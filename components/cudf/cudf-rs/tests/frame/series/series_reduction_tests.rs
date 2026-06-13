@@ -235,8 +235,6 @@ fn test_minmax_f64() {
 fn test_cumsum_i32() {
     let s = crate::common::series::<i32>("x", &[10, 20, 30]).unwrap();
     let cs = s.cumsum().unwrap();
-
-    assert_eq!(cs.name(), Some("x"));
     assert_eq!(cs.to_vec_strict::<i32>().unwrap(), vec![10, 30, 60]);
 }
 
@@ -252,8 +250,6 @@ fn test_cumsum_f64() {
 fn test_cummin_i32() {
     let s = crate::common::series::<i32>("x", &[3, 1, 2]).unwrap();
     let cm = s.cummin().unwrap();
-
-    assert_eq!(cm.name(), Some("x"));
     assert_eq!(cm.to_vec_strict::<i32>().unwrap(), vec![3, 1, 1]);
 }
 
@@ -261,8 +257,6 @@ fn test_cummin_i32() {
 fn test_cummax_i32() {
     let s = crate::common::series::<i32>("x", &[1, 3, 2]).unwrap();
     let cm = s.cummax().unwrap();
-
-    assert_eq!(cm.name(), Some("x"));
     assert_eq!(cm.to_vec_strict::<i32>().unwrap(), vec![1, 3, 3]);
 }
 
@@ -270,8 +264,6 @@ fn test_cummax_i32() {
 fn test_cumprod_i32() {
     let s = crate::common::series::<i32>("x", &[2, 3, 4]).unwrap();
     let cp = s.cumprod().unwrap();
-
-    assert_eq!(cp.name(), Some("x"));
     assert_eq!(cp.to_vec_strict::<i32>().unwrap(), vec![2, 6, 24]);
 }
 
@@ -283,8 +275,6 @@ fn test_cumprod_i32() {
 fn test_is_nan_f64() {
     let s = crate::common::series::<f64>("x", &[1.0, f64::NAN, 3.0]).unwrap();
     let mask = s.is_nan().unwrap();
-
-    assert_eq!(mask.name(), Some("x"));
     assert_eq!(mask.dtype().unwrap().id(), TypeId::Bool8);
     assert_eq!(mask.to_vec_strict::<bool>().unwrap(), vec![false, true, false]);
 }
@@ -293,8 +283,6 @@ fn test_is_nan_f64() {
 fn test_is_not_nan_f64() {
     let s = crate::common::series::<f64>("x", &[1.0, f64::NAN, 3.0]).unwrap();
     let mask = s.is_not_nan().unwrap();
-
-    assert_eq!(mask.name(), Some("x"));
     assert_eq!(mask.to_vec_strict::<bool>().unwrap(), vec![true, false, true]);
 }
 
@@ -306,8 +294,6 @@ fn test_is_not_nan_f64() {
 fn test_abs_i32() {
     let s = crate::common::series::<i32>("x", &[-3, -1, 0, 2]).unwrap();
     let result = s.abs().unwrap();
-
-    assert_eq!(result.name(), Some("x"));
     assert_eq!(result.to_vec_strict::<i32>().unwrap(), vec![3, 1, 0, 2]);
 }
 
@@ -327,8 +313,6 @@ fn test_abs_f64() {
 fn test_neg_i32() {
     let s = crate::common::series::<i32>("x", &[1, -2, 3]).unwrap();
     let result = s.neg().unwrap();
-
-    assert_eq!(result.name(), Some("x"));
     assert_eq!(result.to_vec_strict::<i32>().unwrap(), vec![-1, 2, -3]);
 }
 
@@ -348,8 +332,6 @@ fn test_neg_f64() {
 fn test_logical_not_bool() {
     let s = crate::common::series::<bool>("x", &[true, false, true]).unwrap();
     let result = s.logical_not().unwrap();
-
-    assert_eq!(result.name(), Some("x"));
     assert_eq!(result.dtype().unwrap().id(), TypeId::Bool8);
     assert_eq!(result.to_vec_strict::<bool>().unwrap(), vec![false, true, false]);
 }

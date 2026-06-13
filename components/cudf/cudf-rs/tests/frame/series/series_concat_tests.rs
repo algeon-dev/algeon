@@ -14,8 +14,6 @@ fn test_concat_two_i32_series() {
     let b = crate::common::series::<i32>("b", &[3, 4, 5]).unwrap();
 
     let result = Series::concat(&[&a, &b]).unwrap();
-
-    assert_eq!(result.name(), None, "concat produces unnamed Series");
     assert_eq!(result.len(), 5);
     assert_eq!(result.dtype().unwrap().id(), TypeId::Int32);
     assert_eq!(result.to_vec_strict::<i32>().unwrap(), vec![1, 2, 3, 4, 5]);

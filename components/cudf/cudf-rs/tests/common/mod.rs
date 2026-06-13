@@ -108,7 +108,8 @@ pub fn null_string_scalar() -> cudf::Result<Scalar> {
 
 #[allow(dead_code)]
 pub fn series<T: HostColumnData>(name: impl Into<String>, data: &[T]) -> cudf::Result<Series> {
-    with_test_runtime(|rt| rt.named_series(name, data))
+    let _ = name.into();
+    with_test_runtime(|rt| rt.series(data))
 }
 
 #[allow(dead_code)]
@@ -122,7 +123,8 @@ pub fn nullable_series<T: HostColumnData>(
     data: &[T],
     validity: &[bool],
 ) -> cudf::Result<Series> {
-    with_test_runtime(|rt| rt.named_nullable_series(name, data, validity))
+    let _ = name.into();
+    with_test_runtime(|rt| rt.nullable_series(data, validity))
 }
 
 #[allow(dead_code)]
@@ -132,7 +134,8 @@ pub fn unnamed_nullable_series<T: HostColumnData>(data: &[T], validity: &[bool])
 
 #[allow(dead_code)]
 pub fn series_opt<T: CudfType>(name: impl Into<String>, data: &[Option<T>]) -> cudf::Result<Series> {
-    with_test_runtime(|rt| rt.named_series_opt(name, data))
+    let _ = name.into();
+    with_test_runtime(|rt| rt.series_opt(data))
 }
 
 #[allow(dead_code)]
@@ -142,7 +145,8 @@ pub fn unnamed_series_opt<T: CudfType>(data: &[Option<T>]) -> cudf::Result<Serie
 
 #[allow(dead_code)]
 pub fn null_series(name: impl Into<String>, dtype: impl Into<DataType>, len: usize) -> cudf::Result<Series> {
-    with_test_runtime(|rt| rt.named_nulls(name, dtype, len))
+    let _ = name.into();
+    with_test_runtime(|rt| rt.nulls(dtype, len))
 }
 
 #[allow(dead_code)]
@@ -152,7 +156,8 @@ pub fn unnamed_null_series(dtype: impl Into<DataType>, len: usize) -> cudf::Resu
 
 #[allow(dead_code)]
 pub fn empty_series(name: impl Into<String>, dtype: impl Into<DataType>) -> cudf::Result<Series> {
-    with_test_runtime(|rt| rt.named_empty_series(name, dtype))
+    let _ = name.into();
+    with_test_runtime(|rt| rt.empty_series(dtype))
 }
 
 #[allow(dead_code)]
@@ -355,7 +360,8 @@ pub fn explicit_i32_column(data: &[i32], identity: u64) -> Column {
 
 #[allow(dead_code)]
 pub fn explicit_i32_series(name: &str, data: &[i32], identity: u64) -> Series {
-    Series::from_column(explicit_i32_column(data, identity)).unwrap().rename(name)
+    let _ = name;
+    Series::from_column(explicit_i32_column(data, identity)).unwrap()
 }
 
 #[allow(dead_code)]
@@ -365,7 +371,8 @@ pub fn explicit_bool_column(data: &[bool], identity: u64) -> Column {
 
 #[allow(dead_code)]
 pub fn explicit_bool_series(name: &str, data: &[bool], identity: u64) -> Series {
-    Series::from_column(explicit_bool_column(data, identity)).unwrap().rename(name)
+    let _ = name;
+    Series::from_column(explicit_bool_column(data, identity)).unwrap()
 }
 
 #[allow(dead_code)]

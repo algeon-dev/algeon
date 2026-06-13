@@ -232,7 +232,6 @@ fn test_materialization_preserves_series() {
     let _v1 = s.to_optional_vec::<i32>().unwrap();
 
     // Series is still usable.
-    assert_eq!(s.name(), Some("x"));
     assert_eq!(s.len(), 3);
     assert_eq!(s.null_count(), 1);
     assert_eq!(s.dtype().unwrap().id(), TypeId::Int32);

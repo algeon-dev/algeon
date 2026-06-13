@@ -20,7 +20,6 @@ fn eq_scalar_accepts_primitive() {
     let mask = s.eq_scalar(2i32).unwrap();
 
     assert_eq!(mask.dtype().unwrap().id(), TypeId::Bool8);
-    assert_eq!(mask.name(), Some("z"));
     assert_eq!(mask.to_vec_strict::<bool>().unwrap(), vec![false, true, true, false]);
 }
 
@@ -69,7 +68,6 @@ fn eq_scalar_accepts_str_literal() {
     let mask = s.eq_scalar("active").unwrap();
 
     assert_eq!(mask.dtype().unwrap().id(), TypeId::Bool8);
-    assert_eq!(mask.name(), Some("status"));
     assert_eq!(mask.to_vec_strict::<bool>().unwrap(), vec![true, false, true]);
 }
 
@@ -135,7 +133,6 @@ fn eq_scalar_in_accepts_str_literal() {
     let mask = s.eq_scalar_in("active", &ctx).unwrap();
 
     assert_eq!(mask.dtype().unwrap().id(), TypeId::Bool8);
-    assert_eq!(mask.name(), Some("status"));
     assert_eq!(mask.to_vec_strict::<bool>().unwrap(), vec![true, false, true]);
 }
 

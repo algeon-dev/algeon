@@ -28,13 +28,7 @@ impl Series {
         (values, validity, has_nulls)
     }
 
-    pub(crate) fn from_named_column(name: impl Into<String>, column: Column) -> Result<Self> {
-        let mut s = Self::from_column_with_cache(column)?;
-        s.name = Some(name.into());
-        Ok(s)
-    }
-
-    /// Wrap an owned `Column` as an unnamed `Series`.
+    /// Wrap an owned `Column` as a `Series`.
     ///
     /// This reads column metadata (length, null count) via FFI at construction
     /// time and caches the values for infallible metadata access.
@@ -42,7 +36,7 @@ impl Series {
         Self::from_column_with_cache(column)
     }
 
-    /// Wrap a shared `Arc<Column>` as an unnamed `Series`.
+    /// Wrap a shared `Arc<Column>` as a `Series`.
     ///
     /// This reads column metadata (length, null count) via FFI at construction
     /// time and caches the values for infallible metadata access.
@@ -54,10 +48,10 @@ impl Series {
                 cv.null_count().map_err(|e| e.with_operation("series::from_column_arc"))?,
             )
         };
-        Ok(Self { name: None, column, cached_len, cached_null_count })
+        Ok(Self { column, cached_len, cached_null_count })
     }
 
-    /// Create an unnamed `Series` by repeating a scalar value `size` times.
+    /// Create a `Series` by repeating a scalar value `size` times.
     ///
     /// If the scalar is null, all elements will be null.
     ///
@@ -68,22 +62,12 @@ impl Series {
         Self::from_column(column)
     }
 
-    /// Create a named `Series` by repeating a scalar value `size` times.
-    ///
-    /// If the scalar is null, all elements will be null.
-    ///
-    /// # Cost
-    /// GPU-allocating: one device allocation of `size` elements.
-    pub fn from_named_scalar(name: impl Into<String>, scalar: &Scalar, size: usize) -> Result<Self> {
-        Self::from_scalar(scalar, size).map(|series| series.rename(name))
-    }
-
     /// Private helper: wrap a `Column` and read its cached metadata.
     pub(super) fn from_column_with_cache(column: Column) -> Result<Self> {
         let (cached_len, cached_null_count) = {
             let cv = column.view()?;
             (cv.len()?, cv.null_count()?)
         };
-        Ok(Self { name: None, column: Arc::new(column), cached_len, cached_null_count })
+        Ok(Self { column: Arc::new(column), cached_len, cached_null_count })
     }
 }

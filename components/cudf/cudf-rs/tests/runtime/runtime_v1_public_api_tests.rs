@@ -82,21 +82,21 @@ fn runtime_builder_and_factory_families_seed_runtime_exec_contracts() {
     let expected_mr = rt.memory_resource().testing_raw_handle_value();
 
     reset_exec_observation();
-    let ints = rt.named_series("id", &[3i32, 1, 2]).unwrap();
+    let ints = rt.series(&[3i32, 1, 2]).unwrap();
     assert_eq!(last_exec_stream_value(), expected_stream);
     assert_eq!(last_exec_mr_value(), expected_mr);
     assert_series_residency(&ints, expected_id, expected_stream, expected_mr);
     assert_eq!(ints.to_vec_strict::<i32>().unwrap(), vec![3, 1, 2]);
 
     reset_exec_observation();
-    let strings = rt.named_series("name", &["alice", "bob"]).unwrap();
+    let strings = rt.series(&["alice", "bob"]).unwrap();
     assert_eq!(last_exec_stream_value(), expected_stream);
     assert_eq!(last_exec_mr_value(), expected_mr);
     assert_series_residency(&strings, expected_id, expected_stream, expected_mr);
     assert_eq!(strings.to_strings_strict().unwrap(), vec!["alice".to_string(), "bob".to_string()]);
 
     reset_exec_observation();
-    let nulls = rt.named_nulls("all_null", TypeId::Int32, 3).unwrap();
+    let nulls = rt.nulls(TypeId::Int32, 3).unwrap();
     assert_eq!(last_exec_stream_value(), expected_stream);
     assert_eq!(last_exec_mr_value(), expected_mr);
     assert_series_residency(&nulls, expected_id, expected_stream, expected_mr);
@@ -133,7 +133,7 @@ fn runtime_builder_and_factory_families_seed_runtime_exec_contracts() {
     reset_exec_observation();
     let seed_scalar = rt.scalar(7i32).unwrap();
     reset_exec_observation();
-    let seeded = rt.named_series_from_scalar("seed", &seed_scalar, 2).unwrap();
+    let seeded = rt.series_from_scalar(&seed_scalar, 2).unwrap();
     assert_eq!(last_exec_stream_value(), expected_stream);
     assert_eq!(last_exec_mr_value(), expected_mr);
     assert_series_residency(&seeded, expected_id, expected_stream, expected_mr);
@@ -218,29 +218,17 @@ fn dataframe_in_context_routes_representative_operation_families_through_context
     let data_rt = sample_runtime();
     let other_rt = sample_runtime();
     let ctx_rt = sample_runtime();
-    let df = DataFrame::from_columns(
-        ::std::iter::IntoIterator::into_iter([
-            data_rt.named_series("id", &[3i32, 1, 2, 2]).unwrap(),
-            data_rt.named_series("val", &[30i32, 10, 20, 40]).unwrap(),
-        ])
-        .map(|series| {
-            let name = series.name().expect("explicit test migration requires named Series inputs").to_string();
-            (name, series)
-        }),
-    )
+    let df = DataFrame::from_columns([
+        ("id", data_rt.series(&[3i32, 1, 2, 2]).unwrap()),
+        ("val", data_rt.series(&[30i32, 10, 20, 40]).unwrap()),
+    ])
     .unwrap();
-    let rhs = DataFrame::from_columns(
-        ::std::iter::IntoIterator::into_iter([
-            other_rt.named_series("id", &[2i32, 3, 4]).unwrap(),
-            other_rt.named_series("score", &[200i32, 300, 400]).unwrap(),
-        ])
-        .map(|series| {
-            let name = series.name().expect("explicit test migration requires named Series inputs").to_string();
-            (name, series)
-        }),
-    )
+    let rhs = DataFrame::from_columns([
+        ("id", other_rt.series(&[2i32, 3, 4]).unwrap()),
+        ("score", other_rt.series(&[200i32, 300, 400]).unwrap()),
+    ])
     .unwrap();
-    let gather_map = other_rt.named_series("idx", &[2i32, 0]).unwrap();
+    let gather_map = other_rt.series(&[2i32, 0]).unwrap();
 
     let ctx_stream = ctx_rt.stream().testing_raw_handle_value();
     let ctx_mr = ctx_rt.memory_resource().testing_raw_handle_value();
@@ -292,11 +280,10 @@ fn series_explicit_context_methods_route_representative_operation_families_throu
     let data_rt = sample_runtime();
     let other_rt = sample_runtime();
     let ctx_rt = sample_runtime();
-    let numeric = data_rt.named_nullable_series("score", &[30i32, 0, 10, 0], &[true, false, true, false]).unwrap();
-    let fill = other_rt.named_series("fill", &[9i32, 8, 7, 6]).unwrap();
-    let rhs = other_rt.named_series("rhs", &[1i32, 2, 3, 4]).unwrap();
-    let strings =
-        data_rt.named_nullable_series("name", &["Alice", "bob", "", "CARA"], &[true, true, false, true]).unwrap();
+    let numeric = data_rt.nullable_series(&[30i32, 0, 10, 0], &[true, false, true, false]).unwrap();
+    let fill = other_rt.series(&[9i32, 8, 7, 6]).unwrap();
+    let rhs = other_rt.series(&[1i32, 2, 3, 4]).unwrap();
+    let strings = data_rt.nullable_series(&["Alice", "bob", "", "CARA"], &[true, true, false, true]).unwrap();
 
     let ctx_stream = ctx_rt.stream().testing_raw_handle_value();
     let ctx_mr = ctx_rt.memory_resource().testing_raw_handle_value();
@@ -349,11 +336,7 @@ fn series_explicit_context_methods_route_representative_operation_families_throu
 #[test]
 fn explicit_context_methods_accept_runtime_seeded_dataframe_and_series() {
     let series = crate::common::series::<i32>("id", &[3, 1, 2]).unwrap();
-    let df = DataFrame::from_columns(::std::iter::IntoIterator::into_iter([series.clone()]).map(|series| {
-        let name = series.name().expect("explicit test migration requires named Series inputs").to_string();
-        (name, series)
-    }))
-    .unwrap();
+    let df = DataFrame::from_columns([("id", series.clone())]).unwrap();
     let override_stream = CudaStream::new().unwrap();
     let ctx = ExecutionOverrides::new().with_stream(&override_stream);
 
@@ -369,16 +352,10 @@ fn explicit_context_methods_accept_runtime_seeded_dataframe_and_series() {
 #[test]
 fn explicit_runtime_operations_use_explicit_domain_only() {
     let rt = sample_runtime();
-    let df = DataFrame::from_columns(
-        ::std::iter::IntoIterator::into_iter([
-            rt.named_series("id", &[3i32, 1, 2]).unwrap(),
-            rt.named_series("value", &[30i32, 10, 20]).unwrap(),
-        ])
-        .map(|series| {
-            let name = series.name().expect("explicit test migration requires named Series inputs").to_string();
-            (name, series)
-        }),
-    )
+    let df = DataFrame::from_columns([
+        ("id", rt.series(&[3i32, 1, 2]).unwrap()),
+        ("val", rt.series(&[30i32, 10, 20]).unwrap()),
+    ])
     .unwrap();
 
     let sorted = df.sort_values(["id"], SortOptions::default()).unwrap();
@@ -412,16 +389,10 @@ fn runtime_seeded_readers_use_runtime_stream() {
 
     let parquet_path = dir.path().join("runtime_seed.parquet");
     let seed_rt = sample_runtime();
-    DataFrame::from_columns(
-        ::std::iter::IntoIterator::into_iter([
-            seed_rt.named_series("id", &[1i32, 2, 3]).unwrap(),
-            seed_rt.named_series("value", &[10i32, 20, 30]).unwrap(),
-        ])
-        .map(|series| {
-            let name = series.name().expect("explicit test migration requires named Series inputs").to_string();
-            (name, series)
-        }),
-    )
+    DataFrame::from_columns([
+        ("id", seed_rt.series(&[1i32, 2, 3]).unwrap()),
+        ("value", seed_rt.series(&[10i32, 20, 30]).unwrap()),
+    ])
     .unwrap()
     .write_parquet(&parquet_path)
     .unwrap();
@@ -467,16 +438,10 @@ fn write_options_and_runtime_overrides_use_expected_runtime() {
 
     let data_rt = sample_runtime();
     let target_rt = sample_runtime();
-    let df = DataFrame::from_columns(
-        ::std::iter::IntoIterator::into_iter([
-            data_rt.named_series("id", &[4i32, 5, 6]).unwrap(),
-            data_rt.named_series("value", &[40i32, 50, 60]).unwrap(),
-        ])
-        .map(|series| {
-            let name = series.name().expect("explicit test migration requires named Series inputs").to_string();
-            (name, series)
-        }),
-    )
+    let df = DataFrame::from_columns([
+        ("id", data_rt.series(&[4i32, 5, 6]).unwrap()),
+        ("value", data_rt.series(&[40i32, 50, 60]).unwrap()),
+    ])
     .unwrap();
 
     reset_exec_observation();
@@ -503,18 +468,12 @@ fn write_options_and_runtime_overrides_use_expected_runtime() {
 fn copy_into_runtime_preserves_target_residency_and_reuses_allocation_when_possible() {
     let source_rt = sample_runtime();
     let target_rt = sample_runtime();
-    let df = DataFrame::from_columns(
-        ::std::iter::IntoIterator::into_iter([
-            source_rt.named_series("id", &[1i32, 2, 3]).unwrap(),
-            source_rt.named_series("val", &[10i32, 20, 30]).unwrap(),
-        ])
-        .map(|series| {
-            let name = series.name().expect("explicit test migration requires named Series inputs").to_string();
-            (name, series)
-        }),
-    )
+    let df = DataFrame::from_columns([
+        ("id", source_rt.series(&[1i32, 2, 3]).unwrap()),
+        ("value", source_rt.series(&[10i32, 20, 30]).unwrap()),
+    ])
     .unwrap();
-    let series = source_rt.named_series("id", &[1i32, 2, 3]).unwrap();
+    let series = source_rt.series(&[1i32, 2, 3]).unwrap();
 
     let original_df_ptr = device_ptr(&df, "id");
     let original_series_ptr = series_device_ptr(&series);
@@ -553,27 +512,15 @@ fn in_context_override_and_copy_into_runtime_keep_distinct_mixed_domain_semantic
     let right_rt = sample_runtime();
     let target_rt = sample_runtime();
 
-    let left = DataFrame::from_columns(
-        ::std::iter::IntoIterator::into_iter([
-            left_rt.named_series("id", &[1i32, 2, 3]).unwrap(),
-            left_rt.named_series("val", &[10i32, 20, 30]).unwrap(),
-        ])
-        .map(|series| {
-            let name = series.name().expect("explicit test migration requires named Series inputs").to_string();
-            (name, series)
-        }),
-    )
+    let left = DataFrame::from_columns([
+        ("id", left_rt.series(&[1i32, 2, 3]).unwrap()),
+        ("val", left_rt.series(&[10i32, 20, 30]).unwrap()),
+    ])
     .unwrap();
-    let right = DataFrame::from_columns(
-        ::std::iter::IntoIterator::into_iter([
-            right_rt.named_series("id", &[2i32, 3, 4]).unwrap(),
-            right_rt.named_series("score", &[200i32, 300, 400]).unwrap(),
-        ])
-        .map(|series| {
-            let name = series.name().expect("explicit test migration requires named Series inputs").to_string();
-            (name, series)
-        }),
-    )
+    let right = DataFrame::from_columns([
+        ("id", right_rt.series(&[2i32, 3, 4]).unwrap()),
+        ("score", right_rt.series(&[200i32, 300, 400]).unwrap()),
+    ])
     .unwrap();
 
     let override_stream = CudaStream::new().unwrap();
@@ -606,19 +553,13 @@ fn schema_only_assign_after_copy_into_runtime_preserves_target_residency() {
     let base_rt = sample_runtime();
     let extra_rt = sample_runtime();
     let target_rt = sample_runtime();
-    let df = DataFrame::from_columns(
-        ::std::iter::IntoIterator::into_iter([
-            base_rt.named_series("id", &[1i32, 2, 3]).unwrap(),
-            base_rt.named_series("val", &[10i32, 20, 30]).unwrap(),
-        ])
-        .map(|series| {
-            let name = series.name().expect("explicit test migration requires named Series inputs").to_string();
-            (name, series)
-        }),
-    )
+    let df = DataFrame::from_columns([
+        ("id", base_rt.series(&[1i32, 2, 3]).unwrap()),
+        ("val", base_rt.series(&[10i32, 20, 30]).unwrap()),
+    ])
     .unwrap();
-    let replacement = extra_rt.named_series("replacement", &[7i32, 8, 9]).unwrap();
-    let bonus = extra_rt.named_series("bonus", &[70i32, 80, 90]).unwrap();
+    let replacement = extra_rt.series(&[7i32, 8, 9]).unwrap();
+    let bonus = extra_rt.series(&[70i32, 80, 90]).unwrap();
 
     let df = df.copy_into_runtime(&target_rt).unwrap();
     let replacement = replacement.copy_into_runtime(&target_rt).unwrap();

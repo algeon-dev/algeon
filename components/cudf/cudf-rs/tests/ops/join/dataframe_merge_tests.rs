@@ -122,27 +122,15 @@ fn test_merge_succeeds_with_mixed_domains_and_uses_left_provenance() {
     let _event_observation = crate::common::lock_event_observation();
     let left_rt = sample_runtime();
     let right_rt = sample_runtime();
-    let left = DataFrame::from_columns(
-        ::std::iter::IntoIterator::into_iter([
-            left_rt.named_series("id", &[1i32, 2, 3]).unwrap(),
-            left_rt.named_series("score", &[10i32, 20, 30]).unwrap(),
-        ])
-        .map(|series| {
-            let name = series.name().expect("explicit test migration requires named Series inputs").to_string();
-            (name, series)
-        }),
-    )
+    let left = DataFrame::from_columns([
+        ("id", left_rt.series(&[1i32, 2, 3]).unwrap()),
+        ("score", left_rt.series(&[10i32, 20, 30]).unwrap()),
+    ])
     .unwrap();
-    let right = DataFrame::from_columns(
-        ::std::iter::IntoIterator::into_iter([
-            right_rt.named_series("id", &[2i32, 3, 4]).unwrap(),
-            right_rt.named_series("value", &[200i32, 300, 400]).unwrap(),
-        ])
-        .map(|series| {
-            let name = series.name().expect("explicit test migration requires named Series inputs").to_string();
-            (name, series)
-        }),
-    )
+    let right = DataFrame::from_columns([
+        ("id", right_rt.series(&[2i32, 3, 4]).unwrap()),
+        ("value", right_rt.series(&[200i32, 300, 400]).unwrap()),
+    ])
     .unwrap();
     let expected_exec_stream = left.testing_execution_domain_stream_value();
     let expected_exec_mr = left.testing_execution_domain_mr_value();
@@ -298,27 +286,15 @@ fn test_full_merge_succeeds_with_mixed_domains_and_reassembles_on_left_provenanc
     let _event_observation = crate::common::lock_event_observation();
     let left_rt = sample_runtime();
     let right_rt = sample_runtime();
-    let left = DataFrame::from_columns(
-        ::std::iter::IntoIterator::into_iter([
-            left_rt.named_series("id", &[1i32, 2, 3]).unwrap(),
-            left_rt.named_series("score", &[10i32, 20, 30]).unwrap(),
-        ])
-        .map(|series| {
-            let name = series.name().expect("explicit test migration requires named Series inputs").to_string();
-            (name, series)
-        }),
-    )
+    let left = DataFrame::from_columns([
+        ("id", left_rt.series(&[1i32, 2, 3]).unwrap()),
+        ("score", left_rt.series(&[10i32, 20, 30]).unwrap()),
+    ])
     .unwrap();
-    let right = DataFrame::from_columns(
-        ::std::iter::IntoIterator::into_iter([
-            right_rt.named_series("id", &[2i32, 3, 4]).unwrap(),
-            right_rt.named_series("value", &[200i32, 300, 400]).unwrap(),
-        ])
-        .map(|series| {
-            let name = series.name().expect("explicit test migration requires named Series inputs").to_string();
-            (name, series)
-        }),
-    )
+    let right = DataFrame::from_columns([
+        ("id", right_rt.series(&[2i32, 3, 4]).unwrap()),
+        ("value", right_rt.series(&[200i32, 300, 400]).unwrap()),
+    ])
     .unwrap();
     let expected_exec_stream = left.testing_execution_domain_stream_value();
     let expected_exec_mr = left.testing_execution_domain_mr_value();
@@ -374,27 +350,15 @@ fn test_full_merge_in_context_succeeds_on_mixed_domains_and_reassembles_on_conte
     let left_rt = sample_runtime();
     let right_rt = sample_runtime();
     let target_rt = sample_runtime();
-    let left = DataFrame::from_columns(
-        ::std::iter::IntoIterator::into_iter([
-            left_rt.named_series("id", &[1i32, 2, 3]).unwrap(),
-            left_rt.named_series("score", &[10i32, 20, 30]).unwrap(),
-        ])
-        .map(|series| {
-            let name = series.name().expect("explicit test migration requires named Series inputs").to_string();
-            (name, series)
-        }),
-    )
+    let left = DataFrame::from_columns([
+        ("id", left_rt.series(&[1i32, 2, 3]).unwrap()),
+        ("score", left_rt.series(&[10i32, 20, 30]).unwrap()),
+    ])
     .unwrap();
-    let right = DataFrame::from_columns(
-        ::std::iter::IntoIterator::into_iter([
-            right_rt.named_series("id", &[2i32, 3, 4]).unwrap(),
-            right_rt.named_series("value", &[200i32, 300, 400]).unwrap(),
-        ])
-        .map(|series| {
-            let name = series.name().expect("explicit test migration requires named Series inputs").to_string();
-            (name, series)
-        }),
-    )
+    let right = DataFrame::from_columns([
+        ("id", right_rt.series(&[2i32, 3, 4]).unwrap()),
+        ("value", right_rt.series(&[200i32, 300, 400]).unwrap()),
+    ])
     .unwrap();
     let ctx =
         ExecutionOverrides::new().with_stream(target_rt.stream()).with_memory_resource(target_rt.memory_resource());

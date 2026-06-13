@@ -161,7 +161,7 @@ fn test_lookup_table_rejects_mapping_length_mismatch_at_build_time() {
 }
 
 #[test]
-fn test_lookup_table_supports_repeated_probe_and_value_name() {
+fn test_lookup_table_supports_repeated_probe() {
     let keys = crate::common::series("id", &["u1", "u2"]).unwrap();
     let values = crate::common::series("label", &["alice", "bob"]).unwrap();
     let table = LookupTable::new(keys, values).unwrap();
@@ -170,14 +170,12 @@ fn test_lookup_table_supports_repeated_probe_and_value_name() {
     let second = crate::common::series("vertex", &["u1", "u2"]).unwrap();
 
     let first_result = table.probe(&first).unwrap();
-    let second_result = table.probe_as(&second, "owner").unwrap();
+    let second_result = table.probe(&second).unwrap();
 
     assert_eq!(
         first_result.to_optional_strings().unwrap(),
         vec![Some("bob".to_string()), None, Some("alice".to_string())]
     );
-    assert_eq!(first_result.name(), Some("label"));
-    assert_eq!(second_result.name(), Some("owner"));
     assert_eq!(second_result.to_optional_strings().unwrap(), vec![Some("alice".to_string()), Some("bob".to_string())]);
 }
 
@@ -194,15 +192,13 @@ fn test_lookup_table_exposes_mapping_parts() {
 }
 
 #[test]
-fn test_lookup_table_probe_returns_named_series() {
+fn test_lookup_table_probe_returns_series() {
     let keys = crate::common::series::<i32>("id", &[1, 2]).unwrap();
     let values = crate::common::series("label", &["alice", "bob"]).unwrap();
     let table = LookupTable::new(keys, values).unwrap();
     let input = crate::common::series::<i32>("vertex", &[2, 1, 9]).unwrap();
 
     let result = table.probe(&input).unwrap();
-
-    assert_eq!(result.name(), Some("label"));
     assert_eq!(result.to_optional_strings().unwrap(), vec![Some("bob".to_string()), Some("alice".to_string()), None]);
 }
 

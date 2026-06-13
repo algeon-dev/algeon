@@ -182,11 +182,7 @@ fn test_filter_any_empty_returns_empty_dataframe_with_same_schema() {
 fn test_filter_any_empty_preserves_full_dtype_metadata() {
     let amount =
         series("amount", &[100i64, 250, 999]).unwrap().astype(DataType::fixed_point(TypeId::Decimal64, -2)).unwrap();
-    let df = DataFrame::from_columns(::std::iter::IntoIterator::into_iter([amount.clone()]).map(|series| {
-        let name = series.name().expect("explicit test migration requires named Series inputs").to_string();
-        (name, series)
-    }))
-    .unwrap();
+    let df = DataFrame::from_columns([("amount", amount.clone())]).unwrap();
 
     let filtered = df.filter_any(std::iter::empty::<cudf::Expr>()).unwrap();
 

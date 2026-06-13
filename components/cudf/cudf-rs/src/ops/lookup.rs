@@ -355,15 +355,6 @@ impl LookupTable {
         let meta = validate_probe_inputs(&input_view, &keys_view, &values_view, operation)?;
         let result = execute_reusable_probe(&input_view, &values_view, self.backend.as_ref(), &meta, operation)
             .map_err(|e| e.with_operation(operation))?;
-        let result = Series::from_column(result).map_err(|e| e.with_operation(operation))?;
-
-        Ok(match self.values.name() {
-            Some(name) => result.rename(name),
-            None => result,
-        })
-    }
-
-    pub fn probe_as(&self, input: &Series, output_name: &str) -> Result<Series> {
-        self.probe(input).map(|result| result.rename(output_name))
+        Series::from_column(result).map_err(|e| e.with_operation(operation))
     }
 }

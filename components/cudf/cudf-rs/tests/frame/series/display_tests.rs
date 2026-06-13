@@ -7,7 +7,7 @@ fn test_display_smoke_reports_series_metadata_without_materializing_values() {
     let output = format!("{}", series);
 
     assert!(output.contains("Series"), "output should identify a Series: {}", output);
-    assert!(output.contains("name=score"), "output should contain the series name: {}", output);
+    assert!(!output.contains("score"), "output should not expose schema names on Series: {}", output);
     assert!(
         output.contains("dtype=Int32") || output.contains("dtype=int32") || output.contains("dtype=INT32"),
         "output should contain Int32 metadata: {}",
@@ -27,7 +27,7 @@ fn test_debug_smoke_reports_series_metadata_without_materializing_values() {
     let output = format!("{:?}", series);
 
     assert!(output.contains("Series"), "debug output should identify a Series: {}", output);
-    assert!(output.contains("city"), "debug output should contain the series name: {}", output);
+    assert!(!output.contains("city"), "debug output should not expose schema names on Series: {}", output);
     assert!(
         output.contains("String") || output.contains("string") || output.contains("STRING"),
         "debug output should contain String metadata: {}",

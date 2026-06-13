@@ -19,21 +19,20 @@ use crate::{
 pub(super) const SERIES_VALUE_COUNTS_FALLBACK_NAME: &str = "value";
 pub(super) const SERIES_VALUE_COUNTS_COUNT_NAME: &str = "count";
 
-/// A named, reference-counted GPU column.
+/// A reference-counted GPU column vector.
 ///
 /// `Series` is the cuDF-like user-facing column type. Internally it holds an
-/// `Arc<Column>`, so cloning, renaming, and passing Series between DataFrames
-/// is zero-copy on the GPU side.
+/// `Arc<Column>`, so cloning and passing Series between DataFrames is
+/// zero-copy on the GPU side.
 ///
 /// Metadata queries (`len()`, `is_empty()`, `null_count()`) are infallible and
 /// free — the values are cached at construction time.
 ///
-/// [`std::fmt::Display`] for `Series` is metadata-only. It reports the name,
-/// dtype, length, and nullability summary, but it never materializes values to
-/// host memory.
+/// [`std::fmt::Display`] for `Series` is metadata-only. It reports the dtype,
+/// length, and nullability summary, but it never materializes values to host
+/// memory.
 #[derive(Clone)]
 pub struct Series {
-    pub(super) name: Option<String>,
     pub(super) column: Arc<Column>,
     pub(super) cached_len: usize,
     pub(super) cached_null_count: usize,
@@ -143,7 +142,7 @@ impl Series {
     /// Consume this Series and return the underlying `Arc<Column>`.
     ///
     /// This is the idiomatic way to unwrap a Series when you no longer need
-    /// the name or Series wrapper.
+    /// the Series wrapper.
     pub fn into_inner(self) -> Arc<Column> {
         self.column
     }
@@ -154,16 +153,14 @@ impl Series {
 
     /// Return the first `n` rows of the series.
     ///
-    /// If `n >= len`, all rows are returned. The output inherits the source
-    /// series name, including unnamed inputs.
+    /// If `n >= len`, all rows are returned.
     pub fn head(&self, n: usize) -> Result<Series> {
         self.head_with_context(n, &default_execution_context(), "series::head")
     }
 
     /// Return the last `n` rows of the series.
     ///
-    /// If `n >= len`, all rows are returned. The output inherits the source
-    /// series name, including unnamed inputs.
+    /// If `n >= len`, all rows are returned.
     pub fn tail(&self, n: usize) -> Result<Series> {
         self.tail_with_context(n, &default_execution_context(), "series::tail")
     }
@@ -304,7 +301,7 @@ impl Series {
 
     // -- Scalar comparison ops -----------------------------------------
 
-    /// Element-wise `self > scalar`. Inherits the source Series' name.
+    /// Element-wise `self > scalar`.
     ///
     /// Accepts numeric primitives (any [`CudfType`]) and host strings (`&str`,
     /// `String`, `&String`) through the [`IntoRuntimeScalar`] conversion.
@@ -316,7 +313,7 @@ impl Series {
         self.binary_scalar_in_context(rhs, BinaryOperator::Greater, &default_execution_context(), "series::gt_scalar")
     }
 
-    /// Element-wise `self < scalar`. Inherits the source Series' name.
+    /// Element-wise `self < scalar`.
     ///
     /// Accepts numeric primitives (any [`CudfType`]) and host strings (`&str`,
     /// `String`, `&String`) through the [`IntoRuntimeScalar`] conversion.
@@ -328,7 +325,7 @@ impl Series {
         self.binary_scalar_in_context(rhs, BinaryOperator::Less, &default_execution_context(), "series::lt_scalar")
     }
 
-    /// Element-wise `self == scalar`. Inherits the source Series' name.
+    /// Element-wise `self == scalar`.
     ///
     /// Accepts numeric primitives (any [`CudfType`]) and host strings (`&str`,
     /// `String`, `&String`) through the [`IntoRuntimeScalar`] conversion.
@@ -342,7 +339,7 @@ impl Series {
 
     // -- Extended scalar comparison ops --------------------------------
 
-    /// Element-wise `self != scalar`. Inherits the source Series' name.
+    /// Element-wise `self != scalar`.
     ///
     /// Accepts numeric primitives (any [`CudfType`]) and host strings (`&str`,
     /// `String`, `&String`) through the [`IntoRuntimeScalar`] conversion.
@@ -354,7 +351,7 @@ impl Series {
         self.binary_scalar_in_context(rhs, BinaryOperator::NotEqual, &default_execution_context(), "series::ne_scalar")
     }
 
-    /// Element-wise `self >= scalar`. Inherits the source Series' name.
+    /// Element-wise `self >= scalar`.
     ///
     /// Accepts numeric primitives (any [`CudfType`]) and host strings (`&str`,
     /// `String`, `&String`) through the [`IntoRuntimeScalar`] conversion.
@@ -371,7 +368,7 @@ impl Series {
         )
     }
 
-    /// Element-wise `self <= scalar`. Inherits the source Series' name.
+    /// Element-wise `self <= scalar`.
     ///
     /// Accepts numeric primitives (any [`CudfType`]) and host strings (`&str`,
     /// `String`, `&String`) through the [`IntoRuntimeScalar`] conversion.
@@ -385,7 +382,7 @@ impl Series {
 
     // -- Column-vs-column comparison ops -------------------------------
 
-    /// Element-wise `self == rhs`. Returns an unnamed `BOOL8` Series.
+    /// Element-wise `self == rhs`. Returns a `BOOL8` Series.
     ///
     /// # Cost
     /// GPU-allocating: produces a new unnamed `BOOL8` output column on the
@@ -394,7 +391,7 @@ impl Series {
         self.binary_series_in_context(rhs, BinaryOperator::Equal, &default_execution_context(), "series::eq")
     }
 
-    /// Element-wise `self != rhs`. Returns an unnamed `BOOL8` Series.
+    /// Element-wise `self != rhs`. Returns a `BOOL8` Series.
     ///
     /// # Cost
     /// GPU-allocating: produces a new unnamed `BOOL8` output column on the
@@ -403,7 +400,7 @@ impl Series {
         self.binary_series_in_context(rhs, BinaryOperator::NotEqual, &default_execution_context(), "series::ne")
     }
 
-    /// Element-wise `self > rhs`. Returns an unnamed `BOOL8` Series.
+    /// Element-wise `self > rhs`. Returns a `BOOL8` Series.
     ///
     /// # Cost
     /// GPU-allocating: produces a new unnamed `BOOL8` output column on the
@@ -412,7 +409,7 @@ impl Series {
         self.binary_series_in_context(rhs, BinaryOperator::Greater, &default_execution_context(), "series::gt")
     }
 
-    /// Element-wise `self < rhs`. Returns an unnamed `BOOL8` Series.
+    /// Element-wise `self < rhs`. Returns a `BOOL8` Series.
     ///
     /// # Cost
     /// GPU-allocating: produces a new unnamed `BOOL8` output column on the
@@ -421,7 +418,7 @@ impl Series {
         self.binary_series_in_context(rhs, BinaryOperator::Less, &default_execution_context(), "series::lt")
     }
 
-    /// Element-wise `self >= rhs`. Returns an unnamed `BOOL8` Series.
+    /// Element-wise `self >= rhs`. Returns a `BOOL8` Series.
     ///
     /// # Cost
     /// GPU-allocating: produces a new unnamed `BOOL8` output column on the
@@ -430,7 +427,7 @@ impl Series {
         self.binary_series_in_context(rhs, BinaryOperator::GreaterEqual, &default_execution_context(), "series::ge")
     }
 
-    /// Element-wise `self <= rhs`. Returns an unnamed `BOOL8` Series.
+    /// Element-wise `self <= rhs`. Returns a `BOOL8` Series.
     ///
     /// # Cost
     /// GPU-allocating: produces a new unnamed `BOOL8` output column on the
@@ -441,7 +438,7 @@ impl Series {
 
     /// Element-wise logical AND. Both operands must be `BOOL8`.
     ///
-    /// Returns an unnamed `BOOL8` Series suitable for mask composition.
+    /// Returns a `BOOL8` Series suitable for mask composition.
     pub fn logical_and(&self, rhs: &Series) -> Result<Series> {
         let operation = "series::logical_and";
         self.require_bool_binary_operands(rhs, operation)?;
@@ -450,7 +447,7 @@ impl Series {
 
     /// Element-wise logical OR. Both operands must be `BOOL8`.
     ///
-    /// Returns an unnamed `BOOL8` Series suitable for mask composition.
+    /// Returns a `BOOL8` Series suitable for mask composition.
     pub fn logical_or(&self, rhs: &Series) -> Result<Series> {
         let operation = "series::logical_or";
         self.require_bool_binary_operands(rhs, operation)?;
@@ -459,7 +456,7 @@ impl Series {
 
     // -- Arithmetic ops ------------------------------------------------
 
-    /// Element-wise `self + rhs`. Output type inferred. Returns an unnamed Series.
+    /// Element-wise `self + rhs`. Output type inferred.
     ///
     /// # Cost
     /// GPU-allocating: produces a new unnamed output column on the device and
@@ -468,7 +465,7 @@ impl Series {
         self.binary_series_in_context(rhs, BinaryOperator::Add, &default_execution_context(), "series::add")
     }
 
-    /// Element-wise `self - rhs`. Output type inferred. Returns an unnamed Series.
+    /// Element-wise `self - rhs`. Output type inferred.
     ///
     /// # Cost
     /// GPU-allocating: produces a new unnamed output column on the device and
@@ -477,7 +474,7 @@ impl Series {
         self.binary_series_in_context(rhs, BinaryOperator::Sub, &default_execution_context(), "series::sub")
     }
 
-    /// Element-wise `self * rhs`. Output type inferred. Returns an unnamed Series.
+    /// Element-wise `self * rhs`. Output type inferred.
     ///
     /// # Cost
     /// GPU-allocating: produces a new unnamed output column on the device and
@@ -486,7 +483,7 @@ impl Series {
         self.binary_series_in_context(rhs, BinaryOperator::Mul, &default_execution_context(), "series::mul")
     }
 
-    /// Element-wise `self / rhs`. Output type inferred. Returns an unnamed Series.
+    /// Element-wise `self / rhs`. Output type inferred.
     ///
     /// # Cost
     /// GPU-allocating: produces a new unnamed output column on the device and
@@ -497,7 +494,7 @@ impl Series {
 
     // -- Scalar arithmetic ops -----------------------------------------
 
-    /// Element-wise `self + scalar`. Inherits the source Series' name.
+    /// Element-wise `self + scalar`.
     ///
     /// # Cost
     /// GPU-allocating: creates a device scalar from the host value, then
@@ -506,7 +503,7 @@ impl Series {
         self.binary_scalar_in_context(rhs, BinaryOperator::Add, &default_execution_context(), "series::add_scalar")
     }
 
-    /// Element-wise `self - scalar`. Inherits the source Series' name.
+    /// Element-wise `self - scalar`.
     ///
     /// # Cost
     /// GPU-allocating: creates a device scalar from the host value, then
@@ -515,7 +512,7 @@ impl Series {
         self.binary_scalar_in_context(rhs, BinaryOperator::Sub, &default_execution_context(), "series::sub_scalar")
     }
 
-    /// Element-wise `self * scalar`. Inherits the source Series' name.
+    /// Element-wise `self * scalar`.
     ///
     /// # Cost
     /// GPU-allocating: creates a device scalar from the host value, then
@@ -524,7 +521,7 @@ impl Series {
         self.binary_scalar_in_context(rhs, BinaryOperator::Mul, &default_execution_context(), "series::mul_scalar")
     }
 
-    /// Element-wise `self / scalar`. Inherits the source Series' name.
+    /// Element-wise `self / scalar`.
     ///
     /// # Cost
     /// GPU-allocating: creates a device scalar from the host value, then
@@ -534,7 +531,7 @@ impl Series {
     }
 
     /// Element-wise `self % rhs` (modulo). Output type inferred. Returns an
-    /// unnamed Series.
+    /// `Series`.
     ///
     /// # Cost
     /// GPU-allocating: produces a new unnamed output column on the device and
@@ -543,7 +540,7 @@ impl Series {
         self.binary_series_in_context(rhs, BinaryOperator::Mod, &default_execution_context(), "series::rem")
     }
 
-    /// Element-wise `self % scalar`. Inherits the source Series' name.
+    /// Element-wise `self % scalar`.
     ///
     /// # Cost
     /// GPU-allocating: creates a device scalar from the host value, then
@@ -554,7 +551,7 @@ impl Series {
 
     // -- Static constructors for combining Series ----------------------------
 
-    /// Concatenate multiple series into a single unnamed Series.
+    /// Concatenate multiple series into a single `Series`.
     ///
     /// All series must have the same data type.
     ///
@@ -584,9 +581,7 @@ impl Series {
     pub fn copy_into_runtime(&self, runtime: &Runtime) -> Result<Series> {
         let column =
             Self::clone_or_copy_into_domain(&self.column, runtime.execution_domain(), "series::copy_into_runtime")?;
-        let mut series = Self::from_column_arc(column).map_err(|e| e.with_operation("series::copy_into_runtime"))?;
-        series.name = self.name.clone();
-        Ok(series)
+        Self::from_column_arc(column).map_err(|e| e.with_operation("series::copy_into_runtime"))
     }
 
     /// Clone or deep-copy an `Arc<Column>` into the target domain.
@@ -622,7 +617,7 @@ impl Series {
         self.is_not_null_with_context(&default_execution_context(), "series::is_not_null")
     }
 
-    /// Cast this series to the given type. Inherits the source Series' name.
+    /// Cast this series to the given type.
     ///
     /// Accepts either a [`DataType`] (canonical, supports decimal scale) or a
     /// [`crate::TypeId`] (convenience shorthand, scale defaults to 0).
@@ -635,7 +630,7 @@ impl Series {
         self.cast_in_context(target, &default_execution_context(), "series::astype")
     }
 
-    /// Cast this series to a timestamp type. Inherits the source Series' name.
+    /// Cast this series to a timestamp type.
     ///
     /// The source series should contain integer values representing durations
     /// since the Unix epoch in the specified resolution. If `resolution` is
@@ -655,7 +650,7 @@ impl Series {
         )
     }
 
-    /// Cast this series to a numeric type. Inherits the source Series' name.
+    /// Cast this series to a numeric type.
     ///
     /// `target` must be a numeric [`TypeId`] (integer, unsigned integer,
     /// float, or bool). Returns an error if `target` is a non-numeric type
@@ -673,7 +668,7 @@ impl Series {
         self.cast_in_context(target, &default_execution_context(), "series::to_numeric")
     }
 
-    /// Element-wise natural logarithm. Inherits the source Series' name.
+    /// Element-wise natural logarithm.
     ///
     /// Equivalent to cuDF Python's `Series.log()` / `np.log(series)`.
     ///
@@ -683,7 +678,7 @@ impl Series {
         self.unary_with_context(UnaryOperator::Log, &default_execution_context(), "series::log")
     }
 
-    /// Replace null values with a scalar. Inherits the source Series' name.
+    /// Replace null values with a scalar.
     ///
     /// Equivalent to cuDF Python's `Series.fillna(scalar)`.
     ///
@@ -694,7 +689,6 @@ impl Series {
     }
 
     /// Replace null values using corresponding elements from another Series.
-    /// Inherits the source Series' name.
     ///
     /// Both series must have the same dtype and length.
     ///
@@ -706,7 +700,6 @@ impl Series {
 
     /// Forward fill: replace each null with the nearest preceding non-null
     /// value. Leading nulls (with no preceding non-null value) remain null.
-    /// Inherits the source Series' name.
     ///
     /// Equivalent to cuDF Python's `Series.ffill()` / `Series.fillna(method='ffill')`.
     ///
@@ -718,7 +711,6 @@ impl Series {
 
     /// Backward fill: replace each null with the nearest following non-null
     /// value. Trailing nulls (with no following non-null value) remain null.
-    /// Inherits the source Series' name.
     ///
     /// Equivalent to cuDF Python's `Series.bfill()` / `Series.fillna(method='bfill')`.
     ///
@@ -729,8 +721,7 @@ impl Series {
     }
 
     /// Element-wise membership test. Returns a BOOL8 Series where `true`
-    /// indicates the element is present in `values`. Inherits the source
-    /// Series' name.
+    /// indicates the element is present in `values`.
     ///
     /// Equivalent to cuDF Python's `Series.isin()`.
     ///
@@ -740,8 +731,7 @@ impl Series {
         self.isin_with_context(values, &default_execution_context(), "series::isin")
     }
 
-    /// Return a Series with duplicate values removed. Inherits the source
-    /// Series' name.
+    /// Return a Series with duplicate values removed.
     ///
     /// The order of elements in the result is **not** specified.
     ///
@@ -807,19 +797,10 @@ impl Series {
             &values.view().map_err(|e| e.with_operation("series::lookup"))?,
         )
         .map_err(|e| e.with_operation("series::lookup"))?;
-        let result = Series::from_column(result).map_err(|e| e.with_operation("series::lookup"))?;
-        Ok(match values.name() {
-            Some(name) => result.rename(name),
-            None => result,
-        })
+        Series::from_column(result).map_err(|e| e.with_operation("series::lookup"))
     }
 
-    pub fn lookup_as(&self, keys: &Series, values: &Series, output_name: &str) -> Result<Series> {
-        self.lookup(keys, values).map(|result| result.rename(output_name))
-    }
-
-    /// Sort the series according to the given options. Inherits the source
-    /// Series' name.
+    /// Sort the series according to the given options.
     ///
     /// Equivalent to cuDF Python's `Series.sort_values()`.
     ///

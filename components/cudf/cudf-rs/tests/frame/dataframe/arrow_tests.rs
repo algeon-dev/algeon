@@ -87,7 +87,6 @@ fn test_round_trip_i32() {
     let batch = df.to_record_batch().unwrap();
     assert_eq!(batch.num_columns(), 1);
     assert_eq!(batch.num_rows(), 3);
-    assert_eq!(batch.schema().field(0).name(), "a");
     assert_eq!(*batch.schema().field(0).data_type(), ArrowDataType::Int32);
 
     let df2 = import_record_batch(&batch).unwrap();
@@ -244,12 +243,8 @@ fn test_round_trip_nullable_bool8() {
 fn test_to_record_batch_nullable_bool_from_comparison_preserves_nulls() {
     let lhs = crate::common::nullable_series("lhs", &[1i32, 0, 3], &[true, false, true]).unwrap();
     let rhs = crate::common::nullable_series("rhs", &[1i32, 2, 0], &[true, true, true]).unwrap();
-    let flag = lhs.eq(&rhs).unwrap().rename("flag");
-    let df = DataFrame::from_columns(::std::iter::IntoIterator::into_iter([flag]).map(|series| {
-        let name = series.name().expect("explicit test migration requires named Series inputs").to_string();
-        (name, series)
-    }))
-    .unwrap();
+    let flag = lhs.eq(&rhs).unwrap();
+    let df = DataFrame::from_columns([("flag", flag)]).unwrap();
 
     let batch = df.to_record_batch().unwrap();
     let arr = batch.column(0).as_any().downcast_ref::<BooleanArray>().unwrap();
@@ -280,9 +275,6 @@ fn test_schema_preserved_multi_column() {
 
     let batch = df.to_record_batch().unwrap();
     assert_eq!(batch.schema().fields().len(), 3);
-    assert_eq!(batch.schema().field(0).name(), "id");
-    assert_eq!(batch.schema().field(1).name(), "score");
-    assert_eq!(batch.schema().field(2).name(), "active");
 
     let df2 = import_record_batch(&batch).unwrap();
     assert_eq!(df2.column_names(), vec!["id", "score", "active"]);

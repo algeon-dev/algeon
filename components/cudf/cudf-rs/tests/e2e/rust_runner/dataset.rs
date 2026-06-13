@@ -35,16 +35,13 @@ pub fn build_dataframe(dataset: &Dataset) -> cudf::Result<DataFrame> {
 
 fn build_column_dataframe(dataset: &Dataset) -> cudf::Result<DataFrame> {
     let runtime = Runtime::new()?;
-    let columns: Vec<Series> = dataset
+    let columns: Vec<(String, Series)> = dataset
         .columns
         .iter()
-        .map(|col| build_series(&runtime, &col.name, &col.dtype, &col.values))
+        .map(|col| Ok((col.name.clone(), build_series(&runtime, &col.name, &col.dtype, &col.values)?)))
         .collect::<cudf::Result<Vec<_>>>()?;
 
-    DataFrame::from_columns(::std::iter::IntoIterator::into_iter(columns).map(|series| {
-        let name = series.name().expect("explicit test migration requires named Series inputs").to_string();
-        (name, series)
-    }))
+    DataFrame::from_columns(columns)
 }
 
 fn build_json_lines_dataframe(dataset: &Dataset) -> cudf::Result<DataFrame> {
@@ -79,17 +76,14 @@ fn apply_dictionary_columns(frame: DataFrame, dataset: &Dataset) -> cudf::Result
             let series = frame.series(name)?;
             if dictionary_columns.contains(*name) {
                 let encoded = dictionary::encode(&series.testing_view()?, TypeId::Int32)?;
-                Ok(Series::from_column(encoded)?.rename(*name))
+                Ok((name.to_string(), Series::from_column(encoded)?))
             } else {
-                Ok(series)
+                Ok((name.to_string(), series))
             }
         })
         .collect::<cudf::Result<Vec<_>>>()?;
 
-    DataFrame::from_columns(::std::iter::IntoIterator::into_iter(columns).map(|series| {
-        let name = series.name().expect("explicit test migration requires named Series inputs").to_string();
-        (name, series)
-    }))
+    DataFrame::from_columns(columns)
 }
 
 /// Build a single `Series` from a column name, dtype string, and JSON values.
@@ -141,7 +135,7 @@ fn build_numeric_series<T: cudf::CudfType + Default>(
     }
 
     let has_nulls = validity.iter().any(|&v| !v);
-    if has_nulls { runtime.named_nullable_series(name, &data, &validity) } else { runtime.named_series(name, &data) }
+    if has_nulls { runtime.nullable_series(&data, &validity) } else { runtime.series(&data) }
 }
 
 /// Build a nullable bool `Series` from JSON boolean values.
@@ -150,7 +144,7 @@ fn build_bool_series(runtime: &Runtime, name: &str, values: &[serde_json::Value]
 }
 
 /// Build a nullable string `Series` from JSON string values.
-fn build_str_series(runtime: &Runtime, name: &str, values: &[serde_json::Value]) -> cudf::Result<Series> {
+fn build_str_series(runtime: &Runtime, _name: &str, values: &[serde_json::Value]) -> cudf::Result<Series> {
     let mut data = Vec::with_capacity(values.len());
     let mut validity = Vec::with_capacity(values.len());
 
@@ -170,7 +164,7 @@ fn build_str_series(runtime: &Runtime, name: &str, values: &[serde_json::Value])
     }
 
     let has_nulls = validity.iter().any(|&v| !v);
-    if has_nulls { runtime.named_nullable_series(name, &data, &validity) } else { runtime.named_series(name, &data) }
+    if has_nulls { runtime.nullable_series(&data, &validity) } else { runtime.series(&data) }
 }
 
 #[cfg(test)]

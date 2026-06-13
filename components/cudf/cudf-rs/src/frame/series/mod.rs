@@ -1,6 +1,6 @@
-//! A named, `Arc`-shared GPU column — the primary user-facing column type.
+//! An `Arc`-shared GPU column vector — the primary user-facing 1D type.
 //!
-//! `Series` wraps an `Arc<Column>` with an optional name. It is the
+//! `Series` wraps an `Arc<Column>` without schema metadata. It is the
 //! high-level counterpart to the low-level owned [`Column`](crate::core::Column)
 //! type.
 //!
@@ -10,7 +10,6 @@ mod constructors;
 mod context;
 mod display;
 mod host_column_data;
-mod naming;
 mod ops;
 mod owned;
 pub(crate) mod reduction;

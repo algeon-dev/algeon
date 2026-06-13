@@ -27,7 +27,6 @@ fn test_is_null_all_valid() {
 
     assert_eq!(mask.dtype().unwrap().id(), TypeId::Bool8);
     assert_eq!(mask.len(), 3);
-    assert_eq!(mask.name(), Some("x"));
     assert_eq!(mask.to_vec_strict::<bool>().unwrap(), vec![false, false, false]);
 }
 
@@ -56,7 +55,6 @@ fn test_is_not_null_all_valid() {
 
     assert_eq!(mask.dtype().unwrap().id(), TypeId::Bool8);
     assert_eq!(mask.len(), 3);
-    assert_eq!(mask.name(), Some("x"));
     assert_eq!(mask.to_vec_strict::<bool>().unwrap(), vec![true, true, true]);
 }
 
@@ -91,7 +89,6 @@ fn test_astype_i32_to_f64() {
 
     assert_eq!(casted.dtype().unwrap().id(), TypeId::Float64);
     assert_eq!(casted.len(), 3);
-    assert_eq!(casted.name(), Some("x"));
     assert_eq!(casted.to_vec_strict::<f64>().unwrap(), vec![1.0, 2.0, 3.0]);
 }
 
@@ -138,7 +135,6 @@ fn test_log_f64() {
     let values = logged.to_vec_strict::<f64>().unwrap();
 
     assert_eq!(logged.dtype().unwrap().id(), TypeId::Float64);
-    assert_eq!(logged.name(), Some("x"));
     assert!((values[0] - 0.0).abs() < 1e-10);
     assert!((values[1] - 1.0).abs() < 1e-10);
     assert!((values[2] - 2.0).abs() < 1e-10);
@@ -155,7 +151,6 @@ fn test_fillna_replaces_nulls_with_scalar() {
 
     assert_eq!(filled.len(), 3);
     assert_eq!(filled.null_count(), 0);
-    assert_eq!(filled.name(), Some("x"));
     assert_eq!(filled.to_vec_strict::<i32>().unwrap(), vec![10, 99, 30]);
 }
 
@@ -197,7 +192,6 @@ fn test_fillna_with_series_replaces_nulls() {
 
     assert_eq!(filled.len(), 3);
     assert_eq!(filled.null_count(), 0);
-    assert_eq!(filled.name(), Some("x"));
     assert_eq!(filled.to_vec_strict::<i32>().unwrap(), vec![10, 200, 30]);
 }
 
@@ -222,7 +216,6 @@ fn test_isin_basic() {
 
     assert_eq!(mask.dtype().unwrap().id(), TypeId::Bool8);
     assert_eq!(mask.len(), 5);
-    assert_eq!(mask.name(), Some("x"));
     assert_eq!(mask.to_vec_strict::<bool>().unwrap(), vec![false, true, false, true, false]);
 }
 
@@ -259,8 +252,8 @@ fn test_isin_succeeds_with_mixed_domains_and_uses_source_provenance() {
     let _event_observation = crate::common::lock_event_observation();
     let source_rt = sample_runtime();
     let values_rt = sample_runtime();
-    let s = source_rt.named_series("x", &[1i32, 2, 3, 4, 5]).unwrap();
-    let values = values_rt.named_series("vals", &[2i32, 4]).unwrap();
+    let s = source_rt.series(&[1i32, 2, 3, 4, 5]).unwrap();
+    let values = values_rt.series(&[2i32, 4]).unwrap();
     let expected_exec_stream = s.as_column().testing_execution_domain_stream_value();
     let expected_exec_mr = s.as_column().testing_execution_domain_mr_value();
     crate::common::reset_dependency_observation();
@@ -286,8 +279,6 @@ fn test_isin_succeeds_with_mixed_domains_and_uses_source_provenance() {
 fn test_unique_removes_duplicates() {
     let s = crate::common::series::<i32>("x", &[3, 1, 2, 1, 3]).unwrap();
     let uniq = s.unique().unwrap();
-
-    assert_eq!(uniq.name(), Some("x"));
     assert_eq!(uniq.dtype().unwrap().id(), TypeId::Int32);
 
     let mut vals = uniq.to_vec_strict::<i32>().unwrap();
@@ -381,8 +372,6 @@ fn test_lookup_exact_match() {
     let values = crate::common::series("label", &["alice", "bob", "carol"]).unwrap();
 
     let looked_up = input.lookup(&keys, &values).unwrap();
-
-    assert_eq!(looked_up.name(), Some("label"));
     assert_eq!(
         looked_up.to_optional_strings().unwrap(),
         vec![Some("bob".to_string()), Some("alice".to_string()), Some("carol".to_string())]
@@ -439,26 +428,28 @@ fn test_lookup_rejects_mapping_length_mismatch_with_series_operation() {
 }
 
 #[test]
-fn test_lookup_as_sets_requested_name() {
-    let input = crate::common::series("vertex", &["u2", "u1"]).unwrap();
-    let keys = crate::common::series("id", &["u1", "u2"]).unwrap();
-    let values = crate::common::series("label", &["alice", "bob"]).unwrap();
-
-    let looked_up = input.lookup_as(&keys, &values, "owner").unwrap();
-
-    assert_eq!(looked_up.name(), Some("owner"));
-    assert_eq!(looked_up.to_optional_strings().unwrap(), vec![Some("bob".to_string()), Some("alice".to_string())]);
-}
-
-#[test]
-fn test_lookup_preserves_lookup_value_name_not_probe_name() {
+fn test_lookup_returns_requested_values() {
     let input = crate::common::series("vertex", &["u2", "u1"]).unwrap();
     let keys = crate::common::series("id", &["u1", "u2"]).unwrap();
     let values = crate::common::series("label", &["alice", "bob"]).unwrap();
 
     let looked_up = input.lookup(&keys, &values).unwrap();
+    assert_eq!(looked_up.to_optional_strings().unwrap(), vec![Some("bob".to_string()), Some("alice".to_string())]);
+}
 
-    assert_eq!(looked_up.name(), Some("label"));
+#[test]
+fn test_lookup_display_omits_series_names() {
+    let input = crate::common::series("vertex", &["u2", "u1"]).unwrap();
+    let keys = crate::common::series("id", &["u1", "u2"]).unwrap();
+    let values = crate::common::series("label", &["alice", "bob"]).unwrap();
+
+    let looked_up = input.lookup(&keys, &values).unwrap();
+    let output = format!("{}", looked_up);
+    assert!(
+        !output.contains("vertex") && !output.contains("label"),
+        "lookup output should not expose input schema names: {}",
+        output
+    );
 }
 
 #[test]
@@ -470,8 +461,6 @@ fn test_factorize_basic() {
 
     assert_eq!(codes.dtype().unwrap().id(), TypeId::Int32);
     assert_eq!(codes.len(), 5);
-    assert_eq!(codes.name(), Some("x_codes"));
-    assert_eq!(keys.name(), Some("x_keys"));
 
     // Verify round-trip: same input values get same codes.
     let code_vals = codes.to_vec_strict::<i32>().unwrap();
@@ -502,8 +491,6 @@ fn test_factorize_strings() {
 
     assert_eq!(codes.dtype().unwrap().id(), TypeId::Int32);
     assert_eq!(codes.len(), 4);
-    assert_eq!(codes.name(), Some("x_codes"));
-    assert_eq!(keys.name(), Some("x_keys"));
 
     let code_vals = codes.to_vec_strict::<i32>().unwrap();
     // codes[0] == codes[2] (both map to "a")
@@ -521,9 +508,19 @@ fn test_factorize_unnamed_input_keeps_outputs_unnamed() {
     let factorized = s.factorize().unwrap();
     let codes = factorized.row_codes();
     let keys = factorized.codebook().keys();
+    let codes_output = format!("{}", codes.as_series());
+    let keys_output = format!("{:?}", keys);
 
-    assert_eq!(codes.name(), None);
-    assert_eq!(keys.name(), None);
+    assert!(
+        !codes_output.contains("name="),
+        "factorized row codes should remain unnamed in display output: {}",
+        codes_output
+    );
+    assert!(
+        !keys_output.contains("name"),
+        "factorization codebook keys should remain unnamed in debug output: {}",
+        keys_output
+    );
 }
 
 #[test]
@@ -533,11 +530,9 @@ fn test_codebook_can_encode_and_decode_new_queries() {
     let query = crate::common::series("query", &["c", "a"]).unwrap();
 
     let encoded = codebook.encode(&query).unwrap();
-    assert_eq!(encoded.name(), Some("query_codes"));
     assert_eq!(encoded.to_vec_strict::<i32>().unwrap().len(), 2);
 
     let decoded = codebook.decode(&encoded).unwrap();
-    assert_eq!(decoded.name(), Some("query"));
     assert_eq!(decoded.to_strings_strict().unwrap(), vec!["c", "a"]);
 }
 
@@ -557,27 +552,23 @@ fn test_codebook_encode_rejects_dtype_mismatch_with_codebook_operation() {
 }
 
 #[test]
-fn test_codebook_encode_as_renames_output() {
+fn test_codebook_encode_returns_codes() {
     let s = crate::common::series("x", &["b", "a", "c", "a"]).unwrap();
     let codebook = s.codebook().unwrap();
     let query = crate::common::series("query", &["c", "a"]).unwrap();
 
-    let encoded = codebook.encode_as(&query, "vertex_id").unwrap();
-
-    assert_eq!(encoded.name(), Some("vertex_id"));
+    let encoded = codebook.encode(&query).unwrap();
     assert_eq!(encoded.to_vec_strict::<i32>().unwrap().len(), 2);
 }
 
 #[test]
-fn test_codebook_decode_as_renames_output() {
+fn test_codebook_decode_returns_decoded_values() {
     let s = crate::common::series("x", &["b", "a", "c", "a"]).unwrap();
     let codebook = s.codebook().unwrap();
     let query = crate::common::series("query", &["c", "a"]).unwrap();
     let encoded = codebook.encode(&query).unwrap();
 
-    let decoded = codebook.decode_as(&encoded, "decoded_vertex").unwrap();
-
-    assert_eq!(decoded.name(), Some("decoded_vertex"));
+    let decoded = codebook.decode(&encoded).unwrap();
     assert_eq!(decoded.to_strings_strict().unwrap(), vec!["c", "a"]);
 }
 
@@ -586,23 +577,20 @@ fn test_codebook_can_decode_plain_series_from_external_code_columns() {
     let s = crate::common::series("x", &["b", "a", "c", "a"]).unwrap();
     let codebook = s.codebook().unwrap();
     let encoded = codebook.encode(&crate::common::series("vertex", &["a", "c"]).unwrap()).unwrap();
-    let external_codes = encoded.into_series().rename("vertex");
+    let external_codes = encoded.into_series();
 
     let decoded = codebook.decode_series(&external_codes).unwrap();
-    assert_eq!(decoded.name(), Some("x"));
     assert_eq!(decoded.to_strings_strict().unwrap(), vec!["a", "c"]);
 }
 
 #[test]
-fn test_codebook_decode_series_as_works_from_plain_series() {
+fn test_codebook_decode_series_works_from_plain_series() {
     let s = crate::common::series("x", &["b", "a", "c", "a"]).unwrap();
     let codebook = s.codebook().unwrap();
     let encoded = codebook.encode(&crate::common::series("vertex", &["a", "c"]).unwrap()).unwrap();
-    let external_codes = encoded.into_series().rename("vertex");
+    let external_codes = encoded.into_series();
 
-    let decoded = codebook.decode_series_as(&external_codes, "vertex_label").unwrap();
-
-    assert_eq!(decoded.name(), Some("vertex_label"));
+    let decoded = codebook.decode_series(&external_codes).unwrap();
     assert_eq!(decoded.to_strings_strict().unwrap(), vec!["a", "c"]);
 }
 
@@ -693,7 +681,6 @@ fn test_sort_values_ascending() {
 
     assert_eq!(sorted.dtype().unwrap().id(), TypeId::Int32);
     assert_eq!(sorted.len(), 3);
-    assert_eq!(sorted.name(), Some("x"));
     assert_eq!(sorted.to_vec_strict::<i32>().unwrap(), vec![10, 20, 30]);
 }
 
@@ -782,8 +769,6 @@ fn test_convenience_ops_preserve_input() {
     let _not_null_mask = s.is_not_null().unwrap();
     let _filled = s.fillna(0i32).unwrap();
     let _sorted = s.sort_values(SortOptions::new()).unwrap();
-
-    assert_eq!(s.name(), Some("x"));
     assert_eq!(s.len(), 3);
     assert_eq!(s.null_count(), 1);
     assert_eq!(s.dtype().unwrap().id(), TypeId::Int32);

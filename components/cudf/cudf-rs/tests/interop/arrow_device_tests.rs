@@ -109,13 +109,8 @@ fn nested_dictionary_dataframe(filename: &str, rows: &str) -> DataFrame {
     let category_source = frame.series("category").unwrap().as_column().deep_copy().unwrap();
     let category =
         Series::from_column(dictionary::encode(&category_source.testing_view().unwrap(), TypeId::Int32).unwrap())
-            .unwrap()
-            .rename("category");
-    DataFrame::from_columns(::std::iter::IntoIterator::into_iter([name, lists, point, category]).map(|series| {
-        let name = series.name().expect("explicit test migration requires named Series inputs").to_string();
-        (name, series)
-    }))
-    .unwrap()
+            .unwrap();
+    DataFrame::from_columns([("name", name), ("lists", lists), ("point", point), ("category", category)]).unwrap()
 }
 
 fn binding_bytes(binding: &BufferBinding<'_>) -> Vec<u8> {
@@ -331,8 +326,8 @@ fn assert_host_table_exports_equivalent(source: &Table, imported: &Table) {
     }
 }
 
-fn decimal64_series(runtime: &Runtime, name: &str, values: &[i64], scale: i32) -> Series {
-    runtime.named_series(name, values).unwrap().astype(DataType::fixed_point(TypeId::Decimal64, scale)).unwrap()
+fn decimal64_series(runtime: &Runtime, _name: &str, values: &[i64], scale: i32) -> Series {
+    runtime.series(values).unwrap().astype(DataType::fixed_point(TypeId::Decimal64, scale)).unwrap()
 }
 
 #[repr(C)]
@@ -551,7 +546,7 @@ fn numeric_series_device_arrow_export_reports_producer_retained_view() {
     let _observation_lock = lock_event_observation();
     reset_exec_observation();
     let runtime = Runtime::builder().build().unwrap();
-    let series = runtime.named_series("values", &[1i32, 2, 3, 4]).unwrap();
+    let series = runtime.series(&[1i32, 2, 3, 4]).unwrap();
     let producer_ptr = series.as_column().device_data_ptr().unwrap();
 
     let export = series.try_prepare_device_arrow_export().unwrap();
@@ -568,7 +563,7 @@ fn numeric_series_device_arrow_export_reports_producer_retained_view() {
 fn numeric_series_device_arrow_export_records_sync_event_on_runtime_stream() {
     let _observation_lock = lock_event_observation();
     let runtime = Runtime::builder().build().unwrap();
-    let series = runtime.named_series("values", &[1i32, 2, 3, 4]).unwrap();
+    let series = runtime.series(&[1i32, 2, 3, 4]).unwrap();
     let runtime_stream_raw = runtime.stream().testing_raw_handle_value();
 
     reset_event_observation();
@@ -589,7 +584,7 @@ fn numeric_series_device_arrow_export_records_sync_event_on_runtime_stream() {
 fn bool_series_device_arrow_export_reports_bridge_owned_device_copy() {
     let _observation_lock = lock_event_observation();
     let runtime = Runtime::builder().build().unwrap();
-    let series = runtime.named_series("flag", &[true, false, true]).unwrap();
+    let series = runtime.series(&[true, false, true]).unwrap();
 
     let export = series.try_prepare_device_arrow_export().unwrap();
 
@@ -604,7 +599,7 @@ fn series_device_arrow_export_exposes_stable_sync_event_metadata_across_handoffs
     let _observation_lock = lock_event_observation();
 
     let runtime = Runtime::builder().build().unwrap();
-    let series = runtime.named_series("values", &[7i32, 8, 9]).unwrap();
+    let series = runtime.series(&[7i32, 8, 9]).unwrap();
 
     let export = series.try_prepare_device_arrow_export().unwrap();
     let export_sync_event = export.sync_event_raw_ptr();
@@ -621,7 +616,7 @@ fn series_device_arrow_export_exposes_stable_sync_event_metadata_across_handoffs
 fn numeric_series_device_arrow_raw_parts_round_trip_preserves_pointer() {
     let _observation_lock = lock_event_observation();
     let runtime = Runtime::builder().build().unwrap();
-    let series = runtime.named_series("values", &[11i32, 22, 33]).unwrap();
+    let series = runtime.series(&[11i32, 22, 33]).unwrap();
     let producer_ptr = series.as_column().device_data_ptr().unwrap();
 
     let raw_parts = series.try_prepare_device_arrow_export().unwrap().into_raw_parts();
@@ -650,7 +645,7 @@ fn numeric_series_device_arrow_owned_abi_handoff_survives_export_drop() {
     let _observation_lock = lock_event_observation();
     let runtime = Runtime::builder().build().unwrap();
     let (foreign, producer_ptr) = {
-        let series = runtime.named_series("values", &[41i32, 42, 43]).unwrap();
+        let series = runtime.series(&[41i32, 42, 43]).unwrap();
         let producer_ptr = series.as_column().device_data_ptr().unwrap();
         let abi = series.try_prepare_device_arrow_export().unwrap().into_owned_abi_parts();
 
@@ -680,7 +675,7 @@ fn numeric_series_device_arrow_owned_abi_handoff_survives_export_drop() {
 fn series_device_arrow_import_retains_owned_abi_release_until_imported_column_drop() {
     let _observation_lock = lock_event_observation();
     let runtime = Runtime::builder().build().unwrap();
-    let series = runtime.named_series("values", &[41i32, 42, 43]).unwrap();
+    let series = runtime.series(&[41i32, 42, 43]).unwrap();
     let abi = series.try_prepare_device_arrow_export().unwrap().into_owned_abi_parts();
     let (schema, array, materialization) = abi.into_raw_abi();
     let (schema_releases, array_releases) = unsafe { install_release_observers(schema, array) };
@@ -722,7 +717,7 @@ fn foreign_device_arrow_column_from_raw_abi_parts_rejects_null_schema_and_array(
 fn numeric_device_arrow_import_reports_foreign_retained_view_and_preserves_pointer() {
     let _observation_lock = lock_event_observation();
     let runtime = Runtime::builder().build().unwrap();
-    let series = runtime.named_series("values", &[10i32, 20, 30]).unwrap();
+    let series = runtime.series(&[10i32, 20, 30]).unwrap();
     let producer_ptr = series.as_column().device_data_ptr().unwrap();
 
     let export = series.try_prepare_device_arrow_export().unwrap();
@@ -745,7 +740,7 @@ fn series_device_arrow_import_preserves_sync_event_metadata_without_host_fencing
     let _observation_lock = lock_event_observation();
     let producer_runtime = Runtime::builder().build().unwrap();
     let consumer_runtime = Runtime::builder().build().unwrap();
-    let series = producer_runtime.named_series("values", &[10i32, 20, 30]).unwrap();
+    let series = producer_runtime.series(&[10i32, 20, 30]).unwrap();
     let export = series.try_prepare_device_arrow_export().unwrap();
     let exported_sync_event = export.sync_event_raw_ptr();
     let consumer_stream_raw = consumer_runtime.stream().testing_raw_handle_value();
@@ -766,14 +761,12 @@ fn series_device_arrow_import_preserves_sync_event_metadata_without_host_fencing
 fn series_device_arrow_import_round_trip_returns_unnamed_series() {
     let _observation_lock = lock_event_observation();
     let runtime = Runtime::builder().build().unwrap();
-    let series = runtime.named_series("values", &[10i32, 20, 30]).unwrap();
+    let series = runtime.series(&[10i32, 20, 30]).unwrap();
     let producer_ptr = series.as_column().device_data_ptr().unwrap();
 
     let export = series.try_prepare_device_arrow_export().unwrap();
     let foreign = export.into_foreign();
     let imported = Series::try_import_from_device_arrow_column_into_runtime(&foreign, &runtime).unwrap();
-
-    assert_eq!(imported.name(), None);
     assert_eq!(imported.as_column().device_data_ptr().unwrap(), producer_ptr);
     assert_eq!(imported.to_vec_strict::<i32>().unwrap(), vec![10, 20, 30]);
 }
@@ -784,7 +777,7 @@ fn series_device_arrow_round_trip_does_not_call_host_arrow_path() {
     cudf::testing::reset_arrow_host_interop_observation_for_test();
 
     let runtime = Runtime::builder().build().unwrap();
-    let series = runtime.named_series("values", &[10i32, 20, 30]).unwrap();
+    let series = runtime.series(&[10i32, 20, 30]).unwrap();
 
     let export = series.try_prepare_device_arrow_export().unwrap();
     let foreign = export.into_foreign();
@@ -799,7 +792,7 @@ fn series_device_arrow_round_trip_does_not_call_host_arrow_path() {
 fn bool_device_arrow_import_reports_bridge_owned_device_copy() {
     let _observation_lock = lock_event_observation();
     let runtime = Runtime::builder().build().unwrap();
-    let series = runtime.named_series("flag", &[true, false, true, true]).unwrap();
+    let series = runtime.series(&[true, false, true, true]).unwrap();
 
     let export = series.try_prepare_device_arrow_export().unwrap();
     let foreign = export.into_foreign();
@@ -875,9 +868,7 @@ fn string_series_device_arrow_export_reports_producer_retained_view() {
     let _observation_lock = lock_event_observation();
     reset_exec_observation();
     let runtime = Runtime::builder().build().unwrap();
-    let series = runtime
-        .named_nullable_series("words", &["alpha", "", "placeholder", "omega"], &[true, true, false, true])
-        .unwrap();
+    let series = runtime.nullable_series(&["alpha", "", "placeholder", "omega"], &[true, true, false, true]).unwrap();
 
     let export = series.try_prepare_device_arrow_export().unwrap();
 
@@ -892,9 +883,7 @@ fn string_series_device_arrow_export_reports_producer_retained_view() {
 fn string_series_device_arrow_import_reports_foreign_retained_view_and_preserves_values() {
     let _observation_lock = lock_event_observation();
     let runtime = Runtime::builder().build().unwrap();
-    let series = runtime
-        .named_nullable_series("words", &["alpha", "", "placeholder", "omega"], &[true, true, false, true])
-        .unwrap();
+    let series = runtime.nullable_series(&["alpha", "", "placeholder", "omega"], &[true, true, false, true]).unwrap();
 
     let export = series.try_prepare_device_arrow_export().unwrap();
     let foreign = export.into_foreign();
@@ -1021,7 +1010,7 @@ fn list_of_bool_series_device_arrow_round_trip_reports_bridge_owned_device_copy(
 fn empty_string_series_device_arrow_export_uses_bridge_owned_offsets_but_import_is_foreign_retained() {
     let _observation_lock = lock_event_observation();
     let runtime = Runtime::builder().build().unwrap();
-    let series = runtime.named_empty_series("words", TypeId::String).unwrap();
+    let series = runtime.empty_series(TypeId::String).unwrap();
 
     let export = series.try_prepare_device_arrow_export().unwrap();
 
@@ -1041,7 +1030,7 @@ fn empty_string_series_device_arrow_export_uses_bridge_owned_offsets_but_import_
 fn string_series_device_arrow_fixed_width_values_ptr_is_rejected() {
     let _observation_lock = lock_event_observation();
     let runtime = Runtime::builder().build().unwrap();
-    let series = runtime.named_series("words", &["alpha", "beta"]).unwrap();
+    let series = runtime.series(&["alpha", "beta"]).unwrap();
 
     let export = series.try_prepare_device_arrow_export().unwrap();
     assert_fixed_width_pointer_rejected(
@@ -1151,7 +1140,7 @@ fn numeric_table_device_arrow_export_with_deep_copy_reports_bridge_owned_device_
 fn mixed_table_device_arrow_fixed_width_values_ptr_rejects_non_fixed_width_column() {
     let _observation_lock = lock_event_observation();
     let runtime = Runtime::builder().build().unwrap();
-    let words = runtime.named_series("words", &["alpha", "beta"]).unwrap().as_column().deep_copy().unwrap();
+    let words = runtime.series(&["alpha", "beta"]).unwrap().as_column().deep_copy().unwrap();
     let ids = runtime.column_from_slice(&[1i32, 2]).unwrap();
     let ids_ptr = ids.device_data_ptr().unwrap();
     let table = Table::from_columns(vec![words, ids]).unwrap();
@@ -1171,7 +1160,7 @@ fn mixed_table_device_arrow_fixed_width_values_ptr_rejects_bool_list_struct_and_
     let _observation_lock = lock_event_observation();
 
     let runtime = Runtime::builder().build().unwrap();
-    let flags = runtime.named_series("flags", &[true, false, true]).unwrap().as_column().deep_copy().unwrap();
+    let flags = runtime.series(&[true, false, true]).unwrap().as_column().deep_copy().unwrap();
     let flag_ids = runtime.column_from_slice(&[1i32, 2, 3]).unwrap();
     let flag_ids_ptr = flag_ids.device_data_ptr().unwrap();
     let bool_table = Table::from_columns(vec![flags, flag_ids]).unwrap();
@@ -1256,8 +1245,8 @@ fn numeric_table_device_arrow_export_records_sync_event_on_runtime_stream() {
 fn dataframe_device_arrow_table_raw_parts_round_trip_preserves_names_and_values() {
     let _observation_lock = lock_event_observation();
     let runtime = Runtime::builder().build().unwrap();
-    let ids = runtime.named_series("source_id", &[5i32, 6, 7]).unwrap();
-    let flags = runtime.named_series("source_flag", &[true, false, true]).unwrap();
+    let ids = runtime.series(&[5i32, 6, 7]).unwrap();
+    let flags = runtime.series(&[true, false, true]).unwrap();
     let df = DataFrame::from_columns([("id", ids), ("flag", flags)]).unwrap();
 
     let raw_parts = df.try_prepare_device_arrow_export().unwrap().into_raw_parts();
@@ -1287,8 +1276,8 @@ fn dataframe_device_arrow_owned_abi_handoff_survives_export_drop() {
     let _observation_lock = lock_event_observation();
     let runtime = Runtime::builder().build().unwrap();
     let foreign = {
-        let ids = runtime.named_series("source_id", &[8i32, 9, 10]).unwrap();
-        let flags = runtime.named_series("source_flag", &[true, false, true]).unwrap();
+        let ids = runtime.series(&[8i32, 9, 10]).unwrap();
+        let flags = runtime.series(&[true, false, true]).unwrap();
         let df = DataFrame::from_columns([("id", ids), ("flag", flags)]).unwrap();
         let abi = df.try_prepare_device_arrow_export().unwrap().into_owned_abi_parts();
 
@@ -1317,8 +1306,8 @@ fn dataframe_device_arrow_owned_abi_handoff_survives_export_drop() {
 fn dataframe_device_arrow_import_retains_owned_abi_release_until_imported_dataframe_drop() {
     let _observation_lock = lock_event_observation();
     let runtime = Runtime::builder().build().unwrap();
-    let ids = runtime.named_series("source_id", &[8i32, 9, 10]).unwrap();
-    let flags = runtime.named_series("source_flag", &[true, false, true]).unwrap();
+    let ids = runtime.series(&[8i32, 9, 10]).unwrap();
+    let flags = runtime.series(&[true, false, true]).unwrap();
     let df = DataFrame::from_columns([("id", ids), ("flag", flags)]).unwrap();
     let abi = df.try_prepare_device_arrow_export().unwrap().into_owned_abi_parts();
     let (schema, array, materialization) = abi.into_raw_abi();
@@ -1438,7 +1427,7 @@ fn decimal64_dataframe_device_arrow_round_trip_preserves_names_scale_and_values(
     cudf::testing::reset_arrow_host_interop_observation_for_test();
 
     let runtime = Runtime::builder().build().unwrap();
-    let ids = runtime.named_series("source_id", &[3i32, 1, 4]).unwrap();
+    let ids = runtime.series(&[3i32, 1, 4]).unwrap();
     let amounts = decimal64_series(&runtime, "source_amount", &[12345i64, -67890, 5], -2);
     let df = DataFrame::from_columns([("id", ids), ("amount", amounts.clone())]).unwrap();
 
@@ -1467,10 +1456,8 @@ fn decimal64_dataframe_device_arrow_round_trip_preserves_names_scale_and_values(
 fn string_dataframe_device_arrow_round_trip_preserves_names_and_values() {
     let _observation_lock = lock_event_observation();
     let runtime = Runtime::builder().build().unwrap();
-    let ids = runtime.named_series("source_id", &[3i32, 1, 4, 1]).unwrap();
-    let words = runtime
-        .named_nullable_series("source_words", &["alpha", "", "placeholder", "omega"], &[true, true, false, true])
-        .unwrap();
+    let ids = runtime.series(&[3i32, 1, 4, 1]).unwrap();
+    let words = runtime.nullable_series(&["alpha", "", "placeholder", "omega"], &[true, true, false, true]).unwrap();
     let df = DataFrame::from_columns([("id", ids), ("word", words)]).unwrap();
 
     let export = df.try_prepare_device_arrow_export().unwrap();
@@ -1495,10 +1482,8 @@ fn string_dataframe_device_arrow_round_trip_does_not_call_host_arrow_path() {
     cudf::testing::reset_arrow_host_interop_observation_for_test();
 
     let runtime = Runtime::builder().build().unwrap();
-    let ids = runtime.named_series("source_id", &[3i32, 1, 4, 1]).unwrap();
-    let words = runtime
-        .named_nullable_series("source_words", &["alpha", "", "placeholder", "omega"], &[true, true, false, true])
-        .unwrap();
+    let ids = runtime.series(&[3i32, 1, 4, 1]).unwrap();
+    let words = runtime.nullable_series(&["alpha", "", "placeholder", "omega"], &[true, true, false, true]).unwrap();
     let df = DataFrame::from_columns([("id", ids), ("word", words)]).unwrap();
 
     let export = df.try_prepare_device_arrow_export().unwrap();
@@ -1547,10 +1532,8 @@ fn mixed_nested_dataframe_device_arrow_round_trip_preserves_names_structure_and_
 fn string_dataframe_device_arrow_round_trip_matches_host_arrow_round_trip_for_values() {
     let _observation_lock = lock_event_observation();
     let runtime = Runtime::builder().build().unwrap();
-    let ids = runtime.named_series("source_id", &[3i32, 1, 4, 1]).unwrap();
-    let words = runtime
-        .named_nullable_series("source_words", &["alpha", "", "placeholder", "omega"], &[true, true, false, true])
-        .unwrap();
+    let ids = runtime.series(&[3i32, 1, 4, 1]).unwrap();
+    let words = runtime.nullable_series(&["alpha", "", "placeholder", "omega"], &[true, true, false, true]).unwrap();
     let df = DataFrame::from_columns([("id", ids), ("word", words)]).unwrap();
 
     let device_foreign = df.try_prepare_device_arrow_export().unwrap().into_foreign();
@@ -1574,8 +1557,8 @@ fn string_dataframe_device_arrow_round_trip_matches_host_arrow_round_trip_for_va
 fn dataframe_device_arrow_round_trip_preserves_names_and_values() {
     let _observation_lock = lock_event_observation();
     let runtime = Runtime::builder().build().unwrap();
-    let ids = runtime.named_series("source_id", &[3i32, 1, 4]).unwrap();
-    let flags = runtime.named_series("source_flag", &[true, false, true]).unwrap();
+    let ids = runtime.series(&[3i32, 1, 4]).unwrap();
+    let flags = runtime.series(&[true, false, true]).unwrap();
     let df = DataFrame::from_columns([("id", ids), ("flag", flags)]).unwrap();
 
     let export = df.try_prepare_device_arrow_export().unwrap();
@@ -1593,8 +1576,8 @@ fn dataframe_device_arrow_export_uses_producer_execution_domain() {
     reset_exec_observation();
 
     let runtime = Runtime::builder().build().unwrap();
-    let ids = runtime.named_series("source_id", &[3i32, 1, 4]).unwrap();
-    let flags = runtime.named_series("source_flag", &[true, false, true]).unwrap();
+    let ids = runtime.series(&[3i32, 1, 4]).unwrap();
+    let flags = runtime.series(&[true, false, true]).unwrap();
     let df = DataFrame::from_columns([("id", ids), ("flag", flags)]).unwrap();
 
     let export = df.try_prepare_device_arrow_export().unwrap();
@@ -1610,8 +1593,8 @@ fn dataframe_device_arrow_round_trip_does_not_call_host_arrow_path() {
     cudf::testing::reset_arrow_host_interop_observation_for_test();
 
     let runtime = Runtime::builder().build().unwrap();
-    let ids = runtime.named_series("source_id", &[3i32, 1, 4]).unwrap();
-    let flags = runtime.named_series("source_flag", &[true, false, true]).unwrap();
+    let ids = runtime.series(&[3i32, 1, 4]).unwrap();
+    let flags = runtime.series(&[true, false, true]).unwrap();
     let df = DataFrame::from_columns([("id", ids), ("flag", flags)]).unwrap();
 
     let export = df.try_prepare_device_arrow_export().unwrap();
@@ -1630,8 +1613,8 @@ fn dataframe_device_arrow_import_waits_on_sync_event_via_consumer_stream_without
     let _observation_lock = lock_event_observation();
     let producer_runtime = Runtime::builder().build().unwrap();
     let consumer_runtime = Runtime::builder().build().unwrap();
-    let ids = producer_runtime.named_series("source_id", &[3i32, 1, 4]).unwrap();
-    let flags = producer_runtime.named_series("source_flag", &[true, false, true]).unwrap();
+    let ids = producer_runtime.series(&[3i32, 1, 4]).unwrap();
+    let flags = producer_runtime.series(&[true, false, true]).unwrap();
     let df = DataFrame::from_columns([("id", ids), ("flag", flags)]).unwrap();
     let export = df.try_prepare_device_arrow_export().unwrap();
     let exported_sync_event = export.sync_event_raw_ptr();
@@ -1655,9 +1638,9 @@ fn dataframe_device_arrow_import_waits_on_sync_event_via_consumer_stream_without
 fn dataframe_device_arrow_round_trip_matches_host_arrow_round_trip_for_first_slice_values() {
     let _observation_lock = lock_event_observation();
     let runtime = Runtime::builder().build().unwrap();
-    let ids = runtime.named_series("source_id", &[3i32, 1, 4]).unwrap();
-    let flags = runtime.named_series("source_flag", &[true, false, true]).unwrap();
-    let scores = runtime.named_series("source_score", &[1.25f64, 2.5, 3.75]).unwrap();
+    let ids = runtime.series(&[3i32, 1, 4]).unwrap();
+    let flags = runtime.series(&[true, false, true]).unwrap();
+    let scores = runtime.series(&[1.25f64, 2.5, 3.75]).unwrap();
     let df = DataFrame::from_columns([("id", ids), ("flag", flags), ("score", scores)]).unwrap();
 
     let device_foreign = df.try_prepare_device_arrow_export().unwrap().into_foreign();
@@ -1712,7 +1695,7 @@ fn device_arrow_import_rejects_different_runtime_device() {
     let _observation_lock = lock_event_observation();
     let producer_runtime = Runtime::builder().with_device(DeviceId::new(0).unwrap()).build().unwrap();
     let consumer_runtime = Runtime::builder().with_device(DeviceId::new(1).unwrap()).build().unwrap();
-    let series = producer_runtime.named_series("values", &[1i32, 2, 3]).unwrap();
+    let series = producer_runtime.series(&[1i32, 2, 3]).unwrap();
     let export = series.try_prepare_device_arrow_export().unwrap();
     let foreign = export.into_foreign();
 
@@ -1727,7 +1710,7 @@ fn device_arrow_import_rejects_different_runtime_device() {
 fn device_arrow_import_rejects_non_cuda_device_type() {
     let _observation_lock = lock_event_observation();
     let runtime = Runtime::builder().build().unwrap();
-    let series = runtime.named_series("values", &[1i32, 2, 3]).unwrap();
+    let series = runtime.series(&[1i32, 2, 3]).unwrap();
     let raw_parts = series.try_prepare_device_arrow_export().unwrap().into_raw_parts();
 
     unsafe {
@@ -1753,7 +1736,7 @@ fn device_arrow_import_accepts_cuda_host_device_type() {
     cudf::testing::reset_arrow_host_interop_observation_for_test();
 
     let runtime = Runtime::builder().build().unwrap();
-    let series = runtime.named_series("values", &[11i32, 22, 33]).unwrap();
+    let series = runtime.series(&[11i32, 22, 33]).unwrap();
     let producer_ptr = series.as_column().device_data_ptr().unwrap();
     let raw_parts = series.try_prepare_device_arrow_export().unwrap().into_raw_parts();
 
@@ -1829,7 +1812,7 @@ fn series_device_arrow_import_rejects_different_runtime_device() {
     let _observation_lock = lock_event_observation();
     let producer_runtime = Runtime::builder().with_device(DeviceId::new(0).unwrap()).build().unwrap();
     let consumer_runtime = Runtime::builder().with_device(DeviceId::new(1).unwrap()).build().unwrap();
-    let series = producer_runtime.named_series("values", &[1i32, 2, 3]).unwrap();
+    let series = producer_runtime.series(&[1i32, 2, 3]).unwrap();
     let export = series.try_prepare_device_arrow_export().unwrap();
     let foreign = export.into_foreign();
 

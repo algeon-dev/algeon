@@ -108,8 +108,7 @@ impl DataFrame {
                     id_series.dtype()?.id(),
                     Arc::clone(&self.domain),
                     "dataframe::melt",
-                )?)?
-                .rename(id_name);
+                )?)?;
                 result_columns.push((id_name, empty));
             } else if k == 1 {
                 result_columns.push((id_name, id_series));
@@ -121,8 +120,7 @@ impl DataFrame {
         }
 
         let var_strings: Vec<&str> = value_vars.iter().flat_map(|name| std::iter::repeat_n(name.as_str(), n)).collect();
-        let var_series =
-            Series::from_column(Column::from_strs_in_domain(&var_strings, &self.domain)?)?.rename(&opts.var_name);
+        let var_series = Series::from_column(Column::from_strs_in_domain(&var_strings, &self.domain)?)?;
         result_columns.push((&opts.var_name, var_series));
 
         if value_vars.is_empty() {
@@ -130,17 +128,11 @@ impl DataFrame {
                 crate::TypeId::Int32,
                 Arc::clone(&self.domain),
                 "dataframe::melt",
-            )?)?
-            .rename(&opts.value_name);
+            )?)?;
             result_columns.push((&opts.value_name, empty_series));
         } else {
-            let value_series_list: Vec<Series> = value_vars
-                .iter()
-                .map(|name| {
-                    let s = self.series(name)?;
-                    Ok(s.rename(&opts.value_name))
-                })
-                .collect::<Result<Vec<_>>>()?;
+            let value_series_list: Vec<Series> =
+                value_vars.iter().map(|name| self.series(name)).collect::<Result<Vec<_>>>()?;
             let refs: Vec<&Series> = value_series_list.iter().collect();
             let concat_values = Series::concat(&refs)?;
             result_columns.push((&opts.value_name, concat_values));

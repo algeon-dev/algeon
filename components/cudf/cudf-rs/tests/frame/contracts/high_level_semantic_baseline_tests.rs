@@ -24,24 +24,18 @@ use crate::common::{
 fn sample_df() -> DataFrame {
     let ids = crate::common::series::<i32>("id", &[1, 2, 3]).unwrap();
     let scores = crate::common::series::<f64>("score", &[10.0, 20.0, 30.0]).unwrap();
-    DataFrame::from_columns(::std::iter::IntoIterator::into_iter([ids, scores]).map(|series| {
-        let name = series.name().expect("explicit test migration requires named Series inputs").to_string();
-        (name, series)
-    }))
-    .unwrap()
+    DataFrame::from_columns([("id", ids), ("score", scores)]).unwrap()
 }
 
 // ===========================================================================
 // 1. DataFrame::series() — returns owned Series with Arc-shared Column
 // ===========================================================================
 
-/// `series()` returns a named `Series` with correct metadata.
+/// `series()` returns an owned `Series` with correct metadata.
 #[test]
-fn df_series_returns_owned_with_name() {
+fn df_series_returns_owned_series() {
     let df = sample_df();
     let s = df.series("id").unwrap();
-
-    assert_eq!(s.name(), Some("id"));
     assert_eq!(s.dtype().unwrap().id(), TypeId::Int32);
     assert_eq!(s.len(), 3);
     assert_eq!(s.to_vec_strict::<i32>().unwrap(), vec![1, 2, 3]);
@@ -96,7 +90,6 @@ fn df_get_probe_access() {
     assert!(df.get("nonexistent").unwrap().is_none());
 
     let s = df.get("id").unwrap().unwrap();
-    assert_eq!(s.name(), Some("id"));
     assert_eq!(s.to_vec_strict::<i32>().unwrap(), vec![1, 2, 3]);
 }
 
@@ -135,14 +128,13 @@ fn df_contains_check() {
     assert!(!df.contains("nonexistent"));
 }
 
-/// `iter_series()` yields named series in schema order without copying.
+/// `iter_series()` yields series in schema order without copying.
 #[test]
 fn df_iter_series_preserves_schema_order_and_shares_gpu_data() {
     let df = sample_df();
     let items: Vec<_> = df.iter_series().collect::<cudf::Result<Vec<_>>>().unwrap();
 
-    let names: Vec<_> = items.iter().map(|series| series.name().unwrap().to_string()).collect();
-    assert_eq!(names, vec!["id", "score"]);
+    assert_eq!(df.column_names(), vec!["id", "score"]);
     assert_eq!(items[0].to_vec_strict::<i32>().unwrap(), vec![1, 2, 3]);
     assert_eq!(items[1].to_vec_strict::<f64>().unwrap(), vec![10.0, 20.0, 30.0]);
 
@@ -163,7 +155,6 @@ fn df_iter_series_yields_per_item_errors_without_reordering() {
     assert_eq!(error_context_value(&err, "column_name"), Some("id"));
 
     let second = iter.next().unwrap().unwrap();
-    assert_eq!(second.name(), Some("score"));
     assert_eq!(second.to_vec_strict::<f64>().unwrap(), vec![10.0, 20.0, 30.0]);
 }
 
@@ -382,21 +373,6 @@ fn series_clone_shares_gpu_data() {
     let ptr1 = s.as_column().device_data_ptr().unwrap();
     let ptr2 = cloned.as_column().device_data_ptr().unwrap();
     assert_eq!(ptr1, ptr2);
-    assert_eq!(cloned.name(), Some("x"));
-}
-
-/// `Series::rename()` produces a new Series with a different name but
-/// the same GPU data.
-#[test]
-fn series_rename_shares_gpu_data() {
-    let s = crate::common::series::<i32>("old", &[1, 2, 3]).unwrap();
-    let renamed = s.rename("new");
-
-    let ptr1 = s.as_column().device_data_ptr().unwrap();
-    let ptr2 = renamed.as_column().device_data_ptr().unwrap();
-    assert_eq!(ptr1, ptr2);
-    assert_eq!(renamed.name(), Some("new"));
-    assert_eq!(s.name(), Some("old"));
 }
 
 // ===========================================================================

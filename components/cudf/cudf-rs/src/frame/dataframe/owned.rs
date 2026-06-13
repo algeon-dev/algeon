@@ -293,42 +293,6 @@ impl DataFrame {
         dataframe_from_named_column_arcs(named_columns, "dataframe::from_columns")
     }
 
-    /// Create a `DataFrame` by promoting `Series.name()` into schema exactly
-    /// once.
-    ///
-    /// This is the convenience path for callers that already hold named
-    /// `Series` values and want to promote that metadata into an authoritative
-    /// DataFrame schema. Every input series must be named.
-    ///
-    /// GPU data is shared via `Arc` — no device copy.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if:
-    /// - Any input `Series` is unnamed
-    /// - Any promoted name is duplicated
-    /// - Columns have different row counts
-    pub fn from_series<I>(series: I) -> Result<Self>
-    where I: IntoIterator<Item = Series> {
-        let iter = series.into_iter();
-        let (lower, _) = iter.size_hint();
-        let mut named_columns = Vec::with_capacity(lower);
-
-        for (index, series) in iter.enumerate() {
-            let Some(name) = series.name() else {
-                return Err(Error::new(
-                    ErrorKind::InvalidArgument,
-                    "DataFrame::from_series requires named Series because it derives schema from them",
-                )
-                .with_operation("dataframe::from_series")
-                .with_context("series_index", index.to_string()));
-            };
-            named_columns.push((name.to_string(), Arc::clone(series.column_arc())));
-        }
-
-        dataframe_from_named_column_arcs(named_columns, "dataframe::from_series")
-    }
-
     /// Construct a `DataFrame` directly from pre-validated parts.
     ///
     /// This skips all validation (duplicate names, row-count consistency)

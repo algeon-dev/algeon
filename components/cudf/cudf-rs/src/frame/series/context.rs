@@ -33,8 +33,8 @@ fn factorization_key_order(order: DictionaryKeyOrder) -> factorization::KeyOrder
     }
 }
 
-/// Generate a simple context helper that resolves the output domain, gets a column view,
-/// calls the given op with exec_options, sets the output domain, and inherits the name.
+/// Generate a simple context helper that resolves the output domain, gets a
+/// column view, and wraps the result as a `Series`.
 macro_rules! series_context_op {
     // Unary with fixed operation string
     (unary fn $method:ident($($param:ident : $pty:ty),*), $operation:literal,
@@ -45,7 +45,7 @@ macro_rules! series_context_op {
             let $cv = self.column.view()?;
             let $exec = $domain.explicit_exec_options_raw();
             let col = $call?;
-            self.with_inherited_name(col)
+            Series::from_column(col)
         }
     };
     // Unary with caller-supplied operation string
@@ -56,7 +56,7 @@ macro_rules! series_context_op {
             let $cv = self.column.view()?;
             let $exec = $domain.explicit_exec_options_raw();
             let col = $call?;
-            self.with_inherited_name(col)
+            Series::from_column(col)
         }
     };
     // Binary (two-Series): adds require_same_device + fence for the other Series
@@ -81,7 +81,7 @@ macro_rules! series_context_op {
             let $other_cv = $other.column.view()?;
             let $exec = $domain.explicit_exec_options_raw();
             let col = $call?;
-            self.with_inherited_name(col)
+            Series::from_column(col)
         }
     };
 }
@@ -263,7 +263,7 @@ impl Series {
         )?
         .with_execution_domain(output_domain);
         let mut cols = sorted.into_columns()?;
-        self.with_inherited_name(cols.remove(0))
+        Series::from_column(cols.remove(0))
     }
 
     fn sort_values_in_context(&self, options: SortOptions, ctx: &ExecutionOverrides<'_>) -> Result<Series> {
@@ -317,11 +317,7 @@ impl Series {
             operation,
         )?;
         let keys = Series::from_column(keys)?;
-        let keys = match self.name() {
-            Some(name) => keys.rename(format!("{name}_keys")),
-            None => keys,
-        };
-        Codebook::from_keys_with_fallback(keys, self.name().map(str::to_string))
+        Codebook::from_keys(keys)
     }
 
     pub(super) fn codebook_with_context(
@@ -373,12 +369,8 @@ impl Series {
         )?;
         let row_codes = Series::from_column(parts.row_codes)?;
         let keys = Series::from_column(parts.keys)?;
-        let (row_codes, keys) = match self.name() {
-            Some(name) => (row_codes.rename(format!("{name}_codes")), keys.rename(format!("{name}_keys"))),
-            None => (row_codes, keys),
-        };
-        let row_codes = EncodedSeries::new(row_codes, self.name().map(str::to_string));
-        let codebook = Codebook::from_keys_with_fallback(keys, self.name().map(str::to_string))?;
+        let row_codes = EncodedSeries::new(row_codes);
+        let codebook = Codebook::from_keys(keys)?;
         Ok(Factorized::new(row_codes, codebook))
     }
 
@@ -402,7 +394,7 @@ impl Series {
             exec_options.as_ref(),
             operation,
         )?;
-        self.with_inherited_name(col)
+        Series::from_column(col)
     }
 
     fn fillna_policy_in_context(&self, policy: FillPolicy, ctx: &ExecutionOverrides<'_>) -> Result<Series> {
@@ -429,7 +421,7 @@ impl Series {
             operation,
         )?;
         let mut cols = result.into_columns()?;
-        self.with_inherited_name(cols.remove(0))
+        Series::from_column(cols.remove(0))
     }
 
     fn unique_in_context(&self, ctx: &ExecutionOverrides<'_>) -> Result<Series> {
@@ -496,7 +488,7 @@ impl Series {
             let cv = self.column.view().map_err(|e| e.with_operation(operation))?;
             let empty =
                 crate::core::column::Column::empty_with_dtype_in_domain(cv.data_type()?, output_domain, operation)?;
-            return self.with_inherited_name(empty);
+            return Series::from_column(empty);
         }
 
         let end = start + len;
@@ -523,7 +515,7 @@ impl Series {
             operation,
         )?;
         let mut cols = result.into_columns()?;
-        self.with_inherited_name(cols.remove(0))
+        Series::from_column(cols.remove(0))
     }
 
     pub(super) fn gather_with_context(
@@ -547,7 +539,7 @@ impl Series {
             let cv = self.column.view().map_err(|e| e.with_operation(operation))?;
             let empty =
                 crate::core::column::Column::empty_with_dtype_in_domain(cv.data_type()?, output_domain, operation)?;
-            return self.with_inherited_name(empty);
+            return Series::from_column(empty);
         }
 
         let cv = self.column.view().map_err(|e| e.with_operation(operation))?;
@@ -563,7 +555,7 @@ impl Series {
             operation,
         )?;
         let mut cols = result.into_columns()?;
-        self.with_inherited_name(cols.remove(0))
+        Series::from_column(cols.remove(0))
     }
 
     fn gather_in_context(&self, indices: &Series, ctx: &ExecutionOverrides<'_>) -> Result<Series> {
@@ -619,7 +611,7 @@ impl Series {
             operation,
         )?;
         let mut cols = result.into_columns()?;
-        self.with_inherited_name(cols.remove(0))
+        Series::from_column(cols.remove(0))
     }
 
     fn filter_in_context(&self, mask: &Series, ctx: &ExecutionOverrides<'_>) -> Result<Series> {
@@ -634,7 +626,7 @@ impl Series {
         let result =
             stream_compaction::drop_nulls_impl(ttv.table(), &[0], 1, &output_domain, exec_options.as_ref(), operation)?;
         let mut cols = result.into_columns()?;
-        self.with_inherited_name(cols.remove(0))
+        Series::from_column(cols.remove(0))
     }
 
     fn dropna_in_context(&self, ctx: &ExecutionOverrides<'_>) -> Result<Series> {
@@ -661,7 +653,7 @@ impl Series {
             operation,
         )?;
         let mut cols = result.into_columns()?;
-        self.with_inherited_name(cols.remove(0))
+        Series::from_column(cols.remove(0))
     }
 
     fn drop_duplicates_in_context(&self, ctx: &ExecutionOverrides<'_>) -> Result<Series> {
@@ -674,8 +666,7 @@ impl Series {
         operation: &'static str,
     ) -> Result<crate::DataFrame> {
         let output_domain = self.resolve_context_output_domain(ctx, operation)?;
-        let value_name =
-            self.name().map(str::to_string).unwrap_or_else(|| SERIES_VALUE_COUNTS_FALLBACK_NAME.to_string());
+        let value_name = SERIES_VALUE_COUNTS_FALLBACK_NAME.to_string();
 
         let keys_view = self.column.view().map_err(|e| e.with_operation(operation))?;
         let values_view = self.column.view().map_err(|e| e.with_operation(operation))?;
@@ -754,7 +745,7 @@ impl Series {
         let cv = self.column.view()?;
         let exec_options = output_domain.explicit_exec_options_raw();
         let col = unary::is_nan_impl(&cv, &output_domain, exec_options.as_ref(), operation)?;
-        self.with_inherited_name(col)
+        Series::from_column(col)
     }
 
     fn is_nan_in_context(&self, ctx: &ExecutionOverrides<'_>) -> Result<Series> {
@@ -770,7 +761,7 @@ impl Series {
         let cv = self.column.view()?;
         let exec_options = output_domain.explicit_exec_options_raw();
         let col = unary::is_not_nan_impl(&cv, &output_domain, exec_options.as_ref(), operation)?;
-        self.with_inherited_name(col)
+        Series::from_column(col)
     }
 
     fn is_not_nan_in_context(&self, ctx: &ExecutionOverrides<'_>) -> Result<Series> {
@@ -794,7 +785,7 @@ impl Series {
         let cv = self.column.view()?;
         let exec_options = output_domain.explicit_exec_options_raw();
         let col = unary::is_null_impl(&cv, &output_domain, exec_options.as_ref(), operation)?;
-        self.with_inherited_name(col)
+        Series::from_column(col)
     }
 
     fn is_null_in_context(&self, ctx: &ExecutionOverrides<'_>) -> Result<Series> {
@@ -810,7 +801,7 @@ impl Series {
         let cv = self.column.view()?;
         let exec_options = output_domain.explicit_exec_options_raw();
         let col = unary::is_valid_impl(&cv, &output_domain, exec_options.as_ref(), operation)?;
-        self.with_inherited_name(col)
+        Series::from_column(col)
     }
 
     fn is_not_null_in_context(&self, ctx: &ExecutionOverrides<'_>) -> Result<Series> {
@@ -879,7 +870,7 @@ impl Series {
         let scalar = Scalar::from_str_in_domain(to_strip, &output_domain)?;
         let exec_options = output_domain.explicit_exec_options_raw();
         let col = strings::strip_impl(&cv, side, &scalar, &output_domain, exec_options.as_ref(), operation)?;
-        self.with_inherited_name(col)
+        Series::from_column(col)
     }
 
     pub(super) fn string_scalar_in_context(
@@ -900,7 +891,7 @@ impl Series {
         let scalar = Scalar::from_str_in_domain(target, &output_domain)?;
         let exec_options = output_domain.explicit_exec_options_raw();
         let col = op(&cv, &scalar, &output_domain, exec_options.as_ref(), operation)?;
-        self.with_inherited_name(col)
+        Series::from_column(col)
     }
 
     // ── Cast (special: `impl Into<DataType>` needs local conversion) ───
@@ -916,7 +907,7 @@ impl Series {
         let cv = self.column.view()?;
         let exec_options = output_domain.explicit_exec_options_raw();
         let col = unary::cast_impl(&cv, &target, &output_domain, exec_options.as_ref(), operation)?;
-        self.with_inherited_name(col)
+        Series::from_column(col)
     }
 
     // ── Fillna with scalar (generic over T: CudfType) ──────────────────
@@ -933,7 +924,7 @@ impl Series {
         let exec_options = output_domain.explicit_exec_options_raw();
         let col =
             replace::replace_nulls_with_exec_options(&cv, &scalar, &output_domain, exec_options.as_ref(), operation)?;
-        self.with_inherited_name(col)
+        Series::from_column(col)
     }
 
     fn fillna_in_context<T: CudfType>(&self, value: T, ctx: &ExecutionOverrides<'_>) -> Result<Series> {
@@ -967,7 +958,7 @@ impl Series {
             exec_options.as_ref(),
             operation,
         )?;
-        self.with_inherited_name(col)
+        Series::from_column(col)
     }
 
     fn fillna_with_series_in_context(&self, other: &Series, ctx: &ExecutionOverrides<'_>) -> Result<Series> {
@@ -993,7 +984,7 @@ impl Series {
         let values_cv = values.column.view()?;
         let exec_options = output_domain.explicit_exec_options_raw();
         let col = crate::ops::search::contains_impl(&values_cv, &cv, &output_domain, exec_options.as_ref(), operation)?;
-        self.with_inherited_name(col)
+        Series::from_column(col)
     }
 
     fn isin_in_context(&self, values: &Series, ctx: &ExecutionOverrides<'_>) -> Result<Series> {
@@ -1055,7 +1046,7 @@ impl Series {
             exec_options.as_ref(),
             operation,
         )?;
-        self.with_inherited_name(col)
+        Series::from_column(col)
     }
 }
 

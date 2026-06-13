@@ -30,7 +30,6 @@ impl std::fmt::Debug for Series {
         let meta = build_display_metadata(self);
 
         let mut ds = f.debug_struct("Series");
-        ds.field("name", &self.name);
         ds.field("dtype", &meta.dtype);
         ds.field("len", &self.cached_len);
         ds.field("nullable", &meta.nullable.unwrap_or(false));
@@ -42,9 +41,8 @@ impl std::fmt::Debug for Series {
 impl std::fmt::Display for Series {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let meta = build_display_metadata(self);
-        let name = self.name.as_deref().unwrap_or("<unnamed>");
 
-        write!(f, "Series [name={name}, dtype={}, len={}", meta.dtype, self.cached_len)?;
+        write!(f, "Series [dtype={}, len={}", meta.dtype, self.cached_len)?;
 
         if matches!(meta.nullable, Some(true)) {
             write!(f, ", nullable")?;

@@ -224,5 +224,4 @@ fn test_dataframe_macro_uses_pair_names_not_series_names() {
     let df = cudf::dataframe! { "renamed" => source }.unwrap();
 
     assert_eq!(df.column_names(), &["renamed"]);
-    assert_eq!(df.series("renamed").unwrap().name(), Some("renamed"));
 }

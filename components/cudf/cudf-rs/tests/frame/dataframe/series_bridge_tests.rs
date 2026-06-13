@@ -33,11 +33,7 @@ fn test_from_columns_happy_path_dynamic_iterator() {
 #[test]
 fn test_from_columns_single_column() {
     let vals = crate::common::series::<i64>("x", &[100, 200]).unwrap();
-    let df = DataFrame::from_columns(::std::iter::IntoIterator::into_iter([vals]).map(|series| {
-        let name = series.name().expect("explicit test migration requires named Series inputs").to_string();
-        (name, series)
-    }))
-    .unwrap();
+    let df = DataFrame::from_columns([("x", vals)]).unwrap();
 
     assert_eq!(df.num_columns(), 1);
     assert_eq!(df.num_rows(), 2);
@@ -46,11 +42,7 @@ fn test_from_columns_single_column() {
 #[test]
 fn test_from_columns_empty_series() {
     let empty = crate::common::series::<i32>("e", &[]).unwrap();
-    let df = DataFrame::from_columns(::std::iter::IntoIterator::into_iter([empty]).map(|series| {
-        let name = series.name().expect("explicit test migration requires named Series inputs").to_string();
-        (name, series)
-    }))
-    .unwrap();
+    let df = DataFrame::from_columns([("e", empty)]).unwrap();
 
     assert_eq!(df.num_columns(), 1);
     assert_eq!(df.num_rows(), 0);
@@ -155,13 +147,11 @@ fn test_from_columns_rejects_length_mismatch() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn test_series_returns_named_series() {
+fn test_series_returns_series_values() {
     let ids = crate::common::series::<i32>("ids", &[1, 2, 3]).unwrap();
     let df = DataFrame::from_columns([("id", ids)]).unwrap();
 
     let s = df.series("id").unwrap();
-
-    assert_eq!(s.name(), Some("id"));
     assert_eq!(s.dtype().unwrap().id(), TypeId::Int32);
     assert_eq!(s.len(), 3);
 }
@@ -201,8 +191,6 @@ fn test_round_trip_from_explicit_columns_to_series() {
 
     let df = DataFrame::from_columns([("val", original)]).unwrap();
     let retrieved = df.series("val").unwrap();
-
-    assert_eq!(retrieved.name(), Some("val"));
     assert_eq!(retrieved.len(), 3);
     assert_eq!(retrieved.dtype().unwrap().id(), TypeId::Float64);
 
@@ -224,8 +212,6 @@ fn test_round_trip_from_columns_to_series() {
     let sb = df.series("beta").unwrap();
 
     // Names come from the DataFrame keys, not the original Series names.
-    assert_eq!(sa.name(), Some("alpha"));
-    assert_eq!(sb.name(), Some("beta"));
 
     // GPU data is shared (zero-copy).
     assert_eq!(sa.testing_view().unwrap().device_data_ptr().unwrap(), a_ptr);
@@ -241,11 +227,7 @@ fn test_from_columns_preserves_arc_sharing() {
     let s = crate::common::series::<i32>("x", &[1, 2, 3]).unwrap();
     let arc_before = s.clone().into_inner();
 
-    let df = DataFrame::from_columns(::std::iter::IntoIterator::into_iter([s]).map(|series| {
-        let name = series.name().expect("explicit test migration requires named Series inputs").to_string();
-        (name, series)
-    }))
-    .unwrap();
+    let df = DataFrame::from_columns([("x", s)]).unwrap();
     let retrieved = df.series("x").unwrap();
 
     // The Arc inside the DataFrame should be the same Arc as the input Series.

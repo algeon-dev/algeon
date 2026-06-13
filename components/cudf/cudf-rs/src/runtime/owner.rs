@@ -229,26 +229,10 @@ impl Runtime {
         Series::from_column(T::create_column_in_runtime(self, data)?)
     }
 
-    /// Create a named `Series` from a host slice inside this runtime.
-    pub fn named_series<T: HostColumnData>(&self, name: impl Into<String>, data: &[T]) -> Result<Series> {
-        Series::from_named_column(name, T::create_column_in_runtime(self, data)?)
-    }
-
     /// Create an unnamed nullable `Series` from a host slice plus validity
     /// mask inside this runtime.
     pub fn nullable_series<T: HostColumnData>(&self, data: &[T], validity: &[bool]) -> Result<Series> {
         Series::from_column(T::create_column_nullable_in_runtime(self, data, validity)?)
-    }
-
-    /// Create a named nullable `Series` from a host slice plus validity mask
-    /// inside this runtime.
-    pub fn named_nullable_series<T: HostColumnData>(
-        &self,
-        name: impl Into<String>,
-        data: &[T],
-        validity: &[bool],
-    ) -> Result<Series> {
-        Series::from_named_column(name, T::create_column_nullable_in_runtime(self, data, validity)?)
     }
 
     /// Create a fixed-width `Series` from optional host values inside this runtime.
@@ -265,30 +249,14 @@ impl Runtime {
         }
     }
 
-    /// Create a named fixed-width `Series` from optional host values inside
-    /// this runtime.
-    pub fn named_series_opt<T: CudfType>(&self, name: impl Into<String>, data: &[Option<T>]) -> Result<Series> {
-        self.series_opt(data).map(|series| series.rename(name))
-    }
-
     /// Create an unnamed all-null `Series` inside this runtime.
     pub fn nulls(&self, dtype: impl Into<DataType>, len: usize) -> Result<Series> {
         Series::from_column(self.null_column(dtype, len)?)
     }
 
-    /// Create a named all-null `Series` inside this runtime.
-    pub fn named_nulls(&self, name: impl Into<String>, dtype: impl Into<DataType>, len: usize) -> Result<Series> {
-        Series::from_named_column(name, self.null_column(dtype, len)?)
-    }
-
     /// Create an unnamed empty `Series` inside this runtime.
     pub fn empty_series(&self, dtype: impl Into<DataType>) -> Result<Series> {
         Series::from_column(self.empty_column(dtype)?)
-    }
-
-    /// Create a named empty `Series` inside this runtime.
-    pub fn named_empty_series(&self, name: impl Into<String>, dtype: impl Into<DataType>) -> Result<Series> {
-        Series::from_named_column(name, self.empty_column(dtype)?)
     }
 
     /// Create an unnamed `Series` by repeating a scalar inside this runtime.
@@ -303,18 +271,6 @@ impl Runtime {
         Series::from_column(self.column_from_scalar(scalar, size)?)
     }
 
-    /// Create a named `Series` by repeating a scalar inside this runtime.
-    ///
-    /// If `scalar` does not already belong to this runtime's execution domain,
-    /// the scalar is recreated in this runtime first so placement and
-    /// allocator selection remain honest.
-    ///
-    /// Supports all scalar types except Dictionary32 (no libcudf scalar
-    /// subclass exists for dictionary-encoded scalars).
-    pub fn named_series_from_scalar(&self, name: impl Into<String>, scalar: &Scalar, size: usize) -> Result<Series> {
-        Series::from_named_column(name, self.column_from_scalar(scalar, size)?)
-    }
-
     /// Create an unnamed fixed-width arithmetic sequence `Series` inside this runtime.
     ///
     /// The output is `[start, start + step, start + 2*step, ...]` with
@@ -322,21 +278,6 @@ impl Runtime {
     /// filling.
     pub fn sequence<T: CudfType>(&self, start: T, step: T, size: usize) -> Result<Series> {
         Series::from_column(Column::from_sequence_with_runtime(self, start, step, size)?)
-    }
-
-    /// Create a named fixed-width arithmetic sequence `Series` inside this runtime.
-    ///
-    /// The output is `[start, start + step, start + 2*step, ...]` with
-    /// `size` rows, generated directly on device via libcudf sequence
-    /// filling.
-    pub fn named_sequence<T: CudfType>(
-        &self,
-        name: impl Into<String>,
-        start: T,
-        step: T,
-        size: usize,
-    ) -> Result<Series> {
-        Series::from_named_column(name, Column::from_sequence_with_runtime(self, start, step, size)?)
     }
 
     /// Create an empty `DataFrame` inside this runtime.

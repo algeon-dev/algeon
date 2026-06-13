@@ -26,18 +26,16 @@ use crate::common::{
     reset_exec_observation, reset_sync_observation, sample_runtime, scalar,
 };
 
-fn explicit_nullable_i32_series(name: &str, data: &[i32], validity: &[bool], identity: u64) -> Series {
+fn explicit_nullable_i32_series(_name: &str, data: &[i32], validity: &[bool], identity: u64) -> Series {
     Series::from_column(
         column_from_slice_nullable(data, validity).unwrap().testing_rebind_execution_domain_explicit(identity).unwrap(),
     )
     .unwrap()
-    .rename(name)
 }
 
-fn explicit_str_series(name: &str, data: &[&str], identity: u64) -> Series {
+fn explicit_str_series(_name: &str, data: &[&str], identity: u64) -> Series {
     Series::from_column(column_from_strs(data).unwrap().testing_rebind_execution_domain_explicit(identity).unwrap())
         .unwrap()
-        .rename(name)
 }
 
 fn assert_column_exec_contract(column: &Column, expected_id: u64, expected_stream: usize, expected_mr: usize) {
@@ -63,11 +61,7 @@ fn helper_constructors_seed_explicit_runtime_domain() {
     assert_eq!(table.testing_execution_domain_id(), expected_id);
 
     let series = crate::common::series::<i32>("id", &[1, 2, 3]).unwrap();
-    let df = DataFrame::from_columns(::std::iter::IntoIterator::into_iter([series]).map(|series| {
-        let name = series.name().expect("explicit test migration requires named Series inputs").to_string();
-        (name, series)
-    }))
-    .unwrap();
+    let df = DataFrame::from_columns([("id", series)]).unwrap();
     assert_eq!(df.testing_execution_domain_kind(), "explicit");
     assert_eq!(df.testing_execution_domain_id(), expected_id);
     assert_eq!(df.series("id").unwrap().as_column().testing_execution_domain_id(), expected_id);
@@ -131,16 +125,10 @@ fn dataframe_and_table_construction_reject_mixed_domain_columns() {
 
 #[test]
 fn representative_high_level_ops_preserve_explicit_domain_identity() {
-    let df = DataFrame::from_columns(
-        ::std::iter::IntoIterator::into_iter([
-            explicit_i32_series("id", &[3, 1, 2], 55),
-            explicit_i32_series("value", &[30, 10, 20], 55),
-        ])
-        .map(|series| {
-            let name = series.name().expect("explicit test migration requires named Series inputs").to_string();
-            (name, series)
-        }),
-    )
+    let df = DataFrame::from_columns([
+        ("id", explicit_i32_series("id", &[3, 1, 2], 55)),
+        ("value", explicit_i32_series("value", &[30, 10, 20], 55)),
+    ])
     .unwrap();
 
     let sorted = df.sort_values(["id"], SortOptions::new()).unwrap();
@@ -172,11 +160,7 @@ fn host_materialization_and_io_paths_sync_retained_stream() {
 
     let dir = TempDir::new().unwrap();
     let path = dir.path().join("execution_domain.parquet");
-    let df = DataFrame::from_columns(::std::iter::IntoIterator::into_iter([numeric.clone()]).map(|series| {
-        let name = series.name().expect("explicit test migration requires named Series inputs").to_string();
-        (name, series)
-    }))
-    .unwrap();
+    let df = DataFrame::from_columns([("id", numeric.clone())]).unwrap();
     reset_sync_observation();
     df.write_parquet(&path).unwrap();
     assert_eq!(last_sync_stream_value(), df.testing_execution_domain_stream_value());

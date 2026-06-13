@@ -16,14 +16,13 @@
 //! use cudf::Runtime;
 //!
 //! let rt = Runtime::new().unwrap();
-//! let series = rt
-//!     .named_series("value", &[429i32, 111, 213, 111, 213, 429, 213])
-//!     .unwrap();
+//! let series = rt.series(&[429i32, 111, 213, 111, 213, 429, 213]).unwrap();
 //! let factorized = series.factorize().unwrap();
 //!
 //! // For a reusable lookup mapping, pair keys with explicit positional codes
 //! // instead of reusing the row-aligned codes.
-//! assert_eq!(factorized.row_codes().name(), Some("value_codes"));
+//! assert_eq!(factorized.codebook().keys().len(), 3);
+//! assert_eq!(factorized.row_codes().len(), 7);
 //! ```
 
 use std::ptr;

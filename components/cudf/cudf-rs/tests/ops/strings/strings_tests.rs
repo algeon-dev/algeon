@@ -29,10 +29,11 @@ fn test_str_upper() {
 }
 
 #[test]
-fn test_str_lower_preserves_name() {
+fn test_str_lower_display_omits_input_name() {
     let s = crate::common::series("col", &["ABC"]).unwrap();
     let result = s.str().lower().unwrap();
-    assert_eq!(result.name(), Some("col"));
+    let output = format!("{}", result);
+    assert!(!output.contains("col"), "lower output should not expose schema names: {}", output);
 }
 
 #[test]
@@ -79,10 +80,11 @@ fn test_str_contains_preserves_nulls() {
 }
 
 #[test]
-fn test_str_contains_preserves_name() {
+fn test_str_contains_display_omits_input_name() {
     let s = crate::common::series("col", &["abc"]).unwrap();
     let result = s.str().contains("a").unwrap();
-    assert_eq!(result.name(), Some("col"));
+    let output = format!("{}", result);
+    assert!(!output.contains("col"), "contains output should not expose schema names: {}", output);
 }
 
 // ===========================================================================
@@ -175,10 +177,11 @@ fn test_str_strip_preserves_nulls() {
 }
 
 #[test]
-fn test_str_strip_preserves_name() {
+fn test_str_strip_display_omits_input_name() {
     let s = crate::common::series("col", &[" abc "]).unwrap();
     let result = s.str().strip().unwrap();
-    assert_eq!(result.name(), Some("col"));
+    let output = format!("{}", result);
+    assert!(!output.contains("col"), "strip output should not expose schema names: {}", output);
 }
 
 // ===========================================================================
@@ -226,8 +229,9 @@ fn test_str_len_empty() {
 }
 
 #[test]
-fn test_str_len_preserves_name() {
+fn test_str_len_display_omits_input_name() {
     let s = crate::common::series("col", &["abc"]).unwrap();
     let result = s.str().len().unwrap();
-    assert_eq!(result.name(), Some("col"));
+    let output = format!("{}", result);
+    assert!(!output.contains("col"), "len output should not expose schema names: {}", output);
 }

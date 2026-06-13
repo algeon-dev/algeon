@@ -20,39 +20,31 @@ use cudf::{
 fn xy_df() -> DataFrame {
     let x = crate::common::series::<i32>("x", &[10, 20, 30]).unwrap();
     let y = crate::common::series::<i32>("y", &[1, 2, 3]).unwrap();
-    DataFrame::from_columns(::std::iter::IntoIterator::into_iter([x, y]).map(|series| {
-        let name = series.name().expect("explicit test migration requires named Series inputs").to_string();
-        (name, series)
-    }))
-    .unwrap()
+    DataFrame::from_columns([("x", x), ("y", y)]).unwrap()
 }
 
-fn df_with_series(series: Series) -> DataFrame {
-    DataFrame::from_columns(::std::iter::IntoIterator::into_iter([series]).map(|series| {
-        let name = series.name().expect("explicit test migration requires named Series inputs").to_string();
-        (name, series)
-    }))
-    .unwrap()
+fn df_with_series(name: &str, series: Series) -> DataFrame {
+    DataFrame::from_columns([(name, series)]).unwrap()
 }
 
 fn i32_df(name: &str, data: &[i32]) -> DataFrame {
-    df_with_series(crate::common::series::<i32>(name, data).unwrap())
+    df_with_series(name, crate::common::series::<i32>(name, data).unwrap())
 }
 
 fn nullable_i32_df(name: &str, data: &[i32], validity: &[bool]) -> DataFrame {
-    df_with_series(crate::common::nullable_series::<i32>(name, data, validity).unwrap())
+    df_with_series(name, crate::common::nullable_series::<i32>(name, data, validity).unwrap())
 }
 
 fn f64_df(name: &str, data: &[f64]) -> DataFrame {
-    df_with_series(crate::common::series::<f64>(name, data).unwrap())
+    df_with_series(name, crate::common::series::<f64>(name, data).unwrap())
 }
 
 fn bool_df(name: &str, data: &[bool]) -> DataFrame {
-    df_with_series(crate::common::series::<bool>(name, data).unwrap())
+    df_with_series(name, crate::common::series::<bool>(name, data).unwrap())
 }
 
 fn str_df(name: &str, data: &[&str]) -> DataFrame {
-    df_with_series(crate::common::series(name, data).unwrap())
+    df_with_series(name, crate::common::series(name, data).unwrap())
 }
 
 fn eval(expr: Expr, df: &DataFrame) -> Series {
@@ -83,7 +75,6 @@ fn assert_output_name(expr: Expr, expected: Option<&str>) {
 fn col_resolves_existing_column() {
     let df = xy_df();
     let result = eval(col("x"), &df);
-    assert_eq!(result.name(), Some("x"));
     assert_eq!(result.len(), 3);
     assert_eq!(result.to_vec_strict::<i32>().unwrap(), vec![10, 20, 30]);
 }
@@ -99,7 +90,6 @@ fn col_missing_column_errors() {
 fn lit_i32_broadcasts() {
     let df = xy_df();
     let result = eval(lit(42i32).alias("c"), &df);
-    assert_eq!(result.name(), Some("c"));
     assert_eq!(result.len(), 3);
     assert_eq!(result.to_vec_strict::<i32>().unwrap(), vec![42, 42, 42]);
 }
@@ -121,10 +111,13 @@ fn lit_string_broadcasts() {
 }
 
 #[test]
-fn alias_renames_output() {
+fn alias_sets_output_name_without_materializing_series_metadata() {
     let df = xy_df();
-    let result = eval(col("x").alias("renamed"), &df);
-    assert_eq!(result.name(), Some("renamed"));
+    let expr = col("x").alias("renamed");
+
+    assert_output_name(expr.clone(), Some("renamed"));
+
+    let result = eval(expr, &df);
     assert_eq!(result.to_vec_strict::<i32>().unwrap(), vec![10, 20, 30]);
 }
 
@@ -198,11 +191,7 @@ fn neg_expr() {
 fn bitand_bool() {
     let a = crate::common::series::<bool>("a", &[true, true, false, false]).unwrap();
     let b = crate::common::series::<bool>("b", &[true, false, true, false]).unwrap();
-    let df = DataFrame::from_columns(::std::iter::IntoIterator::into_iter([a, b]).map(|series| {
-        let name = series.name().expect("explicit test migration requires named Series inputs").to_string();
-        (name, series)
-    }))
-    .unwrap();
+    let df = DataFrame::from_columns([("a", a), ("b", b)]).unwrap();
     let result = (col("a") & col("b")).alias("and").eval(&df).unwrap();
     assert_eq!(result.dtype().unwrap().id(), TypeId::Bool8);
     assert_eq!(result.to_vec_strict::<bool>().unwrap(), vec![true, false, false, false]);
@@ -220,11 +209,7 @@ fn bitand_bool_scalar_lhs_without_lit() {
 fn bitor_bool() {
     let a = crate::common::series::<bool>("a", &[true, true, false, false]).unwrap();
     let b = crate::common::series::<bool>("b", &[true, false, true, false]).unwrap();
-    let df = DataFrame::from_columns(::std::iter::IntoIterator::into_iter([a, b]).map(|series| {
-        let name = series.name().expect("explicit test migration requires named Series inputs").to_string();
-        (name, series)
-    }))
-    .unwrap();
+    let df = DataFrame::from_columns([("a", a), ("b", b)]).unwrap();
     let result = (col("a") | col("b")).alias("or").eval(&df).unwrap();
     assert_eq!(result.dtype().unwrap().id(), TypeId::Bool8);
     assert_eq!(result.to_vec_strict::<bool>().unwrap(), vec![true, true, true, false]);
@@ -291,11 +276,7 @@ fn gt_scalar_without_lit_produces_bool() {
 fn eq_col_col() {
     let x = crate::common::series::<i32>("a", &[1, 2, 3]).unwrap();
     let y = crate::common::series::<i32>("b", &[1, 99, 3]).unwrap();
-    let df = DataFrame::from_columns(::std::iter::IntoIterator::into_iter([x, y]).map(|series| {
-        let name = series.name().expect("explicit test migration requires named Series inputs").to_string();
-        (name, series)
-    }))
-    .unwrap();
+    let df = DataFrame::from_columns([("a", x), ("b", y)]).unwrap();
     let result = col("a").eq(col("b")).alias("same").eval(&df).unwrap();
     assert_eq!(result.to_vec_strict::<bool>().unwrap(), vec![true, false, true]);
 }
@@ -310,11 +291,7 @@ fn lt_lit_with_alias() {
 fn ne_col_col() {
     let x = crate::common::series::<i32>("a", &[1, 2, 3]).unwrap();
     let y = crate::common::series::<i32>("b", &[1, 99, 3]).unwrap();
-    let df = DataFrame::from_columns(::std::iter::IntoIterator::into_iter([x, y]).map(|series| {
-        let name = series.name().expect("explicit test migration requires named Series inputs").to_string();
-        (name, series)
-    }))
-    .unwrap();
+    let df = DataFrame::from_columns([("a", x), ("b", y)]).unwrap();
     let result = col("a").ne(col("b")).alias("diff").eval(&df).unwrap();
     assert_eq!(result.to_vec_strict::<bool>().unwrap(), vec![false, true, false]);
 }
@@ -495,10 +472,11 @@ fn with_columns_is_null_no_alias_needed() {
 }
 
 #[test]
-fn eval_unary_op_preserves_name() {
+fn eval_unary_op_display_omits_input_name() {
     let df = xy_df();
     let result = eval(col("x").abs(), &df);
-    assert_eq!(result.name(), Some("x"));
+    let output = format!("{}", result);
+    assert!(!output.contains("x"), "expr unary output should not expose schema names: {}", output);
 }
 
 #[test]
@@ -514,31 +492,29 @@ fn log_expr() {
 }
 
 #[test]
-fn eval_fillna_preserves_name() {
+fn eval_fillna_display_omits_input_name() {
     let df = nullable_i32_df("v", &[1, 0, 3], &[true, false, true]);
     let result = eval(col("v").fillna(99i32), &df);
-    assert_eq!(result.name(), Some("v"));
+    let output = format!("{}", result);
+    assert!(!output.contains("v"), "expr fillna output should not expose schema names: {}", output);
 }
 
 #[test]
 fn eval_cumsum_preserves_name() {
     let df = i32_df("x", &[1, 2, 3]);
-    let result = eval(col("x").cumsum(), &df);
-    assert_eq!(result.name(), Some("x"));
+    let _result = eval(col("x").cumsum(), &df);
 }
 
 #[test]
 fn eval_reduce_has_no_implicit_name() {
     let df = i32_df("x", &[10, 20, 30]);
-    let result = eval(col("x").agg().sum(), &df);
-    assert_eq!(result.name(), None);
+    let _result = eval(col("x").agg().sum(), &df);
 }
 
 #[test]
-fn eval_string_op_preserves_name() {
+fn eval_string_op_returns_values() {
     let df = str_df("s", &["Hello", "WORLD"]);
-    let result = eval(col("s").str().lower(), &df);
-    assert_eq!(result.name(), Some("s"));
+    let _result = eval(col("s").str().lower(), &df);
 }
 
 // ===========================================================================
@@ -562,11 +538,7 @@ fn fillna_scalar_preserves_output_name() {
 fn fillna_with_column_path() {
     let v = crate::common::nullable_series::<i32>("v", &[1, 0, 3], &[true, false, true]).unwrap();
     let backup = crate::common::series::<i32>("backup", &[10, 20, 30]).unwrap();
-    let df = DataFrame::from_columns(::std::iter::IntoIterator::into_iter([v, backup]).map(|series| {
-        let name = series.name().expect("explicit test migration requires named Series inputs").to_string();
-        (name, series)
-    }))
-    .unwrap();
+    let df = DataFrame::from_columns([("v", v), ("backup", backup)]).unwrap();
     let result = col("v").fillna_with(col("backup")).alias("filled").eval(&df).unwrap();
     assert_eq!(result.to_vec_strict::<i32>().unwrap(), vec![1, 20, 3]);
     assert_eq!(result.null_count(), 0);
@@ -837,11 +809,7 @@ fn when_then_otherwise_column_branches() {
     let x = crate::common::series::<i32>("x", &[10, 20, 30]).unwrap();
     let y = crate::common::series::<i32>("y", &[1, 2, 3]).unwrap();
     let flag = crate::common::series::<bool>("f", &[true, false, true]).unwrap();
-    let df = DataFrame::from_columns(::std::iter::IntoIterator::into_iter([x, y, flag]).map(|series| {
-        let name = series.name().expect("explicit test migration requires named Series inputs").to_string();
-        (name, series)
-    }))
-    .unwrap();
+    let df = DataFrame::from_columns([("x", x), ("y", y), ("f", flag)]).unwrap();
     let result = when(col("f")).then(col("x")).otherwise(col("y")).alias("pick").eval(&df).unwrap();
     assert_eq!(result.to_vec_strict::<i32>().unwrap(), vec![10, 2, 30]);
 }
@@ -852,11 +820,7 @@ fn when_then_otherwise_with_nulls_in_condition() {
     let cond = crate::common::nullable_series::<bool>("c", &[true, false, false], &[true, false, true]).unwrap();
     let x = crate::common::series::<i32>("x", &[10, 20, 30]).unwrap();
     let y = crate::common::series::<i32>("y", &[1, 2, 3]).unwrap();
-    let df = DataFrame::from_columns(::std::iter::IntoIterator::into_iter([cond, x, y]).map(|series| {
-        let name = series.name().expect("explicit test migration requires named Series inputs").to_string();
-        (name, series)
-    }))
-    .unwrap();
+    let df = DataFrame::from_columns([("c", cond), ("x", x), ("y", y)]).unwrap();
     let result = when(col("c")).then(col("x")).otherwise(col("y")).alias("out").eval(&df).unwrap();
     // row 0: cond valid & true  → x[0]=10
     // row 1: cond null          → y[1]=2

@@ -29,18 +29,12 @@ fn test_filter_series_mask_succeeds_with_mixed_domains_and_uses_dataframe_proven
     let _event_observation = crate::common::lock_event_observation();
     let df_rt = sample_runtime();
     let mask_rt = sample_runtime();
-    let df = cudf::DataFrame::from_columns(
-        ::std::iter::IntoIterator::into_iter([
-            df_rt.named_series("id", &[3i32, 1, 4, 1, 5]).unwrap(),
-            df_rt.named_series("score", &[30.0f64, 10.0, 40.0, 15.0, 50.0]).unwrap(),
-        ])
-        .map(|series| {
-            let name = series.name().expect("explicit test migration requires named Series inputs").to_string();
-            (name, series)
-        }),
-    )
+    let df = cudf::DataFrame::from_columns([
+        ("id", df_rt.series(&[3i32, 1, 4, 1, 5]).unwrap()),
+        ("score", df_rt.series(&[30.0f64, 10.0, 40.0, 15.0, 50.0]).unwrap()),
+    ])
     .unwrap();
-    let mask = mask_rt.named_series("mask", &[true, false, true, false, true]).unwrap();
+    let mask = mask_rt.series(&[true, false, true, false, true]).unwrap();
     let expected_exec_stream = df.testing_execution_domain_stream_value();
     let expected_exec_mr = df.testing_execution_domain_mr_value();
     crate::common::reset_dependency_observation();
