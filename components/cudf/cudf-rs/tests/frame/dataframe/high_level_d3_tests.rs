@@ -5,7 +5,10 @@
 //!
 //! All tests require a GPU.
 
-use cudf::{DataFrame, DuplicateKeepOption};
+use cudf::{
+    DataFrame, DuplicateKeepOption,
+    frame::dataframe::{DropDuplicatesOptions, DropNaHow, DropNaOptions},
+};
 
 use crate::common::{assert_missing_column_error, scalar};
 
@@ -396,16 +399,12 @@ fn test_drop_duplicates_options_default_is_keep_any() {
 }
 
 // ===========================================================================
-// High-level API re-exports
+// High-level DataFrame option types
 // ===========================================================================
 
 #[test]
-fn test_high_level_option_types_importable_from_crate_root() {
-    // These types should be importable from the crate root.
-    let _: cudf::DropNaOptions = Default::default();
-    let _: cudf::DropNaHow = Default::default();
-    let _: cudf::DropDuplicatesOptions = Default::default();
+fn test_high_level_option_types_importable_from_dataframe_module() {
+    let _: DropNaOptions = Default::default();
+    let _: DropNaHow = Default::default();
+    let _: DropDuplicatesOptions = Default::default();
 }
-
-// Bring the option types into scope for the test module.
-use cudf::{DropDuplicatesOptions, DropNaHow, DropNaOptions};

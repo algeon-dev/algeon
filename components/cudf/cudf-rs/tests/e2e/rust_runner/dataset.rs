@@ -5,7 +5,9 @@
 
 use std::{collections::HashSet, io::Write};
 
-use cudf::{DataFrame, JsonReadOptions, Runtime, Series, TypeId, ops::dictionary, testing::prelude::*};
+use cudf::{
+    DataFrame, Runtime, Series, TypeId, frame::dataframe::JsonReadOptions, ops::dictionary, testing::prelude::*,
+};
 use tempfile::NamedTempFile;
 
 use super::manifest::Dataset;
@@ -139,7 +141,7 @@ fn build_numeric_series<T: cudf::CudfType + Default>(
     }
 
     let has_nulls = validity.iter().any(|&v| !v);
-    if has_nulls { runtime.nullable_series(name, &data, &validity) } else { runtime.series(name, &data) }
+    if has_nulls { runtime.named_nullable_series(name, &data, &validity) } else { runtime.named_series(name, &data) }
 }
 
 /// Build a nullable bool `Series` from JSON boolean values.
@@ -168,7 +170,7 @@ fn build_str_series(runtime: &Runtime, name: &str, values: &[serde_json::Value])
     }
 
     let has_nulls = validity.iter().any(|&v| !v);
-    if has_nulls { runtime.nullable_series(name, &data, &validity) } else { runtime.series(name, &data) }
+    if has_nulls { runtime.named_nullable_series(name, &data, &validity) } else { runtime.named_series(name, &data) }
 }
 
 #[cfg(test)]

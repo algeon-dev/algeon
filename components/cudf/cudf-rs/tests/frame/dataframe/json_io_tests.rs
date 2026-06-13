@@ -1,7 +1,11 @@
 //! Tests for DataFrame-level JSON I/O methods.
 //!
 //! All tests require a GPU.
-use cudf::{DataFrame, ErrorKind, JsonReadOptions, JsonWriteOptions, testing::prelude::*};
+use cudf::{
+    DataFrame, ErrorKind,
+    frame::dataframe::{JsonReadOptions, JsonWriteOptions},
+    testing::prelude::*,
+};
 use tempfile::TempDir;
 
 use crate::common::sample_runtime;

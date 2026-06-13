@@ -1,6 +1,9 @@
 //! Tests for DataFrame I/O integration.
 use cudf::{
-    CsvReadOptions, CsvWriteOptions, DataFrame, ErrorKind, ParquetReadOptions, core::Table, testing::prelude::*,
+    DataFrame, ErrorKind,
+    core::Table,
+    frame::dataframe::{CsvReadOptions, CsvWriteOptions, ParquetReadOptions},
+    testing::prelude::*,
 };
 use tempfile::TempDir;
 

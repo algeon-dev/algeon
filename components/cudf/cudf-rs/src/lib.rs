@@ -1,9 +1,14 @@
 //! Safe Rust bindings for cuDF — GPU-accelerated DataFrames.
 //!
-//! Start with [`DataFrame`] and [`Series`]. They provide a cuDF-Python-like
-//! experience with immutable-value semantics, `Arc`-shared columns, and
-//! GPU-only data operations. Use [`core::Column`]/[`core::Table`] only when
-//! you need fine-grained GPU memory control.
+//! Start with [`DataFrame`], [`Series`], and [`Runtime`]. They provide a
+//! cuDF-Python-like experience with immutable-value semantics, `Arc`-shared
+//! columns, and explicit runtime ownership for GPU execution resources. Use
+//! [`core::Column`]/[`core::Table`] only when you need fine-grained GPU
+//! memory control.
+//!
+//! The crate root is intentionally narrow. DataFrame-specific option and
+//! result types live under [`frame::dataframe`]; factorization-specific types
+//! live under [`frame::factorization`].
 //!
 //! # Quick Start
 //!
@@ -13,9 +18,9 @@
 //! // Build an explicit runtime for this workflow.
 //! let rt = Runtime::new().unwrap();
 //!
-//! // Create named Series from host data inside that runtime.
-//! let ids = rt.series("id", &[1i32, 2, 3]).unwrap();
-//! let scores = rt.series("score", &[10.0f64, 20.0, 30.0]).unwrap();
+//! // Create unnamed Series from host data inside that runtime.
+//! let ids = rt.series(&[1i32, 2, 3]).unwrap();
+//! let scores = rt.series(&[10.0f64, 20.0, 30.0]).unwrap();
 //!
 //! // Build a DataFrame with explicit schema names.
 //! let df = DataFrame::from_columns([("id", ids), ("score", scores)]).unwrap();
@@ -35,26 +40,34 @@
 //! assert_eq!(mean, Some(20.0));
 //! ```
 //!
-//! # Primary Types
+//! # Primary Entry Points
 //!
 //! - [`DataFrame`] — A named, ordered collection of GPU columns with
 //!   immutable-value semantics.
 //! - [`Series`] — A named, `Arc`-shared GPU column; the primary column type.
-//! - [`Factorized`] / [`Codebook`] / [`EncodedSeries`] — typed factorization
-//!   results that distinguish row-aligned encoded indices from reusable
-//!   dictionary mappings.
+//! - [`Runtime`] — Owns the default CUDA stream, memory resource, and retained
+//!   provenance for a workflow.
 //!
-//! # High-Level Operations
+//! # Root-Level Operations
 //!
 //! - [`SortOptions`] / [`DataFrame::sort_values`] — GPU-accelerated sorting.
 //! - [`MergeOptions`] / [`DataFrame::merge`] — GPU-accelerated joins.
 //! - [`GroupBy`] / [`DataFrame::groupby`] — GPU-accelerated groupby aggregation.
-//! - [`Series::factorize`] / [`Series::codebook`] — typed categorical encoding
-//!   and reusable value↔code mappings.
 //! - [`LookupTable`] / [`Series::lookup`] / [`DataFrame::with_lookup`] —
 //!   row-aligned lookup operators and reusable mappings.
 //! - [`Series::sum_value`], [`Series::mean_value`], [`Series::minmax_values`]
 //!   — high-level reductions that return host values directly.
+//!
+//! # Specialized High-Level Types
+//!
+//! - [`frame::dataframe`] — DataFrame-specific builders and result snapshots
+//!   such as [`frame::dataframe::MeltOptions`],
+//!   [`frame::dataframe::DropNaOptions`], and
+//!   [`frame::dataframe::InfoDetail`].
+//! - [`frame::factorization`] — typed categorical encoding results and
+//!   reusable mappings such as [`frame::factorization::Factorized`],
+//!   [`frame::factorization::Codebook`], and
+//!   [`frame::factorization::EncodedSeries`].
 //!
 //! # Advanced Usage
 //!
@@ -106,10 +119,11 @@
 //! [`Runtime`] instances are combined by data operations that can safely
 //! reassemble onto one output domain (for example `merge`, `concat`,
 //! gather/filter-style row ops, and scalar/column replacement paths),
-//! cudf-rs automatically fences the secondary stream with
-//! `cudaStreamSynchronize` before the operation proceeds on the output
-//! stream. This is a *host fence*: it blocks the calling CPU thread until
-//! the secondary stream's GPU work completes.
+//! cudf-rs automatically inserts a device-side CUDA event barrier from each
+//! secondary input stream into the authoritative output stream
+//! (`cudaEventRecord` + `cudaStreamWaitEvent`) before the operation
+//! proceeds. This preserves correctness without blocking the calling CPU
+//! thread.
 //!
 //! **Mixed-provenance structural operations:** Schema-changing operations
 //! that retain incoming columns as-is, such as [`DataFrame::with_column`] and
@@ -117,14 +131,9 @@
 //! cross-runtime inputs and require explicit relocation first via
 //! [`DataFrame::copy_into_runtime`] or [`Series::copy_into_runtime`].
 //!
-//! The host fence is intentionally conservative.  It guarantees correctness
-//! without requiring users to understand CUDA event semantics, but it
-//! serializes cross-stream GPU execution.  For maximum GPU throughput, keep
-//! all objects in the same [`Runtime`].
-//!
-//! A future version may replace the host fence with lighter-weight CUDA
-//! event barriers (`cudaEventRecord` + `cudaStreamWaitEvent`) that avoid
-//! blocking the CPU thread.
+//! This automatic ordering remains a correctness fallback, not a throughput
+//! feature. For maximum GPU concurrency and the clearest mental model, keep
+//! collaborating objects in the same [`Runtime`].
 //!
 //! # Multi-GPU
 //!
@@ -146,8 +155,8 @@
 //!     .unwrap();
 //!
 //! // Each series lives on its respective GPU.
-//! let s0 = rt0.series("a", &[1i32, 2, 3]).unwrap();
-//! let s1 = rt1.series("b", &[4i32, 5, 6]).unwrap();
+//! let s0 = rt0.series(&[1i32, 2, 3]).unwrap();
+//! let s1 = rt1.series(&[4i32, 5, 6]).unwrap();
 //! ```
 
 pub mod core;
@@ -158,6 +167,7 @@ pub(crate) mod internal;
 pub mod io;
 pub mod ops;
 pub mod runtime;
+#[doc(hidden)]
 pub mod testing;
 
 // — Primary entry points —
@@ -169,13 +179,7 @@ pub use core::{
 };
 
 pub use frame::{
-    dataframe::{
-        ColumnMemoryAccounting, ConcatByNameOptions, CsvReadOptions, CsvWriteOptions, DataFrame,
-        DataFrameColumnInfo, DataFrameInfo, DataFrameJoinSides, DataFrameMemoryAccounting, DataTypeCount,
-        DropDuplicatesOptions, DropNaHow, DropNaOptions, InfoDetail, JsonReadOptions, JsonWriteOptions, MeltOptions,
-        ParquetReadOptions, ParquetWriteOptions, SchemaAlignment,
-    },
-    factorization::{Codebook, DictionaryEncodingOptions, DictionaryKeyOrder, EncodedSeries, Factorized},
+    dataframe::DataFrame,
     series::{HostColumnData, IntoSeries, Series},
 };
 // — High-level operations —
