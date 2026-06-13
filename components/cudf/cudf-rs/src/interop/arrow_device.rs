@@ -333,43 +333,59 @@ impl DeviceArrowAbiRootInner {
     }
 
     fn device_id(&self, operation: &'static str) -> i32 {
+        self.try_device_id(operation).unwrap_or(-1)
+    }
+
+    fn try_device_id(&self, operation: &'static str) -> Result<i32> {
         let mut out = -1_i64;
         error::check_status_in(
             unsafe { cudf_sys::cudf_arrow_device_array_device_id(self.array.as_ptr(), &mut out) },
             operation,
-        )
-        .expect("Arrow device array handle should remain valid while wrapper is alive");
-        i32::try_from(out).expect("Arrow device id should fit in i32")
+        )?;
+        i32::try_from(out).map_err(|_| {
+            Error::new(ErrorKind::InvalidOperation, "Arrow device id exceeds i32::MAX")
+                .with_operation(operation)
+                .with_context("device_id", out.to_string())
+        })
     }
 
     fn device_type(&self, operation: &'static str) -> DeviceArrowDeviceType {
+        self.try_device_type(operation).unwrap_or_else(|_| DeviceArrowDeviceType::from_raw(-1))
+    }
+
+    fn try_device_type(&self, operation: &'static str) -> Result<DeviceArrowDeviceType> {
         let mut out = -1_i32;
         error::check_status_in(
             unsafe { cudf_sys::cudf_arrow_device_array_device_type(self.array.as_ptr(), &mut out) },
             operation,
-        )
-        .expect("Arrow device array handle should remain valid while wrapper is alive");
-        DeviceArrowDeviceType::from_raw(out)
+        )?;
+        Ok(DeviceArrowDeviceType::from_raw(out))
     }
 
     fn has_sync_event(&self, operation: &'static str) -> bool {
+        self.try_has_sync_event(operation).unwrap_or(false)
+    }
+
+    fn try_has_sync_event(&self, operation: &'static str) -> Result<bool> {
         let mut out = 0_i32;
         error::check_status_in(
             unsafe { cudf_sys::cudf_arrow_device_array_has_sync_event(self.array.as_ptr(), &mut out) },
             operation,
-        )
-        .expect("Arrow device array handle should remain valid while wrapper is alive");
-        out != 0
+        )?;
+        Ok(out != 0)
     }
 
     fn sync_event_raw_ptr(&self, operation: &'static str) -> *mut c_void {
+        self.try_sync_event_raw_ptr(operation).unwrap_or(ptr::null_mut())
+    }
+
+    fn try_sync_event_raw_ptr(&self, operation: &'static str) -> Result<*mut c_void> {
         let mut out = ptr::null_mut();
         error::check_status_in(
             unsafe { cudf_sys::cudf_arrow_device_array_sync_event_raw(self.array.as_ptr(), &mut out) },
             operation,
-        )
-        .expect("Arrow device array handle should remain valid while wrapper is alive");
-        out
+        )?;
+        Ok(out)
     }
 
     fn fixed_width_values_ptr(&self, operation: &'static str) -> Result<*const c_void> {
@@ -428,7 +444,7 @@ impl DeviceArrowAbiRootInner {
                 unsafe {
                     cudf_sys::cudf_arrow_device_table_column_name(
                         self.schema.as_ptr(),
-                        i64::try_from(index).expect("table column index should fit in i64"),
+                        error::usize_to_i64(index, operation, "column_index")?,
                         &mut raw_name,
                     )
                 },
@@ -483,8 +499,8 @@ fn export_device_arrow_column_from_view(
         reported_materialization.unwrap_or_else(|| export_materialization_from_raw(materialization));
     let import_materialization = foreign_import_materialization_for_column_view(view)?;
     let inner = Arc::new(DeviceArrowAbiRootInner {
-        schema: NonNull::new(schema).expect("native export should never return a null ArrowSchema handle"),
-        array: NonNull::new(array).expect("native export should never return a null ArrowDeviceArray handle"),
+        schema: error::require_non_null(schema, operation, "ArrowSchema")?,
+        array: error::require_non_null(array, operation, "ArrowDeviceArray")?,
         materialization: import_materialization,
         retained_owner: Some(retained_owner),
         ownership: DeviceArrowAbiOwnership::DestroyShim,
@@ -536,8 +552,8 @@ fn export_device_arrow_table_from_view(
         reported_materialization.unwrap_or_else(|| export_materialization_from_raw(materialization));
     let import_materialization = foreign_import_materialization_for_table_view(view)?;
     let inner = Arc::new(DeviceArrowAbiRootInner {
-        schema: NonNull::new(schema).expect("native export should never return a null ArrowSchema handle"),
-        array: NonNull::new(array).expect("native export should never return a null ArrowDeviceArray handle"),
+        schema: error::require_non_null(schema, operation, "ArrowSchema")?,
+        array: error::require_non_null(array, operation, "ArrowDeviceArray")?,
         materialization: import_materialization,
         retained_owner: Some(retained_owner),
         ownership: DeviceArrowAbiOwnership::DestroyShim,
@@ -1023,8 +1039,7 @@ impl Series {
     pub fn try_prepare_device_arrow_export(&self) -> Result<DeviceArrowColumnExport> {
         let operation = "interop::Series::try_prepare_device_arrow_export";
         let view = self.as_column().view().map_err(|error| error.with_operation(operation))?;
-        let exec_options =
-            view.execution_domain().explicit_exec_options_raw().expect("execution domain is always explicit");
+        let exec_options = view.execution_domain().exec_options_raw();
         let retained_owner: Arc<dyn Any + Send + Sync> = self.arc();
 
         export_device_arrow_column_from_view(&view, exec_options, retained_owner, operation, None)
@@ -1042,10 +1057,7 @@ impl Column {
         let operation = "interop::Column::try_prepare_device_arrow_export";
         let retained_column = Arc::new(self);
         let view = retained_column.view().map_err(|error| error.with_operation(operation))?;
-        let exec_options = retained_column
-            .execution_domain()
-            .explicit_exec_options_raw()
-            .expect("execution domain is always explicit");
+        let exec_options = retained_column.execution_domain().exec_options_raw();
         let retained_owner: Arc<dyn Any + Send + Sync> = Arc::clone(&retained_column) as Arc<dyn Any + Send + Sync>;
 
         export_device_arrow_column_from_view(&view, exec_options, retained_owner, operation, None)
@@ -1063,10 +1075,7 @@ impl Column {
         let operation = "interop::Column::try_prepare_device_arrow_export_with_deep_copy";
         let retained_column = Arc::new(self.deep_copy().map_err(|error| error.with_operation(operation))?);
         let view = retained_column.view().map_err(|error| error.with_operation(operation))?;
-        let exec_options = retained_column
-            .execution_domain()
-            .explicit_exec_options_raw()
-            .expect("execution domain is always explicit");
+        let exec_options = retained_column.execution_domain().exec_options_raw();
         let retained_owner: Arc<dyn Any + Send + Sync> = Arc::clone(&retained_column) as Arc<dyn Any + Send + Sync>;
 
         export_device_arrow_column_from_view(
@@ -1084,8 +1093,7 @@ impl Table {
         let operation = "interop::Table::try_prepare_device_arrow_export";
         let retained_table = Arc::new(self);
         let view = retained_table.view().map_err(|error| error.with_operation(operation))?;
-        let exec_options =
-            retained_table.execution_domain().explicit_exec_options_raw().expect("execution domain is always explicit");
+        let exec_options = retained_table.execution_domain().exec_options_raw();
         let retained_owner: Arc<dyn Any + Send + Sync> = Arc::clone(&retained_table) as Arc<dyn Any + Send + Sync>;
 
         export_device_arrow_table_from_view(&view, exec_options, None, retained_owner, operation, None)
@@ -1102,8 +1110,7 @@ impl Table {
         let operation = "interop::Table::try_prepare_device_arrow_export_with_deep_copy";
         let retained_table = Arc::new(self.deep_copy().map_err(|error| error.with_operation(operation))?);
         let view = retained_table.view().map_err(|error| error.with_operation(operation))?;
-        let exec_options =
-            retained_table.execution_domain().explicit_exec_options_raw().expect("execution domain is always explicit");
+        let exec_options = retained_table.execution_domain().exec_options_raw();
         let retained_owner: Arc<dyn Any + Send + Sync> = Arc::clone(&retained_table) as Arc<dyn Any + Send + Sync>;
 
         export_device_arrow_table_from_view(
@@ -1122,8 +1129,7 @@ impl DataFrame {
         let operation = "interop::DataFrame::try_prepare_device_arrow_export";
         let retained_df = Arc::new(self.clone());
         let view = retained_df.build_table_view().map_err(|error| error.with_operation(operation))?;
-        let exec_options =
-            retained_df.execution_domain().explicit_exec_options_raw().expect("execution domain is always explicit");
+        let exec_options = retained_df.execution_domain().exec_options_raw();
         let names = retained_df.column_names_owned();
         let c_names = names
             .iter()
@@ -1148,10 +1154,10 @@ impl Column {
         runtime: &Runtime,
     ) -> Result<Self> {
         let operation = "interop::Column::try_import_from_device_arrow_column_into_runtime";
-        validate_supported_device_type(input.device_type(), operation)?;
-        validate_same_device(input.device_id(), runtime, operation)?;
+        validate_supported_device_type(input.inner.try_device_type(operation)?, operation)?;
+        validate_same_device(input.inner.try_device_id(operation)?, runtime, operation)?;
 
-        let exec_options = runtime.execution_domain().explicit_exec_options_raw().expect("runtime always explicit");
+        let exec_options = runtime.execution_domain().exec_options_raw();
         let mut handle = ptr::null_mut();
         let mut materialization =
             cudf_sys::cudf_arrow_device_import_materialization_t::CUDF_ARROW_DEVICE_IMPORT_FOREIGN_RETAINED_VIEW;
@@ -1172,7 +1178,7 @@ impl Column {
         let retained_owner: Arc<dyn Any + Send + Sync> = Arc::clone(&input.inner) as Arc<dyn Any + Send + Sync>;
         let column = unsafe {
             Column::from_raw_with_domain_and_owner(handle, Arc::clone(runtime.execution_domain()), retained_owner)
-        };
+        }?;
 
         debug_assert_eq!(import_materialization_from_raw(materialization), input.materialization());
         Ok(column)
@@ -1203,10 +1209,10 @@ impl Table {
         runtime: &Runtime,
     ) -> Result<Self> {
         let operation = "interop::Table::try_import_from_device_arrow_table_into_runtime";
-        validate_supported_device_type(input.device_type(), operation)?;
-        validate_same_device(input.device_id(), runtime, operation)?;
+        validate_supported_device_type(input.inner.try_device_type(operation)?, operation)?;
+        validate_same_device(input.inner.try_device_id(operation)?, runtime, operation)?;
 
-        let exec_options = runtime.execution_domain().explicit_exec_options_raw().expect("runtime always explicit");
+        let exec_options = runtime.execution_domain().exec_options_raw();
         let mut handle = ptr::null_mut();
         let mut materialization =
             cudf_sys::cudf_arrow_device_import_materialization_t::CUDF_ARROW_DEVICE_IMPORT_FOREIGN_RETAINED_VIEW;
@@ -1231,7 +1237,7 @@ impl Table {
                 Arc::clone(runtime.execution_domain()),
                 vec![Some(retained_owner); input.column_names()?.len()],
             )
-        };
+        }?;
 
         debug_assert_eq!(import_materialization_from_raw(materialization), input.materialization());
         Ok(columns)

@@ -64,7 +64,10 @@ impl DeviceBuffer {
             unsafe { cudf_sys::cudf_device_buffer_create(size_bytes, &mut handle) },
             "device_buffer::create_on_current_device",
         )?;
-        Ok(Self { handle: NonNull::new(handle).expect("null device_buffer handle on success"), device_snapshot })
+        Ok(Self {
+            handle: error::require_non_null(handle, "device_buffer::create_on_current_device", "device buffer")?,
+            device_snapshot,
+        })
     }
 
     pub(crate) fn new_in_runtime(runtime: &Runtime, size_bytes: usize) -> Result<Self> {
@@ -143,8 +146,11 @@ impl DeviceBuffer {
     ///
     /// The handle must be a valid `cudf_device_buffer_handle` that has not
     /// been consumed by another FFI call.
-    pub(crate) unsafe fn from_raw_parts(handle: *mut c_void, device_snapshot: i32) -> Self {
-        Self { handle: NonNull::new(handle).expect("null device_buffer handle in from_raw_parts"), device_snapshot }
+    pub(crate) unsafe fn from_raw_parts(handle: *mut c_void, device_snapshot: i32) -> Result<Self> {
+        Ok(Self {
+            handle: error::require_non_null(handle, "device_buffer::from_raw_parts", "device buffer")?,
+            device_snapshot,
+        })
     }
 }
 

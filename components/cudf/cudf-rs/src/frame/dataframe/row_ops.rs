@@ -119,7 +119,7 @@ impl DataFrame {
         let output_domain = Arc::clone(&self.domain);
         ExecutionDomain::require_same_device_for_mixed_inputs(&self.domain, cv.execution_domain(), operation)?;
         if !ExecutionDomain::same_provenance(cv.execution_domain(), &output_domain) {
-            cv.execution_domain().fence_stream(operation)?;
+            ExecutionDomain::insert_stream_dependency(cv.execution_domain(), &output_domain, operation)?;
         }
         let exec_options = output_domain.explicit_exec_options_raw();
         let mask = ops::search::contains_impl(&cv, &col_view, &output_domain, exec_options.as_ref(), operation)?;
@@ -167,10 +167,10 @@ impl DataFrame {
     ) -> Result<Self> {
         ExecutionDomain::require_same_device_for_mixed_inputs(&self.domain, indices.execution_domain(), operation)?;
         if !ExecutionDomain::same_provenance(&self.domain, &output_domain) {
-            self.domain.fence_stream(operation)?;
+            ExecutionDomain::insert_stream_dependency(&self.domain, &output_domain, operation)?;
         }
         if !ExecutionDomain::same_provenance(indices.execution_domain(), &output_domain) {
-            indices.execution_domain().fence_stream(operation)?;
+            ExecutionDomain::insert_stream_dependency(indices.execution_domain(), &output_domain, operation)?;
         }
 
         if indices.is_empty()? {
@@ -198,10 +198,10 @@ impl DataFrame {
     ) -> Result<Self> {
         ExecutionDomain::require_same_device_for_mixed_inputs(&self.domain, mask.execution_domain(), operation)?;
         if !ExecutionDomain::same_provenance(&self.domain, &output_domain) {
-            self.domain.fence_stream(operation)?;
+            ExecutionDomain::insert_stream_dependency(&self.domain, &output_domain, operation)?;
         }
         if !ExecutionDomain::same_provenance(mask.execution_domain(), &output_domain) {
-            mask.execution_domain().fence_stream(operation)?;
+            ExecutionDomain::insert_stream_dependency(mask.execution_domain(), &output_domain, operation)?;
         }
 
         self.validate_mask_view(mask, operation)?;
@@ -262,7 +262,7 @@ impl DataFrame {
         let map_view = map.view()?;
         ExecutionDomain::require_same_device_for_mixed_inputs(&self.domain, map_view.execution_domain(), operation)?;
         if !ExecutionDomain::same_provenance(&self.domain, &output_domain) {
-            self.domain.fence_stream(operation)?;
+            ExecutionDomain::insert_stream_dependency(&self.domain, &output_domain, operation)?;
         }
 
         let tv = self.build_table_view()?;

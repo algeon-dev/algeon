@@ -1,5 +1,9 @@
 //! Tests for DataFrame concat, copy, rename, select.
-use cudf::{ConcatByNameOptions, DataFrame, DataType, ErrorKind, SchemaAlignment, TypeId, testing::prelude::*};
+use cudf::{
+    DataFrame, DataType, ErrorKind, TypeId,
+    frame::dataframe::{ConcatByNameOptions, SchemaAlignment},
+    testing::prelude::*,
+};
 
 use crate::common::{
     assert_missing_column_error, column_from_slice, last_exec_mr_value, last_exec_stream_value, last_sync_stream_value,
@@ -168,9 +172,7 @@ fn test_concat_by_name_honors_left_column_order() {
     )
     .unwrap();
 
-    let result = left
-        .concat_by_name(&right, ConcatByNameOptions::new().alignment(SchemaAlignment::NullFill))
-        .unwrap();
+    let result = left.concat_by_name(&right, ConcatByNameOptions::new().alignment(SchemaAlignment::NullFill)).unwrap();
 
     assert_eq!(result.column_names(), vec!["b", "a", "c"]);
 }
@@ -238,33 +240,32 @@ fn test_concat_by_name_decimal_null_fill_preserves_scale() {
         .unwrap();
 
     let left = DataFrame::from_columns([("id", crate::common::series("id", &[1i32, 2]).unwrap())]).unwrap();
-    let right = DataFrame::from_columns([("id", crate::common::series("id", &[3i32, 4]).unwrap()), ("amount", decimal)])
-        .unwrap();
+    let right =
+        DataFrame::from_columns([("id", crate::common::series("id", &[3i32, 4]).unwrap()), ("amount", decimal)])
+            .unwrap();
 
     let result = left.concat_by_name(&right, ConcatByNameOptions::default()).unwrap();
     let amount = result.series("amount").unwrap();
     let raw = amount.astype(TypeId::Int64).unwrap();
 
     assert_eq!(amount.dtype().unwrap(), DataType::fixed_point(TypeId::Decimal64, -2));
-    assert_eq!(
-        raw.to_optional_vec::<i64>().unwrap(),
-        vec![None, None, Some(12345), Some(67890)]
-    );
+    assert_eq!(raw.to_optional_vec::<i64>().unwrap(), vec![None, None, Some(12345), Some(67890)]);
 }
 
 #[test]
 fn test_concat_succeeds_with_mixed_domains_and_uses_left_provenance() {
+    let _event_observation = crate::common::lock_event_observation();
     let left_rt = sample_runtime();
     let right_rt = sample_runtime();
     let left = DataFrame::from_columns(
-        ::std::iter::IntoIterator::into_iter([left_rt.series("a", &[1i32, 2]).unwrap()]).map(|series| {
+        ::std::iter::IntoIterator::into_iter([left_rt.named_series("a", &[1i32, 2]).unwrap()]).map(|series| {
             let name = series.name().expect("explicit test migration requires named Series inputs").to_string();
             (name, series)
         }),
     )
     .unwrap();
     let right = DataFrame::from_columns(
-        ::std::iter::IntoIterator::into_iter([right_rt.series("a", &[3i32, 4]).unwrap()]).map(|series| {
+        ::std::iter::IntoIterator::into_iter([right_rt.named_series("a", &[3i32, 4]).unwrap()]).map(|series| {
             let name = series.name().expect("explicit test migration requires named Series inputs").to_string();
             (name, series)
         }),
@@ -272,8 +273,7 @@ fn test_concat_succeeds_with_mixed_domains_and_uses_left_provenance() {
     .unwrap();
     let expected_exec_stream = left.testing_execution_domain_stream_value();
     let expected_exec_mr = left.testing_execution_domain_mr_value();
-    let expected_sync_stream = right.testing_execution_domain_stream_value();
-
+    crate::common::reset_dependency_observation();
     reset_exec_observation();
     let result = left.concat(&right).unwrap();
 
@@ -281,7 +281,7 @@ fn test_concat_succeeds_with_mixed_domains_and_uses_left_provenance() {
     assert_eq!(result.testing_execution_domain_mr_value(), expected_exec_mr);
     assert_eq!(last_exec_stream_value(), expected_exec_stream);
     assert_eq!(last_exec_mr_value(), expected_exec_mr);
-    assert_eq!(last_sync_stream_value(), expected_sync_stream);
+    assert_eq!(crate::common::dependency_wait_call_count_for_stream(expected_exec_stream), 1);
 
     reset_sync_observation();
     let host = result.series("a").unwrap().to_vec_strict::<i32>().unwrap();
@@ -391,21 +391,21 @@ fn test_concat_many_succeeds_with_mixed_domains_and_uses_self_provenance() {
     let rt2 = sample_runtime();
     let rt3 = sample_runtime();
     let df1 = DataFrame::from_columns(
-        ::std::iter::IntoIterator::into_iter([rt1.series("a", &[1i32, 2]).unwrap()]).map(|series| {
+        ::std::iter::IntoIterator::into_iter([rt1.named_series("a", &[1i32, 2]).unwrap()]).map(|series| {
             let name = series.name().expect("explicit test migration requires named Series inputs").to_string();
             (name, series)
         }),
     )
     .unwrap();
     let df2 = DataFrame::from_columns(
-        ::std::iter::IntoIterator::into_iter([rt2.series("a", &[3i32, 4]).unwrap()]).map(|series| {
+        ::std::iter::IntoIterator::into_iter([rt2.named_series("a", &[3i32, 4]).unwrap()]).map(|series| {
             let name = series.name().expect("explicit test migration requires named Series inputs").to_string();
             (name, series)
         }),
     )
     .unwrap();
     let df3 = DataFrame::from_columns(
-        ::std::iter::IntoIterator::into_iter([rt3.series("a", &[5i32, 6]).unwrap()]).map(|series| {
+        ::std::iter::IntoIterator::into_iter([rt3.named_series("a", &[5i32, 6]).unwrap()]).map(|series| {
             let name = series.name().expect("explicit test migration requires named Series inputs").to_string();
             (name, series)
         }),

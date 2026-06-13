@@ -16,8 +16,9 @@
 //! use cudf::Runtime;
 //!
 //! let rt = Runtime::new().unwrap();
-//! let series =
-//!     rt.series("value", &[429i32, 111, 213, 111, 213, 429, 213]).unwrap();
+//! let series = rt
+//!     .named_series("value", &[429i32, 111, 213, 111, 213, 429, 213])
+//!     .unwrap();
 //! let factorized = series.factorize().unwrap();
 //!
 //! // For a reusable lookup mapping, pair keys with explicit positional codes
@@ -57,7 +58,7 @@ pub(crate) fn encode_impl(
             ("execution_context_provided", exec_options.is_some().to_string()),
         ],
     )?;
-    Ok(unsafe { Column::from_raw_with_domain(out, std::sync::Arc::clone(output_domain)) })
+    unsafe { Column::from_raw_with_domain(out, std::sync::Arc::clone(output_domain)) }
 }
 
 fn decode_impl(
@@ -77,7 +78,7 @@ fn decode_impl(
         operation,
         [("execution_context_provided", exec_options.is_some().to_string())],
     )?;
-    Ok(unsafe { Column::from_raw_with_domain(out, std::sync::Arc::clone(output_domain)) })
+    unsafe { Column::from_raw_with_domain(out, std::sync::Arc::clone(output_domain)) }
 }
 
 fn set_keys_impl(
@@ -100,7 +101,7 @@ fn set_keys_impl(
         operation,
         [("execution_context_provided", exec_options.is_some().to_string())],
     )?;
-    Ok(unsafe { Column::from_raw_with_domain(out, std::sync::Arc::clone(output_domain)) })
+    unsafe { Column::from_raw_with_domain(out, std::sync::Arc::clone(output_domain)) }
 }
 
 fn primary_column_domain(
@@ -184,7 +185,7 @@ fn match_dictionaries_impl(
         .iter()
         .copied()
         .map(|handle| unsafe { Column::from_raw_with_domain(handle, std::sync::Arc::clone(output_domain)) })
-        .collect();
+        .collect::<Result<Vec<_>>>()?;
     unsafe { cudf_sys::cudf_free_column_array(out_columns) };
     Ok(columns)
 }
@@ -230,7 +231,7 @@ pub fn keys<'a>(dict_column: &ColumnView<'a>) -> Result<ColumnView<'a>> {
     )?;
     // SAFETY: out was returned by a successful FFI call. The view borrows from
     // dict_column, enforced by the lifetime parameter 'a.
-    Ok(unsafe { ColumnView::from_raw_with_domain(out, std::sync::Arc::clone(dict_column.execution_domain())) })
+    unsafe { ColumnView::from_raw_with_domain(out, std::sync::Arc::clone(dict_column.execution_domain())) }
 }
 
 /// Get the indices column view from a dictionary column.
@@ -246,7 +247,7 @@ pub fn indices<'a>(dict_column: &ColumnView<'a>) -> Result<ColumnView<'a>> {
     )?;
     // SAFETY: out was returned by a successful FFI call. The view borrows from
     // dict_column, enforced by the lifetime parameter 'a.
-    Ok(unsafe { ColumnView::from_raw_with_domain(out, std::sync::Arc::clone(dict_column.execution_domain())) })
+    unsafe { ColumnView::from_raw_with_domain(out, std::sync::Arc::clone(dict_column.execution_domain())) }
 }
 
 /// Replace the keys of a dictionary column.
@@ -266,7 +267,7 @@ pub fn set_keys(dict_column: &ColumnView<'_>, keys: &ColumnView<'_>) -> Result<C
         "dictionary::set_keys",
     )?;
     if !ExecutionDomain::same_provenance(keys.execution_domain(), &output_domain) {
-        keys.execution_domain().fence_stream("dictionary::set_keys")?;
+        ExecutionDomain::insert_stream_dependency(keys.execution_domain(), &output_domain, "dictionary::set_keys")?;
     }
     let exec_options = output_domain.explicit_exec_options_raw();
     set_keys_impl(dict_column, keys, &output_domain, exec_options.as_ref(), "dictionary::set_keys")
@@ -305,7 +306,11 @@ pub fn match_dictionaries(dict_columns: &[&ColumnView<'_>]) -> Result<Vec<Column
             "dictionary::match_dictionaries",
         )?;
         if !ExecutionDomain::same_provenance(dict_column.execution_domain(), &output_domain) {
-            dict_column.execution_domain().fence_stream("dictionary::match_dictionaries")?;
+            ExecutionDomain::insert_stream_dependency(
+                dict_column.execution_domain(),
+                &output_domain,
+                "dictionary::match_dictionaries",
+            )?;
         }
     }
     let exec_options = output_domain.explicit_exec_options_raw();

@@ -92,7 +92,7 @@ pub(super) fn transfer_from_owned_column(
         // SAFETY: `to_static_bindings` depends on this retained owner to keep
         // the source column alive for the transfer lifetime.
         to_static_bindings(operation, projection.bindings)?,
-        to_static_readiness(readiness),
+        to_static_readiness(operation, readiness)?,
         owned_transfer_diagnostics(),
         owned_transfer_release_contract(default_device),
         OwnedColumnTransferState::new(column),
@@ -126,7 +126,7 @@ pub(super) fn transfer_from_owned_column_with_runtime_release_synchronization(
         projection.column,
         projection.semantic_columns,
         to_static_bindings(operation, projection.bindings)?,
-        to_static_readiness(readiness),
+        to_static_readiness(operation, readiness)?,
         owned_transfer_diagnostics(),
         owned_transfer_runtime_release_contract_with_synchronization(default_device, synchronization)?,
         owner,

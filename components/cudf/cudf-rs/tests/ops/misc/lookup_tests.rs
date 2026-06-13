@@ -113,15 +113,14 @@ fn test_lookup_probe_rejects_mapping_length_mismatch() {
 
 #[test]
 fn test_lookup_probe_succeeds_with_mixed_domains_and_uses_input_provenance() {
+    let _event_observation = crate::common::lock_event_observation();
     let input = explicit_i32_column(&[2, 9, 1], 921);
     let keys = explicit_i32_column(&[1, 2], 920);
     let values = explicit_i32_column(&[10, 20], 920);
 
     let expected_stream = input.testing_execution_domain_stream_value();
     let expected_mr = input.testing_execution_domain_mr_value();
-    let expected_sync_stream = keys.testing_execution_domain_stream_value();
-
-    reset_sync_observation();
+    crate::common::reset_dependency_observation();
     reset_exec_observation();
     let result =
         lookup::probe(&input.testing_view().unwrap(), &keys.testing_view().unwrap(), &values.testing_view().unwrap())
@@ -131,7 +130,7 @@ fn test_lookup_probe_succeeds_with_mixed_domains_and_uses_input_provenance() {
     assert_eq!(result.testing_execution_domain_mr_value(), expected_mr);
     assert_eq!(last_exec_stream_value(), expected_stream);
     assert_eq!(last_exec_mr_value(), expected_mr);
-    assert_eq!(last_sync_stream_value(), expected_sync_stream);
+    assert_eq!(crate::common::dependency_wait_call_count_for_stream(expected_stream), 2);
 
     reset_sync_observation();
     assert_eq!(result.testing_view().unwrap().to_optional_vec::<i32>().unwrap(), vec![Some(20), None, Some(10)]);
@@ -222,6 +221,7 @@ fn test_lookup_table_probe_rejects_dtype_mismatch() {
 
 #[test]
 fn test_lookup_table_probe_succeeds_with_mixed_domains_and_uses_input_provenance() {
+    let _event_observation = crate::common::lock_event_observation();
     let keys = explicit_i32_series("id", &[1, 2], 920);
     let values = explicit_i32_series("label", &[10, 20], 920);
     let table = LookupTable::new(keys, values).unwrap();
@@ -229,9 +229,7 @@ fn test_lookup_table_probe_succeeds_with_mixed_domains_and_uses_input_provenance
 
     let expected_stream = input.as_column().testing_execution_domain_stream_value();
     let expected_mr = input.as_column().testing_execution_domain_mr_value();
-    let expected_sync_stream = table.keys().as_column().testing_execution_domain_stream_value();
-
-    reset_sync_observation();
+    crate::common::reset_dependency_observation();
     reset_exec_observation();
     let result = table.probe(&input).unwrap();
 
@@ -239,7 +237,7 @@ fn test_lookup_table_probe_succeeds_with_mixed_domains_and_uses_input_provenance
     assert_eq!(result.as_column().testing_execution_domain_mr_value(), expected_mr);
     assert_eq!(last_exec_stream_value(), expected_stream);
     assert_eq!(last_exec_mr_value(), expected_mr);
-    assert_eq!(last_sync_stream_value(), expected_sync_stream);
+    assert_eq!(crate::common::dependency_wait_call_count_for_stream(expected_stream), 2);
 
     reset_sync_observation();
     assert_eq!(result.to_optional_vec::<i32>().unwrap(), vec![Some(20), None, Some(10)]);

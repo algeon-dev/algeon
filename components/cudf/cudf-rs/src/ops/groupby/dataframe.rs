@@ -191,9 +191,7 @@ impl<'a> GroupBy<'a> {
             resolve::{build_borrowed_table_view_from_columns, resolve_column_names},
         };
 
-        if !ExecutionDomain::same_provenance(self.df.execution_domain(), &output_domain) {
-            self.df.execution_domain().fence_stream(operation)?;
-        }
+        ExecutionDomain::insert_stream_dependency(self.df.execution_domain(), &output_domain, operation)?;
 
         if specs.is_empty() {
             return Err(Error::new(ErrorKind::InvalidOperation, "at least one aggregation spec is required")

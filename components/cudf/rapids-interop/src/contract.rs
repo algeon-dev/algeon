@@ -277,6 +277,28 @@ pub enum ExportProfile {
     OwnedDeviceTransfer,
 }
 
+/// The prepared-export subset of [`ExportProfile`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PreparedExportProfile {
+    Device,
+    Host,
+}
+
+impl PreparedExportProfile {
+    pub fn diagnostics(self) -> ExportDiagnostics {
+        ExportDiagnostics::new(self.into())
+    }
+}
+
+impl From<PreparedExportProfile> for ExportProfile {
+    fn from(profile: PreparedExportProfile) -> Self {
+        match profile {
+            PreparedExportProfile::Device => ExportProfile::PreparedDeviceExport,
+            PreparedExportProfile::Host => ExportProfile::PreparedHostExport,
+        }
+    }
+}
+
 /// Minimal profile/debug metadata for an export root.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ExportDiagnostics {
@@ -290,6 +312,14 @@ impl ExportDiagnostics {
 
     pub fn profile(&self) -> ExportProfile {
         self.profile
+    }
+
+    pub fn prepared_profile(&self) -> Option<PreparedExportProfile> {
+        match self.profile {
+            ExportProfile::PreparedDeviceExport => Some(PreparedExportProfile::Device),
+            ExportProfile::PreparedHostExport => Some(PreparedExportProfile::Host),
+            ExportProfile::BorrowedDeviceCompatibility | ExportProfile::OwnedDeviceTransfer => None,
+        }
     }
 }
 

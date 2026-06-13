@@ -6,7 +6,8 @@
 //!
 //! All tests require a GPU.
 use cudf::{
-    DictionaryEncodingOptions, DictionaryKeyOrder, ErrorKind, ExecutionOverrides, Series, SortOptions, TypeId,
+    ErrorKind, ExecutionOverrides, Series, SortOptions, TypeId,
+    frame::factorization::{Codebook, DictionaryEncodingOptions, DictionaryKeyOrder},
     testing::prelude::*,
 };
 
@@ -255,14 +256,14 @@ fn test_isin_strings() {
 
 #[test]
 fn test_isin_succeeds_with_mixed_domains_and_uses_source_provenance() {
+    let _event_observation = crate::common::lock_event_observation();
     let source_rt = sample_runtime();
     let values_rt = sample_runtime();
-    let s = source_rt.series("x", &[1i32, 2, 3, 4, 5]).unwrap();
-    let values = values_rt.series("vals", &[2i32, 4]).unwrap();
+    let s = source_rt.named_series("x", &[1i32, 2, 3, 4, 5]).unwrap();
+    let values = values_rt.named_series("vals", &[2i32, 4]).unwrap();
     let expected_exec_stream = s.as_column().testing_execution_domain_stream_value();
     let expected_exec_mr = s.as_column().testing_execution_domain_mr_value();
-    let expected_sync_stream = values.as_column().testing_execution_domain_stream_value();
-
+    crate::common::reset_dependency_observation();
     reset_exec_observation();
     let mask = s.isin(&values).unwrap();
 
@@ -270,7 +271,7 @@ fn test_isin_succeeds_with_mixed_domains_and_uses_source_provenance() {
     assert_eq!(mask.as_column().testing_execution_domain_mr_value(), expected_exec_mr);
     assert_eq!(last_exec_stream_value(), expected_exec_stream);
     assert_eq!(last_exec_mr_value(), expected_exec_mr);
-    assert_eq!(last_sync_stream_value(), expected_sync_stream);
+    assert_eq!(crate::common::dependency_wait_call_count_for_stream(expected_exec_stream), 1);
 
     reset_sync_observation();
     assert_eq!(mask.to_vec_strict::<bool>().unwrap(), vec![false, true, false, true, false]);
@@ -640,7 +641,7 @@ fn test_factorize_with_first_seen_ordering_preserves_row_nulls_and_excludes_null
 fn test_codebook_from_keys_rejects_duplicate_keys() {
     let keys = crate::common::series("lookup_keys", &["b", "a", "b"]).unwrap();
 
-    let err = match cudf::Codebook::from_keys(keys) {
+    let err = match Codebook::from_keys(keys) {
         Ok(_) => panic!("expected duplicate key series to be rejected"),
         Err(err) => err,
     };

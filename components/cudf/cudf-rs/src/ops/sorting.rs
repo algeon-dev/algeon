@@ -11,7 +11,7 @@
 //!
 //! let rt = Runtime::new().unwrap();
 //! let df = cudf::dataframe! {
-//!     "value" => rt.series("value", &[30i32, 10, 20]).unwrap(),
+//!     "value" => rt.series(&[30i32, 10, 20]).unwrap(),
 //! }
 //! .unwrap();
 //! let sorted = df.sort_values(["value"], SortOptions::new()).unwrap();
@@ -148,7 +148,7 @@ pub(crate) fn sort_table_impl(
         ],
     )?;
 
-    Ok(unsafe { Table::from_raw_with_domain(out, std::sync::Arc::clone(output_domain)) })
+    unsafe { Table::from_raw_with_domain(out, std::sync::Arc::clone(output_domain)) }
 }
 
 pub(crate) fn sort_by_key_impl(
@@ -215,7 +215,7 @@ pub(crate) fn sort_by_key_impl(
         ],
     )?;
 
-    Ok(unsafe { Table::from_raw_with_domain(out, std::sync::Arc::clone(output_domain)) })
+    unsafe { Table::from_raw_with_domain(out, std::sync::Arc::clone(output_domain)) }
 }
 
 /// Sort the rows of a table by all its columns.
@@ -228,8 +228,8 @@ pub fn sort(
     null_precedence: Option<&[NullOrder]>,
 ) -> Result<Table> {
     let output_domain = std::sync::Arc::clone(input.execution_domain());
-    let exec_options = output_domain.explicit_exec_options_raw();
-    sort_table_impl(input, column_order, null_precedence, false, &output_domain, exec_options.as_ref(), "sorting::sort")
+    let exec_options = output_domain.exec_options_raw();
+    sort_table_impl(input, column_order, null_precedence, false, &output_domain, Some(&exec_options), "sorting::sort")
 }
 
 /// Stable sort (preserves relative order of equal elements).
@@ -239,14 +239,14 @@ pub fn stable_sort(
     null_precedence: Option<&[NullOrder]>,
 ) -> Result<Table> {
     let output_domain = std::sync::Arc::clone(input.execution_domain());
-    let exec_options = output_domain.explicit_exec_options_raw();
+    let exec_options = output_domain.exec_options_raw();
     sort_table_impl(
         input,
         column_order,
         null_precedence,
         true,
         &output_domain,
-        exec_options.as_ref(),
+        Some(&exec_options),
         "sorting::stable_sort",
     )
 }
@@ -265,9 +265,9 @@ pub fn sort_by_key(
         "sorting::sort_by_key",
     )?;
     if !ExecutionDomain::same_provenance(keys.execution_domain(), &output_domain) {
-        keys.execution_domain().fence_stream("sorting::sort_by_key")?;
+        ExecutionDomain::insert_stream_dependency(keys.execution_domain(), &output_domain, "sorting::sort_by_key")?;
     }
-    let exec_options = output_domain.explicit_exec_options_raw();
+    let exec_options = output_domain.exec_options_raw();
     sort_by_key_impl(
         values,
         keys,
@@ -275,7 +275,7 @@ pub fn sort_by_key(
         null_precedence,
         false,
         &output_domain,
-        exec_options.as_ref(),
+        Some(&exec_options),
         "sorting::sort_by_key",
     )
 }
@@ -296,9 +296,13 @@ pub fn stable_sort_by_key(
         "sorting::stable_sort_by_key",
     )?;
     if !ExecutionDomain::same_provenance(keys.execution_domain(), &output_domain) {
-        keys.execution_domain().fence_stream("sorting::stable_sort_by_key")?;
+        ExecutionDomain::insert_stream_dependency(
+            keys.execution_domain(),
+            &output_domain,
+            "sorting::stable_sort_by_key",
+        )?;
     }
-    let exec_options = output_domain.explicit_exec_options_raw();
+    let exec_options = output_domain.exec_options_raw();
     sort_by_key_impl(
         values,
         keys,
@@ -306,7 +310,7 @@ pub fn stable_sort_by_key(
         null_precedence,
         true,
         &output_domain,
-        exec_options.as_ref(),
+        Some(&exec_options),
         "sorting::stable_sort_by_key",
     )
 }
@@ -320,7 +324,7 @@ pub fn sorted_order(
     null_precedence: Option<&[NullOrder]>,
 ) -> Result<Column> {
     let output_domain = std::sync::Arc::clone(input.execution_domain());
-    let exec_options = output_domain.explicit_exec_options_raw();
+    let exec_options = output_domain.exec_options_raw();
     let num_keys = input.num_columns()?;
     validate_sort_params("sorting::sorted_order", num_keys, column_order, null_precedence)?;
     let num_keys_i32 = checked_num_keys("sorting::sorted_order", num_keys)?;
@@ -328,16 +332,7 @@ pub fn sorted_order(
     let mut out = ptr::null_mut();
     error::check_status_in_with(
         // SAFETY: input handle is valid. co/np are either null or valid slices of num_keys elements.
-        unsafe {
-            cudf_sys::cudf_sorted_order_ex(
-                input.raw_handle(),
-                co,
-                np,
-                num_keys_i32,
-                &mut out,
-                exec_options.as_ref().expect("execution domain is always explicit"),
-            )
-        },
+        unsafe { cudf_sys::cudf_sorted_order_ex(input.raw_handle(), co, np, num_keys_i32, &mut out, &exec_options) },
         "sorting::sorted_order",
         [
             ("num_keys", num_keys.to_string()),
@@ -347,7 +342,7 @@ pub fn sorted_order(
         ],
     )?;
     // SAFETY: out was returned by a successful FFI call.
-    Ok(unsafe { Column::from_raw_with_domain(out, output_domain) })
+    unsafe { Column::from_raw_with_domain(out, output_domain) }
 }
 
 /// Check whether the table is already sorted according to the given order.

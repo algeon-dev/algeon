@@ -273,8 +273,8 @@ fn scoped_groupby_handle_is_reusable() {
     let rt = Runtime::builder().build().unwrap();
     let df = DataFrame::from_columns(
         ::std::iter::IntoIterator::into_iter([
-            rt.series("key", &[1i32, 2, 1, 2]).unwrap(),
-            rt.series("value", &[10i64, 20, 30, 40]).unwrap(),
+            rt.named_series("key", &[1i32, 2, 1, 2]).unwrap(),
+            rt.named_series("value", &[10i64, 20, 30, 40]).unwrap(),
         ])
         .map(|series| {
             let name = series.name().expect("explicit test migration requires named Series inputs").to_string();

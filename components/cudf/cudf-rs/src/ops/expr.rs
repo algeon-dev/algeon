@@ -29,8 +29,8 @@
 //! };
 //!
 //! let rt = Runtime::new().unwrap();
-//! let x = rt.series("x", &[1i32, 2, 3]).unwrap();
-//! let y = rt.series("y", &[10i32, 20, 30]).unwrap();
+//! let x = rt.series(&[1i32, 2, 3]).unwrap();
+//! let y = rt.series(&[10i32, 20, 30]).unwrap();
 //! let df = DataFrame::from_columns([("x", x), ("y", y)]).unwrap();
 //!
 //! let df2 = df

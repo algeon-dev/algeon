@@ -1,14 +1,16 @@
 use std::collections::HashMap;
 
 use cudf::{
-    DataFrame, JsonReadOptions, Runtime, Series, TypeId,
+    DataFrame, Runtime, Series, TypeId,
     core::{Column, Table},
+    frame::dataframe::JsonReadOptions,
     ops::dictionary,
     testing::prelude::*,
 };
 use rapids_interop::{
     BufferBinding, ColumnLayout, ExportDiagnostics, ExportProfile, InteropError, InteropErrorKind, OwnedTableTransfer,
-    PhysicalValidity, PreparedColumnExport, ProducerReadiness, SchemaNullability, SemanticColumn, SemanticTable,
+    PhysicalValidity, PreparedColumnExport, PreparedTableExport, ProducerReadiness, SchemaNullability, SemanticColumn,
+    SemanticTable,
 };
 use tempfile::TempDir;
 
@@ -293,8 +295,8 @@ fn assert_two_numeric_columns_table(table: &Table) {
 }
 
 fn named_numeric_frame(runtime: &Runtime) -> DataFrame {
-    let ids = runtime.series("id", &[1i32, 2, 3]).unwrap();
-    let values = runtime.series("value", &[10i64, 20, 30]).unwrap();
+    let ids = runtime.named_series("id", &[1i32, 2, 3]).unwrap();
+    let values = runtime.named_series("value", &[10i64, 20, 30]).unwrap();
     DataFrame::from_columns(::std::iter::IntoIterator::into_iter([ids, values]).map(|series| {
         let name = series.name().expect("explicit test migration requires named Series inputs").to_string();
         (name, series)
@@ -878,6 +880,55 @@ mod dataframe_import_contracts {
 
 mod error_mapping_contracts {
     use super::*;
+
+    #[test]
+    fn prepared_column_export_constructor_rejects_non_prepared_profiles() {
+        let runtime = Runtime::builder().build().unwrap();
+        let source = runtime.column_from_slice(&[1i32, 2, 3]).unwrap();
+        let device_export = source.try_prepare_device_column_export().unwrap();
+
+        for (profile, expected_profile_name) in [
+            (ExportProfile::BorrowedDeviceCompatibility, "borrowed_device_compatibility"),
+            (ExportProfile::OwnedDeviceTransfer, "owned_device_transfer"),
+        ] {
+            let err = PreparedColumnExport::try_new_with_semantic_columns(
+                device_export.column().clone(),
+                device_export.semantic_columns().to_vec(),
+                device_export.bindings().to_vec(),
+                ProducerReadiness::HostVisible,
+                ExportDiagnostics::new(profile),
+            )
+            .unwrap_err();
+
+            assert_eq!(err.kind(), InteropErrorKind::ProfileUnsupported);
+            assert_eq!(interop_error_context_value(&err, "profile"), Some(expected_profile_name));
+        }
+    }
+
+    #[test]
+    fn prepared_table_export_constructor_rejects_non_prepared_profiles() {
+        let runtime = Runtime::builder().build().unwrap();
+        let frame = named_numeric_frame(&runtime);
+        let device_export = frame.try_prepare_device_table_export().unwrap();
+
+        for (profile, expected_profile_name) in [
+            (ExportProfile::BorrowedDeviceCompatibility, "borrowed_device_compatibility"),
+            (ExportProfile::OwnedDeviceTransfer, "owned_device_transfer"),
+        ] {
+            let err = PreparedTableExport::try_new_with_semantic_columns(
+                device_export.table().clone(),
+                device_export.columns().to_vec(),
+                device_export.semantic_columns().to_vec(),
+                device_export.bindings().to_vec(),
+                ProducerReadiness::HostVisible,
+                ExportDiagnostics::new(profile),
+            )
+            .unwrap_err();
+
+            assert_eq!(err.kind(), InteropErrorKind::ProfileUnsupported);
+            assert_eq!(interop_error_context_value(&err, "profile"), Some(expected_profile_name));
+        }
+    }
 
     #[test]
     fn prepared_host_column_export_constructor_rejects_device_bindings() {

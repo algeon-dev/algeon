@@ -1,6 +1,6 @@
 use crate::{
-    BorrowedColumnView, BorrowedTableView, ExportProfile, OwnedColumnTransfer, OwnedTableTransfer,
-    PartitionedOwnedTableTransfer, PartitionedPreparedTableExport, PreparedColumnExport, PreparedTableExport, Result,
+    BorrowedColumnView, BorrowedTableView, OwnedColumnTransfer, OwnedTableTransfer, PartitionedOwnedTableTransfer,
+    PartitionedPreparedTableExport, PreparedColumnExport, PreparedExportProfile, PreparedTableExport, Result,
     validation::prepared_profile_error,
 };
 
@@ -109,7 +109,7 @@ impl<'a> TryPrepareDevicePartitionedTableExport for PartitionedPreparedTableExpo
 
 impl TryPrepareHostColumnExport for PreparedColumnExport<'static> {
     fn try_prepare_host_column_export(&self) -> Result<PreparedColumnExport<'static>> {
-        if self.diagnostics().profile() != ExportProfile::PreparedHostExport {
+        if self.profile() != PreparedExportProfile::Host {
             return Err(prepared_profile_error(
                 self.diagnostics().profile(),
                 "prepared host export adapter requires prepared host export diagnostics",
@@ -121,7 +121,7 @@ impl TryPrepareHostColumnExport for PreparedColumnExport<'static> {
 
 impl TryPrepareHostTableExport for PreparedTableExport<'static> {
     fn try_prepare_host_table_export(&self) -> Result<PreparedTableExport<'static>> {
-        if self.diagnostics().profile() != ExportProfile::PreparedHostExport {
+        if self.profile() != PreparedExportProfile::Host {
             return Err(prepared_profile_error(
                 self.diagnostics().profile(),
                 "prepared host export adapter requires prepared host export diagnostics",

@@ -122,7 +122,7 @@ pub(crate) fn unary_operation_impl(
         ],
     )?;
     // SAFETY: out was returned by a successful FFI call, transferring ownership.
-    Ok(unsafe { Column::from_raw_with_domain(out, std::sync::Arc::clone(output_domain)) })
+    unsafe { Column::from_raw_with_domain(out, std::sync::Arc::clone(output_domain)) }
 }
 
 /// Return a boolean column with each element logically negated.
@@ -156,7 +156,7 @@ pub(crate) fn is_null_impl(
         [("execution_context_provided", exec_options.is_some().to_string())],
     )?;
     // SAFETY: out was returned by a successful FFI call, transferring ownership.
-    Ok(unsafe { Column::from_raw_with_domain(out, std::sync::Arc::clone(output_domain)) })
+    unsafe { Column::from_raw_with_domain(out, std::sync::Arc::clone(output_domain)) }
 }
 
 /// Return a boolean column: `true` where elements are valid (non-null).
@@ -183,7 +183,7 @@ pub(crate) fn is_valid_impl(
         [("execution_context_provided", exec_options.is_some().to_string())],
     )?;
     // SAFETY: out was returned by a successful FFI call, transferring ownership.
-    Ok(unsafe { Column::from_raw_with_domain(out, std::sync::Arc::clone(output_domain)) })
+    unsafe { Column::from_raw_with_domain(out, std::sync::Arc::clone(output_domain)) }
 }
 
 /// Cast a column to the specified data type.
@@ -219,7 +219,7 @@ pub(crate) fn cast_impl(
         ],
     )?;
     // SAFETY: out was returned by a successful FFI call, transferring ownership.
-    Ok(unsafe { Column::from_raw_with_domain(out, std::sync::Arc::clone(output_domain)) })
+    unsafe { Column::from_raw_with_domain(out, std::sync::Arc::clone(output_domain)) }
 }
 
 /// Check whether a cast between two data types is supported.
@@ -270,7 +270,7 @@ pub(crate) fn is_nan_impl(
         [("execution_context_provided", exec_options.is_some().to_string())],
     )?;
     // SAFETY: out was returned by a successful FFI call, transferring ownership.
-    Ok(unsafe { Column::from_raw_with_domain(out, std::sync::Arc::clone(output_domain)) })
+    unsafe { Column::from_raw_with_domain(out, std::sync::Arc::clone(output_domain)) }
 }
 
 /// Return a boolean column: `true` where elements are not NaN.
@@ -297,5 +297,5 @@ pub(crate) fn is_not_nan_impl(
         [("execution_context_provided", exec_options.is_some().to_string())],
     )?;
     // SAFETY: out was returned by a successful FFI call, transferring ownership.
-    Ok(unsafe { Column::from_raw_with_domain(out, std::sync::Arc::clone(output_domain)) })
+    unsafe { Column::from_raw_with_domain(out, std::sync::Arc::clone(output_domain)) }
 }

@@ -4,6 +4,7 @@
 //! are intentionally narrower than the v1 "execution identity" model:
 //!
 //! - it records retained provenance for later host-visible synchronization
+//!   and device-side cross-stream dependencies
 //! - it supplies default stream / MR handles when no explicit operation context
 //!   is provided
 //! - it does not decide whether mixed-input operations are legal
@@ -23,9 +24,9 @@ use std::{
     },
 };
 
-use super::{device::DeviceId, stream::CudaStream};
+use super::{device::DeviceId, device_guard::DeviceGuard, event::CudaEvent, stream::CudaStream};
 use crate::core::{
-    error::{Error, ErrorKind, Result},
+    error::{self, Error, ErrorKind, Result},
     memory::DeviceMemoryResource,
 };
 
@@ -71,7 +72,13 @@ impl ExecutionDomain {
 
     pub(crate) fn debug_explicit(identity: u64) -> Result<Arc<Self>> {
         let cache = DEBUG_EXPLICIT_DOMAINS.get_or_init(|| Mutex::new(HashMap::new()));
-        let mut cache = cache.lock().expect("debug explicit retained-provenance cache poisoned");
+        let mut cache = cache.lock().map_err(|_| {
+            error::invariant_violation(
+                "execution_domain::debug_explicit",
+                "debug explicit retained-provenance cache poisoned",
+            )
+            .with_context("identity", identity.to_string())
+        })?;
         if let Some(domain) = cache.get(&identity) {
             return Ok(Arc::clone(domain));
         }
@@ -104,8 +111,8 @@ impl ExecutionDomain {
         self.mr.__debug_raw_handle_value()
     }
 
-    pub(crate) fn device(&self) -> Option<DeviceId> {
-        Some(self.device)
+    pub(crate) fn device_id(&self) -> DeviceId {
+        self.device
     }
 
     pub(crate) fn device_snapshot(&self) -> i32 {
@@ -120,44 +127,71 @@ impl ExecutionDomain {
     ///
     /// Use this before copying device data to the host (e.g. `to_host()`,
     /// `Scalar::value()`). For cross-stream device-to-device ordering between
-    /// operations, prefer [`fence_stream`](Self::fence_stream).
+    /// operations, use [`insert_stream_dependency`](Self::insert_stream_dependency).
     pub(crate) fn synchronize_for_host_visibility(&self, operation: &'static str) -> Result<()> {
-        self.fence_stream(operation)
-    }
-
-    /// Fence this domain's stream to establish device-side ordering.
-    ///
-    /// When a secondary input's retained provenance differs from the output
-    /// domain, the secondary stream must be fenced before the operation reads
-    /// its data on the output stream. This method performs a **host fence**
-    /// (`cudaStreamSynchronize`).
-    ///
-    /// A future version may replace the host fence with a lighter-weight CUDA
-    /// event barrier (`cudaEventRecord` + `cudaStreamWaitEvent`) that avoids
-    /// blocking the CPU thread.
-    pub(crate) fn fence_stream(&self, operation: &'static str) -> Result<()> {
         self.stream
             .synchronize()
             .map_err(|e| e.with_operation(operation).with_context("sync_stream", self.debug_label()))
     }
 
+    /// Insert a device-side ordering dependency from `source` into `target`.
+    ///
+    /// This records a CUDA event on the source stream, then inserts a
+    /// `cudaStreamWaitEvent` on the target stream. It does not block the
+    /// calling CPU thread.
+    pub(crate) fn insert_stream_dependency(
+        source: &Arc<Self>,
+        target: &Arc<Self>,
+        operation: &'static str,
+    ) -> Result<()> {
+        Self::require_same_device_for_mixed_inputs(source, target, operation)?;
+        if Self::same_provenance(source, target) {
+            return Ok(());
+        }
+
+        let _guard = DeviceGuard::new(source.device).map_err(|e| {
+            e.with_operation(operation)
+                .with_context("source_domain", source.debug_label())
+                .with_context("target_domain", target.debug_label())
+        })?;
+        let barrier = CudaEvent::new().map_err(|e| {
+            e.with_operation(operation)
+                .with_context("source_domain", source.debug_label())
+                .with_context("target_domain", target.debug_label())
+        })?;
+        barrier.record(source.stream.as_ref()).map_err(|e| {
+            e.with_operation(operation)
+                .with_context("source_domain", source.debug_label())
+                .with_context("target_domain", target.debug_label())
+        })?;
+        target.stream.wait_event(&barrier).map_err(|e| {
+            e.with_operation(operation)
+                .with_context("source_domain", source.debug_label())
+                .with_context("target_domain", target.debug_label())
+        })
+    }
+
     pub(crate) fn explicit_exec_options_raw(&self) -> Option<cudf_sys::cudf_exec_options_t> {
-        Some(cudf_sys::cudf_exec_options_t {
+        Some(self.exec_options_raw())
+    }
+
+    pub(crate) fn exec_options_raw(&self) -> cudf_sys::cudf_exec_options_t {
+        cudf_sys::cudf_exec_options_t {
             struct_size: std::mem::size_of::<cudf_sys::cudf_exec_options_t>(),
             device: self.device.ordinal_raw(),
             flags: cudf_sys::CUDF_EXEC_FLAG_DEVICE_EXPLICIT,
             stream: self.stream.as_raw() as *mut c_void,
             mr: self.mr.as_raw() as *mut c_void,
             reserved: [0; cudf_sys::CUDF_EXEC_OPTIONS_RESERVED_SLOTS],
-        })
+        }
     }
 
-    pub(crate) fn explicit_stream(&self) -> Option<&CudaStream> {
-        Some(self.stream.as_ref())
+    pub(crate) fn stream(&self) -> &CudaStream {
+        self.stream.as_ref()
     }
 
-    pub(crate) fn explicit_memory_resource(&self) -> Option<&DeviceMemoryResource> {
-        Some(self.mr.as_ref())
+    pub(crate) fn memory_resource(&self) -> &DeviceMemoryResource {
+        self.mr.as_ref()
     }
 
     pub(crate) fn resolve_with_borrowed_override(
@@ -227,18 +261,6 @@ impl ExecutionDomain {
             "remedy",
             "use copy_into_runtime(...) to relocate all inputs into one Runtime before calling this operation",
         ))
-    }
-
-    pub(crate) fn require_same_device_and_fence_secondary(
-        primary: &Arc<Self>,
-        secondary: &Arc<Self>,
-        operation: &'static str,
-    ) -> Result<()> {
-        Self::require_same_device_for_mixed_inputs(primary, secondary, operation)?;
-        if !Self::same_provenance(primary, secondary) {
-            secondary.fence_stream(operation)?;
-        }
-        Ok(())
     }
 
     pub(crate) fn require_same_provenance(

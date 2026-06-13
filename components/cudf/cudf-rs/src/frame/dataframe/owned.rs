@@ -90,7 +90,12 @@ where I: IntoIterator<Item = (String, Arc<Column>)> {
     validate_no_duplicate_names(&names, operation)?;
 
     let mut named_columns = named_columns.into_iter();
-    let (first_name, first_column) = named_columns.next().expect("non-empty: checked above");
+    let (first_name, first_column) = named_columns.next().ok_or_else(|| {
+        crate::core::error::invariant_violation(
+            operation,
+            "non-empty dataframe construction unexpectedly lost its first column",
+        )
+    })?;
     let first_rows = named_column_len(&first_name, &first_column, operation)?;
 
     let mut columns: FastIndexMap<String, Arc<Column>> = fast_index_map_with_capacity(names.len());
@@ -288,6 +293,42 @@ impl DataFrame {
         dataframe_from_named_column_arcs(named_columns, "dataframe::from_columns")
     }
 
+    /// Create a `DataFrame` by promoting `Series.name()` into schema exactly
+    /// once.
+    ///
+    /// This is the convenience path for callers that already hold named
+    /// `Series` values and want to promote that metadata into an authoritative
+    /// DataFrame schema. Every input series must be named.
+    ///
+    /// GPU data is shared via `Arc` — no device copy.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - Any input `Series` is unnamed
+    /// - Any promoted name is duplicated
+    /// - Columns have different row counts
+    pub fn from_series<I>(series: I) -> Result<Self>
+    where I: IntoIterator<Item = Series> {
+        let iter = series.into_iter();
+        let (lower, _) = iter.size_hint();
+        let mut named_columns = Vec::with_capacity(lower);
+
+        for (index, series) in iter.enumerate() {
+            let Some(name) = series.name() else {
+                return Err(Error::new(
+                    ErrorKind::InvalidArgument,
+                    "DataFrame::from_series requires named Series because it derives schema from them",
+                )
+                .with_operation("dataframe::from_series")
+                .with_context("series_index", index.to_string()));
+            };
+            named_columns.push((name.to_string(), Arc::clone(series.column_arc())));
+        }
+
+        dataframe_from_named_column_arcs(named_columns, "dataframe::from_series")
+    }
+
     /// Construct a `DataFrame` directly from pre-validated parts.
     ///
     /// This skips all validation (duplicate names, row-count consistency)
@@ -456,8 +497,7 @@ impl DataFrame {
             return Ok(self.columns.clone());
         }
 
-        self.domain
-            .fence_stream(operation)
+        ExecutionDomain::insert_stream_dependency(&self.domain, output_domain, operation)
             .map_err(|e| e.with_context("target_domain", output_domain.debug_label()))?;
 
         let mut copied: FastIndexMap<String, Arc<Column>> = fast_index_map_with_capacity(self.columns.len());
@@ -506,8 +546,8 @@ impl DataFrame {
     /// ```no_run
     /// # use cudf::{GroupByAgg, AggSpec, DataFrame, Runtime};
     /// # let rt = Runtime::new().unwrap();
-    /// # let keys = rt.series("key", &[1i32, 2]).unwrap();
-    /// # let vals = rt.series("val", &[10i64, 20]).unwrap();
+    /// # let keys = rt.series(&[1i32, 2]).unwrap();
+    /// # let vals = rt.series(&[10i64, 20]).unwrap();
     /// # let df = DataFrame::from_columns([("key", keys), ("val", vals)]).unwrap();
     /// let result =
     ///     df.groupby(&["key"]).agg(&[AggSpec::new("val", GroupByAgg::Sum)]).unwrap();
@@ -533,8 +573,8 @@ impl DataFrame {
 /// use cudf::Runtime;
 ///
 /// let rt = Runtime::new().unwrap();
-/// let x = rt.series("source_x", &[1i32, 2, 3]).unwrap();
-/// let y = rt.series("source_y", &[10.0f64, 20.0, 30.0]).unwrap();
+/// let x = rt.series(&[1i32, 2, 3]).unwrap();
+/// let y = rt.series(&[10.0f64, 20.0, 30.0]).unwrap();
 /// let df = cudf::dataframe! { "x" => x, "y" => y }.unwrap();
 /// ```
 ///

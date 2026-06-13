@@ -99,13 +99,12 @@ fn test_contains_float64() {
 
 #[test]
 fn test_contains_succeeds_with_mixed_domains_and_uses_haystack_provenance() {
+    let _event_observation = crate::common::lock_event_observation();
     let haystack = explicit_i32_column(&[10, 20, 30, 40], 910);
     let needles = explicit_i32_column(&[20, 50, 10], 911);
     let expected_stream = haystack.testing_execution_domain_stream_value();
     let expected_mr = haystack.testing_execution_domain_mr_value();
-    let expected_sync_stream = needles.testing_execution_domain_stream_value();
-
-    reset_sync_observation();
+    crate::common::reset_dependency_observation();
     reset_exec_observation();
     let result = search::contains(&haystack.testing_view().unwrap(), &needles.testing_view().unwrap()).unwrap();
 
@@ -113,7 +112,7 @@ fn test_contains_succeeds_with_mixed_domains_and_uses_haystack_provenance() {
     assert_eq!(result.testing_execution_domain_mr_value(), expected_mr);
     assert_eq!(last_exec_stream_value(), expected_stream);
     assert_eq!(last_exec_mr_value(), expected_mr);
-    assert_eq!(last_sync_stream_value(), expected_sync_stream);
+    assert_eq!(crate::common::dependency_wait_call_count_for_stream(expected_stream), 1);
 
     reset_sync_observation();
     assert_eq!(result.testing_view().unwrap().to_vec::<bool>().unwrap(), vec![true, false, true]);
@@ -139,12 +138,12 @@ fn test_isin_i32_some_matches() {
 
 #[test]
 fn test_isin_succeeds_with_mixed_domains() {
+    let _event_observation = crate::common::lock_event_observation();
     let col = explicit_i32_column(&[1, 2, 3, 4, 5], 912);
     let values = explicit_i32_column(&[2, 4], 913);
     let expected_exec_stream = col.testing_execution_domain_stream_value();
     let expected_exec_mr = col.testing_execution_domain_mr_value();
-    let expected_sync_stream = values.testing_execution_domain_stream_value();
-
+    crate::common::reset_dependency_observation();
     reset_exec_observation();
     let cv = col.testing_view().unwrap();
     let vv = values.testing_view().unwrap();
@@ -154,7 +153,7 @@ fn test_isin_succeeds_with_mixed_domains() {
     assert_eq!(mask.testing_execution_domain_mr_value(), expected_exec_mr);
     assert_eq!(last_exec_stream_value(), expected_exec_stream);
     assert_eq!(last_exec_mr_value(), expected_exec_mr);
-    assert_eq!(last_sync_stream_value(), expected_sync_stream);
+    assert_eq!(crate::common::dependency_wait_call_count_for_stream(expected_exec_stream), 1);
 
     reset_sync_observation();
     let mv = mask.testing_view().unwrap();

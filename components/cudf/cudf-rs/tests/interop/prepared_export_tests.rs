@@ -10,7 +10,8 @@ use std::sync::{
 };
 
 use cudf::{
-    DataFrame, DeviceId, JsonReadOptions, Runtime, TypeId,
+    DataFrame, DeviceId, Runtime, TypeId,
+    frame::dataframe::JsonReadOptions,
     interop::cuda_explicit_completion_required_lease_backend,
     ops::dictionary,
     runtime::{CudaEvent, CudaStream},
@@ -213,7 +214,7 @@ mod lease_contracts {
     fn shared_synchronous_completion_falls_back_by_return() {
         let _observation_lock = lock_event_observation();
         let runtime = Runtime::builder().build().unwrap();
-        let series = runtime.series("id", &[1i32, 2, 3]).unwrap();
+        let series = runtime.named_series("id", &[1i32, 2, 3]).unwrap();
 
         let export = series.try_prepare_device_column_export().unwrap();
         let lease = export
@@ -228,7 +229,7 @@ mod lease_contracts {
         let _observation_lock = lock_event_observation();
         reset_event_observation();
         let producer_runtime = Runtime::builder().build().unwrap();
-        let series = producer_runtime.series("id", &[1i32, 2, 3]).unwrap();
+        let series = producer_runtime.named_series("id", &[1i32, 2, 3]).unwrap();
         let export = series.try_prepare_device_column_export().unwrap();
         let producer_event = CudaEvent::new().unwrap();
         let device_count = DeviceId::count().unwrap();
@@ -272,8 +273,8 @@ mod lease_contracts {
         let _observation_lock = lock_event_observation();
         let producer_stream = CudaStream::new().unwrap();
         let producer_runtime = Runtime::builder().with_stream(producer_stream.clone()).build().unwrap();
-        let ids = producer_runtime.series("id", &[1i32, 2, 3]).unwrap();
-        let vals = producer_runtime.series("value", &[10i64, 20, 30]).unwrap();
+        let ids = producer_runtime.named_series("id", &[1i32, 2, 3]).unwrap();
+        let vals = producer_runtime.named_series("value", &[10i64, 20, 30]).unwrap();
         let frame = DataFrame::from_columns(::std::iter::IntoIterator::into_iter([ids, vals]).map(|series| {
             let name = series.name().expect("explicit test migration requires named Series inputs").to_string();
             (name, series)
@@ -313,7 +314,7 @@ mod lease_contracts {
         let _observation_lock = lock_event_observation();
         let producer_stream = CudaStream::new().unwrap();
         let producer_runtime = Runtime::builder().with_stream(producer_stream.clone()).build().unwrap();
-        let series = producer_runtime.series("id", &[1i32, 2, 3]).unwrap();
+        let series = producer_runtime.named_series("id", &[1i32, 2, 3]).unwrap();
         let producer_ready = CudaEvent::new().unwrap();
         producer_ready.record(&producer_stream).unwrap();
         let export = series.try_prepare_device_column_export_with_event(&producer_ready).unwrap();
@@ -359,7 +360,7 @@ mod lease_contracts {
     fn guaranteed_fallback_shared_drop_synchronizes_consumer_stream() {
         let _observation_lock = lock_event_observation();
         let producer_runtime = Runtime::builder().build().unwrap();
-        let series = producer_runtime.series("id", &[1i32, 2, 3]).unwrap();
+        let series = producer_runtime.named_series("id", &[1i32, 2, 3]).unwrap();
         let export = series.try_prepare_device_column_export().unwrap();
         assert_eq!(export.incomplete_drop_behavior(), IncompleteDropBehavior::GuaranteedFallback);
 
@@ -369,7 +370,7 @@ mod lease_contracts {
             .with_stream(consumer_stream.clone())
             .build()
             .unwrap();
-        let _consumer_work = consumer_runtime.series("tmp", &[10i32, 20, 30]).unwrap();
+        let _consumer_work = consumer_runtime.named_series("tmp", &[10i32, 20, 30]).unwrap();
         let consumer_done = CudaEvent::new().unwrap();
 
         {
@@ -390,7 +391,7 @@ mod lease_contracts {
     fn device_event_readiness_must_match_the_producer_device() {
         let _observation_lock = lock_event_observation();
         let producer_runtime = Runtime::builder().build().unwrap();
-        let series = producer_runtime.series("id", &[1i32, 2, 3]).unwrap();
+        let series = producer_runtime.named_series("id", &[1i32, 2, 3]).unwrap();
         let producer_ready = CudaEvent::new().unwrap();
         producer_ready.record(producer_runtime.stream()).unwrap();
 
@@ -410,7 +411,7 @@ mod lease_contracts {
         let (device0, device1) = first_two_test_devices();
         common::set_current_device(device0);
         let producer_runtime = Runtime::builder().with_device(device0).build().unwrap();
-        let series = producer_runtime.series("id", &[1i32, 2, 3]).unwrap();
+        let series = producer_runtime.named_series("id", &[1i32, 2, 3]).unwrap();
 
         common::set_current_device(device1);
         let wrong_device_event = CudaEvent::new().unwrap();
@@ -426,7 +427,7 @@ mod lease_contracts {
     fn explicit_shared_backend_requires_explicit_completion_and_releases_guard_on_drop() {
         let _observation_lock = lock_event_observation();
         let producer_runtime = Runtime::builder().build().unwrap();
-        let series = producer_runtime.series("id", &[1i32, 2, 3]).unwrap();
+        let series = producer_runtime.named_series("id", &[1i32, 2, 3]).unwrap();
         let export = series
             .try_prepare_device_column_export()
             .unwrap()
@@ -464,7 +465,7 @@ mod lease_contracts {
     fn runtime_stream_lease_records_one_completion_event_and_returns_witness() {
         let _observation_lock = lock_event_observation();
         let producer_runtime = Runtime::builder().build().unwrap();
-        let series = producer_runtime.series("id", &[1i32, 2, 3]).unwrap();
+        let series = producer_runtime.named_series("id", &[1i32, 2, 3]).unwrap();
         let export = series.try_prepare_device_column_export().unwrap();
 
         let consumer_stream = CudaStream::new().unwrap();
@@ -523,7 +524,7 @@ mod lease_contracts {
         }
 
         let producer_runtime = Runtime::builder().build().unwrap();
-        let series = producer_runtime.series("id", &[1i32, 2, 3]).unwrap();
+        let series = producer_runtime.named_series("id", &[1i32, 2, 3]).unwrap();
         let complete_calls = Arc::new(AtomicUsize::new(0));
         let export = series
             .try_prepare_device_column_export()
@@ -552,8 +553,8 @@ mod lease_contracts {
     fn runtime_explicit_backend_drop_does_not_synchronize_and_releases_guard() {
         let _observation_lock = lock_event_observation();
         let producer_runtime = Runtime::builder().build().unwrap();
-        let ids = producer_runtime.series("id", &[1i32, 2, 3]).unwrap();
-        let vals = producer_runtime.series("value", &[10i64, 20, 30]).unwrap();
+        let ids = producer_runtime.named_series("id", &[1i32, 2, 3]).unwrap();
+        let vals = producer_runtime.named_series("value", &[10i64, 20, 30]).unwrap();
         let frame = DataFrame::from_columns(::std::iter::IntoIterator::into_iter([ids, vals]).map(|series| {
             let name = series.name().expect("explicit test migration requires named Series inputs").to_string();
             (name, series)
@@ -600,7 +601,7 @@ mod lease_contracts {
     fn shared_leases_can_overlap_and_reacquire_one_export_root() {
         let _observation_lock = lock_event_observation();
         let producer_runtime = Runtime::builder().build().unwrap();
-        let series = producer_runtime.series("id", &[1i32, 2, 3]).unwrap();
+        let series = producer_runtime.named_series("id", &[1i32, 2, 3]).unwrap();
         let export = series.try_prepare_device_column_export().unwrap();
 
         let consumer_stream = CudaStream::new().unwrap();
@@ -650,8 +651,8 @@ mod lease_contracts {
         let (device0, device1) = first_two_test_devices();
         common::set_current_device(device0);
         let producer_runtime = Runtime::builder().with_device(device0).build().unwrap();
-        let ids = producer_runtime.series("id", &[1i32, 2, 3]).unwrap();
-        let vals = producer_runtime.series("value", &[10i64, 20, 30]).unwrap();
+        let ids = producer_runtime.named_series("id", &[1i32, 2, 3]).unwrap();
+        let vals = producer_runtime.named_series("value", &[10i64, 20, 30]).unwrap();
         let frame = DataFrame::from_columns(::std::iter::IntoIterator::into_iter([ids, vals]).map(|series| {
             let name = series.name().expect("explicit test migration requires named Series inputs").to_string();
             (name, series)
@@ -666,7 +667,7 @@ mod lease_contracts {
         let consumer_stream = CudaStream::new().unwrap();
         let consumer_runtime =
             Runtime::builder().with_device(device1).with_stream(consumer_stream.clone()).build().unwrap();
-        let _consumer_work = consumer_runtime.series("tmp", &[7i32, 8, 9]).unwrap();
+        let _consumer_work = consumer_runtime.named_series("tmp", &[7i32, 8, 9]).unwrap();
         let consumer_event = CudaEvent::new().unwrap();
         consumer_event.record(&consumer_stream).unwrap();
         let consumer_stream_raw = consumer_stream.testing_raw_handle_value();
@@ -703,8 +704,8 @@ mod lease_contracts {
         let (device0, device1) = first_two_test_devices();
         common::set_current_device(device0);
         let producer_runtime = Runtime::builder().with_device(device0).build().unwrap();
-        let ids = producer_runtime.series("id", &[1i32, 2, 3]).unwrap();
-        let vals = producer_runtime.series("value", &[10i64, 20, 30]).unwrap();
+        let ids = producer_runtime.named_series("id", &[1i32, 2, 3]).unwrap();
+        let vals = producer_runtime.named_series("value", &[10i64, 20, 30]).unwrap();
         let frame = DataFrame::from_columns(::std::iter::IntoIterator::into_iter([ids, vals]).map(|series| {
             let name = series.name().expect("explicit test migration requires named Series inputs").to_string();
             (name, series)
@@ -719,7 +720,7 @@ mod lease_contracts {
         let consumer_stream = CudaStream::new().unwrap();
         let consumer_runtime =
             Runtime::builder().with_device(device1).with_stream(consumer_stream.clone()).build().unwrap();
-        let _consumer_work = consumer_runtime.series("tmp", &[7i32, 8, 9]).unwrap();
+        let _consumer_work = consumer_runtime.named_series("tmp", &[7i32, 8, 9]).unwrap();
         let consumer_event = CudaEvent::new().unwrap();
         consumer_event.record(&consumer_stream).unwrap();
         let consumer_stream_raw = consumer_stream.testing_raw_handle_value();
@@ -845,8 +846,8 @@ mod device_export_contracts {
     #[test]
     fn device_table_export_preserves_names_nullability_readiness_and_low_level_equivalence() {
         let runtime = Runtime::builder().build().unwrap();
-        let ids = runtime.series("id", &[1i32, 2, 3]).unwrap();
-        let vals = runtime.nullable_series("value", &[10i64, 0, 30], &[true, false, true]).unwrap();
+        let ids = runtime.named_series("id", &[1i32, 2, 3]).unwrap();
+        let vals = runtime.named_nullable_series("value", &[10i64, 0, 30], &[true, false, true]).unwrap();
         let frame = DataFrame::from_columns(::std::iter::IntoIterator::into_iter([ids, vals]).map(|series| {
             let name = series.name().expect("explicit test migration requires named Series inputs").to_string();
             (name, series)
@@ -1041,8 +1042,8 @@ mod host_export_contracts {
     #[test]
     fn host_table_export_is_host_visible_and_rejects_cuda_completion() {
         let runtime = Runtime::builder().build().unwrap();
-        let ids = runtime.series("id", &[1i32, 2, 3]).unwrap();
-        let vals = runtime.nullable_series("value", &[10i64, 0, 30], &[true, false, true]).unwrap();
+        let ids = runtime.named_series("id", &[1i32, 2, 3]).unwrap();
+        let vals = runtime.named_nullable_series("value", &[10i64, 0, 30], &[true, false, true]).unwrap();
         let frame = DataFrame::from_columns(::std::iter::IntoIterator::into_iter([ids, vals]).map(|series| {
             let name = series.name().expect("explicit test migration requires named Series inputs").to_string();
             (name, series)
@@ -1092,7 +1093,7 @@ mod host_export_contracts {
         assert_host_binding_bytes(sliced_export.bindings(), *data, b"onetwo".to_vec());
 
         let nullable = runtime
-            .nullable_series("name", &["alice", "placeholder", "bob", "unused"], &[true, false, true, false])
+            .named_nullable_series("name", &["alice", "placeholder", "bob", "unused"], &[true, false, true, false])
             .unwrap();
         let nullable_export = nullable.try_prepare_host_column_export().unwrap();
         let mask = match nullable_export.column().validity() {

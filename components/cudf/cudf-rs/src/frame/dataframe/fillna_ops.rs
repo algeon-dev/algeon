@@ -238,7 +238,7 @@ impl DataFrame {
         let fill_cv = fill_series.view()?;
         ExecutionDomain::require_same_device_for_mixed_inputs(&output_domain, fill_cv.execution_domain(), operation)?;
         if !ExecutionDomain::same_provenance(fill_cv.execution_domain(), &output_domain) {
-            fill_cv.execution_domain().fence_stream(operation)?;
+            ExecutionDomain::insert_stream_dependency(fill_cv.execution_domain(), &output_domain, operation)?;
         }
         let exec_options = output_domain.explicit_exec_options_raw();
         let new_col = replace::replace_nulls_column_with_exec_options(
@@ -267,7 +267,7 @@ impl DataFrame {
         operation: &'static str,
     ) -> Result<Self> {
         if !ExecutionDomain::same_provenance(&self.domain, &output_domain) {
-            self.domain.fence_stream(operation)?;
+            ExecutionDomain::insert_stream_dependency(&self.domain, &output_domain, operation)?;
         }
 
         let key_indices = resolve_column_names(&self.columns, subset, operation)?;
@@ -294,7 +294,7 @@ impl DataFrame {
         operation: &'static str,
     ) -> Result<Self> {
         if !ExecutionDomain::same_provenance(&self.domain, &output_domain) {
-            self.domain.fence_stream(operation)?;
+            ExecutionDomain::insert_stream_dependency(&self.domain, &output_domain, operation)?;
         }
 
         let key_indices = resolve_column_names(&self.columns, subset, operation)?;

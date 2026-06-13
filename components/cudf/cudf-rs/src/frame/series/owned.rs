@@ -599,7 +599,7 @@ impl Series {
             return Ok(Arc::clone(column));
         }
 
-        column.execution_domain().fence_stream(operation)?;
+        ExecutionDomain::insert_stream_dependency(column.execution_domain(), output_domain, operation)?;
 
         column.copy_into_domain(Arc::clone(output_domain), operation).map(Arc::new)
     }

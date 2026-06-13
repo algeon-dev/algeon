@@ -35,17 +35,16 @@ pub enum FillPolicy {
 /// use cudf::Runtime;
 ///
 /// let rt = Runtime::new().unwrap();
-/// let series = rt
-///     .nullable_series("value", &[1i32, 0, 3], &[true, false, true])
-///     .unwrap();
+/// let series =
+///     rt.nullable_series(&[1i32, 0, 3], &[true, false, true]).unwrap();
 /// let result = series.fillna(99i32).unwrap();
 /// assert_eq!(result.to_vec_strict::<i32>().unwrap(), vec![1, 99, 3]);
 /// ```
 pub fn replace_nulls(input: &ColumnView<'_>, replacement: &Scalar) -> Result<Column> {
     let output_domain = std::sync::Arc::clone(input.execution_domain());
-    ExecutionDomain::require_same_device_and_fence_secondary(
-        &output_domain,
+    ExecutionDomain::insert_stream_dependency(
         replacement.execution_domain(),
+        &output_domain,
         "replace::replace_nulls",
     )?;
     let exec_options = output_domain.explicit_exec_options_raw();
@@ -72,7 +71,7 @@ pub(crate) fn replace_nulls_with_exec_options(
         [("execution_context_provided", exec_options.is_some().to_string())],
     )?;
     // SAFETY: out was returned by a successful FFI call, transferring ownership.
-    Ok(unsafe { Column::from_raw_with_domain(out, Arc::clone(output_domain)) })
+    unsafe { Column::from_raw_with_domain(out, Arc::clone(output_domain)) }
 }
 
 /// Replace null values in a column with corresponding values from another column.
@@ -87,18 +86,16 @@ pub(crate) fn replace_nulls_with_exec_options(
 /// use cudf::Runtime;
 ///
 /// let rt = Runtime::new().unwrap();
-/// let left = rt
-///     .nullable_series("left", &[1i32, 0, 3], &[true, false, true])
-///     .unwrap();
-/// let right = rt.series("right", &[10i32, 20, 30]).unwrap();
+/// let left = rt.nullable_series(&[1i32, 0, 3], &[true, false, true]).unwrap();
+/// let right = rt.series(&[10i32, 20, 30]).unwrap();
 /// let result = left.fillna_with_series(&right).unwrap();
 /// assert_eq!(result.to_vec_strict::<i32>().unwrap(), vec![1, 20, 3]);
 /// ```
 pub fn replace_nulls_column(input: &ColumnView<'_>, replacement: &ColumnView<'_>) -> Result<Column> {
     let output_domain = Arc::clone(input.execution_domain());
-    ExecutionDomain::require_same_device_and_fence_secondary(
-        &output_domain,
+    ExecutionDomain::insert_stream_dependency(
         replacement.execution_domain(),
+        &output_domain,
         "replace::replace_nulls_column",
     )?;
     let exec_options = output_domain.explicit_exec_options_raw();
@@ -131,7 +128,7 @@ pub(crate) fn replace_nulls_column_with_exec_options(
         [("execution_context_provided", exec_options.is_some().to_string())],
     )?;
     // SAFETY: out was returned by a successful FFI call, transferring ownership.
-    Ok(unsafe { Column::from_raw_with_domain(out, Arc::clone(output_domain)) })
+    unsafe { Column::from_raw_with_domain(out, Arc::clone(output_domain)) }
 }
 
 /// Replace null values using a directional fill policy (forward or backward fill).
@@ -147,7 +144,7 @@ pub(crate) fn replace_nulls_column_with_exec_options(
 ///
 /// let rt = Runtime::new().unwrap();
 /// let series = rt
-///     .nullable_series("value", &[1i32, 0, 0, 4], &[true, false, false, true])
+///     .nullable_series(&[1i32, 0, 0, 4], &[true, false, false, true])
 ///     .unwrap();
 /// let result = series.ffill().unwrap();
 /// assert_eq!(result.to_vec_strict::<i32>().unwrap(), vec![1, 1, 1, 4]);
@@ -184,5 +181,5 @@ pub(crate) fn replace_nulls_policy_with_exec_options(
         [("execution_context_provided", exec_options.is_some().to_string()), ("policy", format!("{policy:?}"))],
     )?;
     // SAFETY: out was returned by a successful FFI call, transferring ownership.
-    Ok(unsafe { Column::from_raw_with_domain(out, Arc::clone(output_domain)) })
+    unsafe { Column::from_raw_with_domain(out, Arc::clone(output_domain)) }
 }

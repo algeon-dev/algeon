@@ -223,10 +223,10 @@ impl DataFrame {
             operation,
         )?;
         if !ExecutionDomain::same_provenance(self.execution_domain(), &output_domain) {
-            self.execution_domain().fence_stream(operation)?;
+            ExecutionDomain::insert_stream_dependency(self.execution_domain(), &output_domain, operation)?;
         }
         if !ExecutionDomain::same_provenance(right.execution_domain(), &output_domain) {
-            right.execution_domain().fence_stream(operation)?;
+            ExecutionDomain::insert_stream_dependency(right.execution_domain(), &output_domain, operation)?;
         }
 
         if left_on.len() != right_on.len() {

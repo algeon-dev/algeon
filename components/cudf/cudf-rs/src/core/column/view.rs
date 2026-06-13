@@ -31,8 +31,12 @@ impl<'a> ColumnView<'a> {
     /// # Safety
     /// The handle must be a valid `cudf_column_view_handle` and must remain
     /// valid for lifetime `'a`.
-    pub(crate) unsafe fn from_raw_with_domain(handle: *mut c_void, domain: Arc<ExecutionDomain>) -> Self {
-        Self { handle: NonNull::new(handle).expect("null view handle"), domain, _lifetime: PhantomData }
+    pub(crate) unsafe fn from_raw_with_domain(handle: *mut c_void, domain: Arc<ExecutionDomain>) -> Result<Self> {
+        Ok(Self {
+            handle: error::require_non_null(handle, "column_view::from_raw_with_domain", "column view")?,
+            domain,
+            _lifetime: PhantomData,
+        })
     }
 
     /// Returns the raw FFI handle pointer. For internal use by operations
@@ -57,7 +61,7 @@ impl<'a> ColumnView<'a> {
         )?;
 
         Ok(Self {
-            handle: NonNull::new(duplicated).expect("null duplicated column view handle on success"),
+            handle: error::require_non_null(duplicated, operation, "duplicated column view")?,
             domain: Arc::clone(&self.domain),
             _lifetime: PhantomData,
         })
@@ -175,7 +179,7 @@ impl<'a> ColumnView<'a> {
             "column_view::child",
         )?;
         Ok(ColumnView {
-            handle: NonNull::new(child_handle).expect("null handle on success"),
+            handle: error::require_non_null(child_handle, "column_view::child", "column child view")?,
             domain: Arc::clone(&self.domain),
             _lifetime: PhantomData,
         })
@@ -185,7 +189,7 @@ impl<'a> ColumnView<'a> {
     /// the root list offset to the child range.
     pub(crate) fn list_sliced_child(&self) -> Result<ColumnView<'a>> {
         let mut child_handle = ptr::null_mut();
-        let exec_options = self.domain.explicit_exec_options_raw().expect("execution domain is always explicit");
+        let exec_options = self.domain.exec_options_raw();
         error::check_status_in(
             unsafe {
                 cudf_sys::cudf_column_view_list_sliced_child_ex(self.handle.as_ptr(), &exec_options, &mut child_handle)
@@ -193,7 +197,7 @@ impl<'a> ColumnView<'a> {
             "column_view::list_sliced_child",
         )?;
         Ok(ColumnView {
-            handle: NonNull::new(child_handle).expect("null handle on success"),
+            handle: error::require_non_null(child_handle, "column_view::list_sliced_child", "list child view")?,
             domain: Arc::clone(&self.domain),
             _lifetime: PhantomData,
         })
@@ -226,7 +230,7 @@ impl<'a> ColumnView<'a> {
     pub(crate) fn string_chars_ptr_and_size(&self) -> Result<(*const c_void, usize)> {
         let mut out_ptr: *const c_void = std::ptr::null();
         let mut out_size: usize = 0;
-        let exec_options = self.domain.explicit_exec_options_raw().expect("execution domain is always explicit");
+        let exec_options = self.domain.exec_options_raw();
         let status = unsafe {
             cudf_sys::cudf_column_view_string_chars_ptr_and_size_ex(
                 self.handle.as_ptr(),
@@ -289,7 +293,7 @@ impl<'a> ColumnView<'a> {
 
         // SAFETY: buf is a valid mutable buffer of buf_size bytes. self.handle is
         // valid. Type was checked above to match T::TYPE_ID.
-        let exec_options = self.domain.explicit_exec_options_raw().expect("execution domain is always explicit");
+        let exec_options = self.domain.exec_options_raw();
         error::check_status_in(
             unsafe {
                 cudf_sys::cudf_column_view_to_host_ex(
@@ -351,7 +355,7 @@ impl<'a> ColumnView<'a> {
 
         self.synchronize_host_visibility("column_view::to_raw_bytes")?;
 
-        let exec_options = self.domain.explicit_exec_options_raw().expect("execution domain is always explicit");
+        let exec_options = self.domain.exec_options_raw();
         error::check_status_in(
             unsafe {
                 cudf_sys::cudf_column_view_to_host_ex(
@@ -416,7 +420,7 @@ impl<'a> ColumnView<'a> {
 
         self.synchronize_host_visibility("column_view::to_fixed_width_host_bytes")?;
 
-        let exec_options = self.domain.explicit_exec_options_raw().expect("execution domain is always explicit");
+        let exec_options = self.domain.exec_options_raw();
         error::check_status_in(
             unsafe {
                 cudf_sys::cudf_column_view_to_host_ex(
@@ -448,7 +452,7 @@ impl<'a> ColumnView<'a> {
 
         // SAFETY: mask buffer is large enough (padded to 64-byte boundaries).
         // self.handle is valid and nullable (checked above).
-        let exec_options = self.domain.explicit_exec_options_raw().expect("execution domain is always explicit");
+        let exec_options = self.domain.exec_options_raw();
         error::check_status_in(
             unsafe {
                 cudf_sys::cudf_column_view_null_mask_to_host_ex(
@@ -551,7 +555,7 @@ impl<'a> ColumnView<'a> {
                 .with_context("chars_size", chars_size.to_string())
         })?;
         let mut chars = vec![0u8; chars_size];
-        let exec_options = self.domain.explicit_exec_options_raw().expect("execution domain is always explicit");
+        let exec_options = self.domain.exec_options_raw();
         let chars_buf = if chars.is_empty() { ptr::null_mut() } else { chars.as_mut_ptr() as *mut c_char };
         let mut total_chars_bytes = 0;
 
@@ -723,13 +727,14 @@ impl ColumnView<'_> {
         })?;
 
         if !ExecutionDomain::same_provenance(values.execution_domain(), &self.domain) {
-            values.execution_domain().fence_stream("column_view::isin").map_err(|e| {
-                e.with_context("input_type_id", input_type_id_str.clone())
-                    .with_context("values_type_id", values_type_id_str.clone())
-            })?;
+            ExecutionDomain::insert_stream_dependency(values.execution_domain(), &self.domain, "column_view::isin")
+                .map_err(|e| {
+                    e.with_context("input_type_id", input_type_id_str.clone())
+                        .with_context("values_type_id", values_type_id_str.clone())
+                })?;
         }
 
-        let exec_options = self.domain.explicit_exec_options_raw().expect("execution domain is always explicit");
+        let exec_options = self.domain.exec_options_raw();
         search::contains_impl(values, self, &self.domain, Some(&exec_options), "column_view::isin").map_err(|e| {
             e.with_operation("column_view::isin")
                 .with_context("input_type_id", input_type_id_str)

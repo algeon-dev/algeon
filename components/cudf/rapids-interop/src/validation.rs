@@ -2,13 +2,13 @@ use std::collections::{HashMap, HashSet};
 
 use crate::{
     BufferBinding, BufferId, ColumnId, ColumnLayout, CompletionAuthority, CompletionBinding, ExportDiagnostics,
-    ExportProfile, InteropError, InteropErrorKind, LeaseReadiness, PhysicalValidity, Placement, ProducerReadiness,
-    ReadStartAuthority, ReadStartBinding, ReleaseContract, ReleaseSynchronization, Result, SemanticColumn,
-    TransferCompletionRule, TypeId,
+    ExportProfile, InteropError, InteropErrorKind, LeaseReadiness, PhysicalValidity, Placement, PreparedExportProfile,
+    ProducerReadiness, ReadStartAuthority, ReadStartBinding, ReleaseContract, ReleaseSynchronization, Result,
+    SemanticColumn, TransferCompletionRule, TypeId,
 };
 
-fn export_profile_name(profile: ExportProfile) -> &'static str {
-    match profile {
+fn export_profile_name(profile: impl Into<ExportProfile>) -> &'static str {
+    match profile.into() {
         ExportProfile::BorrowedDeviceCompatibility => "borrowed_device_compatibility",
         ExportProfile::PreparedDeviceExport => "prepared_device_export",
         ExportProfile::PreparedHostExport => "prepared_host_export",
@@ -16,12 +16,12 @@ fn export_profile_name(profile: ExportProfile) -> &'static str {
     }
 }
 
-fn profile_error(profile: ExportProfile, message: &'static str) -> InteropError {
+fn profile_error(profile: impl Into<ExportProfile>, message: &'static str) -> InteropError {
     InteropError::new(InteropErrorKind::ProfileUnsupported, message)
         .with_context("profile", export_profile_name(profile))
 }
 
-pub(crate) fn prepared_profile_error(profile: ExportProfile, message: &'static str) -> InteropError {
+pub(crate) fn prepared_profile_error(profile: impl Into<ExportProfile>, message: &'static str) -> InteropError {
     profile_error(profile, message)
 }
 
@@ -29,11 +29,11 @@ pub(crate) fn owned_transfer_profile_error(profile: ExportProfile, message: &'st
     profile_error(profile, message)
 }
 
-pub(crate) fn validate_prepared_profile(diagnostics: ExportDiagnostics) -> Result<ExportProfile> {
-    match diagnostics.profile() {
-        ExportProfile::PreparedDeviceExport | ExportProfile::PreparedHostExport => Ok(diagnostics.profile()),
-        other => Err(prepared_profile_error(
-            other,
+pub(crate) fn validate_prepared_profile(diagnostics: ExportDiagnostics) -> Result<PreparedExportProfile> {
+    match diagnostics.prepared_profile() {
+        Some(profile) => Ok(profile),
+        None => Err(prepared_profile_error(
+            diagnostics.profile(),
             "prepared export values must declare a prepared export profile in diagnostics",
         )),
     }
@@ -82,12 +82,12 @@ pub(crate) fn validate_release_contract(release_contract: ReleaseContract) -> Re
 }
 
 pub(crate) fn validate_prepared_readiness<'a>(
-    profile: ExportProfile,
+    profile: PreparedExportProfile,
     readiness: &ProducerReadiness<'a>,
     producer_device: Option<i32>,
 ) -> Result<()> {
     match profile {
-        ExportProfile::PreparedDeviceExport => {
+        PreparedExportProfile::Device => {
             let producer_device = producer_device.expect("prepared device export must resolve a producer device");
             match readiness {
                 ProducerReadiness::DeviceStreamOrdered { stream } => {
@@ -122,7 +122,7 @@ pub(crate) fn validate_prepared_readiness<'a>(
                 },
             }
         },
-        ExportProfile::PreparedHostExport => match readiness {
+        PreparedExportProfile::Host => match readiness {
             ProducerReadiness::HostVisible => Ok(()),
             ProducerReadiness::DeviceStreamOrdered { .. } => {
                 Err(prepared_profile_error(profile, "prepared host export requires host-visible readiness")
@@ -133,8 +133,6 @@ pub(crate) fn validate_prepared_readiness<'a>(
                     .with_context("readiness", "device_event_ordered"))
             },
         },
-        ExportProfile::BorrowedDeviceCompatibility => unreachable!("borrowed compatibility is not a prepared export"),
-        ExportProfile::OwnedDeviceTransfer => unreachable!("owned transfer is not a prepared export"),
     }
 }
 
@@ -824,12 +822,12 @@ pub(crate) fn validate_prepared_column_against_bindings<'a>(
 }
 
 pub(crate) fn validate_completion_authority(
-    profile: ExportProfile,
+    profile: PreparedExportProfile,
     completion: CompletionAuthority<'_>,
     producer_device: Option<i32>,
 ) -> Result<()> {
     match profile {
-        ExportProfile::PreparedHostExport => match completion {
+        PreparedExportProfile::Host => match completion {
             CompletionAuthority::SynchronousByReturn => Ok(()),
             CompletionAuthority::SameDeviceStream { .. } => {
                 Err(prepared_profile_error(profile, "prepared host export does not support CUDA completion authority")
@@ -840,7 +838,7 @@ pub(crate) fn validate_completion_authority(
                     .with_context("completion", "cross_device_event"))
             },
         },
-        ExportProfile::PreparedDeviceExport => {
+        PreparedExportProfile::Device => {
             let producer_device = producer_device.expect("prepared device export must resolve a producer device");
             match completion {
                 CompletionAuthority::SynchronousByReturn => Ok(()),
@@ -873,8 +871,6 @@ pub(crate) fn validate_completion_authority(
                 },
             }
         },
-        ExportProfile::BorrowedDeviceCompatibility => unreachable!("borrowed compatibility is not a prepared export"),
-        ExportProfile::OwnedDeviceTransfer => unreachable!("owned transfer is not a prepared export"),
     }
 }
 
@@ -891,27 +887,25 @@ pub(crate) fn lease_readiness_binding(readiness: ProducerReadiness<'_>) -> Lease
 }
 
 pub(crate) fn validate_read_start_authority(
-    profile: ExportProfile,
+    profile: PreparedExportProfile,
     read_start: ReadStartAuthority<'_>,
     producer_device: Option<i32>,
 ) -> Result<()> {
     match profile {
-        ExportProfile::PreparedHostExport => match read_start {
+        PreparedExportProfile::Host => match read_start {
             ReadStartAuthority::SynchronousByReturn => Ok(()),
             ReadStartAuthority::ConsumerStream { .. } => {
                 Err(prepared_profile_error(profile, "prepared host export does not support CUDA read-start authority")
                     .with_context("read_start", "consumer_stream"))
             },
         },
-        ExportProfile::PreparedDeviceExport => {
+        PreparedExportProfile::Device => {
             let _ = producer_device.expect("prepared device export must resolve a producer device");
             match read_start {
                 ReadStartAuthority::SynchronousByReturn => Ok(()),
                 ReadStartAuthority::ConsumerStream { .. } => Ok(()),
             }
         },
-        ExportProfile::BorrowedDeviceCompatibility => unreachable!("borrowed compatibility is not a prepared export"),
-        ExportProfile::OwnedDeviceTransfer => unreachable!("owned transfer is not a prepared export"),
     }
 }
 

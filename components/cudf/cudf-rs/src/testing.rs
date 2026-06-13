@@ -15,7 +15,7 @@ use crate::{
         Column, DeviceMemoryResource, Result, Scalar, Table, column::ColumnView as CoreColumnView,
         table::TableView as CoreTableView,
     },
-    frame::DataFrame,
+    frame::dataframe::DataFrame,
     io::arrow,
     ops::groupby::GroupBy,
     runtime::{CudaEvent, CudaStream, ExecutionOverrides, Runtime},
@@ -260,7 +260,7 @@ impl BorrowedColumnSliceTestingExt for Column {
             unsafe { cudf_sys::cudf_column_view_slice(view.raw_handle(), start, len, &mut handle) },
             "testing::column::slice_view",
         )?;
-        Ok(unsafe { ColumnView::from_raw_with_domain(handle, std::sync::Arc::clone(view.execution_domain())) })
+        unsafe { ColumnView::from_raw_with_domain(handle, std::sync::Arc::clone(view.execution_domain())) }
     }
 }
 

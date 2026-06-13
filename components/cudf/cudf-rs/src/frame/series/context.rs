@@ -75,7 +75,7 @@ macro_rules! series_context_op {
                 $op,
             )?;
             if !ExecutionDomain::same_provenance($other.column.execution_domain(), &$domain) {
-                $other.column.execution_domain().fence_stream($op)?;
+                ExecutionDomain::insert_stream_dependency($other.column.execution_domain(), &$domain, $op)?;
             }
             let $cv = self.column.view()?;
             let $other_cv = $other.column.view()?;
@@ -234,7 +234,7 @@ impl Series {
     ) -> Result<Arc<ExecutionDomain>> {
         let output_domain = ctx.resolve_output_domain(self.column.execution_domain())?;
         if !ExecutionDomain::same_provenance(self.column.execution_domain(), &output_domain) {
-            self.column.execution_domain().fence_stream(operation)?;
+            ExecutionDomain::insert_stream_dependency(self.column.execution_domain(), &output_domain, operation)?;
         }
         Ok(output_domain)
     }
@@ -540,7 +540,7 @@ impl Series {
             operation,
         )?;
         if !ExecutionDomain::same_provenance(idx_cv.execution_domain(), &output_domain) {
-            idx_cv.execution_domain().fence_stream(operation)?;
+            ExecutionDomain::insert_stream_dependency(idx_cv.execution_domain(), &output_domain, operation)?;
         }
 
         if idx_cv.is_empty()? {
@@ -605,7 +605,7 @@ impl Series {
             operation,
         )?;
         if !ExecutionDomain::same_provenance(mask_cv.execution_domain(), &output_domain) {
-            mask_cv.execution_domain().fence_stream(operation)?;
+            ExecutionDomain::insert_stream_dependency(mask_cv.execution_domain(), &output_domain, operation)?;
         }
 
         let cv = self.column.view().map_err(|e| e.with_operation(operation))?;
@@ -955,7 +955,7 @@ impl Series {
             operation,
         )?;
         if !ExecutionDomain::same_provenance(other.column.execution_domain(), &output_domain) {
-            other.column.execution_domain().fence_stream(operation)?;
+            ExecutionDomain::insert_stream_dependency(other.column.execution_domain(), &output_domain, operation)?;
         }
         let cv = self.column.view()?;
         let other_cv = other.column.view()?;
@@ -987,7 +987,7 @@ impl Series {
             operation,
         )?;
         if !ExecutionDomain::same_provenance(values.column.execution_domain(), &output_domain) {
-            values.column.execution_domain().fence_stream(operation)?;
+            ExecutionDomain::insert_stream_dependency(values.column.execution_domain(), &output_domain, operation)?;
         }
         let cv = self.column.view()?;
         let values_cv = values.column.view()?;
@@ -1016,7 +1016,7 @@ impl Series {
             operation,
         )?;
         if !ExecutionDomain::same_provenance(other.column.execution_domain(), &output_domain) {
-            other.column.execution_domain().fence_stream(operation)?;
+            ExecutionDomain::insert_stream_dependency(other.column.execution_domain(), &output_domain, operation)?;
         }
         let lhs = self.column.view()?;
         let rhs = other.column.view()?;

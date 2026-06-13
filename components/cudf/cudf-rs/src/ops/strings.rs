@@ -63,7 +63,7 @@ pub(crate) fn to_lower_impl(
         None => unsafe { cudf_sys::cudf_strings_to_lower(input.raw_handle(), &mut out) },
     };
     error::check_status_in(status, operation)?;
-    Ok(unsafe { Column::from_raw_with_domain(out, Arc::clone(output_domain)) })
+    unsafe { Column::from_raw_with_domain(out, Arc::clone(output_domain)) }
 }
 
 /// Convert each string element to uppercase. Returns a new STRING column.
@@ -85,7 +85,7 @@ pub(crate) fn to_upper_impl(
         None => unsafe { cudf_sys::cudf_strings_to_upper(input.raw_handle(), &mut out) },
     };
     error::check_status_in(status, operation)?;
-    Ok(unsafe { Column::from_raw_with_domain(out, Arc::clone(output_domain)) })
+    unsafe { Column::from_raw_with_domain(out, Arc::clone(output_domain)) }
 }
 
 // ---------------------------------------------------------------------------
@@ -97,11 +97,7 @@ pub(crate) fn to_upper_impl(
 /// `target` must be a valid (non-null) string scalar.
 pub fn str_contains(input: &ColumnView<'_>, target: &Scalar) -> Result<Column> {
     let output_domain = Arc::clone(input.execution_domain());
-    ExecutionDomain::require_same_device_and_fence_secondary(
-        &output_domain,
-        target.execution_domain(),
-        "strings::contains",
-    )?;
+    ExecutionDomain::insert_stream_dependency(target.execution_domain(), &output_domain, "strings::contains")?;
     let exec_options = output_domain.explicit_exec_options_raw();
     str_contains_impl(input, target, &output_domain, exec_options.as_ref(), "strings::contains")
 }
@@ -121,17 +117,13 @@ pub(crate) fn str_contains_impl(
         None => unsafe { cudf_sys::cudf_strings_contains(input.raw_handle(), target.raw_handle(), &mut out) },
     };
     error::check_status_in(status, operation)?;
-    Ok(unsafe { Column::from_raw_with_domain(out, Arc::clone(output_domain)) })
+    unsafe { Column::from_raw_with_domain(out, Arc::clone(output_domain)) }
 }
 
 /// Element-wise starts-with test against a scalar string. Returns a BOOL8 column.
 pub fn starts_with(input: &ColumnView<'_>, target: &Scalar) -> Result<Column> {
     let output_domain = Arc::clone(input.execution_domain());
-    ExecutionDomain::require_same_device_and_fence_secondary(
-        &output_domain,
-        target.execution_domain(),
-        "strings::starts_with",
-    )?;
+    ExecutionDomain::insert_stream_dependency(target.execution_domain(), &output_domain, "strings::starts_with")?;
     let exec_options = output_domain.explicit_exec_options_raw();
     starts_with_impl(input, target, &output_domain, exec_options.as_ref(), "strings::starts_with")
 }
@@ -151,17 +143,13 @@ pub(crate) fn starts_with_impl(
         None => unsafe { cudf_sys::cudf_strings_starts_with(input.raw_handle(), target.raw_handle(), &mut out) },
     };
     error::check_status_in(status, operation)?;
-    Ok(unsafe { Column::from_raw_with_domain(out, Arc::clone(output_domain)) })
+    unsafe { Column::from_raw_with_domain(out, Arc::clone(output_domain)) }
 }
 
 /// Element-wise ends-with test against a scalar string. Returns a BOOL8 column.
 pub fn ends_with(input: &ColumnView<'_>, target: &Scalar) -> Result<Column> {
     let output_domain = Arc::clone(input.execution_domain());
-    ExecutionDomain::require_same_device_and_fence_secondary(
-        &output_domain,
-        target.execution_domain(),
-        "strings::ends_with",
-    )?;
+    ExecutionDomain::insert_stream_dependency(target.execution_domain(), &output_domain, "strings::ends_with")?;
     let exec_options = output_domain.explicit_exec_options_raw();
     ends_with_impl(input, target, &output_domain, exec_options.as_ref(), "strings::ends_with")
 }
@@ -181,7 +169,7 @@ pub(crate) fn ends_with_impl(
         None => unsafe { cudf_sys::cudf_strings_ends_with(input.raw_handle(), target.raw_handle(), &mut out) },
     };
     error::check_status_in(status, operation)?;
-    Ok(unsafe { Column::from_raw_with_domain(out, Arc::clone(output_domain)) })
+    unsafe { Column::from_raw_with_domain(out, Arc::clone(output_domain)) }
 }
 
 // ---------------------------------------------------------------------------
@@ -194,11 +182,7 @@ pub(crate) fn ends_with_impl(
 /// string scalar to strip whitespace.
 pub fn strip(input: &ColumnView<'_>, side: StripSide, to_strip: &Scalar) -> Result<Column> {
     let output_domain = Arc::clone(input.execution_domain());
-    ExecutionDomain::require_same_device_and_fence_secondary(
-        &output_domain,
-        to_strip.execution_domain(),
-        "strings::strip",
-    )?;
+    ExecutionDomain::insert_stream_dependency(to_strip.execution_domain(), &output_domain, "strings::strip")?;
     let exec_options = output_domain.explicit_exec_options_raw();
     strip_impl(input, side, to_strip, &output_domain, exec_options.as_ref(), "strings::strip")
 }
@@ -220,7 +204,7 @@ pub(crate) fn strip_impl(
         None => unsafe { cudf_sys::cudf_strings_strip(input.raw_handle(), side_ffi, to_strip.raw_handle(), &mut out) },
     };
     error::check_status_in(status, operation)?;
-    Ok(unsafe { Column::from_raw_with_domain(out, Arc::clone(output_domain)) })
+    unsafe { Column::from_raw_with_domain(out, Arc::clone(output_domain)) }
 }
 
 // ---------------------------------------------------------------------------
@@ -248,7 +232,7 @@ pub(crate) fn count_characters_impl(
         None => unsafe { cudf_sys::cudf_strings_count_characters(input.raw_handle(), &mut out) },
     };
     error::check_status_in(status, operation)?;
-    Ok(unsafe { Column::from_raw_with_domain(out, Arc::clone(output_domain)) })
+    unsafe { Column::from_raw_with_domain(out, Arc::clone(output_domain)) }
 }
 
 /// Byte count per string. Returns an INT32 column.
@@ -270,5 +254,5 @@ pub(crate) fn count_bytes_impl(
         None => unsafe { cudf_sys::cudf_strings_count_bytes(input.raw_handle(), &mut out) },
     };
     error::check_status_in(status, operation)?;
-    Ok(unsafe { Column::from_raw_with_domain(out, Arc::clone(output_domain)) })
+    unsafe { Column::from_raw_with_domain(out, Arc::clone(output_domain)) }
 }

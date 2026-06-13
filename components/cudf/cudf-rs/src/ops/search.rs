@@ -29,7 +29,7 @@ pub(crate) fn contains_impl(
         operation,
         [("execution_context_provided", exec_options.is_some().to_string())],
     )?;
-    Ok(unsafe { Column::from_raw_with_domain(out, Arc::clone(output_domain)) })
+    unsafe { Column::from_raw_with_domain(out, Arc::clone(output_domain)) }
 }
 
 /// Test which elements of `needles` exist anywhere in `haystack`
@@ -49,8 +49,8 @@ pub(crate) fn contains_impl(
 /// use cudf::Runtime;
 ///
 /// let rt = Runtime::new().unwrap();
-/// let haystack = rt.series("haystack", &[10i32, 20, 30]).unwrap();
-/// let needles = rt.series("needles", &[20i32, 40]).unwrap();
+/// let haystack = rt.series(&[10i32, 20, 30]).unwrap();
+/// let needles = rt.series(&[20i32, 40]).unwrap();
 /// let result = needles.isin(&haystack).unwrap();
 /// assert_eq!(result.to_vec_strict::<bool>().unwrap(), vec![true, false]);
 /// ```
@@ -62,7 +62,7 @@ pub fn contains(haystack: &ColumnView<'_>, needles: &ColumnView<'_>) -> Result<C
         "search::contains",
     )?;
     if !ExecutionDomain::same_provenance(needles.execution_domain(), &output_domain) {
-        needles.execution_domain().fence_stream("search::contains")?;
+        ExecutionDomain::insert_stream_dependency(needles.execution_domain(), &output_domain, "search::contains")?;
     }
     let exec_options = output_domain.explicit_exec_options_raw();
     contains_impl(haystack, needles, &output_domain, exec_options.as_ref(), "search::contains")

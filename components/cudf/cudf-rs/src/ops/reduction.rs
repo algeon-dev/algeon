@@ -6,7 +6,7 @@
 //! use cudf::Runtime;
 //!
 //! let rt = Runtime::new().unwrap();
-//! let series = rt.series("value", &[10i32, 20, 30]).unwrap();
+//! let series = rt.series(&[10i32, 20, 30]).unwrap();
 //!
 //! let total = series.sum_value::<i32>().unwrap();
 //! assert_eq!(total, 60);
@@ -259,7 +259,7 @@ pub(crate) fn reduce_impl(
         ],
     )?;
     // SAFETY: out was returned by a successful FFI call, transferring ownership.
-    Ok(unsafe { Scalar::from_raw_with_domain(out, std::sync::Arc::clone(output_domain)) })
+    unsafe { Scalar::from_raw_with_domain(out, std::sync::Arc::clone(output_domain)) }
 }
 
 /// Compute a prefix scan (cumulative operation) on a column.
@@ -315,7 +315,7 @@ pub(crate) fn scan_impl(
         ],
     )?;
     // SAFETY: out was returned by a successful FFI call, transferring ownership.
-    Ok(unsafe { Column::from_raw_with_domain(out, std::sync::Arc::clone(output_domain)) })
+    unsafe { Column::from_raw_with_domain(out, std::sync::Arc::clone(output_domain)) }
 }
 
 /// Compute the min and max of a column simultaneously.
@@ -343,10 +343,10 @@ pub(crate) fn minmax_impl(
         [("execution_context_provided", exec_options.is_some().to_string())],
     )?;
     // SAFETY: out_min/out_max were returned by a successful FFI call.
-    Ok(unsafe {
-        (
-            Scalar::from_raw_with_domain(out_min, std::sync::Arc::clone(output_domain)),
-            Scalar::from_raw_with_domain(out_max, std::sync::Arc::clone(output_domain)),
-        )
-    })
+    unsafe {
+        Ok((
+            Scalar::from_raw_with_domain(out_min, std::sync::Arc::clone(output_domain))?,
+            Scalar::from_raw_with_domain(out_max, std::sync::Arc::clone(output_domain))?,
+        ))
+    }
 }

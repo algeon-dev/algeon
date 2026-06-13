@@ -50,7 +50,7 @@ pub fn read_json_table(options: &JsonTableReadOptions) -> Result<TableReadOutput
     let filepath = super::path_to_cstring(&options.filepath, OPERATION)?;
     super::validate_input_path(&options.filepath, OPERATION)?;
     let output_domain = Arc::clone(options.runtime.execution_domain());
-    let exec_options = output_domain.explicit_exec_options_raw().expect("execution domain is always explicit");
+    let exec_options = output_domain.exec_options_raw();
 
     let mut table_handle = ptr::null_mut();
     let mut names_ptr: *mut *mut std::os::raw::c_char = ptr::null_mut();
@@ -72,7 +72,7 @@ pub fn read_json_table(options: &JsonTableReadOptions) -> Result<TableReadOutput
 
     // SAFETY: table_handle was returned by a successful FFI call, transferring ownership.
     // Wrap early so table is freed via RAII if collect_column_names() fails.
-    let table = unsafe { Table::from_raw_with_domain(table_handle, output_domain) };
+    let table = unsafe { Table::from_raw_with_domain(table_handle, output_domain) }?;
 
     let column_names = unsafe {
         let names = super::collect_column_names(names_ptr, num_names, OPERATION);
@@ -118,8 +118,7 @@ impl JsonTableWriteOptions {
 
 /// Write a table to a JSON file.
 pub fn write_json(table: &Table, options: &JsonTableWriteOptions) -> Result<()> {
-    let exec_options =
-        options.runtime.as_ref().and_then(|runtime| runtime.execution_domain().explicit_exec_options_raw());
+    let exec_options = options.runtime.as_ref().map(|runtime| runtime.execution_domain().exec_options_raw());
     let table_view = table.view()?;
     write_json_with_exec(&table_view, options, exec_options.as_ref())
 }

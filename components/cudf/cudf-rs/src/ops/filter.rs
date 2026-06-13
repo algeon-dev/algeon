@@ -7,10 +7,10 @@
 //!
 //! let rt = Runtime::new().unwrap();
 //! let df = cudf::dataframe! {
-//!     "value" => rt.series("value", &[10i32, 20, 30, 40]).unwrap(),
+//!     "value" => rt.series(&[10i32, 20, 30, 40]).unwrap(),
 //! }
 //! .unwrap();
-//! let mask = rt.series("mask", &[true, false, true, false]).unwrap();
+//! let mask = rt.series(&[true, false, true, false]).unwrap();
 //!
 //! let result = df.filter(&mask).unwrap();
 //! assert_eq!(
@@ -50,7 +50,7 @@ pub(crate) fn apply_boolean_mask_impl(
         operation,
         [("execution_context_provided", exec_options.is_some().to_string())],
     )?;
-    Ok(unsafe { Table::from_raw_with_domain(out, std::sync::Arc::clone(output_domain)) })
+    unsafe { Table::from_raw_with_domain(out, std::sync::Arc::clone(output_domain)) }
 }
 
 /// Filter rows of a table using a boolean mask column.
@@ -66,7 +66,11 @@ pub fn apply_boolean_mask(input: &TableView<'_>, mask: &ColumnView<'_>) -> Resul
         "filter::apply_boolean_mask",
     )?;
     if !ExecutionDomain::same_provenance(mask.execution_domain(), &output_domain) {
-        mask.execution_domain().fence_stream("filter::apply_boolean_mask")?;
+        ExecutionDomain::insert_stream_dependency(
+            mask.execution_domain(),
+            &output_domain,
+            "filter::apply_boolean_mask",
+        )?;
     }
     let exec_options = output_domain.explicit_exec_options_raw();
     apply_boolean_mask_impl(input, mask, &output_domain, exec_options.as_ref(), "filter::apply_boolean_mask")
@@ -88,7 +92,7 @@ pub(crate) fn apply_row_predicate_impl(
             cudf_sys::cudf_filter_rows_by_predicate_ex(
                 input.raw_handle(),
                 nodes.as_ptr(),
-                i32::try_from(nodes.len()).expect("row predicate node count fits in i32"),
+                error::usize_to_i32(nodes.len(), operation, "node_count")?,
                 root_index,
                 &mut out,
                 options,
@@ -98,7 +102,7 @@ pub(crate) fn apply_row_predicate_impl(
             cudf_sys::cudf_filter_rows_by_predicate(
                 input.raw_handle(),
                 nodes.as_ptr(),
-                i32::try_from(nodes.len()).expect("row predicate node count fits in i32"),
+                error::usize_to_i32(nodes.len(), operation, "node_count")?,
                 root_index,
                 &mut out,
             )
@@ -113,5 +117,5 @@ pub(crate) fn apply_row_predicate_impl(
             ("execution_context_provided", exec_options.is_some().to_string()),
         ],
     )?;
-    Ok(unsafe { Table::from_raw_with_domain(out, std::sync::Arc::clone(output_domain)) })
+    unsafe { Table::from_raw_with_domain(out, std::sync::Arc::clone(output_domain)) }
 }

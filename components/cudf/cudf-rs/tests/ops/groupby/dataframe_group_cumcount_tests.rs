@@ -9,9 +9,9 @@ fn group_cumcount_returns_zero_based_positions_for_each_sorted_group() {
     let runtime = sample_runtime();
     let edges = DataFrame::from_columns(
         ::std::iter::IntoIterator::into_iter([
-            runtime.series("_sp", &[2i32, 1, 1, 2, 1, 3]).unwrap(),
-            runtime.series("weight", &[5.0f32, 9.0, 8.0, 4.0, 7.0, 3.0]).unwrap(),
-            runtime.series("id_fc", &[5i64, 2, 3, 6, 4, 7]).unwrap(),
+            runtime.named_series("_sp", &[2i32, 1, 1, 2, 1, 3]).unwrap(),
+            runtime.named_series("weight", &[5.0f32, 9.0, 8.0, 4.0, 7.0, 3.0]).unwrap(),
+            runtime.named_series("id_fc", &[5i64, 2, 3, 6, 4, 7]).unwrap(),
         ])
         .map(|series| {
             let name = series.name().expect("explicit test migration requires named Series inputs").to_string();
@@ -38,9 +38,11 @@ fn group_cumcount_supports_multi_column_group_keys() {
     let runtime = sample_runtime();
     let df = DataFrame::from_columns(
         ::std::iter::IntoIterator::into_iter([
-            runtime.series("partition", &[1i32, 1, 1, 2, 2, 2]).unwrap(),
-            runtime.series("entityType", &["device", "device", "identity", "device", "device", "identity"]).unwrap(),
-            runtime.series("weight", &[9.0f32, 8.0, 7.0, 6.0, 5.0, 4.0]).unwrap(),
+            runtime.named_series("partition", &[1i32, 1, 1, 2, 2, 2]).unwrap(),
+            runtime
+                .named_series("entityType", &["device", "device", "identity", "device", "device", "identity"])
+                .unwrap(),
+            runtime.named_series("weight", &[9.0f32, 8.0, 7.0, 6.0, 5.0, 4.0]).unwrap(),
         ])
         .map(|series| {
             let name = series.name().expect("explicit test migration requires named Series inputs").to_string();

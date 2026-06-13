@@ -5,8 +5,8 @@ use std::{
 
 use crate::{
     ActiveColumnReadLease, ActiveTableReadLease, BufferBinding, BufferId, ColumnId, CompletionAuthority,
-    ExportDiagnostics, ExportProfile, IncompleteDropBehavior, InteropError, InteropErrorKind, LeaseBackend,
-    LeaseExportContext, ProducerReadiness, ReadStartAuthority, Result, SemanticColumn, SemanticTable,
+    ExportDiagnostics, IncompleteDropBehavior, InteropError, InteropErrorKind, LeaseBackend, LeaseExportContext,
+    PreparedExportProfile, ProducerReadiness, ReadStartAuthority, Result, SemanticColumn, SemanticTable,
     contract::RetainedHostBuffers,
     lease::LeaseRootState,
     validation::{
@@ -24,6 +24,7 @@ pub struct PreparedColumnExport<'a> {
     semantic_columns: Vec<SemanticColumn>,
     bindings: Vec<BufferBinding<'a>>,
     readiness: ProducerReadiness<'a>,
+    profile: PreparedExportProfile,
     diagnostics: ExportDiagnostics,
     retained_host_buffers: RetainedHostBuffers,
     /// Cached producer device ordinal for device-backed exports.
@@ -42,6 +43,7 @@ impl PartialEq for PreparedColumnExport<'_> {
             && self.semantic_columns == other.semantic_columns
             && self.bindings == other.bindings
             && self.readiness == other.readiness
+            && self.profile == other.profile
             && self.diagnostics == other.diagnostics
             && self.producer_device == other.producer_device
             && self.lease_backend.incomplete_drop_behavior() == other.lease_backend.incomplete_drop_behavior()
@@ -85,7 +87,7 @@ impl<'a> PreparedColumnExport<'a> {
         }
         let binding_map = binding_map(&bindings)?;
         let producer_device = match profile {
-            ExportProfile::PreparedDeviceExport => {
+            PreparedExportProfile::Device => {
                 let mut visited = HashMap::new();
                 let producer_device = validate_prepared_column_against_bindings(
                     &column,
@@ -108,7 +110,7 @@ impl<'a> PreparedColumnExport<'a> {
                 }
                 Some(producer_device)
             },
-            ExportProfile::PreparedHostExport => {
+            PreparedExportProfile::Host => {
                 let mut validated = HashSet::new();
                 validate_prepared_host_column_against_bindings(&column, &column_map, &binding_map, &mut validated)?;
                 if validated.len() != column_map.len() {
@@ -124,10 +126,6 @@ impl<'a> PreparedColumnExport<'a> {
                 }
                 None
             },
-            ExportProfile::BorrowedDeviceCompatibility => {
-                unreachable!("borrowed compatibility is not a prepared export")
-            },
-            ExportProfile::OwnedDeviceTransfer => unreachable!("owned transfer is not a prepared export"),
         };
         validate_prepared_readiness(profile, &readiness, producer_device)?;
         Ok(Self {
@@ -135,7 +133,8 @@ impl<'a> PreparedColumnExport<'a> {
             semantic_columns,
             bindings,
             readiness,
-            diagnostics,
+            profile,
+            diagnostics: profile.diagnostics(),
             retained_host_buffers: RetainedHostBuffers::default(),
             producer_device,
             lease_state: LeaseRootState::default(),
@@ -157,6 +156,10 @@ impl<'a> PreparedColumnExport<'a> {
 
     pub fn readiness(&self) -> &ProducerReadiness<'a> {
         &self.readiness
+    }
+
+    pub fn profile(&self) -> PreparedExportProfile {
+        self.profile
     }
 
     pub fn diagnostics(&self) -> &ExportDiagnostics {
@@ -187,8 +190,8 @@ impl<'a> PreparedColumnExport<'a> {
         read_start: ReadStartAuthority<'consumer>,
         completion: CompletionAuthority<'consumer>,
     ) -> Result<ActiveColumnReadLease<'export, 'a, 'consumer>> {
-        validate_read_start_authority(self.diagnostics.profile(), read_start, self.producer_device)?;
-        validate_completion_authority(self.diagnostics.profile(), completion, self.producer_device)?;
+        validate_read_start_authority(self.profile, read_start, self.producer_device)?;
+        validate_completion_authority(self.profile, completion, self.producer_device)?;
         let read_start_binding = read_start_binding(read_start);
         let completion_binding = completion_binding(completion);
         let export_context = self.lease_export_context();
@@ -216,6 +219,7 @@ pub struct PreparedTableExport<'a> {
     semantic_columns: Vec<SemanticColumn>,
     bindings: Vec<BufferBinding<'a>>,
     readiness: ProducerReadiness<'a>,
+    profile: PreparedExportProfile,
     diagnostics: ExportDiagnostics,
     retained_host_buffers: RetainedHostBuffers,
     /// Cached producer device ordinal for device-backed exports.
@@ -231,6 +235,7 @@ impl PartialEq for PreparedTableExport<'_> {
             && self.semantic_columns == other.semantic_columns
             && self.bindings == other.bindings
             && self.readiness == other.readiness
+            && self.profile == other.profile
             && self.diagnostics == other.diagnostics
             && self.producer_device == other.producer_device
             && self.lease_backend.incomplete_drop_behavior() == other.lease_backend.incomplete_drop_behavior()
@@ -314,7 +319,7 @@ impl<'a> PreparedTableExport<'a> {
             }
 
             match profile {
-                ExportProfile::PreparedDeviceExport => {
+                PreparedExportProfile::Device => {
                     let column_device = validate_prepared_column_against_bindings(
                         column,
                         &column_map,
@@ -341,7 +346,7 @@ impl<'a> PreparedTableExport<'a> {
                         Some(_) => {},
                     }
                 },
-                ExportProfile::PreparedHostExport => {
+                PreparedExportProfile::Host => {
                     validate_prepared_host_column_against_bindings(
                         column,
                         &column_map,
@@ -349,10 +354,6 @@ impl<'a> PreparedTableExport<'a> {
                         &mut validated_columns,
                     )?;
                 },
-                ExportProfile::BorrowedDeviceCompatibility => {
-                    unreachable!("borrowed compatibility is not a prepared export")
-                },
-                ExportProfile::OwnedDeviceTransfer => unreachable!("owned transfer is not a prepared export"),
             }
         }
 
@@ -364,7 +365,7 @@ impl<'a> PreparedTableExport<'a> {
             )
             .with_context("column_id", unreferenced.get().to_string()));
         }
-        if validated_devices.len() != column_map.len() && profile == ExportProfile::PreparedDeviceExport {
+        if validated_devices.len() != column_map.len() && profile == PreparedExportProfile::Device {
             let unreferenced = semantic_columns
                 .iter()
                 .find(|candidate| !validated_devices.contains_key(&candidate.id()))
@@ -375,7 +376,7 @@ impl<'a> PreparedTableExport<'a> {
             )
             .with_context("column_id", unreferenced.id().get().to_string()));
         }
-        if profile == ExportProfile::PreparedHostExport && validated_columns.len() != column_map.len() {
+        if profile == PreparedExportProfile::Host && validated_columns.len() != column_map.len() {
             let unreferenced = semantic_columns
                 .iter()
                 .find(|candidate| !validated_columns.contains(&candidate.id()))
@@ -388,7 +389,7 @@ impl<'a> PreparedTableExport<'a> {
         }
 
         let producer_device = match profile {
-            ExportProfile::PreparedDeviceExport => Some(match (table_device, readiness) {
+            PreparedExportProfile::Device => Some(match (table_device, readiness) {
                 (Some(device), _) => device,
                 (None, ProducerReadiness::DeviceStreamOrdered { stream }) => stream.device(),
                 (None, ProducerReadiness::DeviceEventOrdered { event }) => event.device(),
@@ -400,11 +401,7 @@ impl<'a> PreparedTableExport<'a> {
                     .with_context("readiness", "host_visible"));
                 },
             }),
-            ExportProfile::PreparedHostExport => None,
-            ExportProfile::BorrowedDeviceCompatibility => {
-                unreachable!("borrowed compatibility is not a prepared export")
-            },
-            ExportProfile::OwnedDeviceTransfer => unreachable!("owned transfer is not a prepared export"),
+            PreparedExportProfile::Host => None,
         };
         validate_prepared_readiness(profile, &readiness, producer_device)?;
 
@@ -414,7 +411,8 @@ impl<'a> PreparedTableExport<'a> {
             semantic_columns,
             bindings,
             readiness,
-            diagnostics,
+            profile,
+            diagnostics: profile.diagnostics(),
             retained_host_buffers: RetainedHostBuffers::default(),
             producer_device,
             lease_state: LeaseRootState::default(),
@@ -468,6 +466,10 @@ impl<'a> PreparedTableExport<'a> {
         &self.readiness
     }
 
+    pub fn profile(&self) -> PreparedExportProfile {
+        self.profile
+    }
+
     pub fn diagnostics(&self) -> &ExportDiagnostics {
         &self.diagnostics
     }
@@ -496,8 +498,8 @@ impl<'a> PreparedTableExport<'a> {
         read_start: ReadStartAuthority<'consumer>,
         completion: CompletionAuthority<'consumer>,
     ) -> Result<ActiveTableReadLease<'export, 'a, 'consumer>> {
-        validate_read_start_authority(self.diagnostics.profile(), read_start, self.producer_device)?;
-        validate_completion_authority(self.diagnostics.profile(), completion, self.producer_device)?;
+        validate_read_start_authority(self.profile, read_start, self.producer_device)?;
+        validate_completion_authority(self.profile, completion, self.producer_device)?;
         let read_start_binding = read_start_binding(read_start);
         let completion_binding = completion_binding(completion);
         let export_context = self.lease_export_context();

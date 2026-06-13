@@ -2,6 +2,7 @@
 
 use std::{ptr, sync::Arc};
 
+pub use crate::core::types::NullEquality;
 use crate::{
     core::{
         error::{self, Error, ErrorKind, Result},
@@ -40,8 +41,6 @@ impl DuplicateKeepOption {
         }
     }
 }
-
-pub use crate::core::types::NullEquality;
 
 /// Whether NaN elements should be considered equal.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -130,7 +129,7 @@ pub(crate) fn drop_nulls_impl(
             ("execution_context_provided", exec_options.is_some().to_string()),
         ],
     )?;
-    Ok(unsafe { Table::from_raw_with_domain(out, Arc::clone(output_domain)) })
+    unsafe { Table::from_raw_with_domain(out, Arc::clone(output_domain)) }
 }
 
 pub(crate) fn distinct_impl(
@@ -190,7 +189,7 @@ pub(crate) fn distinct_impl(
             ("execution_context_provided", exec_options.is_some().to_string()),
         ],
     )?;
-    Ok(unsafe { Table::from_raw_with_domain(out, Arc::clone(output_domain)) })
+    unsafe { Table::from_raw_with_domain(out, Arc::clone(output_domain)) }
 }
 
 /// Drop rows from a table where key columns contain nulls.
@@ -201,11 +200,11 @@ pub(crate) fn distinct_impl(
 ///
 /// # Example
 /// ```no_run
-/// use cudf::{DropNaOptions, Runtime};
+/// use cudf::{Runtime, frame::dataframe::DropNaOptions};
 ///
 /// let rt = Runtime::new().unwrap();
 /// let df = cudf::dataframe! {
-///     "value" => rt.nullable_series("value", &[1i32, 0, 3], &[true, false, true]).unwrap(),
+///     "value" => rt.nullable_series(&[1i32, 0, 3], &[true, false, true]).unwrap(),
 /// }
 /// .unwrap();
 /// let result = df.dropna(DropNaOptions::new()).unwrap();
@@ -224,11 +223,11 @@ pub fn drop_nulls(input: &TableView<'_>, keys: &[usize], keep_threshold: i32) ->
 ///
 /// # Example
 /// ```no_run
-/// use cudf::{DropDuplicatesOptions, Runtime};
+/// use cudf::{Runtime, frame::dataframe::DropDuplicatesOptions};
 ///
 /// let rt = Runtime::new().unwrap();
 /// let df = cudf::dataframe! {
-///     "value" => rt.series("value", &[1i32, 2, 1, 3]).unwrap(),
+///     "value" => rt.series(&[1i32, 2, 1, 3]).unwrap(),
 /// }
 /// .unwrap();
 /// let result = df.drop_duplicates(DropDuplicatesOptions::new()).unwrap();

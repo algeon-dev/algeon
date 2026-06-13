@@ -1,6 +1,7 @@
 use cudf::{
-    DataFrame, JsonReadOptions, Runtime, TypeId,
+    DataFrame, Runtime, TypeId,
     core::{Column, Table},
+    frame::dataframe::JsonReadOptions,
     ops::dictionary,
     testing::prelude::*,
 };
@@ -128,8 +129,8 @@ fn owned_table_borrow_matches_underlying_table_view_projection() {
 #[test]
 fn series_and_dataframe_convenience_producers_match_underlying_low_level_views() {
     let runtime = Runtime::builder().build().unwrap();
-    let ids = runtime.series("id", &[1i32, 2, 3]).unwrap();
-    let vals = runtime.series("value", &[10i64, 20, 30]).unwrap();
+    let ids = runtime.named_series("id", &[1i32, 2, 3]).unwrap();
+    let vals = runtime.named_series("value", &[10i64, 20, 30]).unwrap();
     let frame =
         DataFrame::from_columns(::std::iter::IntoIterator::into_iter([ids.clone(), vals.clone()]).map(|series| {
             let name = series.name().expect("explicit test migration requires named Series inputs").to_string();

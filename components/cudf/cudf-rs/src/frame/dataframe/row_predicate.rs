@@ -123,7 +123,7 @@ impl DataFrame {
     ) -> Result<Self> {
         let lowered = lower_row_predicate(self, &predicate, operation)?;
         if !ExecutionDomain::same_provenance(&self.domain, &output_domain) {
-            self.domain.fence_stream(operation)?;
+            ExecutionDomain::insert_stream_dependency(&self.domain, &output_domain, operation)?;
         }
         let exec_options = output_domain.explicit_exec_options_raw();
         let tv = self.build_table_view()?;
@@ -168,12 +168,12 @@ fn lower_expr(
                     kind: cudf_sys::cudf_row_predicate_node_kind_t::CUDF_ROW_PREDICATE_NODE_COLUMN_REF,
                     lhs_index: -1,
                     rhs_index: -1,
-                    column_index: i32::try_from(column_index).expect("column index fits in i32"),
+                    column_index: crate::core::error::usize_to_i32(column_index, operation, "column_index")?,
                     binary_op: cudf_sys::cudf_binary_operator_t::CUDF_BINARY_EQUAL,
                     unary_op: cudf_sys::cudf_unary_operator_t::CUDF_UNARY_NOT,
                     literal: std::ptr::null_mut(),
                 },
-            );
+            )?;
             Ok((index, dtype))
         },
         Expr::Literal(literal) => lower_literal(df, literal, lowered),
@@ -193,7 +193,7 @@ fn lower_expr(
                     unary_op: cudf_sys::cudf_unary_operator_t::CUDF_UNARY_NOT,
                     literal: std::ptr::null_mut(),
                 },
-            );
+            )?;
             Ok((not_index, DataType::new(TypeId::Bool8)))
         },
         Expr::Alias { inner, .. } => lower_expr(df, inner, lowered, operation),
@@ -224,7 +224,7 @@ fn lower_literal(df: &DataFrame, literal: &LitValue, lowered: &mut LoweredRowPre
             unary_op: cudf_sys::cudf_unary_operator_t::CUDF_UNARY_NOT,
             literal: handle,
         },
-    );
+    )?;
     Ok((index, dtype))
 }
 
@@ -273,7 +273,7 @@ fn lower_binary_expr(
             unary_op: cudf_sys::cudf_unary_operator_t::CUDF_UNARY_NOT,
             literal: std::ptr::null_mut(),
         },
-    );
+    )?;
     Ok((index, output_type))
 }
 
@@ -349,7 +349,7 @@ fn lower_unary_expr(
                     unary_op: op.to_raw(),
                     literal: std::ptr::null_mut(),
                 },
-            );
+            )?;
             Ok((index, DataType::new(TypeId::Bool8)))
         },
         _ => unsupported_predicate(operation, "unary_operator"),
@@ -374,13 +374,13 @@ fn lower_is_null_expr(
             unary_op: cudf_sys::cudf_unary_operator_t::CUDF_UNARY_NOT,
             literal: std::ptr::null_mut(),
         },
-    );
+    )?;
     Ok((index, DataType::new(TypeId::Bool8)))
 }
 
-fn push_node(lowered: &mut LoweredRowPredicate, node: cudf_sys::cudf_row_predicate_node_t) -> i32 {
+fn push_node(lowered: &mut LoweredRowPredicate, node: cudf_sys::cudf_row_predicate_node_t) -> Result<i32> {
     lowered.nodes.push(node);
-    i32::try_from(lowered.nodes.len() - 1).expect("row predicate node index fits in i32")
+    crate::core::error::usize_to_i32(lowered.nodes.len() - 1, "dataframe::row_predicate::push_node", "node_index")
 }
 
 fn unsupported_predicate<T>(operation: &'static str, expr_kind: &str) -> Result<T> {

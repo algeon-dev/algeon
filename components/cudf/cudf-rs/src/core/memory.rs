@@ -71,8 +71,13 @@ impl DeviceMemoryResource {
         maximum_pool_size.unwrap_or(0)
     }
 
-    fn from_created_handle(handle: *mut std::ffi::c_void, device: DeviceId, constructor: &'static str) -> Self {
-        Self { handle: Arc::new(DeviceMemoryResourceHandle { raw: NonNull::new(handle).expect(constructor), device }) }
+    fn from_created_handle(handle: *mut std::ffi::c_void, device: DeviceId, constructor: &'static str) -> Result<Self> {
+        Ok(Self {
+            handle: Arc::new(DeviceMemoryResourceHandle {
+                raw: error::require_non_null(handle, constructor, "device memory resource")?,
+                device,
+            }),
+        })
     }
 
     /// Create a CUDA (default) memory resource handle on the calling thread's
@@ -94,7 +99,7 @@ impl DeviceMemoryResource {
             unsafe { cudf_sys::cudf_memory_resource_create_cuda(&mut handle) },
             "memory::device_memory_resource::cuda_on",
         )?;
-        Ok(Self::from_created_handle(handle, device, "cudf_memory_resource_create_cuda returned null on success"))
+        Self::from_created_handle(handle, device, "memory::device_memory_resource::cuda_on")
     }
 
     /// Create a pool memory resource handle on the calling thread's current
@@ -129,7 +134,7 @@ impl DeviceMemoryResource {
                 ("maximum_pool_size", maximum_pool_size.map_or_else(|| "None".to_string(), |size| size.to_string())),
             ],
         )?;
-        Ok(Self::from_created_handle(handle, device, "cudf_memory_resource_create_pool returned null on success"))
+        Self::from_created_handle(handle, device, "memory::device_memory_resource::pool_on")
     }
 
     /// The CUDA device this memory resource was created on.
@@ -164,8 +169,8 @@ impl DeviceMemoryResource {
             unsafe { cudf_sys::cudf_test_memory_resource_raw(self.handle.raw.as_ptr(), &mut out) },
             "memory::device_memory_resource::__debug_raw_handle_value",
         )
-        .expect("failed to read raw device memory resource pointer");
-        out as usize
+        .map(|_| out as usize)
+        .unwrap_or(0)
     }
     pub(crate) fn __test_stats() -> Result<Self> {
         let device = DeviceId::current()?;
@@ -176,7 +181,11 @@ impl DeviceMemoryResource {
         )?;
         Ok(Self {
             handle: Arc::new(DeviceMemoryResourceHandle {
-                raw: NonNull::new(handle).expect("cudf_test_memory_resource_create_stats returned null on success"),
+                raw: error::require_non_null(
+                    handle,
+                    "memory::device_memory_resource::__test_stats",
+                    "stats memory resource",
+                )?,
                 device,
             }),
         })

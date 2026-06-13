@@ -298,7 +298,8 @@ fn test_match_dictionaries_no_overlap() {
 }
 
 #[test]
-fn test_dictionary_set_keys_succeeds_with_mixed_domains_and_syncs_secondary_input_before_authoritative_exec() {
+fn test_dictionary_set_keys_succeeds_with_mixed_domains_and_orders_secondary_input_before_authoritative_exec() {
+    let _event_observation = crate::common::lock_event_observation();
     let dict = dictionary::encode(&column_from_slice(&[3i32, 1, 3, 2]).unwrap().testing_view().unwrap(), TypeId::Int32)
         .unwrap()
         .testing_rebind_execution_domain_explicit(601)
@@ -306,8 +307,7 @@ fn test_dictionary_set_keys_succeeds_with_mixed_domains_and_syncs_secondary_inpu
     let keys = column_from_slice(&[2i32, 3, 4]).unwrap().testing_rebind_execution_domain_explicit(602).unwrap();
     let expected_exec_stream = dict.testing_execution_domain_stream_value();
     let expected_exec_mr = dict.testing_execution_domain_mr_value();
-    let expected_presync_stream = keys.testing_execution_domain_stream_value();
-
+    crate::common::reset_dependency_observation();
     reset_exec_observation();
     let updated = dictionary::set_keys(&dict.testing_view().unwrap(), &keys.testing_view().unwrap()).unwrap();
 
@@ -315,7 +315,7 @@ fn test_dictionary_set_keys_succeeds_with_mixed_domains_and_syncs_secondary_inpu
     assert_eq!(updated.testing_execution_domain_mr_value(), expected_exec_mr);
     assert_eq!(last_exec_stream_value(), expected_exec_stream);
     assert_eq!(last_exec_mr_value(), expected_exec_mr);
-    assert_eq!(last_sync_stream_value(), expected_presync_stream);
+    assert_eq!(crate::common::dependency_wait_call_count_for_stream(expected_exec_stream), 1);
 
     reset_sync_observation();
     let mut updated_keys = dictionary::keys(&updated.testing_view().unwrap()).unwrap().to_vec::<i32>().unwrap();
@@ -325,7 +325,8 @@ fn test_dictionary_set_keys_succeeds_with_mixed_domains_and_syncs_secondary_inpu
 }
 
 #[test]
-fn test_match_dictionaries_succeeds_with_mixed_domains_and_syncs_secondary_inputs_before_first_input_exec() {
+fn test_match_dictionaries_succeeds_with_mixed_domains_and_orders_secondary_inputs_before_first_input_exec() {
+    let _event_observation = crate::common::lock_event_observation();
     let first =
         dictionary::encode(&column_from_slice(&[10i32, 20, 30]).unwrap().testing_view().unwrap(), TypeId::Int32)
             .unwrap()
@@ -338,8 +339,7 @@ fn test_match_dictionaries_succeeds_with_mixed_domains_and_syncs_secondary_input
             .unwrap();
     let expected_exec_stream = first.testing_execution_domain_stream_value();
     let expected_exec_mr = first.testing_execution_domain_mr_value();
-    let expected_presync_stream = second.testing_execution_domain_stream_value();
-
+    crate::common::reset_dependency_observation();
     reset_exec_observation();
     let matched =
         dictionary::match_dictionaries(&[&first.testing_view().unwrap(), &second.testing_view().unwrap()]).unwrap();
@@ -349,7 +349,7 @@ fn test_match_dictionaries_succeeds_with_mixed_domains_and_syncs_secondary_input
     assert!(matched.iter().all(|column| column.testing_execution_domain_mr_value() == expected_exec_mr));
     assert_eq!(last_exec_stream_value(), expected_exec_stream);
     assert_eq!(last_exec_mr_value(), expected_exec_mr);
-    assert_eq!(last_sync_stream_value(), expected_presync_stream);
+    assert_eq!(crate::common::dependency_wait_call_count_for_stream(expected_exec_stream), 1);
 
     reset_sync_observation();
     let mut first_keys = dictionary::keys(&matched[0].testing_view().unwrap()).unwrap().to_vec::<i32>().unwrap();
