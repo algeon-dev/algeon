@@ -1,0 +1,109 @@
+error[E0603]: module `testing_hooks` is private
+ --> tests/public_api/ui/no_internal_testing_hooks_modules.rs:2:33
+  |
+2 |     let _ = cudf::core::column::testing_hooks::slice_view_for_test;
+  |                                 ^^^^^^^^^^^^^  ------------------- function `slice_view_for_test` is not publicly re-exported
+  |                                 |
+  |                                 private module
+  |
+note: the module `testing_hooks` is defined here
+ --> src/core/column/mod.rs
+  |
+  | mod testing_hooks;
+  | ^^^^^^^^^^^^^^^^^
+
+error[E0603]: module `testing_hooks` is private
+ --> tests/public_api/ui/no_internal_testing_hooks_modules.rs:3:25
+  |
+3 |     let _ = cudf::core::testing_hooks::trigger_invariant_violation_for_test();
+  |                         ^^^^^^^^^^^^^  ------------------------------------ function `trigger_invariant_violation_for_test` is not publicly re-exported
+  |                         |
+  |                         private module
+  |
+note: the module `testing_hooks` is defined here
+ --> src/core/mod.rs
+  |
+  | pub(crate) mod testing_hooks;
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error[E0603]: module `testing_hooks` is private
+ --> tests/public_api/ui/no_internal_testing_hooks_modules.rs:4:30
+  |
+4 |     let _ = cudf::io::arrow::testing_hooks::trigger_numeric_to_arrow_error_for_test();
+  |                              ^^^^^^^^^^^^^  --------------------------------------- function `trigger_numeric_to_arrow_error_for_test` is not publicly re-exported
+  |                              |
+  |                              private module
+  |
+note: the module `testing_hooks` is defined here
+ --> src/io/arrow.rs
+  |
+  | pub(crate) mod testing_hooks;
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error[E0603]: module `testing_hooks` is private
+ --> tests/public_api/ui/no_internal_testing_hooks_modules.rs:5:36
+  |
+5 |     let _ = cudf::ops::dictionary::testing_hooks::trigger_match_dictionaries_result_count_mismatch_for_test();
+  |                                    ^^^^^^^^^^^^^  --------------------------------------------------------- function `trigger_match_dictionaries_result_count_mismatch_for_test` is not publicly re-exported
+  |                                    |
+  |                                    private module
+  |
+note: the module `testing_hooks` is defined here
+ --> src/ops/dictionary.rs
+  |
+  | pub(crate) mod testing_hooks;
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error[E0603]: module `testing_hooks` is private
+ --> tests/public_api/ui/no_internal_testing_hooks_modules.rs:6:36
+  |
+6 |     let _ = cudf::ops::dictionary::testing_hooks::trigger_match_dictionaries_column_count_limit_error_for_test();
+  |                                    ^^^^^^^^^^^^^  ------------------------------------------------------------ function `trigger_match_dictionaries_column_count_limit_error_for_test` is not publicly re-exported
+  |                                    |
+  |                                    private module
+  |
+note: the module `testing_hooks` is defined here
+ --> src/ops/dictionary.rs
+  |
+  | pub(crate) mod testing_hooks;
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error[E0603]: module `testing_hooks` is private
+ --> tests/public_api/ui/no_internal_testing_hooks_modules.rs:7:33
+  |
+7 |     let _ = cudf::ops::sorting::testing_hooks::trigger_sort_key_count_limit_error_for_test();
+  |                                 ^^^^^^^^^^^^^  ------------------------------------------- function `trigger_sort_key_count_limit_error_for_test` is not publicly re-exported
+  |                                 |
+  |                                 private module
+  |
+note: the module `testing_hooks` is defined here
+ --> src/ops/sorting/mod.rs
+  |
+  | pub(crate) mod testing_hooks;
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error[E0603]: module `testing_hooks` is private
+ --> tests/public_api/ui/no_internal_testing_hooks_modules.rs:8:42
+  |
+8 |     let _ = cudf::interop::arrow_device::testing_hooks::arrow_device_cpu_type_for_test();
+  |                                          ^^^^^^^^^^^^^  ------------------------------ function `arrow_device_cpu_type_for_test` is not publicly re-exported
+  |                                          |
+  |                                          private module
+  |
+note: the module `testing_hooks` is defined here
+ --> src/interop/arrow_device.rs
+  |
+  | pub(crate) mod testing_hooks;
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error[E0603]: module `projection` is private
+ --> tests/public_api/ui/no_internal_testing_hooks_modules.rs:9:28
+  |
+9 |     let _ = cudf::interop::projection::testing_hooks::trigger_negative_offset_for_test();
+  |                            ^^^^^^^^^^ private module  -------------------------------- function `trigger_negative_offset_for_test` is not publicly re-exported
+  |
+note: the module `projection` is defined here
+ --> src/interop/mod.rs
+  |
+  | pub(crate) mod projection;
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^

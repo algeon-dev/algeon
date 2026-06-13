@@ -2,13 +2,21 @@
 //!
 //! All tests require a GPU.
 use cudf::{
-    DataFrame, ErrorKind,
+    DataFrame, ErrorCode, ErrorKind,
     frame::dataframe::{JsonReadOptions, JsonWriteOptions},
     testing::prelude::*,
 };
 use tempfile::TempDir;
 
-use crate::common::sample_runtime;
+use crate::common::{arm_next_io_metadata_fault, error_context_value, reset_io_metadata_fault, sample_runtime};
+
+struct MetadataFaultReset;
+
+impl Drop for MetadataFaultReset {
+    fn drop(&mut self) {
+        reset_io_metadata_fault();
+    }
+}
 
 // ===========================================================================
 // Convenience methods: read_json / write_json
@@ -141,5 +149,31 @@ fn test_dataframe_json_read_nonexistent_file() {
     let rt = sample_runtime();
     let err = DataFrame::read_json(&rt, "/nonexistent/file.jsonl").expect_err("missing JSON file should fail");
 
+    assert_eq!(err.code(), ErrorCode::MissingResource);
     assert_eq!(err.kind(), ErrorKind::NotFound);
+}
+
+#[test]
+fn test_dataframe_json_read_rejects_missing_schema_metadata_for_nonempty_table() {
+    let _reset = MetadataFaultReset;
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("missing_names.jsonl");
+    let rt = sample_runtime();
+
+    std::fs::write(&path, "{\"id\":1,\"value\":10}\n{\"id\":2,\"value\":20}\n").unwrap();
+
+    arm_next_io_metadata_fault(cudf_sys::CUDF_TEST_IO_METADATA_FAULT_ZERO_NAME_COUNT);
+    let err = DataFrame::read_json(&rt, &path).expect_err("missing schema metadata should fail");
+
+    assert_eq!(err.kind(), ErrorKind::InvariantViolation);
+    assert_eq!(err.code(), ErrorCode::InvariantViolation);
+    assert_eq!(err.operation(), "dataframe::read_json_with_options");
+    assert_eq!(error_context_value(&err, "column_name_count"), Some("0"));
+    assert_eq!(error_context_value(&err, "table_column_count"), Some("2"));
+    assert_eq!(error_context_value(&err, "resource"), Some("column_name_count"));
+    assert_eq!(error_context_value(&err, "reason"), Some("missing_reader_schema_names"));
+    assert_eq!(
+        error_context_value(&err, "remedy"),
+        Some("ensure the reader returns one schema name per table column for non-empty results")
+    );
 }

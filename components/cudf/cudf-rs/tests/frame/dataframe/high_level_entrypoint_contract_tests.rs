@@ -212,9 +212,42 @@ fn test_with_lookup_rejects_mapping_length_mismatch_with_dataframe_operation() {
 
     let err = df.with_lookup("owner", "vertex", &keys, &values).unwrap_err();
 
-    assert_eq!(err.kind(), cudf::ErrorKind::InvalidOperation);
+    assert_eq!(err.kind(), cudf::ErrorKind::InvalidInput);
+    assert_eq!(err.code(), cudf::ErrorCode::ColumnLengthMismatch);
     assert_eq!(err.operation(), "dataframe::with_lookup");
-    assert!(err.message().contains("same length"));
+    assert_eq!(crate::common::error_context_value(&err, "column_name"), Some("vertex"));
+    assert_eq!(crate::common::error_context_value(&err, "input_column"), None);
+    assert_eq!(crate::common::error_context_value(&err, "right_type_id"), Some("string"));
+    assert_eq!(crate::common::error_context_value(&err, "type_id"), Some("string"));
+    assert_eq!(crate::common::error_context_value(&err, "keys_count"), Some("2"));
+    assert_eq!(crate::common::error_context_value(&err, "values_count"), Some("1"));
+    assert_eq!(crate::common::error_context_value(&err, "keys_type_id"), None);
+    assert_eq!(crate::common::error_context_value(&err, "output_type_id"), None);
+}
+
+#[test]
+fn test_with_lookup_from_rejects_missing_lookup_key_column_with_canonical_context() {
+    let df = DataFrame::from_columns([("vertex", crate::common::unnamed_series(&["u2", "u1"]).unwrap())]).unwrap();
+    let lookup_df =
+        DataFrame::from_columns([("label", crate::common::unnamed_series(&["alice", "bob"]).unwrap())]).unwrap();
+
+    let err = df.with_lookup_from("owner", "vertex", &lookup_df, "id", "label").unwrap_err();
+
+    crate::common::assert_missing_column_error(&err, "id");
+    assert_eq!(err.operation(), "dataframe::with_lookup_from");
+    assert_eq!(crate::common::error_context_value(&err, "key_column"), None);
+}
+
+#[test]
+fn test_with_lookup_from_rejects_missing_lookup_value_column_with_canonical_context() {
+    let df = DataFrame::from_columns([("vertex", crate::common::unnamed_series(&["u2", "u1"]).unwrap())]).unwrap();
+    let lookup_df = DataFrame::from_columns([("id", crate::common::unnamed_series(&["u1", "u2"]).unwrap())]).unwrap();
+
+    let err = df.with_lookup_from("owner", "vertex", &lookup_df, "id", "label").unwrap_err();
+
+    crate::common::assert_missing_column_error(&err, "label");
+    assert_eq!(err.operation(), "dataframe::with_lookup_from");
+    assert_eq!(crate::common::error_context_value(&err, "value_column"), None);
 }
 
 #[test]
@@ -228,6 +261,34 @@ fn test_with_encoded_and_decoded_column_workflows() {
 
     let decoded = encoded.with_decoded_column("kind_roundtrip", "kind_id", &codebook).unwrap();
     assert_eq!(decoded.series("kind_roundtrip").unwrap().to_strings_strict().unwrap(), vec!["b", "a", "c", "a"]);
+}
+
+#[test]
+fn test_with_encoded_column_rejects_missing_input_column_with_canonical_context() {
+    let df =
+        DataFrame::from_columns([("kind", crate::common::unnamed_series(&["b", "a", "c", "a"]).unwrap())]).unwrap();
+    let codebook = df.codebook("kind").unwrap();
+
+    let err = df.with_encoded_column("kind_id", "missing", &codebook).unwrap_err();
+
+    crate::common::assert_missing_column_error(&err, "missing");
+    assert_eq!(err.operation(), "dataframe::with_encoded_column");
+    assert_eq!(crate::common::error_context_value(&err, "input_column"), None);
+}
+
+#[test]
+fn test_with_decoded_column_rejects_missing_input_column_with_canonical_context() {
+    let df = DataFrame::from_columns([("kind_id", crate::common::unnamed_series(&[1i32, 0, 2, 0]).unwrap())]).unwrap();
+    let codebook = DataFrame::from_columns([("kind", crate::common::unnamed_series(&["b", "a", "c"]).unwrap())])
+        .unwrap()
+        .codebook("kind")
+        .unwrap();
+
+    let err = df.with_decoded_column("kind", "missing", &codebook).unwrap_err();
+
+    crate::common::assert_missing_column_error(&err, "missing");
+    assert_eq!(err.operation(), "dataframe::with_decoded_column");
+    assert_eq!(crate::common::error_context_value(&err, "input_column"), None);
 }
 
 // ===========================================================================

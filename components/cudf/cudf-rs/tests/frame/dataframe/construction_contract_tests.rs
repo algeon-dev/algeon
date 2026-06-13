@@ -2,7 +2,7 @@
 //!
 //! These cases protect the rule that `DataFrame` is the schema authority:
 //! constructors take explicit output names, and `Series` values are nameless.
-use cudf::{DataFrame, ErrorKind, Runtime, Series, testing::prelude::*};
+use cudf::{DataFrame, ErrorCode, ErrorKind, Runtime, Series, testing::prelude::*};
 
 use crate::common::{assert_duplicate_name_error, column_from_slice, error_context_value};
 
@@ -10,13 +10,14 @@ fn assert_length_mismatch_contract(
     err: &cudf::Error,
     operation: &str,
     expected_name: &str,
-    column_rows: &str,
+    actual_rows: &str,
     expected_rows: &str,
 ) {
-    assert_eq!(err.kind(), ErrorKind::InvalidOperation);
+    assert_eq!(err.code(), ErrorCode::ColumnLengthMismatch);
+    assert_eq!(err.kind(), ErrorKind::InvalidInput);
     assert_eq!(err.operation(), operation);
     assert_eq!(error_context_value(err, "column_name"), Some(expected_name));
-    assert_eq!(error_context_value(err, "column_rows"), Some(column_rows));
+    assert_eq!(error_context_value(err, "actual_rows"), Some(actual_rows));
     assert_eq!(error_context_value(err, "expected_rows"), Some(expected_rows));
 }
 
@@ -52,14 +53,35 @@ fn test_from_columns_rejects_duplicate_names() {
 
     let err = DataFrame::from_columns([("dup", a1), ("dup", a2)]).unwrap_err();
     assert_duplicate_name_error(&err, "dup");
+    assert_eq!(error_context_value(&err, "column_name_count"), Some("2"));
 }
 
 #[test]
 fn test_from_columns_empty_iterator() {
     let err = DataFrame::from_columns(Vec::<(&str, Series)>::new()).unwrap_err();
-    assert_eq!(err.kind(), ErrorKind::InvalidOperation);
+    assert_eq!(err.code(), ErrorCode::EmptyConstructionRequiresRuntime);
+    assert_eq!(err.kind(), ErrorKind::ExecutionContext);
     assert_eq!(err.operation(), "dataframe::from_columns");
     assert!(err.message().contains("requires an explicit runtime"), "unexpected error: {err}");
+}
+
+#[test]
+fn test_from_named_series_uses_explicit_names() {
+    let source = crate::common::series::<i32>("source_name", &[7, 8, 9]).unwrap();
+
+    let df = DataFrame::from_named_series([("schema_name", source)]).unwrap();
+    let projected = df.series("schema_name").unwrap();
+    assert_eq!(projected.to_vec_strict::<i32>().unwrap(), vec![7, 8, 9]);
+    assert_eq!(df.column_names(), vec!["schema_name"]);
+}
+
+#[test]
+fn test_from_named_series_matches_from_columns_contracts() {
+    let a = crate::common::series::<i32>("a", &[1, 2, 3]).unwrap();
+    let b = crate::common::series::<i32>("b", &[1, 2]).unwrap();
+
+    let err = DataFrame::from_named_series([("x", a), ("y", b)]).unwrap_err();
+    assert_length_mismatch_contract(&err, "dataframe::from_named_series", "y", "2", "3");
 }
 
 #[test]

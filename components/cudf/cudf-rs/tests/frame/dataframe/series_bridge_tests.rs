@@ -4,7 +4,7 @@
 
 use std::sync::Arc;
 
-use cudf::{DataFrame, ErrorKind, Series, TypeId, testing::prelude::*};
+use cudf::{DataFrame, ErrorCode, ErrorKind, Series, TypeId, testing::prelude::*};
 
 use crate::common::{assert_duplicate_name_error, assert_missing_column_error, error_context_value};
 
@@ -77,9 +77,10 @@ fn test_from_columns_rejects_length_mismatch_dynamic_iterator() {
 
     assert!(result.is_err());
     let err = result.unwrap_err();
-    assert_eq!(err.kind(), ErrorKind::InvalidOperation);
+    assert_eq!(err.code(), ErrorCode::ColumnLengthMismatch);
+    assert_eq!(err.kind(), ErrorKind::InvalidInput);
     assert_eq!(error_context_value(&err, "column_name"), Some("y"));
-    assert_eq!(error_context_value(&err, "column_rows"), Some("2"));
+    assert_eq!(error_context_value(&err, "actual_rows"), Some("2"));
     assert_eq!(error_context_value(&err, "expected_rows"), Some("3"));
 }
 
@@ -115,7 +116,8 @@ fn test_from_columns_with_str_keys() {
 #[test]
 fn test_from_columns_empty_iterator() {
     let err = DataFrame::from_columns(std::iter::empty::<(&str, Series)>()).unwrap_err();
-    assert_eq!(err.kind(), ErrorKind::InvalidOperation);
+    assert_eq!(err.code(), ErrorCode::EmptyConstructionRequiresRuntime);
+    assert_eq!(err.kind(), ErrorKind::ExecutionContext);
     assert_eq!(err.operation(), "dataframe::from_columns");
     assert!(err.message().contains("requires an explicit runtime"), "unexpected error: {err}");
 }
@@ -128,7 +130,7 @@ fn test_from_columns_rejects_duplicates() {
     let result = DataFrame::from_columns(vec![("dup", a), ("dup", b)]);
 
     assert!(result.is_err());
-    assert_eq!(result.unwrap_err().kind(), ErrorKind::InvalidOperation);
+    assert_eq!(result.unwrap_err().kind(), ErrorKind::InvalidInput);
 }
 
 #[test]
@@ -139,7 +141,7 @@ fn test_from_columns_rejects_length_mismatch() {
     let result = DataFrame::from_columns(vec![("x", a), ("y", b)]);
 
     assert!(result.is_err());
-    assert_eq!(result.unwrap_err().kind(), ErrorKind::InvalidOperation);
+    assert_eq!(result.unwrap_err().kind(), ErrorKind::InvalidInput);
 }
 
 // ---------------------------------------------------------------------------

@@ -161,7 +161,7 @@ fn frame_submodules_expose_specialized_high_level_types() {
 }
 
 #[test]
-fn core_and_runtime_modules_keep_explicit_compatibility_surface() {
+fn core_and_runtime_modules_keep_explicit_domain_surface() {
     use cudf::{
         core::{
             Column, CudfType, DataType, DeviceBuffer, DeviceMemoryResource, DeviceSlice, Error, ErrorKind, ErrorStatus,
@@ -194,7 +194,7 @@ fn core_and_runtime_modules_keep_explicit_compatibility_surface() {
     assert_device_slice(None);
 
     let _ = DataType::new(TypeId::Int32);
-    let _ = Error::new(ErrorKind::InvalidOperation, "surface smoke");
+    let _ = Error::new(ErrorKind::InvalidInput, "surface smoke");
     let _ = ErrorStatus::Permanent;
     let _ = NullEquality::Equal;
     let _ = NullPolicy::Include;
@@ -208,6 +208,7 @@ fn hidden_internal_reexports_are_not_publicly_importable() {
     t.compile_fail("tests/public_api/ui/no_into_with_column_expr.rs");
     t.compile_fail("tests/public_api/ui/no_root_debug_validity_helper.rs");
     t.compile_fail("tests/public_api/ui/no_arrow_debug_triggers.rs");
+    t.compile_fail("tests/public_api/ui/no_internal_testing_hooks_modules.rs");
     t.compile_fail("tests/public_api/ui/no_core_view_types.rs");
     t.compile_fail("tests/public_api/ui/no_column_view_method.rs");
     t.compile_fail("tests/public_api/ui/no_table_view_method.rs");
@@ -219,6 +220,8 @@ fn hidden_internal_reexports_are_not_publicly_importable() {
     t.compile_fail("tests/public_api/ui/no_series_string_scalar_aliases.rs");
     t.compile_fail("tests/public_api/ui/no_series_bitwise_operator_overloads.rs");
     t.compile_fail("tests/public_api/ui/no_legacy_result_type_names.rs");
+    t.compile_fail("tests/public_api/ui/no_legacy_error_kind_names.rs");
+    t.compile_fail("tests/public_api/ui/no_legacy_error_code_names.rs");
     t.compile_fail("tests/public_api/ui/no_execution_context_type.rs");
     t.compile_fail("tests/public_api/ui/no_root_dataframe_specialized_types.rs");
     t.compile_fail("tests/public_api/ui/no_root_factorization_types.rs");

@@ -5,7 +5,7 @@
 //!
 //! All tests require a GPU.
 
-use cudf::{DataType, TimestampResolution, TypeId};
+use cudf::{DataType, ErrorCode, ErrorKind, TimestampResolution, TypeId};
 
 // ===========================================================================
 // Integer width widening (lossless)
@@ -298,12 +298,17 @@ fn test_to_numeric_bool_to_i32() {
 fn test_to_numeric_rejects_non_numeric_target() {
     let s = crate::common::series::<i32>("x", &[1, 2]).unwrap();
     let err = s.to_numeric(TypeId::String).unwrap_err();
-    assert_eq!(err.kind(), cudf::ErrorKind::NotSupported);
+    assert_eq!(err.kind(), ErrorKind::Unsupported);
+    assert_eq!(err.code(), ErrorCode::UnsupportedDtype);
+    assert_eq!(err.operation(), "series::to_numeric");
+    assert_eq!(crate::common::error_context_value(&err, "type_id"), Some("string"));
 }
 
 #[test]
 fn test_to_numeric_rejects_timestamp_target() {
     let s = crate::common::series::<i32>("x", &[1, 2]).unwrap();
     let err = s.to_numeric(TypeId::TimestampMicroseconds).unwrap_err();
-    assert_eq!(err.kind(), cudf::ErrorKind::NotSupported);
+    assert_eq!(err.kind(), ErrorKind::Unsupported);
+    assert_eq!(err.code(), ErrorCode::UnsupportedDtype);
+    assert_eq!(err.operation(), "series::to_numeric");
 }

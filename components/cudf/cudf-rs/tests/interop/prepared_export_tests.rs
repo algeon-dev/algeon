@@ -26,7 +26,7 @@ use rapids_interop::{
 };
 use tempfile::TempDir;
 
-use crate::common::{self, column_from_slice, lock_event_observation};
+use crate::common::{self, column_from_slice, interop_error_context_value, lock_event_observation};
 
 const SKIP_MULTI_GPU_ENV: &str = "CUDF_SKIP_MULTI_GPU";
 
@@ -413,6 +413,10 @@ mod lease_contracts {
         common::set_current_device(device0);
         let err = series.try_prepare_device_column_export_with_event(&wrong_device_event).unwrap_err();
         assert_eq!(err.kind(), InteropErrorKind::ReadinessMismatch);
+        assert_eq!(interop_error_context_value(&err, "left_device"), Some(device0.ordinal().to_string().as_str()));
+        assert_eq!(interop_error_context_value(&err, "right_device"), Some(device1.ordinal().to_string().as_str()));
+        assert_eq!(interop_error_context_value(&err, "producer_device"), None);
+        assert_eq!(interop_error_context_value(&err, "event_device"), None);
     }
 
     #[test]
@@ -729,6 +733,121 @@ mod lease_contracts {
 
 mod device_export_contracts {
     use super::*;
+
+    #[test]
+    fn projection_active_range_overflow_hook_uses_row_count_context() {
+        let err = cudf::testing::trigger_interop_projection_active_range_overflow_for_test().unwrap_err();
+        let expected = usize::MAX.to_string();
+
+        assert_eq!(err.kind(), InteropErrorKind::InvalidView);
+        assert_eq!(
+            interop_error_context_value(&err, "operation"),
+            Some("testing::interop::projection::active_range_overflow")
+        );
+        assert_eq!(interop_error_context_value(&err, "resource"), Some("row_range"));
+        assert_eq!(interop_error_context_value(&err, "reason"), Some("end_overflowed_usize"));
+        assert_eq!(interop_error_context_value(&err, "offset"), Some(expected.as_str()));
+        assert_eq!(interop_error_context_value(&err, "row_count"), Some("1"));
+        assert_eq!(interop_error_context_value(&err, "len"), None);
+    }
+
+    #[test]
+    fn projection_negative_offset_hook_uses_offset_contract() {
+        let err = cudf::testing::trigger_interop_projection_negative_offset_for_test().unwrap_err();
+
+        assert_eq!(err.kind(), InteropErrorKind::InvalidView);
+        assert_eq!(
+            interop_error_context_value(&err, "operation"),
+            Some("testing::interop::projection::negative_offset")
+        );
+        assert_eq!(interop_error_context_value(&err, "resource"), Some("offset"));
+        assert_eq!(interop_error_context_value(&err, "reason"), Some("negative_value"));
+        assert_eq!(
+            interop_error_context_value(&err, "remedy"),
+            Some("normalize the view so offset >= 0 before projection")
+        );
+        assert_eq!(interop_error_context_value(&err, "offset"), Some("-1"));
+    }
+
+    #[test]
+    fn projection_missing_string_offsets_child_hook_uses_child_count_contract() {
+        let err = cudf::testing::trigger_interop_projection_missing_string_offsets_child_for_test().unwrap_err();
+
+        assert_eq!(err.kind(), InteropErrorKind::InvalidView);
+        assert_eq!(
+            interop_error_context_value(&err, "operation"),
+            Some("testing::interop::projection::missing_string_offsets_child")
+        );
+        assert_eq!(interop_error_context_value(&err, "resource"), Some("child_count"));
+        assert_eq!(interop_error_context_value(&err, "reason"), Some("requires_offsets_child"));
+        assert_eq!(interop_error_context_value(&err, "type_id"), Some("string"));
+        assert_eq!(interop_error_context_value(&err, "child_count"), Some("0"));
+        assert_eq!(interop_error_context_value(&err, "required_child_count"), Some("1"));
+        assert_eq!(interop_error_context_value(&err, "num_children"), None);
+    }
+
+    #[test]
+    fn projection_list_offsets_width_mismatch_hook_uses_layout_contract() {
+        let err = cudf::testing::trigger_interop_projection_list_offsets_width_mismatch_for_test().unwrap_err();
+
+        assert_eq!(err.kind(), InteropErrorKind::InvalidView);
+        assert_eq!(
+            interop_error_context_value(&err, "operation"),
+            Some("testing::interop::projection::list_offsets_width_mismatch")
+        );
+        assert_eq!(interop_error_context_value(&err, "resource"), Some("offsets_layout"));
+        assert_eq!(interop_error_context_value(&err, "reason"), Some("requires_i32_width"));
+        assert_eq!(interop_error_context_value(&err, "actual_width_bytes"), Some("8"));
+        assert_eq!(interop_error_context_value(&err, "required_width_bytes"), Some("4"));
+        assert_eq!(interop_error_context_value(&err, "offsets_elem_size"), None);
+    }
+
+    #[test]
+    fn projection_dictionary_indices_width_mismatch_hook_uses_layout_contract() {
+        let err = cudf::testing::trigger_interop_projection_dictionary_indices_width_mismatch_for_test().unwrap_err();
+
+        assert_eq!(err.kind(), InteropErrorKind::InvalidView);
+        assert_eq!(
+            interop_error_context_value(&err, "operation"),
+            Some("testing::interop::projection::dictionary_indices_width_mismatch")
+        );
+        assert_eq!(interop_error_context_value(&err, "resource"), Some("indices_layout"));
+        assert_eq!(interop_error_context_value(&err, "reason"), Some("requires_i32_width"));
+        assert_eq!(interop_error_context_value(&err, "actual_width_bytes"), Some("2"));
+        assert_eq!(interop_error_context_value(&err, "required_width_bytes"), Some("4"));
+        assert_eq!(interop_error_context_value(&err, "indices_elem_size"), None);
+    }
+
+    #[test]
+    fn projection_host_offsets_too_small_hook_uses_offsets_range_contract() {
+        let err = cudf::testing::trigger_interop_projection_host_offsets_too_small_for_test().unwrap_err();
+
+        assert_eq!(err.kind(), InteropErrorKind::InvalidView);
+        assert_eq!(
+            interop_error_context_value(&err, "operation"),
+            Some("testing::interop::projection::host_offsets_too_small")
+        );
+        assert_eq!(interop_error_context_value(&err, "resource"), Some("offsets_range"));
+        assert_eq!(interop_error_context_value(&err, "reason"), Some("too_small_for_active_range"));
+        assert_eq!(interop_error_context_value(&err, "offset"), Some("3"));
+        assert_eq!(interop_error_context_value(&err, "row_count"), Some("2"));
+        assert_eq!(interop_error_context_value(&err, "offset_count"), Some("5"));
+        assert_eq!(interop_error_context_value(&err, "offsets_len"), None);
+    }
+
+    #[test]
+    fn projection_missing_null_mask_hook_uses_null_mask_contract() {
+        let err = cudf::testing::trigger_interop_projection_missing_null_mask_for_test().unwrap_err();
+
+        assert_eq!(err.kind(), InteropErrorKind::InvalidView);
+        assert_eq!(
+            interop_error_context_value(&err, "operation"),
+            Some("testing::interop::projection::missing_null_mask")
+        );
+        assert_eq!(interop_error_context_value(&err, "resource"), Some("null_mask_buffer"));
+        assert_eq!(interop_error_context_value(&err, "reason"), Some("missing_for_nullable_column"));
+        assert_eq!(interop_error_context_value(&err, "row_count"), Some("3"));
+    }
 
     #[test]
     fn helper_built_exports_use_explicit_runtime_binding_and_mixed_device_exports_are_rejected() {

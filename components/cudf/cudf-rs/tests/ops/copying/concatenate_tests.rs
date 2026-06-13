@@ -1,9 +1,9 @@
 //! Tests for concatenation operations.
-use cudf::{ErrorKind, core::Table, ops::concatenate, testing::prelude::*};
+use cudf::{ErrorCode, ErrorKind, core::Table, ops::concatenate, testing::prelude::*};
 
 use crate::common::{
-    last_exec_mr_value, last_exec_stream_value, last_sync_stream_value, reset_exec_observation, reset_sync_observation,
-    sample_runtime,
+    error_context_value, last_exec_mr_value, last_exec_stream_value, last_sync_stream_value, reset_exec_observation,
+    reset_sync_observation, sample_runtime,
 };
 
 #[test]
@@ -24,8 +24,11 @@ fn test_concatenate_columns() {
 #[test]
 fn test_concatenate_columns_rejects_empty_input() {
     let err = concatenate::concatenate_columns(&[]).unwrap_err();
-    assert_eq!(err.kind(), ErrorKind::InvalidOperation);
+    assert_eq!(err.kind(), ErrorKind::Unsupported);
+    assert_eq!(err.code(), ErrorCode::UnsupportedOperation);
     assert_eq!(err.operation(), "concatenate::concatenate_columns");
+    assert_eq!(error_context_value(&err, "reason"), Some("empty_input"));
+    assert_eq!(error_context_value(&err, "remedy"), Some("provide at least one input column"));
     assert!(err.message().contains("at least one input column"), "unexpected error: {err}");
 }
 
@@ -57,9 +60,83 @@ fn test_concatenate_tables() {
 #[test]
 fn test_concatenate_tables_rejects_empty_input() {
     let err = concatenate::concatenate_tables(&[]).unwrap_err();
-    assert_eq!(err.kind(), ErrorKind::InvalidOperation);
+    assert_eq!(err.kind(), ErrorKind::Unsupported);
+    assert_eq!(err.code(), ErrorCode::UnsupportedOperation);
     assert_eq!(err.operation(), "concatenate::concatenate_tables");
+    assert_eq!(error_context_value(&err, "reason"), Some("empty_input"));
+    assert_eq!(error_context_value(&err, "remedy"), Some("provide at least one input table"));
     assert!(err.message().contains("at least one input table"), "unexpected error: {err}");
+}
+
+#[test]
+fn test_concatenate_columns_rejects_type_mismatch_with_stable_contract() {
+    let rt = sample_runtime();
+    let a = rt.column_from_slice(&[1i32, 2]).unwrap();
+    let b = rt.column_from_strs(&["x", "y"]).unwrap();
+
+    let err = concatenate::concatenate_columns(&[&a.testing_view().unwrap(), &b.testing_view().unwrap()]).unwrap_err();
+
+    assert_eq!(err.kind(), ErrorKind::InvalidInput);
+    assert_eq!(err.code(), ErrorCode::TypeMismatch);
+    assert_eq!(err.operation(), "concatenate::concatenate_columns");
+    assert_eq!(error_context_value(&err, "column_index"), Some("1"));
+    assert_eq!(error_context_value(&err, "left_type_id"), Some("int32"));
+    assert_eq!(error_context_value(&err, "right_type_id"), Some("string"));
+}
+
+#[test]
+fn test_concatenate_tables_rejects_column_type_mismatch_with_stable_contract() {
+    let rt = sample_runtime();
+    let left = Table::from_columns(vec![
+        rt.column_from_slice(&[1i32, 2]).unwrap(),
+        rt.column_from_slice(&[10i32, 20]).unwrap(),
+    ])
+    .unwrap();
+    let right = Table::from_columns(vec![
+        rt.column_from_slice(&[3i32, 4]).unwrap(),
+        rt.column_from_slice(&[30i64, 40]).unwrap(),
+    ])
+    .unwrap();
+
+    let err =
+        concatenate::concatenate_tables(&[&left.testing_view().unwrap(), &right.testing_view().unwrap()]).unwrap_err();
+
+    assert_eq!(err.kind(), ErrorKind::InvalidInput);
+    assert_eq!(err.code(), ErrorCode::TypeMismatch);
+    assert_eq!(err.operation(), "concatenate::concatenate_tables");
+    assert_eq!(error_context_value(&err, "column_index"), Some("1"));
+    assert_eq!(error_context_value(&err, "left_type_id"), Some("int32"));
+    assert_eq!(error_context_value(&err, "right_type_id"), Some("int64"));
+}
+
+#[test]
+fn test_testing_hook_locks_concatenate_column_count_limit_contract() {
+    let err = cudf::testing::trigger_concatenate_column_count_limit_error_for_test().unwrap_err();
+
+    assert_eq!(err.kind(), ErrorKind::Unsupported);
+    assert_eq!(err.code(), ErrorCode::UnsupportedOperation);
+    assert_eq!(err.operation(), "concatenate::concatenate_columns");
+    assert_eq!(err.message(), "number of input columns exceeds i32::MAX");
+    assert_eq!(error_context_value(&err, "resource"), Some("input_columns"));
+    assert_eq!(error_context_value(&err, "reason"), Some("exceeds_i32_max"));
+    assert_eq!(error_context_value(&err, "column_count"), Some(usize::MAX.to_string().as_str()));
+    assert_eq!(error_context_value(&err, "remedy"), Some("reduce column_count to fit within i32::MAX"));
+    assert_eq!(error_context_value(&err, "num_columns"), None);
+}
+
+#[test]
+fn test_testing_hook_locks_concatenate_table_count_limit_contract() {
+    let err = cudf::testing::trigger_concatenate_table_count_limit_error_for_test().unwrap_err();
+
+    assert_eq!(err.kind(), ErrorKind::Unsupported);
+    assert_eq!(err.code(), ErrorCode::UnsupportedOperation);
+    assert_eq!(err.operation(), "concatenate::concatenate_tables");
+    assert_eq!(err.message(), "number of input tables exceeds i32::MAX");
+    assert_eq!(error_context_value(&err, "resource"), Some("input_tables"));
+    assert_eq!(error_context_value(&err, "reason"), Some("exceeds_i32_max"));
+    assert_eq!(error_context_value(&err, "table_count"), Some(usize::MAX.to_string().as_str()));
+    assert_eq!(error_context_value(&err, "remedy"), Some("reduce table_count to fit within i32::MAX"));
+    assert_eq!(error_context_value(&err, "num_tables"), None);
 }
 
 #[test]

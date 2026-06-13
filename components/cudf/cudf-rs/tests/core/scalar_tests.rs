@@ -1,6 +1,6 @@
-use cudf::TypeId;
+use cudf::{ErrorCode, ErrorKind, TypeId};
 
-use crate::common::scalar;
+use crate::common::{error_context_value, scalar};
 
 #[test]
 fn test_string_scalar_value_round_trip() {
@@ -77,13 +77,66 @@ fn test_string_scalar_data_type() {
 }
 
 #[test]
+fn test_string_scalar_rejects_interior_null_bytes_with_stable_code() {
+    let err = crate::common::with_test_runtime(|rt| rt.string_scalar("a\0b")).unwrap_err();
+    assert_eq!(err.kind(), ErrorKind::InvalidInput);
+    assert_eq!(err.code(), ErrorCode::InvalidInput);
+    assert_eq!(err.operation(), "scalar::from_str_in_domain");
+    assert_eq!(error_context_value(&err, "resource"), Some("string_scalar"));
+    assert_eq!(error_context_value(&err, "reason"), Some("interior_null_byte"));
+}
+
+#[test]
 fn test_type_mismatch_value_extraction() {
     let s = scalar(42i32).unwrap();
-    assert!(s.value::<f64>().is_err());
+    let err = s.value::<f64>().unwrap_err();
+    assert_eq!(err.kind(), ErrorKind::InvalidInput);
+    assert_eq!(err.code(), ErrorCode::TypeMismatch);
+    assert_eq!(err.operation(), "scalar::value");
+    assert_eq!(error_context_value(&err, "left_type_id"), Some("int32"));
+    assert_eq!(error_context_value(&err, "right_type_id"), Some("float64"));
+    assert_eq!(error_context_value(&err, "actual_type_id"), None);
+    assert_eq!(error_context_value(&err, "requested_type_id"), None);
 }
 
 #[test]
 fn test_string_scalar_numeric_value_fails() {
     let s = crate::common::string_scalar("x").unwrap();
-    assert!(s.value::<i32>().is_err());
+    let err = s.value::<i32>().unwrap_err();
+    assert_eq!(err.kind(), ErrorKind::InvalidInput);
+    assert_eq!(err.code(), ErrorCode::TypeMismatch);
+    assert_eq!(err.operation(), "scalar::value");
+    assert_eq!(error_context_value(&err, "left_type_id"), Some("string"));
+    assert_eq!(error_context_value(&err, "right_type_id"), Some("int32"));
+    assert_eq!(error_context_value(&err, "actual_type_id"), None);
+    assert_eq!(error_context_value(&err, "requested_type_id"), None);
+}
+
+#[test]
+fn test_numeric_scalar_string_value_fails_with_type_mismatch_contract() {
+    let s = scalar(42i32).unwrap();
+    let err = s.string_value().unwrap_err();
+    assert_eq!(err.kind(), ErrorKind::InvalidInput);
+    assert_eq!(err.code(), ErrorCode::TypeMismatch);
+    assert_eq!(err.operation(), "scalar::string_value");
+    assert_eq!(error_context_value(&err, "left_type_id"), Some("int32"));
+    assert_eq!(error_context_value(&err, "right_type_id"), Some("string"));
+    assert_eq!(error_context_value(&err, "actual_type_id"), None);
+    assert_eq!(error_context_value(&err, "requested_type_id"), None);
+}
+
+#[test]
+fn test_string_scalar_negative_length_uses_stable_foreign_contract() {
+    let err = cudf::testing::trigger_negative_string_scalar_length_for_test().unwrap_err();
+
+    assert_eq!(err.kind(), ErrorKind::InvariantViolation);
+    assert_eq!(err.code(), ErrorCode::InvariantViolation);
+    assert_eq!(err.operation(), "scalar::string_value");
+    assert_eq!(error_context_value(&err, "resource"), Some("string_scalar_value"));
+    assert_eq!(error_context_value(&err, "reason"), Some("negative_string_length"));
+    assert_eq!(error_context_value(&err, "raw_len"), Some("-1"));
+    assert_eq!(
+        error_context_value(&err, "remedy"),
+        Some("ensure the foreign scalar backend returns a non-negative string length")
+    );
 }

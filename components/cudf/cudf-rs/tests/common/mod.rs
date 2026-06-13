@@ -5,7 +5,7 @@ use std::{
 };
 
 use cudf::{
-    DataFrame, DataType, DeviceId, Error, ErrorKind, HostColumnData, Runtime, Series, TypeId,
+    DataFrame, DataType, DeviceId, Error, ErrorCode, ErrorKind, HostColumnData, Runtime, Series, TypeId,
     core::{Column, CudfType, DeviceBuffer, Scalar},
     runtime::CudaStream,
     testing::prelude::*,
@@ -16,6 +16,7 @@ use cudf_sys::{
     cudf_test_event_stream_wait_call_count_for_stream_raw, cudf_test_exec_last_device, cudf_test_exec_last_mr_raw,
     cudf_test_exec_last_stream_value, cudf_test_exec_last_sync_stream_value, cudf_test_exec_reset_observation,
 };
+use rapids_interop::InteropError;
 
 #[allow(dead_code)]
 pub fn sample_df() -> DataFrame {
@@ -170,10 +171,11 @@ pub fn dataframe_from_columns(names: Vec<String>, columns: Vec<Column>) -> cudf:
     let operation = "dataframe::new";
 
     if names.len() != columns.len() {
-        return Err(Error::new(ErrorKind::InvalidOperation, "number of names must equal number of columns")
+        return Err(Error::new(ErrorKind::InvalidInput, "number of names must equal number of columns")
+            .with_code(ErrorCode::ColumnLengthMismatch)
             .with_operation(operation)
-            .with_context("names_count", names.len().to_string())
-            .with_context("columns_count", columns.len().to_string()));
+            .with_context("column_name_count", names.len().to_string())
+            .with_context("table_column_count", columns.len().to_string()));
     }
 
     if names.is_empty() {
@@ -212,6 +214,19 @@ pub fn fail_next_column_view_metadata_read() {
 }
 
 #[allow(dead_code)]
+pub fn arm_next_io_metadata_fault(fault: i32) {
+    unsafe {
+        cudf_sys::cudf_test_io_reset_metadata_fault();
+        cudf_sys::cudf_test_io_set_next_metadata_fault(fault);
+    }
+}
+
+#[allow(dead_code)]
+pub fn reset_io_metadata_fault() {
+    unsafe { cudf_sys::cudf_test_io_reset_metadata_fault() };
+}
+
+#[allow(dead_code)]
 pub fn reset_sync_observation() {
     unsafe { cudf_test_exec_reset_observation() };
 }
@@ -224,6 +239,21 @@ pub fn reset_dependency_observation() {
 #[allow(dead_code)]
 pub fn reset_row_predicate_observation() {
     unsafe { cudf_sys::cudf_test_row_predicate_reset_observation() };
+}
+
+#[allow(dead_code)]
+pub fn arm_next_groupby_negative_total_columns_fault() {
+    unsafe { cudf_sys::cudf_test_groupby_fail_next_negative_total_columns() };
+}
+
+#[allow(dead_code)]
+pub fn arm_next_table_view_negative_num_columns_fault() {
+    unsafe { cudf_sys::cudf_test_table_view_fail_next_negative_num_columns() };
+}
+
+#[allow(dead_code)]
+pub fn arm_next_table_view_negative_num_rows_fault() {
+    unsafe { cudf_sys::cudf_test_table_view_fail_next_negative_num_rows() };
 }
 
 #[allow(dead_code)]
@@ -387,15 +417,23 @@ pub fn error_context_value<'a>(err: &'a cudf::Error, key: &str) -> Option<&'a st
 }
 
 #[allow(dead_code)]
+pub fn interop_error_context_value<'a>(err: &'a InteropError, key: &str) -> Option<&'a str> {
+    err.context().iter().find_map(|(ctx_key, ctx_value)| (*ctx_key == key).then_some(ctx_value.as_str()))
+}
+
+#[allow(dead_code)]
 pub fn assert_missing_column_error(err: &cudf::Error, expected_column: &str) {
     assert_eq!(err.kind(), cudf::ErrorKind::NotFound);
+    assert_eq!(err.code(), ErrorCode::MissingColumn);
     assert_eq!(error_context_value(err, "column_name"), Some(expected_column));
 }
 
 #[allow(dead_code)]
 pub fn assert_duplicate_name_error(err: &cudf::Error, expected_name: &str) {
-    assert_eq!(err.kind(), cudf::ErrorKind::InvalidOperation);
-    let duplicate_name =
-        error_context_value(err, "duplicate_name").or_else(|| error_context_value(err, "duplicate_column"));
-    assert_eq!(duplicate_name, Some(expected_name));
+    assert_eq!(err.kind(), cudf::ErrorKind::InvalidInput);
+    assert_eq!(err.code(), ErrorCode::DuplicateColumnName);
+    assert_eq!(error_context_value(err, "duplicate_name"), Some(expected_name));
+    assert_eq!(error_context_value(err, "resource"), Some("column_name"));
+    assert!(error_context_value(err, "reason").is_some(), "duplicate-name contract should expose a reason");
+    assert!(error_context_value(err, "remedy").is_some(), "duplicate-name contract should expose a remedy");
 }

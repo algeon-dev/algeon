@@ -1,13 +1,26 @@
 //! Tests for DataFrame I/O integration.
+#[cfg(unix)]
+use std::os::unix::ffi::OsStringExt;
+
 use cudf::{
-    DataFrame, ErrorKind,
+    DataFrame, ErrorCode, ErrorKind,
     core::Table,
     frame::dataframe::{CsvReadOptions, CsvWriteOptions, ParquetReadOptions},
     testing::prelude::*,
 };
 use tempfile::TempDir;
 
-use crate::common::{column_from_slice, sample_runtime};
+use crate::common::{
+    arm_next_io_metadata_fault, column_from_slice, error_context_value, reset_io_metadata_fault, sample_runtime,
+};
+
+struct MetadataFaultReset;
+
+impl Drop for MetadataFaultReset {
+    fn drop(&mut self) {
+        reset_io_metadata_fault();
+    }
+}
 
 #[test]
 fn test_read_parquet_returns_dataframe_with_schema() {
@@ -94,7 +107,7 @@ fn test_roundtrip_create_write_read() {
     let path = dir.path().join("roundtrip.parquet");
     let rt = sample_runtime();
 
-    // Create DataFrame → write → read → verify identical.
+    // Create DataFrame -> write -> read -> verify identical.
     let c1 = column_from_slice(&[10i64, 20, 30]).unwrap();
     let c2 = column_from_slice(&[1.0f32, 2.0, 3.0]).unwrap();
     let c3 = column_from_slice(&[7i32, 8, 9]).unwrap();
@@ -177,6 +190,35 @@ fn test_read_csv_with_options_supports_delimiter_and_explicit_names() {
 }
 
 #[test]
+fn test_read_csv_with_options_rejects_explicit_name_count_mismatch_with_stable_contract() {
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("bad_names.csv");
+    let rt = sample_runtime();
+
+    std::fs::write(
+        &path,
+        "1,10
+2,20
+3,30
+",
+    )
+    .unwrap();
+
+    let opts =
+        CsvReadOptions::builder().filepath(&path).has_header(false).column_names(&["only"]).with_runtime(&rt).build();
+    let err = DataFrame::read_csv_with_options(opts).expect_err("explicit column name count mismatch should fail");
+
+    assert_eq!(err.kind(), ErrorKind::InvalidInput);
+    assert_eq!(err.code(), ErrorCode::ColumnLengthMismatch);
+    assert_eq!(err.operation(), "dataframe::read_csv_with_options");
+    assert_eq!(error_context_value(&err, "column_name_count"), Some("1"));
+    assert_eq!(error_context_value(&err, "table_column_count"), Some("2"));
+    assert_eq!(error_context_value(&err, "resource"), Some("column_name_count"));
+    assert_eq!(error_context_value(&err, "reason"), Some("mismatch_with_table_column_count"));
+    assert_eq!(error_context_value(&err, "remedy"), Some("ensure column_name_count matches table_column_count"));
+}
+
+#[test]
 fn test_read_csv_without_header_uses_generated_names() {
     let dir = TempDir::new().unwrap();
     let path = dir.path().join("test_no_header.csv");
@@ -249,7 +291,7 @@ fn test_read_csv_explicit_names_override_header_names() {
     let df = DataFrame::read_csv_with_options(opts).unwrap();
 
     assert_eq!(df.column_names(), vec!["new_a", "new_b"]);
-    // CSV read produces nullable columns; use to_optional_vec.
+    // CSV read-back produces nullable columns; use to_optional_vec.
     assert_eq!(df.series("new_a").unwrap().to_optional_vec::<i64>().unwrap(), vec![Some(7), Some(8)]);
     assert_eq!(df.series("new_b").unwrap().to_optional_vec::<i64>().unwrap(), vec![Some(70), Some(80)]);
 }
@@ -319,6 +361,7 @@ fn test_dataframe_read_csv_nonexistent_file_reports_not_found() {
     let err = DataFrame::read_csv(&rt, "/tmp/nonexistent_cudf_test_file_12345.csv")
         .expect_err("missing CSV file should fail");
 
+    assert_eq!(err.code(), ErrorCode::MissingResource);
     assert_eq!(err.kind(), ErrorKind::NotFound);
 }
 
@@ -328,5 +371,76 @@ fn test_dataframe_read_parquet_nonexistent_file_reports_not_found() {
     let err = DataFrame::read_parquet(&rt, "/tmp/nonexistent_cudf_test_file_12345.parquet")
         .expect_err("missing Parquet file should fail");
 
+    assert_eq!(err.code(), ErrorCode::MissingResource);
     assert_eq!(err.kind(), ErrorKind::NotFound);
+}
+
+#[cfg(unix)]
+#[test]
+fn test_dataframe_read_csv_rejects_non_utf8_path_with_high_level_operation_context() {
+    let rt = sample_runtime();
+    let path = std::ffi::OsString::from_vec(vec![0x66, 0x6f, 0x80, 0x6f]);
+    let err = DataFrame::read_csv(&rt, std::path::PathBuf::from(path))
+        .expect_err("non-UTF8 paths should fail before filesystem access");
+
+    assert_eq!(err.kind(), ErrorKind::InvalidInput);
+    assert_eq!(err.code(), ErrorCode::InvalidInput);
+    assert_eq!(err.operation(), "dataframe::read_csv_with_options");
+    assert_eq!(error_context_value(&err, "called"), Some("io::csv::read_csv"));
+    assert_eq!(error_context_value(&err, "resource"), Some("path"));
+    assert_eq!(error_context_value(&err, "reason"), Some("invalid_utf8"));
+}
+
+#[test]
+fn test_dataframe_read_parquet_rejects_missing_schema_metadata_for_nonempty_table() {
+    let _reset = MetadataFaultReset;
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("missing_names.parquet");
+    let rt = sample_runtime();
+
+    let table = Table::from_columns(vec![column_from_slice(&[1i32, 2, 3]).unwrap()]).unwrap();
+    let write_opts =
+        cudf::io::parquet::ParquetTableWriteOptions::builder().filepath(&path).column_names(&["x"]).build();
+    cudf::io::parquet::write_parquet(&table, &write_opts).unwrap();
+
+    arm_next_io_metadata_fault(cudf_sys::CUDF_TEST_IO_METADATA_FAULT_ZERO_NAME_COUNT);
+    let err = DataFrame::read_parquet(&rt, &path).expect_err("missing schema metadata should fail");
+
+    assert_eq!(err.kind(), ErrorKind::InvariantViolation);
+    assert_eq!(err.code(), ErrorCode::InvariantViolation);
+    assert_eq!(err.operation(), "dataframe::read_parquet_with_options");
+    assert_eq!(error_context_value(&err, "column_name_count"), Some("0"));
+    assert_eq!(error_context_value(&err, "table_column_count"), Some("1"));
+    assert_eq!(error_context_value(&err, "resource"), Some("column_name_count"));
+    assert_eq!(error_context_value(&err, "reason"), Some("missing_reader_schema_names"));
+    assert_eq!(
+        error_context_value(&err, "remedy"),
+        Some("ensure the reader returns one schema name per table column for non-empty results")
+    );
+}
+
+#[test]
+fn test_dataframe_read_parquet_metadata_invalid_utf8_name_uses_canonical_fault_context() {
+    let _reset = MetadataFaultReset;
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("invalid_utf8_name.parquet");
+    let rt = sample_runtime();
+
+    let table = Table::from_columns(vec![column_from_slice(&[1i32, 2, 3]).unwrap()]).unwrap();
+    let write_opts =
+        cudf::io::parquet::ParquetTableWriteOptions::builder().filepath(&path).column_names(&["x"]).build();
+    cudf::io::parquet::write_parquet(&table, &write_opts).unwrap();
+
+    arm_next_io_metadata_fault(cudf_sys::CUDF_TEST_IO_METADATA_FAULT_INVALID_UTF8_NAME);
+    let err = DataFrame::read_parquet(&rt, &path).expect_err("invalid UTF-8 metadata should fail");
+
+    assert_eq!(err.kind(), ErrorKind::InvariantViolation);
+    assert_eq!(err.code(), ErrorCode::InvariantViolation);
+    assert_eq!(err.operation(), "dataframe::read_parquet_with_options");
+    assert_eq!(error_context_value(&err, "called"), Some("io::parquet::read_parquet_table"));
+    assert_eq!(error_context_value(&err, "column_name_count"), Some("1"));
+    assert_eq!(error_context_value(&err, "column_index"), Some("0"));
+    assert_eq!(error_context_value(&err, "resource"), Some("column_name"));
+    assert_eq!(error_context_value(&err, "reason"), Some("invalid_utf8"));
+    assert_eq!(error_context_value(&err, "name_index"), None);
 }

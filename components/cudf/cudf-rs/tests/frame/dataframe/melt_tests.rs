@@ -4,7 +4,7 @@
 
 use cudf::{DataFrame, frame::dataframe::MeltOptions};
 
-use crate::common::assert_missing_column_error;
+use crate::common::{assert_duplicate_name_error, assert_missing_column_error, error_context_value};
 
 // ===========================================================================
 // Basic melt behavior
@@ -198,4 +198,72 @@ fn test_melt_missing_value_var_returns_error() {
     let opts = MeltOptions::builder().id_vars(&["A"]).value_vars(&["nonexistent"]).build();
     let err = df.melt(opts).unwrap_err();
     assert_missing_column_error(&err, "nonexistent");
+}
+
+#[test]
+fn test_melt_rejects_column_in_both_id_vars_and_value_vars() {
+    let a = crate::common::series::<i32>("A", &[1]).unwrap();
+    let b = crate::common::series::<i32>("B", &[2]).unwrap();
+    let df = DataFrame::from_columns([("A", a), ("B", b)]).unwrap();
+
+    let opts = MeltOptions::builder().id_vars(&["A"]).value_vars(&["A", "B"]).build();
+    let err = df.melt(opts).unwrap_err();
+
+    assert_duplicate_name_error(&err, "A");
+    assert_eq!(err.operation(), "dataframe::melt");
+    assert_eq!(error_context_value(&err, "column_name_count"), Some("3"));
+    assert_eq!(error_context_value(&err, "reason"), Some("melt_name_in_both_id_and_value_vars"));
+    assert_eq!(
+        error_context_value(&err, "remedy"),
+        Some("place each melt column in either id_vars or value_vars, not both")
+    );
+}
+
+#[test]
+fn test_melt_rejects_var_name_collision_with_id_var() {
+    let a = crate::common::series::<i32>("A", &[1]).unwrap();
+    let b = crate::common::series::<i32>("B", &[2]).unwrap();
+    let df = DataFrame::from_columns([("A", a), ("B", b)]).unwrap();
+
+    let opts = MeltOptions::builder().id_vars(&["A"]).value_vars(&["B"]).var_name("A").build();
+    let err = df.melt(opts).unwrap_err();
+
+    assert_duplicate_name_error(&err, "A");
+    assert_eq!(err.operation(), "dataframe::melt");
+    assert_eq!(error_context_value(&err, "column_name_count"), Some("3"));
+    assert_eq!(error_context_value(&err, "reason"), Some("melt_var_name_conflicts_with_id_var"));
+    assert_eq!(error_context_value(&err, "remedy"), Some("choose a var_name that does not collide with id_vars"));
+}
+
+#[test]
+fn test_melt_rejects_value_name_collision_with_id_var() {
+    let a = crate::common::series::<i32>("A", &[1]).unwrap();
+    let b = crate::common::series::<i32>("B", &[2]).unwrap();
+    let df = DataFrame::from_columns([("A", a), ("B", b)]).unwrap();
+
+    let opts = MeltOptions::builder().id_vars(&["A"]).value_vars(&["B"]).value_name("A").build();
+    let err = df.melt(opts).unwrap_err();
+
+    assert_duplicate_name_error(&err, "A");
+    assert_eq!(err.operation(), "dataframe::melt");
+    assert_eq!(error_context_value(&err, "column_name_count"), Some("3"));
+    assert_eq!(error_context_value(&err, "reason"), Some("melt_value_name_conflicts_with_id_var"));
+    assert_eq!(error_context_value(&err, "remedy"), Some("choose a value_name that does not collide with id_vars"));
+}
+
+#[test]
+fn test_melt_rejects_same_var_name_and_value_name() {
+    let a = crate::common::series::<i32>("A", &[1]).unwrap();
+    let b = crate::common::series::<i32>("B", &[2]).unwrap();
+    let df = DataFrame::from_columns([("A", a), ("B", b)]).unwrap();
+
+    let opts =
+        MeltOptions::builder().id_vars(&["A"]).value_vars(&["B"]).var_name("melted").value_name("melted").build();
+    let err = df.melt(opts).unwrap_err();
+
+    assert_duplicate_name_error(&err, "melted");
+    assert_eq!(err.operation(), "dataframe::melt");
+    assert_eq!(error_context_value(&err, "column_name_count"), Some("2"));
+    assert_eq!(error_context_value(&err, "reason"), Some("melt_output_names_conflict"));
+    assert_eq!(error_context_value(&err, "remedy"), Some("choose distinct var_name and value_name"));
 }

@@ -5,7 +5,9 @@
 //!
 //! All tests require a GPU.
 
-use cudf::{ErrorKind, TypeId, testing::prelude::*};
+use cudf::{ErrorCode, ErrorKind, TypeId, testing::prelude::*};
+
+use crate::common::error_context_value;
 
 // ===========================================================================
 // to_vec_strict<T> — numeric host materialization (rejects nullable)
@@ -50,7 +52,10 @@ fn test_to_vec_empty() {
 fn test_to_vec_rejects_nullable_data() {
     let s = crate::common::nullable_series::<i32>("x", &[1, 0, 3], &[true, false, true]).unwrap();
     let err = s.to_vec_strict::<i32>().unwrap_err();
-    assert_eq!(err.kind(), ErrorKind::InvalidOperation);
+    assert_eq!(err.kind(), ErrorKind::InvalidInput);
+    assert_eq!(err.code(), ErrorCode::NullUnexpected);
+    assert_eq!(err.operation(), "series::to_vec_strict");
+    assert_eq!(error_context_value(&err, "null_count"), Some("1"));
 }
 
 #[test]
@@ -64,14 +69,18 @@ fn test_to_vec_accepts_masked_column_when_all_rows_valid() {
 fn test_to_vec_type_mismatch_returns_error() {
     let s = crate::common::series::<f64>("x", &[1.0, 2.0]).unwrap();
     let err = s.to_vec_strict::<i32>().unwrap_err();
-    assert_eq!(err.kind(), ErrorKind::TypeError);
+    assert_eq!(err.kind(), ErrorKind::InvalidInput);
+    assert_eq!(err.code(), ErrorCode::TypeMismatch);
+    assert_eq!(err.operation(), "column_view::to_vec");
+    assert_eq!(error_context_value(&err, "left_type_id"), Some("float64"));
+    assert_eq!(error_context_value(&err, "right_type_id"), Some("int32"));
 }
 
 #[test]
 fn test_to_vec_on_string_column_returns_error() {
     let s = crate::common::series("x", &["a", "b"]).unwrap();
     let err = s.to_vec_strict::<i32>().unwrap_err();
-    assert_eq!(err.kind(), ErrorKind::TypeError);
+    assert_eq!(err.kind(), ErrorKind::InvalidInput);
 }
 
 // ===========================================================================
@@ -117,7 +126,11 @@ fn test_to_optional_vec_empty() {
 fn test_to_optional_vec_type_mismatch_returns_error() {
     let s = crate::common::series::<f64>("x", &[1.0]).unwrap();
     let err = s.to_optional_vec::<i32>().unwrap_err();
-    assert_eq!(err.kind(), ErrorKind::TypeError);
+    assert_eq!(err.kind(), ErrorKind::InvalidInput);
+    assert_eq!(err.code(), ErrorCode::TypeMismatch);
+    assert_eq!(err.operation(), "column_view::to_vec");
+    assert_eq!(error_context_value(&err, "left_type_id"), Some("float64"));
+    assert_eq!(error_context_value(&err, "right_type_id"), Some("int32"));
 }
 
 #[test]
@@ -157,7 +170,10 @@ fn test_to_strings_empty() {
 fn test_to_strings_rejects_nullable_data() {
     let s = crate::common::nullable_series("x", &["a", "b"], &[true, false]).unwrap();
     let err = s.to_strings_strict().unwrap_err();
-    assert_eq!(err.kind(), ErrorKind::InvalidOperation);
+    assert_eq!(err.kind(), ErrorKind::InvalidInput);
+    assert_eq!(err.code(), ErrorCode::NullUnexpected);
+    assert_eq!(err.operation(), "series::to_strings_strict");
+    assert_eq!(error_context_value(&err, "null_count"), Some("1"));
 }
 
 #[test]
@@ -171,7 +187,12 @@ fn test_to_strings_accepts_masked_column_when_all_rows_valid() {
 fn test_to_strings_on_numeric_returns_error() {
     let s = crate::common::series::<i32>("x", &[1, 2]).unwrap();
     let err = s.to_strings_strict().unwrap_err();
-    assert_eq!(err.kind(), ErrorKind::TypeError);
+    assert_eq!(err.kind(), ErrorKind::InvalidInput);
+    assert_eq!(err.code(), ErrorCode::TypeMismatch);
+    assert_eq!(err.operation(), "column_view::to_strings_lossy");
+    assert_eq!(error_context_value(&err, "left_type_id"), Some("int32"));
+    assert_eq!(error_context_value(&err, "right_type_id"), Some("string"));
+    assert_eq!(error_context_value(&err, "actual_type_id"), None);
 }
 
 // ===========================================================================
@@ -190,6 +211,18 @@ fn test_to_optional_strings_without_nulls() {
     let s = crate::common::series("x", &["a", "b"]).unwrap();
     let vals = s.to_optional_strings().unwrap();
     assert_eq!(vals, vec![Some("a".to_string()), Some("b".to_string())]);
+}
+
+#[test]
+fn test_to_optional_strings_on_numeric_returns_phase3_type_mismatch_error() {
+    let s = crate::common::series::<i32>("x", &[1, 2]).unwrap();
+    let err = s.to_optional_strings().unwrap_err();
+
+    assert_eq!(err.kind(), ErrorKind::InvalidInput);
+    assert_eq!(err.code(), ErrorCode::TypeMismatch);
+    assert_eq!(err.operation(), "column_view::to_optional_strings");
+    assert_eq!(error_context_value(&err, "left_type_id"), Some("int32"));
+    assert_eq!(error_context_value(&err, "right_type_id"), Some("string"));
 }
 
 // ===========================================================================

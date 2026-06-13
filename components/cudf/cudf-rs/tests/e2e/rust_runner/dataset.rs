@@ -25,7 +25,7 @@ pub fn build_dataframe(dataset: &Dataset) -> cudf::Result<DataFrame> {
     } else if !dataset.json_lines.is_empty() {
         build_json_lines_dataframe(dataset)?
     } else {
-        return Err(cudf::Error::new(cudf::ErrorKind::InvalidOperation, "dataset must define columns or json_lines")
+        return Err(cudf::Error::new(cudf::ErrorKind::InvalidInput, "dataset must define columns or json_lines")
             .with_operation("e2e::build_dataframe")
             .with_context("dataset_id", dataset.id.clone()));
     };
@@ -46,14 +46,14 @@ fn build_column_dataframe(dataset: &Dataset) -> cudf::Result<DataFrame> {
 
 fn build_json_lines_dataframe(dataset: &Dataset) -> cudf::Result<DataFrame> {
     let mut file = NamedTempFile::new().map_err(|error| {
-        cudf::Error::new(cudf::ErrorKind::IoError, error.to_string())
+        cudf::Error::new(cudf::ErrorKind::DependencyFailure, error.to_string())
             .with_operation("e2e::build_json_lines_dataframe")
             .with_context("dataset_id", dataset.id.clone())
     })?;
 
     for line in &dataset.json_lines {
         writeln!(file, "{line}").map_err(|error| {
-            cudf::Error::new(cudf::ErrorKind::IoError, error.to_string())
+            cudf::Error::new(cudf::ErrorKind::DependencyFailure, error.to_string())
                 .with_operation("e2e::build_json_lines_dataframe")
                 .with_context("dataset_id", dataset.id.clone())
         })?;
@@ -97,11 +97,9 @@ fn build_series(runtime: &Runtime, name: &str, dtype: &str, values: &[serde_json
         "float64" => build_numeric_series::<f64>(runtime, name, values, |v| v.as_f64()),
         "bool8" => build_bool_series(runtime, name, values),
         "string" => build_str_series(runtime, name, values),
-        other => {
-            Err(cudf::Error::new(cudf::ErrorKind::InvalidOperation, format!("unsupported manifest dtype: {}", other))
-                .with_operation("e2e::build_series")
-                .with_context("dtype", other.to_string()))
-        },
+        other => Err(cudf::Error::new(cudf::ErrorKind::InvalidInput, format!("unsupported manifest dtype: {}", other))
+            .with_operation("e2e::build_series")
+            .with_context("dtype", other.to_string())),
     }
 }
 
@@ -125,7 +123,7 @@ fn build_numeric_series<T: cudf::CudfType + Default>(
             validity.push(false);
         } else {
             let val = extract(v).ok_or_else(|| {
-                cudf::Error::new(cudf::ErrorKind::InvalidOperation, format!("cannot convert JSON value to {}", name))
+                cudf::Error::new(cudf::ErrorKind::InvalidInput, format!("cannot convert JSON value to {}", name))
                     .with_operation("e2e::build_numeric_series")
                     .with_context("value", v.to_string())
             })?;
@@ -154,7 +152,7 @@ fn build_str_series(runtime: &Runtime, _name: &str, values: &[serde_json::Value]
             validity.push(false);
         } else {
             let s = v.as_str().ok_or_else(|| {
-                cudf::Error::new(cudf::ErrorKind::InvalidOperation, "expected JSON string for string column")
+                cudf::Error::new(cudf::ErrorKind::InvalidInput, "expected JSON string for string column")
                     .with_operation("e2e::build_str_series")
                     .with_context("value", v.to_string())
             })?;
@@ -204,7 +202,7 @@ mod tests {
         })
         .unwrap_err();
 
-        assert_eq!(err.kind(), cudf::ErrorKind::InvalidOperation);
+        assert_eq!(err.kind(), cudf::ErrorKind::InvalidInput);
         assert_eq!(err.operation(), "e2e::build_dataframe");
     }
 }

@@ -1,8 +1,30 @@
 //! Tests for `SortOptions` and the high-level `DataFrame::sort_values`.
 
-use cudf::{DataFrame, ErrorKind, SortOptions, testing::prelude::*};
+use cudf::{DataFrame, ErrorCode, ErrorKind, SortOptions, testing::prelude::*};
 
-use crate::common::{assert_missing_column_error, column_from_slice, column_from_slice_nullable, sample_df};
+use crate::common::{
+    assert_missing_column_error, column_from_slice, column_from_slice_nullable, error_context_value, sample_df,
+};
+
+fn assert_sort_options_validation_error(
+    err: &cudf::Error,
+    operation: &str,
+    reason: &str,
+    remedy: &str,
+    actual_value: &str,
+) {
+    assert_eq!(err.kind(), ErrorKind::Unsupported);
+    assert_eq!(err.code(), ErrorCode::UnsupportedOperation);
+    assert_eq!(err.operation(), operation);
+    assert_eq!(error_context_value(err, "resource"), Some("sort_options"));
+    assert_eq!(error_context_value(err, "reason"), Some(reason));
+    assert_eq!(error_context_value(err, "remedy"), Some(remedy));
+    assert_eq!(error_context_value(err, "keys_count"), Some("1"));
+    assert_eq!(error_context_value(err, "actual_count"), Some(actual_value));
+    assert_eq!(error_context_value(err, "num_keys"), None);
+    assert_eq!(error_context_value(err, "descending_len"), None);
+    assert_eq!(error_context_value(err, "nulls_first_len"), None);
+}
 
 // ---------------------------------------------------------------------------
 // SortOptions defaults
@@ -114,9 +136,14 @@ fn test_sort_values_rejects_mismatched_descending_length() {
     // 1 sort key but 2 descending flags
     let result = df.sort_values(["id"], SortOptions::new().with_descending(vec![true, false]));
 
-    assert!(result.is_err());
     let err = result.unwrap_err();
-    assert_eq!(err.kind(), ErrorKind::InvalidOperation);
+    assert_sort_options_validation_error(
+        &err,
+        "dataframe::sort_values",
+        "descending_length_mismatch",
+        "provide either zero descending flags or exactly one flag per sort key",
+        "2",
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -129,9 +156,14 @@ fn test_sort_values_rejects_mismatched_nulls_first_length() {
     // 1 sort key but 3 nulls_first flags
     let result = df.sort_values(["id"], SortOptions::new().with_nulls_first(vec![true, false, true]));
 
-    assert!(result.is_err());
     let err = result.unwrap_err();
-    assert_eq!(err.kind(), ErrorKind::InvalidOperation);
+    assert_sort_options_validation_error(
+        &err,
+        "dataframe::sort_values",
+        "nulls_first_length_mismatch",
+        "provide either zero nulls_first flags or exactly one flag per sort key",
+        "3",
+    );
 }
 
 // ---------------------------------------------------------------------------

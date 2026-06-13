@@ -28,7 +28,7 @@ use rapids_interop::{
 use static_assertions::assert_impl_all;
 use tempfile::TempDir;
 
-use crate::common::{column_from_slice, lock_event_observation};
+use crate::common::{column_from_slice, interop_error_context_value, lock_event_observation};
 
 assert_impl_all!(Series: TryIntoOwnedDeviceColumnTransfer);
 assert_impl_all!(DataFrame: TryIntoOwnedDeviceTableTransfer);
@@ -941,6 +941,10 @@ fn runtime_release_owned_column_transfer_rejects_wrong_device_stream_synchronous
     let other_runtime = Runtime::builder().with_device(DeviceId::new(1).unwrap()).build().unwrap();
     let err = releaser.release(TransferCompletionAuthority::same_device_stream(other_runtime.stream())).unwrap_err();
     assert_eq!(err.kind(), InteropErrorKind::ReadinessMismatch);
+    assert_eq!(interop_error_context_value(&err, "left_device"), Some("0"));
+    assert_eq!(interop_error_context_value(&err, "right_device"), Some("1"));
+    assert_eq!(interop_error_context_value(&err, "release_device"), None);
+    assert_eq!(interop_error_context_value(&err, "stream_device"), None);
 }
 
 #[test]

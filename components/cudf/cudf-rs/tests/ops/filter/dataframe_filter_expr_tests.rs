@@ -1,10 +1,10 @@
 //! Tests for high-level fused row-predicate filtering entry points.
-use cudf::{DataFrame, DataType, ErrorKind, TypeId, ops::expr::col, testing::prelude::*};
+use cudf::{DataFrame, DataType, ErrorCode, ErrorKind, TypeId, ops::expr::col, testing::prelude::*};
 
 use crate::common::{
     column_from_slice, column_from_strs, column_from_strs_nullable, dataframe_device_ptr, dataframe_from_columns,
-    last_row_predicate_compute_mask_calls, last_row_predicate_filter_calls, last_row_predicate_final_filter_calls,
-    last_row_predicate_mask_api_calls, reset_row_predicate_observation, series,
+    error_context_value, last_row_predicate_compute_mask_calls, last_row_predicate_filter_calls,
+    last_row_predicate_final_filter_calls, last_row_predicate_mask_api_calls, reset_row_predicate_observation, series,
 };
 
 fn edge_df() -> cudf::DataFrame {
@@ -226,7 +226,15 @@ fn test_filter_expr_rejects_unsupported_nodes_before_low_level_filter_runs() {
     reset_row_predicate_observation();
     let err = df.filter_expr(col("sourceId").str().lower().eq("alice")).unwrap_err();
 
-    assert_eq!(err.kind(), ErrorKind::NotSupported);
+    assert_eq!(err.code(), ErrorCode::UnsupportedOperation);
+    assert_eq!(err.kind(), ErrorKind::Unsupported);
+    assert_eq!(error_context_value(&err, "resource"), Some("row_predicate"));
+    assert_eq!(error_context_value(&err, "reason"), Some("unsupported_expr_kind"));
+    assert_eq!(error_context_value(&err, "expr_kind"), Some("string_op"));
+    assert_eq!(
+        error_context_value(&err, "remedy"),
+        Some("rewrite the predicate into currently supported fused-filter operators"),
+    );
     assert_eq!(last_row_predicate_filter_calls(), 0);
     assert_eq!(last_row_predicate_compute_mask_calls(), 0);
     assert_eq!(last_row_predicate_final_filter_calls(), 0);
@@ -240,7 +248,11 @@ fn test_filter_expr_rejects_mixed_type_comparisons_before_low_level_filter_runs(
     reset_row_predicate_observation();
     let err = df.filter_expr(col("sourceId").eq(5i32)).unwrap_err();
 
-    assert_eq!(err.kind(), ErrorKind::NotSupported);
+    assert_eq!(err.code(), ErrorCode::TypeMismatch);
+    assert_eq!(err.kind(), ErrorKind::InvalidInput);
+    assert_eq!(error_context_value(&err, "left_type_id"), Some("string"));
+    assert_eq!(error_context_value(&err, "right_type_id"), Some("int32"));
+    assert_eq!(error_context_value(&err, "operator"), Some("equal"));
     assert_eq!(last_row_predicate_filter_calls(), 0);
     assert_eq!(last_row_predicate_compute_mask_calls(), 0);
     assert_eq!(last_row_predicate_final_filter_calls(), 0);
@@ -253,7 +265,22 @@ fn test_filter_expr_rejects_non_boolean_predicate_output() {
 
     let err = df.filter_expr(col("weight")).unwrap_err();
 
-    assert_eq!(err.kind(), ErrorKind::TypeError);
+    assert_eq!(err.code(), ErrorCode::TypeMismatch);
+    assert_eq!(err.kind(), ErrorKind::InvalidInput);
+    assert_eq!(error_context_value(&err, "left_type_id"), Some("int32"));
+    assert_eq!(error_context_value(&err, "right_type_id"), Some("bool8"));
+}
+
+#[test]
+fn test_filter_expr_rejects_logical_not_on_non_boolean_operand() {
+    let df = edge_df();
+
+    let err = df.filter_expr(!col("weight")).unwrap_err();
+
+    assert_eq!(err.code(), ErrorCode::TypeMismatch);
+    assert_eq!(err.kind(), ErrorKind::InvalidInput);
+    assert_eq!(error_context_value(&err, "left_type_id"), Some("int32"));
+    assert_eq!(error_context_value(&err, "right_type_id"), Some("bool8"));
 }
 
 #[test]

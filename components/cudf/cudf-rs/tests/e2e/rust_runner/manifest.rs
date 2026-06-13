@@ -380,7 +380,7 @@ mod tests {
         assert_eq!(canonical_dtype("object"), "string");
         assert_eq!(canonical_dtype("category"), "dictionary32");
 
-        // Unknown passes through
+        // Unmapped names pass through
         assert_eq!(canonical_dtype("datetime64[ns]"), "datetime64[ns]");
     }
 

@@ -6,9 +6,11 @@
 
 use std::sync::Arc;
 
-use cudf::{DataFrame, ErrorKind, Runtime, Series};
+use cudf::{DataFrame, ErrorCode, ErrorKind, Runtime, Series};
 
-use crate::common::{assert_missing_column_error, dataframe_device_ptr as device_ptr};
+use crate::common::{
+    assert_duplicate_name_error, assert_missing_column_error, dataframe_device_ptr as device_ptr, error_context_value,
+};
 
 /// Helper: build a 3-row, 3-column DataFrame.
 fn sample_df() -> DataFrame {
@@ -62,6 +64,17 @@ fn test_without_columns_nonexistent_column_returns_error() {
     assert!(result.is_err());
     let err = result.unwrap_err();
     assert_missing_column_error(&err, "nonexistent");
+}
+
+#[test]
+fn test_without_columns_duplicate_name_returns_canonical_duplicate_error() {
+    let df = sample_df();
+
+    let err = df.without_columns(["score", "score"]).expect_err("expected duplicate exclusion error");
+
+    assert_duplicate_name_error(&err, "score");
+    assert_eq!(err.operation(), "dataframe::without_columns");
+    assert_eq!(error_context_value(&err, "column_name_count"), Some("2"));
 }
 
 #[test]
@@ -139,20 +152,32 @@ fn test_rename_columns_nonexistent_source_returns_error() {
 fn test_rename_columns_duplicate_target_returns_error() {
     let df = sample_df();
     // Both "id" and "score" renamed to the same target
-    let result = df.rename_columns([("id", "same"), ("score", "same")]);
+    let err = df.rename_columns([("id", "same"), ("score", "same")]).expect_err("expected duplicate rename target");
 
-    assert!(result.is_err());
-    assert_eq!(result.unwrap_err().kind(), ErrorKind::InvalidOperation);
+    assert_duplicate_name_error(&err, "same");
+    assert_eq!(err.operation(), "dataframe::rename_columns");
+    assert_eq!(error_context_value(&err, "column_name_count"), Some("3"));
 }
 
 #[test]
 fn test_rename_columns_target_conflicts_with_existing_unrenamed_column() {
     let df = sample_df();
     // Rename "id" to "flag" — but "flag" already exists and is not being renamed
-    let result = df.rename_columns([("id", "flag")]);
+    let err = df.rename_columns([("id", "flag")]).expect_err("expected conflicting rename target");
 
-    assert!(result.is_err());
-    assert_eq!(result.unwrap_err().kind(), ErrorKind::InvalidOperation);
+    assert_duplicate_name_error(&err, "flag");
+    assert_eq!(err.operation(), "dataframe::rename_columns");
+}
+
+#[test]
+fn test_rename_columns_duplicate_source_returns_canonical_duplicate_error() {
+    let df = sample_df();
+
+    let err = df.rename_columns([("id", "identifier"), ("id", "identifier2")]).expect_err("expected duplicate source");
+
+    assert_duplicate_name_error(&err, "id");
+    assert_eq!(err.operation(), "dataframe::rename_columns");
+    assert_eq!(error_context_value(&err, "column_name_count"), Some("2"));
 }
 
 #[test]
@@ -276,7 +301,13 @@ fn test_with_column_row_count_mismatch_returns_error() {
     let result = df.with_column("x", wrong_len);
 
     assert!(result.is_err());
-    assert_eq!(result.unwrap_err().kind(), ErrorKind::InvalidOperation);
+    let err = result.unwrap_err();
+    assert_eq!(err.code(), ErrorCode::ColumnLengthMismatch);
+    assert_eq!(err.kind(), ErrorKind::InvalidInput);
+    assert_eq!(err.operation(), "dataframe::with_column");
+    assert_eq!(error_context_value(&err, "column_name"), Some("x"));
+    assert_eq!(error_context_value(&err, "actual_rows"), Some("2"));
+    assert_eq!(error_context_value(&err, "expected_rows"), Some("3"));
 }
 
 // ===========================================================================
@@ -352,7 +383,13 @@ fn test_assign_row_count_mismatch_returns_error() {
     let result = df.assign([("x", wrong)]);
 
     assert!(result.is_err());
-    assert_eq!(result.unwrap_err().kind(), ErrorKind::InvalidOperation);
+    let err = result.unwrap_err();
+    assert_eq!(err.code(), ErrorCode::ColumnLengthMismatch);
+    assert_eq!(err.kind(), ErrorKind::InvalidInput);
+    assert_eq!(err.operation(), "dataframe::assign");
+    assert_eq!(error_context_value(&err, "column_name"), Some("x"));
+    assert_eq!(error_context_value(&err, "actual_rows"), Some("1"));
+    assert_eq!(error_context_value(&err, "expected_rows"), Some("3"));
 }
 
 #[test]
@@ -396,7 +433,13 @@ fn test_assign_on_zero_column_frame_rejects_row_count_mismatch() {
     let result = df.assign([("replacement", wrong)]);
 
     assert!(result.is_err());
-    assert_eq!(result.unwrap_err().kind(), ErrorKind::InvalidOperation);
+    let err = result.unwrap_err();
+    assert_eq!(err.code(), ErrorCode::ColumnLengthMismatch);
+    assert_eq!(err.kind(), ErrorKind::InvalidInput);
+    assert_eq!(err.operation(), "dataframe::assign");
+    assert_eq!(error_context_value(&err, "column_name"), Some("replacement"));
+    assert_eq!(error_context_value(&err, "actual_rows"), Some("2"));
+    assert_eq!(error_context_value(&err, "expected_rows"), Some("3"));
 }
 
 #[test]
@@ -472,7 +515,7 @@ fn test_with_column_on_zero_column_frame_rejects_row_count_mismatch() {
     let result = df.with_column("values", values);
 
     assert!(result.is_err());
-    assert_eq!(result.unwrap_err().kind(), ErrorKind::InvalidOperation);
+    assert_eq!(result.unwrap_err().kind(), ErrorKind::InvalidInput);
 }
 
 #[test]
@@ -483,7 +526,7 @@ fn test_with_column_on_zero_column_frame_from_drop_rejects_row_count_mismatch() 
     let result = df.with_column("values", values);
 
     assert!(result.is_err());
-    assert_eq!(result.unwrap_err().kind(), ErrorKind::InvalidOperation);
+    assert_eq!(result.unwrap_err().kind(), ErrorKind::InvalidInput);
 }
 
 #[test]

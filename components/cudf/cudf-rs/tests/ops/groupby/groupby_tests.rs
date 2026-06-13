@@ -1,14 +1,84 @@
 //! Tests for groupby operations.
 use cudf::{
+    ErrorCode, ErrorKind,
     core::Table,
     ops::groupby::{self, AggregationRequest, GroupByAgg, NullPolicy},
     testing::prelude::*,
 };
 
 use crate::common::{
-    column_from_slice, explicit_i32_column, last_exec_mr_value, last_exec_stream_value, last_sync_stream_value,
-    reset_exec_observation, reset_sync_observation,
+    arm_next_groupby_negative_total_columns_fault, column_from_slice, error_context_value, explicit_i32_column,
+    last_exec_mr_value, last_exec_stream_value, last_sync_stream_value, reset_exec_observation, reset_sync_observation,
 };
+
+fn assert_groupby_validation_error(err: &cudf::Error, operation: &str, reason: &str, remedy: &str) {
+    assert_eq!(err.kind(), ErrorKind::Unsupported);
+    assert_eq!(err.code(), ErrorCode::UnsupportedOperation);
+    assert_eq!(err.operation(), operation);
+    assert_eq!(error_context_value(err, "reason"), Some(reason));
+    assert_eq!(error_context_value(err, "remedy"), Some(remedy));
+}
+
+fn assert_ddof_range_validation_error(err: &cudf::Error, operation: &str, request_index: &str, expected_ddof: u32) {
+    assert_groupby_validation_error(
+        err,
+        operation,
+        "ddof_exceeds_i32_range",
+        "use a ddof value within libcudf's i32 range",
+    );
+    assert_eq!(error_context_value(err, "request_index"), Some(request_index));
+    assert_eq!(error_context_value(err, "ddof"), Some(expected_ddof.to_string().as_str()));
+}
+
+#[test]
+fn test_testing_hook_locks_groupby_request_count_limit_contract() {
+    let err = cudf::testing::trigger_groupby_request_count_limit_error_for_test().unwrap_err();
+
+    assert_groupby_validation_error(
+        &err,
+        "groupby::groupby_aggregate",
+        "exceeds_i32_max",
+        "reduce the number of aggregation requests to fit within libcudf's i32 range",
+    );
+    assert_eq!(error_context_value(&err, "resource"), Some("aggregation_requests"));
+    assert_eq!(error_context_value(&err, "request_count"), Some(usize::MAX.to_string().as_str()));
+    assert_eq!(error_context_value(&err, "num_requests"), None);
+}
+
+#[test]
+fn test_testing_hook_locks_groupby_request_agg_count_limit_contract() {
+    let err = cudf::testing::trigger_groupby_request_agg_count_limit_error_for_test().unwrap_err();
+
+    assert_groupby_validation_error(
+        &err,
+        "groupby::groupby_aggregate",
+        "exceeds_i32_max",
+        "reduce the number of aggregations in this request to fit within libcudf's i32 range",
+    );
+    assert_eq!(error_context_value(&err, "resource"), Some("request_aggregations"));
+    assert_eq!(error_context_value(&err, "request_index"), Some("0"));
+    assert_eq!(error_context_value(&err, "request_count"), Some("1"));
+    assert_eq!(error_context_value(&err, "aggregation_count"), Some(usize::MAX.to_string().as_str()));
+    assert_eq!(error_context_value(&err, "num_requests"), None);
+    assert_eq!(error_context_value(&err, "agg_count"), None);
+}
+
+#[test]
+fn test_testing_hook_locks_groupby_total_agg_handle_count_limit_contract() {
+    let err = cudf::testing::trigger_groupby_total_agg_handle_count_limit_error_for_test().unwrap_err();
+
+    assert_groupby_validation_error(
+        &err,
+        "groupby::groupby_aggregate",
+        "exceeds_i32_max",
+        "reduce the total number of aggregation handles to fit within libcudf's i32 range",
+    );
+    assert_eq!(error_context_value(&err, "resource"), Some("aggregation_handles"));
+    assert_eq!(error_context_value(&err, "request_count"), Some("1"));
+    assert_eq!(error_context_value(&err, "aggregation_handle_count"), Some(usize::MAX.to_string().as_str()));
+    assert_eq!(error_context_value(&err, "num_requests"), None);
+    assert_eq!(error_context_value(&err, "total_agg_handles"), None);
+}
 
 #[test]
 fn test_groupby_sum() {
@@ -151,7 +221,12 @@ fn test_groupby_rejects_empty_aggregations_in_request() {
         Ok(_) => panic!("expected error"),
         Err(err) => err,
     };
-    assert_eq!(err.kind(), cudf::ErrorKind::InvalidOperation);
+    assert_groupby_validation_error(
+        &err,
+        "groupby::groupby_aggregate",
+        "empty_request_aggregations",
+        "provide at least one GroupByAgg per AggregationRequest",
+    );
 }
 
 #[test]
@@ -171,6 +246,26 @@ fn test_groupby_std_accepts_shared_non_negative_ddof_type_boundary() {
 }
 
 #[test]
+fn test_groupby_rejects_ddof_above_i32_max_with_stable_contract() {
+    let keys_col = column_from_slice(&[1i32, 2, 1]).unwrap();
+    let vals_col = column_from_slice(&[10f64, 20.0, 30.0]).unwrap();
+
+    let keys_table = Table::from_columns(vec![keys_col]).unwrap();
+    let kv = keys_table.testing_view().unwrap();
+    let vals_view = vals_col.testing_view().unwrap();
+
+    let requests =
+        [AggregationRequest { values: &vals_view, aggregations: &[GroupByAgg::Variance { ddof: u32::MAX }] }];
+
+    let err = match groupby::groupby_aggregate(&kv, &requests, NullPolicy::Exclude) {
+        Ok(_) => panic!("expected error"),
+        Err(err) => err,
+    };
+
+    assert_ddof_range_validation_error(&err, "groupby::groupby_aggregate", "0", u32::MAX);
+}
+
+#[test]
 fn test_groupby_error_contains_operation_context() {
     let keys_col = column_from_slice(&[1i32, 2, 1]).unwrap();
     let vals_col = column_from_slice(&[10i32, 20, 30]).unwrap();
@@ -186,10 +281,44 @@ fn test_groupby_error_contains_operation_context() {
         Err(err) => err,
     };
 
+    assert_groupby_validation_error(
+        &err,
+        "groupby::groupby_aggregate",
+        "empty_request_aggregations",
+        "provide at least one GroupByAgg per AggregationRequest",
+    );
+    assert_eq!(error_context_value(&err, "request_index"), Some("0"));
+    assert_eq!(error_context_value(&err, "request_count"), Some("1"));
+    assert_eq!(error_context_value(&err, "num_requests"), None);
+}
+
+#[test]
+fn test_groupby_rejects_negative_foreign_result_column_count_with_stable_contract() {
+    let keys_col = column_from_slice(&[1i32, 2, 1]).unwrap();
+    let vals_col = column_from_slice(&[10i64, 20, 30]).unwrap();
+
+    let keys_table = Table::from_columns(vec![keys_col]).unwrap();
+    let kv = keys_table.testing_view().unwrap();
+    let vals_view = vals_col.testing_view().unwrap();
+    let requests = [AggregationRequest { values: &vals_view, aggregations: &[GroupByAgg::Sum] }];
+
+    arm_next_groupby_negative_total_columns_fault();
+    let err = match groupby::groupby_aggregate(&kv, &requests, NullPolicy::Exclude) {
+        Ok(_) => panic!("expected malformed foreign result metadata to fail"),
+        Err(err) => err,
+    };
+
+    assert_eq!(err.kind(), ErrorKind::InvariantViolation);
+    assert_eq!(err.code(), ErrorCode::InvariantViolation);
     assert_eq!(err.operation(), "groupby::groupby_aggregate");
-    let ctx = err.context();
-    assert!(ctx.iter().any(|(k, _)| *k == "request_index"));
-    assert!(ctx.iter().any(|(k, _)| *k == "num_requests"));
+    assert_eq!(error_context_value(&err, "resource"), Some("result_columns"));
+    assert_eq!(error_context_value(&err, "reason"), Some("negative_column_count"));
+    assert_eq!(
+        error_context_value(&err, "remedy"),
+        Some("ensure the foreign groupby backend returns a non-negative result column count")
+    );
+    assert_eq!(error_context_value(&err, "table_column_count"), Some("-1"));
+    assert_eq!(error_context_value(&err, "out_total_columns"), None);
 }
 
 #[test]

@@ -1,13 +1,14 @@
 //! Tests for sorting operations.
 use cudf::{
+    ErrorCode, ErrorKind,
     core::Table,
     ops::sorting::{self, NullOrder, Order},
     testing::prelude::*,
 };
 
 use crate::common::{
-    column_from_slice, column_from_slice_nullable, explicit_i32_column, last_exec_mr_value, last_exec_stream_value,
-    last_sync_stream_value, reset_exec_observation, reset_sync_observation,
+    column_from_slice, column_from_slice_nullable, error_context_value, explicit_i32_column, last_exec_mr_value,
+    last_exec_stream_value, last_sync_stream_value, reset_exec_observation, reset_sync_observation,
 };
 
 #[test]
@@ -101,7 +102,15 @@ fn test_sort_rejects_mismatched_column_order_len() {
     let view = table.testing_view().unwrap();
 
     let err = sorting::sort(&view, Some(&[Order::Ascending]), None).expect_err("expected error");
-    assert_eq!(err.kind(), cudf::ErrorKind::InvalidOperation);
+    assert_eq!(err.kind(), ErrorKind::Unsupported);
+    assert_eq!(err.code(), ErrorCode::UnsupportedOperation);
+    assert_eq!(err.operation(), "sorting::sort");
+    assert_eq!(error_context_value(&err, "resource"), Some("sort_options"));
+    assert_eq!(error_context_value(&err, "reason"), Some("column_order_length_mismatch"));
+    assert_eq!(error_context_value(&err, "keys_count"), Some("2"));
+    assert_eq!(error_context_value(&err, "actual_count"), Some("1"));
+    assert_eq!(error_context_value(&err, "column_order_len"), None);
+    assert_eq!(error_context_value(&err, "num_keys"), None);
 }
 
 #[test]
@@ -113,7 +122,15 @@ fn test_is_sorted_rejects_mismatched_null_precedence_len() {
 
     let err = sorting::is_sorted(&view, Some(&[Order::Ascending, Order::Ascending]), Some(&[NullOrder::After]))
         .expect_err("expected error");
-    assert_eq!(err.kind(), cudf::ErrorKind::InvalidOperation);
+    assert_eq!(err.kind(), ErrorKind::Unsupported);
+    assert_eq!(err.code(), ErrorCode::UnsupportedOperation);
+    assert_eq!(err.operation(), "sorting::is_sorted");
+    assert_eq!(error_context_value(&err, "resource"), Some("sort_options"));
+    assert_eq!(error_context_value(&err, "reason"), Some("null_precedence_length_mismatch"));
+    assert_eq!(error_context_value(&err, "keys_count"), Some("2"));
+    assert_eq!(error_context_value(&err, "actual_count"), Some("1"));
+    assert_eq!(error_context_value(&err, "null_precedence_len"), None);
+    assert_eq!(error_context_value(&err, "num_keys"), None);
 }
 
 #[test]
@@ -125,9 +142,25 @@ fn test_sort_error_contains_operation_context() {
     let err = sorting::sort(&view, Some(&[Order::Ascending, Order::Descending]), None).expect_err("expected error");
 
     assert_eq!(err.operation(), "sorting::sort");
-    let ctx = err.context();
-    assert!(ctx.iter().any(|(k, _)| *k == "num_keys"));
-    assert!(ctx.iter().any(|(k, _)| *k == "column_order_len"));
+    assert_eq!(error_context_value(&err, "resource"), Some("sort_options"));
+    assert_eq!(error_context_value(&err, "keys_count"), Some("1"));
+    assert_eq!(error_context_value(&err, "actual_count"), Some("2"));
+    assert_eq!(error_context_value(&err, "column_order_len"), None);
+    assert_eq!(error_context_value(&err, "num_keys"), None);
+}
+
+#[test]
+fn test_testing_hook_locks_sort_key_count_limit_contract() {
+    let err = cudf::testing::trigger_sort_key_count_limit_error_for_test().unwrap_err();
+
+    assert_eq!(err.kind(), ErrorKind::Unsupported);
+    assert_eq!(err.code(), ErrorCode::UnsupportedOperation);
+    assert_eq!(err.operation(), "sorting::sort");
+    assert_eq!(error_context_value(&err, "resource"), Some("sort_keys"));
+    assert_eq!(error_context_value(&err, "reason"), Some("exceeds_i32_max"));
+    assert_eq!(error_context_value(&err, "keys_count"), Some(usize::MAX.to_string().as_str()));
+    assert_eq!(error_context_value(&err, "remedy"), Some("reduce the number of sort keys to fit within i32::MAX"));
+    assert_eq!(error_context_value(&err, "num_keys"), None);
 }
 
 #[test]

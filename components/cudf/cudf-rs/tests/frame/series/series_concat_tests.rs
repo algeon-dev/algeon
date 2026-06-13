@@ -2,7 +2,9 @@
 //!
 //! All tests require a GPU.
 
-use cudf::{Series, TypeId};
+use cudf::{ErrorCode, ErrorKind, Series, TypeId};
+
+use crate::common::error_context_value;
 
 // ===========================================================================
 // Basic concatenation
@@ -85,8 +87,13 @@ fn test_concat_preserves_nulls() {
 
 #[test]
 fn test_concat_empty_slice_returns_error() {
-    let result = Series::concat(&[]);
-    assert!(result.is_err(), "concat of empty slice should fail");
+    let err = Series::concat(&[]).expect_err("concat of empty slice should fail");
+
+    assert_eq!(err.kind(), ErrorKind::Unsupported);
+    assert_eq!(err.code(), ErrorCode::UnsupportedOperation);
+    assert_eq!(err.operation(), "series::concat");
+    assert_eq!(error_context_value(&err, "reason"), Some("empty_input"));
+    assert_eq!(error_context_value(&err, "remedy"), Some("provide at least one input series"));
 }
 
 #[test]
@@ -94,6 +101,13 @@ fn test_concat_type_mismatch_returns_error() {
     let a = crate::common::series::<i32>("a", &[1, 2]).unwrap();
     let b = crate::common::series("b", &["hello"]).unwrap();
 
-    let result = Series::concat(&[&a, &b]);
-    assert!(result.is_err(), "concat of mismatched types should fail");
+    let err = Series::concat(&[&a, &b]).expect_err("concat of mismatched types should fail");
+
+    assert_eq!(err.kind(), ErrorKind::InvalidInput);
+    assert_eq!(err.code(), ErrorCode::TypeMismatch);
+    assert_eq!(err.operation(), "series::concat");
+    assert_eq!(error_context_value(&err, "column_index"), Some("1"));
+    assert_eq!(error_context_value(&err, "left_type_id"), Some("int32"));
+    assert_eq!(error_context_value(&err, "right_type_id"), Some("string"));
+    assert_eq!(error_context_value(&err, "called"), Some("concatenate::concatenate_columns"));
 }

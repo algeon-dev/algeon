@@ -6,14 +6,14 @@
 //!
 //! All tests require a GPU.
 use cudf::{
-    ErrorKind, ExecutionOverrides, Series, SortOptions, TypeId,
+    ErrorCode, ErrorKind, ExecutionOverrides, Series, SortOptions, TypeId,
     frame::factorization::{Codebook, DictionaryEncodingOptions, DictionaryKeyOrder},
     testing::prelude::*,
 };
 
 use crate::common::{
-    column_from_slice, last_exec_mr_value, last_exec_stream_value, last_sync_stream_value, reset_exec_observation,
-    reset_sync_observation, sample_runtime,
+    column_from_slice, error_context_value, last_exec_mr_value, last_exec_stream_value, last_sync_stream_value,
+    reset_exec_observation, reset_sync_observation, sample_runtime,
 };
 
 // ===========================================================================
@@ -248,6 +248,19 @@ fn test_isin_strings() {
 }
 
 #[test]
+fn test_isin_type_mismatch_uses_canonical_error_contract() {
+    let s = crate::common::series::<i32>("x", &[1, 2, 3]).unwrap();
+    let values = crate::common::series::<f64>("vals", &[1.0, 2.0]).unwrap();
+
+    let err = s.isin(&values).unwrap_err();
+    assert_eq!(err.kind(), ErrorKind::InvalidInput);
+    assert_eq!(err.code(), ErrorCode::TypeMismatch);
+    assert_eq!(err.operation(), "series::isin");
+    assert_eq!(error_context_value(&err, "left_type_id"), Some("int32"));
+    assert_eq!(error_context_value(&err, "right_type_id"), Some("float64"));
+}
+
+#[test]
 fn test_isin_succeeds_with_mixed_domains_and_uses_source_provenance() {
     let _event_observation = crate::common::lock_event_observation();
     let source_rt = sample_runtime();
@@ -345,6 +358,22 @@ fn test_nunique_all_unique() {
 }
 
 #[test]
+fn test_nunique_negative_distinct_count_uses_stable_foreign_contract() {
+    let err = cudf::testing::trigger_nunique_negative_distinct_count_for_test().unwrap_err();
+
+    assert_eq!(err.kind(), ErrorKind::InvariantViolation);
+    assert_eq!(err.code(), ErrorCode::InvariantViolation);
+    assert_eq!(err.operation(), "series::nunique");
+    assert_eq!(error_context_value(&err, "resource"), Some("distinct_count"));
+    assert_eq!(error_context_value(&err, "reason"), Some("negative_count"));
+    assert_eq!(error_context_value(&err, "distinct_count"), Some("-1"));
+    assert_eq!(
+        error_context_value(&err, "remedy"),
+        Some("ensure the foreign reduction backend returns a non-negative distinct count")
+    );
+}
+
+#[test]
 fn test_nunique_counts_nan_as_distinct_non_null_value() {
     let s = crate::common::series::<f64>("x", &[1.0, f64::NAN, 1.0, f64::NAN, 2.0]).unwrap();
     assert_eq!(s.nunique().unwrap(), 3);
@@ -400,7 +429,11 @@ fn test_lookup_rejects_duplicate_keys() {
 
     let err = input.lookup(&keys, &values).unwrap_err();
 
-    assert_eq!(err.kind(), ErrorKind::InvalidOperation);
+    assert_eq!(err.kind(), ErrorKind::InvalidInput);
+    assert_eq!(err.code(), cudf::ErrorCode::DuplicateKey);
+    assert_eq!(err.operation(), "series::lookup");
+    assert_eq!(crate::common::error_context_value(&err, "keys_count"), Some("2"));
+    assert_eq!(crate::common::error_context_value(&err, "distinct_keys_count"), Some("1"));
 }
 
 #[test]
@@ -411,7 +444,14 @@ fn test_lookup_rejects_dtype_mismatch() {
 
     let err = input.lookup(&keys, &values).unwrap_err();
 
-    assert_eq!(err.kind(), ErrorKind::InvalidOperation);
+    assert_eq!(err.kind(), ErrorKind::InvalidInput);
+    assert_eq!(err.code(), cudf::ErrorCode::TypeMismatch);
+    assert_eq!(err.operation(), "series::lookup");
+    assert_eq!(crate::common::error_context_value(&err, "left_type_id"), Some("int32"));
+    assert_eq!(crate::common::error_context_value(&err, "right_type_id"), Some("string"));
+    assert_eq!(crate::common::error_context_value(&err, "type_id"), Some("string"));
+    assert_eq!(crate::common::error_context_value(&err, "output_type_id"), None);
+    assert_eq!(crate::common::error_context_value(&err, "values_type_id"), None);
 }
 
 #[test]
@@ -422,9 +462,15 @@ fn test_lookup_rejects_mapping_length_mismatch_with_series_operation() {
 
     let err = input.lookup(&keys, &values).unwrap_err();
 
-    assert_eq!(err.kind(), ErrorKind::InvalidOperation);
+    assert_eq!(err.kind(), ErrorKind::InvalidInput);
+    assert_eq!(err.code(), cudf::ErrorCode::ColumnLengthMismatch);
     assert_eq!(err.operation(), "series::lookup");
-    assert!(err.message().contains("same length"));
+    assert_eq!(crate::common::error_context_value(&err, "right_type_id"), Some("string"));
+    assert_eq!(crate::common::error_context_value(&err, "type_id"), Some("string"));
+    assert_eq!(crate::common::error_context_value(&err, "keys_count"), Some("2"));
+    assert_eq!(crate::common::error_context_value(&err, "values_count"), Some("1"));
+    assert_eq!(crate::common::error_context_value(&err, "keys_type_id"), None);
+    assert_eq!(crate::common::error_context_value(&err, "output_type_id"), None);
 }
 
 #[test]
@@ -547,8 +593,11 @@ fn test_codebook_encode_rejects_dtype_mismatch_with_codebook_operation() {
         Err(err) => err,
     };
 
-    assert_eq!(err.kind(), ErrorKind::InvalidOperation);
+    assert_eq!(err.kind(), ErrorKind::InvalidInput);
+    assert_eq!(err.code(), cudf::ErrorCode::TypeMismatch);
     assert_eq!(err.operation(), "codebook::encode");
+    assert_eq!(crate::common::error_context_value(&err, "left_type_id"), Some("int32"));
+    assert_eq!(crate::common::error_context_value(&err, "right_type_id"), Some("string"));
 }
 
 #[test]
@@ -634,7 +683,13 @@ fn test_codebook_from_keys_rejects_duplicate_keys() {
         Err(err) => err,
     };
 
-    assert_eq!(err.kind(), ErrorKind::InvalidOperation);
+    assert_eq!(err.kind(), ErrorKind::InvalidInput);
+    assert_eq!(err.code(), cudf::ErrorCode::DuplicateKey);
+    assert_eq!(err.operation(), "codebook::from_keys");
+    assert_eq!(crate::common::error_context_value(&err, "keys_count"), Some("3"));
+    assert_eq!(crate::common::error_context_value(&err, "distinct_keys_count"), Some("2"));
+    assert_eq!(crate::common::error_context_value(&err, "key_count"), None);
+    assert_eq!(crate::common::error_context_value(&err, "distinct_key_count"), None);
     assert!(err.message().contains("unique") || err.message().contains("duplicate"), "unexpected error: {err}");
 }
 
@@ -752,8 +807,21 @@ fn test_sort_values_rejects_wrong_descending_len() {
     let s = crate::common::series::<i32>("x", &[1, 2, 3]).unwrap();
     // Single column but 2 descending flags — should fail
     let result = s.sort_values(SortOptions::new().with_descending(vec![true, false]));
-    assert!(result.is_err());
-    assert_eq!(result.unwrap_err().kind(), ErrorKind::InvalidOperation);
+    let err = result.unwrap_err();
+
+    assert_eq!(err.kind(), ErrorKind::Unsupported);
+    assert_eq!(err.code(), ErrorCode::UnsupportedOperation);
+    assert_eq!(err.operation(), "series::sort_values");
+    assert_eq!(error_context_value(&err, "resource"), Some("sort_options"));
+    assert_eq!(error_context_value(&err, "reason"), Some("descending_length_mismatch"));
+    assert_eq!(
+        error_context_value(&err, "remedy"),
+        Some("provide either zero descending flags or exactly one flag per sort key"),
+    );
+    assert_eq!(error_context_value(&err, "keys_count"), Some("1"));
+    assert_eq!(error_context_value(&err, "num_keys"), None);
+    assert_eq!(error_context_value(&err, "actual_count"), Some("2"));
+    assert_eq!(error_context_value(&err, "descending_len"), None);
 }
 
 // ===========================================================================

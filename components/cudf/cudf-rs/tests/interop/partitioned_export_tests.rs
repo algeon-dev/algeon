@@ -5,7 +5,7 @@ use std::{
 };
 
 use cudf::{
-    DeviceId, Runtime,
+    DeviceId, ErrorCode, ErrorKind, Runtime,
     core::{Column, Table},
     interop::{PartitionedDataFrameExport, runtime_release::TransferCompletionAuthority},
     runtime::CudaStream,
@@ -16,7 +16,10 @@ use rapids_interop::{
     ReadStartAuthority, ReleaseSynchronization, TransferCompletionRule,
 };
 
-use crate::common::{assert_duplicate_name_error, column_from_slice, lock_event_observation};
+use crate::common::{
+    assert_duplicate_name_error, column_from_slice, error_context_value, interop_error_context_value,
+    lock_event_observation,
+};
 
 const SKIP_MULTI_GPU_ENV: &str = "CUDF_SKIP_MULTI_GPU";
 
@@ -214,6 +217,37 @@ fn partitioned_prepared_table_export_imports_one_local_table_per_partition_runti
 }
 
 #[test]
+fn partitioned_prepared_table_export_import_rejects_runtime_count_mismatch_with_stable_contract() {
+    let left_runtime = Runtime::builder().build().unwrap();
+    let right_runtime = Runtime::builder().build().unwrap();
+    let left = left_runtime.column_from_slice(&[1i32, 2, 3]).unwrap();
+    let right = right_runtime.column_from_slice(&[10i32, 20, 30]).unwrap();
+
+    let producer = PartitionedDataFrameExport::new(vec!["left".into(), "right".into()], vec![left, right]).unwrap();
+    let export = producer.try_prepare_device_partitioned_table_export().unwrap();
+
+    let err =
+        Table::try_import_partitioned_local_tables_from_prepared_table_export_into_runtimes(&export, &[&left_runtime])
+            .unwrap_err();
+
+    assert_eq!(err.kind(), InteropErrorKind::ExecutionBindingMismatch);
+    assert_eq!(
+        interop_error_context_value(&err, "operation"),
+        Some("interop::Table::try_import_partitioned_local_tables_from_prepared_table_export_into_runtimes"),
+    );
+    assert_eq!(interop_error_context_value(&err, "resource"), Some("execution_bindings"));
+    assert_eq!(interop_error_context_value(&err, "reason"), Some("partition_runtime_count_mismatch"));
+    assert_eq!(interop_error_context_value(&err, "expected_count"), Some("2"));
+    assert_eq!(interop_error_context_value(&err, "actual_count"), Some("1"));
+    assert_eq!(
+        interop_error_context_value(&err, "remedy"),
+        Some("provide exactly one destination runtime per partition"),
+    );
+    assert_eq!(interop_error_context_value(&err, "partition_count"), None);
+    assert_eq!(interop_error_context_value(&err, "runtime_count"), None);
+}
+
+#[test]
 fn partitioned_prepared_table_export_import_rejects_runtime_on_wrong_device_for_a_partition() {
     if !should_run_multi_gpu_test() {
         return;
@@ -245,11 +279,10 @@ fn partitioned_prepared_table_export_import_rejects_runtime_on_wrong_device_for_
         "expected partition-local mismatch context, got {:?}",
         err.context()
     );
-    assert!(
-        err.context().iter().any(|(key, value)| *key == "runtime_device" && value == "1"),
-        "expected runtime-device mismatch context, got {:?}",
-        err.context()
-    );
+    assert_eq!(interop_error_context_value(&err, "left_device"), Some(device0.ordinal().to_string().as_str()));
+    assert_eq!(interop_error_context_value(&err, "right_device"), Some(device1.ordinal().to_string().as_str()));
+    assert_eq!(interop_error_context_value(&err, "producer_device"), None);
+    assert_eq!(interop_error_context_value(&err, "runtime_device"), None);
 }
 
 #[test]
@@ -513,4 +546,25 @@ fn partitioned_dataframe_export_rejects_duplicate_names_in_wide_schema() {
         Err(err) => err,
     };
     assert_duplicate_name_error(&err, "c3");
+}
+
+#[test]
+fn partitioned_dataframe_export_rejects_name_count_mismatch_with_canonical_context() {
+    let column = column_from_slice(&[1i32, 2]).unwrap();
+
+    let err = match PartitionedDataFrameExport::new(vec!["left".into(), "right".into()], vec![column]) {
+        Ok(_) => panic!("name/column count mismatch should fail"),
+        Err(err) => err,
+    };
+
+    assert_eq!(err.kind(), ErrorKind::InvalidInput);
+    assert_eq!(err.code(), ErrorCode::ColumnLengthMismatch);
+    assert_eq!(err.operation(), "interop::PartitionedDataFrameExport::new");
+    assert_eq!(error_context_value(&err, "column_name_count"), Some("2"));
+    assert_eq!(error_context_value(&err, "table_column_count"), Some("1"));
+    assert_eq!(error_context_value(&err, "resource"), Some("column_name_count"));
+    assert_eq!(error_context_value(&err, "reason"), Some("mismatch_with_table_column_count"));
+    assert_eq!(error_context_value(&err, "remedy"), Some("ensure column_name_count matches table_column_count"));
+    assert_eq!(error_context_value(&err, "names_count"), None);
+    assert_eq!(error_context_value(&err, "columns_count"), None);
 }

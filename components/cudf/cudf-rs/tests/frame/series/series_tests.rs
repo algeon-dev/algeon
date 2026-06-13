@@ -64,7 +64,7 @@ fn test_new_nullable_strs_preserves_null_count() {
 #[test]
 fn test_new_nullable_strs_rejects_mismatched_validity_length() {
     let err = crate::common::nullable_series("names", &["a", "b"], &[true]).unwrap_err();
-    assert_eq!(err.kind(), cudf::ErrorKind::InvalidOperation);
+    assert_eq!(err.kind(), cudf::ErrorKind::InvalidInput);
     assert_eq!(err.operation(), "column::from_strs_nullable_with_runtime");
 }
 

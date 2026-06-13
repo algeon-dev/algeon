@@ -24,6 +24,8 @@ mod dataframe_merge_tests;
 mod dataframe_sort_values_tests;
 #[path = "../ops/misc/dictionary_tests.rs"]
 mod dictionary_tests;
+#[path = "../ops/misc/expr_doc_surface_tests.rs"]
+mod expr_doc_surface_tests;
 #[path = "../ops/misc/expr_tests.rs"]
 mod expr_tests;
 #[path = "../ops/misc/factorize_tests.rs"]
@@ -50,6 +52,8 @@ mod reduction_tests;
 mod replace_tests;
 #[path = "../ops/misc/search_tests.rs"]
 mod search_tests;
+#[path = "../ops/groupby/shared_group_key_validation_tests.rs"]
+mod shared_group_key_validation_tests;
 #[path = "../ops/sorting/sorting_tests.rs"]
 mod sorting_tests;
 #[path = "../ops/misc/stream_compaction_tests.rs"]

@@ -1,9 +1,9 @@
 //! Tests for CU-2: contains (isin) and ColumnView::isin.
-use cudf::{ErrorKind, ops::search, testing::prelude::*};
+use cudf::{ErrorCode, ErrorKind, ops::search, testing::prelude::*};
 
 use crate::common::{
-    column_from_slice, column_from_slice_nullable, column_from_strs, explicit_i32_column, last_exec_mr_value,
-    last_exec_stream_value, last_sync_stream_value, reset_exec_observation, reset_sync_observation,
+    column_from_slice, column_from_slice_nullable, column_from_strs, error_context_value, explicit_i32_column,
+    last_exec_mr_value, last_exec_stream_value, last_sync_stream_value, reset_exec_observation, reset_sync_observation,
 };
 
 #[test]
@@ -260,10 +260,9 @@ fn test_isin_type_mismatch_error_has_operation_context() {
         Ok(_) => panic!("expected type mismatch error"),
         Err(err) => err,
     };
-    assert_eq!(err.kind(), ErrorKind::InvalidOperation);
+    assert_eq!(err.kind(), ErrorKind::InvalidInput);
+    assert_eq!(err.code(), ErrorCode::TypeMismatch);
     assert_eq!(err.operation(), "column_view::isin");
-
-    let ctx = err.context();
-    assert!(ctx.iter().any(|(k, _)| *k == "input_type_id"));
-    assert!(ctx.iter().any(|(k, _)| *k == "values_type_id"));
+    assert_eq!(error_context_value(&err, "left_type_id"), Some("int32"));
+    assert_eq!(error_context_value(&err, "right_type_id"), Some("float64"));
 }

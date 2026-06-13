@@ -1,12 +1,21 @@
 //! Tests for reduction and scan operations.
 
 use cudf::{
-    DataType, TypeId,
+    DataType, ErrorCode, ErrorKind, TypeId,
     ops::reduction::{self, NullPolicy, ReduceAgg, ScanAgg, ScanType},
     testing::prelude::*,
 };
 
-use crate::common::column_from_slice;
+use crate::common::{column_from_slice, error_context_value};
+
+fn assert_ddof_range_validation_error(err: &cudf::Error, operation: &str, expected_ddof: u32) {
+    assert_eq!(err.kind(), ErrorKind::Unsupported);
+    assert_eq!(err.code(), ErrorCode::UnsupportedOperation);
+    assert_eq!(err.operation(), operation);
+    assert_eq!(error_context_value(err, "reason"), Some("ddof_exceeds_i32_range"));
+    assert_eq!(error_context_value(err, "remedy"), Some("use a ddof value within libcudf's i32 range"));
+    assert_eq!(error_context_value(err, "ddof"), Some(expected_ddof.to_string().as_str()));
+}
 
 #[test]
 fn test_reduce_sum() {
@@ -88,9 +97,8 @@ fn test_reduce_ddof_above_i32_max_contains_context() {
     let err = reduction::reduce(&view, &ReduceAgg::Variance { ddof: u32::MAX }, &DataType::new(TypeId::Float64))
         .expect_err("expected error");
 
-    assert_eq!(err.operation(), "reduction::create_reduce_agg_handle(variance)");
-    let ctx = err.context();
-    assert!(ctx.iter().any(|(k, _)| *k == "ddof"));
+    assert_ddof_range_validation_error(&err, "reduction::reduce", u32::MAX);
+    assert_eq!(error_context_value(&err, "called"), Some("reduction::create_reduce_agg_handle(variance)"));
 }
 
 #[test]

@@ -1,15 +1,27 @@
 //! Tests for Parquet and CSV I/O.
+#[cfg(unix)]
+use std::os::unix::ffi::OsStringExt;
 use std::process::Command;
 
 use cudf::{
-    ErrorKind,
+    ErrorCode, ErrorKind,
     core::Table,
     io::{csv, parquet},
     testing::prelude::*,
 };
 use tempfile::TempDir;
 
-use crate::common::{column_from_slice, sample_runtime};
+use crate::common::{
+    arm_next_io_metadata_fault, column_from_slice, error_context_value, reset_io_metadata_fault, sample_runtime,
+};
+
+struct MetadataFaultReset;
+
+impl Drop for MetadataFaultReset {
+    fn drop(&mut self) {
+        reset_io_metadata_fault();
+    }
+}
 
 /// Write a Parquet file with the specified row group size using PyArrow.
 ///
@@ -381,7 +393,18 @@ fn test_parquet_row_groups_with_skip_rows_errors() {
         Ok(_) => panic!("expected error when combining row_groups with skip_rows"),
         Err(err) => err,
     };
-    assert_eq!(err.kind(), ErrorKind::InvalidArgument);
+    assert_eq!(err.kind(), ErrorKind::Unsupported);
+    assert_eq!(err.code(), ErrorCode::UnsupportedOperation);
+    assert_eq!(err.operation(), "io::parquet::read_parquet_table");
+    assert_eq!(error_context_value(&err, "row_group_count"), Some("1"));
+    assert_eq!(error_context_value(&err, "skip_rows"), Some("1"));
+    assert_eq!(error_context_value(&err, "num_rows"), Some("all"));
+    assert_eq!(error_context_value(&err, "resource"), Some("row_groups"));
+    assert_eq!(error_context_value(&err, "reason"), Some("incompatible_option_combination"));
+    assert_eq!(
+        error_context_value(&err, "remedy"),
+        Some("use row_groups by itself, or remove row_groups and use skip_rows/num_rows")
+    );
 }
 
 #[test]
@@ -407,7 +430,305 @@ fn test_parquet_row_groups_with_num_rows_errors() {
         Ok(_) => panic!("expected error when combining row_groups with num_rows"),
         Err(err) => err,
     };
-    assert_eq!(err.kind(), ErrorKind::InvalidArgument);
+    assert_eq!(err.kind(), ErrorKind::Unsupported);
+    assert_eq!(err.code(), ErrorCode::UnsupportedOperation);
+    assert_eq!(err.operation(), "io::parquet::read_parquet_table");
+    assert_eq!(error_context_value(&err, "row_group_count"), Some("1"));
+    assert_eq!(error_context_value(&err, "skip_rows"), Some("0"));
+    assert_eq!(error_context_value(&err, "num_rows"), Some("2"));
+    assert_eq!(error_context_value(&err, "resource"), Some("row_groups"));
+    assert_eq!(error_context_value(&err, "reason"), Some("incompatible_option_combination"));
+    assert_eq!(
+        error_context_value(&err, "remedy"),
+        Some("use row_groups by itself, or remove row_groups and use skip_rows/num_rows")
+    );
+}
+
+#[test]
+fn test_csv_write_rejects_column_name_with_nul_byte_using_stable_contract() {
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("bad_header.csv");
+    let table = Table::from_columns(vec![column_from_slice(&[1i32]).unwrap()]).unwrap();
+
+    let write_opts = csv::CsvTableWriteOptions::builder().filepath(&path).column_names(&["bad\0name"]).build();
+    let err = csv::write_csv(&table, &write_opts).expect_err("column names containing NUL should fail before FFI");
+
+    assert_eq!(err.kind(), ErrorKind::InvalidInput);
+    assert_eq!(err.code(), ErrorCode::InvalidInput);
+    assert_eq!(err.operation(), "io::csv::write_csv");
+    assert_eq!(error_context_value(&err, "column_name"), Some("bad\0name"));
+    assert_eq!(error_context_value(&err, "resource"), Some("column_name"));
+    assert_eq!(error_context_value(&err, "reason"), Some("interior_null_byte"));
+}
+
+#[test]
+fn test_parquet_write_rejects_column_name_with_nul_byte_using_stable_contract() {
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("bad_header.parquet");
+    let table = Table::from_columns(vec![column_from_slice(&[1i32]).unwrap()]).unwrap();
+
+    let write_opts = parquet::ParquetTableWriteOptions::builder().filepath(&path).column_names(&["bad\0name"]).build();
+    let err =
+        parquet::write_parquet(&table, &write_opts).expect_err("column names containing NUL should fail before FFI");
+
+    assert_eq!(err.kind(), ErrorKind::InvalidInput);
+    assert_eq!(err.code(), ErrorCode::InvalidInput);
+    assert_eq!(err.operation(), "io::parquet::write_parquet");
+    assert_eq!(error_context_value(&err, "column_name"), Some("bad\0name"));
+    assert_eq!(error_context_value(&err, "resource"), Some("column_name"));
+    assert_eq!(error_context_value(&err, "reason"), Some("interior_null_byte"));
+}
+
+#[test]
+fn test_parquet_read_rejects_projected_column_name_with_nul_byte_using_stable_contract() {
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("bad_projection.parquet");
+    std::fs::write(&path, []).unwrap();
+    let rt = sample_runtime();
+
+    let read_opts =
+        parquet::ParquetTableReadOptions::builder().filepath(&path).columns(&["bad\0name"]).with_runtime(&rt).build();
+    let err = match parquet::read_parquet_table(&read_opts) {
+        Ok(_) => panic!("projected column names containing NUL should fail before FFI"),
+        Err(err) => err,
+    };
+
+    assert_eq!(err.kind(), ErrorKind::InvalidInput);
+    assert_eq!(err.code(), ErrorCode::InvalidInput);
+    assert_eq!(err.operation(), "io::parquet::read_parquet_table");
+    assert_eq!(error_context_value(&err, "column_name"), Some("bad\0name"));
+    assert_eq!(error_context_value(&err, "resource"), Some("column_name"));
+    assert_eq!(error_context_value(&err, "reason"), Some("interior_null_byte"));
+}
+
+#[test]
+fn test_parquet_skip_rows_exceeding_i64_max_uses_stable_overflow_contract() {
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("overflow_skip_rows.parquet");
+    std::fs::write(&path, []).unwrap();
+    let rt = sample_runtime();
+
+    let read_opts = parquet::ParquetTableReadOptions::builder()
+        .filepath(&path)
+        .skip_rows((i64::MAX as usize) + 1)
+        .with_runtime(&rt)
+        .build();
+    let err = match parquet::read_parquet_table(&read_opts) {
+        Ok(_) => panic!("skip_rows overflow should fail before FFI"),
+        Err(err) => err,
+    };
+
+    assert_eq!(err.kind(), ErrorKind::Unsupported);
+    assert_eq!(err.code(), ErrorCode::UnsupportedOperation);
+    assert_eq!(err.operation(), "io::parquet::read_parquet_table");
+    assert_eq!(error_context_value(&err, "resource"), Some("skip_rows"));
+    assert_eq!(error_context_value(&err, "reason"), Some("exceeds_i64_max"));
+    assert_eq!(error_context_value(&err, "remedy"), Some("reduce skip_rows to fit within i64::MAX"));
+    let expected = ((i64::MAX as usize) + 1).to_string();
+    assert_eq!(error_context_value(&err, "skip_rows"), Some(expected.as_str()));
+}
+
+#[test]
+fn test_parquet_num_rows_exceeding_i64_max_uses_stable_overflow_contract() {
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("overflow_num_rows.parquet");
+    std::fs::write(&path, []).unwrap();
+    let rt = sample_runtime();
+
+    let read_opts = parquet::ParquetTableReadOptions::builder()
+        .filepath(&path)
+        .num_rows((i64::MAX as usize) + 1)
+        .with_runtime(&rt)
+        .build();
+    let err = match parquet::read_parquet_table(&read_opts) {
+        Ok(_) => panic!("num_rows overflow should fail before FFI"),
+        Err(err) => err,
+    };
+
+    assert_eq!(err.kind(), ErrorKind::Unsupported);
+    assert_eq!(err.code(), ErrorCode::UnsupportedOperation);
+    assert_eq!(err.operation(), "io::parquet::read_parquet_table");
+    assert_eq!(error_context_value(&err, "resource"), Some("num_rows"));
+    assert_eq!(error_context_value(&err, "reason"), Some("exceeds_i64_max"));
+    assert_eq!(error_context_value(&err, "remedy"), Some("reduce num_rows to fit within i64::MAX"));
+    let expected = ((i64::MAX as usize) + 1).to_string();
+    assert_eq!(error_context_value(&err, "num_rows"), Some(expected.as_str()));
+}
+
+#[test]
+fn test_csv_write_rejects_column_name_count_with_stable_contract() {
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("bad_names.csv");
+    let table = Table::from_columns(vec![column_from_slice(&[1i32, 2, 3]).unwrap()]).unwrap();
+
+    let write_opts = csv::CsvTableWriteOptions::builder().filepath(&path).column_names(&["only", "extra"]).build();
+    let err = csv::write_csv(&table, &write_opts).expect_err("column name count mismatch should fail before FFI");
+
+    assert_eq!(err.kind(), ErrorKind::InvalidInput);
+    assert_eq!(err.code(), ErrorCode::ColumnLengthMismatch);
+    assert_eq!(err.operation(), "io::csv::write_csv");
+    assert_eq!(error_context_value(&err, "column_name_count"), Some("2"));
+    assert_eq!(error_context_value(&err, "table_column_count"), Some("1"));
+    assert_eq!(error_context_value(&err, "resource"), Some("column_name_count"));
+    assert_eq!(error_context_value(&err, "reason"), Some("mismatch_with_table_column_count"));
+    assert_eq!(error_context_value(&err, "remedy"), Some("ensure column_name_count matches table_column_count"));
+}
+
+#[test]
+fn test_parquet_write_rejects_column_name_count_with_stable_contract() {
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("bad_names.parquet");
+    let table = Table::from_columns(vec![column_from_slice(&[1i32, 2, 3]).unwrap()]).unwrap();
+
+    let write_opts =
+        parquet::ParquetTableWriteOptions::builder().filepath(&path).column_names(&["only", "extra"]).build();
+    let err =
+        parquet::write_parquet(&table, &write_opts).expect_err("column name count mismatch should fail before FFI");
+
+    assert_eq!(err.kind(), ErrorKind::InvalidInput);
+    assert_eq!(err.code(), ErrorCode::ColumnLengthMismatch);
+    assert_eq!(err.operation(), "io::parquet::write_parquet");
+    assert_eq!(error_context_value(&err, "column_name_count"), Some("2"));
+    assert_eq!(error_context_value(&err, "table_column_count"), Some("1"));
+    assert_eq!(error_context_value(&err, "resource"), Some("column_name_count"));
+    assert_eq!(error_context_value(&err, "reason"), Some("mismatch_with_table_column_count"));
+    assert_eq!(error_context_value(&err, "remedy"), Some("ensure column_name_count matches table_column_count"));
+}
+
+#[test]
+fn test_parquet_write_io_failure_uses_canonical_column_name_count_context() {
+    let path =
+        std::env::temp_dir().join("cudf_rs_missing_parent_dir_for_parquet_write_12345").join("write_failure.parquet");
+    let table = Table::from_columns(vec![column_from_slice(&[1i32, 2, 3]).unwrap()]).unwrap();
+
+    let write_opts = parquet::ParquetTableWriteOptions::builder().filepath(&path).column_names(&["x"]).build();
+    let err = parquet::write_parquet(&table, &write_opts).expect_err("missing parent directory should fail in FFI");
+
+    assert_eq!(err.operation(), "io::parquet::write_parquet");
+    assert_eq!(error_context_value(&err, "column_name_count"), Some("1"));
+    assert_eq!(error_context_value(&err, "output_column_name_count"), None);
+}
+
+#[test]
+fn test_csv_write_io_failure_uses_canonical_column_name_count_context() {
+    let path = std::env::temp_dir().join("cudf_rs_missing_parent_dir_for_csv_write_12345").join("write_failure.csv");
+    let table = Table::from_columns(vec![column_from_slice(&[1i32, 2, 3]).unwrap()]).unwrap();
+
+    let write_opts = csv::CsvTableWriteOptions::builder().filepath(&path).column_names(&["x"]).build();
+    let err = csv::write_csv(&table, &write_opts).expect_err("missing parent directory should fail in FFI");
+
+    assert_eq!(err.operation(), "io::csv::write_csv");
+    assert_eq!(error_context_value(&err, "column_name_count"), Some("1"));
+    assert_eq!(error_context_value(&err, "num_column_names"), None);
+}
+
+#[test]
+fn test_parquet_read_metadata_null_name_entry_maps_to_invariant_violation() {
+    let _reset = MetadataFaultReset;
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("metadata_fault.parquet");
+    let rt = sample_runtime();
+
+    let table = Table::from_columns(vec![column_from_slice(&[1i32, 2, 3]).unwrap()]).unwrap();
+    let write_opts = parquet::ParquetTableWriteOptions::builder().filepath(&path).column_names(&["x"]).build();
+    parquet::write_parquet(&table, &write_opts).unwrap();
+
+    arm_next_io_metadata_fault(cudf_sys::CUDF_TEST_IO_METADATA_FAULT_NULL_NAME_ENTRY);
+    let err = match parquet::read_parquet_table(
+        &parquet::ParquetTableReadOptions::builder().filepath(&path).with_runtime(&rt).build(),
+    ) {
+        Ok(_) => panic!("malformed metadata should fail"),
+        Err(err) => err,
+    };
+
+    assert_eq!(err.kind(), ErrorKind::InvariantViolation);
+    assert_eq!(err.code(), ErrorCode::InvariantViolation);
+    assert_eq!(err.operation(), "io::parquet::read_parquet_table");
+    assert_eq!(error_context_value(&err, "column_index"), Some("0"));
+    assert_eq!(error_context_value(&err, "resource"), Some("column_name"));
+    assert_eq!(error_context_value(&err, "reason"), Some("null_name_entry"));
+    assert_eq!(error_context_value(&err, "name_index"), None);
+}
+
+#[test]
+fn test_parquet_read_metadata_null_name_array_uses_canonical_fault_context() {
+    let _reset = MetadataFaultReset;
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("metadata_fault_null_array.parquet");
+    let rt = sample_runtime();
+
+    let table = Table::from_columns(vec![column_from_slice(&[1i32, 2, 3]).unwrap()]).unwrap();
+    let write_opts = parquet::ParquetTableWriteOptions::builder().filepath(&path).column_names(&["x"]).build();
+    parquet::write_parquet(&table, &write_opts).unwrap();
+
+    arm_next_io_metadata_fault(cudf_sys::CUDF_TEST_IO_METADATA_FAULT_NULL_NAME_ARRAY);
+    let err = match parquet::read_parquet_table(
+        &parquet::ParquetTableReadOptions::builder().filepath(&path).with_runtime(&rt).build(),
+    ) {
+        Ok(_) => panic!("malformed metadata should fail"),
+        Err(err) => err,
+    };
+
+    assert_eq!(err.kind(), ErrorKind::InvariantViolation);
+    assert_eq!(err.code(), ErrorCode::InvariantViolation);
+    assert_eq!(err.operation(), "io::parquet::read_parquet_table");
+    assert_eq!(error_context_value(&err, "column_name_count"), Some("1"));
+    assert_eq!(error_context_value(&err, "resource"), Some("column_names"));
+    assert_eq!(error_context_value(&err, "reason"), Some("null_name_array"));
+    assert_eq!(
+        error_context_value(&err, "remedy"),
+        Some("ensure the foreign reader returns a name array whenever column_name_count is positive")
+    );
+    assert_eq!(error_context_value(&err, "names_ptr_null"), None);
+}
+
+#[test]
+fn test_parquet_read_metadata_invalid_utf8_name_uses_canonical_fault_context() {
+    let _reset = MetadataFaultReset;
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("metadata_fault_invalid_utf8.parquet");
+    let rt = sample_runtime();
+
+    let table = Table::from_columns(vec![column_from_slice(&[1i32, 2, 3]).unwrap()]).unwrap();
+    let write_opts = parquet::ParquetTableWriteOptions::builder().filepath(&path).column_names(&["x"]).build();
+    parquet::write_parquet(&table, &write_opts).unwrap();
+
+    arm_next_io_metadata_fault(cudf_sys::CUDF_TEST_IO_METADATA_FAULT_INVALID_UTF8_NAME);
+    let err = match parquet::read_parquet_table(
+        &parquet::ParquetTableReadOptions::builder().filepath(&path).with_runtime(&rt).build(),
+    ) {
+        Ok(_) => panic!("malformed metadata should fail"),
+        Err(err) => err,
+    };
+
+    assert_eq!(err.kind(), ErrorKind::InvariantViolation);
+    assert_eq!(err.code(), ErrorCode::InvariantViolation);
+    assert_eq!(err.operation(), "io::parquet::read_parquet_table");
+    assert_eq!(error_context_value(&err, "column_name_count"), Some("1"));
+    assert_eq!(error_context_value(&err, "column_index"), Some("0"));
+    assert_eq!(error_context_value(&err, "resource"), Some("column_name"));
+    assert_eq!(error_context_value(&err, "reason"), Some("invalid_utf8"));
+    assert_eq!(error_context_value(&err, "remedy"), Some("ensure the foreign reader returns valid UTF-8 column names"));
+    assert_eq!(error_context_value(&err, "name_index"), None);
+}
+
+#[test]
+fn test_parquet_read_missing_projected_column_uses_canonical_column_name_count_context() {
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("missing_projected_column.parquet");
+    let rt = sample_runtime();
+    std::fs::write(&path, b"not a parquet file").unwrap();
+
+    let err = match parquet::read_parquet_table(
+        &parquet::ParquetTableReadOptions::builder().filepath(&path).columns(&["x"]).with_runtime(&rt).build(),
+    ) {
+        Ok(_) => panic!("invalid parquet input should fail"),
+        Err(err) => err,
+    };
+
+    assert_eq!(err.operation(), "io::parquet::read_parquet_table");
+    assert_eq!(error_context_value(&err, "column_name_count"), Some("1"));
+    assert_eq!(error_context_value(&err, "selected_column_count"), None);
 }
 
 #[test]
@@ -447,6 +768,7 @@ fn test_csv_read_nonexistent_file_reports_not_found() {
         Err(err) => err,
     };
 
+    assert_eq!(err.code(), ErrorCode::MissingResource);
     assert_eq!(err.kind(), ErrorKind::NotFound);
 }
 
@@ -462,7 +784,28 @@ fn test_parquet_read_nonexistent_file_reports_not_found() {
         Err(err) => err,
     };
 
+    assert_eq!(err.code(), ErrorCode::MissingResource);
     assert_eq!(err.kind(), ErrorKind::NotFound);
+}
+
+#[cfg(unix)]
+#[test]
+fn test_csv_read_rejects_non_utf8_path_using_stable_contract() {
+    let rt = sample_runtime();
+    let path = std::ffi::OsString::from_vec(vec![0x66, 0x6f, 0x80, 0x6f]);
+    let read_opts =
+        csv::CsvTableReadOptions::builder().filepath(std::path::PathBuf::from(path)).with_runtime(&rt).build();
+    let err = match csv::read_csv(&read_opts) {
+        Ok(_) => panic!("non-UTF8 paths should fail before filesystem access"),
+        Err(err) => err,
+    };
+
+    assert_eq!(err.kind(), ErrorKind::InvalidInput);
+    assert_eq!(err.code(), ErrorCode::InvalidInput);
+    assert_eq!(err.operation(), "io::csv::read_csv");
+    assert_eq!(error_context_value(&err, "resource"), Some("path"));
+    assert_eq!(error_context_value(&err, "reason"), Some("invalid_utf8"));
+    assert_eq!(error_context_value(&err, "path"), None);
 }
 
 #[test]

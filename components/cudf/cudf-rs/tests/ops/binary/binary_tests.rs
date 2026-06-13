@@ -478,7 +478,8 @@ fn test_infer_string_arithmetic_error() {
     let result = binary::infer_binary_output_type(TypeId::String, TypeId::String, BinaryOperator::Add);
     assert!(result.is_err());
     let err = result.unwrap_err();
-    assert_eq!(err.kind(), cudf::ErrorKind::NotSupported);
+    assert_eq!(err.code(), cudf::ErrorCode::TypeMismatch);
+    assert_eq!(err.kind(), cudf::ErrorKind::InvalidInput);
     assert_eq!(err.operation(), "binary::infer_binary_output_type");
 }
 
@@ -508,11 +509,12 @@ fn test_infer_bool_arithmetic() {
 
 #[test]
 fn test_infer_error_context_keys() {
-    // Verify error context contains lhs_type_id, rhs_type_id, operator
+    // Verify error context contains left_type_id, right_type_id, operator
     let err = binary::infer_binary_output_type(TypeId::String, TypeId::Int32, BinaryOperator::Add).unwrap_err();
+    assert_eq!(err.code(), cudf::ErrorCode::TypeMismatch);
     let context_keys: Vec<&str> = err.context().iter().map(|(k, _)| *k).collect();
-    assert!(context_keys.contains(&"lhs_type_id"));
-    assert!(context_keys.contains(&"rhs_type_id"));
+    assert!(context_keys.contains(&"left_type_id"));
+    assert!(context_keys.contains(&"right_type_id"));
     assert!(context_keys.contains(&"operator"));
 }
 

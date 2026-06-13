@@ -4,7 +4,7 @@
 //! family. The goal is to protect provenance, execution, and synchronization
 //! contracts without locking the library into an API-by-API matrix.
 use cudf::{
-    DataFrame, DataType, ErrorKind, GroupByAgg, Series, SortOptions, TypeId,
+    DataFrame, DataType, ErrorCode, ErrorKind, GroupByAgg, Series, SortOptions, TypeId,
     core::{Column, Table},
     ops::{
         binary::{self, BinaryOperator},
@@ -111,16 +111,45 @@ fn dataframe_and_table_construction_reject_mixed_domain_columns() {
         vec![left.deep_copy().unwrap(), right.deep_copy().unwrap()],
     )
     .unwrap_err();
-    assert_eq!(err.kind(), ErrorKind::InvalidOperation);
+    assert_eq!(err.code(), ErrorCode::CrossProvenanceInputs);
+    assert_eq!(err.kind(), ErrorKind::ExecutionContext);
     assert_eq!(err.operation(), "dataframe::new");
     assert!(err.context().iter().any(|(key, value)| *key == "left_domain" && value.starts_with("explicit:100(")));
     assert!(err.context().iter().any(|(key, value)| *key == "right_domain" && value.starts_with("explicit:200(")));
+    assert!(err.context_value("left_device").is_some());
+    assert!(err.context_value("right_device").is_some());
+    assert_eq!(err.context_value("frame_column"), None);
 
     let err = Table::from_columns(vec![left, right]).unwrap_err();
-    assert_eq!(err.kind(), ErrorKind::InvalidOperation);
+    assert_eq!(err.code(), ErrorCode::CrossProvenanceInputs);
+    assert_eq!(err.kind(), ErrorKind::ExecutionContext);
     assert_eq!(err.operation(), "table::from_columns");
     assert!(err.context().iter().any(|(key, value)| *key == "left_domain" && value.starts_with("explicit:100(")));
     assert!(err.context().iter().any(|(key, value)| *key == "right_domain" && value.starts_with("explicit:200(")));
+    assert!(err.context_value("left_device").is_some());
+    assert!(err.context_value("right_device").is_some());
+}
+
+#[test]
+fn dataframe_with_column_rejects_mixed_provenance_with_canonical_context() {
+    let df = DataFrame::from_columns([("id", explicit_i32_series("id", &[1, 2, 3], 300))]).unwrap();
+    let foreign = explicit_i32_series("value", &[10, 20, 30], 301);
+
+    let err = df.with_column("value", foreign).unwrap_err();
+
+    assert_eq!(err.code(), ErrorCode::CrossProvenanceInputs);
+    assert_eq!(err.kind(), ErrorKind::ExecutionContext);
+    assert_eq!(err.operation(), "dataframe::with_column");
+    assert_eq!(err.context_value("column_name"), Some("value"));
+    assert!(err.context().iter().any(|(key, value)| *key == "left_domain" && value.starts_with("explicit:300(")));
+    assert!(err.context().iter().any(|(key, value)| *key == "right_domain" && value.starts_with("explicit:301(")));
+    assert!(err.context_value("left_device").is_some());
+    assert!(err.context_value("right_device").is_some());
+    assert!(err.context().iter().any(|(key, value)| *key == "remedy" && value.contains("copy_into_runtime")));
+    assert_eq!(err.context_value("frame_domain"), None);
+    assert_eq!(err.context_value("series_domain"), None);
+    assert_eq!(err.context_value("frame_device"), None);
+    assert_eq!(err.context_value("series_device"), None);
 }
 
 #[test]
