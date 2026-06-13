@@ -55,7 +55,7 @@ fn test_to_vec_rejects_nullable_data() {
     assert_eq!(err.kind(), ErrorKind::InvalidInput);
     assert_eq!(err.code(), ErrorCode::NullUnexpected);
     assert_eq!(err.operation(), "series::to_vec_strict");
-    assert_eq!(error_context_value(&err, "null_count"), Some("1"));
+    assert_eq!(error_context_value(&err, "null_count").as_deref(), Some("1"));
 }
 
 #[test]
@@ -72,8 +72,8 @@ fn test_to_vec_type_mismatch_returns_error() {
     assert_eq!(err.kind(), ErrorKind::InvalidInput);
     assert_eq!(err.code(), ErrorCode::TypeMismatch);
     assert_eq!(err.operation(), "column_view::to_vec");
-    assert_eq!(error_context_value(&err, "left_type_id"), Some("float64"));
-    assert_eq!(error_context_value(&err, "right_type_id"), Some("int32"));
+    assert_eq!(error_context_value(&err, "left_type_id").as_deref(), Some("float64"));
+    assert_eq!(error_context_value(&err, "right_type_id").as_deref(), Some("int32"));
 }
 
 #[test]
@@ -129,8 +129,8 @@ fn test_to_optional_vec_type_mismatch_returns_error() {
     assert_eq!(err.kind(), ErrorKind::InvalidInput);
     assert_eq!(err.code(), ErrorCode::TypeMismatch);
     assert_eq!(err.operation(), "column_view::to_vec");
-    assert_eq!(error_context_value(&err, "left_type_id"), Some("float64"));
-    assert_eq!(error_context_value(&err, "right_type_id"), Some("int32"));
+    assert_eq!(error_context_value(&err, "left_type_id").as_deref(), Some("float64"));
+    assert_eq!(error_context_value(&err, "right_type_id").as_deref(), Some("int32"));
 }
 
 #[test]
@@ -173,7 +173,7 @@ fn test_to_strings_rejects_nullable_data() {
     assert_eq!(err.kind(), ErrorKind::InvalidInput);
     assert_eq!(err.code(), ErrorCode::NullUnexpected);
     assert_eq!(err.operation(), "series::to_strings_strict");
-    assert_eq!(error_context_value(&err, "null_count"), Some("1"));
+    assert_eq!(error_context_value(&err, "null_count").as_deref(), Some("1"));
 }
 
 #[test]
@@ -190,9 +190,9 @@ fn test_to_strings_on_numeric_returns_error() {
     assert_eq!(err.kind(), ErrorKind::InvalidInput);
     assert_eq!(err.code(), ErrorCode::TypeMismatch);
     assert_eq!(err.operation(), "column_view::to_strings_lossy");
-    assert_eq!(error_context_value(&err, "left_type_id"), Some("int32"));
-    assert_eq!(error_context_value(&err, "right_type_id"), Some("string"));
-    assert_eq!(error_context_value(&err, "actual_type_id"), None);
+    assert_eq!(error_context_value(&err, "left_type_id").as_deref(), Some("int32"));
+    assert_eq!(error_context_value(&err, "right_type_id").as_deref(), Some("string"));
+    assert_eq!(error_context_value(&err, "actual_type_id").as_deref(), None);
 }
 
 // ===========================================================================
@@ -221,8 +221,8 @@ fn test_to_optional_strings_on_numeric_returns_phase3_type_mismatch_error() {
     assert_eq!(err.kind(), ErrorKind::InvalidInput);
     assert_eq!(err.code(), ErrorCode::TypeMismatch);
     assert_eq!(err.operation(), "column_view::to_optional_strings");
-    assert_eq!(error_context_value(&err, "left_type_id"), Some("int32"));
-    assert_eq!(error_context_value(&err, "right_type_id"), Some("string"));
+    assert_eq!(error_context_value(&err, "left_type_id").as_deref(), Some("int32"));
+    assert_eq!(error_context_value(&err, "right_type_id").as_deref(), Some("string"));
 }
 
 // ===========================================================================

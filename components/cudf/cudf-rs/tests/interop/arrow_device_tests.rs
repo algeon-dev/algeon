@@ -9,7 +9,10 @@ use std::{
 
 use cudf::{
     DataFrame, DataType, DeviceId, ErrorCode, ErrorKind, Runtime, Series, TypeId,
-    core::{Column, Table},
+    core::{
+        Column, Table,
+        error::{FactKeyName, FactValue},
+    },
     interop::arrow_device::{
         DeviceArrowDeviceType, DeviceArrowExportMaterialization, DeviceArrowImportMaterialization,
     },
@@ -97,19 +100,26 @@ fn assert_fixed_width_pointer_rejected<T: std::fmt::Debug>(
     assert_eq!(err.kind(), ErrorKind::Unsupported, "{label}: unexpected error kind");
     assert_eq!(err.code(), ErrorCode::UnsupportedLayout, "{label}: unexpected error code");
     assert_eq!(err.operation(), operation, "{label}: unexpected operation");
-    assert_eq!(err.context_value("resource"), Some("column_layout"), "{label}: unexpected resource");
-    assert_eq!(err.context_value("reason"), Some("not_fixed_width_leaf"), "{label}: unexpected reason");
+    assert_eq!(err.detail_value("resource"), Some("column_layout"), "{label}: unexpected resource");
+    assert_eq!(err.detail_value("reason"), Some("not_fixed_width_leaf"), "{label}: unexpected reason");
     assert_eq!(
-        err.context_value("remedy"),
+        err.detail_value("remedy"),
         Some("call fixed_width_values_ptr only on supported fixed-width leaf layouts"),
         "{label}: unexpected remedy"
     );
     match column_index {
         Some(index) => {
-            let expected = index.to_string();
-            assert_eq!(err.context_value("column_index"), Some(expected.as_str()), "{label}: unexpected column_index");
+            assert_eq!(
+                err.fact_value(FactKeyName::ColumnIndex),
+                Some(&FactValue::Usize(index)),
+                "{label}: unexpected fact"
+            );
+            assert_eq!(err.detail_value("column_index"), None, "{label}: unexpected column_index");
         },
-        None => assert_eq!(err.context_value("column_index"), None, "{label}: unexpected column_index"),
+        None => {
+            assert_eq!(err.fact_value(FactKeyName::ColumnIndex), None, "{label}: unexpected fact");
+            assert_eq!(err.detail_value("column_index"), None, "{label}: unexpected column_index");
+        },
     }
     assert!(err.message().contains("fixed-width"), "{label}: unexpected error message: {}", err.message());
 }
@@ -767,9 +777,9 @@ fn foreign_device_arrow_column_from_raw_abi_parts_rejects_null_schema_and_array(
     };
 
     assert_eq!(err.kind(), ErrorKind::InvalidInput);
-    assert_eq!(err.code(), ErrorCode::InvalidInput);
+    assert_eq!(err.code(), ErrorCode::ForeignInvalidArgument);
     assert_eq!(err.operation(), "interop::arrow_device::ForeignDeviceArrowColumn::from_raw_abi_parts");
-    assert_eq!(err.context_value("resource"), Some("arrow_device_schema"));
+    assert_eq!(err.detail_value("resource"), Some("arrow_device_schema"));
     assert!(err.message().contains("schema pointer"));
 }
 
@@ -834,7 +844,7 @@ fn series_device_arrow_import_round_trip_returns_unnamed_series() {
 #[test]
 fn series_device_arrow_round_trip_does_not_call_host_arrow_path() {
     let _observation_lock = lock_event_observation();
-    cudf::testing::reset_arrow_host_interop_observation_for_test();
+    cudf::testing::arrow::reset_arrow_host_interop_observation_for_test();
 
     let runtime = Runtime::builder().build().unwrap();
     let series = runtime.series(&[10i32, 20, 30]).unwrap();
@@ -844,8 +854,8 @@ fn series_device_arrow_round_trip_does_not_call_host_arrow_path() {
     let imported = Series::try_import_from_device_arrow_column_into_runtime(&foreign, &runtime).unwrap();
 
     assert_eq!(imported.to_vec_strict::<i32>().unwrap(), vec![10, 20, 30]);
-    assert_eq!(cudf::testing::arrow_host_export_call_count_for_test(), 0);
-    assert_eq!(cudf::testing::arrow_host_import_call_count_for_test(), 0);
+    assert_eq!(cudf::testing::arrow::arrow_host_export_call_count_for_test(), 0);
+    assert_eq!(cudf::testing::arrow::arrow_host_import_call_count_for_test(), 0);
 }
 
 #[test]
@@ -908,7 +918,7 @@ fn decimal64_series_device_arrow_import_reports_foreign_retained_view_and_preser
 #[test]
 fn decimal64_series_device_arrow_round_trip_does_not_call_host_arrow_path() {
     let _observation_lock = lock_event_observation();
-    cudf::testing::reset_arrow_host_interop_observation_for_test();
+    cudf::testing::arrow::reset_arrow_host_interop_observation_for_test();
 
     let runtime = Runtime::builder().build().unwrap();
     let series = decimal64_series(&runtime, "amount", &[12345i64, -67890, 5], -2);
@@ -919,8 +929,8 @@ fn decimal64_series_device_arrow_round_trip_does_not_call_host_arrow_path() {
 
     assert_eq!(imported.as_column().data_type().unwrap(), DataType::fixed_point(TypeId::Decimal64, -2));
     assert_eq!(imported.eq(&series).unwrap().to_vec_strict::<bool>().unwrap(), vec![true, true, true]);
-    assert_eq!(cudf::testing::arrow_host_export_call_count_for_test(), 0);
-    assert_eq!(cudf::testing::arrow_host_import_call_count_for_test(), 0);
+    assert_eq!(cudf::testing::arrow::arrow_host_export_call_count_for_test(), 0);
+    assert_eq!(cudf::testing::arrow::arrow_host_import_call_count_for_test(), 0);
 }
 
 #[test]
@@ -963,7 +973,7 @@ fn string_series_device_arrow_import_reports_foreign_retained_view_and_preserves
 #[test]
 fn list_series_device_arrow_round_trip_preserves_recursive_children_and_reports_retained_views() {
     let _observation_lock = lock_event_observation();
-    cudf::testing::reset_arrow_host_interop_observation_for_test();
+    cudf::testing::arrow::reset_arrow_host_interop_observation_for_test();
 
     let frame = read_json_dataframe(
         "arrow_device_list.jsonl",
@@ -983,14 +993,14 @@ fn list_series_device_arrow_round_trip_preserves_recursive_children_and_reports_
 
     assert_eq!(imported.as_column().data_type().unwrap().id(), TypeId::List);
     assert_host_column_exports_equivalent(source.as_column(), imported.as_column());
-    assert_eq!(cudf::testing::arrow_host_export_call_count_for_test(), 0);
-    assert_eq!(cudf::testing::arrow_host_import_call_count_for_test(), 0);
+    assert_eq!(cudf::testing::arrow::arrow_host_export_call_count_for_test(), 0);
+    assert_eq!(cudf::testing::arrow::arrow_host_import_call_count_for_test(), 0);
 }
 
 #[test]
 fn struct_series_device_arrow_round_trip_preserves_recursive_children_and_reports_retained_views() {
     let _observation_lock = lock_event_observation();
-    cudf::testing::reset_arrow_host_interop_observation_for_test();
+    cudf::testing::arrow::reset_arrow_host_interop_observation_for_test();
 
     let frame = read_json_dataframe(
         "arrow_device_struct.jsonl",
@@ -1010,14 +1020,14 @@ fn struct_series_device_arrow_round_trip_preserves_recursive_children_and_report
 
     assert_eq!(imported.as_column().data_type().unwrap().id(), TypeId::Struct);
     assert_host_column_exports_equivalent(source.as_column(), imported.as_column());
-    assert_eq!(cudf::testing::arrow_host_export_call_count_for_test(), 0);
-    assert_eq!(cudf::testing::arrow_host_import_call_count_for_test(), 0);
+    assert_eq!(cudf::testing::arrow::arrow_host_export_call_count_for_test(), 0);
+    assert_eq!(cudf::testing::arrow::arrow_host_import_call_count_for_test(), 0);
 }
 
 #[test]
 fn dictionary_series_device_arrow_round_trip_preserves_keys_and_reports_retained_views() {
     let _observation_lock = lock_event_observation();
-    cudf::testing::reset_arrow_host_interop_observation_for_test();
+    cudf::testing::arrow::reset_arrow_host_interop_observation_for_test();
 
     let runtime = Runtime::builder().build().unwrap();
     let plain = runtime.column_from_strs(&["beta", "alpha", "beta", "gamma"]).unwrap();
@@ -1035,14 +1045,14 @@ fn dictionary_series_device_arrow_round_trip_preserves_keys_and_reports_retained
 
     assert_eq!(imported.as_column().data_type().unwrap().id(), TypeId::Dictionary32);
     assert_host_column_exports_equivalent(source.as_column(), imported.as_column());
-    assert_eq!(cudf::testing::arrow_host_export_call_count_for_test(), 0);
-    assert_eq!(cudf::testing::arrow_host_import_call_count_for_test(), 0);
+    assert_eq!(cudf::testing::arrow::arrow_host_export_call_count_for_test(), 0);
+    assert_eq!(cudf::testing::arrow::arrow_host_import_call_count_for_test(), 0);
 }
 
 #[test]
 fn list_of_bool_series_device_arrow_round_trip_reports_bridge_owned_device_copy() {
     let _observation_lock = lock_event_observation();
-    cudf::testing::reset_arrow_host_interop_observation_for_test();
+    cudf::testing::arrow::reset_arrow_host_interop_observation_for_test();
 
     let frame = read_json_dataframe(
         "arrow_device_list_bool.jsonl",
@@ -1062,8 +1072,8 @@ fn list_of_bool_series_device_arrow_round_trip_reports_bridge_owned_device_copy(
 
     assert_eq!(imported.as_column().data_type().unwrap().id(), TypeId::List);
     assert_host_column_exports_equivalent(source.as_column(), imported.as_column());
-    assert_eq!(cudf::testing::arrow_host_export_call_count_for_test(), 0);
-    assert_eq!(cudf::testing::arrow_host_import_call_count_for_test(), 0);
+    assert_eq!(cudf::testing::arrow::arrow_host_export_call_count_for_test(), 0);
+    assert_eq!(cudf::testing::arrow::arrow_host_import_call_count_for_test(), 0);
 }
 
 #[test]
@@ -1215,14 +1225,14 @@ fn numeric_table_device_arrow_fixed_width_values_ptr_rejects_indices_outside_i64
 
     let err = export.fixed_width_values_ptr(usize::MAX).expect_err("oversized table column index should fail");
 
-    let expected_index = usize::MAX.to_string();
     assert_eq!(err.kind(), ErrorKind::Unsupported);
     assert_eq!(err.code(), ErrorCode::UnsupportedOperation);
     assert_eq!(err.operation(), "interop::arrow_device::DeviceArrowTableExport::fixed_width_values_ptr");
-    assert_eq!(err.context_value("column_index"), Some(expected_index.as_str()));
-    assert_eq!(err.context_value("resource"), Some("column_index"));
-    assert_eq!(err.context_value("reason"), Some("exceeds_i64_max"));
-    assert_eq!(err.context_value("remedy"), Some("reduce column_index to fit within i64::MAX"));
+    assert_eq!(err.fact_value(FactKeyName::ColumnIndex), Some(&FactValue::Usize(usize::MAX)));
+    assert_eq!(err.detail_value("column_index"), None);
+    assert_eq!(err.detail_value("resource"), Some("column_index"));
+    assert_eq!(err.detail_value("reason"), Some("exceeds_i64_max"));
+    assert_eq!(err.detail_value("remedy"), Some("reduce column_index to fit within i64::MAX"));
 }
 
 #[test]
@@ -1447,12 +1457,13 @@ fn dataframe_device_arrow_export_rejects_interior_null_column_names_with_stable_
     };
 
     assert_eq!(err.kind(), ErrorKind::InvalidInput);
-    assert_eq!(err.code(), ErrorCode::InvalidInput);
+    assert_eq!(err.code(), ErrorCode::NullUnexpected);
     assert_eq!(err.operation(), "interop::DataFrame::try_prepare_device_arrow_export");
-    assert_eq!(err.context_value("resource"), Some("column_name"));
-    assert_eq!(err.context_value("reason"), Some("interior_null_byte"));
-    assert_eq!(err.context_value("column_name"), Some("bad\0flag"));
-    assert_eq!(err.context_value("column_index"), Some("1"));
+    assert_eq!(err.detail_value("resource"), Some("column_name"));
+    assert_eq!(err.detail_value("reason"), Some("interior_null_byte"));
+    assert_eq!(err.fact_value(FactKeyName::ColumnName), Some(&FactValue::Str(std::borrow::Cow::Borrowed("bad\0flag"))));
+    assert_eq!(err.fact_value(FactKeyName::ColumnIndex), Some(&FactValue::Usize(1)));
+    assert_eq!(err.detail_value("column_index"), None);
 }
 
 #[test]
@@ -1471,11 +1482,11 @@ fn dataframe_device_arrow_table_raw_parts_column_names_reject_negative_foreign_c
     let err = raw_parts.column_names().expect_err("negative foreign table column count should fail");
 
     assert_eq!(err.kind(), ErrorKind::InvariantViolation);
-    assert_eq!(err.code(), ErrorCode::InvariantViolation);
+    assert_eq!(err.code(), ErrorCode::ForeignInvariantViolation);
     assert_eq!(err.operation(), "interop::arrow_device::DeviceArrowTableRawParts::column_names");
-    assert_eq!(err.context_value("resource"), Some("table_column_count"));
-    assert_eq!(err.context_value("reason"), Some("invalid_foreign_table_metadata"));
-    assert_eq!(err.context_value("table_column_count"), Some("-1"));
+    assert_eq!(err.detail_value("resource"), Some("table_column_count"));
+    assert_eq!(err.detail_value("reason"), Some("invalid_foreign_table_metadata"));
+    assert_eq!(err.detail_value("reported_table_column_count"), Some("-1"));
 }
 
 #[test]
@@ -1549,9 +1560,9 @@ fn foreign_device_arrow_table_from_raw_abi_parts_rejects_null_schema_and_array()
     };
 
     assert_eq!(err.kind(), ErrorKind::InvalidInput);
-    assert_eq!(err.code(), ErrorCode::InvalidInput);
+    assert_eq!(err.code(), ErrorCode::ForeignInvalidArgument);
     assert_eq!(err.operation(), "interop::arrow_device::ForeignDeviceArrowTable::from_raw_abi_parts");
-    assert_eq!(err.context_value("resource"), Some("arrow_device_schema"));
+    assert_eq!(err.detail_value("resource"), Some("arrow_device_schema"));
     assert!(err.message().contains("schema pointer"));
 }
 
@@ -1633,7 +1644,7 @@ fn bool_table_device_arrow_import_reports_bridge_owned_device_copy() {
 #[test]
 fn decimal64_dataframe_device_arrow_round_trip_preserves_names_scale_and_values() {
     let _observation_lock = lock_event_observation();
-    cudf::testing::reset_arrow_host_interop_observation_for_test();
+    cudf::testing::arrow::reset_arrow_host_interop_observation_for_test();
 
     let runtime = Runtime::builder().build().unwrap();
     let ids = runtime.series(&[3i32, 1, 4]).unwrap();
@@ -1657,8 +1668,8 @@ fn decimal64_dataframe_device_arrow_round_trip_preserves_names_scale_and_values(
         imported.series("amount").unwrap().eq(&amounts).unwrap().to_vec_strict::<bool>().unwrap(),
         vec![true, true, true]
     );
-    assert_eq!(cudf::testing::arrow_host_export_call_count_for_test(), 0);
-    assert_eq!(cudf::testing::arrow_host_import_call_count_for_test(), 0);
+    assert_eq!(cudf::testing::arrow::arrow_host_export_call_count_for_test(), 0);
+    assert_eq!(cudf::testing::arrow::arrow_host_import_call_count_for_test(), 0);
 }
 
 #[test]
@@ -1688,7 +1699,7 @@ fn string_dataframe_device_arrow_round_trip_preserves_names_and_values() {
 #[test]
 fn string_dataframe_device_arrow_round_trip_does_not_call_host_arrow_path() {
     let _observation_lock = lock_event_observation();
-    cudf::testing::reset_arrow_host_interop_observation_for_test();
+    cudf::testing::arrow::reset_arrow_host_interop_observation_for_test();
 
     let runtime = Runtime::builder().build().unwrap();
     let ids = runtime.series(&[3i32, 1, 4, 1]).unwrap();
@@ -1704,14 +1715,14 @@ fn string_dataframe_device_arrow_round_trip_does_not_call_host_arrow_path() {
         imported.series("word").unwrap().to_optional_strings().unwrap(),
         vec![Some("alpha".to_string()), Some(String::new()), None, Some("omega".to_string()),]
     );
-    assert_eq!(cudf::testing::arrow_host_export_call_count_for_test(), 0);
-    assert_eq!(cudf::testing::arrow_host_import_call_count_for_test(), 0);
+    assert_eq!(cudf::testing::arrow::arrow_host_export_call_count_for_test(), 0);
+    assert_eq!(cudf::testing::arrow::arrow_host_import_call_count_for_test(), 0);
 }
 
 #[test]
 fn mixed_nested_dataframe_device_arrow_round_trip_preserves_names_structure_and_retained_views() {
     let _observation_lock = lock_event_observation();
-    cudf::testing::reset_arrow_host_interop_observation_for_test();
+    cudf::testing::arrow::reset_arrow_host_interop_observation_for_test();
 
     let runtime = Runtime::builder().build().unwrap();
     let source = nested_dictionary_dataframe(
@@ -1733,8 +1744,8 @@ fn mixed_nested_dataframe_device_arrow_round_trip_preserves_names_structure_and_
     assert_eq!(source_names, imported_names);
     assert_eq!(imported_names, vec!["name", "lists", "point", "category"]);
     assert_host_table_exports_equivalent(&source_table, &imported_table);
-    assert_eq!(cudf::testing::arrow_host_export_call_count_for_test(), 0);
-    assert_eq!(cudf::testing::arrow_host_import_call_count_for_test(), 0);
+    assert_eq!(cudf::testing::arrow::arrow_host_export_call_count_for_test(), 0);
+    assert_eq!(cudf::testing::arrow::arrow_host_import_call_count_for_test(), 0);
 }
 
 #[test]
@@ -1799,7 +1810,7 @@ fn dataframe_device_arrow_export_uses_producer_execution_domain() {
 #[test]
 fn dataframe_device_arrow_round_trip_does_not_call_host_arrow_path() {
     let _observation_lock = lock_event_observation();
-    cudf::testing::reset_arrow_host_interop_observation_for_test();
+    cudf::testing::arrow::reset_arrow_host_interop_observation_for_test();
 
     let runtime = Runtime::builder().build().unwrap();
     let ids = runtime.series(&[3i32, 1, 4]).unwrap();
@@ -1813,8 +1824,8 @@ fn dataframe_device_arrow_round_trip_does_not_call_host_arrow_path() {
     assert_eq!(imported.column_names(), &["id", "flag"]);
     assert_eq!(imported.series("id").unwrap().to_vec_strict::<i32>().unwrap(), vec![3, 1, 4]);
     assert_eq!(imported.series("flag").unwrap().to_vec_strict::<bool>().unwrap(), vec![true, false, true]);
-    assert_eq!(cudf::testing::arrow_host_export_call_count_for_test(), 0);
-    assert_eq!(cudf::testing::arrow_host_import_call_count_for_test(), 0);
+    assert_eq!(cudf::testing::arrow::arrow_host_export_call_count_for_test(), 0);
+    assert_eq!(cudf::testing::arrow::arrow_host_import_call_count_for_test(), 0);
 }
 
 #[test]
@@ -1894,9 +1905,9 @@ fn table_device_arrow_import_rejects_different_runtime_device() {
     assert_eq!(err.kind(), ErrorKind::ExecutionContext);
     assert_eq!(err.code(), ErrorCode::CrossDeviceInputs);
     assert_eq!(err.operation(), "interop::Table::try_import_from_device_arrow_table_into_runtime");
-    assert_eq!(err.context_value("left_device"), Some("1"));
-    assert_eq!(err.context_value("right_device"), Some("0"));
-    assert_eq!(err.context_value("resource"), Some("foreign_device_arrow_table"));
+    assert_eq!(err.fact_value(FactKeyName::LeftDevice), Some(&FactValue::DeviceId(1)));
+    assert_eq!(err.fact_value(FactKeyName::RightDevice), Some(&FactValue::DeviceId(0)));
+    assert_eq!(err.detail_value("resource"), Some("foreign_device_arrow_table"));
     assert!(err.message().contains("same CUDA device"));
 }
 
@@ -1919,9 +1930,9 @@ fn device_arrow_import_rejects_different_runtime_device() {
     assert_eq!(err.kind(), ErrorKind::ExecutionContext);
     assert_eq!(err.code(), ErrorCode::CrossDeviceInputs);
     assert_eq!(err.operation(), "interop::Column::try_import_from_device_arrow_column_into_runtime");
-    assert_eq!(err.context_value("left_device"), Some("1"));
-    assert_eq!(err.context_value("right_device"), Some("0"));
-    assert_eq!(err.context_value("resource"), Some("foreign_device_arrow_column"));
+    assert_eq!(err.fact_value(FactKeyName::LeftDevice), Some(&FactValue::DeviceId(1)));
+    assert_eq!(err.fact_value(FactKeyName::RightDevice), Some(&FactValue::DeviceId(0)));
+    assert_eq!(err.detail_value("resource"), Some("foreign_device_arrow_column"));
     assert!(err.message().contains("same CUDA device"));
 }
 
@@ -1933,24 +1944,27 @@ fn device_arrow_import_rejects_non_cuda_device_type() {
     let raw_parts = series.try_prepare_device_arrow_export().unwrap().into_raw_parts();
 
     unsafe {
-        cudf::testing::force_device_arrow_array_device_type_for_test(
+        cudf::testing::interop::force_device_arrow_array_device_type_for_test(
             raw_parts.device_array_ptr(),
-            cudf::testing::arrow_device_cpu_type_for_test(),
+            cudf::testing::interop::arrow_device_cpu_type_for_test(),
         );
     }
 
-    assert_eq!(raw_parts.device_type(), DeviceArrowDeviceType::Other(cudf::testing::arrow_device_cpu_type_for_test()));
+    assert_eq!(
+        raw_parts.device_type(),
+        DeviceArrowDeviceType::Other(cudf::testing::interop::arrow_device_cpu_type_for_test())
+    );
 
     let foreign = raw_parts.into_foreign();
     let err = Column::try_import_from_device_arrow_column_into_runtime(&foreign, &runtime)
         .expect_err("non-CUDA Arrow device roots should be rejected at the safe Rust import boundary");
-    let raw_device_type = cudf::testing::arrow_device_cpu_type_for_test().to_string();
+    let raw_device_type = cudf::testing::interop::arrow_device_cpu_type_for_test().to_string();
 
     assert_eq!(err.kind(), ErrorKind::InvalidInput);
-    assert_eq!(err.code(), ErrorCode::InvalidInput);
+    assert_eq!(err.code(), ErrorCode::ForeignInvalidArgument);
     assert_eq!(err.operation(), "interop::Column::try_import_from_device_arrow_column_into_runtime");
-    assert_eq!(err.context_value("resource"), Some("device_type"));
-    assert_eq!(err.context_value("device_type"), Some(raw_device_type.as_str()));
+    assert_eq!(err.detail_value("resource"), Some("device_type"));
+    assert_eq!(err.detail_value("device_type"), Some(raw_device_type.as_str()));
     assert!(err.message().contains("ARROW_DEVICE_CUDA"));
 }
 
@@ -1970,17 +1984,17 @@ fn device_arrow_import_rejects_foreign_device_id_outside_i32_range_with_stable_c
         .expect_err("foreign device id outside i32 range should fail");
 
     assert_eq!(err.kind(), ErrorKind::InvariantViolation);
-    assert_eq!(err.code(), ErrorCode::InvariantViolation);
+    assert_eq!(err.code(), ErrorCode::ForeignInvariantViolation);
     assert_eq!(err.operation(), "interop::Column::try_import_from_device_arrow_column_into_runtime");
-    assert_eq!(err.context_value("resource"), Some("device_id"));
-    assert_eq!(err.context_value("reason"), Some("invalid_foreign_device_id"));
-    assert_eq!(err.context_value("device_id"), Some("2147483648"));
+    assert_eq!(err.detail_value("resource"), Some("device_id"));
+    assert_eq!(err.detail_value("reason"), Some("invalid_foreign_device_id"));
+    assert_eq!(err.detail_value("device_id"), Some("2147483648"));
 }
 
 #[test]
 fn device_arrow_import_accepts_cuda_host_device_type() {
     let _observation_lock = lock_event_observation();
-    cudf::testing::reset_arrow_host_interop_observation_for_test();
+    cudf::testing::arrow::reset_arrow_host_interop_observation_for_test();
 
     let runtime = Runtime::builder().build().unwrap();
     let series = runtime.series(&[11i32, 22, 33]).unwrap();
@@ -1988,9 +2002,9 @@ fn device_arrow_import_accepts_cuda_host_device_type() {
     let raw_parts = series.try_prepare_device_arrow_export().unwrap().into_raw_parts();
 
     unsafe {
-        cudf::testing::force_device_arrow_array_device_type_for_test(
+        cudf::testing::interop::force_device_arrow_array_device_type_for_test(
             raw_parts.device_array_ptr(),
-            cudf::testing::arrow_device_cuda_host_type_for_test(),
+            cudf::testing::interop::arrow_device_cuda_host_type_for_test(),
         );
     }
 
@@ -2003,14 +2017,14 @@ fn device_arrow_import_accepts_cuda_host_device_type() {
     assert_eq!(foreign.device_type(), DeviceArrowDeviceType::CudaHost);
     assert_eq!(imported.device_data_ptr().unwrap(), producer_ptr);
     assert_eq!(Series::from_column(imported).unwrap().to_vec_strict::<i32>().unwrap(), vec![11, 22, 33]);
-    assert_eq!(cudf::testing::arrow_host_export_call_count_for_test(), 0);
-    assert_eq!(cudf::testing::arrow_host_import_call_count_for_test(), 0);
+    assert_eq!(cudf::testing::arrow::arrow_host_export_call_count_for_test(), 0);
+    assert_eq!(cudf::testing::arrow::arrow_host_import_call_count_for_test(), 0);
 }
 
 #[test]
 fn table_device_arrow_import_accepts_cuda_managed_device_type() {
     let _observation_lock = lock_event_observation();
-    cudf::testing::reset_arrow_host_interop_observation_for_test();
+    cudf::testing::arrow::reset_arrow_host_interop_observation_for_test();
 
     let runtime = Runtime::builder().build().unwrap();
     let ids = runtime.column_from_slice(&[5i32, 6, 7]).unwrap();
@@ -2021,9 +2035,9 @@ fn table_device_arrow_import_accepts_cuda_managed_device_type() {
     let raw_parts = table.try_prepare_device_arrow_export().unwrap().into_raw_parts();
 
     unsafe {
-        cudf::testing::force_device_arrow_array_device_type_for_test(
+        cudf::testing::interop::force_device_arrow_array_device_type_for_test(
             raw_parts.device_array_ptr(),
-            cudf::testing::arrow_device_cuda_managed_type_for_test(),
+            cudf::testing::interop::arrow_device_cuda_managed_type_for_test(),
         );
     }
 
@@ -2046,8 +2060,8 @@ fn table_device_arrow_import_accepts_cuda_managed_device_type() {
         Series::from_column(imported_columns[1].deep_copy().unwrap()).unwrap().to_vec_strict::<f64>().unwrap(),
         vec![1.5, 2.5, 3.5]
     );
-    assert_eq!(cudf::testing::arrow_host_export_call_count_for_test(), 0);
-    assert_eq!(cudf::testing::arrow_host_import_call_count_for_test(), 0);
+    assert_eq!(cudf::testing::arrow::arrow_host_export_call_count_for_test(), 0);
+    assert_eq!(cudf::testing::arrow::arrow_host_import_call_count_for_test(), 0);
 }
 
 #[test]
@@ -2069,15 +2083,10 @@ fn series_device_arrow_import_rejects_different_runtime_device() {
     assert_eq!(err.kind(), ErrorKind::ExecutionContext);
     assert_eq!(err.code(), ErrorCode::CrossDeviceInputs);
     assert_eq!(err.operation(), "interop::Series::try_import_from_device_arrow_column_into_runtime");
-    assert!(
-        err.context().iter().any(|(key, value)| *key == "called"
-            && value == "interop::Column::try_import_from_device_arrow_column_into_runtime"),
-        "expected inner column import operation in called context, got {:?}",
-        err.context()
-    );
-    assert_eq!(err.context_value("left_device"), Some("1"));
-    assert_eq!(err.context_value("right_device"), Some("0"));
-    assert_eq!(err.context_value("resource"), Some("foreign_device_arrow_column"));
+    assert_eq!(err.call_chain(), &["interop::Column::try_import_from_device_arrow_column_into_runtime"]);
+    assert_eq!(err.fact_value(FactKeyName::LeftDevice), Some(&FactValue::DeviceId(1)));
+    assert_eq!(err.fact_value(FactKeyName::RightDevice), Some(&FactValue::DeviceId(0)));
+    assert_eq!(err.detail_value("resource"), Some("foreign_device_arrow_column"));
     assert!(err.message().contains("same CUDA device"));
 }
 
@@ -2091,23 +2100,26 @@ fn table_device_arrow_import_rejects_non_cuda_device_type() {
     let raw_parts = table.try_prepare_device_arrow_export().unwrap().into_raw_parts();
 
     unsafe {
-        cudf::testing::force_device_arrow_array_device_type_for_test(
+        cudf::testing::interop::force_device_arrow_array_device_type_for_test(
             raw_parts.device_array_ptr(),
-            cudf::testing::arrow_device_cpu_type_for_test(),
+            cudf::testing::interop::arrow_device_cpu_type_for_test(),
         );
     }
 
-    assert_eq!(raw_parts.device_type(), DeviceArrowDeviceType::Other(cudf::testing::arrow_device_cpu_type_for_test()));
+    assert_eq!(
+        raw_parts.device_type(),
+        DeviceArrowDeviceType::Other(cudf::testing::interop::arrow_device_cpu_type_for_test())
+    );
 
     let foreign = raw_parts.into_foreign();
     let err = Table::try_import_from_device_arrow_table_into_runtime(&foreign, &runtime)
         .expect_err("non-CUDA Arrow device table roots should be rejected at the safe Rust import boundary");
-    let raw_device_type = cudf::testing::arrow_device_cpu_type_for_test().to_string();
+    let raw_device_type = cudf::testing::interop::arrow_device_cpu_type_for_test().to_string();
 
     assert_eq!(err.kind(), ErrorKind::InvalidInput);
-    assert_eq!(err.code(), ErrorCode::InvalidInput);
+    assert_eq!(err.code(), ErrorCode::ForeignInvalidArgument);
     assert_eq!(err.operation(), "interop::Table::try_import_from_device_arrow_table_into_runtime");
-    assert_eq!(err.context_value("resource"), Some("device_type"));
-    assert_eq!(err.context_value("device_type"), Some(raw_device_type.as_str()));
+    assert_eq!(err.detail_value("resource"), Some("device_type"));
+    assert_eq!(err.detail_value("device_type"), Some(raw_device_type.as_str()));
     assert!(err.message().contains("ARROW_DEVICE_CUDA"));
 }

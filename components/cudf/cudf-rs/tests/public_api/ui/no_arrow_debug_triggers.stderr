@@ -1,11 +1,5 @@
-error[E0425]: cannot find function `__debug_trigger_numeric_to_arrow_error_for_test` in module `cudf::io::arrow`
- --> tests/public_api/ui/no_arrow_debug_triggers.rs:2:30
+error[E0433]: failed to resolve: could not find `arrow` in `io`
+ --> tests/public_api/ui/no_arrow_debug_triggers.rs:2:23
   |
-2 |     let _ = cudf::io::arrow::__debug_trigger_numeric_to_arrow_error_for_test();
-  |                              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ not found in `cudf::io::arrow`
-
-error[E0425]: cannot find function `__debug_trigger_record_batch_error_for_test` in module `cudf::io::arrow`
- --> tests/public_api/ui/no_arrow_debug_triggers.rs:3:30
-  |
-3 |     let _ = cudf::io::arrow::__debug_trigger_record_batch_error_for_test();
-  |                              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ not found in `cudf::io::arrow`
+2 |     let _ = cudf::io::arrow::dataframe_from_record_batch;
+  |                       ^^^^^ could not find `arrow` in `io`

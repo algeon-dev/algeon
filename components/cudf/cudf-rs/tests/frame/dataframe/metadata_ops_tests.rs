@@ -74,7 +74,7 @@ fn test_without_columns_duplicate_name_returns_canonical_duplicate_error() {
 
     assert_duplicate_name_error(&err, "score");
     assert_eq!(err.operation(), "dataframe::without_columns");
-    assert_eq!(error_context_value(&err, "column_name_count"), Some("2"));
+    assert_eq!(error_context_value(&err, "column_name_count").as_deref(), Some("2"));
 }
 
 #[test]
@@ -156,7 +156,7 @@ fn test_rename_columns_duplicate_target_returns_error() {
 
     assert_duplicate_name_error(&err, "same");
     assert_eq!(err.operation(), "dataframe::rename_columns");
-    assert_eq!(error_context_value(&err, "column_name_count"), Some("3"));
+    assert_eq!(error_context_value(&err, "column_name_count").as_deref(), Some("3"));
 }
 
 #[test]
@@ -177,7 +177,7 @@ fn test_rename_columns_duplicate_source_returns_canonical_duplicate_error() {
 
     assert_duplicate_name_error(&err, "id");
     assert_eq!(err.operation(), "dataframe::rename_columns");
-    assert_eq!(error_context_value(&err, "column_name_count"), Some("2"));
+    assert_eq!(error_context_value(&err, "column_name_count").as_deref(), Some("2"));
 }
 
 #[test]
@@ -305,9 +305,9 @@ fn test_with_column_row_count_mismatch_returns_error() {
     assert_eq!(err.code(), ErrorCode::ColumnLengthMismatch);
     assert_eq!(err.kind(), ErrorKind::InvalidInput);
     assert_eq!(err.operation(), "dataframe::with_column");
-    assert_eq!(error_context_value(&err, "column_name"), Some("x"));
-    assert_eq!(error_context_value(&err, "actual_rows"), Some("2"));
-    assert_eq!(error_context_value(&err, "expected_rows"), Some("3"));
+    assert_eq!(error_context_value(&err, "column_name").as_deref(), Some("x"));
+    assert_eq!(error_context_value(&err, "actual_rows").as_deref(), Some("2"));
+    assert_eq!(error_context_value(&err, "expected_rows").as_deref(), Some("3"));
 }
 
 // ===========================================================================
@@ -387,9 +387,9 @@ fn test_assign_row_count_mismatch_returns_error() {
     assert_eq!(err.code(), ErrorCode::ColumnLengthMismatch);
     assert_eq!(err.kind(), ErrorKind::InvalidInput);
     assert_eq!(err.operation(), "dataframe::assign");
-    assert_eq!(error_context_value(&err, "column_name"), Some("x"));
-    assert_eq!(error_context_value(&err, "actual_rows"), Some("1"));
-    assert_eq!(error_context_value(&err, "expected_rows"), Some("3"));
+    assert_eq!(error_context_value(&err, "column_name").as_deref(), Some("x"));
+    assert_eq!(error_context_value(&err, "actual_rows").as_deref(), Some("1"));
+    assert_eq!(error_context_value(&err, "expected_rows").as_deref(), Some("3"));
 }
 
 #[test]
@@ -437,9 +437,9 @@ fn test_assign_on_zero_column_frame_rejects_row_count_mismatch() {
     assert_eq!(err.code(), ErrorCode::ColumnLengthMismatch);
     assert_eq!(err.kind(), ErrorKind::InvalidInput);
     assert_eq!(err.operation(), "dataframe::assign");
-    assert_eq!(error_context_value(&err, "column_name"), Some("replacement"));
-    assert_eq!(error_context_value(&err, "actual_rows"), Some("2"));
-    assert_eq!(error_context_value(&err, "expected_rows"), Some("3"));
+    assert_eq!(error_context_value(&err, "column_name").as_deref(), Some("replacement"));
+    assert_eq!(error_context_value(&err, "actual_rows").as_deref(), Some("2"));
+    assert_eq!(error_context_value(&err, "expected_rows").as_deref(), Some("3"));
 }
 
 #[test]

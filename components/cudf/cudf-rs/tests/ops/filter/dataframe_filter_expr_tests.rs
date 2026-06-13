@@ -228,11 +228,11 @@ fn test_filter_expr_rejects_unsupported_nodes_before_low_level_filter_runs() {
 
     assert_eq!(err.code(), ErrorCode::UnsupportedOperation);
     assert_eq!(err.kind(), ErrorKind::Unsupported);
-    assert_eq!(error_context_value(&err, "resource"), Some("row_predicate"));
-    assert_eq!(error_context_value(&err, "reason"), Some("unsupported_expr_kind"));
-    assert_eq!(error_context_value(&err, "expr_kind"), Some("string_op"));
+    assert_eq!(error_context_value(&err, "resource").as_deref(), Some("row_predicate"));
+    assert_eq!(error_context_value(&err, "reason").as_deref(), Some("unsupported_expr_kind"));
+    assert_eq!(error_context_value(&err, "expr_kind").as_deref(), Some("string_op"));
     assert_eq!(
-        error_context_value(&err, "remedy"),
+        error_context_value(&err, "remedy").as_deref(),
         Some("rewrite the predicate into currently supported fused-filter operators"),
     );
     assert_eq!(last_row_predicate_filter_calls(), 0);
@@ -250,9 +250,9 @@ fn test_filter_expr_rejects_mixed_type_comparisons_before_low_level_filter_runs(
 
     assert_eq!(err.code(), ErrorCode::TypeMismatch);
     assert_eq!(err.kind(), ErrorKind::InvalidInput);
-    assert_eq!(error_context_value(&err, "left_type_id"), Some("string"));
-    assert_eq!(error_context_value(&err, "right_type_id"), Some("int32"));
-    assert_eq!(error_context_value(&err, "operator"), Some("equal"));
+    assert_eq!(error_context_value(&err, "left_type_id").as_deref(), Some("string"));
+    assert_eq!(error_context_value(&err, "right_type_id").as_deref(), Some("int32"));
+    assert_eq!(error_context_value(&err, "operator").as_deref(), Some("equal"));
     assert_eq!(last_row_predicate_filter_calls(), 0);
     assert_eq!(last_row_predicate_compute_mask_calls(), 0);
     assert_eq!(last_row_predicate_final_filter_calls(), 0);
@@ -267,8 +267,8 @@ fn test_filter_expr_rejects_non_boolean_predicate_output() {
 
     assert_eq!(err.code(), ErrorCode::TypeMismatch);
     assert_eq!(err.kind(), ErrorKind::InvalidInput);
-    assert_eq!(error_context_value(&err, "left_type_id"), Some("int32"));
-    assert_eq!(error_context_value(&err, "right_type_id"), Some("bool8"));
+    assert_eq!(error_context_value(&err, "left_type_id").as_deref(), Some("int32"));
+    assert_eq!(error_context_value(&err, "right_type_id").as_deref(), Some("bool8"));
 }
 
 #[test]
@@ -279,8 +279,8 @@ fn test_filter_expr_rejects_logical_not_on_non_boolean_operand() {
 
     assert_eq!(err.code(), ErrorCode::TypeMismatch);
     assert_eq!(err.kind(), ErrorKind::InvalidInput);
-    assert_eq!(error_context_value(&err, "left_type_id"), Some("int32"));
-    assert_eq!(error_context_value(&err, "right_type_id"), Some("bool8"));
+    assert_eq!(error_context_value(&err, "left_type_id").as_deref(), Some("int32"));
+    assert_eq!(error_context_value(&err, "right_type_id").as_deref(), Some("bool8"));
 }
 
 #[test]

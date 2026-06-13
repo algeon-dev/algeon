@@ -5,7 +5,10 @@ use std::process::Command;
 
 use cudf::{
     ErrorCode, ErrorKind,
-    core::Table,
+    core::{
+        Table,
+        error::{FactKeyName, FactValue},
+    },
     io::{csv, parquet},
     testing::prelude::*,
 };
@@ -396,13 +399,13 @@ fn test_parquet_row_groups_with_skip_rows_errors() {
     assert_eq!(err.kind(), ErrorKind::Unsupported);
     assert_eq!(err.code(), ErrorCode::UnsupportedOperation);
     assert_eq!(err.operation(), "io::parquet::read_parquet_table");
-    assert_eq!(error_context_value(&err, "row_group_count"), Some("1"));
-    assert_eq!(error_context_value(&err, "skip_rows"), Some("1"));
-    assert_eq!(error_context_value(&err, "num_rows"), Some("all"));
-    assert_eq!(error_context_value(&err, "resource"), Some("row_groups"));
-    assert_eq!(error_context_value(&err, "reason"), Some("incompatible_option_combination"));
+    assert_eq!(error_context_value(&err, "row_group_count").as_deref(), Some("1"));
+    assert_eq!(error_context_value(&err, "skip_rows").as_deref(), Some("1"));
+    assert_eq!(error_context_value(&err, "num_rows").as_deref(), Some("all"));
+    assert_eq!(error_context_value(&err, "resource").as_deref(), Some("row_groups"));
+    assert_eq!(error_context_value(&err, "reason").as_deref(), Some("incompatible_option_combination"));
     assert_eq!(
-        error_context_value(&err, "remedy"),
+        error_context_value(&err, "remedy").as_deref(),
         Some("use row_groups by itself, or remove row_groups and use skip_rows/num_rows")
     );
 }
@@ -433,13 +436,13 @@ fn test_parquet_row_groups_with_num_rows_errors() {
     assert_eq!(err.kind(), ErrorKind::Unsupported);
     assert_eq!(err.code(), ErrorCode::UnsupportedOperation);
     assert_eq!(err.operation(), "io::parquet::read_parquet_table");
-    assert_eq!(error_context_value(&err, "row_group_count"), Some("1"));
-    assert_eq!(error_context_value(&err, "skip_rows"), Some("0"));
-    assert_eq!(error_context_value(&err, "num_rows"), Some("2"));
-    assert_eq!(error_context_value(&err, "resource"), Some("row_groups"));
-    assert_eq!(error_context_value(&err, "reason"), Some("incompatible_option_combination"));
+    assert_eq!(error_context_value(&err, "row_group_count").as_deref(), Some("1"));
+    assert_eq!(error_context_value(&err, "skip_rows").as_deref(), Some("0"));
+    assert_eq!(error_context_value(&err, "num_rows").as_deref(), Some("2"));
+    assert_eq!(error_context_value(&err, "resource").as_deref(), Some("row_groups"));
+    assert_eq!(error_context_value(&err, "reason").as_deref(), Some("incompatible_option_combination"));
     assert_eq!(
-        error_context_value(&err, "remedy"),
+        error_context_value(&err, "remedy").as_deref(),
         Some("use row_groups by itself, or remove row_groups and use skip_rows/num_rows")
     );
 }
@@ -454,11 +457,11 @@ fn test_csv_write_rejects_column_name_with_nul_byte_using_stable_contract() {
     let err = csv::write_csv(&table, &write_opts).expect_err("column names containing NUL should fail before FFI");
 
     assert_eq!(err.kind(), ErrorKind::InvalidInput);
-    assert_eq!(err.code(), ErrorCode::InvalidInput);
+    assert_eq!(err.code(), ErrorCode::NullUnexpected);
     assert_eq!(err.operation(), "io::csv::write_csv");
-    assert_eq!(error_context_value(&err, "column_name"), Some("bad\0name"));
-    assert_eq!(error_context_value(&err, "resource"), Some("column_name"));
-    assert_eq!(error_context_value(&err, "reason"), Some("interior_null_byte"));
+    assert_eq!(error_context_value(&err, "column_name").as_deref(), Some("bad\0name"));
+    assert_eq!(error_context_value(&err, "resource").as_deref(), Some("column_name"));
+    assert_eq!(error_context_value(&err, "reason").as_deref(), Some("interior_null_byte"));
 }
 
 #[test]
@@ -472,11 +475,11 @@ fn test_parquet_write_rejects_column_name_with_nul_byte_using_stable_contract() 
         parquet::write_parquet(&table, &write_opts).expect_err("column names containing NUL should fail before FFI");
 
     assert_eq!(err.kind(), ErrorKind::InvalidInput);
-    assert_eq!(err.code(), ErrorCode::InvalidInput);
+    assert_eq!(err.code(), ErrorCode::NullUnexpected);
     assert_eq!(err.operation(), "io::parquet::write_parquet");
-    assert_eq!(error_context_value(&err, "column_name"), Some("bad\0name"));
-    assert_eq!(error_context_value(&err, "resource"), Some("column_name"));
-    assert_eq!(error_context_value(&err, "reason"), Some("interior_null_byte"));
+    assert_eq!(error_context_value(&err, "column_name").as_deref(), Some("bad\0name"));
+    assert_eq!(error_context_value(&err, "resource").as_deref(), Some("column_name"));
+    assert_eq!(error_context_value(&err, "reason").as_deref(), Some("interior_null_byte"));
 }
 
 #[test]
@@ -494,11 +497,11 @@ fn test_parquet_read_rejects_projected_column_name_with_nul_byte_using_stable_co
     };
 
     assert_eq!(err.kind(), ErrorKind::InvalidInput);
-    assert_eq!(err.code(), ErrorCode::InvalidInput);
+    assert_eq!(err.code(), ErrorCode::NullUnexpected);
     assert_eq!(err.operation(), "io::parquet::read_parquet_table");
-    assert_eq!(error_context_value(&err, "column_name"), Some("bad\0name"));
-    assert_eq!(error_context_value(&err, "resource"), Some("column_name"));
-    assert_eq!(error_context_value(&err, "reason"), Some("interior_null_byte"));
+    assert_eq!(error_context_value(&err, "column_name").as_deref(), Some("bad\0name"));
+    assert_eq!(error_context_value(&err, "resource").as_deref(), Some("column_name"));
+    assert_eq!(error_context_value(&err, "reason").as_deref(), Some("interior_null_byte"));
 }
 
 #[test]
@@ -521,11 +524,11 @@ fn test_parquet_skip_rows_exceeding_i64_max_uses_stable_overflow_contract() {
     assert_eq!(err.kind(), ErrorKind::Unsupported);
     assert_eq!(err.code(), ErrorCode::UnsupportedOperation);
     assert_eq!(err.operation(), "io::parquet::read_parquet_table");
-    assert_eq!(error_context_value(&err, "resource"), Some("skip_rows"));
-    assert_eq!(error_context_value(&err, "reason"), Some("exceeds_i64_max"));
-    assert_eq!(error_context_value(&err, "remedy"), Some("reduce skip_rows to fit within i64::MAX"));
+    assert_eq!(error_context_value(&err, "resource").as_deref(), Some("skip_rows"));
+    assert_eq!(error_context_value(&err, "reason").as_deref(), Some("exceeds_i64_max"));
+    assert_eq!(error_context_value(&err, "remedy").as_deref(), Some("reduce skip_rows to fit within i64::MAX"));
     let expected = ((i64::MAX as usize) + 1).to_string();
-    assert_eq!(error_context_value(&err, "skip_rows"), Some(expected.as_str()));
+    assert_eq!(error_context_value(&err, "skip_rows").as_deref(), Some(expected.as_str()));
 }
 
 #[test]
@@ -548,11 +551,11 @@ fn test_parquet_num_rows_exceeding_i64_max_uses_stable_overflow_contract() {
     assert_eq!(err.kind(), ErrorKind::Unsupported);
     assert_eq!(err.code(), ErrorCode::UnsupportedOperation);
     assert_eq!(err.operation(), "io::parquet::read_parquet_table");
-    assert_eq!(error_context_value(&err, "resource"), Some("num_rows"));
-    assert_eq!(error_context_value(&err, "reason"), Some("exceeds_i64_max"));
-    assert_eq!(error_context_value(&err, "remedy"), Some("reduce num_rows to fit within i64::MAX"));
+    assert_eq!(error_context_value(&err, "resource").as_deref(), Some("num_rows"));
+    assert_eq!(error_context_value(&err, "reason").as_deref(), Some("exceeds_i64_max"));
+    assert_eq!(error_context_value(&err, "remedy").as_deref(), Some("reduce num_rows to fit within i64::MAX"));
     let expected = ((i64::MAX as usize) + 1).to_string();
-    assert_eq!(error_context_value(&err, "num_rows"), Some(expected.as_str()));
+    assert_eq!(error_context_value(&err, "num_rows").as_deref(), Some(expected.as_str()));
 }
 
 #[test]
@@ -567,11 +570,16 @@ fn test_csv_write_rejects_column_name_count_with_stable_contract() {
     assert_eq!(err.kind(), ErrorKind::InvalidInput);
     assert_eq!(err.code(), ErrorCode::ColumnLengthMismatch);
     assert_eq!(err.operation(), "io::csv::write_csv");
-    assert_eq!(error_context_value(&err, "column_name_count"), Some("2"));
-    assert_eq!(error_context_value(&err, "table_column_count"), Some("1"));
-    assert_eq!(error_context_value(&err, "resource"), Some("column_name_count"));
-    assert_eq!(error_context_value(&err, "reason"), Some("mismatch_with_table_column_count"));
-    assert_eq!(error_context_value(&err, "remedy"), Some("ensure column_name_count matches table_column_count"));
+    assert_eq!(err.fact_value(FactKeyName::ActualCount), Some(&FactValue::Usize(2)));
+    assert_eq!(err.fact_value(FactKeyName::TableColumnCount), Some(&FactValue::Usize(1)));
+    assert_eq!(error_context_value(&err, "column_name_count").as_deref(), Some("2"));
+    assert_eq!(error_context_value(&err, "table_column_count").as_deref(), Some("1"));
+    assert_eq!(error_context_value(&err, "resource").as_deref(), Some("column_name_count"));
+    assert_eq!(error_context_value(&err, "reason").as_deref(), Some("mismatch_with_table_column_count"));
+    assert_eq!(
+        error_context_value(&err, "remedy").as_deref(),
+        Some("ensure column_name_count matches table_column_count")
+    );
 }
 
 #[test]
@@ -588,11 +596,16 @@ fn test_parquet_write_rejects_column_name_count_with_stable_contract() {
     assert_eq!(err.kind(), ErrorKind::InvalidInput);
     assert_eq!(err.code(), ErrorCode::ColumnLengthMismatch);
     assert_eq!(err.operation(), "io::parquet::write_parquet");
-    assert_eq!(error_context_value(&err, "column_name_count"), Some("2"));
-    assert_eq!(error_context_value(&err, "table_column_count"), Some("1"));
-    assert_eq!(error_context_value(&err, "resource"), Some("column_name_count"));
-    assert_eq!(error_context_value(&err, "reason"), Some("mismatch_with_table_column_count"));
-    assert_eq!(error_context_value(&err, "remedy"), Some("ensure column_name_count matches table_column_count"));
+    assert_eq!(err.fact_value(FactKeyName::ActualCount), Some(&FactValue::Usize(2)));
+    assert_eq!(err.fact_value(FactKeyName::TableColumnCount), Some(&FactValue::Usize(1)));
+    assert_eq!(error_context_value(&err, "column_name_count").as_deref(), Some("2"));
+    assert_eq!(error_context_value(&err, "table_column_count").as_deref(), Some("1"));
+    assert_eq!(error_context_value(&err, "resource").as_deref(), Some("column_name_count"));
+    assert_eq!(error_context_value(&err, "reason").as_deref(), Some("mismatch_with_table_column_count"));
+    assert_eq!(
+        error_context_value(&err, "remedy").as_deref(),
+        Some("ensure column_name_count matches table_column_count")
+    );
 }
 
 #[test]
@@ -605,8 +618,8 @@ fn test_parquet_write_io_failure_uses_canonical_column_name_count_context() {
     let err = parquet::write_parquet(&table, &write_opts).expect_err("missing parent directory should fail in FFI");
 
     assert_eq!(err.operation(), "io::parquet::write_parquet");
-    assert_eq!(error_context_value(&err, "column_name_count"), Some("1"));
-    assert_eq!(error_context_value(&err, "output_column_name_count"), None);
+    assert_eq!(error_context_value(&err, "column_name_count").as_deref(), Some("1"));
+    assert_eq!(error_context_value(&err, "output_column_name_count").as_deref(), None);
 }
 
 #[test]
@@ -618,8 +631,8 @@ fn test_csv_write_io_failure_uses_canonical_column_name_count_context() {
     let err = csv::write_csv(&table, &write_opts).expect_err("missing parent directory should fail in FFI");
 
     assert_eq!(err.operation(), "io::csv::write_csv");
-    assert_eq!(error_context_value(&err, "column_name_count"), Some("1"));
-    assert_eq!(error_context_value(&err, "num_column_names"), None);
+    assert_eq!(error_context_value(&err, "column_name_count").as_deref(), Some("1"));
+    assert_eq!(error_context_value(&err, "num_column_names").as_deref(), None);
 }
 
 #[test]
@@ -642,12 +655,13 @@ fn test_parquet_read_metadata_null_name_entry_maps_to_invariant_violation() {
     };
 
     assert_eq!(err.kind(), ErrorKind::InvariantViolation);
-    assert_eq!(err.code(), ErrorCode::InvariantViolation);
+    assert_eq!(err.code(), ErrorCode::ForeignInvariantViolation);
     assert_eq!(err.operation(), "io::parquet::read_parquet_table");
-    assert_eq!(error_context_value(&err, "column_index"), Some("0"));
-    assert_eq!(error_context_value(&err, "resource"), Some("column_name"));
-    assert_eq!(error_context_value(&err, "reason"), Some("null_name_entry"));
-    assert_eq!(error_context_value(&err, "name_index"), None);
+    assert_eq!(err.fact_value(FactKeyName::ColumnIndex), Some(&FactValue::Usize(0)));
+    assert_eq!(error_context_value(&err, "column_index").as_deref(), Some("0"));
+    assert_eq!(error_context_value(&err, "resource").as_deref(), Some("column_name"));
+    assert_eq!(error_context_value(&err, "reason").as_deref(), Some("null_name_entry"));
+    assert_eq!(error_context_value(&err, "name_index").as_deref(), None);
 }
 
 #[test]
@@ -670,16 +684,16 @@ fn test_parquet_read_metadata_null_name_array_uses_canonical_fault_context() {
     };
 
     assert_eq!(err.kind(), ErrorKind::InvariantViolation);
-    assert_eq!(err.code(), ErrorCode::InvariantViolation);
+    assert_eq!(err.code(), ErrorCode::ForeignInvariantViolation);
     assert_eq!(err.operation(), "io::parquet::read_parquet_table");
-    assert_eq!(error_context_value(&err, "column_name_count"), Some("1"));
-    assert_eq!(error_context_value(&err, "resource"), Some("column_names"));
-    assert_eq!(error_context_value(&err, "reason"), Some("null_name_array"));
+    assert_eq!(error_context_value(&err, "column_name_count").as_deref(), Some("1"));
+    assert_eq!(error_context_value(&err, "resource").as_deref(), Some("column_names"));
+    assert_eq!(error_context_value(&err, "reason").as_deref(), Some("null_name_array"));
     assert_eq!(
-        error_context_value(&err, "remedy"),
+        error_context_value(&err, "remedy").as_deref(),
         Some("ensure the foreign reader returns a name array whenever column_name_count is positive")
     );
-    assert_eq!(error_context_value(&err, "names_ptr_null"), None);
+    assert_eq!(error_context_value(&err, "names_ptr_null").as_deref(), None);
 }
 
 #[test]
@@ -702,14 +716,18 @@ fn test_parquet_read_metadata_invalid_utf8_name_uses_canonical_fault_context() {
     };
 
     assert_eq!(err.kind(), ErrorKind::InvariantViolation);
-    assert_eq!(err.code(), ErrorCode::InvariantViolation);
+    assert_eq!(err.code(), ErrorCode::ForeignInvariantViolation);
     assert_eq!(err.operation(), "io::parquet::read_parquet_table");
-    assert_eq!(error_context_value(&err, "column_name_count"), Some("1"));
-    assert_eq!(error_context_value(&err, "column_index"), Some("0"));
-    assert_eq!(error_context_value(&err, "resource"), Some("column_name"));
-    assert_eq!(error_context_value(&err, "reason"), Some("invalid_utf8"));
-    assert_eq!(error_context_value(&err, "remedy"), Some("ensure the foreign reader returns valid UTF-8 column names"));
-    assert_eq!(error_context_value(&err, "name_index"), None);
+    assert_eq!(err.fact_value(FactKeyName::ColumnIndex), Some(&FactValue::Usize(0)));
+    assert_eq!(error_context_value(&err, "column_name_count").as_deref(), Some("1"));
+    assert_eq!(error_context_value(&err, "column_index").as_deref(), Some("0"));
+    assert_eq!(error_context_value(&err, "resource").as_deref(), Some("column_name"));
+    assert_eq!(error_context_value(&err, "reason").as_deref(), Some("invalid_utf8"));
+    assert_eq!(
+        error_context_value(&err, "remedy").as_deref(),
+        Some("ensure the foreign reader returns valid UTF-8 column names")
+    );
+    assert_eq!(error_context_value(&err, "name_index").as_deref(), None);
 }
 
 #[test]
@@ -727,8 +745,8 @@ fn test_parquet_read_missing_projected_column_uses_canonical_column_name_count_c
     };
 
     assert_eq!(err.operation(), "io::parquet::read_parquet_table");
-    assert_eq!(error_context_value(&err, "column_name_count"), Some("1"));
-    assert_eq!(error_context_value(&err, "selected_column_count"), None);
+    assert_eq!(error_context_value(&err, "column_name_count").as_deref(), Some("1"));
+    assert_eq!(error_context_value(&err, "selected_column_count").as_deref(), None);
 }
 
 #[test]
@@ -768,8 +786,10 @@ fn test_csv_read_nonexistent_file_reports_not_found() {
         Err(err) => err,
     };
 
-    assert_eq!(err.code(), ErrorCode::MissingResource);
-    assert_eq!(err.kind(), ErrorKind::NotFound);
+    // Local filesystem IO now classifies as the domestic `IoFailure` leaf;
+    // the coarse `DependencyFailure` kind is the policy bucket.
+    assert_eq!(err.code(), ErrorCode::IoFailure);
+    assert_eq!(err.kind(), ErrorKind::DependencyFailure);
 }
 
 #[test]
@@ -784,8 +804,8 @@ fn test_parquet_read_nonexistent_file_reports_not_found() {
         Err(err) => err,
     };
 
-    assert_eq!(err.code(), ErrorCode::MissingResource);
-    assert_eq!(err.kind(), ErrorKind::NotFound);
+    assert_eq!(err.code(), ErrorCode::IoFailure);
+    assert_eq!(err.kind(), ErrorKind::DependencyFailure);
 }
 
 #[cfg(unix)]
@@ -800,12 +820,31 @@ fn test_csv_read_rejects_non_utf8_path_using_stable_contract() {
         Err(err) => err,
     };
 
-    assert_eq!(err.kind(), ErrorKind::InvalidInput);
-    assert_eq!(err.code(), ErrorCode::InvalidInput);
+    // Non-UTF-8 path is a local-IO precondition failure; classified as the
+    // domestic `IoFailure` leaf (the kind projection is `DependencyFailure`).
+    assert_eq!(err.code(), ErrorCode::IoFailure);
+    assert_eq!(err.kind(), ErrorKind::DependencyFailure);
     assert_eq!(err.operation(), "io::csv::read_csv");
-    assert_eq!(error_context_value(&err, "resource"), Some("path"));
-    assert_eq!(error_context_value(&err, "reason"), Some("invalid_utf8"));
-    assert_eq!(error_context_value(&err, "path"), None);
+    assert_eq!(error_context_value(&err, "resource").as_deref(), Some("path"));
+    assert_eq!(error_context_value(&err, "reason").as_deref(), Some("invalid_utf8"));
+    assert_eq!(error_context_value(&err, "path").as_deref(), None);
+}
+
+#[test]
+fn test_csv_read_rejects_path_with_interior_nul_byte_using_stable_contract() {
+    let rt = sample_runtime();
+    let read_opts = csv::CsvTableReadOptions::builder().filepath("bad\0path.csv").with_runtime(&rt).build();
+    let err = match csv::read_csv(&read_opts) {
+        Ok(_) => panic!("paths containing NUL should fail before filesystem access"),
+        Err(err) => err,
+    };
+
+    assert_eq!(err.code(), ErrorCode::NullUnexpected);
+    assert_eq!(err.kind(), ErrorKind::InvalidInput);
+    assert_eq!(err.operation(), "io::csv::read_csv");
+    assert_eq!(error_context_value(&err, "resource").as_deref(), Some("path"));
+    assert_eq!(error_context_value(&err, "reason").as_deref(), Some("interior_null_byte"));
+    assert_eq!(error_context_value(&err, "path").as_deref(), Some("bad\0path.csv"));
 }
 
 #[test]

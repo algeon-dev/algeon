@@ -1,0 +1,32 @@
+error[E0624]: associated function `new` is private
+ --> tests/public_api/ui/no_facts_write_surface.rs:8:28
+  |
+8 |     let mut facts = Facts::new();
+  |                            ^^^ private associated function
+  |
+ ::: src/core/error/facts.rs
+  |
+  |     pub(crate) fn new() -> Self {
+  |     --------------------------- private associated function defined here
+
+error[E0624]: method `try_insert` is private
+ --> tests/public_api/ui/no_facts_write_surface.rs:9:19
+  |
+9 |     let _ = facts.try_insert(FactKeyName::ExpectedRows, FactValue::Usize(1));
+  |                   ^^^^^^^^^^ private method
+  |
+ ::: src/core/error/facts.rs
+  |
+  |     pub(crate) fn try_insert(&mut self, key: FactKeyName, value: FactValue) -> Result<(), DuplicateFactError> {
+  |     --------------------------------------------------------------------------------------------------------- private method defined here
+
+error[E0624]: method `insert` is private
+  --> tests/public_api/ui/no_facts_write_surface.rs:10:11
+   |
+10 |     facts.insert(FactKeyName::ActualRows, FactValue::Usize(1));
+   |           ^^^^^^ private method
+   |
+  ::: src/core/error/facts.rs
+   |
+   |     pub(crate) fn insert(&mut self, key: FactKeyName, value: FactValue) {
+   |     ------------------------------------------------------------------- private method defined here

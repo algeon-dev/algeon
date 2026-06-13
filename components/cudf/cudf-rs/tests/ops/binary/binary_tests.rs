@@ -1,6 +1,7 @@
 //! Tests for binary operations (numeric and string).
 use cudf::{
     DataType, TypeId,
+    core::error::{FactKeyName, FactValue},
     ops::binary::{self, BinaryOperator},
     testing::prelude::*,
 };
@@ -72,7 +73,7 @@ fn test_binary_operation_error_contains_operation_context() {
         .expect_err("expected error");
 
     assert_eq!(err.operation(), "binary::binary_operation_vv");
-    assert!(err.context().iter().any(|(k, _)| *k == "operator"));
+    assert!(err.details().iter().any(|(k, _)| *k == "operator"));
 }
 
 #[test]
@@ -509,13 +510,14 @@ fn test_infer_bool_arithmetic() {
 
 #[test]
 fn test_infer_error_context_keys() {
-    // Verify error context contains left_type_id, right_type_id, operator
+    // Canonical type ids are facts; operator remains a diagnostic detail.
     let err = binary::infer_binary_output_type(TypeId::String, TypeId::Int32, BinaryOperator::Add).unwrap_err();
     assert_eq!(err.code(), cudf::ErrorCode::TypeMismatch);
-    let context_keys: Vec<&str> = err.context().iter().map(|(k, _)| *k).collect();
-    assert!(context_keys.contains(&"left_type_id"));
-    assert!(context_keys.contains(&"right_type_id"));
-    assert!(context_keys.contains(&"operator"));
+    assert_eq!(err.fact_value(FactKeyName::LeftTypeId), Some(&FactValue::TypeId(TypeId::String)));
+    assert_eq!(err.fact_value(FactKeyName::RightTypeId), Some(&FactValue::TypeId(TypeId::Int32)));
+    assert_eq!(err.detail_value("left_type_id"), None);
+    assert_eq!(err.detail_value("right_type_id"), None);
+    assert_eq!(err.detail_value("operator"), Some("add"));
 }
 
 #[test]

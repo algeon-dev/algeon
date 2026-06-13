@@ -2,6 +2,8 @@
 mod cast_consistency_tests;
 #[path = "../frame/contracts/high_level_semantic_baseline_tests.rs"]
 mod high_level_semantic_baseline_tests;
+#[path = "../frame/contracts/shared_row_selection_contract_tests.rs"]
+mod shared_row_selection_contract_tests;
 
 #[path = "../frame/dataframe/arc_sharing_tests.rs"]
 mod dataframe_arc_sharing_tests;

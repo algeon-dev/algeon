@@ -9,8 +9,8 @@ fn assert_groupby_validation_error(err: &cudf::Error, operation: &str, reason: &
     assert_eq!(err.kind(), ErrorKind::Unsupported);
     assert_eq!(err.code(), ErrorCode::UnsupportedOperation);
     assert_eq!(err.operation(), operation);
-    assert_eq!(error_context_value(err, "reason"), Some(reason));
-    assert_eq!(error_context_value(err, "remedy"), Some(remedy));
+    assert_eq!(error_context_value(err, "reason").as_deref(), Some(reason));
+    assert_eq!(error_context_value(err, "remedy").as_deref(), Some(remedy));
 }
 
 fn assert_ddof_range_validation_error(err: &cudf::Error, operation: &str, request_index: &str, expected_ddof: u32) {
@@ -20,8 +20,8 @@ fn assert_ddof_range_validation_error(err: &cudf::Error, operation: &str, reques
         "ddof_exceeds_i32_range",
         "use a ddof value within libcudf's i32 range",
     );
-    assert_eq!(error_context_value(err, "request_index"), Some(request_index));
-    assert_eq!(error_context_value(err, "ddof"), Some(expected_ddof.to_string().as_str()));
+    assert_eq!(error_context_value(err, "request_index").as_deref(), Some(request_index));
+    assert_eq!(error_context_value(err, "ddof").as_deref(), Some(expected_ddof.to_string().as_str()));
 }
 
 // ---------------------------------------------------------------------------

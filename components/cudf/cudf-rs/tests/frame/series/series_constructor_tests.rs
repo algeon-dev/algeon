@@ -93,10 +93,10 @@ fn test_runtime_sequence_rejects_size_over_i32_max_with_stable_contract() {
     assert_eq!(err.kind(), ErrorKind::Unsupported);
     assert_eq!(err.code(), ErrorCode::UnsupportedOperation);
     assert_eq!(err.operation(), "column::from_sequence_with_runtime");
-    assert_eq!(error_context_value(&err, "size"), Some(size.to_string().as_str()));
-    assert_eq!(error_context_value(&err, "resource"), Some("size"));
-    assert_eq!(error_context_value(&err, "reason"), Some("exceeds_i32_max"));
-    assert_eq!(error_context_value(&err, "remedy"), Some("reduce size to fit within i32::MAX"));
+    assert_eq!(error_context_value(&err, "size").as_deref(), Some(size.to_string().as_str()));
+    assert_eq!(error_context_value(&err, "resource").as_deref(), Some("size"));
+    assert_eq!(error_context_value(&err, "reason").as_deref(), Some("exceeds_i32_max"));
+    assert_eq!(error_context_value(&err, "remedy").as_deref(), Some("reduce size to fit within i32::MAX"));
 }
 
 // ===========================================================================
@@ -252,10 +252,10 @@ fn test_from_scalar_rejects_size_over_i32_max_with_stable_contract() {
     assert_eq!(err.kind(), ErrorKind::Unsupported);
     assert_eq!(err.code(), ErrorCode::UnsupportedOperation);
     assert_eq!(err.operation(), "column::from_scalar");
-    assert_eq!(error_context_value(&err, "size"), Some(size.to_string().as_str()));
-    assert_eq!(error_context_value(&err, "resource"), Some("size"));
-    assert_eq!(error_context_value(&err, "reason"), Some("exceeds_i32_max"));
-    assert_eq!(error_context_value(&err, "remedy"), Some("reduce size to fit within i32::MAX"));
+    assert_eq!(error_context_value(&err, "size").as_deref(), Some(size.to_string().as_str()));
+    assert_eq!(error_context_value(&err, "resource").as_deref(), Some("size"));
+    assert_eq!(error_context_value(&err, "reason").as_deref(), Some("exceeds_i32_max"));
+    assert_eq!(error_context_value(&err, "remedy").as_deref(), Some("reduce size to fit within i32::MAX"));
 }
 
 // ===========================================================================

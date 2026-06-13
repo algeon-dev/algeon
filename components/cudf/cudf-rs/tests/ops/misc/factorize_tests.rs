@@ -1,5 +1,9 @@
 //! Tests for Column::factorize
-use cudf::{ErrorCode, ErrorKind, Series, TypeId, testing::prelude::*};
+use cudf::{
+    ErrorCode, ErrorKind, Series, TypeId,
+    core::error::{FactKeyName, FactValue},
+    testing::prelude::*,
+};
 
 use crate::common::{
     column_from_slice, column_from_slice_nullable, column_from_strs, error_context_value, last_exec_stream_value,
@@ -308,29 +312,36 @@ fn test_factorize_retains_input_provenance_and_syncs_on_input_stream_end_to_end(
 
 #[test]
 fn test_testing_hook_locks_factorize_empty_row_code_dtype_contract() {
-    let err = cudf::testing::trigger_factorize_empty_row_code_dtype_error_for_test().unwrap_err();
+    let err = cudf::testing::factorization::trigger_factorize_empty_row_code_dtype_error_for_test().unwrap_err();
 
     assert_eq!(err.kind(), ErrorKind::InvariantViolation);
-    assert_eq!(err.code(), ErrorCode::InvariantViolation);
+    assert_eq!(err.code(), ErrorCode::ForeignInvariantViolation);
     assert_eq!(err.operation(), "series::factorize");
-    assert_eq!(error_context_value(&err, "resource"), Some("row_codes"));
-    assert_eq!(error_context_value(&err, "reason"), Some("unexpected_dtype"));
-    assert_eq!(error_context_value(&err, "type_id"), Some("float64"));
-    assert_eq!(error_context_value(&err, "remedy"), Some("ensure the factorization backend emits Int32 row codes"));
-    assert_eq!(error_context_value(&err, "row_code_type_id"), None);
+    assert_eq!(err.fact_value(FactKeyName::TypeId), Some(&FactValue::TypeId(TypeId::Float64)));
+    assert_eq!(error_context_value(&err, "resource").as_deref(), Some("row_codes"));
+    assert_eq!(error_context_value(&err, "reason").as_deref(), Some("unexpected_dtype"));
+    assert_eq!(error_context_value(&err, "type_id").as_deref(), Some("float64"));
+    assert_eq!(
+        error_context_value(&err, "remedy").as_deref(),
+        Some("ensure the factorization backend emits Int32 row codes")
+    );
+    assert_eq!(error_context_value(&err, "row_code_type_id").as_deref(), None);
 }
 
 #[test]
 fn test_testing_hook_locks_codebook_key_count_limit_contract() {
-    let err = cudf::testing::trigger_codebook_key_count_limit_error_for_test().unwrap_err();
-    let expected = ((i32::MAX as usize) + 1).to_string();
+    let err = cudf::testing::factorization::trigger_codebook_key_count_limit_error_for_test().unwrap_err();
+    let expected = (i32::MAX as usize) + 1;
+    let expected_text = expected.to_string();
 
     assert_eq!(err.kind(), ErrorKind::Unsupported);
     assert_eq!(err.code(), ErrorCode::UnsupportedOperation);
-    assert_eq!(err.operation(), "factorization::positional_code_series");
-    assert_eq!(error_context_value(&err, "keys_count"), Some(expected.as_str()));
-    assert_eq!(error_context_value(&err, "resource"), Some("keys_count"));
-    assert_eq!(error_context_value(&err, "reason"), Some("exceeds_i32_max"));
-    assert_eq!(error_context_value(&err, "remedy"), Some("reduce keys_count to fit within i32::MAX"));
-    assert_eq!(error_context_value(&err, "len"), None);
+    assert_eq!(err.operation(), "codebook::from_keys");
+    assert_eq!(err.fact_value(FactKeyName::KeysCount), None);
+    assert_eq!(err.detail_value("keys_count"), None);
+    assert_eq!(error_context_value(&err, "size").as_deref(), Some(expected_text.as_str()));
+    assert_eq!(error_context_value(&err, "resource").as_deref(), Some("size"));
+    assert_eq!(error_context_value(&err, "reason").as_deref(), Some("exceeds_i32_max"));
+    assert_eq!(error_context_value(&err, "remedy").as_deref(), Some("reduce size to fit within i32::MAX"));
+    assert_eq!(error_context_value(&err, "len").as_deref(), None);
 }

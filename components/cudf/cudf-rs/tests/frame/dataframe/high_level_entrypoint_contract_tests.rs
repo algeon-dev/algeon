@@ -5,6 +5,7 @@
 //! through `view()` plus `cudf::ops::*`.
 use cudf::{
     DataFrame, TypeId,
+    core::error::{FactKeyName, FactValue},
     ops::{copying, filter as low_level_filter, search},
     testing::prelude::*,
 };
@@ -215,14 +216,16 @@ fn test_with_lookup_rejects_mapping_length_mismatch_with_dataframe_operation() {
     assert_eq!(err.kind(), cudf::ErrorKind::InvalidInput);
     assert_eq!(err.code(), cudf::ErrorCode::ColumnLengthMismatch);
     assert_eq!(err.operation(), "dataframe::with_lookup");
-    assert_eq!(crate::common::error_context_value(&err, "column_name"), Some("vertex"));
-    assert_eq!(crate::common::error_context_value(&err, "input_column"), None);
-    assert_eq!(crate::common::error_context_value(&err, "right_type_id"), Some("string"));
-    assert_eq!(crate::common::error_context_value(&err, "type_id"), Some("string"));
-    assert_eq!(crate::common::error_context_value(&err, "keys_count"), Some("2"));
-    assert_eq!(crate::common::error_context_value(&err, "values_count"), Some("1"));
-    assert_eq!(crate::common::error_context_value(&err, "keys_type_id"), None);
-    assert_eq!(crate::common::error_context_value(&err, "output_type_id"), None);
+    assert_eq!(crate::common::error_context_value(&err, "column_name").as_deref(), Some("vertex"));
+    assert_eq!(err.detail_value("column_name"), None);
+    assert_eq!(crate::common::error_context_value(&err, "input_column").as_deref(), None);
+    assert_eq!(err.fact_value(FactKeyName::RightTypeId), Some(&FactValue::TypeId(TypeId::String)));
+    assert_eq!(err.fact_value(FactKeyName::TypeId), Some(&FactValue::TypeId(TypeId::String)));
+    assert_eq!(err.fact_value(FactKeyName::KeysCount), Some(&FactValue::Usize(2)));
+    assert_eq!(err.detail_value("values_count"), Some("1"));
+    assert_eq!(err.detail_value("keys_count"), None);
+    assert_eq!(crate::common::error_context_value(&err, "keys_type_id").as_deref(), None);
+    assert_eq!(crate::common::error_context_value(&err, "output_type_id").as_deref(), None);
 }
 
 #[test]
@@ -235,7 +238,7 @@ fn test_with_lookup_from_rejects_missing_lookup_key_column_with_canonical_contex
 
     crate::common::assert_missing_column_error(&err, "id");
     assert_eq!(err.operation(), "dataframe::with_lookup_from");
-    assert_eq!(crate::common::error_context_value(&err, "key_column"), None);
+    assert_eq!(crate::common::error_context_value(&err, "key_column").as_deref(), None);
 }
 
 #[test]
@@ -247,7 +250,7 @@ fn test_with_lookup_from_rejects_missing_lookup_value_column_with_canonical_cont
 
     crate::common::assert_missing_column_error(&err, "label");
     assert_eq!(err.operation(), "dataframe::with_lookup_from");
-    assert_eq!(crate::common::error_context_value(&err, "value_column"), None);
+    assert_eq!(crate::common::error_context_value(&err, "value_column").as_deref(), None);
 }
 
 #[test]
@@ -273,7 +276,7 @@ fn test_with_encoded_column_rejects_missing_input_column_with_canonical_context(
 
     crate::common::assert_missing_column_error(&err, "missing");
     assert_eq!(err.operation(), "dataframe::with_encoded_column");
-    assert_eq!(crate::common::error_context_value(&err, "input_column"), None);
+    assert_eq!(crate::common::error_context_value(&err, "input_column").as_deref(), None);
 }
 
 #[test]
@@ -288,7 +291,7 @@ fn test_with_decoded_column_rejects_missing_input_column_with_canonical_context(
 
     crate::common::assert_missing_column_error(&err, "missing");
     assert_eq!(err.operation(), "dataframe::with_decoded_column");
-    assert_eq!(crate::common::error_context_value(&err, "input_column"), None);
+    assert_eq!(crate::common::error_context_value(&err, "input_column").as_deref(), None);
 }
 
 // ===========================================================================

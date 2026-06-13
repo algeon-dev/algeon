@@ -1,8 +1,9 @@
 //! Manifest parsing types for the E2E conformance test framework.
 //!
-//! These types map directly to the JSON fixture format defined in the spec.
-//! Each fixture file contains datasets (input data definitions) and cases
-//! (operation + expected result kind + comparison policy).
+//! These types map directly to the JSON fixture format used by the shared
+//! Rust and Python test runners. Each fixture file contains datasets (input
+//! data definitions) and cases (operation + expected result kind +
+//! comparison policy).
 
 use std::collections::HashMap;
 

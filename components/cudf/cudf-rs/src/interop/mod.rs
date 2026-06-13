@@ -140,7 +140,7 @@ mod column;
 mod consumer_import;
 mod contracts;
 mod errors;
-mod execution;
+pub(crate) mod execution;
 pub mod frame;
 mod import_graph;
 pub(crate) mod projection;

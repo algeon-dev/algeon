@@ -1,0 +1,11 @@
+error[E0425]: cannot find function `stats_memory_resource` in module `cudf::testing`
+ --> tests/public_api/ui/no_testing_flat_primitives.rs:2:28
+  |
+2 |     let _ = cudf::testing::stats_memory_resource();
+  |                            ^^^^^^^^^^^^^^^^^^^^^ not found in `cudf::testing`
+
+error[E0425]: cannot find function `validity_to_host_null_mask_bytes` in module `cudf::testing`
+ --> tests/public_api/ui/no_testing_flat_primitives.rs:3:28
+  |
+3 |     let _ = cudf::testing::validity_to_host_null_mask_bytes(&[true, false, true]);
+  |                            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ not found in `cudf::testing`

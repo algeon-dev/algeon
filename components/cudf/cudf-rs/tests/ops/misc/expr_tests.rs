@@ -9,6 +9,7 @@
 
 use cudf::{
     DataFrame, ErrorCode, ErrorKind, Series, TypeId,
+    core::error::{FactKeyName, FactValue},
     ops::expr::{Expr, col, lit, when},
 };
 
@@ -408,10 +409,10 @@ fn with_columns_no_alias_errors() {
     assert_eq!(err.code(), ErrorCode::UnsupportedOperation);
     assert_eq!(err.kind(), ErrorKind::Unsupported);
     assert_eq!(err.operation(), "dataframe::with_columns");
-    assert_eq!(crate::common::error_context_value(&err, "resource"), Some("output_name"));
-    assert_eq!(crate::common::error_context_value(&err, "reason"), Some("missing_output_name"));
+    assert_eq!(crate::common::error_context_value(&err, "resource").as_deref(), Some("output_name"));
+    assert_eq!(crate::common::error_context_value(&err, "reason").as_deref(), Some("missing_output_name"));
     assert_eq!(
-        crate::common::error_context_value(&err, "remedy"),
+        crate::common::error_context_value(&err, "remedy").as_deref(),
         Some("use .alias(...) or provide an explicit (name, expr) pair"),
     );
 }
@@ -689,8 +690,8 @@ fn agg_sum_string_reports_expr_reduce_operation_on_type_error() {
     assert_eq!(err.kind(), ErrorKind::Unsupported);
     assert_eq!(err.code(), ErrorCode::UnsupportedDtype);
     assert_eq!(err.operation(), "expr::reduce");
-    assert_eq!(crate::common::error_context_value(&err, "type_id"), Some("string"));
-    assert_eq!(crate::common::error_context_value(&err, "input_type"), None);
+    assert_eq!(err.fact_value(FactKeyName::TypeId), Some(&FactValue::TypeId(TypeId::String)));
+    assert_eq!(crate::common::error_context_value(&err, "input_type").as_deref(), None);
 }
 
 #[test]
@@ -715,10 +716,10 @@ fn with_columns_rejects_unaliased_reduce() {
     assert_eq!(err.code(), ErrorCode::UnsupportedOperation);
     assert_eq!(err.kind(), ErrorKind::Unsupported);
     assert_eq!(err.operation(), "dataframe::with_columns");
-    assert_eq!(crate::common::error_context_value(&err, "resource"), Some("output_name"));
-    assert_eq!(crate::common::error_context_value(&err, "reason"), Some("missing_output_name"));
+    assert_eq!(crate::common::error_context_value(&err, "resource").as_deref(), Some("output_name"));
+    assert_eq!(crate::common::error_context_value(&err, "reason").as_deref(), Some("missing_output_name"));
     assert_eq!(
-        crate::common::error_context_value(&err, "remedy"),
+        crate::common::error_context_value(&err, "remedy").as_deref(),
         Some("use .alias(...) or provide an explicit (name, expr) pair"),
     );
 }
@@ -869,10 +870,10 @@ fn if_else_requires_alias_in_with_columns() {
     assert_eq!(err.code(), ErrorCode::UnsupportedOperation);
     assert_eq!(err.kind(), ErrorKind::Unsupported);
     assert_eq!(err.operation(), "dataframe::with_columns");
-    assert_eq!(crate::common::error_context_value(&err, "resource"), Some("output_name"));
-    assert_eq!(crate::common::error_context_value(&err, "reason"), Some("missing_output_name"));
+    assert_eq!(crate::common::error_context_value(&err, "resource").as_deref(), Some("output_name"));
+    assert_eq!(crate::common::error_context_value(&err, "reason").as_deref(), Some("missing_output_name"));
     assert_eq!(
-        crate::common::error_context_value(&err, "remedy"),
+        crate::common::error_context_value(&err, "remedy").as_deref(),
         Some("use .alias(...) or provide an explicit (name, expr) pair"),
     );
 }

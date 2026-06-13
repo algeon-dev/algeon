@@ -1,6 +1,10 @@
 //! Tests for `SortOptions` and the high-level `DataFrame::sort_values`.
 
-use cudf::{DataFrame, ErrorCode, ErrorKind, SortOptions, testing::prelude::*};
+use cudf::{
+    DataFrame, ErrorCode, ErrorKind, SortOptions,
+    core::error::{FactKeyName, FactValue},
+    testing::prelude::*,
+};
 
 use crate::common::{
     assert_missing_column_error, column_from_slice, column_from_slice_nullable, error_context_value, sample_df,
@@ -16,14 +20,16 @@ fn assert_sort_options_validation_error(
     assert_eq!(err.kind(), ErrorKind::Unsupported);
     assert_eq!(err.code(), ErrorCode::UnsupportedOperation);
     assert_eq!(err.operation(), operation);
-    assert_eq!(error_context_value(err, "resource"), Some("sort_options"));
-    assert_eq!(error_context_value(err, "reason"), Some(reason));
-    assert_eq!(error_context_value(err, "remedy"), Some(remedy));
-    assert_eq!(error_context_value(err, "keys_count"), Some("1"));
-    assert_eq!(error_context_value(err, "actual_count"), Some(actual_value));
-    assert_eq!(error_context_value(err, "num_keys"), None);
-    assert_eq!(error_context_value(err, "descending_len"), None);
-    assert_eq!(error_context_value(err, "nulls_first_len"), None);
+    assert_eq!(error_context_value(err, "resource").as_deref(), Some("sort_options"));
+    assert_eq!(error_context_value(err, "reason").as_deref(), Some(reason));
+    assert_eq!(error_context_value(err, "remedy").as_deref(), Some(remedy));
+    assert_eq!(err.fact_value(FactKeyName::KeysCount), Some(&FactValue::Usize(1)));
+    assert_eq!(err.fact_value(FactKeyName::ActualCount), Some(&FactValue::Usize(actual_value.parse().unwrap())));
+    assert_eq!(err.detail_value("keys_count"), None);
+    assert_eq!(err.detail_value("actual_count"), None);
+    assert_eq!(error_context_value(err, "num_keys").as_deref(), None);
+    assert_eq!(error_context_value(err, "descending_len").as_deref(), None);
+    assert_eq!(error_context_value(err, "nulls_first_len").as_deref(), None);
 }
 
 // ---------------------------------------------------------------------------

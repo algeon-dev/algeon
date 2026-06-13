@@ -5,7 +5,10 @@
 //! contracts without locking the library into an API-by-API matrix.
 use cudf::{
     DataFrame, DataType, ErrorCode, ErrorKind, GroupByAgg, Series, SortOptions, TypeId,
-    core::{Column, Table},
+    core::{
+        Column, Table,
+        error::{FactKeyName, FactValue},
+    },
     ops::{
         binary::{self, BinaryOperator},
         concatenate, copying, dictionary, filter,
@@ -114,20 +117,20 @@ fn dataframe_and_table_construction_reject_mixed_domain_columns() {
     assert_eq!(err.code(), ErrorCode::CrossProvenanceInputs);
     assert_eq!(err.kind(), ErrorKind::ExecutionContext);
     assert_eq!(err.operation(), "dataframe::new");
-    assert!(err.context().iter().any(|(key, value)| *key == "left_domain" && value.starts_with("explicit:100(")));
-    assert!(err.context().iter().any(|(key, value)| *key == "right_domain" && value.starts_with("explicit:200(")));
-    assert!(err.context_value("left_device").is_some());
-    assert!(err.context_value("right_device").is_some());
-    assert_eq!(err.context_value("frame_column"), None);
+    assert!(err.details().iter().any(|(key, value)| *key == "left_domain" && value.starts_with("explicit:100(")));
+    assert!(err.details().iter().any(|(key, value)| *key == "right_domain" && value.starts_with("explicit:200(")));
+    assert_eq!(err.fact_value(FactKeyName::LeftDevice), Some(&FactValue::DeviceId(0)));
+    assert_eq!(err.fact_value(FactKeyName::RightDevice), Some(&FactValue::DeviceId(0)));
+    assert_eq!(err.detail_value("frame_column"), None);
 
     let err = Table::from_columns(vec![left, right]).unwrap_err();
     assert_eq!(err.code(), ErrorCode::CrossProvenanceInputs);
     assert_eq!(err.kind(), ErrorKind::ExecutionContext);
     assert_eq!(err.operation(), "table::from_columns");
-    assert!(err.context().iter().any(|(key, value)| *key == "left_domain" && value.starts_with("explicit:100(")));
-    assert!(err.context().iter().any(|(key, value)| *key == "right_domain" && value.starts_with("explicit:200(")));
-    assert!(err.context_value("left_device").is_some());
-    assert!(err.context_value("right_device").is_some());
+    assert!(err.details().iter().any(|(key, value)| *key == "left_domain" && value.starts_with("explicit:100(")));
+    assert!(err.details().iter().any(|(key, value)| *key == "right_domain" && value.starts_with("explicit:200(")));
+    assert_eq!(err.fact_value(FactKeyName::LeftDevice), Some(&FactValue::DeviceId(0)));
+    assert_eq!(err.fact_value(FactKeyName::RightDevice), Some(&FactValue::DeviceId(0)));
 }
 
 #[test]
@@ -140,16 +143,16 @@ fn dataframe_with_column_rejects_mixed_provenance_with_canonical_context() {
     assert_eq!(err.code(), ErrorCode::CrossProvenanceInputs);
     assert_eq!(err.kind(), ErrorKind::ExecutionContext);
     assert_eq!(err.operation(), "dataframe::with_column");
-    assert_eq!(err.context_value("column_name"), Some("value"));
-    assert!(err.context().iter().any(|(key, value)| *key == "left_domain" && value.starts_with("explicit:300(")));
-    assert!(err.context().iter().any(|(key, value)| *key == "right_domain" && value.starts_with("explicit:301(")));
-    assert!(err.context_value("left_device").is_some());
-    assert!(err.context_value("right_device").is_some());
-    assert!(err.context().iter().any(|(key, value)| *key == "remedy" && value.contains("copy_into_runtime")));
-    assert_eq!(err.context_value("frame_domain"), None);
-    assert_eq!(err.context_value("series_domain"), None);
-    assert_eq!(err.context_value("frame_device"), None);
-    assert_eq!(err.context_value("series_device"), None);
+    assert_eq!(err.fact_value(FactKeyName::ColumnName), Some(&FactValue::Str(std::borrow::Cow::Borrowed("value"))));
+    assert!(err.details().iter().any(|(key, value)| *key == "left_domain" && value.starts_with("explicit:300(")));
+    assert!(err.details().iter().any(|(key, value)| *key == "right_domain" && value.starts_with("explicit:301(")));
+    assert_eq!(err.fact_value(FactKeyName::LeftDevice), Some(&FactValue::DeviceId(0)));
+    assert_eq!(err.fact_value(FactKeyName::RightDevice), Some(&FactValue::DeviceId(0)));
+    assert!(err.details().iter().any(|(key, value)| *key == "remedy" && value.contains("copy_into_runtime")));
+    assert_eq!(err.detail_value("frame_domain"), None);
+    assert_eq!(err.detail_value("series_domain"), None);
+    assert_eq!(err.detail_value("frame_device"), None);
+    assert_eq!(err.detail_value("series_device"), None);
 }
 
 #[test]

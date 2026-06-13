@@ -105,8 +105,8 @@ fn test_boolean_mask_rejects_non_bool_mask_with_canonical_type_contract() {
     assert_eq!(err.kind(), ErrorKind::InvalidInput);
     assert_eq!(err.code(), ErrorCode::TypeMismatch);
     assert_eq!(err.operation(), "filter::apply_boolean_mask");
-    assert_eq!(error_context_value(&err, "left_type_id"), Some("int32"));
-    assert_eq!(error_context_value(&err, "right_type_id"), Some("bool8"));
+    assert_eq!(error_context_value(&err, "left_type_id").as_deref(), Some("int32"));
+    assert_eq!(error_context_value(&err, "right_type_id").as_deref(), Some("bool8"));
 }
 
 #[test]
@@ -119,6 +119,6 @@ fn test_boolean_mask_rejects_wrong_length_mask_with_canonical_length_contract() 
     assert_eq!(err.kind(), ErrorKind::InvalidInput);
     assert_eq!(err.code(), ErrorCode::ColumnLengthMismatch);
     assert_eq!(err.operation(), "filter::apply_boolean_mask");
-    assert_eq!(error_context_value(&err, "actual_rows"), Some("2"));
-    assert_eq!(error_context_value(&err, "expected_rows"), Some("3"));
+    assert_eq!(error_context_value(&err, "actual_rows").as_deref(), Some("2"));
+    assert_eq!(error_context_value(&err, "expected_rows").as_deref(), Some("3"));
 }

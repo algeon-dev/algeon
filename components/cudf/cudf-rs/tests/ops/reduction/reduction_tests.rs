@@ -12,9 +12,9 @@ fn assert_ddof_range_validation_error(err: &cudf::Error, operation: &str, expect
     assert_eq!(err.kind(), ErrorKind::Unsupported);
     assert_eq!(err.code(), ErrorCode::UnsupportedOperation);
     assert_eq!(err.operation(), operation);
-    assert_eq!(error_context_value(err, "reason"), Some("ddof_exceeds_i32_range"));
-    assert_eq!(error_context_value(err, "remedy"), Some("use a ddof value within libcudf's i32 range"));
-    assert_eq!(error_context_value(err, "ddof"), Some(expected_ddof.to_string().as_str()));
+    assert_eq!(error_context_value(err, "reason").as_deref(), Some("ddof_exceeds_i32_range"));
+    assert_eq!(error_context_value(err, "remedy").as_deref(), Some("use a ddof value within libcudf's i32 range"));
+    assert_eq!(error_context_value(err, "ddof").as_deref(), Some(expected_ddof.to_string().as_str()));
 }
 
 #[test]
@@ -98,7 +98,11 @@ fn test_reduce_ddof_above_i32_max_contains_context() {
         .expect_err("expected error");
 
     assert_ddof_range_validation_error(&err, "reduction::reduce", u32::MAX);
-    assert_eq!(error_context_value(&err, "called"), Some("reduction::create_reduce_agg_handle(variance)"));
+    assert!(
+        err.call_chain().contains(&"reduction::create_reduce_agg_handle(variance)"),
+        "call_chain did not contain reduction::create_reduce_agg_handle(variance): {:?}",
+        err.call_chain()
+    );
 }
 
 #[test]

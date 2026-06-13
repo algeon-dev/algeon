@@ -5,9 +5,10 @@ use std::sync::{
 
 use rapids_interop::{
     BoundBytes, BufferBinding, BufferId, ColumnId, ColumnLayout, CudaStreamHandle, DataType, ExportDiagnostics,
-    ExportProfile, InteropErrorKind, OwnedColumnTransfer, OwnedTableTransfer, PartitionedOwnedTableTransfer,
-    PartitionedOwnedTableTransferPartition, PhysicalValidity, Placement, ProducerReadiness, ReleaseContract,
-    ReleaseSynchronization, SchemaNullability, SemanticColumn, SemanticTable, TableId, TransferCompletionRule, TypeId,
+    ExportProfile, InteropErrorKind, OwnedColumnTransfer, OwnedTableTransfer, OwnedTableTransferParts,
+    PartitionedOwnedTableTransfer, PartitionedOwnedTableTransferPartition, PhysicalValidity, Placement,
+    ProducerReadiness, ReleaseContract, ReleaseSynchronization, SchemaNullability, SemanticColumn, SemanticTable,
+    TableId, TransferCompletionRule, TypeId,
 };
 
 fn fake_ptr(addr: usize) -> *const core::ffi::c_void {
@@ -320,6 +321,27 @@ fn owned_table_transfer_can_recover_typed_owner() {
     let owner = transfer.try_into_owner::<String>().unwrap();
 
     assert_eq!(owner, "table-owner");
+}
+
+#[test]
+fn owned_table_transfer_accepts_named_parts_constructor() {
+    let columns = vec![fixed_width_column(1, 11, 3, 0)];
+    let table = SemanticTable::new(TableId::new(7), 3, vec![ColumnId::new(1)], None);
+    let release_contract = release_contract();
+    let transfer = OwnedTableTransfer::try_new_with_semantic_columns(OwnedTableTransferParts {
+        table,
+        columns: columns.clone(),
+        semantic_columns: columns,
+        bindings: vec![device_binding(11, 0x1000, 12, 0)],
+        readiness: owned_transfer_readiness(),
+        diagnostics: owned_transfer_diagnostics(),
+        release_contract,
+        owner: String::from("table-owner"),
+    })
+    .unwrap();
+
+    assert_eq!(transfer.release_contract(), &release_contract);
+    assert_eq!(transfer.try_into_owner::<String>().unwrap(), "table-owner");
 }
 
 #[test]

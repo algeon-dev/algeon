@@ -101,11 +101,11 @@ fn df_series_returns_error_when_shared_series_reconstruction_metadata_read_fails
     let err = df.series("id").unwrap_err();
 
     assert_eq!(err.kind(), cudf::ErrorKind::InvariantViolation);
-    assert_eq!(err.code(), ErrorCode::InvariantViolation);
+    assert_eq!(err.code(), ErrorCode::ForeignInvariantViolation);
     assert_eq!(err.operation(), "dataframe::series");
-    assert_eq!(error_context_value(&err, "column_name"), Some("id"));
-    assert_eq!(error_context_value(&err, "resource"), Some("column_view_metadata"));
-    assert_eq!(error_context_value(&err, "reason"), Some("invalid_foreign_column_view_metadata"));
+    assert_eq!(error_context_value(&err, "column_name").as_deref(), Some("id"));
+    assert_eq!(error_context_value(&err, "resource").as_deref(), Some("column_view_metadata"));
+    assert_eq!(error_context_value(&err, "reason").as_deref(), Some("invalid_foreign_column_view_metadata"));
     assert!(err.message().contains("test metadata read failure"), "unexpected error: {err}");
 }
 
@@ -118,11 +118,11 @@ fn df_get_preserves_missing_column_vs_reconstruction_failure() {
     let err = df.get("id").unwrap_err();
 
     assert_eq!(err.kind(), cudf::ErrorKind::InvariantViolation);
-    assert_eq!(err.code(), ErrorCode::InvariantViolation);
+    assert_eq!(err.code(), ErrorCode::ForeignInvariantViolation);
     assert_eq!(err.operation(), "dataframe::get");
-    assert_eq!(error_context_value(&err, "column_name"), Some("id"));
-    assert_eq!(error_context_value(&err, "resource"), Some("column_view_metadata"));
-    assert_eq!(error_context_value(&err, "reason"), Some("invalid_foreign_column_view_metadata"));
+    assert_eq!(error_context_value(&err, "column_name").as_deref(), Some("id"));
+    assert_eq!(error_context_value(&err, "resource").as_deref(), Some("column_view_metadata"));
+    assert_eq!(error_context_value(&err, "reason").as_deref(), Some("invalid_foreign_column_view_metadata"));
 }
 
 /// `contains()` returns `true` for existing columns, `false` otherwise.
@@ -157,11 +157,11 @@ fn df_iter_series_yields_per_item_errors_without_reordering() {
     fail_next_column_view_metadata_read();
     let err = iter.next().unwrap().unwrap_err();
     assert_eq!(err.kind(), cudf::ErrorKind::InvariantViolation);
-    assert_eq!(err.code(), ErrorCode::InvariantViolation);
+    assert_eq!(err.code(), ErrorCode::ForeignInvariantViolation);
     assert_eq!(err.operation(), "dataframe::iter_series");
-    assert_eq!(error_context_value(&err, "column_name"), Some("id"));
-    assert_eq!(error_context_value(&err, "resource"), Some("column_view_metadata"));
-    assert_eq!(error_context_value(&err, "reason"), Some("invalid_foreign_column_view_metadata"));
+    assert_eq!(error_context_value(&err, "column_name").as_deref(), Some("id"));
+    assert_eq!(error_context_value(&err, "resource").as_deref(), Some("column_view_metadata"));
+    assert_eq!(error_context_value(&err, "reason").as_deref(), Some("invalid_foreign_column_view_metadata"));
 
     let second = iter.next().unwrap().unwrap();
     assert_eq!(second.to_vec_strict::<f64>().unwrap(), vec![10.0, 20.0, 30.0]);

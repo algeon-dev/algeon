@@ -110,12 +110,12 @@ fn adopt_rejects_string_type() {
     assert_eq!(err.kind(), ErrorKind::Unsupported);
     assert_eq!(err.code(), ErrorCode::UnsupportedDtype);
     assert_eq!(err.operation(), "column::from_device_buffer_with_runtime");
-    assert_eq!(error_context_value(&err, "reason"), Some("requires_fixed_width_type"));
+    assert_eq!(error_context_value(&err, "reason").as_deref(), Some("requires_fixed_width_type"));
     assert_eq!(
-        error_context_value(&err, "remedy"),
+        error_context_value(&err, "remedy").as_deref(),
         Some("use a fixed-width type when adopting a device buffer as a cudf column"),
     );
-    assert_eq!(error_context_value(&err, "type_id"), Some("string"));
+    assert_eq!(error_context_value(&err, "type_id").as_deref(), Some("string"));
 }
 
 #[test]
@@ -145,17 +145,17 @@ fn adopt_rejects_size_mismatch() {
     let err = crate::common::column_from_device_buffer(buf, 4, TypeId::Int32).expect_err("expected error");
     assert_eq!(err.kind(), ErrorKind::InvalidInput);
     assert_eq!(err.code(), ErrorCode::ColumnLengthMismatch);
-    assert_eq!(error_context_value(&err, "resource"), Some("data_buffer"));
-    assert_eq!(error_context_value(&err, "reason"), Some("size_mismatch_with_row_count"));
+    assert_eq!(error_context_value(&err, "resource").as_deref(), Some("data_buffer"));
+    assert_eq!(error_context_value(&err, "reason").as_deref(), Some("size_mismatch_with_row_count"));
     assert_eq!(
-        error_context_value(&err, "remedy"),
+        error_context_value(&err, "remedy").as_deref(),
         Some("ensure data_buffer has exactly row_count * element_size bytes"),
     );
-    assert_eq!(error_context_value(&err, "actual_bytes"), Some("12"));
-    assert_eq!(error_context_value(&err, "expected_bytes"), Some("16"));
-    assert_eq!(error_context_value(&err, "row_count"), Some("4"));
-    assert_eq!(error_context_value(&err, "type_id"), Some("int32"));
-    assert_eq!(error_context_value(&err, "buffer_bytes"), None);
+    assert_eq!(error_context_value(&err, "actual_bytes").as_deref(), Some("12"));
+    assert_eq!(error_context_value(&err, "expected_bytes").as_deref(), Some("16"));
+    assert_eq!(error_context_value(&err, "row_count").as_deref(), Some("4"));
+    assert_eq!(error_context_value(&err, "type_id").as_deref(), Some("int32"));
+    assert_eq!(error_context_value(&err, "buffer_bytes").as_deref(), None);
 }
 
 #[test]
@@ -167,12 +167,12 @@ fn adopt_rejects_row_count_exceeding_i32_max() {
     assert_eq!(err.kind(), ErrorKind::Unsupported);
     assert_eq!(err.code(), ErrorCode::UnsupportedOperation);
     assert_eq!(err.operation(), "column::from_device_buffer_with_runtime");
-    assert_eq!(error_context_value(&err, "resource"), Some("row_count"));
-    assert_eq!(error_context_value(&err, "reason"), Some("exceeds_i32_max"));
-    assert_eq!(error_context_value(&err, "remedy"), Some("reduce row_count to fit within i32::MAX"));
-    assert_eq!(error_context_value(&err, "len"), None);
+    assert_eq!(error_context_value(&err, "resource").as_deref(), Some("row_count"));
+    assert_eq!(error_context_value(&err, "reason").as_deref(), Some("exceeds_i32_max"));
+    assert_eq!(error_context_value(&err, "remedy").as_deref(), Some("reduce row_count to fit within i32::MAX"));
+    assert_eq!(error_context_value(&err, "len").as_deref(), None);
     let expected = ((i32::MAX as usize) + 1).to_string();
-    assert_eq!(error_context_value(&err, "row_count"), Some(expected.as_str()));
+    assert_eq!(error_context_value(&err, "row_count").as_deref(), Some(expected.as_str()));
 }
 
 // ---------------------------------------------------------------------------
@@ -254,8 +254,8 @@ fn adopt_nullable_rejects_null_count_exceeding_row_count() {
         .expect_err("expected error");
     assert_eq!(err.kind(), ErrorKind::InvalidInput);
     assert_eq!(err.code(), ErrorCode::ColumnLengthMismatch);
-    assert_eq!(error_context_value(&err, "expected_rows"), Some("2"));
-    assert_eq!(error_context_value(&err, "actual_rows"), Some("5"));
+    assert_eq!(error_context_value(&err, "expected_rows").as_deref(), Some("2"));
+    assert_eq!(error_context_value(&err, "actual_rows").as_deref(), Some("5"));
 }
 
 #[test]
@@ -275,11 +275,11 @@ fn adopt_nullable_rejects_null_count_exceeding_i32_max_with_stable_contract() {
     assert_eq!(err.kind(), ErrorKind::Unsupported);
     assert_eq!(err.code(), ErrorCode::UnsupportedOperation);
     assert_eq!(err.operation(), "column::from_device_buffer_nullable_with_runtime");
-    assert_eq!(error_context_value(&err, "resource"), Some("null_count"));
-    assert_eq!(error_context_value(&err, "reason"), Some("exceeds_i32_max"));
-    assert_eq!(error_context_value(&err, "remedy"), Some("reduce null_count to fit within i32::MAX"));
+    assert_eq!(error_context_value(&err, "resource").as_deref(), Some("null_count"));
+    assert_eq!(error_context_value(&err, "reason").as_deref(), Some("exceeds_i32_max"));
+    assert_eq!(error_context_value(&err, "remedy").as_deref(), Some("reduce null_count to fit within i32::MAX"));
     let expected = ((i32::MAX as usize) + 1).to_string();
-    assert_eq!(error_context_value(&err, "null_count"), Some(expected.as_str()));
+    assert_eq!(error_context_value(&err, "null_count").as_deref(), Some(expected.as_str()));
 }
 
 #[test]
@@ -292,18 +292,18 @@ fn adopt_nullable_rejects_mask_too_small() {
     let err = crate::common::column_from_device_buffer_nullable(data_buf, mask_buf, 1, 4, TypeId::Int32)
         .expect_err("expected error");
     assert_eq!(err.kind(), ErrorKind::InvalidInput);
-    assert_eq!(err.code(), ErrorCode::InvalidInput);
-    assert_eq!(error_context_value(&err, "resource"), Some("null_mask_buffer"));
-    assert_eq!(error_context_value(&err, "reason"), Some("insufficient_allocation_size"));
+    assert_eq!(err.code(), ErrorCode::ColumnLengthMismatch);
+    assert_eq!(error_context_value(&err, "resource").as_deref(), Some("null_mask_buffer"));
+    assert_eq!(error_context_value(&err, "reason").as_deref(), Some("insufficient_allocation_size"));
     assert_eq!(
-        error_context_value(&err, "remedy"),
+        error_context_value(&err, "remedy").as_deref(),
         Some("provide at least cudf_null_mask_allocation_size_bytes(row_count) bytes in null_mask_buffer"),
     );
-    assert_eq!(error_context_value(&err, "actual_bytes"), Some("0"));
-    assert_eq!(error_context_value(&err, "expected_bytes"), Some("64"));
-    assert_eq!(error_context_value(&err, "row_count"), Some("4"));
-    assert_eq!(error_context_value(&err, "mask_bytes"), None);
-    assert_eq!(error_context_value(&err, "min_required_bytes"), None);
+    assert_eq!(error_context_value(&err, "actual_bytes").as_deref(), Some("0"));
+    assert_eq!(error_context_value(&err, "expected_bytes").as_deref(), Some("64"));
+    assert_eq!(error_context_value(&err, "row_count").as_deref(), Some("4"));
+    assert_eq!(error_context_value(&err, "mask_bytes").as_deref(), None);
+    assert_eq!(error_context_value(&err, "min_required_bytes").as_deref(), None);
 }
 
 #[test]
@@ -315,12 +315,12 @@ fn adopt_nullable_rejects_mask_smaller_than_cudf_allocation_size() {
     let err = crate::common::column_from_device_buffer_nullable(data_buf, mask_buf, 0, 1, TypeId::Int32)
         .expect_err("expected error");
     assert_eq!(err.kind(), ErrorKind::InvalidInput);
-    assert_eq!(err.code(), ErrorCode::InvalidInput);
-    assert_eq!(error_context_value(&err, "resource"), Some("null_mask_buffer"));
-    assert_eq!(error_context_value(&err, "reason"), Some("insufficient_allocation_size"));
-    assert_eq!(error_context_value(&err, "actual_bytes"), Some("63"));
-    assert_eq!(error_context_value(&err, "expected_bytes"), Some("64"));
-    assert_eq!(error_context_value(&err, "row_count"), Some("1"));
+    assert_eq!(err.code(), ErrorCode::ColumnLengthMismatch);
+    assert_eq!(error_context_value(&err, "resource").as_deref(), Some("null_mask_buffer"));
+    assert_eq!(error_context_value(&err, "reason").as_deref(), Some("insufficient_allocation_size"));
+    assert_eq!(error_context_value(&err, "actual_bytes").as_deref(), Some("63"));
+    assert_eq!(error_context_value(&err, "expected_bytes").as_deref(), Some("64"));
+    assert_eq!(error_context_value(&err, "row_count").as_deref(), Some("1"));
 }
 
 #[test]
@@ -335,14 +335,14 @@ fn adopt_nullable_rejects_data_buffer_size_mismatch_with_stable_contract() {
     assert_eq!(err.kind(), ErrorKind::InvalidInput);
     assert_eq!(err.code(), ErrorCode::ColumnLengthMismatch);
     assert_eq!(err.operation(), "column::from_device_buffer_nullable_with_runtime");
-    assert_eq!(error_context_value(&err, "resource"), Some("data_buffer"));
-    assert_eq!(error_context_value(&err, "reason"), Some("size_mismatch_with_row_count"));
+    assert_eq!(error_context_value(&err, "resource").as_deref(), Some("data_buffer"));
+    assert_eq!(error_context_value(&err, "reason").as_deref(), Some("size_mismatch_with_row_count"));
     assert_eq!(
-        error_context_value(&err, "remedy"),
+        error_context_value(&err, "remedy").as_deref(),
         Some("ensure data_buffer has exactly row_count * element_size bytes"),
     );
-    assert_eq!(error_context_value(&err, "actual_bytes"), Some("12"));
-    assert_eq!(error_context_value(&err, "expected_bytes"), Some("16"));
-    assert_eq!(error_context_value(&err, "row_count"), Some("4"));
-    assert_eq!(error_context_value(&err, "type_id"), Some("int32"));
+    assert_eq!(error_context_value(&err, "actual_bytes").as_deref(), Some("12"));
+    assert_eq!(error_context_value(&err, "expected_bytes").as_deref(), Some("16"));
+    assert_eq!(error_context_value(&err, "row_count").as_deref(), Some("4"));
+    assert_eq!(error_context_value(&err, "type_id").as_deref(), Some("int32"));
 }

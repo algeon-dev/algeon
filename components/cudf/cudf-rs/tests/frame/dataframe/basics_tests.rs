@@ -46,7 +46,7 @@ fn test_reject_duplicate_column_names() {
     let err = result.unwrap_err();
     assert_duplicate_name_error(&err, "x");
     assert_eq!(err.operation(), "dataframe::new");
-    assert_eq!(error_context_value(&err, "column_name_count"), Some("2"));
+    assert_eq!(error_context_value(&err, "column_name_count").as_deref(), Some("2"));
 }
 
 #[test]
@@ -60,10 +60,10 @@ fn test_reject_mismatched_names_columns_count() {
     assert_eq!(err.kind(), ErrorKind::InvalidInput);
     assert_eq!(err.code(), ErrorCode::ColumnLengthMismatch);
     assert_eq!(err.operation(), "dataframe::new");
-    assert_eq!(error_context_value(&err, "column_name_count"), Some("2"));
-    assert_eq!(error_context_value(&err, "table_column_count"), Some("1"));
-    assert_eq!(error_context_value(&err, "names_count"), None);
-    assert_eq!(error_context_value(&err, "columns_count"), None);
+    assert_eq!(error_context_value(&err, "column_name_count").as_deref(), Some("2"));
+    assert_eq!(error_context_value(&err, "table_column_count").as_deref(), Some("1"));
+    assert_eq!(error_context_value(&err, "names_count").as_deref(), None);
+    assert_eq!(error_context_value(&err, "columns_count").as_deref(), None);
 }
 
 #[test]
@@ -162,8 +162,8 @@ fn test_from_table_mismatched_names_count() {
     assert_eq!(err.kind(), ErrorKind::InvalidInput);
     assert_eq!(err.code(), ErrorCode::ColumnLengthMismatch);
     assert_eq!(err.operation(), "dataframe::from_table");
-    assert_eq!(error_context_value(&err, "column_name_count"), Some("2"));
-    assert_eq!(error_context_value(&err, "table_column_count"), Some("1"));
+    assert_eq!(error_context_value(&err, "column_name_count").as_deref(), Some("2"));
+    assert_eq!(error_context_value(&err, "table_column_count").as_deref(), Some("1"));
 }
 
 #[test]

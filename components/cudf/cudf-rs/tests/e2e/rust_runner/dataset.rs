@@ -6,7 +6,8 @@
 use std::{collections::HashSet, io::Write};
 
 use cudf::{
-    DataFrame, Runtime, Series, TypeId, frame::dataframe::JsonReadOptions, ops::dictionary, testing::prelude::*,
+    DataFrame, ErrorCode, Runtime, Series, TypeId, frame::dataframe::JsonReadOptions, ops::dictionary,
+    testing::prelude::*,
 };
 use tempfile::NamedTempFile;
 
@@ -25,9 +26,11 @@ pub fn build_dataframe(dataset: &Dataset) -> cudf::Result<DataFrame> {
     } else if !dataset.json_lines.is_empty() {
         build_json_lines_dataframe(dataset)?
     } else {
-        return Err(cudf::Error::new(cudf::ErrorKind::InvalidInput, "dataset must define columns or json_lines")
-            .with_operation("e2e::build_dataframe")
-            .with_context("dataset_id", dataset.id.clone()));
+        return Err(cudf::testing::error::new_with_for_test(
+            ErrorCode::ForeignInvalidArgument,
+            "e2e::build_dataframe",
+            format!("dataset '{}' must define columns or json_lines", dataset.id),
+        ));
     };
 
     apply_dictionary_columns(frame, dataset)
@@ -46,16 +49,20 @@ fn build_column_dataframe(dataset: &Dataset) -> cudf::Result<DataFrame> {
 
 fn build_json_lines_dataframe(dataset: &Dataset) -> cudf::Result<DataFrame> {
     let mut file = NamedTempFile::new().map_err(|error| {
-        cudf::Error::new(cudf::ErrorKind::DependencyFailure, error.to_string())
-            .with_operation("e2e::build_json_lines_dataframe")
-            .with_context("dataset_id", dataset.id.clone())
+        cudf::testing::error::new_with_for_test(
+            ErrorCode::IoFailure,
+            "e2e::build_json_lines_dataframe",
+            format!("failed to create temp file for dataset '{}': {}", dataset.id, error),
+        )
     })?;
 
     for line in &dataset.json_lines {
         writeln!(file, "{line}").map_err(|error| {
-            cudf::Error::new(cudf::ErrorKind::DependencyFailure, error.to_string())
-                .with_operation("e2e::build_json_lines_dataframe")
-                .with_context("dataset_id", dataset.id.clone())
+            cudf::testing::error::new_with_for_test(
+                ErrorCode::IoFailure,
+                "e2e::build_json_lines_dataframe",
+                format!("failed to write json line for dataset '{}': {}", dataset.id, error),
+            )
         })?;
     }
 
@@ -97,9 +104,11 @@ fn build_series(runtime: &Runtime, name: &str, dtype: &str, values: &[serde_json
         "float64" => build_numeric_series::<f64>(runtime, name, values, |v| v.as_f64()),
         "bool8" => build_bool_series(runtime, name, values),
         "string" => build_str_series(runtime, name, values),
-        other => Err(cudf::Error::new(cudf::ErrorKind::InvalidInput, format!("unsupported manifest dtype: {}", other))
-            .with_operation("e2e::build_series")
-            .with_context("dtype", other.to_string())),
+        other => Err(cudf::testing::error::new_with_for_test(
+            ErrorCode::UnsupportedDtype,
+            "e2e::build_series",
+            format!("unsupported manifest dtype: {}", other),
+        )),
     }
 }
 
@@ -123,9 +132,11 @@ fn build_numeric_series<T: cudf::CudfType + Default>(
             validity.push(false);
         } else {
             let val = extract(v).ok_or_else(|| {
-                cudf::Error::new(cudf::ErrorKind::InvalidInput, format!("cannot convert JSON value to {}", name))
-                    .with_operation("e2e::build_numeric_series")
-                    .with_context("value", v.to_string())
+                cudf::testing::error::new_with_for_test(
+                    ErrorCode::ForeignInvalidArgument,
+                    "e2e::build_numeric_series",
+                    format!("cannot convert JSON value {} to {}", v, name),
+                )
             })?;
             data.push(val);
             validity.push(true);
@@ -152,9 +163,11 @@ fn build_str_series(runtime: &Runtime, _name: &str, values: &[serde_json::Value]
             validity.push(false);
         } else {
             let s = v.as_str().ok_or_else(|| {
-                cudf::Error::new(cudf::ErrorKind::InvalidInput, "expected JSON string for string column")
-                    .with_operation("e2e::build_str_series")
-                    .with_context("value", v.to_string())
+                cudf::testing::error::new_with_for_test(
+                    ErrorCode::ForeignInvalidArgument,
+                    "e2e::build_str_series",
+                    format!("expected JSON string for string column, got {}", v),
+                )
             })?;
             data.push(s);
             validity.push(true);

@@ -31,7 +31,7 @@ impl Drop for CurrentDeviceResourceRestore {
 pub fn allocation_count_delta<T>(op: impl FnOnce() -> T) -> i64 {
     let _guard = CURRENT_DEVICE_RESOURCE_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     let previous_raw = current_device_resource_raw();
-    let stats = cudf::testing::stats_memory_resource().expect("failed to create stats memory resource");
+    let stats = cudf::testing::core::stats_memory_resource().expect("failed to create stats memory resource");
     let _restore = CurrentDeviceResourceRestore { previous_raw };
     let borrowed = stats.as_borrowed_sys();
 

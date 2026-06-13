@@ -79,9 +79,9 @@ fn test_from_columns_rejects_length_mismatch_dynamic_iterator() {
     let err = result.unwrap_err();
     assert_eq!(err.code(), ErrorCode::ColumnLengthMismatch);
     assert_eq!(err.kind(), ErrorKind::InvalidInput);
-    assert_eq!(error_context_value(&err, "column_name"), Some("y"));
-    assert_eq!(error_context_value(&err, "actual_rows"), Some("2"));
-    assert_eq!(error_context_value(&err, "expected_rows"), Some("3"));
+    assert_eq!(error_context_value(&err, "column_name").as_deref(), Some("y"));
+    assert_eq!(error_context_value(&err, "actual_rows").as_deref(), Some("2"));
+    assert_eq!(error_context_value(&err, "expected_rows").as_deref(), Some("3"));
 }
 
 // ---------------------------------------------------------------------------

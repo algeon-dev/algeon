@@ -15,8 +15,8 @@ fn assert_groupby_validation_error(err: &cudf::Error, operation: &str, reason: &
     assert_eq!(err.kind(), ErrorKind::Unsupported);
     assert_eq!(err.code(), ErrorCode::UnsupportedOperation);
     assert_eq!(err.operation(), operation);
-    assert_eq!(error_context_value(err, "reason"), Some(reason));
-    assert_eq!(error_context_value(err, "remedy"), Some(remedy));
+    assert_eq!(error_context_value(err, "reason").as_deref(), Some(reason));
+    assert_eq!(error_context_value(err, "remedy").as_deref(), Some(remedy));
 }
 
 fn assert_ddof_range_validation_error(err: &cudf::Error, operation: &str, request_index: &str, expected_ddof: u32) {
@@ -26,13 +26,13 @@ fn assert_ddof_range_validation_error(err: &cudf::Error, operation: &str, reques
         "ddof_exceeds_i32_range",
         "use a ddof value within libcudf's i32 range",
     );
-    assert_eq!(error_context_value(err, "request_index"), Some(request_index));
-    assert_eq!(error_context_value(err, "ddof"), Some(expected_ddof.to_string().as_str()));
+    assert_eq!(error_context_value(err, "request_index").as_deref(), Some(request_index));
+    assert_eq!(error_context_value(err, "ddof").as_deref(), Some(expected_ddof.to_string().as_str()));
 }
 
 #[test]
 fn test_testing_hook_locks_groupby_request_count_limit_contract() {
-    let err = cudf::testing::trigger_groupby_request_count_limit_error_for_test().unwrap_err();
+    let err = cudf::testing::groupby::trigger_groupby_request_count_limit_error_for_test().unwrap_err();
 
     assert_groupby_validation_error(
         &err,
@@ -40,14 +40,14 @@ fn test_testing_hook_locks_groupby_request_count_limit_contract() {
         "exceeds_i32_max",
         "reduce the number of aggregation requests to fit within libcudf's i32 range",
     );
-    assert_eq!(error_context_value(&err, "resource"), Some("aggregation_requests"));
-    assert_eq!(error_context_value(&err, "request_count"), Some(usize::MAX.to_string().as_str()));
-    assert_eq!(error_context_value(&err, "num_requests"), None);
+    assert_eq!(error_context_value(&err, "resource").as_deref(), Some("aggregation_requests"));
+    assert_eq!(error_context_value(&err, "request_count").as_deref(), Some(usize::MAX.to_string().as_str()));
+    assert_eq!(error_context_value(&err, "num_requests").as_deref(), None);
 }
 
 #[test]
 fn test_testing_hook_locks_groupby_request_agg_count_limit_contract() {
-    let err = cudf::testing::trigger_groupby_request_agg_count_limit_error_for_test().unwrap_err();
+    let err = cudf::testing::groupby::trigger_groupby_request_agg_count_limit_error_for_test().unwrap_err();
 
     assert_groupby_validation_error(
         &err,
@@ -55,17 +55,17 @@ fn test_testing_hook_locks_groupby_request_agg_count_limit_contract() {
         "exceeds_i32_max",
         "reduce the number of aggregations in this request to fit within libcudf's i32 range",
     );
-    assert_eq!(error_context_value(&err, "resource"), Some("request_aggregations"));
-    assert_eq!(error_context_value(&err, "request_index"), Some("0"));
-    assert_eq!(error_context_value(&err, "request_count"), Some("1"));
-    assert_eq!(error_context_value(&err, "aggregation_count"), Some(usize::MAX.to_string().as_str()));
-    assert_eq!(error_context_value(&err, "num_requests"), None);
-    assert_eq!(error_context_value(&err, "agg_count"), None);
+    assert_eq!(error_context_value(&err, "resource").as_deref(), Some("request_aggregations"));
+    assert_eq!(error_context_value(&err, "request_index").as_deref(), Some("0"));
+    assert_eq!(error_context_value(&err, "request_count").as_deref(), Some("1"));
+    assert_eq!(error_context_value(&err, "aggregation_count").as_deref(), Some(usize::MAX.to_string().as_str()));
+    assert_eq!(error_context_value(&err, "num_requests").as_deref(), None);
+    assert_eq!(error_context_value(&err, "agg_count").as_deref(), None);
 }
 
 #[test]
 fn test_testing_hook_locks_groupby_total_agg_handle_count_limit_contract() {
-    let err = cudf::testing::trigger_groupby_total_agg_handle_count_limit_error_for_test().unwrap_err();
+    let err = cudf::testing::groupby::trigger_groupby_total_agg_handle_count_limit_error_for_test().unwrap_err();
 
     assert_groupby_validation_error(
         &err,
@@ -73,11 +73,11 @@ fn test_testing_hook_locks_groupby_total_agg_handle_count_limit_contract() {
         "exceeds_i32_max",
         "reduce the total number of aggregation handles to fit within libcudf's i32 range",
     );
-    assert_eq!(error_context_value(&err, "resource"), Some("aggregation_handles"));
-    assert_eq!(error_context_value(&err, "request_count"), Some("1"));
-    assert_eq!(error_context_value(&err, "aggregation_handle_count"), Some(usize::MAX.to_string().as_str()));
-    assert_eq!(error_context_value(&err, "num_requests"), None);
-    assert_eq!(error_context_value(&err, "total_agg_handles"), None);
+    assert_eq!(error_context_value(&err, "resource").as_deref(), Some("aggregation_handles"));
+    assert_eq!(error_context_value(&err, "request_count").as_deref(), Some("1"));
+    assert_eq!(error_context_value(&err, "aggregation_handle_count").as_deref(), Some(usize::MAX.to_string().as_str()));
+    assert_eq!(error_context_value(&err, "num_requests").as_deref(), None);
+    assert_eq!(error_context_value(&err, "total_agg_handles").as_deref(), None);
 }
 
 #[test]
@@ -287,9 +287,9 @@ fn test_groupby_error_contains_operation_context() {
         "empty_request_aggregations",
         "provide at least one GroupByAgg per AggregationRequest",
     );
-    assert_eq!(error_context_value(&err, "request_index"), Some("0"));
-    assert_eq!(error_context_value(&err, "request_count"), Some("1"));
-    assert_eq!(error_context_value(&err, "num_requests"), None);
+    assert_eq!(error_context_value(&err, "request_index").as_deref(), Some("0"));
+    assert_eq!(error_context_value(&err, "request_count").as_deref(), Some("1"));
+    assert_eq!(error_context_value(&err, "num_requests").as_deref(), None);
 }
 
 #[test]
@@ -309,16 +309,16 @@ fn test_groupby_rejects_negative_foreign_result_column_count_with_stable_contrac
     };
 
     assert_eq!(err.kind(), ErrorKind::InvariantViolation);
-    assert_eq!(err.code(), ErrorCode::InvariantViolation);
+    assert_eq!(err.code(), ErrorCode::ForeignInvariantViolation);
     assert_eq!(err.operation(), "groupby::groupby_aggregate");
-    assert_eq!(error_context_value(&err, "resource"), Some("result_columns"));
-    assert_eq!(error_context_value(&err, "reason"), Some("negative_column_count"));
+    assert_eq!(error_context_value(&err, "resource").as_deref(), Some("result_columns"));
+    assert_eq!(error_context_value(&err, "reason").as_deref(), Some("negative_column_count"));
     assert_eq!(
-        error_context_value(&err, "remedy"),
+        error_context_value(&err, "remedy").as_deref(),
         Some("ensure the foreign groupby backend returns a non-negative result column count")
     );
-    assert_eq!(error_context_value(&err, "table_column_count"), Some("-1"));
-    assert_eq!(error_context_value(&err, "out_total_columns"), None);
+    assert_eq!(error_context_value(&err, "reported_table_column_count").as_deref(), Some("-1"));
+    assert_eq!(error_context_value(&err, "out_total_columns").as_deref(), None);
 }
 
 #[test]

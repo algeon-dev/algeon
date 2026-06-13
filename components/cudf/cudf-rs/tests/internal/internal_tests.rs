@@ -6,7 +6,12 @@
 //!
 //! Direct unit tests for the helpers live inside `src/internal/mod.rs`.
 
-use cudf::{DataFrame, DuplicateKeepOption, ErrorCode, ErrorKind, frame::dataframe::DropDuplicatesOptions, testing};
+use cudf::{
+    DataFrame, DuplicateKeepOption, ErrorCode, ErrorKind,
+    core::error::{FactKeyName, FactValue},
+    frame::dataframe::DropDuplicatesOptions,
+    testing,
+};
 
 use crate::common::{assert_duplicate_name_error, assert_missing_column_error, column_from_slice, error_context_value};
 
@@ -110,19 +115,27 @@ fn join_reassembly_preserves_schema_names() {
 fn reassembly_name_count_mismatch_uses_canonical_count_contract() {
     let table = cudf::core::Table::from_columns(vec![column_from_slice(&[1i32, 2]).unwrap()]).unwrap();
 
-    let err = testing::reassemble_dataframe_from_table_and_names_for_test(table, vec!["only".into(), "extra".into()])
-        .unwrap_err();
+    let err = testing::dataframe::reassemble_dataframe_from_table_and_names_for_test(
+        table,
+        vec!["only".into(), "extra".into()],
+    )
+    .unwrap_err();
 
     assert_eq!(err.kind(), ErrorKind::InvalidInput);
     assert_eq!(err.code(), ErrorCode::ColumnLengthMismatch);
     assert_eq!(err.operation(), "internal::reassemble::dataframe_from_table_and_names");
-    assert_eq!(error_context_value(&err, "column_name_count"), Some("2"));
-    assert_eq!(error_context_value(&err, "table_column_count"), Some("1"));
-    assert_eq!(error_context_value(&err, "resource"), Some("column_name_count"));
-    assert_eq!(error_context_value(&err, "reason"), Some("mismatch_with_table_column_count"));
-    assert_eq!(error_context_value(&err, "remedy"), Some("ensure column_name_count matches table_column_count"));
-    assert_eq!(error_context_value(&err, "names_count"), None);
-    assert_eq!(error_context_value(&err, "columns_count"), None);
+    assert_eq!(err.fact_value(FactKeyName::ActualCount), Some(&FactValue::Usize(2)));
+    assert_eq!(err.fact_value(FactKeyName::TableColumnCount), Some(&FactValue::Usize(1)));
+    assert_eq!(error_context_value(&err, "column_name_count").as_deref(), Some("2"));
+    assert_eq!(error_context_value(&err, "table_column_count").as_deref(), Some("1"));
+    assert_eq!(error_context_value(&err, "resource").as_deref(), Some("column_name_count"));
+    assert_eq!(error_context_value(&err, "reason").as_deref(), Some("mismatch_with_table_column_count"));
+    assert_eq!(
+        error_context_value(&err, "remedy").as_deref(),
+        Some("ensure column_name_count matches table_column_count")
+    );
+    assert_eq!(error_context_value(&err, "names_count").as_deref(), None);
+    assert_eq!(error_context_value(&err, "columns_count").as_deref(), None);
 }
 
 // ---------------------------------------------------------------------------

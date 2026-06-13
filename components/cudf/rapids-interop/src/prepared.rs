@@ -1,4 +1,5 @@
 use std::{
+    any::Any,
     collections::{HashMap, HashSet},
     sync::Arc,
 };
@@ -27,6 +28,7 @@ pub struct PreparedColumnExport<'a> {
     profile: PreparedExportProfile,
     diagnostics: ExportDiagnostics,
     retained_host_buffers: RetainedHostBuffers,
+    retained_owner: Option<Arc<dyn Any + Send + Sync>>,
     /// Cached producer device ordinal for device-backed exports.
     producer_device: Option<i32>,
     lease_state: LeaseRootState,
@@ -136,6 +138,7 @@ impl<'a> PreparedColumnExport<'a> {
             profile,
             diagnostics: profile.diagnostics(),
             retained_host_buffers: RetainedHostBuffers::default(),
+            retained_owner: None,
             producer_device,
             lease_state: LeaseRootState::default(),
             lease_backend: LeaseBackend::semantic_default(),
@@ -175,6 +178,23 @@ impl<'a> PreparedColumnExport<'a> {
     pub fn with_retained_host_buffers(mut self, retained_host_buffers: Vec<Arc<[u8]>>) -> Self {
         self.retained_host_buffers = RetainedHostBuffers::new(retained_host_buffers);
         self
+    }
+
+    #[doc(hidden)]
+    pub fn with_retained_owner(mut self, retained_owner: Arc<dyn Any + Send + Sync>) -> Self {
+        self.retained_owner = Some(retained_owner);
+        self
+    }
+
+    #[doc(hidden)]
+    pub fn with_retained_owner_arc<T>(self, retained_owner: Arc<T>) -> Self
+    where T: Any + Send + Sync + 'static {
+        self.with_retained_owner(retained_owner)
+    }
+
+    #[doc(hidden)]
+    pub fn clone_retained_owner(&self) -> Option<Arc<dyn Any + Send + Sync>> {
+        self.retained_owner.as_ref().map(Arc::clone)
     }
 
     pub fn incomplete_drop_behavior(&self) -> IncompleteDropBehavior {
@@ -222,6 +242,7 @@ pub struct PreparedTableExport<'a> {
     profile: PreparedExportProfile,
     diagnostics: ExportDiagnostics,
     retained_host_buffers: RetainedHostBuffers,
+    retained_owner: Option<Arc<dyn Any + Send + Sync>>,
     /// Cached producer device ordinal for device-backed exports.
     producer_device: Option<i32>,
     lease_state: LeaseRootState,
@@ -414,6 +435,7 @@ impl<'a> PreparedTableExport<'a> {
             profile,
             diagnostics: profile.diagnostics(),
             retained_host_buffers: RetainedHostBuffers::default(),
+            retained_owner: None,
             producer_device,
             lease_state: LeaseRootState::default(),
             lease_backend: LeaseBackend::semantic_default(),
@@ -483,6 +505,23 @@ impl<'a> PreparedTableExport<'a> {
     pub fn with_retained_host_buffers(mut self, retained_host_buffers: Vec<Arc<[u8]>>) -> Self {
         self.retained_host_buffers = RetainedHostBuffers::new(retained_host_buffers);
         self
+    }
+
+    #[doc(hidden)]
+    pub fn with_retained_owner(mut self, retained_owner: Arc<dyn Any + Send + Sync>) -> Self {
+        self.retained_owner = Some(retained_owner);
+        self
+    }
+
+    #[doc(hidden)]
+    pub fn with_retained_owner_arc<T>(self, retained_owner: Arc<T>) -> Self
+    where T: Any + Send + Sync + 'static {
+        self.with_retained_owner(retained_owner)
+    }
+
+    #[doc(hidden)]
+    pub fn clone_retained_owner(&self) -> Option<Arc<dyn Any + Send + Sync>> {
+        self.retained_owner.as_ref().map(Arc::clone)
     }
 
     pub fn incomplete_drop_behavior(&self) -> IncompleteDropBehavior {

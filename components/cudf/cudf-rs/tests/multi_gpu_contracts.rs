@@ -9,7 +9,10 @@ mod common;
 
 use cudf::{
     DataFrame, DeviceId, ErrorCode, ErrorKind, ExecutionOverrides, MergeOptions, Runtime, Series, SortOptions, TypeId,
-    core::memory::DeviceMemoryResource,
+    core::{
+        error::{FactKeyName, FactValue},
+        memory::DeviceMemoryResource,
+    },
     frame::dataframe::{MeltOptions, ParquetWriteOptions},
     ops::{
         expr::{col, lit},
@@ -59,9 +62,9 @@ fn assert_cross_device_relocation_error(err: cudf::Error, operation: &'static st
         err
     );
     assert!(
-        err.context().iter().any(|(key, value)| *key == "remedy" && value.contains("copy_into_runtime")),
+        err.details().iter().any(|(key, value)| *key == "remedy" && value.contains("copy_into_runtime")),
         "expected explicit relocation remedy in error context, got {:?}",
-        err.context()
+        err.details()
     );
 }
 
@@ -79,9 +82,9 @@ fn assert_cross_device_relocation_error_any_operation(err: cudf::Error, operatio
         err
     );
     assert!(
-        err.context().iter().any(|(key, value)| *key == "remedy" && value.contains("copy_into_runtime")),
+        err.details().iter().any(|(key, value)| *key == "remedy" && value.contains("copy_into_runtime")),
         "expected explicit relocation remedy in error context, got {:?}",
-        err.context()
+        err.details()
     );
 }
 
@@ -94,13 +97,15 @@ fn assert_cross_device_contract(err: &cudf::Error, operation: &'static str) {
     assert_eq!(err.operation(), operation);
     assert!(crate::common::error_context_value(err, "left_domain").is_some(), "expected left_domain in {:?}", err);
     assert!(crate::common::error_context_value(err, "right_domain").is_some(), "expected right_domain in {:?}", err);
+    assert!(matches!(err.fact_value(FactKeyName::LeftDevice), Some(FactValue::DeviceId(_))));
+    assert!(matches!(err.fact_value(FactKeyName::RightDevice), Some(FactValue::DeviceId(_))));
     assert!(left_device.is_some(), "expected left_device in {:?}", err);
     assert!(right_device.is_some(), "expected right_device in {:?}", err);
     assert_ne!(left_device, right_device, "cross-device contract should expose different device ids: {:?}", err);
     assert!(
-        err.context().iter().any(|(key, value)| *key == "remedy" && value.contains("copy_into_runtime")),
+        err.details().iter().any(|(key, value)| *key == "remedy" && value.contains("copy_into_runtime")),
         "expected explicit relocation remedy in error context, got {:?}",
-        err.context()
+        err.details()
     );
 }
 
@@ -117,15 +122,17 @@ fn assert_constructor_mixed_provenance_error(
         err
     );
     assert!(
-        err.context().iter().any(|(key, value)| *key == "remedy" && value.contains("copy_into_runtime")),
+        err.details().iter().any(|(key, value)| *key == "remedy" && value.contains("copy_into_runtime")),
         "expected explicit relocation remedy in error context, got {:?}",
-        err.context()
+        err.details()
     );
     assert!(
-        err.context().iter().any(|(key, value)| *key == "column_name" && value == expected_column_name),
-        "expected failing column_name context, got {:?}",
-        err.context()
+        crate::common::error_context_value(&err, "column_name").as_deref() == Some(expected_column_name),
+        "expected failing column_name context, got facts={:?} details={:?}",
+        err.facts(),
+        err.details()
     );
+    assert_eq!(err.detail_value("column_name"), None);
 }
 
 fn assert_borrowed_override_runtime_binding_mismatch(
@@ -140,17 +147,25 @@ fn assert_borrowed_override_runtime_binding_mismatch(
     assert_eq!(err.kind(), ErrorKind::ExecutionContext);
     assert_eq!(err.code(), ErrorCode::RuntimeBindingMismatch);
     assert_eq!(err.operation(), "execution_overrides::resolve_output_domain");
-    assert_eq!(crate::common::error_context_value(&err, "resource"), Some(resource));
-    assert_eq!(crate::common::error_context_value(&err, "left_device"), Some(left_device.as_str()));
-    assert_eq!(crate::common::error_context_value(&err, "right_device"), Some(right_device.as_str()));
+    assert_eq!(crate::common::error_context_value(&err, "resource").as_deref(), Some(resource));
+    assert_eq!(
+        err.fact_value(FactKeyName::LeftDevice),
+        Some(&FactValue::DeviceId(left_device.parse::<i32>().unwrap()))
+    );
+    assert_eq!(
+        err.fact_value(FactKeyName::RightDevice),
+        Some(&FactValue::DeviceId(right_device.parse::<i32>().unwrap()))
+    );
+    assert_eq!(crate::common::error_context_value(&err, "left_device").as_deref(), Some(left_device.as_str()));
+    assert_eq!(crate::common::error_context_value(&err, "right_device").as_deref(), Some(right_device.as_str()));
     assert!(
         crate::common::error_context_value(&err, "remedy").is_some(),
         "expected remedy context, got {:?}",
-        err.context()
+        err.details()
     );
-    assert_eq!(crate::common::error_context_value(&err, "domain_device"), None);
-    assert_eq!(crate::common::error_context_value(&err, "override_stream_device"), None);
-    assert_eq!(crate::common::error_context_value(&err, "override_mr_device"), None);
+    assert_eq!(crate::common::error_context_value(&err, "domain_device").as_deref(), None);
+    assert_eq!(crate::common::error_context_value(&err, "override_stream_device").as_deref(), None);
+    assert_eq!(crate::common::error_context_value(&err, "override_mr_device").as_deref(), None);
 }
 
 fn assert_runtime_builder_binding_mismatch(
@@ -165,17 +180,25 @@ fn assert_runtime_builder_binding_mismatch(
     assert_eq!(err.kind(), ErrorKind::ExecutionContext);
     assert_eq!(err.code(), ErrorCode::RuntimeBindingMismatch);
     assert_eq!(err.operation(), "runtime::RuntimeBuilder::build");
-    assert_eq!(crate::common::error_context_value(&err, "resource"), Some(resource));
-    assert_eq!(crate::common::error_context_value(&err, "left_device"), Some(left_device.as_str()));
-    assert_eq!(crate::common::error_context_value(&err, "right_device"), Some(right_device.as_str()));
+    assert_eq!(crate::common::error_context_value(&err, "resource").as_deref(), Some(resource));
+    assert_eq!(
+        err.fact_value(FactKeyName::LeftDevice),
+        Some(&FactValue::DeviceId(left_device.parse::<i32>().unwrap()))
+    );
+    assert_eq!(
+        err.fact_value(FactKeyName::RightDevice),
+        Some(&FactValue::DeviceId(right_device.parse::<i32>().unwrap()))
+    );
+    assert_eq!(crate::common::error_context_value(&err, "left_device").as_deref(), Some(left_device.as_str()));
+    assert_eq!(crate::common::error_context_value(&err, "right_device").as_deref(), Some(right_device.as_str()));
     assert!(
         crate::common::error_context_value(&err, "remedy").is_some(),
         "expected remedy context, got {:?}",
-        err.context()
+        err.details()
     );
-    assert_eq!(crate::common::error_context_value(&err, "target_device"), None);
-    assert_eq!(crate::common::error_context_value(&err, "stream_device"), None);
-    assert_eq!(crate::common::error_context_value(&err, "mr_device"), None);
+    assert_eq!(crate::common::error_context_value(&err, "target_device").as_deref(), None);
+    assert_eq!(crate::common::error_context_value(&err, "stream_device").as_deref(), None);
+    assert_eq!(crate::common::error_context_value(&err, "mr_device").as_deref(), None);
 }
 
 fn dataframe1(name: &str, series: Series) -> DataFrame {
@@ -316,11 +339,11 @@ fn with_column_requires_explicit_relocation_for_cross_device_series() {
         .with_column("value", foreign)
         .expect_err("cross-device with_column should require explicit relocation before structural insertion");
     assert_cross_device_contract(&err, "dataframe::with_column");
-    assert_eq!(crate::common::error_context_value(&err, "column_name"), Some("value"));
-    assert_eq!(crate::common::error_context_value(&err, "frame_domain"), None);
-    assert_eq!(crate::common::error_context_value(&err, "series_domain"), None);
-    assert_eq!(crate::common::error_context_value(&err, "frame_device"), None);
-    assert_eq!(crate::common::error_context_value(&err, "series_device"), None);
+    assert_eq!(crate::common::error_context_value(&err, "column_name").as_deref(), Some("value"));
+    assert_eq!(crate::common::error_context_value(&err, "frame_domain").as_deref(), None);
+    assert_eq!(crate::common::error_context_value(&err, "series_domain").as_deref(), None);
+    assert_eq!(crate::common::error_context_value(&err, "frame_device").as_deref(), None);
+    assert_eq!(crate::common::error_context_value(&err, "series_device").as_deref(), None);
 }
 
 #[test]
@@ -337,11 +360,11 @@ fn assign_requires_explicit_relocation_for_cross_device_series() {
         .assign([("value", foreign)])
         .expect_err("cross-device assign should require explicit relocation before structural insertion");
     assert_cross_device_contract(&err, "dataframe::assign");
-    assert_eq!(crate::common::error_context_value(&err, "column_name"), Some("value"));
-    assert_eq!(crate::common::error_context_value(&err, "frame_domain"), None);
-    assert_eq!(crate::common::error_context_value(&err, "series_domain"), None);
-    assert_eq!(crate::common::error_context_value(&err, "frame_device"), None);
-    assert_eq!(crate::common::error_context_value(&err, "series_device"), None);
+    assert_eq!(crate::common::error_context_value(&err, "column_name").as_deref(), Some("value"));
+    assert_eq!(crate::common::error_context_value(&err, "frame_domain").as_deref(), None);
+    assert_eq!(crate::common::error_context_value(&err, "series_domain").as_deref(), None);
+    assert_eq!(crate::common::error_context_value(&err, "frame_device").as_deref(), None);
+    assert_eq!(crate::common::error_context_value(&err, "series_device").as_deref(), None);
 }
 
 #[test]
@@ -500,10 +523,10 @@ fn adopted_nullable_device_buffer_rejects_cross_device_data_and_mask_buffers() {
     assert_eq!(err.kind(), ErrorKind::ExecutionContext);
     assert_eq!(err.code(), ErrorCode::CrossDeviceInputs);
     assert_eq!(err.operation(), "column::from_device_buffer_nullable_with_runtime");
-    assert_eq!(crate::common::error_context_value(&err, "left_device"), Some(left_device.as_str()));
-    assert_eq!(crate::common::error_context_value(&err, "right_device"), Some(right_device.as_str()));
-    assert_eq!(crate::common::error_context_value(&err, "data_device"), None);
-    assert_eq!(crate::common::error_context_value(&err, "mask_device"), None);
+    assert_eq!(crate::common::error_context_value(&err, "left_device").as_deref(), Some(left_device.as_str()));
+    assert_eq!(crate::common::error_context_value(&err, "right_device").as_deref(), Some(right_device.as_str()));
+    assert_eq!(crate::common::error_context_value(&err, "data_device").as_deref(), None);
+    assert_eq!(crate::common::error_context_value(&err, "mask_device").as_deref(), None);
 }
 
 #[test]
@@ -528,10 +551,10 @@ fn runtime_adopted_device_buffer_rejects_cross_device_runtime() {
     assert_eq!(err.kind(), ErrorKind::ExecutionContext);
     assert_eq!(err.code(), ErrorCode::CrossDeviceInputs);
     assert_eq!(err.operation(), "column::from_device_buffer_with_runtime");
-    assert_eq!(crate::common::error_context_value(&err, "left_device"), Some(left_device.as_str()));
-    assert_eq!(crate::common::error_context_value(&err, "right_device"), Some(right_device.as_str()));
-    assert_eq!(crate::common::error_context_value(&err, "runtime_device"), None);
-    assert_eq!(crate::common::error_context_value(&err, "buffer_device"), None);
+    assert_eq!(crate::common::error_context_value(&err, "left_device").as_deref(), Some(left_device.as_str()));
+    assert_eq!(crate::common::error_context_value(&err, "right_device").as_deref(), Some(right_device.as_str()));
+    assert_eq!(crate::common::error_context_value(&err, "runtime_device").as_deref(), None);
+    assert_eq!(crate::common::error_context_value(&err, "buffer_device").as_deref(), None);
 }
 
 #[test]
@@ -559,10 +582,10 @@ fn runtime_adopted_nullable_device_buffer_rejects_cross_device_runtime() {
     assert_eq!(err.kind(), ErrorKind::ExecutionContext);
     assert_eq!(err.code(), ErrorCode::CrossDeviceInputs);
     assert_eq!(err.operation(), "column::from_device_buffer_nullable_with_runtime");
-    assert_eq!(crate::common::error_context_value(&err, "left_device"), Some(left_device.as_str()));
-    assert_eq!(crate::common::error_context_value(&err, "right_device"), Some(right_device.as_str()));
-    assert_eq!(crate::common::error_context_value(&err, "runtime_device"), None);
-    assert_eq!(crate::common::error_context_value(&err, "buffer_device"), None);
+    assert_eq!(crate::common::error_context_value(&err, "left_device").as_deref(), Some(left_device.as_str()));
+    assert_eq!(crate::common::error_context_value(&err, "right_device").as_deref(), Some(right_device.as_str()));
+    assert_eq!(crate::common::error_context_value(&err, "runtime_device").as_deref(), None);
+    assert_eq!(crate::common::error_context_value(&err, "buffer_device").as_deref(), None);
 }
 
 // ---------------------------------------------------------------------------
@@ -1429,8 +1452,8 @@ fn dataframe_write_parquet_with_options_without_relocation_rejects_cross_device_
         Err(err) => err,
     };
     assert_cross_device_contract(&err, "dataframe::write_parquet_with_options");
-    assert_eq!(crate::common::error_context_value(&err, "frame_domain"), None);
-    assert_eq!(crate::common::error_context_value(&err, "write_domain"), None);
+    assert_eq!(crate::common::error_context_value(&err, "frame_domain").as_deref(), None);
+    assert_eq!(crate::common::error_context_value(&err, "write_domain").as_deref(), None);
 }
 
 #[test]

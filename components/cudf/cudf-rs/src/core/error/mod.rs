@@ -289,10 +289,10 @@ pub type Result<T> = std::result::Result<T, Error>;
 
 /// Reject canonical fact snake_case names on the detail write path.
 ///
-/// The overlap rule (spec §4) is: canonical snake_case keys are reserved for
-/// `facts` and must never appear in `details`. This is enforced structurally
-/// at the writer so the boundary cannot be violated by reviewer inattention.
-/// A violation is a crate-internal bug and panics in every build profile.
+/// Canonical snake_case keys are reserved for `facts` and must never appear
+/// in `details`. This is enforced structurally at the writer so the boundary
+/// cannot be violated by reviewer inattention. A violation is a crate-internal
+/// bug and panics in every build profile.
 fn assert_canonical_key_not_used_as_detail(key: &'static str) {
     if FactKeyName::from_snake_case(key).is_some() {
         panic!(
@@ -580,7 +580,9 @@ fn leaf_code_for_interop_kind(kind: InteropErrorKind) -> ErrorCode {
 /// Translate an [`InteropError`] into a cudf-rs [`Error`] at the
 /// caller-supplied cudf-rs boundary `operation`.
 ///
-/// Contract (spec §9):
+/// The translated error always uses the caller-supplied cudf-rs operation
+/// label as its anchor. Foreign metadata is preserved as follows:
+///
 /// - `operation` is the caller-supplied cudf-rs constant, never the foreign
 ///   layer's operation label.
 /// - The foreign layer's operation label goes into `details["foreign_operation"]`.
@@ -614,9 +616,9 @@ pub(crate) fn from_interop_in(error: InteropError, operation: &'static str) -> E
 
 /// Attach a foreign-context entry to `err`.
 ///
-/// The facts/details overlap rule (spec §4) forbids canonical snake_case keys
-/// like `left_device` / `right_device` / `type_id` in `details`. Foreign
-/// context comes in as weakly typed `(key, String)` pairs, so this helper:
+/// Canonical snake_case fact keys like `left_device`, `right_device`, and
+/// `type_id` are not allowed in `details`. Foreign context comes in as weakly
+/// typed `(key, String)` pairs, so this helper:
 ///
 /// - Promotes recognised device-role breadcrumbs to [`DeviceIdFact`] facts
 ///   when the value parses as an `i32`, falling back to a non-canonical

@@ -6,8 +6,6 @@ error[E0432]: unresolved import `cudf::ExecutionContext`
   |
 help: consider importing one of these items instead
   |
-1 | use cudf::ErrorCode::ExecutionContext;
-  |            +++++++++++
 1 | use cudf::ErrorKind::ExecutionContext;
   |            +++++++++++
 1 | use cudf_sys::ExecutionContext;

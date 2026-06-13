@@ -2,11 +2,16 @@
 
 use std::sync::Arc;
 
-use super::{device::DeviceId, device_guard::DeviceGuard, execution_domain::ExecutionDomain, stream::CudaStream};
+use rapids_interop::{ExecutionBinding, InteropError, InteropErrorKind};
+
+use super::{
+    device::DeviceId, device_guard::DeviceGuard, event::CudaEvent, execution_domain::ExecutionDomain,
+    stream::CudaStream,
+};
 use crate::{
     core::{
         column::{Column, DeviceBuffer},
-        error::{DeviceIdFact, Error, ErrorCode, FACT_LEFT_DEVICE, FACT_RIGHT_DEVICE, Result},
+        error::{self, DeviceIdFact, Error, ErrorCode, FACT_LEFT_DEVICE, FACT_RIGHT_DEVICE, Result},
         memory::DeviceMemoryResource,
         scalar::Scalar,
         table::Table,
@@ -16,7 +21,20 @@ use crate::{
         dataframe::DataFrame,
         series::{HostColumnData, Series},
     },
+    interop,
 };
+
+/// Outcome of ordering this runtime's stream after a producer execution binding.
+#[derive(Debug, Clone)]
+pub enum StreamDependencyOutcome {
+    NoOp,
+    Barrier(CudaEvent),
+}
+
+fn map_stream_dependency_error(kind: InteropErrorKind, operation: &'static str, error: Error) -> InteropError {
+    let message = error.to_string();
+    InteropError::new(kind, message).with_context("operation", operation).set_source(error)
+}
 
 /// Owns one device-pinned retained-provenance bundle for a `cudf-rs` pipeline.
 ///
@@ -108,6 +126,67 @@ impl Runtime {
     /// Access the runtime's owned device memory resource.
     pub fn memory_resource(&self) -> &DeviceMemoryResource {
         self.domain.memory_resource()
+    }
+
+    /// Borrow this runtime's explicit execution binding for cross-crate interop.
+    pub fn execution_binding(&self) -> std::result::Result<ExecutionBinding<'_>, InteropError> {
+        interop::execution::execution_binding("runtime::Runtime::execution_binding", self.execution_domain())
+    }
+
+    /// Order this runtime's stream after a producer execution binding.
+    ///
+    /// Same-device same-stream producers are already ordered and return
+    /// [`StreamDependencyOutcome::NoOp`]. Same-device different-stream
+    /// producers record an event on the producer stream and make the runtime
+    /// stream wait on it, returning the barrier so callers can retain it until
+    /// dependent work has been enqueued. Cross-device producers are rejected.
+    pub fn order_after_execution_binding(
+        &self,
+        producer: ExecutionBinding<'_>,
+        operation: &'static str,
+    ) -> std::result::Result<StreamDependencyOutcome, InteropError> {
+        let consumer_device = self.device().ordinal() as i32;
+        if producer.device() != consumer_device {
+            return Err(InteropError::new(
+                InteropErrorKind::ExecutionBindingMismatch,
+                "producer execution binding must match the runtime CUDA device",
+            )
+            .with_context("operation", operation)
+            .with_context("left_device", producer.device().to_string())
+            .with_context("right_device", consumer_device.to_string()));
+        }
+
+        let consumer_stream_raw = self
+            .stream()
+            .interop_raw_handle()
+            .map_err(|error| map_stream_dependency_error(InteropErrorKind::ReadinessUnavailable, operation, error))?;
+        if producer.cuda_stream().as_raw() == consumer_stream_raw {
+            return Ok(StreamDependencyOutcome::NoOp);
+        }
+
+        let _guard = DeviceGuard::new(self.device())
+            .map_err(|error| map_stream_dependency_error(InteropErrorKind::ReadinessUnavailable, operation, error))?;
+        let barrier = CudaEvent::new()
+            .map_err(|error| map_stream_dependency_error(InteropErrorKind::ReadinessUnavailable, operation, error))?;
+        let barrier_raw = barrier
+            .interop_raw_handle()
+            .map_err(|error| map_stream_dependency_error(InteropErrorKind::ReadinessUnavailable, operation, error))?;
+        error::check_status_in_with_details(
+            unsafe { cudf_sys::cudf_raw_cuda_event_record(barrier_raw, producer.cuda_stream().as_raw()) },
+            operation,
+            [
+                ("readiness", "device_stream_ordered".to_string()),
+                ("read_start", "consumer_stream".to_string()),
+                ("producer_device", producer.device().to_string()),
+                ("consumer_device", consumer_device.to_string()),
+            ],
+        )
+        .map_err(|error| map_stream_dependency_error(InteropErrorKind::ReadinessUnavailable, operation, error))?;
+        self.stream()
+            .wait_event(&barrier)
+            .map_err(|error| map_stream_dependency_error(InteropErrorKind::ReadinessUnavailable, operation, error))?;
+
+        Ok(StreamDependencyOutcome::Barrier(barrier))
     }
 
     /// Create a fixed-width low-level `Column` inside this runtime.

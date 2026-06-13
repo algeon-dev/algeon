@@ -82,10 +82,10 @@ fn test_dataframe_new_names_columns_count_mismatch() {
     assert_eq!(err.kind(), ErrorKind::InvalidInput);
     assert_eq!(err.code(), ErrorCode::ColumnLengthMismatch);
     assert_eq!(err.operation(), "dataframe::new");
-    assert_eq!(error_context_value(&err, "column_name_count"), Some("2"));
-    assert_eq!(error_context_value(&err, "table_column_count"), Some("1"));
-    assert_eq!(error_context_value(&err, "names_count"), None);
-    assert_eq!(error_context_value(&err, "columns_count"), None);
+    assert_eq!(error_context_value(&err, "column_name_count").as_deref(), Some("2"));
+    assert_eq!(error_context_value(&err, "table_column_count").as_deref(), Some("1"));
+    assert_eq!(error_context_value(&err, "names_count").as_deref(), None);
+    assert_eq!(error_context_value(&err, "columns_count").as_deref(), None);
 }
 
 #[test]

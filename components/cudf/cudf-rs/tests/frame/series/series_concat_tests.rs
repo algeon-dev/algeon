@@ -92,8 +92,8 @@ fn test_concat_empty_slice_returns_error() {
     assert_eq!(err.kind(), ErrorKind::Unsupported);
     assert_eq!(err.code(), ErrorCode::UnsupportedOperation);
     assert_eq!(err.operation(), "series::concat");
-    assert_eq!(error_context_value(&err, "reason"), Some("empty_input"));
-    assert_eq!(error_context_value(&err, "remedy"), Some("provide at least one input series"));
+    assert_eq!(error_context_value(&err, "reason").as_deref(), Some("empty_input"));
+    assert_eq!(error_context_value(&err, "remedy").as_deref(), Some("provide at least one input series"));
 }
 
 #[test]
@@ -106,8 +106,12 @@ fn test_concat_type_mismatch_returns_error() {
     assert_eq!(err.kind(), ErrorKind::InvalidInput);
     assert_eq!(err.code(), ErrorCode::TypeMismatch);
     assert_eq!(err.operation(), "series::concat");
-    assert_eq!(error_context_value(&err, "column_index"), Some("1"));
-    assert_eq!(error_context_value(&err, "left_type_id"), Some("int32"));
-    assert_eq!(error_context_value(&err, "right_type_id"), Some("string"));
-    assert_eq!(error_context_value(&err, "called"), Some("concatenate::concatenate_columns"));
+    assert_eq!(error_context_value(&err, "column_index").as_deref(), Some("1"));
+    assert_eq!(error_context_value(&err, "left_type_id").as_deref(), Some("int32"));
+    assert_eq!(error_context_value(&err, "right_type_id").as_deref(), Some("string"));
+    assert!(
+        err.call_chain().contains(&"concatenate::concatenate_columns"),
+        "expected concatenate::concatenate_columns in call_chain, got {:?}",
+        err.call_chain()
+    );
 }

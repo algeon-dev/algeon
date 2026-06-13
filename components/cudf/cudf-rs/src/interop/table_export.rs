@@ -233,6 +233,46 @@ where
     .map_err(|error| error.with_context("operation", operation))
 }
 
+pub(super) fn prepare_into_owned_table_root_with_readiness(
+    table: Table,
+    names: Option<Vec<String>>,
+    operation: &'static str,
+    readiness: ProducerReadiness<'_>,
+) -> Result<PreparedTableExport<'static>, InteropError> {
+    let retained_table = Arc::new(table);
+    let view =
+        retained_table.view().map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?;
+    let num_rows = view.num_rows().map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?;
+    let default_device = retained_table.execution_domain().device_id().ordinal() as i32;
+    let (columns, semantic_columns, bindings) =
+        build_device_table_projection_from_view(&view, operation, default_device)?;
+    let table =
+        SemanticTable::new(TableId::new(0), num_rows, columns.iter().map(|column| column.id()).collect(), names);
+    PreparedTableExport::try_new_with_semantic_columns(
+        table,
+        columns,
+        semantic_columns,
+        to_static_bindings(operation, bindings)?,
+        to_static_readiness(operation, readiness)?,
+        export_diagnostics(),
+    )
+    .map(|export| {
+        export
+            .with_lease_backend(runtime_lease::shared_cuda_lease_backend())
+            .with_retained_owner_arc(Arc::clone(&retained_table))
+    })
+    .map_err(|error| error.with_context("operation", operation))
+}
+
+pub(super) fn prepare_into_owned_table_root(
+    table: Table,
+    names: Option<Vec<String>>,
+    operation: &'static str,
+) -> Result<PreparedTableExport<'static>, InteropError> {
+    let readiness = prepared_device_readiness(operation, table.execution_domain())?.1;
+    prepare_into_owned_table_root_with_readiness(table, names, operation, readiness)
+}
+
 pub(super) fn prepare_host_table_export_from_columns<'a, I>(
     columns: I,
     num_rows: usize,

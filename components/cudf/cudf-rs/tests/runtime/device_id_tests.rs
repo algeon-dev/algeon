@@ -13,14 +13,17 @@ fn new_device_zero_succeeds() {
 #[test]
 fn new_device_out_of_range_returns_error() {
     let err = DeviceId::new(999).unwrap_err();
-    assert_eq!(err.kind(), ErrorKind::NotFound);
-    assert_eq!(err.code(), ErrorCode::MissingResource);
+    assert_eq!(err.kind(), ErrorKind::InvalidInput);
+    assert_eq!(err.code(), ErrorCode::IndexOutOfBounds);
     assert_eq!(err.operation(), "DeviceId::new");
-    assert_eq!(error_context_value(&err, "resource"), Some("cuda_device"));
-    assert_eq!(error_context_value(&err, "ordinal"), Some("999"));
-    assert_eq!(error_context_value(&err, "reason"), Some("device_ordinal_out_of_range"));
-    assert_eq!(error_context_value(&err, "remedy"), Some("choose a device ordinal less than DeviceId::count()"));
-    assert!(err.is_not_found());
+    assert_eq!(error_context_value(&err, "resource").as_deref(), Some("cuda_device"));
+    assert_eq!(error_context_value(&err, "ordinal").as_deref(), Some("999"));
+    assert_eq!(error_context_value(&err, "reason").as_deref(), Some("device_ordinal_out_of_range"));
+    assert_eq!(
+        error_context_value(&err, "remedy").as_deref(),
+        Some("choose a device ordinal less than DeviceId::count()")
+    );
+    assert_ne!(err.kind(), ErrorKind::NotFound);
 }
 
 #[test]

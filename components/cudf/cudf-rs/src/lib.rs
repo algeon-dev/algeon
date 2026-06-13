@@ -199,4 +199,4 @@ pub use ops::{
     stream_compaction::DuplicateKeepOption,
     strings::StripSide,
 };
-pub use runtime::{DeviceId, ExecutionOverrides, Runtime, RuntimeBuilder};
+pub use runtime::{DeviceId, ExecutionOverrides, Runtime, RuntimeBuilder, StreamDependencyOutcome};

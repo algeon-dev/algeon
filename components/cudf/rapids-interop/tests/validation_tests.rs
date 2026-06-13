@@ -126,6 +126,35 @@ fn prepared_table_export_name_lookup_requires_schema_names() {
 }
 
 #[test]
+fn prepared_column_export_retained_owner_arc_builder_preserves_owner() {
+    let export = PreparedColumnExport::try_new(
+        fixed_width_column(1, 11, 3, 0),
+        vec![host_binding(11, 0x6000, 3 * std::mem::size_of::<i32>())],
+        ProducerReadiness::HostVisible,
+        prepared_host_diagnostics(),
+    )
+    .unwrap()
+    .with_retained_owner_arc(Arc::new([1u8, 2, 3]));
+
+    assert!(export.clone_retained_owner().is_some());
+}
+
+#[test]
+fn prepared_table_export_retained_owner_arc_builder_preserves_owner() {
+    let export = PreparedTableExport::try_new(
+        SemanticTable::new(TableId::new(10), 3, vec![ColumnId::new(1)], Some(vec!["src".into()])),
+        vec![fixed_width_column(1, 11, 3, 0)],
+        vec![host_binding(11, 0x6000, 3 * std::mem::size_of::<i32>())],
+        ProducerReadiness::HostVisible,
+        prepared_host_diagnostics(),
+    )
+    .unwrap()
+    .with_retained_owner_arc(Arc::new(String::from("owner")));
+
+    assert!(export.clone_retained_owner().is_some());
+}
+
+#[test]
 fn execution_binding_requires_explicit_device_stream_handle() {
     let err = CudaStreamHandle::from_raw(fake_ptr(0x3000) as *mut core::ffi::c_void)
         .map(|stream| {

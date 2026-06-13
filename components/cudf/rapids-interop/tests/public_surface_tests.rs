@@ -5,7 +5,7 @@ use rapids_interop::{
     CompletionWitnessKind, CudaEventHandle, CudaStreamHandle, DataType, DeviceMemoryResourceHandle, ExecutionBinding,
     ExportDiagnostics, ExportProfile, IncompleteDropBehavior, InteropError, InteropErrorKind, LeaseActivation,
     LeaseBackend, LeaseCompletionResult, LeaseExportContext, NullMask, NullMaskKind, OwnedColumnTransfer,
-    OwnedTableTransfer, PartitionedOwnedTableTransfer, PartitionedOwnedTableTransferPartition,
+    OwnedTableTransfer, OwnedTableTransferParts, PartitionedOwnedTableTransfer, PartitionedOwnedTableTransferPartition,
     PartitionedPreparedTableExport, PartitionedPreparedTablePartition, PhysicalValidity, Placement,
     PreparedColumnExport, PreparedTableExport, ProducerReadiness, ReadStartAuthority, ReadStartBinding,
     ReleaseContract, ReleaseSynchronization, Result, SchemaNullability, SemanticColumn, SemanticTable, TableId,
@@ -68,6 +68,7 @@ fn crate_root_reexports_public_interop_surface() {
     assert_type::<ActivePartitionedTableReadLease<'static, 'static, 'static>>();
     assert_type::<OwnedColumnTransfer>();
     assert_type::<OwnedTableTransfer>();
+    assert_type::<OwnedTableTransferParts<()>>();
     assert_type::<PartitionedPreparedTablePartition<'static>>();
     assert_type::<PartitionedPreparedTableExport<'static>>();
     assert_type::<PartitionedOwnedTableTransferPartition>();

@@ -294,7 +294,7 @@ async fn to_record_batch_in_spawn_blocking() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn arrow_round_trip_across_spawn_blocking() {
-    use cudf::io::arrow::dataframe_from_record_batch;
+    use cudf::interop::arrow_host::dataframe_from_record_batch;
 
     let df = sample_df();
 

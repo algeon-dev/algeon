@@ -161,47 +161,6 @@ fn frame_submodules_expose_specialized_high_level_types() {
 }
 
 #[test]
-fn core_and_runtime_modules_keep_explicit_domain_surface() {
-    use cudf::{
-        core::{
-            Column, CudfType, DataType, DeviceBuffer, DeviceMemoryResource, DeviceSlice, Error, ErrorKind, ErrorStatus,
-            NullEquality, NullPolicy, Result, Scalar, Table, TimestampResolution, TypeId,
-        },
-        runtime::{CudaEvent, CudaStream, DeviceId, ExecutionOverrides, Runtime, RuntimeBuilder},
-    };
-
-    fn assert_send_sync<T: Send + Sync>() {}
-    fn assert_result_alias(_: Result<()>) {}
-    fn assert_cudf_type<T: CudfType>() {}
-    fn assert_column_len(_f: fn(&Column) -> Result<usize>) {}
-    fn assert_table_num_rows(_f: fn(&Table) -> Result<usize>) {}
-    fn assert_device_slice<'a>(_slice: Option<DeviceSlice<'a>>) {}
-
-    assert_send_sync::<DeviceId>();
-    assert_send_sync::<CudaStream>();
-    assert_send_sync::<CudaEvent>();
-    assert_send_sync::<Runtime>();
-    assert_send_sync::<RuntimeBuilder>();
-    assert_send_sync::<ExecutionOverrides<'static>>();
-    assert_send_sync::<DeviceBuffer>();
-    assert_send_sync::<DeviceMemoryResource>();
-    assert_send_sync::<Scalar>();
-
-    assert_result_alias(Ok(()));
-    assert_cudf_type::<i32>();
-    assert_column_len(Column::len);
-    assert_table_num_rows(Table::num_rows);
-    assert_device_slice(None);
-
-    let _ = DataType::new(TypeId::Int32);
-    let _ = Error::new(ErrorKind::InvalidInput, "surface smoke");
-    let _ = ErrorStatus::Permanent;
-    let _ = NullEquality::Equal;
-    let _ = NullPolicy::Include;
-    let _ = TimestampResolution::Milliseconds;
-}
-
-#[test]
 fn hidden_internal_reexports_are_not_publicly_importable() {
     let t = trybuild::TestCases::new();
     t.compile_fail("tests/public_api/ui/no_debug_execution_context.rs");
@@ -209,6 +168,7 @@ fn hidden_internal_reexports_are_not_publicly_importable() {
     t.compile_fail("tests/public_api/ui/no_root_debug_validity_helper.rs");
     t.compile_fail("tests/public_api/ui/no_arrow_debug_triggers.rs");
     t.compile_fail("tests/public_api/ui/no_internal_testing_hooks_modules.rs");
+    t.compile_fail("tests/public_api/ui/no_testing_flat_primitives.rs");
     t.compile_fail("tests/public_api/ui/no_core_view_types.rs");
     t.compile_fail("tests/public_api/ui/no_column_view_method.rs");
     t.compile_fail("tests/public_api/ui/no_table_view_method.rs");
@@ -223,6 +183,8 @@ fn hidden_internal_reexports_are_not_publicly_importable() {
     t.compile_fail("tests/public_api/ui/no_legacy_error_kind_names.rs");
     t.compile_fail("tests/public_api/ui/no_legacy_error_code_names.rs");
     t.compile_fail("tests/public_api/ui/no_execution_context_type.rs");
+    t.compile_fail("tests/public_api/ui/no_error_new_with_constructor.rs");
+    t.compile_fail("tests/public_api/ui/no_facts_write_surface.rs");
     t.compile_fail("tests/public_api/ui/no_root_dataframe_specialized_types.rs");
     t.compile_fail("tests/public_api/ui/no_root_factorization_types.rs");
     t.compile_fail("tests/public_api/ui/no_dataframe_in_context.rs");
@@ -233,4 +195,22 @@ fn hidden_internal_reexports_are_not_publicly_importable() {
     t.compile_fail("tests/public_api/ui/no_interop_prepared_namespace.rs");
     t.compile_fail("tests/public_api/ui/no_interop_transfer_namespace.rs");
     t.pass("tests/public_api/ui/interop_canonical_contract_imports.rs");
+}
+
+#[test]
+fn testing_submodules_expose_domain_scoped_hooks() {
+    let _ = cudf::testing::arrow::trigger_numeric_to_arrow_error_for_test;
+    let _ = cudf::testing::column::trigger_column_view_fixed_width_host_byte_range_overflow_for_test;
+    let _ = cudf::testing::concatenate::trigger_concatenate_column_count_limit_error_for_test;
+    let _ = cudf::testing::core::stats_memory_resource;
+    let _ = cudf::testing::core::trigger_truthful_error_contract_for_test;
+    let _ = cudf::testing::core::validity_to_host_null_mask_bytes;
+    let _ = cudf::testing::dataframe::trigger_dataframe_row_range_overflow_error_for_test;
+    let _ = cudf::testing::dictionary::trigger_match_dictionaries_result_count_mismatch_for_test;
+    let _ = cudf::testing::factorization::trigger_factorize_empty_row_code_dtype_error_for_test;
+    let _ = cudf::testing::groupby::trigger_groupby_request_count_limit_error_for_test;
+    let _ = cudf::testing::interop::trigger_interop_projection_negative_offset_for_test;
+    let _ = cudf::testing::join::trigger_merge_reassembly_key_count_error_for_test;
+    let _ = cudf::testing::series::trigger_series_row_range_overflow_error_for_test;
+    let _ = cudf::testing::sorting::trigger_sort_key_count_limit_error_for_test;
 }

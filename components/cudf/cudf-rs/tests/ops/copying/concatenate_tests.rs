@@ -27,8 +27,8 @@ fn test_concatenate_columns_rejects_empty_input() {
     assert_eq!(err.kind(), ErrorKind::Unsupported);
     assert_eq!(err.code(), ErrorCode::UnsupportedOperation);
     assert_eq!(err.operation(), "concatenate::concatenate_columns");
-    assert_eq!(error_context_value(&err, "reason"), Some("empty_input"));
-    assert_eq!(error_context_value(&err, "remedy"), Some("provide at least one input column"));
+    assert_eq!(error_context_value(&err, "reason").as_deref(), Some("empty_input"));
+    assert_eq!(error_context_value(&err, "remedy").as_deref(), Some("provide at least one input column"));
     assert!(err.message().contains("at least one input column"), "unexpected error: {err}");
 }
 
@@ -63,8 +63,8 @@ fn test_concatenate_tables_rejects_empty_input() {
     assert_eq!(err.kind(), ErrorKind::Unsupported);
     assert_eq!(err.code(), ErrorCode::UnsupportedOperation);
     assert_eq!(err.operation(), "concatenate::concatenate_tables");
-    assert_eq!(error_context_value(&err, "reason"), Some("empty_input"));
-    assert_eq!(error_context_value(&err, "remedy"), Some("provide at least one input table"));
+    assert_eq!(error_context_value(&err, "reason").as_deref(), Some("empty_input"));
+    assert_eq!(error_context_value(&err, "remedy").as_deref(), Some("provide at least one input table"));
     assert!(err.message().contains("at least one input table"), "unexpected error: {err}");
 }
 
@@ -79,9 +79,9 @@ fn test_concatenate_columns_rejects_type_mismatch_with_stable_contract() {
     assert_eq!(err.kind(), ErrorKind::InvalidInput);
     assert_eq!(err.code(), ErrorCode::TypeMismatch);
     assert_eq!(err.operation(), "concatenate::concatenate_columns");
-    assert_eq!(error_context_value(&err, "column_index"), Some("1"));
-    assert_eq!(error_context_value(&err, "left_type_id"), Some("int32"));
-    assert_eq!(error_context_value(&err, "right_type_id"), Some("string"));
+    assert_eq!(error_context_value(&err, "column_index").as_deref(), Some("1"));
+    assert_eq!(error_context_value(&err, "left_type_id").as_deref(), Some("int32"));
+    assert_eq!(error_context_value(&err, "right_type_id").as_deref(), Some("string"));
 }
 
 #[test]
@@ -104,39 +104,39 @@ fn test_concatenate_tables_rejects_column_type_mismatch_with_stable_contract() {
     assert_eq!(err.kind(), ErrorKind::InvalidInput);
     assert_eq!(err.code(), ErrorCode::TypeMismatch);
     assert_eq!(err.operation(), "concatenate::concatenate_tables");
-    assert_eq!(error_context_value(&err, "column_index"), Some("1"));
-    assert_eq!(error_context_value(&err, "left_type_id"), Some("int32"));
-    assert_eq!(error_context_value(&err, "right_type_id"), Some("int64"));
+    assert_eq!(error_context_value(&err, "column_index").as_deref(), Some("1"));
+    assert_eq!(error_context_value(&err, "left_type_id").as_deref(), Some("int32"));
+    assert_eq!(error_context_value(&err, "right_type_id").as_deref(), Some("int64"));
 }
 
 #[test]
 fn test_testing_hook_locks_concatenate_column_count_limit_contract() {
-    let err = cudf::testing::trigger_concatenate_column_count_limit_error_for_test().unwrap_err();
+    let err = cudf::testing::concatenate::trigger_concatenate_column_count_limit_error_for_test().unwrap_err();
 
     assert_eq!(err.kind(), ErrorKind::Unsupported);
     assert_eq!(err.code(), ErrorCode::UnsupportedOperation);
     assert_eq!(err.operation(), "concatenate::concatenate_columns");
     assert_eq!(err.message(), "number of input columns exceeds i32::MAX");
-    assert_eq!(error_context_value(&err, "resource"), Some("input_columns"));
-    assert_eq!(error_context_value(&err, "reason"), Some("exceeds_i32_max"));
-    assert_eq!(error_context_value(&err, "column_count"), Some(usize::MAX.to_string().as_str()));
-    assert_eq!(error_context_value(&err, "remedy"), Some("reduce column_count to fit within i32::MAX"));
-    assert_eq!(error_context_value(&err, "num_columns"), None);
+    assert_eq!(error_context_value(&err, "resource").as_deref(), Some("input_columns"));
+    assert_eq!(error_context_value(&err, "reason").as_deref(), Some("exceeds_i32_max"));
+    assert_eq!(error_context_value(&err, "column_count").as_deref(), Some(usize::MAX.to_string().as_str()));
+    assert_eq!(error_context_value(&err, "remedy").as_deref(), Some("reduce column_count to fit within i32::MAX"));
+    assert_eq!(error_context_value(&err, "num_columns").as_deref(), None);
 }
 
 #[test]
 fn test_testing_hook_locks_concatenate_table_count_limit_contract() {
-    let err = cudf::testing::trigger_concatenate_table_count_limit_error_for_test().unwrap_err();
+    let err = cudf::testing::concatenate::trigger_concatenate_table_count_limit_error_for_test().unwrap_err();
 
     assert_eq!(err.kind(), ErrorKind::Unsupported);
     assert_eq!(err.code(), ErrorCode::UnsupportedOperation);
     assert_eq!(err.operation(), "concatenate::concatenate_tables");
     assert_eq!(err.message(), "number of input tables exceeds i32::MAX");
-    assert_eq!(error_context_value(&err, "resource"), Some("input_tables"));
-    assert_eq!(error_context_value(&err, "reason"), Some("exceeds_i32_max"));
-    assert_eq!(error_context_value(&err, "table_count"), Some(usize::MAX.to_string().as_str()));
-    assert_eq!(error_context_value(&err, "remedy"), Some("reduce table_count to fit within i32::MAX"));
-    assert_eq!(error_context_value(&err, "num_tables"), None);
+    assert_eq!(error_context_value(&err, "resource").as_deref(), Some("input_tables"));
+    assert_eq!(error_context_value(&err, "reason").as_deref(), Some("exceeds_i32_max"));
+    assert_eq!(error_context_value(&err, "table_count").as_deref(), Some(usize::MAX.to_string().as_str()));
+    assert_eq!(error_context_value(&err, "remedy").as_deref(), Some("reduce table_count to fit within i32::MAX"));
+    assert_eq!(error_context_value(&err, "num_tables").as_deref(), None);
 }
 
 #[test]

@@ -3,7 +3,10 @@
 //! All tests require a GPU.
 use cudf::{
     ErrorCode, ErrorKind,
-    core::Table,
+    core::{
+        Table,
+        error::{FactKeyName, FactValue},
+    },
     io::json::{self, JsonTableReadOptions, JsonTableWriteOptions},
     testing::prelude::*,
 };
@@ -129,12 +132,13 @@ fn test_json_write_rejects_column_name_with_nul_byte() {
     let err = json::write_json(&table, &write_opts).unwrap_err();
 
     assert_eq!(err.kind(), ErrorKind::InvalidInput);
-    assert_eq!(err.code(), ErrorCode::InvalidInput);
+    assert_eq!(err.code(), ErrorCode::NullUnexpected);
     assert_eq!(err.operation(), "io::json::write_json");
-    assert_eq!(error_context_value(&err, "column_index"), Some("0"));
-    assert_eq!(error_context_value(&err, "column_name"), Some("bad\0name"));
-    assert_eq!(error_context_value(&err, "resource"), Some("column_name"));
-    assert_eq!(error_context_value(&err, "reason"), Some("interior_null_byte"));
+    assert_eq!(err.fact_value(FactKeyName::ColumnIndex), Some(&FactValue::Usize(0)));
+    assert_eq!(error_context_value(&err, "column_index").as_deref(), Some("0"));
+    assert_eq!(error_context_value(&err, "column_name").as_deref(), Some("bad\0name"));
+    assert_eq!(error_context_value(&err, "resource").as_deref(), Some("column_name"));
+    assert_eq!(error_context_value(&err, "reason").as_deref(), Some("interior_null_byte"));
     assert!(err.to_string().contains("null byte"), "unexpected error: {err}");
 }
 
@@ -152,11 +156,16 @@ fn test_json_write_rejects_column_name_count_with_stable_contract() {
     assert_eq!(err.kind(), ErrorKind::InvalidInput);
     assert_eq!(err.code(), ErrorCode::ColumnLengthMismatch);
     assert_eq!(err.operation(), "io::json::write_json");
-    assert_eq!(error_context_value(&err, "column_name_count"), Some("2"));
-    assert_eq!(error_context_value(&err, "table_column_count"), Some("1"));
-    assert_eq!(error_context_value(&err, "resource"), Some("column_name_count"));
-    assert_eq!(error_context_value(&err, "reason"), Some("mismatch_with_table_column_count"));
-    assert_eq!(error_context_value(&err, "remedy"), Some("ensure column_name_count matches table_column_count"));
+    assert_eq!(err.fact_value(FactKeyName::ActualCount), Some(&FactValue::Usize(2)));
+    assert_eq!(err.fact_value(FactKeyName::TableColumnCount), Some(&FactValue::Usize(1)));
+    assert_eq!(error_context_value(&err, "column_name_count").as_deref(), Some("2"));
+    assert_eq!(error_context_value(&err, "table_column_count").as_deref(), Some("1"));
+    assert_eq!(error_context_value(&err, "resource").as_deref(), Some("column_name_count"));
+    assert_eq!(error_context_value(&err, "reason").as_deref(), Some("mismatch_with_table_column_count"));
+    assert_eq!(
+        error_context_value(&err, "remedy").as_deref(),
+        Some("ensure column_name_count matches table_column_count")
+    );
 }
 
 // ===========================================================================
@@ -172,8 +181,8 @@ fn test_json_read_nonexistent_file() {
         Err(err) => err,
     };
 
-    assert_eq!(err.code(), ErrorCode::MissingResource);
-    assert_eq!(err.kind(), ErrorKind::NotFound);
+    assert_eq!(err.code(), ErrorCode::IoFailure);
+    assert_eq!(err.kind(), ErrorKind::DependencyFailure);
 }
 
 #[test]
@@ -192,14 +201,14 @@ fn test_json_read_metadata_negative_name_count_maps_to_invariant_violation() {
     };
 
     assert_eq!(err.kind(), ErrorKind::InvariantViolation);
-    assert_eq!(err.code(), ErrorCode::InvariantViolation);
+    assert_eq!(err.code(), ErrorCode::ForeignInvariantViolation);
     assert_eq!(err.operation(), "io::json::read_json_table");
-    assert_eq!(error_context_value(&err, "column_name_count"), Some("-1"));
-    assert_eq!(error_context_value(&err, "resource"), Some("column_name_count"));
-    assert_eq!(error_context_value(&err, "reason"), Some("negative_name_count"));
+    assert_eq!(error_context_value(&err, "column_name_count").as_deref(), Some("-1"));
+    assert_eq!(error_context_value(&err, "resource").as_deref(), Some("column_name_count"));
+    assert_eq!(error_context_value(&err, "reason").as_deref(), Some("negative_name_count"));
     assert_eq!(
-        error_context_value(&err, "remedy"),
+        error_context_value(&err, "remedy").as_deref(),
         Some("ensure the foreign reader reports a non-negative column name count")
     );
-    assert_eq!(error_context_value(&err, "num_names"), None);
+    assert_eq!(error_context_value(&err, "num_names").as_deref(), None);
 }

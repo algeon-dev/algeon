@@ -5,10 +5,13 @@ use std::{
 };
 
 use cudf::{
-    DataFrame, DataType, DeviceId, Error, ErrorCode, ErrorKind, HostColumnData, Runtime, Series, TypeId,
-    core::{Column, CudfType, DeviceBuffer, Scalar},
+    DataFrame, DataType, DeviceId, ErrorCode, HostColumnData, Runtime, Series, TypeId,
+    core::{
+        Column, CudfType, DeviceBuffer, Scalar,
+        error::{FactKeyName, FactValue},
+    },
     runtime::CudaStream,
-    testing::prelude::*,
+    testing::{self, prelude::*},
 };
 use cudf_sys::{
     CUDF_SUCCESS, cudf_cuda_get_device, cudf_cuda_set_device, cudf_test_event_last_wait_stream_raw,
@@ -171,11 +174,7 @@ pub fn dataframe_from_columns(names: Vec<String>, columns: Vec<Column>) -> cudf:
     let operation = "dataframe::new";
 
     if names.len() != columns.len() {
-        return Err(Error::new(ErrorKind::InvalidInput, "number of names must equal number of columns")
-            .with_code(ErrorCode::ColumnLengthMismatch)
-            .with_operation(operation)
-            .with_context("column_name_count", names.len().to_string())
-            .with_context("table_column_count", columns.len().to_string()));
+        return Err(testing::dataframe::new_column_length_mismatch_error_for_test(names.len(), columns.len()));
     }
 
     if names.is_empty() {
@@ -186,11 +185,13 @@ pub fn dataframe_from_columns(names: Vec<String>, columns: Vec<Column>) -> cudf:
         .into_iter()
         .zip(columns)
         .map(|(name, column)| {
-            Series::from_column(column).map(|series| (name, series)).map_err(|e| e.with_operation(operation))
+            Series::from_column(column)
+                .map(|series| (name, series))
+                .map_err(|e| testing::error::reanchor_for_test(e, operation))
         })
         .collect::<cudf::Result<Vec<_>>>()?;
 
-    DataFrame::from_columns(pairs).map_err(|e| e.with_operation(operation))
+    DataFrame::from_columns(pairs).map_err(|e| testing::error::reanchor_for_test(e, operation))
 }
 
 #[allow(dead_code)]
@@ -412,8 +413,32 @@ pub fn sample_runtime() -> Runtime {
 }
 
 #[allow(dead_code)]
-pub fn error_context_value<'a>(err: &'a cudf::Error, key: &str) -> Option<&'a str> {
-    err.context().iter().find_map(|(ctx_key, ctx_value)| (*ctx_key == key).then_some(ctx_value.as_str()))
+pub fn error_context_value(err: &cudf::Error, key: &str) -> Option<String> {
+    // Canonical facts take precedence over legacy diagnostic details. This
+    // mirrors the §5 rule that a canonical key is machine-read from `facts()`
+    // only — producers no longer duplicate it into `details()`.
+    if let Some(fact_name) = FactKeyName::from_snake_case(key) {
+        if let Some(value) = err.fact_value(fact_name) {
+            return Some(fact_value_to_string(value));
+        }
+    }
+    err.details().iter().find_map(|(ctx_key, ctx_value)| (*ctx_key == key).then(|| ctx_value.to_string()))
+}
+
+/// Stringify a `FactValue` using the representation that downstream tests
+/// expect (TypeId rendered in lowercase, matching the historical `type_label`
+/// convention in production code).
+#[allow(dead_code)]
+fn fact_value_to_string(value: &FactValue) -> String {
+    match value {
+        FactValue::Str(s) => s.to_string(),
+        FactValue::Usize(n) => n.to_string(),
+        FactValue::I64(n) => n.to_string(),
+        FactValue::TypeId(t) => format!("{:?}", t).to_lowercase(),
+        FactValue::DeviceId(d) => d.to_string(),
+        // `FactValue` is non_exhaustive; new variants default to their Display form.
+        other => other.to_string(),
+    }
 }
 
 #[allow(dead_code)]
@@ -425,15 +450,15 @@ pub fn interop_error_context_value<'a>(err: &'a InteropError, key: &str) -> Opti
 pub fn assert_missing_column_error(err: &cudf::Error, expected_column: &str) {
     assert_eq!(err.kind(), cudf::ErrorKind::NotFound);
     assert_eq!(err.code(), ErrorCode::MissingColumn);
-    assert_eq!(error_context_value(err, "column_name"), Some(expected_column));
+    assert_eq!(err.fact_value(FactKeyName::ColumnName), Some(&FactValue::Str(expected_column.to_string().into())));
 }
 
 #[allow(dead_code)]
 pub fn assert_duplicate_name_error(err: &cudf::Error, expected_name: &str) {
     assert_eq!(err.kind(), cudf::ErrorKind::InvalidInput);
     assert_eq!(err.code(), ErrorCode::DuplicateColumnName);
-    assert_eq!(error_context_value(err, "duplicate_name"), Some(expected_name));
-    assert_eq!(error_context_value(err, "resource"), Some("column_name"));
+    assert_eq!(error_context_value(err, "duplicate_name").as_deref(), Some(expected_name));
+    assert_eq!(error_context_value(err, "resource").as_deref(), Some("column_name"));
     assert!(error_context_value(err, "reason").is_some(), "duplicate-name contract should expose a reason");
     assert!(error_context_value(err, "remedy").is_some(), "duplicate-name contract should expose a remedy");
 }
