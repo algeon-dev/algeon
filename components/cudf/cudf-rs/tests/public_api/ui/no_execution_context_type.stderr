@@ -1,0 +1,10 @@
+error[E0432]: unresolved import `cudf::ExecutionContext`
+ --> tests/public_api/ui/no_execution_context_type.rs:1:5
+  |
+1 | use cudf::ExecutionContext;
+  |     ^^^^^^^^^^^^^^^^^^^^^^ no `ExecutionContext` in the root
+  |
+help: consider importing this struct instead
+  |
+1 | use cudf_sys::ExecutionContext;
+  |         ++++

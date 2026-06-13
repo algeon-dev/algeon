@@ -1,0 +1,5 @@
+error[E0599]: no method named `in_context` found for reference `&DataFrame` in the current scope
+ --> tests/public_api/ui/no_dataframe_in_context.rs:4:16
+  |
+4 |     let _ = df.in_context(execution);
+  |                ^^^^^^^^^^ method not found in `&DataFrame`

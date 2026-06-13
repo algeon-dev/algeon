@@ -14,6 +14,15 @@ fn test_create_empty_column() {
 }
 
 #[test]
+fn test_create_empty_decimal_column_preserves_scale() {
+    let dtype = DataType::fixed_point(TypeId::Decimal64, -2);
+    let col = crate::common::empty_column(dtype).unwrap();
+    let view = col.testing_view().unwrap();
+    assert_eq!(view.len().unwrap(), 0);
+    assert_eq!(view.data_type().unwrap(), dtype);
+}
+
+#[test]
 fn test_create_i32_column() {
     let data = vec![1i32, 2, 3, 4, 5];
     let col = column_from_slice(&data).unwrap();
@@ -617,6 +626,16 @@ fn test_nulls_string() {
     assert_eq!(view.len().unwrap(), 25);
     assert_eq!(view.null_count().unwrap(), 25);
     assert_eq!(view.data_type().unwrap().id(), TypeId::String);
+}
+
+#[test]
+fn test_nulls_decimal64_preserve_scale() {
+    let dtype = DataType::fixed_point(TypeId::Decimal64, -2);
+    let col = crate::common::null_column(dtype, 5).unwrap();
+    let view = col.testing_view().unwrap();
+    assert_eq!(view.len().unwrap(), 5);
+    assert_eq!(view.null_count().unwrap(), 5);
+    assert_eq!(view.data_type().unwrap(), dtype);
 }
 
 #[test]

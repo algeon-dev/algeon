@@ -14,12 +14,6 @@ use crate::{
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ColumnOrder {
-    Left,
-    FirstSeen,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SchemaAlignment {
     Exact,
     NullFill,
@@ -28,7 +22,6 @@ pub enum SchemaAlignment {
 #[derive(Debug, Clone)]
 pub struct ConcatByNameOptions {
     pub(super) alignment: SchemaAlignment,
-    pub(super) column_order: ColumnOrder,
 }
 
 impl Default for ConcatByNameOptions {
@@ -39,27 +32,29 @@ impl Default for ConcatByNameOptions {
 
 impl ConcatByNameOptions {
     pub fn new() -> Self {
-        Self { alignment: SchemaAlignment::NullFill, column_order: ColumnOrder::Left }
+        Self { alignment: SchemaAlignment::NullFill }
     }
 
     pub fn alignment(mut self, mode: SchemaAlignment) -> Self {
         self.alignment = mode;
         self
     }
-
-    pub fn column_order(mut self, order: ColumnOrder) -> Self {
-        self.column_order = order;
-        self
-    }
 }
 
-fn concat_by_name_output_order(self_df: &DataFrame, others: &[&DataFrame], _order: ColumnOrder) -> Vec<String> {
+fn concat_by_name_output_order(self_df: &DataFrame, others: &[&DataFrame]) -> Vec<String> {
     let mut seen: FastHashSet<String> = FastHashSet::default();
     let mut ordered = Vec::new();
 
-    for frame in std::iter::once(self_df).chain(others.iter().copied()) {
+    for name in self_df.column_names() {
+        if seen.insert(name.to_string()) {
+            ordered.push(name.to_string());
+        }
+    }
+
+    for frame in others {
         for name in frame.column_names() {
-            if seen.insert(name.to_string()) {
+            if !seen.contains(name) {
+                seen.insert(name.to_string());
                 ordered.push(name.to_string());
             }
         }
@@ -146,7 +141,7 @@ impl DataFrame {
                     .with_operation(operation)
                     .with_context("column_name", name.clone())
             })?;
-            let nulls = Column::nulls_in_domain(dtype.id(), self.row_count, &self.domain, operation)
+            let nulls = Column::nulls_in_domain(*dtype, self.row_count, &self.domain, operation)
                 .map_err(|e| e.with_operation(operation))?;
             columns.push((
                 name.clone(),
@@ -197,7 +192,7 @@ impl DataFrame {
             return Ok(self.clone());
         }
 
-        let output_names = concat_by_name_output_order(self, others, options.column_order);
+        let output_names = concat_by_name_output_order(self, others);
         if output_names.is_empty() {
             return self.concat_many_impl(others, None, None, operation);
         }

@@ -1,0 +1,24 @@
+error[E0432]: unresolved imports `cudf::interop::prepared::CompletionAuthority`, `cudf::interop::prepared::ReadStartAuthority`
+ --> tests/public_api/ui/no_interop_prepared_namespace.rs:1:31
+  |
+1 | use cudf::interop::prepared::{CompletionAuthority, PreparedColumnExport, ReadStartAuthority};
+  |                               ^^^^^^^^^^^^^^^^^^^                        ^^^^^^^^^^^^^^^^^^ no `ReadStartAuthority` in `interop::prepared`
+  |                               |
+  |                               no `CompletionAuthority` in `interop::prepared`
+  |
+  = help: consider importing this enum instead:
+          rapids_interop::CompletionAuthority
+  = help: consider importing this enum instead:
+          rapids_interop::ReadStartAuthority
+
+error[E0603]: module `prepared` is private
+ --> tests/public_api/ui/no_interop_prepared_namespace.rs:1:20
+  |
+1 | use cudf::interop::prepared::{CompletionAuthority, PreparedColumnExport, ReadStartAuthority};
+  |                    ^^^^^^^^ private module
+  |
+note: the module `prepared` is defined here
+ --> src/interop/mod.rs
+  |
+  | mod prepared {
+  | ^^^^^^^^^^^^

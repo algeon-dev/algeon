@@ -1,0 +1,21 @@
+error[E0624]: method `view` is private
+ --> tests/public_api/ui/no_series_view_method.rs:4:39
+  |
+4 |     let f: fn(&Series) -> _ = Series::view;
+  |                                       ^^^^ private method
+  |
+ ::: src/frame/series/owned.rs
+  |
+  |     pub(crate) fn view(&self) -> Result<ColumnView<'_>> {
+  |     --------------------------------------------------- private method defined here
+
+error[E0308]: mismatched types
+ --> tests/public_api/ui/no_series_view_method.rs:4:31
+  |
+4 |     let f: fn(&Series) -> _ = Series::view;
+  |            ----------------   ^^^^^^^^^^^^ one type is more general than the other
+  |            |
+  |            expected due to this
+  |
+  = note: expected fn pointer `for<'a> fn(&'a Series) -> _`
+                found fn item `for<'a> fn(&'a Series) -> Result<ColumnView<'a>, cudf::Error> {Series::view}`

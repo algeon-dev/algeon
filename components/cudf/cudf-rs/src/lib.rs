@@ -170,7 +170,7 @@ pub use core::{
 
 pub use frame::{
     dataframe::{
-        ColumnMemoryAccounting, ColumnOrder, ConcatByNameOptions, CsvReadOptions, CsvWriteOptions, DataFrame,
+        ColumnMemoryAccounting, ConcatByNameOptions, CsvReadOptions, CsvWriteOptions, DataFrame,
         DataFrameColumnInfo, DataFrameInfo, DataFrameJoinSides, DataFrameMemoryAccounting, DataTypeCount,
         DropDuplicatesOptions, DropNaHow, DropNaOptions, InfoDetail, JsonReadOptions, JsonWriteOptions, MeltOptions,
         ParquetReadOptions, ParquetWriteOptions, SchemaAlignment,

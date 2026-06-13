@@ -1,0 +1,31 @@
+error[E0603]: struct `ColumnView` is private
+ --> tests/public_api/ui/no_core_view_types.rs:1:18
+  |
+1 | use cudf::core::{ColumnView, TableView};
+  |                  ^^^^^^^^^^ private struct
+  |
+note: the struct `ColumnView` is defined here
+ --> src/core/mod.rs
+  |
+  | pub(crate) use column::ColumnView;
+  |                ^^^^^^^^^^^^^^^^^^
+help: import `ColumnView` directly
+  |
+1 | use cudf::core::{cudf::core::column::view::ColumnView, TableView};
+  |                  ++++++++++++++++++++++++++
+
+error[E0603]: struct `TableView` is private
+ --> tests/public_api/ui/no_core_view_types.rs:1:30
+  |
+1 | use cudf::core::{ColumnView, TableView};
+  |                              ^^^^^^^^^ private struct
+  |
+note: the struct `TableView` is defined here
+ --> src/core/mod.rs
+  |
+  | pub(crate) use table::TableView;
+  |                ^^^^^^^^^^^^^^^^
+help: import `TableView` directly
+  |
+1 | use cudf::core::{ColumnView, cudf::core::table::view::TableView};
+  |                              +++++++++++++++++++++++++

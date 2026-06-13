@@ -10,7 +10,7 @@ use crate::{
         memory::DeviceMemoryResource,
         scalar::Scalar,
         table::Table,
-        types::{CudfType, TypeId},
+        types::{CudfType, DataType, TypeId},
     },
     frame::{
         dataframe::DataFrame,
@@ -121,8 +121,8 @@ impl Runtime {
     }
 
     /// Create an all-null low-level `Column` inside this runtime.
-    pub fn null_column(&self, type_id: TypeId, len: usize) -> Result<Column> {
-        Column::nulls_with_runtime(self, type_id, len)
+    pub fn null_column(&self, dtype: impl Into<DataType>, len: usize) -> Result<Column> {
+        Column::nulls_with_runtime(self, dtype.into(), len)
     }
 
     /// Create a fixed-width scalar inside this runtime.
@@ -146,8 +146,8 @@ impl Runtime {
     }
 
     /// Create an empty low-level `Column` inside this runtime.
-    pub fn empty_column(&self, type_id: TypeId) -> Result<Column> {
-        Column::empty_with_runtime(self, type_id)
+    pub fn empty_column(&self, dtype: impl Into<DataType>) -> Result<Column> {
+        Column::empty_with_runtime(self, dtype.into())
     }
 
     /// Create a low-level `Column` by repeating a scalar inside this runtime.
@@ -254,13 +254,13 @@ impl Runtime {
     }
 
     /// Create an all-null `Series` inside this runtime.
-    pub fn nulls(&self, name: impl Into<String>, type_id: TypeId, len: usize) -> Result<Series> {
-        Series::from_named_column(name, self.null_column(type_id, len)?)
+    pub fn nulls(&self, name: impl Into<String>, dtype: impl Into<DataType>, len: usize) -> Result<Series> {
+        Series::from_named_column(name, self.null_column(dtype, len)?)
     }
 
     /// Create an empty `Series` inside this runtime.
-    pub fn empty_series(&self, name: impl Into<String>, type_id: TypeId) -> Result<Series> {
-        Series::from_named_column(name, self.empty_column(type_id)?)
+    pub fn empty_series(&self, name: impl Into<String>, dtype: impl Into<DataType>) -> Result<Series> {
+        Series::from_named_column(name, self.empty_column(dtype)?)
     }
 
     /// Create a `Series` by repeating a scalar inside this runtime.

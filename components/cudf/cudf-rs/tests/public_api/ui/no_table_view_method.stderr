@@ -1,0 +1,21 @@
+error[E0624]: method `view` is private
+ --> tests/public_api/ui/no_table_view_method.rs:4:37
+  |
+4 |     let f: fn(&Table) -> _ = Table::view;
+  |                                     ^^^^ private method
+  |
+ ::: src/core/table/owned.rs
+  |
+  |     pub(crate) fn view(&self) -> Result<TableView<'_>> {
+  |     -------------------------------------------------- private method defined here
+
+error[E0308]: mismatched types
+ --> tests/public_api/ui/no_table_view_method.rs:4:30
+  |
+4 |     let f: fn(&Table) -> _ = Table::view;
+  |            ---------------   ^^^^^^^^^^^ one type is more general than the other
+  |            |
+  |            expected due to this
+  |
+  = note: expected fn pointer `for<'a> fn(&'a Table) -> _`
+                found fn item `for<'a> fn(&'a Table) -> Result<TableView<'a>, cudf::Error> {Table::view}`

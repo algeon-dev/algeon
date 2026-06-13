@@ -3,7 +3,7 @@
 //!
 //! All tests require a GPU.
 
-use cudf::{Series, TypeId};
+use cudf::{DataType, Series, TypeId};
 
 use crate::common::scalar;
 
@@ -88,6 +88,16 @@ fn test_nulls_zero_length() {
 
     assert_eq!(s.len(), 0);
     assert_eq!(s.null_count(), 0);
+}
+
+#[test]
+fn test_nulls_decimal_preserve_scale() {
+    let dtype = DataType::fixed_point(TypeId::Decimal64, -2);
+    let s = crate::common::null_series("amount", dtype, 3).unwrap();
+
+    assert_eq!(s.dtype().unwrap(), dtype);
+    assert_eq!(s.len(), 3);
+    assert_eq!(s.null_count(), 3);
 }
 
 // ===========================================================================
@@ -180,5 +190,14 @@ fn test_empty_bool8() {
     let s = crate::common::empty_series("flags", TypeId::Bool8).unwrap();
 
     assert_eq!(s.dtype().unwrap().id(), TypeId::Bool8);
+    assert!(s.is_empty());
+}
+
+#[test]
+fn test_empty_decimal_preserve_scale() {
+    let dtype = DataType::fixed_point(TypeId::Decimal64, -2);
+    let s = crate::common::empty_series("amount", dtype).unwrap();
+
+    assert_eq!(s.dtype().unwrap(), dtype);
     assert!(s.is_empty());
 }

@@ -1,0 +1,14 @@
+error[E0432]: unresolved imports `cudf::DataFrameJoinResult`, `cudf::io::IoTableResult`, `cudf::ops::groupby::GroupByResult`, `cudf::ops::join::JoinResult`
+ --> tests/public_api/ui/no_legacy_result_type_names.rs:2:5
+  |
+2 |     DataFrameJoinResult,
+  |     ^^^^^^^^^^^^^^^^^^^
+  |     |
+  |     no `DataFrameJoinResult` in the root
+  |     help: a similar name exists in the module: `DataFrameJoinSides`
+3 |     io::IoTableResult,
+  |     ^^^^^^^^^^^^^^^^^ no `IoTableResult` in `io`
+4 |     ops::{groupby::GroupByResult, join::JoinResult},
+  |           ^^^^^^^^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^^ no `JoinResult` in `ops::join`
+  |           |
+  |           no `GroupByResult` in `ops::groupby`

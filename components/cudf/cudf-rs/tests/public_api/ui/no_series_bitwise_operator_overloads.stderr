@@ -1,0 +1,15 @@
+error[E0369]: no implementation for `&Series & &Series`
+ --> tests/public_api/ui/no_series_bitwise_operator_overloads.rs:8:23
+  |
+8 |     let _ = &series() & &series();
+  |             --------- ^ --------- &Series
+  |             |
+  |             &Series
+
+error[E0369]: no implementation for `&Series | &Series`
+ --> tests/public_api/ui/no_series_bitwise_operator_overloads.rs:9:23
+  |
+9 |     let _ = &series() | &series();
+  |             --------- ^ --------- &Series
+  |             |
+  |             &Series
