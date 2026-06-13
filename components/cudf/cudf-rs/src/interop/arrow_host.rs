@@ -35,13 +35,17 @@ use std::sync::{
     atomic::{AtomicUsize, Ordering},
 };
 
-use arrow::{array::*, datatypes::DataType as ArrowDataType, record_batch::RecordBatch};
+use arrow::{
+    array::*,
+    datatypes::{DataType as ArrowDataType, TimeUnit},
+    record_batch::RecordBatch,
+};
 
 use crate::{
     core::{
         column::{Column, ColumnView},
         error::{self, Error, ErrorCode, FACT_TYPE_ID, Result},
-        types::TypeId,
+        types::{DataType, TypeId},
     },
     frame::dataframe::DataFrame,
     internal::{hash::fast_index_map, resolve::missing_column_error},
@@ -55,6 +59,7 @@ pub(crate) mod testing_hooks;
 static HOST_ARROW_EXPORT_CALL_COUNT: AtomicUsize = AtomicUsize::new(0);
 static HOST_ARROW_IMPORT_CALL_COUNT: AtomicUsize = AtomicUsize::new(0);
 static HOST_ARROW_LAST_BOUNDARY_OBSERVATION: Mutex<Option<BoundaryObservation>> = Mutex::new(None);
+const DEFAULT_DECIMAL128_ARROW_PRECISION: u8 = 38;
 
 impl DataFrame {
     /// Convert this GPU DataFrame to an Arrow [`RecordBatch`] via host copy.
@@ -72,6 +77,11 @@ impl DataFrame {
     /// - Numeric: `Int8`, `Int16`, `Int32`, `Int64`, `UInt8`, `UInt16`,
     ///   `UInt32`, `UInt64`, `Float32`, `Float64`
     /// - `Bool8`
+    /// - `Decimal128` as Arrow `Decimal128(38, scale)`. cuDF stores decimal
+    ///   scale but not precision, so this host path uses precision 38.
+    /// - `TimestampDays` as Arrow `Date32`
+    /// - `TimestampSeconds`, `TimestampMilliseconds`, `TimestampMicroseconds`,
+    ///   and `TimestampNanoseconds` as Arrow timestamps without time zone.
     /// - `String` (converted to Arrow `Utf8`)
     ///
     /// # Errors
@@ -91,9 +101,9 @@ impl DataFrame {
             .map(|&name| {
                 let col = col_map.get(name).ok_or_else(|| missing_column_error("dataframe::to_record_batch", name))?;
                 let cv = col.view()?;
-                let type_id = cv.data_type()?.id();
+                let dtype = cv.data_type()?;
                 let nullable = cv.nullable()?;
-                let arr = column_view_to_arrow(&cv, type_id)?;
+                let arr = column_view_to_arrow(&cv, dtype)?;
                 Ok((name.to_string(), arr, nullable))
             })
             .collect::<Result<_>>()?;
@@ -116,9 +126,12 @@ impl DataFrame {
     /// inside the caller-provided runtime.
     ///
     /// This is the inverse of [`to_record_batch()`](Self::to_record_batch).
-    /// Each Arrow array is copied from host memory to the GPU. The schema
-    /// (column names and types) is preserved, and all imported columns are
-    /// seeded with the caller runtime's retained provenance.
+    /// Each Arrow array is copied from host memory to the GPU. Column names
+    /// and supported logical values are preserved, and all imported columns
+    /// are seeded with the caller runtime's retained provenance. Decimal128
+    /// imports preserve values and scale, but cuDF does not retain Arrow
+    /// precision metadata; re-export normalizes Decimal128 fields to
+    /// `Decimal128(38, scale)`.
     ///
     /// This method imports from host-resident `RecordBatch` data. If you
     /// already have Arrow C Device ABI roots on the same CUDA device, prefer
@@ -130,6 +143,10 @@ impl DataFrame {
     /// - Numeric: `Int8`, `Int16`, `Int32`, `Int64`, `UInt8`, `UInt16`,
     ///   `UInt32`, `UInt64`, `Float32`, `Float64`
     /// - `Boolean`
+    /// - `Decimal128` (preserves values and scale; precision is re-exported
+    ///   as 38)
+    /// - `Date32`
+    /// - `Timestamp(Second|Millisecond|Microsecond|Nanosecond, None)`
     /// - `Utf8` / `LargeUtf8` (converted to cudf `String`)
     ///
     /// # Errors
@@ -155,9 +172,11 @@ impl Runtime {
 /// Prefer [`Runtime::dataframe_from_record_batch()`] or
 /// [`DataFrame::from_record_batch()`] for a more ergonomic API.
 ///
-/// Each Arrow array is copied from host memory to the GPU. The schema
-/// (column names and types) is preserved, and imported columns inherit the
-/// supplied runtime's retained provenance.
+/// Each Arrow array is copied from host memory to the GPU. Column names and
+/// supported logical values are preserved, and imported columns inherit the
+/// supplied runtime's retained provenance. Decimal128 imports preserve values
+/// and scale, but cuDF does not retain Arrow precision metadata; re-export
+/// normalizes Decimal128 fields to `Decimal128(38, scale)`.
 ///
 /// This is the host `RecordBatch` import path, not Arrow C Device ABI import.
 /// For same-device device-root handoff, see
@@ -168,6 +187,9 @@ impl Runtime {
 /// - Numeric: `Int8`, `Int16`, `Int32`, `Int64`, `UInt8`, `UInt16`,
 ///   `UInt32`, `UInt64`, `Float32`, `Float64`
 /// - `Boolean`
+/// - `Decimal128` (preserves values and scale; precision is re-exported as 38)
+/// - `Date32`
+/// - `Timestamp(Second|Millisecond|Microsecond|Nanosecond, None)`
 /// - `Utf8` / `LargeUtf8` (converted to cudf `String`)
 ///
 /// Unsupported Arrow types will return an error.
@@ -241,6 +263,11 @@ impl TryFrom<TypeId> for ArrowDataType {
             TypeId::Float32 => Ok(ArrowDataType::Float32),
             TypeId::Float64 => Ok(ArrowDataType::Float64),
             TypeId::Bool8 => Ok(ArrowDataType::Boolean),
+            TypeId::TimestampDays => Ok(ArrowDataType::Date32),
+            TypeId::TimestampSeconds => Ok(ArrowDataType::Timestamp(TimeUnit::Second, None)),
+            TypeId::TimestampMilliseconds => Ok(ArrowDataType::Timestamp(TimeUnit::Millisecond, None)),
+            TypeId::TimestampMicroseconds => Ok(ArrowDataType::Timestamp(TimeUnit::Microsecond, None)),
+            TypeId::TimestampNanoseconds => Ok(ArrowDataType::Timestamp(TimeUnit::Nanosecond, None)),
             TypeId::String => Ok(ArrowDataType::Utf8),
             _ => Err(Error::new_with(
                 ErrorCode::UnsupportedDtype,
@@ -268,6 +295,12 @@ impl TryFrom<&ArrowDataType> for TypeId {
             ArrowDataType::Float32 => Ok(TypeId::Float32),
             ArrowDataType::Float64 => Ok(TypeId::Float64),
             ArrowDataType::Boolean => Ok(TypeId::Bool8),
+            ArrowDataType::Date32 => Ok(TypeId::TimestampDays),
+            ArrowDataType::Timestamp(TimeUnit::Second, None) => Ok(TypeId::TimestampSeconds),
+            ArrowDataType::Timestamp(TimeUnit::Millisecond, None) => Ok(TypeId::TimestampMilliseconds),
+            ArrowDataType::Timestamp(TimeUnit::Microsecond, None) => Ok(TypeId::TimestampMicroseconds),
+            ArrowDataType::Timestamp(TimeUnit::Nanosecond, None) => Ok(TypeId::TimestampNanoseconds),
+            ArrowDataType::Decimal128(_, _) => Ok(TypeId::Decimal128),
             ArrowDataType::Utf8 | ArrowDataType::LargeUtf8 => Ok(TypeId::String),
             _ => Err(Error::new_with(
                 ErrorCode::UnsupportedDtype,
@@ -284,8 +317,8 @@ impl TryFrom<&ArrowDataType> for TypeId {
 // ---------------------------------------------------------------------------
 
 /// Convert a single `ColumnView` to an Arrow `Array`.
-fn column_view_to_arrow(cv: &ColumnView<'_>, type_id: TypeId) -> Result<Arc<dyn Array>> {
-    match type_id {
+fn column_view_to_arrow(cv: &ColumnView<'_>, dtype: DataType) -> Result<Arc<dyn Array>> {
+    match dtype.id() {
         TypeId::Int8 => numeric_to_arrow::<i8>(cv),
         TypeId::Int16 => numeric_to_arrow::<i16>(cv),
         TypeId::Int32 => numeric_to_arrow::<i32>(cv),
@@ -298,12 +331,18 @@ fn column_view_to_arrow(cv: &ColumnView<'_>, type_id: TypeId) -> Result<Arc<dyn 
         TypeId::Float64 => numeric_to_arrow::<f64>(cv),
         TypeId::Bool8 => bool_to_arrow(cv),
         TypeId::String => string_to_arrow(cv),
+        TypeId::Decimal128 => decimal128_to_arrow(cv, dtype),
+        TypeId::TimestampDays => fixed_width_to_arrow::<i32, arrow::datatypes::Date32Type>(cv),
+        TypeId::TimestampSeconds => fixed_width_to_arrow::<i64, arrow::datatypes::TimestampSecondType>(cv),
+        TypeId::TimestampMilliseconds => fixed_width_to_arrow::<i64, arrow::datatypes::TimestampMillisecondType>(cv),
+        TypeId::TimestampMicroseconds => fixed_width_to_arrow::<i64, arrow::datatypes::TimestampMicrosecondType>(cv),
+        TypeId::TimestampNanoseconds => fixed_width_to_arrow::<i64, arrow::datatypes::TimestampNanosecondType>(cv),
         _ => Err(Error::new_with(
             ErrorCode::UnsupportedDtype,
             "arrow::column_view_to_arrow",
-            format!("unsupported cudf type for Arrow conversion: {:?}", type_id),
+            format!("unsupported cudf type for Arrow conversion: {:?}", dtype.id()),
         )
-        .with_fact(FACT_TYPE_ID, type_id)),
+        .with_fact(FACT_TYPE_ID, dtype.id())),
     }
 }
 
@@ -348,6 +387,86 @@ where T: ArrowPrimitiveMapping {
             Ok(Arc::new(arr))
         },
     }
+}
+
+fn cudf_decimal_scale_to_arrow_scale(scale: i32, operation: &'static str) -> Result<i8> {
+    let arrow_scale = scale.checked_neg().ok_or_else(|| {
+        Error::new_with(ErrorCode::UnsupportedDtype, operation, "decimal scale is outside Arrow Decimal128 range")
+            .with_detail("cudf_scale", scale.to_string())
+    })?;
+    i8::try_from(arrow_scale).map_err(|_| {
+        Error::new_with(ErrorCode::UnsupportedDtype, operation, "decimal scale is outside Arrow Decimal128 range")
+            .with_detail("cudf_scale", scale.to_string())
+            .with_detail("arrow_scale", arrow_scale.to_string())
+    })
+}
+
+fn arrow_decimal_scale_to_cudf_scale(scale: i8) -> i32 {
+    -i32::from(scale)
+}
+
+fn bytes_to_native_vec<T: Copy + Default>(bytes: &[u8]) -> Vec<T> {
+    let elem_size = std::mem::size_of::<T>();
+    assert_eq!(bytes.len() % elem_size, 0);
+    let len = bytes.len() / elem_size;
+    let mut out = vec![T::default(); len];
+    unsafe {
+        std::ptr::copy_nonoverlapping(bytes.as_ptr(), out.as_mut_ptr().cast::<u8>(), bytes.len());
+    }
+    out
+}
+
+fn native_slice_as_bytes<T>(values: &[T]) -> &[u8] {
+    unsafe { std::slice::from_raw_parts(values.as_ptr().cast::<u8>(), std::mem::size_of_val(values)) }
+}
+
+fn fixed_width_host_values<T: Copy + Default>(cv: &ColumnView<'_>) -> Result<Vec<T>> {
+    cv.to_fixed_width_host_bytes().map(|bytes| bytes_to_native_vec::<T>(&bytes))
+}
+
+fn fixed_width_to_arrow<T, A>(cv: &ColumnView<'_>) -> Result<Arc<dyn Array>>
+where
+    T: Copy + arrow::datatypes::ArrowNativeType,
+    A: arrow::datatypes::ArrowPrimitiveType<Native = T>,
+{
+    let data = fixed_width_host_values::<T>(cv)?;
+    let validity = cv.to_host_validity()?;
+
+    let arr = match validity {
+        None => PrimitiveArray::<A>::from_iter_values(data),
+        Some(mask) => PrimitiveArray::<A>::from_iter(
+            data.into_iter().zip(mask).map(|(value, valid)| if valid { Some(value) } else { None }),
+        ),
+    };
+    Ok(Arc::new(arr))
+}
+
+fn map_decimal_to_arrow_error(error: arrow::error::ArrowError) -> Error {
+    error::foreign_invariant_violation(
+        "arrow::decimal128_to_arrow",
+        error.to_string(),
+        "arrow_array",
+        "invalid_arrow_decimal_array",
+        "ensure cudf Decimal128 scale fits Arrow Decimal128 metadata",
+    )
+    .with_source(error)
+}
+
+fn decimal128_to_arrow(cv: &ColumnView<'_>, dtype: DataType) -> Result<Arc<dyn Array>> {
+    let arrow_scale = cudf_decimal_scale_to_arrow_scale(dtype.scale(), "arrow::decimal128_to_arrow")?;
+    let data = fixed_width_host_values::<i128>(cv)?;
+    let validity = cv.to_host_validity()?;
+
+    let arr = match validity {
+        None => Decimal128Array::from(data),
+        Some(mask) => Decimal128Array::from(
+            data.into_iter().zip(mask).map(|(value, valid)| if valid { Some(value) } else { None }).collect::<Vec<_>>(),
+        ),
+    }
+    .with_precision_and_scale(DEFAULT_DECIMAL128_ARROW_PRECISION, arrow_scale)
+    .map_err(map_decimal_to_arrow_error)?;
+
+    Ok(Arc::new(arr))
 }
 
 pub(super) fn reset_host_interop_observation() {
@@ -434,6 +553,49 @@ fn arrow_array_to_column(runtime: &Runtime, arr: &dyn Array, field_name: &str) -
         ArrowDataType::Float32 => primitive_to_column::<f32>(runtime, arr),
         ArrowDataType::Float64 => primitive_to_column::<f64>(runtime, arr),
         ArrowDataType::Boolean => bool_to_column(runtime, arr),
+        ArrowDataType::Date32 => primitive_arrow_to_fixed_width_column::<arrow::datatypes::Date32Type>(
+            runtime,
+            arr,
+            DataType::new(TypeId::TimestampDays),
+        ),
+        ArrowDataType::Timestamp(TimeUnit::Second, None) => primitive_arrow_to_fixed_width_column::<
+            arrow::datatypes::TimestampSecondType,
+        >(
+            runtime, arr, DataType::new(TypeId::TimestampSeconds)
+        ),
+        ArrowDataType::Timestamp(TimeUnit::Millisecond, None) => {
+            primitive_arrow_to_fixed_width_column::<arrow::datatypes::TimestampMillisecondType>(
+                runtime,
+                arr,
+                DataType::new(TypeId::TimestampMilliseconds),
+            )
+        },
+        ArrowDataType::Timestamp(TimeUnit::Microsecond, None) => {
+            primitive_arrow_to_fixed_width_column::<arrow::datatypes::TimestampMicrosecondType>(
+                runtime,
+                arr,
+                DataType::new(TypeId::TimestampMicroseconds),
+            )
+        },
+        ArrowDataType::Timestamp(TimeUnit::Nanosecond, None) => {
+            primitive_arrow_to_fixed_width_column::<arrow::datatypes::TimestampNanosecondType>(
+                runtime,
+                arr,
+                DataType::new(TypeId::TimestampNanoseconds),
+            )
+        },
+        ArrowDataType::Timestamp(_, Some(_)) => Err(Error::new_with(
+            ErrorCode::UnsupportedDtype,
+            "arrow::arrow_array_to_column",
+            format!("unsupported Arrow timestamp with timezone for column '{}': {:?}", field_name, dt),
+        )
+        .with_detail("field_name", field_name.to_string())
+        .with_detail("arrow_type", format!("{:?}", dt))
+        .with_detail("reason", "timezone_not_supported")),
+        ArrowDataType::Decimal128(_, scale) => {
+            let dtype = DataType::fixed_point(TypeId::Decimal128, arrow_decimal_scale_to_cudf_scale(*scale));
+            decimal128_array_to_column(runtime, arr, dtype)
+        },
         ArrowDataType::Utf8 => string_array_to_column(runtime, arr),
         ArrowDataType::LargeUtf8 => large_string_array_to_column(runtime, arr),
         _ => Err(Error::new_with(
@@ -459,6 +621,25 @@ where T: ArrowPrimitiveMapping {
             runtime.column_from_slice_nullable(values, &validity)
         },
     }
+}
+
+fn primitive_arrow_to_fixed_width_column<A>(runtime: &Runtime, arr: &dyn Array, dtype: DataType) -> Result<Column>
+where A: arrow::datatypes::ArrowPrimitiveType {
+    let prim = arr.as_primitive::<A>();
+    let values = prim.values().as_ref();
+    let bytes = native_slice_as_bytes(values);
+    let validity = prim.nulls().map(|null_buf| null_buf.iter().collect::<Vec<_>>());
+    Column::from_fixed_width_host_bytes_with_runtime(runtime, dtype, bytes, validity.as_deref())
+        .map_err(|error| error.reanchor("arrow::arrow_array_to_column"))
+}
+
+fn decimal128_array_to_column(runtime: &Runtime, arr: &dyn Array, dtype: DataType) -> Result<Column> {
+    let decimal = arr.as_primitive::<arrow::datatypes::Decimal128Type>();
+    let values = decimal.values().as_ref();
+    let bytes = native_slice_as_bytes(values);
+    let validity = decimal.nulls().map(|null_buf| null_buf.iter().collect::<Vec<_>>());
+    Column::from_fixed_width_host_bytes_with_runtime(runtime, dtype, bytes, validity.as_deref())
+        .map_err(|error| error.reanchor("arrow::arrow_array_to_column"))
 }
 
 /// Convert a boolean Arrow array to a cudf Column (Bool8).

@@ -19,7 +19,8 @@ use crate::{
         },
         scalar::Scalar,
         types::{
-            CudfType, DataType, TypeId, count_nulls, cudf_null_mask_allocation_size_bytes, validity_to_ffi_bitmask,
+            CudfType, DataType, TypeId, count_nulls, cudf_null_mask_allocation_size_bytes, validity_to_bitmask,
+            validity_to_ffi_bitmask,
         },
     },
     ops::{binary, unary},
@@ -274,6 +275,85 @@ impl Column {
             operation,
         )?;
         Self::from_handle_with_domain(handle, domain)
+    }
+
+    pub(crate) fn from_fixed_width_host_bytes_with_runtime(
+        runtime: &Runtime,
+        dtype: DataType,
+        data: &[u8],
+        validity: Option<&[bool]>,
+    ) -> Result<Self> {
+        let operation = "column::from_fixed_width_host_bytes_with_runtime";
+        let type_id = dtype.id();
+        let elem_size = type_id.size_in_bytes()?.ok_or_else(|| {
+            fixed_width_type_required_error(
+                operation,
+                "fixed-width host byte import requires a fixed-width type",
+                type_id,
+                "use a fixed-width cudf dtype when importing raw host bytes",
+            )
+        })? as usize;
+
+        if type_id == TypeId::Dictionary32 {
+            return Err(fixed_width_type_required_error(
+                operation,
+                "dictionary columns require keys and indices, not a raw fixed-width value buffer",
+                type_id,
+                "use a primitive, temporal, or decimal fixed-width dtype for raw host byte import",
+            ));
+        }
+
+        if !data.len().is_multiple_of(elem_size) {
+            return Err(buffer_size_mismatch_error(
+                operation,
+                "data_buffer",
+                "data buffer length must be a multiple of the fixed-width element size",
+                data.len(),
+                data.len().div_ceil(elem_size) * elem_size,
+                data.len() / elem_size,
+                type_id,
+            ));
+        }
+
+        let row_count = data.len() / elem_size;
+        let size = usize_to_i32_len(row_count, "row_count", operation)?;
+        if let Some(validity) = validity {
+            if validity.len() != row_count {
+                return Err(Error::new_with(
+                    ErrorCode::ColumnLengthMismatch,
+                    operation,
+                    "data and validity slices must have the same length",
+                )
+                .with_fact(FACT_EXPECTED_ROWS, row_count)
+                .with_fact(FACT_ACTUAL_ROWS, validity.len()));
+            }
+        }
+
+        let null_mask = validity.map(validity_to_bitmask);
+        let null_count = validity.map(count_nulls).unwrap_or(0);
+        let exec_options = runtime.execution_domain().exec_options_raw();
+        let mut handle = ptr::null_mut();
+        error::check_status_in_with_details(
+            unsafe {
+                cudf_sys::cudf_column_create_fixed_width_from_host_ex(
+                    type_id.to_raw(),
+                    dtype.scale(),
+                    data.as_ptr() as *const c_void,
+                    size,
+                    null_mask.as_ref().map_or(ptr::null(), |mask| mask.as_ptr()),
+                    null_count,
+                    &exec_options,
+                    &mut handle,
+                )
+            },
+            operation,
+            [
+                ("type_id", type_id_label(type_id)),
+                ("scale", dtype.scale().to_string()),
+                ("row_count", row_count.to_string()),
+            ],
+        )?;
+        Self::from_handle_with_domain(handle, Arc::clone(runtime.execution_domain()))
     }
 
     /// Create a nullable column from host data and a validity mask.

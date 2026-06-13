@@ -47,6 +47,14 @@ int cudf_rust_c_header_smoke(void)
                        int32_t,
                        const cudf_exec_options_t*,
                        cudf_column_handle*)          = &cudf_column_create_numeric_ex;
+  cudf_status_t (*f15a)(cudf_type_id_t,
+                        int32_t,
+                        const void*,
+                        int32_t,
+                        const uint8_t*,
+                        int32_t,
+                        const cudf_exec_options_t*,
+                        cudf_column_handle*)         = &cudf_column_create_fixed_width_from_host_ex;
   cudf_status_t (*f15b)(cudf_scalar_handle,
                         cudf_scalar_handle,
                         int32_t,
@@ -205,6 +213,7 @@ int cudf_rust_c_header_smoke(void)
   (void)f14c;
   (void)f14d;
   (void)f15;
+  (void)f15a;
   (void)f15b;
   (void)f16;
   (void)f16b;

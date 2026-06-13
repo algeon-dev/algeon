@@ -1,12 +1,12 @@
 //! Tests for DataFrame ↔ Arrow RecordBatch interop.
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use arrow::{
     array::*,
-    datatypes::{DataType as ArrowDataType, Field, Schema},
+    datatypes::{DataType as ArrowDataType, Field, Schema, TimeUnit},
     record_batch::RecordBatch,
 };
-use cudf::{DataFrame, ErrorCode, ErrorKind, TypeId, testing::prelude::*};
+use cudf::{BoundaryKind, DataFrame, DataType, ErrorCode, ErrorKind, Runtime, TypeId, testing::prelude::*};
 
 use crate::common::{
     column_from_slice, column_from_slice_nullable, column_from_strs, column_from_strs_nullable, error_context_value,
@@ -15,6 +15,14 @@ use crate::common::{
 fn import_record_batch(batch: &RecordBatch) -> cudf::Result<DataFrame> {
     let runtime = crate::common::sample_runtime();
     DataFrame::from_record_batch(&runtime, batch)
+}
+
+fn decimal128_series(values: &[i64], scale: i32) -> cudf::Result<cudf::Series> {
+    crate::common::series("amount", values)?.astype(DataType::fixed_point(TypeId::Decimal128, scale))
+}
+
+fn timestamp_series(values: &[i64], duration_type: TypeId, timestamp_type: TypeId) -> cudf::Result<cudf::Series> {
+    crate::common::series("ts", values)?.astype(duration_type)?.astype(timestamp_type)
 }
 
 // ---------------------------------------------------------------------------
@@ -27,6 +35,23 @@ fn test_arrow_datatype_try_from_type_id_supported_mappings() {
     assert_eq!(ArrowDataType::try_from(TypeId::Float64).unwrap(), ArrowDataType::Float64);
     assert_eq!(ArrowDataType::try_from(TypeId::Bool8).unwrap(), ArrowDataType::Boolean);
     assert_eq!(ArrowDataType::try_from(TypeId::String).unwrap(), ArrowDataType::Utf8);
+    assert_eq!(ArrowDataType::try_from(TypeId::TimestampDays).unwrap(), ArrowDataType::Date32);
+    assert_eq!(
+        ArrowDataType::try_from(TypeId::TimestampSeconds).unwrap(),
+        ArrowDataType::Timestamp(TimeUnit::Second, None)
+    );
+    assert_eq!(
+        ArrowDataType::try_from(TypeId::TimestampMilliseconds).unwrap(),
+        ArrowDataType::Timestamp(TimeUnit::Millisecond, None)
+    );
+    assert_eq!(
+        ArrowDataType::try_from(TypeId::TimestampMicroseconds).unwrap(),
+        ArrowDataType::Timestamp(TimeUnit::Microsecond, None)
+    );
+    assert_eq!(
+        ArrowDataType::try_from(TypeId::TimestampNanoseconds).unwrap(),
+        ArrowDataType::Timestamp(TimeUnit::Nanosecond, None)
+    );
 }
 
 #[test]
@@ -47,6 +72,21 @@ fn test_type_id_try_from_arrow_datatype_supported_mappings() {
     assert_eq!(TypeId::try_from(&ArrowDataType::Boolean).unwrap(), TypeId::Bool8);
     assert_eq!(TypeId::try_from(&ArrowDataType::Utf8).unwrap(), TypeId::String);
     assert_eq!(TypeId::try_from(&ArrowDataType::LargeUtf8).unwrap(), TypeId::String);
+    assert_eq!(TypeId::try_from(&ArrowDataType::Date32).unwrap(), TypeId::TimestampDays);
+    assert_eq!(TypeId::try_from(&ArrowDataType::Timestamp(TimeUnit::Second, None)).unwrap(), TypeId::TimestampSeconds);
+    assert_eq!(
+        TypeId::try_from(&ArrowDataType::Timestamp(TimeUnit::Millisecond, None)).unwrap(),
+        TypeId::TimestampMilliseconds
+    );
+    assert_eq!(
+        TypeId::try_from(&ArrowDataType::Timestamp(TimeUnit::Microsecond, None)).unwrap(),
+        TypeId::TimestampMicroseconds
+    );
+    assert_eq!(
+        TypeId::try_from(&ArrowDataType::Timestamp(TimeUnit::Nanosecond, None)).unwrap(),
+        TypeId::TimestampNanoseconds
+    );
+    assert_eq!(TypeId::try_from(&ArrowDataType::Decimal128(18, 2)).unwrap(), TypeId::Decimal128);
 }
 
 #[test]
@@ -152,6 +192,36 @@ fn test_from_record_batch_rejects_unsupported_arrow_array_type_with_stable_code(
 }
 
 #[test]
+fn test_from_record_batch_rejects_unsupported_decimal_width_with_stable_code() {
+    let array = Decimal64Array::from(vec![Some(12345i64), None, Some(-5)]).with_precision_and_scale(18, 2).unwrap();
+    let schema = Schema::new(vec![Field::new("amount64", ArrowDataType::Decimal64(18, 2), true)]);
+    let batch = RecordBatch::try_new(Arc::new(schema), vec![Arc::new(array)]).unwrap();
+
+    let err = import_record_batch(&batch).expect_err("Decimal64 import is intentionally unsupported in this slice");
+
+    assert_eq!(err.kind(), ErrorKind::Unsupported);
+    assert_eq!(err.code(), ErrorCode::UnsupportedDtype);
+    assert_eq!(err.operation(), "arrow::arrow_array_to_column");
+    assert_eq!(error_context_value(&err, "field_name").as_deref(), Some("amount64"));
+    assert_eq!(error_context_value(&err, "arrow_type").as_deref(), Some("Decimal64(18, 2)"));
+}
+
+#[test]
+fn test_from_record_batch_rejects_unsupported_decimal32_width_with_stable_code() {
+    let array = Decimal32Array::from(vec![Some(12345i32), None, Some(-5)]).with_precision_and_scale(9, 2).unwrap();
+    let schema = Schema::new(vec![Field::new("amount32", ArrowDataType::Decimal32(9, 2), true)]);
+    let batch = RecordBatch::try_new(Arc::new(schema), vec![Arc::new(array)]).unwrap();
+
+    let err = import_record_batch(&batch).expect_err("Decimal32 import is intentionally unsupported in this slice");
+
+    assert_eq!(err.kind(), ErrorKind::Unsupported);
+    assert_eq!(err.code(), ErrorCode::UnsupportedDtype);
+    assert_eq!(err.operation(), "arrow::arrow_array_to_column");
+    assert_eq!(error_context_value(&err, "field_name").as_deref(), Some("amount32"));
+    assert_eq!(error_context_value(&err, "arrow_type").as_deref(), Some("Decimal32(9, 2)"));
+}
+
+#[test]
 fn test_round_trip_i32() {
     let df =
         crate::common::dataframe_from_columns(vec!["a".to_string()], vec![column_from_slice(&[1i32, 2, 3]).unwrap()])
@@ -202,6 +272,204 @@ fn test_round_trip_f32_f64() {
 
     let f64_vals: Vec<f64> = df2.series("f64_col").unwrap().to_vec_strict::<f64>().unwrap();
     assert_eq!(f64_vals, vec![10.0, 20.0, 30.0]);
+}
+
+#[test]
+fn test_to_record_batch_exports_decimal128_date32_and_timestamp_units() {
+    let decimal = decimal128_series(&[12345, -67890, 5], -2).unwrap();
+    let date = timestamp_series(&[18_262, 18_263, 18_264], TypeId::DurationDays, TypeId::TimestampDays).unwrap();
+    let ts_s = timestamp_series(&[1, 2, 3], TypeId::DurationSeconds, TypeId::TimestampSeconds).unwrap();
+    let ts_ms =
+        timestamp_series(&[1_000, 2_000, 3_000], TypeId::DurationMilliseconds, TypeId::TimestampMilliseconds).unwrap();
+    let ts_us =
+        timestamp_series(&[1_000, 2_000, 3_000], TypeId::DurationMicroseconds, TypeId::TimestampMicroseconds).unwrap();
+    let ts_ns =
+        timestamp_series(&[1_000, 2_000, 3_000], TypeId::DurationNanoseconds, TypeId::TimestampNanoseconds).unwrap();
+    let df = DataFrame::from_columns([
+        ("amount", decimal),
+        ("date", date),
+        ("ts_s", ts_s),
+        ("ts_ms", ts_ms),
+        ("ts_us", ts_us),
+        ("ts_ns", ts_ns),
+    ])
+    .unwrap();
+
+    let batch = df.to_record_batch().unwrap();
+
+    assert_eq!(*batch.schema().field(0).data_type(), ArrowDataType::Decimal128(38, 2));
+    assert_eq!(*batch.schema().field(1).data_type(), ArrowDataType::Date32);
+    assert_eq!(*batch.schema().field(2).data_type(), ArrowDataType::Timestamp(TimeUnit::Second, None));
+    assert_eq!(*batch.schema().field(3).data_type(), ArrowDataType::Timestamp(TimeUnit::Millisecond, None));
+    assert_eq!(*batch.schema().field(4).data_type(), ArrowDataType::Timestamp(TimeUnit::Microsecond, None));
+    assert_eq!(*batch.schema().field(5).data_type(), ArrowDataType::Timestamp(TimeUnit::Nanosecond, None));
+
+    let amount = batch.column(0).as_primitive::<arrow::datatypes::Decimal128Type>();
+    assert_eq!(amount.precision(), 38);
+    assert_eq!(amount.scale(), 2);
+    assert_eq!(amount.values().as_ref(), &[1234500i128, -6789000, 500]);
+    assert_eq!(
+        batch.column(1).as_primitive::<arrow::datatypes::Date32Type>().values().as_ref(),
+        &[18_262, 18_263, 18_264]
+    );
+    assert_eq!(batch.column(2).as_primitive::<arrow::datatypes::TimestampSecondType>().values().as_ref(), &[1, 2, 3]);
+    assert_eq!(
+        batch.column(3).as_primitive::<arrow::datatypes::TimestampMillisecondType>().values().as_ref(),
+        &[1_000, 2_000, 3_000]
+    );
+    assert_eq!(
+        batch.column(4).as_primitive::<arrow::datatypes::TimestampMicrosecondType>().values().as_ref(),
+        &[1_000, 2_000, 3_000]
+    );
+    assert_eq!(
+        batch.column(5).as_primitive::<arrow::datatypes::TimestampNanosecondType>().values().as_ref(),
+        &[1_000, 2_000, 3_000]
+    );
+}
+
+#[test]
+fn test_round_trip_nullable_decimal128_date32_and_timestamp_units() {
+    let amount =
+        Decimal128Array::from(vec![Some(12345i128), None, Some(-67890)]).with_precision_and_scale(20, 2).unwrap();
+    let date = Date32Array::from(vec![Some(18_262), None, Some(18_264)]);
+    let ts_s = TimestampSecondArray::from(vec![Some(1), None, Some(3)]);
+    let ts_ms = TimestampMillisecondArray::from(vec![Some(1_000), None, Some(3_000)]);
+    let ts_us = TimestampMicrosecondArray::from(vec![Some(1_000), None, Some(3_000)]);
+    let ts_ns = TimestampNanosecondArray::from(vec![Some(1_000), None, Some(3_000)]);
+    let schema = Schema::new(vec![
+        Field::new("amount", ArrowDataType::Decimal128(20, 2), true),
+        Field::new("date", ArrowDataType::Date32, true),
+        Field::new("ts_s", ArrowDataType::Timestamp(TimeUnit::Second, None), true),
+        Field::new("ts_ms", ArrowDataType::Timestamp(TimeUnit::Millisecond, None), true),
+        Field::new("ts_us", ArrowDataType::Timestamp(TimeUnit::Microsecond, None), true),
+        Field::new("ts_ns", ArrowDataType::Timestamp(TimeUnit::Nanosecond, None), true),
+    ]);
+    let batch = RecordBatch::try_new(
+        Arc::new(schema),
+        vec![Arc::new(amount), Arc::new(date), Arc::new(ts_s), Arc::new(ts_ms), Arc::new(ts_us), Arc::new(ts_ns)],
+    )
+    .unwrap();
+
+    let df = import_record_batch(&batch).unwrap();
+
+    assert_eq!(df.series("amount").unwrap().dtype().unwrap(), DataType::fixed_point(TypeId::Decimal128, -2));
+    assert_eq!(df.series("date").unwrap().dtype().unwrap().id(), TypeId::TimestampDays);
+    assert_eq!(df.series("ts_s").unwrap().dtype().unwrap().id(), TypeId::TimestampSeconds);
+    assert_eq!(df.series("ts_ms").unwrap().dtype().unwrap().id(), TypeId::TimestampMilliseconds);
+    assert_eq!(df.series("ts_us").unwrap().dtype().unwrap().id(), TypeId::TimestampMicroseconds);
+    assert_eq!(df.series("ts_ns").unwrap().dtype().unwrap().id(), TypeId::TimestampNanoseconds);
+
+    let round_trip = df.to_record_batch().unwrap();
+    assert_eq!(*round_trip.schema().field(0).data_type(), ArrowDataType::Decimal128(38, 2));
+    assert_eq!(*round_trip.schema().field(1).data_type(), ArrowDataType::Date32);
+    assert_eq!(*round_trip.schema().field(2).data_type(), ArrowDataType::Timestamp(TimeUnit::Second, None));
+    assert_eq!(*round_trip.schema().field(3).data_type(), ArrowDataType::Timestamp(TimeUnit::Millisecond, None));
+    assert_eq!(*round_trip.schema().field(4).data_type(), ArrowDataType::Timestamp(TimeUnit::Microsecond, None));
+    assert_eq!(*round_trip.schema().field(5).data_type(), ArrowDataType::Timestamp(TimeUnit::Nanosecond, None));
+
+    for column_index in 0..round_trip.num_columns() {
+        let arr = round_trip.column(column_index);
+        assert!(arr.is_valid(0));
+        assert!(!arr.is_valid(1));
+        assert!(arr.is_valid(2));
+    }
+
+    assert_eq!(
+        round_trip.column(0).as_primitive::<arrow::datatypes::Decimal128Type>().values().as_ref(),
+        &[12345i128, 0, -67890]
+    );
+    assert_eq!(
+        round_trip.column(1).as_primitive::<arrow::datatypes::Date32Type>().values().as_ref(),
+        &[18_262, 0, 18_264]
+    );
+    assert_eq!(
+        round_trip.column(2).as_primitive::<arrow::datatypes::TimestampSecondType>().values().as_ref(),
+        &[1, 0, 3]
+    );
+    assert_eq!(
+        round_trip.column(3).as_primitive::<arrow::datatypes::TimestampMillisecondType>().values().as_ref(),
+        &[1_000, 0, 3_000]
+    );
+    assert_eq!(
+        round_trip.column(4).as_primitive::<arrow::datatypes::TimestampMicrosecondType>().values().as_ref(),
+        &[1_000, 0, 3_000]
+    );
+    assert_eq!(
+        round_trip.column(5).as_primitive::<arrow::datatypes::TimestampNanosecondType>().values().as_ref(),
+        &[1_000, 0, 3_000]
+    );
+}
+
+#[test]
+fn test_from_record_batch_mixed_decimal_temporal_boundary_observation() {
+    let observed = Arc::new(Mutex::new(Vec::new()));
+    let observer_records = Arc::clone(&observed);
+    let runtime = Runtime::builder()
+        .with_boundary_observer(move |observation| {
+            observer_records.lock().unwrap().push(observation);
+        })
+        .build()
+        .unwrap();
+    let amount = Decimal128Array::from(vec![12345i128, 67890]).with_precision_and_scale(20, 2).unwrap();
+    let date = Date32Array::from(vec![18_262, 18_263]);
+    let schema = Schema::new(vec![
+        Field::new("amount", ArrowDataType::Decimal128(20, 2), false),
+        Field::new("date", ArrowDataType::Date32, false),
+    ]);
+    let batch = RecordBatch::try_new(Arc::new(schema), vec![Arc::new(amount), Arc::new(date)]).unwrap();
+
+    let df = DataFrame::from_record_batch(&runtime, &batch).unwrap();
+
+    assert_eq!(df.num_rows(), 2);
+    let observations = observed.lock().unwrap();
+    assert_eq!(observations.len(), 1);
+    let observation = observations[0];
+    assert_eq!(observation.kind, BoundaryKind::HostToDevice);
+    assert_eq!(observation.rows, 2);
+    assert_eq!(observation.columns, 2);
+    assert!(!observation.synchronized_for_host);
+}
+
+#[test]
+fn test_to_record_batch_mixed_decimal_temporal_boundary_observation() {
+    let observed = Arc::new(Mutex::new(Vec::new()));
+    let observer_records = Arc::clone(&observed);
+    let runtime = Runtime::builder()
+        .with_boundary_observer(move |observation| {
+            observer_records.lock().unwrap().push(observation);
+        })
+        .build()
+        .unwrap();
+
+    let amount =
+        runtime.series(&[12345i64, -67890]).unwrap().astype(DataType::fixed_point(TypeId::Decimal128, -2)).unwrap();
+    let date = runtime
+        .series(&[18_262i32, 18_263])
+        .unwrap()
+        .astype(TypeId::DurationDays)
+        .unwrap()
+        .astype(TypeId::TimestampDays)
+        .unwrap();
+    let ts_s = runtime
+        .series(&[1i64, 2])
+        .unwrap()
+        .astype(TypeId::DurationSeconds)
+        .unwrap()
+        .astype(TypeId::TimestampSeconds)
+        .unwrap();
+    let df = DataFrame::from_columns([("amount", amount), ("date", date), ("ts_s", ts_s)]).unwrap();
+
+    let batch = df.to_record_batch().unwrap();
+
+    assert_eq!(batch.num_rows(), 2);
+    assert_eq!(batch.num_columns(), 3);
+    let observations = observed.lock().unwrap();
+    assert_eq!(observations.len(), 1);
+    let observation = observations[0];
+    assert_eq!(observation.kind, BoundaryKind::DeviceToHost);
+    assert_eq!(observation.rows, 2);
+    assert_eq!(observation.columns, 3);
+    assert!(observation.synchronized_for_host);
 }
 
 // ---------------------------------------------------------------------------

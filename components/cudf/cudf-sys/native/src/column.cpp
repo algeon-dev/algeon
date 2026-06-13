@@ -28,10 +28,20 @@
 #include <cstring>
 #include <limits>
 #include <memory>
+#include <optional>
+#include <stdexcept>
+#include <vector>
 
 namespace {
 
 thread_local bool g_fail_next_column_view_metadata_read = false;
+enum class fixed_width_host_import_fault {
+  none,
+  after_data_copy,
+  after_null_mask_copy,
+};
+thread_local fixed_width_host_import_fault g_next_fixed_width_host_import_fault =
+  fixed_width_host_import_fault::none;
 // Synthetic fixed-width test views only need a stable non-null backing pointer.
 // The shim never writes through this storage.
 std::array<int64_t, 8> g_test_column_view_dummy_storage = {};
@@ -43,12 +53,76 @@ bool should_fail_next_column_view_metadata_read()
   return true;
 }
 
+bool is_decimal_type_id(cudf_type_id_t type_id)
+{
+  return type_id == CUDF_TYPE_DECIMAL32 || type_id == CUDF_TYPE_DECIMAL64 ||
+         type_id == CUDF_TYPE_DECIMAL128;
+}
+
+cudf::data_type host_fixed_width_dtype(cudf_type_id_t type_id, int32_t scale)
+{
+  auto const id = to_cudf_type_id(type_id);
+  return is_decimal_type_id(type_id) ? cudf::data_type{id, scale} : cudf::data_type{id};
+}
+
 cudf_status_t maybe_fail_column_view_metadata_read()
 {
   if (!should_fail_next_column_view_metadata_read()) { return CUDF_SUCCESS; }
   set_error("test metadata read failure");
   return CUDF_ERROR_UNKNOWN;
 }
+
+bool consume_fixed_width_host_import_fault(fixed_width_host_import_fault fault)
+{
+  if (g_next_fixed_width_host_import_fault != fault) { return false; }
+  g_next_fixed_width_host_import_fault = fixed_width_host_import_fault::none;
+  return true;
+}
+
+void maybe_fail_fixed_width_host_import(fixed_width_host_import_fault fault)
+{
+  if (!consume_fixed_width_host_import_fault(fault)) { return; }
+  switch (fault) {
+    case fixed_width_host_import_fault::after_data_copy:
+      throw std::runtime_error("test fixed-width host import failure after data copy");
+    case fixed_width_host_import_fault::after_null_mask_copy:
+      throw std::runtime_error("test fixed-width host import failure after null mask copy");
+    case fixed_width_host_import_fault::none: break;
+  }
+}
+
+class host_source_copy_sync_guard {
+ public:
+  explicit host_source_copy_sync_guard(rmm::cuda_stream_view stream) : stream_{stream} {}
+
+  host_source_copy_sync_guard(host_source_copy_sync_guard const&)            = delete;
+  host_source_copy_sync_guard& operator=(host_source_copy_sync_guard const&) = delete;
+
+  ~host_source_copy_sync_guard() noexcept
+  {
+    if (!copy_may_be_pending_) { return; }
+    try {
+      stream_.synchronize();
+      cudf_record_synchronized_stream(stream_);
+    } catch (...) {
+      // Destructors cannot report synchronization failures without masking the
+      // original error; explicit synchronize calls still propagate failures.
+    }
+  }
+
+  void mark_copy_may_be_pending() noexcept { copy_may_be_pending_ = true; }
+
+  void synchronize_and_release()
+  {
+    stream_.synchronize();
+    cudf_record_synchronized_stream(stream_);
+    copy_may_be_pending_ = false;
+  }
+
+ private:
+  rmm::cuda_stream_view stream_;
+  bool copy_may_be_pending_ = false;
+};
 
 }  // namespace
 
@@ -105,6 +179,16 @@ extern "C" {
 void cudf_test_fail_next_column_view_metadata_read()
 {
   g_fail_next_column_view_metadata_read = true;
+}
+
+void cudf_test_fail_next_fixed_width_host_import_after_data_copy()
+{
+  g_next_fixed_width_host_import_fault = fixed_width_host_import_fault::after_data_copy;
+}
+
+void cudf_test_fail_next_fixed_width_host_import_after_null_mask_copy()
+{
+  g_next_fixed_width_host_import_fault = fixed_width_host_import_fault::after_null_mask_copy;
 }
 
 cudf_status_t cudf_test_column_view_create_synthetic_fixed_width(cudf_type_id_t type_id,
@@ -224,26 +308,120 @@ cudf_status_t cudf_column_create_numeric_ex(cudf_type_id_t type_id,
     size_t data_bytes = static_cast<size_t>(size) * elem_size;
 
     // Copy host data to device.
-    rmm::device_buffer dev_data(data, data_bytes, exec.stream, exec.mr);
+    std::optional<rmm::device_buffer> dev_data;
+    std::optional<rmm::device_buffer> dev_null_mask;
+    host_source_copy_sync_guard host_copy_guard{exec.stream};
+    if (data_bytes > 0) { host_copy_guard.mark_copy_may_be_pending(); }
+    dev_data.emplace(data, data_bytes, exec.stream, exec.mr);
 
     // Copy null mask to device if provided.
-    rmm::device_buffer dev_null_mask{};
     if (null_mask != nullptr && null_count > 0) {
       // cudf bitmask is stored as uint32_t words.
       size_t mask_bytes = cudf::bitmask_allocation_size_bytes(static_cast<cudf::size_type>(size));
       // We receive packed bytes from Rust — copy them to a device buffer
       // of the right alignment size.
-      dev_null_mask = rmm::device_buffer(null_mask, mask_bytes, exec.stream, exec.mr);
+      if (mask_bytes > 0) { host_copy_guard.mark_copy_may_be_pending(); }
+      dev_null_mask.emplace(null_mask, mask_bytes, exec.stream, exec.mr);
     }
 
+    host_copy_guard.synchronize_and_release();
+
+    rmm::device_buffer null_mask_buffer{};
+    if (dev_null_mask.has_value()) { null_mask_buffer = std::move(*dev_null_mask); }
     auto col = std::make_unique<cudf::column>(dtype,
                                               static_cast<cudf::size_type>(size),
-                                              std::move(dev_data),
-                                              std::move(dev_null_mask),
+                                              std::move(*dev_data),
+                                              std::move(null_mask_buffer),
                                               static_cast<cudf::size_type>(null_count));
 
-    exec.stream.synchronize();
-    cudf_record_synchronized_stream(exec.stream);
+    *out = cudf_release_column_handle(std::move(col));
+    return CUDF_SUCCESS;
+  }
+  CUDF_RUST_CATCH
+}
+
+cudf_status_t cudf_column_create_fixed_width_from_host(cudf_type_id_t type_id,
+                                                       int32_t scale,
+                                                       const void* data,
+                                                       int32_t size,
+                                                       const uint8_t* null_mask,
+                                                       int32_t null_count,
+                                                       cudf_column_handle* out)
+{
+  return cudf_column_create_fixed_width_from_host_ex(
+    type_id, scale, data, size, null_mask, null_count, nullptr, out);
+}
+
+cudf_status_t cudf_column_create_fixed_width_from_host_ex(cudf_type_id_t type_id,
+                                                          int32_t scale,
+                                                          const void* data,
+                                                          int32_t size,
+                                                          const uint8_t* null_mask,
+                                                          int32_t null_count,
+                                                          cudf_exec_options_t const* options,
+                                                          cudf_column_handle* out)
+{
+  CUDF_RUST_NULL_CHECK(out, "out is null");
+  *out = nullptr;
+  if (size < 0) {
+    set_error("size must be >= 0");
+    return CUDF_ERROR_INVALID_OPERATION;
+  }
+  if (null_count < 0 || null_count > size) {
+    set_error("null_count must be in [0, size]");
+    return CUDF_ERROR_INVALID_OPERATION;
+  }
+  if (!is_decimal_type_id(type_id) && scale != 0) {
+    set_error("scale must be 0 for non-decimal fixed-width host columns");
+    return CUDF_ERROR_INVALID_OPERATION;
+  }
+  if (size > 0) { CUDF_RUST_NULL_CHECK(data, "data is null"); }
+  if (null_count > 0) { CUDF_RUST_NULL_CHECK(null_mask, "null_mask is null when null_count > 0"); }
+  CUDF_RUST_TRY
+  {
+    auto const dtype = host_fixed_width_dtype(type_id, scale);
+    if (!cudf::is_fixed_width(dtype) || type_id == CUDF_TYPE_DICTIONARY32) {
+      set_error(
+        "fixed-width host column construction requires a "
+        "non-dictionary fixed-width type");
+      return CUDF_ERROR_TYPE;
+    }
+
+    cudf_exec_context exec{
+      cudf::get_default_stream(), cudf::get_current_device_resource_ref(), nullptr};
+    cudf_status_t const exec_status = cudf_resolve_exec_options(options, &exec);
+    if (exec_status != CUDF_SUCCESS) { return exec_status; }
+
+    auto const elem_size = cudf::size_of(dtype);
+    auto const data_bytes = static_cast<size_t>(size) * elem_size;
+    std::vector<uint8_t> padded_mask;
+    std::optional<rmm::device_buffer> dev_data;
+    std::optional<rmm::device_buffer> dev_null_mask;
+    host_source_copy_sync_guard host_copy_guard{exec.stream};
+    if (data_bytes > 0) { host_copy_guard.mark_copy_may_be_pending(); }
+    dev_data.emplace(data, data_bytes, exec.stream, exec.mr);
+    maybe_fail_fixed_width_host_import(fixed_width_host_import_fault::after_data_copy);
+
+    if (null_mask != nullptr && size > 0) {
+      auto const compact_mask_bytes = static_cast<size_t>((size + 7) / 8);
+      auto const alloc_mask_bytes =
+        cudf::bitmask_allocation_size_bytes(static_cast<cudf::size_type>(size));
+      padded_mask.assign(alloc_mask_bytes, 0);
+      std::memcpy(padded_mask.data(), null_mask, compact_mask_bytes);
+      if (alloc_mask_bytes > 0) { host_copy_guard.mark_copy_may_be_pending(); }
+      dev_null_mask.emplace(padded_mask.data(), alloc_mask_bytes, exec.stream, exec.mr);
+      maybe_fail_fixed_width_host_import(fixed_width_host_import_fault::after_null_mask_copy);
+    }
+
+    host_copy_guard.synchronize_and_release();
+
+    rmm::device_buffer null_mask_buffer{};
+    if (dev_null_mask.has_value()) { null_mask_buffer = std::move(*dev_null_mask); }
+    auto col = std::make_unique<cudf::column>(dtype,
+                                              static_cast<cudf::size_type>(size),
+                                              std::move(*dev_data),
+                                              std::move(null_mask_buffer),
+                                              static_cast<cudf::size_type>(null_count));
 
     *out = cudf_release_column_handle(std::move(col));
     return CUDF_SUCCESS;

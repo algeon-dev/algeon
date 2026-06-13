@@ -73,8 +73,9 @@ cudf_status_t cudf_column_create_empty(cudf_type_id_t type_id, cudf_column_handl
 /// `null_mask` is optional (pass NULL for no nulls); if provided it must
 /// contain ceil(size/8) bytes of validity bitmask (LSB order).
 ///
-/// This function synchronizes cuDF's default stream before return on success so
-/// the borrowed host buffers are no longer in use.
+/// If host-source copies are queued, this function synchronizes cuDF's default
+/// stream before return on success or failure so the borrowed host buffers are
+/// no longer in use.
 cudf_status_t cudf_column_create_numeric(cudf_type_id_t type_id,
                                          const void* data,
                                          int32_t size,
@@ -84,8 +85,9 @@ cudf_status_t cudf_column_create_numeric(cudf_type_id_t type_id,
 
 /// Create a numeric column from host data with explicit execution options.
 ///
-/// The selected stream is synchronized before return on success so the
-/// borrowed host buffers are no longer in use.
+/// If host-source copies are queued, the selected stream is synchronized
+/// before return on success or failure so the borrowed host buffers are no
+/// longer in use.
 /// When `options->mr` is non-NULL, it must outlive the returned column.
 cudf_status_t cudf_column_create_numeric_ex(cudf_type_id_t type_id,
                                             const void* data,
@@ -94,6 +96,39 @@ cudf_status_t cudf_column_create_numeric_ex(cudf_type_id_t type_id,
                                             int32_t null_count,
                                             const cudf_exec_options_t* options,
                                             cudf_column_handle* out);
+
+/// Create a fixed-width column from host data with explicit logical dtype.
+/// `data` points to host memory of `size` elements of `type_id`.
+/// `scale` is honored only for DECIMAL types and must be 0 otherwise.
+/// `null_mask` is optional (pass NULL for no nulls); if provided it must
+/// contain ceil(size/8) bytes of validity bitmask (LSB order).
+///
+/// If host-source copies are queued, this function synchronizes cuDF's default
+/// stream before return on success or failure so the borrowed host buffers are
+/// no longer in use.
+cudf_status_t cudf_column_create_fixed_width_from_host(cudf_type_id_t type_id,
+                                                       int32_t scale,
+                                                       const void* data,
+                                                       int32_t size,
+                                                       const uint8_t* null_mask,
+                                                       int32_t null_count,
+                                                       cudf_column_handle* out);
+
+/// Create a fixed-width column from host data with explicit logical dtype and
+/// execution options.
+///
+/// If host-source copies are queued, the selected stream is synchronized
+/// before return on success or failure so the borrowed host buffers are no
+/// longer in use.
+/// When `options->mr` is non-NULL, it must outlive the returned column.
+cudf_status_t cudf_column_create_fixed_width_from_host_ex(cudf_type_id_t type_id,
+                                                          int32_t scale,
+                                                          const void* data,
+                                                          int32_t size,
+                                                          const uint8_t* null_mask,
+                                                          int32_t null_count,
+                                                          const cudf_exec_options_t* options,
+                                                          cudf_column_handle* out);
 
 /// Create a fixed-width column filled with a device-side arithmetic sequence.
 ///
@@ -285,6 +320,14 @@ cudf_status_t cudf_column_view_null_count(cudf_column_view_handle handle, int32_
 /// Force the next column-view metadata read (`size` or `null_count`) to fail.
 void cudf_test_fail_next_column_view_metadata_read();
 
+/// Force the next fixed-width host import to fail after the data copy is
+/// queued. Intended only for synchronization regression tests.
+void cudf_test_fail_next_fixed_width_host_import_after_data_copy();
+
+/// Force the next fixed-width host import to fail after the null-mask copy is
+/// queued. Intended only for synchronization regression tests.
+void cudf_test_fail_next_fixed_width_host_import_after_null_mask_copy();
+
 /// Test-only helper that constructs a fixed-width column_view with a caller-
 /// controlled logical offset. The returned view is synthetic and must only be
 /// used for metadata/slicing regression tests.
@@ -357,7 +400,8 @@ cudf_status_t cudf_column_view_to_host_ex(cudf_column_view_handle handle,
 /// `offset * element_size` manually.
 cudf_status_t cudf_column_view_data_ptr(cudf_column_view_handle handle, const void** out);
 
-/// Get the device pointer and active byte length for a STRING column's chars buffer.
+/// Get the device pointer and active byte length for a STRING column's chars
+/// buffer.
 ///
 /// Returns CUDF_ERROR_TYPE if the column is not STRING type.
 /// The returned pointer is the base of the chars child buffer. For sliced
@@ -368,10 +412,11 @@ cudf_status_t cudf_column_view_string_chars_ptr_and_size(cudf_column_view_handle
                                                          const void** out_ptr,
                                                          size_t* out_size);
 
-/// Get the device pointer and active byte length for a STRING column's chars buffer
-/// with explicit execution options.
+/// Get the device pointer and active byte length for a STRING column's chars
+/// buffer with explicit execution options.
 ///
-/// `options->mr` is ignored because this helper does not allocate output storage.
+/// `options->mr` is ignored because this helper does not allocate output
+/// storage.
 cudf_status_t cudf_column_view_string_chars_ptr_and_size_ex(cudf_column_view_handle handle,
                                                             const cudf_exec_options_t* options,
                                                             const void** out_ptr,
@@ -468,7 +513,8 @@ cudf_status_t cudf_column_create_strings(const char** strings,
                                          int32_t null_count,
                                          cudf_column_handle* out);
 
-/// Create a STRING type column from host string data with explicit execution options.
+/// Create a STRING type column from host string data with explicit execution
+/// options.
 ///
 /// The selected stream is synchronized before return on success so the
 /// borrowed host buffers are no longer in use.
@@ -489,7 +535,8 @@ cudf_status_t cudf_column_from_scalar(cudf_scalar_handle scalar,
                                       int32_t size,
                                       cudf_column_handle* out);
 
-/// Create a column by repeating a scalar value `size` times with explicit execution options.
+/// Create a column by repeating a scalar value `size` times with explicit
+/// execution options.
 ///
 /// Passing NULL for `options`, or leaving `options->stream` / `options->mr`
 /// NULL, uses cuDF's default stream and current device memory resource.
