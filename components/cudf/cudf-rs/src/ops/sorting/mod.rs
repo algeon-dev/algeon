@@ -97,19 +97,40 @@ fn checked_num_keys(operation: &'static str, num_keys: usize) -> Result<i32> {
 }
 
 /// Helper: convert Option slices to raw pointers.
-fn sort_params(
-    column_order: Option<&[Order]>,
-    null_precedence: Option<&[NullOrder]>,
-) -> (*const cudf_sys::cudf_order_t, *const cudf_sys::cudf_null_order_t) {
+struct SortParams {
+    column_order: *const cudf_sys::cudf_order_t,
+    null_precedence: *const cudf_sys::cudf_null_order_t,
+    _resolved_null_precedence: Option<Vec<NullOrder>>,
+}
+
+fn sort_params(column_order: Option<&[Order]>, null_precedence: Option<&[NullOrder]>) -> SortParams {
     let co = match column_order {
         Some(s) => s.as_ptr() as *const cudf_sys::cudf_order_t,
         None => ptr::null(),
     };
-    let np = match null_precedence {
+    let resolved_null_precedence = null_precedence.map(|nulls| {
+        nulls
+            .iter()
+            .enumerate()
+            .map(|(index, &null_order)| {
+                let order = column_order.and_then(|orders| orders.get(index)).copied().unwrap_or(Order::Ascending);
+                cudf_null_order_for_output_placement(order, null_order)
+            })
+            .collect::<Vec<_>>()
+    });
+    let np = match &resolved_null_precedence {
         Some(s) => s.as_ptr() as *const cudf_sys::cudf_null_order_t,
         None => ptr::null(),
     };
-    (co, np)
+    SortParams { column_order: co, null_precedence: np, _resolved_null_precedence: resolved_null_precedence }
+}
+
+fn cudf_null_order_for_output_placement(order: Order, null_order: NullOrder) -> NullOrder {
+    match (order, null_order) {
+        (Order::Ascending, placement) => placement,
+        (Order::Descending, NullOrder::Before) => NullOrder::After,
+        (Order::Descending, NullOrder::After) => NullOrder::Before,
+    }
 }
 
 pub(crate) fn sort_table_impl(
@@ -124,16 +145,40 @@ pub(crate) fn sort_table_impl(
     let num_keys = input.num_columns()?;
     validate_sort_params(operation, num_keys, column_order, null_precedence)?;
     let num_keys_i32 = checked_num_keys(operation, num_keys)?;
-    let (co, np) = sort_params(column_order, null_precedence);
+    let params = sort_params(column_order, null_precedence);
     let mut out = ptr::null_mut();
     let status = match (stable, exec_options) {
-        (false, None) => unsafe { cudf_sys::cudf_sort(input.raw_handle(), co, np, num_keys_i32, &mut out) },
-        (true, None) => unsafe { cudf_sys::cudf_stable_sort(input.raw_handle(), co, np, num_keys_i32, &mut out) },
+        (false, None) => unsafe {
+            cudf_sys::cudf_sort(input.raw_handle(), params.column_order, params.null_precedence, num_keys_i32, &mut out)
+        },
+        (true, None) => unsafe {
+            cudf_sys::cudf_stable_sort(
+                input.raw_handle(),
+                params.column_order,
+                params.null_precedence,
+                num_keys_i32,
+                &mut out,
+            )
+        },
         (false, Some(options)) => unsafe {
-            cudf_sys::cudf_sort_ex(input.raw_handle(), co, np, num_keys_i32, &mut out, options)
+            cudf_sys::cudf_sort_ex(
+                input.raw_handle(),
+                params.column_order,
+                params.null_precedence,
+                num_keys_i32,
+                &mut out,
+                options,
+            )
         },
         (true, Some(options)) => unsafe {
-            cudf_sys::cudf_stable_sort_ex(input.raw_handle(), co, np, num_keys_i32, &mut out, options)
+            cudf_sys::cudf_stable_sort_ex(
+                input.raw_handle(),
+                params.column_order,
+                params.null_precedence,
+                num_keys_i32,
+                &mut out,
+                options,
+            )
         },
     };
 
@@ -161,18 +206,25 @@ pub(crate) fn sort_by_key_impl(
     let num_key_columns = keys.num_columns()?;
     validate_sort_params(operation, num_key_columns, column_order, null_precedence)?;
     let num_key_columns_i32 = checked_num_keys(operation, num_key_columns)?;
-    let (co, np) = sort_params(column_order, null_precedence);
+    let params = sort_params(column_order, null_precedence);
     let mut out = ptr::null_mut();
     let status = match (stable, exec_options) {
         (false, None) => unsafe {
-            cudf_sys::cudf_sort_by_key(values.raw_handle(), keys.raw_handle(), co, np, num_key_columns_i32, &mut out)
+            cudf_sys::cudf_sort_by_key(
+                values.raw_handle(),
+                keys.raw_handle(),
+                params.column_order,
+                params.null_precedence,
+                num_key_columns_i32,
+                &mut out,
+            )
         },
         (true, None) => unsafe {
             cudf_sys::cudf_stable_sort_by_key(
                 values.raw_handle(),
                 keys.raw_handle(),
-                co,
-                np,
+                params.column_order,
+                params.null_precedence,
                 num_key_columns_i32,
                 &mut out,
             )
@@ -181,8 +233,8 @@ pub(crate) fn sort_by_key_impl(
             cudf_sys::cudf_sort_by_key_ex(
                 values.raw_handle(),
                 keys.raw_handle(),
-                co,
-                np,
+                params.column_order,
+                params.null_precedence,
                 num_key_columns_i32,
                 &mut out,
                 options,
@@ -192,8 +244,8 @@ pub(crate) fn sort_by_key_impl(
             cudf_sys::cudf_stable_sort_by_key_ex(
                 values.raw_handle(),
                 keys.raw_handle(),
-                co,
-                np,
+                params.column_order,
+                params.null_precedence,
                 num_key_columns_i32,
                 &mut out,
                 options,
@@ -316,12 +368,19 @@ pub fn sorted_order(
     let num_keys = input.num_columns()?;
     validate_sort_params("sorting::sorted_order", num_keys, column_order, null_precedence)?;
     let num_keys_i32 = checked_num_keys("sorting::sorted_order", num_keys)?;
-    let (co, np) = sort_params(column_order, null_precedence);
+    let params = sort_params(column_order, null_precedence);
     let mut out = ptr::null_mut();
     error::check_status_in(
         // SAFETY: input handle is valid. co/np are either null or valid slices of num_keys elements.
         unsafe {
-            cudf_sys::cudf_sorted_order_ex(input.raw_handle(), co, np, num_keys_i32, &mut out, execution.exec_options())
+            cudf_sys::cudf_sorted_order_ex(
+                input.raw_handle(),
+                params.column_order,
+                params.null_precedence,
+                num_keys_i32,
+                &mut out,
+                execution.exec_options(),
+            )
         },
         "sorting::sorted_order",
     )
@@ -345,11 +404,19 @@ pub fn is_sorted(
     let num_keys = input.num_columns()?;
     validate_sort_params("sorting::is_sorted", num_keys, column_order, null_precedence)?;
     let num_keys_i32 = checked_num_keys("sorting::is_sorted", num_keys)?;
-    let (co, np) = sort_params(column_order, null_precedence);
+    let params = sort_params(column_order, null_precedence);
     let mut out: i32 = 0;
     error::check_status_in(
         // SAFETY: input handle is valid. co/np are either null or valid slices of num_keys elements.
-        unsafe { cudf_sys::cudf_is_sorted(input.raw_handle(), co, np, num_keys_i32, &mut out) },
+        unsafe {
+            cudf_sys::cudf_is_sorted(
+                input.raw_handle(),
+                params.column_order,
+                params.null_precedence,
+                num_keys_i32,
+                &mut out,
+            )
+        },
         "sorting::is_sorted",
     )
     .map_err(|err| {
