@@ -1,4 +1,4 @@
-//! Errors carry structured context — kind, status, operation, key-value pairs,
+//! Errors carry structured context — kind, code, status, operation, key-value pairs,
 //! and an optional source — so that GPU pipeline failures are debuggable without
 //! guesswork.
 
@@ -10,49 +10,105 @@ type BoxedSourceError = Box<dyn StdError + Send + Sync + 'static>;
 
 /// The kind of error that occurred.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub enum ErrorKind {
-    /// The caller passed an invalid value or combination of values.
-    InvalidArgument,
-    /// The caller referenced a named resource that does not exist.
+    /// The caller provided invalid values, schema requests, or foreign inputs.
+    InvalidInput,
+    /// The caller referenced a required named resource that does not exist.
     NotFound,
-    /// The requested operation or type combination is not supported.
-    NotSupported,
-    /// A logical precondition or internal contract was violated.
-    InvalidOperation,
-    /// A CUDA runtime error occurred.
-    CudaError,
-    /// A fatal CUDA error occurred (device may be unusable).
-    FatalCudaError,
-    /// Device or host memory allocation failed.
+    /// The requested dtype, layout, or operation is not supported by this path.
+    Unsupported,
+    /// A runtime, readiness, provenance, or execution binding contract failed.
+    ExecutionContext,
+    /// The operation ran out of memory or another bounded resource.
+    ResourceExhausted,
+    /// A lower-layer CUDA, IO, or foreign dependency failed.
+    DependencyFailure,
+    /// The library or a foreign backend returned impossible contract metadata.
+    InvariantViolation,
+}
+
+/// A stable, machine-readable error sub-code within an [`ErrorKind`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum ErrorCode {
+    InvalidInput,
+    NotFound,
+    Unsupported,
+    ExecutionContext,
+    ResourceExhausted,
+    DependencyFailure,
+    InvariantViolation,
+    MissingResource,
+    MissingColumn,
+    DuplicateColumnName,
+    DuplicateKey,
+    ColumnLengthMismatch,
+    TypeMismatch,
+    IndexOutOfBounds,
+    EmptyConstructionRequiresRuntime,
+    CrossDeviceInputs,
+    CrossProvenanceInputs,
+    RuntimeBindingMismatch,
+    ReadinessUnavailable,
+    ExecutionBindingUnavailable,
+    LeaseAlreadyActive,
+    UnsupportedDtype,
+    UnsupportedLayout,
+    UnsupportedOperation,
     OutOfMemory,
-    /// An I/O error occurred (permission denied, decode failure, etc.).
-    /// Missing resources should be reported as [`ErrorKind::NotFound`].
-    IoError,
-    /// An operation was attempted on an unsupported data type.
-    TypeError,
-    /// A null pointer or null value was encountered unexpectedly.
-    NullError,
-    /// An index was out of bounds.
-    IndexError,
-    /// An unknown or unclassified error.
-    Unknown,
+    CudaRuntime,
+    FatalCuda,
+    IoFailure,
+    NullUnexpected,
+}
+
+impl fmt::Display for ErrorCode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ErrorCode::InvalidInput => write!(f, "InvalidInput"),
+            ErrorCode::NotFound => write!(f, "NotFound"),
+            ErrorCode::Unsupported => write!(f, "Unsupported"),
+            ErrorCode::ExecutionContext => write!(f, "ExecutionContext"),
+            ErrorCode::ResourceExhausted => write!(f, "ResourceExhausted"),
+            ErrorCode::DependencyFailure => write!(f, "DependencyFailure"),
+            ErrorCode::InvariantViolation => write!(f, "InvariantViolation"),
+            ErrorCode::MissingResource => write!(f, "MissingResource"),
+            ErrorCode::MissingColumn => write!(f, "MissingColumn"),
+            ErrorCode::DuplicateColumnName => write!(f, "DuplicateColumnName"),
+            ErrorCode::DuplicateKey => write!(f, "DuplicateKey"),
+            ErrorCode::ColumnLengthMismatch => write!(f, "ColumnLengthMismatch"),
+            ErrorCode::TypeMismatch => write!(f, "TypeMismatch"),
+            ErrorCode::IndexOutOfBounds => write!(f, "IndexOutOfBounds"),
+            ErrorCode::EmptyConstructionRequiresRuntime => write!(f, "EmptyConstructionRequiresRuntime"),
+            ErrorCode::CrossDeviceInputs => write!(f, "CrossDeviceInputs"),
+            ErrorCode::CrossProvenanceInputs => write!(f, "CrossProvenanceInputs"),
+            ErrorCode::RuntimeBindingMismatch => write!(f, "RuntimeBindingMismatch"),
+            ErrorCode::ReadinessUnavailable => write!(f, "ReadinessUnavailable"),
+            ErrorCode::ExecutionBindingUnavailable => write!(f, "ExecutionBindingUnavailable"),
+            ErrorCode::LeaseAlreadyActive => write!(f, "LeaseAlreadyActive"),
+            ErrorCode::UnsupportedDtype => write!(f, "UnsupportedDtype"),
+            ErrorCode::UnsupportedLayout => write!(f, "UnsupportedLayout"),
+            ErrorCode::UnsupportedOperation => write!(f, "UnsupportedOperation"),
+            ErrorCode::OutOfMemory => write!(f, "OutOfMemory"),
+            ErrorCode::CudaRuntime => write!(f, "CudaRuntime"),
+            ErrorCode::FatalCuda => write!(f, "FatalCuda"),
+            ErrorCode::IoFailure => write!(f, "IoFailure"),
+            ErrorCode::NullUnexpected => write!(f, "NullUnexpected"),
+        }
+    }
 }
 
 impl fmt::Display for ErrorKind {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            ErrorKind::InvalidArgument => write!(f, "InvalidArgument"),
+            ErrorKind::InvalidInput => write!(f, "InvalidInput"),
             ErrorKind::NotFound => write!(f, "NotFound"),
-            ErrorKind::NotSupported => write!(f, "NotSupported"),
-            ErrorKind::InvalidOperation => write!(f, "InvalidOperation"),
-            ErrorKind::CudaError => write!(f, "CudaError"),
-            ErrorKind::FatalCudaError => write!(f, "FatalCudaError"),
-            ErrorKind::OutOfMemory => write!(f, "OutOfMemory"),
-            ErrorKind::IoError => write!(f, "IoError"),
-            ErrorKind::TypeError => write!(f, "TypeError"),
-            ErrorKind::NullError => write!(f, "NullError"),
-            ErrorKind::IndexError => write!(f, "IndexError"),
-            ErrorKind::Unknown => write!(f, "Unknown"),
+            ErrorKind::Unsupported => write!(f, "Unsupported"),
+            ErrorKind::ExecutionContext => write!(f, "ExecutionContext"),
+            ErrorKind::ResourceExhausted => write!(f, "ResourceExhausted"),
+            ErrorKind::DependencyFailure => write!(f, "DependencyFailure"),
+            ErrorKind::InvariantViolation => write!(f, "InvariantViolation"),
         }
     }
 }
@@ -94,6 +150,7 @@ impl fmt::Display for ErrorStatus {
 /// - `source` — an optional chained cause
 pub struct Error {
     kind: ErrorKind,
+    code: ErrorCode,
     message: String,
     status: ErrorStatus,
     operation: Cow<'static, str>,
@@ -104,6 +161,7 @@ pub struct Error {
 #[derive(Debug, Clone)]
 struct SourceCudfSnapshot {
     kind: ErrorKind,
+    code: ErrorCode,
     status: ErrorStatus,
     operation: String,
     called: Vec<String>,
@@ -117,8 +175,9 @@ impl Error {
     pub fn new(kind: ErrorKind, message: impl Into<String>) -> Self {
         Self {
             kind,
+            code: default_code_for_kind(kind),
             message: message.into(),
-            status: ErrorStatus::Permanent,
+            status: default_status_for_kind(kind),
             operation: Cow::Borrowed(""),
             context: Vec::new(),
             source: None,
@@ -136,6 +195,12 @@ impl Error {
     /// Append a key-value context pair.
     pub fn with_context(mut self, key: &'static str, value: impl Into<String>) -> Self {
         self.context.push((key, value.into()));
+        self
+    }
+
+    /// Set the stable machine-readable sub-code for this error.
+    pub fn with_code(mut self, code: ErrorCode) -> Self {
+        self.code = code;
         self
     }
 
@@ -179,7 +244,7 @@ impl Error {
                 if *key == "operation" {
                     operations.push(value.clone());
                 } else {
-                    remaining_context.push((*key, value.clone()));
+                    remaining_context.push((canonical_interop_context_key(*key), value.clone()));
                 }
             }
         }
@@ -219,7 +284,12 @@ impl Error {
 
     /// Returns the kind of this error.
     pub fn kind(&self) -> ErrorKind {
-        self.kind
+        kind_for_code(self.code).unwrap_or(self.kind)
+    }
+
+    /// Returns the stable machine-readable sub-code.
+    pub fn code(&self) -> ErrorCode {
+        self.code
     }
 
     /// Returns the error message.
@@ -242,6 +312,28 @@ impl Error {
         &self.context
     }
 
+    /// Returns the first context value for `key`, if present.
+    pub fn context_value(&self, key: &str) -> Option<&str> {
+        self.context.iter().find_map(|(ctx_key, ctx_value)| (*ctx_key == key).then_some(ctx_value.as_str()))
+    }
+
+    /// Returns `true` when retrying may succeed.
+    pub fn is_retryable(&self) -> bool {
+        self.status == ErrorStatus::Temporary
+    }
+
+    /// Returns `true` for out-of-memory failures.
+    pub fn is_oom(&self) -> bool {
+        self.kind() == ErrorKind::ResourceExhausted
+            || matches!(self.code, ErrorCode::ResourceExhausted | ErrorCode::OutOfMemory)
+    }
+
+    /// Returns `true` for not-found failures.
+    pub fn is_not_found(&self) -> bool {
+        self.kind() == ErrorKind::NotFound
+            || matches!(self.code, ErrorCode::NotFound | ErrorCode::MissingResource | ErrorCode::MissingColumn)
+    }
+
     /// Returns `true` if the error status is `Temporary`.
     pub fn is_temporary(&self) -> bool {
         self.status == ErrorStatus::Temporary
@@ -260,7 +352,7 @@ impl Error {
 
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{} ({})", self.kind, self.status)?;
+        write!(f, "{} ({})", self.kind(), self.status)?;
 
         if !self.operation.is_empty() {
             write!(f, " at {}", self.operation)?;
@@ -291,7 +383,7 @@ impl fmt::Display for Error {
 
 impl fmt::Debug for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        writeln!(f, "{} ({}):", self.kind, self.status)?;
+        writeln!(f, "{} ({}):", self.kind(), self.status)?;
 
         if !self.operation.is_empty() {
             writeln!(f, "  operation: {}", self.operation)?;
@@ -326,31 +418,111 @@ impl std::error::Error for Error {
 pub type Result<T> = std::result::Result<T, Error>;
 
 pub(crate) fn invariant_violation(operation: &'static str, message: impl Into<String>) -> Error {
-    Error::new(ErrorKind::InvalidOperation, message).with_operation(operation)
+    Error::new(ErrorKind::InvariantViolation, message)
+        .with_code(ErrorCode::InvariantViolation)
+        .with_operation(operation)
+}
+
+pub(crate) fn interior_null_byte_error(
+    operation: &'static str,
+    resource: &'static str,
+    message: &'static str,
+) -> Error {
+    Error::new(ErrorKind::InvalidInput, message)
+        .with_code(ErrorCode::InvalidInput)
+        .with_operation(operation)
+        .with_context("resource", resource)
+        .with_context("reason", "interior_null_byte")
+}
+
+pub(crate) fn limit_validation_error(
+    kind: ErrorKind,
+    operation: &'static str,
+    message: impl Into<String>,
+    resource: &'static str,
+    value_key: &'static str,
+    limit: &'static str,
+    value: usize,
+    remedy: impl Into<String>,
+) -> Error {
+    let reason = match limit {
+        "i32::MAX" => "exceeds_i32_max",
+        "i64::MAX" => "exceeds_i64_max",
+        _ => "exceeds_supported_range",
+    };
+
+    Error::new(kind, message)
+        .with_code(ErrorCode::UnsupportedOperation)
+        .with_operation(operation)
+        .with_context(value_key, value.to_string())
+        .with_context("resource", resource)
+        .with_context("reason", reason)
+        .with_context("remedy", remedy.into())
+}
+
+pub(crate) fn range_limit_error(
+    kind: ErrorKind,
+    operation: &'static str,
+    field: &'static str,
+    limit: &'static str,
+    value: usize,
+) -> Error {
+    limit_validation_error(
+        kind,
+        operation,
+        format!("{field} exceeds {limit}"),
+        field,
+        field,
+        limit,
+        value,
+        format!("reduce {field} to fit within {limit}"),
+    )
+}
+
+pub(crate) fn row_range_limit_error(operation: &'static str, bound: &'static str, value: usize) -> Error {
+    let (message, key, reason) = match bound {
+        "start" => ("row range start exceeds i32::MAX", "start_row", "start_exceeds_i32_max"),
+        "end" => ("row range end exceeds i32::MAX", "end_row", "end_exceeds_i32_max"),
+        _ => ("row range bound exceeds i32::MAX", "row_bound", "bound_exceeds_i32_max"),
+    };
+
+    Error::new(ErrorKind::InvalidInput, message)
+        .with_code(ErrorCode::UnsupportedOperation)
+        .with_operation(operation)
+        .with_context(key, value.to_string())
+        .with_context("resource", "row_range")
+        .with_context("reason", reason)
+        .with_context("remedy", "reduce row range bounds to fit within i32::MAX")
+}
+
+pub(crate) fn row_range_overflow_error(operation: &'static str, start: usize, len: usize) -> Error {
+    let end_row = (start as u128) + (len as u128);
+
+    Error::new(ErrorKind::InvalidInput, "row range end overflowed usize")
+        .with_code(ErrorCode::UnsupportedOperation)
+        .with_operation(operation)
+        .with_context("start_row", start.to_string())
+        .with_context("end_row", end_row.to_string())
+        .with_context("resource", "row_range")
+        .with_context("reason", "end_overflowed_usize")
+        .with_context("remedy", "reduce row range bounds to fit within usize")
 }
 
 pub(crate) fn require_non_null<T>(ptr: *mut T, operation: &'static str, target: &'static str) -> Result<NonNull<T>> {
     NonNull::new(ptr).ok_or_else(|| {
-        Error::new(ErrorKind::NullError, format!("FFI returned null {target} handle on success"))
+        Error::new(ErrorKind::InvariantViolation, format!("FFI returned null {target} handle on success"))
+            .with_code(ErrorCode::InvariantViolation)
             .with_operation(operation)
             .with_context("target", target)
     })
 }
 
 pub(crate) fn usize_to_i32(value: usize, operation: &'static str, field: &'static str) -> Result<i32> {
-    i32::try_from(value).map_err(|_| {
-        Error::new(ErrorKind::InvalidOperation, format!("{field} exceeds i32::MAX"))
-            .with_operation(operation)
-            .with_context(field, value.to_string())
-    })
+    i32::try_from(value).map_err(|_| range_limit_error(ErrorKind::InvalidInput, operation, field, "i32::MAX", value))
 }
 
 pub(crate) fn usize_to_i64(value: usize, operation: &'static str, field: &'static str) -> Result<i64> {
-    i64::try_from(value).map_err(|_| {
-        Error::new(ErrorKind::InvalidOperation, format!("{field} exceeds i64::MAX"))
-            .with_operation(operation)
-            .with_context(field, value.to_string())
-    })
+    i64::try_from(value).map_err(|_| range_limit_error(ErrorKind::InvalidInput, operation, field, "i64::MAX", value))
 }
 
 /// Classify an [`ErrorKind`] as temporary or permanent.
@@ -359,28 +531,85 @@ pub(crate) fn usize_to_i64(value: usize, operation: &'static str, field: &'stati
 /// while logic errors (type mismatch, invalid args) are permanent.
 fn default_status_for_kind(kind: ErrorKind) -> ErrorStatus {
     match kind {
-        ErrorKind::CudaError | ErrorKind::OutOfMemory => ErrorStatus::Temporary,
-        ErrorKind::FatalCudaError => ErrorStatus::Persistent,
+        ErrorKind::ResourceExhausted => ErrorStatus::Temporary,
         _ => ErrorStatus::Permanent,
     }
 }
 
-fn map_interop_error_kind(kind: InteropErrorKind) -> ErrorKind {
+fn default_code_for_kind(kind: ErrorKind) -> ErrorCode {
     match kind {
-        InteropErrorKind::NotFound => ErrorKind::NotFound,
-        InteropErrorKind::UnsupportedType => ErrorKind::TypeError,
-        InteropErrorKind::NullMaskUnsupported => ErrorKind::NullError,
-        InteropErrorKind::ExecutionBindingUnavailable | InteropErrorKind::ReadinessUnavailable => {
-            ErrorKind::InvalidOperation
+        ErrorKind::InvalidInput => ErrorCode::InvalidInput,
+        ErrorKind::NotFound => ErrorCode::NotFound,
+        ErrorKind::Unsupported => ErrorCode::Unsupported,
+        ErrorKind::ExecutionContext => ErrorCode::ExecutionContext,
+        ErrorKind::ResourceExhausted => ErrorCode::ResourceExhausted,
+        ErrorKind::DependencyFailure => ErrorCode::DependencyFailure,
+        ErrorKind::InvariantViolation => ErrorCode::InvariantViolation,
+    }
+}
+
+fn map_interop_error_code(kind: InteropErrorKind) -> ErrorCode {
+    match kind {
+        InteropErrorKind::NotFound => ErrorCode::MissingResource,
+        InteropErrorKind::UnsupportedType => ErrorCode::UnsupportedDtype,
+        InteropErrorKind::NullMaskUnsupported => ErrorCode::InvalidInput,
+        InteropErrorKind::InvalidView => ErrorCode::InvalidInput,
+        InteropErrorKind::ExecutionBindingUnavailable => ErrorCode::ExecutionBindingUnavailable,
+        InteropErrorKind::ReadinessUnavailable => ErrorCode::ReadinessUnavailable,
+        InteropErrorKind::UnsupportedLayout => ErrorCode::UnsupportedLayout,
+        InteropErrorKind::PlacementUnsupported | InteropErrorKind::ProfileUnsupported => {
+            ErrorCode::UnsupportedOperation
         },
-        InteropErrorKind::UnsupportedLayout
-        | InteropErrorKind::PlacementUnsupported
-        | InteropErrorKind::MixedDeviceUnsupported
-        | InteropErrorKind::ProfileUnsupported => ErrorKind::NotSupported,
-        InteropErrorKind::ExecutionBindingMismatch
-        | InteropErrorKind::InvalidView
-        | InteropErrorKind::ReadinessMismatch
-        | InteropErrorKind::LeaseAlreadyActive => ErrorKind::InvalidOperation,
+        InteropErrorKind::MixedDeviceUnsupported => ErrorCode::CrossDeviceInputs,
+        InteropErrorKind::ExecutionBindingMismatch => ErrorCode::RuntimeBindingMismatch,
+        InteropErrorKind::ReadinessMismatch => ErrorCode::RuntimeBindingMismatch,
+        InteropErrorKind::LeaseAlreadyActive => ErrorCode::LeaseAlreadyActive,
+    }
+}
+
+fn kind_for_code(code: ErrorCode) -> Option<ErrorKind> {
+    match code {
+        ErrorCode::InvalidInput
+        | ErrorCode::DuplicateColumnName
+        | ErrorCode::DuplicateKey
+        | ErrorCode::ColumnLengthMismatch
+        | ErrorCode::TypeMismatch
+        | ErrorCode::IndexOutOfBounds
+        | ErrorCode::NullUnexpected => Some(ErrorKind::InvalidInput),
+        ErrorCode::NotFound | ErrorCode::MissingResource | ErrorCode::MissingColumn => Some(ErrorKind::NotFound),
+        ErrorCode::Unsupported
+        | ErrorCode::UnsupportedDtype
+        | ErrorCode::UnsupportedLayout
+        | ErrorCode::UnsupportedOperation => Some(ErrorKind::Unsupported),
+        ErrorCode::ExecutionContext
+        | ErrorCode::EmptyConstructionRequiresRuntime
+        | ErrorCode::CrossDeviceInputs
+        | ErrorCode::CrossProvenanceInputs
+        | ErrorCode::RuntimeBindingMismatch
+        | ErrorCode::ReadinessUnavailable
+        | ErrorCode::ExecutionBindingUnavailable
+        | ErrorCode::LeaseAlreadyActive => Some(ErrorKind::ExecutionContext),
+        ErrorCode::ResourceExhausted | ErrorCode::OutOfMemory => Some(ErrorKind::ResourceExhausted),
+        ErrorCode::DependencyFailure | ErrorCode::CudaRuntime | ErrorCode::FatalCuda | ErrorCode::IoFailure => {
+            Some(ErrorKind::DependencyFailure)
+        },
+        ErrorCode::InvariantViolation => Some(ErrorKind::InvariantViolation),
+    }
+}
+
+fn default_status_for_code(code: ErrorCode) -> ErrorStatus {
+    match code {
+        ErrorCode::ResourceExhausted | ErrorCode::OutOfMemory | ErrorCode::CudaRuntime => ErrorStatus::Temporary,
+        ErrorCode::FatalCuda => ErrorStatus::Persistent,
+        _ => ErrorStatus::Permanent,
+    }
+}
+
+fn canonical_interop_context_key(key: &'static str) -> &'static str {
+    match key {
+        "producer_device" | "expected_device" | "descriptor_device" | "release_device" => "left_device",
+        "runtime_device" | "actual_device" | "event_device" | "stream_device" | "consumer_device" => "right_device",
+        _ => key,
     }
 }
 
@@ -389,6 +618,7 @@ impl From<InteropError> for Error {
         let source_cudf_error =
             find_cudf_error_in_chain(&error as &(dyn std::error::Error + 'static)).map(|inner| SourceCudfSnapshot {
                 kind: inner.kind(),
+                code: inner.code(),
                 status: inner.status(),
                 operation: inner.operation().to_string(),
                 called: inner
@@ -398,10 +628,13 @@ impl From<InteropError> for Error {
                     .map(|(_, value)| value.clone())
                     .collect(),
             });
-        let kind = source_cudf_error.as_ref().map_or_else(|| map_interop_error_kind(error.kind()), |inner| inner.kind);
+        let code = source_cudf_error.as_ref().map_or_else(|| map_interop_error_code(error.kind()), |inner| inner.code);
+        let kind = source_cudf_error
+            .as_ref()
+            .map_or_else(|| kind_for_code(code).unwrap_or(ErrorKind::InvariantViolation), |inner| inner.kind);
         let message = error.to_string();
-        let mut mapped = Error::new(kind, message).set_source(error);
-        mapped.status = source_cudf_error.as_ref().map_or_else(|| default_status_for_kind(kind), |inner| inner.status);
+        let mut mapped = Error::new(kind, message).with_code(code).set_source(error);
+        mapped.status = source_cudf_error.as_ref().map_or_else(|| default_status_for_code(code), |inner| inner.status);
         mapped.apply_interop_context(source_cudf_error.as_ref());
         mapped
     }
@@ -428,17 +661,17 @@ pub(crate) fn check_status(status: cudf_sys::cudf_status_t) -> Result<()> {
         return Ok(());
     }
 
-    let kind = match status {
-        cudf_sys::CUDF_ERROR_INVALID_ARGUMENT => ErrorKind::InvalidArgument,
-        cudf_sys::CUDF_ERROR_INVALID_OPERATION => ErrorKind::InvalidOperation,
-        cudf_sys::CUDF_ERROR_CUDA => ErrorKind::CudaError,
-        cudf_sys::CUDF_ERROR_FATAL_CUDA => ErrorKind::FatalCudaError,
-        cudf_sys::CUDF_ERROR_OUT_OF_MEMORY => ErrorKind::OutOfMemory,
-        cudf_sys::CUDF_ERROR_IO => ErrorKind::IoError,
-        cudf_sys::CUDF_ERROR_TYPE => ErrorKind::TypeError,
-        cudf_sys::CUDF_ERROR_NULL => ErrorKind::NullError,
-        cudf_sys::CUDF_ERROR_INDEX => ErrorKind::IndexError,
-        _ => ErrorKind::Unknown,
+    let (kind, code) = match status {
+        cudf_sys::CUDF_ERROR_INVALID_ARGUMENT => (ErrorKind::InvalidInput, ErrorCode::InvalidInput),
+        cudf_sys::CUDF_ERROR_INVALID_OPERATION => (ErrorKind::InvalidInput, ErrorCode::InvalidInput),
+        cudf_sys::CUDF_ERROR_CUDA => (ErrorKind::DependencyFailure, ErrorCode::CudaRuntime),
+        cudf_sys::CUDF_ERROR_FATAL_CUDA => (ErrorKind::DependencyFailure, ErrorCode::FatalCuda),
+        cudf_sys::CUDF_ERROR_OUT_OF_MEMORY => (ErrorKind::ResourceExhausted, ErrorCode::OutOfMemory),
+        cudf_sys::CUDF_ERROR_IO => (ErrorKind::DependencyFailure, ErrorCode::IoFailure),
+        cudf_sys::CUDF_ERROR_TYPE => (ErrorKind::InvalidInput, ErrorCode::InvalidInput),
+        cudf_sys::CUDF_ERROR_NULL => (ErrorKind::InvalidInput, ErrorCode::NullUnexpected),
+        cudf_sys::CUDF_ERROR_INDEX => (ErrorKind::InvalidInput, ErrorCode::IndexOutOfBounds),
+        _ => (ErrorKind::InvariantViolation, ErrorCode::InvariantViolation),
     };
 
     // SAFETY: cudf_last_error_message returns either null or a pointer to a
@@ -456,8 +689,8 @@ pub(crate) fn check_status(status: cudf_sys::cudf_status_t) -> Result<()> {
         }
     };
 
-    let mut err = Error::new(kind, message);
-    err.status = default_status_for_kind(kind);
+    let mut err = Error::new(kind, message).with_code(code);
+    err.status = default_status_for_code(code);
     Err(err)
 }
 
@@ -482,13 +715,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn default_status_cuda_is_temporary() {
-        assert_eq!(default_status_for_kind(ErrorKind::CudaError), ErrorStatus::Temporary);
-        assert_eq!(default_status_for_kind(ErrorKind::OutOfMemory), ErrorStatus::Temporary);
+    fn default_status_resource_exhausted_is_temporary() {
+        assert_eq!(default_status_for_kind(ErrorKind::ResourceExhausted), ErrorStatus::Temporary);
+        assert_eq!(default_status_for_code(ErrorCode::OutOfMemory), ErrorStatus::Temporary);
     }
 
     #[test]
-    fn default_status_fatal_cuda_is_persistent() {
-        assert_eq!(default_status_for_kind(ErrorKind::FatalCudaError), ErrorStatus::Persistent);
+    fn default_status_fatal_cuda_code_is_persistent() {
+        assert_eq!(default_status_for_code(ErrorCode::FatalCuda), ErrorStatus::Persistent);
     }
 }

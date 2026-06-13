@@ -10,8 +10,11 @@
 //!
 //! - [`csv`], [`json`], and [`parquet`] expose file-format readers and writers
 //!   over low-level owned [`Table`] values.
-//! - [`arrow`] exposes Arrow conversion helpers for [`crate::DataFrame`].
-//!   That path is host-copy interop, not zero-copy external GPU interop.
+//! - [`arrow`] exposes Arrow conversion helpers for [`crate::DataFrame`] using
+//!   the Rust `arrow` crate's [`arrow::record_batch::RecordBatch`]. That path
+//!   is host-copy interop, not zero-copy external GPU interop. If you need
+//!   Arrow C Device ABI handoff for existing device buffers, use
+//!   [`crate::interop::arrow_device`] instead.
 //!
 //! # Naming and Ownership
 //!
@@ -28,10 +31,10 @@
 //! # Runtime Placement
 //!
 //! CSV, JSON, and Parquet option types may carry an explicit [`crate::Runtime`].
-//! For reads, that runtime determines the execution provenance retained by the
-//! returned low-level table. For writes, it controls the explicit execution
-//! context used for the I/O operation itself while the input table remains a
-//! borrow.
+//! For reads, that runtime determines the device, stream, and memory resource
+//! retained by the returned low-level table. For writes, it controls the
+//! device-pinned stream and memory resource used for the I/O operation itself
+//! while the input table remains a borrow.
 
 use std::{
     error::Error as StdError,
@@ -41,7 +44,7 @@ use std::{
 };
 
 use crate::core::{
-    error::{Error, ErrorKind, Result},
+    error::{self, Error, ErrorCode, ErrorKind, Result},
     table::Table,
 };
 
@@ -59,7 +62,7 @@ pub struct TableReadOutput {
 fn classify_io_error_kind(kind: stdio::ErrorKind) -> ErrorKind {
     match kind {
         stdio::ErrorKind::NotFound => ErrorKind::NotFound,
-        _ => ErrorKind::IoError,
+        _ => ErrorKind::DependencyFailure,
     }
 }
 
@@ -70,10 +73,11 @@ fn map_path_io_error(
     operation: &'static str,
     message: &'static str,
 ) -> Error {
-    Error::new(kind, message)
+    let err = Error::new(kind, message)
         .with_operation(operation)
         .with_context("path", path.display().to_string())
-        .set_source(source)
+        .set_source(source);
+    if kind == ErrorKind::NotFound { err.with_code(ErrorCode::MissingResource) } else { err }
 }
 
 fn map_std_io_error(source: stdio::Error, path: &Path, operation: &'static str, message: &'static str) -> Error {
@@ -84,7 +88,7 @@ fn map_std_io_error(source: stdio::Error, path: &Path, operation: &'static str, 
 fn map_csv_error(source: ::csv::Error, path: &Path, operation: &'static str, message: &'static str) -> Error {
     let kind = match source.kind() {
         ::csv::ErrorKind::Io(io_error) => classify_io_error_kind(io_error.kind()),
-        _ => ErrorKind::IoError,
+        _ => ErrorKind::DependencyFailure,
     };
     map_path_io_error(source, kind, path, operation, message)
 }
@@ -95,13 +99,22 @@ fn validate_input_path(path: &Path, operation: &'static str) -> Result<()> {
         .map_err(|source| map_std_io_error(source, path, operation, "failed to access input path"))
 }
 
+fn interior_null_byte_error(operation: &'static str, resource: &'static str, message: &'static str) -> Error {
+    error::interior_null_byte_error(operation, resource, message)
+}
+
 /// Convert a filesystem path to a `CString` for FFI, with operation context.
 fn path_to_cstring(path: &Path, operation: &'static str) -> Result<CString> {
-    let path_str = path
-        .to_str()
-        .ok_or_else(|| Error::new(ErrorKind::InvalidArgument, "path is not valid UTF-8").with_operation(operation))?;
+    let path_str = path.to_str().ok_or_else(|| {
+        Error::new(ErrorKind::InvalidInput, "path is not valid UTF-8")
+            .with_code(ErrorCode::InvalidInput)
+            .with_operation(operation)
+            .with_context("resource", "path")
+            .with_context("reason", "invalid_utf8")
+    })?;
     CString::new(path_str).map_err(|_| {
-        Error::new(ErrorKind::InvalidArgument, "path contains interior null byte").with_operation(operation)
+        interior_null_byte_error(operation, "path", "path contains interior null byte")
+            .with_context("path", path.to_string_lossy().into_owned())
     })
 }
 
@@ -111,33 +124,58 @@ unsafe fn collect_column_names(
     operation: &'static str,
 ) -> Result<Vec<String>> {
     if num_names < 0 {
-        return Err(Error::new(ErrorKind::InvalidOperation, "ffi returned negative column name count")
+        return Err(Error::new(ErrorKind::InvariantViolation, "ffi returned negative column name count")
+            .with_code(ErrorCode::InvariantViolation)
             .with_operation(operation)
-            .with_context("num_names", num_names.to_string()));
+            .with_context("column_name_count", num_names.to_string())
+            .with_context("resource", "column_name_count")
+            .with_context("reason", "negative_name_count")
+            .with_context("remedy", "ensure the foreign reader reports a non-negative column name count"));
     }
 
     if num_names > 0 && names_ptr.is_null() {
-        return Err(Error::new(ErrorKind::InvalidOperation, "ffi returned null column name array with positive count")
-            .with_operation(operation)
-            .with_context("num_names", num_names.to_string())
-            .with_context("names_ptr_null", "true"));
+        return Err(Error::new(
+            ErrorKind::InvariantViolation,
+            "ffi returned null column name array with positive count",
+        )
+        .with_code(ErrorCode::InvariantViolation)
+        .with_operation(operation)
+        .with_context("column_name_count", num_names.to_string())
+        .with_context("resource", "column_names")
+        .with_context("reason", "null_name_array")
+        .with_context(
+            "remedy",
+            "ensure the foreign reader returns a name array whenever column_name_count is positive",
+        ));
     }
 
     let mut names = Vec::with_capacity(num_names as usize);
     for i in 0..num_names {
         let name_ptr = *names_ptr.add(i as usize);
         if name_ptr.is_null() {
-            return Err(Error::new(ErrorKind::InvalidOperation, "ffi returned null column name entry")
+            return Err(Error::new(ErrorKind::InvariantViolation, "ffi returned null column name entry")
+                .with_code(ErrorCode::InvariantViolation)
                 .with_operation(operation)
-                .with_context("num_names", num_names.to_string())
-                .with_context("name_index", i.to_string()));
+                .with_context("column_name_count", num_names.to_string())
+                .with_context("column_index", i.to_string())
+                .with_context("resource", "column_name")
+                .with_context("reason", "null_name_entry")
+                .with_context(
+                    "remedy",
+                    "ensure the foreign reader returns one non-null name entry per reported column",
+                ));
         }
 
         let cstr = CStr::from_ptr(name_ptr);
         let name = cstr.to_str().map_err(|_| {
-            Error::new(ErrorKind::InvalidOperation, "column name from FFI is not valid UTF-8")
+            Error::new(ErrorKind::InvariantViolation, "column name from FFI is not valid UTF-8")
+                .with_code(ErrorCode::InvariantViolation)
                 .with_operation(operation)
-                .with_context("name_index", i.to_string())
+                .with_context("column_name_count", num_names.to_string())
+                .with_context("column_index", i.to_string())
+                .with_context("resource", "column_name")
+                .with_context("reason", "invalid_utf8")
+                .with_context("remedy", "ensure the foreign reader returns valid UTF-8 column names")
         })?;
         names.push(name.to_owned());
     }
@@ -149,31 +187,53 @@ unsafe fn collect_column_names(
 mod tests {
     use std::{ffi::CString, os::raw::c_char, ptr};
 
-    use crate::core::error::ErrorKind;
+    use crate::core::error::{ErrorCode, ErrorKind};
 
     #[test]
     fn test_collect_column_names_rejects_negative_count() {
         let err = unsafe { super::collect_column_names(ptr::null_mut(), -1, "test") }.unwrap_err();
-        assert_eq!(err.kind(), ErrorKind::InvalidOperation);
+        assert_eq!(err.kind(), ErrorKind::InvariantViolation);
+        assert_eq!(err.code(), ErrorCode::InvariantViolation);
         assert_eq!(err.operation(), "test");
-        assert!(err.context().iter().any(|(k, v)| *k == "num_names" && v == "-1"));
+        assert!(err.context().iter().any(|(k, v)| *k == "column_name_count" && v == "-1"));
+        assert!(!err.context().iter().any(|(k, _)| *k == "num_names"));
+        assert!(err.context().iter().any(|(k, v)| *k == "resource" && v == "column_name_count"));
+        assert!(err.context().iter().any(|(k, v)| *k == "reason" && v == "negative_name_count"));
+        assert!(
+            err.context()
+                .iter()
+                .any(|(k, v)| *k == "remedy"
+                    && v == "ensure the foreign reader reports a non-negative column name count")
+        );
     }
 
     #[test]
     fn test_collect_column_names_rejects_null_names_ptr_with_positive_count() {
         let err = unsafe { super::collect_column_names(ptr::null_mut(), 1, "test") }.unwrap_err();
-        assert_eq!(err.kind(), ErrorKind::InvalidOperation);
+        assert_eq!(err.kind(), ErrorKind::InvariantViolation);
+        assert_eq!(err.code(), ErrorCode::InvariantViolation);
         assert_eq!(err.operation(), "test");
-        assert!(err.context().iter().any(|(k, v)| *k == "names_ptr_null" && v == "true"));
+        assert!(err.context().iter().any(|(k, v)| *k == "column_name_count" && v == "1"));
+        assert!(err.context().iter().any(|(k, v)| *k == "resource" && v == "column_names"));
+        assert!(err.context().iter().any(|(k, v)| *k == "reason" && v == "null_name_array"));
+        assert!(err.context().iter().any(|(k, v)| *k == "remedy"
+            && v == "ensure the foreign reader returns a name array whenever column_name_count is positive"));
+        assert!(!err.context().iter().any(|(k, _)| *k == "names_ptr_null"));
     }
 
     #[test]
     fn test_collect_column_names_rejects_null_entry_pointer() {
         let mut ptrs: Vec<*mut c_char> = vec![ptr::null_mut()];
         let err = unsafe { super::collect_column_names(ptrs.as_mut_ptr(), 1, "test") }.unwrap_err();
-        assert_eq!(err.kind(), ErrorKind::InvalidOperation);
+        assert_eq!(err.kind(), ErrorKind::InvariantViolation);
+        assert_eq!(err.code(), ErrorCode::InvariantViolation);
         assert_eq!(err.operation(), "test");
-        assert!(err.context().iter().any(|(k, v)| *k == "name_index" && v == "0"));
+        assert!(err.context().iter().any(|(k, v)| *k == "column_index" && v == "0"));
+        assert!(err.context().iter().any(|(k, v)| *k == "resource" && v == "column_name"));
+        assert!(err.context().iter().any(|(k, v)| *k == "reason" && v == "null_name_entry"));
+        assert!(err.context().iter().any(|(k, v)| *k == "remedy"
+            && v == "ensure the foreign reader returns one non-null name entry per reported column"));
+        assert!(!err.context().iter().any(|(k, _)| *k == "name_index"));
     }
 
     #[test]

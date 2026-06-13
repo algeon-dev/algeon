@@ -3,13 +3,14 @@ use std::sync::Arc;
 use super::owned::{DataFrame, derive_frame_domain_from_columns};
 use crate::{
     core::{
-        error::{Error, ErrorKind, Result},
+        error::{Error, ErrorCode, ErrorKind, Result},
         scalar::Scalar,
         types::DataType,
     },
     frame::series::{IntoSeries, Series},
     internal::resolve::missing_column_error,
     ops::{self, unary},
+    runtime::execution_domain::ExecutionDomain,
 };
 
 /// One item accepted by [`DataFrame::with_columns`](super::DataFrame::with_columns).
@@ -48,6 +49,15 @@ where S: Into<String>
     }
 }
 
+fn missing_output_name_error(operation: &'static str) -> Error {
+    Error::new(ErrorKind::InvalidInput, "expression has no output name; use .alias() to name it")
+        .with_code(ErrorCode::UnsupportedOperation)
+        .with_operation(operation)
+        .with_context("resource", "output_name")
+        .with_context("reason", "missing_output_name")
+        .with_context("remedy", "use .alias(...) or provide an explicit (name, expr) pair")
+}
+
 impl DataFrame {
     /// Return a new DataFrame with a single column added or replaced.
     ///
@@ -73,13 +83,14 @@ impl DataFrame {
         if let Some(self_rows) = expected_rows {
             if col_rows != self_rows {
                 return Err(Error::new(
-                    ErrorKind::InvalidOperation,
+                    ErrorKind::InvalidInput,
                     format!("new column has {} rows but DataFrame has {} rows", col_rows, self_rows),
                 )
+                .with_code(ErrorCode::ColumnLengthMismatch)
                 .with_operation("dataframe::with_column")
                 .with_context("column_name", name.to_string())
-                .with_context("column_rows", col_rows.to_string())
-                .with_context("dataframe_rows", self_rows.to_string()));
+                .with_context("actual_rows", col_rows.to_string())
+                .with_context("expected_rows", self_rows.to_string()));
             }
         }
 
@@ -136,13 +147,14 @@ impl DataFrame {
             if let Some(self_rows) = expected_rows {
                 if series_rows != self_rows {
                     return Err(Error::new(
-                        ErrorKind::InvalidOperation,
+                        ErrorKind::InvalidInput,
                         format!("series '{}' has {} rows but DataFrame has {} rows", name, series_rows, self_rows),
                     )
+                    .with_code(ErrorCode::ColumnLengthMismatch)
                     .with_operation("dataframe::assign")
                     .with_context("column_name", name.to_string())
-                    .with_context("series_rows", series_rows.to_string())
-                    .with_context("dataframe_rows", self_rows.to_string()));
+                    .with_context("actual_rows", series_rows.to_string())
+                    .with_context("expected_rows", self_rows.to_string()));
                 }
             } else {
                 expected_rows = Some(series_rows);
@@ -199,10 +211,11 @@ impl DataFrame {
         let names: Vec<String> = exprs
             .iter()
             .map(|(explicit_name, expr)| {
-                explicit_name.as_deref().or_else(|| expr.output_name()).map(str::to_string).ok_or_else(|| {
-                    Error::new(ErrorKind::InvalidOperation, "expression has no output name; use .alias() to name it")
-                        .with_operation("dataframe::with_columns")
-                })
+                explicit_name
+                    .as_deref()
+                    .or_else(|| expr.output_name())
+                    .map(str::to_string)
+                    .ok_or_else(|| missing_output_name_error("dataframe::with_columns"))
             })
             .collect::<Result<_>>()?;
 
@@ -246,11 +259,7 @@ impl DataFrame {
         let operation = "dataframe::replace_nulls";
         let col = self.columns.get(column).ok_or_else(|| missing_column_error(operation, column))?;
 
-        crate::runtime::execution_domain::ExecutionDomain::insert_stream_dependency(
-            value.execution_domain(),
-            col.execution_domain(),
-            operation,
-        )?;
+        ExecutionDomain::insert_stream_dependency(value.execution_domain(), col.execution_domain(), operation)?;
         let cv = col.view()?;
         let exec_options = col.execution_domain().explicit_exec_options_raw();
         let new_col = crate::ops::replace::replace_nulls_with_exec_options(

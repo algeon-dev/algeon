@@ -11,12 +11,12 @@
 //!   are lexicographic and case-sensitive. Arithmetic and bitwise operators
 //!   on strings will return an error.
 
-use std::ptr;
+use std::{ptr, sync::Arc};
 
 use crate::{
     core::{
         column::{Column, ColumnView},
-        error::{self, Error, ErrorKind, Result},
+        error::{self, Error, ErrorCode, ErrorKind, Result},
         scalar::Scalar,
         types::{DataType, TypeId},
     },
@@ -152,13 +152,14 @@ impl BinaryOperator {
 /// - Int + Float → wider float
 /// - Float + Float → wider float
 /// - Signed int + unsigned int of same width → next wider signed int
-/// - Unsupported combinations → `ErrorKind::NotSupported`
+/// - Unsupported combinations → `ErrorKind::Unsupported`
 pub fn infer_binary_output_type(lhs: TypeId, rhs: TypeId, op: BinaryOperator) -> Result<DataType> {
     let make_err = |msg: &str| {
-        Err(Error::new(ErrorKind::NotSupported, msg.to_string())
+        Err(Error::new(ErrorKind::Unsupported, msg.to_string())
+            .with_code(ErrorCode::TypeMismatch)
             .with_operation("binary::infer_binary_output_type")
-            .with_context("lhs_type_id", format!("{:?}", lhs).to_lowercase())
-            .with_context("rhs_type_id", format!("{:?}", rhs).to_lowercase())
+            .with_context("left_type_id", format!("{:?}", lhs).to_lowercase())
+            .with_context("right_type_id", format!("{:?}", rhs).to_lowercase())
             .with_context("operator", format!("{:?}", op).to_lowercase()))
     };
 
@@ -260,7 +261,7 @@ pub fn binary_operation_vv(
     op: BinaryOperator,
     output_type: &DataType,
 ) -> Result<Column> {
-    let output_domain = std::sync::Arc::clone(lhs.execution_domain());
+    let output_domain = Arc::clone(lhs.execution_domain());
     ExecutionDomain::require_same_device_for_mixed_inputs(
         lhs.execution_domain(),
         rhs.execution_domain(),
@@ -290,7 +291,7 @@ pub(crate) fn binary_operation_vv_impl(
     rhs: &ColumnView<'_>,
     op: BinaryOperator,
     output_type: &DataType,
-    output_domain: &std::sync::Arc<ExecutionDomain>,
+    output_domain: &Arc<ExecutionDomain>,
     exec_options: Option<&cudf_sys::cudf_exec_options_t>,
     operation: &'static str,
 ) -> Result<Column> {
@@ -325,7 +326,7 @@ pub(crate) fn binary_operation_vv_impl(
         ],
     )?;
     // SAFETY: out was returned by a successful FFI call, transferring ownership.
-    unsafe { Column::from_raw_with_domain(out, std::sync::Arc::clone(output_domain)) }
+    unsafe { Column::from_raw_with_domain(out, Arc::clone(output_domain)) }
 }
 
 /// Binary operation: column op scalar.
@@ -338,7 +339,7 @@ pub fn binary_operation_vs(
     op: BinaryOperator,
     output_type: &DataType,
 ) -> Result<Column> {
-    let output_domain = std::sync::Arc::clone(lhs.execution_domain());
+    let output_domain = Arc::clone(lhs.execution_domain());
     ExecutionDomain::insert_stream_dependency(rhs.execution_domain(), &output_domain, "binary::binary_operation_vs")?;
     let exec_options = output_domain.explicit_exec_options_raw();
     binary_operation_vs_impl(
@@ -357,7 +358,7 @@ pub(crate) fn binary_operation_vs_impl(
     rhs: &Scalar,
     op: BinaryOperator,
     output_type: &DataType,
-    output_domain: &std::sync::Arc<ExecutionDomain>,
+    output_domain: &Arc<ExecutionDomain>,
     exec_options: Option<&cudf_sys::cudf_exec_options_t>,
     operation: &'static str,
 ) -> Result<Column> {
@@ -392,7 +393,7 @@ pub(crate) fn binary_operation_vs_impl(
         ],
     )?;
     // SAFETY: out was returned by a successful FFI call, transferring ownership.
-    unsafe { Column::from_raw_with_domain(out, std::sync::Arc::clone(output_domain)) }
+    unsafe { Column::from_raw_with_domain(out, Arc::clone(output_domain)) }
 }
 
 /// Binary operation: scalar op column.
@@ -407,7 +408,7 @@ pub fn binary_operation_sv(
 ) -> Result<Column> {
     // Use the column's domain as primary (consistent with binary_operation_vs
     // which also uses the column's domain).
-    let output_domain = std::sync::Arc::clone(rhs.execution_domain());
+    let output_domain = Arc::clone(rhs.execution_domain());
     ExecutionDomain::insert_stream_dependency(lhs.execution_domain(), &output_domain, "binary::binary_operation_sv")?;
     let exec_options = output_domain.explicit_exec_options_raw();
     binary_operation_sv_impl(
@@ -426,7 +427,7 @@ fn binary_operation_sv_impl(
     rhs: &ColumnView<'_>,
     op: BinaryOperator,
     output_type: &DataType,
-    output_domain: &std::sync::Arc<ExecutionDomain>,
+    output_domain: &Arc<ExecutionDomain>,
     exec_options: Option<&cudf_sys::cudf_exec_options_t>,
     operation: &'static str,
 ) -> Result<Column> {
@@ -461,5 +462,5 @@ fn binary_operation_sv_impl(
         ],
     )?;
     // SAFETY: out was returned by a successful FFI call, transferring ownership.
-    unsafe { Column::from_raw_with_domain(out, std::sync::Arc::clone(output_domain)) }
+    unsafe { Column::from_raw_with_domain(out, Arc::clone(output_domain)) }
 }

@@ -4,12 +4,12 @@ use typed_builder::TypedBuilder;
 
 use super::owned::DataFrame;
 use crate::{
-    core::{
-        column::Column,
-        error::{Error, ErrorKind, Result},
-    },
+    core::{column::Column, error::Result},
     frame::series::Series,
-    internal::{hash::FastHashSet, resolve::missing_column_error},
+    internal::{
+        hash::FastHashSet,
+        resolve::{duplicate_column_name_error_with_contract, missing_column_error},
+    },
 };
 
 /// Options for [`DataFrame::melt`] (unpivot: wide → long format).
@@ -50,6 +50,23 @@ impl DataFrame {
     ///
     /// Equivalent to cuDF Python's `DataFrame.melt()` / `cudf.melt()`.
     pub fn melt(&self, opts: MeltOptions) -> Result<Self> {
+        fn duplicate_name_error(
+            name: &str,
+            column_name_count: usize,
+            message: String,
+            reason: &'static str,
+            remedy: &'static str,
+        ) -> crate::Error {
+            duplicate_column_name_error_with_contract(
+                "dataframe::melt",
+                name.to_string(),
+                column_name_count,
+                message,
+                reason,
+                remedy,
+            )
+        }
+
         let id_vars = &opts.id_vars;
         let value_vars: Vec<String> = if opts.value_vars.is_empty() {
             let id_set: FastHashSet<&str> = id_vars.iter().map(|s| s.as_str()).collect();
@@ -72,29 +89,41 @@ impl DataFrame {
         let id_set: FastHashSet<&str> = id_vars.iter().map(|s| s.as_str()).collect();
         for name in &value_vars {
             if id_set.contains(name.as_str()) {
-                return Err(Error::new(
-                    ErrorKind::InvalidOperation,
+                return Err(duplicate_name_error(
+                    name,
+                    id_vars.len() + value_vars.len(),
                     format!("column '{name}' appears in both id_vars and value_vars"),
-                )
-                .with_operation("dataframe::melt")
-                .with_context("column_name", name.clone()));
+                    "melt_name_in_both_id_and_value_vars",
+                    "place each melt column in either id_vars or value_vars, not both",
+                ));
             }
         }
         if id_set.contains(opts.var_name.as_str()) {
-            return Err(Error::new(
-                ErrorKind::InvalidOperation,
+            return Err(duplicate_name_error(
+                &opts.var_name,
+                id_vars.len() + 2,
                 format!("var_name '{}' collides with an id_var column", opts.var_name),
-            )
-            .with_operation("dataframe::melt")
-            .with_context("var_name", opts.var_name.clone()));
+                "melt_var_name_conflicts_with_id_var",
+                "choose a var_name that does not collide with id_vars",
+            ));
         }
         if id_set.contains(opts.value_name.as_str()) {
-            return Err(Error::new(
-                ErrorKind::InvalidOperation,
+            return Err(duplicate_name_error(
+                &opts.value_name,
+                id_vars.len() + 2,
                 format!("value_name '{}' collides with an id_var column", opts.value_name),
-            )
-            .with_operation("dataframe::melt")
-            .with_context("value_name", opts.value_name.clone()));
+                "melt_value_name_conflicts_with_id_var",
+                "choose a value_name that does not collide with id_vars",
+            ));
+        }
+        if opts.var_name == opts.value_name {
+            return Err(duplicate_name_error(
+                &opts.var_name,
+                2,
+                format!("var_name and value_name must be distinct (got '{}')", opts.var_name),
+                "melt_output_names_conflict",
+                "choose distinct var_name and value_name",
+            ));
         }
 
         let n = self.row_count;

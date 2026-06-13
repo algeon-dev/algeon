@@ -18,13 +18,15 @@ fn prepared_host_leaf_or_string_column_projection_from_view(
 
     if interop_type.id() == InteropTypeId::String {
         if num_children < 1 {
-            return Err(InteropError::new(
-                InteropErrorKind::InvalidView,
+            return Err(projection_child_count_error(
+                operation,
                 "string column view must expose an offsets child",
-            )
-            .with_context("operation", operation)
-            .with_context("type_id", "string")
-            .with_context("num_children", num_children.to_string()));
+                "string",
+                num_children,
+                1,
+                "requires_offsets_child",
+                "expose an offsets child before projecting string data",
+            ));
         }
 
         let mut next_column_id = next_column_id;
@@ -95,7 +97,7 @@ fn prepared_host_leaf_or_string_column_projection_from_view(
         )
         .with_context("operation", operation)
         .with_context("type_id", format!("{:?}", data_type.id()).to_lowercase())
-        .with_context("num_children", num_children.to_string()));
+        .with_context("child_count", num_children.to_string()));
     }
 
     let mut next_column_id = next_column_id;
@@ -171,27 +173,31 @@ fn prepared_host_column_projection_with_current_supported_child_projection_from_
     }
 
     if num_children < 2 {
-        return Err(InteropError::new(
-            InteropErrorKind::InvalidView,
+        return Err(projection_child_count_error(
+            operation,
             "list column view must expose offsets and child columns",
-        )
-        .with_context("operation", operation)
-        .with_context("type_id", "list")
-        .with_context("num_children", num_children.to_string()));
+            "list",
+            num_children,
+            2,
+            "requires_offsets_and_child",
+            "expose both offsets and child columns before projecting list data",
+        ));
     }
 
-    let root_offset = usize::try_from(
-        view.offset().map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?,
-    )
-    .map_err(|_| {
-        InteropError::new(InteropErrorKind::InvalidView, "column view offset must be >= 0")
-            .with_context("operation", operation)
-    })?;
+    let root_offset_raw =
+        view.offset().map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?;
+    let root_offset = usize::try_from(root_offset_raw)
+        .map_err(|_| negative_projection_offset_error(operation, root_offset_raw as i64))?;
     let root_end = root_offset.checked_add(len).ok_or_else(|| {
-        InteropError::new(InteropErrorKind::InvalidView, "list host export active root range overflowed")
-            .with_context("operation", operation)
-            .with_context("offset", root_offset.to_string())
-            .with_context("len", len.to_string())
+        projection_overflow_error(
+            operation,
+            "list host export active root range overflowed",
+            "row_range",
+            "end_overflowed_usize",
+            root_offset,
+            len,
+            "reduce offset + row_count so the active host export range fits within usize",
+        )
     })?;
 
     let mut next_column_id = next_column_id;
@@ -205,27 +211,35 @@ fn prepared_host_column_projection_with_current_supported_child_projection_from_
     let offsets_type =
         offsets_view.data_type().map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?;
     let offsets_elem_size = map_data_type(offsets_type).id().fixed_width_size_bytes().ok_or_else(|| {
-        InteropError::new(InteropErrorKind::InvalidView, "list offsets child must be fixed-width")
-            .with_context("operation", operation)
-            .with_context("offsets_type_id", format!("{:?}", offsets_type.id()).to_lowercase())
+        projection_child_fixed_width_error(
+            operation,
+            "list offsets child must be fixed-width",
+            "offsets_layout",
+            format!("{:?}", offsets_type.id()).to_lowercase(),
+            "materialize list offsets as a fixed-width Int32 child before projection",
+        )
     })?;
     if offsets_elem_size != std::mem::size_of::<i32>() {
-        return Err(InteropError::new(InteropErrorKind::InvalidView, "list offsets child must use 32-bit offsets")
-            .with_context("operation", operation)
-            .with_context("offsets_elem_size", offsets_elem_size.to_string()));
+        return Err(projection_child_width_error(
+            operation,
+            "list offsets child must use 32-bit offsets",
+            "offsets_layout",
+            offsets_elem_size,
+            std::mem::size_of::<i32>(),
+            "materialize list offsets as 32-bit signed integers before projection",
+        ));
     }
     let host_offsets = offsets_view
         .to_vec::<i32>()
         .map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?;
     if host_offsets.len() <= root_end {
-        return Err(InteropError::new(
-            InteropErrorKind::InvalidView,
+        return Err(projection_offsets_too_small_error(
+            operation,
             "list offsets child is too small for the active logical range",
-        )
-        .with_context("operation", operation)
-        .with_context("offset", root_offset.to_string())
-        .with_context("len", len.to_string())
-        .with_context("offsets_len", host_offsets.len().to_string()));
+            root_offset,
+            len,
+            host_offsets.len(),
+        ));
     }
 
     let base_child_offset = host_offsets[root_offset];
@@ -321,13 +335,10 @@ pub(super) fn prepared_host_column_projection_from_view(
         view.null_count().map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?;
 
     if interop_type.id() == InteropTypeId::Struct {
-        let root_offset = usize::try_from(
-            view.offset().map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?,
-        )
-        .map_err(|_| {
-            InteropError::new(InteropErrorKind::InvalidView, "column view offset must be >= 0")
-                .with_context("operation", operation)
-        })?;
+        let root_offset_raw =
+            view.offset().map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?;
+        let root_offset = usize::try_from(root_offset_raw)
+            .map_err(|_| negative_projection_offset_error(operation, root_offset_raw as i64))?;
         if root_offset != 0 {
             let normalized = copy_view_to_owned(view)
                 .map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?;
@@ -410,13 +421,15 @@ pub(super) fn prepared_host_column_projection_from_view(
 
     if interop_type.id() == InteropTypeId::Dictionary32 {
         if num_children < 2 {
-            return Err(InteropError::new(
-                InteropErrorKind::InvalidView,
+            return Err(projection_child_count_error(
+                operation,
                 "dictionary column view must expose indices and keys columns",
-            )
-            .with_context("operation", operation)
-            .with_context("type_id", "dictionary32")
-            .with_context("num_children", num_children.to_string()));
+                "dictionary32",
+                num_children,
+                2,
+                "requires_indices_and_keys",
+                "expose both indices and keys children before projecting dictionary data",
+            ));
         }
 
         let mut next_column_id = next_column_id;
@@ -431,17 +444,23 @@ pub(super) fn prepared_host_column_projection_from_view(
             .data_type()
             .map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?;
         let indices_elem_size = map_data_type(indices_type).id().fixed_width_size_bytes().ok_or_else(|| {
-            InteropError::new(InteropErrorKind::InvalidView, "dictionary indices child must be fixed-width")
-                .with_context("operation", operation)
-                .with_context("indices_type_id", format!("{:?}", indices_type.id()).to_lowercase())
+            projection_child_fixed_width_error(
+                operation,
+                "dictionary indices child must be fixed-width",
+                "indices_layout",
+                format!("{:?}", indices_type.id()).to_lowercase(),
+                "materialize dictionary indices as a fixed-width Int32 child before projection",
+            )
         })?;
         if indices_elem_size != std::mem::size_of::<i32>() {
-            return Err(InteropError::new(
-                InteropErrorKind::InvalidView,
+            return Err(projection_child_width_error(
+                operation,
                 "dictionary indices child must use 32-bit indices",
-            )
-            .with_context("operation", operation)
-            .with_context("indices_elem_size", indices_elem_size.to_string()));
+                "indices_layout",
+                indices_elem_size,
+                std::mem::size_of::<i32>(),
+                "materialize dictionary indices as 32-bit signed integers before projection",
+            ));
         }
 
         let indices_bytes: Arc<[u8]> = Arc::from(

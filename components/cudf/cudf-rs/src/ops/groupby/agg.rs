@@ -1,6 +1,6 @@
 //! Low-level groupby aggregation execution.
 
-use std::{os::raw::c_void, ptr};
+use std::{os::raw::c_void, ptr, sync::Arc};
 
 use smallvec::SmallVec;
 
@@ -8,10 +8,16 @@ pub use crate::core::types::NullPolicy;
 use crate::{
     core::{
         column::{Column, ColumnView},
-        error::{self, Error, ErrorKind, Result},
+        error::{self, Result},
         table::{Table, TableView},
     },
-    ops::reduction::checked_ddof_to_i32,
+    ops::{
+        groupby::errors::{
+            foreign_groupby_contract_error, groupby_request_agg_count_limit_error, groupby_request_count_limit_error,
+            groupby_total_agg_handle_count_limit_error, unsupported_groupby_validation_error,
+        },
+        reduction::{checked_ddof_to_i32, ddof_range_error},
+    },
     runtime::execution_domain::ExecutionDomain,
 };
 
@@ -65,15 +71,13 @@ pub(crate) fn groupby_aggregate_impl(
     keys: &TableView<'_>,
     requests: &[AggregationRequest<'_>],
     null_policy: NullPolicy,
-    output_domain: &std::sync::Arc<ExecutionDomain>,
+    output_domain: &Arc<ExecutionDomain>,
     exec_options: Option<&cudf_sys::cudf_exec_options_t>,
     operation: &'static str,
 ) -> Result<GroupByAggregationOutput> {
-    let num_requests = i32::try_from(requests.len()).map_err(|_| {
-        Error::new(ErrorKind::InvalidOperation, "number of aggregation requests exceeds i32::MAX")
-            .with_operation(operation)
-            .with_context("num_requests", requests.len().to_string())
-    })?;
+    let request_count_usize = requests.len();
+    let request_count = i32::try_from(request_count_usize)
+        .map_err(|_| groupby_request_count_limit_error(operation, request_count_usize))?;
 
     let value_handles: SmallVec<[*mut c_void; GROUPBY_VALUE_HANDLE_INLINE_CAPACITY]> =
         requests.iter().map(|r| r.values.raw_handle()).collect();
@@ -81,32 +85,29 @@ pub(crate) fn groupby_aggregate_impl(
     let mut agg_counts: SmallVec<[i32; GROUPBY_AGG_COUNT_INLINE_CAPACITY]> = SmallVec::with_capacity(requests.len());
     let mut all_agg_handles: SmallVec<[*mut c_void; GROUPBY_AGG_HANDLE_INLINE_CAPACITY]> = SmallVec::new();
 
-    for req in requests {
+    for (request_index, req) in requests.iter().enumerate() {
         if req.aggregations.is_empty() {
-            return Err(Error::new(
-                ErrorKind::InvalidOperation,
+            return Err(unsupported_groupby_validation_error(
+                operation,
                 "each aggregation request must contain at least one aggregation",
+                "empty_request_aggregations",
+                "provide at least one GroupByAgg per AggregationRequest",
             )
-            .with_operation(operation)
-            .with_context("request_index", agg_counts.len().to_string())
-            .with_context("num_requests", num_requests.to_string()));
+            .with_context("request_index", request_index.to_string())
+            .with_context("request_count", request_count.to_string()));
         }
 
         let agg_count = i32::try_from(req.aggregations.len()).map_err(|_| {
-            Error::new(ErrorKind::InvalidOperation, "aggregation count per request exceeds i32::MAX")
-                .with_operation(operation)
-                .with_context("request_index", agg_counts.len().to_string())
-                .with_context("agg_count", req.aggregations.len().to_string())
+            groupby_request_agg_count_limit_error(operation, request_index, req.aggregations.len(), request_count_usize)
         })?;
         agg_counts.push(agg_count);
 
         for agg in req.aggregations {
             match agg {
                 GroupByAgg::Std { ddof } | GroupByAgg::Variance { ddof } if *ddof > i32::MAX as u32 => {
-                    return Err(Error::new(ErrorKind::InvalidOperation, "ddof exceeds libcudf i32 range")
-                        .with_operation(operation)
-                        .with_context("request_index", agg_counts.len().to_string())
-                        .with_context("ddof", ddof.to_string()));
+                    return Err(
+                        ddof_range_error(operation, *ddof).with_context("request_index", request_index.to_string())
+                    );
                 },
                 _ => {},
             }
@@ -127,11 +128,9 @@ pub(crate) fn groupby_aggregate_impl(
                 value_handles.as_ptr(),
                 all_agg_handles.as_ptr(),
                 agg_counts.as_ptr(),
-                num_requests,
+                request_count,
                 i32::try_from(all_agg_handles.len()).map_err(|_| {
-                    Error::new(ErrorKind::InvalidOperation, "total aggregation handle count exceeds i32::MAX")
-                        .with_operation(operation)
-                        .with_context("total_agg_handles", all_agg_handles.len().to_string())
+                    groupby_total_agg_handle_count_limit_error(operation, all_agg_handles.len(), request_count_usize)
                 })?,
                 null_policy_ffi,
                 &mut out_keys,
@@ -147,11 +146,9 @@ pub(crate) fn groupby_aggregate_impl(
                 value_handles.as_ptr(),
                 all_agg_handles.as_ptr(),
                 agg_counts.as_ptr(),
-                num_requests,
+                request_count,
                 i32::try_from(all_agg_handles.len()).map_err(|_| {
-                    Error::new(ErrorKind::InvalidOperation, "total aggregation handle count exceeds i32::MAX")
-                        .with_operation(operation)
-                        .with_context("total_agg_handles", all_agg_handles.len().to_string())
+                    groupby_total_agg_handle_count_limit_error(operation, all_agg_handles.len(), request_count_usize)
                 })?,
                 null_policy_ffi,
                 &mut out_keys,
@@ -170,18 +167,23 @@ pub(crate) fn groupby_aggregate_impl(
         status,
         operation,
         [
-            ("num_requests", num_requests.to_string()),
+            ("request_count", request_count.to_string()),
             ("total_requested_aggs", total_requested_aggs.to_string()),
             ("null_policy", (null_policy as i32).to_string()),
             ("execution_context_provided", exec_options.is_some().to_string()),
         ],
     )?;
 
-    let keys_table = unsafe { Table::from_raw_with_domain(out_keys, std::sync::Arc::clone(output_domain)) }?;
+    let keys_table = unsafe { Table::from_raw_with_domain(out_keys, Arc::clone(output_domain)) }?;
     let total = usize::try_from(out_total_columns).map_err(|_| {
-        Error::new(ErrorKind::InvalidOperation, "FFI returned negative total column count")
-            .with_operation(operation)
-            .with_context("out_total_columns", out_total_columns.to_string())
+        foreign_groupby_contract_error(
+            operation,
+            "FFI returned negative total column count",
+            "result_columns",
+            "negative_column_count",
+            "ensure the foreign groupby backend returns a non-negative result column count",
+        )
+        .with_context("table_column_count", out_total_columns.to_string())
     })?;
     let col_array = if total == 0 { &[][..] } else { unsafe { std::slice::from_raw_parts(out_values, total) } };
 
@@ -191,9 +193,7 @@ pub(crate) fn groupby_aggregate_impl(
         let n = *count as usize;
         let mut cols = Vec::with_capacity(n);
         for i in 0..n {
-            cols.push(unsafe {
-                Column::from_raw_with_domain(col_array[offset + i], std::sync::Arc::clone(output_domain))
-            }?);
+            cols.push(unsafe { Column::from_raw_with_domain(col_array[offset + i], Arc::clone(output_domain)) }?);
         }
         offset += n;
         results.push(cols);
@@ -207,8 +207,8 @@ pub(crate) fn groupby_aggregate_impl(
 fn compatible_groupby_domain(
     keys: &TableView<'_>,
     requests: &[AggregationRequest<'_>],
-) -> Result<std::sync::Arc<ExecutionDomain>> {
-    let output_domain = std::sync::Arc::clone(keys.execution_domain());
+) -> Result<Arc<ExecutionDomain>> {
+    let output_domain = Arc::clone(keys.execution_domain());
     for request in requests {
         ExecutionDomain::insert_stream_dependency(
             request.values.execution_domain(),

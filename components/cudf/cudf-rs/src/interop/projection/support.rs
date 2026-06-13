@@ -60,6 +60,169 @@ pub(super) fn pointer_device(
     Ok(device)
 }
 
+pub(super) fn projection_overflow_error(
+    operation: &'static str,
+    message: &'static str,
+    resource: &'static str,
+    reason: &'static str,
+    offset: usize,
+    row_count: usize,
+    remedy: &'static str,
+) -> InteropError {
+    InteropError::new(InteropErrorKind::InvalidView, message)
+        .with_context("operation", operation)
+        .with_context("resource", resource)
+        .with_context("reason", reason)
+        .with_context("remedy", remedy)
+        .with_context("offset", offset.to_string())
+        .with_context("row_count", row_count.to_string())
+}
+
+pub(super) fn invalid_view_contract_error(
+    operation: &'static str,
+    message: &'static str,
+    resource: &'static str,
+    reason: &'static str,
+    remedy: &'static str,
+) -> InteropError {
+    InteropError::new(InteropErrorKind::InvalidView, message)
+        .with_context("operation", operation)
+        .with_context("resource", resource)
+        .with_context("reason", reason)
+        .with_context("remedy", remedy)
+}
+
+pub(super) fn negative_projection_offset_error(operation: &'static str, offset: i64) -> InteropError {
+    invalid_view_contract_error(
+        operation,
+        "column view offset must be >= 0",
+        "offset",
+        "negative_value",
+        "normalize the view so offset >= 0 before projection",
+    )
+    .with_context("offset", offset.to_string())
+}
+
+pub(super) fn projection_child_count_error(
+    operation: &'static str,
+    message: &'static str,
+    type_id: &'static str,
+    child_count: usize,
+    required_child_count: usize,
+    reason: &'static str,
+    remedy: &'static str,
+) -> InteropError {
+    invalid_view_contract_error(operation, message, "child_count", reason, remedy)
+        .with_context("type_id", type_id)
+        .with_context("child_count", child_count.to_string())
+        .with_context("required_child_count", required_child_count.to_string())
+}
+
+pub(super) fn projection_child_fixed_width_error(
+    operation: &'static str,
+    message: &'static str,
+    resource: &'static str,
+    type_id: String,
+    remedy: &'static str,
+) -> InteropError {
+    invalid_view_contract_error(operation, message, resource, "requires_fixed_width_child", remedy)
+        .with_context("type_id", type_id)
+}
+
+pub(super) fn projection_child_width_error(
+    operation: &'static str,
+    message: &'static str,
+    resource: &'static str,
+    actual_width_bytes: usize,
+    required_width_bytes: usize,
+    remedy: &'static str,
+) -> InteropError {
+    invalid_view_contract_error(operation, message, resource, "requires_i32_width", remedy)
+        .with_context("actual_width_bytes", actual_width_bytes.to_string())
+        .with_context("required_width_bytes", required_width_bytes.to_string())
+}
+
+pub(super) fn projection_offsets_too_small_error(
+    operation: &'static str,
+    message: &'static str,
+    offset: usize,
+    row_count: usize,
+    offset_count: usize,
+) -> InteropError {
+    invalid_view_contract_error(
+        operation,
+        message,
+        "offsets_range",
+        "too_small_for_active_range",
+        "expose at least offset + row_count + 1 offsets for the active logical range",
+    )
+    .with_context("offset", offset.to_string())
+    .with_context("row_count", row_count.to_string())
+    .with_context("offset_count", offset_count.to_string())
+}
+
+pub(super) fn projection_missing_null_mask_error(operation: &'static str, row_count: usize) -> InteropError {
+    invalid_view_contract_error(
+        operation,
+        "nullable column did not expose a null-mask pointer",
+        "null_mask_buffer",
+        "missing_for_nullable_column",
+        "expose a null_mask_buffer for nullable projection inputs or mark the column non-nullable",
+    )
+    .with_context("row_count", row_count.to_string())
+}
+
+pub(super) fn active_projection_range_overflow_error(
+    operation: &'static str,
+    offset: usize,
+    row_count: usize,
+) -> InteropError {
+    projection_overflow_error(
+        operation,
+        "active element range overflowed",
+        "row_range",
+        "end_overflowed_usize",
+        offset,
+        row_count,
+        "reduce offset + row_count so the active projection range fits within usize",
+    )
+}
+
+pub(super) fn offsets_range_overflow_error(
+    operation: &'static str,
+    message: &'static str,
+    offset: usize,
+    row_count: usize,
+) -> InteropError {
+    projection_overflow_error(
+        operation,
+        message,
+        "offsets_range",
+        "end_overflowed_usize",
+        offset,
+        row_count,
+        "reduce offset + row_count so the projected offsets range fits within usize",
+    )
+}
+
+pub(super) fn projection_byte_range_overflow_error(
+    operation: &'static str,
+    message: &'static str,
+    resource: &'static str,
+    offset: usize,
+    row_count: usize,
+) -> InteropError {
+    projection_overflow_error(
+        operation,
+        message,
+        resource,
+        "size_overflowed_usize",
+        offset,
+        row_count,
+        "reduce row_count or the projected byte width so the active byte range fits within usize",
+    )
+}
+
 pub(super) fn bound_bytes<'a>(
     operation: &'static str,
     ptr: *const std::ffi::c_void,
@@ -137,11 +300,7 @@ pub(super) fn validity_for_prepared_projection<'a>(
         Some(ptr) => ptr,
         None if mask_byte_len == 0 => std::ptr::null(),
         None => {
-            return Err(InteropError::new(
-                InteropErrorKind::InvalidView,
-                "nullable column did not expose a null-mask pointer",
-            )
-            .with_context("operation", operation));
+            return Err(projection_missing_null_mask_error(operation, active_elements));
         },
     };
     let mask_device = pointer_device(operation, mask_ptr, default_device)?;

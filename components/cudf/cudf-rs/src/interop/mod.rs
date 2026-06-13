@@ -99,6 +99,10 @@
 //! - Use [`runtime_release`] and [`arrow_device`] only for `cudf-rs`-specific
 //!   runtime-backed release helpers, CUDA handle projection, and Arrow C
 //!   Device ABI glue.
+//! - [`arrow_device`] is not the same surface as [`crate::io::arrow`]:
+//!   `crate::io::arrow` converts through host `RecordBatch` values, while
+//!   [`arrow_device`] describes Arrow C Device ABI roots for existing
+//!   device-backed buffers.
 //!
 //! # Module Position
 //!
@@ -139,7 +143,7 @@ mod errors;
 mod execution;
 pub mod frame;
 mod import_graph;
-mod projection;
+pub(crate) mod projection;
 mod runtime_lease;
 pub mod runtime_release;
 mod table;

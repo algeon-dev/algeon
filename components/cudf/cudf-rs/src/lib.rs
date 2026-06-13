@@ -86,6 +86,7 @@
 //!   workflows can stay on [`Series`] via `*_value` helpers and only drop to
 //!   `Scalar` when you need explicit device-resident scalar behavior.
 //! - [`Runtime`] / [`ExecutionOverrides`] — explicit stream and allocator control.
+//! - [`io::arrow`] — Arrow `RecordBatch` conversion through host memory.
 //! - [`interop`] — `cudf-rs`-specific interop adapters, runtime-backed
 //!   release helpers, CUDA handle projection, and Arrow C Device ABI glue.
 //!   Import shared contract nouns from [`rapids_interop`].
@@ -102,6 +103,11 @@
 //! already have `cudf-rs` runtime handles, use [`interop::cuda_stream_handle`]
 //! and [`interop::cuda_event_handle`] to project them into the shared contract
 //! explicitly.
+//!
+//! Arrow naming can be easy to misread here:
+//! [`io::arrow`] is the host-copy `RecordBatch` path, while
+//! [`interop::arrow_device`] is the Arrow C Device ABI path for
+//! device-backed interop.
 //!
 //! # Stream Synchronization Strategy
 //!
@@ -173,7 +179,7 @@ pub mod testing;
 // — Primary entry points —
 // — Types and error —
 pub use core::{
-    error::{Error, ErrorKind, ErrorStatus, Result},
+    error::{Error, ErrorCode, ErrorKind, ErrorStatus, Result},
     scalar::IntoRuntimeScalar,
     types::{CudfType, DataType, NullEquality, NullPolicy, TimestampResolution, TypeId},
 };

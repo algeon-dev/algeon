@@ -24,11 +24,27 @@ namespace {
 // Internal fault injection for ffi_regressions.rs. Thread-local so parallel
 // tests on other threads do not see the failpoint.
 thread_local bool g_fail_next_table_release_columns_handle_array_alloc = false;
+thread_local bool g_fail_next_table_view_negative_num_columns          = false;
+thread_local bool g_fail_next_table_view_negative_num_rows             = false;
 
 bool should_fail_table_release_columns_handle_array_alloc()
 {
   if (!g_fail_next_table_release_columns_handle_array_alloc) { return false; }
   g_fail_next_table_release_columns_handle_array_alloc = false;
+  return true;
+}
+
+bool should_fail_next_table_view_negative_num_columns()
+{
+  if (!g_fail_next_table_view_negative_num_columns) { return false; }
+  g_fail_next_table_view_negative_num_columns = false;
+  return true;
+}
+
+bool should_fail_next_table_view_negative_num_rows()
+{
+  if (!g_fail_next_table_view_negative_num_rows) { return false; }
+  g_fail_next_table_view_negative_num_rows = false;
   return true;
 }
 
@@ -63,6 +79,16 @@ extern "C" {
 void cudf_test_fail_next_table_release_columns_handle_array_alloc()
 {
   g_fail_next_table_release_columns_handle_array_alloc = true;
+}
+
+void cudf_test_table_view_fail_next_negative_num_columns()
+{
+  g_fail_next_table_view_negative_num_columns = true;
+}
+
+void cudf_test_table_view_fail_next_negative_num_rows()
+{
+  g_fail_next_table_view_negative_num_rows = true;
 }
 
 cudf_status_t cudf_table_create(cudf_column_handle* columns,
@@ -226,6 +252,10 @@ cudf_status_t cudf_table_view_num_columns(cudf_table_view_handle handle, int32_t
   CUDF_RUST_NULL_CHECK(out, "out is null");
   *out = 0;
   CUDF_RUST_NULL_CHECK(handle, "handle is null");
+  if (should_fail_next_table_view_negative_num_columns()) {
+    *out = -1;
+    return CUDF_SUCCESS;
+  }
   CUDF_RUST_TRY
   {
     auto* view = static_cast<cudf::table_view*>(handle);
@@ -240,6 +270,10 @@ cudf_status_t cudf_table_view_num_rows(cudf_table_view_handle handle, int32_t* o
   CUDF_RUST_NULL_CHECK(out, "out is null");
   *out = 0;
   CUDF_RUST_NULL_CHECK(handle, "handle is null");
+  if (should_fail_next_table_view_negative_num_rows()) {
+    *out = -1;
+    return CUDF_SUCCESS;
+  }
   CUDF_RUST_TRY
   {
     auto* view = static_cast<cudf::table_view*>(handle);

@@ -160,8 +160,8 @@ impl RuntimeOwnedReleaseCompletion {
                     )
                     .with_context("operation", operation)
                     .with_context("completion", "same_device_stream")
-                    .with_context("release_device", release_device.to_string())
-                    .with_context("stream_device", stream_device.to_string()));
+                    .with_context("left_device", release_device.to_string())
+                    .with_context("right_device", stream_device.to_string()));
                 }
 
                 Ok(Self::SameDeviceStream { stream: stream.clone() })

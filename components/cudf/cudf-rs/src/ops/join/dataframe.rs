@@ -3,7 +3,7 @@ use std::sync::Arc;
 use crate::{
     core::{
         column::Column,
-        error::{Error, ErrorKind, Result},
+        error::{Error, ErrorCode, ErrorKind, Result},
     },
     frame::dataframe::{DataFrame, DataFrameJoinSides, derive_frame_domain_from_columns},
     internal::{
@@ -13,7 +13,7 @@ use crate::{
         },
     },
     ops::{join, replace},
-    runtime::{execution_context::ExecutionOverrides, execution_domain::ExecutionDomain},
+    runtime::{Runtime, execution_context::ExecutionOverrides, execution_domain::ExecutionDomain},
 };
 
 impl DataFrame {
@@ -47,13 +47,7 @@ impl DataFrame {
         let right_on_refs: Vec<&str> = right_on_strs.iter().map(|s| s.as_str()).collect();
 
         if left_on_refs.len() != right_on_refs.len() {
-            return Err(Error::new(
-                ErrorKind::InvalidOperation,
-                "left_on and right_on must have the same number of key columns",
-            )
-            .with_operation(operation)
-            .with_context("left_on_count", left_on_refs.len().to_string())
-            .with_context("right_on_count", right_on_refs.len().to_string()));
+            return Err(merge_key_count_mismatch_error(operation, left_on_refs.len(), right_on_refs.len()));
         }
 
         let output_domain = ctx.resolve_output_domain(self.execution_domain())?;
@@ -129,13 +123,7 @@ impl DataFrame {
 
         // Validate key counts match.
         if left_on_refs.len() != right_on_refs.len() {
-            return Err(Error::new(
-                ErrorKind::InvalidOperation,
-                "left_on and right_on must have the same number of key columns",
-            )
-            .with_operation(operation)
-            .with_context("left_on_count", left_on_refs.len().to_string())
-            .with_context("right_on_count", right_on_refs.len().to_string()));
+            return Err(merge_key_count_mismatch_error(operation, left_on_refs.len(), right_on_refs.len()));
         }
 
         let join_type = options.join_type();
@@ -182,13 +170,7 @@ impl DataFrame {
         let right_on_refs: Vec<&str> = right_on_strs.iter().map(|s| s.as_str()).collect();
 
         if left_on_refs.len() != right_on_refs.len() {
-            return Err(Error::new(
-                ErrorKind::InvalidOperation,
-                "left_on and right_on must have the same number of key columns",
-            )
-            .with_operation(operation)
-            .with_context("left_on_count", left_on_refs.len().to_string())
-            .with_context("right_on_count", right_on_refs.len().to_string()));
+            return Err(merge_key_count_mismatch_error(operation, left_on_refs.len(), right_on_refs.len()));
         }
 
         self.join_split_on_impl_with_null_eq_and_context(
@@ -230,13 +212,7 @@ impl DataFrame {
         }
 
         if left_on.len() != right_on.len() {
-            return Err(Error::new(
-                ErrorKind::InvalidOperation,
-                "left_on and right_on must have the same number of key columns",
-            )
-            .with_operation(operation)
-            .with_context("left_on_count", left_on.len().to_string())
-            .with_context("right_on_count", right_on.len().to_string()));
+            return Err(merge_key_count_mismatch_error(operation, left_on.len(), right_on.len()));
         }
 
         // Resolve key column names in both sides.
@@ -332,7 +308,8 @@ fn coalesce_columns(left: &Column, right: &Column, operation: &'static str) -> R
     let ldt = lcv.data_type()?;
     let rdt = rcv.data_type()?;
     if ldt != rdt {
-        return Err(Error::new(ErrorKind::InvalidOperation, "cannot coalesce columns with different types")
+        return Err(Error::new(ErrorKind::InvalidInput, "cannot coalesce columns with different types")
+            .with_code(ErrorCode::TypeMismatch)
             .with_operation(operation)
             .with_context("left_type_id", format!("{:?}", ldt.id()).to_lowercase())
             .with_context("right_type_id", format!("{:?}", rdt.id()).to_lowercase()));
@@ -350,6 +327,46 @@ fn coalesce_columns(left: &Column, right: &Column, operation: &'static str) -> R
 ///
 /// `shared` is `true` when `on()` was used (both sides share the same key names),
 /// meaning the output should emit one shared key column per key.
+fn merge_validation_error(
+    operation: &'static str,
+    message: &'static str,
+    reason: &'static str,
+    remedy: &'static str,
+) -> Error {
+    Error::new(ErrorKind::InvalidInput, message)
+        .with_code(ErrorCode::UnsupportedOperation)
+        .with_operation(operation)
+        .with_context("reason", reason)
+        .with_context("remedy", remedy)
+}
+
+fn merge_key_count_mismatch_error(operation: &'static str, left_count: usize, right_count: usize) -> Error {
+    merge_validation_error(
+        operation,
+        "left_on and right_on must have the same number of key columns",
+        "join_key_count_mismatch",
+        "set left_on() and right_on() with the same number of key columns",
+    )
+    .with_context("left_on_count", left_count.to_string())
+    .with_context("right_on_count", right_count.to_string())
+}
+
+pub(super) fn trigger_merge_reassembly_key_count_error_for_test_impl() -> Result<DataFrame> {
+    let runtime = Runtime::new()?;
+    let left = DataFrame::from_columns([("id", runtime.series(&[1i32])?)])?;
+    let right = DataFrame::from_columns([("id", runtime.series(&[1i32])?)])?;
+
+    merge_join_result_with_suffixes(
+        DataFrameJoinSides { left, right },
+        &["id", "unexpected_extra_key"],
+        true,
+        false,
+        "_left",
+        "_right",
+        "dataframe::merge",
+    )
+}
+
 fn resolve_merge_keys(
     options: &join::MergeOptions,
     operation: &'static str,
@@ -363,26 +380,33 @@ fn resolve_merge_keys(
         // left_on() + right_on() mode: asymmetric keys
         (None, Some(lo), Some(ro)) => Ok((lo.to_vec(), ro.to_vec(), false)),
         // left_on without right_on
-        (None, Some(_), None) => {
-            Err(Error::new(ErrorKind::InvalidOperation, "left_on was specified without right_on; set both or use on()")
-                .with_operation(operation))
-        },
+        (None, Some(_), None) => Err(merge_validation_error(
+            operation,
+            "left_on was specified without right_on; set both or use on()",
+            "left_on_without_right_on",
+            "set right_on() or use on()",
+        )),
         // right_on without left_on
-        (None, None, Some(_)) => {
-            Err(Error::new(ErrorKind::InvalidOperation, "right_on was specified without left_on; set both or use on()")
-                .with_operation(operation))
-        },
+        (None, None, Some(_)) => Err(merge_validation_error(
+            operation,
+            "right_on was specified without left_on; set both or use on()",
+            "right_on_without_left_on",
+            "set left_on() or use on()",
+        )),
         // on() together with left_on/right_on is ambiguous — treat as error
-        (Some(_), _, _) => Err(Error::new(
-            ErrorKind::InvalidOperation,
+        (Some(_), _, _) => Err(merge_validation_error(
+            operation,
             "on() cannot be combined with left_on()/right_on(); use one or the other",
-        )
-        .with_operation(operation)),
+            "ambiguous_join_key_configuration",
+            "use on() or left_on() + right_on(), not both",
+        )),
         // Nothing specified
-        (None, None, None) => {
-            Err(Error::new(ErrorKind::InvalidOperation, "no join keys specified; use on() or left_on() + right_on()")
-                .with_operation(operation))
-        },
+        (None, None, None) => Err(merge_validation_error(
+            operation,
+            "no join keys specified; use on() or left_on() + right_on()",
+            "missing_join_keys",
+            "set on() or left_on() + right_on()",
+        )),
     }
 }
 
@@ -414,11 +438,15 @@ fn merge_join_result_with_suffixes(
     let right_cols: Vec<Arc<Column>> = right.columns_map().values().cloned().collect();
 
     if key_count > left_cols.len() || key_count > right_cols.len() {
-        return Err(Error::new(ErrorKind::InvalidOperation, "join key count exceeds result column count")
-            .with_operation(operation)
-            .with_context("num_keys", key_count.to_string())
-            .with_context("left_columns", left_cols.len().to_string())
-            .with_context("right_columns", right_cols.len().to_string()));
+        return Err(merge_validation_error(
+            operation,
+            "join key count exceeds result column count",
+            "join_result_key_count_exceeds_result_columns",
+            "report this as a library bug; join result schema should contain at least one column per key on each side",
+        )
+        .with_context("keys_count", key_count.to_string())
+        .with_context("left_columns", left_cols.len().to_string())
+        .with_context("right_columns", right_cols.len().to_string()));
     }
 
     // Collect left and right payload names (after key columns).

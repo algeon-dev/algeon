@@ -9,7 +9,8 @@ use std::sync::Arc;
 use crate::{
     core::{
         column::{Column, ColumnView},
-        error::{Error, ErrorKind, Result},
+        error::{Error, ErrorCode, ErrorKind, Result},
+        schema,
         table::{Table, TableView},
     },
     frame::series::Series,
@@ -64,9 +65,10 @@ pub struct DataFrameJoinSides {
 
 fn empty_dataframe_requires_runtime_error(operation: &'static str) -> Error {
     Error::new(
-        ErrorKind::InvalidOperation,
+        ErrorKind::InvalidInput,
         "creating an empty dataframe requires an explicit runtime because no authoritative input columns exist",
     )
+    .with_code(ErrorCode::EmptyConstructionRequiresRuntime)
     .with_operation(operation)
     .with_context("remedy", "use Runtime::empty_dataframe()")
 }
@@ -105,12 +107,13 @@ where I: IntoIterator<Item = (String, Arc<Column>)> {
         let rows = named_column_len(&name, &column, operation)?;
         if rows != first_rows {
             return Err(Error::new(
-                ErrorKind::InvalidOperation,
+                ErrorKind::InvalidInput,
                 format!("column '{}' has {} rows but first column has {} rows", name, rows, first_rows),
             )
+            .with_code(ErrorCode::ColumnLengthMismatch)
             .with_operation(operation)
             .with_context("column_name", name)
-            .with_context("column_rows", rows.to_string())
+            .with_context("actual_rows", rows.to_string())
             .with_context("expected_rows", first_rows.to_string()));
         }
         columns.insert(name, column);
@@ -124,7 +127,7 @@ pub(crate) fn derive_frame_domain_from_columns(
     columns: &FastIndexMap<String, Arc<Column>>,
     operation: &'static str,
 ) -> Result<Arc<ExecutionDomain>> {
-    let Some((first_name, first_column)) = columns.iter().next() else {
+    let Some((_, first_column)) = columns.iter().next() else {
         return Err(empty_dataframe_requires_runtime_error(operation));
     };
 
@@ -137,7 +140,7 @@ pub(crate) fn derive_frame_domain_from_columns(
             "dataframe construction requires all columns to already share one retained provenance",
             "use copy_into_runtime(...) to relocate all Series inputs into one Runtime before constructing the DataFrame",
         )
-        .map_err(|e| e.with_context("column_name", name.clone()).with_context("frame_column", first_name.clone()))?;
+        .map_err(|e| e.with_context("column_name", name.clone()))?;
     }
 
     Ok(domain)
@@ -162,9 +165,10 @@ pub(crate) fn resolve_frame_domain_from_authoritative_source(
     for (name, column) in columns {
         if !ExecutionDomain::same_provenance(authoritative_domain, column.execution_domain()) {
             return Err(Error::new(
-                ErrorKind::InvalidOperation,
+                ErrorKind::InvalidInput,
                 "all columns in a dataframe must share the authoritative retained provenance",
             )
+            .with_code(ErrorCode::CrossProvenanceInputs)
             .with_operation(operation)
             .with_context("left_domain", authoritative_domain.debug_label())
             .with_context("right_domain", column.execution_domain().debug_label())
@@ -193,10 +197,13 @@ impl DataFrame {
     /// - Columns have different row counts
     pub(crate) fn new(names: Vec<String>, columns: Vec<Column>) -> Result<Self> {
         if names.len() != columns.len() {
-            return Err(Error::new(ErrorKind::InvalidOperation, "number of names must equal number of columns")
-                .with_operation("dataframe::new")
-                .with_context("names_count", names.len().to_string())
-                .with_context("columns_count", columns.len().to_string()));
+            return Err(schema::column_name_count_mismatch_error(
+                ErrorKind::InvalidInput,
+                "dataframe::new",
+                "number of names must equal number of columns",
+                names.len(),
+                columns.len(),
+            ));
         }
 
         validate_no_duplicate_names(&names, "dataframe::new")?;
@@ -211,12 +218,13 @@ impl DataFrame {
             let rows = col.view()?.len()?;
             if rows != first_rows {
                 return Err(Error::new(
-                    ErrorKind::InvalidOperation,
+                    ErrorKind::InvalidInput,
                     format!("column {} has {} rows but column 0 has {} rows", i, rows, first_rows),
                 )
+                .with_code(ErrorCode::ColumnLengthMismatch)
                 .with_operation("dataframe::new")
                 .with_context("column_index", i.to_string())
-                .with_context("column_rows", rows.to_string())
+                .with_context("actual_rows", rows.to_string())
                 .with_context("expected_rows", first_rows.to_string()));
             }
         }
@@ -245,10 +253,13 @@ impl DataFrame {
 
         let expected = names.len();
         if expected != num_cols {
-            return Err(Error::new(ErrorKind::InvalidOperation, "number of names must equal number of table columns")
-                .with_operation("dataframe::from_table")
-                .with_context("names_count", names.len().to_string())
-                .with_context("table_columns", num_cols.to_string()));
+            return Err(schema::column_name_count_mismatch_error(
+                ErrorKind::InvalidInput,
+                "dataframe::from_table",
+                "number of names must equal number of table columns",
+                names.len(),
+                num_cols,
+            ));
         }
 
         validate_no_duplicate_names(&names, "dataframe::from_table")?;
@@ -291,6 +302,26 @@ impl DataFrame {
         }
 
         dataframe_from_named_column_arcs(named_columns, "dataframe::from_columns")
+    }
+
+    /// Create a `DataFrame` from an iterator of `(name, Series)` pairs.
+    ///
+    /// This is a high-level alias for [`DataFrame::from_columns`] that makes
+    /// schema authority explicit in the call site.
+    pub fn from_named_series<I, S>(pairs: I) -> Result<Self>
+    where
+        I: IntoIterator<Item = (S, Series)>,
+        S: Into<String>,
+    {
+        let iter = pairs.into_iter();
+        let (lower, _) = iter.size_hint();
+        let mut named_columns = Vec::with_capacity(lower);
+
+        for (name, series) in iter {
+            named_columns.push((name.into(), Arc::clone(series.column_arc())));
+        }
+
+        dataframe_from_named_column_arcs(named_columns, "dataframe::from_named_series")
     }
 
     /// Construct a `DataFrame` directly from pre-validated parts.
@@ -480,25 +511,21 @@ impl DataFrame {
         operation: &'static str,
         column_name: &str,
     ) -> Result<()> {
-        if ExecutionDomain::same_provenance(series.as_column().execution_domain(), &self.domain) {
-            return Ok(());
-        }
+        let series_domain = series.as_column().execution_domain();
 
-        Err(Error::new(
-            ErrorKind::InvalidOperation,
+        ExecutionDomain::require_same_device_for_mixed_inputs(&self.domain, series_domain, operation)
+            .map_err(|error| error.with_context("column_name", column_name.to_string()))?;
+
+        ExecutionDomain::require_same_provenance(
+            &self.domain,
+            series_domain,
+            operation,
             "mixed-provenance dataframe column insertion requires explicit relocation into one runtime before insertion",
-        )
-        .with_operation(operation)
-        .with_context("column_name", column_name.to_string())
-        .with_context("frame_domain", self.domain.debug_label())
-        .with_context("series_domain", series.as_column().execution_domain().debug_label())
-        .with_context("frame_device", self.domain.device_snapshot().to_string())
-        .with_context("series_device", series.as_column().execution_domain().device_snapshot().to_string())
-        .with_context(
-            "remedy",
             "use copy_into_runtime(...) to relocate the DataFrame or incoming Series into one Runtime before inserting it",
-        ))
+        )
+        .map_err(|error| error.with_context("column_name", column_name.to_string()))
     }
+
     /// Start a groupby operation.
     ///
     /// Returns a [`GroupBy`](crate::GroupBy) on which you call [`.agg()`][groupby::GroupBy::agg]

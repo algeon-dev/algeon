@@ -1,4 +1,4 @@
-//! Public owner for explicit stream / allocator defaults and retained provenance seeding.
+//! Public owner for device-pinned default stream, memory resource, and retained provenance.
 
 use std::sync::Arc;
 
@@ -6,7 +6,7 @@ use super::{device::DeviceId, device_guard::DeviceGuard, execution_domain::Execu
 use crate::{
     core::{
         column::{Column, DeviceBuffer},
-        error::{Error, ErrorKind, Result},
+        error::{Error, ErrorCode, ErrorKind, Result},
         memory::DeviceMemoryResource,
         scalar::Scalar,
         table::Table,
@@ -18,11 +18,21 @@ use crate::{
     },
 };
 
-/// Owns one explicit retained provenance bundle for a `cudf-rs` pipeline.
+/// Owns one device-pinned retained-provenance bundle for a `cudf-rs` pipeline.
 ///
 /// Each `Runtime` is pinned to a specific CUDA device (see
 /// [`RuntimeBuilder::with_device`]).  All resources created through this
 /// runtime live on that device.
+///
+/// That bundle contains the runtime's default [`CudaStream`] and
+/// [`DeviceMemoryResource`]. Owned GPU objects created through the runtime
+/// retain those defaults unless a supported operation resolves same-device
+/// borrowed overrides for that call.
+///
+/// `Runtime` is therefore the canonical place to express a workflow's default
+/// allocator choice. Create an explicit [`DeviceMemoryResource`] first only
+/// when you need to reuse that allocator handle across runtimes or borrow it
+/// through [`crate::ExecutionOverrides`] for one operation.
 ///
 /// **Multi-GPU execution guarantee:** when an operation is invoked through
 /// this runtime, the runtime's device is re-entered at the FFI boundary before
@@ -294,6 +304,25 @@ impl Runtime {
 }
 
 impl RuntimeBuilder {
+    fn runtime_binding_mismatch(
+        resource: &'static str,
+        left_device: DeviceId,
+        right_device: DeviceId,
+        message: &'static str,
+    ) -> Error {
+        Error::new(ErrorKind::InvalidInput, message)
+            .with_code(ErrorCode::RuntimeBindingMismatch)
+            .with_operation("runtime::RuntimeBuilder::build")
+            .with_context("resource", resource)
+            .with_context("left_device", left_device.ordinal().to_string())
+            .with_context("right_device", right_device.ordinal().to_string())
+            .with_context("reason", "cross_device_runtime_binding")
+            .with_context(
+                "remedy",
+                "use stream and memory-resource handles created on one CUDA device, and make with_device(...) match that device when it is set explicitly",
+            )
+    }
+
     /// Pin the runtime to a specific CUDA device.
     ///
     /// If not called, the runtime uses the calling thread's current device
@@ -309,7 +338,15 @@ impl RuntimeBuilder {
         self
     }
 
-    /// Override the runtime's owned device memory resource.
+    /// Override the runtime's owned default device memory resource.
+    ///
+    /// The supplied handle becomes the runtime's default allocator for
+    /// supported constructors and operations that execute in this runtime.
+    /// Use this when allocator ownership should live on the runtime itself.
+    ///
+    /// If [`with_device`](Self::with_device) is also set, `mr` must have been
+    /// created on that same device. Otherwise, `build()` rejects the
+    /// combination as a cross-device binding mismatch.
     pub fn with_memory_resource(mut self, mr: DeviceMemoryResource) -> Self {
         self.mr_selection = MemoryResourceSelection::Owned(mr);
         self
@@ -320,6 +357,10 @@ impl RuntimeBuilder {
     /// The pool is created only after the runtime target device has been
     /// resolved and entered, so this path does not depend on unrelated ambient
     /// current-device state at call time.
+    ///
+    /// Prefer this over [`with_memory_resource`](Self::with_memory_resource)
+    /// when you want one fresh pool owned by the runtime and do not need the
+    /// allocator handle before `build()`.
     ///
     /// - `initial_pool_size`: initial pool allocation in bytes.
     /// - `maximum_pool_size`: maximum pool size in bytes, or `None` for unbounded.
@@ -333,6 +374,11 @@ impl RuntimeBuilder {
     /// If [`with_device`](Self::with_device) was called, resources are created
     /// on that device.  Otherwise the device is inferred from supplied handles,
     /// or defaults to the calling thread's current device.
+    ///
+    /// The resulting runtime owns exactly one default stream and one default
+    /// memory resource. Borrowed per-operation overrides can temporarily
+    /// replace either handle for a supported call, but they do not mutate this
+    /// owned bundle.
     ///
     /// # Errors
     ///
@@ -366,30 +412,26 @@ impl RuntimeBuilder {
 
     /// Resolve the target device, validating handle provenance.
     fn resolve_device(&self) -> Result<DeviceId> {
-        let op = "runtime::RuntimeBuilder::build";
-
         if let Some(target) = self.device {
             // Explicit device — validate supplied handles agree.
             if let Some(ref stream) = self.stream {
                 if stream.device() != target {
-                    return Err(Error::new(
-                        ErrorKind::InvalidOperation,
+                    return Err(Self::runtime_binding_mismatch(
+                        "stream",
+                        target,
+                        stream.device(),
                         "cross-device stream: stream was created on a different device than the runtime target",
-                    )
-                    .with_operation(op)
-                    .with_context("target_device", target.ordinal().to_string())
-                    .with_context("stream_device", stream.device().ordinal().to_string()));
+                    ));
                 }
             }
             if let MemoryResourceSelection::Owned(ref mr) = self.mr_selection {
                 if mr.device() != target {
-                    return Err(Error::new(
-                        ErrorKind::InvalidOperation,
+                    return Err(Self::runtime_binding_mismatch(
+                        "memory_resource",
+                        target,
+                        mr.device(),
                         "cross-device memory resource: MR was created on a different device than the runtime target",
-                    )
-                    .with_operation(op)
-                    .with_context("target_device", target.ordinal().to_string())
-                    .with_context("mr_device", mr.device().ordinal().to_string()));
+                    ));
                 }
             }
             Ok(target)
@@ -398,13 +440,12 @@ impl RuntimeBuilder {
             match (&self.stream, &self.mr_selection) {
                 (Some(stream), MemoryResourceSelection::Owned(mr)) => {
                     if stream.device() != mr.device() {
-                        return Err(Error::new(
-                            ErrorKind::InvalidOperation,
+                        return Err(Self::runtime_binding_mismatch(
+                            "stream_and_memory_resource",
+                            stream.device(),
+                            mr.device(),
                             "cross-device handles: stream and memory resource were created on different devices",
-                        )
-                        .with_operation(op)
-                        .with_context("stream_device", stream.device().ordinal().to_string())
-                        .with_context("mr_device", mr.device().ordinal().to_string()));
+                        ));
                     }
                     Ok(stream.device())
                 },

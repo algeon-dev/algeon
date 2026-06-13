@@ -7,11 +7,11 @@ use std::{
 
 use smallvec::SmallVec;
 
-use super::TABLE_HANDLE_INLINE_CAPACITY;
+use super::{TABLE_HANDLE_INLINE_CAPACITY, table_column_count_limit_error};
 use crate::{
     core::{
         column::ColumnView,
-        error::{self, Error, ErrorKind, Result},
+        error::{self, Error, ErrorCode, ErrorKind, Result},
     },
     runtime::execution_domain::ExecutionDomain,
 };
@@ -31,12 +31,73 @@ pub struct TableView<'a> {
 }
 
 impl<'a> TableView<'a> {
+    fn foreign_negative_num_columns_error(observed: i32) -> Error {
+        Error::new(ErrorKind::InvariantViolation, "FFI returned negative table column count")
+            .with_code(ErrorCode::InvariantViolation)
+            .with_operation("table_view::num_columns")
+            .with_context("resource", "table_column_count")
+            .with_context("reason", "invalid_foreign_table_metadata")
+            .with_context("table_column_count", observed.to_string())
+            .with_context("remedy", "ensure the foreign table view reports a non-negative column count")
+    }
+
+    fn foreign_negative_num_rows_error(observed: i32) -> Error {
+        Error::new(ErrorKind::InvariantViolation, "FFI returned negative table row count")
+            .with_code(ErrorCode::InvariantViolation)
+            .with_operation("table_view::num_rows")
+            .with_context("resource", "table_row_count")
+            .with_context("reason", "invalid_foreign_table_metadata")
+            .with_context("table_row_count", observed.to_string())
+            .with_context("remedy", "ensure the foreign table view reports a non-negative row count")
+    }
+
     fn empty_requires_authoritative_source_error(operation: &'static str) -> Error {
         Error::new(
-            ErrorKind::InvalidOperation,
+            ErrorKind::InvalidInput,
             "creating an empty table view requires an authoritative source because no input column views exist",
         )
+        .with_code(ErrorCode::UnsupportedOperation)
         .with_operation(operation)
+        .with_context("reason", "empty_borrowed_table_view_requires_authoritative_source")
+        .with_context(
+            "remedy",
+            "borrow at least one column view or call view() on an authoritative Table created by a Runtime",
+        )
+    }
+
+    fn row_count_mismatch_error(
+        operation: &'static str,
+        column_index: usize,
+        actual_rows: usize,
+        expected_rows: usize,
+    ) -> Error {
+        Error::new(
+            ErrorKind::InvalidInput,
+            format!("column {column_index} has {actual_rows} rows but column 0 has {expected_rows} rows"),
+        )
+        .with_code(ErrorCode::ColumnLengthMismatch)
+        .with_operation(operation)
+        .with_context("column_index", column_index.to_string())
+        .with_context("actual_rows", actual_rows.to_string())
+        .with_context("expected_rows", expected_rows.to_string())
+    }
+
+    fn validate_uniform_row_counts(views: &[ColumnView<'a>], operation: &'static str) -> Result<()> {
+        let Some(first) = views.first() else {
+            return Ok(());
+        };
+
+        let first_rows = first.len().map_err(|e| e.with_operation(operation).with_context("column_index", "0"))?;
+
+        for (index, view) in views.iter().enumerate().skip(1) {
+            let rows =
+                view.len().map_err(|e| e.with_operation(operation).with_context("column_index", index.to_string()))?;
+            if rows != first_rows {
+                return Err(Self::row_count_mismatch_error(operation, index, rows, first_rows));
+            }
+        }
+
+        Ok(())
     }
 
     fn from_raw_handle_with_backing(
@@ -64,11 +125,7 @@ impl<'a> TableView<'a> {
             unsafe { cudf_sys::cudf_table_view_num_columns(self.handle.as_ptr(), &mut out) },
             "table_view::num_columns",
         )?;
-        usize::try_from(out).map_err(|_| {
-            Error::new(ErrorKind::InvalidOperation, "number of table columns must be >= 0")
-                .with_operation("table_view::num_columns")
-                .with_context("num_columns", out.to_string())
-        })
+        usize::try_from(out).map_err(|_| Self::foreign_negative_num_columns_error(out))
     }
 
     /// Returns the number of rows.
@@ -79,11 +136,7 @@ impl<'a> TableView<'a> {
             unsafe { cudf_sys::cudf_table_view_num_rows(self.handle.as_ptr(), &mut out) },
             "table_view::num_rows",
         )?;
-        usize::try_from(out).map_err(|_| {
-            Error::new(ErrorKind::InvalidOperation, "number of table rows must be >= 0")
-                .with_operation("table_view::num_rows")
-                .with_context("num_rows", out.to_string())
-        })
+        usize::try_from(out).map_err(|_| Self::foreign_negative_num_rows_error(out))
     }
 
     /// Get a column view by index.
@@ -91,16 +144,17 @@ impl<'a> TableView<'a> {
         let num_columns = self.num_columns()?;
         if index >= num_columns {
             return Err(Error::new(
-                ErrorKind::InvalidOperation,
+                ErrorKind::InvalidInput,
                 format!("table column index {} out of bounds for {} columns", index, num_columns),
             )
+            .with_code(ErrorCode::IndexOutOfBounds)
             .with_operation("table_view::column")
             .with_context("column_index", index.to_string())
-            .with_context("num_columns", num_columns.to_string()));
+            .with_context("table_column_count", num_columns.to_string()));
         }
 
         let index = i32::try_from(index).map_err(|_| {
-            Error::new(ErrorKind::InvalidOperation, "table column index exceeds i32::MAX")
+            Error::new(ErrorKind::InvalidInput, "table column index exceeds i32::MAX")
                 .with_operation("table_view::column")
                 .with_context("column_index", index.to_string())
         })?;
@@ -130,15 +184,16 @@ impl<'a> TableView<'a> {
             .map(|&index| {
                 if index >= num_columns {
                     Err(Error::new(
-                        ErrorKind::InvalidOperation,
+                        ErrorKind::InvalidInput,
                         format!("table column index {} out of bounds for {} columns", index, num_columns),
                     )
+                    .with_code(ErrorCode::IndexOutOfBounds)
                     .with_operation("table_view::select_columns")
                     .with_context("column_index", index.to_string())
-                    .with_context("num_columns", num_columns.to_string()))
+                    .with_context("table_column_count", num_columns.to_string()))
                 } else {
                     i32::try_from(index).map_err(|_| {
-                        Error::new(ErrorKind::InvalidOperation, "table column index exceeds i32::MAX")
+                        Error::new(ErrorKind::InvalidInput, "table column index exceeds i32::MAX")
                             .with_operation("table_view::select_columns")
                             .with_context("column_index", index.to_string())
                     })
@@ -197,10 +252,10 @@ impl<'a> TableView<'a> {
             return Err(Self::empty_requires_authoritative_source_error(operation));
         };
 
+        Self::validate_uniform_row_counts(&views, operation)?;
+
         let num_columns = i32::try_from(views.len()).map_err(|_| {
-            Error::new(ErrorKind::InvalidOperation, "number of column views exceeds i32::MAX")
-                .with_operation(operation)
-                .with_context("num_columns", views.len().to_string())
+            table_column_count_limit_error(operation, "number of column views exceeds i32::MAX", views.len())
         })?;
 
         let mut handles: SmallVec<[*mut c_void; TABLE_HANDLE_INLINE_CAPACITY]> =

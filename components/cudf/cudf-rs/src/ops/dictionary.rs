@@ -25,8 +25,19 @@
 //! assert_eq!(factorized.row_codes().len(), 7);
 //! ```
 
-use std::ptr;
+mod errors;
+mod result_shape;
+pub(crate) mod testing_hooks;
 
+use std::{ptr, sync::Arc};
+
+use self::{
+    errors::{
+        dictionary_column_count_limit_error, require_dictionary_column, unsupported_dictionary_validation_error,
+        validate_set_keys_inputs,
+    },
+    result_shape::validate_match_dictionaries_result_shape,
+};
 use crate::{
     core::{
         column::{Column, ColumnView},
@@ -39,7 +50,7 @@ use crate::{
 pub(crate) fn encode_impl(
     input: &ColumnView<'_>,
     indices_type: TypeId,
-    output_domain: &std::sync::Arc<ExecutionDomain>,
+    output_domain: &Arc<ExecutionDomain>,
     exec_options: Option<&cudf_sys::cudf_exec_options_t>,
     operation: &'static str,
 ) -> Result<Column> {
@@ -57,12 +68,12 @@ pub(crate) fn encode_impl(
             ("execution_context_provided", exec_options.is_some().to_string()),
         ],
     )?;
-    unsafe { Column::from_raw_with_domain(out, std::sync::Arc::clone(output_domain)) }
+    unsafe { Column::from_raw_with_domain(out, Arc::clone(output_domain)) }
 }
 
 fn decode_impl(
     dict_column: &ColumnView<'_>,
-    output_domain: &std::sync::Arc<ExecutionDomain>,
+    output_domain: &Arc<ExecutionDomain>,
     exec_options: Option<&cudf_sys::cudf_exec_options_t>,
     operation: &'static str,
 ) -> Result<Column> {
@@ -77,13 +88,13 @@ fn decode_impl(
         operation,
         [("execution_context_provided", exec_options.is_some().to_string())],
     )?;
-    unsafe { Column::from_raw_with_domain(out, std::sync::Arc::clone(output_domain)) }
+    unsafe { Column::from_raw_with_domain(out, Arc::clone(output_domain)) }
 }
 
 fn set_keys_impl(
     dict_column: &ColumnView<'_>,
     keys: &ColumnView<'_>,
-    output_domain: &std::sync::Arc<ExecutionDomain>,
+    output_domain: &Arc<ExecutionDomain>,
     exec_options: Option<&cudf_sys::cudf_exec_options_t>,
     operation: &'static str,
 ) -> Result<Column> {
@@ -100,35 +111,29 @@ fn set_keys_impl(
         operation,
         [("execution_context_provided", exec_options.is_some().to_string())],
     )?;
-    unsafe { Column::from_raw_with_domain(out, std::sync::Arc::clone(output_domain)) }
+    unsafe { Column::from_raw_with_domain(out, Arc::clone(output_domain)) }
 }
 
-fn primary_column_domain(
-    columns: &[&ColumnView<'_>],
-    operation: &'static str,
-) -> Result<std::sync::Arc<ExecutionDomain>> {
+fn primary_column_domain(columns: &[&ColumnView<'_>], operation: &'static str) -> Result<Arc<ExecutionDomain>> {
     let Some(first) = columns.first() else {
-        return Err(error::Error::new(
-            error::ErrorKind::InvalidOperation,
+        return Err(unsupported_dictionary_validation_error(
+            operation,
             "match_dictionaries requires at least one column",
-        )
-        .with_operation(operation));
+            "empty_input",
+            "provide at least one input dictionary column",
+        ));
     };
-    Ok(std::sync::Arc::clone(first.execution_domain()))
+    Ok(Arc::clone(first.execution_domain()))
 }
 
 fn match_dictionaries_impl(
     dict_columns: &[&ColumnView<'_>],
-    output_domain: &std::sync::Arc<ExecutionDomain>,
+    output_domain: &Arc<ExecutionDomain>,
     exec_options: Option<&cudf_sys::cudf_exec_options_t>,
     operation: &'static str,
 ) -> Result<Vec<Column>> {
     let n = dict_columns.len();
-    let n_i32 = i32::try_from(n).map_err(|_| {
-        error::Error::new(error::ErrorKind::InvalidArgument, "dictionary column count exceeds i32::MAX")
-            .with_operation(operation)
-            .with_context("num_columns", n.to_string())
-    })?;
+    let n_i32 = i32::try_from(n).map_err(|_| dictionary_column_count_limit_error(operation, n))?;
     let handles: Vec<*mut std::ffi::c_void> = dict_columns.iter().map(|c| c.raw_handle()).collect();
     let mut out_columns: *mut *mut std::ffi::c_void = ptr::null_mut();
     let mut out_count: i32 = 0;
@@ -152,38 +157,13 @@ fn match_dictionaries_impl(
         [("num_columns", n.to_string()), ("execution_context_provided", exec_options.is_some().to_string())],
     )?;
 
-    if out_count != n_i32 {
-        if !out_columns.is_null() {
-            let returned = unsafe { std::slice::from_raw_parts(out_columns, out_count.max(0) as usize) };
-            for &handle in returned {
-                if !handle.is_null() {
-                    unsafe { cudf_sys::cudf_column_destroy(handle) };
-                }
-            }
-            unsafe { cudf_sys::cudf_free_column_array(out_columns) };
-        }
-        return Err(error::Error::new(
-            error::ErrorKind::InvalidOperation,
-            "ffi returned unexpected dictionary match result count",
-        )
-        .with_operation(operation)
-        .with_context("expected_count", n.to_string())
-        .with_context("actual_count", out_count.to_string()));
-    }
-    if out_count > 0 && out_columns.is_null() {
-        return Err(error::Error::new(
-            error::ErrorKind::InvalidOperation,
-            "ffi returned null dictionary match result array with positive count",
-        )
-        .with_operation(operation)
-        .with_context("num_columns", n.to_string()));
-    }
+    validate_match_dictionaries_result_shape(out_columns, out_count, n_i32, operation)?;
 
     let returned = unsafe { std::slice::from_raw_parts(out_columns, out_count as usize) };
     let columns = returned
         .iter()
         .copied()
-        .map(|handle| unsafe { Column::from_raw_with_domain(handle, std::sync::Arc::clone(output_domain)) })
+        .map(|handle| unsafe { Column::from_raw_with_domain(handle, Arc::clone(output_domain)) })
         .collect::<Result<Vec<_>>>()?;
     unsafe { cudf_sys::cudf_free_column_array(out_columns) };
     Ok(columns)
@@ -202,7 +182,7 @@ fn match_dictionaries_impl(
 /// Keys:   `[111, 213, 429]`
 /// Indices: `[2, 0, 1, 0, 1, 2, 1]`
 pub fn encode(input: &ColumnView<'_>, indices_type: TypeId) -> Result<Column> {
-    let output_domain = std::sync::Arc::clone(input.execution_domain());
+    let output_domain = Arc::clone(input.execution_domain());
     let exec_options = output_domain.explicit_exec_options_raw();
     encode_impl(input, indices_type, &output_domain, exec_options.as_ref(), "dictionary::encode")
 }
@@ -212,7 +192,7 @@ pub fn encode(input: &ColumnView<'_>, indices_type: TypeId) -> Result<Column> {
 /// The input must be a `DICTIONARY32` column. The result has the same type as
 /// the dictionary keys.
 pub fn decode(dict_column: &ColumnView<'_>) -> Result<Column> {
-    let output_domain = std::sync::Arc::clone(dict_column.execution_domain());
+    let output_domain = Arc::clone(dict_column.execution_domain());
     let exec_options = output_domain.explicit_exec_options_raw();
     decode_impl(dict_column, &output_domain, exec_options.as_ref(), "dictionary::decode")
 }
@@ -230,7 +210,7 @@ pub fn keys<'a>(dict_column: &ColumnView<'a>) -> Result<ColumnView<'a>> {
     )?;
     // SAFETY: out was returned by a successful FFI call. The view borrows from
     // dict_column, enforced by the lifetime parameter 'a.
-    unsafe { ColumnView::from_raw_with_domain(out, std::sync::Arc::clone(dict_column.execution_domain())) }
+    unsafe { ColumnView::from_raw_with_domain(out, Arc::clone(dict_column.execution_domain())) }
 }
 
 /// Get the indices column view from a dictionary column.
@@ -246,7 +226,7 @@ pub fn indices<'a>(dict_column: &ColumnView<'a>) -> Result<ColumnView<'a>> {
     )?;
     // SAFETY: out was returned by a successful FFI call. The view borrows from
     // dict_column, enforced by the lifetime parameter 'a.
-    unsafe { ColumnView::from_raw_with_domain(out, std::sync::Arc::clone(dict_column.execution_domain())) }
+    unsafe { ColumnView::from_raw_with_domain(out, Arc::clone(dict_column.execution_domain())) }
 }
 
 /// Replace the keys of a dictionary column.
@@ -259,7 +239,9 @@ pub fn indices<'a>(dict_column: &ColumnView<'a>) -> Result<ColumnView<'a>> {
 /// This is useful for aligning two dictionary columns to the same key set
 /// so their indices are directly comparable.
 pub fn set_keys(dict_column: &ColumnView<'_>, keys: &ColumnView<'_>) -> Result<Column> {
-    let output_domain = std::sync::Arc::clone(dict_column.execution_domain());
+    validate_set_keys_inputs(dict_column, keys, "dictionary::set_keys")?;
+
+    let output_domain = Arc::clone(dict_column.execution_domain());
     ExecutionDomain::require_same_device_for_mixed_inputs(
         dict_column.execution_domain(),
         keys.execution_domain(),
@@ -290,11 +272,16 @@ pub fn set_keys(dict_column: &ColumnView<'_>, keys: &ColumnView<'_>) -> Result<C
 pub fn match_dictionaries(dict_columns: &[&ColumnView<'_>]) -> Result<Vec<Column>> {
     let n = dict_columns.len();
     if n == 0 {
-        return Err(error::Error::new(
-            error::ErrorKind::InvalidOperation,
+        return Err(unsupported_dictionary_validation_error(
+            "dictionary::match_dictionaries",
             "match_dictionaries requires at least one column",
-        )
-        .with_operation("dictionary::match_dictionaries"));
+            "empty_input",
+            "provide at least one input dictionary column",
+        ));
+    }
+
+    for (column_index, dict_column) in dict_columns.iter().enumerate() {
+        require_dictionary_column(dict_column, "dictionary::match_dictionaries", "dict_column", Some(column_index))?;
     }
 
     let output_domain = primary_column_domain(dict_columns, "dictionary::match_dictionaries")?;

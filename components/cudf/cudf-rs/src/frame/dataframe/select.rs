@@ -2,14 +2,14 @@ use std::sync::Arc;
 
 use super::owned::DataFrame;
 use crate::{
-    core::error::{Error, ErrorKind, Result},
+    core::error::Result,
     frame::{
         factorization::{Codebook, Factorized},
         series::Series,
     },
     internal::{
         hash::{FastHashSet, fast_hash_set_with_capacity, fast_index_map_with_capacity},
-        resolve::missing_column_error,
+        resolve::{duplicate_column_name_error, missing_column_error},
     },
 };
 
@@ -116,11 +116,9 @@ impl DataFrame {
             .map_err(|e| e.with_operation("dataframe::with_lookup"))?
             .lookup(lookup_keys, lookup_values)
             .map_err(|e| {
-                e.with_operation("dataframe::with_lookup").with_context("input_column", input_column.to_string())
+                e.with_operation("dataframe::with_lookup").with_context("column_name", input_column.to_string())
             })?;
-        self.with_column(output_name, looked_up).map_err(|e| {
-            e.with_operation("dataframe::with_lookup").with_context("output_name", output_name.to_string())
-        })
+        self.with_column(output_name, looked_up).map_err(|e| e.with_operation("dataframe::with_lookup"))
     }
 
     pub fn with_lookup_from(
@@ -131,45 +129,29 @@ impl DataFrame {
         key_column: &str,
         value_column: &str,
     ) -> Result<Self> {
-        let lookup_keys = lookup_df.series(key_column).map_err(|e| {
-            e.with_operation("dataframe::with_lookup_from").with_context("key_column", key_column.to_string())
-        })?;
-        let lookup_values = lookup_df.series(value_column).map_err(|e| {
-            e.with_operation("dataframe::with_lookup_from").with_context("value_column", value_column.to_string())
-        })?;
-        self.with_lookup(output_name, input_column, &lookup_keys, &lookup_values).map_err(|e| {
-            e.with_operation("dataframe::with_lookup_from")
-                .with_context("input_column", input_column.to_string())
-                .with_context("output_name", output_name.to_string())
-        })
+        let lookup_keys = lookup_df.series(key_column).map_err(|e| e.with_operation("dataframe::with_lookup_from"))?;
+        let lookup_values =
+            lookup_df.series(value_column).map_err(|e| e.with_operation("dataframe::with_lookup_from"))?;
+        self.with_lookup(output_name, input_column, &lookup_keys, &lookup_values)
+            .map_err(|e| e.with_operation("dataframe::with_lookup_from"))
     }
 
     pub fn with_encoded_column(&self, output_name: &str, input_column: &str, codebook: &Codebook) -> Result<Self> {
         let encoded = codebook
             .encode(&self.series(input_column).map_err(|e| e.with_operation("dataframe::with_encoded_column"))?)
             .map_err(|e| {
-                e.with_operation("dataframe::with_encoded_column")
-                    .with_context("input_column", input_column.to_string())
+                e.with_operation("dataframe::with_encoded_column").with_context("column_name", input_column.to_string())
             })?;
-        self.with_column(output_name, encoded).map_err(|e| {
-            e.with_operation("dataframe::with_encoded_column")
-                .with_context("input_column", input_column.to_string())
-                .with_context("output_name", output_name.to_string())
-        })
+        self.with_column(output_name, encoded).map_err(|e| e.with_operation("dataframe::with_encoded_column"))
     }
 
     pub fn with_decoded_column(&self, output_name: &str, input_column: &str, codebook: &Codebook) -> Result<Self> {
         let decoded = codebook
             .decode_series(&self.series(input_column).map_err(|e| e.with_operation("dataframe::with_decoded_column"))?)
             .map_err(|e| {
-                e.with_operation("dataframe::with_decoded_column")
-                    .with_context("input_column", input_column.to_string())
+                e.with_operation("dataframe::with_decoded_column").with_context("column_name", input_column.to_string())
             })?;
-        self.with_column(output_name, decoded).map_err(|e| {
-            e.with_operation("dataframe::with_decoded_column")
-                .with_context("input_column", input_column.to_string())
-                .with_context("output_name", output_name.to_string())
-        })
+        self.with_column(output_name, decoded).map_err(|e| e.with_operation("dataframe::with_decoded_column"))
     }
     /// Return a new DataFrame containing only the specified columns.
     ///
@@ -193,10 +175,12 @@ impl DataFrame {
         let mut seen: FastHashSet<&str> = fast_hash_set_with_capacity(columns.len());
         for name in &columns {
             if !seen.insert(name.as_str()) {
-                return Err(Error::new(ErrorKind::InvalidOperation, "selected columns must be unique")
-                    .with_operation("dataframe::select")
-                    .with_context("duplicate_column", name.clone())
-                    .with_context("selected_column_count", columns.len().to_string()));
+                return Err(duplicate_column_name_error(
+                    "dataframe::select",
+                    name.clone(),
+                    columns.len(),
+                    "selected columns must be unique",
+                ));
             }
         }
 
@@ -228,20 +212,20 @@ impl DataFrame {
         I: IntoIterator,
         I::Item: AsRef<str>,
     {
+        let requested: Vec<String> = columns.into_iter().map(|name| name.as_ref().to_string()).collect();
         let mut to_drop: FastHashSet<String> = FastHashSet::default();
-        for name in columns {
-            let name = name.as_ref().to_string();
+        for name in &requested {
             if !to_drop.insert(name.clone()) {
-                return Err(Error::new(
-                    ErrorKind::InvalidOperation,
+                return Err(duplicate_column_name_error(
+                    "dataframe::without_columns",
+                    name.clone(),
+                    requested.len(),
                     format!("duplicate column name '{}' in exclusion list", name),
-                )
-                .with_operation("dataframe::without_columns")
-                .with_context("column_name", name));
+                ));
             }
         }
 
-        for name in &to_drop {
+        for name in &requested {
             if !self.columns.contains_key(name.as_str()) {
                 return Err(missing_column_error("dataframe::without_columns", name));
             }

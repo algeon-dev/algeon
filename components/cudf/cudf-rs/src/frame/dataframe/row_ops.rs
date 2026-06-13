@@ -4,13 +4,31 @@ use super::owned::DataFrame;
 use crate::{
     core::{
         column::{Column, ColumnView},
-        error::{Error, ErrorKind, Result},
+        error::{self, Error, ErrorCode, ErrorKind, Result},
     },
     frame::series::Series,
     internal::{hash::fast_index_map_with_capacity, resolve::missing_column_error},
     ops::{self, copying, filter},
-    runtime::{execution_context::ExecutionOverrides, execution_domain::ExecutionDomain},
+    runtime::{Runtime, execution_context::ExecutionOverrides, execution_domain::ExecutionDomain},
 };
+
+fn range_testing_dataframe() -> Result<DataFrame> {
+    let runtime = Runtime::new()?;
+    let series = runtime.series(&[1i32, 2, 3])?;
+    DataFrame::from_named_series([("x", series)])
+}
+
+pub(crate) fn trigger_dataframe_row_range_start_limit_error_for_test() -> Result<DataFrame> {
+    range_testing_dataframe()?.__debug_gather_range_for_test(usize::MAX, 1, "dataframe::gather_range")
+}
+
+pub(crate) fn trigger_dataframe_row_range_end_limit_error_for_test() -> Result<DataFrame> {
+    range_testing_dataframe()?.__debug_gather_range_for_test(i32::MAX as usize, 1, "dataframe::gather_range")
+}
+
+pub(crate) fn trigger_dataframe_row_range_overflow_error_for_test() -> Result<DataFrame> {
+    range_testing_dataframe()?.__debug_gather_range_for_test(i32::MAX as usize, usize::MAX, "dataframe::gather_range")
+}
 
 impl DataFrame {
     /// Gather rows using a borrowed per-operation execution override.
@@ -137,21 +155,24 @@ impl DataFrame {
         let mask_dtype = mask.data_type()?;
         if mask_dtype.id() != crate::core::types::TypeId::Bool8 {
             return Err(Error::new(
-                ErrorKind::TypeError,
+                ErrorKind::InvalidInput,
                 format!("filter mask must be Bool8, got {:?}", mask_dtype.id()),
             )
+            .with_code(ErrorCode::TypeMismatch)
             .with_operation(operation)
-            .with_context("mask_dtype", format!("{:?}", mask_dtype.id())));
+            .with_context("left_type_id", format!("{:?}", mask_dtype.id()).to_lowercase())
+            .with_context("right_type_id", "bool8"));
         }
         let mask_len = mask.len()?;
         if mask_len != self.row_count {
             return Err(Error::new(
-                ErrorKind::InvalidOperation,
+                ErrorKind::InvalidInput,
                 format!("filter mask length ({}) does not match DataFrame row count ({})", mask_len, self.row_count),
             )
+            .with_code(ErrorCode::ColumnLengthMismatch)
             .with_operation(operation)
-            .with_context("mask_length", mask_len.to_string())
-            .with_context("row_count", self.row_count.to_string()));
+            .with_context("actual_rows", mask_len.to_string())
+            .with_context("expected_rows", self.row_count.to_string()));
         }
         Ok(())
     }
@@ -226,6 +247,16 @@ impl DataFrame {
         )
     }
 
+    pub(crate) fn __debug_gather_range_for_test(
+        &self,
+        start: usize,
+        len: usize,
+        operation: &'static str,
+    ) -> Result<Self> {
+        let output_domain = Arc::clone(&self.domain);
+        self.gather_range_impl(start, len, output_domain.explicit_exec_options_raw(), output_domain, operation)
+    }
+
     fn gather_range_in_context(
         &self,
         start: usize,
@@ -249,13 +280,10 @@ impl DataFrame {
             return self.empty_with_same_schema_in_domain(output_domain);
         }
 
-        let end = start + len;
-        let start_i32: i32 = start.try_into().map_err(|_| {
-            Error::new(ErrorKind::InvalidOperation, "gather_range: start exceeds i32::MAX").with_operation(operation)
-        })?;
+        let start_i32: i32 = start.try_into().map_err(|_| error::row_range_limit_error(operation, "start", start))?;
+        let end = start.checked_add(len).ok_or_else(|| error::row_range_overflow_error(operation, start, len))?;
         let end_i32: i32 = end.try_into().map_err(|_| {
-            Error::new(ErrorKind::InvalidOperation, "gather_range: start + len exceeds i32::MAX")
-                .with_operation(operation)
+            error::row_range_limit_error(operation, "end", end).with_context("start_row", start.to_string())
         })?;
         let indices: Vec<i32> = (start_i32..end_i32).collect();
         let map = Column::from_slice_in_domain(&indices, &output_domain)?;

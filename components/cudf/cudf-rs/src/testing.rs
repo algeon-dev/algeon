@@ -16,6 +16,10 @@ use crate::{
         table::TableView as CoreTableView,
     },
     frame::dataframe::DataFrame,
+    interop::{
+        arrow_device::testing_hooks as arrow_device_testing_hooks,
+        projection::testing_hooks as projection_testing_hooks,
+    },
     io::arrow,
     ops::groupby::GroupBy,
     runtime::{CudaEvent, CudaStream, ExecutionOverrides, Runtime},
@@ -232,35 +236,7 @@ impl BorrowedViewTestingExt for DataFrame {
 
 impl BorrowedColumnSliceTestingExt for Column {
     fn testing_slice_view(&self, offset: usize, length: usize) -> Result<ColumnView<'_>> {
-        let view = Column::view(self)?;
-        let start = i32::try_from(offset).map_err(|_| {
-            crate::Error::new(crate::ErrorKind::InvalidOperation, "slice offset exceeds i32::MAX")
-                .with_operation("testing::column::slice_view")
-                .with_context("offset", offset.to_string())
-        })?;
-        let end_usize = offset.checked_add(length).ok_or_else(|| {
-            crate::Error::new(crate::ErrorKind::InvalidOperation, "slice end overflowed usize")
-                .with_operation("testing::column::slice_view")
-                .with_context("offset", offset.to_string())
-                .with_context("length", length.to_string())
-        })?;
-        let len = i32::try_from(length).map_err(|_| {
-            crate::Error::new(crate::ErrorKind::InvalidOperation, "slice length exceeds i32::MAX")
-                .with_operation("testing::column::slice_view")
-                .with_context("length", length.to_string())
-        })?;
-        let _ = i32::try_from(end_usize).map_err(|_| {
-            crate::Error::new(crate::ErrorKind::InvalidOperation, "slice end exceeds i32::MAX")
-                .with_operation("testing::column::slice_view")
-                .with_context("end", end_usize.to_string())
-        })?;
-
-        let mut handle = std::ptr::null_mut();
-        crate::core::error::check_status_in(
-            unsafe { cudf_sys::cudf_column_view_slice(view.raw_handle(), start, len, &mut handle) },
-            "testing::column::slice_view",
-        )?;
-        unsafe { ColumnView::from_raw_with_domain(handle, std::sync::Arc::clone(view.execution_domain())) }
+        crate::core::column::slice_view_for_test(self, offset, length)
     }
 }
 
@@ -304,54 +280,324 @@ impl GroupByTestingExt for GroupBy<'_> {
 
 /// Build a stats memory resource for allocation-accounting tests.
 pub fn stats_memory_resource() -> Result<DeviceMemoryResource> {
-    DeviceMemoryResource::__test_stats()
+    crate::core::testing_hooks::stats_memory_resource()
+}
+
+/// Construct a malformed non-empty STRING column view without an offsets
+/// child so integration tests can lock down foreign-contract validation.
+pub fn synthetic_string_view_without_children(size: usize) -> Result<ColumnView<'static>> {
+    crate::core::column::synthetic_string_view_without_children(size)
 }
 
 /// Pack host validity bits into cuDF's allocation-sized null-mask layout.
 pub fn validity_to_host_null_mask_bytes(validity: &[bool]) -> Vec<u8> {
-    crate::core::types::validity_to_ffi_bitmask(validity)
+    crate::core::testing_hooks::validity_to_host_null_mask_bytes(validity)
+}
+
+/// Trigger the internal raw-byte materialization helper on a borrowed column
+/// view so integration tests can lock down its downstream error contract.
+pub fn column_view_to_raw_bytes_for_test(view: &ColumnView<'_>) -> Result<Vec<u8>> {
+    crate::core::column::column_view_to_raw_bytes_for_test(view)
+}
+
+/// Trigger the internal fixed-width host-byte materialization helper on a
+/// borrowed column view so integration tests can lock down its downstream
+/// error contract.
+pub fn column_view_to_fixed_width_host_bytes_for_test(view: &ColumnView<'_>) -> Result<Vec<u8>> {
+    crate::core::column::column_view_to_fixed_width_host_bytes_for_test(view)
+}
+
+/// Trigger the fixed-width host-byte materialization overflow contract used by
+/// integration tests.
+pub fn trigger_column_view_fixed_width_host_byte_range_overflow_for_test() -> Result<()> {
+    crate::core::column::trigger_fixed_width_host_byte_range_overflow_for_test()
 }
 
 /// Trigger the numeric Arrow error mapping path used by integration tests.
 pub fn trigger_numeric_to_arrow_error_for_test() -> Result<()> {
-    arrow::__debug_trigger_numeric_to_arrow_error_for_test()
+    arrow::testing_hooks::trigger_numeric_to_arrow_error_for_test()
 }
 
 /// Trigger the record-batch Arrow error mapping path used by integration
 /// tests.
 pub fn trigger_record_batch_error_for_test() -> Result<()> {
-    arrow::__debug_trigger_record_batch_error_for_test()
+    arrow::testing_hooks::trigger_record_batch_error_for_test()
+}
+
+/// Trigger the Utf8 Arrow downcast-mismatch path used by integration tests.
+pub fn trigger_arrow_string_array_downcast_mismatch_for_test() -> Result<()> {
+    arrow::testing_hooks::trigger_string_array_downcast_mismatch_for_test()
+}
+
+/// Trigger the LargeUtf8 Arrow downcast-mismatch path used by integration
+/// tests.
+pub fn trigger_arrow_large_string_array_downcast_mismatch_for_test() -> Result<()> {
+    arrow::testing_hooks::trigger_large_string_array_downcast_mismatch_for_test()
 }
 
 /// Reset host-copy Arrow interop observation counters used by integration
 /// tests.
 pub fn reset_arrow_host_interop_observation_for_test() {
-    arrow::__test_reset_host_interop_observation();
+    arrow::testing_hooks::reset_host_interop_observation_for_test();
 }
 
 /// Read how many times the host-copy Arrow export entrypoint ran.
 pub fn arrow_host_export_call_count_for_test() -> usize {
-    arrow::__test_host_export_call_count()
+    arrow::testing_hooks::host_export_call_count_for_test()
 }
 
 /// Read how many times the host-copy Arrow import entrypoint ran.
 pub fn arrow_host_import_call_count_for_test() -> usize {
-    arrow::__test_host_import_call_count()
+    arrow::testing_hooks::host_import_call_count_for_test()
 }
 
 /// Return the Arrow C Device ABI device_type code for CPU roots.
 pub fn arrow_device_cpu_type_for_test() -> i32 {
-    cudf_sys::CUDF_ARROW_DEVICE_TYPE_CPU
+    arrow_device_testing_hooks::arrow_device_cpu_type_for_test()
 }
 
 /// Return the Arrow C Device ABI device_type code for CUDA_HOST roots.
 pub fn arrow_device_cuda_host_type_for_test() -> i32 {
-    cudf_sys::CUDF_ARROW_DEVICE_TYPE_CUDA_HOST
+    arrow_device_testing_hooks::arrow_device_cuda_host_type_for_test()
 }
 
 /// Return the Arrow C Device ABI device_type code for CUDA_MANAGED roots.
 pub fn arrow_device_cuda_managed_type_for_test() -> i32 {
-    cudf_sys::CUDF_ARROW_DEVICE_TYPE_CUDA_MANAGED
+    arrow_device_testing_hooks::arrow_device_cuda_managed_type_for_test()
+}
+
+/// Trigger the internal DataFrame reassembly helper directly for contract
+/// tests.
+pub fn reassemble_dataframe_from_table_and_names_for_test(table: Table, names: Vec<String>) -> Result<DataFrame> {
+    crate::internal::testing_hooks::reassemble_dataframe_from_table_and_names_for_test(table, names)
+}
+
+/// Trigger the merge-result reassembly invariant branch used by integration
+/// tests to lock the downstream error contract.
+pub fn trigger_merge_reassembly_key_count_error_for_test() -> Result<DataFrame> {
+    crate::ops::join::testing_hooks::trigger_merge_reassembly_key_count_error_for_test()
+}
+
+/// Trigger the shared invariant-violation helper path used by integration
+/// tests.
+pub fn trigger_invariant_violation_for_test() -> Result<()> {
+    crate::core::testing_hooks::trigger_invariant_violation_for_test()
+}
+
+/// Trigger the shared null-on-success foreign-handle contract path used by
+/// integration tests.
+pub fn trigger_null_handle_contract_error_for_test() -> Result<()> {
+    crate::core::testing_hooks::trigger_null_handle_contract_error_for_test()
+}
+
+/// Trigger the shared range-limit helper path used by integration tests.
+pub fn trigger_range_limit_error_for_test() -> Result<()> {
+    crate::core::testing_hooks::trigger_range_limit_error_for_test()
+}
+
+/// Trigger the high-level DataFrame dropna subset-count limit validation
+/// contract.
+pub fn trigger_dataframe_dropna_subset_count_limit_error_for_test() -> Result<()> {
+    crate::frame::dataframe::trigger_dataframe_dropna_subset_count_limit_error_for_test()
+}
+
+/// Trigger the DataFrame row-range start limit path used by integration tests.
+pub fn trigger_dataframe_row_range_start_limit_error_for_test() -> Result<DataFrame> {
+    crate::frame::dataframe::trigger_dataframe_row_range_start_limit_error_for_test()
+}
+
+/// Trigger the DataFrame row-range end limit path used by integration tests.
+pub fn trigger_dataframe_row_range_end_limit_error_for_test() -> Result<DataFrame> {
+    crate::frame::dataframe::trigger_dataframe_row_range_end_limit_error_for_test()
+}
+
+/// Trigger the DataFrame row-range overflow path used by integration tests.
+pub fn trigger_dataframe_row_range_overflow_error_for_test() -> Result<DataFrame> {
+    crate::frame::dataframe::trigger_dataframe_row_range_overflow_error_for_test()
+}
+
+/// Trigger the Series row-range start limit path used by integration tests.
+pub fn trigger_series_row_range_start_limit_error_for_test() -> Result<crate::Series> {
+    crate::frame::series::trigger_series_row_range_start_limit_error_for_test()
+}
+
+/// Trigger the Series row-range end limit path used by integration tests.
+pub fn trigger_series_row_range_end_limit_error_for_test() -> Result<crate::Series> {
+    crate::frame::series::trigger_series_row_range_end_limit_error_for_test()
+}
+
+/// Trigger the Series row-range overflow path used by integration tests.
+pub fn trigger_series_row_range_overflow_error_for_test() -> Result<crate::Series> {
+    crate::frame::series::trigger_series_row_range_overflow_error_for_test()
+}
+
+/// Trigger the `Series::nunique` negative-distinct-count foreign-contract path
+/// used by integration tests.
+pub fn trigger_nunique_negative_distinct_count_for_test() -> Result<()> {
+    crate::frame::series::reduction::trigger_nunique_negative_distinct_count_for_test()
+}
+
+/// Trigger the string-scalar negative-length foreign metadata path used by
+/// integration tests.
+pub fn trigger_negative_string_scalar_length_for_test() -> Result<()> {
+    crate::core::scalar::trigger_negative_string_length_error_for_test()
+}
+
+/// Trigger the `Series::value_counts` missing-key-columns result-shape path
+/// used by integration tests.
+pub fn trigger_value_counts_missing_key_columns_for_test() -> Result<DataFrame> {
+    crate::ops::groupby::testing_hooks::trigger_value_counts_missing_key_columns_for_test()
+}
+
+/// Trigger the `Series::value_counts` missing-count-results result-shape path
+/// used by integration tests.
+pub fn trigger_value_counts_missing_count_results_for_test() -> Result<DataFrame> {
+    crate::ops::groupby::testing_hooks::trigger_value_counts_missing_count_results_for_test()
+}
+
+/// Trigger the `Series::value_counts` empty-count-result result-shape path
+/// used by integration tests.
+pub fn trigger_value_counts_empty_count_result_for_test() -> Result<DataFrame> {
+    crate::ops::groupby::testing_hooks::trigger_value_counts_empty_count_result_for_test()
+}
+
+/// Trigger the high-level groupby result-group-index invariant path used by
+/// integration tests.
+pub fn trigger_groupby_result_group_index_out_of_bounds_for_test() -> Result<()> {
+    crate::ops::groupby::testing_hooks::trigger_groupby_result_group_index_out_of_bounds_for_test()
+}
+
+/// Trigger the low-level groupby request-count limit validation path used by
+/// integration tests.
+pub fn trigger_groupby_request_count_limit_error_for_test() -> Result<()> {
+    crate::ops::groupby::testing_hooks::trigger_groupby_request_count_limit_error_for_test()
+}
+
+/// Trigger the low-level groupby per-request aggregation-count limit
+/// validation path used by integration tests.
+pub fn trigger_groupby_request_agg_count_limit_error_for_test() -> Result<()> {
+    crate::ops::groupby::testing_hooks::trigger_groupby_request_agg_count_limit_error_for_test()
+}
+
+/// Trigger the low-level groupby total aggregation-handle count limit
+/// validation path used by integration tests.
+pub fn trigger_groupby_total_agg_handle_count_limit_error_for_test() -> Result<()> {
+    crate::ops::groupby::testing_hooks::trigger_groupby_total_agg_handle_count_limit_error_for_test()
+}
+
+/// Trigger the low-level sorting key-count limit validation path used by
+/// integration tests.
+pub fn trigger_sort_key_count_limit_error_for_test() -> Result<()> {
+    crate::ops::sorting::testing_hooks::trigger_sort_key_count_limit_error_for_test()
+}
+
+/// Trigger the stable owned-table column-count limit validation contract.
+pub fn trigger_table_column_count_limit_error_for_test() -> Result<()> {
+    crate::core::table::testing_hooks::trigger_table_column_count_limit_error_for_test()
+}
+
+/// Trigger the stable borrowed-table-view column-count limit validation contract.
+pub fn trigger_table_view_column_count_limit_error_for_test() -> Result<()> {
+    crate::core::table::testing_hooks::trigger_table_view_column_count_limit_error_for_test()
+}
+
+/// Trigger the high-level groupby result-column-index invariant path used by
+/// integration tests.
+pub fn trigger_groupby_result_column_index_out_of_bounds_for_test() -> Result<()> {
+    crate::ops::groupby::testing_hooks::trigger_groupby_result_column_index_out_of_bounds_for_test()
+}
+
+/// Trigger the high-level groupby duplicate result-column consumption
+/// invariant path used by integration tests.
+pub fn trigger_groupby_duplicate_result_column_consumption_for_test() -> Result<()> {
+    crate::ops::groupby::testing_hooks::trigger_groupby_duplicate_result_column_consumption_for_test()
+}
+
+/// Trigger the dictionary match result-count mismatch foreign-contract path
+/// used by integration tests.
+pub fn trigger_match_dictionaries_result_count_mismatch_for_test() -> Result<()> {
+    crate::ops::dictionary::testing_hooks::trigger_match_dictionaries_result_count_mismatch_for_test()
+}
+
+/// Trigger the dictionary match null-result-array foreign-contract path used
+/// by integration tests.
+pub fn trigger_match_dictionaries_null_result_array_for_test() -> Result<()> {
+    crate::ops::dictionary::testing_hooks::trigger_match_dictionaries_null_result_array_for_test()
+}
+
+/// Trigger the shared-dictionary input-count limit validation contract.
+pub fn trigger_match_dictionaries_column_count_limit_error_for_test() -> Result<()> {
+    crate::ops::dictionary::testing_hooks::trigger_match_dictionaries_column_count_limit_error_for_test()
+}
+
+/// Trigger the factorization empty-row-code dtype invariant path used by
+/// integration tests.
+pub fn trigger_factorize_empty_row_code_dtype_error_for_test() -> Result<()> {
+    crate::ops::factorization::testing_hooks::trigger_factorize_empty_row_code_dtype_error_for_test()
+}
+
+/// Trigger the Codebook key-count limit validation path used by integration
+/// tests.
+pub fn trigger_codebook_key_count_limit_error_for_test() -> Result<()> {
+    crate::frame::factorization::trigger_codebook_key_count_limit_error_for_test()
+}
+
+/// Trigger the concat-by-name missing planned dtype invariant path used by
+/// integration tests.
+pub fn trigger_concat_by_name_missing_planned_dtype_for_test() -> Result<()> {
+    crate::frame::dataframe::trigger_concat_by_name_missing_planned_dtype_for_test()
+}
+
+/// Trigger the concatenate-column input-count limit validation contract.
+pub fn trigger_concatenate_column_count_limit_error_for_test() -> Result<()> {
+    crate::ops::concatenate::trigger_concatenate_column_count_limit_error_for_test()
+}
+
+/// Trigger the concatenate-table input-count limit validation contract.
+pub fn trigger_concatenate_table_count_limit_error_for_test() -> Result<()> {
+    crate::ops::concatenate::trigger_concatenate_table_count_limit_error_for_test()
+}
+
+/// Trigger the shared interop projection active-range overflow contract used
+/// by integration tests.
+pub fn trigger_interop_projection_active_range_overflow_for_test()
+-> std::result::Result<(), rapids_interop::InteropError> {
+    projection_testing_hooks::trigger_active_range_overflow_for_test()
+}
+
+/// Trigger the shared interop projection negative-offset validation contract.
+pub fn trigger_interop_projection_negative_offset_for_test() -> std::result::Result<(), rapids_interop::InteropError> {
+    projection_testing_hooks::trigger_negative_offset_for_test()
+}
+
+/// Trigger the shared interop projection missing-string-offsets-child contract.
+pub fn trigger_interop_projection_missing_string_offsets_child_for_test()
+-> std::result::Result<(), rapids_interop::InteropError> {
+    projection_testing_hooks::trigger_missing_string_offsets_child_for_test()
+}
+
+/// Trigger the shared interop projection list-offsets-width contract.
+pub fn trigger_interop_projection_list_offsets_width_mismatch_for_test()
+-> std::result::Result<(), rapids_interop::InteropError> {
+    projection_testing_hooks::trigger_list_offsets_width_mismatch_for_test()
+}
+
+/// Trigger the shared interop projection dictionary-indices-width contract.
+pub fn trigger_interop_projection_dictionary_indices_width_mismatch_for_test()
+-> std::result::Result<(), rapids_interop::InteropError> {
+    projection_testing_hooks::trigger_dictionary_indices_width_mismatch_for_test()
+}
+
+/// Trigger the shared interop projection host-offsets-range contract.
+pub fn trigger_interop_projection_host_offsets_too_small_for_test()
+-> std::result::Result<(), rapids_interop::InteropError> {
+    projection_testing_hooks::trigger_host_offsets_too_small_for_test()
+}
+
+/// Trigger the shared interop projection missing-null-mask contract.
+pub fn trigger_interop_projection_missing_null_mask_for_test() -> std::result::Result<(), rapids_interop::InteropError>
+{
+    projection_testing_hooks::trigger_missing_null_mask_for_test()
 }
 
 /// Testing-only hook: overwrite one owned ArrowDeviceArray handle's
@@ -362,5 +608,5 @@ pub fn arrow_device_cuda_managed_type_for_test() -> i32 {
 /// `raw_device_array` must be a valid ArrowDeviceArray handle produced by this
 /// crate's Arrow device bridge and still owned by a live Rust wrapper.
 pub unsafe fn force_device_arrow_array_device_type_for_test(raw_device_array: *mut c_void, device_type: i32) {
-    unsafe { cudf_sys::cudf_test_arrow_device_array_set_device_type(raw_device_array, device_type) }
+    unsafe { arrow_device_testing_hooks::force_device_arrow_array_device_type_for_test(raw_device_array, device_type) }
 }

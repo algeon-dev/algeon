@@ -41,7 +41,7 @@ pub enum FillPolicy {
 /// assert_eq!(result.to_vec_strict::<i32>().unwrap(), vec![1, 99, 3]);
 /// ```
 pub fn replace_nulls(input: &ColumnView<'_>, replacement: &Scalar) -> Result<Column> {
-    let output_domain = std::sync::Arc::clone(input.execution_domain());
+    let output_domain = Arc::clone(input.execution_domain());
     ExecutionDomain::insert_stream_dependency(
         replacement.execution_domain(),
         &output_domain,
@@ -150,7 +150,7 @@ pub(crate) fn replace_nulls_column_with_exec_options(
 /// assert_eq!(result.to_vec_strict::<i32>().unwrap(), vec![1, 1, 1, 4]);
 /// ```
 pub fn replace_nulls_policy(input: &ColumnView<'_>, policy: FillPolicy) -> Result<Column> {
-    let output_domain = std::sync::Arc::clone(input.execution_domain());
+    let output_domain = Arc::clone(input.execution_domain());
     let exec_options = output_domain.explicit_exec_options_raw();
     replace_nulls_policy_with_exec_options(
         input,

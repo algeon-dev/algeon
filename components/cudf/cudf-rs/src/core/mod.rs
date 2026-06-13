@@ -5,7 +5,9 @@ mod debug;
 pub mod error;
 pub mod memory;
 pub mod scalar;
+pub(crate) mod schema;
 pub mod table;
+pub(crate) mod testing_hooks;
 pub mod types;
 
 pub(crate) use column::ColumnView;

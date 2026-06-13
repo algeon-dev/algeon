@@ -1,13 +1,33 @@
 //! Private retained-provenance substrate for owned GPU objects.
 //!
-//! `ExecutionDomain` remains the internal type name for now, but its semantics
-//! are intentionally narrower than the v1 "execution identity" model:
+//! In `cudf-rs`, every owned GPU object carries **retained provenance**:
 //!
-//! - it records retained provenance for later host-visible synchronization
-//!   and device-side cross-stream dependencies
-//! - it supplies default stream / MR handles when no explicit operation context
-//!   is provided
-//! - it does not decide whether mixed-input operations are legal
+//! - the CUDA device the object is pinned to
+//! - the CUDA stream that most recently produced or ordered work for it
+//! - the device memory resource (MR) that should back follow-on allocations
+//!
+//! `ExecutionDomain` is the private bundle that stores that metadata.
+//! It is not a general scheduler or execution-policy object. Its job is narrow:
+//!
+//! - remember retained provenance after an operation returns
+//! - supply default stream and memory-resource handles when an operation does
+//!   not receive explicit borrowed overrides
+//! - provide the synchronization hooks needed for host visibility and
+//!   device-side cross-stream ordering
+//!
+//! Terms used here:
+//!
+//! - **stream**: a CUDA work queue (`CudaStream`) on which libcudf kernels and
+//!   copies are enqueued
+//! - **memory resource / MR**: an RMM allocator handle
+//!   (`DeviceMemoryResource`) used for device allocations
+//! - **retained provenance**: execution metadata kept on the owned result so
+//!   later operations know which stream and allocator the object is associated
+//!   with
+//!
+//! `ExecutionDomain` does not by itself decide whether mixed-input operations
+//! are legal. Higher-level APIs choose whether to reject, relocate, or
+//! synchronize mixed-provenance inputs.
 //!
 //! Every retained domain is explicit and device-pinned. The C++ shim re-enters
 //! the pinned device before resolving stream / MR defaults, so operations
@@ -26,7 +46,7 @@ use std::{
 
 use super::{device::DeviceId, device_guard::DeviceGuard, event::CudaEvent, stream::CudaStream};
 use crate::core::{
-    error::{self, Error, ErrorKind, Result},
+    error::{self, Error, ErrorCode, ErrorKind, Result},
     memory::DeviceMemoryResource,
 };
 
@@ -46,7 +66,7 @@ pub(crate) struct ExecutionIdentity(NonZeroU64);
 impl ExecutionIdentity {
     fn new(value: u64) -> Result<Self> {
         NonZeroU64::new(value).map(Self).ok_or_else(|| {
-            Error::new(ErrorKind::InvalidOperation, "debug retained-provenance identity must be non-zero")
+            Error::new(ErrorKind::InvalidInput, "debug retained-provenance identity must be non-zero")
                 .with_operation("execution_domain::ExecutionIdentity::new")
                 .with_context("identity", value.to_string())
         })
@@ -58,6 +78,26 @@ impl ExecutionIdentity {
 }
 
 impl ExecutionDomain {
+    fn borrowed_override_binding_mismatch(
+        operation: &'static str,
+        resource: &'static str,
+        input_device: DeviceId,
+        override_device: DeviceId,
+        message: &'static str,
+    ) -> Error {
+        Error::new(ErrorKind::InvalidInput, message)
+            .with_code(ErrorCode::RuntimeBindingMismatch)
+            .with_operation(operation)
+            .with_context("resource", resource)
+            .with_context("left_device", input_device.ordinal().to_string())
+            .with_context("right_device", override_device.ordinal().to_string())
+            .with_context("reason", "cross_device_borrowed_override")
+            .with_context(
+                "remedy",
+                "borrow a stream or memory resource created on the same device as the input Runtime, or relocate the input into that Runtime first",
+            )
+    }
+
     fn next_identity() -> Result<ExecutionIdentity> {
         ExecutionIdentity::new(NEXT_EXPLICIT_DOMAIN_ID.fetch_add(1, Ordering::Relaxed))
     }
@@ -202,24 +242,24 @@ impl ExecutionDomain {
     ) -> Result<Arc<Self>> {
         if let Some(os) = override_stream {
             if os.device() != input.device {
-                return Err(Error::new(
-                    ErrorKind::InvalidOperation,
-                    "cross-device borrowed stream override: stream was created on a different device than the domain",
-                )
-                .with_operation(operation)
-                .with_context("domain_device", input.device.ordinal().to_string())
-                .with_context("override_stream_device", os.device().ordinal().to_string()));
+                return Err(Self::borrowed_override_binding_mismatch(
+                    operation,
+                    "stream",
+                    input.device,
+                    os.device(),
+                    "cross-device borrowed stream override: stream was created on a different device than the input runtime",
+                ));
             }
         }
         if let Some(omr) = override_mr {
             if omr.device() != input.device {
-                return Err(Error::new(
-                    ErrorKind::InvalidOperation,
-                    "cross-device borrowed MR override: memory resource was created on a different device than the domain",
-                )
-                .with_operation(operation)
-                .with_context("domain_device", input.device.ordinal().to_string())
-                .with_context("override_mr_device", omr.device().ordinal().to_string()));
+                return Err(Self::borrowed_override_binding_mismatch(
+                    operation,
+                    "memory_resource",
+                    input.device,
+                    omr.device(),
+                    "cross-device borrowed memory-resource override: memory resource was created on a different device than the input runtime",
+                ));
             }
         }
 
@@ -249,9 +289,10 @@ impl ExecutionDomain {
         }
 
         Err(Error::new(
-            ErrorKind::InvalidOperation,
+            ErrorKind::InvalidInput,
             "cross-device operation requires explicit relocation into one runtime before execution",
         )
+        .with_code(ErrorCode::CrossDeviceInputs)
         .with_operation(operation)
         .with_context("left_domain", left.debug_label())
         .with_context("right_domain", right.debug_label())
@@ -274,7 +315,8 @@ impl ExecutionDomain {
             return Ok(());
         }
 
-        Err(Error::new(ErrorKind::InvalidOperation, message)
+        Err(Error::new(ErrorKind::InvalidInput, message)
+            .with_code(ErrorCode::CrossProvenanceInputs)
             .with_operation(operation)
             .with_context("left_domain", left.debug_label())
             .with_context("right_domain", right.debug_label())

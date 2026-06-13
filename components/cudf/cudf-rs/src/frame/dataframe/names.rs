@@ -2,13 +2,13 @@ use std::sync::Arc;
 
 use super::owned::DataFrame;
 use crate::{
-    core::error::{Error, ErrorKind, Result},
+    core::error::Result,
     internal::{
         hash::{
             FastHashMap, FastHashSet, fast_hash_map_with_capacity, fast_hash_set_with_capacity,
             fast_index_map_with_capacity,
         },
-        resolve::missing_column_error,
+        resolve::{duplicate_column_name_error, missing_column_error},
     },
 };
 
@@ -55,12 +55,12 @@ impl DataFrame {
                 return Err(missing_column_error("dataframe::rename_columns", old));
             }
             if rename_map.contains_key(old.as_str()) {
-                return Err(Error::new(
-                    ErrorKind::InvalidOperation,
+                return Err(duplicate_column_name_error(
+                    "dataframe::rename_columns",
+                    old.clone(),
+                    pairs.len(),
                     format!("duplicate source column '{}' in rename list", old),
-                )
-                .with_operation("dataframe::rename_columns")
-                .with_context("column_name", old.clone()));
+                ));
             }
             rename_map.insert(old.as_str(), new.as_str());
         }
@@ -71,12 +71,12 @@ impl DataFrame {
         for name in self.columns.keys() {
             let target = if let Some(&new_name) = rename_map.get(name.as_str()) { new_name } else { name.as_str() };
             if !target_names.insert(target.to_string()) {
-                return Err(Error::new(
-                    ErrorKind::InvalidOperation,
+                return Err(duplicate_column_name_error(
+                    "dataframe::rename_columns",
+                    target.to_string(),
+                    self.columns.len(),
                     format!("rename would produce duplicate column name '{}'", target),
-                )
-                .with_operation("dataframe::rename_columns")
-                .with_context("target_name", target.to_string()));
+                ));
             }
         }
 

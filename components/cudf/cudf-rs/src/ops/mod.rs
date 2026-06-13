@@ -11,6 +11,9 @@
 //! trait implementations for borrowed
 //! [`Column`] values.
 //!
+//! Within that expression DSL surface, [`Expr::agg`] exposes broadcast aggregate expressions for
+//! row-aligned use, and [`Expr::str`] exposes string-specific expression methods.
+//!
 //! # Ownership and Evaluation
 //!
 //! Most low-level functions in this module family take borrowed

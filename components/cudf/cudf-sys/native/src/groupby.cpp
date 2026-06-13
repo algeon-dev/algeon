@@ -18,6 +18,15 @@
 
 namespace {
 
+thread_local bool g_fail_next_groupby_negative_total_columns = false;
+
+bool should_fail_next_groupby_negative_total_columns()
+{
+  if (!g_fail_next_groupby_negative_total_columns) { return false; }
+  g_fail_next_groupby_negative_total_columns = false;
+  return true;
+}
+
 cudf_status_t to_cudf_null_policy(cudf_null_policy_t input,
                                   cudf::null_policy* out,
                                   const char* param_name)
@@ -32,6 +41,11 @@ cudf_status_t to_cudf_null_policy(cudf_null_policy_t input,
 }  // namespace
 
 extern "C" {
+
+void cudf_test_groupby_fail_next_negative_total_columns()
+{
+  g_fail_next_groupby_negative_total_columns = true;
+}
 
 cudf_status_t cudf_aggregation_create(cudf_aggregation_kind_t kind, cudf_aggregation_handle* out)
 {
@@ -219,6 +233,13 @@ cudf_status_t cudf_groupby_aggregate_ex(cudf_table_view_handle keys,
     }
 
     auto [result_keys, result_values] = gb.aggregate(requests, exec.stream, exec.mr);
+
+    if (should_fail_next_groupby_negative_total_columns()) {
+      *out_keys          = cudf_release_table_handle(std::move(result_keys));
+      *out_values        = nullptr;
+      *out_total_columns = -1;
+      return CUDF_SUCCESS;
+    }
 
     // Flatten result columns into a single array.
     int32_t total = 0;

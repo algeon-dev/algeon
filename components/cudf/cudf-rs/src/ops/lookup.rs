@@ -20,7 +20,7 @@ use crate::{
     Series,
     core::{
         column::{Column, ColumnView},
-        error::{self, Error, ErrorKind, Result},
+        error::{self, Error, ErrorCode, ErrorKind, Result},
         table::TableView,
         types::{DataType, TypeId},
     },
@@ -35,7 +35,7 @@ fn type_label(type_id: TypeId) -> String {
 struct ProbeMetadata {
     input_type_id: TypeId,
     keys_type_id: TypeId,
-    values_type_id: TypeId,
+    value_type_id: TypeId,
     values_dtype: DataType,
     input_count: usize,
     keys_count: usize,
@@ -59,7 +59,7 @@ impl ProbeMetadata {
         Ok(Self {
             input_type_id: input_dtype.id(),
             keys_type_id: keys_dtype.id(),
-            values_type_id: values_dtype.id(),
+            value_type_id: values_dtype.id(),
             values_dtype,
             input_count,
             keys_count,
@@ -69,16 +69,24 @@ impl ProbeMetadata {
 
     fn decorate(&self, err: Error, operation: &'static str) -> Error {
         err.with_operation(operation)
-            .with_context("input_type_id", type_label(self.input_type_id))
-            .with_context("keys_type_id", type_label(self.keys_type_id))
-            .with_context("values_type_id", type_label(self.values_type_id))
+            .with_context("left_type_id", type_label(self.input_type_id))
+            .with_context("right_type_id", type_label(self.keys_type_id))
+            .with_context("type_id", type_label(self.value_type_id))
             .with_context("input_count", self.input_count.to_string())
             .with_context("keys_count", self.keys_count.to_string())
             .with_context("values_count", self.values_count.to_string())
     }
 
     fn invalid(&self, operation: &'static str, message: impl Into<String>) -> Error {
-        self.decorate(Error::new(ErrorKind::InvalidOperation, message.into()), operation)
+        self.decorate(Error::new(ErrorKind::InvalidInput, message.into()), operation)
+    }
+
+    fn length_mismatch(&self, operation: &'static str, message: impl Into<String>) -> Error {
+        self.invalid(operation, message).with_code(ErrorCode::ColumnLengthMismatch)
+    }
+
+    fn type_mismatch(&self, operation: &'static str, message: impl Into<String>) -> Error {
+        self.decorate(Error::new(ErrorKind::InvalidInput, message.into()).with_code(ErrorCode::TypeMismatch), operation)
     }
 }
 
@@ -91,11 +99,11 @@ fn validate_probe_inputs(
     let meta = ProbeMetadata::collect(input, keys, values, operation)?;
 
     if meta.input_type_id != meta.keys_type_id {
-        return Err(meta.invalid(operation, "input and lookup keys must have the same type"));
+        return Err(meta.type_mismatch(operation, "input and lookup keys must have the same type"));
     }
 
     if meta.keys_count != meta.values_count {
-        return Err(meta.invalid(operation, "lookup keys and values must have the same length"));
+        return Err(meta.length_mismatch(operation, "lookup keys and values must have the same length"));
     }
 
     ExecutionDomain::require_same_device_for_mixed_inputs(input.execution_domain(), keys.execution_domain(), operation)
@@ -136,7 +144,8 @@ fn ensure_unique_keys(keys: &ColumnView<'_>, key_count: usize, operation: &'stat
         .map_err(|e| e.with_operation(operation))?;
 
     if distinct_count != key_count {
-        return Err(Error::new(ErrorKind::InvalidOperation, "lookup keys must be unique")
+        return Err(Error::new(ErrorKind::InvalidInput, "lookup keys must be unique")
+            .with_code(ErrorCode::DuplicateKey)
             .with_operation(operation)
             .with_context("keys_count", key_count.to_string())
             .with_context("distinct_keys_count", distinct_count.to_string()));
@@ -264,12 +273,13 @@ fn execute_reusable_probe(
 
 fn mapping_length_error(keys: &Series, values: &Series, operation: &'static str) -> Error {
     let keys_type_id = keys.dtype().map(|dtype| type_label(dtype.id())).unwrap_or_else(|_| "?".to_string());
-    let values_type_id = values.dtype().map(|dtype| type_label(dtype.id())).unwrap_or_else(|_| "?".to_string());
+    let value_type_id = values.dtype().map(|dtype| type_label(dtype.id())).unwrap_or_else(|_| "?".to_string());
 
-    Error::new(ErrorKind::InvalidOperation, "lookup keys and values must have the same length")
+    Error::new(ErrorKind::InvalidInput, "lookup keys and values must have the same length")
+        .with_code(ErrorCode::ColumnLengthMismatch)
         .with_operation(operation)
-        .with_context("keys_type_id", keys_type_id)
-        .with_context("values_type_id", values_type_id)
+        .with_context("right_type_id", keys_type_id)
+        .with_context("type_id", value_type_id)
         .with_context("keys_count", keys.len().to_string())
         .with_context("values_count", values.len().to_string())
 }

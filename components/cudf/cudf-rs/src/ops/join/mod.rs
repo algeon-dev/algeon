@@ -29,10 +29,11 @@
 //! );
 //! ```
 
-use std::ptr;
+use std::{ptr, sync::Arc};
 
 mod dataframe;
 mod options;
+pub(crate) mod testing_hooks;
 
 pub use options::{JoinType, MergeOptions, NullEquality};
 
@@ -59,7 +60,7 @@ pub(crate) fn join_impl(
     right_payload: &TableView<'_>,
     null_equality: NullEquality,
     join_type: JoinType,
-    output_domain: &std::sync::Arc<ExecutionDomain>,
+    output_domain: &Arc<ExecutionDomain>,
     exec_options: Option<&cudf_sys::cudf_exec_options_t>,
     operation: &'static str,
 ) -> Result<JoinSides> {
@@ -148,8 +149,8 @@ pub(crate) fn join_impl(
     )?;
 
     Ok(JoinSides {
-        left: unsafe { Table::from_raw_with_domain(out_left, std::sync::Arc::clone(output_domain)) }?,
-        right: unsafe { Table::from_raw_with_domain(out_right, std::sync::Arc::clone(output_domain)) }?,
+        left: unsafe { Table::from_raw_with_domain(out_left, Arc::clone(output_domain)) }?,
+        right: unsafe { Table::from_raw_with_domain(out_right, Arc::clone(output_domain)) }?,
     })
 }
 
@@ -159,8 +160,8 @@ fn compatible_join_domain(
     left_payload: &TableView<'_>,
     right_payload: &TableView<'_>,
     operation: &'static str,
-) -> Result<std::sync::Arc<ExecutionDomain>> {
-    let output_domain = std::sync::Arc::clone(left_keys.execution_domain());
+) -> Result<Arc<ExecutionDomain>> {
+    let output_domain = Arc::clone(left_keys.execution_domain());
 
     for input in [right_keys, left_payload, right_payload] {
         ExecutionDomain::require_same_device_for_mixed_inputs(

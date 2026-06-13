@@ -13,35 +13,147 @@
 //! assert_eq!(combined.to_vec_strict::<i32>().unwrap(), vec![1, 2, 3, 4, 5]);
 //! ```
 
-use std::ptr;
+use std::{ptr, sync::Arc};
 
 use crate::{
     core::{
         column::{Column, ColumnView},
-        error::{self, Error, ErrorKind, Result},
+        error::{self, Error, ErrorCode, ErrorKind, Result},
         table::{Table, TableView},
     },
     runtime::execution_domain::ExecutionDomain,
 };
 
-fn checked_len_to_i32(len: usize, operation: &'static str, field: &'static str) -> Result<i32> {
+fn checked_len_to_i32(
+    len: usize,
+    operation: &'static str,
+    message: &'static str,
+    resource: &'static str,
+    value_key: &'static str,
+    remedy: &'static str,
+) -> Result<i32> {
     i32::try_from(len).map_err(|_| {
-        Error::new(ErrorKind::InvalidArgument, format!("{field} exceeds i32::MAX"))
-            .with_operation(operation)
-            .with_context(field, len.to_string())
+        error::limit_validation_error(
+            ErrorKind::InvalidInput,
+            operation,
+            message,
+            resource,
+            value_key,
+            "i32::MAX",
+            len,
+            remedy,
+        )
     })
 }
 
-fn concatenate_requires_input_error(operation: &'static str, input_kind: &'static str) -> Error {
-    Error::new(ErrorKind::InvalidOperation, format!("{operation} requires at least one input {input_kind}"))
-        .with_operation(operation)
+fn input_column_count_limit_error(operation: &'static str, column_count: usize) -> Error {
+    error::limit_validation_error(
+        ErrorKind::InvalidInput,
+        operation,
+        "number of input columns exceeds i32::MAX",
+        "input_columns",
+        "column_count",
+        "i32::MAX",
+        column_count,
+        "reduce column_count to fit within i32::MAX",
+    )
 }
 
-fn compatible_column_domain(columns: &[&ColumnView<'_>]) -> Result<std::sync::Arc<ExecutionDomain>> {
+fn input_table_count_limit_error(operation: &'static str, table_count: usize) -> Error {
+    error::limit_validation_error(
+        ErrorKind::InvalidInput,
+        operation,
+        "number of input tables exceeds i32::MAX",
+        "input_tables",
+        "table_count",
+        "i32::MAX",
+        table_count,
+        "reduce table_count to fit within i32::MAX",
+    )
+}
+
+fn concatenate_requires_input_error(operation: &'static str, input_kind: &'static str) -> Error {
+    Error::new(ErrorKind::InvalidInput, format!("{operation} requires at least one input {input_kind}"))
+        .with_code(ErrorCode::UnsupportedOperation)
+        .with_operation(operation)
+        .with_context("reason", "empty_input")
+        .with_context("remedy", format!("provide at least one input {input_kind}"))
+}
+
+fn type_label<T: std::fmt::Debug>(value: T) -> String {
+    format!("{value:?}").to_lowercase()
+}
+
+fn validate_column_types(columns: &[&ColumnView<'_>], operation: &'static str) -> Result<()> {
+    let Some((first, rest)) = columns.split_first() else {
+        return Ok(());
+    };
+    let left_type = first.data_type().map_err(|e| e.with_operation(operation))?.id();
+
+    for (offset, column) in rest.iter().enumerate() {
+        let right_type = column.data_type().map_err(|e| e.with_operation(operation))?.id();
+        if left_type != right_type {
+            return Err(Error::new(
+                ErrorKind::InvalidInput,
+                "all input columns must have the same data type for concatenation",
+            )
+            .with_code(ErrorCode::TypeMismatch)
+            .with_operation(operation)
+            .with_context("column_index", (offset + 1).to_string())
+            .with_context("left_type_id", type_label(left_type))
+            .with_context("right_type_id", type_label(right_type)));
+        }
+    }
+
+    Ok(())
+}
+
+fn validate_table_column_types(tables: &[&TableView<'_>], operation: &'static str) -> Result<()> {
+    let Some((first, rest)) = tables.split_first() else {
+        return Ok(());
+    };
+    let column_count = first.num_columns().map_err(|e| e.with_operation(operation))?;
+
+    for table in rest {
+        let table_column_count = table.num_columns().map_err(|e| e.with_operation(operation))?;
+        if table_column_count != column_count {
+            return Ok(());
+        }
+
+        for index in 0..column_count {
+            let left_type = first
+                .column(index)
+                .and_then(|column| column.data_type())
+                .map_err(|e| e.with_operation(operation))?
+                .id();
+            let right_type = table
+                .column(index)
+                .and_then(|column| column.data_type())
+                .map_err(|e| e.with_operation(operation))?
+                .id();
+
+            if left_type != right_type {
+                return Err(Error::new(
+                    ErrorKind::InvalidInput,
+                    "all input tables must have matching column data types for concatenation",
+                )
+                .with_code(ErrorCode::TypeMismatch)
+                .with_operation(operation)
+                .with_context("column_index", index.to_string())
+                .with_context("left_type_id", type_label(left_type))
+                .with_context("right_type_id", type_label(right_type)));
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn compatible_column_domain(columns: &[&ColumnView<'_>]) -> Result<Arc<ExecutionDomain>> {
     let Some(first) = columns.first() else {
         return Err(concatenate_requires_input_error("concatenate::concatenate_columns", "column"));
     };
-    let output_domain = std::sync::Arc::clone(first.execution_domain());
+    let output_domain = Arc::clone(first.execution_domain());
     // Order any secondary input stream before the authoritative output stream
     // so the concatenation kernel only reads completed device data.
     for col in &columns[1..] {
@@ -61,11 +173,11 @@ fn compatible_column_domain(columns: &[&ColumnView<'_>]) -> Result<std::sync::Ar
     Ok(output_domain)
 }
 
-fn compatible_table_domain(tables: &[&TableView<'_>]) -> Result<std::sync::Arc<ExecutionDomain>> {
+fn compatible_table_domain(tables: &[&TableView<'_>]) -> Result<Arc<ExecutionDomain>> {
     let Some(first) = tables.first() else {
         return Err(concatenate_requires_input_error("concatenate::concatenate_tables", "table"));
     };
-    let output_domain = std::sync::Arc::clone(first.execution_domain());
+    let output_domain = Arc::clone(first.execution_domain());
     // Order any secondary input stream before the authoritative output stream
     // so the concatenation kernel only reads completed device data.
     for tbl in &tables[1..] {
@@ -96,11 +208,19 @@ pub fn concatenate_columns(columns: &[&ColumnView<'_>]) -> Result<Column> {
 
 pub(crate) fn concatenate_columns_with_exec(
     columns: &[&ColumnView<'_>],
-    output_domain: &std::sync::Arc<ExecutionDomain>,
+    output_domain: &Arc<ExecutionDomain>,
     exec_options: Option<&cudf_sys::cudf_exec_options_t>,
 ) -> Result<Column> {
+    validate_column_types(columns, "concatenate::concatenate_columns")?;
     let handles: Vec<*mut std::os::raw::c_void> = columns.iter().map(|c| c.raw_handle()).collect();
-    let num_columns = checked_len_to_i32(handles.len(), "concatenate::concatenate_columns", "num_columns")?;
+    let num_columns = checked_len_to_i32(
+        handles.len(),
+        "concatenate::concatenate_columns",
+        "number of input columns exceeds i32::MAX",
+        "input_columns",
+        "column_count",
+        "reduce column_count to fit within i32::MAX",
+    )?;
     let mut out = ptr::null_mut();
     error::check_status_in_with(
         // SAFETY: All column view handles are valid (NonNull maintained by ColumnView).
@@ -115,7 +235,7 @@ pub(crate) fn concatenate_columns_with_exec(
         [("num_columns", handles.len().to_string())],
     )?;
     // SAFETY: out was returned by a successful FFI call, transferring ownership.
-    unsafe { Column::from_raw_with_domain(out, std::sync::Arc::clone(output_domain)) }
+    unsafe { Column::from_raw_with_domain(out, Arc::clone(output_domain)) }
 }
 
 /// Concatenate multiple tables into a single table.
@@ -129,11 +249,19 @@ pub fn concatenate_tables(tables: &[&TableView<'_>]) -> Result<Table> {
 
 pub(crate) fn concatenate_tables_with_exec(
     tables: &[&TableView<'_>],
-    output_domain: &std::sync::Arc<ExecutionDomain>,
+    output_domain: &Arc<ExecutionDomain>,
     exec_options: Option<&cudf_sys::cudf_exec_options_t>,
 ) -> Result<Table> {
+    validate_table_column_types(tables, "concatenate::concatenate_tables")?;
     let handles: Vec<*mut std::os::raw::c_void> = tables.iter().map(|t| t.raw_handle()).collect();
-    let num_tables = checked_len_to_i32(handles.len(), "concatenate::concatenate_tables", "num_tables")?;
+    let num_tables = checked_len_to_i32(
+        handles.len(),
+        "concatenate::concatenate_tables",
+        "number of input tables exceeds i32::MAX",
+        "input_tables",
+        "table_count",
+        "reduce table_count to fit within i32::MAX",
+    )?;
     let mut out = ptr::null_mut();
     error::check_status_in_with(
         // SAFETY: All table view handles are valid (NonNull maintained by TableView).
@@ -148,5 +276,13 @@ pub(crate) fn concatenate_tables_with_exec(
         [("num_tables", handles.len().to_string())],
     )?;
     // SAFETY: out was returned by a successful FFI call, transferring ownership.
-    unsafe { Table::from_raw_with_domain(out, std::sync::Arc::clone(output_domain)) }
+    unsafe { Table::from_raw_with_domain(out, Arc::clone(output_domain)) }
+}
+
+pub(crate) fn trigger_concatenate_column_count_limit_error_for_test() -> Result<()> {
+    Err(input_column_count_limit_error("concatenate::concatenate_columns", usize::MAX))
+}
+
+pub(crate) fn trigger_concatenate_table_count_limit_error_for_test() -> Result<()> {
+    Err(input_table_count_limit_error("concatenate::concatenate_tables", usize::MAX))
 }
