@@ -44,34 +44,64 @@ use std::{
     },
 };
 
-use super::{device::DeviceId, device_guard::DeviceGuard, event::CudaEvent, stream::CudaStream};
+use super::{
+    boundary::{BoundaryObservation, BoundaryObserverRef},
+    device::DeviceId,
+    device_guard::DeviceGuard,
+    event::CudaEvent,
+    placement::ExecutionPlacement,
+    stream::CudaStream,
+};
 use crate::core::{
     error::{self, DeviceIdFact, Error, ErrorCode, FACT_LEFT_DEVICE, FACT_RIGHT_DEVICE, Result},
     memory::DeviceMemoryResource,
 };
 
 static DEBUG_EXPLICIT_DOMAINS: OnceLock<Mutex<HashMap<u64, Arc<ExecutionDomain>>>> = OnceLock::new();
-static NEXT_EXPLICIT_DOMAIN_ID: AtomicU64 = AtomicU64::new(1);
+static NEXT_WORKFLOW_ID: AtomicU64 = AtomicU64::new(1);
+static NEXT_BUNDLE_ID: AtomicU64 = AtomicU64::new(1);
 
 pub(crate) struct ExecutionDomain {
     device: DeviceId,
     stream: Arc<CudaStream>,
     mr: Arc<DeviceMemoryResource>,
-    identity: ExecutionIdentity,
+    workflow_id: ExecutionWorkflowId,
+    bundle_id: ExecutionBundleId,
+    boundary_observer: Option<BoundaryObserverRef>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub(crate) struct ExecutionIdentity(NonZeroU64);
+pub(crate) struct ExecutionWorkflowId(NonZeroU64);
 
-impl ExecutionIdentity {
+impl ExecutionWorkflowId {
     fn new(value: u64) -> Result<Self> {
         NonZeroU64::new(value).map(Self).ok_or_else(|| {
             Error::new_with(
                 ErrorCode::InvariantViolation,
-                "execution_domain::ExecutionIdentity::new",
-                "debug retained-provenance identity must be non-zero",
+                "execution_domain::ExecutionWorkflowId::new",
+                "execution workflow identity must be non-zero",
             )
-            .with_detail("identity", value.to_string())
+            .with_detail("workflow_id", value.to_string())
+        })
+    }
+
+    fn get(self) -> u64 {
+        self.0.get()
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) struct ExecutionBundleId(NonZeroU64);
+
+impl ExecutionBundleId {
+    fn new(value: u64) -> Result<Self> {
+        NonZeroU64::new(value).map(Self).ok_or_else(|| {
+            Error::new_with(
+                ErrorCode::InvariantViolation,
+                "execution_domain::ExecutionBundleId::new",
+                "execution bundle identity must be non-zero",
+            )
+            .with_detail("bundle_id", value.to_string())
         })
     }
 
@@ -99,16 +129,28 @@ impl ExecutionDomain {
             )
     }
 
-    fn next_identity() -> Result<ExecutionIdentity> {
-        ExecutionIdentity::new(NEXT_EXPLICIT_DOMAIN_ID.fetch_add(1, Ordering::Relaxed))
+    fn next_workflow_id() -> Result<ExecutionWorkflowId> {
+        ExecutionWorkflowId::new(NEXT_WORKFLOW_ID.fetch_add(1, Ordering::Relaxed))
+    }
+
+    fn next_bundle_id() -> Result<ExecutionBundleId> {
+        ExecutionBundleId::new(NEXT_BUNDLE_ID.fetch_add(1, Ordering::Relaxed))
     }
 
     pub(crate) fn from_handles_on_device(
         device: DeviceId,
         stream: CudaStream,
         mr: DeviceMemoryResource,
+        boundary_observer: Option<BoundaryObserverRef>,
     ) -> Result<Arc<Self>> {
-        Ok(Arc::new(Self { device, stream: Arc::new(stream), mr: Arc::new(mr), identity: Self::next_identity()? }))
+        Ok(Arc::new(Self {
+            device,
+            stream: Arc::new(stream),
+            mr: Arc::new(mr),
+            workflow_id: Self::next_workflow_id()?,
+            bundle_id: Self::next_bundle_id()?,
+            boundary_observer,
+        }))
     }
 
     pub(crate) fn debug_explicit(identity: u64) -> Result<Arc<Self>> {
@@ -127,7 +169,14 @@ impl ExecutionDomain {
         let device = DeviceId::current().unwrap_or(DeviceId::DEFAULT);
         let stream = Arc::new(CudaStream::new()?);
         let mr = Arc::new(DeviceMemoryResource::cuda()?);
-        let domain = Arc::new(Self { device, stream, mr, identity: ExecutionIdentity::new(identity)? });
+        let domain = Arc::new(Self {
+            device,
+            stream,
+            mr,
+            workflow_id: ExecutionWorkflowId::new(identity)?,
+            bundle_id: Self::next_bundle_id()?,
+            boundary_observer: None,
+        });
         cache.insert(identity, Arc::clone(&domain));
         Ok(domain)
     }
@@ -137,11 +186,19 @@ impl ExecutionDomain {
     }
 
     pub(crate) fn debug_id(&self) -> u64 {
-        self.identity.get()
+        self.workflow_id.get()
     }
 
     pub(crate) fn debug_label(&self) -> String {
-        format!("explicit:{}(device={})", self.identity.get(), self.device.ordinal())
+        format!(
+            "explicit:{}(workflow={},bundle={},device={},stream={},memory_resource={})",
+            self.workflow_id.get(),
+            self.workflow_id.get(),
+            self.bundle_id.get(),
+            self.device.ordinal(),
+            self.debug_stream_value(),
+            self.debug_mr_value()
+        )
     }
 
     pub(crate) fn debug_stream_value(&self) -> usize {
@@ -158,6 +215,26 @@ impl ExecutionDomain {
 
     pub(crate) fn device_snapshot(&self) -> i32 {
         self.device.ordinal_raw()
+    }
+
+    pub(crate) fn placement(&self) -> ExecutionPlacement {
+        ExecutionPlacement {
+            device: self.device,
+            workflow_id: self.workflow_id.get(),
+            bundle_id: self.bundle_id.get(),
+            stream_debug: self.debug_stream_value(),
+            memory_resource_debug: self.debug_mr_value(),
+        }
+    }
+
+    pub(crate) fn boundary_observer(&self) -> Option<BoundaryObserverRef> {
+        self.boundary_observer.clone()
+    }
+
+    pub(crate) fn observe_boundary(&self, observation: BoundaryObservation) {
+        if let Some(observer) = &self.boundary_observer {
+            observer.observe(observation);
+        }
     }
 
     /// Synchronize this domain's stream so that the host can read device memory
@@ -264,11 +341,20 @@ impl ExecutionDomain {
             }
         }
 
+        let stream =
+            override_stream.map(|stream| Arc::new(stream.clone())).unwrap_or_else(|| Arc::clone(&input.stream));
+        let mr = override_mr.map(|mr| Arc::new(mr.clone())).unwrap_or_else(|| Arc::clone(&input.mr));
+        if stream.as_raw() == input.stream.as_raw() && mr.as_raw() == input.mr.as_raw() {
+            return Ok(Arc::clone(input));
+        }
+
         Ok(Arc::new(Self {
             device: input.device,
-            stream: override_stream.map(|stream| Arc::new(stream.clone())).unwrap_or_else(|| Arc::clone(&input.stream)),
-            mr: override_mr.map(|mr| Arc::new(mr.clone())).unwrap_or_else(|| Arc::clone(&input.mr)),
-            identity: input.identity,
+            stream,
+            mr,
+            workflow_id: input.workflow_id,
+            bundle_id: Self::next_bundle_id()?,
+            boundary_observer: input.boundary_observer.clone(),
         }))
     }
 

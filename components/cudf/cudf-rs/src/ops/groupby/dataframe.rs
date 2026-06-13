@@ -17,7 +17,9 @@ use crate::{
     },
     frame::dataframe::{DataFrame, group_keys::require_non_empty_group_keys},
     internal::resolve::missing_column_error,
-    runtime::{execution_context::ExecutionOverrides, execution_domain::ExecutionDomain},
+    runtime::{
+        execution_context::ExecutionOverrides, execution_domain::ExecutionDomain, execution_resolver::ResolvedExecution,
+    },
 };
 
 const GROUPBY_VALUE_VIEW_INLINE_CAPACITY: usize = 8;
@@ -195,7 +197,10 @@ impl<'a> GroupBy<'a> {
             resolve::{build_borrowed_table_view_from_columns, resolve_column_names},
         };
 
-        ExecutionDomain::insert_stream_dependency(self.df.execution_domain(), &output_domain, operation)?;
+        let execution =
+            ResolvedExecution::with_output_domain(Arc::clone(&output_domain), [self.df.execution_domain()], operation)?;
+        let output_domain = Arc::clone(execution.output_domain());
+        let resolved_exec_options = exec_options.as_ref().unwrap_or(execution.exec_options());
 
         require_non_empty_group_keys(self.keys.len(), operation)?;
 
@@ -272,26 +277,14 @@ impl<'a> GroupBy<'a> {
             })
             .collect();
 
-        let gb_result = if let Some(exec_options) = exec_options.as_ref() {
-            groupby_aggregate_impl(
-                keys_table.table(),
-                &requests,
-                self.options.null_policy(),
-                &output_domain,
-                Some(exec_options),
-                operation,
-            )?
-        } else {
-            let exec_options = output_domain.exec_options_raw();
-            groupby_aggregate_impl(
-                keys_table.table(),
-                &requests,
-                self.options.null_policy(),
-                &output_domain,
-                Some(&exec_options),
-                operation,
-            )?
-        };
+        let gb_result = groupby_aggregate_impl(
+            keys_table.table(),
+            &requests,
+            self.options.null_policy(),
+            &output_domain,
+            Some(resolved_exec_options),
+            operation,
+        )?;
 
         let grouped_results: Vec<Vec<Option<Column>>> =
             gb_result.results.into_iter().map(|cols| cols.into_iter().map(Some).collect()).collect();

@@ -16,7 +16,10 @@ use crate::{
         resolve::missing_column_error,
     },
     ops,
-    runtime::{Runtime, execution_context::ExecutionOverrides, execution_domain::ExecutionDomain},
+    runtime::{
+        Runtime, execution_context::ExecutionOverrides, execution_domain::ExecutionDomain,
+        execution_resolver::ResolvedExecution,
+    },
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -223,14 +226,6 @@ impl DataFrame {
     pub(crate) fn concat_many_in_context(&self, others: &[&DataFrame], ctx: &ExecutionOverrides<'_>) -> Result<Self> {
         let output_domain = ctx.resolve_output_domain(&self.domain)?;
         let operation = "dataframe::with_execution::concat_many";
-        if !ExecutionDomain::same_provenance(&self.domain, &output_domain) {
-            ExecutionDomain::insert_stream_dependency(&self.domain, &output_domain, operation)?;
-        }
-        for other in others {
-            if !ExecutionDomain::same_provenance(&other.domain, &output_domain) {
-                ExecutionDomain::insert_stream_dependency(&other.domain, &output_domain, operation)?;
-            }
-        }
         self.concat_many_impl(others, output_domain.explicit_exec_options_raw(), Some(output_domain), operation)
     }
 
@@ -246,19 +241,13 @@ impl DataFrame {
         }
 
         let output_domain = forced_output_domain.unwrap_or_else(|| Arc::clone(&self.domain));
-        let exec_options = exec_options.or_else(|| output_domain.explicit_exec_options_raw());
-
-        for other in others {
-            ExecutionDomain::require_same_device_for_mixed_inputs(&self.domain, &other.domain, operation)?;
-        }
-        if !ExecutionDomain::same_provenance(&self.domain, &output_domain) {
-            ExecutionDomain::insert_stream_dependency(&self.domain, &output_domain, operation)?;
-        }
-        for other in others {
-            if !ExecutionDomain::same_provenance(&other.domain, &output_domain) {
-                ExecutionDomain::insert_stream_dependency(&other.domain, &output_domain, operation)?;
-            }
-        }
+        let execution = ResolvedExecution::with_output_domain(
+            Arc::clone(&output_domain),
+            std::iter::once(&self.domain).chain(others.iter().map(|other| &other.domain)),
+            operation,
+        )?;
+        let output_domain = Arc::clone(execution.output_domain());
+        let resolved_exec_options = exec_options.as_ref().unwrap_or(execution.exec_options());
 
         for other in others {
             self.validate_concat_schema(other, operation)?;
@@ -274,7 +263,7 @@ impl DataFrame {
         }
 
         let result_table =
-            ops::concatenate::concatenate_tables_with_exec(&table_refs, &output_domain, exec_options.as_ref())?;
+            ops::concatenate::concatenate_tables_with_exec(&table_refs, &output_domain, Some(resolved_exec_options))?;
 
         Self::from_table_with_names(result_table, self.column_names_owned())
     }

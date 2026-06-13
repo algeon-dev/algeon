@@ -8,9 +8,12 @@ use crate::{
         types::DataType,
     },
     frame::series::{IntoSeries, Series},
-    internal::resolve::missing_column_error,
+    internal::{
+        hash::{FastIndexMap, fast_index_map_with_capacity},
+        resolve::missing_column_error,
+    },
     ops::{self, unary},
-    runtime::execution_domain::ExecutionDomain,
+    runtime::{ExecutionOverrides, execution_domain::ExecutionDomain},
 };
 
 /// One item accepted by [`DataFrame::with_columns`](super::DataFrame::with_columns).
@@ -185,11 +188,34 @@ impl DataFrame {
     /// explicit `(name, expr)` pair. Items without a resolvable name produce
     /// an error **before** any GPU work.
     ///
+    /// # Execution and Cost
+    ///
+    /// This convenience path evaluates through the DataFrame's retained
+    /// provenance. Unchanged columns are shared with `Arc::clone` and do not
+    /// copy GPU data. Use [`DataFrame::with_execution`](Self::with_execution)
+    /// and call `.with_columns(...)` on the returned scope to evaluate
+    /// expressions with borrowed stream / memory-resource overrides; that
+    /// scoped path may device-copy unchanged columns when the override changes
+    /// the result frame's retained provenance.
+    ///
     /// # Errors
     ///
     /// Returns an error if any item lacks an output name, or if
     /// evaluation of any expression fails.
     pub fn with_columns<I, T>(&self, exprs: I) -> Result<Self>
+    where
+        I: IntoIterator<Item = T>,
+        T: Into<WithColumnExpr>,
+    {
+        self.with_columns_in_context(exprs, &ExecutionOverrides::new(), "dataframe::with_columns")
+    }
+
+    pub(crate) fn with_columns_in_context<I, T>(
+        &self,
+        exprs: I,
+        ctx: &ExecutionOverrides<'_>,
+        operation: &'static str,
+    ) -> Result<Self>
     where
         I: IntoIterator<Item = T>,
         T: Into<WithColumnExpr>,
@@ -203,7 +229,7 @@ impl DataFrame {
                 explicit_name.as_deref().or_else(|| expr.output_name()).map(str::to_string).ok_or_else(|| {
                     Error::new_with(
                         ErrorCode::UnsupportedOperation,
-                        "dataframe::with_columns",
+                        operation,
                         "expression has no output name; use .alias() to name it",
                     )
                     .with_detail("resource", "output_name")
@@ -213,9 +239,77 @@ impl DataFrame {
             })
             .collect::<Result<_>>()?;
 
-        let results: Vec<Series> = exprs.iter().map(|(_, expr)| expr.eval(self)).collect::<Result<_>>()?;
-        let pairs: Vec<(&str, Series)> = names.iter().map(String::as_str).zip(results).collect();
-        self.assign(pairs)
+        let (output_domain, results) =
+            ops::expr::eval_many_in_context(self, ctx, operation, exprs.iter().map(|(_, expr)| expr))?;
+        self.assemble_with_columns_in_domain(names, results, output_domain, operation)
+    }
+
+    fn assemble_with_columns_in_domain(
+        &self,
+        names: Vec<String>,
+        results: Vec<Series>,
+        output_domain: Arc<ExecutionDomain>,
+        operation: &'static str,
+    ) -> Result<Self> {
+        let mut replacements: FastIndexMap<String, Series> = fast_index_map_with_capacity(results.len());
+        for (name, series) in names.into_iter().zip(results) {
+            let series_rows = series.len();
+            if series_rows != self.row_count {
+                return Err(Error::new_with(
+                    ErrorCode::ColumnLengthMismatch,
+                    operation,
+                    format!("series '{}' has {} rows but DataFrame has {} rows", name, series_rows, self.row_count),
+                )
+                .with_column(name)
+                .with_fact(FACT_ACTUAL_ROWS, series_rows)
+                .with_fact(FACT_EXPECTED_ROWS, self.row_count));
+            }
+            self.validate_series_against_output_domain(&series, &output_domain, operation, &name)?;
+            replacements.insert(name, series);
+        }
+
+        let mut new_columns = fast_index_map_with_capacity(self.columns.len() + replacements.len());
+        for (name, column) in &self.columns {
+            if let Some(series) = replacements.get(name) {
+                new_columns.insert(name.clone(), series.arc());
+            } else if ExecutionDomain::same_provenance(column.execution_domain(), &output_domain) {
+                new_columns.insert(name.clone(), Arc::clone(column));
+            } else {
+                ExecutionDomain::insert_stream_dependency(column.execution_domain(), &output_domain, operation)
+                    .map_err(|e| e.with_column(name.clone()))?;
+                let copied = column
+                    .copy_into_domain(Arc::clone(&output_domain), operation)
+                    .map_err(|e| e.with_column(name.clone()))?;
+                new_columns.insert(name.clone(), Arc::new(copied));
+            }
+        }
+
+        for (name, series) in replacements {
+            if !self.columns.contains_key(&name) {
+                new_columns.insert(name, series.arc());
+            }
+        }
+
+        let domain =
+            super::owned::resolve_frame_domain_from_authoritative_source(&new_columns, &output_domain, operation)?;
+        Ok(Self { columns: new_columns, row_count: self.row_count, domain })
+    }
+
+    fn validate_series_against_output_domain(
+        &self,
+        series: &Series,
+        output_domain: &Arc<ExecutionDomain>,
+        operation: &'static str,
+        column_name: &str,
+    ) -> Result<()> {
+        ExecutionDomain::require_same_provenance(
+            output_domain,
+            series.as_column().execution_domain(),
+            operation,
+            "with_columns expression output must resolve into the frame output provenance",
+            "evaluate expressions with the DataFrame execution context instead of calling default Series operations inside expression evaluation",
+        )
+        .map_err(|error| error.with_column(column_name.to_string()))
     }
 
     /// Return a new DataFrame with the named column cast to a different type.

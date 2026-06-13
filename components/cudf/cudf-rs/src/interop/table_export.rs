@@ -147,6 +147,8 @@ pub(super) fn prepare_table_export_from_view_with_readiness<'a>(
     readiness: ProducerReadiness<'a>,
 ) -> Result<PreparedTableExport<'a>, InteropError> {
     let (num_rows, _) = table_dimensions(view, operation)?;
+    let observation = table_view_boundary_observation(BoundaryKind::InteropLease, view, operation)?;
+    let observer = view.execution_domain().boundary_observer();
     let (columns, semantic_columns, bindings) =
         build_device_table_projection_from_view(view, operation, default_device)?;
     let table =
@@ -159,7 +161,9 @@ pub(super) fn prepare_table_export_from_view_with_readiness<'a>(
         readiness,
         export_diagnostics(),
     )
-    .map(|export| export.with_lease_backend(runtime_lease::shared_cuda_lease_backend()))
+    .map(|export| {
+        export.with_lease_backend(runtime_lease::shared_cuda_lease_backend_with_observation(observation, observer))
+    })
     .map_err(|error| error.with_context("operation", operation))
 }
 
@@ -200,6 +204,8 @@ where
         columns,
         num_rows,
         names,
+        domain.placement(),
+        domain.boundary_observer(),
         operation,
         default_device,
         readiness,
@@ -210,6 +216,8 @@ pub(super) fn prepare_device_table_export_from_columns_with_readiness<'a, I>(
     columns: I,
     num_rows: usize,
     names: Option<Vec<String>>,
+    placement: ExecutionPlacement,
+    observer: Option<crate::runtime::BoundaryObserverRef>,
     operation: &'static str,
     default_device: i32,
     readiness: ProducerReadiness<'a>,
@@ -219,6 +227,7 @@ where
 {
     let (columns, semantic_columns, bindings) =
         build_device_table_projection_from_columns(columns, operation, default_device)?;
+    let observation = boundary_observation(BoundaryKind::InteropLease, placement, num_rows, columns.len(), false);
     let table =
         SemanticTable::new(TableId::new(0), num_rows, columns.iter().map(|column| column.id()).collect(), names);
     PreparedTableExport::try_new_with_semantic_columns(
@@ -229,7 +238,9 @@ where
         readiness,
         export_diagnostics(),
     )
-    .map(|export| export.with_lease_backend(runtime_lease::shared_cuda_lease_backend()))
+    .map(|export| {
+        export.with_lease_backend(runtime_lease::shared_cuda_lease_backend_with_observation(observation, observer))
+    })
     .map_err(|error| error.with_context("operation", operation))
 }
 
@@ -242,6 +253,8 @@ pub(super) fn prepare_into_owned_table_root_with_readiness(
     let retained_table = Arc::new(table);
     let view =
         retained_table.view().map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?;
+    let observation = table_view_boundary_observation(BoundaryKind::InteropLease, &view, operation)?;
+    let observer = retained_table.execution_domain().boundary_observer();
     let num_rows = view.num_rows().map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?;
     let default_device = retained_table.execution_domain().device_id().ordinal() as i32;
     let (columns, semantic_columns, bindings) =
@@ -258,7 +271,7 @@ pub(super) fn prepare_into_owned_table_root_with_readiness(
     )
     .map(|export| {
         export
-            .with_lease_backend(runtime_lease::shared_cuda_lease_backend())
+            .with_lease_backend(runtime_lease::shared_cuda_lease_backend_with_observation(observation, observer))
             .with_retained_owner_arc(Arc::clone(&retained_table))
     })
     .map_err(|error| error.with_context("operation", operation))
@@ -310,6 +323,8 @@ pub(super) fn transfer_from_owned_table_with_names(
     names: Option<Vec<String>>,
     operation: &'static str,
 ) -> Result<OwnedTableTransfer, InteropError> {
+    let observation = table_boundary_observation(BoundaryKind::OwnedTransfer, &table, operation)?;
+    let domain = Arc::clone(table.execution_domain());
     let (default_device, readiness) = prepared_device_readiness(operation, table.execution_domain())?;
     let (num_rows, columns, semantic_columns, bindings) = {
         let view = table.view().map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?;
@@ -321,7 +336,7 @@ pub(super) fn transfer_from_owned_table_with_names(
 
     let table_semantic =
         SemanticTable::new(TableId::new(0), num_rows, columns.iter().map(|column| column.id()).collect(), names);
-    OwnedTableTransfer::try_new_with_semantic_columns(OwnedTableTransferParts {
+    let transfer = OwnedTableTransfer::try_new_with_semantic_columns(OwnedTableTransferParts {
         table: table_semantic,
         columns,
         semantic_columns,
@@ -333,7 +348,9 @@ pub(super) fn transfer_from_owned_table_with_names(
         release_contract: owned_transfer_release_contract(default_device),
         owner: OwnedTableTransferState::new(table),
     })
-    .map_err(|error| error.with_context("operation", operation))
+    .map_err(|error| error.with_context("operation", operation))?;
+    record_observation(&domain, observation);
+    Ok(transfer)
 }
 
 pub(super) fn transfer_from_owned_table_with_runtime_release(
@@ -374,6 +391,8 @@ pub(super) fn transfer_from_owned_table_with_names_and_runtime_release_synchroni
     synchronization: ReleaseSynchronization,
     operation: &'static str,
 ) -> Result<(OwnedTableTransfer, OwnedTableTransferReleaser), InteropError> {
+    let observation = table_boundary_observation(BoundaryKind::OwnedTransfer, &table, operation)?;
+    let domain = Arc::clone(table.execution_domain());
     let (default_device, readiness) = prepared_device_readiness(operation, table.execution_domain())?;
     let (num_rows, columns, semantic_columns, bindings) = {
         let view = table.view().map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?;
@@ -401,6 +420,7 @@ pub(super) fn transfer_from_owned_table_with_names_and_runtime_release_synchroni
     })
     .map_err(|error| error.with_context("operation", operation))?;
 
+    record_observation(&domain, observation);
     Ok((transfer, releaser))
 }
 

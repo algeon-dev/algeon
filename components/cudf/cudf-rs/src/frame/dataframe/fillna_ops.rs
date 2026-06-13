@@ -11,7 +11,9 @@ use crate::{
         replace,
         stream_compaction::{self, DuplicateKeepOption, NanEquality, NullEquality},
     },
-    runtime::{execution_context::ExecutionOverrides, execution_domain::ExecutionDomain},
+    runtime::{
+        execution_context::ExecutionOverrides, execution_domain::ExecutionDomain, execution_resolver::ResolvedExecution,
+    },
 };
 
 /// How [`DataFrame::dropna`] decides which rows to drop when `thresh` is unset.
@@ -242,16 +244,16 @@ impl DataFrame {
         let output_domain = Arc::clone(col.execution_domain());
         let cv = col.view()?;
         let fill_cv = fill_series.view()?;
-        ExecutionDomain::require_same_device_for_mixed_inputs(&output_domain, fill_cv.execution_domain(), operation)?;
-        if !ExecutionDomain::same_provenance(fill_cv.execution_domain(), &output_domain) {
-            ExecutionDomain::insert_stream_dependency(fill_cv.execution_domain(), &output_domain, operation)?;
-        }
-        let exec_options = output_domain.explicit_exec_options_raw();
+        let execution = ResolvedExecution::with_output_domain(
+            Arc::clone(&output_domain),
+            [cv.execution_domain(), fill_cv.execution_domain()],
+            operation,
+        )?;
         let new_col = replace::replace_nulls_column_with_exec_options(
             &cv,
             &fill_cv,
-            &output_domain,
-            exec_options.as_ref(),
+            execution.output_domain(),
+            Some(execution.exec_options()),
             operation,
         )?;
 
@@ -272,9 +274,9 @@ impl DataFrame {
         output_domain: Arc<ExecutionDomain>,
         operation: &'static str,
     ) -> Result<Self> {
-        if !ExecutionDomain::same_provenance(&self.domain, &output_domain) {
-            ExecutionDomain::insert_stream_dependency(&self.domain, &output_domain, operation)?;
-        }
+        let execution = ResolvedExecution::with_output_domain(Arc::clone(&output_domain), [&self.domain], operation)?;
+        let output_domain = Arc::clone(execution.output_domain());
+        let resolved_exec_options = exec_options.as_ref().unwrap_or(execution.exec_options());
 
         let key_indices = resolve_column_names(&self.columns, subset, operation)?;
         let tv = self.build_table_view()?;
@@ -285,7 +287,7 @@ impl DataFrame {
             NullEquality::Equal,
             NanEquality::AllEqual,
             &output_domain,
-            exec_options.as_ref(),
+            Some(resolved_exec_options),
             operation,
         )?;
         Self::from_table_with_names(result_table, self.column_names_owned())
@@ -299,9 +301,9 @@ impl DataFrame {
         output_domain: Arc<ExecutionDomain>,
         operation: &'static str,
     ) -> Result<Self> {
-        if !ExecutionDomain::same_provenance(&self.domain, &output_domain) {
-            ExecutionDomain::insert_stream_dependency(&self.domain, &output_domain, operation)?;
-        }
+        let execution = ResolvedExecution::with_output_domain(Arc::clone(&output_domain), [&self.domain], operation)?;
+        let output_domain = Arc::clone(execution.output_domain());
+        let resolved_exec_options = exec_options.as_ref().unwrap_or(execution.exec_options());
 
         let key_indices = resolve_column_names(&self.columns, subset, operation)?;
         let tv = self.build_table_view()?;
@@ -310,7 +312,7 @@ impl DataFrame {
             &key_indices,
             keep_threshold,
             &output_domain,
-            exec_options.as_ref(),
+            Some(resolved_exec_options),
             operation,
         )?;
         Self::from_table_with_names(result_table, self.column_names_owned())

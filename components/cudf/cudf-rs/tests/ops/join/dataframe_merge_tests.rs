@@ -150,7 +150,10 @@ fn test_merge_succeeds_with_mixed_domains_and_uses_left_provenance() {
     assert_eq!(result.testing_execution_domain_mr_value(), expected_exec_mr);
     assert_eq!(last_exec_stream_value(), expected_exec_stream);
     assert_eq!(last_exec_mr_value(), expected_exec_mr);
-    assert_eq!(crate::common::dependency_wait_call_count_for_stream(expected_exec_stream), 3);
+    // DataFrame guarantees one retained provenance bundle for all columns, so
+    // one dependency from the right frame's stream orders both right keys and
+    // payload before the left/output stream.
+    assert_eq!(crate::common::dependency_wait_call_count_for_stream(expected_exec_stream), 1);
 
     reset_sync_observation();
     let rows: Vec<_> = i32_column(&result, "id")
@@ -314,7 +317,9 @@ fn test_full_merge_succeeds_with_mixed_domains_and_reassembles_on_left_provenanc
     assert_eq!(result.testing_execution_domain_mr_value(), expected_exec_mr);
     assert_eq!(last_exec_stream_value(), expected_exec_stream);
     assert_eq!(last_exec_mr_value(), expected_exec_mr);
-    assert_eq!(crate::common::dependency_wait_call_count_for_stream(expected_exec_stream), 3);
+    // DataFrame-level merge can order the whole right frame once because all
+    // columns in a DataFrame share one retained provenance bundle.
+    assert_eq!(crate::common::dependency_wait_call_count_for_stream(expected_exec_stream), 1);
     assert_eq!(result.series("id").unwrap().as_column().testing_execution_domain_stream_value(), expected_exec_stream);
     assert_eq!(
         result.series("score").unwrap().as_column().testing_execution_domain_stream_value(),

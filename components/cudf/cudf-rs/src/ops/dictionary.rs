@@ -44,7 +44,9 @@ use crate::{
         error::{self, Result},
         types::TypeId,
     },
-    runtime::execution_domain::ExecutionDomain,
+    runtime::{
+        execution_context::ExecutionOverrides, execution_domain::ExecutionDomain, execution_resolver::ResolvedExecution,
+    },
 };
 
 pub(crate) fn encode_impl(
@@ -114,18 +116,6 @@ fn set_keys_impl(
     unsafe { Column::from_raw_with_domain(out, Arc::clone(output_domain)) }
 }
 
-fn primary_column_domain(columns: &[&ColumnView<'_>], operation: &'static str) -> Result<Arc<ExecutionDomain>> {
-    let Some(first) = columns.first() else {
-        return Err(unsupported_dictionary_validation_error(
-            operation,
-            "match_dictionaries requires at least one column",
-            "empty_input",
-            "provide at least one input dictionary column",
-        ));
-    };
-    Ok(Arc::clone(first.execution_domain()))
-}
-
 fn match_dictionaries_impl(
     dict_columns: &[&ColumnView<'_>],
     output_domain: &Arc<ExecutionDomain>,
@@ -182,9 +172,9 @@ fn match_dictionaries_impl(
 /// Keys:   `[111, 213, 429]`
 /// Indices: `[2, 0, 1, 0, 1, 2, 1]`
 pub fn encode(input: &ColumnView<'_>, indices_type: TypeId) -> Result<Column> {
-    let output_domain = Arc::clone(input.execution_domain());
-    let exec_options = output_domain.explicit_exec_options_raw();
-    encode_impl(input, indices_type, &output_domain, exec_options.as_ref(), "dictionary::encode")
+    let ctx = ExecutionOverrides::new();
+    let execution = ResolvedExecution::unary(input.execution_domain(), &ctx, "dictionary::encode")?;
+    encode_impl(input, indices_type, execution.output_domain(), Some(execution.exec_options()), "dictionary::encode")
 }
 
 /// Decode a dictionary column back to a regular column.
@@ -192,9 +182,9 @@ pub fn encode(input: &ColumnView<'_>, indices_type: TypeId) -> Result<Column> {
 /// The input must be a `DICTIONARY32` column. The result has the same type as
 /// the dictionary keys.
 pub fn decode(dict_column: &ColumnView<'_>) -> Result<Column> {
-    let output_domain = Arc::clone(dict_column.execution_domain());
-    let exec_options = output_domain.explicit_exec_options_raw();
-    decode_impl(dict_column, &output_domain, exec_options.as_ref(), "dictionary::decode")
+    let ctx = ExecutionOverrides::new();
+    let execution = ResolvedExecution::unary(dict_column.execution_domain(), &ctx, "dictionary::decode")?;
+    decode_impl(dict_column, execution.output_domain(), Some(execution.exec_options()), "dictionary::decode")
 }
 
 /// Get the keys column view from a dictionary column.
@@ -241,17 +231,14 @@ pub fn indices<'a>(dict_column: &ColumnView<'a>) -> Result<ColumnView<'a>> {
 pub fn set_keys(dict_column: &ColumnView<'_>, keys: &ColumnView<'_>) -> Result<Column> {
     validate_set_keys_inputs(dict_column, keys, "dictionary::set_keys")?;
 
-    let output_domain = Arc::clone(dict_column.execution_domain());
-    ExecutionDomain::require_same_device_for_mixed_inputs(
+    let ctx = ExecutionOverrides::new();
+    let execution = ResolvedExecution::binary(
         dict_column.execution_domain(),
         keys.execution_domain(),
+        &ctx,
         "dictionary::set_keys",
     )?;
-    if !ExecutionDomain::same_provenance(keys.execution_domain(), &output_domain) {
-        ExecutionDomain::insert_stream_dependency(keys.execution_domain(), &output_domain, "dictionary::set_keys")?;
-    }
-    let exec_options = output_domain.explicit_exec_options_raw();
-    set_keys_impl(dict_column, keys, &output_domain, exec_options.as_ref(), "dictionary::set_keys")
+    set_keys_impl(dict_column, keys, execution.output_domain(), Some(execution.exec_options()), "dictionary::set_keys")
 }
 
 /// Align multiple dictionary columns to a shared, deduplicated key set.
@@ -284,21 +271,18 @@ pub fn match_dictionaries(dict_columns: &[&ColumnView<'_>]) -> Result<Vec<Column
         require_dictionary_column(dict_column, "dictionary::match_dictionaries", "dict_column", Some(column_index))?;
     }
 
-    let output_domain = primary_column_domain(dict_columns, "dictionary::match_dictionaries")?;
-    for dict_column in &dict_columns[1..] {
-        ExecutionDomain::require_same_device_for_mixed_inputs(
-            &output_domain,
-            dict_column.execution_domain(),
-            "dictionary::match_dictionaries",
-        )?;
-        if !ExecutionDomain::same_provenance(dict_column.execution_domain(), &output_domain) {
-            ExecutionDomain::insert_stream_dependency(
-                dict_column.execution_domain(),
-                &output_domain,
-                "dictionary::match_dictionaries",
-            )?;
-        }
-    }
-    let exec_options = output_domain.explicit_exec_options_raw();
-    match_dictionaries_impl(dict_columns, &output_domain, exec_options.as_ref(), "dictionary::match_dictionaries")
+    let ctx = ExecutionOverrides::new();
+    let (primary, secondaries) = dict_columns.split_first().expect("empty input was rejected above");
+    let execution = ResolvedExecution::many(
+        primary.execution_domain(),
+        secondaries.iter().map(|column| column.execution_domain()),
+        &ctx,
+        "dictionary::match_dictionaries",
+    )?;
+    match_dictionaries_impl(
+        dict_columns,
+        execution.output_domain(),
+        Some(execution.exec_options()),
+        "dictionary::match_dictionaries",
+    )
 }

@@ -11,7 +11,9 @@ use crate::{
         error::{self, Result},
         scalar::Scalar,
     },
-    runtime::execution_domain::ExecutionDomain,
+    runtime::{
+        execution_context::ExecutionOverrides, execution_domain::ExecutionDomain, execution_resolver::ResolvedExecution,
+    },
 };
 
 // ---------------------------------------------------------------------------
@@ -46,9 +48,9 @@ impl StripSide {
 
 /// Convert each string element to lowercase. Returns a new STRING column.
 pub fn to_lower(input: &ColumnView<'_>) -> Result<Column> {
-    let output_domain = Arc::clone(input.execution_domain());
-    let exec_options = output_domain.explicit_exec_options_raw();
-    to_lower_impl(input, &output_domain, exec_options.as_ref(), "strings::to_lower")
+    let ctx = ExecutionOverrides::new();
+    let execution = ResolvedExecution::unary(input.execution_domain(), &ctx, "strings::to_lower")?;
+    to_lower_impl(input, execution.output_domain(), Some(execution.exec_options()), "strings::to_lower")
 }
 
 pub(crate) fn to_lower_impl(
@@ -68,9 +70,9 @@ pub(crate) fn to_lower_impl(
 
 /// Convert each string element to uppercase. Returns a new STRING column.
 pub fn to_upper(input: &ColumnView<'_>) -> Result<Column> {
-    let output_domain = Arc::clone(input.execution_domain());
-    let exec_options = output_domain.explicit_exec_options_raw();
-    to_upper_impl(input, &output_domain, exec_options.as_ref(), "strings::to_upper")
+    let ctx = ExecutionOverrides::new();
+    let execution = ResolvedExecution::unary(input.execution_domain(), &ctx, "strings::to_upper")?;
+    to_upper_impl(input, execution.output_domain(), Some(execution.exec_options()), "strings::to_upper")
 }
 
 pub(crate) fn to_upper_impl(
@@ -96,10 +98,10 @@ pub(crate) fn to_upper_impl(
 ///
 /// `target` must be a valid (non-null) string scalar.
 pub fn str_contains(input: &ColumnView<'_>, target: &Scalar) -> Result<Column> {
-    let output_domain = Arc::clone(input.execution_domain());
-    ExecutionDomain::insert_stream_dependency(target.execution_domain(), &output_domain, "strings::contains")?;
-    let exec_options = output_domain.explicit_exec_options_raw();
-    str_contains_impl(input, target, &output_domain, exec_options.as_ref(), "strings::contains")
+    let ctx = ExecutionOverrides::new();
+    let execution =
+        ResolvedExecution::binary(input.execution_domain(), target.execution_domain(), &ctx, "strings::contains")?;
+    str_contains_impl(input, target, execution.output_domain(), Some(execution.exec_options()), "strings::contains")
 }
 
 pub(crate) fn str_contains_impl(
@@ -122,10 +124,10 @@ pub(crate) fn str_contains_impl(
 
 /// Element-wise starts-with test against a scalar string. Returns a BOOL8 column.
 pub fn starts_with(input: &ColumnView<'_>, target: &Scalar) -> Result<Column> {
-    let output_domain = Arc::clone(input.execution_domain());
-    ExecutionDomain::insert_stream_dependency(target.execution_domain(), &output_domain, "strings::starts_with")?;
-    let exec_options = output_domain.explicit_exec_options_raw();
-    starts_with_impl(input, target, &output_domain, exec_options.as_ref(), "strings::starts_with")
+    let ctx = ExecutionOverrides::new();
+    let execution =
+        ResolvedExecution::binary(input.execution_domain(), target.execution_domain(), &ctx, "strings::starts_with")?;
+    starts_with_impl(input, target, execution.output_domain(), Some(execution.exec_options()), "strings::starts_with")
 }
 
 pub(crate) fn starts_with_impl(
@@ -148,10 +150,10 @@ pub(crate) fn starts_with_impl(
 
 /// Element-wise ends-with test against a scalar string. Returns a BOOL8 column.
 pub fn ends_with(input: &ColumnView<'_>, target: &Scalar) -> Result<Column> {
-    let output_domain = Arc::clone(input.execution_domain());
-    ExecutionDomain::insert_stream_dependency(target.execution_domain(), &output_domain, "strings::ends_with")?;
-    let exec_options = output_domain.explicit_exec_options_raw();
-    ends_with_impl(input, target, &output_domain, exec_options.as_ref(), "strings::ends_with")
+    let ctx = ExecutionOverrides::new();
+    let execution =
+        ResolvedExecution::binary(input.execution_domain(), target.execution_domain(), &ctx, "strings::ends_with")?;
+    ends_with_impl(input, target, execution.output_domain(), Some(execution.exec_options()), "strings::ends_with")
 }
 
 pub(crate) fn ends_with_impl(
@@ -181,10 +183,10 @@ pub(crate) fn ends_with_impl(
 /// `to_strip` specifies the set of characters to remove. Pass a valid empty
 /// string scalar to strip whitespace.
 pub fn strip(input: &ColumnView<'_>, side: StripSide, to_strip: &Scalar) -> Result<Column> {
-    let output_domain = Arc::clone(input.execution_domain());
-    ExecutionDomain::insert_stream_dependency(to_strip.execution_domain(), &output_domain, "strings::strip")?;
-    let exec_options = output_domain.explicit_exec_options_raw();
-    strip_impl(input, side, to_strip, &output_domain, exec_options.as_ref(), "strings::strip")
+    let ctx = ExecutionOverrides::new();
+    let execution =
+        ResolvedExecution::binary(input.execution_domain(), to_strip.execution_domain(), &ctx, "strings::strip")?;
+    strip_impl(input, side, to_strip, execution.output_domain(), Some(execution.exec_options()), "strings::strip")
 }
 
 pub(crate) fn strip_impl(
@@ -215,9 +217,9 @@ pub(crate) fn strip_impl(
 ///
 /// Equivalent to cuDF Python's `Series.str.len()`.
 pub fn count_characters(input: &ColumnView<'_>) -> Result<Column> {
-    let output_domain = Arc::clone(input.execution_domain());
-    let exec_options = output_domain.explicit_exec_options_raw();
-    count_characters_impl(input, &output_domain, exec_options.as_ref(), "strings::count_characters")
+    let ctx = ExecutionOverrides::new();
+    let execution = ResolvedExecution::unary(input.execution_domain(), &ctx, "strings::count_characters")?;
+    count_characters_impl(input, execution.output_domain(), Some(execution.exec_options()), "strings::count_characters")
 }
 
 pub(crate) fn count_characters_impl(
@@ -237,9 +239,9 @@ pub(crate) fn count_characters_impl(
 
 /// Byte count per string. Returns an INT32 column.
 pub fn count_bytes(input: &ColumnView<'_>) -> Result<Column> {
-    let output_domain = Arc::clone(input.execution_domain());
-    let exec_options = output_domain.explicit_exec_options_raw();
-    count_bytes_impl(input, &output_domain, exec_options.as_ref(), "strings::count_bytes")
+    let ctx = ExecutionOverrides::new();
+    let execution = ResolvedExecution::unary(input.execution_domain(), &ctx, "strings::count_bytes")?;
+    count_bytes_impl(input, execution.output_domain(), Some(execution.exec_options()), "strings::count_bytes")
 }
 
 pub(crate) fn count_bytes_impl(

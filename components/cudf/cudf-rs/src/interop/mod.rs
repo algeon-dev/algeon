@@ -205,8 +205,63 @@ use crate::{
         resolve::validate_no_duplicate_names,
     },
     ops::dictionary,
-    runtime::{CudaEvent, Runtime, execution_domain::ExecutionDomain},
+    runtime::{
+        BoundaryKind, BoundaryObservation, CudaEvent, ExecutionPlacement, Runtime, execution_domain::ExecutionDomain,
+        record_boundary_observation_in_domain,
+    },
 };
+
+fn boundary_observation(
+    kind: BoundaryKind,
+    placement: ExecutionPlacement,
+    rows: usize,
+    columns: usize,
+    synchronized_for_host: bool,
+) -> BoundaryObservation {
+    BoundaryObservation { kind, placement, rows, columns, synchronized_for_host }
+}
+
+fn record_observation(domain: &Arc<ExecutionDomain>, observation: BoundaryObservation) {
+    record_boundary_observation_in_domain(domain, observation);
+}
+
+fn column_boundary_observation(
+    kind: BoundaryKind,
+    column: &Column,
+    operation: &'static str,
+) -> Result<BoundaryObservation, InteropError> {
+    let rows = column.len().map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?;
+    Ok(boundary_observation(kind, column.execution_domain().placement(), rows, 1, false))
+}
+
+fn column_view_boundary_observation(
+    kind: BoundaryKind,
+    view: &ColumnView<'_>,
+    operation: &'static str,
+) -> Result<BoundaryObservation, InteropError> {
+    let rows = view.len().map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?;
+    Ok(boundary_observation(kind, view.execution_domain().placement(), rows, 1, false))
+}
+
+fn table_boundary_observation(
+    kind: BoundaryKind,
+    table: &Table,
+    operation: &'static str,
+) -> Result<BoundaryObservation, InteropError> {
+    let view = table.view().map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?;
+    table_view_boundary_observation(kind, &view, operation)
+}
+
+fn table_view_boundary_observation(
+    kind: BoundaryKind,
+    view: &TableView<'_>,
+    operation: &'static str,
+) -> Result<BoundaryObservation, InteropError> {
+    let rows = view.num_rows().map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?;
+    let columns =
+        view.num_columns().map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?;
+    Ok(boundary_observation(kind, view.execution_domain().placement(), rows, columns, false))
+}
 
 /// Borrow a `cudf-rs` CUDA stream as a shared RAPIDS interop stream handle.
 ///

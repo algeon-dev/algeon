@@ -8,7 +8,9 @@ use crate::{
         error::{self, Result},
         table::{Table, TableView},
     },
-    runtime::execution_domain::ExecutionDomain,
+    runtime::{
+        execution_context::ExecutionOverrides, execution_domain::ExecutionDomain, execution_resolver::ResolvedExecution,
+    },
 };
 
 pub(crate) fn gather_impl(
@@ -65,23 +67,16 @@ pub(crate) fn gather_impl(
 /// );
 /// ```
 pub fn gather(input: &TableView<'_>, gather_map: &ColumnView<'_>) -> Result<Table> {
-    let output_domain = Arc::clone(input.execution_domain());
-    ExecutionDomain::require_same_device_for_mixed_inputs(
-        input.execution_domain(),
-        gather_map.execution_domain(),
-        "copying::gather",
-    )?;
-    if !ExecutionDomain::same_provenance(gather_map.execution_domain(), &output_domain) {
-        ExecutionDomain::insert_stream_dependency(gather_map.execution_domain(), &output_domain, "copying::gather")?;
-    }
-    let exec_options = output_domain.explicit_exec_options_raw();
+    let ctx = ExecutionOverrides::new();
+    let execution =
+        ResolvedExecution::binary(input.execution_domain(), gather_map.execution_domain(), &ctx, "copying::gather")?;
     gather_impl(
         input,
         gather_map,
         cudf_sys::cudf_out_of_bounds_policy_t::CUDF_OUT_OF_BOUNDS_POLICY_NULLIFY,
         "nullify",
-        &output_domain,
-        exec_options.as_ref(),
+        execution.output_domain(),
+        Some(execution.exec_options()),
         "copying::gather",
     )
 }
@@ -117,27 +112,20 @@ pub fn gather(input: &TableView<'_>, gather_map: &ColumnView<'_>) -> Result<Tabl
 ///
 /// Prefer [`gather`] unless profiling shows the bounds check is a bottleneck.
 pub unsafe fn gather_unchecked(input: &TableView<'_>, gather_map: &ColumnView<'_>) -> Result<Table> {
-    let output_domain = Arc::clone(input.execution_domain());
-    ExecutionDomain::require_same_device_for_mixed_inputs(
+    let ctx = ExecutionOverrides::new();
+    let execution = ResolvedExecution::binary(
         input.execution_domain(),
         gather_map.execution_domain(),
+        &ctx,
         "copying::gather_unchecked",
     )?;
-    if !ExecutionDomain::same_provenance(gather_map.execution_domain(), &output_domain) {
-        ExecutionDomain::insert_stream_dependency(
-            gather_map.execution_domain(),
-            &output_domain,
-            "copying::gather_unchecked",
-        )?;
-    }
-    let exec_options = output_domain.explicit_exec_options_raw();
     gather_impl(
         input,
         gather_map,
         cudf_sys::cudf_out_of_bounds_policy_t::CUDF_OUT_OF_BOUNDS_POLICY_DONT_CHECK,
         "dont_check",
-        &output_domain,
-        exec_options.as_ref(),
+        execution.output_domain(),
+        Some(execution.exec_options()),
         "copying::gather_unchecked",
     )
 }
@@ -146,7 +134,7 @@ pub unsafe fn gather_unchecked(input: &TableView<'_>, gather_map: &ColumnView<'_
 // copy_if_else (column-column)
 // ---------------------------------------------------------------------------
 
-fn copy_if_else_impl(
+pub(crate) fn copy_if_else_impl(
     lhs: &ColumnView<'_>,
     rhs: &ColumnView<'_>,
     boolean_mask: &ColumnView<'_>,
@@ -210,13 +198,19 @@ fn copy_if_else_impl(
 /// );
 /// ```
 pub fn copy_if_else(lhs: &ColumnView<'_>, rhs: &ColumnView<'_>, boolean_mask: &ColumnView<'_>) -> Result<Column> {
-    let output_domain = Arc::clone(lhs.execution_domain());
-    ExecutionDomain::insert_stream_dependency(rhs.execution_domain(), &output_domain, "copying::copy_if_else")?;
-    ExecutionDomain::insert_stream_dependency(
-        boolean_mask.execution_domain(),
-        &output_domain,
+    let ctx = ExecutionOverrides::new();
+    let execution = ResolvedExecution::many(
+        lhs.execution_domain(),
+        [rhs.execution_domain(), boolean_mask.execution_domain()],
+        &ctx,
         "copying::copy_if_else",
     )?;
-    let exec_options = output_domain.explicit_exec_options_raw();
-    copy_if_else_impl(lhs, rhs, boolean_mask, &output_domain, exec_options.as_ref(), "copying::copy_if_else")
+    copy_if_else_impl(
+        lhs,
+        rhs,
+        boolean_mask,
+        execution.output_domain(),
+        Some(execution.exec_options()),
+        "copying::copy_if_else",
+    )
 }

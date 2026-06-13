@@ -5,7 +5,10 @@ use arrow::{
     record_batch::RecordBatch,
 };
 
-use crate::{core::error::Result, runtime::Runtime};
+use crate::{
+    core::error::Result,
+    runtime::{BoundaryObservation, Runtime},
+};
 
 pub(crate) fn trigger_numeric_to_arrow_error_for_test() -> Result<()> {
     let buffer = arrow::buffer::ScalarBuffer::from(vec![1i32]);
@@ -45,4 +48,8 @@ pub(crate) fn host_export_call_count_for_test() -> usize {
 
 pub(crate) fn host_import_call_count_for_test() -> usize {
     super::host_import_call_count()
+}
+
+pub(crate) fn last_host_boundary_observation_for_test() -> Option<BoundaryObservation> {
+    super::last_host_boundary_observation()
 }

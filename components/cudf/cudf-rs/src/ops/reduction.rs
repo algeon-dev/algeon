@@ -17,11 +17,17 @@
 
 use std::{os::raw::c_void, ptr, sync::Arc};
 
-use crate::core::{
-    column::{Column, ColumnView},
-    error::{self, Error, ErrorCode, Result},
-    scalar::Scalar,
-    types::DataType,
+pub use crate::core::types::NullPolicy;
+use crate::{
+    core::{
+        column::{Column, ColumnView},
+        error::{self, Error, ErrorCode, Result},
+        scalar::Scalar,
+        types::DataType,
+    },
+    runtime::{
+        execution_context::ExecutionOverrides, execution_domain::ExecutionDomain, execution_resolver::ResolvedExecution,
+    },
 };
 
 /// Aggregation type for reduce operations.
@@ -80,9 +86,6 @@ impl ScanType {
         }
     }
 }
-
-pub use crate::core::types::NullPolicy;
-use crate::runtime::execution_domain::ExecutionDomain;
 
 fn reduce_agg_name(agg: &ReduceAgg) -> &'static str {
     match agg {
@@ -219,9 +222,9 @@ unsafe fn create_scan_agg_handle(agg: ScanAgg) -> Result<*mut c_void> {
 
 /// Reduce a column to a single scalar value.
 pub fn reduce(input: &ColumnView<'_>, agg: &ReduceAgg, output_type: &DataType) -> Result<Scalar> {
-    let output_domain = Arc::clone(input.execution_domain());
-    let exec_options = output_domain.explicit_exec_options_raw();
-    reduce_impl(input, agg, output_type, &output_domain, exec_options.as_ref(), "reduction::reduce")
+    let ctx = ExecutionOverrides::new();
+    let execution = ResolvedExecution::unary(input.execution_domain(), &ctx, "reduction::reduce")?;
+    reduce_impl(input, agg, output_type, execution.output_domain(), Some(execution.exec_options()), "reduction::reduce")
 }
 
 pub(crate) fn reduce_impl(
@@ -268,9 +271,17 @@ pub(crate) fn reduce_impl(
 
 /// Compute a prefix scan (cumulative operation) on a column.
 pub fn scan(input: &ColumnView<'_>, agg: ScanAgg, scan_type: ScanType, null_policy: NullPolicy) -> Result<Column> {
-    let output_domain = Arc::clone(input.execution_domain());
-    let exec_options = output_domain.explicit_exec_options_raw();
-    scan_impl(input, agg, scan_type, null_policy, &output_domain, exec_options.as_ref(), "reduction::scan")
+    let ctx = ExecutionOverrides::new();
+    let execution = ResolvedExecution::unary(input.execution_domain(), &ctx, "reduction::scan")?;
+    scan_impl(
+        input,
+        agg,
+        scan_type,
+        null_policy,
+        execution.output_domain(),
+        Some(execution.exec_options()),
+        "reduction::scan",
+    )
 }
 
 pub(crate) fn scan_impl(
@@ -324,9 +335,9 @@ pub(crate) fn scan_impl(
 
 /// Compute the min and max of a column simultaneously.
 pub fn minmax(input: &ColumnView<'_>) -> Result<(Scalar, Scalar)> {
-    let output_domain = Arc::clone(input.execution_domain());
-    let exec_options = output_domain.explicit_exec_options_raw();
-    minmax_impl(input, &output_domain, exec_options.as_ref(), "reduction::minmax")
+    let ctx = ExecutionOverrides::new();
+    let execution = ResolvedExecution::unary(input.execution_domain(), &ctx, "reduction::minmax")?;
+    minmax_impl(input, execution.output_domain(), Some(execution.exec_options()), "reduction::minmax")
 }
 
 pub(crate) fn minmax_impl(

@@ -7,7 +7,7 @@ use cudf::{
     AggSpec, DataFrame, DeviceId, ExecutionOverrides, GroupByAgg, MergeOptions, Runtime, Series, SortOptions, TypeId,
     core::memory::DeviceMemoryResource,
     frame::dataframe::{CsvReadOptions, CsvWriteOptions, JsonWriteOptions, ParquetReadOptions, ParquetWriteOptions},
-    ops::expr::col,
+    ops::expr::{col, when},
     runtime::CudaStream,
     testing::prelude::*,
 };
@@ -272,6 +272,50 @@ fn dataframe_in_context_routes_representative_operation_families_through_context
     assert_eq!(last_exec_mr_value(), ctx_mr);
     assert_frame_residency(&filtered, df.testing_execution_domain_id(), ctx_stream, ctx_mr);
     assert_eq!(sorted_i32_i32_rows(&filtered, "id", "val"), vec![(2, 20), (3, 30)]);
+
+    reset_dependency_observation();
+    reset_exec_observation();
+    let keep_before = device_ptr(&df, "val");
+    let with_columns = df
+        .with_execution(&ctx)
+        .with_columns([
+            ("score", col("id") + col("val")),
+            ("id_total", col("id").agg().sum()),
+            ("bucket", when(col("id").ge(2i32)).then("high").otherwise("low")),
+        ])
+        .unwrap();
+    assert_eq!(last_exec_stream_value(), ctx_stream);
+    assert_eq!(last_exec_mr_value(), ctx_mr);
+    assert!(dependency_wait_call_count_for_stream(ctx_stream) >= 1);
+    assert_frame_residency(&with_columns, df.testing_execution_domain_id(), ctx_stream, ctx_mr);
+    assert_eq!(with_columns.series("val").unwrap().as_column().testing_execution_domain_stream_value(), ctx_stream);
+    assert_ne!(
+        device_ptr(&with_columns, "val"),
+        keep_before,
+        "scoped with_columns must relocate unchanged columns when the override changes retained provenance"
+    );
+    assert_eq!(sorted_i32_i32_rows(&with_columns, "id", "score"), vec![(1, 11), (2, 22), (2, 42), (3, 33)]);
+    assert_eq!(with_columns.series("id_total").unwrap().to_vec_strict::<i64>().unwrap(), vec![8, 8, 8, 8]);
+
+    let default_with_columns = df.with_columns([("score", col("id") + col("val"))]).unwrap();
+    assert_eq!(
+        device_ptr(&default_with_columns, "val"),
+        keep_before,
+        "ordinary with_columns should keep unchanged columns Arc-shared when no override changes provenance"
+    );
+
+    reset_exec_observation();
+    let str_df = DataFrame::from_columns([
+        ("name", data_rt.series(&["alice", "Bob", "carol"]).unwrap()),
+        ("keep", data_rt.series(&[1i32, 2, 3]).unwrap()),
+    ])
+    .unwrap();
+    let str_with_columns =
+        str_df.with_execution(&ctx).with_columns([("has_a", col("name").str().contains("a"))]).unwrap();
+    assert_eq!(last_exec_stream_value(), ctx_stream);
+    assert_eq!(last_exec_mr_value(), ctx_mr);
+    assert_frame_residency(&str_with_columns, str_df.testing_execution_domain_id(), ctx_stream, ctx_mr);
+    assert_eq!(str_with_columns.series("has_a").unwrap().to_vec_strict::<bool>().unwrap(), vec![true, false, true]);
 }
 
 #[test]

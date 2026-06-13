@@ -19,7 +19,10 @@ use crate::{
         resolve::validate_no_duplicate_names,
     },
     ops::groupby,
-    runtime::{Runtime, execution_domain::ExecutionDomain},
+    runtime::{
+        BoundaryKind, BoundaryObservation, ExecutionPlacement, Runtime, execution_domain::ExecutionDomain,
+        record_boundary_observation_in_domain,
+    },
 };
 
 /// A GPU DataFrame: a named, ordered collection of GPU columns.
@@ -396,9 +399,26 @@ impl DataFrame {
     pub fn copy_into_runtime(&self, runtime: &Runtime) -> Result<Self> {
         let operation = "dataframe::copy_into_runtime";
         let output_domain = Arc::clone(runtime.execution_domain());
+        let should_copy = self
+            .columns
+            .values()
+            .any(|column| !ExecutionDomain::same_provenance(column.execution_domain(), &output_domain));
         let columns = self.clone_or_copy_columns_into_domain(&output_domain, operation)?;
         let domain = resolve_frame_domain_from_authoritative_source(&columns, &output_domain, operation)?;
-        Ok(Self { columns, row_count: self.row_count, domain })
+        let frame = Self { columns, row_count: self.row_count, domain };
+        if should_copy {
+            record_boundary_observation_in_domain(
+                &output_domain,
+                BoundaryObservation {
+                    kind: BoundaryKind::DeviceToDeviceCopy,
+                    placement: runtime.placement(),
+                    rows: self.row_count,
+                    columns: self.columns.len(),
+                    synchronized_for_host: false,
+                },
+            );
+        }
+        Ok(frame)
     }
 
     /// Consume the `DataFrame`, returning an owned table and column names.
@@ -465,6 +485,11 @@ impl DataFrame {
     /// [`GroupBy`][crate::ops::groupby::GroupBy].
     pub(crate) fn columns_map(&self) -> &FastIndexMap<String, Arc<Column>> {
         &self.columns
+    }
+
+    /// Return a diagnostic summary of this frame's retained execution placement.
+    pub fn placement(&self) -> ExecutionPlacement {
+        self.domain.placement()
     }
 
     pub(crate) fn execution_domain(&self) -> &Arc<ExecutionDomain> {

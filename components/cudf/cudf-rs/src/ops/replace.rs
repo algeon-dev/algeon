@@ -8,7 +8,9 @@ use crate::{
         error::{self, Result},
         scalar::Scalar,
     },
-    runtime::execution_domain::ExecutionDomain,
+    runtime::{
+        execution_context::ExecutionOverrides, execution_domain::ExecutionDomain, execution_resolver::ResolvedExecution,
+    },
 };
 
 /// Fill policy for [`replace_nulls_policy`].
@@ -41,14 +43,20 @@ pub enum FillPolicy {
 /// assert_eq!(result.to_vec_strict::<i32>().unwrap(), vec![1, 99, 3]);
 /// ```
 pub fn replace_nulls(input: &ColumnView<'_>, replacement: &Scalar) -> Result<Column> {
-    let output_domain = Arc::clone(input.execution_domain());
-    ExecutionDomain::insert_stream_dependency(
+    let ctx = ExecutionOverrides::new();
+    let execution = ResolvedExecution::binary(
+        input.execution_domain(),
         replacement.execution_domain(),
-        &output_domain,
+        &ctx,
         "replace::replace_nulls",
     )?;
-    let exec_options = output_domain.explicit_exec_options_raw();
-    replace_nulls_with_exec_options(input, replacement, &output_domain, exec_options.as_ref(), "replace::replace_nulls")
+    replace_nulls_with_exec_options(
+        input,
+        replacement,
+        execution.output_domain(),
+        Some(execution.exec_options()),
+        "replace::replace_nulls",
+    )
 }
 
 pub(crate) fn replace_nulls_with_exec_options(
@@ -92,18 +100,18 @@ pub(crate) fn replace_nulls_with_exec_options(
 /// assert_eq!(result.to_vec_strict::<i32>().unwrap(), vec![1, 20, 3]);
 /// ```
 pub fn replace_nulls_column(input: &ColumnView<'_>, replacement: &ColumnView<'_>) -> Result<Column> {
-    let output_domain = Arc::clone(input.execution_domain());
-    ExecutionDomain::insert_stream_dependency(
+    let ctx = ExecutionOverrides::new();
+    let execution = ResolvedExecution::binary(
+        input.execution_domain(),
         replacement.execution_domain(),
-        &output_domain,
+        &ctx,
         "replace::replace_nulls_column",
     )?;
-    let exec_options = output_domain.explicit_exec_options_raw();
     replace_nulls_column_with_exec_options(
         input,
         replacement,
-        &output_domain,
-        exec_options.as_ref(),
+        execution.output_domain(),
+        Some(execution.exec_options()),
         "replace::replace_nulls_column",
     )
 }
@@ -150,13 +158,13 @@ pub(crate) fn replace_nulls_column_with_exec_options(
 /// assert_eq!(result.to_vec_strict::<i32>().unwrap(), vec![1, 1, 1, 4]);
 /// ```
 pub fn replace_nulls_policy(input: &ColumnView<'_>, policy: FillPolicy) -> Result<Column> {
-    let output_domain = Arc::clone(input.execution_domain());
-    let exec_options = output_domain.explicit_exec_options_raw();
+    let ctx = ExecutionOverrides::new();
+    let execution = ResolvedExecution::unary(input.execution_domain(), &ctx, "replace::replace_nulls_policy")?;
     replace_nulls_policy_with_exec_options(
         input,
         policy,
-        &output_domain,
-        exec_options.as_ref(),
+        execution.output_domain(),
+        Some(execution.exec_options()),
         "replace::replace_nulls_policy",
     )
 }

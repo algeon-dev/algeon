@@ -9,16 +9,25 @@
 //! - [`CudaStream`] and [`CudaEvent`] expose low-level CUDA ordering handles
 //! - [`DeviceId`] is a validated CUDA device ordinal
 
+mod boundary;
 pub mod device;
 pub(crate) mod device_guard;
 pub mod event;
 pub mod execution_context;
 pub(crate) mod execution_domain;
+pub(crate) mod execution_resolver;
 mod owner;
+mod placement;
 pub mod stream;
 
+pub use boundary::{BoundaryKind, BoundaryObservation, BoundaryObserver};
+pub(crate) use boundary::{
+    BoundaryObserverRef, last_boundary_observation, record_boundary_observation,
+    record_boundary_observation_for_observer, record_boundary_observation_in_domain,
+};
 pub use device::DeviceId;
 pub use event::CudaEvent;
 pub use execution_context::ExecutionOverrides;
 pub use owner::{Runtime, RuntimeBuilder, StreamDependencyOutcome};
+pub use placement::ExecutionPlacement;
 pub use stream::CudaStream;

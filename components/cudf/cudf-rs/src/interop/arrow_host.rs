@@ -31,7 +31,7 @@
 //! ```
 
 use std::sync::{
-    Arc,
+    Arc, Mutex,
     atomic::{AtomicUsize, Ordering},
 };
 
@@ -45,13 +45,16 @@ use crate::{
     },
     frame::dataframe::DataFrame,
     internal::{hash::fast_index_map, resolve::missing_column_error},
-    runtime::Runtime,
+    runtime::{
+        BoundaryKind, BoundaryObservation, Runtime, record_boundary_observation, record_boundary_observation_in_domain,
+    },
 };
 
 pub(crate) mod testing_hooks;
 
 static HOST_ARROW_EXPORT_CALL_COUNT: AtomicUsize = AtomicUsize::new(0);
 static HOST_ARROW_IMPORT_CALL_COUNT: AtomicUsize = AtomicUsize::new(0);
+static HOST_ARROW_LAST_BOUNDARY_OBSERVATION: Mutex<Option<BoundaryObservation>> = Mutex::new(None);
 
 impl DataFrame {
     /// Convert this GPU DataFrame to an Arrow [`RecordBatch`] via host copy.
@@ -78,6 +81,9 @@ impl DataFrame {
     pub fn to_record_batch(&self) -> Result<RecordBatch> {
         HOST_ARROW_EXPORT_CALL_COUNT.fetch_add(1, Ordering::Relaxed);
         let names = self.column_names();
+        let rows = self.num_rows();
+        let column_count = self.num_columns();
+        let placement = self.placement();
 
         let col_map = self.columns_map();
         let columns: Vec<(String, Arc<dyn Array>, bool)> = names
@@ -92,7 +98,18 @@ impl DataFrame {
             })
             .collect::<Result<_>>()?;
 
-        RecordBatch::try_from_iter_with_nullable(columns).map_err(map_record_batch_error)
+        let batch = RecordBatch::try_from_iter_with_nullable(columns).map_err(map_record_batch_error)?;
+        record_host_boundary_observation_in_domain(
+            self.execution_domain(),
+            BoundaryObservation {
+                kind: BoundaryKind::DeviceToHost,
+                placement,
+                rows,
+                columns: column_count,
+                synchronized_for_host: true,
+            },
+        );
+        Ok(batch)
     }
 
     /// Create a GPU `DataFrame` from an Arrow [`RecordBatch`] via host copy
@@ -165,11 +182,19 @@ pub fn dataframe_from_record_batch(runtime: &Runtime, batch: &RecordBatch) -> Re
     let num_cols = schema.fields().len();
 
     if num_cols == 0 {
-        return Ok(DataFrame::from_raw_parts(
-            fast_index_map(),
-            batch.num_rows(),
-            Arc::clone(runtime.execution_domain()),
-        ));
+        let frame =
+            DataFrame::from_raw_parts(fast_index_map(), batch.num_rows(), Arc::clone(runtime.execution_domain()));
+        record_host_boundary_observation_in_domain(
+            runtime.execution_domain(),
+            BoundaryObservation {
+                kind: BoundaryKind::HostToDevice,
+                placement: runtime.placement(),
+                rows: batch.num_rows(),
+                columns: num_cols,
+                synchronized_for_host: false,
+            },
+        );
+        return Ok(frame);
     }
 
     let mut names: Vec<String> = Vec::with_capacity(num_cols);
@@ -182,7 +207,18 @@ pub fn dataframe_from_record_batch(runtime: &Runtime, batch: &RecordBatch) -> Re
         columns.push(col);
     }
 
-    DataFrame::new(names, columns)
+    let frame = DataFrame::new(names, columns)?;
+    record_host_boundary_observation_in_domain(
+        runtime.execution_domain(),
+        BoundaryObservation {
+            kind: BoundaryKind::HostToDevice,
+            placement: runtime.placement(),
+            rows: batch.num_rows(),
+            columns: num_cols,
+            synchronized_for_host: false,
+        },
+    );
+    Ok(frame)
 }
 
 // ---------------------------------------------------------------------------
@@ -317,6 +353,7 @@ where T: ArrowPrimitiveMapping {
 pub(super) fn reset_host_interop_observation() {
     HOST_ARROW_EXPORT_CALL_COUNT.store(0, Ordering::Relaxed);
     HOST_ARROW_IMPORT_CALL_COUNT.store(0, Ordering::Relaxed);
+    record_host_boundary_observation(None);
 }
 
 pub(super) fn host_export_call_count() -> usize {
@@ -325,6 +362,27 @@ pub(super) fn host_export_call_count() -> usize {
 
 pub(super) fn host_import_call_count() -> usize {
     HOST_ARROW_IMPORT_CALL_COUNT.load(Ordering::Relaxed)
+}
+
+pub(super) fn last_host_boundary_observation() -> Option<BoundaryObservation> {
+    HOST_ARROW_LAST_BOUNDARY_OBSERVATION.lock().ok().and_then(|last| *last)
+}
+
+fn record_host_boundary_observation(observation: Option<BoundaryObservation>) {
+    if let Ok(mut last) = HOST_ARROW_LAST_BOUNDARY_OBSERVATION.lock() {
+        *last = observation;
+    }
+    record_boundary_observation(observation);
+}
+
+fn record_host_boundary_observation_in_domain(
+    domain: &Arc<crate::runtime::execution_domain::ExecutionDomain>,
+    observation: BoundaryObservation,
+) {
+    if let Ok(mut last) = HOST_ARROW_LAST_BOUNDARY_OBSERVATION.lock() {
+        *last = Some(observation);
+    }
+    record_boundary_observation_in_domain(domain, observation);
 }
 
 /// Convert a Bool8 column to an Arrow BooleanArray.

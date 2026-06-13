@@ -1082,6 +1082,23 @@ fn borrowed_stream_override_rejects_cross_device_context_with_canonical_keys() {
 }
 
 #[test]
+fn with_columns_borrowed_stream_override_rejects_cross_device_context_with_canonical_keys() {
+    if !should_run_multi_gpu_test() {
+        return;
+    }
+
+    let (left_device, right_device) = first_two_test_devices();
+    let (left_rt, right_rt) = first_two_test_runtimes();
+
+    let df = dataframe1("id", left_rt.series(&[3i32, 1, 2]).unwrap());
+    let ctx = ExecutionOverrides::new().with_stream(right_rt.stream());
+
+    let err = df.with_execution(&ctx).with_columns([("id_plus_one", col("id") + lit(1i32))]).unwrap_err();
+
+    assert_borrowed_override_runtime_binding_mismatch(err, "stream", left_device, right_device);
+}
+
+#[test]
 fn borrowed_memory_resource_override_rejects_cross_device_context_with_canonical_keys() {
     if !should_run_multi_gpu_test() {
         return;
@@ -1094,6 +1111,23 @@ fn borrowed_memory_resource_override_rejects_cross_device_context_with_canonical
     let ctx = ExecutionOverrides::new().with_memory_resource(right_rt.memory_resource());
 
     let err = df.with_execution(&ctx).sort_values(["id"], SortOptions::new()).unwrap_err();
+
+    assert_borrowed_override_runtime_binding_mismatch(err, "memory_resource", left_device, right_device);
+}
+
+#[test]
+fn with_columns_borrowed_memory_resource_override_rejects_cross_device_context_with_canonical_keys() {
+    if !should_run_multi_gpu_test() {
+        return;
+    }
+
+    let (left_device, right_device) = first_two_test_devices();
+    let (left_rt, right_rt) = first_two_test_runtimes();
+
+    let df = dataframe1("id", left_rt.series(&[3i32, 1, 2]).unwrap());
+    let ctx = ExecutionOverrides::new().with_memory_resource(right_rt.memory_resource());
+
+    let err = df.with_execution(&ctx).with_columns([("id_plus_one", col("id") + lit(1i32))]).unwrap_err();
 
     assert_borrowed_override_runtime_binding_mismatch(err, "memory_resource", left_device, right_device);
 }

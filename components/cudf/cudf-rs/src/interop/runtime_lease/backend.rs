@@ -14,7 +14,7 @@ use super::{
         synchronize_producer_readiness, synchronize_same_device_stream_raw,
     },
 };
-use crate::runtime::DeviceId;
+use crate::runtime::{BoundaryObservation, BoundaryObserverRef, DeviceId, record_boundary_observation_for_observer};
 
 struct SharedCudaLeaseActivation {
     _barrier: Option<crate::runtime::CudaEvent>,
@@ -22,9 +22,11 @@ struct SharedCudaLeaseActivation {
 
 impl ActiveLeaseActivation for SharedCudaLeaseActivation {}
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Clone)]
 struct SharedCudaLeaseBackend {
     incomplete_drop_behavior: IncompleteDropBehavior,
+    observation: Option<BoundaryObservation>,
+    observer: Option<BoundaryObserverRef>,
 }
 
 impl ActiveLeaseBackend for SharedCudaLeaseBackend {
@@ -40,6 +42,9 @@ impl ActiveLeaseBackend for SharedCudaLeaseBackend {
         match read_start {
             rapids_interop::ReadStartBinding::SynchronousByReturn => {
                 synchronize_producer_readiness(producer_readiness, SHARED_ACTIVATE_LEASE_OP)?;
+                if let Some(observation) = self.observation {
+                    record_boundary_observation_for_observer(self.observer.as_ref(), observation);
+                }
                 Ok(LeaseActivation::noop())
             },
             rapids_interop::ReadStartBinding::ConsumerStream { raw, device } => {
@@ -56,6 +61,10 @@ impl ActiveLeaseBackend for SharedCudaLeaseBackend {
                     consumer_device,
                     SHARED_ACTIVATE_LEASE_OP,
                 )?;
+
+                if let Some(observation) = self.observation {
+                    record_boundary_observation_for_observer(self.observer.as_ref(), observation);
+                }
 
                 Ok(match barrier {
                     Some(barrier) => {
@@ -146,12 +155,19 @@ impl ActiveLeaseBackend for SharedCudaLeaseBackend {
     }
 }
 
-fn shared_cuda_lease_backend_with_behavior(incomplete_drop_behavior: IncompleteDropBehavior) -> LeaseBackend {
-    LeaseBackend::new(SharedCudaLeaseBackend { incomplete_drop_behavior })
+fn shared_cuda_lease_backend_with_behavior(
+    incomplete_drop_behavior: IncompleteDropBehavior,
+    observation: Option<BoundaryObservation>,
+    observer: Option<BoundaryObserverRef>,
+) -> LeaseBackend {
+    LeaseBackend::new(SharedCudaLeaseBackend { incomplete_drop_behavior, observation, observer })
 }
 
-pub(crate) fn shared_cuda_lease_backend() -> LeaseBackend {
-    shared_cuda_lease_backend_with_behavior(IncompleteDropBehavior::GuaranteedFallback)
+pub(crate) fn shared_cuda_lease_backend_with_observation(
+    observation: BoundaryObservation,
+    observer: Option<BoundaryObserverRef>,
+) -> LeaseBackend {
+    shared_cuda_lease_backend_with_behavior(IncompleteDropBehavior::GuaranteedFallback, Some(observation), observer)
 }
 
 /// CUDA-backed prepared-lease backend that requires explicit completion.
@@ -166,5 +182,5 @@ pub(crate) fn shared_cuda_lease_backend() -> LeaseBackend {
 /// can cause GPU use-after-free if the consumer is still accessing producer
 /// memory.
 pub fn cuda_explicit_completion_required_lease_backend() -> LeaseBackend {
-    shared_cuda_lease_backend_with_behavior(IncompleteDropBehavior::ExplicitCompletionRequired)
+    shared_cuda_lease_backend_with_behavior(IncompleteDropBehavior::ExplicitCompletionRequired, None, None)
 }

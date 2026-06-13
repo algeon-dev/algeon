@@ -43,8 +43,34 @@ use crate::{
         types::TypeId,
     },
     ops::dictionary,
-    runtime::Runtime,
+    runtime::{BoundaryKind, BoundaryObservation, Runtime, record_boundary_observation_in_domain},
 };
+
+fn column_view_device_abi_observation(
+    view: &crate::core::column::ColumnView<'_>,
+    operation: &'static str,
+) -> Result<BoundaryObservation> {
+    Ok(BoundaryObservation {
+        kind: BoundaryKind::DeviceAbiHandoff,
+        placement: view.execution_domain().placement(),
+        rows: view.len().map_err(|error| error.reanchor(operation))?,
+        columns: 1,
+        synchronized_for_host: false,
+    })
+}
+
+fn table_view_device_abi_observation(
+    view: &crate::core::table::TableView<'_>,
+    operation: &'static str,
+) -> Result<BoundaryObservation> {
+    Ok(BoundaryObservation {
+        kind: BoundaryKind::DeviceAbiHandoff,
+        placement: view.execution_domain().placement(),
+        rows: view.num_rows().map_err(|error| error.reanchor(operation))?,
+        columns: view.num_columns().map_err(|error| error.reanchor(operation))?,
+        synchronized_for_host: false,
+    })
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum DeviceArrowExportMaterialization {
@@ -790,6 +816,7 @@ fn export_device_arrow_column_from_view(
     operation: &'static str,
     reported_materialization: Option<DeviceArrowExportMaterialization>,
 ) -> Result<DeviceArrowColumnExport> {
+    let observation = column_view_device_abi_observation(view, operation)?;
     let mut schema = ptr::null_mut();
     let mut array = ptr::null_mut();
     let mut materialization =
@@ -819,6 +846,7 @@ fn export_device_arrow_column_from_view(
         ownership: DeviceArrowAbiOwnership::DestroyShim,
     });
 
+    record_boundary_observation_in_domain(view.execution_domain(), observation);
     Ok(DeviceArrowColumnExport { inner, materialization: export_materialization })
 }
 
@@ -830,6 +858,7 @@ fn export_device_arrow_table_from_view(
     operation: &'static str,
     reported_materialization: Option<DeviceArrowExportMaterialization>,
 ) -> Result<DeviceArrowTableExport> {
+    let observation = table_view_device_abi_observation(view, operation)?;
     let mut schema = ptr::null_mut();
     let mut array = ptr::null_mut();
     let mut materialization =
@@ -869,6 +898,7 @@ fn export_device_arrow_table_from_view(
         ownership: DeviceArrowAbiOwnership::DestroyShim,
     });
 
+    record_boundary_observation_in_domain(view.execution_domain(), observation);
     Ok(DeviceArrowTableExport { inner, materialization: export_materialization })
 }
 
@@ -1490,6 +1520,16 @@ impl Column {
         let column = unsafe {
             Column::from_raw_with_domain_and_owner(handle, Arc::clone(runtime.execution_domain()), retained_owner)
         }?;
+        record_boundary_observation_in_domain(
+            runtime.execution_domain(),
+            BoundaryObservation {
+                kind: BoundaryKind::DeviceAbiHandoff,
+                placement: runtime.placement(),
+                rows: column.len().map_err(|error| error.reanchor(operation))?,
+                columns: 1,
+                synchronized_for_host: false,
+            },
+        );
 
         debug_assert_eq!(import_materialization_from_raw(materialization), input.materialization());
         Ok(column)
@@ -1549,6 +1589,11 @@ impl Table {
                 vec![Some(retained_owner); input.column_names()?.len()],
             )
         }?;
+        let observation = {
+            let view = columns.view().map_err(|error| error.reanchor(operation))?;
+            table_view_device_abi_observation(&view, operation)?
+        };
+        record_boundary_observation_in_domain(runtime.execution_domain(), observation);
 
         debug_assert_eq!(import_materialization_from_raw(materialization), input.materialization());
         Ok(columns)

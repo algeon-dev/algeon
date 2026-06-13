@@ -14,6 +14,8 @@ fn prepare_from_column_view_with_readiness<'a>(
     default_device: i32,
     readiness: ProducerReadiness<'a>,
 ) -> Result<PreparedColumnExport<'a>, InteropError> {
+    let observation = column_view_boundary_observation(BoundaryKind::InteropLease, view, operation)?;
+    let observer = view.execution_domain().boundary_observer();
     let projection = prepared_column_projection_from_view(view, operation, default_device, 0, 0)?;
     PreparedColumnExport::try_new_with_semantic_columns(
         projection.column,
@@ -22,7 +24,9 @@ fn prepare_from_column_view_with_readiness<'a>(
         readiness,
         export_diagnostics(),
     )
-    .map(|export| export.with_lease_backend(runtime_lease::shared_cuda_lease_backend()))
+    .map(|export| {
+        export.with_lease_backend(runtime_lease::shared_cuda_lease_backend_with_observation(observation, observer))
+    })
     .map_err(|error| error.with_context("operation", operation))
 }
 
@@ -50,6 +54,8 @@ fn prepare_from_owned_column_root_with_readiness(
     let retained_column = Arc::new(column);
     let view =
         retained_column.view().map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?;
+    let observation = column_view_boundary_observation(BoundaryKind::InteropLease, &view, operation)?;
+    let observer = retained_column.execution_domain().boundary_observer();
     let default_device = retained_column.execution_domain().device_id().ordinal() as i32;
     let projection = prepared_column_projection_from_view(&view, operation, default_device, 0, 0)?;
     PreparedColumnExport::try_new_with_semantic_columns(
@@ -61,7 +67,7 @@ fn prepare_from_owned_column_root_with_readiness(
     )
     .map(|export| {
         export
-            .with_lease_backend(runtime_lease::shared_cuda_lease_backend())
+            .with_lease_backend(runtime_lease::shared_cuda_lease_backend_with_observation(observation, observer))
             .with_retained_owner_arc(Arc::clone(&retained_column))
     })
     .map_err(|error| error.with_context("operation", operation))
@@ -72,6 +78,8 @@ pub(super) fn prepare_from_owned_column<'a>(
     operation: &'static str,
 ) -> Result<PreparedColumnExport<'a>, InteropError> {
     let view = column.view().map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?;
+    let observation = column_view_boundary_observation(BoundaryKind::InteropLease, &view, operation)?;
+    let observer = column.execution_domain().boundary_observer();
     let (default_device, readiness) = prepared_device_readiness(operation, column.execution_domain())?;
     let projection = prepared_column_projection_from_view(&view, operation, default_device, 0, 0)?;
     PreparedColumnExport::try_new_with_semantic_columns(
@@ -81,7 +89,9 @@ pub(super) fn prepare_from_owned_column<'a>(
         readiness,
         export_diagnostics(),
     )
-    .map(|export| export.with_lease_backend(runtime_lease::shared_cuda_lease_backend()))
+    .map(|export| {
+        export.with_lease_backend(runtime_lease::shared_cuda_lease_backend_with_observation(observation, observer))
+    })
     .map_err(|error| error.with_context("operation", operation))
 }
 
@@ -114,12 +124,14 @@ pub(super) fn transfer_from_owned_column(
     column: Column,
     operation: &'static str,
 ) -> Result<OwnedColumnTransfer, InteropError> {
+    let observation = column_boundary_observation(BoundaryKind::OwnedTransfer, &column, operation)?;
+    let domain = Arc::clone(column.execution_domain());
     let (default_device, readiness) = prepared_device_readiness(operation, column.execution_domain())?;
     let projection = {
         let view = column.view().map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?;
         prepared_column_projection_from_view(&view, operation, default_device, 0, 0)?
     };
-    OwnedColumnTransfer::try_new_with_semantic_columns(
+    let transfer = OwnedColumnTransfer::try_new_with_semantic_columns(
         projection.column,
         projection.semantic_columns,
         // SAFETY: `to_static_bindings` depends on this retained owner to keep
@@ -130,7 +142,9 @@ pub(super) fn transfer_from_owned_column(
         owned_transfer_release_contract(default_device),
         OwnedColumnTransferState::new(column),
     )
-    .map_err(|error| error.with_context("operation", operation))
+    .map_err(|error| error.with_context("operation", operation))?;
+    record_observation(&domain, observation);
+    Ok(transfer)
 }
 
 pub(super) fn transfer_from_owned_column_with_runtime_release(
@@ -149,6 +163,8 @@ pub(super) fn transfer_from_owned_column_with_runtime_release_synchronization(
     synchronization: ReleaseSynchronization,
     operation: &'static str,
 ) -> Result<(OwnedColumnTransfer, OwnedColumnTransferReleaser), InteropError> {
+    let observation = column_boundary_observation(BoundaryKind::OwnedTransfer, &column, operation)?;
+    let domain = Arc::clone(column.execution_domain());
     let (default_device, readiness) = prepared_device_readiness(operation, column.execution_domain())?;
     let projection = {
         let view = column.view().map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?;
@@ -166,6 +182,7 @@ pub(super) fn transfer_from_owned_column_with_runtime_release_synchronization(
     )
     .map_err(|error| error.with_context("operation", operation))?;
 
+    record_observation(&domain, observation);
     Ok((transfer, releaser))
 }
 
@@ -389,6 +406,8 @@ impl Column {
     ) -> Result<PreparedColumnExport<'a>, InteropError> {
         let operation = "interop::Column::try_prepare_device_column_export_with_event";
         let view = self.view().map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?;
+        let observation = column_view_boundary_observation(BoundaryKind::InteropLease, &view, operation)?;
+        let observer = self.execution_domain().boundary_observer();
         let (default_device, readiness) = prepared_device_event_readiness(operation, self.execution_domain(), event)?;
         let projection = prepared_column_projection_from_view(&view, operation, default_device, 0, 0)?;
         PreparedColumnExport::try_new_with_semantic_columns(
@@ -398,7 +417,9 @@ impl Column {
             readiness,
             export_diagnostics(),
         )
-        .map(|export| export.with_lease_backend(runtime_lease::shared_cuda_lease_backend()))
+        .map(|export| {
+            export.with_lease_backend(runtime_lease::shared_cuda_lease_backend_with_observation(observation, observer))
+        })
         .map_err(|error| error.with_context("operation", operation))
     }
 

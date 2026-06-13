@@ -1,4 +1,4 @@
-use crate::core::Result;
+use crate::{core::Result, runtime::BoundaryObservation};
 
 /// Trigger the numeric Arrow error mapping path used by integration tests.
 pub fn trigger_numeric_to_arrow_error_for_test() -> Result<()> {
@@ -36,4 +36,10 @@ pub fn arrow_host_export_call_count_for_test() -> usize {
 /// Read how many times the host-copy Arrow import entrypoint ran.
 pub fn arrow_host_import_call_count_for_test() -> usize {
     crate::interop::arrow_host::testing_hooks::host_import_call_count_for_test()
+}
+
+/// Read the last host-copy Arrow boundary observation, if one has been
+/// recorded since the last reset.
+pub fn last_arrow_host_boundary_observation_for_test() -> Option<BoundaryObservation> {
+    crate::interop::arrow_host::testing_hooks::last_host_boundary_observation_for_test()
 }

@@ -5,6 +5,7 @@ remove_nested_parens = true
 
 # Keep simple logic compact
 use_small_heuristics = "Max"
+control_brace_style = "AlwaysSameLine"
 
 # Use shorthand to save tokens in struct initialization
 use_field_init_shorthand = true

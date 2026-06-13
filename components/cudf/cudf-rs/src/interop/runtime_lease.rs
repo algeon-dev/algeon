@@ -3,7 +3,7 @@ mod backend;
 mod sync;
 
 pub use backend::cuda_explicit_completion_required_lease_backend;
-pub(crate) use backend::shared_cuda_lease_backend;
+pub(crate) use backend::shared_cuda_lease_backend_with_observation;
 pub(crate) use sync::{synchronize_completion_fallback, synchronize_runtime_release_completion};
 pub(super) const SHARED_ACTIVATE_LEASE_OP: &str = "interop::PreparedExport::try_activate_read_lease";
 pub(super) const SHARED_COMPLETE_LEASE_OP: &str = "interop::ActiveReadLease::complete";

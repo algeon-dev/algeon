@@ -12,7 +12,9 @@ use crate::{
         sorting::{self, SortOptions},
         stream_compaction::DuplicateKeepOption,
     },
-    runtime::{execution_context::ExecutionOverrides, execution_domain::ExecutionDomain},
+    runtime::{
+        execution_context::ExecutionOverrides, execution_domain::ExecutionDomain, execution_resolver::ResolvedExecution,
+    },
 };
 
 const SORT_KEY_INLINE_CAPACITY: usize = 4;
@@ -87,9 +89,8 @@ impl DataFrame {
         I: IntoIterator<Item = S>,
         S: AsRef<str>,
     {
-        if !ExecutionDomain::same_provenance(&self.domain, &output_domain) {
-            ExecutionDomain::insert_stream_dependency(&self.domain, &output_domain, operation)?;
-        }
+        let execution = ResolvedExecution::with_output_domain(Arc::clone(&output_domain), [&self.domain], operation)?;
+        let resolved_exec_options = exec_options.as_ref().unwrap_or(execution.exec_options());
 
         let by: SmallVec<[String; SORT_KEY_INLINE_CAPACITY]> = by.into_iter().map(|s| s.as_ref().to_string()).collect();
         let by_refs: SmallVec<[&str; SORT_KEY_INLINE_CAPACITY]> = by.iter().map(|s| s.as_str()).collect();
@@ -102,37 +103,27 @@ impl DataFrame {
 
         let tv = self.build_table_view()?;
         let result_table = if all_in_order {
-            if let Some(exec_options) = exec_options.as_ref() {
-                sorting::sort_table_impl(
-                    &tv,
-                    Some(&orders),
-                    null_order_ref,
-                    options.stable,
-                    &output_domain,
-                    Some(exec_options),
-                    operation,
-                )?
-            } else {
-                let sort_fn = if options.stable { sorting::stable_sort } else { sorting::sort };
-                sort_fn(&tv, Some(&orders), null_order_ref)?
-            }
+            sorting::sort_table_impl(
+                &tv,
+                Some(&orders),
+                null_order_ref,
+                options.stable,
+                &output_domain,
+                Some(resolved_exec_options),
+                operation,
+            )?
         } else {
             let keys_table = tv.select_columns(&key_indices)?;
-            if let Some(exec_options) = exec_options.as_ref() {
-                sorting::sort_by_key_impl(
-                    &tv,
-                    &keys_table,
-                    Some(&orders),
-                    null_order_ref,
-                    options.stable,
-                    &output_domain,
-                    Some(exec_options),
-                    operation,
-                )?
-            } else {
-                let sort_by_key_fn = if options.stable { sorting::stable_sort_by_key } else { sorting::sort_by_key };
-                sort_by_key_fn(&tv, &keys_table, Some(&orders), null_order_ref)?
-            }
+            sorting::sort_by_key_impl(
+                &tv,
+                &keys_table,
+                Some(&orders),
+                null_order_ref,
+                options.stable,
+                &output_domain,
+                Some(resolved_exec_options),
+                operation,
+            )?
         }
         .with_execution_domain(output_domain);
 
