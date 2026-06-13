@@ -1,5 +1,7 @@
 use super::*;
 
+type RollupAvgRow = (Option<String>, Option<String>, Option<String>, Option<String>, u32, f64);
+
 #[test]
 fn bounded_compiled_join_rollup_avg_final_merge_concatenates_typed_null_partials() {
     let dir = unique_temp_dir("nexus-query-engine-bounded-compiled-rollup-avg-typed-null-partials");
@@ -199,9 +201,7 @@ fn bounded_compiled_join_rollup_avg_final_merge_concatenates_typed_null_partials
     fs::remove_dir_all(dir).unwrap();
 }
 
-fn rollup_avg_rows(
-    batch: &RecordBatch,
-) -> Vec<(Option<String>, Option<String>, Option<String>, Option<String>, u32, f64)> {
+fn rollup_avg_rows(batch: &RecordBatch) -> Vec<RollupAvgRow> {
     let product_names = string_array(batch, 0);
     let brands = string_array(batch, 1);
     let classes = string_array(batch, 2);
@@ -222,11 +222,7 @@ fn rollup_avg_rows(
         .collect()
 }
 
-fn assert_rollup_avg_rows_eq(
-    actual: Vec<(Option<String>, Option<String>, Option<String>, Option<String>, u32, f64)>,
-    expected: Vec<(Option<String>, Option<String>, Option<String>, Option<String>, u32, f64)>,
-    message: &str,
-) {
+fn assert_rollup_avg_rows_eq(actual: Vec<RollupAvgRow>, expected: Vec<RollupAvgRow>, message: &str) {
     assert_eq!(actual.len(), expected.len(), "{message}: row count mismatch");
     for (row, (actual, expected)) in actual.iter().zip(expected.iter()).enumerate() {
         assert_eq!(

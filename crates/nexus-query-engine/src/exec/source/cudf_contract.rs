@@ -2010,10 +2010,9 @@ mod tests {
         let rendered = format!("{error}");
         let debug = format!("{error:?}");
 
-        assert_eq!(error.fact_value("path").is_some_and(|value| value.starts_with("object_store:s3:fnv64:")), true);
-        assert_eq!(
+        assert!(error.fact_value("path").is_some_and(|value| value.starts_with("object_store:s3:fnv64:")));
+        assert!(
             error.fact_value("stable_id").is_some_and(|value| value.starts_with("object_store:s3:stable_id_fnv64:")),
-            true
         );
         for sensitive in ["secret-bucket", "private/key", "X-Amz-Signature", "abc"] {
             assert!(!rendered.contains(sensitive), "{sensitive} leaked in display error: {rendered}");
@@ -2061,7 +2060,7 @@ mod tests {
         let rendered = format!("{error}");
         let debug = format!("{error:?}");
 
-        assert_eq!(error.fact_value("path").is_some_and(|value| value.starts_with("object_store:s3:fnv64:")), true);
+        assert!(error.fact_value("path").is_some_and(|value| value.starts_with("object_store:s3:fnv64:")));
         for sensitive in ["secret-bucket", "private/key", "X-Amz-Signature", "abc"] {
             assert!(!rendered.contains(sensitive), "{sensitive} leaked in display error: {rendered}");
             assert!(!debug.contains(sensitive), "{sensitive} leaked in debug error: {debug}");

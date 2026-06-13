@@ -217,9 +217,9 @@ pub(crate) fn root_topk_join_aggregate_variant_plan(
     } else {
         source(&mut builder, "root-topk-join-aggregate-store")
     };
-    let customer = if matches!(variant, RootTopKJoinAggregateVariant::SourceReductionOutsideAggregateInput) {
-        source_with_reduction(&mut builder, "root-topk-join-aggregate-customer", true)
-    } else if aggregate_all_branch_reduction {
+    let customer = if matches!(variant, RootTopKJoinAggregateVariant::SourceReductionOutsideAggregateInput)
+        || aggregate_all_branch_reduction
+    {
         source_with_reduction(&mut builder, "root-topk-join-aggregate-customer", true)
     } else {
         source(&mut builder, "root-topk-join-aggregate-customer")
@@ -582,12 +582,11 @@ pub(crate) fn root_topk_join_aggregate_variant_plan(
     let topk_schema = if matches!(variant, RootTopKJoinAggregateVariant::Window) {
         topk_projection = sorted_rank_window_project_key_value(&mut builder, topk_projection);
         key_value_schema()
-    } else if matches!(variant, RootTopKJoinAggregateVariant::KeylessOuterCrossWindow) {
-        topk_projection = sorted_rank_window_project_key_value(&mut builder, topk_projection);
-        topk_projection = join(&mut builder, topk_projection, store, "post_window_root");
-        topk_projection = project_key_value(&mut builder, topk_projection);
-        key_value_schema()
-    } else if matches!(variant, RootTopKJoinAggregateVariant::KeylessOuterCrossWindowMissingSourceReduction) {
+    } else if matches!(
+        variant,
+        RootTopKJoinAggregateVariant::KeylessOuterCrossWindow
+            | RootTopKJoinAggregateVariant::KeylessOuterCrossWindowMissingSourceReduction
+    ) {
         topk_projection = sorted_rank_window_project_key_value(&mut builder, topk_projection);
         topk_projection = join(&mut builder, topk_projection, store, "post_window_root");
         topk_projection = project_key_value(&mut builder, topk_projection);

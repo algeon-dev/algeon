@@ -1,7 +1,3 @@
-#[allow(dead_code)]
-#[path = "../../src/bin/native_iceberg_smoke_report.rs"]
-mod native_iceberg_smoke_report;
-
 use std::collections::HashMap;
 
 use datafusion_nexus::{
@@ -10,9 +6,10 @@ use datafusion_nexus::{
     TableFormatDataFileFormat, TableFormatParquetReadStrategyConfig, TableFormatReadCapability, TableFormatScanPlan,
     TableFormatUnsupportedFeature, TableFormatUnsupportedFeatureCode, resolve_table_format_parquet_source,
 };
-use native_iceberg_smoke_report::{
-    CustomWorkload, IcebergNativeSmokeConfig, IcebergNativeSmokeFixture, ObjectStoreStagingMode,
-    ObjectStoreStagingStatus, ObjectStoreStagingSummary, SmokeQueryExecutionMode, StagedObjectStoreDataFile,
+use datafusion_nexus_bench::iceberg_smoke::{
+    self as native_iceberg_smoke_report, CustomWorkload, IcebergNativeSmokeConfig, IcebergNativeSmokeFixture,
+    ObjectStoreStagingMode, ObjectStoreStagingStatus, ObjectStoreStagingSummary, SmokeQueryExecutionMode,
+    StagedObjectStoreDataFile,
 };
 
 #[test]

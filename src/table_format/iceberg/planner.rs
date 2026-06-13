@@ -4,6 +4,7 @@
 //! format facts at the adapter boundary. It does not execute Arrow readers.
 
 use std::{
+    cmp::Reverse,
     collections::{BTreeMap, HashMap, HashSet},
     fmt,
     sync::Arc,
@@ -534,7 +535,7 @@ impl IcebergTableFormatPlanner {
             .filter(|manifest| manifest.has_added_files() || manifest.has_existing_files())
             .cloned()
             .collect::<Vec<_>>();
-        data_manifests.sort_by(|left, right| manifest_live_rows(right).cmp(&manifest_live_rows(left)));
+        data_manifests.sort_by_key(|manifest| Reverse(manifest_live_rows(manifest)));
 
         let limit = u64::try_from(scan_limit).unwrap_or(u64::MAX);
         let mut task_index = 0usize;
@@ -558,7 +559,7 @@ impl IcebergTableFormatPlanner {
                 })
                 .cloned()
                 .collect::<Vec<_>>();
-            entries.sort_by(|left, right| right.record_count().cmp(&left.record_count()));
+            entries.sort_by_key(|entry| Reverse(entry.record_count()));
 
             for entry in entries {
                 if let Some(context) = timeout_context {
@@ -596,15 +597,15 @@ impl IcebergTableFormatPlanner {
 }
 
 impl TableFormatPlanner for IcebergTableFormatPlanner {
-    fn plan_scan<'a>(&'a self, request: TableFormatScanRequest) -> BoxFuture<'a, Result<TableFormatScanPlan>> {
+    fn plan_scan(&self, request: TableFormatScanRequest) -> BoxFuture<'_, Result<TableFormatScanPlan>> {
         Box::pin(async move { self.plan_table_format_scan(request).await })
     }
 
-    fn plan_scan_with_deadline<'a>(
-        &'a self,
+    fn plan_scan_with_deadline(
+        &self,
         request: TableFormatScanRequest,
         deadline: TableFormatPlanningDeadline,
-    ) -> BoxFuture<'a, Result<TableFormatScanPlan>> {
+    ) -> BoxFuture<'_, Result<TableFormatScanPlan>> {
         Box::pin(async move {
             let timeout_context =
                 IcebergScanPlanningTimeoutContext::new(deadline, &request, self.planning_failure_facts());
@@ -1082,10 +1083,7 @@ impl LimitedDeleteFile {
                 self.partition_spec_id == data_partition_spec_id
                     && self.partition == *data_file.partition()
                     && position_delete_sequence_applies(self.sequence_number, data_sequence_number)
-                    && self
-                        .referenced_data_file
-                        .as_deref()
-                        .map_or(true, |referenced| referenced == data_file.file_path())
+                    && self.referenced_data_file.as_deref().is_none_or(|referenced| referenced == data_file.file_path())
             },
             DataContentType::EqualityDeletes => {
                 equality_delete_sequence_applies(self.sequence_number, data_sequence_number)
@@ -1434,11 +1432,11 @@ async fn attach_remote_footer_schemas_for_field_id_proof(
         let Some((index, footer)) = result else {
             break;
         };
-        if let Some(footer) = footer {
-            if let Some(data_file) = plan.data_files.get_mut(index) {
-                data_file.footer_schema = Some(footer.schema);
-                data_file.row_group_null_counts = footer.row_group_null_counts;
-            }
+        if let Some(footer) = footer
+            && let Some(data_file) = plan.data_files.get_mut(index)
+        {
+            data_file.footer_schema = Some(footer.schema);
+            data_file.row_group_null_counts = footer.row_group_null_counts;
         }
     }
 

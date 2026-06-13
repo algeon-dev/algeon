@@ -70,10 +70,10 @@ impl BusyPlanner {
 }
 
 impl TableFormatPlanner for SleepingPlanner {
-    fn plan_scan<'a>(
-        &'a self,
+    fn plan_scan(
+        &self,
         _request: TableFormatScanRequest,
-    ) -> BoxFuture<'a, datafusion_nexus::Result<TableFormatScanPlan>> {
+    ) -> BoxFuture<'_, datafusion_nexus::Result<TableFormatScanPlan>> {
         let plan = self.plan.clone();
         let delay = self.delay;
         Box::pin(async move {
@@ -88,10 +88,10 @@ impl TableFormatPlanner for SleepingPlanner {
 }
 
 impl TableFormatPlanner for BusyPlanner {
-    fn plan_scan<'a>(
-        &'a self,
+    fn plan_scan(
+        &self,
         _request: TableFormatScanRequest,
-    ) -> BoxFuture<'a, datafusion_nexus::Result<TableFormatScanPlan>> {
+    ) -> BoxFuture<'_, datafusion_nexus::Result<TableFormatScanPlan>> {
         let plan = self.plan.clone();
         let spin_for = self.spin_for;
         Box::pin(async move {
@@ -119,10 +119,10 @@ impl RecordingPlanner {
 }
 
 impl TableFormatPlanner for RecordingPlanner {
-    fn plan_scan<'a>(
-        &'a self,
+    fn plan_scan(
+        &self,
         request: TableFormatScanRequest,
-    ) -> BoxFuture<'a, datafusion_nexus::Result<TableFormatScanPlan>> {
+    ) -> BoxFuture<'_, datafusion_nexus::Result<TableFormatScanPlan>> {
         let scan_limit = request.scan_limit;
         self.requests.lock().expect("request recorder mutex poisoned").push(request);
         let plan = self.plan.clone().with_scan_limit(scan_limit);

@@ -878,7 +878,7 @@ fn write_record_batch_parquet(path: &Path, schema: Arc<Schema>, batch: &RecordBa
     let file = File::create(path).expect("test parquet file should be creatable");
     let props = WriterProperties::builder().set_max_row_group_row_count(Some(row_group_rows)).build();
     let mut writer = ArrowWriter::try_new(file, schema, Some(props)).expect("test parquet writer should be creatable");
-    writer.write(&batch).expect("test parquet batch should be writable");
+    writer.write(batch).expect("test parquet batch should be writable");
     writer.close().expect("test parquet writer should close");
 }
 

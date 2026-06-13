@@ -407,103 +407,6 @@ fn validate_edge_normalize_node(
     Ok(())
 }
 
-#[cfg(test)]
-mod tests {
-    use std::sync::Arc;
-
-    use arrow::datatypes::{DataType as ArrowDataType, Field, Schema};
-
-    use super::*;
-    use crate::{
-        expr::{AggregateFunction, BinaryOp, LiteralValue},
-        plan::{ProjectionOutput, QueryPlanBuilder, WindowFunction, WindowSpec},
-        source::{
-            LiteralBatchSource, LocalParquetFile, LocalParquetSource, ParquetFieldIdReadBinding, SourceColumnRef,
-            SourceNode,
-        },
-    };
-
-    #[test]
-    fn validate_filter_uses_filter_lowering_for_large_left_deep_boolean_predicates() {
-        let schema = Arc::new(Schema::new(vec![Field::new("ca_zip", ArrowDataType::Utf8, true)]));
-        let mut builder = QueryPlanBuilder::new();
-        let source = builder.add_source(SourceNode::LiteralBatch(LiteralBatchSource::empty(Arc::clone(&schema))));
-        let filter = builder.add_filter(source, left_deep_zip_range_disjunction(384), Arc::clone(&schema));
-        let plan = builder.finish_with_host_sink(filter);
-
-        validate_query_plan(&plan).expect("large q08-class filter predicate should validate without generic lowering");
-    }
-
-    #[test]
-    fn validate_rejects_global_whole_partition_aggregate_window() {
-        let input_schema = Arc::new(Schema::new(vec![
-            Field::new("k", ArrowDataType::Int32, false),
-            Field::new("v", ArrowDataType::Int64, true),
-        ]));
-        let window_schema = Arc::new(Schema::new(vec![
-            Field::new("k", ArrowDataType::Int32, false),
-            Field::new("v", ArrowDataType::Int64, true),
-            Field::new("window_v", ArrowDataType::Int64, true),
-        ]));
-        let mut builder = QueryPlanBuilder::new();
-        let source = builder.add_source(SourceNode::LiteralBatch(LiteralBatchSource::empty(input_schema)));
-        let window = builder.add_window(
-            source,
-            WindowSpec::new(
-                Vec::new(),
-                Vec::new(),
-                vec![WindowFunction::aggregate(AggregateFunction::Sum, Expr::column("v"), "window_v")],
-            ),
-            window_schema,
-        );
-        let plan = builder.finish_with_host_sink(window);
-
-        let error = validate_query_plan(&plan).expect_err("global whole-partition aggregate windows are unsupported");
-        assert_eq!(error.code(), QueryErrorCode::UnsupportedOperator);
-        assert_eq!(error.operation(), "nexus_query_engine.window.validate");
-    }
-
-    #[test]
-    fn validate_local_parquet_source_uses_output_schema_override_for_available_columns() {
-        let physical_schema = Arc::new(Schema::new(vec![
-            Field::new("old_status", ArrowDataType::Int64, true),
-            Field::new("status", ArrowDataType::Int64, true),
-        ]));
-        let logical_schema = Arc::new(Schema::new(vec![Field::new("status", ArrowDataType::Int64, true)]));
-        let file = LocalParquetFile::new("/tmp/renamed.parquet").with_field_id_read_bindings(vec![
-            ParquetFieldIdReadBinding::new(2, "status", "old_status", 0, true, ArrowDataType::Int64),
-        ]);
-        let source = LocalParquetSource::from_files(vec![file], physical_schema, vec!["old_status".to_string()])
-            .with_column_roles(vec!["status".to_string()], Vec::new())
-            .with_column_source_refs(vec![0], vec![SourceColumnRef::File(0)], Vec::new())
-            .with_output_schema_override(Arc::clone(&logical_schema));
-        let mut builder = QueryPlanBuilder::new();
-        let source = builder.add_source(SourceNode::LocalParquet(source));
-        let projection = builder.add_projection(
-            source,
-            vec![ProjectionOutput::new(Expr::column("status"), Field::new("status", ArrowDataType::Int64, true))],
-        );
-        let plan = builder.finish_with_host_sink(projection);
-
-        validate_query_plan(&plan).expect("logical output alias should be available downstream");
-    }
-
-    fn left_deep_zip_range_disjunction(count: usize) -> Expr {
-        let mut ranges = (0..count).map(zip_range_predicate);
-        let first = ranges.next().expect("test predicate needs at least one range");
-        ranges.fold(first, |left, right| Expr::binary(left, BinaryOp::Or, right))
-    }
-
-    fn zip_range_predicate(index: usize) -> Expr {
-        let lower = format!("{:05}", 10000 + index);
-        let upper = format!("{:05}", 10001 + index);
-        let lower_bound =
-            Expr::binary(Expr::column("ca_zip"), BinaryOp::GtEq, Expr::literal(LiteralValue::Utf8(lower)));
-        let upper_bound = Expr::binary(Expr::column("ca_zip"), BinaryOp::Lt, Expr::literal(LiteralValue::Utf8(upper)));
-        Expr::binary(lower_bound, BinaryOp::And, upper_bound)
-    }
-}
-
 fn validate_graph_algorithm_node(
     graph: &crate::plan::GraphAlgorithmNode,
     input_schema: &SchemaRef,
@@ -1054,4 +957,101 @@ fn filter_available_columns(available: &BTreeSet<String>, output_schema: &Schema
         .filter(|field| available.contains(field.name()))
         .map(|field| field.name().clone())
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use arrow::datatypes::{DataType as ArrowDataType, Field, Schema};
+
+    use super::*;
+    use crate::{
+        expr::{AggregateFunction, BinaryOp, LiteralValue},
+        plan::{ProjectionOutput, QueryPlanBuilder, WindowFunction, WindowSpec},
+        source::{
+            LiteralBatchSource, LocalParquetFile, LocalParquetSource, ParquetFieldIdReadBinding, SourceColumnRef,
+            SourceNode,
+        },
+    };
+
+    #[test]
+    fn validate_filter_uses_filter_lowering_for_large_left_deep_boolean_predicates() {
+        let schema = Arc::new(Schema::new(vec![Field::new("ca_zip", ArrowDataType::Utf8, true)]));
+        let mut builder = QueryPlanBuilder::new();
+        let source = builder.add_source(SourceNode::LiteralBatch(LiteralBatchSource::empty(Arc::clone(&schema))));
+        let filter = builder.add_filter(source, left_deep_zip_range_disjunction(384), Arc::clone(&schema));
+        let plan = builder.finish_with_host_sink(filter);
+
+        validate_query_plan(&plan).expect("large q08-class filter predicate should validate without generic lowering");
+    }
+
+    #[test]
+    fn validate_rejects_global_whole_partition_aggregate_window() {
+        let input_schema = Arc::new(Schema::new(vec![
+            Field::new("k", ArrowDataType::Int32, false),
+            Field::new("v", ArrowDataType::Int64, true),
+        ]));
+        let window_schema = Arc::new(Schema::new(vec![
+            Field::new("k", ArrowDataType::Int32, false),
+            Field::new("v", ArrowDataType::Int64, true),
+            Field::new("window_v", ArrowDataType::Int64, true),
+        ]));
+        let mut builder = QueryPlanBuilder::new();
+        let source = builder.add_source(SourceNode::LiteralBatch(LiteralBatchSource::empty(input_schema)));
+        let window = builder.add_window(
+            source,
+            WindowSpec::new(
+                Vec::new(),
+                Vec::new(),
+                vec![WindowFunction::aggregate(AggregateFunction::Sum, Expr::column("v"), "window_v")],
+            ),
+            window_schema,
+        );
+        let plan = builder.finish_with_host_sink(window);
+
+        let error = validate_query_plan(&plan).expect_err("global whole-partition aggregate windows are unsupported");
+        assert_eq!(error.code(), QueryErrorCode::UnsupportedOperator);
+        assert_eq!(error.operation(), "nexus_query_engine.window.validate");
+    }
+
+    #[test]
+    fn validate_local_parquet_source_uses_output_schema_override_for_available_columns() {
+        let physical_schema = Arc::new(Schema::new(vec![
+            Field::new("old_status", ArrowDataType::Int64, true),
+            Field::new("status", ArrowDataType::Int64, true),
+        ]));
+        let logical_schema = Arc::new(Schema::new(vec![Field::new("status", ArrowDataType::Int64, true)]));
+        let file = LocalParquetFile::new("/tmp/renamed.parquet").with_field_id_read_bindings(vec![
+            ParquetFieldIdReadBinding::new(2, "status", "old_status", 0, true, ArrowDataType::Int64),
+        ]);
+        let source = LocalParquetSource::from_files(vec![file], physical_schema, vec!["old_status".to_string()])
+            .with_column_roles(vec!["status".to_string()], Vec::new())
+            .with_column_source_refs(vec![0], vec![SourceColumnRef::File(0)], Vec::new())
+            .with_output_schema_override(Arc::clone(&logical_schema));
+        let mut builder = QueryPlanBuilder::new();
+        let source = builder.add_source(SourceNode::LocalParquet(source));
+        let projection = builder.add_projection(
+            source,
+            vec![ProjectionOutput::new(Expr::column("status"), Field::new("status", ArrowDataType::Int64, true))],
+        );
+        let plan = builder.finish_with_host_sink(projection);
+
+        validate_query_plan(&plan).expect("logical output alias should be available downstream");
+    }
+
+    fn left_deep_zip_range_disjunction(count: usize) -> Expr {
+        let mut ranges = (0..count).map(zip_range_predicate);
+        let first = ranges.next().expect("test predicate needs at least one range");
+        ranges.fold(first, |left, right| Expr::binary(left, BinaryOp::Or, right))
+    }
+
+    fn zip_range_predicate(index: usize) -> Expr {
+        let lower = format!("{:05}", 10000 + index);
+        let upper = format!("{:05}", 10001 + index);
+        let lower_bound =
+            Expr::binary(Expr::column("ca_zip"), BinaryOp::GtEq, Expr::literal(LiteralValue::Utf8(lower)));
+        let upper_bound = Expr::binary(Expr::column("ca_zip"), BinaryOp::Lt, Expr::literal(LiteralValue::Utf8(upper)));
+        Expr::binary(lower_bound, BinaryOp::And, upper_bound)
+    }
 }

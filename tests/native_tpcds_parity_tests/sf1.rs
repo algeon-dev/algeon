@@ -827,10 +827,8 @@ async fn tpcds_sf1_rank_window_queries_match_current_admission_contract() {
         assert_whole_native_parity_row(row, query_id, ParityComparisonMode::OrderedExact, 100);
     }
 
-    for query_id in ["q67"] {
-        let row = report.rows.iter().find(|row| row.query_id == query_id).expect("query row should exist");
-        assert_whole_native_parity_row(row, query_id, ParityComparisonMode::OrderedExact, 100);
-    }
+    let row = report.rows.iter().find(|row| row.query_id == "q67").expect("query row should exist");
+    assert_whole_native_parity_row(row, "q67", ParityComparisonMode::OrderedExact, 100);
 }
 
 #[tokio::test]

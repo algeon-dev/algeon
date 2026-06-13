@@ -29,6 +29,9 @@ use datafusion_nexus::{CudfOptimizerConfig, CudfSessionStateBuilderExt, CugraphS
 const DEFAULT_VERTEX_COUNT: i64 = 12_000;
 const DEFAULT_STRING_VERTEX_COUNT: i64 = 4_000;
 
+type NumericBfsRawEdge = (i64, i64, i64);
+type NumericBfsAllowedEdge = (i64, i64);
+
 #[tokio::test]
 async fn cugraph_sql_bfs_include_edges_fixture_matches_python_cugraph_and_reports_timing() {
     let fixture = ensure_numeric_bfs_predicate_fixture();
@@ -641,7 +644,7 @@ fn expected_string_vertex_predicate_counts(vertex_count: i64) -> (usize, usize, 
     (included.len(), excluded.len(), targets.len())
 }
 
-fn generate_numeric_bfs_edges(vertex_count: i64) -> (Vec<(i64, i64, i64)>, Vec<(i64, i64)>) {
+fn generate_numeric_bfs_edges(vertex_count: i64) -> (Vec<NumericBfsRawEdge>, Vec<NumericBfsAllowedEdge>) {
     let mut raw = Vec::new();
     let mut allowed = Vec::new();
     let mut edge_id = 0_i64;

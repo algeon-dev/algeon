@@ -124,30 +124,6 @@ fn stateless_streaming_probe_supported(node: &JoinNode) -> bool {
         || (node.spec.join_type == JoinType::Left && node.spec.build_side == JoinSide::Right)
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::plan::JoinSpec;
-
-    fn join_node(join_type: JoinType, build_side: JoinSide) -> JoinNode {
-        JoinNode {
-            inputs: [NodeId::from_index_for_internal_use(0), NodeId::from_index_for_internal_use(1)],
-            spec: JoinSpec::new(join_type, Vec::new()).with_build_side(build_side),
-        }
-    }
-
-    #[test]
-    fn stateless_streaming_probe_rejects_outer_join_shapes_that_reemit_build_rows() {
-        assert!(stateless_streaming_probe_supported(&join_node(JoinType::Inner, JoinSide::Left)));
-        assert!(stateless_streaming_probe_supported(&join_node(JoinType::Inner, JoinSide::Right)));
-        assert!(stateless_streaming_probe_supported(&join_node(JoinType::Left, JoinSide::Right)));
-
-        assert!(!stateless_streaming_probe_supported(&join_node(JoinType::Left, JoinSide::Left)));
-        assert!(!stateless_streaming_probe_supported(&join_node(JoinType::Full, JoinSide::Left)));
-        assert!(!stateless_streaming_probe_supported(&join_node(JoinType::Full, JoinSide::Right)));
-    }
-}
-
 pub(in crate::exec::bounded) struct BoundedCompiledFilteredJoinBuildState {
     left_keys: Vec<String>,
     left_columns: Vec<String>,
@@ -1628,4 +1604,28 @@ fn materialize_compiled_indices_output(
     ));
     txn.release_gather_map_reservation(reservations, metrics);
     Ok(txn.commit_frame(GpuDataFrame::new(output), reservations, metrics))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::plan::JoinSpec;
+
+    fn join_node(join_type: JoinType, build_side: JoinSide) -> JoinNode {
+        JoinNode {
+            inputs: [NodeId::from_index_for_internal_use(0), NodeId::from_index_for_internal_use(1)],
+            spec: JoinSpec::new(join_type, Vec::new()).with_build_side(build_side),
+        }
+    }
+
+    #[test]
+    fn stateless_streaming_probe_rejects_outer_join_shapes_that_reemit_build_rows() {
+        assert!(stateless_streaming_probe_supported(&join_node(JoinType::Inner, JoinSide::Left)));
+        assert!(stateless_streaming_probe_supported(&join_node(JoinType::Inner, JoinSide::Right)));
+        assert!(stateless_streaming_probe_supported(&join_node(JoinType::Left, JoinSide::Right)));
+
+        assert!(!stateless_streaming_probe_supported(&join_node(JoinType::Left, JoinSide::Left)));
+        assert!(!stateless_streaming_probe_supported(&join_node(JoinType::Full, JoinSide::Left)));
+        assert!(!stateless_streaming_probe_supported(&join_node(JoinType::Full, JoinSide::Right)));
+    }
 }

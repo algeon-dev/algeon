@@ -562,7 +562,7 @@ fn write_position_delete_parquet_with_row_group_rows(
         Field::new("pos", DataType::Int64, false),
     ]));
     let mut file_paths = vec![data_file_path.to_string(); positions.len()];
-    file_paths.extend(std::iter::repeat("file:/tmp/other.parquet".to_string()).take(other_positions.len()));
+    file_paths.extend(std::iter::repeat_n("file:/tmp/other.parquet".to_string(), other_positions.len()));
     let mut all_positions = positions.to_vec();
     all_positions.extend_from_slice(other_positions);
     let batch = RecordBatch::try_new(

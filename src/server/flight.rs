@@ -2140,6 +2140,8 @@ mod tests {
         },
     };
 
+    type PlannerFuture<'a> = BoxFuture<'a, crate::Result<TableFormatScanPlan>>;
+
     #[derive(Debug)]
     struct SleepingPlanner {
         plan: TableFormatScanPlan,
@@ -2153,10 +2155,7 @@ mod tests {
     }
 
     impl TableFormatPlanner for SleepingPlanner {
-        fn plan_scan<'a>(
-            &'a self,
-            _request: TableFormatScanRequest,
-        ) -> BoxFuture<'a, crate::Result<TableFormatScanPlan>> {
+        fn plan_scan(&self, _request: TableFormatScanRequest) -> PlannerFuture<'_> {
             let plan = self.plan.clone();
             let delay = self.delay;
             Box::pin(async move {
@@ -2183,10 +2182,7 @@ mod tests {
     }
 
     impl TableFormatPlanner for CountingPlanner {
-        fn plan_scan<'a>(
-            &'a self,
-            _request: TableFormatScanRequest,
-        ) -> BoxFuture<'a, crate::Result<TableFormatScanPlan>> {
+        fn plan_scan(&self, _request: TableFormatScanRequest) -> PlannerFuture<'_> {
             self.requests.fetch_add(1, Ordering::SeqCst);
             let plan = self.plan.clone();
             Box::pin(async move { Ok(plan) })
