@@ -139,7 +139,7 @@ pub(crate) fn join_impl(
         },
     };
 
-    error::check_status_in_with(
+    error::check_status_in_with_details(
         status,
         operation,
         [

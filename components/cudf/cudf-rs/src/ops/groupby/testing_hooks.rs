@@ -22,7 +22,7 @@ fn empty_i32_column_in_domain(
     operation: &'static str,
 ) -> Result<Column> {
     Column::empty_with_dtype_in_domain(DataType::new(TypeId::Int32), Arc::clone(output_domain), operation)
-        .map_err(|e| e.with_operation(operation))
+        .map_err(|e| e.reanchor(operation))
 }
 
 pub(crate) fn trigger_groupby_request_count_limit_error_for_test() -> Result<()> {
@@ -70,7 +70,7 @@ pub(crate) fn trigger_value_counts_missing_key_columns_for_test() -> Result<Data
         ("value".to_string(), Series::from_column(key_col)?),
         ("count".to_string(), Series::from_column(count_col)?),
     ])
-    .map_err(|e| e.with_operation(operation))
+    .map_err(|e| e.reanchor(operation))
 }
 
 pub(crate) fn trigger_value_counts_missing_count_results_for_test() -> Result<DataFrame> {
@@ -86,7 +86,7 @@ pub(crate) fn trigger_value_counts_missing_count_results_for_test() -> Result<Da
         ("value".to_string(), Series::from_column(key_col)?),
         ("count".to_string(), Series::from_column(count_col)?),
     ])
-    .map_err(|e| e.with_operation(operation))
+    .map_err(|e| e.reanchor(operation))
 }
 
 pub(crate) fn trigger_value_counts_empty_count_result_for_test() -> Result<DataFrame> {
@@ -102,5 +102,5 @@ pub(crate) fn trigger_value_counts_empty_count_result_for_test() -> Result<DataF
         ("value".to_string(), Series::from_column(key_col)?),
         ("count".to_string(), Series::from_column(count_col)?),
     ])
-    .map_err(|e| e.with_operation(operation))
+    .map_err(|e| e.reanchor(operation))
 }

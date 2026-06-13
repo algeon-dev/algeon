@@ -1,5 +1,8 @@
 use crate::{
-    core::{column::Column, error::Result},
+    core::{
+        column::Column,
+        error::{FACT_ACTUAL_COUNT, FACT_TABLE_COLUMN_COUNT, Result},
+    },
     ops::groupby::{GroupByAggregationOutput, errors::foreign_groupby_contract_error},
 };
 
@@ -24,9 +27,9 @@ pub(super) fn take_groupby_result_columns_for_output(
                 "result_group_index_out_of_bounds",
                 HIGH_LEVEL_GROUPBY_RESULT_REMEDY,
             )
-            .with_context("request_index", request_index.to_string())
-            .with_context("group_index", group_idx.to_string())
-            .with_context("group_count", group_count.to_string())
+            .with_detail("request_index", request_index.to_string())
+            .with_detail("group_index", group_idx.to_string())
+            .with_detail("group_count", group_count.to_string())
         })?;
 
         let result_column_count = group.len();
@@ -38,10 +41,11 @@ pub(super) fn take_groupby_result_columns_for_output(
                 "result_column_index_out_of_bounds",
                 HIGH_LEVEL_GROUPBY_RESULT_REMEDY,
             )
-            .with_context("request_index", request_index.to_string())
-            .with_context("group_index", group_idx.to_string())
-            .with_context("agg_index", agg_idx.to_string())
-            .with_context("result_column_count", result_column_count.to_string())
+            .with_detail("request_index", request_index.to_string())
+            .with_detail("group_index", group_idx.to_string())
+            .with_detail("agg_index", agg_idx.to_string())
+            .with_fact(FACT_ACTUAL_COUNT, result_column_count)
+            .with_detail("result_column_count", result_column_count.to_string())
         })?;
 
         let col = col_slot.take().ok_or_else(|| {
@@ -52,9 +56,9 @@ pub(super) fn take_groupby_result_columns_for_output(
                 "duplicate_result_column_consumption",
                 HIGH_LEVEL_GROUPBY_RESULT_REMEDY,
             )
-            .with_context("request_index", request_index.to_string())
-            .with_context("group_index", group_idx.to_string())
-            .with_context("agg_index", agg_idx.to_string())
+            .with_detail("request_index", request_index.to_string())
+            .with_detail("group_index", group_idx.to_string())
+            .with_detail("agg_index", agg_idx.to_string())
         })?;
 
         all_result_cols.push(col);
@@ -77,7 +81,7 @@ pub(crate) fn value_counts_result_columns(
             "missing_key_columns",
             VALUE_COUNTS_GROUPBY_RESULT_REMEDY,
         )
-        .with_context("table_column_count", key_column_count.to_string())
+        .with_fact(FACT_TABLE_COLUMN_COUNT, key_column_count)
     })?;
 
     let mut agg_results = gb.results;
@@ -90,7 +94,7 @@ pub(crate) fn value_counts_result_columns(
             "missing_count_results",
             VALUE_COUNTS_GROUPBY_RESULT_REMEDY,
         )
-        .with_context("result_group_count", result_group_count.to_string())
+        .with_detail("result_group_count", result_group_count.to_string())
     })?;
 
     let result_column_count = count_cols.len();
@@ -102,7 +106,8 @@ pub(crate) fn value_counts_result_columns(
             "empty_count_result",
             VALUE_COUNTS_GROUPBY_RESULT_REMEDY,
         )
-        .with_context("result_column_count", result_column_count.to_string())
+        .with_fact(FACT_ACTUAL_COUNT, result_column_count)
+        .with_detail("result_column_count", result_column_count.to_string())
     })?;
 
     Ok((key_col, count_col))

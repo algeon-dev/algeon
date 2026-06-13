@@ -18,7 +18,7 @@ use std::{ptr, sync::Arc};
 use crate::{
     core::{
         column::{Column, ColumnView},
-        error::{self, Error, ErrorCode, ErrorKind, Result},
+        error::{self, Error, ErrorCode, FACT_COLUMN_INDEX, FACT_LEFT_TYPE_ID, FACT_RIGHT_TYPE_ID, Result},
         table::{Table, TableView},
     },
     runtime::execution_domain::ExecutionDomain,
@@ -32,23 +32,12 @@ fn checked_len_to_i32(
     value_key: &'static str,
     remedy: &'static str,
 ) -> Result<i32> {
-    i32::try_from(len).map_err(|_| {
-        error::limit_validation_error(
-            ErrorKind::InvalidInput,
-            operation,
-            message,
-            resource,
-            value_key,
-            "i32::MAX",
-            len,
-            remedy,
-        )
-    })
+    i32::try_from(len)
+        .map_err(|_| error::limit_validation_error(operation, message, resource, value_key, "i32::MAX", len, remedy))
 }
 
 fn input_column_count_limit_error(operation: &'static str, column_count: usize) -> Error {
     error::limit_validation_error(
-        ErrorKind::InvalidInput,
         operation,
         "number of input columns exceeds i32::MAX",
         "input_columns",
@@ -61,7 +50,6 @@ fn input_column_count_limit_error(operation: &'static str, column_count: usize) 
 
 fn input_table_count_limit_error(operation: &'static str, table_count: usize) -> Error {
     error::limit_validation_error(
-        ErrorKind::InvalidInput,
         operation,
         "number of input tables exceeds i32::MAX",
         "input_tables",
@@ -73,35 +61,32 @@ fn input_table_count_limit_error(operation: &'static str, table_count: usize) ->
 }
 
 fn concatenate_requires_input_error(operation: &'static str, input_kind: &'static str) -> Error {
-    Error::new(ErrorKind::InvalidInput, format!("{operation} requires at least one input {input_kind}"))
-        .with_code(ErrorCode::UnsupportedOperation)
-        .with_operation(operation)
-        .with_context("reason", "empty_input")
-        .with_context("remedy", format!("provide at least one input {input_kind}"))
-}
-
-fn type_label<T: std::fmt::Debug>(value: T) -> String {
-    format!("{value:?}").to_lowercase()
+    Error::new_with(
+        ErrorCode::UnsupportedOperation,
+        operation,
+        format!("{operation} requires at least one input {input_kind}"),
+    )
+    .with_detail("reason", "empty_input")
+    .with_detail("remedy", format!("provide at least one input {input_kind}"))
 }
 
 fn validate_column_types(columns: &[&ColumnView<'_>], operation: &'static str) -> Result<()> {
     let Some((first, rest)) = columns.split_first() else {
         return Ok(());
     };
-    let left_type = first.data_type().map_err(|e| e.with_operation(operation))?.id();
+    let left_type = first.data_type().map_err(|e| e.reanchor(operation))?.id();
 
     for (offset, column) in rest.iter().enumerate() {
-        let right_type = column.data_type().map_err(|e| e.with_operation(operation))?.id();
+        let right_type = column.data_type().map_err(|e| e.reanchor(operation))?.id();
         if left_type != right_type {
-            return Err(Error::new(
-                ErrorKind::InvalidInput,
+            return Err(Error::new_with(
+                ErrorCode::TypeMismatch,
+                operation,
                 "all input columns must have the same data type for concatenation",
             )
-            .with_code(ErrorCode::TypeMismatch)
-            .with_operation(operation)
-            .with_context("column_index", (offset + 1).to_string())
-            .with_context("left_type_id", type_label(left_type))
-            .with_context("right_type_id", type_label(right_type)));
+            .with_fact(FACT_COLUMN_INDEX, offset + 1)
+            .with_fact(FACT_LEFT_TYPE_ID, left_type)
+            .with_fact(FACT_RIGHT_TYPE_ID, right_type));
         }
     }
 
@@ -112,36 +97,29 @@ fn validate_table_column_types(tables: &[&TableView<'_>], operation: &'static st
     let Some((first, rest)) = tables.split_first() else {
         return Ok(());
     };
-    let column_count = first.num_columns().map_err(|e| e.with_operation(operation))?;
+    let column_count = first.num_columns().map_err(|e| e.reanchor(operation))?;
 
     for table in rest {
-        let table_column_count = table.num_columns().map_err(|e| e.with_operation(operation))?;
+        let table_column_count = table.num_columns().map_err(|e| e.reanchor(operation))?;
         if table_column_count != column_count {
             return Ok(());
         }
 
         for index in 0..column_count {
-            let left_type = first
-                .column(index)
-                .and_then(|column| column.data_type())
-                .map_err(|e| e.with_operation(operation))?
-                .id();
-            let right_type = table
-                .column(index)
-                .and_then(|column| column.data_type())
-                .map_err(|e| e.with_operation(operation))?
-                .id();
+            let left_type =
+                first.column(index).and_then(|column| column.data_type()).map_err(|e| e.reanchor(operation))?.id();
+            let right_type =
+                table.column(index).and_then(|column| column.data_type()).map_err(|e| e.reanchor(operation))?.id();
 
             if left_type != right_type {
-                return Err(Error::new(
-                    ErrorKind::InvalidInput,
+                return Err(Error::new_with(
+                    ErrorCode::TypeMismatch,
+                    operation,
                     "all input tables must have matching column data types for concatenation",
                 )
-                .with_code(ErrorCode::TypeMismatch)
-                .with_operation(operation)
-                .with_context("column_index", index.to_string())
-                .with_context("left_type_id", type_label(left_type))
-                .with_context("right_type_id", type_label(right_type)));
+                .with_fact(FACT_COLUMN_INDEX, index)
+                .with_fact(FACT_LEFT_TYPE_ID, left_type)
+                .with_fact(FACT_RIGHT_TYPE_ID, right_type));
             }
         }
     }
@@ -222,7 +200,7 @@ pub(crate) fn concatenate_columns_with_exec(
         "reduce column_count to fit within i32::MAX",
     )?;
     let mut out = ptr::null_mut();
-    error::check_status_in_with(
+    error::check_status_in_with_details(
         // SAFETY: All column view handles are valid (NonNull maintained by ColumnView).
         // handles slice is valid for handles.len() elements.
         match exec_options {
@@ -263,7 +241,7 @@ pub(crate) fn concatenate_tables_with_exec(
         "reduce table_count to fit within i32::MAX",
     )?;
     let mut out = ptr::null_mut();
-    error::check_status_in_with(
+    error::check_status_in_with_details(
         // SAFETY: All table view handles are valid (NonNull maintained by TableView).
         // handles slice is valid for handles.len() elements.
         match exec_options {

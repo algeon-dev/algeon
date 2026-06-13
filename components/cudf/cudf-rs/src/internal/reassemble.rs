@@ -8,12 +8,7 @@
 use std::sync::Arc;
 
 use crate::{
-    core::{
-        column::Column,
-        error::{ErrorKind, Result},
-        schema,
-        table::Table,
-    },
+    core::{column::Column, error::Result, schema, table::Table},
     frame::dataframe::{DataFrame, resolve_frame_domain_from_authoritative_source},
     internal::hash::{FastIndexMap, fast_index_map_with_capacity},
 };
@@ -37,7 +32,6 @@ pub(crate) fn dataframe_from_table_and_names(table: Table, names: Vec<String>) -
     let cols = table.into_columns()?;
     if cols.len() != names.len() {
         return Err(schema::column_name_count_mismatch_error(
-            ErrorKind::InvalidInput,
             "internal::reassemble::dataframe_from_table_and_names",
             "column count does not match name count",
             names.len(),

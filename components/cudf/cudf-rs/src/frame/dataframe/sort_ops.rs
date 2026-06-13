@@ -4,7 +4,7 @@ use smallvec::SmallVec;
 
 use super::{fillna_ops::DropDuplicatesOptions, group_keys::require_non_empty_group_keys, owned::DataFrame};
 use crate::{
-    core::{column::Column, error::Result},
+    core::error::Result,
     frame::series::Series,
     internal::resolve::resolve_column_names,
     ops::{
@@ -163,11 +163,9 @@ impl DataFrame {
 
         let row_idx_name = unique_temp_column_name(self, "__cudf_group_cumcount_row_idx__");
         let group_start_name = unique_temp_column_name(self, "__cudf_group_cumcount_group_start__");
-        let row_idx = Series::from_column(Column::from_sequence_in_domain(
-            0i32,
-            1i32,
+        let row_idx = Series::from_column(crate::core::column::position_sequence_in_domain(
             self.row_count,
-            Arc::clone(&self.domain),
+            &self.domain,
             operation,
         )?)?;
         let with_row_idx = self.with_column(&row_idx_name, row_idx)?;

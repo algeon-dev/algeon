@@ -19,7 +19,7 @@ use std::{os::raw::c_void, ptr, sync::Arc};
 
 use crate::core::{
     column::{Column, ColumnView},
-    error::{self, Error, ErrorCode, ErrorKind, Result},
+    error::{self, Error, ErrorCode, Result},
     scalar::Scalar,
     types::DataType,
 };
@@ -101,12 +101,10 @@ fn reduce_agg_name(agg: &ReduceAgg) -> &'static str {
 }
 
 pub(crate) fn ddof_range_error(operation: &'static str, ddof: u32) -> Error {
-    Error::new(ErrorKind::InvalidInput, "ddof exceeds libcudf i32 range")
-        .with_code(ErrorCode::UnsupportedOperation)
-        .with_operation(operation)
-        .with_context("reason", "ddof_exceeds_i32_range")
-        .with_context("remedy", "use a ddof value within libcudf's i32 range")
-        .with_context("ddof", ddof.to_string())
+    Error::new_with(ErrorCode::UnsupportedOperation, operation, "ddof exceeds libcudf i32 range")
+        .with_detail("reason", "ddof_exceeds_i32_range")
+        .with_detail("remedy", "use a ddof value within libcudf's i32 range")
+        .with_detail("ddof", ddof.to_string())
 }
 
 pub(crate) fn checked_ddof_to_i32(ddof: u32, operation: &'static str) -> Result<i32> {
@@ -211,7 +209,7 @@ unsafe fn create_scan_agg_handle(agg: ScanAgg) -> Result<*mut c_void> {
         ScanAgg::Product => CUDF_REDUCE_AGG_PRODUCT,
     };
     // SAFETY: handle is initialized to null and set by the C shim on success.
-    error::check_status_in_with(
+    error::check_status_in_with_details(
         cudf_sys::cudf_scan_aggregation_create(kind, &mut handle),
         "reduction::create_scan_agg_handle",
         [("scan_aggregation", format!("{:?}", agg).to_lowercase())],
@@ -235,7 +233,7 @@ pub(crate) fn reduce_impl(
     operation: &'static str,
 ) -> Result<Scalar> {
     // SAFETY: create_reduce_agg_handle calls FFI with valid parameters.
-    let agg_handle = unsafe { create_reduce_agg_handle(agg).map_err(|error| error.with_operation(operation))? };
+    let agg_handle = unsafe { create_reduce_agg_handle(agg).map_err(|error| error.reanchor(operation))? };
     let dtype_handle = output_type.to_raw_handle_for(operation)?;
 
     let mut out = ptr::null_mut();
@@ -255,7 +253,7 @@ pub(crate) fn reduce_impl(
         cudf_sys::cudf_data_type_destroy(dtype_handle);
     }
 
-    error::check_status_in_with(
+    error::check_status_in_with_details(
         status,
         operation,
         [
@@ -285,7 +283,7 @@ pub(crate) fn scan_impl(
     operation: &'static str,
 ) -> Result<Column> {
     // SAFETY: create_scan_agg_handle calls FFI with valid parameters.
-    let agg_handle = unsafe { create_scan_agg_handle(agg).map_err(|error| error.with_operation(operation))? };
+    let agg_handle = unsafe { create_scan_agg_handle(agg).map_err(|error| error.reanchor(operation))? };
 
     let mut out = ptr::null_mut();
     let scan_type_ffi = scan_type.to_raw();
@@ -310,7 +308,7 @@ pub(crate) fn scan_impl(
     // SAFETY: agg_handle is a valid handle that must be destroyed.
     unsafe { cudf_sys::cudf_scan_aggregation_destroy(agg_handle) };
 
-    error::check_status_in_with(
+    error::check_status_in_with_details(
         status,
         operation,
         [
@@ -343,7 +341,7 @@ pub(crate) fn minmax_impl(
         Some(options) => unsafe { cudf_sys::cudf_minmax_ex(input.raw_handle(), &mut out_min, &mut out_max, options) },
         None => unsafe { cudf_sys::cudf_minmax(input.raw_handle(), &mut out_min, &mut out_max) },
     };
-    error::check_status_in_with(
+    error::check_status_in_with_details(
         status,
         operation,
         [("execution_context_provided", exec_options.is_some().to_string())],

@@ -1,5 +1,5 @@
 use super::errors::foreign_dictionary_match_result_shape_error;
-use crate::core::error::Result;
+use crate::core::error::{FACT_ACTUAL_COUNT, FACT_TABLE_COLUMN_COUNT, Result};
 
 unsafe fn destroy_returned_columns_array(out_columns: *mut *mut std::ffi::c_void, out_count: i32) {
     if out_columns.is_null() {
@@ -23,13 +23,17 @@ pub(super) fn validate_match_dictionaries_result_shape(
 ) -> Result<()> {
     if out_count != expected_count {
         unsafe { destroy_returned_columns_array(out_columns, out_count) };
-        return Err(foreign_dictionary_match_result_shape_error(
+        let mut err = foreign_dictionary_match_result_shape_error(
             operation,
             "ffi returned unexpected dictionary match result count",
             "result_count_mismatch",
         )
-        .with_context("table_column_count", expected_count.to_string())
-        .with_context("result_column_count", out_count.to_string()));
+        .with_fact(FACT_TABLE_COLUMN_COUNT, expected_count as usize)
+        .with_detail("result_column_count", out_count.to_string());
+        if out_count >= 0 {
+            err = err.with_fact(FACT_ACTUAL_COUNT, out_count as usize);
+        }
+        return Err(err);
     }
 
     if out_count > 0 && out_columns.is_null() {
@@ -38,8 +42,9 @@ pub(super) fn validate_match_dictionaries_result_shape(
             "ffi returned null dictionary match result array with positive count",
             "null_result_array",
         )
-        .with_context("table_column_count", expected_count.to_string())
-        .with_context("result_column_count", out_count.to_string()));
+        .with_fact(FACT_TABLE_COLUMN_COUNT, expected_count as usize)
+        .with_detail("result_column_count", out_count.to_string())
+        .with_fact(FACT_ACTUAL_COUNT, out_count as usize));
     }
 
     Ok(())

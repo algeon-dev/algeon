@@ -24,13 +24,46 @@ use std::{ptr, sync::Arc};
 use crate::{
     core::{
         column::ColumnView,
-        error::{self, Error, ErrorCode, ErrorKind, Result},
+        error::{
+            self, Error, ErrorCode, FACT_ACTUAL_ROWS, FACT_EXPECTED_ROWS, FACT_LEFT_TYPE_ID, FACT_RIGHT_TYPE_ID, Result,
+        },
         scalar::Scalar,
         table::{Table, TableView},
         types::TypeId,
     },
     runtime::execution_domain::ExecutionDomain,
 };
+
+pub(crate) fn validate_boolean_mask(
+    mask: &ColumnView<'_>,
+    expected_rows: usize,
+    expected_rows_label: &'static str,
+    operation: &'static str,
+) -> Result<()> {
+    let mask_dtype = mask.data_type()?;
+    if mask_dtype.id() != TypeId::Bool8 {
+        return Err(Error::new_with(
+            ErrorCode::TypeMismatch,
+            operation,
+            format!("filter mask must be Bool8, got {:?}", mask_dtype.id()),
+        )
+        .with_fact(FACT_LEFT_TYPE_ID, mask_dtype.id())
+        .with_fact(FACT_RIGHT_TYPE_ID, TypeId::Bool8));
+    }
+
+    let mask_len = mask.len()?;
+    if mask_len != expected_rows {
+        return Err(Error::new_with(
+            ErrorCode::ColumnLengthMismatch,
+            operation,
+            format!("filter mask length ({mask_len}) does not match {expected_rows_label} ({expected_rows})"),
+        )
+        .with_fact(FACT_ACTUAL_ROWS, mask_len)
+        .with_fact(FACT_EXPECTED_ROWS, expected_rows));
+    }
+
+    Ok(())
+}
 
 pub(crate) fn apply_boolean_mask_impl(
     input: &TableView<'_>,
@@ -46,7 +79,7 @@ pub(crate) fn apply_boolean_mask_impl(
         },
         None => unsafe { cudf_sys::cudf_apply_boolean_mask(input.raw_handle(), mask.raw_handle(), &mut out) },
     };
-    error::check_status_in_with(
+    error::check_status_in_with_details(
         status,
         operation,
         [("execution_context_provided", exec_options.is_some().to_string())],
@@ -60,30 +93,8 @@ pub(crate) fn apply_boolean_mask_impl(
 /// or null are dropped. The mask must be a `BOOL8` column with the same
 /// number of rows as the input table.
 pub fn apply_boolean_mask(input: &TableView<'_>, mask: &ColumnView<'_>) -> Result<Table> {
-    let mask_dtype = mask.data_type()?;
-    if mask_dtype.id() != TypeId::Bool8 {
-        return Err(Error::new(
-            ErrorKind::InvalidInput,
-            format!("filter mask must be Bool8, got {:?}", mask_dtype.id()),
-        )
-        .with_code(ErrorCode::TypeMismatch)
-        .with_operation("filter::apply_boolean_mask")
-        .with_context("left_type_id", format!("{:?}", mask_dtype.id()).to_lowercase())
-        .with_context("right_type_id", "bool8"));
-    }
-
     let input_rows = input.num_rows()?;
-    let mask_len = mask.len()?;
-    if mask_len != input_rows {
-        return Err(Error::new(
-            ErrorKind::InvalidInput,
-            format!("filter mask length ({mask_len}) does not match table row count ({input_rows})"),
-        )
-        .with_code(ErrorCode::ColumnLengthMismatch)
-        .with_operation("filter::apply_boolean_mask")
-        .with_context("actual_rows", mask_len.to_string())
-        .with_context("expected_rows", input_rows.to_string()));
-    }
+    validate_boolean_mask(mask, input_rows, "table row count", "filter::apply_boolean_mask")?;
 
     let output_domain = Arc::clone(input.execution_domain());
     ExecutionDomain::require_same_device_for_mixed_inputs(
@@ -134,7 +145,7 @@ pub(crate) fn apply_row_predicate_impl(
             )
         },
     };
-    error::check_status_in_with(
+    error::check_status_in_with_details(
         status,
         operation,
         [

@@ -11,7 +11,7 @@ use super::{TABLE_HANDLE_INLINE_CAPACITY, table_column_count_limit_error, view::
 use crate::{
     core::{
         column::Column,
-        error::{self, Error, ErrorCode, ErrorKind, Result},
+        error::{self, Error, ErrorCode, FACT_COLUMN_INDEX, Result},
     },
     runtime::execution_domain::ExecutionDomain,
 };
@@ -35,30 +35,12 @@ unsafe impl Sync for Table {}
 
 impl Table {
     fn empty_requires_runtime_error(operation: &'static str) -> Error {
-        Error::new(
-            ErrorKind::InvalidInput,
+        Error::new_with(
+            ErrorCode::EmptyConstructionRequiresRuntime,
+            operation,
             "creating an empty table requires an explicit runtime because no authoritative input columns exist",
         )
-        .with_code(ErrorCode::EmptyConstructionRequiresRuntime)
-        .with_operation(operation)
-        .with_context("remedy", "use Runtime::empty_table()")
-    }
-
-    fn row_count_mismatch_error(
-        operation: &'static str,
-        column_index: usize,
-        actual_rows: usize,
-        expected_rows: usize,
-    ) -> Error {
-        Error::new(
-            ErrorKind::InvalidInput,
-            format!("column {column_index} has {actual_rows} rows but column 0 has {expected_rows} rows"),
-        )
-        .with_code(ErrorCode::ColumnLengthMismatch)
-        .with_operation(operation)
-        .with_context("column_index", column_index.to_string())
-        .with_context("actual_rows", actual_rows.to_string())
-        .with_context("expected_rows", expected_rows.to_string())
+        .with_detail("remedy", "use Runtime::empty_table()")
     }
 
     fn validate_uniform_row_counts(columns: &[Column], operation: &'static str) -> Result<()> {
@@ -68,18 +50,18 @@ impl Table {
 
         let first_rows = first
             .view()
-            .map_err(|e| e.with_operation(operation).with_context("column_index", "0"))?
+            .map_err(|e| e.reanchor(operation).with_fact(FACT_COLUMN_INDEX, 0))?
             .len()
-            .map_err(|e| e.with_operation(operation).with_context("column_index", "0"))?;
+            .map_err(|e| e.reanchor(operation).with_fact(FACT_COLUMN_INDEX, 0))?;
 
         for (index, column) in columns.iter().enumerate().skip(1) {
             let rows = column
                 .view()
-                .map_err(|e| e.with_operation(operation).with_context("column_index", index.to_string()))?
+                .map_err(|e| e.reanchor(operation).with_fact(FACT_COLUMN_INDEX, index))?
                 .len()
-                .map_err(|e| e.with_operation(operation).with_context("column_index", index.to_string()))?;
+                .map_err(|e| e.reanchor(operation).with_fact(FACT_COLUMN_INDEX, index))?;
             if rows != first_rows {
-                return Err(Self::row_count_mismatch_error(operation, index, rows, first_rows));
+                return Err(error::row_count_mismatch_error(operation, index, rows, first_rows));
             }
         }
 
@@ -117,7 +99,7 @@ impl Table {
                     "all columns in a table must share one retained provenance",
                     "use copy_into_runtime(...) on higher-level Series/DataFrame values or rebuild the table from columns already placed in one Runtime before calling this operation",
                 )
-                .map_err(|e| e.with_context("column_index", index.to_string()))?;
+                .map_err(|e| e.with_fact(FACT_COLUMN_INDEX, index))?;
             }
             if let Some(authoritative_domain) = authoritative_domain.as_ref() {
                 ExecutionDomain::require_same_provenance(

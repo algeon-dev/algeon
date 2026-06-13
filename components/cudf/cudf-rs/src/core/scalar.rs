@@ -11,23 +11,20 @@ use std::{
 };
 
 use super::{
-    error::{self, Error, ErrorCode, ErrorKind, Result},
+    error::{self, Error, ErrorCode, FACT_LEFT_TYPE_ID, FACT_RIGHT_TYPE_ID, FACT_TYPE_ID, Result},
     types::{CudfType, DataType, TypeId},
 };
 use crate::runtime::execution_domain::ExecutionDomain;
 
-fn type_id_label(type_id: TypeId) -> String {
-    format!("{:?}", type_id).to_lowercase()
-}
-
 fn negative_string_length_error(operation: &'static str, raw_len: i32) -> Error {
-    Error::new(ErrorKind::InvariantViolation, "FFI returned negative string length")
-        .with_operation(operation)
-        .with_code(ErrorCode::InvariantViolation)
-        .with_context("raw_len", raw_len.to_string())
-        .with_context("resource", "string_scalar_value")
-        .with_context("reason", "negative_string_length")
-        .with_context("remedy", "ensure the foreign scalar backend returns a non-negative string length")
+    error::foreign_invariant_violation(
+        operation,
+        "FFI returned negative string length",
+        "string_scalar_value",
+        "negative_string_length",
+        "ensure the foreign scalar backend returns a non-negative string length",
+    )
+    .with_detail("raw_len", raw_len.to_string())
 }
 
 /// An owned scalar value on the GPU.
@@ -135,13 +132,12 @@ impl Scalar {
 
     fn copy_into_domain_with_operation(&self, domain: &Arc<ExecutionDomain>, operation: &'static str) -> Result<Self> {
         if self.data_type()?.id() == TypeId::Dictionary32 {
-            return Err(Error::new(
-                ErrorKind::InvalidInput,
+            return Err(Error::new_with(
+                ErrorCode::UnsupportedDtype,
+                operation,
                 "scalar copy does not support Dictionary32 (no libcudf scalar subclass exists)",
             )
-            .with_operation(operation)
-            .with_code(ErrorCode::UnsupportedDtype)
-            .with_context("type_id", "dictionary32"));
+            .with_fact(FACT_TYPE_ID, TypeId::Dictionary32));
         }
 
         let mut handle = ptr::null_mut();
@@ -205,11 +201,13 @@ impl Scalar {
     pub fn value<T: CudfType>(&self) -> Result<T> {
         let dt = self.data_type()?;
         if dt.id() != T::TYPE_ID {
-            return Err(Error::new(ErrorKind::InvalidInput, "scalar type does not match requested type")
-                .with_operation("scalar::value")
-                .with_code(ErrorCode::TypeMismatch)
-                .with_context("left_type_id", type_id_label(dt.id()))
-                .with_context("right_type_id", type_id_label(T::TYPE_ID)));
+            return Err(Error::new_with(
+                ErrorCode::TypeMismatch,
+                "scalar::value",
+                "scalar type does not match requested type",
+            )
+            .with_fact(FACT_LEFT_TYPE_ID, dt.id())
+            .with_fact(FACT_RIGHT_TYPE_ID, T::TYPE_ID));
         }
         // SAFETY: `CudfType` is sealed to built-in primitives with valid
         // all-zero bit patterns.
@@ -237,11 +235,13 @@ impl Scalar {
     pub fn string_value(&self) -> Result<String> {
         let dt = self.data_type()?;
         if dt.id() != TypeId::String {
-            return Err(Error::new(ErrorKind::InvalidInput, "scalar type does not match requested type")
-                .with_operation("scalar::string_value")
-                .with_code(ErrorCode::TypeMismatch)
-                .with_context("left_type_id", type_id_label(dt.id()))
-                .with_context("right_type_id", type_id_label(TypeId::String)));
+            return Err(Error::new_with(
+                ErrorCode::TypeMismatch,
+                "scalar::string_value",
+                "scalar type does not match requested type",
+            )
+            .with_fact(FACT_LEFT_TYPE_ID, dt.id())
+            .with_fact(FACT_RIGHT_TYPE_ID, TypeId::String));
         }
 
         let mut ptr: *mut c_char = ptr::null_mut();

@@ -55,7 +55,7 @@ pub(crate) fn encode_impl(
     operation: &'static str,
 ) -> Result<Column> {
     let mut out = ptr::null_mut();
-    error::check_status_in_with(
+    error::check_status_in_with_details(
         match exec_options {
             Some(options) => unsafe {
                 cudf_sys::cudf_dictionary_encode_ex(input.raw_handle(), indices_type.to_raw(), &mut out, options)
@@ -78,7 +78,7 @@ fn decode_impl(
     operation: &'static str,
 ) -> Result<Column> {
     let mut out = ptr::null_mut();
-    error::check_status_in_with(
+    error::check_status_in_with_details(
         match exec_options {
             Some(options) => unsafe {
                 cudf_sys::cudf_dictionary_decode_ex(dict_column.raw_handle(), &mut out, options)
@@ -99,7 +99,7 @@ fn set_keys_impl(
     operation: &'static str,
 ) -> Result<Column> {
     let mut out = ptr::null_mut();
-    error::check_status_in_with(
+    error::check_status_in_with_details(
         match exec_options {
             Some(options) => unsafe {
                 cudf_sys::cudf_dictionary_set_keys_ex(dict_column.raw_handle(), keys.raw_handle(), &mut out, options)
@@ -138,7 +138,7 @@ fn match_dictionaries_impl(
     let mut out_columns: *mut *mut std::ffi::c_void = ptr::null_mut();
     let mut out_count: i32 = 0;
 
-    error::check_status_in_with(
+    error::check_status_in_with_details(
         match exec_options {
             Some(options) => unsafe {
                 cudf_sys::cudf_dictionary_match_dictionaries_ex(

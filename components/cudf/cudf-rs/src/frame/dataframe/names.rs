@@ -19,7 +19,7 @@ impl DataFrame {
     }
 
     pub fn rename_column(&self, old: &str, new: &str) -> Result<Self> {
-        self.rename_columns([(old, new)]).map_err(|e| e.with_operation("dataframe::rename_column"))
+        self.rename_columns([(old, new)]).map_err(|e| e.reanchor("dataframe::rename_column"))
     }
 
     /// Return a new DataFrame with multiple columns renamed at once.

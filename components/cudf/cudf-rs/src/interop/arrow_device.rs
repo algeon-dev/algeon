@@ -2,7 +2,7 @@
 //!
 //! This module is the device-side Arrow interop boundary. It exports or
 //! imports Arrow C Device ABI roots that describe existing device buffers, and
-//! it is intentionally separate from [`crate::io::arrow`], which converts
+//! it is intentionally separate from [`crate::interop::arrow_host`], which converts
 //! through host-resident Rust Arrow [`arrow::record_batch::RecordBatch`]
 //! values.
 //!
@@ -20,7 +20,7 @@
 //! `Bool8` needs a bridge-owned device copy because cuDF stores booleans as
 //! one byte per value while Arrow booleans are bit-packed.
 //!
-//! If you need a regular Arrow `RecordBatch`, use [`crate::io::arrow`] instead.
+//! If you need a regular Arrow `RecordBatch`, use [`crate::interop::arrow_host`] instead.
 pub(crate) mod testing_hooks;
 
 use std::{
@@ -39,7 +39,7 @@ use crate::{
     DataFrame, Series,
     core::{
         Column, Table,
-        error::{self, Error, ErrorCode, ErrorKind, Result},
+        error::{self, DeviceIdFact, Error, ErrorCode, FACT_COLUMN_INDEX, FACT_LEFT_DEVICE, FACT_RIGHT_DEVICE, Result},
         types::TypeId,
     },
     ops::dictionary,
@@ -152,11 +152,9 @@ fn foreign_input_contract_error(
     resource: &'static str,
     remedy: &'static str,
 ) -> Error {
-    Error::new(ErrorKind::InvalidInput, message)
-        .with_code(ErrorCode::InvalidInput)
-        .with_operation(operation)
-        .with_context("resource", resource)
-        .with_context("remedy", remedy)
+    Error::new_with(ErrorCode::ForeignInvalidArgument, operation, message)
+        .with_detail("resource", resource)
+        .with_detail("remedy", remedy)
 }
 
 fn foreign_metadata_violation(
@@ -166,12 +164,7 @@ fn foreign_metadata_violation(
     reason: &'static str,
     remedy: &'static str,
 ) -> Error {
-    Error::new(ErrorKind::InvariantViolation, message)
-        .with_code(ErrorCode::InvariantViolation)
-        .with_operation(operation)
-        .with_context("resource", resource)
-        .with_context("reason", reason)
-        .with_context("remedy", remedy)
+    error::foreign_invariant_violation(operation, message, resource, reason, remedy)
 }
 
 fn validate_same_device(
@@ -182,16 +175,15 @@ fn validate_same_device(
 ) -> Result<()> {
     let runtime_device = runtime.device().ordinal() as i32;
     if input_device != runtime_device {
-        return Err(Error::new(
-            ErrorKind::InvalidInput,
+        return Err(Error::new_with(
+            ErrorCode::CrossDeviceInputs,
+            operation,
             "device-arrow import requires the foreign input and destination runtime to use the same CUDA device",
         )
-        .with_code(ErrorCode::CrossDeviceInputs)
-        .with_operation(operation)
-        .with_context("left_device", runtime_device.to_string())
-        .with_context("right_device", input_device.to_string())
-        .with_context("resource", resource)
-        .with_context(
+        .with_fact(FACT_LEFT_DEVICE, DeviceIdFact(runtime_device))
+        .with_fact(FACT_RIGHT_DEVICE, DeviceIdFact(input_device))
+        .with_detail("resource", resource)
+        .with_detail(
             "remedy",
             "import into a Runtime pinned to the same CUDA device as the foreign Arrow device roots",
         ));
@@ -211,7 +203,7 @@ fn validate_supported_device_type(input_type: DeviceArrowDeviceType, operation: 
                 "device_type",
                 "use ARROW_DEVICE_CUDA, ARROW_DEVICE_CUDA_HOST, or ARROW_DEVICE_CUDA_MANAGED roots for device-arrow import",
             )
-            .with_context("device_type", input_type.raw_code().to_string()),
+            .with_detail("device_type", input_type.raw_code().to_string()),
         );
     }
     Ok(())
@@ -354,22 +346,21 @@ fn validate_raw_abi_parts(
 
 fn with_optional_column_index(mut err: Error, column_index: Option<usize>) -> Error {
     if let Some(index) = column_index {
-        err = err.with_context("column_index", index.to_string());
+        err = err.with_fact(FACT_COLUMN_INDEX, index);
     }
     err
 }
 
 fn unsupported_fixed_width_values_ptr_layout(operation: &'static str, column_index: Option<usize>) -> Error {
     with_optional_column_index(
-        Error::new(
-            ErrorKind::Unsupported,
+        Error::new_with(
+            ErrorCode::UnsupportedLayout,
+            operation,
             "fixed-width values pointer access requires a supported fixed-width leaf layout",
         )
-        .with_code(ErrorCode::UnsupportedLayout)
-        .with_operation(operation)
-        .with_context("resource", "column_layout")
-        .with_context("reason", "not_fixed_width_leaf")
-        .with_context("remedy", "call fixed_width_values_ptr only on supported fixed-width leaf layouts"),
+        .with_detail("resource", "column_layout")
+        .with_detail("reason", "not_fixed_width_leaf")
+        .with_detail("remedy", "call fixed_width_values_ptr only on supported fixed-width leaf layouts"),
         column_index,
     )
 }
@@ -408,7 +399,7 @@ fn missing_fixed_width_values_buffer(operation: &'static str, column_index: Opti
             "arrow_device_array",
             "ensure the Arrow device array exposes the values buffer for supported fixed-width leaf layouts",
         )
-        .with_context("reason", "missing_fixed_width_values_buffer"),
+        .with_detail("reason", "missing_fixed_width_values_buffer"),
         column_index,
     )
 }
@@ -435,7 +426,7 @@ unsafe fn arrow_schema_is_supported_fixed_width_leaf(
             "ensure the Arrow schema reports a non-negative child count",
             column_index,
         )
-        .with_context("table_column_count", schema.n_children.to_string()));
+        .with_detail("reported_table_column_count", schema.n_children.to_string()));
     }
 
     let format = CStr::from_ptr(schema.format).to_string_lossy();
@@ -501,8 +492,8 @@ unsafe fn table_child_schema_for_fixed_width_ptr<'a>(
             "invalid_foreign_table_metadata",
             "ensure the foreign Arrow table schema reports a non-negative column count",
         )
-        .with_context("table_column_count", schema.n_children.to_string())
-        .with_context("column_index", index.to_string()));
+        .with_detail("reported_table_column_count", schema.n_children.to_string())
+        .with_fact(FACT_COLUMN_INDEX, index));
     }
 
     let count = schema.n_children as usize;
@@ -546,7 +537,7 @@ unsafe fn table_child_array_for_fixed_width_ptr<'a>(
             "ensure the foreign Arrow table array reports a non-negative child count",
             Some(index),
         )
-        .with_context("table_column_count", array.array.n_children.to_string()));
+        .with_detail("reported_table_column_count", array.array.n_children.to_string()));
     }
 
     let count = array.array.n_children as usize;
@@ -654,7 +645,7 @@ impl DeviceArrowAbiRootInner {
                 "invalid_foreign_device_id",
                 "ensure the foreign Arrow device roots report a CUDA device id that fits within i32::MAX",
             )
-            .with_context("device_id", out.to_string())
+            .with_detail("device_id", out.to_string())
         })
     }
 
@@ -708,9 +699,8 @@ impl DeviceArrowAbiRootInner {
     }
 
     fn table_fixed_width_values_ptr(&self, index: usize, operation: &'static str) -> Result<*const c_void> {
-        let index = i64::try_from(index).map_err(|_| {
-            error::range_limit_error(ErrorKind::InvalidInput, operation, "column_index", "i64::MAX", index)
-        })?;
+        let index =
+            i64::try_from(index).map_err(|_| error::range_limit_error(operation, "column_index", "i64::MAX", index))?;
         let column_index = index as usize;
         let schema = unsafe { &*self.schema.as_ptr().cast::<ArrowSchema>() };
         let array = unsafe { &*self.array.as_ptr().cast::<ArrowDeviceArray>() };
@@ -757,7 +747,7 @@ impl DeviceArrowAbiRootInner {
                 "invalid_foreign_table_metadata",
                 "ensure the foreign Arrow table schema reports a non-negative column count",
             )
-            .with_context("table_column_count", out.to_string())
+            .with_detail("reported_table_column_count", out.to_string())
         })?;
 
         let mut names = Vec::with_capacity(count);
@@ -847,15 +837,8 @@ fn export_device_arrow_table_from_view(
     let (raw_names_ptr, raw_names_len) = match raw_names {
         Some(raw_names) => (
             raw_names.as_ptr(),
-            i32::try_from(raw_names.len()).map_err(|_| {
-                error::range_limit_error(
-                    ErrorKind::InvalidInput,
-                    operation,
-                    "table_column_count",
-                    "i32::MAX",
-                    raw_names.len(),
-                )
-            })?,
+            i32::try_from(raw_names.len())
+                .map_err(|_| error::range_limit_error(operation, "table_column_count", "i32::MAX", raw_names.len()))?,
         ),
         None => (ptr::null(), 0),
     };
@@ -1365,7 +1348,7 @@ impl ForeignDeviceArrowTable {
 impl Series {
     pub fn try_prepare_device_arrow_export(&self) -> Result<DeviceArrowColumnExport> {
         let operation = "interop::Series::try_prepare_device_arrow_export";
-        let view = self.as_column().view().map_err(|error| error.with_operation(operation))?;
+        let view = self.as_column().view().map_err(|error| error.reanchor(operation))?;
         let exec_options = view.execution_domain().exec_options_raw();
         let retained_owner: Arc<dyn Any + Send + Sync> = self.arc();
 
@@ -1383,7 +1366,7 @@ impl Column {
     pub fn try_prepare_device_arrow_export(self) -> Result<DeviceArrowColumnExport> {
         let operation = "interop::Column::try_prepare_device_arrow_export";
         let retained_column = Arc::new(self);
-        let view = retained_column.view().map_err(|error| error.with_operation(operation))?;
+        let view = retained_column.view().map_err(|error| error.reanchor(operation))?;
         let exec_options = retained_column.execution_domain().exec_options_raw();
         let retained_owner: Arc<dyn Any + Send + Sync> = Arc::clone(&retained_column) as Arc<dyn Any + Send + Sync>;
 
@@ -1400,8 +1383,8 @@ impl Column {
     /// Arrow device root.
     pub fn try_prepare_device_arrow_export_with_deep_copy(&self) -> Result<DeviceArrowColumnExport> {
         let operation = "interop::Column::try_prepare_device_arrow_export_with_deep_copy";
-        let retained_column = Arc::new(self.deep_copy().map_err(|error| error.with_operation(operation))?);
-        let view = retained_column.view().map_err(|error| error.with_operation(operation))?;
+        let retained_column = Arc::new(self.deep_copy().map_err(|error| error.reanchor(operation))?);
+        let view = retained_column.view().map_err(|error| error.reanchor(operation))?;
         let exec_options = retained_column.execution_domain().exec_options_raw();
         let retained_owner: Arc<dyn Any + Send + Sync> = Arc::clone(&retained_column) as Arc<dyn Any + Send + Sync>;
 
@@ -1419,7 +1402,7 @@ impl Table {
     pub fn try_prepare_device_arrow_export(self) -> Result<DeviceArrowTableExport> {
         let operation = "interop::Table::try_prepare_device_arrow_export";
         let retained_table = Arc::new(self);
-        let view = retained_table.view().map_err(|error| error.with_operation(operation))?;
+        let view = retained_table.view().map_err(|error| error.reanchor(operation))?;
         let exec_options = retained_table.execution_domain().exec_options_raw();
         let retained_owner: Arc<dyn Any + Send + Sync> = Arc::clone(&retained_table) as Arc<dyn Any + Send + Sync>;
 
@@ -1435,8 +1418,8 @@ impl Table {
     /// public path materialized fresh device storage before exporting.
     pub fn try_prepare_device_arrow_export_with_deep_copy(&self) -> Result<DeviceArrowTableExport> {
         let operation = "interop::Table::try_prepare_device_arrow_export_with_deep_copy";
-        let retained_table = Arc::new(self.deep_copy().map_err(|error| error.with_operation(operation))?);
-        let view = retained_table.view().map_err(|error| error.with_operation(operation))?;
+        let retained_table = Arc::new(self.deep_copy().map_err(|error| error.reanchor(operation))?);
+        let view = retained_table.view().map_err(|error| error.reanchor(operation))?;
         let exec_options = retained_table.execution_domain().exec_options_raw();
         let retained_owner: Arc<dyn Any + Send + Sync> = Arc::clone(&retained_table) as Arc<dyn Any + Send + Sync>;
 
@@ -1455,7 +1438,7 @@ impl DataFrame {
     pub fn try_prepare_device_arrow_export(&self) -> Result<DeviceArrowTableExport> {
         let operation = "interop::DataFrame::try_prepare_device_arrow_export";
         let retained_df = Arc::new(self.clone());
-        let view = retained_df.build_table_view().map_err(|error| error.with_operation(operation))?;
+        let view = retained_df.build_table_view().map_err(|error| error.reanchor(operation))?;
         let exec_options = retained_df.execution_domain().exec_options_raw();
         let names = retained_df.column_names_owned();
         let c_names = names
@@ -1464,8 +1447,8 @@ impl DataFrame {
             .map(|(index, name)| {
                 CString::new(name.as_str()).map_err(|_| {
                     error::interior_null_byte_error(operation, "column_name", "column name contains interior null byte")
-                        .with_context("column_index", index.to_string())
-                        .with_context("column_name", name.clone())
+                        .with_fact(FACT_COLUMN_INDEX, index)
+                        .with_column(name.clone())
                 })
             })
             .collect::<Result<Vec<_>>>()?;
@@ -1526,8 +1509,8 @@ impl Series {
     ) -> Result<Self> {
         let operation = "interop::Series::try_import_from_device_arrow_column_into_runtime";
         let column = Column::try_import_from_device_arrow_column_into_runtime(input, runtime)
-            .map_err(|error| error.with_operation(operation))?;
-        Series::from_column(column).map_err(|error| error.with_operation(operation))
+            .map_err(|error| error.reanchor(operation))?;
+        Series::from_column(column).map_err(|error| error.reanchor(operation))
     }
 }
 
@@ -1578,9 +1561,9 @@ impl DataFrame {
         runtime: &Runtime,
     ) -> Result<Self> {
         let operation = "interop::DataFrame::try_import_from_device_arrow_table_into_runtime";
-        let names = input.column_names().map_err(|error| error.with_operation(operation))?;
+        let names = input.column_names().map_err(|error| error.reanchor(operation))?;
         let table = Table::try_import_from_device_arrow_table_into_runtime(input, runtime)
-            .map_err(|error| error.with_operation(operation))?;
-        DataFrame::from_table(table, names).map_err(|error| error.with_operation(operation))
+            .map_err(|error| error.reanchor(operation))?;
+        DataFrame::from_table(table, names).map_err(|error| error.reanchor(operation))
     }
 }

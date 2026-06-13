@@ -158,7 +158,7 @@ impl DataFrame {
             }
         };
 
-        self.drop_nulls(&subset_names, threshold).map_err(|e| e.with_operation("dataframe::dropna"))
+        self.drop_nulls(&subset_names, threshold).map_err(|e| e.reanchor("dataframe::dropna"))
     }
 
     pub(crate) fn dropna_in_context(&self, opts: DropNaOptions, ctx: &ExecutionOverrides<'_>) -> Result<Self> {
@@ -199,7 +199,7 @@ impl DataFrame {
         let subset_names: Vec<&str> =
             if opts.subset.is_empty() { self.column_names() } else { opts.subset.iter().map(|s| s.as_str()).collect() };
 
-        self.distinct(&subset_names, opts.keep).map_err(|e| e.with_operation("dataframe::drop_duplicates"))
+        self.distinct(&subset_names, opts.keep).map_err(|e| e.reanchor("dataframe::drop_duplicates"))
     }
 
     pub(crate) fn drop_duplicates_in_context(
@@ -230,7 +230,7 @@ impl DataFrame {
 
     /// Replace null values in a single column with a pre-constructed [`Scalar`].
     pub fn fillna_with_scalar(&self, column: &str, value: &Scalar) -> Result<Self> {
-        self.replace_nulls(column, value).map_err(|e| e.with_operation("dataframe::fillna_with_scalar"))
+        self.replace_nulls(column, value).map_err(|e| e.reanchor("dataframe::fillna_with_scalar"))
     }
 
     /// Replace null values in a single column using corresponding elements

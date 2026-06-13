@@ -69,27 +69,9 @@ pub(super) fn projection_overflow_error(
     row_count: usize,
     remedy: &'static str,
 ) -> InteropError {
-    InteropError::new(InteropErrorKind::InvalidView, message)
-        .with_context("operation", operation)
-        .with_context("resource", resource)
-        .with_context("reason", reason)
-        .with_context("remedy", remedy)
+    invalid_view_contract_error(operation, message, resource, reason, remedy)
         .with_context("offset", offset.to_string())
         .with_context("row_count", row_count.to_string())
-}
-
-pub(super) fn invalid_view_contract_error(
-    operation: &'static str,
-    message: &'static str,
-    resource: &'static str,
-    reason: &'static str,
-    remedy: &'static str,
-) -> InteropError {
-    InteropError::new(InteropErrorKind::InvalidView, message)
-        .with_context("operation", operation)
-        .with_context("resource", resource)
-        .with_context("reason", reason)
-        .with_context("remedy", remedy)
 }
 
 pub(super) fn negative_projection_offset_error(operation: &'static str, offset: i64) -> InteropError {
@@ -170,6 +152,18 @@ pub(super) fn projection_missing_null_mask_error(operation: &'static str, row_co
         "expose a null_mask_buffer for nullable projection inputs or mark the column non-nullable",
     )
     .with_context("row_count", row_count.to_string())
+}
+
+pub(super) fn projection_struct_requires_child_error(operation: &'static str) -> InteropError {
+    projection_child_count_error(
+        operation,
+        "struct column view must expose at least one child column",
+        "struct",
+        0,
+        1,
+        "requires_child_column",
+        "expose at least one child column before projecting struct data",
+    )
 }
 
 pub(super) fn active_projection_range_overflow_error(
@@ -342,17 +336,15 @@ pub(super) fn encode_host_string_offsets(
 
     for value in strings {
         total_bytes = total_bytes.checked_add(value.len()).ok_or_else(|| {
-            InteropError::new(InteropErrorKind::InvalidView, "string host export byte range overflowed")
-                .with_context("operation", operation)
-        })?;
-        let offset = i32::try_from(total_bytes).map_err(|_| {
-            InteropError::new(
-                InteropErrorKind::InvalidView,
-                "string host export offsets exceed the current 32-bit offsets contract",
+            invalid_view_contract_error(
+                operation,
+                "string host export byte range overflowed",
+                "byte_len",
+                "size_overflowed_usize",
+                "reduce total host-export string bytes so the active byte range fits within usize",
             )
-            .with_context("operation", operation)
-            .with_context("byte_len", total_bytes.to_string())
         })?;
+        let offset = checked_invalid_view_i32_from_usize("byte_len", total_bytes, operation)?;
         offsets.push(offset);
     }
 
@@ -362,13 +354,4 @@ pub(super) fn encode_host_string_offsets(
 
 pub(super) fn encode_host_i32_values(values: &[i32]) -> Arc<[u8]> {
     Arc::from(values.iter().flat_map(|value| value.to_ne_bytes()).collect::<Vec<u8>>())
-}
-
-pub(super) fn checked_child_index(operation: &'static str, index: usize) -> Result<i32, InteropError> {
-    let index_i32 = i32::try_from(index).map_err(|_| {
-        InteropError::new(InteropErrorKind::InvalidView, "child index exceeds i32 range")
-            .with_context("operation", operation)
-            .with_context("index", index.to_string())
-    })?;
-    Ok(index_i32)
 }

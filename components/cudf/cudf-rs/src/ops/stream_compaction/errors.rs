@@ -1,4 +1,4 @@
-use crate::core::error::{Error, ErrorCode, ErrorKind};
+use crate::core::error::{Error, ErrorCode, FACT_COLUMN_INDEX, FACT_TABLE_COLUMN_COUNT};
 
 pub(super) fn unsupported_stream_compaction_validation_error(
     operation: &'static str,
@@ -6,20 +6,17 @@ pub(super) fn unsupported_stream_compaction_validation_error(
     reason: &'static str,
     remedy: &'static str,
 ) -> Error {
-    Error::new(ErrorKind::InvalidInput, message)
-        .with_code(ErrorCode::UnsupportedOperation)
-        .with_operation(operation)
-        .with_context("reason", reason)
-        .with_context("remedy", remedy)
+    Error::new_with(ErrorCode::UnsupportedOperation, operation, message)
+        .with_detail("reason", reason)
+        .with_detail("remedy", remedy)
 }
 
 pub(super) fn key_index_out_of_bounds_error(operation: &'static str, key_index: usize, num_columns: usize) -> Error {
-    Error::new(
-        ErrorKind::InvalidInput,
+    Error::new_with(
+        ErrorCode::IndexOutOfBounds,
+        operation,
         format!("key column index {} out of bounds for {} columns", key_index, num_columns),
     )
-    .with_code(ErrorCode::IndexOutOfBounds)
-    .with_operation(operation)
-    .with_context("column_index", key_index.to_string())
-    .with_context("table_column_count", num_columns.to_string())
+    .with_fact(FACT_COLUMN_INDEX, key_index)
+    .with_fact(FACT_TABLE_COLUMN_COUNT, num_columns)
 }

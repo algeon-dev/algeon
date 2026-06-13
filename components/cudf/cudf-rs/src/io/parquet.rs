@@ -12,7 +12,7 @@ use typed_builder::TypedBuilder;
 
 use crate::{
     core::{
-        error::{self, Error, ErrorCode, ErrorKind, Result},
+        error::{self, Error, ErrorCode, FACT_COLUMN_INDEX, Result},
         schema,
         table::Table,
     },
@@ -54,8 +54,7 @@ impl ParquetTableReadOptions {
 }
 
 fn checked_i64_from_usize(value: usize, field: &'static str, operation: &'static str) -> Result<i64> {
-    i64::try_from(value)
-        .map_err(|_| error::range_limit_error(ErrorKind::InvalidInput, operation, field, "i64::MAX", value))
+    i64::try_from(value).map_err(|_| error::range_limit_error(operation, field, "i64::MAX", value))
 }
 
 fn row_group_combination_error(
@@ -64,15 +63,17 @@ fn row_group_combination_error(
     num_rows_context: String,
     operation: &'static str,
 ) -> Error {
-    Error::new(ErrorKind::InvalidInput, "row_groups cannot be combined with skip_rows or num_rows")
-        .with_code(ErrorCode::UnsupportedOperation)
-        .with_operation(operation)
-        .with_context("row_group_count", row_group_count.to_string())
-        .with_context("skip_rows", skip_rows.to_string())
-        .with_context("num_rows", num_rows_context)
-        .with_context("resource", "row_groups")
-        .with_context("reason", "incompatible_option_combination")
-        .with_context("remedy", "use row_groups by itself, or remove row_groups and use skip_rows/num_rows")
+    Error::new_with(
+        ErrorCode::UnsupportedOperation,
+        operation,
+        "row_groups cannot be combined with skip_rows or num_rows",
+    )
+    .with_detail("row_group_count", row_group_count.to_string())
+    .with_detail("skip_rows", skip_rows.to_string())
+    .with_detail("num_rows", num_rows_context)
+    .with_detail("resource", "row_groups")
+    .with_detail("reason", "incompatible_option_combination")
+    .with_detail("remedy", "use row_groups by itself, or remove row_groups and use skip_rows/num_rows")
 }
 
 /// Read a Parquet file into a low-level table result.
@@ -114,14 +115,16 @@ pub fn read_parquet_table(options: &ParquetTableReadOptions) -> Result<TableRead
         .as_ref()
         .map(|cols| {
             cols.iter()
-                .map(|s| {
+                .enumerate()
+                .map(|(index, s)| {
                     CString::new(s.as_str()).map_err(|_| {
-                        super::interior_null_byte_error(
+                        error::interior_null_byte_error(
                             OPERATION,
                             "column_name",
                             "column name contains interior null byte",
                         )
-                        .with_context("column_name", s.to_string())
+                        .with_fact(FACT_COLUMN_INDEX, index)
+                        .with_column(s.to_string())
                     })
                 })
                 .collect::<Result<Vec<_>>>()
@@ -138,7 +141,7 @@ pub fn read_parquet_table(options: &ParquetTableReadOptions) -> Result<TableRead
         _ => (ptr::null(), 0),
     };
 
-    error::check_status_in_with(
+    error::check_status_in_with_details(
         // SAFETY: filepath is a valid CString. col_ptrs is either null or a
         // valid pointer to num_cols CString pointers. rg_ptr is either null
         // or a valid pointer to num_rg i32 values.
@@ -224,7 +227,6 @@ pub(crate) fn write_parquet_with_exec(
         let expected = table.num_columns()?;
         if names.len() != expected {
             return Err(schema::column_name_count_mismatch_error(
-                ErrorKind::InvalidInput,
                 "io::parquet::write_parquet",
                 format!("column name count ({}) does not match table column count ({})", names.len(), expected),
                 names.len(),
@@ -240,14 +242,16 @@ pub(crate) fn write_parquet_with_exec(
         .map(|names| {
             names
                 .iter()
-                .map(|s| {
+                .enumerate()
+                .map(|(index, s)| {
                     CString::new(s.as_str()).map_err(|_| {
-                        super::interior_null_byte_error(
+                        error::interior_null_byte_error(
                             "io::parquet::write_parquet",
                             "column_name",
                             "column name contains interior null byte",
                         )
-                        .with_context("column_name", s.to_string())
+                        .with_fact(FACT_COLUMN_INDEX, index)
+                        .with_column(s.to_string())
                     })
                 })
                 .collect::<Result<Vec<_>>>()
@@ -260,7 +264,7 @@ pub(crate) fn write_parquet_with_exec(
     let (name_ptrs, num_cols) =
         if name_ptrs_vec.is_empty() { (ptr::null(), 0) } else { (name_ptrs_vec.as_ptr(), name_ptrs_vec.len() as i32) };
 
-    error::check_status_in_with(
+    error::check_status_in_with_details(
         // SAFETY: table handle is valid (NonNull). filepath is a valid CString.
         // name_ptrs is either null or a valid pointer to num_cols CString pointers.
         match exec_options {

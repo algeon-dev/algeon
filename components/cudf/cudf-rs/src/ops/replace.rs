@@ -65,7 +65,7 @@ pub(crate) fn replace_nulls_with_exec_options(
             cudf_sys::cudf_replace_nulls_scalar_ex(input.raw_handle(), replacement.raw_handle(), &mut out, options)
         },
     };
-    error::check_status_in_with(
+    error::check_status_in_with_details(
         status,
         operation,
         [("execution_context_provided", exec_options.is_some().to_string())],
@@ -122,7 +122,7 @@ pub(crate) fn replace_nulls_column_with_exec_options(
             cudf_sys::cudf_replace_nulls_column_ex(input.raw_handle(), replacement.raw_handle(), &mut out, options)
         },
     };
-    error::check_status_in_with(
+    error::check_status_in_with_details(
         status,
         operation,
         [("execution_context_provided", exec_options.is_some().to_string())],
@@ -175,7 +175,7 @@ pub(crate) fn replace_nulls_policy_with_exec_options(
             cudf_sys::cudf_replace_nulls_policy_ex(input.raw_handle(), policy as i32, &mut out, options)
         },
     };
-    error::check_status_in_with(
+    error::check_status_in_with_details(
         status,
         operation,
         [("execution_context_provided", exec_options.is_some().to_string()), ("policy", format!("{policy:?}"))],

@@ -470,14 +470,14 @@ impl DataType {
     pub(crate) fn to_raw_handle_for(self, operation: &'static str) -> Result<*mut std::ffi::c_void> {
         let mut handle = ptr::null_mut();
         if self.id.is_decimal() {
-            error::check_status_in_with(
+            error::check_status_in_with_details(
                 // SAFETY: handle is initialized to null and set by the C shim on success.
                 unsafe { cudf_sys::cudf_data_type_create_fixed_point(self.id.to_raw(), self.scale, &mut handle) },
                 operation,
                 [("type_id", format!("{:?}", self.id).to_lowercase()), ("scale", self.scale.to_string())],
             )?;
         } else {
-            error::check_status_in_with(
+            error::check_status_in_with_details(
                 // SAFETY: handle is initialized to null and set by the C shim on success.
                 unsafe { cudf_sys::cudf_data_type_create(self.id.to_raw(), &mut handle) },
                 operation,

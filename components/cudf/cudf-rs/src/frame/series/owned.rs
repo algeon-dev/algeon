@@ -4,7 +4,7 @@ use super::context::default_execution_context;
 use crate::{
     core::{
         column::{Column, ColumnView},
-        error::{Error, ErrorCode, ErrorKind, Result},
+        error::{Error, ErrorCode, FACT_LEFT_TYPE_ID, FACT_RIGHT_TYPE_ID, FACT_TYPE_ID, Result},
         scalar::IntoRuntimeScalar,
         types::{CudfType, DataType, TimestampResolution, TypeId},
     },
@@ -20,10 +20,8 @@ pub(super) const SERIES_VALUE_COUNTS_FALLBACK_NAME: &str = "value";
 pub(super) const SERIES_VALUE_COUNTS_COUNT_NAME: &str = "count";
 
 pub(super) fn unsupported_numeric_target_error(operation: &'static str, target: TypeId) -> Error {
-    Error::new(ErrorKind::Unsupported, format!("target type {target:?} is not numeric"))
-        .with_code(ErrorCode::UnsupportedDtype)
-        .with_operation(operation)
-        .with_context("type_id", format!("{:?}", target).to_lowercase())
+    Error::new_with(ErrorCode::UnsupportedDtype, operation, format!("target type {target:?} is not numeric"))
+        .with_fact(FACT_TYPE_ID, target)
 }
 
 /// A reference-counted GPU column vector.
@@ -83,11 +81,13 @@ impl Series {
             return Ok(());
         }
 
-        Err(Error::new(ErrorKind::InvalidInput, "logical boolean operations require both operands to have dtype Bool8")
-            .with_code(ErrorCode::TypeMismatch)
-            .with_operation(operation)
-            .with_context("left_type_id", format!("{:?}", lhs_type).to_lowercase())
-            .with_context("right_type_id", format!("{:?}", rhs_type).to_lowercase()))
+        Err(Error::new_with(
+            ErrorCode::TypeMismatch,
+            operation,
+            "logical boolean operations require both operands to have dtype Bool8",
+        )
+        .with_fact(FACT_LEFT_TYPE_ID, lhs_type)
+        .with_fact(FACT_RIGHT_TYPE_ID, rhs_type))
     }
 
     /// Returns the data type of the underlying column.
@@ -237,10 +237,12 @@ impl Series {
         let cv = self.column.view()?;
         let null_count = cv.null_count()?;
         if null_count > 0 {
-            return Err(Error::new(ErrorKind::InvalidInput, "to_vec_strict rejects columns containing nulls")
-                .with_code(ErrorCode::NullUnexpected)
-                .with_operation("series::to_vec_strict")
-                .with_context("null_count", null_count.to_string()));
+            return Err(Error::new_with(
+                ErrorCode::NullUnexpected,
+                "series::to_vec_strict",
+                "to_vec_strict rejects columns containing nulls",
+            )
+            .with_detail("null_count", null_count.to_string()));
         }
         cv.to_vec::<T>()
     }
@@ -280,10 +282,12 @@ impl Series {
         let cv = self.column.view()?;
         let null_count = cv.null_count()?;
         if null_count > 0 {
-            return Err(Error::new(ErrorKind::InvalidInput, "to_strings_strict rejects columns containing nulls")
-                .with_code(ErrorCode::NullUnexpected)
-                .with_operation("series::to_strings_strict")
-                .with_context("null_count", null_count.to_string()));
+            return Err(Error::new_with(
+                ErrorCode::NullUnexpected,
+                "series::to_strings_strict",
+                "to_strings_strict rejects columns containing nulls",
+            )
+            .with_detail("null_count", null_count.to_string()));
         }
         cv.to_strings_lossy()
     }
@@ -579,19 +583,21 @@ impl Series {
     /// GPU-allocating: produces a new column combining all input data.
     pub fn concat(series: &[&Series]) -> Result<Series> {
         if series.is_empty() {
-            return Err(Error::new(ErrorKind::InvalidInput, "cannot concatenate empty slice of Series")
-                .with_code(ErrorCode::UnsupportedOperation)
-                .with_operation("series::concat")
-                .with_context("reason", "empty_input")
-                .with_context("remedy", "provide at least one input series"));
+            return Err(Error::new_with(
+                ErrorCode::UnsupportedOperation,
+                "series::concat",
+                "cannot concatenate empty slice of Series",
+            )
+            .with_detail("reason", "empty_input")
+            .with_detail("remedy", "provide at least one input series"));
         }
 
         let views: Vec<_> = series
             .iter()
-            .map(|s| s.column.view().map_err(|e| e.with_operation("series::concat")))
+            .map(|s| s.column.view().map_err(|e| e.reanchor("series::concat")))
             .collect::<Result<Vec<_>>>()?;
         let view_refs: Vec<&ColumnView<'_>> = views.iter().collect();
-        let col = concatenate::concatenate_columns(&view_refs).map_err(|e| e.with_operation("series::concat"))?;
+        let col = concatenate::concatenate_columns(&view_refs).map_err(|e| e.reanchor("series::concat"))?;
         Self::from_column(col)
     }
 
@@ -603,7 +609,7 @@ impl Series {
     pub fn copy_into_runtime(&self, runtime: &Runtime) -> Result<Series> {
         let column =
             Self::clone_or_copy_into_domain(&self.column, runtime.execution_domain(), "series::copy_into_runtime")?;
-        Self::from_column_arc(column).map_err(|e| e.with_operation("series::copy_into_runtime"))
+        Self::from_column_arc(column).map_err(|e| e.reanchor("series::copy_into_runtime"))
     }
 
     /// Clone or deep-copy an `Arc<Column>` into the target domain.
@@ -812,13 +818,14 @@ impl Series {
     }
 
     pub fn lookup(&self, keys: &Series, values: &Series) -> Result<Series> {
-        let result = crate::ops::lookup::probe(
-            &self.view().map_err(|e| e.with_operation("series::lookup"))?,
-            &keys.view().map_err(|e| e.with_operation("series::lookup"))?,
-            &values.view().map_err(|e| e.with_operation("series::lookup"))?,
-        )
-        .map_err(|e| e.with_operation("series::lookup"))?;
-        Series::from_column(result).map_err(|e| e.with_operation("series::lookup"))
+        (|| {
+            let input = self.view()?;
+            let key_view = keys.view()?;
+            let value_view = values.view()?;
+            let result = crate::ops::lookup::probe(&input, &key_view, &value_view)?;
+            Series::from_column(result)
+        })()
+        .map_err(|e| e.reanchor("series::lookup"))
     }
 
     /// Sort the series according to the given options.

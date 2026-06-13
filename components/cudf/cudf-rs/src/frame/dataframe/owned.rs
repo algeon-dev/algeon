@@ -9,7 +9,7 @@ use std::sync::Arc;
 use crate::{
     core::{
         column::{Column, ColumnView},
-        error::{Error, ErrorCode, ErrorKind, Result},
+        error::{Error, ErrorCode, FACT_ACTUAL_ROWS, FACT_COLUMN_INDEX, FACT_EXPECTED_ROWS, Result},
         schema,
         table::{Table, TableView},
     },
@@ -63,29 +63,24 @@ pub struct DataFrameJoinSides {
     pub right: DataFrame,
 }
 
-fn empty_dataframe_requires_runtime_error(operation: &'static str) -> Error {
-    Error::new(
-        ErrorKind::InvalidInput,
-        "creating an empty dataframe requires an explicit runtime because no authoritative input columns exist",
-    )
-    .with_code(ErrorCode::EmptyConstructionRequiresRuntime)
-    .with_operation(operation)
-    .with_context("remedy", "use Runtime::empty_dataframe()")
-}
-
 fn named_column_len(name: &str, column: &Arc<Column>, operation: &'static str) -> Result<usize> {
     column
         .view()
-        .map_err(|e| e.with_operation(operation).with_context("column_name", name.to_string()))?
+        .map_err(|e| e.reanchor(operation).with_column(name.to_string()))?
         .len()
-        .map_err(|e| e.with_operation(operation).with_context("column_name", name.to_string()))
+        .map_err(|e| e.reanchor(operation).with_column(name.to_string()))
 }
 
 fn dataframe_from_named_column_arcs<I>(named_columns: I, operation: &'static str) -> Result<DataFrame>
 where I: IntoIterator<Item = (String, Arc<Column>)> {
     let named_columns = named_columns.into_iter().collect::<Vec<_>>();
     if named_columns.is_empty() {
-        return Err(empty_dataframe_requires_runtime_error(operation));
+        return Err(Error::new_with(
+            ErrorCode::EmptyConstructionRequiresRuntime,
+            operation,
+            "creating an empty dataframe requires an explicit runtime because no authoritative input columns exist",
+        )
+        .with_detail("remedy", "use Runtime::empty_dataframe()"));
     }
 
     let names = named_columns.iter().map(|(name, _)| name.clone()).collect::<Vec<_>>();
@@ -106,15 +101,14 @@ where I: IntoIterator<Item = (String, Arc<Column>)> {
     for (name, column) in named_columns {
         let rows = named_column_len(&name, &column, operation)?;
         if rows != first_rows {
-            return Err(Error::new(
-                ErrorKind::InvalidInput,
+            return Err(Error::new_with(
+                ErrorCode::ColumnLengthMismatch,
+                operation,
                 format!("column '{}' has {} rows but first column has {} rows", name, rows, first_rows),
             )
-            .with_code(ErrorCode::ColumnLengthMismatch)
-            .with_operation(operation)
-            .with_context("column_name", name)
-            .with_context("actual_rows", rows.to_string())
-            .with_context("expected_rows", first_rows.to_string()));
+            .with_column(name.clone())
+            .with_fact(FACT_ACTUAL_ROWS, rows)
+            .with_fact(FACT_EXPECTED_ROWS, first_rows));
         }
         columns.insert(name, column);
     }
@@ -128,7 +122,12 @@ pub(crate) fn derive_frame_domain_from_columns(
     operation: &'static str,
 ) -> Result<Arc<ExecutionDomain>> {
     let Some((_, first_column)) = columns.iter().next() else {
-        return Err(empty_dataframe_requires_runtime_error(operation));
+        return Err(Error::new_with(
+            ErrorCode::EmptyConstructionRequiresRuntime,
+            operation,
+            "creating an empty dataframe requires an explicit runtime because no authoritative input columns exist",
+        )
+        .with_detail("remedy", "use Runtime::empty_dataframe()"));
     };
 
     let domain = Arc::clone(first_column.execution_domain());
@@ -140,7 +139,7 @@ pub(crate) fn derive_frame_domain_from_columns(
             "dataframe construction requires all columns to already share one retained provenance",
             "use copy_into_runtime(...) to relocate all Series inputs into one Runtime before constructing the DataFrame",
         )
-        .map_err(|e| e.with_context("column_name", name.clone()))?;
+        .map_err(|e| e.with_column(name.clone()))?;
     }
 
     Ok(domain)
@@ -164,15 +163,14 @@ pub(crate) fn resolve_frame_domain_from_authoritative_source(
 
     for (name, column) in columns {
         if !ExecutionDomain::same_provenance(authoritative_domain, column.execution_domain()) {
-            return Err(Error::new(
-                ErrorKind::InvalidInput,
+            return Err(Error::new_with(
+                ErrorCode::CrossProvenanceInputs,
+                operation,
                 "all columns in a dataframe must share the authoritative retained provenance",
             )
-            .with_code(ErrorCode::CrossProvenanceInputs)
-            .with_operation(operation)
-            .with_context("left_domain", authoritative_domain.debug_label())
-            .with_context("right_domain", column.execution_domain().debug_label())
-            .with_context("column_name", name.clone()));
+            .with_column(name.clone())
+            .with_detail("left_domain", authoritative_domain.debug_label())
+            .with_detail("right_domain", column.execution_domain().debug_label()));
         }
     }
 
@@ -198,7 +196,6 @@ impl DataFrame {
     pub(crate) fn new(names: Vec<String>, columns: Vec<Column>) -> Result<Self> {
         if names.len() != columns.len() {
             return Err(schema::column_name_count_mismatch_error(
-                ErrorKind::InvalidInput,
                 "dataframe::new",
                 "number of names must equal number of columns",
                 names.len(),
@@ -209,7 +206,12 @@ impl DataFrame {
         validate_no_duplicate_names(&names, "dataframe::new")?;
 
         if columns.is_empty() {
-            return Err(empty_dataframe_requires_runtime_error("dataframe::new"));
+            return Err(Error::new_with(
+                ErrorCode::EmptyConstructionRequiresRuntime,
+                "dataframe::new",
+                "creating an empty dataframe requires an explicit runtime because no authoritative input columns exist",
+            )
+            .with_detail("remedy", "use Runtime::empty_dataframe()"));
         }
 
         // Validate all columns have the same row count.
@@ -217,15 +219,14 @@ impl DataFrame {
         for (i, col) in columns.iter().enumerate().skip(1) {
             let rows = col.view()?.len()?;
             if rows != first_rows {
-                return Err(Error::new(
-                    ErrorKind::InvalidInput,
+                return Err(Error::new_with(
+                    ErrorCode::ColumnLengthMismatch,
+                    "dataframe::new",
                     format!("column {} has {} rows but column 0 has {} rows", i, rows, first_rows),
                 )
-                .with_code(ErrorCode::ColumnLengthMismatch)
-                .with_operation("dataframe::new")
-                .with_context("column_index", i.to_string())
-                .with_context("actual_rows", rows.to_string())
-                .with_context("expected_rows", first_rows.to_string()));
+                .with_fact(FACT_COLUMN_INDEX, i)
+                .with_fact(FACT_ACTUAL_ROWS, rows)
+                .with_fact(FACT_EXPECTED_ROWS, first_rows));
             }
         }
 
@@ -254,7 +255,6 @@ impl DataFrame {
         let expected = names.len();
         if expected != num_cols {
             return Err(schema::column_name_count_mismatch_error(
-                ErrorKind::InvalidInput,
                 "dataframe::from_table",
                 "number of names must equal number of table columns",
                 names.len(),
@@ -376,14 +376,14 @@ impl DataFrame {
         for (name, arc_col) in &self.columns {
             let col = arc_col
                 .copy_into_domain(Arc::clone(&self.domain), "dataframe::to_table_copy")
-                .map_err(|e| e.with_context("column_name", name.clone()))?;
+                .map_err(|e| e.with_column(name.clone()))?;
             cols.push(col);
         }
 
         let table = if cols.is_empty() {
             Table::empty_in_domain(Arc::clone(&self.domain), "dataframe::to_table_copy")?
         } else {
-            Table::from_columns(cols).map_err(|e| e.with_operation("dataframe::to_table_copy"))?
+            Table::from_columns(cols).map_err(|e| e.reanchor("dataframe::to_table_copy"))?
         };
         Ok(table.with_execution_domain(Arc::clone(&self.domain)))
     }
@@ -421,7 +421,7 @@ impl DataFrame {
                 Ok(col) => col,
                 Err(shared) => shared
                     .copy_into_domain(Arc::clone(&self.domain), "dataframe::try_into_table")
-                    .map_err(|e| e.with_context("column_name", name.clone()))?,
+                    .map_err(|e| e.with_column(name.clone()))?,
             };
             names.push(name);
             cols.push(col);
@@ -430,7 +430,7 @@ impl DataFrame {
         let table = if cols.is_empty() {
             Table::empty_in_domain(Arc::clone(&self.domain), "dataframe::try_into_table")?
         } else {
-            Table::from_columns(cols).map_err(|e| e.with_operation("dataframe::try_into_table"))?
+            Table::from_columns(cols).map_err(|e| e.reanchor("dataframe::try_into_table"))?
         };
         let table = table.with_execution_domain(Arc::clone(&self.domain));
         Ok((table, names))
@@ -493,13 +493,13 @@ impl DataFrame {
         }
 
         ExecutionDomain::insert_stream_dependency(&self.domain, output_domain, operation)
-            .map_err(|e| e.with_context("target_domain", output_domain.debug_label()))?;
+            .map_err(|e| e.with_detail("target_domain", output_domain.debug_label()))?;
 
         let mut copied: FastIndexMap<String, Arc<Column>> = fast_index_map_with_capacity(self.columns.len());
         for (name, column) in &self.columns {
-            let rebound = column.copy_into_domain(Arc::clone(output_domain), operation).map_err(|e| {
-                e.with_context("column_name", name.clone()).with_context("target_domain", output_domain.debug_label())
-            })?;
+            let rebound = column
+                .copy_into_domain(Arc::clone(output_domain), operation)
+                .map_err(|e| e.with_column(name.clone()).with_detail("target_domain", output_domain.debug_label()))?;
             copied.insert(name.clone(), Arc::new(rebound));
         }
         Ok(copied)
@@ -514,7 +514,7 @@ impl DataFrame {
         let series_domain = series.as_column().execution_domain();
 
         ExecutionDomain::require_same_device_for_mixed_inputs(&self.domain, series_domain, operation)
-            .map_err(|error| error.with_context("column_name", column_name.to_string()))?;
+            .map_err(|error| error.with_column(column_name.to_string()))?;
 
         ExecutionDomain::require_same_provenance(
             &self.domain,
@@ -523,7 +523,7 @@ impl DataFrame {
             "mixed-provenance dataframe column insertion requires explicit relocation into one runtime before insertion",
             "use copy_into_runtime(...) to relocate the DataFrame or incoming Series into one Runtime before inserting it",
         )
-        .map_err(|error| error.with_context("column_name", column_name.to_string()))
+        .map_err(|error| error.with_column(column_name.to_string()))
     }
 
     /// Start a groupby operation.

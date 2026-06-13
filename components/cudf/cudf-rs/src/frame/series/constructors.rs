@@ -42,10 +42,10 @@ impl Series {
     /// time and caches the values for infallible metadata access.
     pub(crate) fn from_column_arc(column: Arc<Column>) -> Result<Self> {
         let (cached_len, cached_null_count) = {
-            let cv = column.view().map_err(|e| e.with_operation("series::from_column_arc"))?;
+            let cv = column.view().map_err(|e| e.reanchor("series::from_column_arc"))?;
             (
-                cv.len().map_err(|e| e.with_operation("series::from_column_arc"))?,
-                cv.null_count().map_err(|e| e.with_operation("series::from_column_arc"))?,
+                cv.len().map_err(|e| e.reanchor("series::from_column_arc"))?,
+                cv.null_count().map_err(|e| e.reanchor("series::from_column_arc"))?,
             )
         };
         Ok(Self { column, cached_len, cached_null_count })

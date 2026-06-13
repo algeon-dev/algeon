@@ -31,7 +31,7 @@ impl DataFrame {
     pub fn series(&self, name: &str) -> Result<Series> {
         let col = self.columns.get(name).ok_or_else(|| missing_column_error("dataframe::series", name))?;
         Series::from_column_arc(Arc::clone(col))
-            .map_err(|e| e.with_operation("dataframe::series").with_context("column_name", name.to_string()))
+            .map_err(|e| e.reanchor("dataframe::series").with_column(name.to_string()))
     }
 
     /// Look up the positional index of a column by name.
@@ -52,7 +52,7 @@ impl DataFrame {
         match self.columns.get(name) {
             Some(col) => Series::from_column_arc(Arc::clone(col))
                 .map(Some)
-                .map_err(|e| e.with_operation("dataframe::get").with_context("column_name", name.to_string())),
+                .map_err(|e| e.reanchor("dataframe::get").with_column(name.to_string())),
             None => Ok(None),
         }
     }
@@ -69,7 +69,7 @@ impl DataFrame {
     pub fn iter_series(&self) -> impl Iterator<Item = Result<Series>> + '_ {
         self.columns.iter().map(|(name, col)| {
             Series::from_column_arc(Arc::clone(col))
-                .map_err(|e| e.with_operation("dataframe::iter_series").with_context("column_name", name.clone()))
+                .map_err(|e| e.reanchor("dataframe::iter_series").with_column(name.clone()))
         })
     }
 
@@ -83,10 +83,8 @@ impl DataFrame {
     ///
     /// Returns an error if `column` is not in the schema.
     pub fn codebook(&self, column: &str) -> Result<Codebook> {
-        let series = self.series(column).map_err(|e| e.with_operation("dataframe::codebook"))?;
-        series
-            .codebook()
-            .map_err(|e| e.with_operation("dataframe::codebook").with_context("column_name", column.to_string()))
+        let series = self.series(column).map_err(|e| e.reanchor("dataframe::codebook"))?;
+        series.codebook().map_err(|e| e.reanchor("dataframe::codebook").with_column(column.to_string()))
     }
 
     /// Factorize a named column into row-aligned encoded indices plus a reusable codebook.
@@ -98,10 +96,8 @@ impl DataFrame {
     ///
     /// Returns an error if `column` is not in the schema.
     pub fn factorize(&self, column: &str) -> Result<Factorized> {
-        let series = self.series(column).map_err(|e| e.with_operation("dataframe::factorize"))?;
-        series
-            .factorize()
-            .map_err(|e| e.with_operation("dataframe::factorize").with_context("column_name", column.to_string()))
+        let series = self.series(column).map_err(|e| e.reanchor("dataframe::factorize"))?;
+        series.factorize().map_err(|e| e.reanchor("dataframe::factorize").with_column(column.to_string()))
     }
 
     pub fn with_lookup(
@@ -113,12 +109,10 @@ impl DataFrame {
     ) -> Result<Self> {
         let looked_up = self
             .series(input_column)
-            .map_err(|e| e.with_operation("dataframe::with_lookup"))?
+            .map_err(|e| e.reanchor("dataframe::with_lookup"))?
             .lookup(lookup_keys, lookup_values)
-            .map_err(|e| {
-                e.with_operation("dataframe::with_lookup").with_context("column_name", input_column.to_string())
-            })?;
-        self.with_column(output_name, looked_up).map_err(|e| e.with_operation("dataframe::with_lookup"))
+            .map_err(|e| e.reanchor("dataframe::with_lookup").with_column(input_column.to_string()))?;
+        self.with_column(output_name, looked_up).map_err(|e| e.reanchor("dataframe::with_lookup"))
     }
 
     pub fn with_lookup_from(
@@ -129,29 +123,24 @@ impl DataFrame {
         key_column: &str,
         value_column: &str,
     ) -> Result<Self> {
-        let lookup_keys = lookup_df.series(key_column).map_err(|e| e.with_operation("dataframe::with_lookup_from"))?;
-        let lookup_values =
-            lookup_df.series(value_column).map_err(|e| e.with_operation("dataframe::with_lookup_from"))?;
+        let lookup_keys = lookup_df.series(key_column).map_err(|e| e.reanchor("dataframe::with_lookup_from"))?;
+        let lookup_values = lookup_df.series(value_column).map_err(|e| e.reanchor("dataframe::with_lookup_from"))?;
         self.with_lookup(output_name, input_column, &lookup_keys, &lookup_values)
-            .map_err(|e| e.with_operation("dataframe::with_lookup_from"))
+            .map_err(|e| e.reanchor("dataframe::with_lookup_from"))
     }
 
     pub fn with_encoded_column(&self, output_name: &str, input_column: &str, codebook: &Codebook) -> Result<Self> {
         let encoded = codebook
-            .encode(&self.series(input_column).map_err(|e| e.with_operation("dataframe::with_encoded_column"))?)
-            .map_err(|e| {
-                e.with_operation("dataframe::with_encoded_column").with_context("column_name", input_column.to_string())
-            })?;
-        self.with_column(output_name, encoded).map_err(|e| e.with_operation("dataframe::with_encoded_column"))
+            .encode(&self.series(input_column).map_err(|e| e.reanchor("dataframe::with_encoded_column"))?)
+            .map_err(|e| e.reanchor("dataframe::with_encoded_column").with_column(input_column.to_string()))?;
+        self.with_column(output_name, encoded).map_err(|e| e.reanchor("dataframe::with_encoded_column"))
     }
 
     pub fn with_decoded_column(&self, output_name: &str, input_column: &str, codebook: &Codebook) -> Result<Self> {
         let decoded = codebook
-            .decode_series(&self.series(input_column).map_err(|e| e.with_operation("dataframe::with_decoded_column"))?)
-            .map_err(|e| {
-                e.with_operation("dataframe::with_decoded_column").with_context("column_name", input_column.to_string())
-            })?;
-        self.with_column(output_name, decoded).map_err(|e| e.with_operation("dataframe::with_decoded_column"))
+            .decode_series(&self.series(input_column).map_err(|e| e.reanchor("dataframe::with_decoded_column"))?)
+            .map_err(|e| e.reanchor("dataframe::with_decoded_column").with_column(input_column.to_string()))?;
+        self.with_column(output_name, decoded).map_err(|e| e.reanchor("dataframe::with_decoded_column"))
     }
     /// Return a new DataFrame containing only the specified columns.
     ///

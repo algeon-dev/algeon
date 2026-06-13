@@ -438,12 +438,7 @@ pub(super) fn prepared_column_projection_from_view<'a>(
         let validity_id = allocate_buffer_id(operation, &mut next_buffer_id)?;
         let child_count = num_children;
         if child_count == 0 {
-            return Err(InteropError::new(
-                InteropErrorKind::InvalidView,
-                "struct column view must expose at least one child column",
-            )
-            .with_context("operation", operation)
-            .with_context("type_id", "struct"));
+            return Err(projection_struct_requires_child_error(operation));
         }
 
         let (validity, validity_binding) = validity_for_prepared_projection(

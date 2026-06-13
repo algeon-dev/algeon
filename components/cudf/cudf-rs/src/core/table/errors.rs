@@ -1,4 +1,4 @@
-use crate::core::error::{self, Error, ErrorKind};
+use crate::core::error::{self, Error};
 
 pub(crate) fn table_column_count_limit_error(
     operation: &'static str,
@@ -6,7 +6,6 @@ pub(crate) fn table_column_count_limit_error(
     table_column_count: usize,
 ) -> Error {
     error::limit_validation_error(
-        ErrorKind::InvalidInput,
         operation,
         message,
         "table_column_count",

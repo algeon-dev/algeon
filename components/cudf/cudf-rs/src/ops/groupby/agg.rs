@@ -93,8 +93,8 @@ pub(crate) fn groupby_aggregate_impl(
                 "empty_request_aggregations",
                 "provide at least one GroupByAgg per AggregationRequest",
             )
-            .with_context("request_index", request_index.to_string())
-            .with_context("request_count", request_count.to_string()));
+            .with_detail("request_index", request_index.to_string())
+            .with_detail("request_count", request_count.to_string()));
         }
 
         let agg_count = i32::try_from(req.aggregations.len()).map_err(|_| {
@@ -106,7 +106,7 @@ pub(crate) fn groupby_aggregate_impl(
             match agg {
                 GroupByAgg::Std { ddof } | GroupByAgg::Variance { ddof } if *ddof > i32::MAX as u32 => {
                     return Err(
-                        ddof_range_error(operation, *ddof).with_context("request_index", request_index.to_string())
+                        ddof_range_error(operation, *ddof).with_detail("request_index", request_index.to_string())
                     );
                 },
                 _ => {},
@@ -163,7 +163,7 @@ pub(crate) fn groupby_aggregate_impl(
     }
 
     let total_requested_aggs: i32 = agg_counts.iter().sum();
-    error::check_status_in_with(
+    error::check_status_in_with_details(
         status,
         operation,
         [
@@ -183,7 +183,7 @@ pub(crate) fn groupby_aggregate_impl(
             "negative_column_count",
             "ensure the foreign groupby backend returns a non-negative result column count",
         )
-        .with_context("table_column_count", out_total_columns.to_string())
+        .with_detail("reported_table_column_count", out_total_columns.to_string())
     })?;
     let col_array = if total == 0 { &[][..] } else { unsafe { std::slice::from_raw_parts(out_values, total) } };
 

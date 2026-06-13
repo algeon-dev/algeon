@@ -3,7 +3,7 @@ use std::sync::Arc;
 use crate::{
     core::{
         column::Column,
-        error::{Error, ErrorCode, ErrorKind, Result},
+        error::{Error, ErrorCode, FACT_KEYS_COUNT, FACT_LEFT_TYPE_ID, FACT_RIGHT_TYPE_ID, Result},
     },
     frame::dataframe::{DataFrame, DataFrameJoinSides, derive_frame_domain_from_columns},
     internal::{
@@ -308,11 +308,13 @@ fn coalesce_columns(left: &Column, right: &Column, operation: &'static str) -> R
     let ldt = lcv.data_type()?;
     let rdt = rcv.data_type()?;
     if ldt != rdt {
-        return Err(Error::new(ErrorKind::InvalidInput, "cannot coalesce columns with different types")
-            .with_code(ErrorCode::TypeMismatch)
-            .with_operation(operation)
-            .with_context("left_type_id", format!("{:?}", ldt.id()).to_lowercase())
-            .with_context("right_type_id", format!("{:?}", rdt.id()).to_lowercase()));
+        return Err(Error::new_with(
+            ErrorCode::TypeMismatch,
+            operation,
+            "cannot coalesce columns with different types",
+        )
+        .with_fact(FACT_LEFT_TYPE_ID, ldt.id())
+        .with_fact(FACT_RIGHT_TYPE_ID, rdt.id()));
     }
 
     let exec_options = output_domain.explicit_exec_options_raw();
@@ -333,11 +335,9 @@ fn merge_validation_error(
     reason: &'static str,
     remedy: &'static str,
 ) -> Error {
-    Error::new(ErrorKind::InvalidInput, message)
-        .with_code(ErrorCode::UnsupportedOperation)
-        .with_operation(operation)
-        .with_context("reason", reason)
-        .with_context("remedy", remedy)
+    Error::new_with(ErrorCode::UnsupportedOperation, operation, message)
+        .with_detail("reason", reason)
+        .with_detail("remedy", remedy)
 }
 
 fn merge_key_count_mismatch_error(operation: &'static str, left_count: usize, right_count: usize) -> Error {
@@ -347,8 +347,8 @@ fn merge_key_count_mismatch_error(operation: &'static str, left_count: usize, ri
         "join_key_count_mismatch",
         "set left_on() and right_on() with the same number of key columns",
     )
-    .with_context("left_on_count", left_count.to_string())
-    .with_context("right_on_count", right_count.to_string())
+    .with_detail("left_on_count", left_count.to_string())
+    .with_detail("right_on_count", right_count.to_string())
 }
 
 pub(super) fn trigger_merge_reassembly_key_count_error_for_test_impl() -> Result<DataFrame> {
@@ -444,9 +444,9 @@ fn merge_join_result_with_suffixes(
             "join_result_key_count_exceeds_result_columns",
             "report this as a library bug; join result schema should contain at least one column per key on each side",
         )
-        .with_context("keys_count", key_count.to_string())
-        .with_context("left_columns", left_cols.len().to_string())
-        .with_context("right_columns", right_cols.len().to_string()));
+        .with_fact(FACT_KEYS_COUNT, key_count)
+        .with_detail("left_columns", left_cols.len().to_string())
+        .with_detail("right_columns", right_cols.len().to_string()));
     }
 
     // Collect left and right payload names (after key columns).

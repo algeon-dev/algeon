@@ -6,7 +6,7 @@ use super::{device::DeviceId, device_guard::DeviceGuard, execution_domain::Execu
 use crate::{
     core::{
         column::{Column, DeviceBuffer},
-        error::{Error, ErrorCode, ErrorKind, Result},
+        error::{DeviceIdFact, Error, ErrorCode, FACT_LEFT_DEVICE, FACT_RIGHT_DEVICE, Result},
         memory::DeviceMemoryResource,
         scalar::Scalar,
         table::Table,
@@ -310,14 +310,12 @@ impl RuntimeBuilder {
         right_device: DeviceId,
         message: &'static str,
     ) -> Error {
-        Error::new(ErrorKind::InvalidInput, message)
-            .with_code(ErrorCode::RuntimeBindingMismatch)
-            .with_operation("runtime::RuntimeBuilder::build")
-            .with_context("resource", resource)
-            .with_context("left_device", left_device.ordinal().to_string())
-            .with_context("right_device", right_device.ordinal().to_string())
-            .with_context("reason", "cross_device_runtime_binding")
-            .with_context(
+        Error::new_with(ErrorCode::RuntimeBindingMismatch, "runtime::RuntimeBuilder::build", message)
+            .with_fact(FACT_LEFT_DEVICE, DeviceIdFact(left_device.ordinal_raw()))
+            .with_fact(FACT_RIGHT_DEVICE, DeviceIdFact(right_device.ordinal_raw()))
+            .with_detail("resource", resource)
+            .with_detail("reason", "cross_device_runtime_binding")
+            .with_detail(
                 "remedy",
                 "use stream and memory-resource handles created on one CUDA device, and make with_device(...) match that device when it is set explicitly",
             )

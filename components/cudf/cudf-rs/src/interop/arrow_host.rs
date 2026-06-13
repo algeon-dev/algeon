@@ -40,7 +40,7 @@ use arrow::{array::*, datatypes::DataType as ArrowDataType, record_batch::Record
 use crate::{
     core::{
         column::{Column, ColumnView},
-        error::{Error, ErrorCode, ErrorKind, Result},
+        error::{self, Error, ErrorCode, FACT_TYPE_ID, Result},
         types::TypeId,
     },
     frame::dataframe::DataFrame,
@@ -206,13 +206,12 @@ impl TryFrom<TypeId> for ArrowDataType {
             TypeId::Float64 => Ok(ArrowDataType::Float64),
             TypeId::Bool8 => Ok(ArrowDataType::Boolean),
             TypeId::String => Ok(ArrowDataType::Utf8),
-            _ => Err(Error::new(
-                ErrorKind::Unsupported,
+            _ => Err(Error::new_with(
+                ErrorCode::UnsupportedDtype,
+                "arrow::TryFrom<TypeId> for ArrowDataType",
                 format!("unsupported cudf type for Arrow conversion: {:?}", type_id),
             )
-            .with_code(ErrorCode::UnsupportedDtype)
-            .with_operation("arrow::TryFrom<TypeId> for ArrowDataType")
-            .with_context("type_id", format!("{:?}", type_id).to_lowercase())),
+            .with_fact(FACT_TYPE_ID, type_id)),
         }
     }
 }
@@ -234,12 +233,12 @@ impl TryFrom<&ArrowDataType> for TypeId {
             ArrowDataType::Float64 => Ok(TypeId::Float64),
             ArrowDataType::Boolean => Ok(TypeId::Bool8),
             ArrowDataType::Utf8 | ArrowDataType::LargeUtf8 => Ok(TypeId::String),
-            _ => {
-                Err(Error::new(ErrorKind::Unsupported, format!("unsupported Arrow type for cudf conversion: {:?}", dt))
-                    .with_code(ErrorCode::UnsupportedDtype)
-                    .with_operation("arrow::TryFrom<&ArrowDataType> for TypeId")
-                    .with_context("arrow_type", format!("{:?}", dt)))
-            },
+            _ => Err(Error::new_with(
+                ErrorCode::UnsupportedDtype,
+                "arrow::TryFrom<&ArrowDataType> for TypeId",
+                format!("unsupported Arrow type for cudf conversion: {:?}", dt),
+            )
+            .with_detail("arrow_type", format!("{:?}", dt))),
         }
     }
 }
@@ -263,51 +262,35 @@ fn column_view_to_arrow(cv: &ColumnView<'_>, type_id: TypeId) -> Result<Arc<dyn 
         TypeId::Float64 => numeric_to_arrow::<f64>(cv),
         TypeId::Bool8 => bool_to_arrow(cv),
         TypeId::String => string_to_arrow(cv),
-        _ => Err(Error::new(
-            ErrorKind::Unsupported,
+        _ => Err(Error::new_with(
+            ErrorCode::UnsupportedDtype,
+            "arrow::column_view_to_arrow",
             format!("unsupported cudf type for Arrow conversion: {:?}", type_id),
         )
-        .with_code(ErrorCode::UnsupportedDtype)
-        .with_operation("arrow::column_view_to_arrow")
-        .with_context("type_id", format!("{:?}", type_id).to_lowercase())),
+        .with_fact(FACT_TYPE_ID, type_id)),
     }
 }
 
-fn foreign_arrow_contract_error(
-    operation: &'static str,
-    message: impl Into<String>,
-    resource: &'static str,
-    reason: &'static str,
-    remedy: &'static str,
-) -> Error {
-    Error::new(ErrorKind::InvariantViolation, message)
-        .with_code(ErrorCode::InvariantViolation)
-        .with_operation(operation)
-        .with_context("resource", resource)
-        .with_context("reason", reason)
-        .with_context("remedy", remedy)
-}
-
 pub(super) fn map_record_batch_error(error: arrow::error::ArrowError) -> Error {
-    foreign_arrow_contract_error(
+    error::foreign_invariant_violation(
         "dataframe::to_record_batch",
         error.to_string(),
         "record_batch",
         "invalid_arrow_record_batch",
         "ensure Arrow schemas and column arrays have matching row counts and compatible field layouts",
     )
-    .set_source(error)
+    .with_source(error)
 }
 
 pub(super) fn map_numeric_to_arrow_error(error: arrow::error::ArrowError) -> Error {
-    foreign_arrow_contract_error(
+    error::foreign_invariant_violation(
         "arrow::numeric_to_arrow",
         error.to_string(),
         "arrow_array",
         "invalid_arrow_primitive_array",
         "ensure Arrow primitive values and null buffers have matching logical lengths",
     )
-    .set_source(error)
+    .with_source(error)
 }
 
 /// Convert a numeric column to the corresponding Arrow primitive array.
@@ -395,14 +378,13 @@ fn arrow_array_to_column(runtime: &Runtime, arr: &dyn Array, field_name: &str) -
         ArrowDataType::Boolean => bool_to_column(runtime, arr),
         ArrowDataType::Utf8 => string_array_to_column(runtime, arr),
         ArrowDataType::LargeUtf8 => large_string_array_to_column(runtime, arr),
-        _ => Err(Error::new(
-            ErrorKind::Unsupported,
+        _ => Err(Error::new_with(
+            ErrorCode::UnsupportedDtype,
+            "arrow::arrow_array_to_column",
             format!("unsupported Arrow type for column '{}': {:?}", field_name, dt),
         )
-        .with_code(ErrorCode::UnsupportedDtype)
-        .with_operation("arrow::arrow_array_to_column")
-        .with_context("field_name", field_name.to_string())
-        .with_context("arrow_type", format!("{:?}", dt))),
+        .with_detail("field_name", field_name.to_string())
+        .with_detail("arrow_type", format!("{:?}", dt))),
     }
 }
 
@@ -441,15 +423,15 @@ fn bool_to_column(runtime: &Runtime, arr: &dyn Array) -> Result<Column> {
 /// Convert an Arrow StringArray (Utf8) to a cudf STRING Column.
 fn string_array_to_column(runtime: &Runtime, arr: &dyn Array) -> Result<Column> {
     let str_arr = arr.as_any().downcast_ref::<StringArray>().ok_or_else(|| {
-        foreign_arrow_contract_error(
+        error::foreign_invariant_violation(
             "arrow::string_array_to_column",
             "expected StringArray for Utf8 type",
             "arrow_array",
             "unexpected_arrow_array_layout",
             "ensure Utf8 fields are backed by Arrow StringArray values",
         )
-        .with_context("arrow_type", format!("{:?}", ArrowDataType::Utf8))
-        .with_context("actual_arrow_type", format!("{:?}", arr.data_type()))
+        .with_detail("arrow_type", format!("{:?}", ArrowDataType::Utf8))
+        .with_detail("actual_arrow_type", format!("{:?}", arr.data_type()))
     })?;
 
     let values: Vec<&str> = (0..str_arr.len()).map(|i| str_arr.value(i)).collect();
@@ -466,15 +448,15 @@ fn string_array_to_column(runtime: &Runtime, arr: &dyn Array) -> Result<Column> 
 /// Convert an Arrow LargeStringArray (LargeUtf8) to a cudf STRING Column.
 fn large_string_array_to_column(runtime: &Runtime, arr: &dyn Array) -> Result<Column> {
     let str_arr = arr.as_any().downcast_ref::<LargeStringArray>().ok_or_else(|| {
-        foreign_arrow_contract_error(
+        error::foreign_invariant_violation(
             "arrow::large_string_array_to_column",
             "expected LargeStringArray for LargeUtf8 type",
             "arrow_array",
             "unexpected_arrow_array_layout",
             "ensure LargeUtf8 fields are backed by Arrow LargeStringArray values",
         )
-        .with_context("arrow_type", format!("{:?}", ArrowDataType::LargeUtf8))
-        .with_context("actual_arrow_type", format!("{:?}", arr.data_type()))
+        .with_detail("arrow_type", format!("{:?}", ArrowDataType::LargeUtf8))
+        .with_detail("actual_arrow_type", format!("{:?}", arr.data_type()))
     })?;
 
     let values: Vec<&str> = (0..str_arr.len()).map(|i| str_arr.value(i)).collect();
