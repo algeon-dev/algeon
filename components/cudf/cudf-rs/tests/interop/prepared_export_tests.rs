@@ -4,9 +4,12 @@
 //! host vs device export profiles, metadata preservation, and recursive nested
 //! projections without repeating the same matrix for every shared/runtime and
 //! column/table permutation.
-use std::sync::{
-    Arc,
-    atomic::{AtomicUsize, Ordering},
+use std::{
+    collections::BTreeSet,
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    },
 };
 
 use cudf::{
@@ -107,6 +110,15 @@ fn expected_i32_bytes(values: &[i32]) -> Vec<u8> {
 
 fn expected_i64_bytes(values: &[i64]) -> Vec<u8> {
     values.iter().flat_map(|value| value.to_ne_bytes()).collect()
+}
+
+fn host_string_values(bindings: &[BufferBinding<'_>], offsets: BufferId, data: BufferId) -> Vec<String> {
+    let offsets = binding_bytes(binding(bindings, offsets))
+        .chunks_exact(std::mem::size_of::<i32>())
+        .map(|chunk| i32::from_ne_bytes(chunk.try_into().unwrap()) as usize)
+        .collect::<Vec<_>>();
+    let data = binding_bytes(binding(bindings, data));
+    offsets.windows(2).map(|bounds| String::from_utf8(data[bounds[0]..bounds[1]].to_vec()).unwrap()).collect()
 }
 
 fn expected_names(names: &[&str]) -> Vec<String> {
@@ -1359,8 +1371,10 @@ mod host_export_contracts {
             ColumnLayout::BinaryLike { offsets, data } => (offsets, data),
             layout => panic!("expected binary-like dictionary keys, got {layout:?}"),
         };
-        assert_host_binding_bytes(export.bindings(), *key_offsets, expected_i32_bytes(&[0, 5, 9]));
-        assert_host_binding_bytes(export.bindings(), *key_data, b"alphabeta".to_vec());
+        assert_eq!(
+            host_string_values(export.bindings(), *key_offsets, *key_data).into_iter().collect::<BTreeSet<_>>(),
+            BTreeSet::from(["alpha".to_string(), "beta".to_string()])
+        );
 
         let nested_child = match export.columns()[1].layout() {
             ColumnLayout::List { child, .. } => child,

@@ -10,8 +10,8 @@ use crate::core::error::{self, Result};
 pub(crate) fn copy_view_to_owned(cv: &ColumnView<'_>) -> Result<Column> {
     let len = cv.len()?;
     if len == 0 {
-        return Column::empty_in_domain(
-            cv.data_type()?.id(),
+        return Column::empty_with_dtype_in_domain(
+            cv.data_type()?,
             Arc::clone(cv.execution_domain()),
             "column::copy_view_to_owned",
         );

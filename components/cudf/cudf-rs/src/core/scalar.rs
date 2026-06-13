@@ -27,6 +27,117 @@ fn negative_string_length_error(operation: &'static str, raw_len: i32) -> Error 
     .with_detail("raw_len", raw_len.to_string())
 }
 
+fn unsupported_scalar_dtype_error(
+    operation: &'static str,
+    message: &'static str,
+    type_id: TypeId,
+    expected_family: &'static str,
+) -> Error {
+    Error::new_with(ErrorCode::UnsupportedDtype, operation, message)
+        .with_fact(FACT_TYPE_ID, type_id)
+        .with_detail("reason", "unsupported_scalar_dtype")
+        .with_detail("expected_family", expected_family)
+}
+
+fn scalar_type_mismatch_error(
+    operation: &'static str,
+    message: &'static str,
+    actual: TypeId,
+    requested: TypeId,
+) -> Error {
+    Error::new_with(ErrorCode::TypeMismatch, operation, message)
+        .with_fact(FACT_LEFT_TYPE_ID, actual)
+        .with_fact(FACT_RIGHT_TYPE_ID, requested)
+}
+
+fn scalar_family_type_mismatch_error(
+    operation: &'static str,
+    message: &'static str,
+    actual: TypeId,
+    expected_family: &'static str,
+) -> Error {
+    Error::new_with(ErrorCode::TypeMismatch, operation, message)
+        .with_fact(FACT_LEFT_TYPE_ID, actual)
+        .with_detail("expected_family", expected_family)
+}
+
+fn decimal_dtype_required(dtype: DataType, operation: &'static str) -> Result<DataType> {
+    if dtype.id().is_decimal() {
+        Ok(dtype)
+    } else {
+        Err(unsupported_scalar_dtype_error(
+            operation,
+            "decimal scalar construction requires a decimal dtype",
+            dtype.id(),
+            "decimal",
+        ))
+    }
+}
+
+fn timestamp_type_required(type_id: TypeId, operation: &'static str) -> Result<TypeId> {
+    if type_id.is_timestamp() {
+        Ok(type_id)
+    } else {
+        Err(unsupported_scalar_dtype_error(
+            operation,
+            "timestamp scalar construction requires a timestamp type_id",
+            type_id,
+            "timestamp",
+        ))
+    }
+}
+
+fn duration_type_required(type_id: TypeId, operation: &'static str) -> Result<TypeId> {
+    if type_id.is_duration() {
+        Ok(type_id)
+    } else {
+        Err(unsupported_scalar_dtype_error(
+            operation,
+            "duration scalar construction requires a duration type_id",
+            type_id,
+            "duration",
+        ))
+    }
+}
+
+fn decimal_raw_range_error(operation: &'static str, dtype: DataType, min: i128, max: i128, raw: i128) -> Error {
+    Error::new_with(
+        ErrorCode::UnsupportedOperation,
+        operation,
+        "decimal raw value is outside the requested dtype range",
+    )
+    .with_fact(FACT_TYPE_ID, dtype.id())
+    .with_detail("resource", "decimal_raw")
+    .with_detail("reason", "raw_value_out_of_range")
+    .with_detail("min_raw", min.to_string())
+    .with_detail("max_raw", max.to_string())
+    .with_detail("raw", raw.to_string())
+}
+
+fn temporal_days_raw_range_error(operation: &'static str, type_id: TypeId, raw: i64) -> Error {
+    Error::new_with(
+        ErrorCode::UnsupportedOperation,
+        operation,
+        "day-resolution temporal raw value is outside the i32 representation range",
+    )
+    .with_fact(FACT_TYPE_ID, type_id)
+    .with_detail("resource", "temporal_raw")
+    .with_detail("reason", "raw_value_out_of_range")
+    .with_detail("min_raw", i32::MIN.to_string())
+    .with_detail("max_raw", i32::MAX.to_string())
+    .with_detail("raw", raw.to_string())
+}
+
+fn validate_temporal_raw_range(raw: i64, type_id: TypeId, operation: &'static str) -> Result<()> {
+    if matches!(type_id, TypeId::TimestampDays | TypeId::DurationDays)
+        && (raw < i64::from(i32::MIN) || raw > i64::from(i32::MAX))
+    {
+        Err(temporal_days_raw_range_error(operation, type_id, raw))
+    } else {
+        Ok(())
+    }
+}
+
 /// An owned scalar value on the GPU.
 ///
 /// Scalars can hold a single value of any cudf type, plus a validity flag.
@@ -113,6 +224,155 @@ impl Scalar {
         Self::from_handle_with_domain(handle, Arc::clone(domain))
     }
 
+    pub(crate) fn decimal_from_raw_in_domain(
+        raw: i128,
+        dtype: DataType,
+        domain: &Arc<ExecutionDomain>,
+    ) -> Result<Self> {
+        let dtype = decimal_dtype_required(dtype, "scalar::decimal_from_raw_in_domain")?;
+        match dtype.id() {
+            TypeId::Decimal32 => {
+                let value = i32::try_from(raw).map_err(|_| {
+                    decimal_raw_range_error(
+                        "scalar::decimal_from_raw_in_domain",
+                        dtype,
+                        i32::MIN as i128,
+                        i32::MAX as i128,
+                        raw,
+                    )
+                })?;
+                Self::decimal_from_typed_raw_in_domain(&value, dtype, 1, domain, "scalar::decimal_from_raw_in_domain")
+            },
+            TypeId::Decimal64 => {
+                let value = i64::try_from(raw).map_err(|_| {
+                    decimal_raw_range_error(
+                        "scalar::decimal_from_raw_in_domain",
+                        dtype,
+                        i64::MIN as i128,
+                        i64::MAX as i128,
+                        raw,
+                    )
+                })?;
+                Self::decimal_from_typed_raw_in_domain(&value, dtype, 1, domain, "scalar::decimal_from_raw_in_domain")
+            },
+            TypeId::Decimal128 => {
+                Self::decimal_from_typed_raw_in_domain(&raw, dtype, 1, domain, "scalar::decimal_from_raw_in_domain")
+            },
+            _ => unreachable!("decimal_dtype_required rejects non-decimal dtypes"),
+        }
+    }
+
+    pub(crate) fn timestamp_from_raw_in_domain(
+        raw: i64,
+        type_id: TypeId,
+        domain: &Arc<ExecutionDomain>,
+    ) -> Result<Self> {
+        let type_id = timestamp_type_required(type_id, "scalar::timestamp_from_raw_in_domain")?;
+        validate_temporal_raw_range(raw, type_id, "scalar::timestamp_from_raw_in_domain")?;
+        Self::temporal_from_raw_in_domain(
+            raw,
+            type_id,
+            1,
+            domain,
+            "scalar::timestamp_from_raw_in_domain",
+            cudf_sys::cudf_scalar_create_timestamp_raw_ex,
+        )
+    }
+
+    pub(crate) fn duration_from_raw_in_domain(
+        raw: i64,
+        type_id: TypeId,
+        domain: &Arc<ExecutionDomain>,
+    ) -> Result<Self> {
+        let type_id = duration_type_required(type_id, "scalar::duration_from_raw_in_domain")?;
+        validate_temporal_raw_range(raw, type_id, "scalar::duration_from_raw_in_domain")?;
+        Self::temporal_from_raw_in_domain(
+            raw,
+            type_id,
+            1,
+            domain,
+            "scalar::duration_from_raw_in_domain",
+            cudf_sys::cudf_scalar_create_duration_raw_ex,
+        )
+    }
+
+    pub(crate) fn null_decimal_in_domain(dtype: DataType, domain: &Arc<ExecutionDomain>) -> Result<Self> {
+        let dtype = decimal_dtype_required(dtype, "scalar::null_decimal_in_domain")?;
+        Self::decimal_from_typed_raw_in_domain::<i32>(ptr::null(), dtype, 0, domain, "scalar::null_decimal_in_domain")
+    }
+
+    pub(crate) fn null_timestamp_in_domain(type_id: TypeId, domain: &Arc<ExecutionDomain>) -> Result<Self> {
+        let type_id = timestamp_type_required(type_id, "scalar::null_timestamp_in_domain")?;
+        Self::temporal_from_raw_in_domain(
+            0,
+            type_id,
+            0,
+            domain,
+            "scalar::null_timestamp_in_domain",
+            cudf_sys::cudf_scalar_create_timestamp_raw_ex,
+        )
+    }
+
+    pub(crate) fn null_duration_in_domain(type_id: TypeId, domain: &Arc<ExecutionDomain>) -> Result<Self> {
+        let type_id = duration_type_required(type_id, "scalar::null_duration_in_domain")?;
+        Self::temporal_from_raw_in_domain(
+            0,
+            type_id,
+            0,
+            domain,
+            "scalar::null_duration_in_domain",
+            cudf_sys::cudf_scalar_create_duration_raw_ex,
+        )
+    }
+
+    fn decimal_from_typed_raw_in_domain<T>(
+        value: *const T,
+        dtype: DataType,
+        is_valid: i32,
+        domain: &Arc<ExecutionDomain>,
+        operation: &'static str,
+    ) -> Result<Self> {
+        let mut handle = ptr::null_mut();
+        let exec_options = domain.exec_options_raw();
+        error::check_status_in(
+            unsafe {
+                cudf_sys::cudf_scalar_create_decimal_raw_ex(
+                    dtype.id().to_raw(),
+                    value as *const c_void,
+                    dtype.scale(),
+                    is_valid,
+                    &exec_options,
+                    &mut handle,
+                )
+            },
+            operation,
+        )?;
+        Self::from_handle_with_domain(handle, Arc::clone(domain))
+    }
+
+    fn temporal_from_raw_in_domain(
+        raw: i64,
+        type_id: TypeId,
+        is_valid: i32,
+        domain: &Arc<ExecutionDomain>,
+        operation: &'static str,
+        create: unsafe extern "C" fn(
+            cudf_sys::cudf_type_id_t,
+            i64,
+            i32,
+            *const cudf_sys::cudf_exec_options_t,
+            *mut cudf_sys::cudf_scalar_handle,
+        ) -> cudf_sys::cudf_status_t,
+    ) -> Result<Self> {
+        let mut handle = ptr::null_mut();
+        let exec_options = domain.exec_options_raw();
+        error::check_status_in(
+            unsafe { create(type_id.to_raw(), raw, is_valid, &exec_options, &mut handle) },
+            operation,
+        )?;
+        Self::from_handle_with_domain(handle, Arc::clone(domain))
+    }
+
     /// Returns the raw FFI handle. For internal use by operations.
     pub(crate) fn raw_handle(&self) -> *mut c_void {
         self.handle.as_ptr()
@@ -131,7 +391,8 @@ impl Scalar {
     }
 
     fn copy_into_domain_with_operation(&self, domain: &Arc<ExecutionDomain>, operation: &'static str) -> Result<Self> {
-        if self.data_type()?.id() == TypeId::Dictionary32 {
+        let dtype = self.data_type()?;
+        if dtype.id() == TypeId::Dictionary32 {
             return Err(Error::new_with(
                 ErrorCode::UnsupportedDtype,
                 operation,
@@ -139,6 +400,12 @@ impl Scalar {
             )
             .with_fact(FACT_TYPE_ID, TypeId::Dictionary32));
         }
+
+        if self.domain.device_id() != domain.device_id() {
+            return self.recreate_in_domain_via_host(dtype, domain, operation);
+        }
+
+        ExecutionDomain::insert_stream_dependency(&self.domain, domain, operation)?;
 
         let mut handle = ptr::null_mut();
         let exec_options = domain.exec_options_raw();
@@ -148,6 +415,96 @@ impl Scalar {
         )?;
         Self::from_handle_with_domain(handle, Arc::clone(domain))
     }
+
+    fn recreate_in_domain_via_host(
+        &self,
+        dtype: DataType,
+        domain: &Arc<ExecutionDomain>,
+        operation: &'static str,
+    ) -> Result<Self> {
+        let is_valid = self.is_valid().map_err(|e| e.reanchor_if_needed(operation))?;
+        let recreated = if !is_valid {
+            match dtype.id() {
+                TypeId::Int8 => Self::null_numeric_in_domain::<i8>(domain),
+                TypeId::Int16 => Self::null_numeric_in_domain::<i16>(domain),
+                TypeId::Int32 => Self::null_numeric_in_domain::<i32>(domain),
+                TypeId::Int64 => Self::null_numeric_in_domain::<i64>(domain),
+                TypeId::UInt8 => Self::null_numeric_in_domain::<u8>(domain),
+                TypeId::UInt16 => Self::null_numeric_in_domain::<u16>(domain),
+                TypeId::UInt32 => Self::null_numeric_in_domain::<u32>(domain),
+                TypeId::UInt64 => Self::null_numeric_in_domain::<u64>(domain),
+                TypeId::Float32 => Self::null_numeric_in_domain::<f32>(domain),
+                TypeId::Float64 => Self::null_numeric_in_domain::<f64>(domain),
+                TypeId::Bool8 => Self::null_numeric_in_domain::<bool>(domain),
+                TypeId::String => Self::null_string_in_domain(domain),
+                TypeId::Decimal32 | TypeId::Decimal64 | TypeId::Decimal128 => {
+                    Self::null_decimal_in_domain(dtype, domain)
+                },
+                TypeId::TimestampDays
+                | TypeId::TimestampSeconds
+                | TypeId::TimestampMilliseconds
+                | TypeId::TimestampMicroseconds
+                | TypeId::TimestampNanoseconds => Self::null_timestamp_in_domain(dtype.id(), domain),
+                TypeId::DurationDays
+                | TypeId::DurationSeconds
+                | TypeId::DurationMilliseconds
+                | TypeId::DurationMicroseconds
+                | TypeId::DurationNanoseconds => Self::null_duration_in_domain(dtype.id(), domain),
+                other => Err(Error::new_with(
+                    ErrorCode::UnsupportedDtype,
+                    operation,
+                    "cross-device scalar relocation does not support this scalar dtype",
+                )
+                .with_fact(FACT_TYPE_ID, other)
+                .with_detail("reason", "unsupported_cross_device_scalar_relocation")),
+            }
+        } else {
+            (|| match dtype.id() {
+                TypeId::Int8 => Self::from_value_in_domain(self.value::<i8>()?, domain),
+                TypeId::Int16 => Self::from_value_in_domain(self.value::<i16>()?, domain),
+                TypeId::Int32 => Self::from_value_in_domain(self.value::<i32>()?, domain),
+                TypeId::Int64 => Self::from_value_in_domain(self.value::<i64>()?, domain),
+                TypeId::UInt8 => Self::from_value_in_domain(self.value::<u8>()?, domain),
+                TypeId::UInt16 => Self::from_value_in_domain(self.value::<u16>()?, domain),
+                TypeId::UInt32 => Self::from_value_in_domain(self.value::<u32>()?, domain),
+                TypeId::UInt64 => Self::from_value_in_domain(self.value::<u64>()?, domain),
+                TypeId::Float32 => Self::from_value_in_domain(self.value::<f32>()?, domain),
+                TypeId::Float64 => Self::from_value_in_domain(self.value::<f64>()?, domain),
+                TypeId::Bool8 => Self::from_value_in_domain(self.value::<bool>()?, domain),
+                TypeId::String => Self::from_str_in_domain(&self.string_value()?, domain),
+                TypeId::Decimal32 => {
+                    Self::decimal_from_raw_in_domain(i128::from(self.decimal32_raw_value()?), dtype, domain)
+                },
+                TypeId::Decimal64 => {
+                    Self::decimal_from_raw_in_domain(i128::from(self.decimal64_raw_value()?), dtype, domain)
+                },
+                TypeId::Decimal128 => Self::decimal_from_raw_in_domain(self.decimal128_raw_value()?, dtype, domain),
+                TypeId::TimestampDays
+                | TypeId::TimestampSeconds
+                | TypeId::TimestampMilliseconds
+                | TypeId::TimestampMicroseconds
+                | TypeId::TimestampNanoseconds => {
+                    Self::timestamp_from_raw_in_domain(self.timestamp_raw_value()?, dtype.id(), domain)
+                },
+                TypeId::DurationDays
+                | TypeId::DurationSeconds
+                | TypeId::DurationMilliseconds
+                | TypeId::DurationMicroseconds
+                | TypeId::DurationNanoseconds => {
+                    Self::duration_from_raw_in_domain(self.duration_raw_value()?, dtype.id(), domain)
+                },
+                other => Err(Error::new_with(
+                    ErrorCode::UnsupportedDtype,
+                    operation,
+                    "cross-device scalar relocation does not support this scalar dtype",
+                )
+                .with_fact(FACT_TYPE_ID, other)
+                .with_detail("reason", "unsupported_cross_device_scalar_relocation")),
+            })()
+        };
+        recreated.map_err(|e| e.reanchor_if_needed(operation))
+    }
+
     pub(crate) fn __debug_execution_domain_kind(&self) -> &'static str {
         self.domain.debug_kind()
     }
@@ -223,6 +580,134 @@ impl Scalar {
         )?;
         self.domain.synchronize_for_host_visibility("scalar::value")?;
         Ok(out)
+    }
+
+    fn raw_value_unchecked<T: Copy>(&self, operation: &'static str) -> Result<T> {
+        // SAFETY: raw scalar value types used by this module are plain integer
+        // representations with valid all-zero bit patterns.
+        let mut out = unsafe { std::mem::zeroed::<T>() };
+        let exec_options = self.domain.exec_options_raw();
+        error::check_status_in(
+            unsafe {
+                cudf_sys::cudf_scalar_value_ex(self.handle.as_ptr(), &mut out as *mut T as *mut c_void, &exec_options)
+            },
+            operation,
+        )?;
+        self.domain.synchronize_for_host_visibility(operation)?;
+        Ok(out)
+    }
+
+    /// Extract a Decimal32 scalar's raw fixed-point representation.
+    ///
+    /// This returns the stored integer representation only. It does not apply
+    /// decimal scale formatting or host parsing.
+    ///
+    /// # Synchronization
+    /// This may synchronize the scalar's bound execution domain before
+    /// returning the host-visible value.
+    pub fn decimal32_raw_value(&self) -> Result<i32> {
+        let dt = self.data_type()?;
+        if dt.id() != TypeId::Decimal32 {
+            return Err(scalar_type_mismatch_error(
+                "scalar::decimal32_raw_value",
+                "decimal32 raw extraction requires a Decimal32 scalar",
+                dt.id(),
+                TypeId::Decimal32,
+            ));
+        }
+        self.raw_value_unchecked("scalar::decimal32_raw_value")
+    }
+
+    /// Extract a Decimal64 scalar's raw fixed-point representation.
+    ///
+    /// This returns the stored integer representation only. It does not apply
+    /// decimal scale formatting or host parsing.
+    ///
+    /// # Synchronization
+    /// This may synchronize the scalar's bound execution domain before
+    /// returning the host-visible value.
+    pub fn decimal64_raw_value(&self) -> Result<i64> {
+        let dt = self.data_type()?;
+        if dt.id() != TypeId::Decimal64 {
+            return Err(scalar_type_mismatch_error(
+                "scalar::decimal64_raw_value",
+                "decimal64 raw extraction requires a Decimal64 scalar",
+                dt.id(),
+                TypeId::Decimal64,
+            ));
+        }
+        self.raw_value_unchecked("scalar::decimal64_raw_value")
+    }
+
+    /// Extract a Decimal128 scalar's raw fixed-point representation.
+    ///
+    /// This returns the stored integer representation only. It does not apply
+    /// decimal scale formatting or host parsing.
+    ///
+    /// # Synchronization
+    /// This may synchronize the scalar's bound execution domain before
+    /// returning the host-visible value.
+    pub fn decimal128_raw_value(&self) -> Result<i128> {
+        let dt = self.data_type()?;
+        if dt.id() != TypeId::Decimal128 {
+            return Err(scalar_type_mismatch_error(
+                "scalar::decimal128_raw_value",
+                "decimal128 raw extraction requires a Decimal128 scalar",
+                dt.id(),
+                TypeId::Decimal128,
+            ));
+        }
+        self.raw_value_unchecked("scalar::decimal128_raw_value")
+    }
+
+    /// Extract a timestamp scalar's raw count in its declared resolution.
+    ///
+    /// This returns the stored integer representation only. It does not parse,
+    /// format, or apply timezone behavior.
+    ///
+    /// # Synchronization
+    /// This may synchronize the scalar's bound execution domain before
+    /// returning the host-visible value.
+    pub fn timestamp_raw_value(&self) -> Result<i64> {
+        let dt = self.data_type()?;
+        if !dt.id().is_timestamp() {
+            return Err(scalar_family_type_mismatch_error(
+                "scalar::timestamp_raw_value",
+                "timestamp raw extraction requires a timestamp scalar",
+                dt.id(),
+                "timestamp",
+            ));
+        }
+        if dt.id() == TypeId::TimestampDays {
+            Ok(i64::from(self.raw_value_unchecked::<i32>("scalar::timestamp_raw_value")?))
+        } else {
+            self.raw_value_unchecked("scalar::timestamp_raw_value")
+        }
+    }
+
+    /// Extract a duration scalar's raw count in its declared resolution.
+    ///
+    /// This returns the stored integer representation only. It does not parse
+    /// or format the duration.
+    ///
+    /// # Synchronization
+    /// This may synchronize the scalar's bound execution domain before
+    /// returning the host-visible value.
+    pub fn duration_raw_value(&self) -> Result<i64> {
+        let dt = self.data_type()?;
+        if !dt.id().is_duration() {
+            return Err(scalar_family_type_mismatch_error(
+                "scalar::duration_raw_value",
+                "duration raw extraction requires a duration scalar",
+                dt.id(),
+                "duration",
+            ));
+        }
+        if dt.id() == TypeId::DurationDays {
+            Ok(i64::from(self.raw_value_unchecked::<i32>("scalar::duration_raw_value")?))
+        } else {
+            self.raw_value_unchecked("scalar::duration_raw_value")
+        }
     }
 
     /// Extract the value as a string.

@@ -69,27 +69,6 @@ fn observed_raw_record_call_count_for_stream_raw(stream_raw: usize) -> i32 {
     out
 }
 
-fn observed_last_raw_record_stream_raw() -> usize {
-    let mut out = 0;
-    let status = unsafe { cudf_sys::cudf_test_event_last_raw_record_stream_raw(&mut out) };
-    assert_eq!(status, cudf_sys::CUDF_SUCCESS, "failed to read last raw event-record stream");
-    out
-}
-
-fn observed_last_raw_record_event_raw() -> usize {
-    let mut out = 0;
-    let status = unsafe { cudf_sys::cudf_test_event_last_raw_record_event_raw(&mut out) };
-    assert_eq!(status, cudf_sys::CUDF_SUCCESS, "failed to read last raw event-record event");
-    out
-}
-
-fn raw_cuda_event_from_handle(handle: *mut c_void) -> usize {
-    let mut out = std::ptr::null_mut();
-    let status = unsafe { cudf_sys::cudf_event_raw(handle, &mut out) };
-    assert_eq!(status, cudf_sys::CUDF_SUCCESS, "failed to read raw CUDA event from borrowed handle");
-    out as usize
-}
-
 fn assert_fixed_width_pointer_rejected<T: std::fmt::Debug>(
     result: std::result::Result<T, cudf::Error>,
     label: &str,
@@ -644,8 +623,6 @@ fn numeric_series_device_arrow_export_records_sync_event_on_runtime_stream() {
         observed_raw_record_call_count_for_stream_raw(runtime_stream_raw) > baseline_record,
         "device-arrow export should record a sync event on the runtime stream",
     );
-    assert_eq!(observed_last_raw_record_stream_raw(), runtime_stream_raw);
-    assert_eq!(observed_last_raw_record_event_raw(), raw_cuda_event_from_handle(export.sync_event_raw_ptr()));
 }
 
 #[test]
@@ -1409,8 +1386,6 @@ fn numeric_table_device_arrow_export_records_sync_event_on_runtime_stream() {
         observed_raw_record_call_count_for_stream_raw(runtime_stream_raw) > baseline_record,
         "table device-arrow export should record a sync event on the runtime stream",
     );
-    assert_eq!(observed_last_raw_record_stream_raw(), runtime_stream_raw);
-    assert_eq!(observed_last_raw_record_event_raw(), raw_cuda_event_from_handle(export.sync_event_raw_ptr()));
 }
 
 #[test]

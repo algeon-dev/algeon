@@ -1329,6 +1329,66 @@ extern "C" {
         out: *mut cudf_scalar_handle,
     ) -> cudf_status_t;
 
+    /// Create a decimal scalar from its raw integer representation.
+    ///
+    /// `type_id` must be DECIMAL32, DECIMAL64, or DECIMAL128. `value` points
+    /// to an i32, i64, or i128 raw representation, respectively. Invalid
+    /// scalars may pass a null `value`.
+    pub fn cudf_scalar_create_decimal_raw(
+        type_id: cudf_type_id_t,
+        value: *const c_void,
+        scale: i32,
+        is_valid: i32,
+        out: *mut cudf_scalar_handle,
+    ) -> cudf_status_t;
+
+    /// Create a decimal scalar from its raw integer representation with
+    /// explicit execution options.
+    pub fn cudf_scalar_create_decimal_raw_ex(
+        type_id: cudf_type_id_t,
+        value: *const c_void,
+        scale: i32,
+        is_valid: i32,
+        options: *const cudf_exec_options_t,
+        out: *mut cudf_scalar_handle,
+    ) -> cudf_status_t;
+
+    /// Create a timestamp scalar from a raw integer count.
+    pub fn cudf_scalar_create_timestamp_raw(
+        type_id: cudf_type_id_t,
+        value: i64,
+        is_valid: i32,
+        out: *mut cudf_scalar_handle,
+    ) -> cudf_status_t;
+
+    /// Create a timestamp scalar from a raw integer count with explicit
+    /// execution options.
+    pub fn cudf_scalar_create_timestamp_raw_ex(
+        type_id: cudf_type_id_t,
+        value: i64,
+        is_valid: i32,
+        options: *const cudf_exec_options_t,
+        out: *mut cudf_scalar_handle,
+    ) -> cudf_status_t;
+
+    /// Create a duration scalar from a raw integer count.
+    pub fn cudf_scalar_create_duration_raw(
+        type_id: cudf_type_id_t,
+        value: i64,
+        is_valid: i32,
+        out: *mut cudf_scalar_handle,
+    ) -> cudf_status_t;
+
+    /// Create a duration scalar from a raw integer count with explicit
+    /// execution options.
+    pub fn cudf_scalar_create_duration_raw_ex(
+        type_id: cudf_type_id_t,
+        value: i64,
+        is_valid: i32,
+        options: *const cudf_exec_options_t,
+        out: *mut cudf_scalar_handle,
+    ) -> cudf_status_t;
+
     /// Create a string scalar on cuDF's default stream.
     ///
     /// This helper synchronizes the default stream before return on success
@@ -1394,7 +1454,8 @@ extern "C" {
 
     pub fn cudf_scalar_value(handle: cudf_scalar_handle, out: *mut c_void) -> cudf_status_t;
 
-    /// Materialize a numeric scalar value with explicit execution options.
+    /// Materialize a fixed-width scalar raw value with explicit execution
+    /// options.
     ///
     /// On success, `out` is ready to read when this call returns because
     /// libcudf performs synchronous host materialization internally.

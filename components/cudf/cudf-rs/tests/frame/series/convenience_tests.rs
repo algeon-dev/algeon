@@ -6,7 +6,7 @@
 //!
 //! All tests require a GPU.
 use cudf::{
-    ErrorCode, ErrorKind, ExecutionOverrides, Series, SortOptions, TypeId,
+    DataType, ErrorCode, ErrorKind, ExecutionOverrides, Series, SortOptions, TypeId,
     core::error::{FactKeyName, FactValue},
     frame::factorization::{Codebook, DictionaryEncodingOptions, DictionaryKeyOrder},
     testing::prelude::*,
@@ -658,6 +658,26 @@ fn test_codebook_first_seen_ordering() {
 }
 
 #[test]
+fn test_zero_argument_codebook_preserves_sorted_default_ordering() {
+    let s = crate::common::series("x", &["b", "a", "c", "a"]).unwrap();
+
+    let codebook = s.codebook().unwrap();
+
+    assert_eq!(codebook.keys().to_strings_strict().unwrap(), vec!["a", "b", "c"]);
+}
+
+#[test]
+fn test_empty_decimal_codebook_preserves_scale() {
+    let dtype = DataType::fixed_point(TypeId::Decimal64, -3);
+    let s = sample_runtime().empty_series(dtype).unwrap();
+
+    let codebook = s.codebook().unwrap();
+
+    assert_eq!(codebook.keys().dtype().unwrap(), dtype);
+    assert_eq!(codebook.keys().len(), 0);
+}
+
+#[test]
 fn test_factorize_with_first_seen_ordering() {
     let s = crate::common::series("x", &["b", "a", "c", "a", "b"]).unwrap();
 
@@ -730,6 +750,20 @@ fn test_zero_argument_factorize_preserves_sorted_default_ordering() {
     let factorized = s.factorize().unwrap();
 
     assert_eq!(factorized.codebook().keys().to_strings_strict().unwrap(), vec!["a", "b", "c"]);
+    assert_eq!(factorized.row_codes().to_vec_strict::<i32>().unwrap(), vec![1, 0, 2, 0]);
+}
+
+#[test]
+fn test_empty_decimal_factorize_preserves_codebook_scale() {
+    let dtype = DataType::fixed_point(TypeId::Decimal128, -6);
+    let s = sample_runtime().empty_series(dtype).unwrap();
+
+    let factorized = s.factorize().unwrap();
+
+    assert_eq!(factorized.codebook().keys().dtype().unwrap(), dtype);
+    assert_eq!(factorized.codebook().keys().len(), 0);
+    assert_eq!(factorized.row_codes().dtype().unwrap().id(), TypeId::Int32);
+    assert_eq!(factorized.row_codes().len(), 0);
 }
 
 // ===========================================================================

@@ -22,6 +22,26 @@
 //! If you want an actual scalar reduction, use the [`Series`] reduction APIs
 //! such as [`Series::sum`] or [`Series::sum_value`] instead.
 //!
+//! # Literal Evaluation and Memory Behavior
+//!
+//! Literal constructors such as [`lit`], [`lit_decimal32_raw`],
+//! [`lit_decimal64_raw`], [`lit_decimal128_raw`], [`lit_timestamp_raw`], and
+//! [`lit_duration_raw`] are lazy expression builders. Creating the [`Expr`]
+//! does not allocate GPU memory and does not borrow or transfer host memory.
+//!
+//! During [`Expr::eval`] or [`Expr::eval_in`], each literal is materialized as
+//! a device-resident [`Scalar`] in the resolved output execution domain, then
+//! broadcast into a newly allocated device [`Column`](crate::core::Column) with
+//! the input [`DataFrame`] row count. The returned [`Series`] owns that new
+//! column and retains the resolved provenance: by default the input frame's
+//! stream and memory resource, or the same-device borrowed stream and memory
+//! resource supplied through [`ExecutionOverrides`].
+//!
+//! Literal evaluation enqueues libcudf work and does not intentionally
+//! synchronize the host before returning. Later host-visible reads of the
+//! result, such as value extraction or host export, may synchronize the
+//! result's execution domain.
+//!
 //! # Example
 //!
 //! ```no_run
@@ -59,7 +79,7 @@ use crate::{
         column::Column,
         error::Result,
         scalar::Scalar,
-        types::{CudfType, DataType, NullPolicy},
+        types::{CudfType, DataType, NullPolicy, TimestampResolution, TypeId},
     },
     frame::{dataframe::DataFrame, series::Series},
     internal::hash::{FastHashMap, fast_hash_map_with_capacity},
@@ -856,8 +876,94 @@ pub fn col(name: impl Into<String>) -> Expr {
 /// Create a literal expression that broadcasts the value to all rows.
 ///
 /// Supports all [`CudfType`] numeric types, `&str`, and `String`.
+///
+/// Constructing the expression is allocation-free. Evaluation creates a
+/// device scalar and broadcasts it into a newly allocated device column in the
+/// resolved execution domain, retaining that provenance on the returned
+/// [`Series`]. Evaluation does not intentionally synchronize the host before
+/// returning; later host-visible reads may synchronize.
 pub fn lit<L: IntoLit>(value: L) -> Expr {
     value.into_expr()
+}
+
+/// Create a `DECIMAL32` literal from its raw fixed-point representation.
+///
+/// `scale` is the cudf fixed-point scale, so a raw value of `12345` with
+/// scale `-2` represents `123.45`. Evaluation broadcasts the scalar to the
+/// input DataFrame row count.
+///
+/// Constructing the expression is allocation-free. Evaluation creates a
+/// device scalar and broadcasts it into a newly allocated device column in the
+/// resolved execution domain, retaining that provenance on the returned
+/// [`Series`]. Evaluation does not intentionally synchronize the host before
+/// returning; later host-visible reads may synchronize.
+pub fn lit_decimal32_raw(raw: i32, scale: i32) -> Expr {
+    let dtype = DataType::fixed_point(TypeId::Decimal32, scale);
+    Expr::Literal(LitValue::numeric(move |domain| Scalar::decimal_from_raw_in_domain(i128::from(raw), dtype, domain)))
+}
+
+/// Create a `DECIMAL64` literal from its raw fixed-point representation.
+///
+/// `scale` is the cudf fixed-point scale, so a raw value of `12345` with
+/// scale `-2` represents `123.45`. Evaluation broadcasts the scalar to the
+/// input DataFrame row count.
+///
+/// Constructing the expression is allocation-free. Evaluation creates a
+/// device scalar and broadcasts it into a newly allocated device column in the
+/// resolved execution domain, retaining that provenance on the returned
+/// [`Series`]. Evaluation does not intentionally synchronize the host before
+/// returning; later host-visible reads may synchronize.
+pub fn lit_decimal64_raw(raw: i64, scale: i32) -> Expr {
+    let dtype = DataType::fixed_point(TypeId::Decimal64, scale);
+    Expr::Literal(LitValue::numeric(move |domain| Scalar::decimal_from_raw_in_domain(i128::from(raw), dtype, domain)))
+}
+
+/// Create a `DECIMAL128` literal from its raw fixed-point representation.
+///
+/// `scale` is the cudf fixed-point scale, so a raw value of `12345` with
+/// scale `-2` represents `123.45`. Evaluation broadcasts the scalar to the
+/// input DataFrame row count.
+///
+/// Constructing the expression is allocation-free. Evaluation creates a
+/// device scalar and broadcasts it into a newly allocated device column in the
+/// resolved execution domain, retaining that provenance on the returned
+/// [`Series`]. Evaluation does not intentionally synchronize the host before
+/// returning; later host-visible reads may synchronize.
+pub fn lit_decimal128_raw(raw: i128, scale: i32) -> Expr {
+    let dtype = DataType::fixed_point(TypeId::Decimal128, scale);
+    Expr::Literal(LitValue::numeric(move |domain| Scalar::decimal_from_raw_in_domain(raw, dtype, domain)))
+}
+
+/// Create a timestamp literal from its raw epoch-unit representation.
+///
+/// No parsing, timezone conversion, or calendar interpretation is performed
+/// by this expression helper.
+///
+/// Constructing the expression is allocation-free. Evaluation creates a
+/// device scalar and broadcasts it into a newly allocated device column in the
+/// resolved execution domain, retaining that provenance on the returned
+/// [`Series`]. Evaluation does not intentionally synchronize the host before
+/// returning; later host-visible reads may synchronize.
+pub fn lit_timestamp_raw(raw: i64, resolution: TimestampResolution) -> Expr {
+    Expr::Literal(LitValue::numeric(move |domain| {
+        Scalar::timestamp_from_raw_in_domain(raw, resolution.type_id(), domain)
+    }))
+}
+
+/// Create a duration literal from its raw unit-count representation.
+///
+/// Evaluation broadcasts the scalar to the input DataFrame row count without
+/// string parsing or timezone behavior.
+///
+/// Constructing the expression is allocation-free. Evaluation creates a
+/// device scalar and broadcasts it into a newly allocated device column in the
+/// resolved execution domain, retaining that provenance on the returned
+/// [`Series`]. Evaluation does not intentionally synchronize the host before
+/// returning; later host-visible reads may synchronize.
+pub fn lit_duration_raw(raw: i64, resolution: TimestampResolution) -> Expr {
+    Expr::Literal(LitValue::numeric(move |domain| {
+        Scalar::duration_from_raw_in_domain(raw, resolution.duration_type_id(), domain)
+    }))
 }
 
 /// Begin a conditional expression chain:

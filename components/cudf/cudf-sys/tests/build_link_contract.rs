@@ -221,6 +221,18 @@ fn native_cmakelists_preserves_existing_prefix_path_when_using_install_dir() {
 }
 
 #[test]
+fn native_cmakelists_compiles_c_header_smoke_as_c() {
+    assert!(
+        NATIVE_CMAKELISTS.contains("LANGUAGES C CXX CUDA"),
+        "expected native/CMakeLists.txt to enable C so c_header_smoke.c is compiled as C"
+    );
+    assert!(
+        NATIVE_CMAKELISTS.contains("src/c_header_smoke.c"),
+        "expected native/CMakeLists.txt to include the C header smoke translation unit"
+    );
+}
+
+#[test]
 fn clang_lint_file_matcher_accepts_supported_c_family_sources_only() {
     for path in [
         "native/src/error.cpp",

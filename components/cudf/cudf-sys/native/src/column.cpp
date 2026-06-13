@@ -392,7 +392,7 @@ cudf_status_t cudf_column_create_fixed_width_from_host_ex(cudf_type_id_t type_id
     cudf_status_t const exec_status = cudf_resolve_exec_options(options, &exec);
     if (exec_status != CUDF_SUCCESS) { return exec_status; }
 
-    auto const elem_size = cudf::size_of(dtype);
+    auto const elem_size  = cudf::size_of(dtype);
     auto const data_bytes = static_cast<size_t>(size) * elem_size;
     std::vector<uint8_t> padded_mask;
     std::optional<rmm::device_buffer> dev_data;
