@@ -78,6 +78,30 @@ extern "C" {
         out_left: *mut *mut c_void,
         out_right: *mut *mut c_void,
     ) -> i32;
+    #[link_name = "cudf_inner_join_indices"]
+    pub(crate) fn cudf_inner_join_indices_raw(
+        left_keys: *mut c_void,
+        right_keys: *mut c_void,
+        null_equality: i32,
+        out_left_indices: *mut *mut c_void,
+        out_right_indices: *mut *mut c_void,
+    ) -> i32;
+    #[link_name = "cudf_left_join_indices"]
+    pub(crate) fn cudf_left_join_indices_raw(
+        left_keys: *mut c_void,
+        right_keys: *mut c_void,
+        null_equality: i32,
+        out_left_indices: *mut *mut c_void,
+        out_right_indices: *mut *mut c_void,
+    ) -> i32;
+    #[link_name = "cudf_full_join_indices"]
+    pub(crate) fn cudf_full_join_indices_raw(
+        left_keys: *mut c_void,
+        right_keys: *mut c_void,
+        null_equality: i32,
+        out_left_indices: *mut *mut c_void,
+        out_right_indices: *mut *mut c_void,
+    ) -> i32;
     #[link_name = "cudf_distinct_hash_join_create"]
     pub(crate) fn cudf_distinct_hash_join_create_raw(
         build: *mut c_void,
@@ -88,6 +112,14 @@ extern "C" {
     pub(crate) fn cudf_distinct_hash_join_left_join_raw(
         join: *mut c_void,
         probe: *mut c_void,
+        out: *mut *mut c_void,
+    ) -> i32;
+    #[link_name = "cudf_hash_join_create"]
+    pub(crate) fn cudf_hash_join_create_raw(
+        build: *mut c_void,
+        nullable_join: i32,
+        null_equality: i32,
+        load_factor: f64,
         out: *mut *mut c_void,
     ) -> i32;
     #[link_name = "cudf_scan_aggregation_create"]

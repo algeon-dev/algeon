@@ -1,5 +1,91 @@
 pub use crate::core::types::NullEquality;
 
+/// Whether the build table or any later probe table can contain null join keys.
+///
+/// `MaybeNull` is the conservative default. Use `NoNulls` only when every
+/// build/probe key table used with a persistent [`HashJoin`][crate::ops::join::HashJoin]
+/// is known to be non-nullable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NullableJoin {
+    /// At least one build/probe key table may contain nulls.
+    MaybeNull,
+    /// All build/probe key tables are known not to contain nulls.
+    NoNulls,
+}
+
+impl NullableJoin {
+    pub(crate) fn to_raw(self) -> cudf_sys::cudf_nullable_join_t {
+        match self {
+            NullableJoin::MaybeNull => cudf_sys::cudf_nullable_join_t::CUDF_NULLABLE_JOIN_YES,
+            NullableJoin::NoNulls => cudf_sys::cudf_nullable_join_t::CUDF_NULLABLE_JOIN_NO,
+        }
+    }
+}
+
+/// Options for reusable duplicate-key [`HashJoin`][crate::ops::join::HashJoin]
+/// build artifacts.
+#[derive(Debug, Clone, Copy)]
+pub struct HashJoinOptions {
+    nullable_join: NullableJoin,
+    null_eq: NullEquality,
+    load_factor: f64,
+}
+
+impl Default for HashJoinOptions {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl HashJoinOptions {
+    /// Create options using conservative null handling, nulls-equal comparison,
+    /// and libcudf's standard 0.5 hash-table load factor.
+    pub fn new() -> Self {
+        Self { nullable_join: NullableJoin::MaybeNull, null_eq: NullEquality::Equal, load_factor: 0.5 }
+    }
+
+    /// Set whether build/probe key tables can contain nulls.
+    pub fn nullable_join(mut self, nullable_join: NullableJoin) -> Self {
+        self.nullable_join = nullable_join;
+        self
+    }
+
+    /// Declare that all build/probe key tables are non-nullable.
+    pub fn no_nulls(self) -> Self {
+        self.nullable_join(NullableJoin::NoNulls)
+    }
+
+    /// Set how null key values are compared.
+    pub fn null_equality(mut self, null_eq: NullEquality) -> Self {
+        self.null_eq = null_eq;
+        self
+    }
+
+    /// Set the hash-table load factor.
+    ///
+    /// libcudf accepts values in `(0, 1]`; invalid values are rejected at the
+    /// FFI boundary with an invalid-argument error.
+    pub fn load_factor(mut self, load_factor: f64) -> Self {
+        self.load_factor = load_factor;
+        self
+    }
+
+    /// Returns the nullable-join assumption.
+    pub fn nullable_join_setting(&self) -> NullableJoin {
+        self.nullable_join
+    }
+
+    /// Returns the configured null equality setting.
+    pub fn null_eq(&self) -> NullEquality {
+        self.null_eq
+    }
+
+    /// Returns the configured hash-table load factor.
+    pub fn load_factor_value(&self) -> f64 {
+        self.load_factor
+    }
+}
+
 /// The type of join to perform.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum JoinType {

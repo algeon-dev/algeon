@@ -12,6 +12,7 @@ use cudf::{
             OwnedColumnTransferReleaser, OwnedTableTransferReleaser, PartitionedOwnedTableTransferReleaser,
         },
     },
+    ops::join::{HashJoin, HashJoinOptions, JoinIndices},
     runtime::{CudaEvent, CudaStream},
     testing::prelude::*,
 };
@@ -43,6 +44,9 @@ assert_impl_all!(DeviceArrowTableExport: Send, Sync);
 assert_impl_all!(DeviceArrowTableRawParts: Send, Sync);
 assert_impl_all!(DeviceArrowTableOwnedAbiParts: Send, Sync);
 assert_impl_all!(ForeignDeviceArrowTable: Send, Sync);
+assert_impl_all!(HashJoin: Send, Sync);
+assert_impl_all!(HashJoinOptions: Send, Sync);
+assert_impl_all!(JoinIndices: Send, Sync);
 
 assert_not_impl_any!(BorrowedColumnView<'static>: Send, Sync);
 assert_not_impl_any!(BorrowedTableView<'static>: Send, Sync);

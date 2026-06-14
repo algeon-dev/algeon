@@ -9,7 +9,9 @@
 #include <cudf/utilities/error.hpp>
 #include <cudf/utilities/traits.hpp>
 
+#include <cstdint>
 #include <memory>
+#include <new>
 #include <unordered_set>
 #include <utility>
 #include <vector>
@@ -23,6 +25,18 @@ using cudf_interop::require_non_negative_i32;
 using cudf_interop::require_size_type_from_size_t;
 
 namespace {
+
+thread_local int32_t g_fail_column_handle_release_countdown = -1;
+
+void maybe_fail_column_handle_release()
+{
+  if (g_fail_column_handle_release_countdown < 0) { return; }
+  if (g_fail_column_handle_release_countdown == 0) {
+    g_fail_column_handle_release_countdown = -1;
+    throw std::bad_alloc{};
+  }
+  --g_fail_column_handle_release_countdown;
+}
 
 bool column_parent_stores_direct_element_buffer(cudf::type_id id)
 {
@@ -661,6 +675,11 @@ class foreign_table_handle_state final : public cudf_table_handle_state {
 
 }  // namespace
 
+extern "C" void cudf_test_fail_column_handle_release_after(int32_t successful_releases)
+{
+  g_fail_column_handle_release_countdown = successful_releases;
+}
+
 std::unique_ptr<cudf::column> cudf_column_handle_state::release_native_column()
 {
   throw cudf::logic_error("column handle is not native-backed");
@@ -679,6 +698,7 @@ cudf_column_handle cudf_release_column_handle(std::unique_ptr<cudf::column> colu
 
 cudf_column_handle cudf_release_column_handle(std::unique_ptr<cudf_column_handle_state> column)
 {
+  maybe_fail_column_handle_release();
   return static_cast<cudf_column_handle>(column.release());
 }
 
