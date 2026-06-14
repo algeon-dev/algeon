@@ -8,7 +8,8 @@
 //! All tests require a GPU.
 
 use cudf::{
-    DataFrame, DataType, ErrorCode, ErrorKind, ExecutionOverrides, Runtime, Series, TimestampResolution, TypeId,
+    DataFrame, DataType, ErrorCode, ErrorKind, ExecutionOverrides, Runtime, Series, StringSliceOptions,
+    TimestampResolution, TypeId,
     core::error::{FactKeyName, FactValue},
     ops::expr::{
         Expr, col, lit, lit_decimal32_raw, lit_decimal64_raw, lit_decimal128_raw, lit_duration_raw, lit_timestamp_raw,
@@ -957,6 +958,25 @@ fn str_contains_expr() {
     let result = eval(col("s").str().contains("foo").alias("has"), &df);
     assert_eq!(result.dtype().unwrap().id(), TypeId::Bool8);
     assert_eq!(result.to_vec_strict::<bool>().unwrap(), vec![true, false, true]);
+}
+
+#[test]
+fn str_like_expr() {
+    let df = str_df("s", &["abc", "axc", "abbc", "literal%"]);
+    let result = eval(col("s").str().like("a_c").alias("matches"), &df);
+    assert_eq!(result.dtype().unwrap().id(), TypeId::Bool8);
+    assert_eq!(result.to_vec_strict::<bool>().unwrap(), vec![true, true, false, false]);
+
+    let escaped = eval(col("s").str().like_escape("literal/%", "/").alias("escaped"), &df);
+    assert_eq!(escaped.to_vec_strict::<bool>().unwrap(), vec![false, false, false, true]);
+}
+
+#[test]
+fn str_slice_expr() {
+    let df = str_df("s", &["abcdef", "\u{4F60}\u{597D}\u{4E16}\u{754C}"]);
+    let result = eval(col("s").str().slice(StringSliceOptions::new(Some(1), Some(3))).alias("part"), &df);
+    assert_eq!(result.dtype().unwrap().id(), TypeId::String);
+    assert_eq!(result.to_strings_strict().unwrap(), vec!["bc".to_string(), "\u{597D}\u{4E16}".to_string()]);
 }
 
 #[test]

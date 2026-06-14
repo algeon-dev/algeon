@@ -8,11 +8,15 @@
 #include <cudf/scalar/scalar.hpp>
 #include <cudf/strings/attributes.hpp>
 #include <cudf/strings/case.hpp>
+#include <cudf/strings/contains.hpp>
 #include <cudf/strings/find.hpp>
+#include <cudf/strings/slice.hpp>
 #include <cudf/strings/strings_column_view.hpp>
 #include <cudf/strings/strip.hpp>
 #include <cudf/utilities/default_stream.hpp>
 #include <cudf/utilities/memory_resource.hpp>
+
+#include <string_view>
 
 // Helper: cast a column_view handle to strings_column_view.
 // Caller must guarantee the column is of type STRING.
@@ -33,6 +37,39 @@ static cudf_status_t check_string_scalar(cudf_scalar_handle handle, cudf::string
   }
   *out = static_cast<cudf::string_scalar*>(s);
   return CUDF_SUCCESS;
+}
+
+static cudf_status_t validate_like_arguments(char const* pattern,
+                                             int32_t pattern_len,
+                                             char const* escape_character,
+                                             int32_t escape_character_len)
+{
+  if (pattern_len < 0) {
+    set_error("pattern_len must be non-negative");
+    return CUDF_ERROR_INVALID_OPERATION;
+  }
+  if (escape_character_len < 0) {
+    set_error("escape_character_len must be non-negative");
+    return CUDF_ERROR_INVALID_OPERATION;
+  }
+  if (escape_character_len > 1) {
+    set_error("escape_character_len must be 0 or 1");
+    return CUDF_ERROR_INVALID_OPERATION;
+  }
+  if ((pattern_len > 0) && (pattern == nullptr)) {
+    set_error("pattern is null");
+    return CUDF_ERROR_NULL;
+  }
+  if ((escape_character_len > 0) && (escape_character == nullptr)) {
+    set_error("escape_character is null");
+    return CUDF_ERROR_NULL;
+  }
+  return CUDF_SUCCESS;
+}
+
+static std::string_view make_host_string_view(char const* ptr, int32_t len)
+{
+  return len == 0 ? std::string_view{} : std::string_view{ptr, static_cast<std::size_t>(len)};
 }
 
 extern "C" {
@@ -191,6 +228,106 @@ cudf_status_t cudf_strings_ends_with_ex(cudf_column_view_handle input,
     if (type_status != CUDF_SUCCESS) { return type_status; }
     auto result = cudf::strings::ends_with(to_strings_view(input), *scalar, exec.stream, exec.mr);
     *out        = cudf_release_column_handle(std::move(result));
+    return CUDF_SUCCESS;
+  }
+  CUDF_RUST_CATCH
+}
+
+// ---------------------------------------------------------------------------
+// LIKE
+// ---------------------------------------------------------------------------
+
+cudf_status_t cudf_strings_like(cudf_column_view_handle input,
+                                char const* pattern,
+                                int32_t pattern_len,
+                                char const* escape_character,
+                                int32_t escape_character_len,
+                                cudf_column_handle* out)
+{
+  return cudf_strings_like_ex(
+    input, pattern, pattern_len, escape_character, escape_character_len, out, nullptr);
+}
+
+cudf_status_t cudf_strings_like_ex(cudf_column_view_handle input,
+                                   char const* pattern,
+                                   int32_t pattern_len,
+                                   char const* escape_character,
+                                   int32_t escape_character_len,
+                                   cudf_column_handle* out,
+                                   cudf_exec_options_t const* options)
+{
+  CUDF_RUST_NULL_CHECK(out, "out is null");
+  *out = nullptr;
+  CUDF_RUST_NULL_CHECK(input, "input is null");
+  cudf_status_t const arg_status =
+    validate_like_arguments(pattern, pattern_len, escape_character, escape_character_len);
+  if (arg_status != CUDF_SUCCESS) { return arg_status; }
+
+  CUDF_RUST_TRY
+  {
+    cudf_exec_context exec{
+      cudf::get_default_stream(), cudf::get_current_device_resource_ref(), nullptr};
+    cudf_status_t const exec_status = cudf_resolve_exec_options(options, &exec);
+    if (exec_status != CUDF_SUCCESS) { return exec_status; }
+
+    auto const pattern_view = make_host_string_view(pattern, pattern_len);
+    auto const escape_view  = make_host_string_view(escape_character, escape_character_len);
+    auto result =
+      cudf::strings::like(to_strings_view(input), pattern_view, escape_view, exec.stream, exec.mr);
+    exec.stream.synchronize();
+    cudf_record_synchronized_stream(exec.stream);
+    *out = cudf_release_column_handle(std::move(result));
+    return CUDF_SUCCESS;
+  }
+  CUDF_RUST_CATCH
+}
+
+// ---------------------------------------------------------------------------
+// Slice
+// ---------------------------------------------------------------------------
+
+cudf_status_t cudf_strings_slice(cudf_column_view_handle input,
+                                 int32_t start,
+                                 int32_t start_valid,
+                                 int32_t stop,
+                                 int32_t stop_valid,
+                                 int32_t step,
+                                 cudf_column_handle* out)
+{
+  return cudf_strings_slice_ex(input, start, start_valid, stop, stop_valid, step, out, nullptr);
+}
+
+cudf_status_t cudf_strings_slice_ex(cudf_column_view_handle input,
+                                    int32_t start,
+                                    int32_t start_valid,
+                                    int32_t stop,
+                                    int32_t stop_valid,
+                                    int32_t step,
+                                    cudf_column_handle* out,
+                                    cudf_exec_options_t const* options)
+{
+  CUDF_RUST_NULL_CHECK(out, "out is null");
+  *out = nullptr;
+  CUDF_RUST_NULL_CHECK(input, "input is null");
+  if (step == 0) {
+    set_error("step must not be 0");
+    return CUDF_ERROR_INVALID_OPERATION;
+  }
+
+  CUDF_RUST_TRY
+  {
+    cudf_exec_context exec{
+      cudf::get_default_stream(), cudf::get_current_device_resource_ref(), nullptr};
+    cudf_status_t const exec_status = cudf_resolve_exec_options(options, &exec);
+    if (exec_status != CUDF_SUCCESS) { return exec_status; }
+
+    cudf::numeric_scalar<cudf::size_type> start_scalar{
+      start, start_valid != 0, exec.stream, exec.mr};
+    cudf::numeric_scalar<cudf::size_type> stop_scalar{stop, stop_valid != 0, exec.stream, exec.mr};
+    cudf::numeric_scalar<cudf::size_type> step_scalar{step, true, exec.stream, exec.mr};
+    auto result = cudf::strings::slice_strings(
+      to_strings_view(input), start_scalar, stop_scalar, step_scalar, exec.stream, exec.mr);
+    *out = cudf_release_column_handle(std::move(result));
     return CUDF_SUCCESS;
   }
   CUDF_RUST_CATCH

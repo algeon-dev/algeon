@@ -76,6 +76,53 @@ cudf_status_t cudf_strings_ends_with_ex(cudf_column_view_handle input,
                                         cudf_column_handle* out,
                                         const cudf_exec_options_t* options);
 
+/// Element-wise SQL LIKE pattern match. Returns BOOL8 column.
+///
+/// `pattern` and `escape_character` are borrowed host byte ranges. Null
+/// pointers are accepted only when the corresponding length is zero. The
+/// escape range must be empty or contain exactly one byte.
+cudf_status_t cudf_strings_like(cudf_column_view_handle input,
+                                const char* pattern,
+                                int32_t pattern_len,
+                                const char* escape_character,
+                                int32_t escape_character_len,
+                                cudf_column_handle* out);
+
+/// Element-wise SQL LIKE pattern match with explicit execution context.
+///
+/// On success, synchronizes the selected stream before returning so borrowed
+/// `pattern` and `escape_character` host memory is no longer in use.
+cudf_status_t cudf_strings_like_ex(cudf_column_view_handle input,
+                                   const char* pattern,
+                                   int32_t pattern_len,
+                                   const char* escape_character,
+                                   int32_t escape_character_len,
+                                   cudf_column_handle* out,
+                                   const cudf_exec_options_t* options);
+
+// ---------------------------------------------------------------------------
+// Slice
+// ---------------------------------------------------------------------------
+
+/// Slice each string by character positions `[start, stop)` and `step`.
+cudf_status_t cudf_strings_slice(cudf_column_view_handle input,
+                                 int32_t start,
+                                 int32_t start_valid,
+                                 int32_t stop,
+                                 int32_t stop_valid,
+                                 int32_t step,
+                                 cudf_column_handle* out);
+
+/// Slice each string with explicit execution context.
+cudf_status_t cudf_strings_slice_ex(cudf_column_view_handle input,
+                                    int32_t start,
+                                    int32_t start_valid,
+                                    int32_t stop,
+                                    int32_t stop_valid,
+                                    int32_t step,
+                                    cudf_column_handle* out,
+                                    const cudf_exec_options_t* options);
+
 // ---------------------------------------------------------------------------
 // Strip / trim
 // ---------------------------------------------------------------------------

@@ -8,7 +8,13 @@ use crate::{
         types::{DataType, TypeId},
     },
     internal::resolve::missing_column_error,
-    ops::{Expr, binary::BinaryOperator, expr::LitValue, filter, unary::UnaryOperator},
+    ops::{
+        Expr,
+        binary::BinaryOperator,
+        expr::{self, LitValue},
+        filter,
+        unary::UnaryOperator,
+    },
     runtime::{ExecutionOverrides, execution_domain::ExecutionDomain},
 };
 
@@ -37,7 +43,10 @@ impl DataFrame {
     /// - alias wrappers around a supported inner predicate
     ///
     /// Unsupported predicate nodes fail explicitly before the low-level
-    /// filtering path runs.
+    /// filtering path runs, except predicates containing string `LIKE` or
+    /// string `slice` expressions may be evaluated through the general
+    /// expression engine and applied as a boolean mask until the fused
+    /// row-predicate path supports those string operations directly.
     ///
     /// The predicate must evaluate to a row-aligned `Bool8`. Rows where the
     /// predicate is `false` or null are dropped.
@@ -121,7 +130,13 @@ impl DataFrame {
         output_domain: Arc<ExecutionDomain>,
         operation: &'static str,
     ) -> Result<Self> {
-        let lowered = lower_row_predicate(self, &predicate, operation)?;
+        let lowered = match lower_row_predicate(self, &predicate, operation) {
+            Ok(lowered) => lowered,
+            Err(err) if should_use_string_mask_fallback(&err, &predicate) => {
+                return self.filter_expr_via_boolean_mask(predicate, output_domain, operation);
+            },
+            Err(err) => return Err(err),
+        };
         if !ExecutionDomain::same_provenance(&self.domain, &output_domain) {
             ExecutionDomain::insert_stream_dependency(&self.domain, &output_domain, operation)?;
         }
@@ -138,6 +153,39 @@ impl DataFrame {
         )?;
         Self::from_table_with_names(result_table, self.column_names_owned())
     }
+
+    fn filter_expr_via_boolean_mask(
+        &self,
+        predicate: Expr,
+        output_domain: Arc<ExecutionDomain>,
+        operation: &'static str,
+    ) -> Result<Self> {
+        let mask = expr::eval_in_output_domain(self, Arc::clone(&output_domain), operation, &predicate)?;
+        let mask_view = mask.view()?;
+        filter::validate_boolean_mask(&mask_view, self.num_rows(), "DataFrame row count", operation)?;
+        let execution = crate::runtime::execution_resolver::ResolvedExecution::with_output_domain(
+            Arc::clone(&output_domain),
+            [&self.domain, mask_view.execution_domain()],
+            operation,
+        )?;
+        let output_domain = Arc::clone(execution.output_domain());
+        let tv = self.build_table_view()?;
+        let result_table = filter::apply_boolean_mask_impl(
+            &tv,
+            &mask_view,
+            &output_domain,
+            Some(execution.exec_options()),
+            operation,
+        )?;
+        Self::from_table_with_names(result_table, self.column_names_owned())
+    }
+}
+
+fn should_use_string_mask_fallback(err: &Error, predicate: &Expr) -> bool {
+    err.code() == ErrorCode::UnsupportedOperation
+        && err.detail_value("resource") == Some("row_predicate")
+        && err.detail_value("reason") == Some("unsupported_expr_kind")
+        && predicate.contains_string_like_or_slice()
 }
 
 fn lower_row_predicate(df: &DataFrame, expr: &Expr, operation: &'static str) -> Result<LoweredRowPredicate> {

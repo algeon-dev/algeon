@@ -1,3 +1,5 @@
+use std::os::raw::c_char;
+
 use crate::{
     cudf_column_handle, cudf_column_view_handle, cudf_exec_options_t, cudf_scalar_handle, cudf_status_t,
     cudf_strip_side_t,
@@ -67,6 +69,53 @@ extern "C" {
     pub fn cudf_strings_ends_with_ex(
         input: cudf_column_view_handle,
         target: cudf_scalar_handle,
+        out: *mut cudf_column_handle,
+        options: *const cudf_exec_options_t,
+    ) -> cudf_status_t;
+
+    /// Element-wise SQL LIKE pattern match. Returns BOOL8 column.
+    pub fn cudf_strings_like(
+        input: cudf_column_view_handle,
+        pattern: *const c_char,
+        pattern_len: i32,
+        escape: *const c_char,
+        escape_len: i32,
+        out: *mut cudf_column_handle,
+    ) -> cudf_status_t;
+
+    /// Element-wise SQL LIKE pattern match with explicit execution context.
+    ///
+    /// The selected stream is synchronized before return on success so
+    /// borrowed `pattern` and `escape` host memory is no longer in use.
+    pub fn cudf_strings_like_ex(
+        input: cudf_column_view_handle,
+        pattern: *const c_char,
+        pattern_len: i32,
+        escape: *const c_char,
+        escape_len: i32,
+        out: *mut cudf_column_handle,
+        options: *const cudf_exec_options_t,
+    ) -> cudf_status_t;
+
+    /// Slice each string by character positions `[start, stop)` and `step`.
+    pub fn cudf_strings_slice(
+        input: cudf_column_view_handle,
+        start: i32,
+        start_valid: i32,
+        stop: i32,
+        stop_valid: i32,
+        step: i32,
+        out: *mut cudf_column_handle,
+    ) -> cudf_status_t;
+
+    /// Slice each string with explicit execution context.
+    pub fn cudf_strings_slice_ex(
+        input: cudf_column_view_handle,
+        start: i32,
+        start_valid: i32,
+        stop: i32,
+        stop_valid: i32,
+        step: i32,
         out: *mut cudf_column_handle,
         options: *const cudf_exec_options_t,
     ) -> cudf_status_t;

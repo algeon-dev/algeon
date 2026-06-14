@@ -3,7 +3,7 @@
 //! These functions operate on `STRING`-typed columns and return new columns.
 //! All operations are null-aware: null input elements produce null output.
 
-use std::{ptr, sync::Arc};
+use std::{os::raw::c_char, ptr, sync::Arc};
 
 use crate::{
     core::{
@@ -39,6 +39,44 @@ impl StripSide {
             StripSide::Right => cudf_sys::cudf_strip_side_t::CUDF_STRIP_RIGHT,
             StripSide::Both => cudf_sys::cudf_strip_side_t::CUDF_STRIP_BOTH,
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// String slice options
+// ---------------------------------------------------------------------------
+
+/// Fixed-position string slicing options.
+///
+/// `start` and `stop` use libcudf's zero-based character positions and the
+/// half-open range `[start, stop)`. `None` leaves the corresponding bound open.
+/// `step` is the character stride and must be non-zero.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StringSliceOptions {
+    /// First character position to include, or open start when `None`.
+    pub start: Option<i32>,
+    /// First character position to exclude, or open end when `None`.
+    pub stop: Option<i32>,
+    /// Character stride. Must not be zero.
+    pub step: i32,
+}
+
+impl StringSliceOptions {
+    /// Create string slice options with a default `step` of `1`.
+    pub fn new(start: Option<i32>, stop: Option<i32>) -> Self {
+        Self { start, stop, step: 1 }
+    }
+
+    /// Set the character stride.
+    pub fn with_step(mut self, step: i32) -> Self {
+        self.step = step;
+        self
+    }
+}
+
+impl Default for StringSliceOptions {
+    fn default() -> Self {
+        Self::new(None, None)
     }
 }
 
@@ -122,6 +160,62 @@ pub(crate) fn str_contains_impl(
     unsafe { Column::from_raw_with_domain(out, Arc::clone(output_domain)) }
 }
 
+/// SQL `LIKE` pattern match against a literal pattern. Returns a BOOL8 column.
+///
+/// The pattern uses SQL wildcard semantics: `%` matches zero or more
+/// characters and `_` matches one character. `escape` may specify zero or one
+/// ASCII escape character for literal wildcard matching. This is not a regex
+/// API.
+///
+/// # Synchronization
+/// The C shim synchronizes the selected stream before returning so libcudf no
+/// longer borrows the host pattern or escape bytes.
+pub fn like(input: &ColumnView<'_>, pattern: &str, escape: Option<&str>) -> Result<Column> {
+    let ctx = ExecutionOverrides::new();
+    let execution = ResolvedExecution::unary(input.execution_domain(), &ctx, "strings::like")?;
+    like_impl(input, pattern, escape, execution.output_domain(), Some(execution.exec_options()), "strings::like")
+}
+
+pub(crate) fn like_impl(
+    input: &ColumnView<'_>,
+    pattern: &str,
+    escape: Option<&str>,
+    output_domain: &Arc<ExecutionDomain>,
+    exec_options: Option<&cudf_sys::cudf_exec_options_t>,
+    operation: &'static str,
+) -> Result<Column> {
+    let pattern_len = error::usize_to_i32(pattern.len(), operation, "pattern_len")?;
+    let escape = escape.unwrap_or("");
+    let escape_len = error::usize_to_i32(escape.len(), operation, "escape_len")?;
+    let escape_ptr = if escape.is_empty() { ptr::null() } else { escape.as_ptr() as *const c_char };
+    let mut out = ptr::null_mut();
+    let status = match exec_options {
+        Some(options) => unsafe {
+            cudf_sys::cudf_strings_like_ex(
+                input.raw_handle(),
+                pattern.as_ptr() as *const c_char,
+                pattern_len,
+                escape_ptr,
+                escape_len,
+                &mut out,
+                options,
+            )
+        },
+        None => unsafe {
+            cudf_sys::cudf_strings_like(
+                input.raw_handle(),
+                pattern.as_ptr() as *const c_char,
+                pattern_len,
+                escape_ptr,
+                escape_len,
+                &mut out,
+            )
+        },
+    };
+    error::check_status_in(status, operation)?;
+    unsafe { Column::from_raw_with_domain(out, Arc::clone(output_domain)) }
+}
+
 /// Element-wise starts-with test against a scalar string. Returns a BOOL8 column.
 pub fn starts_with(input: &ColumnView<'_>, target: &Scalar) -> Result<Column> {
     let ctx = ExecutionOverrides::new();
@@ -169,6 +263,61 @@ pub(crate) fn ends_with_impl(
             cudf_sys::cudf_strings_ends_with_ex(input.raw_handle(), target.raw_handle(), &mut out, options)
         },
         None => unsafe { cudf_sys::cudf_strings_ends_with(input.raw_handle(), target.raw_handle(), &mut out) },
+    };
+    error::check_status_in(status, operation)?;
+    unsafe { Column::from_raw_with_domain(out, Arc::clone(output_domain)) }
+}
+
+/// Slice each string using zero-based character positions. Returns a STRING column.
+///
+/// Bounds use libcudf's `[start, stop)` character-position semantics. This
+/// allocates a new GPU string column and preserves nulls.
+pub fn slice(input: &ColumnView<'_>, options: StringSliceOptions) -> Result<Column> {
+    let ctx = ExecutionOverrides::new();
+    let execution = ResolvedExecution::unary(input.execution_domain(), &ctx, "strings::slice")?;
+    slice_impl(input, options, execution.output_domain(), Some(execution.exec_options()), "strings::slice")
+}
+
+pub(crate) fn slice_impl(
+    input: &ColumnView<'_>,
+    options: StringSliceOptions,
+    output_domain: &Arc<ExecutionDomain>,
+    exec_options: Option<&cudf_sys::cudf_exec_options_t>,
+    operation: &'static str,
+) -> Result<Column> {
+    let (start, start_valid) = match options.start {
+        Some(start) => (start, 1),
+        None => (0, 0),
+    };
+    let (stop, stop_valid) = match options.stop {
+        Some(stop) => (stop, 1),
+        None => (0, 0),
+    };
+    let mut out = ptr::null_mut();
+    let status = match exec_options {
+        Some(exec_options) => unsafe {
+            cudf_sys::cudf_strings_slice_ex(
+                input.raw_handle(),
+                start,
+                start_valid,
+                stop,
+                stop_valid,
+                options.step,
+                &mut out,
+                exec_options,
+            )
+        },
+        None => unsafe {
+            cudf_sys::cudf_strings_slice(
+                input.raw_handle(),
+                start,
+                start_valid,
+                stop,
+                stop_valid,
+                options.step,
+                &mut out,
+            )
+        },
     };
     error::check_status_in(status, operation)?;
     unsafe { Column::from_raw_with_domain(out, Arc::clone(output_domain)) }
