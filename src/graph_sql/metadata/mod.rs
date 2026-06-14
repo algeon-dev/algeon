@@ -21,9 +21,11 @@ const ERROR_VERTEX_DTYPE_MISMATCH: &str = "vertex_dtype_mismatch";
 const ERROR_UNSUPPORTED_WEIGHT_DTYPE: &str = "unsupported_weight_dtype";
 const ERROR_UNSUPPORTED_OPTION: &str = "unsupported_option";
 
-pub(super) fn algorithm_for_function_name(function_name: &str) -> Option<CugraphAlgorithm> {
+pub(super) fn algorithm_for_metadata_name(name: &str) -> Option<CugraphAlgorithm> {
     CUGRAPH_OPERATION_REGISTRY
         .iter()
-        .find(|definition| definition.sql_function_name == function_name)
+        .find(|definition| {
+            definition.sql_function_name == name || definition.native_algorithm.definition().name == name
+        })
         .map(|definition| definition.algorithm)
 }
