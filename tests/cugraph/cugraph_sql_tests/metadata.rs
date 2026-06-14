@@ -84,6 +84,45 @@ async fn cugraph_metadata_list_algorithms_reports_allowlist_state() {
     assert_eq!(string_value(batch, 0, 3), "cugraph_sssp");
     assert!(bool_value(batch, 5, 3));
     assert_eq!(string_value(batch, 6, 3), "optional");
+
+    let force_atlas2 = ctx
+        .sql(
+            "SELECT algorithm \
+             FROM cugraph_list_algorithms() \
+             WHERE function_name = 'cugraph_force_atlas2'",
+        )
+        .await
+        .unwrap()
+        .collect()
+        .await
+        .unwrap();
+    assert_eq!(string_value(single_batch(&force_atlas2), 0, 0), "ForceAtlas2");
+
+    let force_atlas2_describe = ctx
+        .sql(
+            "SELECT options_schema_json, limitations_json \
+             FROM cugraph_describe_algorithm('cugraph_force_atlas2')",
+        )
+        .await
+        .unwrap()
+        .collect()
+        .await
+        .unwrap();
+    let force_atlas2_describe = single_batch(&force_atlas2_describe);
+    let options_schema = json_value(string_value(force_atlas2_describe, 0, 0));
+    assert_eq!(
+        options_schema["algorithm_options"]["prevent_overlapping"]["allowed_values"],
+        serde_json::json!([false]),
+    );
+    let limitations = json_value(string_value(force_atlas2_describe, 1, 0));
+    assert!(
+        limitations
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|entry| entry.as_str().is_some_and(|text| text.contains("vertex_radius"))),
+        "ForceAtlas2 metadata must disclose the current prevent_overlapping limitation",
+    );
 }
 
 #[tokio::test]
@@ -427,6 +466,23 @@ async fn cugraph_metadata_validate_call_returns_stable_invalid_rows() {
         "unsupported_option",
     )
     .await;
+}
+
+#[tokio::test]
+async fn cugraph_metadata_validate_call_reports_unsupported_force_atlas2_overlap_prevention() {
+    let state = SessionStateBuilder::new_with_default_features().with_cugraph_sql(CugraphSqlConfig::default()).build();
+    let ctx = SessionContext::new_with_state(state);
+    register_edge_memtable(&ctx, "edges", DataType::Int64, DataType::Int64, DataType::Float64);
+
+    let batch = validate_call_batch(
+        &ctx,
+        "cugraph_force_atlas2",
+        r#"{"src_col":"src","dst_col":"dst","options":{"prevent_overlapping":true}}"#,
+    )
+    .await;
+    assert!(!bool_value(&batch, 0, 0));
+    assert_eq!(string_value(&batch, 1, 0), "unsupported_option");
+    assert!(string_value(&batch, 2, 0).contains("vertex_radius side input"));
 }
 
 #[tokio::test]

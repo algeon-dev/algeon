@@ -37,9 +37,9 @@ use nexus_query_engine::{
     GpuResultHandle, GraphAlgorithm, GraphAlgorithmParams, GraphAlgorithmSpec, GraphBfsParams,
     GraphBfsPredicateInputs as NativeGraphBfsPredicateInputs, GraphConstructionOptions, GraphConstructionPolicy,
     GraphCoreNumberParams, GraphDegreesAllParams, GraphEcgParams, GraphEdgeColumnBindings,
-    GraphEdgePredicateInput as NativeGraphEdgePredicateInput, GraphEigenvectorCentralityParams, GraphHitsParams,
-    GraphInDegreesAllParams, GraphKCoreDegreeType, GraphKCoreParams, GraphKatzCentralityParams, GraphLeidenParams,
-    GraphLouvainParams, GraphMstParams, GraphOutDegreesAllParams, GraphPageRankParams,
+    GraphEdgePredicateInput as NativeGraphEdgePredicateInput, GraphEigenvectorCentralityParams, GraphForceAtlas2Params,
+    GraphHitsParams, GraphInDegreesAllParams, GraphKCoreDegreeType, GraphKCoreParams, GraphKatzCentralityParams,
+    GraphLeidenParams, GraphLouvainParams, GraphMstParams, GraphOutDegreesAllParams, GraphPageRankParams,
     GraphPredicateInput as NativeGraphPredicateInput, GraphSccParams, GraphSpectralClusteringParams, GraphSsspParams,
     GraphTriangleCountAllParams, GraphWccParams, LimitSpec, LiteralValue, ProjectionOutput, QueryMetrics, QueryOutput,
     QueryPlanBuilder, SourceNode, execute_query_plan, execute_query_plan_with_gpu_inputs,
@@ -2027,6 +2027,22 @@ fn native_algorithm_params(
                 seed: params.seed,
             })
         },
+        CugraphAlgorithmParams::ForceAtlas2(params) => GraphAlgorithmParams::ForceAtlas2(GraphForceAtlas2Params {
+            max_iter: params.max_iter,
+            outbound_attraction_distribution: params.outbound_attraction_distribution,
+            lin_log_mode: params.lin_log_mode,
+            prevent_overlapping: params.prevent_overlapping,
+            overlap_scaling_ratio: params.overlap_scaling_ratio,
+            edge_weight_influence: params.edge_weight_influence,
+            jitter_tolerance: params.jitter_tolerance,
+            barnes_hut_optimize: params.barnes_hut_optimize,
+            barnes_hut_theta: params.barnes_hut_theta,
+            scaling_ratio: params.scaling_ratio,
+            strong_gravity_mode: params.strong_gravity_mode,
+            gravity: params.gravity,
+            verbose: params.verbose,
+            seed: params.seed,
+        }),
     }
 }
 

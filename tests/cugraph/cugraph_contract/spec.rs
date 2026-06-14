@@ -14,10 +14,10 @@ use nexus_query_engine::{
     GRAPH_ALGORITHM_STRICT_BOUNDED_MEMORY_BOUNDARY, GRAPH_ALGORITHM_STRICT_BOUNDED_REQUIRED_CONTRACT,
     GRAPH_OPERATION_REGISTRY, GpuResidentSource, GraphAlgorithm, GraphAlgorithmParams, GraphAlgorithmSpec,
     GraphBfsParams, GraphConstructionOptions, GraphCoreNumberParams, GraphDegreesAllParams, GraphEcgParams,
-    GraphEdgeColumnBindings, GraphEigenvectorCentralityParams, GraphHitsParams, GraphInDegreesAllParams,
-    GraphKCoreParams, GraphKatzCentralityParams, GraphLeidenParams, GraphLouvainParams, GraphMstParams,
-    GraphOutDegreesAllParams, GraphPageRankParams, GraphSccParams, GraphSpectralClusteringParams, GraphSsspParams,
-    GraphTriangleCountAllParams, GraphWccParams, PlanNode, QueryPlan, QueryPlanBuilder, SourceNode,
+    GraphEdgeColumnBindings, GraphEigenvectorCentralityParams, GraphForceAtlas2Params, GraphHitsParams,
+    GraphInDegreesAllParams, GraphKCoreParams, GraphKatzCentralityParams, GraphLeidenParams, GraphLouvainParams,
+    GraphMstParams, GraphOutDegreesAllParams, GraphPageRankParams, GraphSccParams, GraphSpectralClusteringParams,
+    GraphSsspParams, GraphTriangleCountAllParams, GraphWccParams, PlanNode, QueryPlan, QueryPlanBuilder, SourceNode,
     StrictBoundedContractReport, StrictBoundedExecutionMode,
     capability::{CapabilityDecision, ContractQuality, ContractStatus, NodeOperator},
     stable_graph_result_schema,
@@ -55,6 +55,7 @@ pub fn default_params(algorithm: GraphAlgorithm) -> GraphAlgorithmParams {
         GraphAlgorithm::BalancedCutClustering => {
             GraphAlgorithmParams::BalancedCutClustering(GraphSpectralClusteringParams::default())
         },
+        GraphAlgorithm::ForceAtlas2 => GraphAlgorithmParams::ForceAtlas2(GraphForceAtlas2Params::default()),
     }
 }
 
@@ -210,6 +211,7 @@ fn registry_pins_current_cugraph_sql_inventory() {
             CugraphAlgorithm::Ecg,
             CugraphAlgorithm::SpectralModularityMaximization,
             CugraphAlgorithm::BalancedCutClustering,
+            CugraphAlgorithm::ForceAtlas2,
         ],
         "cuGraph SQL operation registry order is part of the public surface",
     );

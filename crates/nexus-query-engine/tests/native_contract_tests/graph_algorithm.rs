@@ -350,6 +350,7 @@ fn graph_operation_registry_pins_baseline_inventory() {
                 GraphLayoutRequirement::Forward,
             ),
             (GraphAlgorithm::BalancedCutClustering, "balanced_cut_clustering", GraphLayoutRequirement::Forward),
+            (GraphAlgorithm::ForceAtlas2, "force_atlas2", GraphLayoutRequirement::Any),
         ],
         "graph operation registry order is part of the public surface; \
          adding an algorithm requires extending this baseline list",
@@ -404,6 +405,23 @@ fn graph_operation_registry_pins_baseline_inventory() {
         GraphAlgorithm::all().collect::<Vec<_>>(),
         GRAPH_OPERATION_REGISTRY.iter().map(|def| def.algorithm).collect::<Vec<_>>(),
         "GraphAlgorithm::all must iterate the registry order",
+    );
+}
+
+#[test]
+fn force_atlas2_result_schema_contract_is_exact() {
+    assert_eq!(
+        stable_graph_result_schema(GraphAlgorithm::ForceAtlas2)
+            .fields()
+            .iter()
+            .map(|field| field.as_ref().clone())
+            .collect::<Vec<_>>(),
+        vec![
+            Field::new("vertex", DataType::Int64, false),
+            Field::new("x", DataType::Float32, false),
+            Field::new("y", DataType::Float32, false),
+        ],
+        "ForceAtlas2 layout result schema is part of the native graph contract",
     );
 }
 
@@ -570,6 +588,13 @@ fn graph_operation_registry_pins_descriptor_contracts() {
                 GraphWeightPolicy::Ignored,
                 GraphOutputSchemaKind::Fixed,
                 true,
+            ),
+            (
+                GraphAlgorithm::ForceAtlas2,
+                GraphSourceVertexRequirement::None,
+                GraphWeightPolicy::Optional,
+                GraphOutputSchemaKind::Fixed,
+                false,
             ),
         ],
         "native graph descriptor fields are part of the SQL/native graph contract",
@@ -757,6 +782,7 @@ const CUGRAPH_RS_METHOD_TO_REGISTRY: &[(&str, &str)] = &[
     ("ecg", "ecg"),
     ("spectral_modularity_maximization", "spectral_modularity_maximization"),
     ("balanced_cut_clustering", "balanced_cut_clustering"),
+    ("force_atlas2", "force_atlas2"),
 ];
 
 /// cugraph-rs `Graph` method names that are intentionally absent from the
@@ -770,10 +796,9 @@ const CUGRAPH_RS_METHOD_TO_REGISTRY: &[(&str, &str)] = &[
 ///   analyze_clustering_*, degrees/in_degrees/out_degrees (with vertex selection),
 ///   select_random_vertices
 ///
-/// **Milestone 3** (stochastic / sampling / layout):
+/// **Milestone 3** (stochastic / sampling):
 ///   uniform_random_walks, biased_random_walks, node2vec_random_walks,
-///   homogeneous_*_neighbor_sample, homogeneous_*_temporal_neighbor_sample,
-///   force_atlas2
+///   homogeneous_*_neighbor_sample, homogeneous_*_temporal_neighbor_sample
 ///
 /// When a new method is added to cugraph-rs and it is not yet implemented,
 /// add it here with a comment indicating the planned stage. When it is
@@ -824,7 +849,6 @@ const KNOWN_MISSING_CUGRAPH_RS_METHODS: &[&str] = &[
     "homogeneous_biased_neighbor_sample",
     "homogeneous_uniform_temporal_neighbor_sample",
     "homogeneous_biased_temporal_neighbor_sample",
-    "force_atlas2",
     "force_atlas2_with",
 ];
 

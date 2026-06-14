@@ -65,6 +65,7 @@ async fn cugraph_sql_planning_exposes_stable_output_schemas() {
         CugraphAlgorithm::BalancedCutClustering,
     )
     .await;
+    assert_sql_schema(&ctx, "SELECT * FROM cugraph_force_atlas2('graph_edges')", CugraphAlgorithm::ForceAtlas2).await;
 }
 
 #[tokio::test]
@@ -381,6 +382,14 @@ fn cugraph_sql_planning_schema_contracts_are_exact() {
             "community algorithm {algorithm:?} must expose vertex + partition schema",
         );
     }
+    assert_eq!(
+        schema_fields(CugraphAlgorithm::ForceAtlas2),
+        vec![
+            Field::new("vertex", DataType::Int64, false),
+            Field::new("x", DataType::Float32, false),
+            Field::new("y", DataType::Float32, false),
+        ],
+    );
 }
 
 #[tokio::test]

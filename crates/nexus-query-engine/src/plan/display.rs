@@ -438,6 +438,25 @@ fn format_graph_algorithm_params(params: &super::GraphAlgorithmParams) -> String
             params.k_means_max_iterations,
             params.seed,
         ),
+        super::GraphAlgorithmParams::ForceAtlas2(params) => format!(
+            "max_iter={}:outbound_attraction_distribution={}:lin_log_mode={}:prevent_overlapping={}:\
+             overlap_scaling_ratio={}:edge_weight_influence={}:jitter_tolerance={}:barnes_hut_optimize={}:\
+             barnes_hut_theta={}:scaling_ratio={}:strong_gravity_mode={}:gravity={}:verbose={}:seed={}",
+            params.max_iter,
+            params.outbound_attraction_distribution,
+            params.lin_log_mode,
+            params.prevent_overlapping,
+            params.overlap_scaling_ratio,
+            params.edge_weight_influence,
+            params.jitter_tolerance,
+            params.barnes_hut_optimize,
+            params.barnes_hut_theta,
+            params.scaling_ratio,
+            params.strong_gravity_mode,
+            params.gravity,
+            params.verbose,
+            params.seed,
+        ),
     }
 }
 

@@ -70,7 +70,12 @@ fn cugraph_sql_planning_parses_defaults_explicit_columns_and_null_weight() {
     // triangle_count_all / core_number / k_core must also default to
     // directed=false so their parity oracles (which Python cuGraph forces
     // undirected) are computed under the same semantics as the adapter.
-    for algorithm in [CugraphAlgorithm::TriangleCountAll, CugraphAlgorithm::CoreNumber, CugraphAlgorithm::KCore] {
+    for algorithm in [
+        CugraphAlgorithm::TriangleCountAll,
+        CugraphAlgorithm::CoreNumber,
+        CugraphAlgorithm::KCore,
+        CugraphAlgorithm::ForceAtlas2,
+    ] {
         let spec = parse_cugraph_algorithm_spec(algorithm, &[lit("edges")], &config).unwrap();
         assert!(!spec.graph_options.directed, "{} must default to directed=false", algorithm.function_name());
     }
@@ -806,6 +811,95 @@ fn cugraph_sql_planning_parses_algorithm_options() {
             seed: 11,
             ..Default::default()
         }),
+    );
+
+    let spec = parse_cugraph_algorithm_spec(
+        CugraphAlgorithm::ForceAtlas2,
+        &[
+            lit("graph_edges"),
+            lit("src"),
+            lit("dst"),
+            lit("weight"),
+            lit(r#"{"max_iter":25,"outbound_attraction_distribution":true,"lin_log_mode":true,"overlap_scaling_ratio":3.0,"edge_weight_influence":0.5,"jitter_tolerance":0.25,"barnes_hut_optimize":true,"barnes_hut_theta":0.75,"scaling_ratio":4.0,"strong_gravity_mode":true,"gravity":2.0,"verbose":true,"seed":123}"#),
+        ],
+        &config,
+    )
+    .unwrap();
+    assert_eq!(spec.weight_col, Some("weight".to_string()));
+    assert_eq!(
+        spec.params,
+        CugraphAlgorithmParams::ForceAtlas2(datafusion_nexus::CugraphForceAtlas2Params {
+            max_iter: 25,
+            outbound_attraction_distribution: true,
+            lin_log_mode: true,
+            prevent_overlapping: false,
+            overlap_scaling_ratio: 3.0,
+            edge_weight_influence: 0.5,
+            jitter_tolerance: 0.25,
+            barnes_hut_optimize: true,
+            barnes_hut_theta: 0.75,
+            scaling_ratio: 4.0,
+            strong_gravity_mode: true,
+            gravity: 2.0,
+            verbose: true,
+            seed: 123,
+        }),
+    );
+    assert_error_contains(
+        parse_cugraph_algorithm_spec(
+            CugraphAlgorithm::ForceAtlas2,
+            &[
+                lit("graph_edges"),
+                lit("src"),
+                lit("dst"),
+                datafusion::logical_expr::lit(ScalarValue::Null),
+                lit(r#"{"barnes_hut_theta":1.5}"#),
+            ],
+            &config,
+        ),
+        "barnes_hut_theta must be in [0, 1]",
+    );
+    assert_error_contains(
+        parse_cugraph_algorithm_spec(
+            CugraphAlgorithm::ForceAtlas2,
+            &[
+                lit("graph_edges"),
+                lit("src"),
+                lit("dst"),
+                datafusion::logical_expr::lit(ScalarValue::Null),
+                lit(r#"{"max_iter":0}"#),
+            ],
+            &config,
+        ),
+        "ForceAtlas2 max_iter must be at least 1",
+    );
+    assert_error_contains(
+        parse_cugraph_algorithm_spec(
+            CugraphAlgorithm::ForceAtlas2,
+            &[
+                lit("graph_edges"),
+                lit("src"),
+                lit("dst"),
+                datafusion::logical_expr::lit(ScalarValue::Null),
+                lit(r#"{"max_iter":2147483648}"#),
+            ],
+            &config,
+        ),
+        "ForceAtlas2 max_iter must be at most i32::MAX",
+    );
+    assert_error_contains(
+        parse_cugraph_algorithm_spec(
+            CugraphAlgorithm::ForceAtlas2,
+            &[
+                lit("graph_edges"),
+                lit("src"),
+                lit("dst"),
+                datafusion::logical_expr::lit(ScalarValue::Null),
+                lit(r#"{"prevent_overlapping":true}"#),
+            ],
+            &config,
+        ),
+        "prevent_overlapping requires vertex_radius side input",
     );
 }
 
