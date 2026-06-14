@@ -19,7 +19,7 @@ use cudf_sys::{
     cudf_test_event_stream_wait_call_count_for_stream_raw, cudf_test_exec_last_device, cudf_test_exec_last_mr_raw,
     cudf_test_exec_last_stream_value, cudf_test_exec_last_sync_stream_value, cudf_test_exec_reset_observation,
 };
-use rapids_interop::InteropError;
+use rapids_interop::{ColumnLayout, InteropError, Placement};
 
 #[allow(dead_code)]
 pub fn sample_df() -> DataFrame {
@@ -159,6 +159,39 @@ pub fn nullable_series<T: HostColumnData>(
 #[allow(dead_code)]
 pub fn unnamed_nullable_series<T: HostColumnData>(data: &[T], validity: &[bool]) -> cudf::Result<Series> {
     with_test_runtime(|rt| rt.nullable_series(data, validity))
+}
+
+#[allow(dead_code)]
+pub fn host_export_fixed_width_bytes(series: &Series) -> Vec<u8> {
+    let export = series.try_prepare_host_column_export().unwrap();
+    let values_id = match export.column().layout() {
+        ColumnLayout::FixedWidth { values } => *values,
+        other => panic!("expected fixed-width host export, got {other:?}"),
+    };
+    let binding =
+        export.bindings().iter().find(|binding| binding.id() == values_id).expect("missing fixed-width values binding");
+
+    assert_eq!(*binding.placement(), Placement::Host);
+
+    // SAFETY: prepared host exports retain their backing host buffers, and the
+    // binding lifetime is tied to the export value held in this function.
+    unsafe { std::slice::from_raw_parts(binding.bytes().base_ptr() as *const u8, binding.bytes().byte_len()).to_vec() }
+}
+
+#[allow(dead_code)]
+pub fn host_export_i32_values(series: &Series) -> Vec<i32> {
+    host_export_fixed_width_bytes(series)
+        .chunks_exact(std::mem::size_of::<i32>())
+        .map(|chunk| i32::from_ne_bytes(chunk.try_into().unwrap()))
+        .collect()
+}
+
+#[allow(dead_code)]
+pub fn host_export_i64_values(series: &Series) -> Vec<i64> {
+    host_export_fixed_width_bytes(series)
+        .chunks_exact(std::mem::size_of::<i64>())
+        .map(|chunk| i64::from_ne_bytes(chunk.try_into().unwrap()))
+        .collect()
 }
 
 #[allow(dead_code)]

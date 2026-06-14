@@ -494,7 +494,8 @@ impl Expr {
                 let right = rhs.eval_with_context(ctx)?;
                 let lv = left.view()?;
                 let rv = right.view()?;
-                let out_type = binary::infer_binary_output_type(lv.data_type()?.id(), rv.data_type()?.id(), *op)?;
+                let out_type =
+                    binary::infer_binary_output_dtype_in(lv.data_type()?, rv.data_type()?, *op, ctx.operation)?;
                 let col = binary::binary_operation_vv_impl(
                     &lv,
                     &rv,

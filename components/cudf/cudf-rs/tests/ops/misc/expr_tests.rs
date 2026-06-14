@@ -317,6 +317,17 @@ fn rem_col_lit() {
 }
 
 #[test]
+fn binary_expr_type_error_preserves_eval_operation_and_operator_detail() {
+    let df = xy_df();
+
+    let err = (col("x") + lit("not_numeric")).eval(&df).unwrap_err();
+
+    assert_eq!(err.code(), ErrorCode::TypeMismatch);
+    assert_eq!(err.operation(), "expr::eval_in");
+    assert_eq!(err.detail_value("operator"), Some("add"));
+}
+
+#[test]
 fn neg_expr() {
     let df = xy_df(); // x = [10, 20, 30]
     assert_eq!(eval_i32((-col("x")).alias("neg"), &df), vec![-10, -20, -30]);
@@ -436,6 +447,39 @@ fn ge_and_le() {
     let df = xy_df();
     assert_eq!(eval_bool(col("x").ge(lit(20i32)).alias("ge20"), &df), vec![false, true, true]);
     assert_eq!(eval_bool(col("x").le(lit(20i32)).alias("le20"), &df), vec![true, true, false]);
+}
+
+#[test]
+fn timestamp_days_literal_comparison_matches_tpch_date_filter_shape() {
+    let shipdate = crate::common::series("shipdate", &[18_262i32, 18_263, 18_264])
+        .unwrap()
+        .astype(TypeId::DurationDays)
+        .unwrap()
+        .astype(TypeId::TimestampDays)
+        .unwrap();
+    let df = df_with_series("shipdate", shipdate);
+
+    let result =
+        eval(col("shipdate").lt(lit_timestamp_raw(18_263, TimestampResolution::Days)).alias("before_cutoff"), &df);
+
+    assert_eq!(result.dtype().unwrap().id(), TypeId::Bool8);
+    assert_eq!(result.to_vec_strict::<bool>().unwrap(), vec![true, false, false]);
+}
+
+#[test]
+fn timestamp_days_plus_duration_expr_preserves_timestamp_resolution() {
+    let shipdate = crate::common::series("shipdate", &[18_262i32, 18_263, 18_264])
+        .unwrap()
+        .astype(TypeId::DurationDays)
+        .unwrap()
+        .astype(TypeId::TimestampDays)
+        .unwrap();
+    let df = df_with_series("shipdate", shipdate);
+
+    let result = eval((col("shipdate") + lit_duration_raw(5, TimestampResolution::Days)).alias("later_shipdate"), &df);
+
+    assert_eq!(result.dtype().unwrap().id(), TypeId::TimestampDays);
+    assert_eq!(host_export_i32_values(&result), vec![18_267, 18_268, 18_269]);
 }
 
 // ===========================================================================

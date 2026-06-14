@@ -1112,10 +1112,11 @@ impl Column {
         (|| {
             let lv = self.view()?;
             let rv = rhs.view()?;
-            let out_type = binary::infer_binary_output_type(lv.data_type()?.id(), rv.data_type()?.id(), op)?;
+            let out_type =
+                binary::infer_binary_output_dtype_in(lv.data_type()?, rv.data_type()?, op, "column::binary_op")?;
             binary::binary_operation_vv(&lv, &rv, op, &out_type)
         })()
-        .map_err(|e| e.reanchor("column::binary_op").with_detail("operator", format!("{:?}", op).to_lowercase()))
+        .map_err(|e| e.reanchor("column::binary_op").with_detail("operator", op.name()))
     }
 
     /// Generic binary operation with explicit output type (escape hatch).
@@ -1136,7 +1137,7 @@ impl Column {
         })()
         .map_err(|e| {
             e.reanchor("column::binary_op_with_type")
-                .with_detail("operator", format!("{:?}", op).to_lowercase())
+                .with_detail("operator", op.name())
                 .with_detail("output_type_id", format!("{:?}", output_type.id()).to_lowercase())
         })
     }
@@ -1291,11 +1292,16 @@ impl Column {
     pub fn binary_op_scalar(&self, rhs: &Scalar, op: binary::BinaryOperator) -> Result<Column> {
         (|| {
             let lv = self.view()?;
-            let out_type = binary::infer_binary_output_type(lv.data_type()?.id(), rhs.data_type()?.id(), op)?;
+            let out_type = binary::infer_binary_output_dtype_in(
+                lv.data_type()?,
+                rhs.data_type()?,
+                op,
+                "column::binary_op_scalar",
+            )?;
             binary::binary_operation_vs(&lv, rhs, op, &out_type)
         })()
         .map(|col| col.with_execution_domain(Arc::clone(&self.domain)))
-        .map_err(|e| e.reanchor("column::binary_op_scalar").with_detail("operator", format!("{:?}", op).to_lowercase()))
+        .map_err(|e| e.reanchor("column::binary_op_scalar").with_detail("operator", op.name()))
     }
 
     /// Element-wise: `self op scalar` with explicit output type.
@@ -1316,7 +1322,7 @@ impl Column {
         .map(|col| col.with_execution_domain(Arc::clone(&self.domain)))
         .map_err(|e| {
             e.reanchor("column::binary_op_scalar_with_type")
-                .with_detail("operator", format!("{:?}", op).to_lowercase())
+                .with_detail("operator", op.name())
                 .with_detail("output_type_id", format!("{:?}", output_type.id()).to_lowercase())
         })
     }
