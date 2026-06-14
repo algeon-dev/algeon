@@ -12,10 +12,11 @@
 #include <cudf/utilities/default_stream.hpp>
 #include <cudf/utilities/memory_resource.hpp>
 
+#include <memory>
 #include <new>
+#include <vector>
 
 extern "C" {
-
 cudf_status_t cudf_dictionary_encode(cudf_column_view_handle input,
                                      cudf_type_id_t indices_type_id,
                                      cudf_column_handle* out)
@@ -33,14 +34,16 @@ cudf_status_t cudf_dictionary_encode_ex(cudf_column_view_handle input,
   CUDF_RUST_NULL_CHECK(input, "input is null");
   CUDF_RUST_TRY
   {
-    auto* view        = static_cast<cudf::column_view*>(input);
-    auto indices_type = cudf::data_type(to_cudf_type_id(indices_type_id));
-    cudf_exec_context exec{
-      cudf::get_default_stream(), cudf::get_current_device_resource_ref(), nullptr};
+    auto* view                      = static_cast<cudf::column_view*>(input);
+    auto indices_type               = cudf::data_type(to_cudf_type_id(indices_type_id));
+    cudf_exec_context exec          = cudf_make_exec_context();
     cudf_status_t const exec_status = cudf_resolve_exec_options(options, &exec);
     if (exec_status != CUDF_SUCCESS) { return exec_status; }
-    auto result = cudf::dictionary::encode(*view, indices_type, exec.stream, exec.mr);
-    *out        = cudf_release_column_handle(std::move(result));
+    {
+      cudf_current_device_resource_guard current_mr{exec.mr_raw};
+      auto result = cudf::dictionary::encode(*view, indices_type, exec.stream, exec.mr);
+      *out        = cudf_release_column_handle(std::move(result));
+    }
     return CUDF_SUCCESS;
   }
   CUDF_RUST_CATCH
@@ -62,12 +65,14 @@ cudf_status_t cudf_dictionary_decode_ex(cudf_column_view_handle dict_column,
   {
     auto* view = static_cast<cudf::column_view*>(dict_column);
     cudf::dictionary_column_view dict_view(*view);
-    cudf_exec_context exec{
-      cudf::get_default_stream(), cudf::get_current_device_resource_ref(), nullptr};
+    cudf_exec_context exec          = cudf_make_exec_context();
     cudf_status_t const exec_status = cudf_resolve_exec_options(options, &exec);
     if (exec_status != CUDF_SUCCESS) { return exec_status; }
-    auto result = cudf::dictionary::decode(dict_view, exec.stream, exec.mr);
-    *out        = cudf_release_column_handle(std::move(result));
+    {
+      cudf_current_device_resource_guard current_mr{exec.mr_raw};
+      auto result = cudf::dictionary::decode(dict_view, exec.stream, exec.mr);
+      *out        = cudf_release_column_handle(std::move(result));
+    }
     return CUDF_SUCCESS;
   }
   CUDF_RUST_CATCH
@@ -127,13 +132,15 @@ cudf_status_t cudf_dictionary_set_keys_ex(cudf_column_view_handle dict_column,
   {
     auto* view = static_cast<cudf::column_view*>(dict_column);
     cudf::dictionary_column_view dict_view(*view);
-    auto* keys_view = static_cast<cudf::column_view*>(keys);
-    cudf_exec_context exec{
-      cudf::get_default_stream(), cudf::get_current_device_resource_ref(), nullptr};
+    auto* keys_view                 = static_cast<cudf::column_view*>(keys);
+    cudf_exec_context exec          = cudf_make_exec_context();
     cudf_status_t const exec_status = cudf_resolve_exec_options(options, &exec);
     if (exec_status != CUDF_SUCCESS) { return exec_status; }
-    auto result = cudf::dictionary::set_keys(dict_view, *keys_view, exec.stream, exec.mr);
-    *out        = cudf_release_column_handle(std::move(result));
+    {
+      cudf_current_device_resource_guard current_mr{exec.mr_raw};
+      auto result = cudf::dictionary::set_keys(dict_view, *keys_view, exec.stream, exec.mr);
+      *out        = cudf_release_column_handle(std::move(result));
+    }
     return CUDF_SUCCESS;
   }
   CUDF_RUST_CATCH
@@ -172,11 +179,14 @@ cudf_status_t cudf_dictionary_match_dictionaries_ex(const cudf_column_view_handl
       auto* view = static_cast<cudf::column_view*>(dict_columns[i]);
       dict_views.emplace_back(*view);
     }
-    cudf_exec_context exec{
-      cudf::get_default_stream(), cudf::get_current_device_resource_ref(), nullptr};
+    cudf_exec_context exec          = cudf_make_exec_context();
     cudf_status_t const exec_status = cudf_resolve_exec_options(options, &exec);
     if (exec_status != CUDF_SUCCESS) { return exec_status; }
-    auto results = cudf::dictionary::match_dictionaries(dict_views, exec.stream, exec.mr);
+    std::vector<std::unique_ptr<cudf::column>> results;
+    {
+      cudf_current_device_resource_guard current_mr{exec.mr_raw};
+      results = cudf::dictionary::match_dictionaries(dict_views, exec.stream, exec.mr);
+    }
 
     auto* columns = new (std::nothrow) cudf_column_handle[num_columns];
     if (columns == nullptr) {
@@ -194,5 +204,4 @@ cudf_status_t cudf_dictionary_match_dictionaries_ex(const cudf_column_view_handl
   }
   CUDF_RUST_CATCH
 }
-
 }  // extern "C"

@@ -3,6 +3,7 @@
 
 #include "column.h"
 #include "error.h"
+#include "execution_context.h"
 
 #include <stddef.h>
 #include <stdint.h>
@@ -22,6 +23,22 @@ typedef void* cudf_device_buffer_handle;
 ///
 /// Returns CUDF_ERROR_OUT_OF_MEMORY if allocation fails.
 cudf_status_t cudf_device_buffer_create(size_t size, cudf_device_buffer_handle* out);
+
+/// Allocate a new device buffer of `size` bytes using the explicit execution
+/// options.
+///
+/// Passing NULL for `options`, or NULL for stream / MR inside `options`, keeps
+/// the same default-selection behavior as other `_ex` APIs. When options carry
+/// an explicit memory resource, that resource must outlive the returned buffer
+/// and any column that later adopts it.
+///
+/// On success, `*out` is a valid buffer handle. The buffer contents are
+/// uninitialized.
+///
+/// Returns CUDF_ERROR_OUT_OF_MEMORY if allocation fails.
+cudf_status_t cudf_device_buffer_create_ex(size_t size,
+                                           const cudf_exec_options_t* options,
+                                           cudf_device_buffer_handle* out);
 
 /// Release a device buffer. Safe to call with NULL (no-op).
 ///

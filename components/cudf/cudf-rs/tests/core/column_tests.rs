@@ -4,6 +4,7 @@ use cudf::{DataType, ErrorCode, TypeId, testing::prelude::*};
 
 use crate::common::{
     column_from_slice, column_from_slice_nullable, error_context_value, fail_next_column_view_metadata_read,
+    last_exec_stream_value, reset_exec_observation,
 };
 
 #[test]
@@ -248,6 +249,18 @@ fn test_to_host_validity_for_sliced_nullable_column_is_normalized_to_slice() {
 
     let validity = sliced.to_host_validity().unwrap().unwrap();
     assert_eq!(validity, vec![false, true, true, false]);
+}
+
+#[test]
+fn test_testing_slice_view_uses_column_execution_domain_stream() {
+    let col = column_from_slice_nullable(&[10i32, 20, 30, 40], &[true, false, true, false]).unwrap();
+    let expected_stream = col.testing_execution_domain_stream_value();
+
+    reset_exec_observation();
+    let sliced = col.testing_slice_view(1, 2).unwrap();
+
+    assert_eq!(last_exec_stream_value(), expected_stream);
+    assert_eq!(sliced.null_count().unwrap(), 1);
 }
 
 #[test]

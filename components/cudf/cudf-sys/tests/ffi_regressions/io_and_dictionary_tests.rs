@@ -5,11 +5,15 @@ use std::{
 
 use crate::{
     helpers::*,
-    support::{last_error_message, lock_shim_state},
+    support::{
+        CurrentDeviceResourceRestore, OwnedMemoryResource, OwnedStream, current_device_resource_raw,
+        last_error_message, lock_shim_state,
+    },
 };
 
 #[test]
 fn test_table_view_null_handle_clears_out() {
+    let _shim_state = lock_shim_state();
     let mut out = std::ptr::dangling_mut::<c_void>();
     let status = unsafe { cudf_sys::cudf_table_view(ptr::null_mut(), &mut out) };
 
@@ -19,6 +23,7 @@ fn test_table_view_null_handle_clears_out() {
 
 #[test]
 fn test_io_read_csv_missing_file_clears_out() {
+    let _shim_state = lock_shim_state();
     let path = unique_missing_path("csv");
     let mut out = std::ptr::dangling_mut::<c_void>();
     let status = unsafe { cudf_sys::cudf_io_read_csv(path.as_ptr(), b',' as c_char, 1, &mut out) };
@@ -29,6 +34,7 @@ fn test_io_read_csv_missing_file_clears_out() {
 
 #[test]
 fn test_io_read_parquet_missing_file_clears_out() {
+    let _shim_state = lock_shim_state();
     let path = unique_missing_path("parquet");
     let mut out = std::ptr::dangling_mut::<c_void>();
     let status =
@@ -67,6 +73,7 @@ fn test_invalid_argument_maps_to_invalid_argument() {
 
 #[test]
 fn test_io_read_parquet_with_metadata_invalid_args_clear_outputs() {
+    let _shim_state = lock_shim_state();
     let path = unique_missing_path("parquet");
     let mut out_table = std::ptr::dangling_mut::<c_void>();
     let mut out_names = std::ptr::dangling_mut::<*mut c_char>();
@@ -94,6 +101,7 @@ fn test_io_read_parquet_with_metadata_invalid_args_clear_outputs() {
 
 #[test]
 fn test_io_write_csv_negative_num_columns_rejected() {
+    let _shim_state = lock_shim_state();
     let col = make_i32_column(&[1, 2]);
     let tbl = make_table_from_one_column(col);
     let tv = make_table_view(tbl);
@@ -110,6 +118,7 @@ fn test_io_write_csv_negative_num_columns_rejected() {
 
 #[test]
 fn test_io_write_csv_null_column_name_entry_rejected() {
+    let _shim_state = lock_shim_state();
     let col = make_i32_column(&[1, 2]);
     let tbl = make_table_from_one_column(col);
     let tv = make_table_view(tbl);
@@ -127,6 +136,7 @@ fn test_io_write_csv_null_column_name_entry_rejected() {
 
 #[test]
 fn test_io_read_parquet_negative_num_columns_rejected() {
+    let _shim_state = lock_shim_state();
     let path = unique_missing_path("parquet");
     let mut out: *mut c_void = ptr::null_mut();
     let status =
@@ -137,6 +147,7 @@ fn test_io_read_parquet_negative_num_columns_rejected() {
 
 #[test]
 fn test_io_read_parquet_null_column_name_entry_rejected() {
+    let _shim_state = lock_shim_state();
     let path = unique_missing_path("parquet");
     let columns = [ptr::null()];
     let mut out: *mut c_void = ptr::null_mut();
@@ -148,6 +159,7 @@ fn test_io_read_parquet_null_column_name_entry_rejected() {
 
 #[test]
 fn test_io_read_parquet_negative_skip_rows_rejected() {
+    let _shim_state = lock_shim_state();
     let path = unique_missing_path("parquet");
     let mut out: *mut c_void = ptr::null_mut();
     let status =
@@ -158,6 +170,7 @@ fn test_io_read_parquet_negative_skip_rows_rejected() {
 
 #[test]
 fn test_io_read_parquet_invalid_num_rows_rejected() {
+    let _shim_state = lock_shim_state();
     let path = unique_missing_path("parquet");
     let mut out: *mut c_void = ptr::null_mut();
     let status =
@@ -168,6 +181,7 @@ fn test_io_read_parquet_invalid_num_rows_rejected() {
 
 #[test]
 fn test_io_write_parquet_negative_num_columns_rejected() {
+    let _shim_state = lock_shim_state();
     let col = make_i32_column(&[1, 2]);
     let tbl = make_table_from_one_column(col);
     let tv = make_table_view(tbl);
@@ -184,6 +198,7 @@ fn test_io_write_parquet_negative_num_columns_rejected() {
 
 #[test]
 fn test_io_write_parquet_null_column_name_entry_rejected() {
+    let _shim_state = lock_shim_state();
     let col = make_i32_column(&[1, 2]);
     let tbl = make_table_from_one_column(col);
     let tv = make_table_view(tbl);
@@ -200,7 +215,60 @@ fn test_io_write_parquet_null_column_name_entry_rejected() {
 }
 
 #[test]
+fn test_io_write_parquet_ex_uses_explicit_memory_resource_for_writer_temporaries() {
+    let _shim_state = lock_shim_state();
+    let previous_raw = current_device_resource_raw();
+    let current_mr = OwnedMemoryResource::new_test_stats();
+    let _restore = CurrentDeviceResourceRestore::new(previous_raw);
+    let target_mr = OwnedMemoryResource::new_test_stats();
+
+    let col = make_i32_column(&[10, 20, 30, 40, 50, 60]);
+    let tbl = make_table_from_one_column(col);
+    let tv = make_table_view(tbl);
+    let path = unique_missing_path("parquet");
+    let path_buf = std::path::PathBuf::from(path.as_c_str().to_string_lossy().into_owned());
+    let stream = OwnedStream::new();
+    let target_stream = stream.borrowed();
+    let target_borrowed = target_mr.borrowed();
+    let exec = cudf_sys::ExecutionContext::new().with_stream(&target_stream).with_memory_resource(&target_borrowed);
+    let target_before = target_mr.allocation_count();
+    let current_before = current_mr.allocation_count();
+
+    let current_borrowed = current_mr.borrowed();
+    cudf_sys::test_set_current_device_resource(&current_borrowed)
+        .expect("failed to install current sentinel memory resource");
+    let status = unsafe { cudf_sys::cudf_io_write_parquet_ex(tv, path.as_ptr(), ptr::null(), 0, 0, exec.as_raw()) };
+    let restored_current = current_device_resource_raw();
+    unsafe { cudf_sys::test_set_current_device_resource_raw(previous_raw) }
+        .expect("failed to restore previous current device resource");
+
+    assert_eq!(status, cudf_sys::CUDF_SUCCESS, "{}", last_error_message());
+    assert_eq!(
+        restored_current,
+        current_mr.raw_device_resource(),
+        "write_parquet must restore the caller's current device resource"
+    );
+    assert_eq!(
+        current_mr.allocation_count(),
+        current_before,
+        "write_parquet temporaries must not allocate from the caller's current memory resource"
+    );
+    assert!(
+        target_mr.allocation_count() > target_before,
+        "write_parquet temporaries must be charged to the explicit execution memory resource"
+    );
+
+    stream.synchronize();
+    let _ = std::fs::remove_file(path_buf);
+    unsafe {
+        cudf_sys::cudf_table_view_destroy(tv);
+        cudf_sys::cudf_table_destroy(tbl);
+    }
+}
+
+#[test]
 fn test_io_read_parquet_with_metadata_negative_num_columns_rejected() {
+    let _shim_state = lock_shim_state();
     let path = unique_missing_path("parquet");
     let mut out_table: *mut c_void = ptr::null_mut();
     let mut out_names: *mut *mut i8 = ptr::null_mut();
@@ -226,6 +294,7 @@ fn test_io_read_parquet_with_metadata_negative_num_columns_rejected() {
 
 #[test]
 fn test_io_read_parquet_with_metadata_null_column_name_entry_rejected() {
+    let _shim_state = lock_shim_state();
     let path = unique_missing_path("parquet");
     let columns = [ptr::null()];
     let mut out_table: *mut c_void = std::ptr::dangling_mut::<c_void>();
@@ -253,6 +322,7 @@ fn test_io_read_parquet_with_metadata_null_column_name_entry_rejected() {
 
 #[test]
 fn test_io_read_parquet_with_metadata_negative_skip_rows_rejected() {
+    let _shim_state = lock_shim_state();
     let path = unique_missing_path("parquet");
     let mut out_table: *mut c_void = ptr::null_mut();
     let mut out_names: *mut *mut i8 = ptr::null_mut();
@@ -278,6 +348,7 @@ fn test_io_read_parquet_with_metadata_negative_skip_rows_rejected() {
 
 #[test]
 fn test_io_read_parquet_with_metadata_invalid_num_rows_rejected() {
+    let _shim_state = lock_shim_state();
     let path = unique_missing_path("parquet");
     let mut out_table: *mut c_void = ptr::null_mut();
     let mut out_names: *mut *mut i8 = ptr::null_mut();
@@ -303,6 +374,7 @@ fn test_io_read_parquet_with_metadata_invalid_num_rows_rejected() {
 
 #[test]
 fn test_dictionary_match_dictionaries_invalid_num_columns_clears_outputs() {
+    let _shim_state = lock_shim_state();
     let dict_columns = std::ptr::NonNull::<*mut c_void>::dangling().as_ptr();
     let mut out_columns = std::ptr::NonNull::<*mut c_void>::dangling().as_ptr();
     let mut out_count: i32 = -1;
@@ -317,6 +389,7 @@ fn test_dictionary_match_dictionaries_invalid_num_columns_clears_outputs() {
 
 #[test]
 fn test_replace_nulls_policy_rejects_invalid_policy_value() {
+    let _shim_state = lock_shim_state();
     let col = make_i32_column_nullable(&[1, 0, 3], &[true, false, true]);
     let view = make_column_view(col);
 
@@ -339,6 +412,7 @@ fn test_replace_nulls_policy_rejects_invalid_policy_value() {
 
 #[test]
 fn test_dictionary_match_dictionaries_null_entry_clears_outputs() {
+    let _shim_state = lock_shim_state();
     let dict = make_dictionary_i32_column(&[1, 2, 1]);
     let dict_view = make_column_view(dict);
     let dict_columns = [dict_view, ptr::null_mut()];
@@ -366,6 +440,7 @@ fn test_dictionary_match_dictionaries_null_entry_clears_outputs() {
 
 #[test]
 fn test_dictionary_match_dictionaries_returns_heap_array() {
+    let _shim_state = lock_shim_state();
     let left = make_dictionary_i32_column(&[10, 20, 10, 30]);
     let right = make_dictionary_i32_column(&[20, 30, 40, 20]);
     let left_view = make_column_view(left);

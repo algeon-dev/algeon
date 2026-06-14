@@ -253,6 +253,14 @@ extern "C" {
         out: *mut cudf_column_view_handle,
     ) -> cudf_status_t;
 
+    pub fn cudf_column_view_slice_ex(
+        handle: cudf_column_view_handle,
+        offset: i32,
+        length: i32,
+        options: *const cudf_exec_options_t,
+        out: *mut cudf_column_view_handle,
+    ) -> cudf_status_t;
+
     pub fn cudf_column_view_to_host(
         handle: cudf_column_view_handle,
         host_buf: *mut c_void,
@@ -339,8 +347,9 @@ extern "C" {
 
     /// Create a STRING column by copying from borrowed host buffers.
     ///
-    /// This function synchronizes cuDF's default stream before return on
-    /// success so the borrowed host buffers are no longer in use.
+    /// If host-source copies are queued, this function synchronizes cuDF's
+    /// default stream before return on success or failure so the borrowed host
+    /// buffers are no longer in use.
     pub fn cudf_column_create_strings(
         strings: *const *const c_char,
         lengths: *const i32,
@@ -353,8 +362,9 @@ extern "C" {
     /// Create a STRING column by copying from borrowed host buffers with
     /// explicit execution options.
     ///
-    /// The selected stream is synchronized before return on success so the
-    /// borrowed host buffers are no longer in use.
+    /// If host-source copies are queued, the selected stream is synchronized
+    /// before return on success or failure so the borrowed host buffers are no
+    /// longer in use.
     /// When `options->mr` is non-null, it must outlive the returned column.
     pub fn cudf_column_create_strings_ex(
         strings: *const *const c_char,

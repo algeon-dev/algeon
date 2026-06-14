@@ -15,7 +15,6 @@
 rmm::cuda_stream_view cudf_stream_view_from_handle(cudf_stream_handle handle);
 
 namespace {
-
 cudaEvent_t event_from_handle(cudf_event_handle handle)
 {
   return *static_cast<cudaEvent_t*>(handle);
@@ -48,11 +47,10 @@ std::mutex g_observation_mutex;
 std::unordered_map<std::uintptr_t, int32_t> g_stream_wait_counts_by_stream_raw;
 std::unordered_map<std::uintptr_t, int32_t> g_stream_wait_counts_by_event_raw;
 std::unordered_map<std::uintptr_t, int32_t> g_raw_record_counts_by_stream_raw;
-
+std::unordered_map<std::uintptr_t, int32_t> g_event_synchronize_counts_by_event_handle_raw;
 }  // namespace
 
 extern "C" {
-
 cudf_status_t cudf_event_create(cudf_event_handle* out)
 {
   CUDF_RUST_NULL_CHECK(out, "out is null");
@@ -97,9 +95,14 @@ cudf_status_t cudf_event_synchronize(cudf_event_handle event)
   CUDF_RUST_NULL_CHECK(event, "event is null");
   CUDF_RUST_TRY
   {
+    auto const event_handle_raw = reinterpret_cast<std::uintptr_t>(event);
     g_event_synchronize_call_count.fetch_add(1, std::memory_order_relaxed);
     {
-      std::lock_guard<std::mutex> lock(g_synchronize_block_mutex);
+      std::scoped_lock lock(g_observation_mutex);
+      g_event_synchronize_counts_by_event_handle_raw[event_handle_raw] += 1;
+    }
+    {
+      std::scoped_lock lock(g_synchronize_block_mutex);
       if (g_fail_event_synchronize) {
         set_error("forced cudaEventSynchronize failure for tests");
         return CUDF_ERROR_CUDA;
@@ -149,7 +152,7 @@ cudf_status_t cudf_stream_wait_event(cudf_stream_handle stream, cudf_event_handl
     auto const event_raw = reinterpret_cast<std::uintptr_t>(event_from_handle(event));
     g_last_wait_event_raw.store(event_raw, std::memory_order_relaxed);
     {
-      std::lock_guard<std::mutex> lock(g_observation_mutex);
+      std::scoped_lock lock(g_observation_mutex);
       g_stream_wait_counts_by_stream_raw[stream_raw] += 1;
       g_stream_wait_counts_by_event_raw[event_raw] += 1;
     }
@@ -172,7 +175,7 @@ cudf_status_t cudf_raw_cuda_event_record(void* raw_event, void* raw_stream)
                                       std::memory_order_relaxed);
     g_last_raw_record_stream_raw.store(stream_raw, std::memory_order_relaxed);
     {
-      std::lock_guard<std::mutex> lock(g_observation_mutex);
+      std::scoped_lock lock(g_observation_mutex);
       g_raw_record_counts_by_stream_raw[stream_raw] += 1;
     }
     auto err = cudaEventRecord(event_from_raw(raw_event), stream_from_raw(raw_stream));
@@ -193,7 +196,7 @@ cudf_status_t cudf_raw_cuda_stream_wait_event(void* raw_stream, void* raw_event)
     auto const event_raw = reinterpret_cast<std::uintptr_t>(raw_event);
     g_last_wait_event_raw.store(event_raw, std::memory_order_relaxed);
     {
-      std::lock_guard<std::mutex> lock(g_observation_mutex);
+      std::scoped_lock lock(g_observation_mutex);
       g_stream_wait_counts_by_stream_raw[stream_raw] += 1;
       g_stream_wait_counts_by_event_raw[event_raw] += 1;
     }
@@ -226,27 +229,28 @@ void cudf_test_event_reset_observation()
   g_last_raw_record_event_raw.store(0, std::memory_order_relaxed);
   g_event_synchronize_call_count.store(0, std::memory_order_relaxed);
   {
-    std::lock_guard<std::mutex> lock(g_synchronize_block_mutex);
+    std::scoped_lock lock(g_synchronize_block_mutex);
     g_block_event_synchronize = false;
     g_fail_event_synchronize  = false;
   }
   g_synchronize_block_cv.notify_all();
-  std::lock_guard<std::mutex> lock(g_observation_mutex);
+  std::scoped_lock lock(g_observation_mutex);
   g_stream_wait_counts_by_stream_raw.clear();
   g_stream_wait_counts_by_event_raw.clear();
   g_raw_record_counts_by_stream_raw.clear();
+  g_event_synchronize_counts_by_event_handle_raw.clear();
 }
 
 void cudf_test_event_block_synchronize()
 {
-  std::lock_guard<std::mutex> lock(g_synchronize_block_mutex);
+  std::scoped_lock lock(g_synchronize_block_mutex);
   g_block_event_synchronize = true;
 }
 
 void cudf_test_event_unblock_synchronize()
 {
   {
-    std::lock_guard<std::mutex> lock(g_synchronize_block_mutex);
+    std::scoped_lock lock(g_synchronize_block_mutex);
     g_block_event_synchronize = false;
   }
   g_synchronize_block_cv.notify_all();
@@ -254,13 +258,13 @@ void cudf_test_event_unblock_synchronize()
 
 void cudf_test_event_fail_synchronize()
 {
-  std::lock_guard<std::mutex> lock(g_synchronize_block_mutex);
+  std::scoped_lock lock(g_synchronize_block_mutex);
   g_fail_event_synchronize = true;
 }
 
 void cudf_test_event_allow_synchronize()
 {
-  std::lock_guard<std::mutex> lock(g_synchronize_block_mutex);
+  std::scoped_lock lock(g_synchronize_block_mutex);
   g_fail_event_synchronize = false;
 }
 
@@ -268,6 +272,16 @@ cudf_status_t cudf_test_event_synchronize_call_count(int32_t* out)
 {
   CUDF_RUST_NULL_CHECK(out, "out is null");
   *out = g_event_synchronize_call_count.load(std::memory_order_relaxed);
+  return CUDF_SUCCESS;
+}
+
+cudf_status_t cudf_test_event_synchronize_call_count_for_event_handle_raw(
+  std::uintptr_t event_handle_raw, int32_t* out)
+{
+  CUDF_RUST_NULL_CHECK(out, "out is null");
+  std::scoped_lock lock(g_observation_mutex);
+  auto const it = g_event_synchronize_counts_by_event_handle_raw.find(event_handle_raw);
+  *out          = it == g_event_synchronize_counts_by_event_handle_raw.end() ? 0 : it->second;
   return CUDF_SUCCESS;
 }
 
@@ -282,9 +296,9 @@ cudf_status_t cudf_test_event_stream_wait_call_count_for_stream_raw(std::uintptr
                                                                     int32_t* out)
 {
   CUDF_RUST_NULL_CHECK(out, "out is null");
-  std::lock_guard<std::mutex> lock(g_observation_mutex);
+  std::scoped_lock lock(g_observation_mutex);
   auto const it = g_stream_wait_counts_by_stream_raw.find(stream_raw);
-  *out          = (it == g_stream_wait_counts_by_stream_raw.end()) ? 0 : it->second;
+  *out          = it == g_stream_wait_counts_by_stream_raw.end() ? 0 : it->second;
   return CUDF_SUCCESS;
 }
 
@@ -292,9 +306,9 @@ cudf_status_t cudf_test_event_stream_wait_call_count_for_event_raw(std::uintptr_
                                                                    int32_t* out)
 {
   CUDF_RUST_NULL_CHECK(out, "out is null");
-  std::lock_guard<std::mutex> lock(g_observation_mutex);
+  std::scoped_lock lock(g_observation_mutex);
   auto const it = g_stream_wait_counts_by_event_raw.find(event_raw);
-  *out          = (it == g_stream_wait_counts_by_event_raw.end()) ? 0 : it->second;
+  *out          = it == g_stream_wait_counts_by_event_raw.end() ? 0 : it->second;
   return CUDF_SUCCESS;
 }
 
@@ -323,9 +337,9 @@ cudf_status_t cudf_test_event_raw_record_call_count_for_stream_raw(std::uintptr_
                                                                    int32_t* out)
 {
   CUDF_RUST_NULL_CHECK(out, "out is null");
-  std::lock_guard<std::mutex> lock(g_observation_mutex);
+  std::scoped_lock lock(g_observation_mutex);
   auto const it = g_raw_record_counts_by_stream_raw.find(stream_raw);
-  *out          = (it == g_raw_record_counts_by_stream_raw.end()) ? 0 : it->second;
+  *out          = it == g_raw_record_counts_by_stream_raw.end() ? 0 : it->second;
   return CUDF_SUCCESS;
 }
 
@@ -342,5 +356,4 @@ cudf_status_t cudf_test_event_last_raw_record_event_raw(std::uintptr_t* out)
   *out = g_last_raw_record_event_raw.load(std::memory_order_relaxed);
   return CUDF_SUCCESS;
 }
-
 }  // extern "C"

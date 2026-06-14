@@ -39,8 +39,26 @@ fn read_bool8_column_data(col: *mut c_void) -> Vec<u8> {
     values
 }
 
+fn make_bool8_column(data: &[u8]) -> *mut c_void {
+    let mut out: *mut c_void = ptr::null_mut();
+    let st = unsafe {
+        cudf_sys::cudf_column_create_numeric(
+            cudf_sys::cudf_type_id_t::CUDF_TYPE_BOOL8,
+            data.as_ptr() as *const c_void,
+            data.len() as i32,
+            ptr::null(),
+            0,
+            &mut out,
+        )
+    };
+    assert_eq!(st, cudf_sys::CUDF_SUCCESS);
+    assert!(!out.is_null());
+    out
+}
+
 #[test]
 fn test_column_view_strings_to_host_empty_rejects_undersized_offsets_buffer() {
+    let _shim_state = lock_shim_state();
     let col = make_string_column(&[]);
     let view = make_column_view(col);
     let mut offsets = vec![-1i32; 1];
@@ -61,6 +79,7 @@ fn test_column_view_strings_to_host_empty_rejects_undersized_offsets_buffer() {
 
 #[test]
 fn test_strings_like_validates_pattern_and_escape_arguments() {
+    let _shim_state = lock_shim_state();
     let col = make_string_column(&["abc"]);
     let view = make_column_view(col);
     let pattern = b"a%";
@@ -163,6 +182,7 @@ fn test_strings_like_matches_and_synchronizes_explicit_stream() {
 
 #[test]
 fn test_strings_slice_validates_step_and_initializes_output() {
+    let _shim_state = lock_shim_state();
     let col = make_string_column(&["abcdef"]);
     let view = make_column_view(col);
     let mut out = std::ptr::NonNull::<c_void>::dangling().as_ptr();
@@ -212,6 +232,7 @@ fn test_strings_slice_uses_validity_flags_and_explicit_stream() {
 
 #[test]
 fn test_concatenate_columns_null_element_returns_null_error() {
+    let _shim_state = lock_shim_state();
     let col = make_i32_column(&[1, 2, 3]);
     let view = make_column_view(col);
 
@@ -230,6 +251,7 @@ fn test_concatenate_columns_null_element_returns_null_error() {
 
 #[test]
 fn test_concatenate_tables_null_element_returns_null_error() {
+    let _shim_state = lock_shim_state();
     let col = make_i32_column(&[1, 2]);
     let tbl = make_table_from_one_column(col);
     let tv = make_table_view(tbl);
@@ -249,6 +271,7 @@ fn test_concatenate_tables_null_element_returns_null_error() {
 
 #[test]
 fn test_sort_negative_num_keys_rejected() {
+    let _shim_state = lock_shim_state();
     let col = make_i32_column(&[3, 2, 1]);
     let tbl = make_table_from_one_column(col);
     let tv = make_table_view(tbl);
@@ -267,6 +290,7 @@ fn test_sort_negative_num_keys_rejected() {
 
 #[test]
 fn test_sort_invalid_order_enum_rejected() {
+    let _shim_state = lock_shim_state();
     let col = make_i32_column(&[3, 2, 1]);
     let tbl = make_table_from_one_column(col);
     let tv = make_table_view(tbl);
@@ -286,6 +310,7 @@ fn test_sort_invalid_order_enum_rejected() {
 
 #[test]
 fn test_sort_invalid_null_order_enum_rejected() {
+    let _shim_state = lock_shim_state();
     let col = make_i32_column(&[3, 2, 1]);
     let tbl = make_table_from_one_column(col);
     let tv = make_table_view(tbl);
@@ -305,6 +330,7 @@ fn test_sort_invalid_null_order_enum_rejected() {
 
 #[test]
 fn test_drop_nulls_negative_keep_threshold_rejected() {
+    let _shim_state = lock_shim_state();
     let col = make_i32_column(&[1, 2, 3]);
     let tbl = make_table_from_one_column(col);
     let tv = make_table_view(tbl);
@@ -323,6 +349,7 @@ fn test_drop_nulls_negative_keep_threshold_rejected() {
 
 #[test]
 fn test_drop_nulls_negative_num_keys_rejected() {
+    let _shim_state = lock_shim_state();
     let col = make_i32_column(&[1, 2, 3]);
     let tbl = make_table_from_one_column(col);
     let tv = make_table_view(tbl);
@@ -342,6 +369,7 @@ fn test_drop_nulls_negative_num_keys_rejected() {
 
 #[test]
 fn test_distinct_negative_num_keys_rejected() {
+    let _shim_state = lock_shim_state();
     let col = make_i32_column(&[1, 2, 3]);
     let tbl = make_table_from_one_column(col);
     let tv = make_table_view(tbl);
@@ -361,6 +389,7 @@ fn test_distinct_negative_num_keys_rejected() {
 
 #[test]
 fn test_gather_invalid_bounds_policy_rejected() {
+    let _shim_state = lock_shim_state();
     let col = make_i32_column(&[10, 20, 30]);
     let tbl = make_table_from_one_column(col);
     let tv = make_table_view(tbl);
@@ -384,6 +413,7 @@ fn test_gather_invalid_bounds_policy_rejected() {
 
 #[test]
 fn test_distinct_invalid_policy_values_rejected() {
+    let _shim_state = lock_shim_state();
     let col = make_i32_column(&[1, 2, 2]);
     let tbl = make_table_from_one_column(col);
     let tv = make_table_view(tbl);
@@ -411,6 +441,7 @@ fn test_distinct_invalid_policy_values_rejected() {
 
 #[test]
 fn test_column_create_numeric_negative_size_rejected() {
+    let _shim_state = lock_shim_state();
     let data: [i32; 1] = [42];
     let mut out: *mut c_void = ptr::null_mut();
     let status = unsafe {
@@ -429,6 +460,7 @@ fn test_column_create_numeric_negative_size_rejected() {
 
 #[test]
 fn test_column_create_numeric_null_count_out_of_range_rejected() {
+    let _shim_state = lock_shim_state();
     let data = [1i32, 2, 3];
     let mut out: *mut c_void = ptr::null_mut();
     let status = unsafe {
@@ -447,6 +479,7 @@ fn test_column_create_numeric_null_count_out_of_range_rejected() {
 
 #[test]
 fn test_column_create_numeric_null_count_requires_mask() {
+    let _shim_state = lock_shim_state();
     let data = [1i32, 2, 3];
     let mut out: *mut c_void = ptr::null_mut();
     let status = unsafe {
@@ -465,6 +498,7 @@ fn test_column_create_numeric_null_count_requires_mask() {
 
 #[test]
 fn test_column_create_fixed_width_from_host_preserves_decimal_scale() {
+    let _shim_state = lock_shim_state();
     let data = [12345i128, -67890, 5];
     let mut out: *mut c_void = ptr::null_mut();
     let status = unsafe {
@@ -497,6 +531,7 @@ fn test_column_create_fixed_width_from_host_preserves_decimal_scale() {
 
 #[test]
 fn test_column_create_fixed_width_from_host_rejects_nonzero_scale_for_non_decimal() {
+    let _shim_state = lock_shim_state();
     let data = [1i32, 2, 3];
     let mut out: *mut c_void = ptr::null_mut();
     let status = unsafe {
@@ -517,6 +552,7 @@ fn test_column_create_fixed_width_from_host_rejects_nonzero_scale_for_non_decima
 
 #[test]
 fn test_column_create_fixed_width_from_host_rejects_non_fixed_width_type() {
+    let _shim_state = lock_shim_state();
     let mut out: *mut c_void = ptr::null_mut();
     let status = unsafe {
         cudf_sys::cudf_column_create_fixed_width_from_host(
@@ -535,6 +571,7 @@ fn test_column_create_fixed_width_from_host_rejects_non_fixed_width_type() {
 
 #[test]
 fn test_column_create_fixed_width_from_host_null_count_requires_mask() {
+    let _shim_state = lock_shim_state();
     let data = [1i32, 2, 3];
     let mut out: *mut c_void = ptr::null_mut();
     let status = unsafe {
@@ -554,6 +591,7 @@ fn test_column_create_fixed_width_from_host_null_count_requires_mask() {
 
 #[test]
 fn test_column_view_to_host_string_type_rejected() {
+    let _shim_state = lock_shim_state();
     let strings = [std::ffi::CString::new("ab").unwrap(), std::ffi::CString::new("cd").unwrap()];
     let string_ptrs = [strings[0].as_ptr(), strings[1].as_ptr()];
     let lengths = [2i32, 2i32];
@@ -578,6 +616,7 @@ fn test_column_view_to_host_string_type_rejected() {
 
 #[test]
 fn test_column_create_strings_negative_length_rejected() {
+    let _shim_state = lock_shim_state();
     let strings = [std::ffi::CString::new("ab").unwrap()];
     let string_ptrs = [strings[0].as_ptr()];
     let lengths = [-1i32];
@@ -592,6 +631,7 @@ fn test_column_create_strings_negative_length_rejected() {
 
 #[test]
 fn test_column_create_strings_positive_length_requires_non_null_string_pointer() {
+    let _shim_state = lock_shim_state();
     let string_ptrs = [ptr::null()];
     let lengths = [2i32];
 
@@ -604,7 +644,25 @@ fn test_column_create_strings_positive_length_requires_non_null_string_pointer()
 }
 
 #[test]
+fn test_column_create_strings_rejects_count_that_would_overflow_offsets() {
+    let _shim_state = lock_shim_state();
+    let strings = [std::ffi::CString::new("").unwrap()];
+    let string_ptrs = [strings[0].as_ptr()];
+    let lengths = [0i32];
+
+    let mut col: *mut c_void = std::ptr::NonNull::<c_void>::dangling().as_ptr();
+    let status = unsafe {
+        cudf_sys::cudf_column_create_strings(string_ptrs.as_ptr(), lengths.as_ptr(), i32::MAX, ptr::null(), 0, &mut col)
+    };
+
+    assert_eq!(status, cudf_sys::CUDF_ERROR_INVALID_OPERATION);
+    assert!(col.is_null());
+    assert!(last_error_message().contains("num_strings"));
+}
+
+#[test]
 fn test_drop_nulls_zero_num_keys_allows_null_keys_pointer() {
+    let _shim_state = lock_shim_state();
     let col = make_i32_column(&[1, 2, 3]);
     let tbl = make_table_from_one_column(col);
     let tv = make_table_view(tbl);
@@ -624,6 +682,7 @@ fn test_drop_nulls_zero_num_keys_allows_null_keys_pointer() {
 
 #[test]
 fn test_distinct_zero_num_keys_allows_null_keys_pointer() {
+    let _shim_state = lock_shim_state();
     let col = make_i32_column(&[1, 2, 2]);
     let tbl = make_table_from_one_column(col);
     let tv = make_table_view(tbl);
@@ -653,6 +712,7 @@ fn test_distinct_zero_num_keys_allows_null_keys_pointer() {
 
 #[test]
 fn test_groupby_negative_num_requests_rejected() {
+    let _shim_state = lock_shim_state();
     let key_col = make_i32_column(&[1, 1, 2]);
     let keys_tbl = make_table_from_one_column(key_col);
     let keys_view = make_table_view(keys_tbl);
@@ -689,6 +749,7 @@ fn test_groupby_negative_num_requests_rejected() {
 
 #[test]
 fn test_groupby_aggregation_count_mismatch_rejected() {
+    let _shim_state = lock_shim_state();
     let key_col = make_i32_column(&[1, 1, 2]);
     let val_col = make_i32_column(&[10, 20, 30]);
     let keys_tbl = make_table_from_one_column(key_col);
@@ -799,6 +860,7 @@ fn test_groupby_invalid_keys_null_policy_rejected() {
 
 #[test]
 fn test_groupby_zero_aggregations_returns_null_output_array() {
+    let _shim_state = lock_shim_state();
     let key_col = make_i32_column(&[1, 1, 2]);
     let keys_tbl = make_table_from_one_column(key_col);
     let keys_view = make_table_view(keys_tbl);
@@ -1100,10 +1162,6 @@ fn test_hash_join_probe_ex_uses_explicit_memory_resource_for_probe_allocations()
     let target_borrowed = target_mr.borrowed();
     let exec = cudf_sys::ExecutionContext::new().with_stream(&target_stream).with_memory_resource(&target_borrowed);
 
-    let current_borrowed = current_mr.borrowed();
-    cudf_sys::test_set_current_device_resource(&current_borrowed)
-        .expect("failed to install current sentinel memory resource");
-
     for (name, probe) in [
         (
             "inner",
@@ -1125,14 +1183,20 @@ fn test_hash_join_probe_ex_uses_explicit_memory_resource_for_probe_allocations()
 
         let mut out_left: *mut c_void = ptr::null_mut();
         let mut out_right: *mut c_void = ptr::null_mut();
+        let current_borrowed = current_mr.borrowed();
+        cudf_sys::test_set_current_device_resource(&current_borrowed)
+            .expect("failed to install current sentinel memory resource");
         let status = unsafe { probe(join, probe_tv, &mut out_left, &mut out_right, exec.as_raw()) };
+        let restored_current = current_device_resource_raw();
+        unsafe { cudf_sys::test_set_current_device_resource_raw(previous_raw) }
+            .expect("failed to restore previous current device resource");
 
         assert_eq!(status, cudf_sys::CUDF_SUCCESS, "{name} hash-join probe failed");
         assert!(!out_left.is_null(), "{name} hash-join probe did not publish left indices");
         assert!(!out_right.is_null(), "{name} hash-join probe did not publish right indices");
         assert_eq!(last_exec_mr_raw(), target_mr.raw_device_resource());
         assert_eq!(
-            current_device_resource_raw(),
+            restored_current,
             current_mr.raw_device_resource(),
             "{name} hash-join probe must restore the caller's current device resource"
         );
@@ -1159,6 +1223,478 @@ fn test_hash_join_probe_ex_uses_explicit_memory_resource_for_probe_allocations()
         cudf_sys::cudf_hash_join_destroy(join);
         cudf_sys::cudf_table_view_destroy(build_tv);
         cudf_sys::cudf_table_destroy(build_tbl);
+    }
+}
+
+#[test]
+fn test_gather_ex_uses_explicit_memory_resource() {
+    let _shim_state = lock_shim_state();
+    let previous_raw = current_device_resource_raw();
+    let current_mr = OwnedMemoryResource::new_test_stats();
+    let _restore = CurrentDeviceResourceRestore::new(previous_raw);
+    let target_mr = OwnedMemoryResource::new_test_stats();
+
+    let input_col = make_i32_column(&[10, 20, 30, 40]);
+    let input_tbl = make_table_from_one_column(input_col);
+    let input_view = make_table_view(input_tbl);
+    let gather_map = make_i32_column(&[3, 1, 0, 2]);
+    let gather_map_view = make_column_view(gather_map);
+    let stream = OwnedStream::new();
+    let target_stream = stream.borrowed();
+    let target_borrowed = target_mr.borrowed();
+    let exec = cudf_sys::ExecutionContext::new().with_stream(&target_stream).with_memory_resource(&target_borrowed);
+    let target_before = target_mr.allocation_count();
+    let current_before = current_mr.allocation_count();
+
+    let current_borrowed = current_mr.borrowed();
+    cudf_sys::test_set_current_device_resource(&current_borrowed)
+        .expect("failed to install current sentinel memory resource");
+    let mut out: *mut c_void = ptr::null_mut();
+    let status = unsafe {
+        cudf_sys::cudf_gather_ex(
+            input_view,
+            gather_map_view,
+            cudf_sys::cudf_out_of_bounds_policy_t::CUDF_OUT_OF_BOUNDS_POLICY_NULLIFY,
+            &mut out,
+            exec.as_raw(),
+        )
+    };
+    let restored_current = current_device_resource_raw();
+    unsafe { cudf_sys::test_set_current_device_resource_raw(previous_raw) }
+        .expect("failed to restore previous current device resource");
+
+    assert_eq!(status, cudf_sys::CUDF_SUCCESS);
+    assert!(!out.is_null());
+    assert_eq!(last_exec_mr_raw(), target_mr.raw_device_resource());
+    assert_eq!(
+        restored_current,
+        current_mr.raw_device_resource(),
+        "gather must restore the caller's current device resource"
+    );
+    assert_eq!(
+        current_mr.allocation_count(),
+        current_before,
+        "gather temporaries must not allocate from the caller's current memory resource"
+    );
+    assert!(
+        target_mr.allocation_count() > target_before,
+        "gather allocations must be charged to the explicit execution memory resource"
+    );
+
+    stream.synchronize();
+    unsafe {
+        cudf_sys::cudf_table_destroy(out);
+        cudf_sys::cudf_column_view_destroy(gather_map_view);
+        cudf_sys::cudf_column_destroy(gather_map);
+        cudf_sys::cudf_table_view_destroy(input_view);
+        cudf_sys::cudf_table_destroy(input_tbl);
+    }
+}
+
+#[test]
+fn test_apply_boolean_mask_ex_uses_explicit_memory_resource() {
+    let _shim_state = lock_shim_state();
+    let previous_raw = current_device_resource_raw();
+    let current_mr = OwnedMemoryResource::new_test_stats();
+    let _restore = CurrentDeviceResourceRestore::new(previous_raw);
+    let target_mr = OwnedMemoryResource::new_test_stats();
+
+    let input_col = make_i32_column(&[10, 20, 30, 40]);
+    let input_tbl = make_table_from_one_column(input_col);
+    let input_view = make_table_view(input_tbl);
+    let mask = make_bool8_column(&[1, 0, 1, 0]);
+    let mask_view = make_column_view(mask);
+    let stream = OwnedStream::new();
+    let target_stream = stream.borrowed();
+    let target_borrowed = target_mr.borrowed();
+    let exec = cudf_sys::ExecutionContext::new().with_stream(&target_stream).with_memory_resource(&target_borrowed);
+    let target_before = target_mr.allocation_count();
+    let current_before = current_mr.allocation_count();
+
+    let current_borrowed = current_mr.borrowed();
+    cudf_sys::test_set_current_device_resource(&current_borrowed)
+        .expect("failed to install current sentinel memory resource");
+    let mut out: *mut c_void = ptr::null_mut();
+    let status = unsafe { cudf_sys::cudf_apply_boolean_mask_ex(input_view, mask_view, &mut out, exec.as_raw()) };
+    let restored_current = current_device_resource_raw();
+    unsafe { cudf_sys::test_set_current_device_resource_raw(previous_raw) }
+        .expect("failed to restore previous current device resource");
+
+    assert_eq!(status, cudf_sys::CUDF_SUCCESS);
+    assert!(!out.is_null());
+    assert_eq!(last_exec_mr_raw(), target_mr.raw_device_resource());
+    assert_eq!(
+        restored_current,
+        current_mr.raw_device_resource(),
+        "apply_boolean_mask must restore the caller's current device resource"
+    );
+    assert_eq!(
+        current_mr.allocation_count(),
+        current_before,
+        "apply_boolean_mask temporaries must not allocate from the caller's current memory resource"
+    );
+    assert!(
+        target_mr.allocation_count() > target_before,
+        "apply_boolean_mask allocations must be charged to the explicit execution memory resource"
+    );
+
+    stream.synchronize();
+    unsafe {
+        cudf_sys::cudf_table_destroy(out);
+        cudf_sys::cudf_column_view_destroy(mask_view);
+        cudf_sys::cudf_column_destroy(mask);
+        cudf_sys::cudf_table_view_destroy(input_view);
+        cudf_sys::cudf_table_destroy(input_tbl);
+    }
+}
+
+#[test]
+fn test_replace_nulls_policy_ex_uses_explicit_memory_resource() {
+    let _shim_state = lock_shim_state();
+    let previous_raw = current_device_resource_raw();
+    let current_mr = OwnedMemoryResource::new_test_stats();
+    let _restore = CurrentDeviceResourceRestore::new(previous_raw);
+    let target_mr = OwnedMemoryResource::new_test_stats();
+
+    let input = make_i32_column_nullable(&[10, 20, 30, 40], &[true, false, true, false]);
+    let input_view = make_column_view(input);
+    let stream = OwnedStream::new();
+    let target_stream = stream.borrowed();
+    let target_borrowed = target_mr.borrowed();
+    let exec = cudf_sys::ExecutionContext::new().with_stream(&target_stream).with_memory_resource(&target_borrowed);
+    let target_before = target_mr.allocation_count();
+    let current_before = current_mr.allocation_count();
+
+    let current_borrowed = current_mr.borrowed();
+    cudf_sys::test_set_current_device_resource(&current_borrowed)
+        .expect("failed to install current sentinel memory resource");
+    let mut out: *mut c_void = ptr::null_mut();
+    let status = unsafe { cudf_sys::cudf_replace_nulls_policy_ex(input_view, 0, &mut out, exec.as_raw()) };
+    let restored_current = current_device_resource_raw();
+    unsafe { cudf_sys::test_set_current_device_resource_raw(previous_raw) }
+        .expect("failed to restore previous current device resource");
+
+    assert_eq!(status, cudf_sys::CUDF_SUCCESS);
+    assert!(!out.is_null());
+    assert_eq!(last_exec_mr_raw(), target_mr.raw_device_resource());
+    assert_eq!(
+        restored_current,
+        current_mr.raw_device_resource(),
+        "replace_nulls policy must restore the caller's current device resource"
+    );
+    assert_eq!(
+        current_mr.allocation_count(),
+        current_before,
+        "replace_nulls policy temporaries must not allocate from the caller's current memory resource"
+    );
+    assert!(
+        target_mr.allocation_count() > target_before,
+        "replace_nulls policy allocations must be charged to the explicit execution memory resource"
+    );
+
+    stream.synchronize();
+    unsafe {
+        cudf_sys::cudf_column_destroy(out);
+        cudf_sys::cudf_column_view_destroy(input_view);
+        cudf_sys::cudf_column_destroy(input);
+    }
+}
+
+#[test]
+fn test_distinct_ex_uses_explicit_memory_resource() {
+    let _shim_state = lock_shim_state();
+    let previous_raw = current_device_resource_raw();
+    let current_mr = OwnedMemoryResource::new_test_stats();
+    let _restore = CurrentDeviceResourceRestore::new(previous_raw);
+    let target_mr = OwnedMemoryResource::new_test_stats();
+
+    let input_col = make_i32_column(&[1, 2, 1, 3, 2, 4, 4, 5]);
+    let input_tbl = make_table_from_one_column(input_col);
+    let input_view = make_table_view(input_tbl);
+    let keys = [0_i32];
+    let stream = OwnedStream::new();
+    let target_stream = stream.borrowed();
+    let target_borrowed = target_mr.borrowed();
+    let exec = cudf_sys::ExecutionContext::new().with_stream(&target_stream).with_memory_resource(&target_borrowed);
+    let target_before = target_mr.allocation_count();
+    let current_before = current_mr.allocation_count();
+
+    let current_borrowed = current_mr.borrowed();
+    cudf_sys::test_set_current_device_resource(&current_borrowed)
+        .expect("failed to install current sentinel memory resource");
+    let mut out: *mut c_void = ptr::null_mut();
+    let status = unsafe {
+        cudf_sys::cudf_distinct_ex(
+            input_view,
+            keys.as_ptr(),
+            keys.len() as i32,
+            cudf_sys::cudf_duplicate_keep_option_t::CUDF_DUPLICATE_KEEP_OPTION_KEEP_ANY,
+            cudf_sys::cudf_stream_compaction_null_equality_t::CUDF_STREAM_COMPACTION_NULL_EQUALITY_EQUAL,
+            cudf_sys::cudf_stream_compaction_nan_equality_t::CUDF_STREAM_COMPACTION_NAN_EQUALITY_ALL_EQUAL,
+            &mut out,
+            exec.as_raw(),
+        )
+    };
+    let restored_current = current_device_resource_raw();
+    unsafe { cudf_sys::test_set_current_device_resource_raw(previous_raw) }
+        .expect("failed to restore previous current device resource");
+
+    assert_eq!(status, cudf_sys::CUDF_SUCCESS);
+    assert!(!out.is_null());
+    assert_eq!(last_exec_mr_raw(), target_mr.raw_device_resource());
+    assert_eq!(
+        restored_current,
+        current_mr.raw_device_resource(),
+        "distinct must restore the caller's current device resource"
+    );
+    assert_eq!(
+        current_mr.allocation_count(),
+        current_before,
+        "distinct temporaries must not allocate from the caller's current memory resource"
+    );
+    assert!(
+        target_mr.allocation_count() > target_before,
+        "distinct allocations must be charged to the explicit execution memory resource"
+    );
+
+    stream.synchronize();
+    unsafe {
+        cudf_sys::cudf_table_destroy(out);
+        cudf_sys::cudf_table_view_destroy(input_view);
+        cudf_sys::cudf_table_destroy(input_tbl);
+    }
+}
+
+#[test]
+fn test_dictionary_encode_ex_uses_explicit_memory_resource() {
+    let _shim_state = lock_shim_state();
+    let previous_raw = current_device_resource_raw();
+    let current_mr = OwnedMemoryResource::new_test_stats();
+    let _restore = CurrentDeviceResourceRestore::new(previous_raw);
+    let target_mr = OwnedMemoryResource::new_test_stats();
+
+    let col = make_i32_column(&[3, 1, 3, 2, 4, 2, 1, 5]);
+    let view = make_column_view(col);
+    let stream = OwnedStream::new();
+    let target_stream = stream.borrowed();
+    let target_borrowed = target_mr.borrowed();
+    let exec = cudf_sys::ExecutionContext::new().with_stream(&target_stream).with_memory_resource(&target_borrowed);
+    let target_before = target_mr.allocation_count();
+    let current_before = current_mr.allocation_count();
+
+    let current_borrowed = current_mr.borrowed();
+    cudf_sys::test_set_current_device_resource(&current_borrowed)
+        .expect("failed to install current sentinel memory resource");
+    let mut out: *mut c_void = ptr::null_mut();
+    let status = unsafe {
+        cudf_sys::cudf_dictionary_encode_ex(view, cudf_sys::cudf_type_id_t::CUDF_TYPE_INT32, &mut out, exec.as_raw())
+    };
+    let restored_current = current_device_resource_raw();
+    unsafe { cudf_sys::test_set_current_device_resource_raw(previous_raw) }
+        .expect("failed to restore previous current device resource");
+
+    assert_eq!(status, cudf_sys::CUDF_SUCCESS);
+    assert!(!out.is_null());
+    assert_eq!(last_exec_mr_raw(), target_mr.raw_device_resource());
+    assert_eq!(
+        restored_current,
+        current_mr.raw_device_resource(),
+        "dictionary encode must restore the caller's current device resource"
+    );
+    assert_eq!(
+        current_mr.allocation_count(),
+        current_before,
+        "dictionary encode temporaries must not allocate from the caller's current memory resource"
+    );
+    assert!(
+        target_mr.allocation_count() > target_before,
+        "dictionary encode allocations must be charged to the explicit execution memory resource"
+    );
+
+    stream.synchronize();
+    unsafe {
+        cudf_sys::cudf_column_destroy(out);
+        cudf_sys::cudf_column_view_destroy(view);
+        cudf_sys::cudf_column_destroy(col);
+    }
+}
+
+#[test]
+fn test_dictionary_decode_ex_uses_explicit_memory_resource() {
+    let _shim_state = lock_shim_state();
+    let previous_raw = current_device_resource_raw();
+    let current_mr = OwnedMemoryResource::new_test_stats();
+    let _restore = CurrentDeviceResourceRestore::new(previous_raw);
+    let target_mr = OwnedMemoryResource::new_test_stats();
+
+    let dict = make_dictionary_i32_column(&[10, 20, 10, 30, 20, 40]);
+    let dict_view = make_column_view(dict);
+    let stream = OwnedStream::new();
+    let target_stream = stream.borrowed();
+    let target_borrowed = target_mr.borrowed();
+    let exec = cudf_sys::ExecutionContext::new().with_stream(&target_stream).with_memory_resource(&target_borrowed);
+    let target_before = target_mr.allocation_count();
+    let current_before = current_mr.allocation_count();
+
+    let current_borrowed = current_mr.borrowed();
+    cudf_sys::test_set_current_device_resource(&current_borrowed)
+        .expect("failed to install current sentinel memory resource");
+    let mut out: *mut c_void = ptr::null_mut();
+    let status = unsafe { cudf_sys::cudf_dictionary_decode_ex(dict_view, &mut out, exec.as_raw()) };
+    let restored_current = current_device_resource_raw();
+    unsafe { cudf_sys::test_set_current_device_resource_raw(previous_raw) }
+        .expect("failed to restore previous current device resource");
+
+    assert_eq!(status, cudf_sys::CUDF_SUCCESS);
+    assert!(!out.is_null());
+    assert_eq!(last_exec_mr_raw(), target_mr.raw_device_resource());
+    assert_eq!(
+        restored_current,
+        current_mr.raw_device_resource(),
+        "dictionary decode must restore the caller's current device resource"
+    );
+    assert_eq!(
+        current_mr.allocation_count(),
+        current_before,
+        "dictionary decode temporaries must not allocate from the caller's current memory resource"
+    );
+    assert!(
+        target_mr.allocation_count() > target_before,
+        "dictionary decode allocations must be charged to the explicit execution memory resource"
+    );
+
+    stream.synchronize();
+    unsafe {
+        cudf_sys::cudf_column_destroy(out);
+        cudf_sys::cudf_column_view_destroy(dict_view);
+        cudf_sys::cudf_column_destroy(dict);
+    }
+}
+
+#[test]
+fn test_dictionary_set_keys_ex_uses_explicit_memory_resource() {
+    let _shim_state = lock_shim_state();
+    let previous_raw = current_device_resource_raw();
+    let current_mr = OwnedMemoryResource::new_test_stats();
+    let _restore = CurrentDeviceResourceRestore::new(previous_raw);
+    let target_mr = OwnedMemoryResource::new_test_stats();
+
+    let dict = make_dictionary_i32_column(&[1, 2, 1, 3, 2, 4]);
+    let dict_view = make_column_view(dict);
+    let keys = make_i32_column(&[1, 2, 3, 4, 5]);
+    let keys_view = make_column_view(keys);
+    let stream = OwnedStream::new();
+    let target_stream = stream.borrowed();
+    let target_borrowed = target_mr.borrowed();
+    let exec = cudf_sys::ExecutionContext::new().with_stream(&target_stream).with_memory_resource(&target_borrowed);
+    let target_before = target_mr.allocation_count();
+    let current_before = current_mr.allocation_count();
+
+    let current_borrowed = current_mr.borrowed();
+    cudf_sys::test_set_current_device_resource(&current_borrowed)
+        .expect("failed to install current sentinel memory resource");
+    let mut out: *mut c_void = ptr::null_mut();
+    let status = unsafe { cudf_sys::cudf_dictionary_set_keys_ex(dict_view, keys_view, &mut out, exec.as_raw()) };
+    let restored_current = current_device_resource_raw();
+    unsafe { cudf_sys::test_set_current_device_resource_raw(previous_raw) }
+        .expect("failed to restore previous current device resource");
+
+    assert_eq!(status, cudf_sys::CUDF_SUCCESS);
+    assert!(!out.is_null());
+    assert_eq!(last_exec_mr_raw(), target_mr.raw_device_resource());
+    assert_eq!(
+        restored_current,
+        current_mr.raw_device_resource(),
+        "dictionary set_keys must restore the caller's current device resource"
+    );
+    assert_eq!(
+        current_mr.allocation_count(),
+        current_before,
+        "dictionary set_keys temporaries must not allocate from the caller's current memory resource"
+    );
+    assert!(
+        target_mr.allocation_count() > target_before,
+        "dictionary set_keys allocations must be charged to the explicit execution memory resource"
+    );
+
+    stream.synchronize();
+    unsafe {
+        cudf_sys::cudf_column_destroy(out);
+        cudf_sys::cudf_column_view_destroy(keys_view);
+        cudf_sys::cudf_column_destroy(keys);
+        cudf_sys::cudf_column_view_destroy(dict_view);
+        cudf_sys::cudf_column_destroy(dict);
+    }
+}
+
+#[test]
+fn test_dictionary_match_dictionaries_ex_uses_explicit_memory_resource() {
+    let _shim_state = lock_shim_state();
+    let previous_raw = current_device_resource_raw();
+    let current_mr = OwnedMemoryResource::new_test_stats();
+    let _restore = CurrentDeviceResourceRestore::new(previous_raw);
+    let target_mr = OwnedMemoryResource::new_test_stats();
+
+    let left = make_dictionary_i32_column(&[10, 20, 10, 30]);
+    let right = make_dictionary_i32_column(&[20, 30, 40, 20]);
+    let left_view = make_column_view(left);
+    let right_view = make_column_view(right);
+    let dict_columns = [left_view, right_view];
+    let stream = OwnedStream::new();
+    let target_stream = stream.borrowed();
+    let target_borrowed = target_mr.borrowed();
+    let exec = cudf_sys::ExecutionContext::new().with_stream(&target_stream).with_memory_resource(&target_borrowed);
+    let target_before = target_mr.allocation_count();
+    let current_before = current_mr.allocation_count();
+
+    let current_borrowed = current_mr.borrowed();
+    cudf_sys::test_set_current_device_resource(&current_borrowed)
+        .expect("failed to install current sentinel memory resource");
+    let mut out_columns: *mut cudf_sys::cudf_column_handle = ptr::null_mut();
+    let mut out_count: i32 = -1;
+    let status = unsafe {
+        cudf_sys::cudf_dictionary_match_dictionaries_ex(
+            dict_columns.as_ptr(),
+            dict_columns.len() as i32,
+            &mut out_columns,
+            &mut out_count,
+            exec.as_raw(),
+        )
+    };
+    let restored_current = current_device_resource_raw();
+    unsafe { cudf_sys::test_set_current_device_resource_raw(previous_raw) }
+        .expect("failed to restore previous current device resource");
+
+    assert_eq!(status, cudf_sys::CUDF_SUCCESS);
+    assert_eq!(out_count, dict_columns.len() as i32);
+    assert!(!out_columns.is_null());
+    assert_eq!(last_exec_mr_raw(), target_mr.raw_device_resource());
+    assert_eq!(
+        restored_current,
+        current_mr.raw_device_resource(),
+        "dictionary match_dictionaries must restore the caller's current device resource"
+    );
+    assert_eq!(
+        current_mr.allocation_count(),
+        current_before,
+        "dictionary match_dictionaries temporaries must not allocate from the caller's current memory resource"
+    );
+    assert!(
+        target_mr.allocation_count() > target_before,
+        "dictionary match_dictionaries allocations must be charged to the explicit execution memory resource"
+    );
+
+    stream.synchronize();
+    let matched = unsafe { std::slice::from_raw_parts(out_columns, out_count as usize) };
+    unsafe {
+        for &col in matched {
+            cudf_sys::cudf_column_destroy(col);
+        }
+        cudf_sys::cudf_free_column_array(out_columns);
+        cudf_sys::cudf_column_view_destroy(right_view);
+        cudf_sys::cudf_column_view_destroy(left_view);
+        cudf_sys::cudf_column_destroy(right);
+        cudf_sys::cudf_column_destroy(left);
     }
 }
 
@@ -1199,6 +1735,7 @@ fn test_join_indices_publish_no_outputs_when_second_handle_release_fails() {
 
 #[test]
 fn test_distinct_hash_join_left_join_returns_build_indices() {
+    let _shim_state = lock_shim_state();
     let build_col = make_i32_column(&[10, 20, 30]);
     let build_tbl = make_table_from_one_column(build_col);
     let build_tv = make_table_view(build_tbl);

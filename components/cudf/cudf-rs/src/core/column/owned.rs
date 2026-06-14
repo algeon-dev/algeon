@@ -875,10 +875,11 @@ impl Column {
 
 fn require_runtime_matches_buffer_device(
     runtime: &Runtime,
-    device_snapshot: i32,
+    buffer_domain: &Arc<ExecutionDomain>,
     operation: &'static str,
 ) -> Result<Arc<ExecutionDomain>> {
     let runtime_device = runtime.device();
+    let device_snapshot = buffer_domain.device_snapshot();
     if runtime_device.ordinal() as i32 != device_snapshot {
         return Err(Error::new_with(
             ErrorCode::CrossDeviceInputs,
@@ -891,7 +892,9 @@ fn require_runtime_matches_buffer_device(
         .with_detail("remedy", "move the buffer into a Runtime bound to the same CUDA device before adopting it"));
     }
 
-    Ok(Arc::clone(runtime.execution_domain()))
+    let output_domain = Arc::clone(runtime.execution_domain());
+    ExecutionDomain::insert_stream_dependency(buffer_domain, &output_domain, operation)?;
+    Ok(output_domain)
 }
 
 impl Column {
@@ -947,11 +950,11 @@ impl Column {
             ));
         }
 
-        let (raw_buf, device_snapshot) = buffer.into_raw_parts();
-        let output_domain = match require_runtime_matches_buffer_device(runtime, device_snapshot, operation) {
+        let (raw_buf, buffer_domain) = buffer.into_raw_parts();
+        let output_domain = match require_runtime_matches_buffer_device(runtime, &buffer_domain, operation) {
             Ok(domain) => domain,
             Err(err) => {
-                let _cleanup = unsafe { super::DeviceBuffer::from_raw_parts(raw_buf, device_snapshot) };
+                let _cleanup = unsafe { super::DeviceBuffer::from_raw_parts(raw_buf, buffer_domain) };
                 return Err(err);
             },
         };
@@ -961,9 +964,12 @@ impl Column {
             unsafe { cudf_sys::cudf_column_adopt_device_buffer(type_id.to_raw(), raw_buf, row_count_i32, &mut handle) };
 
         match error::check_status_in(status, operation) {
-            Ok(()) => Self::from_handle_with_domain(handle, output_domain),
+            Ok(()) => {
+                let retained_owner: Arc<dyn Any + Send + Sync> = buffer_domain;
+                Self::from_handle_with_domain_and_owner(handle, output_domain, Some(retained_owner))
+            },
             Err(err) => {
-                let _cleanup = unsafe { super::DeviceBuffer::from_raw_parts(raw_buf, device_snapshot) };
+                let _cleanup = unsafe { super::DeviceBuffer::from_raw_parts(raw_buf, Arc::clone(&buffer_domain)) };
                 Err(err)
             },
         }
@@ -1064,16 +1070,21 @@ impl Column {
             .with_detail("remedy", "ensure both buffers were allocated on the same CUDA device"));
         }
 
-        let (raw_data, data_device_snapshot) = data_buffer.into_raw_parts();
-        let (raw_mask, mask_device_snapshot) = null_mask_buffer.into_raw_parts();
-        let output_domain = match require_runtime_matches_buffer_device(runtime, data_device_snapshot, operation) {
+        let (raw_data, data_domain) = data_buffer.into_raw_parts();
+        let (raw_mask, mask_domain) = null_mask_buffer.into_raw_parts();
+        let output_domain = match require_runtime_matches_buffer_device(runtime, &data_domain, operation) {
             Ok(domain) => domain,
             Err(err) => {
-                let _data_cleanup = unsafe { super::DeviceBuffer::from_raw_parts(raw_data, data_device_snapshot) };
-                let _mask_cleanup = unsafe { super::DeviceBuffer::from_raw_parts(raw_mask, mask_device_snapshot) };
+                let _data_cleanup = unsafe { super::DeviceBuffer::from_raw_parts(raw_data, data_domain) };
+                let _mask_cleanup = unsafe { super::DeviceBuffer::from_raw_parts(raw_mask, mask_domain) };
                 return Err(err);
             },
         };
+        if let Err(err) = ExecutionDomain::insert_stream_dependency(&mask_domain, &output_domain, operation) {
+            let _data_cleanup = unsafe { super::DeviceBuffer::from_raw_parts(raw_data, data_domain) };
+            let _mask_cleanup = unsafe { super::DeviceBuffer::from_raw_parts(raw_mask, mask_domain) };
+            return Err(err);
+        }
 
         let mut handle = ptr::null_mut();
         let status = unsafe {
@@ -1088,10 +1099,13 @@ impl Column {
         };
 
         match error::check_status_in(status, operation) {
-            Ok(()) => Self::from_handle_with_domain(handle, output_domain),
+            Ok(()) => {
+                let retained_owner: Arc<dyn Any + Send + Sync> = Arc::new(vec![data_domain, mask_domain]);
+                Self::from_handle_with_domain_and_owner(handle, output_domain, Some(retained_owner))
+            },
             Err(err) => {
-                let _data_cleanup = unsafe { super::DeviceBuffer::from_raw_parts(raw_data, data_device_snapshot) };
-                let _mask_cleanup = unsafe { super::DeviceBuffer::from_raw_parts(raw_mask, mask_device_snapshot) };
+                let _data_cleanup = unsafe { super::DeviceBuffer::from_raw_parts(raw_data, Arc::clone(&data_domain)) };
+                let _mask_cleanup = unsafe { super::DeviceBuffer::from_raw_parts(raw_mask, Arc::clone(&mask_domain)) };
                 Err(err)
             },
         }

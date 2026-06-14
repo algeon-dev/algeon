@@ -67,6 +67,11 @@ void cudf_test_event_allow_synchronize();
 /// Read the number of `cudaEventSynchronize` calls observed through the shim.
 cudf_status_t cudf_test_event_synchronize_call_count(int32_t* out);
 
+/// Read the number of `cudaEventSynchronize` calls observed for one event
+/// handle pointer.
+cudf_status_t cudf_test_event_synchronize_call_count_for_event_handle_raw(
+  uintptr_t event_handle_raw, int32_t* out);
+
 /// Read the number of `cudaStreamWaitEvent` calls observed through the shim.
 cudf_status_t cudf_test_event_stream_wait_call_count(int32_t* out);
 

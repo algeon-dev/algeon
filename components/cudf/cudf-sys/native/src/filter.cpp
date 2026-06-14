@@ -1,6 +1,7 @@
 #include "filter.h"
 
 #include "execution_context_internal.hpp"
+#include "scalar_handle.hpp"
 #include "shim_common.h"
 
 #include <cudf/ast/ast_operator.hpp>
@@ -19,7 +20,6 @@
 #include <vector>
 
 namespace {
-
 thread_local int32_t g_apply_boolean_mask_call_count         = 0;
 thread_local int32_t g_row_predicate_filter_call_count       = 0;
 thread_local int32_t g_row_predicate_compute_mask_call_count = 0;
@@ -92,11 +92,9 @@ thread_local int32_t g_row_predicate_final_filter_call_count = 0;
   }
   return *expr;
 }
-
 }  // namespace
 
 extern "C" {
-
 cudf_status_t cudf_apply_boolean_mask(cudf_table_view_handle input,
                                       cudf_column_view_handle mask,
                                       cudf_table_handle* out)
@@ -116,15 +114,17 @@ cudf_status_t cudf_apply_boolean_mask_ex(cudf_table_view_handle input,
   CUDF_RUST_TRY
   {
     ++g_apply_boolean_mask_call_count;
-    auto* view      = static_cast<cudf::table_view*>(input);
-    auto* mask_view = static_cast<cudf::column_view*>(mask);
-    cudf_exec_context exec{
-      cudf::get_default_stream(), cudf::get_current_device_resource_ref(), nullptr};
+    auto* view                      = static_cast<cudf::table_view*>(input);
+    auto* mask_view                 = static_cast<cudf::column_view*>(mask);
+    cudf_exec_context exec          = cudf_make_exec_context();
     cudf_status_t const exec_status = cudf_resolve_exec_options(options, &exec);
     if (exec_status != CUDF_SUCCESS) { return exec_status; }
 
-    auto result = cudf::apply_boolean_mask(*view, *mask_view, exec.stream, exec.mr);
-    *out        = cudf_release_table_handle(std::move(result));
+    {
+      cudf_current_device_resource_guard current_mr{exec.mr_raw};
+      auto result = cudf::apply_boolean_mask(*view, *mask_view, exec.stream, exec.mr);
+      *out        = cudf_release_table_handle(std::move(result));
+    }
     return CUDF_SUCCESS;
   }
   CUDF_RUST_CATCH
@@ -161,9 +161,8 @@ cudf_status_t cudf_filter_rows_by_predicate_ex(cudf_table_view_handle input,
       return CUDF_ERROR_INDEX;
     }
 
-    auto* view = static_cast<cudf::table_view*>(input);
-    cudf_exec_context exec{
-      cudf::get_default_stream(), cudf::get_current_device_resource_ref(), nullptr};
+    auto* view                      = static_cast<cudf::table_view*>(input);
+    cudf_exec_context exec          = cudf_make_exec_context();
     cudf_status_t const exec_status = cudf_resolve_exec_options(options, &exec);
     if (exec_status != CUDF_SUCCESS) { return exec_status; }
 
@@ -184,7 +183,7 @@ cudf_status_t cudf_filter_rows_by_predicate_ex(cudf_table_view_handle input,
         case CUDF_ROW_PREDICATE_NODE_LITERAL:
           CUDF_RUST_NULL_CHECK(node.literal, "row-predicate literal handle is null");
           lowered[static_cast<std::size_t>(i)] =
-            &emplace_literal(exprs, *static_cast<cudf::scalar*>(node.literal));
+            &emplace_literal(exprs, cudf_scalar_from_handle(node.literal));
           break;
         case CUDF_ROW_PREDICATE_NODE_BINARY_OP:
           if (node.lhs_index < 0 || node.lhs_index >= i || node.rhs_index < 0 ||
@@ -219,18 +218,21 @@ cudf_status_t cudf_filter_rows_by_predicate_ex(cudf_table_view_handle input,
       }
     }
 
-    ++g_row_predicate_filter_call_count;
-    ++g_row_predicate_compute_mask_call_count;
-    auto mask =
-      cudf::compute_column(*view, resolve_operand(lowered, root_index), exec.stream, exec.mr);
-    if (mask->type().id() != cudf::type_id::BOOL8) {
-      set_error("row predicate must evaluate to Bool8");
-      return CUDF_ERROR_TYPE;
-    }
+    {
+      ++g_row_predicate_filter_call_count;
+      ++g_row_predicate_compute_mask_call_count;
+      auto mask =
+        cudf::compute_column(*view, resolve_operand(lowered, root_index), exec.stream, exec.mr);
+      if (mask->type().id() != cudf::type_id::BOOL8) {
+        set_error("row predicate must evaluate to Bool8");
+        return CUDF_ERROR_TYPE;
+      }
 
-    ++g_row_predicate_final_filter_call_count;
-    auto result = cudf::apply_boolean_mask(*view, mask->view(), exec.stream, exec.mr);
-    *out        = cudf_release_table_handle(std::move(result));
+      ++g_row_predicate_final_filter_call_count;
+      cudf_current_device_resource_guard current_mr{exec.mr_raw};
+      auto result = cudf::apply_boolean_mask(*view, mask->view(), exec.stream, exec.mr);
+      *out        = cudf_release_table_handle(std::move(result));
+    }
     return CUDF_SUCCESS;
   }
   CUDF_RUST_CATCH
@@ -271,5 +273,4 @@ cudf_status_t cudf_test_apply_boolean_mask_call_count(int32_t* out)
   *out = g_apply_boolean_mask_call_count;
   return CUDF_SUCCESS;
 }
-
 }  // extern "C"

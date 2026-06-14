@@ -53,6 +53,12 @@ extern "C" {
     /// Read the number of observed `cudaEventSynchronize` calls.
     pub fn cudf_test_event_synchronize_call_count(out: *mut i32) -> cudf_status_t;
 
+    /// Read the number of observed `cudaEventSynchronize` calls for one event handle pointer.
+    pub fn cudf_test_event_synchronize_call_count_for_event_handle_raw(
+        event_handle_raw: usize,
+        out: *mut i32,
+    ) -> cudf_status_t;
+
     /// Read the number of observed `cudaStreamWaitEvent` calls.
     pub fn cudf_test_event_stream_wait_call_count(out: *mut i32) -> cudf_status_t;
 

@@ -12,8 +12,11 @@
 
 // Defined in error.cpp
 void set_error(const std::string& msg);
+
 void set_error(const char* msg);
+
 cudf_status_t translate_exception();
+
 cudf_status_t translate_io_exception();
 
 // Exception-catching macro pair for C shim functions.

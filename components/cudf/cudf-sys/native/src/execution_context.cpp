@@ -11,10 +11,11 @@
 
 #include <cstdint>
 #include <limits>
+#include <mutex>
 #include <string>
+#include <utility>
 
 namespace {
-
 thread_local std::uintptr_t g_last_exec_stream_value = std::numeric_limits<std::uintptr_t>::max();
 thread_local std::uintptr_t g_last_exec_sync_stream_value =
   std::numeric_limits<std::uintptr_t>::max();
@@ -40,8 +41,13 @@ cudf_status_t get_current_device_or_error(int32_t* out)
   }
   return CUDF_SUCCESS;
 }
-
 }  // namespace
+
+std::recursive_mutex& cudf_current_device_resource_mutex()
+{
+  static std::recursive_mutex mutex;
+  return mutex;
+}
 
 cudf_status_t cudf_device_guard::activate(int32_t target)
 {
@@ -65,7 +71,7 @@ cudf_status_t cudf_device_guard::activate(int32_t target)
 
 cudf_current_device_resource_guard::cudf_current_device_resource_guard(
   rmm::mr::device_memory_resource* target)
-  : previous_(rmm::mr::get_current_device_resource())
+  : lock_(cudf_current_device_resource_mutex()), previous_(rmm::mr::get_current_device_resource())
 {
   rmm::mr::set_current_device_resource(target);
 }
@@ -75,6 +81,62 @@ cudf_current_device_resource_guard::~cudf_current_device_resource_guard()
   rmm::mr::set_current_device_resource(previous_);
 }
 
+cudf_exec_context::cudf_exec_context(rmm::cuda_stream_view stream,
+                                     rmm::device_async_resource_ref mr,
+                                     rmm::mr::device_memory_resource* mr_raw,
+                                     std::shared_ptr<void> mr_lifetime,
+                                     int32_t device,
+                                     cudf_device_guard guard)
+  : stream(stream),
+    mr(std::move(mr)),
+    mr_raw(mr_raw),
+    mr_lifetime(std::move(mr_lifetime)),
+    device(device),
+    guard(std::move(guard))
+{
+}
+
+cudf_exec_context::cudf_exec_context(cudf_exec_context&& other) noexcept
+  : stream(other.stream),
+    mr(other.mr),
+    mr_raw(other.mr_raw),
+    mr_lifetime(std::move(other.mr_lifetime)),
+    device(other.device),
+    guard(std::move(other.guard)),
+    current_resource_lock(std::move(other.current_resource_lock)),
+    previous_mr_raw(other.previous_mr_raw),
+    current_resource_installed(other.current_resource_installed)
+{
+  other.previous_mr_raw            = nullptr;
+  other.current_resource_installed = false;
+}
+
+cudf_exec_context::~cudf_exec_context()
+{
+  if (current_resource_installed) { rmm::mr::set_current_device_resource(previous_mr_raw); }
+}
+
+void cudf_exec_context::install_current_device_resource()
+{
+  if (current_resource_installed) { return; }
+  current_resource_lock =
+    std::unique_lock<std::recursive_mutex>{cudf_current_device_resource_mutex()};
+  previous_mr_raw = rmm::mr::get_current_device_resource();
+  if (previous_mr_raw != mr_raw) { rmm::mr::set_current_device_resource(mr_raw); }
+  current_resource_installed = true;
+}
+
+cudf_exec_context cudf_make_exec_context()
+{
+  std::scoped_lock lock{cudf_current_device_resource_mutex()};
+  auto* mr_raw = rmm::mr::get_current_device_resource();
+  return {cudf::get_default_stream(),
+          cudf::get_current_device_resource_ref(),
+          mr_raw,
+          cudf_memory_resource_lifetime_from_raw(mr_raw),
+          0};
+}
+
 cudf_status_t cudf_resolve_exec_options(cudf_exec_options_t const* options, cudf_exec_context* out)
 {
   if (out == nullptr) {
@@ -82,29 +144,33 @@ cudf_status_t cudf_resolve_exec_options(cudf_exec_options_t const* options, cudf
     return CUDF_ERROR_NULL;
   }
 
-  // Step 1: Null-options fast path — resolve the current device's defaults and return.
-  // This must come before any struct-field access since there is no struct.
+  // Step 1: Null-options fast path — resolve the current device's defaults and
+  // return. This must come before any struct-field access since there is no
+  // struct.
   if (options == nullptr) {
     int32_t dev                        = 0;
     cudf_status_t const current_status = get_current_device_or_error(&dev);
     if (current_status != CUDF_SUCCESS) { return current_status; }
-    out->device = dev;
-    out->stream = cudf::get_default_stream();
-    out->mr     = cudf::get_current_device_resource_ref();
-    out->mr_raw = rmm::mr::get_current_device_resource();
+    out->device      = dev;
+    out->stream      = cudf::get_default_stream();
+    out->mr          = cudf::get_current_device_resource_ref();
+    out->mr_raw      = rmm::mr::get_current_device_resource();
+    out->mr_lifetime = cudf_memory_resource_lifetime_from_raw(out->mr_raw);
     record_exec_context(out->stream, out->mr_raw);
+    out->install_current_device_resource();
     return CUDF_SUCCESS;
   }
 
   // Step 2: Validate the options struct before reading any fields beyond
   // struct_size.  This prevents reading past a caller's valid prefix (ABI
-  // versioning) and avoids side-effects (e.g. device switching) on invalid data.
+  // versioning) and avoids side-effects (e.g. device switching) on invalid
+  // data.
   if (options->struct_size < sizeof(cudf_exec_options_t)) {
     set_error("exec options struct_size is smaller than cudf_exec_options_t");
     return CUDF_ERROR_INVALID_OPERATION;
   }
   // Only CUDF_EXEC_FLAG_DEVICE_EXPLICIT is defined; reject unknown bits.
-  if ((options->flags & ~static_cast<uint32_t>(CUDF_EXEC_FLAG_DEVICE_EXPLICIT)) != 0) {
+  if ((options->flags & ~CUDF_EXEC_FLAG_DEVICE_EXPLICIT) != 0) {
     set_error("exec options flags contains unknown bits");
     return CUDF_ERROR_INVALID_OPERATION;
   }
@@ -131,18 +197,21 @@ cudf_status_t cudf_resolve_exec_options(cudf_exec_options_t const* options, cudf
   }
 
   // Step 4: Resolve stream and MR defaults on the now-active device.
-  out->stream = cudf::get_default_stream();
-  out->mr     = cudf::get_current_device_resource_ref();
-  out->mr_raw = rmm::mr::get_current_device_resource();
+  out->stream      = cudf::get_default_stream();
+  out->mr          = cudf::get_current_device_resource_ref();
+  out->mr_raw      = rmm::mr::get_current_device_resource();
+  out->mr_lifetime = cudf_memory_resource_lifetime_from_raw(out->mr_raw);
 
   // Step 5: Apply optional stream/MR overrides from the caller.
   if (options->stream != nullptr) { out->stream = cudf_stream_view_from_handle(options->stream); }
   if (options->mr != nullptr) {
-    out->mr_raw = cudf_memory_resource_raw_from_handle(options->mr);
-    out->mr     = cudf_memory_resource_ref_from_handle(options->mr);
+    out->mr_raw      = cudf_memory_resource_raw_from_handle(options->mr);
+    out->mr          = cudf_memory_resource_ref_from_handle(options->mr);
+    out->mr_lifetime = cudf_memory_resource_lifetime_from_handle(options->mr);
   }
 
   record_exec_context(out->stream, out->mr_raw);
+  out->install_current_device_resource();
   return CUDF_SUCCESS;
 }
 
@@ -152,7 +221,6 @@ void cudf_record_synchronized_stream(rmm::cuda_stream_view stream)
 }
 
 extern "C" {
-
 void cudf_test_exec_reset_observation()
 {
   g_last_exec_stream_value      = std::numeric_limits<std::uintptr_t>::max();
@@ -203,6 +271,7 @@ cudf_status_t cudf_test_stream_handle_value(cudf_stream_handle handle, std::uint
 cudf_status_t cudf_test_current_device_resource_raw(void** out)
 {
   CUDF_RUST_NULL_CHECK(out, "out is null");
+  std::scoped_lock lock{cudf_current_device_resource_mutex()};
   *out = rmm::mr::get_current_device_resource();
   return CUDF_SUCCESS;
 }
@@ -213,5 +282,4 @@ cudf_status_t cudf_test_exec_last_device(int32_t* out)
   *out = g_last_exec_device;
   return CUDF_SUCCESS;
 }
-
 }  // extern "C"

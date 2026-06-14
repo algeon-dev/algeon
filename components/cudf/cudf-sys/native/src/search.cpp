@@ -10,7 +10,6 @@
 #include <cudf/utilities/memory_resource.hpp>
 
 extern "C" {
-
 cudf_status_t cudf_contains(cudf_column_view_handle haystack,
                             cudf_column_view_handle needles,
                             cudf_column_handle* out)
@@ -29,18 +28,18 @@ cudf_status_t cudf_contains_ex(cudf_column_view_handle haystack,
   CUDF_RUST_NULL_CHECK(needles, "needles is null");
   CUDF_RUST_TRY
   {
-    auto* haystack_view = static_cast<cudf::column_view*>(haystack);
-    auto* needles_view  = static_cast<cudf::column_view*>(needles);
-    cudf_exec_context exec{
-      cudf::get_default_stream(), cudf::get_current_device_resource_ref(), nullptr};
+    auto* haystack_view             = static_cast<cudf::column_view*>(haystack);
+    auto* needles_view              = static_cast<cudf::column_view*>(needles);
+    cudf_exec_context exec          = cudf_make_exec_context();
     cudf_status_t const exec_status = cudf_resolve_exec_options(options, &exec);
     if (exec_status != CUDF_SUCCESS) { return exec_status; }
 
-    auto result = cudf::contains(*haystack_view, *needles_view, exec.stream, exec.mr);
-    *out        = cudf_release_column_handle(std::move(result));
+    {
+      auto result = cudf::contains(*haystack_view, *needles_view, exec.stream, exec.mr);
+      *out        = cudf_release_column_handle(std::move(result));
+    }
     return CUDF_SUCCESS;
   }
   CUDF_RUST_CATCH
 }
-
 }  // extern "C"

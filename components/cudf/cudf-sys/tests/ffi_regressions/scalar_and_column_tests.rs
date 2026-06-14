@@ -14,6 +14,7 @@ use crate::{
 
 #[test]
 fn test_scalar_string_value_round_trips_empty_and_non_empty_values() {
+    let _shim_state = lock_shim_state();
     for expected in ["hello", ""] {
         let s = std::ffi::CString::new(expected).unwrap();
         let mut scalar: *mut c_void = ptr::null_mut();
@@ -32,7 +33,146 @@ fn test_scalar_string_value_round_trips_empty_and_non_empty_values() {
 }
 
 #[test]
+fn test_nullable_device_buffer_adoption_rejects_same_handle_for_data_and_mask() {
+    let _shim_state = lock_shim_state();
+    let mut buffer: *mut c_void = ptr::null_mut();
+    let st = unsafe { cudf_sys::cudf_device_buffer_create(64, &mut buffer) };
+    assert_eq!(st, cudf_sys::CUDF_SUCCESS);
+    assert!(!buffer.is_null());
+
+    let mut out: *mut c_void = ptr::null_mut();
+    let st = unsafe {
+        cudf_sys::cudf_column_adopt_device_buffer_nullable(
+            cudf_sys::cudf_type_id_t::CUDF_TYPE_INT8,
+            buffer,
+            buffer,
+            0,
+            64,
+            &mut out,
+        )
+    };
+    assert_eq!(st, cudf_sys::CUDF_ERROR_INVALID_OPERATION);
+    assert!(out.is_null());
+    assert!(last_error_message().contains("distinct handles"));
+
+    unsafe { cudf_sys::cudf_device_buffer_destroy(buffer) };
+}
+
+#[test]
+fn test_device_buffer_adoption_publish_failure_leaves_buffer_handle_valid() {
+    let _shim_state = lock_shim_state();
+    let values = [10i32, 20, 30];
+    let mut buffer: *mut c_void = ptr::null_mut();
+    let st = unsafe { cudf_sys::cudf_device_buffer_create(std::mem::size_of_val(&values), &mut buffer) };
+    assert_eq!(st, cudf_sys::CUDF_SUCCESS);
+    assert!(!buffer.is_null());
+    let st = unsafe {
+        cudf_sys::cudf_device_buffer_copy_from_host(
+            buffer,
+            values.as_ptr() as *const c_void,
+            std::mem::size_of_val(&values),
+        )
+    };
+    assert_eq!(st, cudf_sys::CUDF_SUCCESS);
+
+    let mut out: *mut c_void = ptr::null_mut();
+    unsafe { cudf_sys::cudf_test_fail_column_handle_release_after(0) };
+    let st = unsafe {
+        cudf_sys::cudf_column_adopt_device_buffer(
+            cudf_sys::cudf_type_id_t::CUDF_TYPE_INT32,
+            buffer,
+            values.len() as i32,
+            &mut out,
+        )
+    };
+    unsafe { cudf_sys::cudf_test_fail_column_handle_release_after(-1) };
+    assert_eq!(st, cudf_sys::CUDF_ERROR_OUT_OF_MEMORY);
+    assert!(out.is_null());
+
+    let mut size = 0usize;
+    let st = unsafe { cudf_sys::cudf_device_buffer_size(buffer, &mut size) };
+    assert_eq!(st, cudf_sys::CUDF_SUCCESS);
+    assert_eq!(size, std::mem::size_of_val(&values));
+
+    let st = unsafe {
+        cudf_sys::cudf_column_adopt_device_buffer(
+            cudf_sys::cudf_type_id_t::CUDF_TYPE_INT32,
+            buffer,
+            values.len() as i32,
+            &mut out,
+        )
+    };
+    assert_eq!(st, cudf_sys::CUDF_SUCCESS);
+    assert!(!out.is_null());
+    assert_eq!(read_i32_column_data(out, values.len()), values);
+
+    unsafe { cudf_sys::cudf_column_destroy(out) };
+}
+
+#[test]
+fn test_nullable_device_buffer_adoption_publish_failure_leaves_both_handles_valid() {
+    let _shim_state = lock_shim_state();
+    let values = [10i32, 20, 30];
+    let mut data_buffer: *mut c_void = ptr::null_mut();
+    let mut mask_buffer: *mut c_void = ptr::null_mut();
+    let st = unsafe { cudf_sys::cudf_device_buffer_create(std::mem::size_of_val(&values), &mut data_buffer) };
+    assert_eq!(st, cudf_sys::CUDF_SUCCESS);
+    let st = unsafe { cudf_sys::cudf_device_buffer_create(64, &mut mask_buffer) };
+    assert_eq!(st, cudf_sys::CUDF_SUCCESS);
+    let st = unsafe {
+        cudf_sys::cudf_device_buffer_copy_from_host(
+            data_buffer,
+            values.as_ptr() as *const c_void,
+            std::mem::size_of_val(&values),
+        )
+    };
+    assert_eq!(st, cudf_sys::CUDF_SUCCESS);
+
+    let mut out: *mut c_void = ptr::null_mut();
+    unsafe { cudf_sys::cudf_test_fail_column_handle_release_after(0) };
+    let st = unsafe {
+        cudf_sys::cudf_column_adopt_device_buffer_nullable(
+            cudf_sys::cudf_type_id_t::CUDF_TYPE_INT32,
+            data_buffer,
+            mask_buffer,
+            0,
+            values.len() as i32,
+            &mut out,
+        )
+    };
+    unsafe { cudf_sys::cudf_test_fail_column_handle_release_after(-1) };
+    assert_eq!(st, cudf_sys::CUDF_ERROR_OUT_OF_MEMORY);
+    assert!(out.is_null());
+
+    let mut data_size = 0usize;
+    let mut mask_size = 0usize;
+    let st = unsafe { cudf_sys::cudf_device_buffer_size(data_buffer, &mut data_size) };
+    assert_eq!(st, cudf_sys::CUDF_SUCCESS);
+    let st = unsafe { cudf_sys::cudf_device_buffer_size(mask_buffer, &mut mask_size) };
+    assert_eq!(st, cudf_sys::CUDF_SUCCESS);
+    assert_eq!(data_size, std::mem::size_of_val(&values));
+    assert_eq!(mask_size, 64);
+
+    let st = unsafe {
+        cudf_sys::cudf_column_adopt_device_buffer_nullable(
+            cudf_sys::cudf_type_id_t::CUDF_TYPE_INT32,
+            data_buffer,
+            mask_buffer,
+            0,
+            values.len() as i32,
+            &mut out,
+        )
+    };
+    assert_eq!(st, cudf_sys::CUDF_SUCCESS);
+    assert!(!out.is_null());
+    assert_eq!(read_i32_column_data(out, values.len()), values);
+
+    unsafe { cudf_sys::cudf_column_destroy(out) };
+}
+
+#[test]
 fn test_column_view_null_mask_to_host_ex_supports_sliced_nullable_views() {
+    let _shim_state = lock_shim_state();
     let col = make_i32_column_nullable(
         &[10, 20, 30, 40, 50, 60, 70, 80, 90, 100],
         &[true, false, true, true, false, true, false, true, true, false],
@@ -55,6 +195,7 @@ fn test_column_view_null_mask_to_host_ex_supports_sliced_nullable_views() {
 
 #[test]
 fn test_scalar_string_value_owned_output_survives_subsequent_shim_calls() {
+    let _shim_state = lock_shim_state();
     let s = std::ffi::CString::new("hello").unwrap();
     let mut scalar: *mut c_void = ptr::null_mut();
     let st = unsafe { cudf_sys::cudf_scalar_create_string(s.as_ptr(), 1, &mut scalar) };
@@ -83,6 +224,7 @@ fn test_scalar_string_value_owned_output_survives_subsequent_shim_calls() {
 
 #[test]
 fn test_scalar_string_value_null_handle_initializes_outputs_before_failure() {
+    let _shim_state = lock_shim_state();
     let mut out = std::ptr::NonNull::<c_char>::dangling().as_ptr();
     let mut len: i32 = 123;
     let st = unsafe { cudf_sys::cudf_scalar_string_value(ptr::null_mut(), &mut out, &mut len) };
@@ -93,6 +235,7 @@ fn test_scalar_string_value_null_handle_initializes_outputs_before_failure() {
 
 #[test]
 fn test_scalar_string_value_wrong_type_initializes_outputs_before_failure() {
+    let _shim_state = lock_shim_state();
     let scalar = make_i32_scalar(42);
 
     let mut out = std::ptr::NonNull::<c_char>::dangling().as_ptr();
@@ -107,6 +250,7 @@ fn test_scalar_string_value_wrong_type_initializes_outputs_before_failure() {
 
 #[test]
 fn test_scalar_create_numeric_invalid_allows_null_value() {
+    let _shim_state = lock_shim_state();
     let mut scalar: *mut c_void = ptr::null_mut();
     let st = unsafe {
         cudf_sys::cudf_scalar_create_numeric(cudf_sys::cudf_type_id_t::CUDF_TYPE_INT32, ptr::null(), 0, &mut scalar)
@@ -124,6 +268,7 @@ fn test_scalar_create_numeric_invalid_allows_null_value() {
 
 #[test]
 fn test_scalar_create_numeric_valid_requires_value() {
+    let _shim_state = lock_shim_state();
     let mut scalar: *mut c_void = ptr::null_mut();
     let st = unsafe {
         cudf_sys::cudf_scalar_create_numeric(cudf_sys::cudf_type_id_t::CUDF_TYPE_INT32, ptr::null(), 1, &mut scalar)
@@ -157,6 +302,7 @@ unsafe fn scalar_raw_value<T: Copy>(scalar: *mut c_void) -> T {
 
 #[test]
 fn test_scalar_create_decimal_raw_round_trips_type_scale_validity_and_value() {
+    let _shim_state = lock_shim_state();
     let scale = -2;
 
     let raw32 = -12345_i32;
@@ -216,6 +362,7 @@ fn test_scalar_create_decimal_raw_round_trips_type_scale_validity_and_value() {
 
 #[test]
 fn test_scalar_create_timestamp_raw_round_trips_type_validity_and_value() {
+    let _shim_state = lock_shim_state();
     let cases = [
         (cudf_sys::cudf_type_id_t::CUDF_TYPE_TIMESTAMP_DAYS, 19_118_i64),
         (cudf_sys::cudf_type_id_t::CUDF_TYPE_TIMESTAMP_SECONDS, 1_651_795_200_i64),
@@ -241,6 +388,7 @@ fn test_scalar_create_timestamp_raw_round_trips_type_validity_and_value() {
 
 #[test]
 fn test_scalar_create_duration_raw_round_trips_type_validity_and_value() {
+    let _shim_state = lock_shim_state();
     let cases = [
         (cudf_sys::cudf_type_id_t::CUDF_TYPE_DURATION_DAYS, -7_i64),
         (cudf_sys::cudf_type_id_t::CUDF_TYPE_DURATION_SECONDS, -123_i64),
@@ -489,6 +637,7 @@ fn test_scalar_create_raw_ex_null_and_default_options_use_default_exec_without_s
 
 #[test]
 fn test_scalar_create_raw_ex_propagates_exec_option_validation_errors() {
+    let _shim_state = lock_shim_state();
     let bad_exec = cudf_sys::cudf_exec_options_t { struct_size: 0, ..Default::default() };
     let raw_decimal = 123_i64;
 
@@ -538,6 +687,7 @@ fn test_scalar_create_raw_ex_propagates_exec_option_validation_errors() {
 
 #[test]
 fn test_scalar_create_raw_rejects_wrong_family_type_ids() {
+    let _shim_state = lock_shim_state();
     let raw_decimal = 1_i64;
     let exec = cudf_sys::ExecutionContext::new();
 
@@ -587,6 +737,7 @@ fn test_scalar_create_raw_rejects_wrong_family_type_ids() {
 
 #[test]
 fn test_scalar_create_temporal_days_rejects_i64_values_outside_i32_range() {
+    let _shim_state = lock_shim_state();
     let exec = cudf_sys::ExecutionContext::new();
     let cases = [
         (cudf_sys::cudf_type_id_t::CUDF_TYPE_TIMESTAMP_DAYS, i64::from(i32::MAX) + 1, true),
@@ -610,6 +761,7 @@ fn test_scalar_create_temporal_days_rejects_i64_values_outside_i32_range() {
 
 #[test]
 fn test_scalar_create_raw_decimal_invalid_allows_null_value() {
+    let _shim_state = lock_shim_state();
     let cases = [
         cudf_sys::cudf_type_id_t::CUDF_TYPE_DECIMAL32,
         cudf_sys::cudf_type_id_t::CUDF_TYPE_DECIMAL64,
@@ -628,6 +780,7 @@ fn test_scalar_create_raw_decimal_invalid_allows_null_value() {
 
 #[test]
 fn test_scalar_create_raw_temporal_invalid_preserves_dtype() {
+    let _shim_state = lock_shim_state();
     let cases = [
         cudf_sys::cudf_type_id_t::CUDF_TYPE_TIMESTAMP_DAYS,
         cudf_sys::cudf_type_id_t::CUDF_TYPE_TIMESTAMP_SECONDS,
@@ -664,6 +817,7 @@ fn test_scalar_create_raw_temporal_invalid_preserves_dtype() {
 
 #[test]
 fn test_scalar_create_raw_rejects_null_out_and_valid_decimal_null_value() {
+    let _shim_state = lock_shim_state();
     let raw = 123_i32;
     let st = unsafe {
         cudf_sys::cudf_scalar_create_decimal_raw(
@@ -692,6 +846,7 @@ fn test_scalar_create_raw_rejects_null_out_and_valid_decimal_null_value() {
 
 #[test]
 fn test_scalar_create_string_valid_requires_value() {
+    let _shim_state = lock_shim_state();
     let mut scalar: *mut c_void = ptr::null_mut();
     let st = unsafe { cudf_sys::cudf_scalar_create_string(ptr::null(), 1, &mut scalar) };
     assert_eq!(st, cudf_sys::CUDF_ERROR_NULL);
@@ -700,6 +855,7 @@ fn test_scalar_create_string_valid_requires_value() {
 
 #[test]
 fn test_scalar_create_string_invalid_allows_null_value() {
+    let _shim_state = lock_shim_state();
     let mut scalar: *mut c_void = ptr::null_mut();
     let st = unsafe { cudf_sys::cudf_scalar_create_string(ptr::null(), 0, &mut scalar) };
     assert_eq!(st, cudf_sys::CUDF_SUCCESS);
@@ -715,6 +871,7 @@ fn test_scalar_create_string_invalid_allows_null_value() {
 
 #[test]
 fn test_column_view_slice_nested_nullable_preserves_logical_offset_in_null_count() {
+    let _shim_state = lock_shim_state();
     let col = make_i32_column_nullable(&[10, 20, 30, 40, 50], &[true, false, true, false, true]);
     let base_view = make_column_view(col);
 
@@ -756,6 +913,7 @@ fn test_column_view_slice_nested_nullable_preserves_logical_offset_in_null_count
 
 #[test]
 fn test_column_view_slice_rejects_active_offset_overflow() {
+    let _shim_state = lock_shim_state();
     let mut view: *mut c_void = ptr::null_mut();
     let st = unsafe {
         cudf_sys::cudf_test_column_view_create_synthetic_fixed_width(
@@ -783,6 +941,7 @@ fn test_column_view_slice_rejects_active_offset_overflow() {
 
 #[test]
 fn test_column_view_strings_to_host_ex_rejects_string_view_without_offsets_child() {
+    let _shim_state = lock_shim_state();
     let mut view: *mut c_void = ptr::null_mut();
     let st = unsafe { cudf_sys::cudf_test_column_view_create_synthetic_string_without_children(1, &mut view) };
     assert_eq!(st, cudf_sys::CUDF_SUCCESS);
@@ -812,6 +971,7 @@ fn test_column_view_strings_to_host_ex_rejects_string_view_without_offsets_child
 
 #[test]
 fn test_column_view_string_chars_ptr_and_size_ex_reports_active_sliced_chars_span() {
+    let _shim_state = lock_shim_state();
     let col = make_string_column(&["zero", "one", "two", "three"]);
     let full_view = make_column_view(col);
     let sliced_view = make_sliced_column_view(col, 1, 2);

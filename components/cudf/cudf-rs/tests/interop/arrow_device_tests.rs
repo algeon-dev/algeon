@@ -48,10 +48,11 @@ fn reset_event_observation() {
     unsafe { cudf_sys::cudf_test_event_reset_observation() };
 }
 
-fn observed_event_synchronize_call_count() -> i32 {
+fn observed_event_synchronize_call_count_for_event_handle_raw(event_handle_raw: usize) -> i32 {
     let mut out = -1;
-    let status = unsafe { cudf_sys::cudf_test_event_synchronize_call_count(&mut out) };
-    assert_eq!(status, cudf_sys::CUDF_SUCCESS, "failed to read event synchronize observation count");
+    let status =
+        unsafe { cudf_sys::cudf_test_event_synchronize_call_count_for_event_handle_raw(event_handle_raw, &mut out) };
+    assert_eq!(status, cudf_sys::CUDF_SUCCESS, "failed to read event synchronize observation count for event handle");
     out
 }
 
@@ -794,14 +795,15 @@ fn series_device_arrow_import_preserves_sync_event_metadata_without_host_fencing
 
     reset_event_observation();
     let baseline_wait = observed_stream_wait_call_count_for_stream_raw(consumer_stream_raw);
+    let baseline_sync = observed_event_synchronize_call_count_for_event_handle_raw(exported_sync_event as usize);
 
     let foreign = export.into_foreign();
     let imported = Series::try_import_from_device_arrow_column_into_runtime(&foreign, &consumer_runtime).unwrap();
 
-    assert_eq!(imported.to_vec_strict::<i32>().unwrap(), vec![10, 20, 30]);
     assert_eq!(foreign.sync_event_raw_ptr(), exported_sync_event);
     assert!(observed_stream_wait_call_count_for_stream_raw(consumer_stream_raw) > baseline_wait);
-    assert_eq!(observed_event_synchronize_call_count(), 0);
+    assert_eq!(observed_event_synchronize_call_count_for_event_handle_raw(exported_sync_event as usize), baseline_sync);
+    assert_eq!(imported.to_vec_strict::<i32>().unwrap(), vec![10, 20, 30]);
 }
 
 #[test]
@@ -1817,16 +1819,17 @@ fn dataframe_device_arrow_import_waits_on_sync_event_via_consumer_stream_without
 
     reset_event_observation();
     let baseline_wait = observed_stream_wait_call_count_for_stream_raw(consumer_stream_raw);
+    let baseline_sync = observed_event_synchronize_call_count_for_event_handle_raw(exported_sync_event as usize);
 
     let foreign = export.into_foreign();
     let imported = DataFrame::try_import_from_device_arrow_table_into_runtime(&foreign, &consumer_runtime).unwrap();
 
     assert_eq!(imported.column_names(), &["id", "flag"]);
-    assert_eq!(imported.series("id").unwrap().to_vec_strict::<i32>().unwrap(), vec![3, 1, 4]);
-    assert_eq!(imported.series("flag").unwrap().to_vec_strict::<bool>().unwrap(), vec![true, false, true]);
     assert_eq!(foreign.sync_event_raw_ptr(), exported_sync_event);
     assert!(observed_stream_wait_call_count_for_stream_raw(consumer_stream_raw) > baseline_wait);
-    assert_eq!(observed_event_synchronize_call_count(), 0);
+    assert_eq!(observed_event_synchronize_call_count_for_event_handle_raw(exported_sync_event as usize), baseline_sync);
+    assert_eq!(imported.series("id").unwrap().to_vec_strict::<i32>().unwrap(), vec![3, 1, 4]);
+    assert_eq!(imported.series("flag").unwrap().to_vec_strict::<bool>().unwrap(), vec![true, false, true]);
 }
 
 #[test]

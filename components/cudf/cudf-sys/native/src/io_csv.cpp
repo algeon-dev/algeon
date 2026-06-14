@@ -13,7 +13,6 @@
 #include <vector>
 
 extern "C" {
-
 cudf_status_t cudf_io_read_csv(const char* filepath,
                                char delimiter,
                                int32_t has_header,
@@ -33,8 +32,7 @@ cudf_status_t cudf_io_read_csv_ex(const char* filepath,
   CUDF_RUST_NULL_CHECK(filepath, "filepath is null");
   CUDF_RUST_TRY
   {
-    cudf_exec_context exec{
-      cudf::get_default_stream(), cudf::get_current_device_resource_ref(), nullptr};
+    cudf_exec_context exec          = cudf_make_exec_context();
     cudf_status_t const exec_status = cudf_resolve_exec_options(exec_options, &exec);
     if (exec_status != CUDF_SUCCESS) { return exec_status; }
 
@@ -42,10 +40,12 @@ cudf_status_t cudf_io_read_csv_ex(const char* filepath,
     auto builder = cudf::io::csv_reader_options::builder(source).delimiter(delimiter).header(
       has_header ? 0 : -1);
 
-    auto options = builder.build();
-    auto result  = cudf::io::read_csv(options, exec.stream, exec.mr);
+    {
+      auto options         = builder.build();
+      auto [tbl, metadata] = cudf::io::read_csv(options, exec.stream, exec.mr);
 
-    *out = cudf_release_table_handle(std::move(result.tbl));
+      *out = cudf_release_table_handle(std::move(tbl));
+    }
     return CUDF_SUCCESS;
   }
   CUDF_RUST_IO_CATCH
@@ -79,8 +79,7 @@ cudf_status_t cudf_io_write_csv_ex(cudf_table_view_handle table,
   if (num_columns > 0) { CUDF_RUST_NULL_CHECK(column_names, "column_names is null"); }
   CUDF_RUST_TRY
   {
-    cudf_exec_context exec{
-      cudf::get_default_stream(), cudf::get_current_device_resource_ref(), nullptr};
+    cudf_exec_context exec          = cudf_make_exec_context();
     cudf_status_t const exec_status = cudf_resolve_exec_options(exec_options, &exec);
     if (exec_status != CUDF_SUCCESS) { return exec_status; }
 
@@ -103,10 +102,12 @@ cudf_status_t cudf_io_write_csv_ex(cudf_table_view_handle table,
     }
 
     auto options = builder.build();
-    cudf::io::write_csv(options, exec.stream);
+    {
+      cudf_current_device_resource_guard current_mr{exec.mr_raw};
+      cudf::io::write_csv(options, exec.stream);
+    }
     return CUDF_SUCCESS;
   }
   CUDF_RUST_IO_CATCH
 }
-
 }  // extern "C"

@@ -14,11 +14,10 @@
 #include <unordered_map>
 
 namespace cudf_interop {
-
 inline cudf::size_type require_non_negative_i32(int32_t value, char const* field)
 {
   if (value < 0) { throw cudf::logic_error(field); }
-  return static_cast<cudf::size_type>(value);
+  return value;
 }
 
 inline cudf::size_type require_size_type_from_size_t(size_t value, char const* field)
@@ -64,7 +63,6 @@ inline binding_index_t build_binding_index(cudf_interop_buffer_binding_t const* 
   }
   return index;
 }
-
 }  // namespace cudf_interop
 
 #endif  // CUDF_RUST_INTEROP_COMMON_HPP

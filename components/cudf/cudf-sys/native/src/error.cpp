@@ -24,7 +24,6 @@ void set_error(const char* msg)
 }
 
 extern "C" {
-
 const char* cudf_last_error_message(void)
 {
   if (g_has_error) { return g_last_error_message.c_str(); }
@@ -36,11 +35,9 @@ void cudf_clear_error(void)
   g_has_error = false;
   g_last_error_message.clear();
 }
-
 }  // extern "C"
 
 namespace {
-
 cudf_status_t translate_exception_impl(cudf_status_t runtime_error_status)
 {
   try {
@@ -80,7 +77,6 @@ cudf_status_t translate_exception_impl(cudf_status_t runtime_error_status)
     return CUDF_ERROR_UNKNOWN;
   }
 }
-
 }  // namespace
 
 // Exception-catching helper used by all C shim functions.
@@ -90,7 +86,6 @@ cudf_status_t translate_exception() { return translate_exception_impl(CUDF_ERROR
 cudf_status_t translate_io_exception() { return translate_exception_impl(CUDF_ERROR_IO); }
 
 extern "C" {
-
 cudf_status_t cudf_test_throw_runtime_error()
 {
   cudf_clear_error();
@@ -120,7 +115,6 @@ cudf_status_t cudf_test_throw_invalid_argument()
     return translate_exception();
   }
 }
-
 }  // extern "C"
 
 // Macro used throughout the C shim to wrap function bodies.

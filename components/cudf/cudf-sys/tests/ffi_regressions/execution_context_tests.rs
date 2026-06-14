@@ -373,6 +373,149 @@ fn test_column_create_strings_host_source_sync_contract() {
     }
 }
 
+fn assert_strings_import_error_syncs_selected_stream(
+    arm_fault: unsafe extern "C" fn(),
+    values: &[&str],
+    validity: Option<&[bool]>,
+) {
+    let _shim_state = lock_shim_state();
+    let c_strings: Vec<_> = values.iter().map(|value| std::ffi::CString::new(*value).unwrap()).collect();
+    let string_ptrs: Vec<_> = c_strings.iter().map(|value| value.as_ptr()).collect();
+    let lengths: Vec<_> = values.iter().map(|value| value.len() as i32).collect();
+    let null_mask = validity.map(validity_to_bitmask).unwrap_or_default();
+    let null_count =
+        validity.map(|validity| validity.iter().filter(|&&is_valid| !is_valid).count() as i32).unwrap_or(0);
+    let null_mask_ptr = if null_mask.is_empty() { ptr::null() } else { null_mask.as_ptr() };
+
+    let stream = OwnedStream::new();
+    let explicit_stream = stream_value(stream.as_raw());
+    let borrowed_stream = stream.borrowed();
+    let exec = cudf_sys::ExecutionContext::new().with_stream(&borrowed_stream);
+
+    reset_exec_observation();
+    unsafe { arm_fault() };
+    let mut out: *mut c_void = ptr::null_mut();
+    let st = unsafe {
+        cudf_sys::cudf_column_create_strings_ex(
+            string_ptrs.as_ptr(),
+            lengths.as_ptr(),
+            values.len() as i32,
+            null_mask_ptr,
+            null_count,
+            exec.as_raw(),
+            &mut out,
+        )
+    };
+
+    assert_ne!(st, cudf_sys::CUDF_SUCCESS);
+    assert!(out.is_null());
+    assert_eq!(last_exec_stream_value(), explicit_stream);
+    assert_eq!(last_exec_sync_stream_value(), explicit_stream);
+}
+
+#[test]
+fn test_column_view_slice_ex_uses_explicit_stream_for_null_count() {
+    let _shim_state = lock_shim_state();
+    let col = make_i32_column_nullable(&[10, 20, 30, 40], &[true, false, true, false]);
+    let view = make_column_view(col);
+    let stream = OwnedStream::new();
+    let explicit_stream = stream_value(stream.as_raw());
+    let borrowed_stream = stream.borrowed();
+    let exec = cudf_sys::ExecutionContext::new().with_stream(&borrowed_stream);
+
+    reset_exec_observation();
+    let mut slice: *mut c_void = ptr::null_mut();
+    let st = unsafe { cudf_sys::cudf_column_view_slice_ex(view, 1, 2, exec.as_raw(), &mut slice) };
+    assert_eq!(st, cudf_sys::CUDF_SUCCESS);
+    assert!(!slice.is_null());
+    assert_eq!(last_exec_stream_value(), explicit_stream);
+    assert_eq!(last_exec_sync_stream_value(), NO_SYNC_RECORDED);
+
+    let mut null_count = -1;
+    let st = unsafe { cudf_sys::cudf_column_view_null_count(slice, &mut null_count) };
+    assert_eq!(st, cudf_sys::CUDF_SUCCESS);
+    assert_eq!(null_count, 1);
+
+    unsafe {
+        cudf_sys::cudf_column_view_destroy(slice);
+        cudf_sys::cudf_column_view_destroy(view);
+        cudf_sys::cudf_column_destroy(col);
+    }
+}
+
+#[test]
+fn test_column_view_slice_legacy_wrapper_uses_default_stream_for_null_count() {
+    let _shim_state = lock_shim_state();
+    let col = make_i32_column_nullable(&[10, 20, 30, 40], &[true, false, true, false]);
+    let view = make_column_view(col);
+    let default_stream = default_stream_value();
+
+    reset_exec_observation();
+    let mut slice: *mut c_void = ptr::null_mut();
+    let st = unsafe { cudf_sys::cudf_column_view_slice(view, 1, 2, &mut slice) };
+    assert_eq!(st, cudf_sys::CUDF_SUCCESS);
+    assert!(!slice.is_null());
+    assert_eq!(last_exec_stream_value(), default_stream);
+    assert_eq!(last_exec_sync_stream_value(), NO_SYNC_RECORDED);
+
+    let mut null_count = -1;
+    let st = unsafe { cudf_sys::cudf_column_view_null_count(slice, &mut null_count) };
+    assert_eq!(st, cudf_sys::CUDF_SUCCESS);
+    assert_eq!(null_count, 1);
+
+    unsafe {
+        cudf_sys::cudf_column_view_destroy(slice);
+        cudf_sys::cudf_column_view_destroy(view);
+        cudf_sys::cudf_column_destroy(col);
+    }
+}
+
+#[test]
+fn test_column_create_strings_ex_syncs_on_error_after_offsets_copy() {
+    assert_strings_import_error_syncs_selected_stream(
+        cudf_sys::cudf_test_fail_next_strings_host_import_after_offsets_copy,
+        &["ab", "", "cde"],
+        None,
+    );
+}
+
+#[test]
+fn test_column_create_strings_ex_syncs_on_error_after_chars_copy() {
+    assert_strings_import_error_syncs_selected_stream(
+        cudf_sys::cudf_test_fail_next_strings_host_import_after_chars_copy,
+        &["ab", "", "cde"],
+        None,
+    );
+}
+
+#[test]
+fn test_column_create_strings_ex_syncs_on_error_after_null_mask_copy() {
+    let validity = [true, false, true];
+    assert_strings_import_error_syncs_selected_stream(
+        cudf_sys::cudf_test_fail_next_strings_host_import_after_null_mask_copy,
+        &["ab", "", "cde"],
+        Some(&validity),
+    );
+}
+
+#[test]
+fn test_column_create_strings_ex_syncs_on_error_before_make_strings_column() {
+    assert_strings_import_error_syncs_selected_stream(
+        cudf_sys::cudf_test_fail_next_strings_host_import_before_make_strings_column,
+        &["ab", "", "cde"],
+        None,
+    );
+}
+
+#[test]
+fn test_column_create_strings_ex_syncs_on_error_after_make_strings_column() {
+    assert_strings_import_error_syncs_selected_stream(
+        cudf_sys::cudf_test_fail_next_strings_host_import_after_make_strings_column,
+        &["ab", "", "cde"],
+        None,
+    );
+}
+
 #[test]
 fn test_stream_handle_has_no_effect_until_attached_to_execution_context() {
     let _shim_state = lock_shim_state();

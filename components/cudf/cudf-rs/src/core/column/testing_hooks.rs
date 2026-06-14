@@ -1,5 +1,3 @@
-use std::sync::Arc;
-
 use super::{Column, ColumnView};
 use crate::core::{
     error::{self, Result},
@@ -23,10 +21,5 @@ pub(crate) fn slice_view_for_test<'a>(column: &'a Column, offset: usize, length:
     };
     let (_start, _end) = row_range::checked_bounds_i32(offset, length, operation)?;
 
-    let mut handle = std::ptr::null_mut();
-    crate::core::error::check_status_in(
-        unsafe { cudf_sys::cudf_column_view_slice(view.raw_handle(), start, len, &mut handle) },
-        operation,
-    )?;
-    unsafe { ColumnView::from_raw_with_domain(handle, Arc::clone(view.execution_domain())) }
+    view.slice_with_operation(start, len, operation)
 }

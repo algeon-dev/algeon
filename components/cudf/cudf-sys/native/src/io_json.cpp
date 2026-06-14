@@ -15,7 +15,6 @@
 #include <vector>
 
 extern "C" {
-
 cudf_status_t cudf_io_read_json(const char* filepath, int32_t lines, cudf_table_handle* out)
 {
   return cudf_io_read_json_ex(filepath, lines, out, nullptr);
@@ -31,18 +30,19 @@ cudf_status_t cudf_io_read_json_ex(const char* filepath,
   CUDF_RUST_NULL_CHECK(filepath, "filepath is null");
   CUDF_RUST_TRY
   {
-    cudf_exec_context exec{
-      cudf::get_default_stream(), cudf::get_current_device_resource_ref(), nullptr};
+    cudf_exec_context exec          = cudf_make_exec_context();
     cudf_status_t const exec_status = cudf_resolve_exec_options(exec_options, &exec);
     if (exec_status != CUDF_SUCCESS) { return exec_status; }
 
     auto source  = cudf::io::source_info(std::string(filepath));
     auto builder = cudf::io::json_reader_options::builder(source).lines(lines != 0);
 
-    auto options = builder.build();
-    auto result  = cudf::io::read_json(options, exec.stream, exec.mr);
+    {
+      auto options         = builder.build();
+      auto [tbl, metadata] = cudf::io::read_json(options, exec.stream, exec.mr);
 
-    *out = cudf_release_table_handle(std::move(result.tbl));
+      *out = cudf_release_table_handle(std::move(tbl));
+    }
     return CUDF_SUCCESS;
   }
   CUDF_RUST_IO_CATCH
@@ -74,16 +74,18 @@ cudf_status_t cudf_io_read_json_with_metadata_ex(const char* filepath,
   CUDF_RUST_NULL_CHECK(filepath, "filepath is null");
   CUDF_RUST_TRY
   {
-    cudf_exec_context exec{
-      cudf::get_default_stream(), cudf::get_current_device_resource_ref(), nullptr};
+    cudf_exec_context exec          = cudf_make_exec_context();
     cudf_status_t const exec_status = cudf_resolve_exec_options(exec_options, &exec);
     if (exec_status != CUDF_SUCCESS) { return exec_status; }
 
     auto source  = cudf::io::source_info(std::string(filepath));
     auto builder = cudf::io::json_reader_options::builder(source).lines(lines != 0);
 
-    auto options = builder.build();
-    auto result  = cudf::io::read_json(options, exec.stream, exec.mr);
+    cudf::io::table_with_metadata result;
+    {
+      auto options = builder.build();
+      result       = cudf::io::read_json(options, exec.stream, exec.mr);
+    }
 
     auto const fault = cudf_test_io_take_next_metadata_fault();
     if (fault != CUDF_TEST_IO_METADATA_FAULT_NONE) {
@@ -158,8 +160,7 @@ cudf_status_t cudf_io_write_json_ex(cudf_table_view_handle table,
   if (num_columns > 0) { CUDF_RUST_NULL_CHECK(column_names, "column_names is null"); }
   CUDF_RUST_TRY
   {
-    cudf_exec_context exec{
-      cudf::get_default_stream(), cudf::get_current_device_resource_ref(), nullptr};
+    cudf_exec_context exec          = cudf_make_exec_context();
     cudf_status_t const exec_status = cudf_resolve_exec_options(exec_options, &exec);
     if (exec_status != CUDF_SUCCESS) { return exec_status; }
 
@@ -181,10 +182,12 @@ cudf_status_t cudf_io_write_json_ex(cudf_table_view_handle table,
     }
 
     auto options = builder.build();
-    cudf::io::write_json(options, exec.stream);
+    {
+      cudf_current_device_resource_guard current_mr{exec.mr_raw};
+      cudf::io::write_json(options, exec.stream);
+    }
     return CUDF_SUCCESS;
   }
   CUDF_RUST_IO_CATCH
 }
-
 }  // extern "C"

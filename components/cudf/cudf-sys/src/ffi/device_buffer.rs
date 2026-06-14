@@ -1,6 +1,6 @@
 use std::os::raw::c_void;
 
-use crate::{cudf_column_handle, cudf_device_buffer_handle, cudf_status_t, cudf_type_id_t};
+use crate::{cudf_column_handle, cudf_device_buffer_handle, cudf_exec_options_t, cudf_status_t, cudf_type_id_t};
 
 extern "C" {
     // -- DeviceBuffer (owned GPU memory) -------------------------------------
@@ -8,6 +8,14 @@ extern "C" {
     /// Allocate a device buffer of `size` bytes using the current per-device
     /// RMM memory resource. Contents are uninitialized.
     pub fn cudf_device_buffer_create(size: usize, out: *mut cudf_device_buffer_handle) -> cudf_status_t;
+
+    /// Allocate a device buffer of `size` bytes using the explicit stream and
+    /// memory resource in `options`. Contents are uninitialized.
+    pub fn cudf_device_buffer_create_ex(
+        size: usize,
+        options: *const cudf_exec_options_t,
+        out: *mut cudf_device_buffer_handle,
+    ) -> cudf_status_t;
 
     /// Release a device buffer. Safe to call with null (no-op).
     /// Must NOT be called if the buffer was previously adopted by a column.

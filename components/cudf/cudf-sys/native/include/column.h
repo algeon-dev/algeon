@@ -333,6 +333,26 @@ void cudf_test_fail_next_fixed_width_host_import_after_data_copy();
 /// queued. Intended only for synchronization regression tests.
 void cudf_test_fail_next_fixed_width_host_import_after_null_mask_copy();
 
+/// Force the next strings host import to fail after the offsets copy is
+/// queued. Intended only for synchronization regression tests.
+void cudf_test_fail_next_strings_host_import_after_offsets_copy();
+
+/// Force the next strings host import to fail after the chars copy is queued.
+/// Intended only for synchronization regression tests.
+void cudf_test_fail_next_strings_host_import_after_chars_copy();
+
+/// Force the next strings host import to fail after the null-mask copy is
+/// queued. Intended only for synchronization regression tests.
+void cudf_test_fail_next_strings_host_import_after_null_mask_copy();
+
+/// Force the next strings host import to fail after host-source copies are
+/// queued and before the libcudf strings column is assembled.
+void cudf_test_fail_next_strings_host_import_before_make_strings_column();
+
+/// Force the next strings host import to fail after the libcudf strings column
+/// is assembled but before the shim returns success.
+void cudf_test_fail_next_strings_host_import_after_make_strings_column();
+
 /// Test-only helper that constructs a fixed-width column_view with a caller-
 /// controlled logical offset. The returned view is synthetic and must only be
 /// used for metadata/slicing regression tests.
@@ -447,6 +467,19 @@ cudf_status_t cudf_column_view_slice(cudf_column_view_handle handle,
                                      int32_t length,
                                      cudf_column_view_handle* out);
 
+/// Create a sliced borrowed column view over an existing column view with
+/// explicit execution options.
+///
+/// This is zero-copy with respect to device data: it creates only a new
+/// `cudf::column_view` handle. `options->stream` is used for null-count
+/// computation when the source view is nullable. `options->mr` is ignored
+/// because this helper does not allocate output storage.
+cudf_status_t cudf_column_view_slice_ex(cudf_column_view_handle handle,
+                                        int32_t offset,
+                                        int32_t length,
+                                        const cudf_exec_options_t* options,
+                                        cudf_column_view_handle* out);
+
 /// Copy null mask to host buffer. `host_buf` must be at least
 /// bitmask_allocation_size_bytes(size) bytes.
 ///
@@ -509,8 +542,9 @@ cudf_status_t cudf_column_create_from_device_data_ex(cudf_type_id_t type_id,
 /// packed bitmask (LSB order) indicating which rows are valid.
 ///
 /// For num_strings == 0, an empty STRING column is returned.
-/// On success, this helper synchronizes cuDF's default stream before return so
-/// the borrowed host buffers are no longer in use.
+/// If host-source copies are queued, this helper synchronizes cuDF's default
+/// stream before return on success or failure so the borrowed host buffers are
+/// no longer in use.
 cudf_status_t cudf_column_create_strings(const char** strings,
                                          const int32_t* lengths,
                                          int32_t num_strings,
@@ -521,8 +555,9 @@ cudf_status_t cudf_column_create_strings(const char** strings,
 /// Create a STRING type column from host string data with explicit execution
 /// options.
 ///
-/// The selected stream is synchronized before return on success so the
-/// borrowed host buffers are no longer in use.
+/// If host-source copies are queued, the selected stream is synchronized
+/// before return on success or failure so the borrowed host buffers are no
+/// longer in use.
 /// When `options->mr` is non-NULL, it must outlive the returned column.
 cudf_status_t cudf_column_create_strings_ex(const char** strings,
                                             const int32_t* lengths,
