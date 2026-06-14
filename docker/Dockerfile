@@ -107,6 +107,9 @@ ENV LD_LIBRARY_PATH=/app/lib${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}} \
 #   AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY / AWS_SESSION_TOKEN
 #
 # ── DataFusion session (single underscores; SessionConfig::from_env) ────────
+#   Consumed by DataFusion's SessionConfig::from_env(), not direct Nexus env
+#   parsing. DataFusion maps `datafusion.execution.batch_size` to
+#   DATAFUSION_EXECUTION_BATCH_SIZE.
 #   DATAFUSION_EXECUTION_TARGET_PARTITIONS
 #   DATAFUSION_EXECUTION_BATCH_SIZE
 #
