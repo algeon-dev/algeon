@@ -6,6 +6,8 @@ mod dataframe_debug_tests;
 mod dataframe_display_tests;
 #[path = "../frame/contracts/high_level_reexport_tests.rs"]
 mod high_level_reexport_tests;
+#[path = "interop_canonical_contract_imports.rs"]
+mod interop_canonical_contract_imports;
 #[path = "../runtime/debug_tests.rs"]
 mod runtime_debug_tests;
 #[path = "../frame/series/display_tests.rs"]

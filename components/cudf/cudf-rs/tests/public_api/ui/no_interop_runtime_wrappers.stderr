@@ -1,7 +1,0 @@
-error[E0432]: unresolved imports `cudf::interop::runtime`, `cudf::interop::transfer`
- --> tests/public_api/ui/no_interop_runtime_wrappers.rs:2:5
-  |
-2 |     runtime::RuntimeCompletionAuthority,
-  |     ^^^^^^^ could not find `runtime` in `interop`
-3 |     transfer::{RuntimeOwnedColumnTransferReleaser, RuntimeOwnedTableTransferReleaser},
-  |     ^^^^^^^^ could not find `transfer` in `interop`

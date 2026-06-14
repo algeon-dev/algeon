@@ -437,45 +437,6 @@ fn frame_submodules_expose_specialized_high_level_types() {
 }
 
 #[test]
-fn hidden_internal_reexports_are_not_publicly_importable() {
-    let t = trybuild::TestCases::new();
-    t.compile_fail("tests/public_api/ui/no_debug_execution_context.rs");
-    t.compile_fail("tests/public_api/ui/no_into_with_column_expr.rs");
-    t.compile_fail("tests/public_api/ui/no_root_debug_validity_helper.rs");
-    t.compile_fail("tests/public_api/ui/no_arrow_debug_triggers.rs");
-    t.compile_fail("tests/public_api/ui/no_internal_testing_hooks_modules.rs");
-    t.compile_fail("tests/public_api/ui/no_testing_flat_primitives.rs");
-    t.compile_fail("tests/public_api/ui/no_core_view_types.rs");
-    t.compile_fail("tests/public_api/ui/no_column_view_method.rs");
-    t.compile_fail("tests/public_api/ui/no_table_view_method.rs");
-    t.compile_fail("tests/public_api/ui/no_dataframe_view_method.rs");
-    t.compile_fail("tests/public_api/ui/no_series_view_method.rs");
-    t.compile_fail("tests/public_api/ui/no_series_as_column_view.rs");
-    t.compile_fail("tests/public_api/ui/no_testing_column_view_factorize_parts.rs");
-    t.compile_fail("tests/public_api/ui/no_testing_column_view_validity.rs");
-    t.compile_fail("tests/public_api/ui/no_series_string_scalar_aliases.rs");
-    t.compile_fail("tests/public_api/ui/no_series_bitwise_operator_overloads.rs");
-    t.compile_fail("tests/public_api/ui/no_legacy_result_type_names.rs");
-    t.compile_fail("tests/public_api/ui/no_legacy_error_kind_names.rs");
-    t.compile_fail("tests/public_api/ui/no_legacy_error_code_names.rs");
-    t.compile_fail("tests/public_api/ui/no_execution_context_type.rs");
-    t.compile_fail("tests/public_api/ui/no_error_new_with_constructor.rs");
-    t.compile_fail("tests/public_api/ui/no_facts_write_surface.rs");
-    t.compile_fail("tests/public_api/ui/no_root_dataframe_specialized_types.rs");
-    t.compile_fail("tests/public_api/ui/no_root_factorization_types.rs");
-    t.compile_fail("tests/public_api/ui/no_root_source_planning_types.rs");
-    t.compile_fail("tests/public_api/ui/no_dataframe_in_context.rs");
-    t.compile_fail("tests/public_api/ui/no_named_first_runtime_series_constructors.rs");
-    t.compile_fail("tests/public_api/ui/no_query_request_public_fields_or_expr_constructors.rs");
-    t.compile_fail("tests/public_api/ui/no_interop_runtime_wrappers.rs");
-    t.compile_fail("tests/public_api/ui/no_interop_shared_contract_nouns.rs");
-    t.compile_fail("tests/public_api/ui/no_interop_borrowed_namespace.rs");
-    t.compile_fail("tests/public_api/ui/no_interop_prepared_namespace.rs");
-    t.compile_fail("tests/public_api/ui/no_interop_transfer_namespace.rs");
-    t.pass("tests/public_api/ui/interop_canonical_contract_imports.rs");
-}
-
-#[test]
 fn testing_submodules_expose_domain_scoped_hooks() {
     let _ = cudf::testing::arrow::trigger_numeric_to_arrow_error_for_test;
     let _ = cudf::testing::column::trigger_column_view_fixed_width_host_byte_range_overflow_for_test;

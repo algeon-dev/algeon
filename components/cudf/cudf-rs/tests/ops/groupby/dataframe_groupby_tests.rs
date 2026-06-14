@@ -196,7 +196,7 @@ fn test_prepare_sort_groupby_with_budget_reports_exact_group_facts_and_reuses_ha
     let result = agg_outcome.value();
     let agg_report = agg_outcome.report();
     let output_bytes = dataframe_device_allocated_size_bytes(result);
-    assert_eq!(groupby_sum_pairs(&result), groupby_sum_pairs(&expected));
+    assert_eq!(groupby_sum_pairs(result), groupby_sum_pairs(&expected));
     assert_eq!(agg_report.request().boundary(), "prepared_sort_groupby");
     assert_eq!(agg_report.enforcement(), ExecutionBudgetEnforcement::StreamBoundReservation);
     assert_eq!(agg_report.status(), ExecutionBudgetStatus::ReservationEnforced);

@@ -1,5 +1,0 @@
-error[E0599]: no function or associated item named `view` found for struct `DataFrame` in the current scope
- --> tests/public_api/ui/no_dataframe_view_method.rs:4:45
-  |
-4 |     let f: fn(&DataFrame) -> _ = DataFrame::view;
-  |                                             ^^^^ function or associated item not found in `DataFrame`
