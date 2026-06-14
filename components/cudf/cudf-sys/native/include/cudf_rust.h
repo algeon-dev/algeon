@@ -8,6 +8,7 @@
 #include "column.h"
 #include "concatenate.h"
 #include "copying.h"
+#include "datetime.h"
 #include "device.h"
 #include "device_buffer.h"
 #include "dictionary.h"

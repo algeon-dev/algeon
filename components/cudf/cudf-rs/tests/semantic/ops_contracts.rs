@@ -22,6 +22,8 @@ mod dataframe_merge_split_tests;
 mod dataframe_merge_tests;
 #[path = "../ops/sorting/dataframe_sort_values_tests.rs"]
 mod dataframe_sort_values_tests;
+#[path = "../ops/datetime/datetime_tests.rs"]
+mod datetime_tests;
 #[path = "../ops/misc/dictionary_tests.rs"]
 mod dictionary_tests;
 #[path = "../ops/misc/expr_doc_surface_tests.rs"]

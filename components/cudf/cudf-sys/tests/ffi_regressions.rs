@@ -1,5 +1,7 @@
 #[path = "ffi_regressions/arrow_device_tests.rs"]
 mod arrow_device_tests;
+#[path = "ffi_regressions/datetime_tests.rs"]
+mod datetime_tests;
 #[path = "ffi_regressions/execution_context_tests.rs"]
 mod execution_context_tests;
 #[path = "ffi_regressions/helpers.rs"]

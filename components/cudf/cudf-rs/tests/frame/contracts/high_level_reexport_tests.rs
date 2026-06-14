@@ -112,6 +112,33 @@ fn ops_expr_raw_literal_functions_are_publicly_importable() {
 }
 
 #[test]
+fn datetime_extract_surface_is_publicly_importable() {
+    use cudf::{
+        TypeId,
+        ops::datetime::{DatetimeComponent, extract_component},
+        testing::prelude::*,
+    };
+
+    fn assert_component(_: DatetimeComponent) {}
+
+    let ts = crate::common::series("ts", &[0i32, 10_561])
+        .unwrap()
+        .astype(TypeId::DurationDays)
+        .unwrap()
+        .astype(TypeId::TimestampDays)
+        .unwrap();
+    let view = ts.as_column().testing_view().unwrap();
+    let year = extract_component(&view, DatetimeComponent::Year).unwrap();
+    let month = ts.dt().month().unwrap();
+    let day = ts.dt().day().unwrap();
+
+    assert_component(DatetimeComponent::Month);
+    assert_eq!(year.testing_view().unwrap().to_vec::<i16>().unwrap(), vec![1970, 1998]);
+    assert_eq!(month.to_vec_strict::<i16>().unwrap(), vec![1, 12]);
+    assert_eq!(day.to_vec_strict::<i16>().unwrap(), vec![1, 1]);
+}
+
+#[test]
 fn execution_placement_summary_is_publicly_reexported() {
     use cudf::{DataFrame, ExecutionPlacement, Runtime};
 

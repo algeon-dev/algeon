@@ -152,6 +152,7 @@ add_library(
   src/reduction.cpp
   src/concatenate.cpp
   src/dictionary.cpp
+  src/datetime.cpp
   src/hashing.cpp
   src/replace.cpp
   src/search.cpp

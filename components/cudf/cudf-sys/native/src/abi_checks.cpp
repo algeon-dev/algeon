@@ -4,6 +4,7 @@
 
 #include "binary.h"
 #include "copying.h"
+#include "datetime.h"
 #include "execution_context.h"
 #include "filter.h"
 #include "groupby.h"
@@ -40,6 +41,8 @@ static_assert(sizeof(cudf_unary_operator_t) == sizeof(int32_t),
               "cudf_unary_operator_t must be 32-bit");
 static_assert(sizeof(cudf_binary_operator_t) == sizeof(int32_t),
               "cudf_binary_operator_t must be 32-bit");
+static_assert(sizeof(cudf_datetime_component_t) == sizeof(int32_t),
+              "cudf_datetime_component_t must be 32-bit");
 static_assert(sizeof(cudf_reduce_aggregation_kind_t) == sizeof(int32_t),
               "cudf_reduce_aggregation_kind_t must be 32-bit");
 static_assert(sizeof(cudf_scan_type_t) == sizeof(int32_t), "cudf_scan_type_t must be 32-bit");
@@ -216,6 +219,10 @@ static_assert(CUDF_UNARY_BIT_COUNT == static_cast<int>(cudf::unary_operator::BIT
 static_assert(CUDF_UNARY_BIT_INVERT == static_cast<int>(cudf::unary_operator::BIT_INVERT));
 static_assert(CUDF_UNARY_NOT == static_cast<int>(cudf::unary_operator::NOT));
 static_assert(CUDF_UNARY_NEGATE == static_cast<int>(cudf::unary_operator::NEGATE));
+
+static_assert(CUDF_DATETIME_COMPONENT_YEAR == 0);
+static_assert(CUDF_DATETIME_COMPONENT_MONTH == 1);
+static_assert(CUDF_DATETIME_COMPONENT_DAY == 2);
 
 static_assert(CUDF_BINARY_ADD == static_cast<int>(cudf::binary_operator::ADD));
 static_assert(CUDF_BINARY_SUB == static_cast<int>(cudf::binary_operator::SUB));

@@ -17,6 +17,7 @@ use crate::{
     internal::temp_table::TempTableView,
     ops::{
         binary::{self, BinaryOperator},
+        datetime::{self, DatetimeComponent},
         factorization,
         groupby::GroupByAgg,
         reduction::{self, ReduceAgg, ScanAgg, ScanType},
@@ -840,6 +841,19 @@ impl Series {
         operation: &'static str,
     ) -> Result<Series> {
         self.string_unary_in_context(op, ctx, operation)
+    }
+
+    pub(super) fn datetime_component_with_context(
+        &self,
+        component: DatetimeComponent,
+        ctx: &ExecutionOverrides<'_>,
+        operation: &'static str,
+    ) -> Result<Series> {
+        let output_domain = self.resolve_context_output_domain(ctx, operation)?;
+        let cv = self.column.view()?;
+        let exec_options = output_domain.explicit_exec_options_raw();
+        let col = datetime::extract_component_impl(&cv, component, &output_domain, exec_options.as_ref(), operation)?;
+        Series::from_column(col)
     }
 
     pub(super) fn strip_in_context(
