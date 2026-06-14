@@ -312,6 +312,7 @@ impl DatafusionCudfFlightSqlService {
             }
         };
         verify_flight_info_plan(&logical_plan, ticket_kind)?;
+        reject_drop_object_type_mismatch(query_ctx, &logical_plan, ticket_kind.create_logical_plan_operation()).await?;
         if let Some(error) = fast_fail_unsupported_table_format_operator_plan(&logical_plan) {
             return Err(status_with_query_id(adapter_error_status(error), &query_id));
         }
@@ -462,17 +463,44 @@ impl DatafusionCudfFlightSqlService {
         };
         let planning = self.query_planning(native_cancellation.clone());
         let query_ctx = &planning.ctx;
+        let query_state = query_ctx.state();
+        let logical_plan = tokio::select! {
+            result = query_state.create_logical_plan(&sql) => match result {
+                Ok(plan) => plan,
+                Err(error) => {
+                    log_leaf_guard_rejection(&query_id, &error, self.session_profile);
+                    let status = status_with_query_id(
+                        datafusion_error_to_status_for_operation(error, ticket_kind.sql_operation()),
+                        &query_id,
+                    );
+                    lifecycle.finish_status("planning", &status);
+                    return Err(status);
+                },
+            },
+            _ = token.cancelled() => {
+                native_cancellation.cancel();
+                let status = cancellation_status(&self.shutdown_token, &query_id);
+                lifecycle.finish_status("planning", &status);
+                return Err(status);
+            },
+        };
+        if let Err(status) =
+            reject_drop_object_type_mismatch(query_ctx, &logical_plan, ticket_kind.sql_operation()).await
+        {
+            let status = status_with_query_id(status, &query_id);
+            lifecycle.finish_status("planning", &status);
+            return Err(status);
+        }
         let df = tokio::select! {
-            result = query_ctx.sql(&sql) => match result {
+            result = query_ctx.execute_logical_plan(logical_plan) => match result {
                 Ok(df) => df,
                 Err(error) => {
-                    // Logical-planning failures (e.g. SQL parse, unknown
-                    // table) happen before the physical optimizer runs, so
-                    // `last_report` is empty here. The leaf-guard helper
-                    // still no-ops on non-leaf-guard errors, but we run it
-                    // for completeness so any planning-time adapter error
-                    // that does carry the leaf-guard facts gets the
-                    // structured warn line.
+                    // DDL execution and logical-plan wrapping happen before
+                    // the physical optimizer runs, so `last_report` is empty
+                    // here. The leaf-guard helper no-ops on non-leaf-guard
+                    // errors, but we run it for completeness so any
+                    // planning-time adapter error that does carry the
+                    // leaf-guard facts gets the structured warn line.
                     log_leaf_guard_rejection(&query_id, &error, self.session_profile);
                     let status = status_with_query_id(
                         datafusion_error_to_status_for_operation(error, ticket_kind.sql_operation()),
@@ -614,6 +642,11 @@ impl DatafusionCudfFlightSqlService {
             lifecycle.finish_status("planning", &status);
             return Err(status);
         }
+        if let Err(status) = reject_drop_object_type_mismatch(&self.ctx, &plan, statement_kind.sql_operation()).await {
+            let status = status_with_query_id(status, &query_id);
+            lifecycle.finish_status("planning", &status);
+            return Err(status);
+        }
         let df = tokio::select! {
             result = self.ctx.execute_logical_plan(plan) => match result {
                 Ok(df) => df,
@@ -726,6 +759,60 @@ impl DatafusionCudfFlightSqlService {
             return Ok(true);
         }
         Ok(self.cancellations.cancel(query_id))
+    }
+}
+
+async fn reject_drop_object_type_mismatch(
+    ctx: &SessionContext,
+    plan: &LogicalPlan,
+    operation: &'static str,
+) -> Result<(), Status> {
+    let (object_name, expected_table_type) = match plan {
+        LogicalPlan::Ddl(DdlStatement::DropTable(drop_table)) => (&drop_table.name, TableType::Base),
+        LogicalPlan::Ddl(DdlStatement::DropView(drop_view)) => (&drop_view.name, TableType::View),
+        _ => return Ok(()),
+    };
+    let table_name = object_name.table().to_string();
+    let Ok(schema) = ctx.state().schema_for_ref(object_name.clone()) else {
+        return Ok(());
+    };
+    let Ok(Some(actual_table_type)) = schema.table_type(&table_name).await else {
+        return Ok(());
+    };
+    if actual_table_type == expected_table_type {
+        return Ok(());
+    };
+
+    let object_name = object_name.to_string();
+    let actual_label = table_type_client_label(actual_table_type);
+    let expected_label = table_type_client_label(expected_table_type);
+    let suggested_drop = drop_statement_for_table_type(actual_table_type);
+    Err(adapter_error_status(
+        Error::new(
+            ErrorCode::InvalidRequest,
+            operation,
+            format!(
+                "Object '{object_name}' is a {actual_label}, not a {expected_label}; use {suggested_drop} to remove it"
+            ),
+        )
+        .with_fact("object_name", object_name)
+        .with_fact("requested_table_type", table_type_to_flight_sql(expected_table_type))
+        .with_fact("actual_table_type", table_type_to_flight_sql(actual_table_type)),
+    ))
+}
+
+fn table_type_client_label(table_type: TableType) -> &'static str {
+    match table_type {
+        TableType::Base => "base table",
+        TableType::View => "view",
+        TableType::Temporary => "temporary table",
+    }
+}
+
+fn drop_statement_for_table_type(table_type: TableType) -> &'static str {
+    match table_type {
+        TableType::Base | TableType::Temporary => "DROP TABLE",
+        TableType::View => "DROP VIEW",
     }
 }
 

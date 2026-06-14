@@ -74,6 +74,82 @@ async fn create_view_statement_executes_once_and_persists_across_statements() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn drop_table_on_view_reports_object_type_mismatch() {
+    let addr = free_local_addr();
+    let mut config = ServerConfig::from_env_get(|_| None).unwrap();
+    config.bind_addr = addr;
+
+    let server = tokio::spawn(async move { serve(config).await });
+    let mut client = connect_with_retry(addr).await;
+
+    let _ = execute_batches(&mut client, "CREATE VIEW drop_view_probe AS SELECT 1 AS x").await;
+
+    let error = client.execute("DROP TABLE drop_view_probe".to_string(), None).await.unwrap_err();
+    let status = unwrap_flight_status(error);
+    assert_eq!(status.code(), Code::InvalidArgument);
+    assert_query_id_metadata(&status);
+    assert_error_metadata(&status, "invalid_request", "invalid_input", "permanent");
+    assert!(status.message().contains("is a view"), "message must explain actual object type: {}", status.message());
+    assert!(status.message().contains("DROP VIEW"), "message must name the corrective DDL: {}", status.message());
+    assert_no_diagnostic_fields(status.message());
+
+    let error = client.execute_update("DROP TABLE IF EXISTS drop_view_probe".to_string(), None).await.unwrap_err();
+    let status = unwrap_flight_status(error);
+    assert_eq!(status.code(), Code::InvalidArgument);
+    assert_query_id_metadata(&status);
+    assert_error_metadata(&status, "invalid_request", "invalid_input", "permanent");
+    assert!(status.message().contains("DROP VIEW"));
+    assert_no_diagnostic_fields(status.message());
+
+    let _ = execute_batches(&mut client, "DROP VIEW drop_view_probe").await;
+    let error = client.execute("SELECT * FROM drop_view_probe".to_string(), None).await.unwrap_err();
+    let status = unwrap_flight_status(error);
+
+    server.abort();
+
+    assert_eq!(status.code(), Code::NotFound);
+    assert_error_metadata(&status, "object_not_found", "not_found", "permanent");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn drop_view_on_table_reports_object_type_mismatch() {
+    let addr = free_local_addr();
+    let mut config = ServerConfig::from_env_get(|_| None).unwrap();
+    config.bind_addr = addr;
+
+    let server = tokio::spawn(async move { serve(config).await });
+    let mut client = connect_with_retry(addr).await;
+
+    let _ = execute_batches(&mut client, "CREATE TABLE drop_table_probe AS SELECT 1 AS x").await;
+
+    let error = client.execute("DROP VIEW drop_table_probe".to_string(), None).await.unwrap_err();
+    let status = unwrap_flight_status(error);
+    assert_eq!(status.code(), Code::InvalidArgument);
+    assert_query_id_metadata(&status);
+    assert_error_metadata(&status, "invalid_request", "invalid_input", "permanent");
+    assert!(status.message().contains("base table"), "message must explain actual object type: {}", status.message());
+    assert!(status.message().contains("DROP TABLE"), "message must name the corrective DDL: {}", status.message());
+    assert_no_diagnostic_fields(status.message());
+
+    let error = client.execute_update("DROP VIEW IF EXISTS drop_table_probe".to_string(), None).await.unwrap_err();
+    let status = unwrap_flight_status(error);
+    assert_eq!(status.code(), Code::InvalidArgument);
+    assert_query_id_metadata(&status);
+    assert_error_metadata(&status, "invalid_request", "invalid_input", "permanent");
+    assert!(status.message().contains("DROP TABLE"));
+    assert_no_diagnostic_fields(status.message());
+
+    let _ = execute_batches(&mut client, "DROP TABLE drop_table_probe").await;
+    let error = client.execute("SELECT * FROM drop_table_probe".to_string(), None).await.unwrap_err();
+    let status = unwrap_flight_status(error);
+
+    server.abort();
+
+    assert_eq!(status.code(), Code::NotFound);
+    assert_error_metadata(&status, "object_not_found", "not_found", "permanent");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn statement_update_create_external_table_executes_and_persists() {
     let addr = free_local_addr();
     let mut config = ServerConfig::from_env_get(|_| None).unwrap();
