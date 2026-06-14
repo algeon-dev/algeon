@@ -606,6 +606,9 @@ impl<'df, 'ctx, 'handles> DataFrameExecutionScope<'df, 'ctx, 'handles> {
         /// Filter rows using the borrowed execution override.
         fn filter(mask: &Series) -> Result<DataFrame> => filter_in_context;
 
+        /// Filter rows to those where `column` values appear in a `Series` using the borrowed execution override.
+        fn filter_isin(column: &str, values: &Series) -> Result<DataFrame> => filter_isin_in_context;
+
         /// Concatenate with another frame using the borrowed execution override.
         fn concat(other: &DataFrame) -> Result<DataFrame> => concat_in_context;
 

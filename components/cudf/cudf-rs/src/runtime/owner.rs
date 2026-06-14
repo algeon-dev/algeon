@@ -5,6 +5,7 @@ use std::sync::Arc;
 use rapids_interop::{ExecutionBinding, InteropError, InteropErrorKind};
 
 use super::{
+    ExecutionOverrides,
     boundary::{BoundaryObserver, BoundaryObserverRef},
     budget::{BudgetedExecutionOutcome, ExecutionBudgetReport, ExecutionBudgetRequest, ExecutionBudgetToken},
     device::DeviceId,
@@ -588,6 +589,14 @@ impl Runtime {
     /// Create an unnamed `Series` from a host slice inside this runtime.
     pub fn series<T: HostColumnData>(&self, data: &[T]) -> Result<Series> {
         Series::from_column(T::create_column_in_runtime(self, data)?)
+    }
+
+    /// Create an unnamed `Series` from a host slice using borrowed execution overrides.
+    pub fn series_in<T: HostColumnData>(&self, data: &[T], ctx: &ExecutionOverrides<'_>) -> Result<Series> {
+        let operation = "runtime::series_in";
+        let domain = ctx.resolve_output_domain(&self.domain).map_err(|error| error.reanchor(operation))?;
+        let runtime = Self { domain };
+        runtime.series(data).map_err(|error| error.reanchor(operation))
     }
 
     /// Create an unnamed nullable `Series` from a host slice plus validity

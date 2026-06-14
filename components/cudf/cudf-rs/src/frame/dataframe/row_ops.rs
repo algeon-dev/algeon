@@ -128,10 +128,31 @@ impl DataFrame {
     /// Filter rows to those where `column` values appear in a `Series`.
     pub fn filter_isin(&self, column: &str, values: &Series) -> Result<Self> {
         let operation = "dataframe::filter_isin";
+        let output_domain = Arc::clone(&self.domain);
+        self.filter_isin_with_domain(column, values, output_domain, operation)
+    }
+
+    pub(crate) fn filter_isin_in_context(
+        &self,
+        column: &str,
+        values: &Series,
+        ctx: &ExecutionOverrides<'_>,
+    ) -> Result<Self> {
+        let operation = "dataframe::with_execution::filter_isin";
+        let output_domain = ctx.resolve_output_domain(&self.domain)?;
+        self.filter_isin_with_domain(column, values, output_domain, operation)
+    }
+
+    fn filter_isin_with_domain(
+        &self,
+        column: &str,
+        values: &Series,
+        output_domain: Arc<ExecutionDomain>,
+        operation: &'static str,
+    ) -> Result<Self> {
         let cv = values.view()?;
         let col = self.columns.get(column).ok_or_else(|| missing_column_error(operation, column))?;
         let col_view = col.view()?;
-        let output_domain = Arc::clone(&self.domain);
         let execution = ResolvedExecution::with_output_domain(
             Arc::clone(&output_domain),
             [cv.execution_domain(), col_view.execution_domain()],
