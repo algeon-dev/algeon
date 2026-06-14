@@ -1183,11 +1183,14 @@ fn push_host_binding(
     Ok(())
 }
 
+/// Host-side buffers for a string-like array: `(offsets, data, validity)`.
+type StringLikeHostBuffers = (Arc<[u8]>, Arc<[u8]>, Option<Vec<bool>>);
+
 fn string_like_array_host_buffers(
     arr: &dyn Array,
     expected_type: &ArrowDataType,
     operation: &'static str,
-) -> Result<(Arc<[u8]>, Arc<[u8]>, Option<Vec<bool>>)> {
+) -> Result<StringLikeHostBuffers> {
     if arr.data_type() != expected_type {
         return Err(Error::new_with(
             ErrorCode::TypeMismatch,
