@@ -229,11 +229,18 @@ pub(super) fn canonical_field_equal(
             if w1 != w2 {
                 return false;
             }
-            let cpu_value = f64::from_bits(*b1);
-            let native_value = f64::from_bits(*b2);
+            let cpu_value = float_bits_to_f64(*w1, *b1);
+            let native_value = float_bits_to_f64(*w2, *b2);
             floats_close_enough(cpu_value, native_value, tolerance)
         },
         _ => canonical_field_exact_or_allowed(cpu, native, options),
+    }
+}
+
+fn float_bits_to_f64(width: u8, bits: u64) -> f64 {
+    match width {
+        32 => f32::from_bits(bits as u32) as f64,
+        _ => f64::from_bits(bits),
     }
 }
 

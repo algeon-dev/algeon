@@ -1,6 +1,11 @@
 use arrow::datatypes::SchemaRef as ArrowSchemaRef;
 
 use super::*;
+use crate::exec::operators::{
+    execute_gpu_native_statistical_final_merge_with_budget,
+    execute_gpu_native_statistical_partial_aggregate_with_budget,
+    should_execute_gpu_native_statistical_partial_aggregate,
+};
 
 pub(in crate::exec::bounded) fn execute_compiled_bounded_aggregate_from_stream(
     context: &ExecutionContext,
@@ -20,6 +25,18 @@ pub(in crate::exec::bounded) fn execute_compiled_bounded_aggregate_from_stream(
                 aggregate,
                 input_schema,
                 output_schema,
+                reservations,
+                metrics,
+            );
+        }
+        if should_execute_gpu_native_statistical_partial_aggregate(context, &aggregate.spec) {
+            return execute_compiled_bounded_statistical_aggregate_from_stream(
+                context,
+                node_id,
+                aggregate,
+                input_schema,
+                output_schema,
+                &mut inputs,
                 reservations,
                 metrics,
             );
@@ -128,6 +145,191 @@ pub(in crate::exec::bounded) fn execute_compiled_bounded_aggregate_from_stream(
     })();
     inputs.release_producer_reservations(reservations, metrics);
     result
+}
+
+fn execute_compiled_bounded_statistical_aggregate_from_stream(
+    context: &ExecutionContext,
+    node_id: NodeId,
+    aggregate: &AggregateNode,
+    input_schema: &ArrowSchemaRef,
+    output_schema: &ArrowSchemaRef,
+    inputs: &mut ResidentFrameStreamPayload,
+    reservations: &mut ReservationTracker,
+    metrics: &mut QueryMetrics,
+) -> Result<ResidentGpuFrame> {
+    let mut partials = Vec::with_capacity(inputs.len());
+    while let Some(input) = inputs.next_yielded_frame(reservations, metrics) {
+        let mut input = match input {
+            Ok(input) => input,
+            Err(error) => {
+                release_partials_reverse(reservations, partials, metrics);
+                return Err(error);
+            },
+        };
+        let input = input.take_for_release();
+        match execute_compiled_bounded_statistical_partial_from_frame(
+            context,
+            node_id,
+            aggregate,
+            input_schema,
+            output_schema,
+            input,
+            reservations,
+            metrics,
+        ) {
+            Ok(partial) => partials.push(partial),
+            Err(error) => {
+                release_partials_reverse(reservations, partials, metrics);
+                inputs.release_remaining_frames(reservations, metrics);
+                return Err(error);
+            },
+        }
+    }
+
+    if partials.is_empty() {
+        return execute_compiled_bounded_aggregate_from_empty_input(
+            context,
+            node_id,
+            aggregate,
+            input_schema,
+            output_schema,
+            reservations,
+            metrics,
+        );
+    }
+
+    let merged = execute_bounded_generic_union(context, node_id, partials, reservations, metrics)?;
+    let input_reserved_bytes = merged.reservation.bytes();
+    let input_reservation = merged.reservation;
+    let result = execute_bounded_generic_unary_from_frame(
+        context,
+        node_id,
+        "compiled_statistical_aggregate_final_merge",
+        "compiled_statistical_aggregate_output",
+        merged.frame,
+        input_reserved_bytes,
+        reservations,
+        metrics,
+        true,
+        |context, input, token, metrics| {
+            execute_gpu_native_statistical_final_merge_with_budget(
+                context,
+                Some(node_id),
+                input.into_frame(),
+                &aggregate.spec,
+                input_schema,
+                output_schema,
+                token.expect("budget token is created for compiled statistical final aggregate stages"),
+                metrics,
+            )
+        },
+    );
+    reservations.release(input_reservation, metrics);
+    result
+}
+
+fn execute_compiled_bounded_statistical_partial_from_frame(
+    context: &ExecutionContext,
+    node_id: NodeId,
+    aggregate: &AggregateNode,
+    input_schema: &ArrowSchemaRef,
+    output_schema: &ArrowSchemaRef,
+    input: ResidentGpuFrame,
+    reservations: &mut ReservationTracker,
+    metrics: &mut QueryMetrics,
+) -> Result<CommittedPartial> {
+    let input_rows = input.frame.num_rows() as u64;
+    let upper_bound_bytes = match statistical_partial_aggregate_work_reservation_upper_bound_bytes(
+        context,
+        node_id,
+        aggregate,
+        input_schema,
+        output_schema,
+        &input.frame,
+        reservations,
+        metrics,
+    ) {
+        Ok(bytes) => bytes,
+        Err(error) => {
+            reservations.release(input.reservation, metrics);
+            return Err(error);
+        },
+    };
+    let input_frame = input.frame;
+    let input_reservation = input.reservation;
+    let work_request =
+        MemoryReservationRequest::new(ReservationKind::PartialState, upper_bound_bytes, reservations.budget())
+            .with_memory_boundary("compiled_statistical_aggregate_partial_state_work")
+            .with_node_id(node_id)
+            .with_stage("compiled_statistical_aggregate_partial");
+    let mut work_reservation = match reservations.try_reserve_work(work_request, metrics) {
+        Ok(reservation) => reservation,
+        Err(error) => {
+            drop(input_frame);
+            reservations.release(input_reservation, metrics);
+            return Err(error);
+        },
+    };
+    let token = match execution_budget_token_for_boundary(
+        context,
+        reservations.available_bytes_including(&work_reservation),
+        "compiled_statistical_aggregate_partial_state_work",
+        "nexus_query_engine.bounded.aggregate.statistical_partial.budget_token",
+        "failed to create bounded native statistical partial aggregate budget token",
+    ) {
+        Ok(token) => token,
+        Err(error) => {
+            reservations.release(work_reservation, metrics);
+            reservations.release(input_reservation, metrics);
+            return Err(error);
+        },
+    };
+    let output = execute_gpu_native_statistical_partial_aggregate_with_budget(
+        context,
+        Some(node_id),
+        input_frame.into_frame(),
+        &aggregate.spec,
+        input_schema,
+        &token,
+        metrics,
+    );
+    let frame = match output {
+        Ok(frame) => frame,
+        Err(error) => {
+            reservations.release(work_reservation, metrics);
+            reservations.release(input_reservation, metrics);
+            return Err(error);
+        },
+    };
+    reservations.release(input_reservation, metrics);
+    let partial_bytes = match observe_device_memory_bytes(&frame, metrics) {
+        Ok(bytes) => bytes,
+        Err(error) => {
+            drop(frame);
+            reservations.release(work_reservation, metrics);
+            return Err(error);
+        },
+    };
+    let partial_request =
+        MemoryReservationRequest::new(ReservationKind::PartialState, partial_bytes, reservations.budget())
+            .with_memory_boundary("compiled_statistical_aggregate_partial_state")
+            .with_node_id(node_id)
+            .with_stage("compiled_statistical_aggregate_partial");
+    if partial_bytes > work_reservation.bytes() {
+        let error = partial_aggregate_upper_bound_violation_error(node_id, work_reservation.bytes(), partial_bytes);
+        drop(frame);
+        reservations.release(work_reservation, metrics);
+        return Err(error);
+    }
+    reservations.shrink_to_observed_with_request(
+        &mut work_reservation,
+        partial_bytes,
+        partial_request.clone(),
+        metrics,
+    );
+    let partial_reservation = reservations.transfer(work_reservation, partial_request, metrics);
+    metrics.record_partial_aggregate(input_rows, frame.num_rows() as u64, partial_reservation.bytes());
+    Ok(CommittedPartial { frame, reservation: partial_reservation })
 }
 
 fn execute_compiled_bounded_distinct_aggregate_from_stream(

@@ -20,6 +20,7 @@ mod grouping_sets;
 mod host_exact;
 mod partial_execute;
 mod partial_strategy;
+mod statistical;
 #[cfg(test)]
 mod tests;
 mod validate;
@@ -57,6 +58,15 @@ use partial_strategy::{
 };
 pub(in crate::exec) use partial_strategy::{
     record_default_grouped_aggregate_strategy_decision, record_grouped_aggregate_strategy_decision,
+};
+use statistical::{
+    execute_gpu_native_statistical_aggregate, execute_gpu_native_statistical_aggregate_with_budget,
+    should_execute_gpu_native_statistical_aggregate,
+};
+pub(in crate::exec) use statistical::{
+    execute_gpu_native_statistical_final_merge_with_budget,
+    execute_gpu_native_statistical_partial_aggregate_with_budget,
+    should_execute_gpu_native_statistical_partial_aggregate,
 };
 pub(in crate::exec) use validate::{
     validate_aggregate_capability, validate_aggregate_output_names, validate_final_aggregate_capability,
@@ -148,6 +158,17 @@ pub(in crate::exec) fn execute_aggregate(
             output_schema,
             metrics,
             None,
+        );
+    }
+    if should_execute_gpu_native_statistical_aggregate(context, &spec) {
+        return execute_gpu_native_statistical_aggregate(
+            context,
+            None,
+            frame,
+            spec,
+            prepared_input_schema,
+            output_schema,
+            metrics,
         );
     }
     if spec.group_exprs.is_empty() {
@@ -373,6 +394,18 @@ pub(in crate::exec) fn execute_aggregate_with_budget_for_node(
             },
         };
         return Ok(output);
+    }
+    if should_execute_gpu_native_statistical_aggregate(context, &spec) {
+        return execute_gpu_native_statistical_aggregate_with_budget(
+            context,
+            node_id,
+            frame,
+            spec,
+            prepared_input_schema,
+            output_schema,
+            token,
+            metrics,
+        );
     }
     if spec.group_exprs.is_empty() {
         let output = match execute_global_aggregate_with_budget(

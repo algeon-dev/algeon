@@ -7,6 +7,8 @@ mod global_aggregate;
 mod projection;
 pub(super) use self::{aggregate::*, global_aggregate::*, projection::*};
 
+const SPECIALIZED_LITERAL_IN_LIST_FILTER_MIN_VALUES: usize = 129;
+
 pub(super) fn execution_budget_token_for_boundary(
     context: &ExecutionContext,
     budget_bytes: u64,
@@ -53,36 +55,144 @@ pub(super) fn execute_filter(
     input: GpuDataFrame,
     metrics: &mut QueryMetrics,
 ) -> Result<GpuDataFrame> {
-    let predicate = lower_filter_predicate_expr(&node.predicate)?;
     let frame = input.into_frame();
     let overrides = execution_overrides(context);
     let timer = Instant::now();
-    let output = frame.with_execution(&overrides).filter_expr(predicate).map_err(|error| {
-        QueryError::from_cudf("nexus_query_engine.filter.execute", "failed to execute native cudf filter", error)
-    })?;
+    let output = if let Some((column, values)) = literal_in_list_filter_series(context, &node.predicate, &overrides)? {
+        frame.with_execution(&overrides).filter_isin(&column, &values).map_err(|error| {
+            QueryError::from_cudf(
+                "nexus_query_engine.filter.execute",
+                "failed to execute native cudf IN-list filter",
+                error,
+            )
+        })?
+    } else {
+        let predicate = lower_filter_predicate_expr(&node.predicate)?;
+        frame.with_execution(&overrides).filter_expr(predicate).map_err(|error| {
+            QueryError::from_cudf("nexus_query_engine.filter.execute", "failed to execute native cudf filter", error)
+        })?
+    };
     metrics.operator_time += timer.elapsed();
     Ok(GpuDataFrame::new(output))
 }
 
 pub(super) fn execute_filter_with_budget(
-    _context: &ExecutionContext,
+    context: &ExecutionContext,
     node: &FilterNode,
     input: GpuDataFrame,
     token: &ExecutionBudgetToken,
     metrics: &mut QueryMetrics,
 ) -> Result<GpuDataFrame> {
-    let predicate = lower_filter_predicate_expr(&node.predicate)?;
     let frame = input.into_frame();
     let overrides = token.execution_overrides();
     let timer = Instant::now();
-    let output = frame.with_execution(&overrides).filter_expr(predicate).map_err(|error| {
-        attach_budget_token_failure_facts(
-            QueryError::from_cudf("nexus_query_engine.filter.execute", "failed to execute native cudf filter", error),
-            token,
-        )
-    })?;
+    let output = if let Some((column, values)) = literal_in_list_filter_series(context, &node.predicate, &overrides)? {
+        frame.with_execution(&overrides).filter_isin(&column, &values).map_err(|error| {
+            attach_budget_token_failure_facts(
+                QueryError::from_cudf(
+                    "nexus_query_engine.filter.execute",
+                    "failed to execute native cudf IN-list filter",
+                    error,
+                ),
+                token,
+            )
+        })?
+    } else {
+        let predicate = lower_filter_predicate_expr(&node.predicate)?;
+        frame.with_execution(&overrides).filter_expr(predicate).map_err(|error| {
+            attach_budget_token_failure_facts(
+                QueryError::from_cudf(
+                    "nexus_query_engine.filter.execute",
+                    "failed to execute native cudf filter",
+                    error,
+                ),
+                token,
+            )
+        })?
+    };
     metrics.operator_time += timer.elapsed();
     Ok(GpuDataFrame::new(output))
+}
+
+fn literal_in_list_filter_series(
+    context: &ExecutionContext,
+    predicate: &Expr,
+    overrides: &ExecutionOverrides<'_>,
+) -> Result<Option<(String, cudf::Series)>> {
+    let Expr::InList { expr, list, negated: false } = predicate else {
+        return Ok(None);
+    };
+    if list.len() < SPECIALIZED_LITERAL_IN_LIST_FILTER_MIN_VALUES {
+        return Ok(None);
+    }
+    let Expr::Column(column) = expr.as_ref() else {
+        return Ok(None);
+    };
+    let Some(first) = list.first().and_then(|expr| match expr {
+        Expr::Literal(value) => Some(value),
+        _ => None,
+    }) else {
+        return Ok(None);
+    };
+    let series = match first {
+        LiteralValue::Int32(_) => {
+            let Some(values) = collect_in_list_literals(list, |value| match value {
+                LiteralValue::Int32(value) => Some(*value),
+                _ => None,
+            }) else {
+                return Ok(None);
+            };
+            context.runtime().series_in(&values, overrides)
+        },
+        LiteralValue::Int64(_) => {
+            let Some(values) = collect_in_list_literals(list, |value| match value {
+                LiteralValue::Int64(value) => Some(*value),
+                _ => None,
+            }) else {
+                return Ok(None);
+            };
+            context.runtime().series_in(&values, overrides)
+        },
+        LiteralValue::UInt32(_) => {
+            let Some(values) = collect_in_list_literals(list, |value| match value {
+                LiteralValue::UInt32(value) => Some(*value),
+                _ => None,
+            }) else {
+                return Ok(None);
+            };
+            context.runtime().series_in(&values, overrides)
+        },
+        LiteralValue::UInt64(_) => {
+            let Some(values) = collect_in_list_literals(list, |value| match value {
+                LiteralValue::UInt64(value) => Some(*value),
+                _ => None,
+            }) else {
+                return Ok(None);
+            };
+            context.runtime().series_in(&values, overrides)
+        },
+        _ => return Ok(None),
+    }
+    .map_err(|error| {
+        QueryError::from_cudf(
+            "nexus_query_engine.filter.literal_in_list_values",
+            "failed to upload native filter IN-list values",
+            error,
+        )
+    })?;
+    Ok(Some((column.name().to_string(), series)))
+}
+
+fn collect_in_list_literals<T: Copy>(
+    list: &[Expr],
+    mut convert: impl FnMut(&LiteralValue) -> Option<T>,
+) -> Option<Vec<T>> {
+    list.iter()
+        .map(|expr| match expr {
+            Expr::Literal(value) => convert(value),
+            _ => None,
+        })
+        .collect()
 }
 
 pub(super) fn execute_sort(

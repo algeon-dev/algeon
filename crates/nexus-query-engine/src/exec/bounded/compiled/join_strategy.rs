@@ -52,7 +52,8 @@ impl CompiledJoinExecutionStrategy {
         facts: KeyedHashJoinStrategyInputFacts,
     ) -> std::result::Result<Option<CompiledJoinStrategySelection>, KeyedHashJoinStrategyDecision> {
         if join_node_execution_capability(join) != Some(JoinExecutionCapability::KeyedHash) {
-            if one_shot_equi_join_supported(join) {
+            if one_shot_equi_join_supported(join) || crate::capability::partitioned_keyed_residual_join_supported(join)
+            {
                 match keyed_hash_join_strategy_decision(join, facts) {
                     decision @ KeyedHashJoinStrategyDecision::Selected {
                         strategy: KeyedHashJoinStrategy::OneShotEqui,

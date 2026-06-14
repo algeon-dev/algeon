@@ -261,6 +261,11 @@ fn benchmark_report_accepted_rows_include_bounded_status_contract_rows_and_resou
                 observed_build_rows: Some(101),
                 build_side_bytes: Some(1024),
                 probe_side_bytes: Some(2048),
+                estimated_output_rows: Some(102),
+                estimated_output_bytes: Some(4096),
+                build_key_unique: Some("true".to_string()),
+                build_key_uniqueness_probe_status: Some("measured".to_string()),
+                build_key_uniqueness_probe_error_code: None,
                 probe_reuse_count: Some(1),
                 partition_count: None,
                 partition_target_bytes: None,
@@ -386,6 +391,45 @@ fn benchmark_report_accepted_rows_include_bounded_status_contract_rows_and_resou
             "\t1.000\t2.000\t3.000\t4.000\t5.000\t6.000\t7.000\t8.000\t9.000\t10.000\t11.000\t12.000\t13.000\n"
         )
     );
+}
+
+#[test]
+fn benchmark_report_partitioned_join_count_sums_runtime_executions_but_status_counts_sites() {
+    let config =
+        NativeTpchBenchmarkConfig { query_ids: vec!["q07".to_string()], ..NativeTpchBenchmarkConfig::default() };
+    let mut native = timed_native_run("output-fnv1a64:0000000000000007");
+    native.metrics = NativeDataFusionExecutionMetrics {
+        join_strategy_rows: vec![NativeJoinStrategyMetricRow {
+            node_id: "n7".to_string(),
+            join_strategy: "partitioned_hash_equi".to_string(),
+            execution_strategy: "bounded_partitioned_hash_equi_join".to_string(),
+            join_type: "inner".to_string(),
+            build_side: "right".to_string(),
+            key_count: 1,
+            partitioned_hash_join_count: 2,
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    let report = NativeTpchBenchmarkReport {
+        metadata: benchmark_metadata(),
+        config,
+        rows: vec![NativeTpchBenchmarkRow::accepted(
+            "q07",
+            accepted_planning_row("q07"),
+            Ok(timed_cpu_run("output-fnv1a64:0000000000000007")),
+            Ok(native),
+        )],
+    };
+
+    let text = report.to_tsv();
+    let mut lines = text.lines().filter(|line| !line.starts_with('#'));
+    let header = lines.next().expect("benchmark report should contain a TSV header");
+    let fields = lines.next().expect("benchmark report should contain a q07 row").split('\t').collect::<Vec<_>>();
+    let header_fields = header.split('\t').collect::<Vec<_>>();
+
+    assert_eq!(fields[header_index(&header_fields, "partitioned_join_count")], "2");
+    assert_eq!(fields[header_index(&header_fields, "join_partitioning_status")], "partitioned");
 }
 
 #[test]

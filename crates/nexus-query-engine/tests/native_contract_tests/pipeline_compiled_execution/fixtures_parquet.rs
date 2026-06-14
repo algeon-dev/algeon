@@ -106,6 +106,46 @@ pub(super) fn write_multi_join_parquets(a_path: &Path, b_path: &Path, c_path: &P
     write_parquet(c_path, Arc::clone(&c_schema), &c_batch);
 }
 
+pub(super) fn write_residual_stream_join_parquets(a_path: &Path, b_path: &Path, c_path: &Path) {
+    let a_schema = Arc::new(Schema::new(vec![
+        Field::new("a_id", DataType::Int32, false),
+        Field::new("a_value", DataType::Int32, false),
+    ]));
+    let a_batch_0 = RecordBatch::try_new(
+        Arc::clone(&a_schema),
+        vec![Arc::new(Int32Array::from(vec![1, 2])), Arc::new(Int32Array::from(vec![10, 20]))],
+    )
+    .unwrap();
+    let a_batch_1 = RecordBatch::try_new(
+        Arc::clone(&a_schema),
+        vec![Arc::new(Int32Array::from(vec![3, 4])), Arc::new(Int32Array::from(vec![30, 40]))],
+    )
+    .unwrap();
+    write_parquet_batches(a_path, Arc::clone(&a_schema), &[a_batch_0, a_batch_1]);
+
+    let b_schema = Arc::new(Schema::new(vec![
+        Field::new("b_id", DataType::Int32, false),
+        Field::new("b_value", DataType::Int32, false),
+    ]));
+    let b_batch = RecordBatch::try_new(
+        Arc::clone(&b_schema),
+        vec![Arc::new(Int32Array::from(vec![2, 4])), Arc::new(Int32Array::from(vec![200, 400]))],
+    )
+    .unwrap();
+    write_parquet(b_path, Arc::clone(&b_schema), &b_batch);
+
+    let c_schema = Arc::new(Schema::new(vec![
+        Field::new("c_id", DataType::Int32, false),
+        Field::new("c_value", DataType::Int32, false),
+    ]));
+    let c_batch = RecordBatch::try_new(
+        Arc::clone(&c_schema),
+        vec![Arc::new(Int32Array::from(vec![2, 4])), Arc::new(Int32Array::from(vec![15, 45]))],
+    )
+    .unwrap();
+    write_parquet(c_path, Arc::clone(&c_schema), &c_batch);
+}
+
 pub(super) fn write_single_join_post_root_parquets(customers_path: &Path, orders_path: &Path) {
     let customer_schema = Arc::new(Schema::new(vec![Field::new("c_custkey", DataType::Int32, false)]));
     let customer_batch =
@@ -207,9 +247,15 @@ pub(super) fn write_key_value_parquet(path: &Path, keys: &[i32], values: &[i64])
 }
 
 pub(super) fn write_parquet(path: &Path, schema: Arc<Schema>, batch: &RecordBatch) {
+    write_parquet_batches(path, schema, std::slice::from_ref(batch));
+}
+
+fn write_parquet_batches(path: &Path, schema: Arc<Schema>, batches: &[RecordBatch]) {
     let file = File::create(path).unwrap();
     let props = WriterProperties::builder().set_max_row_group_row_count(Some(2)).build();
     let mut writer = ArrowWriter::try_new(file, schema, Some(props)).unwrap();
-    writer.write(batch).unwrap();
+    for batch in batches {
+        writer.write(batch).unwrap();
+    }
     writer.close().unwrap();
 }

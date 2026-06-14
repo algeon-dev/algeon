@@ -4,6 +4,16 @@ mod dynamic_filters;
 
 const MIN_JOIN_MATERIALIZE_STREAM_QUANTUM_BYTES: u64 = 8 * 1024;
 
+fn join_build_key_uniqueness_probe_can_fallback(error: &QueryError) -> bool {
+    matches!(
+        error.code(),
+        QueryErrorCode::CudfResourceExhausted
+            | QueryErrorCode::CudfTemporaryFailure
+            | QueryErrorCode::MemoryReservationFailed
+            | QueryErrorCode::ServiceOverloaded
+    )
+}
+
 /// Compiled task interpreter for bounded GPU work.
 #[doc(hidden)]
 pub struct CompiledGpuTaskExecutor<'a> {
@@ -53,6 +63,61 @@ impl<'a> CompiledGpuTaskExecutor<'a> {
 
     pub fn remaining_bytes(&self) -> u64 {
         self.reservations.remaining_bytes()
+    }
+
+    fn select_join_build_strategy(
+        &mut self,
+        task: &PipelineTask,
+        node_id: NodeId,
+        node: &JoinNode,
+        build_frame: &GpuDataFrame,
+        build_side_bytes: u64,
+    ) -> Result<CompiledJoinStrategySelection> {
+        let observed_build_rows = build_frame.num_rows() as u64;
+        let mut build_key_uniqueness_probe_status = None;
+        let mut build_key_uniqueness_probe_error_code = None;
+        let build_key_unique = if join_strategy_needs_build_key_uniqueness_probe(
+            self.plan,
+            node,
+            node_id,
+            observed_build_rows,
+            build_side_bytes,
+        ) {
+            match measure_join_build_key_unique(self.context, node, build_frame, &self.reservations, self.metrics) {
+                Ok(unique) => {
+                    build_key_uniqueness_probe_status = Some("measured");
+                    Some(unique)
+                },
+                Err(error) if join_build_key_uniqueness_probe_can_fallback(&error) => {
+                    build_key_uniqueness_probe_status = Some("fallback_temporary_failure");
+                    build_key_uniqueness_probe_error_code = Some(error.code().as_str().to_string());
+                    None
+                },
+                Err(error) => return Err(error),
+            }
+        } else {
+            None
+        };
+        let mut strategy =
+            join_strategy(self.plan, node, task, node_id, observed_build_rows, build_side_bytes, build_key_unique)?;
+        if let Some(facts) = strategy.facts.as_mut() {
+            facts.insert(
+                "build_key_unique",
+                build_key_unique.map_or_else(|| "none".to_string(), |unique| unique.to_string()),
+            );
+            facts.insert(
+                "build_key_uniqueness_probe_status",
+                build_key_uniqueness_probe_status.unwrap_or("none").to_string(),
+            );
+            facts.insert(
+                "build_key_uniqueness_probe_error_code",
+                build_key_uniqueness_probe_error_code.unwrap_or_else(|| "none".to_string()),
+            );
+        }
+        if let Some(facts) = strategy.facts.as_ref() {
+            self.metrics.record_join_strategy_decision(node_id, facts);
+        }
+        Ok(strategy)
     }
 
     pub fn take_host_output(&mut self) -> Result<RecordBatch> {
@@ -574,17 +639,13 @@ impl<'a> CompiledGpuTaskExecutor<'a> {
                 },
             }?;
             self.produce_hash_join_build_dynamic_filters(node_id, node, &input_frame.frame)?;
-            let strategy = join_strategy(
-                self.plan,
-                node,
+            let strategy = self.select_join_build_strategy(
                 task,
                 node_id,
-                input_frame.frame.num_rows() as u64,
+                node,
+                &input_frame.frame,
                 input_frame.reservation.bytes(),
             )?;
-            if let Some(facts) = strategy.facts.as_ref() {
-                self.metrics.record_join_strategy_decision(node_id, facts);
-            }
             execute_bounded_compiled_join_build_from_resident_frame(
                 self.context,
                 node_id,
@@ -605,17 +666,13 @@ impl<'a> CompiledGpuTaskExecutor<'a> {
                     self.metrics,
                 )?;
                 self.produce_hash_join_build_dynamic_filters(node_id, node, &input_frame.frame)?;
-                let strategy = join_strategy(
-                    self.plan,
-                    node,
+                let strategy = self.select_join_build_strategy(
                     task,
                     node_id,
-                    input_frame.frame.num_rows() as u64,
+                    node,
+                    &input_frame.frame,
                     input_frame.reservation.bytes(),
                 )?;
-                if let Some(facts) = strategy.facts.as_ref() {
-                    self.metrics.record_join_strategy_decision(node_id, facts);
-                }
                 execute_bounded_compiled_join_build_from_resident_frame(
                     self.context,
                     node_id,
@@ -632,24 +689,21 @@ impl<'a> CompiledGpuTaskExecutor<'a> {
                     .with_fact("plan_node_id", node_id)
                     .with_fact("resident_resource_id", input))
             } else {
-                self.produce_hash_join_build_dynamic_filters(node_id, node, &input_payload.clone_frame())?;
-                let strategy = join_strategy(
-                    self.plan,
-                    node,
+                let input_frame = input_payload.clone_frame();
+                self.produce_hash_join_build_dynamic_filters(node_id, node, &input_frame)?;
+                let strategy = self.select_join_build_strategy(
                     task,
                     node_id,
-                    input_payload.num_rows() as u64,
+                    node,
+                    &input_frame,
                     input_payload.reservation_bytes(),
                 )?;
-                if let Some(facts) = strategy.facts.as_ref() {
-                    self.metrics.record_join_strategy_decision(node_id, facts);
-                }
                 execute_bounded_compiled_join_build_from_frame(
                     self.context,
                     node_id,
                     node,
                     strategy.strategy,
-                    input_payload.clone_frame(),
+                    input_frame,
                     input_payload.reservation(),
                     &mut self.reservations,
                     self.metrics,
@@ -962,6 +1016,36 @@ impl<'a> CompiledGpuTaskExecutor<'a> {
                     .output_schema(),
                 node.output_schema(),
                 input_frame.frame,
+                input_reserved_bytes,
+                &mut self.reservations,
+                self.metrics,
+            );
+            self.reservations.release(input_reservation, self.metrics);
+            result
+        } else if state.can_consume_task_input_resource(task, input) {
+            let input_payload = state.consume_task_input_resource(task, input)?.into_payload();
+            let CompiledGpuResourcePayload::ResidentFrame { frame, .. } = input_payload.payload else {
+                return Err(invalid("compiled aggregate task expected a resident frame input")
+                    .with_fact("compiled_task_id", task.id())
+                    .with_fact("plan_node_id", node_id)
+                    .with_fact("pipeline_task_kind", task.kind().as_str()));
+            };
+            let ResidentGpuFrame { frame: input_frame, reservation: input_reservation } = *frame;
+            let input_reserved_bytes = input_reservation.bytes();
+            let result = execute_compiled_bounded_aggregate_from_frame(
+                self.context,
+                node_id,
+                aggregate,
+                self.plan
+                    .node(aggregate.input)
+                    .ok_or_else(|| {
+                        invalid("compiled aggregate task references a missing aggregate input node")
+                            .with_fact("compiled_task_id", task.id())
+                            .with_fact("plan_node_id", aggregate.input)
+                    })?
+                    .output_schema(),
+                node.output_schema(),
+                input_frame,
                 input_reserved_bytes,
                 &mut self.reservations,
                 self.metrics,
@@ -1500,12 +1584,17 @@ impl<'a> CompiledGpuTaskExecutor<'a> {
         let PlanNode::Join(join) = &node.kind else {
             return false;
         };
-        join.spec.residual_predicate.is_none()
-            && match join.spec.join_type {
-                JoinType::Inner | JoinType::LeftSemi | JoinType::LeftAnti | JoinType::LeftMark => true,
-                JoinType::Left => join.spec.build_side == JoinSide::Right,
-                JoinType::Full | JoinType::Cross => false,
-            }
+        if join.spec.residual_predicate.is_some() {
+            return matches!(
+                CompiledJoinExecutionStrategy::from_plan_join_node(self.plan, node_id, join),
+                Ok(Some(CompiledJoinExecutionStrategy::OneShotEqui))
+            );
+        }
+        match join.spec.join_type {
+            JoinType::Inner | JoinType::LeftSemi | JoinType::LeftAnti | JoinType::LeftMark => true,
+            JoinType::Left => join.spec.build_side == JoinSide::Right,
+            JoinType::Full | JoinType::Cross => false,
+        }
     }
 
     fn task_feeds_any_join_input_through_unary_chain(&self, task: PipelineTaskId) -> bool {

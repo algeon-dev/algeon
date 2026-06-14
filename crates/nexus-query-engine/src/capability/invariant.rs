@@ -726,17 +726,15 @@ pub(super) fn append_hash_join_resident_grouped_aggregate_topk_post_root_stage_o
         return;
     };
     let invariant_id = InvariantId(invariants.len());
+    let mut nodes = vec![shape.root_join_id];
+    if shape.post_root_projection_id != shape.root_join_id {
+        nodes.push(shape.post_root_projection_id);
+    }
+    nodes.extend([shape.post_root_aggregate_id, shape.final_projection_id, shape.final_sort_id, shape.final_limit_id]);
     invariants.push(SubgraphInvariant {
         invariant_id,
         kind: SubgraphInvariantKind::PostRootStageOrder { root_join_id: shape.root_join_id },
-        nodes: vec![
-            shape.root_join_id,
-            shape.post_root_projection_id,
-            shape.post_root_aggregate_id,
-            shape.final_projection_id,
-            shape.final_sort_id,
-            shape.final_limit_id,
-        ],
+        nodes,
         required_schedule: ScheduleConstraint::Barrier,
         required_resources: vec![ResidentResource::NodeOutput(shape.root_join_id)],
         reservation_requirements: Vec::new(),

@@ -81,7 +81,7 @@ pub(super) fn execute_compiled_one_shot_equi_join_materialize(
     let indices = CompiledJoinIndices::Pair { left: pair_indices.left().clone(), right: pair_indices.right().clone() };
     drop(pair_indices);
     if node.spec.residual_predicate.is_some() {
-        return materialize_compiled_one_shot_residual_output(
+        let (output, chunk_metrics) = materialize_compiled_one_shot_residual_output(
             context,
             node_id,
             node,
@@ -94,7 +94,16 @@ pub(super) fn execute_compiled_one_shot_equi_join_materialize(
             index_bytes,
             reservations,
             metrics,
+        )?;
+        record_one_shot_join_chunk_metrics(
+            node_id,
+            node,
+            node.spec.build_side,
+            probe_side(node.spec.build_side),
+            &chunk_metrics,
+            metrics,
         );
+        return Ok(output);
     }
     materialize_compiled_indices_output(
         context,
@@ -129,12 +138,6 @@ pub(super) fn execute_compiled_one_shot_equi_join_probe_from_stream(
     metrics: &mut QueryMetrics,
 ) -> Result<BoundedCompiledJoinProbeState> {
     validate_one_shot_equi_join(node)?;
-    if node.spec.residual_predicate.is_some() {
-        return Err(unsupported_bounded_shape(
-            "streamed compiled one-shot equi join probe does not support residual predicates",
-            "compiled_join_strategy_unsupported",
-        ));
-    }
 
     let probe_side = probe_side(build.side);
     let probe_columns = compiled_join_input_columns(context, node, build.strategy, probe_side)?;
@@ -174,6 +177,7 @@ pub(super) fn execute_compiled_one_shot_equi_join_probe_from_stream(
         Ok(()) => Ok(BoundedCompiledJoinProbeState::OneShotStreamed { build, outputs, summary }),
         Err(error) => {
             release_streamed_join_outputs_reverse(reservations, outputs, metrics);
+            release_bounded_join_side_frame(build.input, reservations, metrics);
             Err(error)
         },
     }
@@ -189,14 +193,6 @@ pub(super) fn execute_compiled_one_shot_equi_join_probe_from_frame_stream(
     metrics: &mut QueryMetrics,
 ) -> Result<BoundedCompiledJoinProbeState> {
     validate_one_shot_equi_join(node)?;
-    if node.spec.residual_predicate.is_some() {
-        inputs.release_all(reservations, metrics);
-        release_bounded_join_side_frame(build.input, reservations, metrics);
-        return Err(unsupported_bounded_shape(
-            "streamed compiled one-shot equi join probe does not support residual predicates",
-            "compiled_join_strategy_unsupported",
-        ));
-    }
     let probe_side = probe_side(build.side);
     let probe_columns = match compiled_join_input_columns(context, node, build.strategy, probe_side) {
         Ok(columns) => columns,
@@ -344,17 +340,19 @@ pub(super) fn materialize_compiled_one_shot_equi_join_probe_chunk(
     let options = dataframe_join_options(&left_keys, &right_keys, node.spec.null_equality);
     let overrides = execution_overrides(context);
     let timer = Instant::now();
-    let (left, right) = match build_side {
-        JoinSide::Left => (build, &probe),
-        JoinSide::Right => (&probe, build),
-    };
-    let pair_indices = match node.spec.join_type {
-        JoinType::Inner => left.frame.with_execution(&overrides).inner_join_indices(&right.frame, options),
-        JoinType::Left => left.frame.with_execution(&overrides).left_join_indices(&right.frame, options),
-        JoinType::Full => left.frame.with_execution(&overrides).full_join_indices(&right.frame, options),
-        JoinType::LeftSemi | JoinType::LeftAnti | JoinType::LeftMark | JoinType::Cross => {
-            unreachable!("validated above")
-        },
+    let pair_indices = {
+        let (left, right) = match build_side {
+            JoinSide::Left => (build, &probe),
+            JoinSide::Right => (&probe, build),
+        };
+        match node.spec.join_type {
+            JoinType::Inner => left.frame.with_execution(&overrides).inner_join_indices(&right.frame, options),
+            JoinType::Left => left.frame.with_execution(&overrides).left_join_indices(&right.frame, options),
+            JoinType::Full => left.frame.with_execution(&overrides).full_join_indices(&right.frame, options),
+            JoinType::LeftSemi | JoinType::LeftAnti | JoinType::LeftMark | JoinType::Cross => {
+                unreachable!("validated above")
+            },
+        }
     }
     .map_err(|error| join_index_error(error, node))?;
     let index_bytes = pair_indices.device_allocated_size_bytes().map(|bytes| bytes as u64).map_err(|error| {
@@ -385,6 +383,41 @@ pub(super) fn materialize_compiled_one_shot_equi_join_probe_chunk(
     let output_rows = pair_indices.len() as u64;
     let indices = CompiledJoinIndices::Pair { left: pair_indices.left().clone(), right: pair_indices.right().clone() };
     drop(pair_indices);
+    let probe_rows = probe.rows;
+    let probe_bytes = probe.bytes;
+    if node.spec.residual_predicate.is_some() {
+        let build_alias = match alias_compiled_one_shot_build_chunk(node_id, build, reservations, metrics) {
+            Ok(build_alias) => build_alias,
+            Err(error) => {
+                drop(indices);
+                reservations.release(gather_map_reservation, metrics);
+                drop(probe);
+                return Err(error);
+            },
+        };
+        let probe_side = probe_side(build_side);
+        let (left, right) = orient_prepared_inputs(build_side, build_alias, probe_side, probe)?;
+        let (output, chunk_metrics) = materialize_compiled_one_shot_residual_output(
+            context,
+            node_id,
+            node,
+            left,
+            right,
+            indices,
+            output_rows,
+            gather_map_reservation,
+            timer,
+            index_bytes,
+            reservations,
+            metrics,
+        )?;
+        summary.record_chunk_metrics(&chunk_metrics);
+        return Ok(output);
+    }
+    let (left, right) = match build_side {
+        JoinSide::Left => (build, &probe),
+        JoinSide::Right => (&probe, build),
+    };
     super::super::common::trace_preflight_entry(
         "materialize_compiled_one_shot_equi_join_probe_chunk",
         "streamed_one_shot",
@@ -488,9 +521,40 @@ pub(super) fn materialize_compiled_one_shot_equi_join_probe_chunk(
     }
     drop(indices);
     reservations.release(gather_map_reservation, metrics);
-    let probe_rows = probe.rows;
-    let probe_bytes = probe.bytes;
     drop(probe);
-    summary.record_chunk(probe_rows, probe_bytes, index_bytes, output_reservation_bytes, output_rows, output_bytes);
+    summary.record_chunk(
+        probe_rows,
+        probe_bytes,
+        index_bytes,
+        output_reservation_bytes,
+        output_reservation_bytes,
+        output_rows,
+        output_bytes,
+    );
     Ok(ResidentGpuFrame { frame: GpuDataFrame::new(output), reservation: output_reservation })
+}
+
+fn alias_compiled_one_shot_build_chunk(
+    node_id: NodeId,
+    build: &BoundedJoinSideFrame,
+    reservations: &mut ReservationTracker,
+    metrics: &mut QueryMetrics,
+) -> Result<BoundedJoinSideFrame> {
+    let reservation = reservations.alias_reservation(
+        &build._reservation,
+        bounded_join_request(
+            ReservationKind::BuildSide,
+            "join_build_side_stream_alias",
+            build.bytes,
+            reservations.budget(),
+            node_id,
+        ),
+        metrics,
+    );
+    Ok(BoundedJoinSideFrame {
+        frame: build.frame.clone(),
+        _reservation: reservation,
+        rows: build.rows,
+        bytes: build.bytes,
+    })
 }

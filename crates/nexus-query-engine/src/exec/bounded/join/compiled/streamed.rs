@@ -10,11 +10,11 @@ pub(super) fn execute_compiled_streamed_one_shot_join_materialize(
     reservations: &mut ReservationTracker,
     metrics: &mut QueryMetrics,
 ) -> Result<ResidentGpuFrame> {
-    let build_side = build.side;
+    let BoundedCompiledPreparedJoinBuildState { side: build_side, input, .. } = build;
     let probe_side = probe_side(build_side);
-    let build_rows = build.input.rows;
-    let build_bytes = build.input.bytes;
-    drop(build);
+    let build_rows = input.rows;
+    let build_bytes = input.bytes;
+    release_bounded_join_side_frame(input, reservations, metrics);
 
     let output = concatenate_streamed_hash_join_outputs(context, node_id, outputs, reservations, metrics)?;
     record_streamed_one_shot_join_metrics(
@@ -67,7 +67,7 @@ pub(super) fn record_streamed_one_shot_join_metrics(
 ) {
     metrics.record_one_shot_join();
     metrics.record_one_shot_join_index_bytes(summary.index_bytes);
-    metrics.record_one_shot_join_materialization_bytes(summary.output_reservation_bytes);
+    metrics.record_one_shot_join_materialization_bytes(summary.materialization_bytes);
     metrics.record_one_shot_join_output_bytes(summary.output_bytes);
     metrics.record_operator_metrics(crate::metrics::OperatorMetrics::join(
         node_id,
@@ -75,7 +75,7 @@ pub(super) fn record_streamed_one_shot_join_metrics(
             join_type: node.spec.join_type.to_string(),
             execution_strategy: "bounded_one_shot_equi_join".to_string(),
             key_count: node.spec.keys.len(),
-            residual_predicate: false,
+            residual_predicate: node.spec.residual_predicate.is_some(),
             null_equality: node.spec.null_equality.to_string(),
             build_side: build_side.to_string(),
             probe_side: probe_side.to_string(),
@@ -90,6 +90,43 @@ pub(super) fn record_streamed_one_shot_join_metrics(
             output_reservation_bytes: summary.output_reservation_bytes,
             output_rows: summary.output_rows,
             output_bytes: summary.output_bytes,
+        },
+    ));
+}
+
+pub(super) fn record_one_shot_join_chunk_metrics(
+    node_id: NodeId,
+    node: &JoinNode,
+    build_side: JoinSide,
+    probe_side: JoinSide,
+    chunk: &OneShotJoinChunkMetrics,
+    metrics: &mut QueryMetrics,
+) {
+    metrics.record_one_shot_join();
+    metrics.record_one_shot_join_index_bytes(chunk.index_bytes);
+    metrics.record_one_shot_join_materialization_bytes(chunk.materialization_bytes);
+    metrics.record_one_shot_join_output_bytes(chunk.output_bytes);
+    metrics.record_operator_metrics(crate::metrics::OperatorMetrics::join(
+        node_id,
+        crate::metrics::JoinOperatorMetrics {
+            join_type: node.spec.join_type.to_string(),
+            execution_strategy: "bounded_one_shot_equi_join".to_string(),
+            key_count: node.spec.keys.len(),
+            residual_predicate: node.spec.residual_predicate.is_some(),
+            null_equality: node.spec.null_equality.to_string(),
+            build_side: build_side.to_string(),
+            probe_side: probe_side.to_string(),
+            build_rows: chunk.build_rows,
+            build_bytes: chunk.build_bytes,
+            probe_rows: chunk.probe_rows,
+            probe_bytes: chunk.probe_bytes,
+            hash_table_bytes: 0,
+            filtered_probe_state_bytes: 0,
+            mixed_size_data_bytes: 0,
+            gather_map_bytes: chunk.index_bytes,
+            output_reservation_bytes: chunk.output_reservation_bytes,
+            output_rows: chunk.output_rows,
+            output_bytes: chunk.output_bytes,
         },
     ));
 }

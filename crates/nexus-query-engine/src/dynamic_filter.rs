@@ -24,7 +24,7 @@ use crate::{
     error::{QueryError, QueryErrorCode, Result},
     expr::{BinaryOp, Expr, LiteralValue},
     optimizer::{DimensionKeyFilter, KeyRange},
-    plan::{JoinSide, NodeId},
+    plan::{JoinSide, NodeId, PlanNode, QueryPlan},
     source::{LocalParquetSource, SourceColumnRef},
 };
 
@@ -463,7 +463,82 @@ pub const DEFAULT_SMALL_IN_LIST_DYNAMIC_FILTER_LIMIT: usize = 1024;
 /// pruning work are not expected to pay for themselves.
 pub const LARGE_KEYSET_DIMENSION_SOURCE_SKIP_REASON: &str = "large_keyset_dimension_sized_local_parquet_consumer";
 
+/// Runtime cap for dynamic-filter producer rows when an exact host keyset would
+/// be materialized.
+pub(crate) const MAX_DYNAMIC_FILTER_BUILD_ROWS: usize = 1_000_000;
+
+/// Producer row threshold where runtime avoids exact host keyset payloads for
+/// local-Parquet consumers and considers range-only payloads instead.
+pub(crate) const LARGE_LOCAL_PARQUET_RANGE_DYNAMIC_FILTER_PRODUCER_ROWS: usize = 4 * 1024;
+
+/// Local-Parquet consumer byte threshold below which large producer keysets are
+/// treated as unlikely to pay for their producer-before-consumer dependency.
+pub(crate) const DIMENSION_SIZED_DYNAMIC_FILTER_CONSUMER_BYTES: u64 = 256 * 1024 * 1024;
+
+/// Selected row-group count below which a dimension-sized local-Parquet consumer
+/// has too little independent source work to justify a large producer keyset.
+pub(crate) const TINY_LOCAL_PARQUET_DYNAMIC_FILTER_CONSUMER_ROW_GROUPS: usize = 32;
+
 const MAX_RANGE_READER_PREDICATE_SELECTIVITY_PPM: u128 = 950_000;
+
+pub(crate) fn dynamic_filter_consumer_source_feeds_downstream_work_fanout(
+    plan: &QueryPlan,
+    source_node_id: NodeId,
+) -> bool {
+    let parent_counts = dynamic_filter_parent_counts(plan);
+    let mut current = source_node_id;
+    let mut saw_work_boundary = false;
+    loop {
+        let parent_count = parent_counts.get(current.index()).copied().unwrap_or_default();
+        if parent_count > 1 {
+            return saw_work_boundary;
+        }
+        if parent_count == 0 {
+            return false;
+        }
+        let Some(parent) = dynamic_filter_single_parent(plan, &parent_counts, current) else {
+            return false;
+        };
+        let Some(parent_node) = plan.node(parent) else {
+            return false;
+        };
+        if dynamic_filter_downstream_work_boundary(&parent_node.kind) {
+            saw_work_boundary = true;
+        }
+        current = parent;
+    }
+}
+
+fn dynamic_filter_parent_counts(plan: &QueryPlan) -> Vec<usize> {
+    let mut counts = vec![0; plan.node_count()];
+    for node in plan.nodes() {
+        for input in node.input_ids() {
+            if let Some(count) = counts.get_mut(input.index()) {
+                *count += 1;
+            }
+        }
+    }
+    counts
+}
+
+fn dynamic_filter_single_parent(plan: &QueryPlan, parent_counts: &[usize], node_id: NodeId) -> Option<NodeId> {
+    if parent_counts.get(node_id.index()).copied().unwrap_or_default() != 1 {
+        return None;
+    }
+    plan.nodes().iter().find(|candidate| candidate.input_ids().contains(&node_id)).map(|candidate| candidate.id)
+}
+
+fn dynamic_filter_downstream_work_boundary(node: &PlanNode) -> bool {
+    matches!(
+        node,
+        PlanNode::Aggregate(_)
+            | PlanNode::Window(_)
+            | PlanNode::Join(_)
+            | PlanNode::Union(_)
+            | PlanNode::EdgeNormalize(_)
+            | PlanNode::GraphAlgorithm(_)
+    )
+}
 
 /// Extracts integer-like values from a host Arrow column for initial
 /// dynamic-filter payload construction.

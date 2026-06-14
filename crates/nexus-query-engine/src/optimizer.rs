@@ -229,26 +229,62 @@ pub fn optimize_query_plan(plan: QueryPlan, options: &NativeOptimizerOptions) ->
         projection_simplification::optimize_projection_simplification(plan, &options.projection_simplification);
     let semijoin_result =
         optimize_semijoin_reduction(projection_simplification_result.plan, &options.semijoin_reduction);
-    let null_rejection_result = outer_join_null_rejection::optimize_outer_join_null_rejection(
-        semijoin_result.plan,
-        &options.outer_join_null_rejection,
-    );
     let join_filter_reassociation_result =
-        optimize_join_filter_reassociation_fixpoint(null_rejection_result.plan, &options.join_filter_reassociation);
-    let dimension_pruning_result = dimension_pruning::optimize_dimension_derived_row_group_pruning(
-        join_filter_reassociation_result.plan,
-        &options.dimension_derived_row_group_pruning,
-    );
+        optimize_join_filter_reassociation_fixpoint(semijoin_result.plan, &options.join_filter_reassociation);
     let join_build_side_result = join_build_side::optimize_join_build_side_selection(
-        dimension_pruning_result.plan,
+        join_filter_reassociation_result.plan,
         &options.join_build_side_selection,
     );
-    let aggregate_join_pushdown_result = aggregate_join_pushdown::optimize_aggregate_join_pushdown(
+    let null_rejection_result = outer_join_null_rejection::optimize_outer_join_null_rejection(
         join_build_side_result.plan,
+        &options.outer_join_null_rejection,
+    );
+    let aggregate_join_pushdown_result = aggregate_join_pushdown::optimize_aggregate_join_pushdown(
+        null_rejection_result.plan,
         &options.aggregate_join_pushdown,
     );
+    let post_aggregate_join_build_side_result = if aggregate_join_pushdown_result.change.changed() {
+        join_build_side::optimize_join_build_side_selection(
+            aggregate_join_pushdown_result.plan,
+            &options.join_build_side_selection,
+        )
+    } else {
+        join_build_side::JoinBuildSideSelectionResult {
+            plan: aggregate_join_pushdown_result.plan,
+            change: NativeOptimizerChange::Unchanged,
+            diagnostics: JoinBuildSideSelectionDiagnostics::default(),
+        }
+    };
+    let post_aggregate_null_rejection_result = if aggregate_join_pushdown_result.change.changed() {
+        outer_join_null_rejection::optimize_outer_join_null_rejection(
+            post_aggregate_join_build_side_result.plan,
+            &options.outer_join_null_rejection,
+        )
+    } else {
+        outer_join_null_rejection::OuterJoinNullRejectionResult {
+            plan: post_aggregate_join_build_side_result.plan,
+            change: NativeOptimizerChange::Unchanged,
+            diagnostics: OuterJoinNullRejectionDiagnostics::default(),
+        }
+    };
+    let dimension_pruning_result = dimension_pruning::optimize_dimension_derived_row_group_pruning(
+        post_aggregate_null_rejection_result.plan,
+        &options.dimension_derived_row_group_pruning,
+    );
+    let post_dimension_join_build_side_result = if dimension_pruning_result.change.changed() {
+        join_build_side::optimize_join_build_side_selection(
+            dimension_pruning_result.plan,
+            &options.join_build_side_selection,
+        )
+    } else {
+        join_build_side::JoinBuildSideSelectionResult {
+            plan: dimension_pruning_result.plan,
+            change: NativeOptimizerChange::Unchanged,
+            diagnostics: JoinBuildSideSelectionDiagnostics::default(),
+        }
+    };
     let count_non_null_column_pruning_result = count_non_null_pruning::optimize_count_non_null_column_pruning(
-        aggregate_join_pushdown_result.plan,
+        post_dimension_join_build_side_result.plan,
         &options.count_non_null_column_pruning,
     );
     let stream_fanout_replay_result = stream_fanout_replay::optimize_stream_fanout_replay(
@@ -262,6 +298,7 @@ pub fn optimize_query_plan(plan: QueryPlan, options: &NativeOptimizerOptions) ->
     let local_parquet_source_reuse_result = local_parquet_source_reuse::optimize_local_parquet_source_reuse(
         shared_subplan_materialization_result.plan,
         &options.local_parquet_source_reuse,
+        &options.dynamic_filter_route_discovery,
     );
     let final_projection_simplification_result = projection_simplification::optimize_projection_simplification(
         local_parquet_source_reuse_result.plan,
@@ -279,6 +316,9 @@ pub fn optimize_query_plan(plan: QueryPlan, options: &NativeOptimizerOptions) ->
         || dimension_pruning_result.change.changed()
         || join_build_side_result.change.changed()
         || aggregate_join_pushdown_result.change.changed()
+        || post_aggregate_join_build_side_result.change.changed()
+        || post_aggregate_null_rejection_result.change.changed()
+        || post_dimension_join_build_side_result.change.changed()
         || count_non_null_column_pruning_result.change.changed()
         || stream_fanout_replay_result.change.changed()
         || local_parquet_source_reuse_result.change.changed()
@@ -301,10 +341,19 @@ pub fn optimize_query_plan(plan: QueryPlan, options: &NativeOptimizerOptions) ->
                 diagnostics
             },
             semijoin_reduction: semijoin_result.diagnostics,
-            outer_join_null_rejection: null_rejection_result.diagnostics,
+            outer_join_null_rejection: {
+                let mut diagnostics = null_rejection_result.diagnostics;
+                diagnostics.merge(post_aggregate_null_rejection_result.diagnostics);
+                diagnostics
+            },
             join_filter_reassociation: join_filter_reassociation_result.diagnostics,
             dimension_derived_row_group_pruning: dimension_pruning_result.diagnostics,
-            join_build_side_selection: join_build_side_result.diagnostics,
+            join_build_side_selection: {
+                let mut diagnostics = join_build_side_result.diagnostics;
+                diagnostics.merge(post_aggregate_join_build_side_result.diagnostics);
+                diagnostics.merge(post_dimension_join_build_side_result.diagnostics);
+                diagnostics
+            },
             stream_fanout_replay: stream_fanout_replay_result.diagnostics,
             local_parquet_source_reuse: local_parquet_source_reuse_result.diagnostics,
             shared_subplan_materialization: shared_subplan_materialization_result.diagnostics,

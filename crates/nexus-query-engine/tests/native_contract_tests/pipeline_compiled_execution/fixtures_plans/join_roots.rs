@@ -493,6 +493,246 @@ pub(super) fn simple_multi_join_plan(a_path: &Path, b_path: &Path, c_path: &Path
     builder.finish_with_host_sink(abc)
 }
 
+pub(super) fn residual_one_shot_frame_stream_multi_join_plan(
+    a_path: &Path,
+    b_path: &Path,
+    c_path: &Path,
+) -> QueryPlan {
+    let a_schema = Arc::new(Schema::new(vec![
+        Field::new("a_id", DataType::Int32, false),
+        Field::new("a_value", DataType::Int32, false),
+        Field::new("a_partition", DataType::Int32, false),
+    ]));
+    let b_schema = Arc::new(Schema::new(vec![
+        Field::new("b_id", DataType::Int32, false),
+        Field::new("b_value", DataType::Int32, false),
+    ]));
+    let c_schema = Arc::new(Schema::new(vec![
+        Field::new("c_id", DataType::Int32, false),
+        Field::new("c_value", DataType::Int32, false),
+    ]));
+    let first_join_schema = Arc::new(Schema::new(vec![
+        Field::new("a_id", DataType::Int32, false),
+        Field::new("a_value", DataType::Int32, false),
+        Field::new("b_value", DataType::Int32, true),
+    ]));
+    let output_schema = Arc::new(Schema::new(vec![
+        Field::new("a_id", DataType::Int32, false),
+        Field::new("a_value", DataType::Int32, false),
+        Field::new("b_value", DataType::Int32, true),
+        Field::new("c_value", DataType::Int32, true),
+    ]));
+
+    let mut builder = QueryPlanBuilder::new();
+    let a_source = builder.add_source(SourceNode::LocalParquet(
+        LocalParquetSource::from_files(
+            vec![
+                LocalParquetFile::new(a_path)
+                    .with_row_group_rows(vec![2, 2])
+                    .with_row_group_bytes(vec![1024, 1024])
+                    .with_partition_values(vec![LiteralValue::Int32(0)]),
+            ],
+            Arc::clone(&a_schema),
+            vec!["a_id".into(), "a_value".into()],
+        )
+        .with_file_column_count(2)
+        .with_partition_columns(vec![PartitionColumn::new("a_partition", DataType::Int32, false)]),
+    ));
+    let a = builder.add_projection(
+        a_source,
+        vec![
+            ProjectionOutput::new(Expr::column("a_id"), Field::new("a_id", DataType::Int32, false)),
+            ProjectionOutput::new(Expr::column("a_value"), Field::new("a_value", DataType::Int32, false)),
+        ],
+    );
+    let b = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::from_files(
+        vec![LocalParquetFile::new(b_path).with_row_group_rows(vec![2]).with_row_group_bytes(vec![1024])],
+        Arc::clone(&b_schema),
+        vec!["b_id".into(), "b_value".into()],
+    )));
+    let c = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::from_files(
+        vec![LocalParquetFile::new(c_path).with_row_group_rows(vec![50_000]).with_row_group_bytes(vec![1024])],
+        Arc::clone(&c_schema),
+        vec!["c_id".into(), "c_value".into()],
+    )));
+    let ab = builder.add_join(
+        a,
+        b,
+        JoinSpec::new(
+            JoinType::Inner,
+            vec![JoinKey::new(ColumnRef::input(0, "a_id", "a_id"), ColumnRef::input(1, "b_id", "b_id"))],
+        )
+        .with_output_projection(vec![
+            JoinOutputColumn::left(ColumnRef::input(0, "a_id", "a_id"), "a_id"),
+            JoinOutputColumn::left(ColumnRef::input(0, "a_value", "a_value"), "a_value"),
+            JoinOutputColumn::right(ColumnRef::input(1, "b_value", "b_value"), "b_value"),
+        ])
+        .with_build_side(JoinSide::Right),
+        Arc::clone(&first_join_schema),
+    );
+    let abc = builder.add_join(
+        ab,
+        c,
+        JoinSpec::new(
+            JoinType::Inner,
+            vec![JoinKey::new(ColumnRef::input(0, "a_id", "a_id"), ColumnRef::input(1, "c_id", "c_id"))],
+        )
+        .with_residual_predicate(Expr::binary(
+            Expr::binary(
+                Expr::input_column(0, "a_value", "a_value"),
+                BinaryOp::Lt,
+                Expr::input_column(1, "c_value", "c_value"),
+            ),
+            BinaryOp::And,
+            Expr::is_not_distinct_from(
+                Expr::input_column(0, "a_id", "a_id"),
+                Expr::input_column(1, "c_id", "c_id"),
+            ),
+        ))
+        .with_output_projection(vec![
+            JoinOutputColumn::left(ColumnRef::input(0, "a_id", "a_id"), "a_id"),
+            JoinOutputColumn::left(ColumnRef::input(0, "a_value", "a_value"), "a_value"),
+            JoinOutputColumn::left(ColumnRef::input(0, "b_value", "b_value"), "b_value"),
+            JoinOutputColumn::right(ColumnRef::input(1, "c_value", "c_value"), "c_value"),
+        ])
+        .with_build_side(JoinSide::Right),
+        output_schema,
+    );
+    builder.finish_with_host_sink(abc)
+}
+
+pub(super) fn residual_one_shot_leaf_stream_join_plan(a_path: &Path, c_path: &Path) -> QueryPlan {
+    let a_schema = Arc::new(Schema::new(vec![
+        Field::new("a_id", DataType::Int32, false),
+        Field::new("a_value", DataType::Int32, false),
+        Field::new("a_partition", DataType::Int32, false),
+    ]));
+    let c_schema = Arc::new(Schema::new(vec![
+        Field::new("c_id", DataType::Int32, false),
+        Field::new("c_value", DataType::Int32, false),
+    ]));
+    let output_schema = Arc::new(Schema::new(vec![
+        Field::new("a_id", DataType::Int32, false),
+        Field::new("a_value", DataType::Int32, false),
+        Field::new("c_value", DataType::Int32, true),
+    ]));
+
+    let mut builder = QueryPlanBuilder::new();
+    let a_source = builder.add_source(SourceNode::LocalParquet(
+        LocalParquetSource::from_files(
+            vec![
+                LocalParquetFile::new(a_path)
+                    .with_row_group_rows(vec![2, 2])
+                    .with_row_group_bytes(vec![1024, 1024])
+                    .with_partition_values(vec![LiteralValue::Int32(0)]),
+            ],
+            Arc::clone(&a_schema),
+            vec!["a_id".into(), "a_value".into()],
+        )
+        .with_file_column_count(2)
+        .with_partition_columns(vec![PartitionColumn::new("a_partition", DataType::Int32, false)]),
+    ));
+    let a = builder.add_projection(
+        a_source,
+        vec![
+            ProjectionOutput::new(Expr::column("a_id"), Field::new("a_id", DataType::Int32, false)),
+            ProjectionOutput::new(Expr::column("a_value"), Field::new("a_value", DataType::Int32, false)),
+        ],
+    );
+    let c = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::from_files(
+        vec![LocalParquetFile::new(c_path).with_row_group_rows(vec![50_000]).with_row_group_bytes(vec![1024])],
+        Arc::clone(&c_schema),
+        vec!["c_id".into(), "c_value".into()],
+    )));
+    let ac = builder.add_join(
+        a,
+        c,
+        JoinSpec::new(
+            JoinType::Inner,
+            vec![JoinKey::new(ColumnRef::input(0, "a_id", "a_id"), ColumnRef::input(1, "c_id", "c_id"))],
+        )
+        .with_residual_predicate(Expr::binary(
+            Expr::input_column(0, "a_value", "a_value"),
+            BinaryOp::Lt,
+            Expr::input_column(1, "c_value", "c_value"),
+        ))
+        .with_output_projection(vec![
+            JoinOutputColumn::left(ColumnRef::input(0, "a_id", "a_id"), "a_id"),
+            JoinOutputColumn::left(ColumnRef::input(0, "a_value", "a_value"), "a_value"),
+            JoinOutputColumn::right(ColumnRef::input(1, "c_value", "c_value"), "c_value"),
+        ])
+        .with_build_side(JoinSide::Right),
+        output_schema,
+    );
+    builder.finish_with_host_sink(ac)
+}
+
+pub(super) fn residual_one_shot_leaf_stream_left_build_join_plan(a_path: &Path, c_path: &Path) -> QueryPlan {
+    let a_schema = Arc::new(Schema::new(vec![
+        Field::new("a_id", DataType::Int32, false),
+        Field::new("a_value", DataType::Int32, false),
+        Field::new("a_partition", DataType::Int32, false),
+    ]));
+    let c_schema = Arc::new(Schema::new(vec![
+        Field::new("c_id", DataType::Int32, false),
+        Field::new("c_value", DataType::Int32, false),
+    ]));
+    let output_schema = Arc::new(Schema::new(vec![
+        Field::new("a_id", DataType::Int32, false),
+        Field::new("a_value", DataType::Int32, false),
+        Field::new("c_value", DataType::Int32, true),
+    ]));
+
+    let mut builder = QueryPlanBuilder::new();
+    let c = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::from_files(
+        vec![LocalParquetFile::new(c_path).with_row_group_rows(vec![50_000]).with_row_group_bytes(vec![1024])],
+        Arc::clone(&c_schema),
+        vec!["c_id".into(), "c_value".into()],
+    )));
+    let a_source = builder.add_source(SourceNode::LocalParquet(
+        LocalParquetSource::from_files(
+            vec![
+                LocalParquetFile::new(a_path)
+                    .with_row_group_rows(vec![2, 2])
+                    .with_row_group_bytes(vec![1024, 1024])
+                    .with_partition_values(vec![LiteralValue::Int32(0)]),
+            ],
+            Arc::clone(&a_schema),
+            vec!["a_id".into(), "a_value".into()],
+        )
+        .with_file_column_count(2)
+        .with_partition_columns(vec![PartitionColumn::new("a_partition", DataType::Int32, false)]),
+    ));
+    let a = builder.add_projection(
+        a_source,
+        vec![
+            ProjectionOutput::new(Expr::column("a_id"), Field::new("a_id", DataType::Int32, false)),
+            ProjectionOutput::new(Expr::column("a_value"), Field::new("a_value", DataType::Int32, false)),
+        ],
+    );
+    let ca = builder.add_join(
+        c,
+        a,
+        JoinSpec::new(
+            JoinType::Inner,
+            vec![JoinKey::new(ColumnRef::input(0, "c_id", "c_id"), ColumnRef::input(1, "a_id", "a_id"))],
+        )
+        .with_residual_predicate(Expr::binary(
+            Expr::input_column(1, "a_value", "a_value"),
+            BinaryOp::Lt,
+            Expr::input_column(0, "c_value", "c_value"),
+        ))
+        .with_output_projection(vec![
+            JoinOutputColumn::right(ColumnRef::input(1, "a_id", "a_id"), "a_id"),
+            JoinOutputColumn::right(ColumnRef::input(1, "a_value", "a_value"), "a_value"),
+            JoinOutputColumn::left(ColumnRef::input(0, "c_value", "c_value"), "c_value"),
+        ])
+        .with_build_side(JoinSide::Left),
+        output_schema,
+    );
+    builder.finish_with_host_sink(ca)
+}
+
 pub(super) fn root_join_with_unary_inputs_data_plan(left_path: &Path, right_path: &Path) -> QueryPlan {
     let left_source_schema = Arc::new(Schema::new(vec![
         Field::new("left_id", DataType::Int32, false),

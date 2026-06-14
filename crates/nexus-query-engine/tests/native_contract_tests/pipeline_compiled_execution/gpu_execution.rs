@@ -701,6 +701,317 @@ fn execute_query_plan_routes_simple_multi_join_tree_through_compiled_pipeline() 
 }
 
 #[test]
+fn execute_query_plan_streams_residual_one_shot_probe_from_prior_join() {
+    let Ok(runtime) = cudf::Runtime::new() else {
+        return;
+    };
+    let dir = unique_temp_dir("nexus-query-engine-compiled-residual-stream");
+    let a_path = dir.join("a.parquet");
+    let b_path = dir.join("b.parquet");
+    let c_path = dir.join("c.parquet");
+    write_residual_stream_join_parquets(&a_path, &b_path, &c_path);
+    let plan = residual_one_shot_frame_stream_multi_join_plan(&a_path, &b_path, &c_path);
+    let analysis = plan.capability_analysis();
+    assert!(analysis.admits_closed_multi_join_subgraph());
+    let pipeline = compile_pipeline(&plan, &analysis).expect("residual stream multi-join plan should compile");
+    assert_eq!(
+        compiled_bounded_pipeline_support(&pipeline).expect("support check should not fail"),
+        CompiledBoundedPipelineSupport::Supported
+    );
+    let upstream_join = plan
+        .nodes()
+        .iter()
+        .find_map(|node| {
+            matches!(&node.kind, PlanNode::Join(join) if join.spec.residual_predicate.is_none()).then_some(node.id)
+        })
+        .expect("fixture should contain the upstream equi join");
+    let residual_join = plan
+        .nodes()
+        .iter()
+        .find_map(|node| {
+            matches!(&node.kind, PlanNode::Join(join) if join.spec.residual_predicate.is_some()).then_some(node.id)
+        })
+        .expect("fixture should contain the downstream residual join");
+    let context = bounded_context(Arc::new(runtime));
+
+    let result = execute_query_plan(&context, &plan)
+        .expect("residual one-shot stream probe should execute through compiled path");
+    let batch = result.output().as_host_arrow().expect("compiled output should be host Arrow");
+    let metrics = result.metrics();
+    let upstream_join = upstream_join.to_string();
+    let residual_join = residual_join.to_string();
+
+    assert_eq!(batch.num_rows(), 1);
+    assert_eq!(int32_quads_sorted(batch, 0, 1, 2, 3), vec![(Some(4), Some(40), Some(400), Some(45))]);
+    assert_eq!(metrics.compiled_pipeline_attempts, 1);
+    assert_eq!(metrics.compiled_pipeline_tasks_executed, pipeline.tasks().len() as u64);
+    let join_rows = metrics.operators.iter().filter_map(|operator| operator.join.as_ref()).collect::<Vec<_>>();
+    let residual_join_rows = metrics
+        .operators
+        .iter()
+        .filter(|operator| {
+            operator.node_id == residual_join
+                && operator.join.as_ref().is_some_and(|join| {
+                    join.residual_predicate && join.execution_strategy == "bounded_one_shot_equi_join"
+                })
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        residual_join_rows.len(),
+        1,
+        "join rows: {join_rows:?}; strategy decisions: {:?}",
+        metrics.join_strategy_decisions
+    );
+    let residual_join_metrics = residual_join_rows[0].join.as_ref().expect("residual join row should be present");
+    assert_eq!(residual_join_metrics.probe_rows, 2);
+    assert_eq!(residual_join_metrics.output_rows, 1);
+    let one_shot_operator_rows =
+        join_rows.iter().filter(|join| join.execution_strategy == "bounded_one_shot_equi_join").count();
+    assert_eq!(metrics.one_shot_join_count, one_shot_operator_rows as u64);
+    let upstream_events = metrics
+        .reservation_events
+        .iter()
+        .filter(|event| event.node_id.as_deref() == Some(upstream_join.as_str()))
+        .collect::<Vec<_>>();
+    assert!(
+        upstream_events
+            .iter()
+            .filter(|event| {
+                (event.memory_boundary == "join_output" || event.memory_boundary == "join_output_stream_chunk")
+                    && event.action == MemoryReservationEventAction::Reserve
+            })
+            .count()
+            >= 2,
+        "fixture must produce multiple upstream join output chunks: source_chunks_committed={}, source_rows={:?}, upstream_events={upstream_events:?}",
+        metrics.source_chunks_committed,
+        metrics.source_read_runtime_rows
+    );
+    assert!(
+        !metrics.reservation_events.iter().any(|event| {
+            event.node_id.as_deref() == Some(upstream_join.as_str())
+                && event.memory_boundary == "join_output_stream_concat"
+        }),
+        "upstream join output must stay streamed into the residual probe"
+    );
+    assert!(metrics.reservation_events.iter().any(|event| {
+        event.node_id.as_deref() == Some(residual_join.as_str())
+            && event.memory_boundary == "join_residual_filter_output"
+    }));
+    let build_alias_acquires = metrics
+        .reservation_events
+        .iter()
+        .filter(|event| {
+            event.node_id.as_deref() == Some(residual_join.as_str())
+                && event.memory_boundary == "join_build_side_stream_alias"
+                && event.action == MemoryReservationEventAction::AliasAcquire
+        })
+        .count();
+    let build_alias_releases = metrics
+        .reservation_events
+        .iter()
+        .filter(|event| {
+            event.node_id.as_deref() == Some(residual_join.as_str())
+                && event.memory_boundary == "join_build_side_stream_alias"
+                && event.action == MemoryReservationEventAction::AliasRelease
+        })
+        .count();
+    assert!(build_alias_acquires > 0, "residual stream should alias the retained build side");
+    assert_eq!(build_alias_acquires, build_alias_releases);
+}
+
+#[test]
+fn execute_query_plan_streams_residual_one_shot_probe_from_leaf_local_source() {
+    let Ok(runtime) = cudf::Runtime::new() else {
+        return;
+    };
+    let dir = unique_temp_dir("nexus-query-engine-compiled-residual-leaf-stream");
+    let a_path = dir.join("a.parquet");
+    let b_path = dir.join("b.parquet");
+    let c_path = dir.join("c.parquet");
+    write_residual_stream_join_parquets(&a_path, &b_path, &c_path);
+    let plan = residual_one_shot_leaf_stream_join_plan(&a_path, &c_path);
+    let analysis = plan.capability_analysis();
+    let pipeline = compile_pipeline(&plan, &analysis).expect("residual leaf-stream join plan should compile");
+    assert_eq!(
+        compiled_bounded_pipeline_support(&pipeline).expect("support check should not fail"),
+        CompiledBoundedPipelineSupport::Supported
+    );
+    let residual_join = plan
+        .nodes()
+        .iter()
+        .find_map(|node| {
+            matches!(&node.kind, PlanNode::Join(join) if join.spec.residual_predicate.is_some()).then_some(node.id)
+        })
+        .expect("fixture should contain the residual join");
+    let context = bounded_context(Arc::new(runtime));
+
+    let result = execute_query_plan(&context, &plan)
+        .expect("residual one-shot leaf stream probe should execute through compiled path");
+    let batch = result.output().as_host_arrow().expect("compiled output should be host Arrow");
+    let metrics = result.metrics();
+    let residual_join = residual_join.to_string();
+
+    assert_eq!(batch.num_rows(), 1);
+    assert_eq!(int32_triples_sorted(batch, 0, 1, 2), vec![(Some(4), Some(40), Some(45))]);
+    assert_eq!(metrics.compiled_pipeline_attempts, 1);
+    assert_eq!(metrics.compiled_pipeline_tasks_executed, pipeline.tasks().len() as u64);
+    assert!(
+        metrics.source_chunks_committed >= 2,
+        "fixture must stream the leaf probe source in multiple chunks: source_chunks_committed={}, source_rows={:?}",
+        metrics.source_chunks_committed,
+        metrics.source_read_runtime_rows
+    );
+    let join_rows = metrics.operators.iter().filter_map(|operator| operator.join.as_ref()).collect::<Vec<_>>();
+    let residual_join_rows = metrics
+        .operators
+        .iter()
+        .filter(|operator| {
+            operator.node_id == residual_join
+                && operator.join.as_ref().is_some_and(|join| {
+                    join.residual_predicate && join.execution_strategy == "bounded_mixed_keyed_residual_join"
+                })
+        })
+        .collect::<Vec<_>>();
+    assert!(
+        !residual_join_rows.is_empty(),
+        "join rows: {join_rows:?}; strategy decisions: {:?}",
+        metrics.join_strategy_decisions
+    );
+    assert_eq!(
+        residual_join_rows
+            .iter()
+            .filter_map(|operator| operator.join.as_ref())
+            .map(|join| join.probe_rows)
+            .sum::<u64>(),
+        4
+    );
+    assert_eq!(
+        residual_join_rows
+            .iter()
+            .filter_map(|operator| operator.join.as_ref())
+            .map(|join| join.output_rows)
+            .sum::<u64>(),
+        1
+    );
+    assert_eq!(metrics.one_shot_join_count, 0);
+    let build_alias_acquires = metrics
+        .reservation_events
+        .iter()
+        .filter(|event| {
+            event.node_id.as_deref() == Some(residual_join.as_str())
+                && event.memory_boundary == "join_build_side_stream_alias"
+                && event.action == MemoryReservationEventAction::AliasAcquire
+        })
+        .count();
+    let build_alias_releases = metrics
+        .reservation_events
+        .iter()
+        .filter(|event| {
+            event.node_id.as_deref() == Some(residual_join.as_str())
+                && event.memory_boundary == "join_build_side_stream_alias"
+                && event.action == MemoryReservationEventAction::AliasRelease
+        })
+        .count();
+    assert!(build_alias_acquires > 0, "residual stream should alias the retained build side");
+    assert_eq!(build_alias_acquires, build_alias_releases);
+}
+
+#[test]
+fn execute_query_plan_streams_residual_one_shot_right_probe_with_left_build() {
+    let Ok(runtime) = cudf::Runtime::new() else {
+        return;
+    };
+    let dir = unique_temp_dir("nexus-query-engine-compiled-residual-left-build-stream");
+    let a_path = dir.join("a.parquet");
+    let b_path = dir.join("b.parquet");
+    let c_path = dir.join("c.parquet");
+    write_residual_stream_join_parquets(&a_path, &b_path, &c_path);
+    let plan = residual_one_shot_leaf_stream_left_build_join_plan(&a_path, &c_path);
+    let analysis = plan.capability_analysis();
+    let pipeline =
+        compile_pipeline(&plan, &analysis).expect("left-build residual leaf-stream join plan should compile");
+    assert_eq!(
+        compiled_bounded_pipeline_support(&pipeline).expect("support check should not fail"),
+        CompiledBoundedPipelineSupport::Supported
+    );
+    let residual_join = plan
+        .nodes()
+        .iter()
+        .find_map(|node| {
+            matches!(&node.kind, PlanNode::Join(join) if join.spec.residual_predicate.is_some()).then_some(node.id)
+        })
+        .expect("fixture should contain the residual join");
+    let context = bounded_context(Arc::new(runtime));
+
+    let result = execute_query_plan(&context, &plan)
+        .expect("left-build residual one-shot leaf stream probe should execute through compiled path");
+    let batch = result.output().as_host_arrow().expect("compiled output should be host Arrow");
+    let metrics = result.metrics();
+    let residual_join = residual_join.to_string();
+
+    assert_eq!(batch.num_rows(), 1);
+    assert_eq!(int32_triples_sorted(batch, 0, 1, 2), vec![(Some(4), Some(40), Some(45))]);
+    assert_eq!(metrics.compiled_pipeline_attempts, 1);
+    assert_eq!(metrics.compiled_pipeline_tasks_executed, pipeline.tasks().len() as u64);
+    let residual_join_rows = metrics
+        .operators
+        .iter()
+        .filter(|operator| {
+            operator.node_id == residual_join
+                && operator.join.as_ref().is_some_and(|join| {
+                    join.residual_predicate
+                        && join.execution_strategy == "bounded_mixed_keyed_residual_join"
+                        && join.build_side == JoinSide::Left.to_string()
+                        && join.probe_side == JoinSide::Right.to_string()
+                })
+        })
+        .collect::<Vec<_>>();
+    assert!(
+        !residual_join_rows.is_empty(),
+        "operator rows: {:?}; strategy decisions: {:?}",
+        metrics.operators,
+        metrics.join_strategy_decisions
+    );
+    assert_eq!(
+        residual_join_rows
+            .iter()
+            .filter_map(|operator| operator.join.as_ref())
+            .map(|join| join.probe_rows)
+            .sum::<u64>(),
+        4
+    );
+    assert_eq!(
+        residual_join_rows
+            .iter()
+            .filter_map(|operator| operator.join.as_ref())
+            .map(|join| join.output_rows)
+            .sum::<u64>(),
+        1
+    );
+    assert_eq!(metrics.one_shot_join_count, 0);
+    let build_alias_acquires = metrics
+        .reservation_events
+        .iter()
+        .filter(|event| {
+            event.node_id.as_deref() == Some(residual_join.as_str())
+                && event.memory_boundary == "join_build_side_stream_alias"
+                && event.action == MemoryReservationEventAction::AliasAcquire
+        })
+        .count();
+    let build_alias_releases = metrics
+        .reservation_events
+        .iter()
+        .filter(|event| {
+            event.node_id.as_deref() == Some(residual_join.as_str())
+                && event.memory_boundary == "join_build_side_stream_alias"
+                && event.action == MemoryReservationEventAction::AliasRelease
+        })
+        .count();
+    assert!(build_alias_acquires > 0, "residual stream should alias the retained build side");
+    assert_eq!(build_alias_acquires, build_alias_releases);
+}
+
+#[test]
 fn compiled_host_sink_diagnostics_are_structured_without_legacy_routing_terms() {
     let Ok(runtime) = cudf::Runtime::new() else {
         return;

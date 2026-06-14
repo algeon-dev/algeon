@@ -590,6 +590,27 @@ fn string_values(batch: &RecordBatch, column: usize) -> Vec<Option<String>> {
 
 type Int32Quad = (Option<i32>, Option<i32>, Option<i32>, Option<i32>);
 
+type Int32Triple = (Option<i32>, Option<i32>, Option<i32>);
+
+pub(super) fn int32_triples_sorted(
+    batch: &RecordBatch,
+    first_column: usize,
+    second_column: usize,
+    third_column: usize,
+) -> Vec<Int32Triple> {
+    let first = int32_values(batch, first_column);
+    let second = int32_values(batch, second_column);
+    let third = int32_values(batch, third_column);
+    let mut triples = first
+        .into_iter()
+        .zip(second)
+        .zip(third)
+        .map(|((first, second), third)| (first, second, third))
+        .collect::<Vec<_>>();
+    triples.sort();
+    triples
+}
+
 pub(super) fn int32_quads_sorted(
     batch: &RecordBatch,
     first_column: usize,

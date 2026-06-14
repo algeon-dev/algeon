@@ -3,11 +3,11 @@ use std::{
     sync::Arc,
 };
 
-use arrow::datatypes::{Field, Schema, SchemaRef};
+use arrow::datatypes::{DataType, Field, Schema, SchemaRef};
 
 use super::rewrite;
 use crate::{
-    expr::{AggregateExpr, AggregateFunction, AggregateSpec, CaseWhen, ColumnRef, Expr},
+    expr::{AggregateExpr, AggregateFunction, AggregateSpec, BinaryOp, CaseWhen, ColumnRef, Expr, LiteralValue},
     plan::{
         AggregateNode, JoinKey, JoinNode, JoinOutputColumn, JoinSide, JoinSpec, JoinType, NodeId, PlanFacts, PlanNode,
         ProjectionNode, QueryNode, QueryPlan, SchemaBehavior,
@@ -16,6 +16,10 @@ use crate::{
 
 /// Stable rule name used in optimizer diagnostics.
 pub const AGGREGATE_JOIN_PUSHDOWN_RULE_NAME: &str = "aggregate_join_pushdown";
+
+const JOIN_UNION_PREAGG_MIN_KNOWN_UNION_BYTES: u64 = 128 * 1024 * 1024;
+const JOIN_UNION_PREAGG_MAX_DUPLICATED_OTHER_BYTES: u64 = 64 * 1024 * 1024;
+const JOIN_UNION_PREAGG_MIN_UNION_TO_DUPLICATED_OTHER_RATIO: u64 = 4;
 
 /// Configuration for reducing aggregates before joins.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -368,13 +372,10 @@ impl<'a> AggregateJoinPushdownRewriter<'a> {
             )?;
         }
 
-        let preagg_aliases = aggregate
-            .spec
-            .aggr_exprs
-            .iter()
-            .enumerate()
-            .map(|(index, _)| unique_preagg_alias(index, aggregate_facts.output_schema.as_ref(), &preagg_group_columns))
-            .collect::<Vec<_>>();
+        let preagg_state_aliases =
+            preaggregate_state_aliases(aggregate, aggregate_facts.output_schema.as_ref(), &preagg_group_columns);
+        let reserved_preagg_aliases =
+            preagg_state_aliases.iter().flat_map(|aliases| aliases.iter().cloned()).collect::<Vec<_>>();
         // The aggregate executor requires aggregate measure arguments to be
         // plain column references. When every measure already resolves to a
         // plain column from the measure-side input (the q70/q86 case with no
@@ -403,7 +404,7 @@ impl<'a> AggregateJoinPushdownRewriter<'a> {
                         index,
                         aggregate_facts.output_schema.as_ref(),
                         &preagg_group_columns,
-                        &preagg_aliases,
+                        &reserved_preagg_aliases,
                     )
                 })
                 .collect::<Vec<_>>();
@@ -438,33 +439,48 @@ impl<'a> AggregateJoinPushdownRewriter<'a> {
             (preagg_input, preagg_input_schema, measure_input_columns)
         };
 
+        let preagg_measure_states = preaggregate_measure_states(
+            &preagg_input_schema_for_spec,
+            aggregate,
+            aggregate_facts.output_schema.as_ref(),
+            &preagg_state_aliases,
+            &measure_input_columns,
+        )?;
         let preagg_schema = preaggregate_schema(
             &preagg_input_schema_for_spec,
             aggregate,
             aggregate_facts.output_schema.as_ref(),
             &preagg_group_columns,
-            &preagg_aliases,
+            &preagg_measure_states,
         )?;
-        let preagg_spec = preaggregate_spec(aggregate, &preagg_group_columns, &preagg_aliases, &measure_input_columns)?;
-        let preagg_id = self.push_node(
-            PlanNode::Aggregate(AggregateNode { input: preagg_input_id, spec: preagg_spec }),
-            PlanFacts::device(Arc::clone(&preagg_schema), SchemaBehavior::Aggregate),
-        );
+        let preagg_spec =
+            preaggregate_spec(aggregate, &preagg_group_columns, &preagg_measure_states, &measure_input_columns)?;
+        let preagg_id = self
+            .try_rewrite_preaggregate_through_join_union(preagg_input_id, &preagg_spec, &preagg_schema)
+            .unwrap_or_else(|| {
+                self.push_node(
+                    PlanNode::Aggregate(AggregateNode { input: preagg_input_id, spec: preagg_spec }),
+                    PlanFacts::device(Arc::clone(&preagg_schema), SchemaBehavior::Aggregate),
+                )
+            });
 
         let new_join =
-            self.rewritten_join_after_preagg(lineage, join, preagg_side, preagg_id, &preagg_aliases, join_type);
+            self.rewritten_join_after_preagg(lineage, join, preagg_side, preagg_id, &preagg_measure_states, join_type);
         let join_schema = new_join_output_schema(
             aggregate,
             aggregate_facts.output_schema.as_ref(),
             &preagg_schema,
-            &preagg_aliases,
+            &preagg_measure_states,
             preagg_side,
             join_type,
         )?;
         let join_id = self.push_node(PlanNode::Join(new_join), PlanFacts::device(join_schema, SchemaBehavior::Join));
         let final_input = if coalesce_preagg_nulls_to_zero {
-            let projection_outputs =
-                coalesce_preagg_projection_outputs(aggregate, aggregate_facts.output_schema.as_ref(), &preagg_aliases)?;
+            let projection_outputs = coalesce_preagg_projection_outputs(
+                aggregate,
+                aggregate_facts.output_schema.as_ref(),
+                &preagg_measure_states,
+            )?;
             let projection_node = ProjectionNode::new(join_id, projection_outputs);
             let projection_schema = Arc::clone(projection_node.output_schema());
             self.push_node(
@@ -474,11 +490,24 @@ impl<'a> AggregateJoinPushdownRewriter<'a> {
         } else {
             join_id
         };
-        let final_spec = final_aggregate_spec_after_preagg(aggregate, &preagg_aliases)?;
-        Ok(self.push_node(
-            PlanNode::Aggregate(AggregateNode { input: final_input, spec: final_spec }),
-            aggregate_facts.clone(),
-        ))
+        let final_rewrite = final_aggregate_rewrite_after_preagg(
+            aggregate,
+            aggregate_facts.output_schema.as_ref(),
+            &preagg_measure_states,
+        )?;
+        let final_aggregate_id = self.push_node(
+            PlanNode::Aggregate(AggregateNode { input: final_input, spec: final_rewrite.spec }),
+            PlanFacts::device(Arc::clone(&final_rewrite.output_schema), SchemaBehavior::Aggregate),
+        );
+        if let Some(projection_outputs) = final_rewrite.projection_outputs {
+            let projection_node = ProjectionNode::new(final_aggregate_id, projection_outputs);
+            let projection_schema = Arc::clone(projection_node.output_schema());
+            return Ok(self.push_node(
+                PlanNode::Projection(projection_node),
+                PlanFacts::device(projection_schema, SchemaBehavior::Projection),
+            ));
+        }
+        Ok(final_aggregate_id)
     }
 
     fn rewritten_join_after_preagg(
@@ -487,7 +516,7 @@ impl<'a> AggregateJoinPushdownRewriter<'a> {
         join: &JoinNode,
         preagg_side: JoinSide,
         preagg_id: NodeId,
-        preagg_aliases: &[String],
+        preagg_measure_states: &[PreAggregateMeasureState],
         join_type: JoinType,
     ) -> JoinNode {
         let other_side = opposite_side(preagg_side);
@@ -497,7 +526,8 @@ impl<'a> AggregateJoinPushdownRewriter<'a> {
         };
         let keys =
             join.spec.keys.iter().map(|key| rewritten_join_key_after_preagg(key, preagg_side)).collect::<Vec<_>>();
-        let mut output_projection = Vec::with_capacity(lineage.group_columns.len() + preagg_aliases.len());
+        let state_count = preagg_measure_states.iter().map(|measure| measure.state_columns.len()).sum::<usize>();
+        let mut output_projection = Vec::with_capacity(lineage.group_columns.len() + state_count);
         for group in &lineage.group_columns {
             let side = group.side;
             let join_input_index =
@@ -509,11 +539,11 @@ impl<'a> AggregateJoinPushdownRewriter<'a> {
                 group.output_name.as_str(),
             ));
         }
-        for alias in preagg_aliases {
+        for state in preagg_measure_states.iter().flat_map(|measure| &measure.state_columns) {
             output_projection.push(JoinOutputColumn::new(
                 preagg_side,
-                ColumnRef::input(join_side_index(preagg_side), alias.as_str(), alias.as_str()),
-                alias.as_str(),
+                ColumnRef::input(join_side_index(preagg_side), state.alias.as_str(), state.alias.as_str()),
+                state.alias.as_str(),
             ));
         }
         let spec = JoinSpec {
@@ -527,6 +557,114 @@ impl<'a> AggregateJoinPushdownRewriter<'a> {
             mark_column_name: None,
         };
         JoinNode { inputs, spec }
+    }
+
+    fn try_rewrite_preaggregate_through_join_union(
+        &mut self,
+        preagg_input: NodeId,
+        preagg_spec: &AggregateSpec,
+        preagg_schema: &SchemaRef,
+    ) -> Option<NodeId> {
+        if preagg_spec.grouping_sets.is_some()
+            || preagg_spec.aggr_exprs.is_empty()
+            || !preagg_spec.aggr_exprs.iter().all(decomposable_union_partial_aggregate_expr)
+        {
+            return None;
+        }
+
+        let input_node = self.nodes.get(preagg_input.index()).filter(|node| node.id == preagg_input)?;
+        let PlanNode::Join(input_join) = &input_node.kind else {
+            return None;
+        };
+        if input_join.spec.join_type != JoinType::Inner
+            || input_join.spec.residual_predicate.is_some()
+            || input_join.spec.build_artifact_id.is_some()
+            || input_join.spec.mark_column_name.is_some()
+        {
+            return None;
+        }
+
+        let (union_side, union_inputs) = self.distributable_join_union_input(input_join)?;
+        let other_side = opposite_side(union_side);
+        let other_input = input_join.inputs[join_side_index(other_side)];
+        let other_bytes = self.estimated_rewritten_output_bytes(other_input)?;
+        let known_union_bytes = union_inputs
+            .iter()
+            .try_fold(0_u64, |sum, input| sum.checked_add(self.estimated_rewritten_output_bytes(*input)?))?;
+        let duplicated_other_bytes = other_bytes.checked_mul(union_inputs.len() as u64)?;
+        if known_union_bytes < JOIN_UNION_PREAGG_MIN_KNOWN_UNION_BYTES
+            || other_bytes > JOIN_UNION_PREAGG_MAX_DUPLICATED_OTHER_BYTES
+            || known_union_bytes
+                < duplicated_other_bytes.saturating_mul(JOIN_UNION_PREAGG_MIN_UNION_TO_DUPLICATED_OTHER_RATIO)
+        {
+            return None;
+        }
+
+        let input_join = input_join.clone();
+        let join_facts = input_node.facts.clone();
+        let branch_aggregates = union_inputs
+            .into_iter()
+            .map(|branch_input| {
+                let branch_join = join_with_replaced_input(&input_join, union_side, branch_input);
+                let branch_join_id = self.push_node(PlanNode::Join(branch_join), join_facts.clone());
+                self.push_node(
+                    PlanNode::Aggregate(AggregateNode { input: branch_join_id, spec: preagg_spec.clone() }),
+                    PlanFacts::device(Arc::clone(preagg_schema), SchemaBehavior::Aggregate),
+                )
+            })
+            .collect::<Vec<_>>();
+        let partial_union = self.push_node(
+            PlanNode::Union(crate::plan::UnionNode { inputs: branch_aggregates }),
+            PlanFacts::device(Arc::clone(preagg_schema), SchemaBehavior::Union),
+        );
+        let final_spec = final_aggregate_spec_after_union_preagg(preagg_spec, preagg_schema)?;
+        Some(self.push_node(
+            PlanNode::Aggregate(AggregateNode { input: partial_union, spec: final_spec }),
+            PlanFacts::device(Arc::clone(preagg_schema), SchemaBehavior::Aggregate),
+        ))
+    }
+
+    fn distributable_join_union_input(&self, join: &JoinNode) -> Option<(JoinSide, Vec<NodeId>)> {
+        [JoinSide::Left, JoinSide::Right].into_iter().find_map(|side| {
+            let input = join.inputs[join_side_index(side)];
+            let node = self.nodes.get(input.index()).filter(|node| node.id == input)?;
+            let PlanNode::Union(union) = &node.kind else {
+                return None;
+            };
+            (union.inputs.len() > 1).then(|| (side, union.inputs.clone()))
+        })
+    }
+
+    fn estimated_rewritten_output_bytes(&self, node_id: NodeId) -> Option<u64> {
+        let node = self.nodes.get(node_id.index()).filter(|node| node.id == node_id)?;
+        match &node.kind {
+            PlanNode::Source(source) => match source.as_ref() {
+                crate::source::SourceNode::LocalParquet(source) => source
+                    .diagnostics
+                    .selected_row_group_stats
+                    .as_ref()
+                    .and_then(|stats| stats.selected_source_bytes())
+                    .or(source.diagnostics.known_bytes),
+                crate::source::SourceNode::GpuResident(_) => None,
+                crate::source::SourceNode::LiteralBatch(source) => source
+                    .batches
+                    .iter()
+                    .try_fold(0_u64, |sum, batch| sum.checked_add(batch.get_array_memory_size() as u64)),
+            },
+            PlanNode::Projection(projection) => self.estimated_rewritten_output_bytes(projection.input),
+            PlanNode::Filter(filter) => self.estimated_rewritten_output_bytes(filter.input),
+            PlanNode::Sort(sort) => self.estimated_rewritten_output_bytes(sort.input),
+            PlanNode::Union(union) => union
+                .inputs
+                .iter()
+                .try_fold(0_u64, |total, input| total.checked_add(self.estimated_rewritten_output_bytes(*input)?)),
+            PlanNode::Limit(_)
+            | PlanNode::Aggregate(_)
+            | PlanNode::Join(_)
+            | PlanNode::Window(_)
+            | PlanNode::EdgeNormalize(_)
+            | PlanNode::GraphAlgorithm(_) => None,
+        }
     }
 
     fn clone_kind_with_rewritten_inputs(&mut self, kind: &PlanNode) -> PlanNode {
@@ -564,6 +702,27 @@ struct LineageMeasureColumn {
 struct PreAggregateColumn {
     source_name: String,
     output_name: String,
+}
+
+#[derive(Clone)]
+struct PreAggregateMeasureState {
+    original_function: AggregateFunction,
+    original_alias: String,
+    final_output_field: Field,
+    state_columns: Vec<PreAggregateStateColumn>,
+}
+
+#[derive(Clone)]
+struct PreAggregateStateColumn {
+    alias: String,
+    preaggregate_function: AggregateFunction,
+    field: Field,
+}
+
+struct FinalAggregateRewrite {
+    spec: AggregateSpec,
+    output_schema: SchemaRef,
+    projection_outputs: Option<Vec<crate::plan::ProjectionOutput>>,
 }
 
 struct AggregateJoinLineage {
@@ -650,7 +809,7 @@ fn measure_lineage_column(
     join: &JoinNode,
     chain: &[ProjectionNode],
 ) -> Result<LineageMeasureColumn, AggregateJoinPushdownRejectedReason> {
-    if !matches!(expr.function, AggregateFunction::Sum | AggregateFunction::Count)
+    if !matches!(expr.function, AggregateFunction::Sum | AggregateFunction::Count | AggregateFunction::Avg)
         || expr.distinct
         || expr.filter.is_some()
     {
@@ -915,9 +1074,10 @@ fn preaggregate_schema(
     aggregate: &AggregateNode,
     aggregate_output_schema: &Schema,
     group_columns: &[PreAggregateColumn],
-    preagg_aliases: &[String],
+    preagg_measure_states: &[PreAggregateMeasureState],
 ) -> Result<SchemaRef, AggregateJoinPushdownRejectedReason> {
-    let mut fields = Vec::with_capacity(group_columns.len() + preagg_aliases.len());
+    let state_count = preagg_measure_states.iter().map(|measure| measure.state_columns.len()).sum::<usize>();
+    let mut fields = Vec::with_capacity(group_columns.len() + state_count);
     for column in group_columns {
         let input_field = input_schema
             .field_with_name(column.source_name.as_str())
@@ -928,11 +1088,15 @@ fn preaggregate_schema(
         }
         fields.push(field);
     }
-    for (expr, alias) in aggregate.spec.aggr_exprs.iter().zip(preagg_aliases) {
-        let output_field = aggregate_output_schema
-            .field_with_name(expr.alias.as_str())
-            .map_err(|_| AggregateJoinPushdownRejectedReason::MissingInputField)?;
-        fields.push(Field::new(alias.as_str(), output_field.data_type().clone(), output_field.is_nullable()));
+    if aggregate.spec.aggr_exprs.len() != preagg_measure_states.len()
+        || preagg_measure_states
+            .iter()
+            .any(|measure| aggregate_output_schema.field_with_name(measure.original_alias.as_str()).is_err())
+    {
+        return Err(AggregateJoinPushdownRejectedReason::MissingInputField);
+    }
+    for state in preagg_measure_states.iter().flat_map(|measure| &measure.state_columns) {
+        fields.push(state.field.clone());
     }
     Ok(Arc::new(Schema::new(fields)))
 }
@@ -940,7 +1104,7 @@ fn preaggregate_schema(
 fn preaggregate_spec(
     aggregate: &AggregateNode,
     group_columns: &[PreAggregateColumn],
-    preagg_aliases: &[String],
+    preagg_measure_states: &[PreAggregateMeasureState],
     measure_input_aliases: &[String],
 ) -> Result<AggregateSpec, AggregateJoinPushdownRejectedReason> {
     // Both group keys and measure inputs are read from the materialized
@@ -951,18 +1115,94 @@ fn preaggregate_spec(
         .iter()
         .map(|column| Expr::column(column.source_name.as_str()).alias(column.output_name.as_str()))
         .collect::<Vec<_>>();
-    if measure_input_aliases.len() != preagg_aliases.len() || aggregate.spec.aggr_exprs.len() != preagg_aliases.len() {
+    if measure_input_aliases.len() != preagg_measure_states.len()
+        || aggregate.spec.aggr_exprs.len() != preagg_measure_states.len()
+    {
         return Err(AggregateJoinPushdownRejectedReason::UnsupportedAggregateExpression);
     }
     let aggr_exprs = measure_input_aliases
         .iter()
-        .zip(preagg_aliases)
-        .zip(aggregate.spec.aggr_exprs.iter())
-        .map(|((measure_input_alias, preagg_alias), original)| {
-            AggregateExpr::new(original.function, Expr::column(measure_input_alias.as_str()), preagg_alias.as_str())
+        .zip(preagg_measure_states)
+        .flat_map(|(measure_input_alias, measure)| {
+            measure.state_columns.iter().map(|state| {
+                AggregateExpr::new(
+                    state.preaggregate_function,
+                    Expr::column(measure_input_alias.as_str()),
+                    state.alias.as_str(),
+                )
+            })
         })
         .collect::<Vec<_>>();
     Ok(AggregateSpec::new(group_exprs, aggr_exprs))
+}
+
+fn preaggregate_measure_states(
+    input_schema: &SchemaRef,
+    aggregate: &AggregateNode,
+    aggregate_output_schema: &Schema,
+    state_aliases: &[Vec<String>],
+    measure_input_aliases: &[String],
+) -> Result<Vec<PreAggregateMeasureState>, AggregateJoinPushdownRejectedReason> {
+    if aggregate.spec.aggr_exprs.len() != state_aliases.len()
+        || aggregate.spec.aggr_exprs.len() != measure_input_aliases.len()
+    {
+        return Err(AggregateJoinPushdownRejectedReason::UnsupportedAggregateExpression);
+    }
+    aggregate
+        .spec
+        .aggr_exprs
+        .iter()
+        .zip(state_aliases)
+        .zip(measure_input_aliases)
+        .map(|((expr, aliases), measure_input_alias)| {
+            let output_field = aggregate_output_schema
+                .field_with_name(expr.alias.as_str())
+                .map_err(|_| AggregateJoinPushdownRejectedReason::MissingInputField)?
+                .as_ref()
+                .clone();
+            let input_field = input_schema
+                .field_with_name(measure_input_alias.as_str())
+                .map_err(|_| AggregateJoinPushdownRejectedReason::MissingInputField)?;
+            let state_columns = match expr.function {
+                AggregateFunction::Sum | AggregateFunction::Count => {
+                    let alias =
+                        aliases.first().ok_or(AggregateJoinPushdownRejectedReason::UnsupportedAggregateExpression)?;
+                    vec![PreAggregateStateColumn {
+                        alias: alias.clone(),
+                        preaggregate_function: expr.function,
+                        field: Field::new(alias.as_str(), output_field.data_type().clone(), output_field.is_nullable()),
+                    }]
+                },
+                AggregateFunction::Avg => {
+                    if aliases.len() != 2 {
+                        return Err(AggregateJoinPushdownRejectedReason::UnsupportedAggregateExpression);
+                    }
+                    let sum_alias = aliases[0].clone();
+                    let count_alias = aliases[1].clone();
+                    let sum_type = avg_pushdown_sum_state_data_type(input_field.data_type(), output_field.data_type())?;
+                    vec![
+                        PreAggregateStateColumn {
+                            alias: sum_alias.clone(),
+                            preaggregate_function: AggregateFunction::Sum,
+                            field: Field::new(sum_alias.as_str(), sum_type, true),
+                        },
+                        PreAggregateStateColumn {
+                            alias: count_alias.clone(),
+                            preaggregate_function: AggregateFunction::Count,
+                            field: Field::new(count_alias.as_str(), DataType::Int64, false),
+                        },
+                    ]
+                },
+                _ => return Err(AggregateJoinPushdownRejectedReason::UnsupportedAggregateExpression),
+            };
+            Ok(PreAggregateMeasureState {
+                original_function: expr.function,
+                original_alias: expr.alias.clone(),
+                final_output_field: output_field,
+                state_columns,
+            })
+        })
+        .collect()
 }
 
 /// Builds the projection outputs for the materializing projection inserted
@@ -1037,35 +1277,252 @@ fn unique_measure_input_alias(
     unreachable!("infinite suffix search must find a measure-input alias")
 }
 
-fn final_aggregate_spec_after_preagg(
+fn final_aggregate_rewrite_after_preagg(
     aggregate: &AggregateNode,
-    preagg_aliases: &[String],
-) -> Result<AggregateSpec, AggregateJoinPushdownRejectedReason> {
-    let aggr_exprs = aggregate
-        .spec
-        .aggr_exprs
-        .iter()
-        .zip(preagg_aliases)
-        .map(|(expr, alias)| {
-            AggregateExpr::new(AggregateFunction::Sum, Expr::column(alias.as_str()), expr.alias.as_str())
-        })
-        .collect::<Vec<_>>();
-    Ok(AggregateSpec {
+    aggregate_output_schema: &Schema,
+    preagg_measure_states: &[PreAggregateMeasureState],
+) -> Result<FinalAggregateRewrite, AggregateJoinPushdownRejectedReason> {
+    if aggregate.spec.aggr_exprs.len() != preagg_measure_states.len() {
+        return Err(AggregateJoinPushdownRejectedReason::UnsupportedAggregateExpression);
+    }
+    let mut fields = Vec::with_capacity(
+        aggregate.spec.group_exprs.len()
+            + preagg_measure_states.iter().map(|measure| measure.state_columns.len()).sum::<usize>(),
+    );
+    for group in &aggregate.spec.group_exprs {
+        let column = plain_column(group).ok_or(AggregateJoinPushdownRejectedReason::UnsupportedGroupExpression)?;
+        fields.push(
+            aggregate_output_schema
+                .field_with_name(column.name())
+                .map_err(|_| AggregateJoinPushdownRejectedReason::MissingInputField)?
+                .as_ref()
+                .clone(),
+        );
+    }
+    if let Some(grouping_sets) = &aggregate.spec.grouping_sets {
+        fields.push(
+            aggregate_output_schema
+                .field_with_name(grouping_sets.grouping_id_alias.as_str())
+                .map_err(|_| AggregateJoinPushdownRejectedReason::MissingInputField)?
+                .as_ref()
+                .clone(),
+        );
+    }
+
+    let mut aggr_exprs = Vec::new();
+    for measure in preagg_measure_states {
+        match measure.original_function {
+            AggregateFunction::Sum | AggregateFunction::Count => {
+                let state = measure
+                    .state_columns
+                    .first()
+                    .ok_or(AggregateJoinPushdownRejectedReason::UnsupportedAggregateExpression)?;
+                aggr_exprs.push(AggregateExpr::new(
+                    AggregateFunction::Sum,
+                    Expr::column(state.alias.as_str()),
+                    measure.original_alias.as_str(),
+                ));
+                fields.push(measure.final_output_field.clone());
+            },
+            AggregateFunction::Avg => {
+                if measure.state_columns.len() != 2 {
+                    return Err(AggregateJoinPushdownRejectedReason::UnsupportedAggregateExpression);
+                }
+                for state in &measure.state_columns {
+                    aggr_exprs.push(AggregateExpr::new(
+                        AggregateFunction::Sum,
+                        Expr::column(state.alias.as_str()),
+                        state.alias.as_str(),
+                    ));
+                    fields.push(state.field.clone());
+                }
+            },
+            _ => return Err(AggregateJoinPushdownRejectedReason::UnsupportedAggregateExpression),
+        }
+    }
+
+    let spec = AggregateSpec {
         group_exprs: aggregate.spec.group_exprs.clone(),
         aggr_exprs,
         grouping_sets: aggregate.spec.grouping_sets.clone(),
-    })
+    };
+    let output_schema = Arc::new(Schema::new(fields));
+    let projection_outputs = preagg_measure_states
+        .iter()
+        .any(|measure| measure.original_function == AggregateFunction::Avg)
+        .then(|| final_avg_projection_outputs(aggregate, aggregate_output_schema, preagg_measure_states))
+        .transpose()?;
+    Ok(FinalAggregateRewrite { spec, output_schema, projection_outputs })
+}
+
+fn final_avg_projection_outputs(
+    aggregate: &AggregateNode,
+    aggregate_output_schema: &Schema,
+    preagg_measure_states: &[PreAggregateMeasureState],
+) -> Result<Vec<crate::plan::ProjectionOutput>, AggregateJoinPushdownRejectedReason> {
+    let grouping_id_output_count = usize::from(aggregate.spec.grouping_sets.is_some());
+    let mut outputs = Vec::with_capacity(
+        aggregate.spec.group_exprs.len() + grouping_id_output_count + aggregate.spec.aggr_exprs.len(),
+    );
+    for group in &aggregate.spec.group_exprs {
+        let column = plain_column(group).ok_or(AggregateJoinPushdownRejectedReason::UnsupportedGroupExpression)?;
+        let field = aggregate_output_schema
+            .field_with_name(column.name())
+            .map_err(|_| AggregateJoinPushdownRejectedReason::MissingInputField)?
+            .as_ref()
+            .clone();
+        outputs.push(crate::plan::ProjectionOutput::new(Expr::column(column.name()), field));
+    }
+    if let Some(grouping_sets) = &aggregate.spec.grouping_sets {
+        let field = aggregate_output_schema
+            .field_with_name(grouping_sets.grouping_id_alias.as_str())
+            .map_err(|_| AggregateJoinPushdownRejectedReason::MissingInputField)?
+            .as_ref()
+            .clone();
+        outputs.push(crate::plan::ProjectionOutput::new(Expr::column(grouping_sets.grouping_id_alias.as_str()), field));
+    }
+
+    for measure in preagg_measure_states {
+        let field = measure.final_output_field.clone();
+        let expr = match measure.original_function {
+            AggregateFunction::Sum | AggregateFunction::Count => Expr::column(measure.original_alias.as_str()),
+            AggregateFunction::Avg => final_avg_projection_expr(measure)?,
+            _ => return Err(AggregateJoinPushdownRejectedReason::UnsupportedAggregateExpression),
+        };
+        outputs.push(crate::plan::ProjectionOutput::new(expr, field));
+    }
+    Ok(outputs)
+}
+
+fn final_avg_projection_expr(measure: &PreAggregateMeasureState) -> Result<Expr, AggregateJoinPushdownRejectedReason> {
+    if measure.state_columns.len() != 2 {
+        return Err(AggregateJoinPushdownRejectedReason::UnsupportedAggregateExpression);
+    }
+    let sum_state = &measure.state_columns[0];
+    let count_state = &measure.state_columns[1];
+    let division_type =
+        avg_pushdown_division_data_type(sum_state.field.data_type(), measure.final_output_field.data_type())?;
+    let sum = Expr::cast(Expr::column(sum_state.alias.as_str()), division_type.clone());
+    let count =
+        Expr::cast(Expr::column(count_state.alias.as_str()), avg_pushdown_count_projection_data_type(&division_type));
+    let count_is_zero =
+        Expr::binary(Expr::column(count_state.alias.as_str()), BinaryOp::Eq, Expr::literal(LiteralValue::Int64(0)));
+    let avg_divide = if matches!(division_type, DataType::Decimal128(_, _)) {
+        Expr::binary_with_output_type(sum, BinaryOp::Divide, count, division_type)
+    } else {
+        Expr::binary(sum, BinaryOp::Divide, count)
+    };
+    let avg = Expr::cast(avg_divide, measure.final_output_field.data_type().clone());
+    Ok(Expr::case(
+        vec![CaseWhen::new(
+            count_is_zero,
+            Expr::literal(LiteralValue::Null(measure.final_output_field.data_type().clone())),
+        )],
+        avg,
+    )
+    .alias(measure.original_alias.as_str()))
+}
+
+fn avg_pushdown_sum_state_data_type(
+    input_type: &DataType,
+    avg_output_type: &DataType,
+) -> Result<DataType, AggregateJoinPushdownRejectedReason> {
+    match avg_output_type {
+        DataType::Float32 | DataType::Float64 => Ok(DataType::Float64),
+        DataType::Decimal128(_, output_scale) => match input_type {
+            DataType::Decimal128(_, input_scale) => {
+                Ok(DataType::Decimal128(arrow::datatypes::DECIMAL128_MAX_PRECISION, *input_scale))
+            },
+            DataType::Int8
+            | DataType::Int16
+            | DataType::Int32
+            | DataType::Int64
+            | DataType::UInt8
+            | DataType::UInt16
+            | DataType::UInt32
+            | DataType::UInt64
+            | DataType::Float32
+            | DataType::Float64 => Ok(DataType::Decimal128(arrow::datatypes::DECIMAL128_MAX_PRECISION, *output_scale)),
+            _ => Err(AggregateJoinPushdownRejectedReason::UnsupportedAggregateExpression),
+        },
+        _ => Err(AggregateJoinPushdownRejectedReason::UnsupportedAggregateExpression),
+    }
+}
+
+fn avg_pushdown_division_data_type(
+    state_sum_type: &DataType,
+    avg_output_type: &DataType,
+) -> Result<DataType, AggregateJoinPushdownRejectedReason> {
+    match avg_output_type {
+        DataType::Float32 | DataType::Float64 => Ok(DataType::Float64),
+        DataType::Decimal128(_, output_scale) => match state_sum_type {
+            DataType::Decimal128(_, _)
+            | DataType::Int8
+            | DataType::Int16
+            | DataType::Int32
+            | DataType::Int64
+            | DataType::UInt8
+            | DataType::UInt16
+            | DataType::UInt32
+            | DataType::UInt64
+            | DataType::Float32
+            | DataType::Float64 => Ok(DataType::Decimal128(arrow::datatypes::DECIMAL128_MAX_PRECISION, *output_scale)),
+            _ => Err(AggregateJoinPushdownRejectedReason::UnsupportedAggregateExpression),
+        },
+        _ => Err(AggregateJoinPushdownRejectedReason::UnsupportedAggregateExpression),
+    }
+}
+
+fn avg_pushdown_count_projection_data_type(avg_output_type: &DataType) -> DataType {
+    match avg_output_type {
+        DataType::Decimal128(_, _) => DataType::Decimal128(arrow::datatypes::DECIMAL128_MAX_PRECISION, 0),
+        _ => avg_output_type.clone(),
+    }
+}
+
+fn decomposable_union_partial_aggregate_expr(expr: &AggregateExpr) -> bool {
+    matches!(expr.function, AggregateFunction::Sum | AggregateFunction::Count)
+        && !expr.distinct
+        && expr.filter.is_none()
+}
+
+fn join_with_replaced_input(join: &JoinNode, side: JoinSide, replacement: NodeId) -> JoinNode {
+    let mut rewritten = join.clone();
+    rewritten.inputs[join_side_index(side)] = replacement;
+    rewritten
+}
+
+fn final_aggregate_spec_after_union_preagg(
+    preagg_spec: &AggregateSpec,
+    preagg_schema: &SchemaRef,
+) -> Option<AggregateSpec> {
+    if preagg_spec.grouping_sets.is_some() || preagg_schema.fields().len() < preagg_spec.group_exprs.len() {
+        return None;
+    }
+    let group_exprs = preagg_schema
+        .fields()
+        .iter()
+        .take(preagg_spec.group_exprs.len())
+        .map(|field| Expr::column(field.name()))
+        .collect::<Vec<_>>();
+    let aggr_exprs = preagg_spec
+        .aggr_exprs
+        .iter()
+        .map(|expr| AggregateExpr::new(AggregateFunction::Sum, Expr::column(expr.alias.as_str()), expr.alias.as_str()))
+        .collect::<Vec<_>>();
+    Some(AggregateSpec::new(group_exprs, aggr_exprs))
 }
 
 fn new_join_output_schema(
     aggregate: &AggregateNode,
     aggregate_output_schema: &Schema,
     preagg_schema: &SchemaRef,
-    preagg_aliases: &[String],
+    preagg_measure_states: &[PreAggregateMeasureState],
     preagg_side: JoinSide,
     join_type: JoinType,
 ) -> Result<SchemaRef, AggregateJoinPushdownRejectedReason> {
-    let mut fields = Vec::with_capacity(aggregate.spec.group_exprs.len() + preagg_aliases.len());
+    let state_count = preagg_measure_states.iter().map(|measure| measure.state_columns.len()).sum::<usize>();
+    let mut fields = Vec::with_capacity(aggregate.spec.group_exprs.len() + state_count);
     for group in &aggregate.spec.group_exprs {
         let column = plain_column(group).ok_or(AggregateJoinPushdownRejectedReason::UnsupportedGroupExpression)?;
         let field = aggregate_output_schema
@@ -1073,9 +1530,10 @@ fn new_join_output_schema(
             .map_err(|_| AggregateJoinPushdownRejectedReason::MissingInputField)?;
         fields.push(field.as_ref().clone());
     }
-    for alias in preagg_aliases {
-        let field =
-            preagg_schema.field_with_name(alias).map_err(|_| AggregateJoinPushdownRejectedReason::MissingInputField)?;
+    for state in preagg_measure_states.iter().flat_map(|measure| &measure.state_columns) {
+        let field = preagg_schema
+            .field_with_name(state.alias.as_str())
+            .map_err(|_| AggregateJoinPushdownRejectedReason::MissingInputField)?;
         let mut field = field.as_ref().clone();
         if join_side_introduces_nulls(join_type, preagg_side) && !field.is_nullable() {
             field = Field::new(field.name().as_str(), field.data_type().clone(), true);
@@ -1088,9 +1546,10 @@ fn new_join_output_schema(
 fn coalesce_preagg_projection_outputs(
     aggregate: &AggregateNode,
     aggregate_output_schema: &Schema,
-    preagg_aliases: &[String],
+    preagg_measure_states: &[PreAggregateMeasureState],
 ) -> Result<Vec<crate::plan::ProjectionOutput>, AggregateJoinPushdownRejectedReason> {
-    let mut outputs = Vec::with_capacity(aggregate.spec.group_exprs.len() + preagg_aliases.len());
+    let state_count = preagg_measure_states.iter().map(|measure| measure.state_columns.len()).sum::<usize>();
+    let mut outputs = Vec::with_capacity(aggregate.spec.group_exprs.len() + state_count);
     for group in &aggregate.spec.group_exprs {
         let column = plain_column(group).ok_or(AggregateJoinPushdownRejectedReason::UnsupportedGroupExpression)?;
         let field = aggregate_output_schema
@@ -1101,17 +1560,14 @@ fn coalesce_preagg_projection_outputs(
         outputs.push(crate::plan::ProjectionOutput::new(Expr::column(column.name()), field));
     }
 
-    for (expr, alias) in aggregate.spec.aggr_exprs.iter().zip(preagg_aliases) {
-        let output_field = aggregate_output_schema
-            .field_with_name(expr.alias.as_str())
-            .map_err(|_| AggregateJoinPushdownRejectedReason::MissingInputField)?;
-        let zero = zero_literal_for_data_type(output_field.data_type())?;
-        let field = Field::new(alias.as_str(), output_field.data_type().clone(), output_field.is_nullable());
+    for state in preagg_measure_states.iter().flat_map(|measure| &measure.state_columns) {
+        let zero = zero_literal_for_data_type(state.field.data_type())?;
+        let field = Field::new(state.alias.as_str(), state.field.data_type().clone(), state.field.is_nullable());
         let coalesced = Expr::case(
-            vec![CaseWhen::new(Expr::is_null(Expr::column(alias.as_str())), Expr::literal(zero))],
-            Expr::column(alias.as_str()),
+            vec![CaseWhen::new(Expr::is_null(Expr::column(state.alias.as_str())), Expr::literal(zero))],
+            Expr::column(state.alias.as_str()),
         )
-        .alias(alias.as_str());
+        .alias(state.alias.as_str());
         outputs.push(crate::plan::ProjectionOutput::new(coalesced, field));
     }
     Ok(outputs)
@@ -1137,20 +1593,40 @@ fn join_side_introduces_nulls(join_type: JoinType, side: JoinSide) -> bool {
     matches!((join_type, side), (JoinType::Left, JoinSide::Right) | (JoinType::Full, JoinSide::Left | JoinSide::Right))
 }
 
-fn unique_preagg_alias(index: usize, aggregate_output_schema: &Schema, group_columns: &[PreAggregateColumn]) -> String {
+fn preaggregate_state_aliases(
+    aggregate: &AggregateNode,
+    aggregate_output_schema: &Schema,
+    group_columns: &[PreAggregateColumn],
+) -> Vec<Vec<String>> {
     let mut used = aggregate_output_schema.fields().iter().map(|field| field.name().clone()).collect::<BTreeSet<_>>();
     used.extend(group_columns.iter().map(|column| column.output_name.clone()));
-    for suffix in 0usize.. {
-        let candidate = if suffix == 0 {
-            format!("__cudf_preagg_sum_{index}")
-        } else {
-            format!("__cudf_preagg_sum_{index}_{suffix}")
-        };
-        if !used.contains(&candidate) {
+    used.extend(group_columns.iter().map(|column| column.source_name.clone()));
+    aggregate
+        .spec
+        .aggr_exprs
+        .iter()
+        .enumerate()
+        .map(|(index, expr)| match expr.function {
+            AggregateFunction::Avg => vec![
+                unique_preagg_state_alias(format!("__cudf_preagg_avg_{index}_sum"), &mut used),
+                unique_preagg_state_alias(format!("__cudf_preagg_avg_{index}_count"), &mut used),
+            ],
+            _ => vec![unique_preagg_state_alias(format!("__cudf_preagg_sum_{index}"), &mut used)],
+        })
+        .collect()
+}
+
+fn unique_preagg_state_alias(base: String, used: &mut BTreeSet<String>) -> String {
+    if used.insert(base.clone()) {
+        return base;
+    }
+    for suffix in 1usize.. {
+        let candidate = format!("{base}_{suffix}");
+        if used.insert(candidate.clone()) {
             return candidate;
         }
     }
-    unreachable!("infinite suffix search must find a preaggregate alias")
+    unreachable!("infinite suffix search must find a preaggregate state alias")
 }
 
 fn rewritten_join_key_after_preagg(key: &JoinKey, preagg_side: JoinSide) -> JoinKey {

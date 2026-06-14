@@ -66,8 +66,8 @@ pub(in crate::capability) fn root_topk_join_aggregate_shape_decision(
     }
     let whole_query_reachable = collect_reachable_node_ids(plan)?;
     let shared_producer_ids = root_topk_shared_computed_producer_ids(plan, &whole_query_reachable)?;
-    let distinct_aggregate_ids = root_topk_distinct_aggregate_ids(plan, &root_reachable)?;
     let window_ids = root_topk_window_ids(plan, &root_reachable)?;
+    let distinct_aggregate_ids = root_topk_distinct_aggregate_ids(plan, &root_reachable, window_ids.is_empty())?;
     let window_input_sort_ids = root_topk_window_input_sort_ids(plan, &window_ids)?;
     let join_ids = root_reachable
         .iter()
@@ -178,6 +178,7 @@ pub(in crate::capability) fn root_topk_join_aggregate_shape_decision(
                 &root_reachable,
                 &keyless_or_cross_join_ids,
                 !keyless_outer_cross_window_join_ids.is_empty(),
+                window_ids.is_empty(),
             )?
         };
     let aggregate_input_reachable = aggregate_input_reachable_nodes(plan, aggregate_id)?;
@@ -787,6 +788,7 @@ fn require_supported_root_topk_join(
 fn root_topk_distinct_aggregate_ids(
     plan: &QueryPlan,
     reachable: &BTreeSet<NodeId>,
+    allow_grouping_sets_without_window: bool,
 ) -> Result<Vec<NodeId>, CapabilityDecision> {
     let mut distinct_aggregate_ids = Vec::new();
     let window_input_sort_ids = root_topk_window_input_sort_ids(plan, &root_topk_window_ids(plan, reachable)?)?;
@@ -800,6 +802,11 @@ fn root_topk_distinct_aggregate_ids(
         match &node.kind {
             PlanNode::Aggregate(aggregate) => {
                 if aggregate.spec.grouping_sets.is_some() {
+                    if allow_grouping_sets_without_window
+                        && root_topk_rankless_grouping_sets_contract_satisfied(*node_id, aggregate)?
+                    {
+                        continue;
+                    }
                     return Err(CapabilityDecision::rejected(
                         "root_topk_join_aggregate_rejects_rollup_subcontract",
                         [("node_id", node_id.to_string())],
@@ -845,6 +852,44 @@ fn root_topk_distinct_aggregate_ids(
     distinct_aggregate_ids.sort_unstable();
     distinct_aggregate_ids.dedup();
     Ok(distinct_aggregate_ids)
+}
+
+fn root_topk_rankless_grouping_sets_contract_satisfied(
+    aggregate_id: NodeId,
+    aggregate: &AggregateNode,
+) -> Result<bool, CapabilityDecision> {
+    let Some(grouping_sets) = aggregate.spec.grouping_sets.as_ref() else {
+        return Ok(false);
+    };
+    let group_expr_count = aggregate.spec.group_exprs.len();
+    let grouping_set_count = grouping_sets.groups.len();
+    if (1..=4).contains(&group_expr_count)
+        && grouping_set_count == group_expr_count + 1
+        && root_topk_grouping_sets_are_suffix_rollup_masks(group_expr_count, &grouping_sets.groups)
+    {
+        return Ok(true);
+    }
+    Err(CapabilityDecision::rejected(
+        "root_topk_join_aggregate_requires_rankless_rollup_grouping_sets_contract",
+        [
+            ("node_id", aggregate_id.to_string()),
+            ("group_expr_count", group_expr_count.to_string()),
+            ("grouping_set_count", grouping_set_count.to_string()),
+            ("max_rankless_rollup_group_expr_count", "4".to_string()),
+            ("required_grouping_mask_contract", "suffix_rollup".to_string()),
+        ],
+    ))
+}
+
+fn root_topk_grouping_sets_are_suffix_rollup_masks(group_expr_count: usize, groups: &[Vec<bool>]) -> bool {
+    if groups.len() != group_expr_count + 1 {
+        return false;
+    }
+    let actual = groups.iter().cloned().collect::<BTreeSet<_>>();
+    let expected = (0..=group_expr_count)
+        .map(|rolled_count| (0..group_expr_count).map(|idx| idx >= group_expr_count - rolled_count).collect::<Vec<_>>())
+        .collect::<BTreeSet<_>>();
+    actual == expected
 }
 
 fn root_topk_window_ids(plan: &QueryPlan, reachable: &BTreeSet<NodeId>) -> Result<Vec<NodeId>, CapabilityDecision> {
@@ -908,6 +953,7 @@ fn aggregate_projection_in_reachable_fragment(
     reachable: &BTreeSet<NodeId>,
     keyless_or_cross_join_ids: &[NodeId],
     allow_direct_source_aggregate: bool,
+    allow_grouping_sets_aggregate: bool,
 ) -> Result<(NodeId, NodeId), CapabilityDecision> {
     let mut candidates = Vec::new();
     for node_id in reachable {
@@ -917,7 +963,7 @@ fn aggregate_projection_in_reachable_fragment(
         let Some(PlanNode::Aggregate(aggregate)) = plan.node(projection.input).map(|node| &node.kind) else {
             continue;
         };
-        if aggregate.spec.grouping_sets.is_some() {
+        if aggregate.spec.grouping_sets.is_some() && !allow_grouping_sets_aggregate {
             continue;
         }
         let aggregate_input_reachable = collect_reachable_node_ids_from(plan, aggregate.input)?;
@@ -948,7 +994,7 @@ fn aggregate_projection_in_reachable_fragment(
         let Some(PlanNode::Aggregate(aggregate)) = plan.node(*node_id).map(|node| &node.kind) else {
             continue;
         };
-        if aggregate.spec.grouping_sets.is_some() {
+        if aggregate.spec.grouping_sets.is_some() && !allow_grouping_sets_aggregate {
             continue;
         }
         if aggregate.spec.group_exprs.is_empty() {
@@ -1055,14 +1101,15 @@ fn require_root_topk_source_reduction_proof(
     aggregate_id: NodeId,
     require_joined_branch_local_reduction: bool,
 ) -> Result<(), CapabilityDecision> {
-    if require_joined_branch_local_reduction
-        && aggregate_input_reachable
-            .iter()
-            .any(|node_id| matches!(plan.node(*node_id).map(|node| &node.kind), Some(PlanNode::Join(_))))
+    let has_joined_aggregate_input = aggregate_input_reachable
+        .iter()
+        .any(|node_id| matches!(plan.node(*node_id).map(|node| &node.kind), Some(PlanNode::Join(_))));
+    if has_joined_aggregate_input
+        && root_topk_joined_aggregate_input_has_branch_local_source_reduction(plan, aggregate_id, &BTreeSet::new())?
     {
-        if root_topk_joined_aggregate_input_has_branch_local_source_reduction(plan, aggregate_id, &BTreeSet::new())? {
-            return Ok(());
-        }
+        return Ok(());
+    }
+    if require_joined_branch_local_reduction && has_joined_aggregate_input {
         return Err(root_topk_source_reduction_rejection(plan, aggregate_input_reachable, aggregate_id));
     }
     for route in plan.dynamic_filter_routes() {

@@ -917,7 +917,7 @@ impl NativeCudfMetrics {
             let join_strategy = facts
                 .and_then(|facts| facts.get("join_strategy").map(String::as_str))
                 .unwrap_or_else(|| join_strategy_label(join));
-            let runtime = join_runtime_counters(join_strategy, join);
+            let runtime = join_runtime_counters(join);
             let builder = MetricBuilder::new(&self.metrics_set)
                 .with_type(MetricType::Summary)
                 .with_new_label("node_id", operator.node_id.clone())
@@ -941,6 +941,17 @@ impl NativeCudfMetrics {
                 )
                 .with_new_label("probe_reuse_count", optional_fact(facts, "probe_reuse_count"))
                 .with_new_label("probe_side_bytes", optional_fact(facts, "probe_side_bytes"))
+                .with_new_label("estimated_output_rows", optional_fact(facts, "estimated_output_rows"))
+                .with_new_label("estimated_output_bytes", optional_fact(facts, "estimated_output_bytes"))
+                .with_new_label("build_key_unique", optional_fact(facts, "build_key_unique"))
+                .with_new_label(
+                    "build_key_uniqueness_probe_status",
+                    optional_fact(facts, "build_key_uniqueness_probe_status"),
+                )
+                .with_new_label(
+                    "build_key_uniqueness_probe_error_code",
+                    optional_fact(facts, "build_key_uniqueness_probe_error_code"),
+                )
                 .with_new_label("partition_count", optional_fact(facts, "partition_count"))
                 .with_new_label("partition_target_bytes", optional_fact(facts, "partition_target_bytes"))
                 .with_new_label("build_partition_batch_count", optional_fact(facts, "build_partition_batch_count"))
@@ -1331,8 +1342,8 @@ fn join_strategy_label(join: &JoinOperatorMetrics) -> &'static str {
     }
 }
 
-fn join_runtime_counters(join_strategy: &str, join: &JoinOperatorMetrics) -> JoinRuntimeCounters {
-    match join_strategy {
+fn join_runtime_counters(join: &JoinOperatorMetrics) -> JoinRuntimeCounters {
+    match join_strategy_label(join) {
         "reusable_hash_equi" => JoinRuntimeCounters {
             hash_join_build_count: u64::from(join.hash_table_bytes > 0),
             hash_join_hash_table_bytes: join.hash_table_bytes,
@@ -1409,7 +1420,8 @@ fn summary_counter_category(name: &str) -> MetricCategory {
 #[cfg(test)]
 mod tests {
     use nexus_query_engine::{
-        LakehouseCacheFillEventSnapshot, SourceReadParquetEvidenceMetrics, SourceReadRuntimeMetrics,
+        JoinOperatorMetrics, LakehouseCacheFillEventSnapshot, OperatorMetrics, SourceReadParquetEvidenceMetrics,
+        SourceReadRuntimeMetrics,
     };
 
     use super::*;
@@ -1582,6 +1594,48 @@ mod tests {
         assert_eq!(row.filtered_grouped_observed_retained_peak_bytes, 524_288);
         assert_eq!(row.filtered_grouped_state_rows_merged, 20_000);
         assert_eq!(row.filtered_grouped_high_cardinality_admission, "chunk_local_partial_final_merge");
+    }
+
+    #[test]
+    fn join_strategy_rows_preserve_planned_strategy_while_counting_runtime_execution_strategy() {
+        let metrics_set = ExecutionPlanMetricsSet::new();
+        let native_metrics = NativeCudfMetrics::new(&metrics_set, 0);
+        let mut query_metrics = QueryMetrics::default();
+        let mut facts = BTreeMap::new();
+        facts.insert("join_strategy", "partitioned_hash_equi".to_string());
+        facts.insert("estimated_build_rows", "10000".to_string());
+        facts.insert("partition_count", "8".to_string());
+
+        query_metrics.record_join_strategy_decision("n6", &facts);
+        query_metrics.record_operator_metrics(OperatorMetrics::join(
+            "n6",
+            JoinOperatorMetrics {
+                join_type: "inner".to_string(),
+                execution_strategy: "bounded_one_shot_equi_join".to_string(),
+                key_count: 1,
+                build_side: "right".to_string(),
+                probe_side: "left".to_string(),
+                build_rows: 10_000,
+                build_bytes: 64 * 1024 * 1024,
+                probe_rows: 1_000_000,
+                probe_bytes: 512 * 1024 * 1024,
+                gather_map_bytes: 2048,
+                output_reservation_bytes: 4096,
+                output_rows: 100,
+                output_bytes: 8192,
+                ..Default::default()
+            },
+        ));
+
+        native_metrics.record_query_metrics(&query_metrics);
+
+        let metrics = NativeDataFusionExecutionMetrics::from_metrics(&metrics_set.clone_inner());
+        assert_eq!(metrics.join_strategy_rows.len(), 1);
+        let row = &metrics.join_strategy_rows[0];
+        assert_eq!(row.join_strategy, "partitioned_hash_equi");
+        assert_eq!(row.execution_strategy, "bounded_one_shot_equi_join");
+        assert_eq!(row.partitioned_hash_join_count, 0);
+        assert_eq!(row.one_shot_join_count, 1);
     }
 
     #[test]

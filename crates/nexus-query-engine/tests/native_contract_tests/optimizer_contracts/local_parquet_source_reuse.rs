@@ -16,10 +16,7 @@ fn native_optimizer_reuses_compatible_small_local_parquet_source_variants() {
     validate_local_parquet_source(sources[0]).expect("shared source must retain a valid schema mapping contract");
     assert_eq!(sources[0].diagnostics.schema_mapping_disposition, SchemaMappingDisposition::DirectByName);
     assert!(sources[0].diagnostics.rejected_features.is_empty());
-    assert_eq!(
-        sources[0].projected_output_columns.len(),
-        sources[0].projected_output_column_source_refs.len()
-    );
+    assert_eq!(sources[0].projected_output_columns.len(), sources[0].projected_output_column_source_refs.len());
     assert_eq!(sources[0].pure_filter_columns.len(), sources[0].pure_filter_column_source_refs.len());
     assert!(
         sources[0]
@@ -32,6 +29,71 @@ fn native_optimizer_reuses_compatible_small_local_parquet_source_variants() {
         result.plan.nodes().iter().any(|node| matches!(node.kind, PlanNode::Filter(_))),
         "reader predicate should be replayed as a branch-local native filter"
     );
+}
+
+#[test]
+fn native_optimizer_rejects_source_reuse_with_branch_specific_dynamic_filter_routes() {
+    let mut builder = QueryPlanBuilder::new();
+    let sales_for_date_join = builder.add_source(estimated_local_source_with_stable_id_and_file_indices(
+        "web_sales",
+        "web_sales",
+        &["ws_sold_date_sk", "ws_item_sk"],
+        &[0, 1],
+        512 * 1024 * 1024,
+        10_000_000,
+    ));
+    let sales_for_other_branch = builder.add_source(estimated_local_source_with_stable_id_and_file_indices(
+        "web_sales",
+        "web_sales",
+        &["ws_item_sk"],
+        &[1],
+        128 * 1024 * 1024,
+        10_000_000,
+    ));
+    let date_dim = builder.add_source(estimated_local_source("date_dim", "d_date_sk", 16 * 1024 * 1024, 100_000));
+    let branch_schema = schema(&["date_sk"]);
+    let sales_dates = builder.add_projection(
+        sales_for_date_join,
+        vec![ProjectionOutput::new(Expr::column("ws_sold_date_sk"), Field::new("date_sk", DataType::Int32, false))],
+    );
+    let date_join = builder.add_join(
+        sales_dates,
+        date_dim,
+        JoinSpec::new(
+            JoinType::Inner,
+            vec![JoinKey::new(
+                ColumnRef::input(0, "date_sk", "date_sk"),
+                ColumnRef::input(1, "d_date_sk", "d_date_sk"),
+            )],
+        )
+        .with_output_projection(vec![JoinOutputColumn::left(ColumnRef::input(0, "date_sk", "date_sk"), "date_sk")])
+        .with_build_side(JoinSide::Right),
+        Arc::clone(&branch_schema),
+    );
+    let other_branch = builder.add_projection(
+        sales_for_other_branch,
+        vec![ProjectionOutput::new(
+            Expr::column("ws_item_sk").alias("date_sk"),
+            Field::new("date_sk", DataType::Int32, false),
+        )],
+    );
+    let union = builder.add_union(vec![date_join, other_branch], branch_schema);
+    let plan = builder.finish_gpu_resident(union);
+
+    let result = optimize_query_plan(plan, &NativeOptimizerOptions::default());
+
+    let diagnostics = &result.diagnostics.local_parquet_source_reuse;
+    assert_eq!(diagnostics.considered_count, 1);
+    assert_eq!(diagnostics.applied_count, 0);
+    assert_eq!(
+        diagnostics.candidates[0].rejected_reason,
+        Some(nexus_query_engine::LocalParquetSourceReuseRejectedReason::DynamicFilterConsumerConflict)
+    );
+    assert_eq!(local_parquet_source_count_for_stable_id(&result.plan, "web_sales"), 2);
+    assert!(result.plan.dynamic_filter_routes().iter().any(|route| {
+        route.consumer_columns == vec!["ws_sold_date_sk".to_string()]
+            && matches!(route.consumer, DynamicFilterConsumer::LocalParquetSource { source_node_id } if source_node_id == sales_for_date_join)
+    }));
 }
 
 #[test]
@@ -129,8 +191,7 @@ fn gpu_local_parquet_source_cache_key_isolates_position_delete_files() {
     let delete_chunk_plan =
         plan_local_parquet_source_chunks(delete_source_id, &delete_a_source, SourceChunkPlanningPolicy::new(None, 1))
             .unwrap();
-    let base_chunk_key =
-        GpuLocalParquetSourceCacheKey::from_source_chunk(&base_source, &base_chunk_plan.chunks[0]);
+    let base_chunk_key = GpuLocalParquetSourceCacheKey::from_source_chunk(&base_source, &base_chunk_plan.chunks[0]);
     let delete_chunk_key =
         GpuLocalParquetSourceCacheKey::from_source_chunk(&delete_a_source, &delete_chunk_plan.chunks[0]);
 
@@ -539,11 +600,7 @@ fn count_star_probe_source_reuse_plan() -> nexus_query_engine::QueryPlan {
     let mut builder = QueryPlanBuilder::new();
     let left = builder.add_source(count_star_probe_customer_address_source("id", 0));
     let right = builder.add_source(count_star_probe_customer_address_source("zip", 2));
-    let output_schema = Arc::new(Schema::new(vec![Field::new(
-        ZERO_COLUMN_COUNT_COLUMN,
-        DataType::Int64,
-        false,
-    )]));
+    let output_schema = Arc::new(Schema::new(vec![Field::new(ZERO_COLUMN_COUNT_COLUMN, DataType::Int64, false)]));
     let union = builder.add_union(vec![left, right], output_schema);
     builder.finish_gpu_resident(union)
 }
@@ -551,10 +608,8 @@ fn count_star_probe_source_reuse_plan() -> nexus_query_engine::QueryPlan {
 fn position_delete_source_reuse_plan() -> nexus_query_engine::QueryPlan {
     let mut builder = QueryPlanBuilder::new();
     let left = builder.add_source(SourceNode::LocalParquet(
-        contract_sensitive_customer_address_source(remote_direct_customer_address_contract()).with_position_delete_file(
-            "delete-a",
-            "s3://warehouse/customer_address-delete-a.parquet",
-        ),
+        contract_sensitive_customer_address_source(remote_direct_customer_address_contract())
+            .with_position_delete_file("delete-a", "s3://warehouse/customer_address-delete-a.parquet"),
     ));
     let right = builder.add_source(SourceNode::LocalParquet(contract_sensitive_customer_address_source(
         remote_direct_customer_address_contract(),

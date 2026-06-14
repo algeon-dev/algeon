@@ -100,6 +100,29 @@ fn simple_string_sum_spec() -> (Schema, AggregateSpec) {
     (schema, spec)
 }
 
+fn simple_string_avg_spec() -> (Schema, AggregateSpec) {
+    let schema =
+        Schema::new(vec![Field::new("category", DataType::Utf8, true), Field::new("price", DataType::Float64, true)]);
+    let spec = AggregateSpec::new(
+        vec![Expr::column("category")],
+        vec![AggregateExpr::new(AggregateFunction::Avg, Expr::column("price"), "avg_price")],
+    );
+    (schema, spec)
+}
+
+fn simple_string_avg_sum_spec() -> (Schema, AggregateSpec) {
+    let schema =
+        Schema::new(vec![Field::new("category", DataType::Utf8, true), Field::new("price", DataType::Float64, true)]);
+    let spec = AggregateSpec::new(
+        vec![Expr::column("category")],
+        vec![
+            AggregateExpr::new(AggregateFunction::Avg, Expr::column("price"), "avg_price"),
+            AggregateExpr::new(AggregateFunction::Sum, Expr::column("price"), "sum_price"),
+        ],
+    );
+    (schema, spec)
+}
+
 fn filtered_global_q09_like_spec(filter_count: usize) -> (Arc<Schema>, AggregateSpec) {
     let schema = Arc::new(Schema::new(vec![
         Field::new("quantity", DataType::Int64, true),
@@ -811,6 +834,94 @@ fn large_single_key_runtime_probe_is_exact_cardinality_probe_candidate() {
 }
 
 #[test]
+fn medium_single_string_avg_runtime_probe_is_exact_cardinality_probe_candidate() {
+    let (schema, spec) = simple_string_avg_spec();
+    let decision = aggregate_strategy_capability_decision(&spec, &schema, AggregateExecutionStage::Single);
+    let decision = select_partial_aggregate_strategy_decision(
+        decision,
+        None,
+        &spec,
+        &schema,
+        204_000,
+        None,
+        &QueryMetrics::default(),
+    );
+
+    assert_eq!(decision.selected_strategy, AggregateExecutionStrategy::LibcudfGroupby);
+    assert_eq!(
+        decision.facts.get("prepared_sort_groupby_cost_model_status").map(String::as_str),
+        Some("selected_libcudf_runtime_probe")
+    );
+    assert_eq!(exact_single_key_cardinality_probe_candidate(&decision, &spec, &schema, 204_000), Some("category"));
+}
+
+#[test]
+fn medium_single_string_sum_runtime_probe_waits_for_libcudf_groupby_cardinality() {
+    let (schema, spec) = simple_string_sum_spec();
+    let decision = aggregate_strategy_capability_decision(&spec, &schema, AggregateExecutionStage::Single);
+    let decision = select_partial_aggregate_strategy_decision(
+        decision,
+        None,
+        &spec,
+        &schema,
+        204_000,
+        None,
+        &QueryMetrics::default(),
+    );
+
+    assert_eq!(decision.selected_strategy, AggregateExecutionStrategy::LibcudfGroupby);
+    assert_eq!(
+        decision.facts.get("prepared_sort_groupby_cost_model_status").map(String::as_str),
+        Some("selected_libcudf_runtime_probe")
+    );
+    assert_eq!(exact_single_key_cardinality_probe_candidate(&decision, &spec, &schema, 204_000), None);
+}
+
+#[test]
+fn medium_single_string_mixed_avg_sum_runtime_probe_waits_for_libcudf_groupby_cardinality() {
+    let (schema, spec) = simple_string_avg_sum_spec();
+    let decision = aggregate_strategy_capability_decision(&spec, &schema, AggregateExecutionStage::Single);
+    let decision = select_partial_aggregate_strategy_decision(
+        decision,
+        None,
+        &spec,
+        &schema,
+        204_000,
+        None,
+        &QueryMetrics::default(),
+    );
+
+    assert_eq!(decision.selected_strategy, AggregateExecutionStrategy::LibcudfGroupby);
+    assert_eq!(
+        decision.facts.get("prepared_sort_groupby_cost_model_status").map(String::as_str),
+        Some("selected_libcudf_runtime_probe")
+    );
+    assert_eq!(exact_single_key_cardinality_probe_candidate(&decision, &spec, &schema, 204_000), None);
+}
+
+#[test]
+fn medium_partial_single_string_avg_runtime_probe_waits_for_libcudf_groupby_cardinality() {
+    let (schema, spec) = simple_string_avg_spec();
+    let decision = aggregate_strategy_capability_decision(&spec, &schema, AggregateExecutionStage::Partial);
+    let decision = select_partial_aggregate_strategy_decision(
+        decision,
+        None,
+        &spec,
+        &schema,
+        204_000,
+        None,
+        &QueryMetrics::default(),
+    );
+
+    assert_eq!(decision.selected_strategy, AggregateExecutionStrategy::LibcudfGroupby);
+    assert_eq!(
+        decision.facts.get("prepared_sort_groupby_cost_model_status").map(String::as_str),
+        Some("selected_libcudf_runtime_probe")
+    );
+    assert_eq!(exact_single_key_cardinality_probe_candidate(&decision, &spec, &schema, 204_000), None);
+}
+
+#[test]
 fn exact_cardinality_probe_candidate_rejects_small_inputs() {
     let (schema, spec, small_decision) = partial_strategy_for_simple_string_sum(10_000);
     assert_eq!(exact_single_key_cardinality_probe_candidate(&small_decision, &spec, &schema, 10_000), None);
@@ -834,6 +945,27 @@ fn large_two_key_runtime_probe_is_exact_grouped_key_cardinality_probe_candidate(
         exact_grouped_key_cardinality_probe_candidate(&decision, &spec, &schema, 5_000_000),
         Some(vec!["quarter".to_string(), "year".to_string()])
     );
+}
+
+#[test]
+fn medium_two_key_runtime_probe_waits_for_libcudf_groupby_cardinality() {
+    let (schema, spec) = fixed_width_sum_spec();
+    let decision = aggregate_strategy_capability_decision(&spec, &schema, AggregateExecutionStage::Partial);
+    let decision = select_partial_aggregate_strategy_decision(
+        decision,
+        None,
+        &spec,
+        &schema,
+        204_000,
+        None,
+        &QueryMetrics::default(),
+    );
+
+    assert_eq!(
+        decision.facts.get("prepared_sort_groupby_cost_model_status").map(String::as_str),
+        Some("selected_libcudf_runtime_probe")
+    );
+    assert_eq!(exact_grouped_key_cardinality_probe_candidate(&decision, &spec, &schema, 204_000), None);
 }
 
 #[test]

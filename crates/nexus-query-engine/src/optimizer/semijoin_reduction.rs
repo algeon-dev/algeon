@@ -819,6 +819,11 @@ fn evaluate_semijoin_cost_gate(
 ) -> SemijoinReductionCostGateDiagnostics {
     let target_subtree = analysis.target_subtree_id;
     let threshold_multiplier = threshold_multiplier.max(1);
+
+    if let Some(signal) = filtered_source_keyset_cost_signal(plan, semi_right, analysis) {
+        return SemijoinReductionCostGateDiagnostics { signal, threshold_multiplier, accepted: true };
+    }
+
     if let (Some(semi_right_rows), Some(target_rows)) =
         (estimated_output_rows(plan, semi_right), estimated_output_rows(plan, target_subtree))
     {
@@ -846,10 +851,6 @@ fn evaluate_semijoin_cost_gate(
             threshold_multiplier,
             accepted,
         };
-    }
-
-    if let Some(signal) = filtered_source_keyset_cost_signal(plan, semi_right, analysis) {
-        return SemijoinReductionCostGateDiagnostics { signal, threshold_multiplier, accepted: true };
     }
 
     SemijoinReductionCostGateDiagnostics {
@@ -948,6 +949,18 @@ fn filtered_source_keyset_evidence(plan: &QueryPlan, node_id: NodeId) -> Option<
                 && join.spec.keys.len() == 1
                 && join.spec.residual_predicate.is_none()
                 && join.spec.build_artifact_id.is_none() =>
+        {
+            let left = filtered_source_keyset_evidence(plan, join.inputs[0])?;
+            let right = filtered_source_keyset_evidence(plan, join.inputs[1])?;
+            Some(left.combine(right))
+        },
+        PlanNode::Join(join)
+            if join.spec.join_type == JoinType::LeftSemi
+                && join.spec.keys.len() == 1
+                && join.spec.residual_predicate.is_none()
+                && join.spec.build_artifact_id.is_none()
+                && join.spec.null_equality == JoinNullEquality::NullsDoNotMatch
+                && join.spec.output_projection.iter().all(|column| column.side == JoinSide::Left) =>
         {
             let left = filtered_source_keyset_evidence(plan, join.inputs[0])?;
             let right = filtered_source_keyset_evidence(plan, join.inputs[1])?;
@@ -1163,7 +1176,7 @@ mod tests {
 
     use super::*;
     use crate::{
-        expr::{AggregateSpec, BinaryOp, LimitSpec, SortExpr, SortSpec},
+        expr::{AggregateSpec, BinaryOp, LimitSpec, LiteralValue, SortExpr, SortSpec},
         plan::{JoinOutputColumn, JoinSpec, ProjectionOutput, QueryPlanBuilder},
         source::{GpuResidentSource, LocalParquetFile, LocalParquetSource, SourceNode},
     };
@@ -1431,6 +1444,29 @@ mod tests {
     }
 
     #[test]
+    fn cost_gate_prefers_filtered_keyset_evidence_over_stale_row_estimate() {
+        let mut builder = QueryPlanBuilder::new();
+        let target = builder.add_source(local_source("target", 700, Some(7_000)));
+        let semi_right = builder.add_source(local_filtered_source("semi_right", 100, Some(800)));
+        let plan = builder.finish_gpu_resident(target);
+
+        let analysis = lineage_analysis_crossing_to_target(target);
+        let gate = evaluate_semijoin_cost_gate(&plan, semi_right, &analysis, 8);
+
+        assert!(gate.accepted);
+        assert_eq!(
+            gate.signal,
+            SemijoinReductionCostSignal::FilteredSourceKeysetShape {
+                filtered_source_count: 1,
+                semi_right_source_bytes: Some(800),
+                target_rows: Some(700),
+                target_bytes: Some(7_000),
+                crossed_join_count: 1,
+            }
+        );
+    }
+
+    #[test]
     fn cost_gate_falls_back_to_byte_estimate_when_rows_are_unavailable() {
         let mut builder = QueryPlanBuilder::new();
         let target = builder.add_source(local_source_with_bytes_only("target", 8_000));
@@ -1466,6 +1502,17 @@ mod tests {
             }],
             steps: Vec::new(),
         }
+    }
+
+    fn lineage_analysis_crossing_to_target(target_subtree_id: NodeId) -> SemijoinLineageAnalysis {
+        let mut analysis = lineage_analysis_for_target(target_subtree_id);
+        analysis.steps.push(SemijoinLineageStep {
+            crossed_join_node_id: target_subtree_id,
+            target_side: JoinSide::Left,
+            target_child_id: target_subtree_id,
+            key_mappings: Vec::new(),
+        });
+        analysis
     }
 
     fn single_source_plan(fields: Vec<Field>) -> (QueryPlan, NodeId) {
@@ -1547,6 +1594,17 @@ mod tests {
             schema(vec![field("k")]),
             vec!["k".to_string()],
         ))
+    }
+
+    fn local_filtered_source(name: &str, rows: u64, bytes: Option<u64>) -> SourceNode {
+        let SourceNode::LocalParquet(source) = local_source(name, rows, bytes) else {
+            unreachable!("local_source always builds local Parquet")
+        };
+        SourceNode::LocalParquet(source.with_reader_predicate(Expr::binary(
+            Expr::column("k"),
+            BinaryOp::Eq,
+            Expr::literal(LiteralValue::Int32(1)),
+        )))
     }
 
     fn local_source_with_bytes_only(name: &str, bytes: u64) -> SourceNode {

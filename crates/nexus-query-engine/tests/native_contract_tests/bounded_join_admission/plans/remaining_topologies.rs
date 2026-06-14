@@ -107,13 +107,25 @@ pub(crate) fn resident_grouped_aggregate_input_post_join_aggregate_topk_variant_
     let lineitem = source(&mut builder, "resident-aggregate-post-aggregate-topk-lineitem");
 
     let grouped_input = grouped_aggregate(&mut builder, lineitem);
-    let mut grouped_input = builder.add_projection(
-        grouped_input,
-        projection_outputs(
-            vec![Expr::column("k")],
-            Arc::new(Schema::new(vec![Field::new("k", DataType::Int32, false)])),
-        ),
-    );
+    let mut grouped_input = if matches!(
+        variant,
+        ResidentGroupedAggregateInputPostJoinAggregateTopKVariant::FilterWrappedGroupedInputDirectPostJoinAggregateInput
+            | ResidentGroupedAggregateInputPostJoinAggregateTopKVariant::PreAggregatedPreservedInputFilterWrappedDirectPostJoinAggregateInput
+    ) {
+        builder.add_filter(
+            grouped_input,
+            Expr::binary(Expr::column("v"), BinaryOp::Gt, Expr::literal(LiteralValue::Int64(0))),
+            key_value_schema(),
+        )
+    } else {
+        builder.add_projection(
+            grouped_input,
+            projection_outputs(
+                vec![Expr::column("k")],
+                Arc::new(Schema::new(vec![Field::new("k", DataType::Int32, false)])),
+            ),
+        )
+    };
     if matches!(variant, ResidentGroupedAggregateInputPostJoinAggregateTopKVariant::UnsupportedGroupedInputFilter) {
         grouped_input = builder.add_filter(
             grouped_input,
@@ -123,13 +135,33 @@ pub(crate) fn resident_grouped_aggregate_input_post_join_aggregate_topk_variant_
     }
     let ab = join(&mut builder, a, b, "ab");
     let right_tree = join(&mut builder, ab, c, "right_tree");
+    let right_tree = if matches!(
+        variant,
+        ResidentGroupedAggregateInputPostJoinAggregateTopKVariant::PreAggregatedPreservedInputFilterWrappedDirectPostJoinAggregateInput
+    ) {
+        grouped_aggregate(&mut builder, right_tree)
+    } else {
+        right_tree
+    };
     let root = semi_join(&mut builder, right_tree, grouped_input);
-    let root = project_key_value(&mut builder, root);
+    let root = if matches!(
+        variant,
+        ResidentGroupedAggregateInputPostJoinAggregateTopKVariant::DirectPostJoinAggregateInput
+            | ResidentGroupedAggregateInputPostJoinAggregateTopKVariant::FilterWrappedGroupedInputDirectPostJoinAggregateInput
+            | ResidentGroupedAggregateInputPostJoinAggregateTopKVariant::PreAggregatedPreservedInputFilterWrappedDirectPostJoinAggregateInput
+    ) {
+        root
+    } else {
+        project_key_value(&mut builder, root)
+    };
     let post_join_aggregate = match variant {
         ResidentGroupedAggregateInputPostJoinAggregateTopKVariant::ScalarPostJoinAggregate => {
             scalar_aggregate(&mut builder, root)
         },
         ResidentGroupedAggregateInputPostJoinAggregateTopKVariant::Admitted
+        | ResidentGroupedAggregateInputPostJoinAggregateTopKVariant::DirectPostJoinAggregateInput
+        | ResidentGroupedAggregateInputPostJoinAggregateTopKVariant::FilterWrappedGroupedInputDirectPostJoinAggregateInput
+        | ResidentGroupedAggregateInputPostJoinAggregateTopKVariant::PreAggregatedPreservedInputFilterWrappedDirectPostJoinAggregateInput
         | ResidentGroupedAggregateInputPostJoinAggregateTopKVariant::MissingFetchLimit
         | ResidentGroupedAggregateInputPostJoinAggregateTopKVariant::UnsupportedGroupedInputFilter => {
             grouped_aggregate(&mut builder, root)
@@ -146,6 +178,9 @@ pub(crate) fn resident_grouped_aggregate_input_post_join_aggregate_topk_variant_
             builder.finish_with_host_sink(sort)
         },
         ResidentGroupedAggregateInputPostJoinAggregateTopKVariant::Admitted
+        | ResidentGroupedAggregateInputPostJoinAggregateTopKVariant::DirectPostJoinAggregateInput
+        | ResidentGroupedAggregateInputPostJoinAggregateTopKVariant::FilterWrappedGroupedInputDirectPostJoinAggregateInput
+        | ResidentGroupedAggregateInputPostJoinAggregateTopKVariant::PreAggregatedPreservedInputFilterWrappedDirectPostJoinAggregateInput
         | ResidentGroupedAggregateInputPostJoinAggregateTopKVariant::ScalarPostJoinAggregate
         | ResidentGroupedAggregateInputPostJoinAggregateTopKVariant::UnsupportedGroupedInputFilter => {
             let limit = builder.add_limit(sort, LimitSpec::fetch(100), key_value_schema());
@@ -157,6 +192,9 @@ pub(crate) fn resident_grouped_aggregate_input_post_join_aggregate_topk_variant_
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum ResidentGroupedAggregateInputPostJoinAggregateTopKVariant {
     Admitted,
+    DirectPostJoinAggregateInput,
+    FilterWrappedGroupedInputDirectPostJoinAggregateInput,
+    PreAggregatedPreservedInputFilterWrappedDirectPostJoinAggregateInput,
     MissingFetchLimit,
     ScalarPostJoinAggregate,
     UnsupportedGroupedInputFilter,
@@ -193,26 +231,36 @@ pub(crate) fn root_topk_join_aggregate_variant_plan(
     }
 
     let mut builder = QueryPlanBuilder::new();
-    let fact = source_with_reduction(
-        &mut builder,
-        "root-topk-join-aggregate-fact",
-        !matches!(
-            variant,
-            RootTopKJoinAggregateVariant::MissingSourceReduction
-                | RootTopKJoinAggregateVariant::SourceReductionOutsideAggregateInput
-                | RootTopKJoinAggregateVariant::KeylessJoinUnrelatedScalarAggregate
-                | RootTopKJoinAggregateVariant::KeylessOuterCrossWindowMissingSourceReduction
-                | RootTopKJoinAggregateVariant::SortFetchSingleHashJoinAggregateSourceAdjacentFilters
-                | RootTopKJoinAggregateVariant::SortFetchSingleHashJoinAggregateFullScan
-        ),
-    );
+    let small_exact_joined_aggregate_input =
+        matches!(variant, RootTopKJoinAggregateVariant::SmallExactSharedProjectionAggregateFanout);
+    let fact = if small_exact_joined_aggregate_input {
+        source_with_known_size(&mut builder, "root-topk-join-aggregate-fact-small-exact", 4096)
+    } else {
+        source_with_reduction(
+            &mut builder,
+            "root-topk-join-aggregate-fact",
+            !matches!(
+                variant,
+                RootTopKJoinAggregateVariant::MissingSourceReduction
+                    | RootTopKJoinAggregateVariant::SourceReductionOutsideAggregateInput
+                    | RootTopKJoinAggregateVariant::KeylessJoinUnrelatedScalarAggregate
+                    | RootTopKJoinAggregateVariant::KeylessOuterCrossWindowMissingSourceReduction
+                    | RootTopKJoinAggregateVariant::SortFetchSingleHashJoinAggregateSourceAdjacentFilters
+                    | RootTopKJoinAggregateVariant::SortFetchSingleHashJoinAggregateFullScan
+            ),
+        )
+    };
     let aggregate_all_branch_reduction = matches!(variant, RootTopKJoinAggregateVariant::SortFetchHashJoinAggregate);
-    let date = if aggregate_all_branch_reduction {
+    let date = if small_exact_joined_aggregate_input {
+        source_with_known_size(&mut builder, "root-topk-join-aggregate-date-small-exact", 4096)
+    } else if aggregate_all_branch_reduction {
         source_with_reduction(&mut builder, "root-topk-join-aggregate-date", true)
     } else {
         source(&mut builder, "root-topk-join-aggregate-date")
     };
-    let store = if aggregate_all_branch_reduction {
+    let store = if small_exact_joined_aggregate_input {
+        source_with_known_size(&mut builder, "root-topk-join-aggregate-store-small-exact", 4096)
+    } else if aggregate_all_branch_reduction {
         source_with_reduction(&mut builder, "root-topk-join-aggregate-store", true)
     } else {
         source(&mut builder, "root-topk-join-aggregate-store")
@@ -309,7 +357,11 @@ pub(crate) fn root_topk_join_aggregate_variant_plan(
         let aggregate_branch = grouped_aggregate(&mut builder, grouped_projection);
         let aggregate_branch = project_key_value(&mut builder, aggregate_branch);
         join(&mut builder, grouped, aggregate_branch, "root_shared_grouped_aggregate")
-    } else if matches!(variant, RootTopKJoinAggregateVariant::SharedProjectionAggregateFanout) {
+    } else if matches!(
+        variant,
+        RootTopKJoinAggregateVariant::SharedProjectionAggregateFanout
+            | RootTopKJoinAggregateVariant::SmallExactSharedProjectionAggregateFanout
+    ) {
         let aggregate_branch = grouped_aggregate(&mut builder, grouped_projection);
         let aggregate_branch = project_key_value(&mut builder, aggregate_branch);
         join(&mut builder, grouped_projection, aggregate_branch, "root_shared_projection_aggregate")
@@ -647,6 +699,7 @@ pub(crate) fn root_topk_join_aggregate_variant_plan(
         | RootTopKJoinAggregateVariant::SharedComputedFanout
         | RootTopKJoinAggregateVariant::SharedGroupedAggregateFanout
         | RootTopKJoinAggregateVariant::SharedProjectionAggregateFanout
+        | RootTopKJoinAggregateVariant::SmallExactSharedProjectionAggregateFanout
         | RootTopKJoinAggregateVariant::MissingGroupedAggregateFragment
         | RootTopKJoinAggregateVariant::DistinctAggregate
         | RootTopKJoinAggregateVariant::DistinctAggregateBuildSideKeyedOuterJoin
@@ -708,6 +761,7 @@ pub(crate) enum RootTopKJoinAggregateVariant {
     SharedComputedFanout,
     SharedGroupedAggregateFanout,
     SharedProjectionAggregateFanout,
+    SmallExactSharedProjectionAggregateFanout,
     MissingGroupedAggregateFragment,
     MissingFetchLimit,
     DistinctAggregate,

@@ -21,6 +21,24 @@ fn estimated_local_source_with_fields(name: &str, field_names: &[&str], bytes: u
     estimated_local_source_with_stable_id(name, name, field_names, bytes, rows)
 }
 
+fn estimated_local_source_with_row_group_count(
+    name: &str,
+    field_names: &[&str],
+    row_group_count: usize,
+    bytes_per_row_group: u64,
+    rows_per_row_group: u64,
+) -> SourceNode {
+    let source_schema = schema(field_names);
+    let row_group_bytes = vec![bytes_per_row_group; row_group_count];
+    let row_group_rows = vec![rows_per_row_group; row_group_count];
+    let file = LocalParquetFile::new(format!("/tmp/{name}.parquet"))
+        .with_stable_id(name)
+        .with_projected_row_group_bytes(row_group_bytes.clone(), row_group_bytes)
+        .with_row_group_rows(row_group_rows);
+    let read_columns = field_names.iter().map(|name| (*name).to_string()).collect::<Vec<_>>();
+    SourceNode::LocalParquet(LocalParquetSource::from_files(vec![file], source_schema, read_columns))
+}
+
 fn estimated_local_source_with_stable_id(
     name: &str,
     stable_id: &str,

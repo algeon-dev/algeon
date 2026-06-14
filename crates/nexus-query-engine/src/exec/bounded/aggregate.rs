@@ -29,7 +29,10 @@ use post_stages::{
 };
 pub(super) use post_stages::{execute_post_aggregate_stages, execute_post_sort_projections, execute_standalone_limit};
 pub use sizing::{PartialAggregateShape, partial_aggregate_upper_bound_bytes};
-use sizing::{partial_aggregate_upper_bound_violation_error, partial_aggregate_work_reservation_upper_bound_bytes};
+use sizing::{
+    partial_aggregate_upper_bound_violation_error, partial_aggregate_work_reservation_upper_bound_bytes,
+    statistical_partial_aggregate_work_reservation_upper_bound_bytes,
+};
 pub(in crate::exec::bounded) use source_adjacent::execute_bounded_partitioned_source_adjacent_aggregate_from_raw_chunks;
 pub(in crate::exec::bounded) use stream::{
     execute_bounded_whole_input_aggregate_from_raw_chunks, execute_compiled_bounded_aggregate_from_stream,

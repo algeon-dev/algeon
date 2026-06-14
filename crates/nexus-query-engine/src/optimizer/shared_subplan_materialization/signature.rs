@@ -54,7 +54,8 @@ fn aggregate_materialization_signature(
     let source_bytes = sum_optional_u64(sources.iter().map(|source| source.selected_source_bytes));
     let source_rows = sum_optional_u64(sources.iter().map(|source| source.selected_rows));
     let group_exprs = spec.group_exprs.iter().map(ToString::to_string).collect::<Vec<_>>();
-    let aggregate_exprs = spec.aggr_exprs.iter().map(aggregate_expr_signature).collect::<Vec<_>>();
+    let aggregate_exprs =
+        spec.aggr_exprs.iter().map(|expr| aggregate_expr_signature(plan, input, expr)).collect::<Vec<_>>();
     let post_aggregate_filter_columns_by_source = post_aggregate_filterable_group_columns_by_source(
         plan,
         input,
@@ -393,19 +394,163 @@ fn push_contract_value(output: &mut String, key: &str, value: &str) {
     output.push(';');
 }
 
-fn aggregate_expr_signature(expr: &AggregateExpr) -> String {
+fn aggregate_expr_signature(plan: &QueryPlan, input: NodeId, expr: &AggregateExpr) -> String {
     format!(
         "fn={};distinct={};arg={};filter={};alias={}",
         aggregate_function_signature(expr.function),
         expr.distinct,
-        expr.expr,
-        expr.filter.as_ref().map_or_else(|| "none".to_string(), ToString::to_string),
+        aggregate_input_expr_signature(plan, input, &expr.expr),
+        expr.filter
+            .as_ref()
+            .map_or_else(|| "none".to_string(), |filter| aggregate_input_expr_signature(plan, input, filter)),
         expr.alias
     )
 }
 
 fn aggregate_function_signature(function: AggregateFunction) -> &'static str {
     function.as_str()
+}
+
+fn aggregate_input_expr_signature(plan: &QueryPlan, input: NodeId, expr: &Expr) -> String {
+    canonicalize_aggregate_input_expr(plan, input, expr).to_string()
+}
+
+fn canonicalize_aggregate_input_expr(plan: &QueryPlan, input: NodeId, expr: &Expr) -> Expr {
+    match expr {
+        Expr::Column(column) => canonicalize_aggregate_input_column(plan, input, column.name())
+            .unwrap_or_else(|| Expr::Column(column.clone())),
+        Expr::Literal(value) => Expr::Literal(value.clone()),
+        Expr::Not(expr) => Expr::Not(Box::new(canonicalize_aggregate_input_expr(plan, input, expr))),
+        Expr::IsNull(expr) => Expr::IsNull(Box::new(canonicalize_aggregate_input_expr(plan, input, expr))),
+        Expr::IsNotNull(expr) => Expr::IsNotNull(Box::new(canonicalize_aggregate_input_expr(plan, input, expr))),
+        Expr::Cast { expr, target_type } => Expr::Cast {
+            expr: Box::new(canonicalize_aggregate_input_expr(plan, input, expr)),
+            target_type: target_type.clone(),
+        },
+        Expr::TryCast { expr, target_type } => Expr::TryCast {
+            expr: Box::new(canonicalize_aggregate_input_expr(plan, input, expr)),
+            target_type: target_type.clone(),
+        },
+        Expr::Binary { left, op, right, output_type } => Expr::Binary {
+            left: Box::new(canonicalize_aggregate_input_expr(plan, input, left)),
+            op: *op,
+            right: Box::new(canonicalize_aggregate_input_expr(plan, input, right)),
+            output_type: output_type.clone(),
+        },
+        Expr::Like { expr, pattern, escape, negated } => Expr::Like {
+            expr: Box::new(canonicalize_aggregate_input_expr(plan, input, expr)),
+            pattern: pattern.clone(),
+            escape: escape.clone(),
+            negated: *negated,
+        },
+        Expr::Substring { expr, start, length } => Expr::Substring {
+            expr: Box::new(canonicalize_aggregate_input_expr(plan, input, expr)),
+            start: *start,
+            length: *length,
+        },
+        Expr::Lower(expr) => Expr::Lower(Box::new(canonicalize_aggregate_input_expr(plan, input, expr))),
+        Expr::Upper(expr) => Expr::Upper(Box::new(canonicalize_aggregate_input_expr(plan, input, expr))),
+        Expr::StringLength { expr, output_type } => Expr::StringLength {
+            expr: Box::new(canonicalize_aggregate_input_expr(plan, input, expr)),
+            output_type: output_type.clone(),
+        },
+        Expr::RegexpReplace { expr, pattern, replacement, output_type } => Expr::RegexpReplace {
+            expr: Box::new(canonicalize_aggregate_input_expr(plan, input, expr)),
+            pattern: pattern.clone(),
+            replacement: replacement.clone(),
+            output_type: output_type.clone(),
+        },
+        Expr::Concat(exprs) => {
+            Expr::Concat(exprs.iter().map(|expr| canonicalize_aggregate_input_expr(plan, input, expr)).collect())
+        },
+        Expr::Abs(expr) => Expr::Abs(Box::new(canonicalize_aggregate_input_expr(plan, input, expr))),
+        Expr::Sqrt { expr, output_type } => Expr::Sqrt {
+            expr: Box::new(canonicalize_aggregate_input_expr(plan, input, expr)),
+            output_type: output_type.clone(),
+        },
+        Expr::Round { expr, decimal_places, output_type } => Expr::Round {
+            expr: Box::new(canonicalize_aggregate_input_expr(plan, input, expr)),
+            decimal_places: *decimal_places,
+            output_type: output_type.clone(),
+        },
+        Expr::InList { expr, list, negated } => Expr::InList {
+            expr: Box::new(canonicalize_aggregate_input_expr(plan, input, expr)),
+            list: list.iter().map(|expr| canonicalize_aggregate_input_expr(plan, input, expr)).collect(),
+            negated: *negated,
+        },
+        Expr::IsDistinctFrom { left, right } => Expr::IsDistinctFrom {
+            left: Box::new(canonicalize_aggregate_input_expr(plan, input, left)),
+            right: Box::new(canonicalize_aggregate_input_expr(plan, input, right)),
+        },
+        Expr::IsNotDistinctFrom { left, right } => Expr::IsNotDistinctFrom {
+            left: Box::new(canonicalize_aggregate_input_expr(plan, input, left)),
+            right: Box::new(canonicalize_aggregate_input_expr(plan, input, right)),
+        },
+        Expr::Case { branches, else_expr } => Expr::Case {
+            branches: branches
+                .iter()
+                .map(|branch| crate::expr::CaseWhen {
+                    when: canonicalize_aggregate_input_expr(plan, input, &branch.when),
+                    then: canonicalize_aggregate_input_expr(plan, input, &branch.then),
+                })
+                .collect(),
+            else_expr: Box::new(canonicalize_aggregate_input_expr(plan, input, else_expr)),
+        },
+        Expr::Extract { field, expr } => {
+            Expr::Extract { field: *field, expr: Box::new(canonicalize_aggregate_input_expr(plan, input, expr)) }
+        },
+        Expr::DateTrunc { field, expr, output_type } => Expr::DateTrunc {
+            field: *field,
+            expr: Box::new(canonicalize_aggregate_input_expr(plan, input, expr)),
+            output_type: output_type.clone(),
+        },
+        Expr::Alias { expr, .. } => canonicalize_aggregate_input_expr(plan, input, expr),
+    }
+}
+
+fn canonicalize_aggregate_input_column(plan: &QueryPlan, input: NodeId, column: &str) -> Option<Expr> {
+    let node = plan.node(input)?;
+    match &node.kind {
+        PlanNode::Projection(projection) => {
+            if !aggregate_alias_canonicalization_input_is_rowset_preserving(plan, projection.input) {
+                return None;
+            }
+            let output = projection.outputs.iter().find(|output| output.field.name() == column)?;
+            Some(canonicalize_aggregate_input_expr(plan, projection.input, &output.expr))
+        },
+        PlanNode::Sort(sort) => canonicalize_aggregate_input_column(plan, sort.input, column),
+        PlanNode::Source(_)
+        | PlanNode::Filter(_)
+        | PlanNode::Limit(_)
+        | PlanNode::Join(_)
+        | PlanNode::Aggregate(_)
+        | PlanNode::Window(_)
+        | PlanNode::Union(_)
+        | PlanNode::EdgeNormalize(_)
+        | PlanNode::GraphAlgorithm(_) => None,
+    }
+}
+
+fn aggregate_alias_canonicalization_input_is_rowset_preserving(plan: &QueryPlan, input: NodeId) -> bool {
+    let Some(node) = plan.node(input) else {
+        return false;
+    };
+    match &node.kind {
+        PlanNode::Source(_) => true,
+        PlanNode::Projection(projection) => aggregate_alias_canonicalization_input_is_rowset_preserving(
+            plan,
+            projection.input,
+        ),
+        PlanNode::Sort(sort) => aggregate_alias_canonicalization_input_is_rowset_preserving(plan, sort.input),
+        PlanNode::Filter(_)
+        | PlanNode::Limit(_)
+        | PlanNode::Join(_)
+        | PlanNode::Aggregate(_)
+        | PlanNode::Window(_)
+        | PlanNode::Union(_)
+        | PlanNode::EdgeNormalize(_)
+        | PlanNode::GraphAlgorithm(_) => false,
+    }
 }
 
 fn sum_optional_u64(values: impl IntoIterator<Item = Option<u64>>) -> Option<u64> {

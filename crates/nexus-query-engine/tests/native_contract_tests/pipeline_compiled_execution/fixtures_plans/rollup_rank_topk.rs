@@ -186,6 +186,158 @@ pub(super) fn selected_small_rollup_rank_topk_plan() -> QueryPlan {
     )
 }
 
+pub(super) fn selected_q22_class_rollup_topk_after_pushdown_plan() -> QueryPlan {
+    let fact_schema = Arc::new(Schema::new(vec![
+        Field::new("date_sk", DataType::Int32, false),
+        Field::new("item_sk", DataType::Int32, false),
+        Field::new("quantity_on_hand", DataType::Int64, true),
+    ]));
+    let date_schema = Arc::new(Schema::new(vec![Field::new("date_sk", DataType::Int32, false)]));
+    let item_schema = Arc::new(Schema::new(vec![
+        Field::new("item_sk", DataType::Int32, false),
+        Field::new("product_name", DataType::Utf8, true),
+        Field::new("brand", DataType::Utf8, true),
+        Field::new("class", DataType::Utf8, true),
+        Field::new("category", DataType::Utf8, true),
+    ]));
+    let fact_date_join_schema = Arc::new(Schema::new(vec![
+        Field::new("item_sk", DataType::Int32, false),
+        Field::new("quantity_on_hand", DataType::Int64, true),
+    ]));
+    let item_join_schema = Arc::new(Schema::new(vec![
+        Field::new("product_name", DataType::Utf8, true),
+        Field::new("brand", DataType::Utf8, true),
+        Field::new("class", DataType::Utf8, true),
+        Field::new("category", DataType::Utf8, true),
+        Field::new("quantity_on_hand", DataType::Int64, true),
+    ]));
+    let aggregate_schema = Arc::new(Schema::new(vec![
+        Field::new("product_name", DataType::Utf8, true),
+        Field::new("brand", DataType::Utf8, true),
+        Field::new("class", DataType::Utf8, true),
+        Field::new("category", DataType::Utf8, true),
+        Field::new("__grouping_id", DataType::UInt32, false),
+        Field::new("avg_qoh", DataType::Float64, true),
+    ]));
+    let output_schema = Arc::new(Schema::new(vec![
+        Field::new("product_name", DataType::Utf8, true),
+        Field::new("brand", DataType::Utf8, true),
+        Field::new("class", DataType::Utf8, true),
+        Field::new("category", DataType::Utf8, true),
+        Field::new("qoh", DataType::Float64, true),
+    ]));
+
+    let fact_file = LocalParquetFile::new("/tmp/compiled-selected-q22-class-rollup-topk-fact.parquet")
+        .with_file_size_bytes(512 << 20)
+        .with_row_groups(vec![0, 1])
+        .with_projected_row_group_bytes(vec![32 << 20, 32 << 20, 32 << 20, 32 << 20], vec![32 << 20; 4])
+        .with_row_group_rows(vec![1_000_000; 4]);
+    let date_file = LocalParquetFile::new("/tmp/compiled-selected-q22-class-rollup-topk-date.parquet")
+        .with_file_size_bytes(1024);
+    let item_file = LocalParquetFile::new("/tmp/compiled-selected-q22-class-rollup-topk-item.parquet")
+        .with_file_size_bytes(4096);
+
+    let mut builder = QueryPlanBuilder::new();
+    let fact = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::from_files(
+        vec![fact_file],
+        fact_schema,
+        vec!["date_sk".into(), "item_sk".into(), "quantity_on_hand".into()],
+    )));
+    let date = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::from_files(
+        vec![date_file],
+        date_schema,
+        vec!["date_sk".into()],
+    )));
+    let fact_date_join = builder.add_join(
+        fact,
+        date,
+        JoinSpec::new(
+            JoinType::Inner,
+            vec![JoinKey::new(
+                ColumnRef::input(0, "date_sk", "date_sk"),
+                ColumnRef::input(1, "date_sk", "date_sk"),
+            )],
+        )
+        .with_output_projection(vec![
+            JoinOutputColumn::left(ColumnRef::input(0, "item_sk", "item_sk"), "item_sk"),
+            JoinOutputColumn::left(ColumnRef::input(0, "quantity_on_hand", "quantity_on_hand"), "quantity_on_hand"),
+        ])
+        .with_build_side(JoinSide::Right),
+        fact_date_join_schema,
+    );
+    let item = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::from_files(
+        vec![item_file],
+        item_schema,
+        vec!["item_sk".into(), "product_name".into(), "brand".into(), "class".into(), "category".into()],
+    )));
+    let item_join = builder.add_join(
+        fact_date_join,
+        item,
+        JoinSpec::new(
+            JoinType::Inner,
+            vec![JoinKey::new(
+                ColumnRef::input(0, "item_sk", "item_sk"),
+                ColumnRef::input(1, "item_sk", "item_sk"),
+            )],
+        )
+        .with_output_projection(vec![
+            JoinOutputColumn::right(ColumnRef::input(1, "product_name", "product_name"), "product_name"),
+            JoinOutputColumn::right(ColumnRef::input(1, "brand", "brand"), "brand"),
+            JoinOutputColumn::right(ColumnRef::input(1, "class", "class"), "class"),
+            JoinOutputColumn::right(ColumnRef::input(1, "category", "category"), "category"),
+            JoinOutputColumn::left(ColumnRef::input(0, "quantity_on_hand", "quantity_on_hand"), "quantity_on_hand"),
+        ])
+        .with_build_side(JoinSide::Right),
+        item_join_schema,
+    );
+    let aggregate = builder.add_aggregate(
+        item_join,
+        AggregateSpec::new(
+            vec![
+                Expr::column("product_name"),
+                Expr::column("brand"),
+                Expr::column("class"),
+                Expr::column("category"),
+            ],
+            vec![AggregateExpr::new(AggregateFunction::Avg, Expr::column("quantity_on_hand"), "avg_qoh")],
+        )
+        .with_grouping_sets(GroupingSetsSpec::new(
+            vec![
+                vec![true, true, true, true],
+                vec![false, true, true, true],
+                vec![false, false, true, true],
+                vec![false, false, false, true],
+                vec![false, false, false, false],
+            ],
+            "__grouping_id",
+        )),
+        aggregate_schema,
+    );
+    let projection = builder.add_projection(
+        aggregate,
+        vec![
+            ProjectionOutput::new(Expr::column("product_name"), output_schema.field(0).as_ref().clone()),
+            ProjectionOutput::new(Expr::column("brand"), output_schema.field(1).as_ref().clone()),
+            ProjectionOutput::new(Expr::column("class"), output_schema.field(2).as_ref().clone()),
+            ProjectionOutput::new(Expr::column("category"), output_schema.field(3).as_ref().clone()),
+            ProjectionOutput::new(Expr::column("avg_qoh").alias("qoh"), output_schema.field(4).as_ref().clone()),
+        ],
+    );
+    let sort = builder.add_sort(
+        projection,
+        SortSpec::new(vec![
+            SortExpr::new(Expr::column("qoh"), false, false),
+            SortExpr::new(Expr::column("product_name"), false, false),
+            SortExpr::new(Expr::column("brand"), false, false),
+            SortExpr::new(Expr::column("class"), false, false),
+            SortExpr::new(Expr::column("category"), false, false),
+        ]),
+        Arc::clone(&output_schema),
+    );
+    let limit = builder.add_limit(sort, LimitSpec::fetch(100), output_schema);
+    builder.finish_with_host_sink(limit)
+}
+
 pub(super) fn statistical_join_final_full_sort_plan() -> QueryPlan {
     let fact_schema = Arc::new(Schema::new(vec![
         Field::new("date_sk", DataType::Int32, false),

@@ -100,7 +100,12 @@ fn discover_scalar_aggregate_from_grouped_aggregate_candidates(plan: &QueryPlan)
                 aggregate_node_ids: vec![*grouped_id, scalar_id],
                 reuse_count: 2,
                 group_exprs: grouped_aggregate.spec.group_exprs.iter().map(ToString::to_string).collect(),
-                aggregate_exprs: scalar_aggregate.spec.aggr_exprs.iter().map(aggregate_expr_signature).collect(),
+                aggregate_exprs: scalar_aggregate
+                    .spec
+                    .aggr_exprs
+                    .iter()
+                    .map(|expr| aggregate_expr_signature(plan, scalar_aggregate.input, expr))
+                    .collect(),
                 filtered_aggregate_count: 0,
                 filtered_aggregate_memory_shape: "not_applicable".to_string(),
                 filtered_aggregate_estimation_input_rows: None,

@@ -141,6 +141,14 @@ pub(crate) struct DimensionDerivedRowGroupPruningResult {
     pub diagnostics: DimensionDerivedRowGroupPruningDiagnostics,
 }
 
+fn record_dimension_pruning_candidate(
+    diagnostics: &mut DimensionDerivedRowGroupPruningDiagnostics,
+    candidate: DimensionDerivedRowGroupPruningCandidateDiagnostics,
+) {
+    diagnostics.considered_count += 1;
+    diagnostics.candidates.push(candidate);
+}
+
 pub(crate) fn optimize_dimension_derived_row_group_pruning(
     plan: QueryPlan,
     options: &DimensionDerivedRowGroupPruningOptions,
@@ -170,7 +178,6 @@ pub(crate) fn optimize_dimension_derived_row_group_pruning(
         }
 
         for orientation in candidate_orientations(join) {
-            diagnostics.considered_count += 1;
             let mut candidate = DimensionDerivedRowGroupPruningCandidateDiagnostics {
                 rule_name: DIMENSION_DERIVED_ROW_GROUP_PRUNING_RULE_NAME,
                 candidate_node_id: node.id,
@@ -191,96 +198,126 @@ pub(crate) fn optimize_dimension_derived_row_group_pruning(
             else {
                 candidate.rejected_reason =
                     Some(DimensionDerivedRowGroupPruningRejectedReason::DimensionKeyLineageUnavailable);
-                diagnostics.candidates.push(candidate);
+                record_dimension_pruning_candidate(&mut diagnostics, candidate);
                 continue;
             };
             candidate.dimension_source_node_id = Some(dimension_lineage.source_node_id);
             candidate.dimension_key_column = Some(dimension_lineage.source_column.clone());
 
-            let Some(target_lineage) =
-                unique_lineage(&plan, &parent_counts, orientation.target_input, orientation.target_key.name())
-            else {
+            let target_lineages = dedup_lineages(lineages_for_column(
+                &plan,
+                &parent_counts,
+                orientation.target_input,
+                orientation.target_key.name(),
+            ));
+            if target_lineages.is_empty() {
                 candidate.rejected_reason =
                     Some(DimensionDerivedRowGroupPruningRejectedReason::TargetKeyLineageUnavailable);
-                diagnostics.candidates.push(candidate);
-                continue;
-            };
-            candidate.target_source_node_id = Some(target_lineage.source_node_id);
-            candidate.target_key_column = Some(target_lineage.source_column.clone());
-
-            if dimension_lineage.source_node_id == target_lineage.source_node_id {
-                candidate.rejected_reason = Some(DimensionDerivedRowGroupPruningRejectedReason::SameSource);
-                diagnostics.candidates.push(candidate);
+                record_dimension_pruning_candidate(&mut diagnostics, candidate);
                 continue;
             }
-            if target_lineage.has_shared_path {
-                candidate.rejected_reason =
-                    Some(DimensionDerivedRowGroupPruningRejectedReason::TargetLineageReusedInPlan);
-                diagnostics.candidates.push(candidate);
+
+            let mut target_candidates = Vec::new();
+            for target_lineage in target_lineages {
+                let mut target_candidate = candidate.clone();
+                target_candidate.target_source_node_id = Some(target_lineage.source_node_id);
+                target_candidate.target_key_column = Some(target_lineage.source_column.clone());
+
+                if dimension_lineage.source_node_id == target_lineage.source_node_id {
+                    target_candidate.rejected_reason = Some(DimensionDerivedRowGroupPruningRejectedReason::SameSource);
+                    record_dimension_pruning_candidate(&mut diagnostics, target_candidate);
+                    continue;
+                }
+                if target_lineage.has_shared_path {
+                    target_candidate.rejected_reason =
+                        Some(DimensionDerivedRowGroupPruningRejectedReason::TargetLineageReusedInPlan);
+                    record_dimension_pruning_candidate(&mut diagnostics, target_candidate);
+                    continue;
+                }
+
+                target_candidates.push((target_candidate, target_lineage));
+            }
+            if target_candidates.is_empty() {
                 continue;
             }
 
             let Some(dimension_source) = local_parquet_source(&plan, dimension_lineage.source_node_id) else {
-                candidate.rejected_reason =
-                    Some(DimensionDerivedRowGroupPruningRejectedReason::DimensionKeyLineageUnavailable);
-                diagnostics.candidates.push(candidate);
+                for (mut candidate, _) in target_candidates {
+                    candidate.rejected_reason =
+                        Some(DimensionDerivedRowGroupPruningRejectedReason::DimensionKeyLineageUnavailable);
+                    record_dimension_pruning_candidate(&mut diagnostics, candidate);
+                }
                 continue;
             };
             if dimension_source.reader_predicate.is_none() {
-                candidate.rejected_reason =
-                    Some(DimensionDerivedRowGroupPruningRejectedReason::DimensionPredicateAbsent);
-                diagnostics.candidates.push(candidate);
+                for (mut candidate, _) in target_candidates {
+                    candidate.rejected_reason =
+                        Some(DimensionDerivedRowGroupPruningRejectedReason::DimensionPredicateAbsent);
+                    record_dimension_pruning_candidate(&mut diagnostics, candidate);
+                }
                 continue;
             }
             if !dimension_scan_admitted(dimension_source, options.max_dimension_rows) {
-                candidate.rejected_reason =
-                    Some(DimensionDerivedRowGroupPruningRejectedReason::DimensionScanNotAdmitted);
-                diagnostics.candidates.push(candidate);
+                for (mut candidate, _) in target_candidates {
+                    candidate.rejected_reason =
+                        Some(DimensionDerivedRowGroupPruningRejectedReason::DimensionScanNotAdmitted);
+                    record_dimension_pruning_candidate(&mut diagnostics, candidate);
+                }
                 continue;
             }
 
             let Some(key_filter) = derive_dimension_key_filter(dimension_source, &dimension_lineage.source_column)
             else {
-                candidate.rejected_reason =
-                    Some(DimensionDerivedRowGroupPruningRejectedReason::UnsupportedDimensionPredicate);
-                diagnostics.candidates.push(candidate);
+                for (mut candidate, _) in target_candidates {
+                    candidate.rejected_reason =
+                        Some(DimensionDerivedRowGroupPruningRejectedReason::UnsupportedDimensionPredicate);
+                    record_dimension_pruning_candidate(&mut diagnostics, candidate);
+                }
                 continue;
             };
             let Some(key_filter) = key_filter else {
-                candidate.rejected_reason = Some(DimensionDerivedRowGroupPruningRejectedReason::EmptyDimensionKeyRange);
-                diagnostics.candidates.push(candidate);
+                for (mut candidate, _) in target_candidates {
+                    candidate.rejected_reason =
+                        Some(DimensionDerivedRowGroupPruningRejectedReason::EmptyDimensionKeyRange);
+                    record_dimension_pruning_candidate(&mut diagnostics, candidate);
+                }
                 continue;
             };
             let key_bounds = key_filter.bounds();
-            candidate.derived_min_key = Some(key_bounds.min);
-            candidate.derived_max_key = Some(key_bounds.max);
 
-            let Some(target_source) = mutable_local_parquet_source(&mut nodes, target_lineage.source_node_id) else {
-                candidate.rejected_reason =
-                    Some(DimensionDerivedRowGroupPruningRejectedReason::TargetKeyLineageUnavailable);
-                diagnostics.candidates.push(candidate);
-                continue;
-            };
-            let Some(prune_result) = prune_target_source(target_source, &target_lineage.source_column, &key_filter)
-            else {
-                candidate.rejected_reason =
-                    Some(DimensionDerivedRowGroupPruningRejectedReason::TargetStatisticsUnavailable);
-                diagnostics.candidates.push(candidate);
-                continue;
-            };
-            candidate.selected_row_groups_before = Some(prune_result.before);
-            candidate.selected_row_groups_after = Some(prune_result.after);
+            for (mut candidate, target_lineage) in target_candidates {
+                candidate.derived_min_key = Some(key_bounds.min);
+                candidate.derived_max_key = Some(key_bounds.max);
 
-            if !prune_result.applied {
-                candidate.rejected_reason = Some(DimensionDerivedRowGroupPruningRejectedReason::NoRowGroupReduction);
-                diagnostics.candidates.push(candidate);
-                continue;
+                let Some(target_source) = mutable_local_parquet_source(&mut nodes, target_lineage.source_node_id)
+                else {
+                    candidate.rejected_reason =
+                        Some(DimensionDerivedRowGroupPruningRejectedReason::TargetKeyLineageUnavailable);
+                    record_dimension_pruning_candidate(&mut diagnostics, candidate);
+                    continue;
+                };
+                let Some(prune_result) = prune_target_source(target_source, &target_lineage.source_column, &key_filter)
+                else {
+                    candidate.rejected_reason =
+                        Some(DimensionDerivedRowGroupPruningRejectedReason::TargetStatisticsUnavailable);
+                    record_dimension_pruning_candidate(&mut diagnostics, candidate);
+                    continue;
+                };
+                candidate.selected_row_groups_before = Some(prune_result.before);
+                candidate.selected_row_groups_after = Some(prune_result.after);
+
+                if !prune_result.applied {
+                    candidate.rejected_reason =
+                        Some(DimensionDerivedRowGroupPruningRejectedReason::NoRowGroupReduction);
+                    record_dimension_pruning_candidate(&mut diagnostics, candidate);
+                    continue;
+                }
+
+                candidate.applied = true;
+                diagnostics.applied_count += 1;
+                changed = true;
+                record_dimension_pruning_candidate(&mut diagnostics, candidate);
             }
-
-            candidate.applied = true;
-            diagnostics.applied_count += 1;
-            changed = true;
-            diagnostics.candidates.push(candidate);
         }
     }
 
@@ -615,12 +652,13 @@ pub fn discover_dimension_derived_pruning_requests(plan: &QueryPlan) -> Vec<Dime
             else {
                 continue;
             };
-            let Some(target) =
-                unique_lineage(plan, &parent_counts, orientation.target_input, orientation.target_key.name())
-            else {
-                continue;
-            };
-            if dimension.source_node_id == target.source_node_id || target.has_shared_path {
+            let targets = dedup_lineages(lineages_for_column(
+                plan,
+                &parent_counts,
+                orientation.target_input,
+                orientation.target_key.name(),
+            ));
+            if targets.is_empty() {
                 continue;
             }
             let Some(dimension_source) = local_parquet_source(plan, dimension.source_node_id) else {
@@ -629,12 +667,17 @@ pub fn discover_dimension_derived_pruning_requests(plan: &QueryPlan) -> Vec<Dime
             if dimension_source.reader_predicate.is_none() {
                 continue;
             }
-            requests.push(DimensionDerivedPruningRequest {
-                dimension_source_node_id: dimension.source_node_id,
-                dimension_key_column: dimension.source_column,
-                target_source_node_id: target.source_node_id,
-                target_key_column: target.source_column,
-            });
+            for target in targets {
+                if dimension.source_node_id == target.source_node_id || target.has_shared_path {
+                    continue;
+                }
+                requests.push(DimensionDerivedPruningRequest {
+                    dimension_source_node_id: dimension.source_node_id,
+                    dimension_key_column: dimension.source_column.clone(),
+                    target_source_node_id: target.source_node_id,
+                    target_key_column: target.source_column,
+                });
+            }
         }
     }
     requests
@@ -686,14 +729,18 @@ fn unique_lineage(
     node_id: NodeId,
     column_name: &str,
 ) -> Option<SourceColumnLineage> {
-    let mut lineages = lineages_for_column(plan, parent_counts, node_id, column_name);
+    let mut lineages = dedup_lineages(lineages_for_column(plan, parent_counts, node_id, column_name));
+    (lineages.len() == 1).then(|| lineages.remove(0))
+}
+
+fn dedup_lineages(mut lineages: Vec<SourceColumnLineage>) -> Vec<SourceColumnLineage> {
     lineages.sort_by(|left, right| {
         left.source_node_id.cmp(&right.source_node_id).then_with(|| {
             left.source_column.cmp(&right.source_column).then_with(|| left.has_shared_path.cmp(&right.has_shared_path))
         })
     });
     lineages.dedup();
-    (lineages.len() == 1).then(|| lineages.remove(0))
+    lineages
 }
 
 fn lineages_for_column(
@@ -749,11 +796,15 @@ fn lineages_for_column(
             })
             .map(mark_shared)
             .collect(),
-        PlanNode::Aggregate(_)
-        | PlanNode::Window(_)
-        | PlanNode::Union(_)
-        | PlanNode::EdgeNormalize(_)
-        | PlanNode::GraphAlgorithm(_) => Vec::new(),
+        PlanNode::Union(union) => union
+            .inputs
+            .iter()
+            .flat_map(|input| lineages_for_column(plan, parent_counts, *input, column_name))
+            .map(mark_shared)
+            .collect(),
+        PlanNode::Aggregate(_) | PlanNode::Window(_) | PlanNode::EdgeNormalize(_) | PlanNode::GraphAlgorithm(_) => {
+            Vec::new()
+        },
     }
 }
 
@@ -1036,6 +1087,190 @@ fn derive_dimension_key_filter(source: &LocalParquetSource, key_column: &str) ->
     Some(accumulator.finish())
 }
 
+pub(crate) fn derive_i64_expr_range_from_filtered_subtree(
+    plan: &QueryPlan,
+    node_id: NodeId,
+    expr: &Expr,
+    max_rows: u64,
+) -> Option<Option<KeyRange>> {
+    derive_i64_expr_range_from_filtered_subtree_inner(plan, node_id, expr.clone(), None, max_rows)
+}
+
+fn derive_i64_expr_range_from_filtered_subtree_inner(
+    plan: &QueryPlan,
+    node_id: NodeId,
+    expr: Expr,
+    predicate: Option<Expr>,
+    max_rows: u64,
+) -> Option<Option<KeyRange>> {
+    let node = plan.node(node_id)?;
+    match &node.kind {
+        PlanNode::Source(source) => {
+            let SourceNode::LocalParquet(source) = source.as_ref() else {
+                return None;
+            };
+            if !dimension_scan_admitted(source, max_rows) {
+                return None;
+            }
+            let predicate = combine_predicates(source.reader_predicate.clone(), predicate);
+            derive_i64_expr_range_from_local_parquet_source(source, &expr, predicate.as_ref())
+        },
+        PlanNode::Filter(filter) => derive_i64_expr_range_from_filtered_subtree_inner(
+            plan,
+            filter.input,
+            expr,
+            combine_predicates(predicate, Some(filter.predicate.clone())),
+            max_rows,
+        ),
+        PlanNode::Projection(projection) => {
+            let expr = remap_projection_general_expr(&expr, projection)?;
+            let predicate = remap_optional_projection_general_expr(predicate, projection)?;
+            derive_i64_expr_range_from_filtered_subtree_inner(plan, projection.input, expr, predicate, max_rows)
+        },
+        PlanNode::Aggregate(aggregate) => {
+            if aggregate.spec.grouping_sets.is_some() || !aggregate.spec.aggr_exprs.is_empty() {
+                return None;
+            }
+            let expr = remap_aggregate_group_general_expr(&expr, aggregate)?;
+            let predicate = remap_optional_aggregate_group_general_expr(predicate, aggregate)?;
+            derive_i64_expr_range_from_filtered_subtree_inner(plan, aggregate.input, expr, predicate, max_rows)
+        },
+        PlanNode::Sort(sort) => {
+            derive_i64_expr_range_from_filtered_subtree_inner(plan, sort.input, expr, predicate, max_rows)
+        },
+        PlanNode::Join(_)
+        | PlanNode::Limit(_)
+        | PlanNode::Window(_)
+        | PlanNode::Union(_)
+        | PlanNode::EdgeNormalize(_)
+        | PlanNode::GraphAlgorithm(_) => None,
+    }
+}
+
+fn remap_optional_projection_general_expr(
+    expr: Option<Expr>,
+    projection: &crate::plan::ProjectionNode,
+) -> Option<Option<Expr>> {
+    match expr {
+        Some(expr) => remap_projection_general_expr(&expr, projection).map(Some),
+        None => Some(None),
+    }
+}
+
+fn remap_optional_aggregate_group_general_expr(
+    expr: Option<Expr>,
+    aggregate: &crate::plan::AggregateNode,
+) -> Option<Option<Expr>> {
+    match expr {
+        Some(expr) => remap_aggregate_group_general_expr(&expr, aggregate).map(Some),
+        None => Some(None),
+    }
+}
+
+fn remap_projection_general_expr(expr: &Expr, projection: &crate::plan::ProjectionNode) -> Option<Expr> {
+    remap_unqualified_columns(expr, &mut |column| {
+        let output = projection.outputs.iter().find(|output| output.field.name() == column.name())?;
+        Some(strip_alias(output.expr.clone()))
+    })
+}
+
+fn remap_aggregate_group_general_expr(expr: &Expr, aggregate: &crate::plan::AggregateNode) -> Option<Expr> {
+    remap_unqualified_columns(expr, &mut |column| {
+        aggregate
+            .spec
+            .group_exprs
+            .iter()
+            .find(|expr| aggregate_group_output_name(expr) == Some(column.name()))
+            .cloned()
+            .map(strip_alias)
+    })
+}
+
+fn strip_alias(expr: Expr) -> Expr {
+    match expr {
+        Expr::Alias { expr, .. } => strip_alias(*expr),
+        _ => expr,
+    }
+}
+
+fn combine_predicates(left: Option<Expr>, right: Option<Expr>) -> Option<Expr> {
+    match (left, right) {
+        (Some(left), Some(right)) => Some(Expr::binary(left, BinaryOp::And, right)),
+        (Some(expr), None) | (None, Some(expr)) => Some(expr),
+        (None, None) => None,
+    }
+}
+
+fn derive_i64_expr_range_from_local_parquet_source(
+    source: &LocalParquetSource,
+    expr: &Expr,
+    predicate: Option<&Expr>,
+) -> Option<Option<KeyRange>> {
+    let projection_indices = reader_projection_indices_for_exprs(source, expr, predicate)?;
+    let mut range = None;
+    for source_file in &source.files {
+        let path = source_file.location.as_local_path()?;
+        let file = File::open(path).ok()?;
+        let builder = ParquetRecordBatchReaderBuilder::try_new(file).ok()?;
+        let row_group_count = builder.metadata().num_row_groups();
+        let mask = ProjectionMask::roots(builder.parquet_schema(), projection_indices.iter().copied());
+        let row_groups = selected_or_all_row_groups(source_file, row_group_count);
+        let reader = builder.with_projection(mask).with_row_groups(row_groups).build().ok()?;
+        for batch in reader {
+            let batch = batch.ok()?;
+            observe_i64_expr_range_batch(&mut range, &batch, expr, predicate)?;
+        }
+    }
+    Some(range)
+}
+
+fn observe_i64_expr_range_batch(
+    range: &mut Option<KeyRange>,
+    batch: &RecordBatch,
+    expr: &Expr,
+    predicate: Option<&Expr>,
+) -> Option<()> {
+    for row in 0..batch.num_rows() {
+        if let Some(predicate) = predicate
+            && !eval_bool(predicate, batch, row)?
+        {
+            continue;
+        }
+        let value = match eval_scalar(expr, batch, row)? {
+            Scalar::Null => continue,
+            value => scalar_to_i64(value)?,
+        };
+        *range = Some(match *range {
+            Some(existing) => KeyRange { min: existing.min.min(value), max: existing.max.max(value) },
+            None => KeyRange { min: value, max: value },
+        });
+    }
+    Some(())
+}
+
+fn reader_projection_indices_for_exprs(
+    source: &LocalParquetSource,
+    expr: &Expr,
+    predicate: Option<&Expr>,
+) -> Option<BTreeSet<usize>> {
+    let mut columns = BTreeSet::new();
+    for column in predicate_columns(expr) {
+        let SourceColumnRef::File(column_index) = source.source_column_ref(&column)? else {
+            return None;
+        };
+        columns.insert(column_index);
+    }
+    if let Some(predicate) = predicate {
+        for column in predicate_columns(predicate) {
+            let SourceColumnRef::File(column_index) = source.source_column_ref(&column)? else {
+                return None;
+            };
+            columns.insert(column_index);
+        }
+    }
+    (!columns.is_empty()).then_some(columns)
+}
+
 fn reader_projection_indices(
     source: &LocalParquetSource,
     key_column: &str,
@@ -1281,10 +1516,10 @@ fn eval_binary(left: Scalar, op: BinaryOp, right: Scalar) -> Option<Scalar> {
         BinaryOp::LtEq => scalar_cmp(&left, &right).map(|ordering| Scalar::Boolean(ordering <= 0)),
         BinaryOp::Gt => scalar_cmp(&left, &right).map(|ordering| Scalar::Boolean(ordering > 0)),
         BinaryOp::GtEq => scalar_cmp(&left, &right).map(|ordering| Scalar::Boolean(ordering >= 0)),
-        BinaryOp::Add
-        | BinaryOp::Subtract
-        | BinaryOp::Multiply
-        | BinaryOp::Divide
+        BinaryOp::Add => eval_checked_i64_binary(left, right, i64::checked_add).map(Scalar::Int64),
+        BinaryOp::Subtract => eval_checked_i64_binary(left, right, i64::checked_sub).map(Scalar::Int64),
+        BinaryOp::Multiply => eval_checked_i64_binary(left, right, i64::checked_mul).map(Scalar::Int64),
+        BinaryOp::Divide
         | BinaryOp::Modulo
         | BinaryOp::BitwiseAnd
         | BinaryOp::BitwiseOr
@@ -1294,6 +1529,10 @@ fn eval_binary(left: Scalar, op: BinaryOp, right: Scalar) -> Option<Scalar> {
         | BinaryOp::And
         | BinaryOp::Or => None,
     }
+}
+
+fn eval_checked_i64_binary(left: Scalar, right: Scalar, op: fn(i64, i64) -> Option<i64>) -> Option<i64> {
+    op(scalar_to_i64(left)?, scalar_to_i64(right)?)
 }
 
 fn eval_boolean_binary(left: Scalar, op: BinaryOp, right: Scalar) -> Option<Scalar> {
@@ -1341,9 +1580,17 @@ fn scalar_to_i64(value: Scalar) -> Option<i64> {
     match value {
         Scalar::Int64(value) => Some(value),
         Scalar::UInt64(value) => i64::try_from(value).ok(),
-        Scalar::Float64(value) if value.fract() == 0.0 => Some(value as i64),
-        Scalar::Boolean(_) | Scalar::Float64(_) | Scalar::String(_) | Scalar::Null => None,
+        Scalar::Float64(value) => exact_i64_from_f64(value),
+        Scalar::Boolean(_) | Scalar::String(_) | Scalar::Null => None,
     }
+}
+
+fn exact_i64_from_f64(value: f64) -> Option<i64> {
+    if !value.is_finite() || value.fract() != 0.0 || value < i64::MIN as f64 || value >= 9_223_372_036_854_775_808.0 {
+        return None;
+    }
+    let converted = value as i64;
+    ((converted as f64) == value).then_some(converted)
 }
 
 fn scalar_to_u64(value: Scalar) -> Option<u64> {

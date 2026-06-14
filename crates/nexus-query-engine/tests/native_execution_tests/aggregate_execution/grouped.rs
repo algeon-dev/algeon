@@ -152,6 +152,92 @@ fn bounded_single_grouped_aggregate_uses_prepared_sort_groupby_after_exact_cardi
 }
 
 #[test]
+fn bounded_medium_single_string_avg_uses_prepared_sort_groupby_after_exact_cardinality_probe() {
+    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let row_count = 204_000usize;
+    let groups =
+        ["Books", "Children", "Electronics", "Home", "Jewelry", "Men", "Music", "Shoes", "Sports", "Tools", "Women"];
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("category", DataType::Utf8, false),
+        Field::new("price", DataType::Float64, false),
+    ]));
+    let batch = RecordBatch::try_new(
+        Arc::clone(&schema),
+        vec![
+            Arc::new(StringArray::from_iter_values((0..row_count).map(|row| groups[row % groups.len()]))),
+            Arc::new(Float64Array::from_iter_values((0..row_count).map(|row| (row % groups.len()) as f64 + 1.0))),
+        ],
+    )
+    .unwrap();
+    let aggregate_schema = Arc::new(Schema::new(vec![
+        Field::new("category", DataType::Utf8, false),
+        Field::new("avg_price", DataType::Float64, true),
+    ]));
+    let aggregate_spec = AggregateSpec::new(
+        vec![Expr::column("category")],
+        vec![AggregateExpr::new(AggregateFunction::Avg, Expr::column("price"), "avg_price")],
+    );
+
+    let mut builder = QueryPlanBuilder::new();
+    let source =
+        builder.add_source(SourceNode::LiteralBatch(LiteralBatchSource::new(Arc::clone(&schema), vec![batch])));
+    let aggregate = builder.add_aggregate(source, aggregate_spec, Arc::clone(&aggregate_schema));
+    let plan = builder.finish_with_host_sink(aggregate);
+
+    let context = ExecutionContext::builder()
+        .with_shared_runtime(Arc::clone(&runtime))
+        .with_memory_control_policy(MemoryControlPolicy::Bounded {
+            device_budget_bytes: 8 * 1024 * 1024 * 1024,
+            max_source_chunk_bytes: 1024 * 1024,
+            max_row_groups_per_chunk: 1,
+            max_retry_attempts: 1,
+            min_retry_chunk_row_groups: 1,
+        })
+        .build()
+        .unwrap();
+    let result = execute_query_plan(&context, &plan).unwrap();
+    let metrics = result.metrics();
+    let single_strategy = metrics
+        .aggregate_strategy_decisions
+        .iter()
+        .find(|decision| decision.facts.get("execution_stage").map(String::as_str) == Some("single"))
+        .expect("single aggregate should record a strategy decision");
+    assert_eq!(single_strategy.node_id, aggregate.to_string());
+    assert_eq!(single_strategy.facts.get("selected_strategy").map(String::as_str), Some("prepared_sort_groupby"));
+    assert_eq!(
+        single_strategy.facts.get("prepared_sort_groupby_cost_model_status").map(String::as_str),
+        Some("selected_exact_cardinality_low_cardinality")
+    );
+    assert_eq!(single_strategy.facts.get("exact_cardinality_probe_status").map(String::as_str), Some("measured"));
+    assert_eq!(single_strategy.facts.get("exact_cardinality_probe_input_rows").map(String::as_str), Some("204000"));
+    assert_eq!(single_strategy.facts.get("exact_cardinality_probe_num_groups").map(String::as_str), Some("11"));
+
+    let probe_events =
+        budgeted_events(metrics, "nexus_query_engine.aggregate.exact_single_key_cardinality_probe.nunique");
+    assert!(!probe_events.is_empty(), "single aggregate should record the exact-cardinality probe event");
+    let prepare_events = budgeted_events(metrics, "nexus_query_engine.aggregate.prepare_single.prepared_sort_groupby");
+    assert!(!prepare_events.is_empty(), "single aggregate should record prepared groupby preparation");
+    let avg_events = budgeted_events(metrics, "nexus_query_engine.aggregate.finalize_avg");
+    assert!(!avg_events.is_empty(), "prepared AVG should record AVG finalization");
+
+    let QueryOutput::HostArrow(batch) = result.output() else {
+        panic!("host sink should materialize one RecordBatch");
+    };
+    assert_eq!(batch.schema(), aggregate_schema);
+    assert_eq!(batch.num_rows(), groups.len());
+    let output_keys = batch.column(0).as_any().downcast_ref::<StringArray>().unwrap();
+    let output_avg = batch.column(1).as_any().downcast_ref::<Float64Array>().unwrap();
+    let mut actual = (0..batch.num_rows())
+        .map(|row| (output_keys.value(row).to_string(), output_avg.value(row)))
+        .collect::<Vec<_>>();
+    actual.sort_by(|left, right| left.0.cmp(&right.0));
+    let mut expected =
+        groups.iter().enumerate().map(|(index, group)| ((*group).to_string(), index as f64 + 1.0)).collect::<Vec<_>>();
+    expected.sort_by(|left, right| left.0.cmp(&right.0));
+    assert_eq!(actual, expected);
+}
+
+#[test]
 fn bounded_native_query_executes_chunked_grouped_sum_and_final_merge() {
     let dir = unique_temp_dir("nexus-query-engine-bounded-native-execution");
     let path = dir.join("input.parquet");

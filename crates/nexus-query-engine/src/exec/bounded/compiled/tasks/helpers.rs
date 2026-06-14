@@ -1,4 +1,7 @@
+use cudf::{DuplicateKeepOption, frame::dataframe::DropDuplicatesOptions};
+
 use super::*;
+use crate::exec::{attach_budget_token_failure_facts, execution_budget_token_for_boundary};
 
 pub(super) fn plan_node(task: &PipelineTask) -> Result<NodeId> {
     task.plan_node().ok_or_else(|| {
@@ -60,6 +63,7 @@ pub(super) fn join_strategy(
     node_id: NodeId,
     observed_build_rows: u64,
     build_side_bytes: u64,
+    build_key_unique: Option<bool>,
 ) -> Result<CompiledJoinStrategySelection> {
     let plan_facts = keyed_hash_join_strategy_input_facts_for_plan(plan, node_id, node);
     let strategy_facts = KeyedHashJoinStrategyInputFacts {
@@ -67,6 +71,9 @@ pub(super) fn join_strategy(
         observed_build_rows: Some(observed_build_rows),
         build_side_bytes: Some(build_side_bytes),
         probe_side_bytes: plan_facts.probe_side_bytes,
+        estimated_output_rows: plan_facts.estimated_output_rows,
+        estimated_output_bytes: plan_facts.estimated_output_bytes,
+        build_key_unique,
         probe_reuse_count: plan_facts.probe_reuse_count,
         reusable_prebuild_supported: plan_facts.reusable_prebuild_supported,
     };
@@ -99,6 +106,87 @@ pub(super) fn join_strategy(
                 .with_fact("residual_predicate", node.spec.residual_predicate.is_some())
                 .with_fact("output_projection_len", node.spec.output_projection.len())
         })
+}
+
+pub(super) fn join_strategy_needs_build_key_uniqueness_probe(
+    plan: &QueryPlan,
+    node: &JoinNode,
+    node_id: NodeId,
+    observed_build_rows: u64,
+    build_side_bytes: u64,
+) -> bool {
+    let plan_facts = keyed_hash_join_strategy_input_facts_for_plan(plan, node_id, node);
+    keyed_hash_join_strategy_should_probe_left_one_shot_build_key_uniqueness(
+        node,
+        KeyedHashJoinStrategyInputFacts {
+            estimated_build_rows: plan_facts.estimated_build_rows,
+            observed_build_rows: Some(observed_build_rows),
+            build_side_bytes: Some(build_side_bytes),
+            probe_side_bytes: plan_facts.probe_side_bytes,
+            estimated_output_rows: plan_facts.estimated_output_rows,
+            estimated_output_bytes: plan_facts.estimated_output_bytes,
+            build_key_unique: None,
+            probe_reuse_count: plan_facts.probe_reuse_count,
+            reusable_prebuild_supported: plan_facts.reusable_prebuild_supported,
+        },
+    )
+}
+
+pub(super) fn measure_join_build_key_unique(
+    context: &ExecutionContext,
+    node: &JoinNode,
+    build_frame: &GpuDataFrame,
+    reservations: &ReservationTracker,
+    metrics: &mut QueryMetrics,
+) -> Result<bool> {
+    let key_columns = node
+        .spec
+        .keys
+        .iter()
+        .map(|key| match node.spec.build_side {
+            JoinSide::Left => key.left.name().to_string(),
+            JoinSide::Right => key.right.name().to_string(),
+        })
+        .collect::<Vec<_>>();
+    let key_refs = key_columns.iter().map(String::as_str).collect::<Vec<_>>();
+    let token = execution_budget_token_for_boundary(
+        context,
+        reservations.remaining_bytes(),
+        "join_build_key_uniqueness_probe",
+        "nexus_query_engine.bounded.join.build_key_uniqueness_probe.budget_token",
+        "failed to create join build-key uniqueness probe budget token",
+    )?;
+    let overrides = token.execution_overrides();
+    let timer = Instant::now();
+    let keys = match build_frame.frame().select(key_refs.clone()) {
+        Ok(keys) => keys,
+        Err(error) => {
+            metrics.operator_time += timer.elapsed();
+            return Err(QueryError::from_cudf(
+                "nexus_query_engine.bounded.join.build_key_uniqueness_probe.input",
+                "failed to project join build-key uniqueness probe columns",
+                error,
+            ));
+        },
+    };
+    let unique_keys = match keys.with_execution(&overrides).drop_duplicates(
+        DropDuplicatesOptions::builder().subset(key_refs.as_slice()).keep(DuplicateKeepOption::KeepAny).build(),
+    ) {
+        Ok(unique_keys) => unique_keys,
+        Err(error) => {
+            metrics.operator_time += timer.elapsed();
+            return Err(attach_budget_token_failure_facts(
+                QueryError::from_cudf(
+                    "nexus_query_engine.bounded.join.build_key_uniqueness_probe.distinct_keys",
+                    "failed to compute join build-key uniqueness",
+                    error,
+                ),
+                &token,
+            ));
+        },
+    };
+    metrics.operator_time += timer.elapsed();
+    Ok(unique_keys.num_rows() == build_frame.num_rows())
 }
 
 pub(super) fn sort_node<'a>(plan: &'a QueryPlan, task: &PipelineTask, node_id: NodeId) -> Result<&'a SortNode> {

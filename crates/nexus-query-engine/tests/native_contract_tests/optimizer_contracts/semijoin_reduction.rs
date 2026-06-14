@@ -110,6 +110,53 @@ fn semijoin_reduction_accepts_filtered_dimension_keyset_for_transitive_fact_filt
 }
 
 #[test]
+fn semijoin_reduction_accepts_filtered_left_semi_dimension_keyset_for_transitive_fact_filtering() {
+    let plan = root_semijoin_over_fact_date_dimension_plan_with_left_semi_week_keyset();
+
+    let result = optimize_query_plan(plan, &NativeOptimizerOptions::default());
+
+    assert_eq!(result.change, NativeOptimizerChange::Changed);
+    assert_eq!(result.diagnostics.semijoin_reduction.considered_count, 2);
+    assert_eq!(result.diagnostics.semijoin_reduction.applied_count, 1);
+    assert!(result.plan.unreachable_node_ids().is_empty());
+
+    let date_candidate = result
+        .diagnostics
+        .semijoin_reduction
+        .candidates
+        .iter()
+        .find(|candidate| {
+            candidate
+                .key_mappings
+                .iter()
+                .any(|mapping| mapping.before_column == "d_date" && mapping.after_column.as_deref() == Some("d_date"))
+        })
+        .expect("outer date semijoin candidate should be considered");
+    assert!(date_candidate.applied);
+    assert_eq!(date_candidate.crossed_join_node_ids.len(), 1);
+    assert!(matches!(
+        date_candidate.cost_gate.as_ref().map(|gate| &gate.signal),
+        Some(SemijoinReductionCostSignal::FilteredSourceKeysetShape {
+            filtered_source_count: 1,
+            target_rows: Some(73_049),
+            crossed_join_count: 1,
+            ..
+        })
+    ));
+
+    assert!(
+        result.plan.dynamic_filter_routes().iter().any(|route| {
+            matches!(&route.producer, DynamicFilterProducer::HashJoinBuild { build_side: JoinSide::Right, .. })
+                && route.producer_columns == vec!["d_date_sk".to_string()]
+                && route.consumer_columns == vec!["ss_sold_date_sk".to_string()]
+                && matches!(&route.consumer, DynamicFilterConsumer::LocalParquetSource { .. })
+                && route.consumer_lowering == DynamicFilterConsumerLowering::ReaderPredicate
+        }),
+        "optimized left-semi dimension keyset should expose a reusable date_sk dynamic-filter route to the fact source"
+    );
+}
+
+#[test]
 fn semijoin_reduction_strict_gate_allows_later_passes_to_route_dimension_keyset_filter() {
     let plan = root_semijoin_over_fact_date_dimension_plan();
     let options = NativeOptimizerOptions {
@@ -492,6 +539,18 @@ fn root_semijoin_over_nested_inner_join_plan() -> nexus_query_engine::QueryPlan 
 }
 
 fn root_semijoin_over_fact_date_dimension_plan() -> nexus_query_engine::QueryPlan {
+    root_semijoin_over_fact_date_dimension_plan_with_week_keyset(week_dates_from_filtered_date_dimension)
+}
+
+fn root_semijoin_over_fact_date_dimension_plan_with_left_semi_week_keyset() -> nexus_query_engine::QueryPlan {
+    root_semijoin_over_fact_date_dimension_plan_with_week_keyset(
+        week_dates_from_filtered_date_dimension_left_semi,
+    )
+}
+
+fn root_semijoin_over_fact_date_dimension_plan_with_week_keyset(
+    week_keyset: fn(&mut QueryPlanBuilder, nexus_query_engine::NodeId) -> nexus_query_engine::NodeId,
+) -> nexus_query_engine::QueryPlan {
     let mut builder = QueryPlanBuilder::new();
     let fact = builder.add_source(estimated_local_source_with_fields(
         "store_sales",
@@ -529,7 +588,7 @@ fn root_semijoin_over_fact_date_dimension_plan() -> nexus_query_engine::QueryPla
         Arc::clone(&sales_with_date_schema),
     );
 
-    let week_dates = week_dates_from_filtered_date_dimension(&mut builder, date_dim);
+    let week_dates = week_keyset(&mut builder, date_dim);
     let semi = builder.add_join(
         sales_with_date,
         week_dates,
@@ -573,6 +632,41 @@ fn week_dates_from_filtered_date_dimension(
         filtered_week,
         JoinSpec::new(
             JoinType::Inner,
+            vec![JoinKey::new(
+                ColumnRef::input(0, "d_week_seq", "d_week_seq"),
+                ColumnRef::input(1, "d_week_seq", "d_week_seq"),
+            )],
+        )
+        .with_output_projection(vec![JoinOutputColumn::left(ColumnRef::input(0, "d_date", "d_date"), "d_date")]),
+        schema(&["d_date"]),
+    )
+}
+
+fn week_dates_from_filtered_date_dimension_left_semi(
+    builder: &mut QueryPlanBuilder,
+    date_dim: nexus_query_engine::NodeId,
+) -> nexus_query_engine::NodeId {
+    let all_dates = builder.add_projection(
+        date_dim,
+        vec![
+            ProjectionOutput::new(Expr::column("d_date"), Field::new("d_date", DataType::Int32, false)),
+            ProjectionOutput::new(Expr::column("d_week_seq"), Field::new("d_week_seq", DataType::Int32, false)),
+        ],
+    );
+    let filtered_date = builder.add_filter(
+        date_dim,
+        Expr::binary(Expr::column("d_date"), BinaryOp::Eq, Expr::literal(LiteralValue::Int32(10_959))),
+        schema(&["d_date_sk", "d_date", "d_week_seq"]),
+    );
+    let filtered_week = builder.add_projection(
+        filtered_date,
+        vec![ProjectionOutput::new(Expr::column("d_week_seq"), Field::new("d_week_seq", DataType::Int32, false))],
+    );
+    builder.add_join(
+        all_dates,
+        filtered_week,
+        JoinSpec::new(
+            JoinType::LeftSemi,
             vec![JoinKey::new(
                 ColumnRef::input(0, "d_week_seq", "d_week_seq"),
                 ColumnRef::input(1, "d_week_seq", "d_week_seq"),

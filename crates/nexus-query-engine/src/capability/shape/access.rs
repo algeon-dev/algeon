@@ -389,7 +389,7 @@ pub(in crate::capability) fn projection_or_filter_wrapped_grouped_local_parquet_
     node_id: NodeId,
 ) -> Result<(NodeId, NodeId), CapabilityDecision> {
     let mut current = node_id;
-    let mut first_projection_id = None;
+    let mut saw_wrapper = false;
     let mut visited = BTreeSet::new();
     loop {
         if !visited.insert(current) {
@@ -406,17 +406,20 @@ pub(in crate::capability) fn projection_or_filter_wrapped_grouped_local_parquet_
         };
         match &node.kind {
             PlanNode::Projection(projection) => {
-                first_projection_id.get_or_insert(current);
+                saw_wrapper = true;
                 current = projection.input;
             },
-            PlanNode::Filter(filter) => current = filter.input,
+            PlanNode::Filter(filter) => {
+                saw_wrapper = true;
+                current = filter.input;
+            },
             PlanNode::Aggregate(aggregate) => {
-                let Some(projection_id) = first_projection_id else {
+                if !saw_wrapper {
                     return Err(CapabilityDecision::rejected(
-                        "resident_grouped_aggregate_topk_input_requires_projection_wrapped_grouped_aggregate",
+                        "resident_grouped_aggregate_topk_input_requires_projection_or_filter_wrapped_grouped_aggregate",
                         [("node_id", node_id.to_string())],
                     ));
-                };
+                }
                 if aggregate.spec.group_exprs.is_empty() {
                     return Err(CapabilityDecision::rejected(
                         "resident_grouped_aggregate_topk_input_requires_grouped_aggregate",
@@ -424,7 +427,7 @@ pub(in crate::capability) fn projection_or_filter_wrapped_grouped_local_parquet_
                     ));
                 }
                 validate_local_parquet_leaf_pipeline_for_capability(plan, aggregate.input)?;
-                return Ok((current, projection_id));
+                return Ok((current, node_id));
             },
             PlanNode::Source(_)
             | PlanNode::Join(_)

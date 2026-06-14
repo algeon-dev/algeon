@@ -41,7 +41,7 @@ use datafusion_nexus_bench::{
 const DEFAULT_QUERY_IDS: &[&str] =
     &["q03", "q07", "q22", "q26", "q32", "q37", "q42", "q52", "q55", "q62", "q82", "q85", "q92", "q93", "q97"];
 
-const TSV_SCHEMA_VERSION: u32 = 1;
+const TSV_SCHEMA_VERSION: u32 = 2;
 const TSV_HEADER: &str = concat!(
     "engine\tquery_id\titeration\twarmup\twall_ms\toutcome\tplanning_outcome\toutput_batches\toutput_rows\toutput_bytes",
     "\treservation_live_peak_bytes\treservation_denied_count\tretry_count\tnative_runtime_started\tfailure",
@@ -1179,17 +1179,17 @@ fn partitioned_join_count_text(metrics: &NativeDataFusionExecutionMetrics) -> St
 }
 
 fn partitioned_join_count(metrics: &NativeDataFusionExecutionMetrics) -> usize {
-    metrics
-        .join_strategy_rows
-        .iter()
-        .filter(|row| row.join_strategy.starts_with("partitioned_") || row.partitioned_hash_join_count > 0)
-        .count()
+    metrics.join_strategy_rows.iter().map(|row| row.partitioned_hash_join_count).sum()
+}
+
+fn partitioned_join_site_count(metrics: &NativeDataFusionExecutionMetrics) -> usize {
+    metrics.join_strategy_rows.iter().filter(|row| row.partitioned_hash_join_count > 0).count()
 }
 
 fn join_partitioning_status(metrics: &NativeDataFusionExecutionMetrics) -> String {
     let join_count = metrics.join_strategy_rows.len();
-    let partitioned_count = partitioned_join_count(metrics);
-    match (join_count, partitioned_count) {
+    let partitioned_sites = partitioned_join_site_count(metrics);
+    match (join_count, partitioned_sites) {
         (0, _) => "no_joins",
         (_, 0) => "not_partitioned",
         (joins, partitioned) if joins == partitioned => "partitioned",
@@ -1263,7 +1263,7 @@ mod tests {
         };
         let p1 = P1BottleneckSummary::from_outcome(&outcome);
         assert_eq!(p1.runtime_operator_class, "not_run");
-        assert_eq!(TSV_SCHEMA_VERSION, 1);
+        assert_eq!(TSV_SCHEMA_VERSION, 2);
         assert_eq!(TSV_COLUMNS.join("\t"), TSV_HEADER);
         assert_eq!(TSV_HEADER.split('\t').count(), row_fields(query, 0, false, &outcome, Engine::CpuDataFusion).len());
     }
