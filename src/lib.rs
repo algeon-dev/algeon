@@ -101,7 +101,10 @@ pub mod execution_contracts {
             NativeStrictBoundedContractDiagnostics, NativeStrictBoundedRejectedCandidateDiagnostics,
             STRICT_BOUNDED_NON_JOIN_OUTSIDE_REPORT_SCOPE_REASON,
         },
-        session_config::{DATAFUSION_NEXUS_CONFIG_PREFIX, DataFusionNexusSessionConfig, NativeMemoryPolicyConfig},
+        session_config::{
+            DATAFUSION_NEXUS_CONFIG_PREFIX, DATAFUSION_NEXUS_SESSION_CONFIG_OPTIONS, DataFusionNexusSessionConfig,
+            DataFusionNexusSessionConfigOption, NativeMemoryPolicyConfig,
+        },
     };
 }
 
@@ -281,7 +284,10 @@ pub use session::{
     CUDF_NATIVE_PHYSICAL_OPTIMIZER_RULE_NAME, CudfSessionStateBuilderExt, PhysicalOptimizerRules,
     cudf_native_physical_optimizer_rules, cudf_native_physical_optimizer_rules_with_rule,
 };
-pub use session_config::{DATAFUSION_NEXUS_CONFIG_PREFIX, DataFusionNexusSessionConfig, NativeMemoryPolicyConfig};
+pub use session_config::{
+    DATAFUSION_NEXUS_CONFIG_PREFIX, DATAFUSION_NEXUS_SESSION_CONFIG_OPTIONS, DataFusionNexusSessionConfig,
+    DataFusionNexusSessionConfigOption, NativeMemoryPolicyConfig,
+};
 pub use source_cardinality::{
     SOURCE_UNIQUE_KEYS_METADATA_KEY, register_source_unique_keys_for_path, schema_with_source_unique_keys,
 };
