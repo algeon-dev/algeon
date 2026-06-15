@@ -1,4 +1,5 @@
 mod arrow_device;
+mod arrow_host;
 mod ast;
 mod binary;
 mod column;
@@ -33,6 +34,7 @@ mod types;
 mod unary;
 
 pub use arrow_device::*;
+pub use arrow_host::*;
 pub use ast::*;
 pub use binary::*;
 pub use column::*;

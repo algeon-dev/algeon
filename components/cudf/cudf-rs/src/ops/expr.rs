@@ -31,7 +31,7 @@
 //!
 //! During [`Expr::eval`] or [`Expr::eval_in`], each literal is materialized as
 //! a device-resident [`Scalar`] in the resolved output execution domain, then
-//! broadcast into a newly allocated device [`Column`](crate::core::Column) with
+//! broadcast into a newly allocated device [`Column`] with
 //! the input [`DataFrame`] row count. The returned [`Series`] owns that new
 //! column and retains the resolved provenance: by default the input frame's
 //! stream and memory resource, or the same-device borrowed stream and memory

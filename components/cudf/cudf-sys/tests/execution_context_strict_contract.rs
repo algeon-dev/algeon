@@ -7,6 +7,8 @@ const EXECUTION_CONTEXT_CPP: &str =
 const EXECUTION_CONTEXT_INTERNAL_HPP: &str =
     include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/native/src/execution_context_internal.hpp"));
 const ARROW_DEVICE_CPP: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/native/src/arrow_device.cpp"));
+const ARROW_HOST_H: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/native/include/arrow_host.h"));
+const ARROW_HOST_CPP: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/native/src/arrow_host.cpp"));
 const BINARY_H: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/native/include/binary.h"));
 const BINARY_CPP: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/native/src/binary.cpp"));
 const CONCATENATE_H: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/native/include/concatenate.h"));
@@ -61,6 +63,7 @@ const TABLE_H: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/native/
 const TABLE_CPP: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/native/src/table.cpp"));
 const UNARY_H: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/native/include/unary.h"));
 const UNARY_CPP: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/native/src/unary.cpp"));
+const ARROW_HOST_FFI_RS: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/ffi/arrow_host.rs"));
 const BINARY_FFI_RS: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/ffi/binary.rs"));
 const CONCATENATE_FFI_RS: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/ffi/concatenate.rs"));
 const COLUMN_FFI_RS: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/ffi/column.rs"));
@@ -1595,6 +1598,34 @@ fn arrow_device_entries_use_required_exec_options() {
             "{function} must not accept permissive/ambient execution options"
         );
         assert!(!body.contains("cudf_make_exec_context"), "{function} must not seed execution from ambient defaults");
+    }
+}
+
+#[test]
+fn arrow_host_entries_use_required_exec_options() {
+    let body = function_region(ARROW_HOST_CPP, "cudf_status_t cudf_arrow_host_column_import_ex", "CUDF_RUST_CATCH");
+    assert!(
+        body.contains("cudf_resolve_required_exec_options(options, &exec)"),
+        "cudf_arrow_host_column_import_ex must use the strict execution-options resolver"
+    );
+    assert!(
+        !body.contains("cudf_resolve_exec_options(options"),
+        "cudf_arrow_host_column_import_ex must not accept permissive/ambient execution options"
+    );
+    assert!(
+        !body.contains("cudf_make_exec_context"),
+        "cudf_arrow_host_column_import_ex must not seed execution from ambient defaults"
+    );
+}
+
+#[test]
+fn arrow_host_duplicate_non_ex_production_apis_are_removed() {
+    for (name, source, marker) in [
+        ("arrow host native header", ARROW_HOST_H, "cudf_status_t cudf_arrow_host_column_import("),
+        ("arrow host native source", ARROW_HOST_CPP, "cudf_status_t cudf_arrow_host_column_import("),
+        ("arrow host Rust FFI", ARROW_HOST_FFI_RS, "pub fn cudf_arrow_host_column_import("),
+    ] {
+        assert!(!source.contains(marker), "{name} must not retain duplicate non-_ex production API `{marker}`");
     }
 }
 

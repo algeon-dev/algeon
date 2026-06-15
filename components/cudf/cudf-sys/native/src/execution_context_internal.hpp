@@ -103,4 +103,45 @@ cudf_resolve_required_exec_options(cudf_exec_options_t const *options,
 
 void cudf_record_synchronized_stream(rmm::cuda_stream_view stream);
 
+/// Synchronizes a stream before borrowed host-source buffers are allowed to go
+/// out of scope. libcudf host import paths enqueue host-to-device copies on the
+/// supplied stream, while the Rust FFI bridge owns only borrowed Arrow host
+/// roots for the duration of the shim call.
+class cudf_host_source_copy_sync_guard {
+public:
+  explicit cudf_host_source_copy_sync_guard(rmm::cuda_stream_view stream)
+      : stream_{stream} {}
+
+  cudf_host_source_copy_sync_guard(
+      cudf_host_source_copy_sync_guard const &) = delete;
+
+  cudf_host_source_copy_sync_guard &
+  operator=(cudf_host_source_copy_sync_guard const &) = delete;
+
+  ~cudf_host_source_copy_sync_guard() noexcept {
+    if (!copy_may_be_pending_) {
+      return;
+    }
+    try {
+      stream_.synchronize();
+      cudf_record_synchronized_stream(stream_);
+    } catch (...) {
+      // Destructors cannot report synchronization failures without masking the
+      // original error; explicit synchronize calls still propagate failures.
+    }
+  }
+
+  void mark_copy_may_be_pending() noexcept { copy_may_be_pending_ = true; }
+
+  void synchronize_and_release() {
+    stream_.synchronize();
+    cudf_record_synchronized_stream(stream_);
+    copy_may_be_pending_ = false;
+  }
+
+private:
+  rmm::cuda_stream_view stream_;
+  bool copy_may_be_pending_ = false;
+};
+
 #endif // CUDF_RUST_EXECUTION_CONTEXT_INTERNAL_HPP
