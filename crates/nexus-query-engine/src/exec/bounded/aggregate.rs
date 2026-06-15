@@ -47,11 +47,12 @@ fn aggregate_source_chunk_planning_policy(
     context: &ExecutionContext,
     bounded: &BoundedPlan<'_>,
 ) -> SourceChunkPlanningPolicy {
-    let mut policy = SourceChunkPlanningPolicy::for_source_task_with_mode(
+    let mut policy = SourceChunkPlanningPolicy::for_source_task_with_mode_and_options(
         bounded.source,
         context.memory_control_policy(),
         SourceTaskMemoryModel::aggregate_pipeline(bounded.has_source_adjacent_stages()),
         context.source_chunk_planning_mode(),
+        context.source_chunk_planning_options(),
     );
     if bounded.has_source_adjacent_stages() {
         policy.max_source_chunk_bytes = Some(

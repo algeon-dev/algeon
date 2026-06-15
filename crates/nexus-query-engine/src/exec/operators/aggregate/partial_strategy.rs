@@ -1,24 +1,11 @@
 use std::collections::BTreeMap;
 
 use super::*;
-use crate::capability::aggregate_strategy_capability_decision;
+use crate::capability::{AggregateStrategyExecutionOptions, aggregate_strategy_capability_decision};
 
-pub(super) const ENCODED_KEY_PARTIAL_LOW_CARDINALITY_THRESHOLD_PPM: u64 = 100_000;
-pub(super) const ENCODED_KEY_PARTIAL_MIN_INPUT_ROWS: u64 = 100_000;
-pub(super) const EXACT_GROUPED_KEY_CARDINALITY_PROBE_MAX_KEY_COLUMNS: usize = 5;
-pub(super) const EXACT_SINGLE_STRING_AVG_CARDINALITY_PROBE_MIN_INPUT_ROWS: u64 = 100_000;
-pub(super) const EXACT_SINGLE_KEY_CARDINALITY_PROBE_MIN_INPUT_ROWS: u64 = 500_000;
-pub(super) const EXACT_GROUPED_KEY_CARDINALITY_PROBE_MIN_INPUT_ROWS: u64 = 500_000;
-pub(super) const EXACT_SINGLE_STRING_KEY_PREPARED_MAX_GROUPS: u64 = 4_096;
-pub(super) const EXACT_THREE_KEY_CARDINALITY_PROBE_MAX_INPUT_ROWS: u64 = 10_000_000;
-pub(super) const EXACT_FIVE_KEY_CARDINALITY_PROBE_MAX_INPUT_ROWS: u64 = 7_000_000;
-pub(super) const PREPARED_SORT_GROUPBY_LOW_CARDINALITY_THRESHOLD_PPM: u64 = 100_000;
-pub(super) const SOURCE_ADJACENT_PREPARED_SORT_GROUPBY_MAX_ROW_GROUPS: u64 = 64;
-pub(super) const SOURCE_ADJACENT_PREPARED_SORT_GROUPBY_MAX_SOURCE_READ_BYTES: u64 = 384 * 1024 * 1024;
-pub(super) const SOURCE_ADJACENT_PREPARED_SORT_GROUPBY_MAX_FAN_IN: u64 = 64;
-
+#[cfg(test)]
 pub(super) fn select_partial_aggregate_strategy_decision(
-    mut decision: AggregateStrategyCapabilityDecision,
+    decision: AggregateStrategyCapabilityDecision,
     node_id: Option<NodeId>,
     spec: &AggregateSpec,
     input_schema: &arrow::datatypes::Schema,
@@ -26,11 +13,34 @@ pub(super) fn select_partial_aggregate_strategy_decision(
     input_evidence: Option<PartialAggregateInputEvidence>,
     metrics: &QueryMetrics,
 ) -> AggregateStrategyCapabilityDecision {
+    select_partial_aggregate_strategy_decision_with_options(
+        decision,
+        node_id,
+        spec,
+        input_schema,
+        input_rows,
+        input_evidence,
+        AggregateStrategyExecutionOptions::default(),
+        metrics,
+    )
+}
+
+pub(super) fn select_partial_aggregate_strategy_decision_with_options(
+    mut decision: AggregateStrategyCapabilityDecision,
+    node_id: Option<NodeId>,
+    spec: &AggregateSpec,
+    input_schema: &arrow::datatypes::Schema,
+    input_rows: u64,
+    input_evidence: Option<PartialAggregateInputEvidence>,
+    options: AggregateStrategyExecutionOptions,
+    metrics: &QueryMetrics,
+) -> AggregateStrategyCapabilityDecision {
+    add_aggregate_strategy_execution_option_facts(&mut decision.facts, options);
     add_prepared_sort_groupby_gate_facts(&mut decision, input_rows);
     decision.facts.insert("encoded_key_partial_cost_model", "prior_partial_reduction_ratio".to_string());
     decision.facts.insert(
         "encoded_key_partial_reduction_ratio_threshold_ppm",
-        ENCODED_KEY_PARTIAL_LOW_CARDINALITY_THRESHOLD_PPM.to_string(),
+        options.encoded_key_partial_low_cardinality_threshold_ppm().to_string(),
     );
     decision.facts.insert("encoded_key_partial_current_input_rows", input_rows.to_string());
     add_partial_aggregate_input_evidence_facts(&mut decision.facts, input_evidence);
@@ -51,7 +61,7 @@ pub(super) fn select_partial_aggregate_strategy_decision(
         && evidence.source_adjacent_partial
         && prepared_sort_groupby_available
     {
-        if source_adjacent_prepared_sort_groupby_allowed(evidence) {
+        if source_adjacent_prepared_sort_groupby_allowed(evidence, options) {
             return select_prepared_sort_groupby_for_source_adjacent(decision);
         }
         decision = reject_prepared_sort_groupby_for_cost_model(
@@ -62,7 +72,7 @@ pub(super) fn select_partial_aggregate_strategy_decision(
         prepared_sort_groupby_runtime_candidate = false;
     }
 
-    if input_rows < ENCODED_KEY_PARTIAL_MIN_INPUT_ROWS {
+    if input_rows < options.encoded_key_partial_min_input_rows() {
         if encoded_key_partial_available {
             decision = reject_encoded_key_partial_for_cost_model(
                 decision,
@@ -98,13 +108,13 @@ pub(super) fn select_partial_aggregate_strategy_decision(
         };
     };
     add_prior_cardinality_facts(&mut decision, &evidence, spec, input_schema);
-    if evidence.reduction_ratio_ppm <= PREPARED_SORT_GROUPBY_LOW_CARDINALITY_THRESHOLD_PPM
+    if evidence.reduction_ratio_ppm <= options.prepared_sort_groupby_low_cardinality_threshold_ppm()
         && prepared_sort_groupby_runtime_candidate
         && prepared_sort_groupby_should_run_for_prior_evidence(&decision, &evidence)
     {
         return select_prepared_sort_groupby_for_prior_cardinality(decision);
     }
-    if evidence.reduction_ratio_ppm <= ENCODED_KEY_PARTIAL_LOW_CARDINALITY_THRESHOLD_PPM
+    if evidence.reduction_ratio_ppm <= options.encoded_key_partial_low_cardinality_threshold_ppm()
         && encoded_key_partial_available
     {
         if prepared_sort_groupby_runtime_candidate {
@@ -138,6 +148,65 @@ pub(super) fn select_partial_aggregate_strategy_decision(
     } else {
         decision
     }
+}
+
+pub(in crate::exec::operators::aggregate) fn add_aggregate_strategy_execution_option_facts(
+    facts: &mut BTreeMap<&'static str, String>,
+    options: AggregateStrategyExecutionOptions,
+) {
+    facts.insert("aggregate_strategy_options_version", "1".to_string());
+    facts.insert(
+        "aggregate_encoded_key_partial_low_cardinality_threshold_ppm",
+        options.encoded_key_partial_low_cardinality_threshold_ppm().to_string(),
+    );
+    facts.insert(
+        "aggregate_encoded_key_partial_min_input_rows",
+        options.encoded_key_partial_min_input_rows().to_string(),
+    );
+    facts.insert(
+        "aggregate_exact_grouped_key_cardinality_probe_max_key_columns",
+        options.exact_grouped_key_cardinality_probe_max_key_columns().to_string(),
+    );
+    facts.insert(
+        "aggregate_exact_single_string_avg_cardinality_probe_min_input_rows",
+        options.exact_single_string_avg_cardinality_probe_min_input_rows().to_string(),
+    );
+    facts.insert(
+        "aggregate_exact_single_key_cardinality_probe_min_input_rows",
+        options.exact_single_key_cardinality_probe_min_input_rows().to_string(),
+    );
+    facts.insert(
+        "aggregate_exact_grouped_key_cardinality_probe_min_input_rows",
+        options.exact_grouped_key_cardinality_probe_min_input_rows().to_string(),
+    );
+    facts.insert(
+        "aggregate_exact_single_string_key_prepared_max_groups",
+        options.exact_single_string_key_prepared_max_groups().to_string(),
+    );
+    facts.insert(
+        "aggregate_exact_three_key_cardinality_probe_max_input_rows",
+        options.exact_three_key_cardinality_probe_max_input_rows().to_string(),
+    );
+    facts.insert(
+        "aggregate_exact_five_key_cardinality_probe_max_input_rows",
+        options.exact_five_key_cardinality_probe_max_input_rows().to_string(),
+    );
+    facts.insert(
+        "aggregate_prepared_sort_groupby_low_cardinality_threshold_ppm",
+        options.prepared_sort_groupby_low_cardinality_threshold_ppm().to_string(),
+    );
+    facts.insert(
+        "aggregate_source_adjacent_prepared_sort_groupby_max_row_groups",
+        options.source_adjacent_prepared_sort_groupby_max_row_groups().to_string(),
+    );
+    facts.insert(
+        "aggregate_source_adjacent_prepared_sort_groupby_max_source_read_bytes",
+        options.source_adjacent_prepared_sort_groupby_max_source_read_bytes().to_string(),
+    );
+    facts.insert(
+        "aggregate_source_adjacent_prepared_sort_groupby_max_fan_in",
+        options.source_adjacent_prepared_sort_groupby_max_fan_in().to_string(),
+    );
 }
 
 pub(super) fn add_partial_aggregate_input_evidence_facts(
@@ -329,11 +398,28 @@ fn prepared_sort_groupby_should_run_for_prior_evidence(
     fixed_width_keys > 0 || group_keys > 1 || string_keys == 0
 }
 
+#[cfg(test)]
 pub(super) fn exact_single_key_cardinality_probe_candidate<'a>(
     decision: &AggregateStrategyCapabilityDecision,
     spec: &'a AggregateSpec,
     input_schema: &arrow::datatypes::Schema,
     input_rows: u64,
+) -> Option<&'a str> {
+    exact_single_key_cardinality_probe_candidate_with_options(
+        decision,
+        spec,
+        input_schema,
+        input_rows,
+        AggregateStrategyExecutionOptions::default(),
+    )
+}
+
+pub(super) fn exact_single_key_cardinality_probe_candidate_with_options<'a>(
+    decision: &AggregateStrategyCapabilityDecision,
+    spec: &'a AggregateSpec,
+    input_schema: &arrow::datatypes::Schema,
+    input_rows: u64,
+    options: AggregateStrategyExecutionOptions,
 ) -> Option<&'a str> {
     if decision.selected_strategy != AggregateExecutionStrategy::LibcudfGroupby
         || decision.facts.get("prepared_sort_groupby_cost_model_status").map(String::as_str)
@@ -345,24 +431,41 @@ pub(super) fn exact_single_key_cardinality_probe_candidate<'a>(
     }
     let key_column = plain_group_key_column_name(&spec.group_exprs[0])?;
     input_schema.field_with_name(key_column).ok()?;
-    if input_rows < exact_single_key_cardinality_probe_min_input_rows(decision, spec) {
+    if input_rows < exact_single_key_cardinality_probe_min_input_rows(decision, spec, options) {
         return None;
     }
     Some(key_column)
 }
 
+#[cfg(test)]
 pub(super) fn exact_grouped_key_cardinality_probe_candidate(
     decision: &AggregateStrategyCapabilityDecision,
     spec: &AggregateSpec,
     input_schema: &arrow::datatypes::Schema,
     input_rows: u64,
 ) -> Option<Vec<String>> {
+    exact_grouped_key_cardinality_probe_candidate_with_options(
+        decision,
+        spec,
+        input_schema,
+        input_rows,
+        AggregateStrategyExecutionOptions::default(),
+    )
+}
+
+pub(super) fn exact_grouped_key_cardinality_probe_candidate_with_options(
+    decision: &AggregateStrategyCapabilityDecision,
+    spec: &AggregateSpec,
+    input_schema: &arrow::datatypes::Schema,
+    input_rows: u64,
+    options: AggregateStrategyExecutionOptions,
+) -> Option<Vec<String>> {
     if decision.selected_strategy != AggregateExecutionStrategy::LibcudfGroupby
         || decision.facts.get("prepared_sort_groupby_cost_model_status").map(String::as_str)
             != Some("selected_libcudf_runtime_probe")
         || !prepared_sort_groupby_contract_available(decision)
-        || !(2..=EXACT_GROUPED_KEY_CARDINALITY_PROBE_MAX_KEY_COLUMNS).contains(&spec.group_exprs.len())
-        || input_rows < EXACT_GROUPED_KEY_CARDINALITY_PROBE_MIN_INPUT_ROWS
+        || !(2..=options.exact_grouped_key_cardinality_probe_max_key_columns()).contains(&spec.group_exprs.len())
+        || input_rows < options.exact_grouped_key_cardinality_probe_min_input_rows()
     {
         return None;
     }
@@ -378,7 +481,9 @@ pub(super) fn exact_grouped_key_cardinality_probe_candidate(
         key_columns.push(key_column.to_string());
         key_types.push(field.data_type());
     }
-    if spec.group_exprs.len() > 2 && !extended_grouped_cardinality_probe_shape_supported(input_rows, &key_types) {
+    if spec.group_exprs.len() > 2
+        && !extended_grouped_cardinality_probe_shape_supported(input_rows, &key_types, options)
+    {
         return None;
     }
     Some(key_columns)
@@ -387,6 +492,7 @@ pub(super) fn exact_grouped_key_cardinality_probe_candidate(
 fn exact_single_key_cardinality_probe_min_input_rows(
     decision: &AggregateStrategyCapabilityDecision,
     spec: &AggregateSpec,
+    options: AggregateStrategyExecutionOptions,
 ) -> u64 {
     let single_stage = decision.facts.get("execution_stage").map(String::as_str) == Some("single");
     let single_string_key = decision.facts.get("group_key_count").map(String::as_str) == Some("1")
@@ -395,9 +501,9 @@ fn exact_single_key_cardinality_probe_min_input_rows(
     let avg_only =
         !spec.aggr_exprs.is_empty() && spec.aggr_exprs.iter().all(|expr| expr.function == AggregateFunction::Avg);
     if single_stage && single_string_key && avg_only {
-        EXACT_SINGLE_STRING_AVG_CARDINALITY_PROBE_MIN_INPUT_ROWS
+        options.exact_single_string_avg_cardinality_probe_min_input_rows()
     } else {
-        EXACT_SINGLE_KEY_CARDINALITY_PROBE_MIN_INPUT_ROWS
+        options.exact_single_key_cardinality_probe_min_input_rows()
     }
 }
 
@@ -554,25 +660,53 @@ pub(super) fn add_exact_grouped_key_cardinality_probe_facts(
     decision.facts.insert("prepared_sort_groupby_prior_strategy", "exact_cardinality_probe".to_string());
 }
 
+#[cfg(test)]
 pub(super) fn exact_cardinality_probe_should_select_prepared_sort_groupby(
     decision: &AggregateStrategyCapabilityDecision,
     probe: &ExactSingleKeyCardinalityProbe,
 ) -> bool {
-    exact_cardinality_probe_values_should_select_prepared_sort_groupby(
+    exact_cardinality_probe_should_select_prepared_sort_groupby_with_options(
         decision,
-        probe.num_groups,
-        probe.reduction_ratio_ppm,
+        probe,
+        AggregateStrategyExecutionOptions::default(),
     )
 }
 
-pub(super) fn exact_grouped_key_cardinality_probe_should_select_prepared_sort_groupby(
+pub(super) fn exact_cardinality_probe_should_select_prepared_sort_groupby_with_options(
     decision: &AggregateStrategyCapabilityDecision,
-    probe: &ExactGroupedKeyCardinalityProbe,
+    probe: &ExactSingleKeyCardinalityProbe,
+    options: AggregateStrategyExecutionOptions,
 ) -> bool {
     exact_cardinality_probe_values_should_select_prepared_sort_groupby(
         decision,
         probe.num_groups,
         probe.reduction_ratio_ppm,
+        options,
+    )
+}
+
+#[cfg(test)]
+pub(super) fn exact_grouped_key_cardinality_probe_should_select_prepared_sort_groupby(
+    decision: &AggregateStrategyCapabilityDecision,
+    probe: &ExactGroupedKeyCardinalityProbe,
+) -> bool {
+    exact_grouped_key_cardinality_probe_should_select_prepared_sort_groupby_with_options(
+        decision,
+        probe,
+        AggregateStrategyExecutionOptions::default(),
+    )
+}
+
+pub(super) fn exact_grouped_key_cardinality_probe_should_select_prepared_sort_groupby_with_options(
+    decision: &AggregateStrategyCapabilityDecision,
+    probe: &ExactGroupedKeyCardinalityProbe,
+    options: AggregateStrategyExecutionOptions,
+) -> bool {
+    exact_cardinality_probe_values_should_select_prepared_sort_groupby(
+        decision,
+        probe.num_groups,
+        probe.reduction_ratio_ppm,
+        options,
     )
 }
 
@@ -580,6 +714,7 @@ fn exact_cardinality_probe_values_should_select_prepared_sort_groupby(
     decision: &AggregateStrategyCapabilityDecision,
     num_groups: u64,
     reduction_ratio_ppm: u64,
+    options: AggregateStrategyExecutionOptions,
 ) -> bool {
     let string_keys =
         decision.facts.get("string_group_key_count").and_then(|value| value.parse::<usize>().ok()).unwrap_or(0);
@@ -588,27 +723,34 @@ fn exact_cardinality_probe_values_should_select_prepared_sort_groupby(
     let group_keys = decision.facts.get("group_key_count").and_then(|value| value.parse::<usize>().ok()).unwrap_or(0);
 
     if group_keys == 1 && string_keys == 1 && fixed_width_keys == 0 {
-        return num_groups <= EXACT_SINGLE_STRING_KEY_PREPARED_MAX_GROUPS;
+        return num_groups <= options.exact_single_string_key_prepared_max_groups();
     }
-    reduction_ratio_ppm <= PREPARED_SORT_GROUPBY_LOW_CARDINALITY_THRESHOLD_PPM
+    reduction_ratio_ppm <= options.prepared_sort_groupby_low_cardinality_threshold_ppm()
 }
 
-fn source_adjacent_prepared_sort_groupby_allowed(evidence: PartialAggregateInputEvidence) -> bool {
+fn source_adjacent_prepared_sort_groupby_allowed(
+    evidence: PartialAggregateInputEvidence,
+    options: AggregateStrategyExecutionOptions,
+) -> bool {
+    let row_group_count_known =
+        !evidence.source_chunk_reads_all_row_groups || evidence.source_chunk_row_group_count > 0;
+    let row_group_count_allowed = row_group_count_known
+        && evidence.source_chunk_row_group_count <= options.source_adjacent_prepared_sort_groupby_max_row_groups();
     if evidence.source_adjacent_partition_strategy == "none" {
-        if evidence.source_chunk_row_group_count <= SOURCE_ADJACENT_PREPARED_SORT_GROUPBY_MAX_ROW_GROUPS {
+        if row_group_count_allowed {
             return true;
         }
         return evidence
             .source_chunk_estimated_source_read_bytes
-            .is_some_and(|bytes| bytes <= SOURCE_ADJACENT_PREPARED_SORT_GROUPBY_MAX_SOURCE_READ_BYTES);
+            .is_some_and(|bytes| bytes <= options.source_adjacent_prepared_sort_groupby_max_source_read_bytes());
     }
-    if evidence.source_chunk_row_group_count > SOURCE_ADJACENT_PREPARED_SORT_GROUPBY_MAX_ROW_GROUPS {
+    if !row_group_count_allowed {
         return false;
     }
     evidence.source_adjacent_partition_strategy == "group_key"
         && evidence
             .source_adjacent_max_partition_fan_in
-            .is_some_and(|fan_in| fan_in <= SOURCE_ADJACENT_PREPARED_SORT_GROUPBY_MAX_FAN_IN)
+            .is_some_and(|fan_in| fan_in <= options.source_adjacent_prepared_sort_groupby_max_fan_in())
 }
 
 fn select_prepared_sort_groupby_for_source_adjacent(
@@ -899,7 +1041,11 @@ fn exact_grouped_key_cardinality_probe_dtype_supported(data_type: &ArrowDataType
         || matches!(data_type, ArrowDataType::Utf8 | ArrowDataType::LargeUtf8 | ArrowDataType::Utf8View)
 }
 
-fn extended_grouped_cardinality_probe_shape_supported(input_rows: u64, key_types: &[&ArrowDataType]) -> bool {
+fn extended_grouped_cardinality_probe_shape_supported(
+    input_rows: u64,
+    key_types: &[&ArrowDataType],
+    options: AggregateStrategyExecutionOptions,
+) -> bool {
     let string_key_count = key_types
         .iter()
         .filter(|data_type| {
@@ -910,12 +1056,12 @@ fn extended_grouped_cardinality_probe_shape_supported(input_rows: u64, key_types
         key_types.iter().filter(|data_type| fixed_width_dtype_size(data_type).is_some()).count();
     match key_types.len() {
         3 => {
-            input_rows <= EXACT_THREE_KEY_CARDINALITY_PROBE_MAX_INPUT_ROWS
+            input_rows <= options.exact_three_key_cardinality_probe_max_input_rows()
                 && string_key_count == 1
                 && fixed_width_key_count == 2
         },
         5 => {
-            input_rows <= EXACT_FIVE_KEY_CARDINALITY_PROBE_MAX_INPUT_ROWS
+            input_rows <= options.exact_five_key_cardinality_probe_max_input_rows()
                 && string_key_count == 3
                 && fixed_width_key_count == 2
         },
@@ -940,6 +1086,7 @@ pub(in crate::exec) fn record_default_grouped_aggregate_strategy_decision(
     node_id: Option<String>,
     stage: AggregateExecutionStage,
     memory_mode: &'static str,
+    aggregate_strategy_options: AggregateStrategyExecutionOptions,
     spec: &AggregateSpec,
     input_schema: &arrow::datatypes::SchemaRef,
     input_rows: u64,
@@ -952,6 +1099,7 @@ pub(in crate::exec) fn record_default_grouped_aggregate_strategy_decision(
         node_id,
         stage,
         memory_mode,
+        aggregate_strategy_options,
         spec,
         input_schema,
         input_rows,
@@ -972,6 +1120,7 @@ pub(in crate::exec) fn record_grouped_aggregate_strategy_decision(
     node_id: Option<String>,
     stage: AggregateExecutionStage,
     memory_mode: &'static str,
+    aggregate_strategy_options: AggregateStrategyExecutionOptions,
     spec: &AggregateSpec,
     input_schema: &arrow::datatypes::SchemaRef,
     input_rows: u64,
@@ -985,6 +1134,7 @@ pub(in crate::exec) fn record_grouped_aggregate_strategy_decision(
     input_evidence: Option<PartialAggregateInputEvidence>,
 ) {
     let mut facts = decision.facts;
+    add_aggregate_strategy_execution_option_facts(&mut facts, aggregate_strategy_options);
     add_partial_aggregate_input_evidence_facts(&mut facts, input_evidence);
     facts
         .entry("aggregate_structural_key")

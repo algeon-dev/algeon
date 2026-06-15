@@ -1,13 +1,11 @@
 use super::*;
 
-const MAX_UNPRUNED_HASH_SET_POST_DECODE_VALUES: usize = 4096;
-const MIN_UNPRUNED_HASH_SET_POST_DECODE_SOURCE_ROWS: u64 = 1_000_000;
-const MAX_DEFERRED_SMALL_IN_LIST_READER_VALUES: usize = 128;
 pub(super) fn merged_reader_predicate_route_ids(
     source: &LocalParquetSource,
     routes: &[&DynamicFilterRoute],
     filter_set: &DynamicFilterSet,
     deferred_reader_predicate_routes: &BTreeSet<DynamicFilterId>,
+    options: DynamicFilterExecutionOptions,
 ) -> Result<BTreeSet<DynamicFilterId>> {
     let mut ids = BTreeSet::new();
     for route in routes {
@@ -26,7 +24,7 @@ pub(super) fn merged_reader_predicate_route_ids(
         let Some(column) = route.consumer_columns.first() else {
             continue;
         };
-        if dynamic_filter_reader_predicate_should_merge(source, column, filter)? {
+        if dynamic_filter_reader_predicate_should_merge(source, column, filter, options)? {
             ids.insert(route.id);
         }
     }
@@ -57,6 +55,7 @@ pub(super) fn deferred_large_small_in_list_reader_predicate_routes(
     source: &LocalParquetSource,
     routes: &[&DynamicFilterRoute],
     filter_set: &DynamicFilterSet,
+    options: DynamicFilterExecutionOptions,
 ) -> BTreeSet<DynamicFilterId> {
     let mut large_small_in_list_routes = BTreeSet::new();
     let mut retained_reader_predicate_count = usize::from(source.reader_predicate.is_some());
@@ -70,7 +69,7 @@ pub(super) fn deferred_large_small_in_list_reader_predicate_routes(
         let Some(filter) = filter_set.produced(route.id) else {
             continue;
         };
-        if large_small_in_list_reader_predicate_should_defer(filter) {
+        if large_small_in_list_reader_predicate_should_defer(filter, options) {
             large_small_in_list_routes.insert(route.id);
         } else if !matches!(filter, DynamicFilter::Empty | DynamicFilter::HashSetContainsI64 { .. }) {
             retained_reader_predicate_count = retained_reader_predicate_count.saturating_add(1);
@@ -82,13 +81,16 @@ pub(super) fn deferred_large_small_in_list_reader_predicate_routes(
     large_small_in_list_routes
 }
 
-pub(super) fn large_small_in_list_reader_predicate_should_defer(filter: &DynamicFilter) -> bool {
+pub(super) fn large_small_in_list_reader_predicate_should_defer(
+    filter: &DynamicFilter,
+    options: DynamicFilterExecutionOptions,
+) -> bool {
     matches!(
         filter,
         DynamicFilter::SmallInListI64 {
             values,
             ..
-        } if values.len() > MAX_DEFERRED_SMALL_IN_LIST_READER_VALUES
+        } if values.len() > options.max_deferred_small_in_list_reader_values
     )
 }
 
@@ -100,6 +102,7 @@ pub(super) fn source_post_decode_dynamic_filter_stages(
     before: DynamicFilterSourceSnapshot,
     after: DynamicFilterSourceSnapshot,
     deferred_reader_predicate_routes: &BTreeSet<DynamicFilterId>,
+    options: DynamicFilterExecutionOptions,
 ) -> Vec<(DynamicFilterRoute, DynamicFilter, FilterNode)> {
     routes
         .iter()
@@ -112,6 +115,7 @@ pub(super) fn source_post_decode_dynamic_filter_stages(
                 before,
                 after,
                 deferred_reader_predicate_routes,
+                options,
             ) {
                 return None;
             }
@@ -129,10 +133,11 @@ pub(super) fn source_dynamic_filter_requires_post_decode(
     before: DynamicFilterSourceSnapshot,
     after: DynamicFilterSourceSnapshot,
     deferred_reader_predicate_routes: &BTreeSet<DynamicFilterId>,
+    options: DynamicFilterExecutionOptions,
 ) -> bool {
     !matches!(filter, DynamicFilter::Empty)
         && (deferred_reader_predicate_routes.contains(&route.id)
-            || unpruned_reader_hash_set_should_run_post_decode(source, route, filter, before, after)
+            || unpruned_reader_hash_set_should_run_post_decode(source, route, filter, before, after, options)
             || matches!(
                 route.consumer_lowering,
                 DynamicFilterConsumerLowering::PostDecodeOnly
@@ -146,6 +151,7 @@ pub(super) fn unpruned_reader_hash_set_should_run_post_decode(
     filter: &DynamicFilter,
     before: DynamicFilterSourceSnapshot,
     after: DynamicFilterSourceSnapshot,
+    options: DynamicFilterExecutionOptions,
 ) -> bool {
     if route.consumer_lowering != DynamicFilterConsumerLowering::ReaderPredicate {
         return false;
@@ -156,10 +162,10 @@ pub(super) fn unpruned_reader_hash_set_should_run_post_decode(
     let DynamicFilter::HashSetContainsI64 { values, .. } = filter else {
         return false;
     };
-    if values.len() > MAX_UNPRUNED_HASH_SET_POST_DECODE_VALUES {
+    if values.len() > options.max_unpruned_hash_set_post_decode_values {
         return false;
     }
-    selected_source_known_rows(source).is_some_and(|rows| rows >= MIN_UNPRUNED_HASH_SET_POST_DECODE_SOURCE_ROWS)
+    selected_source_known_rows(source).is_some_and(|rows| rows >= options.min_unpruned_hash_set_post_decode_source_rows)
 }
 
 pub(super) fn dynamic_filter_source_pruning_unchanged(

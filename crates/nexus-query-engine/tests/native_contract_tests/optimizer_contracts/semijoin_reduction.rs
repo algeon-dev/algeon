@@ -230,6 +230,23 @@ fn semijoin_reduction_strict_admission_gate_keeps_rewrite_when_original_is_not_y
 }
 
 #[test]
+fn semijoin_reduction_preserves_plan_captured_join_strategy_options_through_rewrite() {
+    let keyed_hash_join_strategy =
+        KeyedHashJoinStrategyOptions::default().with_small_reusable_hash_build_row_threshold(11);
+    let stamped_plan = optimize_query_plan(
+        root_semijoin_over_inner_join_plan(SemijoinTarget::Right),
+        &NativeOptimizerOptions { keyed_hash_join_strategy, ..NativeOptimizerOptions::disabled() },
+    )
+    .plan;
+
+    let result = optimize_semijoin_reduction(stamped_plan, &SemijoinReductionOptions::default());
+
+    assert_eq!(result.change, NativeOptimizerChange::Changed);
+    assert_eq!(result.diagnostics.applied_count, 1);
+    assert_eq!(result.plan.keyed_hash_join_strategy_options(), keyed_hash_join_strategy);
+}
+
+#[test]
 fn semijoin_reduction_rejects_outer_crossed_joins() {
     for join_type in [JoinType::Left, JoinType::Full] {
         assert_semijoin_rejection(

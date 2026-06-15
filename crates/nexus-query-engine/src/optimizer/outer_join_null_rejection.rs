@@ -240,7 +240,12 @@ pub(crate) fn optimize_outer_join_null_rejection(
 
     let change = if changed { super::NativeOptimizerChange::Changed } else { super::NativeOptimizerChange::Unchanged };
     let root = plan.root_id();
-    OuterJoinNullRejectionResult { plan: rewrite::finish_rewritten_plan(nodes, root, plan.sink()), change, diagnostics }
+    OuterJoinNullRejectionResult {
+        plan: rewrite::finish_rewritten_plan(nodes, root, plan.sink())
+            .with_keyed_hash_join_strategy_options_from(&plan),
+        change,
+        diagnostics,
+    }
 }
 
 #[derive(Debug, Clone)]

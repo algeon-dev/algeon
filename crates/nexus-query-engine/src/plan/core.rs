@@ -4,7 +4,10 @@
 //! otherwise.
 
 use super::*;
-use crate::dynamic_filter::DynamicFilterRoute;
+use crate::{
+    capability::KeyedHashJoinStrategyOptions,
+    dynamic_filter::{DynamicFilterExecutionOptions, DynamicFilterRoute},
+};
 
 /// DataFusion-free query plan consumed by the native cuDF execution engine.
 ///
@@ -22,6 +25,8 @@ pub struct QueryPlan {
     pub(super) root: NodeId,
     pub(super) sink: ResultSink,
     pub(super) dynamic_filter_routes: Vec<DynamicFilterRoute>,
+    pub(super) dynamic_filter_execution_options: DynamicFilterExecutionOptions,
+    pub(super) keyed_hash_join_strategy_options: KeyedHashJoinStrategyOptions,
 }
 
 impl QueryPlan {
@@ -32,7 +37,14 @@ impl QueryPlan {
     pub(crate) fn from_rewritten_parts(nodes: Vec<QueryNode>, root: NodeId, sink: ResultSink) -> Self {
         assert!(nodes.get(root.index()).is_some(), "query plan root node must exist");
         assert_eq!(sink.input(), root, "query plan sink must consume the root node");
-        Self { nodes, root, sink, dynamic_filter_routes: Vec::new() }
+        Self {
+            nodes,
+            root,
+            sink,
+            dynamic_filter_routes: Vec::new(),
+            dynamic_filter_execution_options: DynamicFilterExecutionOptions::default(),
+            keyed_hash_join_strategy_options: KeyedHashJoinStrategyOptions::default(),
+        }
     }
 
     /// Returns the node consumed by the plan sink.
@@ -57,10 +69,54 @@ impl QueryPlan {
         &self.dynamic_filter_routes
     }
 
+    /// Dynamic-filter execution policy captured when routes were discovered.
+    pub fn dynamic_filter_execution_options(&self) -> DynamicFilterExecutionOptions {
+        self.dynamic_filter_execution_options
+    }
+
+    /// Keyed-hash join strategy policy used by capability admission and runtime
+    /// strategy selection.
+    pub fn keyed_hash_join_strategy_options(&self) -> KeyedHashJoinStrategyOptions {
+        self.keyed_hash_join_strategy_options
+    }
+
     /// Returns this plan with a replacement dynamic-filter route list.
     pub(crate) fn with_dynamic_filter_routes(mut self, routes: Vec<DynamicFilterRoute>) -> Self {
         self.dynamic_filter_routes = routes;
         self
+    }
+
+    /// Returns this plan with replacement dynamic-filter execution options.
+    pub(crate) fn with_dynamic_filter_execution_options(mut self, options: DynamicFilterExecutionOptions) -> Self {
+        self.dynamic_filter_execution_options = options;
+        self
+    }
+
+    /// Returns this plan with replacement keyed-hash join strategy options.
+    pub(crate) fn with_keyed_hash_join_strategy_options(mut self, options: KeyedHashJoinStrategyOptions) -> Self {
+        self.keyed_hash_join_strategy_options = options;
+        self
+    }
+
+    /// Returns this plan with dynamic-filter routes and execution options copied
+    /// from another plan.
+    pub(crate) fn with_dynamic_filter_state_from(mut self, source: &Self) -> Self {
+        self.dynamic_filter_routes = source.dynamic_filter_routes.clone();
+        self.dynamic_filter_execution_options = source.dynamic_filter_execution_options;
+        self
+    }
+
+    /// Returns this plan with rewrite-preserved execution policy state copied
+    /// from another plan.
+    pub(crate) fn with_rewrite_state_from(self, source: &Self) -> Self {
+        self.with_dynamic_filter_state_from(source)
+            .with_keyed_hash_join_strategy_options(source.keyed_hash_join_strategy_options)
+    }
+
+    /// Returns this plan with keyed-hash join strategy options copied from
+    /// another plan.
+    pub(crate) fn with_keyed_hash_join_strategy_options_from(self, source: &Self) -> Self {
+        self.with_keyed_hash_join_strategy_options(source.keyed_hash_join_strategy_options)
     }
 
     /// Return a copy of this plan with the same root and a GPU-resident sink.
@@ -74,6 +130,8 @@ impl QueryPlan {
             root: self.root,
             sink: ResultSink::GpuResident { input: self.root },
             dynamic_filter_routes: self.dynamic_filter_routes.clone(),
+            dynamic_filter_execution_options: self.dynamic_filter_execution_options,
+            keyed_hash_join_strategy_options: self.keyed_hash_join_strategy_options,
         }
     }
 

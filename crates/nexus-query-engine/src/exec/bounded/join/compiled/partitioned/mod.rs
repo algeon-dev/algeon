@@ -129,12 +129,15 @@ pub(super) fn partitioned_join_reusable_rejected_reason(
     build_rows: u64,
     build_bytes: u64,
     probe_bytes: u64,
+    options: KeyedHashJoinStrategyOptions,
 ) -> &'static str {
-    if build_rows >= LARGE_KEYED_HASH_BUILD_ROW_THRESHOLD || build_bytes >= LARGE_KEYED_HASH_BUILD_BYTES_THRESHOLD {
+    if build_rows >= options.large_keyed_hash_build_row_threshold
+        || build_bytes >= options.large_keyed_hash_build_bytes_threshold
+    {
         "build_side_too_large"
-    } else if probe_bytes >= LARGE_KEYED_HASH_PROBE_BYTES_THRESHOLD
-        && build_rows > SMALL_REUSABLE_HASH_BUILD_ROW_THRESHOLD
-        && build_bytes > SMALL_REUSABLE_HASH_BUILD_BYTES_THRESHOLD
+    } else if probe_bytes >= options.large_keyed_hash_probe_bytes_threshold
+        && build_rows > options.small_reusable_hash_build_row_threshold
+        && build_bytes > options.small_reusable_hash_build_bytes_threshold
     {
         "probe_side_too_large"
     } else {

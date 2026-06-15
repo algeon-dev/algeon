@@ -61,6 +61,7 @@ pub(super) fn execute_compiled_prepared_join_materialize(
             node,
             state.left,
             state.right,
+            state.strategy_options,
             reservations,
             metrics,
         ),
@@ -71,6 +72,7 @@ pub(super) fn execute_compiled_prepared_join_materialize(
                 node,
                 state.left,
                 state.right,
+                state.strategy_options,
                 reservations,
                 metrics,
             )

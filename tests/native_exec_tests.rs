@@ -14,15 +14,16 @@ use datafusion::{
     },
 };
 use datafusion_nexus::{
-    CandidateOutcome, CudfNativePhysicalOptimizerRule, CudfOptimizerConfig, ErrorCode, FallbackReason,
-    GpuFallbackPolicy, NativeCudfComposedExec, NativeCudfExec, NativeCudfExecutionConfig, NativeCudfGpuProducerExec,
-    NativePipelineExecutionMode, NativePlanPreferenceOptions, STRICT_BOUNDED_NON_JOIN_OUTSIDE_REPORT_SCOPE_REASON,
-    cudf_native_physical_optimizer_rules, lower_physical_plan_to_native,
+    CandidateOutcome, CudfNativePhysicalOptimizerRule, CudfOptimizerConfig, DataFusionNexusSessionConfig, ErrorCode,
+    FallbackReason, GpuFallbackPolicy, NativeCudfComposedExec, NativeCudfExec, NativeCudfExecutionConfig,
+    NativeCudfGpuProducerExec, NativePipelineExecutionMode, NativePlanPreferenceOptions,
+    STRICT_BOUNDED_NON_JOIN_OUTSIDE_REPORT_SCOPE_REASON, cudf_native_physical_optimizer_rules,
+    lower_physical_plan_to_native,
 };
 use datafusion_nexus_bench::{TPCH_QUERIES, write_tiny_tpch_parquet_dataset};
 use nexus_query_engine::{
     BoundedJoinReservationContract, MemoryControlPolicy, PipelineTaskKind, ReservationKind, SourceChunkPlanningMode,
-    StrictBoundedExecutionMode, capability::ContractQuality, compile_pipeline,
+    SourceChunkPlanningOptions, StrictBoundedExecutionMode, capability::ContractQuality, compile_pipeline,
 };
 
 #[path = "native_exec_tests/bounded_join.rs"]
@@ -114,6 +115,14 @@ fn bounded_auto_sized_uses_bounded_defaults_and_prefetch_scheduler() {
             .with_source_chunk_planning_mode(SourceChunkPlanningMode::LocalParquetThroughput)
             .source_chunk_planning_mode(),
         SourceChunkPlanningMode::LocalParquetThroughput
+    );
+    let source_chunk_planning_options =
+        SourceChunkPlanningOptions::default().with_local_parquet_throughput_max_row_groups_per_chunk(2048);
+    assert_eq!(
+        NativeCudfExecutionConfig::bounded_auto_sized()
+            .with_source_chunk_planning_options(source_chunk_planning_options)
+            .source_chunk_planning_options(),
+        source_chunk_planning_options
     );
 }
 
@@ -218,6 +227,29 @@ fn native_optimizer_rule_rewrites_supported_physical_plan() {
         diagnostics.strict_bounded_contract.non_join_bounded_plan_reason.as_deref(),
         Some(STRICT_BOUNDED_NON_JOIN_OUTSIDE_REPORT_SCOPE_REASON)
     );
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn native_optimizer_rule_uses_datafusion_config_options_at_optimize_time() {
+    let dir = unique_temp_dir("datafusion-nexus-native-exec-optimizer-session-config");
+    let path = dir.join("input.parquet");
+    write_parquet_file(&path);
+    let plan = aggregate_sort_limit_plan(parquet_scan(&path), Operator::Plus);
+    let config = native_optimizer_config();
+    let rule = CudfNativePhysicalOptimizerRule::new(config.clone());
+    let mut options = ConfigOptions::default();
+    options.extensions.insert(DataFusionNexusSessionConfig::from_optimizer_config(&config));
+    options.set("datafusion_nexus.native.memory_policy", "unbounded").unwrap();
+
+    let optimized = rule.optimize(plan, &options).unwrap();
+
+    let native = optimized.downcast_ref::<NativeCudfExec>().expect("supported plan should optimize to NativeCudfExec");
+    let display = displayable(native).one_line().to_string();
+    assert!(display.contains("memory_control_policy=unbounded"), "{display}");
+    let report = rule.last_report().expect("native optimizer should record a planning report");
+    assert_eq!(report.rewritten_count(), 1);
 
     fs::remove_dir_all(dir).unwrap();
 }

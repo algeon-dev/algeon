@@ -356,10 +356,8 @@ fn replace_lowered_root_or_keep_plan(
     let candidate = single_rewritten_candidate(&lowering.report)
         .cloned()
         .ok_or_else(|| native_candidate_error("native rewrite has no rewritten candidate"))?;
-    let optimizer_options = native_optimizer_options_for_execution(
-        native_optimizer_options,
-        native_execution_config.native_pipeline_execution_mode(),
-    );
+    let optimizer_options = native_optimizer_options_for_execution(native_optimizer_options, native_execution_config)
+        .map_err(DataFusionError::from)?;
     let optimizer_result = nexus_query_engine::optimize_query_plan(lowering.plans[0].clone(), &optimizer_options);
     let native_optimizer = optimizer_result.diagnostics;
     let native_plan = optimizer_result.plan;
@@ -445,10 +443,11 @@ fn replace_lowered_root_or_keep_plan(
 
 fn native_optimizer_options_for_execution(
     options: &nexus_query_engine::NativeOptimizerOptions,
-    execution_mode: nexus_query_engine::NativePipelineExecutionMode,
-) -> nexus_query_engine::NativeOptimizerOptions {
+    native_execution_config: &NativeCudfExecutionConfig,
+) -> crate::error::Result<nexus_query_engine::NativeOptimizerOptions> {
+    native_execution_config.validate_query_policies()?;
     let mut options = options.clone();
-    options.semijoin_reduction.admission_mode = match execution_mode {
+    options.semijoin_reduction.admission_mode = match native_execution_config.native_pipeline_execution_mode() {
         nexus_query_engine::NativePipelineExecutionMode::StrictBounded => {
             nexus_query_engine::SemijoinReductionAdmissionMode::StrictBounded
         },
@@ -456,7 +455,16 @@ fn native_optimizer_options_for_execution(
             nexus_query_engine::SemijoinReductionAdmissionMode::Adaptive
         },
     };
-    options
+    options.dynamic_filter_route_discovery.execution = native_execution_config.dynamic_filter_execution_options();
+    options.keyed_hash_join_strategy = native_execution_config.keyed_hash_join_strategy_options();
+    options.validate().map_err(|error| {
+        Error::from_native(
+            "datafusion_nexus.native_exec.config.validate",
+            "invalid native optimizer option policy",
+            error,
+        )
+    })?;
+    Ok(options)
 }
 
 fn native_datafusion_exec_for_plan(
@@ -1050,4 +1058,134 @@ pub(super) fn peel_cooperative_native_exec(plan: &Arc<dyn ExecutionPlan>) -> Opt
         return None;
     };
     child.downcast_ref::<NativeCudfExec>().is_some().then(|| Arc::clone(child))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn optimizer_options_for_execution_copy_dynamic_filter_policy_from_execution_config() {
+        let dynamic_filter_options =
+            nexus_query_engine::DynamicFilterExecutionOptions::default().with_max_build_rows(10_000);
+        let keyed_hash_join_strategy_options = nexus_query_engine::KeyedHashJoinStrategyOptions::default()
+            .with_small_reusable_hash_build_row_threshold(11);
+        let execution_config = NativeCudfExecutionConfig::bounded(1024, 512, 1, 3, 1)
+            .with_dynamic_filter_execution_options(dynamic_filter_options)
+            .with_keyed_hash_join_strategy_options(keyed_hash_join_strategy_options)
+            .with_native_pipeline_execution_mode(nexus_query_engine::NativePipelineExecutionMode::Adaptive);
+
+        let options = native_optimizer_options_for_execution(
+            &nexus_query_engine::NativeOptimizerOptions::disabled(),
+            &execution_config,
+        )
+        .expect("valid execution policy should produce optimizer options");
+
+        assert_eq!(options.dynamic_filter_route_discovery.execution, dynamic_filter_options);
+        assert_eq!(options.keyed_hash_join_strategy, keyed_hash_join_strategy_options);
+        assert_eq!(
+            options.semijoin_reduction.admission_mode,
+            nexus_query_engine::SemijoinReductionAdmissionMode::Adaptive
+        );
+    }
+
+    #[test]
+    fn optimizer_options_for_execution_rejects_invalid_expert_query_policy() {
+        let execution_config = NativeCudfExecutionConfig::bounded(1024, 512, 1, 3, 1)
+            .with_dynamic_filter_execution_options(
+                nexus_query_engine::DynamicFilterExecutionOptions::default()
+                    .with_max_build_rows(10)
+                    .with_large_local_parquet_range_producer_rows(11),
+            );
+
+        let error = native_optimizer_options_for_execution(
+            &nexus_query_engine::NativeOptimizerOptions::disabled(),
+            &execution_config,
+        )
+        .unwrap_err();
+
+        assert_eq!(error.code(), ErrorCode::InvalidExecutionPlan);
+        assert_eq!(error.fact_value("native_code"), Some("invalid_plan"));
+        assert_eq!(error.fact_value("field"), Some("large_local_parquet_range_producer_rows"));
+        assert_eq!(error.fact_value("reason"), Some("range_producer_rows_exceeds_runtime_build_cap"));
+    }
+
+    #[test]
+    fn optimizer_options_for_execution_rejects_invalid_keyed_hash_join_policy() {
+        let execution_config = NativeCudfExecutionConfig::bounded(1024, 512, 1, 3, 1)
+            .with_keyed_hash_join_strategy_options(
+                nexus_query_engine::KeyedHashJoinStrategyOptions::default()
+                    .with_large_keyed_hash_build_row_threshold(10),
+            );
+
+        let error = native_optimizer_options_for_execution(
+            &nexus_query_engine::NativeOptimizerOptions::disabled(),
+            &execution_config,
+        )
+        .unwrap_err();
+
+        assert_eq!(error.code(), ErrorCode::InvalidExecutionPlan);
+        assert_eq!(error.fact_value("native_code"), Some("invalid_plan"));
+        assert_eq!(error.fact_value("large_field"), Some("large_keyed_hash_build_row_threshold"));
+        assert_eq!(error.fact_value("reason"), Some("large_threshold_below_small_threshold"));
+    }
+
+    #[test]
+    fn optimizer_options_for_execution_rejects_invalid_aggregate_strategy_policy() {
+        let execution_config = NativeCudfExecutionConfig::bounded(1024, 512, 1, 3, 1)
+            .with_aggregate_strategy_execution_options(
+                nexus_query_engine::AggregateStrategyExecutionOptions::default()
+                    .with_encoded_key_partial_low_cardinality_threshold_ppm(1_000_001),
+            );
+
+        let error = native_optimizer_options_for_execution(
+            &nexus_query_engine::NativeOptimizerOptions::disabled(),
+            &execution_config,
+        )
+        .unwrap_err();
+
+        assert_eq!(error.code(), ErrorCode::InvalidExecutionPlan);
+        assert_eq!(error.fact_value("native_code"), Some("invalid_plan"));
+        assert_eq!(error.fact_value("field"), Some("encoded_key_partial_low_cardinality_threshold_ppm"));
+        assert_eq!(error.fact_value("reason"), Some("ratio_ppm_above_one_hundred_percent"));
+    }
+
+    #[test]
+    fn optimizer_options_for_execution_rejects_invalid_source_chunk_planning_policy() {
+        let execution_config = NativeCudfExecutionConfig::bounded(1024, 512, 1, 3, 1)
+            .with_source_chunk_planning_options(
+                nexus_query_engine::SourceChunkPlanningOptions::default()
+                    .with_local_parquet_throughput_min_device_budget_bytes(0),
+            );
+
+        let error = native_optimizer_options_for_execution(
+            &nexus_query_engine::NativeOptimizerOptions::disabled(),
+            &execution_config,
+        )
+        .unwrap_err();
+
+        assert_eq!(error.code(), ErrorCode::InvalidExecutionPlan);
+        assert_eq!(error.fact_value("native_code"), Some("invalid_plan"));
+        assert_eq!(error.fact_value("field"), Some("local_parquet_throughput_min_device_budget_bytes"));
+        assert_eq!(error.fact_value("reason"), Some("zero"));
+    }
+
+    #[test]
+    fn optimizer_options_for_execution_rejects_invalid_optimizer_policy() {
+        let optimizer_options = nexus_query_engine::NativeOptimizerOptions {
+            semijoin_reduction: nexus_query_engine::SemijoinReductionOptions {
+                cost_threshold_multiplier: 0,
+                ..Default::default()
+            },
+            ..nexus_query_engine::NativeOptimizerOptions::disabled()
+        };
+        let execution_config = NativeCudfExecutionConfig::bounded(1024, 512, 1, 3, 1);
+
+        let error = native_optimizer_options_for_execution(&optimizer_options, &execution_config).unwrap_err();
+
+        assert_eq!(error.code(), ErrorCode::InvalidExecutionPlan);
+        assert_eq!(error.fact_value("native_code"), Some("invalid_plan"));
+        assert_eq!(error.fact_value("field"), Some("cost_threshold_multiplier"));
+        assert_eq!(error.fact_value("reason"), Some("zero"));
+    }
 }

@@ -16,15 +16,12 @@ use super::{
 use crate::{
     capability::{
         KeyedHashJoinStrategyInputFacts, keyed_hash_join_strategy_input_facts_for_plan,
-        keyed_hash_join_strategy_should_probe_left_one_shot_build_key_uniqueness,
+        keyed_hash_join_strategy_should_probe_left_one_shot_build_key_uniqueness_with_options,
     },
     dynamic_filter::{
-        DEFAULT_SMALL_IN_LIST_DYNAMIC_FILTER_LIMIT, DIMENSION_SIZED_DYNAMIC_FILTER_CONSUMER_BYTES, DynamicFilter,
-        DynamicFilterConsumer, DynamicFilterProducer, DynamicFilterRoute, DynamicFilterSet,
-        LARGE_KEYSET_DIMENSION_SOURCE_SKIP_REASON, LARGE_LOCAL_PARQUET_RANGE_DYNAMIC_FILTER_PRODUCER_ROWS,
-        MAX_DYNAMIC_FILTER_BUILD_ROWS, TINY_LOCAL_PARQUET_DYNAMIC_FILTER_CONSUMER_ROW_GROUPS,
-        dynamic_filter_consumer_source_feeds_downstream_work_fanout, dynamic_filter_i64_values,
-        dynamic_filter_predicate_for_schema,
+        DynamicFilter, DynamicFilterConsumer, DynamicFilterProducer, DynamicFilterRoute, DynamicFilterSet,
+        LARGE_KEYSET_DIMENSION_SOURCE_SKIP_REASON, dynamic_filter_consumer_source_feeds_downstream_work_fanout,
+        dynamic_filter_i64_values, dynamic_filter_predicate_for_schema,
     },
     error::{QueryError, QueryErrorCode, Result},
     exec::{

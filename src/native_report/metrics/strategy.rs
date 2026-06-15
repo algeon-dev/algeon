@@ -149,6 +149,34 @@ pub struct NativeAggregateStrategyMetricRow {
     pub aggregate_structural_key: String,
     /// Evidence source used by partial aggregate cardinality cost models.
     pub prior_cardinality_evidence_scope: String,
+    /// Aggregate strategy execution option row version.
+    pub aggregate_strategy_options_version: String,
+    /// Encoded-key partial aggregation low-cardinality threshold in PPM.
+    pub aggregate_encoded_key_partial_low_cardinality_threshold_ppm: usize,
+    /// Minimum input rows before encoded-key partial aggregation may run.
+    pub aggregate_encoded_key_partial_min_input_rows: usize,
+    /// Maximum grouping-key columns eligible for exact grouped-key probes.
+    pub aggregate_exact_grouped_key_cardinality_probe_max_key_columns: usize,
+    /// Single-stage string-key AVG probe row threshold.
+    pub aggregate_exact_single_string_avg_cardinality_probe_min_input_rows: usize,
+    /// General single-key exact-cardinality probe row threshold.
+    pub aggregate_exact_single_key_cardinality_probe_min_input_rows: usize,
+    /// Grouped-key exact-cardinality probe row threshold.
+    pub aggregate_exact_grouped_key_cardinality_probe_min_input_rows: usize,
+    /// Maximum string-key groups accepted for prepared sort-backed groupby.
+    pub aggregate_exact_single_string_key_prepared_max_groups: usize,
+    /// Three-key exact-cardinality probe input-row cap.
+    pub aggregate_exact_three_key_cardinality_probe_max_input_rows: usize,
+    /// Five-key exact-cardinality probe input-row cap.
+    pub aggregate_exact_five_key_cardinality_probe_max_input_rows: usize,
+    /// Prepared sort-backed groupby low-cardinality threshold in PPM.
+    pub aggregate_prepared_sort_groupby_low_cardinality_threshold_ppm: usize,
+    /// Source-adjacent prepared sort-backed groupby row-group cap.
+    pub aggregate_source_adjacent_prepared_sort_groupby_max_row_groups: usize,
+    /// Source-adjacent prepared sort-backed groupby source-read byte cap.
+    pub aggregate_source_adjacent_prepared_sort_groupby_max_source_read_bytes: usize,
+    /// Source-adjacent prepared sort-backed groupby fan-in cap.
+    pub aggregate_source_adjacent_prepared_sort_groupby_max_fan_in: usize,
     /// Runtime cost-model name used for encoded-key partial selection.
     pub encoded_key_partial_cost_model: String,
     /// Runtime cost-model status for encoded-key partial selection.
@@ -217,7 +245,7 @@ impl NativeAggregateStrategyMetricRow {
     /// Serializes this nested row as stable comma-separated key/value pairs.
     pub fn to_stable_kv_row(&self) -> String {
         format!(
-            "node_id={},selected_strategy={},execution_stage={},memory_mode={},group_key_count={},group_key_exprs={},group_key_dtypes={},aggregate_functions={},floating_statistical_aggregate={},statistical_aggregate_execution_mode={},statistical_aggregate_tolerance_contract={},statistical_aggregate_functions={},statistical_aggregate_ddof={},stddev_samp_execution_mode={},stddev_samp_ddof={},aggregate_filter_count={},filtered_input_materialization_strategy={},filtered_input_materialization_estimated_bytes={},filtered_input_materialization_budget_bytes={},filtered_input_materialization_threshold_bytes={},filtered_input_lower_level_unresolved_contracts={},filtered_global_rows_per_chunk={},filtered_global_inputs_per_segment={},filtered_global_segment_target_temporary_bytes={},filtered_global_actual_chunk_count={},filtered_global_actual_segment_count={},filtered_global_max_segment_rows={},filtered_global_observed_temporary_peak_bytes={},filtered_global_observed_retained_peak_bytes={},filtered_global_state_rows_merged={},filtered_grouped_rows_per_chunk={},filtered_grouped_inputs_per_segment={},filtered_grouped_segment_target_temporary_bytes={},filtered_grouped_actual_chunk_count={},filtered_grouped_actual_segment_count={},filtered_grouped_max_segment_rows={},filtered_grouped_observed_temporary_peak_bytes={},filtered_grouped_observed_retained_peak_bytes={},filtered_grouped_state_rows_merged={},filtered_grouped_high_cardinality_admission={},distinct_aggregate_count={},input_rows={},output_group_count={},reduction_ratio_ppm={},chunk_row_count={},chunk_count={},partial_aggregate_count={},source_adjacent_partial={},source_chunk_row_group_count={},source_chunk_reads_all_row_groups={},source_chunk_known_row_count={},source_chunk_estimated_source_read_bytes={},source_chunk_size_estimate_based={},source_adjacent_partition_strategy={},source_adjacent_partition_count={},source_adjacent_non_empty_partition_count={},source_adjacent_partition_key_count={},source_adjacent_max_partition_fan_in={},partitioned_merge_partition_count={},partitioned_merge_non_empty_partition_count={},partitioned_merge_max_partition_fan_in={},selection_elapsed_ns={},encode_elapsed_ns={},groupby_elapsed_ns={},decode_elapsed_ns={},strategy_operator_elapsed_ns={},aggregate_structural_key={},prior_cardinality_evidence_scope={},encoded_key_partial_cost_model={},encoded_key_partial_cost_model_status={},encoded_key_partial_selection_reason={},encoded_key_partial_reduction_ratio_threshold_ppm={},encoded_key_partial_prior_reduction_ratio_ppm={},encoded_key_partial_prior_strategy={},exact_cardinality_probe_status={},exact_cardinality_probe_key={},exact_cardinality_probe_input_rows={},exact_cardinality_probe_non_null_distinct_count={},exact_cardinality_probe_null_count={},exact_cardinality_probe_num_groups={},exact_cardinality_probe_reduction_ratio_ppm={},exact_cardinality_probe_elapsed_ns={},prepared_sort_groupby_rejected_reason={},prepared_sort_groupby_contract_status={},prepared_sort_groupby_required_contract={},prepared_sort_groupby_cost_model={},prepared_sort_groupby_cost_model_status={},prepared_sort_groupby_selection_reason={},prepared_sort_groupby_num_groups={},prepared_sort_groupby_grouped_key_output_bytes={},prepared_sort_groupby_max_group_size={},rejected_candidate_strategies={}",
+            "node_id={},selected_strategy={},execution_stage={},memory_mode={},group_key_count={},group_key_exprs={},group_key_dtypes={},aggregate_functions={},floating_statistical_aggregate={},statistical_aggregate_execution_mode={},statistical_aggregate_tolerance_contract={},statistical_aggregate_functions={},statistical_aggregate_ddof={},stddev_samp_execution_mode={},stddev_samp_ddof={},aggregate_filter_count={},filtered_input_materialization_strategy={},filtered_input_materialization_estimated_bytes={},filtered_input_materialization_budget_bytes={},filtered_input_materialization_threshold_bytes={},filtered_input_lower_level_unresolved_contracts={},filtered_global_rows_per_chunk={},filtered_global_inputs_per_segment={},filtered_global_segment_target_temporary_bytes={},filtered_global_actual_chunk_count={},filtered_global_actual_segment_count={},filtered_global_max_segment_rows={},filtered_global_observed_temporary_peak_bytes={},filtered_global_observed_retained_peak_bytes={},filtered_global_state_rows_merged={},filtered_grouped_rows_per_chunk={},filtered_grouped_inputs_per_segment={},filtered_grouped_segment_target_temporary_bytes={},filtered_grouped_actual_chunk_count={},filtered_grouped_actual_segment_count={},filtered_grouped_max_segment_rows={},filtered_grouped_observed_temporary_peak_bytes={},filtered_grouped_observed_retained_peak_bytes={},filtered_grouped_state_rows_merged={},filtered_grouped_high_cardinality_admission={},distinct_aggregate_count={},input_rows={},output_group_count={},reduction_ratio_ppm={},chunk_row_count={},chunk_count={},partial_aggregate_count={},source_adjacent_partial={},source_chunk_row_group_count={},source_chunk_reads_all_row_groups={},source_chunk_known_row_count={},source_chunk_estimated_source_read_bytes={},source_chunk_size_estimate_based={},source_adjacent_partition_strategy={},source_adjacent_partition_count={},source_adjacent_non_empty_partition_count={},source_adjacent_partition_key_count={},source_adjacent_max_partition_fan_in={},partitioned_merge_partition_count={},partitioned_merge_non_empty_partition_count={},partitioned_merge_max_partition_fan_in={},selection_elapsed_ns={},encode_elapsed_ns={},groupby_elapsed_ns={},decode_elapsed_ns={},strategy_operator_elapsed_ns={},aggregate_structural_key={},prior_cardinality_evidence_scope={},aggregate_strategy_options_version={},aggregate_encoded_key_partial_low_cardinality_threshold_ppm={},aggregate_encoded_key_partial_min_input_rows={},aggregate_exact_grouped_key_cardinality_probe_max_key_columns={},aggregate_exact_single_string_avg_cardinality_probe_min_input_rows={},aggregate_exact_single_key_cardinality_probe_min_input_rows={},aggregate_exact_grouped_key_cardinality_probe_min_input_rows={},aggregate_exact_single_string_key_prepared_max_groups={},aggregate_exact_three_key_cardinality_probe_max_input_rows={},aggregate_exact_five_key_cardinality_probe_max_input_rows={},aggregate_prepared_sort_groupby_low_cardinality_threshold_ppm={},aggregate_source_adjacent_prepared_sort_groupby_max_row_groups={},aggregate_source_adjacent_prepared_sort_groupby_max_source_read_bytes={},aggregate_source_adjacent_prepared_sort_groupby_max_fan_in={},encoded_key_partial_cost_model={},encoded_key_partial_cost_model_status={},encoded_key_partial_selection_reason={},encoded_key_partial_reduction_ratio_threshold_ppm={},encoded_key_partial_prior_reduction_ratio_ppm={},encoded_key_partial_prior_strategy={},exact_cardinality_probe_status={},exact_cardinality_probe_key={},exact_cardinality_probe_input_rows={},exact_cardinality_probe_non_null_distinct_count={},exact_cardinality_probe_null_count={},exact_cardinality_probe_num_groups={},exact_cardinality_probe_reduction_ratio_ppm={},exact_cardinality_probe_elapsed_ns={},prepared_sort_groupby_rejected_reason={},prepared_sort_groupby_contract_status={},prepared_sort_groupby_required_contract={},prepared_sort_groupby_cost_model={},prepared_sort_groupby_cost_model_status={},prepared_sort_groupby_selection_reason={},prepared_sort_groupby_num_groups={},prepared_sort_groupby_grouped_key_output_bytes={},prepared_sort_groupby_max_group_size={},rejected_candidate_strategies={}",
             self.node_id,
             self.selected_strategy,
             self.execution_stage,
@@ -286,6 +314,20 @@ impl NativeAggregateStrategyMetricRow {
             self.strategy_operator_elapsed_ns,
             self.aggregate_structural_key,
             self.prior_cardinality_evidence_scope,
+            self.aggregate_strategy_options_version,
+            self.aggregate_encoded_key_partial_low_cardinality_threshold_ppm,
+            self.aggregate_encoded_key_partial_min_input_rows,
+            self.aggregate_exact_grouped_key_cardinality_probe_max_key_columns,
+            self.aggregate_exact_single_string_avg_cardinality_probe_min_input_rows,
+            self.aggregate_exact_single_key_cardinality_probe_min_input_rows,
+            self.aggregate_exact_grouped_key_cardinality_probe_min_input_rows,
+            self.aggregate_exact_single_string_key_prepared_max_groups,
+            self.aggregate_exact_three_key_cardinality_probe_max_input_rows,
+            self.aggregate_exact_five_key_cardinality_probe_max_input_rows,
+            self.aggregate_prepared_sort_groupby_low_cardinality_threshold_ppm,
+            self.aggregate_source_adjacent_prepared_sort_groupby_max_row_groups,
+            self.aggregate_source_adjacent_prepared_sort_groupby_max_source_read_bytes,
+            self.aggregate_source_adjacent_prepared_sort_groupby_max_fan_in,
             self.encoded_key_partial_cost_model,
             self.encoded_key_partial_cost_model_status,
             self.encoded_key_partial_selection_reason,
@@ -364,6 +406,32 @@ impl NativeAggregateStrategyMetricRow {
             && self.partitioned_merge_max_partition_fan_in == other.partitioned_merge_max_partition_fan_in
             && self.aggregate_structural_key == other.aggregate_structural_key
             && self.prior_cardinality_evidence_scope == other.prior_cardinality_evidence_scope
+            && self.aggregate_strategy_options_version == other.aggregate_strategy_options_version
+            && self.aggregate_encoded_key_partial_low_cardinality_threshold_ppm
+                == other.aggregate_encoded_key_partial_low_cardinality_threshold_ppm
+            && self.aggregate_encoded_key_partial_min_input_rows == other.aggregate_encoded_key_partial_min_input_rows
+            && self.aggregate_exact_grouped_key_cardinality_probe_max_key_columns
+                == other.aggregate_exact_grouped_key_cardinality_probe_max_key_columns
+            && self.aggregate_exact_single_string_avg_cardinality_probe_min_input_rows
+                == other.aggregate_exact_single_string_avg_cardinality_probe_min_input_rows
+            && self.aggregate_exact_single_key_cardinality_probe_min_input_rows
+                == other.aggregate_exact_single_key_cardinality_probe_min_input_rows
+            && self.aggregate_exact_grouped_key_cardinality_probe_min_input_rows
+                == other.aggregate_exact_grouped_key_cardinality_probe_min_input_rows
+            && self.aggregate_exact_single_string_key_prepared_max_groups
+                == other.aggregate_exact_single_string_key_prepared_max_groups
+            && self.aggregate_exact_three_key_cardinality_probe_max_input_rows
+                == other.aggregate_exact_three_key_cardinality_probe_max_input_rows
+            && self.aggregate_exact_five_key_cardinality_probe_max_input_rows
+                == other.aggregate_exact_five_key_cardinality_probe_max_input_rows
+            && self.aggregate_prepared_sort_groupby_low_cardinality_threshold_ppm
+                == other.aggregate_prepared_sort_groupby_low_cardinality_threshold_ppm
+            && self.aggregate_source_adjacent_prepared_sort_groupby_max_row_groups
+                == other.aggregate_source_adjacent_prepared_sort_groupby_max_row_groups
+            && self.aggregate_source_adjacent_prepared_sort_groupby_max_source_read_bytes
+                == other.aggregate_source_adjacent_prepared_sort_groupby_max_source_read_bytes
+            && self.aggregate_source_adjacent_prepared_sort_groupby_max_fan_in
+                == other.aggregate_source_adjacent_prepared_sort_groupby_max_fan_in
             && self.encoded_key_partial_cost_model == other.encoded_key_partial_cost_model
             && self.encoded_key_partial_cost_model_status == other.encoded_key_partial_cost_model_status
             && self.encoded_key_partial_selection_reason == other.encoded_key_partial_selection_reason
@@ -848,6 +916,59 @@ fn labels_to_aggregate_strategy_row(labels: BTreeMap<&str, &str>) -> NativeAggre
         strategy_operator_elapsed_ns: usize_label(&labels, "strategy_operator_elapsed_ns"),
         aggregate_structural_key: string_label(&labels, "aggregate_structural_key"),
         prior_cardinality_evidence_scope: string_label(&labels, "prior_cardinality_evidence_scope"),
+        aggregate_strategy_options_version: string_label(&labels, "aggregate_strategy_options_version"),
+        aggregate_encoded_key_partial_low_cardinality_threshold_ppm: usize_label(
+            &labels,
+            "aggregate_encoded_key_partial_low_cardinality_threshold_ppm",
+        ),
+        aggregate_encoded_key_partial_min_input_rows: usize_label(
+            &labels,
+            "aggregate_encoded_key_partial_min_input_rows",
+        ),
+        aggregate_exact_grouped_key_cardinality_probe_max_key_columns: usize_label(
+            &labels,
+            "aggregate_exact_grouped_key_cardinality_probe_max_key_columns",
+        ),
+        aggregate_exact_single_string_avg_cardinality_probe_min_input_rows: usize_label(
+            &labels,
+            "aggregate_exact_single_string_avg_cardinality_probe_min_input_rows",
+        ),
+        aggregate_exact_single_key_cardinality_probe_min_input_rows: usize_label(
+            &labels,
+            "aggregate_exact_single_key_cardinality_probe_min_input_rows",
+        ),
+        aggregate_exact_grouped_key_cardinality_probe_min_input_rows: usize_label(
+            &labels,
+            "aggregate_exact_grouped_key_cardinality_probe_min_input_rows",
+        ),
+        aggregate_exact_single_string_key_prepared_max_groups: usize_label(
+            &labels,
+            "aggregate_exact_single_string_key_prepared_max_groups",
+        ),
+        aggregate_exact_three_key_cardinality_probe_max_input_rows: usize_label(
+            &labels,
+            "aggregate_exact_three_key_cardinality_probe_max_input_rows",
+        ),
+        aggregate_exact_five_key_cardinality_probe_max_input_rows: usize_label(
+            &labels,
+            "aggregate_exact_five_key_cardinality_probe_max_input_rows",
+        ),
+        aggregate_prepared_sort_groupby_low_cardinality_threshold_ppm: usize_label(
+            &labels,
+            "aggregate_prepared_sort_groupby_low_cardinality_threshold_ppm",
+        ),
+        aggregate_source_adjacent_prepared_sort_groupby_max_row_groups: usize_label(
+            &labels,
+            "aggregate_source_adjacent_prepared_sort_groupby_max_row_groups",
+        ),
+        aggregate_source_adjacent_prepared_sort_groupby_max_source_read_bytes: usize_label(
+            &labels,
+            "aggregate_source_adjacent_prepared_sort_groupby_max_source_read_bytes",
+        ),
+        aggregate_source_adjacent_prepared_sort_groupby_max_fan_in: usize_label(
+            &labels,
+            "aggregate_source_adjacent_prepared_sort_groupby_max_fan_in",
+        ),
         encoded_key_partial_cost_model: string_label(&labels, "encoded_key_partial_cost_model"),
         encoded_key_partial_cost_model_status: string_label(&labels, "encoded_key_partial_cost_model_status"),
         encoded_key_partial_selection_reason: string_label(&labels, "encoded_key_partial_selection_reason"),
@@ -887,5 +1008,31 @@ fn labels_to_aggregate_strategy_row(labels: BTreeMap<&str, &str>) -> NativeAggre
         ),
         prepared_sort_groupby_max_group_size: string_label(&labels, "prepared_sort_groupby_max_group_size"),
         rejected_candidate_strategies: string_label(&labels, "rejected_candidate_strategies"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn aggregate_strategy_metric_row_projects_strategy_execution_options() {
+        let labels = BTreeMap::from([
+            ("aggregate_strategy_options_version", "1"),
+            ("aggregate_encoded_key_partial_low_cardinality_threshold_ppm", "175000"),
+            ("aggregate_encoded_key_partial_min_input_rows", "123"),
+            ("aggregate_exact_grouped_key_cardinality_probe_max_key_columns", "4"),
+            ("aggregate_prepared_sort_groupby_low_cardinality_threshold_ppm", "200000"),
+            ("aggregate_source_adjacent_prepared_sort_groupby_max_source_read_bytes", "4096"),
+        ]);
+
+        let row = labels_to_aggregate_strategy_row(labels);
+
+        assert_eq!(row.aggregate_strategy_options_version, "1");
+        assert_eq!(row.aggregate_encoded_key_partial_low_cardinality_threshold_ppm, 175_000);
+        assert_eq!(row.aggregate_encoded_key_partial_min_input_rows, 123);
+        assert_eq!(row.aggregate_exact_grouped_key_cardinality_probe_max_key_columns, 4);
+        assert_eq!(row.aggregate_prepared_sort_groupby_low_cardinality_threshold_ppm, 200_000);
+        assert_eq!(row.aggregate_source_adjacent_prepared_sort_groupby_max_source_read_bytes, 4096);
     }
 }

@@ -173,7 +173,14 @@ impl QueryPlanBuilder {
     fn finish(self, root: NodeId, sink: ResultSink) -> QueryPlan {
         assert!(self.nodes.get(root.index()).is_some(), "query plan root node must exist");
         assert_eq!(sink.input(), root, "query plan sink must consume the root node");
-        QueryPlan { nodes: self.nodes, root, sink, dynamic_filter_routes: Vec::new() }
+        QueryPlan {
+            nodes: self.nodes,
+            root,
+            sink,
+            dynamic_filter_routes: Vec::new(),
+            dynamic_filter_execution_options: Default::default(),
+            keyed_hash_join_strategy_options: Default::default(),
+        }
     }
 
     fn push(&mut self, kind: PlanNode, facts: PlanFacts) -> NodeId {

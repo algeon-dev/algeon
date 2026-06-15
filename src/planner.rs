@@ -10,11 +10,14 @@
 
 use std::fmt;
 
+use datafusion::common::{Result as DataFusionResult, config::ConfigOptions};
+
 use crate::{
     error::{Error, ErrorCode},
     native_exec::NativeCudfExecutionConfig,
     policy::{FallbackReason, GpuFallbackPolicy},
     report::GpuCandidate,
+    session_config::optimizer_config_with_datafusion_options,
 };
 
 mod leaf_guard;
@@ -142,6 +145,12 @@ impl CudfOptimizerConfig {
     pub fn with_runtime(mut self, runtime: cudf::Runtime) -> Self {
         self.native_execution_config = self.native_execution_config.clone().with_runtime(runtime);
         self
+    }
+
+    /// Apply registered `datafusion_nexus.native.*` DataFusion session options
+    /// to this optimizer config.
+    pub fn with_datafusion_config_options(&self, options: &ConfigOptions) -> DataFusionResult<Self> {
+        optimizer_config_with_datafusion_options(self, options)
     }
 }
 

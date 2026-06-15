@@ -20,6 +20,8 @@ use bytes::Bytes;
 
 use crate::{
     adaptive_runtime::AdaptiveMemoryHistory,
+    capability::AggregateStrategyExecutionOptions,
+    chunk::SourceChunkPlanningOptions,
     error::{QueryError, QueryErrorCode, Result},
     mode::{NativePipelineExecutionMode, StddevSampExecutionMode},
 };
@@ -351,6 +353,10 @@ pub struct ExecutionContext {
     native_pipeline_execution_mode: NativePipelineExecutionMode,
     /// Selected execution contract for floating statistical aggregates.
     stddev_samp_execution_mode: StddevSampExecutionMode,
+    /// Runtime threshold policy for grouped aggregate strategy selection.
+    aggregate_strategy_execution_options: AggregateStrategyExecutionOptions,
+    /// Expert policy for local-throughput source chunk planning.
+    source_chunk_planning_options: SourceChunkPlanningOptions,
     /// Optional adaptive-only memory history store.
     adaptive_memory_history: Option<Arc<AdaptiveMemoryHistory>>,
     /// Optional durable GPU hash-join build cache.
@@ -412,6 +418,8 @@ struct ExecutionContextParts {
     cancellation: ExecutionCancellation,
     native_pipeline_execution_mode: NativePipelineExecutionMode,
     stddev_samp_execution_mode: StddevSampExecutionMode,
+    aggregate_strategy_execution_options: AggregateStrategyExecutionOptions,
+    source_chunk_planning_options: SourceChunkPlanningOptions,
     adaptive_memory_history: Option<Arc<AdaptiveMemoryHistory>>,
     hash_join_build_cache: Option<Arc<crate::exec::GpuHashJoinBuildCache>>,
     local_parquet_source_cache: Option<Arc<crate::exec::GpuLocalParquetSourceCache>>,
@@ -467,6 +475,8 @@ impl ExecutionContext {
             cancellation: ExecutionCancellation::new(),
             native_pipeline_execution_mode: NativePipelineExecutionMode::default(),
             stddev_samp_execution_mode: StddevSampExecutionMode::default(),
+            aggregate_strategy_execution_options: AggregateStrategyExecutionOptions::default(),
+            source_chunk_planning_options: SourceChunkPlanningOptions::default(),
             adaptive_memory_history: None,
             hash_join_build_cache: None,
             local_parquet_source_cache: None,
@@ -497,6 +507,8 @@ impl ExecutionContext {
             cancellation: parts.cancellation,
             native_pipeline_execution_mode: parts.native_pipeline_execution_mode,
             stddev_samp_execution_mode: parts.stddev_samp_execution_mode,
+            aggregate_strategy_execution_options: parts.aggregate_strategy_execution_options,
+            source_chunk_planning_options: parts.source_chunk_planning_options,
             adaptive_memory_history: parts.adaptive_memory_history,
             hash_join_build_cache: parts.hash_join_build_cache,
             local_parquet_source_cache: parts.local_parquet_source_cache,
@@ -564,6 +576,8 @@ impl ExecutionContext {
             cancellation: self.cancellation.clone(),
             native_pipeline_execution_mode: self.native_pipeline_execution_mode,
             stddev_samp_execution_mode: self.stddev_samp_execution_mode,
+            aggregate_strategy_execution_options: self.aggregate_strategy_execution_options,
+            source_chunk_planning_options: self.source_chunk_planning_options,
             adaptive_memory_history: self.adaptive_memory_history.as_ref().map(Arc::clone),
             hash_join_build_cache: self.hash_join_build_cache.as_ref().map(Arc::clone),
             local_parquet_source_cache: self.local_parquet_source_cache.as_ref().map(Arc::clone),
@@ -918,6 +932,16 @@ impl ExecutionContext {
         self.statistical_aggregate_execution_mode()
     }
 
+    /// Returns grouped aggregate strategy execution policy.
+    pub fn aggregate_strategy_execution_options(&self) -> AggregateStrategyExecutionOptions {
+        self.aggregate_strategy_execution_options
+    }
+
+    /// Returns expert local-throughput source chunk planning policy.
+    pub fn source_chunk_planning_options(&self) -> SourceChunkPlanningOptions {
+        self.source_chunk_planning_options
+    }
+
     /// Returns the adaptive-only memory history store, when configured.
     pub fn adaptive_memory_history(&self) -> Option<Arc<AdaptiveMemoryHistory>> {
         self.adaptive_memory_history.as_ref().map(Arc::clone)
@@ -985,6 +1009,10 @@ pub struct ExecutionContextBuilder {
     native_pipeline_execution_mode: NativePipelineExecutionMode,
     /// Execution contract for floating statistical aggregates.
     stddev_samp_execution_mode: StddevSampExecutionMode,
+    /// Runtime threshold policy for grouped aggregate strategy selection.
+    aggregate_strategy_execution_options: AggregateStrategyExecutionOptions,
+    /// Expert policy for local-throughput source chunk planning.
+    source_chunk_planning_options: SourceChunkPlanningOptions,
     /// Optional adaptive-only memory history store.
     adaptive_memory_history: Option<Arc<AdaptiveMemoryHistory>>,
     /// Optional durable hash-join build cache.
@@ -1154,6 +1182,18 @@ impl ExecutionContextBuilder {
         self.with_statistical_aggregate_execution_mode(mode)
     }
 
+    /// Sets grouped aggregate strategy execution policy.
+    pub fn with_aggregate_strategy_execution_options(mut self, options: AggregateStrategyExecutionOptions) -> Self {
+        self.aggregate_strategy_execution_options = options;
+        self
+    }
+
+    /// Sets expert local-throughput source chunk planning policy.
+    pub fn with_source_chunk_planning_options(mut self, options: SourceChunkPlanningOptions) -> Self {
+        self.source_chunk_planning_options = options;
+        self
+    }
+
     /// Provides the adaptive-only memory history store.
     pub fn with_adaptive_memory_history(mut self, memory_history: Arc<AdaptiveMemoryHistory>) -> Self {
         self.adaptive_memory_history = Some(memory_history);
@@ -1183,6 +1223,8 @@ impl ExecutionContextBuilder {
         self.memory_control_policy.validate()?;
         self.boundary_policy.validate(self.hash_join_build_cache.is_some())?;
         self.source_scheduler_policy.validate()?;
+        self.aggregate_strategy_execution_options.validate()?;
+        self.source_chunk_planning_options.validate()?;
         if let Some(service_stream_pool_size) = self.service_stream_pool_size {
             validate_service_stream_pool_size(service_stream_pool_size)?;
         }
@@ -1252,6 +1294,8 @@ impl ExecutionContextBuilder {
                 cancellation: self.cancellation,
                 native_pipeline_execution_mode: self.native_pipeline_execution_mode,
                 stddev_samp_execution_mode: self.stddev_samp_execution_mode,
+                aggregate_strategy_execution_options: self.aggregate_strategy_execution_options,
+                source_chunk_planning_options: self.source_chunk_planning_options,
                 adaptive_memory_history: self.adaptive_memory_history,
                 hash_join_build_cache: self.hash_join_build_cache,
                 local_parquet_source_cache: self.local_parquet_source_cache,
@@ -1314,6 +1358,8 @@ impl ExecutionContextBuilder {
             cancellation: self.cancellation,
             native_pipeline_execution_mode: self.native_pipeline_execution_mode,
             stddev_samp_execution_mode: self.stddev_samp_execution_mode,
+            aggregate_strategy_execution_options: self.aggregate_strategy_execution_options,
+            source_chunk_planning_options: self.source_chunk_planning_options,
             adaptive_memory_history: self.adaptive_memory_history,
             hash_join_build_cache: self.hash_join_build_cache,
             local_parquet_source_cache: self.local_parquet_source_cache,
@@ -1553,12 +1599,29 @@ mod tests {
 
     #[test]
     fn execution_context_records_source_chunk_planning_mode() {
+        let options =
+            SourceChunkPlanningOptions::default().with_local_parquet_throughput_max_row_groups_per_chunk(2048);
         let context = ExecutionContext::builder()
             .with_source_chunk_planning_mode(SourceChunkPlanningMode::LocalParquetThroughput)
+            .with_source_chunk_planning_options(options)
             .build()
             .unwrap();
 
         assert_eq!(context.source_chunk_planning_mode(), SourceChunkPlanningMode::LocalParquetThroughput);
+        assert_eq!(context.source_chunk_planning_options(), options);
+    }
+
+    #[test]
+    fn execution_context_rejects_invalid_source_chunk_planning_options() {
+        let error = ExecutionContext::builder()
+            .with_source_chunk_planning_options(
+                SourceChunkPlanningOptions::default().with_local_parquet_throughput_max_row_groups_per_chunk(0),
+            )
+            .build()
+            .unwrap_err();
+
+        assert_eq!(error.code(), QueryErrorCode::InvalidPlan);
+        assert_eq!(error.fact_value("field"), Some("local_parquet_throughput_max_row_groups_per_chunk"));
     }
 
     #[test]

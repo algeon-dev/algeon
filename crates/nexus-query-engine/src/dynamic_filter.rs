@@ -455,31 +455,244 @@ impl DynamicFilterSet {
     }
 }
 
+/// Runtime and route-discovery thresholds for native dynamic filters.
+///
+/// These values are shared by the optimizer and compiled execution so a route
+/// admitted during planning is evaluated against the same skip and payload
+/// thresholds at runtime. Keep this as one policy object before exposing any
+/// subset through user-facing configuration. Fields are crate-visible only;
+/// embedders should use the read-only accessors and `with_*` methods.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct DynamicFilterExecutionOptions {
+    /// Maximum exact keyset cardinality lowered into a reader `IN (...)` predicate.
+    pub(crate) small_in_list_limit: usize,
+    /// Runtime cap for producer rows when an exact host keyset would be materialized.
+    pub(crate) max_build_rows: usize,
+    /// Producer row threshold where local-Parquet consumers switch from exact
+    /// host keysets to range-only payloads.
+    pub(crate) large_local_parquet_range_producer_rows: usize,
+    /// Local-Parquet consumer byte threshold below which large producer keysets
+    /// are treated as unlikely to pay for their producer-before-consumer dependency.
+    pub(crate) dimension_sized_consumer_bytes: u64,
+    /// Selected row-group count below which a dimension-sized local-Parquet
+    /// consumer has too little independent source work to justify a large keyset.
+    pub(crate) tiny_local_parquet_consumer_row_groups: usize,
+    /// Maximum range overlap ratio, in parts per million, for merging a runtime
+    /// range payload into a reader predicate.
+    pub(crate) max_range_reader_predicate_selectivity_ppm: u64,
+    /// Maximum small-IN-list cardinality that may be deferred from reader
+    /// predicate application into a post-decode filter when another predicate remains.
+    pub(crate) max_deferred_small_in_list_reader_values: usize,
+    /// Maximum unpruned hash-set payload cardinality accepted for source
+    /// post-decode filtering.
+    pub(crate) max_unpruned_hash_set_post_decode_values: usize,
+    /// Minimum known source rows required before an unpruned hash-set payload is
+    /// worth applying as a source post-decode filter.
+    pub(crate) min_unpruned_hash_set_post_decode_source_rows: u64,
+}
+
+impl DynamicFilterExecutionOptions {
+    const MAX_SELECTIVITY_PPM: u64 = 1_000_000;
+
+    pub const DEFAULT_SMALL_IN_LIST_LIMIT: usize = 1024;
+    pub const DEFAULT_MAX_BUILD_ROWS: usize = 1_000_000;
+    pub const DEFAULT_LARGE_LOCAL_PARQUET_RANGE_PRODUCER_ROWS: usize = 4 * 1024;
+    pub const DEFAULT_DIMENSION_SIZED_CONSUMER_BYTES: u64 = 256 * 1024 * 1024;
+    pub const DEFAULT_TINY_LOCAL_PARQUET_CONSUMER_ROW_GROUPS: usize = 32;
+    pub const DEFAULT_MAX_RANGE_READER_PREDICATE_SELECTIVITY_PPM: u64 = 950_000;
+    pub const DEFAULT_MAX_DEFERRED_SMALL_IN_LIST_READER_VALUES: usize = 128;
+    pub const DEFAULT_MAX_UNPRUNED_HASH_SET_POST_DECODE_VALUES: usize = 4096;
+    pub const DEFAULT_MIN_UNPRUNED_HASH_SET_POST_DECODE_SOURCE_ROWS: u64 = 1_000_000;
+
+    /// Maximum exact keyset cardinality lowered into a reader `IN (...)` predicate.
+    pub fn small_in_list_limit(&self) -> usize {
+        self.small_in_list_limit
+    }
+
+    /// Runtime cap for producer rows when an exact host keyset would be materialized.
+    pub fn max_build_rows(&self) -> usize {
+        self.max_build_rows
+    }
+
+    /// Producer row threshold where local-Parquet consumers switch from exact
+    /// host keysets to range-only payloads.
+    pub fn large_local_parquet_range_producer_rows(&self) -> usize {
+        self.large_local_parquet_range_producer_rows
+    }
+
+    /// Local-Parquet consumer byte threshold below which large producer keysets
+    /// are treated as unlikely to pay for themselves.
+    pub fn dimension_sized_consumer_bytes(&self) -> u64 {
+        self.dimension_sized_consumer_bytes
+    }
+
+    /// Selected row-group count below which a dimension-sized local-Parquet
+    /// consumer has too little independent source work to justify a large keyset.
+    pub fn tiny_local_parquet_consumer_row_groups(&self) -> usize {
+        self.tiny_local_parquet_consumer_row_groups
+    }
+
+    /// Maximum range overlap ratio, in parts per million, for merging a runtime
+    /// range payload into a reader predicate.
+    pub fn max_range_reader_predicate_selectivity_ppm(&self) -> u64 {
+        self.max_range_reader_predicate_selectivity_ppm
+    }
+
+    /// Maximum small-IN-list cardinality that may be deferred from reader
+    /// predicate application into a post-decode filter when another predicate remains.
+    pub fn max_deferred_small_in_list_reader_values(&self) -> usize {
+        self.max_deferred_small_in_list_reader_values
+    }
+
+    /// Maximum unpruned hash-set payload cardinality accepted for source
+    /// post-decode filtering.
+    pub fn max_unpruned_hash_set_post_decode_values(&self) -> usize {
+        self.max_unpruned_hash_set_post_decode_values
+    }
+
+    /// Minimum known source rows required before an unpruned hash-set payload is
+    /// worth applying as a source post-decode filter.
+    pub fn min_unpruned_hash_set_post_decode_source_rows(&self) -> u64 {
+        self.min_unpruned_hash_set_post_decode_source_rows
+    }
+
+    /// Validates internal consistency for this dynamic-filter policy.
+    ///
+    /// Zero-valued thresholds remain accepted because this is still an expert
+    /// Rust surface and callers may use zero to disable narrow sub-behaviors.
+    /// The checks here only reject combinations that make planner and runtime
+    /// contracts contradictory.
+    pub fn validate(&self) -> Result<()> {
+        if self.large_local_parquet_range_producer_rows != 0
+            && self.max_build_rows != 0
+            && self.large_local_parquet_range_producer_rows > self.max_build_rows
+        {
+            return Err(invalid_dynamic_filter_execution_option(
+                "large_local_parquet_range_producer_rows",
+                self.large_local_parquet_range_producer_rows,
+                "max_build_rows",
+                self.max_build_rows,
+                "range_producer_rows_exceeds_runtime_build_cap",
+            ));
+        }
+        if self.max_range_reader_predicate_selectivity_ppm > Self::MAX_SELECTIVITY_PPM {
+            return Err(invalid_dynamic_filter_execution_option_max(
+                "max_range_reader_predicate_selectivity_ppm",
+                self.max_range_reader_predicate_selectivity_ppm,
+                Self::MAX_SELECTIVITY_PPM,
+                "selectivity_ppm_above_one_hundred_percent",
+            ));
+        }
+        Ok(())
+    }
+
+    pub fn with_small_in_list_limit(mut self, limit: usize) -> Self {
+        self.small_in_list_limit = limit;
+        self
+    }
+
+    pub fn with_max_build_rows(mut self, rows: usize) -> Self {
+        self.max_build_rows = rows;
+        self
+    }
+
+    pub fn with_large_local_parquet_range_producer_rows(mut self, rows: usize) -> Self {
+        self.large_local_parquet_range_producer_rows = rows;
+        self
+    }
+
+    pub fn with_dimension_sized_consumer_bytes(mut self, bytes: u64) -> Self {
+        self.dimension_sized_consumer_bytes = bytes;
+        self
+    }
+
+    pub fn with_tiny_local_parquet_consumer_row_groups(mut self, row_groups: usize) -> Self {
+        self.tiny_local_parquet_consumer_row_groups = row_groups;
+        self
+    }
+
+    pub fn with_max_range_reader_predicate_selectivity_ppm(mut self, selectivity_ppm: u64) -> Self {
+        self.max_range_reader_predicate_selectivity_ppm = selectivity_ppm;
+        self
+    }
+
+    pub fn with_max_deferred_small_in_list_reader_values(mut self, values: usize) -> Self {
+        self.max_deferred_small_in_list_reader_values = values;
+        self
+    }
+
+    pub fn with_max_unpruned_hash_set_post_decode_values(mut self, values: usize) -> Self {
+        self.max_unpruned_hash_set_post_decode_values = values;
+        self
+    }
+
+    pub fn with_min_unpruned_hash_set_post_decode_source_rows(mut self, rows: u64) -> Self {
+        self.min_unpruned_hash_set_post_decode_source_rows = rows;
+        self
+    }
+}
+
+fn invalid_dynamic_filter_execution_option(
+    field: &'static str,
+    value: usize,
+    bound_field: &'static str,
+    bound_value: usize,
+    reason: &'static str,
+) -> QueryError {
+    QueryError::new(
+        QueryErrorCode::InvalidPlan,
+        "nexus_query_engine.dynamic_filter.execution_options.validate",
+        "dynamic-filter execution option is inconsistent with another policy field",
+    )
+    .with_fact("field", field)
+    .with_fact("value", value)
+    .with_fact("bound_field", bound_field)
+    .with_fact("bound_value", bound_value)
+    .with_fact("reason", reason)
+}
+
+fn invalid_dynamic_filter_execution_option_max(
+    field: &'static str,
+    value: u64,
+    max_value: u64,
+    reason: &'static str,
+) -> QueryError {
+    QueryError::new(
+        QueryErrorCode::InvalidPlan,
+        "nexus_query_engine.dynamic_filter.execution_options.validate",
+        "dynamic-filter execution option exceeds its valid maximum",
+    )
+    .with_fact("field", field)
+    .with_fact("value", value)
+    .with_fact("max_value", max_value)
+    .with_fact("reason", reason)
+}
+
+impl Default for DynamicFilterExecutionOptions {
+    fn default() -> Self {
+        Self {
+            small_in_list_limit: Self::DEFAULT_SMALL_IN_LIST_LIMIT,
+            max_build_rows: Self::DEFAULT_MAX_BUILD_ROWS,
+            large_local_parquet_range_producer_rows: Self::DEFAULT_LARGE_LOCAL_PARQUET_RANGE_PRODUCER_ROWS,
+            dimension_sized_consumer_bytes: Self::DEFAULT_DIMENSION_SIZED_CONSUMER_BYTES,
+            tiny_local_parquet_consumer_row_groups: Self::DEFAULT_TINY_LOCAL_PARQUET_CONSUMER_ROW_GROUPS,
+            max_range_reader_predicate_selectivity_ppm: Self::DEFAULT_MAX_RANGE_READER_PREDICATE_SELECTIVITY_PPM,
+            max_deferred_small_in_list_reader_values: Self::DEFAULT_MAX_DEFERRED_SMALL_IN_LIST_READER_VALUES,
+            max_unpruned_hash_set_post_decode_values: Self::DEFAULT_MAX_UNPRUNED_HASH_SET_POST_DECODE_VALUES,
+            min_unpruned_hash_set_post_decode_source_rows: Self::DEFAULT_MIN_UNPRUNED_HASH_SET_POST_DECODE_SOURCE_ROWS,
+        }
+    }
+}
+
 /// Maximum exact keyset cardinality lowered into a reader `IN (...)` predicate.
-pub const DEFAULT_SMALL_IN_LIST_DYNAMIC_FILTER_LIMIT: usize = 1024;
+pub const DEFAULT_SMALL_IN_LIST_DYNAMIC_FILTER_LIMIT: usize =
+    DynamicFilterExecutionOptions::DEFAULT_SMALL_IN_LIST_LIMIT;
 
 /// Stable runtime skip reason for a large exact keyset whose local-Parquet
 /// consumers are already small enough that payload materialization and footer
 /// pruning work are not expected to pay for themselves.
 pub const LARGE_KEYSET_DIMENSION_SOURCE_SKIP_REASON: &str = "large_keyset_dimension_sized_local_parquet_consumer";
-
-/// Runtime cap for dynamic-filter producer rows when an exact host keyset would
-/// be materialized.
-pub(crate) const MAX_DYNAMIC_FILTER_BUILD_ROWS: usize = 1_000_000;
-
-/// Producer row threshold where runtime avoids exact host keyset payloads for
-/// local-Parquet consumers and considers range-only payloads instead.
-pub(crate) const LARGE_LOCAL_PARQUET_RANGE_DYNAMIC_FILTER_PRODUCER_ROWS: usize = 4 * 1024;
-
-/// Local-Parquet consumer byte threshold below which large producer keysets are
-/// treated as unlikely to pay for their producer-before-consumer dependency.
-pub(crate) const DIMENSION_SIZED_DYNAMIC_FILTER_CONSUMER_BYTES: u64 = 256 * 1024 * 1024;
-
-/// Selected row-group count below which a dimension-sized local-Parquet consumer
-/// has too little independent source work to justify a large producer keyset.
-pub(crate) const TINY_LOCAL_PARQUET_DYNAMIC_FILTER_CONSUMER_ROW_GROUPS: usize = 32;
-
-const MAX_RANGE_READER_PREDICATE_SELECTIVITY_PPM: u128 = 950_000;
 
 pub(crate) fn dynamic_filter_consumer_source_feeds_downstream_work_fanout(
     plan: &QueryPlan,
@@ -793,6 +1006,7 @@ pub(crate) fn dynamic_filter_reader_predicate_should_merge(
     source: &LocalParquetSource,
     column: &str,
     filter: &DynamicFilter,
+    options: DynamicFilterExecutionOptions,
 ) -> Result<bool> {
     let Some(predicate) = dynamic_filter_reader_predicate(source, column, filter) else {
         return Ok(false);
@@ -812,7 +1026,8 @@ pub(crate) fn dynamic_filter_reader_predicate_should_merge(
     let Some(source_width) = range_width(source_range) else {
         return Ok(true);
     };
-    Ok(overlap.saturating_mul(1_000_000) <= source_width.saturating_mul(MAX_RANGE_READER_PREDICATE_SELECTIVITY_PPM))
+    Ok(overlap.saturating_mul(1_000_000)
+        <= source_width.saturating_mul(u128::from(options.max_range_reader_predicate_selectivity_ppm)))
 }
 
 fn selected_source_i64_range(source: &LocalParquetSource, column: &str) -> Result<Option<I64Range>> {
@@ -939,5 +1154,28 @@ fn i64_literal_for_type(value: i64, data_type: &DataType) -> Option<LiteralValue
         DataType::UInt32 => u32::try_from(value).ok().map(LiteralValue::UInt32),
         DataType::UInt64 => u64::try_from(value).ok().map(LiteralValue::UInt64),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn dynamic_filter_execution_options_accept_zero_threshold_overrides() {
+        DynamicFilterExecutionOptions::default().with_max_build_rows(0).validate().unwrap();
+        DynamicFilterExecutionOptions::default().with_large_local_parquet_range_producer_rows(0).validate().unwrap();
+    }
+
+    #[test]
+    fn dynamic_filter_execution_options_accept_independent_post_decode_limits() {
+        DynamicFilterExecutionOptions::default()
+            .with_max_build_rows(10)
+            .with_large_local_parquet_range_producer_rows(10)
+            .with_small_in_list_limit(1)
+            .with_max_deferred_small_in_list_reader_values(2)
+            .with_max_unpruned_hash_set_post_decode_values(11)
+            .validate()
+            .unwrap();
     }
 }

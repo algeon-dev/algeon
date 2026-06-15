@@ -1,5 +1,6 @@
 use super::rewrite;
 use crate::{
+    error::{QueryError, QueryErrorCode},
     expr::{ColumnRef, Expr},
     plan::{JoinNode, JoinSide, JoinType, NodeId, PlanNode, QueryPlan, estimated_output_bytes, estimated_output_rows},
 };
@@ -30,6 +31,27 @@ impl JoinBuildSideSelectionOptions {
             small_build_side_rows: DEFAULT_SMALL_BUILD_SIDE_ROWS,
         }
     }
+
+    /// Validates internal consistency for build-side selection thresholds.
+    pub fn validate(&self) -> crate::error::Result<()> {
+        validate_nonzero_join_build_side_option("small_build_side_bytes", self.small_build_side_bytes)?;
+        validate_nonzero_join_build_side_option("small_build_side_rows", self.small_build_side_rows)?;
+        Ok(())
+    }
+}
+
+fn validate_nonzero_join_build_side_option(field: &'static str, value: u64) -> crate::error::Result<()> {
+    if value == 0 {
+        return Err(QueryError::new(
+            QueryErrorCode::InvalidPlan,
+            "nexus_query_engine.join_build_side_selection_options.validate",
+            "join build-side selection option must be greater than zero",
+        )
+        .with_fact("field", field)
+        .with_fact("value", value)
+        .with_fact("reason", "zero"));
+    }
+    Ok(())
 }
 
 impl Default for JoinBuildSideSelectionOptions {
@@ -86,6 +108,10 @@ pub struct JoinBuildSideSelectionCandidateDiagnostics {
     pub left_estimated_bytes: Option<u64>,
     /// Estimated bytes on the right input, if known.
     pub right_estimated_bytes: Option<u64>,
+    /// Configured byte threshold under which a side is treated as a small build candidate.
+    pub small_build_side_bytes: u64,
+    /// Configured row threshold under which a side is treated as a small build candidate.
+    pub small_build_side_rows: u64,
     /// True when the returned plan uses the selected build side.
     pub applied: bool,
     /// Rejection reason when no change was applied.
@@ -147,6 +173,8 @@ pub(crate) fn optimize_join_build_side_selection(
             right_estimated_rows: right.rows,
             left_estimated_bytes: left.bytes,
             right_estimated_bytes: right.bytes,
+            small_build_side_bytes: options.small_build_side_bytes,
+            small_build_side_rows: options.small_build_side_rows,
             applied: false,
             rejected_reason: Some(JoinBuildSideSelectionRejectedReason::NoBetterBuildSide),
         };
@@ -175,7 +203,12 @@ pub(crate) fn optimize_join_build_side_selection(
 
     let change = if changed { super::NativeOptimizerChange::Changed } else { super::NativeOptimizerChange::Unchanged };
     let root = plan.root_id();
-    JoinBuildSideSelectionResult { plan: rewrite::finish_rewritten_plan(nodes, root, plan.sink()), change, diagnostics }
+    JoinBuildSideSelectionResult {
+        plan: rewrite::finish_rewritten_plan(nodes, root, plan.sink())
+            .with_keyed_hash_join_strategy_options_from(&plan),
+        change,
+        diagnostics,
+    }
 }
 
 fn join_build_side_selection_supported(join: &crate::plan::JoinNode) -> bool {

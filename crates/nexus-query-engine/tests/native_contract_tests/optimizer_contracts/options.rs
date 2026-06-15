@@ -29,6 +29,39 @@ fn native_optimizer_options_can_disable_semijoin_reduction_pass() {
 }
 
 #[test]
+fn native_optimizer_captures_keyed_hash_join_strategy_options_in_plan() {
+    let keyed_hash_join_strategy =
+        KeyedHashJoinStrategyOptions::default().with_small_reusable_hash_build_row_threshold(11);
+    let options = NativeOptimizerOptions { keyed_hash_join_strategy, ..NativeOptimizerOptions::disabled() };
+
+    let result = optimize_query_plan(single_source_plan(), &options);
+
+    assert_eq!(result.plan.keyed_hash_join_strategy_options(), keyed_hash_join_strategy);
+}
+
+#[test]
+fn native_optimizer_preserves_keyed_hash_join_strategy_options_through_projection_rewrite() {
+    let plan_schema = schema(&["key"]);
+    let mut builder = QueryPlanBuilder::new();
+    let source = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("input", Arc::clone(&plan_schema))));
+    let projection = builder.add_projection(source, projection_outputs(vec![Expr::column("key")], Arc::clone(&plan_schema)));
+    let plan = builder.finish_gpu_resident(projection);
+    let keyed_hash_join_strategy =
+        KeyedHashJoinStrategyOptions::default().with_small_reusable_hash_build_row_threshold(11);
+    let options = NativeOptimizerOptions {
+        projection_simplification: ProjectionSimplificationOptions::default(),
+        keyed_hash_join_strategy,
+        ..NativeOptimizerOptions::disabled()
+    };
+
+    let result = optimize_query_plan(plan, &options);
+
+    assert_eq!(result.change, NativeOptimizerChange::Changed);
+    assert_eq!(result.diagnostics.projection_simplification.applied_count, 1);
+    assert_eq!(result.plan.keyed_hash_join_strategy_options(), keyed_hash_join_strategy);
+}
+
+#[test]
 fn projection_simplification_options_and_rule_name_are_stable() {
     assert_eq!(PROJECTION_SIMPLIFICATION_RULE_NAME, "projection_simplification");
     assert!(ProjectionSimplificationOptions::default().enabled);
@@ -45,6 +78,7 @@ fn semijoin_reduction_options_and_rule_name_are_stable() {
     );
     assert_eq!(SemijoinReductionOptions::default().admission_mode, SemijoinReductionAdmissionMode::NotEvaluated);
     assert!(!SemijoinReductionOptions::disabled().enabled);
+    SemijoinReductionOptions::default().validate().unwrap();
 }
 
 #[test]
@@ -54,6 +88,7 @@ fn join_build_side_selection_options_and_rule_name_are_stable() {
     assert!(!JoinBuildSideSelectionOptions::disabled().enabled);
     assert_eq!(JoinBuildSideSelectionOptions::default().small_build_side_bytes, 64 * 1024 * 1024);
     assert_eq!(JoinBuildSideSelectionOptions::default().small_build_side_rows, 1_000_000);
+    JoinBuildSideSelectionOptions::default().validate().unwrap();
 }
 
 #[test]
@@ -92,6 +127,7 @@ fn dimension_derived_row_group_pruning_options_and_rule_name_are_stable() {
     assert!(DimensionDerivedRowGroupPruningOptions::default().enabled);
     assert_eq!(DimensionDerivedRowGroupPruningOptions::default().max_dimension_rows, 1_000_000);
     assert!(!DimensionDerivedRowGroupPruningOptions::disabled().enabled);
+    DimensionDerivedRowGroupPruningOptions::default().validate().unwrap();
 }
 
 #[test]
@@ -106,6 +142,76 @@ fn local_parquet_source_reuse_options_and_rule_name_are_stable() {
     assert_eq!(LOCAL_PARQUET_SOURCE_REUSE_RULE_NAME, "local_parquet_source_reuse");
     assert!(LocalParquetSourceReuseOptions::default().enabled);
     assert!(!LocalParquetSourceReuseOptions::disabled().enabled);
+    assert_eq!(LocalParquetSourceReuseOptions::default().max_variant_selected_bytes, 500 * 1024 * 1024);
+    LocalParquetSourceReuseOptions::default().validate().unwrap();
+}
+
+#[test]
+fn native_optimizer_options_validate_expert_optimizer_thresholds() {
+    NativeOptimizerOptions::default().validate().unwrap();
+    NativeOptimizerOptions::disabled().validate().unwrap();
+
+    let error = NativeOptimizerOptions {
+        semijoin_reduction: SemijoinReductionOptions { cost_threshold_multiplier: 0, ..Default::default() },
+        ..Default::default()
+    }
+    .validate()
+    .unwrap_err();
+    assert_eq!(error.code(), QueryErrorCode::InvalidPlan);
+    assert_eq!(error.fact_value("field"), Some("cost_threshold_multiplier"));
+    assert_eq!(error.fact_value("reason"), Some("zero"));
+
+    let error = NativeOptimizerOptions {
+        join_build_side_selection: JoinBuildSideSelectionOptions {
+            small_build_side_bytes: 0,
+            ..Default::default()
+        },
+        ..Default::default()
+    }
+    .validate()
+    .unwrap_err();
+    assert_eq!(error.code(), QueryErrorCode::InvalidPlan);
+    assert_eq!(error.fact_value("field"), Some("small_build_side_bytes"));
+    assert_eq!(error.fact_value("reason"), Some("zero"));
+
+    let error = NativeOptimizerOptions {
+        join_build_side_selection: JoinBuildSideSelectionOptions {
+            small_build_side_rows: 0,
+            ..Default::default()
+        },
+        ..Default::default()
+    }
+    .validate()
+    .unwrap_err();
+    assert_eq!(error.code(), QueryErrorCode::InvalidPlan);
+    assert_eq!(error.fact_value("field"), Some("small_build_side_rows"));
+    assert_eq!(error.fact_value("reason"), Some("zero"));
+
+    let error = NativeOptimizerOptions {
+        dimension_derived_row_group_pruning: DimensionDerivedRowGroupPruningOptions {
+            max_dimension_rows: 0,
+            ..Default::default()
+        },
+        ..Default::default()
+    }
+    .validate()
+    .unwrap_err();
+    assert_eq!(error.code(), QueryErrorCode::InvalidPlan);
+    assert_eq!(error.fact_value("field"), Some("max_dimension_rows"));
+    assert_eq!(error.fact_value("reason"), Some("zero"));
+
+    let error = NativeOptimizerOptions {
+        local_parquet_source_reuse: LocalParquetSourceReuseOptions {
+            max_variant_selected_bytes: 0,
+            ..Default::default()
+        },
+        ..Default::default()
+    }
+    .validate()
+    .unwrap_err();
+    assert_eq!(error.code(), QueryErrorCode::InvalidPlan);
+    assert_eq!(error.fact_value("field"), Some("max_variant_selected_bytes"));
+    assert_eq!(error.fact_value("reason"), Some("zero"));
 }
 
 #[test]
@@ -119,5 +225,39 @@ fn shared_subplan_materialization_options_and_rule_name_are_stable() {
 fn dynamic_filter_route_discovery_options_and_rule_name_are_stable() {
     assert_eq!(DYNAMIC_FILTER_ROUTE_DISCOVERY_RULE_NAME, "dynamic_filter_route_discovery");
     assert!(DynamicFilterRouteDiscoveryOptions::default().enabled);
+    assert_eq!(DynamicFilterRouteDiscoveryOptions::default().execution, DynamicFilterExecutionOptions::default());
     assert!(!DynamicFilterRouteDiscoveryOptions::disabled().enabled);
+    assert_eq!(DynamicFilterRouteDiscoveryOptions::disabled().execution, DynamicFilterExecutionOptions::default());
+}
+
+#[test]
+fn dynamic_filter_execution_options_defaults_are_stable() {
+    let options = DynamicFilterExecutionOptions::default();
+
+    assert_eq!(options.small_in_list_limit(), 1024);
+    assert_eq!(options.max_build_rows(), 1_000_000);
+    assert_eq!(options.large_local_parquet_range_producer_rows(), 4 * 1024);
+    assert_eq!(options.dimension_sized_consumer_bytes(), 256 * 1024 * 1024);
+    assert_eq!(options.tiny_local_parquet_consumer_row_groups(), 32);
+    assert_eq!(options.max_range_reader_predicate_selectivity_ppm(), 950_000);
+    assert_eq!(options.max_deferred_small_in_list_reader_values(), 128);
+    assert_eq!(options.max_unpruned_hash_set_post_decode_values(), 4096);
+    assert_eq!(options.min_unpruned_hash_set_post_decode_source_rows(), 1_000_000);
+}
+
+#[test]
+fn keyed_hash_join_strategy_options_defaults_are_stable() {
+    let options = KeyedHashJoinStrategyOptions::default();
+
+    assert_eq!(options.large_keyed_hash_build_row_threshold(), 64_000_000);
+    assert_eq!(options.large_keyed_hash_build_bytes_threshold(), 8 * 1024 * 1024 * 1024);
+    assert_eq!(options.large_keyed_hash_probe_bytes_threshold(), 2 * 1024 * 1024 * 1024);
+    assert_eq!(options.small_reusable_hash_build_row_threshold(), 1_000_000);
+    assert_eq!(options.small_reusable_hash_build_bytes_threshold(), 64 * 1024 * 1024);
+    assert_eq!(options.small_one_shot_probe_bytes_threshold(), 256 * 1024 * 1024);
+    assert_eq!(options.max_small_probe_left_one_shot_build_row_threshold(), 128_000_000);
+    assert_eq!(
+        options.max_small_probe_left_one_shot_build_bytes_threshold(),
+        2 * 1024 * 1024 * 1024
+    );
 }

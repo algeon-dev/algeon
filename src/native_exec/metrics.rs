@@ -1183,6 +1183,62 @@ impl NativeCudfMetrics {
                     aggregate_fact(facts, "prior_cardinality_evidence_scope"),
                 )
                 .with_new_label(
+                    "aggregate_strategy_options_version",
+                    aggregate_fact(facts, "aggregate_strategy_options_version"),
+                )
+                .with_new_label(
+                    "aggregate_encoded_key_partial_low_cardinality_threshold_ppm",
+                    aggregate_fact(facts, "aggregate_encoded_key_partial_low_cardinality_threshold_ppm"),
+                )
+                .with_new_label(
+                    "aggregate_encoded_key_partial_min_input_rows",
+                    aggregate_fact(facts, "aggregate_encoded_key_partial_min_input_rows"),
+                )
+                .with_new_label(
+                    "aggregate_exact_grouped_key_cardinality_probe_max_key_columns",
+                    aggregate_fact(facts, "aggregate_exact_grouped_key_cardinality_probe_max_key_columns"),
+                )
+                .with_new_label(
+                    "aggregate_exact_single_string_avg_cardinality_probe_min_input_rows",
+                    aggregate_fact(facts, "aggregate_exact_single_string_avg_cardinality_probe_min_input_rows"),
+                )
+                .with_new_label(
+                    "aggregate_exact_single_key_cardinality_probe_min_input_rows",
+                    aggregate_fact(facts, "aggregate_exact_single_key_cardinality_probe_min_input_rows"),
+                )
+                .with_new_label(
+                    "aggregate_exact_grouped_key_cardinality_probe_min_input_rows",
+                    aggregate_fact(facts, "aggregate_exact_grouped_key_cardinality_probe_min_input_rows"),
+                )
+                .with_new_label(
+                    "aggregate_exact_single_string_key_prepared_max_groups",
+                    aggregate_fact(facts, "aggregate_exact_single_string_key_prepared_max_groups"),
+                )
+                .with_new_label(
+                    "aggregate_exact_three_key_cardinality_probe_max_input_rows",
+                    aggregate_fact(facts, "aggregate_exact_three_key_cardinality_probe_max_input_rows"),
+                )
+                .with_new_label(
+                    "aggregate_exact_five_key_cardinality_probe_max_input_rows",
+                    aggregate_fact(facts, "aggregate_exact_five_key_cardinality_probe_max_input_rows"),
+                )
+                .with_new_label(
+                    "aggregate_prepared_sort_groupby_low_cardinality_threshold_ppm",
+                    aggregate_fact(facts, "aggregate_prepared_sort_groupby_low_cardinality_threshold_ppm"),
+                )
+                .with_new_label(
+                    "aggregate_source_adjacent_prepared_sort_groupby_max_row_groups",
+                    aggregate_fact(facts, "aggregate_source_adjacent_prepared_sort_groupby_max_row_groups"),
+                )
+                .with_new_label(
+                    "aggregate_source_adjacent_prepared_sort_groupby_max_source_read_bytes",
+                    aggregate_fact(facts, "aggregate_source_adjacent_prepared_sort_groupby_max_source_read_bytes"),
+                )
+                .with_new_label(
+                    "aggregate_source_adjacent_prepared_sort_groupby_max_fan_in",
+                    aggregate_fact(facts, "aggregate_source_adjacent_prepared_sort_groupby_max_fan_in"),
+                )
+                .with_new_label(
                     "encoded_key_partial_cost_model",
                     aggregate_fact(facts, "encoded_key_partial_cost_model"),
                 )
@@ -1482,6 +1538,53 @@ mod tests {
         assert_eq!(row.statistical_aggregate_ddof, "stddev_samp:1");
         assert_eq!(row.stddev_samp_execution_mode, "gpu_native_tolerant");
         assert_eq!(row.stddev_samp_ddof, "1");
+    }
+
+    #[test]
+    fn aggregate_strategy_rows_bridge_strategy_execution_option_labels() {
+        let metrics_set = ExecutionPlanMetricsSet::new();
+        let native_metrics = NativeCudfMetrics::new(&metrics_set, 0);
+        let mut query_metrics = QueryMetrics::default();
+        let facts = BTreeMap::from([
+            ("selected_strategy", "libcudf_groupby".to_string()),
+            ("execution_stage", "partial".to_string()),
+            ("aggregate_strategy_options_version", "1".to_string()),
+            ("aggregate_encoded_key_partial_low_cardinality_threshold_ppm", "175000".to_string()),
+            ("aggregate_encoded_key_partial_min_input_rows", "123".to_string()),
+            ("aggregate_exact_grouped_key_cardinality_probe_max_key_columns", "4".to_string()),
+            ("aggregate_exact_single_string_avg_cardinality_probe_min_input_rows", "101".to_string()),
+            ("aggregate_exact_single_key_cardinality_probe_min_input_rows", "202".to_string()),
+            ("aggregate_exact_grouped_key_cardinality_probe_min_input_rows", "303".to_string()),
+            ("aggregate_exact_single_string_key_prepared_max_groups", "404".to_string()),
+            ("aggregate_exact_three_key_cardinality_probe_max_input_rows", "505".to_string()),
+            ("aggregate_exact_five_key_cardinality_probe_max_input_rows", "606".to_string()),
+            ("aggregate_prepared_sort_groupby_low_cardinality_threshold_ppm", "200000".to_string()),
+            ("aggregate_source_adjacent_prepared_sort_groupby_max_row_groups", "65".to_string()),
+            ("aggregate_source_adjacent_prepared_sort_groupby_max_source_read_bytes", "4096".to_string()),
+            ("aggregate_source_adjacent_prepared_sort_groupby_max_fan_in", "7".to_string()),
+        ]);
+
+        query_metrics.record_aggregate_strategy_decision("n13", &facts);
+        native_metrics.record_query_metrics(&query_metrics);
+
+        let metrics = NativeDataFusionExecutionMetrics::from_metrics(&metrics_set.clone_inner());
+        assert_eq!(metrics.aggregate_strategy_rows.len(), 1);
+        let row = &metrics.aggregate_strategy_rows[0];
+        assert_eq!(row.node_id, "n13");
+        assert_eq!(row.aggregate_strategy_options_version, "1");
+        assert_eq!(row.aggregate_encoded_key_partial_low_cardinality_threshold_ppm, 175_000);
+        assert_eq!(row.aggregate_encoded_key_partial_min_input_rows, 123);
+        assert_eq!(row.aggregate_exact_grouped_key_cardinality_probe_max_key_columns, 4);
+        assert_eq!(row.aggregate_exact_single_string_avg_cardinality_probe_min_input_rows, 101);
+        assert_eq!(row.aggregate_exact_single_key_cardinality_probe_min_input_rows, 202);
+        assert_eq!(row.aggregate_exact_grouped_key_cardinality_probe_min_input_rows, 303);
+        assert_eq!(row.aggregate_exact_single_string_key_prepared_max_groups, 404);
+        assert_eq!(row.aggregate_exact_three_key_cardinality_probe_max_input_rows, 505);
+        assert_eq!(row.aggregate_exact_five_key_cardinality_probe_max_input_rows, 606);
+        assert_eq!(row.aggregate_prepared_sort_groupby_low_cardinality_threshold_ppm, 200_000);
+        assert_eq!(row.aggregate_source_adjacent_prepared_sort_groupby_max_row_groups, 65);
+        assert_eq!(row.aggregate_source_adjacent_prepared_sort_groupby_max_source_read_bytes, 4096);
+        assert_eq!(row.aggregate_source_adjacent_prepared_sort_groupby_max_fan_in, 7);
     }
 
     #[test]

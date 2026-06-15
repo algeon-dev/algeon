@@ -4,10 +4,8 @@ use super::rewrite;
 use crate::{
     datatypes::{is_supported_arrow_type, is_supported_list_carry_type, is_timestamp_with_timezone},
     dynamic_filter::{
-        DIMENSION_SIZED_DYNAMIC_FILTER_CONSUMER_BYTES, DynamicFilterConsumer, DynamicFilterConsumerLowering,
-        DynamicFilterConsumerReductionStage, DynamicFilterId, DynamicFilterKind, DynamicFilterProducer,
-        DynamicFilterRoute, LARGE_LOCAL_PARQUET_RANGE_DYNAMIC_FILTER_PRODUCER_ROWS, MAX_DYNAMIC_FILTER_BUILD_ROWS,
-        TINY_LOCAL_PARQUET_DYNAMIC_FILTER_CONSUMER_ROW_GROUPS,
+        DynamicFilterConsumer, DynamicFilterConsumerLowering, DynamicFilterConsumerReductionStage,
+        DynamicFilterExecutionOptions, DynamicFilterId, DynamicFilterKind, DynamicFilterProducer, DynamicFilterRoute,
         dynamic_filter_consumer_source_feeds_downstream_work_fanout,
     },
     expr::{AggregateFunction, BinaryOp, ColumnQualifier, ColumnRef, Expr},
@@ -23,18 +21,20 @@ pub const DYNAMIC_FILTER_ROUTE_DISCOVERY_RULE_NAME: &str = "dynamic_filter_route
 pub struct DynamicFilterRouteDiscoveryOptions {
     /// Whether the pass may discover native dynamic-filter routes.
     pub enabled: bool,
+    /// Runtime policy captured into plans that carry discovered dynamic-filter routes.
+    pub execution: DynamicFilterExecutionOptions,
 }
 
 impl DynamicFilterRouteDiscoveryOptions {
     /// Returns options with route discovery disabled.
     pub fn disabled() -> Self {
-        Self { enabled: false }
+        Self { enabled: false, execution: DynamicFilterExecutionOptions::default() }
     }
 }
 
 impl Default for DynamicFilterRouteDiscoveryOptions {
     fn default() -> Self {
-        Self { enabled: true }
+        Self { enabled: true, execution: DynamicFilterExecutionOptions::default() }
     }
 }
 
@@ -229,7 +229,7 @@ pub(crate) fn optimize_dynamic_filter_route_discovery(
                     )
                 });
             let producer_dependency_root = aggregate_group_key_producer.unwrap_or(orientation.producer_input);
-            if producer_keyset_exceeds_runtime_limit(&plan, producer_dependency_root) {
+            if producer_keyset_exceeds_runtime_limit(&plan, producer_dependency_root, options.execution) {
                 candidate.rejected_reason = Some(DynamicFilterRouteRejectedReason::ProducerKeysetExceedsRuntimeLimit);
                 diagnostics.candidates.push(candidate);
                 continue;
@@ -398,6 +398,7 @@ pub(crate) fn optimize_dynamic_filter_route_discovery(
                                 &plan,
                                 orientation.producer_input,
                                 consumer_source,
+                                options.execution,
                             )
                         {
                             candidate.rejected_reason =
@@ -588,7 +589,7 @@ pub(crate) fn optimize_dynamic_filter_route_discovery(
             candidate.selected_source_bytes = stats.and_then(|stats| stats.selected_source_bytes());
             candidate.total_source_bytes = stats.and_then(|stats| stats.total_source_bytes());
 
-            if producer_keyset_exceeds_runtime_limit(&plan, residual_candidate.producer_input) {
+            if producer_keyset_exceeds_runtime_limit(&plan, residual_candidate.producer_input, options.execution) {
                 candidate.rejected_reason = Some(DynamicFilterRouteRejectedReason::ProducerKeysetExceedsRuntimeLimit);
                 diagnostics.candidates.push(candidate);
                 continue;
@@ -633,6 +634,7 @@ pub(crate) fn optimize_dynamic_filter_route_discovery(
                     &plan,
                     residual_candidate.producer_input,
                     consumer_source,
+                    options.execution,
                 )
             {
                 candidate.rejected_reason =
@@ -679,7 +681,7 @@ pub(crate) fn optimize_dynamic_filter_route_discovery(
 
     let change =
         if routes.is_empty() { super::NativeOptimizerChange::Unchanged } else { super::NativeOptimizerChange::Changed };
-    let plan = plan.with_dynamic_filter_routes(routes);
+    let plan = plan.with_dynamic_filter_execution_options(options.execution).with_dynamic_filter_routes(routes);
     DynamicFilterRouteDiscoveryResult { plan, change, diagnostics }
 }
 
@@ -1005,6 +1007,7 @@ fn large_keyset_dimension_sized_local_parquet_consumer_is_not_promising(
     plan: &QueryPlan,
     producer_input: NodeId,
     consumer_source: &LocalParquetSource,
+    options: DynamicFilterExecutionOptions,
 ) -> bool {
     let Some(consumer_stats) = consumer_source.diagnostics.selected_row_group_stats.as_ref() else {
         return false;
@@ -1012,23 +1015,27 @@ fn large_keyset_dimension_sized_local_parquet_consumer_is_not_promising(
     let Some(consumer_bytes) = consumer_stats.selected_source_bytes() else {
         return false;
     };
-    if consumer_bytes > DIMENSION_SIZED_DYNAMIC_FILTER_CONSUMER_BYTES {
+    if consumer_bytes > options.dimension_sized_consumer_bytes {
         return false;
     }
 
     let Some(producer_rows) = estimated_output_rows(plan, producer_input) else {
         return false;
     };
-    if producer_rows <= LARGE_LOCAL_PARQUET_RANGE_DYNAMIC_FILTER_PRODUCER_ROWS as u64 {
+    if producer_rows <= options.large_local_parquet_range_producer_rows as u64 {
         return false;
     }
 
-    consumer_stats.selected_row_groups <= TINY_LOCAL_PARQUET_DYNAMIC_FILTER_CONSUMER_ROW_GROUPS
+    consumer_stats.selected_row_groups <= options.tiny_local_parquet_consumer_row_groups
         || estimated_output_bytes(plan, producer_input).is_some_and(|producer_bytes| producer_bytes > consumer_bytes)
 }
 
-fn producer_keyset_exceeds_runtime_limit(plan: &QueryPlan, producer_input: NodeId) -> bool {
-    exact_unfiltered_output_rows(plan, producer_input).is_some_and(|rows| rows > MAX_DYNAMIC_FILTER_BUILD_ROWS as u64)
+fn producer_keyset_exceeds_runtime_limit(
+    plan: &QueryPlan,
+    producer_input: NodeId,
+    options: DynamicFilterExecutionOptions,
+) -> bool {
+    exact_unfiltered_output_rows(plan, producer_input).is_some_and(|rows| rows > options.max_build_rows as u64)
 }
 
 fn exact_unfiltered_output_rows(plan: &QueryPlan, node_id: NodeId) -> Option<u64> {

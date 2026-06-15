@@ -104,6 +104,17 @@ pub(crate) fn optimize_count_non_null_column_pruning(
             diagnostics: CountNonNullColumnPruningDiagnostics::default(),
         };
     }
+    if !plan.dynamic_filter_routes().is_empty() {
+        // This pass compacts node ids. Dynamic-filter route discovery currently
+        // runs later, so routed plans should only appear if a caller runs this
+        // pass directly or reorders the optimizer. Keep those routes valid by
+        // declining the compacting rewrite.
+        return CountNonNullColumnPruningResult {
+            plan,
+            change: super::NativeOptimizerChange::Unchanged,
+            diagnostics: CountNonNullColumnPruningDiagnostics::default(),
+        };
+    }
 
     let mut rewriter = CountNonNullColumnPruningRewriter::new(&plan);
     let new_root = rewriter.rewrite_subtree(plan.root_id(), RequiredColumns::All);
@@ -115,7 +126,7 @@ pub(crate) fn optimize_count_non_null_column_pruning(
 
     CountNonNullColumnPruningResult {
         plan: rewrite::finish_compacted_rewritten_plan(rewriter.nodes, new_root, plan.sink())
-            .with_dynamic_filter_routes(plan.dynamic_filter_routes().to_vec()),
+            .with_keyed_hash_join_strategy_options_from(&plan),
         change: super::NativeOptimizerChange::Changed,
         diagnostics: rewriter.diagnostics,
     }

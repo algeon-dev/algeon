@@ -40,9 +40,11 @@ mod shape;
 pub(crate) use aggregate::analyze_aggregate_strategies;
 pub use aggregate::{
     AggregateExecutionStage, AggregateExecutionStrategy, AggregateStrategyCandidateRejection,
-    AggregateStrategyCapability, AggregateStrategyCapabilityDecision, aggregate_strategy_capability_decision,
+    AggregateStrategyCapability, AggregateStrategyCapabilityDecision, AggregateStrategyExecutionOptions,
+    aggregate_strategy_capability_decision,
 };
 pub use entry::analyze_query_capabilities;
+pub use join::KeyedHashJoinStrategyOptions;
 pub(crate) use join::*;
 pub use model::{
     AggregateGrouping, BLOCKING_ROLLUP_RANK_FULL_SCAN_REQUIRES_EXACT_CONTRACTS, CapabilityAnalysis, CapabilityDecision,

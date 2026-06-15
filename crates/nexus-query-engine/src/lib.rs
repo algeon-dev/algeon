@@ -178,8 +178,9 @@ pub mod optimizer_contracts {
     pub use crate::{
         dynamic_filter::{
             DynamicFilter, DynamicFilterConsumer, DynamicFilterConsumerLowering, DynamicFilterConsumerReductionStage,
-            DynamicFilterId, DynamicFilterKind, DynamicFilterPayload, DynamicFilterProducer, DynamicFilterReadiness,
-            DynamicFilterRoute, DynamicFilterSet, LARGE_KEYSET_DIMENSION_SOURCE_SKIP_REASON,
+            DynamicFilterExecutionOptions, DynamicFilterId, DynamicFilterKind, DynamicFilterPayload,
+            DynamicFilterProducer, DynamicFilterReadiness, DynamicFilterRoute, DynamicFilterSet,
+            LARGE_KEYSET_DIMENSION_SOURCE_SKIP_REASON,
         },
         optimizer::{
             AGGREGATE_JOIN_PUSHDOWN_RULE_NAME, AggregateJoinPushdownCandidateDiagnostics,
@@ -243,9 +244,10 @@ pub use adaptive_runtime::{
     AdaptiveTaskMemoryHistoryKey, AdaptiveTaskMemoryHistoryShape, AdaptiveTaskMemoryHistorySummary,
     AdaptiveTaskMemoryObservation,
 };
+pub use capability::{AggregateStrategyExecutionOptions, KeyedHashJoinStrategyOptions};
 pub use chunk::{
-    SourceChunk, SourceChunkPlan, SourceChunkPlanningPolicy, SourceMetadataCache, SourceTaskMemoryModel,
-    plan_local_parquet_source_chunks, plan_local_parquet_source_chunks_with_execution_context,
+    SourceChunk, SourceChunkPlan, SourceChunkPlanningOptions, SourceChunkPlanningPolicy, SourceMetadataCache,
+    SourceTaskMemoryModel, plan_local_parquet_source_chunks, plan_local_parquet_source_chunks_with_execution_context,
     plan_local_parquet_source_chunks_with_metadata_cache,
 };
 pub use contract_report::{
@@ -258,8 +260,8 @@ pub use datatypes::{
 };
 pub use dynamic_filter::{
     DynamicFilter, DynamicFilterConsumer, DynamicFilterConsumerLowering, DynamicFilterConsumerReductionStage,
-    DynamicFilterId, DynamicFilterKind, DynamicFilterPayload, DynamicFilterProducer, DynamicFilterReadiness,
-    DynamicFilterRoute, DynamicFilterSet, LARGE_KEYSET_DIMENSION_SOURCE_SKIP_REASON,
+    DynamicFilterExecutionOptions, DynamicFilterId, DynamicFilterKind, DynamicFilterPayload, DynamicFilterProducer,
+    DynamicFilterReadiness, DynamicFilterRoute, DynamicFilterSet, LARGE_KEYSET_DIMENSION_SOURCE_SKIP_REASON,
 };
 pub use error::{Facts, QueryError, QueryErrorCode, QueryErrorKind, QueryErrorStatus, Result};
 pub use exec::{

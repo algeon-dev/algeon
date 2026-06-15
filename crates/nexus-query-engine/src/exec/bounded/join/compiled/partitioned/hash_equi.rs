@@ -6,6 +6,7 @@ pub(in crate::exec::bounded::join::compiled) fn execute_compiled_partitioned_has
     node: &JoinNode,
     left: BoundedJoinSideFrame,
     right: BoundedJoinSideFrame,
+    strategy_options: KeyedHashJoinStrategyOptions,
     reservations: &mut ReservationTracker,
     metrics: &mut QueryMetrics,
 ) -> Result<ResidentGpuFrame> {
@@ -15,6 +16,7 @@ pub(in crate::exec::bounded::join::compiled) fn execute_compiled_partitioned_has
         node,
         left,
         right,
+        strategy_options,
         false,
         reservations,
         metrics,
@@ -32,6 +34,7 @@ pub(in crate::exec::bounded::join::compiled) fn execute_compiled_partitioned_has
     node: &JoinNode,
     left: BoundedJoinSideFrame,
     right: BoundedJoinSideFrame,
+    strategy_options: KeyedHashJoinStrategyOptions,
     reservations: &mut ReservationTracker,
     metrics: &mut QueryMetrics,
 ) -> Result<BoundedCompiledJoinMaterializeOutput> {
@@ -41,6 +44,7 @@ pub(in crate::exec::bounded::join::compiled) fn execute_compiled_partitioned_has
         node,
         left,
         right,
+        strategy_options,
         true,
         reservations,
         metrics,
@@ -53,6 +57,7 @@ fn execute_compiled_partitioned_hash_equi_join_materialize_output(
     node: &JoinNode,
     left: BoundedJoinSideFrame,
     right: BoundedJoinSideFrame,
+    strategy_options: KeyedHashJoinStrategyOptions,
     preserve_stream: bool,
     reservations: &mut ReservationTracker,
     metrics: &mut QueryMetrics,
@@ -64,6 +69,7 @@ fn execute_compiled_partitioned_hash_equi_join_materialize_output(
         node_id,
         node,
         strategy: PARTITIONED_HASH_EQUI_STRATEGY,
+        strategy_options,
         partition_count,
         partition_target_bytes: partitioned_join_target_bytes_for_context(context),
     };

@@ -27,6 +27,7 @@ pub(super) struct PartitionedJoinDriverPlan<'a> {
     pub(super) node_id: NodeId,
     pub(super) node: &'a JoinNode,
     pub(super) strategy: PartitionedJoinStrategy,
+    pub(super) strategy_options: KeyedHashJoinStrategyOptions,
     pub(super) partition_count: usize,
     pub(super) partition_target_bytes: u64,
 }
@@ -253,6 +254,7 @@ pub(super) fn record_partitioned_join_selection(
                     side_metric(plan.node.spec.build_side, original.left_rows, original.right_rows),
                     side_metric(plan.node.spec.build_side, original.left_bytes, original.right_bytes),
                     side_metric(probe_side(plan.node.spec.build_side), original.left_bytes, original.right_bytes),
+                    plan.strategy_options,
                 )
                 .to_string(),
             ),

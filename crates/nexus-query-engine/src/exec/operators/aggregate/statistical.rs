@@ -76,6 +76,7 @@ pub(super) fn execute_gpu_native_statistical_aggregate(
         prepared_input_schema.as_ref(),
         input_rows,
         AggregateExecutionStage::Single,
+        context.aggregate_strategy_execution_options(),
         metrics,
     );
     let selection_elapsed = selection_timer.elapsed();
@@ -169,6 +170,7 @@ pub(super) fn execute_gpu_native_statistical_aggregate_with_budget(
         prepared_input_schema.as_ref(),
         input_rows,
         AggregateExecutionStage::Single,
+        context.aggregate_strategy_execution_options(),
         metrics,
     );
     let selection_elapsed = selection_timer.elapsed();
@@ -273,6 +275,7 @@ pub(in crate::exec) fn execute_gpu_native_statistical_partial_aggregate_with_bud
         input_schema.as_ref(),
         input_rows,
         AggregateExecutionStage::Partial,
+        context.aggregate_strategy_execution_options(),
         metrics,
     );
     decision.facts.insert("selected_strategy", "floating_statistical_gpu_native_tolerant_partial_moments".to_string());
@@ -318,6 +321,7 @@ pub(in crate::exec) fn execute_gpu_native_statistical_partial_aggregate_with_bud
         node_id.map(|id| id.to_string()),
         AggregateExecutionStage::Partial,
         context.memory_control_policy().as_str(),
+        context.aggregate_strategy_execution_options(),
         spec,
         input_schema,
         input_rows,
@@ -355,6 +359,7 @@ pub(in crate::exec) fn execute_gpu_native_statistical_final_merge_with_budget(
         original_input_schema.as_ref(),
         input_rows,
         AggregateExecutionStage::FinalMerge,
+        context.aggregate_strategy_execution_options(),
         metrics,
     );
     decision.facts.insert("selected_strategy", "floating_statistical_gpu_native_tolerant_final_moments".to_string());
@@ -407,6 +412,7 @@ pub(in crate::exec) fn execute_gpu_native_statistical_final_merge_with_budget(
         node_id.map(|id| id.to_string()),
         AggregateExecutionStage::FinalMerge,
         context.memory_control_policy().as_str(),
+        context.aggregate_strategy_execution_options(),
         spec,
         original_input_schema,
         input_rows,
@@ -428,15 +434,17 @@ fn gpu_native_statistical_decision(
     input_schema: &arrow::datatypes::Schema,
     input_rows: u64,
     stage: AggregateExecutionStage,
+    aggregate_strategy_options: AggregateStrategyExecutionOptions,
     metrics: &QueryMetrics,
 ) -> AggregateStrategyCapabilityDecision {
-    let mut decision = select_partial_aggregate_strategy_decision(
+    let mut decision = select_partial_aggregate_strategy_decision_with_options(
         aggregate_strategy_capability_decision(spec, input_schema, stage),
         node_id,
         spec,
         input_schema,
         input_rows,
         None,
+        aggregate_strategy_options,
         metrics,
     );
     decision.facts.insert("statistical_aggregate_gpu_native_formula", STATISTICAL_MOMENTS_FACT.to_string());

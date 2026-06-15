@@ -330,6 +330,26 @@ mod tests {
     }
 
     #[test]
+    fn aggregate_strategy_rows_format_strategy_execution_options() {
+        let row = NativeAggregateStrategyMetricRow {
+            aggregate_strategy_options_version: "1".to_string(),
+            aggregate_encoded_key_partial_low_cardinality_threshold_ppm: 175_000,
+            aggregate_encoded_key_partial_min_input_rows: 123,
+            aggregate_prepared_sort_groupby_low_cardinality_threshold_ppm: 200_000,
+            aggregate_source_adjacent_prepared_sort_groupby_max_row_groups: 65,
+            ..NativeAggregateStrategyMetricRow::default()
+        };
+
+        let formatted = format_aggregate_strategy_rows(&[row]);
+
+        assert!(formatted.contains("aggregate_strategy_options_version=1"));
+        assert!(formatted.contains("aggregate_encoded_key_partial_low_cardinality_threshold_ppm=175000"));
+        assert!(formatted.contains("aggregate_encoded_key_partial_min_input_rows=123"));
+        assert!(formatted.contains("aggregate_prepared_sort_groupby_low_cardinality_threshold_ppm=200000"));
+        assert!(formatted.contains("aggregate_source_adjacent_prepared_sort_groupby_max_row_groups=65"));
+    }
+
+    #[test]
     fn nested_metric_row_formatters_escape_delimiters_sort_rows_and_cover_empty_rows() {
         assert_eq!(format_graph_runtime_rows(&[]), "none");
         assert_eq!(format_task_operator_rows(&[]), "none");

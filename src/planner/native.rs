@@ -186,7 +186,7 @@ impl PhysicalOptimizerRule for CudfNativePhysicalOptimizerRule {
     fn optimize(
         &self,
         plan: Arc<dyn ExecutionPlan>,
-        _config: &ConfigOptions,
+        config: &ConfigOptions,
     ) -> DataFusionResult<Arc<dyn ExecutionPlan>> {
         if plan.downcast_ref::<NativeCudfExec>().is_some() || plan.downcast_ref::<NativeCudfComposedExec>().is_some() {
             return Ok(plan);
@@ -202,9 +202,10 @@ impl PhysicalOptimizerRule for CudfNativePhysicalOptimizerRule {
         *self.state.last_input_join_diagnostics.lock().expect("native input join diagnostics mutex poisoned") =
             physical_join_diagnostics(plan.as_ref());
 
-        let native_execution_config = self.config.native_execution_config();
-        let native_optimizer_options = self.config.native_optimizer_options();
-        let native_plan_preference_options = self.config.native_plan_preference_options();
+        let effective_config = self.config.with_datafusion_config_options(config)?;
+        let native_execution_config = effective_config.native_execution_config();
+        let native_optimizer_options = effective_config.native_optimizer_options();
+        let native_plan_preference_options = effective_config.native_plan_preference_options();
 
         let optimized = match self.stage {
             NativeOptimizerStage::CountOnlyProbe => optimize_count_only_native_plan(
@@ -220,7 +221,7 @@ impl PhysicalOptimizerRule for CudfNativePhysicalOptimizerRule {
                 native_plan_preference_options,
             )?,
         };
-        let optimized = apply_native_fallback_policy(Arc::clone(&plan), optimized, &self.config)?;
+        let optimized = apply_native_fallback_policy(Arc::clone(&plan), optimized, &effective_config)?;
         *self.state.last_report.lock().expect("native planning report mutex poisoned") = Some(optimized.report.clone());
         *self.state.last_native_optimizer.lock().expect("native optimizer diagnostics mutex poisoned") =
             optimized.native_optimizer.clone();

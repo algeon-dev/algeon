@@ -104,14 +104,15 @@ impl<'a> CompiledGpuTaskExecutor<'a> {
             return Ok(());
         }
 
-        if producer_frame.num_rows() > MAX_DYNAMIC_FILTER_BUILD_ROWS {
+        let options = self.plan.dynamic_filter_execution_options();
+        if producer_frame.num_rows() > options.max_build_rows {
             for route in routes {
                 self.dynamic_filters.insert_skipped(route.id, "producer_key_row_count_exceeds_runtime_limit");
                 self.metrics.record_dynamic_filter_skipped(route, "producer_key_row_count_exceeds_runtime_limit");
             }
             return Ok(());
         }
-        if producer_frame.num_rows() > LARGE_LOCAL_PARQUET_RANGE_DYNAMIC_FILTER_PRODUCER_ROWS
+        if producer_frame.num_rows() > options.large_local_parquet_range_producer_rows
             && routes.iter().all(route_targets_local_parquet_source)
         {
             let producer_frame_bytes = producer_frame.device_allocated_size_bytes().ok();
@@ -208,7 +209,7 @@ impl<'a> CompiledGpuTaskExecutor<'a> {
                 self.metrics.record_dynamic_filter_skipped(route, "unsupported_producer_key_type");
                 continue;
             };
-            let filter = DynamicFilter::from_i64_values(values, DEFAULT_SMALL_IN_LIST_DYNAMIC_FILTER_LIMIT);
+            let filter = DynamicFilter::from_i64_values(values, options.small_in_list_limit);
             self.dynamic_filters.insert(route.id, filter.clone());
             self.metrics.record_dynamic_filter_produced(route, &filter, producer_frame.num_rows() as u64);
         }
@@ -278,10 +279,11 @@ impl<'a> CompiledGpuTaskExecutor<'a> {
         if dynamic_filter_consumer_source_feeds_downstream_work_fanout(self.plan, *source_node_id) {
             return false;
         }
-        if consumer_bytes > DIMENSION_SIZED_DYNAMIC_FILTER_CONSUMER_BYTES {
+        let options = self.plan.dynamic_filter_execution_options();
+        if consumer_bytes > options.dimension_sized_consumer_bytes {
             return false;
         }
-        stats.selected_row_groups <= TINY_LOCAL_PARQUET_DYNAMIC_FILTER_CONSUMER_ROW_GROUPS
+        stats.selected_row_groups <= options.tiny_local_parquet_consumer_row_groups
             || producer_frame_bytes.is_some_and(|producer_bytes| producer_bytes > consumer_bytes)
     }
 
@@ -320,7 +322,9 @@ impl<'a> CompiledGpuTaskExecutor<'a> {
                     .with_fact("dynamic_filter_id", route.id.to_string()));
             }
         }
-        let deferred_reader_predicate_routes = stream.deferred_reader_predicate_routes(&routes, &self.dynamic_filters);
+        let options = self.plan.dynamic_filter_execution_options();
+        let deferred_reader_predicate_routes =
+            stream.deferred_reader_predicate_routes(&routes, &self.dynamic_filters, options);
         for route in &routes {
             let Some(filter) = self.dynamic_filters.produced(route.id).cloned() else {
                 continue;
@@ -331,6 +335,7 @@ impl<'a> CompiledGpuTaskExecutor<'a> {
                 &[route],
                 &self.dynamic_filters,
                 &deferred_reader_predicate_routes,
+                options,
             )?;
             let after = stream.dynamic_filter_source_snapshot();
             self.metrics.record_dynamic_filter_applied(route, &filter, before, after);
