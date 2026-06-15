@@ -1,9 +1,10 @@
-error[E0432]: unresolved imports `cudf::DropNaOptions`, `cudf::InfoDetail`, `cudf::JsonReadOptions`, `cudf::MeltOptions`
+error[E0432]: unresolved imports `cudf::DropNaOptions`, `cudf::InfoDetail`, `cudf::JsonReadOptions`, `cudf::MeltOptions`, `cudf::MultiParquetReadOptions`
  --> tests/public_api/ui/no_root_dataframe_specialized_types.rs:1:12
   |
-1 | use cudf::{DropNaOptions, InfoDetail, JsonReadOptions, MeltOptions};
-  |            ^^^^^^^^^^^^^  ^^^^^^^^^^  ^^^^^^^^^^^^^^^  ^^^^^^^^^^^ no `MeltOptions` in the root
-  |            |              |           |
+1 | use cudf::{DropNaOptions, InfoDetail, JsonReadOptions, MeltOptions, MultiParquetReadOptions};
+  |            ^^^^^^^^^^^^^  ^^^^^^^^^^  ^^^^^^^^^^^^^^^  ^^^^^^^^^^^  ^^^^^^^^^^^^^^^^^^^^^^^ no `MultiParquetReadOptions` in the root
+  |            |              |           |                |
+  |            |              |           |                no `MeltOptions` in the root
   |            |              |           no `JsonReadOptions` in the root
   |            |              no `InfoDetail` in the root
   |            no `DropNaOptions` in the root
@@ -16,13 +17,15 @@ error[E0432]: unresolved imports `cudf::DropNaOptions`, `cudf::InfoDetail`, `cud
           cudf::frame::dataframe::JsonReadOptions
   = help: consider importing this struct instead:
           cudf::frame::dataframe::MeltOptions
+  = help: consider importing this struct instead:
+          cudf::frame::dataframe::MultiParquetReadOptions
 help: a similar name exists in the module
   |
-1 - use cudf::{DropNaOptions, InfoDetail, JsonReadOptions, MeltOptions};
-1 + use cudf::{GroupByOptions, InfoDetail, JsonReadOptions, MeltOptions};
+1 - use cudf::{DropNaOptions, InfoDetail, JsonReadOptions, MeltOptions, MultiParquetReadOptions};
+1 + use cudf::{GroupByOptions, InfoDetail, JsonReadOptions, MeltOptions, MultiParquetReadOptions};
   |
 help: a similar name exists in the module
   |
-1 - use cudf::{DropNaOptions, InfoDetail, JsonReadOptions, MeltOptions};
-1 + use cudf::{DropNaOptions, InfoDetail, JsonReadOptions, MergeOptions};
+1 - use cudf::{DropNaOptions, InfoDetail, JsonReadOptions, MeltOptions, MultiParquetReadOptions};
+1 + use cudf::{DropNaOptions, InfoDetail, JsonReadOptions, MergeOptions, MultiParquetReadOptions};
   |

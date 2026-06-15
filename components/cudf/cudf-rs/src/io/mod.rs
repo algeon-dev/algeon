@@ -78,9 +78,26 @@ fn map_path_io_error(
 }
 
 fn validate_input_path(path: &Path, operation: &'static str) -> Result<()> {
-    fs::metadata(path)
-        .map(|_| ())
-        .map_err(|source| map_path_io_error(source, path, operation, "failed to access input path"))
+    let metadata = fs::metadata(path)
+        .map_err(|source| map_path_io_error(source, path, operation, "failed to access input path"))?;
+
+    if metadata.is_file() {
+        return Ok(());
+    }
+
+    if metadata.is_dir() {
+        return Err(Error::new_with(ErrorCode::PathIsDirectory, operation, "input path is a directory")
+            .with_detail("path", path.display().to_string())
+            .with_detail("resource", "input_path")
+            .with_detail("reason", "path_is_directory")
+            .with_detail("remedy", "provide a regular file path instead of a directory"));
+    }
+
+    Err(Error::new_with(ErrorCode::IoFailure, operation, "input path is not a regular file")
+        .with_detail("path", path.display().to_string())
+        .with_detail("resource", "input_path")
+        .with_detail("reason", "path_not_regular_file")
+        .with_detail("remedy", "provide a regular file path"))
 }
 
 /// Convert a filesystem path to a `CString` for FFI, with operation context.
@@ -162,9 +179,9 @@ unsafe fn collect_column_names(
 
 #[cfg(test)]
 mod tests {
-    use std::{ffi::CString, os::raw::c_char, ptr};
+    use std::{ffi::CString, fs, os::raw::c_char, ptr};
 
-    use crate::core::error::{ErrorCode, ErrorKind, FactKeyName, FactValue};
+    use crate::core::error::{ErrorCode, ErrorKind, ErrorStatus, FactKeyName, FactValue};
 
     #[test]
     fn test_collect_column_names_rejects_negative_count() {
@@ -235,5 +252,26 @@ mod tests {
         assert_eq!(err.kind(), ErrorKind::DependencyFailure);
         assert_eq!(err.operation(), "test");
         assert!(err.details().iter().any(|(k, v)| *k == "path" && v == &path.display().to_string()));
+    }
+
+    #[test]
+    fn test_validate_input_path_rejects_directory() {
+        let path = std::env::temp_dir().join(format!("cudf_rs_directory_input_path_test_{}", std::process::id()));
+        fs::create_dir_all(&path).unwrap();
+
+        let result = super::validate_input_path(&path, "test");
+        let _ = fs::remove_dir(&path);
+        let err = result.unwrap_err();
+        let path_display = path.display().to_string();
+
+        assert_eq!(err.code(), ErrorCode::PathIsDirectory);
+        assert_eq!(err.code().to_string(), "PathIsDirectory");
+        assert_eq!(err.kind(), ErrorKind::InvalidInput);
+        assert_eq!(err.status(), ErrorStatus::Permanent);
+        assert_eq!(err.operation(), "test");
+        assert_eq!(err.detail_value("path"), Some(path_display.as_str()));
+        assert_eq!(err.detail_value("resource"), Some("input_path"));
+        assert_eq!(err.detail_value("reason"), Some("path_is_directory"));
+        assert_eq!(err.detail_value("remedy"), Some("provide a regular file path instead of a directory"));
     }
 }
