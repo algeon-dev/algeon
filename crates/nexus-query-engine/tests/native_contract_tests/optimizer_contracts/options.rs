@@ -74,7 +74,11 @@ fn semijoin_reduction_options_and_rule_name_are_stable() {
     assert!(SemijoinReductionOptions::default().enabled);
     assert_eq!(
         SemijoinReductionOptions::default().cost_threshold_multiplier,
-        DEFAULT_SEMIJOIN_REDUCTION_COST_THRESHOLD_MULTIPLIER
+        SemijoinReductionOptions::DEFAULT_COST_THRESHOLD_MULTIPLIER
+    );
+    assert_eq!(
+        DEFAULT_SEMIJOIN_REDUCTION_COST_THRESHOLD_MULTIPLIER,
+        SemijoinReductionOptions::DEFAULT_COST_THRESHOLD_MULTIPLIER
     );
     assert_eq!(SemijoinReductionOptions::default().admission_mode, SemijoinReductionAdmissionMode::NotEvaluated);
     assert!(!SemijoinReductionOptions::disabled().enabled);
@@ -86,8 +90,14 @@ fn join_build_side_selection_options_and_rule_name_are_stable() {
     assert_eq!(JOIN_BUILD_SIDE_SELECTION_RULE_NAME, "join_build_side_selection");
     assert!(JoinBuildSideSelectionOptions::default().enabled);
     assert!(!JoinBuildSideSelectionOptions::disabled().enabled);
-    assert_eq!(JoinBuildSideSelectionOptions::default().small_build_side_bytes, 64 * 1024 * 1024);
-    assert_eq!(JoinBuildSideSelectionOptions::default().small_build_side_rows, 1_000_000);
+    assert_eq!(
+        JoinBuildSideSelectionOptions::default().small_build_side_bytes,
+        JoinBuildSideSelectionOptions::DEFAULT_SMALL_BUILD_SIDE_BYTES
+    );
+    assert_eq!(
+        JoinBuildSideSelectionOptions::default().small_build_side_rows,
+        JoinBuildSideSelectionOptions::DEFAULT_SMALL_BUILD_SIDE_ROWS
+    );
     JoinBuildSideSelectionOptions::default().validate().unwrap();
 }
 
@@ -125,8 +135,12 @@ fn join_filter_reassociation_options_and_rule_name_are_stable() {
 fn dimension_derived_row_group_pruning_options_and_rule_name_are_stable() {
     assert_eq!(DIMENSION_DERIVED_ROW_GROUP_PRUNING_RULE_NAME, "dimension_derived_row_group_pruning");
     assert!(DimensionDerivedRowGroupPruningOptions::default().enabled);
-    assert_eq!(DimensionDerivedRowGroupPruningOptions::default().max_dimension_rows, 1_000_000);
+    assert_eq!(
+        DimensionDerivedRowGroupPruningOptions::default().max_dimension_rows,
+        DimensionDerivedRowGroupPruningOptions::DEFAULT_MAX_DIMENSION_ROWS
+    );
     assert!(!DimensionDerivedRowGroupPruningOptions::disabled().enabled);
+    assert_eq!(nexus_query_engine::DIMENSION_KEY_FILTER_MAX_RUNS, nexus_query_engine::DimensionKeyFilter::MAX_RUNS);
     DimensionDerivedRowGroupPruningOptions::default().validate().unwrap();
 }
 
@@ -142,7 +156,10 @@ fn local_parquet_source_reuse_options_and_rule_name_are_stable() {
     assert_eq!(LOCAL_PARQUET_SOURCE_REUSE_RULE_NAME, "local_parquet_source_reuse");
     assert!(LocalParquetSourceReuseOptions::default().enabled);
     assert!(!LocalParquetSourceReuseOptions::disabled().enabled);
-    assert_eq!(LocalParquetSourceReuseOptions::default().max_variant_selected_bytes, 500 * 1024 * 1024);
+    assert_eq!(
+        LocalParquetSourceReuseOptions::default().max_variant_selected_bytes,
+        LocalParquetSourceReuseOptions::DEFAULT_MAX_VARIANT_SELECTED_BYTES
+    );
     LocalParquetSourceReuseOptions::default().validate().unwrap();
 }
 

@@ -14,18 +14,14 @@ use crate::{
     source::{LocalParquetFile, ParquetReadStrategy, RemoteParquetReadMode},
 };
 
-const SOURCE_ADJACENT_WORK_RESERVATION_HEADROOM_BYTES: u64 = 1;
-const SOURCE_READ_BUDGET_CORRECTION_SLACK_BYTES: u64 = 8 * 1024 * 1024;
-pub(in crate::exec::bounded) const SOURCE_BATCH_READ_MAX_PLANNED_BYTES: u64 = 4 * 1024 * 1024 * 1024;
-const SOURCE_ADJACENT_RAW_SOURCE_BATCH_MAX_BYTES: u64 = 64 * 1024 * 1024;
-const REMOTE_DIRECT_SOURCE_ADJACENT_RAW_SOURCE_BATCH_MAX_BYTES: u64 = 8 * 1024 * 1024 * 1024;
-
+mod reservation_policy;
 mod retry;
 mod scheduling;
 mod source_read;
 
 // Private re-export so sibling submodules can reach `is_prefetch_chunk_error`
 // via `use super::*;` without exposing it outside the chunks module.
+use reservation_policy::BoundedSourceReservationPolicy;
 use retry::is_prefetch_chunk_error;
 pub(in crate::exec) use retry::record_chunk_retry_error;
 pub(super) use retry::{chunk_retry_facts, is_retryable_chunk_error, split_retryable_chunk};
@@ -167,21 +163,36 @@ fn bounded_source_adjacent_chunk_batches(
     if bounded.source.files.iter().any(LocalParquetFile::has_position_delete_files) {
         return singleton_source_chunk_batches(chunks);
     }
-    let max_batch_source_read_bytes = match context.memory_control_policy() {
-        MemoryControlPolicy::Bounded { max_source_chunk_bytes, .. } => {
-            Some(max_source_chunk_bytes.min(source_adjacent_raw_source_batch_max_bytes(
-                bounded.source,
-                chunks,
-                is_source_adjacent_grouped_aggregate(bounded),
-            )))
-        },
-        MemoryControlPolicy::Unbounded => Some(source_adjacent_raw_source_batch_max_bytes(
-            bounded.source,
-            chunks,
-            is_source_adjacent_grouped_aggregate(bounded),
-        )),
-    };
+    let batching_policy = BoundedSourceBatchingPolicy::default();
+    let max_batch_source_read_bytes = batching_policy.source_adjacent_raw_source_batch_target_bytes(
+        context.memory_control_policy(),
+        source_adjacent_source_requires_remote_direct_read(bounded.source, chunks),
+        is_source_adjacent_grouped_aggregate(bounded),
+    );
     plan_source_chunk_batches(chunks, max_batch_source_read_bytes)
+}
+
+#[cfg(test)]
+fn source_adjacent_raw_source_batch_max_bytes(
+    source: &LocalParquetSource,
+    chunks: &[SourceChunk],
+    source_adjacent_grouped_aggregate: bool,
+) -> u64 {
+    BoundedSourceBatchingPolicy::default().source_adjacent_raw_source_batch_max_bytes(
+        source_adjacent_source_requires_remote_direct_read(source, chunks),
+        source_adjacent_grouped_aggregate,
+    )
+}
+
+fn source_adjacent_source_requires_remote_direct_read(source: &LocalParquetSource, chunks: &[SourceChunk]) -> bool {
+    source.scan_limit.is_none()
+        && source.partition_columns.is_empty()
+        && chunks.iter().all(source_chunk_requires_remote_direct_read)
+}
+
+fn source_chunk_requires_remote_direct_read(chunk: &SourceChunk) -> bool {
+    matches!(chunk.resolved_source.read_strategy, ParquetReadStrategy::RemoteDirect)
+        && chunk.resolved_source.remote_read_mode == RemoteParquetReadMode::RequireDirect
 }
 
 fn singleton_source_chunk_batches(chunks: &[SourceChunk]) -> Vec<SourceChunkBatch> {
@@ -199,29 +210,6 @@ fn singleton_source_chunk_batches(chunks: &[SourceChunk]) -> Vec<SourceChunkBatc
             source_batching_reason: "source_gate:position_deletes".to_string(),
         })
         .collect()
-}
-
-fn source_adjacent_raw_source_batch_max_bytes(
-    source: &LocalParquetSource,
-    chunks: &[SourceChunk],
-    source_adjacent_grouped_aggregate: bool,
-) -> u64 {
-    if source.scan_limit.is_none()
-        && source.partition_columns.is_empty()
-        && chunks.iter().all(source_chunk_requires_remote_direct_read)
-    {
-        if source_adjacent_grouped_aggregate {
-            return SOURCE_ADJACENT_GROUPED_AGGREGATE_TARGET_CHUNK_BYTES;
-        }
-        REMOTE_DIRECT_SOURCE_ADJACENT_RAW_SOURCE_BATCH_MAX_BYTES
-    } else {
-        SOURCE_ADJACENT_RAW_SOURCE_BATCH_MAX_BYTES
-    }
-}
-
-fn source_chunk_requires_remote_direct_read(chunk: &SourceChunk) -> bool {
-    matches!(chunk.resolved_source.read_strategy, ParquetReadStrategy::RemoteDirect)
-        && chunk.resolved_source.remote_read_mode == RemoteParquetReadMode::RequireDirect
 }
 
 fn execute_bounded_source_adjacent_chunk_batches_serial(
@@ -970,8 +958,8 @@ pub(in crate::exec::bounded) fn execute_source_adjacent_chunk_unary(
 }
 
 fn source_adjacent_chunk_unary_work_request_bytes(input_reserved_bytes: u64, remaining_bytes: u64) -> u64 {
-    let admissible_work_bytes = remaining_bytes.saturating_sub(SOURCE_ADJACENT_WORK_RESERVATION_HEADROOM_BYTES);
-    input_reserved_bytes.min(admissible_work_bytes)
+    BoundedSourceReservationPolicy::default()
+        .source_adjacent_unary_work_request_bytes(input_reserved_bytes, remaining_bytes)
 }
 fn grow_source_reservation_to_observed(
     frame: &GpuDataFrame,
@@ -1245,7 +1233,10 @@ impl SourceReadBudgetCorrection {
             .with_fact_if_absent("budget_retry_peak_aligned_bytes", self.peak_aligned_bytes)
             .with_fact_if_absent("budget_retry_largest_failed_allocation_bytes", self.largest_failed_allocation_bytes)
             .with_fact_if_absent("budget_retry_failed_allocation_count", self.failed_allocation_count)
-            .with_fact_if_absent("budget_retry_slack_bytes", SOURCE_READ_BUDGET_CORRECTION_SLACK_BYTES)
+            .with_fact_if_absent(
+                "budget_retry_slack_bytes",
+                BoundedSourceReservationPolicy::default().source_read_budget_correction_slack_bytes(),
+            )
             .with_fact_if_absent("budget_retry_cap_bytes", self.cap_bytes)
     }
 
@@ -1274,10 +1265,10 @@ pub(in crate::exec) fn source_read_budget_correction_from_error(
     let peak_aligned_bytes = u64::try_from(detail.peak_aligned_bytes()).ok()?;
     let largest_failed_allocation_bytes = u64::try_from(detail.largest_failed_allocation_bytes()).ok()?;
     let failed_allocation_count = u64::try_from(detail.failed_allocation_count()).ok()?;
-    let lower_bound = previous_budget_bytes.saturating_mul(2).max(
-        peak_aligned_bytes
-            .saturating_add(largest_failed_allocation_bytes)
-            .saturating_add(SOURCE_READ_BUDGET_CORRECTION_SLACK_BYTES),
+    let lower_bound = BoundedSourceReservationPolicy::default().source_read_budget_correction_lower_bound(
+        previous_budget_bytes,
+        peak_aligned_bytes,
+        largest_failed_allocation_bytes,
     );
     let cap_bytes = reservations.available_bytes_including(reservation);
     let corrected_budget_bytes = lower_bound.min(cap_bytes);
@@ -1637,11 +1628,11 @@ mod tests {
 
         assert_eq!(
             source_adjacent_raw_source_batch_max_bytes(&source, &chunks, true),
-            SOURCE_ADJACENT_GROUPED_AGGREGATE_TARGET_CHUNK_BYTES
+            BoundedSourceBatchingPolicy::DEFAULT_SOURCE_ADJACENT_GROUPED_AGGREGATE_TARGET_CHUNK_BYTES
         );
         assert_eq!(
             source_adjacent_raw_source_batch_max_bytes(&source, &chunks, false),
-            REMOTE_DIRECT_SOURCE_ADJACENT_RAW_SOURCE_BATCH_MAX_BYTES
+            BoundedSourceBatchingPolicy::DEFAULT_REMOTE_DIRECT_SOURCE_ADJACENT_RAW_SOURCE_BATCH_MAX_BYTES
         );
     }
 

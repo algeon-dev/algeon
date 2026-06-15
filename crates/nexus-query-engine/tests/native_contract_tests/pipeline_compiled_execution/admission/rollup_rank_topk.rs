@@ -53,6 +53,7 @@ fn strict_admission_rejects_large_full_scan_rollup_rank_topk_before_execution() 
     assert_ne!(rejection.facts.get("rank_sort_id").map(String::as_str), Some("absent"));
     assert_ne!(rejection.facts.get("rank_filter_id").map(String::as_str), Some("absent"));
     assert_eq!(rejection.facts.get("large_source_selected_bytes").map(String::as_str), Some("2147483648"));
+    assert_eq!(rejection.facts.get("large_source_threshold_bytes").map(String::as_str), Some("536870912"));
     assert_eq!(rejection.facts.get("large_source_selected_row_groups").map(String::as_str), Some("unknown"));
     assert_eq!(
         rejection.facts.get("required_remediation").map(String::as_str),

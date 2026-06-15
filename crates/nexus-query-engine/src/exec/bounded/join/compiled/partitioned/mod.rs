@@ -83,32 +83,18 @@ fn partitioned_mixed_join_partition_count(
     right_bytes: u64,
 ) -> usize {
     let byte_partitions = partitioned_join_partition_count(context, left_bytes, right_bytes);
-    let row_basis = left_rows.max(right_rows).max(1);
     let target_rows = partitioned_mixed_join_target_rows(context);
-    let row_partitions = row_basis.saturating_add(target_rows.saturating_sub(1)) / target_rows;
-    let row_partitions = usize::try_from(row_partitions.clamp(2, PARTITIONED_MIXED_JOIN_MAX_PARTITIONS as u64))
-        .unwrap_or(PARTITIONED_MIXED_JOIN_MAX_PARTITIONS);
-    byte_partitions.max(row_partitions)
+    BoundedPartitionRowPolicy::default().mixed_join_partition_count(byte_partitions, target_rows, left_rows, right_rows)
 }
 
 fn partitioned_mixed_join_target_rows(context: &ExecutionContext) -> u64 {
-    match context.memory_control_policy() {
-        MemoryControlPolicy::Bounded { device_budget_bytes, .. } => {
-            partitioned_mixed_join_target_rows_for_budget(device_budget_bytes)
-        },
-        _ => PARTITIONED_MIXED_JOIN_MIN_TARGET_ROWS,
-    }
+    BoundedPartitionRowPolicy::default().mixed_join_target_rows(context.memory_control_policy())
 }
 
+#[cfg(test)]
 fn partitioned_mixed_join_target_rows_for_budget(device_budget_bytes: u64) -> u64 {
-    (device_budget_bytes / (128 * 1024))
-        .clamp(PARTITIONED_MIXED_JOIN_MIN_TARGET_ROWS, PARTITIONED_MIXED_JOIN_MAX_TARGET_ROWS)
+    BoundedPartitionRowPolicy::default().mixed_join_target_rows_for_budget(device_budget_bytes)
 }
-
-const PARTITIONED_MIXED_JOIN_MIN_TARGET_ROWS: u64 = 50_000;
-const PARTITIONED_MIXED_JOIN_MAX_TARGET_ROWS: u64 = 1_000_000;
-const PARTITIONED_MIXED_JOIN_MAX_PARTITIONS: usize = 1024;
-const PARTITIONED_HASH_FRAME_STREAM_MIN_PARTITIONS: usize = 2;
 
 pub(super) fn partitioned_join_target_bytes_for_context(context: &ExecutionContext) -> u64 {
     match context.memory_control_policy() {
@@ -120,9 +106,7 @@ pub(super) fn partitioned_join_target_bytes_for_context(context: &ExecutionConte
 }
 
 pub(super) fn partitioned_join_target_partition_bytes(device_budget_bytes: u64) -> u64 {
-    const MIN_TARGET_BYTES: u64 = 128 * 1024 * 1024;
-    const MAX_TARGET_BYTES: u64 = 2 * 1024 * 1024 * 1024;
-    (device_budget_bytes / 16).clamp(MIN_TARGET_BYTES, MAX_TARGET_BYTES)
+    BoundedPartitionTargetPolicy::default().partitioned_join_target_bytes(device_budget_bytes)
 }
 
 pub(super) fn partitioned_join_reusable_rejected_reason(
@@ -312,7 +296,7 @@ mod tests {
     fn mixed_join_row_target_stays_conservative_for_small_budgets() {
         assert_eq!(
             partitioned_mixed_join_target_rows_for_budget(256 * 1024 * 1024),
-            PARTITIONED_MIXED_JOIN_MIN_TARGET_ROWS
+            BoundedPartitionRowPolicy::DEFAULT_MIXED_JOIN_MIN_TARGET_ROWS
         );
     }
 
@@ -321,7 +305,7 @@ mod tests {
         assert_eq!(partitioned_mixed_join_target_rows_for_budget(95 * 1024 * 1024 * 1024), 778_240);
         assert_eq!(
             partitioned_mixed_join_target_rows_for_budget(256 * 1024 * 1024 * 1024),
-            PARTITIONED_MIXED_JOIN_MAX_TARGET_ROWS
+            BoundedPartitionRowPolicy::DEFAULT_MIXED_JOIN_MAX_TARGET_ROWS
         );
     }
 }

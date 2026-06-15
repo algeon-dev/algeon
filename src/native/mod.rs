@@ -9,6 +9,7 @@ mod lowering;
 mod normalize;
 mod pruning;
 mod source;
+mod table_format_pruning_policy;
 mod validate;
 
 use std::sync::Arc;

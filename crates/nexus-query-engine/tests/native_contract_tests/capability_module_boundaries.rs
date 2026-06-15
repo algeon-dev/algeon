@@ -6,8 +6,20 @@ use std::{
 
 const STRICT_BOUNDED_MODULES: &[&str] = &["strict"];
 const ADAPTIVE_BOUNDED_MODULES: &[&str] = &["adaptive"];
-const SHARED_BOUNDED_RUNTIME_MODULES: &[&str] =
-    &["admission", "aggregate", "chunks", "compiled", "facts", "final_sort", "generic", "join", "reservation"];
+const SHARED_BOUNDED_RUNTIME_MODULES: &[&str] = &[
+    "admission",
+    "aggregate",
+    "chunks",
+    "compiled",
+    "facts",
+    "final_sort",
+    "generic",
+    "join",
+    "partition_row_policy",
+    "partition_target_policy",
+    "reservation",
+    "source_batching_policy",
+];
 
 const RETIRED_TOPOLOGY_EXECUTOR_BRIDGES: &[&str] = &[
     "crates/nexus-query-engine/src/exec/bounded/pipeline.rs",

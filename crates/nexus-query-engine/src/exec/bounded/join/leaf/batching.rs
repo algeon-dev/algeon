@@ -1,7 +1,5 @@
 use super::*;
 
-const REMOTE_DIRECT_MATERIALIZED_JOIN_SOURCE_BATCH_MAX_BYTES: u64 = 9 * 1024 * 1024 * 1024;
-
 pub(super) fn stream_has_multi_source_batches(stream: &BoundedJoinLeafLocalParquetSourceStream) -> bool {
     stream.source.partition_columns.is_empty()
         && source_chunk_batching_reader_predicate_supported(&stream.source)
@@ -45,7 +43,7 @@ fn materialized_source_batch_target_bytes(stream: &BoundedJoinLeafLocalParquetSo
         && stream.source.partition_columns.is_empty()
         && stream.chunks.iter().all(source_chunk_requires_remote_direct_read)
     {
-        return Some(REMOTE_DIRECT_MATERIALIZED_JOIN_SOURCE_BATCH_MAX_BYTES);
+        return Some(BoundedSourceBatchingPolicy::default().remote_direct_materialized_join_source_batch_max_bytes());
     }
     stream.planning_policy.max_source_chunk_bytes
 }
@@ -98,16 +96,11 @@ pub(super) fn singleton_source_chunk_batches(chunks: &[SourceChunk], reason: &'s
         .collect()
 }
 pub(super) fn source_chunk_batch_target_bytes(policy: MemoryControlPolicy) -> Option<u64> {
-    match policy {
-        MemoryControlPolicy::Bounded { max_source_chunk_bytes, .. } => Some(max_source_chunk_bytes),
-        MemoryControlPolicy::Unbounded => None,
-    }
+    BoundedSourceBatchingPolicy::default().generic_source_batch_target_bytes(policy, false)
 }
 
 pub(super) fn capped_source_chunk_batch_target_bytes(max_batch_source_read_bytes: Option<u64>) -> Option<u64> {
-    max_batch_source_read_bytes
-        .map(|max_source_chunk_bytes| max_source_chunk_bytes.min(SOURCE_BATCH_READ_MAX_PLANNED_BYTES))
-        .or(Some(SOURCE_BATCH_READ_MAX_PLANNED_BYTES))
+    BoundedSourceBatchingPolicy::default().capped_source_batch_target_bytes(max_batch_source_read_bytes)
 }
 
 #[cfg(test)]
@@ -127,7 +120,7 @@ mod tests {
     #[test]
     fn join_leaf_batches_cap_large_non_predicate_source_reads() {
         let source = test_source();
-        let chunk_bytes = SOURCE_BATCH_READ_MAX_PLANNED_BYTES / 2 + 1;
+        let chunk_bytes = BoundedSourceBatchingPolicy::DEFAULT_SOURCE_BATCH_READ_MAX_PLANNED_BYTES / 2 + 1;
         let chunks = vec![test_chunk(0, chunk_bytes), test_chunk(1, chunk_bytes)];
 
         let batches = join_leaf_source_chunk_batches(&source, &chunks, &[], Some(32 * 1024 * 1024 * 1024));

@@ -1792,16 +1792,8 @@ pub(in crate::exec::bounded) fn reusable_hash_join_stream_target_output_bytes(
     context: &ExecutionContext,
     reservations: &ReservationTracker,
 ) -> u64 {
-    const MIN_TARGET_BYTES: u64 = 128 * 1024 * 1024;
-    const MAX_TARGET_BYTES: u64 = 512 * 1024 * 1024;
-    let policy_target = match context.memory_control_policy() {
-        crate::runtime::MemoryControlPolicy::Bounded { device_budget_bytes, .. } => {
-            (device_budget_bytes / 8).clamp(MIN_TARGET_BYTES, MAX_TARGET_BYTES)
-        },
-        _ => MAX_TARGET_BYTES,
-    };
-    let live_target = reservations.remaining_bytes().saturating_div(16);
-    if live_target == 0 { policy_target } else { policy_target.min(live_target) }
+    BoundedPartitionTargetPolicy::default()
+        .reusable_hash_join_stream_target_output_bytes(context.memory_control_policy(), reservations.remaining_bytes())
 }
 
 fn release_root_hash_join_stream_outputs(

@@ -560,11 +560,10 @@ fn generic_source_chunk_batches(
     if context.local_parquet_source_cache().is_some() || !generic_source_chunk_batching_supported(source) {
         return singleton_source_chunk_batches(chunks);
     }
-    let target_bytes = if source_chunk_batch_decode_scratch_risk(source, chunks) {
-        capped_source_chunk_batch_target_bytes(context.memory_control_policy())
-    } else {
-        source_chunk_batch_target_bytes(context.memory_control_policy())
-    };
+    let target_bytes = BoundedSourceBatchingPolicy::default().generic_source_batch_target_bytes(
+        context.memory_control_policy(),
+        source_chunk_batch_decode_scratch_risk(source, chunks),
+    );
     plan_source_chunk_batches(chunks, target_bytes)
 }
 
@@ -590,22 +589,6 @@ fn singleton_source_chunk_batches(chunks: &[SourceChunk]) -> Vec<crate::chunk::S
             source_batching_reason: "source_gate:generic_batching_disabled".to_string(),
         })
         .collect()
-}
-
-fn source_chunk_batch_target_bytes(policy: MemoryControlPolicy) -> Option<u64> {
-    match policy {
-        MemoryControlPolicy::Bounded { max_source_chunk_bytes, .. } => Some(max_source_chunk_bytes),
-        MemoryControlPolicy::Unbounded => None,
-    }
-}
-
-fn capped_source_chunk_batch_target_bytes(policy: MemoryControlPolicy) -> Option<u64> {
-    match policy {
-        MemoryControlPolicy::Bounded { max_source_chunk_bytes, .. } => {
-            Some(max_source_chunk_bytes.min(SOURCE_BATCH_READ_MAX_PLANNED_BYTES))
-        },
-        MemoryControlPolicy::Unbounded => Some(SOURCE_BATCH_READ_MAX_PLANNED_BYTES),
-    }
 }
 
 fn source_chunk_batch_decode_scratch_risk(source: &LocalParquetSource, chunks: &[SourceChunk]) -> bool {
@@ -725,4 +708,98 @@ pub(in crate::exec::bounded) fn insert_bounded_local_parquet_source_cache(
         },
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{path::PathBuf, sync::Arc};
+
+    use arrow::datatypes::{DataType, Field, Schema};
+
+    use super::*;
+    use crate::{
+        expr::{BinaryOp, Expr, LiteralValue},
+        runtime::SourceChunkPlanningMode,
+        source::{LocalParquetSource, ParquetSourceLocation, ResolvedParquetSource},
+    };
+
+    #[test]
+    fn generic_source_batches_cap_decode_scratch_risk_only() {
+        let context = ExecutionContext::builder()
+            .with_memory_control_policy(MemoryControlPolicy::Bounded {
+                device_budget_bytes: 64 * 1024 * 1024 * 1024,
+                max_source_chunk_bytes: 32 * 1024 * 1024 * 1024,
+                max_row_groups_per_chunk: 1,
+                max_retry_attempts: 1,
+                min_retry_chunk_row_groups: 1,
+            })
+            .build()
+            .expect("valid bounded context");
+        let chunk_bytes = BoundedSourceBatchingPolicy::DEFAULT_SOURCE_BATCH_READ_MAX_PLANNED_BYTES / 2 + 1;
+        let chunks = vec![test_chunk(0, chunk_bytes, false), test_chunk(1, chunk_bytes, false)];
+
+        let no_predicate_batches = generic_source_chunk_batches(&context, &test_source(false), &chunks);
+        assert_eq!(no_predicate_batches.len(), 1);
+        assert_eq!(no_predicate_batches[0].chunk_count(), 2);
+
+        let scratch_risk_chunks = vec![test_chunk(0, chunk_bytes, true), test_chunk(1, chunk_bytes, true)];
+        let predicate_batches = generic_source_chunk_batches(&context, &test_source(true), &scratch_risk_chunks);
+        assert_eq!(predicate_batches.len(), 2);
+        assert!(predicate_batches.iter().all(SourceChunkBatch::is_singleton));
+    }
+
+    fn test_source(with_reader_predicate: bool) -> LocalParquetSource {
+        let schema = Arc::new(Schema::new(vec![Field::new("c0", DataType::Int64, true)]));
+        let source = LocalParquetSource::from_files(Vec::new(), schema, vec!["c0".to_string()]);
+        if with_reader_predicate {
+            return source.with_reader_predicate(Expr::binary(
+                Expr::column("c0"),
+                BinaryOp::GtEq,
+                Expr::literal(LiteralValue::Int64(0)),
+            ));
+        }
+        source
+    }
+
+    fn test_chunk(index: usize, bytes: u64, pure_filter_bytes: bool) -> SourceChunk {
+        let pure_filter_bytes = if pure_filter_bytes { bytes } else { 0 };
+        SourceChunk {
+            source_node_id: NodeId::from_index_for_internal_use(1),
+            chunk_index: index,
+            file_index: index,
+            location: ParquetSourceLocation::LocalPath(PathBuf::from(format!("part-{index}.parquet"))),
+            path: PathBuf::from(format!("part-{index}.parquet")),
+            resolved_source: ResolvedParquetSource::local_kvikio(format!("part-{index}.parquet")),
+            stable_id: format!("file-{index}"),
+            row_group_indexes: vec![0],
+            reads_all_row_groups: false,
+            known_file_bytes: Some(bytes),
+            known_row_group_bytes: Some(bytes),
+            known_projected_compressed_bytes: Some(bytes),
+            known_projected_uncompressed_bytes: Some(bytes),
+            known_pure_filter_compressed_bytes: Some(pure_filter_bytes),
+            known_pure_filter_uncompressed_bytes: Some(pure_filter_bytes),
+            estimated_chunk_bytes: Some(bytes),
+            estimated_source_read_bytes: Some(bytes),
+            exact_source_read_preflight_bytes: Some(bytes),
+            source_file_row_groups: None,
+            source_file_row_group_bytes: Some(vec![bytes]),
+            source_file_projected_compressed_bytes: Some(vec![bytes]),
+            source_file_projected_uncompressed_bytes: Some(vec![bytes]),
+            source_file_pure_filter_compressed_bytes: Some(vec![pure_filter_bytes]),
+            source_file_pure_filter_uncompressed_bytes: Some(vec![pure_filter_bytes]),
+            source_file_row_group_rows: Some(vec![1]),
+            reader_decimal_types: Vec::new(),
+            reader_decimal_types_footer_verified: false,
+            read_columns: vec!["c0".to_string()],
+            partition_values: Vec::new(),
+            zero_column_count: false,
+            known_row_count: Some(1),
+            scan_limit_rows: None,
+            size_estimate_based: false,
+            source_batching_reason: None,
+            source_chunk_planning_mode: SourceChunkPlanningMode::Conservative,
+            source_chunk_planning_reason: "test_policy".to_string(),
+        }
+    }
 }

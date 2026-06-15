@@ -1,6 +1,6 @@
 use super::*;
 
-impl<'a> FinalSortExecutor<'a> {
+impl FinalSortExecutor<'_> {
     pub(super) fn full_sort_limit_attempt(
         &mut self,
         limit: Option<&LimitNode>,

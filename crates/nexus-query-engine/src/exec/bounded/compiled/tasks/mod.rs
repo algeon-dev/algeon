@@ -28,9 +28,10 @@ use crate::{
         bounded::{
             ActiveReservation, BoundedCompiledJoinBuildState, BoundedCompiledJoinMaterializeOutput,
             BoundedCompiledJoinProbeState, BoundedJoinLeafLocalParquetSourcePrefetch,
-            BoundedJoinLeafLocalParquetSourceStream, ReservationTracker, ResidentGpuFrame,
-            execute_bounded_compiled_join_build_from_frame, execute_bounded_compiled_join_build_from_resident_frame,
-            execute_bounded_compiled_join_materialize, execute_bounded_compiled_join_materialize_preserving_stream,
+            BoundedJoinLeafLocalParquetSourceStream, BoundedPartitionTargetPolicy, ReservationTracker,
+            ResidentGpuFrame, execute_bounded_compiled_join_build_from_frame,
+            execute_bounded_compiled_join_build_from_resident_frame, execute_bounded_compiled_join_materialize,
+            execute_bounded_compiled_join_materialize_preserving_stream,
             execute_bounded_compiled_join_probe_from_frame, execute_bounded_compiled_join_probe_from_frame_stream,
             execute_bounded_compiled_join_probe_from_resident_frame, execute_bounded_compiled_join_probe_from_stream,
             execute_bounded_generic_gpu_resident_source, execute_bounded_generic_literal_batch_source,

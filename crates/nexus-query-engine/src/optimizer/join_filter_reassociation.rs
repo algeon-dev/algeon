@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 
 use arrow::datatypes::{DataType as ArrowDataType, SchemaRef};
 
-use super::{dimension_pruning, rewrite};
+use super::{dimension_pruning, rewrite, source_target_policy::OptimizerSourceTargetPolicy};
 use crate::{
     expr::{BinaryOp, ColumnQualifier, ColumnRef, Expr, LiteralValue},
     plan::{
@@ -13,9 +13,6 @@ use crate::{
 
 /// Stable rule name used in optimizer diagnostics.
 pub const JOIN_FILTER_REASSOCIATION_RULE_NAME: &str = "join_filter_reassociation";
-const RESIDUAL_FILTER_PUSHDOWN_MAX_TARGET_ROWS: u64 = 1_000_000;
-const RESIDUAL_FILTER_PUSHDOWN_MAX_TARGET_BYTES: u64 = 64 * 1024 * 1024;
-const RESIDUAL_SCALAR_RANGE_MAX_ROWS: u64 = 1_000_000;
 
 /// Configuration for moving filters across preserved-side join structure.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -617,12 +614,8 @@ fn residual_filter_pushdown_target_supported(plan: &QueryPlan, node_id: NodeId) 
     };
     match &node.kind {
         PlanNode::Source(source) => match source.as_ref() {
-            crate::source::SourceNode::LocalParquet(_) => {
-                estimated_output_rows(plan, node_id)
-                    .is_some_and(|rows| rows <= RESIDUAL_FILTER_PUSHDOWN_MAX_TARGET_ROWS)
-                    || estimated_output_bytes(plan, node_id)
-                        .is_some_and(|bytes| bytes <= RESIDUAL_FILTER_PUSHDOWN_MAX_TARGET_BYTES)
-            },
+            crate::source::SourceNode::LocalParquet(_) => OptimizerSourceTargetPolicy::default()
+                .target_is_dimension_sized(estimated_output_rows(plan, node_id), estimated_output_bytes(plan, node_id)),
             crate::source::SourceNode::GpuResident(_) | crate::source::SourceNode::LiteralBatch(_) => true,
         },
         PlanNode::Filter(filter) => residual_filter_pushdown_target_supported(plan, filter.input),
@@ -705,7 +698,7 @@ fn derive_side_scalar_range_filter(plan: &QueryPlan, join: &JoinNode, expr: &Exp
         plan,
         scalar_input,
         &scalar_expr,
-        RESIDUAL_SCALAR_RANGE_MAX_ROWS,
+        OptimizerSourceTargetPolicy::default().residual_scalar_range_max_rows(),
     )??;
     scalar_range_necessary_filter(target_expr, *op, target_on_left, scalar_range, &target_type)
 }

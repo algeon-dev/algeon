@@ -44,15 +44,12 @@ use crate::{
     chunk::SourceChunk,
     error::{QueryError, QueryErrorCode, Result},
     exec::source::metrics::format_row_groups,
+    parquet_metadata::parquet_footer_prefetch_bytes,
     runtime::{ExecutionContext, S3ObjectStoreKey},
     source::{LocalParquetFile, LocalParquetSource},
 };
 
 const PARQUET_MAGIC: &[u8; 4] = b"PAR1";
-/// Speculative tail size for the first ranged GET. Large enough to cover the
-/// footer of any practical Parquet file in a single round trip while still
-/// being a tiny fraction of even a small file.
-const FOOTER_PREFETCH_BYTES: u64 = 64 * 1024;
 
 /// Selector for the row-group subset to fetch.
 #[derive(Debug, Clone)]
@@ -502,7 +499,7 @@ pub(super) async fn fetch_ranged_parquet(
         .with_fact("file_size", file_size));
     }
 
-    let prefetch = FOOTER_PREFETCH_BYTES.min(file_size);
+    let prefetch = parquet_footer_prefetch_bytes(file_size);
     let mut requested_range_count = 1usize;
     let mut requested_range_bytes = prefetch;
     let tail_start = file_size - prefetch;

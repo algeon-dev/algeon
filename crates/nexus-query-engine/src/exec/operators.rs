@@ -1,13 +1,11 @@
 use arrow::datatypes::SchemaRef as ArrowSchemaRef;
 
-use super::*;
+use super::{lowering_policy::ExpressionLoweringPolicy, *};
 
 mod aggregate;
 mod global_aggregate;
 mod projection;
 pub(super) use self::{aggregate::*, global_aggregate::*, projection::*};
-
-const SPECIALIZED_LITERAL_IN_LIST_FILTER_MIN_VALUES: usize = 129;
 
 pub(super) fn execution_budget_token_for_boundary(
     context: &ExecutionContext,
@@ -122,7 +120,7 @@ fn literal_in_list_filter_series(
     let Expr::InList { expr, list, negated: false } = predicate else {
         return Ok(None);
     };
-    if list.len() < SPECIALIZED_LITERAL_IN_LIST_FILTER_MIN_VALUES {
+    if !ExpressionLoweringPolicy::default().filter_in_list_should_use_specialized_series(list.len()) {
         return Ok(None);
     }
     let Expr::Column(column) = expr.as_ref() else {

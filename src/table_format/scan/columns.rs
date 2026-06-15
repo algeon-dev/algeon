@@ -202,7 +202,7 @@ pub(crate) struct TableFormatUnsupportedColumn<'a> {
     pub(crate) role: TableFormatColumnRole,
 }
 
-impl<'a> TableFormatUnsupportedColumn<'a> {
+impl TableFormatUnsupportedColumn<'_> {
     /// Stable role code for diagnostics.
     pub(crate) const fn role_code(&self) -> &'static str {
         self.role.code()

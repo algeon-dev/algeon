@@ -23,7 +23,7 @@ struct TopKMergeAttempt {
     attempt: usize,
 }
 
-impl<'a> FinalSortExecutor<'a> {
+impl FinalSortExecutor<'_> {
     pub(super) fn hierarchical_topk(
         &mut self,
         limit: &LimitNode,

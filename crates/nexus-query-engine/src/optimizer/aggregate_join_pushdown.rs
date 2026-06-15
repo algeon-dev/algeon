@@ -5,7 +5,7 @@ use std::{
 
 use arrow::datatypes::{DataType, Field, Schema, SchemaRef};
 
-use super::rewrite;
+use super::{aggregate_join_pushdown_policy::AggregateJoinPushdownPolicy, rewrite};
 use crate::{
     expr::{AggregateExpr, AggregateFunction, AggregateSpec, BinaryOp, CaseWhen, ColumnRef, Expr, LiteralValue},
     plan::{
@@ -16,10 +16,6 @@ use crate::{
 
 /// Stable rule name used in optimizer diagnostics.
 pub const AGGREGATE_JOIN_PUSHDOWN_RULE_NAME: &str = "aggregate_join_pushdown";
-
-const JOIN_UNION_PREAGG_MIN_KNOWN_UNION_BYTES: u64 = 128 * 1024 * 1024;
-const JOIN_UNION_PREAGG_MAX_DUPLICATED_OTHER_BYTES: u64 = 64 * 1024 * 1024;
-const JOIN_UNION_PREAGG_MIN_UNION_TO_DUPLICATED_OTHER_RATIO: u64 = 4;
 
 /// Configuration for reducing aggregates before joins.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -592,12 +588,11 @@ impl<'a> AggregateJoinPushdownRewriter<'a> {
         let known_union_bytes = union_inputs
             .iter()
             .try_fold(0_u64, |sum, input| sum.checked_add(self.estimated_rewritten_output_bytes(*input)?))?;
-        let duplicated_other_bytes = other_bytes.checked_mul(union_inputs.len() as u64)?;
-        if known_union_bytes < JOIN_UNION_PREAGG_MIN_KNOWN_UNION_BYTES
-            || other_bytes > JOIN_UNION_PREAGG_MAX_DUPLICATED_OTHER_BYTES
-            || known_union_bytes
-                < duplicated_other_bytes.saturating_mul(JOIN_UNION_PREAGG_MIN_UNION_TO_DUPLICATED_OTHER_RATIO)
-        {
+        if !AggregateJoinPushdownPolicy::default().join_union_preaggregate_admitted(
+            known_union_bytes,
+            other_bytes,
+            union_inputs.len(),
+        ) {
             return None;
         }
 

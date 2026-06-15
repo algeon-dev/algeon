@@ -15,7 +15,10 @@ mod facts;
 mod final_sort;
 mod generic;
 mod join;
+mod partition_row_policy;
+mod partition_target_policy;
 mod reservation;
+mod source_batching_policy;
 pub(in crate::exec) mod strict;
 
 use adaptive::try_execute_adaptive_bounded_pipeline;
@@ -54,7 +57,10 @@ pub use join::{
     JoinOutputColumnUpperBoundInput, PER_COLUMN_ALIGNMENT_PADDING_BYTES, STRING_OFFSET_BYTES_CONSERVATIVE,
     join_output_upper_bound_bytes,
 };
+pub(in crate::exec::bounded) use partition_row_policy::BoundedPartitionRowPolicy;
+pub(in crate::exec::bounded) use partition_target_policy::BoundedPartitionTargetPolicy;
 pub(in crate::exec) use reservation::{ActiveReservation, CommittedPartial, ReservationTracker, ResidentGpuFrame};
+pub(in crate::exec::bounded) use source_batching_policy::BoundedSourceBatchingPolicy;
 use strict::try_execute_strict_bounded_pipeline;
 
 use crate::mode::NativePipelineExecutionMode;

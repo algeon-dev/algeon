@@ -11,6 +11,7 @@ use futures::StreamExt;
 use object_store::ObjectStoreExt;
 
 use super::{
+    lakehouse_cache_policy::LakehouseCachePolicy,
     object_store_safety::{object_store_key_fact, source_fetch_location},
     start_host_parquet_buffer_fetch, *,
 };
@@ -21,7 +22,6 @@ use crate::{
 };
 
 pub(super) static LAKEHOUSE_CACHE_READ_PIN_COUNTER: AtomicU64 = AtomicU64::new(0);
-pub(super) const MALFORMED_LAKEHOUSE_CACHE_LOCK_STALE_AGE: Duration = Duration::from_millis(250);
 
 pub(in crate::exec::source) fn ensure_local_cache_parquet_file(
     context: &ExecutionContext,
@@ -293,11 +293,10 @@ fn acquire_lakehouse_cache_read_pin(
 }
 
 fn local_cache_optimized_batch_eligible(source: &LocalParquetSource, batch: &crate::chunk::SourceChunkBatch) -> bool {
-    const MIN_OPTIMIZED_BATCH_FILES: usize = 8;
-    const MAX_OPTIMIZED_BATCH_SOURCE_READ_BYTES: u64 = 64 * 1024 * 1024;
+    let policy = LakehouseCachePolicy::default();
 
     if !std::env::var("NEXUS_LAKEHOUSE_OPTIMIZED_BATCH_CACHE").is_ok_and(|value| value == "1")
-        || batch.chunk_count() < MIN_OPTIMIZED_BATCH_FILES
+        || !policy.optimized_batch_has_min_files(batch.chunk_count())
         || source.reader_predicate.is_some()
         || source.scan_limit.is_some()
         || !source.partition_columns.is_empty()
@@ -310,7 +309,7 @@ fn local_cache_optimized_batch_eligible(source: &LocalParquetSource, batch: &cra
     let Some(estimated_source_read_bytes) = batch.estimated_source_read_bytes else {
         return false;
     };
-    if estimated_source_read_bytes > MAX_OPTIMIZED_BATCH_SOURCE_READ_BYTES {
+    if !policy.optimized_batch_source_read_bytes_allowed(estimated_source_read_bytes) {
         return false;
     }
 
@@ -528,15 +527,7 @@ fn optimized_cache_fixed_width_type(data_type: &arrow::datatypes::DataType) -> b
 }
 
 fn optimized_batch_row_group_size_rows(row_count: usize) -> i32 {
-    const TARGET_ROW_GROUPS: usize = 32;
-    const MIN_ROWS_PER_GROUP: usize = 50_000;
-    const MAX_ROWS_PER_GROUP: usize = 1_000_000;
-
-    if row_count == 0 {
-        return 0;
-    }
-    let rows = row_count.div_ceil(TARGET_ROW_GROUPS).clamp(MIN_ROWS_PER_GROUP, MAX_ROWS_PER_GROUP);
-    i32::try_from(rows).unwrap_or(i32::MAX)
+    LakehouseCachePolicy::default().optimized_batch_row_group_size_rows(row_count)
 }
 
 fn sanitize_cache_component(value: &str) -> String {
@@ -897,10 +888,9 @@ fn acquire_lakehouse_cache_lock(
     file_index: Option<usize>,
     chunk_index: Option<usize>,
 ) -> Result<LakehouseCacheLock> {
-    const LOCK_WAIT: Duration = Duration::from_millis(100);
-    const MAX_ATTEMPTS: usize = 600;
+    let policy = LakehouseCachePolicy::default();
 
-    for attempt in 0..MAX_ATTEMPTS {
+    for attempt in 0..policy.cache_lock_max_attempts() {
         context.check_cancellation("nexus_query_engine.lakehouse_cache.lock")?;
         match OpenOptions::new().write(true).create_new(true).open(lock_path) {
             Ok(mut file) => {
@@ -914,8 +904,8 @@ fn acquire_lakehouse_cache_lock(
                 if cache_path.is_file() {
                     return Ok(LakehouseCacheLock { path: None });
                 }
-                if attempt + 1 < MAX_ATTEMPTS {
-                    thread::sleep(LOCK_WAIT);
+                if attempt + 1 < policy.cache_lock_max_attempts() {
+                    thread::sleep(policy.cache_lock_wait());
                     continue;
                 }
                 let mut error = QueryError::new(
@@ -1041,7 +1031,7 @@ fn malformed_lakehouse_cache_lock_is_stale(lock_path: &Path) -> bool {
     let Ok(modified) = metadata.modified() else {
         return false;
     };
-    modified.elapsed().is_ok_and(|elapsed| elapsed >= MALFORMED_LAKEHOUSE_CACHE_LOCK_STALE_AGE)
+    modified.elapsed().is_ok_and(|elapsed| elapsed >= LakehouseCachePolicy::default().malformed_cache_lock_stale_age())
 }
 
 fn lakehouse_cache_temp_path(cache_path: &Path) -> PathBuf {

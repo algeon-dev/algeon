@@ -8,6 +8,7 @@ use super::{compiled::ResidentFrameStreamPayload, *};
 use crate::exec::source::record_bounded_parquet_source_metrics;
 
 mod final_merge;
+mod final_merge_policy;
 mod partitioned;
 mod plan;
 mod post_stages;
@@ -38,15 +39,11 @@ pub(in crate::exec::bounded) use stream::{
     execute_bounded_whole_input_aggregate_from_raw_chunks, execute_compiled_bounded_aggregate_from_stream,
 };
 
-const SOURCE_ADJACENT_AGGREGATE_TARGET_CHUNK_BYTES: u64 = 2 * 1024 * 1024 * 1024;
-pub(in crate::exec::bounded) const SOURCE_ADJACENT_GROUPED_AGGREGATE_TARGET_CHUNK_BYTES: u64 = 384 * 1024 * 1024;
-const SOURCE_ADJACENT_GROUPED_AGGREGATE_MAX_OPERATOR_ROW_GROUPS: usize = 1024;
-const SOURCE_ADJACENT_GROUP_KEY_PARTITION_MAX_INPUT_ROWS: u64 = 32_000_000;
-
 fn aggregate_source_chunk_planning_policy(
     context: &ExecutionContext,
     bounded: &BoundedPlan<'_>,
 ) -> SourceChunkPlanningPolicy {
+    let batching_policy = BoundedSourceBatchingPolicy::default();
     let mut policy = SourceChunkPlanningPolicy::for_source_task_with_mode_and_options(
         bounded.source,
         context.memory_control_policy(),
@@ -55,23 +52,18 @@ fn aggregate_source_chunk_planning_policy(
         context.source_chunk_planning_options(),
     );
     if bounded.has_source_adjacent_stages() {
-        policy.max_source_chunk_bytes = Some(
-            policy
-                .max_source_chunk_bytes
-                .unwrap_or(SOURCE_ADJACENT_AGGREGATE_TARGET_CHUNK_BYTES)
-                .min(SOURCE_ADJACENT_AGGREGATE_TARGET_CHUNK_BYTES),
-        );
+        let target_chunk_bytes = batching_policy.source_adjacent_aggregate_target_chunk_bytes();
+        policy.max_source_chunk_bytes =
+            Some(policy.max_source_chunk_bytes.unwrap_or(target_chunk_bytes).min(target_chunk_bytes));
         policy.mark_downstream_cap("source_adjacent_aggregate_downstream_cap");
     }
     if is_source_adjacent_grouped_aggregate(bounded) && source_adjacent_grouped_aggregate_has_string_key(bounded) {
-        policy.max_source_chunk_bytes = Some(
-            policy
-                .max_source_chunk_bytes
-                .unwrap_or(SOURCE_ADJACENT_GROUPED_AGGREGATE_TARGET_CHUNK_BYTES)
-                .min(SOURCE_ADJACENT_GROUPED_AGGREGATE_TARGET_CHUNK_BYTES),
-        );
-        policy.max_row_groups_per_chunk =
-            policy.max_row_groups_per_chunk.min(SOURCE_ADJACENT_GROUPED_AGGREGATE_MAX_OPERATOR_ROW_GROUPS);
+        let target_chunk_bytes = batching_policy.source_adjacent_grouped_aggregate_target_chunk_bytes();
+        policy.max_source_chunk_bytes =
+            Some(policy.max_source_chunk_bytes.unwrap_or(target_chunk_bytes).min(target_chunk_bytes));
+        policy.max_row_groups_per_chunk = policy
+            .max_row_groups_per_chunk
+            .min(batching_policy.source_adjacent_grouped_aggregate_max_operator_row_groups());
         policy.mark_downstream_cap("source_adjacent_grouped_aggregate_downstream_cap");
     }
     policy
@@ -183,7 +175,7 @@ fn source_adjacent_group_key_partitioning_fits_rows(bounded: &BoundedPlan<'_>, c
         return true;
     }
     chunks.iter().all(|chunk| {
-        chunk.known_row_count.is_some_and(|rows| rows <= SOURCE_ADJACENT_GROUP_KEY_PARTITION_MAX_INPUT_ROWS)
+        BoundedPartitionRowPolicy::default().source_adjacent_group_key_partitioning_fits_rows(chunk.known_row_count)
     })
 }
 
