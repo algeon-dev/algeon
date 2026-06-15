@@ -14,7 +14,7 @@ use super::*;
 /// The returned view's lifetime is tied to `'a` (the execution binding and the
 /// device memory it describes), not to the `ColumnView` borrow.
 pub(super) fn borrow_from_view_with_execution<'a>(
-    view: &ColumnView<'_>,
+    view: &ColumnView<'a>,
     execution: ExecutionBinding<'a>,
     operation: &'static str,
 ) -> Result<BorrowedColumnView<'a>, InteropError> {

@@ -81,9 +81,9 @@ pub(crate) fn validate_release_contract(release_contract: ReleaseContract) -> Re
     }
 }
 
-pub(crate) fn validate_prepared_readiness<'a>(
+pub(crate) fn validate_prepared_readiness(
     profile: PreparedExportProfile,
-    readiness: &ProducerReadiness<'a>,
+    readiness: &ProducerReadiness<'_>,
     producer_device: Option<i32>,
 ) -> Result<()> {
     match profile {
@@ -136,10 +136,7 @@ pub(crate) fn validate_prepared_readiness<'a>(
     }
 }
 
-pub(crate) fn validate_owned_transfer_readiness<'a>(
-    readiness: &ProducerReadiness<'a>,
-    producer_device: i32,
-) -> Result<()> {
+pub(crate) fn validate_owned_transfer_readiness(readiness: &ProducerReadiness<'_>, producer_device: i32) -> Result<()> {
     match readiness {
         ProducerReadiness::DeviceStreamOrdered { stream } => {
             let stream_device = stream.device();

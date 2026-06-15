@@ -850,7 +850,7 @@ impl ColumnView<'_> {
         })
     }
 }
-impl<'a> Drop for ColumnView<'a> {
+impl Drop for ColumnView<'_> {
     fn drop(&mut self) {
         unsafe {
             cudf_sys::cudf_column_view_destroy(self.handle.as_ptr());

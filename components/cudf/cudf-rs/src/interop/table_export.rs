@@ -88,7 +88,7 @@ fn table_dimensions(view: &TableView<'_>, operation: &'static str) -> Result<(us
 }
 
 fn build_device_table_projection_from_view<'a>(
-    view: &TableView<'_>,
+    view: &TableView<'a>,
     operation: &'static str,
     default_device: i32,
 ) -> Result<DeviceTableProjection<'a>, InteropError> {
@@ -210,7 +210,7 @@ where
 }
 
 pub(super) fn prepare_table_export_from_view<'a>(
-    view: &TableView<'_>,
+    view: &TableView<'a>,
     domain: &Arc<ExecutionDomain>,
     names: Option<Vec<String>>,
     operation: &'static str,
@@ -220,7 +220,7 @@ pub(super) fn prepare_table_export_from_view<'a>(
 }
 
 pub(super) fn prepare_table_export_from_view_with_readiness<'a>(
-    view: &TableView<'_>,
+    view: &TableView<'a>,
     names: Option<Vec<String>>,
     operation: &'static str,
     default_device: i32,
@@ -494,13 +494,15 @@ pub(super) fn transfer_from_owned_table_with_names_and_runtime_release_synchroni
 
     let table_semantic =
         SemanticTable::new(TableId::new(0), num_rows, columns.iter().map(|column| column.id()).collect(), names);
+    let bindings = to_static_bindings(operation, bindings)?;
+    let readiness = to_static_readiness(operation, readiness)?;
     let (owner, releaser) = runtime_owned_table_owner_and_releaser(table, default_device, synchronization);
     let transfer = OwnedTableTransfer::try_new_with_semantic_columns(OwnedTableTransferParts {
         table: table_semantic,
         columns,
         semantic_columns,
-        bindings: to_static_bindings(operation, bindings)?,
-        readiness: to_static_readiness(operation, readiness)?,
+        bindings,
+        readiness,
         diagnostics: owned_transfer_diagnostics(),
         release_contract: owned_transfer_runtime_release_contract_with_synchronization(
             default_device,

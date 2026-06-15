@@ -22,7 +22,7 @@ pub struct NullMask<'a> {
     _lifetime: PhantomData<&'a ()>,
 }
 
-impl<'a> NullMask<'a> {
+impl NullMask<'_> {
     /// Construct the canonical "no null mask is present" descriptor.
     pub fn absent() -> Self {
         Self { kind: NullMaskKind::Absent, _lifetime: PhantomData }

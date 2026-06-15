@@ -179,7 +179,7 @@ pub struct CudaStreamHandle<'a> {
     _lifetime: PhantomData<&'a ()>,
 }
 
-impl<'a> CudaStreamHandle<'a> {
+impl CudaStreamHandle<'_> {
     /// Reject constructing a borrowed stream handle without CUDA device
     /// identity.
     pub fn from_raw(raw: *mut c_void) -> Result<Self> {
@@ -241,7 +241,7 @@ pub struct CudaEventHandle<'a> {
     _lifetime: PhantomData<&'a ()>,
 }
 
-impl<'a> CudaEventHandle<'a> {
+impl CudaEventHandle<'_> {
     /// Reject constructing a borrowed event handle without CUDA device
     /// identity.
     pub fn from_raw(raw: *mut c_void) -> Result<Self> {
@@ -299,7 +299,7 @@ pub struct DeviceMemoryResourceHandle<'a> {
     _lifetime: PhantomData<&'a ()>,
 }
 
-impl<'a> DeviceMemoryResourceHandle<'a> {
+impl DeviceMemoryResourceHandle<'_> {
     /// Construct a borrowed memory-resource handle from a raw non-null pointer.
     pub fn from_raw(raw: *mut c_void) -> Result<Self> {
         let raw = NonNull::new(raw).ok_or_else(|| {
@@ -522,7 +522,7 @@ pub struct BoundBytes<'a> {
     _lifetime: PhantomData<&'a ()>,
 }
 
-impl<'a> BoundBytes<'a> {
+impl BoundBytes<'_> {
     pub fn from_raw_parts(base_ptr: *mut c_void, byte_len: usize) -> Result<Self> {
         let base_ptr = match NonNull::new(base_ptr) {
             Some(ptr) => ptr,

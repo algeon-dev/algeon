@@ -358,11 +358,11 @@ fn pool_mr() -> DeviceMemoryResource {
     DeviceMemoryResource::pool(TEST_POOL_MR_BYTES, None).expect("failed to create pool MR")
 }
 
-fn debug_ctx_with_stream<'a>(stream: &'a CudaStream) -> cudf::ExecutionOverrides<'a> {
+fn debug_ctx_with_stream(stream: &CudaStream) -> cudf::ExecutionOverrides<'_> {
     cudf::ExecutionOverrides::new().with_stream(stream)
 }
 
-fn debug_ctx_with_mr<'a>(mr: &'a DeviceMemoryResource) -> cudf::ExecutionOverrides<'a> {
+fn debug_ctx_with_mr(mr: &DeviceMemoryResource) -> cudf::ExecutionOverrides<'_> {
     cudf::ExecutionOverrides::new().with_memory_resource(mr)
 }
 
