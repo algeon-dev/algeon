@@ -39,6 +39,12 @@ fn sorted_join_index_pairs(indices: &join::JoinIndices) -> Vec<(i32, i32)> {
     pairs
 }
 
+fn sorted_single_side_indices(indices: &join::SingleSideJoinIndices) -> Vec<i32> {
+    let mut rows = indices.indices.testing_view().unwrap().to_vec::<i32>().unwrap();
+    rows.sort();
+    rows
+}
+
 fn sorted_dataframe_triples(df: &DataFrame) -> Vec<(i32, i32, i32)> {
     let ids = df.series("id").unwrap().to_vec_strict::<i32>().unwrap();
     let left_vals = df.series("left_val").unwrap().to_vec_strict::<i32>().unwrap();
@@ -168,6 +174,25 @@ fn test_full_join() {
     let mut right_keys = nullable_i32_table_column(&result.right, 0);
     right_keys.sort();
     assert_eq!(right_keys, vec![None, Some(2), Some(3)]);
+}
+
+#[test]
+fn test_cross_join_materializes_rows_in_libcudf_order() {
+    let left_id = column_from_slice(&[1i32, 2]).unwrap();
+    let left_val = column_from_slice(&[10i32, 20]).unwrap();
+    let right_id = column_from_slice(&[100i32, 200, 300]).unwrap();
+
+    let left = Table::from_columns(vec![left_id, left_val]).unwrap();
+    let right = Table::from_columns(vec![right_id]).unwrap();
+
+    let result = join::cross_join(&left.testing_view().unwrap(), &right.testing_view().unwrap()).unwrap();
+    let view = result.testing_view().unwrap();
+
+    assert_eq!(view.num_columns().unwrap(), 3);
+    assert_eq!(view.num_rows().unwrap(), 6);
+    assert_eq!(view.column(0).unwrap().to_vec::<i32>().unwrap(), vec![1, 1, 1, 2, 2, 2]);
+    assert_eq!(view.column(1).unwrap().to_vec::<i32>().unwrap(), vec![10, 10, 10, 20, 20, 20]);
+    assert_eq!(view.column(2).unwrap().to_vec::<i32>().unwrap(), vec![100, 200, 300, 100, 200, 300]);
 }
 
 #[test]
@@ -351,6 +376,36 @@ fn test_inner_join_indices_with_duplicate_keys_returns_all_matching_pairs() {
     .unwrap();
 
     assert_eq!(sorted_join_index_pairs(&indices), vec![(1, 0), (1, 1), (2, 0), (2, 1)]);
+}
+
+#[test]
+fn test_left_semi_join_indices_return_each_matching_left_row_once() {
+    let left_keys = Table::from_columns(vec![column_from_slice(&[1i32, 2, 2, 3, 4]).unwrap()]).unwrap();
+    let right_keys = Table::from_columns(vec![column_from_slice(&[2i32, 2, 4]).unwrap()]).unwrap();
+
+    let indices = join::left_semi_join_indices(
+        &left_keys.testing_view().unwrap(),
+        &right_keys.testing_view().unwrap(),
+        NullEquality::Equal,
+    )
+    .unwrap();
+
+    assert_eq!(sorted_single_side_indices(&indices), vec![1, 2, 4]);
+}
+
+#[test]
+fn test_left_anti_join_indices_return_only_non_matching_left_rows() {
+    let left_keys = Table::from_columns(vec![column_from_slice(&[1i32, 2, 2, 3, 4]).unwrap()]).unwrap();
+    let right_keys = Table::from_columns(vec![column_from_slice(&[2i32, 4]).unwrap()]).unwrap();
+
+    let indices = join::left_anti_join_indices(
+        &left_keys.testing_view().unwrap(),
+        &right_keys.testing_view().unwrap(),
+        NullEquality::Equal,
+    )
+    .unwrap();
+
+    assert_eq!(sorted_single_side_indices(&indices), vec![0, 3]);
 }
 
 #[test]

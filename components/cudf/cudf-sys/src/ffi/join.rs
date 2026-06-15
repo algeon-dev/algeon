@@ -78,6 +78,22 @@ extern "C" {
         options: *const cudf_exec_options_t,
     ) -> cudf_status_t;
 
+    pub fn cudf_cross_join(
+        left: cudf_table_view_handle,
+        right: cudf_table_view_handle,
+        out: *mut cudf_table_handle,
+    ) -> cudf_status_t;
+
+    /// Cross join with explicit execution context.
+    ///
+    /// When `options->mr` is non-null, it must outlive the returned table.
+    pub fn cudf_cross_join_ex(
+        left: cudf_table_view_handle,
+        right: cudf_table_view_handle,
+        out: *mut cudf_table_handle,
+        options: *const cudf_exec_options_t,
+    ) -> cudf_status_t;
+
     pub fn cudf_inner_join_indices(
         left_keys: cudf_table_view_handle,
         right_keys: cudf_table_view_handle,
@@ -126,6 +142,36 @@ extern "C" {
         null_equality: cudf_null_equality_t,
         out_left_indices: *mut cudf_column_handle,
         out_right_indices: *mut cudf_column_handle,
+        options: *const cudf_exec_options_t,
+    ) -> cudf_status_t;
+
+    pub fn cudf_left_semi_join_indices(
+        left_keys: cudf_table_view_handle,
+        right_keys: cudf_table_view_handle,
+        null_equality: cudf_null_equality_t,
+        out_indices: *mut cudf_column_handle,
+    ) -> cudf_status_t;
+
+    pub fn cudf_left_semi_join_indices_ex(
+        left_keys: cudf_table_view_handle,
+        right_keys: cudf_table_view_handle,
+        null_equality: cudf_null_equality_t,
+        out_indices: *mut cudf_column_handle,
+        options: *const cudf_exec_options_t,
+    ) -> cudf_status_t;
+
+    pub fn cudf_left_anti_join_indices(
+        left_keys: cudf_table_view_handle,
+        right_keys: cudf_table_view_handle,
+        null_equality: cudf_null_equality_t,
+        out_indices: *mut cudf_column_handle,
+    ) -> cudf_status_t;
+
+    pub fn cudf_left_anti_join_indices_ex(
+        left_keys: cudf_table_view_handle,
+        right_keys: cudf_table_view_handle,
+        null_equality: cudf_null_equality_t,
+        out_indices: *mut cudf_column_handle,
         options: *const cudf_exec_options_t,
     ) -> cudf_status_t;
 

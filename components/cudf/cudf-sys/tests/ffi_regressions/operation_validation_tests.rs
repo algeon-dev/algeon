@@ -976,6 +976,31 @@ fn assert_join_indices_invalid_null_equality_rejected(
     }
 }
 
+fn assert_filtered_join_indices_invalid_null_equality_rejected(
+    join_fn: unsafe extern "C" fn(*mut c_void, *mut c_void, i32, *mut *mut c_void) -> i32,
+) {
+    let left_key_col = make_i32_column(&[1, 2]);
+    let right_key_col = make_i32_column(&[2, 3]);
+    let left_keys_tbl = make_table_from_one_column(left_key_col);
+    let right_keys_tbl = make_table_from_one_column(right_key_col);
+    let left_keys_view = make_table_view(left_keys_tbl);
+    let right_keys_view = make_table_view(right_keys_tbl);
+
+    let mut out: *mut c_void = ptr::null_mut();
+    let status = unsafe { join_fn(left_keys_view, right_keys_view, 99, &mut out) };
+
+    assert_eq!(status, cudf_sys::CUDF_ERROR_INVALID_OPERATION);
+    assert!(out.is_null());
+    assert!(last_error_message().contains("invalid null_equality"));
+
+    unsafe {
+        cudf_sys::cudf_table_view_destroy(right_keys_view);
+        cudf_sys::cudf_table_view_destroy(left_keys_view);
+        cudf_sys::cudf_table_destroy(right_keys_tbl);
+        cudf_sys::cudf_table_destroy(left_keys_tbl);
+    }
+}
+
 #[test]
 fn test_inner_join_invalid_null_equality_rejected() {
     let _shim_state = lock_shim_state();
@@ -1010,6 +1035,18 @@ fn test_left_join_indices_invalid_null_equality_rejected() {
 fn test_full_join_indices_invalid_null_equality_rejected() {
     let _shim_state = lock_shim_state();
     assert_join_indices_invalid_null_equality_rejected(cudf_full_join_indices_raw);
+}
+
+#[test]
+fn test_left_semi_join_indices_invalid_null_equality_rejected() {
+    let _shim_state = lock_shim_state();
+    assert_filtered_join_indices_invalid_null_equality_rejected(cudf_left_semi_join_indices_raw);
+}
+
+#[test]
+fn test_left_anti_join_indices_invalid_null_equality_rejected() {
+    let _shim_state = lock_shim_state();
+    assert_filtered_join_indices_invalid_null_equality_rejected(cudf_left_anti_join_indices_raw);
 }
 
 #[test]
@@ -1317,6 +1354,88 @@ fn test_join_indices_ex_uses_explicit_memory_resource_for_allocations_and_proven
 }
 
 #[test]
+fn test_filtered_join_indices_ex_uses_explicit_memory_resource_for_allocations_and_provenance() {
+    let _shim_state = lock_shim_state();
+    let previous_raw = current_device_resource_raw();
+    let current_mr = OwnedMemoryResource::new_test_stats();
+    let _restore = CurrentDeviceResourceRestore::new(previous_raw);
+    let target_mr = OwnedMemoryResource::new_test_stats();
+
+    let left_tbl = make_table_from_one_column(make_i32_column(&[1, 2, 2, 3, 5, 8, 13, 21]));
+    let right_tbl = make_table_from_one_column(make_i32_column(&[2, 3, 13]));
+    let left_tv = make_table_view(left_tbl);
+    let right_tv = make_table_view(right_tbl);
+    let stream = OwnedStream::new();
+    let target_stream = stream.borrowed();
+    let target_borrowed = target_mr.borrowed();
+    let exec = cudf_sys::ExecutionContext::new().with_stream(&target_stream).with_memory_resource(&target_borrowed);
+
+    for (name, join_indices) in [
+        (
+            "semi",
+            cudf_sys::cudf_left_semi_join_indices_ex
+                as unsafe extern "C" fn(
+                    *mut c_void,
+                    *mut c_void,
+                    cudf_sys::cudf_null_equality_t,
+                    *mut *mut c_void,
+                    *const cudf_sys::cudf_exec_options_t,
+                ) -> cudf_sys::cudf_status_t,
+        ),
+        ("anti", cudf_sys::cudf_left_anti_join_indices_ex),
+    ] {
+        let target_before = target_mr.allocation_count();
+        let current_before = current_mr.allocation_count();
+        reset_exec_observation();
+
+        let mut out: *mut c_void = ptr::null_mut();
+        let current_borrowed = current_mr.borrowed();
+        cudf_sys::test_set_current_device_resource(&current_borrowed)
+            .expect("failed to install current sentinel memory resource");
+        let status = unsafe {
+            join_indices(
+                left_tv,
+                right_tv,
+                cudf_sys::cudf_null_equality_t::CUDF_NULL_EQUALITY_EQUAL,
+                &mut out,
+                exec.as_raw(),
+            )
+        };
+        let restored_current = current_device_resource_raw();
+        unsafe { cudf_sys::test_set_current_device_resource_raw(previous_raw) }
+            .expect("failed to restore previous current device resource");
+
+        assert_eq!(status, cudf_sys::CUDF_SUCCESS, "{name} filtered join indices failed");
+        assert!(!out.is_null(), "{name} filtered join indices did not publish indices");
+        assert_eq!(last_exec_mr_raw(), target_mr.raw_device_resource());
+        assert_eq!(
+            restored_current,
+            current_mr.raw_device_resource(),
+            "{name} filtered join indices must restore the caller's current memory resource"
+        );
+        assert_eq!(
+            current_mr.allocation_count(),
+            current_before,
+            "{name} filtered join temporaries must not allocate from the caller's current memory resource"
+        );
+        assert!(
+            target_mr.allocation_count() > target_before,
+            "{name} filtered join allocations must be charged to the explicit execution memory resource"
+        );
+
+        unsafe { cudf_sys::cudf_column_destroy(out) };
+    }
+
+    stream.synchronize();
+    unsafe {
+        cudf_sys::cudf_table_view_destroy(right_tv);
+        cudf_sys::cudf_table_view_destroy(left_tv);
+        cudf_sys::cudf_table_destroy(right_tbl);
+        cudf_sys::cudf_table_destroy(left_tbl);
+    }
+}
+
+#[test]
 fn test_distinct_hash_join_probe_ex_uses_explicit_memory_resource_for_probe_allocations() {
     let _shim_state = lock_shim_state();
     let previous_raw = current_device_resource_raw();
@@ -1450,6 +1569,148 @@ fn test_gather_ex_uses_explicit_memory_resource() {
         cudf_sys::cudf_column_destroy(gather_map);
         cudf_sys::cudf_table_view_destroy(input_view);
         cudf_sys::cudf_table_destroy(input_tbl);
+    }
+}
+
+#[test]
+fn test_cross_join_ex_uses_explicit_memory_resource_for_allocations_and_provenance() {
+    let _shim_state = lock_shim_state();
+    let previous_raw = current_device_resource_raw();
+    let current_mr = OwnedMemoryResource::new_test_stats();
+    let _restore = CurrentDeviceResourceRestore::new(previous_raw);
+    let target_mr = OwnedMemoryResource::new_test_stats();
+
+    let left_tbl = make_table_from_one_column(make_i32_column(&[1, 2, 3, 4]));
+    let right_tbl = make_table_from_one_column(make_i32_column(&[10, 20, 30]));
+    let left_tv = make_table_view(left_tbl);
+    let right_tv = make_table_view(right_tbl);
+    let stream = OwnedStream::new();
+    let target_stream = stream.borrowed();
+    let target_borrowed = target_mr.borrowed();
+    let exec = cudf_sys::ExecutionContext::new().with_stream(&target_stream).with_memory_resource(&target_borrowed);
+    let target_before = target_mr.allocation_count();
+    let current_before = current_mr.allocation_count();
+
+    let current_borrowed = current_mr.borrowed();
+    cudf_sys::test_set_current_device_resource(&current_borrowed)
+        .expect("failed to install current sentinel memory resource");
+    let mut out: *mut c_void = ptr::null_mut();
+    let status = unsafe { cudf_sys::cudf_cross_join_ex(left_tv, right_tv, &mut out, exec.as_raw()) };
+    let restored_current = current_device_resource_raw();
+    unsafe { cudf_sys::test_set_current_device_resource_raw(previous_raw) }
+        .expect("failed to restore previous current device resource");
+
+    assert_eq!(status, cudf_sys::CUDF_SUCCESS);
+    assert!(!out.is_null());
+    assert_eq!(last_exec_mr_raw(), target_mr.raw_device_resource());
+    assert_eq!(
+        restored_current,
+        current_mr.raw_device_resource(),
+        "cross_join must restore the caller's current memory resource"
+    );
+    assert_eq!(
+        current_mr.allocation_count(),
+        current_before,
+        "cross_join temporaries must not allocate from the caller's current memory resource"
+    );
+    assert!(
+        target_mr.allocation_count() > target_before,
+        "cross_join allocations must be charged to the explicit execution memory resource"
+    );
+
+    stream.synchronize();
+    unsafe {
+        cudf_sys::cudf_table_destroy(out);
+        cudf_sys::cudf_table_view_destroy(right_tv);
+        cudf_sys::cudf_table_view_destroy(left_tv);
+        cudf_sys::cudf_table_destroy(right_tbl);
+        cudf_sys::cudf_table_destroy(left_tbl);
+    }
+}
+
+#[test]
+fn test_scatter_null_scatter_map_returns_libcudf_error() {
+    let _shim_state = lock_shim_state();
+    let source_tbl = make_table_from_one_column(make_i32_column(&[10, 20]));
+    let target_tbl = make_table_from_one_column(make_i32_column(&[1, 2, 3, 4]));
+    let source_tv = make_table_view(source_tbl);
+    let target_tv = make_table_view(target_tbl);
+    let scatter_map = make_i32_column_nullable(&[0, 1], &[true, false]);
+    let scatter_map_view = make_column_view(scatter_map);
+
+    let mut out: *mut c_void = ptr::null_mut();
+    let status = unsafe { cudf_scatter_raw(source_tv, scatter_map_view, target_tv, &mut out) };
+
+    assert_eq!(status, cudf_sys::CUDF_ERROR_INVALID_ARGUMENT);
+    assert!(out.is_null());
+
+    unsafe {
+        cudf_sys::cudf_column_view_destroy(scatter_map_view);
+        cudf_sys::cudf_column_destroy(scatter_map);
+        cudf_sys::cudf_table_view_destroy(target_tv);
+        cudf_sys::cudf_table_view_destroy(source_tv);
+        cudf_sys::cudf_table_destroy(target_tbl);
+        cudf_sys::cudf_table_destroy(source_tbl);
+    }
+}
+
+#[test]
+fn test_scatter_ex_uses_explicit_memory_resource_for_allocations_and_provenance() {
+    let _shim_state = lock_shim_state();
+    let previous_raw = current_device_resource_raw();
+    let current_mr = OwnedMemoryResource::new_test_stats();
+    let _restore = CurrentDeviceResourceRestore::new(previous_raw);
+    let target_mr = OwnedMemoryResource::new_test_stats();
+
+    let source_tbl = make_table_from_one_column(make_i32_column(&[10, 20, 30]));
+    let target_tbl = make_table_from_one_column(make_i32_column(&[1, 2, 3, 4, 5]));
+    let source_tv = make_table_view(source_tbl);
+    let target_tv = make_table_view(target_tbl);
+    let scatter_map = make_i32_column(&[4, 2, 0]);
+    let scatter_map_view = make_column_view(scatter_map);
+    let stream = OwnedStream::new();
+    let target_stream = stream.borrowed();
+    let target_borrowed = target_mr.borrowed();
+    let exec = cudf_sys::ExecutionContext::new().with_stream(&target_stream).with_memory_resource(&target_borrowed);
+    let target_before = target_mr.allocation_count();
+    let current_before = current_mr.allocation_count();
+
+    let current_borrowed = current_mr.borrowed();
+    cudf_sys::test_set_current_device_resource(&current_borrowed)
+        .expect("failed to install current sentinel memory resource");
+    let mut out: *mut c_void = ptr::null_mut();
+    let status = unsafe { cudf_sys::cudf_scatter_ex(source_tv, scatter_map_view, target_tv, &mut out, exec.as_raw()) };
+    let restored_current = current_device_resource_raw();
+    unsafe { cudf_sys::test_set_current_device_resource_raw(previous_raw) }
+        .expect("failed to restore previous current device resource");
+
+    assert_eq!(status, cudf_sys::CUDF_SUCCESS);
+    assert!(!out.is_null());
+    assert_eq!(last_exec_mr_raw(), target_mr.raw_device_resource());
+    assert_eq!(
+        restored_current,
+        current_mr.raw_device_resource(),
+        "scatter must restore the caller's current memory resource"
+    );
+    assert_eq!(
+        current_mr.allocation_count(),
+        current_before,
+        "scatter temporaries must not allocate from the caller's current memory resource"
+    );
+    assert!(
+        target_mr.allocation_count() > target_before,
+        "scatter allocations must be charged to the explicit execution memory resource"
+    );
+
+    stream.synchronize();
+    unsafe {
+        cudf_sys::cudf_table_destroy(out);
+        cudf_sys::cudf_column_view_destroy(scatter_map_view);
+        cudf_sys::cudf_column_destroy(scatter_map);
+        cudf_sys::cudf_table_view_destroy(target_tv);
+        cudf_sys::cudf_table_view_destroy(source_tv);
+        cudf_sys::cudf_table_destroy(target_tbl);
+        cudf_sys::cudf_table_destroy(source_tbl);
     }
 }
 

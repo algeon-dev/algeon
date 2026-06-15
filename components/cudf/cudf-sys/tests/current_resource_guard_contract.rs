@@ -2,6 +2,7 @@ use std::{collections::BTreeSet, fs, path::Path};
 
 const EXPECTED_GUARDS: &[&str] = &[
     "copying::gather",
+    "copying::scatter",
     "column::list_sliced_child",
     "dictionary::decode",
     "dictionary::encode",
@@ -16,6 +17,9 @@ const EXPECTED_GUARDS: &[&str] = &[
     "join::distinct_hash_join_create",
     "join::distinct_hash_join_destroy",
     "join::distinct_hash_join_left_join",
+    "join::cross_join",
+    "join::left_anti_join_indices",
+    "join::left_semi_join_indices",
     "join::hash_join_create",
     "join::hash_join_destroy",
     "join::hash_join_full_join",
@@ -101,6 +105,11 @@ fn classify_allowed_guard(file_name: &str, context: &str) -> Option<&'static str
         "copying.cpp" if context.contains("cudf::gather(*view, *map_view, policy, exec.stream, exec.mr)") => {
             Some("copying::gather")
         },
+        "copying.cpp"
+            if context.contains("cudf::scatter(*source_view, *map_view, *target_view, exec.stream, exec.mr)") =>
+        {
+            Some("copying::scatter")
+        },
         "column.cpp" if context.contains("lists.get_sliced_child(exec.stream)") => Some("column::list_sliced_child"),
         "dictionary.cpp" if context.contains("cudf::dictionary::decode(dict_view, exec.stream, exec.mr)") => {
             Some("dictionary::decode")
@@ -141,6 +150,9 @@ fn classify_allowed_guard(file_name: &str, context: &str) -> Option<&'static str
         "join.cpp" if context.contains("distinct_join->left_join(*probe_view, exec.stream, exec.mr)") => {
             Some("join::distinct_hash_join_left_join")
         },
+        "join.cpp" if context.contains("cudf::cross_join(*left_view, *right_view, exec.stream, exec.mr)") => {
+            Some("join::cross_join")
+        },
         "join.cpp" if context.contains("std::make_unique<cudf::hash_join>") => Some("join::hash_join_create"),
         "join.cpp" if context.contains("void cudf_hash_join_destroy") && context.contains("delete owner") => {
             Some("join::hash_join_destroy")
@@ -153,6 +165,12 @@ fn classify_allowed_guard(file_name: &str, context: &str) -> Option<&'static str
         },
         "join.cpp" if context.contains("cudf::left_join(*lk, *rk, null_eq, exec.stream, exec.mr)") => {
             Some("join::left_join_indices")
+        },
+        "join.cpp" if context.contains("join.anti_join(*lk, exec.stream, exec.mr)") => {
+            Some("join::left_anti_join_indices")
+        },
+        "join.cpp" if context.contains("join.semi_join(*lk, exec.stream, exec.mr)") => {
+            Some("join::left_semi_join_indices")
         },
         "join.cpp" if context.contains("hash_join->full_join(*probe_view, {}, exec.stream, exec.mr)") => {
             Some("join::hash_join_full_join")

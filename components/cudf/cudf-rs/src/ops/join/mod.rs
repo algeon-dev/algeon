@@ -67,6 +67,17 @@ pub struct JoinIndices {
     pub right: Column,
 }
 
+/// Device-side gather map produced by a single-side join.
+///
+/// The column is an `INT32` device column indexing rows in the left key table.
+/// Payload columns are not copied by these index-producing operations. For
+/// left semi joins, duplicate matches on the right side do not duplicate left
+/// rows in the output index map.
+pub struct SingleSideJoinIndices {
+    /// Row indices for the left table.
+    pub indices: Column,
+}
+
 /// Split output of a low-level join operation.
 pub struct JoinSides {
     /// The left-side result table (keys + payload for matching rows).
@@ -272,6 +283,59 @@ pub(crate) fn join_indices_impl(
     })
 }
 
+pub(crate) fn single_side_join_indices_impl(
+    left_keys: &TableView<'_>,
+    right_keys: &TableView<'_>,
+    null_equality: NullEquality,
+    semi_join: bool,
+    output_domain: &Arc<ExecutionDomain>,
+    exec_options: Option<&cudf_sys::cudf_exec_options_t>,
+    operation: &'static str,
+) -> Result<SingleSideJoinIndices> {
+    let mut out = ptr::null_mut();
+    let null_eq_ffi = null_equality.to_join_raw();
+    let status = match (semi_join, exec_options) {
+        (true, None) => unsafe {
+            cudf_sys::cudf_left_semi_join_indices(
+                left_keys.raw_handle(),
+                right_keys.raw_handle(),
+                null_eq_ffi,
+                &mut out,
+            )
+        },
+        (false, None) => unsafe {
+            cudf_sys::cudf_left_anti_join_indices(
+                left_keys.raw_handle(),
+                right_keys.raw_handle(),
+                null_eq_ffi,
+                &mut out,
+            )
+        },
+        (true, Some(options)) => unsafe {
+            cudf_sys::cudf_left_semi_join_indices_ex(
+                left_keys.raw_handle(),
+                right_keys.raw_handle(),
+                null_eq_ffi,
+                &mut out,
+                options,
+            )
+        },
+        (false, Some(options)) => unsafe {
+            cudf_sys::cudf_left_anti_join_indices_ex(
+                left_keys.raw_handle(),
+                right_keys.raw_handle(),
+                null_eq_ffi,
+                &mut out,
+                options,
+            )
+        },
+    };
+
+    check_join_indices_status(status, null_equality, exec_options.is_some(), operation)?;
+
+    Ok(SingleSideJoinIndices { indices: unsafe { Column::from_raw_with_domain(out, Arc::clone(output_domain)) }? })
+}
+
 fn compatible_join_domain(
     left_keys: &TableView<'_>,
     right_keys: &TableView<'_>,
@@ -389,6 +453,51 @@ pub fn left_join_indices(
     )
 }
 
+/// Left semi join indices for rows from the left key table that have a match.
+///
+/// Returns a single `INT32` device gather map indexing rows in `left_keys`.
+/// Payload columns are not copied or gathered by this operation. Duplicate
+/// matches in `right_keys` do not duplicate left rows; each matching left row
+/// appears at most once in the returned gather map.
+pub fn left_semi_join_indices(
+    left_keys: &TableView<'_>,
+    right_keys: &TableView<'_>,
+    null_equality: NullEquality,
+) -> Result<SingleSideJoinIndices> {
+    let execution = compatible_join_indices_domain(left_keys, right_keys, "join::left_semi_join_indices")?;
+    single_side_join_indices_impl(
+        left_keys,
+        right_keys,
+        null_equality,
+        true,
+        execution.output_domain(),
+        Some(execution.exec_options()),
+        "join::left_semi_join_indices",
+    )
+}
+
+/// Left anti join indices for rows from the left key table that have no match.
+///
+/// Returns a single `INT32` device gather map indexing rows in `left_keys`.
+/// Payload columns are not copied or gathered by this operation. Duplicate
+/// matches in `right_keys` do not duplicate left rows.
+pub fn left_anti_join_indices(
+    left_keys: &TableView<'_>,
+    right_keys: &TableView<'_>,
+    null_equality: NullEquality,
+) -> Result<SingleSideJoinIndices> {
+    let execution = compatible_join_indices_domain(left_keys, right_keys, "join::left_anti_join_indices")?;
+    single_side_join_indices_impl(
+        left_keys,
+        right_keys,
+        null_equality,
+        false,
+        execution.output_domain(),
+        Some(execution.exec_options()),
+        "join::left_anti_join_indices",
+    )
+}
+
 // ---------------------------------------------------------------------------
 // Low-level join functions
 // ---------------------------------------------------------------------------
@@ -435,6 +544,55 @@ pub fn full_join_indices(
         Some(execution.exec_options()),
         "join::full_join_indices",
     )
+}
+
+/// Cross join two tables.
+///
+/// The output cardinality is `left.num_rows() * right.num_rows()`. This
+/// operation materializes the cartesian product into a new table and copies
+/// column data into that output; it is not a zero-copy row selection. The
+/// computed row count is checked before calling libcudf and must fit in
+/// libcudf's `INT32` row-count range.
+pub fn cross_join(left: &TableView<'_>, right: &TableView<'_>) -> Result<Table> {
+    let operation = "join::cross_join";
+    let left_rows = left.num_rows().map_err(|e| e.reanchor_if_needed(operation))?;
+    let right_rows = right.num_rows().map_err(|e| e.reanchor_if_needed(operation))?;
+    let output_rows = left_rows.checked_mul(right_rows).ok_or_else(|| {
+        error::limit_validation_error(
+            operation,
+            "cross join output row count overflowed usize",
+            "output_rows",
+            "table_row_count",
+            "usize::MAX",
+            usize::MAX,
+            "reduce left or right row count before cross joining",
+        )
+    })?;
+    if output_rows > i32::MAX as usize {
+        return Err(error::limit_validation_error(
+            operation,
+            "cross join output row count exceeds i32::MAX",
+            "output_rows",
+            "table_row_count",
+            "i32::MAX",
+            output_rows,
+            "reduce left or right row count before cross joining",
+        ));
+    }
+
+    let ctx = ExecutionOverrides::new();
+    let execution = ResolvedExecution::binary(left.execution_domain(), right.execution_domain(), &ctx, operation)?;
+
+    let mut out = ptr::null_mut();
+    let status = unsafe {
+        cudf_sys::cudf_cross_join_ex(left.raw_handle(), right.raw_handle(), &mut out, execution.exec_options())
+    };
+    error::check_status_in_with_details(
+        status,
+        operation,
+        [("output_rows", output_rows.to_string()), ("execution_context_provided", true.to_string())],
+    )?;
+    unsafe { Table::from_raw_with_domain(out, Arc::clone(execution.output_domain())) }
 }
 
 struct HashJoinHandle {

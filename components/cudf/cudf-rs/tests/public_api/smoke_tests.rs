@@ -22,3 +22,14 @@ fn join_indices_and_hash_join_slice6_surface_is_publicly_importable() {
     let _: Option<JoinIndices> = None;
     let _ = (inner_join_indices, left_join_indices, full_join_indices);
 }
+
+#[test]
+fn slice7_join_and_copying_surface_is_publicly_importable() {
+    use cudf::ops::{
+        copying::scatter,
+        join::{SingleSideJoinIndices, cross_join, left_anti_join_indices, left_semi_join_indices},
+    };
+
+    let _: Option<SingleSideJoinIndices> = None;
+    let _ = (left_semi_join_indices, left_anti_join_indices, cross_join, scatter);
+}
