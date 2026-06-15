@@ -6,6 +6,11 @@
 #![allow(non_upper_case_globals)]
 #![allow(non_camel_case_types)]
 #![allow(clippy::all)]
+// The bindings carry cuGraph's C (Doxygen) doc comments verbatim. Constructs like
+// `@param [in]` and bare URLs are not valid rustdoc, so silence the doc lints that
+// would otherwise fire on every generated item.
+#![allow(rustdoc::broken_intra_doc_links)]
+#![allow(rustdoc::bare_urls)]
 
 include!(concat!(env!("OUT_DIR"), "/bindings.rs"));
 
