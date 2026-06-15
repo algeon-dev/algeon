@@ -4,6 +4,8 @@ mod binary_tests;
 mod cast_spec_tests;
 #[path = "../ops/copying/concatenate_tests.rs"]
 mod concatenate_tests;
+#[path = "../ops/join/conditional_join_tests.rs"]
+mod conditional_join_tests;
 #[path = "../ops/copying/copying_tests.rs"]
 mod copying_tests;
 #[path = "../ops/filter/dataframe_filter_expr_tests.rs"]
@@ -48,6 +50,8 @@ mod high_level_groupby_tests;
 mod join_tests;
 #[path = "../ops/misc/lookup_tests.rs"]
 mod lookup_tests;
+#[path = "../ops/join/mixed_join_tests.rs"]
+mod mixed_join_tests;
 #[path = "../ops/reduction/reduction_tests.rs"]
 mod reduction_tests;
 #[path = "../ops/misc/replace_tests.rs"]

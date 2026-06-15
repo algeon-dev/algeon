@@ -25,6 +25,73 @@ pub const CUDF_TEST_IO_METADATA_FAULT_ZERO_NAME_COUNT: i32 = 5;
 pub type cudf_status_t = i32;
 
 // ---------------------------------------------------------------------------
+// AST enums (mirror cudf::ast)
+// ---------------------------------------------------------------------------
+
+#[repr(i32)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum cudf_ast_table_reference_t {
+    CUDF_AST_TABLE_REFERENCE_LEFT = 0,
+    CUDF_AST_TABLE_REFERENCE_RIGHT = 1,
+    CUDF_AST_TABLE_REFERENCE_OUTPUT = 2,
+}
+
+#[repr(i32)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum cudf_ast_operator_t {
+    CUDF_AST_ADD = 0,
+    CUDF_AST_SUB = 1,
+    CUDF_AST_MUL = 2,
+    CUDF_AST_DIV = 3,
+    CUDF_AST_TRUE_DIV = 4,
+    CUDF_AST_FLOOR_DIV = 5,
+    CUDF_AST_MOD = 6,
+    CUDF_AST_PYMOD = 7,
+    CUDF_AST_POW = 8,
+    CUDF_AST_EQUAL = 9,
+    CUDF_AST_NULL_EQUAL = 10,
+    CUDF_AST_NOT_EQUAL = 11,
+    CUDF_AST_LESS = 12,
+    CUDF_AST_GREATER = 13,
+    CUDF_AST_LESS_EQUAL = 14,
+    CUDF_AST_GREATER_EQUAL = 15,
+    CUDF_AST_BITWISE_AND = 16,
+    CUDF_AST_BITWISE_OR = 17,
+    CUDF_AST_BITWISE_XOR = 18,
+    CUDF_AST_LOGICAL_AND = 19,
+    CUDF_AST_NULL_LOGICAL_AND = 20,
+    CUDF_AST_LOGICAL_OR = 21,
+    CUDF_AST_NULL_LOGICAL_OR = 22,
+    CUDF_AST_IDENTITY = 23,
+    CUDF_AST_IS_NULL = 24,
+    CUDF_AST_SIN = 25,
+    CUDF_AST_COS = 26,
+    CUDF_AST_TAN = 27,
+    CUDF_AST_ARCSIN = 28,
+    CUDF_AST_ARCCOS = 29,
+    CUDF_AST_ARCTAN = 30,
+    CUDF_AST_SINH = 31,
+    CUDF_AST_COSH = 32,
+    CUDF_AST_TANH = 33,
+    CUDF_AST_ARCSINH = 34,
+    CUDF_AST_ARCCOSH = 35,
+    CUDF_AST_ARCTANH = 36,
+    CUDF_AST_EXP = 37,
+    CUDF_AST_LOG = 38,
+    CUDF_AST_SQRT = 39,
+    CUDF_AST_CBRT = 40,
+    CUDF_AST_CEIL = 41,
+    CUDF_AST_FLOOR = 42,
+    CUDF_AST_ABS = 43,
+    CUDF_AST_RINT = 44,
+    CUDF_AST_BIT_INVERT = 45,
+    CUDF_AST_NOT = 46,
+    CUDF_AST_CAST_TO_INT64 = 47,
+    CUDF_AST_CAST_TO_UINT64 = 48,
+    CUDF_AST_CAST_TO_FLOAT64 = 49,
+}
+
+// ---------------------------------------------------------------------------
 // Type IDs (mirrors cudf::type_id)
 //
 // FFI enums use `#[repr(i32)]` to make the Rust-side ABI explicitly 32-bit.
@@ -324,6 +391,7 @@ pub type cudf_column_view_handle = *mut c_void;
 pub type cudf_table_handle = *mut c_void;
 pub type cudf_table_view_handle = *mut c_void;
 pub type cudf_scalar_handle = *mut c_void;
+pub type cudf_ast_expression_handle = *mut c_void;
 pub type cudf_distinct_hash_join_handle = *mut c_void;
 pub type cudf_hash_join_handle = *mut c_void;
 pub type cudf_device_buffer_handle = *mut c_void;

@@ -1,6 +1,7 @@
 #ifndef CUDF_RUST_JOIN_H
 #define CUDF_RUST_JOIN_H
 
+#include "ast.h"
 #include "error.h"
 #include "execution_context.h"
 #include "table.h"
@@ -204,6 +205,180 @@ cudf_status_t cudf_left_anti_join_indices_ex(cudf_table_view_handle left_keys,
                                              cudf_null_equality_t null_equality,
                                              cudf_column_handle* out_indices,
                                              const cudf_exec_options_t* options);
+
+/// Conditional inner join. Returns INT32 left and right gather-index columns.
+cudf_status_t cudf_conditional_inner_join_indices(cudf_table_view_handle left,
+                                                  cudf_table_view_handle right,
+                                                  cudf_ast_expression_handle predicate,
+                                                  cudf_column_handle* out_left_indices,
+                                                  cudf_column_handle* out_right_indices);
+
+/// Conditional inner join indices with explicit execution context.
+cudf_status_t cudf_conditional_inner_join_indices_ex(cudf_table_view_handle left,
+                                                     cudf_table_view_handle right,
+                                                     cudf_ast_expression_handle predicate,
+                                                     cudf_column_handle* out_left_indices,
+                                                     cudf_column_handle* out_right_indices,
+                                                     const cudf_exec_options_t* options);
+
+/// Conditional left join. Returns INT32 left and right gather-index columns.
+cudf_status_t cudf_conditional_left_join_indices(cudf_table_view_handle left,
+                                                 cudf_table_view_handle right,
+                                                 cudf_ast_expression_handle predicate,
+                                                 cudf_column_handle* out_left_indices,
+                                                 cudf_column_handle* out_right_indices);
+
+/// Conditional left join indices with explicit execution context.
+cudf_status_t cudf_conditional_left_join_indices_ex(cudf_table_view_handle left,
+                                                    cudf_table_view_handle right,
+                                                    cudf_ast_expression_handle predicate,
+                                                    cudf_column_handle* out_left_indices,
+                                                    cudf_column_handle* out_right_indices,
+                                                    const cudf_exec_options_t* options);
+
+/// Conditional full join. Returns INT32 left and right gather-index columns.
+cudf_status_t cudf_conditional_full_join_indices(cudf_table_view_handle left,
+                                                 cudf_table_view_handle right,
+                                                 cudf_ast_expression_handle predicate,
+                                                 cudf_column_handle* out_left_indices,
+                                                 cudf_column_handle* out_right_indices);
+
+/// Conditional full join indices with explicit execution context.
+cudf_status_t cudf_conditional_full_join_indices_ex(cudf_table_view_handle left,
+                                                    cudf_table_view_handle right,
+                                                    cudf_ast_expression_handle predicate,
+                                                    cudf_column_handle* out_left_indices,
+                                                    cudf_column_handle* out_right_indices,
+                                                    const cudf_exec_options_t* options);
+
+/// Conditional left semi join. Returns an INT32 column of left row indices.
+cudf_status_t cudf_conditional_left_semi_join_indices(cudf_table_view_handle left,
+                                                      cudf_table_view_handle right,
+                                                      cudf_ast_expression_handle predicate,
+                                                      cudf_column_handle* out_indices);
+
+/// Conditional left semi join indices with explicit execution context.
+cudf_status_t cudf_conditional_left_semi_join_indices_ex(cudf_table_view_handle left,
+                                                         cudf_table_view_handle right,
+                                                         cudf_ast_expression_handle predicate,
+                                                         cudf_column_handle* out_indices,
+                                                         const cudf_exec_options_t* options);
+
+/// Conditional left anti join. Returns an INT32 column of left row indices.
+cudf_status_t cudf_conditional_left_anti_join_indices(cudf_table_view_handle left,
+                                                      cudf_table_view_handle right,
+                                                      cudf_ast_expression_handle predicate,
+                                                      cudf_column_handle* out_indices);
+
+/// Conditional left anti join indices with explicit execution context.
+cudf_status_t cudf_conditional_left_anti_join_indices_ex(cudf_table_view_handle left,
+                                                         cudf_table_view_handle right,
+                                                         cudf_ast_expression_handle predicate,
+                                                         cudf_column_handle* out_indices,
+                                                         const cudf_exec_options_t* options);
+
+/// Mixed inner join. Equality tables are hash-joined first and `predicate` is
+/// evaluated against the conditional tables. Returns INT32 gather-index
+/// columns.
+cudf_status_t cudf_mixed_inner_join_indices(cudf_table_view_handle left_equality,
+                                            cudf_table_view_handle right_equality,
+                                            cudf_table_view_handle left_conditional,
+                                            cudf_table_view_handle right_conditional,
+                                            cudf_ast_expression_handle predicate,
+                                            cudf_null_equality_t null_equality,
+                                            cudf_column_handle* out_left_indices,
+                                            cudf_column_handle* out_right_indices);
+
+/// Mixed inner join indices with explicit execution context.
+cudf_status_t cudf_mixed_inner_join_indices_ex(cudf_table_view_handle left_equality,
+                                               cudf_table_view_handle right_equality,
+                                               cudf_table_view_handle left_conditional,
+                                               cudf_table_view_handle right_conditional,
+                                               cudf_ast_expression_handle predicate,
+                                               cudf_null_equality_t null_equality,
+                                               cudf_column_handle* out_left_indices,
+                                               cudf_column_handle* out_right_indices,
+                                               const cudf_exec_options_t* options);
+
+/// Mixed left join. Returns INT32 gather-index columns.
+cudf_status_t cudf_mixed_left_join_indices(cudf_table_view_handle left_equality,
+                                           cudf_table_view_handle right_equality,
+                                           cudf_table_view_handle left_conditional,
+                                           cudf_table_view_handle right_conditional,
+                                           cudf_ast_expression_handle predicate,
+                                           cudf_null_equality_t null_equality,
+                                           cudf_column_handle* out_left_indices,
+                                           cudf_column_handle* out_right_indices);
+
+/// Mixed left join indices with explicit execution context.
+cudf_status_t cudf_mixed_left_join_indices_ex(cudf_table_view_handle left_equality,
+                                              cudf_table_view_handle right_equality,
+                                              cudf_table_view_handle left_conditional,
+                                              cudf_table_view_handle right_conditional,
+                                              cudf_ast_expression_handle predicate,
+                                              cudf_null_equality_t null_equality,
+                                              cudf_column_handle* out_left_indices,
+                                              cudf_column_handle* out_right_indices,
+                                              const cudf_exec_options_t* options);
+
+/// Mixed full join. Returns INT32 gather-index columns.
+cudf_status_t cudf_mixed_full_join_indices(cudf_table_view_handle left_equality,
+                                           cudf_table_view_handle right_equality,
+                                           cudf_table_view_handle left_conditional,
+                                           cudf_table_view_handle right_conditional,
+                                           cudf_ast_expression_handle predicate,
+                                           cudf_null_equality_t null_equality,
+                                           cudf_column_handle* out_left_indices,
+                                           cudf_column_handle* out_right_indices);
+
+/// Mixed full join indices with explicit execution context.
+cudf_status_t cudf_mixed_full_join_indices_ex(cudf_table_view_handle left_equality,
+                                              cudf_table_view_handle right_equality,
+                                              cudf_table_view_handle left_conditional,
+                                              cudf_table_view_handle right_conditional,
+                                              cudf_ast_expression_handle predicate,
+                                              cudf_null_equality_t null_equality,
+                                              cudf_column_handle* out_left_indices,
+                                              cudf_column_handle* out_right_indices,
+                                              const cudf_exec_options_t* options);
+
+/// Mixed left semi join. Returns an INT32 column of left row indices.
+cudf_status_t cudf_mixed_left_semi_join_indices(cudf_table_view_handle left_equality,
+                                                cudf_table_view_handle right_equality,
+                                                cudf_table_view_handle left_conditional,
+                                                cudf_table_view_handle right_conditional,
+                                                cudf_ast_expression_handle predicate,
+                                                cudf_null_equality_t null_equality,
+                                                cudf_column_handle* out_indices);
+
+/// Mixed left semi join indices with explicit execution context.
+cudf_status_t cudf_mixed_left_semi_join_indices_ex(cudf_table_view_handle left_equality,
+                                                   cudf_table_view_handle right_equality,
+                                                   cudf_table_view_handle left_conditional,
+                                                   cudf_table_view_handle right_conditional,
+                                                   cudf_ast_expression_handle predicate,
+                                                   cudf_null_equality_t null_equality,
+                                                   cudf_column_handle* out_indices,
+                                                   const cudf_exec_options_t* options);
+
+/// Mixed left anti join. Returns an INT32 column of left row indices.
+cudf_status_t cudf_mixed_left_anti_join_indices(cudf_table_view_handle left_equality,
+                                                cudf_table_view_handle right_equality,
+                                                cudf_table_view_handle left_conditional,
+                                                cudf_table_view_handle right_conditional,
+                                                cudf_ast_expression_handle predicate,
+                                                cudf_null_equality_t null_equality,
+                                                cudf_column_handle* out_indices);
+
+/// Mixed left anti join indices with explicit execution context.
+cudf_status_t cudf_mixed_left_anti_join_indices_ex(cudf_table_view_handle left_equality,
+                                                   cudf_table_view_handle right_equality,
+                                                   cudf_table_view_handle left_conditional,
+                                                   cudf_table_view_handle right_conditional,
+                                                   cudf_ast_expression_handle predicate,
+                                                   cudf_null_equality_t null_equality,
+                                                   cudf_column_handle* out_indices,
+                                                   const cudf_exec_options_t* options);
 
 /// Build a reusable distinct-hash-join artifact from a build-key table.
 ///

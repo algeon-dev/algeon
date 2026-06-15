@@ -1,4 +1,5 @@
 mod arrow_device;
+mod ast;
 mod binary;
 mod column;
 mod concatenate;
@@ -30,6 +31,7 @@ mod types;
 mod unary;
 
 pub use arrow_device::*;
+pub use ast::*;
 pub use binary::*;
 pub use column::*;
 pub use concatenate::*;

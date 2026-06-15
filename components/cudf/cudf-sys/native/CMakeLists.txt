@@ -128,6 +128,7 @@ add_library(
   cudf_rust SHARED
   src/error.cpp
   src/handle_provenance.cpp
+  src/ast.cpp
   src/arrow_device.cpp
   src/types.cpp
   src/owning_handle.cpp
