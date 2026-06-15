@@ -1758,7 +1758,7 @@ fn prepared_device_binding<'a>(
     Ok(binding)
 }
 
-fn prepared_column_device<'a>(column: PreparedEdgeColumn<'a>, name: &str, operation: &'static str) -> Result<i32> {
+fn prepared_column_device(column: PreparedEdgeColumn<'_>, name: &str, operation: &'static str) -> Result<i32> {
     let binding = prepared_device_binding(column, name, operation)?;
     let Placement::CudaDevice { device } = binding.placement() else {
         unreachable!("prepared_device_binding must return a device-resident binding")
@@ -1936,9 +1936,9 @@ fn prepared_lease_authorities<'a>(
     }
 }
 
-fn build_graph_from_borrowed_edge_list_raw<'a, T: Transposition>(
+fn build_graph_from_borrowed_edge_list_raw<T: Transposition>(
     handle: &EnteredContext<'_>,
-    edge_list: &BorrowedEdgeList<'a>,
+    edge_list: &BorrowedEdgeList<'_>,
     properties: GraphProperties,
     renumber: bool,
     operation: &'static str,
@@ -2229,9 +2229,9 @@ fn build_python_normalized_graph_from_dataframe<T: Transposition>(
     build_graph_from_owned_dataframe_raw(handle, &normalized, properties, renumber, has_weights, operation)
 }
 
-fn build_graph_from_prepared_edge_list_raw<'a, T: Transposition>(
+fn build_graph_from_prepared_edge_list_raw<T: Transposition>(
     handle: &EnteredContext<'_>,
-    edge_list: &PreparedEdgeList<'a>,
+    edge_list: &PreparedEdgeList<'_>,
     properties: GraphProperties,
     renumber: bool,
     operation: &'static str,

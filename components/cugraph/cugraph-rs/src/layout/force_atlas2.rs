@@ -170,7 +170,7 @@ pub struct ForceAtlas2VertexAttrs<'a, V: CugraphElement = i32, W: CugraphElement
     pub mass: Option<(&'a DeviceArrayView<'a, V>, &'a DeviceArrayView<'a, W>)>,
 }
 
-impl<'a, V: CugraphElement, W: CugraphElement> Default for ForceAtlas2VertexAttrs<'a, V, W> {
+impl<V: CugraphElement, W: CugraphElement> Default for ForceAtlas2VertexAttrs<'_, V, W> {
     fn default() -> Self {
         Self { radius: None, mobility: None, mass: None }
     }
