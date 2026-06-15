@@ -65,8 +65,8 @@ pub use service_stream::{
     DEFAULT_SERVICE_STREAM_POOL_SIZE, ServiceStreamPool, StreamLease, default_service_stream_pool_size_for_device,
 };
 pub use source_fetch::{
-    DEFAULT_GDS_MAX_CONCURRENT_OPS, DEFAULT_GDS_MIN_CHUNK_BYTES, DEFAULT_HOST_FETCH_BUDGET_BYTES,
-    DEFAULT_HOST_FETCH_BUDGET_CAP_BYTES, DEFAULT_HOST_FETCH_MAX_CONCURRENT_OPS,
+    DEFAULT_GDS_MAX_CONCURRENT_OPS, DEFAULT_GDS_MIN_CHUNK_BYTES, DEFAULT_HOST_FETCH_ACQUIRE_TIMEOUT,
+    DEFAULT_HOST_FETCH_BUDGET_BYTES, DEFAULT_HOST_FETCH_BUDGET_CAP_BYTES, DEFAULT_HOST_FETCH_MAX_CONCURRENT_OPS,
     DEFAULT_LAKEHOUSE_CACHE_FILL_MAX_CONCURRENT_OPS, HostFetchBudget, HostFetchPermit, SourceFetchConfig,
     SourceFetchStrategy, SourceFetchStrategyDecision, SourceFetchStrategyReason, SourceFetchSubstrate,
     default_host_fetch_budget_bytes,
@@ -463,7 +463,7 @@ impl ExecutionContext {
             source_fetch_concurrency: SourceFetchConcurrencyGate::default(),
             lakehouse_cache_fill_budget: HostFetchBudget::default(),
             lakehouse_cache_fill_concurrency: SourceFetchConcurrencyGate::new(
-                DEFAULT_LAKEHOUSE_CACHE_FILL_MAX_CONCURRENT_OPS,
+                SourceFetchConfig::DEFAULT_LAKEHOUSE_CACHE_FILL_MAX_CONCURRENT_OPS,
             )
             .expect("default lakehouse cache fill concurrency is non-zero"),
             lakehouse_cache_fill_events: LakehouseCacheFillEventSink::default(),
@@ -673,6 +673,11 @@ impl ExecutionContext {
     /// Maximum object-store SourceFetch operations admitted concurrently.
     pub fn host_fetch_max_concurrent_ops(&self) -> usize {
         self.source_fetch_concurrency.max_concurrent_ops()
+    }
+
+    /// Timeout used by blocking object-store SourceFetch resource acquisition.
+    pub fn host_fetch_acquire_timeout(&self) -> Duration {
+        self.source_fetch_config.host_fetch_acquire_timeout
     }
 
     /// Returns the service-wide background lakehouse cache-fill byte budget.
@@ -995,6 +1000,8 @@ pub struct ExecutionContextBuilder {
     host_fetch_budget: Option<HostFetchBudget>,
     /// Host fetch budget size used when constructing the default budget.
     host_fetch_budget_bytes: Option<u64>,
+    /// Timeout used by blocking object-store SourceFetch resource acquisition.
+    host_fetch_acquire_timeout: Option<Duration>,
     /// Max object-store SourceFetch operations allowed concurrently.
     host_fetch_max_concurrent_ops: Option<usize>,
     /// Background lakehouse cache-fill budget size used when constructing the default fill budget.
@@ -1135,6 +1142,12 @@ impl ExecutionContextBuilder {
         self
     }
 
+    /// Sets the timeout used by blocking object-store SourceFetch resource acquisition.
+    pub fn with_host_fetch_acquire_timeout(mut self, timeout: Duration) -> Self {
+        self.host_fetch_acquire_timeout = Some(timeout);
+        self
+    }
+
     /// Sets the service-wide object-store SourceFetch operation cap.
     pub fn with_host_fetch_max_concurrent_ops(mut self, max_concurrent_ops: usize) -> Self {
         self.host_fetch_max_concurrent_ops = Some(max_concurrent_ops);
@@ -1233,6 +1246,9 @@ impl ExecutionContextBuilder {
         let mut source_fetch_config = self.source_fetch_config.unwrap_or_default();
         if let Some(host_fetch_budget_bytes) = self.host_fetch_budget_bytes {
             source_fetch_config.host_fetch_budget_bytes = Some(host_fetch_budget_bytes);
+        }
+        if let Some(host_fetch_acquire_timeout) = self.host_fetch_acquire_timeout {
+            source_fetch_config.host_fetch_acquire_timeout = host_fetch_acquire_timeout;
         }
         if let Some(max_concurrent_ops) = self.host_fetch_max_concurrent_ops {
             source_fetch_config.host_fetch_max_concurrent_ops = max_concurrent_ops;
@@ -1422,13 +1438,16 @@ mod tests {
     fn default_host_fetch_budget_is_capped() {
         assert_eq!(
             default_host_fetch_budget_bytes_from_physical_memory(Some(128 * 1024 * 1024 * 1024)),
-            DEFAULT_HOST_FETCH_BUDGET_CAP_BYTES
+            SourceFetchConfig::DEFAULT_HOST_FETCH_BUDGET_CAP_BYTES
         );
         assert_eq!(
             default_host_fetch_budget_bytes_from_physical_memory(Some(4 * 1024 * 1024 * 1024)),
             1024 * 1024 * 1024
         );
-        assert_eq!(default_host_fetch_budget_bytes_from_physical_memory(None), DEFAULT_HOST_FETCH_BUDGET_BYTES);
+        assert_eq!(
+            default_host_fetch_budget_bytes_from_physical_memory(None),
+            SourceFetchConfig::DEFAULT_HOST_FETCH_BUDGET_BYTES
+        );
     }
 
     #[test]
@@ -1458,6 +1477,13 @@ mod tests {
     fn execution_context_records_host_fetch_concurrency_limit() {
         let context = ExecutionContext::builder().with_host_fetch_max_concurrent_ops(7).build().unwrap();
         assert_eq!(context.host_fetch_max_concurrent_ops(), 7);
+    }
+
+    #[test]
+    fn execution_context_records_host_fetch_acquire_timeout() {
+        let context =
+            ExecutionContext::builder().with_host_fetch_acquire_timeout(Duration::from_secs(11)).build().unwrap();
+        assert_eq!(context.host_fetch_acquire_timeout(), Duration::from_secs(11));
     }
 
     #[test]
@@ -1631,6 +1657,13 @@ mod tests {
         assert_eq!(error.fact_value("field"), Some("host_fetch_max_concurrent_ops"));
     }
 
+    #[test]
+    fn execution_context_rejects_zero_host_fetch_acquire_timeout() {
+        let error = ExecutionContext::builder().with_host_fetch_acquire_timeout(Duration::ZERO).build().unwrap_err();
+        assert_eq!(error.code(), QueryErrorCode::InvalidPlan);
+        assert_eq!(error.fact_value("field"), Some("host_fetch_acquire_timeout"));
+    }
+
     fn available_gds_capability() -> DeploymentIoCapability {
         DeploymentIoCapability::from_probe_inputs(
             NvidiaFsProbeStatus::Present { path: std::path::PathBuf::from(NVIDIA_FS_PROC_PATH) },
@@ -1644,11 +1677,26 @@ mod tests {
         let config = SourceFetchConfig::default();
         assert_eq!(config.substrate, SourceFetchSubstrate::Auto);
         assert_eq!(config.host_fetch_budget_bytes, None);
-        assert_eq!(config.host_fetch_max_concurrent_ops, DEFAULT_HOST_FETCH_MAX_CONCURRENT_OPS);
+        assert_eq!(config.host_fetch_acquire_timeout, SourceFetchConfig::DEFAULT_HOST_FETCH_ACQUIRE_TIMEOUT);
+        assert_eq!(config.host_fetch_max_concurrent_ops, SourceFetchConfig::DEFAULT_HOST_FETCH_MAX_CONCURRENT_OPS);
         assert_eq!(config.lakehouse_cache_fill_budget_bytes, None);
-        assert_eq!(config.lakehouse_cache_fill_max_concurrent_ops, DEFAULT_LAKEHOUSE_CACHE_FILL_MAX_CONCURRENT_OPS);
-        assert_eq!(config.gds_max_concurrent_ops, DEFAULT_GDS_MAX_CONCURRENT_OPS);
-        assert_eq!(config.gds_min_chunk_bytes, DEFAULT_GDS_MIN_CHUNK_BYTES);
+        assert_eq!(
+            config.lakehouse_cache_fill_max_concurrent_ops,
+            SourceFetchConfig::DEFAULT_LAKEHOUSE_CACHE_FILL_MAX_CONCURRENT_OPS
+        );
+        assert_eq!(config.gds_max_concurrent_ops, SourceFetchConfig::DEFAULT_GDS_MAX_CONCURRENT_OPS);
+        assert_eq!(config.gds_min_chunk_bytes, SourceFetchConfig::DEFAULT_GDS_MIN_CHUNK_BYTES);
+        assert_eq!(SourceFetchConfig::DEFAULT_HOST_FETCH_ACQUIRE_TIMEOUT, Duration::from_secs(30));
+        assert_eq!(DEFAULT_HOST_FETCH_ACQUIRE_TIMEOUT, SourceFetchConfig::DEFAULT_HOST_FETCH_ACQUIRE_TIMEOUT);
+        assert_eq!(DEFAULT_HOST_FETCH_BUDGET_BYTES, SourceFetchConfig::DEFAULT_HOST_FETCH_BUDGET_BYTES);
+        assert_eq!(DEFAULT_HOST_FETCH_BUDGET_CAP_BYTES, SourceFetchConfig::DEFAULT_HOST_FETCH_BUDGET_CAP_BYTES);
+        assert_eq!(DEFAULT_HOST_FETCH_MAX_CONCURRENT_OPS, SourceFetchConfig::DEFAULT_HOST_FETCH_MAX_CONCURRENT_OPS);
+        assert_eq!(
+            DEFAULT_LAKEHOUSE_CACHE_FILL_MAX_CONCURRENT_OPS,
+            SourceFetchConfig::DEFAULT_LAKEHOUSE_CACHE_FILL_MAX_CONCURRENT_OPS
+        );
+        assert_eq!(DEFAULT_GDS_MAX_CONCURRENT_OPS, SourceFetchConfig::DEFAULT_GDS_MAX_CONCURRENT_OPS);
+        assert_eq!(DEFAULT_GDS_MIN_CHUNK_BYTES, SourceFetchConfig::DEFAULT_GDS_MIN_CHUNK_BYTES);
     }
 
     #[test]
@@ -1766,6 +1814,12 @@ mod tests {
         let error = zero_cache_fill_budget.validate_for_deployment(&deployment).unwrap_err();
         assert_eq!(error.code(), QueryErrorCode::InvalidPlan);
         assert_eq!(error.fact_value("field"), Some("lakehouse_cache_fill_budget_bytes"));
+
+        let zero_host_fetch_acquire_timeout =
+            SourceFetchConfig { host_fetch_acquire_timeout: Duration::ZERO, ..SourceFetchConfig::default() };
+        let error = zero_host_fetch_acquire_timeout.validate_for_deployment(&deployment).unwrap_err();
+        assert_eq!(error.code(), QueryErrorCode::InvalidPlan);
+        assert_eq!(error.fact_value("field"), Some("host_fetch_acquire_timeout"));
 
         let zero_min_chunk = SourceFetchConfig { gds_min_chunk_bytes: 0, ..SourceFetchConfig::default() };
         let error = zero_min_chunk.validate_for_deployment(&deployment).unwrap_err();

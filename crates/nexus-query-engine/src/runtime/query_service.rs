@@ -11,11 +11,11 @@ use std::{
 };
 
 use super::{
-    DEFAULT_HOST_FETCH_MAX_CONCURRENT_OPS, DeploymentIoCapability, ExecutionBoundaryPolicy, ExecutionCancellation,
-    ExecutionContext, ExecutionContextParts, GdsConcurrencyGate, HostFetchBudget, MemoryControlPolicy,
-    MemoryResourcePolicy, ServiceStreamPool, SourceChunkPlanningMode, SourceFetchConcurrencyGate, SourceFetchConfig,
-    SourceObjectStoreRegistry, SourceSchedulerPolicy, SourceStorageProfile, default_host_fetch_budget_bytes,
-    default_lakehouse_cache_fill_runtime, default_source_fetch_runtime, validate_service_stream_pool_device,
+    DeploymentIoCapability, ExecutionBoundaryPolicy, ExecutionCancellation, ExecutionContext, ExecutionContextParts,
+    GdsConcurrencyGate, HostFetchBudget, MemoryControlPolicy, MemoryResourcePolicy, ServiceStreamPool,
+    SourceChunkPlanningMode, SourceFetchConcurrencyGate, SourceFetchConfig, SourceObjectStoreRegistry,
+    SourceSchedulerPolicy, SourceStorageProfile, default_host_fetch_budget_bytes, default_lakehouse_cache_fill_runtime,
+    default_source_fetch_runtime, validate_service_stream_pool_device,
 };
 use crate::{
     adaptive_runtime::AdaptiveMemoryHistory,
@@ -214,8 +214,8 @@ impl Default for QueryServiceConfig {
             aggregate_strategy_execution_options: AggregateStrategyExecutionOptions::default(),
             source_chunk_planning_options: SourceChunkPlanningOptions::default(),
             stream_pool_size: None,
-            max_concurrent_queries: DEFAULT_HOST_FETCH_MAX_CONCURRENT_OPS,
-            max_admission_queue_len: DEFAULT_HOST_FETCH_MAX_CONCURRENT_OPS,
+            max_concurrent_queries: SourceFetchConfig::DEFAULT_HOST_FETCH_MAX_CONCURRENT_OPS,
+            max_admission_queue_len: SourceFetchConfig::DEFAULT_HOST_FETCH_MAX_CONCURRENT_OPS,
             admission_wait_timeout: Duration::from_secs(30),
             max_source_chunk_bytes: 64 * 1024 * 1024,
             max_row_groups_per_chunk: 1,
@@ -656,6 +656,11 @@ impl QueryHandle {
         self.service.config.source_chunk_planning_mode
     }
 
+    /// Source IO resource policy assigned to this admitted query.
+    pub fn source_fetch_config(&self) -> SourceFetchConfig {
+        self.service.config.source_fetch.clone()
+    }
+
     /// Native bounded-pipeline mode copied into the tenant execution context.
     pub fn native_pipeline_execution_mode(&self) -> NativePipelineExecutionMode {
         self.service.config.native_pipeline_execution_mode
@@ -1038,6 +1043,7 @@ mod tests {
         let config = QueryServiceConfig {
             source_fetch: SourceFetchConfig {
                 host_fetch_budget_bytes: Some(4096),
+                host_fetch_acquire_timeout: Duration::from_secs(9),
                 host_fetch_max_concurrent_ops: 5,
                 lakehouse_cache_fill_budget_bytes: Some(2048),
                 lakehouse_cache_fill_max_concurrent_ops: 2,
@@ -1062,6 +1068,7 @@ mod tests {
         let tenant_context = handle.acquire_context().unwrap();
         let context = tenant_context.context();
         assert_eq!(context.host_fetch_budget().budget_bytes(), 4096);
+        assert_eq!(context.host_fetch_acquire_timeout(), Duration::from_secs(9));
         assert_eq!(context.host_fetch_max_concurrent_ops(), 5);
         assert_eq!(context.lakehouse_cache_fill_budget().budget_bytes(), 2048);
         assert_eq!(context.lakehouse_cache_fill_max_concurrent_ops(), 2);

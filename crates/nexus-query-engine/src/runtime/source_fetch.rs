@@ -12,17 +12,20 @@ use super::{
 use crate::error::{QueryError, QueryErrorCode, Result};
 
 /// Conservative fallback for hosts where physical-memory detection is unavailable.
-pub const DEFAULT_HOST_FETCH_BUDGET_BYTES: u64 = 1024 * 1024 * 1024;
+pub const DEFAULT_HOST_FETCH_BUDGET_BYTES: u64 = SourceFetchConfig::DEFAULT_HOST_FETCH_BUDGET_BYTES;
 /// Auto-sizing cap so source buffers do not crowd other host-side query state.
-pub const DEFAULT_HOST_FETCH_BUDGET_CAP_BYTES: u64 = 16 * 1024 * 1024 * 1024;
+pub const DEFAULT_HOST_FETCH_BUDGET_CAP_BYTES: u64 = SourceFetchConfig::DEFAULT_HOST_FETCH_BUDGET_CAP_BYTES;
+/// Default timeout for blocking host-buffer budget and source-fetch concurrency acquisition.
+pub const DEFAULT_HOST_FETCH_ACQUIRE_TIMEOUT: Duration = SourceFetchConfig::DEFAULT_HOST_FETCH_ACQUIRE_TIMEOUT;
 /// Hides object-store latency without making fetch fanout effectively unbounded.
-pub const DEFAULT_HOST_FETCH_MAX_CONCURRENT_OPS: usize = 64;
+pub const DEFAULT_HOST_FETCH_MAX_CONCURRENT_OPS: usize = SourceFetchConfig::DEFAULT_HOST_FETCH_MAX_CONCURRENT_OPS;
 /// Background cache fills leave most IO slots for foreground source reads.
-pub const DEFAULT_LAKEHOUSE_CACHE_FILL_MAX_CONCURRENT_OPS: usize = 4;
+pub const DEFAULT_LAKEHOUSE_CACHE_FILL_MAX_CONCURRENT_OPS: usize =
+    SourceFetchConfig::DEFAULT_LAKEHOUSE_CACHE_FILL_MAX_CONCURRENT_OPS;
 /// Direct-device reads use a separate DMA gate from host-buffer fetches.
-pub const DEFAULT_GDS_MAX_CONCURRENT_OPS: usize = 32;
+pub const DEFAULT_GDS_MAX_CONCURRENT_OPS: usize = SourceFetchConfig::DEFAULT_GDS_MAX_CONCURRENT_OPS;
 /// Smaller chunks stay on host-buffer IO to avoid direct-device setup overhead.
-pub const DEFAULT_GDS_MIN_CHUNK_BYTES: u64 = 4 * 1024 * 1024;
+pub const DEFAULT_GDS_MIN_CHUNK_BYTES: u64 = SourceFetchConfig::DEFAULT_GDS_MIN_CHUNK_BYTES;
 
 /// Service-level source IO substrate preference.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
@@ -171,6 +174,8 @@ pub struct SourceFetchConfig {
     pub substrate: SourceFetchSubstrate,
     /// Max in-flight host-buffer bytes across queries. `None` auto-sizes from host RAM.
     pub host_fetch_budget_bytes: Option<u64>,
+    /// Timeout for blocking host-buffer budget and source-fetch concurrency acquisition.
+    pub host_fetch_acquire_timeout: Duration,
     /// Max concurrent object-store host-fetch operations across queries.
     pub host_fetch_max_concurrent_ops: usize,
     /// Max in-flight background complete-object cache-fill bytes across queries. `None` auto-sizes from host RAM.
@@ -184,11 +189,27 @@ pub struct SourceFetchConfig {
 }
 
 impl SourceFetchConfig {
+    /// Conservative fallback for hosts where physical-memory detection is unavailable.
+    pub const DEFAULT_HOST_FETCH_BUDGET_BYTES: u64 = 1024 * 1024 * 1024;
+    /// Auto-sizing cap so source buffers do not crowd other host-side query state.
+    pub const DEFAULT_HOST_FETCH_BUDGET_CAP_BYTES: u64 = 16 * 1024 * 1024 * 1024;
+    /// Hides object-store latency without making fetch fanout effectively unbounded.
+    pub const DEFAULT_HOST_FETCH_MAX_CONCURRENT_OPS: usize = 64;
+    /// Background cache fills leave most IO slots for foreground source reads.
+    pub const DEFAULT_LAKEHOUSE_CACHE_FILL_MAX_CONCURRENT_OPS: usize = 4;
+    /// Direct-device reads use a separate DMA gate from host-buffer fetches.
+    pub const DEFAULT_GDS_MAX_CONCURRENT_OPS: usize = 32;
+    /// Smaller chunks stay on host-buffer IO to avoid direct-device setup overhead.
+    pub const DEFAULT_GDS_MIN_CHUNK_BYTES: u64 = 4 * 1024 * 1024;
+    /// Default timeout for blocking host-buffer budget and source-fetch concurrency acquisition.
+    pub const DEFAULT_HOST_FETCH_ACQUIRE_TIMEOUT: Duration = Duration::from_secs(30);
+
     /// Validates the source IO config against deployment capability diagnostics.
     pub fn validate_for_deployment(&self, deployment: &DeploymentIoCapability) -> Result<()> {
         if let Some(host_fetch_budget_bytes) = self.host_fetch_budget_bytes {
             validate_host_fetch_budget_bytes(host_fetch_budget_bytes)?;
         }
+        validate_host_fetch_acquire_timeout(self.host_fetch_acquire_timeout)?;
         if let Some(lakehouse_cache_fill_budget_bytes) = self.lakehouse_cache_fill_budget_bytes {
             validate_lakehouse_cache_fill_budget_bytes(lakehouse_cache_fill_budget_bytes)?;
         }
@@ -251,11 +272,12 @@ impl Default for SourceFetchConfig {
         Self {
             substrate: SourceFetchSubstrate::Auto,
             host_fetch_budget_bytes: None,
-            host_fetch_max_concurrent_ops: DEFAULT_HOST_FETCH_MAX_CONCURRENT_OPS,
+            host_fetch_acquire_timeout: Self::DEFAULT_HOST_FETCH_ACQUIRE_TIMEOUT,
+            host_fetch_max_concurrent_ops: Self::DEFAULT_HOST_FETCH_MAX_CONCURRENT_OPS,
             lakehouse_cache_fill_budget_bytes: None,
-            lakehouse_cache_fill_max_concurrent_ops: DEFAULT_LAKEHOUSE_CACHE_FILL_MAX_CONCURRENT_OPS,
-            gds_max_concurrent_ops: DEFAULT_GDS_MAX_CONCURRENT_OPS,
-            gds_min_chunk_bytes: DEFAULT_GDS_MIN_CHUNK_BYTES,
+            lakehouse_cache_fill_max_concurrent_ops: Self::DEFAULT_LAKEHOUSE_CACHE_FILL_MAX_CONCURRENT_OPS,
+            gds_max_concurrent_ops: Self::DEFAULT_GDS_MAX_CONCURRENT_OPS,
+            gds_min_chunk_bytes: Self::DEFAULT_GDS_MIN_CHUNK_BYTES,
         }
     }
 }
@@ -263,7 +285,8 @@ impl Default for SourceFetchConfig {
 /// Returns the default service-wide host-buffer fetch budget.
 ///
 /// Linux hosts use 25% of `MemTotal` from `/proc/meminfo`. Other hosts, or
-/// hosts where memory detection fails, use [`DEFAULT_HOST_FETCH_BUDGET_BYTES`].
+/// hosts where memory detection fails, use
+/// [`SourceFetchConfig::DEFAULT_HOST_FETCH_BUDGET_BYTES`].
 pub fn default_host_fetch_budget_bytes() -> u64 {
     default_host_fetch_budget_bytes_from_physical_memory(detect_physical_memory_bytes())
 }
@@ -271,9 +294,9 @@ pub fn default_host_fetch_budget_bytes() -> u64 {
 pub(super) fn default_host_fetch_budget_bytes_from_physical_memory(physical_memory_bytes: Option<u64>) -> u64 {
     physical_memory_bytes
         .and_then(|bytes| bytes.checked_div(4))
-        .map(|bytes| bytes.min(DEFAULT_HOST_FETCH_BUDGET_CAP_BYTES))
+        .map(|bytes| bytes.min(SourceFetchConfig::DEFAULT_HOST_FETCH_BUDGET_CAP_BYTES))
         .filter(|bytes| *bytes > 0)
-        .unwrap_or(DEFAULT_HOST_FETCH_BUDGET_BYTES)
+        .unwrap_or(SourceFetchConfig::DEFAULT_HOST_FETCH_BUDGET_BYTES)
 }
 
 fn detect_physical_memory_bytes() -> Option<u64> {
@@ -472,6 +495,19 @@ fn validate_host_fetch_budget_bytes(budget_bytes: u64) -> Result<()> {
     Ok(())
 }
 
+fn validate_host_fetch_acquire_timeout(timeout: Duration) -> Result<()> {
+    if timeout.is_zero() {
+        return Err(QueryError::new(
+            QueryErrorCode::InvalidPlan,
+            "nexus_query_engine.source_fetch_config.validate",
+            "host fetch acquire timeout must be greater than zero",
+        )
+        .with_fact("field", "host_fetch_acquire_timeout")
+        .with_fact("reason", "zero"));
+    }
+    Ok(())
+}
+
 fn validate_host_fetch_request_bytes(requested_bytes: u64, budget_bytes: u64) -> Result<()> {
     if requested_bytes == 0 {
         return Err(QueryError::new(
@@ -605,7 +641,8 @@ impl SourceFetchConcurrencyGate {
 
 impl Default for SourceFetchConcurrencyGate {
     fn default() -> Self {
-        Self::new(DEFAULT_HOST_FETCH_MAX_CONCURRENT_OPS).expect("default host fetch concurrency is non-zero")
+        Self::new(SourceFetchConfig::DEFAULT_HOST_FETCH_MAX_CONCURRENT_OPS)
+            .expect("default host fetch concurrency is non-zero")
     }
 }
 
@@ -731,7 +768,7 @@ impl GdsConcurrencyGate {
 
 impl Default for GdsConcurrencyGate {
     fn default() -> Self {
-        Self::new(DEFAULT_GDS_MAX_CONCURRENT_OPS).expect("default GDS concurrency is non-zero")
+        Self::new(SourceFetchConfig::DEFAULT_GDS_MAX_CONCURRENT_OPS).expect("default GDS concurrency is non-zero")
     }
 }
 

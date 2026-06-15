@@ -1,23 +1,30 @@
 #![cfg(feature = "server")]
 
-use std::collections::BTreeMap;
 #[cfg(feature = "iceberg")]
 use std::path::PathBuf;
-
-use datafusion_nexus::server::{
-    NEXUS_ICEBERG_GLUE_DATABASE_ENV, NEXUS_SERVER_BIND_ENV, NEXUS_SERVER_CONFIG_FILE_ENV,
-    NEXUS_SERVER_CUGRAPH_ENABLED_ENV, NEXUS_SERVER_MAX_IN_FLIGHT_ENV, NEXUS_SERVER_NATIVE_DEVICE_BUDGET_BYTES_ENV,
-    NEXUS_SERVER_NATIVE_MAX_RETRY_ATTEMPTS_ENV, NEXUS_SERVER_NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV,
-    NEXUS_SERVER_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV, NEXUS_SERVER_NATIVE_MAX_SOURCE_READS_IN_FLIGHT_ENV,
-    NEXUS_SERVER_NATIVE_MEMORY_POLICY_ENV, NEXUS_SERVER_NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS_ENV,
-    NEXUS_SERVER_NATIVE_PIPELINE_EXECUTION_MODE_ENV, NEXUS_SERVER_NATIVE_SOURCE_CHUNK_PLANNING_MODE_ENV,
-    NEXUS_SERVER_NATIVE_STATISTICAL_AGGREGATE_EXECUTION_MODE_ENV, NEXUS_SERVER_STATEMENT_TICKET_TTL_SECS_ENV,
-    ServerConfig,
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    time::Duration,
 };
+
 #[cfg(feature = "cugraph")]
 use datafusion_nexus::server::{
     NEXUS_SERVER_CUGRAPH_ALGORITHMS_ENV, NEXUS_SERVER_CUGRAPH_CONSTRUCTION_POLICY_ENV,
     NEXUS_SERVER_CUGRAPH_DIRECTED_ENV, NEXUS_SERVER_CUGRAPH_RENUMBER_ENV,
+};
+use datafusion_nexus::{
+    DATAFUSION_NEXUS_SESSION_CONFIG_OPTIONS,
+    server::{
+        NEXUS_ICEBERG_GLUE_DATABASE_ENV, NEXUS_SERVER_BIND_ENV, NEXUS_SERVER_CONFIG_FILE_ENV,
+        NEXUS_SERVER_CUGRAPH_ENABLED_ENV, NEXUS_SERVER_MAX_IN_FLIGHT_ENV, NEXUS_SERVER_NATIVE_CONFIG_OPTIONS,
+        NEXUS_SERVER_NATIVE_DEVICE_BUDGET_BYTES_ENV, NEXUS_SERVER_NATIVE_HOST_FETCH_ACQUIRE_TIMEOUT_SECS_ENV,
+        NEXUS_SERVER_NATIVE_MAX_RETRY_ATTEMPTS_ENV, NEXUS_SERVER_NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV,
+        NEXUS_SERVER_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV, NEXUS_SERVER_NATIVE_MAX_SOURCE_READS_IN_FLIGHT_ENV,
+        NEXUS_SERVER_NATIVE_MEMORY_POLICY_ENV, NEXUS_SERVER_NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS_ENV,
+        NEXUS_SERVER_NATIVE_PIPELINE_EXECUTION_MODE_ENV, NEXUS_SERVER_NATIVE_SOURCE_CHUNK_PLANNING_MODE_ENV,
+        NEXUS_SERVER_NATIVE_STATISTICAL_AGGREGATE_EXECUTION_MODE_ENV, NEXUS_SERVER_STATEMENT_TICKET_TTL_SECS_ENV,
+        ServerConfig, ServerNativeConfigScope,
+    },
 };
 #[cfg(feature = "iceberg")]
 use datafusion_nexus::{TableFormatLakehouseCachePolicy, TableFormatParquetReadStrategyPreference};
@@ -42,6 +49,85 @@ fn server_config_defaults_to_single_flight_sql_admission() {
     );
     #[cfg(feature = "cugraph")]
     assert!(config.cugraph.is_none(), "cuGraph Flight SQL exposure must be disabled by default");
+}
+
+#[test]
+fn server_native_config_option_descriptors_cover_toml_env_and_session_keys() {
+    let expected = [
+        ("native.memory_policy", NEXUS_SERVER_NATIVE_MEMORY_POLICY_ENV),
+        ("native.device_budget_bytes", NEXUS_SERVER_NATIVE_DEVICE_BUDGET_BYTES_ENV),
+        ("native.max_source_chunk_bytes", NEXUS_SERVER_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV),
+        ("native.max_row_groups_per_chunk", NEXUS_SERVER_NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV),
+        ("native.max_retry_attempts", NEXUS_SERVER_NATIVE_MAX_RETRY_ATTEMPTS_ENV),
+        ("native.min_retry_chunk_row_groups", NEXUS_SERVER_NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS_ENV),
+        ("native.max_source_reads_in_flight", NEXUS_SERVER_NATIVE_MAX_SOURCE_READS_IN_FLIGHT_ENV),
+        ("native.source_chunk_planning_mode", NEXUS_SERVER_NATIVE_SOURCE_CHUNK_PLANNING_MODE_ENV),
+        ("native.host_fetch_acquire_timeout_secs", NEXUS_SERVER_NATIVE_HOST_FETCH_ACQUIRE_TIMEOUT_SECS_ENV),
+        ("native.pipeline_execution_mode", NEXUS_SERVER_NATIVE_PIPELINE_EXECUTION_MODE_ENV),
+        ("native.statistical_aggregate_execution_mode", NEXUS_SERVER_NATIVE_STATISTICAL_AGGREGATE_EXECUTION_MODE_ENV),
+    ];
+
+    assert_eq!(NEXUS_SERVER_NATIVE_CONFIG_OPTIONS.len(), expected.len());
+    let mut toml_fields = BTreeSet::new();
+    let mut env_vars = BTreeSet::new();
+    for option in NEXUS_SERVER_NATIVE_CONFIG_OPTIONS {
+        assert!(toml_fields.insert(option.toml_field), "duplicate TOML field {}", option.toml_field);
+        assert!(env_vars.insert(option.env_var), "duplicate env var {}", option.env_var);
+        assert!(!option.value_type.is_empty(), "{} should document a value type", option.toml_field);
+        assert!(!option.description.is_empty(), "{} should document a description", option.toml_field);
+    }
+    for (toml_field, env_var) in expected {
+        let option = NEXUS_SERVER_NATIVE_CONFIG_OPTIONS
+            .iter()
+            .find(|option| option.toml_field == toml_field)
+            .unwrap_or_else(|| panic!("missing descriptor for {toml_field}"));
+        assert_eq!(option.env_var, env_var);
+    }
+
+    let session_keys =
+        DATAFUSION_NEXUS_SESSION_CONFIG_OPTIONS.iter().map(|option| option.full_key()).collect::<BTreeSet<_>>();
+    let server_session_keys = NEXUS_SERVER_NATIVE_CONFIG_OPTIONS
+        .iter()
+        .filter_map(|option| option.session_key.map(str::to_string))
+        .collect::<BTreeSet<_>>();
+    assert_eq!(server_session_keys, session_keys);
+}
+
+#[test]
+fn server_native_config_option_descriptors_document_scope() {
+    let bounded_fields = NEXUS_SERVER_NATIVE_CONFIG_OPTIONS
+        .iter()
+        .filter(|option| option.scope.is_bounded_only())
+        .map(|option| option.toml_field)
+        .collect::<BTreeSet<_>>();
+    assert_eq!(
+        bounded_fields,
+        BTreeSet::from([
+            "native.device_budget_bytes",
+            "native.max_source_chunk_bytes",
+            "native.max_row_groups_per_chunk",
+            "native.max_retry_attempts",
+            "native.min_retry_chunk_row_groups",
+            "native.max_source_reads_in_flight",
+            "native.source_chunk_planning_mode",
+            "native.pipeline_execution_mode",
+        ])
+    );
+
+    let timeout = NEXUS_SERVER_NATIVE_CONFIG_OPTIONS
+        .iter()
+        .find(|option| option.toml_field == "native.host_fetch_acquire_timeout_secs")
+        .expect("host-fetch timeout descriptor");
+    assert_eq!(timeout.scope, ServerNativeConfigScope::SourceIoResource);
+    assert_eq!(timeout.session_key, None);
+    assert!(!timeout.scope.is_bounded_only());
+
+    let statistical = NEXUS_SERVER_NATIVE_CONFIG_OPTIONS
+        .iter()
+        .find(|option| option.toml_field == "native.statistical_aggregate_execution_mode")
+        .expect("statistical aggregate descriptor");
+    assert_eq!(statistical.scope, ServerNativeConfigScope::NativeExecution);
+    assert!(!statistical.scope.is_bounded_only());
 }
 
 #[test]
@@ -108,6 +194,7 @@ fn server_config_accepts_extended_native_query_knobs() {
         (NEXUS_SERVER_NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS_ENV, "2".to_string()),
         (NEXUS_SERVER_NATIVE_MAX_SOURCE_READS_IN_FLIGHT_ENV, "4".to_string()),
         (NEXUS_SERVER_NATIVE_SOURCE_CHUNK_PLANNING_MODE_ENV, "local_parquet_throughput".to_string()),
+        (NEXUS_SERVER_NATIVE_HOST_FETCH_ACQUIRE_TIMEOUT_SECS_ENV, "12".to_string()),
         (NEXUS_SERVER_NATIVE_PIPELINE_EXECUTION_MODE_ENV, "adaptive".to_string()),
         (NEXUS_SERVER_NATIVE_STATISTICAL_AGGREGATE_EXECUTION_MODE_ENV, "gpu_native_tolerant".to_string()),
     ]);
@@ -127,6 +214,7 @@ fn server_config_accepts_extended_native_query_knobs() {
     );
     assert_eq!(native.source_scheduler_policy().max_source_reads_in_flight(), 4);
     assert_eq!(native.source_chunk_planning_mode(), SourceChunkPlanningMode::LocalParquetThroughput);
+    assert_eq!(native.source_fetch_config().host_fetch_acquire_timeout, Duration::from_secs(12));
     assert_eq!(native.native_pipeline_execution_mode(), NativePipelineExecutionMode::Adaptive);
     assert_eq!(native.statistical_aggregate_execution_mode(), StatisticalAggregateExecutionMode::GpuNativeTolerant);
 }
@@ -143,6 +231,7 @@ max_retry_attempts = 5
 min_retry_chunk_row_groups = 2
 max_source_reads_in_flight = 4
 source_chunk_planning_mode = "local_parquet_throughput"
+host_fetch_acquire_timeout_secs = 12
 pipeline_execution_mode = "adaptive"
 statistical_aggregate_execution_mode = "gpu_native_tolerant"
 "#,
@@ -163,6 +252,7 @@ statistical_aggregate_execution_mode = "gpu_native_tolerant"
     );
     assert_eq!(native.source_scheduler_policy().max_source_reads_in_flight(), 4);
     assert_eq!(native.source_chunk_planning_mode(), SourceChunkPlanningMode::LocalParquetThroughput);
+    assert_eq!(native.source_fetch_config().host_fetch_acquire_timeout, Duration::from_secs(12));
     assert_eq!(native.native_pipeline_execution_mode(), NativePipelineExecutionMode::Adaptive);
     assert_eq!(native.statistical_aggregate_execution_mode(), StatisticalAggregateExecutionMode::GpuNativeTolerant);
 }
@@ -178,10 +268,12 @@ max_row_groups_per_chunk = 8
 max_retry_attempts = 0
 min_retry_chunk_row_groups = 2
 source_chunk_planning_mode = "local_parquet_throughput"
+host_fetch_acquire_timeout_secs = 0
 "#,
     );
     env.insert(NEXUS_SERVER_NATIVE_MAX_RETRY_ATTEMPTS_ENV, "7".to_string());
     env.insert(NEXUS_SERVER_NATIVE_SOURCE_CHUNK_PLANNING_MODE_ENV, "conservative".to_string());
+    env.insert(NEXUS_SERVER_NATIVE_HOST_FETCH_ACQUIRE_TIMEOUT_SECS_ENV, "11".to_string());
 
     let config = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap();
     let native = config.native_optimizer_config.native_execution_config();
@@ -197,6 +289,7 @@ source_chunk_planning_mode = "local_parquet_throughput"
         }
     );
     assert_eq!(native.source_chunk_planning_mode(), SourceChunkPlanningMode::Conservative);
+    assert_eq!(native.source_fetch_config().host_fetch_acquire_timeout, Duration::from_secs(11));
 }
 
 #[test]
@@ -383,17 +476,38 @@ fn server_config_rejects_zero_extended_native_query_knobs() {
 }
 
 #[test]
+fn server_config_rejects_zero_host_fetch_acquire_timeout() {
+    let env = BTreeMap::from([(NEXUS_SERVER_NATIVE_HOST_FETCH_ACQUIRE_TIMEOUT_SECS_ENV, "0".to_string())]);
+
+    let error = ServerConfig::from_env_get(|env_name| env.get(env_name).cloned()).unwrap_err();
+
+    assert!(error.to_string().contains(NEXUS_SERVER_NATIVE_HOST_FETCH_ACQUIRE_TIMEOUT_SECS_ENV));
+}
+
+#[test]
 fn server_config_rejects_zero_toml_native_query_knobs() {
-    let (_dir, env) = env_with_server_toml(
-        r#"
+    for (toml_body, field) in [
+        (
+            r#"
 [native]
 max_source_reads_in_flight = 0
 "#,
-    );
+            "native.max_source_reads_in_flight",
+        ),
+        (
+            r#"
+[native]
+host_fetch_acquire_timeout_secs = 0
+"#,
+            "native.host_fetch_acquire_timeout_secs",
+        ),
+    ] {
+        let (_dir, env) = env_with_server_toml(toml_body);
 
-    let error = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap_err();
+        let error = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap_err();
 
-    assert!(error.to_string().contains("native.max_source_reads_in_flight"));
+        assert!(error.to_string().contains(field));
+    }
 }
 
 #[test]

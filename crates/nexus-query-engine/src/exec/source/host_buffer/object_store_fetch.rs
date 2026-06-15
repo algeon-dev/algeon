@@ -1,4 +1,4 @@
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use super::{
     object_store_safety::{SourceFetchLocation, object_store_bucket_fact, source_fetch_location},
@@ -9,8 +9,6 @@ use crate::{
     error::{QueryError, QueryErrorCode, Result},
     runtime::S3ObjectStoreKey,
 };
-
-pub(super) const HOST_FETCH_BUDGET_ACQUIRE_TIMEOUT: Duration = Duration::from_secs(30);
 
 pub(in crate::exec::source) struct ScheduledHostParquetFetch {
     pub(in crate::exec::source::host_buffer) receiver: std::sync::mpsc::Receiver<Result<HostParquetBuffer>>,
@@ -157,6 +155,7 @@ fn start_host_parquet_buffer_fetch_with_budget_mode(
     let fetch_location = source_fetch_location(location, resolved_source)?;
     let host_budget = context.host_fetch_budget();
     let host_budget_bytes = host_budget.budget_bytes();
+    let host_fetch_acquire_timeout = context.host_fetch_acquire_timeout();
     let reserve_bytes = host_fetch_reserve_bytes(
         host_budget_bytes,
         context.source_scheduler_policy().max_source_reads_in_flight(),
@@ -169,7 +168,7 @@ fn start_host_parquet_buffer_fetch_with_budget_mode(
                 .acquire_with_timeout(
                     context.cancellation(),
                     reserve_bytes,
-                    HOST_FETCH_BUDGET_ACQUIRE_TIMEOUT,
+                    host_fetch_acquire_timeout,
                     "nexus_query_engine.source_fetch.host_buffer_budget",
                 )
                 .map_err(|error| attach_fetch_budget_facts(error, &fetch_location, reserve_bytes))?
@@ -178,7 +177,7 @@ fn start_host_parquet_buffer_fetch_with_budget_mode(
             let concurrency_wait_timer = Instant::now();
             let operation_permit = context
                 .acquire_source_fetch_operation_with_timeout(
-                    HOST_FETCH_BUDGET_ACQUIRE_TIMEOUT,
+                    host_fetch_acquire_timeout,
                     "nexus_query_engine.source_fetch.host_buffer_concurrency",
                 )
                 .map_err(|error| attach_fetch_budget_facts(error, &fetch_location, reserve_bytes))?

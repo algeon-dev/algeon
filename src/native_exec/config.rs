@@ -4,13 +4,16 @@
 //! construction, allocator setup, memory-control validation, and cache wiring
 //! happen later when execution builds the native query context.
 
-use std::sync::{Arc, OnceLock};
+use std::{
+    sync::{Arc, OnceLock},
+    time::Duration,
+};
 
 use nexus_query_engine::{
     AdaptiveMemoryHistory, AggregateStrategyExecutionOptions, DynamicFilterExecutionOptions, ExecutionBoundaryPolicy,
     ExecutionCancellation, ExecutionContext, GpuHashJoinBuildCache, GpuLocalParquetSourceCache,
     KeyedHashJoinStrategyOptions, MemoryControlPolicy, MemoryResourcePolicy, NativePipelineExecutionMode, QueryHandle,
-    ServiceStreamPool, SourceChunkPlanningMode, SourceChunkPlanningOptions, SourceSchedulerPolicy,
+    ServiceStreamPool, SourceChunkPlanningMode, SourceChunkPlanningOptions, SourceFetchConfig, SourceSchedulerPolicy,
     SourceStorageProfile, StddevSampExecutionMode, TenantQueryContext,
 };
 
@@ -31,6 +34,7 @@ pub struct NativeCudfExecutionConfig {
     boundary_policy: ExecutionBoundaryPolicy,
     source_scheduler_policy: SourceSchedulerPolicy,
     source_chunk_planning_mode: SourceChunkPlanningMode,
+    source_fetch_config: SourceFetchConfig,
     service_stream_pool: Option<ServiceStreamPool>,
     service_stream_pool_size: Option<usize>,
     cancellation: ExecutionCancellation,
@@ -98,6 +102,7 @@ impl NativeCudfExecutionConfig {
             boundary_policy: ExecutionBoundaryPolicy::default(),
             source_scheduler_policy: SourceSchedulerPolicy::default(),
             source_chunk_planning_mode: SourceChunkPlanningMode::default(),
+            source_fetch_config: SourceFetchConfig::default(),
             service_stream_pool: None,
             service_stream_pool_size: None,
             cancellation: ExecutionCancellation::new(),
@@ -174,6 +179,7 @@ impl NativeCudfExecutionConfig {
             boundary_policy: ExecutionBoundaryPolicy::default(),
             source_scheduler_policy: SourceSchedulerPolicy::default(),
             source_chunk_planning_mode: SourceChunkPlanningMode::default(),
+            source_fetch_config: SourceFetchConfig::default(),
             service_stream_pool: None,
             service_stream_pool_size: None,
             cancellation: ExecutionCancellation::new(),
@@ -243,6 +249,21 @@ impl NativeCudfExecutionConfig {
     /// Set bounded source chunk planning mode.
     pub fn with_source_chunk_planning_mode(mut self, mode: SourceChunkPlanningMode) -> Self {
         self.source_chunk_planning_mode = mode;
+        self
+    }
+
+    /// Set service-level source IO resource policy for standalone native execution.
+    ///
+    /// Query-service execution gets this policy from the admitted service handle
+    /// instead; this setter covers direct `NativeCudfExec`/optimizer usage.
+    pub fn with_source_fetch_config(mut self, source_fetch_config: SourceFetchConfig) -> Self {
+        self.source_fetch_config = source_fetch_config;
+        self
+    }
+
+    /// Set the timeout used by blocking object-store SourceFetch resource acquisition.
+    pub fn with_host_fetch_acquire_timeout(mut self, timeout: Duration) -> Self {
+        self.source_fetch_config.host_fetch_acquire_timeout = timeout;
         self
     }
 
@@ -385,6 +406,7 @@ impl NativeCudfExecutionConfig {
         self.boundary_policy = handle.boundary_policy();
         self.source_scheduler_policy = handle.source_scheduler_policy();
         self.source_chunk_planning_mode = handle.source_chunk_planning_mode();
+        self.source_fetch_config = handle.source_fetch_config();
         self.native_pipeline_execution_mode = handle.native_pipeline_execution_mode();
         self.stddev_samp_execution_mode = handle.stddev_samp_execution_mode();
         self.dynamic_filter_execution_options = handle.dynamic_filter_execution_options();
@@ -413,6 +435,11 @@ impl NativeCudfExecutionConfig {
     /// Source chunk planning mode used by bounded native source reads.
     pub fn source_chunk_planning_mode(&self) -> SourceChunkPlanningMode {
         self.source_chunk_planning_mode
+    }
+
+    /// Source IO resource policy used by standalone native execution.
+    pub fn source_fetch_config(&self) -> &SourceFetchConfig {
+        &self.source_fetch_config
     }
 
     /// Strict bounded or adaptive pipeline execution mode.
@@ -509,6 +536,7 @@ impl NativeCudfExecutionConfig {
             .with_boundary_policy(self.boundary_policy)
             .with_source_scheduler_policy(self.source_scheduler_policy)
             .with_source_chunk_planning_mode(self.source_chunk_planning_mode)
+            .with_source_fetch_config(self.source_fetch_config.clone())
             .with_cancellation(self.cancellation.clone())
             .with_native_pipeline_execution_mode(self.native_pipeline_execution_mode)
             .with_statistical_aggregate_execution_mode(self.stddev_samp_execution_mode)
