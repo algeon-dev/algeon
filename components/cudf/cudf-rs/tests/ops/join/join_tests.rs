@@ -1,7 +1,11 @@
 //! Tests for join operations.
 use cudf::{
+    DataFrame, MergeOptions, Series,
     core::Table,
-    ops::join::{self, NullEquality},
+    ops::{
+        copying,
+        join::{self, NullEquality},
+    },
     testing::prelude::*,
 };
 
@@ -33,6 +37,20 @@ fn sorted_join_index_pairs(indices: &join::JoinIndices) -> Vec<(i32, i32)> {
     let mut pairs: Vec<_> = left.into_iter().zip(right).collect();
     pairs.sort();
     pairs
+}
+
+fn sorted_dataframe_triples(df: &DataFrame) -> Vec<(i32, i32, i32)> {
+    let ids = df.series("id").unwrap().to_vec_strict::<i32>().unwrap();
+    let left_vals = df.series("left_val").unwrap().to_vec_strict::<i32>().unwrap();
+    let right_vals = df.series("right_val").unwrap().to_vec_strict::<i32>().unwrap();
+
+    let mut triples: Vec<_> = ids
+        .into_iter()
+        .zip(left_vals.into_iter().zip(right_vals))
+        .map(|(id, (left, right))| (id, left, right))
+        .collect();
+    triples.sort();
+    triples
 }
 
 #[test]
@@ -336,6 +354,48 @@ fn test_inner_join_indices_with_duplicate_keys_returns_all_matching_pairs() {
 }
 
 #[test]
+fn test_inner_join_indices_materialize_same_rows_as_dataframe_merge() {
+    let rt = sample_runtime();
+    let left = DataFrame::from_columns([
+        ("id", rt.series(&[1i32, 2, 2, 3]).unwrap()),
+        ("left_val", rt.series(&[10i32, 20, 21, 30]).unwrap()),
+    ])
+    .unwrap();
+    let right = DataFrame::from_columns([
+        ("id", rt.series(&[2i32, 2, 4]).unwrap()),
+        ("right_val", rt.series(&[200i32, 201, 400]).unwrap()),
+    ])
+    .unwrap();
+
+    let left_keys = Table::from_columns(vec![left.series("id").unwrap().as_column().deep_copy().unwrap()]).unwrap();
+    let right_keys = Table::from_columns(vec![right.series("id").unwrap().as_column().deep_copy().unwrap()]).unwrap();
+    let indices = join::inner_join_indices(
+        &left_keys.testing_view().unwrap(),
+        &right_keys.testing_view().unwrap(),
+        NullEquality::Equal,
+    )
+    .unwrap();
+
+    let left_indices = Series::from_column(indices.left).unwrap();
+    let right_indices = Series::from_column(indices.right).unwrap();
+    let left_gathered = left.gather(&left_indices).unwrap();
+    let right_table = right.to_table_copy().unwrap();
+    let right_gathered =
+        copying::gather(&right_table.testing_view().unwrap(), &right_indices.as_column().testing_view().unwrap())
+            .unwrap();
+    let mut right_columns = right_gathered.into_columns().unwrap();
+    let assembled = DataFrame::from_columns([
+        ("id", left_gathered.series("id").unwrap()),
+        ("left_val", left_gathered.series("left_val").unwrap()),
+        ("right_val", Series::from_column(right_columns.remove(1)).unwrap()),
+    ])
+    .unwrap();
+
+    let merged = left.merge(&right, MergeOptions::new().on(["id"]).how_inner()).unwrap();
+    assert_eq!(sorted_dataframe_triples(&assembled), sorted_dataframe_triples(&merged));
+}
+
+#[test]
 fn test_left_join_indices_with_duplicate_keys_preserves_unmatched_left_rows() {
     let left_keys = Table::from_columns(vec![column_from_slice(&[1i32, 2, 2, 3]).unwrap()]).unwrap();
     let right_keys = Table::from_columns(vec![column_from_slice(&[2i32, 2, 4]).unwrap()]).unwrap();
@@ -410,4 +470,29 @@ fn test_hash_join_supports_duplicate_build_keys_and_repeated_probes() {
 
     assert_eq!(sorted_join_index_pairs(&first), vec![(0, 0), (0, 1), (1, 2)]);
     assert_eq!(sorted_join_index_pairs(&second), vec![(0, JOIN_NO_MATCH), (1, 0), (1, 1)]);
+}
+
+#[test]
+fn test_hash_join_supports_parallel_probes_from_cloned_handle() {
+    use cudf::ops::join::{HashJoin, HashJoinOptions};
+
+    let build_keys = Table::from_columns(vec![column_from_slice(&[2i32, 2, 4]).unwrap()]).unwrap();
+    let first_probe = Table::from_columns(vec![column_from_slice(&[2i32, 4]).unwrap()]).unwrap();
+    let second_probe = Table::from_columns(vec![column_from_slice(&[1i32, 2]).unwrap()]).unwrap();
+    let hash_join = HashJoin::new(build_keys, HashJoinOptions::new()).unwrap();
+
+    let first_join = hash_join.clone();
+    let first = std::thread::spawn(move || {
+        let indices = first_join.inner_join_indices(&first_probe.testing_view().unwrap()).unwrap();
+        sorted_join_index_pairs(&indices)
+    });
+
+    let second_join = hash_join.clone();
+    let second = std::thread::spawn(move || {
+        let indices = second_join.left_join_indices(&second_probe.testing_view().unwrap()).unwrap();
+        sorted_join_index_pairs(&indices)
+    });
+
+    assert_eq!(first.join().unwrap(), vec![(0, 0), (0, 1), (1, 2)]);
+    assert_eq!(second.join().unwrap(), vec![(0, JOIN_NO_MATCH), (1, 0), (1, 1)]);
 }

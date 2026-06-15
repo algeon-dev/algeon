@@ -1,6 +1,7 @@
 #include "join.h"
 
 #include "execution_context_internal.hpp"
+#include "handle_provenance.hpp"
 #include "shim_common.h"
 
 #include <cudf/column/column.hpp>
@@ -100,20 +101,22 @@ struct column_handle_deleter {
 
 using unique_column_handle = std::unique_ptr<void, column_handle_deleter>;
 
-unique_column_handle make_unique_column_handle(std::unique_ptr<cudf::column> column)
+unique_column_handle make_unique_column_handle(std::unique_ptr<cudf::column> column,
+                                               cudf_handle_provenance const& provenance)
 {
-  return unique_column_handle{cudf_release_column_handle(std::move(column))};
+  return unique_column_handle{cudf_release_column_handle(std::move(column), provenance)};
 }
 
 void release_join_index_pair(join_index_pair indices,
                              cudf_column_handle* out_left_indices,
-                             cudf_column_handle* out_right_indices)
+                             cudf_column_handle* out_right_indices,
+                             cudf_handle_provenance const& provenance)
 {
   auto left_column  = release_join_index_column(std::move(indices.first));
   auto right_column = release_join_index_column(std::move(indices.second));
 
-  auto left_handle  = make_unique_column_handle(std::move(left_column));
-  auto right_handle = make_unique_column_handle(std::move(right_column));
+  auto left_handle  = make_unique_column_handle(std::move(left_column), provenance);
+  auto right_handle = make_unique_column_handle(std::move(right_column), provenance);
 
   *out_left_indices  = left_handle.release();
   *out_right_indices = right_handle.release();
@@ -362,9 +365,11 @@ cudf_status_t cudf_inner_join_indices_ex(cudf_table_view_handle left_keys,
     auto* rk = static_cast<cudf::table_view*>(right_keys);
 
     {
+      cudf_current_device_resource_guard current_mr{exec.mr_raw};
       release_join_index_pair(cudf::inner_join(*lk, *rk, null_eq, exec.stream, exec.mr),
                               out_left_indices,
-                              out_right_indices);
+                              out_right_indices,
+                              cudf_capture_exec_provenance(exec));
     }
     return CUDF_SUCCESS;
   }
@@ -407,9 +412,11 @@ cudf_status_t cudf_left_join_indices_ex(cudf_table_view_handle left_keys,
     auto* rk = static_cast<cudf::table_view*>(right_keys);
 
     {
+      cudf_current_device_resource_guard current_mr{exec.mr_raw};
       release_join_index_pair(cudf::left_join(*lk, *rk, null_eq, exec.stream, exec.mr),
                               out_left_indices,
-                              out_right_indices);
+                              out_right_indices,
+                              cudf_capture_exec_provenance(exec));
     }
     return CUDF_SUCCESS;
   }
@@ -452,9 +459,11 @@ cudf_status_t cudf_full_join_indices_ex(cudf_table_view_handle left_keys,
     auto* rk = static_cast<cudf::table_view*>(right_keys);
 
     {
+      cudf_current_device_resource_guard current_mr{exec.mr_raw};
       release_join_index_pair(cudf::full_join(*lk, *rk, null_eq, exec.stream, exec.mr),
                               out_left_indices,
-                              out_right_indices);
+                              out_right_indices,
+                              cudf_capture_exec_provenance(exec));
     }
     return CUDF_SUCCESS;
   }
@@ -542,8 +551,10 @@ cudf_status_t cudf_distinct_hash_join_left_join_ex(cudf_distinct_hash_join_handl
     auto* distinct_join = owner->join.get();
     auto* probe_view    = static_cast<cudf::table_view*>(probe);
     {
+      cudf_current_device_resource_guard current_mr{exec.mr_raw};
       auto indices = distinct_join->left_join(*probe_view, exec.stream, exec.mr);
-      *out         = cudf_release_column_handle(release_join_index_column(std::move(indices)));
+      *out         = cudf_release_column_handle(release_join_index_column(std::move(indices)),
+                                        cudf_capture_exec_provenance(exec));
     }
     return CUDF_SUCCESS;
   }
@@ -646,7 +657,8 @@ cudf_status_t cudf_hash_join_inner_join_ex(cudf_hash_join_handle join,
       cudf_current_device_resource_guard current_mr{exec.mr_raw};
       release_join_index_pair(hash_join->inner_join(*probe_view, {}, exec.stream, exec.mr),
                               out_left_indices,
-                              out_right_indices);
+                              out_right_indices,
+                              cudf_capture_exec_provenance(exec));
     }
     return CUDF_SUCCESS;
   }
@@ -687,7 +699,8 @@ cudf_status_t cudf_hash_join_left_join_ex(cudf_hash_join_handle join,
       cudf_current_device_resource_guard current_mr{exec.mr_raw};
       release_join_index_pair(hash_join->left_join(*probe_view, {}, exec.stream, exec.mr),
                               out_left_indices,
-                              out_right_indices);
+                              out_right_indices,
+                              cudf_capture_exec_provenance(exec));
     }
     return CUDF_SUCCESS;
   }
@@ -728,7 +741,8 @@ cudf_status_t cudf_hash_join_full_join_ex(cudf_hash_join_handle join,
       cudf_current_device_resource_guard current_mr{exec.mr_raw};
       release_join_index_pair(hash_join->full_join(*probe_view, {}, exec.stream, exec.mr),
                               out_left_indices,
-                              out_right_indices);
+                              out_right_indices,
+                              cudf_capture_exec_provenance(exec));
     }
     return CUDF_SUCCESS;
   }

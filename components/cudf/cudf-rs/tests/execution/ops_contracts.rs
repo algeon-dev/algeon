@@ -21,6 +21,30 @@ mod join_hash_join_execution_tests {
     }
 
     #[test]
+    fn one_shot_join_indices_support_mixed_same_device_domains_and_use_left_provenance() {
+        let left_keys = Table::from_columns(vec![explicit_i32_column(&[1, 2, 2, 3], 958)]).unwrap();
+        let right_keys = Table::from_columns(vec![explicit_i32_column(&[2, 2, 4], 959)]).unwrap();
+        let expected_stream = left_keys.testing_execution_domain_stream_value();
+        let expected_mr = left_keys.testing_execution_domain_mr_value();
+
+        reset_exec_observation();
+        let indices = join::inner_join_indices(
+            &left_keys.testing_view().unwrap(),
+            &right_keys.testing_view().unwrap(),
+            NullEquality::Equal,
+        )
+        .unwrap();
+
+        assert_eq!(indices.left.testing_execution_domain_id(), left_keys.testing_execution_domain_id());
+        assert_eq!(indices.right.testing_execution_domain_id(), left_keys.testing_execution_domain_id());
+        assert_eq!(indices.left.testing_execution_domain_mr_value(), expected_mr);
+        assert_eq!(indices.right.testing_execution_domain_mr_value(), expected_mr);
+        assert_eq!(last_exec_stream_value(), expected_stream);
+        assert_eq!(last_exec_mr_value(), expected_mr);
+        assert_eq!(sorted_join_index_pairs(&indices), vec![(1, 0), (1, 1), (2, 0), (2, 1)]);
+    }
+
+    #[test]
     fn hash_join_indices_support_mixed_same_device_domains_and_use_probe_provenance() {
         let build_keys = Table::from_columns(vec![explicit_i32_column(&[2, 2, 4], 960)]).unwrap();
         let probe_keys = Table::from_columns(vec![explicit_i32_column(&[1, 2, 4], 961)]).unwrap();

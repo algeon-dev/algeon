@@ -1227,6 +1227,168 @@ fn test_hash_join_probe_ex_uses_explicit_memory_resource_for_probe_allocations()
 }
 
 #[test]
+fn test_join_indices_ex_uses_explicit_memory_resource_for_allocations_and_provenance() {
+    let _shim_state = lock_shim_state();
+    let previous_raw = current_device_resource_raw();
+    let current_mr = OwnedMemoryResource::new_test_stats();
+    let _restore = CurrentDeviceResourceRestore::new(previous_raw);
+    let target_mr = OwnedMemoryResource::new_test_stats();
+
+    let left_tbl = make_table_from_one_column(make_i32_column(&[1, 2, 2, 3]));
+    let right_tbl = make_table_from_one_column(make_i32_column(&[2, 2, 4]));
+    let left_tv = make_table_view(left_tbl);
+    let right_tv = make_table_view(right_tbl);
+    let stream = OwnedStream::new();
+    let target_stream = stream.borrowed();
+    let target_borrowed = target_mr.borrowed();
+    let exec = cudf_sys::ExecutionContext::new().with_stream(&target_stream).with_memory_resource(&target_borrowed);
+
+    for (name, join_indices) in [
+        (
+            "inner",
+            cudf_sys::cudf_inner_join_indices_ex
+                as unsafe extern "C" fn(
+                    *mut c_void,
+                    *mut c_void,
+                    cudf_sys::cudf_null_equality_t,
+                    *mut *mut c_void,
+                    *mut *mut c_void,
+                    *const cudf_sys::cudf_exec_options_t,
+                ) -> cudf_sys::cudf_status_t,
+        ),
+        ("left", cudf_sys::cudf_left_join_indices_ex),
+        ("full", cudf_sys::cudf_full_join_indices_ex),
+    ] {
+        let target_before = target_mr.allocation_count();
+        let current_before = current_mr.allocation_count();
+        reset_exec_observation();
+
+        let mut out_left: *mut c_void = ptr::null_mut();
+        let mut out_right: *mut c_void = ptr::null_mut();
+        let current_borrowed = current_mr.borrowed();
+        cudf_sys::test_set_current_device_resource(&current_borrowed)
+            .expect("failed to install current sentinel memory resource");
+        let status = unsafe {
+            join_indices(
+                left_tv,
+                right_tv,
+                cudf_sys::cudf_null_equality_t::CUDF_NULL_EQUALITY_EQUAL,
+                &mut out_left,
+                &mut out_right,
+                exec.as_raw(),
+            )
+        };
+        let restored_current = current_device_resource_raw();
+        unsafe { cudf_sys::test_set_current_device_resource_raw(previous_raw) }
+            .expect("failed to restore previous current device resource");
+
+        assert_eq!(status, cudf_sys::CUDF_SUCCESS, "{name} join indices failed");
+        assert!(!out_left.is_null(), "{name} join indices did not publish left indices");
+        assert!(!out_right.is_null(), "{name} join indices did not publish right indices");
+        assert_eq!(last_exec_mr_raw(), target_mr.raw_device_resource());
+        assert_eq!(
+            restored_current,
+            current_mr.raw_device_resource(),
+            "{name} join indices must restore the caller's current memory resource"
+        );
+        assert_eq!(
+            current_mr.allocation_count(),
+            current_before,
+            "{name} join-index temporaries must not allocate from the caller's current memory resource"
+        );
+        assert!(
+            target_mr.allocation_count() > target_before,
+            "{name} join-index allocations must be charged to the explicit execution memory resource"
+        );
+
+        unsafe {
+            cudf_sys::cudf_column_destroy(out_left);
+            cudf_sys::cudf_column_destroy(out_right);
+        }
+    }
+
+    stream.synchronize();
+    unsafe {
+        cudf_sys::cudf_table_view_destroy(right_tv);
+        cudf_sys::cudf_table_view_destroy(left_tv);
+        cudf_sys::cudf_table_destroy(right_tbl);
+        cudf_sys::cudf_table_destroy(left_tbl);
+    }
+}
+
+#[test]
+fn test_distinct_hash_join_probe_ex_uses_explicit_memory_resource_for_probe_allocations() {
+    let _shim_state = lock_shim_state();
+    let previous_raw = current_device_resource_raw();
+    let current_mr = OwnedMemoryResource::new_test_stats();
+    let _restore = CurrentDeviceResourceRestore::new(previous_raw);
+    let target_mr = OwnedMemoryResource::new_test_stats();
+
+    let build_col = make_i32_column(&[1, 2, 3, 4, 5, 6, 7, 8]);
+    let build_tbl = make_table_from_one_column(build_col);
+    let build_tv = make_table_view(build_tbl);
+
+    let mut join: *mut c_void = ptr::null_mut();
+    let status = unsafe {
+        cudf_sys::cudf_distinct_hash_join_create(
+            build_tv,
+            cudf_sys::cudf_null_equality_t::CUDF_NULL_EQUALITY_EQUAL,
+            &mut join,
+        )
+    };
+    assert_eq!(status, cudf_sys::CUDF_SUCCESS);
+    assert!(!join.is_null());
+
+    let probe_tbl = make_table_from_one_column(make_i32_column(&[8, 7, 42, 1, 2, 99, 3, 4]));
+    let probe_tv = make_table_view(probe_tbl);
+    let stream = OwnedStream::new();
+    let target_stream = stream.borrowed();
+    let target_borrowed = target_mr.borrowed();
+    let exec = cudf_sys::ExecutionContext::new().with_stream(&target_stream).with_memory_resource(&target_borrowed);
+
+    let target_before = target_mr.allocation_count();
+    let current_before = current_mr.allocation_count();
+    reset_exec_observation();
+
+    let mut out: *mut c_void = ptr::null_mut();
+    let current_borrowed = current_mr.borrowed();
+    cudf_sys::test_set_current_device_resource(&current_borrowed)
+        .expect("failed to install current sentinel memory resource");
+    let status = unsafe { cudf_sys::cudf_distinct_hash_join_left_join_ex(join, probe_tv, &mut out, exec.as_raw()) };
+    let restored_current = current_device_resource_raw();
+    unsafe { cudf_sys::test_set_current_device_resource_raw(previous_raw) }
+        .expect("failed to restore previous current device resource");
+
+    assert_eq!(status, cudf_sys::CUDF_SUCCESS);
+    assert!(!out.is_null());
+    assert_eq!(last_exec_mr_raw(), target_mr.raw_device_resource());
+    assert_eq!(
+        restored_current,
+        current_mr.raw_device_resource(),
+        "distinct hash-join probe must restore the caller's current memory resource"
+    );
+    assert_eq!(
+        current_mr.allocation_count(),
+        current_before,
+        "distinct hash-join probe temporaries must not allocate from the caller's current memory resource"
+    );
+    assert!(
+        target_mr.allocation_count() > target_before,
+        "distinct hash-join probe allocations must be charged to the explicit execution memory resource"
+    );
+
+    stream.synchronize();
+    unsafe {
+        cudf_sys::cudf_column_destroy(out);
+        cudf_sys::cudf_table_view_destroy(probe_tv);
+        cudf_sys::cudf_table_destroy(probe_tbl);
+        cudf_sys::cudf_distinct_hash_join_destroy(join);
+        cudf_sys::cudf_table_view_destroy(build_tv);
+        cudf_sys::cudf_table_destroy(build_tbl);
+    }
+}
+
+#[test]
 fn test_gather_ex_uses_explicit_memory_resource() {
     let _shim_state = lock_shim_state();
     let previous_raw = current_device_resource_raw();

@@ -465,6 +465,11 @@ impl Drop for HashJoinHandle {
 /// `HashJoin` owns the build key table and a libcudf hash table that borrows
 /// that build table's device memory. Probe methods return `INT32` device
 /// gather maps; they do not gather payload columns.
+///
+/// The handle is `Send + Sync`: cloned handles may be probed from multiple
+/// host threads while the retained build table stays alive. Each probe still
+/// resolves execution provenance from its probe table and returns device
+/// columns in that resolved execution domain.
 #[derive(Clone)]
 pub struct HashJoin {
     handle: Arc<HashJoinHandle>,

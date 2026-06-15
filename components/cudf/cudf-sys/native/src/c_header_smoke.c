@@ -150,23 +150,33 @@ int cudf_rust_c_header_smoke(void)
   cudf_status_t (*f22aa)(
     cudf_table_view_handle, cudf_null_equality_t, cudf_distinct_hash_join_handle*) =
     &cudf_distinct_hash_join_create;
+  cudf_status_t (*f22aa_ex)(cudf_table_view_handle,
+                            cudf_null_equality_t,
+                            cudf_distinct_hash_join_handle*,
+
+                            const cudf_exec_options_t*) = &cudf_distinct_hash_join_create_ex;
   cudf_status_t (*f22ab)(
     cudf_distinct_hash_join_handle, cudf_table_view_handle, cudf_column_handle*) =
     &cudf_distinct_hash_join_left_join;
-  void (*f22ac)(cudf_distinct_hash_join_handle)      = &cudf_distinct_hash_join_destroy;
+  cudf_status_t (*f22ab_ex)(cudf_distinct_hash_join_handle,
+                            cudf_table_view_handle,
+                            cudf_column_handle*,
+
+                            const cudf_exec_options_t*) = &cudf_distinct_hash_join_left_join_ex;
+  void (*f22ac)(cudf_distinct_hash_join_handle)         = &cudf_distinct_hash_join_destroy;
   cudf_status_t (*f22ad)(cudf_table_view_handle,
                          cudf_nullable_join_t,
                          cudf_null_equality_t,
                          double,
-                         cudf_hash_join_handle*)     = &cudf_hash_join_create;
+                         cudf_hash_join_handle*)        = &cudf_hash_join_create;
   cudf_status_t (*f22ae)(cudf_table_view_handle,
                          cudf_nullable_join_t,
                          cudf_null_equality_t,
                          double,
                          cudf_hash_join_handle*,
 
-                         const cudf_exec_options_t*) = &cudf_hash_join_create_ex;
-  void (*f22af)(cudf_hash_join_handle)               = &cudf_hash_join_destroy;
+                         const cudf_exec_options_t*)    = &cudf_hash_join_create_ex;
+  void (*f22af)(cudf_hash_join_handle)                  = &cudf_hash_join_destroy;
   cudf_status_t (*f22ag)(
     cudf_hash_join_handle, cudf_table_view_handle, cudf_column_handle*, cudf_column_handle*) =
     &cudf_hash_join_inner_join;
