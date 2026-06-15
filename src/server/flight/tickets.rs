@@ -65,6 +65,11 @@ pub(super) struct StatementTicket {
     pub(super) query_id: String,
     pub(super) sql: String,
     pub(super) ticket_kind: StatementTicketKind,
+    /// The originating prepared-statement handle, when this ticket was issued
+    /// from `get_flight_info_prepared_statement`. `None` for non-prepared
+    /// statement tickets. Used to deduplicate repeated no-result-set DDL
+    /// execution on the query channel (see `PreparedStatementEntry`).
+    pub(super) prepared_handle: Option<String>,
     pub(super) native_cancellation: ExecutionCancellation,
     pub(super) started_at: Instant,
     pub(super) issued_at: Instant,
