@@ -190,17 +190,17 @@ fn validate_scatter_map(
 
     let map_len = scatter_map.len().map_err(|e| e.reanchor_if_needed(operation))?;
     let source_rows = source.num_rows().map_err(|e| e.reanchor_if_needed(operation))?;
-    if source_rows != map_len {
+    if map_len > source_rows {
         return Err(Error::new_with(
             ErrorCode::ColumnLengthMismatch,
             operation,
-            format!("source row count ({source_rows}) does not match scatter map length ({map_len})"),
+            format!("scatter map length ({map_len}) exceeds source row count ({source_rows})"),
         )
-        .with_fact(FACT_ACTUAL_ROWS, source_rows)
-        .with_fact(FACT_EXPECTED_ROWS, map_len)
+        .with_fact(FACT_ACTUAL_ROWS, map_len)
+        .with_fact(FACT_EXPECTED_ROWS, source_rows)
         .with_detail("resource", "scatter_map")
-        .with_detail("reason", "length_mismatch")
-        .with_detail("remedy", "provide one scatter index for each source row"));
+        .with_detail("reason", "scatter_map_too_long")
+        .with_detail("remedy", "provide at most one scatter index per source row"));
     }
 
     let null_count = scatter_map.null_count().map_err(|e| e.reanchor_if_needed(operation))?;
@@ -252,15 +252,17 @@ fn validate_scatter_map(
 
 /// Scatter rows from `source` into a copy of `target`.
 ///
-/// Row `i` of `source` replaces row `scatter_map[i]` in `target`; other target
-/// rows are copied through unchanged. Negative scatter indices are interpreted
-/// relative to the target row count, so `-1` addresses the final target row.
+/// For each row `i` covered by `scatter_map`, row `i` of `source` replaces row
+/// `scatter_map[i]` in `target`; other target rows are copied through unchanged.
+/// Negative scatter indices are interpreted relative to the target row count,
+/// so `-1` addresses the final target row.
 ///
-/// The scatter map must be a non-null `INT32` device column with one entry per
-/// source row. Safe Rust validates the scatter map before calling libcudf: every
-/// index must be in `[-target.num_rows(), target.num_rows())` after negative
-/// index handling, and duplicate target indices are rejected because libcudf
-/// documents duplicate scatter destinations as undefined behavior.
+/// The scatter map must be a non-null `INT32` device column whose length is no
+/// greater than the number of source rows. Safe Rust validates the scatter map
+/// before calling libcudf: every index must be in
+/// `[-target.num_rows(), target.num_rows())` after negative index handling, and
+/// duplicate target indices are rejected because libcudf documents duplicate
+/// scatter destinations as undefined behavior.
 ///
 /// # Synchronization
 ///
@@ -282,8 +284,8 @@ pub fn scatter(source: &TableView<'_>, scatter_map: &ColumnView<'_>, target: &Ta
 ///
 /// # Safety
 ///
-/// Caller must ensure that `scatter_map` is a non-null `INT32` column with one
-/// entry per source row, every index is within
+/// Caller must ensure that `scatter_map` is a non-null `INT32` column whose
+/// length is no greater than the number of source rows, every index is within
 /// `[-target.num_rows(), target.num_rows())`, and no two entries address the
 /// same normalized target row. Duplicate or out-of-bounds scatter indices cause
 /// undefined behavior in libcudf.

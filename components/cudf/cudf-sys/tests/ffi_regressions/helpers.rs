@@ -8,6 +8,21 @@ use std::{
 // constructing invalid Rust enum values (which is instant UB).
 #[allow(dead_code)]
 extern "C" {
+    #[link_name = "cudf_ast_column_reference_create"]
+    pub(crate) fn cudf_ast_column_reference_create_raw(
+        column_index: i32,
+        table_source: i32,
+        out: *mut *mut c_void,
+    ) -> i32;
+    #[link_name = "cudf_ast_operation_unary_create"]
+    pub(crate) fn cudf_ast_operation_unary_create_raw(op: i32, input: *mut c_void, out: *mut *mut c_void) -> i32;
+    #[link_name = "cudf_ast_operation_binary_create"]
+    pub(crate) fn cudf_ast_operation_binary_create_raw(
+        op: i32,
+        left: *mut c_void,
+        right: *mut c_void,
+        out: *mut *mut c_void,
+    ) -> i32;
     #[link_name = "cudf_sort"]
     pub(crate) fn cudf_sort_raw(
         input: *mut c_void,
@@ -142,6 +157,59 @@ extern "C" {
         null_equality: i32,
         load_factor: f64,
         out: *mut *mut c_void,
+    ) -> i32;
+    #[link_name = "cudf_mixed_inner_join_indices"]
+    pub(crate) fn cudf_mixed_inner_join_indices_raw(
+        left_equality: *mut c_void,
+        right_equality: *mut c_void,
+        left_conditional: *mut c_void,
+        right_conditional: *mut c_void,
+        predicate: *mut c_void,
+        null_equality: i32,
+        out_left_indices: *mut *mut c_void,
+        out_right_indices: *mut *mut c_void,
+    ) -> i32;
+    #[link_name = "cudf_mixed_left_join_indices"]
+    pub(crate) fn cudf_mixed_left_join_indices_raw(
+        left_equality: *mut c_void,
+        right_equality: *mut c_void,
+        left_conditional: *mut c_void,
+        right_conditional: *mut c_void,
+        predicate: *mut c_void,
+        null_equality: i32,
+        out_left_indices: *mut *mut c_void,
+        out_right_indices: *mut *mut c_void,
+    ) -> i32;
+    #[link_name = "cudf_mixed_full_join_indices"]
+    pub(crate) fn cudf_mixed_full_join_indices_raw(
+        left_equality: *mut c_void,
+        right_equality: *mut c_void,
+        left_conditional: *mut c_void,
+        right_conditional: *mut c_void,
+        predicate: *mut c_void,
+        null_equality: i32,
+        out_left_indices: *mut *mut c_void,
+        out_right_indices: *mut *mut c_void,
+    ) -> i32;
+    #[link_name = "cudf_mixed_left_semi_join_indices"]
+    pub(crate) fn cudf_mixed_left_semi_join_indices_raw(
+        left_equality: *mut c_void,
+        right_equality: *mut c_void,
+        left_conditional: *mut c_void,
+        right_conditional: *mut c_void,
+        predicate: *mut c_void,
+        null_equality: i32,
+        out_indices: *mut *mut c_void,
+    ) -> i32;
+    #[link_name = "cudf_mixed_left_anti_join_indices"]
+    pub(crate) fn cudf_mixed_left_anti_join_indices_raw(
+        left_equality: *mut c_void,
+        right_equality: *mut c_void,
+        left_conditional: *mut c_void,
+        right_conditional: *mut c_void,
+        predicate: *mut c_void,
+        null_equality: i32,
+        out_indices: *mut *mut c_void,
     ) -> i32;
     #[link_name = "cudf_scan_aggregation_create"]
     pub(crate) fn cudf_scan_aggregation_create_raw(kind: i32, out: *mut *mut c_void) -> i32;

@@ -160,6 +160,59 @@ fn test_scatter_writes_source_rows_into_target_and_supports_negative_indices() {
 }
 
 #[test]
+fn test_scatter_accepts_partial_scatter_map() {
+    let source = Table::from_columns(vec![column_from_slice(&[100i32, 200, 999]).unwrap()]).unwrap();
+    let target = Table::from_columns(vec![column_from_slice(&[10i32, 20, 30, 40]).unwrap()]).unwrap();
+    let scatter_map = column_from_slice(&[1i32, -1]).unwrap();
+
+    let result = copying::scatter(
+        &source.testing_view().unwrap(),
+        &scatter_map.testing_view().unwrap(),
+        &target.testing_view().unwrap(),
+    )
+    .unwrap();
+
+    let result_view = result.testing_view().unwrap();
+    assert_eq!(result_view.num_rows().unwrap(), 4);
+    assert_eq!(result_view.column(0).unwrap().to_vec::<i32>().unwrap(), vec![10, 100, 30, 200]);
+}
+
+#[test]
+fn test_scatter_accepts_empty_scatter_map_as_target_copy() {
+    let source = Table::from_columns(vec![column_from_slice(&[100i32, 200]).unwrap()]).unwrap();
+    let target = Table::from_columns(vec![column_from_slice(&[10i32, 20, 30]).unwrap()]).unwrap();
+    let scatter_map = column_from_slice::<i32>(&[]).unwrap();
+
+    let result = copying::scatter(
+        &source.testing_view().unwrap(),
+        &scatter_map.testing_view().unwrap(),
+        &target.testing_view().unwrap(),
+    )
+    .unwrap();
+
+    let result_view = result.testing_view().unwrap();
+    assert_eq!(result_view.num_rows().unwrap(), 3);
+    assert_eq!(result_view.column(0).unwrap().to_vec::<i32>().unwrap(), vec![10, 20, 30]);
+}
+
+#[test]
+fn test_scatter_rejects_scatter_map_longer_than_source() {
+    let source = Table::from_columns(vec![column_from_slice(&[100i32, 200]).unwrap()]).unwrap();
+    let target = Table::from_columns(vec![column_from_slice(&[10i32, 20, 30]).unwrap()]).unwrap();
+    let scatter_map = column_from_slice(&[0i32, 1, 2]).unwrap();
+
+    let err = copying::scatter(
+        &source.testing_view().unwrap(),
+        &scatter_map.testing_view().unwrap(),
+        &target.testing_view().unwrap(),
+    )
+    .expect_err("scatter_map longer than source should be rejected");
+
+    assert_eq!(err.operation(), "copying::scatter");
+    assert_eq!(err.detail_value("reason"), Some("scatter_map_too_long"));
+}
+
+#[test]
 fn test_scatter_rejects_null_scatter_map() {
     let source = Table::from_columns(vec![column_from_slice(&[100i32, 200]).unwrap()]).unwrap();
     let target = Table::from_columns(vec![column_from_slice(&[10i32, 20, 30]).unwrap()]).unwrap();
