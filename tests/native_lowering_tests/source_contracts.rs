@@ -25,6 +25,47 @@ fn pushed_down_parquet_predicate_with_filter_is_reader_pushdown() {
 }
 
 #[test]
+fn reader_pushdown_covered_filter_keeps_frontend_projection_order_after_reordered_source_read() {
+    let dir = unique_temp_dir("datafusion-nexus-native-lowering-source-order");
+    let path = dir.join("input.parquet");
+    write_snap_edge_parquet_file(&path);
+    let scan = parquet_edge_scan_with_projection_and_pushed_src_predicate(&path);
+    let scan_schema = scan.schema();
+    let predicate =
+        binary(col("src", &scan_schema).unwrap(), Operator::GtEq, lit(ScalarValue::Int64(Some(10))), &scan_schema)
+            .unwrap();
+    let plan: Arc<dyn ExecutionPlan> = Arc::new(FilterExec::try_new(predicate, scan).unwrap());
+
+    let result = lower_physical_plan_to_native(plan);
+
+    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.source_diagnostics.len(), 1);
+    assert_eq!(result.source_diagnostics[0].predicate_disposition.as_str(), "reader_pushdown");
+    let source = native_local_parquet_source(&result.plans[0]);
+    assert_eq!(source.read_columns, vec!["dst".to_string(), "src".to_string(), "weight".to_string()]);
+    assert_eq!(source.projected_output_columns, vec!["src".to_string(), "dst".to_string(), "weight".to_string()]);
+    assert!(source.reader_predicate.is_some());
+    assert!(native_filter_exprs(&result.plans[0]).is_empty());
+
+    let PlanNode::Projection(projection) = &result.plans[0].root_node().kind else {
+        panic!("reader-pushdown-covered source must project back to frontend scan order");
+    };
+    let projected_columns = projection
+        .expressions()
+        .map(|expr| match expr {
+            Expr::Column(column) => column.name().to_string(),
+            other => panic!("expected column projection, got {other:?}"),
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(projected_columns, vec!["src".to_string(), "dst".to_string(), "weight".to_string()]);
+    let projected_fields = projection.output_fields().map(|field| field.name().as_str()).collect::<Vec<_>>();
+    assert_eq!(projected_fields, vec!["src", "dst", "weight"]);
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
 fn pushed_down_parquet_predicate_subset_of_filter_is_reader_pushdown_with_native_verification() {
     let dir = unique_temp_dir("datafusion-nexus-native-lowering-pushed-predicate-subset");
     let path = dir.join("input.parquet");

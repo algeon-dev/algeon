@@ -454,6 +454,22 @@ pub(super) fn parquet_scan_with_projection_and_pushed_label_predicate(
     DataSourceExec::from_data_source(file_scan)
 }
 
+pub(super) fn parquet_edge_scan_with_projection_and_pushed_src_predicate(
+    path: &std::path::Path,
+) -> Arc<dyn ExecutionPlan> {
+    let scan = parquet_scan_with_projection_indices(path, vec![1, 2, 3]);
+    let data_source = scan.downcast_ref::<DataSourceExec>().expect("parquet scan should be DataSourceExec");
+    let (file_scan, parquet_source) =
+        data_source.downcast_to_file_source::<ParquetSource>().expect("parquet scan should use ParquetSource");
+    let scan_schema = scan.schema();
+    let predicate =
+        binary(col("src", &scan_schema).unwrap(), Operator::GtEq, lit(ScalarValue::Int64(Some(10))), &scan_schema)
+            .unwrap();
+    let parquet_source = parquet_source.with_predicate(predicate).with_pushdown_filters(true);
+    let file_scan = FileScanConfigBuilder::from(file_scan.clone()).with_source(Arc::new(parquet_source)).build();
+    DataSourceExec::from_data_source(file_scan)
+}
+
 pub(super) fn parquet_scan_with_pushed_down_label_prefix_predicate(path: &std::path::Path) -> Arc<dyn ExecutionPlan> {
     let scan = parquet_scan_with_projection_indices(path, vec![0, 4, 2, 3]);
     let data_source = scan.downcast_ref::<DataSourceExec>().expect("parquet scan should be DataSourceExec");
