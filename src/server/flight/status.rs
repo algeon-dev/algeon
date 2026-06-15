@@ -36,11 +36,19 @@ pub(super) fn verify_statement_query_plan(plan: &LogicalPlan) -> Result<(), Stat
 
 pub(super) fn verify_prepared_query_plan(plan: &LogicalPlan) -> Result<(), Status> {
     match plan {
-        LogicalPlan::Ddl(_) => Err(adapter_error_status(Error::new(
-            ErrorCode::InvalidRequest,
-            "datafusion_nexus.server.flight.get_flight_info_prepared_statement.verify_plan",
-            "Flight SQL prepared DDL statements must be executed with execute_update",
-        ))),
+        // DDL carries no result set, but DataFusion executes it eagerly in
+        // `execute_logical_plan` and yields an empty stream. The shared do_get
+        // path (`execute_ticket`) runs that identically for statement and
+        // prepared tickets, so prepared DDL flows through the query channel just
+        // like a non-prepared statement (see `verify_statement_query_plan`).
+        // JDBC clients such as DataGrip always wrap statements in a server-side
+        // prepared statement and call `execute()`, never `execute_update()`, so
+        // rejecting DDL here made `CREATE EXTERNAL TABLE` / `DROP` unrunnable
+        // from those clients. We still reject query-producing DDL (CTAS / CREATE
+        // INDEX) to match `dataset_schema_for_prepared_statement`.
+        LogicalPlan::Ddl(ddl) => {
+            verify_update_ddl(ddl, "datafusion_nexus.server.flight.get_flight_info_prepared_statement.verify_plan")
+        },
         LogicalPlan::Dml(_) | LogicalPlan::Copy(_) => Err(adapter_error_status(Error::new(
             ErrorCode::UnsupportedOperator,
             "datafusion_nexus.server.flight.get_flight_info_prepared_statement.verify_plan",
