@@ -105,6 +105,10 @@ fn build_rs_tracks_explicit_native_contract_env_changes() {
         "CUGRAPH_NATIVE_LINK_DIRS",
         "CUGRAPH_RUNTIME_LIB_DIRS",
         "CUGRAPH_CMAKE_BUILD_DIR",
+        "CUGRAPH_CPP_BUILD_DIR",
+        "CUGRAPH_SYS_AUTO_BUILD",
+        "CUDF_INSTALL_DIR",
+        "CMAKE_CUDA_ARCHITECTURES",
     ] {
         assert!(
             build_rs.contains(&format!("cargo:rerun-if-env-changed={env_var}")),
@@ -198,8 +202,30 @@ fn build_rs_uses_cmake_export_fallback_instead_of_pkg_config_or_deps_scanning() 
         build_support.contains("../cugraph/cpp/build"),
         "build_support.rs should support the workspace-local CMake export root for repo-local builds"
     );
+    assert!(
+        build_support.contains("cmake_build_dir.join(\"CMakeCache.txt\")"),
+        "build_support.rs should track CMakeCache.txt because package roots and CUDA architectures are cache inputs"
+    );
+    assert!(
+        build_rs.contains("prepare_workspace_cmake_export_dir"),
+        "build.rs should prepare the workspace-local cuGraph CMake export automatically before falling back to docs"
+    );
+    assert!(
+        build_support.contains("Command::new(\"cmake\")") && build_support.contains("build_workspace_cugraph_cpp"),
+        "build_support.rs should make the workspace-local native build a first-class cargo build path"
+    );
     assert!(!build_support.contains("pkg-config"), "build_support.rs should not fall back to pkg-config discovery");
     assert!(!build_rs.contains("_deps"), "build.rs should not scan private dependency layout details directly");
+}
+
+#[test]
+fn cmake_probe_pins_makefiles_generator_for_link_txt_contract() {
+    let build_support = read_build_support_rs();
+
+    assert!(
+        build_support.contains("\"-G\"") && build_support.contains("\"Unix Makefiles\""),
+        "the CMake metadata probe should pin a Makefiles generator because link.txt is part of that generator contract"
+    );
 }
 
 #[test]
