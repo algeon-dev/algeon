@@ -10,10 +10,11 @@ use arrow::{
 use arrow_flight::{
     error::FlightError,
     sql::{
-        CommandGetCrossReference, CommandGetDbSchemas, CommandGetExportedKeys, CommandGetImportedKeys,
-        CommandGetPrimaryKeys, CommandGetTables, SqlInfo, SqlNullOrdering, SqlOuterJoinsSupportLevel,
-        SqlSupportedGroupBy, SqlSupportedResultSetConcurrency, SqlSupportedResultSetType, SqlSupportedTransaction,
-        SqlSupportedUnions, client::FlightSqlServiceClient,
+        ActionCreatePreparedStatementRequest, ActionCreatePreparedStatementResult, Any, CommandGetCrossReference,
+        CommandGetDbSchemas, CommandGetExportedKeys, CommandGetImportedKeys, CommandGetPrimaryKeys, CommandGetTables,
+        ProstMessageExt, SqlInfo, SqlNullOrdering, SqlOuterJoinsSupportLevel, SqlSupportedGroupBy,
+        SqlSupportedResultSetConcurrency, SqlSupportedResultSetType, SqlSupportedTransaction, SqlSupportedUnions,
+        client::FlightSqlServiceClient,
     },
 };
 use datafusion_nexus::server::{
@@ -175,7 +176,7 @@ async fn statement_update_create_external_table_executes_and_persists() {
 
     server.abort();
 
-    assert_eq!(record_count, -1, "DataFusion DDL does not expose an affected-row count");
+    assert_eq!(record_count, 0, "DDL statements do not update table rows");
     assert_eq!(batches.len(), 1);
     assert_eq!(int_value(batches[0].column(0)), Some(2));
 }
@@ -210,9 +211,39 @@ async fn prepared_statement_update_create_external_table_executes_and_persists()
 
     server.abort();
 
-    assert_eq!(record_count, -1, "DataFusion DDL does not expose an affected-row count");
+    assert_eq!(record_count, 0, "DDL statements do not update table rows");
     assert_eq!(batches.len(), 1);
     assert_eq!(int_value(batches[0].column(0)), Some(2));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn prepared_ddl_create_action_omits_dataset_schema_bytes() {
+    let addr = free_local_addr();
+    let mut config = ServerConfig::from_env_get(|_| None).unwrap();
+    config.bind_addr = addr;
+
+    let server = tokio::spawn(async move { serve(config).await });
+    let mut client = connect_with_retry(addr).await;
+    let dir = tempfile::Builder::new().prefix("datafusion-nexus-flight-sql-prepared-schema-").tempdir().unwrap();
+    let parquet_path = dir.path().join("edges.parquet");
+    write_update_edges_parquet(&parquet_path);
+
+    let prepared = create_prepared_raw(
+        &mut client,
+        format!(
+            "CREATE EXTERNAL TABLE schema_probe_edges STORED AS PARQUET LOCATION '{}'",
+            parquet_path.to_string_lossy()
+        ),
+    )
+    .await;
+    close_prepared_raw(&mut client, prepared.prepared_statement_handle.clone()).await;
+
+    server.abort();
+
+    assert!(
+        prepared.dataset_schema.is_empty(),
+        "non-result-set prepared DDL must omit dataset_schema rather than advertise a 0-column result"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -261,12 +292,53 @@ async fn prepared_statement_query_create_external_table_executes_and_persists() 
     assert_eq!(int_value(batches[0].column(0)), Some(2));
 }
 
+// Regression for the observed JDBC/DataGrip flow: the same prepared DDL handle
+// is first executed as an update, then the client also asks for a query ticket.
+// The query-channel pass must be a no-op with an empty result, not a duplicate
+// DDL execution or a client-visible failure.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn prepared_ddl_update_then_query_double_send_is_deduplicated() {
+    let addr = free_local_addr();
+    let mut config = ServerConfig::from_env_get(|_| None).unwrap();
+    config.bind_addr = addr;
+
+    let server = tokio::spawn(async move { serve(config).await });
+    let mut client = connect_with_retry(addr).await;
+    let dir = tempfile::Builder::new().prefix("datafusion-nexus-flight-sql-dedup-mixed-").tempdir().unwrap();
+    let parquet_path = dir.path().join("edges.parquet");
+    write_update_edges_parquet(&parquet_path);
+
+    let create_sql = format!(
+        "CREATE EXTERNAL TABLE dedup_mixed_edges STORED AS PARQUET LOCATION '{}'",
+        parquet_path.to_string_lossy()
+    );
+
+    let mut prepared = client.prepare(create_sql, None).await.unwrap();
+    assert_eq!(prepared.dataset_schema().unwrap().fields().len(), 0, "DDL prepared statements do not return rows");
+
+    let update_count = prepared.execute_update().await.unwrap();
+    assert_eq!(update_count, 0, "DDL statements do not update table rows");
+
+    let flight_info = prepared.execute().await.unwrap();
+    let ticket = flight_info.endpoint.first().and_then(|endpoint| endpoint.ticket.clone()).unwrap();
+    let rows: usize =
+        client.do_get(ticket).await.unwrap().try_collect::<Vec<_>>().await.unwrap().iter().map(|b| b.num_rows()).sum();
+    assert_eq!(rows, 0, "query-channel duplicate of an already-executed DDL handle must be an empty no-op");
+
+    prepared.close().await.unwrap();
+    let batches = execute_batches(&mut client, "SELECT COUNT(*) AS edge_count FROM dedup_mixed_edges").await;
+
+    server.abort();
+
+    assert_eq!(batches.len(), 1);
+    assert_eq!(int_value(batches[0].column(0)), Some(2));
+}
+
 // Regression: a prepared DDL handle re-executed twice — the double-send a
 // JDBC client such as DataGrip triggers — must succeed both times. DataGrip /
-// the Arrow Flight SQL JDBC driver classify the empty result schema of a DDL
-// prepared statement as IS_DML, so `execute()` routes to `executeUpdate()`
-// (the update channel) and re-uses the held handle. The second execution is
-// deduplicated into a no-op instead of failing with "already exists".
+// the Arrow Flight SQL JDBC driver classify DDL prepared statements as updates
+// when no result-set schema is advertised. The second execution is deduplicated
+// into a no-op instead of failing with "already exists".
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn prepared_ddl_double_execute_is_deduplicated_on_update_channel() {
     let addr = free_local_addr();
@@ -289,12 +361,12 @@ async fn prepared_ddl_double_execute_is_deduplicated_on_update_channel() {
     assert_eq!(prepared.dataset_schema().unwrap().fields().len(), 0, "DDL prepared statements do not return rows");
 
     let first = prepared.execute_update().await.unwrap();
-    assert_eq!(first, -1, "DataFusion DDL does not expose an affected-row count");
+    assert_eq!(first, 0, "DDL statements do not update table rows");
 
     // The double-send: same handle, executed again. Must be a no-op, not an
     // "already exists" rejection.
     let second = prepared.execute_update().await.unwrap();
-    assert_eq!(second, -1, "re-executing the same prepared DDL handle must be a deduplicated no-op");
+    assert_eq!(second, 0, "re-executing the same prepared DDL handle must be a deduplicated no-op");
 
     prepared.close().await.unwrap();
     let batches = execute_batches(&mut client, "SELECT COUNT(*) AS edge_count FROM dedup_update_edges").await;
@@ -1176,6 +1248,39 @@ async fn execute_batches(
     let flight_info = client.execute(sql.to_string(), None).await.unwrap();
     let ticket = flight_info.endpoint.first().and_then(|endpoint| endpoint.ticket.clone()).unwrap();
     client.do_get(ticket).await.unwrap().try_collect::<Vec<_>>().await.unwrap()
+}
+
+async fn create_prepared_raw(
+    client: &mut FlightSqlServiceClient<tonic::transport::Channel>,
+    sql: String,
+) -> ActionCreatePreparedStatementResult {
+    use prost::Message as _;
+
+    let action_body = ActionCreatePreparedStatementRequest { query: sql, transaction_id: None };
+    let action = arrow_flight::Action {
+        r#type: "CreatePreparedStatement".to_string(),
+        body: action_body.as_any().encode_to_vec().into(),
+    };
+    let mut stream = client.do_action(action).await.unwrap();
+    let result = stream.message().await.unwrap().expect("CreatePreparedStatement action must return one result");
+    let any = Any::decode(&*result.body).unwrap();
+    any.unpack::<ActionCreatePreparedStatementResult>().unwrap().unwrap()
+}
+
+async fn close_prepared_raw(
+    client: &mut FlightSqlServiceClient<tonic::transport::Channel>,
+    handle: prost::bytes::Bytes,
+) {
+    use arrow_flight::sql::ActionClosePreparedStatementRequest;
+    use prost::Message as _;
+
+    let action_body = ActionClosePreparedStatementRequest { prepared_statement_handle: handle };
+    let action = arrow_flight::Action {
+        r#type: "ClosePreparedStatement".to_string(),
+        body: action_body.as_any().encode_to_vec().into(),
+    };
+    let mut stream = client.do_action(action).await.unwrap();
+    while stream.message().await.unwrap().is_some() {}
 }
 
 fn write_update_edges_parquet(path: &Path) {

@@ -68,7 +68,7 @@ use tickets::*;
 
 const FLIGHT_SQL_CANCEL_RESULT_CANCELLING: i32 = 2;
 const FLIGHT_SQL_CANCEL_RESULT_NOT_CANCELLABLE: i32 = 3;
-const UNKNOWN_UPDATE_RECORD_COUNT: i64 = -1;
+const NO_UPDATED_RECORDS_COUNT: i64 = 0;
 const SQL_ANSI92_ENTRY_SQL_BIT_INDEX: i32 = 0;
 const QUERY_ID_METADATA_KEY: &str = "x-datafusion-nexus-query-id";
 
@@ -84,12 +84,12 @@ const ADMISSION_SWEEP_POLL_INTERVAL: Duration = Duration::from_millis(50);
 /// A live Flight SQL prepared statement.
 ///
 /// JDBC clients such as DataGrip prepare a statement once and then re-run the
-/// held handle. A DDL statement prepares with an empty result schema, which the
-/// Arrow Flight SQL JDBC driver classifies as `IS_DML` and executes through
-/// `executeUpdate` (the update channel); DataGrip re-runs that same handle, so
-/// the second execution would otherwise hit DataFusion's "already exists" /
-/// "not found" catalog error. We deduplicate no-result-set DDL per handle: the
-/// first execution runs, later executions of the *same* handle are no-ops.
+/// held handle. A DDL statement prepares without a result-set schema, so JDBC
+/// clients classify it as an update and execute through `executeUpdate` (the
+/// update channel). Some clients still re-run that same handle, so the second
+/// execution would otherwise hit DataFusion's "already exists" / "not found"
+/// catalog error. We deduplicate no-result-set DDL per handle: the first
+/// execution runs, later executions of the *same* handle are no-ops.
 /// Query / DML prepared statements set `no_result_ddl = false` and are never
 /// deduplicated, so they can still be executed repeatedly.
 ///
@@ -787,7 +787,7 @@ impl DatafusionCudfFlightSqlService {
         };
 
         lifecycle.finish_success("collect");
-        Ok(UNKNOWN_UPDATE_RECORD_COUNT)
+        Ok(NO_UPDATED_RECORDS_COUNT)
     }
 
     fn dataset_schema_for_prepared_statement(&self, plan: &LogicalPlan) -> Result<Schema, Status> {
@@ -821,6 +821,13 @@ impl DatafusionCudfFlightSqlService {
             },
             _ => Ok(plan.schema().as_arrow().clone()),
         }
+    }
+
+    fn prepared_statement_has_result_set(&self, plan: &LogicalPlan) -> bool {
+        !matches!(
+            plan,
+            LogicalPlan::Ddl(_) | LogicalPlan::Statement(Statement::SetVariable(_) | Statement::ResetVariable(_))
+        )
     }
 
     fn cancel_from_flight_info(&self, raw_info: &[u8]) -> Result<bool, Status> {
