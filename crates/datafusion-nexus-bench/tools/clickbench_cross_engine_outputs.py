@@ -216,9 +216,8 @@ def discover_fixture(explicit: Path | None, repo_root: Path) -> Path:
         candidates.append(Path(env))
     candidates.extend(
         [
-            Path("/opt/dlami/nvme/clickbench/partitioned"),
-            repo_root / "tests" / "data" / "clickbench" / "partitioned",
-            repo_root / "tests" / "data" / "clickbench" / "hits.parquet",
+            repo_root / "fixture" / "data" / "clickbench" / "partitioned",
+            repo_root / "fixture" / "data" / "clickbench" / "hits.parquet",
         ]
     )
     for candidate in candidates:
