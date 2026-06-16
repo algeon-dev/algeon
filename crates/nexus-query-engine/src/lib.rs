@@ -34,16 +34,23 @@ pub mod error;
 pub mod exec;
 /// DataFusion-free expression IR used by native query plans.
 pub mod expr;
+/// Stable helper primitives shared by report and benchmark harnesses.
+pub mod harness;
 /// Runtime metrics, counters, and memory-reservation event records.
 pub mod metrics;
 pub mod mode;
+/// Stable name-generation helpers shared across native planning code.
+pub mod naming;
 pub mod optimizer;
 pub(crate) mod parquet_metadata;
+/// Shared Parquet footer/statistics helpers for native pruning and sizing.
+pub mod parquet_stats;
 pub mod pipeline;
 /// DataFusion-free query plan IR and graph operators.
 pub mod plan;
 pub mod runtime;
 pub mod source;
+pub(crate) mod util;
 
 /// Common native-engine imports for constructing and executing a plan.
 pub mod prelude {

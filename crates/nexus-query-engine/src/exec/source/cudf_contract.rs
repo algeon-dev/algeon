@@ -103,7 +103,7 @@ pub(super) fn cudf_local_parquet_source_chunk(
                     error,
                     chunk,
                 )
-                .with_fact("path", chunk_path_fact(chunk))
+                .with_fact("path", parquet_chunk_path_fact(chunk))
                 .with_fact("chunk_index", chunk.chunk_index)
                 .with_fact("file_index", chunk.file_index)
                 .with_fact("read_columns", chunk.read_columns.len())
@@ -177,7 +177,7 @@ pub(super) fn cudf_local_parquet_source_chunk_batch(
                     error,
                     chunk,
                 )
-                .with_fact("path", chunk_path_fact(chunk))
+                .with_fact("path", parquet_chunk_path_fact(chunk))
                 .with_fact("chunk_index", chunk.chunk_index)
                 .with_fact("file_index", chunk.file_index)
                 .with_fact("batch_file_index", batch_file_index)
@@ -228,7 +228,7 @@ pub(super) fn cudf_local_parquet_source_file_selection(
                     error,
                     file,
                 )
-                .with_fact("path", file_path_fact(file))
+                .with_fact("path", parquet_file_path_fact(file))
                 .with_fact("chunk_index", chunk_index)
                 .with_fact("file_index", file_index)
                 .with_fact("read_columns", source.read_columns.len())
@@ -481,18 +481,6 @@ fn path_fact(path: &Path) -> String {
     crate::source::redacted_path_diagnostic(path)
 }
 
-fn chunk_path_fact(chunk: &SourceChunk) -> String {
-    if chunk.location.is_local_path() { path_fact(&chunk.path) } else { chunk.location.diagnostic_location() }
-}
-
-fn file_path_fact(file: &LocalParquetFile) -> String {
-    if file.location.is_local_path() { path_fact(&file.path) } else { file.location.diagnostic_location() }
-}
-
-fn file_stable_id_fact(file: &LocalParquetFile) -> String {
-    file.location.diagnostic_stable_id(file.stable_id.as_str())
-}
-
 fn source_has_object_store_location(source: &LocalParquetSource) -> bool {
     source.files.iter().any(|file| !file.location.is_local_path())
 }
@@ -556,7 +544,7 @@ fn cudf_local_parquet_source_for_chunk(
     )
     .map_err(|error| {
         error
-            .with_fact("path", chunk_path_fact(chunk))
+            .with_fact("path", parquet_chunk_path_fact(chunk))
             .with_fact("chunk_index", chunk.chunk_index)
             .with_fact("file_index", chunk.file_index)
             .with_fact("read_columns", chunk.read_columns.len())
@@ -580,7 +568,7 @@ fn cudf_local_parquet_source_for_file(
     )
     .map_err(|error| {
         error
-            .with_fact("path", file_path_fact(file))
+            .with_fact("path", parquet_file_path_fact(file))
             .with_fact("chunk_index", chunk_index)
             .with_fact("file_index", file_index)
             .with_fact("read_columns", source.read_columns.len())
@@ -948,7 +936,7 @@ fn cudf_local_parquet_file_for_chunk(
             error,
             chunk,
         )
-        .with_fact("path", chunk_path_fact(chunk))
+        .with_fact("path", parquet_chunk_path_fact(chunk))
         .with_fact("chunk_index", chunk.chunk_index)
         .with_fact("file_index", chunk.file_index)
     })?;
@@ -973,7 +961,7 @@ fn cudf_local_parquet_file_for_chunk(
                     error,
                     chunk,
                 )
-                .with_fact("path", chunk_path_fact(chunk))
+                .with_fact("path", parquet_chunk_path_fact(chunk))
                 .with_fact("chunk_index", chunk.chunk_index)
                 .with_fact("file_index", chunk.file_index)
             })?;
@@ -990,7 +978,7 @@ fn cudf_local_parquet_file_for_chunk(
                     error,
                     chunk,
                 )
-                .with_fact("path", chunk_path_fact(chunk))
+                .with_fact("path", parquet_chunk_path_fact(chunk))
                 .with_fact("chunk_index", chunk.chunk_index)
                 .with_fact("file_index", chunk.file_index)
             })?;
@@ -1007,7 +995,7 @@ fn cudf_local_parquet_file_for_chunk(
                     error,
                     chunk,
                 )
-                .with_fact("path", chunk_path_fact(chunk))
+                .with_fact("path", parquet_chunk_path_fact(chunk))
                 .with_fact("chunk_index", chunk.chunk_index)
                 .with_fact("file_index", chunk.file_index)
             })?;
@@ -1060,8 +1048,8 @@ fn cudf_local_parquet_file(
             error,
             file,
         )
-        .with_fact("path", file_path_fact(file))
-        .with_fact("stable_id", file_stable_id_fact(file))
+        .with_fact("path", parquet_file_path_fact(file))
+        .with_fact("stable_id", parquet_file_stable_id_fact(file))
     })?;
     cudf_file = attach_cudf_remote_parquet_contract(
         context,
@@ -1082,8 +1070,8 @@ fn cudf_local_parquet_file(
                     error,
                     file,
                 )
-                .with_fact("path", file_path_fact(file))
-                .with_fact("stable_id", file_stable_id_fact(file))
+                .with_fact("path", parquet_file_path_fact(file))
+                .with_fact("stable_id", parquet_file_stable_id_fact(file))
             })?;
     }
     if let (Some(compressed_bytes), Some(uncompressed_bytes)) =
@@ -1098,8 +1086,8 @@ fn cudf_local_parquet_file(
                     error,
                     file,
                 )
-                .with_fact("path", file_path_fact(file))
-                .with_fact("stable_id", file_stable_id_fact(file))
+                .with_fact("path", parquet_file_path_fact(file))
+                .with_fact("stable_id", parquet_file_stable_id_fact(file))
             })?;
     }
     if let (Some(compressed_bytes), Some(uncompressed_bytes)) =
@@ -1114,8 +1102,8 @@ fn cudf_local_parquet_file(
                     error,
                     file,
                 )
-                .with_fact("path", file_path_fact(file))
-                .with_fact("stable_id", file_stable_id_fact(file))
+                .with_fact("path", parquet_file_path_fact(file))
+                .with_fact("stable_id", parquet_file_stable_id_fact(file))
             })?;
     }
     cudf_file = attach_cudf_reader_decimal_types(

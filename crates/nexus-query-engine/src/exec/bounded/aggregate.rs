@@ -5,7 +5,7 @@ use arrow::{
 };
 
 use super::{compiled::ResidentFrameStreamPayload, *};
-use crate::exec::source::record_bounded_parquet_source_metrics;
+use crate::exec::{operators::final_global_aggregate_spec, source::record_bounded_parquet_source_metrics};
 
 mod final_merge;
 mod final_merge_policy;
@@ -24,10 +24,7 @@ use partitioned::{
     should_partition_compiled_grouped_aggregate,
 };
 pub(super) use plan::{BoundedPlan, BoundedUnaryStage};
-use post_stages::{
-    aggregate_spec_has_global_final_state, execute_final_aggregate, execute_final_aggregate_projection,
-    final_global_aggregate_spec,
-};
+use post_stages::{aggregate_spec_has_global_final_state, execute_final_aggregate, execute_final_aggregate_projection};
 pub(super) use post_stages::{execute_post_aggregate_stages, execute_post_sort_projections, execute_standalone_limit};
 pub use sizing::{PartialAggregateShape, partial_aggregate_upper_bound_bytes};
 use sizing::{
@@ -429,24 +426,16 @@ fn execute_compiled_bounded_exact_host_aggregate_from_frame(
         },
     };
     let output_resident_request = output_upload_request.clone().with_requested_bytes(output_bytes);
-    if output_bytes > output_reservation.bytes() {
-        let delta = output_bytes.saturating_sub(output_reservation.bytes());
-        if let Err(error) = reservations.try_grow(
-            &mut output_reservation,
-            output_upload_request.clone().with_requested_bytes(delta),
-            metrics,
-        ) {
-            drop(frame);
-            reservations.release(output_reservation, metrics);
-            return Err(error);
-        }
-    } else {
-        reservations.shrink_to_observed_with_request(
-            &mut output_reservation,
-            output_bytes,
-            output_resident_request.clone(),
-            metrics,
-        );
+    if let Err(error) = reconcile_work_reservation_to_output(
+        reservations,
+        &mut output_reservation,
+        output_bytes,
+        &output_resident_request,
+        metrics,
+    ) {
+        drop(frame);
+        reservations.release(output_reservation, metrics);
+        return Err(error);
     }
     let output_reservation = reservations.transfer(output_reservation, output_resident_request, metrics);
     Ok(ResidentGpuFrame { frame, reservation: output_reservation })

@@ -13,15 +13,20 @@ use parquet::{
     file::{
         metadata::RowGroupMetaData,
         reader::{FileReader, SerializedFileReader},
-        statistics::Statistics,
     },
-    schema::types::SchemaDescriptor,
 };
 
-use super::rewrite;
+use super::{
+    access::{
+        local_parquet_source, mutable_local_parquet_source, predicate_columns, reader_projection_indices,
+        reader_projection_indices_for_exprs,
+    },
+    rewrite,
+};
 use crate::{
     error::{QueryError, QueryErrorCode},
     expr::{BinaryOp, ColumnRef, Expr, LiteralValue},
+    parquet_stats::{row_group_i64_range, single_leaf_primitive_root_column_index},
     plan::{JoinNode, JoinSide, JoinType, NodeId, PlanNode, QueryNode, QueryPlan},
     source::{LocalParquetFile, LocalParquetSource, SourceColumnRef, SourceNode},
 };
@@ -567,6 +572,9 @@ fn remap_join_output_predicate(predicate: &Expr, join: &JoinNode) -> Option<(Joi
     side.map(|side| (side, remapped))
 }
 
+// Deliberately narrower than the similarly named helper in
+// `join_filter_reassociation`: dimension pruning must reject expression
+// families it cannot prove safe to push into source pruning.
 fn remap_unqualified_columns(expr: &Expr, map_column: &mut impl FnMut(&ColumnRef) -> Option<Expr>) -> Option<Expr> {
     match expr {
         Expr::Column(column) if column.qualifier().is_none() => map_column(column),
@@ -836,31 +844,6 @@ fn projection_expr_lineages(
         Expr::Alias { expr, .. } => projection_expr_lineages(plan, parent_counts, input, expr),
         _ => Vec::new(),
     }
-}
-
-fn local_parquet_source(plan: &QueryPlan, node_id: NodeId) -> Option<&LocalParquetSource> {
-    let node = plan.node(node_id)?;
-    let PlanNode::Source(source) = &node.kind else {
-        return None;
-    };
-    let SourceNode::LocalParquet(source) = source.as_ref() else {
-        return None;
-    };
-    Some(source)
-}
-
-fn mutable_local_parquet_source(nodes: &mut [QueryNode], node_id: NodeId) -> Option<&mut LocalParquetSource> {
-    let node = nodes.get_mut(node_id.index())?;
-    if node.id != node_id {
-        return None;
-    }
-    let PlanNode::Source(source) = &mut node.kind else {
-        return None;
-    };
-    let SourceNode::LocalParquet(source) = source.as_mut() else {
-        return None;
-    };
-    Some(source)
 }
 
 fn dimension_scan_admitted(source: &LocalParquetSource, max_dimension_rows: u64) -> bool {
@@ -1268,104 +1251,6 @@ fn observe_i64_expr_range_batch(
     Some(())
 }
 
-fn reader_projection_indices_for_exprs(
-    source: &LocalParquetSource,
-    expr: &Expr,
-    predicate: Option<&Expr>,
-) -> Option<BTreeSet<usize>> {
-    let mut columns = BTreeSet::new();
-    for column in predicate_columns(expr) {
-        let SourceColumnRef::File(column_index) = source.source_column_ref(&column)? else {
-            return None;
-        };
-        columns.insert(column_index);
-    }
-    if let Some(predicate) = predicate {
-        for column in predicate_columns(predicate) {
-            let SourceColumnRef::File(column_index) = source.source_column_ref(&column)? else {
-                return None;
-            };
-            columns.insert(column_index);
-        }
-    }
-    (!columns.is_empty()).then_some(columns)
-}
-
-fn reader_projection_indices(
-    source: &LocalParquetSource,
-    key_column: &str,
-    predicate: &Expr,
-) -> Option<BTreeSet<usize>> {
-    let mut columns = BTreeSet::new();
-    let SourceColumnRef::File(key_index) = source.source_column_ref(key_column)? else {
-        return None;
-    };
-    columns.insert(key_index);
-    for column in predicate_columns(predicate) {
-        let SourceColumnRef::File(column_index) = source.source_column_ref(&column)? else {
-            return None;
-        };
-        columns.insert(column_index);
-    }
-    Some(columns)
-}
-
-fn predicate_columns(expr: &Expr) -> Vec<String> {
-    let mut columns = Vec::new();
-    collect_expr_columns(expr, &mut columns);
-    columns.sort();
-    columns.dedup();
-    columns
-}
-
-fn collect_expr_columns(expr: &Expr, columns: &mut Vec<String>) {
-    match expr {
-        Expr::Column(column) => columns.push(column.name().to_string()),
-        Expr::Not(inner)
-        | Expr::IsNull(inner)
-        | Expr::IsNotNull(inner)
-        | Expr::Alias { expr: inner, .. }
-        | Expr::Cast { expr: inner, .. }
-        | Expr::TryCast { expr: inner, .. }
-        | Expr::Lower(inner)
-        | Expr::Upper(inner)
-        | Expr::Abs(inner) => collect_expr_columns(inner, columns),
-        Expr::Binary { left, right, .. }
-        | Expr::IsDistinctFrom { left, right }
-        | Expr::IsNotDistinctFrom { left, right } => {
-            collect_expr_columns(left, columns);
-            collect_expr_columns(right, columns);
-        },
-        Expr::InList { expr, list, .. } => {
-            collect_expr_columns(expr, columns);
-            for item in list {
-                collect_expr_columns(item, columns);
-            }
-        },
-        Expr::Like { expr, .. }
-        | Expr::Substring { expr, .. }
-        | Expr::StringLength { expr, .. }
-        | Expr::RegexpReplace { expr, .. }
-        | Expr::Sqrt { expr, .. }
-        | Expr::Round { expr, .. }
-        | Expr::Extract { expr, .. }
-        | Expr::DateTrunc { expr, .. } => collect_expr_columns(expr, columns),
-        Expr::Concat(exprs) => {
-            for expr in exprs {
-                collect_expr_columns(expr, columns);
-            }
-        },
-        Expr::Case { branches, else_expr } => {
-            for branch in branches {
-                collect_expr_columns(&branch.when, columns);
-                collect_expr_columns(&branch.then, columns);
-            }
-            collect_expr_columns(else_expr, columns);
-        },
-        Expr::Literal(_) => {},
-    }
-}
-
 #[derive(Debug, Clone, PartialEq)]
 enum Scalar {
     Boolean(bool),
@@ -1770,19 +1655,6 @@ fn prune_target_source(
     Some(TargetPruneResult { before, after, applied: true })
 }
 
-fn single_leaf_primitive_root_column_index(schema: &SchemaDescriptor, root_index: usize) -> Option<usize> {
-    if !schema.root_schema().get_fields().get(root_index)?.is_primitive() {
-        return None;
-    }
-    let mut leaf_indices =
-        (0..schema.num_columns()).filter(|leaf_index| schema.get_column_root_idx(*leaf_index) == root_index);
-    let leaf_index = leaf_indices.next()?;
-    if leaf_indices.next().is_some() {
-        return None;
-    }
-    Some(leaf_index)
-}
-
 /// Outcome of [`apply_dimension_derived_pruning_with_stats`].
 #[derive(Debug, Clone)]
 pub struct DimensionDerivedApplyResult {
@@ -1966,14 +1838,7 @@ pub fn apply_dimension_derived_pruning_with_stats(
 }
 
 fn row_group_key_range(row_group: &RowGroupMetaData, column_index: usize) -> Option<KeyRange> {
-    let statistics = row_group.columns().get(column_index)?.statistics()?;
-    match statistics {
-        Statistics::Int32(stats) => {
-            Some(KeyRange { min: i64::from(*stats.min_opt()?), max: i64::from(*stats.max_opt()?) })
-        },
-        Statistics::Int64(stats) => Some(KeyRange { min: *stats.min_opt()?, max: *stats.max_opt()? }),
-        _ => None,
-    }
+    row_group_i64_range(row_group, column_index).map(|range| KeyRange { min: range.min, max: range.max })
 }
 
 fn ranges_overlap(left: KeyRange, right: KeyRange) -> bool {

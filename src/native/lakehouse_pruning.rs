@@ -1,6 +1,6 @@
 //! Object-store footer pruning for native plans produced from table formats.
 
-use std::{collections::BTreeSet, future::Future, pin::Pin, sync::Arc};
+use std::{future::Future, pin::Pin, sync::Arc};
 
 use arrow::datatypes::DataType;
 use datafusion::{
@@ -19,7 +19,10 @@ use nexus_query_engine::{
     BinaryOp, DimensionDerivedKeyRange as KeyRange, DimensionKeyAccumulator, DimensionKeyFilter, Expr, LiteralValue,
     LocalParquetRowGroupSelection, LocalParquetSource, NodeId, ParquetSourceLocation, PlanNode, QueryPlan,
     SourceColumnRef, SourceNode, apply_dimension_derived_pruning_with_stats, apply_local_parquet_row_group_selections,
-    discover_dimension_derived_pruning_requests, seed_dimension_derived_reader_predicates,
+    discover_dimension_derived_pruning_requests,
+    optimizer::{local_parquet_source, reader_projection_indices},
+    parquet_stats::{leaf_column_statistics, row_group_i64_range_for_root_column},
+    seed_dimension_derived_reader_predicates,
 };
 
 use crate::{NativeCudfExec, native::table_format_pruning_policy::TableFormatPruningPolicy};
@@ -765,81 +768,6 @@ async fn derive_dimension_key_filter(
     Ok(accumulator.finish())
 }
 
-fn reader_projection_indices(
-    source: &LocalParquetSource,
-    key_column: &str,
-    predicate: &Expr,
-) -> Option<BTreeSet<usize>> {
-    let mut columns = BTreeSet::new();
-    let SourceColumnRef::File(key_index) = source.source_column_ref(key_column)? else {
-        return None;
-    };
-    columns.insert(key_index);
-    for column in predicate_columns(predicate) {
-        let SourceColumnRef::File(column_index) = source.source_column_ref(&column)? else {
-            return None;
-        };
-        columns.insert(column_index);
-    }
-    Some(columns)
-}
-
-fn predicate_columns(expr: &Expr) -> Vec<String> {
-    let mut columns = Vec::new();
-    collect_expr_columns(expr, &mut columns);
-    columns.sort();
-    columns.dedup();
-    columns
-}
-
-fn collect_expr_columns(expr: &Expr, columns: &mut Vec<String>) {
-    match expr {
-        Expr::Column(column) => columns.push(column.name().to_string()),
-        Expr::Not(inner)
-        | Expr::IsNull(inner)
-        | Expr::IsNotNull(inner)
-        | Expr::Alias { expr: inner, .. }
-        | Expr::Cast { expr: inner, .. }
-        | Expr::TryCast { expr: inner, .. }
-        | Expr::Lower(inner)
-        | Expr::Upper(inner)
-        | Expr::Abs(inner) => collect_expr_columns(inner, columns),
-        Expr::Binary { left, right, .. }
-        | Expr::IsDistinctFrom { left, right }
-        | Expr::IsNotDistinctFrom { left, right } => {
-            collect_expr_columns(left, columns);
-            collect_expr_columns(right, columns);
-        },
-        Expr::InList { expr, list, .. } => {
-            collect_expr_columns(expr, columns);
-            for item in list {
-                collect_expr_columns(item, columns);
-            }
-        },
-        Expr::Like { expr, .. }
-        | Expr::Substring { expr, .. }
-        | Expr::StringLength { expr, .. }
-        | Expr::RegexpReplace { expr, .. }
-        | Expr::Sqrt { expr, .. }
-        | Expr::Round { expr, .. }
-        | Expr::Extract { expr, .. }
-        | Expr::DateTrunc { expr, .. } => collect_expr_columns(expr, columns),
-        Expr::Concat(exprs) => {
-            for expr in exprs {
-                collect_expr_columns(expr, columns);
-            }
-        },
-        Expr::Case { branches, else_expr } => {
-            for branch in branches {
-                collect_expr_columns(&branch.when, columns);
-                collect_expr_columns(&branch.then, columns);
-            }
-            collect_expr_columns(else_expr, columns);
-        },
-        Expr::Literal(_) => {},
-    }
-}
-
 async fn parquet_metadata(
     store: Arc<dyn datafusion::object_store::ObjectStore>,
     path: ObjectStorePath,
@@ -857,57 +785,18 @@ fn row_group_key_ranges(
     selected_row_groups: &[usize],
 ) -> Vec<Option<KeyRange>> {
     let schema = metadata.file_metadata().schema_descr();
-    let leaf_column_index = single_leaf_primitive_root_column_index(schema, column_index);
     selected_row_groups
         .iter()
         .map(|row_group_index| {
             let row_group = metadata.row_groups().get(*row_group_index)?;
-            let statistics = leaf_column_index.and_then(|index| row_group.columns().get(index)?.statistics())?;
-            match statistics {
-                Statistics::Int32(stats) => {
-                    Some(KeyRange { min: i64::from(*stats.min_opt()?), max: i64::from(*stats.max_opt()?) })
-                },
-                Statistics::Int64(stats) => Some(KeyRange { min: *stats.min_opt()?, max: *stats.max_opt()? }),
-                _ => None,
-            }
+            row_group_i64_range_for_root_column(row_group, schema, column_index)
+                .map(|range| KeyRange { min: range.min, max: range.max })
         })
         .collect()
 }
 
-fn leaf_column_statistics<'a>(
-    row_group: &'a parquet::file::metadata::RowGroupMetaData,
-    schema: &SchemaDescriptor,
-    root_column_index: usize,
-) -> Option<&'a Statistics> {
-    let leaf_column_index = single_leaf_primitive_root_column_index(schema, root_column_index)?;
-    row_group.columns().get(leaf_column_index)?.statistics()
-}
-
-fn single_leaf_primitive_root_column_index(schema: &SchemaDescriptor, root_index: usize) -> Option<usize> {
-    if !schema.root_schema().get_fields().get(root_index)?.is_primitive() {
-        return None;
-    }
-    let mut leaf_indices =
-        (0..schema.num_columns()).filter(|leaf_index| schema.get_column_root_idx(*leaf_index) == root_index);
-    let leaf_index = leaf_indices.next()?;
-    if leaf_indices.next().is_some() {
-        return None;
-    }
-    Some(leaf_index)
-}
-
 fn selected_or_all_row_groups(selected: Option<&[usize]>, row_group_count: usize) -> Vec<usize> {
     selected.map_or_else(|| (0..row_group_count).collect(), |row_groups| row_groups.to_vec())
-}
-
-fn local_parquet_source(plan: &QueryPlan, node_id: NodeId) -> Option<&LocalParquetSource> {
-    match &plan.node(node_id)?.kind {
-        PlanNode::Source(source) => match source.as_ref() {
-            SourceNode::LocalParquet(source) => Some(source),
-            SourceNode::GpuResident(_) | SourceNode::LiteralBatch(_) => None,
-        },
-        _ => None,
-    }
 }
 
 struct ObjectStoreFile {

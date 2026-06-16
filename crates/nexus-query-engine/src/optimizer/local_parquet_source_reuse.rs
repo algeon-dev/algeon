@@ -5,7 +5,7 @@ use std::{
 
 use arrow::datatypes::{DataType, Field, Schema};
 
-use super::{dynamic_filter as dynamic_filter_optimizer, rewrite};
+use super::{consumers_by_node, dynamic_filter as dynamic_filter_optimizer, rewrite};
 use crate::{
     dynamic_filter::DynamicFilterConsumer,
     error::{QueryError, QueryErrorCode},
@@ -17,6 +17,7 @@ use crate::{
         LocalParquetFile, LocalParquetSource, ParquetReaderDecimalType, ResolvedParquetSource, SourceColumnRef,
         SourceNode,
     },
+    util::escape_kv_delimited,
 };
 
 /// Stable rule name used in optimizer diagnostics.
@@ -265,7 +266,7 @@ fn discover_source_reuse_candidates(
 }
 
 fn source_variant_feeds_source_adjacent_grouped_aggregate(plan: &QueryPlan, source_node_id: NodeId) -> bool {
-    let parents = source_parent_map(plan);
+    let parents = consumers_by_node(plan);
     let mut stack = parents.get(&source_node_id).cloned().unwrap_or_default();
     let mut visited = BTreeSet::new();
     while let Some(node_id) = stack.pop() {
@@ -288,16 +289,6 @@ fn source_variant_feeds_source_adjacent_grouped_aggregate(plan: &QueryPlan, sour
         }
     }
     false
-}
-
-fn source_parent_map(plan: &QueryPlan) -> BTreeMap<NodeId, Vec<NodeId>> {
-    let mut parents = BTreeMap::<NodeId, Vec<NodeId>>::new();
-    for node in plan.nodes() {
-        for input in node.input_ids() {
-            parents.entry(*input).or_default().push(node.id);
-        }
-    }
-    parents
 }
 
 fn source_reuse_would_widen_variant(variant: &SourceVariant, superset_read_columns: &[SupersetColumn]) -> bool {
@@ -560,23 +551,10 @@ fn push_optional_contract_value(output: &mut String, key: &str, value: Option<&s
 }
 
 fn push_contract_value(output: &mut String, key: &str, value: &str) {
-    output.push_str(escape_contract_value(key).as_str());
+    output.push_str(escape_kv_delimited(key).as_str());
     output.push('=');
-    output.push_str(escape_contract_value(value).as_str());
+    output.push_str(escape_kv_delimited(value).as_str());
     output.push(';');
-}
-
-fn escape_contract_value(value: &str) -> String {
-    let mut escaped = String::with_capacity(value.len());
-    for ch in value.chars() {
-        match ch {
-            '\\' => escaped.push_str("\\\\"),
-            '=' => escaped.push_str("\\="),
-            ';' => escaped.push_str("\\;"),
-            other => escaped.push(other),
-        }
-    }
-    escaped
 }
 
 fn exact_source_key(source: &LocalParquetSource) -> String {

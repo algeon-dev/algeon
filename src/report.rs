@@ -73,6 +73,15 @@ impl PlanningReport {
         self.outcomes.iter().filter(|outcome| matches!(outcome, CandidateOutcome::Rewritten { .. })).count()
     }
 
+    pub fn single_rewritten_candidate(&self) -> Option<&GpuCandidate> {
+        let mut rewritten = self.outcomes.iter().filter_map(|outcome| match outcome {
+            CandidateOutcome::Rewritten { candidate } => Some(candidate),
+            CandidateOutcome::Rejected { .. } => None,
+        });
+        let candidate = rewritten.next()?;
+        rewritten.next().is_none().then_some(candidate)
+    }
+
     pub fn rejected_count(&self) -> usize {
         self.outcomes.iter().filter(|outcome| matches!(outcome, CandidateOutcome::Rejected { .. })).count()
     }

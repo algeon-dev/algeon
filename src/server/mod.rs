@@ -15,6 +15,7 @@ mod admission;
 pub mod auth;
 mod cancel;
 pub mod config;
+mod datafusion_error;
 pub mod diagnostics;
 pub mod error;
 mod flight;

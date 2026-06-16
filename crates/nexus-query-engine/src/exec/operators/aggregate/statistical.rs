@@ -758,29 +758,26 @@ fn statistical_state_aliases_for_names(
     input_names: &BTreeSet<String>,
     index: usize,
 ) -> StatisticalStateAliases {
-    let aliases = StatisticalStateAliases {
-        value: format!("__cudf_stat_{index}_value"),
-        square: format!("__cudf_stat_{index}_square"),
-        sum: format!("__cudf_stat_{index}_sum"),
-        count: format!("__cudf_stat_{index}_count"),
-        sum_squares: format!("__cudf_stat_{index}_sum_squares"),
-    };
+    let aliases = statistical_state_aliases_with_suffix(index, None);
     if statistical_aliases_available(spec, input_names, &aliases) {
         return aliases;
     }
-    for suffix in 1usize.. {
-        let aliases = StatisticalStateAliases {
-            value: format!("__cudf_stat_{index}_value_{suffix}"),
-            square: format!("__cudf_stat_{index}_square_{suffix}"),
-            sum: format!("__cudf_stat_{index}_sum_{suffix}"),
-            count: format!("__cudf_stat_{index}_count_{suffix}"),
-            sum_squares: format!("__cudf_stat_{index}_sum_squares_{suffix}"),
-        };
-        if statistical_aliases_available(spec, input_names, &aliases) {
-            return aliases;
-        }
+    let suffix = crate::naming::first_available_numeric_suffix_from(1, |suffix| {
+        let aliases = statistical_state_aliases_with_suffix(index, Some(suffix));
+        !statistical_aliases_available(spec, input_names, &aliases)
+    });
+    statistical_state_aliases_with_suffix(index, Some(suffix))
+}
+
+fn statistical_state_aliases_with_suffix(index: usize, suffix: Option<usize>) -> StatisticalStateAliases {
+    let suffix = suffix.map(|suffix| format!("_{suffix}")).unwrap_or_default();
+    StatisticalStateAliases {
+        value: format!("__cudf_stat_{index}_value{suffix}"),
+        square: format!("__cudf_stat_{index}_square{suffix}"),
+        sum: format!("__cudf_stat_{index}_sum{suffix}"),
+        count: format!("__cudf_stat_{index}_count{suffix}"),
+        sum_squares: format!("__cudf_stat_{index}_sum_squares{suffix}"),
     }
-    unreachable!("usize suffix space is finite but practically inexhaustible")
 }
 
 fn statistical_aliases_available(
@@ -804,16 +801,9 @@ fn statistical_aliases_available(
 }
 
 fn unique_internal_column_name(frame: &DataFrame, spec: &AggregateSpec, base: String) -> String {
-    if internal_column_name_available(frame, spec, &base) {
-        return base;
-    }
-    for suffix in 1usize.. {
-        let candidate = format!("{base}_{suffix}");
-        if internal_column_name_available(frame, spec, &candidate) {
-            return candidate;
-        }
-    }
-    unreachable!("usize suffix space is finite but practically inexhaustible")
+    crate::naming::unique_alias_with_suffix(base.as_str(), |candidate| {
+        !internal_column_name_available(frame, spec, candidate)
+    })
 }
 
 fn internal_column_name_available(frame: &DataFrame, spec: &AggregateSpec, candidate: &str) -> bool {

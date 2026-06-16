@@ -1,5 +1,4 @@
 use std::{
-    cmp,
     collections::{BTreeMap, BTreeSet},
     sync::Arc,
     time::{Duration, Instant},
@@ -8,7 +7,12 @@ use std::{
 use arrow::datatypes::SchemaRef as ArrowSchemaRef;
 
 use super::{
-    filter_inputs::filtered_aggregate_input_type,
+    filter_inputs::{filtered_aggregate_input_type, filtered_aggregate_value_expr},
+    filtered_common::{
+        FilteredSegmentRuntimeStats, add_segmented_budgeted_execution_stats, estimate_column_bytes,
+        filtered_fixed_width_dtype_size, filtered_inputs_per_segment_for_budget, null_mask_bytes,
+        unsupported_stateful_filtered_merge,
+    },
     filtered_segment_policy::{FilteredAggregateScope, FilteredAggregateSegmentationPolicy},
     *,
 };
@@ -33,6 +37,20 @@ struct FilteredGroupedSegmentRuntimeStats {
     unresolved_contracts: BTreeSet<String>,
 }
 
+impl FilteredSegmentRuntimeStats for FilteredGroupedSegmentRuntimeStats {
+    fn observed_temporary_peak_bytes_mut(&mut self) -> &mut u64 {
+        &mut self.observed_temporary_peak_bytes
+    }
+
+    fn observed_retained_peak_bytes_mut(&mut self) -> &mut u64 {
+        &mut self.observed_retained_peak_bytes
+    }
+
+    fn unresolved_contracts_mut(&mut self) -> &mut BTreeSet<String> {
+        &mut self.unresolved_contracts
+    }
+}
+
 struct SegmentedFilteredGroupedPartialState {
     frame: GpuDataFrame,
     stats: FilteredGroupedSegmentRuntimeStats,
@@ -53,17 +71,7 @@ pub(super) fn select_filtered_grouped_aggregate_strategy(
 ) -> Result<FilteredGroupedAggregateStrategyDecision> {
     let policy = FilteredAggregateSegmentationPolicy::default();
     let footprint = estimate_filtered_grouped_materialization_footprint(spec, input_schema, input_rows)?;
-    let unsupported_stateful_merge = spec.aggr_exprs.iter().any(|expr| {
-        expr.distinct
-            || matches!(
-                expr.function,
-                AggregateFunction::NUnique
-                    | AggregateFunction::StddevSamp
-                    | AggregateFunction::StddevPop
-                    | AggregateFunction::VarSamp
-                    | AggregateFunction::VarPop
-            )
-    });
+    let unsupported_stateful_merge = unsupported_stateful_filtered_merge(spec);
     let threshold = policy.single_pass_threshold_bytes(budget_bytes);
     let single_pass_exceeds_threshold =
         footprint.filtered_count > 0 && footprint.estimated_materialization_bytes > threshold;
@@ -596,7 +604,7 @@ fn prepare_filtered_grouped_partial_segment(
             continue;
         };
         let input_type = filtered_aggregate_input_type(aggregate_expr, input_schema)?;
-        let value_expr = filtered_grouped_aggregate_value_expr(aggregate_expr);
+        let value_expr = filtered_aggregate_value_expr(aggregate_expr);
         let alias = unique_filtered_grouped_segment_alias("__cudf_filtered_grouped_arg", &fields);
         let predicate_alias = prepared_chunk.predicate_aliases.get(filter.to_string().as_str()).ok_or_else(|| {
             QueryError::new(
@@ -770,24 +778,6 @@ fn add_segmented_runtime_facts(
     );
 }
 
-fn add_segmented_budgeted_execution_stats(
-    stats: &mut FilteredGroupedSegmentRuntimeStats,
-    metrics: &QueryMetrics,
-    budget_event_start: usize,
-) {
-    for event in metrics.budgeted_execution_events.iter().skip(budget_event_start) {
-        if let Some(bytes) = event.allocator_high_water_bytes {
-            stats.observed_temporary_peak_bytes = stats.observed_temporary_peak_bytes.max(bytes);
-        }
-        if let Some(bytes) = event.retained_bytes {
-            stats.observed_retained_peak_bytes = stats.observed_retained_peak_bytes.max(bytes);
-        }
-        if let Some(contract) = &event.unresolved_contract {
-            stats.unresolved_contracts.insert(contract.clone());
-        }
-    }
-}
-
 #[derive(Debug, Clone, Copy)]
 struct FilteredGroupedMaterializationFootprint {
     filtered_count: usize,
@@ -870,7 +860,7 @@ fn estimate_filtered_grouped_materialization_footprint(
             unique_filter_predicates.insert(filter.to_string());
         }
         let input_type = filtered_aggregate_input_type(aggregate_expr, input_schema)?;
-        let element_width = fixed_width_dtype_size(&input_type).unwrap_or(STRING_OFFSET_BYTES_CONSERVATIVE);
+        let element_width = filtered_fixed_width_dtype_size(&input_type).unwrap_or(STRING_OFFSET_BYTES_CONSERVATIVE);
         value_bytes = value_bytes.saturating_add(input_rows.saturating_mul(element_width));
         validity_bytes = validity_bytes.saturating_add(null_mask_bytes(input_rows));
         predicate_bytes = predicate_bytes.saturating_add(input_rows);
@@ -894,73 +884,6 @@ fn estimate_filtered_grouped_materialization_footprint(
     })
 }
 
-fn estimate_column_bytes(data_type: &ArrowDataType, nullable: bool, rows: u64) -> Result<u64> {
-    let width = fixed_width_dtype_size(data_type).unwrap_or(STRING_OFFSET_BYTES_CONSERVATIVE);
-    let validity = if nullable { null_mask_bytes(rows) } else { 0 };
-    Ok(rows.saturating_mul(width).saturating_add(validity).saturating_add(PER_COLUMN_ALIGNMENT_PADDING_BYTES))
-}
-
-fn filtered_inputs_per_segment_for_budget(
-    max_segment_input_bytes_per_row: u64,
-    rows_per_chunk: u64,
-    retained_predicate_bytes_per_row: u64,
-    budget_bytes: u64,
-    target_temporary_bytes: u64,
-) -> usize {
-    let target = FilteredAggregateSegmentationPolicy::default()
-        .segment_temporary_budget_bytes(target_temporary_bytes, budget_bytes);
-    let retained_predicate_bytes = retained_predicate_bytes_per_row.saturating_mul(rows_per_chunk);
-    let available_for_masked_inputs = target.saturating_sub(retained_predicate_bytes).max(1);
-    let per_input_bytes = max_segment_input_bytes_per_row.saturating_mul(rows_per_chunk);
-    usize::try_from(cmp::max(1, available_for_masked_inputs / per_input_bytes.max(1))).unwrap_or(usize::MAX)
-}
-
-fn filtered_grouped_aggregate_value_expr(aggregate_expr: &AggregateExpr) -> Expr {
-    if aggregate_expr.function == AggregateFunction::Count
-        && !aggregate_expr.distinct
-        && global_count_star_expr(&aggregate_expr.expr)
-    {
-        Expr::literal(LiteralValue::Int64(1))
-    } else {
-        aggregate_expr.expr.clone()
-    }
-}
-
 fn unique_filtered_grouped_segment_alias(base: &str, fields: &[Field]) -> String {
-    if fields.iter().all(|field| field.name() != base) {
-        return base.to_string();
-    }
-    for suffix in 1usize.. {
-        let alias = format!("{base}_{suffix}");
-        if fields.iter().all(|field| field.name() != alias.as_str()) {
-            return alias;
-        }
-    }
-    unreachable!("usize suffix space is finite but practically inexhaustible")
-}
-
-fn fixed_width_dtype_size(data_type: &ArrowDataType) -> Option<u64> {
-    match data_type {
-        ArrowDataType::Boolean | ArrowDataType::Int8 | ArrowDataType::UInt8 => Some(1),
-        ArrowDataType::Int16 | ArrowDataType::UInt16 => Some(2),
-        ArrowDataType::Int32
-        | ArrowDataType::UInt32
-        | ArrowDataType::Float32
-        | ArrowDataType::Date32
-        | ArrowDataType::Time32(_) => Some(4),
-        ArrowDataType::Int64
-        | ArrowDataType::UInt64
-        | ArrowDataType::Float64
-        | ArrowDataType::Date64
-        | ArrowDataType::Time64(_)
-        | ArrowDataType::Timestamp(_, _)
-        | ArrowDataType::Duration(_) => Some(8),
-        ArrowDataType::Decimal128(_, _) => Some(16),
-        ArrowDataType::Decimal256(_, _) => Some(32),
-        _ => None,
-    }
-}
-
-fn null_mask_bytes(rows: u64) -> u64 {
-    if rows == 0 { 0 } else { rows.div_ceil(8).div_ceil(64) * 64 }
+    crate::naming::unique_alias_with_suffix(base, |alias| fields.iter().any(|field| field.name() == alias))
 }

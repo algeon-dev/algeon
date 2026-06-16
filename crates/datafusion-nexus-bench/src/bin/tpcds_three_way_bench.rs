@@ -37,6 +37,7 @@ use datafusion_nexus_bench::{
     tpcds_native_analytics_optimizer_config_with_profile_settings, tpcds_native_profile_settings_from_env,
     tpcds_native_profile_settings_with_env, tpcds_native_report_session_config,
 };
+use nexus_query_engine::harness::max_option as max_optional_usize;
 
 const DEFAULT_QUERY_IDS: &[&str] =
     &["q03", "q07", "q22", "q26", "q32", "q37", "q42", "q52", "q55", "q62", "q82", "q85", "q92", "q93", "q97"];
@@ -1229,14 +1230,6 @@ fn metric_field(
 
 fn optional_f64_text(value: Option<f64>) -> String {
     value.map_or_else(|| "not_run".to_string(), |value| format!("{value:.3}"))
-}
-
-fn max_optional_usize(left: Option<usize>, right: Option<usize>) -> Option<usize> {
-    match (left, right) {
-        (Some(left), Some(right)) => Some(left.max(right)),
-        (Some(value), None) | (None, Some(value)) => Some(value),
-        (None, None) => None,
-    }
 }
 
 #[cfg(test)]

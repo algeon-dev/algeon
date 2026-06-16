@@ -23,6 +23,7 @@ use super::{
     aggregate::{lower_native_aggregate_function, project_required_output_columns},
     expr::{collect_required_field_indices, lower_physical_expr_with_bindings},
     lower_native_input,
+    naming::{sanitize_field_name, unique_name_with_suffix},
     sort::lower_sort_with_input,
 };
 use crate::{
@@ -496,16 +497,7 @@ fn window_key_expr(
 
 fn unique_window_key_name(index: usize, used_names: &BTreeSet<String>) -> String {
     let base = format!("__cudf_window_key_{index}");
-    if !used_names.contains(base.as_str()) {
-        return base;
-    }
-    for suffix in 1usize.. {
-        let candidate = format!("{base}_{suffix}");
-        if !used_names.contains(candidate.as_str()) {
-            return candidate;
-        }
-    }
-    unreachable!("usize suffix space is finite but practically inexhaustible")
+    unique_name_with_suffix(base.as_str(), |candidate| !used_names.contains(candidate))
 }
 
 fn lower_window_spec(
@@ -616,20 +608,7 @@ fn unique_window_output_name(
     }
     let sanitized = sanitize_field_name(frontend_name);
     let base = format!("__cudf_window_{ordinal}_{sanitized}");
-    if !frontend_names.contains(base.as_str()) && !used_native_names.contains(base.as_str()) {
-        return base;
-    }
-    for suffix in 1usize.. {
-        let candidate = format!("{base}_{suffix}");
-        if !frontend_names.contains(candidate.as_str()) && !used_native_names.contains(candidate.as_str()) {
-            return candidate;
-        }
-    }
-    unreachable!("usize suffix space is finite but practically inexhaustible")
-}
-
-fn sanitize_field_name(name: &str) -> String {
-    let sanitized =
-        name.chars().map(|ch| if ch.is_ascii_alphanumeric() || ch == '_' { ch } else { '_' }).collect::<String>();
-    if sanitized.is_empty() { "field".to_string() } else { sanitized }
+    unique_name_with_suffix(base.as_str(), |candidate| {
+        !frontend_names.contains(candidate) && !used_native_names.contains(candidate)
+    })
 }

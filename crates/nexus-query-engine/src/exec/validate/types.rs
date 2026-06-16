@@ -192,7 +192,7 @@ fn unsupported_type(context: &'static str, data_type: &ArrowDataType, expected: 
     .with_fact("data_type", format!("{data_type:?}")))
 }
 
-fn is_integral_type(data_type: &ArrowDataType) -> bool {
+pub(super) fn is_integral_type(data_type: &ArrowDataType) -> bool {
     matches!(
         data_type,
         ArrowDataType::Int8

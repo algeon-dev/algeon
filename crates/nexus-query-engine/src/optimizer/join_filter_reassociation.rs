@@ -2,7 +2,10 @@ use std::collections::BTreeMap;
 
 use arrow::datatypes::{DataType as ArrowDataType, SchemaRef};
 
-use super::{dimension_pruning, rewrite, source_target_policy::OptimizerSourceTargetPolicy};
+use super::{
+    dimension_pruning, rewrite, simple_projection_column, source_target_policy::OptimizerSourceTargetPolicy,
+    unique_join_output_for_name,
+};
 use crate::{
     expr::{BinaryOp, ColumnQualifier, ColumnRef, Expr, LiteralValue},
     plan::{
@@ -870,6 +873,9 @@ fn remap_single_side_join_output_predicate(predicate: &Expr, join: &JoinNode) ->
     side.map(|side| (side, remapped))
 }
 
+// Deliberately broader than the similarly named helper in `dimension_pruning`:
+// reassociation rebuilds supported expression trees, while pruning keeps a
+// tighter proof boundary for source-pushdown safety.
 fn remap_unqualified_columns(expr: &Expr, map_column: &mut impl FnMut(&ColumnRef) -> Option<Expr>) -> Option<Expr> {
     match expr {
         Expr::Column(column) if column.qualifier().is_none() => map_column(column),
@@ -1168,20 +1174,6 @@ fn unique_projection_expr_for_output<'a>(projection: &'a ProjectionNode, output_
     let mut matches = projection.outputs.iter().filter(|output| output.field.name() == output_name);
     let first = matches.next()?;
     matches.next().is_none().then_some(&first.expr)
-}
-
-fn simple_projection_column(expr: &Expr) -> Option<&ColumnRef> {
-    match expr {
-        Expr::Column(column) => Some(column),
-        Expr::Alias { expr, .. } => simple_projection_column(expr),
-        _ => None,
-    }
-}
-
-fn unique_join_output_for_name<'a>(join: &'a JoinNode, output_name: &str) -> Option<&'a JoinOutputColumn> {
-    let mut matches = join.spec.output_projection.iter().filter(|output| output.output_name == output_name);
-    let first = matches.next()?;
-    matches.next().is_none().then_some(first)
 }
 
 const fn join_side_index(side: JoinSide) -> usize {

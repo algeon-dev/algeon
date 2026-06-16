@@ -1,3 +1,5 @@
+use nexus_query_engine::harness::max_option as max_optional_metric;
+
 use super::*;
 
 #[derive(Debug, Clone)]
@@ -487,14 +489,6 @@ fn aggregate_native_execution_metrics(metrics: &[MetricsSet]) -> NativeDataFusio
         aggregate.merge_join_strategy_rows(current.join_strategy_rows);
     }
     aggregate
-}
-
-fn max_optional_metric(left: Option<usize>, right: Option<usize>) -> Option<usize> {
-    match (left, right) {
-        (Some(left), Some(right)) => Some(left.max(right)),
-        (Some(value), None) | (None, Some(value)) => Some(value),
-        (None, None) => None,
-    }
 }
 
 fn native_started(error: DataFusionError) -> NativeRunFailure {

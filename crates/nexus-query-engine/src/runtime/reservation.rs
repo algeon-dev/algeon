@@ -1,4 +1,5 @@
 use super::*;
+use crate::util::comma_separated_usize;
 
 /// Reservation request submitted to bounded execution admission.
 ///
@@ -348,15 +349,4 @@ impl RetryFacts {
         }
         error
     }
-}
-
-fn comma_separated_usize(values: &[usize]) -> String {
-    let mut output = String::new();
-    for (index, value) in values.iter().enumerate() {
-        if index > 0 {
-            output.push(',');
-        }
-        output.push_str(&value.to_string());
-    }
-    output
 }

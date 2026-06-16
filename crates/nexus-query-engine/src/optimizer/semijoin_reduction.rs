@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 
 use arrow::datatypes::{Field, Schema, SchemaRef as ArrowSchemaRef};
 
-use super::{rewrite, source_target_policy::OptimizerSourceTargetPolicy};
+use super::{rewrite, simple_projection_column_single_alias, source_target_policy::OptimizerSourceTargetPolicy};
 use crate::{
     adaptive_report::AdaptiveCandidateStatus,
     error::{QueryError, QueryErrorCode},
@@ -420,7 +420,7 @@ impl<'a> SemijoinLineageAnalyzer<'a> {
                     let slot = resolve_output_slot(node.output_schema(), column)?;
                     let output =
                         projection.outputs.get(slot).ok_or(SemijoinReductionRejectedReason::DroppedKeyLineage)?;
-                    let input_column = simple_projection_column(&output.expr)
+                    let input_column = simple_projection_column_single_alias(&output.expr)
                         .ok_or(SemijoinReductionRejectedReason::ExpressionDerivedKey)?;
                     local_mappings.push(SemijoinReductionKeyMappingDiagnostics {
                         before_column: column_label(column),
@@ -772,17 +772,6 @@ fn prepend_mappings(
 ) {
     for (mapping, local) in existing.iter_mut().zip(local_mappings) {
         mapping.before_column = local.before_column;
-    }
-}
-
-fn simple_projection_column(expr: &Expr) -> Option<&ColumnRef> {
-    match expr {
-        Expr::Column(column) => Some(column),
-        Expr::Alias { expr, .. } => match expr.as_ref() {
-            Expr::Column(column) => Some(column),
-            _ => None,
-        },
-        _ => None,
     }
 }
 

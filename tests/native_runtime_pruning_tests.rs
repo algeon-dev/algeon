@@ -325,8 +325,7 @@ async fn native_runtime_discounted_revenue_global_decimal_sum_matches_cpu() {
     write_discounted_revenue_lineitem_parquet(&path);
 
     let cpu_batches = cpu_sql_output(&path, SQL_Q6_SHAPED_QUERY).await;
-    let native_physical_plan =
-        sql_plan(&path, direct_friendly_sql_session_config(), SQL_Q6_SHAPED_QUERY).await;
+    let native_physical_plan = sql_plan(&path, direct_friendly_sql_session_config(), SQL_Q6_SHAPED_QUERY).await;
     let lowering = lower_physical_plan_to_native(native_physical_plan);
     assert_eq!(lowering.rewritten_count(), 1, "outcomes={:?}", lowering.report.outcomes());
     assert_eq!(lowering.rejected_count(), 0, "outcomes={:?}", lowering.report.outcomes());

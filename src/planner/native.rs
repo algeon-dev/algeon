@@ -10,6 +10,7 @@ use super::CudfOptimizerConfig;
 use crate::{
     native_exec::{NativeCudfComposedExec, NativeCudfExec},
     native_report::{NativeJoinDiagnosticSummary, physical_join_diagnostics},
+    physical_plan::physical_plan_shape,
     report::PlanningReport,
     session::{CUDF_NATIVE_COUNT_ONLY_PHYSICAL_OPTIMIZER_RULE_NAME, CUDF_NATIVE_PHYSICAL_OPTIMIZER_RULE_NAME},
 };
@@ -248,23 +249,4 @@ impl PhysicalOptimizerRule for CudfNativePhysicalOptimizerRule {
     fn schema_check(&self) -> bool {
         true
     }
-}
-
-fn physical_plan_shape(plan: &dyn ExecutionPlan) -> String {
-    let children = plan.children();
-    if children.is_empty() {
-        return plan.name().to_string();
-    }
-
-    let mut shape = String::new();
-    shape.push_str(plan.name());
-    shape.push('(');
-    for (index, child) in children.iter().enumerate() {
-        if index > 0 {
-            shape.push(',');
-        }
-        shape.push_str(&physical_plan_shape(child.as_ref()));
-    }
-    shape.push(')');
-    shape
 }

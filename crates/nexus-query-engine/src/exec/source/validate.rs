@@ -108,8 +108,8 @@ pub fn validate_local_parquet_source(source: &LocalParquetSource) -> Result<()> 
                 )
                 .with_fact("reason", "missing_row_count_metadata")
                 .with_fact("file_index", file_index)
-                .with_fact("path", file_path_fact(file))
-                .with_fact("stable_id", file_stable_id_fact(file)));
+                .with_fact("path", parquet_file_path_fact(file))
+                .with_fact("stable_id", parquet_file_stable_id_fact(file)));
             }
         }
     }
@@ -183,7 +183,7 @@ pub fn validate_local_parquet_source(source: &LocalParquetSource) -> Result<()> 
                     "nexus_query_engine.local_parquet_source.validate",
                     "local parquet row group index exceeds the cudf reader range",
                 )
-                .with_fact("path", file_path_fact(file))
+                .with_fact("path", parquet_file_path_fact(file))
                 .with_fact("file_index", file_index)
                 .with_fact("row_group_position", index)
                 .with_fact("row_group", row_group)
@@ -197,7 +197,7 @@ pub fn validate_local_parquet_source(source: &LocalParquetSource) -> Result<()> 
                     "nexus_query_engine.local_parquet_source.validate",
                     "selected parquet row group is outside source contract row-group bytes",
                 )
-                .with_fact("path", file_path_fact(file))
+                .with_fact("path", parquet_file_path_fact(file))
                 .with_fact("file_index", file_index)
                 .with_fact("row_group_position", index)
                 .with_fact("row_group", row_group)
@@ -225,8 +225,8 @@ fn validate_position_delete_row_group_selection(file: &LocalParquetFile, file_in
             )
             .with_fact("reason", "position_deletes_require_contiguous_row_groups")
             .with_fact("file_index", file_index)
-            .with_fact("path", file_path_fact(file))
-            .with_fact("stable_id", file_stable_id_fact(file))
+            .with_fact("path", parquet_file_path_fact(file))
+            .with_fact("stable_id", parquet_file_stable_id_fact(file))
             .with_fact("previous_row_group", previous)
             .with_fact("row_group", row_group));
         }
@@ -251,8 +251,8 @@ fn validate_position_delete_row_group_index(
         )
         .with_fact("reason", "position_deletes_row_group_outside_row_count_metadata")
         .with_fact("file_index", file_index)
-        .with_fact("path", file_path_fact(file))
-        .with_fact("stable_id", file_stable_id_fact(file))
+        .with_fact("path", parquet_file_path_fact(file))
+        .with_fact("stable_id", parquet_file_stable_id_fact(file))
         .with_fact("row_group_position", row_group_position)
         .with_fact("row_group", row_group)
         .with_fact("row_group_count", row_group_rows.len()));
@@ -349,29 +349,6 @@ fn validate_count_star_probe_source(source: &LocalParquetSource) -> Result<()> {
         .with_fact("missing_columns", source.missing_columns.len()));
     }
     Ok(())
-}
-
-fn local_parquet_file_row_group_metadata_count(file: &LocalParquetFile) -> Option<usize> {
-    file.row_group_bytes
-        .as_ref()
-        .or(file.projected_row_group_uncompressed_bytes.as_ref())
-        .or(file.projected_row_group_compressed_bytes.as_ref())
-        .or(file.pure_filter_row_group_uncompressed_bytes.as_ref())
-        .or(file.pure_filter_row_group_compressed_bytes.as_ref())
-        .or(file.row_group_rows.as_ref())
-        .map(Vec::len)
-}
-
-fn file_path_fact(file: &LocalParquetFile) -> String {
-    if file.location.is_local_path() {
-        crate::source::redacted_path_diagnostic(&file.path)
-    } else {
-        file.location.diagnostic_location()
-    }
-}
-
-fn file_stable_id_fact(file: &LocalParquetFile) -> String {
-    file.location.diagnostic_stable_id(file.stable_id.as_str())
 }
 
 fn validate_local_parquet_source_contract(source: &LocalParquetSource) -> Result<()> {

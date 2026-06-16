@@ -13,7 +13,8 @@ use nexus_query_engine::{
 use super::{
     FieldBinding, LoweredNativeInput, RequiredFields, executable_schema_and_bindings,
     expr::{alias_if_needed, lower_physical_expr_with_bindings},
-    projection_outputs,
+    naming::unique_name_with_suffix,
+    project_bindings_to_schema, projection_outputs,
 };
 use crate::policy::FallbackReason;
 
@@ -112,29 +113,12 @@ fn project_sort_output(
         return Ok(sorted);
     }
 
-    let expressions = bindings
-        .iter()
-        .map(|binding| {
-            let input_binding = sorted.binding_for_frontend_index(binding.frontend_index)?;
-            Ok(alias_if_needed(NativeExpr::column(input_binding.native_name.as_str()), binding.native_name.as_str()))
-        })
-        .collect::<Result<Vec<_>, FallbackReason>>()?;
-    let node = builder.add_projection(sorted.node, projection_outputs(expressions, &schema)?);
-    Ok(LoweredNativeInput::with_bindings(node, schema, bindings))
+    project_bindings_to_schema(builder, sorted, schema, bindings)
 }
 
 fn unique_sort_key_name(index: usize, used_names: &BTreeSet<String>) -> String {
     let base = format!("__cudf_sort_key_{index}");
-    if !used_names.contains(base.as_str()) {
-        return base;
-    }
-    for suffix in 1usize.. {
-        let candidate = format!("{base}_{suffix}");
-        if !used_names.contains(candidate.as_str()) {
-            return candidate;
-        }
-    }
-    unreachable!("usize suffix space is finite but practically inexhaustible")
+    unique_name_with_suffix(base.as_str(), |candidate| !used_names.contains(candidate))
 }
 
 fn lower_sort_spec_with_prepared_input(

@@ -8,11 +8,9 @@ use datafusion::{
 use nexus_query_engine::{
     LiteralValue as NativeLiteralValue, LocalParquetFile as NativeLocalParquetFile,
     PartitionColumnDisposition as NativePartitionColumnDisposition, SourceColumnRef as NativeSourceColumnRef,
+    parquet_stats::{ColumnByteKind, row_group_column_bytes, row_group_null_counts_for_root_column},
 };
-use parquet::file::{
-    metadata::RowGroupMetaData,
-    reader::{FileReader, SerializedFileReader},
-};
+use parquet::file::reader::{FileReader, SerializedFileReader};
 
 use super::{
     literal::{NativeLiteralContext, native_literal_value},
@@ -192,44 +190,14 @@ pub(super) fn attach_row_group_byte_metadata(
     {
         native_file = native_file.with_row_group_rows(row_group_rows);
     }
-    let parquet_schema = metadata.file_metadata().schema_descr();
     for column_index in read_column_indexes {
-        let Some(leaf_index) = single_leaf_primitive_root_column_index(parquet_schema, column_index) else {
+        let Some(null_counts) = row_group_null_counts_for_root_column(metadata, column_index) else {
             continue;
         };
-        let null_counts = metadata
-            .row_groups()
-            .iter()
-            .map(|row_group| {
-                row_group
-                    .columns()
-                    .get(leaf_index)
-                    .and_then(|column| column.statistics())
-                    .and_then(|statistics| statistics.null_count_opt())
-            })
-            .collect::<Vec<_>>();
         native_file = native_file.with_row_group_null_counts(column_index, null_counts);
     }
 
     native_file
-}
-
-fn single_leaf_primitive_root_column_index(
-    schema: &parquet::schema::types::SchemaDescriptor,
-    root_index: usize,
-) -> Option<usize> {
-    if !schema.root_schema().get_fields().get(root_index)?.is_primitive() {
-        return None;
-    }
-    let mut leaf_indices = schema.columns().iter().enumerate().filter_map(|(leaf_index, column)| {
-        (column.path().parts().first()? == schema.root_schema().get_fields().get(root_index)?.name())
-            .then_some(leaf_index)
-    });
-    let leaf_index = leaf_indices.next()?;
-    if leaf_indices.next().is_some() {
-        return None;
-    }
-    Some(leaf_index)
 }
 
 fn file_source_ref_index(source_ref: &NativeSourceColumnRef) -> Option<usize> {
@@ -237,28 +205,6 @@ fn file_source_ref_index(source_ref: &NativeSourceColumnRef) -> Option<usize> {
         NativeSourceColumnRef::File(index) => Some(*index),
         NativeSourceColumnRef::Partition(_) | NativeSourceColumnRef::MissingNull(_) => None,
     }
-}
-
-#[derive(Debug, Clone, Copy)]
-enum ColumnByteKind {
-    Compressed,
-    Uncompressed,
-}
-
-fn row_group_column_bytes(
-    row_group: &RowGroupMetaData,
-    column_indexes: &BTreeSet<usize>,
-    kind: ColumnByteKind,
-) -> Option<u64> {
-    column_indexes.iter().try_fold(0u64, |total, column_index| {
-        let column = row_group.columns().get(*column_index)?;
-        let bytes = match kind {
-            ColumnByteKind::Compressed => column.compressed_size(),
-            ColumnByteKind::Uncompressed => column.uncompressed_size(),
-        };
-        let bytes = u64::try_from(bytes).ok()?;
-        total.checked_add(bytes)
-    })
 }
 
 fn validate_partition_columns(
@@ -320,9 +266,8 @@ fn native_partition_values(
 mod tests {
     use std::sync::Arc;
 
+    use nexus_query_engine::parquet_stats::single_leaf_primitive_root_column_index;
     use parquet::schema::{parser::parse_message_type, types::SchemaDescriptor};
-
-    use super::single_leaf_primitive_root_column_index;
 
     #[test]
     fn null_count_leaf_mapping_refuses_nested_roots_and_maps_later_primitives() {

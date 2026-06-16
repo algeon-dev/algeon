@@ -346,7 +346,17 @@ fn validate_mark_join_output_projection(
 fn validate_join_residual_column_sides(expr: &Expr) -> Result<()> {
     let mut left = false;
     let mut right = false;
-    collect_join_residual_sides(expr, &mut left, &mut right)?;
+    let mut collect = |input, _name: &str| match input {
+        0 => left = true,
+        1 => right = true,
+        _ => unreachable!("join residual walker only yields binary input columns"),
+    };
+    walk_join_residual_columns(
+        expr,
+        "nexus_query_engine.join.validate_residual",
+        "join residual column must be input-qualified",
+        &mut collect,
+    )?;
     if !left || !right {
         return Err(QueryError::new(
             QueryErrorCode::UnsupportedExpression,
@@ -358,79 +368,6 @@ fn validate_join_residual_column_sides(expr: &Expr) -> Result<()> {
         .with_fact("references_right", right));
     }
     Ok(())
-}
-
-fn collect_join_residual_sides(expr: &Expr, left: &mut bool, right: &mut bool) -> Result<()> {
-    match expr {
-        Expr::Column(column) => match column.qualifier() {
-            Some(ColumnQualifier::Input { index: 0 }) => {
-                *left = true;
-                Ok(())
-            },
-            Some(ColumnQualifier::Input { index: 1 }) => {
-                *right = true;
-                Ok(())
-            },
-            qualifier => Err(QueryError::new(
-                QueryErrorCode::UnsupportedExpression,
-                "nexus_query_engine.join.validate_residual",
-                "join residual column must be input-qualified",
-            )
-            .with_fact("column", column.name())
-            .with_fact("qualifier", qualifier.map(ToString::to_string).unwrap_or_else(|| "none".to_string()))),
-        },
-        Expr::Literal(_) => Ok(()),
-        Expr::Not(inner)
-        | Expr::IsNull(inner)
-        | Expr::IsNotNull(inner)
-        | Expr::Cast { expr: inner, .. }
-        | Expr::TryCast { expr: inner, .. }
-        | Expr::Abs(inner)
-        | Expr::Sqrt { expr: inner, .. }
-        | Expr::Round { expr: inner, .. }
-        | Expr::Alias { expr: inner, .. } => collect_join_residual_sides(inner, left, right),
-        Expr::Binary { left: lhs, right: rhs, .. } => {
-            collect_join_residual_sides(lhs, left, right)?;
-            collect_join_residual_sides(rhs, left, right)
-        },
-        Expr::IsDistinctFrom { left: lhs, right: rhs } | Expr::IsNotDistinctFrom { left: lhs, right: rhs } => {
-            collect_join_residual_sides(lhs, left, right)?;
-            collect_join_residual_sides(rhs, left, right)
-        },
-        Expr::InList { expr, list, .. } => {
-            collect_join_residual_sides(expr, left, right)?;
-            for item in list {
-                collect_join_residual_sides(item, left, right)?;
-            }
-            Ok(())
-        },
-        Expr::Concat(exprs) => {
-            for expr in exprs {
-                collect_join_residual_sides(expr, left, right)?;
-            }
-            Ok(())
-        },
-        Expr::Case { branches, else_expr } => {
-            for branch in branches {
-                collect_join_residual_sides(&branch.when, left, right)?;
-                collect_join_residual_sides(&branch.then, left, right)?;
-            }
-            collect_join_residual_sides(else_expr, left, right)
-        },
-        Expr::Like { .. }
-        | Expr::Substring { .. }
-        | Expr::Lower(_)
-        | Expr::Upper(_)
-        | Expr::StringLength { .. }
-        | Expr::RegexpReplace { .. }
-        | Expr::Extract { .. }
-        | Expr::DateTrunc { .. } => Err(QueryError::new(
-            QueryErrorCode::UnsupportedExpression,
-            "nexus_query_engine.join.validate_residual",
-            "native join residual predicates do not yet support this expression family",
-        )
-        .with_fact("expression", expr)),
-    }
 }
 
 fn validate_join_residual_expr(

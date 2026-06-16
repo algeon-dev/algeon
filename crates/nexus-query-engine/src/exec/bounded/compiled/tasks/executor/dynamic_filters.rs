@@ -1,6 +1,7 @@
 use arrow::datatypes::SchemaRef as ArrowSchemaRef;
 
 use super::*;
+use crate::Expr;
 
 impl CompiledGpuTaskExecutor<'_> {
     pub(super) fn produce_hash_join_build_dynamic_filters(
@@ -366,15 +367,7 @@ impl CompiledGpuTaskExecutor<'_> {
             .output_schema()
             .clone();
         for route in &routes {
-            let Some(filter) = self.dynamic_filters.produced(route.id).cloned() else {
-                continue;
-            };
-            let Some(column) = route.consumer_columns.first() else {
-                self.metrics.record_dynamic_filter_skipped(route, "unsupported_consumer_key_contract");
-                continue;
-            };
-            let Some(predicate) = dynamic_filter_predicate_for_schema(probe_schema.as_ref(), column, &filter) else {
-                self.metrics.record_dynamic_filter_skipped(route, "post_decode_predicate_unsupported");
+            let Some((filter, predicate)) = self.resolve_dynamic_filter_predicate(route, probe_schema.as_ref()) else {
                 continue;
             };
             let filter_node = FilterNode { input: probe_input, predicate };
@@ -421,16 +414,8 @@ impl CompiledGpuTaskExecutor<'_> {
         self.ensure_dynamic_filter_routes_ready(filter_node_id, &routes)?;
         let input_schema = self.dynamic_filter_consumer_input_schema(filter_node_id, filter.input)?;
         for route in &routes {
-            let Some(dynamic_filter) = self.dynamic_filters.produced(route.id).cloned() else {
-                continue;
-            };
-            let Some(column) = route.consumer_columns.first() else {
-                self.metrics.record_dynamic_filter_skipped(route, "unsupported_consumer_key_contract");
-                continue;
-            };
-            let Some(predicate) = dynamic_filter_predicate_for_schema(input_schema.as_ref(), column, &dynamic_filter)
+            let Some((dynamic_filter, predicate)) = self.resolve_dynamic_filter_predicate(route, input_schema.as_ref())
             else {
-                self.metrics.record_dynamic_filter_skipped(route, "post_decode_predicate_unsupported");
                 continue;
             };
             let dynamic_filter_node = FilterNode { input: filter.input, predicate };
@@ -480,16 +465,8 @@ impl CompiledGpuTaskExecutor<'_> {
         let mut input = Some(input);
         let mut frame: Option<ResidentGpuFrame> = None;
         for route in &routes {
-            let Some(dynamic_filter) = self.dynamic_filters.produced(route.id).cloned() else {
-                continue;
-            };
-            let Some(column) = route.consumer_columns.first() else {
-                self.metrics.record_dynamic_filter_skipped(route, "unsupported_consumer_key_contract");
-                continue;
-            };
-            let Some(predicate) = dynamic_filter_predicate_for_schema(input_schema.as_ref(), column, &dynamic_filter)
+            let Some((dynamic_filter, predicate)) = self.resolve_dynamic_filter_predicate(route, input_schema.as_ref())
             else {
-                self.metrics.record_dynamic_filter_skipped(route, "post_decode_predicate_unsupported");
                 continue;
             };
             let dynamic_filter_node = FilterNode { input: filter.input, predicate };
@@ -561,16 +538,8 @@ impl CompiledGpuTaskExecutor<'_> {
         self.ensure_dynamic_filter_routes_ready(filter_node_id, &routes)?;
         let input_schema = self.dynamic_filter_consumer_input_schema(filter_node_id, filter.input)?;
         for route in &routes {
-            let Some(dynamic_filter) = self.dynamic_filters.produced(route.id).cloned() else {
-                continue;
-            };
-            let Some(column) = route.consumer_columns.first() else {
-                self.metrics.record_dynamic_filter_skipped(route, "unsupported_consumer_key_contract");
-                continue;
-            };
-            let Some(predicate) = dynamic_filter_predicate_for_schema(input_schema.as_ref(), column, &dynamic_filter)
+            let Some((dynamic_filter, predicate)) = self.resolve_dynamic_filter_predicate(route, input_schema.as_ref())
             else {
-                self.metrics.record_dynamic_filter_skipped(route, "post_decode_predicate_unsupported");
                 continue;
             };
             stream = map_dynamic_filter_resident_frame_stream(
@@ -612,15 +581,7 @@ impl CompiledGpuTaskExecutor<'_> {
         let mut input = Some(input);
         let mut frame: Option<ResidentGpuFrame> = None;
         for route in &routes {
-            let Some(filter) = self.dynamic_filters.produced(route.id).cloned() else {
-                continue;
-            };
-            let Some(column) = route.consumer_columns.first() else {
-                self.metrics.record_dynamic_filter_skipped(route, "unsupported_consumer_key_contract");
-                continue;
-            };
-            let Some(predicate) = dynamic_filter_predicate_for_schema(probe_schema.as_ref(), column, &filter) else {
-                self.metrics.record_dynamic_filter_skipped(route, "post_decode_predicate_unsupported");
+            let Some((filter, predicate)) = self.resolve_dynamic_filter_predicate(route, probe_schema.as_ref()) else {
                 continue;
             };
             let filter_node = FilterNode { input: probe_input, predicate };
@@ -702,15 +663,7 @@ impl CompiledGpuTaskExecutor<'_> {
             .output_schema()
             .clone();
         for route in &routes {
-            let Some(filter) = self.dynamic_filters.produced(route.id).cloned() else {
-                continue;
-            };
-            let Some(column) = route.consumer_columns.first() else {
-                self.metrics.record_dynamic_filter_skipped(route, "unsupported_consumer_key_contract");
-                continue;
-            };
-            let Some(predicate) = dynamic_filter_predicate_for_schema(probe_schema.as_ref(), column, &filter) else {
-                self.metrics.record_dynamic_filter_skipped(route, "post_decode_predicate_unsupported");
+            let Some((filter, predicate)) = self.resolve_dynamic_filter_predicate(route, probe_schema.as_ref()) else {
                 continue;
             };
             stream = map_dynamic_filter_resident_frame_stream(
@@ -724,6 +677,23 @@ impl CompiledGpuTaskExecutor<'_> {
             self.metrics.record_dynamic_filter_applied_post_decode(route, &filter, None, None);
         }
         Ok(stream)
+    }
+
+    fn resolve_dynamic_filter_predicate(
+        &mut self,
+        route: &DynamicFilterRoute,
+        schema: &arrow::datatypes::Schema,
+    ) -> Option<(DynamicFilter, Expr)> {
+        let dynamic_filter = self.dynamic_filters.produced(route.id).cloned()?;
+        let Some(column) = route.consumer_columns.first() else {
+            self.metrics.record_dynamic_filter_skipped(route, "unsupported_consumer_key_contract");
+            return None;
+        };
+        let Some(predicate) = dynamic_filter_predicate_for_schema(schema, column, &dynamic_filter) else {
+            self.metrics.record_dynamic_filter_skipped(route, "post_decode_predicate_unsupported");
+            return None;
+        };
+        Some((dynamic_filter, predicate))
     }
 
     fn join_probe_dynamic_filter_routes(&self, join_node_id: NodeId) -> Vec<crate::dynamic_filter::DynamicFilterRoute> {

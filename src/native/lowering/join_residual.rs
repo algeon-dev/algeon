@@ -2,7 +2,7 @@ use std::{collections::BTreeSet, sync::Arc};
 
 use arrow::datatypes::{DataType, Field, SchemaRef};
 use datafusion::{
-    common::{JoinSide as DataFusionJoinSide, ScalarValue},
+    common::JoinSide as DataFusionJoinSide,
     physical_expr::{
         PhysicalExpr, ScalarFunctionExpr,
         expressions::{
@@ -17,9 +17,13 @@ use super::{
     LoweredNativeInput,
     expr::{alias_if_needed, lower_binary_operator, lower_literal, physical_expr_field},
     join::CanonicalJoin,
+    naming::unique_name_with_suffix,
 };
 use crate::{
-    native::validate::{is_supported_native_cast, is_supported_native_type, validate_physical_expr},
+    native::{
+        literal::{literal_i32, substring_stop_position},
+        validate::{is_supported_native_cast, is_supported_native_type, validate_physical_expr},
+    },
     policy::FallbackReason,
 };
 
@@ -549,11 +553,11 @@ fn lower_join_filter_side_substring_function(
         return Err(FallbackReason::UnsupportedExpression);
     }
     validate_join_filter_string_expr(&args[0], context.filter.schema())?;
-    let start = join_filter_literal_i32(&args[1])?;
+    let start = literal_i32(&args[1])?;
     if start < 1 {
         return Err(FallbackReason::UnsupportedExpression);
     }
-    let length = if args.len() == 3 { Some(join_filter_literal_i32(&args[2])?) } else { None };
+    let length = if args.len() == 3 { Some(literal_i32(&args[2])?) } else { None };
     if let Some(length) = length
         && (length < 0 || substring_stop_position(start, length).is_none())
     {
@@ -597,34 +601,6 @@ fn is_string_type(data_type: &DataType) -> bool {
     matches!(data_type, DataType::Utf8 | DataType::LargeUtf8 | DataType::Utf8View)
 }
 
-fn substring_stop_position(start: i32, length: i32) -> Option<i32> {
-    let zero_based_start = start.checked_sub(1)?;
-    zero_based_start.checked_add(length)
-}
-
-fn join_filter_literal_i32(expr: &Arc<dyn PhysicalExpr>) -> Result<i32, FallbackReason> {
-    let Some(literal) = expr.downcast_ref::<Literal>() else {
-        return Err(FallbackReason::UnsupportedExpression);
-    };
-    match literal.value() {
-        ScalarValue::Int8(Some(value)) => Ok(i32::from(*value)),
-        ScalarValue::Int16(Some(value)) => Ok(i32::from(*value)),
-        ScalarValue::Int32(Some(value)) => Ok(*value),
-        ScalarValue::Int64(Some(value)) => {
-            i32::try_from(*value).map_err(|_error| FallbackReason::UnsupportedExpression)
-        },
-        ScalarValue::UInt8(Some(value)) => Ok(i32::from(*value)),
-        ScalarValue::UInt16(Some(value)) => Ok(i32::from(*value)),
-        ScalarValue::UInt32(Some(value)) => {
-            i32::try_from(*value).map_err(|_error| FallbackReason::UnsupportedExpression)
-        },
-        ScalarValue::UInt64(Some(value)) => {
-            i32::try_from(*value).map_err(|_error| FallbackReason::UnsupportedExpression)
-        },
-        _ => Err(FallbackReason::UnsupportedExpression),
-    }
-}
-
 fn declared_decimal_divide_output_type(
     binary: &BinaryExpr,
     input_schema: &SchemaRef,
@@ -661,17 +637,9 @@ fn unique_synthetic_join_residual_alias(
         DataFusionJoinSide::None => "none",
     };
     let base = format!("__cudf_join_residual_{side_name}_{index}");
-    if synthetic_join_residual_alias_is_available(base.as_str(), input_schema, materializations) {
-        return base;
-    }
-
-    for suffix in 1usize.. {
-        let alias = format!("{base}_{suffix}");
-        if synthetic_join_residual_alias_is_available(alias.as_str(), input_schema, materializations) {
-            return alias;
-        }
-    }
-    unreachable!("usize suffix space is finite but practically inexhaustible")
+    unique_name_with_suffix(base.as_str(), |alias| {
+        synthetic_join_residual_alias_is_available(alias, input_schema, materializations)
+    })
 }
 
 fn synthetic_join_residual_alias_is_available(

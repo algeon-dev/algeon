@@ -1,5 +1,7 @@
 use std::collections::BTreeMap;
 
+pub(super) use nexus_query_engine::harness::max_option as max_optional_usize;
+
 pub(super) fn labels_by_name(labels: &[datafusion::physical_plan::metrics::Label]) -> BTreeMap<&str, &str> {
     labels.iter().map(|label| (label.name(), label.value())).collect()
 }
@@ -41,12 +43,4 @@ pub(super) fn optional_i64(value: Option<i64>) -> String {
 
 pub(super) fn optional_str(value: Option<&str>) -> String {
     value.unwrap_or("none").to_string()
-}
-
-pub(super) fn max_optional_usize(left: Option<usize>, right: Option<usize>) -> Option<usize> {
-    match (left, right) {
-        (Some(left), Some(right)) => Some(left.max(right)),
-        (Some(value), None) | (None, Some(value)) => Some(value),
-        (None, None) => None,
-    }
 }

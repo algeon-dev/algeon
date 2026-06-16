@@ -6,6 +6,7 @@
 
 mod semijoin_reduction;
 
+mod access;
 mod aggregate_join_pushdown;
 mod aggregate_join_pushdown_policy;
 mod count_non_null_pruning;
@@ -23,6 +24,10 @@ mod shared_subplan_materialization;
 mod source_target_policy;
 mod stream_fanout_replay;
 
+use access::{
+    consumers_by_node, simple_projection_column, simple_projection_column_single_alias, unique_join_output_for_name,
+};
+pub use access::{local_parquet_source, predicate_columns, reader_projection_indices};
 pub use aggregate_join_pushdown::{
     AGGREGATE_JOIN_PUSHDOWN_RULE_NAME, AggregateJoinPushdownCandidateDiagnostics, AggregateJoinPushdownDiagnostics,
     AggregateJoinPushdownOptions, AggregateJoinPushdownRejectedReason,
@@ -65,6 +70,7 @@ pub use projection_simplification::{
     PROJECTION_SIMPLIFICATION_RULE_NAME, ProjectionSimplificationCandidateDiagnostics,
     ProjectionSimplificationDiagnostics, ProjectionSimplificationOptions, ProjectionSimplificationRejectedReason,
 };
+pub(crate) use rewrite::parent_counts;
 pub use semijoin_reduction::{
     DEFAULT_SEMIJOIN_REDUCTION_COST_THRESHOLD_MULTIPLIER, SEMIJOIN_REDUCTION_RULE_NAME,
     SemijoinReductionAdmissionDecision, SemijoinReductionAdmissionMode, SemijoinReductionCandidateDiagnostics,
@@ -265,46 +271,42 @@ pub fn optimize_query_plan(plan: QueryPlan, options: &NativeOptimizerOptions) ->
         null_rejection_result.plan,
         &options.aggregate_join_pushdown,
     );
-    let post_aggregate_join_build_side_result = if aggregate_join_pushdown_result.change.changed() {
-        join_build_side::optimize_join_build_side_selection(
-            aggregate_join_pushdown_result.plan,
-            &options.join_build_side_selection,
-        )
-    } else {
-        join_build_side::JoinBuildSideSelectionResult {
-            plan: aggregate_join_pushdown_result.plan,
+    let aggregate_join_pushdown_change = aggregate_join_pushdown_result.change;
+    let post_aggregate_join_build_side_result = rerun_optimizer_pass_if_changed(
+        aggregate_join_pushdown_result.plan,
+        aggregate_join_pushdown_change,
+        |plan| join_build_side::optimize_join_build_side_selection(plan, &options.join_build_side_selection),
+        |plan| join_build_side::JoinBuildSideSelectionResult {
+            plan,
             change: NativeOptimizerChange::Unchanged,
             diagnostics: JoinBuildSideSelectionDiagnostics::default(),
-        }
-    };
-    let post_aggregate_null_rejection_result = if aggregate_join_pushdown_result.change.changed() {
-        outer_join_null_rejection::optimize_outer_join_null_rejection(
-            post_aggregate_join_build_side_result.plan,
-            &options.outer_join_null_rejection,
-        )
-    } else {
-        outer_join_null_rejection::OuterJoinNullRejectionResult {
-            plan: post_aggregate_join_build_side_result.plan,
+        },
+    );
+    let post_aggregate_null_rejection_result = rerun_optimizer_pass_if_changed(
+        post_aggregate_join_build_side_result.plan,
+        aggregate_join_pushdown_change,
+        |plan| outer_join_null_rejection::optimize_outer_join_null_rejection(plan, &options.outer_join_null_rejection),
+        |plan| outer_join_null_rejection::OuterJoinNullRejectionResult {
+            plan,
             change: NativeOptimizerChange::Unchanged,
             diagnostics: OuterJoinNullRejectionDiagnostics::default(),
-        }
-    };
+        },
+    );
     let dimension_pruning_result = dimension_pruning::optimize_dimension_derived_row_group_pruning(
         post_aggregate_null_rejection_result.plan,
         &options.dimension_derived_row_group_pruning,
     );
-    let post_dimension_join_build_side_result = if dimension_pruning_result.change.changed() {
-        join_build_side::optimize_join_build_side_selection(
-            dimension_pruning_result.plan,
-            &options.join_build_side_selection,
-        )
-    } else {
-        join_build_side::JoinBuildSideSelectionResult {
-            plan: dimension_pruning_result.plan,
+    let dimension_pruning_change = dimension_pruning_result.change;
+    let post_dimension_join_build_side_result = rerun_optimizer_pass_if_changed(
+        dimension_pruning_result.plan,
+        dimension_pruning_change,
+        |plan| join_build_side::optimize_join_build_side_selection(plan, &options.join_build_side_selection),
+        |plan| join_build_side::JoinBuildSideSelectionResult {
+            plan,
             change: NativeOptimizerChange::Unchanged,
             diagnostics: JoinBuildSideSelectionDiagnostics::default(),
-        }
-    };
+        },
+    );
     let count_non_null_column_pruning_result = count_non_null_pruning::optimize_count_non_null_column_pruning(
         post_dimension_join_build_side_result.plan,
         &options.count_non_null_column_pruning,
@@ -382,6 +384,15 @@ pub fn optimize_query_plan(plan: QueryPlan, options: &NativeOptimizerOptions) ->
             dynamic_filter_route_discovery: dynamic_filter_route_result.diagnostics,
         },
     }
+}
+
+fn rerun_optimizer_pass_if_changed<T>(
+    plan: QueryPlan,
+    change: NativeOptimizerChange,
+    rerun: impl FnOnce(QueryPlan) -> T,
+    unchanged: impl FnOnce(QueryPlan) -> T,
+) -> T {
+    if change.changed() { rerun(plan) } else { unchanged(plan) }
 }
 
 fn optimize_join_filter_reassociation_fixpoint(

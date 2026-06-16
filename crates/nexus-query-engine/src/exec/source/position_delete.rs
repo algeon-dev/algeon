@@ -100,7 +100,7 @@ pub(super) fn read_position_delete_source_chunk(
             "Iceberg position-delete chunk reads require decoded data columns",
         )
         .with_fact("reason", "position_deletes_require_data_column")
-        .with_fact("path", chunk_path_fact(chunk))
+        .with_fact("path", parquet_chunk_path_fact(chunk))
         .with_fact("chunk_index", chunk.chunk_index)
         .with_fact("file_index", chunk.file_index)
         .with_row_group_facts(chunk));
@@ -142,7 +142,7 @@ pub(super) fn read_position_delete_source_chunk(
                 error,
                 chunk,
             )
-            .with_fact("path", chunk_path_fact(chunk))
+            .with_fact("path", parquet_chunk_path_fact(chunk))
             .with_fact("chunk_index", chunk.chunk_index)
             .with_fact("file_index", chunk.file_index)
             .with_fact("read_columns", chunk.read_columns.len())
@@ -213,8 +213,8 @@ pub(super) fn apply_position_deletes_to_data_file(
             "Iceberg position deletes require at least one decoded data column",
         )
         .with_fact("reason", "position_deletes_require_data_column")
-        .with_fact("path", file_path_fact(file))
-        .with_fact("stable_id", file_stable_id_fact(file))
+        .with_fact("path", parquet_file_path_fact(file))
+        .with_fact("stable_id", parquet_file_stable_id_fact(file))
         .with_fact("file_index", file_index));
     }
 
@@ -226,8 +226,8 @@ pub(super) fn apply_position_deletes_to_data_file(
             "failed to construct Iceberg position-delete row positions",
             error,
         )
-        .with_fact("path", file_path_fact(file))
-        .with_fact("stable_id", file_stable_id_fact(file))
+        .with_fact("path", parquet_file_path_fact(file))
+        .with_fact("stable_id", parquet_file_stable_id_fact(file))
         .with_fact("file_index", file_index)
     })?;
     frame = frame.with_column(row_position_column.as_str(), row_positions).map_err(|error| {
@@ -236,8 +236,8 @@ pub(super) fn apply_position_deletes_to_data_file(
             "failed to append Iceberg position-delete row positions",
             error,
         )
-        .with_fact("path", file_path_fact(file))
-        .with_fact("stable_id", file_stable_id_fact(file))
+        .with_fact("path", parquet_file_path_fact(file))
+        .with_fact("stable_id", parquet_file_stable_id_fact(file))
         .with_fact("file_index", file_index)
     })?;
     let row_position_expr = position_delete_row_position_expr(row_position_column.as_str(), row_position_range)?;
@@ -247,8 +247,8 @@ pub(super) fn apply_position_deletes_to_data_file(
             "failed to normalize Iceberg position-delete row positions",
             error,
         )
-        .with_fact("path", file_path_fact(file))
-        .with_fact("stable_id", file_stable_id_fact(file))
+        .with_fact("path", parquet_file_path_fact(file))
+        .with_fact("stable_id", parquet_file_stable_id_fact(file))
         .with_fact("file_index", file_index)
     })?;
 
@@ -288,8 +288,8 @@ pub(super) fn apply_position_deletes_to_data_file(
                     "failed to filter Iceberg position-delete rows for the current data file",
                     error,
                 )
-                .with_fact("path", file_path_fact(file))
-                .with_fact("stable_id", file_stable_id_fact(file))
+                .with_fact("path", parquet_file_path_fact(file))
+                .with_fact("stable_id", parquet_file_stable_id_fact(file))
                 .with_fact("file_index", file_index)
                 .with_fact("delete_index", delete_index)
                 .with_fact(
@@ -315,8 +315,8 @@ pub(super) fn apply_position_deletes_to_data_file(
                     "failed to apply Iceberg position deletes with native cudf anti join",
                     error,
                 )
-                .with_fact("path", file_path_fact(file))
-                .with_fact("stable_id", file_stable_id_fact(file))
+                .with_fact("path", parquet_file_path_fact(file))
+                .with_fact("stable_id", parquet_file_stable_id_fact(file))
                 .with_fact("file_index", file_index)
                 .with_fact("delete_index", delete_index)
                 .with_fact("delete_rows", matching_deletes.num_rows())
@@ -331,8 +331,8 @@ pub(super) fn apply_position_deletes_to_data_file(
                 "failed to restore Iceberg data-file row order after applying position deletes",
                 error,
             )
-            .with_fact("path", file_path_fact(file))
-            .with_fact("stable_id", file_stable_id_fact(file))
+            .with_fact("path", parquet_file_path_fact(file))
+            .with_fact("stable_id", parquet_file_stable_id_fact(file))
             .with_fact("file_index", file_index)
         })?;
     frame = frame.without_columns([row_position_column.as_str()]).map_err(|error| {
@@ -341,8 +341,8 @@ pub(super) fn apply_position_deletes_to_data_file(
             "failed to remove Iceberg position-delete work column",
             error,
         )
-        .with_fact("path", file_path_fact(file))
-        .with_fact("stable_id", file_stable_id_fact(file))
+        .with_fact("path", parquet_file_path_fact(file))
+        .with_fact("stable_id", parquet_file_stable_id_fact(file))
         .with_fact("file_index", file_index)
     })?;
     metrics.operator_time += timer.elapsed();
@@ -569,14 +569,7 @@ pub(super) fn read_position_delete_file(
 
 pub(super) fn unique_position_delete_column_name(frame: &DataFrame) -> String {
     let names = frame.column_names();
-    if !names.contains(&ICEBERG_POSITION_DELETE_ROW_POSITION_COLUMN) {
-        return ICEBERG_POSITION_DELETE_ROW_POSITION_COLUMN.to_string();
-    }
-    for index in 0usize.. {
-        let candidate = format!("{ICEBERG_POSITION_DELETE_ROW_POSITION_COLUMN}_{index}");
-        if !names.contains(&candidate.as_str()) {
-            return candidate;
-        }
-    }
-    unreachable!("usize suffix space is finite but practically inexhaustible")
+    crate::naming::unique_name_with_suffix_from(ICEBERG_POSITION_DELETE_ROW_POSITION_COLUMN, 0, |candidate| {
+        names.contains(&candidate)
+    })
 }

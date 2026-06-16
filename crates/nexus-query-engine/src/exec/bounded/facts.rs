@@ -1,5 +1,5 @@
 use super::*;
-use crate::exec::source::SourceChunkRowGroupFacts;
+use crate::exec::source::{SourceChunkRowGroupFacts, parquet_chunk_path_fact};
 
 #[derive(Debug, Clone, Copy)]
 pub(in crate::exec) struct RuntimeResourceFacts<'a> {
@@ -60,16 +60,8 @@ pub(in crate::exec) fn attach_chunk_resource_facts(
     .attach_to(error)
     .with_fact_if_absent("chunk_index", chunk.chunk_index)
     .with_fact_if_absent("file_index", chunk.file_index)
-    .with_fact_if_absent("path", chunk_path_fact(chunk));
+    .with_fact_if_absent("path", parquet_chunk_path_fact(chunk));
     error.with_row_group_facts_if_absent(chunk)
-}
-
-fn chunk_path_fact(chunk: &SourceChunk) -> String {
-    if chunk.location.is_local_path() {
-        crate::source::redacted_path_diagnostic(&chunk.path)
-    } else {
-        chunk.location.diagnostic_location()
-    }
 }
 
 pub(in crate::exec) fn attach_source_batch_resource_facts(

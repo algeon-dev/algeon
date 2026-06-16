@@ -2,6 +2,7 @@ use arrow::datatypes::{DataType, Schema, SchemaRef};
 use datafusion::physical_expr::expressions::DynamicFilterPhysicalExpr;
 
 use super::*;
+use crate::native::literal::{is_interval_literal_expr, literal_i32, literal_string, substring_stop_position};
 
 pub(super) fn join_residual_expression_category(
     expr: &Arc<dyn PhysicalExpr>,
@@ -111,7 +112,7 @@ pub(super) fn expression_category_with_schema(
         }
         return expression_category_with_schema(like.expr(), input_schema).or_else(|| {
             expression_category_with_schema(like.pattern(), input_schema)
-                .or_else(|| literal_string(like.pattern()).is_none().then(|| "expression_like_pattern".to_string()))
+                .or_else(|| literal_string(like.pattern()).is_err().then(|| "expression_like_pattern".to_string()))
         });
     }
     if let Some(in_list) = expr.downcast_ref::<InListExpr>() {
@@ -196,10 +197,7 @@ fn literal_is_supported(value: &ScalarValue) -> bool {
 }
 
 fn expression_contains_interval_literal(expr: &Arc<dyn PhysicalExpr>) -> bool {
-    if expr
-        .downcast_ref::<Literal>()
-        .is_some_and(|literal| matches!(literal.value(), ScalarValue::IntervalMonthDayNano(Some(_))))
-    {
+    if is_interval_literal_expr(expr) {
         return true;
     }
     if let Some(binary) = expr.downcast_ref::<BinaryExpr>() {
@@ -220,11 +218,6 @@ fn interval_arithmetic_category(binary: &BinaryExpr) -> Option<String> {
         return Some("expression_interval_arithmetic".to_string());
     }
     if left_interval { expression_category(binary.right()) } else { expression_category(binary.left()) }
-}
-
-fn is_interval_literal_expr(expr: &Arc<dyn PhysicalExpr>) -> bool {
-    expr.downcast_ref::<Literal>()
-        .is_some_and(|literal| matches!(literal.value(), ScalarValue::IntervalMonthDayNano(Some(_))))
 }
 
 pub(super) fn stable_data_type_identifier(data_type: &DataType) -> String {
@@ -249,39 +242,24 @@ fn cast_type_pair_category(
     )
 }
 
-fn literal_string(expr: &Arc<dyn PhysicalExpr>) -> Option<String> {
-    let literal = expr.downcast_ref::<Literal>()?;
-    match literal.value() {
-        ScalarValue::Utf8(Some(value)) | ScalarValue::LargeUtf8(Some(value)) | ScalarValue::Utf8View(Some(value)) => {
-            Some(value.clone())
-        },
-        _ => None,
-    }
-}
-
 fn substring_arguments_are_supported(function: &ScalarFunctionExpr) -> bool {
     let args = function.args();
     if !(2..=3).contains(&args.len()) {
         return false;
     }
-    let Some(start) = literal_i32(&args[1]) else {
+    let Ok(start) = literal_i32(&args[1]) else {
         return false;
     };
     if start < 1 {
         return false;
     }
     if args.len() == 3 {
-        let Some(length) = literal_i32(&args[2]) else {
+        let Ok(length) = literal_i32(&args[2]) else {
             return false;
         };
         return length >= 0 && substring_stop_position(start, length).is_some();
     }
     true
-}
-
-fn substring_stop_position(start: i32, length: i32) -> Option<i32> {
-    let zero_based_start = start.checked_sub(1)?;
-    zero_based_start.checked_add(length)
 }
 
 fn extract_field_is_supported(function: &ScalarFunctionExpr) -> bool {
@@ -291,21 +269,6 @@ fn extract_field_is_supported(function: &ScalarFunctionExpr) -> bool {
     literal_string(field)
         .map(|field| matches!(field.to_ascii_lowercase().as_str(), "year" | "month" | "day"))
         .unwrap_or(false)
-}
-
-fn literal_i32(expr: &Arc<dyn PhysicalExpr>) -> Option<i32> {
-    let literal = expr.downcast_ref::<Literal>()?;
-    match literal.value() {
-        ScalarValue::Int8(Some(value)) => Some(i32::from(*value)),
-        ScalarValue::Int16(Some(value)) => Some(i32::from(*value)),
-        ScalarValue::Int32(Some(value)) => Some(*value),
-        ScalarValue::Int64(Some(value)) => i32::try_from(*value).ok(),
-        ScalarValue::UInt8(Some(value)) => Some(i32::from(*value)),
-        ScalarValue::UInt16(Some(value)) => Some(i32::from(*value)),
-        ScalarValue::UInt32(Some(value)) => i32::try_from(*value).ok(),
-        ScalarValue::UInt64(Some(value)) => i32::try_from(*value).ok(),
-        _ => None,
-    }
 }
 
 fn binary_operator_is_supported(op: &Operator) -> bool {

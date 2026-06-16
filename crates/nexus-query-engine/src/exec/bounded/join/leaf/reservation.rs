@@ -1,4 +1,5 @@
 use super::*;
+use crate::exec::source::{parquet_chunk_path_fact, source_read_batch_request, source_read_request};
 
 pub(super) fn attach_join_source_read_resource_facts(
     error: QueryError,
@@ -15,7 +16,7 @@ pub(super) fn attach_join_source_read_resource_facts(
         .with_fact_if_absent("max_attempts", max_attempts)
         .with_fact_if_absent("chunk_index", chunk.chunk_index)
         .with_fact_if_absent("file_index", chunk.file_index)
-        .with_fact_if_absent("path", chunk_path_fact(chunk))
+        .with_fact_if_absent("path", parquet_chunk_path_fact(chunk))
         .with_row_group_facts_if_absent(chunk)
 }
 
@@ -71,17 +72,16 @@ pub(super) fn join_source_read_reservation_request_for_boundary(
     attempt: usize,
     max_attempts: usize,
 ) -> MemoryReservationRequest {
-    let mut request = MemoryReservationRequest::new(ReservationKind::SourceRead, requested_bytes, budget_bytes)
-        .with_memory_boundary(memory_boundary)
-        .with_node_id(node_id)
-        .with_stage(memory_boundary)
-        .with_chunk_index(chunk.chunk_index)
-        .with_file_index(chunk.file_index)
-        .with_path(chunk_path_fact(chunk))
-        .with_attempt(attempt, max_attempts);
-    if !chunk.reads_all_row_groups {
-        request = request.with_row_groups(chunk.row_group_indexes.clone());
-    }
+    let request = source_read_request(
+        ReservationKind::SourceRead,
+        memory_boundary,
+        requested_bytes,
+        budget_bytes,
+        node_id,
+        chunk,
+        attempt,
+        max_attempts,
+    );
     let contract = source_read_reservation_contract(policy, chunk);
     request.with_source_read_contract(contract.quality.as_str(), contract.planning_bytes, contract.estimated_bytes)
 }
@@ -109,24 +109,16 @@ fn join_source_read_batch_reservation_request_for_boundary(
         );
     }
 
-    let mut request = MemoryReservationRequest::new(ReservationKind::SourceRead, requested_bytes, budget_bytes)
-        .with_memory_boundary(memory_boundary)
-        .with_node_id(node_id)
-        .with_stage(memory_boundary)
-        .with_attempt(attempt, max_attempts);
-    let same_file =
-        batch.chunks.iter().all(|chunk| chunk.file_index == first_chunk.file_index && chunk.path == first_chunk.path);
-    if same_file {
-        request = request.with_file_index(first_chunk.file_index).with_path(chunk_path_fact(first_chunk));
-        if batch.chunks.iter().all(|chunk| !chunk.reads_all_row_groups) {
-            let mut row_groups =
-                batch.chunks.iter().flat_map(|chunk| chunk.row_group_indexes.iter().copied()).collect::<Vec<_>>();
-            row_groups.sort_unstable();
-            row_groups.dedup();
-            request = request.with_row_groups(row_groups);
-        }
-    }
-    request
+    source_read_batch_request(
+        ReservationKind::SourceRead,
+        memory_boundary,
+        requested_bytes,
+        budget_bytes,
+        node_id,
+        batch,
+        attempt,
+        max_attempts,
+    )
 }
 
 pub(super) fn observed_join_source_read_reservation_request(
@@ -136,30 +128,21 @@ pub(super) fn observed_join_source_read_reservation_request(
     attempt: usize,
     max_attempts: usize,
 ) -> MemoryReservationRequest {
-    let mut request = MemoryReservationRequest::new(ReservationKind::SourceRead, 0, budget_bytes)
-        .with_memory_boundary("join_source_read")
-        .with_node_id(node_id)
-        .with_stage("join_source_read")
-        .with_chunk_index(chunk.chunk_index)
-        .with_file_index(chunk.file_index)
-        .with_path(chunk_path_fact(chunk))
-        .with_attempt(attempt, max_attempts);
-    if !chunk.reads_all_row_groups {
-        request = request.with_row_groups(chunk.row_group_indexes.clone());
-    }
-    request.with_source_read_contract(
+    source_read_request(
+        ReservationKind::SourceRead,
+        "join_source_read",
+        0,
+        budget_bytes,
+        node_id,
+        chunk,
+        attempt,
+        max_attempts,
+    )
+    .with_source_read_contract(
         SourceReadReservationContractQuality::ObservedGrowShrink.as_str(),
         chunk.estimated_chunk_bytes,
         chunk.estimated_source_read_bytes,
     )
-}
-
-fn chunk_path_fact(chunk: &SourceChunk) -> String {
-    if chunk.location.is_local_path() {
-        crate::source::redacted_path_diagnostic(&chunk.path)
-    } else {
-        chunk.location.diagnostic_location()
-    }
 }
 
 fn observed_join_source_read_batch_reservation_request(

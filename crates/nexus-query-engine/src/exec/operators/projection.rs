@@ -45,14 +45,7 @@ pub(in crate::exec) fn execute_projection(
         metrics.operator_time += timer.elapsed();
         return Ok(GpuDataFrame::new(output));
     }
-    let output_names = node.output_fields().map(|field| field.name().clone()).collect::<Vec<_>>();
-    let exprs = node
-        .outputs
-        .iter()
-        .map(|output| lower_projection_output_expr(output).map(|expr| (output.field.name().as_str(), expr)))
-        .collect::<Result<Vec<_>>>()?;
-    let mut output_columns = output_names;
-    output_columns.extend(datafusion_order_columns(&frame));
+    let PreparedProjectionColumns { exprs, output_columns } = prepare_projection_columns(node, &frame)?;
     let output_columns = output_columns.iter().map(String::as_str).collect::<Vec<_>>();
     let overrides = execution_overrides(context);
     let mut output =
@@ -83,14 +76,7 @@ pub(in crate::exec) fn execute_projection_with_budget(
         metrics.operator_time += timer.elapsed();
         return Ok(GpuDataFrame::new(output));
     }
-    let output_names = node.output_fields().map(|field| field.name().clone()).collect::<Vec<_>>();
-    let exprs = node
-        .outputs
-        .iter()
-        .map(|output| lower_projection_output_expr(output).map(|expr| (output.field.name().as_str(), expr)))
-        .collect::<Result<Vec<_>>>()?;
-    let mut output_columns = output_names;
-    output_columns.extend(datafusion_order_columns(&frame));
+    let PreparedProjectionColumns { exprs, output_columns } = prepare_projection_columns(node, &frame)?;
     let output_columns = output_columns.iter().map(String::as_str).collect::<Vec<_>>();
     let mut output = budgeted_value(
         frame.with_columns_with_budget(exprs, token).map_err(|error| {
@@ -114,6 +100,25 @@ pub(in crate::exec) fn execute_projection_with_budget(
     output = coerce_projection_output_schema(output, node, Some(token), metrics)?;
     metrics.operator_time += timer.elapsed();
     Ok(GpuDataFrame::new(output))
+}
+
+struct PreparedProjectionColumns<'a> {
+    exprs: Vec<(&'a str, cudf::Expr)>,
+    output_columns: Vec<String>,
+}
+
+fn prepare_projection_columns<'a>(
+    node: &'a ProjectionNode,
+    frame: &DataFrame,
+) -> Result<PreparedProjectionColumns<'a>> {
+    let exprs = node
+        .outputs
+        .iter()
+        .map(|output| lower_projection_output_expr(output).map(|expr| (output.field.name().as_str(), expr)))
+        .collect::<Result<Vec<_>>>()?;
+    let mut output_columns = node.output_fields().map(|field| field.name().clone()).collect::<Vec<_>>();
+    output_columns.extend(datafusion_order_columns(frame));
+    Ok(PreparedProjectionColumns { exprs, output_columns })
 }
 
 fn try_execute_column_only_projection(

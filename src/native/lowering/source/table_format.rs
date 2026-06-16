@@ -18,8 +18,9 @@ use nexus_query_engine::{
 use parquet::{arrow::PARQUET_FIELD_ID_META_KEY, file::reader::FileReader};
 
 use super::{
-    SourceReaderPushdownPredicate, add_source_filter_projection, combine_scan_limits, project_scan_output_columns,
-    required_source_scan_output_indices, source_bindings_for_schema, supported_reader_pushdown_predicate,
+    SourceReaderPushdownPredicate, SourceUnprojectedFilterOutput, combine_scan_limits,
+    lower_source_filter_and_projection, project_scan_output_columns, required_source_scan_output_indices,
+    source_bindings_for_schema, supported_reader_pushdown_predicate,
 };
 use crate::{
     native::{
@@ -134,53 +135,15 @@ pub(super) fn lower_table_format_source_input(
         (LoweredNativeInput::with_bindings(union_node, Arc::clone(&source_output_schema), scan_output_bindings), false)
     };
     if let Some(filter) = filter {
-        if reader_pushdown_covers_filter {
-            if let Some(projection) = filter.projection() {
-                return add_source_filter_projection(
-                    builder,
-                    scan_output.node,
-                    &scan_output,
-                    filter.schema(),
-                    projection,
-                    required_output_fields,
-                );
-            }
-            return project_scan_output_columns(
-                builder,
-                scan_output.node,
-                scan_output.schema,
-                scan_output.bindings,
-                required_output_fields,
-            );
-        }
-        let filtered_node = builder.add_filter(
-            scan_output.node,
-            lower_physical_expr_with_bindings(
-                filter.predicate(),
-                &filter.input().schema(),
-                Some(&scan_output.bindings),
-            )?,
-            Arc::clone(&scan_output.schema),
-        );
-        let filtered = if let Some(projection) = filter.projection() {
-            add_source_filter_projection(
-                builder,
-                filtered_node,
-                &scan_output,
-                filter.schema(),
-                projection,
-                required_output_fields,
-            )
-        } else {
-            project_scan_output_columns(
-                builder,
-                filtered_node,
-                scan_output.schema,
-                scan_output.bindings,
-                required_output_fields,
-            )
-        }?;
-        if let Some(scan_limit) = scan_plan.scan_limit {
+        let filtered = lower_source_filter_and_projection(
+            builder,
+            scan_output,
+            filter,
+            reader_pushdown_covers_filter,
+            required_output_fields,
+            SourceUnprojectedFilterOutput::ProjectRequiredOutput,
+        )?;
+        if !reader_pushdown_covers_filter && let Some(scan_limit) = scan_plan.scan_limit {
             let limited_node =
                 builder.add_limit(filtered.node, NativeLimitSpec::fetch(scan_limit), Arc::clone(&filtered.schema));
             Ok(LoweredNativeInput::with_bindings(limited_node, filtered.schema, filtered.bindings))

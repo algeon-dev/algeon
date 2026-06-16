@@ -733,22 +733,16 @@ fn execute_source_adjacent_partition_aggregate(
             .with_stage("source_adjacent_partitioned_partial_aggregate")
             .with_attempt(1, 1)
             .with_compiled_task_id(task_id);
-    if output_bytes > work_reservation.bytes() {
-        let delta = output_bytes.saturating_sub(work_reservation.bytes());
-        if let Err(error) =
-            reservations.try_grow(&mut work_reservation, output_request.clone().with_requested_bytes(delta), metrics)
-        {
-            drop(frame);
-            reservations.release(work_reservation, metrics);
-            return Err(error);
-        }
-    } else {
-        reservations.shrink_to_observed_with_request(
-            &mut work_reservation,
-            output_bytes,
-            output_request.clone(),
-            metrics,
-        );
+    if let Err(error) = reconcile_work_reservation_to_output(
+        reservations,
+        &mut work_reservation,
+        output_bytes,
+        &output_request,
+        metrics,
+    ) {
+        drop(frame);
+        reservations.release(work_reservation, metrics);
+        return Err(error);
     }
     let output_reservation = reservations.transfer(work_reservation, output_request, metrics);
     let output = CommittedPartial { frame, reservation: output_reservation };
@@ -851,22 +845,16 @@ fn concatenate_committed_frames(
         .with_node_id(node_id)
         .with_stage(stage)
         .with_compiled_task_id(task_id.clone());
-    if output_bytes > concat_reservation.bytes() {
-        let delta = output_bytes.saturating_sub(concat_reservation.bytes());
-        if let Err(error) =
-            reservations.try_grow(&mut concat_reservation, output_request.clone().with_requested_bytes(delta), metrics)
-        {
-            drop(concatenated);
-            reservations.release(concat_reservation, metrics);
-            return Err(error);
-        }
-    } else {
-        reservations.shrink_to_observed_with_request(
-            &mut concat_reservation,
-            output_bytes,
-            output_request.clone(),
-            metrics,
-        );
+    if let Err(error) = reconcile_work_reservation_to_output(
+        reservations,
+        &mut concat_reservation,
+        output_bytes,
+        &output_request,
+        metrics,
+    ) {
+        drop(concatenated);
+        reservations.release(concat_reservation, metrics);
+        return Err(error);
     }
     let output_reservation = reservations.transfer(concat_reservation, output_request, metrics);
     Ok(CommittedPartial { frame: concatenated, reservation: output_reservation })
@@ -908,16 +896,7 @@ fn release_optional_partials_reverse(
 
 fn unique_source_adjacent_partition_column_name(frame: &cudf::DataFrame) -> String {
     let base = "__cudf_source_adjacent_partition_row_id";
-    if !frame.contains(base) {
-        return base.to_string();
-    }
-    for suffix in 1usize.. {
-        let candidate = format!("{base}_{suffix}");
-        if !frame.contains(&candidate) {
-            return candidate;
-        }
-    }
-    unreachable!("usize suffix space is finite but practically inexhaustible")
+    crate::naming::unique_alias_with_suffix(base, |candidate| frame.contains(candidate))
 }
 
 fn source_adjacent_aggregate_task_id(node_id: NodeId, stage: &'static str, suffix: impl std::fmt::Display) -> String {

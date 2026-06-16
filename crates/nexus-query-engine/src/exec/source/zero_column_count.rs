@@ -21,7 +21,7 @@ pub(super) fn read_zero_column_count_source(
                     "nexus_query_engine.zero_column_count.read",
                     "zero-column count source requires parquet row-count metadata",
                 )
-                .with_fact("path", chunk_path_fact(chunk))
+                .with_fact("path", parquet_chunk_path_fact(chunk))
                 .with_fact("chunk_index", chunk.chunk_index)
                 .with_fact("file_index", chunk.file_index)
                 .with_row_group_facts(chunk)

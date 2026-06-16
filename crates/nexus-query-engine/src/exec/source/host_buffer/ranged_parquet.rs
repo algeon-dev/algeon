@@ -47,6 +47,7 @@ use crate::{
     parquet_metadata::parquet_footer_prefetch_bytes,
     runtime::{ExecutionContext, S3ObjectStoreKey},
     source::{LocalParquetFile, LocalParquetSource},
+    util::comma_separated_usize,
 };
 
 const PARQUET_MAGIC: &[u8; 4] = b"PAR1";
@@ -171,7 +172,7 @@ pub(super) fn file_request(source: &LocalParquetSource, file: &LocalParquetFile)
     let column_indices = source.read_column_file_indices.clone();
     let column_pruned = file_column_pruning_applies(file, source);
     if let Some(row_groups) = file.row_groups.as_ref().filter(|row_groups| !row_groups.is_empty())
-        && super::represented_file_row_group_count(file).is_some_and(|total| row_groups.len() < total)
+        && super::local_parquet_file_row_group_metadata_count(file).is_some_and(|total| row_groups.len() < total)
     {
         return Some(RangedParquetFetchRequest::new(
             RangedRowGroupSelector::Explicit(row_groups.clone()),
@@ -187,17 +188,17 @@ pub(super) fn file_request(source: &LocalParquetSource, file: &LocalParquetFile)
     }
     if let Some(row_groups) = file.row_groups.as_ref().filter(|row_groups| !row_groups.is_empty())
         && column_pruned
-        && super::represented_file_row_group_count(file).is_some()
+        && super::local_parquet_file_row_group_metadata_count(file).is_some()
     {
         return Some(RangedParquetFetchRequest::new(
             RangedRowGroupSelector::Explicit(row_groups.clone()),
             Some(column_indices),
         ));
     }
-    if column_pruned && super::represented_file_row_group_count(file).is_some_and(|total| total > 0) {
+    if column_pruned && super::local_parquet_file_row_group_metadata_count(file).is_some_and(|total| total > 0) {
         return Some(RangedParquetFetchRequest::new(
             RangedRowGroupSelector::Explicit(
-                (0..super::represented_file_row_group_count(file).expect("checked above")).collect(),
+                (0..super::local_parquet_file_row_group_metadata_count(file).expect("checked above")).collect(),
             ),
             Some(column_indices),
         ));
@@ -260,14 +261,8 @@ pub(super) fn attach_fetch_facts(
         .with_fact("mini_row_group_bytes", comma_separated_u64(&ranged_fetch.mini_row_group_bytes))
         .with_fact("mini_parquet_footer_bytes", ranged_fetch.footer_bytes)
         .with_fact("original_file_bytes", ranged_fetch.original_file_bytes)
-        .with_fact(
-            "selected_original_row_groups",
-            comma_separated_usize_values(&ranged_fetch.selected_original_row_groups),
-        )
-        .with_fact(
-            "selected_file_column_indices",
-            comma_separated_usize_values(&ranged_fetch.selected_file_column_indices),
-        )
+        .with_fact("selected_original_row_groups", comma_separated_usize(&ranged_fetch.selected_original_row_groups))
+        .with_fact("selected_file_column_indices", comma_separated_usize(&ranged_fetch.selected_file_column_indices))
         .with_fact("mini_row_groups", ranged_fetch.mini_row_group_rows.len())
         .with_fact("original_chunk_row_groups", format_row_groups(chunk))
 }
@@ -287,14 +282,8 @@ pub(super) fn attach_file_fetch_facts(
         .with_fact("mini_row_group_bytes", comma_separated_u64(&ranged_fetch.mini_row_group_bytes))
         .with_fact("mini_parquet_footer_bytes", ranged_fetch.footer_bytes)
         .with_fact("original_file_bytes", ranged_fetch.original_file_bytes)
-        .with_fact(
-            "selected_original_row_groups",
-            comma_separated_usize_values(&ranged_fetch.selected_original_row_groups),
-        )
-        .with_fact(
-            "selected_file_column_indices",
-            comma_separated_usize_values(&ranged_fetch.selected_file_column_indices),
-        )
+        .with_fact("selected_original_row_groups", comma_separated_usize(&ranged_fetch.selected_original_row_groups))
+        .with_fact("selected_file_column_indices", comma_separated_usize(&ranged_fetch.selected_file_column_indices))
         .with_fact("mini_row_groups", ranged_fetch.mini_row_group_rows.len())
         .with_fact("path", super::parquet_file_path_fact(file))
         .with_fact("stable_id", super::parquet_file_stable_id_fact(file))
@@ -448,10 +437,6 @@ fn chunk_source_file_row_group_count(chunk: &SourceChunk) -> Option<usize> {
         .or(chunk.source_file_pure_filter_compressed_bytes.as_ref())
         .or(chunk.source_file_pure_filter_uncompressed_bytes.as_ref())
         .map(Vec::len)
-}
-
-fn comma_separated_usize_values(values: &[usize]) -> String {
-    values.iter().map(usize::to_string).collect::<Vec<_>>().join(",")
 }
 
 fn comma_separated_u64(values: &[u64]) -> String {

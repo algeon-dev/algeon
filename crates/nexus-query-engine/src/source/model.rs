@@ -15,14 +15,19 @@ use arrow::{
 
 #[cfg(test)]
 use super::diagnostics::redacted_object_store_path_diagnostic;
-use super::diagnostics::{
-    LocalParquetDiagnosticColumns, PredicateDisposition, RejectedSourceFeature, SourceDiagnostics,
-    ZeroColumnCountDisposition, files_have_proven_direct_device_read, object_store_diagnostic_id,
-    redacted_debug_option, redacted_debug_value, redacted_stable_id_diagnostic, stable_fnv1a64,
+use super::{
+    diagnostics::{
+        LocalParquetDiagnosticColumns, PredicateDisposition, RejectedSourceFeature, SourceDiagnostics,
+        ZeroColumnCountDisposition, files_have_proven_direct_device_read, object_store_diagnostic_id,
+        redacted_debug_option, redacted_debug_value, redacted_stable_id_diagnostic, stable_fnv1a64,
+    },
+    reader_predicate_decimal_raw_for_integer_value, reader_predicate_expr_references_decimal_column,
+    reader_predicate_integer_literal_raw, reader_predicate_rescale_decimal_raw, reader_predicate_unsigned_literal_raw,
 };
 use crate::{
     datatypes::{
-        cudf_dtype_from_arrow_type, is_supported_arrow_type, is_supported_list_carry_type, is_timestamp_with_timezone,
+        arrow_decimal_scale_to_cudf_scale, cudf_dtype_from_arrow_type, is_supported_arrow_type,
+        is_supported_list_carry_type, is_timestamp_with_timezone,
     },
     expr::{BinaryOp, Expr, LiteralValue},
 };
@@ -1681,125 +1686,37 @@ fn reader_predicate_literal_is_supported_for_type(value: &LiteralValue, data_typ
 }
 
 fn signed_literal_fits(value: &LiteralValue, min: i128, max: i128) -> bool {
-    integer_literal_raw(value).is_some_and(|raw| raw >= min && raw <= max)
+    reader_predicate_integer_literal_raw(value).is_some_and(|raw| raw >= min && raw <= max)
 }
 
 fn unsigned_literal_fits(value: &LiteralValue, max: u128) -> bool {
-    unsigned_literal_raw(value).is_some_and(|raw| raw <= max)
-}
-
-fn unsigned_literal_raw(value: &LiteralValue) -> Option<u128> {
-    match value {
-        LiteralValue::UInt8(value) => Some(u128::from(*value)),
-        LiteralValue::UInt16(value) => Some(u128::from(*value)),
-        LiteralValue::UInt32(value) => Some(u128::from(*value)),
-        LiteralValue::UInt64(value) => Some(u128::from(*value)),
-        LiteralValue::Int8(value) => u128::try_from(*value).ok(),
-        LiteralValue::Int16(value) => u128::try_from(*value).ok(),
-        LiteralValue::Int32(value) => u128::try_from(*value).ok(),
-        LiteralValue::Int64(value) => u128::try_from(*value).ok(),
-        _ => None,
-    }
-}
-
-fn integer_literal_raw(value: &LiteralValue) -> Option<i128> {
-    match value {
-        LiteralValue::Int8(value) => Some(i128::from(*value)),
-        LiteralValue::Int16(value) => Some(i128::from(*value)),
-        LiteralValue::Int32(value) => Some(i128::from(*value)),
-        LiteralValue::Int64(value) => Some(i128::from(*value)),
-        LiteralValue::UInt8(value) => Some(i128::from(*value)),
-        LiteralValue::UInt16(value) => Some(i128::from(*value)),
-        LiteralValue::UInt32(value) => Some(i128::from(*value)),
-        LiteralValue::UInt64(value) => Some(i128::from(*value)),
-        _ => None,
-    }
+    reader_predicate_unsigned_literal_raw(value).is_some_and(|raw| raw <= max)
 }
 
 fn decimal_literal_can_target_scale(value: &LiteralValue, target_arrow_scale: i8) -> bool {
-    let target_cudf_scale = -i32::from(target_arrow_scale);
-    if let Some(raw) = integer_literal_raw(value) {
-        return decimal_raw_for_integer_value(raw, target_cudf_scale).is_some();
+    let target_cudf_scale = arrow_decimal_scale_to_cudf_scale(target_arrow_scale);
+    if let Some(raw) = reader_predicate_integer_literal_raw(value) {
+        return reader_predicate_decimal_raw_for_integer_value(raw, target_cudf_scale).is_ok();
     }
     if let LiteralValue::Decimal128 { raw, scale, .. } = value {
-        return rescale_decimal_raw_for_reader_support(*raw, -i32::from(*scale), target_cudf_scale).is_some();
+        return reader_predicate_rescale_decimal_raw(
+            *raw,
+            arrow_decimal_scale_to_cudf_scale(*scale),
+            target_cudf_scale,
+        )
+        .is_ok();
     }
     false
 }
 
-fn decimal_raw_for_integer_value(value: i128, target_scale: i32) -> Option<i128> {
-    if target_scale <= 0 {
-        checked_pow10(target_scale.unsigned_abs()).and_then(|multiplier| value.checked_mul(multiplier))
-    } else {
-        let divisor = checked_pow10(target_scale as u32)?;
-        (value % divisor == 0).then_some(value / divisor)
-    }
-}
-
-fn rescale_decimal_raw_for_reader_support(raw: i128, source_scale: i32, target_scale: i32) -> Option<i128> {
-    let scale_delta = source_scale.checked_sub(target_scale)?;
-    if scale_delta >= 0 {
-        let multiplier = checked_pow10(scale_delta as u32)?;
-        raw.checked_mul(multiplier)
-    } else {
-        let divisor = checked_pow10(scale_delta.unsigned_abs())?;
-        (raw % divisor == 0).then_some(raw / divisor)
-    }
-}
-
-fn checked_pow10(exponent: u32) -> Option<i128> {
-    let mut value = 1i128;
-    for _ in 0..exponent {
-        value = value.checked_mul(10)?;
-    }
-    Some(value)
-}
-
 fn reader_predicate_references_decimal_column(source: &LocalParquetSource, expr: &Expr) -> bool {
-    match expr {
-        Expr::Column(column) => source
+    reader_predicate_expr_references_decimal_column(expr, |column_name| {
+        source
             .schema
-            .field_with_name(column.name())
+            .field_with_name(column_name)
             .ok()
-            .is_some_and(|field| matches!(field.data_type(), DataType::Decimal128(_, _))),
-        Expr::Literal(_) => false,
-        Expr::Not(inner)
-        | Expr::IsNull(inner)
-        | Expr::IsNotNull(inner)
-        | Expr::Alias { expr: inner, .. }
-        | Expr::Cast { expr: inner, .. }
-        | Expr::TryCast { expr: inner, .. } => reader_predicate_references_decimal_column(source, inner),
-        Expr::Binary { left, right, .. } => {
-            reader_predicate_references_decimal_column(source, left)
-                || reader_predicate_references_decimal_column(source, right)
-        },
-        Expr::InList { expr, list, .. } => {
-            reader_predicate_references_decimal_column(source, expr)
-                || list.iter().any(|value| reader_predicate_references_decimal_column(source, value))
-        },
-        Expr::Like { expr, .. }
-        | Expr::Substring { expr, .. }
-        | Expr::Lower(expr)
-        | Expr::Upper(expr)
-        | Expr::StringLength { expr, .. }
-        | Expr::RegexpReplace { expr, .. }
-        | Expr::Abs(expr)
-        | Expr::Sqrt { expr, .. }
-        | Expr::Round { expr, .. }
-        | Expr::Extract { expr, .. }
-        | Expr::DateTrunc { expr, .. } => reader_predicate_references_decimal_column(source, expr),
-        Expr::Concat(exprs) => exprs.iter().any(|expr| reader_predicate_references_decimal_column(source, expr)),
-        Expr::IsDistinctFrom { left, right } | Expr::IsNotDistinctFrom { left, right } => {
-            reader_predicate_references_decimal_column(source, left)
-                || reader_predicate_references_decimal_column(source, right)
-        },
-        Expr::Case { branches, else_expr } => {
-            branches.iter().any(|branch| {
-                reader_predicate_references_decimal_column(source, &branch.when)
-                    || reader_predicate_references_decimal_column(source, &branch.then)
-            }) || reader_predicate_references_decimal_column(source, else_expr)
-        },
-    }
+            .is_some_and(|field| matches!(field.data_type(), DataType::Decimal128(_, _)))
+    })
 }
 
 fn reader_predicate_source_contract_shape_is_supported(source: &LocalParquetSource, expr: &Expr) -> bool {

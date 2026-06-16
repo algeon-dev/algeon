@@ -1,6 +1,6 @@
 use arrow::datatypes::DataType as ArrowDataType;
 
-use super::rewrite;
+use super::{access::local_parquet_source, rewrite};
 use crate::{
     datatypes::{is_supported_arrow_type, is_supported_list_carry_type, is_timestamp_with_timezone},
     dynamic_filter::{
@@ -1636,17 +1636,6 @@ fn consumer_pre_aggregate_lineages_for_column(
         | PlanNode::EdgeNormalize(_)
         | PlanNode::GraphAlgorithm(_) => Vec::new(),
     }
-}
-
-fn local_parquet_source(plan: &QueryPlan, node_id: NodeId) -> Option<&LocalParquetSource> {
-    let node = plan.node(node_id)?;
-    let PlanNode::Source(source) = &node.kind else {
-        return None;
-    };
-    let SourceNode::LocalParquet(source) = source.as_ref() else {
-        return None;
-    };
-    Some(source)
 }
 
 fn consumer_reader_column_is_visible(source: &LocalParquetSource, column: &str) -> bool {

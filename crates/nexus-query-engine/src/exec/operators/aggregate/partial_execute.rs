@@ -331,14 +331,7 @@ fn encoded_partial_key_dtype_requires_encoding(data_type: &ArrowDataType) -> boo
 
 fn unique_encoded_group_key_name(frame: &DataFrame, aggregate: &LoweredAggregate, key_index: usize) -> String {
     let base = format!("__cudf_encoded_group_key_{key_index}");
-    if !frame.contains(base.as_str()) && !aggregate.output_names.iter().any(|name| name == &base) {
-        return base;
-    }
-    for suffix in 1usize.. {
-        let candidate = format!("{base}_{suffix}");
-        if !frame.contains(candidate.as_str()) && !aggregate.output_names.iter().any(|name| name == &candidate) {
-            return candidate;
-        }
-    }
-    unreachable!("usize suffix space is finite but practically inexhaustible")
+    crate::naming::unique_alias_with_suffix(base.as_str(), |candidate| {
+        frame.contains(candidate) || aggregate.output_names.iter().any(|name| name == candidate)
+    })
 }

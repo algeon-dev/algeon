@@ -16,6 +16,7 @@ use super::{
     start_host_parquet_buffer_fetch, *,
 };
 use crate::{
+    datatypes::is_arrow_fixed_width,
     error::{QueryError, QueryErrorCode, Result},
     parquet_metadata::write_parquet_footer_sidecar_from_file,
     runtime::{LakehouseCacheFillErrorEvent, LakehouseCacheFillEvent, LakehouseCacheFillOutcome, S3ObjectStoreKey},
@@ -501,29 +502,7 @@ fn source_read_columns_are_fixed_width(source: &LocalParquetSource) -> bool {
 
 fn optimized_cache_fixed_width_type(data_type: &arrow::datatypes::DataType) -> bool {
     use arrow::datatypes::DataType;
-    matches!(
-        data_type,
-        DataType::Boolean
-            | DataType::Int8
-            | DataType::Int16
-            | DataType::Int32
-            | DataType::Int64
-            | DataType::UInt8
-            | DataType::UInt16
-            | DataType::UInt32
-            | DataType::UInt64
-            | DataType::Float16
-            | DataType::Float32
-            | DataType::Float64
-            | DataType::Date32
-            | DataType::Date64
-            | DataType::Time32(_)
-            | DataType::Time64(_)
-            | DataType::Timestamp(_, _)
-            | DataType::Duration(_)
-            | DataType::Decimal128(_, _)
-            | DataType::Decimal256(_, _)
-    )
+    is_arrow_fixed_width(data_type) || matches!(data_type, DataType::Float16)
 }
 
 fn optimized_batch_row_group_size_rows(row_count: usize) -> i32 {

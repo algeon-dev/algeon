@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use super::{LocalParquetFile, PartitionColumn, SourceColumnRef};
+use super::{LocalParquetFile, ParquetSourceLocation, PartitionColumn, SourceColumnRef};
 
 // Borrowed column-layout snapshot used to build source diagnostics.
 #[derive(Debug, Clone, Copy)]
@@ -206,6 +206,33 @@ pub(crate) fn redacted_path_diagnostic(path: &Path) -> String {
     redacted_location_diagnostic(path.as_str()).unwrap_or(path)
 }
 
+pub(crate) fn parquet_source_path_fact(location: &ParquetSourceLocation, path: &Path) -> String {
+    if location.is_local_path() { redacted_path_diagnostic(path) } else { location.diagnostic_location() }
+}
+
+pub(crate) fn parquet_source_stable_id_fact(location: &ParquetSourceLocation, stable_id: &str) -> String {
+    location.diagnostic_stable_id(stable_id)
+}
+
+pub(crate) fn parquet_file_path_fact(file: &LocalParquetFile) -> String {
+    parquet_source_path_fact(&file.location, &file.path)
+}
+
+pub(crate) fn parquet_file_stable_id_fact(file: &LocalParquetFile) -> String {
+    parquet_source_stable_id_fact(&file.location, file.stable_id.as_str())
+}
+
+pub(crate) fn local_parquet_file_row_group_metadata_count(file: &LocalParquetFile) -> Option<usize> {
+    file.row_group_bytes
+        .as_ref()
+        .or(file.projected_row_group_uncompressed_bytes.as_ref())
+        .or(file.projected_row_group_compressed_bytes.as_ref())
+        .or(file.pure_filter_row_group_uncompressed_bytes.as_ref())
+        .or(file.pure_filter_row_group_compressed_bytes.as_ref())
+        .or(file.row_group_rows.as_ref())
+        .map(Vec::len)
+}
+
 pub(crate) fn redacted_stable_id_diagnostic(stable_id: &str) -> String {
     redacted_location_diagnostic(stable_id).unwrap_or_else(|| stable_id.to_string())
 }
@@ -348,17 +375,6 @@ fn selected_row_group_stats_for_file(file: &LocalParquetFile) -> Option<Selected
         selected_rows,
         total_rows,
     })
-}
-
-fn local_parquet_file_row_group_metadata_count(file: &LocalParquetFile) -> Option<usize> {
-    file.row_group_bytes
-        .as_ref()
-        .or(file.projected_row_group_compressed_bytes.as_ref())
-        .or(file.projected_row_group_uncompressed_bytes.as_ref())
-        .or(file.pure_filter_row_group_compressed_bytes.as_ref())
-        .or(file.pure_filter_row_group_uncompressed_bytes.as_ref())
-        .or(file.row_group_rows.as_ref())
-        .map(Vec::len)
 }
 
 fn source_read_bytes(
@@ -676,5 +692,42 @@ impl RejectedSourceFeature {
             Self::ZeroColumnCount => "zero_column_count",
             Self::SchemaMapping => "schema_mapping",
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+
+    use super::*;
+
+    #[test]
+    fn parquet_source_path_fact_redacts_uri_shaped_local_paths() {
+        let path = PathBuf::from("s3://secret-bucket/private/key.parquet?X-Amz-Signature=abc");
+        let fact = parquet_source_path_fact(&ParquetSourceLocation::local_path(&path), &path);
+
+        assert!(fact.starts_with("object_store:s3:fnv64:"));
+        assert!(!fact.contains("secret-bucket"));
+        assert!(!fact.contains("X-Amz-Signature"));
+    }
+
+    #[test]
+    fn parquet_source_path_fact_uses_object_store_diagnostic_location() {
+        let uri = "s3://secret-bucket/private/key.parquet?X-Amz-Signature=abc";
+        let location = ParquetSourceLocation::object_store_uri(uri).expect("valid object-store URI");
+        let fact = parquet_source_path_fact(&location, PathBuf::from(uri).as_path());
+
+        assert!(fact.starts_with("object_store:s3:fnv64:"));
+        assert!(!fact.contains("secret-bucket"));
+        assert!(!fact.contains("X-Amz-Signature"));
+    }
+
+    #[test]
+    fn local_parquet_file_row_group_metadata_count_uses_first_available_vector() {
+        let file = LocalParquetFile::new("lineitem.parquet")
+            .with_projected_row_group_bytes(vec![10, 20, 30], vec![100, 200, 300])
+            .with_row_group_rows(vec![1, 2, 3]);
+
+        assert_eq!(local_parquet_file_row_group_metadata_count(&file), Some(3));
     }
 }

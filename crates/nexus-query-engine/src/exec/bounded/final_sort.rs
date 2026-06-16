@@ -179,6 +179,26 @@ struct FinalSortExecutor<'a> {
     metrics: &'a mut QueryMetrics,
 }
 
+fn final_sort_runtime_facts(
+    memory_boundary: &'static str,
+    node_id: NodeId,
+    attempt: usize,
+    max_attempts: usize,
+    metrics: &mut QueryMetrics,
+    error: QueryError,
+) -> QueryError {
+    RuntimeResourceFacts {
+        memory_boundary,
+        stage: "final_sort",
+        node_id,
+        attempt,
+        max_attempts,
+        resume_boundary: "final_sort",
+        metrics,
+    }
+    .attach_to(error)
+}
+
 impl FinalSortExecutor<'_> {
     fn final_sort_budget_token(&self, boundary: &'static str, attempt: usize) -> Result<cudf::ExecutionBudgetToken> {
         self.final_sort_budget_token_for_bytes(boundary, attempt, self.reservations.remaining_bytes())

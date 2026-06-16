@@ -54,8 +54,8 @@ pub(crate) fn source_file_for_chunk<'a>(
             "local parquet source chunk references a missing source file",
         )
         .with_fact("reason", "source_chunk_file_index_missing")
-        .with_fact("path", source_chunk_path_fact(chunk))
-        .with_fact("stable_id", chunk.location.diagnostic_stable_id(chunk.stable_id.as_str()))
+        .with_fact("path", crate::source::parquet_source_path_fact(&chunk.location, &chunk.path))
+        .with_fact("stable_id", crate::source::parquet_source_stable_id_fact(&chunk.location, chunk.stable_id.as_str()))
         .with_fact("chunk_index", chunk.chunk_index)
         .with_fact("file_index", chunk.file_index)
         .with_fact("source_files", source.files.len())
@@ -83,14 +83,14 @@ pub(crate) fn source_chunk_row_position_range(chunk: &SourceChunk) -> Result<Opt
             "Iceberg position-delete row-group chunks require per-row-group row-count metadata",
         )
         .with_fact("reason", "position_deletes_require_row_group_rows")
-        .with_fact("path", source_chunk_path_fact(chunk))
+        .with_fact("path", crate::source::parquet_source_path_fact(&chunk.location, &chunk.path))
         .with_fact("file_index", chunk.file_index)
         .with_fact("chunk_index", chunk.chunk_index)
         .with_fact("row_groups", source_chunk_row_groups_fact(chunk))
     })?;
     contiguous_row_group_position_range(&chunk.row_group_indexes, row_group_rows).map(Some).map_err(|error| {
         error
-            .with_fact("path", source_chunk_path_fact(chunk))
+            .with_fact("path", crate::source::parquet_source_path_fact(&chunk.location, &chunk.path))
             .with_fact("file_index", chunk.file_index)
             .with_fact("chunk_index", chunk.chunk_index)
             .with_fact("row_groups", source_chunk_row_groups_fact(chunk))
@@ -212,28 +212,12 @@ fn source_chunk_identity_mismatch_error(
     )
     .with_fact("reason", "source_chunk_identity_mismatch")
     .with_fact("field", field)
-    .with_fact("path", source_chunk_path_fact(chunk))
-    .with_fact("source_file_path", source_file_path_fact(file))
-    .with_fact("stable_id", chunk.location.diagnostic_stable_id(chunk.stable_id.as_str()))
-    .with_fact("source_file_stable_id", file.location.diagnostic_stable_id(file.stable_id.as_str()))
+    .with_fact("path", crate::source::parquet_source_path_fact(&chunk.location, &chunk.path))
+    .with_fact("source_file_path", crate::source::parquet_file_path_fact(file))
+    .with_fact("stable_id", crate::source::parquet_source_stable_id_fact(&chunk.location, chunk.stable_id.as_str()))
+    .with_fact("source_file_stable_id", crate::source::parquet_file_stable_id_fact(file))
     .with_fact("chunk_index", chunk.chunk_index)
     .with_fact("file_index", chunk.file_index)
-}
-
-fn source_chunk_path_fact(chunk: &SourceChunk) -> String {
-    if chunk.location.is_local_path() {
-        crate::source::redacted_path_diagnostic(&chunk.path)
-    } else {
-        chunk.location.diagnostic_location()
-    }
-}
-
-fn source_file_path_fact(file: &LocalParquetFile) -> String {
-    if file.location.is_local_path() {
-        crate::source::redacted_path_diagnostic(&file.path)
-    } else {
-        file.location.diagnostic_location()
-    }
 }
 
 /// Plans chunks for a local Parquet source using a fresh footer metadata cache.
@@ -364,7 +348,7 @@ fn plan_local_parquet_source_chunks_with_metadata_cache_and_context(
             "zero-column count source requires parquet row-count metadata for each planned chunk",
         )
         .with_fact("reason", "row_count_metadata_unavailable")
-        .with_fact("path", source_chunk_path_fact(chunk))
+        .with_fact("path", crate::source::parquet_source_path_fact(&chunk.location, &chunk.path))
         .with_fact("file_index", chunk.file_index)
         .with_fact("chunk_index", chunk.chunk_index));
     }
@@ -419,7 +403,7 @@ fn apply_source_scan_limit_to_chunks(
                 "nexus_query_engine.source_chunk.scan_limit",
                 "source scan limit requires row-count metadata for planned chunks",
             )
-            .with_fact("path", source_chunk_path_fact(&chunk))
+            .with_fact("path", crate::source::parquet_source_path_fact(&chunk.location, &chunk.path))
             .with_fact("file_index", chunk.file_index)
             .with_fact("chunk_index", chunk.chunk_index)
         })?;
@@ -484,7 +468,7 @@ fn scan_limit_row_group_prefix(chunk: &SourceChunk, keep_rows: u64) -> Result<(V
             "nexus_query_engine.source_chunk.scan_limit",
             "source scan limit requires per-row-group row-count metadata for chunk prefix trimming",
         )
-        .with_fact("path", source_chunk_path_fact(chunk))
+        .with_fact("path", crate::source::parquet_source_path_fact(&chunk.location, &chunk.path))
         .with_fact("file_index", chunk.file_index)
         .with_fact("chunk_index", chunk.chunk_index)
     })?;
@@ -498,7 +482,7 @@ fn scan_limit_row_group_prefix(chunk: &SourceChunk, keep_rows: u64) -> Result<(V
                 "nexus_query_engine.source_chunk.scan_limit",
                 "source scan limit row group is outside row-count metadata",
             )
-            .with_fact("path", source_chunk_path_fact(chunk))
+            .with_fact("path", crate::source::parquet_source_path_fact(&chunk.location, &chunk.path))
             .with_fact("file_index", chunk.file_index)
             .with_fact("chunk_index", chunk.chunk_index)
             .with_fact("row_group", row_group)
@@ -511,7 +495,7 @@ fn scan_limit_row_group_prefix(chunk: &SourceChunk, keep_rows: u64) -> Result<(V
                 "nexus_query_engine.source_chunk.scan_limit",
                 "source scan limit row group row counts overflow native range",
             )
-            .with_fact("path", source_chunk_path_fact(chunk))
+            .with_fact("path", crate::source::parquet_source_path_fact(&chunk.location, &chunk.path))
             .with_fact("file_index", chunk.file_index)
             .with_fact("chunk_index", chunk.chunk_index)
         })?;
@@ -525,7 +509,7 @@ fn scan_limit_row_group_prefix(chunk: &SourceChunk, keep_rows: u64) -> Result<(V
         "nexus_query_engine.source_chunk.scan_limit",
         "planned chunk row groups do not cover the requested source scan limit",
     )
-    .with_fact("path", source_chunk_path_fact(chunk))
+    .with_fact("path", crate::source::parquet_source_path_fact(&chunk.location, &chunk.path))
     .with_fact("file_index", chunk.file_index)
     .with_fact("chunk_index", chunk.chunk_index)
     .with_fact("requested_rows", keep_rows)
@@ -849,7 +833,7 @@ fn validate_selected_row_groups(
                 "selected parquet row group is outside file metadata",
             )
             .with_fact("path", file.location.diagnostic_location())
-            .with_fact("stable_id", file.location.diagnostic_stable_id(file.stable_id.as_str()))
+            .with_fact("stable_id", crate::source::parquet_file_stable_id_fact(file))
             .with_fact("file_index", file_index)
             .with_fact("row_group_position", row_group_position)
             .with_fact("row_group", row_group)
@@ -877,13 +861,13 @@ fn validate_position_delete_planned_row_groups(
         )
         .with_fact("reason", "position_deletes_require_row_group_rows")
         .with_fact("path", file.location.diagnostic_location())
-        .with_fact("stable_id", file.location.diagnostic_stable_id(file.stable_id.as_str()))
+        .with_fact("stable_id", crate::source::parquet_file_stable_id_fact(file))
         .with_fact("file_index", file_index)
     })?;
     contiguous_row_group_position_range(row_groups, &row_group_rows).map(|_range| ()).map_err(|error| {
         error
             .with_fact("path", file.location.diagnostic_location())
-            .with_fact("stable_id", file.location.diagnostic_stable_id(file.stable_id.as_str()))
+            .with_fact("stable_id", crate::source::parquet_file_stable_id_fact(file))
             .with_fact("file_index", file_index)
     })
 }

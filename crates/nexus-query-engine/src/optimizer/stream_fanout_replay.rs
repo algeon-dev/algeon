@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use super::rewrite;
+use super::{consumers_by_node, rewrite};
 use crate::plan::{JoinNode, JoinSide, JoinType, NodeId, PlanNode, QueryNode, QueryPlan};
 
 /// Stable rule name used in optimizer diagnostics.
@@ -111,6 +111,7 @@ pub(crate) fn optimize_stream_fanout_replay(
         .with_keyed_hash_join_strategy_options_from(&plan);
 
     let mut diagnostics = StreamFanoutReplayDiagnostics::default();
+    let direct_consumers = consumers_by_node(&plan);
     for (fanout_node_id, join_probe_consumer_node_ids) in candidates {
         diagnostics.considered_count += 1;
         let applied = applied_fanouts.contains(&fanout_node_id);
@@ -120,7 +121,7 @@ pub(crate) fn optimize_stream_fanout_replay(
         diagnostics.candidates.push(StreamFanoutReplayCandidateDiagnostics {
             rule_name: STREAM_FANOUT_REPLAY_RULE_NAME,
             fanout_node_id,
-            consumer_count: direct_consumer_count(&plan, fanout_node_id),
+            consumer_count: direct_consumers.get(&fanout_node_id).map_or(0, Vec::len),
             join_probe_consumer_node_ids,
             applied,
             rejected_reason: (!applied).then_some(StreamFanoutReplayRejectedReason::NotReachableFromSink),
@@ -208,7 +209,7 @@ enum CloneMode {
 }
 
 fn replay_candidates(plan: &QueryPlan) -> BTreeMap<NodeId, Vec<NodeId>> {
-    let direct_consumers = direct_consumers(plan);
+    let direct_consumers = consumers_by_node(plan);
     let mut probe_consumers = BTreeMap::<NodeId, Vec<NodeId>>::new();
     for node in plan.nodes() {
         let PlanNode::Join(join) = &node.kind else {
@@ -229,20 +230,6 @@ fn replay_candidates(plan: &QueryPlan) -> BTreeMap<NodeId, Vec<NodeId>> {
                 && stream_replayable_subtree(plan, *producer)
         })
         .collect()
-}
-
-fn direct_consumers(plan: &QueryPlan) -> BTreeMap<NodeId, Vec<NodeId>> {
-    let mut consumers = BTreeMap::<NodeId, Vec<NodeId>>::new();
-    for node in plan.nodes() {
-        for input in node.input_ids() {
-            consumers.entry(*input).or_default().push(node.id);
-        }
-    }
-    consumers
-}
-
-fn direct_consumer_count(plan: &QueryPlan, producer: NodeId) -> usize {
-    direct_consumers(plan).get(&producer).map_or(0, Vec::len)
 }
 
 fn join_probe_stream_capable(join: &JoinNode) -> bool {

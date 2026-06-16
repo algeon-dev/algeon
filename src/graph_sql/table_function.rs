@@ -3,7 +3,7 @@ use std::sync::Arc;
 use arrow::datatypes::SchemaRef;
 use datafusion::{
     catalog::{Session, TableFunction, TableFunctionImpl, TableProvider},
-    common::{Result, TableReference},
+    common::Result,
     datasource::{TableType, provider_as_source},
     execution::{SessionState, context::SessionContext},
     logical_expr::{Expr, LogicalPlanBuilder, col},
@@ -12,7 +12,8 @@ use datafusion::{
 
 use super::{
     CugraphAlgorithm, CugraphAlgorithmParams, CugraphAlgorithmSpec, CugraphSqlConfig, CugraphTableReference,
-    CugraphVertexIdDomain, parse_cugraph_algorithm_spec, plan_error, vertex_id_domain_for_call,
+    CugraphVertexIdDomain, datafusion_table_reference, parse_cugraph_algorithm_spec, plan_error,
+    vertex_id_domain_for_call,
 };
 use crate::{
     NativeCudfExecutionConfig,
@@ -109,15 +110,6 @@ pub fn cugraph_table_functions(config: CugraphSqlConfig) -> Vec<Arc<TableFunctio
 pub fn register_cugraph_udtfs(ctx: &SessionContext, config: CugraphSqlConfig) {
     for function in cugraph_table_functions(config) {
         ctx.register_udtf(function.name(), Arc::clone(function.function()));
-    }
-}
-
-fn datafusion_table_reference(table: &CugraphTableReference) -> TableReference {
-    match table.parts() {
-        [table] => TableReference::bare(table.as_str()),
-        [schema, table] => TableReference::partial(schema.as_str(), table.as_str()),
-        [catalog, schema, table] => TableReference::full(catalog.as_str(), schema.as_str(), table.as_str()),
-        _ => unreachable!("CugraphTableReference::parse validates one to three identifier parts"),
     }
 }
 

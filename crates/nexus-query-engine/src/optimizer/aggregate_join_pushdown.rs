@@ -5,12 +5,15 @@ use std::{
 
 use arrow::datatypes::{DataType, Field, Schema, SchemaRef};
 
-use super::{aggregate_join_pushdown_policy::AggregateJoinPushdownPolicy, rewrite};
+use super::{
+    aggregate_join_pushdown_policy::AggregateJoinPushdownPolicy, rewrite, simple_projection_column,
+    unique_join_output_for_name,
+};
 use crate::{
     expr::{AggregateExpr, AggregateFunction, AggregateSpec, BinaryOp, CaseWhen, ColumnRef, Expr, LiteralValue},
     plan::{
         AggregateNode, JoinKey, JoinNode, JoinOutputColumn, JoinSide, JoinSpec, JoinType, NodeId, PlanFacts, PlanNode,
-        ProjectionNode, QueryNode, QueryPlan, SchemaBehavior,
+        ProjectionNode, ProjectionOutput, QueryNode, QueryPlan, SchemaBehavior,
     },
 };
 
@@ -784,12 +787,12 @@ fn group_lineage_column(
     // boundary. The aggregate's view-name comes from the original group expr;
     // the inlined column resolves which join output column it actually reads.
     let aggregate_view_column =
-        plain_column(expr).ok_or(AggregateJoinPushdownRejectedReason::UnsupportedGroupExpression)?;
+        simple_projection_column(expr).ok_or(AggregateJoinPushdownRejectedReason::UnsupportedGroupExpression)?;
     let aggregate_output_name = aggregate_view_column.name().to_string();
     let inlined = inline_expr_through_projection_chain(expr.clone(), chain)
         .map_err(|_| AggregateJoinPushdownRejectedReason::UnsupportedGroupExpression)?;
     let join_output_column =
-        plain_column(&inlined).ok_or(AggregateJoinPushdownRejectedReason::UnsupportedGroupExpression)?;
+        simple_projection_column(&inlined).ok_or(AggregateJoinPushdownRejectedReason::UnsupportedGroupExpression)?;
     let output = unique_join_output_for_name(join, join_output_column.name())
         .or_else(|| unique_join_output_for_name(join, join_output_column.display_name()))
         .ok_or(AggregateJoinPushdownRejectedReason::MissingJoinOutputLineage)?;
@@ -1034,20 +1037,6 @@ fn substitute_unqualified_columns(expr: Expr, map: &dyn Fn(&str) -> Option<Expr>
     }
 }
 
-fn plain_column(expr: &Expr) -> Option<&ColumnRef> {
-    match expr {
-        Expr::Column(column) => Some(column),
-        Expr::Alias { expr, .. } => plain_column(expr),
-        _ => None,
-    }
-}
-
-fn unique_join_output_for_name<'a>(join: &'a JoinNode, output_name: &str) -> Option<&'a JoinOutputColumn> {
-    let mut matches = join.spec.output_projection.iter().filter(|output| output.output_name == output_name);
-    let first = matches.next()?;
-    matches.next().is_none().then_some(first)
-}
-
 fn push_unique_preagg_group_column(
     columns: &mut Vec<PreAggregateColumn>,
     source_name: &str,
@@ -1235,8 +1224,8 @@ fn measure_input_projection_outputs(
         // projection chain preserved this name at the aggregate boundary, so
         // its arrow type matches what the inlined side-input expression
         // evaluates to.
-        let original_column =
-            plain_column(&aggr_expr.expr).ok_or(AggregateJoinPushdownRejectedReason::UnsupportedAggregateExpression)?;
+        let original_column = simple_projection_column(&aggr_expr.expr)
+            .ok_or(AggregateJoinPushdownRejectedReason::UnsupportedAggregateExpression)?;
         let aggregate_input_field = aggregate_input_schema
             .field_with_name(original_column.name())
             .map_err(|_| AggregateJoinPushdownRejectedReason::MissingInputField)?;
@@ -1286,7 +1275,8 @@ fn final_aggregate_rewrite_after_preagg(
             + preagg_measure_states.iter().map(|measure| measure.state_columns.len()).sum::<usize>(),
     );
     for group in &aggregate.spec.group_exprs {
-        let column = plain_column(group).ok_or(AggregateJoinPushdownRejectedReason::UnsupportedGroupExpression)?;
+        let column =
+            simple_projection_column(group).ok_or(AggregateJoinPushdownRejectedReason::UnsupportedGroupExpression)?;
         fields.push(
             aggregate_output_schema
                 .field_with_name(column.name())
@@ -1355,27 +1345,19 @@ fn final_avg_projection_outputs(
     aggregate: &AggregateNode,
     aggregate_output_schema: &Schema,
     preagg_measure_states: &[PreAggregateMeasureState],
-) -> Result<Vec<crate::plan::ProjectionOutput>, AggregateJoinPushdownRejectedReason> {
+) -> Result<Vec<ProjectionOutput>, AggregateJoinPushdownRejectedReason> {
     let grouping_id_output_count = usize::from(aggregate.spec.grouping_sets.is_some());
     let mut outputs = Vec::with_capacity(
         aggregate.spec.group_exprs.len() + grouping_id_output_count + aggregate.spec.aggr_exprs.len(),
     );
-    for group in &aggregate.spec.group_exprs {
-        let column = plain_column(group).ok_or(AggregateJoinPushdownRejectedReason::UnsupportedGroupExpression)?;
-        let field = aggregate_output_schema
-            .field_with_name(column.name())
-            .map_err(|_| AggregateJoinPushdownRejectedReason::MissingInputField)?
-            .as_ref()
-            .clone();
-        outputs.push(crate::plan::ProjectionOutput::new(Expr::column(column.name()), field));
-    }
+    append_group_projection_outputs(&mut outputs, aggregate, aggregate_output_schema)?;
     if let Some(grouping_sets) = &aggregate.spec.grouping_sets {
         let field = aggregate_output_schema
             .field_with_name(grouping_sets.grouping_id_alias.as_str())
             .map_err(|_| AggregateJoinPushdownRejectedReason::MissingInputField)?
             .as_ref()
             .clone();
-        outputs.push(crate::plan::ProjectionOutput::new(Expr::column(grouping_sets.grouping_id_alias.as_str()), field));
+        outputs.push(ProjectionOutput::new(Expr::column(grouping_sets.grouping_id_alias.as_str()), field));
     }
 
     for measure in preagg_measure_states {
@@ -1385,7 +1367,7 @@ fn final_avg_projection_outputs(
             AggregateFunction::Avg => final_avg_projection_expr(measure)?,
             _ => return Err(AggregateJoinPushdownRejectedReason::UnsupportedAggregateExpression),
         };
-        outputs.push(crate::plan::ProjectionOutput::new(expr, field));
+        outputs.push(ProjectionOutput::new(expr, field));
     }
     Ok(outputs)
 }
@@ -1520,7 +1502,8 @@ fn new_join_output_schema(
     let state_count = preagg_measure_states.iter().map(|measure| measure.state_columns.len()).sum::<usize>();
     let mut fields = Vec::with_capacity(aggregate.spec.group_exprs.len() + state_count);
     for group in &aggregate.spec.group_exprs {
-        let column = plain_column(group).ok_or(AggregateJoinPushdownRejectedReason::UnsupportedGroupExpression)?;
+        let column =
+            simple_projection_column(group).ok_or(AggregateJoinPushdownRejectedReason::UnsupportedGroupExpression)?;
         let field = aggregate_output_schema
             .field_with_name(column.name())
             .map_err(|_| AggregateJoinPushdownRejectedReason::MissingInputField)?;
@@ -1543,18 +1526,10 @@ fn coalesce_preagg_projection_outputs(
     aggregate: &AggregateNode,
     aggregate_output_schema: &Schema,
     preagg_measure_states: &[PreAggregateMeasureState],
-) -> Result<Vec<crate::plan::ProjectionOutput>, AggregateJoinPushdownRejectedReason> {
+) -> Result<Vec<ProjectionOutput>, AggregateJoinPushdownRejectedReason> {
     let state_count = preagg_measure_states.iter().map(|measure| measure.state_columns.len()).sum::<usize>();
     let mut outputs = Vec::with_capacity(aggregate.spec.group_exprs.len() + state_count);
-    for group in &aggregate.spec.group_exprs {
-        let column = plain_column(group).ok_or(AggregateJoinPushdownRejectedReason::UnsupportedGroupExpression)?;
-        let field = aggregate_output_schema
-            .field_with_name(column.name())
-            .map_err(|_| AggregateJoinPushdownRejectedReason::MissingInputField)?
-            .as_ref()
-            .clone();
-        outputs.push(crate::plan::ProjectionOutput::new(Expr::column(column.name()), field));
-    }
+    append_group_projection_outputs(&mut outputs, aggregate, aggregate_output_schema)?;
 
     for state in preagg_measure_states.iter().flat_map(|measure| &measure.state_columns) {
         let zero = zero_literal_for_data_type(state.field.data_type())?;
@@ -1564,9 +1539,27 @@ fn coalesce_preagg_projection_outputs(
             Expr::column(state.alias.as_str()),
         )
         .alias(state.alias.as_str());
-        outputs.push(crate::plan::ProjectionOutput::new(coalesced, field));
+        outputs.push(ProjectionOutput::new(coalesced, field));
     }
     Ok(outputs)
+}
+
+fn append_group_projection_outputs(
+    outputs: &mut Vec<ProjectionOutput>,
+    aggregate: &AggregateNode,
+    aggregate_output_schema: &Schema,
+) -> Result<(), AggregateJoinPushdownRejectedReason> {
+    for group in &aggregate.spec.group_exprs {
+        let column =
+            simple_projection_column(group).ok_or(AggregateJoinPushdownRejectedReason::UnsupportedGroupExpression)?;
+        let field = aggregate_output_schema
+            .field_with_name(column.name())
+            .map_err(|_| AggregateJoinPushdownRejectedReason::MissingInputField)?
+            .as_ref()
+            .clone();
+        outputs.push(ProjectionOutput::new(Expr::column(column.name()), field));
+    }
+    Ok(())
 }
 
 fn zero_literal_for_data_type(

@@ -18,7 +18,10 @@ use nexus_query_engine::{
 
 use crate::{
     native::{
-        literal::{NativeLiteralContext, native_literal_value, parse_yyyy_mm_dd_date32},
+        literal::{
+            NativeLiteralContext, literal_i32, literal_string, native_literal_value, parse_yyyy_mm_dd_date32,
+            substring_stop_position,
+        },
         lowering::FieldBinding,
         validate::{
             bounded_nonnegative_integral_cast_is_supported, is_list_carry_type, is_supported_native_cast,
@@ -314,11 +317,6 @@ fn lower_substring_function(
         return Err(FallbackReason::UnsupportedExpression);
     }
     Ok(NativeExpr::substring(lower_physical_expr_with_bindings(&args[0], input_schema, bindings)?, start, length))
-}
-
-fn substring_stop_position(start: i32, length: i32) -> Option<i32> {
-    let zero_based_start = start.checked_sub(1)?;
-    zero_based_start.checked_add(length)
 }
 
 fn lower_extract_function(
@@ -730,41 +728,6 @@ pub(super) fn lower_binary_operator(op: &Operator) -> Result<NativeBinaryOp, Fal
         Operator::GtEq => Ok(NativeBinaryOp::GtEq),
         Operator::And => Ok(NativeBinaryOp::And),
         Operator::Or => Ok(NativeBinaryOp::Or),
-        _ => Err(FallbackReason::UnsupportedExpression),
-    }
-}
-
-fn literal_string(expr: &Arc<dyn PhysicalExpr>) -> Result<String, FallbackReason> {
-    let Some(literal) = expr.downcast_ref::<Literal>() else {
-        return Err(FallbackReason::UnsupportedExpression);
-    };
-    match literal.value() {
-        ScalarValue::Utf8(Some(value)) | ScalarValue::LargeUtf8(Some(value)) | ScalarValue::Utf8View(Some(value)) => {
-            Ok(value.clone())
-        },
-        _ => Err(FallbackReason::UnsupportedExpression),
-    }
-}
-
-fn literal_i32(expr: &Arc<dyn PhysicalExpr>) -> Result<i32, FallbackReason> {
-    let Some(literal) = expr.downcast_ref::<Literal>() else {
-        return Err(FallbackReason::UnsupportedExpression);
-    };
-    match literal.value() {
-        ScalarValue::Int8(Some(value)) => Ok(i32::from(*value)),
-        ScalarValue::Int16(Some(value)) => Ok(i32::from(*value)),
-        ScalarValue::Int32(Some(value)) => Ok(*value),
-        ScalarValue::Int64(Some(value)) => {
-            i32::try_from(*value).map_err(|_error| FallbackReason::UnsupportedExpression)
-        },
-        ScalarValue::UInt8(Some(value)) => Ok(i32::from(*value)),
-        ScalarValue::UInt16(Some(value)) => Ok(i32::from(*value)),
-        ScalarValue::UInt32(Some(value)) => {
-            i32::try_from(*value).map_err(|_error| FallbackReason::UnsupportedExpression)
-        },
-        ScalarValue::UInt64(Some(value)) => {
-            i32::try_from(*value).map_err(|_error| FallbackReason::UnsupportedExpression)
-        },
         _ => Err(FallbackReason::UnsupportedExpression),
     }
 }

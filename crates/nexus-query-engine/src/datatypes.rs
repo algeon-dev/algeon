@@ -64,6 +64,64 @@ pub fn is_supported_list_carry_type(data_type: &ArrowDataType) -> bool {
     matches!(data_type, ArrowDataType::List(field) | ArrowDataType::LargeList(field) if is_supported_string_list_child(field))
 }
 
+/// Returns the physical byte width for Arrow scalar fixed-width values used by
+/// native sizing heuristics.
+///
+/// This is not a general Arrow memory-layout classifier: it intentionally
+/// preserves the native execution paths that did not size `Float16`, decimal32,
+/// decimal64, or fixed-size binary values as fixed-width inputs.
+pub fn arrow_fixed_width_byte_size(data_type: &ArrowDataType) -> Option<u64> {
+    match data_type {
+        ArrowDataType::Boolean | ArrowDataType::Int8 | ArrowDataType::UInt8 => Some(1),
+        ArrowDataType::Int16 | ArrowDataType::UInt16 => Some(2),
+        ArrowDataType::Int32
+        | ArrowDataType::UInt32
+        | ArrowDataType::Float32
+        | ArrowDataType::Date32
+        | ArrowDataType::Time32(_) => Some(4),
+        ArrowDataType::Int64
+        | ArrowDataType::UInt64
+        | ArrowDataType::Float64
+        | ArrowDataType::Date64
+        | ArrowDataType::Time64(_)
+        | ArrowDataType::Timestamp(_, _)
+        | ArrowDataType::Duration(_) => Some(8),
+        ArrowDataType::Decimal128(_, _) => Some(16),
+        ArrowDataType::Decimal256(_, _) => Some(32),
+        ArrowDataType::Null
+        | ArrowDataType::Float16
+        | ArrowDataType::Interval(_)
+        | ArrowDataType::Binary
+        | ArrowDataType::FixedSizeBinary(_)
+        | ArrowDataType::LargeBinary
+        | ArrowDataType::BinaryView
+        | ArrowDataType::Utf8
+        | ArrowDataType::LargeUtf8
+        | ArrowDataType::Utf8View
+        | ArrowDataType::List(_)
+        | ArrowDataType::ListView(_)
+        | ArrowDataType::FixedSizeList(_, _)
+        | ArrowDataType::LargeList(_)
+        | ArrowDataType::LargeListView(_)
+        | ArrowDataType::Struct(_)
+        | ArrowDataType::Union(_, _)
+        | ArrowDataType::Dictionary(_, _)
+        | ArrowDataType::Decimal32(_, _)
+        | ArrowDataType::Decimal64(_, _)
+        | ArrowDataType::Map(_, _)
+        | ArrowDataType::RunEndEncoded(_, _) => None,
+    }
+}
+
+/// Returns whether an Arrow scalar type is fixed-width under the native sizing policy.
+///
+/// See [`arrow_fixed_width_byte_size`] for the policy boundary. In particular,
+/// some physically fixed-width Arrow types remain excluded for behavior
+/// compatibility with existing native execution paths.
+pub fn is_arrow_fixed_width(data_type: &ArrowDataType) -> bool {
+    arrow_fixed_width_byte_size(data_type).is_some()
+}
+
 /// Human-readable Arrow type name for client-facing diagnostics.
 pub fn diagnostic_arrow_type(data_type: &ArrowDataType) -> String {
     match data_type {
@@ -122,7 +180,7 @@ fn is_supported_string_list_child(field: &arrow::datatypes::FieldRef) -> bool {
     matches!(field.data_type(), ArrowDataType::Utf8 | ArrowDataType::LargeUtf8 | ArrowDataType::Utf8View)
 }
 
-fn arrow_field_metadata_matches_except_parquet_field_id(
+pub fn arrow_field_metadata_matches_except_parquet_field_id(
     left: &HashMap<String, String>,
     right: &HashMap<String, String>,
 ) -> bool {
@@ -313,9 +371,55 @@ fn is_supported_duration_cast(source_type: &ArrowDataType, target_type: &ArrowDa
 mod tests {
     use std::sync::Arc;
 
-    use arrow::datatypes::{DataType as ArrowDataType, Field, Fields};
+    use arrow::datatypes::{DataType as ArrowDataType, Field, Fields, TimeUnit};
 
-    use super::diagnostic_arrow_type;
+    use super::{arrow_fixed_width_byte_size, diagnostic_arrow_type, is_arrow_fixed_width};
+
+    #[test]
+    fn arrow_fixed_width_byte_size_covers_scalar_fixed_width_types() {
+        let cases = [
+            (ArrowDataType::Boolean, 1),
+            (ArrowDataType::Int8, 1),
+            (ArrowDataType::UInt8, 1),
+            (ArrowDataType::Int16, 2),
+            (ArrowDataType::UInt16, 2),
+            (ArrowDataType::Int32, 4),
+            (ArrowDataType::UInt32, 4),
+            (ArrowDataType::Float32, 4),
+            (ArrowDataType::Date32, 4),
+            (ArrowDataType::Time32(TimeUnit::Millisecond), 4),
+            (ArrowDataType::Int64, 8),
+            (ArrowDataType::UInt64, 8),
+            (ArrowDataType::Float64, 8),
+            (ArrowDataType::Date64, 8),
+            (ArrowDataType::Time64(TimeUnit::Nanosecond), 8),
+            (ArrowDataType::Timestamp(TimeUnit::Microsecond, None), 8),
+            (ArrowDataType::Duration(TimeUnit::Nanosecond), 8),
+            (ArrowDataType::Decimal128(10, 2), 16),
+            (ArrowDataType::Decimal256(30, 2), 32),
+        ];
+
+        for (data_type, expected_size) in cases {
+            assert_eq!(arrow_fixed_width_byte_size(&data_type), Some(expected_size), "{data_type:?}");
+            assert!(is_arrow_fixed_width(&data_type), "{data_type:?}");
+        }
+    }
+
+    #[test]
+    fn arrow_fixed_width_byte_size_rejects_types_outside_native_sizing_policy() {
+        let data_type = ArrowDataType::List(Arc::new(Field::new("item", ArrowDataType::Int32, true)));
+
+        assert_eq!(arrow_fixed_width_byte_size(&ArrowDataType::Float16), None);
+        assert_eq!(arrow_fixed_width_byte_size(&ArrowDataType::Decimal32(9, 2)), None);
+        assert_eq!(arrow_fixed_width_byte_size(&ArrowDataType::Decimal64(18, 2)), None);
+        assert_eq!(arrow_fixed_width_byte_size(&ArrowDataType::FixedSizeBinary(16)), None);
+        assert_eq!(arrow_fixed_width_byte_size(&ArrowDataType::Utf8), None);
+        assert_eq!(arrow_fixed_width_byte_size(&ArrowDataType::LargeUtf8), None);
+        assert_eq!(arrow_fixed_width_byte_size(&ArrowDataType::Utf8View), None);
+        assert_eq!(arrow_fixed_width_byte_size(&data_type), None);
+        assert!(!is_arrow_fixed_width(&ArrowDataType::Float16));
+        assert!(!is_arrow_fixed_width(&ArrowDataType::Utf8));
+    }
 
     #[test]
     fn diagnostic_arrow_type_formats_map_without_arrow_debug_noise() {

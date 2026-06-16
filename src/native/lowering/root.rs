@@ -2,10 +2,10 @@ use std::{collections::BTreeSet, sync::Arc};
 
 use datafusion::{
     datasource::physical_plan::{FileSource, ParquetSource},
-    physical_plan::{ExecutionPlan, projection::ProjectionExec},
+    physical_plan::{ExecutionPlan, projection::ProjectionExec, sorts::sort::SortExec},
 };
 use nexus_query_engine::{
-    LocalParquetSource as NativeLocalParquetSource, QueryPlan as NativeQueryPlan,
+    LimitSpec as NativeLimitSpec, LocalParquetSource as NativeLocalParquetSource, QueryPlan as NativeQueryPlan,
     QueryPlanBuilder as NativeQueryPlanBuilder, SourceNode as NativeSourceNode,
 };
 
@@ -23,11 +23,11 @@ use super::{
     lower_native_input, lower_native_input_with_scan_limit, projection_outputs,
     sort::lower_sort_with_input,
     source::{
-        add_source_filter_projection, lower_empty_table_format_count_star_source,
-        lower_required_file_source_projection_exprs, lower_table_format_count_star_fallback_source,
-        lower_table_format_count_star_mixed_row_count_source, lower_table_format_zero_column_count_source,
-        reader_predicate_proves_local_parquet_at_most_one_row, required_scan_projection,
-        required_scan_projection_requires_native_projection, required_scan_projection_schema,
+        SourceUnprojectedFilterOutput, lower_empty_table_format_count_star_source,
+        lower_required_file_source_projection_exprs, lower_source_filter_and_projection,
+        lower_table_format_count_star_fallback_source, lower_table_format_count_star_mixed_row_count_source,
+        lower_table_format_zero_column_count_source, reader_predicate_proves_local_parquet_at_most_one_row,
+        required_scan_projection, required_scan_projection_requires_native_projection, required_scan_projection_schema,
         source_bindings_for_schema, source_reader_pushdown_predicate,
         table_format_count_star_mixed_row_count_metadata_can_split, table_format_count_star_probe_can_lower,
         table_format_scan_rejection, table_format_zero_column_count_metadata_is_available,
@@ -207,42 +207,14 @@ pub(super) fn lower_slice1_plan(
         RequiredFields::all()
     };
     let filtered = if let Some(filter) = filter {
-        if reader_pushdown_covers_filter {
-            if let Some(projection) = filter.projection() {
-                add_source_filter_projection(
-                    &mut builder,
-                    scan_output.node,
-                    &scan_output,
-                    filter.schema(),
-                    projection,
-                    &required_filter_output_fields,
-                )?
-            } else {
-                scan_output
-            }
-        } else {
-            let filtered_node = builder.add_filter(
-                scan_output.node,
-                lower_physical_expr_with_bindings(
-                    filter.predicate(),
-                    &filter.input().schema(),
-                    Some(&scan_output.bindings),
-                )?,
-                Arc::clone(&scan_output.schema),
-            );
-            if let Some(projection) = filter.projection() {
-                add_source_filter_projection(
-                    &mut builder,
-                    filtered_node,
-                    &scan_output,
-                    filter.schema(),
-                    projection,
-                    &required_filter_output_fields,
-                )?
-            } else {
-                LoweredNativeInput::with_bindings(filtered_node, scan_output.schema, scan_output.bindings)
-            }
-        }
+        lower_source_filter_and_projection(
+            &mut builder,
+            scan_output,
+            filter,
+            reader_pushdown_covers_filter,
+            &required_filter_output_fields,
+            SourceUnprojectedFilterOutput::PreserveScanOutput,
+        )?
     } else {
         scan_output
     };
@@ -290,24 +262,7 @@ pub(super) fn lower_slice1_plan(
             aggregate_output_bindings,
         )
     };
-    let sort_input = if let Some(projection) = post_aggregate_projection {
-        add_projection_node_with_input(&mut builder, aggregate_output, projection)?
-    } else {
-        aggregate_output
-    };
-    let sorted_or_projected = if let Some(sort) = sort {
-        lower_sort_with_input(&mut builder, sort, sort_input, &RequiredFields::all())?
-    } else {
-        sort_input
-    };
-    let output = if let Some(limit) = normalized.limit {
-        let node = builder.add_limit(sorted_or_projected.node, limit, Arc::clone(&sorted_or_projected.schema));
-        LoweredNativeInput::with_bindings(node, sorted_or_projected.schema, sorted_or_projected.bindings)
-    } else {
-        sorted_or_projected
-    };
-
-    Ok(builder.finish_with_host_sink_schema(output.node, output.frontend_schema()?))
+    finish_with_post_projection_sort_limit(builder, aggregate_output, post_aggregate_projection, sort, normalized.limit)
 }
 
 pub(super) fn lower_table_format_zero_column_count_plan(
@@ -359,48 +314,20 @@ pub(super) fn lower_table_format_zero_column_count_plan(
             aggregate_output_schema,
             aggregate_output_bindings,
         );
-        let sort_input = if let Some(projection) = post_aggregate_projection {
-            add_projection_node_with_input(&mut builder, aggregate_output, projection)?
-        } else {
-            aggregate_output
-        };
-        let sorted_or_projected = if let Some(sort) = sort {
-            lower_sort_with_input(&mut builder, sort, sort_input, &RequiredFields::all())?
-        } else {
-            sort_input
-        };
-        let output = if let Some(limit) = normalized.limit {
-            let node = builder.add_limit(sorted_or_projected.node, limit, Arc::clone(&sorted_or_projected.schema));
-            LoweredNativeInput::with_bindings(node, sorted_or_projected.schema, sorted_or_projected.bindings)
-        } else {
-            sorted_or_projected
-        };
-
-        return Ok(builder.finish_with_host_sink_schema(output.node, output.frontend_schema()?));
+        return finish_with_post_projection_sort_limit(
+            builder,
+            aggregate_output,
+            post_aggregate_projection,
+            sort,
+            normalized.limit,
+        );
     };
     let aggregate_output = LoweredNativeInput::with_bindings(
         builder.add_aggregate(source_input.node, aggregate_spec, Arc::clone(&aggregate_output_schema)),
         aggregate_output_schema,
         aggregate_output_bindings,
     );
-    let sort_input = if let Some(projection) = post_aggregate_projection {
-        add_projection_node_with_input(&mut builder, aggregate_output, projection)?
-    } else {
-        aggregate_output
-    };
-    let sorted_or_projected = if let Some(sort) = sort {
-        lower_sort_with_input(&mut builder, sort, sort_input, &RequiredFields::all())?
-    } else {
-        sort_input
-    };
-    let output = if let Some(limit) = normalized.limit {
-        let node = builder.add_limit(sorted_or_projected.node, limit, Arc::clone(&sorted_or_projected.schema));
-        LoweredNativeInput::with_bindings(node, sorted_or_projected.schema, sorted_or_projected.bindings)
-    } else {
-        sorted_or_projected
-    };
-
-    Ok(builder.finish_with_host_sink_schema(output.node, output.frontend_schema()?))
+    finish_with_post_projection_sort_limit(builder, aggregate_output, post_aggregate_projection, sort, normalized.limit)
 }
 
 pub(super) fn lower_joined_aggregate_plan(
@@ -462,24 +389,7 @@ pub(super) fn lower_joined_aggregate_plan(
             aggregate_output_bindings,
         )
     };
-    let sort_input = if let Some(projection) = post_aggregate_projection {
-        add_projection_node_with_input(&mut builder, aggregate_output, projection)?
-    } else {
-        aggregate_output
-    };
-    let sorted_or_projected = if let Some(sort) = sort {
-        lower_sort_with_input(&mut builder, sort, sort_input, &RequiredFields::all())?
-    } else {
-        sort_input
-    };
-    let output = if let Some(limit) = normalized.limit {
-        let node = builder.add_limit(sorted_or_projected.node, limit, Arc::clone(&sorted_or_projected.schema));
-        LoweredNativeInput::with_bindings(node, sorted_or_projected.schema, sorted_or_projected.bindings)
-    } else {
-        sorted_or_projected
-    };
-
-    Ok(builder.finish_with_host_sink_schema(output.node, output.frontend_schema()?))
+    finish_with_post_projection_sort_limit(builder, aggregate_output, post_aggregate_projection, sort, normalized.limit)
 }
 
 pub(super) fn lower_input_root_plan(
@@ -504,24 +414,43 @@ pub(super) fn lower_input_root_plan(
         if normalized.sort.is_none() { source_scan_limit_from_limit_spec(normalized.limit) } else { None };
     let lowered_input =
         lower_native_input_with_scan_limit(&root.input, &mut builder, &required_input_fields, pushed_scan_limit)?;
-    let projected = if let Some(projection) = root.projection {
-        add_projection_node_with_input(&mut builder, lowered_input, projection)?
+    finish_with_post_projection_sort_limit(builder, lowered_input, root.projection, normalized.sort, normalized.limit)
+}
+
+fn finish_with_post_projection_sort_limit(
+    mut builder: NativeQueryPlanBuilder,
+    input: LoweredNativeInput,
+    projection: Option<&ProjectionExec>,
+    sort: Option<&SortExec>,
+    limit: Option<NativeLimitSpec>,
+) -> Result<NativeQueryPlan, FallbackReason> {
+    let output = apply_post_projection_sort_limit(&mut builder, input, projection, sort, limit)?;
+    Ok(builder.finish_with_host_sink_schema(output.node, output.frontend_schema()?))
+}
+
+fn apply_post_projection_sort_limit(
+    builder: &mut NativeQueryPlanBuilder,
+    input: LoweredNativeInput,
+    projection: Option<&ProjectionExec>,
+    sort: Option<&SortExec>,
+    limit: Option<NativeLimitSpec>,
+) -> Result<LoweredNativeInput, FallbackReason> {
+    let projected = if let Some(projection) = projection {
+        add_projection_node_with_input(builder, input, projection)?
     } else {
-        lowered_input
+        input
     };
-    let sorted_or_projected = if let Some(sort) = normalized.sort {
-        lower_sort_with_input(&mut builder, sort, projected, &RequiredFields::all())?
+    let sorted_or_projected = if let Some(sort) = sort {
+        lower_sort_with_input(builder, sort, projected, &RequiredFields::all())?
     } else {
         projected
     };
-    let output = if let Some(limit) = normalized.limit {
+    if let Some(limit) = limit {
         let node = builder.add_limit(sorted_or_projected.node, limit, Arc::clone(&sorted_or_projected.schema));
-        LoweredNativeInput::with_bindings(node, sorted_or_projected.schema, sorted_or_projected.bindings)
+        Ok(LoweredNativeInput::with_bindings(node, sorted_or_projected.schema, sorted_or_projected.bindings))
     } else {
-        sorted_or_projected
-    };
-
-    Ok(builder.finish_with_host_sink_schema(output.node, output.frontend_schema()?))
+        Ok(sorted_or_projected)
+    }
 }
 
 fn required_root_projection_input_fields(projection: &ProjectionExec) -> Result<RequiredFields, FallbackReason> {

@@ -201,45 +201,7 @@ fn resolve_auto_s3_table_format_parquet_source(
     metadata: &TableFormatParquetSourceMetadata,
 ) -> Result<ResolvedParquetSource> {
     if let Some(cache_root) = config.lakehouse_cache_root.as_ref() {
-        let cache_path = cache_root.join(cache_relative_path(location, config, metadata));
-        if !config.lakehouse_cache_read_policy.is_enabled() {
-            let resolved = remote_foreground_source(location, config)?
-                .with_cache_status(LakehouseCacheStatus::Bypassed)
-                .with_lakehouse_cache_read_mode(LakehouseCacheReadMode::Bypassed)
-                .with_lakehouse_cache_config(cache_root.display().to_string(), config.lakehouse_cache_max_bytes)
-                .with_lakehouse_cache_path(cache_path.display().to_string())
-                .with_lakehouse_cache_fill_mode(background_fill_mode(config));
-            return Ok(resolved);
-        }
-        if complete_cache_hit_matches_metadata(&cache_path, metadata) {
-            return Ok(ResolvedParquetSource::local_cache_kvikio(
-                location,
-                cache_path.display().to_string(),
-                config.credential_mode,
-                LakehouseCacheStatus::Hit,
-            )
-            .with_lakehouse_cache_config(cache_root.display().to_string(), config.lakehouse_cache_max_bytes)
-            .with_lakehouse_cache_path(cache_path.display().to_string()));
-        }
-        if config.lakehouse_cache_policy.fills_before_read() {
-            reject_if_remote_direct_required(config, "lakehouse_cache_fill_before_read")?;
-            return Ok(ResolvedParquetSource::local_cache_kvikio(
-                location,
-                cache_path.display().to_string(),
-                config.credential_mode,
-                LakehouseCacheStatus::FillBeforeRead,
-            )
-            .with_lakehouse_cache_config(cache_root.display().to_string(), config.lakehouse_cache_max_bytes)
-            .with_lakehouse_cache_path(cache_path.display().to_string())
-            .with_lakehouse_cache_fill_mode(LakehouseCacheFillMode::Blocking));
-        }
-        let fill_mode = background_fill_mode(config);
-        return Ok(remote_foreground_source(location, config)?
-            .with_cache_status(LakehouseCacheStatus::Miss)
-            .with_lakehouse_cache_read_mode(LakehouseCacheReadMode::Enabled)
-            .with_lakehouse_cache_config(cache_root.display().to_string(), config.lakehouse_cache_max_bytes)
-            .with_lakehouse_cache_path(cache_path.display().to_string())
-            .with_lakehouse_cache_fill_mode(fill_mode));
+        return resolve_s3_table_format_parquet_source_with_cache_root(location, config, metadata, cache_root, None);
     }
 
     remote_foreground_source(location, config)
@@ -262,22 +224,30 @@ fn resolve_local_cache_table_format_parquet_source(
     metadata: &TableFormatParquetSourceMetadata,
 ) -> Result<ResolvedParquetSource> {
     let Some(cache_root) = config.lakehouse_cache_root.as_ref() else {
-        let resolved = if config.remote_direct_enabled {
-            remote_direct_or_capability_fallback_source(location, config, None)?
-        } else {
-            remote_host_buffer_fallback_source(location, config, "remote_direct_disabled", true)?
-        };
+        let resolved = remote_foreground_source(location, config)?;
         return Ok(resolved
             .with_cache_status(LakehouseCacheStatus::Skipped)
             .with_fallback_reason("lakehouse_cache_root_unset"));
     };
+    resolve_s3_table_format_parquet_source_with_cache_root(
+        location,
+        config,
+        metadata,
+        cache_root,
+        Some("lakehouse_cache_miss_fill_disabled"),
+    )
+}
+
+fn resolve_s3_table_format_parquet_source_with_cache_root(
+    location: &str,
+    config: &TableFormatParquetReadStrategyConfig,
+    metadata: &TableFormatParquetSourceMetadata,
+    cache_root: &Path,
+    miss_fill_disabled_fallback_reason: Option<&'static str>,
+) -> Result<ResolvedParquetSource> {
     let cache_path = cache_root.join(cache_relative_path(location, config, metadata));
     if !config.lakehouse_cache_read_policy.is_enabled() {
-        let resolved = if config.remote_direct_enabled {
-            remote_direct_or_capability_fallback_source(location, config, None)?
-        } else {
-            remote_host_buffer_fallback_source(location, config, "remote_direct_disabled", true)?
-        };
+        let resolved = remote_foreground_source(location, config)?;
         return Ok(resolved
             .with_cache_status(LakehouseCacheStatus::Bypassed)
             .with_lakehouse_cache_read_mode(LakehouseCacheReadMode::Bypassed)
@@ -308,18 +278,16 @@ fn resolve_local_cache_table_format_parquet_source(
         .with_lakehouse_cache_fill_mode(LakehouseCacheFillMode::Blocking));
     }
     let fill_mode = background_fill_mode(config);
-    let mut resolved = if config.remote_direct_enabled {
-        remote_direct_or_capability_fallback_source(location, config, None)?
-    } else {
-        remote_host_buffer_fallback_source(location, config, "remote_direct_disabled", true)?
-    }
-    .with_cache_status(LakehouseCacheStatus::Miss)
-    .with_lakehouse_cache_read_mode(LakehouseCacheReadMode::Enabled)
-    .with_lakehouse_cache_config(cache_root.display().to_string(), config.lakehouse_cache_max_bytes)
-    .with_lakehouse_cache_path(cache_path.display().to_string())
-    .with_lakehouse_cache_fill_mode(fill_mode);
-    if fill_mode == LakehouseCacheFillMode::Disabled {
-        resolved = resolved.with_fallback_reason("lakehouse_cache_miss_fill_disabled");
+    let mut resolved = remote_foreground_source(location, config)?
+        .with_cache_status(LakehouseCacheStatus::Miss)
+        .with_lakehouse_cache_read_mode(LakehouseCacheReadMode::Enabled)
+        .with_lakehouse_cache_config(cache_root.display().to_string(), config.lakehouse_cache_max_bytes)
+        .with_lakehouse_cache_path(cache_path.display().to_string())
+        .with_lakehouse_cache_fill_mode(fill_mode);
+    if fill_mode == LakehouseCacheFillMode::Disabled
+        && let Some(fallback_reason) = miss_fill_disabled_fallback_reason
+    {
+        resolved = resolved.with_fallback_reason(fallback_reason);
     }
     Ok(resolved)
 }
@@ -810,7 +778,28 @@ mod tests {
         assert_expected_remote_foreground_source(&source);
         assert_eq!(source.cache_status, LakehouseCacheStatus::Miss);
         assert_eq!(source.lakehouse_cache_fill_mode, LakehouseCacheFillMode::Disabled);
+        assert_ne!(source.fallback_reason.as_deref(), Some("lakehouse_cache_miss_fill_disabled"));
         assert!(source.lakehouse_cache_path.is_some());
+    }
+
+    #[test]
+    fn explicit_local_cache_without_cache_root_is_skipped_with_stable_reason() {
+        let config = TableFormatParquetReadStrategyConfig {
+            preference: TableFormatParquetReadStrategyPreference::LocalCache,
+            lakehouse_cache_root: None,
+            ..Default::default()
+        };
+
+        let source = resolve_table_format_parquet_source(
+            "s3://bucket/table/part-0.parquet",
+            &TableFormatReadCapability::object_store("s3"),
+            &config,
+        )
+        .unwrap();
+
+        assert_expected_remote_foreground_source(&source);
+        assert_eq!(source.cache_status, LakehouseCacheStatus::Skipped);
+        assert_eq!(source.fallback_reason.as_deref(), Some("lakehouse_cache_root_unset"));
     }
 
     #[test]
@@ -1037,6 +1026,59 @@ mod tests {
         assert_eq!(source.lakehouse_cache_fill_mode, LakehouseCacheFillMode::Background);
         assert_eq!(source.reader_location, "s3://bucket/table/part-0.parquet");
         assert_eq!(source.lakehouse_cache_path.as_deref(), Some(cache_path.to_str().unwrap()));
+    }
+
+    #[test]
+    fn explicit_local_cache_read_bypass_skips_existing_local_cache_hit() {
+        let root = tempfile::tempdir().unwrap();
+        let config = TableFormatParquetReadStrategyConfig {
+            preference: TableFormatParquetReadStrategyPreference::LocalCache,
+            lakehouse_cache_root: Some(root.path().to_path_buf()),
+            lakehouse_cache_read_policy: TableFormatLakehouseCacheReadPolicy::Disabled,
+            lakehouse_cache_policy: TableFormatLakehouseCachePolicy::ReadThrough,
+            ..Default::default()
+        };
+        let metadata = TableFormatParquetSourceMetadata::from_size_and_row_count(Some(4096), Some(10));
+        let cache_path = root.path().join(cache_relative_path("s3://bucket/table/part-0.parquet", &config, &metadata));
+        fs::create_dir_all(cache_path.parent().unwrap()).unwrap();
+        fs::write(&cache_path, vec![0_u8; 4096]).unwrap();
+
+        let source = resolve_table_format_parquet_source_with_metadata(
+            "s3://bucket/table/part-0.parquet",
+            &TableFormatReadCapability::object_store("s3"),
+            &config,
+            &metadata,
+        )
+        .unwrap();
+
+        assert_expected_remote_foreground_source(&source);
+        assert_eq!(source.cache_status, LakehouseCacheStatus::Bypassed);
+        assert_eq!(source.lakehouse_cache_read_mode, LakehouseCacheReadMode::Bypassed);
+        assert_eq!(source.lakehouse_cache_fill_mode, LakehouseCacheFillMode::Background);
+        assert_eq!(source.lakehouse_cache_path.as_deref(), Some(cache_path.to_str().unwrap()));
+    }
+
+    #[test]
+    fn fill_before_read_rejects_require_direct_with_stable_reason() {
+        let root = tempfile::tempdir().unwrap();
+        let config = TableFormatParquetReadStrategyConfig {
+            preference: TableFormatParquetReadStrategyPreference::LocalCache,
+            lakehouse_cache_root: Some(root.path().to_path_buf()),
+            lakehouse_cache_policy: TableFormatLakehouseCachePolicy::FillBeforeRead,
+            remote_direct_read_mode: RemoteParquetReadMode::RequireDirect,
+            ..Default::default()
+        };
+
+        let error = resolve_table_format_parquet_source(
+            "s3://bucket/table/part-0.parquet",
+            &TableFormatReadCapability::object_store("s3"),
+            &config,
+        )
+        .unwrap_err();
+
+        assert_eq!(error.code(), crate::ErrorCode::InvalidExecutionPlan);
+        assert_eq!(error.fact_value("remote_read_mode"), Some("require_direct"));
+        assert_eq!(error.fact_value("fallback_reason"), Some("lakehouse_cache_fill_before_read"));
     }
 
     #[test]
