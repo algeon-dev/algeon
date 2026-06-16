@@ -1,0 +1,49 @@
+# schema: https://nexte.st/schemas/repo-config.json
+nextest-version = { required = "0.9.133" }
+
+[profile.default]
+# Match the local `cargo test --no-fail-fast` workflow while letting nextest
+# schedule independent test cases across CPU cores.
+fail-fast = false
+slow-timeout = { period = "120s" }
+
+[profile.gpu-parallel]
+# Opt-in profile used by scripts/check_all.sh when GPU_PARALLEL=1.
+fail-fast = false
+slow-timeout = { period = "120s" }
+
+[test-groups.gpu]
+# Default GPU lane stays conservative. It is still protected by an outer flock
+# in scripts/check_all.sh and documented developer commands.
+max-threads = 1
+
+[test-groups.gpu-parallel]
+# Opt-in bounded parallelism for GPU tests, after the caller has acquired the
+# repository GPU flock.
+max-threads = 4
+
+[[profile.default.overrides]]
+filter = '''
+(package(nexus-query-engine) & binary(native_execution_tests))
+| (package(nexus-query-engine) & binary(native_contract_tests))
+| (package(datafusion-nexus) & binary(cugraph_tests))
+| (package(datafusion-nexus) & binary(iceberg_tests))
+| (package(datafusion-nexus) & binary(native_exec_tests))
+| (package(datafusion-nexus) & binary(native_runtime_pruning_tests))
+| (package(datafusion-nexus) & binary(native_tpcds_parity_tests))
+| (package(datafusion-nexus) & binary(server_cugraph_tests))
+'''
+test-group = "gpu"
+
+[[profile.gpu-parallel.overrides]]
+filter = '''
+(package(nexus-query-engine) & binary(native_execution_tests))
+| (package(nexus-query-engine) & binary(native_contract_tests))
+| (package(datafusion-nexus) & binary(cugraph_tests))
+| (package(datafusion-nexus) & binary(iceberg_tests))
+| (package(datafusion-nexus) & binary(native_exec_tests))
+| (package(datafusion-nexus) & binary(native_runtime_pruning_tests))
+| (package(datafusion-nexus) & binary(native_tpcds_parity_tests))
+| (package(datafusion-nexus) & binary(server_cugraph_tests))
+'''
+test-group = "gpu-parallel"
