@@ -69,6 +69,24 @@ async fn cugraph_sql_planning_exposes_stable_output_schemas() {
 }
 
 #[tokio::test]
+async fn cugraph_strongly_connected_components_rejects_undirected_graph_option() {
+    let state = SessionStateBuilder::new_with_default_features().with_cugraph_sql(CugraphSqlConfig::default()).build();
+    let ctx = SessionContext::new_with_state(state);
+
+    let error = ctx
+        .sql(
+            "SELECT * FROM cugraph_strongly_connected_components(\
+             'graph_edges', 'src', 'dst', 'weight', \
+             '{\"directed\":false,\"renumber\":true,\"construction_policy\":\"python_cugraph\"}')",
+        )
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("cugraph_strongly_connected_components requires directed=true"), "{error}");
+    assert!(error.contains("cugraph_weakly_connected_components"), "{error}");
+}
+
+#[tokio::test]
 async fn cugraph_bfs_path_mode_exposes_path_schema_through_canonical_function() {
     let state = SessionStateBuilder::new_with_default_features().with_cugraph_sql(CugraphSqlConfig::default()).build();
     let ctx = SessionContext::new_with_state(state);

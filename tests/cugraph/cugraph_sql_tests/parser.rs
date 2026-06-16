@@ -82,6 +82,42 @@ fn cugraph_sql_planning_parses_defaults_explicit_columns_and_null_weight() {
 }
 
 #[test]
+fn cugraph_sql_planning_rejects_incompatible_directedness_options() {
+    let config = CugraphSqlConfig::default();
+
+    let scc_error = parse_cugraph_algorithm_spec(
+        CugraphAlgorithm::StronglyConnectedComponents,
+        &[
+            lit("graph_edges"),
+            lit("src"),
+            lit("dst"),
+            datafusion::logical_expr::lit(ScalarValue::Null),
+            lit(r#"{"directed":false}"#),
+        ],
+        &config,
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(scc_error.contains("cugraph_strongly_connected_components requires directed=true"), "{scc_error}");
+    assert!(scc_error.contains("cugraph_weakly_connected_components"), "{scc_error}");
+
+    let wcc_error = parse_cugraph_algorithm_spec(
+        CugraphAlgorithm::WeaklyConnectedComponents,
+        &[
+            lit("graph_edges"),
+            lit("src"),
+            lit("dst"),
+            datafusion::logical_expr::lit(ScalarValue::Null),
+            lit(r#"{"directed":true}"#),
+        ],
+        &config,
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(wcc_error.contains("cugraph_weakly_connected_components requires directed=false"), "{wcc_error}");
+}
+
+#[test]
 fn cugraph_sql_planning_parses_algorithm_options() {
     let config = CugraphSqlConfig::default();
     let spec = parse_cugraph_algorithm_spec(

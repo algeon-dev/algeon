@@ -679,6 +679,25 @@ fn graph_algorithm_capability_validates_edge_column_types_but_allows_nullable_sc
     assert_eq!(nullable_edge_id_capability.executable, CapabilityDecision::Satisfied);
 }
 
+#[test]
+fn graph_algorithm_capability_rejects_incompatible_directedness() {
+    let scc = graph_plan_with_options(
+        GraphAlgorithm::StronglyConnectedComponents,
+        GraphAlgorithmParams::StronglyConnectedComponents(Default::default()),
+        GraphConstructionOptions { directed: false, ..Default::default() },
+        edge_schema(DataType::Int64, DataType::Float64, false),
+    );
+    assert_graph_directedness_rejection(&scc, "strongly_connected_components", false, true);
+
+    let wcc = graph_plan_with_options(
+        GraphAlgorithm::WeaklyConnectedComponents,
+        GraphAlgorithmParams::WeaklyConnectedComponents(Default::default()),
+        GraphConstructionOptions { directed: true, ..Default::default() },
+        edge_schema(DataType::Int64, DataType::Float64, false),
+    );
+    assert_graph_directedness_rejection(&wcc, "weakly_connected_components", true, false);
+}
+
 fn assert_graph_rejection_contains(plan: &QueryPlan, reason: &str, role: &str) {
     let capability = plan.capability_analysis().nodes.into_iter().find(|node| node.node_id == plan.root_id()).unwrap();
     let CapabilityDecision::Rejected { facts, .. } = capability.executable else {
@@ -688,13 +707,36 @@ fn assert_graph_rejection_contains(plan: &QueryPlan, reason: &str, role: &str) {
     assert_eq!(facts.get("edge_column_role").map(String::as_str), Some(role));
 }
 
+fn assert_graph_directedness_rejection(plan: &QueryPlan, algorithm: &str, directed: bool, required_directed: bool) {
+    let capability = plan.capability_analysis().nodes.into_iter().find(|node| node.node_id == plan.root_id()).unwrap();
+    let CapabilityDecision::Rejected { facts, .. } = capability.executable else {
+        panic!("expected graph capability rejection");
+    };
+    assert_eq!(facts.get("reason").map(String::as_str), Some("unsupported_graph_directedness"));
+    assert_eq!(facts.get("algorithm").map(String::as_str), Some(algorithm));
+    assert_eq!(facts.get("directed").map(String::as_str), Some(if directed { "true" } else { "false" }));
+    assert_eq!(
+        facts.get("required_directed").map(String::as_str),
+        Some(if required_directed { "true" } else { "false" })
+    );
+}
+
 fn graph_plan(algorithm: GraphAlgorithm, params: GraphAlgorithmParams, input_schema: Arc<Schema>) -> QueryPlan {
+    graph_plan_with_options(algorithm, params, GraphConstructionOptions::default(), input_schema)
+}
+
+fn graph_plan_with_options(
+    algorithm: GraphAlgorithm,
+    params: GraphAlgorithmParams,
+    graph_options: GraphConstructionOptions,
+    input_schema: Arc<Schema>,
+) -> QueryPlan {
     let mut builder = QueryPlanBuilder::new();
     let input = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("edges", input_schema)));
     let spec = GraphAlgorithmSpec::with_stable_schema(
         algorithm,
         GraphEdgeColumnBindings::new("src", "dst", Some("weight")),
-        GraphConstructionOptions::default(),
+        graph_options,
         params,
     );
     let graph = builder.add_graph_algorithm(input, spec);

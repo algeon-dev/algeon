@@ -413,6 +413,19 @@ fn validate_graph_algorithm_node(
     input_available: &BTreeSet<String>,
     output_schema: &SchemaRef,
 ) -> Result<()> {
+    if let Some(required) = graph.spec.algorithm.definition().required_graph_directedness()
+        && graph.spec.graph_options.directed != required
+    {
+        return Err(QueryError::new(
+            QueryErrorCode::InvalidPlan,
+            "nexus_query_engine.graph_algorithm.validate",
+            "graph algorithm directed option is incompatible with the cuGraph algorithm",
+        )
+        .with_fact("reason", "unsupported_graph_directedness")
+        .with_fact("algorithm", graph.spec.algorithm.as_str())
+        .with_fact("directed", graph.spec.graph_options.directed)
+        .with_fact("required_directed", required));
+    }
     if output_schema.as_ref() != crate::plan::graph_result_schema_for_params(&graph.spec.params).as_ref() {
         return Err(QueryError::new(
             QueryErrorCode::InvalidPlan,
@@ -968,7 +981,10 @@ mod tests {
     use super::*;
     use crate::{
         expr::{AggregateFunction, BinaryOp, LiteralValue},
-        plan::{ProjectionOutput, QueryPlanBuilder, WindowFunction, WindowSpec},
+        plan::{
+            GraphAlgorithm, GraphAlgorithmParams, GraphAlgorithmSpec, GraphConstructionOptions,
+            GraphEdgeColumnBindings, ProjectionOutput, QueryPlanBuilder, WindowFunction, WindowSpec,
+        },
         source::{
             LiteralBatchSource, LocalParquetFile, LocalParquetSource, ParquetFieldIdReadBinding, SourceColumnRef,
             SourceNode,
@@ -1013,6 +1029,33 @@ mod tests {
         let error = validate_query_plan(&plan).expect_err("global whole-partition aggregate windows are unsupported");
         assert_eq!(error.code(), QueryErrorCode::UnsupportedOperator);
         assert_eq!(error.operation(), "nexus_query_engine.window.validate");
+    }
+
+    #[test]
+    fn validate_graph_algorithm_rejects_incompatible_directedness() {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("src", ArrowDataType::Int64, false),
+            Field::new("dst", ArrowDataType::Int64, false),
+            Field::new("weight", ArrowDataType::Float64, false),
+        ]));
+        let mut builder = QueryPlanBuilder::new();
+        let source = builder.add_source(SourceNode::LiteralBatch(LiteralBatchSource::empty(schema)));
+        let spec = GraphAlgorithmSpec::with_stable_schema(
+            GraphAlgorithm::StronglyConnectedComponents,
+            GraphEdgeColumnBindings::new("src", "dst", Some("weight")),
+            GraphConstructionOptions { directed: false, ..Default::default() },
+            GraphAlgorithmParams::StronglyConnectedComponents(Default::default()),
+        );
+        let graph = builder.add_graph_algorithm(source, spec);
+        let plan = builder.finish_with_host_sink(graph);
+
+        let error = validate_query_plan(&plan).expect_err("SCC must reject undirected graph construction");
+        assert_eq!(error.code(), QueryErrorCode::InvalidPlan);
+        assert_eq!(error.operation(), "nexus_query_engine.graph_algorithm.validate");
+        assert_eq!(error.fact_value("reason"), Some("unsupported_graph_directedness"));
+        assert_eq!(error.fact_value("algorithm"), Some("strongly_connected_components"));
+        assert_eq!(error.fact_value("directed"), Some("false"));
+        assert_eq!(error.fact_value("required_directed"), Some("true"));
     }
 
     #[test]

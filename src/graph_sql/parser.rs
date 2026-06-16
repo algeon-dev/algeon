@@ -66,6 +66,7 @@ pub fn parse_cugraph_algorithm_spec(
         let options_json = literal_string_arg(args, next, "options_json")?;
         parse_options_json(algorithm, &options_json, &mut graph_options, &mut edge_id_col, &mut params)?;
     }
+    validate_graph_directedness(algorithm, &graph_options)?;
 
     // MST is a weighted algorithm: require an explicit weight column so
     // the graph is built with edge weights rather than silently producing
@@ -120,6 +121,27 @@ fn default_params(
         panic!("source-vertex arity validation requires source_vertex");
     }
     CugraphAlgorithmParams::from_native_defaults(algorithm, source_vertex)
+}
+
+fn validate_graph_directedness(algorithm: CugraphAlgorithm, graph_options: &CugraphGraphOptions) -> Result<()> {
+    let Some(required) = algorithm.native_algorithm().definition().required_graph_directedness() else {
+        return Ok(());
+    };
+    if graph_options.directed == required {
+        return Ok(());
+    }
+    let message = match (algorithm, required) {
+        (CugraphAlgorithm::StronglyConnectedComponents, true) => {
+            "cugraph_strongly_connected_components requires directed=true; use \
+             cugraph_weakly_connected_components for weak/undirected components"
+        },
+        (CugraphAlgorithm::WeaklyConnectedComponents, false) => {
+            "cugraph_weakly_connected_components requires directed=false so cuGraph receives a symmetric graph"
+        },
+        _ if required => "cuGraph algorithm requires directed=true",
+        _ => "cuGraph algorithm requires directed=false",
+    };
+    Err(plan_error(message))
 }
 
 fn parse_options_json(
