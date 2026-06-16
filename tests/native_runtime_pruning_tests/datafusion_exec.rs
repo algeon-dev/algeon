@@ -21,10 +21,10 @@ fn assert_row_group_coverage_metrics(metrics: &MetricsSet) {
 }
 
 #[tokio::test]
-async fn native_datafusion_exec_q6_shaped_global_decimal_sum_matches_cpu() {
-    let dir = unique_temp_dir("datafusion-nexus-native-datafusion-q6-shaped");
+async fn native_datafusion_exec_discounted_revenue_global_decimal_sum_matches_cpu() {
+    let dir = unique_temp_dir("datafusion-nexus-native-datafusion-discounted-revenue");
     let path = dir.join("lineitem.parquet");
-    write_q6_lineitem_parquet(&path);
+    write_discounted_revenue_lineitem_parquet(&path);
     let cpu_batches = cpu_sql_output(&path, SQL_Q6_SHAPED_QUERY).await;
 
     let plan = native_datafusion_sql_plan(&path, SQL_Q6_SHAPED_QUERY, native_datafusion_config()).await;

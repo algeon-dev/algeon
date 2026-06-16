@@ -197,21 +197,35 @@ fn bounded_mixed_residual_resident_grouped_aggregate_preserves_node_failure_loca
     );
 }
 
+/// Mutates a residual join shape used to prove the mixed keyed
+/// residual join + resident grouped-aggregate input contract.
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum ResidualResidentGroupedAggregateInputVariant {
+    /// Baseline positive fixture whose surrounding shape is kept out of broader
+    /// bounded families, so only this narrow residual-resident proof admits it.
     BlockedFamily,
     RootJoinWithoutResidual,
     BareGroupedAggregateInput,
     ScalarAggregateInput,
+    /// Starts the grouped input from a resident GPU frame; this must not be
+    /// confused with the local source-to-aggregate reduction proof.
     GroupedAggregateGpuResidentInput,
     BareGlobalAggregateInput,
     FinalSort,
+    /// Positive fixture: admission is about the resident grouped input and
+    /// residual memory contract, not the final aggregate being exactly SUM.
     GlobalAggregateNotSum,
+    /// Positive fixture: the grouped input only has to be a reusable grouped
+    /// aggregate, not specifically the AVG expression used by the baseline.
     GroupedAggregateNotAvg,
+    /// Positive fixtures that keep the residual connected to the grouped input
+    /// while varying the scaled-average idiom the optimizer usually emits.
     ResidualWithoutScaledAverage,
     ResidualWrongMultiplier,
     PreprojectedResidualWrongMultiplier,
     RootOutputIncludesGroupedAggregate,
+    /// Rejection locality case: the shape is otherwise close, but the residual
+    /// contains an expression family the join capability cannot lower.
     UnsupportedResidualExpression,
 }
 

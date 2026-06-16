@@ -300,7 +300,7 @@ fn write_category_bucket_parquet(runtime: &cudf::Runtime, path: &Path) -> Arc<Sc
     schema
 }
 
-fn write_q19_shaped_join_source_left_parquet(path: &Path) -> Arc<Schema> {
+fn write_source_adjacent_join_filter_left_parquet(path: &Path) -> Arc<Schema> {
     let schema = Arc::new(Schema::new(vec![
         Field::new("partkey", DataType::Int32, false),
         Field::new("brand", DataType::Utf8, false),
@@ -340,7 +340,7 @@ fn write_q19_shaped_join_source_left_parquet(path: &Path) -> Arc<Schema> {
     schema
 }
 
-fn write_q19_shaped_join_source_right_parquet(path: &Path) -> Arc<Schema> {
+fn write_source_adjacent_join_filter_right_parquet(path: &Path) -> Arc<Schema> {
     let schema = Arc::new(Schema::new(vec![
         Field::new("partkey", DataType::Int32, false),
         Field::new("category", DataType::Utf8, false),
@@ -366,7 +366,7 @@ fn write_q19_shaped_join_source_right_parquet(path: &Path) -> Arc<Schema> {
     schema
 }
 
-fn q19_shaped_predicate() -> Expr {
+fn source_adjacent_join_filter_predicate() -> Expr {
     let branch_1 = q19_brand_branch("Brand#12", &["SM CASE", "SM BOX", "SM PACK", "SM PKG"], 1.0, 11.0, 5);
     let branch_2 = q19_brand_branch("Brand#23", &["MED BAG", "MED BOX", "MED PKG", "MED PACK"], 10.0, 20.0, 10);
     let branch_3 = q19_brand_branch("Brand#34", &["LG CASE", "LG BOX", "LG PACK", "LG PKG"], 20.0, 30.0, 15);

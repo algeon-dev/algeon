@@ -1,13 +1,28 @@
 use super::*;
 
+/// Mutates the non-root side of a keyless conditional root join. The admitted
+/// shape is deliberately narrow: a projection-wrapped left-anti subplan on one
+/// side and a scalar aggregate on the other.
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum KeylessInputSubplanVariant {
     Admitted,
+    /// Replaces the scalar side with a grouped aggregate, which changes the
+    /// cardinality contract the keyless residual join relies on.
     GroupedAggregate,
+    /// Adds an ordering barrier below the root keyless join; this is not part of
+    /// the input-subplan proof even though the operator itself is supported.
     SortInput,
+    /// Adds a limit barrier below the root keyless join, breaking the bounded
+    /// input-subplan shape.
     LimitInput,
+    /// Omits the projection wrapper around the left-anti join. The wrapper is
+    /// the explicit boundary proving the anti-join is only an input subplan.
     BareLeftAntiInput,
+    /// Swaps the left-anti input subplan for an inner join to verify the proof
+    /// rejects ordinary join inputs.
     InnerJoinInput,
+    /// Adds a join below the left-anti input, which would make the input subplan
+    /// recursively multi-join instead of a bounded anti-join leaf.
     NestedJoinInput,
 }
 

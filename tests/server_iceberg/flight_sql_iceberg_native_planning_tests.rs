@@ -127,7 +127,7 @@ async fn native_profile_iceberg_q1_style_cast_round_aggregate_order_limit_rewrit
          LIMIT 15",
     )
     .await
-    .expect("native profile must rewrite Q1-style cast/round aggregate ORDER BY LIMIT over Iceberg");
+    .expect("native profile must rewrite cast/round aggregate ORDER BY LIMIT over Iceberg");
 
     assert_no_leftover_table_format_scan(physical_plan.as_ref());
     assert_query_root_is_native(physical_plan.as_ref());

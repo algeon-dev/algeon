@@ -319,13 +319,14 @@ async fn native_runtime_nullable_avg_output_ordering_matches_cpu() {
 }
 
 #[tokio::test]
-async fn native_runtime_q6_shaped_global_decimal_sum_matches_cpu() {
-    let dir = unique_temp_dir("datafusion-nexus-native-runtime-q6-shaped");
+async fn native_runtime_discounted_revenue_global_decimal_sum_matches_cpu() {
+    let dir = unique_temp_dir("datafusion-nexus-native-runtime-discounted-revenue");
     let path = dir.join("lineitem.parquet");
-    write_q6_lineitem_parquet(&path);
+    write_discounted_revenue_lineitem_parquet(&path);
 
     let cpu_batches = cpu_sql_output(&path, SQL_Q6_SHAPED_QUERY).await;
-    let native_physical_plan = sql_plan(&path, direct_friendly_sql_session_config(), SQL_Q6_SHAPED_QUERY).await;
+    let native_physical_plan =
+        sql_plan(&path, direct_friendly_sql_session_config(), SQL_Q6_SHAPED_QUERY).await;
     let lowering = lower_physical_plan_to_native(native_physical_plan);
     assert_eq!(lowering.rewritten_count(), 1, "outcomes={:?}", lowering.report.outcomes());
     assert_eq!(lowering.rejected_count(), 0, "outcomes={:?}", lowering.report.outcomes());
@@ -402,7 +403,7 @@ async fn native_runtime_order_sensitive_source_scan_limit_matches_cpu() {
 async fn native_runtime_global_decimal_avg_matches_cpu() {
     let dir = unique_temp_dir("datafusion-nexus-native-runtime-global-decimal-avg");
     let path = dir.join("lineitem.parquet");
-    write_q6_lineitem_parquet(&path);
+    write_discounted_revenue_lineitem_parquet(&path);
 
     let cpu_batches = cpu_sql_output(&path, SQL_GLOBAL_DECIMAL_AVG_QUERY).await;
     let native_physical_plan =

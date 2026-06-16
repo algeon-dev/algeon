@@ -401,12 +401,12 @@ fn bounded_native_query_streams_source_adjacent_filter_projection_into_hash_prob
 }
 
 #[test]
-fn bounded_native_query_executes_q19_shaped_join_source_filter_predicate() {
-    let dir = unique_temp_dir("nexus-query-engine-bounded-root-hash-join-q19-source-filter");
+fn bounded_native_query_executes_source_adjacent_join_filter_predicate() {
+    let dir = unique_temp_dir("nexus-query-engine-bounded-root-hash-join-source-filter");
     let left_path = dir.join("lineitem_part.parquet");
     let right_path = dir.join("part_category.parquet");
-    let left_schema = write_q19_shaped_join_source_left_parquet(&left_path);
-    let right_schema = write_q19_shaped_join_source_right_parquet(&right_path);
+    let left_schema = write_source_adjacent_join_filter_left_parquet(&left_path);
+    let right_schema = write_source_adjacent_join_filter_right_parquet(&right_path);
     let output_schema = Arc::new(Schema::new(vec![
         Field::new("partkey", DataType::Int32, false),
         Field::new("category", DataType::Utf8, false),
@@ -431,7 +431,7 @@ fn bounded_native_query_executes_q19_shaped_join_source_filter_predicate() {
             ],
         ),
     ));
-    let filtered_left = builder.add_filter(left, q19_shaped_predicate(), Arc::clone(&left_schema));
+    let filtered_left = builder.add_filter(left, source_adjacent_join_filter_predicate(), Arc::clone(&left_schema));
     let projected_left = builder.add_projection(
         filtered_left,
         vec![ProjectionOutput::new(Expr::column("partkey"), Field::new("partkey", DataType::Int32, false))],
@@ -461,7 +461,7 @@ fn bounded_native_query_executes_q19_shaped_join_source_filter_predicate() {
     let plan = builder.finish_with_host_sink(join);
     assert!(
         plan.capability_analysis().admits_strict_bounded_join(),
-        "Q19-shaped source-adjacent filter should stay capability-admitted:\n{plan}"
+        "source-adjacent filter should stay capability-admitted:\n{plan}"
     );
     let context = ExecutionContext::builder()
         .with_shared_runtime(Arc::new(cudf::Runtime::new().unwrap()))
@@ -486,7 +486,7 @@ fn bounded_native_query_executes_q19_shaped_join_source_filter_predicate() {
                 && event.reservation_kind == ReservationKind::OperatorOutput
                 && event.memory_boundary == "join_source_filter_output"
         }),
-        "Q19-shaped filter must execute on the join_source_filter reservation boundary"
+        "source-adjacent filter must execute on the join_source_filter reservation boundary"
     );
 
     let QueryOutput::HostArrow(batch) = result.output() else {

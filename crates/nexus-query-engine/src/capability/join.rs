@@ -207,11 +207,21 @@ pub(crate) enum JoinExecutionCapability {
     KeyedResidualMixed,
 }
 
+/// Physical strategy selected for a keyed hash-capable join after size,
+/// reuse, and residual-expression facts have been evaluated.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) enum KeyedHashJoinStrategy {
+    /// Prebuild and retain a hash-table artifact because the build side is
+    /// reused, explicitly materialized, or small enough to keep reusable.
     ReusableHashEqui,
+    /// Build and probe for this join instance only, without preserving a
+    /// reusable hash-table artifact for later probes.
     OneShotEqui,
+    /// Partition a large keyed equi-join so build/probe memory is bounded by
+    /// partition-sized work units.
     PartitionedHashEqui,
+    /// Partition a keyed join whose residual predicate is evaluated within the
+    /// mixed keyed/residual path instead of as a reusable equi hash join.
     PartitionedMixedKeyedResidual,
 }
 

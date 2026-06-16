@@ -104,7 +104,7 @@ pub(super) fn write_scalar_expression_input_parquet(path: &std::path::Path) {
     writer.close().unwrap();
 }
 
-pub(super) fn write_q6_lineitem_parquet(path: &std::path::Path) {
+pub(super) fn write_discounted_revenue_lineitem_parquet(path: &std::path::Path) {
     let schema = Arc::new(Schema::new(vec![
         Field::new("l_quantity", DataType::Decimal128(15, 2), false),
         Field::new("l_extendedprice", DataType::Decimal128(15, 2), false),

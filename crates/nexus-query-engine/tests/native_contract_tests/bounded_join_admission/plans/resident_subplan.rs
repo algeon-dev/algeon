@@ -1,13 +1,28 @@
 use super::*;
 
+/// Mutates the shared revenue subplan used to prove that a keyed root
+/// join may consume the same resident aggregate subplan as a scalar aggregate.
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum KeyedHashJoinResidentSubplanPipelineVariant {
+    /// Baseline positive fixture whose broader bounded families are blocked,
+    /// forcing the keyed-hash resident-subplan proof to carry admission.
     BlockedFamily,
+    /// Root residuals are intentionally outside this pipeline; residual-aware
+    /// keyed joins must be admitted through their own contracts.
     ResidualRootJoin,
+    /// Like `ResidualRootJoin`, but with an unsupported expression so rejection
+    /// reports the node-local expression failure first.
     UnsupportedRootResidualExpression,
+    /// A sort inside the resident subplan invalidates this proof but can still
+    /// fall through to the full-sort envelope.
     SortBelowRoot,
+    /// Breaks the max-over-sum shape at the scalar aggregate.
     ScalarAggregateNotMax,
+    /// Breaks the max-over-sum shape at the grouped aggregate.
     GroupedAggregateNotSum,
+    /// Builds an isomorphic aggregate from a different node; admission requires
+    /// actual shared identity after common-subexpression elimination, not
+    /// structural equivalence.
     StructurallyEquivalentGroupedAggregate,
 }
 
