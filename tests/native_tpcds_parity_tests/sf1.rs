@@ -1145,67 +1145,70 @@ async fn tpcds_sf1_distributed_aggregate_lowering_admits_shared_resident_groupin
     }
 }
 
-#[tokio::test]
-async fn tpcds_sf1_union_queries_match_as_whole_native() {
+/// Assert that a single TPC-DS SF1 UNION query lowers to one whole native
+/// subtree and matches plain DataFusion exactly.
+///
+/// This is the per-query body behind the `tpcds_sf1_union_q*_matches_as_whole_native`
+/// tests below. It was factored out of a former single test that looped over all
+/// nine UNION queries in one `#[tokio::test]` (~53s, the GPU lane's single longest
+/// test). One test per query lets nextest schedule them across the `gpu` group's
+/// threads and makes a failure name the offending query instead of the whole set.
+async fn assert_tpcds_sf1_union_query_matches_as_whole_native(query_id: &str, expected_output_rows: usize) {
     let Some(root) = sf1_fixture_root_or_skip() else {
         return;
     };
     let root = root.as_path();
     assert!(root.join("store_sales.parquet").is_file(), "TPC-DS SF1 fixture is missing at {}", root.display());
 
-    let query_filter = vec![
-        "q23".to_string(),
-        "q27".to_string(),
-        "q33".to_string(),
-        "q71".to_string(),
-        "q75".to_string(),
-        "q56".to_string(),
-        "q60".to_string(),
-        "q66".to_string(),
-        "q76".to_string(),
-    ];
     let items = tpcds_parity_workload_items(
         root,
         sf1_tpcds_test_session_config(),
         sf1_native_optimizer_config(),
-        Some(&query_filter),
+        Some(&[query_id.to_string()]),
     )
     .await
     .unwrap();
     let report = NativeTpcdsParityReport::collect(items, ParityFloatTolerance::exact());
-    assert_eq!(report.rows.len(), 9);
+    assert_eq!(report.rows.len(), 1, "{query_id}");
 
-    for (query_id, output_rows) in [
-        ("q23", 4),
-        ("q27", 100),
-        ("q33", 100),
-        ("q56", 100),
-        ("q60", 100),
-        ("q66", 5),
-        ("q71", 1031),
-        ("q75", 100),
-        ("q76", 100),
-    ] {
-        let row = report.rows.iter().find(|row| row.query_id == query_id).expect("query row should exist");
-        assert_eq!(row.cpu_planning_status, ParityStageStatus::Succeeded, "{query_id}");
-        assert_eq!(row.cpu_runtime_status, ParityStageStatus::Succeeded, "{query_id}");
-        assert_eq!(row.native_planning_outcome, NativeTpcdsParityPlanningOutcome::AcceptedReplaced, "{query_id}");
-        assert_eq!(row.native_reason_code, None, "{query_id}");
-        assert_eq!(row.native_unsupported_category, None, "{query_id}");
-        assert_eq!(row.post_native_execution_path, NativeDataFusionPostNativeExecutionPath::Native, "{query_id}");
-        assert_eq!(row.native_plan_fragment_count, 1, "{query_id}");
-        assert_eq!(row.host_datafusion_boundary_count, 0, "{query_id}");
-        assert!(row.native_runtime_started, "{query_id} must execute as one whole native subtree");
-        assert_eq!(row.native_runtime_outcome, NativeDataFusionRuntimeOutcome::Succeeded, "{query_id}");
-        assert_eq!(row.parity_status, ParityStatus::Matched, "{query_id}");
-        assert_eq!(row.comparison_mode, ParityComparisonMode::OrderedExact, "{query_id}");
-        assert_eq!(row.cpu_output_rows, Some(output_rows), "{query_id}");
-        assert_eq!(row.native_output_rows, Some(output_rows), "{query_id}");
-        assert_eq!(row.native_reservation_denied_count, Some(0), "{query_id}");
-        assert_eq!(row.native_retry_count, Some(0), "{query_id}");
-        assert_eq!(row.native_runtime_failure, None, "{query_id}");
-    }
+    let row = report.rows.iter().find(|row| row.query_id == query_id).expect("query row should exist");
+    assert_eq!(row.cpu_planning_status, ParityStageStatus::Succeeded, "{query_id}");
+    assert_eq!(row.cpu_runtime_status, ParityStageStatus::Succeeded, "{query_id}");
+    assert_eq!(row.native_planning_outcome, NativeTpcdsParityPlanningOutcome::AcceptedReplaced, "{query_id}");
+    assert_eq!(row.native_reason_code, None, "{query_id}");
+    assert_eq!(row.native_unsupported_category, None, "{query_id}");
+    assert_eq!(row.post_native_execution_path, NativeDataFusionPostNativeExecutionPath::Native, "{query_id}");
+    assert_eq!(row.native_plan_fragment_count, 1, "{query_id}");
+    assert_eq!(row.host_datafusion_boundary_count, 0, "{query_id}");
+    assert!(row.native_runtime_started, "{query_id} must execute as one whole native subtree");
+    assert_eq!(row.native_runtime_outcome, NativeDataFusionRuntimeOutcome::Succeeded, "{query_id}");
+    assert_eq!(row.parity_status, ParityStatus::Matched, "{query_id}");
+    assert_eq!(row.comparison_mode, ParityComparisonMode::OrderedExact, "{query_id}");
+    assert_eq!(row.cpu_output_rows, Some(expected_output_rows), "{query_id}");
+    assert_eq!(row.native_output_rows, Some(expected_output_rows), "{query_id}");
+    assert_eq!(row.native_reservation_denied_count, Some(0), "{query_id}");
+    assert_eq!(row.native_retry_count, Some(0), "{query_id}");
+    assert_eq!(row.native_runtime_failure, None, "{query_id}");
 }
+
+macro_rules! tpcds_sf1_union_query_parity_test {
+    ($name:ident, $query_id:literal, $expected_output_rows:expr) => {
+        #[tokio::test]
+        async fn $name() {
+            assert_tpcds_sf1_union_query_matches_as_whole_native($query_id, $expected_output_rows).await;
+        }
+    };
+}
+
+tpcds_sf1_union_query_parity_test!(tpcds_sf1_union_q23_matches_as_whole_native, "q23", 4);
+tpcds_sf1_union_query_parity_test!(tpcds_sf1_union_q27_matches_as_whole_native, "q27", 100);
+tpcds_sf1_union_query_parity_test!(tpcds_sf1_union_q33_matches_as_whole_native, "q33", 100);
+tpcds_sf1_union_query_parity_test!(tpcds_sf1_union_q56_matches_as_whole_native, "q56", 100);
+tpcds_sf1_union_query_parity_test!(tpcds_sf1_union_q60_matches_as_whole_native, "q60", 100);
+tpcds_sf1_union_query_parity_test!(tpcds_sf1_union_q66_matches_as_whole_native, "q66", 5);
+tpcds_sf1_union_query_parity_test!(tpcds_sf1_union_q71_matches_as_whole_native, "q71", 1031);
+tpcds_sf1_union_query_parity_test!(tpcds_sf1_union_q75_matches_as_whole_native, "q75", 100);
+tpcds_sf1_union_query_parity_test!(tpcds_sf1_union_q76_matches_as_whole_native, "q76", 100);
 
 #[tokio::test]
 async fn tpcds_sf1_projection_scalar_queries_match_current_admission_contract() {
