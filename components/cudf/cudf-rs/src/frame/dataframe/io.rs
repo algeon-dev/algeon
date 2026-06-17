@@ -97,7 +97,8 @@ impl CsvWriteOptions {
 ///
 /// This is the schema-aware Parquet reader API for `DataFrame`. It controls
 /// file-format slicing and column selection, then lifts truthful Parquet
-/// schema metadata into the resulting `DataFrame`.
+/// schema metadata into the resulting `DataFrame`. A supplied projection must
+/// contain at least one column name; omit `columns` to read all columns.
 #[derive(Debug, Clone, TypedBuilder)]
 pub struct ParquetReadOptions {
     #[builder(setter(transform = |path: impl AsRef<Path>| path.as_ref().to_path_buf()))]
@@ -134,7 +135,9 @@ impl ParquetReadOptions {
 /// tables on device. It does not perform glob expansion; each path is passed
 /// to the low-level Parquet reader literally. If globbing is desired, expand
 /// patterns in the shell or caller before building these options. It also does
-/// not perform predicate pushdown, partition-column inference, or GDS.
+/// not perform predicate pushdown, partition-column inference, or GDS. A
+/// supplied projection must contain at least one column name; omit `columns` to
+/// read all columns.
 #[derive(Debug, Clone, TypedBuilder)]
 pub struct MultiParquetReadOptions {
     #[builder(setter(transform = |paths: &[impl AsRef<Path>]| paths.iter().map(|path| path.as_ref().to_path_buf()).collect()))]
@@ -254,6 +257,49 @@ fn require_reader_schema_names(
     Ok((result.table, names))
 }
 
+fn empty_parquet_projection_error(operation: &'static str) -> Error {
+    Error::new_with(ErrorCode::EmptyInput, operation, "parquet projection requires at least one column name")
+        .with_detail("resource", "columns")
+        .with_detail("reason", "empty_projection")
+        .with_detail("column_name_count", "0")
+        .with_detail("remedy", "omit the projection to read all columns, or provide at least one column name")
+}
+
+fn validate_parquet_projection(columns: Option<&[String]>, operation: &'static str) -> Result<()> {
+    if matches!(columns, Some(names) if names.is_empty()) {
+        return Err(empty_parquet_projection_error(operation));
+    }
+
+    Ok(())
+}
+
+fn reanchor_multi_parquet_file_error(
+    error: Error,
+    operation: &'static str,
+    file_index: usize,
+    filepath: &Path,
+) -> Error {
+    error
+        .reanchor(operation)
+        .with_detail("file_index", file_index.to_string())
+        .with_detail_if_absent("path", filepath.display().to_string())
+}
+
+fn reanchor_multi_parquet_schema_error(
+    error: Error,
+    operation: &'static str,
+    reference_filepath: &Path,
+    file_index: usize,
+    filepath: &Path,
+) -> Error {
+    error
+        .reanchor(operation)
+        .with_detail("reference_file_index", "0")
+        .with_detail("reference_path", reference_filepath.display().to_string())
+        .with_detail("file_index", file_index.to_string())
+        .with_detail("path", filepath.display().to_string())
+}
+
 fn prepare_write_domain(
     frame_domain: &Arc<ExecutionDomain>,
     write_domain: &Arc<ExecutionDomain>,
@@ -366,6 +412,7 @@ impl DataFrame {
     /// synthesized heuristically.
     pub fn read_parquet_with_options(options: ParquetReadOptions) -> Result<Self> {
         let operation = "dataframe::read_parquet_with_options";
+        validate_parquet_projection(options.columns.as_deref(), operation)?;
         let table_options = options.to_table_options();
         let result = parquet::read_parquet_table(&table_options).map_err(|error| error.reanchor(operation))?;
         let (table, names) = require_reader_schema_names(result, operation, "parquet reader")?;
@@ -414,13 +461,22 @@ impl DataFrame {
             .with_detail("reason", "empty_input")
             .with_detail("remedy", "provide one or more concrete Parquet file paths"));
         }
+        validate_parquet_projection(options.columns.as_deref(), operation)?;
 
-        let mut frames = Vec::with_capacity(options.filepaths.len());
-        for filepath in &options.filepaths {
+        let mut frames: Vec<DataFrame> = Vec::with_capacity(options.filepaths.len());
+        for (file_index, filepath) in options.filepaths.iter().enumerate() {
             let table_options = options.to_single_file_options(filepath.clone());
-            let result = parquet::read_parquet_table(&table_options).map_err(|error| error.reanchor(operation))?;
-            let (table, names) = require_reader_schema_names(result, operation, "parquet reader")?;
-            let frame = Self::from_table(table, names).map_err(|error| error.reanchor(operation))?;
+            let result = parquet::read_parquet_table(&table_options)
+                .map_err(|error| reanchor_multi_parquet_file_error(error, operation, file_index, filepath))?;
+            let (table, names) = require_reader_schema_names(result, operation, "parquet reader")
+                .map_err(|error| reanchor_multi_parquet_file_error(error, operation, file_index, filepath))?;
+            let frame = Self::from_table(table, names)
+                .map_err(|error| reanchor_multi_parquet_file_error(error, operation, file_index, filepath))?;
+            if let Some(reference) = frames.first() {
+                reference.validate_concat_schema(&frame, "dataframe::concat_many").map_err(|error| {
+                    reanchor_multi_parquet_schema_error(error, operation, &options.filepaths[0], file_index, filepath)
+                })?;
+            }
             frames.push(frame);
         }
 

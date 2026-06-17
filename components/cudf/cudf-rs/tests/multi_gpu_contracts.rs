@@ -1415,6 +1415,74 @@ fn mixed_join_indices_in_without_relocation_reject_cross_device_runtime_inputs()
 }
 
 #[test]
+fn filter_join_indices_without_relocation_reject_cross_device_runtime_inputs() {
+    if !should_run_multi_gpu_test() {
+        return;
+    }
+
+    let (left_rt, right_rt) = first_two_test_runtimes();
+
+    let left =
+        cudf::core::Table::from_columns(vec![left_rt.series(&[1i32, 3, 5]).unwrap().as_column().deep_copy().unwrap()])
+            .unwrap();
+    let right =
+        cudf::core::Table::from_columns(vec![right_rt.series(&[2i32, 4, 6]).unwrap().as_column().deep_copy().unwrap()])
+            .unwrap();
+    let left_indices = left_rt.series(&[0i32, 1, 2]).unwrap().as_column().deep_copy().unwrap();
+    let right_indices = right_rt.series(&[0i32, 1, 2]).unwrap().as_column().deep_copy().unwrap();
+    let predicate =
+        AstExpression::less(AstExpression::left_column(0).unwrap(), AstExpression::right_column(0).unwrap()).unwrap();
+
+    let err = match join::filter_join_indices(
+        &left.testing_view().unwrap(),
+        &right.testing_view().unwrap(),
+        &left_indices.testing_view().unwrap(),
+        &right_indices.testing_view().unwrap(),
+        &predicate,
+        join::JoinType::Inner,
+    ) {
+        Ok(_) => panic!("cross-device filter join indices should fail until inputs are explicitly relocated"),
+        Err(err) => err,
+    };
+    assert_cross_device_relocation_error(err, "join::filter_join_indices");
+}
+
+#[test]
+fn filter_join_indices_in_without_relocation_reject_cross_device_runtime_inputs() {
+    if !should_run_multi_gpu_test() {
+        return;
+    }
+
+    let (left_rt, right_rt) = first_two_test_runtimes();
+
+    let left =
+        cudf::core::Table::from_columns(vec![left_rt.series(&[1i32, 3, 5]).unwrap().as_column().deep_copy().unwrap()])
+            .unwrap();
+    let right =
+        cudf::core::Table::from_columns(vec![right_rt.series(&[2i32, 4, 6]).unwrap().as_column().deep_copy().unwrap()])
+            .unwrap();
+    let left_indices = left_rt.series(&[0i32, 1, 2]).unwrap().as_column().deep_copy().unwrap();
+    let right_indices = right_rt.series(&[0i32, 1, 2]).unwrap().as_column().deep_copy().unwrap();
+    let predicate =
+        AstExpression::less(AstExpression::left_column(0).unwrap(), AstExpression::right_column(0).unwrap()).unwrap();
+    let ctx = ExecutionOverrides::new().with_stream(left_rt.stream()).with_memory_resource(left_rt.memory_resource());
+
+    let err = match join::filter_join_indices_in(
+        &left.testing_view().unwrap(),
+        &right.testing_view().unwrap(),
+        &left_indices.testing_view().unwrap(),
+        &right_indices.testing_view().unwrap(),
+        &predicate,
+        join::JoinType::Inner,
+        &ctx,
+    ) {
+        Ok(_) => panic!("cross-device filter join indices should fail until inputs are explicitly relocated"),
+        Err(err) => err,
+    };
+    assert_cross_device_relocation_error(err, "join::filter_join_indices_in");
+}
+
+#[test]
 fn hash_join_probe_without_relocation_rejects_cross_device_runtime_inputs() {
     if !should_run_multi_gpu_test() {
         return;

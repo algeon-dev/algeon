@@ -99,6 +99,65 @@ fn make_left_less_than_right_predicate() -> *mut c_void {
     out
 }
 
+const FILTER_JOIN_KIND_INNER: i32 = 0;
+const FILTER_JOIN_KIND_LEFT_SEMI: i32 = 3;
+const FILTER_JOIN_KIND_LEFT_ANTI: i32 = 4;
+const FILTER_JOIN_KIND_INVALID: i32 = 99;
+
+struct FilterJoinTestInputs {
+    left_tbl: *mut c_void,
+    right_tbl: *mut c_void,
+    left_tv: *mut c_void,
+    right_tv: *mut c_void,
+    left_indices_col: *mut c_void,
+    right_indices_col: *mut c_void,
+    left_indices_view: *mut c_void,
+    right_indices_view: *mut c_void,
+    predicate: *mut c_void,
+}
+
+impl FilterJoinTestInputs {
+    fn new() -> Self {
+        let left_tbl = make_table_from_one_column(make_i32_column(&[10, 30, 5, 7]));
+        let right_tbl = make_table_from_one_column(make_i32_column(&[20, 10, 6, 8]));
+        let left_tv = make_table_view(left_tbl);
+        let right_tv = make_table_view(right_tbl);
+        let left_indices_col = make_i32_column(&[0, 1, 2, 3]);
+        let right_indices_col = make_i32_column(&[0, 1, 2, 3]);
+        let left_indices_view = make_column_view(left_indices_col);
+        let right_indices_view = make_column_view(right_indices_col);
+        let predicate = make_left_less_than_right_predicate();
+
+        Self {
+            left_tbl,
+            right_tbl,
+            left_tv,
+            right_tv,
+            left_indices_col,
+            right_indices_col,
+            left_indices_view,
+            right_indices_view,
+            predicate,
+        }
+    }
+}
+
+impl Drop for FilterJoinTestInputs {
+    fn drop(&mut self) {
+        unsafe {
+            cudf_sys::cudf_column_view_destroy(self.right_indices_view);
+            cudf_sys::cudf_column_view_destroy(self.left_indices_view);
+            cudf_sys::cudf_column_destroy(self.right_indices_col);
+            cudf_sys::cudf_column_destroy(self.left_indices_col);
+            cudf_sys::cudf_ast_expression_destroy(self.predicate);
+            cudf_sys::cudf_table_view_destroy(self.right_tv);
+            cudf_sys::cudf_table_view_destroy(self.left_tv);
+            cudf_sys::cudf_table_destroy(self.right_tbl);
+            cudf_sys::cudf_table_destroy(self.left_tbl);
+        }
+    }
+}
+
 #[test]
 fn test_column_view_strings_to_host_empty_rejects_undersized_offsets_buffer() {
     let _shim_state = lock_shim_state();
@@ -1270,6 +1329,298 @@ fn test_conditional_join_default_forms_validate_null_handles_and_clear_outputs()
         cudf_sys::cudf_table_destroy(right_tbl);
         cudf_sys::cudf_table_destroy(left_tbl);
     }
+}
+
+#[test]
+fn test_filter_join_indices_invalid_join_kind_rejected_and_clears_outputs() {
+    let _shim_state = lock_shim_state();
+    let inputs = FilterJoinTestInputs::new();
+    let join_indices = cudf_filter_join_indices_raw as FilterJoinIndicesRaw;
+
+    let mut out_left = std::ptr::NonNull::<c_void>::dangling().as_ptr();
+    let mut out_right = std::ptr::NonNull::<c_void>::dangling().as_ptr();
+    let status = unsafe {
+        join_indices(
+            inputs.left_tv,
+            inputs.right_tv,
+            inputs.left_indices_view,
+            inputs.right_indices_view,
+            inputs.predicate,
+            FILTER_JOIN_KIND_INVALID,
+            &mut out_left,
+            &mut out_right,
+        )
+    };
+
+    assert_eq!(status, cudf_sys::CUDF_ERROR_INVALID_OPERATION);
+    assert!(out_left.is_null());
+    assert!(out_right.is_null());
+    assert!(last_error_message().contains("invalid join_kind"));
+}
+
+#[test]
+fn test_filter_join_indices_unsupported_join_kinds_rejected_and_clear_outputs() {
+    let _shim_state = lock_shim_state();
+    let inputs = FilterJoinTestInputs::new();
+    let join_indices = cudf_filter_join_indices_raw as FilterJoinIndicesRaw;
+
+    for (name, join_kind) in [("left_semi", FILTER_JOIN_KIND_LEFT_SEMI), ("left_anti", FILTER_JOIN_KIND_LEFT_ANTI)] {
+        let mut out_left = std::ptr::NonNull::<c_void>::dangling().as_ptr();
+        let mut out_right = std::ptr::NonNull::<c_void>::dangling().as_ptr();
+        let status = unsafe {
+            join_indices(
+                inputs.left_tv,
+                inputs.right_tv,
+                inputs.left_indices_view,
+                inputs.right_indices_view,
+                inputs.predicate,
+                join_kind,
+                &mut out_left,
+                &mut out_right,
+            )
+        };
+
+        assert_eq!(status, cudf_sys::CUDF_ERROR_INVALID_ARGUMENT, "{name} filter join status");
+        assert!(out_left.is_null(), "{name} filter join must leave left output null");
+        assert!(out_right.is_null(), "{name} filter join must leave right output null");
+    }
+}
+
+#[test]
+fn test_filter_join_indices_mismatched_index_lengths_rejected_and_clear_outputs() {
+    let _shim_state = lock_shim_state();
+    let inputs = FilterJoinTestInputs::new();
+    let short_right_indices_col = make_i32_column(&[0, 1]);
+    let short_right_indices_view = make_column_view(short_right_indices_col);
+    let join_indices = cudf_filter_join_indices_raw as FilterJoinIndicesRaw;
+
+    let mut out_left = std::ptr::NonNull::<c_void>::dangling().as_ptr();
+    let mut out_right = std::ptr::NonNull::<c_void>::dangling().as_ptr();
+    let status = unsafe {
+        join_indices(
+            inputs.left_tv,
+            inputs.right_tv,
+            inputs.left_indices_view,
+            short_right_indices_view,
+            inputs.predicate,
+            FILTER_JOIN_KIND_INNER,
+            &mut out_left,
+            &mut out_right,
+        )
+    };
+
+    assert_eq!(status, cudf_sys::CUDF_ERROR_INVALID_ARGUMENT);
+    assert!(out_left.is_null());
+    assert!(out_right.is_null());
+    assert!(last_error_message().contains("same size"));
+
+    unsafe {
+        cudf_sys::cudf_column_view_destroy(short_right_indices_view);
+        cudf_sys::cudf_column_destroy(short_right_indices_col);
+    }
+}
+
+#[test]
+fn test_filter_join_indices_null_handles_clear_outputs() {
+    let _shim_state = lock_shim_state();
+    let inputs = FilterJoinTestInputs::new();
+    let join_indices = cudf_filter_join_indices_raw as FilterJoinIndicesRaw;
+
+    let mut out_right = std::ptr::NonNull::<c_void>::dangling().as_ptr();
+    let status = unsafe {
+        join_indices(
+            inputs.left_tv,
+            inputs.right_tv,
+            inputs.left_indices_view,
+            inputs.right_indices_view,
+            inputs.predicate,
+            FILTER_JOIN_KIND_INNER,
+            ptr::null_mut(),
+            &mut out_right,
+        )
+    };
+    assert_eq!(status, cudf_sys::CUDF_ERROR_NULL);
+    assert!(last_error_message().contains("out_left_indices is null"));
+
+    let mut out_left = std::ptr::NonNull::<c_void>::dangling().as_ptr();
+    let status = unsafe {
+        join_indices(
+            inputs.left_tv,
+            inputs.right_tv,
+            inputs.left_indices_view,
+            inputs.right_indices_view,
+            inputs.predicate,
+            FILTER_JOIN_KIND_INNER,
+            &mut out_left,
+            ptr::null_mut(),
+        )
+    };
+    assert_eq!(status, cudf_sys::CUDF_ERROR_NULL);
+    assert!(out_left.is_null(), "filter join must clear left output before validating right output");
+    assert!(last_error_message().contains("out_right_indices is null"));
+
+    for (case, left, right, left_indices, right_indices, predicate, message) in [
+        (
+            "left",
+            ptr::null_mut(),
+            inputs.right_tv,
+            inputs.left_indices_view,
+            inputs.right_indices_view,
+            inputs.predicate,
+            "left is null",
+        ),
+        (
+            "right",
+            inputs.left_tv,
+            ptr::null_mut(),
+            inputs.left_indices_view,
+            inputs.right_indices_view,
+            inputs.predicate,
+            "right is null",
+        ),
+        (
+            "left_indices",
+            inputs.left_tv,
+            inputs.right_tv,
+            ptr::null_mut(),
+            inputs.right_indices_view,
+            inputs.predicate,
+            "left_indices is null",
+        ),
+        (
+            "right_indices",
+            inputs.left_tv,
+            inputs.right_tv,
+            inputs.left_indices_view,
+            ptr::null_mut(),
+            inputs.predicate,
+            "right_indices is null",
+        ),
+        (
+            "predicate",
+            inputs.left_tv,
+            inputs.right_tv,
+            inputs.left_indices_view,
+            inputs.right_indices_view,
+            ptr::null_mut(),
+            "predicate is null",
+        ),
+    ] {
+        let mut out_left = std::ptr::NonNull::<c_void>::dangling().as_ptr();
+        let mut out_right = std::ptr::NonNull::<c_void>::dangling().as_ptr();
+        let status = unsafe {
+            join_indices(
+                left,
+                right,
+                left_indices,
+                right_indices,
+                predicate,
+                FILTER_JOIN_KIND_INNER,
+                &mut out_left,
+                &mut out_right,
+            )
+        };
+
+        assert_eq!(status, cudf_sys::CUDF_ERROR_NULL, "filter join null {case} status");
+        assert!(out_left.is_null(), "filter join must clear left output for null {case}");
+        assert!(out_right.is_null(), "filter join must clear right output for null {case}");
+        assert!(last_error_message().contains(message));
+    }
+}
+
+#[test]
+fn test_filter_join_indices_ex_uses_explicit_memory_resource_for_allocations_and_provenance() {
+    let _shim_state = lock_shim_state();
+    let previous_raw = current_device_resource_raw();
+    let current_mr = OwnedMemoryResource::new_test_stats();
+    let _restore = CurrentDeviceResourceRestore::new(previous_raw);
+    let target_mr = OwnedMemoryResource::new_test_stats();
+    let inputs = FilterJoinTestInputs::new();
+    let stream = OwnedStream::new();
+    let target_stream = stream.borrowed();
+    let target_borrowed = target_mr.borrowed();
+    let exec = cudf_sys::ExecutionContext::new().with_stream(&target_stream).with_memory_resource(&target_borrowed);
+    let join_indices = cudf_filter_join_indices_ex_raw as FilterJoinIndicesExRaw;
+
+    let target_before = target_mr.allocation_count();
+    let current_before = current_mr.allocation_count();
+    reset_exec_observation();
+
+    let mut out_left: *mut c_void = ptr::null_mut();
+    let mut out_right: *mut c_void = ptr::null_mut();
+    let current_borrowed = current_mr.borrowed();
+    cudf_sys::test_set_current_device_resource(&current_borrowed)
+        .expect("failed to install current sentinel memory resource");
+    let status = unsafe {
+        join_indices(
+            inputs.left_tv,
+            inputs.right_tv,
+            inputs.left_indices_view,
+            inputs.right_indices_view,
+            inputs.predicate,
+            FILTER_JOIN_KIND_INNER,
+            &mut out_left,
+            &mut out_right,
+            exec.as_raw(),
+        )
+    };
+    let restored_current = current_device_resource_raw();
+    unsafe { cudf_sys::test_set_current_device_resource_raw(previous_raw) }
+        .expect("failed to restore previous current device resource");
+
+    assert_eq!(status, cudf_sys::CUDF_SUCCESS);
+    assert!(!out_left.is_null(), "filter join did not publish left indices");
+    assert!(!out_right.is_null(), "filter join did not publish right indices");
+    assert_eq!(last_exec_stream_value(), stream_value(stream.as_raw()));
+    assert_eq!(last_exec_mr_raw(), target_mr.raw_device_resource());
+    assert_eq!(
+        restored_current,
+        current_mr.raw_device_resource(),
+        "filter join must restore the caller's current memory resource"
+    );
+    assert_eq!(
+        current_mr.allocation_count(),
+        current_before,
+        "filter join temporaries must not allocate from the caller's current memory resource"
+    );
+    assert!(
+        target_mr.allocation_count() > target_before,
+        "filter join allocations must be charged to the explicit execution memory resource"
+    );
+    assert_readable_nonempty_i32_indices(out_left, "filter join left indices");
+    assert_readable_nonempty_i32_indices(out_right, "filter join right indices");
+
+    stream.synchronize();
+    let target_active_before_destroy = target_mr.active_allocation_count();
+    assert!(
+        target_active_before_destroy > 0,
+        "filter join outputs should retain active allocations on the explicit memory resource"
+    );
+    let current_before_destroy = current_mr.allocation_count();
+    let current_borrowed = current_mr.borrowed();
+    cudf_sys::test_set_current_device_resource(&current_borrowed)
+        .expect("failed to install current sentinel memory resource before destroy");
+    unsafe {
+        cudf_sys::cudf_column_destroy(out_right);
+        cudf_sys::cudf_column_destroy(out_left);
+    }
+    let restored_current = current_device_resource_raw();
+    unsafe { cudf_sys::test_set_current_device_resource_raw(previous_raw) }
+        .expect("failed to restore previous current device resource after destroy");
+    assert_eq!(
+        restored_current,
+        current_mr.raw_device_resource(),
+        "filter join output destroy must restore the caller's current memory resource"
+    );
+    assert_eq!(
+        current_mr.allocation_count(),
+        current_before_destroy,
+        "filter join output destroy must not allocate through the caller's current memory resource"
+    );
+    assert!(
+        target_mr.active_allocation_count() < target_active_before_destroy,
+        "filter join output destroy must release through the explicit execution memory resource"
+    );
 }
 
 #[test]

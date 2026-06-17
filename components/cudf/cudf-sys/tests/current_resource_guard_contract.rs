@@ -30,6 +30,7 @@ const EXPECTED_GUARDS: &[&str] = &[
     "join::full_join_indices",
     "join::inner_join_indices",
     "join::left_join_indices",
+    "join::filter_join_indices",
     "join::mixed_pair_join_indices",
     "join::mixed_single_side_join_indices",
     "replace::replace_nulls_policy",
@@ -180,6 +181,7 @@ fn classify_allowed_guard(file_name: &str, context: &str) -> Option<&'static str
         "join.cpp" if context.contains("cudf::conditional_left_semi_join(") => {
             Some("join::conditional_single_side_join_indices")
         },
+        "join.cpp" if context.contains("cudf::filter_join_indices(") => Some("join::filter_join_indices"),
         "join.cpp" if context.contains("cudf::mixed_inner_join(") => Some("join::mixed_pair_join_indices"),
         "join.cpp" if context.contains("cudf::mixed_left_semi_join(") => Some("join::mixed_single_side_join_indices"),
         "join.cpp" if context.contains("hash_join->full_join(*probe_view, {}, exec.stream, exec.mr)") => {

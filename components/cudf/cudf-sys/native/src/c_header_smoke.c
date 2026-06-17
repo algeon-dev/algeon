@@ -249,6 +249,25 @@ int cudf_rust_c_header_smoke(void)
                           cudf_column_handle*,
 
                           const cudf_exec_options_t*) = &cudf_conditional_left_anti_join_indices_ex;
+  cudf_join_kind_t f22fj_kind                         = CUDF_JOIN_KIND_INNER_JOIN;
+  cudf_status_t (*f22fj0)(cudf_table_view_handle,
+                          cudf_table_view_handle,
+                          cudf_column_view_handle,
+                          cudf_column_view_handle,
+                          cudf_ast_expression_handle,
+                          cudf_join_kind_t,
+                          cudf_column_handle*,
+                          cudf_column_handle*)        = &cudf_filter_join_indices;
+  cudf_status_t (*f22fj1)(cudf_table_view_handle,
+                          cudf_table_view_handle,
+                          cudf_column_view_handle,
+                          cudf_column_view_handle,
+                          cudf_ast_expression_handle,
+                          cudf_join_kind_t,
+                          cudf_column_handle*,
+                          cudf_column_handle*,
+
+                          const cudf_exec_options_t*) = &cudf_filter_join_indices_ex;
   cudf_status_t (*f22mi0)(cudf_table_view_handle,
                           cudf_table_view_handle,
                           cudf_table_view_handle,
@@ -595,6 +614,9 @@ int cudf_rust_c_header_smoke(void)
   (void)f22cs1;
   (void)f22ca0;
   (void)f22ca1;
+  (void)f22fj_kind;
+  (void)f22fj0;
+  (void)f22fj1;
   (void)f22mi0;
   (void)f22mi1;
   (void)f22ml0;

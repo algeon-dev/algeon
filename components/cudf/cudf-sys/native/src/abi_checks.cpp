@@ -22,6 +22,7 @@
 #include <cudf/binaryop.hpp>
 #include <cudf/copying.hpp>
 #include <cudf/join/hash_join.hpp>
+#include <cudf/join/join.hpp>
 #include <cudf/reduction.hpp>
 #include <cudf/stream_compaction.hpp>
 #include <cudf/strings/side_type.hpp>
@@ -46,6 +47,7 @@ static_assert(sizeof(cudf_null_equality_t) == sizeof(int32_t),
               "cudf_null_equality_t must be 32-bit");
 static_assert(sizeof(cudf_nullable_join_t) == sizeof(int32_t),
               "cudf_nullable_join_t must be 32-bit");
+static_assert(sizeof(cudf_join_kind_t) == sizeof(int32_t), "cudf_join_kind_t must be 32-bit");
 static_assert(sizeof(cudf_unary_operator_t) == sizeof(int32_t),
               "cudf_unary_operator_t must be 32-bit");
 static_assert(sizeof(cudf_binary_operator_t) == sizeof(int32_t),
@@ -213,6 +215,12 @@ static_assert(CUDF_NULL_EQUALITY_UNEQUAL == static_cast<int>(cudf::null_equality
 
 static_assert(CUDF_NULLABLE_JOIN_YES == static_cast<int>(cudf::nullable_join::YES));
 static_assert(CUDF_NULLABLE_JOIN_NO == static_cast<int>(cudf::nullable_join::NO));
+
+static_assert(CUDF_JOIN_KIND_INNER_JOIN == static_cast<int>(cudf::join_kind::INNER_JOIN));
+static_assert(CUDF_JOIN_KIND_LEFT_JOIN == static_cast<int>(cudf::join_kind::LEFT_JOIN));
+static_assert(CUDF_JOIN_KIND_FULL_JOIN == static_cast<int>(cudf::join_kind::FULL_JOIN));
+static_assert(CUDF_JOIN_KIND_LEFT_SEMI_JOIN == static_cast<int>(cudf::join_kind::LEFT_SEMI_JOIN));
+static_assert(CUDF_JOIN_KIND_LEFT_ANTI_JOIN == static_cast<int>(cudf::join_kind::LEFT_ANTI_JOIN));
 
 static_assert(CUDF_SCAN_INCLUSIVE == static_cast<int>(cudf::scan_type::INCLUSIVE));
 static_assert(CUDF_SCAN_EXCLUSIVE == static_cast<int>(cudf::scan_type::EXCLUSIVE));

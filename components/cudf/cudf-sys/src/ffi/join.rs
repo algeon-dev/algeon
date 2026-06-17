@@ -1,7 +1,7 @@
 use crate::{
-    cudf_ast_expression_handle, cudf_column_handle, cudf_distinct_hash_join_handle, cudf_exec_options_t,
-    cudf_hash_join_handle, cudf_null_equality_t, cudf_nullable_join_t, cudf_status_t, cudf_table_handle,
-    cudf_table_view_handle,
+    cudf_ast_expression_handle, cudf_column_handle, cudf_column_view_handle, cudf_distinct_hash_join_handle,
+    cudf_exec_options_t, cudf_hash_join_handle, cudf_join_kind_t, cudf_null_equality_t, cudf_nullable_join_t,
+    cudf_status_t, cudf_table_handle, cudf_table_view_handle,
 };
 
 extern "C" {
@@ -284,6 +284,31 @@ extern "C" {
         right: cudf_table_view_handle,
         predicate: cudf_ast_expression_handle,
         out_indices: *mut cudf_column_handle,
+        options: *const cudf_exec_options_t,
+    ) -> cudf_status_t;
+
+    pub fn cudf_filter_join_indices(
+        left: cudf_table_view_handle,
+        right: cudf_table_view_handle,
+        left_indices: cudf_column_view_handle,
+        right_indices: cudf_column_view_handle,
+        predicate: cudf_ast_expression_handle,
+        join_kind: cudf_join_kind_t,
+        out_left_indices: *mut cudf_column_handle,
+        out_right_indices: *mut cudf_column_handle,
+    ) -> cudf_status_t;
+
+    /// Filter already-computed join-index pairs with explicit execution
+    /// context. Only inner, left, and full join kinds are supported.
+    pub fn cudf_filter_join_indices_ex(
+        left: cudf_table_view_handle,
+        right: cudf_table_view_handle,
+        left_indices: cudf_column_view_handle,
+        right_indices: cudf_column_view_handle,
+        predicate: cudf_ast_expression_handle,
+        join_kind: cudf_join_kind_t,
+        out_left_indices: *mut cudf_column_handle,
+        out_right_indices: *mut cudf_column_handle,
         options: *const cudf_exec_options_t,
     ) -> cudf_status_t;
 

@@ -24,6 +24,15 @@ typedef enum {
   CUDF_NULLABLE_JOIN_NO  = 1,
 } cudf_nullable_join_t;
 
+/// Join kind for APIs that operate on already-computed join index pairs.
+typedef enum {
+  CUDF_JOIN_KIND_INNER_JOIN     = 0,
+  CUDF_JOIN_KIND_LEFT_JOIN      = 1,
+  CUDF_JOIN_KIND_FULL_JOIN      = 2,
+  CUDF_JOIN_KIND_LEFT_SEMI_JOIN = 3,
+  CUDF_JOIN_KIND_LEFT_ANTI_JOIN = 4,
+} cudf_join_kind_t;
+
 /// Opaque handle to a reusable libcudf distinct-hash-join build artifact.
 typedef void* cudf_distinct_hash_join_handle;
 
@@ -299,6 +308,36 @@ cudf_status_t cudf_conditional_left_anti_join_indices_ex(cudf_table_view_handle 
                                                          cudf_ast_expression_handle predicate,
                                                          cudf_column_handle* out_indices,
                                                          const cudf_exec_options_t* options);
+
+/// Filter already-computed join-index pairs with an AST predicate.
+///
+/// `left_indices` and `right_indices` must be non-nullable INT32 column views
+/// of equal length. Only inner, left, and full join kinds are supported. The
+/// returned INT32 gather-index columns encode unmatched rows with libcudf's
+/// no-match sentinel, not with nulls.
+cudf_status_t cudf_filter_join_indices(cudf_table_view_handle left,
+                                       cudf_table_view_handle right,
+                                       cudf_column_view_handle left_indices,
+                                       cudf_column_view_handle right_indices,
+                                       cudf_ast_expression_handle predicate,
+                                       cudf_join_kind_t join_kind,
+                                       cudf_column_handle* out_left_indices,
+                                       cudf_column_handle* out_right_indices);
+
+/// Filter already-computed join-index pairs with explicit execution context.
+///
+/// Passing NULL for `options`, or leaving `options->stream` / `options->mr`
+/// NULL, uses cuDF's default stream and current device memory resource. When
+/// `options->mr` is non-NULL, it must outlive both returned index columns.
+cudf_status_t cudf_filter_join_indices_ex(cudf_table_view_handle left,
+                                          cudf_table_view_handle right,
+                                          cudf_column_view_handle left_indices,
+                                          cudf_column_view_handle right_indices,
+                                          cudf_ast_expression_handle predicate,
+                                          cudf_join_kind_t join_kind,
+                                          cudf_column_handle* out_left_indices,
+                                          cudf_column_handle* out_right_indices,
+                                          const cudf_exec_options_t* options);
 
 /// Mixed inner join. Equality tables are hash-joined first and `predicate` is
 /// evaluated against the conditional tables. Returns INT32 gather-index

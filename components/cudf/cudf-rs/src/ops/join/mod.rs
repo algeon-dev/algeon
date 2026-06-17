@@ -29,19 +29,23 @@
 //! );
 //! ```
 //!
-//! # Conditional and Mixed `_in` Join Execution Context
+//! # Join-Index `_in` Execution Context
 //!
-//! Conditional and mixed join-index APIs ending in `_in` share the same
-//! execution-context contract. The borrowed
-//! [`crate::ExecutionOverrides`] selects the
-//! stream and/or memory resource for GPU index allocation when compatible with
-//! the primary left input's device (`left` for conditional joins,
-//! `left_equality` for mixed joins). Output provenance is resolved from that
-//! primary input plus the override. Same-device table inputs and predicate
-//! literal domains are ordered against the resolved output stream; cross-device
-//! inputs are rejected before calling libcudf. These calls enqueue GPU `INT32`
-//! index allocation and do not gather payload columns or materialize
-//! host-visible data before returning.
+//! Join-index APIs ending in `_in` share the same execution-context contract.
+//! The borrowed [`crate::ExecutionOverrides`] selects the stream and/or memory
+//! resource for GPU index allocation when compatible with the primary left
+//! input's device (`left_keys` for equality joins, `probe_keys` for
+//! `HashJoin` probes, `left` for conditional joins, and `left_equality` for
+//! mixed joins). Output provenance is resolved from that primary input plus the
+//! override. Same-device table inputs and predicate literal domains are
+//! ordered against the resolved output stream; cross-device inputs are rejected
+//! before calling libcudf. These calls enqueue GPU `INT32` index allocation and
+//! do not gather payload columns or materialize host-visible data before
+//! returning.
+//!
+//! `filter_join_indices_in` follows the same split, but uses the left index
+//! column as the primary input because it transforms already-computed join
+//! gather maps rather than building equality matches itself.
 
 use std::{
     fmt,
@@ -58,9 +62,12 @@ pub use options::{HashJoinOptions, JoinType, MergeOptions, NullEquality, Nullabl
 
 use crate::{
     core::{
-        column::Column,
-        error::{self, Result},
+        column::{Column, ColumnView},
+        error::{
+            self, Error, ErrorCode, FACT_ACTUAL_ROWS, FACT_EXPECTED_ROWS, FACT_LEFT_TYPE_ID, FACT_RIGHT_TYPE_ID, Result,
+        },
         table::{Table, TableView},
+        types::TypeId,
     },
     ops::ast::AstExpression,
     runtime::{
@@ -75,6 +82,7 @@ use crate::{
 /// sentinel and are intended for gather paths that use nullifying
 /// out-of-bounds handling. Payload columns are not copied until callers gather
 /// with these indices.
+#[derive(Debug)]
 pub struct JoinIndices {
     /// Row indices for the left/probe table.
     pub left: Column,
@@ -88,12 +96,14 @@ pub struct JoinIndices {
 /// Payload columns are not copied by these index-producing operations. For
 /// left semi joins, duplicate matches on the right side do not duplicate left
 /// rows in the output index map.
+#[derive(Debug)]
 pub struct SingleSideJoinIndices {
     /// Row indices for the left table.
     pub indices: Column,
 }
 
 /// Split output of a low-level join operation.
+#[derive(Debug)]
 pub struct JoinSides {
     /// The left-side result table (keys + payload for matching rows).
     pub left: Table,
@@ -370,10 +380,10 @@ fn compatible_join_domain(
 fn compatible_join_indices_domain(
     left_keys: &TableView<'_>,
     right_keys: &TableView<'_>,
+    ctx: &ExecutionOverrides<'_>,
     operation: &'static str,
 ) -> Result<ResolvedExecution> {
-    let ctx = ExecutionOverrides::new();
-    ResolvedExecution::binary(left_keys.execution_domain(), right_keys.execution_domain(), &ctx, operation)
+    ResolvedExecution::binary(left_keys.execution_domain(), right_keys.execution_domain(), ctx, operation)
 }
 
 fn compatible_conditional_join_domain(
@@ -404,6 +414,23 @@ fn compatible_mixed_join_domain(
     secondaries.push(right_conditional.execution_domain());
     predicate.literal_domains(&mut secondaries);
     ResolvedExecution::many(left_equality.execution_domain(), secondaries, ctx, operation)
+}
+
+fn compatible_filter_join_indices_domain(
+    left: &TableView<'_>,
+    right: &TableView<'_>,
+    left_indices: &ColumnView<'_>,
+    right_indices: &ColumnView<'_>,
+    predicate: &AstExpression,
+    ctx: &ExecutionOverrides<'_>,
+    operation: &'static str,
+) -> Result<ResolvedExecution> {
+    let mut secondaries = Vec::new();
+    secondaries.push(right_indices.execution_domain());
+    secondaries.push(left.execution_domain());
+    secondaries.push(right.execution_domain());
+    predicate.literal_domains(&mut secondaries);
+    ResolvedExecution::many(left_indices.execution_domain(), secondaries, ctx, operation)
 }
 
 fn conditional_join_indices_impl(
@@ -549,6 +576,124 @@ fn conditional_single_side_join_indices_impl(
     )?;
 
     Ok(SingleSideJoinIndices { indices: unsafe { Column::from_raw_with_domain(out, Arc::clone(output_domain)) }? })
+}
+
+fn filter_join_kind_raw(join_type: JoinType) -> cudf_sys::cudf_join_kind_t {
+    match join_type {
+        JoinType::Inner => cudf_sys::cudf_join_kind_t::CUDF_JOIN_KIND_INNER_JOIN,
+        JoinType::Left => cudf_sys::cudf_join_kind_t::CUDF_JOIN_KIND_LEFT_JOIN,
+        JoinType::Full => cudf_sys::cudf_join_kind_t::CUDF_JOIN_KIND_FULL_JOIN,
+    }
+}
+
+fn validate_filter_join_index_column(
+    indices: &ColumnView<'_>,
+    resource: &'static str,
+    operation: &'static str,
+) -> Result<usize> {
+    let dtype = indices.data_type().map_err(|e| e.reanchor_if_needed(operation))?;
+    if dtype.id() != TypeId::Int32 {
+        return Err(Error::new_with(
+            ErrorCode::TypeMismatch,
+            operation,
+            format!("{resource} must be Int32, got {:?}", dtype.id()),
+        )
+        .with_fact(FACT_LEFT_TYPE_ID, dtype.id())
+        .with_fact(FACT_RIGHT_TYPE_ID, TypeId::Int32)
+        .with_detail("resource", resource)
+        .with_detail("reason", "join_index_type_mismatch")
+        .with_detail("remedy", "provide INT32 join-index columns produced by cudf-rs join-index APIs"));
+    }
+
+    let nullable = indices.nullable().map_err(|e| e.reanchor_if_needed(operation))?;
+    if nullable {
+        return Err(Error::new_with(ErrorCode::NullUnexpected, operation, format!("{resource} must not be nullable"))
+            .with_detail("resource", resource)
+            .with_detail("reason", "nullable_join_indices")
+            .with_detail("remedy", "use non-nullable INT32 join-index columns produced by cudf-rs join-index APIs"));
+    }
+
+    indices.len().map_err(|e| e.reanchor_if_needed(operation))
+}
+
+fn validate_filter_join_indices(
+    left_indices: &ColumnView<'_>,
+    right_indices: &ColumnView<'_>,
+    operation: &'static str,
+) -> Result<()> {
+    let left_len = validate_filter_join_index_column(left_indices, "left_indices", operation)?;
+    let right_len = validate_filter_join_index_column(right_indices, "right_indices", operation)?;
+    if left_len != right_len {
+        return Err(Error::new_with(
+            ErrorCode::ColumnLengthMismatch,
+            operation,
+            format!("left_indices length ({left_len}) does not match right_indices length ({right_len})"),
+        )
+        .with_fact(FACT_ACTUAL_ROWS, right_len)
+        .with_fact(FACT_EXPECTED_ROWS, left_len)
+        .with_detail("resource", "join_indices")
+        .with_detail("reason", "left_right_index_length_mismatch")
+        .with_detail("remedy", "filter index pairs produced by the same equality join result"));
+    }
+    Ok(())
+}
+
+fn filter_join_indices_impl(
+    left: &TableView<'_>,
+    right: &TableView<'_>,
+    left_indices: &ColumnView<'_>,
+    right_indices: &ColumnView<'_>,
+    predicate: &AstExpression,
+    join_type: JoinType,
+    output_domain: &Arc<ExecutionDomain>,
+    exec_options: Option<&cudf_sys::cudf_exec_options_t>,
+    operation: &'static str,
+) -> Result<JoinIndices> {
+    validate_filter_join_indices(left_indices, right_indices, operation)?;
+
+    let mut out_left = ptr::null_mut();
+    let mut out_right = ptr::null_mut();
+    let status = match exec_options {
+        Some(options) => unsafe {
+            cudf_sys::cudf_filter_join_indices_ex(
+                left.raw_handle(),
+                right.raw_handle(),
+                left_indices.raw_handle(),
+                right_indices.raw_handle(),
+                predicate.raw_handle(),
+                filter_join_kind_raw(join_type),
+                &mut out_left,
+                &mut out_right,
+                options,
+            )
+        },
+        None => unsafe {
+            cudf_sys::cudf_filter_join_indices(
+                left.raw_handle(),
+                right.raw_handle(),
+                left_indices.raw_handle(),
+                right_indices.raw_handle(),
+                predicate.raw_handle(),
+                filter_join_kind_raw(join_type),
+                &mut out_left,
+                &mut out_right,
+            )
+        },
+    };
+
+    error::check_status_in_with_details(
+        status,
+        operation,
+        [
+            ("join_type", format!("{:?}", join_type).to_lowercase()),
+            ("execution_context_provided", exec_options.is_some().to_string()),
+        ],
+    )?;
+
+    Ok(JoinIndices {
+        left: unsafe { Column::from_raw_with_domain(out_left, Arc::clone(output_domain)) }?,
+        right: unsafe { Column::from_raw_with_domain(out_right, Arc::clone(output_domain)) }?,
+    })
 }
 
 fn mixed_join_indices_impl(
@@ -746,6 +891,26 @@ pub fn inner_join(
     )
 }
 
+fn join_indices_with_context(
+    left_keys: &TableView<'_>,
+    right_keys: &TableView<'_>,
+    null_equality: NullEquality,
+    join_type: JoinType,
+    ctx: &ExecutionOverrides<'_>,
+    operation: &'static str,
+) -> Result<JoinIndices> {
+    let execution = compatible_join_indices_domain(left_keys, right_keys, ctx, operation)?;
+    join_indices_impl(
+        left_keys,
+        right_keys,
+        null_equality,
+        join_type,
+        execution.output_domain(),
+        Some(execution.exec_options()),
+        operation,
+    )
+}
+
 /// Inner join indices for matching rows in both key tables.
 ///
 /// Returns `INT32` device columns that can be used as gather maps for the
@@ -756,16 +921,23 @@ pub fn inner_join_indices(
     right_keys: &TableView<'_>,
     null_equality: NullEquality,
 ) -> Result<JoinIndices> {
-    let execution = compatible_join_indices_domain(left_keys, right_keys, "join::inner_join_indices")?;
-    join_indices_impl(
-        left_keys,
-        right_keys,
-        null_equality,
-        JoinType::Inner,
-        execution.output_domain(),
-        Some(execution.exec_options()),
-        "join::inner_join_indices",
-    )
+    let ctx = ExecutionOverrides::new();
+    join_indices_with_context(left_keys, right_keys, null_equality, JoinType::Inner, &ctx, "join::inner_join_indices")
+}
+
+/// Inner join indices using a borrowed execution override.
+///
+/// Same result semantics as [`inner_join_indices`]. This allocates only
+/// `INT32` device gather maps and does not gather or copy payload columns. See
+/// the [join module](crate::ops::join)'s shared `_in` execution-context
+/// contract.
+pub fn inner_join_indices_in(
+    left_keys: &TableView<'_>,
+    right_keys: &TableView<'_>,
+    null_equality: NullEquality,
+    ctx: &ExecutionOverrides<'_>,
+) -> Result<JoinIndices> {
+    join_indices_with_context(left_keys, right_keys, null_equality, JoinType::Inner, ctx, "join::inner_join_indices_in")
 }
 
 /// Left join: all left rows are preserved; right side is null-padded
@@ -800,16 +972,23 @@ pub fn left_join_indices(
     right_keys: &TableView<'_>,
     null_equality: NullEquality,
 ) -> Result<JoinIndices> {
-    let execution = compatible_join_indices_domain(left_keys, right_keys, "join::left_join_indices")?;
-    join_indices_impl(
-        left_keys,
-        right_keys,
-        null_equality,
-        JoinType::Left,
-        execution.output_domain(),
-        Some(execution.exec_options()),
-        "join::left_join_indices",
-    )
+    let ctx = ExecutionOverrides::new();
+    join_indices_with_context(left_keys, right_keys, null_equality, JoinType::Left, &ctx, "join::left_join_indices")
+}
+
+/// Left join indices using a borrowed execution override.
+///
+/// Same result semantics as [`left_join_indices`]. This allocates only
+/// `INT32` device gather maps and does not gather or copy payload columns. See
+/// the [join module](crate::ops::join)'s shared `_in` execution-context
+/// contract.
+pub fn left_join_indices_in(
+    left_keys: &TableView<'_>,
+    right_keys: &TableView<'_>,
+    null_equality: NullEquality,
+    ctx: &ExecutionOverrides<'_>,
+) -> Result<JoinIndices> {
+    join_indices_with_context(left_keys, right_keys, null_equality, JoinType::Left, ctx, "join::left_join_indices_in")
 }
 
 /// Left semi join indices for rows from the left key table that have a match.
@@ -823,7 +1002,8 @@ pub fn left_semi_join_indices(
     right_keys: &TableView<'_>,
     null_equality: NullEquality,
 ) -> Result<SingleSideJoinIndices> {
-    let execution = compatible_join_indices_domain(left_keys, right_keys, "join::left_semi_join_indices")?;
+    let ctx = ExecutionOverrides::new();
+    let execution = compatible_join_indices_domain(left_keys, right_keys, &ctx, "join::left_semi_join_indices")?;
     single_side_join_indices_impl(
         left_keys,
         right_keys,
@@ -845,7 +1025,8 @@ pub fn left_anti_join_indices(
     right_keys: &TableView<'_>,
     null_equality: NullEquality,
 ) -> Result<SingleSideJoinIndices> {
-    let execution = compatible_join_indices_domain(left_keys, right_keys, "join::left_anti_join_indices")?;
+    let ctx = ExecutionOverrides::new();
+    let execution = compatible_join_indices_domain(left_keys, right_keys, &ctx, "join::left_anti_join_indices")?;
     single_side_join_indices_impl(
         left_keys,
         right_keys,
@@ -1092,6 +1273,96 @@ pub fn conditional_left_anti_join_indices_in(
 ) -> Result<SingleSideJoinIndices> {
     let operation = "join::conditional_left_anti_join_indices_in";
     conditional_single_side_join_indices_with_context(left, right, predicate, false, ctx, operation)
+}
+
+fn filter_join_indices_with_context(
+    left: &TableView<'_>,
+    right: &TableView<'_>,
+    left_indices: &ColumnView<'_>,
+    right_indices: &ColumnView<'_>,
+    predicate: &AstExpression,
+    join_type: JoinType,
+    ctx: &ExecutionOverrides<'_>,
+    operation: &'static str,
+) -> Result<JoinIndices> {
+    let execution =
+        compatible_filter_join_indices_domain(left, right, left_indices, right_indices, predicate, ctx, operation)?;
+    filter_join_indices_impl(
+        left,
+        right,
+        left_indices,
+        right_indices,
+        predicate,
+        join_type,
+        execution.output_domain(),
+        Some(execution.exec_options()),
+        operation,
+    )
+}
+
+/// Filter existing join-index pairs with an AST predicate.
+///
+/// This is a two-step mixed-join primitive: callers first produce equality
+/// join maps, then pass those non-nullable `INT32` index columns here with the
+/// conditional tables used by `predicate`. The result is new `INT32` device
+/// gather maps only; payload columns are not gathered or copied. `Inner`
+/// keeps passing valid pairs, `Left` preserves left rows with right-side
+/// no-match sentinels where no predicate-passing match remains, and `Full`
+/// preserves raw input-pair semantics by passing through existing no-match
+/// pairs and splitting predicate-failing valid pairs into separate no-match
+/// sentinel pairs. `Full` filtering does not deduplicate rows already covered
+/// by other passing pairs; call [`mixed_full_join_indices`] for libcudf's
+/// complete mixed full-join row coverage.
+///
+/// The output keeps provenance from `left_indices`; same-device table, index,
+/// and predicate literal inputs are ordered against the resolved output stream,
+/// and cross-device inputs are rejected before calling libcudf. This call
+/// enqueues work on the resolved stream and does not materialize host-visible
+/// data before returning.
+pub fn filter_join_indices(
+    left: &TableView<'_>,
+    right: &TableView<'_>,
+    left_indices: &ColumnView<'_>,
+    right_indices: &ColumnView<'_>,
+    predicate: &AstExpression,
+    join_type: JoinType,
+) -> Result<JoinIndices> {
+    let ctx = ExecutionOverrides::new();
+    filter_join_indices_with_context(
+        left,
+        right,
+        left_indices,
+        right_indices,
+        predicate,
+        join_type,
+        &ctx,
+        "join::filter_join_indices",
+    )
+}
+
+/// Filter existing join-index pairs using a borrowed execution override.
+///
+/// Same result semantics as [`filter_join_indices`]. See the
+/// [join module](crate::ops::join)'s shared `_in` execution-context contract.
+pub fn filter_join_indices_in(
+    left: &TableView<'_>,
+    right: &TableView<'_>,
+    left_indices: &ColumnView<'_>,
+    right_indices: &ColumnView<'_>,
+    predicate: &AstExpression,
+    join_type: JoinType,
+    ctx: &ExecutionOverrides<'_>,
+) -> Result<JoinIndices> {
+    filter_join_indices_with_context(
+        left,
+        right,
+        left_indices,
+        right_indices,
+        predicate,
+        join_type,
+        ctx,
+        "join::filter_join_indices_in",
+    )
 }
 
 #[derive(Clone, Copy)]
@@ -1464,16 +1735,23 @@ pub fn full_join_indices(
     right_keys: &TableView<'_>,
     null_equality: NullEquality,
 ) -> Result<JoinIndices> {
-    let execution = compatible_join_indices_domain(left_keys, right_keys, "join::full_join_indices")?;
-    join_indices_impl(
-        left_keys,
-        right_keys,
-        null_equality,
-        JoinType::Full,
-        execution.output_domain(),
-        Some(execution.exec_options()),
-        "join::full_join_indices",
-    )
+    let ctx = ExecutionOverrides::new();
+    join_indices_with_context(left_keys, right_keys, null_equality, JoinType::Full, &ctx, "join::full_join_indices")
+}
+
+/// Full join indices using a borrowed execution override.
+///
+/// Same result semantics as [`full_join_indices`]. This allocates only
+/// `INT32` device gather maps and does not gather or copy payload columns. See
+/// the [join module](crate::ops::join)'s shared `_in` execution-context
+/// contract.
+pub fn full_join_indices_in(
+    left_keys: &TableView<'_>,
+    right_keys: &TableView<'_>,
+    null_equality: NullEquality,
+    ctx: &ExecutionOverrides<'_>,
+) -> Result<JoinIndices> {
+    join_indices_with_context(left_keys, right_keys, null_equality, JoinType::Full, ctx, "join::full_join_indices_in")
 }
 
 /// Cross join two tables.
@@ -1582,10 +1860,28 @@ impl HashJoin {
     /// allocate GPU memory for the hash table but does not copy payload
     /// columns.
     pub fn new(build: Table, options: HashJoinOptions) -> Result<Self> {
-        let operation = "hash_join::new";
+        let ctx = ExecutionOverrides::new();
+        Self::new_with_context(build, options, &ctx, "hash_join::new")
+    }
+
+    /// Build a reusable hash-join artifact using a borrowed execution override.
+    ///
+    /// Same lifetime and result semantics as [`HashJoin::new`]. The borrowed
+    /// override selects the stream and/or memory resource used while building
+    /// the libcudf hash table when compatible with the build table's device.
+    pub fn new_in(build: Table, options: HashJoinOptions, ctx: &ExecutionOverrides<'_>) -> Result<Self> {
+        Self::new_with_context(build, options, ctx, "hash_join::new_in")
+    }
+
+    fn new_with_context(
+        build: Table,
+        options: HashJoinOptions,
+        ctx: &ExecutionOverrides<'_>,
+        operation: &'static str,
+    ) -> Result<Self> {
         let handle = {
             let build_view = build.view().map_err(|e| e.reanchor_if_needed(operation))?;
-            let exec_options = build.execution_domain().exec_options_raw();
+            let execution = ResolvedExecution::unary(build.execution_domain(), ctx, operation)?;
             let mut handle = ptr::null_mut();
             error::check_status_in_with_details(
                 unsafe {
@@ -1595,7 +1891,7 @@ impl HashJoin {
                         options.null_eq().to_join_raw(),
                         options.load_factor_value(),
                         &mut handle,
-                        &exec_options,
+                        execution.exec_options(),
                     )
                 },
                 operation,
@@ -1608,7 +1904,7 @@ impl HashJoin {
             )?;
             HashJoinHandle {
                 handle: error::require_non_null(handle, operation, "hash join")?,
-                _domain: Arc::clone(build.execution_domain()),
+                _domain: Arc::clone(execution.output_domain()),
             }
         };
 
@@ -1630,7 +1926,22 @@ impl HashJoin {
     /// The returned `left` column indexes the probe table, and `right` indexes
     /// the retained build table.
     pub fn inner_join_indices(&self, probe_keys: &TableView<'_>) -> Result<JoinIndices> {
-        self.probe_indices(probe_keys, JoinType::Inner, "hash_join::inner_join_indices")
+        let ctx = ExecutionOverrides::new();
+        self.probe_indices_with_context(probe_keys, JoinType::Inner, &ctx, "hash_join::inner_join_indices")
+    }
+
+    /// Probe with inner-join semantics using a borrowed execution override.
+    ///
+    /// Same result semantics as [`HashJoin::inner_join_indices`]. This
+    /// allocates only `INT32` device gather maps and does not gather or copy
+    /// payload columns. See the [join module](crate::ops::join)'s shared `_in`
+    /// execution-context contract.
+    pub fn inner_join_indices_in(
+        &self,
+        probe_keys: &TableView<'_>,
+        ctx: &ExecutionOverrides<'_>,
+    ) -> Result<JoinIndices> {
+        self.probe_indices_with_context(probe_keys, JoinType::Inner, ctx, "hash_join::inner_join_indices_in")
     }
 
     /// Probe with left-join semantics.
@@ -1638,7 +1949,22 @@ impl HashJoin {
     /// Misses in the returned `right` column contain libcudf's no-match
     /// sentinel for nullifying gather.
     pub fn left_join_indices(&self, probe_keys: &TableView<'_>) -> Result<JoinIndices> {
-        self.probe_indices(probe_keys, JoinType::Left, "hash_join::left_join_indices")
+        let ctx = ExecutionOverrides::new();
+        self.probe_indices_with_context(probe_keys, JoinType::Left, &ctx, "hash_join::left_join_indices")
+    }
+
+    /// Probe with left-join semantics using a borrowed execution override.
+    ///
+    /// Same result semantics as [`HashJoin::left_join_indices`]. This
+    /// allocates only `INT32` device gather maps and does not gather or copy
+    /// payload columns. See the [join module](crate::ops::join)'s shared `_in`
+    /// execution-context contract.
+    pub fn left_join_indices_in(
+        &self,
+        probe_keys: &TableView<'_>,
+        ctx: &ExecutionOverrides<'_>,
+    ) -> Result<JoinIndices> {
+        self.probe_indices_with_context(probe_keys, JoinType::Left, ctx, "hash_join::left_join_indices_in")
     }
 
     /// Probe with full-join semantics.
@@ -1646,18 +1972,33 @@ impl HashJoin {
     /// Misses on either side contain libcudf's no-match sentinel for
     /// nullifying gather.
     pub fn full_join_indices(&self, probe_keys: &TableView<'_>) -> Result<JoinIndices> {
-        self.probe_indices(probe_keys, JoinType::Full, "hash_join::full_join_indices")
+        let ctx = ExecutionOverrides::new();
+        self.probe_indices_with_context(probe_keys, JoinType::Full, &ctx, "hash_join::full_join_indices")
     }
 
-    fn probe_indices(
+    /// Probe with full-join semantics using a borrowed execution override.
+    ///
+    /// Same result semantics as [`HashJoin::full_join_indices`]. This
+    /// allocates only `INT32` device gather maps and does not gather or copy
+    /// payload columns. See the [join module](crate::ops::join)'s shared `_in`
+    /// execution-context contract.
+    pub fn full_join_indices_in(
+        &self,
+        probe_keys: &TableView<'_>,
+        ctx: &ExecutionOverrides<'_>,
+    ) -> Result<JoinIndices> {
+        self.probe_indices_with_context(probe_keys, JoinType::Full, ctx, "hash_join::full_join_indices_in")
+    }
+
+    fn probe_indices_with_context(
         &self,
         probe_keys: &TableView<'_>,
         join_type: JoinType,
+        ctx: &ExecutionOverrides<'_>,
         operation: &'static str,
     ) -> Result<JoinIndices> {
-        let ctx = ExecutionOverrides::new();
         let execution =
-            ResolvedExecution::many(probe_keys.execution_domain(), [self.build.execution_domain()], &ctx, operation)?;
+            ResolvedExecution::many(probe_keys.execution_domain(), [self.build.execution_domain()], ctx, operation)?;
         self.probe_indices_impl(
             probe_keys,
             join_type,

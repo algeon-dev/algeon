@@ -268,7 +268,7 @@ impl DataFrame {
         Self::from_table_with_names(result_table, self.column_names_owned())
     }
 
-    fn validate_concat_schema(&self, other: &DataFrame, operation: &'static str) -> Result<()> {
+    pub(crate) fn validate_concat_schema(&self, other: &DataFrame, operation: &'static str) -> Result<()> {
         if self.columns.len() != other.columns.len() {
             return Err(Error::new_with(
                 ErrorCode::UnsupportedOperation,

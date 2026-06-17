@@ -81,6 +81,32 @@ fn test_read_parquet_with_options() {
 }
 
 #[test]
+fn test_read_parquet_with_options_rejects_empty_projection_as_invalid_input() {
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("test_empty_projection.parquet");
+    let rt = sample_runtime();
+
+    let table = Table::from_columns(vec![column_from_slice(&[1i32, 2]).unwrap()]).unwrap();
+    let write_opts =
+        cudf::io::parquet::ParquetTableWriteOptions::builder().filepath(&path).column_names(&["id"]).build();
+    cudf::io::parquet::write_parquet(&table, &write_opts).unwrap();
+
+    let opts = ParquetReadOptions::builder().filepath(&path).columns(&[]).with_runtime(&rt).build();
+    let err = DataFrame::read_parquet_with_options(opts).expect_err("empty projection should fail clearly");
+
+    assert_eq!(err.kind(), ErrorKind::InvalidInput);
+    assert_eq!(err.code(), ErrorCode::EmptyInput);
+    assert_eq!(err.operation(), "dataframe::read_parquet_with_options");
+    assert_eq!(error_context_value(&err, "resource").as_deref(), Some("columns"));
+    assert_eq!(error_context_value(&err, "reason").as_deref(), Some("empty_projection"));
+    assert_eq!(error_context_value(&err, "column_name_count").as_deref(), Some("0"));
+    assert_eq!(
+        error_context_value(&err, "remedy").as_deref(),
+        Some("omit the projection to read all columns, or provide at least one column name")
+    );
+}
+
+#[test]
 fn test_write_parquet_preserves_schema() {
     let dir = TempDir::new().unwrap();
     let path = dir.path().join("test_write.parquet");

@@ -1,10 +1,11 @@
 //! Semantic tests for mixed equality and conditional join index operations.
 
 use cudf::{
+    ErrorCode,
     core::Table,
     ops::{
         ast::AstExpression,
-        join::{self, JoinIndices, NullEquality, SingleSideJoinIndices},
+        join::{self, JoinIndices, JoinType, NullEquality, SingleSideJoinIndices},
     },
     testing::prelude::*,
 };
@@ -47,6 +48,216 @@ fn mixed_inputs() -> (Table, Table, Table, Table) {
     let right_conditional = i32_table(&[6, 8, 4, 7, 10]);
 
     (left_equality, right_equality, left_conditional, right_conditional)
+}
+
+#[test]
+fn filter_join_indices_rejects_non_int32_index_columns() {
+    let left_conditional = i32_table(&[1]);
+    let right_conditional = i32_table(&[2]);
+    let left_indices = column_from_slice(&[0i64]).unwrap();
+    let right_indices = column_from_slice(&[0i32]).unwrap();
+    let predicate = left_less_than_right();
+
+    let err = join::filter_join_indices(
+        &left_conditional.testing_view().unwrap(),
+        &right_conditional.testing_view().unwrap(),
+        &left_indices.testing_view().unwrap(),
+        &right_indices.testing_view().unwrap(),
+        &predicate,
+        JoinType::Inner,
+    )
+    .unwrap_err();
+
+    assert_eq!(err.code(), ErrorCode::TypeMismatch);
+    assert_eq!(err.operation(), "join::filter_join_indices");
+}
+
+#[test]
+fn filter_join_indices_rejects_mismatched_index_lengths() {
+    let left_conditional = i32_table(&[1, 3]);
+    let right_conditional = i32_table(&[2]);
+    let left_indices = column_from_slice(&[0i32, 1]).unwrap();
+    let right_indices = column_from_slice(&[0i32]).unwrap();
+    let predicate = left_less_than_right();
+
+    let err = join::filter_join_indices(
+        &left_conditional.testing_view().unwrap(),
+        &right_conditional.testing_view().unwrap(),
+        &left_indices.testing_view().unwrap(),
+        &right_indices.testing_view().unwrap(),
+        &predicate,
+        JoinType::Inner,
+    )
+    .unwrap_err();
+
+    assert_eq!(err.code(), ErrorCode::ColumnLengthMismatch);
+    assert_eq!(err.operation(), "join::filter_join_indices");
+}
+
+#[test]
+fn filter_join_indices_rejects_nullable_index_columns() {
+    let left_conditional = i32_table(&[1]);
+    let right_conditional = i32_table(&[2]);
+    let left_indices = column_from_slice_nullable(&[0i32], &[false]).unwrap();
+    let right_indices = column_from_slice(&[0i32]).unwrap();
+    let predicate = left_less_than_right();
+
+    let err = join::filter_join_indices(
+        &left_conditional.testing_view().unwrap(),
+        &right_conditional.testing_view().unwrap(),
+        &left_indices.testing_view().unwrap(),
+        &right_indices.testing_view().unwrap(),
+        &predicate,
+        JoinType::Inner,
+    )
+    .unwrap_err();
+
+    assert_eq!(err.code(), ErrorCode::NullUnexpected);
+    assert_eq!(err.operation(), "join::filter_join_indices");
+    assert_eq!(err.detail_value("reason"), Some("nullable_join_indices"));
+}
+
+#[test]
+fn filter_join_indices_inner_matches_mixed_inner_join_indices() {
+    let (left_equality, right_equality, left_conditional, right_conditional) = mixed_inputs();
+    let predicate = left_less_than_right();
+
+    let equality_indices = join::inner_join_indices(
+        &left_equality.testing_view().unwrap(),
+        &right_equality.testing_view().unwrap(),
+        NullEquality::Equal,
+    )
+    .unwrap();
+    let filtered = join::filter_join_indices(
+        &left_conditional.testing_view().unwrap(),
+        &right_conditional.testing_view().unwrap(),
+        &equality_indices.left.testing_view().unwrap(),
+        &equality_indices.right.testing_view().unwrap(),
+        &predicate,
+        JoinType::Inner,
+    )
+    .unwrap();
+    let mixed = join::mixed_inner_join_indices(
+        &left_equality.testing_view().unwrap(),
+        &right_equality.testing_view().unwrap(),
+        &left_conditional.testing_view().unwrap(),
+        &right_conditional.testing_view().unwrap(),
+        &predicate,
+        NullEquality::Equal,
+    )
+    .unwrap();
+
+    assert_eq!(sorted_join_index_pairs(&filtered), sorted_join_index_pairs(&mixed));
+}
+
+#[test]
+fn filter_join_indices_left_matches_mixed_left_join_indices() {
+    let (left_equality, right_equality, left_conditional, right_conditional) = mixed_inputs();
+    let predicate = left_less_than_right();
+
+    let equality_indices = join::left_join_indices(
+        &left_equality.testing_view().unwrap(),
+        &right_equality.testing_view().unwrap(),
+        NullEquality::Equal,
+    )
+    .unwrap();
+    let filtered = join::filter_join_indices(
+        &left_conditional.testing_view().unwrap(),
+        &right_conditional.testing_view().unwrap(),
+        &equality_indices.left.testing_view().unwrap(),
+        &equality_indices.right.testing_view().unwrap(),
+        &predicate,
+        JoinType::Left,
+    )
+    .unwrap();
+    let mixed = join::mixed_left_join_indices(
+        &left_equality.testing_view().unwrap(),
+        &right_equality.testing_view().unwrap(),
+        &left_conditional.testing_view().unwrap(),
+        &right_conditional.testing_view().unwrap(),
+        &predicate,
+        NullEquality::Equal,
+    )
+    .unwrap();
+
+    assert_eq!(sorted_join_index_pairs(&filtered), sorted_join_index_pairs(&mixed));
+}
+
+#[test]
+fn filter_join_indices_full_matches_mixed_full_join_indices() {
+    let left_equality = i32_table(&[1, 2, 3]);
+    let right_equality = i32_table(&[1, 2, 4]);
+    let left_conditional = i32_table(&[10, 20, 30]);
+    let right_conditional = i32_table(&[15, 15, 25]);
+    let predicate = left_less_than_right();
+
+    let equality_indices = join::full_join_indices(
+        &left_equality.testing_view().unwrap(),
+        &right_equality.testing_view().unwrap(),
+        NullEquality::Equal,
+    )
+    .unwrap();
+    let filtered = join::filter_join_indices(
+        &left_conditional.testing_view().unwrap(),
+        &right_conditional.testing_view().unwrap(),
+        &equality_indices.left.testing_view().unwrap(),
+        &equality_indices.right.testing_view().unwrap(),
+        &predicate,
+        JoinType::Full,
+    )
+    .unwrap();
+    let mixed = join::mixed_full_join_indices(
+        &left_equality.testing_view().unwrap(),
+        &right_equality.testing_view().unwrap(),
+        &left_conditional.testing_view().unwrap(),
+        &right_conditional.testing_view().unwrap(),
+        &predicate,
+        NullEquality::Equal,
+    )
+    .unwrap();
+
+    assert_eq!(sorted_join_index_pairs(&filtered), sorted_join_index_pairs(&mixed));
+}
+
+#[test]
+fn filter_join_indices_full_uses_raw_pair_semantics_for_duplicate_matches() {
+    let (left_equality, right_equality, left_conditional, right_conditional) = mixed_inputs();
+    let predicate = left_less_than_right();
+
+    let equality_indices = join::full_join_indices(
+        &left_equality.testing_view().unwrap(),
+        &right_equality.testing_view().unwrap(),
+        NullEquality::Equal,
+    )
+    .unwrap();
+    let filtered = join::filter_join_indices(
+        &left_conditional.testing_view().unwrap(),
+        &right_conditional.testing_view().unwrap(),
+        &equality_indices.left.testing_view().unwrap(),
+        &equality_indices.right.testing_view().unwrap(),
+        &predicate,
+        JoinType::Full,
+    )
+    .unwrap();
+
+    assert_eq!(
+        sorted_join_index_pairs(&filtered),
+        vec![
+            (JOIN_NO_MATCH, 0),
+            (JOIN_NO_MATCH, 2),
+            (JOIN_NO_MATCH, 3),
+            (JOIN_NO_MATCH, 4),
+            (0, 0),
+            (0, 1),
+            (1, JOIN_NO_MATCH),
+            (1, 1),
+            (2, 2),
+            (2, 3),
+            (3, JOIN_NO_MATCH),
+            (3, JOIN_NO_MATCH),
+            (4, JOIN_NO_MATCH),
+        ]
+    );
 }
 
 #[test]
