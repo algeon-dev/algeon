@@ -208,6 +208,25 @@ fn boundary_observation_shape_is_publicly_reexported() {
 }
 
 #[test]
+fn query_execution_context_is_publicly_reexported() {
+    use cudf::{DataFrame, QueryExecutionContext, Runtime, SortOptions};
+
+    fn assert_query_context(_: &QueryExecutionContext<'_>) {}
+
+    let rt = Runtime::builder().build().unwrap();
+    let query = rt.query_execution();
+    assert_query_context(&query);
+    assert_eq!(query.runtime().placement(), rt.placement());
+    assert_eq!(query.placement(), rt.placement());
+    assert_eq!(query.device(), rt.device());
+
+    let df = DataFrame::from_columns([("id", rt.series(&[2i32, 1, 3]).unwrap())]).unwrap();
+    let sorted = df.with_execution(query.overrides()).sort_values(["id"], SortOptions::new()).unwrap();
+
+    assert_eq!(sorted.series("id").unwrap().to_vec_strict::<i32>().unwrap(), vec![1, 2, 3]);
+}
+
+#[test]
 fn factorization_surface_smoke() {
     use cudf::frame::factorization::{
         Codebook, DictionaryEncodingOptions, DictionaryKeyOrder, EncodedSeries, Factorized,
@@ -305,9 +324,9 @@ fn empty_dataframe_table_copy_smoke() {
 #[test]
 fn frame_submodules_expose_specialized_high_level_types() {
     use cudf::{
-        Runtime,
+        DataFrame, Runtime,
         frame::{
-            dataframe::{JsonReadOptions, MeltOptions, MultiParquetReadOptions, ParquetReadOptions},
+            dataframe::{GpuRecordBatch, JsonReadOptions, MeltOptions, MultiParquetReadOptions, ParquetReadOptions},
             factorization::{DictionaryEncodingOptions, DictionaryKeyOrder},
         },
     };
@@ -319,6 +338,15 @@ fn frame_submodules_expose_specialized_high_level_types() {
         MultiParquetReadOptions::builder().filepaths(&["part-0.parquet", "part-1.parquet"]).with_runtime(&rt).build();
     let _melt = MeltOptions::builder().id_vars(&["id"]).value_vars(&["value"]).build();
     let _factorization = DictionaryEncodingOptions::new().key_order(DictionaryKeyOrder::FirstSeen);
+
+    let frame = DataFrame::from_columns([("id", rt.series(&[1i32, 2, 3]).unwrap())]).unwrap();
+    let schema = std::sync::Arc::new(arrow::datatypes::Schema::new(vec![arrow::datatypes::Field::new(
+        "id",
+        arrow::datatypes::DataType::Int32,
+        false,
+    )]));
+    let batch = GpuRecordBatch::new(frame, schema).unwrap();
+    assert_eq!(batch.num_rows(), 3);
 }
 
 #[test]

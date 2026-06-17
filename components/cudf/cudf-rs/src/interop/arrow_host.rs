@@ -37,7 +37,7 @@ use std::sync::{
 
 use arrow::{
     array::*,
-    datatypes::{DataType as ArrowDataType, TimeUnit},
+    datatypes::{DataType as ArrowDataType, Schema, TimeUnit},
     record_batch::RecordBatch,
 };
 
@@ -48,7 +48,10 @@ use crate::{
         types::{DataType, TypeId},
     },
     frame::dataframe::DataFrame,
-    internal::{hash::fast_index_map, resolve::missing_column_error},
+    internal::{
+        hash::fast_index_map,
+        resolve::{missing_column_error, validate_no_duplicate_names},
+    },
     runtime::{
         BoundaryKind, BoundaryObservation, Runtime, record_boundary_observation, record_boundary_observation_in_domain,
     },
@@ -60,6 +63,220 @@ static HOST_ARROW_EXPORT_CALL_COUNT: AtomicUsize = AtomicUsize::new(0);
 static HOST_ARROW_IMPORT_CALL_COUNT: AtomicUsize = AtomicUsize::new(0);
 static HOST_ARROW_LAST_BOUNDARY_OBSERVATION: Mutex<Option<BoundaryObservation>> = Mutex::new(None);
 const DEFAULT_DECIMAL128_ARROW_PRECISION: u8 = 38;
+
+/// Copy-free planner view of one Arrow host field as cudf-rs would import it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ArrowHostField {
+    name: String,
+    arrow_dtype: ArrowDataType,
+    cudf_dtype: DataType,
+    nullable: bool,
+}
+
+impl ArrowHostField {
+    fn new(name: String, arrow_dtype: ArrowDataType, cudf_dtype: DataType, nullable: bool) -> Self {
+        Self { name, arrow_dtype, cudf_dtype, nullable }
+    }
+
+    /// Field name in Arrow schema order.
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// Original Arrow logical type.
+    pub fn arrow_data_type(&self) -> &ArrowDataType {
+        &self.arrow_dtype
+    }
+
+    /// cudf-rs logical type that the host Arrow import path would create.
+    pub fn cudf_data_type(&self) -> DataType {
+        self.cudf_dtype
+    }
+
+    /// Arrow field nullability. cudf physical dtypes do not encode this bit.
+    pub fn nullable(&self) -> bool {
+        self.nullable
+    }
+}
+
+/// Copy-free planner view of an Arrow host schema as cudf-rs would import it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ArrowHostSchema {
+    fields: Vec<ArrowHostField>,
+    row_count: usize,
+}
+
+impl ArrowHostSchema {
+    fn new(fields: Vec<ArrowHostField>, row_count: usize) -> Self {
+        Self { fields, row_count }
+    }
+
+    /// Validated fields in schema order.
+    pub fn fields(&self) -> &[ArrowHostField] {
+        &self.fields
+    }
+
+    /// Return one validated field by ordinal.
+    pub fn field(&self, index: usize) -> Option<&ArrowHostField> {
+        self.fields.get(index)
+    }
+
+    /// Return one validated field by name.
+    pub fn field_by_name(&self, name: &str) -> Option<&ArrowHostField> {
+        self.fields.iter().find(|field| field.name() == name)
+    }
+
+    /// Number of schema fields.
+    pub fn len(&self) -> usize {
+        self.fields.len()
+    }
+
+    /// Whether the schema has no fields.
+    pub fn is_empty(&self) -> bool {
+        self.fields.is_empty()
+    }
+
+    /// Logical row count supplied by the caller or observed from a RecordBatch.
+    pub fn row_count(&self) -> usize {
+        self.row_count
+    }
+}
+
+/// Convert a supported Arrow host logical type into a cudf-rs logical type.
+///
+/// This is a copy-free planner/schema helper. It follows the same support
+/// envelope as [`DataFrame::from_record_batch`]: numeric types, Boolean,
+/// Decimal128, Date32, timezone-free timestamps, Utf8, and LargeUtf8.
+pub fn cudf_dtype_from_arrow_type(dt: &ArrowDataType) -> Result<DataType> {
+    cudf_dtype_from_arrow_type_in(dt, "arrow_host::cudf_dtype_from_arrow_type")
+}
+
+/// Convert a supported cudf-rs logical type into the Arrow host type used by
+/// [`DataFrame::to_record_batch`].
+///
+/// Decimal128 export uses Arrow precision 38 because libcudf retains decimal
+/// scale but not Arrow precision metadata.
+pub fn arrow_type_from_cudf_dtype(dtype: DataType) -> Result<ArrowDataType> {
+    arrow_type_from_cudf_dtype_in(dtype, "arrow_host::arrow_type_from_cudf_dtype")
+}
+
+/// Return whether this Arrow host type is supported by cudf-rs host import.
+pub fn is_supported_arrow_type(dt: &ArrowDataType) -> bool {
+    cudf_dtype_from_arrow_type(dt).is_ok()
+}
+
+/// Return whether this Arrow host type is a supported numeric cudf-rs type.
+pub fn is_supported_arrow_numeric_type(dt: &ArrowDataType) -> bool {
+    cudf_dtype_from_arrow_type(dt).map(|dtype| dtype.id().is_numeric()).unwrap_or(false)
+}
+
+/// Validate an Arrow schema without copying data and return cudf-rs planner metadata.
+///
+/// Nullability is retained as schema metadata rather than folded into the cudf
+/// physical dtype.
+pub fn validate_arrow_schema(schema: &Schema, row_count: usize) -> Result<ArrowHostSchema> {
+    let operation = "arrow_host::validate_arrow_schema";
+    let names = schema.fields().iter().map(|field| field.name().clone()).collect::<Vec<_>>();
+    validate_no_duplicate_names(&names, operation)?;
+
+    let mut fields = Vec::with_capacity(schema.fields().len());
+    for field in schema.fields() {
+        let cudf_dtype = cudf_dtype_from_arrow_type_in(field.data_type(), operation)
+            .map_err(|error| error.with_detail("field_name", field.name().clone()))?;
+        fields.push(ArrowHostField::new(
+            field.name().clone(),
+            field.data_type().clone(),
+            cudf_dtype,
+            field.is_nullable(),
+        ));
+    }
+
+    Ok(ArrowHostSchema::new(fields, row_count))
+}
+
+/// Validate a RecordBatch schema without copying array data and return cudf-rs planner metadata.
+pub fn validate_record_batch_schema(batch: &RecordBatch) -> Result<ArrowHostSchema> {
+    validate_arrow_schema(batch.schema().as_ref(), batch.num_rows())
+        .map_err(|error| error.reanchor("arrow_host::validate_record_batch_schema"))
+}
+
+fn cudf_dtype_from_arrow_type_in(dt: &ArrowDataType, operation: &'static str) -> Result<DataType> {
+    let dtype = match dt {
+        ArrowDataType::Int8 => DataType::new(TypeId::Int8),
+        ArrowDataType::Int16 => DataType::new(TypeId::Int16),
+        ArrowDataType::Int32 => DataType::new(TypeId::Int32),
+        ArrowDataType::Int64 => DataType::new(TypeId::Int64),
+        ArrowDataType::UInt8 => DataType::new(TypeId::UInt8),
+        ArrowDataType::UInt16 => DataType::new(TypeId::UInt16),
+        ArrowDataType::UInt32 => DataType::new(TypeId::UInt32),
+        ArrowDataType::UInt64 => DataType::new(TypeId::UInt64),
+        ArrowDataType::Float32 => DataType::new(TypeId::Float32),
+        ArrowDataType::Float64 => DataType::new(TypeId::Float64),
+        ArrowDataType::Boolean => DataType::new(TypeId::Bool8),
+        ArrowDataType::Date32 => DataType::new(TypeId::TimestampDays),
+        ArrowDataType::Timestamp(TimeUnit::Second, None) => DataType::new(TypeId::TimestampSeconds),
+        ArrowDataType::Timestamp(TimeUnit::Millisecond, None) => DataType::new(TypeId::TimestampMilliseconds),
+        ArrowDataType::Timestamp(TimeUnit::Microsecond, None) => DataType::new(TypeId::TimestampMicroseconds),
+        ArrowDataType::Timestamp(TimeUnit::Nanosecond, None) => DataType::new(TypeId::TimestampNanoseconds),
+        ArrowDataType::Timestamp(_, Some(_)) => {
+            return Err(Error::new_with(
+                ErrorCode::UnsupportedDtype,
+                operation,
+                format!("unsupported Arrow timestamp with timezone for cudf conversion: {:?}", dt),
+            )
+            .with_detail("arrow_type", format!("{:?}", dt))
+            .with_detail("reason", "timezone_not_supported"));
+        },
+        ArrowDataType::Decimal128(_, scale) => {
+            DataType::fixed_point(TypeId::Decimal128, arrow_decimal_scale_to_cudf_scale(*scale))
+        },
+        ArrowDataType::Utf8 | ArrowDataType::LargeUtf8 => DataType::new(TypeId::String),
+        _ => {
+            return Err(Error::new_with(
+                ErrorCode::UnsupportedDtype,
+                operation,
+                format!("unsupported Arrow type for cudf conversion: {:?}", dt),
+            )
+            .with_detail("arrow_type", format!("{:?}", dt))
+            .with_detail("reason", "unsupported_arrow_type"));
+        },
+    };
+
+    Ok(dtype)
+}
+
+fn arrow_type_from_cudf_dtype_in(dtype: DataType, operation: &'static str) -> Result<ArrowDataType> {
+    match dtype.id() {
+        TypeId::Int8 => Ok(ArrowDataType::Int8),
+        TypeId::Int16 => Ok(ArrowDataType::Int16),
+        TypeId::Int32 => Ok(ArrowDataType::Int32),
+        TypeId::Int64 => Ok(ArrowDataType::Int64),
+        TypeId::UInt8 => Ok(ArrowDataType::UInt8),
+        TypeId::UInt16 => Ok(ArrowDataType::UInt16),
+        TypeId::UInt32 => Ok(ArrowDataType::UInt32),
+        TypeId::UInt64 => Ok(ArrowDataType::UInt64),
+        TypeId::Float32 => Ok(ArrowDataType::Float32),
+        TypeId::Float64 => Ok(ArrowDataType::Float64),
+        TypeId::Bool8 => Ok(ArrowDataType::Boolean),
+        TypeId::TimestampDays => Ok(ArrowDataType::Date32),
+        TypeId::TimestampSeconds => Ok(ArrowDataType::Timestamp(TimeUnit::Second, None)),
+        TypeId::TimestampMilliseconds => Ok(ArrowDataType::Timestamp(TimeUnit::Millisecond, None)),
+        TypeId::TimestampMicroseconds => Ok(ArrowDataType::Timestamp(TimeUnit::Microsecond, None)),
+        TypeId::TimestampNanoseconds => Ok(ArrowDataType::Timestamp(TimeUnit::Nanosecond, None)),
+        TypeId::String => Ok(ArrowDataType::Utf8),
+        TypeId::Decimal128 => {
+            let arrow_scale = cudf_decimal_scale_to_arrow_scale(dtype.scale(), operation)
+                .map_err(|error| error.with_fact(FACT_TYPE_ID, dtype.id()))?;
+            Ok(ArrowDataType::Decimal128(DEFAULT_DECIMAL128_ARROW_PRECISION, arrow_scale))
+        },
+        _ => Err(Error::new_with(
+            ErrorCode::UnsupportedDtype,
+            operation,
+            format!("unsupported cudf type for Arrow host conversion: {:?}", dtype.id()),
+        )
+        .with_fact(FACT_TYPE_ID, dtype.id())),
+    }
+}
 
 impl DataFrame {
     /// Convert this GPU DataFrame to an Arrow [`RecordBatch`] via host copy.
@@ -251,31 +468,17 @@ impl TryFrom<TypeId> for ArrowDataType {
     type Error = Error;
 
     fn try_from(type_id: TypeId) -> Result<Self> {
-        match type_id {
-            TypeId::Int8 => Ok(ArrowDataType::Int8),
-            TypeId::Int16 => Ok(ArrowDataType::Int16),
-            TypeId::Int32 => Ok(ArrowDataType::Int32),
-            TypeId::Int64 => Ok(ArrowDataType::Int64),
-            TypeId::UInt8 => Ok(ArrowDataType::UInt8),
-            TypeId::UInt16 => Ok(ArrowDataType::UInt16),
-            TypeId::UInt32 => Ok(ArrowDataType::UInt32),
-            TypeId::UInt64 => Ok(ArrowDataType::UInt64),
-            TypeId::Float32 => Ok(ArrowDataType::Float32),
-            TypeId::Float64 => Ok(ArrowDataType::Float64),
-            TypeId::Bool8 => Ok(ArrowDataType::Boolean),
-            TypeId::TimestampDays => Ok(ArrowDataType::Date32),
-            TypeId::TimestampSeconds => Ok(ArrowDataType::Timestamp(TimeUnit::Second, None)),
-            TypeId::TimestampMilliseconds => Ok(ArrowDataType::Timestamp(TimeUnit::Millisecond, None)),
-            TypeId::TimestampMicroseconds => Ok(ArrowDataType::Timestamp(TimeUnit::Microsecond, None)),
-            TypeId::TimestampNanoseconds => Ok(ArrowDataType::Timestamp(TimeUnit::Nanosecond, None)),
-            TypeId::String => Ok(ArrowDataType::Utf8),
-            _ => Err(Error::new_with(
+        if type_id.is_decimal() {
+            return Err(Error::new_with(
                 ErrorCode::UnsupportedDtype,
                 "arrow::TryFrom<TypeId> for ArrowDataType",
-                format!("unsupported cudf type for Arrow conversion: {:?}", type_id),
+                format!("decimal cudf type {:?} requires scale for Arrow host conversion", type_id),
             )
-            .with_fact(FACT_TYPE_ID, type_id)),
+            .with_fact(FACT_TYPE_ID, type_id)
+            .with_detail("reason", "decimal_scale_required")
+            .with_detail("remedy", "use arrow_host::arrow_type_from_cudf_dtype with DataType::fixed_point"));
         }
+        arrow_type_from_cudf_dtype_in(DataType::new(type_id), "arrow::TryFrom<TypeId> for ArrowDataType")
     }
 }
 
@@ -283,32 +486,7 @@ impl TryFrom<&ArrowDataType> for TypeId {
     type Error = Error;
 
     fn try_from(dt: &ArrowDataType) -> Result<Self> {
-        match dt {
-            ArrowDataType::Int8 => Ok(TypeId::Int8),
-            ArrowDataType::Int16 => Ok(TypeId::Int16),
-            ArrowDataType::Int32 => Ok(TypeId::Int32),
-            ArrowDataType::Int64 => Ok(TypeId::Int64),
-            ArrowDataType::UInt8 => Ok(TypeId::UInt8),
-            ArrowDataType::UInt16 => Ok(TypeId::UInt16),
-            ArrowDataType::UInt32 => Ok(TypeId::UInt32),
-            ArrowDataType::UInt64 => Ok(TypeId::UInt64),
-            ArrowDataType::Float32 => Ok(TypeId::Float32),
-            ArrowDataType::Float64 => Ok(TypeId::Float64),
-            ArrowDataType::Boolean => Ok(TypeId::Bool8),
-            ArrowDataType::Date32 => Ok(TypeId::TimestampDays),
-            ArrowDataType::Timestamp(TimeUnit::Second, None) => Ok(TypeId::TimestampSeconds),
-            ArrowDataType::Timestamp(TimeUnit::Millisecond, None) => Ok(TypeId::TimestampMilliseconds),
-            ArrowDataType::Timestamp(TimeUnit::Microsecond, None) => Ok(TypeId::TimestampMicroseconds),
-            ArrowDataType::Timestamp(TimeUnit::Nanosecond, None) => Ok(TypeId::TimestampNanoseconds),
-            ArrowDataType::Decimal128(_, _) => Ok(TypeId::Decimal128),
-            ArrowDataType::Utf8 | ArrowDataType::LargeUtf8 => Ok(TypeId::String),
-            _ => Err(Error::new_with(
-                ErrorCode::UnsupportedDtype,
-                "arrow::TryFrom<&ArrowDataType> for TypeId",
-                format!("unsupported Arrow type for cudf conversion: {:?}", dt),
-            )
-            .with_detail("arrow_type", format!("{:?}", dt))),
-        }
+        cudf_dtype_from_arrow_type_in(dt, "arrow::TryFrom<&ArrowDataType> for TypeId").map(|dtype| dtype.id())
     }
 }
 
@@ -393,11 +571,24 @@ fn cudf_decimal_scale_to_arrow_scale(scale: i32, operation: &'static str) -> Res
     let arrow_scale = scale.checked_neg().ok_or_else(|| {
         Error::new_with(ErrorCode::UnsupportedDtype, operation, "decimal scale is outside Arrow Decimal128 range")
             .with_detail("cudf_scale", scale.to_string())
+            .with_detail("reason", "decimal_scale_overflow")
     })?;
+    if arrow_scale > i32::from(DEFAULT_DECIMAL128_ARROW_PRECISION) {
+        return Err(Error::new_with(
+            ErrorCode::UnsupportedDtype,
+            operation,
+            "decimal scale exceeds cudf-rs Arrow Decimal128 precision",
+        )
+        .with_detail("cudf_scale", scale.to_string())
+        .with_detail("arrow_scale", arrow_scale.to_string())
+        .with_detail("arrow_precision", DEFAULT_DECIMAL128_ARROW_PRECISION.to_string())
+        .with_detail("reason", "decimal_scale_exceeds_decimal128_precision"));
+    }
     i8::try_from(arrow_scale).map_err(|_| {
         Error::new_with(ErrorCode::UnsupportedDtype, operation, "decimal scale is outside Arrow Decimal128 range")
             .with_detail("cudf_scale", scale.to_string())
             .with_detail("arrow_scale", arrow_scale.to_string())
+            .with_detail("reason", "decimal_scale_outside_arrow_i8_range")
     })
 }
 
@@ -453,7 +644,8 @@ fn map_decimal_to_arrow_error(error: arrow::error::ArrowError) -> Error {
 }
 
 fn decimal128_to_arrow(cv: &ColumnView<'_>, dtype: DataType) -> Result<Arc<dyn Array>> {
-    let arrow_scale = cudf_decimal_scale_to_arrow_scale(dtype.scale(), "arrow::decimal128_to_arrow")?;
+    let arrow_scale = cudf_decimal_scale_to_arrow_scale(dtype.scale(), "arrow::decimal128_to_arrow")
+        .map_err(|error| error.with_fact(FACT_TYPE_ID, dtype.id()))?;
     let data = fixed_width_host_values::<i128>(cv)?;
     let validity = cv.to_host_validity()?;
 

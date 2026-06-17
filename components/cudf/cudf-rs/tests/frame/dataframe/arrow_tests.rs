@@ -63,6 +63,14 @@ fn test_arrow_datatype_try_from_type_id_rejects_unsupported_types() {
     assert_eq!(err.operation(), "arrow::TryFrom<TypeId> for ArrowDataType");
     assert_eq!(error_context_value(&err, "type_id").as_deref(), Some("list"));
     assert!(err.message().contains("unsupported cudf type"));
+
+    let decimal_err =
+        ArrowDataType::try_from(TypeId::Decimal128).expect_err("TypeId alone must not fabricate a Decimal128 scale");
+    assert_eq!(decimal_err.kind(), ErrorKind::Unsupported);
+    assert_eq!(decimal_err.code(), ErrorCode::UnsupportedDtype);
+    assert_eq!(decimal_err.operation(), "arrow::TryFrom<TypeId> for ArrowDataType");
+    assert_eq!(error_context_value(&decimal_err, "type_id").as_deref(), Some("decimal128"));
+    assert_eq!(error_context_value(&decimal_err, "reason").as_deref(), Some("decimal_scale_required"));
 }
 
 #[test]
@@ -98,6 +106,176 @@ fn test_type_id_try_from_arrow_datatype_rejects_unsupported_types() {
     assert_eq!(err.operation(), "arrow::TryFrom<&ArrowDataType> for TypeId");
     assert_eq!(error_context_value(&err, "arrow_type").as_deref(), Some("LargeBinary"));
     assert!(err.message().contains("unsupported Arrow type"));
+}
+
+#[test]
+fn test_arrow_host_dtype_mapping_preserves_logical_metadata() {
+    use cudf::interop::arrow_host::{
+        arrow_type_from_cudf_dtype, cudf_dtype_from_arrow_type, is_supported_arrow_numeric_type,
+        is_supported_arrow_type,
+    };
+
+    assert_eq!(
+        cudf_dtype_from_arrow_type(&ArrowDataType::Decimal128(18, 2)).unwrap(),
+        DataType::fixed_point(TypeId::Decimal128, -2)
+    );
+    assert_eq!(
+        arrow_type_from_cudf_dtype(DataType::fixed_point(TypeId::Decimal128, -6)).unwrap(),
+        ArrowDataType::Decimal128(38, 6)
+    );
+    assert_eq!(
+        cudf_dtype_from_arrow_type(&ArrowDataType::Timestamp(TimeUnit::Nanosecond, None)).unwrap(),
+        DataType::new(TypeId::TimestampNanoseconds)
+    );
+    assert_eq!(
+        arrow_type_from_cudf_dtype(DataType::new(TypeId::TimestampMilliseconds)).unwrap(),
+        ArrowDataType::Timestamp(TimeUnit::Millisecond, None)
+    );
+    assert_eq!(cudf_dtype_from_arrow_type(&ArrowDataType::LargeUtf8).unwrap(), DataType::new(TypeId::String));
+    assert!(is_supported_arrow_type(&ArrowDataType::Boolean));
+    assert!(is_supported_arrow_numeric_type(&ArrowDataType::Float64));
+    assert!(!is_supported_arrow_numeric_type(&ArrowDataType::Boolean));
+}
+
+#[test]
+fn test_arrow_host_dtype_mapping_rejects_decimal_scale_outside_arrow_range() {
+    use cudf::interop::arrow_host::arrow_type_from_cudf_dtype;
+
+    let err = arrow_type_from_cudf_dtype(DataType::fixed_point(TypeId::Decimal128, -39))
+        .expect_err("Arrow Decimal128 scale must fit the exported precision");
+
+    assert_eq!(err.kind(), ErrorKind::Unsupported);
+    assert_eq!(err.code(), ErrorCode::UnsupportedDtype);
+    assert_eq!(err.operation(), "arrow_host::arrow_type_from_cudf_dtype");
+    assert_eq!(error_context_value(&err, "type_id").as_deref(), Some("decimal128"));
+    assert_eq!(error_context_value(&err, "cudf_scale").as_deref(), Some("-39"));
+    assert_eq!(error_context_value(&err, "arrow_scale").as_deref(), Some("39"));
+    assert_eq!(error_context_value(&err, "arrow_precision").as_deref(), Some("38"));
+    assert_eq!(error_context_value(&err, "reason").as_deref(), Some("decimal_scale_exceeds_decimal128_precision"));
+
+    let range_err = arrow_type_from_cudf_dtype(DataType::fixed_point(TypeId::Decimal128, -129))
+        .expect_err("large Arrow Decimal128 scale must fail before Arrow array construction");
+    assert_eq!(range_err.kind(), ErrorKind::Unsupported);
+    assert_eq!(range_err.code(), ErrorCode::UnsupportedDtype);
+    assert_eq!(range_err.operation(), "arrow_host::arrow_type_from_cudf_dtype");
+    assert_eq!(error_context_value(&range_err, "type_id").as_deref(), Some("decimal128"));
+    assert_eq!(error_context_value(&range_err, "cudf_scale").as_deref(), Some("-129"));
+    assert_eq!(error_context_value(&range_err, "arrow_scale").as_deref(), Some("129"));
+    assert_eq!(
+        error_context_value(&range_err, "reason").as_deref(),
+        Some("decimal_scale_exceeds_decimal128_precision")
+    );
+}
+
+#[test]
+fn test_arrow_host_schema_validation_exposes_planner_metadata() {
+    use cudf::interop::arrow_host::validate_arrow_schema;
+
+    let schema = Schema::new(vec![
+        Field::new("id", ArrowDataType::Int32, false),
+        Field::new("amount", ArrowDataType::Decimal128(12, 3), true),
+        Field::new("label", ArrowDataType::LargeUtf8, true),
+    ]);
+
+    let mapped = validate_arrow_schema(&schema, 17).unwrap();
+
+    assert_eq!(mapped.row_count(), 17);
+    assert_eq!(mapped.len(), 3);
+    assert_eq!(mapped.field(0).unwrap().name(), "id");
+    assert_eq!(mapped.field(0).unwrap().cudf_data_type(), DataType::new(TypeId::Int32));
+    assert_eq!(mapped.field(0).unwrap().arrow_data_type(), &ArrowDataType::Int32);
+    assert!(!mapped.field(0).unwrap().nullable());
+    assert_eq!(mapped.field(1).unwrap().name(), "amount");
+    assert_eq!(mapped.field(1).unwrap().cudf_data_type(), DataType::fixed_point(TypeId::Decimal128, -3));
+    assert_eq!(mapped.field_by_name("label").unwrap().cudf_data_type(), DataType::new(TypeId::String));
+}
+
+#[test]
+fn test_arrow_host_schema_validation_accepts_empty_schema_without_copying() {
+    use cudf::interop::arrow_host::validate_arrow_schema;
+
+    let schema = Schema::empty();
+    let mapped = validate_arrow_schema(&schema, 0).unwrap();
+
+    assert!(mapped.is_empty());
+    assert_eq!(mapped.len(), 0);
+    assert_eq!(mapped.row_count(), 0);
+}
+
+#[test]
+fn test_arrow_host_record_batch_schema_validation_uses_batch_row_count_without_copying() {
+    use cudf::interop::arrow_host::validate_record_batch_schema;
+
+    let schema = Arc::new(Schema::new(vec![Field::new("id", ArrowDataType::Int32, false)]));
+    let batch = RecordBatch::try_new(schema, vec![Arc::new(Int32Array::from(vec![1, 2, 3]))]).unwrap();
+
+    let mapped = validate_record_batch_schema(&batch).unwrap();
+
+    assert_eq!(mapped.row_count(), 3);
+    assert_eq!(mapped.fields()[0].name(), "id");
+    assert_eq!(mapped.fields()[0].cudf_data_type(), DataType::new(TypeId::Int32));
+}
+
+#[test]
+fn test_arrow_host_record_batch_schema_validation_reanchors_schema_errors() {
+    use cudf::interop::arrow_host::validate_record_batch_schema;
+
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("id", ArrowDataType::Int32, false),
+        Field::new("id", ArrowDataType::Int32, false),
+    ]));
+    let batch = RecordBatch::try_new(
+        schema,
+        vec![Arc::new(Int32Array::from(vec![1, 2, 3])), Arc::new(Int32Array::from(vec![4, 5, 6]))],
+    )
+    .unwrap();
+
+    let err = validate_record_batch_schema(&batch).expect_err("duplicate names should be anchored at RecordBatch API");
+
+    assert_eq!(err.code(), ErrorCode::DuplicateColumnName);
+    assert_eq!(err.operation(), "arrow_host::validate_record_batch_schema");
+    assert!(err.call_chain().contains(&"arrow_host::validate_arrow_schema"));
+    assert_eq!(error_context_value(&err, "duplicate_name").as_deref(), Some("id"));
+}
+
+#[test]
+fn test_arrow_host_schema_validation_rejects_timezone_and_nested_types_before_copy() {
+    use cudf::interop::arrow_host::{cudf_dtype_from_arrow_type, validate_arrow_schema};
+
+    let tz_err = cudf_dtype_from_arrow_type(&ArrowDataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into())))
+        .expect_err("timezone-aware Arrow timestamps are not supported");
+    assert_eq!(tz_err.kind(), ErrorKind::Unsupported);
+    assert_eq!(tz_err.code(), ErrorCode::UnsupportedDtype);
+    assert_eq!(tz_err.operation(), "arrow_host::cudf_dtype_from_arrow_type");
+    assert_eq!(error_context_value(&tz_err, "reason").as_deref(), Some("timezone_not_supported"));
+
+    let nested_schema = Schema::new(vec![Field::new(
+        "items",
+        ArrowDataType::List(Arc::new(Field::new("item", ArrowDataType::Int32, true))),
+        true,
+    )]);
+    let nested_err = validate_arrow_schema(&nested_schema, 0).expect_err("nested Arrow types should be rejected");
+    assert_eq!(nested_err.kind(), ErrorKind::Unsupported);
+    assert_eq!(nested_err.code(), ErrorCode::UnsupportedDtype);
+    assert_eq!(nested_err.operation(), "arrow_host::validate_arrow_schema");
+    assert_eq!(error_context_value(&nested_err, "field_name").as_deref(), Some("items"));
+    assert_eq!(error_context_value(&nested_err, "reason").as_deref(), Some("unsupported_arrow_type"));
+}
+
+#[test]
+fn test_arrow_host_schema_validation_rejects_duplicate_names_before_copy() {
+    use cudf::interop::arrow_host::validate_arrow_schema;
+
+    let schema = Schema::new(vec![
+        Field::new("id", ArrowDataType::Int32, false),
+        Field::new("value", ArrowDataType::Int64, false),
+        Field::new("id", ArrowDataType::Float64, true),
+    ]);
+
+    let err = validate_arrow_schema(&schema, 0).expect_err("duplicate Arrow field names should be rejected");
+    assert_eq!(err.code(), ErrorCode::DuplicateColumnName);
+    assert_eq!(err.operation(), "arrow_host::validate_arrow_schema");
+    assert_eq!(error_context_value(&err, "duplicate_name").as_deref(), Some("id"));
 }
 
 #[test]

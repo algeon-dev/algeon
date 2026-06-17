@@ -18,6 +18,7 @@ pub(crate) mod execution_domain;
 pub(crate) mod execution_resolver;
 mod owner;
 mod placement;
+mod query_execution_context;
 pub mod stream;
 
 pub use boundary::{BoundaryKind, BoundaryObservation, BoundaryObserver};
@@ -30,4 +31,5 @@ pub use event::CudaEvent;
 pub use execution_context::ExecutionOverrides;
 pub use owner::{Runtime, RuntimeBuilder, StreamDependencyOutcome};
 pub use placement::ExecutionPlacement;
+pub use query_execution_context::QueryExecutionContext;
 pub use stream::CudaStream;

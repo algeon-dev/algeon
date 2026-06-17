@@ -2,4 +2,7 @@ error[E0432]: unresolved import `cudf::__DebugExecutionContext`
  --> tests/public_api/ui/no_debug_execution_context.rs:1:5
   |
 1 | use cudf::__DebugExecutionContext;
-  |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ no `__DebugExecutionContext` in the root
+  |     ^^^^^^-----------------------
+  |     |     |
+  |     |     help: a similar name exists in the module: `QueryExecutionContext`
+  |     no `__DebugExecutionContext` in the root
