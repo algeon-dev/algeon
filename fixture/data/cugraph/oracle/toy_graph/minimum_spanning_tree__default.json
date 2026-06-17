@@ -1,0 +1,31 @@
+{
+  "header": {
+    "algorithm": "minimum_spanning_tree",
+    "dataset": "toy_graph",
+    "dataset_sha256": "1f2b85cad15bbd3a1b2498d7f2de59e97b144f186bfa35bc4f36bc51823e1a7d",
+    "params": {},
+    "seed": null,
+    "versions": {
+      "cudf": "26.04.000",
+      "cugraph": "26.04.000",
+      "numpy": "2.4.6",
+      "pylibcugraph": "26.04.000"
+    }
+  },
+  "result": {
+    "dst": [
+      1,
+      2,
+      3,
+      4,
+      5
+    ],
+    "src": [
+      0,
+      1,
+      1,
+      1,
+      4
+    ]
+  }
+}

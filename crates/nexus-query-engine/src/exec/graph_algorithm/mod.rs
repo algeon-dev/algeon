@@ -164,6 +164,7 @@ type GraphAlgorithmExecutor = fn(
 #[cfg(feature = "cugraph")]
 const GRAPH_ALGORITHM_EXECUTORS: &[(crate::plan::GraphAlgorithm, GraphAlgorithmExecutor)] = &[
     (crate::plan::GraphAlgorithm::PageRank, execute_pagerank),
+    (crate::plan::GraphAlgorithm::PersonalizedPageRank, execute_personalized_pagerank),
     (crate::plan::GraphAlgorithm::Bfs, execute_bfs),
     (crate::plan::GraphAlgorithm::Louvain, execute_louvain),
     (crate::plan::GraphAlgorithm::EigenvectorCentrality, execute_eigenvector_centrality),
@@ -179,7 +180,6 @@ const GRAPH_ALGORITHM_EXECUTORS: &[(crate::plan::GraphAlgorithm, GraphAlgorithmE
     (crate::plan::GraphAlgorithm::CoreNumber, execute_core_number),
     (crate::plan::GraphAlgorithm::KCore, execute_k_core),
     (crate::plan::GraphAlgorithm::MinimumSpanningTree, execute_minimum_spanning_tree),
-    (crate::plan::GraphAlgorithm::PageRankStrict, execute_pagerank_strict),
     (crate::plan::GraphAlgorithm::Leiden, execute_leiden),
     (crate::plan::GraphAlgorithm::Ecg, execute_ecg),
     (crate::plan::GraphAlgorithm::SpectralModularityMaximization, execute_spectral_modularity_maximization),
@@ -730,6 +730,15 @@ fn graph_algorithm_parameters(params: &crate::plan::GraphAlgorithmParams) -> Str
         crate::plan::GraphAlgorithmParams::PageRank(params) => {
             format!("alpha={},epsilon={},max_iterations={}", params.alpha, params.epsilon, params.max_iterations)
         },
+        crate::plan::GraphAlgorithmParams::PersonalizedPageRank(params) => format!(
+            "alpha={},epsilon={},max_iterations={},personalization_node={},personalization_vertex_col={},personalization_value_col={}",
+            params.pagerank.alpha,
+            params.pagerank.epsilon,
+            params.pagerank.max_iterations,
+            params.personalization.input,
+            params.personalization.vertex,
+            params.personalization.value,
+        ),
         crate::plan::GraphAlgorithmParams::Bfs(params) => format!(
             "source_vertex={},depth_limit={}",
             params.source_vertex,
@@ -765,9 +774,6 @@ fn graph_algorithm_parameters(params: &crate::plan::GraphAlgorithmParams) -> Str
             format!("k={},degree_type={}", params.k, params.degree_type.as_str())
         },
         crate::plan::GraphAlgorithmParams::MinimumSpanningTree(_) => String::new(),
-        crate::plan::GraphAlgorithmParams::PageRankStrict(params) => {
-            format!("alpha={},epsilon={},max_iterations={}", params.alpha, params.epsilon, params.max_iterations)
-        },
         crate::plan::GraphAlgorithmParams::Leiden(params) => format!(
             "max_level={},resolution={},theta={},seed={}",
             params.max_level, params.resolution, params.theta, params.seed,

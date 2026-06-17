@@ -49,8 +49,12 @@ async fn cugraph_sql_planning_exposes_stable_output_schemas() {
         CugraphAlgorithm::MinimumSpanningTree,
     )
     .await;
-    assert_sql_schema(&ctx, "SELECT * FROM cugraph_pagerank_strict('graph_edges')", CugraphAlgorithm::PageRankStrict)
-        .await;
+    assert_sql_schema(
+        &ctx,
+        r#"SELECT * FROM cugraph_personalized_pagerank('graph_edges', 'src', 'dst', NULL, '{"personalization_table":"ppr_seeds","personalization_vertex_col":"vertex","personalization_value_col":"value"}')"#,
+        CugraphAlgorithm::PersonalizedPageRank,
+    )
+    .await;
     assert_sql_schema(&ctx, "SELECT * FROM cugraph_leiden('graph_edges')", CugraphAlgorithm::Leiden).await;
     assert_sql_schema(&ctx, "SELECT * FROM cugraph_ecg('graph_edges')", CugraphAlgorithm::Ecg).await;
     assert_sql_schema(
@@ -385,7 +389,7 @@ fn cugraph_sql_planning_schema_contracts_are_exact() {
         vec![Field::new("src", DataType::Int64, false), Field::new("dst", DataType::Int64, false)],
     );
     assert_eq!(
-        schema_fields(CugraphAlgorithm::PageRankStrict),
+        schema_fields(CugraphAlgorithm::PersonalizedPageRank),
         vec![Field::new("vertex", DataType::Int64, false), Field::new("value", DataType::Float64, false)],
     );
     for algorithm in [

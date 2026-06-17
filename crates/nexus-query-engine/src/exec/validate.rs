@@ -478,30 +478,38 @@ fn validate_graph_algorithm_side_inputs(
         graph_edge_field("source", &graph.spec.edge_columns.source, edge_input.output_schema(), edge_available)?
             .data_type()
             .clone();
+    let expected_side_inputs = graph_algorithm_side_input_node_ids(&graph.spec.params);
+    if graph.inputs[1..] != expected_side_inputs[..] {
+        return Err(graph_algorithm_error("graph algorithm side-input list must match parameter input bindings")
+            .with_fact("node_id", node_id)
+            .with_fact("algorithm", graph.spec.algorithm.as_str())
+            .with_fact(
+                "actual_side_inputs",
+                graph.inputs[1..].iter().map(ToString::to_string).collect::<Vec<_>>().join(","),
+            )
+            .with_fact(
+                "expected_side_inputs",
+                expected_side_inputs.iter().map(ToString::to_string).collect::<Vec<_>>().join(","),
+            ));
+    }
     let crate::plan::GraphAlgorithmParams::Bfs(params) = &graph.spec.params else {
+        if let crate::plan::GraphAlgorithmParams::PersonalizedPageRank(params) = &graph.spec.params {
+            return validate_graph_personalization_input(
+                &params.personalization,
+                &vertex_type,
+                plan,
+                available_columns_by_node,
+                node_id,
+            );
+        }
         if graph.inputs.len() > 1 {
-            return Err(graph_algorithm_error("only BFS graph algorithm nodes may carry predicate side inputs")
+            return Err(graph_algorithm_error("graph algorithm node does not accept side inputs")
                 .with_fact("node_id", node_id)
                 .with_fact("algorithm", graph.spec.algorithm.as_str())
                 .with_fact("side_input_count", graph.inputs.len().saturating_sub(1)));
         }
         return Ok(());
     };
-    let expected_side_inputs = params.side_input_node_ids().collect::<Vec<_>>();
-    if graph.inputs[1..] != expected_side_inputs[..] {
-        return Err(graph_algorithm_error(
-            "BFS graph algorithm side-input list must match source/predicate input bindings",
-        )
-        .with_fact("node_id", node_id)
-        .with_fact(
-            "actual_side_inputs",
-            graph.inputs[1..].iter().map(ToString::to_string).collect::<Vec<_>>().join(","),
-        )
-        .with_fact(
-            "expected_side_inputs",
-            expected_side_inputs.iter().map(ToString::to_string).collect::<Vec<_>>().join(","),
-        ));
-    }
 
     validate_graph_predicate_input(
         params.source_vertices.as_ref(),
@@ -551,6 +559,44 @@ fn validate_graph_algorithm_side_inputs(
     }
     if let Some(input) = &params.predicates.include_edges {
         validate_graph_edge_predicate_input(input, &vertex_type, plan, available_columns_by_node, node_id)?;
+    }
+    Ok(())
+}
+
+fn graph_algorithm_side_input_node_ids(params: &crate::plan::GraphAlgorithmParams) -> Vec<NodeId> {
+    match params {
+        crate::plan::GraphAlgorithmParams::Bfs(params) => params.side_input_node_ids().collect(),
+        crate::plan::GraphAlgorithmParams::PersonalizedPageRank(params) => params.side_input_node_ids().collect(),
+        _ => Vec::new(),
+    }
+}
+
+fn validate_graph_personalization_input(
+    input: &crate::plan::GraphPageRankPersonalizationInput,
+    vertex_type: &arrow::datatypes::DataType,
+    plan: &QueryPlan,
+    available_columns_by_node: &[BTreeSet<String>],
+    node_id: NodeId,
+) -> Result<()> {
+    let input_node = input_node(plan, input.input, node_id)?;
+    let input_available = available_columns(available_columns_by_node, input.input)?;
+    validate_graph_predicate_column(
+        "personalization_vertex",
+        &input.vertex,
+        input_node.output_schema(),
+        input_available,
+        vertex_type,
+    )?;
+    let field = graph_edge_field("personalization_value", &input.value, input_node.output_schema(), input_available)?;
+    if !matches!(field.data_type(), arrow::datatypes::DataType::Float32 | arrow::datatypes::DataType::Float64) {
+        return Err(QueryError::new(
+            QueryErrorCode::UnsupportedType,
+            "nexus_query_engine.graph_algorithm.validate",
+            "personalized PageRank value column type is unsupported",
+        )
+        .with_fact("reason", "unsupported_personalization_value_type")
+        .with_fact("column", &input.value)
+        .with_fact("data_type", format!("{:?}", field.data_type())));
     }
     Ok(())
 }

@@ -372,7 +372,7 @@ struct AlgorithmMetadataRow {
 fn title_case_algorithm_name(name: &str) -> String {
     match name {
         "pagerank" => return "PageRank".to_string(),
-        "pagerank_strict" => return "PageRank Strict".to_string(),
+        "personalized_pagerank" => return "Personalized PageRank".to_string(),
         "bfs" => return "BFS".to_string(),
         "hits" => return "HITS".to_string(),
         "sssp" => return "SSSP".to_string(),
@@ -421,6 +421,8 @@ fn signature(algorithm: CugraphAlgorithm) -> String {
     let function_name = algorithm.function_name();
     if algorithm == CugraphAlgorithm::MinimumSpanningTree {
         format!("{function_name}(table_name, src_col, dst_col, weight_col [, options_json])")
+    } else if algorithm == CugraphAlgorithm::PersonalizedPageRank {
+        format!("{function_name}(table_name, src_col, dst_col, weight_col, options_json)")
     } else if algorithm.requires_source_vertex() {
         format!("{function_name}(table_name, source_vertex [, src_col, dst_col [, weight_col [, options_json]]])")
     } else {
@@ -431,6 +433,8 @@ fn signature(algorithm: CugraphAlgorithm) -> String {
 fn allowed_arg_counts_json(algorithm: CugraphAlgorithm) -> String {
     if algorithm == CugraphAlgorithm::MinimumSpanningTree {
         "[4,5]".to_string()
+    } else if algorithm == CugraphAlgorithm::PersonalizedPageRank {
+        "[5]".to_string()
     } else if algorithm.requires_source_vertex() {
         "[2,4,5,6]".to_string()
     } else {

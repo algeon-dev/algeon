@@ -66,10 +66,12 @@ pub(super) fn result_field_descriptions_json(algorithm: CugraphAlgorithm) -> Str
 
 fn result_field_description(algorithm: CugraphAlgorithm, field_name: &str) -> &'static str {
     match (algorithm, field_name) {
-        (CugraphAlgorithm::PageRank | CugraphAlgorithm::PageRankStrict, "vertex") => {
+        (CugraphAlgorithm::PageRank | CugraphAlgorithm::PersonalizedPageRank, "vertex") => {
             "Vertex receiving the PageRank score."
         },
-        (CugraphAlgorithm::PageRank | CugraphAlgorithm::PageRankStrict, "value") => "PageRank score for the vertex.",
+        (CugraphAlgorithm::PageRank | CugraphAlgorithm::PersonalizedPageRank, "value") => {
+            "PageRank score for the vertex."
+        },
         (CugraphAlgorithm::EigenvectorCentrality, "vertex") => "Vertex receiving the eigenvector centrality score.",
         (CugraphAlgorithm::EigenvectorCentrality, "value") => "Eigenvector centrality score for the vertex.",
         (CugraphAlgorithm::KatzCentrality, "vertex") => "Vertex receiving the Katz centrality score.",
@@ -164,7 +166,8 @@ pub(super) fn summary(algorithm: CugraphAlgorithm) -> &'static str {
         CugraphAlgorithm::Bfs => {
             "Single-source breadth-first search; weight_col is accepted but traversal uses hop counts."
         },
-        CugraphAlgorithm::PageRank | CugraphAlgorithm::PageRankStrict => "Compute PageRank scores.",
+        CugraphAlgorithm::PageRank => "Compute PageRank scores.",
+        CugraphAlgorithm::PersonalizedPageRank => "Compute personalized PageRank scores.",
         CugraphAlgorithm::Louvain => "Detect communities with Louvain modularity optimization.",
         CugraphAlgorithm::EigenvectorCentrality => "Compute eigenvector centrality scores.",
         CugraphAlgorithm::KatzCentrality => "Compute Katz centrality scores.",
@@ -195,8 +198,8 @@ pub(super) fn purpose(algorithm: CugraphAlgorithm) -> &'static str {
         CugraphAlgorithm::PageRank => {
             "Rank vertices by iterative link analysis so high-value vertices are those connected from other high-value vertices."
         },
-        CugraphAlgorithm::PageRankStrict => {
-            "Run PageRank with strict convergence behavior for callers that want failures instead of relaxed convergence results."
+        CugraphAlgorithm::PersonalizedPageRank => {
+            "Rank vertices with PageRank while biasing the teleport distribution using a relation-backed personalization vector."
         },
         CugraphAlgorithm::Louvain => {
             "Assign vertices to communities by optimizing modularity over the edge-list graph."
@@ -243,6 +246,7 @@ pub(super) fn purpose(algorithm: CugraphAlgorithm) -> &'static str {
 pub(super) fn examples_json(algorithm: CugraphAlgorithm) -> String {
     match algorithm {
         CugraphAlgorithm::Bfs => bfs_examples_json(),
+        CugraphAlgorithm::PersonalizedPageRank => personalized_pagerank_examples_json(),
         CugraphAlgorithm::Sssp => json!([
             source_vertex_example(algorithm, "basic_sssp"),
             weighted_source_vertex_example(algorithm, "weighted_sssp")
@@ -251,6 +255,25 @@ pub(super) fn examples_json(algorithm: CugraphAlgorithm) -> String {
         CugraphAlgorithm::MinimumSpanningTree => json!([weighted_example(algorithm, "weighted_mst")]).to_string(),
         _ => json!([minimal_example(algorithm)]).to_string(),
     }
+}
+
+fn personalized_pagerank_examples_json() -> String {
+    json!([
+        {
+            "name": "basic_personalized_pagerank",
+            "sql": "SELECT * FROM cugraph_personalized_pagerank('target_edges', 'src', 'dst', NULL, '{\"personalization_table\":\"ppr_seeds\",\"personalization_vertex_col\":\"vertex\",\"personalization_value_col\":\"value\"}')",
+            "call_json": {
+                "src_col": "src",
+                "dst_col": "dst",
+                "options": {
+                    "personalization_table": "ppr_seeds",
+                    "personalization_vertex_col": "vertex",
+                    "personalization_value_col": "value"
+                }
+            }
+        }
+    ])
+    .to_string()
 }
 
 fn minimal_example(algorithm: CugraphAlgorithm) -> Value {

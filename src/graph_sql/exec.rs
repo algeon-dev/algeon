@@ -40,6 +40,7 @@ use nexus_query_engine::{
     GraphEdgePredicateInput as NativeGraphEdgePredicateInput, GraphEigenvectorCentralityParams, GraphForceAtlas2Params,
     GraphHitsParams, GraphInDegreesAllParams, GraphKCoreDegreeType, GraphKCoreParams, GraphKatzCentralityParams,
     GraphLeidenParams, GraphLouvainParams, GraphMstParams, GraphOutDegreesAllParams, GraphPageRankParams,
+    GraphPageRankPersonalizationInput as NativeGraphPageRankPersonalizationInput, GraphPersonalizedPageRankParams,
     GraphPredicateInput as NativeGraphPredicateInput, GraphSccParams, GraphSpectralClusteringParams, GraphSsspParams,
     GraphTriangleCountAllParams, GraphWccParams, LimitSpec, LiteralValue, ProjectionOutput, QueryMetrics, QueryOutput,
     QueryPlanBuilder, SourceNode, execute_query_plan, execute_query_plan_with_gpu_inputs,
@@ -1801,11 +1802,11 @@ fn bind_predicate_gpu_inputs(
 ) -> Result<Vec<nexus_query_engine::NodeId>> {
     let mut nodes = Vec::with_capacity(predicate_frames.len());
     for (index, CugraphGpuFrame { schema, frame }) in predicate_frames.into_iter().enumerate() {
-        let input_name = format!("__datafusion_nexus_cugraph_bfs_predicate_{index}");
+        let input_name = format!("__datafusion_nexus_cugraph_side_input_{index}");
         let handle = GpuResultHandle::new(context, frame, Arc::clone(&schema)).map_err(|error| {
             DataFusionError::from(Error::from_native(
                 "datafusion_nexus.cugraph_sql.gpu_input",
-                "failed to bind cuGraph BFS predicate source as a GPU-resident native input",
+                "failed to bind cuGraph side-input source as a GPU-resident native input",
                 error,
             ))
         })?;
@@ -1938,6 +1939,21 @@ fn native_algorithm_params(
             epsilon: params.epsilon,
             max_iterations: params.max_iterations,
         }),
+        CugraphAlgorithmParams::PersonalizedPageRank(params) => {
+            let personalization_node = predicate_nodes.first().copied().expect("personalization node missing");
+            GraphAlgorithmParams::PersonalizedPageRank(GraphPersonalizedPageRankParams {
+                pagerank: GraphPageRankParams {
+                    alpha: params.pagerank.alpha,
+                    epsilon: params.pagerank.epsilon,
+                    max_iterations: params.pagerank.max_iterations,
+                },
+                personalization: NativeGraphPageRankPersonalizationInput::new(
+                    personalization_node,
+                    params.personalization.vertex_col.clone(),
+                    params.personalization.value_col.clone(),
+                ),
+            })
+        },
         CugraphAlgorithmParams::Bfs(params) => {
             GraphAlgorithmParams::Bfs(Box::new(native_bfs_params(params, predicate_nodes)))
         },
@@ -1986,11 +2002,6 @@ fn native_algorithm_params(
             degree_type: sql_degree_type_to_native(params.degree_type),
         }),
         CugraphAlgorithmParams::MinimumSpanningTree(_) => GraphAlgorithmParams::MinimumSpanningTree(GraphMstParams),
-        CugraphAlgorithmParams::PageRankStrict(params) => GraphAlgorithmParams::PageRankStrict(GraphPageRankParams {
-            alpha: params.alpha,
-            epsilon: params.epsilon,
-            max_iterations: params.max_iterations,
-        }),
         CugraphAlgorithmParams::Leiden(params) => GraphAlgorithmParams::Leiden(GraphLeidenParams {
             max_level: params.max_level,
             resolution: params.resolution,

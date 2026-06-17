@@ -341,7 +341,7 @@ fn graph_operation_registry_pins_baseline_inventory() {
             (GraphAlgorithm::CoreNumber, "core_number", GraphLayoutRequirement::Any),
             (GraphAlgorithm::KCore, "k_core", GraphLayoutRequirement::Any),
             (GraphAlgorithm::MinimumSpanningTree, "minimum_spanning_tree", GraphLayoutRequirement::Any),
-            (GraphAlgorithm::PageRankStrict, "pagerank_strict", GraphLayoutRequirement::Transposed),
+            (GraphAlgorithm::PersonalizedPageRank, "personalized_pagerank", GraphLayoutRequirement::Transposed),
             (GraphAlgorithm::Leiden, "leiden", GraphLayoutRequirement::Forward),
             (GraphAlgorithm::Ecg, "ecg", GraphLayoutRequirement::Forward),
             (
@@ -445,7 +445,7 @@ fn graph_operation_registry_pins_descriptor_contracts() {
             (
                 GraphAlgorithm::PageRank,
                 GraphSourceVertexRequirement::None,
-                GraphWeightPolicy::Ignored,
+                GraphWeightPolicy::Optional,
                 GraphOutputSchemaKind::Fixed,
                 true,
             ),
@@ -555,9 +555,9 @@ fn graph_operation_registry_pins_descriptor_contracts() {
                 true,
             ),
             (
-                GraphAlgorithm::PageRankStrict,
+                GraphAlgorithm::PersonalizedPageRank,
                 GraphSourceVertexRequirement::None,
-                GraphWeightPolicy::Ignored,
+                GraphWeightPolicy::Optional,
                 GraphOutputSchemaKind::Fixed,
                 true,
             ),
@@ -804,6 +804,7 @@ fn edge_schema_with_edge_id(vertex_type: DataType, weight_type: DataType) -> Arc
 /// drift test.
 const CUGRAPH_RS_METHOD_TO_REGISTRY: &[(&str, &str)] = &[
     ("pagerank", "pagerank"),
+    ("personalized_pagerank", "personalized_pagerank"),
     ("bfs", "bfs"),
     ("louvain", "louvain"),
     ("eigenvector_centrality", "eigenvector_centrality"),
@@ -819,7 +820,6 @@ const CUGRAPH_RS_METHOD_TO_REGISTRY: &[(&str, &str)] = &[
     ("core_number", "core_number"),
     ("k_core", "k_core"),
     ("minimum_spanning_tree", "minimum_spanning_tree"),
-    ("pagerank_strict", "pagerank_strict"),
     ("leiden", "leiden"),
     ("ecg", "ecg"),
     ("spectral_modularity_maximization", "spectral_modularity_maximization"),
@@ -831,7 +831,7 @@ const CUGRAPH_RS_METHOD_TO_REGISTRY: &[(&str, &str)] = &[
 /// registry today, pinned by stage.
 ///
 /// **Milestone 2** (need auxiliary inputs):
-///   personalized_pagerank, hits_with_initial_hubs,
+///   hits_with_initial_hubs,
 ///   betweenness_centrality(_all), edge_betweenness_centrality(_all),
 ///   vertex_pairs, jaccard/sorensen/overlap/cosine (pair+all_pairs),
 ///   k_truss_subgraph, extract_ego, k_core_with_core_numbers,
@@ -849,11 +849,7 @@ const CUGRAPH_RS_METHOD_TO_REGISTRY: &[(&str, &str)] = &[
 const KNOWN_MISSING_CUGRAPH_RS_METHODS: &[&str] = &[
     // Milestone 2 — auxiliary inputs or variant forms of registered algorithms
     "pagerank_with",
-    "pagerank_strict_with",
-    "personalized_pagerank",
     "personalized_pagerank_with",
-    "personalized_pagerank_strict",
-    "personalized_pagerank_strict_with",
     "hits_with_initial_hubs",
     "degrees",
     "degrees_checked",

@@ -16,8 +16,9 @@ use nexus_query_engine::{
     GraphBfsParams, GraphConstructionOptions, GraphCoreNumberParams, GraphDegreesAllParams, GraphEcgParams,
     GraphEdgeColumnBindings, GraphEigenvectorCentralityParams, GraphForceAtlas2Params, GraphHitsParams,
     GraphInDegreesAllParams, GraphKCoreParams, GraphKatzCentralityParams, GraphLeidenParams, GraphLouvainParams,
-    GraphMstParams, GraphOutDegreesAllParams, GraphPageRankParams, GraphSccParams, GraphSpectralClusteringParams,
-    GraphSsspParams, GraphTriangleCountAllParams, GraphWccParams, PlanNode, QueryPlan, QueryPlanBuilder, SourceNode,
+    GraphMstParams, GraphOutDegreesAllParams, GraphPageRankParams, GraphPageRankPersonalizationInput,
+    GraphPersonalizedPageRankParams, GraphSccParams, GraphSpectralClusteringParams, GraphSsspParams,
+    GraphTriangleCountAllParams, GraphWccParams, PlanNode, QueryPlan, QueryPlanBuilder, SourceNode,
     StrictBoundedContractReport, StrictBoundedExecutionMode,
     capability::{CapabilityDecision, ContractQuality, ContractStatus, NodeOperator},
     stable_graph_result_schema,
@@ -27,6 +28,9 @@ use nexus_query_engine::{
 pub fn default_params(algorithm: GraphAlgorithm) -> GraphAlgorithmParams {
     match algorithm {
         GraphAlgorithm::PageRank => GraphAlgorithmParams::PageRank(GraphPageRankParams::default()),
+        GraphAlgorithm::PersonalizedPageRank => {
+            GraphAlgorithmParams::PersonalizedPageRank(GraphPersonalizedPageRankParams::default())
+        },
         GraphAlgorithm::Bfs => GraphAlgorithmParams::Bfs(Box::new(GraphBfsParams::new(0, None))),
         GraphAlgorithm::Louvain => GraphAlgorithmParams::Louvain(GraphLouvainParams::default()),
         GraphAlgorithm::EigenvectorCentrality => {
@@ -46,7 +50,6 @@ pub fn default_params(algorithm: GraphAlgorithm) -> GraphAlgorithmParams {
         GraphAlgorithm::CoreNumber => GraphAlgorithmParams::CoreNumber(GraphCoreNumberParams::default()),
         GraphAlgorithm::KCore => GraphAlgorithmParams::KCore(GraphKCoreParams::default()),
         GraphAlgorithm::MinimumSpanningTree => GraphAlgorithmParams::MinimumSpanningTree(GraphMstParams),
-        GraphAlgorithm::PageRankStrict => GraphAlgorithmParams::PageRankStrict(GraphPageRankParams::default()),
         GraphAlgorithm::Leiden => GraphAlgorithmParams::Leiden(GraphLeidenParams::default()),
         GraphAlgorithm::Ecg => GraphAlgorithmParams::Ecg(GraphEcgParams::default()),
         GraphAlgorithm::SpectralModularityMaximization => {
@@ -67,15 +70,39 @@ fn edge_schema() -> Arc<Schema> {
     ]))
 }
 
+fn personalization_schema() -> Arc<Schema> {
+    Arc::new(Schema::new(vec![
+        Field::new("vertex", DataType::Int64, false),
+        Field::new("value", DataType::Float64, false),
+    ]))
+}
+
 /// Build the canonical CPU-only QueryPlan for the contract checks.
 pub fn graph_plan(algorithm: GraphAlgorithm) -> QueryPlan {
     let mut builder = QueryPlanBuilder::new();
     let input = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("edges", edge_schema())));
+    let personalization =
+        if algorithm == GraphAlgorithm::PersonalizedPageRank {
+            Some(builder.add_source(SourceNode::GpuResident(GpuResidentSource::new(
+                "personalization",
+                personalization_schema(),
+            ))))
+        } else {
+            None
+        };
+    let params = if let Some(personalization) = personalization {
+        GraphAlgorithmParams::PersonalizedPageRank(GraphPersonalizedPageRankParams {
+            pagerank: GraphPageRankParams::default(),
+            personalization: GraphPageRankPersonalizationInput::new(personalization, "vertex", "value"),
+        })
+    } else {
+        default_params(algorithm)
+    };
     let spec = GraphAlgorithmSpec::with_stable_schema(
         algorithm,
         GraphEdgeColumnBindings::new("src", "dst", Some("weight")),
-        GraphConstructionOptions::default(),
-        default_params(algorithm),
+        algorithm.definition().default_graph_options(&GraphConstructionOptions::default()),
+        params,
     );
     let graph = builder.add_graph_algorithm(input, spec);
     builder.finish_with_host_sink(graph)
@@ -206,7 +233,7 @@ fn registry_pins_current_cugraph_sql_inventory() {
             CugraphAlgorithm::CoreNumber,
             CugraphAlgorithm::KCore,
             CugraphAlgorithm::MinimumSpanningTree,
-            CugraphAlgorithm::PageRankStrict,
+            CugraphAlgorithm::PersonalizedPageRank,
             CugraphAlgorithm::Leiden,
             CugraphAlgorithm::Ecg,
             CugraphAlgorithm::SpectralModularityMaximization,

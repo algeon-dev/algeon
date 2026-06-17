@@ -659,41 +659,46 @@ fn cugraph_sql_planning_parses_algorithm_options() {
         "unsupported 'degree_type' value 'both'",
     );
 
-    // PageRank strict: same options as PageRank.
+    // Personalized PageRank: PageRank options plus required personalization relation.
     let spec = parse_cugraph_algorithm_spec(
-        CugraphAlgorithm::PageRankStrict,
+        CugraphAlgorithm::PersonalizedPageRank,
         &[
             lit("graph_edges"),
             lit("src"),
             lit("dst"),
             datafusion::logical_expr::lit(ScalarValue::Null),
-            lit(r#"{"alpha":0.9,"epsilon":0.0001,"max_iterations":50}"#),
+            lit(
+                r#"{"alpha":0.9,"epsilon":0.0001,"max_iterations":50,"personalization_table":"ppr_seeds","personalization_vertex_col":"vertex","personalization_value_col":"score"}"#,
+            ),
         ],
         &config,
     )
     .unwrap();
     assert_eq!(
         spec.params,
-        CugraphAlgorithmParams::PageRankStrict(datafusion_nexus::CugraphPageRankParams {
-            alpha: 0.9,
-            epsilon: 0.0001,
-            max_iterations: 50,
+        CugraphAlgorithmParams::PersonalizedPageRank(datafusion_nexus::CugraphPersonalizedPageRankParams {
+            pagerank: datafusion_nexus::CugraphPageRankParams { alpha: 0.9, epsilon: 0.0001, max_iterations: 50 },
+            personalization: datafusion_nexus::CugraphPageRankPersonalizationTable::new(
+                datafusion_nexus::CugraphTableReference::parse("ppr_seeds").unwrap(),
+                "vertex",
+                "score",
+            ),
         }),
     );
-    // PageRank strict: epsilon=0 rejected.
+    // Personalized PageRank: required relation options are rejected when absent.
     assert_error_contains(
         parse_cugraph_algorithm_spec(
-            CugraphAlgorithm::PageRankStrict,
+            CugraphAlgorithm::PersonalizedPageRank,
             &[
                 lit("graph_edges"),
                 lit("src"),
                 lit("dst"),
                 datafusion::logical_expr::lit(ScalarValue::Null),
-                lit(r#"{"epsilon":0}"#),
+                lit(r#"{"alpha":0.9}"#),
             ],
             &config,
         ),
-        "PageRank strict epsilon must be positive",
+        "cugraph_personalized_pagerank requires options: personalization_table, personalization_vertex_col, personalization_value_col",
     );
 
     // Leiden: max_level, resolution, theta, seed.

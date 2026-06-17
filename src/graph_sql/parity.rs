@@ -141,6 +141,17 @@ pub const CUGRAPH_PARITY_SPECS: &[ParitySpec] = &[
         tolerance: ParityTolerance { abs: 1.0e-5, rel: 1.0e-3 },
     },
     ParitySpec {
+        label: "personalized_pagerank/karate@vertex=0",
+        algorithm: CugraphAlgorithm::PersonalizedPageRank,
+        dataset: "karate",
+        params_json: r#"{"alpha":0.85,"epsilon":1e-06,"max_iterations":100,"personalization_table":"ppr_seeds","personalization_vertex_col":"vertex","personalization_value_col":"value","personalization_vertices":[0],"personalization_values":[1.0]}"#,
+        seed: None,
+        truth_source: ParityTruthSource::OracleJson,
+        oracle_relpath: "karate/personalized_pagerank__vertex_0.json",
+        comparator: ParityComparator::Numeric,
+        tolerance: ParityTolerance { abs: 1.0e-5, rel: 1.0e-3 },
+    },
+    ParitySpec {
         label: "bfs/karate@src=0",
         algorithm: CugraphAlgorithm::Bfs,
         dataset: "karate",
@@ -342,18 +353,6 @@ pub const CUGRAPH_PARITY_SPECS: &[ParitySpec] = &[
         oracle_relpath: "toy_graph/minimum_spanning_tree__default.json",
         comparator: ParityComparator::EdgeSubgraph,
         tolerance: ParityTolerance::exact(),
-    },
-    // Additional oracle-backed cuGraph parity specs.
-    ParitySpec {
-        label: "pagerank_strict/karate@alpha=0.85",
-        algorithm: CugraphAlgorithm::PageRankStrict,
-        dataset: "karate",
-        params_json: r#"{"alpha":0.85,"epsilon":1e-06,"max_iterations":100}"#,
-        seed: None,
-        truth_source: ParityTruthSource::OracleJson,
-        oracle_relpath: "karate/pagerank_strict__alpha_0_85.json",
-        comparator: ParityComparator::Numeric,
-        tolerance: ParityTolerance { abs: 1.0e-5, rel: 1.0e-3 },
     },
     ParitySpec {
         label: "leiden/karate@default",

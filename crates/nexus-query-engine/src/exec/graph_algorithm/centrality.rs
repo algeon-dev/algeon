@@ -43,6 +43,94 @@ pub(super) fn execute_pagerank(
     )
 }
 
+pub(super) fn execute_personalized_pagerank(
+    context: &ExecutionContext,
+    spec: &crate::plan::GraphAlgorithmSpec,
+    mut inputs: GraphAlgorithmExecutionInputs,
+) -> Result<GraphAlgorithmExecutionResult> {
+    let input = inputs.edge_list;
+    let crate::plan::GraphAlgorithmParams::PersonalizedPageRank(params) = &spec.params else {
+        return Err(QueryError::new(
+            QueryErrorCode::InvalidPlan,
+            "nexus_query_engine.graph_algorithm.personalized_pagerank",
+            "PersonalizedPageRank graph algorithm node carried non-PersonalizedPageRank parameters",
+        )
+        .with_fact("algorithm", spec.algorithm.as_str()));
+    };
+    let personalization_frame = inputs.side_inputs.remove(&params.personalization.input).ok_or_else(|| {
+        QueryError::new(
+            QueryErrorCode::InvalidPlan,
+            "nexus_query_engine.graph_algorithm.personalized_pagerank",
+            "PersonalizedPageRank graph algorithm node is missing its personalization side input",
+        )
+        .with_fact("side_input_node", params.personalization.input)
+    })?;
+
+    let input = input.into_frame();
+    let (edges, vertex_type) = project_edge_list(&input, spec)?;
+    let options = table_graph_options(spec);
+    let ppr_params = personalized_pagerank_params(&params.pagerank)?;
+    let personalization_frame = personalization_frame.into_frame();
+    let personalization = &params.personalization;
+
+    run_with_cugraph_graph::<cugraph::Transposed, _, _>(
+        context,
+        edges,
+        options,
+        "datafusion_nexus_cugraph_personalized_pagerank",
+        |runtime, entered, graph| match vertex_type {
+            cudf::TypeId::Int32 => match graph.weight_dtype() {
+                cugraph::types::DataType::Float32 => personalized_pagerank_typed::<i32, f32>(
+                    &personalization_frame,
+                    personalization,
+                    runtime,
+                    entered,
+                    graph,
+                    &ppr_params,
+                    spec,
+                ),
+                cugraph::types::DataType::Float64 => personalized_pagerank_typed::<i32, f64>(
+                    &personalization_frame,
+                    personalization,
+                    runtime,
+                    entered,
+                    graph,
+                    &ppr_params,
+                    spec,
+                ),
+                dtype => Err(personalized_pagerank_unsupported_weight_dtype(dtype)),
+            },
+            cudf::TypeId::Int64 => match graph.weight_dtype() {
+                cugraph::types::DataType::Float32 => personalized_pagerank_typed::<i64, f32>(
+                    &personalization_frame,
+                    personalization,
+                    runtime,
+                    entered,
+                    graph,
+                    &ppr_params,
+                    spec,
+                ),
+                cugraph::types::DataType::Float64 => personalized_pagerank_typed::<i64, f64>(
+                    &personalization_frame,
+                    personalization,
+                    runtime,
+                    entered,
+                    graph,
+                    &ppr_params,
+                    spec,
+                ),
+                dtype => Err(personalized_pagerank_unsupported_weight_dtype(dtype)),
+            },
+            dtype => Err(QueryError::new(
+                QueryErrorCode::UnsupportedType,
+                "nexus_query_engine.graph_algorithm.personalized_pagerank",
+                "personalized PageRank requires Int32 or Int64 graph vertices",
+            )
+            .with_fact("vertex_dtype", format!("{dtype:?}"))),
+        },
+    )
+}
+
 pub(super) fn execute_eigenvector_centrality(
     context: &ExecutionContext,
     spec: &crate::plan::GraphAlgorithmSpec,
@@ -188,46 +276,102 @@ pub(super) fn execute_katz_centrality(
     )
 }
 
-pub(super) fn execute_pagerank_strict(
-    context: &ExecutionContext,
+fn personalized_pagerank_typed<V, W>(
+    personalization_frame: &DataFrame,
+    personalization: &crate::plan::GraphPageRankPersonalizationInput,
+    runtime: &cudf::Runtime,
+    entered: &cugraph::EnteredContext<'_>,
+    graph: &mut cugraph::Graph<cugraph::Transposed>,
+    params: &cugraph::centrality::PersonalizedPageRankParams,
     spec: &crate::plan::GraphAlgorithmSpec,
-    inputs: GraphAlgorithmExecutionInputs,
-) -> Result<GraphAlgorithmExecutionResult> {
-    let input = inputs.edge_list;
-    let crate::plan::GraphAlgorithmParams::PageRankStrict(params) = &spec.params else {
-        return Err(QueryError::new(
-            QueryErrorCode::InvalidPlan,
-            "nexus_query_engine.graph_algorithm.pagerank_strict",
-            "PageRankStrict graph algorithm node carried non-PageRankStrict parameters",
-        )
-        .with_fact("algorithm", spec.algorithm.as_str()));
+) -> Result<GraphAlgorithmExecutionResult>
+where
+    V: cudf::CudfType + cugraph::types::CugraphElement,
+    W: cudf::CudfType + cugraph::types::CugraphElement,
+{
+    let vertices = graph_series(personalization_frame, &personalization.vertex, "personalization_vertex")?;
+    let values = personalization_values_series::<W>(personalization_frame, &personalization.value)?;
+    validate_personalization_series(&vertices, "personalization_vertex")?;
+    validate_personalization_series(&values, "personalization_value")?;
+    let vertex_slice = graph_device_slice::<V>(&vertices, "personalization_vertex")?;
+    let value_slice = graph_device_slice::<W>(&values, "personalization_value")?;
+    let vertex_view = graph_device_view::<V>(&vertex_slice, "personalization_vertex")?;
+    let value_view = graph_device_view::<W>(&value_slice, "personalization_value")?;
+    let personalization = cugraph::centrality::PersonalizationVector { vertices: &vertex_view, values: &value_view };
+    let result = graph.personalized_pagerank(entered, params, &personalization).map_err(map_cugraph_error(
+        "nexus_query_engine.graph_algorithm.personalized_pagerank",
+        "cuGraph personalized PageRank failed",
+    ))?;
+    let converged = result.converged().map_or_else(|_| "unknown".to_string(), |value| value.to_string());
+    let algorithm_metadata = format!("converged={},iterations={}", converged, result.num_iterations());
+    let frame = result.to_dataframe(runtime).map_err(map_cugraph_error(
+        "nexus_query_engine.graph_algorithm.personalized_pagerank_result",
+        "failed to convert cuGraph personalized PageRank result to cudf DataFrame",
+    ))?;
+    Ok(GraphAlgorithmExecutionResult {
+        frame: normalize_graph_result_schema(frame, &spec.output_schema)?,
+        algorithm_metadata,
+    })
+}
+
+fn personalization_values_series<W>(frame: &DataFrame, column: &str) -> Result<cudf::Series>
+where W: cudf::CudfType + cugraph::types::CugraphElement {
+    let values = graph_series(frame, column, "personalization_value")?;
+    let target = match W::data_type() {
+        cugraph::types::DataType::Float32 => cudf::TypeId::Float32,
+        cugraph::types::DataType::Float64 => cudf::TypeId::Float64,
+        dtype => return Err(personalized_pagerank_unsupported_weight_dtype(dtype)),
     };
+    let dtype = values.dtype().map_err(|error| {
+        QueryError::from_cudf(
+            "nexus_query_engine.graph_algorithm.personalized_pagerank",
+            "failed to inspect personalized PageRank value dtype",
+            error,
+        )
+        .with_fact("column", column)
+    })?;
+    if dtype.id() == target {
+        return Ok(values);
+    }
+    if !matches!(dtype.id(), cudf::TypeId::Float32 | cudf::TypeId::Float64) {
+        return Err(QueryError::new(
+            QueryErrorCode::UnsupportedType,
+            "nexus_query_engine.graph_algorithm.personalized_pagerank",
+            "personalized PageRank value column type is unsupported",
+        )
+        .with_fact("column", column)
+        .with_fact("dtype", format!("{dtype:?}")));
+    }
+    values.astype(cudf::DataType::new(target)).map_err(|error| {
+        QueryError::from_cudf(
+            "nexus_query_engine.graph_algorithm.personalized_pagerank",
+            "failed to cast personalized PageRank values to the graph weight dtype",
+            error,
+        )
+        .with_fact("column", column)
+        .with_fact("source_dtype", format!("{dtype:?}"))
+        .with_fact("target_dtype", format!("{target:?}"))
+    })
+}
 
-    let input = input.into_frame();
-    let (edges, _) = project_edge_list(&input, spec)?;
-    let options = table_graph_options(spec);
-    let pr_params = pagerank_params(params)?;
-
-    run_with_cugraph_graph::<cugraph::Transposed, _, _>(
-        context,
-        edges,
-        options,
-        "datafusion_nexus_cugraph_pagerank_strict",
-        |runtime, entered, graph| {
-            let result = graph.pagerank_strict(entered, &pr_params).map_err(map_cugraph_error(
-                "nexus_query_engine.graph_algorithm.pagerank_strict",
-                "cuGraph PageRank strict failed",
-            ))?;
-            let converged = result.converged().map_or_else(|_| "unknown".to_string(), |value| value.to_string());
-            let algorithm_metadata = format!("converged={},iterations={}", converged, result.num_iterations());
-            let frame = result.to_dataframe(runtime).map_err(map_cugraph_error(
-                "nexus_query_engine.graph_algorithm.pagerank_strict_result",
-                "failed to convert cuGraph PageRank strict result to cudf DataFrame",
-            ))?;
-            Ok(GraphAlgorithmExecutionResult {
-                frame: normalize_graph_result_schema(frame, &spec.output_schema)?,
-                algorithm_metadata,
-            })
-        },
+fn validate_personalization_series(series: &cudf::Series, role: &'static str) -> Result<()> {
+    if series.null_count() == 0 {
+        return Ok(());
+    }
+    Err(QueryError::new(
+        QueryErrorCode::InvalidPlan,
+        "nexus_query_engine.graph_algorithm.personalized_pagerank",
+        "personalized PageRank side-input columns must be non-null",
     )
+    .with_fact("role", role)
+    .with_fact("null_count", series.null_count()))
+}
+
+fn personalized_pagerank_unsupported_weight_dtype(dtype: cugraph::types::DataType) -> QueryError {
+    QueryError::new(
+        QueryErrorCode::UnsupportedType,
+        "nexus_query_engine.graph_algorithm.personalized_pagerank",
+        "personalized PageRank requires Float32 or Float64 graph weights",
+    )
+    .with_fact("weight_dtype", dtype.to_string())
 }

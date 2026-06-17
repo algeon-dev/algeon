@@ -75,8 +75,8 @@ async fn cugraph_metadata_list_algorithms_reports_allowlist_state() {
     assert_eq!(string_value(batch, 0, 2), "cugraph_pagerank");
     assert!(bool_value(batch, 1, 2));
     assert!(bool_value(batch, 4, 2));
-    assert!(!bool_value(batch, 5, 2));
-    assert_eq!(string_value(batch, 6, 2), "ignored");
+    assert!(bool_value(batch, 5, 2));
+    assert_eq!(string_value(batch, 6, 2), "optional");
     assert_eq!(string_value(batch, 7, 2), "fixed");
     assert!(!bool_value(batch, 8, 2));
     assert_eq!(json_value(string_value(batch, 10, 2)), serde_json::json!([1, 3, 4, 5]));
@@ -473,6 +473,7 @@ async fn cugraph_metadata_validate_call_reports_unsupported_force_atlas2_overlap
     let state = SessionStateBuilder::new_with_default_features().with_cugraph_sql(CugraphSqlConfig::default()).build();
     let ctx = SessionContext::new_with_state(state);
     register_edge_memtable(&ctx, "edges", DataType::Int64, DataType::Int64, DataType::Float64);
+    register_personalization_memtable(&ctx, "ppr_seeds", DataType::Int64, DataType::Float64);
 
     let batch = validate_call_batch(
         &ctx,
@@ -619,6 +620,8 @@ async fn cugraph_metadata_registry_matches_native_graph_descriptors() {
         assert!(string_value(batch, 7, row).starts_with(entry.sql_function_name));
         let expected_arg_counts = if entry.algorithm == CugraphAlgorithm::MinimumSpanningTree {
             serde_json::json!([4, 5])
+        } else if entry.algorithm == CugraphAlgorithm::PersonalizedPageRank {
+            serde_json::json!([5])
         } else if descriptor.source_vertex_requirement().requires_source_vertex() {
             serde_json::json!([2, 4, 5, 6])
         } else {
@@ -679,6 +682,7 @@ async fn cugraph_validate_call_source_and_weight_policy_match_metadata() {
     let state = SessionStateBuilder::new_with_default_features().with_cugraph_sql(CugraphSqlConfig::default()).build();
     let ctx = SessionContext::new_with_state(state);
     register_edge_memtable(&ctx, "edges", DataType::Int64, DataType::Int64, DataType::Float64);
+    register_personalization_memtable(&ctx, "ppr_seeds", DataType::Int64, DataType::Float64);
 
     for entry in CUGRAPH_OPERATION_REGISTRY {
         let function = entry.sql_function_name;
@@ -697,6 +701,8 @@ async fn cugraph_validate_call_source_and_weight_policy_match_metadata() {
 
         let call_json = if entry.native_algorithm.requires_source_vertex() {
             r#"{"source_vertex":0,"src_col":"src","dst_col":"dst"}"#
+        } else if entry.algorithm == CugraphAlgorithm::PersonalizedPageRank {
+            r#"{"src_col":"src","dst_col":"dst","options":{"personalization_table":"ppr_seeds","personalization_vertex_col":"vertex","personalization_value_col":"value"}}"#
         } else {
             r#"{"src_col":"src","dst_col":"dst"}"#
         };

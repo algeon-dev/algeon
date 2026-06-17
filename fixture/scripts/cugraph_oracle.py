@@ -156,16 +156,62 @@ def _build_graph(cudf_mod, cugraph_mod, edges, directed: bool, edge_attr: bool):
     return graph
 
 
+def _allow_nonconvergence_dataframe(result):
+    """Return the DataFrame from cuGraph's allow-nonconvergence result."""
+    if isinstance(result, tuple):
+        return result[0]
+    return result
+
+
 def _pagerank(cugraph_mod, graph, params: Dict[str, Any]) -> Dict[str, Any]:
     alpha = float(params.get("alpha", 0.85))
     epsilon = float(params.get("epsilon", 1.0e-6))
     max_iterations = int(params.get("max_iterations", 100))
-    df = cugraph_mod.pagerank(
+    df = _allow_nonconvergence_dataframe(cugraph_mod.pagerank(
         graph,
         alpha=alpha,
         max_iter=max_iterations,
         tol=epsilon,
-    ).sort_values("vertex").reset_index(drop=True)
+        fail_on_nonconvergence=False,
+    )).sort_values("vertex").reset_index(drop=True)
+    return {
+        "vertex": [int(v) for v in df["vertex"].to_pandas().tolist()],
+        "value": [float(v) for v in df["pagerank"].to_pandas().tolist()],
+    }
+
+
+def _personalized_pagerank(cugraph_mod, graph, params: Dict[str, Any]) -> Dict[str, Any]:
+    import cudf as cudf_mod
+
+    alpha = float(params.get("alpha", 0.85))
+    epsilon = float(params.get("epsilon", 1.0e-6))
+    max_iterations = int(params.get("max_iterations", 100))
+    personalization_vertices = params.get("personalization_vertices", [0])
+    personalization_values = params.get("personalization_values", [1.0])
+    if len(personalization_vertices) != len(personalization_values):
+        raise ValueError("personalization_vertices and personalization_values must have the same length")
+    vertex_dtype = graph.edgelist.edgelist_df.dtypes.iloc[0]
+    value_dtype = graph.edgelist.edgelist_df["weights"].dtype
+    personalization = cudf_mod.DataFrame(
+        {
+            "vertex": cudf_mod.Series(
+                [int(vertex) for vertex in personalization_vertices],
+                dtype=vertex_dtype,
+            ),
+            "values": cudf_mod.Series(
+                [float(value) for value in personalization_values],
+                dtype=value_dtype,
+            ),
+        }
+    )
+    df = _allow_nonconvergence_dataframe(cugraph_mod.pagerank(
+        graph,
+        alpha=alpha,
+        max_iter=max_iterations,
+        tol=epsilon,
+        personalization=personalization,
+        fail_on_nonconvergence=False,
+    )).sort_values("vertex").reset_index(drop=True)
     return {
         "vertex": [int(v) for v in df["vertex"].to_pandas().tolist()],
         "value": [float(v) for v in df["pagerank"].to_pandas().tolist()],
@@ -475,26 +521,6 @@ def _minimum_spanning_tree(cugraph_mod, graph, params: Dict[str, Any]) -> Dict[s
     }
 
 
-def _pagerank_strict(cugraph_mod, graph, params: Dict[str, Any]) -> Dict[str, Any]:
-    """PageRank strict variant — errors on non-convergence."""
-    alpha = float(params.get("alpha", 0.85))
-    epsilon = float(params.get("epsilon", 1.0e-6))
-    max_iterations = int(params.get("max_iterations", 100))
-    # Python cuGraph's `pagerank` defaults `fail_on_nonconvergence=True`,
-    # which is the strict behavior (raises if convergence is not reached within
-    # max_iter). No special flag is needed.
-    df = cugraph_mod.pagerank(
-        graph,
-        alpha=alpha,
-        max_iter=max_iterations,
-        tol=epsilon,
-    ).sort_values("vertex").reset_index(drop=True)
-    return {
-        "vertex": [int(v) for v in df["vertex"].to_pandas().tolist()],
-        "value": [float(v) for v in df["pagerank"].to_pandas().tolist()],
-    }
-
-
 def _leiden(cugraph_mod, graph, params: Dict[str, Any]) -> Dict[str, Any]:
     # Python cuGraph uses `max_iter` (not `max_level`) and `random_state` (not `seed`).
     max_iter = int(params.get("max_level", 100))
@@ -711,11 +737,10 @@ ALGORITHMS = {
         "directed": False,
         "run": _minimum_spanning_tree,
     },
-    # PageRank strict: same layout/directed as pagerank.
-    "pagerank_strict": {
+    "personalized_pagerank": {
         "layout": "transposed",
         "directed": True,
-        "run": _pagerank_strict,
+        "run": _personalized_pagerank,
     },
     # Leiden/ECG/spectral/balanced-cut require undirected graphs.
     "leiden": {

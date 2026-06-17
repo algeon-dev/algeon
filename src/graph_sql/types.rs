@@ -12,6 +12,7 @@ use super::plan_error;
 use crate::NativeCudfExecutionConfig;
 
 pub const CUGRAPH_PAGERANK_FUNCTION: &str = "cugraph_pagerank";
+pub const CUGRAPH_PERSONALIZED_PAGERANK_FUNCTION: &str = "cugraph_personalized_pagerank";
 pub const CUGRAPH_BFS_FUNCTION: &str = "cugraph_bfs";
 pub const CUGRAPH_LOUVAIN_FUNCTION: &str = "cugraph_louvain";
 pub const CUGRAPH_EIGENVECTOR_CENTRALITY_FUNCTION: &str = "cugraph_eigenvector_centrality";
@@ -27,7 +28,6 @@ pub const CUGRAPH_TRIANGLE_COUNT_ALL_FUNCTION: &str = "cugraph_triangle_count_al
 pub const CUGRAPH_CORE_NUMBER_FUNCTION: &str = "cugraph_core_number";
 pub const CUGRAPH_K_CORE_FUNCTION: &str = "cugraph_k_core";
 pub const CUGRAPH_MINIMUM_SPANNING_TREE_FUNCTION: &str = "cugraph_minimum_spanning_tree";
-pub const CUGRAPH_PAGERANK_STRICT_FUNCTION: &str = "cugraph_pagerank_strict";
 pub const CUGRAPH_LEIDEN_FUNCTION: &str = "cugraph_leiden";
 pub const CUGRAPH_ECG_FUNCTION: &str = "cugraph_ecg";
 pub const CUGRAPH_SPECTRAL_MODULARITY_MAXIMIZATION_FUNCTION: &str = "cugraph_spectral_modularity_maximization";
@@ -94,6 +94,7 @@ impl CugraphSqlConfig {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum CugraphAlgorithm {
     PageRank,
+    PersonalizedPageRank,
     Bfs,
     Louvain,
     EigenvectorCentrality,
@@ -109,7 +110,6 @@ pub enum CugraphAlgorithm {
     CoreNumber,
     KCore,
     MinimumSpanningTree,
-    PageRankStrict,
     Leiden,
     Ecg,
     SpectralModularityMaximization,
@@ -261,9 +261,9 @@ pub const CUGRAPH_OPERATION_REGISTRY: &[CugraphOperationDefinition] = &[
         sql_function_name: CUGRAPH_MINIMUM_SPANNING_TREE_FUNCTION,
     },
     CugraphOperationDefinition {
-        algorithm: CugraphAlgorithm::PageRankStrict,
-        native_algorithm: NativeGraphAlgorithm::PageRankStrict,
-        sql_function_name: CUGRAPH_PAGERANK_STRICT_FUNCTION,
+        algorithm: CugraphAlgorithm::PersonalizedPageRank,
+        native_algorithm: NativeGraphAlgorithm::PersonalizedPageRank,
+        sql_function_name: CUGRAPH_PERSONALIZED_PAGERANK_FUNCTION,
     },
     CugraphOperationDefinition {
         algorithm: CugraphAlgorithm::Leiden,
@@ -405,6 +405,7 @@ impl CugraphGraphConstructionPolicy {
 #[derive(Debug, Clone, PartialEq)]
 pub enum CugraphAlgorithmParams {
     PageRank(CugraphPageRankParams),
+    PersonalizedPageRank(CugraphPersonalizedPageRankParams),
     Bfs(Box<CugraphBfsParams>),
     Louvain(CugraphLouvainParams),
     EigenvectorCentrality(CugraphEigenvectorCentralityParams),
@@ -420,7 +421,6 @@ pub enum CugraphAlgorithmParams {
     CoreNumber(CugraphCoreNumberParams),
     KCore(CugraphKCoreParams),
     MinimumSpanningTree(CugraphMstParams),
-    PageRankStrict(CugraphPageRankParams),
     Leiden(CugraphLeidenParams),
     Ecg(CugraphEcgParams),
     SpectralModularityMaximization(CugraphSpectralClusteringParams),
@@ -439,6 +439,16 @@ impl CugraphAlgorithmParams {
                 epsilon: params.epsilon,
                 max_iterations: params.max_iterations,
             }),
+            NativeGraphAlgorithmParams::PersonalizedPageRank(params) => {
+                Self::PersonalizedPageRank(CugraphPersonalizedPageRankParams {
+                    pagerank: CugraphPageRankParams {
+                        alpha: params.pagerank.alpha,
+                        epsilon: params.pagerank.epsilon,
+                        max_iterations: params.pagerank.max_iterations,
+                    },
+                    personalization: CugraphPageRankPersonalizationTable::default(),
+                })
+            },
             NativeGraphAlgorithmParams::Bfs(params) => Self::Bfs(Box::new(CugraphBfsParams {
                 source_vertex: source_vertex.unwrap_or(CugraphBfsSourceVertex::Int64(params.source_vertex)),
                 depth_limit: params.depth_limit,
@@ -490,11 +500,6 @@ impl CugraphAlgorithmParams {
                 degree_type: CugraphKCoreDegreeType::from_native(params.degree_type),
             }),
             NativeGraphAlgorithmParams::MinimumSpanningTree(_) => Self::MinimumSpanningTree(CugraphMstParams),
-            NativeGraphAlgorithmParams::PageRankStrict(params) => Self::PageRankStrict(CugraphPageRankParams {
-                alpha: params.alpha,
-                epsilon: params.epsilon,
-                max_iterations: params.max_iterations,
-            }),
             NativeGraphAlgorithmParams::Leiden(params) => Self::Leiden(CugraphLeidenParams {
                 max_level: params.max_level,
                 resolution: params.resolution,
@@ -561,6 +566,44 @@ pub struct CugraphPageRankParams {
 impl Default for CugraphPageRankParams {
     fn default() -> Self {
         Self { alpha: 0.85, epsilon: 1e-6, max_iterations: 100 }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct CugraphPersonalizedPageRankParams {
+    pub pagerank: CugraphPageRankParams,
+    pub personalization: CugraphPageRankPersonalizationTable,
+}
+
+impl Default for CugraphPersonalizedPageRankParams {
+    fn default() -> Self {
+        Self {
+            pagerank: CugraphPageRankParams::default(),
+            personalization: CugraphPageRankPersonalizationTable::default(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CugraphPageRankPersonalizationTable {
+    pub table_name: CugraphTableReference,
+    pub vertex_col: String,
+    pub value_col: String,
+}
+
+impl CugraphPageRankPersonalizationTable {
+    pub fn new(table_name: CugraphTableReference, vertex_col: impl Into<String>, value_col: impl Into<String>) -> Self {
+        Self { table_name, vertex_col: vertex_col.into(), value_col: value_col.into() }
+    }
+}
+
+impl Default for CugraphPageRankPersonalizationTable {
+    fn default() -> Self {
+        Self::new(
+            CugraphTableReference::parse("personalization").expect("default personalization table name is valid"),
+            "vertex",
+            "value",
+        )
     }
 }
 
