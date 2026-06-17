@@ -3,9 +3,8 @@
 use std::ptr;
 
 use cugraph_sys::{
-    cugraph_centrality_result_free, cugraph_centrality_result_t, cugraph_error_t, cugraph_pagerank,
-    cugraph_pagerank_allow_nonconvergence, cugraph_personalized_pagerank,
-    cugraph_personalized_pagerank_allow_nonconvergence,
+    cugraph_centrality_result_free, cugraph_centrality_result_t, cugraph_error_t,
+    cugraph_pagerank_allow_nonconvergence, cugraph_personalized_pagerank_allow_nonconvergence,
 };
 
 use super::PageRankResult;
@@ -140,10 +139,8 @@ pub struct PersonalizationVector<'a, V: CugraphElement = i32, W: CugraphElement 
 
 #[derive(Debug, Clone, Copy)]
 enum PageRankCall {
-    StandardAllowNonconvergence,
-    StandardStrict,
-    PersonalizedAllowNonconvergence,
-    PersonalizedStrict,
+    Standard,
+    Personalized,
 }
 
 /// Compute PageRank on a graph.
@@ -168,30 +165,8 @@ pub(crate) fn pagerank<V: CugraphElement, W: CugraphElement>(
         precomputed_weights,
         initial_guess,
         None,
-        PageRankCall::StandardAllowNonconvergence,
+        PageRankCall::Standard,
         "pagerank",
-    )
-}
-
-pub(crate) fn pagerank_strict<V: CugraphElement, W: CugraphElement>(
-    handle: &EnteredContext<'_>,
-    graph: &mut Graph<Transposed>,
-    params: &PageRankParams,
-    precomputed_weights: Option<&PrecomputedWeights<'_, V, W>>,
-    initial_guess: Option<&InitialGuess<'_, V, W>>,
-) -> Result<PageRankResult> {
-    pagerank_impl(
-        handle,
-        graph,
-        params.alpha,
-        params.epsilon,
-        params.max_iterations,
-        params.do_expensive_check,
-        precomputed_weights,
-        initial_guess,
-        None,
-        PageRankCall::StandardStrict,
-        "pagerank_strict",
     )
 }
 
@@ -213,31 +188,8 @@ pub(crate) fn personalized_pagerank<V: CugraphElement, W: CugraphElement>(
         precomputed_weights,
         initial_guess,
         Some(personalization),
-        PageRankCall::PersonalizedAllowNonconvergence,
+        PageRankCall::Personalized,
         "personalized_pagerank",
-    )
-}
-
-pub(crate) fn personalized_pagerank_strict<V: CugraphElement, W: CugraphElement>(
-    handle: &EnteredContext<'_>,
-    graph: &mut Graph<Transposed>,
-    params: &PersonalizedPageRankParams,
-    personalization: &PersonalizationVector<'_, V, W>,
-    precomputed_weights: Option<&PrecomputedWeights<'_, V, W>>,
-    initial_guess: Option<&InitialGuess<'_, V, W>>,
-) -> Result<PageRankResult> {
-    pagerank_impl(
-        handle,
-        graph,
-        params.alpha,
-        params.epsilon,
-        params.max_iterations,
-        params.do_expensive_check,
-        precomputed_weights,
-        initial_guess,
-        Some(personalization),
-        PageRankCall::PersonalizedStrict,
-        "personalized_pagerank_strict",
     )
 }
 
@@ -314,7 +266,7 @@ fn pagerank_impl<V: CugraphElement, W: CugraphElement>(
     // valid out-pointers.
     unsafe {
         let code = match call {
-            PageRankCall::StandardAllowNonconvergence => cugraph_pagerank_allow_nonconvergence(
+            PageRankCall::Standard => cugraph_pagerank_allow_nonconvergence(
                 handle.handle_ptr(),
                 graph.as_ptr(),
                 pw_verts_ptr,
@@ -328,37 +280,7 @@ fn pagerank_impl<V: CugraphElement, W: CugraphElement>(
                 &mut result,
                 &mut error,
             ),
-            PageRankCall::StandardStrict => cugraph_pagerank(
-                handle.handle_ptr(),
-                graph.as_ptr(),
-                pw_verts_ptr,
-                pw_sums_ptr,
-                ig_verts_ptr,
-                ig_vals_ptr,
-                alpha.get(),
-                epsilon.get(),
-                usize::from(max_iterations),
-                to_bool_t(do_expensive_check),
-                &mut result,
-                &mut error,
-            ),
-            PageRankCall::PersonalizedAllowNonconvergence => cugraph_personalized_pagerank_allow_nonconvergence(
-                handle.handle_ptr(),
-                graph.as_ptr(),
-                pw_verts_ptr,
-                pw_sums_ptr,
-                ig_verts_ptr,
-                ig_vals_ptr,
-                personalization_verts_ptr,
-                personalization_vals_ptr,
-                alpha.get(),
-                epsilon.get(),
-                usize::from(max_iterations),
-                to_bool_t(do_expensive_check),
-                &mut result,
-                &mut error,
-            ),
-            PageRankCall::PersonalizedStrict => cugraph_personalized_pagerank(
+            PageRankCall::Personalized => cugraph_personalized_pagerank_allow_nonconvergence(
                 handle.handle_ptr(),
                 graph.as_ptr(),
                 pw_verts_ptr,

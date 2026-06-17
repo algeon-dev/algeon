@@ -37,9 +37,7 @@ fn bindings_include_critical_core_symbols() {
         "cugraph_edgelist_get_destinations",
         "cugraph_edgelist_free",
         // Centrality
-        "cugraph_pagerank",
         "cugraph_pagerank_allow_nonconvergence",
-        "cugraph_personalized_pagerank",
         "cugraph_personalized_pagerank_allow_nonconvergence",
         "cugraph_eigenvector_centrality",
         "cugraph_katz_centrality",

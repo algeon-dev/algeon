@@ -1064,27 +1064,6 @@ impl Graph<Transposed> {
         crate::centrality::pagerank::pagerank(handle, self, params, precomputed_weights, initial_guess)
     }
 
-    /// Compute PageRank using the strict native API, returning an error if the
-    /// solver does not converge within `max_iterations`.
-    pub fn pagerank_strict(
-        &mut self,
-        handle: &EnteredContext<'_>,
-        params: &crate::centrality::PageRankParams,
-    ) -> Result<crate::centrality::PageRankResult> {
-        crate::centrality::pagerank::pagerank_strict::<i32, f32>(handle, self, params, None, None)
-    }
-
-    /// Compute strict PageRank with optional precomputed weights and/or initial guess.
-    pub fn pagerank_strict_with<V: CugraphElement, W: CugraphElement>(
-        &mut self,
-        handle: &EnteredContext<'_>,
-        params: &crate::centrality::PageRankParams,
-        precomputed_weights: Option<&crate::centrality::PrecomputedWeights<'_, V, W>>,
-        initial_guess: Option<&crate::centrality::InitialGuess<'_, V, W>>,
-    ) -> Result<crate::centrality::PageRankResult> {
-        crate::centrality::pagerank::pagerank_strict(handle, self, params, precomputed_weights, initial_guess)
-    }
-
     /// Compute personalized PageRank using the allow-nonconvergence native API.
     pub fn personalized_pagerank<V: CugraphElement, W: CugraphElement>(
         &mut self,
@@ -1105,37 +1084,6 @@ impl Graph<Transposed> {
         initial_guess: Option<&crate::centrality::InitialGuess<'_, V, W>>,
     ) -> Result<crate::centrality::PageRankResult> {
         crate::centrality::pagerank::personalized_pagerank(
-            handle,
-            self,
-            params,
-            personalization,
-            precomputed_weights,
-            initial_guess,
-        )
-    }
-
-    /// Compute personalized PageRank using the strict native API, returning an
-    /// error if the solver does not converge within `max_iterations`.
-    pub fn personalized_pagerank_strict<V: CugraphElement, W: CugraphElement>(
-        &mut self,
-        handle: &EnteredContext<'_>,
-        params: &crate::centrality::PersonalizedPageRankParams,
-        personalization: &crate::centrality::PersonalizationVector<'_, V, W>,
-    ) -> Result<crate::centrality::PageRankResult> {
-        crate::centrality::pagerank::personalized_pagerank_strict(handle, self, params, personalization, None, None)
-    }
-
-    /// Compute strict personalized PageRank with optional precomputed weights
-    /// and/or initial guess.
-    pub fn personalized_pagerank_strict_with<V: CugraphElement, W: CugraphElement>(
-        &mut self,
-        handle: &EnteredContext<'_>,
-        params: &crate::centrality::PersonalizedPageRankParams,
-        personalization: &crate::centrality::PersonalizationVector<'_, V, W>,
-        precomputed_weights: Option<&crate::centrality::PrecomputedWeights<'_, V, W>>,
-        initial_guess: Option<&crate::centrality::InitialGuess<'_, V, W>>,
-    ) -> Result<crate::centrality::PageRankResult> {
-        crate::centrality::pagerank::personalized_pagerank_strict(
             handle,
             self,
             params,
