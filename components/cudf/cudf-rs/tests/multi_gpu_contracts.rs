@@ -1309,6 +1309,36 @@ fn conditional_join_indices_without_relocation_reject_cross_device_runtime_input
 }
 
 #[test]
+fn conditional_join_indices_in_without_relocation_reject_cross_device_runtime_inputs() {
+    if !should_run_multi_gpu_test() {
+        return;
+    }
+
+    let (left_rt, right_rt) = first_two_test_runtimes();
+
+    let left =
+        cudf::core::Table::from_columns(vec![left_rt.series(&[1i32, 2, 3]).unwrap().as_column().deep_copy().unwrap()])
+            .unwrap();
+    let right =
+        cudf::core::Table::from_columns(vec![right_rt.series(&[2i32, 3, 4]).unwrap().as_column().deep_copy().unwrap()])
+            .unwrap();
+    let predicate =
+        AstExpression::less(AstExpression::left_column(0).unwrap(), AstExpression::right_column(0).unwrap()).unwrap();
+    let ctx = ExecutionOverrides::new().with_stream(left_rt.stream()).with_memory_resource(left_rt.memory_resource());
+
+    let err = match join::conditional_inner_join_indices_in(
+        &left.testing_view().unwrap(),
+        &right.testing_view().unwrap(),
+        &predicate,
+        &ctx,
+    ) {
+        Ok(_) => panic!("cross-device conditional join indices should fail until inputs are explicitly relocated"),
+        Err(err) => err,
+    };
+    assert_cross_device_relocation_error(err, "join::conditional_inner_join_indices_in");
+}
+
+#[test]
 fn mixed_join_indices_without_relocation_reject_cross_device_runtime_inputs() {
     if !should_run_multi_gpu_test() {
         return;
@@ -1343,6 +1373,45 @@ fn mixed_join_indices_without_relocation_reject_cross_device_runtime_inputs() {
         Err(err) => err,
     };
     assert_cross_device_relocation_error(err, "join::mixed_inner_join_indices");
+}
+
+#[test]
+fn mixed_join_indices_in_without_relocation_reject_cross_device_runtime_inputs() {
+    if !should_run_multi_gpu_test() {
+        return;
+    }
+
+    let (left_rt, right_rt) = first_two_test_runtimes();
+
+    let left_equality =
+        cudf::core::Table::from_columns(vec![left_rt.series(&[1i32, 2, 3]).unwrap().as_column().deep_copy().unwrap()])
+            .unwrap();
+    let left_conditional =
+        cudf::core::Table::from_columns(vec![left_rt.series(&[5i32, 6, 7]).unwrap().as_column().deep_copy().unwrap()])
+            .unwrap();
+    let right_equality =
+        cudf::core::Table::from_columns(vec![right_rt.series(&[1i32, 2, 3]).unwrap().as_column().deep_copy().unwrap()])
+            .unwrap();
+    let right_conditional =
+        cudf::core::Table::from_columns(vec![right_rt.series(&[6i32, 7, 8]).unwrap().as_column().deep_copy().unwrap()])
+            .unwrap();
+    let predicate =
+        AstExpression::less(AstExpression::left_column(0).unwrap(), AstExpression::right_column(0).unwrap()).unwrap();
+    let ctx = ExecutionOverrides::new().with_stream(left_rt.stream()).with_memory_resource(left_rt.memory_resource());
+
+    let err = match join::mixed_inner_join_indices_in(
+        &left_equality.testing_view().unwrap(),
+        &right_equality.testing_view().unwrap(),
+        &left_conditional.testing_view().unwrap(),
+        &right_conditional.testing_view().unwrap(),
+        &predicate,
+        join::NullEquality::Equal,
+        &ctx,
+    ) {
+        Ok(_) => panic!("cross-device mixed join indices should fail until inputs are explicitly relocated"),
+        Err(err) => err,
+    };
+    assert_cross_device_relocation_error(err, "join::mixed_inner_join_indices_in");
 }
 
 #[test]
