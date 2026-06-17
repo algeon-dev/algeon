@@ -7,6 +7,7 @@
 #include "binary.h"
 #include "copying.h"
 #include "datetime.h"
+#include "device.h"
 #include "execution_context.h"
 #include "filter.h"
 #include "groupby.h"
@@ -68,6 +69,8 @@ static_assert(sizeof(cudf_stream_compaction_null_equality_t) == sizeof(int32_t),
 static_assert(sizeof(cudf_stream_compaction_nan_equality_t) == sizeof(int32_t),
               "cudf_stream_compaction_nan_equality_t must be 32-bit");
 static_assert(sizeof(cudf_strip_side_t) == sizeof(int32_t), "cudf_strip_side_t must be 32-bit");
+static_assert(sizeof(cudf_device_attribute_t) == sizeof(int32_t),
+              "cudf_device_attribute_t must be 32-bit");
 static_assert(sizeof(cudf_arrow_device_export_materialization_t) == sizeof(int32_t),
               "cudf_arrow_device_export_materialization_t must be 32-bit");
 static_assert(sizeof(cudf_arrow_device_import_materialization_t) == sizeof(int32_t),
@@ -153,6 +156,10 @@ static_assert(CUDF_ERROR_UNKNOWN == 8);
 static_assert(CUDF_ERROR_FATAL_CUDA == 9);
 static_assert(CUDF_ERROR_INVALID_ARGUMENT == 10);
 static_assert(CUDF_ERROR_UNSUPPORTED == 11);
+
+static_assert(CUDF_DEVICE_ATTRIBUTE_MULTIPROCESSOR_COUNT == 1);
+static_assert(CUDF_DEVICE_ATTRIBUTE_MANAGED_MEMORY == 2);
+static_assert(CUDF_DEVICE_ATTRIBUTE_CONCURRENT_MANAGED_ACCESS == 3);
 
 static_assert(CUDF_AST_TABLE_REFERENCE_LEFT == static_cast<int>(cudf::ast::table_reference::LEFT));
 static_assert(CUDF_AST_TABLE_REFERENCE_RIGHT ==

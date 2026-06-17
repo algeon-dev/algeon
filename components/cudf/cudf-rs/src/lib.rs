@@ -214,6 +214,7 @@
 //! ```
 
 pub mod core;
+pub mod device;
 pub mod frame;
 pub mod hash;
 pub mod interop;
@@ -237,6 +238,7 @@ pub use core::{
     types::{CudfType, DataType, NullEquality, NullPolicy, TimestampResolution, TypeId},
 };
 
+pub use device::inventory::DeviceMemory;
 pub use frame::{
     dataframe::{
         DataFrame, DataFrameConditionalFullJoinSizeData, DataFrameCrossJoinOptions, DataFrameFilteredJoin,

@@ -22,7 +22,7 @@ use std::{
 };
 
 use cudf::{
-    AggSpec, DataFrame, GroupByAgg, Series, SortOptions,
+    AggSpec, DataFrame, DeviceId, GroupByAgg, Series, SortOptions,
     core::{Column, Scalar, Table, memory::DeviceMemoryResource},
     runtime::{CudaEvent, CudaStream},
 };
@@ -74,6 +74,20 @@ fn cuda_event_is_send_sync() {
 #[test]
 fn device_memory_resource_is_send_sync() {
     assert_send_sync::<DeviceMemoryResource>();
+}
+
+#[test]
+fn device_inventory_reports_nonzero_memory_and_sm_count() {
+    let device = DeviceId::DEFAULT;
+
+    let memory = device.available_memory().unwrap();
+    let sm_count = device.multiprocessor_count().unwrap();
+    let pci_bus_id = device.pci_bus_id().unwrap();
+
+    assert!(memory.total_bytes > 0);
+    assert!(memory.free_bytes <= memory.total_bytes);
+    assert!(sm_count > 0);
+    assert!(!pci_bus_id.is_empty());
 }
 
 #[test]

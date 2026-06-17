@@ -3,6 +3,10 @@
 int cudf_rust_c_header_smoke(void)
 {
   cudf_status_t (*f1)(cudf_stream_handle*)                    = &cudf_stream_create;
+  cudf_status_t (*f1_device_pci_bus_id)(int32_t, char*, size_t) =
+    &cudf_cuda_device_pci_bus_id;
+  cudf_status_t (*f1_device_memory)(int32_t, size_t*, size_t*) = &cudf_device_memory_info;
+  cudf_status_t (*f1_device_attr)(int32_t, int32_t, int32_t*)  = &cudf_device_attribute;
   void (*f2)(cudf_stream_handle)                              = &cudf_stream_destroy;
   cudf_status_t (*f2b)(cudf_stream_handle, void**)            = &cudf_stream_raw;
   cudf_status_t (*f2b2)(void*)                                = &cudf_raw_cuda_stream_synchronize;
@@ -183,6 +187,7 @@ int cudf_rust_c_header_smoke(void)
     &cudf_reduce_aggregation_create_nunique;
   cudf_exec_options_t opts = CUDF_EXEC_OPTIONS_INITIALIZER;
   cudf_nullable_join_t j1  = CUDF_NULLABLE_JOIN_YES;
+  cudf_device_attribute_t device_attr = CUDF_DEVICE_ATTRIBUTE_MULTIPROCESSOR_COUNT;
 
   void (*f24)(cudf_device_buffer_handle)                   = &cudf_device_buffer_destroy;
   cudf_status_t (*f25)(cudf_device_buffer_handle, void**)  = &cudf_device_buffer_data;
@@ -258,6 +263,9 @@ int cudf_rust_c_header_smoke(void)
   cudf_datetime_component_t c1 = CUDF_DATETIME_COMPONENT_YEAR;
 
   (void)f1;
+  (void)f1_device_pci_bus_id;
+  (void)f1_device_memory;
+  (void)f1_device_attr;
   (void)f2;
   (void)f2b;
   (void)f2b2;
@@ -349,6 +357,7 @@ int cudf_rust_c_header_smoke(void)
   (void)f51;
   (void)c1;
   (void)j1;
+  (void)device_attr;
   (void)opts;
   return 0;
 }
