@@ -1,19 +1,23 @@
 use std::sync::Arc;
 
-use arrow::datatypes::{DataType, SchemaRef};
+use arrow::{
+    array::{ArrayRef, Int32Array, Int64Array},
+    datatypes::{DataType, Field, Schema, SchemaRef},
+    record_batch::RecordBatch,
+};
 use datafusion::{
-    catalog::{Session, TableFunction, TableFunctionImpl, TableProvider},
+    catalog::{Session, TableFunction, TableFunctionArgs, TableFunctionImpl, TableProvider},
     common::Result,
-    datasource::{TableType, provider_as_source},
+    datasource::{MemTable, TableType, provider_as_source},
     execution::{SessionState, context::SessionContext},
     logical_expr::{Expr, LogicalPlanBuilder, col},
     physical_plan::ExecutionPlan,
 };
 
 use super::{
-    CugraphAlgorithm, CugraphAlgorithmParams, CugraphAlgorithmSpec, CugraphSqlConfig, CugraphTableReference,
-    CugraphVertexIdDomain, datafusion_table_reference, parse_cugraph_algorithm_spec, plan_error,
-    vertex_id_domain_for_call,
+    CugraphAlgorithm, CugraphAlgorithmParams, CugraphAlgorithmSpec, CugraphBfsSource, CugraphBfsSourceVertex,
+    CugraphSqlConfig, CugraphTableReference, CugraphVertexIdDomain, bfs_result_schema_for_vertex_domain,
+    datafusion_table_reference, parse_cugraph_algorithm_spec, plan_error, vertex_id_domain_for_call,
 };
 use crate::{
     NativeCudfExecutionConfig,
@@ -59,19 +63,23 @@ impl TableProvider for CugraphAlgoTableProvider {
         let session_state = state.as_any().downcast_ref::<SessionState>().ok_or_else(|| {
             plan_error("cuGraph SQL table functions require a DataFusion SessionState for catalog resolution")
         })?;
-        let table_ref = datafusion_table_reference(&self.spec.table_name);
+        let mut spec = self.spec.clone();
+        let table_ref = datafusion_table_reference(&spec.table_name);
         let schema = session_state.schema_for_ref(table_ref.clone())?;
         let provider = schema
             .table(table_ref.table())
             .await?
-            .ok_or_else(|| plan_error(format!("No table named '{}' for cuGraph edge source", self.spec.table_name)))?;
-        let vertex_domain = validate_edge_source_schema(&self.spec, &provider.schema())?;
+            .ok_or_else(|| plan_error(format!("No table named '{}' for cuGraph edge source", spec.table_name)))?;
+        let vertex_domain = validate_edge_source_schema(&spec, &provider.schema())?;
+        if let CugraphAlgorithmParams::Bfs(params) = &spec.params {
+            spec.output_schema = bfs_result_schema_for_vertex_domain(params, &vertex_domain);
+        }
         let scan = LogicalPlanBuilder::scan(table_ref, provider_as_source(provider), None)?.build()?;
-        let edge_source_plan = LogicalPlanBuilder::from(scan).project(edge_source_projection(&self.spec))?.build()?;
+        let edge_source_plan = LogicalPlanBuilder::from(scan).project(edge_source_projection(&spec))?.build()?;
         let edge_source = state.create_physical_plan(&edge_source_plan).await?;
-        let predicate_sources = predicate_source_plans(state, session_state, &self.spec, &vertex_domain).await?;
+        let predicate_sources = predicate_source_plans(state, session_state, &spec, &vertex_domain).await?;
         Ok(Arc::new(CugraphAlgoExec::try_new(
-            self.spec.clone(),
+            spec,
             edge_source,
             predicate_sources,
             projection.cloned(),
@@ -91,6 +99,37 @@ impl TableFunctionImpl for CugraphTableFunction {
     fn call(&self, args: &[Expr]) -> Result<Arc<dyn TableProvider>> {
         let spec = parse_cugraph_algorithm_spec(self.algorithm, args, &self.config)?;
         Ok(Arc::new(CugraphAlgoTableProvider::new(spec, self.config.native_execution_config.clone())))
+    }
+
+    fn call_with_args(&self, args: TableFunctionArgs) -> Result<Arc<dyn TableProvider>> {
+        let mut spec = parse_cugraph_algorithm_spec(self.algorithm, args.exprs(), &self.config)?;
+        maybe_resolve_bfs_relation_output_schema(&mut spec, args.session());
+        Ok(Arc::new(CugraphAlgoTableProvider::new(spec, self.config.native_execution_config.clone())))
+    }
+}
+
+fn maybe_resolve_bfs_relation_output_schema(spec: &mut CugraphAlgorithmSpec, session: &dyn Session) {
+    let CugraphAlgorithmParams::Bfs(params) = &spec.params else {
+        return;
+    };
+    if !matches!(params.source, CugraphBfsSource::Relation(_)) {
+        return;
+    }
+    let Some(session_state) = session.as_any().downcast_ref::<SessionState>() else {
+        return;
+    };
+    let table_ref = datafusion_table_reference(&spec.table_name);
+    let Ok(schema) = session_state.schema_for_ref(table_ref.clone()) else {
+        return;
+    };
+    let Ok(Some(provider)) = futures::executor::block_on(schema.table(table_ref.table())) else {
+        return;
+    };
+    let Ok(vertex_domain) = validate_edge_source_schema(spec, &provider.schema()) else {
+        return;
+    };
+    if let CugraphAlgorithmParams::Bfs(params) = &spec.params {
+        spec.output_schema = bfs_result_schema_for_vertex_domain(params, &vertex_domain);
     }
 }
 
@@ -131,6 +170,9 @@ async fn predicate_source_plans(
     vertex_domain: &CugraphVertexIdDomain,
 ) -> Result<Vec<Arc<dyn ExecutionPlan>>> {
     let mut plans = Vec::new();
+    if let Some(plan) = literal_bfs_source_plan(state, spec, vertex_domain).await? {
+        plans.push(plan);
+    }
     for source in predicate_source_specs(spec) {
         let table_ref = datafusion_table_reference(&source.table_name);
         let schema = session_state.schema_for_ref(table_ref.clone())?;
@@ -144,6 +186,47 @@ async fn predicate_source_plans(
         plans.push(state.create_physical_plan(&plan).await?);
     }
     Ok(plans)
+}
+
+async fn literal_bfs_source_plan(
+    state: &dyn Session,
+    spec: &CugraphAlgorithmSpec,
+    vertex_domain: &CugraphVertexIdDomain,
+) -> Result<Option<Arc<dyn ExecutionPlan>>> {
+    let CugraphAlgorithmParams::Bfs(params) = &spec.params else {
+        return Ok(None);
+    };
+    let CugraphBfsSource::LiteralList(values) = &params.source else {
+        return Ok(None);
+    };
+    if !values.first().is_some_and(|value| matches!(value, CugraphBfsSourceVertex::Int64(_))) {
+        return Ok(None);
+    }
+    let values = values
+        .iter()
+        .map(|value| match value {
+            CugraphBfsSourceVertex::Int64(value) => Ok(*value),
+            CugraphBfsSourceVertex::Utf8(_) => Err(plan_error("numeric BFS source list contained a string value")),
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let (data_type, array): (DataType, ArrayRef) = match vertex_domain {
+        CugraphVertexIdDomain::Int32 => {
+            let values = values
+                .into_iter()
+                .map(|value| {
+                    i32::try_from(value)
+                        .map_err(|_| plan_error(format!("BFS source vertex {value} does not fit Int32 edge domain")))
+                })
+                .collect::<Result<Vec<_>>>()?;
+            (DataType::Int32, Arc::new(Int32Array::from(values)) as ArrayRef)
+        },
+        CugraphVertexIdDomain::Int64 => (DataType::Int64, Arc::new(Int64Array::from(values)) as ArrayRef),
+        CugraphVertexIdDomain::StringLogical => return Ok(None),
+    };
+    let schema = Arc::new(Schema::new(vec![Field::new("__source_vertex", data_type, false)]));
+    let batch = RecordBatch::try_new(Arc::clone(&schema), vec![array])?;
+    let table = MemTable::try_new(schema, vec![vec![batch]])?;
+    table.scan(state, None, &[], None).await.map(Some)
 }
 
 #[derive(Debug, Clone)]
@@ -178,6 +261,12 @@ fn predicate_source_specs(spec: &CugraphAlgorithmSpec) -> Vec<PredicateSourceSpe
     let mut sources = Vec::new();
     match &spec.params {
         CugraphAlgorithmParams::Bfs(params) => {
+            if let Some(input) = params.source.relation() {
+                sources.push(PredicateSourceSpec {
+                    table_name: input.table_name.clone(),
+                    columns: vec![PredicateSourceColumn::vertex(input.column.clone())],
+                });
+            }
             if let Some(input) = &params.predicates.include_vertices {
                 sources.push(PredicateSourceSpec {
                     table_name: input.table_name.clone(),

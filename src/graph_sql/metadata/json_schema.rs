@@ -3,7 +3,7 @@ use serde_json::{Value, json};
 
 use super::super::{
     CUGRAPH_VALIDATE_CALL_FUNCTION, CugraphAlgorithm, CugraphAlgorithmParams, CugraphAlgorithmSpec,
-    CugraphBfsPredicateInputs, CugraphBfsSourceVertex, CugraphGraphOptions, CugraphSqlConfig,
+    CugraphBfsPredicateInputs, CugraphBfsSource, CugraphBfsSourceVertex, CugraphGraphOptions, CugraphSqlConfig,
 };
 
 pub(super) fn schema_json(schema: &SchemaRef) -> String {
@@ -462,6 +462,32 @@ fn bfs_options_schema_json() -> Value {
                 "min": 0,
                 "description": "Maximum BFS depth in hops; null means unbounded traversal."
             },
+            "source_vertices_table": {
+                "scope": "algorithm",
+                "type": "Utf8|null",
+                "default": null,
+                "required_with": "source_vertex_col",
+                "description": "Optional relation containing BFS source vertices. Use source_vertex=NULL in the positional SQL argument when this option is set.",
+                "side_input": {
+                    "role": "source_vertices",
+                    "column_option": "source_vertex_col",
+                    "expected_columns": [
+                        {
+                            "name_from_option": "source_vertex_col",
+                            "type": "same logical vertex domain as src_col and dst_col"
+                        }
+                    ]
+                }
+            },
+            "source_vertex_col": {
+                "scope": "algorithm",
+                "type": "Utf8|null",
+                "default": null,
+                "required_with": "source_vertices_table",
+                "description": "Column in source_vertices_table containing BFS source vertex identifiers.",
+                "column_of": "source_vertices_table",
+                "expected_type": "same logical vertex domain as src_col and dst_col"
+            },
             "output_mode": {
                 "scope": "algorithm",
                 "type": "Utf8",
@@ -676,6 +702,8 @@ fn algorithm_option_defaults(algorithm: CugraphAlgorithm) -> Value {
         }),
         CugraphAlgorithmParams::Bfs(params) => json!({
             "depth_limit": params.depth_limit,
+            "source_vertices_table": null,
+            "source_vertex_col": null,
             "edge_id_col": null,
             "include_vertices_table": null,
             "include_vertex_col": null,
@@ -808,7 +836,7 @@ fn params_json(params: &CugraphAlgorithmParams) -> Value {
             },
         }),
         CugraphAlgorithmParams::Bfs(params) => json!({
-            "source_vertex": source_vertex_json(&params.source_vertex),
+            "source_vertex": bfs_source_json(&params.source),
             "depth_limit": params.depth_limit,
             "predicates": bfs_predicates_json(&params.predicates),
             "output": {
@@ -875,6 +903,17 @@ fn bfs_predicates_json(predicates: &CugraphBfsPredicateInputs) -> Value {
             })
         }),
     })
+}
+
+fn bfs_source_json(source: &CugraphBfsSource) -> Value {
+    match source {
+        CugraphBfsSource::Scalar(source) => source_vertex_json(source),
+        CugraphBfsSource::LiteralList(values) => Value::Array(values.iter().map(source_vertex_json).collect()),
+        CugraphBfsSource::Relation(input) => json!({
+            "table": input.table_name.to_string(),
+            "column": input.column,
+        }),
+    }
 }
 
 fn source_vertex_json(source_vertex: &CugraphBfsSourceVertex) -> Value {

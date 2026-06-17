@@ -244,6 +244,133 @@ async fn cugraph_sql_gpu_bfs_include_edges_predicate_executes_end_to_end() {
 }
 
 #[tokio::test]
+async fn cugraph_sql_gpu_bfs_numeric_source_list_executes_multi_source() {
+    let state = SessionStateBuilder::new_with_default_features()
+        .with_cudf_native(CudfOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred))
+        .with_cugraph_sql(CugraphSqlConfig::default())
+        .build();
+    let ctx = SessionContext::new_with_state(state);
+    register_disconnected_bfs_edges(&ctx, "raw_edges");
+
+    let batches = ctx
+        .sql(
+            "SELECT vertex, distance, reachable \
+             FROM cugraph_bfs('raw_edges', [0, 10], 'src', 'dst', NULL, \
+                  '{\"construction_policy\":\"raw_libcugraph\",\
+                     \"output_mode\":\"normalized\"}')",
+        )
+        .await
+        .unwrap()
+        .collect()
+        .await
+        .unwrap();
+    let batch = single_batch(&batches);
+    assert_eq!(bfs_distance_for(batch, 0), Some(0));
+    assert_eq!(bfs_distance_for(batch, 2), Some(1));
+    assert_eq!(bfs_distance_for(batch, 3), Some(2));
+    assert_eq!(bfs_distance_for(batch, 10), Some(0));
+    assert_eq!(bfs_distance_for(batch, 11), Some(1));
+}
+
+#[tokio::test]
+async fn cugraph_sql_gpu_bfs_utf8_source_list_executes_multi_source() {
+    let state = SessionStateBuilder::new_with_default_features()
+        .with_cudf_native(CudfOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred))
+        .with_cugraph_sql(CugraphSqlConfig::default())
+        .build();
+    let ctx = SessionContext::new_with_state(state);
+    register_disconnected_string_bfs_edges(&ctx, "raw_edges");
+
+    let batches = ctx
+        .sql(
+            "SELECT vertex, distance, predecessor, reachable \
+             FROM cugraph_bfs('raw_edges', ['a', 'x'], 'src', 'dst', NULL, \
+                  '{\"construction_policy\":\"raw_libcugraph\",\
+                     \"output_mode\":\"normalized\"}')",
+        )
+        .await
+        .unwrap()
+        .collect()
+        .await
+        .unwrap();
+    let batch = single_batch(&batches);
+    assert_eq!(string_bfs_distance_for(batch, "a"), Some(0));
+    assert_eq!(string_bfs_distance_for(batch, "b"), Some(1));
+    assert_eq!(string_bfs_distance_for(batch, "c"), Some(2));
+    assert_eq!(string_bfs_distance_for(batch, "x"), Some(0));
+    assert_eq!(string_bfs_distance_for(batch, "y"), Some(1));
+    assert_eq!(string_bfs_predecessor_for(batch, "c"), Some("b".to_string()));
+    assert_eq!(string_bfs_predecessor_for(batch, "y"), Some("x".to_string()));
+}
+
+#[tokio::test]
+async fn cugraph_sql_gpu_bfs_source_table_combines_with_target_path() {
+    let state = SessionStateBuilder::new_with_default_features()
+        .with_cudf_native(CudfOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred))
+        .with_cugraph_sql(CugraphSqlConfig::default())
+        .build();
+    let ctx = SessionContext::new_with_state(state);
+    register_disconnected_bfs_edges(&ctx, "raw_edges");
+    register_i64_vertex_values(&ctx, "bfs_sources", "vertex_id", vec![0, 10]);
+    register_i64_vertex_values(&ctx, "targets", "vertex_id", vec![3]);
+
+    let batches = ctx
+        .sql(
+            "SELECT path_index, source, target, vertex, distance \
+             FROM cugraph_bfs('raw_edges', NULL, 'src', 'dst', NULL, \
+                  '{\"construction_policy\":\"raw_libcugraph\",\
+                     \"source_vertices_table\":\"bfs_sources\",\
+                     \"source_vertex_col\":\"vertex_id\",\
+                     \"output_mode\":\"path\",\
+                     \"target_vertices_table\":\"targets\",\
+                     \"target_vertex_col\":\"vertex_id\"}') \
+             ORDER BY path_index",
+        )
+        .await
+        .unwrap()
+        .collect()
+        .await
+        .unwrap();
+    let batch = single_batch(&batches);
+    assert_eq!(int64_column(batch, 0), vec![0, 1, 2]);
+    assert_eq!(int64_column(batch, 1), vec![0, 0, 0]);
+    assert_eq!(int64_column(batch, 2), vec![3, 3, 3]);
+    assert_eq!(int64_column(batch, 3), vec![0, 2, 3]);
+    assert_eq!(int64_column(batch, 4), vec![0, 1, 2]);
+}
+
+#[tokio::test]
+async fn cugraph_sql_gpu_bfs_utf8_source_table_maps_logical_ids_end_to_end() {
+    let state = SessionStateBuilder::new_with_default_features()
+        .with_cudf_native(CudfOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred))
+        .with_cugraph_sql(CugraphSqlConfig::default())
+        .build();
+    let ctx = SessionContext::new_with_state(state);
+    register_string_bfs_edges(&ctx, "raw_edges");
+    register_string_vertex_memtable(&ctx, "bfs_sources", "vertex_id", &["a"]);
+
+    let batches = ctx
+        .sql(
+            "SELECT vertex, distance, predecessor, reachable \
+             FROM cugraph_bfs('raw_edges', NULL, 'src', 'dst', NULL, \
+                  '{\"construction_policy\":\"raw_libcugraph\",\
+                     \"source_vertices_table\":\"bfs_sources\",\
+                     \"source_vertex_col\":\"vertex_id\",\
+                     \"output_mode\":\"normalized\"}')",
+        )
+        .await
+        .unwrap()
+        .collect()
+        .await
+        .unwrap();
+    let batch = single_batch(&batches);
+    assert_eq!(string_bfs_distance_for(batch, "a"), Some(0));
+    assert_eq!(string_bfs_distance_for(batch, "b"), Some(1));
+    assert_eq!(string_bfs_distance_for(batch, "c"), Some(1));
+    assert_eq!(string_bfs_distance_for(batch, "d"), Some(2));
+}
+
+#[tokio::test]
 async fn cugraph_sql_gpu_bfs_utf8_include_edges_maps_logical_ids_end_to_end() {
     let state = SessionStateBuilder::new_with_default_features()
         .with_cudf_native(CudfOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred))

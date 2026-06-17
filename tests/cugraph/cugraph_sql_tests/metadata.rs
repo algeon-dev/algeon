@@ -186,13 +186,17 @@ async fn cugraph_metadata_describe_algorithm_returns_structured_rows() {
         "edge_id_col when omitted and include_edge_ids_table is set"
     );
     assert_eq!(options_schema["algorithm_options"]["include_edge_id_col"]["valid_when"], "edge_id_col is set");
+    let source_table = &options_schema["algorithm_options"]["source_vertices_table"];
+    assert_eq!(source_table["side_input"]["role"], "source_vertices");
+    assert_eq!(source_table["side_input"]["column_option"], "source_vertex_col");
+    assert_eq!(options_schema["algorithm_options"]["source_vertex_col"]["column_of"], "source_vertices_table");
 
     let default_graph_options = json_value(string_value(batch, 8, 0));
     assert!(default_graph_options["directed"].is_boolean());
 
     let argument_descriptions = json_value(string_value(batch, 9, 0));
-    let source_vertex = json_array_item_by_name(&argument_descriptions, "source_vertex");
-    assert_eq!(source_vertex["type"], "Int64|Utf8");
+    let source_vertex = json_array_item_by_name(&argument_descriptions, "source_vertex_or_vertices");
+    assert_eq!(source_vertex["type"], "Int64|Utf8|List<Int64>|List<Utf8>|null-with-source_vertices_table");
     let weight_col = json_array_item_by_name(&argument_descriptions, "weight_col");
     assert_eq!(weight_col["weight_col_policy"], "ignored");
     assert_eq!(weight_col["semantic_effect"], "none for traversal; BFS distance is a hop count");
@@ -202,12 +206,25 @@ async fn cugraph_metadata_describe_algorithm_returns_structured_rows() {
     assert_eq!(option_defaults["algorithm_options"]["output_mode"], "raw");
 
     let result_fields = json_value(string_value(batch, 11, 0));
+    let distance = json_array_item_by_name(&result_fields, "distance");
+    assert_eq!(distance["description"], "Hop-count distance from the nearest selected BFS source vertex.");
     let predecessor = json_array_item_by_name(&result_fields, "predecessor");
     assert_eq!(predecessor["data_type"], "Int64");
-    assert!(predecessor["description"].as_str().unwrap().contains("BFS tree"));
+    assert_eq!(
+        predecessor["description"],
+        "Previous vertex on the discovered BFS tree, null for selected source vertices or unreachable vertices depending on output mode."
+    );
 
     let limitations = json_value(string_value(batch, 12, 0));
     assert_json_array_contains_string(&limitations, "BFS traversal ignores edge weights; distance is a hop count");
+    assert_json_array_contains_string(
+        &limitations,
+        "source lists and source_vertices_table are multi-source BFS, not one BFS per source",
+    );
+    assert_json_array_contains_string(
+        &limitations,
+        "source lists and source_vertices_table must contain at most one source per connected component",
+    );
 
     assert!(string_value(batch, 13, 0).contains("breadth-first"));
     assert!(string_value(batch, 14, 0).contains("reconstructed source-to-target path"));
@@ -219,6 +236,8 @@ async fn cugraph_metadata_describe_algorithm_returns_structured_rows() {
     assert_eq!(path_index["type"], "Int64");
 
     let examples = json_value(string_value(batch, 16, 0));
+    json_array_item_by_name(&examples, "multi_source_bfs_list");
+    json_array_item_by_name(&examples, "multi_source_bfs_table");
     let dry_run_path = json_array_item_by_name(&examples, "dry_run_path");
     assert!(
         dry_run_path["sql"].as_str().unwrap().contains(CUGRAPH_VALIDATE_CALL_FUNCTION),
@@ -750,6 +769,119 @@ async fn cugraph_validate_call_accepts_utf8_bfs_logical_vertex_domain() {
     assert_eq!(string_value(batch, 3, 0), "Utf8");
     assert!(string_value(batch, 4, 0).contains(r#""data_type":"Utf8""#));
     assert!(string_value(batch, 5, 0).contains(r#""source_vertex":"a""#));
+}
+
+#[tokio::test]
+async fn cugraph_validate_call_accepts_bfs_source_arrays_and_relation_sources() {
+    let state = SessionStateBuilder::new_with_default_features().with_cugraph_sql(CugraphSqlConfig::default()).build();
+    let ctx = SessionContext::new_with_state(state);
+    register_edge_memtable(&ctx, "edges", DataType::Int64, DataType::Int64, DataType::Float64);
+    register_edge_memtable(&ctx, "numeric_edges", DataType::Int64, DataType::Int64, DataType::Float64);
+    register_vertex_memtable(&ctx, "bfs_sources", "vertex_id", DataType::Int64, false);
+    register_string_bfs_edges(&ctx, "string_edges");
+    register_string_vertex_memtable(&ctx, "string_sources", "vertex_id", &["a", "b"]);
+
+    let batch = validate_call_batch(
+        &ctx,
+        "cugraph_bfs",
+        r#"{"source_vertex":[0,2],"src_col":"src","dst_col":"dst","options":{"output_mode":"normalized"}}"#,
+    )
+    .await;
+    assert!(bool_value(&batch, 0, 0), "numeric source arrays should validate: {}", string_value(&batch, 2, 0));
+
+    let batch = validate_call_batch(
+        &ctx,
+        "cugraph_bfs",
+        r#"{"source_vertex":["a","b"],"src_col":"src","dst_col":"dst","options":{"output_mode":"normalized"}}"#,
+    )
+    .await;
+    // validate_call_batch uses the default numeric edge table. Exercise string arrays through explicit SQL below.
+    assert!(!bool_value(&batch, 0, 0));
+
+    let batches = ctx
+        .sql(
+            r#"SELECT valid, error_code, output_schema_json, normalized_options_json
+               FROM cugraph_validate_call(
+                 'cugraph_bfs',
+                 'string_edges',
+                 '{"source_vertex":["a","b"],"src_col":"src","dst_col":"dst","options":{"output_mode":"normalized"}}'
+               )"#,
+        )
+        .await
+        .unwrap()
+        .collect()
+        .await
+        .unwrap();
+    let batch = single_batch(&batches);
+    assert!(bool_value(batch, 0, 0));
+    assert_eq!(string_value(batch, 1, 0), "ok");
+    assert!(string_value(batch, 2, 0).contains(r#""data_type":"Utf8""#));
+    assert!(string_value(batch, 3, 0).contains(r#""source_vertex":["a","b"]"#));
+
+    let batches = ctx
+        .sql(
+            r#"SELECT valid, error_code, normalized_options_json
+               FROM cugraph_validate_call(
+                 'cugraph_bfs',
+                 'numeric_edges',
+                 '{"source_vertex":null,"src_col":"src","dst_col":"dst","options":{"source_vertices_table":"bfs_sources","source_vertex_col":"vertex_id"}}'
+               )"#,
+        )
+        .await
+        .unwrap()
+        .collect()
+        .await
+        .unwrap();
+    let batch = single_batch(&batches);
+    assert!(bool_value(batch, 0, 0));
+    assert_eq!(string_value(batch, 1, 0), "ok");
+    assert!(string_value(batch, 2, 0).contains(r#""table":"bfs_sources""#));
+
+    let batches = ctx
+        .sql(
+            r#"SELECT valid, error_code, output_schema_json
+               FROM cugraph_validate_call(
+                 'cugraph_bfs',
+                 'string_edges',
+                 '{"src_col":"src","dst_col":"dst","options":{"source_vertices_table":"string_sources","source_vertex_col":"vertex_id"}}'
+               )"#,
+        )
+        .await
+        .unwrap()
+        .collect()
+        .await
+        .unwrap();
+    let batch = single_batch(&batches);
+    assert!(bool_value(batch, 0, 0));
+    assert_eq!(string_value(batch, 1, 0), "ok");
+    assert!(string_value(batch, 2, 0).contains(r#""data_type":"Utf8""#));
+}
+
+#[tokio::test]
+async fn cugraph_validate_call_rejects_invalid_bfs_source_arrays_and_relation_pairs() {
+    let state = SessionStateBuilder::new_with_default_features().with_cugraph_sql(CugraphSqlConfig::default()).build();
+    let ctx = SessionContext::new_with_state(state);
+    register_edge_memtable(&ctx, "edges", DataType::Int64, DataType::Int64, DataType::Float64);
+    register_vertex_memtable(&ctx, "bfs_sources", "vertex_id", DataType::Int64, false);
+
+    for call_json in [
+        r#"{"source_vertex":[],"src_col":"src","dst_col":"dst"}"#,
+        r#"{"source_vertex":[0,null],"src_col":"src","dst_col":"dst"}"#,
+        r#"{"source_vertex":[0,"a"],"src_col":"src","dst_col":"dst"}"#,
+        r#"{"source_vertex":null,"src_col":"src","dst_col":"dst"}"#,
+        r#"{"src_col":"src","dst_col":"dst"}"#,
+        r#"{"source_vertex":0,"src_col":"src","dst_col":"dst","options":{"source_vertices_table":"bfs_sources","source_vertex_col":"vertex_id"}}"#,
+        r#"{"source_vertex":null,"src_col":"src","dst_col":"dst","options":{"source_vertices_table":"bfs_sources"}}"#,
+        r#"{"source_vertex":null,"src_col":"src","dst_col":"dst","options":{"source_vertex_col":"vertex_id"}}"#,
+    ] {
+        let batch = validate_call_batch(&ctx, "cugraph_bfs", call_json).await;
+        assert!(
+            !bool_value(&batch, 0, 0),
+            "invalid source JSON should be rejected: call={call_json}, message={}",
+            string_value(&batch, 2, 0)
+        );
+        assert_ne!(string_value(&batch, 1, 0), "ok");
+    }
 }
 
 #[tokio::test]

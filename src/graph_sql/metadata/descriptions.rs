@@ -21,8 +21,12 @@ pub(super) fn argument_descriptions_json(algorithm: CugraphAlgorithm) -> String 
         json!({"name": "options_json", "type": "Utf8", "required": false}),
     ];
     if algorithm.requires_source_vertex() {
-        let source_type = if algorithm == CugraphAlgorithm::Bfs { "Int64|Utf8" } else { "Int64" };
-        args.insert(1, json!({"name": "source_vertex", "type": source_type, "required": true}));
+        let (source_name, source_type) = if algorithm == CugraphAlgorithm::Bfs {
+            ("source_vertex_or_vertices", "Int64|Utf8|List<Int64>|List<Utf8>|null-with-source_vertices_table")
+        } else {
+            ("source_vertex", "Int64")
+        };
+        args.insert(1, json!({"name": source_name, "type": source_type, "required": true}));
     }
     Value::Array(args).to_string()
 }
@@ -77,9 +81,9 @@ fn result_field_description(algorithm: CugraphAlgorithm, field_name: &str) -> &'
         (CugraphAlgorithm::KatzCentrality, "vertex") => "Vertex receiving the Katz centrality score.",
         (CugraphAlgorithm::KatzCentrality, "value") => "Katz centrality score for the vertex.",
         (CugraphAlgorithm::Bfs, "vertex") => "Vertex reached or considered by the BFS traversal.",
-        (CugraphAlgorithm::Bfs, "distance") => "Hop-count distance from the source vertex.",
+        (CugraphAlgorithm::Bfs, "distance") => "Hop-count distance from the nearest selected BFS source vertex.",
         (CugraphAlgorithm::Bfs, "predecessor") => {
-            "Previous vertex on the discovered BFS tree, null for source or unreachable vertices depending on output mode."
+            "Previous vertex on the discovered BFS tree, null for selected source vertices or unreachable vertices depending on output mode."
         },
         (CugraphAlgorithm::Sssp, "vertex") => "Vertex reached by the shortest-path traversal.",
         (CugraphAlgorithm::Sssp, "distance") => "Shortest weighted-path distance from the source vertex.",
@@ -150,6 +154,9 @@ pub(super) fn limitations_json(algorithm: CugraphAlgorithm) -> String {
     if algorithm == CugraphAlgorithm::Bfs {
         limitations.extend([
             "BFS traversal ignores edge weights; distance is a hop count",
+            "source lists and source_vertices_table are multi-source BFS, not one BFS per source",
+            "source lists and source_vertices_table must contain at most one source per connected component",
+            "raw/normalized output does not expose origin source per vertex",
             "string logical vertex-domain BFS rejects edge_id_col, include_edge_ids_*, and include_edge_id_col",
             "path output requires exactly one target row at execution time",
             "options_schema_json is typed registry metadata; validate_call remains the authoritative call-specific checker",
@@ -164,7 +171,7 @@ pub(super) fn limitations_json(algorithm: CugraphAlgorithm) -> String {
 pub(super) fn summary(algorithm: CugraphAlgorithm) -> &'static str {
     match algorithm {
         CugraphAlgorithm::Bfs => {
-            "Single-source breadth-first search; weight_col is accepted but traversal uses hop counts."
+            "Multi-source-capable breadth-first search; source selectors must contain at most one source per connected component."
         },
         CugraphAlgorithm::PageRank => "Compute PageRank scores.",
         CugraphAlgorithm::PersonalizedPageRank => "Compute personalized PageRank scores.",
@@ -348,6 +355,30 @@ fn bfs_examples_json() -> String {
                 "src_col": "src",
                 "dst_col": "dst",
                 "options": {"depth_limit": 4, "output_mode": "normalized"}
+            }
+        },
+        {
+            "name": "multi_source_bfs_list",
+            "sql": "SELECT * FROM cugraph_bfs('target_edges', [123,456], 'src', 'dst', NULL, '{\"output_mode\":\"normalized\"}')",
+            "call_json": {
+                "source_vertex": [123, 456],
+                "src_col": "src",
+                "dst_col": "dst",
+                "options": {"output_mode": "normalized"}
+            }
+        },
+        {
+            "name": "multi_source_bfs_table",
+            "sql": "SELECT * FROM cugraph_bfs('target_edges', NULL, 'src', 'dst', NULL, '{\"source_vertices_table\":\"bfs_sources\",\"source_vertex_col\":\"vertex_id\",\"output_mode\":\"normalized\"}')",
+            "call_json": {
+                "source_vertex": null,
+                "src_col": "src",
+                "dst_col": "dst",
+                "options": {
+                    "source_vertices_table": "bfs_sources",
+                    "source_vertex_col": "vertex_id",
+                    "output_mode": "normalized"
+                }
             }
         },
         {

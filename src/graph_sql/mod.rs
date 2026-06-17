@@ -28,7 +28,7 @@ pub use types::{
     CUGRAPH_STRONGLY_CONNECTED_COMPONENTS_FUNCTION, CUGRAPH_TRIANGLE_COUNT_ALL_FUNCTION,
     CUGRAPH_VALIDATE_CALL_FUNCTION, CUGRAPH_VALIDATE_CALL_SCHEMA_VERSION, CUGRAPH_WEAKLY_CONNECTED_COMPONENTS_FUNCTION,
     CugraphAlgorithm, CugraphAlgorithmParams, CugraphAlgorithmSpec, CugraphBfsOutputMode, CugraphBfsOutputOptions,
-    CugraphBfsParams, CugraphBfsPredicateInputs, CugraphBfsSourceVertex, CugraphCoreNumberParams,
+    CugraphBfsParams, CugraphBfsPredicateInputs, CugraphBfsSource, CugraphBfsSourceVertex, CugraphCoreNumberParams,
     CugraphDegreesAllParams, CugraphEcgParams, CugraphEigenvectorCentralityParams, CugraphForceAtlas2Params,
     CugraphGraphConstructionPolicy, CugraphGraphEdgePredicateTable, CugraphGraphOptions, CugraphGraphPredicateTable,
     CugraphHitsParams, CugraphInDegreesAllParams, CugraphKCoreDegreeType, CugraphKCoreParams,
@@ -38,7 +38,7 @@ pub use types::{
     CugraphSsspParams, CugraphTableReference, CugraphTriangleCountAllParams, CugraphWccParams, bfs_result_schema,
     result_schema_for_params, stable_result_schema,
 };
-pub(crate) use types::{CugraphVertexIdDomain, vertex_id_domain_for_call};
+pub(crate) use types::{CugraphVertexIdDomain, bfs_result_schema_for_vertex_domain, vertex_id_domain_for_call};
 
 fn plan_error(message: impl Into<String>) -> DataFusionError {
     DataFusionError::Plan(message.into())

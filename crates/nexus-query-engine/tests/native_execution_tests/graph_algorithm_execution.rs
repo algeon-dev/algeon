@@ -444,6 +444,137 @@ fn bfs_include_edges_relation_filters_by_source_destination() {
 }
 
 #[test]
+fn bfs_source_vertices_side_input_accepts_multiple_rows() {
+    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime));
+
+    let edge_schema = Arc::new(Schema::new(vec![
+        Field::new("src", DataType::Int32, false),
+        Field::new("dst", DataType::Int32, false),
+    ]));
+    let edge_batch = RecordBatch::try_new(
+        Arc::clone(&edge_schema),
+        vec![Arc::new(Int32Array::from(vec![0, 10])), Arc::new(Int32Array::from(vec![1, 11]))],
+    )
+    .unwrap();
+    let source_schema = Arc::new(Schema::new(vec![Field::new("source_vertex", DataType::Int32, false)]));
+    let source_batch =
+        RecordBatch::try_new(Arc::clone(&source_schema), vec![Arc::new(Int32Array::from(vec![0, 10]))]).unwrap();
+
+    let mut builder = QueryPlanBuilder::new();
+    let edges = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("edges", Arc::clone(&edge_schema))));
+    let sources =
+        builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("sources", Arc::clone(&source_schema))));
+    let mut params = GraphBfsParams::new(0, None);
+    params.source_vertices = Some(GraphPredicateInput::new(sources, "source_vertex"));
+    let spec = GraphAlgorithmSpec::with_stable_schema(
+        GraphAlgorithm::Bfs,
+        GraphEdgeColumnBindings::new("src", "dst", None::<&str>),
+        GraphConstructionOptions { directed: true, renumber: true, policy: GraphConstructionPolicy::RawLibcugraph },
+        GraphAlgorithmParams::Bfs(Box::new(params)),
+    );
+    let graph = builder.add_graph_algorithm(edges, spec);
+    let plan = builder.finish_with_host_sink_schema(graph, stable_graph_result_schema(GraphAlgorithm::Bfs));
+
+    let mut gpu_inputs = GpuResidentInputMap::new();
+    gpu_inputs.insert(
+        "edges".to_string(),
+        GpuResultHandle::new(
+            &context,
+            GpuDataFrame::new(DataFrame::from_record_batch(&runtime, &edge_batch).unwrap()),
+            Arc::clone(&edge_schema),
+        )
+        .unwrap(),
+    );
+    gpu_inputs.insert(
+        "sources".to_string(),
+        GpuResultHandle::new(
+            &context,
+            GpuDataFrame::new(DataFrame::from_record_batch(&runtime, &source_batch).unwrap()),
+            Arc::clone(&source_schema),
+        )
+        .unwrap(),
+    );
+
+    let result = execute_query_plan_with_gpu_inputs(&context, &plan, &gpu_inputs).unwrap();
+    let QueryOutput::HostArrow(batch) = result.output() else {
+        panic!("host sink should materialize BFS output");
+    };
+    let vertices = int64_array(batch, 0);
+    let distances = int64_array(batch, 1);
+    let distance_for = |vertex: i64| {
+        (0..batch.num_rows())
+            .find_map(|row| (vertices.value(row) == vertex).then(|| distances.value(row)))
+            .unwrap_or_else(|| panic!("missing vertex {vertex} in BFS output"))
+    };
+    assert_eq!(distance_for(0), 0);
+    assert_eq!(distance_for(1), 1);
+    assert_eq!(distance_for(10), 0);
+    assert_eq!(distance_for(11), 1);
+    assert!(result.metrics().graph_algorithm_runtime_rows[0].algorithm_metadata.contains("source_vertices_rows=2"));
+}
+
+#[test]
+fn bfs_source_vertices_side_input_rejects_empty_source_set() {
+    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime));
+
+    let edge_schema = Arc::new(Schema::new(vec![
+        Field::new("src", DataType::Int32, false),
+        Field::new("dst", DataType::Int32, false),
+    ]));
+    let edge_batch = RecordBatch::try_new(
+        Arc::clone(&edge_schema),
+        vec![Arc::new(Int32Array::from(vec![0])), Arc::new(Int32Array::from(vec![1]))],
+    )
+    .unwrap();
+    let source_schema = Arc::new(Schema::new(vec![Field::new("source_vertex", DataType::Int32, false)]));
+    let source_batch =
+        RecordBatch::try_new(Arc::clone(&source_schema), vec![Arc::new(Int32Array::from(Vec::<i32>::new()))]).unwrap();
+
+    let mut builder = QueryPlanBuilder::new();
+    let edges = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("edges", Arc::clone(&edge_schema))));
+    let sources =
+        builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("sources", Arc::clone(&source_schema))));
+    let mut params = GraphBfsParams::new(0, None);
+    params.source_vertices = Some(GraphPredicateInput::new(sources, "source_vertex"));
+    let spec = GraphAlgorithmSpec::with_stable_schema(
+        GraphAlgorithm::Bfs,
+        GraphEdgeColumnBindings::new("src", "dst", None::<&str>),
+        GraphConstructionOptions { directed: true, renumber: true, policy: GraphConstructionPolicy::RawLibcugraph },
+        GraphAlgorithmParams::Bfs(Box::new(params)),
+    );
+    let graph = builder.add_graph_algorithm(edges, spec);
+    let plan = builder.finish_with_host_sink_schema(graph, stable_graph_result_schema(GraphAlgorithm::Bfs));
+
+    let mut gpu_inputs = GpuResidentInputMap::new();
+    gpu_inputs.insert(
+        "edges".to_string(),
+        GpuResultHandle::new(
+            &context,
+            GpuDataFrame::new(DataFrame::from_record_batch(&runtime, &edge_batch).unwrap()),
+            Arc::clone(&edge_schema),
+        )
+        .unwrap(),
+    );
+    gpu_inputs.insert(
+        "sources".to_string(),
+        GpuResultHandle::new(
+            &context,
+            GpuDataFrame::new(DataFrame::from_record_batch(&runtime, &source_batch).unwrap()),
+            Arc::clone(&source_schema),
+        )
+        .unwrap(),
+    );
+
+    let error = match execute_query_plan_with_gpu_inputs(&context, &plan, &gpu_inputs) {
+        Ok(_) => panic!("empty BFS source-vertices side input should fail"),
+        Err(error) => error.to_string(),
+    };
+    assert!(error.contains("source-vertices side input must contain at least one row"), "{error}");
+}
+
+#[test]
 fn bfs_target_metadata_columns_are_shaped_when_requested() {
     let runtime = Arc::new(cudf::Runtime::new().unwrap());
     let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime));

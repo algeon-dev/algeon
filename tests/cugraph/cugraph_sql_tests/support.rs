@@ -279,6 +279,31 @@ pub(super) fn register_directed_bfs_edges(ctx: &SessionContext, table_name: &str
     ctx.register_table(table_name, provider).unwrap();
 }
 
+pub(super) fn register_disconnected_bfs_edges(ctx: &SessionContext, table_name: &str) {
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("src", DataType::Int64, false),
+        Field::new("dst", DataType::Int64, false),
+    ]));
+    let batch = RecordBatch::try_new(
+        Arc::clone(&schema),
+        vec![
+            Arc::new(Int64Array::from(vec![0_i64, 2, 10])) as ArrayRef,
+            Arc::new(Int64Array::from(vec![2_i64, 3, 11])) as ArrayRef,
+        ],
+    )
+    .unwrap();
+    let provider = Arc::new(MemTable::try_new(schema, vec![vec![batch]]).unwrap());
+    ctx.register_table(table_name, provider).unwrap();
+}
+
+pub(super) fn register_i64_vertex_values(ctx: &SessionContext, table_name: &str, column_name: &str, values: Vec<i64>) {
+    let schema = Arc::new(Schema::new(vec![Field::new(column_name, DataType::Int64, false)]));
+    let batch =
+        RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(Int64Array::from(values)) as ArrayRef]).unwrap();
+    let provider = Arc::new(MemTable::try_new(schema, vec![vec![batch]]).unwrap());
+    ctx.register_table(table_name, provider).unwrap();
+}
+
 pub(super) fn register_allowed_bfs_edges(ctx: &SessionContext, table_name: &str) {
     let schema = Arc::new(Schema::new(vec![
         Field::new("allowed_src", DataType::Int64, false),
@@ -349,6 +374,21 @@ pub(super) fn register_string_bfs_edges(ctx: &SessionContext, table_name: &str) 
         vec![
             Arc::new(StringArray::from(vec!["a", "a", "b", "c"])) as ArrayRef,
             Arc::new(StringArray::from(vec!["b", "c", "d", "d"])) as ArrayRef,
+        ],
+    )
+    .unwrap();
+    let provider = Arc::new(MemTable::try_new(schema, vec![vec![batch]]).unwrap());
+    ctx.register_table(table_name, provider).unwrap();
+}
+
+pub(super) fn register_disconnected_string_bfs_edges(ctx: &SessionContext, table_name: &str) {
+    let schema =
+        Arc::new(Schema::new(vec![Field::new("src", DataType::Utf8, false), Field::new("dst", DataType::Utf8, false)]));
+    let batch = RecordBatch::try_new(
+        Arc::clone(&schema),
+        vec![
+            Arc::new(StringArray::from(vec!["a", "b", "x"])) as ArrayRef,
+            Arc::new(StringArray::from(vec!["b", "c", "y"])) as ArrayRef,
         ],
     )
     .unwrap();

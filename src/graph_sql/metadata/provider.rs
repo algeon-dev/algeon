@@ -423,6 +423,10 @@ fn signature(algorithm: CugraphAlgorithm) -> String {
         format!("{function_name}(table_name, src_col, dst_col, weight_col [, options_json])")
     } else if algorithm == CugraphAlgorithm::PersonalizedPageRank {
         format!("{function_name}(table_name, src_col, dst_col, weight_col, options_json)")
+    } else if algorithm == CugraphAlgorithm::Bfs {
+        format!(
+            "{function_name}(table_name, source_vertex_or_vertices [, src_col, dst_col [, weight_col [, options_json]]])"
+        )
     } else if algorithm.requires_source_vertex() {
         format!("{function_name}(table_name, source_vertex [, src_col, dst_col [, weight_col [, options_json]]])")
     } else {

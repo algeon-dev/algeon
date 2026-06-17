@@ -27,8 +27,9 @@ use datafusion_nexus::{
     CUGRAPH_DESCRIBE_ALGORITHM_FUNCTION, CUGRAPH_DESCRIBE_ALGORITHM_SCHEMA_VERSION, CUGRAPH_LIST_ALGORITHMS_FUNCTION,
     CUGRAPH_LIST_ALGORITHMS_SCHEMA_VERSION, CUGRAPH_OPERATION_REGISTRY, CUGRAPH_VALIDATE_CALL_FUNCTION,
     CUGRAPH_VALIDATE_CALL_SCHEMA_VERSION, CudfOptimizerConfig, CudfSessionStateBuilderExt, CugraphAlgorithm,
-    CugraphAlgorithmParams, CugraphBfsOutputMode, CugraphBfsSourceVertex, CugraphGraphConstructionPolicy,
-    CugraphSqlConfig, GpuFallbackPolicy, NativeCudfComposedExec, parse_cugraph_algorithm_spec, stable_result_schema,
+    CugraphAlgorithmParams, CugraphBfsOutputMode, CugraphBfsSource, CugraphBfsSourceVertex,
+    CugraphGraphConstructionPolicy, CugraphSqlConfig, GpuFallbackPolicy, NativeCudfComposedExec,
+    parse_cugraph_algorithm_spec, stable_result_schema,
 };
 
 #[path = "cugraph_sql_tests/gpu.rs"]
