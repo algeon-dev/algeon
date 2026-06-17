@@ -45,9 +45,9 @@ pub use super::tpcds_queries::{TPCDS_QUERIES, TPCDS_QUERY_COUNT, TpcdsQuery, tpc
 
 /// Device-byte budget for bounded native TPC-DS execution.
 ///
-/// When unset, the workload uses `nvidia-smi` memory.total minus 500 MiB, with
-/// a 256 MiB fallback if GPU memory cannot be detected. Invalid values panic
-/// during config construction.
+/// When unset, the workload uses CUDA/cudf-rs inventory total memory minus
+/// 500 MiB, with a 256 MiB fallback if GPU memory cannot be detected. Invalid
+/// values panic during config construction.
 pub const CUDF_TPCDS_NATIVE_DEVICE_BUDGET_BYTES_ENV: &str = "CUDF_TPCDS_NATIVE_DEVICE_BUDGET_BYTES";
 /// Named native memory/source profile used by TPC-DS benchmark/report
 /// surfaces. Accepts `conservative` (default) or `sf100_gpu_throughput`;

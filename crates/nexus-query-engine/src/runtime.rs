@@ -28,6 +28,7 @@ use crate::{
 
 mod boundary;
 mod bounded_join;
+pub mod gpu;
 mod io_capability;
 mod object_store;
 mod policy;
@@ -43,6 +44,7 @@ pub use boundary::{
 pub use bounded_join::{
     BoundedJoinReservationContract, BoundedJoinReservationRequirement, BoundedJoinReservationStatus,
 };
+pub use gpu::{CudfInventory, DeviceFacts, GpuInventory, device_budget_bytes_from_facts};
 pub use io_capability::{
     DEFAULT_GDS_LOCAL_MOUNT_ROOT, DeploymentIoCapability, GdsAvailabilityStatus, GdsDriverProbeStatus,
     KVIKIO_COMPAT_MODE_ENV, KvikioCompatModeStatus, NVIDIA_FS_PROC_PATH, NVIDIA_FS_SYSFS_PATH, NvidiaFsProbeStatus,
@@ -1400,7 +1402,10 @@ fn validate_service_stream_pool_device(pool: &ServiceStreamPool, runtime_device:
 #[cfg(test)]
 mod tests {
     use super::{
-        service_stream::{default_service_stream_pool_size_from_sm_count, nonzero_sm_count},
+        service_stream::{
+            default_service_stream_pool_size_from_device_facts, default_service_stream_pool_size_from_sm_count,
+            nonzero_sm_count,
+        },
         source_fetch::default_host_fetch_budget_bytes_from_physical_memory,
         *,
     };
@@ -1425,6 +1430,63 @@ mod tests {
         assert_eq!(default_service_stream_pool_size_from_sm_count(Some(128)), DEFAULT_SERVICE_STREAM_POOL_SIZE);
         assert_eq!(default_service_stream_pool_size_from_sm_count(Some(0)), DEFAULT_SERVICE_STREAM_POOL_SIZE);
         assert_eq!(default_service_stream_pool_size_from_sm_count(None), DEFAULT_SERVICE_STREAM_POOL_SIZE);
+    }
+
+    #[derive(Debug)]
+    struct FakeGpuInventory {
+        facts: Vec<DeviceFacts>,
+    }
+
+    impl GpuInventory for FakeGpuInventory {
+        fn device_count(&self) -> Result<usize> {
+            Ok(self.facts.len())
+        }
+
+        fn facts(&self, device_ordinal: usize) -> Result<DeviceFacts> {
+            self.facts.get(device_ordinal).cloned().ok_or_else(|| {
+                QueryError::new(
+                    QueryErrorCode::Internal,
+                    "nexus_query_engine.test.gpu_inventory",
+                    "fake device ordinal out of range",
+                )
+                .with_fact("device_ordinal", device_ordinal)
+            })
+        }
+    }
+
+    fn fake_device_facts(device: usize, total_bytes: u64, sm_count: Option<u32>) -> DeviceFacts {
+        DeviceFacts { device, total_bytes, free_bytes: total_bytes / 2, sm_count, utilization_pct: None }
+    }
+
+    #[test]
+    fn gpu_inventory_fake_drives_pool_size_and_budget_math_without_gpu() {
+        let inventory = FakeGpuInventory { facts: vec![fake_device_facts(0, 16 * 1024 * 1024 * 1024, Some(12))] };
+        let facts = inventory.facts(0).unwrap();
+
+        assert_eq!(default_service_stream_pool_size_from_device_facts(&facts), 24);
+        assert_eq!(device_budget_bytes_from_facts(&facts, 512 * 1024 * 1024, 256 * 1024 * 1024), 16_642_998_272);
+    }
+
+    #[test]
+    fn gpu_inventory_all_facts_uses_fake_ordinals_without_cuda_device_resolution() {
+        let inventory = FakeGpuInventory {
+            facts: vec![
+                fake_device_facts(0, 8 * 1024 * 1024 * 1024, Some(10)),
+                fake_device_facts(1, 12 * 1024 * 1024 * 1024, Some(20)),
+            ],
+        };
+
+        let facts = inventory.all_facts().unwrap();
+
+        assert_eq!(facts.iter().map(|facts| facts.device).collect::<Vec<_>>(), vec![0, 1]);
+        assert_eq!(facts.iter().filter_map(|facts| facts.sm_count).collect::<Vec<_>>(), vec![10, 20]);
+    }
+
+    #[test]
+    fn service_stream_pool_default_size_uses_sm_times_two_for_small_sm_device_fact() {
+        let facts = fake_device_facts(0, 4 * 1024 * 1024 * 1024, Some(31));
+
+        assert_eq!(default_service_stream_pool_size_from_device_facts(&facts), 62);
     }
 
     #[test]

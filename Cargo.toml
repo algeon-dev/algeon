@@ -54,6 +54,8 @@ tonic = "0.14"
 [features]
 default = []
 cugraph = ["dep:cugraph", "dep:cugraph-sys", "nexus-query-engine/cugraph"]
+# Optional NVML utilization facts; memory capacity and SM count use cudf-rs CUDA/RMM inventory.
+nvml = ["nexus-query-engine/nvml"]
 iceberg = [
   "dep:aws-config",
   "dep:aws-credential-types",

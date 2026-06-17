@@ -10,11 +10,12 @@ use std::{
 };
 
 use nexus_query_engine::{
-    AdaptiveMemoryHistory, AggregateStrategyExecutionOptions, DynamicFilterExecutionOptions, ExecutionBoundaryPolicy,
-    ExecutionCancellation, ExecutionContext, GpuHashJoinBuildCache, GpuLocalParquetSourceCache,
-    KeyedHashJoinStrategyOptions, MemoryControlPolicy, MemoryResourcePolicy, NativePipelineExecutionMode, QueryHandle,
-    ServiceStreamPool, SourceChunkPlanningMode, SourceChunkPlanningOptions, SourceFetchConfig, SourceSchedulerPolicy,
-    SourceStorageProfile, StddevSampExecutionMode, TenantQueryContext,
+    AdaptiveMemoryHistory, AggregateStrategyExecutionOptions, CudfInventory, DynamicFilterExecutionOptions,
+    ExecutionBoundaryPolicy, ExecutionCancellation, ExecutionContext, GpuHashJoinBuildCache, GpuInventory,
+    GpuLocalParquetSourceCache, KeyedHashJoinStrategyOptions, MemoryControlPolicy, MemoryResourcePolicy,
+    NativePipelineExecutionMode, QueryHandle, ServiceStreamPool, SourceChunkPlanningMode, SourceChunkPlanningOptions,
+    SourceFetchConfig, SourceSchedulerPolicy, SourceStorageProfile, StddevSampExecutionMode, TenantQueryContext,
+    device_budget_bytes_from_facts,
 };
 
 use crate::error::Error;
@@ -78,7 +79,7 @@ impl NativeCudfExecutionConfig {
     /// read the primary GPU's total memory.
     pub const AUTO_SIZED_DEVICE_BUDGET_FALLBACK_BYTES: u64 = 256 * 1024 * 1024;
     /// Device-memory headroom, in bytes, reserved for libcudf and driver
-    /// overhead when deriving a bounded budget from `nvidia-smi`.
+    /// overhead when deriving a bounded budget from CUDA device inventory.
     pub const AUTO_SIZED_DEVICE_BUDGET_HEADROOM_BYTES: u64 = 500 * 1024 * 1024;
     /// Default bounded source chunk byte target used by
     /// [`Self::bounded_auto_sized`].
@@ -123,9 +124,9 @@ impl NativeCudfExecutionConfig {
     /// Use default runtime allocator construction with an auto-sized bounded
     /// memory-control profile.
     ///
-    /// The device budget is `nvidia-smi --query-gpu=memory.total --id=0`
-    /// minus [`Self::AUTO_SIZED_DEVICE_BUDGET_HEADROOM_BYTES`]. If `nvidia-smi`
-    /// is unavailable, fails, or returns an unexpected payload, the budget
+    /// The device budget is CUDA device 0's total memory minus
+    /// [`Self::AUTO_SIZED_DEVICE_BUDGET_HEADROOM_BYTES`]. If CUDA inventory is
+    /// unavailable or fails, the budget
     /// falls back to [`Self::AUTO_SIZED_DEVICE_BUDGET_FALLBACK_BYTES`]. Source
     /// chunking uses a 64 MiB byte target, one row group per chunk, three retry
     /// attempts, and one row group as the retry floor.
@@ -143,8 +144,8 @@ impl NativeCudfExecutionConfig {
     ///
     /// The value is derived from the primary GPU's reported total memory minus
     /// 500 MiB of libcudf/driver headroom. A 256 MiB fallback keeps bounded
-    /// report and service defaults constructible on hosts without `nvidia-smi`
-    /// or without a visible GPU.
+    /// report and service defaults constructible on hosts without CUDA
+    /// inventory or without a visible GPU.
     pub fn auto_sized_device_budget_bytes() -> u64 {
         static AUTO_SIZED_DEVICE_BUDGET_BYTES: OnceLock<u64> = OnceLock::new();
         *AUTO_SIZED_DEVICE_BUDGET_BYTES.get_or_init(detect_auto_sized_device_budget_bytes)
@@ -575,23 +576,72 @@ impl NativeCudfExecutionConfig {
 }
 
 fn detect_auto_sized_device_budget_bytes() -> u64 {
-    let output = match std::process::Command::new("nvidia-smi")
-        .args(["--query-gpu=memory.total", "--format=csv,noheader,nounits", "--id=0"])
-        .output()
-    {
-        Ok(output) if output.status.success() => output.stdout,
-        _ => return NativeCudfExecutionConfig::AUTO_SIZED_DEVICE_BUDGET_FALLBACK_BYTES,
-    };
-    let total_mib: u64 = match std::str::from_utf8(&output).ok().and_then(|value| value.trim().lines().next()) {
-        Some(line) => match line.trim().parse() {
-            Ok(value) => value,
-            Err(_) => return NativeCudfExecutionConfig::AUTO_SIZED_DEVICE_BUDGET_FALLBACK_BYTES,
-        },
-        None => return NativeCudfExecutionConfig::AUTO_SIZED_DEVICE_BUDGET_FALLBACK_BYTES,
-    };
-    let total_bytes = total_mib.saturating_mul(1024 * 1024);
-    total_bytes
-        .checked_sub(NativeCudfExecutionConfig::AUTO_SIZED_DEVICE_BUDGET_HEADROOM_BYTES)
-        .filter(|value| *value > 0)
+    auto_sized_device_budget_bytes_with_inventory(&CudfInventory)
+}
+
+fn auto_sized_device_budget_bytes_with_inventory(inventory: &impl GpuInventory) -> u64 {
+    inventory
+        .facts(cudf::DeviceId::DEFAULT.ordinal())
+        .map(|facts| {
+            device_budget_bytes_from_facts(
+                &facts,
+                NativeCudfExecutionConfig::AUTO_SIZED_DEVICE_BUDGET_HEADROOM_BYTES,
+                NativeCudfExecutionConfig::AUTO_SIZED_DEVICE_BUDGET_FALLBACK_BYTES,
+            )
+        })
         .unwrap_or(NativeCudfExecutionConfig::AUTO_SIZED_DEVICE_BUDGET_FALLBACK_BYTES)
+}
+
+#[cfg(test)]
+mod tests {
+    use nexus_query_engine::{DeviceFacts, QueryError, QueryErrorCode, Result};
+
+    use super::*;
+
+    enum FakeInventory {
+        Facts(DeviceFacts),
+        Failure,
+    }
+
+    impl GpuInventory for FakeInventory {
+        fn device_count(&self) -> Result<usize> {
+            Ok(1)
+        }
+
+        fn facts(&self, _device_ordinal: usize) -> Result<DeviceFacts> {
+            match self {
+                Self::Facts(facts) => Ok(facts.clone()),
+                Self::Failure => Err(QueryError::new(
+                    QueryErrorCode::CudfTemporaryFailure,
+                    "datafusion_nexus.test.gpu_inventory",
+                    "simulated inventory failure",
+                )),
+            }
+        }
+    }
+
+    fn device_facts(total_bytes: u64) -> DeviceFacts {
+        DeviceFacts { device: 0, total_bytes, free_bytes: total_bytes / 2, sm_count: Some(16), utilization_pct: None }
+    }
+
+    #[test]
+    fn auto_sized_budget_uses_total_memory_minus_headroom() {
+        let total = 8 * 1024 * 1024 * 1024;
+        let inventory = FakeInventory::Facts(device_facts(total));
+
+        assert_eq!(
+            auto_sized_device_budget_bytes_with_inventory(&inventory),
+            total - NativeCudfExecutionConfig::AUTO_SIZED_DEVICE_BUDGET_HEADROOM_BYTES
+        );
+    }
+
+    #[test]
+    fn auto_sized_budget_falls_back_when_inventory_fails() {
+        let inventory = FakeInventory::Failure;
+
+        assert_eq!(
+            auto_sized_device_budget_bytes_with_inventory(&inventory),
+            NativeCudfExecutionConfig::AUTO_SIZED_DEVICE_BUDGET_FALLBACK_BYTES
+        );
+    }
 }
