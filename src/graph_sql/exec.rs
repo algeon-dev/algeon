@@ -146,7 +146,11 @@ impl CugraphAlgoExec {
                 .with_fact("partition", partition)
                 .into());
             }
-            let metrics = NativeCudfMetrics::new(&self.metrics, partition);
+            let metrics = NativeCudfMetrics::new_with_capture(
+                &self.metrics,
+                partition,
+                self.native_execution_config.metrics_capture(),
+            );
             let _elapsed_compute = metrics.baseline.elapsed_compute().timer();
             let edge_schema = self.edge_source.schema();
             let edge_frame =
@@ -219,7 +223,11 @@ impl CugraphAlgoExec {
             .with_fact("partition", partition)
             .into());
         }
-        let metrics = NativeCudfMetrics::new(&self.metrics, partition);
+        let metrics = NativeCudfMetrics::new_with_capture(
+            &self.metrics,
+            partition,
+            self.native_execution_config.metrics_capture(),
+        );
         let _elapsed_compute = metrics.baseline.elapsed_compute().timer();
         let edge_schema = self.edge_source.schema();
         let edge_frame =
@@ -376,7 +384,8 @@ impl ExecutionPlan for CugraphAlgoExec {
         let limit = self.limit;
         let edge_normalize_inserted = self.edge_normalize_inserted();
         let default_execution_config = self.native_execution_config.clone();
-        let metrics = NativeCudfMetrics::new(&self.metrics, partition);
+        let metrics =
+            NativeCudfMetrics::new_with_capture(&self.metrics, partition, default_execution_config.metrics_capture());
         let output = futures::stream::once(async move {
             let _elapsed_compute = metrics.baseline.elapsed_compute().timer();
             let execution_config = edge_execution_config(edge_source.as_ref(), &default_execution_config);

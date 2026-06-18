@@ -19,6 +19,7 @@ mod datafusion_error;
 pub mod diagnostics;
 pub mod error;
 mod flight;
+mod observability;
 mod session;
 mod table_format_operator_fast_fail;
 

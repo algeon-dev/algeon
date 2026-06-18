@@ -3,7 +3,11 @@
 //! The public name list is the contract consumed by tests, reports, and users
 //! who inspect DataFusion metrics after native execution.
 
-use std::collections::BTreeMap;
+use std::{
+    collections::BTreeMap,
+    fmt,
+    sync::{Arc, Weak},
+};
 
 use datafusion::physical_plan::metrics::{
     BaselineMetrics, Count, ExecutionPlanMetricsSet, MetricBuilder, MetricCategory, MetricType, Time,
@@ -142,11 +146,51 @@ pub const NATIVE_CUDF_DATAFUSION_METRIC_NAMES: &[&str] = &[
     "materialization_time",
 ];
 
+/// Query-keyed sink for native metrics captured while DataFusion wrapper metrics are populated.
+pub(crate) trait NativeMetricsCaptureSink: Send + Sync {
+    fn record_query_metrics(&self, query_id: &str, metrics: &QueryMetrics);
+
+    fn record_lakehouse_cache_fill_events(&self, query_id: &str, events: &[LakehouseCacheFillEventSnapshot]);
+}
+
+/// Cheap cloneable handle copied into native execution wrappers for one server query.
+#[derive(Clone)]
+pub(crate) struct NativeMetricsCapture {
+    query_id: Arc<str>,
+    sink: Weak<dyn NativeMetricsCaptureSink>,
+}
+
+impl NativeMetricsCapture {
+    #[cfg(feature = "server")]
+    pub(crate) fn new(query_id: impl Into<Arc<str>>, sink: Arc<dyn NativeMetricsCaptureSink>) -> Self {
+        Self { query_id: query_id.into(), sink: Arc::downgrade(&sink) }
+    }
+
+    fn record_query_metrics(&self, metrics: &QueryMetrics) {
+        if let Some(sink) = self.sink.upgrade() {
+            sink.record_query_metrics(&self.query_id, metrics);
+        }
+    }
+
+    fn record_lakehouse_cache_fill_events(&self, events: &[LakehouseCacheFillEventSnapshot]) {
+        if let Some(sink) = self.sink.upgrade() {
+            sink.record_lakehouse_cache_fill_events(&self.query_id, events);
+        }
+    }
+}
+
+impl fmt::Debug for NativeMetricsCapture {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("NativeMetricsCapture").field("query_id", &self.query_id).finish_non_exhaustive()
+    }
+}
+
 // Private translation layer from native `QueryMetrics` into DataFusion metrics. Field names must
 // match `NATIVE_CUDF_DATAFUSION_METRIC_NAMES` and the registration names in `new`.
 #[derive(Debug, Clone)]
 pub(crate) struct NativeCudfMetrics {
     metrics_set: ExecutionPlanMetricsSet,
+    capture: Option<NativeMetricsCapture>,
     pub(crate) baseline: BaselineMetrics,
     input_batches: Count,
     input_rows: Count,
@@ -266,7 +310,16 @@ pub(crate) struct NativeCudfMetrics {
 }
 
 impl NativeCudfMetrics {
+    #[cfg(any(test, feature = "server"))]
     pub(crate) fn new(metrics: &ExecutionPlanMetricsSet, partition: usize) -> Self {
+        Self::new_with_capture(metrics, partition, None)
+    }
+
+    pub(crate) fn new_with_capture(
+        metrics: &ExecutionPlanMetricsSet,
+        partition: usize,
+        capture: Option<NativeMetricsCapture>,
+    ) -> Self {
         let native_aggregate_strategy_rows = summary_counter(metrics, "native_aggregate_strategy_rows", partition);
         let _ = summary_counter(metrics, "native_join_strategy_rows", partition);
         let _ = summary_counter(metrics, "native_graph_runtime_rows", partition);
@@ -277,6 +330,7 @@ impl NativeCudfMetrics {
         let _ = summary_counter(metrics, "native_lakehouse_cache_fill_event_snapshot_rows", partition);
         Self {
             metrics_set: metrics.clone(),
+            capture,
             baseline: BaselineMetrics::new(metrics, partition),
             input_batches: summary_counter(metrics, "input_batches", partition),
             input_rows: summary_counter(metrics, "input_rows", partition),
@@ -615,6 +669,9 @@ impl NativeCudfMetrics {
         self.final_merge_time.add_duration(metrics.final_merge_time);
         self.final_sort_time.add_duration(metrics.final_sort_time);
         self.materialization_time.add_duration(metrics.materialization_time);
+        if let Some(capture) = &self.capture {
+            capture.record_query_metrics(metrics);
+        }
     }
 
     pub(crate) fn record_lakehouse_cache_fill_events(&self, events: &[LakehouseCacheFillEventSnapshot]) {
@@ -640,6 +697,9 @@ impl NativeCudfMetrics {
                 .with_new_label("error_operation", event.error_operation.clone().unwrap_or_else(|| "none".to_string()))
                 .global_counter("native_lakehouse_cache_fill_event_snapshot_rows")
                 .add(1);
+        }
+        if let Some(capture) = &self.capture {
+            capture.record_lakehouse_cache_fill_events(events);
         }
     }
 
@@ -1475,6 +1535,9 @@ fn summary_counter_category(name: &str) -> MetricCategory {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(feature = "server")]
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
     use nexus_query_engine::{
         JoinOperatorMetrics, LakehouseCacheFillEventSnapshot, OperatorMetrics, SourceReadParquetEvidenceMetrics,
         SourceReadRuntimeMetrics,
@@ -1500,6 +1563,42 @@ mod tests {
         assert_eq!(category_for("output_rows"), Some(MetricCategory::Rows));
         assert_eq!(category_for("output_bytes"), Some(MetricCategory::Bytes));
         assert_eq!(category_for("elapsed_compute"), Some(MetricCategory::Timing));
+    }
+
+    #[cfg(feature = "server")]
+    #[derive(Default)]
+    struct CountingCaptureSink {
+        query_metrics: AtomicUsize,
+        cache_events: AtomicUsize,
+    }
+
+    #[cfg(feature = "server")]
+    impl NativeMetricsCaptureSink for CountingCaptureSink {
+        fn record_query_metrics(&self, _query_id: &str, _metrics: &QueryMetrics) {
+            self.query_metrics.fetch_add(1, Ordering::Relaxed);
+        }
+
+        fn record_lakehouse_cache_fill_events(&self, _query_id: &str, events: &[LakehouseCacheFillEventSnapshot]) {
+            self.cache_events.fetch_add(events.len(), Ordering::Relaxed);
+        }
+    }
+
+    #[cfg(feature = "server")]
+    #[test]
+    fn native_metrics_capture_does_not_keep_sink_alive() {
+        let sink = Arc::new(CountingCaptureSink::default());
+        let erased_sink: Arc<dyn NativeMetricsCaptureSink> = sink.clone();
+        let weak_sink = Arc::downgrade(&erased_sink);
+        let capture = NativeMetricsCapture::new("q1", erased_sink);
+
+        assert_eq!(Arc::strong_count(&sink), 1);
+        capture.record_query_metrics(&QueryMetrics::default());
+        assert_eq!(sink.query_metrics.load(Ordering::Relaxed), 1);
+
+        drop(sink);
+        assert!(weak_sink.upgrade().is_none());
+        capture.record_query_metrics(&QueryMetrics::default());
+        capture.record_lakehouse_cache_fill_events(&[]);
     }
 
     #[test]

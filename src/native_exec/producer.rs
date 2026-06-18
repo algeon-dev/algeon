@@ -18,8 +18,11 @@ use futures::future::BoxFuture;
 use nexus_query_engine::{ExecutionContext, GpuResultHandle, QueryOutput, QueryPlan, execute_query_plan};
 
 use super::{
-    common::{comma_separated, conservative_properties, gpu_resident_source_names, native_query_runtime_error},
-    metrics::NativeCudfMetrics,
+    common::{
+        comma_separated, conservative_properties, gpu_resident_source_names, native_plan_one_line,
+        native_query_runtime_error, write_native_plan_tree,
+    },
+    metrics::{NativeCudfMetrics, NativeMetricsCapture},
 };
 use crate::error::{Error, ErrorCode};
 
@@ -42,6 +45,7 @@ pub(crate) trait GpuResidentProducerExec {
 pub struct NativeCudfGpuProducerExec {
     input_name: String,
     plan: QueryPlan,
+    metrics_capture: Option<NativeMetricsCapture>,
     metrics: ExecutionPlanMetricsSet,
     cache: Arc<PlanProperties>,
 }
@@ -51,6 +55,14 @@ impl NativeCudfGpuProducerExec {
     ///
     /// Requires a GPU-resident sink and no external GPU-resident inputs.
     pub fn try_new(input_name: impl Into<String>, plan: QueryPlan) -> crate::error::Result<Self> {
+        Self::try_new_with_metrics_capture(input_name, plan, None)
+    }
+
+    pub(crate) fn try_new_with_metrics_capture(
+        input_name: impl Into<String>,
+        plan: QueryPlan,
+        metrics_capture: Option<NativeMetricsCapture>,
+    ) -> crate::error::Result<Self> {
         let input_name = input_name.into();
         if input_name.is_empty() {
             return Err(Error::new(
@@ -82,6 +94,7 @@ impl NativeCudfGpuProducerExec {
             input_name,
             cache: conservative_properties(Arc::clone(plan.output_schema())),
             plan,
+            metrics_capture,
             metrics: ExecutionPlanMetricsSet::new(),
         })
     }
@@ -113,7 +126,7 @@ impl NativeCudfGpuProducerExec {
             .into());
         }
 
-        let metrics = NativeCudfMetrics::new(&self.metrics, partition);
+        let metrics = NativeCudfMetrics::new_with_capture(&self.metrics, partition, self.metrics_capture.clone());
         let _elapsed_compute = metrics.baseline.elapsed_compute().timer();
         let result = execute_query_plan(native_context, &self.plan).map_err(|error| {
             DataFusionError::from(native_query_runtime_error(
@@ -192,19 +205,28 @@ pub(crate) async fn execute_gpu_resident_producer_with_context(
 impl DisplayAs for NativeCudfGpuProducerExec {
     fn fmt_as(&self, t: DisplayFormatType, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match t {
-            DisplayFormatType::Default | DisplayFormatType::Verbose => write!(
+            DisplayFormatType::Default => write!(
                 f,
                 "NativeCudfGpuProducerExec: input_name={}, native_nodes={}, sink=gpu_resident, output_boundary=device_resident, edge_normalize_inserted={}",
                 self.input_name,
                 self.plan.node_count(),
                 self.plan.contains_edge_normalize(),
             ),
+            DisplayFormatType::Verbose => write!(
+                f,
+                "NativeCudfGpuProducerExec: input_name={}, native_nodes={}, sink=gpu_resident, output_boundary=device_resident, edge_normalize_inserted={}, native_plan={}",
+                self.input_name,
+                self.plan.node_count(),
+                self.plan.contains_edge_normalize(),
+                native_plan_one_line(&self.plan),
+            ),
             DisplayFormatType::TreeRender => {
                 writeln!(f, "input_name={}", self.input_name)?;
                 writeln!(f, "native_nodes={}", self.plan.node_count())?;
                 writeln!(f, "sink=gpu_resident")?;
                 writeln!(f, "output_boundary=device_resident")?;
-                writeln!(f, "edge_normalize_inserted={}", self.plan.contains_edge_normalize())
+                writeln!(f, "edge_normalize_inserted={}", self.plan.contains_edge_normalize())?;
+                write_native_plan_tree(f, &self.plan)
             },
         }
     }

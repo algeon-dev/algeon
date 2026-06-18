@@ -20,7 +20,10 @@ use futures::TryStreamExt;
 use nexus_query_engine::{QueryOutput, QueryPlan, execute_query_plan};
 
 use super::{
-    common::{conservative_properties, mark_native_runtime_error, native_query_runtime_error},
+    common::{
+        conservative_properties, mark_native_runtime_error, native_plan_one_line, native_query_runtime_error,
+        write_native_plan_tree,
+    },
     config::NativeCudfExecutionConfig,
     metrics::NativeCudfMetrics,
 };
@@ -75,7 +78,7 @@ impl NativeCudfExec {
 impl DisplayAs for NativeCudfExec {
     fn fmt_as(&self, t: DisplayFormatType, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match t {
-            DisplayFormatType::Default | DisplayFormatType::Verbose => write!(
+            DisplayFormatType::Default => write!(
                 f,
                 "NativeCudfExec: native_nodes={}, sink=host_arrow, native_pipeline_execution_mode={}, memory_control_policy={}, boundary_policy={}, output_boundary=device_to_host, edge_normalize_inserted={}",
                 self.plan.node_count(),
@@ -83,6 +86,16 @@ impl DisplayAs for NativeCudfExec {
                 self.execution_config.memory_control_policy(),
                 self.execution_config.boundary_policy(),
                 self.plan.contains_edge_normalize(),
+            ),
+            DisplayFormatType::Verbose => write!(
+                f,
+                "NativeCudfExec: native_nodes={}, sink=host_arrow, native_pipeline_execution_mode={}, memory_control_policy={}, boundary_policy={}, output_boundary=device_to_host, edge_normalize_inserted={}, native_plan={}",
+                self.plan.node_count(),
+                self.execution_config.native_pipeline_execution_mode(),
+                self.execution_config.memory_control_policy(),
+                self.execution_config.boundary_policy(),
+                self.plan.contains_edge_normalize(),
+                native_plan_one_line(&self.plan),
             ),
             DisplayFormatType::TreeRender => {
                 writeln!(f, "native_nodes={}", self.plan.node_count())?;
@@ -95,7 +108,8 @@ impl DisplayAs for NativeCudfExec {
                 writeln!(f, "memory_control_policy={}", self.execution_config.memory_control_policy())?;
                 writeln!(f, "boundary_policy={}", self.execution_config.boundary_policy())?;
                 writeln!(f, "output_boundary=device_to_host")?;
-                writeln!(f, "edge_normalize_inserted={}", self.plan.contains_edge_normalize())
+                writeln!(f, "edge_normalize_inserted={}", self.plan.contains_edge_normalize())?;
+                write_native_plan_tree(f, &self.plan)
             },
         }
     }
@@ -146,7 +160,8 @@ impl ExecutionPlan for NativeCudfExec {
         let schema = self.schema();
         let plan = self.plan.clone();
         let execution_config = self.execution_config.clone();
-        let metrics = NativeCudfMetrics::new(&self.metrics, partition);
+        let metrics =
+            NativeCudfMetrics::new_with_capture(&self.metrics, partition, self.execution_config.metrics_capture());
         let output = futures::stream::once(async move {
             let _elapsed_compute = metrics.baseline.elapsed_compute().timer();
             // Context construction is the configuration/validation stage. Failures here happen

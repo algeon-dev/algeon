@@ -8,13 +8,15 @@ use arrow::{
     record_batch::RecordBatch,
 };
 use arrow_flight::{
+    FlightInfo,
     error::FlightError,
     sql::{
-        ActionCreatePreparedStatementRequest, ActionCreatePreparedStatementResult, Any, CommandGetCrossReference,
-        CommandGetDbSchemas, CommandGetExportedKeys, CommandGetImportedKeys, CommandGetPrimaryKeys, CommandGetTables,
-        ProstMessageExt, SqlInfo, SqlNullOrdering, SqlOuterJoinsSupportLevel, SqlSupportedGroupBy,
-        SqlSupportedResultSetConcurrency, SqlSupportedResultSetType, SqlSupportedTransaction, SqlSupportedUnions,
-        client::FlightSqlServiceClient,
+        ActionCancelQueryRequest, ActionCancelQueryResult, ActionCreatePreparedStatementRequest,
+        ActionCreatePreparedStatementResult, Any, CommandGetCrossReference, CommandGetDbSchemas,
+        CommandGetExportedKeys, CommandGetImportedKeys, CommandGetPrimaryKeys, CommandGetTables,
+        CommandPreparedStatementQuery, ProstMessageExt, SqlInfo, SqlNullOrdering, SqlOuterJoinsSupportLevel,
+        SqlSupportedGroupBy, SqlSupportedResultSetConcurrency, SqlSupportedResultSetType, SqlSupportedTransaction,
+        SqlSupportedUnions, TicketStatementQuery, client::FlightSqlServiceClient,
     },
 };
 use datafusion_nexus::server::{
@@ -24,9 +26,11 @@ use datafusion_nexus::server::{
 };
 use futures::TryStreamExt;
 use parquet::{arrow::ArrowWriter, file::properties::WriterProperties};
+use prost::Message as _;
 use tonic::{Code, transport::Endpoint};
 
 const QUERY_ID_METADATA_KEY: &str = "x-datafusion-nexus-query-id";
+const CANCEL_RESULT_CANCELLING: i32 = 2;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn flight_sql_client_can_run_select_one() {
@@ -47,6 +51,198 @@ async fn flight_sql_client_can_run_select_one() {
     assert_eq!(batches[0].num_rows(), 1);
     assert_eq!(batches[0].num_columns(), 1);
     assert_eq!(int_value(batches[0].column(0)), Some(1));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn get_query_stats_returns_completed_statement_observability() {
+    let addr = free_local_addr();
+    let mut config = ServerConfig::from_env_get(|_| None).unwrap();
+    config.bind_addr = addr;
+
+    let server = tokio::spawn(async move { serve(config).await });
+    let mut client = connect_with_retry(addr).await;
+
+    let flight_info = client.execute("select 1 as one".to_string(), None).await.unwrap();
+    let query_id = query_id_from_statement_flight_info(&flight_info);
+    let ticket = flight_info.endpoint.first().and_then(|endpoint| endpoint.ticket.clone()).unwrap();
+    let batches = client.do_get(ticket).await.unwrap().try_collect::<Vec<_>>().await.unwrap();
+    assert_eq!(int_value(batches[0].column(0)), Some(1));
+
+    let payload = get_query_stats_raw(&mut client, &query_id).await;
+
+    server.abort();
+
+    assert!(payload.contains("# datafusion_nexus_query_stats=1"), "{payload}");
+    assert!(payload.contains(&format!("# query_id={query_id}")), "{payload}");
+    assert!(payload.contains("# outcome=succeeded"), "{payload}");
+    assert!(payload.contains("[physical_plan]"), "{payload}");
+
+    let (header, row) = query_stats_tsv_single_row(&payload, "execution");
+    assert_eq!(tsv_value(&header, &row, "runtime_outcome"), "succeeded", "{payload}");
+    assert_eq!(tsv_value(&header, &row, "output_batches"), "1", "{payload}");
+    assert_eq!(tsv_value(&header, &row, "output_rows"), "1", "{payload}");
+    assert!(tsv_value(&header, &row, "output_bytes").parse::<usize>().unwrap() > 0, "{payload}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn get_query_stats_returns_structured_error_after_planning_failure() {
+    let addr = free_local_addr();
+    let mut config = ServerConfig::from_env_get(|_| None).unwrap();
+    config.bind_addr = addr;
+
+    let server = tokio::spawn(async move { serve(config).await });
+    let mut client = connect_with_retry(addr).await;
+
+    let error = client.execute("select missing from (select 1 as one) as t".to_string(), None).await.unwrap_err();
+    let status = unwrap_flight_status(error);
+    assert_eq!(status.code(), Code::InvalidArgument);
+    let query_id = query_id_from_status(&status);
+
+    let payload = get_query_stats_raw(&mut client, &query_id).await;
+
+    server.abort();
+
+    assert!(payload.contains("# outcome=failed"), "{payload}");
+    assert!(payload.contains("[structured_error]"), "{payload}");
+    assert!(payload.contains("code=field_not_found"), "{payload}");
+    assert!(
+        payload.contains("operation=datafusion_nexus.server.flight.get_flight_info_statement.create_logical_plan"),
+        "{payload}"
+    );
+    assert!(payload.contains("missing"), "{payload}");
+    assert!(payload.contains("one"), "{payload}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn get_query_stats_surfaces_complete_cpu_fallback_rejection() {
+    let addr = free_local_addr();
+    let mut config = ServerConfig::from_env_get(|_| None).unwrap();
+    config.bind_addr = addr;
+
+    let server = tokio::spawn(async move { serve(config).await });
+    let mut client = connect_with_retry(addr).await;
+    let dir = tempfile::Builder::new().prefix("datafusion-nexus-flight-sql-stats-fallback-").tempdir().unwrap();
+    let parquet_path = dir.path().join("edges.parquet");
+    write_update_edges_parquet(&parquet_path);
+
+    let _ = execute_batches(
+        &mut client,
+        &format!(
+            "CREATE EXTERNAL TABLE stats_fallback_edges STORED AS PARQUET LOCATION '{}'",
+            parquet_path.to_string_lossy()
+        ),
+    )
+    .await;
+    let flight_info = client
+        .execute("SELECT src FROM stats_fallback_edges WHERE TRY_CAST(src AS INT) >= 0 ORDER BY src".to_string(), None)
+        .await
+        .unwrap();
+    let query_id = query_id_from_statement_flight_info(&flight_info);
+    let batches = collect_metadata_batches(&mut client, &flight_info).await;
+    assert_eq!(batches.iter().map(RecordBatch::num_rows).sum::<usize>(), 2);
+
+    let payload = get_query_stats_raw(&mut client, &query_id).await;
+
+    server.abort();
+
+    assert!(payload.contains("# outcome=succeeded"), "{payload}");
+
+    let (planning_header, planning_row) = query_stats_tsv_single_row(&payload, "planning");
+    assert_eq!(tsv_value(&planning_header, &planning_row, "outcome"), "rejected_before_execution", "{payload}");
+    assert_eq!(
+        tsv_value(&planning_header, &planning_row, "reason_code"),
+        "native_sort_preserving_merge_unsupported",
+        "{payload}"
+    );
+    assert_eq!(tsv_value(&planning_header, &planning_row, "unsupported_category"), "operator_sort", "{payload}");
+    assert_eq!(tsv_value(&planning_header, &planning_row, "post_native_execution_path"), "cpu", "{payload}");
+    assert_eq!(tsv_value(&planning_header, &planning_row, "native_plan_fragment_count"), "0", "{payload}");
+    assert_eq!(tsv_value(&planning_header, &planning_row, "host_datafusion_boundary_count"), "0", "{payload}");
+    assert_eq!(tsv_value(&planning_header, &planning_row, "rejected_before_execution"), "true", "{payload}");
+
+    let (execution_header, execution_row) = query_stats_tsv_single_row(&payload, "execution");
+    assert_eq!(
+        tsv_value(&execution_header, &execution_row, "planning_outcome"),
+        "rejected_before_execution",
+        "{payload}"
+    );
+    assert_eq!(tsv_value(&execution_header, &execution_row, "post_native_execution_path"), "cpu", "{payload}");
+    assert_eq!(tsv_value(&execution_header, &execution_row, "native_runtime_started"), "false", "{payload}");
+    assert_eq!(tsv_value(&execution_header, &execution_row, "runtime_outcome"), "not_started", "{payload}");
+    assert_eq!(tsv_value(&execution_header, &execution_row, "output_rows"), "not_run", "{payload}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn get_query_stats_unknown_query_returns_not_found() {
+    let addr = free_local_addr();
+    let mut config = ServerConfig::from_env_get(|_| None).unwrap();
+    config.bind_addr = addr;
+
+    let server = tokio::spawn(async move { serve(config).await });
+    let mut client = connect_with_retry(addr).await;
+
+    let action = arrow_flight::Action {
+        r#type: "GetQueryStats".to_string(),
+        body: b"missing-query-id".as_slice().to_vec().into(),
+    };
+    let error = client.do_action(action).await.unwrap_err();
+    let status = unwrap_flight_status(error);
+
+    server.abort();
+
+    assert_eq!(status.code(), Code::NotFound);
+    assert!(status.message().contains("unknown or expired query_id"), "{status:?}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn get_query_stats_returns_transaction_structured_error() {
+    let addr = free_local_addr();
+    let mut config = ServerConfig::from_env_get(|_| None).unwrap();
+    config.bind_addr = addr;
+
+    let server = tokio::spawn(async move { serve(config).await });
+    let mut client = connect_with_retry(addr).await;
+
+    let error = client
+        .execute("select 1 as one".to_string(), Some(prost::bytes::Bytes::from_static(b"txn")))
+        .await
+        .unwrap_err();
+    let status = unwrap_flight_status(error);
+    assert_eq!(status.code(), Code::Unimplemented);
+    let query_id = query_id_from_status(&status);
+
+    let payload = get_query_stats_raw(&mut client, &query_id).await;
+
+    server.abort();
+
+    assert!(payload.contains("# outcome=failed"), "{payload}");
+    assert!(payload.contains("code=unsupported_operator"), "{payload}");
+    assert!(payload.contains("operation=datafusion_nexus.server.flight.transaction"), "{payload}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn get_query_stats_returns_cancelled_for_unconsumed_ticket() {
+    let addr = free_local_addr();
+    let mut config = ServerConfig::from_env_get(|_| None).unwrap();
+    config.bind_addr = addr;
+
+    let server = tokio::spawn(async move { serve(config).await });
+    let mut client = connect_with_retry(addr).await;
+
+    let flight_info = client.execute("select 1 as one".to_string(), None).await.unwrap();
+    let query_id = query_id_from_statement_flight_info(&flight_info);
+    let result = cancel_query_raw(&mut client, &flight_info).await;
+    assert_eq!(result.result, CANCEL_RESULT_CANCELLING);
+
+    let payload = get_query_stats_raw(&mut client, &query_id).await;
+
+    server.abort();
+
+    assert!(payload.contains("# outcome=failed"), "{payload}");
+    assert!(payload.contains("# sealed=true"), "{payload}");
+    assert!(payload.contains("[structured_error]"), "{payload}");
+    assert!(payload.contains("code=cancelled"), "{payload}");
+    assert!(payload.contains("operation=datafusion_nexus.server.flight.cancel_query"), "{payload}");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -93,6 +289,14 @@ async fn drop_table_on_view_reports_object_type_mismatch() {
     assert!(status.message().contains("is a view"), "message must explain actual object type: {}", status.message());
     assert!(status.message().contains("DROP VIEW"), "message must name the corrective DDL: {}", status.message());
     assert_no_diagnostic_fields(status.message());
+    let payload = get_query_stats_raw(&mut client, &query_id_from_status(&status)).await;
+    assert!(
+        payload.contains("operation=datafusion_nexus.server.flight.get_flight_info_statement.create_logical_plan"),
+        "{payload}"
+    );
+    assert!(payload.contains("fact.object_name=drop_view_probe"), "{payload}");
+    assert!(payload.contains("fact.requested_table_type=TABLE"), "{payload}");
+    assert!(payload.contains("fact.actual_table_type=VIEW"), "{payload}");
 
     let error = client.execute_update("DROP TABLE IF EXISTS drop_view_probe".to_string(), None).await.unwrap_err();
     let status = unwrap_flight_status(error);
@@ -244,6 +448,28 @@ async fn prepared_ddl_create_action_omits_dataset_schema_bytes() {
         prepared.dataset_schema.is_empty(),
         "non-result-set prepared DDL must omit dataset_schema rather than advertise a 0-column result"
     );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn prepared_create_action_handle_resolves_query_stats() {
+    let addr = free_local_addr();
+    let mut config = ServerConfig::from_env_get(|_| None).unwrap();
+    config.bind_addr = addr;
+
+    let server = tokio::spawn(async move { serve(config).await });
+    let mut client = connect_with_retry(addr).await;
+
+    let prepared = create_prepared_raw(&mut client, "select 1 as one".to_string()).await;
+    let query_id =
+        String::from_utf8(prepared.prepared_statement_handle.to_vec()).expect("handle must be UTF-8 query id");
+    let payload = get_query_stats_raw(&mut client, &query_id).await;
+    close_prepared_raw(&mut client, prepared.prepared_statement_handle).await;
+
+    server.abort();
+
+    assert!(payload.contains(&format!("# query_id={query_id}")), "{payload}");
+    assert!(payload.contains("# outcome=succeeded"), "{payload}");
+    assert!(payload.contains("# sql=select 1 as one"), "{payload}");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1049,8 +1275,44 @@ async fn prepared_statement_invalid_sql_fails_at_create() {
     assert_query_id_metadata(&status);
     assert_error_metadata(&status, "sql_parse", "invalid_input", "permanent");
     assert_no_diagnostic_fields(status.message());
+    let payload = get_query_stats_raw(&mut client, &query_id_from_status(&status)).await;
+    assert!(
+        payload.contains(
+            "operation=datafusion_nexus.server.flight.do_action_create_prepared_statement.create_logical_plan"
+        ),
+        "{payload}"
+    );
 
     server.abort();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn unknown_prepared_statement_query_stats_remains_resolvable() {
+    let addr = free_local_addr();
+    let mut config = ServerConfig::from_env_get(|_| None).unwrap();
+    config.bind_addr = addr;
+
+    let server = tokio::spawn(async move { serve(config).await });
+    let mut client = connect_with_retry(addr).await;
+
+    let command =
+        CommandPreparedStatementQuery { prepared_statement_handle: prost::bytes::Bytes::from_static(b"ghost") };
+    let descriptor = arrow_flight::FlightDescriptor::new_cmd(command.as_any().encode_to_vec());
+    let status = client.inner_mut().get_flight_info(descriptor).await.unwrap_err();
+    assert_eq!(status.code(), Code::NotFound);
+    let query_id = query_id_from_status(&status);
+
+    let payload = get_query_stats_raw(&mut client, &query_id).await;
+
+    server.abort();
+
+    assert!(payload.contains("# outcome=failed"), "{payload}");
+    assert!(payload.contains("code=object_not_found"), "{payload}");
+    assert!(
+        payload.contains("operation=datafusion_nexus.server.flight.get_flight_info_prepared_statement.resolve"),
+        "{payload}"
+    );
+    assert!(payload.contains("unknown prepared statement handle"), "{payload}");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1169,6 +1431,68 @@ fn unwrap_flight_status(error: FlightError) -> tonic::Status {
         FlightError::Tonic(status) => *status,
         other => panic!("expected tonic Status, got {other:?}"),
     }
+}
+
+fn query_id_from_status(status: &tonic::Status) -> String {
+    status
+        .metadata()
+        .get(QUERY_ID_METADATA_KEY)
+        .and_then(|value| value.to_str().ok())
+        .expect("status must carry query id metadata")
+        .to_string()
+}
+
+fn query_id_from_statement_flight_info(flight_info: &arrow_flight::FlightInfo) -> String {
+    use prost::Message as _;
+
+    let ticket = flight_info.endpoint.first().and_then(|endpoint| endpoint.ticket.as_ref()).unwrap();
+    let any = Any::decode(&*ticket.ticket).unwrap();
+    let ticket = any.unpack::<TicketStatementQuery>().unwrap().expect("statement ticket");
+    String::from_utf8(ticket.statement_handle.to_vec()).unwrap()
+}
+
+async fn get_query_stats_raw(client: &mut FlightSqlServiceClient<tonic::transport::Channel>, query_id: &str) -> String {
+    let action =
+        arrow_flight::Action { r#type: "GetQueryStats".to_string(), body: query_id.as_bytes().to_vec().into() };
+    let mut stream = client.do_action(action).await.unwrap();
+    let result = stream.message().await.unwrap().expect("GetQueryStats action must return one result");
+    assert!(stream.message().await.unwrap().is_none(), "GetQueryStats action returns exactly one result");
+    String::from_utf8(result.body.to_vec()).unwrap()
+}
+
+fn query_stats_tsv_single_row<'a>(payload: &'a str, section: &str) -> (Vec<&'a str>, Vec<&'a str>) {
+    let marker = format!("[{section}]");
+    let mut lines = payload
+        .lines()
+        .skip_while(|line| *line != marker)
+        .skip(1)
+        .filter(|line| !line.is_empty() && !line.starts_with('#'));
+    let header =
+        lines.next().unwrap_or_else(|| panic!("missing [{section}] header in query_stats payload:\n{payload}"));
+    let row = lines.next().unwrap_or_else(|| panic!("missing [{section}] row in query_stats payload:\n{payload}"));
+    (header.split('\t').collect(), row.split('\t').collect())
+}
+
+fn tsv_value<'a>(header: &[&str], row: &'a [&str], column: &str) -> &'a str {
+    let index = header
+        .iter()
+        .position(|name| *name == column)
+        .unwrap_or_else(|| panic!("missing TSV column {column}; header={header:?}; row={row:?}"));
+    row.get(index).copied().unwrap_or_else(|| panic!("missing TSV value for column {column}; row={row:?}"))
+}
+
+async fn cancel_query_raw(
+    client: &mut FlightSqlServiceClient<tonic::transport::Channel>,
+    flight_info: &FlightInfo,
+) -> ActionCancelQueryResult {
+    let action_body = ActionCancelQueryRequest { info: flight_info.encode_to_vec().into() };
+    let action =
+        arrow_flight::Action { r#type: "CancelQuery".to_string(), body: action_body.as_any().encode_to_vec().into() };
+    let mut stream = client.do_action(action).await.unwrap();
+    let result = stream.message().await.unwrap().expect("CancelQuery action must return one result");
+    assert!(stream.message().await.unwrap().is_none(), "CancelQuery action returns exactly one result");
+    let any = Any::decode(&*result.body).unwrap();
+    any.unpack::<ActionCancelQueryResult>().unwrap().unwrap()
 }
 
 async fn collect_metadata_batches(

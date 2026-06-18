@@ -12,13 +12,14 @@ mod host;
 mod metrics;
 mod producer;
 
+#[cfg(any(feature = "server", feature = "cugraph"))]
+pub(crate) use self::metrics::NativeCudfMetrics;
+#[cfg(feature = "server")]
+pub(crate) use self::metrics::{NativeMetricsCapture, NativeMetricsCaptureSink};
 pub(crate) use self::producer::gpu_resident_producer_input_name;
+#[cfg(feature = "cugraph")]
+pub(crate) use self::producer::{GpuResidentProducerExec, gpu_resident_producer};
 pub use self::{
     composed::NativeCudfComposedExec, config::NativeCudfExecutionConfig, host::NativeCudfExec,
     metrics::NATIVE_CUDF_DATAFUSION_METRIC_NAMES, producer::NativeCudfGpuProducerExec,
-};
-#[cfg(feature = "cugraph")]
-pub(crate) use self::{
-    metrics::NativeCudfMetrics,
-    producer::{GpuResidentProducerExec, gpu_resident_producer},
 };
