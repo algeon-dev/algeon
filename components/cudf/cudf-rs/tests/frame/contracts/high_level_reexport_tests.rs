@@ -227,6 +227,35 @@ fn query_execution_context_is_publicly_reexported() {
 }
 
 #[test]
+fn dataframe_join_helpers_are_publicly_reexported() {
+    use cudf::{DataFrame, DataFrameJoinIndices, DataFrameJoinOptions, Runtime};
+
+    fn assert_indices(_: &DataFrameJoinIndices) {}
+    fn assert_options(_: DataFrameJoinOptions) {}
+
+    let rt = Runtime::builder().build().unwrap();
+    let left = DataFrame::from_columns([
+        ("id", rt.series(&[1i32, 2, 3]).unwrap()),
+        ("value", rt.series(&[10i32, 20, 30]).unwrap()),
+    ])
+    .unwrap();
+    let right = DataFrame::from_columns([("id", rt.series(&[2i32]).unwrap())]).unwrap();
+    let options = DataFrameJoinOptions::new().on(["id"]);
+    assert_options(options.clone());
+
+    let indices = left.left_semi_join_indices(&right, options).unwrap();
+    assert_indices(&indices);
+    let materialized = left.materialize_join_indices(&indices, ["value"]).unwrap();
+    let semi = left.left_semi_join(&right, DataFrameJoinOptions::new().on(["id"])).unwrap();
+    let anti = left.left_anti_join(&right, DataFrameJoinOptions::new().on(["id"])).unwrap();
+
+    assert_eq!(indices.len(), 1);
+    assert_eq!(materialized.series("value").unwrap().to_vec_strict::<i32>().unwrap(), vec![20]);
+    assert_eq!(semi.series("id").unwrap().to_vec_strict::<i32>().unwrap(), vec![2]);
+    assert_eq!(anti.series("id").unwrap().to_vec_strict::<i32>().unwrap(), vec![1, 3]);
+}
+
+#[test]
 fn factorization_surface_smoke() {
     use cudf::frame::factorization::{
         Codebook, DictionaryEncodingOptions, DictionaryKeyOrder, EncodedSeries, Factorized,

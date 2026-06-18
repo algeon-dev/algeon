@@ -1,4 +1,7 @@
-use super::{DataFrame, DataFrameJoinSides, DropDuplicatesOptions, DropNaOptions, WithColumnExpr};
+use super::{
+    DataFrame, DataFrameJoinIndices, DataFrameJoinOptions, DataFrameJoinSides, DropDuplicatesOptions, DropNaOptions,
+    WithColumnExpr,
+};
 use crate::{
     Expr, Result,
     frame::series::Series,
@@ -108,6 +111,18 @@ impl<'df, 'ctx, 'handles> DataFrameExecutionScope<'df, 'ctx, 'handles> {
 
         /// Merge-split with another frame using the borrowed execution override.
         fn merge_split(right: &DataFrame, options: MergeOptions) -> Result<DataFrameJoinSides> => merge_split_in_context;
+
+        /// Produce left semi join indices using the borrowed execution override.
+        fn left_semi_join_indices(right: &DataFrame, options: DataFrameJoinOptions) -> Result<DataFrameJoinIndices> => left_semi_join_indices_in_context;
+
+        /// Produce left anti join indices using the borrowed execution override.
+        fn left_anti_join_indices(right: &DataFrame, options: DataFrameJoinOptions) -> Result<DataFrameJoinIndices> => left_anti_join_indices_in_context;
+
+        /// Left semi join using the borrowed execution override.
+        fn left_semi_join(right: &DataFrame, options: DataFrameJoinOptions) -> Result<DataFrame> => left_semi_join_in_context;
+
+        /// Left anti join using the borrowed execution override.
+        fn left_anti_join(right: &DataFrame, options: DataFrameJoinOptions) -> Result<DataFrame> => left_anti_join_in_context;
 
         /// Drop rows containing null values using the borrowed execution override.
         fn dropna(opts: DropNaOptions) -> Result<DataFrame> => dropna_in_context;

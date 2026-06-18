@@ -14,6 +14,7 @@ mod gpu_record_batch;
 pub(crate) mod group_keys;
 mod info;
 mod io;
+mod join;
 mod names;
 mod owned;
 mod reshape;
@@ -36,6 +37,7 @@ pub use io::{
     CsvReadOptions, CsvWriteOptions, JsonReadOptions, JsonWriteOptions, MultiParquetReadOptions, ParquetReadOptions,
     ParquetWriteOptions,
 };
+pub use join::{DataFrameJoinIndices, DataFrameJoinOptions};
 pub use owned::{DataFrame, DataFrameJoinSides};
 pub(crate) use owned::{derive_frame_domain_from_columns, resolve_frame_domain_from_authoritative_source};
 pub use reshape::MeltOptions;

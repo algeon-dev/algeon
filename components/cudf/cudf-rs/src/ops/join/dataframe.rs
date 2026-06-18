@@ -5,7 +5,12 @@ use crate::{
         column::Column,
         error::{Error, ErrorCode, FACT_KEYS_COUNT, FACT_LEFT_TYPE_ID, FACT_RIGHT_TYPE_ID, Result},
     },
-    frame::dataframe::{DataFrame, DataFrameJoinSides, derive_frame_domain_from_columns},
+    frame::{
+        dataframe::{
+            DataFrame, DataFrameJoinIndices, DataFrameJoinOptions, DataFrameJoinSides, derive_frame_domain_from_columns,
+        },
+        series::Series,
+    },
     internal::{
         hash::{FastHashSet, FastIndexMap, fast_index_map_with_capacity},
         resolve::{
@@ -74,6 +79,71 @@ impl DataFrame {
     ) -> Result<Self> {
         self.merge_in_context(right, options, ctx)
     }
+
+    /// Produce left semi join indices using a borrowed per-operation execution override.
+    pub(crate) fn left_semi_join_indices_in_context(
+        &self,
+        right: &DataFrame,
+        options: DataFrameJoinOptions,
+        ctx: &ExecutionOverrides<'_>,
+    ) -> Result<DataFrameJoinIndices> {
+        self.single_side_join_indices_impl(
+            right,
+            options,
+            true,
+            Some(ctx),
+            "dataframe::with_execution::left_semi_join_indices",
+        )
+    }
+
+    /// Produce left anti join indices using a borrowed per-operation execution override.
+    pub(crate) fn left_anti_join_indices_in_context(
+        &self,
+        right: &DataFrame,
+        options: DataFrameJoinOptions,
+        ctx: &ExecutionOverrides<'_>,
+    ) -> Result<DataFrameJoinIndices> {
+        self.single_side_join_indices_impl(
+            right,
+            options,
+            false,
+            Some(ctx),
+            "dataframe::with_execution::left_anti_join_indices",
+        )
+    }
+
+    /// Left semi join using a borrowed per-operation execution override.
+    pub(crate) fn left_semi_join_in_context(
+        &self,
+        right: &DataFrame,
+        options: DataFrameJoinOptions,
+        ctx: &ExecutionOverrides<'_>,
+    ) -> Result<Self> {
+        let indices = self.left_semi_join_indices_in_context(right, options, ctx)?;
+        self.materialize_join_indices_in_context(
+            &indices,
+            self.column_names_owned(),
+            ctx,
+            "dataframe::with_execution::left_semi_join",
+        )
+    }
+
+    /// Left anti join using a borrowed per-operation execution override.
+    pub(crate) fn left_anti_join_in_context(
+        &self,
+        right: &DataFrame,
+        options: DataFrameJoinOptions,
+        ctx: &ExecutionOverrides<'_>,
+    ) -> Result<Self> {
+        let indices = self.left_anti_join_indices_in_context(right, options, ctx)?;
+        self.materialize_join_indices_in_context(
+            &indices,
+            self.column_names_owned(),
+            ctx,
+            "dataframe::with_execution::left_anti_join",
+        )
+    }
+
     // -- Joins (merge) -------------------------------------------------------
 
     /// Merge (join) two DataFrames with cuDF-style options.
@@ -186,6 +256,136 @@ impl DataFrame {
             None,
             operation,
         )
+    }
+
+    /// Return device-side gather indices for the left rows that have a match in `right`.
+    ///
+    /// This is an index-producing query-planning helper. It allocates only an
+    /// `INT32` device gather map and does not copy payload columns. Duplicate
+    /// matches on the right side do not duplicate left rows.
+    pub fn left_semi_join_indices(
+        &self,
+        right: &DataFrame,
+        options: DataFrameJoinOptions,
+    ) -> Result<DataFrameJoinIndices> {
+        self.single_side_join_indices_impl(right, options, true, None, "dataframe::left_semi_join_indices")
+    }
+
+    /// Return device-side gather indices for the left rows that have no match in `right`.
+    ///
+    /// This is an index-producing query-planning helper. It allocates only an
+    /// `INT32` device gather map and does not copy payload columns.
+    pub fn left_anti_join_indices(
+        &self,
+        right: &DataFrame,
+        options: DataFrameJoinOptions,
+    ) -> Result<DataFrameJoinIndices> {
+        self.single_side_join_indices_impl(right, options, false, None, "dataframe::left_anti_join_indices")
+    }
+
+    /// Materialize selected columns by gathering rows with join indices.
+    ///
+    /// This performs a GPU gather of the selected columns and therefore copies
+    /// device buffers for those output columns. It is not a zero-copy schema
+    /// projection. The row count of the output is the length of `indices`.
+    pub fn materialize_join_indices<I, S>(&self, indices: &DataFrameJoinIndices, columns: I) -> Result<Self>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        self.materialize_join_indices_impl(indices, columns, None, "dataframe::materialize_join_indices")
+    }
+
+    /// Left semi join, returning only left-side columns.
+    ///
+    /// This helper first computes left-side join indices and then gathers the
+    /// left frame's columns. The gather copies selected device rows into new
+    /// columns. Right-side payload columns are never included, and duplicate
+    /// right matches do not duplicate left rows.
+    pub fn left_semi_join(&self, right: &DataFrame, options: DataFrameJoinOptions) -> Result<Self> {
+        let indices = self.left_semi_join_indices(right, options)?;
+        self.materialize_join_indices(&indices, self.column_names_owned())
+            .map_err(|e| e.reanchor("dataframe::left_semi_join"))
+    }
+
+    /// Left anti join, returning only left-side columns.
+    ///
+    /// This helper first computes left-side join indices and then gathers the
+    /// left frame's columns. The gather copies selected device rows into new
+    /// columns. Right-side payload columns are never included.
+    pub fn left_anti_join(&self, right: &DataFrame, options: DataFrameJoinOptions) -> Result<Self> {
+        let indices = self.left_anti_join_indices(right, options)?;
+        self.materialize_join_indices(&indices, self.column_names_owned())
+            .map_err(|e| e.reanchor("dataframe::left_anti_join"))
+    }
+
+    fn single_side_join_indices_impl(
+        &self,
+        right: &DataFrame,
+        options: DataFrameJoinOptions,
+        semi_join: bool,
+        ctx: Option<&ExecutionOverrides<'_>>,
+        operation: &'static str,
+    ) -> Result<DataFrameJoinIndices> {
+        let (left_on_strs, right_on_strs, _shared_keys) = resolve_dataframe_join_keys(&options, operation)?;
+        let left_on_refs: Vec<&str> = left_on_strs.iter().map(|s| s.as_str()).collect();
+        let right_on_refs: Vec<&str> = right_on_strs.iter().map(|s| s.as_str()).collect();
+
+        if left_on_refs.len() != right_on_refs.len() {
+            return Err(merge_key_count_mismatch_error(operation, left_on_refs.len(), right_on_refs.len()));
+        }
+
+        let left_key_indices = resolve_column_names(self.columns_map(), &left_on_refs, operation)?;
+        let right_key_indices = resolve_column_names(right.columns_map(), &right_on_refs, operation)?;
+        let lk_table = build_borrowed_table_view_from_columns(self.columns_map(), &left_key_indices)?;
+        let rk_table = build_borrowed_table_view_from_columns(right.columns_map(), &right_key_indices)?;
+
+        let raw_indices = match (semi_join, ctx) {
+            (true, Some(ctx)) => {
+                join::left_semi_join_indices_in(lk_table.table(), rk_table.table(), options.null_eq(), ctx)?
+            },
+            (false, Some(ctx)) => {
+                join::left_anti_join_indices_in(lk_table.table(), rk_table.table(), options.null_eq(), ctx)?
+            },
+            (true, None) => join::left_semi_join_indices(lk_table.table(), rk_table.table(), options.null_eq())?,
+            (false, None) => join::left_anti_join_indices(lk_table.table(), rk_table.table(), options.null_eq())?,
+        };
+
+        let indices = Series::from_column(raw_indices.indices)
+            .map_err(|e| e.reanchor(operation).with_detail("resource", "join_indices"))?;
+        Ok(DataFrameJoinIndices::new(indices))
+    }
+
+    pub(crate) fn materialize_join_indices_in_context<I, S>(
+        &self,
+        indices: &DataFrameJoinIndices,
+        columns: I,
+        ctx: &ExecutionOverrides<'_>,
+        operation: &'static str,
+    ) -> Result<Self>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        self.materialize_join_indices_impl(indices, columns, Some(ctx), operation)
+    }
+
+    fn materialize_join_indices_impl<I, S>(
+        &self,
+        indices: &DataFrameJoinIndices,
+        columns: I,
+        ctx: Option<&ExecutionOverrides<'_>>,
+        operation: &'static str,
+    ) -> Result<Self>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        let selected = self.select(columns).map_err(|e| e.reanchor(operation))?;
+        match ctx {
+            Some(ctx) => selected.gather_in_context(indices.indices(), ctx).map_err(|e| e.reanchor(operation)),
+            None => selected.gather(indices.indices()).map_err(|e| e.reanchor(operation)),
+        }
     }
     /// Internal split-join dispatch with configurable null equality.
     #[allow(clippy::too_many_arguments)]
@@ -383,6 +583,43 @@ fn resolve_merge_keys(
             "use on() or left_on() + right_on(), not both",
         )),
         // Nothing specified
+        (None, None, None) => Err(merge_validation_error(
+            operation,
+            "no join keys specified; use on() or left_on() + right_on()",
+            "missing_join_keys",
+            "set on() or left_on() + right_on()",
+        )),
+    }
+}
+
+fn resolve_dataframe_join_keys(
+    options: &DataFrameJoinOptions,
+    operation: &'static str,
+) -> Result<(Vec<String>, Vec<String>, bool)> {
+    match (options.on_keys(), options.left_on_keys(), options.right_on_keys()) {
+        (Some(on), None, None) => {
+            let keys: Vec<String> = on.to_vec();
+            Ok((keys.clone(), keys, true))
+        },
+        (None, Some(lo), Some(ro)) => Ok((lo.to_vec(), ro.to_vec(), false)),
+        (None, Some(_), None) => Err(merge_validation_error(
+            operation,
+            "left_on was specified without right_on; set both or use on()",
+            "left_on_without_right_on",
+            "set right_on() or use on()",
+        )),
+        (None, None, Some(_)) => Err(merge_validation_error(
+            operation,
+            "right_on was specified without left_on; set both or use on()",
+            "right_on_without_left_on",
+            "set left_on() or use on()",
+        )),
+        (Some(_), _, _) => Err(merge_validation_error(
+            operation,
+            "on() cannot be combined with left_on()/right_on(); use one or the other",
+            "ambiguous_join_key_configuration",
+            "use on() or left_on() + right_on(), not both",
+        )),
         (None, None, None) => Err(merge_validation_error(
             operation,
             "no join keys specified; use on() or left_on() + right_on()",
