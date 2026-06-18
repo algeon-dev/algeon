@@ -2,12 +2,14 @@
 
 use std::{
     collections::HashMap,
-    sync::{Arc, Condvar, Mutex, OnceLock},
+    sync::{Arc, Condvar, Mutex, OnceLock, mpsc},
+    thread,
+    time::Duration,
 };
 
 #[cfg(test)]
 use super::DeviceFacts;
-use super::ExecutionContext;
+use super::{ExecutionCancellation, ExecutionContext};
 use crate::error::{QueryError, QueryErrorCode, Result};
 
 /// Fallback and upper bound for the default service stream pool size.
@@ -17,6 +19,7 @@ use crate::error::{QueryError, QueryErrorCode, Result};
 /// uses this value as the fallback when device SM count detection is
 /// unavailable and as the upper bound when detection succeeds.
 pub const DEFAULT_SERVICE_STREAM_POOL_SIZE: usize = 64;
+const STREAM_ACQUIRE_CANCELLATION_POLL_INTERVAL: Duration = Duration::from_millis(10);
 
 /// Returns the default service stream pool size for a CUDA device.
 ///
@@ -147,13 +150,33 @@ impl ServiceStreamPool {
 
     /// Acquire a CUDA stream/runtime lease, blocking when all pool slots are busy.
     pub fn acquire(&self) -> Result<StreamLease> {
+        self.acquire_inner(None, "nexus_query_engine.service_stream_pool.acquire")
+    }
+
+    /// Acquire a CUDA stream/runtime lease while observing cooperative cancellation.
+    pub fn acquire_with_cancellation(
+        &self,
+        cancellation: &ExecutionCancellation,
+        operation: &'static str,
+    ) -> Result<StreamLease> {
+        self.acquire_inner(Some(cancellation), operation)
+    }
+
+    fn acquire_inner(
+        &self,
+        cancellation: Option<&ExecutionCancellation>,
+        operation: &'static str,
+    ) -> Result<StreamLease> {
         enum AcquireAction {
             Reuse(Arc<cudf::Runtime>),
             Create,
         }
 
         let action = loop {
-            let mut state = self.lock_state("nexus_query_engine.service_stream_pool.acquire")?;
+            if let Some(cancellation) = cancellation {
+                cancellation.check(operation)?;
+            }
+            let mut state = self.lock_state(operation)?;
             if let Some(runtime) = state.idle.pop() {
                 break AcquireAction::Reuse(runtime);
             }
@@ -161,13 +184,26 @@ impl ServiceStreamPool {
                 state.created += 1;
                 break AcquireAction::Create;
             }
-            let _guard = self.inner.available.wait(state).map_err(|_error| {
-                QueryError::new(
-                    QueryErrorCode::Internal,
-                    "nexus_query_engine.service_stream_pool.acquire",
-                    "service stream pool mutex was poisoned while waiting for a stream",
-                )
-            })?;
+            if cancellation.is_some() {
+                let (_guard, _timeout) =
+                    self.inner.available.wait_timeout(state, STREAM_ACQUIRE_CANCELLATION_POLL_INTERVAL).map_err(
+                        |_error| {
+                            QueryError::new(
+                                QueryErrorCode::Internal,
+                                operation,
+                                "service stream pool mutex was poisoned while waiting for a stream",
+                            )
+                        },
+                    )?;
+            } else {
+                let _guard = self.inner.available.wait(state).map_err(|_error| {
+                    QueryError::new(
+                        QueryErrorCode::Internal,
+                        operation,
+                        "service stream pool mutex was poisoned while waiting for a stream",
+                    )
+                })?;
+            }
         };
 
         let runtime = match action {
@@ -226,9 +262,11 @@ impl ServiceStreamPool {
 
 /// RAII handle for a runtime borrowed from a [`ServiceStreamPool`].
 ///
-/// Dropping the lease synchronizes the runtime stream and returns it to the
-/// pool. Synchronization keeps source-read output safe to consume on another
-/// runtime before the stream is reused by an unrelated worker.
+/// Dropping the lease schedules runtime stream synchronization on the service
+/// cleanup thread and returns the runtime to the pool only after that
+/// synchronization completes. This keeps source-read output safe to consume on
+/// another runtime before the stream is reused by an unrelated worker without
+/// running CUDA synchronization on the dropping thread.
 #[derive(Debug)]
 pub struct StreamLease {
     pool: ServiceStreamPool,
@@ -256,11 +294,82 @@ impl Drop for StreamLease {
         let Some(runtime) = self.runtime.take() else {
             return;
         };
-        if let Err(error) = runtime.synchronize() {
-            eprintln!("[nexus-query-engine] warning: failed to synchronize service stream before return: {error}");
-        }
-        self.pool.release(runtime);
+        enqueue_stream_cleanup(self.pool.clone(), runtime);
     }
+}
+
+enum StreamCleanupJob {
+    Runtime {
+        pool: ServiceStreamPool,
+        runtime: Arc<cudf::Runtime>,
+    },
+    #[cfg(test)]
+    Probe {
+        done: mpsc::Sender<thread::ThreadId>,
+    },
+}
+
+fn enqueue_stream_cleanup(pool: ServiceStreamPool, runtime: Arc<cudf::Runtime>) {
+    let job = StreamCleanupJob::Runtime { pool, runtime };
+    match stream_cleanup_sender() {
+        Some(sender) => {
+            if let Err(error) = sender.send(job) {
+                match error.0 {
+                    StreamCleanupJob::Runtime { pool, runtime } => synchronize_and_release_stream(pool, runtime),
+                    #[cfg(test)]
+                    StreamCleanupJob::Probe { .. } => {},
+                }
+            }
+        },
+        None => match job {
+            StreamCleanupJob::Runtime { pool, runtime } => synchronize_and_release_stream(pool, runtime),
+            #[cfg(test)]
+            StreamCleanupJob::Probe { .. } => {},
+        },
+    }
+}
+
+fn stream_cleanup_sender() -> Option<&'static mpsc::Sender<StreamCleanupJob>> {
+    static CLEANUP: OnceLock<Option<mpsc::Sender<StreamCleanupJob>>> = OnceLock::new();
+    CLEANUP
+        .get_or_init(|| {
+            let (sender, receiver) = mpsc::channel::<StreamCleanupJob>();
+            match thread::Builder::new().name("nexus-service-stream-cleanup".to_string()).spawn(move || {
+                for job in receiver {
+                    match job {
+                        StreamCleanupJob::Runtime { pool, runtime } => synchronize_and_release_stream(pool, runtime),
+                        #[cfg(test)]
+                        StreamCleanupJob::Probe { done } => {
+                            let _ = done.send(thread::current().id());
+                        },
+                    }
+                }
+            }) {
+                Ok(_handle) => Some(sender),
+                Err(error) => {
+                    eprintln!("[nexus-query-engine] warning: failed to spawn service stream cleanup thread: {error}");
+                    None
+                },
+            }
+        })
+        .as_ref()
+}
+
+fn synchronize_and_release_stream(pool: ServiceStreamPool, runtime: Arc<cudf::Runtime>) {
+    if let Err(error) = runtime.synchronize() {
+        eprintln!("[nexus-query-engine] warning: failed to synchronize service stream before return: {error}");
+    }
+    pool.release(runtime);
+}
+
+#[cfg(test)]
+fn stream_cleanup_thread_id_for_test() -> thread::ThreadId {
+    let (sender, receiver) = mpsc::channel();
+    stream_cleanup_sender()
+        .expect("cleanup thread should be available in tests")
+        .send(StreamCleanupJob::Probe { done: sender })
+        .expect("cleanup thread accepts probe");
+    receiver.recv().expect("cleanup thread returns probe")
 }
 
 pub(crate) struct SourceReadStreamLease {
@@ -289,4 +398,45 @@ pub(super) fn validate_service_stream_pool_size(pool_size: usize) -> Result<()> 
         .with_fact("reason", "zero"));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn stream_cleanup_jobs_run_on_background_thread() {
+        assert_ne!(stream_cleanup_thread_id_for_test(), thread::current().id());
+    }
+
+    #[test]
+    fn stream_acquire_observes_cancellation_while_pool_is_saturated() {
+        let device = cudf::DeviceId::DEFAULT;
+        let pool = ServiceStreamPool::new(device, 1).unwrap();
+        let held = pool.acquire().unwrap();
+        let cancellation = ExecutionCancellation::new();
+        let waiter_cancellation = cancellation.clone();
+        let waiter_pool = pool.clone();
+        let (started_sender, started_receiver) = mpsc::channel();
+        let (result_sender, result_receiver) = mpsc::channel();
+
+        let waiter = thread::spawn(move || {
+            started_sender.send(()).unwrap();
+            let result = waiter_pool.acquire_with_cancellation(
+                &waiter_cancellation,
+                "nexus_query_engine.service_stream_pool.test_cancelled_acquire",
+            );
+            result_sender.send(result.map(|_lease| ())).unwrap();
+        });
+        started_receiver.recv().unwrap();
+        thread::sleep(Duration::from_millis(25));
+        cancellation.cancel();
+        let result = result_receiver.recv_timeout(Duration::from_secs(1));
+        drop(held);
+        waiter.join().unwrap();
+        let error = result.expect("cancelled stream acquisition should finish").unwrap_err();
+
+        assert_eq!(error.code(), QueryErrorCode::Cancelled);
+        assert_eq!(error.operation(), "nexus_query_engine.service_stream_pool.test_cancelled_acquire");
+    }
 }

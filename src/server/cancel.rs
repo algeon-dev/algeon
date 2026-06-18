@@ -13,9 +13,10 @@
 //!
 //! # Lifetime
 //!
-//! Entries are inserted after admission and removed by
-//! `QueryExecutionGuard::drop`. Before a ticket is issued, shutdown still
-//! reaches the native flag through the planning `shutdown_token` arm.
+//! Entries are inserted after an admitted ticket is consumed, before any
+//! execution branch can return, and removed by `QueryExecutionGuard::drop`.
+//! Before a ticket is issued, shutdown still reaches the native flag through
+//! the planning `shutdown_token` arm.
 
 use dashmap::DashMap;
 use nexus_query_engine::ExecutionCancellation;
@@ -69,9 +70,9 @@ impl QueryCancellation {
 
     /// Number of statements currently registered for cancellation. Used by
     /// graceful shutdown to report how many in-flight queries it is draining.
-    /// Statements that have been admitted but not yet inserted (a brief
-    /// window inside `execute_ticket`) are not counted; cancellation of those
-    /// is handled by the shared shutdown token in
+    /// Statements that have been admitted but not yet inserted (before ticket
+    /// consumption or during the narrow handoff into `execute_ticket`) are not
+    /// counted; cancellation of those is handled by the shared shutdown token in
     /// [`crate::server::flight::DatafusionCudfFlightSqlService`].
     pub fn len(&self) -> usize {
         self.tokens.len()

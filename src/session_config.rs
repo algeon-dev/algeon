@@ -377,6 +377,16 @@ pub fn optimizer_config_with_datafusion_options(
     config: &CudfOptimizerConfig,
     options: &ConfigOptions,
 ) -> DataFusionResult<CudfOptimizerConfig> {
+    if config.native_execution_config().has_query_service_handle() {
+        // QueryService admission is the authority for bounded server/query
+        // execution: it owns the per-query device-budget slice, stream pool,
+        // source-read fan-out, and execution policy. Reapplying a session
+        // extension copied from a longer-lived base SessionState can restore
+        // an unpartitioned server budget and make planning less strict than
+        // runtime. Ignore session overrides on this path so planning and
+        // execution use the same admitted handle contract.
+        return Ok(config.clone());
+    }
     match options.extensions.get::<DataFusionNexusSessionConfig>() {
         Some(session_config) => session_config.apply_to_optimizer_config(config.clone()),
         None => Ok(config.clone()),

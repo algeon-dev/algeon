@@ -154,6 +154,28 @@ impl NativeCudfExecutionConfig {
         *AUTO_SIZED_DEVICE_BUDGET_BYTES.get_or_init(detect_auto_sized_device_budget_bytes)
     }
 
+    /// Returns the auto-sized bounded device budget for `device_ordinal`.
+    ///
+    /// Unlike [`Self::auto_sized_device_budget_bytes`], this helper is not
+    /// process-cached because server placement can choose a non-default ordinal.
+    pub fn auto_sized_device_budget_bytes_for_device(device_ordinal: usize) -> u64 {
+        auto_sized_device_budget_bytes_for_device_with_inventory(&CudfInventory, device_ordinal)
+    }
+
+    /// Returns the auto-sized bounded device budget for `device_ordinal` after
+    /// applying a total-memory budget fraction.
+    ///
+    /// The fraction is an upper bound on usable device memory. The fixed
+    /// headroom remains a floor, so `1.0` preserves the historical
+    /// `total - 500 MiB` behavior instead of granting the full device.
+    pub fn auto_sized_device_budget_bytes_for_device_with_fraction(device_ordinal: usize, budget_fraction: f64) -> u64 {
+        auto_sized_device_budget_bytes_for_device_with_fraction_and_inventory(
+            &CudfInventory,
+            device_ordinal,
+            budget_fraction,
+        )
+    }
+
     /// Use default runtime allocator construction with bounded native memory-control settings.
     ///
     /// Byte fields are device-byte budgets. `max_source_chunk_bytes` and
@@ -433,6 +455,11 @@ impl NativeCudfExecutionConfig {
         self
     }
 
+    /// Returns whether execution is bound to a QueryService admission handle.
+    pub(crate) fn has_query_service_handle(&self) -> bool {
+        self.query_service_handle.is_some()
+    }
+
     /// Memory-control policy copied into the lazily built native context.
     pub fn memory_control_policy(&self) -> MemoryControlPolicy {
         self.memory_control_policy
@@ -537,13 +564,16 @@ impl NativeCudfExecutionConfig {
     pub(crate) fn execution_context(&self) -> crate::error::Result<NativeCudfExecutionContext> {
         self.validate_query_policies()?;
         if let Some(handle) = &self.query_service_handle {
-            return handle.acquire_context().map(NativeCudfExecutionContext::tenant_bound).map_err(|error| {
-                Error::from_native(
-                    "datafusion_nexus.native_exec.context",
-                    "failed to acquire query service native cudf execution context",
-                    error,
-                )
-            });
+            return handle
+                .acquire_context_with_cancellation(self.cancellation.clone())
+                .map(NativeCudfExecutionContext::tenant_bound)
+                .map_err(|error| {
+                    Error::from_native(
+                        "datafusion_nexus.native_exec.context",
+                        "failed to acquire query service native cudf execution context",
+                        error,
+                    )
+                });
         }
 
         let mut builder = ExecutionContext::builder()
@@ -595,8 +625,15 @@ fn detect_auto_sized_device_budget_bytes() -> u64 {
 }
 
 fn auto_sized_device_budget_bytes_with_inventory(inventory: &impl GpuInventory) -> u64 {
+    auto_sized_device_budget_bytes_for_device_with_inventory(inventory, cudf::DeviceId::DEFAULT.ordinal())
+}
+
+fn auto_sized_device_budget_bytes_for_device_with_inventory(
+    inventory: &impl GpuInventory,
+    device_ordinal: usize,
+) -> u64 {
     inventory
-        .facts(cudf::DeviceId::DEFAULT.ordinal())
+        .facts(device_ordinal)
         .map(|facts| {
             device_budget_bytes_from_facts(
                 &facts,
@@ -605,6 +642,35 @@ fn auto_sized_device_budget_bytes_with_inventory(inventory: &impl GpuInventory) 
             )
         })
         .unwrap_or(NativeCudfExecutionConfig::AUTO_SIZED_DEVICE_BUDGET_FALLBACK_BYTES)
+}
+
+fn auto_sized_device_budget_bytes_for_device_with_fraction_and_inventory(
+    inventory: &impl GpuInventory,
+    device_ordinal: usize,
+    budget_fraction: f64,
+) -> u64 {
+    inventory
+        .facts(device_ordinal)
+        .map(|facts| {
+            let headroom_budget = device_budget_bytes_from_facts(
+                &facts,
+                NativeCudfExecutionConfig::AUTO_SIZED_DEVICE_BUDGET_HEADROOM_BYTES,
+                NativeCudfExecutionConfig::AUTO_SIZED_DEVICE_BUDGET_FALLBACK_BYTES,
+            );
+            let fraction_budget = fraction_budget_bytes(facts.total_bytes, budget_fraction)
+                .filter(|budget| *budget > 0)
+                .unwrap_or(NativeCudfExecutionConfig::AUTO_SIZED_DEVICE_BUDGET_FALLBACK_BYTES);
+            headroom_budget.min(fraction_budget)
+        })
+        .unwrap_or(NativeCudfExecutionConfig::AUTO_SIZED_DEVICE_BUDGET_FALLBACK_BYTES)
+}
+
+fn fraction_budget_bytes(total_bytes: u64, budget_fraction: f64) -> Option<u64> {
+    if !budget_fraction.is_finite() || !(0.0..=1.0).contains(&budget_fraction) || budget_fraction == 0.0 {
+        return None;
+    }
+    let budget = (total_bytes as f64 * budget_fraction).floor();
+    (budget > 0.0 && budget <= u64::MAX as f64).then_some(budget as u64)
 }
 
 #[cfg(test)]
@@ -657,6 +723,45 @@ mod tests {
         assert_eq!(
             auto_sized_device_budget_bytes_with_inventory(&inventory),
             NativeCudfExecutionConfig::AUTO_SIZED_DEVICE_BUDGET_FALLBACK_BYTES
+        );
+    }
+
+    #[test]
+    fn auto_sized_budget_for_device_uses_requested_ordinal() {
+        struct OrdinalInventory;
+
+        impl GpuInventory for OrdinalInventory {
+            fn device_count(&self) -> Result<usize> {
+                Ok(2)
+            }
+
+            fn facts(&self, device_ordinal: usize) -> Result<DeviceFacts> {
+                Ok(device_facts(match device_ordinal {
+                    0 => 8 * 1024 * 1024 * 1024,
+                    1 => 16 * 1024 * 1024 * 1024,
+                    other => panic!("unexpected device ordinal {other}"),
+                }))
+            }
+        }
+
+        assert_eq!(
+            auto_sized_device_budget_bytes_for_device_with_inventory(&OrdinalInventory, 1),
+            16 * 1024 * 1024 * 1024 - NativeCudfExecutionConfig::AUTO_SIZED_DEVICE_BUDGET_HEADROOM_BYTES
+        );
+    }
+
+    #[test]
+    fn auto_sized_budget_fraction_preserves_headroom_floor() {
+        let total = 8 * 1024 * 1024 * 1024;
+        let inventory = FakeInventory::Facts(device_facts(total));
+
+        assert_eq!(
+            auto_sized_device_budget_bytes_for_device_with_fraction_and_inventory(&inventory, 0, 1.0),
+            total - NativeCudfExecutionConfig::AUTO_SIZED_DEVICE_BUDGET_HEADROOM_BYTES
+        );
+        assert_eq!(
+            auto_sized_device_budget_bytes_for_device_with_fraction_and_inventory(&inventory, 0, 0.5),
+            total / 2
         );
     }
 }

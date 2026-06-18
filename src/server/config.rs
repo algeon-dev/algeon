@@ -34,6 +34,18 @@ pub const NEXUS_SERVER_LOG_ENV: &str = "NEXUS_SERVER_LOG";
 /// Maximum number of Flight SQL statements admitted at once. Defaults to `1`;
 /// set a larger value only when the GPU has enough memory for concurrent work.
 pub const NEXUS_SERVER_MAX_IN_FLIGHT_ENV: &str = "NEXUS_SERVER_MAX_IN_FLIGHT";
+/// Preferred maximum number of Flight SQL statements admitted at once. Defaults
+/// to `1`; `NEXUS_SERVER_MAX_IN_FLIGHT` remains accepted as a compatibility
+/// alias.
+pub const NEXUS_SERVER_MAX_CONCURRENT_QUERIES_ENV: &str = "NEXUS_SERVER_MAX_CONCURRENT_QUERIES";
+/// Fraction of a GPU's total memory eligible for server native-query budgets.
+/// The fixed native headroom remains a floor, so `1.0` preserves the historical
+/// auto-sized `total - headroom` behavior.
+pub const NEXUS_SERVER_DEVICE_BUDGET_FRACTION_ENV: &str = "NEXUS_SERVER_DEVICE_BUDGET_FRACTION";
+/// Comma-separated CUDA device ordinals available to the Flight SQL server.
+/// Phase 2 accepts exactly one ordinal; multi-GPU placement is reserved for
+/// Phase 3.
+pub const NEXUS_SERVER_GPU_DEVICES_ENV: &str = "NEXUS_SERVER_GPU_DEVICES";
 /// Seconds an unconsumed Flight SQL statement ticket may hold admission before
 /// it expires and releases its slot. Defaults to `300`.
 pub const NEXUS_SERVER_STATEMENT_TICKET_TTL_SECS_ENV: &str = "NEXUS_SERVER_STATEMENT_TICKET_TTL_SECS";
@@ -311,6 +323,8 @@ pub struct ServerConfig {
     pub bind_addr: SocketAddr,
     pub log_filter: String,
     pub max_in_flight: usize,
+    pub gpu_devices: Vec<usize>,
+    pub device_budget_fraction: Option<f64>,
     /// Wall-clock time a planned Flight SQL statement ticket may hold an
     /// admission permit while waiting for `DoGet`. Expired tickets are dropped
     /// and their permits are released; the default is 300 seconds.
@@ -529,7 +543,10 @@ impl ServerConfig {
         let mut values = EnvValues::new(&mut get);
         let bind_addr = values.socket_addr(NEXUS_SERVER_BIND_ENV, DEFAULT_BIND_ADDR)?;
         let log_filter = values.string(NEXUS_SERVER_LOG_ENV).unwrap_or_else(|| DEFAULT_LOG_FILTER.to_string());
-        let max_in_flight = values.positive_usize(NEXUS_SERVER_MAX_IN_FLIGHT_ENV, DEFAULT_MAX_IN_FLIGHT)?;
+        let max_concurrent_queries = server_max_concurrent_queries(&mut values)?;
+        let max_in_flight = max_concurrent_queries.value;
+        let gpu_devices = server_gpu_devices(&mut values)?;
+        let device_budget_fraction = values.optional_f64(NEXUS_SERVER_DEVICE_BUDGET_FRACTION_ENV)?;
         let statement_ticket_ttl = Duration::from_secs(
             values.positive_u64(NEXUS_SERVER_STATEMENT_TICKET_TTL_SECS_ENV, DEFAULT_STATEMENT_TICKET_TTL_SECS)?,
         );
@@ -538,7 +555,8 @@ impl ServerConfig {
             Some(path) => load_overlay(&path)?,
             None => ServerFileOverlay::default(),
         };
-        let native_optimizer_config = native_optimizer_config(&mut values, &overlay.native)?;
+        let native_optimizer_config =
+            native_optimizer_config(&mut values, &overlay.native, &gpu_devices, device_budget_fraction)?;
         #[cfg(feature = "iceberg")]
         let mut native_optimizer_config = native_optimizer_config;
 
@@ -575,11 +593,24 @@ impl ServerConfig {
         let session_profile = explicit_profile.unwrap_or(default_profile);
 
         overlay.auth.mode.validate()?;
+        if max_in_flight > 1
+            && matches!(
+                native_optimizer_config.native_execution_config().memory_control_policy(),
+                MemoryControlPolicy::Unbounded
+            )
+        {
+            return Err(ServerError::invalid_config(
+                max_concurrent_queries.field,
+                "requires bounded native memory policy when greater than one",
+            ));
+        }
 
         Ok(Self {
             bind_addr,
             log_filter,
             max_in_flight,
+            gpu_devices,
+            device_budget_fraction,
             statement_ticket_ttl,
             native_optimizer_config,
             session_profile,
@@ -604,7 +635,61 @@ fn load_overlay(path: &std::path::Path) -> Result<ServerFileOverlay> {
     })
 }
 
-fn native_optimizer_config(values: &mut EnvValues<'_>, file: &ServerNativeFileConfig) -> Result<CudfOptimizerConfig> {
+fn server_max_concurrent_queries(values: &mut EnvValues<'_>) -> Result<NativeConfigValue<usize>> {
+    let preferred = values
+        .optional_usize(NEXUS_SERVER_MAX_CONCURRENT_QUERIES_ENV)?
+        .map(|value| NativeConfigValue::new(value, NEXUS_SERVER_MAX_CONCURRENT_QUERIES_ENV));
+    let legacy = values
+        .optional_usize(NEXUS_SERVER_MAX_IN_FLIGHT_ENV)?
+        .map(|value| NativeConfigValue::new(value, NEXUS_SERVER_MAX_IN_FLIGHT_ENV));
+    let selected = match (preferred, legacy) {
+        (Some(preferred), Some(legacy)) if preferred.value != legacy.value => {
+            return Err(ServerError::invalid_config(
+                NEXUS_SERVER_MAX_CONCURRENT_QUERIES_ENV,
+                format!(
+                    "conflicts with {NEXUS_SERVER_MAX_IN_FLIGHT_ENV}; set only one admission limit or use the same value"
+                ),
+            ));
+        },
+        (Some(preferred), _) => preferred,
+        (None, Some(legacy)) => legacy,
+        (None, None) => NativeConfigValue::new(DEFAULT_MAX_IN_FLIGHT, NEXUS_SERVER_MAX_CONCURRENT_QUERIES_ENV),
+    };
+    if selected.value == 0 {
+        return Err(ServerError::invalid_config(selected.field, "must be greater than zero"));
+    }
+    Ok(selected)
+}
+
+fn server_gpu_devices(values: &mut EnvValues<'_>) -> Result<Vec<usize>> {
+    let Some(raw) = values.string(NEXUS_SERVER_GPU_DEVICES_ENV) else {
+        return Ok(vec![0]);
+    };
+    let mut devices = Vec::new();
+    for part in raw.split(',') {
+        let ordinal = part.trim().parse::<usize>().map_err(|error| {
+            ServerError::invalid_config(NEXUS_SERVER_GPU_DEVICES_ENV, format!("must contain integer ordinals: {error}"))
+        })?;
+        if devices.contains(&ordinal) {
+            return Err(ServerError::invalid_config(NEXUS_SERVER_GPU_DEVICES_ENV, "must not contain duplicates"));
+        }
+        devices.push(ordinal);
+    }
+    if devices.len() != 1 {
+        return Err(ServerError::invalid_config(
+            NEXUS_SERVER_GPU_DEVICES_ENV,
+            "phase-2 server admission accepts exactly one GPU ordinal; multi-GPU placement is reserved for Phase 3",
+        ));
+    }
+    Ok(devices)
+}
+
+fn native_optimizer_config(
+    values: &mut EnvValues<'_>,
+    file: &ServerNativeFileConfig,
+    gpu_devices: &[usize],
+    device_budget_fraction: Option<f64>,
+) -> Result<CudfOptimizerConfig> {
     let memory_policy = optional_native_string(
         values,
         NEXUS_SERVER_NATIVE_MEMORY_POLICY_ENV,
@@ -625,6 +710,12 @@ fn native_optimizer_config(values: &mut EnvValues<'_>, file: &ServerNativeFileCo
         "native.device_budget_bytes",
         if env_forces_unbounded { None } else { file.device_budget_bytes },
     )?;
+    if device_budget_fraction.is_some() && device_budget.is_some() {
+        return Err(ServerError::invalid_config(
+            NEXUS_SERVER_DEVICE_BUDGET_FRACTION_ENV,
+            format!("cannot be combined with {NEXUS_SERVER_NATIVE_DEVICE_BUDGET_BYTES_ENV}"),
+        ));
+    }
     let max_source_chunk = optional_native_u64(
         values,
         NEXUS_SERVER_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV,
@@ -700,7 +791,8 @@ fn native_optimizer_config(values: &mut EnvValues<'_>, file: &ServerNativeFileCo
             || min_retry_chunk_row_groups.is_some()
             || max_source_reads_in_flight.is_some()
             || source_chunk_planning_mode.is_some()
-            || native_pipeline_execution_mode.is_some())
+            || native_pipeline_execution_mode.is_some()
+            || device_budget_fraction.is_some())
     {
         return Err(ServerError::invalid_config(
             memory_policy.field,
@@ -708,10 +800,56 @@ fn native_optimizer_config(values: &mut EnvValues<'_>, file: &ServerNativeFileCo
         ));
     }
 
+    let device_ordinal = *gpu_devices.first().unwrap_or(&0);
     let mut execution_config = match memory_policy.value {
         ServerNativeMemoryPolicy::Unbounded => NativeCudfExecutionConfig::unbounded(),
         ServerNativeMemoryPolicy::Bounded => match (&device_budget, &max_source_chunk, &max_row_groups) {
-            (None, None, None) => NativeCudfExecutionConfig::bounded_auto_sized(),
+            (None, None, None) => {
+                let device_budget_bytes = match device_budget_fraction {
+                    Some(fraction) => NativeCudfExecutionConfig::auto_sized_device_budget_bytes_for_device_with_fraction(
+                        device_ordinal,
+                        fraction,
+                    ),
+                    None => NativeCudfExecutionConfig::auto_sized_device_budget_bytes_for_device(device_ordinal),
+                };
+                NativeCudfExecutionConfig::bounded(
+                    device_budget_bytes,
+                    NativeCudfExecutionConfig::DEFAULT_BOUNDED_MAX_SOURCE_CHUNK_BYTES,
+                    NativeCudfExecutionConfig::DEFAULT_BOUNDED_MAX_ROW_GROUPS_PER_CHUNK,
+                    max_retry_attempts
+                        .as_ref()
+                        .map_or(NativeCudfExecutionConfig::DEFAULT_BOUNDED_MAX_RETRY_ATTEMPTS, |value| value.value),
+                    min_retry_chunk_row_groups
+                        .as_ref()
+                        .map_or(NativeCudfExecutionConfig::DEFAULT_BOUNDED_MIN_RETRY_CHUNK_ROW_GROUPS, |value| {
+                            value.value
+                        }),
+                )
+            },
+            (None, Some(max_source_chunk), Some(max_row_groups)) if device_budget_fraction.is_some() => {
+                if max_source_chunk.value == 0 {
+                    return Err(ServerError::invalid_config(max_source_chunk.field, "must be greater than zero"));
+                }
+                if max_row_groups.value == 0 {
+                    return Err(ServerError::invalid_config(max_row_groups.field, "must be greater than zero"));
+                }
+                NativeCudfExecutionConfig::bounded(
+                    NativeCudfExecutionConfig::auto_sized_device_budget_bytes_for_device_with_fraction(
+                        device_ordinal,
+                        device_budget_fraction.expect("checked above"),
+                    ),
+                    max_source_chunk.value,
+                    max_row_groups.value,
+                    max_retry_attempts
+                        .as_ref()
+                        .map_or(NativeCudfExecutionConfig::DEFAULT_BOUNDED_MAX_RETRY_ATTEMPTS, |value| value.value),
+                    min_retry_chunk_row_groups
+                        .as_ref()
+                        .map_or(NativeCudfExecutionConfig::DEFAULT_BOUNDED_MIN_RETRY_CHUNK_ROW_GROUPS, |value| {
+                            value.value
+                        }),
+                )
+            },
             (Some(device_budget), Some(max_source_chunk), Some(max_row_groups)) => {
                 if device_budget.value == 0 {
                     return Err(ServerError::invalid_config(device_budget.field, "must be greater than zero"));
@@ -743,7 +881,8 @@ fn native_optimizer_config(values: &mut EnvValues<'_>, file: &ServerNativeFileCo
                 ));
             },
         },
-    };
+    }
+    .with_device_ordinal(device_ordinal);
     if let Some(max_retry_attempts) = max_retry_attempts {
         if max_retry_attempts.value == 0 {
             return Err(ServerError::invalid_config(max_retry_attempts.field, "must be greater than zero"));
@@ -1502,14 +1641,6 @@ impl<'a> EnvValues<'a> {
         raw.parse().map_err(|error| ServerError::invalid_config(name, format!("must be a socket address: {error}")))
     }
 
-    fn positive_usize(&mut self, name: &'static str, default: usize) -> Result<usize> {
-        let value = self.optional_usize(name)?.unwrap_or(default);
-        if value == 0 {
-            return Err(ServerError::invalid_config(name, "must be greater than zero"));
-        }
-        Ok(value)
-    }
-
     fn positive_u64(&mut self, name: &'static str, default: u64) -> Result<u64> {
         let value = self.optional_u64(name)?.unwrap_or(default);
         if value == 0 {
@@ -1532,6 +1663,20 @@ impl<'a> EnvValues<'a> {
             .map(|raw| {
                 raw.parse::<u64>()
                     .map_err(|error| ServerError::invalid_config(name, format!("must be an integer: {error}")))
+            })
+            .transpose()
+    }
+
+    fn optional_f64(&mut self, name: &'static str) -> Result<Option<f64>> {
+        self.string(name)
+            .map(|raw| {
+                let value = raw
+                    .parse::<f64>()
+                    .map_err(|error| ServerError::invalid_config(name, format!("must be a decimal number: {error}")))?;
+                if !value.is_finite() || !(0.0..=1.0).contains(&value) || value == 0.0 {
+                    return Err(ServerError::invalid_config(name, "must be greater than 0 and at most 1"));
+                }
+                Ok(value)
             })
             .transpose()
     }

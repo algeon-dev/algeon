@@ -409,9 +409,11 @@ mod get_tables_prefilter_tests {
             ctx,
             CudfOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred),
             ServerSessionProfile::Native,
-            1,
+            Arc::new(QueryAdmission::new(1).expect("test admission limit")),
             Duration::from_secs(30),
             AuthInterceptor::new(AuthMode::Disabled, TokenStore::new()),
+            #[cfg(feature = "cugraph")]
+            None,
         )
     }
 

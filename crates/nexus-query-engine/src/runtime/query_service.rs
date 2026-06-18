@@ -5,7 +5,7 @@ use std::{
     fmt,
     sync::{
         Arc, Condvar, Mutex,
-        atomic::{AtomicBool, AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
     },
     time::{Duration, Instant},
 };
@@ -175,6 +175,13 @@ impl QueryServiceConfig {
         validate_nonzero_config_field("max_row_groups_per_chunk", self.max_row_groups_per_chunk == 0)?;
         validate_nonzero_config_field("max_retry_attempts", self.max_retry_attempts == 0)?;
         validate_nonzero_config_field("min_retry_chunk_row_groups", self.min_retry_chunk_row_groups == 0)?;
+        if let Some(stream_pool_size) = self.stream_pool_size {
+            validate_stream_pool_admission_capacity(
+                stream_pool_size,
+                self.max_concurrent_queries,
+                self.source_scheduler_policy.max_source_reads_in_flight(),
+            )?;
+        }
         if self.admission_wait_timeout.is_zero() {
             return Err(QueryError::new(
                 QueryErrorCode::InvalidPlan,
@@ -238,6 +245,33 @@ fn validate_nonzero_config_field(field: &'static str, is_zero: bool) -> Result<(
     Ok(())
 }
 
+fn minimum_stream_pool_size(max_concurrent_queries: usize, max_source_reads_in_flight: usize) -> usize {
+    let streams_per_query = 1usize.saturating_add(max_source_reads_in_flight.max(1));
+    max_concurrent_queries.saturating_mul(streams_per_query).max(max_concurrent_queries)
+}
+
+fn validate_stream_pool_admission_capacity(
+    stream_pool_size: usize,
+    max_concurrent_queries: usize,
+    max_source_reads_in_flight: usize,
+) -> Result<()> {
+    let minimum_stream_pool_size = minimum_stream_pool_size(max_concurrent_queries, max_source_reads_in_flight);
+    if stream_pool_size < minimum_stream_pool_size {
+        return Err(QueryError::new(
+            QueryErrorCode::InvalidPlan,
+            "nexus_query_engine.query_service.config.validate",
+            "service stream pool size must cover root and source-read streams for every admitted query",
+        )
+        .with_fact("field", "stream_pool_size")
+        .with_fact("stream_pool_size", stream_pool_size)
+        .with_fact("max_concurrent_queries", max_concurrent_queries)
+        .with_fact("max_source_reads_in_flight", max_source_reads_in_flight)
+        .with_fact("minimum_stream_pool_size", minimum_stream_pool_size)
+        .with_fact("reason", "stream_pool_smaller_than_admission_limit"));
+    }
+    Ok(())
+}
+
 /// Service-level entry point for tenant-aware native query admission.
 #[derive(Clone, Debug)]
 pub struct QueryService {
@@ -266,6 +300,22 @@ pub struct TenantQueueDepth {
     pub queued_queries: usize,
 }
 
+/// Cancel-safe queued admission request.
+///
+/// Dropping this value before admission removes the queued request from the
+/// service queue. This lets async servers wait without parking a blocking
+/// thread inside [`QueryService::admit_query`].
+#[derive(Debug)]
+pub struct QueryAdmissionWaiter {
+    service: QueryService,
+    tenant_id: TenantId,
+    request_id: u64,
+    requested_at: Instant,
+    deadline: Instant,
+    device_budget_bytes: u64,
+    queued: bool,
+}
+
 #[derive(Debug)]
 struct QueryServiceInner {
     config: QueryServiceConfig,
@@ -280,7 +330,7 @@ struct QueryServiceInner {
 
 #[derive(Debug, Clone)]
 struct QueryServiceResources {
-    service_stream_pool: ServiceStreamPool,
+    devices: DeviceRegistry,
     host_fetch_budget: HostFetchBudget,
     source_fetch_concurrency: SourceFetchConcurrencyGate,
     lakehouse_cache_fill_budget: HostFetchBudget,
@@ -292,17 +342,154 @@ struct QueryServiceResources {
     deployment_io_capability: DeploymentIoCapability,
 }
 
+#[derive(Debug, Clone)]
+struct DeviceRegistry {
+    devices: Vec<DeviceRuntimeResources>,
+}
+
+#[derive(Debug, Clone)]
+struct DeviceRuntimeResources {
+    stream_pool: ServiceStreamPool,
+}
+
+impl DeviceRegistry {
+    fn single(device: cudf::DeviceId, stream_pool_size: usize) -> Result<Self> {
+        let registry = Self {
+            devices: vec![DeviceRuntimeResources { stream_pool: ServiceStreamPool::new(device, stream_pool_size)? }],
+        };
+        registry.validate_single_device()?;
+        Ok(registry)
+    }
+
+    fn validate_single_device(&self) -> Result<()> {
+        if self.devices.len() != 1 {
+            return Err(QueryError::new(
+                QueryErrorCode::InvalidPlan,
+                "nexus_query_engine.query_service.device_registry",
+                "phase-2 query service device registry must contain exactly one device",
+            )
+            .with_fact("device_count", self.devices.len())
+            .with_fact("expected_device_count", 1));
+        }
+        Ok(())
+    }
+
+    fn primary(&self) -> Result<&DeviceRuntimeResources> {
+        self.validate_single_device()?;
+        self.devices.first().ok_or_else(|| {
+            QueryError::new(
+                QueryErrorCode::InvalidPlan,
+                "nexus_query_engine.query_service.device_registry",
+                "query service device registry is empty",
+            )
+        })
+    }
+}
+
 #[derive(Debug, Default)]
 struct AdmissionState {
     active_queries: usize,
     queued: VecDeque<AdmissionRequest>,
     next_tenant_index: usize,
+    closed: bool,
 }
 
 #[derive(Debug, Clone)]
 struct AdmissionRequest {
     request_id: u64,
     tenant_id: TenantId,
+}
+
+#[derive(Debug)]
+struct QueryHandleLifetime {
+    service: Arc<QueryServiceInner>,
+    tenant_id: TenantId,
+    query_id: u64,
+    release_requested: AtomicBool,
+    released: AtomicBool,
+    active_contexts: AtomicUsize,
+    root_context: Mutex<Option<ExecutionContext>>,
+}
+
+#[derive(Debug)]
+struct QueryContextLifetimeGuard {
+    lifetime: Arc<QueryHandleLifetime>,
+}
+
+impl QueryHandleLifetime {
+    fn new(service: Arc<QueryServiceInner>, tenant_id: TenantId, query_id: u64) -> Arc<Self> {
+        Arc::new(Self {
+            service,
+            tenant_id,
+            query_id,
+            release_requested: AtomicBool::new(false),
+            released: AtomicBool::new(false),
+            active_contexts: AtomicUsize::new(0),
+            root_context: Mutex::new(None),
+        })
+    }
+
+    fn retain_context(self: &Arc<Self>) -> Result<QueryContextLifetimeGuard> {
+        if self.release_requested.load(Ordering::Acquire) || self.released.load(Ordering::Acquire) {
+            return Err(self.released_error());
+        }
+        self.active_contexts.fetch_add(1, Ordering::AcqRel);
+        if self.release_requested.load(Ordering::Acquire) || self.released.load(Ordering::Acquire) {
+            let guard = QueryContextLifetimeGuard { lifetime: Arc::clone(self) };
+            drop(guard);
+            return Err(self.released_error());
+        }
+        Ok(QueryContextLifetimeGuard { lifetime: Arc::clone(self) })
+    }
+
+    fn request_release(&self) {
+        self.release_requested.store(true, Ordering::Release);
+        self.release_if_ready();
+    }
+
+    fn release_if_ready(&self) {
+        if !self.release_requested.load(Ordering::Acquire) || self.active_contexts.load(Ordering::Acquire) != 0 {
+            return;
+        }
+        if self.released.swap(true, Ordering::AcqRel) {
+            return;
+        }
+        match self.root_context.lock() {
+            Ok(mut context) => {
+                context.take();
+            },
+            Err(_error) => {
+                eprintln!("[nexus-query-engine] warning: failed to drop poisoned query service root context");
+            },
+        }
+        match self.service.admission.lock() {
+            Ok(mut state) => {
+                state.active_queries = state.active_queries.saturating_sub(1);
+                self.service.admission_available.notify_all();
+            },
+            Err(_error) => {
+                eprintln!("[nexus-query-engine] warning: failed to release poisoned query service admission state");
+            },
+        }
+    }
+
+    fn released_error(&self) -> QueryError {
+        QueryError::new(
+            QueryErrorCode::InvalidPlan,
+            "nexus_query_engine.query_service.context",
+            "query service handle was released before context acquisition",
+        )
+        .with_fact("tenant_id", self.tenant_id.as_str())
+        .with_fact("query_id", self.query_id)
+        .with_fact("reason", "query_handle_released")
+    }
+}
+
+impl Drop for QueryContextLifetimeGuard {
+    fn drop(&mut self) {
+        self.lifetime.active_contexts.fetch_sub(1, Ordering::AcqRel);
+        self.lifetime.release_if_ready();
+    }
 }
 
 impl QueryService {
@@ -325,10 +512,20 @@ impl QueryService {
                 error,
             )
         })?;
+        let default_stream_pool_size = super::default_service_stream_pool_size_for_device(device);
+        let minimum_stream_pool_size = minimum_stream_pool_size(
+            config.max_concurrent_queries,
+            config.source_scheduler_policy.max_source_reads_in_flight(),
+        );
         let stream_pool_size =
-            config.stream_pool_size.unwrap_or_else(|| super::default_service_stream_pool_size_for_device(device));
+            config.stream_pool_size.unwrap_or_else(|| default_stream_pool_size.max(minimum_stream_pool_size));
+        validate_stream_pool_admission_capacity(
+            stream_pool_size,
+            config.max_concurrent_queries,
+            config.source_scheduler_policy.max_source_reads_in_flight(),
+        )?;
         let resources = QueryServiceResources {
-            service_stream_pool: ServiceStreamPool::new(device, stream_pool_size)?,
+            devices: DeviceRegistry::single(device, stream_pool_size)?,
             host_fetch_budget: HostFetchBudget::new(
                 config.source_fetch.host_fetch_budget_bytes.unwrap_or_else(default_host_fetch_budget_bytes),
             )?,
@@ -430,6 +627,9 @@ impl QueryService {
         let deadline = requested_at.checked_add(self.inner.config.admission_wait_timeout).unwrap_or(requested_at);
 
         let mut state = self.lock_admission()?;
+        if state.closed {
+            return Err(service_closed_error(&tenant_id));
+        }
         if state.queued.len() >= self.inner.config.max_admission_queue_len {
             return Err(service_overloaded_error(
                 "admission_queue_full",
@@ -441,6 +641,11 @@ impl QueryService {
         state.queued.push_back(request);
 
         loop {
+            if state.closed {
+                remove_queued_request(&mut state, request_id);
+                self.inner.admission_available.notify_all();
+                return Err(service_closed_error(&tenant_id));
+            }
             if self.request_is_admissible(&state, request_id)
                 && let Some(position) = state.queued.iter().position(|queued| queued.request_id == request_id)
             {
@@ -448,14 +653,15 @@ impl QueryService {
                 state.active_queries = state.active_queries.saturating_add(1);
                 self.rotate_after_admission(&mut state, &admitted.tenant_id);
                 let admission_sequence = self.inner.next_admission_sequence.fetch_add(1, Ordering::Relaxed);
+                let service = Arc::clone(&self.inner);
                 return Ok(QueryHandle {
-                    service: Arc::clone(&self.inner),
+                    lifetime: QueryHandleLifetime::new(Arc::clone(&service), tenant_id.clone(), request_id),
+                    service,
                     tenant_id,
                     query_id: request_id,
                     admission_sequence,
                     admission_wait: requested_at.elapsed(),
                     device_budget_bytes,
-                    released: AtomicBool::new(false),
                 });
             }
 
@@ -490,6 +696,82 @@ impl QueryService {
                 ));
             }
         }
+    }
+
+    /// Enqueues a query admission request without blocking the caller.
+    ///
+    /// Call [`QueryAdmissionWaiter::try_admit`] until it returns a handle. If
+    /// the waiter is dropped first, the queued request is removed.
+    pub fn enqueue_admission(&self, tenant_id: impl Into<TenantId>) -> Result<QueryAdmissionWaiter> {
+        let tenant_id = tenant_id.into();
+        let device_budget_bytes = self.tenant_budget(&tenant_id)?;
+        let request_id = self.inner.next_query_id.fetch_add(1, Ordering::Relaxed);
+        let requested_at = Instant::now();
+        let deadline = requested_at.checked_add(self.inner.config.admission_wait_timeout).unwrap_or(requested_at);
+        let mut state = self.lock_admission()?;
+        if state.closed {
+            return Err(service_closed_error(&tenant_id));
+        }
+        if state.queued.len() >= self.inner.config.max_admission_queue_len {
+            return Err(service_overloaded_error(
+                "admission_queue_full",
+                &tenant_id,
+                state.queued.len(),
+                self.inner.config.max_admission_queue_len,
+            ));
+        }
+        state.queued.push_back(AdmissionRequest { request_id, tenant_id: tenant_id.clone() });
+        self.inner.admission_available.notify_all();
+        Ok(QueryAdmissionWaiter {
+            service: self.clone(),
+            tenant_id,
+            request_id,
+            requested_at,
+            deadline,
+            device_budget_bytes,
+            queued: true,
+        })
+    }
+
+    /// Attempts to admit a query without queueing or waiting.
+    ///
+    /// Returns `Ok(None)` when all admission slots are active or when queued
+    /// requests already exist and this caller must not bypass them.
+    pub fn try_admit_query(&self, tenant_id: impl Into<TenantId>) -> Result<Option<QueryHandle>> {
+        let tenant_id = tenant_id.into();
+        let device_budget_bytes = self.tenant_budget(&tenant_id)?;
+        let mut state = self.lock_admission()?;
+        if state.closed {
+            return Err(service_closed_error(&tenant_id));
+        }
+        if state.active_queries >= self.inner.config.max_concurrent_queries || !state.queued.is_empty() {
+            return Ok(None);
+        }
+
+        state.active_queries = state.active_queries.saturating_add(1);
+        self.rotate_after_admission(&mut state, &tenant_id);
+        let query_id = self.inner.next_query_id.fetch_add(1, Ordering::Relaxed);
+        let admission_sequence = self.inner.next_admission_sequence.fetch_add(1, Ordering::Relaxed);
+        let service = Arc::clone(&self.inner);
+        Ok(Some(QueryHandle {
+            lifetime: QueryHandleLifetime::new(Arc::clone(&service), tenant_id.clone(), query_id),
+            service,
+            tenant_id,
+            query_id,
+            admission_sequence,
+            admission_wait: Duration::ZERO,
+            device_budget_bytes,
+        }))
+    }
+
+    /// Closes admission and wakes every queued waiter.
+    ///
+    /// Active query handles keep their slots until dropped or finished.
+    pub fn close(&self) -> Result<()> {
+        let mut state = self.lock_admission()?;
+        state.closed = true;
+        self.inner.admission_available.notify_all();
+        Ok(())
     }
 
     /// Returns the configured device budget for a tenant.
@@ -575,6 +857,89 @@ impl QueryService {
     }
 }
 
+impl QueryAdmissionWaiter {
+    /// Attempts to complete this queued admission without blocking.
+    ///
+    /// Returns `Ok(None)` while the request is still queued behind active work
+    /// or tenant-fairness rotation. Queue timeout and service close remove the
+    /// request and return a structured error.
+    pub fn try_admit(&mut self) -> Result<Option<QueryHandle>> {
+        if !self.queued {
+            return Err(QueryError::new(
+                QueryErrorCode::InvalidPlan,
+                "nexus_query_engine.query_service.admission",
+                "query admission waiter has already completed",
+            )
+            .with_fact("tenant_id", self.tenant_id.as_str())
+            .with_fact("query_id", self.request_id)
+            .with_fact("reason", "admission_waiter_completed"));
+        }
+
+        let mut state = self.service.lock_admission()?;
+        if state.closed {
+            remove_queued_request(&mut state, self.request_id);
+            self.queued = false;
+            self.service.inner.admission_available.notify_all();
+            return Err(service_closed_error(&self.tenant_id));
+        }
+        if self.service.request_is_admissible(&state, self.request_id)
+            && let Some(position) = state.queued.iter().position(|queued| queued.request_id == self.request_id)
+        {
+            let admitted = state.queued.remove(position).expect("admissible request exists");
+            state.active_queries = state.active_queries.saturating_add(1);
+            self.service.rotate_after_admission(&mut state, &admitted.tenant_id);
+            self.queued = false;
+            let admission_sequence = self.service.inner.next_admission_sequence.fetch_add(1, Ordering::Relaxed);
+            let service = Arc::clone(&self.service.inner);
+            return Ok(Some(QueryHandle {
+                lifetime: QueryHandleLifetime::new(Arc::clone(&service), self.tenant_id.clone(), self.request_id),
+                service,
+                tenant_id: self.tenant_id.clone(),
+                query_id: self.request_id,
+                admission_sequence,
+                admission_wait: self.requested_at.elapsed(),
+                device_budget_bytes: self.device_budget_bytes,
+            }));
+        }
+
+        if Instant::now() >= self.deadline {
+            remove_queued_request(&mut state, self.request_id);
+            self.queued = false;
+            self.service.inner.admission_available.notify_all();
+            return Err(service_overloaded_error(
+                "admission_wait_timeout",
+                &self.tenant_id,
+                state.queued.len(),
+                self.service.inner.config.max_admission_queue_len,
+            ));
+        }
+
+        Ok(None)
+    }
+
+    /// Remaining time before this queued admission reaches the service timeout.
+    pub fn remaining_wait(&self) -> Duration {
+        self.deadline.saturating_duration_since(Instant::now())
+    }
+}
+
+impl Drop for QueryAdmissionWaiter {
+    fn drop(&mut self) {
+        if !self.queued {
+            return;
+        }
+        match self.service.inner.admission.lock() {
+            Ok(mut state) => {
+                remove_queued_request(&mut state, self.request_id);
+                self.service.inner.admission_available.notify_all();
+            },
+            Err(_error) => {
+                eprintln!("[nexus-query-engine] warning: failed to remove queued query service admission request");
+            },
+        }
+    }
+}
+
 fn remove_queued_request(state: &mut AdmissionState, request_id: u64) {
     if let Some(position) = state.queued.iter().position(|request| request.request_id == request_id) {
         state.queued.remove(position);
@@ -598,6 +963,16 @@ fn service_overloaded_error(
     .with_fact("max_admission_queue_len", max_admission_queue_len)
 }
 
+fn service_closed_error(tenant_id: &TenantId) -> QueryError {
+    QueryError::new(
+        QueryErrorCode::Cancelled,
+        "nexus_query_engine.query_service.admission",
+        "query service admission is closed",
+    )
+    .with_fact("reason", "admission_closed")
+    .with_fact("tenant_id", tenant_id.as_str())
+}
+
 /// RAII admission handle for one tenant query.
 #[derive(Debug)]
 pub struct QueryHandle {
@@ -607,7 +982,7 @@ pub struct QueryHandle {
     admission_sequence: u64,
     admission_wait: Duration,
     device_budget_bytes: u64,
-    released: AtomicBool,
+    lifetime: Arc<QueryHandleLifetime>,
 }
 
 impl QueryHandle {
@@ -699,16 +1074,13 @@ impl QueryHandle {
 
     /// Acquires a tenant-bound execution context from the service stream pool.
     pub fn acquire_context(&self) -> Result<TenantQueryContext> {
-        if self.released.load(Ordering::Acquire) {
-            return Err(QueryError::new(
-                QueryErrorCode::InvalidPlan,
-                "nexus_query_engine.query_service.context",
-                "query service handle was released before context acquisition",
-            )
-            .with_fact("tenant_id", self.tenant_id.as_str())
-            .with_fact("query_id", self.query_id)
-            .with_fact("reason", "query_handle_released"));
-        }
+        self.acquire_context_with_cancellation(ExecutionCancellation::new())
+    }
+
+    /// Acquires a tenant-bound execution context that observes caller-supplied
+    /// cooperative cancellation.
+    pub fn acquire_context_with_cancellation(&self, cancellation: ExecutionCancellation) -> Result<TenantQueryContext> {
+        let lifetime_guard = self.lifetime.retain_context()?;
         let Some(resources) = &self.service.resources else {
             return Err(QueryError::new(
                 QueryErrorCode::InvalidPlan,
@@ -716,8 +1088,21 @@ impl QueryHandle {
                 "query service was constructed without runtime resources",
             ));
         };
-        let stream_lease = resources.service_stream_pool.acquire()?;
-        validate_service_stream_pool_device(&resources.service_stream_pool, stream_lease.runtime().device())?;
+        let device = resources.devices.primary()?;
+        let mut root_context = self.lifetime.root_context.lock().map_err(|_error| {
+            QueryError::new(
+                QueryErrorCode::Internal,
+                "nexus_query_engine.query_service.context",
+                "query service root context mutex was poisoned",
+            )
+        })?;
+        if let Some(context) = root_context.as_ref() {
+            return Ok(TenantQueryContext { context: context.clone(), _lifetime_guard: lifetime_guard });
+        }
+        let stream_lease = device
+            .stream_pool
+            .acquire_with_cancellation(&cancellation, "nexus_query_engine.query_service.context.stream_acquire")?;
+        validate_service_stream_pool_device(&device.stream_pool, stream_lease.runtime().device())?;
         let stream_lease_guard = Arc::new(stream_lease);
         let context = ExecutionContext::from_parts(ExecutionContextParts {
             runtime: stream_lease_guard.shared_runtime(),
@@ -727,7 +1112,7 @@ impl QueryHandle {
             source_scheduler_policy: self.service.config.source_scheduler_policy,
             source_chunk_planning_mode: self.service.config.source_chunk_planning_mode,
             source_fetch_config: self.service.config.source_fetch.clone(),
-            service_stream_pool: resources.service_stream_pool.clone(),
+            service_stream_pool: device.stream_pool.clone(),
             host_fetch_budget: resources.host_fetch_budget.clone(),
             source_fetch_concurrency: resources.source_fetch_concurrency.clone(),
             lakehouse_cache_fill_budget: resources.lakehouse_cache_fill_budget.clone(),
@@ -738,7 +1123,7 @@ impl QueryHandle {
             lakehouse_cache_fill_runtime: Arc::clone(&resources.lakehouse_cache_fill_runtime),
             source_object_stores: Arc::clone(&resources.source_object_stores),
             deployment_io_capability: resources.deployment_io_capability.clone(),
-            cancellation: ExecutionCancellation::new(),
+            cancellation,
             native_pipeline_execution_mode: self.service.config.native_pipeline_execution_mode,
             stddev_samp_execution_mode: self.service.config.stddev_samp_execution_mode,
             aggregate_strategy_execution_options: self.service.config.aggregate_strategy_execution_options,
@@ -747,28 +1132,19 @@ impl QueryHandle {
             hash_join_build_cache: None,
             local_parquet_source_cache: None,
             stream_lease_guard: Some(stream_lease_guard),
+            query_service_admitted: true,
         });
-        Ok(TenantQueryContext { context })
+        *root_context = Some(context.clone());
+        Ok(TenantQueryContext { context, _lifetime_guard: lifetime_guard })
     }
 
     /// Releases the admission slot before dropping the handle.
     pub fn finish(&self) {
-        self.release_once();
+        self.lifetime.request_release();
     }
 
     fn release_once(&self) {
-        if self.released.swap(true, Ordering::AcqRel) {
-            return;
-        }
-        match self.service.admission.lock() {
-            Ok(mut state) => {
-                state.active_queries = state.active_queries.saturating_sub(1);
-                self.service.admission_available.notify_all();
-            },
-            Err(_error) => {
-                eprintln!("[nexus-query-engine] warning: failed to release poisoned query service admission state");
-            },
-        }
+        self.lifetime.request_release();
     }
 }
 
@@ -782,6 +1158,7 @@ impl Drop for QueryHandle {
 #[derive(Debug)]
 pub struct TenantQueryContext {
     context: ExecutionContext,
+    _lifetime_guard: QueryContextLifetimeGuard,
 }
 
 impl TenantQueryContext {
@@ -812,6 +1189,24 @@ mod tests {
             ..QueryServiceConfig::default()
         };
         QueryService::new_for_admission_tests(
+            config,
+            vec![
+                QueryServiceTenantConfig::new("large", 8 * 1024 * 1024),
+                QueryServiceTenantConfig::new("small", 1024 * 1024),
+            ],
+            non_gds_deployment(),
+        )
+        .unwrap()
+    }
+
+    fn runtime_test_service(max_concurrent_queries: usize, max_admission_queue_len: usize) -> QueryService {
+        let config = QueryServiceConfig {
+            max_concurrent_queries,
+            max_admission_queue_len,
+            admission_wait_timeout: Duration::from_millis(500),
+            ..QueryServiceConfig::default()
+        };
+        QueryService::new_with_deployment(
             config,
             vec![
                 QueryServiceTenantConfig::new("large", 8 * 1024 * 1024),
@@ -1101,6 +1496,139 @@ mod tests {
         assert_eq!(error.code(), QueryErrorCode::InvalidPlan);
         assert_eq!(error.fact_value("tenant_id"), Some("small"));
         assert_eq!(error.fact_value("reason"), Some("query_handle_released"));
+    }
+
+    #[test]
+    fn query_service_context_keeps_admission_until_context_drop() {
+        let service = runtime_test_service(1, 8);
+        let handle = service.admit_query("large").unwrap();
+        let tenant_context = handle.acquire_context().unwrap();
+        drop(handle);
+
+        assert!(service.try_admit_query("small").unwrap().is_none());
+        drop(tenant_context);
+        assert!(service.try_admit_query("small").unwrap().is_some());
+    }
+
+    #[test]
+    fn query_service_handle_reuses_one_root_context() {
+        let service = runtime_test_service(1, 8);
+        let handle = service.admit_query("large").unwrap();
+        let first = handle.acquire_context().unwrap();
+        let second = handle.acquire_context().unwrap();
+
+        assert!(Arc::ptr_eq(&first.context().shared_runtime(), &second.context().shared_runtime()));
+    }
+
+    #[test]
+    fn query_service_rejects_stream_pool_smaller_than_admission_limit() {
+        let config = QueryServiceConfig {
+            max_concurrent_queries: 2,
+            stream_pool_size: Some(1),
+            ..QueryServiceConfig::default()
+        };
+
+        let error = QueryService::new_for_admission_tests(
+            config,
+            vec![QueryServiceTenantConfig::new("tenant", 1024 * 1024)],
+            non_gds_deployment(),
+        )
+        .unwrap_err();
+
+        assert_eq!(error.code(), QueryErrorCode::InvalidPlan);
+        assert_eq!(error.fact_value("field"), Some("stream_pool_size"));
+        assert_eq!(error.fact_value("reason"), Some("stream_pool_smaller_than_admission_limit"));
+    }
+
+    #[test]
+    fn query_service_rejects_stream_pool_that_covers_only_root_streams() {
+        let config = QueryServiceConfig {
+            max_concurrent_queries: 2,
+            source_scheduler_policy: SourceSchedulerPolicy::new(1),
+            stream_pool_size: Some(2),
+            ..QueryServiceConfig::default()
+        };
+
+        let error = QueryService::new_for_admission_tests(
+            config,
+            vec![QueryServiceTenantConfig::new("tenant", 1024 * 1024)],
+            non_gds_deployment(),
+        )
+        .unwrap_err();
+
+        assert_eq!(error.code(), QueryErrorCode::InvalidPlan);
+        assert_eq!(error.fact_value("field"), Some("stream_pool_size"));
+        assert_eq!(error.fact_value("max_source_reads_in_flight"), Some("1"));
+        assert_eq!(error.fact_value("minimum_stream_pool_size"), Some("4"));
+    }
+
+    #[test]
+    fn query_service_try_admit_does_not_queue_when_saturated() {
+        let service = test_service(1, 8);
+        let active = service.try_admit_query("large").unwrap().expect("first query should admit");
+
+        assert!(service.try_admit_query("small").unwrap().is_none());
+        let snapshot = service.admission_snapshot().unwrap();
+        assert_eq!(snapshot.active_queries, 1);
+        assert_eq!(snapshot.queued_queries, 0);
+
+        drop(active);
+        assert!(service.try_admit_query("small").unwrap().is_some());
+    }
+
+    #[test]
+    fn query_service_concurrent_budget_sum_never_exceeds_capacity() {
+        let capacity_bytes = 12 * 1024 * 1024;
+        let max_concurrent_queries = 4;
+        let per_query_budget = capacity_bytes / u64::try_from(max_concurrent_queries).unwrap();
+        let service = QueryService::new_for_admission_tests(
+            QueryServiceConfig { max_concurrent_queries, max_admission_queue_len: 8, ..QueryServiceConfig::default() },
+            vec![QueryServiceTenantConfig::new("tenant", per_query_budget)],
+            non_gds_deployment(),
+        )
+        .unwrap();
+
+        let handles = (0..max_concurrent_queries)
+            .map(|_| service.try_admit_query("tenant").unwrap().expect("capacity should admit query"))
+            .collect::<Vec<_>>();
+
+        let admitted_budget_sum: u64 = handles.iter().map(QueryHandle::device_budget_bytes).sum();
+        assert_eq!(admitted_budget_sum, capacity_bytes);
+        assert!(service.try_admit_query("tenant").unwrap().is_none());
+    }
+
+    #[test]
+    fn query_service_enqueued_waiter_counts_against_queue_limit_until_drop() {
+        let service = test_service(1, 1);
+        let _active = service.admit_query("large").unwrap();
+        let waiter = service.enqueue_admission("small").unwrap();
+
+        let error = service.enqueue_admission("large").unwrap_err();
+        assert_eq!(error.code(), QueryErrorCode::ServiceOverloaded);
+        assert_eq!(error.fact_value("reason"), Some("admission_queue_full"));
+
+        drop(waiter);
+        assert!(service.enqueue_admission("large").is_ok());
+    }
+
+    #[test]
+    fn query_service_close_wakes_waiting_admission() {
+        let service = test_service(1, 8);
+        let _active = service.admit_query("large").unwrap();
+        let queued_service = service.clone();
+        let (started_sender, started_receiver) = std::sync::mpsc::channel();
+        let waiter = std::thread::spawn(move || {
+            started_sender.send(()).unwrap();
+            queued_service.admit_query("small").unwrap_err()
+        });
+        started_receiver.recv().unwrap();
+        wait_for_queued_len(&service, 1);
+
+        service.close().unwrap();
+        let error = waiter.join().unwrap();
+
+        assert_eq!(error.code(), QueryErrorCode::Cancelled);
+        assert_eq!(error.fact_value("reason"), Some("admission_closed"));
     }
 
     #[test]

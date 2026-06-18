@@ -57,8 +57,8 @@ pub use policy::{
     DevicePlacement, MemoryControlPolicy, MemoryResourcePolicy, MemorySpaceId, ReservationKind, SourceChunkPlanningMode,
 };
 pub use query_service::{
-    QueryHandle, QueryService, QueryServiceAdmissionSnapshot, QueryServiceConfig, QueryServiceTenantConfig, TenantId,
-    TenantQueryContext, TenantQueueDepth,
+    QueryAdmissionWaiter, QueryHandle, QueryService, QueryServiceAdmissionSnapshot, QueryServiceConfig,
+    QueryServiceTenantConfig, TenantId, TenantQueryContext, TenantQueueDepth,
 };
 pub use reservation::{MemoryReservationRequest, RetryFacts};
 pub(crate) use service_stream::SourceReadStreamLease;
@@ -374,6 +374,8 @@ pub struct ExecutionContext {
     local_parquet_source_cache: Option<Arc<crate::exec::GpuLocalParquetSourceCache>>,
     /// Optional owned stream lease kept alive by contexts derived from it.
     stream_lease_guard: Option<Arc<StreamLease>>,
+    /// Whether this context was created from a QueryService admission handle.
+    query_service_admitted: bool,
 }
 
 /// Execution context tied to an owned CUDA stream lease.
@@ -426,6 +428,7 @@ struct ExecutionContextParts {
     hash_join_build_cache: Option<Arc<crate::exec::GpuHashJoinBuildCache>>,
     local_parquet_source_cache: Option<Arc<crate::exec::GpuLocalParquetSourceCache>>,
     stream_lease_guard: Option<Arc<StreamLease>>,
+    query_service_admitted: bool,
 }
 
 impl ExecutionContext {
@@ -483,6 +486,7 @@ impl ExecutionContext {
             hash_join_build_cache: None,
             local_parquet_source_cache: None,
             stream_lease_guard: None,
+            query_service_admitted: false,
         })
     }
 
@@ -515,6 +519,7 @@ impl ExecutionContext {
             hash_join_build_cache: parts.hash_join_build_cache,
             local_parquet_source_cache: parts.local_parquet_source_cache,
             stream_lease_guard: parts.stream_lease_guard,
+            query_service_admitted: parts.query_service_admitted,
         }
     }
 
@@ -543,7 +548,9 @@ impl ExecutionContext {
 
     /// Acquires a same-device leased context for a scheduled source-read worker.
     pub(crate) fn acquire_source_read_lease(&self) -> Result<SourceReadStreamLease> {
-        let stream_lease = self.service_stream_pool.acquire()?;
+        let stream_lease = self
+            .service_stream_pool
+            .acquire_with_cancellation(&self.cancellation, "nexus_query_engine.runtime.source_read_stream.acquire")?;
         let context = self.with_stream_lease(&stream_lease)?;
         Ok(SourceReadStreamLease::new(context, stream_lease))
     }
@@ -584,6 +591,7 @@ impl ExecutionContext {
             hash_join_build_cache: self.hash_join_build_cache.as_ref().map(Arc::clone),
             local_parquet_source_cache: self.local_parquet_source_cache.as_ref().map(Arc::clone),
             stream_lease_guard: None,
+            query_service_admitted: self.query_service_admitted,
         }))
     }
 
@@ -605,6 +613,11 @@ impl ExecutionContext {
         let mut context = self.clone();
         context.memory_control_policy = MemoryControlPolicy::Unbounded;
         context
+    }
+
+    /// Returns whether this context is backed by a QueryService admission slot.
+    pub fn is_query_service_admitted(&self) -> bool {
+        self.query_service_admitted
     }
 
     /// Returns the cooperative cancellation flag for this execution.
@@ -1318,6 +1331,7 @@ impl ExecutionContextBuilder {
                 hash_join_build_cache: self.hash_join_build_cache,
                 local_parquet_source_cache: self.local_parquet_source_cache,
                 stream_lease_guard: None,
+                query_service_admitted: false,
             }));
         }
 
@@ -1382,6 +1396,7 @@ impl ExecutionContextBuilder {
             hash_join_build_cache: self.hash_join_build_cache,
             local_parquet_source_cache: self.local_parquet_source_cache,
             stream_lease_guard: None,
+            query_service_admitted: false,
         }))
     }
 }

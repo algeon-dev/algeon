@@ -1747,7 +1747,7 @@ fn execute_cugraph_query_to_host(
     limit: Option<usize>,
     edge_normalize_inserted: bool,
 ) -> Result<(RecordBatch, QueryMetrics)> {
-    let graph_context = graph_algorithm_execution_context(context);
+    let graph_context = graph_algorithm_execution_context(context)?;
     let plan = cugraph_query_plan(
         &graph_context,
         spec,
@@ -1788,7 +1788,7 @@ fn execute_cugraph_query_to_gpu_with_options(
     limit: Option<usize>,
     edge_normalize_inserted: bool,
 ) -> Result<(GpuResultHandle, QueryMetrics)> {
-    let graph_context = graph_algorithm_execution_context(context);
+    let graph_context = graph_algorithm_execution_context(context)?;
     let plan = cugraph_query_plan(
         &graph_context,
         spec,
@@ -1820,14 +1820,25 @@ fn execute_cugraph_query_to_gpu_with_options(
     Ok((handle, metrics))
 }
 
-fn graph_algorithm_execution_context(context: &ExecutionContext) -> ExecutionContext {
+fn graph_algorithm_execution_context(context: &ExecutionContext) -> Result<ExecutionContext> {
+    if context.is_query_service_admitted() && context.memory_control_policy().is_bounded() {
+        return Err(Error::new(
+            ErrorCode::UnsupportedOperator,
+            "datafusion_nexus.cugraph_sql.execute",
+            "cuGraph SQL graph algorithms require unbounded native memory policy under Flight SQL QueryService admission",
+        )
+        .with_fact("memory_control_policy", context.memory_control_policy())
+        .with_fact("query_service_admitted", true)
+        .with_fact("reason", "cugraph_bounded_query_service_unsupported")
+        .into());
+    }
     // Graph algorithms are intentionally outside strict bounded admission until
     // libcudf/cuGraph expose lower-level allocation contracts. Edge and
     // predicate child plans still run under the session's configured native
     // policy; only the graph-algorithm native IR fragment uses unbounded
     // execution so it reaches the cuGraph executor instead of bounded generic
     // admission.
-    context.for_unbounded_fragment()
+    Ok(context.for_unbounded_fragment())
 }
 
 #[derive(Debug, Clone, Copy)]
