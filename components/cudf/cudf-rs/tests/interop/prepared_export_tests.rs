@@ -13,7 +13,7 @@ use std::{
 };
 
 use cudf::{
-    DataFrame, DeviceId, Runtime, TypeId,
+    DataFrame, DeviceId, ErrorCode, Runtime, TypeId,
     core::Table,
     frame::dataframe::JsonReadOptions,
     interop::cuda_explicit_completion_required_lease_backend,
@@ -979,7 +979,7 @@ mod device_export_contracts {
     }
 
     #[test]
-    fn helper_built_exports_use_explicit_runtime_binding_and_mixed_device_exports_are_rejected() {
+    fn helper_built_exports_use_explicit_runtime_binding_and_cross_device_inputs_are_rejected() {
         crate::common::with_test_runtime(|runtime| {
             let column = column_from_slice(&[1i32, 2, 3]).unwrap();
             let view = column.testing_view().unwrap();
@@ -1011,15 +1011,18 @@ mod device_export_contracts {
         let (device0, device1) = first_two_test_devices();
         let rt0 = Runtime::builder().with_device(device0).build().unwrap();
         let rt1 = Runtime::builder().with_device(device1).build().unwrap();
-        let left =
-            rt0.column_from_slice(&[1i32, 2, 3]).unwrap().testing_rebind_execution_domain_explicit(9001).unwrap();
-        let right =
-            rt1.column_from_slice(&[4i32, 5, 6]).unwrap().testing_rebind_execution_domain_explicit(9001).unwrap();
-        let frame =
-            crate::common::dataframe_from_columns(vec!["left".into(), "right".into()], vec![left, right]).unwrap();
 
-        let err = frame.try_prepare_device_table_export().unwrap_err();
-        assert_eq!(err.kind(), InteropErrorKind::MixedDeviceUnsupported);
+        let left = rt0.column_from_slice(&[1i32, 2, 3]).unwrap();
+        let right = rt1.column_from_slice(&[4i32, 5, 6]).unwrap();
+        let frame_err =
+            crate::common::dataframe_from_columns(vec!["left".into(), "right".into()], vec![left, right]).unwrap_err();
+        assert_eq!(frame_err.code(), ErrorCode::CrossProvenanceInputs);
+
+        let _left_domain_seed =
+            rt0.column_from_slice(&[1i32, 2, 3]).unwrap().testing_rebind_execution_domain_explicit(9001).unwrap();
+        let rebind_err =
+            rt1.column_from_slice(&[4i32, 5, 6]).unwrap().testing_rebind_execution_domain_explicit(9001).unwrap_err();
+        assert_eq!(rebind_err.code(), ErrorCode::CrossDeviceInputs);
     }
 
     #[test]

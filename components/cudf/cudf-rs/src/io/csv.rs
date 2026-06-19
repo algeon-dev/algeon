@@ -46,6 +46,7 @@ pub fn read_csv(options: &CsvTableReadOptions) -> Result<TableReadOutput> {
     let exec_options = output_domain.exec_options_raw();
 
     let mut table_handle = ptr::null_mut();
+    let _io_guard = super::lock_libcudf_io(operation)?;
     error::check_status_in_with_details(
         // SAFETY: filepath is a valid CString (converted above).
         unsafe {
@@ -159,6 +160,7 @@ pub(crate) fn write_csv_with_exec(
     let (name_ptrs, num_cols) =
         if name_ptrs_vec.is_empty() { (ptr::null(), 0) } else { (name_ptrs_vec.as_ptr(), name_ptrs_vec.len() as i32) };
 
+    let _io_guard = super::lock_libcudf_io("io::csv::write_csv")?;
     error::check_status_in_with_details(
         // SAFETY: table handle is valid (NonNull). filepath is a valid CString (converted above).
         // name_ptrs is either null or a valid pointer to num_cols CString pointers.
