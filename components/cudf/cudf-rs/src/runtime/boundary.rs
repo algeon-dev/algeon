@@ -11,6 +11,8 @@ static LAST_BOUNDARY_OBSERVATION: Mutex<Option<BoundaryObservation>> = Mutex::ne
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum BoundaryKind {
+    /// Query-stage checkpoint without a host/device transfer by itself.
+    QueryStage,
     /// Host-resident input was copied into GPU-owned cudf-rs state.
     HostToDevice,
     /// GPU-resident cudf-rs state was materialized into host-visible output.
@@ -25,6 +27,82 @@ pub enum BoundaryKind {
     OwnedTransfer,
 }
 
+/// Query-stage taxonomy for memory and boundary observations.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum QueryStageKind {
+    /// File or external source read produced GPU-resident cudf-rs state.
+    SourceRead,
+    /// Query operator produced a GPU-resident output.
+    OperatorOutput,
+    /// GPU-resident data was materialized into a final host-visible result.
+    FinalMaterialize,
+    /// External data was imported into cudf-rs.
+    InteropImport,
+    /// cudf-rs data was exported across an interop boundary.
+    InteropExport,
+}
+
+/// Typed memory and transfer facts attached to a query-stage observation.
+///
+/// `payload_bytes` and `device_allocated_bytes` describe the GPU-resident
+/// output. `uploaded_bytes` and `downloaded_bytes` are populated only for
+/// observations that actually cross a host/device transfer boundary. They are
+/// query accounting counters derived from the resulting logical payload, not
+/// exact PCIe or driver-level transfer byte counts.
+/// `reservation_bytes` is intentionally optional so bounded query engines can
+/// attach or compare requested reservations without inventing free-form detail
+/// keys.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct QueryMemoryObservation {
+    /// Logical payload bytes represented by the observed output.
+    pub payload_bytes: Option<usize>,
+    /// Actual device allocation footprint represented by the observed output.
+    pub device_allocated_bytes: Option<usize>,
+    /// Payload-derived host-to-device bytes attributed to this boundary.
+    pub uploaded_bytes: Option<usize>,
+    /// Payload-derived device-to-host bytes attributed to this boundary.
+    pub downloaded_bytes: Option<usize>,
+    /// Optional bounded-execution reservation size associated with this stage.
+    pub reservation_bytes: Option<usize>,
+}
+
+impl QueryMemoryObservation {
+    /// Empty memory facts for observations that do not compute accounting.
+    pub fn empty() -> Self {
+        Self::default()
+    }
+
+    /// Create memory facts for a GPU-resident output.
+    pub fn device_resident(payload_bytes: Option<usize>, device_allocated_bytes: Option<usize>) -> Self {
+        Self {
+            payload_bytes,
+            device_allocated_bytes,
+            uploaded_bytes: None,
+            downloaded_bytes: None,
+            reservation_bytes: None,
+        }
+    }
+
+    /// Attach a host-to-device upload counter.
+    pub fn with_uploaded_bytes(mut self, uploaded_bytes: usize) -> Self {
+        self.uploaded_bytes = Some(uploaded_bytes);
+        self
+    }
+
+    /// Attach a device-to-host download counter.
+    pub fn with_downloaded_bytes(mut self, downloaded_bytes: usize) -> Self {
+        self.downloaded_bytes = Some(downloaded_bytes);
+        self
+    }
+
+    /// Attach a bounded-execution reservation fact.
+    pub fn with_reservation_bytes(mut self, reservation_bytes: usize) -> Self {
+        self.reservation_bytes = Some(reservation_bytes);
+        self
+    }
+}
+
 /// Stable diagnostic observation for one host/device or interop boundary.
 ///
 /// The row and column counts describe the logical table-shaped payload at the
@@ -34,6 +112,8 @@ pub enum BoundaryKind {
 pub struct BoundaryObservation {
     /// Boundary category.
     pub kind: BoundaryKind,
+    /// Optional query-stage category for query engine accounting.
+    pub query_stage: Option<QueryStageKind>,
     /// Retained cudf-rs execution placement associated with the boundary.
     pub placement: ExecutionPlacement,
     /// Logical row count at the boundary.
@@ -42,6 +122,41 @@ pub struct BoundaryObservation {
     pub columns: usize,
     /// Whether the path synchronized for host-visible results.
     pub synchronized_for_host: bool,
+    /// Typed memory, transfer, and reservation facts for this observation.
+    pub memory: QueryMemoryObservation,
+}
+
+impl BoundaryObservation {
+    /// Construct an observation without query-stage memory facts.
+    pub fn new(
+        kind: BoundaryKind,
+        placement: ExecutionPlacement,
+        rows: usize,
+        columns: usize,
+        synchronized_for_host: bool,
+    ) -> Self {
+        Self {
+            kind,
+            query_stage: None,
+            placement,
+            rows,
+            columns,
+            synchronized_for_host,
+            memory: QueryMemoryObservation::empty(),
+        }
+    }
+
+    /// Attach a query stage classification.
+    pub fn with_query_stage(mut self, query_stage: QueryStageKind) -> Self {
+        self.query_stage = Some(query_stage);
+        self
+    }
+
+    /// Attach typed memory and transfer facts.
+    pub fn with_memory(mut self, memory: QueryMemoryObservation) -> Self {
+        self.memory = memory;
+        self
+    }
 }
 
 /// Opt-in observer for query-facing host/device and interop boundaries.

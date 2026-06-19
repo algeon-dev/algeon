@@ -206,8 +206,8 @@ use crate::{
     },
     ops::dictionary,
     runtime::{
-        BoundaryKind, BoundaryObservation, CudaEvent, ExecutionPlacement, Runtime, execution_domain::ExecutionDomain,
-        record_boundary_observation_in_domain,
+        BoundaryKind, BoundaryObservation, CudaEvent, ExecutionPlacement, QueryStageKind, Runtime,
+        execution_domain::ExecutionDomain, record_boundary_observation_in_domain,
     },
 };
 
@@ -218,7 +218,13 @@ fn boundary_observation(
     columns: usize,
     synchronized_for_host: bool,
 ) -> BoundaryObservation {
-    BoundaryObservation { kind, placement, rows, columns, synchronized_for_host }
+    let observation = BoundaryObservation::new(kind, placement, rows, columns, synchronized_for_host);
+    match kind {
+        BoundaryKind::InteropLease | BoundaryKind::OwnedTransfer => {
+            observation.with_query_stage(QueryStageKind::InteropExport)
+        },
+        _ => observation,
+    }
 }
 
 fn record_observation(domain: &Arc<ExecutionDomain>, observation: BoundaryObservation) {

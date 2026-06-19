@@ -19,10 +19,7 @@ use crate::{
         resolve::validate_no_duplicate_names,
     },
     ops::groupby,
-    runtime::{
-        BoundaryKind, BoundaryObservation, ExecutionPlacement, Runtime, execution_domain::ExecutionDomain,
-        record_boundary_observation_in_domain,
-    },
+    runtime::{BoundaryKind, ExecutionPlacement, QueryStageKind, Runtime, execution_domain::ExecutionDomain},
 };
 
 /// A GPU DataFrame: a named, ordered collection of GPU columns.
@@ -407,16 +404,12 @@ impl DataFrame {
         let domain = resolve_frame_domain_from_authoritative_source(&columns, &output_domain, operation)?;
         let frame = Self { columns, row_count: self.row_count, domain };
         if should_copy {
-            record_boundary_observation_in_domain(
-                &output_domain,
-                BoundaryObservation {
-                    kind: BoundaryKind::DeviceToDeviceCopy,
-                    placement: runtime.placement(),
-                    rows: self.row_count,
-                    columns: self.columns.len(),
-                    synchronized_for_host: false,
-                },
-            );
+            frame.record_boundary_observation_for_query_stage(
+                BoundaryKind::DeviceToDeviceCopy,
+                QueryStageKind::OperatorOutput,
+                false,
+                operation,
+            )?;
         }
         Ok(frame)
     }

@@ -89,6 +89,9 @@ impl DataFrameJoinOptions {
 /// Producing this value allocates only the index column. Payload data is copied
 /// only when the indices are passed to
 /// [`DataFrame::materialize_join_indices`](super::DataFrame::materialize_join_indices).
+///
+/// Cloning this wrapper is cheap: it clones the wrapped [`Series`] handle and
+/// shares the same device-side index buffer.
 #[derive(Debug, Clone)]
 pub struct DataFrameJoinIndices {
     indices: Series,
@@ -120,6 +123,9 @@ impl DataFrameJoinIndices {
     }
 
     /// Retained execution placement of the device-side gather map.
+    ///
+    /// This describes the index buffer itself, not the source left DataFrame
+    /// that the indices may later gather from.
     pub fn placement(&self) -> ExecutionPlacement {
         self.indices.placement()
     }

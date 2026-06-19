@@ -21,7 +21,7 @@ mod placement;
 mod query_execution_context;
 pub mod stream;
 
-pub use boundary::{BoundaryKind, BoundaryObservation, BoundaryObserver};
+pub use boundary::{BoundaryKind, BoundaryObservation, BoundaryObserver, QueryMemoryObservation, QueryStageKind};
 pub(crate) use boundary::{
     BoundaryObserverRef, last_boundary_observation, record_boundary_observation,
     record_boundary_observation_for_observer, record_boundary_observation_in_domain,

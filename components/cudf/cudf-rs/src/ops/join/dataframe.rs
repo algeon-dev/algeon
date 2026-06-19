@@ -304,8 +304,7 @@ impl DataFrame {
     /// right matches do not duplicate left rows.
     pub fn left_semi_join(&self, right: &DataFrame, options: DataFrameJoinOptions) -> Result<Self> {
         let indices = self.left_semi_join_indices(right, options)?;
-        self.materialize_join_indices(&indices, self.column_names_owned())
-            .map_err(|e| e.reanchor("dataframe::left_semi_join"))
+        self.materialize_join_indices_impl(&indices, self.column_names_owned(), None, "dataframe::left_semi_join")
     }
 
     /// Left anti join, returning only left-side columns.
@@ -315,8 +314,7 @@ impl DataFrame {
     /// columns. Right-side payload columns are never included.
     pub fn left_anti_join(&self, right: &DataFrame, options: DataFrameJoinOptions) -> Result<Self> {
         let indices = self.left_anti_join_indices(right, options)?;
-        self.materialize_join_indices(&indices, self.column_names_owned())
-            .map_err(|e| e.reanchor("dataframe::left_anti_join"))
+        self.materialize_join_indices_impl(&indices, self.column_names_owned(), None, "dataframe::left_anti_join")
     }
 
     fn single_side_join_indices_impl(
@@ -327,7 +325,7 @@ impl DataFrame {
         ctx: Option<&ExecutionOverrides<'_>>,
         operation: &'static str,
     ) -> Result<DataFrameJoinIndices> {
-        let (left_on_strs, right_on_strs, _shared_keys) = resolve_dataframe_join_keys(&options, operation)?;
+        let (left_on_strs, right_on_strs) = resolve_dataframe_join_keys(&options, operation)?;
         let left_on_refs: Vec<&str> = left_on_strs.iter().map(|s| s.as_str()).collect();
         let right_on_refs: Vec<&str> = right_on_strs.iter().map(|s| s.as_str()).collect();
 
@@ -595,13 +593,13 @@ fn resolve_merge_keys(
 fn resolve_dataframe_join_keys(
     options: &DataFrameJoinOptions,
     operation: &'static str,
-) -> Result<(Vec<String>, Vec<String>, bool)> {
+) -> Result<(Vec<String>, Vec<String>)> {
     match (options.on_keys(), options.left_on_keys(), options.right_on_keys()) {
         (Some(on), None, None) => {
             let keys: Vec<String> = on.to_vec();
-            Ok((keys.clone(), keys, true))
+            Ok((keys.clone(), keys))
         },
-        (None, Some(lo), Some(ro)) => Ok((lo.to_vec(), ro.to_vec(), false)),
+        (None, Some(lo), Some(ro)) => Ok((lo.to_vec(), ro.to_vec())),
         (None, Some(_), None) => Err(merge_validation_error(
             operation,
             "left_on was specified without right_on; set both or use on()",

@@ -53,7 +53,8 @@ use crate::{
         resolve::{missing_column_error, validate_no_duplicate_names},
     },
     runtime::{
-        BoundaryKind, BoundaryObservation, Runtime, record_boundary_observation, record_boundary_observation_in_domain,
+        BoundaryKind, BoundaryObservation, QueryStageKind, Runtime, record_boundary_observation,
+        record_boundary_observation_in_domain,
     },
 };
 
@@ -326,16 +327,18 @@ impl DataFrame {
             .collect::<Result<_>>()?;
 
         let batch = RecordBatch::try_from_iter_with_nullable(columns).map_err(map_record_batch_error)?;
-        record_host_boundary_observation_in_domain(
-            self.execution_domain(),
-            BoundaryObservation {
-                kind: BoundaryKind::DeviceToHost,
-                placement,
-                rows,
-                columns: column_count,
-                synchronized_for_host: true,
-            },
-        );
+        let observation = self
+            .boundary_observation_for_query_stage(
+                BoundaryKind::DeviceToHost,
+                QueryStageKind::FinalMaterialize,
+                true,
+                "dataframe::to_record_batch",
+            )
+            .map_err(|error| error.reanchor("dataframe::to_record_batch"))?;
+        debug_assert_eq!(observation.placement, placement);
+        debug_assert_eq!(observation.rows, rows);
+        debug_assert_eq!(observation.columns, column_count);
+        record_host_boundary_observation_in_domain(self.execution_domain(), observation);
         Ok(batch)
     }
 
@@ -423,16 +426,13 @@ pub fn dataframe_from_record_batch(runtime: &Runtime, batch: &RecordBatch) -> Re
     if num_cols == 0 {
         let frame =
             DataFrame::from_raw_parts(fast_index_map(), batch.num_rows(), Arc::clone(runtime.execution_domain()));
-        record_host_boundary_observation_in_domain(
-            runtime.execution_domain(),
-            BoundaryObservation {
-                kind: BoundaryKind::HostToDevice,
-                placement: runtime.placement(),
-                rows: batch.num_rows(),
-                columns: num_cols,
-                synchronized_for_host: false,
-            },
-        );
+        let observation = frame.boundary_observation_for_query_stage(
+            BoundaryKind::HostToDevice,
+            QueryStageKind::InteropImport,
+            false,
+            "dataframe_from_record_batch",
+        )?;
+        record_host_boundary_observation_in_domain(runtime.execution_domain(), observation);
         return Ok(frame);
     }
 
@@ -447,16 +447,13 @@ pub fn dataframe_from_record_batch(runtime: &Runtime, batch: &RecordBatch) -> Re
     }
 
     let frame = DataFrame::new(names, columns)?;
-    record_host_boundary_observation_in_domain(
-        runtime.execution_domain(),
-        BoundaryObservation {
-            kind: BoundaryKind::HostToDevice,
-            placement: runtime.placement(),
-            rows: batch.num_rows(),
-            columns: num_cols,
-            synchronized_for_host: false,
-        },
-    );
+    let observation = frame.boundary_observation_for_query_stage(
+        BoundaryKind::HostToDevice,
+        QueryStageKind::InteropImport,
+        false,
+        "dataframe_from_record_batch",
+    )?;
+    record_host_boundary_observation_in_domain(runtime.execution_domain(), observation);
     Ok(frame)
 }
 

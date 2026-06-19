@@ -43,33 +43,33 @@ use crate::{
         types::TypeId,
     },
     ops::dictionary,
-    runtime::{BoundaryKind, BoundaryObservation, Runtime, record_boundary_observation_in_domain},
+    runtime::{BoundaryKind, BoundaryObservation, QueryStageKind, Runtime, record_boundary_observation_in_domain},
 };
 
 fn column_view_device_abi_observation(
     view: &crate::core::column::ColumnView<'_>,
     operation: &'static str,
 ) -> Result<BoundaryObservation> {
-    Ok(BoundaryObservation {
-        kind: BoundaryKind::DeviceAbiHandoff,
-        placement: view.execution_domain().placement(),
-        rows: view.len().map_err(|error| error.reanchor(operation))?,
-        columns: 1,
-        synchronized_for_host: false,
-    })
+    Ok(BoundaryObservation::new(
+        BoundaryKind::DeviceAbiHandoff,
+        view.execution_domain().placement(),
+        view.len().map_err(|error| error.reanchor(operation))?,
+        1,
+        false,
+    ))
 }
 
 fn table_view_device_abi_observation(
     view: &crate::core::table::TableView<'_>,
     operation: &'static str,
 ) -> Result<BoundaryObservation> {
-    Ok(BoundaryObservation {
-        kind: BoundaryKind::DeviceAbiHandoff,
-        placement: view.execution_domain().placement(),
-        rows: view.num_rows().map_err(|error| error.reanchor(operation))?,
-        columns: view.num_columns().map_err(|error| error.reanchor(operation))?,
-        synchronized_for_host: false,
-    })
+    Ok(BoundaryObservation::new(
+        BoundaryKind::DeviceAbiHandoff,
+        view.execution_domain().placement(),
+        view.num_rows().map_err(|error| error.reanchor(operation))?,
+        view.num_columns().map_err(|error| error.reanchor(operation))?,
+        false,
+    ))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -816,7 +816,8 @@ fn export_device_arrow_column_from_view(
     operation: &'static str,
     reported_materialization: Option<DeviceArrowExportMaterialization>,
 ) -> Result<DeviceArrowColumnExport> {
-    let observation = column_view_device_abi_observation(view, operation)?;
+    let observation =
+        column_view_device_abi_observation(view, operation)?.with_query_stage(QueryStageKind::InteropExport);
     let mut schema = ptr::null_mut();
     let mut array = ptr::null_mut();
     let mut materialization =
@@ -858,7 +859,8 @@ fn export_device_arrow_table_from_view(
     operation: &'static str,
     reported_materialization: Option<DeviceArrowExportMaterialization>,
 ) -> Result<DeviceArrowTableExport> {
-    let observation = table_view_device_abi_observation(view, operation)?;
+    let observation =
+        table_view_device_abi_observation(view, operation)?.with_query_stage(QueryStageKind::InteropExport);
     let mut schema = ptr::null_mut();
     let mut array = ptr::null_mut();
     let mut materialization =
@@ -1522,13 +1524,14 @@ impl Column {
         }?;
         record_boundary_observation_in_domain(
             runtime.execution_domain(),
-            BoundaryObservation {
-                kind: BoundaryKind::DeviceAbiHandoff,
-                placement: runtime.placement(),
-                rows: column.len().map_err(|error| error.reanchor(operation))?,
-                columns: 1,
-                synchronized_for_host: false,
-            },
+            BoundaryObservation::new(
+                BoundaryKind::DeviceAbiHandoff,
+                runtime.placement(),
+                column.len().map_err(|error| error.reanchor(operation))?,
+                1,
+                false,
+            )
+            .with_query_stage(QueryStageKind::InteropImport),
         );
 
         debug_assert_eq!(import_materialization_from_raw(materialization), input.materialization());
@@ -1591,7 +1594,7 @@ impl Table {
         }?;
         let observation = {
             let view = columns.view().map_err(|error| error.reanchor(operation))?;
-            table_view_device_abi_observation(&view, operation)?
+            table_view_device_abi_observation(&view, operation)?.with_query_stage(QueryStageKind::InteropImport)
         };
         record_boundary_observation_in_domain(runtime.execution_domain(), observation);
 

@@ -1,7 +1,7 @@
 //! Tests for the high-level `DataFrame::merge` API and `MergeOptions` / `JoinType`.
 use cudf::{
-    DataFrame, ErrorCode, ErrorKind, ExecutionOverrides, JoinType, MergeOptions,
-    frame::dataframe::DataFrameJoinOptions, testing::prelude::*,
+    DataFrame, DataFrameJoinOptions, ErrorCode, ErrorKind, ExecutionOverrides, JoinType, MergeOptions,
+    testing::prelude::*,
 };
 
 use crate::common::{
@@ -166,6 +166,121 @@ fn test_dataframe_left_semi_join_indices_with_execution_uses_borrowed_handles() 
     assert_eq!(last_exec_stream_value(), query_rt.stream().testing_raw_handle_value());
     assert_eq!(last_exec_mr_value(), query_rt.memory_resource().testing_raw_handle_value());
     assert_eq!(indices.placement().device, query_rt.device());
+}
+
+#[test]
+fn test_dataframe_left_semi_join_rejects_missing_join_keys() {
+    let left = left_df();
+    let right = right_df();
+
+    let err = left.left_semi_join(&right, DataFrameJoinOptions::new()).unwrap_err();
+
+    assert_merge_validation_error(
+        &err,
+        "dataframe::left_semi_join_indices",
+        "missing_join_keys",
+        "set on() or left_on() + right_on()",
+    );
+}
+
+#[test]
+fn test_dataframe_left_semi_join_rejects_ambiguous_join_key_configuration() {
+    let left = left_df();
+    let right = right_df();
+
+    let err = left.left_semi_join(&right, DataFrameJoinOptions::new().on(["id"]).left_on(["id"])).unwrap_err();
+
+    assert_merge_validation_error(
+        &err,
+        "dataframe::left_semi_join_indices",
+        "ambiguous_join_key_configuration",
+        "use on() or left_on() + right_on(), not both",
+    );
+}
+
+#[test]
+fn test_dataframe_left_anti_join_rejects_left_on_without_right_on() {
+    let left = left_df();
+    let right = right_df();
+
+    let err = left.left_anti_join(&right, DataFrameJoinOptions::new().left_on(["id"])).unwrap_err();
+
+    assert_merge_validation_error(
+        &err,
+        "dataframe::left_anti_join_indices",
+        "left_on_without_right_on",
+        "set right_on() or use on()",
+    );
+}
+
+#[test]
+fn test_dataframe_left_semi_join_indices_rejects_key_count_mismatch() {
+    let left = left_df_asym();
+    let right = right_df_asym();
+
+    let err = left
+        .left_semi_join_indices(
+            &right,
+            DataFrameJoinOptions::new().left_on(["left_id"]).right_on(["right_id", "value"]),
+        )
+        .unwrap_err();
+
+    assert_merge_validation_error(
+        &err,
+        "dataframe::left_semi_join_indices",
+        "join_key_count_mismatch",
+        "set left_on() and right_on() with the same number of key columns",
+    );
+    assert_eq!(error_context_value(&err, "left_on_count").as_deref(), Some("1"));
+    assert_eq!(error_context_value(&err, "right_on_count").as_deref(), Some("2"));
+}
+
+#[test]
+fn test_dataframe_materialize_join_indices_reanchors_unknown_column() {
+    let left = left_df();
+    let right = right_df();
+
+    let indices = left.left_semi_join_indices(&right, DataFrameJoinOptions::new().on(["id"])).unwrap();
+    let err = left.materialize_join_indices(&indices, ["missing_payload"]).unwrap_err();
+
+    assert_missing_column_error(&err, "missing_payload");
+    assert_eq!(err.operation(), "dataframe::materialize_join_indices");
+}
+
+#[test]
+fn test_dataframe_left_semi_join_empty_result_preserves_schema() {
+    let rt = sample_runtime();
+    let left =
+        DataFrame::from_columns([("id", rt.series(&[1i32, 2]).unwrap()), ("score", rt.series(&[10i32, 20]).unwrap())])
+            .unwrap();
+    let right = DataFrame::from_columns([("id", rt.series(&[3i32, 4]).unwrap())]).unwrap();
+
+    let indices = left.left_semi_join_indices(&right, DataFrameJoinOptions::new().on(["id"])).unwrap();
+    let result = left.left_semi_join(&right, DataFrameJoinOptions::new().on(["id"])).unwrap();
+
+    assert!(indices.is_empty());
+    assert_eq!(result.column_names(), vec!["id", "score"]);
+    assert_eq!(result.num_rows(), 0);
+    assert!(i32_column(&result, "id").is_empty());
+    assert!(i32_column(&result, "score").is_empty());
+}
+
+#[test]
+fn test_dataframe_left_anti_join_empty_result_preserves_schema() {
+    let rt = sample_runtime();
+    let left =
+        DataFrame::from_columns([("id", rt.series(&[1i32, 2]).unwrap()), ("score", rt.series(&[10i32, 20]).unwrap())])
+            .unwrap();
+    let right = DataFrame::from_columns([("id", rt.series(&[1i32, 2]).unwrap())]).unwrap();
+
+    let indices = left.left_anti_join_indices(&right, DataFrameJoinOptions::new().on(["id"])).unwrap();
+    let result = left.left_anti_join(&right, DataFrameJoinOptions::new().on(["id"])).unwrap();
+
+    assert!(indices.is_empty());
+    assert_eq!(result.column_names(), vec!["id", "score"]);
+    assert_eq!(result.num_rows(), 0);
+    assert!(i32_column(&result, "id").is_empty());
+    assert!(i32_column(&result, "score").is_empty());
 }
 
 // ---------------------------------------------------------------------------

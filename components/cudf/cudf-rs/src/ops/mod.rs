@@ -52,7 +52,7 @@ pub mod unary;
 
 use std::ops::{Add, Div, Mul, Sub};
 
-pub use expr::{Expr, col, lit, when};
+pub use expr::{Expr, col, lit, lit_null, when};
 
 use crate::core::{column::Column, error::Result, scalar::Scalar};
 

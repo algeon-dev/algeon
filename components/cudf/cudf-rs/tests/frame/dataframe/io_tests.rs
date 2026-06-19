@@ -3,12 +3,13 @@
 use std::os::unix::ffi::OsStringExt;
 
 use cudf::{
-    DataFrame, ErrorCode, ErrorKind,
+    BoundaryKind, DataFrame, ErrorCode, ErrorKind,
     core::{
         Table,
         error::{FactKeyName, FactValue},
     },
     frame::dataframe::{CsvReadOptions, CsvWriteOptions, ParquetReadOptions},
+    runtime::QueryStageKind,
     testing::prelude::*,
 };
 use tempfile::TempDir;
@@ -39,14 +40,22 @@ fn test_read_parquet_returns_dataframe_with_schema() {
         cudf::io::parquet::ParquetTableWriteOptions::builder().filepath(&path).column_names(&["id", "value"]).build();
     cudf::io::parquet::write_parquet(&table, &write_opts).unwrap();
 
+    cudf::testing::boundary::reset_boundary_observation_for_test();
     // Read back via DataFrame.
     let df = DataFrame::read_parquet(&rt, &path).unwrap();
+    let observation = cudf::testing::boundary::last_boundary_observation_for_test().unwrap();
 
     assert_eq!(df.num_columns(), 2);
     assert_eq!(df.num_rows(), 3);
     assert_eq!(df.column_names(), vec!["id", "value"]);
     assert_eq!(df.testing_execution_domain_id(), rt.testing_execution_domain_id());
     assert_eq!(df.testing_execution_domain_stream_value(), rt.stream().testing_raw_handle_value());
+    assert_eq!(observation.kind, BoundaryKind::HostToDevice);
+    assert_eq!(observation.query_stage, Some(QueryStageKind::SourceRead));
+    assert_eq!(observation.rows, 3);
+    assert_eq!(observation.columns, 2);
+    assert_eq!(observation.memory.uploaded_bytes, observation.memory.payload_bytes);
+    assert!(observation.memory.payload_bytes.unwrap() > 0);
 
     let col = df.series("id").unwrap();
     assert_eq!(col.to_vec_strict::<i32>().unwrap(), vec![1, 2, 3]);

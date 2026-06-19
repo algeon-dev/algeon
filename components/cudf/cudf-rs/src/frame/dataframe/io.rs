@@ -17,7 +17,7 @@ use crate::{
         json::{self, JsonTableReadOptions, JsonTableWriteOptions},
         parquet::{self, ParquetTableReadOptions, ParquetTableWriteOptions},
     },
-    runtime::{Runtime, execution_domain::ExecutionDomain},
+    runtime::{BoundaryKind, QueryStageKind, Runtime, execution_domain::ExecutionDomain},
 };
 
 /// Options for [`DataFrame::read_csv_with_options`].
@@ -346,7 +346,14 @@ impl DataFrame {
         let table_options = options.to_table_options();
         let result = csv::read_csv(&table_options).map_err(|error| error.reanchor(operation))?;
         let names = resolve_csv_column_names(&options, &result)?;
-        Self::from_table(result.table, names).map_err(|error| error.reanchor(operation))
+        let frame = Self::from_table(result.table, names).map_err(|error| error.reanchor(operation))?;
+        frame.record_boundary_observation_for_query_stage(
+            BoundaryKind::HostToDevice,
+            QueryStageKind::SourceRead,
+            false,
+            operation,
+        )?;
+        Ok(frame)
     }
 
     /// Write this `DataFrame` to a CSV file, preserving the DataFrame schema
@@ -416,7 +423,14 @@ impl DataFrame {
         let table_options = options.to_table_options();
         let result = parquet::read_parquet_table(&table_options).map_err(|error| error.reanchor(operation))?;
         let (table, names) = require_reader_schema_names(result, operation, "parquet reader")?;
-        Self::from_table(table, names).map_err(|error| error.reanchor(operation))
+        let frame = Self::from_table(table, names).map_err(|error| error.reanchor(operation))?;
+        frame.record_boundary_observation_for_query_stage(
+            BoundaryKind::HostToDevice,
+            QueryStageKind::SourceRead,
+            false,
+            operation,
+        )?;
+        Ok(frame)
     }
 
     /// Read multiple Parquet files into one `DataFrame`.
@@ -484,7 +498,14 @@ impl DataFrame {
             unreachable!("empty file list was rejected before reading");
         };
         let rest_refs: Vec<&DataFrame> = rest.iter().collect();
-        first.concat_many(&rest_refs).map_err(|error| error.reanchor(operation))
+        let frame = first.concat_many(&rest_refs).map_err(|error| error.reanchor(operation))?;
+        frame.record_boundary_observation_for_query_stage(
+            BoundaryKind::HostToDevice,
+            QueryStageKind::SourceRead,
+            false,
+            operation,
+        )?;
+        Ok(frame)
     }
 
     /// Write this `DataFrame` to a Parquet file, embedding column names in
@@ -551,7 +572,14 @@ impl DataFrame {
         let table_options = options.to_table_options();
         let result = json::read_json_table(&table_options).map_err(|error| error.reanchor(operation))?;
         let (table, names) = require_reader_schema_names(result, operation, "json reader")?;
-        Self::from_table(table, names).map_err(|error| error.reanchor(operation))
+        let frame = Self::from_table(table, names).map_err(|error| error.reanchor(operation))?;
+        frame.record_boundary_observation_for_query_stage(
+            BoundaryKind::HostToDevice,
+            QueryStageKind::SourceRead,
+            false,
+            operation,
+        )?;
+        Ok(frame)
     }
 
     /// Write this `DataFrame` to a JSON Lines (NDJSON) file, using column

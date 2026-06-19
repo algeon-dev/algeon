@@ -325,6 +325,41 @@ impl Scalar {
         )
     }
 
+    pub(crate) fn null_in_domain(dtype: DataType, domain: &Arc<ExecutionDomain>) -> Result<Self> {
+        match dtype.id() {
+            TypeId::Int8 => Self::null_numeric_in_domain::<i8>(domain),
+            TypeId::Int16 => Self::null_numeric_in_domain::<i16>(domain),
+            TypeId::Int32 => Self::null_numeric_in_domain::<i32>(domain),
+            TypeId::Int64 => Self::null_numeric_in_domain::<i64>(domain),
+            TypeId::UInt8 => Self::null_numeric_in_domain::<u8>(domain),
+            TypeId::UInt16 => Self::null_numeric_in_domain::<u16>(domain),
+            TypeId::UInt32 => Self::null_numeric_in_domain::<u32>(domain),
+            TypeId::UInt64 => Self::null_numeric_in_domain::<u64>(domain),
+            TypeId::Float32 => Self::null_numeric_in_domain::<f32>(domain),
+            TypeId::Float64 => Self::null_numeric_in_domain::<f64>(domain),
+            TypeId::Bool8 => Self::null_numeric_in_domain::<bool>(domain),
+            TypeId::String => Self::null_string_in_domain(domain),
+            TypeId::Decimal32 | TypeId::Decimal64 | TypeId::Decimal128 => Self::null_decimal_in_domain(dtype, domain),
+            TypeId::TimestampDays
+            | TypeId::TimestampSeconds
+            | TypeId::TimestampMilliseconds
+            | TypeId::TimestampMicroseconds
+            | TypeId::TimestampNanoseconds => Self::null_timestamp_in_domain(dtype.id(), domain),
+            TypeId::DurationDays
+            | TypeId::DurationSeconds
+            | TypeId::DurationMilliseconds
+            | TypeId::DurationMicroseconds
+            | TypeId::DurationNanoseconds => Self::null_duration_in_domain(dtype.id(), domain),
+            other => Err(Error::new_with(
+                ErrorCode::UnsupportedDtype,
+                "scalar::null_in_domain",
+                "null scalar construction does not support this dtype",
+            )
+            .with_fact(FACT_TYPE_ID, other)
+            .with_detail("reason", "unsupported_null_scalar_dtype")),
+        }
+    }
+
     fn decimal_from_typed_raw_in_domain<T>(
         value: *const T,
         dtype: DataType,

@@ -69,6 +69,7 @@ use std::{cell::RefCell, sync::Arc};
 use super::{
     binary::{self, BinaryOperator},
     copying,
+    datetime::{self, DatetimeComponent},
     reduction::{self, ReduceAgg, ScanAgg, ScanType},
     replace::{self, FillPolicy},
     strings::{self, StringSliceOptions, StripSide},
@@ -191,6 +192,8 @@ enum LitValueInner {
     Numeric(Box<dyn Fn(&Arc<ExecutionDomain>) -> Result<Scalar> + Send + Sync>),
     /// A string literal.
     String(String),
+    /// A typed null literal.
+    Null(DataType),
 }
 
 /// Opaque wrapper for literal values inside expressions.
@@ -204,6 +207,7 @@ impl LitValue {
         match &*self.0 {
             LitValueInner::Numeric(f) => f(domain),
             LitValueInner::String(s) => Scalar::from_str_in_domain(s, domain),
+            LitValueInner::Null(dtype) => Scalar::null_in_domain(*dtype, domain),
         }
     }
 
@@ -213,6 +217,10 @@ impl LitValue {
 
     fn string(s: String) -> Self {
         Self(Arc::new(LitValueInner::String(s)))
+    }
+
+    fn null(dtype: DataType) -> Self {
+        Self(Arc::new(LitValueInner::Null(dtype)))
     }
 }
 
@@ -276,6 +284,8 @@ pub enum Expr {
     Reduce { input: Box<Expr>, agg: ReduceAgg },
     /// String operation.
     StringOp { input: Box<Expr>, op: StringOperator },
+    /// Datetime component extraction.
+    DateTimeComponent { input: Box<Expr>, component: DatetimeComponent },
     /// Conditional: row-wise `if cond then true_val else false_val`.
     ///
     /// Construct via the staged [`when()`] conditional expression chain.
@@ -444,6 +454,11 @@ impl Expr {
         ExprStringNamespace(self)
     }
 
+    /// Access datetime expression methods for timestamp-specific transforms.
+    pub fn dt(self) -> ExprDatetimeNamespace {
+        ExprDatetimeNamespace(self)
+    }
+
     // -- Name resolution ---------------------------------------------------
 
     /// Returns the output column name, if determinable.
@@ -466,7 +481,8 @@ impl Expr {
             | Expr::FillNaExpr { input, .. }
             | Expr::FillNullPolicy { input, .. }
             | Expr::Scan { input, .. }
-            | Expr::StringOp { input, .. } => input.output_name(),
+            | Expr::StringOp { input, .. }
+            | Expr::DateTimeComponent { input, .. } => input.output_name(),
             Expr::Reduce { .. } => None,
             // Multi-input or no-source nodes.
             Expr::BinaryOp { .. } | Expr::Literal(_) | Expr::IfElse { .. } => None,
@@ -504,36 +520,6 @@ impl Expr {
     ) -> Result<Series> {
         let ctx = ExprEvalContext::new(df, overrides, operation)?;
         self.eval_with_context(&ctx)
-    }
-
-    pub(crate) fn contains_string_like_or_slice(&self) -> bool {
-        match self {
-            Expr::StringOp { input, op } => {
-                matches!(op, StringOperator::Like { .. } | StringOperator::Slice(_))
-                    || input.contains_string_like_or_slice()
-            },
-            Expr::BinaryOp { lhs, rhs, .. } => {
-                lhs.contains_string_like_or_slice() || rhs.contains_string_like_or_slice()
-            },
-            Expr::UnaryOp { input, .. }
-            | Expr::Cast { input, .. }
-            | Expr::IsNull(input)
-            | Expr::IsNotNull(input)
-            | Expr::Alias { inner: input, .. }
-            | Expr::FillNaScalar { input, .. }
-            | Expr::FillNullPolicy { input, .. }
-            | Expr::Scan { input, .. }
-            | Expr::Reduce { input, .. } => input.contains_string_like_or_slice(),
-            Expr::FillNaExpr { input, fill } => {
-                input.contains_string_like_or_slice() || fill.contains_string_like_or_slice()
-            },
-            Expr::IfElse { condition, true_val, false_val } => {
-                condition.contains_string_like_or_slice()
-                    || true_val.contains_string_like_or_slice()
-                    || false_val.contains_string_like_or_slice()
-            },
-            Expr::Column(_) | Expr::Literal(_) => false,
-        }
     }
 
     fn eval_with_context(&self, ctx: &ExprEvalContext<'_>) -> Result<Series> {
@@ -735,6 +721,19 @@ impl Expr {
                         strings::slice_impl(&cv, *options, &ctx.output_domain, ctx.exec_options(), ctx.operation)?
                     },
                 };
+                ctx.wrap_column(col)
+            },
+
+            Expr::DateTimeComponent { input, component } => {
+                let series = input.eval_with_context(ctx)?;
+                let cv = series.view()?;
+                let col = datetime::extract_component_impl(
+                    &cv,
+                    *component,
+                    &ctx.output_domain,
+                    ctx.exec_options(),
+                    ctx.operation,
+                )?;
                 ctx.wrap_column(col)
             },
 
@@ -951,6 +950,33 @@ impl ExprStringNamespace {
 }
 
 // ===========================================================================
+// Datetime expression methods
+// ===========================================================================
+
+/// Datetime expression methods on timestamp columns.
+///
+/// Construct via [`Expr::dt`]. Methods on this type produce row-aligned
+/// `INT16` expressions and preserve the input column name.
+pub struct ExprDatetimeNamespace(Expr);
+
+impl ExprDatetimeNamespace {
+    /// Extract the calendar year.
+    pub fn year(self) -> Expr {
+        Expr::DateTimeComponent { input: Box::new(self.0), component: DatetimeComponent::Year }
+    }
+
+    /// Extract the one-based calendar month.
+    pub fn month(self) -> Expr {
+        Expr::DateTimeComponent { input: Box::new(self.0), component: DatetimeComponent::Month }
+    }
+
+    /// Extract the one-based day of month.
+    pub fn day(self) -> Expr {
+        Expr::DateTimeComponent { input: Box::new(self.0), component: DatetimeComponent::Day }
+    }
+}
+
+// ===========================================================================
 // DSL entry points
 // ===========================================================================
 
@@ -970,6 +996,16 @@ pub fn col(name: impl Into<String>) -> Expr {
 /// returning; later host-visible reads may synchronize.
 pub fn lit<L: IntoLit>(value: L) -> Expr {
     value.into_expr()
+}
+
+/// Create a typed null literal expression that broadcasts to all rows.
+///
+/// The dtype is part of the literal contract, so query planners can lower
+/// typed SQL/DataFusion nulls without inventing sentinel values. Evaluation
+/// creates an invalid device scalar of the requested dtype, then broadcasts it
+/// into a newly allocated device column in the resolved execution domain.
+pub fn lit_null(dtype: impl Into<DataType>) -> Expr {
+    Expr::Literal(LitValue::null(dtype.into()))
 }
 
 /// Create a `DECIMAL32` literal from its raw fixed-point representation.
