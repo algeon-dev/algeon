@@ -10,6 +10,7 @@ use cudf::ExecutionBudgetReport;
 
 use crate::{
     dynamic_filter::{DynamicFilter, DynamicFilterConsumerReductionStage, DynamicFilterRoute},
+    graph_memory::GraphReservationReport,
     harness::max_option,
     runtime::{ExecutionBoundaryPolicy, MemoryControlPolicy, MemoryReservationRequest, MemorySpaceId, ReservationKind},
 };
@@ -227,6 +228,8 @@ pub struct QueryMetrics {
     pub operators: Vec<OperatorMetrics>,
     /// Graph algorithm runtime rows in observation order.
     pub graph_algorithm_runtime_rows: Vec<GraphAlgorithmRuntimeMetrics>,
+    /// Graph memory-tier reservation rows in observation order.
+    pub graph_reservation_rows: Vec<GraphReservationReport>,
     /// Join-strategy diagnostics captured during planning/execution.
     pub join_strategy_decisions: Vec<JoinStrategyDecisionMetrics>,
     /// Aggregate-strategy diagnostics captured during planning/execution.
@@ -466,6 +469,11 @@ impl QueryMetrics {
     /// Appends one graph algorithm runtime row.
     pub fn record_graph_algorithm_runtime(&mut self, metrics: GraphAlgorithmRuntimeMetrics) {
         self.graph_algorithm_runtime_rows.push(metrics);
+    }
+
+    /// Appends one graph memory-tier reservation row.
+    pub fn record_graph_reservation(&mut self, report: GraphReservationReport) {
+        self.graph_reservation_rows.push(report);
     }
 
     /// Records join-strategy diagnostics for a node.
@@ -804,6 +812,34 @@ impl QueryMetrics {
             self.record_task_budget_observation(&compiled_task_id, observed_peak_bytes, retained_bytes);
         }
         self.budgeted_execution_events.push(BudgetedExecutionEvent::new(operation, report));
+    }
+
+    /// Records a graph execution bounded by a budget-tracking RMM resource.
+    pub fn record_graph_budget_tracking(
+        &mut self,
+        operation: impl Into<String>,
+        budget_bytes: u64,
+        allocator_high_water_bytes: Option<u64>,
+        status: impl Into<String>,
+        context_facts: BTreeMap<String, String>,
+    ) {
+        self.max_task_observed_peak_bytes = max_option(self.max_task_observed_peak_bytes, allocator_high_water_bytes);
+        if let Some(compiled_task_id) = self.current_compiled_task_id.clone() {
+            self.record_task_budget_observation(&compiled_task_id, allocator_high_water_bytes, None);
+        }
+        self.budgeted_execution_events.push(BudgetedExecutionEvent {
+            operation: operation.into(),
+            boundary: crate::graph_memory::GRAPH_MEMORY_BOUNDARY.to_string(),
+            budget_bytes,
+            enforcement: "budget_tracking_memory_resource".to_string(),
+            status: status.into(),
+            allocator_high_water_bytes,
+            retained_bytes: None,
+            output_bytes: None,
+            output_rows: None,
+            unresolved_contract: Some("cugraph_workspace_preflight".to_string()),
+            context_facts,
+        });
     }
 
     /// Records execution of a compiled pipeline task.
@@ -1213,6 +1249,7 @@ impl QueryMetrics {
         self.boundary.merge_from(other.boundary);
         self.operators.extend(other.operators);
         self.graph_algorithm_runtime_rows.extend(other.graph_algorithm_runtime_rows);
+        self.graph_reservation_rows.extend(other.graph_reservation_rows);
         self.join_strategy_decisions.extend(other.join_strategy_decisions);
         self.aggregate_strategy_decisions.extend(other.aggregate_strategy_decisions);
         self.dynamic_filter_runtime_rows.extend(other.dynamic_filter_runtime_rows);

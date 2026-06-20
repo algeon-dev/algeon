@@ -66,6 +66,10 @@ pub enum GraphAlgorithm {
     KatzCentrality,
     /// <https://docs.rapids.ai/api/cugraph/stable/api_docs/cugraph_c/centrality/#hits-centrality>
     Hits,
+    /// <https://docs.rapids.ai/api/cugraph/stable/api_docs/cugraph_c/centrality/#betweenness-centrality>
+    BetweennessCentrality,
+    /// <https://docs.rapids.ai/api/cugraph/stable/api_docs/cugraph_c/centrality/#edge-betweenness-centrality>
+    EdgeBetweennessCentrality,
     /// <https://docs.rapids.ai/api/cugraph/stable/api_docs/cugraph_c/traversal/#single-source-shortest-path-sssp>
     Sssp,
     /// In-degree and out-degree for every vertex.
@@ -112,6 +116,8 @@ impl GraphAlgorithm {
             Self::EigenvectorCentrality => "eigenvector_centrality",
             Self::KatzCentrality => "katz_centrality",
             Self::Hits => "hits",
+            Self::BetweennessCentrality => "betweenness_centrality",
+            Self::EdgeBetweennessCentrality => "edge_betweenness_centrality",
             Self::Sssp => "sssp",
             Self::DegreesAll => "degrees_all",
             Self::InDegreesAll => "in_degrees_all",
@@ -396,6 +402,12 @@ impl GraphOperationDefinition {
                 GraphAlgorithmParams::KatzCentrality(GraphKatzCentralityParams::default())
             },
             GraphAlgorithm::Hits => GraphAlgorithmParams::Hits(GraphHitsParams::default()),
+            GraphAlgorithm::BetweennessCentrality => {
+                GraphAlgorithmParams::BetweennessCentrality(GraphBetweennessCentralityParams::default())
+            },
+            GraphAlgorithm::EdgeBetweennessCentrality => {
+                GraphAlgorithmParams::EdgeBetweennessCentrality(GraphEdgeBetweennessCentralityParams::default())
+            },
             GraphAlgorithm::Sssp => GraphAlgorithmParams::Sssp(GraphSsspParams { source_vertex: 0, cutoff: None }),
             GraphAlgorithm::DegreesAll => GraphAlgorithmParams::DegreesAll(GraphDegreesAllParams),
             GraphAlgorithm::InDegreesAll => GraphAlgorithmParams::InDegreesAll(GraphInDegreesAllParams),
@@ -475,6 +487,16 @@ pub const GRAPH_OPERATION_REGISTRY: &[GraphOperationDefinition] = &[
         algorithm: GraphAlgorithm::Hits,
         name: "hits",
         layout_requirement: GraphLayoutRequirement::Transposed,
+    },
+    GraphOperationDefinition {
+        algorithm: GraphAlgorithm::BetweennessCentrality,
+        name: "betweenness_centrality",
+        layout_requirement: GraphLayoutRequirement::Any,
+    },
+    GraphOperationDefinition {
+        algorithm: GraphAlgorithm::EdgeBetweennessCentrality,
+        name: "edge_betweenness_centrality",
+        layout_requirement: GraphLayoutRequirement::Any,
     },
     GraphOperationDefinition {
         algorithm: GraphAlgorithm::Sssp,
@@ -772,6 +794,8 @@ pub enum GraphAlgorithmParams {
     EigenvectorCentrality(GraphEigenvectorCentralityParams),
     KatzCentrality(GraphKatzCentralityParams),
     Hits(GraphHitsParams),
+    BetweennessCentrality(GraphBetweennessCentralityParams),
+    EdgeBetweennessCentrality(GraphEdgeBetweennessCentralityParams),
     Sssp(GraphSsspParams),
     DegreesAll(GraphDegreesAllParams),
     InDegreesAll(GraphInDegreesAllParams),
@@ -800,6 +824,8 @@ impl GraphAlgorithmParams {
             Self::EigenvectorCentrality(_) => GraphAlgorithm::EigenvectorCentrality,
             Self::KatzCentrality(_) => GraphAlgorithm::KatzCentrality,
             Self::Hits(_) => GraphAlgorithm::Hits,
+            Self::BetweennessCentrality(_) => GraphAlgorithm::BetweennessCentrality,
+            Self::EdgeBetweennessCentrality(_) => GraphAlgorithm::EdgeBetweennessCentrality,
             Self::Sssp(_) => GraphAlgorithm::Sssp,
             Self::DegreesAll(_) => GraphAlgorithm::DegreesAll,
             Self::InDegreesAll(_) => GraphAlgorithm::InDegreesAll,
@@ -1104,6 +1130,93 @@ impl Default for GraphHitsParams {
     fn default() -> Self {
         // Matches cugraph::centrality::HitsParams::default().
         Self { epsilon: 1.0e-5, max_iterations: 100, normalize: false }
+    }
+}
+
+/// Default upper bound on exact betweenness source count.
+///
+/// Exact betweenness runs one traversal per vertex. Calls above this
+/// conservative upper bound must provide explicit seed vertices so the
+/// approximation is visible in the request.
+pub const DEFAULT_BETWEENNESS_EXACT_VERTEX_THRESHOLD: u64 = 100_000;
+
+/// Explicit seed set for approximate betweenness.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum GraphBetweennessSeeds {
+    /// Host literal seed vertices from SQL options.
+    I64(Vec<i64>),
+}
+
+impl GraphBetweennessSeeds {
+    /// Number of requested seed vertices.
+    pub fn len(&self) -> usize {
+        match self {
+            Self::I64(values) => values.len(),
+        }
+    }
+
+    /// Whether the seed list is empty.
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+}
+
+/// Parameters for vertex betweenness centrality.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GraphBetweennessCentralityParams {
+    /// Explicit seed vertices for approximate betweenness. `None` requests
+    /// exact all-vertex betweenness unless `k` requests a deterministic
+    /// approximate seed set.
+    pub seeds: Option<GraphBetweennessSeeds>,
+    /// Deterministic approximate seed count. Mutually exclusive with `seeds`;
+    /// execution resolves it to the first `k` distinct graph vertices in stable
+    /// order before calling cuGraph.
+    pub k: Option<u64>,
+    /// Whether to normalize the result.
+    pub normalized: bool,
+    /// Whether endpoints contribute to vertex betweenness.
+    pub include_endpoints: bool,
+    /// Conservative all-vertex threshold for exact execution.
+    pub exact_vertex_threshold: u64,
+}
+
+impl Default for GraphBetweennessCentralityParams {
+    fn default() -> Self {
+        Self {
+            seeds: None,
+            k: None,
+            normalized: true,
+            include_endpoints: false,
+            exact_vertex_threshold: DEFAULT_BETWEENNESS_EXACT_VERTEX_THRESHOLD,
+        }
+    }
+}
+
+/// Parameters for edge betweenness centrality.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GraphEdgeBetweennessCentralityParams {
+    /// Explicit seed vertices for approximate edge betweenness. `None`
+    /// requests exact all-vertex edge betweenness unless `k` requests a
+    /// deterministic approximate seed set.
+    pub seeds: Option<GraphBetweennessSeeds>,
+    /// Deterministic approximate seed count. Mutually exclusive with `seeds`;
+    /// execution resolves it to the first `k` distinct graph vertices in stable
+    /// order before calling cuGraph.
+    pub k: Option<u64>,
+    /// Whether to normalize the result.
+    pub normalized: bool,
+    /// Conservative all-vertex threshold for exact execution.
+    pub exact_vertex_threshold: u64,
+}
+
+impl Default for GraphEdgeBetweennessCentralityParams {
+    fn default() -> Self {
+        Self {
+            seeds: None,
+            k: None,
+            normalized: true,
+            exact_vertex_threshold: DEFAULT_BETWEENNESS_EXACT_VERTEX_THRESHOLD,
+        }
     }
 }
 
@@ -1413,11 +1526,19 @@ pub fn stable_graph_result_schema(algorithm: GraphAlgorithm) -> SchemaRef {
         GraphAlgorithm::PageRank
         | GraphAlgorithm::PersonalizedPageRank
         | GraphAlgorithm::EigenvectorCentrality
-        | GraphAlgorithm::KatzCentrality => {
+        | GraphAlgorithm::KatzCentrality
+        | GraphAlgorithm::BetweennessCentrality => {
             // Centrality-style algorithms expose one score per vertex.
             vec![
                 Field::new("vertex", arrow::datatypes::DataType::Int64, false),
                 Field::new("value", arrow::datatypes::DataType::Float64, false),
+            ]
+        },
+        GraphAlgorithm::EdgeBetweennessCentrality => {
+            vec![
+                Field::new("source", arrow::datatypes::DataType::Int64, false),
+                Field::new("destination", arrow::datatypes::DataType::Int64, false),
+                Field::new("score", arrow::datatypes::DataType::Float64, false),
             ]
         },
         GraphAlgorithm::Bfs => vec![

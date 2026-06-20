@@ -3,13 +3,16 @@ use std::sync::Arc;
 use arrow::datatypes::{DataType, Field, Schema};
 use nexus_query_engine::{
     GRAPH_ALGORITHM_STRICT_BOUNDED_LOWER_LEVEL_CONTRACTS, GRAPH_ALGORITHM_STRICT_BOUNDED_MEMORY_BOUNDARY,
-    GRAPH_ALGORITHM_STRICT_BOUNDED_REQUIRED_CONTRACT, GRAPH_OPERATION_REGISTRY, GpuResidentSource, GraphAlgorithm,
-    GraphAlgorithmParams, GraphAlgorithmSpec, GraphBfsParams, GraphBfsPredicateInputs, GraphConstructionOptions,
-    GraphConstructionPolicy, GraphEdgeColumnBindings, GraphLayoutRequirement, GraphOutputSchemaKind,
-    GraphPageRankParams, GraphPredicateInput, GraphSourceVertexRequirement, GraphWeightPolicy, PlanNode, QueryPlan,
-    QueryPlanBuilder, SourceNode, StrictBoundedContractReport, StrictBoundedExecutionMode,
+    GRAPH_ALGORITHM_STRICT_BOUNDED_REQUIRED_CONTRACT, GRAPH_MEMORY_BUDGET_TRACKING_MIN_LIMIT_BYTES,
+    GRAPH_OPERATION_REGISTRY, GpuResidentSource, GraphAlgorithm, GraphAlgorithmParams, GraphAlgorithmSpec,
+    GraphBetweennessCentralityParams, GraphBetweennessSeeds, GraphBfsParams, GraphBfsPredicateInputs,
+    GraphConstructionOptions, GraphConstructionPolicy, GraphEdgeBetweennessCentralityParams, GraphEdgeColumnBindings,
+    GraphLayoutRequirement, GraphMemoryClass, GraphMemoryModel, GraphMemoryModelInput, GraphOutputSchemaKind,
+    GraphPageRankParams, GraphPredicateInput, GraphReservationOutcome, GraphReservationReport,
+    GraphSourceVertexRequirement, GraphWeightPolicy, PlanNode, QueryPlan, QueryPlanBuilder, SourceNode,
+    StrictBoundedContractReport, StrictBoundedExecutionMode,
     capability::{CapabilityDecision, ContractQuality, ContractStatus, NodeOperator},
-    stable_graph_result_schema,
+    graph_memory_class, stable_graph_result_schema,
 };
 
 #[test]
@@ -319,6 +322,130 @@ fn graph_algorithm_strict_bounded_contract_surface_lists_lower_level_gaps() {
 }
 
 #[test]
+fn graph_memory_classes_pin_phase_f3_algorithm_tiers() {
+    assert_eq!(graph_memory_class(GraphAlgorithm::PageRank), GraphMemoryClass::OutputSized);
+    assert_eq!(graph_memory_class(GraphAlgorithm::Bfs), GraphMemoryClass::OutputSized);
+    assert_eq!(graph_memory_class(GraphAlgorithm::MinimumSpanningTree), GraphMemoryClass::OutputSized);
+    assert_eq!(graph_memory_class(GraphAlgorithm::StronglyConnectedComponents), GraphMemoryClass::MultiArray);
+    assert_eq!(graph_memory_class(GraphAlgorithm::Louvain), GraphMemoryClass::MultiArray);
+    assert_eq!(graph_memory_class(GraphAlgorithm::TriangleCountAll), GraphMemoryClass::WorkspaceHeavyDataDependent);
+    assert_eq!(graph_memory_class(GraphAlgorithm::ForceAtlas2), GraphMemoryClass::WorkspaceHeavyDataDependent);
+    assert_eq!(
+        graph_memory_class(GraphAlgorithm::BetweennessCentrality),
+        GraphMemoryClass::WorkspaceHeavySeedDependent
+    );
+    assert_eq!(
+        graph_memory_class(GraphAlgorithm::EdgeBetweennessCentrality),
+        GraphMemoryClass::WorkspaceHeavySeedDependent
+    );
+}
+
+#[test]
+fn graph_memory_report_admits_and_denies_without_strict_contract_projection() {
+    let spec = GraphAlgorithmSpec::with_stable_schema(
+        GraphAlgorithm::PageRank,
+        GraphEdgeColumnBindings::new("src", "dst", Some("weight")),
+        GraphConstructionOptions { directed: true, renumber: true, policy: GraphConstructionPolicy::RawLibcugraph },
+        GraphAlgorithmParams::PageRank(GraphPageRankParams::default()),
+    );
+    let estimate = GraphMemoryModel
+        .estimate(
+            &spec,
+            GraphMemoryModelInput {
+                input_edges: 100,
+                vertex_width_bytes: 4,
+                weight_width_bytes: Some(4),
+                has_edge_id: false,
+            },
+        )
+        .unwrap();
+    assert_eq!(estimate.class, GraphMemoryClass::OutputSized);
+    assert_eq!(estimate.vertex_upper_bound, 200);
+    assert!(estimate.requested_bytes > 0);
+
+    let admitted = GraphReservationReport::from_estimate(
+        "n2",
+        estimate.clone(),
+        Some(GRAPH_MEMORY_BUDGET_TRACKING_MIN_LIMIT_BYTES),
+    );
+    assert_eq!(admitted.outcome, GraphReservationOutcome::Admitted);
+    assert_eq!(admitted.reason, None);
+
+    let denied = GraphReservationReport::from_estimate(
+        "n2",
+        estimate.clone(),
+        Some(GRAPH_MEMORY_BUDGET_TRACKING_MIN_LIMIT_BYTES - 1),
+    );
+    assert_eq!(denied.outcome, GraphReservationOutcome::Denied);
+    assert_eq!(denied.reason, Some("graph_memory_estimate_exceeds_budget"));
+
+    let strict = StrictBoundedContractReport::from_capability_analysis(
+        &graph_plan(
+            GraphAlgorithm::PageRank,
+            GraphAlgorithmParams::PageRank(GraphPageRankParams::default()),
+            edge_schema(DataType::Int32, DataType::Float32, false),
+        )
+        .capability_analysis(),
+    )
+    .unwrap();
+    assert!(
+        strict
+            .gate_rows()
+            .iter()
+            .all(|row| { row.memory_boundary != "graph_memory" && !row.required_contract.contains("graph_memory") })
+    );
+}
+
+#[test]
+fn betweenness_seed_count_is_the_class_d_memory_dial() {
+    let spec = GraphAlgorithmSpec::with_stable_schema(
+        GraphAlgorithm::BetweennessCentrality,
+        GraphEdgeColumnBindings::new("src", "dst", None::<&str>),
+        GraphConstructionOptions { directed: true, renumber: true, policy: GraphConstructionPolicy::RawLibcugraph },
+        GraphAlgorithmParams::BetweennessCentrality(GraphBetweennessCentralityParams {
+            seeds: Some(GraphBetweennessSeeds::I64(vec![0, 2, 4])),
+            ..Default::default()
+        }),
+    );
+    let estimate = GraphMemoryModel
+        .estimate(
+            &spec,
+            GraphMemoryModelInput {
+                input_edges: 100,
+                vertex_width_bytes: 4,
+                weight_width_bytes: None,
+                has_edge_id: false,
+            },
+        )
+        .unwrap();
+    assert_eq!(estimate.class, GraphMemoryClass::WorkspaceHeavySeedDependent);
+    assert_eq!(estimate.seed_count, Some(3));
+    assert!(estimate.data_dependent);
+
+    let k_spec = GraphAlgorithmSpec::with_stable_schema(
+        GraphAlgorithm::EdgeBetweennessCentrality,
+        GraphEdgeColumnBindings::new("src", "dst", None::<&str>),
+        GraphConstructionOptions { directed: true, renumber: true, policy: GraphConstructionPolicy::RawLibcugraph },
+        GraphAlgorithmParams::EdgeBetweennessCentrality(GraphEdgeBetweennessCentralityParams {
+            k: Some(5),
+            ..Default::default()
+        }),
+    );
+    let k_estimate = GraphMemoryModel
+        .estimate(
+            &k_spec,
+            GraphMemoryModelInput {
+                input_edges: 100,
+                vertex_width_bytes: 4,
+                weight_width_bytes: None,
+                has_edge_id: false,
+            },
+        )
+        .unwrap();
+    assert_eq!(k_estimate.seed_count, Some(5));
+}
+
+#[test]
 fn graph_operation_registry_pins_baseline_inventory() {
     let inventory: Vec<_> =
         GRAPH_OPERATION_REGISTRY.iter().map(|def| (def.algorithm, def.name, def.layout_requirement)).collect();
@@ -331,6 +458,8 @@ fn graph_operation_registry_pins_baseline_inventory() {
             (GraphAlgorithm::EigenvectorCentrality, "eigenvector_centrality", GraphLayoutRequirement::Transposed),
             (GraphAlgorithm::KatzCentrality, "katz_centrality", GraphLayoutRequirement::Transposed),
             (GraphAlgorithm::Hits, "hits", GraphLayoutRequirement::Transposed),
+            (GraphAlgorithm::BetweennessCentrality, "betweenness_centrality", GraphLayoutRequirement::Any),
+            (GraphAlgorithm::EdgeBetweennessCentrality, "edge_betweenness_centrality", GraphLayoutRequirement::Any),
             (GraphAlgorithm::Sssp, "sssp", GraphLayoutRequirement::Forward),
             (GraphAlgorithm::DegreesAll, "degrees_all", GraphLayoutRequirement::Transposed),
             (GraphAlgorithm::InDegreesAll, "in_degrees_all", GraphLayoutRequirement::Transposed),
@@ -479,6 +608,20 @@ fn graph_operation_registry_pins_descriptor_contracts() {
             ),
             (
                 GraphAlgorithm::Hits,
+                GraphSourceVertexRequirement::None,
+                GraphWeightPolicy::Ignored,
+                GraphOutputSchemaKind::Fixed,
+                true,
+            ),
+            (
+                GraphAlgorithm::BetweennessCentrality,
+                GraphSourceVertexRequirement::None,
+                GraphWeightPolicy::Ignored,
+                GraphOutputSchemaKind::Fixed,
+                true,
+            ),
+            (
+                GraphAlgorithm::EdgeBetweennessCentrality,
                 GraphSourceVertexRequirement::None,
                 GraphWeightPolicy::Ignored,
                 GraphOutputSchemaKind::Fixed,

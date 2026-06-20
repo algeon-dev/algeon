@@ -396,6 +396,21 @@ fn format_graph_algorithm_params(params: &super::GraphAlgorithmParams) -> String
             "epsilon={}:max_iterations={}:normalize={}",
             params.epsilon, params.max_iterations, params.normalize,
         ),
+        super::GraphAlgorithmParams::BetweennessCentrality(params) => format!(
+            "seeds={}:k={}:normalized={}:include_endpoints={}:exact_vertex_threshold={}",
+            betweenness_seeds_label(params.seeds.as_ref()),
+            params.k.map_or_else(|| "none".to_string(), |k| k.to_string()),
+            params.normalized,
+            params.include_endpoints,
+            params.exact_vertex_threshold,
+        ),
+        super::GraphAlgorithmParams::EdgeBetweennessCentrality(params) => format!(
+            "seeds={}:k={}:normalized={}:exact_vertex_threshold={}",
+            betweenness_seeds_label(params.seeds.as_ref()),
+            params.k.map_or_else(|| "none".to_string(), |k| k.to_string()),
+            params.normalized,
+            params.exact_vertex_threshold,
+        ),
         super::GraphAlgorithmParams::Sssp(params) => format!(
             "source_vertex={}:cutoff={}",
             params.source_vertex,
@@ -464,6 +479,10 @@ fn format_graph_algorithm_params(params: &super::GraphAlgorithmParams) -> String
             params.seed,
         ),
     }
+}
+
+fn betweenness_seeds_label(seeds: Option<&super::GraphBetweennessSeeds>) -> String {
+    seeds.map_or_else(|| "all".to_string(), |seeds| seeds.len().to_string())
 }
 
 fn format_graph_algorithm_predicates(params: &super::GraphAlgorithmParams) -> String {

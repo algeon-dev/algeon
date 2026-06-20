@@ -241,6 +241,7 @@ pub const fn reservation_requirement_scope(kind: ReservationKind) -> Reservation
         | ReservationKind::MixedSizeData
         | ReservationKind::SourceCacheRetained
         | ReservationKind::ChunkOperator
+        | ReservationKind::GraphAlgorithm
         | ReservationKind::PartialState
         | ReservationKind::FinalMerge => ReservationRequirementScope::Node,
         ReservationKind::SourceRead

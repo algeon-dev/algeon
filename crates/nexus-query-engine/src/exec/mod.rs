@@ -56,6 +56,12 @@ pub use bounded::{
     partial_aggregate_upper_bound_bytes,
 };
 use edge_normalize::execute_edge_normalize;
+#[cfg(feature = "cugraph")]
+#[doc(hidden)]
+pub use graph_algorithm::{
+    force_next_graph_adaptive_chunk_attempt_resource_exhausted_for_test,
+    force_next_graph_adaptive_full_attempt_resource_exhausted_for_test,
+};
 pub use source::{
     ResolvedRemoteParquetDatasourceProbe, probe_resolved_remote_parquet_datasource, read_gpu_resident_source,
     read_literal_batch_source, read_local_parquet_source, validate_local_parquet_source,

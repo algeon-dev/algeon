@@ -6,11 +6,11 @@ use datafusion::{
 use serde_json::Value;
 
 use super::{
-    CugraphAlgorithm, CugraphAlgorithmParams, CugraphAlgorithmSpec, CugraphBfsOutputMode, CugraphBfsOutputOptions,
-    CugraphBfsPredicateInputs, CugraphBfsSource, CugraphBfsSourceVertex, CugraphGraphConstructionPolicy,
-    CugraphGraphEdgePredicateTable, CugraphGraphOptions, CugraphGraphPredicateTable, CugraphKCoreDegreeType,
-    CugraphPageRankParams, CugraphSqlConfig, CugraphTableReference, literal_string_arg, plan_error,
-    result_schema_for_params,
+    CugraphAlgorithm, CugraphAlgorithmParams, CugraphAlgorithmSpec, CugraphBetweennessSeeds, CugraphBfsOutputMode,
+    CugraphBfsOutputOptions, CugraphBfsPredicateInputs, CugraphBfsSource, CugraphBfsSourceVertex,
+    CugraphGraphConstructionPolicy, CugraphGraphEdgePredicateTable, CugraphGraphOptions, CugraphGraphPredicateTable,
+    CugraphKCoreDegreeType, CugraphPageRankParams, CugraphSqlConfig, CugraphTableReference, literal_string_arg,
+    plan_error, result_schema_for_params,
 };
 
 pub fn parse_cugraph_algorithm_spec(
@@ -404,6 +404,51 @@ fn parse_options_json(
                     params.normalize = normalize;
                 }
             },
+            "seeds" if is_betweenness_algorithm(algorithm) => {
+                let seeds = parse_betweenness_seeds(value, key)?;
+                match params {
+                    CugraphAlgorithmParams::BetweennessCentrality(params) => params.seeds = seeds,
+                    CugraphAlgorithmParams::EdgeBetweennessCentrality(params) => params.seeds = seeds,
+                    _ => {},
+                }
+            },
+            "k" if is_betweenness_algorithm(algorithm) => {
+                let k = json_u64(value, key)?;
+                if k == 0 {
+                    return Err(plan_error("betweenness k must be at least 1"));
+                }
+                match params {
+                    CugraphAlgorithmParams::BetweennessCentrality(params) => params.k = Some(k),
+                    CugraphAlgorithmParams::EdgeBetweennessCentrality(params) => params.k = Some(k),
+                    _ => {},
+                }
+            },
+            "normalized" if is_betweenness_algorithm(algorithm) => {
+                let normalized = json_bool(value, key)?;
+                match params {
+                    CugraphAlgorithmParams::BetweennessCentrality(params) => params.normalized = normalized,
+                    CugraphAlgorithmParams::EdgeBetweennessCentrality(params) => params.normalized = normalized,
+                    _ => {},
+                }
+            },
+            "include_endpoints" if algorithm == CugraphAlgorithm::BetweennessCentrality => {
+                let include_endpoints = json_bool(value, key)?;
+                if let CugraphAlgorithmParams::BetweennessCentrality(params) = params {
+                    params.include_endpoints = include_endpoints;
+                }
+            },
+            "exact_vertex_threshold" if is_betweenness_algorithm(algorithm) => {
+                let exact_vertex_threshold = json_u64(value, key)?;
+                match params {
+                    CugraphAlgorithmParams::BetweennessCentrality(params) => {
+                        params.exact_vertex_threshold = exact_vertex_threshold
+                    },
+                    CugraphAlgorithmParams::EdgeBetweennessCentrality(params) => {
+                        params.exact_vertex_threshold = exact_vertex_threshold
+                    },
+                    _ => {},
+                }
+            },
             "cutoff" if algorithm == CugraphAlgorithm::Sssp => {
                 if let CugraphAlgorithmParams::Sssp(params) = params {
                     params.cutoff = match value {
@@ -744,12 +789,49 @@ fn parse_options_json(
     if algorithm == CugraphAlgorithm::PersonalizedPageRank {
         validate_personalized_pagerank_options(object, params)?;
     }
+    if is_betweenness_algorithm(algorithm) {
+        validate_betweenness_options(params)?;
+    }
 
     Ok(source_relation)
 }
 
 fn is_pagerank_algorithm(algorithm: CugraphAlgorithm) -> bool {
     matches!(algorithm, CugraphAlgorithm::PageRank | CugraphAlgorithm::PersonalizedPageRank)
+}
+
+fn is_betweenness_algorithm(algorithm: CugraphAlgorithm) -> bool {
+    matches!(algorithm, CugraphAlgorithm::BetweennessCentrality | CugraphAlgorithm::EdgeBetweennessCentrality)
+}
+
+fn parse_betweenness_seeds(value: &Value, key: &str) -> Result<Option<CugraphBetweennessSeeds>> {
+    if value.is_null() {
+        return Ok(None);
+    }
+    let values =
+        value.as_array().ok_or_else(|| plan_error(format!("cuGraph option '{key}' must be an integer array")))?;
+    if values.is_empty() {
+        return Err(plan_error("betweenness seeds must not be empty"));
+    }
+    let vertices = values.iter().map(|value| json_i64(value, key)).collect::<Result<Vec<_>>>()?;
+    Ok(Some(CugraphBetweennessSeeds { vertices }))
+}
+
+fn validate_betweenness_options(params: &CugraphAlgorithmParams) -> Result<()> {
+    match params {
+        CugraphAlgorithmParams::BetweennessCentrality(params) => {
+            if params.seeds.is_some() && params.k.is_some() {
+                return Err(plan_error("betweenness seeds and k are mutually exclusive"));
+            }
+        },
+        CugraphAlgorithmParams::EdgeBetweennessCentrality(params) => {
+            if params.seeds.is_some() && params.k.is_some() {
+                return Err(plan_error("betweenness seeds and k are mutually exclusive"));
+            }
+        },
+        _ => {},
+    }
+    Ok(())
 }
 
 fn pagerank_params_mut(params: &mut CugraphAlgorithmParams) -> Option<&mut CugraphPageRankParams> {
@@ -1128,4 +1210,116 @@ fn json_u32(value: &Value, key: &str) -> Result<u32> {
 
 fn json_u64(value: &Value, key: &str) -> Result<u64> {
     value.as_u64().ok_or_else(|| plan_error(format!("cuGraph option '{key}' must be an unsigned 64-bit integer")))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn str_arg(value: &str) -> Expr {
+        Expr::Literal(ScalarValue::Utf8(Some(value.to_string())), None)
+    }
+
+    #[test]
+    fn parses_betweenness_explicit_seed_options() {
+        let spec = parse_cugraph_algorithm_spec(
+            CugraphAlgorithm::BetweennessCentrality,
+            &[
+                str_arg("edges"),
+                str_arg("src"),
+                str_arg("dst"),
+                Expr::Literal(ScalarValue::Utf8(None), None),
+                str_arg(r#"{"seeds":[0,2,4],"normalized":false,"include_endpoints":true,"exact_vertex_threshold":7}"#),
+            ],
+            &CugraphSqlConfig::default(),
+        )
+        .unwrap();
+
+        let CugraphAlgorithmParams::BetweennessCentrality(params) = spec.params else {
+            panic!("expected betweenness params");
+        };
+        assert_eq!(params.seeds.expect("seeds").vertices, vec![0, 2, 4]);
+        assert!(!params.normalized);
+        assert!(params.include_endpoints);
+        assert_eq!(params.exact_vertex_threshold, 7);
+    }
+
+    #[test]
+    fn parses_betweenness_k_option() {
+        let spec = parse_cugraph_algorithm_spec(
+            CugraphAlgorithm::EdgeBetweennessCentrality,
+            &[
+                str_arg("edges"),
+                str_arg("src"),
+                str_arg("dst"),
+                Expr::Literal(ScalarValue::Utf8(None), None),
+                str_arg(r#"{"k":10,"normalized":false}"#),
+            ],
+            &CugraphSqlConfig::default(),
+        )
+        .unwrap();
+
+        let CugraphAlgorithmParams::EdgeBetweennessCentrality(params) = spec.params else {
+            panic!("expected edge betweenness params");
+        };
+        assert_eq!(params.k, Some(10));
+        assert!(params.seeds.is_none());
+        assert!(!params.normalized);
+    }
+
+    #[test]
+    fn rejects_betweenness_seeds_with_k() {
+        let error = parse_cugraph_algorithm_spec(
+            CugraphAlgorithm::BetweennessCentrality,
+            &[
+                str_arg("edges"),
+                str_arg("src"),
+                str_arg("dst"),
+                Expr::Literal(ScalarValue::Utf8(None), None),
+                str_arg(r#"{"seeds":[0],"k":1}"#),
+            ],
+            &CugraphSqlConfig::default(),
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("betweenness seeds and k are mutually exclusive"));
+    }
+
+    #[test]
+    fn parses_betweenness_null_seeds_as_exact_all_vertices() {
+        let spec = parse_cugraph_algorithm_spec(
+            CugraphAlgorithm::BetweennessCentrality,
+            &[
+                str_arg("edges"),
+                str_arg("src"),
+                str_arg("dst"),
+                Expr::Literal(ScalarValue::Utf8(None), None),
+                str_arg(r#"{"seeds":null,"normalized":true}"#),
+            ],
+            &CugraphSqlConfig::default(),
+        )
+        .unwrap();
+
+        let CugraphAlgorithmParams::BetweennessCentrality(params) = spec.params else {
+            panic!("expected betweenness params");
+        };
+        assert!(params.seeds.is_none());
+        assert!(params.normalized);
+    }
+
+    #[test]
+    fn rejects_empty_betweenness_seed_list() {
+        let error = parse_cugraph_algorithm_spec(
+            CugraphAlgorithm::EdgeBetweennessCentrality,
+            &[
+                str_arg("edges"),
+                str_arg("src"),
+                str_arg("dst"),
+                Expr::Literal(ScalarValue::Utf8(None), None),
+                str_arg(r#"{"seeds":[]}"#),
+            ],
+            &CugraphSqlConfig::default(),
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("betweenness seeds must not be empty"));
+    }
 }

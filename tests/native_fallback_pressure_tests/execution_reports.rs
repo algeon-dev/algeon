@@ -207,10 +207,16 @@ fn native_datafusion_execution_report_records_runtime_boundaries() {
     assert_eq!(row.metrics.join_strategy_rows[0].build_key_unique.as_deref(), Some("true"));
     assert_eq!(row.metrics.join_strategy_rows[0].build_key_uniqueness_probe_status.as_deref(), Some("measured"));
     assert_eq!(row.metrics.join_strategy_rows[0].build_key_uniqueness_probe_error_code, None);
+    assert_eq!(row.metrics.graph_reservation_rows.len(), 1);
+    assert_eq!(row.metrics.graph_reservation_rows[0].algorithm, "pagerank");
+    assert_eq!(row.metrics.graph_reservation_rows[0].class, "output_sized");
+    assert_eq!(row.metrics.graph_reservation_rows[0].outcome, "admitted");
+    assert_eq!(row.metrics.graph_reservation_rows[0].requested_bytes, 4096);
+    assert_eq!(row.metrics.graph_reservation_rows[0].budget_bytes, Some(1048576));
 
     let text = report.to_tsv();
-    assert_eq!(NATIVE_DATAFUSION_EXECUTION_TSV_SCHEMA_VERSION, 44);
-    assert_eq!(NATIVE_DATAFUSION_EXECUTION_TSV_HEADER.split('\t').count(), 130);
+    assert_eq!(NATIVE_DATAFUSION_EXECUTION_TSV_SCHEMA_VERSION, 45);
+    assert_eq!(NATIVE_DATAFUSION_EXECUTION_TSV_HEADER.split('\t').count(), 131);
     assert!(NATIVE_DATAFUSION_EXECUTION_TSV_HEADER.contains(
         "\treservation_requested_bytes\treservation_granted_bytes\treservation_live_peak_bytes\treservation_denied_count\t"
     ));
@@ -219,7 +225,10 @@ fn native_datafusion_execution_report_records_runtime_boundaries() {
         "# native_datafusion_execution_tsv_schema_version={NATIVE_DATAFUSION_EXECUTION_TSV_SCHEMA_VERSION}\n"
     )));
     assert!(text.contains(&format!("{NATIVE_DATAFUSION_EXECUTION_TSV_HEADER}\n")));
-    assert!(NATIVE_DATAFUSION_EXECUTION_TSV_HEADER.contains("\tgraph_runtime_rows\ttask_operator_rows\t"));
+    assert!(
+        NATIVE_DATAFUSION_EXECUTION_TSV_HEADER
+            .contains("\tgraph_reservation_rows\tgraph_runtime_rows\ttask_operator_rows\t")
+    );
     assert!(
         NATIVE_DATAFUSION_EXECUTION_TSV_HEADER
             .contains("\tdynamic_filter_produced_count\tdynamic_filter_skipped_count\tdynamic_filter_applied_count\t")
@@ -247,6 +256,7 @@ fn native_datafusion_execution_report_records_runtime_boundaries() {
             .ends_with("\tsource_diagnostics\tlakehouse_cache_fill_event_snapshot_rows")
     );
     assert!(text.contains("selected_strategy=libcudf_groupby,execution_stage=partial"));
+    assert!(text.contains("algorithm=pagerank,class=output_sized,outcome=admitted"));
     assert!(text.contains("algorithm=pagerank,runtime_outcome=succeeded"));
     assert!(
         text.contains(

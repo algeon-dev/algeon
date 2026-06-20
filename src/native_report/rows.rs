@@ -17,7 +17,7 @@ use super::{
     },
     tsv::{
         TsvRow, format_adaptive_pipeline_rows, format_aggregate_strategy_rows, format_dynamic_filter_runtime_rows,
-        format_graph_runtime_rows, format_join_diagnostics, format_join_strategy_rows,
+        format_graph_reservation_rows, format_graph_runtime_rows, format_join_diagnostics, format_join_strategy_rows,
         format_lakehouse_cache_fill_event_snapshot_rows, format_source_diagnostics,
         format_strict_bounded_compiled_graphs, format_strict_bounded_contract_rows, format_task_operator_rows,
         format_task_runtime_rows,
@@ -441,6 +441,7 @@ impl TsvRow for NativeDataFusionExecutionRow {
             self.metrics.max_task_reservation_bytes.to_string(),
             self.metrics.max_task_observed_peak_bytes.map_or_else(|| "none".to_string(), |value| value.to_string()),
             self.metrics.max_task_retained_bytes.map_or_else(|| "none".to_string(), |value| value.to_string()),
+            format_graph_reservation_rows(&self.metrics.graph_reservation_rows),
             format_graph_runtime_rows(&self.metrics.graph_runtime_rows),
             format_task_operator_rows(&self.metrics.task_operator_rows),
             format_task_runtime_rows(&self.metrics.task_runtime_rows),
@@ -657,6 +658,7 @@ mod tests {
                 | "allocator_high_water_bytes"
                 | "max_task_observed_peak_bytes"
                 | "max_task_retained_bytes"
+                | "graph_reservation_rows"
                 | "graph_runtime_rows"
                 | "task_operator_rows"
                 | "task_runtime_rows"
@@ -818,7 +820,7 @@ mod tests {
                 "q_exec\tRootExec\tRootExec(Source)\tcandidate_shape\tcandidate_family\taccepted_replaced\tnone\tnone\t",
                 "none\tnone\tnone\tNativeCudfExec\tnative\t7\t2\tfalse\ttrue\tsucceeded\tnone\t3\t111\t2222\t",
                 "10\t11\t12\t13\t14\t15\t16\t17\t18\t19\t20\t21\t22\t23\t24\t25\t26\t27\t28\t29\t30\t31\t",
-                "none\tnone\tnone\t32\t33\t34\t35\t36\t37\t38\t39\t40\t41\t42\t43\t44\t45\t",
+                "none\tnone\tnone\tnone\t32\t33\t34\t35\t36\t37\t38\t39\t40\t41\t42\t43\t44\t45\t",
                 "mixed_post_decode\tmeasured_source_pruned\tsource_read_pruned\tnone\t",
                 "46\t47\t48\t49\t50\t51\t52\t53\t54\t55\t56\t57\t58\t59\t60\t61\t62\t63\t64\t65\t66\t67\t",
                 "0\t0\t0\t0\t0\t0\t0\t0\t68\t69\t70\t71\t72\t73\t74\t75\t76\t77\t78\t79\t80\t81\t82\t83\t",

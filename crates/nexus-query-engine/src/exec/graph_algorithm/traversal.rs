@@ -5,7 +5,7 @@ pub(super) fn execute_bfs(
     spec: &crate::plan::GraphAlgorithmSpec,
     inputs: GraphAlgorithmExecutionInputs,
 ) -> Result<GraphAlgorithmExecutionResult> {
-    let GraphAlgorithmExecutionInputs { edge_list: input, side_inputs } = inputs;
+    let GraphAlgorithmExecutionInputs { edge_list: input, side_inputs, graph_memory_limit_bytes } = inputs;
     let crate::plan::GraphAlgorithmParams::Bfs(params) = &spec.params else {
         return Err(QueryError::new(
             QueryErrorCode::InvalidPlan,
@@ -192,19 +192,23 @@ pub(super) fn execute_bfs(
                 predicate_columns.metadata(),
                 target_metadata,
             ),
+            budget_observations: Vec::new(),
         })
     };
     if spec.edge_columns.edge_id.is_some() {
-        run_with_cugraph_graph_edge_ids::<cugraph::Forward, _, _>(
+        run_with_cugraph_graph_edge_ids::<cugraph::Forward, _>(
             context,
+            graph_memory_limit_bytes,
             &edges,
             spec,
             "datafusion_nexus_cugraph_bfs",
             run_bfs,
         )
     } else {
-        run_with_cugraph_graph::<cugraph::Forward, _, _>(
+        run_with_cugraph_graph::<cugraph::Forward, _>(
             context,
+            graph_memory_limit_bytes,
+            spec,
             edges,
             options,
             "datafusion_nexus_cugraph_bfs",
@@ -723,8 +727,10 @@ pub(super) fn execute_sssp(
     let options = table_graph_options(spec);
     let sssp_p = sssp_params(params)?;
 
-    run_with_cugraph_graph::<cugraph::Forward, _, _>(
+    run_with_cugraph_graph::<cugraph::Forward, _>(
         context,
+        inputs.graph_memory_limit_bytes,
+        spec,
         edges,
         options,
         "datafusion_nexus_cugraph_sssp",
@@ -773,6 +779,7 @@ pub(super) fn execute_sssp(
                     params.source_vertex,
                     params.cutoff.map_or_else(|| "none".to_string(), |v| v.to_string()),
                 ),
+                budget_observations: Vec::new(),
             })
         },
     )

@@ -1,5 +1,7 @@
 use super::*;
 
+static GRAPH_ADAPTIVE_RETRY_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 #[test]
 fn bfs_drops_null_edge_rows_before_graph_construction() {
     let runtime = Arc::new(cudf::Runtime::new().unwrap());
@@ -110,6 +112,700 @@ fn bfs_python_cugraph_reports_null_edges_dropped_before_edge_normalize() {
     let graph_metrics = &result.metrics().graph_algorithm_runtime_rows;
     assert_eq!(graph_metrics.len(), 1);
     assert!(graph_metrics[0].algorithm_metadata.contains("null_edge_rows_dropped=2"));
+}
+
+#[test]
+fn bounded_bfs_records_graph_memory_admission_before_cugraph() {
+    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let context = ExecutionContext::builder()
+        .with_shared_runtime(Arc::clone(&runtime))
+        .with_memory_control_policy(MemoryControlPolicy::Bounded {
+            device_budget_bytes: 16 * 1024 * 1024,
+            max_source_chunk_bytes: 1024 * 1024,
+            max_row_groups_per_chunk: 1,
+            max_retry_attempts: 1,
+            min_retry_chunk_row_groups: 1,
+        })
+        .build()
+        .unwrap();
+
+    let edge_schema = Arc::new(Schema::new(vec![
+        Field::new("src", DataType::Int32, false),
+        Field::new("dst", DataType::Int32, false),
+    ]));
+    let edge_batch = RecordBatch::try_new(
+        Arc::clone(&edge_schema),
+        vec![Arc::new(Int32Array::from(vec![0, 1, 2])), Arc::new(Int32Array::from(vec![1, 2, 3]))],
+    )
+    .unwrap();
+
+    let mut builder = QueryPlanBuilder::new();
+    let edges = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("edges", Arc::clone(&edge_schema))));
+    let spec = GraphAlgorithmSpec::with_stable_schema(
+        GraphAlgorithm::Bfs,
+        GraphEdgeColumnBindings::new("src", "dst", None::<&str>),
+        GraphConstructionOptions { directed: true, renumber: true, policy: GraphConstructionPolicy::RawLibcugraph },
+        GraphAlgorithmParams::Bfs(Box::new(GraphBfsParams::new(0, None))),
+    );
+    let graph = builder.add_graph_algorithm(edges, spec);
+    let plan = builder.finish_with_host_sink_schema(graph, stable_graph_result_schema(GraphAlgorithm::Bfs));
+
+    let mut gpu_inputs = GpuResidentInputMap::new();
+    gpu_inputs.insert(
+        "edges".to_string(),
+        GpuResultHandle::new(
+            &context,
+            GpuDataFrame::new(DataFrame::from_record_batch(&runtime, &edge_batch).unwrap()),
+            Arc::clone(&edge_schema),
+        )
+        .unwrap(),
+    );
+
+    let result = execute_query_plan_with_gpu_inputs(&context, &plan, &gpu_inputs).unwrap();
+    let graph_reservations = &result.metrics().graph_reservation_rows;
+    assert_eq!(graph_reservations.len(), 1);
+    assert_eq!(graph_reservations[0].algorithm, GraphAlgorithm::Bfs);
+    assert_eq!(graph_reservations[0].outcome, GraphReservationOutcome::Admitted);
+    assert_eq!(graph_reservations[0].input_edges, 3);
+    assert_eq!(graph_reservations[0].vertex_width_bytes, 4);
+    assert!(graph_reservations[0].requested_bytes > 0);
+    assert!(graph_reservations[0].budget_bytes.is_some_and(|budget| budget < 16 * 1024 * 1024));
+    let graph_reserve = result.metrics().reservation_events.iter().find(|event| {
+        event.memory_boundary == "graph_memory" && event.reservation_kind == ReservationKind::GraphAlgorithm
+    });
+    let graph_reserve = graph_reserve.expect("graph memory admission should reserve live bounded capacity");
+    assert_eq!(graph_reserve.requested_bytes, graph_reservations[0].requested_bytes);
+    assert!(graph_reserve.current_reserved_bytes >= graph_reservations[0].requested_bytes);
+    let graph_budget = result
+        .metrics()
+        .budgeted_execution_events
+        .iter()
+        .find(|event| event.operation == "datafusion_nexus_cugraph_bfs")
+        .expect("bounded graph execution should record the enforced graph budget");
+    assert_eq!(graph_budget.budget_bytes, graph_reserve.requested_bytes);
+    assert!(result.metrics().reservation_events.iter().any(|event| {
+        event.memory_boundary == "bounded_generic_graph_algorithm_output"
+            && event.reservation_kind == ReservationKind::OperatorOutput
+            && event.action == MemoryReservationEventAction::Transfer
+    }));
+    assert!(!result.metrics().reservation_events.iter().any(|event| {
+        event.memory_boundary == "bounded_generic_graph_algorithm_output"
+            && event.reservation_kind == ReservationKind::OperatorOutput
+            && event.action == MemoryReservationEventAction::Reserve
+    }));
+    assert!(result.metrics().reservation_live_peak_bytes >= graph_reserve.current_reserved_bytes);
+}
+
+#[test]
+fn bounded_bfs_denies_graph_memory_estimate_before_cugraph_oom() {
+    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let context = ExecutionContext::builder()
+        .with_shared_runtime(Arc::clone(&runtime))
+        .with_memory_control_policy(MemoryControlPolicy::Bounded {
+            device_budget_bytes: 4096,
+            max_source_chunk_bytes: 4096,
+            max_row_groups_per_chunk: 1,
+            max_retry_attempts: 1,
+            min_retry_chunk_row_groups: 1,
+        })
+        .build()
+        .unwrap();
+
+    let edge_schema = Arc::new(Schema::new(vec![
+        Field::new("src", DataType::Int32, false),
+        Field::new("dst", DataType::Int32, false),
+    ]));
+    let src = (0..128).collect::<Vec<i32>>();
+    let dst = (1..129).collect::<Vec<i32>>();
+    let edge_batch = RecordBatch::try_new(
+        Arc::clone(&edge_schema),
+        vec![Arc::new(Int32Array::from(src)), Arc::new(Int32Array::from(dst))],
+    )
+    .unwrap();
+
+    let mut builder = QueryPlanBuilder::new();
+    let edges = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("edges", Arc::clone(&edge_schema))));
+    let spec = GraphAlgorithmSpec::with_stable_schema(
+        GraphAlgorithm::Bfs,
+        GraphEdgeColumnBindings::new("src", "dst", None::<&str>),
+        GraphConstructionOptions { directed: true, renumber: true, policy: GraphConstructionPolicy::RawLibcugraph },
+        GraphAlgorithmParams::Bfs(Box::new(GraphBfsParams::new(0, None))),
+    );
+    let graph = builder.add_graph_algorithm(edges, spec);
+    let plan = builder.finish_with_host_sink_schema(graph, stable_graph_result_schema(GraphAlgorithm::Bfs));
+
+    let mut gpu_inputs = GpuResidentInputMap::new();
+    gpu_inputs.insert(
+        "edges".to_string(),
+        GpuResultHandle::new(
+            &context,
+            GpuDataFrame::new(DataFrame::from_record_batch(&runtime, &edge_batch).unwrap()),
+            Arc::clone(&edge_schema),
+        )
+        .unwrap(),
+    );
+
+    let error = match execute_query_plan_with_gpu_inputs(&context, &plan, &gpu_inputs) {
+        Ok(_) => panic!("bounded graph memory estimate should be denied before cuGraph execution"),
+        Err(error) => error,
+    };
+    assert_eq!(error.code(), QueryErrorCode::MemoryReservationFailed);
+    assert_eq!(error.fact_value("memory_boundary"), Some("graph_memory"));
+    assert_eq!(error.fact_value("reservation_kind"), Some("graph_algorithm"));
+    assert_eq!(error.fact_value("reason"), Some("graph_memory_estimate_exceeds_budget"));
+    assert_eq!(error.fact_value("algorithm"), Some("bfs"));
+    assert_eq!(error.fact_value("graph_memory_class"), Some("output_sized"));
+}
+
+#[test]
+fn bounded_bfs_denies_graph_memory_against_live_input_reservation_after_null_filter() {
+    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let context = ExecutionContext::builder()
+        .with_shared_runtime(Arc::clone(&runtime))
+        .with_memory_control_policy(MemoryControlPolicy::Bounded {
+            device_budget_bytes: 420,
+            max_source_chunk_bytes: 420,
+            max_row_groups_per_chunk: 1,
+            max_retry_attempts: 1,
+            min_retry_chunk_row_groups: 1,
+        })
+        .build()
+        .unwrap();
+
+    let edge_schema =
+        Arc::new(Schema::new(vec![Field::new("src", DataType::Int32, true), Field::new("dst", DataType::Int32, true)]));
+    let edge_batch = RecordBatch::try_new(
+        Arc::clone(&edge_schema),
+        vec![
+            Arc::new(Int32Array::from(vec![Some(0), Some(1), None])),
+            Arc::new(Int32Array::from(vec![Some(1), Some(2), Some(3)])),
+        ],
+    )
+    .unwrap();
+
+    let mut builder = QueryPlanBuilder::new();
+    let edges = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("edges", Arc::clone(&edge_schema))));
+    let spec = GraphAlgorithmSpec::with_stable_schema(
+        GraphAlgorithm::Bfs,
+        GraphEdgeColumnBindings::new("src", "dst", None::<&str>),
+        GraphConstructionOptions { directed: true, renumber: true, policy: GraphConstructionPolicy::RawLibcugraph },
+        GraphAlgorithmParams::Bfs(Box::new(GraphBfsParams::new(0, None))),
+    );
+    let graph = builder.add_graph_algorithm(edges, spec);
+    let plan = builder.finish_with_host_sink_schema(graph, stable_graph_result_schema(GraphAlgorithm::Bfs));
+
+    let mut gpu_inputs = GpuResidentInputMap::new();
+    gpu_inputs.insert(
+        "edges".to_string(),
+        GpuResultHandle::new(
+            &context,
+            GpuDataFrame::new(DataFrame::from_record_batch(&runtime, &edge_batch).unwrap()),
+            Arc::clone(&edge_schema),
+        )
+        .unwrap(),
+    );
+
+    let error = match execute_query_plan_with_gpu_inputs(&context, &plan, &gpu_inputs) {
+        Ok(_) => panic!("bounded graph memory estimate should be denied after nullable edge filtering"),
+        Err(error) => error,
+    };
+    assert_eq!(error.code(), QueryErrorCode::MemoryReservationFailed);
+    assert_eq!(error.fact_value("memory_boundary"), Some("graph_memory"));
+    assert_eq!(error.fact_value("reason"), Some("graph_memory_estimate_exceeds_budget"));
+    assert_eq!(error.fact_value("input_edges"), Some("2"));
+    assert_eq!(error.fact_value("requested_bytes"), Some("1048576"));
+    assert_eq!(error.fact_value("budget_bytes"), Some("420"));
+    assert!(error.fact_value("granted_bytes").is_some_and(|bytes| bytes.parse::<u64>().unwrap() < 1048576));
+}
+
+#[test]
+fn betweenness_with_explicit_seeds_records_approximate_metadata() {
+    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime));
+
+    let edge_schema = Arc::new(Schema::new(vec![
+        Field::new("src", DataType::Int32, false),
+        Field::new("dst", DataType::Int32, false),
+    ]));
+    let edge_batch = RecordBatch::try_new(
+        Arc::clone(&edge_schema),
+        vec![Arc::new(Int32Array::from(vec![0, 1, 2, 3])), Arc::new(Int32Array::from(vec![1, 2, 3, 0]))],
+    )
+    .unwrap();
+
+    let mut builder = QueryPlanBuilder::new();
+    let edges = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("edges", Arc::clone(&edge_schema))));
+    let spec = GraphAlgorithmSpec::with_stable_schema(
+        GraphAlgorithm::BetweennessCentrality,
+        GraphEdgeColumnBindings::new("src", "dst", None::<&str>),
+        GraphConstructionOptions { directed: true, renumber: true, policy: GraphConstructionPolicy::RawLibcugraph },
+        GraphAlgorithmParams::BetweennessCentrality(GraphBetweennessCentralityParams {
+            seeds: Some(GraphBetweennessSeeds::I64(vec![0, 2])),
+            ..Default::default()
+        }),
+    );
+    let graph = builder.add_graph_algorithm(edges, spec);
+    let plan =
+        builder.finish_with_host_sink_schema(graph, stable_graph_result_schema(GraphAlgorithm::BetweennessCentrality));
+
+    let mut gpu_inputs = GpuResidentInputMap::new();
+    gpu_inputs.insert(
+        "edges".to_string(),
+        GpuResultHandle::new(
+            &context,
+            GpuDataFrame::new(DataFrame::from_record_batch(&runtime, &edge_batch).unwrap()),
+            Arc::clone(&edge_schema),
+        )
+        .unwrap(),
+    );
+
+    let result = execute_query_plan_with_gpu_inputs(&context, &plan, &gpu_inputs).unwrap();
+    let QueryOutput::HostArrow(batch) = result.output() else {
+        panic!("host sink should materialize betweenness output");
+    };
+    assert_eq!(batch.num_columns(), 2);
+    assert!(batch.num_rows() > 0);
+    let graph_metrics = &result.metrics().graph_algorithm_runtime_rows;
+    assert_eq!(graph_metrics.len(), 1);
+    assert!(graph_metrics[0].algorithm_metadata.contains("approximate=true"));
+    assert!(graph_metrics[0].algorithm_metadata.contains("seed_count=2"));
+}
+
+#[test]
+fn betweenness_k_selects_deterministic_approximate_seed_count() {
+    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime));
+
+    let edge_schema = Arc::new(Schema::new(vec![
+        Field::new("src", DataType::Int32, false),
+        Field::new("dst", DataType::Int32, false),
+    ]));
+    let edge_batch = RecordBatch::try_new(
+        Arc::clone(&edge_schema),
+        vec![Arc::new(Int32Array::from(vec![3, 0, 1, 2])), Arc::new(Int32Array::from(vec![0, 1, 2, 3]))],
+    )
+    .unwrap();
+
+    let mut builder = QueryPlanBuilder::new();
+    let edges = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("edges", Arc::clone(&edge_schema))));
+    let spec = GraphAlgorithmSpec::with_stable_schema(
+        GraphAlgorithm::BetweennessCentrality,
+        GraphEdgeColumnBindings::new("src", "dst", None::<&str>),
+        GraphConstructionOptions { directed: true, renumber: true, policy: GraphConstructionPolicy::RawLibcugraph },
+        GraphAlgorithmParams::BetweennessCentrality(GraphBetweennessCentralityParams {
+            k: Some(2),
+            ..Default::default()
+        }),
+    );
+    let graph = builder.add_graph_algorithm(edges, spec);
+    let plan =
+        builder.finish_with_host_sink_schema(graph, stable_graph_result_schema(GraphAlgorithm::BetweennessCentrality));
+
+    let mut gpu_inputs = GpuResidentInputMap::new();
+    gpu_inputs.insert(
+        "edges".to_string(),
+        GpuResultHandle::new(
+            &context,
+            GpuDataFrame::new(DataFrame::from_record_batch(&runtime, &edge_batch).unwrap()),
+            Arc::clone(&edge_schema),
+        )
+        .unwrap(),
+    );
+
+    let result = execute_query_plan_with_gpu_inputs(&context, &plan, &gpu_inputs).unwrap();
+    let graph_metrics = &result.metrics().graph_algorithm_runtime_rows;
+    assert_eq!(graph_metrics.len(), 1);
+    assert!(graph_metrics[0].algorithm_parameters.contains("k=2"));
+    assert!(graph_metrics[0].algorithm_metadata.contains("approximate=true"));
+    assert!(graph_metrics[0].algorithm_metadata.contains("seed_count=2"));
+}
+
+#[test]
+fn adaptive_betweenness_oom_retries_once_by_chunking_same_seed_set() {
+    let _guard = GRAPH_ADAPTIVE_RETRY_TEST_LOCK.lock().expect("graph adaptive retry test lock poisoned");
+    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let memory_history = Arc::new(AdaptiveMemoryHistory::new());
+    let context = ExecutionContext::builder()
+        .with_shared_runtime(Arc::clone(&runtime))
+        .with_memory_control_policy(MemoryControlPolicy::Bounded {
+            device_budget_bytes: 16 * 1024 * 1024,
+            max_source_chunk_bytes: 1024 * 1024,
+            max_row_groups_per_chunk: 1,
+            max_retry_attempts: 1,
+            min_retry_chunk_row_groups: 1,
+        })
+        .with_native_pipeline_execution_mode(NativePipelineExecutionMode::Adaptive)
+        .with_adaptive_memory_history(Arc::clone(&memory_history))
+        .build()
+        .unwrap();
+
+    let edge_schema = Arc::new(Schema::new(vec![
+        Field::new("src", DataType::Int32, false),
+        Field::new("dst", DataType::Int32, false),
+    ]));
+    let edge_batch = RecordBatch::try_new(
+        Arc::clone(&edge_schema),
+        vec![Arc::new(Int32Array::from(vec![0, 1, 2, 3])), Arc::new(Int32Array::from(vec![1, 2, 3, 0]))],
+    )
+    .unwrap();
+
+    let mut builder = QueryPlanBuilder::new();
+    let edges = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("edges", Arc::clone(&edge_schema))));
+    let spec = GraphAlgorithmSpec::with_stable_schema(
+        GraphAlgorithm::BetweennessCentrality,
+        GraphEdgeColumnBindings::new("src", "dst", None::<&str>),
+        GraphConstructionOptions { directed: true, renumber: true, policy: GraphConstructionPolicy::RawLibcugraph },
+        GraphAlgorithmParams::BetweennessCentrality(GraphBetweennessCentralityParams {
+            seeds: Some(GraphBetweennessSeeds::I64(vec![0, 1, 2, 3])),
+            ..Default::default()
+        }),
+    );
+    let history_spec = spec.clone();
+    let graph = builder.add_graph_algorithm(edges, spec);
+    let plan =
+        builder.finish_with_host_sink_schema(graph, stable_graph_result_schema(GraphAlgorithm::BetweennessCentrality));
+
+    let mut gpu_inputs = GpuResidentInputMap::new();
+    gpu_inputs.insert(
+        "edges".to_string(),
+        GpuResultHandle::new(
+            &context,
+            GpuDataFrame::new(DataFrame::from_record_batch(&runtime, &edge_batch).unwrap()),
+            Arc::clone(&edge_schema),
+        )
+        .unwrap(),
+    );
+
+    let expected_result = execute_query_plan_with_gpu_inputs(&context, &plan, &gpu_inputs).unwrap();
+    let QueryOutput::HostArrow(expected_batch) = expected_result.output() else {
+        panic!("host sink should materialize full betweenness output");
+    };
+
+    force_next_graph_adaptive_full_attempt_resource_exhausted_for_test();
+    let result = execute_query_plan_with_gpu_inputs(&context, &plan, &gpu_inputs).unwrap();
+    let QueryOutput::HostArrow(batch) = result.output() else {
+        panic!("host sink should materialize adaptive chunked betweenness output");
+    };
+    assert!(batch.num_rows() > 0);
+    assert_vertex_betweenness_batches_close(expected_batch, batch);
+    assert_eq!(result.metrics().adaptive_retry_count, 1);
+    let graph_reservation = result
+        .metrics()
+        .reservation_events
+        .iter()
+        .find(|event| {
+            event.memory_boundary == "graph_memory" && event.reservation_kind == ReservationKind::GraphAlgorithm
+        })
+        .expect("adaptive graph retry should reserve graph memory");
+    let graph_budget_events = result
+        .metrics()
+        .budgeted_execution_events
+        .iter()
+        .filter(|event| event.operation == "datafusion_nexus_cugraph_betweenness_centrality")
+        .collect::<Vec<_>>();
+    assert_eq!(graph_budget_events.len(), 2, "adaptive retry should budget each seed chunk");
+    for event in graph_budget_events {
+        assert_eq!(event.boundary, "graph_memory");
+        assert_eq!(event.enforcement, "budget_tracking_memory_resource");
+        assert_eq!(event.status, "budget_tracking_enforced");
+        assert_eq!(event.unresolved_contract.as_deref(), Some("cugraph_workspace_preflight"));
+        assert_eq!(event.budget_bytes, graph_reservation.requested_bytes);
+        assert!(event.allocator_high_water_bytes.is_some());
+    }
+    assert!(result.metrics().max_task_observed_peak_bytes.is_some());
+    let graph_metrics = &result.metrics().graph_algorithm_runtime_rows;
+    assert_eq!(graph_metrics.len(), 1);
+    assert!(graph_metrics[0].algorithm_metadata.contains("adaptive_retry=oom_retry"));
+    assert!(graph_metrics[0].algorithm_metadata.contains("seed_count=4"));
+    assert!(graph_metrics[0].algorithm_metadata.contains("seed_chunk_batches=2"));
+    assert!(
+        memory_history.lookup_query_plan(&plan).is_none(),
+        "graph retry evidence must not enter query-level adaptive history"
+    );
+    let history = memory_history
+        .lookup_graph_algorithm(&history_spec)
+        .expect("adaptive graph retry should record graph-tier memory-history floor evidence");
+    assert_eq!(history.observation_count, 1);
+    assert!(history.max_allocator_high_water_bytes > 0);
+}
+
+#[test]
+fn adaptive_betweenness_failed_retry_still_records_graph_floor() {
+    let _guard = GRAPH_ADAPTIVE_RETRY_TEST_LOCK.lock().expect("graph adaptive retry test lock poisoned");
+    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let memory_history = Arc::new(AdaptiveMemoryHistory::new());
+    let context = ExecutionContext::builder()
+        .with_shared_runtime(Arc::clone(&runtime))
+        .with_memory_control_policy(MemoryControlPolicy::Bounded {
+            device_budget_bytes: 16 * 1024 * 1024,
+            max_source_chunk_bytes: 1024 * 1024,
+            max_row_groups_per_chunk: 1,
+            max_retry_attempts: 1,
+            min_retry_chunk_row_groups: 1,
+        })
+        .with_native_pipeline_execution_mode(NativePipelineExecutionMode::Adaptive)
+        .with_adaptive_memory_history(Arc::clone(&memory_history))
+        .build()
+        .unwrap();
+
+    let edge_schema = Arc::new(Schema::new(vec![
+        Field::new("src", DataType::Int32, false),
+        Field::new("dst", DataType::Int32, false),
+    ]));
+    let edge_batch = RecordBatch::try_new(
+        Arc::clone(&edge_schema),
+        vec![Arc::new(Int32Array::from(vec![0, 1, 2, 3])), Arc::new(Int32Array::from(vec![1, 2, 3, 0]))],
+    )
+    .unwrap();
+
+    let mut builder = QueryPlanBuilder::new();
+    let edges = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("edges", Arc::clone(&edge_schema))));
+    let spec = GraphAlgorithmSpec::with_stable_schema(
+        GraphAlgorithm::BetweennessCentrality,
+        GraphEdgeColumnBindings::new("src", "dst", None::<&str>),
+        GraphConstructionOptions { directed: true, renumber: true, policy: GraphConstructionPolicy::RawLibcugraph },
+        GraphAlgorithmParams::BetweennessCentrality(GraphBetweennessCentralityParams {
+            seeds: Some(GraphBetweennessSeeds::I64(vec![0, 1, 2, 3])),
+            ..Default::default()
+        }),
+    );
+    let history_spec = spec.clone();
+    let graph = builder.add_graph_algorithm(edges, spec);
+    let plan =
+        builder.finish_with_host_sink_schema(graph, stable_graph_result_schema(GraphAlgorithm::BetweennessCentrality));
+
+    let mut gpu_inputs = GpuResidentInputMap::new();
+    gpu_inputs.insert(
+        "edges".to_string(),
+        GpuResultHandle::new(
+            &context,
+            GpuDataFrame::new(DataFrame::from_record_batch(&runtime, &edge_batch).unwrap()),
+            Arc::clone(&edge_schema),
+        )
+        .unwrap(),
+    );
+
+    force_next_graph_adaptive_full_attempt_resource_exhausted_for_test();
+    force_next_graph_adaptive_chunk_attempt_resource_exhausted_for_test();
+    let error = match execute_query_plan_with_gpu_inputs(&context, &plan, &gpu_inputs) {
+        Ok(_) => panic!("forced failed graph retry should return resource exhausted"),
+        Err(error) => error,
+    };
+    assert_eq!(error.code(), QueryErrorCode::CudfResourceExhausted);
+    assert!(memory_history.lookup_query_plan(&plan).is_none());
+    let history = memory_history
+        .lookup_graph_algorithm(&history_spec)
+        .expect("failed graph retry should still persist graph-tier floor evidence");
+    assert!(history.observation_count >= 1);
+    assert!(history.max_allocator_high_water_bytes > 0);
+}
+
+#[test]
+fn adaptive_edge_betweenness_retry_matches_full_seed_result() {
+    let _guard = GRAPH_ADAPTIVE_RETRY_TEST_LOCK.lock().expect("graph adaptive retry test lock poisoned");
+    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let context = ExecutionContext::builder()
+        .with_shared_runtime(Arc::clone(&runtime))
+        .with_memory_control_policy(MemoryControlPolicy::Bounded {
+            device_budget_bytes: 16 * 1024 * 1024,
+            max_source_chunk_bytes: 1024 * 1024,
+            max_row_groups_per_chunk: 1,
+            max_retry_attempts: 1,
+            min_retry_chunk_row_groups: 1,
+        })
+        .with_native_pipeline_execution_mode(NativePipelineExecutionMode::Adaptive)
+        .build()
+        .unwrap();
+
+    let edge_schema = Arc::new(Schema::new(vec![
+        Field::new("src", DataType::Int32, false),
+        Field::new("dst", DataType::Int32, false),
+    ]));
+    let edge_batch = RecordBatch::try_new(
+        Arc::clone(&edge_schema),
+        vec![Arc::new(Int32Array::from(vec![0, 1, 2, 3])), Arc::new(Int32Array::from(vec![1, 2, 3, 0]))],
+    )
+    .unwrap();
+
+    let mut builder = QueryPlanBuilder::new();
+    let edges = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("edges", Arc::clone(&edge_schema))));
+    let spec = GraphAlgorithmSpec::with_stable_schema(
+        GraphAlgorithm::EdgeBetweennessCentrality,
+        GraphEdgeColumnBindings::new("src", "dst", None::<&str>),
+        GraphConstructionOptions { directed: true, renumber: true, policy: GraphConstructionPolicy::RawLibcugraph },
+        GraphAlgorithmParams::EdgeBetweennessCentrality(GraphEdgeBetweennessCentralityParams {
+            seeds: Some(GraphBetweennessSeeds::I64(vec![0, 1, 2, 3])),
+            ..Default::default()
+        }),
+    );
+    let graph = builder.add_graph_algorithm(edges, spec);
+    let plan = builder
+        .finish_with_host_sink_schema(graph, stable_graph_result_schema(GraphAlgorithm::EdgeBetweennessCentrality));
+
+    let mut gpu_inputs = GpuResidentInputMap::new();
+    gpu_inputs.insert(
+        "edges".to_string(),
+        GpuResultHandle::new(
+            &context,
+            GpuDataFrame::new(DataFrame::from_record_batch(&runtime, &edge_batch).unwrap()),
+            Arc::clone(&edge_schema),
+        )
+        .unwrap(),
+    );
+
+    let expected_result = execute_query_plan_with_gpu_inputs(&context, &plan, &gpu_inputs).unwrap();
+    let QueryOutput::HostArrow(expected_batch) = expected_result.output() else {
+        panic!("host sink should materialize full edge betweenness output");
+    };
+
+    force_next_graph_adaptive_full_attempt_resource_exhausted_for_test();
+    let result = execute_query_plan_with_gpu_inputs(&context, &plan, &gpu_inputs).unwrap();
+    let QueryOutput::HostArrow(batch) = result.output() else {
+        panic!("host sink should materialize adaptive chunked edge betweenness output");
+    };
+    assert_edge_betweenness_batches_close(expected_batch, batch);
+    assert_eq!(result.metrics().adaptive_retry_count, 1);
+    let graph_budget_events = result
+        .metrics()
+        .budgeted_execution_events
+        .iter()
+        .filter(|event| event.operation == "datafusion_nexus_cugraph_edge_betweenness_centrality")
+        .collect::<Vec<_>>();
+    assert_eq!(graph_budget_events.len(), 2, "adaptive retry should budget each edge-betweenness seed chunk");
+}
+
+fn assert_vertex_betweenness_batches_close(expected: &RecordBatch, actual: &RecordBatch) {
+    let expected = vertex_betweenness_scores(expected);
+    let actual = vertex_betweenness_scores(actual);
+    assert_eq!(actual.len(), expected.len());
+    for (vertex, expected_value) in expected {
+        let actual_value = actual.get(&vertex).unwrap_or_else(|| panic!("missing vertex {vertex}"));
+        assert!(
+            (actual_value - expected_value).abs() <= 1.0e-6,
+            "vertex {vertex}: expected {expected_value}, got {actual_value}"
+        );
+    }
+}
+
+fn vertex_betweenness_scores(batch: &RecordBatch) -> std::collections::BTreeMap<i64, f64> {
+    let vertices = int64_array(batch, 0);
+    let values = float64_array(batch, 1);
+    (0..batch.num_rows()).map(|row| (vertices.value(row), values.value(row))).collect()
+}
+
+fn assert_edge_betweenness_batches_close(expected: &RecordBatch, actual: &RecordBatch) {
+    let expected = edge_betweenness_scores(expected);
+    let actual = edge_betweenness_scores(actual);
+    assert_eq!(actual.len(), expected.len());
+    for (edge, expected_value) in expected {
+        let actual_value = actual.get(&edge).unwrap_or_else(|| panic!("missing edge {edge:?}"));
+        assert!(
+            (actual_value - expected_value).abs() <= 1.0e-6,
+            "edge {edge:?}: expected {expected_value}, got {actual_value}"
+        );
+    }
+}
+
+fn edge_betweenness_scores(batch: &RecordBatch) -> std::collections::BTreeMap<(i64, i64), f64> {
+    let sources = int64_array(batch, 0);
+    let destinations = int64_array(batch, 1);
+    let scores = float64_array(batch, 2);
+    (0..batch.num_rows()).map(|row| ((sources.value(row), destinations.value(row)), scores.value(row))).collect()
+}
+
+#[test]
+fn exact_betweenness_above_threshold_is_refused_before_cugraph() {
+    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime));
+
+    let edge_schema = Arc::new(Schema::new(vec![
+        Field::new("src", DataType::Int32, false),
+        Field::new("dst", DataType::Int32, false),
+    ]));
+    let edge_batch = RecordBatch::try_new(
+        Arc::clone(&edge_schema),
+        vec![Arc::new(Int32Array::from(vec![0, 1])), Arc::new(Int32Array::from(vec![1, 2]))],
+    )
+    .unwrap();
+
+    let mut builder = QueryPlanBuilder::new();
+    let edges = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("edges", Arc::clone(&edge_schema))));
+    let spec = GraphAlgorithmSpec::with_stable_schema(
+        GraphAlgorithm::BetweennessCentrality,
+        GraphEdgeColumnBindings::new("src", "dst", None::<&str>),
+        GraphConstructionOptions { directed: true, renumber: true, policy: GraphConstructionPolicy::RawLibcugraph },
+        GraphAlgorithmParams::BetweennessCentrality(GraphBetweennessCentralityParams {
+            exact_vertex_threshold: 1,
+            ..Default::default()
+        }),
+    );
+    let graph = builder.add_graph_algorithm(edges, spec);
+    let plan =
+        builder.finish_with_host_sink_schema(graph, stable_graph_result_schema(GraphAlgorithm::BetweennessCentrality));
+
+    let mut gpu_inputs = GpuResidentInputMap::new();
+    gpu_inputs.insert(
+        "edges".to_string(),
+        GpuResultHandle::new(
+            &context,
+            GpuDataFrame::new(DataFrame::from_record_batch(&runtime, &edge_batch).unwrap()),
+            Arc::clone(&edge_schema),
+        )
+        .unwrap(),
+    );
+
+    let error = match execute_query_plan_with_gpu_inputs(&context, &plan, &gpu_inputs) {
+        Ok(_) => panic!("exact betweenness above threshold should be refused before cuGraph"),
+        Err(error) => error,
+    };
+    assert_eq!(error.code(), QueryErrorCode::InvalidPlan);
+    assert_eq!(error.fact_value("reason"), Some("exact_betweenness_vertex_threshold_exceeded"));
+    assert_eq!(error.fact_value("actual_vertex_count"), Some("3"));
+    assert_eq!(error.fact_value("required_option"), Some("seeds_or_k"));
+}
+
+#[test]
+fn exact_betweenness_threshold_uses_actual_vertices_not_edge_upper_bound() {
+    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime));
+
+    let edge_schema = Arc::new(Schema::new(vec![
+        Field::new("src", DataType::Int32, false),
+        Field::new("dst", DataType::Int32, false),
+    ]));
+    let edge_batch = RecordBatch::try_new(
+        Arc::clone(&edge_schema),
+        vec![Arc::new(Int32Array::from(vec![0, 1, 2])), Arc::new(Int32Array::from(vec![1, 2, 0]))],
+    )
+    .unwrap();
+
+    let mut builder = QueryPlanBuilder::new();
+    let edges = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("edges", Arc::clone(&edge_schema))));
+    let spec = GraphAlgorithmSpec::with_stable_schema(
+        GraphAlgorithm::BetweennessCentrality,
+        GraphEdgeColumnBindings::new("src", "dst", None::<&str>),
+        GraphConstructionOptions { directed: true, renumber: true, policy: GraphConstructionPolicy::RawLibcugraph },
+        GraphAlgorithmParams::BetweennessCentrality(GraphBetweennessCentralityParams {
+            exact_vertex_threshold: 3,
+            ..Default::default()
+        }),
+    );
+    let graph = builder.add_graph_algorithm(edges, spec);
+    let plan =
+        builder.finish_with_host_sink_schema(graph, stable_graph_result_schema(GraphAlgorithm::BetweennessCentrality));
+
+    let mut gpu_inputs = GpuResidentInputMap::new();
+    gpu_inputs.insert(
+        "edges".to_string(),
+        GpuResultHandle::new(
+            &context,
+            GpuDataFrame::new(DataFrame::from_record_batch(&runtime, &edge_batch).unwrap()),
+            Arc::clone(&edge_schema),
+        )
+        .unwrap(),
+    );
+
+    execute_query_plan_with_gpu_inputs(&context, &plan, &gpu_inputs).unwrap();
 }
 
 // BFS does not consume edge weights, so a null weight must NOT drop its edge

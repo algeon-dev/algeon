@@ -34,6 +34,8 @@ pub mod error;
 pub mod exec;
 /// DataFusion-free expression IR used by native query plans.
 pub mod expr;
+/// Approximate cuGraph memory pricing outside strict bounded admission.
+pub mod graph_memory;
 /// Stable helper primitives shared by report and benchmark harnesses.
 pub mod harness;
 /// Runtime metrics, counters, and memory-reservation event records.
@@ -73,21 +75,23 @@ pub mod ir {
             Expr, GroupingSetsSpec, LimitSpec, LiteralValue, SortExpr, SortSpec,
         },
         plan::{
-            AggregateNode, DataPlacement, FilterNode, GraphAlgorithm, GraphAlgorithmNode, GraphAlgorithmParams,
-            GraphAlgorithmSpec, GraphBfsParams, GraphBfsPredicateInputs, GraphConstructionOptions,
+            AggregateNode, DEFAULT_BETWEENNESS_EXACT_VERTEX_THRESHOLD, DataPlacement, FilterNode, GraphAlgorithm,
+            GraphAlgorithmNode, GraphAlgorithmParams, GraphAlgorithmSpec, GraphBetweennessCentralityParams,
+            GraphBetweennessSeeds, GraphBfsParams, GraphBfsPredicateInputs, GraphConstructionOptions,
             GraphConstructionPolicy, GraphCoreNumberParams, GraphDegreesAllParams, GraphEcgParams,
-            GraphEdgeColumnBindings, GraphEdgePredicateInput, GraphEigenvectorCentralityParams, GraphForceAtlas2Params,
-            GraphHitsParams, GraphInDegreesAllParams, GraphKCoreDegreeType, GraphKCoreParams,
-            GraphKatzCentralityParams, GraphLayoutRequirement, GraphLeidenParams, GraphLouvainParams, GraphMstParams,
-            GraphOperationDefinition, GraphOutDegreesAllParams, GraphOutputSchemaKind, GraphPageRankParams,
-            GraphPageRankPersonalizationInput, GraphPersonalizedPageRankParams, GraphPredicateInput, GraphSccParams,
-            GraphSourceVertexRequirement, GraphSpectralClusteringParams, GraphSsspParams, GraphTriangleCountAllParams,
-            GraphWccParams, GraphWeightPolicy, HashJoinBuildArtifactId, JoinKey, JoinNode, JoinNullEquality,
-            JoinOutputColumn, JoinSide, JoinSpec, JoinType, LimitNode, NativePlanCpuPreferenceReason,
-            NativePlanPreferenceDecision, NativePlanPreferenceFacts, NativePlanPreferenceOptions, NodeId, PlanFacts,
-            PlanNode, ProjectionNode, ProjectionOutput, QueryNode, QueryPlan, QueryPlanBuilder, ResultSink,
-            SchemaBehavior, ShiftDirection, SortNode, WindowFrame, WindowFunction, WindowNode, WindowSpec,
-            native_plan_preference_decision, stable_graph_result_schema,
+            GraphEdgeBetweennessCentralityParams, GraphEdgeColumnBindings, GraphEdgePredicateInput,
+            GraphEigenvectorCentralityParams, GraphForceAtlas2Params, GraphHitsParams, GraphInDegreesAllParams,
+            GraphKCoreDegreeType, GraphKCoreParams, GraphKatzCentralityParams, GraphLayoutRequirement,
+            GraphLeidenParams, GraphLouvainParams, GraphMstParams, GraphOperationDefinition, GraphOutDegreesAllParams,
+            GraphOutputSchemaKind, GraphPageRankParams, GraphPageRankPersonalizationInput,
+            GraphPersonalizedPageRankParams, GraphPredicateInput, GraphSccParams, GraphSourceVertexRequirement,
+            GraphSpectralClusteringParams, GraphSsspParams, GraphTriangleCountAllParams, GraphWccParams,
+            GraphWeightPolicy, HashJoinBuildArtifactId, JoinKey, JoinNode, JoinNullEquality, JoinOutputColumn,
+            JoinSide, JoinSpec, JoinType, LimitNode, NativePlanCpuPreferenceReason, NativePlanPreferenceDecision,
+            NativePlanPreferenceFacts, NativePlanPreferenceOptions, NodeId, PlanFacts, PlanNode, ProjectionNode,
+            ProjectionOutput, QueryNode, QueryPlan, QueryPlanBuilder, ResultSink, SchemaBehavior, ShiftDirection,
+            SortNode, WindowFrame, WindowFunction, WindowNode, WindowSpec, native_plan_preference_decision,
+            stable_graph_result_schema,
         },
         source::{
             ByteRangeDisposition, CredentialMode, GpuResidentSource, LakehouseCacheFillMode, LakehouseCacheReadMode,
@@ -133,6 +137,7 @@ pub mod admission_contracts {
 pub mod runtime_contracts {
     pub use crate::{
         adaptive_runtime::{
+            AdaptiveGraphMemoryHistoryKey, AdaptiveGraphMemoryHistorySummary, AdaptiveGraphMemoryObservation,
             AdaptiveMemoryHistory, AdaptiveMemoryHistoryKey, AdaptiveMemoryHistorySummary, AdaptiveMemoryObservation,
             AdaptiveTaskMemoryHistoryKey, AdaptiveTaskMemoryHistoryShape, AdaptiveTaskMemoryHistorySummary,
             AdaptiveTaskMemoryObservation,
@@ -151,6 +156,12 @@ pub mod runtime_contracts {
             join_output_upper_bound_bytes, materialize_gpu_result_to_host, partial_aggregate_upper_bound_bytes,
             probe_resolved_remote_parquet_datasource, read_gpu_resident_source, read_local_parquet_source,
             validate_local_parquet_source,
+        },
+        graph_memory::{
+            GRAPH_MEMORY_BOUNDARY, GRAPH_MEMORY_BUDGET_TRACKING_MIN_LIMIT_BYTES,
+            GRAPH_MEMORY_ESTIMATE_EXCEEDS_BUDGET_REASON, GraphMemoryClass, GraphMemoryEstimate, GraphMemoryModel,
+            GraphMemoryModelInput, GraphReservationOutcome, GraphReservationReport, graph_memory_class,
+            graph_memory_model_input,
         },
         runtime::{
             BoundedJoinReservationContract, BoundedJoinReservationRequirement, BoundedJoinReservationStatus,
@@ -252,6 +263,7 @@ pub use adaptive_report::{
     AdaptiveStrategy,
 };
 pub use adaptive_runtime::{
+    AdaptiveGraphMemoryHistoryKey, AdaptiveGraphMemoryHistorySummary, AdaptiveGraphMemoryObservation,
     AdaptiveMemoryHistory, AdaptiveMemoryHistoryKey, AdaptiveMemoryHistorySummary, AdaptiveMemoryObservation,
     AdaptiveTaskMemoryHistoryKey, AdaptiveTaskMemoryHistoryShape, AdaptiveTaskMemoryHistorySummary,
     AdaptiveTaskMemoryObservation,
@@ -289,9 +301,20 @@ pub use exec::{
     strict_bounded_pipeline_rejection_projection,
     strict_bounded_pipeline_rejection_projection_with_statistical_aggregate_mode, validate_local_parquet_source,
 };
+#[cfg(feature = "cugraph")]
+#[doc(hidden)]
+pub use exec::{
+    force_next_graph_adaptive_chunk_attempt_resource_exhausted_for_test,
+    force_next_graph_adaptive_full_attempt_resource_exhausted_for_test,
+};
 pub use expr::{
     AggregateExpr, AggregateFunction, AggregateSpec, BinaryOp, CaseWhen, ColumnQualifier, ColumnRef, DatePart, Expr,
     GroupingSetsSpec, LimitSpec, LiteralValue, SortExpr, SortSpec,
+};
+pub use graph_memory::{
+    GRAPH_MEMORY_BOUNDARY, GRAPH_MEMORY_BUDGET_TRACKING_MIN_LIMIT_BYTES, GRAPH_MEMORY_ESTIMATE_EXCEEDS_BUDGET_REASON,
+    GraphMemoryClass, GraphMemoryEstimate, GraphMemoryModel, GraphMemoryModelInput, GraphReservationOutcome,
+    GraphReservationReport, graph_memory_class, graph_memory_model_input,
 };
 pub use metrics::{
     AggregateStrategyDecisionMetrics, BoundaryMetrics, BudgetedExecutionEvent, DynamicFilterRuntimeMetrics,
@@ -345,16 +368,18 @@ pub use pipeline::{
     compile_pipeline,
 };
 pub use plan::{
-    AggregateNode, DataPlacement, FilterNode, GRAPH_ALGORITHM_STRICT_BOUNDED_LOWER_LEVEL_CONTRACTS,
-    GRAPH_ALGORITHM_STRICT_BOUNDED_MEMORY_BOUNDARY, GRAPH_ALGORITHM_STRICT_BOUNDED_REQUIRED_CONTRACT,
-    GRAPH_OPERATION_REGISTRY, GraphAlgorithm, GraphAlgorithmNode, GraphAlgorithmParams, GraphAlgorithmSpec,
-    GraphAlgorithmStrictBoundedLowerLevelContract, GraphBfsParams, GraphBfsPredicateInputs, GraphConstructionOptions,
-    GraphConstructionPolicy, GraphCoreNumberParams, GraphDegreesAllParams, GraphEcgParams, GraphEdgeColumnBindings,
-    GraphEdgePredicateInput, GraphEigenvectorCentralityParams, GraphForceAtlas2Params, GraphHitsParams,
-    GraphInDegreesAllParams, GraphKCoreDegreeType, GraphKCoreParams, GraphKatzCentralityParams, GraphLayoutRequirement,
-    GraphLeidenParams, GraphLouvainParams, GraphMstParams, GraphOperationDefinition, GraphOutDegreesAllParams,
-    GraphOutputSchemaKind, GraphPageRankParams, GraphPageRankPersonalizationInput, GraphPersonalizedPageRankParams,
-    GraphPredicateInput, GraphSccParams, GraphSourceVertexRequirement, GraphSpectralClusteringParams, GraphSsspParams,
+    AggregateNode, DEFAULT_BETWEENNESS_EXACT_VERTEX_THRESHOLD, DataPlacement, FilterNode,
+    GRAPH_ALGORITHM_STRICT_BOUNDED_LOWER_LEVEL_CONTRACTS, GRAPH_ALGORITHM_STRICT_BOUNDED_MEMORY_BOUNDARY,
+    GRAPH_ALGORITHM_STRICT_BOUNDED_REQUIRED_CONTRACT, GRAPH_OPERATION_REGISTRY, GraphAlgorithm, GraphAlgorithmNode,
+    GraphAlgorithmParams, GraphAlgorithmSpec, GraphAlgorithmStrictBoundedLowerLevelContract,
+    GraphBetweennessCentralityParams, GraphBetweennessSeeds, GraphBfsParams, GraphBfsPredicateInputs,
+    GraphConstructionOptions, GraphConstructionPolicy, GraphCoreNumberParams, GraphDegreesAllParams, GraphEcgParams,
+    GraphEdgeBetweennessCentralityParams, GraphEdgeColumnBindings, GraphEdgePredicateInput,
+    GraphEigenvectorCentralityParams, GraphForceAtlas2Params, GraphHitsParams, GraphInDegreesAllParams,
+    GraphKCoreDegreeType, GraphKCoreParams, GraphKatzCentralityParams, GraphLayoutRequirement, GraphLeidenParams,
+    GraphLouvainParams, GraphMstParams, GraphOperationDefinition, GraphOutDegreesAllParams, GraphOutputSchemaKind,
+    GraphPageRankParams, GraphPageRankPersonalizationInput, GraphPersonalizedPageRankParams, GraphPredicateInput,
+    GraphSccParams, GraphSourceVertexRequirement, GraphSpectralClusteringParams, GraphSsspParams,
     GraphTriangleCountAllParams, GraphWccParams, GraphWeightPolicy, HashJoinBuildArtifactId, JoinKey, JoinNode,
     JoinNullEquality, JoinOutputColumn, JoinSide, JoinSpec, JoinType, LimitNode, NativePlanCpuPreferenceReason,
     NativePlanPreferenceDecision, NativePlanPreferenceFacts, NativePlanPreferenceOptions, NodeId, PlanFacts, PlanNode,

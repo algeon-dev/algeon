@@ -47,6 +47,7 @@ pub const NATIVE_CUDF_DATAFUSION_METRIC_NAMES: &[&str] = &[
     "max_task_observed_peak_bytes_observed",
     "max_task_retained_bytes",
     "max_task_retained_bytes_observed",
+    "native_graph_reservation_rows",
     "native_graph_runtime_rows",
     "native_task_operator_rows",
     "native_task_runtime_rows",
@@ -322,6 +323,7 @@ impl NativeCudfMetrics {
     ) -> Self {
         let native_aggregate_strategy_rows = summary_counter(metrics, "native_aggregate_strategy_rows", partition);
         let _ = summary_counter(metrics, "native_join_strategy_rows", partition);
+        let _ = summary_counter(metrics, "native_graph_reservation_rows", partition);
         let _ = summary_counter(metrics, "native_graph_runtime_rows", partition);
         let _ = summary_counter(metrics, "native_task_operator_rows", partition);
         let _ = summary_counter(metrics, "native_task_runtime_rows", partition);
@@ -646,6 +648,7 @@ impl NativeCudfMetrics {
         self.one_shot_join_materialization_bytes.add(count(metrics.one_shot_join_materialization_bytes));
         self.one_shot_join_output_bytes.add(count(metrics.one_shot_join_output_bytes));
         self.join_gather_map_bytes.add(count(join_gather_map_bytes(metrics)));
+        self.record_graph_reservation_rows(metrics);
         self.record_graph_runtime_rows(metrics);
         self.record_task_operator_rows(metrics);
         self.record_task_runtime_rows(metrics);
@@ -736,6 +739,41 @@ impl NativeCudfMetrics {
                 .with_new_label("host_to_device_uploads", row.host_to_device_uploads.to_string())
                 .with_new_label("device_to_host_materializations", row.device_to_host_materializations.to_string())
                 .global_counter("native_graph_runtime_rows")
+                .add(1);
+        }
+    }
+
+    fn record_graph_reservation_rows(&self, metrics: &QueryMetrics) {
+        for row in &metrics.graph_reservation_rows {
+            MetricBuilder::new(&self.metrics_set)
+                .with_type(MetricType::Summary)
+                .with_new_label("node_id", row.node_id.clone())
+                .with_new_label("algorithm", row.algorithm.as_str().to_string())
+                .with_new_label("class", row.class.as_str().to_string())
+                .with_new_label("outcome", row.outcome.as_str().to_string())
+                .with_new_label("input_edges", row.input_edges.to_string())
+                .with_new_label("vertex_upper_bound", row.vertex_upper_bound.to_string())
+                .with_new_label("vertex_width_bytes", row.vertex_width_bytes.to_string())
+                .with_new_label(
+                    "weight_width_bytes",
+                    row.weight_width_bytes.map_or_else(|| "none".to_string(), |value| value.to_string()),
+                )
+                .with_new_label("has_edge_id", row.has_edge_id.to_string())
+                .with_new_label("directed", row.directed.to_string())
+                .with_new_label("renumber", row.renumber.to_string())
+                .with_new_label("construction_policy", row.construction_policy.as_str().to_string())
+                .with_new_label(
+                    "seed_count",
+                    row.seed_count.map_or_else(|| "none".to_string(), |value| value.to_string()),
+                )
+                .with_new_label("data_dependent", row.data_dependent.to_string())
+                .with_new_label("requested_bytes", row.requested_bytes.to_string())
+                .with_new_label(
+                    "budget_bytes",
+                    row.budget_bytes.map_or_else(|| "none".to_string(), |value| value.to_string()),
+                )
+                .with_new_label("reason", row.reason.unwrap_or("none").to_string())
+                .global_counter("native_graph_reservation_rows")
                 .add(1);
         }
     }

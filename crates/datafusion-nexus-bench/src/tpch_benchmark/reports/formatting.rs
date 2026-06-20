@@ -145,6 +145,10 @@ pub(super) fn format_graph_runtime_rows(rows: &[NativeGraphRuntimeMetricRow]) ->
     datafusion_nexus::native_report::format_native_graph_runtime_metric_rows(rows)
 }
 
+pub(super) fn format_graph_reservation_rows(rows: &[NativeGraphReservationMetricRow]) -> String {
+    datafusion_nexus::native_report::format_native_graph_reservation_metric_rows(rows)
+}
+
 pub(super) fn format_task_operator_rows(rows: &[NativeTaskOperatorMetricRow]) -> String {
     datafusion_nexus::native_report::format_native_task_operator_metric_rows(rows)
 }

@@ -8,6 +8,72 @@ use super::labels::{
 };
 
 const NATIVE_GRAPH_RUNTIME_ROWS_METRIC_NAME: &str = "native_graph_runtime_rows";
+const NATIVE_GRAPH_RESERVATION_ROWS_METRIC_NAME: &str = "native_graph_reservation_rows";
+
+/// Stable nested metric row for one graph memory-tier admission.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct NativeGraphReservationMetricRow {
+    /// Native graph algorithm node id.
+    pub node_id: String,
+    /// Stable graph algorithm label.
+    pub algorithm: String,
+    /// Graph memory class label.
+    pub class: String,
+    /// Admission outcome label.
+    pub outcome: String,
+    /// Edge rows after null-edge filtering.
+    pub input_edges: usize,
+    /// Conservative vertex upper bound used by the model.
+    pub vertex_upper_bound: usize,
+    /// Vertex id width in bytes.
+    pub vertex_width_bytes: usize,
+    /// Consumed edge-weight width in bytes, if present.
+    pub weight_width_bytes: Option<usize>,
+    /// Whether a stable edge id column was bound.
+    pub has_edge_id: bool,
+    /// Whether the graph was treated as directed.
+    pub directed: bool,
+    /// Whether cuGraph renumbering was enabled.
+    pub renumber: bool,
+    /// Graph construction policy label.
+    pub construction_policy: String,
+    /// Seed count for seed-dependent algorithms, when applicable.
+    pub seed_count: Option<usize>,
+    /// Whether the estimate is flagged as data-dependent.
+    pub data_dependent: bool,
+    /// Requested graph-tier bytes.
+    pub requested_bytes: usize,
+    /// Bounded device budget bytes, when bounded.
+    pub budget_bytes: Option<usize>,
+    /// Stable denial reason or `none`.
+    pub reason: String,
+}
+
+impl NativeGraphReservationMetricRow {
+    /// Serializes this nested row as stable comma-separated key/value pairs.
+    pub fn to_stable_kv_row(&self) -> String {
+        format!(
+            "node_id={},algorithm={},class={},outcome={},input_edges={},vertex_upper_bound={},vertex_width_bytes={},weight_width_bytes={},has_edge_id={},directed={},renumber={},construction_policy={},seed_count={},data_dependent={},requested_bytes={},budget_bytes={},reason={}",
+            self.node_id,
+            self.algorithm,
+            self.class,
+            self.outcome,
+            self.input_edges,
+            self.vertex_upper_bound,
+            self.vertex_width_bytes,
+            optional_usize(self.weight_width_bytes),
+            self.has_edge_id,
+            self.directed,
+            self.renumber,
+            self.construction_policy,
+            optional_usize(self.seed_count),
+            self.data_dependent,
+            self.requested_bytes,
+            optional_usize(self.budget_bytes),
+            self.reason,
+        )
+    }
+}
 
 /// Stable nested metric row for one graph algorithm execution.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -106,6 +172,22 @@ pub(super) fn graph_runtime_rows(metrics: &MetricsSet) -> Vec<NativeGraphRuntime
     rows
 }
 
+pub(super) fn graph_reservation_rows(metrics: &MetricsSet) -> Vec<NativeGraphReservationMetricRow> {
+    let mut rows = metrics
+        .iter()
+        .filter(|metric| metric.value().name() == NATIVE_GRAPH_RESERVATION_ROWS_METRIC_NAME)
+        .filter(|metric| metric.labels().iter().any(|label| label.name() == "algorithm"))
+        .map(|metric| labels_to_graph_reservation_row(labels_by_name(metric.labels())))
+        .collect::<Vec<_>>();
+    rows.sort_by(|left, right| {
+        left.node_id
+            .cmp(&right.node_id)
+            .then_with(|| left.algorithm.cmp(&right.algorithm))
+            .then_with(|| left.to_stable_kv_row().cmp(&right.to_stable_kv_row()))
+    });
+    rows
+}
+
 fn labels_to_graph_runtime_row(labels: BTreeMap<&str, &str>) -> NativeGraphRuntimeMetricRow {
     NativeGraphRuntimeMetricRow {
         node_id: string_label(&labels, "node_id"),
@@ -130,5 +212,27 @@ fn labels_to_graph_runtime_row(labels: BTreeMap<&str, &str>) -> NativeGraphRunti
         gpu_resident_input_handoffs: usize_label(&labels, "gpu_resident_input_handoffs"),
         host_to_device_uploads: usize_label(&labels, "host_to_device_uploads"),
         device_to_host_materializations: usize_label(&labels, "device_to_host_materializations"),
+    }
+}
+
+fn labels_to_graph_reservation_row(labels: BTreeMap<&str, &str>) -> NativeGraphReservationMetricRow {
+    NativeGraphReservationMetricRow {
+        node_id: string_label(&labels, "node_id"),
+        algorithm: string_label(&labels, "algorithm"),
+        class: string_label(&labels, "class"),
+        outcome: string_label(&labels, "outcome"),
+        input_edges: usize_label(&labels, "input_edges"),
+        vertex_upper_bound: usize_label(&labels, "vertex_upper_bound"),
+        vertex_width_bytes: usize_label(&labels, "vertex_width_bytes"),
+        weight_width_bytes: optional_usize_label(&labels, "weight_width_bytes"),
+        has_edge_id: bool_label(&labels, "has_edge_id"),
+        directed: bool_label(&labels, "directed"),
+        renumber: bool_label(&labels, "renumber"),
+        construction_policy: string_label(&labels, "construction_policy"),
+        seed_count: optional_usize_label(&labels, "seed_count"),
+        data_dependent: bool_label(&labels, "data_dependent"),
+        requested_bytes: usize_label(&labels, "requested_bytes"),
+        budget_bytes: optional_usize_label(&labels, "budget_bytes"),
+        reason: string_label(&labels, "reason"),
     }
 }

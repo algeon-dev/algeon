@@ -13,13 +13,13 @@ use datafusion_nexus::{CUGRAPH_OPERATION_REGISTRY, CugraphAlgorithm, stable_resu
 use nexus_query_engine::{
     GRAPH_ALGORITHM_STRICT_BOUNDED_MEMORY_BOUNDARY, GRAPH_ALGORITHM_STRICT_BOUNDED_REQUIRED_CONTRACT,
     GRAPH_OPERATION_REGISTRY, GpuResidentSource, GraphAlgorithm, GraphAlgorithmParams, GraphAlgorithmSpec,
-    GraphBfsParams, GraphConstructionOptions, GraphCoreNumberParams, GraphDegreesAllParams, GraphEcgParams,
-    GraphEdgeColumnBindings, GraphEigenvectorCentralityParams, GraphForceAtlas2Params, GraphHitsParams,
-    GraphInDegreesAllParams, GraphKCoreParams, GraphKatzCentralityParams, GraphLeidenParams, GraphLouvainParams,
-    GraphMstParams, GraphOutDegreesAllParams, GraphPageRankParams, GraphPageRankPersonalizationInput,
-    GraphPersonalizedPageRankParams, GraphSccParams, GraphSpectralClusteringParams, GraphSsspParams,
-    GraphTriangleCountAllParams, GraphWccParams, PlanNode, QueryPlan, QueryPlanBuilder, SourceNode,
-    StrictBoundedContractReport, StrictBoundedExecutionMode,
+    GraphBetweennessCentralityParams, GraphBfsParams, GraphConstructionOptions, GraphCoreNumberParams,
+    GraphDegreesAllParams, GraphEcgParams, GraphEdgeBetweennessCentralityParams, GraphEdgeColumnBindings,
+    GraphEigenvectorCentralityParams, GraphForceAtlas2Params, GraphHitsParams, GraphInDegreesAllParams,
+    GraphKCoreParams, GraphKatzCentralityParams, GraphLeidenParams, GraphLouvainParams, GraphMstParams,
+    GraphOutDegreesAllParams, GraphPageRankParams, GraphPageRankPersonalizationInput, GraphPersonalizedPageRankParams,
+    GraphSccParams, GraphSpectralClusteringParams, GraphSsspParams, GraphTriangleCountAllParams, GraphWccParams,
+    PlanNode, QueryPlan, QueryPlanBuilder, SourceNode, StrictBoundedContractReport, StrictBoundedExecutionMode,
     capability::{CapabilityDecision, ContractQuality, ContractStatus, NodeOperator},
     stable_graph_result_schema,
 };
@@ -38,6 +38,12 @@ pub fn default_params(algorithm: GraphAlgorithm) -> GraphAlgorithmParams {
         },
         GraphAlgorithm::KatzCentrality => GraphAlgorithmParams::KatzCentrality(GraphKatzCentralityParams::default()),
         GraphAlgorithm::Hits => GraphAlgorithmParams::Hits(GraphHitsParams::default()),
+        GraphAlgorithm::BetweennessCentrality => {
+            GraphAlgorithmParams::BetweennessCentrality(GraphBetweennessCentralityParams::default())
+        },
+        GraphAlgorithm::EdgeBetweennessCentrality => {
+            GraphAlgorithmParams::EdgeBetweennessCentrality(GraphEdgeBetweennessCentralityParams::default())
+        },
         GraphAlgorithm::Sssp => GraphAlgorithmParams::Sssp(GraphSsspParams { source_vertex: 0, cutoff: None }),
         GraphAlgorithm::DegreesAll => GraphAlgorithmParams::DegreesAll(GraphDegreesAllParams),
         GraphAlgorithm::InDegreesAll => GraphAlgorithmParams::InDegreesAll(GraphInDegreesAllParams),
@@ -223,6 +229,8 @@ fn registry_pins_current_cugraph_sql_inventory() {
             CugraphAlgorithm::EigenvectorCentrality,
             CugraphAlgorithm::KatzCentrality,
             CugraphAlgorithm::Hits,
+            CugraphAlgorithm::BetweennessCentrality,
+            CugraphAlgorithm::EdgeBetweennessCentrality,
             CugraphAlgorithm::Sssp,
             CugraphAlgorithm::DegreesAll,
             CugraphAlgorithm::InDegreesAll,

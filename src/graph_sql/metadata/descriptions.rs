@@ -179,6 +179,12 @@ pub(super) fn summary(algorithm: CugraphAlgorithm) -> &'static str {
         CugraphAlgorithm::EigenvectorCentrality => "Compute eigenvector centrality scores.",
         CugraphAlgorithm::KatzCentrality => "Compute Katz centrality scores.",
         CugraphAlgorithm::Hits => "Compute HITS hub and authority scores.",
+        CugraphAlgorithm::BetweennessCentrality => {
+            "Compute exact or explicitly seeded/k-sampled approximate betweenness centrality scores."
+        },
+        CugraphAlgorithm::EdgeBetweennessCentrality => {
+            "Compute exact or explicitly seeded/k-sampled approximate edge betweenness centrality scores."
+        },
         CugraphAlgorithm::Sssp => "Compute single-source shortest paths.",
         CugraphAlgorithm::DegreesAll => "Compute in-degree and out-degree for every vertex.",
         CugraphAlgorithm::InDegreesAll => "Compute in-degree for every vertex.",
@@ -218,6 +224,12 @@ pub(super) fn purpose(algorithm: CugraphAlgorithm) -> &'static str {
             "Score vertices by attenuated walks so direct and indirect neighbors both contribute to centrality."
         },
         CugraphAlgorithm::Hits => "Compute hub and authority scores for directed-link style graphs.",
+        CugraphAlgorithm::BetweennessCentrality => {
+            "Score vertices by how often they appear on shortest paths, using exact all-vertex traversal, an explicit seed list, or a deterministic k seed count for approximate results."
+        },
+        CugraphAlgorithm::EdgeBetweennessCentrality => {
+            "Score edges by shortest-path participation, using exact all-vertex traversal, an explicit seed list, or a deterministic k seed count for approximate results."
+        },
         CugraphAlgorithm::Sssp => {
             "Find shortest paths from one source vertex, using edge weights when a weight column is supplied."
         },

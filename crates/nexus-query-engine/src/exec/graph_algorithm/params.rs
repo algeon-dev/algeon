@@ -15,6 +15,22 @@ pub(super) fn hits_params(params: &crate::plan::GraphHitsParams) -> Result<cugra
     })
 }
 
+pub(super) fn betweenness_centrality_params(
+    params: &crate::plan::GraphBetweennessCentralityParams,
+) -> cugraph::centrality::BetweennessCentralityParams {
+    cugraph::centrality::BetweennessCentralityParams {
+        normalized: params.normalized,
+        include_endpoints: params.include_endpoints,
+        do_expensive_check: false,
+    }
+}
+
+pub(super) fn edge_betweenness_centrality_params(
+    params: &crate::plan::GraphEdgeBetweennessCentralityParams,
+) -> cugraph::centrality::EdgeBetweennessCentralityParams {
+    cugraph::centrality::EdgeBetweennessCentralityParams { normalized: params.normalized, do_expensive_check: false }
+}
+
 pub(super) fn katz_centrality_params(
     params: &crate::plan::GraphKatzCentralityParams,
 ) -> Result<cugraph::centrality::KatzCentralityParams> {

@@ -3,7 +3,8 @@ use std::{collections::BTreeSet, fmt, sync::Arc};
 use arrow::datatypes::{DataType, Field, Schema, SchemaRef};
 use datafusion::common::{DataFusionError, Result};
 use nexus_query_engine::{
-    GraphAlgorithm as NativeGraphAlgorithm, GraphAlgorithmParams as NativeGraphAlgorithmParams,
+    DEFAULT_BETWEENNESS_EXACT_VERTEX_THRESHOLD, GraphAlgorithm as NativeGraphAlgorithm,
+    GraphAlgorithmParams as NativeGraphAlgorithmParams, GraphBetweennessSeeds as NativeGraphBetweennessSeeds,
     GraphConstructionOptions as NativeGraphConstructionOptions,
     GraphConstructionPolicy as NativeGraphConstructionPolicy, GraphKCoreDegreeType as NativeGraphKCoreDegreeType,
 };
@@ -18,6 +19,8 @@ pub const CUGRAPH_LOUVAIN_FUNCTION: &str = "cugraph_louvain";
 pub const CUGRAPH_EIGENVECTOR_CENTRALITY_FUNCTION: &str = "cugraph_eigenvector_centrality";
 pub const CUGRAPH_KATZ_CENTRALITY_FUNCTION: &str = "cugraph_katz_centrality";
 pub const CUGRAPH_HITS_FUNCTION: &str = "cugraph_hits";
+pub const CUGRAPH_BETWEENNESS_CENTRALITY_FUNCTION: &str = "cugraph_betweenness_centrality";
+pub const CUGRAPH_EDGE_BETWEENNESS_CENTRALITY_FUNCTION: &str = "cugraph_edge_betweenness_centrality";
 pub const CUGRAPH_SSSP_FUNCTION: &str = "cugraph_sssp";
 pub const CUGRAPH_DEGREES_ALL_FUNCTION: &str = "cugraph_degrees_all";
 pub const CUGRAPH_IN_DEGREES_ALL_FUNCTION: &str = "cugraph_in_degrees_all";
@@ -100,6 +103,8 @@ pub enum CugraphAlgorithm {
     EigenvectorCentrality,
     KatzCentrality,
     Hits,
+    BetweennessCentrality,
+    EdgeBetweennessCentrality,
     Sssp,
     DegreesAll,
     InDegreesAll,
@@ -209,6 +214,16 @@ pub const CUGRAPH_OPERATION_REGISTRY: &[CugraphOperationDefinition] = &[
         algorithm: CugraphAlgorithm::Hits,
         native_algorithm: NativeGraphAlgorithm::Hits,
         sql_function_name: CUGRAPH_HITS_FUNCTION,
+    },
+    CugraphOperationDefinition {
+        algorithm: CugraphAlgorithm::BetweennessCentrality,
+        native_algorithm: NativeGraphAlgorithm::BetweennessCentrality,
+        sql_function_name: CUGRAPH_BETWEENNESS_CENTRALITY_FUNCTION,
+    },
+    CugraphOperationDefinition {
+        algorithm: CugraphAlgorithm::EdgeBetweennessCentrality,
+        native_algorithm: NativeGraphAlgorithm::EdgeBetweennessCentrality,
+        sql_function_name: CUGRAPH_EDGE_BETWEENNESS_CENTRALITY_FUNCTION,
     },
     CugraphOperationDefinition {
         algorithm: CugraphAlgorithm::Sssp,
@@ -411,6 +426,8 @@ pub enum CugraphAlgorithmParams {
     EigenvectorCentrality(CugraphEigenvectorCentralityParams),
     KatzCentrality(CugraphKatzCentralityParams),
     Hits(CugraphHitsParams),
+    BetweennessCentrality(CugraphBetweennessCentralityParams),
+    EdgeBetweennessCentrality(CugraphEdgeBetweennessCentralityParams),
     Sssp(CugraphSsspParams),
     DegreesAll(CugraphDegreesAllParams),
     InDegreesAll(CugraphInDegreesAllParams),
@@ -472,6 +489,23 @@ impl CugraphAlgorithmParams {
                 max_iterations: params.max_iterations,
                 normalize: params.normalize,
             }),
+            NativeGraphAlgorithmParams::BetweennessCentrality(params) => {
+                Self::BetweennessCentrality(CugraphBetweennessCentralityParams {
+                    seeds: params.seeds.map(CugraphBetweennessSeeds::from_native),
+                    k: params.k,
+                    normalized: params.normalized,
+                    include_endpoints: params.include_endpoints,
+                    exact_vertex_threshold: params.exact_vertex_threshold,
+                })
+            },
+            NativeGraphAlgorithmParams::EdgeBetweennessCentrality(params) => {
+                Self::EdgeBetweennessCentrality(CugraphEdgeBetweennessCentralityParams {
+                    seeds: params.seeds.map(CugraphBetweennessSeeds::from_native),
+                    k: params.k,
+                    normalized: params.normalized,
+                    exact_vertex_threshold: params.exact_vertex_threshold,
+                })
+            },
             NativeGraphAlgorithmParams::Sssp(params) => Self::Sssp(CugraphSsspParams {
                 source_vertex: source
                     .unwrap_or_else(|| CugraphBfsSource::scalar_i64(params.source_vertex))
@@ -985,6 +1019,63 @@ impl Default for CugraphHitsParams {
     fn default() -> Self {
         // Mirrors `nexus_query_engine::GraphHitsParams::default`.
         Self { epsilon: 1.0e-5, max_iterations: 100, normalize: false }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CugraphBetweennessSeeds {
+    pub vertices: Vec<i64>,
+}
+
+impl CugraphBetweennessSeeds {
+    pub(crate) fn from_native(seeds: NativeGraphBetweennessSeeds) -> Self {
+        match seeds {
+            NativeGraphBetweennessSeeds::I64(vertices) => Self { vertices },
+        }
+    }
+
+    pub fn len(&self) -> usize {
+        self.vertices.len()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CugraphBetweennessCentralityParams {
+    pub seeds: Option<CugraphBetweennessSeeds>,
+    pub k: Option<u64>,
+    pub normalized: bool,
+    pub include_endpoints: bool,
+    pub exact_vertex_threshold: u64,
+}
+
+impl Default for CugraphBetweennessCentralityParams {
+    fn default() -> Self {
+        Self {
+            seeds: None,
+            k: None,
+            normalized: true,
+            include_endpoints: false,
+            exact_vertex_threshold: DEFAULT_BETWEENNESS_EXACT_VERTEX_THRESHOLD,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CugraphEdgeBetweennessCentralityParams {
+    pub seeds: Option<CugraphBetweennessSeeds>,
+    pub k: Option<u64>,
+    pub normalized: bool,
+    pub exact_vertex_threshold: u64,
+}
+
+impl Default for CugraphEdgeBetweennessCentralityParams {
+    fn default() -> Self {
+        Self {
+            seeds: None,
+            k: None,
+            normalized: true,
+            exact_vertex_threshold: DEFAULT_BETWEENNESS_EXACT_VERTEX_THRESHOLD,
+        }
     }
 }
 

@@ -181,10 +181,12 @@ fn benchmark_report_schema_v4_rows_match_header_columns() {
     let header = lines.next().expect("benchmark report should contain a TSV header");
     let header_fields = header.split('\t').collect::<Vec<_>>();
     assert_eq!(header, NATIVE_TPCH_BENCHMARK_TSV_HEADER);
-    assert_eq!(NATIVE_TPCH_BENCHMARK_TSV_SCHEMA_VERSION, 37);
+    assert_eq!(NATIVE_TPCH_BENCHMARK_TSV_SCHEMA_VERSION, 38);
     assert_eq!(NativeTpchBenchmarkTsvRow::COLUMNS.join("\t"), NATIVE_TPCH_BENCHMARK_TSV_HEADER);
     assert_eq!(NativeTpchBenchmarkTsvRow::SCHEMA_VERSION, NATIVE_TPCH_BENCHMARK_TSV_SCHEMA_VERSION);
-    assert!(NATIVE_TPCH_BENCHMARK_TSV_HEADER.contains("\tgraph_runtime_rows\ttask_operator_rows\t"));
+    assert!(
+        NATIVE_TPCH_BENCHMARK_TSV_HEADER.contains("\tgraph_reservation_rows\tgraph_runtime_rows\ttask_operator_rows\t")
+    );
     assert!(NATIVE_TPCH_BENCHMARK_TSV_HEADER.contains(
         "\tdynamic_filter_post_decode_rows_before\tdynamic_filter_post_decode_rows_after\tdynamic_filter_post_decode_rows_filtered\tdynamic_filter_source_post_decode_rows_filtered\tdynamic_filter_filter_post_decode_rows_filtered\tdynamic_filter_join_probe_post_decode_rows_filtered\tdynamic_filter_post_decode_reduction_stage\t"
     ));
