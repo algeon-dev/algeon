@@ -15,7 +15,7 @@ use arrow::{
 };
 use arrow_flight::{error::FlightError, sql::client::FlightSqlServiceClient};
 use datafusion_nexus::server::{
-    NEXUS_SERVER_CUGRAPH_ALGORITHMS_ENV, NEXUS_SERVER_CUGRAPH_ENABLED_ENV, ServerConfig, serve,
+    NEXUS_SERVER_CUGRAPH_ALGORITHMS_ENV, NEXUS_SERVER_CUGRAPH_ENABLED_ENV, ServerConfig, serve_with_listener,
 };
 use futures::TryStreamExt;
 use parquet::{arrow::ArrowWriter, file::properties::WriterProperties};
@@ -23,12 +23,12 @@ use tonic::{Code, transport::Endpoint};
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn cugraph_dsl_metadata_and_dry_run_work_over_flight_sql_view() {
-    let addr = free_local_addr();
+    let (listener, addr) = free_local_addr();
     let env = BTreeMap::from([(NEXUS_SERVER_CUGRAPH_ENABLED_ENV, "true".to_string())]);
     let mut config = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap();
     config.bind_addr = addr;
 
-    let server = tokio::spawn(async move { serve(config).await });
+    let server = tokio::spawn(async move { serve_with_listener(config, listener).await });
     let mut client = connect_with_retry(addr).await;
     let dir = unique_temp_dir("datafusion-nexus-server-cugraph-flight");
     let parquet_path = dir.join("edges.parquet");
@@ -99,12 +99,12 @@ async fn cugraph_dsl_metadata_and_dry_run_work_over_flight_sql_view() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn cugraph_dsl_nullable_parquet_edge_schema_validates_over_flight_sql() {
-    let addr = free_local_addr();
+    let (listener, addr) = free_local_addr();
     let env = BTreeMap::from([(NEXUS_SERVER_CUGRAPH_ENABLED_ENV, "true".to_string())]);
     let mut config = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap();
     config.bind_addr = addr;
 
-    let server = tokio::spawn(async move { serve(config).await });
+    let server = tokio::spawn(async move { serve_with_listener(config, listener).await });
     let mut client = connect_with_retry(addr).await;
     let dir = unique_temp_dir("datafusion-nexus-server-cugraph-nullable-flight");
     let parquet_path = dir.join("edges.parquet");
@@ -145,7 +145,7 @@ async fn cugraph_dsl_nullable_parquet_edge_schema_validates_over_flight_sql() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn cugraph_dsl_disallowed_algorithm_rejected_over_flight_sql() {
-    let addr = free_local_addr();
+    let (listener, addr) = free_local_addr();
     let env = BTreeMap::from([
         (NEXUS_SERVER_CUGRAPH_ENABLED_ENV, "true".to_string()),
         (NEXUS_SERVER_CUGRAPH_ALGORITHMS_ENV, "cugraph_pagerank".to_string()),
@@ -153,7 +153,7 @@ async fn cugraph_dsl_disallowed_algorithm_rejected_over_flight_sql() {
     let mut config = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap();
     config.bind_addr = addr;
 
-    let server = tokio::spawn(async move { serve(config).await });
+    let server = tokio::spawn(async move { serve_with_listener(config, listener).await });
     let mut client = connect_with_retry(addr).await;
 
     let error = client.execute("SELECT * FROM cugraph_louvain('g')".to_string(), None).await.unwrap_err();
@@ -167,9 +167,26 @@ async fn cugraph_dsl_disallowed_algorithm_rejected_over_flight_sql() {
     assert!(status.message().contains("not enabled in this session"));
 }
 
-fn free_local_addr() -> std::net::SocketAddr {
+/// Warm the process-wide CUDA context exactly once. The first CUDA call pays a
+/// multi-second `cuInit()` cost; doing it here (every test reserves an address
+/// before spawning a server) keeps that cost off each server's connect window,
+/// and the `OnceLock` collapses concurrent callers onto a single init.
+fn warm_cuda_once() {
+    static CUDA_WARM: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+    CUDA_WARM.get_or_init(|| {
+        // Best-effort: serve_with_listener re-runs (and surfaces) any error.
+        let _ = datafusion_nexus::server::init_cuda_device(0);
+    });
+}
+
+/// Reserve a loopback port and hand back the live listener so the caller can
+/// pass it straight to `serve_with_listener`. Keeping the socket bound closes
+/// the bind/serve gap where a parallel test could steal the port.
+fn free_local_addr() -> (TcpListener, std::net::SocketAddr) {
+    warm_cuda_once();
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    listener.local_addr().unwrap()
+    let addr = listener.local_addr().unwrap();
+    (listener, addr)
 }
 
 fn unique_temp_dir(prefix: &str) -> std::path::PathBuf {
@@ -225,17 +242,20 @@ fn write_nullable_edge_parquet(path: &Path) {
 
 async fn connect_with_retry(addr: std::net::SocketAddr) -> FlightSqlServiceClient<tonic::transport::Channel> {
     let uri = format!("http://{addr}");
-    let mut last_error = None;
-    for _ in 0..50 {
+    let deadline = std::time::Instant::now() + Duration::from_secs(15);
+    let mut backoff = Duration::from_millis(10);
+    loop {
         match Endpoint::from_shared(uri.clone()).unwrap().connect().await {
             Ok(channel) => return FlightSqlServiceClient::new(channel),
             Err(error) => {
-                last_error = Some(error);
-                tokio::time::sleep(Duration::from_millis(50)).await;
+                if std::time::Instant::now() >= deadline {
+                    panic!("Flight SQL server did not accept connections at {addr} within 15s: {error:?}");
+                }
+                tokio::time::sleep(backoff).await;
+                backoff = (backoff * 2).min(Duration::from_millis(500));
             },
         }
     }
-    panic!("Flight SQL server did not accept connections at {addr}: {last_error:?}");
 }
 
 async fn execute_batches(

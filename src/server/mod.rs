@@ -3,10 +3,11 @@
 #[cfg(feature = "iceberg")]
 use std::borrow::Cow;
 use std::sync::Arc;
+use std::time::Instant;
 
 use arrow_flight::flight_service_server::FlightServiceServer;
 use nexus_query_engine::MemoryControlPolicy;
-use tonic::transport::Server;
+use tonic::transport::{Server, server::TcpIncoming};
 
 #[cfg(feature = "iceberg")]
 use crate::table_format::scan::credential_free_endpoint_identity;
@@ -36,6 +37,21 @@ pub use crate::{
     NEXUS_LAKEHOUSE_CACHE_ROOT_ENV,
 };
 
+/// Initialize the process-wide CUDA device context for `ordinal`.
+///
+/// The first CUDA call in a process implicitly runs `cuInit()`, which
+/// establishes the driver context — a one-time cost of a couple of seconds.
+/// [`serve`] triggers this lazily while constructing the query-service
+/// admission controller; calling it up front (from a deployment init step or a
+/// test harness) pays the cost before the server starts accepting connections,
+/// so the bind is not delayed by the cold start. The device count is cached, so
+/// repeated calls within a process are cheap.
+pub fn init_cuda_device(ordinal: usize) -> Result<()> {
+    cudf::DeviceId::new(ordinal)
+        .map(|_| ())
+        .map_err(|error| ServerError::session("failed to initialize CUDA device context", error))
+}
+
 /// Start the Flight SQL server and serve until SIGINT/SIGTERM.
 ///
 /// Graceful shutdown sequence on signal:
@@ -48,15 +64,60 @@ pub use crate::{
 /// 3. Let tonic stop accepting new connections and drain existing RPCs; the
 ///    `serve_with_shutdown` future returns once the last RPC finishes.
 pub async fn serve(config: ServerConfig) -> Result<()> {
-    ensure_single_librmm_runtime_mapping()?;
     let addr = config.bind_addr;
+    serve_inner(config, Listen::Addr(addr)).await
+}
+
+/// Serve on an already-bound listener instead of binding `config.bind_addr`.
+///
+/// This lets a caller reserve the port up front and hand the live socket to
+/// the server, eliminating the bind/serve gap where the port could be stolen
+/// by another process. Note that, unlike [`serve`], the TCP socket already
+/// accepts connections before this call finishes its CUDA/session/admission
+/// startup, so an early client connection succeeds at the TCP layer and its
+/// first RPC blocks until the gRPC stack is wired up rather than being
+/// refused. `config.bind_addr` is ignored in favour of the listener's own
+/// address.
+pub async fn serve_with_listener(config: ServerConfig, listener: std::net::TcpListener) -> Result<()> {
+    serve_inner(config, Listen::Prebound(listener)).await
+}
+
+/// How [`serve_inner`] obtains its TCP socket.
+enum Listen {
+    /// Bind `addr` only once startup is complete (matches historical `serve`
+    /// behaviour: full init, then bind, so the socket never exists half-ready).
+    Addr(std::net::SocketAddr),
+    /// Adopt a listener the caller already bound.
+    Prebound(std::net::TcpListener),
+}
+
+async fn serve_inner(config: ServerConfig, listen: Listen) -> Result<()> {
+    ensure_single_librmm_runtime_mapping()?;
+    let addr = match &listen {
+        Listen::Addr(addr) => *addr,
+        Listen::Prebound(listener) => listener
+            .local_addr()
+            .map_err(|error| ServerError::session("failed to read Flight SQL listener address", error))?,
+    };
     log_server_config_snapshot(&config);
     warn_if_testing_profile_active(&config);
     warn_if_cugraph_built_but_disabled(&config);
+
     let ctx = Arc::new(session::build_session_context(&config).await?);
     let auth_interceptor = auth::AuthInterceptor::new(config.auth.mode.clone(), auth::TokenStore::new());
     log_auth_mode_snapshot(&config.auth.mode);
+    // Building the admission controller is where the process-wide CUDA device
+    // context is first established (the query-service backend resolves the
+    // device, which implicitly runs `cuInit()` on the first call in a process).
+    // That cold start is a one-time cost of a couple of seconds; time it so the
+    // startup latency is visible in the logs rather than looking like a hang
+    // before the bind.
+    let admission_init_start = Instant::now();
     let admission = Arc::new(admission::QueryAdmission::from_server_config(&config)?);
+    tracing::info!(
+        elapsed_ms = u64::try_from(admission_init_start.elapsed().as_millis()).unwrap_or(u64::MAX),
+        "query admission controller initialized"
+    );
     let service = flight::DatafusionCudfFlightSqlService::new(
         ctx,
         config.native_optimizer_config.clone(),
@@ -101,12 +162,26 @@ pub async fn serve(config: ServerConfig) -> Result<()> {
         let _ = watchdog_tx.send(watchdog);
     };
 
-    let server_result =
-        Server::builder().add_service(FlightServiceServer::new(service)).serve_with_shutdown(addr, shutdown).await;
+    let builder = Server::builder().add_service(FlightServiceServer::new(service));
+    let server_result = match listen {
+        Listen::Addr(addr) => builder.serve_with_shutdown(addr, shutdown).await,
+        Listen::Prebound(listener) => {
+            listener
+                .set_nonblocking(true)
+                .map_err(|error| ServerError::session("failed to set Flight SQL listener non-blocking", error))?;
+            let tokio_listener = tokio::net::TcpListener::from_std(listener)
+                .map_err(|error| ServerError::session("failed to adopt Flight SQL listener", error))?;
+            // `TcpIncoming::from` leaves TCP_NODELAY unset; tonic's own
+            // address-bound path defaults it to enabled, so restore it to keep
+            // gRPC latency behaviour identical across the two entry points.
+            let incoming = TcpIncoming::from(tokio_listener).with_nodelay(Some(true));
+            builder.serve_with_incoming_shutdown(incoming, shutdown).await
+        },
+    };
 
-    // Abort the watchdog if it was armed. If serve_with_shutdown returned
-    // before the shutdown future ran (e.g. a bind/listen error), the oneshot
-    // sender was dropped — `recv` returns Err and there is nothing to abort.
+    // Abort the watchdog if it was armed. If the serve future returned before
+    // the shutdown future ran (e.g. a bind/listen error), the oneshot sender
+    // was dropped — `recv` returns Err and there is nothing to abort.
     if let Ok(watchdog) = watchdog_rx.await {
         watchdog.abort();
     }

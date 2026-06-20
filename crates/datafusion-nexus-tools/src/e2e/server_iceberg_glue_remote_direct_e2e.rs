@@ -46,7 +46,7 @@ use arrow_flight::sql::client::FlightSqlServiceClient;
 use datafusion_nexus::server::{
     NEXUS_ICEBERG_CATALOG_KIND_ENV, NEXUS_ICEBERG_GLUE_URI_ENV, NEXUS_ICEBERG_GLUE_WAREHOUSE_ENV,
     NEXUS_ICEBERG_NAMESPACE_ENV, NEXUS_ICEBERG_S3_CREDENTIAL_SOURCE_ENV, NEXUS_ICEBERG_S3_ENDPOINT_ENV,
-    NEXUS_ICEBERG_S3_PATH_STYLE_ENV, NEXUS_ICEBERG_S3_REGION_ENV, ServerConfig, serve,
+    NEXUS_ICEBERG_S3_PATH_STYLE_ENV, NEXUS_ICEBERG_S3_REGION_ENV, ServerConfig, serve_with_listener,
 };
 use futures::TryStreamExt;
 use tonic::transport::Endpoint;
@@ -260,12 +260,12 @@ struct SubstrateResults {
 async fn run_server_pass(params: &RunParams, substrate: ReadSubstrate) -> E2eResult<SubstrateResults> {
     let label = substrate.label();
     let server_env = params.server_env(substrate);
-    let addr = free_local_addr();
+    let (listener, addr) = free_local_addr();
     let mut config = ServerConfig::from_env_get(|name| server_env.get(name).cloned())?;
     config.bind_addr = addr;
 
     eprintln!("[{label}] starting Flight SQL server on {addr}");
-    let server = tokio::spawn(async move { serve(config).await });
+    let server = tokio::spawn(async move { serve_with_listener(config, listener).await });
     let result = validate_substrate(params, substrate, addr).await;
     server.abort();
     result
@@ -464,26 +464,48 @@ fn int_value(array: &arrow::array::ArrayRef) -> Option<i64> {
         .or_else(|| array.as_any().downcast_ref::<UInt32Array>().map(|a| i64::from(a.value(0))))
 }
 
-fn free_local_addr() -> std::net::SocketAddr {
+/// Warm the process-wide CUDA context exactly once. The first CUDA call pays a
+/// multi-second `cuInit()` cost; doing it before spawning the server keeps that
+/// cost off the connect window, and the `OnceLock` collapses concurrent callers
+/// onto a single init.
+fn warm_cuda_once() {
+    static CUDA_WARM: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+    CUDA_WARM.get_or_init(|| {
+        // Best-effort: serve_with_listener re-runs (and surfaces) any error.
+        let _ = datafusion_nexus::server::init_cuda_device(0);
+    });
+}
+
+/// Reserve a loopback port and hand back the live listener so the caller can
+/// pass it straight to `serve_with_listener`. Keeping the socket bound closes
+/// the bind/serve gap where another process could steal the port.
+fn free_local_addr() -> (TcpListener, std::net::SocketAddr) {
+    warm_cuda_once();
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    listener.local_addr().unwrap()
+    let addr = listener.local_addr().unwrap();
+    (listener, addr)
 }
 
 async fn connect_with_retry(
     addr: std::net::SocketAddr,
 ) -> E2eResult<FlightSqlServiceClient<tonic::transport::Channel>> {
     let uri = format!("http://{addr}");
-    let mut last_error = None;
-    for _ in 0..100 {
+    let deadline = std::time::Instant::now() + Duration::from_secs(15);
+    let mut backoff = Duration::from_millis(10);
+    loop {
         match Endpoint::from_shared(uri.clone())?.connect().await {
             Ok(channel) => return Ok(FlightSqlServiceClient::new(channel)),
             Err(error) => {
-                last_error = Some(error);
-                tokio::time::sleep(Duration::from_millis(100)).await;
+                if std::time::Instant::now() >= deadline {
+                    return Err(
+                        format!("Flight SQL server did not accept connections at {addr} within 15s: {error:?}").into()
+                    );
+                }
+                tokio::time::sleep(backoff).await;
+                backoff = (backoff * 2).min(Duration::from_millis(500));
             },
         }
     }
-    Err(format!("Flight SQL server did not accept connections at {addr}: {last_error:?}").into())
 }
 
 /// Renders RecordBatches to a sorted Vec of row strings for order-insensitive,

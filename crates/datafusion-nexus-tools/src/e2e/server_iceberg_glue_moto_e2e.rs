@@ -9,7 +9,7 @@ use datafusion_nexus::server::{
         NEXUS_ICEBERG_NAMESPACE_ENV, NEXUS_ICEBERG_S3_ENDPOINT_ENV, NEXUS_ICEBERG_S3_PATH_STYLE_ENV,
         NEXUS_ICEBERG_S3_REGION_ENV, NEXUS_SERVER_SESSION_PROFILE_ENV,
     },
-    serve,
+    serve_with_listener,
 };
 use futures::TryStreamExt;
 use iceberg::{
@@ -91,11 +91,11 @@ async fn validate_flight_sql_server(
     namespace: &NamespaceIdent,
     table: &str,
 ) -> E2eResult<()> {
-    let addr = free_local_addr();
+    let (listener, addr) = free_local_addr();
     let mut config = ServerConfig::from_env_get(|name| local_env.get(name).cloned())?;
     config.bind_addr = addr;
 
-    let server = tokio::spawn(async move { serve(config).await });
+    let server = tokio::spawn(async move { serve_with_listener(config, listener).await });
     let mut client = connect_with_retry(addr).await;
 
     let sql = format!("SELECT count(*) AS row_count FROM glue.\"{}\".{table}", namespace);
@@ -134,24 +134,44 @@ async fn query_count(client: &mut FlightSqlServiceClient<tonic::transport::Chann
     int_value(batches[0].column(0)).ok_or_else(|| "could not read count from result".into())
 }
 
-fn free_local_addr() -> std::net::SocketAddr {
+/// Warm the process-wide CUDA context exactly once. The first CUDA call pays a
+/// multi-second `cuInit()` cost; doing it before spawning the server keeps that
+/// cost off the connect window, and the `OnceLock` collapses concurrent callers
+/// onto a single init.
+fn warm_cuda_once() {
+    static CUDA_WARM: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+    CUDA_WARM.get_or_init(|| {
+        // Best-effort: serve_with_listener re-runs (and surfaces) any error.
+        let _ = datafusion_nexus::server::init_cuda_device(0);
+    });
+}
+
+/// Reserve a loopback port and hand back the live listener so the caller can
+/// pass it straight to `serve_with_listener`. Keeping the socket bound closes
+/// the bind/serve gap where another process could steal the port.
+fn free_local_addr() -> (TcpListener, std::net::SocketAddr) {
+    warm_cuda_once();
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    listener.local_addr().unwrap()
+    let addr = listener.local_addr().unwrap();
+    (listener, addr)
 }
 
 async fn connect_with_retry(addr: std::net::SocketAddr) -> FlightSqlServiceClient<tonic::transport::Channel> {
     let uri = format!("http://{addr}");
-    let mut last_error = None;
-    for _ in 0..100 {
+    let deadline = std::time::Instant::now() + Duration::from_secs(15);
+    let mut backoff = Duration::from_millis(10);
+    loop {
         match Endpoint::from_shared(uri.clone()).unwrap().connect().await {
             Ok(channel) => return FlightSqlServiceClient::new(channel),
             Err(error) => {
-                last_error = Some(error);
-                tokio::time::sleep(Duration::from_millis(100)).await;
+                if std::time::Instant::now() >= deadline {
+                    panic!("Flight SQL server did not accept connections at {addr} within 15s: {error:?}");
+                }
+                tokio::time::sleep(backoff).await;
+                backoff = (backoff * 2).min(Duration::from_millis(500));
             },
         }
     }
-    panic!("Flight SQL server did not accept connections at {addr}: {last_error:?}");
 }
 
 fn int_value(array: &arrow::array::ArrayRef) -> Option<i64> {
