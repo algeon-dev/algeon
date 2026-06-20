@@ -201,6 +201,22 @@ pub(super) fn status_with_query_id(mut status: Status, query_id: &str) -> Status
     status
 }
 
+pub(super) fn status_with_query_id_and_correlation_id(
+    mut status: Status,
+    query_id: &str,
+    correlation_id: Option<&str>,
+) -> Status {
+    if let Ok(value) = MetadataValue::try_from(query_id) {
+        status.metadata_mut().insert(QUERY_ID_METADATA_KEY, value);
+    }
+    if let Some(correlation_id) = correlation_id
+        && let Ok(value) = MetadataValue::try_from(correlation_id)
+    {
+        status.metadata_mut().insert(CORRELATION_ID_METADATA_KEY, value);
+    }
+    status
+}
+
 pub(super) fn status_outcome(code: Code) -> &'static str {
     if code == Code::Cancelled { "cancelled" } else { "failed" }
 }

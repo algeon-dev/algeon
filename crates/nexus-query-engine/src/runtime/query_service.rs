@@ -14,9 +14,9 @@ use super::{
     DeploymentIoCapability, ExecutionBoundaryPolicy, ExecutionCancellation, ExecutionContext, ExecutionContextParts,
     GdsConcurrencyGate, GpuInventory, GrantRequest, HostFetchBudget, LeastLoadedPlacement, MemoryControlPolicy,
     MemoryGovernor, MemoryGovernorReport, MemoryGrant, MemoryResourcePolicy, PlacementPolicy, PlacementRequest,
-    SourceChunkPlanningMode, SourceFetchConcurrencyGate, SourceFetchConfig, SourceObjectStoreRegistry,
-    SourceSchedulerPolicy, SourceStorageProfile, default_host_fetch_budget_bytes, default_lakehouse_cache_fill_runtime,
-    default_source_fetch_runtime, validate_service_stream_pool_device,
+    Priority, QueryQos, SourceChunkPlanningMode, SourceFetchConcurrencyGate, SourceFetchConfig,
+    SourceObjectStoreRegistry, SourceSchedulerPolicy, SourceStorageProfile, default_host_fetch_budget_bytes,
+    default_lakehouse_cache_fill_runtime, default_source_fetch_runtime, validate_service_stream_pool_device,
 };
 use crate::{
     adaptive_runtime::AdaptiveMemoryHistory,
@@ -426,6 +426,8 @@ struct AdmissionState {
 struct AdmissionRequest {
     request_id: u64,
     tenant_id: TenantId,
+    grant_policy: TenantGrantPolicy,
+    qos: QueryQos,
 }
 
 #[derive(Debug)]
@@ -742,11 +744,19 @@ impl QueryService {
     /// Queue overflow and wait timeout return `service_overloaded` instead of
     /// parking the caller indefinitely.
     pub fn admit_query(&self, tenant_id: impl Into<TenantId>) -> Result<QueryHandle> {
+        self.admit_query_with_qos(tenant_id, QueryQos::default())
+    }
+
+    /// Admits a query with caller-supplied QoS metadata.
+    ///
+    /// Priority affects queued admission order only; it does not preempt active
+    /// CUDA work or change memory-governor accounting.
+    pub fn admit_query_with_qos(&self, tenant_id: impl Into<TenantId>, qos: QueryQos) -> Result<QueryHandle> {
         let tenant_id = tenant_id.into();
         let grant_policy = self.tenant_grant_policy(&tenant_id)?;
         let request_id = self.inner.next_query_id.fetch_add(1, Ordering::Relaxed);
         let requested_at = Instant::now();
-        let request = AdmissionRequest { request_id, tenant_id: tenant_id.clone() };
+        let request = AdmissionRequest { request_id, tenant_id: tenant_id.clone(), grant_policy, qos };
         let deadline = requested_at.checked_add(self.inner.config.admission_wait_timeout).unwrap_or(requested_at);
 
         let mut state = self.lock_admission()?;
@@ -769,11 +779,17 @@ impl QueryService {
                 self.inner.admission_available.notify_all();
                 return Err(service_closed_error(&tenant_id));
             }
-            if self.request_is_admissible(&state, request_id)
+            if self.request_is_admissible(&state, request_id)?
                 && let Some(position) = state.queued.iter().position(|queued| queued.request_id == request_id)
             {
-                let Some(placed_query) =
-                    self.try_place_query(&tenant_id, request_id, grant_policy, Some(deadline), state.active_queries)?
+                let Some(placed_query) = self.try_place_query(
+                    &tenant_id,
+                    request_id,
+                    grant_policy,
+                    qos,
+                    Some(deadline),
+                    state.active_queries,
+                )?
                 else {
                     let now = Instant::now();
                     if now >= deadline {
@@ -871,6 +887,15 @@ impl QueryService {
     /// Call [`QueryAdmissionWaiter::try_admit`] until it returns a handle. If
     /// the waiter is dropped first, the queued request is removed.
     pub fn enqueue_admission(&self, tenant_id: impl Into<TenantId>) -> Result<QueryAdmissionWaiter> {
+        self.enqueue_admission_with_qos(tenant_id, QueryQos::default())
+    }
+
+    /// Enqueues a query admission request with caller-supplied QoS metadata.
+    pub fn enqueue_admission_with_qos(
+        &self,
+        tenant_id: impl Into<TenantId>,
+        qos: QueryQos,
+    ) -> Result<QueryAdmissionWaiter> {
         let tenant_id = tenant_id.into();
         let grant_policy = self.tenant_grant_policy(&tenant_id)?;
         let request_id = self.inner.next_query_id.fetch_add(1, Ordering::Relaxed);
@@ -888,7 +913,7 @@ impl QueryService {
                 self.inner.config.max_admission_queue_len,
             ));
         }
-        state.queued.push_back(AdmissionRequest { request_id, tenant_id: tenant_id.clone() });
+        state.queued.push_back(AdmissionRequest { request_id, tenant_id: tenant_id.clone(), grant_policy, qos });
         self.inner.admission_available.notify_all();
         Ok(QueryAdmissionWaiter {
             service: self.clone(),
@@ -906,6 +931,16 @@ impl QueryService {
     /// Returns `Ok(None)` when all admission slots are active or when queued
     /// requests already exist and this caller must not bypass them.
     pub fn try_admit_query(&self, tenant_id: impl Into<TenantId>) -> Result<Option<QueryHandle>> {
+        self.try_admit_query_with_qos(tenant_id, QueryQos::default())
+    }
+
+    /// Attempts to admit a query with caller-supplied QoS metadata without
+    /// queueing or waiting.
+    pub fn try_admit_query_with_qos(
+        &self,
+        tenant_id: impl Into<TenantId>,
+        qos: QueryQos,
+    ) -> Result<Option<QueryHandle>> {
         let tenant_id = tenant_id.into();
         let grant_policy = self.tenant_grant_policy(&tenant_id)?;
         let mut state = self.lock_admission()?;
@@ -917,7 +952,7 @@ impl QueryService {
         }
         let query_id = self.inner.next_query_id.fetch_add(1, Ordering::Relaxed);
         let Some(placed_query) =
-            self.try_place_query(&tenant_id, query_id, grant_policy, None, state.active_queries)?
+            self.try_place_query(&tenant_id, query_id, grant_policy, qos, None, state.active_queries)?
         else {
             return Ok(None);
         };
@@ -1028,6 +1063,7 @@ impl QueryService {
         governor: &MemoryGovernor,
         query_id: u64,
         grant_policy: TenantGrantPolicy,
+        qos: QueryQos,
         deadline: Option<Instant>,
         active_queries: usize,
     ) -> Result<Option<MemoryGrant>> {
@@ -1041,6 +1077,7 @@ impl QueryService {
             self.reserved_min_bytes_for_remaining_slots(active_queries),
         );
         let mut request = GrantRequest::new(query_id, grant_policy.min_bytes, want_bytes);
+        request = request.with_qos(qos);
         if let Some(deadline) = deadline {
             request = request.with_deadline(deadline);
         }
@@ -1052,6 +1089,7 @@ impl QueryService {
         tenant_id: &TenantId,
         query_id: u64,
         grant_policy: TenantGrantPolicy,
+        qos: QueryQos,
         deadline: Option<Instant>,
         active_queries: usize,
     ) -> Result<Option<PlacedQuery>> {
@@ -1060,6 +1098,7 @@ impl QueryService {
                 &self.inner.fallback_memory_governor,
                 query_id,
                 grant_policy,
+                qos,
                 deadline,
                 active_queries,
             )?
@@ -1085,6 +1124,7 @@ impl QueryService {
                 self.reserved_min_bytes_for_selected_device(resources, device, active_queries)?;
             let want_bytes = self.grant_want_bytes(available_bytes, grant_policy, reserved_for_remaining_slots);
             let mut request = GrantRequest::new(query_id, grant_policy.min_bytes, want_bytes);
+            request = request.with_qos(qos);
             if let Some(deadline) = deadline {
                 request = request.with_deadline(deadline);
             }
@@ -1177,28 +1217,52 @@ impl QueryService {
         })
     }
 
-    fn request_is_admissible(&self, state: &AdmissionState, request_id: u64) -> bool {
+    fn request_is_admissible(&self, state: &AdmissionState, request_id: u64) -> Result<bool> {
         if state.active_queries >= self.inner.config.max_concurrent_queries {
-            return false;
+            return Ok(false);
         }
-        let Some(selected) = self.select_next_request(state) else {
-            return false;
+        let Some(position) = self.select_next_request_position(state)? else {
+            return Ok(false);
         };
-        selected.request_id == request_id
+        Ok(state.queued[position].request_id == request_id)
     }
 
-    fn select_next_request<'a>(&self, state: &'a AdmissionState) -> Option<&'a AdmissionRequest> {
+    fn select_next_request_position(&self, state: &AdmissionState) -> Result<Option<usize>> {
         if state.queued.is_empty() {
-            return None;
+            return Ok(None);
         }
-        for offset in 0..self.inner.tenant_order.len() {
-            let tenant_index = (state.next_tenant_index + offset) % self.inner.tenant_order.len();
-            let tenant_id = &self.inner.tenant_order[tenant_index];
-            if let Some(request) = state.queued.iter().find(|request| &request.tenant_id == tenant_id) {
-                return Some(request);
+
+        let mut first_candidate = None;
+        for priority in Priority::DESCENDING {
+            for offset in 0..self.inner.tenant_order.len() {
+                let tenant_index = (state.next_tenant_index + offset) % self.inner.tenant_order.len();
+                let tenant_id = &self.inner.tenant_order[tenant_index];
+                for position in state.queued.iter().enumerate().filter_map(|(position, request)| {
+                    (&request.tenant_id == tenant_id && request.qos.priority() == priority).then_some(position)
+                }) {
+                    first_candidate.get_or_insert(position);
+                    if self.request_can_receive_minimum_grant(&state.queued[position])? {
+                        return Ok(Some(position));
+                    }
+                }
             }
         }
-        state.queued.front()
+
+        Ok(first_candidate.or(Some(0)))
+    }
+
+    fn request_can_receive_minimum_grant(&self, request: &AdmissionRequest) -> Result<bool> {
+        let Some(resources) = &self.inner.resources else {
+            return Ok(self.inner.fallback_memory_governor.available_bytes()? >= request.grant_policy.min_bytes);
+        };
+        for context in resources.devices.contexts() {
+            if context.capacity_bytes() >= request.grant_policy.min_bytes
+                && context.available_bytes()? >= request.grant_policy.min_bytes
+            {
+                return Ok(true);
+            }
+        }
+        Ok(false)
     }
 
     fn rotate_after_admission(&self, state: &mut AdmissionState, tenant_id: &TenantId) {
@@ -1233,13 +1297,14 @@ impl QueryAdmissionWaiter {
             self.service.inner.admission_available.notify_all();
             return Err(service_closed_error(&self.tenant_id));
         }
-        if self.service.request_is_admissible(&state, self.request_id)
+        if self.service.request_is_admissible(&state, self.request_id)?
             && let Some(position) = state.queued.iter().position(|queued| queued.request_id == self.request_id)
         {
             let Some(placed_query) = self.service.try_place_query(
                 &self.tenant_id,
                 self.request_id,
                 self.grant_policy,
+                state.queued[position].qos,
                 Some(self.deadline),
                 state.active_queries,
             )?
@@ -2151,6 +2216,72 @@ mod tests {
 
         assert_eq!(error.code(), QueryErrorCode::ServiceOverloaded);
         assert_eq!(error.fact_value("reason"), Some("memory_grant_wait_timeout"));
+    }
+
+    #[test]
+    fn query_service_work_conserving_admission_skips_memory_blocked_head() {
+        let service = QueryService::new_for_admission_tests(
+            QueryServiceConfig {
+                device_capacity_bytes: Some(100),
+                max_concurrent_queries: 2,
+                max_admission_queue_len: 8,
+                ..QueryServiceConfig::default()
+            },
+            vec![
+                QueryServiceTenantConfig::new("holder", 90),
+                QueryServiceTenantConfig::new("large", 100),
+                QueryServiceTenantConfig::new("small", 10),
+            ],
+            non_gds_deployment(),
+        )
+        .unwrap();
+        let _active = service.admit_query("holder").unwrap();
+        let mut large = service.enqueue_admission("large").unwrap();
+        let mut small = service.enqueue_admission("small").unwrap();
+
+        assert!(large.try_admit().unwrap().is_none());
+        let admitted_small = small.try_admit().unwrap().expect("small query should pass memory-blocked large query");
+
+        assert_eq!(admitted_small.tenant_id().as_str(), "small");
+        assert_eq!(admitted_small.device_budget_bytes(), 10);
+        assert_eq!(admitted_small.admission_sequence(), 2);
+        let snapshot = service.admission_snapshot().unwrap();
+        assert_eq!(snapshot.active_queries, 2);
+        assert_eq!(snapshot.queued_queries, 1);
+        assert_eq!(snapshot.queued_by_tenant[1].tenant_id.as_str(), "large");
+        assert_eq!(snapshot.queued_by_tenant[1].queued_queries, 1);
+    }
+
+    #[test]
+    fn query_service_admission_priority_passes_lower_priority_queue_head() {
+        let service = QueryService::new_for_admission_tests(
+            QueryServiceConfig {
+                device_capacity_bytes: Some(100),
+                max_concurrent_queries: 1,
+                max_admission_queue_len: 8,
+                ..QueryServiceConfig::default()
+            },
+            vec![
+                QueryServiceTenantConfig::new("holder", 100),
+                QueryServiceTenantConfig::new("normal", 10),
+                QueryServiceTenantConfig::new("high", 10),
+            ],
+            non_gds_deployment(),
+        )
+        .unwrap();
+        let active = service.admit_query("holder").unwrap();
+        let mut normal = service.enqueue_admission("normal").unwrap();
+        let mut high = service.enqueue_admission_with_qos("high", QueryQos::new(Priority::High)).unwrap();
+        drop(active);
+
+        assert!(normal.try_admit().unwrap().is_none());
+        let admitted_high = high.try_admit().unwrap().expect("high-priority query should pass normal-priority head");
+
+        assert_eq!(admitted_high.tenant_id().as_str(), "high");
+        assert_eq!(admitted_high.admission_sequence(), 2);
+        let report = service.memory_governor_report().unwrap();
+        assert_eq!(report.grants.len(), 1);
+        assert_eq!(report.grants[0].priority, "high");
     }
 
     #[test]
