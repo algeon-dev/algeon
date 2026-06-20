@@ -43,8 +43,7 @@ pub const NEXUS_SERVER_MAX_CONCURRENT_QUERIES_ENV: &str = "NEXUS_SERVER_MAX_CONC
 /// auto-sized `total - headroom` behavior.
 pub const NEXUS_SERVER_DEVICE_BUDGET_FRACTION_ENV: &str = "NEXUS_SERVER_DEVICE_BUDGET_FRACTION";
 /// Comma-separated CUDA device ordinals available to the Flight SQL server.
-/// Phase 2 accepts exactly one ordinal; multi-GPU placement is reserved for
-/// Phase 3.
+/// Independent queries are placed across this set by the native query service.
 pub const NEXUS_SERVER_GPU_DEVICES_ENV: &str = "NEXUS_SERVER_GPU_DEVICES";
 /// Seconds an unconsumed Flight SQL statement ticket may hold admission before
 /// it expires and releases its slot. Defaults to `300`.
@@ -674,12 +673,6 @@ fn server_gpu_devices(values: &mut EnvValues<'_>) -> Result<Vec<usize>> {
             return Err(ServerError::invalid_config(NEXUS_SERVER_GPU_DEVICES_ENV, "must not contain duplicates"));
         }
         devices.push(ordinal);
-    }
-    if devices.len() != 1 {
-        return Err(ServerError::invalid_config(
-            NEXUS_SERVER_GPU_DEVICES_ENV,
-            "phase-2 server admission accepts exactly one GPU ordinal; multi-GPU placement is reserved for Phase 3",
-        ));
     }
     Ok(devices)
 }

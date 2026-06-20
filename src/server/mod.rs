@@ -2,8 +2,7 @@
 
 #[cfg(feature = "iceberg")]
 use std::borrow::Cow;
-use std::sync::Arc;
-use std::time::Instant;
+use std::{sync::Arc, time::Instant};
 
 use arrow_flight::flight_service_server::FlightServiceServer;
 use nexus_query_engine::MemoryControlPolicy;

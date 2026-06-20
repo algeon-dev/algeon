@@ -29,6 +29,7 @@ pub struct QueryAdmission {
 #[derive(Debug)]
 struct ServerQueryServiceAdmissionConfig {
     service_config: QueryServiceConfig,
+    device_ordinals: Vec<usize>,
     tenant_config: QueryServiceTenantConfig,
     tenant_id: TenantId,
 }
@@ -49,8 +50,12 @@ impl QueryAdmission {
             return Self::new(config.max_in_flight);
         };
         let tenant_id = admission_config.tenant_id.clone();
-        let service = QueryService::new(admission_config.service_config, vec![admission_config.tenant_config])
-            .map_err(|error| ServerError::session("failed to initialize query service admission", error))?;
+        let service = QueryService::new_with_device_ordinals(
+            admission_config.service_config,
+            admission_config.device_ordinals,
+            vec![admission_config.tenant_config],
+        )
+        .map_err(|error| ServerError::session("failed to initialize query service admission", error))?;
         Ok(Self {
             backend: QueryAdmissionBackend::QueryService { service, tenant_id },
             max_in_flight: config.max_in_flight,
@@ -191,7 +196,7 @@ fn server_query_service_admission_config(config: &ServerConfig) -> Result<Option
     if max_in_flight == 0 {
         return Err(ServerError::invalid_config("max_in_flight", "must be greater than zero"));
     }
-    let tenant_budget_bytes = partitioned_query_budget_bytes(device_budget_bytes, max_in_flight)?;
+    let tenant_min_budget_bytes = partitioned_query_budget_bytes(device_budget_bytes, max_in_flight)?;
     let device_ordinal = *config.gpu_devices.first().unwrap_or(&0);
     // Phase 2 keeps the deadlock-sensitive order explicit:
     // admission permit -> root/source stream leases -> bounded memory grants.
@@ -214,6 +219,7 @@ fn server_query_service_admission_config(config: &ServerConfig) -> Result<Option
         aggregate_strategy_execution_options: native.aggregate_strategy_execution_options(),
         source_chunk_planning_options: native.source_chunk_planning_options(),
         stream_pool_size: Some(stream_pool_size),
+        device_capacity_bytes: Some(device_budget_bytes),
         max_concurrent_queries: max_in_flight,
         max_admission_queue_len: server_admission_queue_len(max_in_flight),
         max_source_chunk_bytes,
@@ -223,8 +229,14 @@ fn server_query_service_admission_config(config: &ServerConfig) -> Result<Option
         ..QueryServiceConfig::default()
     };
     let tenant_id = TenantId::new(DEFAULT_SERVER_TENANT_ID);
-    let tenant_config = QueryServiceTenantConfig::new(tenant_id.clone(), tenant_budget_bytes);
-    Ok(Some(ServerQueryServiceAdmissionConfig { service_config, tenant_config, tenant_id }))
+    let tenant_config =
+        QueryServiceTenantConfig::with_grant_range(tenant_id.clone(), tenant_min_budget_bytes, device_budget_bytes);
+    Ok(Some(ServerQueryServiceAdmissionConfig {
+        service_config,
+        device_ordinals: config.gpu_devices.clone(),
+        tenant_config,
+        tenant_id,
+    }))
 }
 
 fn partitioned_query_budget_bytes(capacity_bytes: u64, max_concurrent_queries: usize) -> Result<u64> {
@@ -274,9 +286,30 @@ mod tests {
             .expect("bounded native config should use QueryService admission");
 
         assert_eq!(admission.service_config.max_concurrent_queries, 3);
-        assert_eq!(admission.tenant_config.device_budget_bytes, 1024);
-        assert!(admission.tenant_config.device_budget_bytes * 3 <= 3072);
+        assert_eq!(admission.device_ordinals, vec![0]);
+        assert_eq!(admission.service_config.device_capacity_bytes, Some(3072));
+        assert_eq!(admission.tenant_config.min_device_budget_bytes, 1024);
+        assert_eq!(admission.tenant_config.device_budget_bytes, 3072);
         assert_eq!(admission.service_config.stream_pool_size, Some(9));
         assert_eq!(admission.service_config.source_scheduler_policy.max_source_reads_in_flight(), 2);
+    }
+
+    #[test]
+    fn server_query_service_config_preserves_multi_gpu_device_subset() {
+        let env = std::collections::BTreeMap::from([
+            (super::super::config::NEXUS_SERVER_GPU_DEVICES_ENV, "0,1".to_string()),
+            (super::super::config::NEXUS_SERVER_MAX_CONCURRENT_QUERIES_ENV, "2".to_string()),
+            (super::super::config::NEXUS_SERVER_NATIVE_DEVICE_BUDGET_BYTES_ENV, "2048".to_string()),
+            (super::super::config::NEXUS_SERVER_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV, "1024".to_string()),
+            (super::super::config::NEXUS_SERVER_NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV, "1".to_string()),
+        ]);
+        let config = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap();
+
+        let admission = server_query_service_admission_config(&config)
+            .unwrap()
+            .expect("bounded native config should use QueryService admission");
+
+        assert_eq!(admission.device_ordinals, vec![0, 1]);
+        assert_eq!(admission.service_config.device_ordinal, 0);
     }
 }

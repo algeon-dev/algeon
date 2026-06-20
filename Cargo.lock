@@ -2118,7 +2118,7 @@ dependencies = [
 
 [[package]]
 name = "datafusion-nexus"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "argon2",
  "arrow",
@@ -2162,7 +2162,7 @@ dependencies = [
 
 [[package]]
 name = "datafusion-nexus-bench"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "arrow",
  "async-trait",
@@ -2186,7 +2186,7 @@ dependencies = [
 
 [[package]]
 name = "datafusion-nexus-tools"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "arrow",
  "arrow-flight",
@@ -3791,7 +3791,7 @@ checksum = "9252111cf132ba0929b6f8e030cac2a24b507f3a4d6db6fb2896f27b354c714b"
 
 [[package]]
 name = "nexus-query-engine"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "arrow",
  "bytes",

@@ -497,9 +497,10 @@ async fn connect_with_retry(
             Ok(channel) => return Ok(FlightSqlServiceClient::new(channel)),
             Err(error) => {
                 if std::time::Instant::now() >= deadline {
-                    return Err(
-                        format!("Flight SQL server did not accept connections at {addr} within 15s: {error:?}").into()
-                    );
+                    return Err(format!(
+                        "Flight SQL server did not accept connections at {addr} within 15s: {error:?}"
+                    )
+                    .into());
                 }
                 tokio::time::sleep(backoff).await;
                 backoff = (backoff * 2).min(Duration::from_millis(500));

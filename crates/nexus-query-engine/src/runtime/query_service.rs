@@ -12,7 +12,8 @@ use std::{
 
 use super::{
     DeploymentIoCapability, ExecutionBoundaryPolicy, ExecutionCancellation, ExecutionContext, ExecutionContextParts,
-    GdsConcurrencyGate, HostFetchBudget, MemoryControlPolicy, MemoryResourcePolicy, ServiceStreamPool,
+    GdsConcurrencyGate, GpuInventory, GrantRequest, HostFetchBudget, LeastLoadedPlacement, MemoryControlPolicy,
+    MemoryGovernor, MemoryGovernorReport, MemoryGrant, MemoryResourcePolicy, PlacementPolicy, PlacementRequest,
     SourceChunkPlanningMode, SourceFetchConcurrencyGate, SourceFetchConfig, SourceObjectStoreRegistry,
     SourceSchedulerPolicy, SourceStorageProfile, default_host_fetch_budget_bytes, default_lakehouse_cache_fill_runtime,
     default_source_fetch_runtime, validate_service_stream_pool_device,
@@ -76,18 +77,39 @@ impl fmt::Display for TenantId {
 pub struct QueryServiceTenantConfig {
     /// Tenant admitted by the query service.
     pub tenant_id: TenantId,
-    /// Per-query device budget for this tenant's query handles, in bytes.
+    /// Preferred per-query device budget for this tenant's query handles, in bytes.
     pub device_budget_bytes: u64,
+    /// Minimum device budget required to admit this tenant's query handles, in bytes.
+    pub min_device_budget_bytes: u64,
 }
 
 impl QueryServiceTenantConfig {
-    /// Creates a tenant config with a fixed bounded device-memory slice.
+    /// Creates a tenant config with a fixed bounded device-memory grant.
     pub fn new(tenant_id: impl Into<TenantId>, device_budget_bytes: u64) -> Self {
-        Self { tenant_id: tenant_id.into(), device_budget_bytes }
+        Self { tenant_id: tenant_id.into(), device_budget_bytes, min_device_budget_bytes: device_budget_bytes }
+    }
+
+    /// Creates a tenant config with separate minimum and preferred grants.
+    pub fn with_grant_range(
+        tenant_id: impl Into<TenantId>,
+        min_device_budget_bytes: u64,
+        device_budget_bytes: u64,
+    ) -> Self {
+        Self { tenant_id: tenant_id.into(), device_budget_bytes, min_device_budget_bytes }
     }
 
     fn validate(&self) -> Result<()> {
         self.tenant_id.validate()?;
+        if self.min_device_budget_bytes == 0 {
+            return Err(QueryError::new(
+                QueryErrorCode::InvalidPlan,
+                "nexus_query_engine.query_service.tenant.validate",
+                "tenant minimum device budget bytes must be greater than zero",
+            )
+            .with_fact("tenant_id", self.tenant_id.as_str())
+            .with_fact("field", "min_device_budget_bytes")
+            .with_fact("reason", "zero"));
+        }
         if self.device_budget_bytes == 0 {
             return Err(QueryError::new(
                 QueryErrorCode::InvalidPlan,
@@ -97,6 +119,17 @@ impl QueryServiceTenantConfig {
             .with_fact("tenant_id", self.tenant_id.as_str())
             .with_fact("field", "device_budget_bytes")
             .with_fact("reason", "zero"));
+        }
+        if self.device_budget_bytes < self.min_device_budget_bytes {
+            return Err(QueryError::new(
+                QueryErrorCode::InvalidPlan,
+                "nexus_query_engine.query_service.tenant.validate",
+                "tenant preferred device budget must be at least the minimum device budget",
+            )
+            .with_fact("tenant_id", self.tenant_id.as_str())
+            .with_fact("field", "device_budget_bytes")
+            .with_fact("bound_field", "min_device_budget_bytes")
+            .with_fact("reason", "device_budget_below_minimum"));
         }
         Ok(())
     }
@@ -133,6 +166,11 @@ pub struct QueryServiceConfig {
     pub source_chunk_planning_options: SourceChunkPlanningOptions,
     /// Optional service stream pool size. `None` uses the SM-aware default.
     pub stream_pool_size: Option<usize>,
+    /// Soft memory-governor capacity for the configured CUDA device.
+    ///
+    /// `None` preserves fixed-slice callers by sizing capacity from tenant
+    /// grants and `max_concurrent_queries`.
+    pub device_capacity_bytes: Option<u64>,
     /// Maximum number of admitted query handles active at one time.
     pub max_concurrent_queries: usize,
     /// Maximum number of queued query admissions across all tenants.
@@ -171,6 +209,9 @@ impl QueryServiceConfig {
         }
         validate_nonzero_config_field("max_concurrent_queries", self.max_concurrent_queries == 0)?;
         validate_nonzero_config_field("max_admission_queue_len", self.max_admission_queue_len == 0)?;
+        if let Some(device_capacity_bytes) = self.device_capacity_bytes {
+            validate_nonzero_config_field("device_capacity_bytes", device_capacity_bytes == 0)?;
+        }
         validate_nonzero_config_field("max_source_chunk_bytes", self.max_source_chunk_bytes == 0)?;
         validate_nonzero_config_field("max_row_groups_per_chunk", self.max_row_groups_per_chunk == 0)?;
         validate_nonzero_config_field("max_retry_attempts", self.max_retry_attempts == 0)?;
@@ -221,6 +262,7 @@ impl Default for QueryServiceConfig {
             aggregate_strategy_execution_options: AggregateStrategyExecutionOptions::default(),
             source_chunk_planning_options: SourceChunkPlanningOptions::default(),
             stream_pool_size: None,
+            device_capacity_bytes: None,
             max_concurrent_queries: SourceFetchConfig::DEFAULT_HOST_FETCH_MAX_CONCURRENT_OPS,
             max_admission_queue_len: SourceFetchConfig::DEFAULT_HOST_FETCH_MAX_CONCURRENT_OPS,
             admission_wait_timeout: Duration::from_secs(30),
@@ -272,6 +314,28 @@ fn validate_stream_pool_admission_capacity(
     Ok(())
 }
 
+fn default_stream_pool_size_for_ordinals(device_ordinals: &[usize]) -> Result<usize> {
+    let ordinals = if device_ordinals.is_empty() {
+        let device_count = super::CudfInventory.device_count()?;
+        (0..device_count).collect::<Vec<_>>()
+    } else {
+        device_ordinals.to_vec()
+    };
+    let mut default_size = 0;
+    for ordinal in ordinals {
+        let device = cudf::DeviceId::new(ordinal).map_err(|error| {
+            QueryError::from_cudf(
+                "nexus_query_engine.query_service.device",
+                "failed to resolve query service CUDA device",
+                error,
+            )
+            .with_fact("device_ordinal", ordinal)
+        })?;
+        default_size = default_size.max(super::default_service_stream_pool_size_for_device(device));
+    }
+    Ok(default_size)
+}
+
 /// Service-level entry point for tenant-aware native query admission.
 #[derive(Clone, Debug)]
 pub struct QueryService {
@@ -312,15 +376,17 @@ pub struct QueryAdmissionWaiter {
     request_id: u64,
     requested_at: Instant,
     deadline: Instant,
-    device_budget_bytes: u64,
+    grant_policy: TenantGrantPolicy,
     queued: bool,
 }
 
 #[derive(Debug)]
 struct QueryServiceInner {
     config: QueryServiceConfig,
-    tenant_budgets: HashMap<TenantId, u64>,
+    tenant_grants: HashMap<TenantId, TenantGrantPolicy>,
     tenant_order: Vec<TenantId>,
+    max_tenant_min_bytes: u64,
+    fallback_memory_governor: MemoryGovernor,
     resources: Option<QueryServiceResources>,
     admission: Mutex<AdmissionState>,
     admission_available: Condvar,
@@ -328,9 +394,15 @@ struct QueryServiceInner {
     next_admission_sequence: AtomicU64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct TenantGrantPolicy {
+    min_bytes: u64,
+    want_bytes: u64,
+}
+
 #[derive(Debug, Clone)]
 struct QueryServiceResources {
-    devices: DeviceRegistry,
+    devices: super::DeviceRegistry,
     host_fetch_budget: HostFetchBudget,
     source_fetch_concurrency: SourceFetchConcurrencyGate,
     lakehouse_cache_fill_budget: HostFetchBudget,
@@ -340,50 +412,6 @@ struct QueryServiceResources {
     lakehouse_cache_fill_runtime: Arc<tokio::runtime::Runtime>,
     source_object_stores: Arc<SourceObjectStoreRegistry>,
     deployment_io_capability: DeploymentIoCapability,
-}
-
-#[derive(Debug, Clone)]
-struct DeviceRegistry {
-    devices: Vec<DeviceRuntimeResources>,
-}
-
-#[derive(Debug, Clone)]
-struct DeviceRuntimeResources {
-    stream_pool: ServiceStreamPool,
-}
-
-impl DeviceRegistry {
-    fn single(device: cudf::DeviceId, stream_pool_size: usize) -> Result<Self> {
-        let registry = Self {
-            devices: vec![DeviceRuntimeResources { stream_pool: ServiceStreamPool::new(device, stream_pool_size)? }],
-        };
-        registry.validate_single_device()?;
-        Ok(registry)
-    }
-
-    fn validate_single_device(&self) -> Result<()> {
-        if self.devices.len() != 1 {
-            return Err(QueryError::new(
-                QueryErrorCode::InvalidPlan,
-                "nexus_query_engine.query_service.device_registry",
-                "phase-2 query service device registry must contain exactly one device",
-            )
-            .with_fact("device_count", self.devices.len())
-            .with_fact("expected_device_count", 1));
-        }
-        Ok(())
-    }
-
-    fn primary(&self) -> Result<&DeviceRuntimeResources> {
-        self.validate_single_device()?;
-        self.devices.first().ok_or_else(|| {
-            QueryError::new(
-                QueryErrorCode::InvalidPlan,
-                "nexus_query_engine.query_service.device_registry",
-                "query service device registry is empty",
-            )
-        })
-    }
 }
 
 #[derive(Debug, Default)]
@@ -401,6 +429,12 @@ struct AdmissionRequest {
 }
 
 #[derive(Debug)]
+struct PlacedQuery {
+    device_ordinal: usize,
+    memory_grant: MemoryGrant,
+}
+
+#[derive(Debug)]
 struct QueryHandleLifetime {
     service: Arc<QueryServiceInner>,
     tenant_id: TenantId,
@@ -409,6 +443,7 @@ struct QueryHandleLifetime {
     released: AtomicBool,
     active_contexts: AtomicUsize,
     root_context: Mutex<Option<ExecutionContext>>,
+    memory_grant: Mutex<Option<MemoryGrant>>,
 }
 
 #[derive(Debug)]
@@ -417,7 +452,12 @@ struct QueryContextLifetimeGuard {
 }
 
 impl QueryHandleLifetime {
-    fn new(service: Arc<QueryServiceInner>, tenant_id: TenantId, query_id: u64) -> Arc<Self> {
+    fn new(
+        service: Arc<QueryServiceInner>,
+        tenant_id: TenantId,
+        query_id: u64,
+        memory_grant: MemoryGrant,
+    ) -> Arc<Self> {
         Arc::new(Self {
             service,
             tenant_id,
@@ -426,7 +466,23 @@ impl QueryHandleLifetime {
             released: AtomicBool::new(false),
             active_contexts: AtomicUsize::new(0),
             root_context: Mutex::new(None),
+            memory_grant: Mutex::new(Some(memory_grant)),
         })
+    }
+
+    fn memory_grant(&self) -> Result<MemoryGrant> {
+        self.memory_grant
+            .lock()
+            .map_err(|_error| {
+                QueryError::new(
+                    QueryErrorCode::Internal,
+                    "nexus_query_engine.query_service.context",
+                    "query service memory grant mutex was poisoned",
+                )
+            })?
+            .as_ref()
+            .cloned()
+            .ok_or_else(|| self.released_error())
     }
 
     fn retain_context(self: &Arc<Self>) -> Result<QueryContextLifetimeGuard> {
@@ -454,6 +510,15 @@ impl QueryHandleLifetime {
         if self.released.swap(true, Ordering::AcqRel) {
             return;
         }
+        match self.service.admission.lock() {
+            Ok(mut state) => {
+                state.active_queries = state.active_queries.saturating_sub(1);
+                self.service.admission_available.notify_all();
+            },
+            Err(_error) => {
+                eprintln!("[nexus-query-engine] warning: failed to release poisoned query service admission state");
+            },
+        }
         match self.root_context.lock() {
             Ok(mut context) => {
                 context.take();
@@ -462,13 +527,12 @@ impl QueryHandleLifetime {
                 eprintln!("[nexus-query-engine] warning: failed to drop poisoned query service root context");
             },
         }
-        match self.service.admission.lock() {
-            Ok(mut state) => {
-                state.active_queries = state.active_queries.saturating_sub(1);
-                self.service.admission_available.notify_all();
+        match self.memory_grant.lock() {
+            Ok(mut memory_grant) => {
+                memory_grant.take();
             },
             Err(_error) => {
-                eprintln!("[nexus-query-engine] warning: failed to release poisoned query service admission state");
+                eprintln!("[nexus-query-engine] warning: failed to drop poisoned query service memory grant");
             },
         }
     }
@@ -495,8 +559,18 @@ impl Drop for QueryContextLifetimeGuard {
 impl QueryService {
     /// Creates a service entry point and initializes service-owned runtime gates.
     pub fn new(config: QueryServiceConfig, tenants: Vec<QueryServiceTenantConfig>) -> Result<Self> {
+        let device_ordinals = vec![config.device_ordinal];
+        Self::new_with_device_ordinals(config, device_ordinals, tenants)
+    }
+
+    /// Creates a service entry point over an explicit set of CUDA device ordinals.
+    pub fn new_with_device_ordinals(
+        config: QueryServiceConfig,
+        device_ordinals: Vec<usize>,
+        tenants: Vec<QueryServiceTenantConfig>,
+    ) -> Result<Self> {
         let deployment = DeploymentIoCapability::cached_current_host();
-        Self::new_with_deployment(config, tenants, deployment)
+        Self::new_with_device_ordinals_and_deployment(config, device_ordinals, tenants, deployment)
     }
 
     /// Creates a service entry point with caller-supplied deployment diagnostics.
@@ -505,14 +579,18 @@ impl QueryService {
         tenants: Vec<QueryServiceTenantConfig>,
         deployment_io_capability: DeploymentIoCapability,
     ) -> Result<Self> {
-        let device = cudf::DeviceId::new(config.device_ordinal).map_err(|error| {
-            QueryError::from_cudf(
-                "nexus_query_engine.query_service.device",
-                "failed to resolve query service CUDA device",
-                error,
-            )
-        })?;
-        let default_stream_pool_size = super::default_service_stream_pool_size_for_device(device);
+        let device_ordinals = vec![config.device_ordinal];
+        Self::new_with_device_ordinals_and_deployment(config, device_ordinals, tenants, deployment_io_capability)
+    }
+
+    /// Creates a service entry point over explicit devices with caller-supplied deployment diagnostics.
+    pub fn new_with_device_ordinals_and_deployment(
+        config: QueryServiceConfig,
+        device_ordinals: Vec<usize>,
+        tenants: Vec<QueryServiceTenantConfig>,
+        deployment_io_capability: DeploymentIoCapability,
+    ) -> Result<Self> {
+        let default_stream_pool_size = default_stream_pool_size_for_ordinals(&device_ordinals)?;
         let minimum_stream_pool_size = minimum_stream_pool_size(
             config.max_concurrent_queries,
             config.source_scheduler_policy.max_source_reads_in_flight(),
@@ -524,8 +602,12 @@ impl QueryService {
             config.max_concurrent_queries,
             config.source_scheduler_policy.max_source_reads_in_flight(),
         )?;
+        let mut registry_config = super::DeviceRegistryConfig::new(device_ordinals, stream_pool_size);
+        if let Some(device_capacity_bytes) = config.device_capacity_bytes {
+            registry_config = registry_config.with_device_capacity_bytes(device_capacity_bytes);
+        }
         let resources = QueryServiceResources {
-            devices: DeviceRegistry::single(device, stream_pool_size)?,
+            devices: super::DeviceRegistry::install(&super::CudfInventory, &registry_config)?,
             host_fetch_budget: HostFetchBudget::new(
                 config.source_fetch.host_fetch_budget_bytes.unwrap_or_else(default_host_fetch_budget_bytes),
             )?,
@@ -583,11 +665,24 @@ impl QueryService {
             .with_fact("reason", "empty"));
         }
 
-        let mut tenant_budgets = HashMap::with_capacity(tenants.len());
+        let mut tenant_grants = HashMap::with_capacity(tenants.len());
         let mut tenant_order = Vec::with_capacity(tenants.len());
+        let mut max_tenant_want_bytes = 0u64;
+        let mut max_tenant_min_bytes = 0u64;
         for tenant in tenants {
             tenant.validate()?;
-            if tenant_budgets.insert(tenant.tenant_id.clone(), tenant.device_budget_bytes).is_some() {
+            max_tenant_want_bytes = max_tenant_want_bytes.max(tenant.device_budget_bytes);
+            max_tenant_min_bytes = max_tenant_min_bytes.max(tenant.min_device_budget_bytes);
+            if tenant_grants
+                .insert(
+                    tenant.tenant_id.clone(),
+                    TenantGrantPolicy {
+                        min_bytes: tenant.min_device_budget_bytes,
+                        want_bytes: tenant.device_budget_bytes,
+                    },
+                )
+                .is_some()
+            {
                 return Err(QueryError::new(
                     QueryErrorCode::InvalidPlan,
                     "nexus_query_engine.query_service.tenant.validate",
@@ -598,12 +693,40 @@ impl QueryService {
             }
             tenant_order.push(tenant.tenant_id);
         }
+        let max_concurrent_queries_u64 = u64::try_from(config.max_concurrent_queries).unwrap_or(u64::MAX);
+        let compatibility_capacity = max_tenant_want_bytes.saturating_mul(max_concurrent_queries_u64).max(1);
+        let device_capacity_bytes = config.device_capacity_bytes.unwrap_or(compatibility_capacity);
+        if device_capacity_bytes == 0 {
+            return Err(QueryError::new(
+                QueryErrorCode::InvalidPlan,
+                "nexus_query_engine.query_service.config.validate",
+                "query service device capacity bytes must be greater than zero",
+            )
+            .with_fact("field", "device_capacity_bytes")
+            .with_fact("reason", "zero"));
+        }
+        for (tenant_id, grant) in &tenant_grants {
+            if grant.min_bytes > device_capacity_bytes {
+                return Err(QueryError::new(
+                    QueryErrorCode::InvalidPlan,
+                    "nexus_query_engine.query_service.tenant.validate",
+                    "tenant minimum device budget exceeds memory governor capacity",
+                )
+                .with_fact("tenant_id", tenant_id.as_str())
+                .with_fact("field", "min_device_budget_bytes")
+                .with_fact("reason", "min_device_budget_above_capacity")
+                .with_fact("device_capacity_bytes", device_capacity_bytes));
+            }
+        }
+        let fallback_memory_governor = MemoryGovernor::new(config.device_ordinal, device_capacity_bytes)?;
 
         Ok(Self {
             inner: Arc::new(QueryServiceInner {
                 config,
-                tenant_budgets,
+                tenant_grants,
                 tenant_order,
+                max_tenant_min_bytes,
+                fallback_memory_governor,
                 resources,
                 admission: Mutex::new(AdmissionState::default()),
                 admission_available: Condvar::new(),
@@ -620,7 +743,7 @@ impl QueryService {
     /// parking the caller indefinitely.
     pub fn admit_query(&self, tenant_id: impl Into<TenantId>) -> Result<QueryHandle> {
         let tenant_id = tenant_id.into();
-        let device_budget_bytes = self.tenant_budget(&tenant_id)?;
+        let grant_policy = self.tenant_grant_policy(&tenant_id)?;
         let request_id = self.inner.next_query_id.fetch_add(1, Ordering::Relaxed);
         let requested_at = Instant::now();
         let request = AdmissionRequest { request_id, tenant_id: tenant_id.clone() };
@@ -649,19 +772,64 @@ impl QueryService {
             if self.request_is_admissible(&state, request_id)
                 && let Some(position) = state.queued.iter().position(|queued| queued.request_id == request_id)
             {
+                let Some(placed_query) =
+                    self.try_place_query(&tenant_id, request_id, grant_policy, Some(deadline), state.active_queries)?
+                else {
+                    let now = Instant::now();
+                    if now >= deadline {
+                        remove_queued_request(&mut state, request_id);
+                        self.inner.admission_available.notify_all();
+                        return Err(service_overloaded_error(
+                            "memory_grant_wait_timeout",
+                            &tenant_id,
+                            state.queued.len(),
+                            self.inner.config.max_admission_queue_len,
+                        ));
+                    }
+                    let wait = deadline.saturating_duration_since(now);
+                    let (next_state, timeout) =
+                        self.inner.admission_available.wait_timeout(state, wait).map_err(|_error| {
+                            QueryError::new(
+                                QueryErrorCode::Internal,
+                                "nexus_query_engine.query_service.admission",
+                                "query service admission mutex was poisoned while waiting",
+                            )
+                        })?;
+                    state = next_state;
+                    if timeout.timed_out() {
+                        remove_queued_request(&mut state, request_id);
+                        self.inner.admission_available.notify_all();
+                        return Err(service_overloaded_error(
+                            "memory_grant_wait_timeout",
+                            &tenant_id,
+                            state.queued.len(),
+                            self.inner.config.max_admission_queue_len,
+                        ));
+                    }
+                    continue;
+                };
                 let admitted = state.queued.remove(position).expect("admissible request exists");
+                self.attach_admission_release_wakeup(&placed_query.memory_grant)?;
                 state.active_queries = state.active_queries.saturating_add(1);
                 self.rotate_after_admission(&mut state, &admitted.tenant_id);
                 let admission_sequence = self.inner.next_admission_sequence.fetch_add(1, Ordering::Relaxed);
                 let service = Arc::clone(&self.inner);
+                let device_budget_bytes = placed_query.memory_grant.budget_bytes();
+                let device_ordinal = placed_query.device_ordinal;
                 return Ok(QueryHandle {
-                    lifetime: QueryHandleLifetime::new(Arc::clone(&service), tenant_id.clone(), request_id),
+                    lifetime: QueryHandleLifetime::new(
+                        Arc::clone(&service),
+                        tenant_id.clone(),
+                        request_id,
+                        placed_query.memory_grant,
+                    ),
                     service,
                     tenant_id,
                     query_id: request_id,
                     admission_sequence,
                     admission_wait: requested_at.elapsed(),
                     device_budget_bytes,
+                    device_ordinal,
                 });
             }
 
@@ -704,7 +872,7 @@ impl QueryService {
     /// the waiter is dropped first, the queued request is removed.
     pub fn enqueue_admission(&self, tenant_id: impl Into<TenantId>) -> Result<QueryAdmissionWaiter> {
         let tenant_id = tenant_id.into();
-        let device_budget_bytes = self.tenant_budget(&tenant_id)?;
+        let grant_policy = self.tenant_grant_policy(&tenant_id)?;
         let request_id = self.inner.next_query_id.fetch_add(1, Ordering::Relaxed);
         let requested_at = Instant::now();
         let deadline = requested_at.checked_add(self.inner.config.admission_wait_timeout).unwrap_or(requested_at);
@@ -728,7 +896,7 @@ impl QueryService {
             request_id,
             requested_at,
             deadline,
-            device_budget_bytes,
+            grant_policy,
             queued: true,
         })
     }
@@ -739,7 +907,7 @@ impl QueryService {
     /// requests already exist and this caller must not bypass them.
     pub fn try_admit_query(&self, tenant_id: impl Into<TenantId>) -> Result<Option<QueryHandle>> {
         let tenant_id = tenant_id.into();
-        let device_budget_bytes = self.tenant_budget(&tenant_id)?;
+        let grant_policy = self.tenant_grant_policy(&tenant_id)?;
         let mut state = self.lock_admission()?;
         if state.closed {
             return Err(service_closed_error(&tenant_id));
@@ -747,20 +915,33 @@ impl QueryService {
         if state.active_queries >= self.inner.config.max_concurrent_queries || !state.queued.is_empty() {
             return Ok(None);
         }
-
+        let query_id = self.inner.next_query_id.fetch_add(1, Ordering::Relaxed);
+        let Some(placed_query) =
+            self.try_place_query(&tenant_id, query_id, grant_policy, None, state.active_queries)?
+        else {
+            return Ok(None);
+        };
+        self.attach_admission_release_wakeup(&placed_query.memory_grant)?;
         state.active_queries = state.active_queries.saturating_add(1);
         self.rotate_after_admission(&mut state, &tenant_id);
-        let query_id = self.inner.next_query_id.fetch_add(1, Ordering::Relaxed);
         let admission_sequence = self.inner.next_admission_sequence.fetch_add(1, Ordering::Relaxed);
         let service = Arc::clone(&self.inner);
+        let device_budget_bytes = placed_query.memory_grant.budget_bytes();
+        let device_ordinal = placed_query.device_ordinal;
         Ok(Some(QueryHandle {
-            lifetime: QueryHandleLifetime::new(Arc::clone(&service), tenant_id.clone(), query_id),
+            lifetime: QueryHandleLifetime::new(
+                Arc::clone(&service),
+                tenant_id.clone(),
+                query_id,
+                placed_query.memory_grant,
+            ),
             service,
             tenant_id,
             query_id,
             admission_sequence,
             admission_wait: Duration::ZERO,
             device_budget_bytes,
+            device_ordinal,
         }))
     }
 
@@ -774,9 +955,13 @@ impl QueryService {
         Ok(())
     }
 
-    /// Returns the configured device budget for a tenant.
+    /// Returns the configured preferred device budget for a tenant.
     pub fn tenant_budget(&self, tenant_id: &TenantId) -> Result<u64> {
-        self.inner.tenant_budgets.get(tenant_id).copied().ok_or_else(|| {
+        self.tenant_grant_policy(tenant_id).map(|grant| grant.want_bytes)
+    }
+
+    fn tenant_grant_policy(&self, tenant_id: &TenantId) -> Result<TenantGrantPolicy> {
+        self.inner.tenant_grants.get(tenant_id).copied().ok_or_else(|| {
             QueryError::new(
                 QueryErrorCode::InvalidPlan,
                 "nexus_query_engine.query_service.admission",
@@ -784,6 +969,172 @@ impl QueryService {
             )
             .with_fact("tenant_id", tenant_id.as_str())
         })
+    }
+
+    fn remaining_slots_after_current(&self, active_queries: usize) -> usize {
+        self.inner.config.max_concurrent_queries.saturating_sub(active_queries.saturating_add(1))
+    }
+
+    fn reserved_min_bytes_for_remaining_slots(&self, active_queries: usize) -> u64 {
+        self.inner
+            .max_tenant_min_bytes
+            .saturating_mul(u64::try_from(self.remaining_slots_after_current(active_queries)).unwrap_or(u64::MAX))
+    }
+
+    fn reserved_min_bytes_for_selected_device(
+        &self,
+        resources: &QueryServiceResources,
+        selected_device: cudf::DeviceId,
+        active_queries: usize,
+    ) -> Result<u64> {
+        let remaining_slots = self.remaining_slots_after_current(active_queries);
+        if remaining_slots == 0 || self.inner.max_tenant_min_bytes == 0 {
+            return Ok(0);
+        }
+        let mut other_device_min_slots = 0usize;
+        for context in resources.devices.contexts() {
+            if context.device() == selected_device {
+                continue;
+            }
+            let slots = context.available_bytes()? / self.inner.max_tenant_min_bytes;
+            other_device_min_slots =
+                other_device_min_slots.saturating_add(usize::try_from(slots).unwrap_or(usize::MAX));
+            if other_device_min_slots >= remaining_slots {
+                return Ok(0);
+            }
+        }
+        let slots_to_reserve_on_selected = remaining_slots.saturating_sub(other_device_min_slots);
+        Ok(self
+            .inner
+            .max_tenant_min_bytes
+            .saturating_mul(u64::try_from(slots_to_reserve_on_selected).unwrap_or(u64::MAX)))
+    }
+
+    fn grant_want_bytes(
+        &self,
+        available_bytes: u64,
+        grant_policy: TenantGrantPolicy,
+        reserved_for_remaining_slots: u64,
+    ) -> u64 {
+        if available_bytes <= reserved_for_remaining_slots {
+            grant_policy.min_bytes
+        } else {
+            grant_policy.want_bytes.min(available_bytes - reserved_for_remaining_slots).max(grant_policy.min_bytes)
+        }
+    }
+
+    fn try_grant_from_governor(
+        &self,
+        governor: &MemoryGovernor,
+        query_id: u64,
+        grant_policy: TenantGrantPolicy,
+        deadline: Option<Instant>,
+        active_queries: usize,
+    ) -> Result<Option<MemoryGrant>> {
+        let available_bytes = governor.available_bytes()?;
+        if available_bytes < grant_policy.min_bytes {
+            return Ok(None);
+        }
+        let want_bytes = self.grant_want_bytes(
+            available_bytes,
+            grant_policy,
+            self.reserved_min_bytes_for_remaining_slots(active_queries),
+        );
+        let mut request = GrantRequest::new(query_id, grant_policy.min_bytes, want_bytes);
+        if let Some(deadline) = deadline {
+            request = request.with_deadline(deadline);
+        }
+        governor.try_request(request)
+    }
+
+    fn try_place_query(
+        &self,
+        tenant_id: &TenantId,
+        query_id: u64,
+        grant_policy: TenantGrantPolicy,
+        deadline: Option<Instant>,
+        active_queries: usize,
+    ) -> Result<Option<PlacedQuery>> {
+        let Some(resources) = &self.inner.resources else {
+            let Some(memory_grant) = self.try_grant_from_governor(
+                &self.inner.fallback_memory_governor,
+                query_id,
+                grant_policy,
+                deadline,
+                active_queries,
+            )?
+            else {
+                return Ok(None);
+            };
+            return Ok(Some(PlacedQuery { device_ordinal: self.inner.config.device_ordinal, memory_grant }));
+        };
+
+        let placement_request = PlacementRequest::with_grant_range(grant_policy.min_bytes, grant_policy.want_bytes)
+            .with_tenant_id(tenant_id.as_str());
+        let mut any_device_can_fit_minimum = false;
+        for device in LeastLoadedPlacement.candidates(&resources.devices, &placement_request)? {
+            let context = resources.devices.context(device)?;
+            if context.capacity_bytes() >= grant_policy.min_bytes {
+                any_device_can_fit_minimum = true;
+            }
+            let available_bytes = context.available_bytes()?;
+            if available_bytes < grant_policy.min_bytes {
+                continue;
+            }
+            let reserved_for_remaining_slots =
+                self.reserved_min_bytes_for_selected_device(resources, device, active_queries)?;
+            let want_bytes = self.grant_want_bytes(available_bytes, grant_policy, reserved_for_remaining_slots);
+            let mut request = GrantRequest::new(query_id, grant_policy.min_bytes, want_bytes);
+            if let Some(deadline) = deadline {
+                request = request.with_deadline(deadline);
+            }
+            if let Some(memory_grant) = context.try_grant_query(request)? {
+                return Ok(Some(PlacedQuery { device_ordinal: device.ordinal(), memory_grant }));
+            }
+        }
+        if any_device_can_fit_minimum {
+            return Ok(None);
+        }
+        Err(QueryError::new(
+            QueryErrorCode::ServiceOverloaded,
+            "nexus_query_engine.query_service.placement",
+            "no configured CUDA device has enough capacity for the query minimum budget",
+        )
+        .with_fact("tenant_id", tenant_id.as_str())
+        .with_fact("min_device_budget_bytes", grant_policy.min_bytes)
+        .with_fact("reason", "query_min_budget_exceeds_device_capacity"))
+    }
+
+    fn attach_admission_release_wakeup(&self, grant: &MemoryGrant) -> Result<()> {
+        let service = Arc::clone(&self.inner);
+        grant.notify_on_release(Arc::new(move || {
+            let _guard = match service.admission.lock() {
+                Ok(guard) => guard,
+                Err(_error) => {
+                    eprintln!(
+                        "[nexus-query-engine] warning: failed to lock query service admission for grant release wakeup"
+                    );
+                    return;
+                },
+            };
+            service.admission_available.notify_all();
+        }))
+    }
+
+    /// Returns the service memory-governor report.
+    pub fn memory_governor_report(&self) -> Result<MemoryGovernorReport> {
+        if let Some(resources) = &self.inner.resources {
+            return resources.devices.context_by_ordinal(self.inner.config.device_ordinal)?.memory_governor().report();
+        }
+        self.inner.fallback_memory_governor.report()
+    }
+
+    /// Returns one memory-governor report for each installed service device.
+    pub fn memory_governor_reports(&self) -> Result<Vec<MemoryGovernorReport>> {
+        let Some(resources) = &self.inner.resources else {
+            return Ok(vec![self.inner.fallback_memory_governor.report()?]);
+        };
+        resources.devices.contexts().map(|context| context.memory_governor().report()).collect()
     }
 
     /// Returns the service configuration.
@@ -885,20 +1236,50 @@ impl QueryAdmissionWaiter {
         if self.service.request_is_admissible(&state, self.request_id)
             && let Some(position) = state.queued.iter().position(|queued| queued.request_id == self.request_id)
         {
+            let Some(placed_query) = self.service.try_place_query(
+                &self.tenant_id,
+                self.request_id,
+                self.grant_policy,
+                Some(self.deadline),
+                state.active_queries,
+            )?
+            else {
+                if Instant::now() >= self.deadline {
+                    remove_queued_request(&mut state, self.request_id);
+                    self.queued = false;
+                    self.service.inner.admission_available.notify_all();
+                    return Err(service_overloaded_error(
+                        "memory_grant_wait_timeout",
+                        &self.tenant_id,
+                        state.queued.len(),
+                        self.service.inner.config.max_admission_queue_len,
+                    ));
+                }
+                return Ok(None);
+            };
             let admitted = state.queued.remove(position).expect("admissible request exists");
+            self.service.attach_admission_release_wakeup(&placed_query.memory_grant)?;
             state.active_queries = state.active_queries.saturating_add(1);
             self.service.rotate_after_admission(&mut state, &admitted.tenant_id);
             self.queued = false;
             let admission_sequence = self.service.inner.next_admission_sequence.fetch_add(1, Ordering::Relaxed);
             let service = Arc::clone(&self.service.inner);
+            let device_budget_bytes = placed_query.memory_grant.budget_bytes();
+            let device_ordinal = placed_query.device_ordinal;
             return Ok(Some(QueryHandle {
-                lifetime: QueryHandleLifetime::new(Arc::clone(&service), self.tenant_id.clone(), self.request_id),
+                lifetime: QueryHandleLifetime::new(
+                    Arc::clone(&service),
+                    self.tenant_id.clone(),
+                    self.request_id,
+                    placed_query.memory_grant,
+                ),
                 service,
                 tenant_id: self.tenant_id.clone(),
                 query_id: self.request_id,
                 admission_sequence,
                 admission_wait: self.requested_at.elapsed(),
-                device_budget_bytes: self.device_budget_bytes,
+                device_budget_bytes,
+                device_ordinal,
             }));
         }
 
@@ -982,6 +1363,7 @@ pub struct QueryHandle {
     admission_sequence: u64,
     admission_wait: Duration,
     device_budget_bytes: u64,
+    device_ordinal: usize,
     lifetime: Arc<QueryHandleLifetime>,
 }
 
@@ -1009,6 +1391,11 @@ impl QueryHandle {
     /// Device-memory budget slice assigned to this query.
     pub fn device_budget_bytes(&self) -> u64 {
         self.device_budget_bytes
+    }
+
+    /// CUDA device ordinal selected for this query.
+    pub fn device_ordinal(&self) -> usize {
+        self.device_ordinal
     }
 
     /// Bounded memory policy this handle will use for native execution.
@@ -1088,7 +1475,7 @@ impl QueryHandle {
                 "query service was constructed without runtime resources",
             ));
         };
-        let device = resources.devices.primary()?;
+        let device = resources.devices.context_by_ordinal(self.device_ordinal)?;
         let mut root_context = self.lifetime.root_context.lock().map_err(|_error| {
             QueryError::new(
                 QueryErrorCode::Internal,
@@ -1100,19 +1487,21 @@ impl QueryHandle {
             return Ok(TenantQueryContext { context: context.clone(), _lifetime_guard: lifetime_guard });
         }
         let stream_lease = device
-            .stream_pool
+            .stream_pool()
             .acquire_with_cancellation(&cancellation, "nexus_query_engine.query_service.context.stream_acquire")?;
-        validate_service_stream_pool_device(&device.stream_pool, stream_lease.runtime().device())?;
+        validate_service_stream_pool_device(device.stream_pool(), stream_lease.runtime().device())?;
         let stream_lease_guard = Arc::new(stream_lease);
+        let memory_grant = self.lifetime.memory_grant()?;
         let context = ExecutionContext::from_parts(ExecutionContextParts {
             runtime: stream_lease_guard.shared_runtime(),
             memory_policy: MemoryResourcePolicy::ExternalRuntime,
             memory_control_policy: self.memory_control_policy(),
+            memory_grant: Some(memory_grant),
             boundary_policy: self.service.config.boundary_policy,
             source_scheduler_policy: self.service.config.source_scheduler_policy,
             source_chunk_planning_mode: self.service.config.source_chunk_planning_mode,
             source_fetch_config: self.service.config.source_fetch.clone(),
-            service_stream_pool: device.stream_pool.clone(),
+            service_stream_pool: device.stream_pool().clone(),
             host_fetch_budget: resources.host_fetch_budget.clone(),
             source_fetch_concurrency: resources.source_fetch_concurrency.clone(),
             lakehouse_cache_fill_budget: resources.lakehouse_cache_fill_budget.clone(),
@@ -1239,6 +1628,8 @@ mod tests {
 
         assert_eq!(large.device_budget_bytes(), 8 * 1024 * 1024);
         assert_eq!(small.device_budget_bytes(), 1024 * 1024);
+        assert_eq!(large.device_ordinal(), 0);
+        assert_eq!(small.device_ordinal(), 0);
         assert_eq!(
             small.memory_control_policy(),
             MemoryControlPolicy::Bounded {
@@ -1253,6 +1644,21 @@ mod tests {
         assert_eq!(small.admission_sequence(), 2);
         assert!(large.admission_wait() <= Duration::from_secs(1));
         assert!(small.admission_wait() <= Duration::from_secs(1));
+    }
+
+    #[test]
+    fn query_service_admission_test_config_can_record_non_default_device_without_runtime_resources() {
+        let config = QueryServiceConfig { device_ordinal: 2, ..QueryServiceConfig::default() };
+        let service = QueryService::new_for_admission_tests(
+            config,
+            vec![QueryServiceTenantConfig::new("tenant", 1024 * 1024)],
+            non_gds_deployment(),
+        )
+        .unwrap();
+
+        let handle = service.admit_query("tenant").unwrap();
+
+        assert_eq!(handle.device_ordinal(), 2);
     }
 
     #[test]
@@ -1582,7 +1988,12 @@ mod tests {
         let max_concurrent_queries = 4;
         let per_query_budget = capacity_bytes / u64::try_from(max_concurrent_queries).unwrap();
         let service = QueryService::new_for_admission_tests(
-            QueryServiceConfig { max_concurrent_queries, max_admission_queue_len: 8, ..QueryServiceConfig::default() },
+            QueryServiceConfig {
+                device_capacity_bytes: Some(capacity_bytes),
+                max_concurrent_queries,
+                max_admission_queue_len: 8,
+                ..QueryServiceConfig::default()
+            },
             vec![QueryServiceTenantConfig::new("tenant", per_query_budget)],
             non_gds_deployment(),
         )
@@ -1595,6 +2006,151 @@ mod tests {
         let admitted_budget_sum: u64 = handles.iter().map(QueryHandle::device_budget_bytes).sum();
         assert_eq!(admitted_budget_sum, capacity_bytes);
         assert!(service.try_admit_query("tenant").unwrap().is_none());
+    }
+
+    #[test]
+    fn query_service_uses_variable_memory_governor_grants() {
+        let service = QueryService::new_for_admission_tests(
+            QueryServiceConfig {
+                device_capacity_bytes: Some(100),
+                max_concurrent_queries: 4,
+                max_admission_queue_len: 8,
+                ..QueryServiceConfig::default()
+            },
+            vec![QueryServiceTenantConfig::with_grant_range("tenant", 10, 60)],
+            non_gds_deployment(),
+        )
+        .unwrap();
+
+        let first = service.try_admit_query("tenant").unwrap().expect("first query should admit");
+        let second = service.try_admit_query("tenant").unwrap().expect("second query should preserve remaining minima");
+        let third = service.try_admit_query("tenant").unwrap().expect("third query should admit minimum grant");
+        let fourth = service.try_admit_query("tenant").unwrap().expect("fourth query should admit minimum grant");
+
+        assert_eq!(first.device_budget_bytes(), 60);
+        assert_eq!(second.device_budget_bytes(), 20);
+        assert_eq!(third.device_budget_bytes(), 10);
+        assert_eq!(fourth.device_budget_bytes(), 10);
+        assert!(service.try_admit_query("tenant").unwrap().is_none());
+        let report = service.memory_governor_report().unwrap();
+        assert_eq!(report.capacity_bytes, 100);
+        assert_eq!(report.outstanding_bytes, 100);
+        assert_eq!(report.available_bytes, 0);
+
+        drop(first);
+        assert_eq!(service.memory_governor_report().unwrap().available_bytes, 60);
+    }
+
+    #[test]
+    fn query_service_reserves_remaining_slots_for_largest_tenant_minimum() {
+        let service = QueryService::new_for_admission_tests(
+            QueryServiceConfig {
+                device_capacity_bytes: Some(100),
+                max_concurrent_queries: 2,
+                max_admission_queue_len: 8,
+                ..QueryServiceConfig::default()
+            },
+            vec![QueryServiceTenantConfig::with_grant_range("low", 10, 100), QueryServiceTenantConfig::new("high", 60)],
+            non_gds_deployment(),
+        )
+        .unwrap();
+
+        let low = service.try_admit_query("low").unwrap().expect("low-min tenant should admit");
+        let high = service.try_admit_query("high").unwrap().expect("high-min tenant should retain capacity");
+
+        assert_eq!(low.device_budget_bytes(), 40);
+        assert_eq!(high.device_budget_bytes(), 60);
+        assert_eq!(service.memory_governor_report().unwrap().available_bytes, 0);
+    }
+
+    #[test]
+    fn query_service_waiting_on_memory_grant_wakes_after_grant_release() {
+        let service = QueryService::new_for_admission_tests(
+            QueryServiceConfig {
+                device_capacity_bytes: Some(100),
+                max_concurrent_queries: 2,
+                max_admission_queue_len: 8,
+                admission_wait_timeout: Duration::from_secs(2),
+                ..QueryServiceConfig::default()
+            },
+            vec![QueryServiceTenantConfig::new("tenant", 100)],
+            non_gds_deployment(),
+        )
+        .unwrap();
+        let active = service.admit_query("tenant").unwrap();
+        let queued_service = service.clone();
+        let (started_sender, started_receiver) = std::sync::mpsc::channel();
+        let waiter = std::thread::spawn(move || {
+            started_sender.send(()).unwrap();
+            queued_service.admit_query("tenant").unwrap()
+        });
+        started_receiver.recv_timeout(Duration::from_secs(1)).unwrap();
+        wait_for_queued_len(&service, 1);
+        assert_eq!(service.memory_governor_report().unwrap().available_bytes, 0);
+
+        drop(active);
+        let admitted = waiter.join().unwrap();
+        assert_eq!(admitted.device_budget_bytes(), 100);
+        assert_eq!(service.memory_governor_report().unwrap().available_bytes, 0);
+        drop(admitted);
+        assert_eq!(service.memory_governor_report().unwrap().available_bytes, 100);
+    }
+
+    #[test]
+    fn query_service_waiting_on_memory_grant_wakes_after_retained_grant_release() {
+        let service = QueryService::new_for_admission_tests(
+            QueryServiceConfig {
+                device_capacity_bytes: Some(100),
+                max_concurrent_queries: 2,
+                max_admission_queue_len: 8,
+                admission_wait_timeout: Duration::from_secs(2),
+                ..QueryServiceConfig::default()
+            },
+            vec![QueryServiceTenantConfig::new("tenant", 100)],
+            non_gds_deployment(),
+        )
+        .unwrap();
+        let active = service.admit_query("tenant").unwrap();
+        let retained_grant = active.lifetime.memory_grant().unwrap();
+        drop(active);
+        assert_eq!(service.memory_governor_report().unwrap().available_bytes, 0);
+
+        let queued_service = service.clone();
+        let (started_sender, started_receiver) = std::sync::mpsc::channel();
+        let waiter = std::thread::spawn(move || {
+            started_sender.send(()).unwrap();
+            queued_service.admit_query("tenant").unwrap()
+        });
+        started_receiver.recv_timeout(Duration::from_secs(1)).unwrap();
+        wait_for_queued_len(&service, 1);
+
+        drop(retained_grant);
+        let admitted = waiter.join().unwrap();
+        assert_eq!(admitted.device_budget_bytes(), 100);
+    }
+
+    #[test]
+    fn query_admission_waiter_times_out_while_selected_but_memory_blocked() {
+        let service = QueryService::new_for_admission_tests(
+            QueryServiceConfig {
+                device_capacity_bytes: Some(100),
+                max_concurrent_queries: 2,
+                max_admission_queue_len: 8,
+                admission_wait_timeout: Duration::from_millis(20),
+                ..QueryServiceConfig::default()
+            },
+            vec![QueryServiceTenantConfig::new("tenant", 100)],
+            non_gds_deployment(),
+        )
+        .unwrap();
+        let _active = service.admit_query("tenant").unwrap();
+        let mut waiter = service.enqueue_admission("tenant").unwrap();
+        std::thread::sleep(Duration::from_millis(30));
+
+        let error = waiter.try_admit().unwrap_err();
+
+        assert_eq!(error.code(), QueryErrorCode::ServiceOverloaded);
+        assert_eq!(error.fact_value("reason"), Some("memory_grant_wait_timeout"));
     }
 
     #[test]

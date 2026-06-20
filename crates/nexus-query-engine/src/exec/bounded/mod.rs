@@ -98,7 +98,7 @@ pub(super) fn execute_bounded_query_plan(
         Ok(bounded) => bounded,
         Err(_error) => return execute_bounded_generic_query_plan(context, plan, gpu_inputs, metrics),
     };
-    let MemoryControlPolicy::Bounded { device_budget_bytes, .. } = context.memory_control_policy() else {
+    let Some(device_budget_bytes) = context.bounded_device_budget_bytes() else {
         unreachable!("execute_bounded_query_plan is called only for bounded policies");
     };
     let mut reservations = ReservationTracker::new_for_context(context, device_budget_bytes, metrics)?;
