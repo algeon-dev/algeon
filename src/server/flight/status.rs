@@ -185,7 +185,7 @@ pub(super) fn server_shutdown_status(query_id: &str) -> Status {
 
 /// Disambiguate per-statement cancellation: if the parent shutdown token has
 /// been cancelled the whole server is going away; otherwise it was an
-/// `ActionCancelQuery` from the client.
+/// `ActionCancelQuery` or dropped DoGet stream from the client.
 pub(super) fn cancellation_error(shutdown_token: &CancellationToken) -> Error {
     if shutdown_token.is_cancelled() {
         server_shutdown_error()

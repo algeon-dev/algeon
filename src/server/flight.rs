@@ -728,9 +728,13 @@ impl DatafusionCudfFlightSqlService {
         // together after the ticket leaves `self.tickets`.
         let guard = QueryExecutionGuard {
             query_id: query_id.clone(),
+            correlation_id: correlation_id.clone(),
             cancellations: Arc::clone(&self.cancellations),
             observability: Arc::clone(&self.observability),
+            flight_token: token.clone(),
+            native_cancellation: native_cancellation.clone(),
             native_cancel_bridge,
+            shutdown_token: self.shutdown_token.clone(),
             _permit: permit,
             lifecycle: Arc::clone(&lifecycle),
         };
@@ -1708,6 +1712,47 @@ mod correlation_tests {
             .expect("query stats capture should be retained")
             .to_query_stats_payload();
         assert!(payload.contains("# correlation_id=do-get-corr-7\n"), "{payload}");
+    }
+
+    #[tokio::test]
+    async fn dropping_do_get_stream_cancels_statement() {
+        let service = test_service();
+        let response = service
+            .get_flight_info_statement(
+                CommandStatementQuery { query: "SELECT 1 AS one".to_string(), transaction_id: None },
+                Request::new(FlightDescriptor::new_cmd(Vec::<u8>::new())),
+            )
+            .await
+            .expect("statement flight info should succeed");
+        let query_id = response
+            .metadata()
+            .get(QUERY_ID_METADATA_KEY)
+            .and_then(|value| value.to_str().ok())
+            .expect("query id response metadata")
+            .to_string();
+        let native_cancellation = {
+            let ticket = service.tickets.get(&query_id).expect("statement ticket should be retained");
+            ticket.native_cancellation.clone()
+        };
+
+        let response =
+            service.execute_ticket(query_id.clone(), None).await.expect("statement do_get should return a lazy stream");
+        assert!(!native_cancellation.is_cancelled(), "stream creation must not cancel the query");
+
+        drop(response);
+
+        assert!(native_cancellation.is_cancelled(), "dropping the DoGet stream must cancel native execution");
+        assert_eq!(service.cancellations.len(), 0, "dropped streams must leave no cancellable registry entry");
+        let payload = service
+            .observability
+            .get(&query_id)
+            .expect("query stats capture should be retained")
+            .to_query_stats_payload();
+        assert!(payload.contains("# outcome=failed"), "{payload}");
+        assert!(payload.contains("# sealed=true"), "{payload}");
+        assert!(payload.contains("[structured_error]"), "{payload}");
+        assert!(payload.contains("code=cancelled"), "{payload}");
+        assert!(payload.contains("operation=datafusion_nexus.server.flight.cancel_query"), "{payload}");
     }
 }
 

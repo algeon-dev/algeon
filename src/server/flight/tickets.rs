@@ -101,19 +101,35 @@ pub(super) struct StatementTicket {
 ///
 /// `DoGet` returns before the stream is fully polled, so ordinary stack cleanup
 /// would release admission and cancellation state too early. The stream holds
-/// this guard to keep those resources alive and to seal observability on every
-/// exit path, including client drop.
+/// this guard to keep those resources alive and to convert client drop into
+/// cooperative native cancellation.
 pub(super) struct QueryExecutionGuard {
     pub(super) query_id: String,
+    pub(super) correlation_id: Option<String>,
     pub(super) cancellations: Arc<QueryCancellation>,
     pub(super) observability: Arc<QueryObservability>,
+    pub(super) flight_token: CancellationToken,
+    pub(super) native_cancellation: ExecutionCancellation,
     pub(super) native_cancel_bridge: tokio::task::JoinHandle<()>,
+    pub(super) shutdown_token: CancellationToken,
     pub(super) _permit: QueryAdmissionPermit,
     pub(super) lifecycle: Arc<QueryLifecycle>,
 }
 
 impl Drop for QueryExecutionGuard {
     fn drop(&mut self) {
+        if !self.lifecycle.is_finished() {
+            self.native_cancellation.cancel();
+            self.flight_token.cancel();
+            let status = finish_adapter_error_status_with_correlation_id(
+                self.observability.as_ref(),
+                &self.query_id,
+                self.correlation_id.as_deref(),
+                "stream",
+                cancellation_error(&self.shutdown_token),
+            );
+            self.lifecycle.finish_status("stream", &status);
+        }
         self.native_cancel_bridge.abort();
         self.cancellations.remove(&self.query_id);
         self.observability.seal(&self.query_id);
@@ -160,6 +176,10 @@ impl QueryLifecycle {
                 "finished Flight SQL statement"
             );
         }
+    }
+
+    pub(super) fn is_finished(&self) -> bool {
+        self.terminal.lock().expect("query lifecycle mutex poisoned").is_some()
     }
 
     pub(super) fn finish_status(&self, stage: &'static str, status: &Status) {
