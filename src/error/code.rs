@@ -25,6 +25,14 @@ pub enum ErrorCode {
     PlanningTimeout,
     /// A requested catalog, schema, table, table function, or similar named object was not found.
     ObjectNotFound,
+    /// Source object storage denied access to the requested object or metadata.
+    SourceAccessDenied,
+    /// Source object storage lacked valid authentication credentials.
+    SourceUnauthenticated,
+    /// Source object storage could not find the requested object.
+    SourceObjectNotFound,
+    /// Source object storage failed with a retryable transport or service error.
+    SourceTemporaryFailure,
     /// A named field was not present in a resolved schema.
     FieldNotFound,
     /// The optimizer intentionally rejected a native candidate.
@@ -84,6 +92,10 @@ impl ErrorCode {
             Self::DataFusionPlanning => "datafusion_planning",
             Self::PlanningTimeout => "planning_timeout",
             Self::ObjectNotFound => "object_not_found",
+            Self::SourceAccessDenied => "source_access_denied",
+            Self::SourceUnauthenticated => "source_unauthenticated",
+            Self::SourceObjectNotFound => "source_object_not_found",
+            Self::SourceTemporaryFailure => "source_temporary_failure",
             Self::FieldNotFound => "field_not_found",
             Self::NativeCandidateRejected => "native_candidate_rejected",
             Self::UnsupportedOperator => "unsupported_operator",
@@ -129,6 +141,10 @@ pub enum ErrorKind {
     Cancelled,
     /// Requested catalog, schema, table, table function, or similar named object was not found.
     NotFound,
+    /// The caller or configured source credentials do not have permission.
+    PermissionDenied,
+    /// The caller or configured source credentials are not authenticated.
+    Unauthenticated,
     /// Planning, validation, or physical-plan construction failure.
     Planning,
     /// Caller-provided input is invalid for the requested operation.
@@ -153,6 +169,8 @@ impl ErrorKind {
         match self {
             Self::Cancelled => "cancelled",
             Self::NotFound => "not_found",
+            Self::PermissionDenied => "permission_denied",
+            Self::Unauthenticated => "unauthenticated",
             Self::Planning => "planning",
             Self::InvalidInput => "invalid_input",
             Self::Unsupported => "unsupported",
@@ -217,7 +235,9 @@ pub const fn kind_for_code(code: ErrorCode) -> ErrorKind {
         | ErrorCode::PlanningTimeout
         | ErrorCode::NativeCandidateRejected
         | ErrorCode::InvalidExecutionPlan => ErrorKind::Planning,
-        ErrorCode::ObjectNotFound => ErrorKind::NotFound,
+        ErrorCode::ObjectNotFound | ErrorCode::SourceObjectNotFound => ErrorKind::NotFound,
+        ErrorCode::SourceAccessDenied => ErrorKind::PermissionDenied,
+        ErrorCode::SourceUnauthenticated => ErrorKind::Unauthenticated,
         ErrorCode::FieldNotFound => ErrorKind::InvalidInput,
         ErrorCode::UnsupportedOperator | ErrorCode::UnsupportedExpression | ErrorCode::UnsupportedType => {
             ErrorKind::Unsupported
@@ -228,9 +248,10 @@ pub const fn kind_for_code(code: ErrorCode) -> ErrorKind {
         ErrorCode::CudfResourceExhausted | ErrorCode::MemoryReservationFailed | ErrorCode::ServiceOverloaded => {
             ErrorKind::ResourceExhausted
         },
-        ErrorCode::CudfTemporaryFailure | ErrorCode::CudfPersistentFailure | ErrorCode::CudfDependencyFailure => {
-            ErrorKind::DependencyFailure
-        },
+        ErrorCode::CudfTemporaryFailure
+        | ErrorCode::CudfPersistentFailure
+        | ErrorCode::CudfDependencyFailure
+        | ErrorCode::SourceTemporaryFailure => ErrorKind::DependencyFailure,
         ErrorCode::CudfInvariantViolation => ErrorKind::InvariantViolation,
         ErrorCode::Internal => ErrorKind::Internal,
     }
@@ -247,6 +268,7 @@ pub const fn status_for_code(code: ErrorCode) -> ErrorStatus {
         ErrorCode::Cancelled => ErrorStatus::Permanent,
         ErrorCode::CudfResourceExhausted
         | ErrorCode::CudfTemporaryFailure
+        | ErrorCode::SourceTemporaryFailure
         | ErrorCode::MemoryReservationFailed
         | ErrorCode::ServiceOverloaded => ErrorStatus::Temporary,
         ErrorCode::CudfPersistentFailure => ErrorStatus::Persistent,
@@ -255,6 +277,9 @@ pub const fn status_for_code(code: ErrorCode) -> ErrorStatus {
         | ErrorCode::DataFusionPlanning
         | ErrorCode::PlanningTimeout
         | ErrorCode::ObjectNotFound
+        | ErrorCode::SourceAccessDenied
+        | ErrorCode::SourceUnauthenticated
+        | ErrorCode::SourceObjectNotFound
         | ErrorCode::FieldNotFound
         | ErrorCode::NativeCandidateRejected
         | ErrorCode::UnsupportedOperator

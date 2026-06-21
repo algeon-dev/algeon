@@ -109,6 +109,8 @@ fn adapter_error_to_status(error: &Error) -> Status {
     let status = match error.kind() {
         ErrorKind::Cancelled => Status::cancelled(message),
         ErrorKind::NotFound => Status::not_found(message),
+        ErrorKind::PermissionDenied => Status::permission_denied(message),
+        ErrorKind::Unauthenticated => Status::unauthenticated(message),
         ErrorKind::InvalidInput | ErrorKind::Planning => Status::invalid_argument(message),
         ErrorKind::Unsupported => Status::unimplemented(message),
         ErrorKind::ResourceExhausted => Status::resource_exhausted(message),
@@ -123,6 +125,16 @@ fn client_status_message(error: &Error) -> String {
     let message = match error.code() {
         ErrorCode::SqlParse | ErrorCode::FieldNotFound | ErrorCode::ObjectNotFound | ErrorCode::DataFusionPlanning => {
             error.message().to_string()
+        },
+        ErrorCode::SourceAccessDenied => "source object storage access denied while processing the request".to_string(),
+        ErrorCode::SourceUnauthenticated => {
+            "source object storage credentials are missing or invalid while processing the request".to_string()
+        },
+        ErrorCode::SourceObjectNotFound => {
+            "source object storage object was not found while processing the request".to_string()
+        },
+        ErrorCode::SourceTemporaryFailure => {
+            "temporary source object storage failure while processing the request; retry later".to_string()
         },
         ErrorCode::ServiceOverloaded => "service overloaded; retry later".to_string(),
         _ if error.kind() == ErrorKind::ResourceExhausted => {

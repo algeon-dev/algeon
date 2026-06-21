@@ -8,9 +8,9 @@
 //! lazily on first access.
 
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::{BTreeMap, BTreeSet, HashMap},
     fmt,
-    sync::Arc,
+    sync::{Arc, RwLock as StdRwLock},
     time::Duration,
 };
 
@@ -381,6 +381,7 @@ pub struct CudfIcebergSchemaProvider {
     provider_options: IcebergProviderOptions,
     parquet_read_strategy_config: Option<TableFormatParquetReadStrategyConfig>,
     table_cache: RwLock<HashMap<String, Arc<dyn TableProvider>>>,
+    seeded_table_names: StdRwLock<BTreeSet<String>>,
 }
 
 impl CudfIcebergSchemaProvider {
@@ -402,6 +403,7 @@ impl CudfIcebergSchemaProvider {
             provider_options,
             parquet_read_strategy_config,
             table_cache: RwLock::new(HashMap::new()),
+            seeded_table_names: StdRwLock::new(BTreeSet::new()),
         }
     }
 
@@ -413,7 +415,29 @@ impl CudfIcebergSchemaProvider {
     /// Seeded names do not appear in `table_names()`.
     pub async fn seed_table(&self, name: String, provider: Arc<dyn TableProvider>) {
         let mut cache = self.table_cache.write().await;
-        cache.entry(name).or_insert(provider);
+        cache.entry(name.clone()).or_insert(provider);
+        if let Ok(mut seeded) = self.seeded_table_names.write() {
+            seeded.insert(name);
+        }
+    }
+
+    /// Returns whether `name` is either startup-discovered or already seeded in
+    /// the synchronous cache. This exists for catalog-overlay collision checks
+    /// that cannot await [`SchemaProvider::table`].
+    #[cfg(feature = "server")]
+    pub(crate) fn known_or_seeded_table_exists(&self, name: &str) -> bool {
+        self.table_exist(name) || self.seeded_table_names.read().is_ok_and(|seeded| seeded.contains(name))
+    }
+
+    /// Returns startup-discovered table names plus any synchronously visible
+    /// seeded aliases.
+    #[cfg(feature = "server")]
+    pub(crate) fn known_or_seeded_table_names(&self) -> Vec<String> {
+        let mut names = self.known_table_names.iter().cloned().collect::<BTreeSet<_>>();
+        if let Ok(seeded) = self.seeded_table_names.read() {
+            names.extend(seeded.iter().cloned());
+        }
+        names.into_iter().collect()
     }
 }
 

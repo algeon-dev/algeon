@@ -32,6 +32,10 @@ pub async fn build_session_context(config: &ServerConfig) -> super::error::Resul
 
     #[cfg(feature = "iceberg")]
     register_iceberg_catalog(&ctx, config).await?;
+    if let Some(workspace) = &config.workspace {
+        super::workspace::install_workspace_overlay(&ctx, workspace)?;
+    }
+    super::workspace::warn_if_default_schema_is_read_only(&ctx, config);
 
     Ok(ctx)
 }

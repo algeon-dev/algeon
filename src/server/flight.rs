@@ -32,6 +32,7 @@ use arrow_flight::{
 };
 use dashmap::DashMap;
 use datafusion::{
+    common::TableReference,
     datasource::TableType,
     error::DataFusionError,
     execution::SessionStateBuilder,
@@ -82,6 +83,7 @@ const QUERY_ID_METADATA_KEY: &str = "x-datafusion-nexus-query-id";
 const CORRELATION_ID_METADATA_KEY: &str = "x-datafusion-nexus-correlation-id";
 const CORRELATION_ID_METADATA_ALIASES: &[&str] = &[CORRELATION_ID_METADATA_KEY, "x-correlation-id"];
 const MAX_CORRELATION_ID_LEN: usize = 256;
+const READ_ONLY_SCHEMA_PROVIDER_REGISTER_TABLE_MESSAGE: &str = "schema provider does not support registering tables";
 
 /// Hard cap on live prepared-statement handles across all connections.
 /// Bounds the worst case for clients that leak handles by disconnecting
@@ -178,8 +180,36 @@ pub struct DatafusionCudfFlightSqlService {
     /// [`TokenStore`] is shared between the handshake mint path and the
     /// per-RPC validate path.
     auth: AuthInterceptor,
+    catalog_diagnostics: ServerCatalogDiagnostics,
     #[cfg(feature = "cugraph")]
     cugraph_sql_config: Option<CugraphSqlConfig>,
+}
+
+#[derive(Clone, Debug, Default)]
+struct ServerCatalogDiagnostics {
+    iceberg_enabled: bool,
+    workspace_catalog: Option<String>,
+    workspace_schema: Option<String>,
+}
+
+impl ServerCatalogDiagnostics {
+    fn from_server_config(config: &super::config::ServerConfig) -> Self {
+        Self {
+            iceberg_enabled: server_config_iceberg_enabled(config),
+            workspace_catalog: config.workspace.as_ref().map(|workspace| workspace.catalog.clone()),
+            workspace_schema: config.workspace.as_ref().map(|workspace| workspace.schema.clone()),
+        }
+    }
+}
+
+#[cfg(feature = "iceberg")]
+fn server_config_iceberg_enabled(config: &super::config::ServerConfig) -> bool {
+    config.iceberg.is_some()
+}
+
+#[cfg(not(feature = "iceberg"))]
+fn server_config_iceberg_enabled(_config: &super::config::ServerConfig) -> bool {
+    false
 }
 
 /// Per-statement session context paired with the retained native rule that
@@ -213,9 +243,21 @@ impl DatafusionCudfFlightSqlService {
             statement_ticket_ttl,
             shutdown_token: CancellationToken::new(),
             auth,
+            catalog_diagnostics: ServerCatalogDiagnostics::default(),
             #[cfg(feature = "cugraph")]
             cugraph_sql_config,
         }
+    }
+
+    pub(super) fn with_server_config_diagnostics(mut self, config: &super::config::ServerConfig) -> Self {
+        self.catalog_diagnostics = ServerCatalogDiagnostics::from_server_config(config);
+        self
+    }
+
+    #[cfg(test)]
+    fn with_catalog_diagnostics(mut self, diagnostics: ServerCatalogDiagnostics) -> Self {
+        self.catalog_diagnostics = diagnostics;
+        self
     }
 
     /// Validate the bearer token on a tonic request. Returns the
@@ -1145,23 +1187,39 @@ impl DatafusionCudfFlightSqlService {
             self.observability.seal(&query_id);
             return Err(status);
         }
+        let plan_for_error = plan.clone();
         let df = tokio::select! {
             result = query_ctx.execute_logical_plan(plan)
                 .instrument(Self::query_stage_span(Some(&query_span), &query_id, correlation_id.as_deref(), "planning")) => match result {
                 Ok(df) => df,
                 Err(error) => {
                     log_leaf_guard_rejection(&query_id, &error, self.session_profile);
-                    self.observability.finish_failed(
-                        &query_id,
-                        "planning",
-                        datafusion_error_to_captured_error(&error, statement_kind.sql_operation()),
-                    );
-                    let status = status_with_query_id(
-                        datafusion_error_to_status_for_operation(error, statement_kind.sql_operation()),
-                        &query_id,
-                    );
-                    let status =
-                        status_with_query_id_and_correlation_id(status, &query_id, correlation_id.as_deref());
+                    let status = match self.ddl_read_only_registration_error(
+                        query_ctx,
+                        &plan_for_error,
+                        error,
+                        statement_kind.sql_operation(),
+                    ) {
+                        Ok(error) => finish_adapter_error_status_with_correlation_id(
+                            self.observability.as_ref(),
+                            &query_id,
+                            correlation_id.as_deref(),
+                            "planning",
+                            error,
+                        ),
+                        Err(error) => {
+                            self.observability.finish_failed(
+                                &query_id,
+                                "planning",
+                                datafusion_error_to_captured_error(&error, statement_kind.sql_operation()),
+                            );
+                            let status = status_with_query_id(
+                                datafusion_error_to_status_for_operation(error, statement_kind.sql_operation()),
+                                &query_id,
+                            );
+                            status_with_query_id_and_correlation_id(status, &query_id, correlation_id.as_deref())
+                        },
+                    };
                     lifecycle.finish_status("planning", &status);
                     self.observability.seal(&query_id);
                     return Err(status);
@@ -1227,6 +1285,42 @@ impl DatafusionCudfFlightSqlService {
         // still retained because their Status metadata exposes the query_id.
         self.observability.delete(&query_id);
         Ok(NO_UPDATED_RECORDS_COUNT)
+    }
+
+    fn ddl_read_only_registration_error(
+        &self,
+        ctx: &SessionContext,
+        plan: &LogicalPlan,
+        source: DataFusionError,
+        operation: &'static str,
+    ) -> Result<Error, DataFusionError> {
+        if !datafusion_error_contains_message(&source, READ_ONLY_SCHEMA_PROVIDER_REGISTER_TABLE_MESSAGE) {
+            return Err(source);
+        }
+        let Some((target, statement_kind)) = ddl_register_table_target(plan) else {
+            return Err(source);
+        };
+
+        let options = ctx.state();
+        let catalog_options = &options.config().options().catalog;
+        let resolved = target.clone().resolve(&catalog_options.default_catalog, &catalog_options.default_schema);
+        let message = format!(
+            "schema provider does not support registering tables for DDL target {}.{}",
+            resolved.catalog, resolved.schema
+        );
+        let mut error = Error::new(ErrorCode::DataFusionPlanning, operation, message)
+            .with_fact("target_catalog", resolved.catalog.as_ref())
+            .with_fact("target_schema", resolved.schema.as_ref())
+            .with_fact("target_table", resolved.table.as_ref())
+            .with_fact("statement_kind", statement_kind)
+            .with_fact("iceberg_enabled", self.catalog_diagnostics.iceberg_enabled);
+        if let Some(workspace_catalog) = &self.catalog_diagnostics.workspace_catalog {
+            error = error.with_fact("workspace_catalog", workspace_catalog);
+        }
+        if let Some(workspace_schema) = &self.catalog_diagnostics.workspace_schema {
+            error = error.with_fact("workspace_schema", workspace_schema);
+        }
+        Ok(error.with_source(source))
     }
 
     fn dataset_schema_for_prepared_statement(&self, plan: &LogicalPlan) -> crate::Result<Schema> {
@@ -1311,6 +1405,34 @@ impl DatafusionCudfFlightSqlService {
             self.observability.seal(query_id);
         }
         Ok(cancelled)
+    }
+}
+
+fn ddl_register_table_target(plan: &LogicalPlan) -> Option<(&TableReference, &'static str)> {
+    let LogicalPlan::Ddl(ddl) = plan else {
+        return None;
+    };
+    match ddl {
+        DdlStatement::CreateExternalTable(statement) => Some((&statement.name, "CreateExternalTable")),
+        DdlStatement::CreateMemoryTable(statement) => Some((&statement.name, "CreateMemoryTable")),
+        DdlStatement::CreateView(statement) => Some((&statement.name, "CreateView")),
+        _ => None,
+    }
+}
+
+fn datafusion_error_contains_message(error: &DataFusionError, needle: &str) -> bool {
+    if error.to_string().contains(needle) {
+        return true;
+    }
+    match error {
+        DataFusionError::Context(_, source) | DataFusionError::Diagnostic(_, source) => {
+            datafusion_error_contains_message(source, needle)
+        },
+        DataFusionError::Shared(source) => datafusion_error_contains_message(source, needle),
+        DataFusionError::Collection(errors) => {
+            errors.iter().any(|error| datafusion_error_contains_message(error, needle))
+        },
+        _ => false,
     }
 }
 
@@ -1553,9 +1675,12 @@ mod correlation_tests {
 
 #[cfg(all(test, feature = "iceberg"))]
 mod tests {
-    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::{
+        collections::BTreeMap,
+        sync::atomic::{AtomicUsize, Ordering},
+    };
 
-    use datafusion::datasource::MemTable;
+    use datafusion::{datasource::MemTable, prelude::SessionConfig};
     use futures::future::BoxFuture;
 
     use super::*;
@@ -1831,6 +1956,57 @@ mod tests {
             .expect("second statement should acquire admission and issue a ticket");
     }
 
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn update_ddl_read_only_schema_failure_captures_catalog_target_facts() {
+        let ctx = Arc::new(SessionContext::new_with_config(
+            SessionConfig::new().with_default_catalog_and_schema("glue", "nexus_graph"),
+        ));
+        ctx.register_catalog(
+            "glue",
+            Arc::new(ReadOnlyCatalog::new("nexus_graph", [("edges_by_src", read_only_edge_table())])),
+        );
+        let service = DatafusionCudfFlightSqlService::new(
+            ctx,
+            CudfOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred),
+            ServerSessionProfile::Native,
+            Arc::new(QueryAdmission::new(1).expect("test admission limit")),
+            Duration::from_secs(30),
+            AuthInterceptor::new(AuthMode::Disabled, TokenStore::new()),
+            #[cfg(feature = "cugraph")]
+            None,
+        )
+        .with_catalog_diagnostics(ServerCatalogDiagnostics {
+            iceberg_enabled: true,
+            workspace_catalog: Some("datafusion".to_string()),
+            workspace_schema: Some("public".to_string()),
+        });
+        let query_id = "read-only-ddl-target".to_string();
+        let sql = "CREATE VIEW target_edges AS SELECT src, dst FROM edges_by_src".to_string();
+        service.observability.start_query_with_correlation_id(query_id.clone(), sql.clone(), None);
+
+        let status = service
+            .execute_update_sql(query_id.clone(), sql, None, UpdateStatementKind::Statement)
+            .await
+            .expect_err("read-only source schema should reject DDL registration");
+
+        assert_eq!(status.code(), Code::InvalidArgument);
+        assert_status_metadata(&status, "datafusion_planning", "planning", "permanent");
+        assert!(status.message().contains("glue.nexus_graph"), "status={status:?}");
+        let payload = service
+            .observability
+            .get(&query_id)
+            .expect("failed DDL update should retain query stats")
+            .to_query_stats_payload();
+        assert!(payload.contains("operation=datafusion_nexus.server.flight.do_put_statement_update.sql"), "{payload}");
+        assert!(payload.contains("fact.target_catalog=glue"), "{payload}");
+        assert!(payload.contains("fact.target_schema=nexus_graph"), "{payload}");
+        assert!(payload.contains("fact.target_table=target_edges"), "{payload}");
+        assert!(payload.contains("fact.statement_kind=CreateView"), "{payload}");
+        assert!(payload.contains("fact.iceberg_enabled=true"), "{payload}");
+        assert!(payload.contains("fact.workspace_catalog=datafusion"), "{payload}");
+        assert!(payload.contains("fact.workspace_schema=public"), "{payload}");
+    }
+
     async fn issue_statement_ticket(
         service: &DatafusionCudfFlightSqlService,
         sql: &str,
@@ -1856,6 +2032,82 @@ mod tests {
             status.metadata().get(ERROR_STATUS_METADATA_KEY).and_then(|value| value.to_str().ok()),
             Some(error_status)
         );
+    }
+
+    #[derive(Debug)]
+    struct ReadOnlyCatalog {
+        schema_name: String,
+        schema: Arc<ReadOnlySchema>,
+    }
+
+    impl ReadOnlyCatalog {
+        fn new(
+            schema_name: impl Into<String>,
+            tables: impl IntoIterator<Item = (&'static str, Arc<dyn datafusion::datasource::TableProvider>)>,
+        ) -> Self {
+            Self { schema_name: schema_name.into(), schema: Arc::new(ReadOnlySchema::new(tables)) }
+        }
+    }
+
+    impl datafusion::catalog::CatalogProvider for ReadOnlyCatalog {
+        fn schema_names(&self) -> Vec<String> {
+            vec![self.schema_name.clone()]
+        }
+
+        fn schema(&self, name: &str) -> Option<Arc<dyn datafusion::catalog::SchemaProvider>> {
+            (name == self.schema_name).then(|| Arc::clone(&self.schema) as Arc<dyn datafusion::catalog::SchemaProvider>)
+        }
+    }
+
+    #[derive(Debug)]
+    struct ReadOnlySchema {
+        tables: BTreeMap<String, Arc<dyn datafusion::datasource::TableProvider>>,
+    }
+
+    impl ReadOnlySchema {
+        fn new(
+            tables: impl IntoIterator<Item = (&'static str, Arc<dyn datafusion::datasource::TableProvider>)>,
+        ) -> Self {
+            Self { tables: tables.into_iter().map(|(name, table)| (name.to_string(), table)).collect() }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl datafusion::catalog::SchemaProvider for ReadOnlySchema {
+        fn table_names(&self) -> Vec<String> {
+            self.tables.keys().cloned().collect()
+        }
+
+        async fn table(
+            &self,
+            name: &str,
+        ) -> datafusion::common::Result<Option<Arc<dyn datafusion::datasource::TableProvider>>> {
+            Ok(self.tables.get(name).cloned())
+        }
+
+        async fn table_type(&self, name: &str) -> datafusion::common::Result<Option<TableType>> {
+            Ok(self.tables.get(name).map(|table| table.table_type()))
+        }
+
+        fn table_exist(&self, name: &str) -> bool {
+            self.tables.contains_key(name)
+        }
+    }
+
+    fn read_only_edge_table() -> Arc<dyn datafusion::datasource::TableProvider> {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("src", DataType::Int64, false),
+            Field::new("dst", DataType::Int64, false),
+        ]));
+        let batch = arrow::record_batch::RecordBatch::try_new(
+            Arc::clone(&schema),
+            vec![
+                Arc::new(arrow::array::Int64Array::from(vec![0, 1])),
+                Arc::new(arrow::array::Int64Array::from(vec![1, 2])),
+            ],
+        )
+        .unwrap();
+        Arc::new(MemTable::try_new(schema, vec![vec![batch]]).unwrap())
     }
 
     fn iceberg_test_schema() -> Arc<Schema> {

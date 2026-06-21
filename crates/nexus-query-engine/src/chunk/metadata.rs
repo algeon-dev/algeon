@@ -10,7 +10,7 @@ use parquet::file::{
     reader::{FileReader, SerializedFileReader},
 };
 
-use super::source_file_needs_footer_metadata;
+use super::{source_file_needs_footer_metadata, source_file_requires_footer_metadata};
 use crate::{
     error::{QueryError, QueryErrorCode, Result},
     parquet_metadata::{fetch_object_store_parquet_metadata, read_parquet_footer_sidecar},
@@ -23,7 +23,7 @@ const OBJECT_STORE_FOOTER_METADATA_FETCH_TIMEOUT: Duration = Duration::from_secs
 /// Footer metadata cache shared across repeated source chunk planning calls.
 #[derive(Debug, Default)]
 pub struct SourceMetadataCache {
-    footers: HashMap<SourceMetadataCacheKey, Option<Arc<ParquetMetaData>>>,
+    footers: HashMap<SourceMetadataCacheKey, FooterMetadataCacheEntry>,
 }
 
 impl SourceMetadataCache {
@@ -38,24 +38,36 @@ impl SourceMetadataCache {
 
     pub(super) fn footer_metadata(
         &mut self,
+        source: &LocalParquetSource,
         file: &LocalParquetFile,
         context: Option<&SourceMetadataLoadContext<'_>>,
     ) -> Result<FooterMetadataLoad> {
+        let requirement =
+            FooterMetadataRequirement::for_source_file_requirement(source_file_requires_footer_metadata(source, file));
         let key = SourceMetadataCacheKey::from_file(file);
-        if let Some(metadata) = self.footers.get(&key) {
-            return Ok(FooterMetadataLoad { metadata: metadata.clone(), load_time: Duration::ZERO, load_count: 0 });
+        if let Some(entry) = self.footers.get(&key)
+            && entry.usable_for(requirement)
+        {
+            return Ok(FooterMetadataLoad {
+                metadata: entry.metadata.clone(),
+                load_time: Duration::ZERO,
+                load_count: 0,
+            });
         }
 
         let timer = Instant::now();
         let metadata = match load_local_parquet_footer_metadata(file) {
             Some(metadata) => Some(metadata),
-            None => {
-                context.map(|context| load_object_store_parquet_footer_metadata(context, file)).transpose()?.flatten()
-            },
+            None => context
+                .map(|context| load_object_store_parquet_footer_metadata(context, file, requirement))
+                .transpose()?
+                .flatten(),
         };
         let load_time = timer.elapsed();
-        if metadata.is_some() || cache_footer_metadata_miss(file) {
-            self.footers.insert(key, metadata.clone());
+        if let Some(metadata) = &metadata {
+            self.footers.insert(key, FooterMetadataCacheEntry::metadata(Arc::clone(metadata)));
+        } else if cache_footer_metadata_miss(file) && !requirement.is_required() {
+            self.footers.insert(key, FooterMetadataCacheEntry::miss(requirement));
         }
         Ok(FooterMetadataLoad { metadata, load_time, load_count: 1 })
     }
@@ -77,11 +89,14 @@ impl SourceMetadataCache {
                 continue;
             }
             let key = SourceMetadataCacheKey::from_file(file);
-            if self.footers.contains_key(&key) {
+            let requirement = FooterMetadataRequirement::for_source_file_requirement(
+                source_file_requires_footer_metadata(source, file),
+            );
+            if self.footers.get(&key).is_some_and(|entry| entry.usable_for(requirement)) {
                 continue;
             }
             if let Some(metadata) = load_local_parquet_footer_metadata(file) {
-                self.footers.insert(key, Some(metadata));
+                self.footers.insert(key, FooterMetadataCacheEntry::metadata(metadata));
                 load_count = load_count.saturating_add(1);
                 continue;
             }
@@ -91,8 +106,9 @@ impl SourceMetadataCache {
             load_count = load_count.saturating_add(1);
             let fetch_location = match source_metadata_fetch_location(file) {
                 Ok(fetch_location) => fetch_location,
+                Err(error) if requirement.is_required() => return Err(error),
                 Err(_error) => {
-                    self.footers.insert(key, None);
+                    self.footers.insert(key, FooterMetadataCacheEntry::miss(requirement));
                     continue;
                 },
             };
@@ -100,13 +116,14 @@ impl SourceMetadataCache {
                 context,
                 fetch_location,
                 "nexus_query_engine.source_metadata.object_store_footer_prefetch",
+                requirement,
             )?
             else {
-                self.footers.insert(key, None);
+                self.footers.insert(key, FooterMetadataCacheEntry::miss(requirement));
                 continue;
             };
             let FooterMetadataFetch { handle, receiver, wait_started: _ } = fetch;
-            pending.push(PendingFooterMetadataFetch { key, handle, receiver });
+            pending.push(PendingFooterMetadataFetch { key, handle, receiver, requirement });
         }
 
         while !pending.is_empty() {
@@ -115,21 +132,28 @@ impl SourceMetadataCache {
                 match pending[index].receiver.try_recv() {
                     Ok(Ok(metadata)) => {
                         let completed = pending.swap_remove(index);
-                        self.footers.insert(completed.key.clone(), Some(metadata));
+                        self.footers.insert(completed.key.clone(), FooterMetadataCacheEntry::metadata(metadata));
                     },
                     Ok(Err(error)) => {
-                        if error.code() == QueryErrorCode::Cancelled {
+                        if should_propagate_footer_metadata_error(&error, pending[index].requirement) {
                             return Err(error);
                         }
                         let completed = pending.swap_remove(index);
-                        self.footers.insert(completed.key.clone(), None);
+                        self.footers
+                            .insert(completed.key.clone(), FooterMetadataCacheEntry::miss(completed.requirement));
                     },
                     Err(std::sync::mpsc::TryRecvError::Empty) => {
                         index += 1;
                     },
                     Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                        if pending[index].requirement.is_required() {
+                            return Err(footer_metadata_fetch_disconnected_error(
+                                "nexus_query_engine.source_metadata.object_store_footer_prefetch",
+                            ));
+                        }
                         let completed = pending.swap_remove(index);
-                        self.footers.insert(completed.key.clone(), None);
+                        self.footers
+                            .insert(completed.key.clone(), FooterMetadataCacheEntry::miss(completed.requirement));
                     },
                 }
             }
@@ -143,16 +167,44 @@ impl SourceMetadataCache {
                 for pending_fetch in pending.drain(..) {
                     match pending_fetch.receiver.try_recv() {
                         Ok(Ok(metadata)) => {
-                            self.footers.insert(pending_fetch.key.clone(), Some(metadata));
+                            self.footers
+                                .insert(pending_fetch.key.clone(), FooterMetadataCacheEntry::metadata(metadata));
                         },
                         Ok(Err(error)) => {
-                            if error.code() == QueryErrorCode::Cancelled {
+                            if should_propagate_footer_metadata_error(&error, pending_fetch.requirement) {
                                 return Err(error);
                             }
-                            self.footers.insert(pending_fetch.key.clone(), None);
+                            if pending_fetch.requirement.is_required() {
+                                return Err(footer_metadata_fetch_timeout_error(
+                                    "nexus_query_engine.source_metadata.object_store_footer_prefetch",
+                                ));
+                            }
+                            self.footers.insert(
+                                pending_fetch.key.clone(),
+                                FooterMetadataCacheEntry::miss(pending_fetch.requirement),
+                            );
                         },
-                        Err(std::sync::mpsc::TryRecvError::Empty | std::sync::mpsc::TryRecvError::Disconnected) => {
-                            self.footers.insert(pending_fetch.key.clone(), None);
+                        Err(std::sync::mpsc::TryRecvError::Empty) => {
+                            if pending_fetch.requirement.is_required() {
+                                return Err(footer_metadata_fetch_timeout_error(
+                                    "nexus_query_engine.source_metadata.object_store_footer_prefetch",
+                                ));
+                            }
+                            self.footers.insert(
+                                pending_fetch.key.clone(),
+                                FooterMetadataCacheEntry::miss(pending_fetch.requirement),
+                            );
+                        },
+                        Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                            if pending_fetch.requirement.is_required() {
+                                return Err(footer_metadata_fetch_disconnected_error(
+                                    "nexus_query_engine.source_metadata.object_store_footer_prefetch",
+                                ));
+                            }
+                            self.footers.insert(
+                                pending_fetch.key.clone(),
+                                FooterMetadataCacheEntry::miss(pending_fetch.requirement),
+                            );
                         },
                     }
                 }
@@ -161,19 +213,24 @@ impl SourceMetadataCache {
             match pending[0].receiver.recv_timeout(remaining.min(Duration::from_millis(100))) {
                 Ok(Ok(metadata)) => {
                     let completed = pending.swap_remove(0);
-                    self.footers.insert(completed.key.clone(), Some(metadata));
+                    self.footers.insert(completed.key.clone(), FooterMetadataCacheEntry::metadata(metadata));
                 },
                 Ok(Err(error)) => {
-                    if error.code() == QueryErrorCode::Cancelled {
+                    if should_propagate_footer_metadata_error(&error, pending[0].requirement) {
                         return Err(error);
                     }
                     let completed = pending.swap_remove(0);
-                    self.footers.insert(completed.key.clone(), None);
+                    self.footers.insert(completed.key.clone(), FooterMetadataCacheEntry::miss(completed.requirement));
                 },
                 Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {},
                 Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                    if pending[0].requirement.is_required() {
+                        return Err(footer_metadata_fetch_disconnected_error(
+                            "nexus_query_engine.source_metadata.object_store_footer_prefetch",
+                        ));
+                    }
                     let completed = pending.swap_remove(0);
-                    self.footers.insert(completed.key.clone(), None);
+                    self.footers.insert(completed.key.clone(), FooterMetadataCacheEntry::miss(completed.requirement));
                 },
             }
         }
@@ -188,10 +245,31 @@ pub(super) struct SourceMetadataLoadContext<'a> {
     pub(super) execution_context: &'a ExecutionContext,
 }
 
+#[derive(Debug, Clone)]
+struct FooterMetadataCacheEntry {
+    metadata: Option<Arc<ParquetMetaData>>,
+    miss_requirement: Option<FooterMetadataRequirement>,
+}
+
+impl FooterMetadataCacheEntry {
+    fn metadata(metadata: Arc<ParquetMetaData>) -> Self {
+        Self { metadata: Some(metadata), miss_requirement: None }
+    }
+
+    fn miss(requirement: FooterMetadataRequirement) -> Self {
+        Self { metadata: None, miss_requirement: Some(requirement) }
+    }
+
+    fn usable_for(&self, requirement: FooterMetadataRequirement) -> bool {
+        self.metadata.is_some() || (!requirement.is_required() && self.miss_requirement.is_some())
+    }
+}
+
 struct PendingFooterMetadataFetch {
     key: SourceMetadataCacheKey,
     handle: tokio::task::JoinHandle<()>,
     receiver: std::sync::mpsc::Receiver<Result<Arc<ParquetMetaData>>>,
+    requirement: FooterMetadataRequirement,
 }
 
 impl Drop for PendingFooterMetadataFetch {
@@ -206,10 +284,27 @@ struct FooterMetadataFetch {
     receiver: std::sync::mpsc::Receiver<Result<Arc<ParquetMetaData>>>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FooterMetadataRequirement {
+    Optional,
+    Required,
+}
+
+impl FooterMetadataRequirement {
+    const fn for_source_file_requirement(required: bool) -> Self {
+        if required { Self::Required } else { Self::Optional }
+    }
+
+    const fn is_required(self) -> bool {
+        matches!(self, Self::Required)
+    }
+}
+
 fn spawn_footer_metadata_fetch(
     context: &SourceMetadataLoadContext<'_>,
     fetch_location: SourceMetadataFetchLocation,
     operation: &'static str,
+    requirement: FooterMetadataRequirement,
 ) -> Result<Option<FooterMetadataFetch>> {
     let store = match context.execution_context.s3_object_store(S3ObjectStoreKey {
         bucket: fetch_location.bucket.clone(),
@@ -217,6 +312,7 @@ fn spawn_footer_metadata_fetch(
         storage_profile_id: fetch_location.storage_profile_id.clone(),
     }) {
         Ok(store) => store,
+        Err(error) if requirement.is_required() => return Err(error),
         Err(_error) => return Ok(None),
     };
     let wait_started = Instant::now();
@@ -224,6 +320,9 @@ fn spawn_footer_metadata_fetch(
         .execution_context
         .acquire_source_fetch_operation_with_timeout(OBJECT_STORE_FOOTER_METADATA_FETCH_TIMEOUT, operation)?
     else {
+        if requirement.is_required() {
+            return Err(footer_metadata_fetch_timeout_error(operation));
+        }
         return Ok(None);
     };
     let (sender, receiver) = std::sync::mpsc::channel();
@@ -282,6 +381,7 @@ fn cache_footer_metadata_miss(file: &LocalParquetFile) -> bool {
 fn load_object_store_parquet_footer_metadata(
     context: &SourceMetadataLoadContext<'_>,
     file: &LocalParquetFile,
+    requirement: FooterMetadataRequirement,
 ) -> Result<Option<Arc<ParquetMetaData>>> {
     if !source_file_can_fetch_object_store_footer(file) {
         return Ok(None);
@@ -290,9 +390,10 @@ fn load_object_store_parquet_footer_metadata(
     context.execution_context.check_cancellation(OPERATION)?;
     let fetch_location = match source_metadata_fetch_location(file) {
         Ok(fetch_location) => fetch_location,
+        Err(error) if requirement.is_required() => return Err(error),
         Err(_error) => return Ok(None),
     };
-    let Some(fetch) = spawn_footer_metadata_fetch(context, fetch_location, OPERATION)? else {
+    let Some(fetch) = spawn_footer_metadata_fetch(context, fetch_location, OPERATION, requirement)? else {
         return Ok(None);
     };
     let FooterMetadataFetch { wait_started, handle: fetch_handle, receiver } = fetch;
@@ -303,20 +404,60 @@ fn load_object_store_parquet_footer_metadata(
         }
         let Some(remaining) = OBJECT_STORE_FOOTER_METADATA_FETCH_TIMEOUT.checked_sub(wait_started.elapsed()) else {
             fetch_handle.abort();
+            if requirement.is_required() {
+                return Err(footer_metadata_fetch_timeout_error(OPERATION));
+            }
             return Ok(None);
         };
         match receiver.recv_timeout(remaining.min(Duration::from_millis(100))) {
             Ok(Ok(metadata)) => return Ok(Some(metadata)),
             Ok(Err(error)) => {
-                if error.code() == QueryErrorCode::Cancelled {
+                if should_propagate_footer_metadata_error(&error, requirement) {
                     return Err(error);
                 }
                 return Ok(None);
             },
             Err(std::sync::mpsc::RecvTimeoutError::Timeout) => continue,
-            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => return Ok(None),
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                if requirement.is_required() {
+                    return Err(footer_metadata_fetch_disconnected_error(OPERATION));
+                }
+                return Ok(None);
+            },
         }
     }
+}
+
+fn should_propagate_footer_metadata_error(error: &QueryError, requirement: FooterMetadataRequirement) -> bool {
+    match error.code() {
+        QueryErrorCode::Cancelled
+        | QueryErrorCode::SourceAccessDenied
+        | QueryErrorCode::SourceUnauthenticated
+        | QueryErrorCode::SourceObjectNotFound => true,
+        QueryErrorCode::SourceTemporaryFailure => requirement.is_required(),
+        _ => requirement.is_required(),
+    }
+}
+
+fn footer_metadata_fetch_timeout_error(operation: &'static str) -> QueryError {
+    QueryError::new(
+        QueryErrorCode::SourceTemporaryFailure,
+        operation,
+        "timed out fetching required object-store Parquet footer metadata",
+    )
+    .with_fact("reason", "required_footer_metadata_fetch_timeout")
+    .with_fact("object_store_error_kind", "timeout")
+    .with_fact("timeout_ms", OBJECT_STORE_FOOTER_METADATA_FETCH_TIMEOUT.as_millis())
+}
+
+fn footer_metadata_fetch_disconnected_error(operation: &'static str) -> QueryError {
+    QueryError::new(
+        QueryErrorCode::SourceTemporaryFailure,
+        operation,
+        "object-store Parquet footer metadata fetch stopped before returning required metadata",
+    )
+    .with_fact("reason", "required_footer_metadata_fetch_disconnected")
+    .with_fact("object_store_error_kind", "fetch_worker_disconnected")
 }
 
 fn source_file_can_fetch_object_store_footer(file: &LocalParquetFile) -> bool {
@@ -422,4 +563,69 @@ pub(super) struct FooterMetadataLoad {
     pub(super) metadata: Option<Arc<ParquetMetaData>>,
     pub(super) load_time: Duration,
     pub(super) load_count: u64,
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use arrow::datatypes::{DataType, Field, Schema};
+
+    use super::*;
+
+    fn source_from_file(file: LocalParquetFile) -> LocalParquetSource {
+        let schema = Arc::new(Schema::new(vec![Field::new("c0", DataType::Int64, true)]));
+        LocalParquetSource::from_files(vec![file], schema, vec!["c0".to_string()])
+    }
+
+    fn footer_error(code: QueryErrorCode) -> QueryError {
+        QueryError::new(code, "nexus_query_engine.test.footer_metadata", "test footer metadata error")
+    }
+
+    #[test]
+    fn footer_metadata_error_policy_preserves_fatal_source_errors() {
+        for code in [
+            QueryErrorCode::Cancelled,
+            QueryErrorCode::SourceAccessDenied,
+            QueryErrorCode::SourceUnauthenticated,
+            QueryErrorCode::SourceObjectNotFound,
+        ] {
+            let error = footer_error(code);
+            assert!(should_propagate_footer_metadata_error(&error, FooterMetadataRequirement::Optional));
+            assert!(should_propagate_footer_metadata_error(&error, FooterMetadataRequirement::Required));
+        }
+    }
+
+    #[test]
+    fn footer_metadata_error_policy_keeps_optional_temporary_misses_soft() {
+        let temporary = footer_error(QueryErrorCode::SourceTemporaryFailure);
+        assert!(!should_propagate_footer_metadata_error(&temporary, FooterMetadataRequirement::Optional));
+        assert!(should_propagate_footer_metadata_error(&temporary, FooterMetadataRequirement::Required));
+
+        let dependency = footer_error(QueryErrorCode::CudfDependencyFailure);
+        assert!(!should_propagate_footer_metadata_error(&dependency, FooterMetadataRequirement::Optional));
+        assert!(should_propagate_footer_metadata_error(&dependency, FooterMetadataRequirement::Required));
+    }
+
+    #[test]
+    fn cached_optional_footer_metadata_miss_is_not_reused_for_required_metadata() {
+        let file =
+            LocalParquetFile::object_store_uri("s3://bucket/table/part-0.parquet").expect("valid object-store file");
+        let optional_source = source_from_file(file.clone());
+        let mut required_source = source_from_file(file.clone());
+        required_source.scan_limit = Some(1);
+        let mut cache = SourceMetadataCache::default();
+
+        let optional_load = cache.footer_metadata(&optional_source, &file, None).unwrap();
+        assert!(optional_load.metadata.is_none());
+        assert_eq!(optional_load.load_count, 1);
+        assert_eq!(cache.cached_footer_count(), 1);
+
+        let required_load = cache.footer_metadata(&required_source, &file, None).unwrap();
+        assert!(required_load.metadata.is_none());
+        assert_eq!(
+            required_load.load_count, 1,
+            "required metadata must ignore a previously cached optional miss and attempt a fresh load"
+        );
+    }
 }

@@ -22,6 +22,7 @@ mod flight;
 mod observability;
 mod session;
 mod table_format_operator_fast_fail;
+mod workspace;
 
 pub use auth::{AuthConfig, AuthInterceptor, AuthMode, Principal, StaticUserConfig, TokenStore};
 pub use config::*;
@@ -128,7 +129,8 @@ async fn serve_inner(config: ServerConfig, listen: Listen) -> Result<()> {
         config.cugraph.as_ref().map(|cugraph| {
             session::cugraph_sql_config(cugraph, config.native_optimizer_config.native_execution_config().clone())
         }),
-    );
+    )
+    .with_server_config_diagnostics(&config);
     let admission = Arc::clone(service.admission());
     let cancellations = Arc::clone(service.cancellations());
     let shutdown_token = service.shutdown_token().clone();
@@ -624,6 +626,7 @@ mod tests {
             native_optimizer_config: CudfOptimizerConfig::default(),
             session_profile: profile,
             auth: auth::AuthConfig::default(),
+            workspace: None,
             #[cfg(feature = "iceberg")]
             iceberg: None,
             #[cfg(feature = "cugraph")]

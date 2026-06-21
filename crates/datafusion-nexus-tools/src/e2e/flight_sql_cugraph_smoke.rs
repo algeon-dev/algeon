@@ -24,9 +24,9 @@ const ICEBERG_DST_COL_ENV: &str = "NEXUS_CUGRAPH_SMOKE_ICEBERG_DST_COL";
 const ICEBERG_WEIGHT_COL_ENV: &str = "NEXUS_CUGRAPH_SMOKE_ICEBERG_WEIGHT_COL";
 const RESULT_MODE_ENV: &str = "NEXUS_CUGRAPH_SMOKE_RESULT_MODE";
 
-const DEFAULT_ICEBERG_EDGE_TABLE: &str = "glue.graph_sf1.bh_edges";
-const DEFAULT_ICEBERG_SRC_COL: &str = "src_id";
-const DEFAULT_ICEBERG_DST_COL: &str = "dst_id";
+const DEFAULT_ICEBERG_EDGE_TABLE: &str = "glue.nexus_graph.edges_by_src";
+const DEFAULT_ICEBERG_SRC_COL: &str = "src";
+const DEFAULT_ICEBERG_DST_COL: &str = "dst";
 const DEFAULT_ICEBERG_WEIGHT_COL: &str = "weight";
 
 pub async fn run(url_arg: Option<String>) -> SmokeResult<()> {
