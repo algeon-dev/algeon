@@ -29,7 +29,7 @@ fn test_filter_series_mask_succeeds_with_mixed_domains_and_uses_dataframe_proven
     let _event_observation = crate::common::lock_event_observation();
     let df_rt = sample_runtime();
     let mask_rt = sample_runtime();
-    let df = cudf::DataFrame::from_columns([
+    let df = cudf::DataFrame::from_series([
         ("id", df_rt.series(&[3i32, 1, 4, 1, 5]).unwrap()),
         ("score", df_rt.series(&[30.0f64, 10.0, 40.0, 15.0, 50.0]).unwrap()),
     ])

@@ -249,7 +249,7 @@ pub fn dataframe_from_columns(names: Vec<String>, columns: Vec<Column>) -> cudf:
         })
         .collect::<cudf::Result<Vec<_>>>()?;
 
-    DataFrame::from_columns(pairs).map_err(|e| testing::error::reanchor_for_test(e, operation))
+    DataFrame::from_series(pairs).map_err(|e| testing::error::reanchor_for_test(e, operation))
 }
 
 #[allow(dead_code)]

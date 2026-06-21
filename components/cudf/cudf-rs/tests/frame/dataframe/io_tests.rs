@@ -345,7 +345,7 @@ fn test_write_csv_preserves_dataframe_schema() {
 
     let ids = crate::common::series::<i32>("source_ids", &[100, 200]).unwrap();
     let values = crate::common::series::<i32>("source_values", &[1, 2]).unwrap();
-    let df = DataFrame::from_columns([("x", ids), ("y", values)]).unwrap();
+    let df = DataFrame::from_series([("x", ids), ("y", values)]).unwrap();
 
     df.write_csv(&path).unwrap();
 
@@ -370,7 +370,7 @@ fn test_write_csv_with_options_supports_delimiter_and_header_toggle() {
 
     let left = crate::common::series::<i32>("left_src", &[9, 8]).unwrap();
     let right = crate::common::series::<i32>("right_src", &[90, 80]).unwrap();
-    let df = DataFrame::from_columns([("left", left), ("right", right)]).unwrap();
+    let df = DataFrame::from_series([("left", left), ("right", right)]).unwrap();
 
     let opts = CsvWriteOptions::builder().filepath(&path).delimiter(b'\t').include_header(false).build();
     df.write_csv_with_options(opts).unwrap();

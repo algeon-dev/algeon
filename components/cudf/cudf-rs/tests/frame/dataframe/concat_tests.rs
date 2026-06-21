@@ -275,10 +275,9 @@ fn test_concat_by_name_decimal_null_fill_preserves_scale() {
         .astype(DataType::fixed_point(TypeId::Decimal64, -2))
         .unwrap();
 
-    let left = DataFrame::from_columns([("id", crate::common::series("id", &[1i32, 2]).unwrap())]).unwrap();
-    let right =
-        DataFrame::from_columns([("id", crate::common::series("id", &[3i32, 4]).unwrap()), ("amount", decimal)])
-            .unwrap();
+    let left = DataFrame::from_series([("id", crate::common::series("id", &[1i32, 2]).unwrap())]).unwrap();
+    let right = DataFrame::from_series([("id", crate::common::series("id", &[3i32, 4]).unwrap()), ("amount", decimal)])
+        .unwrap();
 
     let result = left.concat_by_name(&right, ConcatByNameOptions::default()).unwrap();
     let amount = result.series("amount").unwrap();
@@ -293,8 +292,8 @@ fn test_concat_succeeds_with_mixed_domains_and_uses_left_provenance() {
     let _event_observation = crate::common::lock_event_observation();
     let left_rt = sample_runtime();
     let right_rt = sample_runtime();
-    let left = DataFrame::from_columns([("a", left_rt.series(&[1i32, 2]).unwrap())]).unwrap();
-    let right = DataFrame::from_columns([("a", right_rt.series(&[3i32, 4]).unwrap())]).unwrap();
+    let left = DataFrame::from_series([("a", left_rt.series(&[1i32, 2]).unwrap())]).unwrap();
+    let right = DataFrame::from_series([("a", right_rt.series(&[3i32, 4]).unwrap())]).unwrap();
     let expected_exec_stream = left.testing_execution_domain_stream_value();
     let expected_exec_mr = left.testing_execution_domain_mr_value();
     crate::common::reset_dependency_observation();
@@ -424,9 +423,9 @@ fn test_concat_many_succeeds_with_mixed_domains_and_uses_self_provenance() {
     let rt1 = sample_runtime();
     let rt2 = sample_runtime();
     let rt3 = sample_runtime();
-    let df1 = DataFrame::from_columns([("a", rt1.series(&[1i32, 2]).unwrap())]).unwrap();
-    let df2 = DataFrame::from_columns([("a", rt2.series(&[3i32, 4]).unwrap())]).unwrap();
-    let df3 = DataFrame::from_columns([("a", rt3.series(&[5i32, 6]).unwrap())]).unwrap();
+    let df1 = DataFrame::from_series([("a", rt1.series(&[1i32, 2]).unwrap())]).unwrap();
+    let df2 = DataFrame::from_series([("a", rt2.series(&[3i32, 4]).unwrap())]).unwrap();
+    let df3 = DataFrame::from_series([("a", rt3.series(&[5i32, 6]).unwrap())]).unwrap();
     let expected_domain_id = df1.testing_execution_domain_id();
 
     let result = df1.concat_many(&[&df2, &df3]).unwrap();

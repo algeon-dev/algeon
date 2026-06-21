@@ -64,7 +64,7 @@ fn helper_constructors_seed_explicit_runtime_domain() {
     assert_eq!(table.testing_execution_domain_id(), expected_id);
 
     let series = crate::common::series::<i32>("id", &[1, 2, 3]).unwrap();
-    let df = DataFrame::from_columns([("id", series)]).unwrap();
+    let df = DataFrame::from_series([("id", series)]).unwrap();
     assert_eq!(df.testing_execution_domain_kind(), "explicit");
     assert_eq!(df.testing_execution_domain_id(), expected_id);
     assert_eq!(df.series("id").unwrap().as_column().testing_execution_domain_id(), expected_id);
@@ -89,7 +89,7 @@ fn borrowed_override_preserves_workflow_and_allocates_distinct_bundle_identity()
     assert_eq!(sorted_placement.memory_resource_debug, ctx_rt.memory_resource().testing_raw_handle_value());
     assert!(!input.same_provenance(&sorted), "same workflow must not hide different concrete handles");
 
-    let err = DataFrame::from_columns([("input", input), ("sorted", sorted)]).unwrap_err();
+    let err = DataFrame::from_series([("input", input), ("sorted", sorted)]).unwrap_err();
     assert_eq!(err.code(), ErrorCode::CrossProvenanceInputs);
     let left_domain = err.detail_value("left_domain").unwrap();
     let right_domain = err.detail_value("right_domain").unwrap();
@@ -166,7 +166,7 @@ fn dataframe_and_table_construction_reject_mixed_domain_columns() {
 
 #[test]
 fn dataframe_with_column_rejects_mixed_provenance_with_canonical_context() {
-    let df = DataFrame::from_columns([("id", explicit_i32_series("id", &[1, 2, 3], 300))]).unwrap();
+    let df = DataFrame::from_series([("id", explicit_i32_series("id", &[1, 2, 3], 300))]).unwrap();
     let foreign = explicit_i32_series("value", &[10, 20, 30], 301);
 
     let err = df.with_column("value", foreign).unwrap_err();
@@ -188,7 +188,7 @@ fn dataframe_with_column_rejects_mixed_provenance_with_canonical_context() {
 
 #[test]
 fn representative_high_level_ops_preserve_explicit_domain_identity() {
-    let df = DataFrame::from_columns([
+    let df = DataFrame::from_series([
         ("id", explicit_i32_series("id", &[3, 1, 2], 55)),
         ("value", explicit_i32_series("value", &[30, 10, 20], 55)),
     ])
@@ -223,7 +223,7 @@ fn host_materialization_and_io_paths_sync_retained_stream() {
 
     let dir = TempDir::new().unwrap();
     let path = dir.path().join("execution_domain.parquet");
-    let df = DataFrame::from_columns([("id", numeric.clone())]).unwrap();
+    let df = DataFrame::from_series([("id", numeric.clone())]).unwrap();
     reset_sync_observation();
     df.write_parquet(&path).unwrap();
     assert_eq!(last_sync_stream_value(), df.testing_execution_domain_stream_value());

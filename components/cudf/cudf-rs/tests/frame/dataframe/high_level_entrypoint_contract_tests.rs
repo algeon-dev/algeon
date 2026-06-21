@@ -23,7 +23,7 @@ use crate::common::{
 fn sample_df() -> DataFrame {
     let ids = crate::common::unnamed_series::<i32>(&[10, 20, 30, 40, 50]).unwrap();
     let scores = crate::common::unnamed_series::<f64>(&[1.0, 2.0, 3.0, 4.0, 5.0]).unwrap();
-    DataFrame::from_columns([("id", ids), ("score", scores)]).unwrap()
+    DataFrame::from_series([("id", ids), ("score", scores)]).unwrap()
 }
 
 // ===========================================================================
@@ -49,7 +49,7 @@ fn test_gather_with_series_succeeds_with_mixed_domains_and_uses_dataframe_proven
     let _event_observation = crate::common::lock_event_observation();
     let df_rt = sample_runtime();
     let indices_rt = sample_runtime();
-    let df = DataFrame::from_columns([
+    let df = DataFrame::from_series([
         ("id", df_rt.series(&[10i32, 20, 30]).unwrap()),
         ("score", df_rt.series(&[1.0f64, 2.0, 3.0]).unwrap()),
     ])
@@ -95,7 +95,7 @@ fn test_filter_isin_with_series_succeeds_with_mixed_domains_and_uses_dataframe_p
     let _event_observation = crate::common::lock_event_observation();
     let df_rt = sample_runtime();
     let values_rt = sample_runtime();
-    let df = DataFrame::from_columns([("id", df_rt.series(&[10i32, 20, 30]).unwrap())]).unwrap();
+    let df = DataFrame::from_series([("id", df_rt.series(&[10i32, 20, 30]).unwrap())]).unwrap();
     let values = values_rt.series(&[20i32, 30]).unwrap();
     let expected_exec_stream = df.testing_execution_domain_stream_value();
     let expected_exec_mr = df.testing_execution_domain_mr_value();
@@ -142,7 +142,7 @@ fn test_fillna_with_plain_value() {
     let ids =
         crate::common::unnamed_nullable_series::<i32>(&[10, 0, 30, 0, 50], &[true, false, true, false, true]).unwrap();
     let scores = crate::common::unnamed_series::<f64>(&[1.0, 2.0, 3.0, 4.0, 5.0]).unwrap();
-    let df = DataFrame::from_columns([("id", ids), ("score", scores)]).unwrap();
+    let df = DataFrame::from_series([("id", ids), ("score", scores)]).unwrap();
 
     let filled = df.fillna::<i32>("id", 42).unwrap();
     assert_eq!(filled.num_rows(), 5);
@@ -156,7 +156,7 @@ fn test_fillna_with_scalar_still_works() {
     let ids =
         crate::common::unnamed_nullable_series::<i32>(&[10, 0, 30, 0, 50], &[true, false, true, false, true]).unwrap();
     let scores = crate::common::unnamed_series::<f64>(&[1.0, 2.0, 3.0, 4.0, 5.0]).unwrap();
-    let df = DataFrame::from_columns([("id", ids), ("score", scores)]).unwrap();
+    let df = DataFrame::from_series([("id", ids), ("score", scores)]).unwrap();
 
     let fill = scalar(42i32).unwrap();
     let filled = df.fillna_with_scalar("id", &fill).unwrap();
@@ -169,7 +169,7 @@ fn test_fillna_with_scalar_still_works() {
 #[test]
 fn test_fillna_rejects_missing_column() {
     let ids = crate::common::unnamed_series::<i32>(&[10, 20, 30]).unwrap();
-    let df = DataFrame::from_columns([("id", ids)]).unwrap();
+    let df = DataFrame::from_series([("id", ids)]).unwrap();
     let err = df.fillna::<i32>("nonexistent", 42).unwrap_err();
 
     assert_missing_column_error(&err, "nonexistent");
@@ -189,9 +189,8 @@ fn test_factorize_returns_typed_result() {
 
 #[test]
 fn test_with_lookup_from_round_trip_against_narrow_lookup_dataframe() {
-    let df =
-        DataFrame::from_columns([("vertex", crate::common::unnamed_series(&["u2", "u9", "u1"]).unwrap())]).unwrap();
-    let lookup_df = DataFrame::from_columns([
+    let df = DataFrame::from_series([("vertex", crate::common::unnamed_series(&["u2", "u9", "u1"]).unwrap())]).unwrap();
+    let lookup_df = DataFrame::from_series([
         ("id", crate::common::unnamed_series(&["u1", "u2"]).unwrap()),
         ("label", crate::common::unnamed_series(&["alice", "bob"]).unwrap()),
     ])
@@ -207,7 +206,7 @@ fn test_with_lookup_from_round_trip_against_narrow_lookup_dataframe() {
 
 #[test]
 fn test_with_lookup_rejects_mapping_length_mismatch_with_dataframe_operation() {
-    let df = DataFrame::from_columns([("vertex", crate::common::unnamed_series(&["u2", "u1"]).unwrap())]).unwrap();
+    let df = DataFrame::from_series([("vertex", crate::common::unnamed_series(&["u2", "u1"]).unwrap())]).unwrap();
     let keys = crate::common::unnamed_series(&["u1", "u2"]).unwrap();
     let values = crate::common::unnamed_series(&["alice"]).unwrap();
 
@@ -230,9 +229,9 @@ fn test_with_lookup_rejects_mapping_length_mismatch_with_dataframe_operation() {
 
 #[test]
 fn test_with_lookup_from_rejects_missing_lookup_key_column_with_canonical_context() {
-    let df = DataFrame::from_columns([("vertex", crate::common::unnamed_series(&["u2", "u1"]).unwrap())]).unwrap();
+    let df = DataFrame::from_series([("vertex", crate::common::unnamed_series(&["u2", "u1"]).unwrap())]).unwrap();
     let lookup_df =
-        DataFrame::from_columns([("label", crate::common::unnamed_series(&["alice", "bob"]).unwrap())]).unwrap();
+        DataFrame::from_series([("label", crate::common::unnamed_series(&["alice", "bob"]).unwrap())]).unwrap();
 
     let err = df.with_lookup_from("owner", "vertex", &lookup_df, "id", "label").unwrap_err();
 
@@ -243,8 +242,8 @@ fn test_with_lookup_from_rejects_missing_lookup_key_column_with_canonical_contex
 
 #[test]
 fn test_with_lookup_from_rejects_missing_lookup_value_column_with_canonical_context() {
-    let df = DataFrame::from_columns([("vertex", crate::common::unnamed_series(&["u2", "u1"]).unwrap())]).unwrap();
-    let lookup_df = DataFrame::from_columns([("id", crate::common::unnamed_series(&["u1", "u2"]).unwrap())]).unwrap();
+    let df = DataFrame::from_series([("vertex", crate::common::unnamed_series(&["u2", "u1"]).unwrap())]).unwrap();
+    let lookup_df = DataFrame::from_series([("id", crate::common::unnamed_series(&["u1", "u2"]).unwrap())]).unwrap();
 
     let err = df.with_lookup_from("owner", "vertex", &lookup_df, "id", "label").unwrap_err();
 
@@ -255,8 +254,7 @@ fn test_with_lookup_from_rejects_missing_lookup_value_column_with_canonical_cont
 
 #[test]
 fn test_with_encoded_and_decoded_column_workflows() {
-    let df =
-        DataFrame::from_columns([("kind", crate::common::unnamed_series(&["b", "a", "c", "a"]).unwrap())]).unwrap();
+    let df = DataFrame::from_series([("kind", crate::common::unnamed_series(&["b", "a", "c", "a"]).unwrap())]).unwrap();
     let codebook = df.codebook("kind").unwrap();
 
     let encoded = df.with_encoded_column("kind_id", "kind", &codebook).unwrap();
@@ -268,8 +266,7 @@ fn test_with_encoded_and_decoded_column_workflows() {
 
 #[test]
 fn test_with_encoded_column_rejects_missing_input_column_with_canonical_context() {
-    let df =
-        DataFrame::from_columns([("kind", crate::common::unnamed_series(&["b", "a", "c", "a"]).unwrap())]).unwrap();
+    let df = DataFrame::from_series([("kind", crate::common::unnamed_series(&["b", "a", "c", "a"]).unwrap())]).unwrap();
     let codebook = df.codebook("kind").unwrap();
 
     let err = df.with_encoded_column("kind_id", "missing", &codebook).unwrap_err();
@@ -281,8 +278,8 @@ fn test_with_encoded_column_rejects_missing_input_column_with_canonical_context(
 
 #[test]
 fn test_with_decoded_column_rejects_missing_input_column_with_canonical_context() {
-    let df = DataFrame::from_columns([("kind_id", crate::common::unnamed_series(&[1i32, 0, 2, 0]).unwrap())]).unwrap();
-    let codebook = DataFrame::from_columns([("kind", crate::common::unnamed_series(&["b", "a", "c"]).unwrap())])
+    let df = DataFrame::from_series([("kind_id", crate::common::unnamed_series(&[1i32, 0, 2, 0]).unwrap())]).unwrap();
+    let codebook = DataFrame::from_series([("kind", crate::common::unnamed_series(&["b", "a", "c"]).unwrap())])
         .unwrap()
         .codebook("kind")
         .unwrap();

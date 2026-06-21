@@ -121,7 +121,7 @@ fn nested_dictionary_dataframe(filename: &str, rows: &str) -> DataFrame {
     let category =
         Series::from_column(dictionary::encode(&category_source.testing_view().unwrap(), TypeId::Int32).unwrap())
             .unwrap();
-    DataFrame::from_columns([("name", name), ("lists", lists), ("point", point), ("category", category)]).unwrap()
+    DataFrame::from_series([("name", name), ("lists", lists), ("point", point), ("category", category)]).unwrap()
 }
 
 fn binding_bytes(binding: &BufferBinding<'_>) -> Vec<u8> {
@@ -1396,7 +1396,7 @@ fn dataframe_device_arrow_table_raw_parts_round_trip_preserves_names_and_values(
     let runtime = Runtime::builder().build().unwrap();
     let ids = runtime.series(&[5i32, 6, 7]).unwrap();
     let flags = runtime.series(&[true, false, true]).unwrap();
-    let df = DataFrame::from_columns([("id", ids), ("flag", flags)]).unwrap();
+    let df = DataFrame::from_series([("id", ids), ("flag", flags)]).unwrap();
 
     let raw_parts = df.try_prepare_device_arrow_export().unwrap().into_raw_parts();
 
@@ -1426,7 +1426,7 @@ fn dataframe_device_arrow_export_rejects_interior_null_column_names_with_stable_
     let runtime = Runtime::builder().build().unwrap();
     let ids = runtime.series(&[5i32, 6, 7]).unwrap();
     let flags = runtime.series(&[true, false, true]).unwrap();
-    let df = DataFrame::from_columns([("id", ids), ("bad\0flag", flags)]).unwrap();
+    let df = DataFrame::from_series([("id", ids), ("bad\0flag", flags)]).unwrap();
 
     let err = match df.try_prepare_device_arrow_export() {
         Ok(_) => panic!("interior NUL column name should fail device-arrow export"),
@@ -1449,7 +1449,7 @@ fn dataframe_device_arrow_table_raw_parts_column_names_reject_negative_foreign_c
     let runtime = Runtime::builder().build().unwrap();
     let ids = runtime.series(&[5i32, 6, 7]).unwrap();
     let flags = runtime.series(&[true, false, true]).unwrap();
-    let df = DataFrame::from_columns([("id", ids), ("flag", flags)]).unwrap();
+    let df = DataFrame::from_series([("id", ids), ("flag", flags)]).unwrap();
     let raw_parts = df.try_prepare_device_arrow_export().unwrap().into_raw_parts();
 
     unsafe {
@@ -1473,7 +1473,7 @@ fn dataframe_device_arrow_owned_abi_handoff_survives_export_drop() {
     let foreign = {
         let ids = runtime.series(&[8i32, 9, 10]).unwrap();
         let flags = runtime.series(&[true, false, true]).unwrap();
-        let df = DataFrame::from_columns([("id", ids), ("flag", flags)]).unwrap();
+        let df = DataFrame::from_series([("id", ids), ("flag", flags)]).unwrap();
         let abi = df.try_prepare_device_arrow_export().unwrap().into_owned_abi_parts();
 
         assert_eq!(abi.materialization(), DeviceArrowExportMaterialization::BridgeOwnedDeviceCopy);
@@ -1503,7 +1503,7 @@ fn dataframe_device_arrow_import_retains_owned_abi_release_until_imported_datafr
     let runtime = Runtime::builder().build().unwrap();
     let ids = runtime.series(&[8i32, 9, 10]).unwrap();
     let flags = runtime.series(&[true, false, true]).unwrap();
-    let df = DataFrame::from_columns([("id", ids), ("flag", flags)]).unwrap();
+    let df = DataFrame::from_series([("id", ids), ("flag", flags)]).unwrap();
     let abi = df.try_prepare_device_arrow_export().unwrap().into_owned_abi_parts();
     let (schema, array, materialization) = abi.into_raw_abi();
     let (schema_releases, array_releases) = unsafe { install_release_observers(schema, array) };
@@ -1626,7 +1626,7 @@ fn decimal64_dataframe_device_arrow_round_trip_preserves_names_scale_and_values(
     let runtime = Runtime::builder().build().unwrap();
     let ids = runtime.series(&[3i32, 1, 4]).unwrap();
     let amounts = decimal64_series(&runtime, "source_amount", &[12345i64, -67890, 5], -2);
-    let df = DataFrame::from_columns([("id", ids), ("amount", amounts.clone())]).unwrap();
+    let df = DataFrame::from_series([("id", ids), ("amount", amounts.clone())]).unwrap();
 
     let export = df.try_prepare_device_arrow_export().unwrap();
 
@@ -1655,7 +1655,7 @@ fn string_dataframe_device_arrow_round_trip_preserves_names_and_values() {
     let runtime = Runtime::builder().build().unwrap();
     let ids = runtime.series(&[3i32, 1, 4, 1]).unwrap();
     let words = runtime.nullable_series(&["alpha", "", "placeholder", "omega"], &[true, true, false, true]).unwrap();
-    let df = DataFrame::from_columns([("id", ids), ("word", words)]).unwrap();
+    let df = DataFrame::from_series([("id", ids), ("word", words)]).unwrap();
 
     let export = df.try_prepare_device_arrow_export().unwrap();
     assert_eq!(export.materialization(), DeviceArrowExportMaterialization::ProducerRetainedView);
@@ -1681,7 +1681,7 @@ fn string_dataframe_device_arrow_round_trip_does_not_call_host_arrow_path() {
     let runtime = Runtime::builder().build().unwrap();
     let ids = runtime.series(&[3i32, 1, 4, 1]).unwrap();
     let words = runtime.nullable_series(&["alpha", "", "placeholder", "omega"], &[true, true, false, true]).unwrap();
-    let df = DataFrame::from_columns([("id", ids), ("word", words)]).unwrap();
+    let df = DataFrame::from_series([("id", ids), ("word", words)]).unwrap();
 
     let export = df.try_prepare_device_arrow_export().unwrap();
     let foreign = export.into_foreign();
@@ -1731,7 +1731,7 @@ fn string_dataframe_device_arrow_round_trip_matches_host_arrow_round_trip_for_va
     let runtime = Runtime::builder().build().unwrap();
     let ids = runtime.series(&[3i32, 1, 4, 1]).unwrap();
     let words = runtime.nullable_series(&["alpha", "", "placeholder", "omega"], &[true, true, false, true]).unwrap();
-    let df = DataFrame::from_columns([("id", ids), ("word", words)]).unwrap();
+    let df = DataFrame::from_series([("id", ids), ("word", words)]).unwrap();
 
     let device_foreign = df.try_prepare_device_arrow_export().unwrap().into_foreign();
     let device_imported =
@@ -1756,7 +1756,7 @@ fn dataframe_device_arrow_round_trip_preserves_names_and_values() {
     let runtime = Runtime::builder().build().unwrap();
     let ids = runtime.series(&[3i32, 1, 4]).unwrap();
     let flags = runtime.series(&[true, false, true]).unwrap();
-    let df = DataFrame::from_columns([("id", ids), ("flag", flags)]).unwrap();
+    let df = DataFrame::from_series([("id", ids), ("flag", flags)]).unwrap();
 
     let export = df.try_prepare_device_arrow_export().unwrap();
     let foreign = export.into_foreign();
@@ -1775,7 +1775,7 @@ fn dataframe_device_arrow_export_uses_producer_execution_domain() {
     let runtime = Runtime::builder().build().unwrap();
     let ids = runtime.series(&[3i32, 1, 4]).unwrap();
     let flags = runtime.series(&[true, false, true]).unwrap();
-    let df = DataFrame::from_columns([("id", ids), ("flag", flags)]).unwrap();
+    let df = DataFrame::from_series([("id", ids), ("flag", flags)]).unwrap();
 
     let export = df.try_prepare_device_arrow_export().unwrap();
 
@@ -1792,7 +1792,7 @@ fn dataframe_device_arrow_round_trip_does_not_call_host_arrow_path() {
     let runtime = Runtime::builder().build().unwrap();
     let ids = runtime.series(&[3i32, 1, 4]).unwrap();
     let flags = runtime.series(&[true, false, true]).unwrap();
-    let df = DataFrame::from_columns([("id", ids), ("flag", flags)]).unwrap();
+    let df = DataFrame::from_series([("id", ids), ("flag", flags)]).unwrap();
 
     let export = df.try_prepare_device_arrow_export().unwrap();
     let foreign = export.into_foreign();
@@ -1812,7 +1812,7 @@ fn dataframe_device_arrow_import_waits_on_sync_event_via_consumer_stream_without
     let consumer_runtime = Runtime::builder().build().unwrap();
     let ids = producer_runtime.series(&[3i32, 1, 4]).unwrap();
     let flags = producer_runtime.series(&[true, false, true]).unwrap();
-    let df = DataFrame::from_columns([("id", ids), ("flag", flags)]).unwrap();
+    let df = DataFrame::from_series([("id", ids), ("flag", flags)]).unwrap();
     let export = df.try_prepare_device_arrow_export().unwrap();
     let exported_sync_event = export.sync_event_raw_ptr();
     let consumer_stream_raw = consumer_runtime.stream().testing_raw_handle_value();
@@ -1839,7 +1839,7 @@ fn dataframe_device_arrow_round_trip_matches_host_arrow_round_trip_for_first_sli
     let ids = runtime.series(&[3i32, 1, 4]).unwrap();
     let flags = runtime.series(&[true, false, true]).unwrap();
     let scores = runtime.series(&[1.25f64, 2.5, 3.75]).unwrap();
-    let df = DataFrame::from_columns([("id", ids), ("flag", flags), ("score", scores)]).unwrap();
+    let df = DataFrame::from_series([("id", ids), ("flag", flags), ("score", scores)]).unwrap();
 
     let device_foreign = df.try_prepare_device_arrow_export().unwrap().into_foreign();
     let device_imported =

@@ -95,7 +95,7 @@ fn value_counts_from_groupby_output(
     operation: &'static str,
 ) -> Result<crate::DataFrame> {
     let (key_col, count_col) = crate::ops::groupby::value_counts_result_columns(gb, operation)?;
-    crate::DataFrame::from_columns([
+    crate::DataFrame::from_series([
         (SERIES_VALUE_COUNTS_FALLBACK_NAME.to_string(), Series::from_column(key_col)?),
         (SERIES_VALUE_COUNTS_COUNT_NAME.to_string(), Series::from_column(count_col)?),
     ])

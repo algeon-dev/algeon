@@ -19,7 +19,7 @@ use crate::{
 fn range_testing_dataframe() -> Result<DataFrame> {
     let runtime = Runtime::new()?;
     let series = runtime.series(&[1i32, 2, 3])?;
-    DataFrame::from_named_series([("x", series)])
+    DataFrame::from_series([("x", series)])
 }
 
 pub(crate) fn trigger_dataframe_row_range_start_limit_error_for_test() -> Result<DataFrame> {

@@ -15,7 +15,7 @@ fn assert_group_cumcount_validation_error(err: &cudf::Error, operation: &str, re
 #[test]
 fn group_cumcount_returns_zero_based_positions_for_each_sorted_group() {
     let runtime = sample_runtime();
-    let edges = DataFrame::from_columns([
+    let edges = DataFrame::from_series([
         ("_sp", runtime.series(&[2i32, 1, 1, 2, 1, 3]).unwrap()),
         ("weight", runtime.series(&[5.0f32, 9.0, 8.0, 4.0, 7.0, 3.0]).unwrap()),
         ("id_fc", runtime.series(&[5i64, 2, 3, 6, 4, 7]).unwrap()),
@@ -36,7 +36,7 @@ fn group_cumcount_returns_zero_based_positions_for_each_sorted_group() {
 #[test]
 fn group_cumcount_supports_multi_column_group_keys() {
     let runtime = sample_runtime();
-    let df = DataFrame::from_columns([
+    let df = DataFrame::from_series([
         ("partition", runtime.series(&[1i32, 1, 1, 2, 2, 2]).unwrap()),
         ("entityType", runtime.series(&["device", "device", "identity", "device", "device", "identity"]).unwrap()),
         ("score", runtime.series(&[9.0f32, 8.0, 7.0, 6.0, 5.0, 4.0]).unwrap()),
@@ -51,7 +51,7 @@ fn group_cumcount_supports_multi_column_group_keys() {
 #[test]
 fn group_cumcount_rejects_empty_group_keys_with_stable_contract() {
     let runtime = sample_runtime();
-    let df = DataFrame::from_columns([
+    let df = DataFrame::from_series([
         ("partition", runtime.series(&[1i32, 1, 2]).unwrap()),
         ("score", runtime.series(&[9.0f32, 8.0, 7.0]).unwrap()),
     ])

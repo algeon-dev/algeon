@@ -277,7 +277,7 @@ fn test_sort_all_null() {
 fn test_dataframe_filter_empty_result() {
     use cudf::DataFrame;
     let a = crate::common::series::<i32>("a", &[1, 2, 3]).unwrap();
-    let df = DataFrame::from_columns([("a", a)]).unwrap();
+    let df = DataFrame::from_series([("a", a)]).unwrap();
     // Filter with all-false mask
     let mask = crate::common::series::<bool>("mask", &[false, false, false]).unwrap();
     let result = df.filter(&mask).unwrap();
@@ -289,7 +289,7 @@ fn test_dataframe_filter_empty_result() {
 fn test_dataframe_head_zero() {
     use cudf::DataFrame;
     let a = crate::common::series::<i32>("a", &[1, 2, 3]).unwrap();
-    let df = DataFrame::from_columns([("a", a)]).unwrap();
+    let df = DataFrame::from_series([("a", a)]).unwrap();
     let result = df.head(0).unwrap();
     assert_eq!(result.num_rows(), 0);
 }
@@ -298,7 +298,7 @@ fn test_dataframe_head_zero() {
 fn test_dataframe_slice_empty() {
     use cudf::DataFrame;
     let a = crate::common::series::<i32>("a", &[1, 2, 3]).unwrap();
-    let df = DataFrame::from_columns([("a", a)]).unwrap();
+    let df = DataFrame::from_series([("a", a)]).unwrap();
     let result = df.slice(1, 0).unwrap();
     assert_eq!(result.num_rows(), 0);
 }
@@ -313,7 +313,7 @@ fn test_dataframe_dropna_with_mixed_nulls() {
     // col a: [1, null, 3], col b: [null, 5, 6]
     let a = crate::common::nullable_series::<i32>("a", &[1, 0, 3], &[true, false, true]).unwrap();
     let b = crate::common::nullable_series::<i32>("b", &[0, 5, 6], &[false, true, true]).unwrap();
-    let df = DataFrame::from_columns([("a", a), ("b", b)]).unwrap();
+    let df = DataFrame::from_series([("a", a), ("b", b)]).unwrap();
     let result = df.dropna(DropNaOptions::builder().subset(&["a", "b"]).build()).unwrap();
     // Only row 2 (index 2) has no nulls in either column
     assert_eq!(result.num_rows(), 1);
@@ -325,7 +325,7 @@ fn test_dataframe_dropna_with_mixed_nulls() {
 fn test_dataframe_cast_column_preserves_nulls() {
     use cudf::DataFrame;
     let a = crate::common::nullable_series::<i32>("a", &[10, 0, 30], &[true, false, true]).unwrap();
-    let df = DataFrame::from_columns([("a", a)]).unwrap();
+    let df = DataFrame::from_series([("a", a)]).unwrap();
     let result = df.cast_column("a", DataType::new(TypeId::Float64)).unwrap();
     let col = result.series("a").unwrap();
     let vals = col.to_optional_vec::<f64>().unwrap();

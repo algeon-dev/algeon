@@ -185,7 +185,7 @@ impl DataFrame {
     /// Crate-private constructor from column names and owned [`Column`] values.
     ///
     /// Advanced constructor. For most user-facing code, prefer
-    /// [`DataFrame::from_columns`] with explicit schema names.
+    /// [`DataFrame::from_series`] with explicit schema names.
     ///
     /// # Errors
     ///
@@ -288,7 +288,7 @@ impl DataFrame {
     /// Returns an error if:
     /// - Any name is duplicated
     /// - Columns have different row counts
-    pub fn from_columns<I, S>(pairs: I) -> Result<Self>
+    pub fn from_series<I, S>(pairs: I) -> Result<Self>
     where
         I: IntoIterator<Item = (S, Series)>,
         S: Into<String>,
@@ -301,27 +301,7 @@ impl DataFrame {
             named_columns.push((name.into(), Arc::clone(series.column_arc())));
         }
 
-        dataframe_from_named_column_arcs(named_columns, "dataframe::from_columns")
-    }
-
-    /// Create a `DataFrame` from an iterator of `(name, Series)` pairs.
-    ///
-    /// This is a high-level alias for [`DataFrame::from_columns`] that makes
-    /// schema authority explicit in the call site.
-    pub fn from_named_series<I, S>(pairs: I) -> Result<Self>
-    where
-        I: IntoIterator<Item = (S, Series)>,
-        S: Into<String>,
-    {
-        let iter = pairs.into_iter();
-        let (lower, _) = iter.size_hint();
-        let mut named_columns = Vec::with_capacity(lower);
-
-        for (name, series) in iter {
-            named_columns.push((name.into(), Arc::clone(series.column_arc())));
-        }
-
-        dataframe_from_named_column_arcs(named_columns, "dataframe::from_named_series")
+        dataframe_from_named_column_arcs(named_columns, "dataframe::from_series")
     }
 
     /// Construct a `DataFrame` directly from pre-validated parts.
@@ -557,7 +537,7 @@ impl DataFrame {
     /// # let rt = Runtime::new().unwrap();
     /// # let keys = rt.series(&[1i32, 2]).unwrap();
     /// # let vals = rt.series(&[10i64, 20]).unwrap();
-    /// # let df = DataFrame::from_columns([("key", keys), ("val", vals)]).unwrap();
+    /// # let df = DataFrame::from_series([("key", keys), ("val", vals)]).unwrap();
     /// let result =
     ///     df.groupby(&["key"]).agg(&[AggSpec::new("val", GroupByAgg::Sum)]).unwrap();
     /// ```
@@ -572,7 +552,7 @@ impl DataFrame {
 
 /// Construct a [`DataFrame`](crate::frame::dataframe::DataFrame) from named pairs.
 ///
-/// This macro is a shorthand for [`DataFrame::from_columns`]. Each value
+/// This macro is a shorthand for [`DataFrame::from_series`]. Each value
 /// must evaluate to a [`Series`](crate::Series). The pair key becomes the
 /// DataFrame schema name, overriding any name carried by the Series.
 ///
@@ -597,7 +577,7 @@ impl DataFrame {
 #[macro_export]
 macro_rules! dataframe {
     ($($name:expr => $series:expr),+ $(,)?) => {{
-        $crate::DataFrame::from_columns(vec![
+        $crate::DataFrame::from_series(vec![
             $(($name.to_string(), $series)),+
         ])
     }};

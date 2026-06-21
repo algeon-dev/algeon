@@ -295,7 +295,7 @@ fn scoped_groupby_handle_is_reusable() {
     use cudf::{ExecutionOverrides, Runtime, runtime::CudaStream};
 
     let rt = Runtime::builder().build().unwrap();
-    let df = DataFrame::from_columns([
+    let df = DataFrame::from_series([
         ("key", rt.series(&[1i32, 2, 1, 2]).unwrap()),
         ("value", rt.series(&[10i64, 20, 30, 40]).unwrap()),
     ])

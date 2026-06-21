@@ -13,7 +13,7 @@ use cudf::{
 fn grouped_df() -> DataFrame {
     let key = crate::common::series::<i32>("k", &[1, 1, 2]).unwrap();
     let value = crate::common::series::<i32>("v", &[10, 20, 30]).unwrap();
-    DataFrame::from_columns([("k", key), ("v", value)]).unwrap()
+    DataFrame::from_series([("k", key), ("v", value)]).unwrap()
 }
 
 #[test]
@@ -228,7 +228,7 @@ fn sort_query_forwards_nulls_first_descending_and_stable_per_key() {
     let a = crate::common::nullable_series::<i32>("a", &[2, 0, 1, 0, 1, 1], &[true, false, true, false, true, true])
         .unwrap();
     let b = crate::common::series::<i32>("b", &[5, 1, 2, 9, 7, 7]).unwrap();
-    let df = DataFrame::from_columns([("row", row), ("a", a), ("b", b)]).unwrap();
+    let df = DataFrame::from_series([("row", row), ("a", a), ("b", b)]).unwrap();
 
     let spec = QuerySortSpec::new([
         QuerySortExpr::ascending(col("a")).with_nulls_first(true),

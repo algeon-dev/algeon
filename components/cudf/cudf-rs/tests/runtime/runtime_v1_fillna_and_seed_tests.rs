@@ -56,7 +56,7 @@ fn df_fillna_after_copy_into_runtime_places_inputs_in_target_runtime() {
     let target_rt = sample_runtime();
 
     // Build a DataFrame with a nullable column in domain A.
-    let df = DataFrame::from_columns([
+    let df = DataFrame::from_series([
         ("id", rt_a.series(&[1i32, 2, 3]).unwrap()),
         ("val", rt_a.nullable_series(&[10i32, 0, 30], &[true, false, true]).unwrap()),
     ])
@@ -86,7 +86,7 @@ fn df_fillna_with_series_succeeds_with_mixed_domains_default_path() {
     let rt_a = sample_runtime();
     let rt_b = sample_runtime();
 
-    let df = DataFrame::from_columns([
+    let df = DataFrame::from_series([
         ("id", rt_a.series(&[1i32, 2, 3]).unwrap()),
         ("val", rt_a.nullable_series(&[10i32, 0, 30], &[true, false, true]).unwrap()),
     ])
@@ -111,7 +111,7 @@ fn df_fillna_with_series_succeeds_with_mixed_domains_default_path() {
 #[test]
 fn df_fillna_after_copy_into_runtime_same_domain_works() {
     let rt = sample_runtime();
-    let df = DataFrame::from_columns([
+    let df = DataFrame::from_series([
         ("id", rt.series(&[1i32, 2, 3]).unwrap()),
         ("val", rt.nullable_series(&[10i32, 0, 30], &[true, false, true]).unwrap()),
     ])
@@ -202,7 +202,7 @@ fn runtime_empty_column_retains_explicit_domain() {
 #[test]
 fn runtime_empty_column_in_dataframe_no_mixed_domain_error() {
     let rt = sample_runtime();
-    let df = DataFrame::from_columns([("id", rt.series(&[1i32; 0]).unwrap())]).unwrap();
+    let df = DataFrame::from_series([("id", rt.series(&[1i32; 0]).unwrap())]).unwrap();
     let empty_col = rt.empty_column(TypeId::Int64).unwrap();
 
     // Adding an empty column in the same domain should succeed without

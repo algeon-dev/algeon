@@ -124,7 +124,7 @@ fn concat_by_name_missing_planned_dtype_error(operation: &'static str, column_na
 
 pub(crate) fn trigger_concat_by_name_missing_planned_dtype_for_test() -> Result<()> {
     let runtime = Runtime::new()?;
-    let df = DataFrame::from_columns([("left", runtime.series(&[1i32])?)])?;
+    let df = DataFrame::from_series([("left", runtime.series(&[1i32])?)])?;
     let output_names = vec!["missing".to_string()];
     let dtypes = FastHashMap::default();
     df.align_for_concat_by_name(&output_names, &dtypes, SchemaAlignment::NullFill, "dataframe::concat_many_by_name")
@@ -158,7 +158,7 @@ impl DataFrame {
             columns.push((name.clone(), Series::from_column(nulls).map_err(|e| e.reanchor(operation))?));
         }
 
-        DataFrame::from_columns(columns).map_err(|e| e.reanchor(operation))
+        DataFrame::from_series(columns).map_err(|e| e.reanchor(operation))
     }
 
     /// Concatenate two DataFrames row-wise.

@@ -44,7 +44,7 @@ fn build_column_dataframe(dataset: &Dataset) -> cudf::Result<DataFrame> {
         .map(|col| Ok((col.name.clone(), build_series(&runtime, &col.name, &col.dtype, &col.values)?)))
         .collect::<cudf::Result<Vec<_>>>()?;
 
-    DataFrame::from_columns(columns)
+    DataFrame::from_series(columns)
 }
 
 fn build_json_lines_dataframe(dataset: &Dataset) -> cudf::Result<DataFrame> {
@@ -90,7 +90,7 @@ fn apply_dictionary_columns(frame: DataFrame, dataset: &Dataset) -> cudf::Result
         })
         .collect::<cudf::Result<Vec<_>>>()?;
 
-    DataFrame::from_columns(columns)
+    DataFrame::from_series(columns)
 }
 
 /// Build a single `Series` from a column name, dtype string, and JSON values.

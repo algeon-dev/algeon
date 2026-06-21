@@ -297,7 +297,7 @@ fn assert_two_numeric_columns_table(table: &Table) {
 fn named_numeric_frame(runtime: &Runtime) -> DataFrame {
     let ids = runtime.series(&[1i32, 2, 3]).unwrap();
     let values = runtime.series(&[10i64, 20, 30]).unwrap();
-    DataFrame::from_columns([("id", ids), ("value", values)]).unwrap()
+    DataFrame::from_series([("id", ids), ("value", values)]).unwrap()
 }
 
 fn assert_named_numeric_dataframe(imported: &DataFrame, left_name: &str, right_name: &str) {
@@ -314,7 +314,7 @@ fn dictionary_backed_nested_frame(filename: &str, rows: &str) -> DataFrame {
     let id = frame.series("id").unwrap();
     let encoded = dictionary::encode(&category.testing_view().unwrap(), TypeId::Int32).unwrap();
     let category = Series::from_column(encoded).unwrap();
-    DataFrame::from_columns([("category", category), ("nested", nested), ("point", point), ("id", id)]).unwrap()
+    DataFrame::from_series([("category", category), ("nested", nested), ("point", point), ("id", id)]).unwrap()
 }
 
 fn owned_table_transfer_with_root_names(transfer: OwnedTableTransfer, names: Vec<String>) -> OwnedTableTransfer {
@@ -706,7 +706,7 @@ mod table_import_contracts {
             Series::from_column(dictionary::encode(&category_source.testing_view().unwrap(), TypeId::Int32).unwrap())
                 .unwrap();
         let frame =
-            DataFrame::from_columns([("name", name), ("lists", lists), ("point", point), ("category", category)])
+            DataFrame::from_series([("name", name), ("lists", lists), ("point", point), ("category", category)])
                 .unwrap();
         let destination_runtime = common::sample_runtime();
 

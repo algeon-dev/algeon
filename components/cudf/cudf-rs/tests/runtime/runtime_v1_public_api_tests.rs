@@ -218,12 +218,12 @@ fn dataframe_in_context_routes_representative_operation_families_through_context
     let data_rt = sample_runtime();
     let other_rt = sample_runtime();
     let ctx_rt = sample_runtime();
-    let df = DataFrame::from_columns([
+    let df = DataFrame::from_series([
         ("id", data_rt.series(&[3i32, 1, 2, 2]).unwrap()),
         ("val", data_rt.series(&[30i32, 10, 20, 40]).unwrap()),
     ])
     .unwrap();
-    let rhs = DataFrame::from_columns([
+    let rhs = DataFrame::from_series([
         ("id", other_rt.series(&[2i32, 3, 4]).unwrap()),
         ("score", other_rt.series(&[200i32, 300, 400]).unwrap()),
     ])
@@ -305,7 +305,7 @@ fn dataframe_in_context_routes_representative_operation_families_through_context
     );
 
     reset_exec_observation();
-    let str_df = DataFrame::from_columns([
+    let str_df = DataFrame::from_series([
         ("name", data_rt.series(&["alice", "Bob", "carol"]).unwrap()),
         ("keep", data_rt.series(&[1i32, 2, 3]).unwrap()),
     ])
@@ -380,7 +380,7 @@ fn series_explicit_context_methods_route_representative_operation_families_throu
 #[test]
 fn explicit_context_methods_accept_runtime_seeded_dataframe_and_series() {
     let series = crate::common::series::<i32>("id", &[3, 1, 2]).unwrap();
-    let df = DataFrame::from_columns([("id", series.clone())]).unwrap();
+    let df = DataFrame::from_series([("id", series.clone())]).unwrap();
     let override_stream = CudaStream::new().unwrap();
     let ctx = ExecutionOverrides::new().with_stream(&override_stream);
 
@@ -396,7 +396,7 @@ fn explicit_context_methods_accept_runtime_seeded_dataframe_and_series() {
 #[test]
 fn explicit_runtime_operations_use_explicit_domain_only() {
     let rt = sample_runtime();
-    let df = DataFrame::from_columns([
+    let df = DataFrame::from_series([
         ("id", rt.series(&[3i32, 1, 2]).unwrap()),
         ("val", rt.series(&[30i32, 10, 20]).unwrap()),
     ])
@@ -433,7 +433,7 @@ fn runtime_seeded_readers_use_runtime_stream() {
 
     let parquet_path = dir.path().join("runtime_seed.parquet");
     let seed_rt = sample_runtime();
-    DataFrame::from_columns([
+    DataFrame::from_series([
         ("id", seed_rt.series(&[1i32, 2, 3]).unwrap()),
         ("value", seed_rt.series(&[10i32, 20, 30]).unwrap()),
     ])
@@ -482,7 +482,7 @@ fn write_options_and_runtime_overrides_use_expected_runtime() {
 
     let data_rt = sample_runtime();
     let target_rt = sample_runtime();
-    let df = DataFrame::from_columns([
+    let df = DataFrame::from_series([
         ("id", data_rt.series(&[4i32, 5, 6]).unwrap()),
         ("value", data_rt.series(&[40i32, 50, 60]).unwrap()),
     ])
@@ -512,7 +512,7 @@ fn write_options_and_runtime_overrides_use_expected_runtime() {
 fn copy_into_runtime_preserves_target_residency_and_reuses_allocation_when_possible() {
     let source_rt = sample_runtime();
     let target_rt = sample_runtime();
-    let df = DataFrame::from_columns([
+    let df = DataFrame::from_series([
         ("id", source_rt.series(&[1i32, 2, 3]).unwrap()),
         ("value", source_rt.series(&[10i32, 20, 30]).unwrap()),
     ])
@@ -556,12 +556,12 @@ fn in_context_override_and_copy_into_runtime_keep_distinct_mixed_domain_semantic
     let right_rt = sample_runtime();
     let target_rt = sample_runtime();
 
-    let left = DataFrame::from_columns([
+    let left = DataFrame::from_series([
         ("id", left_rt.series(&[1i32, 2, 3]).unwrap()),
         ("val", left_rt.series(&[10i32, 20, 30]).unwrap()),
     ])
     .unwrap();
-    let right = DataFrame::from_columns([
+    let right = DataFrame::from_series([
         ("id", right_rt.series(&[2i32, 3, 4]).unwrap()),
         ("score", right_rt.series(&[200i32, 300, 400]).unwrap()),
     ])
@@ -597,7 +597,7 @@ fn schema_only_assign_after_copy_into_runtime_preserves_target_residency() {
     let base_rt = sample_runtime();
     let extra_rt = sample_runtime();
     let target_rt = sample_runtime();
-    let df = DataFrame::from_columns([
+    let df = DataFrame::from_series([
         ("id", base_rt.series(&[1i32, 2, 3]).unwrap()),
         ("val", base_rt.series(&[10i32, 20, 30]).unwrap()),
     ])

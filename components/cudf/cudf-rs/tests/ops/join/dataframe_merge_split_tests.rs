@@ -192,12 +192,12 @@ fn test_merge_split_in_context_succeeds_on_mixed_domains_and_uses_context_resour
     let right_rt = sample_runtime();
     let target_rt = sample_runtime();
 
-    let left = DataFrame::from_columns([
+    let left = DataFrame::from_series([
         ("id", left_rt.series(&[1i32, 2, 3]).unwrap()),
         ("score", left_rt.series(&[10i32, 20, 30]).unwrap()),
     ])
     .unwrap();
-    let right = DataFrame::from_columns([
+    let right = DataFrame::from_series([
         ("id", right_rt.series(&[2i32, 3, 4]).unwrap()),
         ("value", right_rt.series(&[200i32, 300, 400]).unwrap()),
     ])
@@ -236,12 +236,12 @@ fn test_merge_split_succeeds_with_mixed_domains_and_uses_left_provenance() {
     let _event_observation = crate::common::lock_event_observation();
     let left_rt = sample_runtime();
     let right_rt = sample_runtime();
-    let left = DataFrame::from_columns([
+    let left = DataFrame::from_series([
         ("id", left_rt.series(&[1i32, 2, 3]).unwrap()),
         ("score", left_rt.series(&[10i32, 20, 30]).unwrap()),
     ])
     .unwrap();
-    let right = DataFrame::from_columns([
+    let right = DataFrame::from_series([
         ("id", right_rt.series(&[2i32, 3, 4]).unwrap()),
         ("value", right_rt.series(&[200i32, 300, 400]).unwrap()),
     ])

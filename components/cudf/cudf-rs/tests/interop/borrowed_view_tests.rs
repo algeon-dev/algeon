@@ -131,7 +131,7 @@ fn series_and_dataframe_convenience_producers_match_underlying_low_level_views()
     let runtime = Runtime::builder().build().unwrap();
     let ids = runtime.series(&[1i32, 2, 3]).unwrap();
     let vals = runtime.series(&[10i64, 20, 30]).unwrap();
-    let frame = DataFrame::from_columns([("id", ids.clone()), ("value", vals.clone())]).unwrap();
+    let frame = DataFrame::from_series([("id", ids.clone()), ("value", vals.clone())]).unwrap();
 
     let series_borrowed = ids.try_borrow_column_view().unwrap();
     let frame_borrowed = frame.try_borrow_table_view().unwrap();
@@ -164,7 +164,7 @@ fn helper_built_dataframe_borrow_uses_explicit_test_runtime_binding() {
     crate::common::with_test_runtime(|runtime| {
         let ids = crate::common::series("id", &[1i32, 2, 3]).unwrap();
         let vals = crate::common::series("value", &[10i64, 20, 30]).unwrap();
-        let frame = DataFrame::from_columns([("id", ids), ("value", vals)]).unwrap();
+        let frame = DataFrame::from_series([("id", ids), ("value", vals)]).unwrap();
         let borrowed = frame.try_borrow_table_view().unwrap();
 
         assert_eq!(frame.testing_execution_domain_kind(), "explicit");

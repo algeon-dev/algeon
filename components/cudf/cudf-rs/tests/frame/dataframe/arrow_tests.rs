@@ -463,7 +463,7 @@ fn test_to_record_batch_exports_decimal128_date32_and_timestamp_units() {
         timestamp_series(&[1_000, 2_000, 3_000], TypeId::DurationMicroseconds, TypeId::TimestampMicroseconds).unwrap();
     let ts_ns =
         timestamp_series(&[1_000, 2_000, 3_000], TypeId::DurationNanoseconds, TypeId::TimestampNanoseconds).unwrap();
-    let df = DataFrame::from_columns([
+    let df = DataFrame::from_series([
         ("amount", decimal),
         ("date", date),
         ("ts_s", ts_s),
@@ -635,7 +635,7 @@ fn test_to_record_batch_mixed_decimal_temporal_boundary_observation() {
         .unwrap()
         .astype(TypeId::TimestampSeconds)
         .unwrap();
-    let df = DataFrame::from_columns([("amount", amount), ("date", date), ("ts_s", ts_s)]).unwrap();
+    let df = DataFrame::from_series([("amount", amount), ("date", date), ("ts_s", ts_s)]).unwrap();
 
     let batch = df.to_record_batch().unwrap();
 
@@ -763,7 +763,7 @@ fn test_to_record_batch_nullable_bool_from_comparison_preserves_nulls() {
     let lhs = crate::common::nullable_series("lhs", &[1i32, 0, 3], &[true, false, true]).unwrap();
     let rhs = crate::common::nullable_series("rhs", &[1i32, 2, 0], &[true, true, true]).unwrap();
     let flag = lhs.eq(&rhs).unwrap();
-    let df = DataFrame::from_columns([("flag", flag)]).unwrap();
+    let df = DataFrame::from_series([("flag", flag)]).unwrap();
 
     let batch = df.to_record_batch().unwrap();
     let arr = batch.column(0).as_any().downcast_ref::<BooleanArray>().unwrap();

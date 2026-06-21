@@ -835,7 +835,7 @@ fn table_copy_ex_uses_explicit_stream_and_mr() {
 
 #[test]
 fn sort_with_execution_context_on_explicit_domain_uses_explicit_stream_and_retains_override() {
-    let df = cudf::DataFrame::from_columns([("id", explicit_i32_series("id", &[3, 1, 2], 501))]).unwrap();
+    let df = cudf::DataFrame::from_series([("id", explicit_i32_series("id", &[3, 1, 2], 501))]).unwrap();
 
     let stream = CudaStream::new().unwrap();
     let explicit_stream = stream.testing_raw_handle_value();
@@ -855,7 +855,7 @@ fn sort_with_execution_context_on_explicit_domain_uses_explicit_stream_and_retai
 #[test]
 fn sort_with_execution_context_accepts_runtime_seeded_inputs() {
     let ids = crate::common::series::<i32>("id", &[3, 1, 2]).unwrap();
-    let df = cudf::DataFrame::from_columns([("id", ids)]).unwrap();
+    let df = cudf::DataFrame::from_series([("id", ids)]).unwrap();
 
     let stream = CudaStream::new().unwrap();
     let explicit_stream = stream.testing_raw_handle_value();
@@ -870,7 +870,7 @@ fn sort_with_execution_context_accepts_runtime_seeded_inputs() {
 
 #[test]
 fn sort_with_execution_context_on_explicit_domain_uses_explicit_memory_resource() {
-    let df = cudf::DataFrame::from_columns([("id", explicit_i32_series("id", &[3, 1, 2], 502))]).unwrap();
+    let df = cudf::DataFrame::from_series([("id", explicit_i32_series("id", &[3, 1, 2], 502))]).unwrap();
 
     let mr = pool_mr();
     let explicit_mr = mr.testing_raw_handle_value();
@@ -886,12 +886,12 @@ fn sort_with_execution_context_on_explicit_domain_uses_explicit_memory_resource(
 
 #[test]
 fn merge_with_execution_context_on_explicit_domains_uses_explicit_stream() {
-    let left = cudf::DataFrame::from_columns([
+    let left = cudf::DataFrame::from_series([
         ("id", explicit_i32_series("id", &[1, 2, 3], 503)),
         ("val", explicit_i64_series("val", &[10, 20, 30], 503)),
     ])
     .unwrap();
-    let right = cudf::DataFrame::from_columns([
+    let right = cudf::DataFrame::from_series([
         ("id", explicit_i32_series("id", &[2, 3, 4], 503)),
         ("score", explicit_i64_series("score", &[200, 300, 400], 503)),
     ])
@@ -911,7 +911,7 @@ fn merge_with_execution_context_on_explicit_domains_uses_explicit_stream() {
 
 #[test]
 fn groupby_with_execution_context_on_explicit_domain_uses_explicit_stream() {
-    let df = cudf::DataFrame::from_columns([
+    let df = cudf::DataFrame::from_series([
         ("key", explicit_i32_series("key", &[1, 1, 2, 2], 504)),
         ("val", explicit_i64_series("val", &[10, 20, 30, 40], 504)),
     ])
@@ -932,7 +932,7 @@ fn groupby_with_execution_context_on_explicit_domain_uses_explicit_stream() {
 
 #[test]
 fn gather_with_execution_context_on_explicit_domain_uses_explicit_stream_and_retains_override() {
-    let df = cudf::DataFrame::from_columns([("id", explicit_i32_series("id", &[3, 1, 2], 505))]).unwrap();
+    let df = cudf::DataFrame::from_series([("id", explicit_i32_series("id", &[3, 1, 2], 505))]).unwrap();
     let indices = explicit_i32_series("gather", &[2, 0], 505);
 
     let stream = CudaStream::new().unwrap();
@@ -953,7 +953,7 @@ fn gather_with_execution_context_on_explicit_domain_uses_explicit_stream_and_ret
 #[test]
 fn gather_with_execution_context_accepts_runtime_seeded_inputs() {
     let ids = crate::common::series::<i32>("id", &[3, 1, 2]).unwrap();
-    let df = cudf::DataFrame::from_columns([("id", ids)]).unwrap();
+    let df = cudf::DataFrame::from_series([("id", ids)]).unwrap();
     let indices = crate::common::series::<i32>("gather", &[2, 0]).unwrap();
 
     let stream = CudaStream::new().unwrap();
@@ -969,7 +969,7 @@ fn gather_with_execution_context_accepts_runtime_seeded_inputs() {
 
 #[test]
 fn filter_with_execution_context_on_explicit_domain_uses_explicit_stream_and_retains_override() {
-    let df = cudf::DataFrame::from_columns([("id", explicit_i32_series("id", &[3, 1, 2], 506))]).unwrap();
+    let df = cudf::DataFrame::from_series([("id", explicit_i32_series("id", &[3, 1, 2], 506))]).unwrap();
     let mask = explicit_bool_series("mask", &[true, false, true], 506);
 
     let stream = CudaStream::new().unwrap();
@@ -990,7 +990,7 @@ fn filter_with_execution_context_on_explicit_domain_uses_explicit_stream_and_ret
 #[test]
 fn filter_with_execution_context_accepts_runtime_seeded_inputs() {
     let ids = crate::common::series::<i32>("id", &[3, 1, 2]).unwrap();
-    let df = cudf::DataFrame::from_columns([("id", ids)]).unwrap();
+    let df = cudf::DataFrame::from_series([("id", ids)]).unwrap();
     let mask = crate::common::series::<bool>("mask", &[true, false, true]).unwrap();
 
     let stream = CudaStream::new().unwrap();
@@ -1031,7 +1031,7 @@ fn column_deep_copy_uses_source_runtime_stream_without_override() {
 #[test]
 fn sort_values_default_produces_correct_results() {
     let ids = crate::common::series::<i32>("id", &[3, 1, 2]).unwrap();
-    let df = cudf::DataFrame::from_columns([("id", ids)]).unwrap();
+    let df = cudf::DataFrame::from_series([("id", ids)]).unwrap();
 
     let sorted = df.sort_values(["id"], cudf::SortOptions::default()).unwrap();
 
@@ -1046,11 +1046,11 @@ fn sort_values_default_produces_correct_results() {
 fn merge_default_produces_correct_results() {
     let left_ids = crate::common::series::<i32>("id", &[1, 2, 3]).unwrap();
     let left_vals = crate::common::series::<f64>("val", &[10.0, 20.0, 30.0]).unwrap();
-    let left = cudf::DataFrame::from_columns([("id", left_ids), ("val", left_vals)]).unwrap();
+    let left = cudf::DataFrame::from_series([("id", left_ids), ("val", left_vals)]).unwrap();
 
     let right_ids = crate::common::series::<i32>("id", &[2, 3, 4]).unwrap();
     let right_scores = crate::common::series::<f64>("score", &[200.0, 300.0, 400.0]).unwrap();
-    let right = cudf::DataFrame::from_columns([("id", right_ids), ("score", right_scores)]).unwrap();
+    let right = cudf::DataFrame::from_series([("id", right_ids), ("score", right_scores)]).unwrap();
 
     let joined = left.merge(&right, cudf::MergeOptions::new().how_inner().on(["id"])).unwrap();
 
@@ -1063,7 +1063,7 @@ fn merge_default_produces_correct_results() {
 fn groupby_agg_default_produces_correct_results() {
     let keys = crate::common::series::<i32>("key", &[1, 1, 2, 2]).unwrap();
     let vals = crate::common::series::<i64>("val", &[10, 20, 30, 40]).unwrap();
-    let df = cudf::DataFrame::from_columns([("key", keys), ("val", vals)]).unwrap();
+    let df = cudf::DataFrame::from_series([("key", keys), ("val", vals)]).unwrap();
 
     let result = df.groupby(["key"]).agg(&[cudf::AggSpec::new("val", cudf::GroupByAgg::Sum)]).unwrap();
 

@@ -493,7 +493,7 @@ fn scalar_copy_dataframe_round_trip() {
     let scalar = ts.min().unwrap();
 
     let series = rt.series_from_scalar(&scalar, 3).unwrap();
-    let df = cudf::DataFrame::from_columns([("ts_col", series)]).unwrap();
+    let df = cudf::DataFrame::from_series([("ts_col", series)]).unwrap();
     let retrieved = df.series("ts_col").unwrap();
 
     let expected = crate::common::series::<i64>("ts_col", &[1_000_000, 1_000_000, 1_000_000])
