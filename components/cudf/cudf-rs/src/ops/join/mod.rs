@@ -111,27 +111,64 @@ pub struct JoinSides {
     pub right: Table,
 }
 
+#[derive(Clone, Copy)]
+pub(crate) struct SplitJoinTables<'a, 'view> {
+    pub(crate) left_keys: &'a TableView<'view>,
+    pub(crate) right_keys: &'a TableView<'view>,
+    pub(crate) left_payload: &'a TableView<'view>,
+    pub(crate) right_payload: &'a TableView<'view>,
+}
+
+#[derive(Clone, Copy)]
+struct FilterJoinInputs<'a, 'view> {
+    left: &'a TableView<'view>,
+    right: &'a TableView<'view>,
+    left_indices: &'a ColumnView<'view>,
+    right_indices: &'a ColumnView<'view>,
+    predicate: &'a AstExpression,
+}
+
+#[derive(Clone, Copy)]
+struct MixedJoinTables<'a, 'view> {
+    left_equality: &'a TableView<'view>,
+    right_equality: &'a TableView<'view>,
+    left_conditional: &'a TableView<'view>,
+    right_conditional: &'a TableView<'view>,
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct JoinCallContext<'a> {
+    output_domain: &'a Arc<ExecutionDomain>,
+    exec_options: Option<&'a cudf_sys::cudf_exec_options_t>,
+    operation: &'static str,
+}
+
+impl<'a> JoinCallContext<'a> {
+    pub(crate) fn new(
+        output_domain: &'a Arc<ExecutionDomain>,
+        exec_options: Option<&'a cudf_sys::cudf_exec_options_t>,
+        operation: &'static str,
+    ) -> Self {
+        Self { output_domain, exec_options, operation }
+    }
+}
+
 pub(crate) fn join_impl(
-    left_keys: &TableView<'_>,
-    right_keys: &TableView<'_>,
-    left_payload: &TableView<'_>,
-    right_payload: &TableView<'_>,
+    tables: SplitJoinTables<'_, '_>,
     null_equality: NullEquality,
     join_type: JoinType,
-    output_domain: &Arc<ExecutionDomain>,
-    exec_options: Option<&cudf_sys::cudf_exec_options_t>,
-    operation: &'static str,
+    context: JoinCallContext<'_>,
 ) -> Result<JoinSides> {
     let mut out_left = ptr::null_mut();
     let mut out_right = ptr::null_mut();
     let null_eq_ffi = null_equality.to_join_raw();
-    let status = match (join_type, exec_options) {
+    let status = match (join_type, context.exec_options) {
         (JoinType::Inner, None) => unsafe {
             cudf_sys::cudf_inner_join(
-                left_keys.raw_handle(),
-                right_keys.raw_handle(),
-                left_payload.raw_handle(),
-                right_payload.raw_handle(),
+                tables.left_keys.raw_handle(),
+                tables.right_keys.raw_handle(),
+                tables.left_payload.raw_handle(),
+                tables.right_payload.raw_handle(),
                 null_eq_ffi,
                 &mut out_left,
                 &mut out_right,
@@ -139,10 +176,10 @@ pub(crate) fn join_impl(
         },
         (JoinType::Left, None) => unsafe {
             cudf_sys::cudf_left_join(
-                left_keys.raw_handle(),
-                right_keys.raw_handle(),
-                left_payload.raw_handle(),
-                right_payload.raw_handle(),
+                tables.left_keys.raw_handle(),
+                tables.right_keys.raw_handle(),
+                tables.left_payload.raw_handle(),
+                tables.right_payload.raw_handle(),
                 null_eq_ffi,
                 &mut out_left,
                 &mut out_right,
@@ -150,10 +187,10 @@ pub(crate) fn join_impl(
         },
         (JoinType::Full, None) => unsafe {
             cudf_sys::cudf_full_join(
-                left_keys.raw_handle(),
-                right_keys.raw_handle(),
-                left_payload.raw_handle(),
-                right_payload.raw_handle(),
+                tables.left_keys.raw_handle(),
+                tables.right_keys.raw_handle(),
+                tables.left_payload.raw_handle(),
+                tables.right_payload.raw_handle(),
                 null_eq_ffi,
                 &mut out_left,
                 &mut out_right,
@@ -161,10 +198,10 @@ pub(crate) fn join_impl(
         },
         (JoinType::Inner, Some(options)) => unsafe {
             cudf_sys::cudf_inner_join_ex(
-                left_keys.raw_handle(),
-                right_keys.raw_handle(),
-                left_payload.raw_handle(),
-                right_payload.raw_handle(),
+                tables.left_keys.raw_handle(),
+                tables.right_keys.raw_handle(),
+                tables.left_payload.raw_handle(),
+                tables.right_payload.raw_handle(),
                 null_eq_ffi,
                 &mut out_left,
                 &mut out_right,
@@ -173,10 +210,10 @@ pub(crate) fn join_impl(
         },
         (JoinType::Left, Some(options)) => unsafe {
             cudf_sys::cudf_left_join_ex(
-                left_keys.raw_handle(),
-                right_keys.raw_handle(),
-                left_payload.raw_handle(),
-                right_payload.raw_handle(),
+                tables.left_keys.raw_handle(),
+                tables.right_keys.raw_handle(),
+                tables.left_payload.raw_handle(),
+                tables.right_payload.raw_handle(),
                 null_eq_ffi,
                 &mut out_left,
                 &mut out_right,
@@ -185,10 +222,10 @@ pub(crate) fn join_impl(
         },
         (JoinType::Full, Some(options)) => unsafe {
             cudf_sys::cudf_full_join_ex(
-                left_keys.raw_handle(),
-                right_keys.raw_handle(),
-                left_payload.raw_handle(),
-                right_payload.raw_handle(),
+                tables.left_keys.raw_handle(),
+                tables.right_keys.raw_handle(),
+                tables.left_payload.raw_handle(),
+                tables.right_payload.raw_handle(),
                 null_eq_ffi,
                 &mut out_left,
                 &mut out_right,
@@ -199,16 +236,16 @@ pub(crate) fn join_impl(
 
     error::check_status_in_with_details(
         status,
-        operation,
+        context.operation,
         [
             ("null_equality", format!("{:?}", null_equality).to_lowercase()),
-            ("execution_context_provided", exec_options.is_some().to_string()),
+            ("execution_context_provided", context.exec_options.is_some().to_string()),
         ],
     )?;
 
     Ok(JoinSides {
-        left: unsafe { Table::from_raw_with_domain(out_left, Arc::clone(output_domain)) }?,
-        right: unsafe { Table::from_raw_with_domain(out_right, Arc::clone(output_domain)) }?,
+        left: unsafe { Table::from_raw_with_domain(out_left, Arc::clone(context.output_domain)) }?,
+        right: unsafe { Table::from_raw_with_domain(out_right, Arc::clone(context.output_domain)) }?,
     })
 }
 
@@ -361,17 +398,15 @@ pub(crate) fn single_side_join_indices_impl(
     Ok(SingleSideJoinIndices { indices: unsafe { Column::from_raw_with_domain(out, Arc::clone(output_domain)) }? })
 }
 
-fn compatible_join_domain(
-    left_keys: &TableView<'_>,
-    right_keys: &TableView<'_>,
-    left_payload: &TableView<'_>,
-    right_payload: &TableView<'_>,
-    operation: &'static str,
-) -> Result<ResolvedExecution> {
+fn compatible_join_domain(tables: SplitJoinTables<'_, '_>, operation: &'static str) -> Result<ResolvedExecution> {
     let ctx = ExecutionOverrides::new();
     ResolvedExecution::many(
-        left_keys.execution_domain(),
-        [right_keys.execution_domain(), left_payload.execution_domain(), right_payload.execution_domain()],
+        tables.left_keys.execution_domain(),
+        [
+            tables.right_keys.execution_domain(),
+            tables.left_payload.execution_domain(),
+            tables.right_payload.execution_domain(),
+        ],
         &ctx,
         operation,
     )
@@ -400,37 +435,30 @@ fn compatible_conditional_join_domain(
 }
 
 fn compatible_mixed_join_domain(
-    left_equality: &TableView<'_>,
-    right_equality: &TableView<'_>,
-    left_conditional: &TableView<'_>,
-    right_conditional: &TableView<'_>,
+    tables: MixedJoinTables<'_, '_>,
     predicate: &AstExpression,
     ctx: &ExecutionOverrides<'_>,
     operation: &'static str,
 ) -> Result<ResolvedExecution> {
     let mut secondaries = Vec::new();
-    secondaries.push(right_equality.execution_domain());
-    secondaries.push(left_conditional.execution_domain());
-    secondaries.push(right_conditional.execution_domain());
+    secondaries.push(tables.right_equality.execution_domain());
+    secondaries.push(tables.left_conditional.execution_domain());
+    secondaries.push(tables.right_conditional.execution_domain());
     predicate.literal_domains(&mut secondaries);
-    ResolvedExecution::many(left_equality.execution_domain(), secondaries, ctx, operation)
+    ResolvedExecution::many(tables.left_equality.execution_domain(), secondaries, ctx, operation)
 }
 
 fn compatible_filter_join_indices_domain(
-    left: &TableView<'_>,
-    right: &TableView<'_>,
-    left_indices: &ColumnView<'_>,
-    right_indices: &ColumnView<'_>,
-    predicate: &AstExpression,
+    inputs: FilterJoinInputs<'_, '_>,
     ctx: &ExecutionOverrides<'_>,
     operation: &'static str,
 ) -> Result<ResolvedExecution> {
     let mut secondaries = Vec::new();
-    secondaries.push(right_indices.execution_domain());
-    secondaries.push(left.execution_domain());
-    secondaries.push(right.execution_domain());
-    predicate.literal_domains(&mut secondaries);
-    ResolvedExecution::many(left_indices.execution_domain(), secondaries, ctx, operation)
+    secondaries.push(inputs.right_indices.execution_domain());
+    secondaries.push(inputs.left.execution_domain());
+    secondaries.push(inputs.right.execution_domain());
+    inputs.predicate.literal_domains(&mut secondaries);
+    ResolvedExecution::many(inputs.left_indices.execution_domain(), secondaries, ctx, operation)
 }
 
 fn conditional_join_indices_impl(
@@ -639,28 +667,22 @@ fn validate_filter_join_indices(
 }
 
 fn filter_join_indices_impl(
-    left: &TableView<'_>,
-    right: &TableView<'_>,
-    left_indices: &ColumnView<'_>,
-    right_indices: &ColumnView<'_>,
-    predicate: &AstExpression,
+    inputs: FilterJoinInputs<'_, '_>,
     join_type: JoinType,
-    output_domain: &Arc<ExecutionDomain>,
-    exec_options: Option<&cudf_sys::cudf_exec_options_t>,
-    operation: &'static str,
+    context: JoinCallContext<'_>,
 ) -> Result<JoinIndices> {
-    validate_filter_join_indices(left_indices, right_indices, operation)?;
+    validate_filter_join_indices(inputs.left_indices, inputs.right_indices, context.operation)?;
 
     let mut out_left = ptr::null_mut();
     let mut out_right = ptr::null_mut();
-    let status = match exec_options {
+    let status = match context.exec_options {
         Some(options) => unsafe {
             cudf_sys::cudf_filter_join_indices_ex(
-                left.raw_handle(),
-                right.raw_handle(),
-                left_indices.raw_handle(),
-                right_indices.raw_handle(),
-                predicate.raw_handle(),
+                inputs.left.raw_handle(),
+                inputs.right.raw_handle(),
+                inputs.left_indices.raw_handle(),
+                inputs.right_indices.raw_handle(),
+                inputs.predicate.raw_handle(),
                 filter_join_kind_raw(join_type),
                 &mut out_left,
                 &mut out_right,
@@ -669,11 +691,11 @@ fn filter_join_indices_impl(
         },
         None => unsafe {
             cudf_sys::cudf_filter_join_indices(
-                left.raw_handle(),
-                right.raw_handle(),
-                left_indices.raw_handle(),
-                right_indices.raw_handle(),
-                predicate.raw_handle(),
+                inputs.left.raw_handle(),
+                inputs.right.raw_handle(),
+                inputs.left_indices.raw_handle(),
+                inputs.right_indices.raw_handle(),
+                inputs.predicate.raw_handle(),
                 filter_join_kind_raw(join_type),
                 &mut out_left,
                 &mut out_right,
@@ -683,24 +705,21 @@ fn filter_join_indices_impl(
 
     error::check_status_in_with_details(
         status,
-        operation,
+        context.operation,
         [
             ("join_type", format!("{:?}", join_type).to_lowercase()),
-            ("execution_context_provided", exec_options.is_some().to_string()),
+            ("execution_context_provided", context.exec_options.is_some().to_string()),
         ],
     )?;
 
     Ok(JoinIndices {
-        left: unsafe { Column::from_raw_with_domain(out_left, Arc::clone(output_domain)) }?,
-        right: unsafe { Column::from_raw_with_domain(out_right, Arc::clone(output_domain)) }?,
+        left: unsafe { Column::from_raw_with_domain(out_left, Arc::clone(context.output_domain)) }?,
+        right: unsafe { Column::from_raw_with_domain(out_right, Arc::clone(context.output_domain)) }?,
     })
 }
 
 fn mixed_join_indices_impl(
-    left_equality: &TableView<'_>,
-    right_equality: &TableView<'_>,
-    left_conditional: &TableView<'_>,
-    right_conditional: &TableView<'_>,
+    tables: MixedJoinTables<'_, '_>,
     predicate: &AstExpression,
     null_equality: NullEquality,
     join_type: JoinType,
@@ -714,10 +733,10 @@ fn mixed_join_indices_impl(
     let status = match (join_type, exec_options) {
         (JoinType::Inner, None) => unsafe {
             cudf_sys::cudf_mixed_inner_join_indices(
-                left_equality.raw_handle(),
-                right_equality.raw_handle(),
-                left_conditional.raw_handle(),
-                right_conditional.raw_handle(),
+                tables.left_equality.raw_handle(),
+                tables.right_equality.raw_handle(),
+                tables.left_conditional.raw_handle(),
+                tables.right_conditional.raw_handle(),
                 predicate.raw_handle(),
                 null_eq_ffi,
                 &mut out_left,
@@ -726,10 +745,10 @@ fn mixed_join_indices_impl(
         },
         (JoinType::Left, None) => unsafe {
             cudf_sys::cudf_mixed_left_join_indices(
-                left_equality.raw_handle(),
-                right_equality.raw_handle(),
-                left_conditional.raw_handle(),
-                right_conditional.raw_handle(),
+                tables.left_equality.raw_handle(),
+                tables.right_equality.raw_handle(),
+                tables.left_conditional.raw_handle(),
+                tables.right_conditional.raw_handle(),
                 predicate.raw_handle(),
                 null_eq_ffi,
                 &mut out_left,
@@ -738,10 +757,10 @@ fn mixed_join_indices_impl(
         },
         (JoinType::Full, None) => unsafe {
             cudf_sys::cudf_mixed_full_join_indices(
-                left_equality.raw_handle(),
-                right_equality.raw_handle(),
-                left_conditional.raw_handle(),
-                right_conditional.raw_handle(),
+                tables.left_equality.raw_handle(),
+                tables.right_equality.raw_handle(),
+                tables.left_conditional.raw_handle(),
+                tables.right_conditional.raw_handle(),
                 predicate.raw_handle(),
                 null_eq_ffi,
                 &mut out_left,
@@ -750,10 +769,10 @@ fn mixed_join_indices_impl(
         },
         (JoinType::Inner, Some(options)) => unsafe {
             cudf_sys::cudf_mixed_inner_join_indices_ex(
-                left_equality.raw_handle(),
-                right_equality.raw_handle(),
-                left_conditional.raw_handle(),
-                right_conditional.raw_handle(),
+                tables.left_equality.raw_handle(),
+                tables.right_equality.raw_handle(),
+                tables.left_conditional.raw_handle(),
+                tables.right_conditional.raw_handle(),
                 predicate.raw_handle(),
                 null_eq_ffi,
                 &mut out_left,
@@ -763,10 +782,10 @@ fn mixed_join_indices_impl(
         },
         (JoinType::Left, Some(options)) => unsafe {
             cudf_sys::cudf_mixed_left_join_indices_ex(
-                left_equality.raw_handle(),
-                right_equality.raw_handle(),
-                left_conditional.raw_handle(),
-                right_conditional.raw_handle(),
+                tables.left_equality.raw_handle(),
+                tables.right_equality.raw_handle(),
+                tables.left_conditional.raw_handle(),
+                tables.right_conditional.raw_handle(),
                 predicate.raw_handle(),
                 null_eq_ffi,
                 &mut out_left,
@@ -776,10 +795,10 @@ fn mixed_join_indices_impl(
         },
         (JoinType::Full, Some(options)) => unsafe {
             cudf_sys::cudf_mixed_full_join_indices_ex(
-                left_equality.raw_handle(),
-                right_equality.raw_handle(),
-                left_conditional.raw_handle(),
-                right_conditional.raw_handle(),
+                tables.left_equality.raw_handle(),
+                tables.right_equality.raw_handle(),
+                tables.left_conditional.raw_handle(),
+                tables.right_conditional.raw_handle(),
                 predicate.raw_handle(),
                 null_eq_ffi,
                 &mut out_left,
@@ -798,10 +817,7 @@ fn mixed_join_indices_impl(
 }
 
 fn mixed_single_side_join_indices_impl(
-    left_equality: &TableView<'_>,
-    right_equality: &TableView<'_>,
-    left_conditional: &TableView<'_>,
-    right_conditional: &TableView<'_>,
+    tables: MixedJoinTables<'_, '_>,
     predicate: &AstExpression,
     null_equality: NullEquality,
     semi_join: bool,
@@ -814,10 +830,10 @@ fn mixed_single_side_join_indices_impl(
     let status = match (semi_join, exec_options) {
         (true, None) => unsafe {
             cudf_sys::cudf_mixed_left_semi_join_indices(
-                left_equality.raw_handle(),
-                right_equality.raw_handle(),
-                left_conditional.raw_handle(),
-                right_conditional.raw_handle(),
+                tables.left_equality.raw_handle(),
+                tables.right_equality.raw_handle(),
+                tables.left_conditional.raw_handle(),
+                tables.right_conditional.raw_handle(),
                 predicate.raw_handle(),
                 null_eq_ffi,
                 &mut out,
@@ -825,10 +841,10 @@ fn mixed_single_side_join_indices_impl(
         },
         (false, None) => unsafe {
             cudf_sys::cudf_mixed_left_anti_join_indices(
-                left_equality.raw_handle(),
-                right_equality.raw_handle(),
-                left_conditional.raw_handle(),
-                right_conditional.raw_handle(),
+                tables.left_equality.raw_handle(),
+                tables.right_equality.raw_handle(),
+                tables.left_conditional.raw_handle(),
+                tables.right_conditional.raw_handle(),
                 predicate.raw_handle(),
                 null_eq_ffi,
                 &mut out,
@@ -836,10 +852,10 @@ fn mixed_single_side_join_indices_impl(
         },
         (true, Some(options)) => unsafe {
             cudf_sys::cudf_mixed_left_semi_join_indices_ex(
-                left_equality.raw_handle(),
-                right_equality.raw_handle(),
-                left_conditional.raw_handle(),
-                right_conditional.raw_handle(),
+                tables.left_equality.raw_handle(),
+                tables.right_equality.raw_handle(),
+                tables.left_conditional.raw_handle(),
+                tables.right_conditional.raw_handle(),
                 predicate.raw_handle(),
                 null_eq_ffi,
                 &mut out,
@@ -848,10 +864,10 @@ fn mixed_single_side_join_indices_impl(
         },
         (false, Some(options)) => unsafe {
             cudf_sys::cudf_mixed_left_anti_join_indices_ex(
-                left_equality.raw_handle(),
-                right_equality.raw_handle(),
-                left_conditional.raw_handle(),
-                right_conditional.raw_handle(),
+                tables.left_equality.raw_handle(),
+                tables.right_equality.raw_handle(),
+                tables.left_conditional.raw_handle(),
+                tables.right_conditional.raw_handle(),
                 predicate.raw_handle(),
                 null_eq_ffi,
                 &mut out,
@@ -877,17 +893,14 @@ pub fn inner_join(
     right_payload: &TableView<'_>,
     null_equality: NullEquality,
 ) -> Result<JoinSides> {
-    let execution = compatible_join_domain(left_keys, right_keys, left_payload, right_payload, "join::inner_join")?;
+    let operation = "join::inner_join";
+    let tables = SplitJoinTables { left_keys, right_keys, left_payload, right_payload };
+    let execution = compatible_join_domain(tables, operation)?;
     join_impl(
-        left_keys,
-        right_keys,
-        left_payload,
-        right_payload,
+        tables,
         null_equality,
         JoinType::Inner,
-        execution.output_domain(),
-        Some(execution.exec_options()),
-        "join::inner_join",
+        JoinCallContext::new(execution.output_domain(), Some(execution.exec_options()), operation),
     )
 }
 
@@ -949,17 +962,14 @@ pub fn left_join(
     right_payload: &TableView<'_>,
     null_equality: NullEquality,
 ) -> Result<JoinSides> {
-    let execution = compatible_join_domain(left_keys, right_keys, left_payload, right_payload, "join::left_join")?;
+    let operation = "join::left_join";
+    let tables = SplitJoinTables { left_keys, right_keys, left_payload, right_payload };
+    let execution = compatible_join_domain(tables, operation)?;
     join_impl(
-        left_keys,
-        right_keys,
-        left_payload,
-        right_payload,
+        tables,
         null_equality,
         JoinType::Left,
-        execution.output_domain(),
-        Some(execution.exec_options()),
-        "join::left_join",
+        JoinCallContext::new(execution.output_domain(), Some(execution.exec_options()), operation),
     )
 }
 
@@ -1336,27 +1346,16 @@ pub fn conditional_left_anti_join_indices_in(
 }
 
 fn filter_join_indices_with_context(
-    left: &TableView<'_>,
-    right: &TableView<'_>,
-    left_indices: &ColumnView<'_>,
-    right_indices: &ColumnView<'_>,
-    predicate: &AstExpression,
+    inputs: FilterJoinInputs<'_, '_>,
     join_type: JoinType,
     ctx: &ExecutionOverrides<'_>,
     operation: &'static str,
 ) -> Result<JoinIndices> {
-    let execution =
-        compatible_filter_join_indices_domain(left, right, left_indices, right_indices, predicate, ctx, operation)?;
+    let execution = compatible_filter_join_indices_domain(inputs, ctx, operation)?;
     filter_join_indices_impl(
-        left,
-        right,
-        left_indices,
-        right_indices,
-        predicate,
+        inputs,
         join_type,
-        execution.output_domain(),
-        Some(execution.exec_options()),
-        operation,
+        JoinCallContext::new(execution.output_domain(), Some(execution.exec_options()), operation),
     )
 }
 
@@ -1389,11 +1388,7 @@ pub fn filter_join_indices(
 ) -> Result<JoinIndices> {
     let ctx = ExecutionOverrides::new();
     filter_join_indices_with_context(
-        left,
-        right,
-        left_indices,
-        right_indices,
-        predicate,
+        FilterJoinInputs { left, right, left_indices, right_indices, predicate },
         join_type,
         &ctx,
         "join::filter_join_indices",
@@ -1414,23 +1409,11 @@ pub fn filter_join_indices_in(
     ctx: &ExecutionOverrides<'_>,
 ) -> Result<JoinIndices> {
     filter_join_indices_with_context(
-        left,
-        right,
-        left_indices,
-        right_indices,
-        predicate,
+        FilterJoinInputs { left, right, left_indices, right_indices, predicate },
         join_type,
         ctx,
         "join::filter_join_indices_in",
     )
-}
-
-#[derive(Clone, Copy)]
-struct MixedJoinTables<'a, 'view> {
-    left_equality: &'a TableView<'view>,
-    right_equality: &'a TableView<'view>,
-    left_conditional: &'a TableView<'view>,
-    right_conditional: &'a TableView<'view>,
 }
 
 fn mixed_join_indices_with_context(
@@ -1441,20 +1424,9 @@ fn mixed_join_indices_with_context(
     ctx: &ExecutionOverrides<'_>,
     operation: &'static str,
 ) -> Result<JoinIndices> {
-    let execution = compatible_mixed_join_domain(
-        tables.left_equality,
-        tables.right_equality,
-        tables.left_conditional,
-        tables.right_conditional,
-        predicate,
-        ctx,
-        operation,
-    )?;
+    let execution = compatible_mixed_join_domain(tables, predicate, ctx, operation)?;
     mixed_join_indices_impl(
-        tables.left_equality,
-        tables.right_equality,
-        tables.left_conditional,
-        tables.right_conditional,
+        tables,
         predicate,
         null_equality,
         join_type,
@@ -1472,20 +1444,9 @@ fn mixed_single_side_join_indices_with_context(
     ctx: &ExecutionOverrides<'_>,
     operation: &'static str,
 ) -> Result<SingleSideJoinIndices> {
-    let execution = compatible_mixed_join_domain(
-        tables.left_equality,
-        tables.right_equality,
-        tables.left_conditional,
-        tables.right_conditional,
-        predicate,
-        ctx,
-        operation,
-    )?;
+    let execution = compatible_mixed_join_domain(tables, predicate, ctx, operation)?;
     mixed_single_side_join_indices_impl(
-        tables.left_equality,
-        tables.right_equality,
-        tables.left_conditional,
-        tables.right_conditional,
+        tables,
         predicate,
         null_equality,
         semi_join,
@@ -1772,17 +1733,14 @@ pub fn full_join(
     right_payload: &TableView<'_>,
     null_equality: NullEquality,
 ) -> Result<JoinSides> {
-    let execution = compatible_join_domain(left_keys, right_keys, left_payload, right_payload, "join::full_join")?;
+    let operation = "join::full_join";
+    let tables = SplitJoinTables { left_keys, right_keys, left_payload, right_payload };
+    let execution = compatible_join_domain(tables, operation)?;
     join_impl(
-        left_keys,
-        right_keys,
-        left_payload,
-        right_payload,
+        tables,
         null_equality,
         JoinType::Full,
-        execution.output_domain(),
-        Some(execution.exec_options()),
-        "join::full_join",
+        JoinCallContext::new(execution.output_domain(), Some(execution.exec_options()), operation),
     )
 }
 

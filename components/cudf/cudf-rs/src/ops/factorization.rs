@@ -88,13 +88,13 @@ fn ordered_first_seen_keys(
 
     let first_code_rows = stream_compaction::distinct_impl(
         &non_null_code_rows_view,
-        &[0],
-        DuplicateKeepOption::KeepFirst,
-        NullEquality::Equal,
-        NanEquality::AllEqual,
-        output_domain,
-        exec_options,
-        operation,
+        stream_compaction::DistinctConfig::new(
+            &[0],
+            DuplicateKeepOption::KeepFirst,
+            NullEquality::Equal,
+            NanEquality::AllEqual,
+        ),
+        stream_compaction::StreamCompactionExecution::new(output_domain, exec_options, operation),
     )
     .map_err(|e| e.reanchor(operation))?;
     let first_code_rows_view = first_code_rows.view().map_err(|e| e.reanchor(operation))?;
@@ -139,11 +139,8 @@ fn sorted_key_order(
     let encoded_keys_table = TableView::from_column_views(&[encoded_keys]).map_err(|e| e.reanchor(operation))?;
     let sorted_original_codes = sorting::sorted_order_impl(
         &encoded_keys_table,
-        Some(&[Order::Ascending]),
-        Some(&[NullOrder::After]),
-        output_domain,
-        exec_options,
-        operation,
+        sorting::SortKeyConfig::new(Some(&[Order::Ascending]), Some(&[NullOrder::After])),
+        sorting::SortExecution::new(output_domain, exec_options, operation),
     )
     .map_err(|e| e.reanchor(operation))?;
     let sorted_keys_table = {

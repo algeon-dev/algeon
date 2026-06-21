@@ -70,6 +70,42 @@ impl NanEquality {
     }
 }
 
+#[derive(Clone, Copy)]
+pub(crate) struct DistinctConfig<'a> {
+    keys: &'a [usize],
+    keep: DuplicateKeepOption,
+    null_equality: NullEquality,
+    nan_equality: NanEquality,
+}
+
+impl<'a> DistinctConfig<'a> {
+    pub(crate) fn new(
+        keys: &'a [usize],
+        keep: DuplicateKeepOption,
+        null_equality: NullEquality,
+        nan_equality: NanEquality,
+    ) -> Self {
+        Self { keys, keep, null_equality, nan_equality }
+    }
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct StreamCompactionExecution<'a> {
+    output_domain: &'a Arc<ExecutionDomain>,
+    exec_options: Option<&'a cudf_sys::cudf_exec_options_t>,
+    operation: &'static str,
+}
+
+impl<'a> StreamCompactionExecution<'a> {
+    pub(crate) fn new(
+        output_domain: &'a Arc<ExecutionDomain>,
+        exec_options: Option<&'a cudf_sys::cudf_exec_options_t>,
+        operation: &'static str,
+    ) -> Self {
+        Self { output_domain, exec_options, operation }
+    }
+}
+
 fn checked_key_indices_i32(input: &TableView<'_>, keys: &[usize], operation: &'static str) -> Result<Vec<i32>> {
     let num_columns = input.num_columns()?;
 
@@ -136,22 +172,18 @@ pub(crate) fn drop_nulls_impl(
 
 pub(crate) fn distinct_impl(
     input: &TableView<'_>,
-    keys: &[usize],
-    keep: DuplicateKeepOption,
-    null_equality: NullEquality,
-    nan_equality: NanEquality,
-    output_domain: &Arc<ExecutionDomain>,
-    exec_options: Option<&cudf_sys::cudf_exec_options_t>,
-    operation: &'static str,
+    config: DistinctConfig<'_>,
+    execution: StreamCompactionExecution<'_>,
 ) -> Result<Table> {
-    let keys_i32 = checked_key_indices_i32(input, keys, operation)?;
+    let operation = execution.operation;
+    let keys_i32 = checked_key_indices_i32(input, config.keys, operation)?;
     let keys_count = error::usize_to_i32(keys_i32.len(), operation, "keys_count")?;
 
     let mut out = ptr::null_mut();
-    let keep_ffi = keep.to_raw();
-    let null_eq_ffi = null_equality.to_stream_compaction_raw();
-    let nan_eq_ffi = nan_equality.to_raw();
-    let status = match exec_options {
+    let keep_ffi = config.keep.to_raw();
+    let null_eq_ffi = config.null_equality.to_stream_compaction_raw();
+    let nan_eq_ffi = config.nan_equality.to_raw();
+    let status = match execution.exec_options {
         Some(options) => unsafe {
             cudf_sys::cudf_distinct_ex(
                 input.raw_handle(),
@@ -181,13 +213,13 @@ pub(crate) fn distinct_impl(
         operation,
         [
             ("keys_count", keys_count.to_string()),
-            ("keep", format!("{:?}", keep).to_lowercase()),
-            ("null_equality", format!("{:?}", null_equality).to_lowercase()),
-            ("nan_equality", format!("{:?}", nan_equality).to_lowercase()),
-            ("execution_context_provided", exec_options.is_some().to_string()),
+            ("keep", format!("{:?}", config.keep).to_lowercase()),
+            ("null_equality", format!("{:?}", config.null_equality).to_lowercase()),
+            ("nan_equality", format!("{:?}", config.nan_equality).to_lowercase()),
+            ("execution_context_provided", execution.exec_options.is_some().to_string()),
         ],
     )?;
-    unsafe { Table::from_raw_with_domain(out, Arc::clone(output_domain)) }
+    unsafe { Table::from_raw_with_domain(out, Arc::clone(execution.output_domain)) }
 }
 
 /// Drop rows from a table where key columns contain nulls.
@@ -249,12 +281,11 @@ pub fn distinct(
     let execution = ResolvedExecution::unary(input.execution_domain(), &ctx, "stream_compaction::distinct")?;
     distinct_impl(
         input,
-        keys,
-        keep,
-        null_equality,
-        nan_equality,
-        execution.output_domain(),
-        Some(execution.exec_options()),
-        "stream_compaction::distinct",
+        DistinctConfig::new(keys, keep, null_equality, nan_equality),
+        StreamCompactionExecution::new(
+            execution.output_domain(),
+            Some(execution.exec_options()),
+            "stream_compaction::distinct",
+        ),
     )
 }

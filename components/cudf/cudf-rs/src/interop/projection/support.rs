@@ -308,22 +308,46 @@ pub(super) fn validity_for_prepared_projection<'a>(
     ))
 }
 
+pub(super) struct PreparedHostValidity {
+    validity: PhysicalValidity,
+    retained_binding: Option<RetainedHostValidityBinding>,
+}
+
+struct RetainedHostValidityBinding {
+    binding: BufferBinding<'static>,
+    retained_buffer: Arc<[u8]>,
+}
+
+impl PreparedHostValidity {
+    pub(super) fn retain_into(
+        self,
+        bindings: &mut Vec<BufferBinding<'static>>,
+        retained_host_buffers: &mut Vec<Arc<[u8]>>,
+    ) -> PhysicalValidity {
+        let Self { validity, retained_binding } = self;
+        if let Some(retained_binding) = retained_binding {
+            bindings.push(retained_binding.binding);
+            retained_host_buffers.push(retained_binding.retained_buffer);
+        }
+        validity
+    }
+}
+
 pub(super) fn host_validity_for_prepared_projection(
     operation: &'static str,
     validity: Option<Arc<[u8]>>,
     null_count: usize,
     validity_id: BufferId,
-) -> Result<(PhysicalValidity, Option<BufferBinding<'static>>, Option<Arc<[u8]>>), InteropError> {
+) -> Result<PreparedHostValidity, InteropError> {
     let Some(mask_bytes) = validity else {
-        return Ok((PhysicalValidity::NoValidityBuffer, None, None));
+        return Ok(PreparedHostValidity { validity: PhysicalValidity::NoValidityBuffer, retained_binding: None });
     };
 
     let binding = retained_host_binding(operation, validity_id, &mask_bytes)?;
-    Ok((
-        PhysicalValidity::ValidityMask { mask: validity_id, null_count: Some(null_count) },
-        Some(binding),
-        Some(mask_bytes),
-    ))
+    Ok(PreparedHostValidity {
+        validity: PhysicalValidity::ValidityMask { mask: validity_id, null_count: Some(null_count) },
+        retained_binding: Some(RetainedHostValidityBinding { binding, retained_buffer: mask_bytes }),
+    })
 }
 
 pub(super) fn encode_host_string_offsets(

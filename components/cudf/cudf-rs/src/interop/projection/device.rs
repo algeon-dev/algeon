@@ -1,7 +1,6 @@
 use super::*;
 
-fn prepared_column_projection_from_materialized_view<'a>(
-    operation: &'static str,
+struct MaterializedViewProjectionInput {
     data_type: DataType,
     num_children: usize,
     len: usize,
@@ -10,25 +9,37 @@ fn prepared_column_projection_from_materialized_view<'a>(
     nullable: bool,
     null_mask_ptr: Option<*const std::ffi::c_void>,
     null_count: usize,
+}
+
+struct MaterializedViewProjectionState {
+    operation: &'static str,
     default_device: i32,
+    column_id: ColumnId,
     next_column_id: u32,
     next_buffer_id: u32,
-) -> Result<PreparedColumnProjection<'a>, InteropError> {
-    let interop_type = map_data_type(data_type);
-    let active_elements =
-        offset.checked_add(len).ok_or_else(|| active_projection_range_overflow_error(operation, offset, len))?;
-    let mut next_column_id = next_column_id;
-    let mut next_buffer_id = next_buffer_id;
-    let column_id = allocate_column_id(operation, &mut next_column_id)?;
+}
 
-    if num_children != 0 {
+fn prepared_column_projection_from_materialized_view<'a>(
+    input: MaterializedViewProjectionInput,
+    state: MaterializedViewProjectionState,
+) -> Result<PreparedColumnProjection<'a>, InteropError> {
+    let operation = state.operation;
+    let data_type = input.data_type;
+    let interop_type = map_data_type(data_type);
+    let active_elements = input
+        .offset
+        .checked_add(input.len)
+        .ok_or_else(|| active_projection_range_overflow_error(operation, input.offset, input.len))?;
+    let mut next_buffer_id = state.next_buffer_id;
+
+    if input.num_children != 0 {
         return Err(InteropError::new(
             InteropErrorKind::UnsupportedLayout,
             "prepared device export currently supports fixed-width leaf, string, list, struct, and dictionary column layouts only",
         )
         .with_context("operation", operation)
         .with_context("type_id", format!("{:?}", data_type.id()).to_lowercase())
-        .with_context("child_count", num_children.to_string()));
+        .with_context("child_count", input.num_children.to_string()));
     }
 
     let values_id = allocate_buffer_id(operation, &mut next_buffer_id)?;
@@ -46,25 +57,25 @@ fn prepared_column_projection_from_materialized_view<'a>(
             operation,
             "active value byte range overflowed",
             "value_byte_range",
-            offset,
-            len,
+            input.offset,
+            input.len,
         )
         .with_context("elem_size", elem_size.to_string())
     })?;
 
-    let values_device = pointer_device(operation, data_ptr, default_device)?;
+    let values_device = pointer_device(operation, input.data_ptr, state.default_device)?;
     let (validity, validity_binding) = validity_for_prepared_projection(
         operation,
-        nullable,
-        null_mask_ptr,
-        null_count,
+        input.nullable,
+        input.null_mask_ptr,
+        input.null_count,
         active_elements,
         validity_id,
-        default_device,
+        state.default_device,
     )?;
     let mut bindings = vec![BufferBinding::new(
         values_id,
-        bound_bytes(operation, data_ptr, values_byte_len)?,
+        bound_bytes(operation, input.data_ptr, values_byte_len)?,
         Placement::CudaDevice { device: values_device },
     )];
     if let Some(binding) = validity_binding {
@@ -72,12 +83,12 @@ fn prepared_column_projection_from_materialized_view<'a>(
     }
 
     let column = SemanticColumn::new(
-        column_id,
+        state.column_id,
         interop_type,
-        len,
-        offset,
+        input.len,
+        input.offset,
         validity,
-        schema_nullability(nullable),
+        schema_nullability(input.nullable),
         ColumnLayout::FixedWidth { values: values_id },
     );
     Ok(PreparedColumnProjection {
@@ -85,7 +96,7 @@ fn prepared_column_projection_from_materialized_view<'a>(
         semantic_columns: vec![column],
         bindings,
         next_buffer_id,
-        next_column_id,
+        next_column_id: state.next_column_id,
     })
 }
 
@@ -497,17 +508,16 @@ pub(super) fn prepared_column_projection_from_view<'a>(
     }
 
     prepared_column_projection_from_materialized_view(
-        operation,
-        data_type,
-        num_children,
-        len,
-        offset,
-        data_ptr,
-        nullable,
-        null_mask_ptr,
-        null_count,
-        default_device,
-        column_id.get(),
-        next_buffer_id,
+        MaterializedViewProjectionInput {
+            data_type,
+            num_children,
+            len,
+            offset,
+            data_ptr,
+            nullable,
+            null_mask_ptr,
+            null_count,
+        },
+        MaterializedViewProjectionState { operation, default_device, column_id, next_column_id, next_buffer_id },
     )
 }

@@ -51,17 +51,11 @@ fn prepared_host_leaf_or_string_column_projection_from_view(
 
         let offsets_binding = retained_host_binding(operation, offsets_id, &offsets_bytes)?;
         let data_binding = retained_host_binding(operation, data_id, &data_bytes)?;
-        let (validity, validity_binding, validity_bytes) =
-            host_validity_for_prepared_projection(operation, validity, null_count, validity_id)?;
+        let host_validity = host_validity_for_prepared_projection(operation, validity, null_count, validity_id)?;
 
         let mut bindings = vec![offsets_binding, data_binding];
         let mut retained_host_buffers = vec![offsets_bytes, data_bytes];
-        if let Some(binding) = validity_binding {
-            bindings.push(binding);
-        }
-        if let Some(bytes) = validity_bytes {
-            retained_host_buffers.push(bytes);
-        }
+        let validity = host_validity.retain_into(&mut bindings, &mut retained_host_buffers);
 
         let column = SemanticColumn::new(
             column_id,
@@ -115,17 +109,11 @@ fn prepared_host_leaf_or_string_column_projection_from_view(
         .map(|mask| mask.map(Arc::<[u8]>::from))
         .map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?;
     let values_binding = retained_host_binding(operation, values_id, &values_bytes)?;
-    let (validity, validity_binding, validity_bytes) =
-        host_validity_for_prepared_projection(operation, validity, null_count, validity_id)?;
+    let host_validity = host_validity_for_prepared_projection(operation, validity, null_count, validity_id)?;
 
     let mut bindings = vec![values_binding];
     let mut retained_host_buffers = vec![values_bytes];
-    if let Some(binding) = validity_binding {
-        bindings.push(binding);
-    }
-    if let Some(bytes) = validity_bytes {
-        retained_host_buffers.push(bytes);
-    }
+    let validity = host_validity.retain_into(&mut bindings, &mut retained_host_buffers);
 
     let column = SemanticColumn::new(
         column_id,
@@ -286,17 +274,11 @@ fn prepared_host_column_projection_with_current_supported_child_projection_from_
         .to_host_null_mask_bytes()
         .map(|mask| mask.map(Arc::<[u8]>::from))
         .map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?;
-    let (validity, validity_binding, validity_bytes) =
-        host_validity_for_prepared_projection(operation, validity, null_count, validity_id)?;
+    let host_validity = host_validity_for_prepared_projection(operation, validity, null_count, validity_id)?;
 
     let mut bindings = vec![offsets_binding];
     let mut retained_host_buffers = vec![offsets_bytes];
-    if let Some(binding) = validity_binding {
-        bindings.push(binding);
-    }
-    if let Some(bytes) = validity_bytes {
-        retained_host_buffers.push(bytes);
-    }
+    let validity = host_validity.retain_into(&mut bindings, &mut retained_host_buffers);
     bindings.extend(child_projection.bindings);
     retained_host_buffers.extend(child_projection.retained_host_buffers);
 
@@ -369,17 +351,11 @@ pub(super) fn prepared_host_column_projection_from_view(
             .to_host_null_mask_bytes()
             .map(|mask| mask.map(Arc::<[u8]>::from))
             .map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?;
-        let (validity, validity_binding, validity_bytes) =
-            host_validity_for_prepared_projection(operation, validity, null_count, validity_id)?;
+        let host_validity = host_validity_for_prepared_projection(operation, validity, null_count, validity_id)?;
 
         let mut bindings = Vec::new();
         let mut retained_host_buffers = Vec::new();
-        if let Some(binding) = validity_binding {
-            bindings.push(binding);
-        }
-        if let Some(bytes) = validity_bytes {
-            retained_host_buffers.push(bytes);
-        }
+        let validity = host_validity.retain_into(&mut bindings, &mut retained_host_buffers);
 
         let mut child_ids = Vec::with_capacity(child_count);
         let mut semantic_columns = Vec::new();
@@ -480,17 +456,11 @@ pub(super) fn prepared_host_column_projection_from_view(
             .to_host_null_mask_bytes()
             .map(|mask| mask.map(Arc::<[u8]>::from))
             .map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?;
-        let (validity, validity_binding, validity_bytes) =
-            host_validity_for_prepared_projection(operation, validity, null_count, validity_id)?;
+        let host_validity = host_validity_for_prepared_projection(operation, validity, null_count, validity_id)?;
 
         let mut bindings = vec![indices_binding];
         let mut retained_host_buffers = vec![indices_bytes];
-        if let Some(binding) = validity_binding {
-            bindings.push(binding);
-        }
-        if let Some(bytes) = validity_bytes {
-            retained_host_buffers.push(bytes);
-        }
+        let validity = host_validity.retain_into(&mut bindings, &mut retained_host_buffers);
         bindings.extend(keys_projection.bindings);
         retained_host_buffers.extend(keys_projection.retained_host_buffers);
 

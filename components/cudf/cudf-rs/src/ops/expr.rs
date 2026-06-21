@@ -187,9 +187,11 @@ pub(crate) fn eval_in_output_domain(
 /// A type-erased factory for creating a [`Scalar`] from a literal value.
 ///
 /// Not part of the public API — use [`lit()`] to create literals.
+type NumericLiteralFactory = dyn Fn(&Arc<ExecutionDomain>) -> Result<Scalar> + Send + Sync + 'static;
+
 enum LitValueInner {
     /// A numeric scalar factory. The closure creates the Scalar on demand.
-    Numeric(Box<dyn Fn(&Arc<ExecutionDomain>) -> Result<Scalar> + Send + Sync>),
+    Numeric(Box<NumericLiteralFactory>),
     /// A string literal.
     String(String),
     /// A typed null literal.

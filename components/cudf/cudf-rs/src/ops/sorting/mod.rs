@@ -103,6 +103,35 @@ struct SortParams {
     _resolved_null_precedence: Option<Vec<NullOrder>>,
 }
 
+#[derive(Clone, Copy)]
+pub(crate) struct SortKeyConfig<'a> {
+    column_order: Option<&'a [Order]>,
+    null_precedence: Option<&'a [NullOrder]>,
+}
+
+impl<'a> SortKeyConfig<'a> {
+    pub(crate) fn new(column_order: Option<&'a [Order]>, null_precedence: Option<&'a [NullOrder]>) -> Self {
+        Self { column_order, null_precedence }
+    }
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct SortExecution<'a> {
+    output_domain: &'a Arc<ExecutionDomain>,
+    exec_options: Option<&'a cudf_sys::cudf_exec_options_t>,
+    operation: &'static str,
+}
+
+impl<'a> SortExecution<'a> {
+    pub(crate) fn new(
+        output_domain: &'a Arc<ExecutionDomain>,
+        exec_options: Option<&'a cudf_sys::cudf_exec_options_t>,
+        operation: &'static str,
+    ) -> Self {
+        Self { output_domain, exec_options, operation }
+    }
+}
+
 fn sort_params(column_order: Option<&[Order]>, null_precedence: Option<&[NullOrder]>) -> SortParams {
     let co = match column_order {
         Some(s) => s.as_ptr() as *const cudf_sys::cudf_order_t,
@@ -135,19 +164,17 @@ fn cudf_null_order_for_output_placement(order: Order, null_order: NullOrder) -> 
 
 pub(crate) fn sort_table_impl(
     input: &TableView<'_>,
-    column_order: Option<&[Order]>,
-    null_precedence: Option<&[NullOrder]>,
+    ordering: SortKeyConfig<'_>,
     stable: bool,
-    output_domain: &Arc<ExecutionDomain>,
-    exec_options: Option<&cudf_sys::cudf_exec_options_t>,
-    operation: &'static str,
+    execution: SortExecution<'_>,
 ) -> Result<Table> {
+    let operation = execution.operation;
     let num_keys = input.num_columns()?;
-    validate_sort_params(operation, num_keys, column_order, null_precedence)?;
+    validate_sort_params(operation, num_keys, ordering.column_order, ordering.null_precedence)?;
     let num_keys_i32 = checked_num_keys(operation, num_keys)?;
-    let params = sort_params(column_order, null_precedence);
+    let params = sort_params(ordering.column_order, ordering.null_precedence);
     let mut out = ptr::null_mut();
-    let status = match (stable, exec_options) {
+    let status = match (stable, execution.exec_options) {
         (false, None) => unsafe {
             cudf_sys::cudf_sort(input.raw_handle(), params.column_order, params.null_precedence, num_keys_i32, &mut out)
         },
@@ -184,31 +211,29 @@ pub(crate) fn sort_table_impl(
 
     error::check_status_in(status, operation).map_err(|err| {
         err.with_fact(FACT_KEYS_COUNT, num_keys).with_details([
-            ("column_order_provided", column_order.is_some().to_string()),
-            ("null_precedence_provided", null_precedence.is_some().to_string()),
-            ("execution_context_provided", exec_options.is_some().to_string()),
+            ("column_order_provided", ordering.column_order.is_some().to_string()),
+            ("null_precedence_provided", ordering.null_precedence.is_some().to_string()),
+            ("execution_context_provided", execution.exec_options.is_some().to_string()),
         ])
     })?;
 
-    unsafe { Table::from_raw_with_domain(out, Arc::clone(output_domain)) }
+    unsafe { Table::from_raw_with_domain(out, Arc::clone(execution.output_domain)) }
 }
 
 pub(crate) fn sort_by_key_impl(
     values: &TableView<'_>,
     keys: &TableView<'_>,
-    column_order: Option<&[Order]>,
-    null_precedence: Option<&[NullOrder]>,
+    ordering: SortKeyConfig<'_>,
     stable: bool,
-    output_domain: &Arc<ExecutionDomain>,
-    exec_options: Option<&cudf_sys::cudf_exec_options_t>,
-    operation: &'static str,
+    execution: SortExecution<'_>,
 ) -> Result<Table> {
+    let operation = execution.operation;
     let num_key_columns = keys.num_columns()?;
-    validate_sort_params(operation, num_key_columns, column_order, null_precedence)?;
+    validate_sort_params(operation, num_key_columns, ordering.column_order, ordering.null_precedence)?;
     let num_key_columns_i32 = checked_num_keys(operation, num_key_columns)?;
-    let params = sort_params(column_order, null_precedence);
+    let params = sort_params(ordering.column_order, ordering.null_precedence);
     let mut out = ptr::null_mut();
-    let status = match (stable, exec_options) {
+    let status = match (stable, execution.exec_options) {
         (false, None) => unsafe {
             cudf_sys::cudf_sort_by_key(
                 values.raw_handle(),
@@ -255,29 +280,27 @@ pub(crate) fn sort_by_key_impl(
 
     error::check_status_in(status, operation).map_err(|err| {
         err.with_fact(FACT_KEYS_COUNT, num_key_columns).with_details([
-            ("column_order_provided", column_order.is_some().to_string()),
-            ("null_precedence_provided", null_precedence.is_some().to_string()),
-            ("execution_context_provided", exec_options.is_some().to_string()),
+            ("column_order_provided", ordering.column_order.is_some().to_string()),
+            ("null_precedence_provided", ordering.null_precedence.is_some().to_string()),
+            ("execution_context_provided", execution.exec_options.is_some().to_string()),
         ])
     })?;
 
-    unsafe { Table::from_raw_with_domain(out, Arc::clone(output_domain)) }
+    unsafe { Table::from_raw_with_domain(out, Arc::clone(execution.output_domain)) }
 }
 
 pub(crate) fn sorted_order_impl(
     input: &TableView<'_>,
-    column_order: Option<&[Order]>,
-    null_precedence: Option<&[NullOrder]>,
-    output_domain: &Arc<ExecutionDomain>,
-    exec_options: Option<&cudf_sys::cudf_exec_options_t>,
-    operation: &'static str,
+    ordering: SortKeyConfig<'_>,
+    execution: SortExecution<'_>,
 ) -> Result<Column> {
+    let operation = execution.operation;
     let num_keys = input.num_columns()?;
-    validate_sort_params(operation, num_keys, column_order, null_precedence)?;
+    validate_sort_params(operation, num_keys, ordering.column_order, ordering.null_precedence)?;
     let num_keys_i32 = checked_num_keys(operation, num_keys)?;
-    let params = sort_params(column_order, null_precedence);
+    let params = sort_params(ordering.column_order, ordering.null_precedence);
     let mut out = ptr::null_mut();
-    let status = match exec_options {
+    let status = match execution.exec_options {
         Some(options) => unsafe {
             cudf_sys::cudf_sorted_order_ex(
                 input.raw_handle(),
@@ -301,12 +324,12 @@ pub(crate) fn sorted_order_impl(
 
     error::check_status_in(status, operation).map_err(|err| {
         err.with_fact(FACT_KEYS_COUNT, num_keys).with_details([
-            ("column_order_provided", column_order.is_some().to_string()),
-            ("null_precedence_provided", null_precedence.is_some().to_string()),
-            ("execution_context_provided", exec_options.is_some().to_string()),
+            ("column_order_provided", ordering.column_order.is_some().to_string()),
+            ("null_precedence_provided", ordering.null_precedence.is_some().to_string()),
+            ("execution_context_provided", execution.exec_options.is_some().to_string()),
         ])
     })?;
-    unsafe { Column::from_raw_with_domain(out, Arc::clone(output_domain)) }
+    unsafe { Column::from_raw_with_domain(out, Arc::clone(execution.output_domain)) }
 }
 
 /// Sort the rows of a table by all its columns.
@@ -322,12 +345,9 @@ pub fn sort(
     let execution = ResolvedExecution::unary(input.execution_domain(), &ctx, "sorting::sort")?;
     sort_table_impl(
         input,
-        column_order,
-        null_precedence,
+        SortKeyConfig::new(column_order, null_precedence),
         false,
-        execution.output_domain(),
-        Some(execution.exec_options()),
-        "sorting::sort",
+        SortExecution::new(execution.output_domain(), Some(execution.exec_options()), "sorting::sort"),
     )
 }
 
@@ -341,12 +361,9 @@ pub fn stable_sort(
     let execution = ResolvedExecution::unary(input.execution_domain(), &ctx, "sorting::stable_sort")?;
     sort_table_impl(
         input,
-        column_order,
-        null_precedence,
+        SortKeyConfig::new(column_order, null_precedence),
         true,
-        execution.output_domain(),
-        Some(execution.exec_options()),
-        "sorting::stable_sort",
+        SortExecution::new(execution.output_domain(), Some(execution.exec_options()), "sorting::stable_sort"),
     )
 }
 
@@ -363,12 +380,9 @@ pub fn sort_by_key(
     sort_by_key_impl(
         values,
         keys,
-        column_order,
-        null_precedence,
+        SortKeyConfig::new(column_order, null_precedence),
         false,
-        execution.output_domain(),
-        Some(execution.exec_options()),
-        "sorting::sort_by_key",
+        SortExecution::new(execution.output_domain(), Some(execution.exec_options()), "sorting::sort_by_key"),
     )
 }
 
@@ -391,12 +405,9 @@ pub fn stable_sort_by_key(
     sort_by_key_impl(
         values,
         keys,
-        column_order,
-        null_precedence,
+        SortKeyConfig::new(column_order, null_precedence),
         true,
-        execution.output_domain(),
-        Some(execution.exec_options()),
-        "sorting::stable_sort_by_key",
+        SortExecution::new(execution.output_domain(), Some(execution.exec_options()), "sorting::stable_sort_by_key"),
     )
 }
 
@@ -412,11 +423,8 @@ pub fn sorted_order(
     let execution = ResolvedExecution::unary(input.execution_domain(), &ctx, "sorting::sorted_order")?;
     sorted_order_impl(
         input,
-        column_order,
-        null_precedence,
-        execution.output_domain(),
-        Some(execution.exec_options()),
-        "sorting::sorted_order",
+        SortKeyConfig::new(column_order, null_precedence),
+        SortExecution::new(execution.output_domain(), Some(execution.exec_options()), "sorting::sorted_order"),
     )
 }
 

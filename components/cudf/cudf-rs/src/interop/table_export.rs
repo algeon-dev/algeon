@@ -1,5 +1,85 @@
 use super::*;
 
+struct DeviceTableProjection<'a> {
+    columns: Vec<SemanticColumn>,
+    semantic_columns: Vec<SemanticColumn>,
+    bindings: Vec<BufferBinding<'a>>,
+}
+
+struct HostTableProjection {
+    columns: Vec<SemanticColumn>,
+    semantic_columns: Vec<SemanticColumn>,
+    bindings: Vec<BufferBinding<'static>>,
+    retained_host_buffers: Vec<Arc<[u8]>>,
+}
+
+pub(super) struct DeviceTableExportContext<'a> {
+    operation: &'static str,
+    placement: ExecutionPlacement,
+    observer: Option<crate::runtime::BoundaryObserverRef>,
+    default_device: i32,
+    readiness: ProducerReadiness<'a>,
+}
+
+impl<'a> DeviceTableExportContext<'a> {
+    fn from_domain(operation: &'static str, domain: &Arc<ExecutionDomain>) -> Result<Self, InteropError> {
+        let (default_device, readiness) = prepared_device_readiness(operation, domain)?;
+        Self::with_readiness(operation, domain, default_device, readiness)
+    }
+
+    pub(super) fn with_readiness(
+        operation: &'static str,
+        domain: &Arc<ExecutionDomain>,
+        default_device: i32,
+        readiness: ProducerReadiness<'a>,
+    ) -> Result<Self, InteropError> {
+        let domain_device = domain.device_snapshot();
+        if default_device != domain_device {
+            return Err(InteropError::new(
+                InteropErrorKind::ReadinessMismatch,
+                "prepared table export device must match producer execution domain",
+            )
+            .with_context("operation", operation)
+            .with_context("left_device", default_device.to_string())
+            .with_context("right_device", domain_device.to_string()));
+        }
+
+        match readiness {
+            ProducerReadiness::DeviceStreamOrdered { stream } if stream.device() != default_device => {
+                return Err(device_readiness_mismatch_error(operation, default_device, stream.device()));
+            },
+            ProducerReadiness::DeviceEventOrdered { event } if event.device() != default_device => {
+                return Err(device_readiness_mismatch_error(operation, default_device, event.device()));
+            },
+            ProducerReadiness::HostVisible
+            | ProducerReadiness::DeviceStreamOrdered { .. }
+            | ProducerReadiness::DeviceEventOrdered { .. } => {},
+        }
+
+        Ok(Self {
+            operation,
+            placement: domain.placement(),
+            observer: domain.boundary_observer(),
+            default_device,
+            readiness,
+        })
+    }
+}
+
+fn device_readiness_mismatch_error(
+    operation: &'static str,
+    default_device: i32,
+    readiness_device: i32,
+) -> InteropError {
+    InteropError::new(
+        InteropErrorKind::ReadinessMismatch,
+        "prepared table export readiness must match producer CUDA device",
+    )
+    .with_context("operation", operation)
+    .with_context("left_device", default_device.to_string())
+    .with_context("right_device", readiness_device.to_string())
+}
+
 fn table_dimensions(view: &TableView<'_>, operation: &'static str) -> Result<(usize, usize), InteropError> {
     let num_rows = view.num_rows().map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?;
     let num_columns =
@@ -11,7 +91,7 @@ fn build_device_table_projection_from_view<'a>(
     view: &TableView<'_>,
     operation: &'static str,
     default_device: i32,
-) -> Result<(Vec<SemanticColumn>, Vec<SemanticColumn>, Vec<BufferBinding<'a>>), InteropError> {
+) -> Result<DeviceTableProjection<'a>, InteropError> {
     let (_, num_columns) = table_dimensions(view, operation)?;
     let mut columns = Vec::with_capacity(num_columns);
     let mut semantic_columns = Vec::new();
@@ -37,13 +117,13 @@ fn build_device_table_projection_from_view<'a>(
         semantic_columns.extend(projection.semantic_columns);
     }
 
-    Ok((columns, semantic_columns, bindings))
+    Ok(DeviceTableProjection { columns, semantic_columns, bindings })
 }
 
 fn build_host_table_projection_from_view(
     view: &TableView<'_>,
     operation: &'static str,
-) -> Result<(Vec<SemanticColumn>, Vec<SemanticColumn>, Vec<BufferBinding<'static>>, Vec<Arc<[u8]>>), InteropError> {
+) -> Result<HostTableProjection, InteropError> {
     let (_, num_columns) = table_dimensions(view, operation)?;
     let mut columns = Vec::with_capacity(num_columns);
     let mut semantic_columns = Vec::new();
@@ -66,14 +146,14 @@ fn build_host_table_projection_from_view(
         semantic_columns.extend(projection.semantic_columns);
     }
 
-    Ok((columns, semantic_columns, bindings, retained_host_buffers))
+    Ok(HostTableProjection { columns, semantic_columns, bindings, retained_host_buffers })
 }
 
 fn build_device_table_projection_from_columns<'a, I>(
     columns: I,
     operation: &'static str,
     default_device: i32,
-) -> Result<(Vec<SemanticColumn>, Vec<SemanticColumn>, Vec<BufferBinding<'a>>), InteropError>
+) -> Result<DeviceTableProjection<'a>, InteropError>
 where
     I: IntoIterator<Item = &'a Column>,
 {
@@ -96,13 +176,13 @@ where
         semantic_columns.extend(projection.semantic_columns);
     }
 
-    Ok((projected_columns, semantic_columns, bindings))
+    Ok(DeviceTableProjection { columns: projected_columns, semantic_columns, bindings })
 }
 
 fn build_host_table_projection_from_columns<'a, I>(
     columns: I,
     operation: &'static str,
-) -> Result<(Vec<SemanticColumn>, Vec<SemanticColumn>, Vec<BufferBinding<'static>>, Vec<Arc<[u8]>>), InteropError>
+) -> Result<HostTableProjection, InteropError>
 where
     I: IntoIterator<Item = &'a Column>,
 {
@@ -126,7 +206,7 @@ where
         semantic_columns.extend(projection.semantic_columns);
     }
 
-    Ok((projected_columns, semantic_columns, bindings, retained_host_buffers))
+    Ok(HostTableProjection { columns: projected_columns, semantic_columns, bindings, retained_host_buffers })
 }
 
 pub(super) fn prepare_table_export_from_view<'a>(
@@ -149,15 +229,18 @@ pub(super) fn prepare_table_export_from_view_with_readiness<'a>(
     let (num_rows, _) = table_dimensions(view, operation)?;
     let observation = table_view_boundary_observation(BoundaryKind::InteropLease, view, operation)?;
     let observer = view.execution_domain().boundary_observer();
-    let (columns, semantic_columns, bindings) =
-        build_device_table_projection_from_view(view, operation, default_device)?;
-    let table =
-        SemanticTable::new(TableId::new(0), num_rows, columns.iter().map(|column| column.id()).collect(), names);
+    let projection = build_device_table_projection_from_view(view, operation, default_device)?;
+    let table = SemanticTable::new(
+        TableId::new(0),
+        num_rows,
+        projection.columns.iter().map(|column| column.id()).collect(),
+        names,
+    );
     PreparedTableExport::try_new_with_semantic_columns(
         table,
-        columns,
-        semantic_columns,
-        bindings,
+        projection.columns,
+        projection.semantic_columns,
+        projection.bindings,
         readiness,
         export_diagnostics(),
     )
@@ -173,19 +256,22 @@ pub(super) fn prepare_host_table_export_from_view(
     operation: &'static str,
 ) -> Result<PreparedTableExport<'static>, InteropError> {
     let (num_rows, _) = table_dimensions(view, operation)?;
-    let (columns, semantic_columns, bindings, retained_host_buffers) =
-        build_host_table_projection_from_view(view, operation)?;
-    let table =
-        SemanticTable::new(TableId::new(0), num_rows, columns.iter().map(|column| column.id()).collect(), names);
+    let projection = build_host_table_projection_from_view(view, operation)?;
+    let table = SemanticTable::new(
+        TableId::new(0),
+        num_rows,
+        projection.columns.iter().map(|column| column.id()).collect(),
+        names,
+    );
     PreparedTableExport::try_new_with_semantic_columns(
         table,
-        columns,
-        semantic_columns,
-        bindings,
+        projection.columns,
+        projection.semantic_columns,
+        projection.bindings,
         ProducerReadiness::HostVisible,
         host_export_diagnostics(),
     )
-    .map(|export| export.with_retained_host_buffers(retained_host_buffers))
+    .map(|export| export.with_retained_host_buffers(projection.retained_host_buffers))
     .map_err(|error| error.with_context("operation", operation))
 }
 
@@ -199,42 +285,36 @@ pub(super) fn prepare_device_table_export_from_columns<'a, I>(
 where
     I: IntoIterator<Item = &'a Column>,
 {
-    let (default_device, readiness) = prepared_device_readiness(operation, domain)?;
-    prepare_device_table_export_from_columns_with_readiness(
-        columns,
-        num_rows,
-        names,
-        domain.placement(),
-        domain.boundary_observer(),
-        operation,
-        default_device,
-        readiness,
-    )
+    let context = DeviceTableExportContext::from_domain(operation, domain)?;
+    prepare_device_table_export_from_columns_with_readiness(columns, num_rows, names, context)
 }
 
 pub(super) fn prepare_device_table_export_from_columns_with_readiness<'a, I>(
     columns: I,
     num_rows: usize,
     names: Option<Vec<String>>,
-    placement: ExecutionPlacement,
-    observer: Option<crate::runtime::BoundaryObserverRef>,
-    operation: &'static str,
-    default_device: i32,
-    readiness: ProducerReadiness<'a>,
+    context: DeviceTableExportContext<'a>,
 ) -> Result<PreparedTableExport<'a>, InteropError>
 where
     I: IntoIterator<Item = &'a Column>,
 {
-    let (columns, semantic_columns, bindings) =
-        build_device_table_projection_from_columns(columns, operation, default_device)?;
-    let observation = boundary_observation(BoundaryKind::InteropLease, placement, num_rows, columns.len(), false);
-    let table =
-        SemanticTable::new(TableId::new(0), num_rows, columns.iter().map(|column| column.id()).collect(), names);
+    let operation = context.operation;
+    let projection = build_device_table_projection_from_columns(columns, operation, context.default_device)?;
+    let observation =
+        boundary_observation(BoundaryKind::InteropLease, context.placement, num_rows, projection.columns.len(), false);
+    let readiness = context.readiness;
+    let observer = context.observer;
+    let table = SemanticTable::new(
+        TableId::new(0),
+        num_rows,
+        projection.columns.iter().map(|column| column.id()).collect(),
+        names,
+    );
     PreparedTableExport::try_new_with_semantic_columns(
         table,
-        columns,
-        semantic_columns,
-        bindings,
+        projection.columns,
+        projection.semantic_columns,
+        projection.bindings,
         readiness,
         export_diagnostics(),
     )
@@ -257,15 +337,18 @@ pub(super) fn prepare_into_owned_table_root_with_readiness(
     let observer = retained_table.execution_domain().boundary_observer();
     let num_rows = view.num_rows().map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?;
     let default_device = retained_table.execution_domain().device_id().ordinal() as i32;
-    let (columns, semantic_columns, bindings) =
-        build_device_table_projection_from_view(&view, operation, default_device)?;
-    let table =
-        SemanticTable::new(TableId::new(0), num_rows, columns.iter().map(|column| column.id()).collect(), names);
+    let projection = build_device_table_projection_from_view(&view, operation, default_device)?;
+    let table = SemanticTable::new(
+        TableId::new(0),
+        num_rows,
+        projection.columns.iter().map(|column| column.id()).collect(),
+        names,
+    );
     PreparedTableExport::try_new_with_semantic_columns(
         table,
-        columns,
-        semantic_columns,
-        to_static_bindings(operation, bindings)?,
+        projection.columns,
+        projection.semantic_columns,
+        to_static_bindings(operation, projection.bindings)?,
         to_static_readiness(operation, readiness)?,
         export_diagnostics(),
     )
@@ -295,19 +378,22 @@ pub(super) fn prepare_host_table_export_from_columns<'a, I>(
 where
     I: IntoIterator<Item = &'a Column>,
 {
-    let (columns, semantic_columns, bindings, retained_host_buffers) =
-        build_host_table_projection_from_columns(columns, operation)?;
-    let table =
-        SemanticTable::new(TableId::new(0), num_rows, columns.iter().map(|column| column.id()).collect(), names);
+    let projection = build_host_table_projection_from_columns(columns, operation)?;
+    let table = SemanticTable::new(
+        TableId::new(0),
+        num_rows,
+        projection.columns.iter().map(|column| column.id()).collect(),
+        names,
+    );
     PreparedTableExport::try_new_with_semantic_columns(
         table,
-        columns,
-        semantic_columns,
-        bindings,
+        projection.columns,
+        projection.semantic_columns,
+        projection.bindings,
         ProducerReadiness::HostVisible,
         host_export_diagnostics(),
     )
-    .map(|export| export.with_retained_host_buffers(retained_host_buffers))
+    .map(|export| export.with_retained_host_buffers(projection.retained_host_buffers))
     .map_err(|error| error.with_context("operation", operation))
 }
 
@@ -329,9 +415,8 @@ pub(super) fn transfer_from_owned_table_with_names(
     let (num_rows, columns, semantic_columns, bindings) = {
         let view = table.view().map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?;
         let (num_rows, _) = table_dimensions(&view, operation)?;
-        let (columns, semantic_columns, bindings) =
-            build_device_table_projection_from_view(&view, operation, default_device)?;
-        (num_rows, columns, semantic_columns, bindings)
+        let projection = build_device_table_projection_from_view(&view, operation, default_device)?;
+        (num_rows, projection.columns, projection.semantic_columns, projection.bindings)
     };
 
     let table_semantic =
@@ -397,9 +482,8 @@ pub(super) fn transfer_from_owned_table_with_names_and_runtime_release_synchroni
     let (num_rows, columns, semantic_columns, bindings) = {
         let view = table.view().map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?;
         let (num_rows, _) = table_dimensions(&view, operation)?;
-        let (columns, semantic_columns, bindings) =
-            build_device_table_projection_from_view(&view, operation, default_device)?;
-        (num_rows, columns, semantic_columns, bindings)
+        let projection = build_device_table_projection_from_view(&view, operation, default_device)?;
+        (num_rows, projection.columns, projection.semantic_columns, projection.bindings)
     };
 
     let table_semantic =

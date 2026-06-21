@@ -531,15 +531,17 @@ impl DataFrame {
     ) -> Result<PreparedTableExport<'a>, InteropError> {
         let operation = "interop::DataFrame::try_prepare_device_table_export_with_event";
         let (default_device, readiness) = prepared_device_event_readiness(operation, self.execution_domain(), event)?;
+        let context = super::table_export::DeviceTableExportContext::with_readiness(
+            operation,
+            self.execution_domain(),
+            default_device,
+            readiness,
+        )?;
         prepare_device_table_export_from_columns_with_readiness(
             self.columns_map().values().map(AsRef::as_ref),
             self.num_rows(),
             Some(self.column_names_owned()),
-            self.placement(),
-            self.execution_domain().boundary_observer(),
-            operation,
-            default_device,
-            readiness,
+            context,
         )
         .map(|export| export.with_retained_owner_arc(Arc::new(self.clone())))
     }

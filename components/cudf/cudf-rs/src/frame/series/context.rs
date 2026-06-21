@@ -30,6 +30,14 @@ use crate::{
     runtime::{ExecutionOverrides, Runtime, execution_domain::ExecutionDomain},
 };
 
+type StringScalarColumnOp = fn(
+    &crate::core::column::ColumnView<'_>,
+    &Scalar,
+    &Arc<ExecutionDomain>,
+    Option<&cudf_sys::cudf_exec_options_t>,
+    &'static str,
+) -> Result<crate::core::column::Column>;
+
 fn factorization_key_order(order: DictionaryKeyOrder) -> factorization::KeyOrder {
     match order {
         DictionaryKeyOrder::Sorted => factorization::KeyOrder::Sorted,
@@ -287,12 +295,9 @@ impl Series {
         let exec_options = output_domain.explicit_exec_options_raw();
         let sorted = crate::ops::sorting::sort_table_impl(
             ttv.table(),
-            Some(&orders),
-            null_orders.as_deref(),
+            crate::ops::sorting::SortKeyConfig::new(Some(&orders), null_orders.as_deref()),
             options.stable,
-            &output_domain,
-            exec_options.as_ref(),
-            operation,
+            crate::ops::sorting::SortExecution::new(&output_domain, exec_options.as_ref(), operation),
         )?
         .with_execution_domain(output_domain);
         let mut cols = sorted.into_columns()?;
@@ -445,13 +450,13 @@ impl Series {
         let exec_options = output_domain.explicit_exec_options_raw();
         let result = stream_compaction::distinct_impl(
             ttv.table(),
-            &[0],
-            DuplicateKeepOption::KeepAny,
-            NullEquality::Equal,
-            NanEquality::AllEqual,
-            &output_domain,
-            exec_options.as_ref(),
-            operation,
+            stream_compaction::DistinctConfig::new(
+                &[0],
+                DuplicateKeepOption::KeepAny,
+                NullEquality::Equal,
+                NanEquality::AllEqual,
+            ),
+            stream_compaction::StreamCompactionExecution::new(&output_domain, exec_options.as_ref(), operation),
         )?;
         let mut cols = result.into_columns()?;
         Series::from_column(cols.remove(0))
@@ -650,13 +655,13 @@ impl Series {
         let exec_options = output_domain.explicit_exec_options_raw();
         let result = stream_compaction::distinct_impl(
             ttv.table(),
-            &[0],
-            DuplicateKeepOption::KeepAny,
-            NullEquality::Equal,
-            NanEquality::AllEqual,
-            &output_domain,
-            exec_options.as_ref(),
-            operation,
+            stream_compaction::DistinctConfig::new(
+                &[0],
+                DuplicateKeepOption::KeepAny,
+                NullEquality::Equal,
+                NanEquality::AllEqual,
+            ),
+            stream_compaction::StreamCompactionExecution::new(&output_domain, exec_options.as_ref(), operation),
         )?;
         let mut cols = result.into_columns()?;
         Series::from_column(cols.remove(0))
@@ -876,13 +881,7 @@ impl Series {
         target: &str,
         ctx: &ExecutionOverrides<'_>,
         operation: &'static str,
-        op: fn(
-            &crate::core::column::ColumnView<'_>,
-            &Scalar,
-            &Arc<ExecutionDomain>,
-            Option<&cudf_sys::cudf_exec_options_t>,
-            &'static str,
-        ) -> Result<crate::core::column::Column>,
+        op: StringScalarColumnOp,
     ) -> Result<Series> {
         let output_domain = self.resolve_context_output_domain(ctx, operation)?;
         let cv = self.column.view()?;

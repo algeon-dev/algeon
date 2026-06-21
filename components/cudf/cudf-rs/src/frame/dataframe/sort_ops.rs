@@ -105,24 +105,18 @@ impl DataFrame {
         let result_table = if all_in_order {
             sorting::sort_table_impl(
                 &tv,
-                Some(&orders),
-                null_order_ref,
+                sorting::SortKeyConfig::new(Some(&orders), null_order_ref),
                 options.stable,
-                &output_domain,
-                Some(resolved_exec_options),
-                operation,
+                sorting::SortExecution::new(&output_domain, Some(resolved_exec_options), operation),
             )?
         } else {
             let keys_table = tv.select_columns(&key_indices)?;
             sorting::sort_by_key_impl(
                 &tv,
                 &keys_table,
-                Some(&orders),
-                null_order_ref,
+                sorting::SortKeyConfig::new(Some(&orders), null_order_ref),
                 options.stable,
-                &output_domain,
-                Some(resolved_exec_options),
-                operation,
+                sorting::SortExecution::new(&output_domain, Some(resolved_exec_options), operation),
             )?
         }
         .with_execution_domain(output_domain);
