@@ -127,19 +127,22 @@ fn slice9_multi_file_parquet_surface_is_publicly_importable() {
 }
 
 #[test]
-fn parquet_source_phase1_surface_is_publicly_importable_under_io_source() {
+fn parquet_source_planning_surface_is_publicly_importable_under_io_source() {
     use cudf::{
         DataType, TypeId,
         io::source::{
             ByteRangeDisposition, LocalParquetFile, LocalParquetSource, LocalParquetSourceKind, PartitionColumn,
             PartitionColumnDisposition, PartitionValue, PredicateDisposition, RejectedSourceFeature,
-            SchemaMappingDisposition, SourceColumn, SourceColumnRef, SourceColumnRole, SourceFormat,
-            SourceOutputColumn, SourceRequiredColumn, SourceSchema, ZERO_COLUMN_COUNT_COLUMN,
-            ZeroColumnCountDisposition,
+            SchemaMappingDisposition, SourceChunk, SourceChunkPlan, SourceChunkPlanningPolicy, SourceColumn,
+            SourceColumnRef, SourceColumnRole, SourceFormat, SourceOutputColumn, SourceRequiredColumn, SourceSchema,
+            ZERO_COLUMN_COUNT_COLUMN, ZeroColumnCountDisposition, plan_local_parquet_source_chunks,
+            source_row_count_to_i64, source_row_group_index_to_i32,
         },
     };
 
     fn assert_source(_: &LocalParquetSource) {}
+    fn assert_plan(_: &SourceChunkPlan) {}
+    fn assert_chunk(_: &SourceChunk) {}
 
     let dtype = DataType::new(TypeId::Int64);
     let schema = SourceSchema::new([
@@ -180,6 +183,15 @@ fn parquet_source_phase1_surface_is_publicly_importable_under_io_source() {
     assert_eq!(count_source.output_columns()[0].name(), ZERO_COLUMN_COUNT_COLUMN);
     assert_eq!(count_source.output_columns()[0].source(), SourceColumnRef::ZeroColumnCount);
     assert_eq!(count_source.diagnostics().zero_column_count_disposition(), ZeroColumnCountDisposition::Represented);
+
+    let policy = SourceChunkPlanningPolicy::default();
+    assert_eq!(policy.max_source_chunk_bytes(), None);
+    assert!(policy.max_row_groups_per_chunk() > 0);
+    let plan = plan_local_parquet_source_chunks(&source, policy).unwrap();
+    assert_plan(&plan);
+    assert_chunk(&plan.chunks()[0]);
+    assert_eq!(source_row_group_index_to_i32(0).unwrap(), 0);
+    assert_eq!(source_row_count_to_i64(0).unwrap(), 0);
 }
 
 #[test]
