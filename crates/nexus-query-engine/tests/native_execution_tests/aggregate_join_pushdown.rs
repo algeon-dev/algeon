@@ -14,7 +14,7 @@ fn optimized_aggregate_join_pushdown_matches_plain_sum_inner_join_with_duplicate
     assert_eq!(optimizer_result.change, nexus_query_engine::NativeOptimizerChange::Changed);
     assert_eq!(optimizer_result.diagnostics.aggregate_join_pushdown.applied_count, 1);
 
-    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime));
+    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime)).unwrap();
     let original = execute_query_plan(&context, &plan).unwrap();
     let optimized = execute_query_plan(&context, &optimizer_result.plan).unwrap();
 
@@ -53,7 +53,7 @@ fn optimized_aggregate_join_pushdown_matches_left_join_count_with_unmatched_rows
     assert_eq!(optimizer_result.change, nexus_query_engine::NativeOptimizerChange::Changed);
     assert_eq!(optimizer_result.diagnostics.aggregate_join_pushdown.applied_count, 1);
 
-    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime));
+    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime)).unwrap();
     let original = execute_query_plan(&context, &plan).unwrap();
     let optimized = execute_query_plan(&context, &optimizer_result.plan).unwrap();
 

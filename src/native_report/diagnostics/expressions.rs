@@ -147,7 +147,10 @@ pub(super) fn expression_category_with_schema(
     if let Some(dynamic_filter) = expr.downcast_ref::<DynamicFilterPhysicalExpr>() {
         return match dynamic_filter.current() {
             Ok(current) => expression_category_with_schema(&current, input_schema),
-            Err(_error) => Some("expression_dynamic_filter".to_string()),
+            Err(error) => Some(format!(
+                "expression_dynamic_filter_error_{}",
+                stable_identifier(error.to_string().as_str()).trim_matches('_')
+            )),
         };
     }
     if let Some(function) = expr.downcast_ref::<ScalarFunctionExpr>() {

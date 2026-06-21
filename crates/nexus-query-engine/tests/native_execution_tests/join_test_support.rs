@@ -401,7 +401,7 @@ pub(super) fn execute_left_only_residual_join(
         Arc::clone(&output_schema),
     );
     let plan = builder.finish_with_host_sink(sort);
-    let context = ExecutionContext::from_shared_runtime(Arc::clone(runtime));
+    let context = ExecutionContext::from_shared_runtime(Arc::clone(runtime)).unwrap();
     execute_query_plan(&context, &plan).unwrap()
 }
 
@@ -473,7 +473,7 @@ pub(super) fn residual_validation_error(
         output_schema,
     );
     let plan = builder.finish_with_host_sink(join);
-    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime));
+    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime)).unwrap();
 
     match execute_query_plan(&context, &plan) {
         Ok(_) => panic!("native residual validation should reject invalid predicates before source read"),

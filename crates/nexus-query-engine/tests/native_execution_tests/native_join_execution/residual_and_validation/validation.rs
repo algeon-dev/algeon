@@ -40,7 +40,7 @@ fn native_query_rejects_invalid_cross_join_before_source_read() {
         output_schema,
     );
     let plan = builder.finish_with_host_sink(join);
-    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime));
+    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime)).unwrap();
 
     let error = match execute_query_plan(&context, &plan) {
         Ok(_) => panic!("native validation should reject cross joins with equality keys before source read"),
@@ -117,7 +117,7 @@ fn native_query_rejects_duplicate_join_output_names_before_runtime_materializati
         ),
     );
     let plan = builder.finish_with_host_sink(projection);
-    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime));
+    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime)).unwrap();
 
     let error = match execute_query_plan(&context, &plan) {
         Ok(_) => panic!("native validation should reject duplicate join output names before runtime materialization"),

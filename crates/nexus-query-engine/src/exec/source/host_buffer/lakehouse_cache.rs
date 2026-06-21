@@ -18,7 +18,7 @@ use super::{
 use crate::{
     datatypes::is_arrow_fixed_width,
     error::{QueryError, QueryErrorCode, Result},
-    parquet_metadata::write_parquet_footer_sidecar_from_file,
+    parquet_metadata::{object_store_query_error, write_parquet_footer_sidecar_from_file},
     runtime::{LakehouseCacheFillErrorEvent, LakehouseCacheFillEvent, LakehouseCacheFillOutcome, S3ObjectStoreKey},
 };
 
@@ -1219,15 +1219,15 @@ async fn stream_lakehouse_cache_fill(
     if complete_cache_file_matches_expected_size(&cache_path, estimated_fetch_bytes) {
         return Ok(0);
     }
-    let result = store.get(&location).await.map_err(|_error| {
-        QueryError::new(
-            QueryErrorCode::CudfDependencyFailure,
+    let result = store.get(&location).await.map_err(|error| {
+        lakehouse_cache_object_store_error(
             "nexus_query_engine.lakehouse_cache.background_fill.fetch",
             "failed to start background lakehouse cache object fetch",
+            error,
+            &cache_path,
+            &location,
+            stable_id.as_str(),
         )
-        .with_fact("path", lakehouse_cache_path_fact(&cache_path))
-        .with_fact("object_store_path", object_store_key_fact(&location))
-        .with_fact("stable_id", lakehouse_cache_stable_id_fact(stable_id.as_str()))
     })?;
     let mut temp_file = OpenOptions::new().write(true).create_new(true).open(&temp_path).map_err(|error| {
         lakehouse_cache_io_error(
@@ -1245,16 +1245,16 @@ async fn stream_lakehouse_cache_fill(
     let mut total_bytes = 0u64;
     let mut stream = result.into_stream();
     while let Some(chunk) = stream.next().await {
-        let chunk = chunk.map_err(|_error| {
+        let chunk = chunk.map_err(|error| {
             let _ = fs::remove_file(&temp_path);
-            QueryError::new(
-                QueryErrorCode::CudfDependencyFailure,
+            lakehouse_cache_object_store_error(
                 "nexus_query_engine.lakehouse_cache.background_fill.fetch",
                 "failed to stream background lakehouse cache object bytes",
+                error,
+                &cache_path,
+                &location,
+                stable_id.as_str(),
             )
-            .with_fact("path", lakehouse_cache_path_fact(&cache_path))
-            .with_fact("object_store_path", object_store_key_fact(&location))
-            .with_fact("stable_id", lakehouse_cache_stable_id_fact(stable_id.as_str()))
         })?;
         total_bytes = total_bytes
             .checked_add(u64::try_from(chunk.len()).map_err(|_error| {
@@ -1337,4 +1337,48 @@ async fn stream_lakehouse_cache_fill(
     }
     let _ = write_parquet_footer_sidecar_from_file(&cache_path, sidecar_content_identity.as_str());
     Ok(total_bytes)
+}
+
+fn lakehouse_cache_object_store_error(
+    operation: &'static str,
+    message: &'static str,
+    error: object_store::Error,
+    cache_path: &Path,
+    location: &object_store::path::Path,
+    stable_id: &str,
+) -> QueryError {
+    object_store_query_error(operation, message, error)
+        .with_fact("path", lakehouse_cache_path_fact(cache_path))
+        .with_fact("object_store_path", object_store_key_fact(location))
+        .with_fact("stable_id", lakehouse_cache_stable_id_fact(stable_id))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn background_fill_object_store_error_preserves_authn_classification() {
+        let error = object_store::Error::Generic {
+            store: "fault",
+            source: Box::new(std::io::Error::other(
+                "ServiceError: status code: 403 Forbidden; ExpiredToken: security token expired",
+            )),
+        };
+        let query_error = lakehouse_cache_object_store_error(
+            "nexus_query_engine.lakehouse_cache.background_fill.fetch",
+            "failed to start background lakehouse cache object fetch",
+            error,
+            Path::new("/tmp/cache/file.parquet"),
+            &object_store::path::Path::from("bucket/private/file.parquet"),
+            "stable-id",
+        );
+
+        assert_eq!(query_error.code(), QueryErrorCode::SourceUnauthenticated);
+        assert_eq!(query_error.fact_value("object_store_error_kind"), Some("generic"));
+        assert_eq!(query_error.fact_value("object_store_error_detail"), Some("expired_token"));
+        assert!(query_error.fact_value("path").is_some());
+        assert!(query_error.fact_value("object_store_path").is_some());
+        assert!(query_error.source_error().is_some());
+    }
 }

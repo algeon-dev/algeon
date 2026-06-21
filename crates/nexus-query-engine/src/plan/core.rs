@@ -194,7 +194,11 @@ impl QueryPlan {
                 Some(bounded_join_unsupported_shape_facts(self, boundary_policy, Some(&projection)))
             },
             Ok(None) => None,
-            Err(_) => Some(bounded_join_unsupported_shape_facts(self, boundary_policy, None)),
+            Err(error) => {
+                let mut facts = bounded_join_unsupported_shape_facts(self, boundary_policy, None);
+                crate::bounded::insert_bounded_join_rejection_projection_error_facts(&mut facts, &error);
+                Some(facts)
+            },
         }
     }
 

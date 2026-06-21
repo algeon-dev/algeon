@@ -5,7 +5,7 @@ static GRAPH_ADAPTIVE_RETRY_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::
 #[test]
 fn bfs_drops_null_edge_rows_before_graph_construction() {
     let runtime = Arc::new(cudf::Runtime::new().unwrap());
-    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime));
+    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime)).unwrap();
 
     let edge_schema =
         Arc::new(Schema::new(vec![Field::new("src", DataType::Int32, true), Field::new("dst", DataType::Int32, true)]));
@@ -73,7 +73,7 @@ fn bfs_drops_null_edge_rows_before_graph_construction() {
 #[test]
 fn bfs_python_cugraph_reports_null_edges_dropped_before_edge_normalize() {
     let runtime = Arc::new(cudf::Runtime::new().unwrap());
-    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime));
+    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime)).unwrap();
 
     let edge_schema =
         Arc::new(Schema::new(vec![Field::new("src", DataType::Int32, true), Field::new("dst", DataType::Int32, true)]));
@@ -321,7 +321,7 @@ fn bounded_bfs_denies_graph_memory_against_live_input_reservation_after_null_fil
 #[test]
 fn betweenness_with_explicit_seeds_records_approximate_metadata() {
     let runtime = Arc::new(cudf::Runtime::new().unwrap());
-    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime));
+    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime)).unwrap();
 
     let edge_schema = Arc::new(Schema::new(vec![
         Field::new("src", DataType::Int32, false),
@@ -374,7 +374,7 @@ fn betweenness_with_explicit_seeds_records_approximate_metadata() {
 #[test]
 fn betweenness_k_selects_deterministic_approximate_seed_count() {
     let runtime = Arc::new(cudf::Runtime::new().unwrap());
-    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime));
+    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime)).unwrap();
 
     let edge_schema = Arc::new(Schema::new(vec![
         Field::new("src", DataType::Int32, false),
@@ -716,7 +716,7 @@ fn edge_betweenness_scores(batch: &RecordBatch) -> std::collections::BTreeMap<(i
 #[test]
 fn exact_betweenness_above_threshold_is_refused_before_cugraph() {
     let runtime = Arc::new(cudf::Runtime::new().unwrap());
-    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime));
+    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime)).unwrap();
 
     let edge_schema = Arc::new(Schema::new(vec![
         Field::new("src", DataType::Int32, false),
@@ -767,7 +767,7 @@ fn exact_betweenness_above_threshold_is_refused_before_cugraph() {
 #[test]
 fn exact_betweenness_threshold_uses_actual_vertices_not_edge_upper_bound() {
     let runtime = Arc::new(cudf::Runtime::new().unwrap());
-    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime));
+    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime)).unwrap();
 
     let edge_schema = Arc::new(Schema::new(vec![
         Field::new("src", DataType::Int32, false),
@@ -815,7 +815,7 @@ fn exact_betweenness_threshold_uses_actual_vertices_not_edge_upper_bound() {
 #[test]
 fn bfs_keeps_null_weight_edges_but_drops_null_edge_id_rows() {
     let runtime = Arc::new(cudf::Runtime::new().unwrap());
-    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime));
+    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime)).unwrap();
 
     let edge_schema = Arc::new(Schema::new(vec![
         Field::new("src", DataType::Int32, false),
@@ -898,7 +898,7 @@ fn bfs_keeps_null_weight_edges_but_drops_null_edge_id_rows() {
 #[test]
 fn bfs_null_weight_does_not_drop_reachable_edges() {
     let runtime = Arc::new(cudf::Runtime::new().unwrap());
-    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime));
+    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime)).unwrap();
 
     let edge_schema = Arc::new(Schema::new(vec![
         Field::new("src", DataType::Int32, false),
@@ -962,7 +962,7 @@ fn bfs_null_weight_does_not_drop_reachable_edges() {
 #[test]
 fn bfs_include_edge_ids_filters_edges() {
     let runtime = Arc::new(cudf::Runtime::new().unwrap());
-    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime));
+    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime)).unwrap();
 
     let edge_schema = Arc::new(Schema::new(vec![
         Field::new("src", DataType::Int32, false),
@@ -1050,7 +1050,7 @@ fn bfs_include_edge_ids_filters_edges() {
 #[test]
 fn bfs_include_edges_relation_filters_by_source_destination() {
     let runtime = Arc::new(cudf::Runtime::new().unwrap());
-    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime));
+    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime)).unwrap();
 
     let edge_schema = Arc::new(Schema::new(vec![
         Field::new("src", DataType::Int32, false),
@@ -1142,7 +1142,7 @@ fn bfs_include_edges_relation_filters_by_source_destination() {
 #[test]
 fn bfs_source_vertices_side_input_accepts_multiple_rows() {
     let runtime = Arc::new(cudf::Runtime::new().unwrap());
-    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime));
+    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime)).unwrap();
 
     let edge_schema = Arc::new(Schema::new(vec![
         Field::new("src", DataType::Int32, false),
@@ -1213,7 +1213,7 @@ fn bfs_source_vertices_side_input_accepts_multiple_rows() {
 #[test]
 fn bfs_source_vertices_side_input_rejects_empty_source_set() {
     let runtime = Arc::new(cudf::Runtime::new().unwrap());
-    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime));
+    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime)).unwrap();
 
     let edge_schema = Arc::new(Schema::new(vec![
         Field::new("src", DataType::Int32, false),
@@ -1273,7 +1273,7 @@ fn bfs_source_vertices_side_input_rejects_empty_source_set() {
 #[test]
 fn bfs_target_metadata_columns_are_shaped_when_requested() {
     let runtime = Arc::new(cudf::Runtime::new().unwrap());
-    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime));
+    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime)).unwrap();
 
     let edge_schema = Arc::new(Schema::new(vec![
         Field::new("src", DataType::Int32, false),

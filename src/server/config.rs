@@ -1727,7 +1727,7 @@ impl<'a> EnvValues<'a> {
 
     fn socket_addr(&mut self, name: &'static str, default: &str) -> Result<SocketAddr> {
         let raw = self.string(name).unwrap_or_else(|| default.to_string());
-        raw.parse().map_err(|error| ServerError::invalid_config(name, format!("must be a socket address: {error}")))
+        raw.parse().map_err(|error| ServerError::invalid_config_with_source(name, "must be a socket address", error))
     }
 
     fn positive_u64(&mut self, name: &'static str, default: u64) -> Result<u64> {
@@ -1742,7 +1742,7 @@ impl<'a> EnvValues<'a> {
         self.string(name)
             .map(|raw| {
                 raw.parse::<usize>()
-                    .map_err(|error| ServerError::invalid_config(name, format!("must be an integer: {error}")))
+                    .map_err(|error| ServerError::invalid_config_with_source(name, "must be an integer", error))
             })
             .transpose()
     }
@@ -1751,7 +1751,7 @@ impl<'a> EnvValues<'a> {
         self.string(name)
             .map(|raw| {
                 raw.parse::<u64>()
-                    .map_err(|error| ServerError::invalid_config(name, format!("must be an integer: {error}")))
+                    .map_err(|error| ServerError::invalid_config_with_source(name, "must be an integer", error))
             })
             .transpose()
     }
@@ -1759,9 +1759,9 @@ impl<'a> EnvValues<'a> {
     fn optional_f64(&mut self, name: &'static str) -> Result<Option<f64>> {
         self.string(name)
             .map(|raw| {
-                let value = raw
-                    .parse::<f64>()
-                    .map_err(|error| ServerError::invalid_config(name, format!("must be a decimal number: {error}")))?;
+                let value = raw.parse::<f64>().map_err(|error| {
+                    ServerError::invalid_config_with_source(name, "must be a decimal number", error)
+                })?;
                 if !value.is_finite() || !(0.0..=1.0).contains(&value) || value == 0.0 {
                     return Err(ServerError::invalid_config(name, "must be greater than 0 and at most 1"));
                 }

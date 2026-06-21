@@ -151,7 +151,7 @@ pub(super) fn arrow_flight_error_to_status(error: arrow_flight::error::FlightErr
 }
 
 pub(super) fn server_error_to_status(error: ServerError) -> Status {
-    Status::internal(error.to_string())
+    adapter_error_to_status(error.as_adapter_error())
 }
 
 pub(super) fn adapter_error_status(error: Error) -> Status {

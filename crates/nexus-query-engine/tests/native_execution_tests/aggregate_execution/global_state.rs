@@ -209,7 +209,7 @@ fn native_query_rejects_global_valid_count_reserved_state_alias_collision_before
         builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("missing_input", Arc::clone(&input_schema))));
     let aggregate = builder.add_aggregate(source, aggregate, aggregated_schema);
     let plan = builder.finish_with_host_sink(aggregate);
-    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime));
+    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime)).unwrap();
 
     match execute_query_plan(&context, &plan) {
         Ok(_) => panic!("global valid-count reserved state alias collision should be rejected before source read"),

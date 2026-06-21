@@ -46,7 +46,7 @@ fn native_query_executes_cross_join_with_explicit_output_projection() {
     );
     let plan = builder.finish_with_host_sink(sort);
 
-    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime));
+    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime)).unwrap();
     let result = execute_query_plan(&context, &plan).unwrap();
     let metrics = result.metrics();
     let join_metrics =
@@ -127,7 +127,7 @@ fn native_query_preserves_cross_join_right_then_left_projection_order() {
     );
     let plan = builder.finish_with_host_sink(sort);
 
-    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime));
+    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime)).unwrap();
     let result = execute_query_plan(&context, &plan).unwrap();
     let join_metrics =
         result.metrics().operators.iter().find_map(|operator| operator.join.as_ref()).expect("join metrics");
@@ -221,7 +221,7 @@ fn native_query_preserves_cross_join_interleaved_projection_order() {
     );
     let plan = builder.finish_with_host_sink(sort);
 
-    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime));
+    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime)).unwrap();
     let result = execute_query_plan(&context, &plan).unwrap();
     let join_metrics =
         result.metrics().operators.iter().find_map(|operator| operator.join.as_ref()).expect("join metrics");

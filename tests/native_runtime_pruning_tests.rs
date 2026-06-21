@@ -588,7 +588,7 @@ async fn assert_native_physical_plan_parity(
     }
 
     let runtime = Arc::new(cudf::Runtime::new().unwrap());
-    let context = ExecutionContext::from_shared_runtime(runtime);
+    let context = ExecutionContext::from_shared_runtime(runtime).unwrap();
     let _observation_guard = ARROW_HOST_OBSERVATION_LOCK.lock().await;
     cudf::testing::arrow::reset_arrow_host_interop_observation_for_test();
     let result = execute_query_plan(&context, &lowering.plans[0]).unwrap();

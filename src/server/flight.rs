@@ -54,7 +54,10 @@ use super::{
     cancel::QueryCancellation,
     config::ServerSessionProfile,
     diagnostics::{log_leaf_guard_rejection, log_native_planning_report},
-    error::{ServerError, datafusion_error_to_captured_error, datafusion_error_to_status_for_operation},
+    error::{
+        ServerError, adapter_error_to_status, datafusion_error_to_captured_error,
+        datafusion_error_to_status_for_operation,
+    },
     observability::{CapturedError, QueryObservability},
     table_format_operator_fast_fail::fast_fail_unsupported_table_format_operator_plan,
 };
@@ -1362,34 +1365,57 @@ impl DatafusionCudfFlightSqlService {
     }
 
     fn cancel_from_flight_info(&self, raw_info: &[u8]) -> Result<bool, Status> {
-        let info = FlightInfo::decode(raw_info).map_err(|error| Status::invalid_argument(error.to_string()))?;
+        let info = FlightInfo::decode(raw_info).map_err(|error| {
+            cancel_invalid_argument_status(
+                "Flight SQL cancel action contained malformed FlightInfo bytes",
+                "flight_info_decode",
+                error,
+            )
+        })?;
         let Some(endpoint) = info.endpoint.first() else {
             return Ok(false);
         };
         let Some(ticket) = endpoint.ticket.as_ref() else {
             return Ok(false);
         };
-        let any = arrow_flight::sql::Any::decode(&*ticket.ticket)
-            .map_err(|error| Status::invalid_argument(error.to_string()))?;
+        let any = arrow_flight::sql::Any::decode(&*ticket.ticket).map_err(|error| {
+            cancel_invalid_argument_status(
+                "Flight SQL cancel action contained a malformed ticket envelope",
+                "ticket_any_decode",
+                error,
+            )
+        })?;
         // The ticket may be either a `TicketStatementQuery` (issued by
         // `get_flight_info_statement`) or a `CommandPreparedStatementQuery`
         // (issued by `get_flight_info_prepared_statement`). Both encode the
         // per-execution `query_id` UTF-8 bytes in their handle field; once
         // extracted, the cancellation path is identical.
-        let query_id_bytes = if let Some(statement_ticket) =
-            any.unpack::<TicketStatementQuery>().map_err(|error| Status::invalid_argument(error.to_string()))?
-        {
+        let query_id_bytes = if let Some(statement_ticket) = any.unpack::<TicketStatementQuery>().map_err(|error| {
+            cancel_invalid_argument_status(
+                "Flight SQL cancel action could not unpack statement ticket",
+                "statement_ticket_unpack",
+                error,
+            )
+        })? {
             statement_ticket.statement_handle
-        } else if let Some(prepared_ticket) = any
-            .unpack::<CommandPreparedStatementQuery>()
-            .map_err(|error| Status::invalid_argument(error.to_string()))?
-        {
+        } else if let Some(prepared_ticket) = any.unpack::<CommandPreparedStatementQuery>().map_err(|error| {
+            cancel_invalid_argument_status(
+                "Flight SQL cancel action could not unpack prepared-statement ticket",
+                "prepared_ticket_unpack",
+                error,
+            )
+        })? {
             prepared_ticket.prepared_statement_handle
         } else {
             return Ok(false);
         };
-        let query_id =
-            std::str::from_utf8(&query_id_bytes).map_err(|error| Status::invalid_argument(error.to_string()))?;
+        let query_id = std::str::from_utf8(&query_id_bytes).map_err(|error| {
+            cancel_invalid_argument_status(
+                "Flight SQL cancel action contained a non-UTF-8 query id",
+                "query_id_utf8",
+                error,
+            )
+        })?;
         if let Some((_, ticket)) = self.tickets.remove(query_id) {
             ticket.native_cancellation.cancel();
             let error = cancellation_error(&self.shutdown_token);
@@ -1406,6 +1432,18 @@ impl DatafusionCudfFlightSqlService {
         }
         Ok(cancelled)
     }
+}
+
+fn cancel_invalid_argument_status(
+    message: &'static str,
+    stage: &'static str,
+    source: impl std::error::Error + Send + Sync + 'static,
+) -> Status {
+    adapter_error_status(
+        Error::new(ErrorCode::InvalidRequest, "datafusion_nexus.server.flight.cancel_query.decode", message)
+            .with_fact("cancel_decode_stage", stage)
+            .with_source(source),
+    )
 }
 
 fn ddl_register_table_target(plan: &LogicalPlan) -> Option<(&TableReference, &'static str)> {
@@ -1723,6 +1761,22 @@ mod tests {
                 Ok(plan)
             })
         }
+    }
+
+    #[test]
+    fn cancel_invalid_argument_status_carries_adapter_metadata() {
+        let invalid_query_id = vec![0xff];
+        let status = cancel_invalid_argument_status(
+            "Flight SQL cancel action contained a non-UTF-8 query id",
+            "query_id_utf8",
+            std::str::from_utf8(&invalid_query_id).unwrap_err(),
+        );
+
+        assert_eq!(status.code(), Code::InvalidArgument);
+        assert_eq!(status.metadata().get(ERROR_CODE_METADATA_KEY).unwrap().to_str().unwrap(), "invalid_request");
+        assert_eq!(status.metadata().get(ERROR_KIND_METADATA_KEY).unwrap().to_str().unwrap(), "invalid_input");
+        assert_eq!(status.metadata().get(ERROR_STATUS_METADATA_KEY).unwrap().to_str().unwrap(), "permanent");
+        assert_eq!(status.message(), "Flight SQL cancel action contained a non-UTF-8 query id");
     }
 
     #[derive(Debug)]
