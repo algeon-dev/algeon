@@ -134,8 +134,8 @@ fn parquet_source_planning_surface_is_publicly_importable_under_io_source() {
             ByteRangeDisposition, LocalParquetFile, LocalParquetSource, LocalParquetSourceKind, PartitionColumn,
             PartitionColumnDisposition, PartitionValue, PredicateDisposition, RejectedSourceFeature,
             SchemaMappingDisposition, SourceChunk, SourceChunkPlan, SourceChunkPlanningPolicy, SourceColumn,
-            SourceColumnRef, SourceColumnRole, SourceFormat, SourceOutputColumn, SourceRequiredColumn, SourceSchema,
-            ZERO_COLUMN_COUNT_COLUMN, ZeroColumnCountDisposition, plan_local_parquet_source_chunks,
+            SourceColumnRef, SourceColumnRole, SourceFormat, SourceOutputColumn, SourceReadMode, SourceRequiredColumn,
+            SourceSchema, ZERO_COLUMN_COUNT_COLUMN, ZeroColumnCountDisposition, plan_local_parquet_source_chunks,
             source_row_count_to_i64, source_row_group_index_to_i32,
         },
     };
@@ -143,6 +143,15 @@ fn parquet_source_planning_surface_is_publicly_importable_under_io_source() {
     fn assert_source(_: &LocalParquetSource) {}
     fn assert_plan(_: &SourceChunkPlan) {}
     fn assert_chunk(_: &SourceChunk) {}
+    fn assert_source_reader(_: fn(&cudf::Runtime, &LocalParquetSource) -> cudf::Result<cudf::DataFrame>) {}
+    fn assert_source_mode_reader(
+        _: fn(&cudf::Runtime, &LocalParquetSource, SourceReadMode) -> cudf::Result<cudf::DataFrame>,
+    ) {
+    }
+    fn assert_source_chunk_reader(
+        _: fn(&cudf::Runtime, &LocalParquetSource, &SourceChunk, SourceReadMode) -> cudf::Result<cudf::DataFrame>,
+    ) {
+    }
 
     let dtype = DataType::new(TypeId::Int64);
     let schema = SourceSchema::new([
@@ -192,6 +201,10 @@ fn parquet_source_planning_surface_is_publicly_importable_under_io_source() {
     assert_chunk(&plan.chunks()[0]);
     assert_eq!(source_row_group_index_to_i32(0).unwrap(), 0);
     assert_eq!(source_row_count_to_i64(0).unwrap(), 0);
+    assert_source_reader(cudf::DataFrame::read_parquet_source);
+    assert_source_mode_reader(cudf::DataFrame::read_parquet_source_with_mode);
+    assert_source_chunk_reader(cudf::DataFrame::read_parquet_source_chunk);
+    assert_eq!(SourceReadMode::FinalOutput, SourceReadMode::FinalOutput);
 }
 
 #[test]

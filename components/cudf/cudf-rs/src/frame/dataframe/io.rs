@@ -11,11 +11,17 @@ use crate::{
         error::{Error, ErrorCode, Result},
         schema,
     },
+    frame::series::Series,
+    internal::hash::{FastHashSet, fast_hash_set_with_capacity},
     io::{
         TableReadOutput,
         csv::{self, CsvTableReadOptions, CsvTableWriteOptions},
         json::{self, JsonTableReadOptions, JsonTableWriteOptions},
         parquet::{self, ParquetTableReadOptions, ParquetTableWriteOptions},
+        source::{
+            LocalParquetSource, LocalParquetSourceKind, PartitionValue, SourceChunk, SourceColumnRef, SourceReadMode,
+            plan_local_parquet_source_chunks,
+        },
     },
     runtime::{BoundaryKind, QueryStageKind, Runtime, execution_domain::ExecutionDomain},
 };
@@ -314,6 +320,253 @@ fn prepare_write_domain(
     Ok(())
 }
 
+fn missing_source_row_count_error(operation: &'static str, chunk: &SourceChunk) -> Error {
+    Error::new_with(
+        ErrorCode::ForeignInvalidArgument,
+        operation,
+        "source chunk requires row-count metadata because it has no decoded read columns",
+    )
+    .with_detail("reason", "missing_chunk_row_count")
+    .with_detail("chunk_index", chunk.chunk_index().to_string())
+    .with_detail("file_index", chunk.file_index().to_string())
+    .with_detail("stable_id", chunk.stable_id().to_string())
+    .with_detail("path", chunk.path().display().to_string())
+}
+
+fn source_ref_series(frame: &DataFrame, source: &LocalParquetSource, source_ref: SourceColumnRef) -> Result<Series> {
+    match source_ref {
+        SourceColumnRef::ReadColumn(index) => {
+            let name = source.read_columns().get(index).ok_or_else(|| {
+                Error::new_with(
+                    ErrorCode::IndexOutOfBounds,
+                    "dataframe::read_parquet_source",
+                    "read column reference index is out of bounds during source projection",
+                )
+                .with_detail("reason", "read_column_ref_out_of_bounds")
+                .with_detail("read_column_count", source.read_columns().len().to_string())
+            })?;
+            frame.series(name)
+        },
+        SourceColumnRef::Partition(index) => {
+            let column = source.partition_columns().get(index).ok_or_else(|| {
+                Error::new_with(
+                    ErrorCode::IndexOutOfBounds,
+                    "dataframe::read_parquet_source",
+                    "partition column reference index is out of bounds during source projection",
+                )
+                .with_detail("reason", "partition_ref_out_of_bounds")
+                .with_detail("partition_column_count", source.partition_columns().len().to_string())
+            })?;
+            frame.series(column.name())
+        },
+        SourceColumnRef::ZeroColumnCount => frame.series(crate::io::source::ZERO_COLUMN_COUNT_COLUMN),
+    }
+}
+
+fn project_source_frame(frame: &DataFrame, source: &LocalParquetSource, mode: SourceReadMode) -> Result<DataFrame> {
+    let mut pairs: Vec<(String, Series)> = Vec::new();
+    let seen_capacity = source.output_columns().len()
+        + if mode == SourceReadMode::ExecutionFrame { source.required_columns().len() } else { 0 };
+    let mut seen: FastHashSet<String> = fast_hash_set_with_capacity(seen_capacity);
+
+    for output in source.output_columns() {
+        let series = source_ref_series(frame, source, output.source())?;
+        seen.insert(output.name().to_string());
+        pairs.push((output.name().to_string(), series));
+    }
+
+    if mode == SourceReadMode::ExecutionFrame {
+        for required in source.required_columns() {
+            if seen.contains(required.name()) {
+                continue;
+            }
+            let series = source_ref_series(frame, source, required.source())?;
+            seen.insert(required.name().to_string());
+            pairs.push((required.name().to_string(), series));
+        }
+    }
+
+    if pairs.is_empty() {
+        return frame.select(Vec::<&str>::new()).map_err(|error| error.reanchor("dataframe::read_parquet_source"));
+    }
+
+    DataFrame::from_series(pairs).map_err(|error| error.reanchor("dataframe::read_parquet_source"))
+}
+
+fn empty_parquet_source_frame(
+    runtime: &Runtime,
+    source: &LocalParquetSource,
+    mode: SourceReadMode,
+) -> Result<DataFrame> {
+    let mut pairs: Vec<(String, Series)> = Vec::new();
+    let seen_capacity = source.output_columns().len()
+        + if mode == SourceReadMode::ExecutionFrame { source.required_columns().len() } else { 0 };
+    let mut seen: FastHashSet<String> = fast_hash_set_with_capacity(seen_capacity);
+
+    for output in source.output_columns() {
+        let schema_column = source.schema().column(output.name()).ok_or_else(|| {
+            Error::new_with(
+                ErrorCode::MissingColumn,
+                "dataframe::read_parquet_source",
+                "source schema does not contain output column for typed empty source",
+            )
+            .with_column(output.name().to_string())
+            .with_detail("reason", "schema_column_missing")
+        })?;
+        pairs.push((output.name().to_string(), runtime.empty_series(schema_column.data_type())?));
+        seen.insert(output.name().to_string());
+    }
+
+    if mode == SourceReadMode::ExecutionFrame {
+        for required in source.required_columns() {
+            if seen.contains(required.name()) {
+                continue;
+            }
+            let schema_column = source.schema().column(required.name()).ok_or_else(|| {
+                Error::new_with(
+                    ErrorCode::MissingColumn,
+                    "dataframe::read_parquet_source",
+                    "source schema does not contain required column for typed empty source",
+                )
+                .with_column(required.name().to_string())
+                .with_detail("reason", "schema_column_missing")
+            })?;
+            pairs.push((required.name().to_string(), runtime.empty_series(schema_column.data_type())?));
+            seen.insert(required.name().to_string());
+        }
+    }
+
+    if pairs.is_empty() {
+        return Ok(runtime.empty_dataframe());
+    }
+
+    DataFrame::from_series(pairs).map_err(|error| error.reanchor("dataframe::read_parquet_source"))
+}
+
+fn partition_scalar_series(runtime: &Runtime, value: &PartitionValue, len: usize) -> Result<Series> {
+    let scalar = match value {
+        PartitionValue::Boolean(value) => runtime.scalar(*value)?,
+        PartitionValue::Int8(value) => runtime.scalar(*value)?,
+        PartitionValue::Int16(value) => runtime.scalar(*value)?,
+        PartitionValue::Int32(value) => runtime.scalar(*value)?,
+        PartitionValue::Int64(value) => runtime.scalar(*value)?,
+        PartitionValue::UInt8(value) => runtime.scalar(*value)?,
+        PartitionValue::UInt16(value) => runtime.scalar(*value)?,
+        PartitionValue::UInt32(value) => runtime.scalar(*value)?,
+        PartitionValue::UInt64(value) => runtime.scalar(*value)?,
+        PartitionValue::Float32(value) => runtime.scalar(*value)?,
+        PartitionValue::Float64(value) => runtime.scalar(*value)?,
+        PartitionValue::String(value) => runtime.string_scalar(value)?,
+    };
+    runtime.series_from_scalar(&scalar, len)
+}
+
+fn materialize_partition_columns(
+    runtime: &Runtime,
+    source: &LocalParquetSource,
+    chunk: &SourceChunk,
+    frame: DataFrame,
+    row_count_override: Option<usize>,
+) -> Result<DataFrame> {
+    let mut frame = frame;
+    let row_count = row_count_override.unwrap_or_else(|| frame.num_rows());
+    for (partition_index, (column, value)) in
+        source.partition_columns().iter().zip(chunk.partition_values()).enumerate()
+    {
+        let series = partition_scalar_series(runtime, value, row_count).map_err(|error| {
+            error
+                .reanchor("dataframe::read_parquet_source")
+                .with_detail("reason", "partition_materialization_failed")
+                .with_detail("partition_index", partition_index.to_string())
+                .with_detail("partition_column", column.name().to_string())
+                .with_detail("chunk_index", chunk.chunk_index().to_string())
+                .with_detail("file_index", chunk.file_index().to_string())
+                .with_detail("stable_id", chunk.stable_id().to_string())
+                .with_detail("path", chunk.path().display().to_string())
+        })?;
+        frame = frame.with_column(column.name(), series).map_err(|error| {
+            error
+                .reanchor("dataframe::read_parquet_source")
+                .with_detail("reason", "partition_column_insert_failed")
+                .with_detail("partition_index", partition_index.to_string())
+                .with_detail("partition_column", column.name().to_string())
+        })?;
+    }
+    Ok(frame)
+}
+
+fn read_parquet_source_chunk_frame(
+    runtime: &Runtime,
+    source: &LocalParquetSource,
+    chunk: &SourceChunk,
+    mode: SourceReadMode,
+) -> Result<DataFrame> {
+    if source.kind() == LocalParquetSourceKind::MetadataRowCount {
+        let count = chunk
+            .known_row_count_i64()?
+            .ok_or_else(|| missing_source_row_count_error("dataframe::read_parquet_source_chunk", chunk))?;
+        let count_series = runtime.series(&[count])?;
+        let frame = DataFrame::from_series([(crate::io::source::ZERO_COLUMN_COUNT_COLUMN, count_series)])
+            .map_err(|error| error.reanchor("dataframe::read_parquet_source_chunk"))?;
+        return project_source_frame(&frame, source, mode)
+            .map_err(|error| error.reanchor("dataframe::read_parquet_source_chunk"));
+    }
+
+    let (mut frame, row_count_override) = if chunk.read_columns().is_empty() {
+        let row_count = chunk
+            .known_row_count()
+            .ok_or_else(|| missing_source_row_count_error("dataframe::read_parquet_source_chunk", chunk))?;
+        let row_count = usize::try_from(row_count).map_err(|_| {
+            Error::new_with(
+                ErrorCode::UnsupportedOperation,
+                "dataframe::read_parquet_source_chunk",
+                "source chunk row count exceeds usize",
+            )
+            .with_detail("reason", "row_count_exceeds_usize")
+            .with_detail("row_count", row_count.to_string())
+            .with_detail("chunk_index", chunk.chunk_index().to_string())
+        })?;
+        (runtime.empty_dataframe(), Some(row_count))
+    } else {
+        let row_groups = if chunk.reads_all_row_groups() { None } else { Some(chunk.row_group_indexes_i32()?) };
+        let table_options = ParquetTableReadOptions::from_parts(
+            chunk.path().to_path_buf(),
+            Some(chunk.read_columns().to_vec()),
+            0,
+            None,
+            row_groups,
+            runtime.clone(),
+        );
+        let result = parquet::read_parquet_table(&table_options).map_err(|error| {
+            error
+                .reanchor("dataframe::read_parquet_source_chunk")
+                .with_detail("chunk_index", chunk.chunk_index().to_string())
+                .with_detail("file_index", chunk.file_index().to_string())
+                .with_detail("stable_id", chunk.stable_id().to_string())
+                .with_detail_if_absent("path", chunk.path().display().to_string())
+        })?;
+        let (table, names) =
+            require_reader_schema_names(result, "dataframe::read_parquet_source_chunk", "parquet reader").map_err(
+                |error| {
+                    error
+                        .reanchor("dataframe::read_parquet_source_chunk")
+                        .with_detail("chunk_index", chunk.chunk_index().to_string())
+                        .with_detail("file_index", chunk.file_index().to_string())
+                        .with_detail("stable_id", chunk.stable_id().to_string())
+                        .with_detail("path", chunk.path().display().to_string())
+                },
+            )?;
+        (
+            DataFrame::from_table(table, names)
+                .map_err(|error| error.reanchor("dataframe::read_parquet_source_chunk"))?,
+            None,
+        )
+    };
+
+    frame = materialize_partition_columns(runtime, source, chunk, frame, row_count_override)?;
+    project_source_frame(&frame, source, mode).map_err(|error| error.reanchor("dataframe::read_parquet_source_chunk"))
+}
+
 impl DataFrame {
     /// Read a CSV file into a `DataFrame`.
     ///
@@ -499,6 +752,83 @@ impl DataFrame {
         };
         let rest_refs: Vec<&DataFrame> = rest.iter().collect();
         let frame = first.concat_many(&rest_refs).map_err(|error| error.reanchor(operation))?;
+        frame.record_boundary_observation_for_query_stage(
+            BoundaryKind::HostToDevice,
+            QueryStageKind::SourceRead,
+            false,
+            operation,
+        )?;
+        Ok(frame)
+    }
+
+    /// Read a checked local Parquet source and return its final output.
+    ///
+    /// This is equivalent to
+    /// [`read_parquet_source_with_mode`](Self::read_parquet_source_with_mode)
+    /// with [`SourceReadMode::FinalOutput`].
+    ///
+    /// # Cost
+    /// Performs host filesystem reads through the existing single-file
+    /// Parquet reader, materializes partition columns explicitly on device,
+    /// and concatenates per-file/chunk frames on device when more than one
+    /// chunk is planned. Partition materialization and concatenation are not
+    /// zero-copy.
+    pub fn read_parquet_source(runtime: &Runtime, source: &LocalParquetSource) -> Result<Self> {
+        Self::read_parquet_source_with_mode(runtime, source, SourceReadMode::FinalOutput)
+    }
+
+    /// Read a checked local Parquet source in the requested output mode.
+    ///
+    /// [`SourceReadMode::FinalOutput`] applies final source projection and
+    /// aliases. [`SourceReadMode::ExecutionFrame`] keeps pure-filter columns
+    /// required for source-local query execution.
+    pub fn read_parquet_source_with_mode(
+        runtime: &Runtime,
+        source: &LocalParquetSource,
+        mode: SourceReadMode,
+    ) -> Result<Self> {
+        let operation = "dataframe::read_parquet_source";
+        let plan =
+            plan_local_parquet_source_chunks(source, Default::default()).map_err(|error| error.reanchor(operation))?;
+        let frame = if plan.chunks().is_empty() {
+            empty_parquet_source_frame(runtime, source, mode)?
+        } else {
+            let mut frames = Vec::with_capacity(plan.chunks().len());
+            for chunk in plan.chunks() {
+                frames.push(
+                    read_parquet_source_chunk_frame(runtime, source, chunk, mode)
+                        .map_err(|error| error.reanchor(operation))?,
+                );
+            }
+
+            let Some((first, rest)) = frames.split_first() else {
+                unreachable!("empty chunks handled before split_first");
+            };
+            let rest_refs: Vec<&DataFrame> = rest.iter().collect();
+            first.concat_many(&rest_refs).map_err(|error| error.reanchor(operation))?
+        };
+
+        frame.record_boundary_observation_for_query_stage(
+            BoundaryKind::HostToDevice,
+            QueryStageKind::SourceRead,
+            false,
+            operation,
+        )?;
+        Ok(frame)
+    }
+
+    /// Execute one planned local Parquet source chunk.
+    ///
+    /// This is the bounded-read hook for downstream query engines. Query
+    /// engines should usually request [`SourceReadMode::ExecutionFrame`].
+    pub fn read_parquet_source_chunk(
+        runtime: &Runtime,
+        source: &LocalParquetSource,
+        chunk: &SourceChunk,
+        mode: SourceReadMode,
+    ) -> Result<Self> {
+        let operation = "dataframe::read_parquet_source_chunk";
+        let frame = read_parquet_source_chunk_frame(runtime, source, chunk, mode)?;
         frame.record_boundary_observation_for_query_stage(
             BoundaryKind::HostToDevice,
             QueryStageKind::SourceRead,

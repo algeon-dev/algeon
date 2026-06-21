@@ -239,6 +239,32 @@ fn gpu_record_batch_wraps_frame_schema_and_keeps_host_materialization_explicit()
 }
 
 #[test]
+fn arrow_host_testing_observation_isolated_per_test_thread() {
+    let _observation_lock = lock_event_observation();
+    testing::arrow::reset_arrow_host_interop_observation_for_test();
+
+    std::thread::spawn(|| {
+        let runtime = sample_runtime();
+        let df = DataFrame::from_record_batch(&runtime, &sample_record_batch()).unwrap();
+
+        testing::arrow::reset_arrow_host_interop_observation_for_test();
+        let export_count_before = testing::arrow::arrow_host_export_call_count_for_test();
+        let _ = df.to_record_batch().unwrap();
+
+        assert_eq!(testing::arrow::arrow_host_export_call_count_for_test(), export_count_before + 1);
+        assert_eq!(
+            testing::arrow::last_arrow_host_boundary_observation_for_test().unwrap().kind,
+            BoundaryKind::DeviceToHost
+        );
+    })
+    .join()
+    .unwrap();
+
+    assert_eq!(testing::arrow::arrow_host_export_call_count_for_test(), 0);
+    assert!(testing::arrow::last_arrow_host_boundary_observation_for_test().is_none());
+}
+
+#[test]
 fn gpu_record_batch_rejects_incompatible_external_schema_before_materialization() {
     let runtime = sample_runtime();
     let df = DataFrame::from_record_batch(&runtime, &sample_record_batch()).unwrap();

@@ -206,6 +206,7 @@ fn representative_high_level_ops_preserve_explicit_domain_identity() {
 
 #[test]
 fn host_materialization_and_io_paths_sync_retained_stream() {
+    let _event_observation = lock_event_observation();
     let numeric = explicit_i32_series("id", &[1, 2, 3], 60);
     reset_sync_observation();
     assert_eq!(numeric.to_vec_strict::<i32>().unwrap(), vec![1, 2, 3]);

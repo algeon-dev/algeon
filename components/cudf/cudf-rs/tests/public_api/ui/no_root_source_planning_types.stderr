@@ -1,0 +1,43 @@
+error[E0432]: unresolved imports `cudf::plan_local_parquet_source_chunks`, `cudf::ByteRangeDisposition`, `cudf::LocalParquetFile`, `cudf::LocalParquetSource`, `cudf::LocalParquetSourceKind`, `cudf::PartitionColumn`, `cudf::PartitionColumnDisposition`, `cudf::PartitionValue`, `cudf::PredicateDisposition`, `cudf::RejectedSourceFeature`, `cudf::SchemaMappingDisposition`, `cudf::SourceChunk`, `cudf::SourceChunkPlan`, `cudf::SourceChunkPlanningPolicy`, `cudf::SourceColumn`, `cudf::SourceColumnRef`, `cudf::SourceColumnRole`, `cudf::SourceDiagnostics`, `cudf::SourceFormat`, `cudf::SourceOutputColumn`, `cudf::SourceReadMode`, `cudf::SourceRequiredColumn`, `cudf::SourceSchema`, `cudf::ZeroColumnCountDisposition`, `cudf::ZERO_COLUMN_COUNT_COLUMN`
+ --> tests/public_api/ui/no_root_source_planning_types.rs:2:5
+  |
+2 |     plan_local_parquet_source_chunks, ByteRangeDisposition, LocalParquetFile, LocalParquetSource,
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^^^^ no `LocalParquetSource` in the root
+  |     |                                 |                     |
+  |     |                                 |                     no `LocalParquetFile` in the root
+  |     |                                 no `ByteRangeDisposition` in the root
+  |     no `plan_local_parquet_source_chunks` in the root
+3 |     LocalParquetSourceKind, PartitionColumn, PartitionColumnDisposition, PartitionValue, PredicateDisposition,
+  |     ^^^^^^^^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^^^^^^ no `PredicateDisposition` in the root
+  |     |                       |                |                           |
+  |     |                       |                |                           no `PartitionValue` in the root
+  |     |                       |                no `PartitionColumnDisposition` in the root
+  |     |                       no `PartitionColumn` in the root
+  |     no `LocalParquetSourceKind` in the root
+4 |     RejectedSourceFeature, SchemaMappingDisposition, SourceChunk, SourceChunkPlan, SourceChunkPlanningPolicy,
+  |     ^^^^^^^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^^^^^^^^^^  ^^^^^^^^^^^  ^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^^^^^^^^^^^
+  |     |
+  |     no `RejectedSourceFeature` in the root
+5 |     SourceColumn, SourceColumnRef, SourceColumnRole, SourceDiagnostics, SourceFormat, SourceOutputColumn,
+  |     ^^^^^^^^^^^^  ^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^^^  ^^^^^^^^^^^^  ^^^^^^^^^^^^^^^^^^
+6 |     SourceReadMode, SourceRequiredColumn, SourceSchema, ZeroColumnCountDisposition, ZERO_COLUMN_COUNT_COLUMN,
+  |     ^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^^^^^^  ^^^^^^^^^^^^  ^^^^^^^^^^^^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^^^^^^^^^^
+  |
+  = help: consider importing this enum instead:
+          cudf::io::source::ByteRangeDisposition
+  = help: consider importing this struct instead:
+          cudf::io::source::LocalParquetFile
+  = help: consider importing this struct instead:
+          cudf::io::source::LocalParquetSource
+  = help: consider importing this enum instead:
+          cudf::io::source::LocalParquetSourceKind
+  = help: consider importing this struct instead:
+          cudf::io::source::PartitionColumn
+  = help: consider importing this enum instead:
+          cudf::io::source::PartitionColumnDisposition
+  = help: consider importing this enum instead:
+          cudf::io::source::PartitionValue
+  = help: consider importing this enum instead:
+          cudf::io::source::PredicateDisposition
+  = help: consider importing this enum instead:
+          cudf::io::source::RejectedSourceFeature

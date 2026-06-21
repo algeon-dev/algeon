@@ -408,6 +408,7 @@ fn hidden_internal_reexports_are_not_publicly_importable() {
     t.compile_fail("tests/public_api/ui/no_facts_write_surface.rs");
     t.compile_fail("tests/public_api/ui/no_root_dataframe_specialized_types.rs");
     t.compile_fail("tests/public_api/ui/no_root_factorization_types.rs");
+    t.compile_fail("tests/public_api/ui/no_root_source_planning_types.rs");
     t.compile_fail("tests/public_api/ui/no_dataframe_in_context.rs");
     t.compile_fail("tests/public_api/ui/no_named_first_runtime_series_constructors.rs");
     t.compile_fail("tests/public_api/ui/no_query_request_public_fields_or_expr_constructors.rs");
