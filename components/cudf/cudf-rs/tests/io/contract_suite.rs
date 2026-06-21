@@ -8,3 +8,5 @@ mod dataframe_parquet_multi_file_tests;
 mod io_tests;
 #[path = "json_io_tests.rs"]
 mod json_io_tests;
+#[path = "source_contract_tests.rs"]
+mod source_contract_tests;

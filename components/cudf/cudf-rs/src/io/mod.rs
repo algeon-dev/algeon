@@ -50,6 +50,7 @@ use crate::core::{
 pub mod csv;
 pub mod json;
 pub mod parquet;
+pub mod source;
 
 /// Shared output envelope for low-level table readers.
 pub struct TableReadOutput {

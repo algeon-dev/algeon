@@ -127,6 +127,62 @@ fn slice9_multi_file_parquet_surface_is_publicly_importable() {
 }
 
 #[test]
+fn parquet_source_phase1_surface_is_publicly_importable_under_io_source() {
+    use cudf::{
+        DataType, TypeId,
+        io::source::{
+            ByteRangeDisposition, LocalParquetFile, LocalParquetSource, LocalParquetSourceKind, PartitionColumn,
+            PartitionColumnDisposition, PartitionValue, PredicateDisposition, RejectedSourceFeature,
+            SchemaMappingDisposition, SourceColumn, SourceColumnRef, SourceColumnRole, SourceFormat,
+            SourceOutputColumn, SourceRequiredColumn, SourceSchema, ZERO_COLUMN_COUNT_COLUMN,
+            ZeroColumnCountDisposition,
+        },
+    };
+
+    fn assert_source(_: &LocalParquetSource) {}
+
+    let dtype = DataType::new(TypeId::Int64);
+    let schema = SourceSchema::new([
+        SourceColumn::new("id", dtype, false).unwrap(),
+        SourceColumn::new("region", DataType::new(TypeId::String), false).unwrap(),
+        SourceColumn::new("filter_only", DataType::new(TypeId::Int32), true).unwrap(),
+    ])
+    .unwrap();
+    let source = LocalParquetSource::data(
+        [LocalParquetFile::new("part-0.parquet", "part-0", [PartitionValue::String("AMER".to_string())]).unwrap()],
+        schema,
+        ["id", "filter_only"],
+        [
+            SourceOutputColumn::new("id", SourceColumnRef::ReadColumn(0)).unwrap(),
+            SourceOutputColumn::new("region", SourceColumnRef::Partition(0)).unwrap(),
+        ],
+        [SourceRequiredColumn::new("filter_only", SourceColumnRef::ReadColumn(1), SourceColumnRole::PureFilter)
+            .unwrap()],
+        [PartitionColumn::new("region", DataType::new(TypeId::String), false).unwrap()],
+    )
+    .unwrap();
+    assert_source(&source);
+
+    let diagnostics = source.diagnostics();
+    assert_eq!(source.kind(), LocalParquetSourceKind::Data);
+    assert_eq!(diagnostics.format(), SourceFormat::Parquet);
+    assert_eq!(diagnostics.predicate_disposition(), PredicateDisposition::Absent);
+    assert_eq!(diagnostics.byte_range_disposition(), ByteRangeDisposition::FullFiles);
+    assert_eq!(diagnostics.partition_column_disposition(), PartitionColumnDisposition::Represented);
+    assert_eq!(diagnostics.zero_column_count_disposition(), ZeroColumnCountDisposition::NotRequired);
+    assert_eq!(diagnostics.schema_mapping_disposition(), SchemaMappingDisposition::DirectByName);
+    assert_eq!(RejectedSourceFeature::NonLocalSource.as_str(), "non_local_source");
+
+    let count_source =
+        LocalParquetSource::zero_column_count([LocalParquetFile::new("counts.parquet", "counts", []).unwrap()])
+            .unwrap();
+    assert_eq!(count_source.kind(), LocalParquetSourceKind::MetadataRowCount);
+    assert_eq!(count_source.output_columns()[0].name(), ZERO_COLUMN_COUNT_COLUMN);
+    assert_eq!(count_source.output_columns()[0].source(), SourceColumnRef::ZeroColumnCount);
+    assert_eq!(count_source.diagnostics().zero_column_count_disposition(), ZeroColumnCountDisposition::Represented);
+}
+
+#[test]
 fn query_expression_surface_is_publicly_importable() {
     use cudf::{
         ops::expr::col,
