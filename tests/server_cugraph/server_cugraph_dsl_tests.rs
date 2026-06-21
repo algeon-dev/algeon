@@ -4,18 +4,19 @@ use std::{
     collections::BTreeMap,
     fs,
     net::TcpListener,
-    path::Path,
+    path::{Path, PathBuf},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use arrow::{
-    array::{Array, ArrayRef, BooleanArray, Float64Array, Int64Array, StringArray},
+    array::{Array, ArrayRef, BooleanArray, Float64Array, Int64Array, LargeStringArray, StringArray},
     datatypes::{DataType, Field, Schema},
     record_batch::RecordBatch,
 };
 use arrow_flight::{error::FlightError, sql::client::FlightSqlServiceClient};
 use datafusion_nexus::server::{
-    NEXUS_SERVER_CUGRAPH_ALGORITHMS_ENV, NEXUS_SERVER_CUGRAPH_ENABLED_ENV, ServerConfig, serve_with_listener,
+    NEXUS_SERVER_CUGRAPH_ALGORITHMS_ENV, NEXUS_SERVER_CUGRAPH_ENABLED_ENV, NEXUS_SERVER_SESSION_PROFILE_ENV,
+    Result as ServerResult, ServerConfig, serve_with_listener,
 };
 use futures::TryStreamExt;
 use parquet::{arrow::ArrowWriter, file::properties::WriterProperties};
@@ -23,6 +24,7 @@ use tonic::{Code, transport::Endpoint};
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn cugraph_dsl_metadata_and_dry_run_work_over_flight_sql_view() {
+    let _guard = server_test_lock().lock().await;
     let (listener, addr) = free_local_addr();
     let env = BTreeMap::from([(NEXUS_SERVER_CUGRAPH_ENABLED_ENV, "true".to_string())]);
     let mut config = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap();
@@ -99,6 +101,7 @@ async fn cugraph_dsl_metadata_and_dry_run_work_over_flight_sql_view() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn cugraph_dsl_nullable_parquet_edge_schema_validates_over_flight_sql() {
+    let _guard = server_test_lock().lock().await;
     let (listener, addr) = free_local_addr();
     let env = BTreeMap::from([(NEXUS_SERVER_CUGRAPH_ENABLED_ENV, "true".to_string())]);
     let mut config = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap();
@@ -144,7 +147,135 @@ async fn cugraph_dsl_nullable_parquet_edge_schema_validates_over_flight_sql() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cugraph_bfs_path_uses_gpu_resident_join_side_inputs_over_flight_sql() {
+    let _guard = server_test_lock().lock().await;
+    let (listener, addr) = free_local_addr();
+    let env = BTreeMap::from([
+        (NEXUS_SERVER_CUGRAPH_ENABLED_ENV, "true".to_string()),
+        (NEXUS_SERVER_SESSION_PROFILE_ENV, "native".to_string()),
+    ]);
+    let mut config = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap();
+    config.bind_addr = addr;
+
+    let _server = ScopedServer::spawn(config, listener);
+    let mut client = connect_with_retry(addr).await;
+    let dir = ScopedTempDir::new("datafusion-nexus-server-cugraph-bfs-gpu-sides");
+    let edges_path = dir.path().join("edges.parquet");
+    let source_candidates_path = dir.path().join("source_candidates.parquet");
+    let source_keep_path = dir.path().join("source_keep.parquet");
+    let target_candidates_path = dir.path().join("target_candidates.parquet");
+    let target_keep_path = dir.path().join("target_keep.parquet");
+    write_disconnected_edge_parquet(&edges_path);
+    write_vertex_key_parquet(&source_candidates_path, "vertex_id", "keep_id", &[(0, 1), (10, 2), (99, 9)]);
+    write_key_parquet(&source_keep_path, "keep_id", &[1, 2]);
+    write_vertex_key_parquet(&target_candidates_path, "vertex_id", "keep_id", &[(3, 7), (11, 8)]);
+    write_key_parquet(&target_keep_path, "keep_id", &[7]);
+
+    execute_batches(
+        &mut client,
+        &format!("CREATE EXTERNAL TABLE raw_edges STORED AS PARQUET LOCATION '{}'", edges_path.to_string_lossy()),
+    )
+    .await;
+    execute_batches(
+        &mut client,
+        &format!(
+            "CREATE EXTERNAL TABLE source_candidates STORED AS PARQUET LOCATION '{}'",
+            source_candidates_path.to_string_lossy()
+        ),
+    )
+    .await;
+    execute_batches(
+        &mut client,
+        &format!(
+            "CREATE EXTERNAL TABLE source_keep STORED AS PARQUET LOCATION '{}'",
+            source_keep_path.to_string_lossy()
+        ),
+    )
+    .await;
+    execute_batches(
+        &mut client,
+        &format!(
+            "CREATE EXTERNAL TABLE target_candidates STORED AS PARQUET LOCATION '{}'",
+            target_candidates_path.to_string_lossy()
+        ),
+    )
+    .await;
+    execute_batches(
+        &mut client,
+        &format!(
+            "CREATE EXTERNAL TABLE target_keep STORED AS PARQUET LOCATION '{}'",
+            target_keep_path.to_string_lossy()
+        ),
+    )
+    .await;
+    execute_batches(&mut client, "CREATE VIEW graph_edges AS SELECT src, dst, weight FROM raw_edges WHERE src >= 0")
+        .await;
+    execute_batches(
+        &mut client,
+        "CREATE VIEW bfs_sources AS \
+         SELECT c.vertex_id \
+         FROM source_candidates c \
+         JOIN source_keep k ON c.keep_id = k.keep_id",
+    )
+    .await;
+    execute_batches(
+        &mut client,
+        "CREATE VIEW bfs_targets AS \
+         SELECT c.vertex_id \
+         FROM target_candidates c \
+         JOIN target_keep k ON c.keep_id = k.keep_id",
+    )
+    .await;
+
+    let bfs_sql = r#"SELECT path_index, source, target, vertex, distance
+           FROM cugraph_bfs(
+             'graph_edges',
+             NULL,
+             'src',
+             'dst',
+             'weight',
+             '{"directed":true,
+               "renumber":true,
+               "construction_policy":"raw_libcugraph",
+               "source_vertices_table":"bfs_sources",
+               "source_vertex_col":"vertex_id",
+               "output_mode":"path",
+               "target_vertices_table":"bfs_targets",
+               "target_vertex_col":"vertex_id"}'
+           )
+           ORDER BY path_index"#;
+    let explain = execute_batches(&mut client, &format!("EXPLAIN {bfs_sql}")).await;
+    let explain_text = string_values(&explain);
+    assert!(
+        explain_text.contains("CugraphAlgoExec"),
+        "Flight SQL EXPLAIN should expose the cuGraph physical operator:\n{explain_text}",
+    );
+    assert!(
+        explain_text.contains("predicate_source_count=2"),
+        "Flight SQL EXPLAIN should show the source and target relation inputs:\n{explain_text}",
+    );
+    assert!(
+        explain_text.matches("NativeCudfExec:").count() >= 3,
+        "edge, source, and target relation inputs should all be native children before GPU-resident execution:\n{explain_text}",
+    );
+    assert!(
+        !explain_text.contains("HashJoinExec"),
+        "join-backed BFS relation inputs should not fall back to a DataFusion join child:\n{explain_text}",
+    );
+
+    let batches = execute_batches(&mut client, bfs_sql).await;
+
+    let batch = single_batch(&batches);
+    assert_eq!(int64_column(batch, 0), vec![0, 1, 2]);
+    assert_eq!(int64_column(batch, 1), vec![0, 0, 0]);
+    assert_eq!(int64_column(batch, 2), vec![3, 3, 3]);
+    assert_eq!(int64_column(batch, 3), vec![0, 2, 3]);
+    assert_eq!(int64_column(batch, 4), vec![0, 1, 2]);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn cugraph_dsl_disallowed_algorithm_rejected_over_flight_sql() {
+    let _guard = server_test_lock().lock().await;
     let (listener, addr) = free_local_addr();
     let env = BTreeMap::from([
         (NEXUS_SERVER_CUGRAPH_ENABLED_ENV, "true".to_string()),
@@ -179,6 +310,11 @@ fn warm_cuda_once() {
     });
 }
 
+fn server_test_lock() -> &'static tokio::sync::Mutex<()> {
+    static SERVER_TEST_LOCK: std::sync::OnceLock<tokio::sync::Mutex<()>> = std::sync::OnceLock::new();
+    SERVER_TEST_LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
+}
+
 /// Reserve a loopback port and hand back the live listener so the caller can
 /// pass it straight to `serve_with_listener`. Keeping the socket bound closes
 /// the bind/serve gap where a parallel test could steal the port.
@@ -187,6 +323,42 @@ fn free_local_addr() -> (TcpListener, std::net::SocketAddr) {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let addr = listener.local_addr().unwrap();
     (listener, addr)
+}
+
+struct ScopedServer {
+    handle: tokio::task::JoinHandle<ServerResult<()>>,
+}
+
+impl ScopedServer {
+    fn spawn(config: ServerConfig, listener: TcpListener) -> Self {
+        Self { handle: tokio::spawn(async move { serve_with_listener(config, listener).await }) }
+    }
+}
+
+impl Drop for ScopedServer {
+    fn drop(&mut self) {
+        self.handle.abort();
+    }
+}
+
+struct ScopedTempDir {
+    path: PathBuf,
+}
+
+impl ScopedTempDir {
+    fn new(prefix: &str) -> Self {
+        Self { path: unique_temp_dir(prefix) }
+    }
+
+    fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
+impl Drop for ScopedTempDir {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.path);
+    }
 }
 
 fn unique_temp_dir(prefix: &str) -> std::path::PathBuf {
@@ -240,6 +412,63 @@ fn write_nullable_edge_parquet(path: &Path) {
     writer.close().unwrap();
 }
 
+fn write_disconnected_edge_parquet(path: &Path) {
+    let schema = std::sync::Arc::new(Schema::new(vec![
+        Field::new("src", DataType::Int64, false),
+        Field::new("dst", DataType::Int64, false),
+        Field::new("weight", DataType::Float64, false),
+    ]));
+    let batch = RecordBatch::try_new(
+        std::sync::Arc::clone(&schema),
+        vec![
+            std::sync::Arc::new(Int64Array::from(vec![0_i64, 0, 2, 10, 99])) as ArrayRef,
+            std::sync::Arc::new(Int64Array::from(vec![1_i64, 2, 3, 11, 3])) as ArrayRef,
+            std::sync::Arc::new(Float64Array::from(vec![1.0_f64, 1.0, 1.0, 1.0, 1.0])) as ArrayRef,
+        ],
+    )
+    .unwrap();
+    let file = fs::File::create(path).unwrap();
+    let props = WriterProperties::builder().build();
+    let mut writer = ArrowWriter::try_new(file, schema, Some(props)).unwrap();
+    writer.write(&batch).unwrap();
+    writer.close().unwrap();
+}
+
+fn write_vertex_key_parquet(path: &Path, vertex_col: &str, key_col: &str, rows: &[(i64, i64)]) {
+    let schema = std::sync::Arc::new(Schema::new(vec![
+        Field::new(vertex_col, DataType::Int64, false),
+        Field::new(key_col, DataType::Int64, false),
+    ]));
+    let batch = RecordBatch::try_new(
+        std::sync::Arc::clone(&schema),
+        vec![
+            std::sync::Arc::new(Int64Array::from(rows.iter().map(|(vertex, _)| *vertex).collect::<Vec<_>>()))
+                as ArrayRef,
+            std::sync::Arc::new(Int64Array::from(rows.iter().map(|(_, key)| *key).collect::<Vec<_>>())) as ArrayRef,
+        ],
+    )
+    .unwrap();
+    let file = fs::File::create(path).unwrap();
+    let props = WriterProperties::builder().build();
+    let mut writer = ArrowWriter::try_new(file, schema, Some(props)).unwrap();
+    writer.write(&batch).unwrap();
+    writer.close().unwrap();
+}
+
+fn write_key_parquet(path: &Path, key_col: &str, keys: &[i64]) {
+    let schema = std::sync::Arc::new(Schema::new(vec![Field::new(key_col, DataType::Int64, false)]));
+    let batch = RecordBatch::try_new(
+        std::sync::Arc::clone(&schema),
+        vec![std::sync::Arc::new(Int64Array::from(keys.to_vec())) as ArrayRef],
+    )
+    .unwrap();
+    let file = fs::File::create(path).unwrap();
+    let props = WriterProperties::builder().build();
+    let mut writer = ArrowWriter::try_new(file, schema, Some(props)).unwrap();
+    writer.write(&batch).unwrap();
+    writer.close().unwrap();
+}
+
 async fn connect_with_retry(addr: std::net::SocketAddr) -> FlightSqlServiceClient<tonic::transport::Channel> {
     let uri = format!("http://{addr}");
     let deadline = std::time::Instant::now() + Duration::from_secs(15);
@@ -282,6 +511,25 @@ fn string_value(batch: &arrow::record_batch::RecordBatch, column: usize, row: us
         .to_string()
 }
 
+fn string_values(batches: &[arrow::record_batch::RecordBatch]) -> String {
+    let mut values = Vec::new();
+    for batch in batches {
+        for column in batch.columns() {
+            if let Some(strings) = column.as_any().downcast_ref::<StringArray>() {
+                values.extend((0..strings.len()).map(|row| strings.value(row).to_string()));
+            } else if let Some(strings) = column.as_any().downcast_ref::<LargeStringArray>() {
+                values.extend((0..strings.len()).map(|row| strings.value(row).to_string()));
+            }
+        }
+    }
+    values.join("\n")
+}
+
 fn bool_value(batch: &arrow::record_batch::RecordBatch, column: usize, row: usize) -> bool {
     batch.column(column).as_any().downcast_ref::<BooleanArray>().expect("column must be BooleanArray").value(row)
+}
+
+fn int64_column(batch: &arrow::record_batch::RecordBatch, column: usize) -> Vec<i64> {
+    let array = batch.column(column).as_any().downcast_ref::<Int64Array>().expect("column must be Int64Array");
+    (0..array.len()).map(|row| array.value(row)).collect()
 }

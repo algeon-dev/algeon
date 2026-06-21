@@ -12,7 +12,7 @@ use nexus_query_engine::{
     GraphSourceVertexRequirement, GraphWeightPolicy, PlanNode, QueryErrorCode, QueryPlan, QueryPlanBuilder, SourceNode,
     StrictBoundedContractReport, StrictBoundedExecutionMode,
     capability::{CapabilityDecision, ContractQuality, ContractStatus, NodeOperator},
-    graph_memory_class, stable_graph_result_schema,
+    graph_memory_class, graph_memory_reservation_required, stable_graph_result_schema,
 };
 
 #[test]
@@ -364,6 +364,14 @@ fn graph_memory_classes_pin_phase_f3_algorithm_tiers() {
         graph_memory_class(GraphAlgorithm::EdgeBetweennessCentrality),
         GraphMemoryClass::WorkspaceHeavySeedDependent
     );
+
+    assert!(!graph_memory_reservation_required(GraphAlgorithm::Bfs));
+    assert!(graph_memory_reservation_required(GraphAlgorithm::PageRank));
+    assert!(graph_memory_reservation_required(GraphAlgorithm::MinimumSpanningTree));
+    assert!(graph_memory_reservation_required(GraphAlgorithm::Louvain));
+    assert!(graph_memory_reservation_required(GraphAlgorithm::TriangleCountAll));
+    assert!(graph_memory_reservation_required(GraphAlgorithm::BetweennessCentrality));
+    assert!(graph_memory_reservation_required(GraphAlgorithm::EdgeBetweennessCentrality));
 }
 
 #[test]

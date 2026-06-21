@@ -10,7 +10,7 @@ use crate::{
     },
     error::{QueryError, QueryErrorCode, Result},
     pipeline::{CompiledPipeline, compile_pipeline},
-    plan::{QueryPlan, ResultSink},
+    plan::QueryPlan,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -96,15 +96,6 @@ pub(in crate::exec::bounded) fn capability_first_bounded_pipeline_admission(
             return Ok(Some(CapabilityFirstPipelineAdmission::rejected(analysis, None, projection)));
         },
     };
-    if !matches!(plan.sink(), ResultSink::HostArrow { .. }) {
-        let projection = admission_projection(
-            CapabilityRejectionCategory::UnsupportedSinkBoundary,
-            "result_sink",
-            "unsupported_sink_boundary",
-            [("result_sink_kind", result_sink_kind(plan.sink()).to_string())],
-        );
-        return Ok(Some(CapabilityFirstPipelineAdmission::rejected(analysis, None, projection)));
-    }
     let pipeline = match compile_pipeline(plan, &analysis) {
         Ok(pipeline) => pipeline,
         Err(error) if compiled_pipeline_graph_is_unsupported_envelope(&error) => {
@@ -153,13 +144,6 @@ fn admission_projection(
     }
 }
 
-fn result_sink_kind(sink: &ResultSink) -> &'static str {
-    match sink {
-        ResultSink::HostArrow { .. } => "host_arrow",
-        ResultSink::GpuResident { .. } => "gpu_resident",
-    }
-}
-
 fn compiled_pipeline_graph_is_unsupported_envelope(error: &QueryError) -> bool {
     error.code() == QueryErrorCode::InvalidPlan
         && matches!(error.operation(), "nexus_query_engine.pipeline.compile" | "nexus_query_engine.pipeline.validate")
@@ -178,6 +162,7 @@ mod tests {
             DynamicFilterProducer, DynamicFilterRoute,
         },
         expr::{AggregateExpr, AggregateFunction, AggregateSpec, ColumnRef, Expr, SortExpr, SortSpec},
+        pipeline::{PipelineTaskKind, SinkBoundaryKind},
         plan::{
             JoinKey, JoinOutputColumn, JoinSide, JoinSpec, JoinType, ProjectionOutput, QueryPlan, QueryPlanBuilder,
         },
@@ -199,6 +184,27 @@ mod tests {
         );
         assert_eq!(admission.envelope(), Some(StrictBoundedEnvelope::RootFullSortJoinAggregate));
         assert!(admission.pipeline().is_some());
+    }
+
+    #[test]
+    fn strict_admission_accepts_gpu_resident_sink_for_join_pipeline() {
+        let plan = root_full_sort_left_semi_grouped_aggregate_plan().clone_with_gpu_resident_sink();
+
+        let admission = capability_first_bounded_pipeline_admission(&plan)
+            .expect("gpu-resident sink admission should not error")
+            .expect("join plan should produce strict admission evidence");
+
+        assert!(
+            matches!(admission.candidate_status(), CapabilityFirstCandidateStatus::Admitted),
+            "rejection={:?}",
+            admission.rejection_projection()
+        );
+        let pipeline = admission.pipeline().expect("admitted plan should have a compiled pipeline");
+        assert_eq!(pipeline.sink().kind(), SinkBoundaryKind::GpuResidentOutput);
+        assert!(
+            pipeline.tasks().iter().all(|task| task.kind() != PipelineTaskKind::SinkMaterialize),
+            "gpu-resident sink must not compile a host materialization task"
+        );
     }
 
     #[test]

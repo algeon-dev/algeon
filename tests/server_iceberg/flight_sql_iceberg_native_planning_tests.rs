@@ -156,7 +156,7 @@ async fn native_profile_iceberg_cte_aggregate_join_back_rewrites_as_native_root(
 }
 
 #[tokio::test]
-async fn native_profile_iceberg_not_in_count_distinct_keeps_safe_host_boundary() {
+async fn native_profile_iceberg_not_in_count_distinct_composes_gpu_resident_child() {
     let schema = iceberg_test_schema();
     let physical_plan = run_iceberg_sql_under_native_profile(
         &[
@@ -172,7 +172,8 @@ async fn native_profile_iceberg_not_in_count_distinct_keeps_safe_host_boundary()
 
     assert_no_leftover_table_format_scan(physical_plan.as_ref());
     assert_plan_contains_native_cudf_exec(physical_plan.as_ref());
-    assert_plan_does_not_contain_operator(physical_plan.as_ref(), "NativeCudfGpuProducerExec");
+    assert_plan_contains_operator(physical_plan.as_ref(), "NativeCudfGpuProducerExec");
+    assert_query_root_is_native(physical_plan.as_ref());
 }
 
 #[tokio::test]
@@ -625,6 +626,13 @@ fn assert_plan_does_not_contain_operator(plan: &dyn ExecutionPlan, operator: &st
     if plan_contains_operator(plan, operator) {
         let rendered = displayable(plan).indent(false).to_string();
         panic!("native profile rewrite left `{operator}` in the plan; plan:\n{rendered}");
+    }
+}
+
+fn assert_plan_contains_operator(plan: &dyn ExecutionPlan, operator: &str) {
+    if !plan_contains_operator(plan, operator) {
+        let rendered = displayable(plan).indent(false).to_string();
+        panic!("native profile rewrite did not include `{operator}` in the plan; plan:\n{rendered}");
     }
 }
 

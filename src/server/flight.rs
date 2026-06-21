@@ -571,55 +571,52 @@ impl DatafusionCudfFlightSqlService {
         query_id: &str,
         correlation_id: Option<&str>,
     ) -> Result<QueryAdmissionPermit, Status> {
+        self.expire_stale_tickets(Instant::now());
+        match self.admission.try_acquire() {
+            Ok(Some(permit)) => {
+                Self::log_query_service_admission(query_id, &permit);
+                return Ok(permit);
+            },
+            Ok(None) => {},
+            Err(error) => {
+                let status = if self.shutdown_token.is_cancelled() {
+                    server_shutdown_status(query_id)
+                } else {
+                    server_error_to_status(error)
+                };
+                return Err(status_with_query_id_and_correlation_id(status, query_id, correlation_id));
+            },
+        }
+
+        let mut acquire = Box::pin(self.admission.acquire());
         loop {
-            self.expire_stale_tickets(Instant::now());
-            match self.admission.try_acquire() {
-                Ok(Some(permit)) => {
+            let sleep_for = self.next_ticket_expiration_delay(Instant::now()).unwrap_or(ADMISSION_SWEEP_POLL_INTERVAL);
+            let sleep_for = sleep_for.min(ADMISSION_SWEEP_POLL_INTERVAL);
+            tokio::select! {
+                result = &mut acquire => {
+                    let permit = result
+                        .map_err(|error| {
+                            let status = if self.shutdown_token.is_cancelled() {
+                                server_shutdown_status(query_id)
+                            } else {
+                                server_error_to_status(error)
+                            };
+                            status_with_query_id_and_correlation_id(status, query_id, correlation_id)
+                        })?;
                     Self::log_query_service_admission(query_id, &permit);
                     return Ok(permit);
                 },
-                Ok(None) => {},
-                Err(error) => {
-                    let status = if self.shutdown_token.is_cancelled() {
-                        server_shutdown_status(query_id)
-                    } else {
-                        server_error_to_status(error)
-                    };
-                    return Err(status_with_query_id_and_correlation_id(status, query_id, correlation_id));
+                _ = tokio::time::sleep(sleep_for) => {
+                    self.expire_stale_tickets(Instant::now());
                 },
-            }
-
-            let mut acquire = Box::pin(self.admission.acquire());
-            loop {
-                let sleep_for =
-                    self.next_ticket_expiration_delay(Instant::now()).unwrap_or(ADMISSION_SWEEP_POLL_INTERVAL);
-                let sleep_for = sleep_for.min(ADMISSION_SWEEP_POLL_INTERVAL);
-                tokio::select! {
-                    result = &mut acquire => {
-                        let permit = result
-                            .map_err(|error| {
-                                let status = if self.shutdown_token.is_cancelled() {
-                                    server_shutdown_status(query_id)
-                                } else {
-                                    server_error_to_status(error)
-                                };
-                                status_with_query_id_and_correlation_id(status, query_id, correlation_id)
-                            })?;
-                        Self::log_query_service_admission(query_id, &permit);
-                        return Ok(permit);
-                    },
-                    _ = tokio::time::sleep(sleep_for) => {
-                        self.expire_stale_tickets(Instant::now());
-                    },
-                    _ = self.shutdown_token.cancelled() => {
-                        self.admission.close();
-                        return Err(status_with_query_id_and_correlation_id(
-                            server_shutdown_status(query_id),
-                            query_id,
-                            correlation_id,
-                        ));
-                    },
-                }
+                _ = self.shutdown_token.cancelled() => {
+                    self.admission.close();
+                    return Err(status_with_query_id_and_correlation_id(
+                        server_shutdown_status(query_id),
+                        query_id,
+                        correlation_id,
+                    ));
+                },
             }
         }
     }

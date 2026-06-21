@@ -353,6 +353,6 @@ fn independent_operator_class_pressure_pipeline() -> CompiledPipeline {
             ResidentLifetime::SinkOutput { producer: pressure_source },
         )],
         vec![],
-        SinkBoundary::new(SinkBoundaryKind::HostArrowMaterialization, pressure_source),
+        SinkBoundary::new(SinkBoundaryKind::GpuResidentOutput, pressure_source),
     )
 }

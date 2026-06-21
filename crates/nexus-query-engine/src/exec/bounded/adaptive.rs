@@ -6,7 +6,7 @@
 
 use super::{
     admission::{CapabilityFirstCandidateStatus, capability_first_bounded_pipeline_admission},
-    compiled::execute_compiled_pipeline_to_host,
+    compiled::execute_compiled_pipeline,
     *,
 };
 use crate::{
@@ -198,7 +198,7 @@ impl<'a, 'm> AdaptiveCompiledPipelineExecutor<'a, 'm> {
                 })?;
                 match self.admission.report().row().adaptive_strategy {
                     AdaptiveStrategy::ConservativeCompiledPipeline => {
-                        let output = execute_compiled_pipeline_to_host(
+                        let output = execute_compiled_pipeline(
                             self.context,
                             self.plan,
                             pipeline,

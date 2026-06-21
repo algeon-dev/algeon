@@ -308,6 +308,39 @@ pub const fn graph_memory_class(algorithm: GraphAlgorithm) -> GraphMemoryClass {
     }
 }
 
+/// Whether bounded graph execution must reserve an algorithm workspace tier.
+///
+/// Algorithms stay on the graph-workspace path until their cuGraph execution is
+/// audited as table/view-only over already-accounted resident inputs.
+pub const fn graph_memory_reservation_required(algorithm: GraphAlgorithm) -> bool {
+    match algorithm {
+        GraphAlgorithm::Bfs => false,
+        GraphAlgorithm::PageRank
+        | GraphAlgorithm::PersonalizedPageRank
+        | GraphAlgorithm::Louvain
+        | GraphAlgorithm::EigenvectorCentrality
+        | GraphAlgorithm::KatzCentrality
+        | GraphAlgorithm::Hits
+        | GraphAlgorithm::BetweennessCentrality
+        | GraphAlgorithm::EdgeBetweennessCentrality
+        | GraphAlgorithm::Sssp
+        | GraphAlgorithm::DegreesAll
+        | GraphAlgorithm::InDegreesAll
+        | GraphAlgorithm::OutDegreesAll
+        | GraphAlgorithm::WeaklyConnectedComponents
+        | GraphAlgorithm::StronglyConnectedComponents
+        | GraphAlgorithm::TriangleCountAll
+        | GraphAlgorithm::CoreNumber
+        | GraphAlgorithm::KCore
+        | GraphAlgorithm::MinimumSpanningTree
+        | GraphAlgorithm::Leiden
+        | GraphAlgorithm::Ecg
+        | GraphAlgorithm::SpectralModularityMaximization
+        | GraphAlgorithm::BalancedCutClustering
+        | GraphAlgorithm::ForceAtlas2 => true,
+    }
+}
+
 fn graph_seed_count(params: &GraphAlgorithmParams, vertex_upper_bound: u64) -> Option<u64> {
     match params {
         GraphAlgorithmParams::BetweennessCentrality(params) => Some(

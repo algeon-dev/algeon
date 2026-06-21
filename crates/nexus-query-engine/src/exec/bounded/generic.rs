@@ -430,42 +430,53 @@ fn execute_bounded_generic_graph_algorithm(
     let null_edge_rows_dropped =
         prior_null_edge_rows_dropped.saturating_add(input_rows.saturating_sub(sanitized_input_rows));
 
-    let report = graph_memory_reservation_report(
-        node_id,
-        &graph.spec,
-        filtered_input.frame(),
-        sanitized_input_rows,
-        Some(reservations.remaining_bytes()),
-        false,
-    )?;
-    let request =
-        MemoryReservationRequest::new(ReservationKind::GraphAlgorithm, report.requested_bytes, reservations.budget())
-            .with_memory_boundary(crate::graph_memory::GRAPH_MEMORY_BOUNDARY)
-            .with_node_id(node_id)
-            .with_stage("graph_memory_admission");
-    metrics.record_graph_reservation(report.clone());
-    if report.outcome == crate::graph_memory::GraphReservationOutcome::Denied {
-        let remaining = reservations.remaining_bytes();
-        metrics.record_reservation_denied_timeline_event(
-            &request,
-            crate::metrics::MemoryReservationEventAction::Reserve,
-            remaining,
-            reservations.reserved_bytes(),
-        );
-        drop(filtered_input);
-        reservations.release(input_reservation, metrics);
-        return Err(report.denied_error(&request, remaining).with_fact_if_absent("node_id", node_id));
-    }
-
-    let mut graph_reservation = match reservations.try_reserve_work(request, metrics) {
-        Ok(reservation) => reservation,
-        Err(error) => {
+    let mut graph_reservation = None;
+    let graph_memory_limit_bytes = if crate::graph_memory::graph_memory_reservation_required(graph.spec.algorithm) {
+        let report = graph_memory_reservation_report(
+            node_id,
+            &graph.spec,
+            filtered_input.frame(),
+            sanitized_input_rows,
+            Some(reservations.remaining_bytes()),
+            false,
+        )?;
+        let request = MemoryReservationRequest::new(
+            ReservationKind::GraphAlgorithm,
+            report.requested_bytes,
+            reservations.budget(),
+        )
+        .with_memory_boundary(crate::graph_memory::GRAPH_MEMORY_BOUNDARY)
+        .with_node_id(node_id)
+        .with_stage("graph_memory_admission");
+        metrics.record_graph_reservation(report.clone());
+        if report.outcome == crate::graph_memory::GraphReservationOutcome::Denied {
+            let remaining = reservations.remaining_bytes();
+            metrics.record_reservation_denied_timeline_event(
+                &request,
+                crate::metrics::MemoryReservationEventAction::Reserve,
+                remaining,
+                reservations.reserved_bytes(),
+            );
             drop(filtered_input);
             reservations.release(input_reservation, metrics);
-            return Err(
-                error.with_fact_if_absent("reason", crate::graph_memory::GRAPH_MEMORY_ESTIMATE_EXCEEDS_BUDGET_REASON)
-            );
-        },
+            return Err(report.denied_error(&request, remaining).with_fact_if_absent("node_id", node_id));
+        }
+
+        match reservations.try_reserve_work(request, metrics) {
+            Ok(reservation) => {
+                let bytes = reservation.bytes();
+                graph_reservation = Some(reservation);
+                Some(bytes)
+            },
+            Err(error) => {
+                drop(filtered_input);
+                reservations.release(input_reservation, metrics);
+                return Err(error
+                    .with_fact_if_absent("reason", crate::graph_memory::GRAPH_MEMORY_ESTIMATE_EXCEEDS_BUDGET_REASON));
+            },
+        }
+    } else {
+        None
     };
     let mut live_reservations = vec![input_reservation];
     let mut side_inputs = std::collections::BTreeMap::new();
@@ -478,7 +489,9 @@ fn execute_bounded_generic_graph_algorithm(
             },
             Err(error) => {
                 drop(filtered_input);
-                reservations.release(graph_reservation, metrics);
+                if let Some(reservation) = graph_reservation.take() {
+                    reservations.release(reservation, metrics);
+                }
                 release_reservations_reverse(reservations, live_reservations, metrics);
                 return Err(error);
             },
@@ -491,7 +504,7 @@ fn execute_bounded_generic_graph_algorithm(
         graph,
         filtered_input,
         side_inputs,
-        Some(graph_reservation.bytes()),
+        graph_memory_limit_bytes,
         input_rows,
         input_columns,
         null_edge_rows_dropped,
@@ -499,7 +512,9 @@ fn execute_bounded_generic_graph_algorithm(
     ) {
         Ok(output) => output,
         Err(error) => {
-            reservations.release(graph_reservation, metrics);
+            if let Some(reservation) = graph_reservation.take() {
+                reservations.release(reservation, metrics);
+            }
             release_reservations_reverse(reservations, live_reservations, metrics);
             return Err(error.with_fact_if_absent("node_id", node_id));
         },
@@ -509,30 +524,46 @@ fn execute_bounded_generic_graph_algorithm(
         Ok(bytes) => bytes,
         Err(error) => {
             drop(output);
-            reservations.release(graph_reservation, metrics);
+            if let Some(reservation) = graph_reservation.take() {
+                reservations.release(reservation, metrics);
+            }
             release_reservations_reverse(reservations, live_reservations, metrics);
             return Err(error.with_fact_if_absent("node_id", node_id));
         },
     };
-    release_reservations_reverse(reservations, live_reservations, metrics);
     let output_request =
         MemoryReservationRequest::new(ReservationKind::OperatorOutput, output_bytes, reservations.budget())
             .with_memory_boundary("bounded_generic_graph_algorithm_output")
             .with_node_id(node_id)
             .with_stage("bounded_generic_graph_algorithm")
             .with_attempt(1, 1);
-    if let Err(error) = reconcile_work_reservation_to_output(
-        reservations,
-        &mut graph_reservation,
-        output_bytes,
-        &output_request,
-        metrics,
-    ) {
-        drop(output);
-        reservations.release(graph_reservation, metrics);
-        return Err(error);
-    }
-    let output_reservation = reservations.transfer(graph_reservation, output_request, metrics);
+    let output_reservation = if let Some(mut graph_reservation) = graph_reservation {
+        release_reservations_reverse(reservations, live_reservations, metrics);
+        if let Err(error) = reconcile_work_reservation_to_output(
+            reservations,
+            &mut graph_reservation,
+            output_bytes,
+            &output_request,
+            metrics,
+        ) {
+            drop(output);
+            reservations.release(graph_reservation, metrics);
+            return Err(error);
+        }
+        reservations.transfer(graph_reservation, output_request, metrics)
+    } else {
+        match reservations.try_reserve(output_request, metrics) {
+            Ok(reservation) => {
+                release_reservations_reverse(reservations, live_reservations, metrics);
+                reservation
+            },
+            Err(error) => {
+                drop(output);
+                release_reservations_reverse(reservations, live_reservations, metrics);
+                return Err(error);
+            },
+        }
+    };
     Ok(ResidentGpuFrame { frame: output, reservation: output_reservation })
 }
 

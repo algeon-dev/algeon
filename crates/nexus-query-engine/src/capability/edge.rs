@@ -277,17 +277,21 @@ pub(super) fn analyze_sink_edge(plan: &QueryPlan) -> EdgeContract {
             contract_kinds.push(EdgeContractKind::JoinMaterialization);
         }
     }
-    contract_kinds.push(EdgeContractKind::ExplicitSinkMaterialization);
+    if matches!(plan.sink(), crate::plan::ResultSink::HostArrow { .. }) {
+        contract_kinds.push(EdgeContractKind::ExplicitSinkMaterialization);
+    }
     let required_properties = vec![RequiredProperty::ResidentFrame];
     let mut reservation_requirements = Vec::new();
     append_source_read_edge_requirement(plan, producer, &mut reservation_requirements);
     append_producer_output_edge_requirements(plan, producer, &mut reservation_requirements);
-    reservation_requirements.push(ReservationRequirement::modeled(
-        ReservationKind::Materialization,
-        "host_materialization",
-        "query_engine_explicit_sink_materialization_reservation",
-        ContractQuality::QueryEngineOwnedBoundary,
-    ));
+    if matches!(plan.sink(), crate::plan::ResultSink::HostArrow { .. }) {
+        reservation_requirements.push(ReservationRequirement::modeled(
+            ReservationKind::Materialization,
+            "host_materialization",
+            "query_engine_explicit_sink_materialization_reservation",
+            ContractQuality::QueryEngineOwnedBoundary,
+        ));
+    }
     let decision = edge_decision(plan, producer, consumer, &required_properties);
     EdgeContract {
         producer,

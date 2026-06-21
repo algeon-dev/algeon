@@ -109,15 +109,18 @@ fn bounded_native_query_executes_keyless_conditional_join_with_resident_input_su
         true,
     );
     assert!(gpu_plan.capability_analysis().admits_keyless_conditional_join_input_subplan_pipeline());
-    let gpu_error = match execute_query_plan(&context, &gpu_plan) {
-        Ok(_) => panic!("D.3.7 strict bounded joins require compiled host-Arrow execution"),
-        Err(error) => error,
-    };
-    assert_eq!(gpu_error.code(), nexus_query_engine::QueryErrorCode::UnsupportedPlanShape);
-    assert_eq!(gpu_error.fact_value("compiled_pipeline_required"), Some("true"));
-    assert_eq!(gpu_error.fact_value("compiled_pipeline_rejection_reason"), Some("unsupported_sink_boundary"));
-    assert_eq!(gpu_error.fact_value("legacy_bounded_join_path_bridge"), Some("disabled"));
-    assert_eq!(gpu_error.fact_value("result_sink_kind"), Some("gpu_resident"));
+    let gpu_result = execute_query_plan(&context, &gpu_plan).expect("GPU sink compiled keyless subplan should execute");
+    let handle = gpu_result.output().as_gpu_resident().expect("GPU sink should keep output resident").clone();
+    let mut materialization_metrics = QueryMetrics::default();
+    let gpu_batch = materialize_gpu_result_to_host(handle, &mut materialization_metrics)
+        .expect("resident compiled output should materialize for assertions");
+    assert_eq!(gpu_batch.num_rows(), 3);
+    assert_eq!(gpu_batch.num_columns(), 3);
+    assert_eq!(int32_array(&gpu_batch, 0).values().as_ref(), &[2, 2, 3]);
+    assert_eq!(int32_array(&gpu_batch, 1).values().as_ref(), &[20, 25, 30]);
+    assert_eq!(int32_array(&gpu_batch, 2).values().as_ref(), &[15, 15, 15]);
+    assert_eq!(gpu_result.metrics().compiled_pipeline_attempts, 1);
+    assert_eq!(gpu_result.metrics().compiled_pipeline_host_arrow_sinks, 0);
 
     let constrained_context = ExecutionContext::builder()
         .with_shared_runtime(Arc::clone(&runtime))

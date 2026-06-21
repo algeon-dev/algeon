@@ -161,7 +161,7 @@ pub mod runtime_contracts {
             GRAPH_MEMORY_BOUNDARY, GRAPH_MEMORY_BUDGET_TRACKING_MIN_LIMIT_BYTES,
             GRAPH_MEMORY_ESTIMATE_EXCEEDS_BUDGET_REASON, GraphMemoryClass, GraphMemoryEstimate, GraphMemoryModel,
             GraphMemoryModelInput, GraphReservationOutcome, GraphReservationReport, graph_memory_class,
-            graph_memory_model_input,
+            graph_memory_model_input, graph_memory_reservation_required,
         },
         runtime::{
             BoundedJoinReservationContract, BoundedJoinReservationRequirement, BoundedJoinReservationStatus,
@@ -314,7 +314,7 @@ pub use expr::{
 pub use graph_memory::{
     GRAPH_MEMORY_BOUNDARY, GRAPH_MEMORY_BUDGET_TRACKING_MIN_LIMIT_BYTES, GRAPH_MEMORY_ESTIMATE_EXCEEDS_BUDGET_REASON,
     GraphMemoryClass, GraphMemoryEstimate, GraphMemoryModel, GraphMemoryModelInput, GraphReservationOutcome,
-    GraphReservationReport, graph_memory_class, graph_memory_model_input,
+    GraphReservationReport, graph_memory_class, graph_memory_model_input, graph_memory_reservation_required,
 };
 pub use metrics::{
     AggregateStrategyDecisionMetrics, BoundaryMetrics, BudgetedExecutionEvent, DynamicFilterRuntimeMetrics,

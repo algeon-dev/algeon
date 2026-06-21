@@ -126,6 +126,47 @@ impl<'a> CompiledGpuTaskExecutor<'a> {
         })
     }
 
+    pub fn take_gpu_output(
+        &mut self,
+        state: &mut CompiledPipelineState<CompiledGpuResource>,
+    ) -> Result<GpuResultHandle> {
+        if self.pipeline.sink().kind() != SinkBoundaryKind::GpuResidentOutput {
+            return Err(invalid("compiled GPU output requires a GPU-resident sink boundary")
+                .with_fact("sink_boundary_task_id", self.pipeline.sink().input())
+                .with_fact("sink_boundary_kind", self.pipeline.sink().kind().as_str()));
+        }
+        let output = state.take_sink_output_resource(self.pipeline)?;
+        let resource = output.id();
+        let payload = output.into_payload();
+        let frame = match payload.payload {
+            CompiledGpuResourcePayload::ResidentFrame { frame, .. } => frame,
+            other => {
+                <Self as CompiledTaskExecutor>::release_resource(
+                    self,
+                    resource,
+                    CompiledGpuResource { payload: other },
+                )?;
+                return Err(invalid("compiled GPU sink output must be a resident frame")
+                    .with_fact("sink_boundary_task_id", self.pipeline.sink().input())
+                    .with_fact("resident_resource_id", resource)
+                    .with_fact("sink_boundary_kind", self.pipeline.sink().kind().as_str()));
+            },
+        };
+        let ResidentGpuFrame { frame, reservation } = *frame;
+        let handle = match GpuResultHandle::new(self.context, frame, self.plan.output_schema().clone()) {
+            Ok(handle) => handle,
+            Err(error) => {
+                self.reservations.release(reservation, self.metrics);
+                return Err(error
+                    .with_fact_if_absent("sink_boundary_task_id", self.pipeline.sink().input())
+                    .with_fact_if_absent("resident_resource_id", resource)
+                    .with_fact_if_absent("sink_boundary_kind", self.pipeline.sink().kind().as_str()));
+            },
+        };
+        self.reservations.release(reservation, self.metrics);
+        Ok(handle)
+    }
+
     fn can_admit_with_current_reservations(
         &self,
         task: &PipelineTask,

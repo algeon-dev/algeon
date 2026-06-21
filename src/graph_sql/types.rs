@@ -600,19 +600,10 @@ impl Default for CugraphPageRankParams {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct CugraphPersonalizedPageRankParams {
     pub pagerank: CugraphPageRankParams,
     pub personalization: CugraphPageRankPersonalizationTable,
-}
-
-impl Default for CugraphPersonalizedPageRankParams {
-    fn default() -> Self {
-        Self {
-            pagerank: CugraphPageRankParams::default(),
-            personalization: CugraphPageRankPersonalizationTable::default(),
-        }
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1036,6 +1027,10 @@ impl CugraphBetweennessSeeds {
 
     pub fn len(&self) -> usize {
         self.vertices.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.vertices.is_empty()
     }
 }
 

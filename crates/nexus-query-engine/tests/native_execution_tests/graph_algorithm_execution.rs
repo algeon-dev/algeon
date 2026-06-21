@@ -115,7 +115,7 @@ fn bfs_python_cugraph_reports_null_edges_dropped_before_edge_normalize() {
 }
 
 #[test]
-fn bounded_bfs_records_graph_memory_admission_before_cugraph() {
+fn bounded_bfs_counts_gpu_tables_without_graph_memory_reservation() {
     let runtime = Arc::new(cudf::Runtime::new().unwrap());
     let context = ExecutionContext::builder()
         .with_shared_runtime(Arc::clone(&runtime))
@@ -162,48 +162,65 @@ fn bounded_bfs_records_graph_memory_admission_before_cugraph() {
     );
 
     let result = execute_query_plan_with_gpu_inputs(&context, &plan, &gpu_inputs).unwrap();
-    let graph_reservations = &result.metrics().graph_reservation_rows;
-    assert_eq!(graph_reservations.len(), 1);
-    assert_eq!(graph_reservations[0].algorithm, GraphAlgorithm::Bfs);
-    assert_eq!(graph_reservations[0].outcome, GraphReservationOutcome::Admitted);
-    assert_eq!(graph_reservations[0].input_edges, 3);
-    assert_eq!(graph_reservations[0].vertex_width_bytes, 4);
-    assert!(graph_reservations[0].requested_bytes > 0);
-    assert!(graph_reservations[0].budget_bytes.is_some_and(|budget| budget < 16 * 1024 * 1024));
-    let graph_reserve = result.metrics().reservation_events.iter().find(|event| {
-        event.memory_boundary == "graph_memory" && event.reservation_kind == ReservationKind::GraphAlgorithm
-    });
-    let graph_reserve = graph_reserve.expect("graph memory admission should reserve live bounded capacity");
-    assert_eq!(graph_reserve.requested_bytes, graph_reservations[0].requested_bytes);
-    assert!(graph_reserve.current_reserved_bytes >= graph_reservations[0].requested_bytes);
-    let graph_budget = result
-        .metrics()
-        .budgeted_execution_events
-        .iter()
-        .find(|event| event.operation == "datafusion_nexus_cugraph_bfs")
-        .expect("bounded graph execution should record the enforced graph budget");
-    assert_eq!(graph_budget.budget_bytes, graph_reserve.requested_bytes);
-    assert!(result.metrics().reservation_events.iter().any(|event| {
-        event.memory_boundary == "bounded_generic_graph_algorithm_output"
-            && event.reservation_kind == ReservationKind::OperatorOutput
-            && event.action == MemoryReservationEventAction::Transfer
-    }));
+    assert!(result.metrics().graph_reservation_rows.is_empty(), "BFS should not add graph-memory reservation rows");
     assert!(!result.metrics().reservation_events.iter().any(|event| {
+        event.memory_boundary == "graph_memory" && event.reservation_kind == ReservationKind::GraphAlgorithm
+    }));
+    assert!(
+        !result
+            .metrics()
+            .budgeted_execution_events
+            .iter()
+            .any(|event| event.operation == "datafusion_nexus_cugraph_bfs")
+    );
+    let source_reserve = result
+        .metrics()
+        .reservation_events
+        .iter()
+        .find(|event| {
+            event.memory_boundary == "bounded_generic_gpu_resident_source"
+                && event.reservation_kind == ReservationKind::SourceRead
+                && event.action == MemoryReservationEventAction::Reserve
+        })
+        .expect("bounded BFS should account the GPU-resident edge table");
+    assert!(source_reserve.requested_bytes > 0);
+    let output_reserve = result
+        .metrics()
+        .reservation_events
+        .iter()
+        .find(|event| {
+            event.memory_boundary == "bounded_generic_graph_algorithm_output"
+                && event.reservation_kind == ReservationKind::OperatorOutput
+                && event.action == MemoryReservationEventAction::Reserve
+        })
+        .expect("bounded BFS should account the GPU-resident output table");
+    assert!(output_reserve.requested_bytes > 0);
+    assert!(
+        output_reserve.current_reserved_bytes
+            >= source_reserve.requested_bytes.saturating_add(output_reserve.requested_bytes),
+        "BFS output reservation should be charged while input table reservation is still live"
+    );
+    assert!(result.metrics().reservation_events.iter().any(|event| {
         event.memory_boundary == "bounded_generic_graph_algorithm_output"
             && event.reservation_kind == ReservationKind::OperatorOutput
             && event.action == MemoryReservationEventAction::Reserve
     }));
-    assert!(result.metrics().reservation_live_peak_bytes >= graph_reserve.current_reserved_bytes);
+    assert!(!result.metrics().reservation_events.iter().any(|event| {
+        event.memory_boundary == "bounded_generic_graph_algorithm_output"
+            && event.reservation_kind == ReservationKind::OperatorOutput
+            && event.action == MemoryReservationEventAction::Transfer
+    }));
+    assert!(result.metrics().reservation_live_peak_bytes >= output_reserve.current_reserved_bytes);
 }
 
 #[test]
-fn bounded_bfs_denies_graph_memory_estimate_before_cugraph_oom() {
+fn bounded_bfs_counts_side_input_tables_without_graph_memory_reservation() {
     let runtime = Arc::new(cudf::Runtime::new().unwrap());
     let context = ExecutionContext::builder()
         .with_shared_runtime(Arc::clone(&runtime))
         .with_memory_control_policy(MemoryControlPolicy::Bounded {
-            device_budget_bytes: 4096,
-            max_source_chunk_bytes: 4096,
+            device_budget_bytes: 16 * 1024 * 1024,
+            max_source_chunk_bytes: 1024 * 1024,
             max_row_groups_per_chunk: 1,
             max_retry_attempts: 1,
             min_retry_chunk_row_groups: 1,
@@ -215,21 +232,26 @@ fn bounded_bfs_denies_graph_memory_estimate_before_cugraph_oom() {
         Field::new("src", DataType::Int32, false),
         Field::new("dst", DataType::Int32, false),
     ]));
-    let src = (0..128).collect::<Vec<i32>>();
-    let dst = (1..129).collect::<Vec<i32>>();
     let edge_batch = RecordBatch::try_new(
         Arc::clone(&edge_schema),
-        vec![Arc::new(Int32Array::from(src)), Arc::new(Int32Array::from(dst))],
+        vec![Arc::new(Int32Array::from(vec![0, 10])), Arc::new(Int32Array::from(vec![1, 11]))],
     )
     .unwrap();
+    let source_schema = Arc::new(Schema::new(vec![Field::new("source_vertex", DataType::Int32, false)]));
+    let source_batch =
+        RecordBatch::try_new(Arc::clone(&source_schema), vec![Arc::new(Int32Array::from(vec![0, 10]))]).unwrap();
 
     let mut builder = QueryPlanBuilder::new();
     let edges = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("edges", Arc::clone(&edge_schema))));
+    let sources =
+        builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("sources", Arc::clone(&source_schema))));
+    let mut params = GraphBfsParams::new(0, None);
+    params.source_vertices = Some(GraphPredicateInput::new(sources, "source_vertex"));
     let spec = GraphAlgorithmSpec::with_stable_schema(
         GraphAlgorithm::Bfs,
         GraphEdgeColumnBindings::new("src", "dst", None::<&str>),
         GraphConstructionOptions { directed: true, renumber: true, policy: GraphConstructionPolicy::RawLibcugraph },
-        GraphAlgorithmParams::Bfs(Box::new(GraphBfsParams::new(0, None))),
+        GraphAlgorithmParams::Bfs(Box::new(params)),
     );
     let graph = builder.add_graph_algorithm(edges, spec);
     let plan = builder.finish_with_host_sink_schema(graph, stable_graph_result_schema(GraphAlgorithm::Bfs));
@@ -244,27 +266,67 @@ fn bounded_bfs_denies_graph_memory_estimate_before_cugraph_oom() {
         )
         .unwrap(),
     );
+    gpu_inputs.insert(
+        "sources".to_string(),
+        GpuResultHandle::new(
+            &context,
+            GpuDataFrame::new(DataFrame::from_record_batch(&runtime, &source_batch).unwrap()),
+            Arc::clone(&source_schema),
+        )
+        .unwrap(),
+    );
 
-    let error = match execute_query_plan_with_gpu_inputs(&context, &plan, &gpu_inputs) {
-        Ok(_) => panic!("bounded graph memory estimate should be denied before cuGraph execution"),
-        Err(error) => error,
-    };
-    assert_eq!(error.code(), QueryErrorCode::MemoryReservationFailed);
-    assert_eq!(error.fact_value("memory_boundary"), Some("graph_memory"));
-    assert_eq!(error.fact_value("reservation_kind"), Some("graph_algorithm"));
-    assert_eq!(error.fact_value("reason"), Some("graph_memory_estimate_exceeds_budget"));
-    assert_eq!(error.fact_value("algorithm"), Some("bfs"));
-    assert_eq!(error.fact_value("graph_memory_class"), Some("output_sized"));
+    let result = execute_query_plan_with_gpu_inputs(&context, &plan, &gpu_inputs).unwrap();
+    assert!(result.metrics().graph_reservation_rows.is_empty(), "BFS should not add graph-memory reservation rows");
+    assert!(!result.metrics().reservation_events.iter().any(|event| {
+        event.memory_boundary == "graph_memory" && event.reservation_kind == ReservationKind::GraphAlgorithm
+    }));
+    assert!(
+        !result
+            .metrics()
+            .budgeted_execution_events
+            .iter()
+            .any(|event| event.operation == "datafusion_nexus_cugraph_bfs")
+    );
+    let source_read_bytes = result
+        .metrics()
+        .reservation_events
+        .iter()
+        .filter(|event| {
+            event.memory_boundary == "bounded_generic_gpu_resident_source"
+                && event.reservation_kind == ReservationKind::SourceRead
+                && event.action == MemoryReservationEventAction::Reserve
+        })
+        .map(|event| event.requested_bytes)
+        .collect::<Vec<_>>();
+    assert_eq!(source_read_bytes.len(), 2, "BFS edge and source-vertices inputs should both be accounted");
+    assert!(source_read_bytes.iter().all(|bytes| *bytes > 0));
+    let source_read_bytes: u64 = source_read_bytes.iter().copied().sum();
+    let output_reserve = result
+        .metrics()
+        .reservation_events
+        .iter()
+        .find(|event| {
+            event.memory_boundary == "bounded_generic_graph_algorithm_output"
+                && event.reservation_kind == ReservationKind::OperatorOutput
+                && event.action == MemoryReservationEventAction::Reserve
+        })
+        .expect("bounded BFS should account the GPU-resident output table");
+    assert!(
+        output_reserve.current_reserved_bytes >= source_read_bytes.saturating_add(output_reserve.requested_bytes),
+        "BFS output reservation should be charged while edge and side-input tables are still live"
+    );
+    assert!(result.metrics().graph_algorithm_runtime_rows[0].algorithm_metadata.contains("source_vertices_rows=2"));
 }
 
 #[test]
-fn bounded_bfs_denies_graph_memory_against_live_input_reservation_after_null_filter() {
+fn bounded_betweenness_success_keeps_graph_memory_reservation() {
     let runtime = Arc::new(cudf::Runtime::new().unwrap());
     let context = ExecutionContext::builder()
         .with_shared_runtime(Arc::clone(&runtime))
         .with_memory_control_policy(MemoryControlPolicy::Bounded {
-            device_budget_bytes: 420,
-            max_source_chunk_bytes: 420,
+            device_budget_bytes: 16 * 1024 * 1024,
+            max_source_chunk_bytes: 1024 * 1024,
             max_row_groups_per_chunk: 1,
             max_retry_attempts: 1,
             min_retry_chunk_row_groups: 1,
@@ -272,27 +334,30 @@ fn bounded_bfs_denies_graph_memory_against_live_input_reservation_after_null_fil
         .build()
         .unwrap();
 
-    let edge_schema =
-        Arc::new(Schema::new(vec![Field::new("src", DataType::Int32, true), Field::new("dst", DataType::Int32, true)]));
+    let edge_schema = Arc::new(Schema::new(vec![
+        Field::new("src", DataType::Int32, false),
+        Field::new("dst", DataType::Int32, false),
+    ]));
     let edge_batch = RecordBatch::try_new(
         Arc::clone(&edge_schema),
-        vec![
-            Arc::new(Int32Array::from(vec![Some(0), Some(1), None])),
-            Arc::new(Int32Array::from(vec![Some(1), Some(2), Some(3)])),
-        ],
+        vec![Arc::new(Int32Array::from(vec![0, 1, 2, 3])), Arc::new(Int32Array::from(vec![1, 2, 3, 0]))],
     )
     .unwrap();
 
     let mut builder = QueryPlanBuilder::new();
     let edges = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("edges", Arc::clone(&edge_schema))));
     let spec = GraphAlgorithmSpec::with_stable_schema(
-        GraphAlgorithm::Bfs,
+        GraphAlgorithm::BetweennessCentrality,
         GraphEdgeColumnBindings::new("src", "dst", None::<&str>),
         GraphConstructionOptions { directed: true, renumber: true, policy: GraphConstructionPolicy::RawLibcugraph },
-        GraphAlgorithmParams::Bfs(Box::new(GraphBfsParams::new(0, None))),
+        GraphAlgorithmParams::BetweennessCentrality(GraphBetweennessCentralityParams {
+            seeds: Some(GraphBetweennessSeeds::I64(vec![0, 2])),
+            ..Default::default()
+        }),
     );
     let graph = builder.add_graph_algorithm(edges, spec);
-    let plan = builder.finish_with_host_sink_schema(graph, stable_graph_result_schema(GraphAlgorithm::Bfs));
+    let plan =
+        builder.finish_with_host_sink_schema(graph, stable_graph_result_schema(GraphAlgorithm::BetweennessCentrality));
 
     let mut gpu_inputs = GpuResidentInputMap::new();
     gpu_inputs.insert(
@@ -305,17 +370,34 @@ fn bounded_bfs_denies_graph_memory_against_live_input_reservation_after_null_fil
         .unwrap(),
     );
 
-    let error = match execute_query_plan_with_gpu_inputs(&context, &plan, &gpu_inputs) {
-        Ok(_) => panic!("bounded graph memory estimate should be denied after nullable edge filtering"),
-        Err(error) => error,
-    };
-    assert_eq!(error.code(), QueryErrorCode::MemoryReservationFailed);
-    assert_eq!(error.fact_value("memory_boundary"), Some("graph_memory"));
-    assert_eq!(error.fact_value("reason"), Some("graph_memory_estimate_exceeds_budget"));
-    assert_eq!(error.fact_value("input_edges"), Some("2"));
-    assert_eq!(error.fact_value("requested_bytes"), Some("1048576"));
-    assert_eq!(error.fact_value("budget_bytes"), Some("420"));
-    assert!(error.fact_value("granted_bytes").is_some_and(|bytes| bytes.parse::<u64>().unwrap() < 1048576));
+    let result = execute_query_plan_with_gpu_inputs(&context, &plan, &gpu_inputs).unwrap();
+    let graph_reservations = &result.metrics().graph_reservation_rows;
+    assert_eq!(graph_reservations.len(), 1);
+    assert_eq!(graph_reservations[0].algorithm, GraphAlgorithm::BetweennessCentrality);
+    assert_eq!(graph_reservations[0].outcome, GraphReservationOutcome::Admitted);
+    let graph_reserve = result
+        .metrics()
+        .reservation_events
+        .iter()
+        .find(|event| {
+            event.memory_boundary == "graph_memory" && event.reservation_kind == ReservationKind::GraphAlgorithm
+        })
+        .expect("bounded betweenness should reserve graph memory");
+    assert_eq!(graph_reserve.requested_bytes, graph_reservations[0].requested_bytes);
+    let graph_budget = result
+        .metrics()
+        .budgeted_execution_events
+        .iter()
+        .find(|event| event.operation == "datafusion_nexus_cugraph_betweenness_centrality")
+        .expect("bounded betweenness should enforce a graph memory budget");
+    assert_eq!(graph_budget.boundary, "graph_memory");
+    assert_eq!(graph_budget.enforcement, "budget_tracking_memory_resource");
+    assert_eq!(graph_budget.budget_bytes, graph_reserve.requested_bytes);
+    assert!(result.metrics().reservation_events.iter().any(|event| {
+        event.memory_boundary == "bounded_generic_graph_algorithm_output"
+            && event.reservation_kind == ReservationKind::OperatorOutput
+            && event.action == MemoryReservationEventAction::Transfer
+    }));
 }
 
 #[test]

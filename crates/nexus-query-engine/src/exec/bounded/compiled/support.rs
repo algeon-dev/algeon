@@ -8,9 +8,9 @@ use crate::{
     error::Result,
     pipeline::{
         CompiledPipeline, PipelineBarrierKind, PipelineEdgeKind, PipelineTask, PipelineTaskId, PipelineTaskKind,
-        ReservationGate, ReservationGateId, SinkBoundaryKind,
+        ReservationGate, ReservationGateId, ResidentLifetime, SinkBoundaryKind,
     },
-    plan::{NodeId, PlanNode, QueryPlan},
+    plan::{NodeId, PlanNode, QueryPlan, ResultSink},
     runtime::ReservationKind,
 };
 
@@ -32,21 +32,13 @@ pub fn compiled_bounded_pipeline_support(pipeline: &CompiledPipeline) -> Result<
     if pipeline.gates().iter().any(|gate| gate.status() != ContractStatus::Modeled) {
         return Ok(CompiledBoundedPipelineSupport::Unsupported);
     }
-    if pipeline.sink().kind() != SinkBoundaryKind::HostArrowMaterialization {
-        return Ok(CompiledBoundedPipelineSupport::Unsupported);
-    }
-
     let Some(join_groups) = join_task_groups(pipeline) else {
         return Ok(CompiledBoundedPipelineSupport::Unsupported);
     };
     if join_groups.is_empty() {
         return Ok(CompiledBoundedPipelineSupport::Unsupported);
     }
-    let Some(sink_materialize) = single_task_of_kind(pipeline, PipelineTaskKind::SinkMaterialize) else {
-        return Ok(CompiledBoundedPipelineSupport::Unsupported);
-    };
-
-    if pipeline.sink().input() != sink_materialize.id() {
+    if !sink_boundary_shape_is_in_d3_6_envelope(pipeline) {
         return Ok(CompiledBoundedPipelineSupport::Unsupported);
     }
     if !task_kinds_are_in_d2_envelope(pipeline) {
@@ -62,7 +54,7 @@ pub fn compiled_bounded_pipeline_support(pipeline: &CompiledPipeline) -> Result<
     if !task_reservation_gates_are_in_d2_envelope(pipeline) {
         return Ok(CompiledBoundedPipelineSupport::Unsupported);
     }
-    if !task_resource_shapes_are_in_d2_envelope(pipeline, &join_groups, sink_materialize) {
+    if !task_resource_shapes_are_in_d2_envelope(pipeline, &join_groups) {
         return Ok(CompiledBoundedPipelineSupport::Unsupported);
     }
     if !edge_kinds_are_in_d3_2_envelope(pipeline) || !barrier_kinds_are_in_d2_envelope(pipeline) {
@@ -74,7 +66,7 @@ pub fn compiled_bounded_pipeline_support(pipeline: &CompiledPipeline) -> Result<
     if !join_edges_are_in_d2_envelope(pipeline, &join_groups) {
         return Ok(CompiledBoundedPipelineSupport::Unsupported);
     }
-    let Some(sink_path) = explicit_host_sink_path_in_d3_6_envelope(pipeline, sink_materialize) else {
+    let Some(sink_path) = explicit_sink_path_in_d3_6_envelope(pipeline) else {
         return Ok(CompiledBoundedPipelineSupport::Unsupported);
     };
     if !stage_tasks_are_in_d3_6_envelope(pipeline, &sink_path) {
@@ -84,7 +76,7 @@ pub fn compiled_bounded_pipeline_support(pipeline: &CompiledPipeline) -> Result<
         return Ok(CompiledBoundedPipelineSupport::Unsupported);
     }
     if !pipeline.barriers().iter().any(|barrier| {
-        barrier.kind() == PipelineBarrierKind::SinkBoundary && barrier.upstream_tasks() == [sink_materialize.id()]
+        barrier.kind() == PipelineBarrierKind::SinkBoundary && barrier.upstream_tasks() == [pipeline.sink().input()]
     }) {
         return Ok(CompiledBoundedPipelineSupport::Unsupported);
     }
@@ -102,6 +94,9 @@ pub fn compiled_bounded_query_plan_support(
     pipeline: &CompiledPipeline,
 ) -> Result<CompiledBoundedPipelineSupport> {
     if compiled_bounded_pipeline_support(pipeline)? == CompiledBoundedPipelineSupport::Unsupported {
+        return Ok(CompiledBoundedPipelineSupport::Unsupported);
+    }
+    if !plan_sink_matches_pipeline_sink(plan, pipeline) {
         return Ok(CompiledBoundedPipelineSupport::Unsupported);
     }
     if !task_plan_nodes_match_kinds(plan, pipeline) {
@@ -130,10 +125,7 @@ pub fn compiled_bounded_query_plan_support(
             return Ok(CompiledBoundedPipelineSupport::Unsupported);
         }
     }
-    let Some(sink_materialize) = single_task_of_kind(pipeline, PipelineTaskKind::SinkMaterialize) else {
-        return Ok(CompiledBoundedPipelineSupport::Unsupported);
-    };
-    let Some(final_plan_node) = sink_input_plan_node(pipeline, sink_materialize.id()) else {
+    let Some(final_plan_node) = sink_output_plan_node(pipeline) else {
         return Ok(CompiledBoundedPipelineSupport::Unsupported);
     };
     if plan.sink().input() != final_plan_node {
@@ -144,6 +136,14 @@ pub fn compiled_bounded_query_plan_support(
     }
 
     Ok(CompiledBoundedPipelineSupport::Supported)
+}
+
+fn plan_sink_matches_pipeline_sink(plan: &QueryPlan, pipeline: &CompiledPipeline) -> bool {
+    matches!(
+        (plan.sink(), pipeline.sink().kind()),
+        (ResultSink::HostArrow { .. }, SinkBoundaryKind::HostArrowMaterialization)
+            | (ResultSink::GpuResident { .. }, SinkBoundaryKind::GpuResidentOutput)
+    )
 }
 
 fn join_strategy_reservations_are_modeled(
@@ -275,11 +275,7 @@ fn task_kinds_are_in_d2_envelope(pipeline: &CompiledPipeline) -> bool {
     })
 }
 
-fn task_resource_shapes_are_in_d2_envelope(
-    pipeline: &CompiledPipeline,
-    join_groups: &[JoinTaskGroup<'_>],
-    sink_materialize: &PipelineTask,
-) -> bool {
+fn task_resource_shapes_are_in_d2_envelope(pipeline: &CompiledPipeline, join_groups: &[JoinTaskGroup<'_>]) -> bool {
     pipeline.tasks().iter().all(|task| match task.kind() {
         PipelineTaskKind::SourceRead | PipelineTaskKind::GpuResidentSource | PipelineTaskKind::LiteralBatchSource => {
             task.input_resources().is_empty() && task.output_resources().len() == 1
@@ -295,11 +291,44 @@ fn task_resource_shapes_are_in_d2_envelope(
         },
         PipelineTaskKind::JoinMaterialize => task.input_resources().is_empty() && task.output_resources().len() == 1,
         PipelineTaskKind::SinkMaterialize => task.input_resources().len() == 1 && task.output_resources().is_empty(),
-    }) && join_groups.iter().all(|group| {
-        group.build.plan_node() == Some(group.plan_node)
-            && group.probe.plan_node() == Some(group.plan_node)
-            && group.materialize.plan_node() == Some(group.plan_node)
-    }) && sink_materialize.plan_node().is_none()
+    }) && sink_materialize_tasks_are_in_d3_6_envelope(pipeline)
+        && join_groups.iter().all(|group| {
+            group.build.plan_node() == Some(group.plan_node)
+                && group.probe.plan_node() == Some(group.plan_node)
+                && group.materialize.plan_node() == Some(group.plan_node)
+        })
+}
+
+fn sink_materialize_tasks_are_in_d3_6_envelope(pipeline: &CompiledPipeline) -> bool {
+    let sink_materialize_tasks =
+        pipeline.tasks().iter().filter(|task| task.kind() == PipelineTaskKind::SinkMaterialize).collect::<Vec<_>>();
+    match pipeline.sink().kind() {
+        SinkBoundaryKind::HostArrowMaterialization => {
+            let [sink_materialize] = sink_materialize_tasks.as_slice() else {
+                return false;
+            };
+            pipeline.sink().input() == sink_materialize.id() && sink_materialize.plan_node().is_none()
+        },
+        SinkBoundaryKind::GpuResidentOutput => sink_materialize_tasks.is_empty(),
+    }
+}
+
+fn sink_boundary_shape_is_in_d3_6_envelope(pipeline: &CompiledPipeline) -> bool {
+    match pipeline.sink().kind() {
+        SinkBoundaryKind::HostArrowMaterialization => {
+            let Some(sink_materialize) = single_task_of_kind(pipeline, PipelineTaskKind::SinkMaterialize) else {
+                return false;
+            };
+            pipeline.sink().input() == sink_materialize.id()
+                && single_sink_input_edge_to_task(pipeline, sink_materialize.id()).is_some()
+        },
+        SinkBoundaryKind::GpuResidentOutput => single_sink_output_resource_from_task(pipeline, pipeline.sink().input())
+            .is_some_and(|resource| {
+                task_index(pipeline)
+                    .get(&pipeline.sink().input())
+                    .is_some_and(|task| task.output_resources().contains(&resource.id()))
+            }),
+    }
 }
 
 fn task_reservation_gates_are_in_d2_envelope(pipeline: &CompiledPipeline) -> bool {
@@ -535,22 +564,11 @@ fn join_barriers_are_in_d2_envelope(pipeline: &CompiledPipeline, join_groups: &[
     })
 }
 
-fn explicit_host_sink_path_in_d3_6_envelope(
-    pipeline: &CompiledPipeline,
-    sink_materialize: &PipelineTask,
-) -> Option<BTreeSet<PipelineTaskId>> {
+fn explicit_sink_path_in_d3_6_envelope(pipeline: &CompiledPipeline) -> Option<BTreeSet<PipelineTaskId>> {
     let tasks = task_index(pipeline);
-    let sink_edge = single_sink_input_edge_to_task(pipeline, sink_materialize.id())?;
-    let [sink_resource] = sink_edge.resources() else {
-        return None;
-    };
-    if !sink_materialize.input_resources().contains(sink_resource) {
-        return None;
-    }
-
-    let mut current = sink_edge.from();
-    let mut reverse_path = vec![sink_materialize.id()];
-    let mut visited = BTreeSet::from([sink_materialize.id()]);
+    let mut current = sink_path_terminal_task(pipeline)?;
+    let mut reverse_path = Vec::new();
+    let mut visited = BTreeSet::new();
 
     loop {
         if !visited.insert(current) {
@@ -559,7 +577,7 @@ fn explicit_host_sink_path_in_d3_6_envelope(
         reverse_path.push(current);
 
         let current_task = tasks.get(&current).copied()?;
-        if !post_root_task_has_single_data_output_on_sink_path(pipeline, current_task) {
+        if !task_has_single_data_output_toward_sink(pipeline, current_task) {
             return None;
         }
 
@@ -613,6 +631,23 @@ fn explicit_host_sink_path_in_d3_6_envelope(
     Some(reverse_path.into_iter().collect())
 }
 
+fn sink_path_terminal_task(pipeline: &CompiledPipeline) -> Option<PipelineTaskId> {
+    match pipeline.sink().kind() {
+        SinkBoundaryKind::HostArrowMaterialization => {
+            let sink_materialize = single_task_of_kind(pipeline, PipelineTaskKind::SinkMaterialize)?;
+            let sink_edge = single_sink_input_edge_to_task(pipeline, sink_materialize.id())?;
+            let [sink_resource] = sink_edge.resources() else {
+                return None;
+            };
+            if !sink_materialize.input_resources().contains(sink_resource) {
+                return None;
+            }
+            Some(sink_edge.from())
+        },
+        SinkBoundaryKind::GpuResidentOutput => Some(pipeline.sink().input()),
+    }
+}
+
 fn union_fan_in_is_in_d3_6_envelope(pipeline: &CompiledPipeline, task: &PipelineTask) -> bool {
     let tasks = task_index(pipeline);
     let incoming = pipeline
@@ -649,7 +684,12 @@ fn single_sink_input_edge_to_task(
     Some(first)
 }
 
-fn post_root_task_has_single_data_output_on_sink_path(pipeline: &CompiledPipeline, task: &PipelineTask) -> bool {
+fn task_has_single_data_output_toward_sink(pipeline: &CompiledPipeline, task: &PipelineTask) -> bool {
+    if pipeline.sink().kind() == SinkBoundaryKind::GpuResidentOutput && pipeline.sink().input() == task.id() {
+        return single_sink_output_resource_from_task(pipeline, task.id())
+            .is_some_and(|resource| task.output_resources().contains(&resource.id()));
+    }
+
     let outgoing_data_edges = pipeline
         .edges()
         .iter()
@@ -665,6 +705,20 @@ fn post_root_task_has_single_data_output_on_sink_path(pipeline: &CompiledPipelin
         return false;
     };
     task.output_resources().contains(resource)
+}
+
+fn single_sink_output_resource_from_task(
+    pipeline: &CompiledPipeline,
+    task_id: PipelineTaskId,
+) -> Option<&crate::pipeline::ResidentResource> {
+    let mut resources = pipeline.resources().iter().filter(
+        |resource| matches!(resource.lifetime(), ResidentLifetime::SinkOutput { producer } if producer == task_id),
+    );
+    let first = resources.next()?;
+    if resources.next().is_some() {
+        return None;
+    }
+    Some(first)
 }
 
 fn sink_path_stage_order_is_in_d3_6_envelope(pipeline: &CompiledPipeline, sink_path: &[PipelineTaskId]) -> bool {
@@ -858,10 +912,7 @@ fn downstream_join_input_tasks(pipeline: &CompiledPipeline, task: PipelineTaskId
 }
 
 fn downstream_sink_path_union_tasks(pipeline: &CompiledPipeline, task: PipelineTaskId) -> BTreeSet<PipelineTaskId> {
-    let Some(sink_materialize) = single_task_of_kind(pipeline, PipelineTaskKind::SinkMaterialize) else {
-        return BTreeSet::new();
-    };
-    let Some(sink_path) = explicit_host_sink_path_in_d3_6_envelope(pipeline, sink_materialize) else {
+    let Some(sink_path) = explicit_sink_path_in_d3_6_envelope(pipeline) else {
         return BTreeSet::new();
     };
     let tasks = task_index(pipeline);
@@ -922,10 +973,19 @@ fn task_plan_nodes_match_kinds(plan: &QueryPlan, pipeline: &CompiledPipeline) ->
     })
 }
 
-fn sink_input_plan_node(pipeline: &CompiledPipeline, sink_task: PipelineTaskId) -> Option<NodeId> {
-    let edge =
-        pipeline.edges().iter().find(|edge| edge.to() == sink_task && edge.kind() == PipelineEdgeKind::SinkInput)?;
-    task_index(pipeline).get(&edge.from()).and_then(|task| task.plan_node())
+fn sink_output_plan_node(pipeline: &CompiledPipeline) -> Option<NodeId> {
+    match pipeline.sink().kind() {
+        SinkBoundaryKind::HostArrowMaterialization => {
+            let edge = pipeline
+                .edges()
+                .iter()
+                .find(|edge| edge.to() == pipeline.sink().input() && edge.kind() == PipelineEdgeKind::SinkInput)?;
+            task_index(pipeline).get(&edge.from()).and_then(|task| task.plan_node())
+        },
+        SinkBoundaryKind::GpuResidentOutput => {
+            task_index(pipeline).get(&pipeline.sink().input()).and_then(|task| task.plan_node())
+        },
+    }
 }
 
 fn sink_path_post_limit_unary_nodes_are_projection(plan: &QueryPlan) -> bool {

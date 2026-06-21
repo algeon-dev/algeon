@@ -177,8 +177,8 @@ fn semijoin_reduction_strict_gate_allows_later_passes_to_route_dimension_keyset_
         candidate.admission_decision,
         Some(nexus_query_engine::SemijoinReductionAdmissionDecision::StrictBoundedKept)
     );
-    assert_eq!(candidate.original_admitted, Some(false));
-    assert_eq!(candidate.rewritten_admitted, Some(false));
+    assert_eq!(candidate.original_admitted, Some(true));
+    assert_eq!(candidate.rewritten_admitted, Some(true));
     assert!(
         result.plan.dynamic_filter_routes().iter().any(|route| {
             matches!(&route.producer, DynamicFilterProducer::HashJoinBuild { build_side: JoinSide::Right, .. })

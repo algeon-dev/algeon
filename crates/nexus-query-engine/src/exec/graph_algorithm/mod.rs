@@ -827,6 +827,9 @@ fn admit_graph_memory(
     input_edges: u64,
     metrics: &mut QueryMetrics,
 ) -> Result<()> {
+    if !crate::graph_memory::graph_memory_reservation_required(spec.algorithm) {
+        return Ok(());
+    }
     let report = graph_memory_reservation_report(
         node_id,
         spec,

@@ -320,7 +320,7 @@ fn execute_query_plan_uses_adaptive_task_history_to_lower_repeated_reservations(
 }
 
 #[test]
-fn execute_query_plan_rejects_selected_adaptive_unsupported_join_with_adaptive_labels() {
+fn execute_query_plan_routes_gpu_sink_join_through_adaptive_compiled_pipeline() {
     let Ok(runtime) = cudf::Runtime::new() else {
         return;
     };
@@ -331,25 +331,19 @@ fn execute_query_plan_rejects_selected_adaptive_unsupported_join_with_adaptive_l
     let plan = root_join_gpu_sink_data_plan(&left_path, &right_path);
     let context = bounded_context_with_mode(Arc::new(runtime), NativePipelineExecutionMode::Adaptive);
 
-    let error = match execute_query_plan(&context, &plan) {
-        Ok(_) => panic!("unsupported adaptive graph should be rejected"),
-        Err(error) => error,
+    let result = execute_query_plan(&context, &plan).expect("adaptive compiled GPU sink join should execute");
+    let QueryOutput::GpuResident(handle) = result.output() else {
+        panic!("GPU sink should keep the compiled output resident");
     };
-    let rendered = error.to_string();
+    let mut materialization_metrics = QueryMetrics::default();
+    let batch = materialize_gpu_result_to_host(handle.clone(), &mut materialization_metrics)
+        .expect("resident compiled output should materialize for assertions");
 
-    assert_eq!(error.code(), nexus_query_engine::QueryErrorCode::UnsupportedPlanShape);
-    assert_eq!(error.fact_value("execution_mode"), Some("unsupported_adaptive"));
-    assert_eq!(error.fact_value("candidate_status"), Some("rejected"));
-    assert_eq!(error.fact_value("adaptive_strategy"), Some("unsupported"));
-    assert_eq!(error.fact_value("runtime_actions_allowed"), Some("none"));
-    assert_eq!(error.fact_value("retry_count"), Some("0"));
-    assert_eq!(error.fact_value("spill_count"), Some("0"));
-    assert_eq!(error.fact_value("downgrade_count"), Some("0"));
-    assert_eq!(error.fact_value("rejection_reason"), Some("unsupported_sink_boundary"));
-    assert_eq!(error.fact_value("strict_bounded_contract_report"), Some("not_emitted"));
-    assert!(rendered.contains("execution_mode=unsupported_adaptive"));
-    assert!(!rendered.contains("execution_mode=strict_bounded"));
-    assert!(!rendered.contains("execution_mode=unsupported_strict_bounded"));
+    assert_eq!(batch.num_rows(), 2);
+    assert_eq!(int32_values(&batch, 0), vec![Some(2), Some(4)]);
+    assert_eq!(int32_values(&batch, 1), vec![Some(200), Some(400)]);
+    assert_eq!(result.metrics().compiled_pipeline_attempts, 1);
+    assert_eq!(result.metrics().compiled_pipeline_host_arrow_sinks, 0);
 }
 
 #[test]
@@ -443,7 +437,7 @@ fn execute_query_plan_leaves_unsupported_compiled_graphs_on_legacy_fallback() {
 }
 
 #[test]
-fn execute_query_plan_rejects_admitted_join_when_compiled_runtime_cannot_own_sink() {
+fn execute_query_plan_routes_gpu_resident_sink_join_through_compiled_pipeline() {
     let Ok(runtime) = cudf::Runtime::new() else {
         return;
     };
@@ -454,50 +448,211 @@ fn execute_query_plan_rejects_admitted_join_when_compiled_runtime_cannot_own_sin
     let plan = root_join_gpu_sink_data_plan(&left_path, &right_path);
     let analysis = plan.capability_analysis();
     assert!(analysis.admits_root_join());
-    let rejection_projection = nexus_query_engine::strict_bounded_pipeline_rejection_projection(&plan)
-        .expect("strict rejection projection should not fail")
-        .expect("GPU sink should be projected as a strict bounded rejection");
-    assert_eq!(rejection_projection.reason, "unsupported_sink_boundary");
-    assert_eq!(rejection_projection.memory_boundary, "result_sink");
-    assert_eq!(
-        rejection_projection.category,
-        nexus_query_engine::capability::CapabilityRejectionCategory::UnsupportedSinkBoundary
+    let admission = strict_bounded_pipeline_admission(&plan)
+        .expect("strict admission should not fail")
+        .expect("GPU sink root join should be strict-admitted");
+    assert_eq!(admission.pipeline().sink().kind(), SinkBoundaryKind::GpuResidentOutput);
+    assert!(
+        admission.pipeline().gates().iter().all(|gate| {
+            gate.reservation_kind() != ReservationKind::Materialization
+                && gate.memory_boundary() != "host_materialization"
+                && gate.required_contract() != "query_engine_explicit_sink_materialization_reservation"
+        }),
+        "GPU sink compiled pipeline must not carry host materialization gates"
     );
     assert!(
-        plan.bounded_join_modeled_facts(nexus_query_engine::ExecutionBoundaryPolicy::default()).is_none(),
-        "GPU sink plans rejected by strict admission must not emit modeled bounded-join facts"
-    );
-    let unsupported_facts = plan
-        .bounded_join_unsupported_shape_facts(nexus_query_engine::ExecutionBoundaryPolicy::default())
-        .expect("GPU sink rejection should emit unsupported bounded-join facts");
-    assert_eq!(
-        unsupported_facts.get("bounded_join_rejection_reason").map(String::as_str),
-        Some("unsupported_sink_boundary")
-    );
-    assert_eq!(unsupported_facts.get("bounded_join_rejection_boundary").map(String::as_str), Some("result_sink"));
-    assert_eq!(
-        unsupported_facts.get("bounded_join_rejection_category").map(String::as_str),
-        Some("unsupported_sink_boundary")
+        nexus_query_engine::strict_bounded_pipeline_rejection_projection(&plan)
+            .expect("strict rejection projection should not fail")
+            .is_none(),
+        "GPU sink should stay inside the compiled bounded envelope"
     );
     assert!(
-        unsupported_facts
-            .get("bounded_join_rejection_facts")
-            .is_some_and(|facts| facts.contains("result_sink_kind=gpu_resident"))
+        plan.bounded_join_modeled_facts(nexus_query_engine::ExecutionBoundaryPolicy::default()).is_some(),
+        "GPU sink plans admitted by strict compiled execution must emit modeled bounded-join facts"
+    );
+    assert!(
+        plan.bounded_join_unsupported_shape_facts(nexus_query_engine::ExecutionBoundaryPolicy::default()).is_none(),
+        "GPU sink plans admitted by strict compiled execution must not emit unsupported bounded-join facts"
     );
     let context = bounded_context(Arc::new(runtime));
 
-    let error = match execute_query_plan(&context, &plan) {
-        Ok(_) => panic!("capability-admitted bounded joins must not fall back to legacy path dispatch"),
-        Err(error) => error,
+    let result = execute_query_plan(&context, &plan).expect("strict compiled GPU sink join should execute");
+    let QueryOutput::GpuResident(handle) = result.output() else {
+        panic!("GPU sink should keep the compiled output resident");
     };
-    let rendered = error.to_string();
+    let mut materialization_metrics = QueryMetrics::default();
+    let batch = materialize_gpu_result_to_host(handle.clone(), &mut materialization_metrics)
+        .expect("resident compiled output should materialize for assertions");
 
-    assert_eq!(error.code(), nexus_query_engine::QueryErrorCode::UnsupportedPlanShape);
-    assert_eq!(error.fact_value("compiled_pipeline_required"), Some("true"));
-    assert_eq!(error.fact_value("compiled_pipeline_rejection_reason"), Some("unsupported_sink_boundary"));
-    assert_eq!(error.fact_value("legacy_bounded_join_path_bridge"), Some("disabled"));
-    assert_eq!(error.fact_value("result_sink_kind"), Some("gpu_resident"));
-    assert_no_legacy_execution_selection_terms("D.3.7 compiled-required rejection", &rendered);
+    assert_eq!(batch.num_rows(), 2);
+    assert_eq!(int32_values(&batch, 0), vec![Some(2), Some(4)]);
+    assert_eq!(int32_values(&batch, 1), vec![Some(200), Some(400)]);
+    assert_eq!(result.metrics().compiled_pipeline_attempts, 1);
+    assert_eq!(result.metrics().compiled_pipeline_host_arrow_sinks, 0);
+
+    let mut passthrough_inputs = GpuResidentInputMap::new();
+    passthrough_inputs.insert("compiled_root_join".to_string(), handle.clone());
+    let mut passthrough_builder = QueryPlanBuilder::new();
+    let passthrough_source = passthrough_builder.add_source(SourceNode::GpuResident(GpuResidentSource::new(
+        "compiled_root_join",
+        plan.output_schema().clone(),
+    )));
+    let passthrough_plan = passthrough_builder.finish_with_host_sink(passthrough_source);
+    let passthrough = execute_query_plan_with_gpu_inputs(&context, &passthrough_plan, &passthrough_inputs)
+        .expect("compiled GPU output handle should feed a later GPU-resident source");
+    let QueryOutput::HostArrow(passthrough_batch) = passthrough.output() else {
+        panic!("passthrough consumer should materialize the resident source for assertions");
+    };
+    assert_eq!(passthrough_batch.num_rows(), 2);
+    assert_eq!(int32_values(passthrough_batch, 0), vec![Some(2), Some(4)]);
+    assert_eq!(int32_values(passthrough_batch, 1), vec![Some(200), Some(400)]);
+}
+
+#[test]
+fn pipeline_validation_rejects_non_sink_edge_gate_on_sink_boundary() {
+    let plan = root_join_gpu_sink_data_plan(
+        Path::new("/tmp/compiled-gpu-sink-invalid-gate-left.parquet"),
+        Path::new("/tmp/compiled-gpu-sink-invalid-gate-right.parquet"),
+    );
+    let analysis = plan.capability_analysis();
+    let pipeline = compile_pipeline(&plan, &analysis).expect("GPU sink root join should compile");
+    let invalid_gate = ReservationGateId::new(pipeline.gates().len());
+    let mut gates = pipeline.gates().to_vec();
+    gates.push(ReservationGate::new(
+        invalid_gate,
+        ReservationGateOwner::SinkBoundary,
+        ReservationKind::ProbeSide,
+        ReservationRequirementScope::Edge,
+        "join_probe_side",
+        "query_engine_probe_side_source_reservation",
+        ContractStatus::Modeled,
+        ContractQuality::QueryEngineOwnedOrdering,
+    ));
+    let mut sink_gates = pipeline.sink().gates().to_vec();
+    sink_gates.push(invalid_gate);
+    let malformed = CompiledPipeline::new(
+        pipeline.tasks().to_vec(),
+        pipeline.edges().to_vec(),
+        pipeline.barriers().to_vec(),
+        pipeline.resources().to_vec(),
+        gates,
+        SinkBoundary::new(pipeline.sink().kind(), pipeline.sink().input()).with_gates(sink_gates),
+    );
+
+    let error = malformed.validate().expect_err("unrelated edge gates must not attach to the sink boundary");
+
+    assert_eq!(error.code(), nexus_query_engine::QueryErrorCode::InvalidPlan);
+    assert_eq!(error.fact_value("gate_owner"), Some("sink_boundary"));
+    assert_eq!(error.fact_value("requirement_scope"), Some("edge"));
+    assert_eq!(error.fact_value("reservation_kind"), Some("probe_side"));
+}
+
+#[test]
+fn compiled_support_rejects_plan_pipeline_sink_mismatch() {
+    let plan = root_join_data_plan(
+        Path::new("/tmp/compiled-sink-mismatch-left.parquet"),
+        Path::new("/tmp/compiled-sink-mismatch-right.parquet"),
+    );
+    let gpu_plan = plan.clone_with_gpu_resident_sink();
+    let host_pipeline =
+        compile_pipeline(&plan, &plan.capability_analysis()).expect("host-sink root join should compile");
+    let gpu_pipeline =
+        compile_pipeline(&gpu_plan, &gpu_plan.capability_analysis()).expect("GPU-sink root join should compile");
+
+    assert_eq!(
+        compiled_bounded_query_plan_support(&gpu_plan, &host_pipeline).expect("support check should not fail"),
+        CompiledBoundedPipelineSupport::Unsupported,
+        "a host-sink compiled pipeline must not be reused for a GPU-sink query plan"
+    );
+    assert_eq!(
+        compiled_bounded_query_plan_support(&plan, &gpu_pipeline).expect("support check should not fail"),
+        CompiledBoundedPipelineSupport::Unsupported,
+        "a GPU-sink compiled pipeline must not be reused for a host-sink query plan"
+    );
+}
+
+#[test]
+fn pipeline_validation_rejects_host_sink_output_lifetime() {
+    let source = PipelineTaskId::new(0);
+    let output = ResidentResourceId::new(0);
+    let pipeline =
+        single_sink_output_pipeline(SinkBoundaryKind::HostArrowMaterialization, source, vec![(source, output)]);
+
+    let error = pipeline.validate().expect_err("host sinks cannot retain sink-output resources");
+
+    assert_eq!(error.code(), nexus_query_engine::QueryErrorCode::InvalidPlan);
+    assert_eq!(error.fact_value("resident_resource_id"), Some("r0"));
+    assert_eq!(error.fact_value("sink_boundary_kind"), Some("host_arrow_materialization"));
+    assert_eq!(error.fact_value("sink_output_resource_count"), Some("1"));
+}
+
+#[test]
+fn pipeline_validation_rejects_gpu_sink_output_from_wrong_producer() {
+    let sink = PipelineTaskId::new(0);
+    let producer = PipelineTaskId::new(1);
+    let output = ResidentResourceId::new(0);
+    let pipeline = single_sink_output_pipeline(SinkBoundaryKind::GpuResidentOutput, sink, vec![(producer, output)]);
+
+    let error = pipeline.validate().expect_err("GPU sink output must be produced by the sink boundary input task");
+
+    assert_eq!(error.code(), nexus_query_engine::QueryErrorCode::InvalidPlan);
+    assert_eq!(error.fact_value("resident_resource_id"), Some("r0"));
+    assert_eq!(error.fact_value("producer_task"), Some("t1"));
+    assert_eq!(error.fact_value("sink_boundary_task_id"), Some("t0"));
+}
+
+#[test]
+fn pipeline_validation_rejects_multiple_gpu_sink_outputs() {
+    let sink = PipelineTaskId::new(0);
+    let other = PipelineTaskId::new(1);
+    let pipeline = single_sink_output_pipeline(
+        SinkBoundaryKind::GpuResidentOutput,
+        sink,
+        vec![(sink, ResidentResourceId::new(0)), (other, ResidentResourceId::new(1))],
+    );
+
+    let error = pipeline.validate().expect_err("GPU sinks must expose exactly one sink-output resource");
+
+    assert_eq!(error.code(), nexus_query_engine::QueryErrorCode::InvalidPlan);
+    assert_eq!(error.fact_value("sink_boundary_task_id"), Some("t0"));
+    assert_eq!(error.fact_value("sink_boundary_kind"), Some("gpu_resident_output"));
+    assert_eq!(error.fact_value("sink_output_resource_count"), Some("2"));
+}
+
+fn single_sink_output_pipeline(
+    kind: SinkBoundaryKind,
+    sink_input: PipelineTaskId,
+    sink_outputs: Vec<(PipelineTaskId, ResidentResourceId)>,
+) -> CompiledPipeline {
+    let mut task_ids = sink_outputs.iter().map(|(task, _)| *task).collect::<BTreeSet<_>>();
+    task_ids.insert(sink_input);
+    let tasks = task_ids
+        .iter()
+        .map(|task| {
+            let outputs = sink_outputs
+                .iter()
+                .filter_map(|(producer, resource)| (*producer == *task).then_some(*resource))
+                .collect();
+            PipelineTask::new(*task, PipelineTaskKind::SourceRead).with_output_resources(outputs)
+        })
+        .collect::<Vec<_>>();
+    let resources = sink_outputs
+        .iter()
+        .map(|(producer, resource)| {
+            ResidentResource::new(*resource, *producer, vec![], ResidentLifetime::SinkOutput { producer: *producer })
+        })
+        .collect::<Vec<_>>();
+    CompiledPipeline::new(
+        tasks,
+        vec![],
+        vec![
+            PipelineBarrier::new(PipelineBarrierId::new(0), PipelineBarrierKind::SinkBoundary)
+                .with_upstream_tasks(task_ids.into_iter().collect()),
+        ],
+        resources,
+        vec![],
+        SinkBoundary::new(kind, sink_input),
+    )
 }
 
 #[test]

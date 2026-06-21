@@ -819,15 +819,11 @@ fn parse_betweenness_seeds(value: &Value, key: &str) -> Result<Option<CugraphBet
 
 fn validate_betweenness_options(params: &CugraphAlgorithmParams) -> Result<()> {
     match params {
-        CugraphAlgorithmParams::BetweennessCentrality(params) => {
-            if params.seeds.is_some() && params.k.is_some() {
-                return Err(plan_error("betweenness seeds and k are mutually exclusive"));
-            }
+        CugraphAlgorithmParams::BetweennessCentrality(params) if params.seeds.is_some() && params.k.is_some() => {
+            return Err(plan_error("betweenness seeds and k are mutually exclusive"));
         },
-        CugraphAlgorithmParams::EdgeBetweennessCentrality(params) => {
-            if params.seeds.is_some() && params.k.is_some() {
-                return Err(plan_error("betweenness seeds and k are mutually exclusive"));
-            }
+        CugraphAlgorithmParams::EdgeBetweennessCentrality(params) if params.seeds.is_some() && params.k.is_some() => {
+            return Err(plan_error("betweenness seeds and k are mutually exclusive"));
         },
         _ => {},
     }

@@ -518,7 +518,7 @@ fn validate_report_row_owner_scope(row: &StrictBoundedContractGateRow) -> Result
         (
             StrictBoundedContractOwner::Compiled(ReservationGateOwner::SinkBoundary),
             ReservationRequirementScope::Edge,
-        ) if row.reservation_kind == ReservationKind::Materialization => true,
+        ) => sink_boundary_edge_gate_kind_is_allowed(row.reservation_kind),
         (
             StrictBoundedContractOwner::Compiled(ReservationGateOwner::Barrier(_)),
             ReservationRequirementScope::Subgraph,
@@ -537,6 +537,16 @@ fn validate_report_row_owner_scope(row: &StrictBoundedContractGateRow) -> Result
         .with_fact("owner", row.owner.to_string())
         .with_fact("contract_scope", row.contract_scope.as_str())
         .with_fact("reservation_kind", row.reservation_kind.as_str()))
+}
+
+fn sink_boundary_edge_gate_kind_is_allowed(kind: ReservationKind) -> bool {
+    matches!(
+        kind,
+        ReservationKind::SourceRead
+            | ReservationKind::GatherMap
+            | ReservationKind::JoinOutput
+            | ReservationKind::Materialization
+    )
 }
 
 fn validate_quality_gap_consistency(
