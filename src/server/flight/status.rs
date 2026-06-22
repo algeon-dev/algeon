@@ -18,6 +18,15 @@ pub(super) fn verify_flight_info_plan(plan: &LogicalPlan, ticket_kind: Statement
     }
 }
 
+pub(super) fn flight_info_result_schema(plan: &LogicalPlan) -> Schema {
+    match plan {
+        LogicalPlan::Ddl(_) | LogicalPlan::Statement(Statement::SetVariable(_) | Statement::ResetVariable(_)) => {
+            Schema::empty()
+        },
+        _ => plan.schema().as_arrow().clone(),
+    }
+}
+
 pub(super) fn verify_statement_query_plan(plan: &LogicalPlan) -> crate::Result<()> {
     match plan {
         LogicalPlan::Dml(_) | LogicalPlan::Copy(_) => Err(Error::new(

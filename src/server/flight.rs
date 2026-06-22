@@ -526,7 +526,7 @@ impl DatafusionCudfFlightSqlService {
                 correlation_id.as_deref(),
             ));
         }
-        let schema = logical_plan.schema().as_arrow().clone();
+        let schema = flight_info_result_schema(&logical_plan);
 
         // Both ticket variants carry the per-execution `query_id` bytes. For
         // prepared statements this reuses `prepared_statement_handle`; the

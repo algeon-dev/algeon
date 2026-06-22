@@ -42,6 +42,9 @@ async fn flight_sql_client_can_run_select_one() {
     let mut client = connect_with_retry(addr).await;
 
     let flight_info = client.execute("select 1 as one".to_string(), None).await.unwrap();
+    let schema = flight_info.clone().try_decode_schema().unwrap();
+    assert_eq!(schema.fields().len(), 1);
+    assert_eq!(schema.field(0).name(), "one");
     let ticket = flight_info.endpoint.first().and_then(|endpoint| endpoint.ticket.clone()).unwrap();
     let batches = client.do_get(ticket).await.unwrap().try_collect::<Vec<_>>().await.unwrap();
 
@@ -254,12 +257,19 @@ async fn create_view_statement_executes_once_and_persists_across_statements() {
     let server = tokio::spawn(async move { serve_with_listener(config, listener).await });
     let mut client = connect_with_retry(addr).await;
 
-    let batches = execute_batches(
-        &mut client,
-        "CREATE VIEW target_edges AS \
-         SELECT * FROM (VALUES (0::BIGINT, 1::BIGINT), (1::BIGINT, 2::BIGINT)) AS t(src, dst)",
-    )
-    .await;
+    let flight_info = client
+        .execute(
+            "CREATE VIEW target_edges AS \
+         SELECT * FROM (VALUES (0::BIGINT, 1::BIGINT), (1::BIGINT, 2::BIGINT)) AS t(src, dst)"
+                .to_string(),
+            None,
+        )
+        .await
+        .unwrap();
+    let advertised_schema = flight_info.clone().try_decode_schema().unwrap();
+    let (stream_schema, batches) = execute_flight_info_with_stream_schema(&mut client, flight_info).await;
+    assert_eq!(advertised_schema.fields().len(), 0, "DDL FlightInfo must advertise no result-set columns");
+    assert_eq!(stream_schema.fields().len(), 0, "DDL DoGet stream must match the advertised empty schema");
     assert_eq!(batches.iter().map(|batch| batch.num_rows()).sum::<usize>(), 0);
 
     let batches = execute_batches(&mut client, "SELECT COUNT(*) AS edge_count FROM target_edges").await;
@@ -268,6 +278,45 @@ async fn create_view_statement_executes_once_and_persists_across_statements() {
 
     assert_eq!(batches.len(), 1);
     assert_eq!(int_value(batches[0].column(0)), Some(2));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn prepared_create_view_query_advertises_empty_schema_and_persists() {
+    let (listener, addr) = free_local_addr();
+    let mut config = ServerConfig::from_env_get(|_| None).unwrap();
+    config.bind_addr = addr;
+
+    let server = tokio::spawn(async move { serve_with_listener(config, listener).await });
+    let mut client = connect_with_retry(addr).await;
+
+    let mut prepared = client
+        .prepare(
+            "CREATE VIEW prepared_target_edges AS \
+             SELECT * FROM (VALUES (10::BIGINT, 11::BIGINT), (11::BIGINT, 12::BIGINT)) AS t(src, dst)"
+                .to_string(),
+            None,
+        )
+        .await
+        .unwrap();
+    assert_eq!(prepared.dataset_schema().unwrap().fields().len(), 0, "DDL prepared statements do not return rows");
+
+    let flight_info = prepared.execute().await.unwrap();
+    let advertised_schema = flight_info.clone().try_decode_schema().unwrap();
+    let (stream_schema, batches) = execute_flight_info_with_stream_schema(&mut client, flight_info).await;
+    assert_eq!(advertised_schema.fields().len(), 0, "prepared DDL FlightInfo must advertise no result set");
+    assert_eq!(stream_schema.fields().len(), 0, "prepared DDL DoGet stream must match the advertised empty schema");
+    assert_eq!(batches.iter().map(|batch| batch.num_rows()).sum::<usize>(), 0);
+
+    prepared.close().await.unwrap();
+    let batches = execute_batches(&mut client, "SELECT src, dst FROM prepared_target_edges ORDER BY src").await;
+
+    server.abort();
+
+    assert_eq!(batches.len(), 1);
+    assert_eq!(batches[0].schema().fields().len(), 2);
+    assert_eq!(batches[0].num_rows(), 2);
+    assert_eq!(int_value(batches[0].column(0)), Some(10));
+    assert_eq!(int_value(batches[0].column(1)), Some(11));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1592,6 +1641,20 @@ async fn execute_batches(
     let flight_info = client.execute(sql.to_string(), None).await.unwrap();
     let ticket = flight_info.endpoint.first().and_then(|endpoint| endpoint.ticket.clone()).unwrap();
     client.do_get(ticket).await.unwrap().try_collect::<Vec<_>>().await.unwrap()
+}
+
+async fn execute_flight_info_with_stream_schema(
+    client: &mut FlightSqlServiceClient<tonic::transport::Channel>,
+    flight_info: FlightInfo,
+) -> (Schema, Vec<arrow::record_batch::RecordBatch>) {
+    let ticket = flight_info.endpoint.first().and_then(|endpoint| endpoint.ticket.clone()).unwrap();
+    let mut stream = client.do_get(ticket).await.unwrap();
+    let mut batches = Vec::new();
+    while let Some(batch) = stream.try_next().await.unwrap() {
+        batches.push(batch);
+    }
+    let schema = stream.schema().expect("Flight stream must include a schema").as_ref().clone();
+    (schema, batches)
 }
 
 async fn create_prepared_raw(
