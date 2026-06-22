@@ -5,17 +5,29 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
+has_arg() {
+  local wanted="$1"
+  shift
+  for arg in "$@"; do
+    if [[ "${arg}" == "${wanted}" || "${arg}" == "${wanted}="* ]]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
 usage() {
   cat <<'USAGE'
 Usage:
-  fixture.sh tpch generate [--scale sf10] [--out PATH] [--force]
-  fixture.sh tpcds generate [--scale sf10] [--out PATH] [--force]
+  fixture.sh tpch generate [--scale N...] [--out-root PATH] [--variant raw|optimized|both] [--force]
+  fixture.sh tpcds generate [--scale N...] [--out-root PATH] [--variant raw|optimized|both] [--force]
   fixture.sh clickbench fetch [--layout single|partitioned|both] [--out PATH]
   fixture.sh iceberg rest load --workload tpch|tpcds [--scale sf1]
   fixture.sh iceberg glue-moto load --workload tpch|tpcds [--scale sf1]
 
-This is a thin router. Workload-specific logic lives under
-fixture/scripts/workloads/.
+This is a thin router. TPC-H / TPC-DS generation (and layout optimization) live in
+fixture/scripts/gen_tpch.py and gen_tpcds.py; other workloads live under
+fixture/scripts/workloads/. Run a gen_*.py with --help for the full flag set.
 USAGE
 }
 
@@ -35,10 +47,16 @@ shift 2
 
 case "${domain}:${command}" in
   tpch:generate)
-    exec "${SCRIPT_DIR}/workloads/tpch/generate.sh" "$@"
+    if ! has_arg "--variant" "$@" && ! has_arg "--out-root" "$@"; then
+      set -- --variant raw --no-verify "$@"
+    fi
+    exec python3 "${SCRIPT_DIR}/gen_tpch.py" "$@"
     ;;
   tpcds:generate)
-    exec "${SCRIPT_DIR}/workloads/tpcds/generate.sh" "$@"
+    if ! has_arg "--variant" "$@" && ! has_arg "--out-root" "$@"; then
+      set -- --variant raw --no-verify "$@"
+    fi
+    exec python3 "${SCRIPT_DIR}/gen_tpcds.py" "$@"
     ;;
   clickbench:fetch)
     exec "${SCRIPT_DIR}/workloads/clickbench/fetch.sh" "$@"
