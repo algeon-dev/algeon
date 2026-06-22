@@ -74,13 +74,14 @@ fn benchmark_planning_row_selection_handles_multi_candidate_reports() {
 fn benchmark_query_progress_line_identifies_query_and_profile() {
     let config = NativeTpchBenchmarkConfig {
         query_ids: vec!["q07".to_string()],
-        native_memory_policy: NativeTpchMemoryPolicy::Bounded {
-            device_budget_bytes: 94_489_280_512,
-            max_source_chunk_bytes: 34_359_738_368,
-            max_row_groups_per_chunk: 1024,
-            max_retry_attempts: DEFAULT_NATIVE_MAX_RETRY_ATTEMPTS,
-            min_retry_chunk_row_groups: DEFAULT_NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS,
-        },
+        native_memory_policy: NativeTpchMemoryPolicy::bounded_custom(
+            94_489_280_512,
+            34_359_738_368,
+            1024,
+            DEFAULT_NATIVE_MAX_RETRY_ATTEMPTS,
+            DEFAULT_NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS,
+            nexus_query_engine::SourceChunkPlanningMode::LocalParquetThroughput,
+        ),
         dataset_mode: NativeTpchDatasetMode::External(NativeTpchScaleFactor::Sf100),
         ..NativeTpchBenchmarkConfig::default()
     };
@@ -92,9 +93,31 @@ fn benchmark_query_progress_line_identifies_query_and_profile() {
     assert!(line.contains("dataset_mode=sf100_external"));
     assert!(line.contains("execution_mode=strict_bounded"));
     assert!(line.contains("memory_policy=bounded"));
+    assert!(line.contains("native_profile=custom"));
+    assert!(line.contains("source_chunk_planning_mode=local_parquet_throughput"));
     assert!(line.contains("max_row_groups_per_chunk=1024"));
     assert!(line.contains("max_source_chunk_bytes=34359738368"));
     assert!(line.contains("skip_cpu="));
+}
+
+#[test]
+fn benchmark_query_progress_line_identifies_named_sf100_profile() {
+    let profile =
+        tpch_native_profile_settings_from([(CUDF_TPCH_BENCH_NATIVE_PROFILE_ENV, "sf100_gpu_throughput")]).unwrap();
+    let config = NativeTpchBenchmarkConfig {
+        query_ids: vec!["q07".to_string()],
+        native_memory_policy: NativeTpchMemoryPolicy::bounded_from_profile_settings(profile),
+        dataset_mode: NativeTpchDatasetMode::External(NativeTpchScaleFactor::Sf100),
+        ..NativeTpchBenchmarkConfig::default()
+    };
+    let query = TPCH_QUERIES.iter().find(|query| query.id == "q07").unwrap();
+
+    let line = benchmark_query_progress_line(&config, query, 0, 1);
+
+    assert!(line.contains("native_profile=sf100_gpu_throughput"));
+    assert!(line.contains("source_chunk_planning_mode=local_parquet_throughput"));
+    assert!(line.contains("max_row_groups_per_chunk=1024"));
+    assert!(line.contains("max_source_chunk_bytes=34359738368"));
 }
 
 #[test]
@@ -244,6 +267,10 @@ fn benchmark_sf10_metadata() -> TpchDatasetMetadata {
     benchmark_metadata_for_scale("sf10", 86_586_082, benchmark_sf10_tables())
 }
 
+fn benchmark_sf100_metadata() -> TpchDatasetMetadata {
+    benchmark_metadata_for_scale("sf100", 866_037_932, benchmark_sf100_tables())
+}
+
 fn benchmark_metadata_for_scale(
     scale_factor: impl Into<String>,
     total_rows: u64,
@@ -287,6 +314,19 @@ fn benchmark_sf10_tables() -> Vec<TpchTableMetadata> {
         ("partsupp", 8_000_000),
         ("region", 5),
         ("supplier", 100_000),
+    ])
+}
+
+fn benchmark_sf100_tables() -> Vec<TpchTableMetadata> {
+    benchmark_tables(&[
+        ("customer", 15_000_000),
+        ("lineitem", 600_037_902),
+        ("nation", 25),
+        ("orders", 150_000_000),
+        ("part", 20_000_000),
+        ("partsupp", 80_000_000),
+        ("region", 5),
+        ("supplier", 1_000_000),
     ])
 }
 
@@ -514,4 +554,11 @@ fn query_measurement(fingerprint: &str) -> execution::QueryMeasurement {
 
 fn header_index(header: &[&str], name: &str) -> usize {
     header.iter().position(|field| *field == name).unwrap_or_else(|| panic!("missing TSV field {name}"))
+}
+
+fn tpch_native_profile_settings_from<const N: usize>(
+    entries: [(&'static str, &'static str); N],
+) -> DataFusionResult<NativeTpchProfileSettings> {
+    let env = entries.into_iter().collect::<std::collections::BTreeMap<_, _>>();
+    native_tpch_profile_settings_with_env(|name| env.get(name).copied().map(ToString::to_string))
 }

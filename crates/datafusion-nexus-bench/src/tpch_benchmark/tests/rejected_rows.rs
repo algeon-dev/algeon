@@ -37,8 +37,11 @@ fn benchmark_report_header_and_rejected_rows_are_stable() {
     assert!(text.contains("# tpch_benchmark_native_peak_memory_fields=max_across_measured_iterations\n"));
     assert!(text.contains("# tpch_benchmark_native_timing_fields=per_measured_iteration_mean\n"));
     assert!(text.contains("# tpch_benchmark_dataset_mode=sf1_external\n"));
+    assert!(text.contains("# tpch_benchmark_native_profile_name=conservative\n"));
+    assert!(text.contains("# tpch_benchmark_native_profile_source=default\n"));
     assert!(text.contains("# tpch_benchmark_native_device_budget_bytes=15032385536\n"));
     assert!(text.contains("# tpch_benchmark_native_max_source_chunk_bytes=536870912\n"));
+    assert!(text.contains("# tpch_benchmark_native_source_chunk_planning_mode=conservative\n"));
     assert!(text.contains("# tpch_benchmark_native_max_source_reads_in_flight=2\n"));
     assert!(text.contains("# tpch_benchmark_native_source_cache_policy=disabled\n"));
     assert!(text.contains("# tpch_benchmark_native_source_cache_max_retained_bytes=none\n"));
@@ -50,4 +53,26 @@ fn benchmark_report_header_and_rejected_rows_are_stable() {
     assert!(!text.contains("bounded_join_reservation_facts"));
     assert!(!text.contains("bounded_join_execution_family"));
     assert!(text.contains("\ttrue\tfalse\tfalse\tnot_started\tnone\tnone\tnone\tnone\tnone\tnone\tnone\tnone\tnone\tnone\tnone\tnone\tnot_run\t"));
+}
+
+#[test]
+fn benchmark_report_metadata_identifies_named_sf100_profile() {
+    let profile =
+        tpch_native_profile_settings_from([(CUDF_TPCH_BENCH_NATIVE_PROFILE_ENV, "sf100_gpu_throughput")]).unwrap();
+    let config = NativeTpchBenchmarkConfig {
+        query_ids: vec!["q01".to_string()],
+        dataset_mode: NativeTpchDatasetMode::External(NativeTpchScaleFactor::Sf100),
+        native_memory_policy: NativeTpchMemoryPolicy::bounded_from_profile_settings(profile),
+        ..NativeTpchBenchmarkConfig::default()
+    };
+    let report = NativeTpchBenchmarkReport { metadata: benchmark_sf100_metadata(), config, rows: Vec::new() };
+
+    let text = report.to_tsv();
+
+    assert!(text.contains("# tpch_benchmark_native_profile_name=sf100_gpu_throughput\n"));
+    assert!(text.contains("# tpch_benchmark_native_profile_source=env_profile\n"));
+    assert!(text.contains("# tpch_benchmark_native_device_budget_bytes=102005473280\n"));
+    assert!(text.contains("# tpch_benchmark_native_max_source_chunk_bytes=34359738368\n"));
+    assert!(text.contains("# tpch_benchmark_native_max_row_groups_per_chunk=1024\n"));
+    assert!(text.contains("# tpch_benchmark_native_source_chunk_planning_mode=local_parquet_throughput\n"));
 }

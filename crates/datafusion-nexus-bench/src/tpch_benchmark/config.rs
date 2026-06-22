@@ -1,5 +1,17 @@
 use super::*;
 
+pub(super) const CUDF_TPCH_BENCH_NATIVE_PROFILE_ENV: &str = "CUDF_TPCH_BENCH_NATIVE_PROFILE";
+pub(super) const CUDF_TPCH_BENCH_NATIVE_DEVICE_BUDGET_BYTES_ENV: &str = "CUDF_TPCH_BENCH_NATIVE_DEVICE_BUDGET_BYTES";
+pub(super) const CUDF_TPCH_BENCH_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV: &str =
+    "CUDF_TPCH_BENCH_NATIVE_MAX_SOURCE_CHUNK_BYTES";
+pub(super) const CUDF_TPCH_BENCH_NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV: &str =
+    "CUDF_TPCH_BENCH_NATIVE_MAX_ROW_GROUPS_PER_CHUNK";
+pub(super) const CUDF_TPCH_BENCH_NATIVE_MAX_RETRY_ATTEMPTS_ENV: &str = "CUDF_TPCH_BENCH_NATIVE_MAX_RETRY_ATTEMPTS";
+pub(super) const CUDF_TPCH_BENCH_NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS_ENV: &str =
+    "CUDF_TPCH_BENCH_NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS";
+pub(super) const CUDF_TPCH_BENCH_NATIVE_SOURCE_CHUNK_PLANNING_MODE_ENV: &str =
+    "CUDF_TPCH_BENCH_NATIVE_SOURCE_CHUNK_PLANNING_MODE";
+
 pub(super) const DEFAULT_NATIVE_DEVICE_BUDGET_BYTES: u64 = 14 * 1024 * 1024 * 1024;
 pub(super) const DEFAULT_NATIVE_MAX_SOURCE_CHUNK_BYTES: u64 = 512 * 1024 * 1024;
 pub(super) const DEFAULT_NATIVE_MAX_ROW_GROUPS_PER_CHUNK: usize = 1;
@@ -7,6 +19,13 @@ pub(super) const DEFAULT_NATIVE_MAX_RETRY_ATTEMPTS: usize = 4;
 pub(super) const DEFAULT_NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS: usize = 1;
 pub(super) const DEFAULT_NATIVE_MAX_SOURCE_READS_IN_FLIGHT: usize = 2;
 pub(super) const DEFAULT_NATIVE_SOURCE_CACHE_MAX_RETAINED_BYTES: u64 = 8 * 1024 * 1024 * 1024;
+
+pub(super) const TPCH_NATIVE_PROFILE_CONSERVATIVE: &str = "conservative";
+pub(super) const TPCH_NATIVE_PROFILE_SF100_GPU_THROUGHPUT: &str = "sf100_gpu_throughput";
+pub(super) const TPCH_NATIVE_PROFILE_CUSTOM: &str = "custom";
+pub(super) const TPCH_SF100_GPU_THROUGHPUT_DEVICE_BUDGET_BYTES: u64 = 102_005_473_280;
+pub(super) const TPCH_SF100_GPU_THROUGHPUT_MAX_SOURCE_CHUNK_BYTES: u64 = 34_359_738_368;
+pub(super) const TPCH_SF100_GPU_THROUGHPUT_MAX_ROW_GROUPS_PER_CHUNK: usize = 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct NativeTpchBenchmarkConfig {
@@ -87,6 +106,8 @@ impl NativeTpchBenchmarkConfig {
                 max_row_groups_per_chunk,
                 max_retry_attempts,
                 min_retry_chunk_row_groups,
+                source_chunk_planning_mode,
+                ..
             } => NativeCudfExecutionConfig::bounded(
                 device_budget_bytes,
                 max_source_chunk_bytes,
@@ -96,7 +117,8 @@ impl NativeTpchBenchmarkConfig {
             )
             .with_source_scheduler_policy(nexus_query_engine::SourceSchedulerPolicy::new(
                 self.max_source_reads_in_flight,
-            )),
+            ))
+            .with_source_chunk_planning_mode(source_chunk_planning_mode),
         };
         config
             .with_optional_shared_runtime(resources.runtime.clone())
@@ -231,11 +253,14 @@ impl NativeTpchScaleFactor {
 pub(super) enum NativeTpchMemoryPolicy {
     Unbounded,
     Bounded {
+        profile_name: &'static str,
+        profile_source: &'static str,
         device_budget_bytes: u64,
         max_source_chunk_bytes: u64,
         max_row_groups_per_chunk: usize,
         max_retry_attempts: usize,
         min_retry_chunk_row_groups: usize,
+        source_chunk_planning_mode: nexus_query_engine::SourceChunkPlanningMode,
     },
 }
 
@@ -247,29 +272,42 @@ impl NativeTpchMemoryPolicy {
         };
         match policy.as_str() {
             "unbounded" => Ok(Self::Unbounded),
-            "bounded" => Ok(Self::Bounded {
-                device_budget_bytes: env_u64(
-                    "CUDF_TPCH_BENCH_NATIVE_DEVICE_BUDGET_BYTES",
-                    DEFAULT_NATIVE_DEVICE_BUDGET_BYTES,
-                )?,
-                max_source_chunk_bytes: env_u64(
-                    "CUDF_TPCH_BENCH_NATIVE_MAX_SOURCE_CHUNK_BYTES",
-                    DEFAULT_NATIVE_MAX_SOURCE_CHUNK_BYTES,
-                )?,
-                max_row_groups_per_chunk: env_usize(
-                    "CUDF_TPCH_BENCH_NATIVE_MAX_ROW_GROUPS_PER_CHUNK",
-                    DEFAULT_NATIVE_MAX_ROW_GROUPS_PER_CHUNK,
-                )?,
-                max_retry_attempts: env_usize(
-                    "CUDF_TPCH_BENCH_NATIVE_MAX_RETRY_ATTEMPTS",
-                    DEFAULT_NATIVE_MAX_RETRY_ATTEMPTS,
-                )?,
-                min_retry_chunk_row_groups: env_usize(
-                    "CUDF_TPCH_BENCH_NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS",
-                    DEFAULT_NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS,
-                )?,
-            }),
+            "bounded" => Ok(Self::bounded_from_profile_settings(native_tpch_profile_settings_from_env()?)),
             other => Err(plan_error(format!("invalid {name}: {other}; expected bounded or unbounded"))),
+        }
+    }
+
+    #[cfg(test)]
+    pub(super) const fn bounded_custom(
+        device_budget_bytes: u64,
+        max_source_chunk_bytes: u64,
+        max_row_groups_per_chunk: usize,
+        max_retry_attempts: usize,
+        min_retry_chunk_row_groups: usize,
+        source_chunk_planning_mode: nexus_query_engine::SourceChunkPlanningMode,
+    ) -> Self {
+        Self::Bounded {
+            profile_name: TPCH_NATIVE_PROFILE_CUSTOM,
+            profile_source: "direct_config",
+            device_budget_bytes,
+            max_source_chunk_bytes,
+            max_row_groups_per_chunk,
+            max_retry_attempts,
+            min_retry_chunk_row_groups,
+            source_chunk_planning_mode,
+        }
+    }
+
+    pub(super) fn bounded_from_profile_settings(profile: NativeTpchProfileSettings) -> Self {
+        Self::Bounded {
+            profile_name: profile.profile_name,
+            profile_source: profile.profile_source,
+            device_budget_bytes: profile.device_budget_bytes,
+            max_source_chunk_bytes: profile.max_source_chunk_bytes,
+            max_row_groups_per_chunk: profile.max_row_groups_per_chunk,
+            max_retry_attempts: profile.max_retry_attempts,
+            min_retry_chunk_row_groups: profile.min_retry_chunk_row_groups,
+            source_chunk_planning_mode: profile.source_chunk_planning_mode,
         }
     }
 
@@ -287,15 +325,16 @@ impl NativeTpchMemoryPolicy {
             max_row_groups_per_chunk,
             max_retry_attempts,
             min_retry_chunk_row_groups,
+            ..
         } = self
         else {
             return Ok(());
         };
-        validate_nonzero("CUDF_TPCH_BENCH_NATIVE_DEVICE_BUDGET_BYTES", device_budget_bytes)?;
-        validate_nonzero("CUDF_TPCH_BENCH_NATIVE_MAX_SOURCE_CHUNK_BYTES", max_source_chunk_bytes)?;
-        validate_nonzero("CUDF_TPCH_BENCH_NATIVE_MAX_ROW_GROUPS_PER_CHUNK", max_row_groups_per_chunk)?;
-        validate_nonzero("CUDF_TPCH_BENCH_NATIVE_MAX_RETRY_ATTEMPTS", max_retry_attempts)?;
-        validate_nonzero("CUDF_TPCH_BENCH_NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS", min_retry_chunk_row_groups)?;
+        validate_nonzero(CUDF_TPCH_BENCH_NATIVE_DEVICE_BUDGET_BYTES_ENV, device_budget_bytes)?;
+        validate_nonzero(CUDF_TPCH_BENCH_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV, max_source_chunk_bytes)?;
+        validate_nonzero(CUDF_TPCH_BENCH_NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV, max_row_groups_per_chunk)?;
+        validate_nonzero(CUDF_TPCH_BENCH_NATIVE_MAX_RETRY_ATTEMPTS_ENV, max_retry_attempts)?;
+        validate_nonzero(CUDF_TPCH_BENCH_NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS_ENV, min_retry_chunk_row_groups)?;
         Ok(())
     }
 }
@@ -303,13 +342,179 @@ impl NativeTpchMemoryPolicy {
 impl Default for NativeTpchMemoryPolicy {
     fn default() -> Self {
         Self::Bounded {
+            profile_name: TPCH_NATIVE_PROFILE_CONSERVATIVE,
+            profile_source: "default",
             device_budget_bytes: DEFAULT_NATIVE_DEVICE_BUDGET_BYTES,
             max_source_chunk_bytes: DEFAULT_NATIVE_MAX_SOURCE_CHUNK_BYTES,
             max_row_groups_per_chunk: DEFAULT_NATIVE_MAX_ROW_GROUPS_PER_CHUNK,
             max_retry_attempts: DEFAULT_NATIVE_MAX_RETRY_ATTEMPTS,
             min_retry_chunk_row_groups: DEFAULT_NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS,
+            source_chunk_planning_mode: nexus_query_engine::SourceChunkPlanningMode::Conservative,
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct NativeTpchProfileSettings {
+    pub(super) profile_name: &'static str,
+    pub(super) profile_source: &'static str,
+    pub(super) device_budget_bytes: u64,
+    pub(super) max_source_chunk_bytes: u64,
+    pub(super) max_row_groups_per_chunk: usize,
+    pub(super) max_retry_attempts: usize,
+    pub(super) min_retry_chunk_row_groups: usize,
+    pub(super) source_chunk_planning_mode: nexus_query_engine::SourceChunkPlanningMode,
+}
+
+impl NativeTpchProfileSettings {
+    fn from_base(base: NativeTpchProfileBase) -> Self {
+        Self {
+            profile_name: base.name,
+            profile_source: base.source,
+            device_budget_bytes: base.device_budget_bytes,
+            max_source_chunk_bytes: base.max_source_chunk_bytes,
+            max_row_groups_per_chunk: base.max_row_groups_per_chunk,
+            max_retry_attempts: base.max_retry_attempts,
+            min_retry_chunk_row_groups: base.min_retry_chunk_row_groups,
+            source_chunk_planning_mode: base.source_chunk_planning_mode,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct NativeTpchProfileBase {
+    name: &'static str,
+    source: &'static str,
+    device_budget_bytes: u64,
+    max_source_chunk_bytes: u64,
+    max_row_groups_per_chunk: usize,
+    max_retry_attempts: usize,
+    min_retry_chunk_row_groups: usize,
+    source_chunk_planning_mode: nexus_query_engine::SourceChunkPlanningMode,
+}
+
+fn native_tpch_profile_settings_from_env() -> DataFusionResult<NativeTpchProfileSettings> {
+    native_tpch_profile_settings_with_env(|name| {
+        std::env::var_os(name).map(|value| value.to_string_lossy().into_owned())
+    })
+}
+
+pub(super) fn native_tpch_profile_settings_with_env(
+    mut get: impl FnMut(&'static str) -> Option<String>,
+) -> DataFusionResult<NativeTpchProfileSettings> {
+    let requested_profile = get(CUDF_TPCH_BENCH_NATIVE_PROFILE_ENV).map(|value| value.trim().to_ascii_lowercase());
+    let base = native_tpch_profile_base(requested_profile.as_deref())?;
+    let mut resolved = NativeTpchProfileSettings::from_base(base);
+    let device_budget_bytes = get(CUDF_TPCH_BENCH_NATIVE_DEVICE_BUDGET_BYTES_ENV);
+    let max_source_chunk_bytes = get(CUDF_TPCH_BENCH_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV);
+    let max_row_groups_per_chunk = get(CUDF_TPCH_BENCH_NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV);
+    let max_retry_attempts = get(CUDF_TPCH_BENCH_NATIVE_MAX_RETRY_ATTEMPTS_ENV);
+    let min_retry_chunk_row_groups = get(CUDF_TPCH_BENCH_NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS_ENV);
+    let source_chunk_planning_mode = get(CUDF_TPCH_BENCH_NATIVE_SOURCE_CHUNK_PLANNING_MODE_ENV);
+    let had_override = device_budget_bytes.is_some()
+        || max_source_chunk_bytes.is_some()
+        || max_row_groups_per_chunk.is_some()
+        || max_retry_attempts.is_some()
+        || min_retry_chunk_row_groups.is_some()
+        || source_chunk_planning_mode.is_some();
+
+    if let Some(value) = device_budget_bytes {
+        resolved.device_budget_bytes = parse_env_u64_value(CUDF_TPCH_BENCH_NATIVE_DEVICE_BUDGET_BYTES_ENV, value)?;
+    }
+    if let Some(value) = max_source_chunk_bytes {
+        resolved.max_source_chunk_bytes =
+            parse_env_u64_value(CUDF_TPCH_BENCH_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV, value)?;
+    }
+    if let Some(value) = max_row_groups_per_chunk {
+        resolved.max_row_groups_per_chunk =
+            parse_env_usize_value(CUDF_TPCH_BENCH_NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV, value)?;
+    }
+    if let Some(value) = max_retry_attempts {
+        resolved.max_retry_attempts = parse_env_usize_value(CUDF_TPCH_BENCH_NATIVE_MAX_RETRY_ATTEMPTS_ENV, value)?;
+    }
+    if let Some(value) = min_retry_chunk_row_groups {
+        resolved.min_retry_chunk_row_groups =
+            parse_env_usize_value(CUDF_TPCH_BENCH_NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS_ENV, value)?;
+    }
+    if let Some(value) = source_chunk_planning_mode {
+        resolved.source_chunk_planning_mode = parse_env_source_chunk_planning_mode(value)?;
+    }
+    validate_tpch_profile_settings(&resolved)?;
+
+    let conservative = native_tpch_profile_base(Some(TPCH_NATIVE_PROFILE_CONSERVATIVE))?;
+    let sf100 = native_tpch_profile_base(Some(TPCH_NATIVE_PROFILE_SF100_GPU_THROUGHPUT))?;
+    let requested_without_override = requested_profile.is_some() && !had_override;
+    if same_tpch_profile_values(&resolved, conservative) {
+        resolved.profile_name = TPCH_NATIVE_PROFILE_CONSERVATIVE;
+        resolved.profile_source = if requested_without_override {
+            "env_profile"
+        } else if had_override {
+            "resolved_values"
+        } else {
+            "default"
+        };
+    } else if same_tpch_profile_values(&resolved, sf100) {
+        resolved.profile_name = TPCH_NATIVE_PROFILE_SF100_GPU_THROUGHPUT;
+        resolved.profile_source = if requested_without_override {
+            "env_profile"
+        } else if had_override {
+            "resolved_values"
+        } else {
+            "default"
+        };
+    } else if had_override {
+        resolved.profile_name = TPCH_NATIVE_PROFILE_CUSTOM;
+        resolved.profile_source = "custom_overrides";
+    }
+
+    Ok(resolved)
+}
+
+fn validate_tpch_profile_settings(profile: &NativeTpchProfileSettings) -> DataFusionResult<()> {
+    validate_nonzero(CUDF_TPCH_BENCH_NATIVE_DEVICE_BUDGET_BYTES_ENV, profile.device_budget_bytes)?;
+    validate_nonzero(CUDF_TPCH_BENCH_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV, profile.max_source_chunk_bytes)?;
+    validate_nonzero(CUDF_TPCH_BENCH_NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV, profile.max_row_groups_per_chunk)?;
+    validate_nonzero(CUDF_TPCH_BENCH_NATIVE_MAX_RETRY_ATTEMPTS_ENV, profile.max_retry_attempts)?;
+    validate_nonzero(CUDF_TPCH_BENCH_NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS_ENV, profile.min_retry_chunk_row_groups)?;
+    Ok(())
+}
+
+fn native_tpch_profile_base(profile: Option<&str>) -> DataFusionResult<NativeTpchProfileBase> {
+    let profile = profile.unwrap_or(TPCH_NATIVE_PROFILE_CONSERVATIVE);
+    match profile {
+        TPCH_NATIVE_PROFILE_CONSERVATIVE => Ok(NativeTpchProfileBase {
+            name: TPCH_NATIVE_PROFILE_CONSERVATIVE,
+            source: "default",
+            device_budget_bytes: DEFAULT_NATIVE_DEVICE_BUDGET_BYTES,
+            max_source_chunk_bytes: DEFAULT_NATIVE_MAX_SOURCE_CHUNK_BYTES,
+            max_row_groups_per_chunk: DEFAULT_NATIVE_MAX_ROW_GROUPS_PER_CHUNK,
+            max_retry_attempts: DEFAULT_NATIVE_MAX_RETRY_ATTEMPTS,
+            min_retry_chunk_row_groups: DEFAULT_NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS,
+            source_chunk_planning_mode: nexus_query_engine::SourceChunkPlanningMode::Conservative,
+        }),
+        TPCH_NATIVE_PROFILE_SF100_GPU_THROUGHPUT => Ok(NativeTpchProfileBase {
+            name: TPCH_NATIVE_PROFILE_SF100_GPU_THROUGHPUT,
+            source: "env_profile",
+            device_budget_bytes: TPCH_SF100_GPU_THROUGHPUT_DEVICE_BUDGET_BYTES,
+            max_source_chunk_bytes: TPCH_SF100_GPU_THROUGHPUT_MAX_SOURCE_CHUNK_BYTES,
+            max_row_groups_per_chunk: TPCH_SF100_GPU_THROUGHPUT_MAX_ROW_GROUPS_PER_CHUNK,
+            max_retry_attempts: DEFAULT_NATIVE_MAX_RETRY_ATTEMPTS,
+            min_retry_chunk_row_groups: DEFAULT_NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS,
+            source_chunk_planning_mode: nexus_query_engine::SourceChunkPlanningMode::LocalParquetThroughput,
+        }),
+        other => Err(plan_error(format!(
+            "invalid {CUDF_TPCH_BENCH_NATIVE_PROFILE_ENV}: {other}; expected {TPCH_NATIVE_PROFILE_CONSERVATIVE} or {TPCH_NATIVE_PROFILE_SF100_GPU_THROUGHPUT}"
+        ))),
+    }
+}
+
+fn same_tpch_profile_values(profile: &NativeTpchProfileSettings, base: NativeTpchProfileBase) -> bool {
+    profile.device_budget_bytes == base.device_budget_bytes
+        && profile.max_source_chunk_bytes == base.max_source_chunk_bytes
+        && profile.max_row_groups_per_chunk == base.max_row_groups_per_chunk
+        && profile.max_retry_attempts == base.max_retry_attempts
+        && profile.min_retry_chunk_row_groups == base.min_retry_chunk_row_groups
+        && profile.source_chunk_planning_mode == base.source_chunk_planning_mode
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -398,6 +603,30 @@ fn env_u64(name: &'static str, default: u64) -> DataFusionResult<u64> {
         return Ok(default);
     };
     value.to_string_lossy().parse::<u64>().map_err(|error| plan_error(format!("invalid {name}: {error}")))
+}
+
+fn parse_env_usize_value(name: &'static str, value: String) -> DataFusionResult<usize> {
+    let value = value.trim();
+    value.parse::<usize>().map_err(|error| plan_error(format!("invalid {name}: {error}")))
+}
+
+fn parse_env_u64_value(name: &'static str, value: String) -> DataFusionResult<u64> {
+    let value = value.trim();
+    value.parse::<u64>().map_err(|error| plan_error(format!("invalid {name}: {error}")))
+}
+
+fn parse_env_source_chunk_planning_mode(
+    value: String,
+) -> DataFusionResult<nexus_query_engine::SourceChunkPlanningMode> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "conservative" => Ok(nexus_query_engine::SourceChunkPlanningMode::Conservative),
+        "local_parquet_throughput" | "local_throughput" => {
+            Ok(nexus_query_engine::SourceChunkPlanningMode::LocalParquetThroughput)
+        },
+        other => Err(plan_error(format!(
+            "invalid {CUDF_TPCH_BENCH_NATIVE_SOURCE_CHUNK_PLANNING_MODE_ENV}: {other}; expected conservative or local_parquet_throughput"
+        ))),
+    }
 }
 
 fn optional_env_bool(name: &'static str) -> DataFusionResult<Option<bool>> {

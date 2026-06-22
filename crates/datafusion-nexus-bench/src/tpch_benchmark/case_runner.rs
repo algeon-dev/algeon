@@ -25,20 +25,34 @@ pub(super) fn benchmark_query_progress_line(
     query_index: usize,
     query_count: usize,
 ) -> String {
-    let (max_row_groups_per_chunk, max_source_chunk_bytes) = match config.native_memory_policy {
-        NativeTpchMemoryPolicy::Bounded { max_row_groups_per_chunk, max_source_chunk_bytes, .. } => {
-            (max_row_groups_per_chunk.to_string(), max_source_chunk_bytes.to_string())
-        },
-        NativeTpchMemoryPolicy::Unbounded => ("unbounded".to_string(), "unbounded".to_string()),
-    };
+    let (profile_name, source_chunk_planning_mode, max_row_groups_per_chunk, max_source_chunk_bytes) =
+        match config.native_memory_policy {
+            NativeTpchMemoryPolicy::Bounded {
+                profile_name,
+                source_chunk_planning_mode,
+                max_row_groups_per_chunk,
+                max_source_chunk_bytes,
+                ..
+            } => (
+                profile_name.to_string(),
+                source_chunk_planning_mode.as_str().to_string(),
+                max_row_groups_per_chunk.to_string(),
+                max_source_chunk_bytes.to_string(),
+            ),
+            NativeTpchMemoryPolicy::Unbounded => {
+                ("none".to_string(), "none".to_string(), "unbounded".to_string(), "unbounded".to_string())
+            },
+        };
     format!(
-        "[native_tpch_benchmark] stage=query_start query={} index={}/{} dataset_mode={} execution_mode={} memory_policy={} max_row_groups_per_chunk={} max_source_chunk_bytes={} skip_cpu={}",
+        "[native_tpch_benchmark] stage=query_start query={} index={}/{} dataset_mode={} execution_mode={} memory_policy={} native_profile={} source_chunk_planning_mode={} max_row_groups_per_chunk={} max_source_chunk_bytes={} skip_cpu={}",
         query.id,
         query_index.saturating_add(1),
         query_count,
         config.dataset_mode.as_str(),
         config.native_pipeline_execution_mode.as_str(),
         config.native_memory_policy.as_str(),
+        profile_name,
+        source_chunk_planning_mode,
         max_row_groups_per_chunk,
         max_source_chunk_bytes,
         std::env::var_os("CUDF_TPCH_BENCH_SKIP_CPU").is_some(),
