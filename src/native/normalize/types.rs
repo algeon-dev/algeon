@@ -400,13 +400,15 @@ impl NormalizedNativeWindow<'_> {
 #[derive(Debug, Clone)]
 pub(in crate::native) struct NormalizedNativeHashJoin<'a> {
     pub(in crate::native) join: &'a HashJoinExec,
+    pub(in crate::native) fetch: Option<LimitSpec>,
     pub(in crate::native) left: Box<NormalizedNativeInput<'a>>,
     pub(in crate::native) right: Box<NormalizedNativeInput<'a>>,
 }
 
 impl NormalizedNativeHashJoin<'_> {
     fn shape(&self) -> String {
-        wrap_shape("HashJoinExec", format!("{},{}", self.left.shape(), self.right.shape()))
+        let name = if self.fetch.is_some() { "HashJoinExec(fetch)" } else { "HashJoinExec" };
+        wrap_shape(name, format!("{},{}", self.left.shape(), self.right.shape()))
     }
 
     fn operator_count(&self) -> usize {

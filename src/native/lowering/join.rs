@@ -447,7 +447,13 @@ pub(super) fn lower_hash_join_input(
         spec = spec.with_mark_column_name(mark_name);
     }
     let node = builder.add_join(native_left.node, native_right.node, spec, Arc::clone(&output_columns.schema));
-    Ok(LoweredNativeInput::with_bindings(node, output_columns.schema, output_columns.bindings))
+    let output = LoweredNativeInput::with_bindings(node, output_columns.schema, output_columns.bindings);
+    if let Some(fetch) = join.fetch {
+        let node = builder.add_limit(output.node, fetch, Arc::clone(&output.schema));
+        Ok(LoweredNativeInput::with_bindings(node, output.schema, output.bindings))
+    } else {
+        Ok(output)
+    }
 }
 
 pub(super) fn lower_nested_loop_join_input(

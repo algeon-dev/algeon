@@ -542,6 +542,7 @@ fn normalize_native_input(
         let right = normalize_native_input(join.right().as_ref(), candidate)?;
         return Ok(NormalizedNativeInput::HashJoin(NormalizedNativeHashJoin {
             join,
+            fetch: join.fetch().map(NativeLimitSpec::fetch),
             left: Box::new(left),
             right: Box::new(right),
         }));
