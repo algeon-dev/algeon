@@ -56,6 +56,14 @@ fn catalog_backend_error(message: &'static str, catalog_type: &'static str, sour
     error.with_source(source)
 }
 
+fn glue_catalog_backend_error(
+    message: &'static str,
+    context: &GlueCatalogBackendErrorContext,
+    source: iceberg::Error,
+) -> Error {
+    context.apply(catalog_backend_error(message, "glue", source))
+}
+
 fn catalog_backend_error_code(source: &iceberg::Error, aws_facts: Option<&AwsCatalogErrorFacts>) -> ErrorCode {
     if let Some(aws_facts) = aws_facts {
         if matches!(
@@ -1066,6 +1074,74 @@ impl GlueIcebergCatalogConfig {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct GlueCatalogCredentialFacts {
+    profile: Option<String>,
+    credential_source: super::GlueIcebergCredentialSource,
+}
+
+impl GlueCatalogCredentialFacts {
+    fn from_config_env(
+        config: &GlueIcebergCatalogConfig,
+        mut get: impl FnMut(&str) -> Option<String>,
+    ) -> GlueCatalogCredentialFacts {
+        let profile =
+            config.profile.clone().or_else(|| super::non_empty(get(crate::table_format::iceberg::AWS_PROFILE_ENV)));
+        let has_access_key = super::non_empty(get(crate::table_format::iceberg::AWS_ACCESS_KEY_ID_ENV)).is_some();
+        let has_secret_key = super::non_empty(get(crate::table_format::iceberg::AWS_SECRET_ACCESS_KEY_ENV)).is_some();
+        let has_session_token = super::non_empty(
+            get(crate::table_format::iceberg::AWS_SESSION_TOKEN_ENV)
+                .or_else(|| get(crate::table_format::iceberg::AWS_SECURITY_TOKEN_ENV)),
+        )
+        .is_some();
+        let credential_source = super::GlueIcebergCredentialSource::from_parts(
+            profile.as_deref(),
+            has_access_key,
+            has_secret_key,
+            has_session_token,
+        );
+        Self { profile, credential_source }
+    }
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+struct GlueCatalogBackendErrorContext {
+    catalog_handle: Option<String>,
+    catalog_id: Option<String>,
+    region: Option<String>,
+    credential_facts: Option<GlueCatalogCredentialFacts>,
+}
+
+impl GlueCatalogBackendErrorContext {
+    fn from_config(config: &GlueIcebergCatalogConfig, credential_facts: GlueCatalogCredentialFacts) -> Self {
+        Self {
+            catalog_handle: super::non_empty(Some(config.catalog_handle.clone())),
+            catalog_id: config.catalog_id.clone().and_then(|value| super::non_empty(Some(value))),
+            region: super::non_empty(Some(config.region.clone())),
+            credential_facts: Some(credential_facts),
+        }
+    }
+
+    fn apply(&self, mut error: Error) -> Error {
+        if let Some(catalog_handle) = self.catalog_handle.as_ref() {
+            error = error.with_fact("catalog_handle", catalog_handle);
+        }
+        if let Some(catalog_id) = self.catalog_id.as_ref() {
+            error = error.with_fact("catalog_id", catalog_id);
+        }
+        if let Some(region) = self.region.as_ref() {
+            error = error.with_fact("region", region);
+        }
+        if let Some(credential_facts) = self.credential_facts.as_ref() {
+            error = error.with_fact("credential_source", credential_facts.credential_source.code());
+            if let Some(profile) = credential_facts.profile.as_ref() {
+                error = error.with_fact("aws_profile", profile);
+            }
+        }
+        error
+    }
+}
+
 fn glue_catalog_props(
     config: &GlueIcebergCatalogConfig,
     mut get: impl FnMut(&str) -> Option<String>,
@@ -1124,6 +1200,7 @@ fn glue_catalog_props(
 pub struct GlueIcebergCatalogBackend {
     catalog: Arc<dyn Catalog>,
     parquet_read_strategy_config: Option<TableFormatParquetReadStrategyConfig>,
+    error_context: GlueCatalogBackendErrorContext,
 }
 
 impl fmt::Debug for GlueIcebergCatalogBackend {
@@ -1142,7 +1219,11 @@ impl GlueIcebergCatalogBackend {
             .load(catalog_handle, props)
             .await
             .map_err(|error| catalog_backend_error("failed to connect to AWS Glue Iceberg catalog", "glue", error))?;
-        Ok(Self { catalog: Arc::new(glue), parquet_read_strategy_config: None })
+        Ok(Self {
+            catalog: Arc::new(glue),
+            parquet_read_strategy_config: None,
+            error_context: GlueCatalogBackendErrorContext::default(),
+        })
     }
 
     /// Builds a connected Glue backend from a [`GlueIcebergCatalogConfig`].
@@ -1154,12 +1235,19 @@ impl GlueIcebergCatalogBackend {
         config: GlueIcebergCatalogConfig,
         mut get: impl FnMut(&str) -> Option<String>,
     ) -> Result<Self> {
+        let credential_facts = GlueCatalogCredentialFacts::from_config_env(&config, |name| get(name));
         let props = glue_catalog_props(&config, |name| get(name));
         let source_storage_profile = config.source_storage_profile_with_env(|name| get(name));
         let parquet_read_strategy_config = config
             .parquet_read_strategy_config()
             .with_source_storage_profile_remote_direct_capability(&source_storage_profile);
-        Self::from_config_with_resolved_parquet_read_strategy_config(config, props, parquet_read_strategy_config).await
+        Self::from_config_with_resolved_parquet_read_strategy_config(
+            config,
+            props,
+            parquet_read_strategy_config,
+            credential_facts,
+        )
+        .await
     }
 
     /// Builds a connected Glue backend from a config and caller-owned
@@ -1169,20 +1257,32 @@ impl GlueIcebergCatalogBackend {
         mut get: impl FnMut(&str) -> Option<String>,
         parquet_read_strategy_config: TableFormatParquetReadStrategyConfig,
     ) -> Result<Self> {
+        let credential_facts = GlueCatalogCredentialFacts::from_config_env(&config, |name| get(name));
         let props = glue_catalog_props(&config, |name| get(name));
         let source_storage_profile = config.source_storage_profile_with_env(|name| get(name));
         let parquet_read_strategy_config = config
             .parquet_read_strategy_config_from(parquet_read_strategy_config)
             .with_source_storage_profile_remote_direct_capability(&source_storage_profile);
-        Self::from_config_with_resolved_parquet_read_strategy_config(config, props, parquet_read_strategy_config).await
+        Self::from_config_with_resolved_parquet_read_strategy_config(
+            config,
+            props,
+            parquet_read_strategy_config,
+            credential_facts,
+        )
+        .await
     }
 
     async fn from_config_with_resolved_parquet_read_strategy_config(
         config: GlueIcebergCatalogConfig,
         props: HashMap<String, String>,
         parquet_read_strategy_config: TableFormatParquetReadStrategyConfig,
+        credential_facts: GlueCatalogCredentialFacts,
     ) -> Result<Self> {
-        let mut backend = Self::from_props(config.catalog_handle, props).await?;
+        let error_context = GlueCatalogBackendErrorContext::from_config(&config, credential_facts);
+        let glue = GlueCatalogBuilder::default().load(config.catalog_handle.clone(), props).await.map_err(|error| {
+            glue_catalog_backend_error("failed to connect to AWS Glue Iceberg catalog", &error_context, error)
+        })?;
+        let mut backend = Self { catalog: Arc::new(glue), parquet_read_strategy_config: None, error_context };
         backend.parquet_read_strategy_config = Some(parquet_read_strategy_config);
         Ok(backend)
     }
@@ -1203,6 +1303,7 @@ impl IcebergCatalogBackend for GlueIcebergCatalogBackend {
             "failed to list namespaces from AWS Glue Iceberg catalog",
         )
         .await
+        .map_err(|error| self.error_context.apply(error))
     }
 
     async fn list_tables(&self, namespace: &NamespaceIdent) -> Result<Vec<TableIdent>> {
@@ -1213,11 +1314,13 @@ impl IcebergCatalogBackend for GlueIcebergCatalogBackend {
             "failed to list tables from AWS Glue Iceberg catalog",
         )
         .await
+        .map_err(|error| self.error_context.apply(error))
     }
 
     async fn load_table(&self, table: &TableIdent) -> Result<iceberg::table::Table> {
         catalog_backend_load_table(&self.catalog, table, "glue", "failed to load table from AWS Glue Iceberg catalog")
             .await
+            .map_err(|error| self.error_context.apply(error))
     }
 
     fn parquet_read_strategy_config(&self) -> Option<TableFormatParquetReadStrategyConfig> {
@@ -1610,6 +1713,68 @@ mod rest_tests {
         assert_eq!(error.fact_value("aws_http_status"), Some("401"));
         assert_eq!(error.fact_value("aws_retryable"), Some("true"));
         assert_eq!(error.fact_value("aws_error_detail"), Some("expired_token"));
+    }
+
+    #[test]
+    fn glue_catalog_backend_error_includes_safe_credential_context_for_profile() {
+        let config = GlueIcebergCatalogConfig::new("glue-handle", "s3://lakehouse/warehouse", "us-west-2")
+            .with_catalog_id("123456789012")
+            .with_profile("crem-int");
+        let credential_facts = GlueCatalogCredentialFacts::from_config_env(&config, no_env);
+        let error_context = GlueCatalogBackendErrorContext::from_config(&config, credential_facts);
+
+        let error = glue_catalog_backend_error(
+            "failed to connect to AWS Glue Iceberg catalog",
+            &error_context,
+            glue_expired_token_error(),
+        );
+
+        assert_eq!(error.code(), ErrorCode::SourceUnauthenticated);
+        assert_eq!(error.fact_value("credential_source"), Some("aws_profile_env"));
+        assert_eq!(error.fact_value("aws_profile"), Some("crem-int"));
+        assert_eq!(error.fact_value("catalog_handle"), Some("glue-handle"));
+        assert_eq!(error.fact_value("catalog_id"), Some("123456789012"));
+        assert_eq!(error.fact_value("region"), Some("us-west-2"));
+        assert_eq!(error.fact_value("aws_error_detail"), Some("expired_token"));
+    }
+
+    #[test]
+    fn glue_catalog_backend_error_includes_default_chain_without_profile_fact() {
+        let config = GlueIcebergCatalogConfig::new("glue-handle", "s3://lakehouse/warehouse", "us-west-2");
+        let credential_facts = GlueCatalogCredentialFacts::from_config_env(&config, no_env);
+        let error_context = GlueCatalogBackendErrorContext::from_config(&config, credential_facts);
+
+        let error = glue_catalog_backend_error(
+            "failed to connect to AWS Glue Iceberg catalog",
+            &error_context,
+            glue_expired_token_error(),
+        );
+
+        assert_eq!(error.code(), ErrorCode::SourceUnauthenticated);
+        assert_eq!(error.fact_value("credential_source"), Some("aws_default_chain"));
+        assert_eq!(error.fact_value("aws_profile"), None);
+    }
+
+    #[test]
+    fn glue_catalog_backend_error_context_preserves_namespace_fact() {
+        let config = GlueIcebergCatalogConfig::new("glue-handle", "s3://lakehouse/warehouse", "us-west-2")
+            .with_profile("crem-int");
+        let credential_facts = GlueCatalogCredentialFacts::from_config_env(&config, no_env);
+        let error_context = GlueCatalogBackendErrorContext::from_config(&config, credential_facts);
+
+        let error = error_context.apply(
+            catalog_backend_error(
+                "failed to list tables from AWS Glue Iceberg catalog",
+                "glue",
+                glue_expired_token_error(),
+            )
+            .with_fact("namespace", "nexus_graph"),
+        );
+
+        assert_eq!(error.code(), ErrorCode::SourceUnauthenticated);
+        assert_eq!(error.fact_value("namespace"), Some("nexus_graph"));
+        assert_eq!(error.fact_value("credential_source"), Some("aws_profile_env"));
+        assert_eq!(error.fact_value("aws_profile"), Some("crem-int"));
     }
 
     #[test]
