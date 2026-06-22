@@ -938,6 +938,7 @@ fn materialize_bounded_root_hash_join_probe_chunk(
         &overrides,
         &node.spec.output_projection,
         node.spec.join_type,
+        node.spec.datafusion_order_preserved_side,
     ) {
         Ok(output) => output,
         Err(error) => {
@@ -1608,6 +1609,7 @@ fn materialize_bounded_root_hash_join_index_slice_once(
         overrides,
         &node.spec.output_projection,
         node.spec.join_type,
+        node.spec.datafusion_order_preserved_side,
     ) {
         Ok(output) => output,
         Err(error) => {

@@ -5,7 +5,10 @@ use datafusion::{
     common::{JoinSide as DataFusionJoinSide, NullEquality},
     logical_expr::JoinType,
     physical_expr::{PhysicalExpr, expressions::Column},
-    physical_plan::{ExecutionPlan, joins::NestedLoopJoinExec},
+    physical_plan::{
+        ExecutionPlan,
+        joins::{NestedLoopJoinExec, PartitionMode},
+    },
 };
 use nexus_query_engine::{
     ColumnRef as NativeColumnRef, Expr as NativeExpr, JoinKey as NativeJoinKey,
@@ -434,10 +437,12 @@ pub(super) fn lower_hash_join_input(
     let keys = lower_prepared_join_keys(&prepared_keys.keys, &left, &right, canonical)?;
     let (native_left, native_right) = canonical.order_inputs(left, right);
     let build_side = native_join_build_side(canonical, keys.len(), residual.is_some());
+    let datafusion_order_preserved_side = datafusion_hash_join_order_preserved_side(join, build_side);
     let mut spec = NativeJoinSpec::new(canonical.join_type, keys)
         .with_output_projection(output_columns.projection)
         .with_null_equality(lower_join_null_equality(join.join.null_equality()))
-        .with_build_side(build_side);
+        .with_build_side(build_side)
+        .with_datafusion_order_preserved_side(datafusion_order_preserved_side);
     if let Some(residual) = residual {
         spec = spec.with_residual_predicate(residual.predicate);
     }
@@ -569,6 +574,23 @@ fn native_join_build_side(canonical: CanonicalJoin, key_count: usize, has_residu
         NativeJoinSide::Left
     } else {
         canonical.build_side()
+    }
+}
+
+fn datafusion_hash_join_order_preserved_side(
+    join: &NormalizedNativeHashJoin<'_>,
+    build_side: NativeJoinSide,
+) -> NativeJoinSide {
+    match join.join.partition_mode() {
+        PartitionMode::CollectLeft => opposite_native_side(build_side),
+        PartitionMode::Partitioned | PartitionMode::Auto => NativeJoinSide::Right,
+    }
+}
+
+const fn opposite_native_side(side: NativeJoinSide) -> NativeJoinSide {
+    match side {
+        NativeJoinSide::Left => NativeJoinSide::Right,
+        NativeJoinSide::Right => NativeJoinSide::Left,
     }
 }
 

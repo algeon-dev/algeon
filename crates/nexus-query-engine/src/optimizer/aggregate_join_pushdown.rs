@@ -553,6 +553,7 @@ impl<'a> AggregateJoinPushdownRewriter<'a> {
             output_projection,
             null_equality: join.spec.null_equality,
             build_side: join.spec.build_side,
+            datafusion_order_preserved_side: join.spec.datafusion_order_preserved_side,
             build_artifact_id: None,
             mark_column_name: None,
         };

@@ -173,6 +173,7 @@ pub(super) fn execute_join(
         &overrides,
         &node.spec.output_projection,
         node.spec.join_type,
+        node.spec.datafusion_order_preserved_side,
         node.spec.mark_column_name.as_deref(),
     )?;
     metrics.operator_time += timer.elapsed();

@@ -6,7 +6,7 @@ use cudf::{DataFrame, SortOptions as CudfSortOptions};
 use super::*;
 use crate::{
     error::{QueryError, QueryErrorCode, Result},
-    plan::{JoinType, PlanNode, QueryPlan},
+    plan::{JoinSide, JoinType, PlanNode, QueryPlan},
     runtime::ExecutionContext,
 };
 
@@ -143,6 +143,7 @@ pub(in crate::exec) fn append_datafusion_join_order_columns(
     left: Option<&DataFrame>,
     right: Option<&DataFrame>,
     join_type: JoinType,
+    preserved_side: JoinSide,
 ) -> Result<()> {
     if !datafusion_order_tracking_enabled() {
         return Ok(());
@@ -150,12 +151,18 @@ pub(in crate::exec) fn append_datafusion_join_order_columns(
 
     let mut next_index = 0usize;
     match join_type {
-        // DataFusion HashJoinExec currently preserves the right/probe side for
-        // inner joins. The left/build side order breaks ties between multiple
-        // matches for the same probe row.
-        JoinType::Inner => {
-            append_side_order_columns(columns, right, &mut next_index, "right")?;
-            append_side_order_columns(columns, left, &mut next_index, "left")?;
+        // DataFusion HashJoinExec preserves its probe stream for inner joins.
+        // Lowering records which native side corresponds to that stream because
+        // native build/probe orientation can differ from DataFusion's.
+        JoinType::Inner => match preserved_side {
+            JoinSide::Left => {
+                append_side_order_columns(columns, left, &mut next_index, "left")?;
+                append_side_order_columns(columns, right, &mut next_index, "right")?;
+            },
+            JoinSide::Right => {
+                append_side_order_columns(columns, right, &mut next_index, "right")?;
+                append_side_order_columns(columns, left, &mut next_index, "left")?;
+            },
         },
         JoinType::Left
         | JoinType::LeftSemi

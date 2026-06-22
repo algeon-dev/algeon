@@ -487,6 +487,7 @@ pub(super) fn materialize_compiled_one_shot_equi_join_probe_chunk(
         &overrides,
         &node.spec.output_projection,
         node.spec.join_type,
+        node.spec.datafusion_order_preserved_side,
     ) {
         Ok(output) => output,
         Err(error) => {
