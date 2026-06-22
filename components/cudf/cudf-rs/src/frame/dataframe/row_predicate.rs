@@ -221,7 +221,7 @@ fn lower_expr(
             )?;
             Ok((index, dtype))
         },
-        Expr::Literal(literal) => lower_literal(df, literal, lowered),
+        Expr::Literal(literal) => lower_literal(df, literal, lowered, operation),
         Expr::BinaryOp { lhs, op, rhs } => lower_binary_expr(df, lhs, *op, rhs, lowered, operation),
         Expr::UnaryOp { op, input } => lower_unary_expr(df, *op, input, lowered, operation),
         Expr::IsNull(input) => lower_is_null_expr(df, input, lowered, operation),
@@ -254,9 +254,17 @@ fn lower_expr(
     }
 }
 
-fn lower_literal(df: &DataFrame, literal: &LitValue, lowered: &mut LoweredRowPredicate) -> Result<(i32, DataType)> {
+fn lower_literal(
+    df: &DataFrame,
+    literal: &LitValue,
+    lowered: &mut LoweredRowPredicate,
+    operation: &'static str,
+) -> Result<(i32, DataType)> {
     let scalar = literal.to_scalar_in_domain(df.execution_domain())?;
     let dtype = scalar.data_type()?;
+    if !row_predicate_literal_dtype_is_supported(dtype) {
+        return unsupported_predicate(operation, "literal");
+    }
     let handle = scalar.raw_handle();
     lowered.scalars.push(scalar);
     let index = push_node(
@@ -272,6 +280,10 @@ fn lower_literal(df: &DataFrame, literal: &LitValue, lowered: &mut LoweredRowPre
         },
     )?;
     Ok((index, dtype))
+}
+
+fn row_predicate_literal_dtype_is_supported(dtype: DataType) -> bool {
+    dtype.id().is_numeric() || dtype.id() == TypeId::Bool8 || dtype.id() == TypeId::String
 }
 
 fn lower_binary_expr(
