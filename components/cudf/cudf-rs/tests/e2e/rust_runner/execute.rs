@@ -390,6 +390,7 @@ fn normalize_manifest_error_kind_from_code(code: ErrorCode) -> Option<&'static s
         | ErrorCode::DuplicateKey
         | ErrorCode::ColumnLengthMismatch
         | ErrorCode::TypeMismatch
+        | ErrorCode::ValueOutOfRange
         | ErrorCode::EmptyConstructionRequiresRuntime
         | ErrorCode::CrossDeviceInputs
         | ErrorCode::CrossProvenanceInputs

@@ -122,17 +122,33 @@ fn build_script_tracks_build_support_and_cargo_link_template_changes() {
 
 #[test]
 fn build_script_tracks_native_build_env_changes() {
-    for env_var in ["CUDF_INSTALL_DIR", "CUDF_CPP_BUILD_DIR", "CUDA_HOME", "CUDA_PATH", "CUDA_STATIC_RUNTIME"] {
+    for env_var in [
+        "CUDF_INSTALL_DIR",
+        "CUDF_CPP_BUILD_DIR",
+        "CUDA_HOME",
+        "CUDA_PATH",
+        "CUDA_STATIC_RUNTIME",
+        "CUDF_RUST_CLANG_LINT",
+    ] {
         let expected = format!("cargo:rerun-if-env-changed={env_var}");
         assert!(BUILD_RS.contains(&expected), "expected build.rs to track {env_var} with `{expected}`");
     }
 }
 
 #[test]
-fn build_script_requires_clang_tools_and_tracks_path_changes() {
+fn build_script_makes_clang_tools_opt_in_and_tracks_path_changes() {
+    assert!(
+        BUILD_RS.contains("CUDF_RUST_CLANG_LINT"),
+        "expected build.rs to gate native clang linting behind CUDF_RUST_CLANG_LINT"
+    );
+    assert!(
+        BUILD_RS.contains("CUDF_RUST_ENABLE_CLANG_TIDY"),
+        "expected build.rs to pass the clang-tidy opt-in flag through to CMake"
+    );
+
     for tool in ["clang-format", "clang-tidy"] {
         let expected = format!("find_required_executable(\"{tool}\")");
-        assert!(BUILD_RS.contains(&expected), "expected build.rs to hard-require {tool} via `{expected}`");
+        assert!(BUILD_RS.contains(&expected), "expected build.rs to discover {tool} via `{expected}`");
     }
 
     assert!(
@@ -160,6 +176,7 @@ fn local_agent_docs_match_upstream_cudf_toolchain_contract() {
 fn build_script_runs_clang_format_against_native_sources_only() {
     for expected in [
         "collect_native_clang_lint_files",
+        "CUDF_RUST_CLANG_LINT",
         "run_clang_format_check",
         "--dry-run",
         "--Werror",
@@ -291,7 +308,12 @@ fn clang_format_config_path_points_at_upstream_rapids_style_file() {
 
 #[test]
 fn native_cmakelists_enables_clang_tidy_for_cudf_rust_target_only() {
-    for expected in ["CXX_CLANG_TIDY", "enable_clang_tidy(cudf_rust)", "CUDF_RUST_CLANG_TIDY_CONFIG_FILE"] {
+    for expected in [
+        "CUDF_RUST_ENABLE_CLANG_TIDY",
+        "CXX_CLANG_TIDY",
+        "enable_clang_tidy(cudf_rust)",
+        "CUDF_RUST_CLANG_TIDY_CONFIG_FILE",
+    ] {
         assert!(
             NATIVE_CMAKELISTS.contains(expected),
             "expected native/CMakeLists.txt to contain `{expected}` for cudf_rust clang-tidy wiring"

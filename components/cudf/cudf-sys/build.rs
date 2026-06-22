@@ -67,20 +67,28 @@ fn main() {
 
     let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
     let native_dir = build_support::native_dir(&manifest_dir);
-    let clang_format =
-        build_support::find_required_executable("clang-format").unwrap_or_else(|error| panic!("{error}"));
-    let clang_tidy = build_support::find_required_executable("clang-tidy").unwrap_or_else(|error| panic!("{error}"));
-    let clang_format_config = build_support::clang_format_config_path(&manifest_dir);
     let clang_tidy_config = build_support::clang_tidy_config_path(&manifest_dir);
-    ensure_file_exists(&clang_format_config, "clang-format config");
-    ensure_file_exists(&clang_tidy_config, "clang-tidy config");
-    let lint_files =
-        build_support::collect_native_clang_lint_files(&manifest_dir).unwrap_or_else(|error| panic!("{error}"));
-    run_clang_format_check(&clang_format, &clang_format_config, &lint_files);
+    let clang_format_config = build_support::clang_format_config_path(&manifest_dir);
+    let clang_lint =
+        build_support::normalized_cmake_bool_from_env("CUDF_RUST_CLANG_LINT").unwrap_or_else(|error| panic!("{error}"));
 
     let mut config = cmake::Config::new(&native_dir);
-    config.define("CUDF_RUST_CLANG_TIDY_EXE", &clang_tidy);
-    config.define("CUDF_RUST_CLANG_TIDY_CONFIG_FILE", &clang_tidy_config);
+    config.define("CUDF_RUST_ENABLE_CLANG_TIDY", clang_lint.unwrap_or("OFF"));
+    if clang_lint == Some("ON") {
+        let clang_format =
+            build_support::find_required_executable("clang-format").unwrap_or_else(|error| panic!("{error}"));
+        let clang_tidy =
+            build_support::find_required_executable("clang-tidy").unwrap_or_else(|error| panic!("{error}"));
+
+        ensure_file_exists(&clang_format_config, "clang-format config");
+        ensure_file_exists(&clang_tidy_config, "clang-tidy config");
+        let lint_files =
+            build_support::collect_native_clang_lint_files(&manifest_dir).unwrap_or_else(|error| panic!("{error}"));
+        run_clang_format_check(&clang_format, &clang_format_config, &lint_files);
+
+        config.define("CUDF_RUST_CLANG_TIDY_EXE", &clang_tidy);
+        config.define("CUDF_RUST_CLANG_TIDY_CONFIG_FILE", &clang_tidy_config);
+    }
 
     if let Some(cuda_static_runtime) =
         build_support::normalized_cmake_bool_from_env("CUDA_STATIC_RUNTIME").unwrap_or_else(|error| panic!("{error}"))
@@ -112,5 +120,6 @@ fn main() {
     println!("cargo:rerun-if-env-changed=CUDA_HOME");
     println!("cargo:rerun-if-env-changed=CUDA_PATH");
     println!("cargo:rerun-if-env-changed=CUDA_STATIC_RUNTIME");
+    println!("cargo:rerun-if-env-changed=CUDF_RUST_CLANG_LINT");
     println!("cargo:rerun-if-env-changed=PATH");
 }

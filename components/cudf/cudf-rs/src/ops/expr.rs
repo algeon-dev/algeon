@@ -68,17 +68,18 @@ use std::{cell::RefCell, sync::Arc};
 
 use super::{
     binary::{self, BinaryOperator},
-    copying,
+    concatenate, copying,
     datetime::{self, DatetimeComponent},
     reduction::{self, ReduceAgg, ScanAgg, ScanType},
     replace::{self, FillPolicy},
+    search,
     strings::{self, StringSliceOptions, StripSide},
     unary::{self, UnaryOperator},
 };
 use crate::{
     core::{
         column::Column,
-        error::Result,
+        error::{Error, ErrorCode, Result},
         scalar::Scalar,
         types::{CudfType, DataType, NullPolicy, TimestampResolution, TypeId},
     },
@@ -288,12 +289,16 @@ pub enum Expr {
     StringOp { input: Box<Expr>, op: StringOperator },
     /// Datetime component extraction.
     DateTimeComponent { input: Box<Expr>, component: DatetimeComponent },
+    /// Calendrical timestamp offset with month, day, and nanosecond fields.
+    DateTimeOffset { input: Box<Expr>, months: i32, days: i32, nanoseconds: i64 },
     /// Conditional: row-wise `if cond then true_val else false_val`.
     ///
     /// Construct via the staged [`when()`] conditional expression chain.
     /// Output name is `None` — an explicit `.alias()` is required for use in
     /// `with_columns`.
     IfElse { condition: Box<Expr>, true_val: Box<Expr>, false_val: Box<Expr> },
+    /// Set membership against a literal list.
+    InList { input: Box<Expr>, values: Vec<Expr>, negated: bool },
 }
 
 impl Expr {
@@ -360,6 +365,19 @@ impl Expr {
     /// Element-wise validity check. Produces BOOL8.
     pub fn is_not_null(self) -> Expr {
         Expr::IsNotNull(Box::new(self))
+    }
+
+    /// Element-wise set membership against a literal list. Produces BOOL8.
+    ///
+    /// Values must be literal expressions. The list is materialized once as a
+    /// device column and evaluated with cuDF's membership kernel.
+    pub fn is_in_list(self, values: Vec<Expr>) -> Expr {
+        Expr::InList { input: Box::new(self), values, negated: false }
+    }
+
+    /// Element-wise negated set membership against a literal list. Produces BOOL8.
+    pub fn is_not_in_list(self, values: Vec<Expr>) -> Expr {
+        Expr::InList { input: Box::new(self), values, negated: true }
     }
 
     /// Logical NOT (explicit method, equivalent to `!expr`).
@@ -484,10 +502,12 @@ impl Expr {
             | Expr::FillNullPolicy { input, .. }
             | Expr::Scan { input, .. }
             | Expr::StringOp { input, .. }
-            | Expr::DateTimeComponent { input, .. } => input.output_name(),
+            | Expr::DateTimeComponent { input, .. }
+            | Expr::DateTimeOffset { input, .. } => input.output_name(),
             Expr::Reduce { .. } => None,
             // Multi-input or no-source nodes.
             Expr::BinaryOp { .. } | Expr::Literal(_) | Expr::IfElse { .. } => None,
+            Expr::InList { input, .. } => input.output_name(),
         }
     }
 
@@ -739,6 +759,11 @@ impl Expr {
                 ctx.wrap_column(col)
             },
 
+            Expr::DateTimeOffset { input, months, days, nanoseconds } => {
+                let series = input.eval_with_context(ctx)?;
+                apply_datetime_offset(series, *months, *days, *nanoseconds, ctx)
+            },
+
             Expr::IfElse { condition, true_val, false_val } => {
                 let cond_series = condition.eval_with_context(ctx)?;
                 let true_series = true_val.eval_with_context(ctx)?;
@@ -756,8 +781,173 @@ impl Expr {
                 )?;
                 ctx.wrap_column(col)
             },
+
+            Expr::InList { input, values, negated } => {
+                let input = input.eval_with_context(ctx)?;
+                let input_view = input.view()?;
+                let haystack = literal_haystack(values, ctx)?;
+                let haystack_view = haystack.view()?;
+                if haystack_view.null_count()? == haystack_view.len()? {
+                    let scalar = Scalar::null_in_domain(DataType::new(TypeId::Bool8), &ctx.output_domain)?;
+                    let col = Column::from_scalar(&scalar, ctx.df.num_rows())?;
+                    return ctx.wrap_column(col);
+                }
+                let col = search::contains_impl(
+                    &haystack_view,
+                    &input_view,
+                    &ctx.output_domain,
+                    ctx.exec_options(),
+                    ctx.operation,
+                )?;
+                let col = if *negated {
+                    let view = col.view()?;
+                    unary::unary_operation_impl(
+                        &view,
+                        UnaryOperator::Not,
+                        &ctx.output_domain,
+                        ctx.exec_options(),
+                        ctx.operation,
+                    )?
+                } else {
+                    col
+                };
+                ctx.wrap_column(col)
+            },
         }
     }
+}
+
+fn apply_datetime_offset(
+    series: Series,
+    months: i32,
+    days: i32,
+    nanoseconds: i64,
+    ctx: &ExprEvalContext<'_>,
+) -> Result<Series> {
+    let series = if months != 0 {
+        let cv = series.view()?;
+        let col =
+            datetime::add_calendrical_months_impl(&cv, months, &ctx.output_domain, ctx.exec_options(), ctx.operation)?;
+        drop(cv);
+        ctx.wrap_column(col)?
+    } else {
+        series
+    };
+
+    let resolution = {
+        let cv = series.view()?;
+        let input_type = cv.data_type()?.id();
+        let Some(resolution) = input_type.timestamp_resolution() else {
+            return Err(Error::new_with(
+                ErrorCode::TypeMismatch,
+                ctx.operation,
+                "datetime offset requires timestamp input",
+            )
+            .with_detail("actual_type_id", input_type.to_string())
+            .with_detail("expected_family", "timestamp"));
+        };
+        resolution
+    };
+    if days == 0 && nanoseconds == 0 {
+        return Ok(series);
+    }
+
+    let duration_raw = duration_raw_for_resolution(days, nanoseconds, resolution, ctx.operation)?;
+    if duration_raw == 0 {
+        return Ok(series);
+    }
+
+    let scalar = Scalar::duration_from_raw_in_domain(duration_raw, resolution.duration_type_id(), &ctx.output_domain)?;
+    let duration = Column::from_scalar(&scalar, ctx.df.num_rows())?;
+    let duration = ctx.wrap_column(duration)?;
+    let col = {
+        let cv = series.view()?;
+        let duration_view = duration.view()?;
+        let out_type = binary::infer_binary_output_dtype_in(
+            cv.data_type()?,
+            duration_view.data_type()?,
+            BinaryOperator::Add,
+            ctx.operation,
+        )?;
+        binary::binary_operation_vv_impl(
+            &cv,
+            &duration_view,
+            BinaryOperator::Add,
+            &out_type,
+            &ctx.output_domain,
+            ctx.exec_options(),
+            ctx.operation,
+        )?
+    };
+    ctx.wrap_column(col)
+}
+
+fn duration_raw_for_resolution(
+    days: i32,
+    nanoseconds: i64,
+    resolution: TimestampResolution,
+    operation: &'static str,
+) -> Result<i64> {
+    const NANOS_PER_DAY: i128 = 86_400_000_000_000;
+    let total_nanos = i128::from(days)
+        .checked_mul(NANOS_PER_DAY)
+        .and_then(|value| value.checked_add(i128::from(nanoseconds)))
+        .ok_or_else(|| {
+            Error::new_with(ErrorCode::ValueOutOfRange, operation, "datetime offset duration overflows i128")
+        })?;
+    let divisor = match resolution {
+        TimestampResolution::Days => NANOS_PER_DAY,
+        TimestampResolution::Seconds => 1_000_000_000,
+        TimestampResolution::Milliseconds => 1_000_000,
+        TimestampResolution::Microseconds => 1_000,
+        TimestampResolution::Nanoseconds => 1,
+    };
+    if total_nanos % divisor != 0 {
+        return Err(Error::new_with(
+            ErrorCode::ValueOutOfRange,
+            operation,
+            "datetime offset cannot be represented exactly in the input timestamp resolution",
+        )
+        .with_detail("resolution", format!("{resolution:?}"))
+        .with_detail("days", days.to_string())
+        .with_detail("nanoseconds", nanoseconds.to_string()));
+    }
+    i64::try_from(total_nanos / divisor).map_err(|_error| {
+        Error::new_with(ErrorCode::ValueOutOfRange, operation, "datetime offset duration overflows i64")
+            .with_detail("resolution", format!("{resolution:?}"))
+            .with_detail("days", days.to_string())
+            .with_detail("nanoseconds", nanoseconds.to_string())
+    })
+}
+
+fn literal_haystack(values: &[Expr], ctx: &ExprEvalContext<'_>) -> Result<Column> {
+    if values.is_empty() {
+        return Err(Error::new_with(
+            ErrorCode::UnsupportedOperation,
+            ctx.operation,
+            "expression IN list requires at least one value",
+        )
+        .with_detail("reason", "empty_in_list"));
+    }
+
+    let columns = values
+        .iter()
+        .map(|expr| {
+            let Expr::Literal(value) = expr else {
+                return Err(Error::new_with(
+                    ErrorCode::UnsupportedOperation,
+                    ctx.operation,
+                    "expression IN list currently requires literal values",
+                )
+                .with_detail("reason", "non_literal_in_list_value"));
+            };
+            let scalar = value.to_scalar_in_domain(&ctx.output_domain)?;
+            Column::from_scalar(&scalar, 1)
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let views = columns.iter().map(Column::view).collect::<Result<Vec<_>>>()?;
+    let view_refs = views.iter().collect::<Vec<_>>();
+    concatenate::concatenate_columns(&view_refs)
 }
 
 // ===========================================================================
@@ -958,7 +1148,8 @@ impl ExprStringNamespace {
 /// Datetime expression methods on timestamp columns.
 ///
 /// Construct via [`Expr::dt`]. Methods on this type produce row-aligned
-/// `INT16` expressions and preserve the input column name.
+/// expressions and preserve the input column name. Component extraction
+/// returns `INT16`; calendrical offsets return the input timestamp type.
 pub struct ExprDatetimeNamespace(Expr);
 
 impl ExprDatetimeNamespace {
@@ -975,6 +1166,15 @@ impl ExprDatetimeNamespace {
     /// Extract the one-based day of month.
     pub fn day(self) -> Expr {
         Expr::DateTimeComponent { input: Box::new(self.0), component: DatetimeComponent::Day }
+    }
+
+    /// Add a calendrical interval to a timestamp expression.
+    ///
+    /// Month offsets use libcudf calendrical month semantics. Day and
+    /// nanosecond offsets are applied as fixed durations in the input
+    /// timestamp's resolution.
+    pub fn offset(self, months: i32, days: i32, nanoseconds: i64) -> Expr {
+        Expr::DateTimeOffset { input: Box::new(self.0), months, days, nanoseconds }
     }
 }
 

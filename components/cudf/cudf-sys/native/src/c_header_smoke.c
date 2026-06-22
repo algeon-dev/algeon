@@ -540,7 +540,11 @@ int cudf_rust_c_header_smoke(void)
                        cudf_column_handle*,
 
                        const cudf_exec_options_t*) = &cudf_datetime_extract_component_ex;
-  cudf_datetime_component_t c1                     = CUDF_DATETIME_COMPONENT_YEAR;
+  cudf_status_t (*f52)(cudf_column_view_handle, int32_t, cudf_column_handle*) =
+    &cudf_datetime_add_calendrical_months_scalar;
+  cudf_status_t (*f53)(cudf_column_view_handle, int32_t, cudf_column_handle*, const cudf_exec_options_t*) =
+    &cudf_datetime_add_calendrical_months_scalar_ex;
+  cudf_datetime_component_t c1 = CUDF_DATETIME_COMPONENT_YEAR;
 
   (void)f1;
   (void)f2;
@@ -686,6 +690,8 @@ int cudf_rust_c_header_smoke(void)
   (void)f49;
   (void)f50;
   (void)f51;
+  (void)f52;
+  (void)f53;
   (void)c1;
   (void)j1;
   (void)opts;
