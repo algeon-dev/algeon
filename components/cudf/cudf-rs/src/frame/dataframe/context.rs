@@ -1,6 +1,6 @@
 use super::{
-    DataFrame, DataFrameJoinIndices, DataFrameJoinOptions, DataFrameJoinPairIndices, DataFrameJoinSides,
-    DropDuplicatesOptions, DropNaOptions, WithColumnExpr,
+    DataFrame, DataFrameHashJoin, DataFrameHashJoinOptions, DataFrameJoinIndices, DataFrameJoinOptions,
+    DataFrameJoinPairIndices, DataFrameJoinSides, DropDuplicatesOptions, DropNaOptions, WithColumnExpr,
 };
 use crate::{
     Expr, Result,
@@ -97,6 +97,15 @@ impl<'df, 'ctx, 'handles> DataFrameExecutionScope<'df, 'ctx, 'handles> {
             self.ctx,
             "dataframe::with_execution::materialize_join_indices",
         )
+    }
+
+    /// Build a reusable hash-join artifact using the borrowed execution override.
+    pub fn build_hash_join<I, S>(&self, build_on: I, options: DataFrameHashJoinOptions) -> Result<DataFrameHashJoin>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        self.df.build_hash_join_in_context(build_on, options, self.ctx)
     }
 
     dataframe_scope_forward!(

@@ -1,7 +1,7 @@
 //! Tests for the high-level `DataFrame::merge` API and `MergeOptions` / `JoinType`.
 use cudf::{
-    DataFrame, DataFrameJoinOptions, ErrorCode, ErrorKind, ExecutionOverrides, JoinType, MergeOptions,
-    testing::prelude::*,
+    DataFrame, DataFrameHashJoinOptions, DataFrameJoinOptions, ErrorCode, ErrorKind, ExecutionOverrides, JoinType,
+    MergeOptions, testing::prelude::*,
 };
 
 use crate::common::{
@@ -192,6 +192,69 @@ fn test_dataframe_full_join_indices_nullify_unmatched_sides() {
         nullable_i32_column(&left_rows, "score").into_iter().zip(nullable_i32_column(&right_rows, "value")).collect();
     rows.sort();
     assert_eq!(rows, vec![(None, Some(300)), (Some(10), None), (Some(20), Some(200))]);
+}
+
+#[test]
+fn test_dataframe_hash_join_reuses_build_for_projected_inner_probes_with_duplicates() {
+    let rt = sample_runtime();
+    let build = DataFrame::from_series([
+        ("id", rt.series(&[2i32, 2, 4]).unwrap()),
+        ("value", rt.series(&[200i32, 201, 400]).unwrap()),
+    ])
+    .unwrap();
+    let first_probe = DataFrame::from_series([
+        ("pid", rt.series(&[1i32, 2, 2, 3]).unwrap()),
+        ("score", rt.series(&[10i32, 20, 21, 30]).unwrap()),
+    ])
+    .unwrap();
+    let second_probe =
+        DataFrame::from_series([("pid", rt.series(&[4i32, 5]).unwrap()), ("score", rt.series(&[40i32, 50]).unwrap())])
+            .unwrap();
+
+    let hash_join = build.build_hash_join(["id"], DataFrameHashJoinOptions::new()).unwrap();
+    let first_indices = hash_join.inner_probe(&first_probe, ["pid"]).unwrap();
+    let first = hash_join.materialize(&first_probe, &first_indices, ["score"], ["value"]).unwrap();
+    let second_indices = hash_join.inner_probe(&second_probe, ["pid"]).unwrap();
+    let second = hash_join.materialize(&second_probe, &second_indices, ["score"], ["value"]).unwrap();
+
+    assert_eq!(hash_join.build_keys(), &["id".to_string()]);
+    assert_eq!(first_indices.len(), 4);
+    let mut first_rows: Vec<_> =
+        i32_column(&first.probe, "score").into_iter().zip(i32_column(&first.build, "value")).collect();
+    first_rows.sort();
+    assert_eq!(first_rows, vec![(20, 200), (20, 201), (21, 200), (21, 201)]);
+    assert_eq!(second_indices.len(), 1);
+    assert_eq!(i32_column(&second.probe, "score"), vec![40]);
+    assert_eq!(i32_column(&second.build, "value"), vec![400]);
+}
+
+#[test]
+fn test_dataframe_hash_join_left_and_full_probes_nullify_unmatched_projection() {
+    let rt = sample_runtime();
+    let build =
+        DataFrame::from_series([("id", rt.series(&[2i32, 3]).unwrap()), ("value", rt.series(&[200i32, 300]).unwrap())])
+            .unwrap();
+    let probe =
+        DataFrame::from_series([("pid", rt.series(&[1i32, 2]).unwrap()), ("score", rt.series(&[10i32, 20]).unwrap())])
+            .unwrap();
+
+    let hash_join = build.build_hash_join(["id"], DataFrameHashJoinOptions::new()).unwrap();
+    let left_indices = hash_join.left_probe(&probe, ["pid"]).unwrap();
+    let left_probe = hash_join.materialize_probe(&probe, &left_indices, ["score"]).unwrap();
+    let left_build = hash_join.materialize_build(&left_indices, ["value"]).unwrap();
+    let full_indices = hash_join.full_probe(&probe, ["pid"]).unwrap();
+    let full_probe = hash_join.materialize_probe(&probe, &full_indices, ["score"]).unwrap();
+    let full_build = hash_join.materialize_build(&full_indices, ["value"]).unwrap();
+
+    let mut left_rows: Vec<_> =
+        i32_column(&left_probe, "score").into_iter().zip(nullable_i32_column(&left_build, "value")).collect();
+    left_rows.sort();
+    assert_eq!(left_rows, vec![(10, None), (20, Some(200))]);
+
+    let mut full_rows: Vec<_> =
+        nullable_i32_column(&full_probe, "score").into_iter().zip(nullable_i32_column(&full_build, "value")).collect();
+    full_rows.sort();
+    assert_eq!(full_rows, vec![(None, Some(300)), (Some(10), None), (Some(20), Some(200))]);
 }
 
 #[test]

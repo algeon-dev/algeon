@@ -7,8 +7,9 @@ use crate::{
     },
     frame::{
         dataframe::{
-            DataFrame, DataFrameJoinIndices, DataFrameJoinOptions, DataFrameJoinPairIndices, DataFrameJoinSides,
-            derive_frame_domain_from_columns,
+            DataFrame, DataFrameHashJoin, DataFrameHashJoinMaterialized, DataFrameHashJoinOptions,
+            DataFrameHashJoinPairIndices, DataFrameJoinIndices, DataFrameJoinOptions, DataFrameJoinPairIndices,
+            DataFrameJoinSides, derive_frame_domain_from_columns,
         },
         series::Series,
     },
@@ -39,6 +40,40 @@ struct JoinSplitCall<'a> {
 }
 
 impl DataFrame {
+    /// Build a reusable hash-join artifact from this DataFrame's named key columns.
+    pub fn build_hash_join<I, S>(&self, build_on: I, options: DataFrameHashJoinOptions) -> Result<DataFrameHashJoin>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        let ctx = ExecutionOverrides::new();
+        self.build_hash_join_in_context(build_on, options, &ctx)
+    }
+
+    pub(crate) fn build_hash_join_in_context<I, S>(
+        &self,
+        build_on: I,
+        options: DataFrameHashJoinOptions,
+        ctx: &ExecutionOverrides<'_>,
+    ) -> Result<DataFrameHashJoin>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        let operation = "dataframe::build_hash_join";
+        let build_keys = build_on.into_iter().map(|key| key.as_ref().to_string()).collect::<Vec<_>>();
+        validate_hash_join_key_names(&build_keys, operation)?;
+
+        let build_key_refs = build_keys.iter().map(|key| key.as_str()).collect::<Vec<_>>();
+        resolve_column_names(self.columns_map(), &build_key_refs, operation)?;
+        let build_key_frame = self.select(build_keys.clone()).map_err(|error| error.reanchor(operation))?;
+        let build_key_table = build_key_frame.to_table_copy().map_err(|error| error.reanchor(operation))?;
+        let join = join::HashJoin::new_in(build_key_table, options.to_hash_join_options(), ctx)
+            .map_err(|error| error.reanchor(operation))?;
+
+        Ok(DataFrameHashJoin { join, build: self.clone(), build_keys, options })
+    }
+
     /// Merge using a borrowed per-operation execution override.
     pub(crate) fn merge_in_context(
         &self,
@@ -600,6 +635,166 @@ impl DataFrame {
     }
 }
 
+impl DataFrameHashJoin {
+    /// Probe this reusable build artifact with inner-join semantics.
+    pub fn inner_probe<I, S>(&self, probe: &DataFrame, probe_on: I) -> Result<DataFrameHashJoinPairIndices>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        let ctx = ExecutionOverrides::new();
+        self.inner_probe_in(probe, probe_on, &ctx)
+    }
+
+    /// Probe this reusable build artifact with left-join semantics.
+    pub fn left_probe<I, S>(&self, probe: &DataFrame, probe_on: I) -> Result<DataFrameHashJoinPairIndices>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        let ctx = ExecutionOverrides::new();
+        self.left_probe_in(probe, probe_on, &ctx)
+    }
+
+    /// Probe this reusable build artifact with full-join semantics.
+    pub fn full_probe<I, S>(&self, probe: &DataFrame, probe_on: I) -> Result<DataFrameHashJoinPairIndices>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        let ctx = ExecutionOverrides::new();
+        self.full_probe_in(probe, probe_on, &ctx)
+    }
+
+    /// Probe this reusable build artifact with inner-join semantics using a borrowed execution override.
+    pub fn inner_probe_in<I, S>(
+        &self,
+        probe: &DataFrame,
+        probe_on: I,
+        ctx: &ExecutionOverrides<'_>,
+    ) -> Result<DataFrameHashJoinPairIndices>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        self.probe_indices_with_context(
+            probe,
+            probe_on,
+            join::JoinType::Inner,
+            ctx,
+            "dataframe::hash_join::inner_probe",
+        )
+    }
+
+    /// Probe this reusable build artifact with left-join semantics using a borrowed execution override.
+    pub fn left_probe_in<I, S>(
+        &self,
+        probe: &DataFrame,
+        probe_on: I,
+        ctx: &ExecutionOverrides<'_>,
+    ) -> Result<DataFrameHashJoinPairIndices>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        self.probe_indices_with_context(probe, probe_on, join::JoinType::Left, ctx, "dataframe::hash_join::left_probe")
+    }
+
+    /// Probe this reusable build artifact with full-join semantics using a borrowed execution override.
+    pub fn full_probe_in<I, S>(
+        &self,
+        probe: &DataFrame,
+        probe_on: I,
+        ctx: &ExecutionOverrides<'_>,
+    ) -> Result<DataFrameHashJoinPairIndices>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        self.probe_indices_with_context(probe, probe_on, join::JoinType::Full, ctx, "dataframe::hash_join::full_probe")
+    }
+
+    /// Materialize selected columns from the probe DataFrame.
+    pub fn materialize_probe<I, S>(
+        &self,
+        probe: &DataFrame,
+        indices: &DataFrameHashJoinPairIndices,
+        columns: I,
+    ) -> Result<DataFrame>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        probe
+            .materialize_join_indices(indices.probe(), columns)
+            .map_err(|error| error.reanchor("dataframe::hash_join::materialize_probe"))
+    }
+
+    /// Materialize selected columns from the retained build DataFrame.
+    pub fn materialize_build<I, S>(&self, indices: &DataFrameHashJoinPairIndices, columns: I) -> Result<DataFrame>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        self.build
+            .materialize_join_indices(indices.build(), columns)
+            .map_err(|error| error.reanchor("dataframe::hash_join::materialize_build"))
+    }
+
+    /// Materialize selected probe and build columns.
+    pub fn materialize<PI, PS, BI, BS>(
+        &self,
+        probe: &DataFrame,
+        indices: &DataFrameHashJoinPairIndices,
+        probe_columns: PI,
+        build_columns: BI,
+    ) -> Result<DataFrameHashJoinMaterialized>
+    where
+        PI: IntoIterator<Item = PS>,
+        PS: AsRef<str>,
+        BI: IntoIterator<Item = BS>,
+        BS: AsRef<str>,
+    {
+        Ok(DataFrameHashJoinMaterialized {
+            probe: self.materialize_probe(probe, indices, probe_columns)?,
+            build: self.materialize_build(indices, build_columns)?,
+        })
+    }
+
+    fn probe_indices_with_context<I, S>(
+        &self,
+        probe: &DataFrame,
+        probe_on: I,
+        join_type: join::JoinType,
+        ctx: &ExecutionOverrides<'_>,
+        operation: &'static str,
+    ) -> Result<DataFrameHashJoinPairIndices>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        let probe_keys = probe_on.into_iter().map(|key| key.as_ref().to_string()).collect::<Vec<_>>();
+        validate_hash_join_key_names(&probe_keys, operation)?;
+        if probe_keys.len() != self.build_keys.len() {
+            return Err(merge_key_count_mismatch_error(operation, probe_keys.len(), self.build_keys.len()));
+        }
+
+        let probe_key_refs = probe_keys.iter().map(|key| key.as_str()).collect::<Vec<_>>();
+        let probe_key_indices = resolve_column_names(probe.columns_map(), &probe_key_refs, operation)?;
+        let probe_key_table = build_borrowed_table_view_from_columns(probe.columns_map(), &probe_key_indices)?;
+        let raw_indices = match join_type {
+            join::JoinType::Inner => self.join.inner_join_indices_in(probe_key_table.table(), ctx)?,
+            join::JoinType::Left => self.join.left_join_indices_in(probe_key_table.table(), ctx)?,
+            join::JoinType::Full => self.join.full_join_indices_in(probe_key_table.table(), ctx)?,
+        };
+        let probe = Series::from_column(raw_indices.left)
+            .map_err(|error| error.reanchor(operation).with_detail("resource", "probe_join_indices"))?;
+        let build = Series::from_column(raw_indices.right)
+            .map_err(|error| error.reanchor(operation).with_detail("resource", "build_join_indices"))?;
+        Ok(DataFrameHashJoinPairIndices::new(probe, build))
+    }
+}
+
 /// Build the schema name list for a join result side:
 /// key column names (in `on` order) followed by payload column names.
 fn build_join_schema_names(
@@ -669,6 +864,18 @@ fn merge_validation_error(
     Error::new_with(ErrorCode::UnsupportedOperation, operation, message)
         .with_detail("reason", reason)
         .with_detail("remedy", remedy)
+}
+
+fn validate_hash_join_key_names(keys: &[String], operation: &'static str) -> Result<()> {
+    if keys.is_empty() {
+        return Err(merge_validation_error(
+            operation,
+            "no join keys specified",
+            "missing_join_keys",
+            "set at least one hash join key column",
+        ));
+    }
+    validate_no_duplicate_names(keys, operation)
 }
 
 fn merge_key_count_mismatch_error(operation: &'static str, left_count: usize, right_count: usize) -> Error {

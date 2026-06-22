@@ -231,8 +231,15 @@ fn query_execution_context_is_publicly_reexported() {
 
 #[test]
 fn dataframe_join_helpers_are_publicly_reexported() {
-    use cudf::{DataFrame, DataFrameJoinIndices, DataFrameJoinOptions, DataFrameJoinPairIndices, Runtime};
+    use cudf::{
+        DataFrame, DataFrameHashJoin, DataFrameHashJoinMaterialized, DataFrameHashJoinOptions,
+        DataFrameHashJoinPairIndices, DataFrameJoinIndices, DataFrameJoinOptions, DataFrameJoinPairIndices, Runtime,
+    };
 
+    fn assert_hash_join(_: &DataFrameHashJoin) {}
+    fn assert_hash_pair_indices(_: &DataFrameHashJoinPairIndices) {}
+    fn assert_hash_materialized(_: &DataFrameHashJoinMaterialized) {}
+    fn assert_hash_options(_: DataFrameHashJoinOptions) {}
     fn assert_indices(_: &DataFrameJoinIndices) {}
     fn assert_pair_indices(_: &DataFrameJoinPairIndices) {}
     fn assert_options(_: DataFrameJoinOptions) {}
@@ -246,20 +253,30 @@ fn dataframe_join_helpers_are_publicly_reexported() {
     let right = DataFrame::from_series([("id", rt.series(&[2i32]).unwrap())]).unwrap();
     let options = DataFrameJoinOptions::new().on(["id"]);
     assert_options(options.clone());
+    assert_hash_options(DataFrameHashJoinOptions::new());
 
     let indices = left.left_semi_join_indices(&right, options).unwrap();
     assert_indices(&indices);
     let pair_indices = left.inner_join_indices(&right, DataFrameJoinOptions::new().on(["id"])).unwrap();
     assert_pair_indices(&pair_indices);
+    let hash_join = right.build_hash_join(["id"], DataFrameHashJoinOptions::new()).unwrap();
+    assert_hash_join(&hash_join);
+    let hash_indices = hash_join.inner_probe(&left, ["id"]).unwrap();
+    assert_hash_pair_indices(&hash_indices);
     let materialized = left.materialize_join_indices(&indices, ["value"]).unwrap();
     let pair_materialized = left.materialize_join_indices(pair_indices.left(), ["value"]).unwrap();
+    let hash_materialized = hash_join.materialize(&left, &hash_indices, ["value"], ["id"]).unwrap();
+    assert_hash_materialized(&hash_materialized);
     let semi = left.left_semi_join(&right, DataFrameJoinOptions::new().on(["id"])).unwrap();
     let anti = left.left_anti_join(&right, DataFrameJoinOptions::new().on(["id"])).unwrap();
 
     assert_eq!(indices.len(), 1);
     assert_eq!(pair_indices.len(), 1);
+    assert_eq!(hash_indices.len(), 1);
     assert_eq!(materialized.series("value").unwrap().to_vec_strict::<i32>().unwrap(), vec![20]);
     assert_eq!(pair_materialized.series("value").unwrap().to_vec_strict::<i32>().unwrap(), vec![20]);
+    assert_eq!(hash_materialized.probe.series("value").unwrap().to_vec_strict::<i32>().unwrap(), vec![20]);
+    assert_eq!(hash_materialized.build.series("id").unwrap().to_vec_strict::<i32>().unwrap(), vec![2]);
     assert_eq!(semi.series("id").unwrap().to_vec_strict::<i32>().unwrap(), vec![2]);
     assert_eq!(anti.series("id").unwrap().to_vec_strict::<i32>().unwrap(), vec![1, 3]);
 }

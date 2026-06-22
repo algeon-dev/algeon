@@ -188,7 +188,10 @@ pub use core::{
 };
 
 pub use frame::{
-    dataframe::{DataFrame, DataFrameJoinIndices, DataFrameJoinOptions, DataFrameJoinPairIndices},
+    dataframe::{
+        DataFrame, DataFrameHashJoin, DataFrameHashJoinMaterialized, DataFrameHashJoinOptions,
+        DataFrameHashJoinPairIndices, DataFrameJoinIndices, DataFrameJoinOptions, DataFrameJoinPairIndices,
+    },
     series::{HostColumnData, IntoSeries, Series},
 };
 // — High-level operations —

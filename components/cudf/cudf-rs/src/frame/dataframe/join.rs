@@ -1,4 +1,9 @@
-use crate::{core::types::NullEquality, frame::series::Series, runtime::ExecutionPlacement};
+use crate::{
+    core::types::NullEquality,
+    frame::{dataframe::DataFrame, series::Series},
+    ops::join::{HashJoin, HashJoinOptions, NullableJoin},
+    runtime::ExecutionPlacement,
+};
 
 /// DataFrame-level equality join key options for query-planning helpers.
 ///
@@ -80,6 +85,72 @@ impl DataFrameJoinOptions {
     /// Returns the null key comparison policy.
     pub fn null_eq(&self) -> NullEquality {
         self.null_eq
+    }
+}
+
+/// DataFrame-level options for building a reusable hash-join artifact.
+#[derive(Debug, Clone, Copy)]
+pub struct DataFrameHashJoinOptions {
+    null_eq: NullEquality,
+    nullable_join: NullableJoin,
+    load_factor: f64,
+}
+
+impl Default for DataFrameHashJoinOptions {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl DataFrameHashJoinOptions {
+    /// Create conservative hash-join build options.
+    pub fn new() -> Self {
+        Self { null_eq: NullEquality::Equal, nullable_join: NullableJoin::MaybeNull, load_factor: 0.5 }
+    }
+
+    /// Set how null join keys compare.
+    pub fn null_equality(mut self, null_eq: NullEquality) -> Self {
+        self.null_eq = null_eq;
+        self
+    }
+
+    /// Set whether build/probe key columns may contain nulls.
+    pub fn nullable_join(mut self, nullable_join: NullableJoin) -> Self {
+        self.nullable_join = nullable_join;
+        self
+    }
+
+    /// Declare that all build/probe key columns are non-nullable.
+    pub fn no_nulls(self) -> Self {
+        self.nullable_join(NullableJoin::NoNulls)
+    }
+
+    /// Set the libcudf hash-table load factor.
+    pub fn load_factor(mut self, load_factor: f64) -> Self {
+        self.load_factor = load_factor;
+        self
+    }
+
+    /// Returns the configured null equality setting.
+    pub fn null_eq(&self) -> NullEquality {
+        self.null_eq
+    }
+
+    /// Returns the nullable-join assumption.
+    pub fn nullable_join_setting(&self) -> NullableJoin {
+        self.nullable_join
+    }
+
+    /// Returns the configured hash-table load factor.
+    pub fn load_factor_value(&self) -> f64 {
+        self.load_factor
+    }
+
+    pub(crate) fn to_hash_join_options(self) -> HashJoinOptions {
+        HashJoinOptions::new()
+            .null_equality(self.null_eq)
+            .nullable_join(self.nullable_join)
+            .load_factor(self.load_factor)
     }
 }
 
@@ -184,5 +255,85 @@ impl DataFrameJoinPairIndices {
     /// DataFrame that the indices may later gather from.
     pub fn placement(&self) -> ExecutionPlacement {
         self.left.placement()
+    }
+}
+
+/// Device-side row-index pairs produced by probing a reusable DataFrame hash join.
+///
+/// The `probe` gather map indexes the probe DataFrame passed to the probe call.
+/// The `build` gather map indexes the retained build DataFrame inside the
+/// [`DataFrameHashJoin`]. For outer probes, unmatched rows contain libcudf's
+/// no-match sentinel and should be materialized through
+/// [`DataFrameHashJoin::materialize_probe`] or
+/// [`DataFrameHashJoin::materialize_build`].
+#[derive(Debug, Clone)]
+pub struct DataFrameHashJoinPairIndices {
+    probe: DataFrameJoinIndices,
+    build: DataFrameJoinIndices,
+}
+
+impl DataFrameHashJoinPairIndices {
+    pub(crate) fn new(probe: Series, build: Series) -> Self {
+        Self { probe: DataFrameJoinIndices::new(probe), build: DataFrameJoinIndices::new(build) }
+    }
+
+    /// Borrow the gather map for rows in the probe DataFrame.
+    pub fn probe(&self) -> &DataFrameJoinIndices {
+        &self.probe
+    }
+
+    /// Borrow the gather map for rows in the retained build DataFrame.
+    pub fn build(&self) -> &DataFrameJoinIndices {
+        &self.build
+    }
+
+    /// Number of output rows represented by this pair of gather maps.
+    pub fn len(&self) -> usize {
+        self.probe.len()
+    }
+
+    /// Returns `true` when this pair represents no output rows.
+    pub fn is_empty(&self) -> bool {
+        self.probe.is_empty()
+    }
+}
+
+/// Materialized probe/build sides from a reusable DataFrame hash-join probe.
+#[derive(Debug, Clone)]
+pub struct DataFrameHashJoinMaterialized {
+    /// Projected rows gathered from the probe DataFrame.
+    pub probe: DataFrame,
+    /// Projected rows gathered from the retained build DataFrame.
+    pub build: DataFrame,
+}
+
+/// Reusable DataFrame-level hash-join build artifact.
+///
+/// This type owns the build-side [`DataFrame`] and a low-level reusable
+/// [`HashJoin`] built from the named build key columns. Probe methods produce
+/// device-side gather maps only; payload columns are copied only when the
+/// materialization helpers are called.
+#[derive(Debug, Clone)]
+pub struct DataFrameHashJoin {
+    pub(crate) join: HashJoin,
+    pub(crate) build: DataFrame,
+    pub(crate) build_keys: Vec<String>,
+    pub(crate) options: DataFrameHashJoinOptions,
+}
+
+impl DataFrameHashJoin {
+    /// Borrow the retained build DataFrame.
+    pub fn build(&self) -> &DataFrame {
+        &self.build
+    }
+
+    /// Returns the resolved build key column names.
+    pub fn build_keys(&self) -> &[String] {
+        &self.build_keys
+    }
+
+    /// Returns the options used to construct this artifact.
+    pub fn options(&self) -> DataFrameHashJoinOptions {
+        self.options
     }
 }
