@@ -41,7 +41,10 @@ pub use types::{
     CugraphSsspParams, CugraphTableReference, CugraphTriangleCountAllParams, CugraphWccParams, bfs_result_schema,
     result_schema_for_params, stable_result_schema,
 };
-pub(crate) use types::{CugraphVertexIdDomain, bfs_result_schema_for_vertex_domain, vertex_id_domain_for_call};
+pub(crate) use types::{
+    CugraphVertexIdDomain, bfs_result_schema_for_vertex_domain, validate_vertex_id_domain_support_for_call,
+    vertex_id_domain_for_call,
+};
 
 fn plan_error(message: impl Into<String>) -> DataFusionError {
     DataFusionError::Plan(message.into())

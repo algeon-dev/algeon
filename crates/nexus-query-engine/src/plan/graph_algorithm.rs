@@ -176,6 +176,11 @@ impl GraphAlgorithm {
     pub fn output_schema_kind(self) -> GraphOutputSchemaKind {
         self.definition().output_schema_kind()
     }
+
+    /// Vertex-id dtype support declared by the native graph descriptor.
+    pub fn vertex_id_type_support(self) -> GraphVertexIdTypeSupport {
+        self.definition().vertex_id_type_support()
+    }
 }
 
 impl fmt::Display for GraphAlgorithm {
@@ -211,6 +216,50 @@ impl GraphLayoutRequirement {
 }
 
 impl fmt::Display for GraphLayoutRequirement {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// Vertex-id dtype support for a native graph algorithm.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum GraphVertexIdTypeSupport {
+    /// The operation accepts Int32 and Int64 vertex id columns.
+    Int32OrInt64,
+    /// Legacy cuGraph C API operation whose edge type dispatch only supports
+    /// Int32 vertex id columns.
+    Int32OnlyLegacyEdgeType,
+}
+
+impl GraphVertexIdTypeSupport {
+    /// Stable lowercase capability code.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Int32OrInt64 => "int32_or_int64",
+            Self::Int32OnlyLegacyEdgeType => "int32_only_legacy_edge_type",
+        }
+    }
+
+    /// SQL/diagnostic label for supported dtypes.
+    pub const fn supported_dtypes_label(self) -> &'static str {
+        match self {
+            Self::Int32OrInt64 => "Int32|Int64",
+            Self::Int32OnlyLegacyEdgeType => "Int32",
+        }
+    }
+
+    /// Whether the Arrow dtype is supported for vertex id columns.
+    pub fn accepts_arrow_data_type(self, data_type: &arrow::datatypes::DataType) -> bool {
+        match self {
+            Self::Int32OrInt64 => {
+                matches!(data_type, arrow::datatypes::DataType::Int32 | arrow::datatypes::DataType::Int64)
+            },
+            Self::Int32OnlyLegacyEdgeType => matches!(data_type, arrow::datatypes::DataType::Int32),
+        }
+    }
+}
+
+impl fmt::Display for GraphVertexIdTypeSupport {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(self.as_str())
     }
@@ -350,9 +399,22 @@ impl GraphOperationDefinition {
     /// one graph property.
     pub const fn required_graph_directedness(&self) -> Option<bool> {
         match self.algorithm {
-            GraphAlgorithm::WeaklyConnectedComponents => Some(false),
+            GraphAlgorithm::WeaklyConnectedComponents
+            | GraphAlgorithm::MinimumSpanningTree
+            | GraphAlgorithm::SpectralModularityMaximization
+            | GraphAlgorithm::BalancedCutClustering => Some(false),
             GraphAlgorithm::StronglyConnectedComponents => Some(true),
             _ => None,
+        }
+    }
+
+    /// Vertex-id dtype support for this algorithm.
+    pub const fn vertex_id_type_support(&self) -> GraphVertexIdTypeSupport {
+        match self.algorithm {
+            GraphAlgorithm::MinimumSpanningTree
+            | GraphAlgorithm::SpectralModularityMaximization
+            | GraphAlgorithm::BalancedCutClustering => GraphVertexIdTypeSupport::Int32OnlyLegacyEdgeType,
+            _ => GraphVertexIdTypeSupport::Int32OrInt64,
         }
     }
 
@@ -375,6 +437,9 @@ impl GraphOperationDefinition {
                 | GraphAlgorithm::TriangleCountAll
                 | GraphAlgorithm::CoreNumber
                 | GraphAlgorithm::KCore
+                | GraphAlgorithm::MinimumSpanningTree
+                | GraphAlgorithm::SpectralModularityMaximization
+                | GraphAlgorithm::BalancedCutClustering
                 | GraphAlgorithm::ForceAtlas2
         ) {
             options.directed = false;

@@ -17,7 +17,8 @@ use datafusion::{
 use super::{
     CugraphAlgorithm, CugraphAlgorithmParams, CugraphAlgorithmSpec, CugraphBfsSource, CugraphBfsSourceVertex,
     CugraphSqlConfig, CugraphTableReference, CugraphVertexIdDomain, bfs_result_schema_for_vertex_domain,
-    datafusion_table_reference, parse_cugraph_algorithm_spec, plan_error, vertex_id_domain_for_call,
+    datafusion_table_reference, parse_cugraph_algorithm_spec, plan_error, validate_vertex_id_domain_support_for_call,
+    vertex_id_domain_for_call,
 };
 use crate::{
     NativeCudfExecutionConfig,
@@ -329,6 +330,7 @@ fn validate_edge_source_schema(spec: &CugraphAlgorithmSpec, schema: &SchemaRef) 
         ))
     })?;
     let domain = vertex_id_domain_for_call(spec.algorithm, &spec.params, src.data_type(), dst.data_type())?;
+    validate_vertex_id_domain_support_for_call(spec.algorithm, &domain)?;
     if let Some(edge_id_col) = &spec.edge_id_col {
         let edge_id = schema.field_with_name(edge_id_col).map_err(|_| {
             plan_error(format!("cuGraph edge source '{}' is missing edge-id column '{edge_id_col}'", spec.table_name))

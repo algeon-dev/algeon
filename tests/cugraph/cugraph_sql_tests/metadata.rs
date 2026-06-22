@@ -123,6 +123,26 @@ async fn cugraph_metadata_list_algorithms_reports_allowlist_state() {
             .any(|entry| entry.as_str().is_some_and(|text| text.contains("vertex_radius"))),
         "ForceAtlas2 metadata must disclose the current prevent_overlapping limitation",
     );
+
+    let mst_describe = ctx
+        .sql(
+            "SELECT limitations_json \
+             FROM cugraph_describe_algorithm('cugraph_minimum_spanning_tree')",
+        )
+        .await
+        .unwrap()
+        .collect()
+        .await
+        .unwrap();
+    let limitations = json_value(string_value(single_batch(&mst_describe), 0, 0));
+    assert!(
+        limitations
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|entry| entry.as_str().is_some_and(|text| text.contains("requires Int32"))),
+        "legacy MST metadata must disclose the Int32 vertex dtype limitation",
+    );
 }
 
 #[tokio::test]
@@ -700,8 +720,8 @@ async fn cugraph_metadata_registry_matches_native_graph_descriptors() {
 async fn cugraph_validate_call_source_and_weight_policy_match_metadata() {
     let state = SessionStateBuilder::new_with_default_features().with_cugraph_sql(CugraphSqlConfig::default()).build();
     let ctx = SessionContext::new_with_state(state);
-    register_edge_memtable(&ctx, "edges", DataType::Int64, DataType::Int64, DataType::Float64);
-    register_personalization_memtable(&ctx, "ppr_seeds", DataType::Int64, DataType::Float64);
+    register_edge_memtable(&ctx, "edges", DataType::Int32, DataType::Int32, DataType::Float64);
+    register_personalization_memtable(&ctx, "ppr_seeds", DataType::Int32, DataType::Float64);
 
     for entry in CUGRAPH_OPERATION_REGISTRY {
         let function = entry.sql_function_name;
@@ -737,6 +757,94 @@ async fn cugraph_validate_call_source_and_weight_policy_match_metadata() {
                 string_value(&batch, 2, 0),
             );
         }
+    }
+}
+
+#[tokio::test]
+async fn cugraph_validate_call_rejects_int64_for_legacy_int32_only_algorithms() {
+    let state = SessionStateBuilder::new_with_default_features().with_cugraph_sql(CugraphSqlConfig::default()).build();
+    let ctx = SessionContext::new_with_state(state);
+    register_edge_memtable(&ctx, "edges_i64", DataType::Int64, DataType::Int64, DataType::Float64);
+    register_edge_memtable(&ctx, "edges_i32", DataType::Int32, DataType::Int32, DataType::Float64);
+
+    for (function, call_json) in [
+        ("cugraph_minimum_spanning_tree", r#"{"src_col":"src","dst_col":"dst","weight_col":"weight"}"#),
+        ("cugraph_spectral_modularity_maximization", r#"{"src_col":"src","dst_col":"dst"}"#),
+        ("cugraph_balanced_cut_clustering", r#"{"src_col":"src","dst_col":"dst"}"#),
+    ] {
+        let escaped = call_json.replace('\'', "''");
+        let rejected = ctx
+            .sql(&format!(
+                "SELECT valid, error_code, message, would_execute_gpu \
+                 FROM cugraph_validate_call('{function}', 'edges_i64', '{escaped}')"
+            ))
+            .await
+            .unwrap()
+            .collect()
+            .await
+            .unwrap();
+        let rejected = single_batch(&rejected);
+        assert!(!bool_value(rejected, 0, 0), "{function} must reject Int64 vertices");
+        assert_eq!(string_value(rejected, 1, 0), "unsupported_vertex_dtype");
+        assert!(string_value(rejected, 2, 0).contains("supported vertex dtypes: Int32"));
+        assert!(!bool_value(rejected, 3, 0));
+
+        let accepted = ctx
+            .sql(&format!(
+                "SELECT valid, error_code, would_execute_gpu \
+                 FROM cugraph_validate_call('{function}', 'edges_i32', '{escaped}')"
+            ))
+            .await
+            .unwrap()
+            .collect()
+            .await
+            .unwrap();
+        let accepted = single_batch(&accepted);
+        assert!(bool_value(accepted, 0, 0), "{function} must accept Int32 vertices");
+        assert_eq!(string_value(accepted, 1, 0), "ok");
+        assert!(bool_value(accepted, 2, 0));
+    }
+}
+
+#[tokio::test]
+async fn cugraph_validate_call_rejects_directed_true_for_undirected_only_algorithms() {
+    let state = SessionStateBuilder::new_with_default_features().with_cugraph_sql(CugraphSqlConfig::default()).build();
+    let ctx = SessionContext::new_with_state(state);
+    register_edge_memtable(&ctx, "edges", DataType::Int32, DataType::Int32, DataType::Float64);
+
+    for (function, call_json, expected) in [
+        (
+            "cugraph_minimum_spanning_tree",
+            r#"{"src_col":"src","dst_col":"dst","weight_col":"weight","options":{"directed":true}}"#,
+            "cugraph_minimum_spanning_tree requires directed=false",
+        ),
+        (
+            "cugraph_spectral_modularity_maximization",
+            r#"{"src_col":"src","dst_col":"dst","options":{"directed":true}}"#,
+            "cugraph_spectral_modularity_maximization requires directed=false",
+        ),
+        (
+            "cugraph_balanced_cut_clustering",
+            r#"{"src_col":"src","dst_col":"dst","options":{"directed":true}}"#,
+            "cugraph_balanced_cut_clustering requires directed=false",
+        ),
+    ] {
+        let escaped = call_json.replace('\'', "''");
+        let batches = ctx
+            .sql(&format!(
+                "SELECT valid, error_code, message, would_execute_gpu \
+                 FROM cugraph_validate_call('{function}', 'edges', '{escaped}')"
+            ))
+            .await
+            .unwrap()
+            .collect()
+            .await
+            .unwrap();
+        let batch = single_batch(&batches);
+        assert!(!bool_value(batch, 0, 0), "{function} must reject directed=true");
+        assert_eq!(string_value(batch, 1, 0), "unsupported_option");
+        assert!(string_value(batch, 2, 0).contains(expected), "{}", string_value(batch, 2, 0));
+        assert!(!bool_value(batch, 3, 0));
     }
 }
 

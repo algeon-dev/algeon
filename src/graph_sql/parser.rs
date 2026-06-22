@@ -62,6 +62,9 @@ pub fn parse_cugraph_algorithm_spec(
     //   undirected; libcugraph accepts directed but produces different
     //   (non-comparable) results, so the adapter default aligns with the
     //   Python oracle to keep parity meaningful.
+    // - minimum_spanning_tree / spectral_modularity_maximization /
+    //   balanced_cut_clustering: cuGraph requires an undirected/symmetric
+    //   graph for these legacy algorithms.
     graph_options = algorithm.effective_default_graph_options(&graph_options);
     let mut params = default_params(algorithm, source.clone());
     let has_options_json = args.len() > next;
@@ -196,6 +199,15 @@ fn validate_graph_directedness(algorithm: CugraphAlgorithm, graph_options: &Cugr
         },
         (CugraphAlgorithm::WeaklyConnectedComponents, false) => {
             "cugraph_weakly_connected_components requires directed=false so cuGraph receives a symmetric graph"
+        },
+        (CugraphAlgorithm::MinimumSpanningTree, false) => {
+            "cugraph_minimum_spanning_tree requires directed=false so cuGraph receives an undirected graph"
+        },
+        (CugraphAlgorithm::SpectralModularityMaximization, false) => {
+            "cugraph_spectral_modularity_maximization requires directed=false so cuGraph receives an undirected graph"
+        },
+        (CugraphAlgorithm::BalancedCutClustering, false) => {
+            "cugraph_balanced_cut_clustering requires directed=false so cuGraph receives an undirected graph"
         },
         _ if required => "cuGraph algorithm requires directed=true",
         _ => "cuGraph algorithm requires directed=false",

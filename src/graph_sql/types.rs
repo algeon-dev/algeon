@@ -856,6 +856,26 @@ pub(crate) fn vertex_id_domain_for_call(
     }
 }
 
+pub(crate) fn validate_vertex_id_domain_support_for_call(
+    algorithm: CugraphAlgorithm,
+    vertex_domain: &CugraphVertexIdDomain,
+) -> Result<()> {
+    let data_type = match vertex_domain {
+        CugraphVertexIdDomain::Int32 => DataType::Int32,
+        CugraphVertexIdDomain::Int64 => DataType::Int64,
+        CugraphVertexIdDomain::StringLogical => return Ok(()),
+    };
+    let support = algorithm.native_algorithm().vertex_id_type_support();
+    if support.accepts_arrow_data_type(&data_type) {
+        return Ok(());
+    }
+    Err(plan_error(format!(
+        "cuGraph {} vertex columns have unsupported dtype {data_type:?}; supported vertex dtypes: {}",
+        algorithm.function_name(),
+        support.supported_dtypes_label()
+    )))
+}
+
 pub(crate) fn is_numeric_vertex_dtype(data_type: &DataType) -> bool {
     matches!(data_type, DataType::Int32 | DataType::Int64)
 }
