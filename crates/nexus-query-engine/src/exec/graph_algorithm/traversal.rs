@@ -28,161 +28,213 @@ pub(super) fn execute_bfs(
         spec,
         &mut edges,
     )?;
+    if let Some(result) = empty_bfs_result_for_trivial_path_endpoint(context, spec, params, &edges, &predicate_columns)?
+    {
+        return Ok(result);
+    }
+    let endpoint_edges = edges.clone();
 
     let run_bfs = |runtime: &cudf::Runtime,
                    entered: &cugraph::EnteredContext<'_>,
                    graph: &mut cugraph::Graph<cugraph::Forward>| {
-        let (frame, target_metadata) = match vertex_type {
-            cudf::TypeId::Int32 => {
-                let source = i32::try_from(params.source_vertex).map_err(|_| {
-                    QueryError::new(
-                        QueryErrorCode::InvalidPlan,
-                        "nexus_query_engine.graph_algorithm.bfs_source",
-                        "BFS source vertex does not fit the Int32 graph vertex dtype",
-                    )
-                    .with_fact("source_vertex", params.source_vertex)
-                    .with_fact("vertex_dtype", "Int32")
-                })?;
-                let source_slice =
-                    predicate_column_slice::<i32>(predicate_columns.source_vertices.as_ref(), "source_vertices")?;
-                let source_array = if source_slice.is_none() {
-                    Some(cugraph::DeviceArray::from_slice(entered, &[source]).map_err(map_cugraph_error(
-                        "nexus_query_engine.graph_algorithm.bfs_source",
-                        "failed to copy BFS source vertex to device memory",
-                    ))?)
-                } else {
-                    None
-                };
-                let sources_view = match (source_slice.as_ref(), source_array.as_ref()) {
-                    (Some(slice), None) => {
-                        cugraph::cudf_interop::device_array_view_from_slice::<i32>(slice).map_err(map_cugraph_error(
+        let (frame, target_metadata) =
+            match vertex_type {
+                cudf::TypeId::Int32 => {
+                    let source = i32::try_from(params.source_vertex).map_err(|_| {
+                        QueryError::new(
+                            QueryErrorCode::InvalidPlan,
                             "nexus_query_engine.graph_algorithm.bfs_source",
-                            "failed to wrap BFS source-vertex side input as a cuGraph device-array view",
-                        ))?
-                    },
-                    (None, Some(array)) => array.view().map_err(map_cugraph_error(
-                        "nexus_query_engine.graph_algorithm.bfs_source",
-                        "failed to create BFS source vertex view",
-                    ))?,
-                    _ => unreachable!("source array is created iff no source side input exists"),
-                };
-                let include_vertices_slice =
-                    predicate_column_slice::<i32>(predicate_columns.include_vertices.as_ref(), "include_vertices")?;
-                let exclude_vertices_slice =
-                    predicate_column_slice::<i32>(predicate_columns.exclude_vertices.as_ref(), "exclude_vertices")?;
-                let target_vertices_slice =
-                    predicate_column_slice::<i32>(predicate_columns.target_vertices.as_ref(), "target_vertices")?;
-                let include_edge_ids_slice =
-                    predicate_column_slice::<i32>(predicate_columns.include_edge_ids.as_ref(), "include_edge_ids")?;
-                let include_vertices_view =
-                    predicate_device_view::<i32>(include_vertices_slice.as_ref(), "include_vertices")?;
-                let exclude_vertices_view =
-                    predicate_device_view::<i32>(exclude_vertices_slice.as_ref(), "exclude_vertices")?;
-                let target_vertices_view =
-                    predicate_device_view::<i32>(target_vertices_slice.as_ref(), "target_vertices")?;
-                let include_edge_ids_view =
-                    predicate_device_view::<i32>(include_edge_ids_slice.as_ref(), "include_edge_ids")?;
-                let predicates = cugraph::traversal::BfsPredicateParams::<i32, i32> {
-                    include_vertices: include_vertices_view.as_ref(),
-                    exclude_vertices: exclude_vertices_view.as_ref(),
-                    target_vertices: target_vertices_view.as_ref(),
-                    include_edge_ids: include_edge_ids_view.as_ref(),
-                    stop_when_any_target_found: target_vertices_view.is_some(),
-                };
-                let result = if predicate_columns.requires_predicate_bfs_call() {
-                    graph.bfs_with_predicates(entered, &sources_view, &bfs_p, &predicates).map_err(
-                        map_cugraph_error("nexus_query_engine.graph_algorithm.bfs", "cuGraph predicate BFS failed"),
-                    )?
-                } else {
-                    graph
-                        .bfs(entered, &sources_view, &bfs_p)
-                        .map_err(map_cugraph_error("nexus_query_engine.graph_algorithm.bfs", "cuGraph BFS failed"))?
-                };
-                let target_info = result.target_info().copied();
-                let target_metadata = bfs_target_metadata(target_info.as_ref());
-                let frame = result.to_dataframe(runtime).map_err(map_cugraph_error(
-                    "nexus_query_engine.graph_algorithm.bfs_result",
-                    "failed to convert cuGraph BFS result to cudf DataFrame",
-                ))?;
-                let frame = append_bfs_target_metadata_columns(context, params, frame, target_info)?;
-                (frame, target_metadata)
-            },
-            cudf::TypeId::Int64 => {
-                let source_slice =
-                    predicate_column_slice::<i64>(predicate_columns.source_vertices.as_ref(), "source_vertices")?;
-                let source_array = if source_slice.is_none() {
-                    Some(cugraph::DeviceArray::from_slice(entered, &[params.source_vertex]).map_err(
-                        map_cugraph_error(
+                            "BFS source vertex does not fit the Int32 graph vertex dtype",
+                        )
+                        .with_fact("source_vertex", params.source_vertex)
+                        .with_fact("vertex_dtype", "Int32")
+                    })?;
+                    let source_slice =
+                        predicate_column_slice::<i32>(predicate_columns.source_vertices.as_ref(), "source_vertices")?;
+                    let source_array = if source_slice.is_none() {
+                        Some(cugraph::DeviceArray::from_slice(entered, &[source]).map_err(map_cugraph_error(
                             "nexus_query_engine.graph_algorithm.bfs_source",
                             "failed to copy BFS source vertex to device memory",
-                        ),
-                    )?)
-                } else {
-                    None
-                };
-                let sources_view = match (source_slice.as_ref(), source_array.as_ref()) {
-                    (Some(slice), None) => {
-                        cugraph::cudf_interop::device_array_view_from_slice::<i64>(slice).map_err(map_cugraph_error(
+                        ))?)
+                    } else {
+                        None
+                    };
+                    let sources_view = match (source_slice.as_ref(), source_array.as_ref()) {
+                        (Some(slice), None) => cugraph::cudf_interop::device_array_view_from_slice::<i32>(slice)
+                            .map_err(map_cugraph_error(
+                                "nexus_query_engine.graph_algorithm.bfs_source",
+                                "failed to wrap BFS source-vertex side input as a cuGraph device-array view",
+                            ))?,
+                        (None, Some(array)) => array.view().map_err(map_cugraph_error(
                             "nexus_query_engine.graph_algorithm.bfs_source",
-                            "failed to wrap BFS source-vertex side input as a cuGraph device-array view",
-                        ))?
-                    },
-                    (None, Some(array)) => array.view().map_err(map_cugraph_error(
+                            "failed to create BFS source vertex view",
+                        ))?,
+                        _ => unreachable!("source array is created iff no source side input exists"),
+                    };
+                    let include_vertices_slice =
+                        predicate_column_slice::<i32>(predicate_columns.include_vertices.as_ref(), "include_vertices")?;
+                    let exclude_vertices_slice =
+                        predicate_column_slice::<i32>(predicate_columns.exclude_vertices.as_ref(), "exclude_vertices")?;
+                    let target_vertices_slice =
+                        predicate_column_slice::<i32>(predicate_columns.target_vertices.as_ref(), "target_vertices")?;
+                    let include_edge_ids_slice =
+                        predicate_column_slice::<i32>(predicate_columns.include_edge_ids.as_ref(), "include_edge_ids")?;
+                    let include_vertices_view =
+                        predicate_device_view::<i32>(include_vertices_slice.as_ref(), "include_vertices")?;
+                    let exclude_vertices_view =
+                        predicate_device_view::<i32>(exclude_vertices_slice.as_ref(), "exclude_vertices")?;
+                    let target_vertices_view =
+                        predicate_device_view::<i32>(target_vertices_slice.as_ref(), "target_vertices")?;
+                    let include_edge_ids_view =
+                        predicate_device_view::<i32>(include_edge_ids_slice.as_ref(), "include_edge_ids")?;
+                    let predicates = cugraph::traversal::BfsPredicateParams::<i32, i32> {
+                        include_vertices: include_vertices_view.as_ref(),
+                        exclude_vertices: exclude_vertices_view.as_ref(),
+                        target_vertices: target_vertices_view.as_ref(),
+                        include_edge_ids: include_edge_ids_view.as_ref(),
+                        stop_when_any_target_found: target_vertices_view.is_some(),
+                    };
+                    let result = if predicate_columns.requires_predicate_bfs_call() {
+                        match graph.bfs_with_predicates(entered, &sources_view, &bfs_p, &predicates) {
+                            Ok(result) => result,
+                            Err(error) => {
+                                return graph_bfs_error_for_missing_path_endpoint(
+                                    context,
+                                    spec,
+                                    params,
+                                    &endpoint_edges,
+                                    vertex_type,
+                                    &predicate_columns,
+                                    error,
+                                    "cuGraph predicate BFS failed",
+                                );
+                            },
+                        }
+                    } else {
+                        match graph.bfs(entered, &sources_view, &bfs_p) {
+                            Ok(result) => result,
+                            Err(error) => {
+                                return graph_bfs_error_for_missing_path_endpoint(
+                                    context,
+                                    spec,
+                                    params,
+                                    &endpoint_edges,
+                                    vertex_type,
+                                    &predicate_columns,
+                                    error,
+                                    "cuGraph BFS failed",
+                                );
+                            },
+                        }
+                    };
+                    let target_info = result.target_info().copied();
+                    let target_metadata = bfs_target_metadata(target_info.as_ref());
+                    let frame = result.to_dataframe(runtime).map_err(map_cugraph_error(
+                        "nexus_query_engine.graph_algorithm.bfs_result",
+                        "failed to convert cuGraph BFS result to cudf DataFrame",
+                    ))?;
+                    let frame = append_bfs_target_metadata_columns(context, params, frame, target_info)?;
+                    (frame, target_metadata)
+                },
+                cudf::TypeId::Int64 => {
+                    let source_slice =
+                        predicate_column_slice::<i64>(predicate_columns.source_vertices.as_ref(), "source_vertices")?;
+                    let source_array = if source_slice.is_none() {
+                        Some(cugraph::DeviceArray::from_slice(entered, &[params.source_vertex]).map_err(
+                            map_cugraph_error(
+                                "nexus_query_engine.graph_algorithm.bfs_source",
+                                "failed to copy BFS source vertex to device memory",
+                            ),
+                        )?)
+                    } else {
+                        None
+                    };
+                    let sources_view = match (source_slice.as_ref(), source_array.as_ref()) {
+                        (Some(slice), None) => cugraph::cudf_interop::device_array_view_from_slice::<i64>(slice)
+                            .map_err(map_cugraph_error(
+                                "nexus_query_engine.graph_algorithm.bfs_source",
+                                "failed to wrap BFS source-vertex side input as a cuGraph device-array view",
+                            ))?,
+                        (None, Some(array)) => array.view().map_err(map_cugraph_error(
+                            "nexus_query_engine.graph_algorithm.bfs_source",
+                            "failed to create BFS source vertex view",
+                        ))?,
+                        _ => unreachable!("source array is created iff no source side input exists"),
+                    };
+                    let include_vertices_slice =
+                        predicate_column_slice::<i64>(predicate_columns.include_vertices.as_ref(), "include_vertices")?;
+                    let exclude_vertices_slice =
+                        predicate_column_slice::<i64>(predicate_columns.exclude_vertices.as_ref(), "exclude_vertices")?;
+                    let target_vertices_slice =
+                        predicate_column_slice::<i64>(predicate_columns.target_vertices.as_ref(), "target_vertices")?;
+                    let include_edge_ids_slice =
+                        predicate_column_slice::<i64>(predicate_columns.include_edge_ids.as_ref(), "include_edge_ids")?;
+                    let include_vertices_view =
+                        predicate_device_view::<i64>(include_vertices_slice.as_ref(), "include_vertices")?;
+                    let exclude_vertices_view =
+                        predicate_device_view::<i64>(exclude_vertices_slice.as_ref(), "exclude_vertices")?;
+                    let target_vertices_view =
+                        predicate_device_view::<i64>(target_vertices_slice.as_ref(), "target_vertices")?;
+                    let include_edge_ids_view =
+                        predicate_device_view::<i64>(include_edge_ids_slice.as_ref(), "include_edge_ids")?;
+                    let predicates = cugraph::traversal::BfsPredicateParams::<i64, i64> {
+                        include_vertices: include_vertices_view.as_ref(),
+                        exclude_vertices: exclude_vertices_view.as_ref(),
+                        target_vertices: target_vertices_view.as_ref(),
+                        include_edge_ids: include_edge_ids_view.as_ref(),
+                        stop_when_any_target_found: target_vertices_view.is_some(),
+                    };
+                    let result = if predicate_columns.requires_predicate_bfs_call() {
+                        match graph.bfs_with_predicates(entered, &sources_view, &bfs_p, &predicates) {
+                            Ok(result) => result,
+                            Err(error) => {
+                                return graph_bfs_error_for_missing_path_endpoint(
+                                    context,
+                                    spec,
+                                    params,
+                                    &endpoint_edges,
+                                    vertex_type,
+                                    &predicate_columns,
+                                    error,
+                                    "cuGraph predicate BFS failed",
+                                );
+                            },
+                        }
+                    } else {
+                        match graph.bfs(entered, &sources_view, &bfs_p) {
+                            Ok(result) => result,
+                            Err(error) => {
+                                return graph_bfs_error_for_missing_path_endpoint(
+                                    context,
+                                    spec,
+                                    params,
+                                    &endpoint_edges,
+                                    vertex_type,
+                                    &predicate_columns,
+                                    error,
+                                    "cuGraph BFS failed",
+                                );
+                            },
+                        }
+                    };
+                    let target_info = result.target_info().copied();
+                    let target_metadata = bfs_target_metadata(target_info.as_ref());
+                    let frame = result.to_dataframe(runtime).map_err(map_cugraph_error(
+                        "nexus_query_engine.graph_algorithm.bfs_result",
+                        "failed to convert cuGraph BFS result to cudf DataFrame",
+                    ))?;
+                    let frame = append_bfs_target_metadata_columns(context, params, frame, target_info)?;
+                    (frame, target_metadata)
+                },
+                _ => {
+                    return Err(QueryError::new(
+                        QueryErrorCode::UnsupportedType,
                         "nexus_query_engine.graph_algorithm.bfs_source",
-                        "failed to create BFS source vertex view",
-                    ))?,
-                    _ => unreachable!("source array is created iff no source side input exists"),
-                };
-                let include_vertices_slice =
-                    predicate_column_slice::<i64>(predicate_columns.include_vertices.as_ref(), "include_vertices")?;
-                let exclude_vertices_slice =
-                    predicate_column_slice::<i64>(predicate_columns.exclude_vertices.as_ref(), "exclude_vertices")?;
-                let target_vertices_slice =
-                    predicate_column_slice::<i64>(predicate_columns.target_vertices.as_ref(), "target_vertices")?;
-                let include_edge_ids_slice =
-                    predicate_column_slice::<i64>(predicate_columns.include_edge_ids.as_ref(), "include_edge_ids")?;
-                let include_vertices_view =
-                    predicate_device_view::<i64>(include_vertices_slice.as_ref(), "include_vertices")?;
-                let exclude_vertices_view =
-                    predicate_device_view::<i64>(exclude_vertices_slice.as_ref(), "exclude_vertices")?;
-                let target_vertices_view =
-                    predicate_device_view::<i64>(target_vertices_slice.as_ref(), "target_vertices")?;
-                let include_edge_ids_view =
-                    predicate_device_view::<i64>(include_edge_ids_slice.as_ref(), "include_edge_ids")?;
-                let predicates = cugraph::traversal::BfsPredicateParams::<i64, i64> {
-                    include_vertices: include_vertices_view.as_ref(),
-                    exclude_vertices: exclude_vertices_view.as_ref(),
-                    target_vertices: target_vertices_view.as_ref(),
-                    include_edge_ids: include_edge_ids_view.as_ref(),
-                    stop_when_any_target_found: target_vertices_view.is_some(),
-                };
-                let result = if predicate_columns.requires_predicate_bfs_call() {
-                    graph.bfs_with_predicates(entered, &sources_view, &bfs_p, &predicates).map_err(
-                        map_cugraph_error("nexus_query_engine.graph_algorithm.bfs", "cuGraph predicate BFS failed"),
-                    )?
-                } else {
-                    graph
-                        .bfs(entered, &sources_view, &bfs_p)
-                        .map_err(map_cugraph_error("nexus_query_engine.graph_algorithm.bfs", "cuGraph BFS failed"))?
-                };
-                let target_info = result.target_info().copied();
-                let target_metadata = bfs_target_metadata(target_info.as_ref());
-                let frame = result.to_dataframe(runtime).map_err(map_cugraph_error(
-                    "nexus_query_engine.graph_algorithm.bfs_result",
-                    "failed to convert cuGraph BFS result to cudf DataFrame",
-                ))?;
-                let frame = append_bfs_target_metadata_columns(context, params, frame, target_info)?;
-                (frame, target_metadata)
-            },
-            _ => {
-                return Err(QueryError::new(
-                    QueryErrorCode::UnsupportedType,
-                    "nexus_query_engine.graph_algorithm.bfs_source",
-                    "BFS graph vertex dtype is unsupported",
-                )
-                .with_fact("vertex_dtype", format!("{vertex_type:?}")));
-            },
-        };
+                        "BFS graph vertex dtype is unsupported",
+                    )
+                    .with_fact("vertex_dtype", format!("{vertex_type:?}")));
+                },
+            };
         Ok(GraphAlgorithmExecutionResult {
             frame: normalize_graph_result_schema(frame, &spec.output_schema)?,
             algorithm_metadata: format!(
@@ -270,7 +322,12 @@ impl BfsPredicateColumns {
             vertex_type,
         )?;
         Ok(Self {
-            source_vertices: source_vertex_series(side_inputs, params.source_vertices.as_ref(), vertex_type)?,
+            source_vertices: source_vertex_series(
+                side_inputs,
+                params.source_vertices.as_ref(),
+                vertex_type,
+                params.endpoint_policy,
+            )?,
             include_vertices: predicate_series(
                 side_inputs,
                 params.predicates.include_vertices.as_ref(),
@@ -472,6 +529,437 @@ fn drop_null_include_edge_rows(
     Ok((filtered, null_rows_dropped))
 }
 
+#[derive(Debug, Clone, Copy)]
+struct BfsEndpointMembership {
+    source_rows: usize,
+    valid_source_rows: usize,
+    target_rows: usize,
+    valid_target_rows: usize,
+}
+
+fn empty_bfs_result_for_missing_path_endpoint(
+    context: &ExecutionContext,
+    spec: &crate::plan::GraphAlgorithmSpec,
+    params: &crate::plan::GraphBfsParams,
+    edges: &DataFrame,
+    vertex_type: cudf::TypeId,
+    predicate_columns: &BfsPredicateColumns,
+) -> Result<Option<GraphAlgorithmExecutionResult>> {
+    if params.endpoint_policy != crate::plan::GraphBfsEndpointPolicy::EmptyOnMissingPathEndpoint {
+        return Ok(None);
+    }
+
+    let source_vertices = concrete_bfs_source_vertices(context, params, predicate_columns, vertex_type)?;
+    let target_vertices = predicate_columns.target_vertices.as_ref().ok_or_else(|| {
+        QueryError::new(
+            QueryErrorCode::InvalidPlan,
+            "nexus_query_engine.graph_algorithm.bfs_endpoint_membership",
+            "BFS empty endpoint policy requires target_vertices",
+        )
+    })?;
+    if target_vertices.len() != 1 {
+        return Err(QueryError::new(
+            QueryErrorCode::InvalidPlan,
+            "nexus_query_engine.graph_algorithm.bfs_endpoint_membership",
+            "BFS empty endpoint policy requires exactly one target vertex",
+        )
+        .with_fact("target_rows", target_vertices.len()));
+    }
+
+    if source_vertices.is_empty() {
+        let membership = BfsEndpointMembership {
+            source_rows: 0,
+            valid_source_rows: 0,
+            target_rows: target_vertices.len(),
+            valid_target_rows: 0,
+        };
+        return empty_bfs_result(context, spec, params, predicate_columns, "source_vertices_empty", membership)
+            .map(Some);
+    }
+
+    if edges.num_rows() == 0 {
+        let membership = BfsEndpointMembership {
+            source_rows: source_vertices.len(),
+            valid_source_rows: 0,
+            target_rows: target_vertices.len(),
+            valid_target_rows: 0,
+        };
+        return empty_bfs_result(context, spec, params, predicate_columns, "edge_source_empty", membership).map(Some);
+    }
+
+    let domain = graph_vertex_domain_frame(edges, spec)?;
+    let source_membership = valid_vertex_rows(&source_vertices, &domain, "source_vertices")?;
+    let target_membership = valid_vertex_rows(target_vertices, &domain, "target_vertices")?;
+    let membership = BfsEndpointMembership {
+        source_rows: source_vertices.len(),
+        valid_source_rows: source_membership,
+        target_rows: target_vertices.len(),
+        valid_target_rows: target_membership,
+    };
+
+    if source_membership == 0 {
+        return empty_bfs_result(context, spec, params, predicate_columns, "source_vertices_absent", membership)
+            .map(Some);
+    }
+    if source_membership < source_vertices.len() {
+        return Err(QueryError::new(
+            QueryErrorCode::InvalidPlan,
+            "nexus_query_engine.graph_algorithm.bfs_endpoint_membership",
+            "BFS source vertices contain values absent from the graph after edge-source filters",
+        )
+        .with_fact("reason", "partial_source_vertices_absent")
+        .with_fact("predicate_role", "source_vertices")
+        .with_fact("source_rows", source_vertices.len())
+        .with_fact("valid_source_rows", source_membership)
+        .with_fact("target_rows", target_vertices.len())
+        .with_fact("valid_target_rows", target_membership)
+        .with_fact("endpoint_policy", params.endpoint_policy.as_str()));
+    }
+    if target_membership == 0 {
+        return empty_bfs_result(context, spec, params, predicate_columns, "target_vertices_absent", membership)
+            .map(Some);
+    }
+
+    Ok(None)
+}
+
+fn empty_bfs_result_for_trivial_path_endpoint(
+    context: &ExecutionContext,
+    spec: &crate::plan::GraphAlgorithmSpec,
+    params: &crate::plan::GraphBfsParams,
+    edges: &DataFrame,
+    predicate_columns: &BfsPredicateColumns,
+) -> Result<Option<GraphAlgorithmExecutionResult>> {
+    if params.endpoint_policy != crate::plan::GraphBfsEndpointPolicy::EmptyOnMissingPathEndpoint {
+        return Ok(None);
+    }
+
+    let target_vertices = predicate_columns.target_vertices.as_ref().ok_or_else(|| {
+        QueryError::new(
+            QueryErrorCode::InvalidPlan,
+            "nexus_query_engine.graph_algorithm.bfs_endpoint_membership",
+            "BFS empty endpoint policy requires target_vertices",
+        )
+    })?;
+    if target_vertices.len() != 1 {
+        return Err(QueryError::new(
+            QueryErrorCode::InvalidPlan,
+            "nexus_query_engine.graph_algorithm.bfs_endpoint_membership",
+            "BFS empty endpoint policy requires exactly one target vertex",
+        )
+        .with_fact("target_rows", target_vertices.len()));
+    }
+    validate_bfs_non_endpoint_predicate_membership(edges, spec, predicate_columns)?;
+
+    let source_rows = predicate_columns.source_vertices.as_ref().map_or(1, cudf::Series::len);
+    if source_rows == 0 {
+        let valid_target_rows = if edges.num_rows() == 0 {
+            0
+        } else {
+            let domain = graph_vertex_domain_frame(edges, spec)?;
+            valid_vertex_rows(target_vertices, &domain, "target_vertices")?
+        };
+        let membership = BfsEndpointMembership {
+            source_rows: 0,
+            valid_source_rows: 0,
+            target_rows: target_vertices.len(),
+            valid_target_rows,
+        };
+        return empty_bfs_result(context, spec, params, predicate_columns, "source_vertices_empty", membership)
+            .map(Some);
+    }
+
+    if edges.num_rows() == 0 {
+        let membership = BfsEndpointMembership {
+            source_rows,
+            valid_source_rows: 0,
+            target_rows: target_vertices.len(),
+            valid_target_rows: 0,
+        };
+        return empty_bfs_result(context, spec, params, predicate_columns, "edge_source_empty", membership).map(Some);
+    }
+
+    Ok(None)
+}
+
+fn graph_bfs_error_for_missing_path_endpoint(
+    context: &ExecutionContext,
+    spec: &crate::plan::GraphAlgorithmSpec,
+    params: &crate::plan::GraphBfsParams,
+    edges: &DataFrame,
+    vertex_type: cudf::TypeId,
+    predicate_columns: &BfsPredicateColumns,
+    error: cugraph::Error,
+    message: &'static str,
+) -> Result<GraphAlgorithmExecutionResult> {
+    if error.kind() == cugraph::ErrorKind::InvalidInput {
+        validate_bfs_non_endpoint_predicate_membership(edges, spec, predicate_columns)?;
+        if let Some(result) =
+            empty_bfs_result_for_missing_path_endpoint(context, spec, params, edges, vertex_type, predicate_columns)?
+        {
+            return Ok(result);
+        }
+    }
+    Err(map_cugraph_error("nexus_query_engine.graph_algorithm.bfs", message)(error))
+}
+
+fn validate_bfs_non_endpoint_predicate_membership(
+    edges: &DataFrame,
+    spec: &crate::plan::GraphAlgorithmSpec,
+    predicate_columns: &BfsPredicateColumns,
+) -> Result<()> {
+    if edges.num_rows() == 0 {
+        if let Some(vertices) = &predicate_columns.include_vertices
+            && !vertices.is_empty()
+        {
+            return Err(predicate_membership_error("include_vertices", vertices.len(), 0));
+        }
+        if let Some(vertices) = &predicate_columns.exclude_vertices
+            && !vertices.is_empty()
+        {
+            return Err(predicate_membership_error("exclude_vertices", vertices.len(), 0));
+        }
+        if let Some(edge_ids) = &predicate_columns.include_edge_ids
+            && !edge_ids.is_empty()
+        {
+            return Err(predicate_membership_error("include_edge_ids", edge_ids.len(), 0));
+        }
+        if let Some(input_rows) = predicate_columns.include_edges_rows
+            && input_rows > 0
+        {
+            return Err(QueryError::new(
+                QueryErrorCode::InvalidPlan,
+                "nexus_query_engine.graph_algorithm.bfs_endpoint_membership",
+                "BFS include_edges predicate cannot match an empty graph after edge-source filters",
+            )
+            .with_fact("reason", "predicate_edges_absent")
+            .with_fact("predicate_role", "include_edges")
+            .with_fact("predicate_rows", input_rows)
+            .with_fact("valid_predicate_rows", 0));
+        }
+        return Ok(());
+    }
+    if predicate_columns.include_vertices.is_some() || predicate_columns.exclude_vertices.is_some() {
+        let domain = graph_vertex_domain_frame(edges, spec)?;
+        if let Some(vertices) = &predicate_columns.include_vertices {
+            validate_predicate_membership(vertices, &domain, "include_vertices")?;
+        }
+        if let Some(vertices) = &predicate_columns.exclude_vertices {
+            validate_predicate_membership(vertices, &domain, "exclude_vertices")?;
+        }
+    }
+    if let Some(edge_ids) = &predicate_columns.include_edge_ids {
+        let edge_id_col = spec.edge_columns.edge_id.as_ref().ok_or_else(|| {
+            QueryError::new(
+                QueryErrorCode::InvalidPlan,
+                "nexus_query_engine.graph_algorithm.bfs_endpoint_membership",
+                "BFS include_edge_ids membership validation requires an edge-id column binding",
+            )
+            .with_fact("predicate_role", "include_edge_ids")
+        })?;
+        let edge_id_domain = graph_edge_id_domain_frame(edges, edge_id_col)?;
+        validate_predicate_membership(edge_ids, &edge_id_domain, "include_edge_ids")?;
+    }
+    Ok(())
+}
+
+fn validate_predicate_membership(vertices: &cudf::Series, domain: &DataFrame, role: &'static str) -> Result<()> {
+    let valid_rows = valid_vertex_rows(vertices, domain, role)?;
+    if valid_rows == vertices.len() {
+        return Ok(());
+    }
+    Err(predicate_membership_error(role, vertices.len(), valid_rows))
+}
+
+fn predicate_membership_error(role: &'static str, predicate_rows: usize, valid_rows: usize) -> QueryError {
+    QueryError::new(
+        QueryErrorCode::InvalidPlan,
+        "nexus_query_engine.graph_algorithm.bfs_endpoint_membership",
+        "BFS predicate contains values absent from the graph after edge-source filters",
+    )
+    .with_fact("reason", "predicate_vertices_absent")
+    .with_fact("predicate_role", role)
+    .with_fact("predicate_rows", predicate_rows)
+    .with_fact("valid_predicate_rows", valid_rows)
+}
+
+fn concrete_bfs_source_vertices(
+    context: &ExecutionContext,
+    params: &crate::plan::GraphBfsParams,
+    predicate_columns: &BfsPredicateColumns,
+    vertex_type: cudf::TypeId,
+) -> Result<cudf::Series> {
+    if let Some(source_vertices) = &predicate_columns.source_vertices {
+        return Ok(source_vertices.clone());
+    }
+    match vertex_type {
+        cudf::TypeId::Int32 => {
+            let source = i32::try_from(params.source_vertex).map_err(|_| {
+                QueryError::new(
+                    QueryErrorCode::InvalidPlan,
+                    "nexus_query_engine.graph_algorithm.bfs_source",
+                    "BFS source vertex does not fit the Int32 graph vertex dtype",
+                )
+                .with_fact("source_vertex", params.source_vertex)
+                .with_fact("vertex_dtype", "Int32")
+            })?;
+            scalar_series(context, source, "source_vertices")
+        },
+        cudf::TypeId::Int64 => scalar_series(context, params.source_vertex, "source_vertices"),
+        _ => Err(QueryError::new(
+            QueryErrorCode::UnsupportedType,
+            "nexus_query_engine.graph_algorithm.bfs_source",
+            "BFS graph vertex dtype is unsupported",
+        )
+        .with_fact("vertex_dtype", format!("{vertex_type:?}"))),
+    }
+}
+
+fn scalar_series<T>(context: &ExecutionContext, value: T, role: &'static str) -> Result<cudf::Series>
+where T: cudf::CudfType {
+    context.runtime().scalar(value).and_then(|scalar| context.runtime().series_from_scalar(&scalar, 1)).map_err(
+        |error| {
+            QueryError::from_cudf(
+                "nexus_query_engine.graph_algorithm.bfs_endpoint_membership",
+                "failed to materialize BFS endpoint scalar",
+                error,
+            )
+            .with_fact("predicate_role", role)
+        },
+    )
+}
+
+fn graph_vertex_domain_frame(edges: &DataFrame, spec: &crate::plan::GraphAlgorithmSpec) -> Result<DataFrame> {
+    let source = graph_edge_series_for_column(edges, &spec.edge_columns.source, "graph_source_domain")?;
+    let destination = graph_edge_series_for_column(edges, &spec.edge_columns.destination, "graph_destination_domain")?;
+    let domain = cudf::Series::concat(&[&source, &destination]).map_err(|error| {
+        QueryError::from_cudf(
+            "nexus_query_engine.graph_algorithm.bfs_endpoint_membership",
+            "failed to build BFS graph vertex domain",
+            error,
+        )
+    })?;
+    DataFrame::from_series([("__vertex", domain)]).map_err(|error| {
+        QueryError::from_cudf(
+            "nexus_query_engine.graph_algorithm.bfs_endpoint_membership",
+            "failed to bind BFS graph vertex domain",
+            error,
+        )
+    })
+}
+
+fn graph_edge_series_for_column(frame: &DataFrame, column: &str, role: &'static str) -> Result<cudf::Series> {
+    frame.series(column).map_err(|error| {
+        QueryError::from_cudf(
+            "nexus_query_engine.graph_algorithm.bfs_endpoint_membership",
+            "failed to access BFS graph domain column",
+            error,
+        )
+        .with_fact("predicate_role", role)
+        .with_fact("column", column)
+    })
+}
+
+fn graph_edge_id_domain_frame(edges: &DataFrame, edge_id_column: &str) -> Result<DataFrame> {
+    let edge_ids = graph_edge_series_for_column(edges, edge_id_column, "include_edge_ids_domain")?;
+    DataFrame::from_series([("__vertex", edge_ids)]).map_err(|error| {
+        QueryError::from_cudf(
+            "nexus_query_engine.graph_algorithm.bfs_endpoint_membership",
+            "failed to bind BFS edge-id predicate domain",
+            error,
+        )
+        .with_fact("predicate_role", "include_edge_ids")
+    })
+}
+
+fn valid_vertex_rows(vertices: &cudf::Series, domain: &DataFrame, role: &'static str) -> Result<usize> {
+    let vertices = DataFrame::from_series([("__vertex", vertices.clone())]).map_err(|error| {
+        QueryError::from_cudf(
+            "nexus_query_engine.graph_algorithm.bfs_endpoint_membership",
+            "failed to bind BFS endpoint vertex set",
+            error,
+        )
+        .with_fact("predicate_role", role)
+    })?;
+    let options = cudf::DataFrameJoinOptions::new()
+        .left_on(["__vertex"])
+        .right_on(["__vertex"])
+        .null_equality(cudf::NullEquality::Unequal);
+    vertices.left_semi_join(domain, options).map(|frame| frame.num_rows()).map_err(|error| {
+        QueryError::from_cudf(
+            "nexus_query_engine.graph_algorithm.bfs_endpoint_membership",
+            "failed to test BFS endpoint graph membership",
+            error,
+        )
+        .with_fact("predicate_role", role)
+    })
+}
+
+fn empty_bfs_result(
+    context: &ExecutionContext,
+    spec: &crate::plan::GraphAlgorithmSpec,
+    params: &crate::plan::GraphBfsParams,
+    predicate_columns: &BfsPredicateColumns,
+    reason: &'static str,
+    membership: BfsEndpointMembership,
+) -> Result<GraphAlgorithmExecutionResult> {
+    let frame = empty_graph_result_frame(context, &spec.output_schema)?;
+    Ok(GraphAlgorithmExecutionResult {
+        frame,
+        algorithm_metadata: format!(
+            "source_vertex={},depth_limit={},compute_predecessors=true,{},target_found=false,target_distance=none,endpoint_policy={},empty_result_reason={},source_rows={},valid_source_rows={},target_rows={},valid_target_rows={}",
+            params.source_vertex,
+            params.depth_limit.map_or_else(|| "none".to_string(), |value| value.to_string()),
+            predicate_columns.metadata(),
+            params.endpoint_policy.as_str(),
+            reason,
+            membership.source_rows,
+            membership.valid_source_rows,
+            membership.target_rows,
+            membership.valid_target_rows,
+        ),
+        budget_observations: Vec::new(),
+    })
+}
+
+fn empty_graph_result_frame(context: &ExecutionContext, schema: &arrow::datatypes::SchemaRef) -> Result<DataFrame> {
+    if schema.fields().is_empty() {
+        return Ok(context.runtime().empty_dataframe());
+    }
+    let columns = schema
+        .fields()
+        .iter()
+        .map(|field| {
+            let dtype = crate::datatypes::cudf_dtype_from_arrow_type(field.data_type()).ok_or_else(|| {
+                QueryError::new(
+                    QueryErrorCode::UnsupportedType,
+                    "nexus_query_engine.graph_algorithm.bfs_endpoint_membership",
+                    "empty BFS result column type is not supported by native execution",
+                )
+                .with_fact("column", field.name().as_str())
+                .with_fact("data_type", format!("{:?}", field.data_type()))
+            })?;
+            let series = context.runtime().empty_series(dtype).map_err(|error| {
+                QueryError::from_cudf(
+                    "nexus_query_engine.graph_algorithm.bfs_endpoint_membership",
+                    "failed to build empty BFS result column",
+                    error,
+                )
+                .with_fact("column", field.name().as_str())
+                .with_fact("data_type", format!("{:?}", field.data_type()))
+            })?;
+            Ok((field.name().clone(), series))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    DataFrame::from_series(columns).map_err(|error| {
+        QueryError::from_cudf(
+            "nexus_query_engine.graph_algorithm.bfs_endpoint_membership",
+            "failed to build empty BFS result frame",
+            error,
+        )
+    })
+}
+
 fn predicate_series(
     side_inputs: &std::collections::BTreeMap<NodeId, GpuDataFrame>,
     input: Option<&crate::plan::GraphPredicateInput>,
@@ -500,13 +988,14 @@ fn source_vertex_series(
     side_inputs: &std::collections::BTreeMap<NodeId, GpuDataFrame>,
     input: Option<&crate::plan::GraphPredicateInput>,
     vertex_type: cudf::TypeId,
+    endpoint_policy: crate::plan::GraphBfsEndpointPolicy,
 ) -> Result<Option<cudf::Series>> {
     let Some(input) = input else {
         return Ok(None);
     };
     let series =
         predicate_series(side_inputs, Some(input), "source_vertices", vertex_type)?.expect("input was Some above");
-    if series.is_empty() {
+    if series.is_empty() && endpoint_policy != crate::plan::GraphBfsEndpointPolicy::EmptyOnMissingPathEndpoint {
         return Err(QueryError::new(
             QueryErrorCode::InvalidPlan,
             "nexus_query_engine.graph_algorithm.bfs_source",

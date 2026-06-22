@@ -19,9 +19,9 @@ use cudf::DataFrame;
 #[cfg(feature = "cugraph")]
 use nexus_query_engine::{
     AdaptiveMemoryHistory, GraphAlgorithm, GraphAlgorithmParams, GraphAlgorithmSpec, GraphBetweennessCentralityParams,
-    GraphBetweennessSeeds, GraphBfsParams, GraphBfsPredicateInputs, GraphConstructionOptions, GraphConstructionPolicy,
-    GraphEdgeBetweennessCentralityParams, GraphEdgeColumnBindings, GraphEdgePredicateInput, GraphPredicateInput,
-    GraphReservationOutcome, NativePipelineExecutionMode,
+    GraphBetweennessSeeds, GraphBfsEndpointPolicy, GraphBfsParams, GraphBfsPredicateInputs, GraphConstructionOptions,
+    GraphConstructionPolicy, GraphEdgeBetweennessCentralityParams, GraphEdgeColumnBindings, GraphEdgePredicateInput,
+    GraphPredicateInput, GraphReservationOutcome, NativePipelineExecutionMode,
     force_next_graph_adaptive_chunk_attempt_resource_exhausted_for_test,
     force_next_graph_adaptive_full_attempt_resource_exhausted_for_test, stable_graph_result_schema,
 };

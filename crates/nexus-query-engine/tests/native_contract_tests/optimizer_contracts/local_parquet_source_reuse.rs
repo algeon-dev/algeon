@@ -764,6 +764,7 @@ fn graph_bfs_local_source_reuse_plan() -> nexus_query_engine::QueryPlan {
             target_vertices: Some(GraphPredicateInput::new(target_vertices, "vertex_id")),
             ..Default::default()
         },
+        endpoint_policy: GraphBfsEndpointPolicy::Strict,
         return_target_info: false,
     };
     let spec = GraphAlgorithmSpec::with_stable_schema(

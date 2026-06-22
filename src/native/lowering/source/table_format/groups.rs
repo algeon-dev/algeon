@@ -13,6 +13,14 @@ impl TableFormatSourceReadGroup {
     pub(super) fn has_field_id_aliases(&self) -> bool {
         self.field_id_bindings.iter().flatten().any(|binding| binding.logical_name != binding.physical_name)
     }
+
+    pub(super) fn has_read_coercions(&self) -> bool {
+        self.field_id_bindings.iter().flatten().any(|binding| {
+            self.source_schema.field_with_name(binding.physical_name.as_str()).is_ok_and(|field| {
+                table_format_footer_data_type_needs_logical_source_contract(&binding.data_type, field.data_type())
+            })
+        })
+    }
 }
 
 pub(super) fn table_format_source_read_groups(
@@ -103,6 +111,9 @@ pub(super) fn table_format_requirements_for_file(
                     .push(Some(table_format_scalar_value_to_native_literal(default_value, &mapping.data_type)?));
             }
         } else if mapping.nullable {
+            if table_format_mapping_is_predicate_required(mapping, base) {
+                return Err(FallbackReason::IcebergFieldIdMappingUnsupported);
+            }
             if is_list_carry_type(&mapping.data_type) {
                 return Err(FallbackReason::UnsupportedType);
             }
@@ -142,12 +153,22 @@ pub(super) fn table_format_requirements_for_file(
         projected_output_column_source_refs,
         pure_filter_columns: base.pure_filter_columns.clone(),
         pure_filter_column_source_refs,
+        predicate_columns: base.predicate_columns.clone(),
         partition_columns,
         partition_column_values,
         partition_column_indices: base.partition_column_indices.clone(),
         missing_columns,
         scan_output_columns: base.scan_output_columns.clone(),
         requires_physical_row_presence: base.requires_physical_row_presence,
+    })
+}
+
+fn table_format_mapping_is_predicate_required(
+    mapping: &TableFormatColumnMapping,
+    requirements: &NativeParquetColumnRequirements,
+) -> bool {
+    requirements.predicate_columns.iter().any(|column| {
+        column == &mapping.logical_name || mapping.source_name.as_ref().is_some_and(|source_name| column == source_name)
     })
 }
 
@@ -233,8 +254,18 @@ pub(super) fn table_format_source_contract_schema(
         if seen.insert(field.name().clone()) {
             let contract_field = read_fields
                 .iter()
-                .find_map(|(name, read_field)| (name == field.name()).then_some(read_field))
-                .cloned()
+                .find_map(|(name, read_field)| {
+                    (name == field.name()).then(|| {
+                        if table_format_footer_data_type_needs_logical_source_contract(
+                            read_field.data_type(),
+                            field.data_type(),
+                        ) {
+                            field.as_ref().clone()
+                        } else {
+                            read_field.clone()
+                        }
+                    })
+                })
                 .unwrap_or_else(|| field.as_ref().clone());
             fields.push(contract_field);
         }

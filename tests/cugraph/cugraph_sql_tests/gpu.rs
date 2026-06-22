@@ -340,6 +340,274 @@ async fn cugraph_sql_gpu_bfs_source_table_combines_with_target_path() {
 }
 
 #[tokio::test]
+async fn cugraph_sql_gpu_bfs_path_absent_source_returns_empty_batch() {
+    let state = SessionStateBuilder::new_with_default_features()
+        .with_cudf_native(CudfOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred))
+        .with_cugraph_sql(CugraphSqlConfig::default())
+        .build();
+    let ctx = SessionContext::new_with_state(state);
+    register_directed_bfs_edges(&ctx, "raw_edges");
+    register_i64_vertex_values(&ctx, "bfs_sources", "vertex_id", vec![99]);
+    register_i64_vertex_values(&ctx, "targets", "vertex_id", vec![3]);
+
+    let batches = ctx
+        .sql(
+            "SELECT path_index, source, target, vertex, distance \
+             FROM cugraph_bfs('raw_edges', NULL, 'src', 'dst', NULL, \
+                  '{\"construction_policy\":\"raw_libcugraph\",\
+                     \"source_vertices_table\":\"bfs_sources\",\
+                     \"source_vertex_col\":\"vertex_id\",\
+                     \"output_mode\":\"path\",\
+                     \"target_vertices_table\":\"targets\",\
+                     \"target_vertex_col\":\"vertex_id\"}')",
+        )
+        .await
+        .unwrap()
+        .collect()
+        .await
+        .unwrap();
+    drop_session_context_on_blocking_thread(ctx).await;
+    assert_empty_i64_path_batch(single_batch(&batches));
+}
+
+#[tokio::test]
+async fn cugraph_sql_gpu_bfs_path_empty_source_table_returns_empty_batch() {
+    let state = SessionStateBuilder::new_with_default_features()
+        .with_cudf_native(CudfOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred))
+        .with_cugraph_sql(CugraphSqlConfig::default())
+        .build();
+    let ctx = SessionContext::new_with_state(state);
+    register_directed_bfs_edges(&ctx, "raw_edges");
+    register_i64_vertex_values(&ctx, "bfs_sources", "vertex_id", Vec::new());
+    register_i64_vertex_values(&ctx, "targets", "vertex_id", vec![3]);
+
+    let batches = ctx
+        .sql(
+            "SELECT path_index, source, target, vertex, distance \
+             FROM cugraph_bfs('raw_edges', NULL, 'src', 'dst', NULL, \
+                  '{\"construction_policy\":\"raw_libcugraph\",\
+                     \"source_vertices_table\":\"bfs_sources\",\
+                     \"source_vertex_col\":\"vertex_id\",\
+                     \"output_mode\":\"path\",\
+                     \"target_vertices_table\":\"targets\",\
+                     \"target_vertex_col\":\"vertex_id\"}')",
+        )
+        .await
+        .unwrap()
+        .collect()
+        .await
+        .unwrap();
+    drop_session_context_on_blocking_thread(ctx).await;
+    assert_empty_i64_path_batch(single_batch(&batches));
+}
+
+#[tokio::test]
+async fn cugraph_sql_gpu_bfs_path_empty_source_with_bad_include_vertices_is_rejected() {
+    let state = SessionStateBuilder::new_with_default_features()
+        .with_cudf_native(CudfOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred))
+        .with_cugraph_sql(CugraphSqlConfig::default())
+        .build();
+    let ctx = SessionContext::new_with_state(state);
+    register_directed_bfs_edges(&ctx, "raw_edges");
+    register_i64_vertex_values(&ctx, "bfs_sources", "vertex_id", Vec::new());
+    register_i64_vertex_values(&ctx, "targets", "vertex_id", vec![3]);
+    register_i64_vertex_values(&ctx, "included", "vertex_id", vec![123]);
+
+    let error = ctx
+        .sql(
+            "SELECT path_index, source, target, vertex, distance \
+             FROM cugraph_bfs('raw_edges', NULL, 'src', 'dst', NULL, \
+                  '{\"construction_policy\":\"raw_libcugraph\",\
+                     \"source_vertices_table\":\"bfs_sources\",\
+                     \"source_vertex_col\":\"vertex_id\",\
+                     \"output_mode\":\"path\",\
+                     \"target_vertices_table\":\"targets\",\
+                     \"target_vertex_col\":\"vertex_id\",\
+                     \"include_vertices_table\":\"included\",\
+                     \"include_vertex_col\":\"vertex_id\"}')",
+        )
+        .await
+        .unwrap()
+        .collect()
+        .await
+        .unwrap_err()
+        .to_string();
+    drop_session_context_on_blocking_thread(ctx).await;
+    assert!(error.contains("predicate_vertices_absent"), "unexpected error: {error}");
+    assert!(error.contains("include_vertices"), "error should carry predicate_role: {error}");
+    assert!(!error.contains("Found invalid vertex"), "error should be graph-aware: {error}");
+}
+
+#[tokio::test]
+async fn cugraph_sql_gpu_bfs_path_absent_source_with_bad_include_vertices_is_rejected() {
+    let state = SessionStateBuilder::new_with_default_features()
+        .with_cudf_native(CudfOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred))
+        .with_cugraph_sql(CugraphSqlConfig::default())
+        .build();
+    let ctx = SessionContext::new_with_state(state);
+    register_directed_bfs_edges(&ctx, "raw_edges");
+    register_i64_vertex_values(&ctx, "bfs_sources", "vertex_id", vec![99]);
+    register_i64_vertex_values(&ctx, "targets", "vertex_id", vec![3]);
+    register_i64_vertex_values(&ctx, "included", "vertex_id", vec![123]);
+
+    let error = ctx
+        .sql(
+            "SELECT path_index, source, target, vertex, distance \
+             FROM cugraph_bfs('raw_edges', NULL, 'src', 'dst', NULL, \
+                  '{\"construction_policy\":\"raw_libcugraph\",\
+                     \"source_vertices_table\":\"bfs_sources\",\
+                     \"source_vertex_col\":\"vertex_id\",\
+                     \"output_mode\":\"path\",\
+                     \"target_vertices_table\":\"targets\",\
+                     \"target_vertex_col\":\"vertex_id\",\
+                     \"include_vertices_table\":\"included\",\
+                     \"include_vertex_col\":\"vertex_id\"}')",
+        )
+        .await
+        .unwrap()
+        .collect()
+        .await
+        .unwrap_err()
+        .to_string();
+    drop_session_context_on_blocking_thread(ctx).await;
+    assert!(error.contains("predicate_vertices_absent"), "unexpected error: {error}");
+    assert!(error.contains("include_vertices"), "error should carry predicate_role: {error}");
+    assert!(!error.contains("Found invalid vertex"), "error should be graph-aware: {error}");
+}
+
+#[tokio::test]
+async fn cugraph_sql_gpu_bfs_path_partial_absent_sources_are_rejected() {
+    let state = SessionStateBuilder::new_with_default_features()
+        .with_cudf_native(CudfOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred))
+        .with_cugraph_sql(CugraphSqlConfig::default())
+        .build();
+    let ctx = SessionContext::new_with_state(state);
+    register_directed_bfs_edges(&ctx, "raw_edges");
+    register_i64_vertex_values(&ctx, "bfs_sources", "vertex_id", vec![0, 99]);
+    register_i64_vertex_values(&ctx, "targets", "vertex_id", vec![3]);
+
+    let error = ctx
+        .sql(
+            "SELECT path_index, source, target, vertex, distance \
+             FROM cugraph_bfs('raw_edges', NULL, 'src', 'dst', NULL, \
+                  '{\"construction_policy\":\"raw_libcugraph\",\
+                     \"source_vertices_table\":\"bfs_sources\",\
+                     \"source_vertex_col\":\"vertex_id\",\
+                     \"output_mode\":\"path\",\
+                     \"target_vertices_table\":\"targets\",\
+                     \"target_vertex_col\":\"vertex_id\"}')",
+        )
+        .await
+        .unwrap()
+        .collect()
+        .await
+        .unwrap_err()
+        .to_string();
+    drop_session_context_on_blocking_thread(ctx).await;
+    assert!(error.contains("partial_source_vertices_absent"), "unexpected error: {error}");
+    assert!(!error.contains("Found invalid vertex"), "error should be graph-aware: {error}");
+}
+
+#[tokio::test]
+async fn cugraph_sql_gpu_bfs_path_absent_target_returns_empty_batch() {
+    let state = SessionStateBuilder::new_with_default_features()
+        .with_cudf_native(CudfOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred))
+        .with_cugraph_sql(CugraphSqlConfig::default())
+        .build();
+    let ctx = SessionContext::new_with_state(state);
+    register_directed_bfs_edges(&ctx, "raw_edges");
+    register_i64_vertex_values(&ctx, "bfs_sources", "vertex_id", vec![0]);
+    register_i64_vertex_values(&ctx, "targets", "vertex_id", vec![99]);
+
+    let batches = ctx
+        .sql(
+            "SELECT path_index, source, target, vertex, distance \
+             FROM cugraph_bfs('raw_edges', NULL, 'src', 'dst', NULL, \
+                  '{\"construction_policy\":\"raw_libcugraph\",\
+                     \"source_vertices_table\":\"bfs_sources\",\
+                     \"source_vertex_col\":\"vertex_id\",\
+                     \"output_mode\":\"path\",\
+                     \"target_vertices_table\":\"targets\",\
+                     \"target_vertex_col\":\"vertex_id\"}')",
+        )
+        .await
+        .unwrap()
+        .collect()
+        .await
+        .unwrap();
+    drop_session_context_on_blocking_thread(ctx).await;
+    assert_empty_i64_path_batch(single_batch(&batches));
+}
+
+#[tokio::test]
+async fn cugraph_sql_gpu_bfs_path_empty_edge_source_returns_empty_batch() {
+    let state = SessionStateBuilder::new_with_default_features()
+        .with_cudf_native(CudfOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred))
+        .with_cugraph_sql(CugraphSqlConfig::default())
+        .build();
+    let ctx = SessionContext::new_with_state(state);
+    register_empty_directed_bfs_edges(&ctx, "raw_edges");
+    register_i64_vertex_values(&ctx, "bfs_sources", "vertex_id", vec![0]);
+    register_i64_vertex_values(&ctx, "targets", "vertex_id", vec![3]);
+
+    let batches = ctx
+        .sql(
+            "SELECT path_index, source, target, vertex, distance \
+             FROM cugraph_bfs('raw_edges', NULL, 'src', 'dst', NULL, \
+                  '{\"construction_policy\":\"raw_libcugraph\",\
+                     \"source_vertices_table\":\"bfs_sources\",\
+                     \"source_vertex_col\":\"vertex_id\",\
+                     \"output_mode\":\"path\",\
+                     \"target_vertices_table\":\"targets\",\
+                     \"target_vertex_col\":\"vertex_id\"}')",
+        )
+        .await
+        .unwrap()
+        .collect()
+        .await
+        .unwrap();
+    drop_session_context_on_blocking_thread(ctx).await;
+    assert_empty_i64_path_batch(single_batch(&batches));
+}
+
+#[tokio::test]
+async fn cugraph_sql_gpu_bfs_path_empty_edge_source_with_bad_include_vertices_is_rejected() {
+    let state = SessionStateBuilder::new_with_default_features()
+        .with_cudf_native(CudfOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred))
+        .with_cugraph_sql(CugraphSqlConfig::default())
+        .build();
+    let ctx = SessionContext::new_with_state(state);
+    register_empty_directed_bfs_edges(&ctx, "raw_edges");
+    register_i64_vertex_values(&ctx, "bfs_sources", "vertex_id", vec![0]);
+    register_i64_vertex_values(&ctx, "targets", "vertex_id", vec![3]);
+    register_i64_vertex_values(&ctx, "included", "vertex_id", vec![123]);
+
+    let error = ctx
+        .sql(
+            "SELECT path_index, source, target, vertex, distance \
+             FROM cugraph_bfs('raw_edges', NULL, 'src', 'dst', NULL, \
+                  '{\"construction_policy\":\"raw_libcugraph\",\
+                     \"source_vertices_table\":\"bfs_sources\",\
+                     \"source_vertex_col\":\"vertex_id\",\
+                     \"output_mode\":\"path\",\
+                     \"target_vertices_table\":\"targets\",\
+                     \"target_vertex_col\":\"vertex_id\",\
+                     \"include_vertices_table\":\"included\",\
+                     \"include_vertex_col\":\"vertex_id\"}')",
+        )
+        .await
+        .unwrap()
+        .collect()
+        .await
+        .unwrap_err()
+        .to_string();
+    drop_session_context_on_blocking_thread(ctx).await;
+    assert!(error.contains("predicate_vertices_absent"), "unexpected error: {error}");
+    assert!(error.contains("include_vertices"), "error should carry predicate_role: {error}");
+    assert!(!error.contains("Found invalid vertex"), "error should be graph-aware: {error}");
+}
+
+#[tokio::test]
 async fn cugraph_sql_gpu_bfs_utf8_source_table_maps_logical_ids_end_to_end() {
     let state = SessionStateBuilder::new_with_default_features()
         .with_cudf_native(CudfOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred))
@@ -363,6 +631,7 @@ async fn cugraph_sql_gpu_bfs_utf8_source_table_maps_logical_ids_end_to_end() {
         .collect()
         .await
         .unwrap();
+    drop_session_context_on_blocking_thread(ctx).await;
     let batch = single_batch(&batches);
     assert_eq!(string_bfs_distance_for(batch, "a"), Some(0));
     assert_eq!(string_bfs_distance_for(batch, "b"), Some(1));
@@ -462,6 +731,7 @@ async fn cugraph_sql_gpu_bfs_path_reconstructs_utf8_target_path_end_to_end() {
         .collect()
         .await
         .unwrap();
+    drop_session_context_on_blocking_thread(ctx).await;
     let batch = single_batch(&batches);
     assert_eq!(string_path_column(batch, 1), vec!["a", "a", "a"]);
     assert_eq!(string_path_column(batch, 2), vec!["d", "d", "d"]);

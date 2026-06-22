@@ -107,7 +107,7 @@ fn selected_source_bindings_in_frontend_order(
 ) -> Result<Vec<super::FieldBinding>, FallbackReason> {
     let mut selected_bindings = match required_output_fields {
         RequiredFields::All => input_bindings.to_vec(),
-        RequiredFields::Only(_) => {
+        RequiredFields::Only { .. } => {
             let frontend_field_count =
                 input_bindings.iter().map(|binding| binding.frontend_index).max().map_or(0, |index| index + 1);
             required_output_fields

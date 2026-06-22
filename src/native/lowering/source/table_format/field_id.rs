@@ -56,6 +56,9 @@ pub(super) fn validate_table_format_direct_file_column_field_ids(
             let Some((_index, field)) = footer_field_by_id(&schema, *field_id)
                 .or_else(|| footer_field_by_mapping_name_without_field_id(&schema, mapping))
             else {
+                if footer_field_by_mapping_name(&schema, mapping).is_some() {
+                    return Err(FallbackReason::IcebergFieldIdMappingUnsupported);
+                }
                 if mapping.nullable {
                     continue;
                 }
@@ -117,6 +120,9 @@ pub(super) fn table_format_file_field_id_read_bindings(
         let Some((physical_root_index, field)) = footer_field_by_id(footer_schema, field_id)
             .or_else(|| footer_field_by_mapping_name_without_field_id(footer_schema, mapping))
         else {
+            if footer_field_by_mapping_name(footer_schema, mapping).is_some() {
+                return Err(FallbackReason::IcebergFieldIdMappingUnsupported);
+            }
             if mapping.nullable || mapping.missing_default_value.is_some() {
                 continue;
             }
@@ -150,15 +156,20 @@ pub(super) fn footer_field_by_mapping_name_without_field_id<'a>(
     schema: &'a Schema,
     mapping: &TableFormatColumnMapping,
 ) -> Option<(usize, &'a Field)> {
+    footer_field_by_mapping_name(schema, mapping).filter(|(_index, field)| {
+        parquet_field_id_metadata_is_absent(field) && table_format_footer_field_matches_mapping(field, mapping)
+    })
+}
+
+fn footer_field_by_mapping_name<'a>(
+    schema: &'a Schema,
+    mapping: &TableFormatColumnMapping,
+) -> Option<(usize, &'a Field)> {
     let source_name = mapping.source_name.as_ref().unwrap_or(&mapping.logical_name);
     schema
         .fields()
         .iter()
         .enumerate()
-        .find(|(_index, field)| {
-            field.name() == source_name
-                && parquet_field_id_metadata_is_absent(field)
-                && table_format_footer_field_matches_mapping(field, mapping)
-        })
+        .find(|(_index, field)| field.name() == source_name)
         .map(|(index, field)| (index, field.as_ref()))
 }

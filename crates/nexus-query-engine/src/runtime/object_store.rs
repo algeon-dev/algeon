@@ -439,6 +439,17 @@ impl fmt::Debug for SourceObjectStoreRegistry {
 
 pub(super) fn default_source_fetch_runtime() -> Result<Arc<tokio::runtime::Runtime>> {
     static RUNTIME: OnceLock<Arc<tokio::runtime::Runtime>> = OnceLock::new();
+    static INIT_LOCK: Mutex<()> = Mutex::new(());
+    if let Some(runtime) = RUNTIME.get() {
+        return Ok(Arc::clone(runtime));
+    }
+    let _guard = INIT_LOCK.lock().map_err(|_| {
+        QueryError::new(
+            QueryErrorCode::CudfDependencyFailure,
+            "nexus_query_engine.runtime.source_fetch_runtime",
+            "source-fetch runtime initialization lock was poisoned",
+        )
+    })?;
     if let Some(runtime) = RUNTIME.get() {
         return Ok(Arc::clone(runtime));
     }
@@ -454,11 +465,23 @@ pub(super) fn default_source_fetch_runtime() -> Result<Arc<tokio::runtime::Runti
             },
         )?,
     );
-    Ok(Arc::clone(RUNTIME.get_or_init(|| runtime)))
+    assert!(RUNTIME.set(Arc::clone(&runtime)).is_ok(), "source-fetch runtime initialized while holding init lock");
+    Ok(runtime)
 }
 
 pub(super) fn default_lakehouse_cache_fill_runtime() -> Result<Arc<tokio::runtime::Runtime>> {
     static RUNTIME: OnceLock<Arc<tokio::runtime::Runtime>> = OnceLock::new();
+    static INIT_LOCK: Mutex<()> = Mutex::new(());
+    if let Some(runtime) = RUNTIME.get() {
+        return Ok(Arc::clone(runtime));
+    }
+    let _guard = INIT_LOCK.lock().map_err(|_| {
+        QueryError::new(
+            QueryErrorCode::CudfDependencyFailure,
+            "nexus_query_engine.runtime.lakehouse_cache_fill_runtime",
+            "lakehouse cache fill runtime initialization lock was poisoned",
+        )
+    })?;
     if let Some(runtime) = RUNTIME.get() {
         return Ok(Arc::clone(runtime));
     }
@@ -476,7 +499,11 @@ pub(super) fn default_lakehouse_cache_fill_runtime() -> Result<Arc<tokio::runtim
                 .with_source(error)
             })?,
     );
-    Ok(Arc::clone(RUNTIME.get_or_init(|| runtime)))
+    assert!(
+        RUNTIME.set(Arc::clone(&runtime)).is_ok(),
+        "lakehouse cache fill runtime initialized while holding init lock"
+    );
+    Ok(runtime)
 }
 
 #[cfg(test)]

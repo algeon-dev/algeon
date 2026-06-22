@@ -53,6 +53,18 @@ pub(super) fn table_format_column_requirements(
     }
 
     let output_column_set: BTreeSet<String> = output_columns.iter().cloned().collect();
+    let predicate_columns =
+        table_format_predicate_scan_output_indices(scan_schema.clone(), filter, required_output_fields)?
+            .into_iter()
+            .map(|index| {
+                scan_schema
+                    .fields()
+                    .get(index)
+                    .map(|field| field.name().clone())
+                    .ok_or(FallbackReason::UnsupportedExpression)
+            })
+            .chain(filter_columns.iter().cloned().map(Ok))
+            .collect::<Result<BTreeSet<_>, _>>()?;
 
     // Iterate required columns in scan-projection order so the read/partition/
     // missing lists below preserve that order. The `BTreeSet`-driven order used
@@ -172,6 +184,7 @@ pub(super) fn table_format_column_requirements(
         projected_output_column_source_refs,
         pure_filter_columns,
         pure_filter_column_source_refs,
+        predicate_columns: predicate_columns.into_iter().collect(),
         partition_columns,
         partition_column_values,
         partition_column_indices: Vec::new(),
@@ -179,6 +192,23 @@ pub(super) fn table_format_column_requirements(
         scan_output_columns,
         requires_physical_row_presence: false,
     })
+}
+
+fn table_format_predicate_scan_output_indices(
+    scan_schema: SchemaRef,
+    filter: Option<&datafusion::physical_plan::filter::FilterExec>,
+    required_output_fields: &RequiredFields,
+) -> Result<Vec<usize>, FallbackReason> {
+    if let Some(filter) = filter
+        && let Some(projection) = filter.projection()
+    {
+        return required_output_fields
+            .predicate_indices(filter.schema().fields().len())?
+            .into_iter()
+            .map(|output_index| projection.get(output_index).copied().ok_or(FallbackReason::UnsupportedExpression))
+            .collect();
+    }
+    required_output_fields.predicate_indices(scan_schema.fields().len())
 }
 
 pub(super) fn table_format_row_presence_carrier_requirements(
@@ -195,6 +225,7 @@ pub(super) fn table_format_row_presence_carrier_requirements(
         projected_output_column_source_refs: Vec::new(),
         pure_filter_columns: vec![read_column.clone()],
         pure_filter_column_source_refs: vec![NativeSourceColumnRef::File(read_column_file_index)],
+        predicate_columns: Vec::new(),
         partition_columns: Vec::new(),
         partition_column_values: Vec::new(),
         partition_column_indices: Vec::new(),

@@ -33,6 +33,10 @@ pub(super) fn find_composed_exec(
     plan.children().into_iter().find_map(|child| find_composed_exec(child.as_ref()))
 }
 
+pub(super) async fn drop_session_context_on_blocking_thread(ctx: SessionContext) {
+    tokio::task::spawn_blocking(move || drop(ctx)).await.unwrap();
+}
+
 #[derive(Debug, Clone)]
 pub(super) struct PageRankRow {
     pub(super) vertex: i64,
@@ -279,6 +283,23 @@ pub(super) fn register_directed_bfs_edges(ctx: &SessionContext, table_name: &str
     ctx.register_table(table_name, provider).unwrap();
 }
 
+pub(super) fn register_empty_directed_bfs_edges(ctx: &SessionContext, table_name: &str) {
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("src", DataType::Int64, false),
+        Field::new("dst", DataType::Int64, false),
+    ]));
+    let batch = RecordBatch::try_new(
+        Arc::clone(&schema),
+        vec![
+            Arc::new(Int64Array::from(Vec::<i64>::new())) as ArrayRef,
+            Arc::new(Int64Array::from(Vec::<i64>::new())) as ArrayRef,
+        ],
+    )
+    .unwrap();
+    let provider = Arc::new(MemTable::try_new(schema, vec![vec![batch]]).unwrap());
+    ctx.register_table(table_name, provider).unwrap();
+}
+
 pub(super) fn register_disconnected_bfs_edges(ctx: &SessionContext, table_name: &str) {
     let schema = Arc::new(Schema::new(vec![
         Field::new("src", DataType::Int64, false),
@@ -507,6 +528,17 @@ pub(super) fn int64_column(batch: &RecordBatch, index: usize) -> Vec<i64> {
 pub(super) fn string_path_column(batch: &RecordBatch, index: usize) -> Vec<&str> {
     let values = batch.column(index).as_any().downcast_ref::<StringArray>().unwrap();
     (0..batch.num_rows()).map(|row| values.value(row)).collect()
+}
+
+pub(super) fn assert_empty_i64_path_batch(batch: &RecordBatch) {
+    assert_eq!(batch.num_rows(), 0);
+    assert_eq!(
+        schema_field_names(batch.schema().as_ref()),
+        vec!["path_index", "source", "target", "vertex", "distance"]
+    );
+    for index in 0..batch.num_columns() {
+        assert_eq!(batch.schema().field(index).data_type(), &DataType::Int64);
+    }
 }
 
 pub(super) fn edge_column(data_type: &DataType) -> ArrayRef {

@@ -1,4 +1,5 @@
 use std::{
+    collections::HashMap,
     fs::{self, File},
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
@@ -11,13 +12,17 @@ use arrow::{
     record_batch::RecordBatch,
 };
 use datafusion::{
-    common::{DataFusionError, ScalarValue},
+    common::{DataFusionError, NullEquality, ScalarValue},
     datasource::TableProvider,
     execution::context::TaskContext,
-    logical_expr::Operator,
+    logical_expr::{JoinType, Operator},
     physical_expr::expressions::{binary, col, lit},
     physical_plan::{
-        ExecutionPlan, coalesce_partitions::CoalescePartitionsExec, filter::FilterExec, limit::GlobalLimitExec,
+        ExecutionPlan,
+        coalesce_partitions::CoalescePartitionsExec,
+        filter::FilterExec,
+        joins::{HashJoinExec, PartitionMode},
+        limit::GlobalLimitExec,
     },
     prelude::{SessionConfig, SessionContext},
 };
@@ -37,7 +42,7 @@ use nexus_query_engine::{
     CredentialMode, ExecutionContext, LakehouseCacheStatus, LiteralValue as NativeLiteralValue, ParquetReadStrategy,
     PlanNode, QueryOutput, ResolvedParquetSource, SourceColumnRef, SourceDecodeInput, SourceNode, execute_query_plan,
 };
-use parquet::arrow::ArrowWriter;
+use parquet::arrow::{ArrowWriter, PARQUET_FIELD_ID_META_KEY};
 
 #[derive(Debug)]
 struct RecordingPlanner {
@@ -768,6 +773,210 @@ async fn iceberg_provider_keeps_native_filter_for_temporal_table_format_predicat
     assert!(
         native_plan_filter_count(&result.plans[0]) >= 1,
         "temporal table-format predicates must remain represented as native filters"
+    );
+}
+
+#[test]
+fn native_lowering_rejects_iceberg_missing_predicate_column_above_hash_join() {
+    let edge_schema = Arc::new(Schema::new(vec![
+        Field::new("edge_id", DataType::Int64, false),
+        Field::new("profile_id", DataType::Int64, false),
+    ]));
+    let profile_schema = Arc::new(Schema::new(vec![
+        Field::new("profile_id", DataType::Int64, false),
+        Field::new("age", DataType::Int64, true),
+    ]));
+    let profile_footer_schema = Arc::new(Schema::new(vec![
+        Field::new("profile_id", DataType::Int64, false)
+            .with_metadata(HashMap::from([(PARQUET_FIELD_ID_META_KEY.to_string(), "1".to_string())])),
+    ]));
+    let edge_scan: Arc<dyn ExecutionPlan> = Arc::new(CudfTableFormatScanExec::new(
+        native_admissible_scan_plan_for_schema(
+            Arc::clone(&edge_schema),
+            "edges-data-0001",
+            "/tmp/iceberg/edges.parquet",
+        ),
+        Arc::clone(&edge_schema),
+    ));
+    let profile_plan = TableFormatScanPlan::new(TableFormat::Iceberg)
+        .with_snapshot_id("12345")
+        .with_catalog_type("glue")
+        .with_logical_schema(Arc::clone(&profile_schema))
+        .with_native_source_schema(Arc::clone(&profile_schema))
+        .with_data_file(
+            TableFormatDataFile::new(
+                "profiles-data-0001",
+                "s3://bucket/profiles/data-0001.parquet",
+                TableFormatDataFileFormat::Parquet,
+                TableFormatReadCapability::object_store("s3"),
+            )
+            .with_size_bytes(4096)
+            .with_row_count(11)
+            .with_resolved_parquet_source(ResolvedParquetSource::remote_direct(
+                "s3://bucket/profiles/data-0001.parquet",
+                CredentialMode::SharedProcessEnv,
+            ))
+            .with_footer_schema(profile_footer_schema),
+        )
+        .with_projected_column(TableFormatColumnMapping::new(
+            Some(1),
+            "profile_id",
+            Some("profile_id"),
+            DataType::Int64,
+            false,
+            TableFormatColumnSource::DirectTopLevelFileColumn,
+            TableFormatColumnRole::Projected,
+        ))
+        .with_projected_column(TableFormatColumnMapping::new(
+            Some(2),
+            "age",
+            Some("age"),
+            DataType::Int64,
+            true,
+            TableFormatColumnSource::DirectTopLevelFileColumn,
+            TableFormatColumnRole::Projected,
+        ));
+    let profile_scan: Arc<dyn ExecutionPlan> =
+        Arc::new(CudfTableFormatScanExec::new(profile_plan, Arc::clone(&profile_schema)));
+    let edge_profile_id = col("profile_id", &edge_schema).unwrap();
+    let profile_profile_id = col("profile_id", &profile_schema).unwrap();
+    let join: Arc<dyn ExecutionPlan> = Arc::new(
+        HashJoinExec::try_new(
+            edge_scan,
+            profile_scan,
+            vec![(edge_profile_id, profile_profile_id)],
+            None,
+            &JoinType::Inner,
+            Some(vec![0, 1, edge_schema.fields().len() + profile_schema.index_of("age").unwrap()]),
+            PartitionMode::CollectLeft,
+            NullEquality::NullEqualsNothing,
+            false,
+        )
+        .unwrap(),
+    );
+    let join_schema = join.schema();
+    let predicate =
+        binary(col("age", &join_schema).unwrap(), Operator::Gt, lit(ScalarValue::Int64(Some(0))), &join_schema)
+            .unwrap();
+    let filter: Arc<dyn ExecutionPlan> = Arc::new(FilterExec::try_new(predicate, join).unwrap());
+
+    let result = lower_physical_plan_to_native(filter);
+
+    assert_eq!(result.rewritten_count(), 0, "outcomes={:?}", result.report.outcomes());
+    assert!(
+        result.report.outcomes().iter().any(|outcome| {
+            matches!(
+                outcome,
+                CandidateOutcome::Rejected { reason: FallbackReason::IcebergFieldIdMappingUnsupported, .. }
+            )
+        }),
+        "predicate-required missing Iceberg field above a join must reject instead of materializing NULLs: {:?}",
+        result.report.outcomes()
+    );
+}
+
+#[test]
+fn native_lowering_accepts_iceberg_same_name_signed_widened_predicate_column_above_hash_join() {
+    let edge_schema = Arc::new(Schema::new(vec![
+        Field::new("edge_id", DataType::Int64, false),
+        Field::new("profile_id", DataType::Int64, false),
+    ]));
+    let profile_schema = Arc::new(Schema::new(vec![
+        Field::new("profile_id", DataType::Int64, false),
+        Field::new("age", DataType::Int32, true),
+    ]));
+    let profile_footer_schema = Arc::new(Schema::new(vec![
+        Field::new("profile_id", DataType::Int64, false)
+            .with_metadata(HashMap::from([(PARQUET_FIELD_ID_META_KEY.to_string(), "1".to_string())])),
+        Field::new("age", DataType::Int16, true),
+    ]));
+    let edge_scan: Arc<dyn ExecutionPlan> = Arc::new(CudfTableFormatScanExec::new(
+        native_admissible_scan_plan_for_schema(
+            Arc::clone(&edge_schema),
+            "edges-data-0001",
+            "/tmp/iceberg/edges.parquet",
+        ),
+        Arc::clone(&edge_schema),
+    ));
+    let profile_plan = TableFormatScanPlan::new(TableFormat::Iceberg)
+        .with_snapshot_id("12345")
+        .with_catalog_type("glue")
+        .with_logical_schema(Arc::clone(&profile_schema))
+        .with_native_source_schema(Arc::clone(&profile_schema))
+        .with_data_file(
+            TableFormatDataFile::new(
+                "profiles-data-0001",
+                "s3://bucket/profiles/data-0001.parquet",
+                TableFormatDataFileFormat::Parquet,
+                TableFormatReadCapability::object_store("s3"),
+            )
+            .with_size_bytes(4096)
+            .with_row_count(11)
+            .with_resolved_parquet_source(ResolvedParquetSource::remote_direct(
+                "s3://bucket/profiles/data-0001.parquet",
+                CredentialMode::SharedProcessEnv,
+            ))
+            .with_footer_schema(profile_footer_schema),
+        )
+        .with_projected_column(TableFormatColumnMapping::new(
+            Some(1),
+            "profile_id",
+            Some("profile_id"),
+            DataType::Int64,
+            false,
+            TableFormatColumnSource::DirectTopLevelFileColumn,
+            TableFormatColumnRole::Projected,
+        ))
+        .with_projected_column(TableFormatColumnMapping::new(
+            Some(2),
+            "age",
+            Some("age"),
+            DataType::Int32,
+            true,
+            TableFormatColumnSource::DirectTopLevelFileColumn,
+            TableFormatColumnRole::Projected,
+        ));
+    let profile_scan: Arc<dyn ExecutionPlan> =
+        Arc::new(CudfTableFormatScanExec::new(profile_plan, Arc::clone(&profile_schema)));
+    let edge_profile_id = col("profile_id", &edge_schema).unwrap();
+    let profile_profile_id = col("profile_id", &profile_schema).unwrap();
+    let join: Arc<dyn ExecutionPlan> = Arc::new(
+        HashJoinExec::try_new(
+            edge_scan,
+            profile_scan,
+            vec![(edge_profile_id, profile_profile_id)],
+            None,
+            &JoinType::Inner,
+            Some(vec![0, 1, edge_schema.fields().len() + profile_schema.index_of("age").unwrap()]),
+            PartitionMode::CollectLeft,
+            NullEquality::NullEqualsNothing,
+            false,
+        )
+        .unwrap(),
+    );
+    let join_schema = join.schema();
+    let predicate =
+        binary(col("age", &join_schema).unwrap(), Operator::Gt, lit(ScalarValue::Int32(Some(0))), &join_schema)
+            .unwrap();
+    let filter: Arc<dyn ExecutionPlan> = Arc::new(FilterExec::try_new(predicate, join).unwrap());
+
+    let result = lower_physical_plan_to_native(filter);
+
+    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
+    let sources = native_local_parquet_sources(&result.plans[0]);
+    let profile_source = sources
+        .into_iter()
+        .find(|source| source.read_columns.contains(&"age".to_string()))
+        .expect("profile source should read same-name widened age column");
+    assert_eq!(profile_source.schema.field_with_name("age").unwrap().data_type(), &DataType::Int32);
+    assert!(profile_source.reader_predicate.is_none());
+    assert!(
+        profile_source.files.iter().any(|file| {
+            file.field_id_read_bindings.iter().any(|binding| {
+                binding.logical_name == "age" && binding.physical_name == "age" && binding.data_type == DataType::Int16
+            })
+        }),
+        "source should keep footer-proven physical age type for diagnostics/coercion"
     );
 }
 

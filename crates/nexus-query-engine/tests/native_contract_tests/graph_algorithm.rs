@@ -5,10 +5,10 @@ use nexus_query_engine::{
     GRAPH_ALGORITHM_STRICT_BOUNDED_LOWER_LEVEL_CONTRACTS, GRAPH_ALGORITHM_STRICT_BOUNDED_MEMORY_BOUNDARY,
     GRAPH_ALGORITHM_STRICT_BOUNDED_REQUIRED_CONTRACT, GRAPH_MEMORY_BUDGET_TRACKING_MIN_LIMIT_BYTES,
     GRAPH_OPERATION_REGISTRY, GpuResidentSource, GraphAlgorithm, GraphAlgorithmParams, GraphAlgorithmSpec,
-    GraphBetweennessCentralityParams, GraphBetweennessSeeds, GraphBfsParams, GraphBfsPredicateInputs,
-    GraphConstructionOptions, GraphConstructionPolicy, GraphEdgeBetweennessCentralityParams, GraphEdgeColumnBindings,
-    GraphLayoutRequirement, GraphMemoryClass, GraphMemoryModel, GraphMemoryModelInput, GraphOutputSchemaKind,
-    GraphPageRankParams, GraphPredicateInput, GraphReservationOutcome, GraphReservationReport,
+    GraphBetweennessCentralityParams, GraphBetweennessSeeds, GraphBfsEndpointPolicy, GraphBfsParams,
+    GraphBfsPredicateInputs, GraphConstructionOptions, GraphConstructionPolicy, GraphEdgeBetweennessCentralityParams,
+    GraphEdgeColumnBindings, GraphLayoutRequirement, GraphMemoryClass, GraphMemoryModel, GraphMemoryModelInput,
+    GraphOutputSchemaKind, GraphPageRankParams, GraphPredicateInput, GraphReservationOutcome, GraphReservationReport,
     GraphSourceVertexRequirement, GraphWeightPolicy, PlanNode, QueryErrorCode, QueryPlan, QueryPlanBuilder, SourceNode,
     StrictBoundedContractReport, StrictBoundedExecutionMode,
     capability::{CapabilityDecision, ContractQuality, ContractStatus, NodeOperator},
@@ -162,6 +162,7 @@ fn bfs_predicate_side_inputs_are_explicit_native_ir_edges() {
             target_vertices: Some(GraphPredicateInput::new(targets, "vertex_id")),
             ..Default::default()
         },
+        endpoint_policy: GraphBfsEndpointPolicy::Strict,
         return_target_info: false,
     };
     let spec = GraphAlgorithmSpec::with_stable_schema(
@@ -242,6 +243,7 @@ fn bfs_edge_id_predicates_require_primary_edge_id_binding() {
             include_edge_ids: Some(GraphPredicateInput::new(allowed, "edge_id")),
             ..Default::default()
         },
+        endpoint_policy: GraphBfsEndpointPolicy::Strict,
         return_target_info: false,
     };
     let spec = GraphAlgorithmSpec::with_stable_schema(

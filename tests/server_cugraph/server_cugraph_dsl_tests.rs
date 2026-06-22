@@ -271,6 +271,93 @@ async fn cugraph_bfs_path_uses_gpu_resident_join_side_inputs_over_flight_sql() {
     assert_eq!(int64_column(batch, 2), vec![3, 3, 3]);
     assert_eq!(int64_column(batch, 3), vec![0, 2, 3]);
     assert_eq!(int64_column(batch, 4), vec![0, 1, 2]);
+
+    execute_batches(&mut client, "CREATE VIEW missing_bfs_sources AS SELECT CAST(12345 AS BIGINT) AS vertex_id").await;
+    let empty_bfs_sql = r#"SELECT path_index, source, target, vertex, distance
+           FROM cugraph_bfs(
+             'graph_edges',
+             NULL,
+             'src',
+             'dst',
+             'weight',
+             '{"directed":true,
+               "renumber":true,
+               "construction_policy":"raw_libcugraph",
+               "source_vertices_table":"missing_bfs_sources",
+               "source_vertex_col":"vertex_id",
+               "output_mode":"path",
+               "target_vertices_table":"bfs_targets",
+               "target_vertex_col":"vertex_id"}'
+           )
+           ORDER BY path_index"#;
+    let empty_flight_info = client.execute(empty_bfs_sql.to_string(), None).await.unwrap();
+    let ticket = empty_flight_info.endpoint.first().and_then(|endpoint| endpoint.ticket.clone()).unwrap();
+    let empty_schema = empty_flight_info.try_decode_schema().unwrap();
+    let empty_batches = client.do_get(ticket).await.unwrap().try_collect::<Vec<_>>().await.unwrap();
+    assert_eq!(empty_batches.iter().map(|batch| batch.num_rows()).sum::<usize>(), 0);
+    assert_eq!(empty_schema.field(0).name(), "path_index");
+    assert_eq!(empty_schema.field(4).name(), "distance");
+
+    execute_batches(
+        &mut client,
+        "CREATE VIEW partial_bfs_sources AS \
+         SELECT CAST(0 AS BIGINT) AS vertex_id \
+         UNION ALL \
+         SELECT CAST(12345 AS BIGINT) AS vertex_id",
+    )
+    .await;
+    let partial_error_sql = r#"SELECT path_index, source, target, vertex, distance
+           FROM cugraph_bfs(
+             'graph_edges',
+             NULL,
+             'src',
+             'dst',
+             'weight',
+             '{"directed":true,
+               "renumber":true,
+               "construction_policy":"raw_libcugraph",
+               "source_vertices_table":"partial_bfs_sources",
+               "source_vertex_col":"vertex_id",
+               "output_mode":"path",
+               "target_vertices_table":"bfs_targets",
+               "target_vertex_col":"vertex_id"}'
+           )
+           ORDER BY path_index"#;
+    let partial_flight_info = client.execute(partial_error_sql.to_string(), None).await.unwrap();
+    let ticket = partial_flight_info.endpoint.first().and_then(|endpoint| endpoint.ticket.clone()).unwrap();
+    let error = client.do_get(ticket).await.unwrap().try_collect::<Vec<_>>().await.unwrap_err().to_string();
+    assert!(error.contains("partial_source_vertices_absent"), "unexpected Flight SQL error: {error}");
+    assert!(!error.contains("Found invalid vertex"), "Flight SQL error should be graph-aware: {error}");
+
+    execute_batches(&mut client, "CREATE VIEW empty_bfs_sources AS SELECT CAST(0 AS BIGINT) AS vertex_id WHERE 1 = 0")
+        .await;
+    execute_batches(&mut client, "CREATE VIEW bad_included_vertices AS SELECT CAST(12345 AS BIGINT) AS vertex_id")
+        .await;
+    let bad_predicate_sql = r#"SELECT path_index, source, target, vertex, distance
+           FROM cugraph_bfs(
+             'graph_edges',
+             NULL,
+             'src',
+             'dst',
+             'weight',
+             '{"directed":true,
+               "renumber":true,
+               "construction_policy":"raw_libcugraph",
+               "source_vertices_table":"empty_bfs_sources",
+               "source_vertex_col":"vertex_id",
+               "include_vertices_table":"bad_included_vertices",
+               "include_vertex_col":"vertex_id",
+               "output_mode":"path",
+               "target_vertices_table":"bfs_targets",
+               "target_vertex_col":"vertex_id"}'
+           )
+           ORDER BY path_index"#;
+    let bad_predicate_flight_info = client.execute(bad_predicate_sql.to_string(), None).await.unwrap();
+    let ticket = bad_predicate_flight_info.endpoint.first().and_then(|endpoint| endpoint.ticket.clone()).unwrap();
+    let error = client.do_get(ticket).await.unwrap().try_collect::<Vec<_>>().await.unwrap_err().to_string();
+    assert!(error.contains("predicate_vertices_absent"), "unexpected Flight SQL error: {error}");
+    assert!(error.contains("include_vertices"), "Flight SQL error should carry predicate_role: {error}");
+    assert!(!error.contains("Found invalid vertex"), "Flight SQL error should be graph-aware: {error}");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

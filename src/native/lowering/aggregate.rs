@@ -54,9 +54,22 @@ pub(super) fn required_aggregate_input_fields(
     pre_aggregate_projection: Option<&ProjectionExec>,
 ) -> Result<RequiredFields, FallbackReason> {
     let mut required = BTreeSet::new();
+    let mut predicate_required = BTreeSet::new();
     if let Some(projection) = pre_aggregate_projection {
         for projection_expr in projection.expr() {
             collect_required_field_indices(&projection_expr.expr, &projection.input().schema(), &mut required)?;
+        }
+        let mut filter_projection_indices = BTreeSet::new();
+        for filter in aggregate.filter_expr().iter().flatten() {
+            collect_required_field_indices(filter, &aggregate.input().schema(), &mut filter_projection_indices)?;
+        }
+        for index in filter_projection_indices {
+            let projection_expr = projection.expr().get(index).ok_or(FallbackReason::UnsupportedExpression)?;
+            collect_required_field_indices(
+                &projection_expr.expr,
+                &projection.input().schema(),
+                &mut predicate_required,
+            )?;
         }
     } else {
         for aggregate_expr in aggregate.aggr_expr() {
@@ -66,12 +79,13 @@ pub(super) fn required_aggregate_input_fields(
         }
         for filter in aggregate.filter_expr().iter().flatten() {
             collect_required_field_indices(filter, &aggregate.input().schema(), &mut required)?;
+            collect_required_field_indices(filter, &aggregate.input().schema(), &mut predicate_required)?;
         }
         for (group_expr, _alias) in aggregate.group_expr().expr() {
             collect_required_field_indices(group_expr, &aggregate.input().schema(), &mut required)?;
         }
     }
-    Ok(RequiredFields::only(required))
+    Ok(RequiredFields::only_with_predicates(required, predicate_required))
 }
 
 pub(super) fn lower_aggregate_input(

@@ -27,10 +27,27 @@ pub(super) fn lower_filter_input(
 ) -> Result<LoweredNativeInput, FallbackReason> {
     validate_physical_expr(filter.filter.predicate(), &filter.filter.input().schema())?;
     let selection = required_filter_output_selection(filter.filter, required_output_fields)?;
-    let mut child_required = BTreeSet::new();
-    collect_required_field_indices(filter.filter.predicate(), &filter.filter.input().schema(), &mut child_required)?;
+    let mut predicate_required = BTreeSet::new();
+    collect_required_field_indices(
+        filter.filter.predicate(),
+        &filter.filter.input().schema(),
+        &mut predicate_required,
+    )?;
+    for output_index in required_output_fields.predicate_indices(filter.filter.schema().fields().len())? {
+        let input_index = if let Some(projection) = filter.filter.projection() {
+            *projection.get(output_index).ok_or(FallbackReason::UnsupportedExpression)?
+        } else {
+            output_index
+        };
+        predicate_required.insert(input_index);
+    }
+    let mut child_required = predicate_required.clone();
     child_required.extend(selection.child_required_indices.iter().copied());
-    let input = lower_native_input(&filter.input, builder, &RequiredFields::only(child_required))?;
+    let input = lower_native_input(
+        &filter.input,
+        builder,
+        &RequiredFields::only_with_predicates(child_required, predicate_required),
+    )?;
     let filtered_node = builder.add_filter(
         input.node,
         lower_physical_expr_with_bindings(
@@ -115,7 +132,20 @@ pub(super) fn lower_projection_input(
             &mut child_required,
         )?;
     }
-    let input = lower_native_input(&projection.input, builder, &RequiredFields::only(child_required))?;
+    let mut child_predicate_required = BTreeSet::new();
+    for index in required_output_fields.predicate_indices(projection.projection.schema().fields().len())? {
+        let projection_expr = projection.projection.expr().get(index).ok_or(FallbackReason::UnsupportedExpression)?;
+        collect_required_field_indices(
+            &projection_expr.expr,
+            &projection.projection.input().schema(),
+            &mut child_predicate_required,
+        )?;
+    }
+    let input = lower_native_input(
+        &projection.input,
+        builder,
+        &RequiredFields::only_with_predicates(child_required, child_predicate_required),
+    )?;
     let (schema, bindings) = executable_schema_and_bindings(&projection.projection.schema(), required_output_fields)?;
     let expressions = required_projection
         .iter()
