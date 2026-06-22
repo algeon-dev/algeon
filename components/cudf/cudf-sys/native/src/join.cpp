@@ -23,6 +23,7 @@
 #include <cudf/utilities/span.hpp>
 
 #include <rmm/device_uvector.hpp>
+#include <rmm/mr/statistics_resource_adaptor.hpp>
 
 #include <cstdint>
 #include <memory>
@@ -113,8 +114,12 @@ struct distinct_hash_join_owner {
 };
 
 struct hash_join_owner {
+  std::shared_ptr<void> upstream_mr_lifetime;
+  std::unique_ptr<rmm::mr::statistics_resource_adaptor<rmm::mr::device_memory_resource>>
+    observed_mr;
   std::unique_ptr<cudf::hash_join> join;
   rmm::mr::device_memory_resource* mr_raw = nullptr;
+  std::size_t device_allocated_size_bytes = 0;
   int32_t device                          = 0;
 };
 
@@ -1358,11 +1363,17 @@ cudf_status_t cudf_hash_join_create_ex(cudf_table_view_handle build,
     auto* build_view = static_cast<cudf::table_view*>(build);
     auto owner       = std::make_unique<hash_join_owner>();
     owner->device    = exec.device;
-    owner->mr_raw    = exec.mr_raw;
+    owner->upstream_mr_lifetime = exec.mr_lifetime;
+    owner->observed_mr =
+      std::make_unique<rmm::mr::statistics_resource_adaptor<rmm::mr::device_memory_resource>>(
+        exec.mr);
+    owner->mr_raw = owner->observed_mr.get();
     {
-      cudf_current_device_resource_guard current_mr{exec.mr_raw};
+      cudf_current_device_resource_guard current_mr{owner->mr_raw};
       owner->join =
         std::make_unique<cudf::hash_join>(*build_view, nullable, null_eq, load_factor, exec.stream);
+      auto const bytes = owner->observed_mr->get_bytes_counter().value;
+      owner->device_allocated_size_bytes = bytes > 0 ? static_cast<std::size_t>(bytes) : 0;
     }
     *out = static_cast<cudf_hash_join_handle>(owner.release());
     return CUDF_SUCCESS;
@@ -1384,6 +1395,23 @@ void cudf_hash_join_destroy(cudf_hash_join_handle handle)
   } catch (...) {
     (void)translate_exception();
   }
+}
+
+cudf_status_t cudf_hash_join_device_allocated_size(cudf_hash_join_handle handle, size_t* out)
+{
+  CUDF_RUST_NULL_CHECK(out, "out is null");
+  *out = 0;
+  CUDF_RUST_NULL_CHECK(handle, "hash join is null");
+  CUDF_RUST_TRY
+  {
+    auto* owner = static_cast<hash_join_owner*>(handle);
+    cudf_device_guard device_guard;
+    cudf_status_t const device_status = device_guard.activate(owner->device);
+    if (device_status != CUDF_SUCCESS) { return device_status; }
+    *out = owner->device_allocated_size_bytes;
+    return CUDF_SUCCESS;
+  }
+  CUDF_RUST_CATCH
 }
 
 cudf_status_t cudf_hash_join_inner_join(cudf_hash_join_handle join,

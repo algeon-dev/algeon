@@ -1,7 +1,8 @@
 //! Semantic tests for mixed equality and conditional join index operations.
 
 use cudf::{
-    ErrorCode,
+    DataFrame, DataFrameCrossJoinOptions, DataFrameJoinOptions, DataFrameMixedJoinOptions,
+    DataFramePredicateJoinOptions, ErrorCode, Runtime,
     core::Table,
     ops::{
         ast::AstExpression,
@@ -377,4 +378,112 @@ fn mixed_inner_join_indices_honors_null_equality_for_equi_keys() {
 
     assert_eq!(sorted_join_index_pairs(&equal), vec![(0, 0), (1, 1)]);
     assert_eq!(sorted_join_index_pairs(&unequal), vec![(1, 1)]);
+}
+
+#[test]
+fn dataframe_projected_cross_join_supports_output_aliases() {
+    let rt = Runtime::new().unwrap();
+    let left = DataFrame::from_series([
+        ("id", rt.series(&[1i32, 2]).unwrap()),
+        ("left_val", rt.series(&[10i32, 20]).unwrap()),
+    ])
+    .unwrap();
+    let right = DataFrame::from_series([
+        ("id", rt.series(&[100i32, 200, 300]).unwrap()),
+        ("right_val", rt.series(&[7i32, 8, 9]).unwrap()),
+    ])
+    .unwrap();
+
+    let result = left
+        .cross_join_projected(
+            &right,
+            DataFrameCrossJoinOptions::new()
+                .left_projection([("id", "left_id"), ("left_val", "left_val")])
+                .right_projection([("id", "right_id"), ("right_val", "right_val")]),
+        )
+        .unwrap();
+
+    assert_eq!(result.num_rows(), 6);
+    assert_eq!(result.column_names(), vec!["left_id", "left_val", "right_id", "right_val"]);
+    assert_eq!(result.series("left_id").unwrap().to_vec_strict::<i32>().unwrap(), vec![1, 1, 1, 2, 2, 2]);
+    assert_eq!(result.series("left_val").unwrap().to_vec_strict::<i32>().unwrap(), vec![10, 10, 10, 20, 20, 20]);
+    assert_eq!(result.series("right_id").unwrap().to_vec_strict::<i32>().unwrap(), vec![100, 200, 300, 100, 200, 300]);
+    assert_eq!(result.series("right_val").unwrap().to_vec_strict::<i32>().unwrap(), vec![7, 8, 9, 7, 8, 9]);
+}
+
+#[test]
+fn dataframe_mixed_join_indices_use_named_equality_and_predicate_columns() {
+    let rt = Runtime::new().unwrap();
+    let left = DataFrame::from_series([
+        ("id", rt.series(&[1i32, 1, 2, 2]).unwrap()),
+        ("left_val", rt.series(&[5i32, 7, 3, 9]).unwrap()),
+    ])
+    .unwrap();
+    let right = DataFrame::from_series([
+        ("id", rt.series(&[1i32, 1, 2, 2]).unwrap()),
+        ("right_val", rt.series(&[6i32, 8, 4, 7]).unwrap()),
+    ])
+    .unwrap();
+    let predicate = left_less_than_right();
+
+    let indices = left
+        .mixed_inner_join_indices(
+            &right,
+            &predicate,
+            DataFrameMixedJoinOptions::new()
+                .on(["id"])
+                .left_predicate_columns(["left_val"])
+                .right_predicate_columns(["right_val"]),
+        )
+        .unwrap();
+
+    let mut pairs = indices
+        .left()
+        .indices()
+        .to_vec_strict::<i32>()
+        .unwrap()
+        .into_iter()
+        .zip(indices.right().indices().to_vec_strict::<i32>().unwrap())
+        .collect::<Vec<_>>();
+    pairs.sort();
+    assert_eq!(pairs, vec![(0, 0), (0, 1), (1, 1), (2, 2), (2, 3)]);
+}
+
+#[test]
+fn dataframe_filter_join_indices_filter_existing_hash_probe_pairs() {
+    let rt = Runtime::new().unwrap();
+    let left = DataFrame::from_series([
+        ("id", rt.series(&[1i32, 1, 2, 2]).unwrap()),
+        ("left_val", rt.series(&[5i32, 7, 3, 9]).unwrap()),
+    ])
+    .unwrap();
+    let right = DataFrame::from_series([
+        ("id", rt.series(&[1i32, 1, 2, 2]).unwrap()),
+        ("right_val", rt.series(&[6i32, 8, 4, 7]).unwrap()),
+    ])
+    .unwrap();
+    let equality = left.inner_join_indices(&right, DataFrameJoinOptions::new().on(["id"])).unwrap();
+    let predicate = left_less_than_right();
+
+    let filtered = left
+        .filter_join_indices(
+            &right,
+            equality.left(),
+            equality.right(),
+            &predicate,
+            DataFramePredicateJoinOptions::new().left_columns(["left_val"]).right_columns(["right_val"]),
+            cudf::JoinType::Inner,
+        )
+        .unwrap();
+
+    let mut pairs = filtered
+        .left()
+        .indices()
+        .to_vec_strict::<i32>()
+        .unwrap()
+        .into_iter()
+        .zip(filtered.right().indices().to_vec_strict::<i32>().unwrap())
+        .collect::<Vec<_>>();
+    pairs.sort();
+    assert_eq!(pairs, vec![(0, 0), (0, 1), (1, 1), (2, 2), (2, 3)]);
 }

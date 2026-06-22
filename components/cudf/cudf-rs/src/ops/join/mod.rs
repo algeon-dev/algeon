@@ -1965,6 +1965,20 @@ impl HashJoin {
         self.options
     }
 
+    /// Returns bytes retained by this reusable hash-join build artifact.
+    ///
+    /// This is observed from the device memory resource used while constructing
+    /// the libcudf hash join. It excludes the retained build key table and any
+    /// per-probe output/index allocations.
+    pub fn device_allocated_size_bytes(&self) -> Result<usize> {
+        let mut out = 0usize;
+        error::check_status_in(
+            unsafe { cudf_sys::cudf_hash_join_device_allocated_size(self.handle.handle.as_ptr(), &mut out) },
+            "hash_join::device_allocated_size_bytes",
+        )?;
+        Ok(out)
+    }
+
     /// Probe with inner-join semantics.
     ///
     /// The returned `left` column indexes the probe table, and `right` indexes

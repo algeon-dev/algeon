@@ -7,9 +7,10 @@ use crate::{
     },
     frame::{
         dataframe::{
-            DataFrame, DataFrameHashJoin, DataFrameHashJoinMaterialized, DataFrameHashJoinOptions,
-            DataFrameHashJoinPairIndices, DataFrameJoinIndices, DataFrameJoinOptions, DataFrameJoinPairIndices,
-            DataFrameJoinSides, derive_frame_domain_from_columns,
+            DataFrame, DataFrameCrossJoinOptions, DataFrameHashJoin, DataFrameHashJoinMaterialized,
+            DataFrameHashJoinOptions, DataFrameHashJoinPairIndices, DataFrameJoinIndices, DataFrameJoinOptions,
+            DataFrameJoinPairIndices, DataFrameJoinSides, DataFrameMixedJoinOptions, DataFramePredicateJoinOptions,
+            derive_frame_domain_from_columns,
         },
         series::Series,
     },
@@ -18,8 +19,9 @@ use crate::{
         resolve::{
             build_borrowed_table_view_from_columns, payload_indices, resolve_column_names, validate_no_duplicate_names,
         },
+        temp_table::TempTableView,
     },
-    ops::{join, replace},
+    ops::{ast::AstExpression, join, replace},
     runtime::{
         Runtime, execution_context::ExecutionOverrides, execution_domain::ExecutionDomain,
         execution_resolver::ResolvedExecution,
@@ -397,6 +399,183 @@ impl DataFrame {
         self.two_side_join_indices_impl(right, options, join::JoinType::Full, None, "dataframe::full_join_indices")
     }
 
+    /// Cross join two DataFrames and materialize only the requested output columns.
+    ///
+    /// Source columns are selected before calling libcudf. Output names are
+    /// taken from [`DataFrameCrossJoinOptions`], allowing same-named source
+    /// columns from each side to be projected with distinct result names.
+    pub fn cross_join_projected(&self, right: &DataFrame, options: DataFrameCrossJoinOptions) -> Result<Self> {
+        let ctx = ExecutionOverrides::new();
+        self.cross_join_projected_in_context(right, options, &ctx)
+    }
+
+    pub(crate) fn cross_join_projected_in_context(
+        &self,
+        right: &DataFrame,
+        options: DataFrameCrossJoinOptions,
+        ctx: &ExecutionOverrides<'_>,
+    ) -> Result<Self> {
+        let operation = "dataframe::cross_join_projected";
+        let left_names = options.left_column_names();
+        let right_names = options.right_column_names();
+        if left_names.is_empty() || right_names.is_empty() {
+            return Err(merge_validation_error(
+                operation,
+                "projected cross join requires at least one selected column from each side",
+                "empty_cross_join_projection_side",
+                "select at least one left column and one right column",
+            ));
+        }
+        if left_names.len() != options.left_output_names().len() {
+            return Err(merge_key_count_mismatch_error(operation, left_names.len(), options.left_output_names().len()));
+        }
+        if right_names.len() != options.right_output_names().len() {
+            return Err(merge_key_count_mismatch_error(
+                operation,
+                right_names.len(),
+                options.right_output_names().len(),
+            ));
+        }
+
+        let output_names =
+            options.left_output_names().iter().chain(options.right_output_names()).cloned().collect::<Vec<_>>();
+        validate_no_duplicate_names(&output_names, operation)?;
+
+        let left_refs = string_refs(left_names);
+        let right_refs = string_refs(right_names);
+        let left_indices = resolve_column_names(self.columns_map(), &left_refs, operation)?;
+        let right_indices = resolve_column_names(right.columns_map(), &right_refs, operation)?;
+        let left_table = build_borrowed_table_view_from_columns(self.columns_map(), &left_indices)?;
+        let right_table = build_borrowed_table_view_from_columns(right.columns_map(), &right_indices)?;
+        let table =
+            join::cross_join_in(left_table.table(), right_table.table(), ctx).map_err(|e| e.reanchor(operation))?;
+        DataFrame::from_table(table, output_names).map_err(|e| e.reanchor(operation))
+    }
+
+    /// Conditional inner join indices for rows whose AST predicate evaluates true.
+    pub fn conditional_inner_join_indices(
+        &self,
+        right: &DataFrame,
+        predicate: &AstExpression,
+        options: DataFramePredicateJoinOptions,
+    ) -> Result<DataFrameJoinPairIndices> {
+        let ctx = ExecutionOverrides::new();
+        self.conditional_join_indices_in_context(right, predicate, options, join::JoinType::Inner, &ctx)
+    }
+
+    /// Conditional left join indices for rows whose AST predicate evaluates true.
+    pub fn conditional_left_join_indices(
+        &self,
+        right: &DataFrame,
+        predicate: &AstExpression,
+        options: DataFramePredicateJoinOptions,
+    ) -> Result<DataFrameJoinPairIndices> {
+        let ctx = ExecutionOverrides::new();
+        self.conditional_join_indices_in_context(right, predicate, options, join::JoinType::Left, &ctx)
+    }
+
+    /// Conditional full join indices for rows whose AST predicate evaluates true.
+    pub fn conditional_full_join_indices(
+        &self,
+        right: &DataFrame,
+        predicate: &AstExpression,
+        options: DataFramePredicateJoinOptions,
+    ) -> Result<DataFrameJoinPairIndices> {
+        let ctx = ExecutionOverrides::new();
+        self.conditional_join_indices_in_context(right, predicate, options, join::JoinType::Full, &ctx)
+    }
+
+    /// Conditional left semi join indices.
+    pub fn conditional_left_semi_join_indices(
+        &self,
+        right: &DataFrame,
+        predicate: &AstExpression,
+        options: DataFramePredicateJoinOptions,
+    ) -> Result<DataFrameJoinIndices> {
+        let ctx = ExecutionOverrides::new();
+        self.conditional_single_side_join_indices_in_context(right, predicate, options, true, &ctx)
+    }
+
+    /// Conditional left anti join indices.
+    pub fn conditional_left_anti_join_indices(
+        &self,
+        right: &DataFrame,
+        predicate: &AstExpression,
+        options: DataFramePredicateJoinOptions,
+    ) -> Result<DataFrameJoinIndices> {
+        let ctx = ExecutionOverrides::new();
+        self.conditional_single_side_join_indices_in_context(right, predicate, options, false, &ctx)
+    }
+
+    /// Mixed equality-plus-predicate inner join indices.
+    pub fn mixed_inner_join_indices(
+        &self,
+        right: &DataFrame,
+        predicate: &AstExpression,
+        options: DataFrameMixedJoinOptions,
+    ) -> Result<DataFrameJoinPairIndices> {
+        let ctx = ExecutionOverrides::new();
+        self.mixed_join_indices_in_context(right, predicate, options, join::JoinType::Inner, &ctx)
+    }
+
+    /// Mixed equality-plus-predicate left join indices.
+    pub fn mixed_left_join_indices(
+        &self,
+        right: &DataFrame,
+        predicate: &AstExpression,
+        options: DataFrameMixedJoinOptions,
+    ) -> Result<DataFrameJoinPairIndices> {
+        let ctx = ExecutionOverrides::new();
+        self.mixed_join_indices_in_context(right, predicate, options, join::JoinType::Left, &ctx)
+    }
+
+    /// Mixed equality-plus-predicate full join indices.
+    pub fn mixed_full_join_indices(
+        &self,
+        right: &DataFrame,
+        predicate: &AstExpression,
+        options: DataFrameMixedJoinOptions,
+    ) -> Result<DataFrameJoinPairIndices> {
+        let ctx = ExecutionOverrides::new();
+        self.mixed_join_indices_in_context(right, predicate, options, join::JoinType::Full, &ctx)
+    }
+
+    /// Mixed equality-plus-predicate left semi join indices.
+    pub fn mixed_left_semi_join_indices(
+        &self,
+        right: &DataFrame,
+        predicate: &AstExpression,
+        options: DataFrameMixedJoinOptions,
+    ) -> Result<DataFrameJoinIndices> {
+        let ctx = ExecutionOverrides::new();
+        self.mixed_single_side_join_indices_in_context(right, predicate, options, true, &ctx)
+    }
+
+    /// Mixed equality-plus-predicate left anti join indices.
+    pub fn mixed_left_anti_join_indices(
+        &self,
+        right: &DataFrame,
+        predicate: &AstExpression,
+        options: DataFrameMixedJoinOptions,
+    ) -> Result<DataFrameJoinIndices> {
+        let ctx = ExecutionOverrides::new();
+        self.mixed_single_side_join_indices_in_context(right, predicate, options, false, &ctx)
+    }
+
+    /// Filter existing two-sided join-index pairs with a predicate.
+    pub fn filter_join_indices(
+        &self,
+        right: &DataFrame,
+        left_indices: &DataFrameJoinIndices,
+        right_indices: &DataFrameJoinIndices,
+        predicate: &AstExpression,
+        options: DataFramePredicateJoinOptions,
+        join_type: join::JoinType,
+    ) -> Result<DataFrameJoinPairIndices> {
+        let ctx = ExecutionOverrides::new();
+        self.filter_join_indices_in_context(right, left_indices, right_indices, predicate, options, join_type, &ctx)
+    }
+
     /// Return device-side gather indices for the left rows that have a match in `right`.
     ///
     /// This is an index-producing query-planning helper. It allocates only an
@@ -542,6 +721,151 @@ impl DataFrame {
         Ok(DataFrameJoinIndices::new(indices))
     }
 
+    pub(crate) fn conditional_join_indices_in_context(
+        &self,
+        right: &DataFrame,
+        predicate: &AstExpression,
+        options: DataFramePredicateJoinOptions,
+        join_type: join::JoinType,
+        ctx: &ExecutionOverrides<'_>,
+    ) -> Result<DataFrameJoinPairIndices> {
+        let operation = "dataframe::with_execution::conditional_join_indices";
+        let (left_table, right_table) = predicate_tables(self, right, &options, operation)?;
+        let raw = match join_type {
+            join::JoinType::Inner => {
+                join::conditional_inner_join_indices_in(left_table.table(), right_table.table(), predicate, ctx)?
+            },
+            join::JoinType::Left => {
+                join::conditional_left_join_indices_in(left_table.table(), right_table.table(), predicate, ctx)?
+            },
+            join::JoinType::Full => {
+                join::conditional_full_join_indices_in(left_table.table(), right_table.table(), predicate, ctx)?
+            },
+        };
+        pair_indices_from_raw(raw, operation)
+    }
+
+    pub(crate) fn conditional_single_side_join_indices_in_context(
+        &self,
+        right: &DataFrame,
+        predicate: &AstExpression,
+        options: DataFramePredicateJoinOptions,
+        semi_join: bool,
+        ctx: &ExecutionOverrides<'_>,
+    ) -> Result<DataFrameJoinIndices> {
+        let operation = "dataframe::with_execution::conditional_single_side_join_indices";
+        let (left_table, right_table) = predicate_tables(self, right, &options, operation)?;
+        let raw = if semi_join {
+            join::conditional_left_semi_join_indices_in(left_table.table(), right_table.table(), predicate, ctx)?
+        } else {
+            join::conditional_left_anti_join_indices_in(left_table.table(), right_table.table(), predicate, ctx)?
+        };
+        single_side_indices_from_raw(raw, operation)
+    }
+
+    pub(crate) fn mixed_join_indices_in_context(
+        &self,
+        right: &DataFrame,
+        predicate: &AstExpression,
+        options: DataFrameMixedJoinOptions,
+        join_type: join::JoinType,
+        ctx: &ExecutionOverrides<'_>,
+    ) -> Result<DataFrameJoinPairIndices> {
+        let operation = "dataframe::with_execution::mixed_join_indices";
+        let tables = mixed_join_tables(self, right, &options, operation)?;
+        let raw = match join_type {
+            join::JoinType::Inner => join::mixed_inner_join_indices_in(
+                tables.left_equality.table(),
+                tables.right_equality.table(),
+                tables.left_conditional.table(),
+                tables.right_conditional.table(),
+                predicate,
+                options.null_eq(),
+                ctx,
+            )?,
+            join::JoinType::Left => join::mixed_left_join_indices_in(
+                tables.left_equality.table(),
+                tables.right_equality.table(),
+                tables.left_conditional.table(),
+                tables.right_conditional.table(),
+                predicate,
+                options.null_eq(),
+                ctx,
+            )?,
+            join::JoinType::Full => join::mixed_full_join_indices_in(
+                tables.left_equality.table(),
+                tables.right_equality.table(),
+                tables.left_conditional.table(),
+                tables.right_conditional.table(),
+                predicate,
+                options.null_eq(),
+                ctx,
+            )?,
+        };
+        pair_indices_from_raw(raw, operation)
+    }
+
+    pub(crate) fn mixed_single_side_join_indices_in_context(
+        &self,
+        right: &DataFrame,
+        predicate: &AstExpression,
+        options: DataFrameMixedJoinOptions,
+        semi_join: bool,
+        ctx: &ExecutionOverrides<'_>,
+    ) -> Result<DataFrameJoinIndices> {
+        let operation = "dataframe::with_execution::mixed_single_side_join_indices";
+        let tables = mixed_join_tables(self, right, &options, operation)?;
+        let raw = if semi_join {
+            join::mixed_left_semi_join_indices_in(
+                tables.left_equality.table(),
+                tables.right_equality.table(),
+                tables.left_conditional.table(),
+                tables.right_conditional.table(),
+                predicate,
+                options.null_eq(),
+                ctx,
+            )?
+        } else {
+            join::mixed_left_anti_join_indices_in(
+                tables.left_equality.table(),
+                tables.right_equality.table(),
+                tables.left_conditional.table(),
+                tables.right_conditional.table(),
+                predicate,
+                options.null_eq(),
+                ctx,
+            )?
+        };
+        single_side_indices_from_raw(raw, operation)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn filter_join_indices_in_context(
+        &self,
+        right: &DataFrame,
+        left_indices: &DataFrameJoinIndices,
+        right_indices: &DataFrameJoinIndices,
+        predicate: &AstExpression,
+        options: DataFramePredicateJoinOptions,
+        join_type: join::JoinType,
+        ctx: &ExecutionOverrides<'_>,
+    ) -> Result<DataFrameJoinPairIndices> {
+        let operation = "dataframe::with_execution::filter_join_indices";
+        let (left_table, right_table) = predicate_tables(self, right, &options, operation)?;
+        let left_indices = left_indices.indices().as_column().view().map_err(|e| e.reanchor(operation))?;
+        let right_indices = right_indices.indices().as_column().view().map_err(|e| e.reanchor(operation))?;
+        let raw = join::filter_join_indices_in(
+            left_table.table(),
+            right_table.table(),
+            &left_indices,
+            &right_indices,
+            predicate,
+            join_type,
+            ctx,
+        )?;
+        pair_indices_from_raw(raw, operation)
+    }
+
     pub(crate) fn materialize_join_indices_in_context<I, S>(
         &self,
         indices: &DataFrameJoinIndices,
@@ -633,6 +957,97 @@ impl DataFrame {
             right: DataFrame::from_table(result.right, right_schema_names)?,
         })
     }
+}
+
+struct MixedDataFrameJoinTables<'a> {
+    left_equality: TempTableView<'a>,
+    right_equality: TempTableView<'a>,
+    left_conditional: TempTableView<'a>,
+    right_conditional: TempTableView<'a>,
+}
+
+fn string_refs(values: &[String]) -> Vec<&str> {
+    values.iter().map(|value| value.as_str()).collect()
+}
+
+fn predicate_tables<'a>(
+    left: &'a DataFrame,
+    right: &'a DataFrame,
+    options: &DataFramePredicateJoinOptions,
+    operation: &'static str,
+) -> Result<(TempTableView<'a>, TempTableView<'a>)> {
+    let left_names = options.left_column_names();
+    let right_names = options.right_column_names();
+    if left_names.is_empty() || right_names.is_empty() {
+        return Err(merge_validation_error(
+            operation,
+            "predicate join requires at least one predicate column from each side",
+            "empty_predicate_columns",
+            "set the left and right predicate column lists used by the AST predicate",
+        ));
+    }
+    let left_refs = string_refs(left_names);
+    let right_refs = string_refs(right_names);
+    let left_indices = resolve_column_names(left.columns_map(), &left_refs, operation)?;
+    let right_indices = resolve_column_names(right.columns_map(), &right_refs, operation)?;
+    Ok((
+        build_borrowed_table_view_from_columns(left.columns_map(), &left_indices)?,
+        build_borrowed_table_view_from_columns(right.columns_map(), &right_indices)?,
+    ))
+}
+
+fn mixed_join_tables<'a>(
+    left: &'a DataFrame,
+    right: &'a DataFrame,
+    options: &DataFrameMixedJoinOptions,
+    operation: &'static str,
+) -> Result<MixedDataFrameJoinTables<'a>> {
+    let (left_on, right_on) = resolve_dataframe_mixed_join_keys(options, operation)?;
+    if left_on.len() != right_on.len() {
+        return Err(merge_key_count_mismatch_error(operation, left_on.len(), right_on.len()));
+    }
+    if options.left_predicate_column_names().is_empty() || options.right_predicate_column_names().is_empty() {
+        return Err(merge_validation_error(
+            operation,
+            "mixed join requires at least one predicate column from each side",
+            "empty_predicate_columns",
+            "set the left and right predicate column lists used by the AST predicate",
+        ));
+    }
+
+    let left_key_refs = string_refs(&left_on);
+    let right_key_refs = string_refs(&right_on);
+    let left_predicate_refs = string_refs(options.left_predicate_column_names());
+    let right_predicate_refs = string_refs(options.right_predicate_column_names());
+
+    let left_key_indices = resolve_column_names(left.columns_map(), &left_key_refs, operation)?;
+    let right_key_indices = resolve_column_names(right.columns_map(), &right_key_refs, operation)?;
+    let left_predicate_indices = resolve_column_names(left.columns_map(), &left_predicate_refs, operation)?;
+    let right_predicate_indices = resolve_column_names(right.columns_map(), &right_predicate_refs, operation)?;
+
+    Ok(MixedDataFrameJoinTables {
+        left_equality: build_borrowed_table_view_from_columns(left.columns_map(), &left_key_indices)?,
+        right_equality: build_borrowed_table_view_from_columns(right.columns_map(), &right_key_indices)?,
+        left_conditional: build_borrowed_table_view_from_columns(left.columns_map(), &left_predicate_indices)?,
+        right_conditional: build_borrowed_table_view_from_columns(right.columns_map(), &right_predicate_indices)?,
+    })
+}
+
+fn pair_indices_from_raw(raw_indices: join::JoinIndices, operation: &'static str) -> Result<DataFrameJoinPairIndices> {
+    let left = Series::from_column(raw_indices.left)
+        .map_err(|e| e.reanchor(operation).with_detail("resource", "left_join_indices"))?;
+    let right = Series::from_column(raw_indices.right)
+        .map_err(|e| e.reanchor(operation).with_detail("resource", "right_join_indices"))?;
+    Ok(DataFrameJoinPairIndices::new(left, right))
+}
+
+fn single_side_indices_from_raw(
+    raw_indices: join::SingleSideJoinIndices,
+    operation: &'static str,
+) -> Result<DataFrameJoinIndices> {
+    let indices = Series::from_column(raw_indices.indices)
+        .map_err(|e| e.reanchor(operation).with_detail("resource", "join_indices"))?;
+    Ok(DataFrameJoinIndices::new(indices))
 }
 
 impl DataFrameHashJoin {
@@ -950,6 +1365,43 @@ fn resolve_merge_keys(
 
 fn resolve_dataframe_join_keys(
     options: &DataFrameJoinOptions,
+    operation: &'static str,
+) -> Result<(Vec<String>, Vec<String>)> {
+    match (options.on_keys(), options.left_on_keys(), options.right_on_keys()) {
+        (Some(on), None, None) => {
+            let keys: Vec<String> = on.to_vec();
+            Ok((keys.clone(), keys))
+        },
+        (None, Some(lo), Some(ro)) => Ok((lo.to_vec(), ro.to_vec())),
+        (None, Some(_), None) => Err(merge_validation_error(
+            operation,
+            "left_on was specified without right_on; set both or use on()",
+            "left_on_without_right_on",
+            "set right_on() or use on()",
+        )),
+        (None, None, Some(_)) => Err(merge_validation_error(
+            operation,
+            "right_on was specified without left_on; set both or use on()",
+            "right_on_without_left_on",
+            "set left_on() or use on()",
+        )),
+        (Some(_), _, _) => Err(merge_validation_error(
+            operation,
+            "on() cannot be combined with left_on()/right_on(); use one or the other",
+            "ambiguous_join_key_configuration",
+            "use on() or left_on() + right_on(), not both",
+        )),
+        (None, None, None) => Err(merge_validation_error(
+            operation,
+            "no join keys specified; use on() or left_on() + right_on()",
+            "missing_join_keys",
+            "set on() or left_on() + right_on()",
+        )),
+    }
+}
+
+fn resolve_dataframe_mixed_join_keys(
+    options: &DataFrameMixedJoinOptions,
     operation: &'static str,
 ) -> Result<(Vec<String>, Vec<String>)> {
     match (options.on_keys(), options.left_on_keys(), options.right_on_keys()) {

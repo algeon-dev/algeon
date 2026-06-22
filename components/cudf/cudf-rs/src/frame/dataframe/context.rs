@@ -1,11 +1,12 @@
 use super::{
-    DataFrame, DataFrameHashJoin, DataFrameHashJoinOptions, DataFrameJoinIndices, DataFrameJoinOptions,
-    DataFrameJoinPairIndices, DataFrameJoinSides, DropDuplicatesOptions, DropNaOptions, WithColumnExpr,
+    DataFrame, DataFrameCrossJoinOptions, DataFrameHashJoin, DataFrameHashJoinOptions, DataFrameJoinIndices,
+    DataFrameJoinOptions, DataFrameJoinPairIndices, DataFrameJoinSides, DataFrameMixedJoinOptions,
+    DataFramePredicateJoinOptions, DropDuplicatesOptions, DropNaOptions, WithColumnExpr,
 };
 use crate::{
-    Expr, Result,
+    Expr, JoinType, Result,
     frame::series::Series,
-    ops::{join::MergeOptions, sorting::SortOptions},
+    ops::{ast::AstExpression, join::MergeOptions, sorting::SortOptions},
     runtime::ExecutionOverrides,
 };
 
@@ -108,6 +109,127 @@ impl<'df, 'ctx, 'handles> DataFrameExecutionScope<'df, 'ctx, 'handles> {
         self.df.build_hash_join_in_context(build_on, options, self.ctx)
     }
 
+    /// Produce conditional inner join row-index pairs using the borrowed execution override.
+    pub fn conditional_inner_join_indices(
+        &self,
+        right: &DataFrame,
+        predicate: &AstExpression,
+        options: DataFramePredicateJoinOptions,
+    ) -> Result<DataFrameJoinPairIndices> {
+        self.df.conditional_join_indices_in_context(right, predicate, options, JoinType::Inner, self.ctx)
+    }
+
+    /// Produce conditional left join row-index pairs using the borrowed execution override.
+    pub fn conditional_left_join_indices(
+        &self,
+        right: &DataFrame,
+        predicate: &AstExpression,
+        options: DataFramePredicateJoinOptions,
+    ) -> Result<DataFrameJoinPairIndices> {
+        self.df.conditional_join_indices_in_context(right, predicate, options, JoinType::Left, self.ctx)
+    }
+
+    /// Produce conditional full join row-index pairs using the borrowed execution override.
+    pub fn conditional_full_join_indices(
+        &self,
+        right: &DataFrame,
+        predicate: &AstExpression,
+        options: DataFramePredicateJoinOptions,
+    ) -> Result<DataFrameJoinPairIndices> {
+        self.df.conditional_join_indices_in_context(right, predicate, options, JoinType::Full, self.ctx)
+    }
+
+    /// Produce conditional left semi join indices using the borrowed execution override.
+    pub fn conditional_left_semi_join_indices(
+        &self,
+        right: &DataFrame,
+        predicate: &AstExpression,
+        options: DataFramePredicateJoinOptions,
+    ) -> Result<DataFrameJoinIndices> {
+        self.df.conditional_single_side_join_indices_in_context(right, predicate, options, true, self.ctx)
+    }
+
+    /// Produce conditional left anti join indices using the borrowed execution override.
+    pub fn conditional_left_anti_join_indices(
+        &self,
+        right: &DataFrame,
+        predicate: &AstExpression,
+        options: DataFramePredicateJoinOptions,
+    ) -> Result<DataFrameJoinIndices> {
+        self.df.conditional_single_side_join_indices_in_context(right, predicate, options, false, self.ctx)
+    }
+
+    /// Produce mixed inner join row-index pairs using the borrowed execution override.
+    pub fn mixed_inner_join_indices(
+        &self,
+        right: &DataFrame,
+        predicate: &AstExpression,
+        options: DataFrameMixedJoinOptions,
+    ) -> Result<DataFrameJoinPairIndices> {
+        self.df.mixed_join_indices_in_context(right, predicate, options, JoinType::Inner, self.ctx)
+    }
+
+    /// Produce mixed left join row-index pairs using the borrowed execution override.
+    pub fn mixed_left_join_indices(
+        &self,
+        right: &DataFrame,
+        predicate: &AstExpression,
+        options: DataFrameMixedJoinOptions,
+    ) -> Result<DataFrameJoinPairIndices> {
+        self.df.mixed_join_indices_in_context(right, predicate, options, JoinType::Left, self.ctx)
+    }
+
+    /// Produce mixed full join row-index pairs using the borrowed execution override.
+    pub fn mixed_full_join_indices(
+        &self,
+        right: &DataFrame,
+        predicate: &AstExpression,
+        options: DataFrameMixedJoinOptions,
+    ) -> Result<DataFrameJoinPairIndices> {
+        self.df.mixed_join_indices_in_context(right, predicate, options, JoinType::Full, self.ctx)
+    }
+
+    /// Produce mixed left semi join indices using the borrowed execution override.
+    pub fn mixed_left_semi_join_indices(
+        &self,
+        right: &DataFrame,
+        predicate: &AstExpression,
+        options: DataFrameMixedJoinOptions,
+    ) -> Result<DataFrameJoinIndices> {
+        self.df.mixed_single_side_join_indices_in_context(right, predicate, options, true, self.ctx)
+    }
+
+    /// Produce mixed left anti join indices using the borrowed execution override.
+    pub fn mixed_left_anti_join_indices(
+        &self,
+        right: &DataFrame,
+        predicate: &AstExpression,
+        options: DataFrameMixedJoinOptions,
+    ) -> Result<DataFrameJoinIndices> {
+        self.df.mixed_single_side_join_indices_in_context(right, predicate, options, false, self.ctx)
+    }
+
+    /// Filter existing join-index pairs with a predicate using the borrowed execution override.
+    pub fn filter_join_indices(
+        &self,
+        right: &DataFrame,
+        left_indices: &DataFrameJoinIndices,
+        right_indices: &DataFrameJoinIndices,
+        predicate: &AstExpression,
+        options: DataFramePredicateJoinOptions,
+        join_type: JoinType,
+    ) -> Result<DataFrameJoinPairIndices> {
+        self.df.filter_join_indices_in_context(
+            right,
+            left_indices,
+            right_indices,
+            predicate,
+            options,
+            join_type,
+            self.ctx,
+        )
+    }
+
     dataframe_scope_forward!(
         /// Return the first `n` rows using the borrowed execution override.
         fn head(n: usize) -> Result<DataFrame> => head_in_context;
@@ -144,6 +266,9 @@ impl<'df, 'ctx, 'handles> DataFrameExecutionScope<'df, 'ctx, 'handles> {
 
         /// Produce full join row-index pairs using the borrowed execution override.
         fn full_join_indices(right: &DataFrame, options: DataFrameJoinOptions) -> Result<DataFrameJoinPairIndices> => full_join_indices_in_context;
+
+        /// Cross join and materialize selected columns using the borrowed execution override.
+        fn cross_join_projected(right: &DataFrame, options: DataFrameCrossJoinOptions) -> Result<DataFrame> => cross_join_projected_in_context;
 
         /// Produce left semi join indices using the borrowed execution override.
         fn left_semi_join_indices(right: &DataFrame, options: DataFrameJoinOptions) -> Result<DataFrameJoinIndices> => left_semi_join_indices_in_context;

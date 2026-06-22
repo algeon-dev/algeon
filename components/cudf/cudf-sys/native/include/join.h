@@ -534,6 +534,12 @@ cudf_status_t cudf_hash_join_create_ex(cudf_table_view_handle build,
 /// resource.
 void cudf_hash_join_destroy(cudf_hash_join_handle handle);
 
+/// Return device bytes retained by a reusable hash-join build artifact.
+///
+/// This excludes the build table viewed by the handle and any per-probe
+/// output/index allocations.
+cudf_status_t cudf_hash_join_device_allocated_size(cudf_hash_join_handle handle, size_t* out);
+
 /// Probe a reusable hash-join artifact for inner-join gather indices.
 ///
 /// The probe table is the logical left side and the build table is the logical

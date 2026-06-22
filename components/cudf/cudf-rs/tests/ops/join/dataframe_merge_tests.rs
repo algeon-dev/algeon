@@ -144,6 +144,7 @@ fn test_dataframe_inner_join_indices_materialize_projected_sides_with_duplicates
     let right_rows = right.materialize_join_indices(indices.right(), ["value"]).unwrap();
 
     assert_eq!(indices.len(), 4);
+    assert!(indices.device_allocated_size_bytes().unwrap() > 0);
     assert_eq!(left_rows.column_names(), vec!["score"]);
     assert_eq!(right_rows.column_names(), vec!["value"]);
     let mut rows: Vec<_> = i32_column(&left_rows, "score").into_iter().zip(i32_column(&right_rows, "value")).collect();
@@ -212,7 +213,9 @@ fn test_dataframe_hash_join_reuses_build_for_projected_inner_probes_with_duplica
             .unwrap();
 
     let hash_join = build.build_hash_join(["id"], DataFrameHashJoinOptions::new()).unwrap();
+    assert!(hash_join.device_allocated_size_bytes().unwrap() > 0);
     let first_indices = hash_join.inner_probe(&first_probe, ["pid"]).unwrap();
+    assert!(first_indices.device_allocated_size_bytes().unwrap() > 0);
     let first = hash_join.materialize(&first_probe, &first_indices, ["score"], ["value"]).unwrap();
     let second_indices = hash_join.inner_probe(&second_probe, ["pid"]).unwrap();
     let second = hash_join.materialize(&second_probe, &second_indices, ["score"], ["value"]).unwrap();

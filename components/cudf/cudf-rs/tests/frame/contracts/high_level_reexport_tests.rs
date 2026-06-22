@@ -232,8 +232,9 @@ fn query_execution_context_is_publicly_reexported() {
 #[test]
 fn dataframe_join_helpers_are_publicly_reexported() {
     use cudf::{
-        DataFrame, DataFrameHashJoin, DataFrameHashJoinMaterialized, DataFrameHashJoinOptions,
-        DataFrameHashJoinPairIndices, DataFrameJoinIndices, DataFrameJoinOptions, DataFrameJoinPairIndices, Runtime,
+        DataFrame, DataFrameCrossJoinOptions, DataFrameHashJoin, DataFrameHashJoinMaterialized,
+        DataFrameHashJoinOptions, DataFrameHashJoinPairIndices, DataFrameJoinIndices, DataFrameJoinOptions,
+        DataFrameJoinPairIndices, DataFrameMixedJoinOptions, DataFramePredicateJoinOptions, Runtime,
     };
 
     fn assert_hash_join(_: &DataFrameHashJoin) {}
@@ -243,6 +244,9 @@ fn dataframe_join_helpers_are_publicly_reexported() {
     fn assert_indices(_: &DataFrameJoinIndices) {}
     fn assert_pair_indices(_: &DataFrameJoinPairIndices) {}
     fn assert_options(_: DataFrameJoinOptions) {}
+    fn assert_cross_options(_: DataFrameCrossJoinOptions) {}
+    fn assert_predicate_options(_: DataFramePredicateJoinOptions) {}
+    fn assert_mixed_options(_: DataFrameMixedJoinOptions) {}
 
     let rt = Runtime::builder().build().unwrap();
     let left = DataFrame::from_series([
@@ -254,15 +258,22 @@ fn dataframe_join_helpers_are_publicly_reexported() {
     let options = DataFrameJoinOptions::new().on(["id"]);
     assert_options(options.clone());
     assert_hash_options(DataFrameHashJoinOptions::new());
+    assert_cross_options(DataFrameCrossJoinOptions::new());
+    assert_predicate_options(DataFramePredicateJoinOptions::new());
+    assert_mixed_options(DataFrameMixedJoinOptions::new());
 
     let indices = left.left_semi_join_indices(&right, options).unwrap();
     assert_indices(&indices);
+    assert!(indices.device_allocated_size_bytes().unwrap() > 0);
     let pair_indices = left.inner_join_indices(&right, DataFrameJoinOptions::new().on(["id"])).unwrap();
     assert_pair_indices(&pair_indices);
+    assert!(pair_indices.device_allocated_size_bytes().unwrap() > 0);
     let hash_join = right.build_hash_join(["id"], DataFrameHashJoinOptions::new()).unwrap();
     assert_hash_join(&hash_join);
+    assert!(hash_join.device_allocated_size_bytes().unwrap() > 0);
     let hash_indices = hash_join.inner_probe(&left, ["id"]).unwrap();
     assert_hash_pair_indices(&hash_indices);
+    assert!(hash_indices.device_allocated_size_bytes().unwrap() > 0);
     let materialized = left.materialize_join_indices(&indices, ["value"]).unwrap();
     let pair_materialized = left.materialize_join_indices(pair_indices.left(), ["value"]).unwrap();
     let hash_materialized = hash_join.materialize(&left, &hash_indices, ["value"], ["id"]).unwrap();

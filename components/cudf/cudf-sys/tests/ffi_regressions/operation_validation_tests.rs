@@ -1674,6 +1674,47 @@ fn test_hash_join_create_ex_uses_explicit_memory_resource_for_build_allocations(
 }
 
 #[test]
+fn test_hash_join_device_allocated_size_reports_retained_build_artifact_bytes() {
+    let _shim_state = lock_shim_state();
+
+    let col = make_i32_column(&[1, 2, 3, 4, 5, 6, 7, 8]);
+    let tbl = make_table_from_one_column(col);
+    let tv = make_table_view(tbl);
+
+    let mut out = usize::MAX;
+    let status = unsafe { cudf_sys::cudf_hash_join_device_allocated_size(ptr::null_mut(), &mut out) };
+    assert_eq!(status, cudf_sys::CUDF_ERROR_NULL);
+    assert_eq!(out, 0);
+
+    let status = unsafe { cudf_sys::cudf_hash_join_device_allocated_size(ptr::null_mut(), ptr::null_mut()) };
+    assert_eq!(status, cudf_sys::CUDF_ERROR_NULL);
+
+    let mut join: *mut c_void = ptr::null_mut();
+    let status = unsafe {
+        cudf_sys::cudf_hash_join_create(
+            tv,
+            cudf_sys::cudf_nullable_join_t::CUDF_NULLABLE_JOIN_YES,
+            cudf_sys::cudf_null_equality_t::CUDF_NULL_EQUALITY_EQUAL,
+            0.5,
+            &mut join,
+        )
+    };
+    assert_eq!(status, cudf_sys::CUDF_SUCCESS);
+    assert!(!join.is_null());
+
+    let mut bytes = 0usize;
+    let status = unsafe { cudf_sys::cudf_hash_join_device_allocated_size(join, &mut bytes) };
+    assert_eq!(status, cudf_sys::CUDF_SUCCESS);
+    assert!(bytes > 0, "hash-join build artifact should retain device allocations");
+
+    unsafe {
+        cudf_sys::cudf_hash_join_destroy(join);
+        cudf_sys::cudf_table_view_destroy(tv);
+        cudf_sys::cudf_table_destroy(tbl);
+    }
+}
+
+#[test]
 fn test_hash_join_probe_ex_uses_explicit_memory_resource_for_probe_allocations() {
     let _shim_state = lock_shim_state();
     let previous_raw = current_device_resource_raw();

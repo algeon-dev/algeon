@@ -30,6 +30,7 @@ fn join_indices_and_hash_join_slice6_surface_is_publicly_importable() {
         HashJoin::left_join_indices_in,
         HashJoin::full_join_indices,
         HashJoin::full_join_indices_in,
+        HashJoin::device_allocated_size_bytes,
     );
     let _ = (
         inner_join_indices,
@@ -85,6 +86,9 @@ fn slice8_ast_conditional_and_mixed_join_surface_is_publicly_importable() {
     let _: Option<AstExpression> = None;
     let _operator = AstOperator::Less;
     let _ = (
+        AstExpression::cast_to_float64,
+        AstExpression::cast_to_int64,
+        AstExpression::cast_to_uint64,
         conditional_inner_join_indices,
         conditional_inner_join_indices_in,
         conditional_left_join_indices,
