@@ -25,6 +25,10 @@ pub struct NativeGraphReservationMetricRow {
     pub input_edges: usize,
     /// Conservative vertex upper bound used by the model.
     pub vertex_upper_bound: usize,
+    /// Vertex count signal actually used by the model.
+    pub vertex_estimate: usize,
+    /// Provenance for the vertex estimate.
+    pub vertex_estimate_source: String,
     /// Vertex id width in bytes.
     pub vertex_width_bytes: usize,
     /// Consumed edge-weight width in bytes, if present.
@@ -53,13 +57,15 @@ impl NativeGraphReservationMetricRow {
     /// Serializes this nested row as stable comma-separated key/value pairs.
     pub fn to_stable_kv_row(&self) -> String {
         format!(
-            "node_id={},algorithm={},class={},outcome={},input_edges={},vertex_upper_bound={},vertex_width_bytes={},weight_width_bytes={},has_edge_id={},directed={},renumber={},construction_policy={},seed_count={},data_dependent={},requested_bytes={},budget_bytes={},reason={}",
+            "node_id={},algorithm={},class={},outcome={},input_edges={},vertex_upper_bound={},vertex_estimate={},vertex_estimate_source={},vertex_width_bytes={},weight_width_bytes={},has_edge_id={},directed={},renumber={},construction_policy={},seed_count={},data_dependent={},requested_bytes={},budget_bytes={},reason={}",
             self.node_id,
             self.algorithm,
             self.class,
             self.outcome,
             self.input_edges,
             self.vertex_upper_bound,
+            self.vertex_estimate,
+            self.vertex_estimate_source,
             self.vertex_width_bytes,
             optional_usize(self.weight_width_bytes),
             self.has_edge_id,
@@ -223,6 +229,8 @@ fn labels_to_graph_reservation_row(labels: BTreeMap<&str, &str>) -> NativeGraphR
         outcome: string_label(&labels, "outcome"),
         input_edges: usize_label(&labels, "input_edges"),
         vertex_upper_bound: usize_label(&labels, "vertex_upper_bound"),
+        vertex_estimate: usize_label(&labels, "vertex_estimate"),
+        vertex_estimate_source: string_label(&labels, "vertex_estimate_source"),
         vertex_width_bytes: usize_label(&labels, "vertex_width_bytes"),
         weight_width_bytes: optional_usize_label(&labels, "weight_width_bytes"),
         has_edge_id: bool_label(&labels, "has_edge_id"),

@@ -375,6 +375,9 @@ fn bounded_betweenness_success_keeps_graph_memory_reservation() {
     assert_eq!(graph_reservations.len(), 1);
     assert_eq!(graph_reservations[0].algorithm, GraphAlgorithm::BetweennessCentrality);
     assert_eq!(graph_reservations[0].outcome, GraphReservationOutcome::Admitted);
+    assert_eq!(graph_reservations[0].vertex_upper_bound, 8);
+    assert_eq!(graph_reservations[0].vertex_estimate, 4);
+    assert_eq!(graph_reservations[0].vertex_estimate_source, GraphVertexEstimateSource::RuntimeExactDistinct);
     let graph_reserve = result
         .metrics()
         .reservation_events
@@ -397,6 +400,106 @@ fn bounded_betweenness_success_keeps_graph_memory_reservation() {
         event.memory_boundary == "bounded_generic_graph_algorithm_output"
             && event.reservation_kind == ReservationKind::OperatorOutput
             && event.action == MemoryReservationEventAction::Transfer
+    }));
+}
+
+#[test]
+fn bounded_sparse_pagerank_uses_runtime_vertex_estimate_to_admit_graph_memory() {
+    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let edge_count = 1_000_000_u64;
+    let source = (0..edge_count).map(|row| (row % 4) as i32).collect::<Vec<_>>();
+    let destination = (0..edge_count).map(|row| ((row + 1) % 4) as i32).collect::<Vec<_>>();
+    let edge_schema = Arc::new(Schema::new(vec![
+        Field::new("src", DataType::Int32, false),
+        Field::new("dst", DataType::Int32, false),
+    ]));
+    let edge_batch = RecordBatch::try_new(
+        Arc::clone(&edge_schema),
+        vec![Arc::new(Int32Array::from(source)), Arc::new(Int32Array::from(destination))],
+    )
+    .unwrap();
+    let edge_frame = GpuDataFrame::new(DataFrame::from_record_batch(&runtime, &edge_batch).unwrap());
+    let input_bytes = edge_frame.device_allocated_size_bytes().unwrap();
+
+    let spec = GraphAlgorithmSpec::with_stable_schema(
+        GraphAlgorithm::PageRank,
+        GraphEdgeColumnBindings::new("src", "dst", None::<&str>),
+        GraphConstructionOptions { directed: true, renumber: true, policy: GraphConstructionPolicy::RawLibcugraph },
+        GraphAlgorithmParams::PageRank(GraphPageRankParams::default()),
+    );
+    let model_input = GraphMemoryModelInput {
+        input_edges: edge_count,
+        vertex_width_bytes: 4,
+        weight_width_bytes: None,
+        has_edge_id: false,
+        vertex_estimate: None,
+    };
+    let fallback_estimate = GraphMemoryModel.estimate(&spec, model_input).unwrap();
+    let exact_estimate = GraphMemoryModel
+        .estimate(&spec, model_input.with_vertex_estimate(GraphVertexEstimate::runtime_exact_distinct(4)))
+        .unwrap();
+    let fallback_request = fallback_estimate.requested_bytes.max(GRAPH_MEMORY_BUDGET_TRACKING_MIN_LIMIT_BYTES);
+    let exact_request = exact_estimate.requested_bytes.max(GRAPH_MEMORY_BUDGET_TRACKING_MIN_LIMIT_BYTES);
+    assert!(exact_request < fallback_request, "test requires sparse graph pricing to be smaller than the 2E fallback");
+    let graph_budget_remaining = exact_request + (fallback_request - exact_request) / 2;
+    assert!(graph_budget_remaining < fallback_request);
+
+    let context = ExecutionContext::builder()
+        .with_shared_runtime(Arc::clone(&runtime))
+        .with_memory_control_policy(MemoryControlPolicy::Bounded {
+            device_budget_bytes: input_bytes + graph_budget_remaining,
+            max_source_chunk_bytes: 1024 * 1024,
+            max_row_groups_per_chunk: 1,
+            max_retry_attempts: 1,
+            min_retry_chunk_row_groups: 1,
+        })
+        .build()
+        .unwrap();
+
+    let mut builder = QueryPlanBuilder::new();
+    let edges = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("edges", Arc::clone(&edge_schema))));
+    let graph = builder.add_graph_algorithm(edges, spec);
+    let plan = builder.finish_with_host_sink_schema(graph, stable_graph_result_schema(GraphAlgorithm::PageRank));
+
+    let mut gpu_inputs = GpuResidentInputMap::new();
+    gpu_inputs
+        .insert("edges".to_string(), GpuResultHandle::new(&context, edge_frame, Arc::clone(&edge_schema)).unwrap());
+
+    let result = execute_query_plan_with_gpu_inputs(&context, &plan, &gpu_inputs).unwrap();
+    let QueryOutput::HostArrow(batch) = result.output() else {
+        panic!("host sink should materialize PageRank output");
+    };
+    assert_eq!(batch.num_rows(), 4);
+
+    let graph_reservations = &result.metrics().graph_reservation_rows;
+    assert_eq!(graph_reservations.len(), 1);
+    assert_eq!(graph_reservations[0].algorithm, GraphAlgorithm::PageRank);
+    assert_eq!(graph_reservations[0].outcome, GraphReservationOutcome::Admitted);
+    assert_eq!(graph_reservations[0].vertex_upper_bound, edge_count * 2);
+    assert_eq!(graph_reservations[0].vertex_estimate, 4);
+    assert_eq!(graph_reservations[0].vertex_estimate_source, GraphVertexEstimateSource::RuntimeExactDistinct);
+    assert!(
+        graph_reservations[0].requested_bytes <= graph_budget_remaining,
+        "runtime exact vertex estimate should admit within a budget that the 2E fallback would exceed"
+    );
+    assert!(fallback_request > graph_budget_remaining);
+
+    assert!(result.metrics().reservation_events.iter().any(|event| {
+        event.memory_boundary == GRAPH_VERTEX_ESTIMATE_BOUNDARY
+            && event.reservation_kind == ReservationKind::GraphAlgorithm
+            && event.action == MemoryReservationEventAction::Reserve
+    }));
+    assert!(result.metrics().reservation_events.iter().any(|event| {
+        event.memory_boundary == GRAPH_VERTEX_ESTIMATE_BOUNDARY
+            && event.reservation_kind == ReservationKind::GraphAlgorithm
+            && event.action == MemoryReservationEventAction::Release
+    }));
+    assert!(result.metrics().budgeted_execution_events.iter().any(|event| {
+        event.operation == "nexus_query_engine.graph_algorithm.graph_memory_vertex_estimate"
+            && event.boundary == GRAPH_VERTEX_ESTIMATE_BOUNDARY
+            && event.enforcement == "budget_tracking_memory_resource"
+            && event.status == "budget_tracking_enforced"
+            && event.unresolved_contract.as_deref() == Some("graph_vertex_estimate_probe")
     }));
 }
 

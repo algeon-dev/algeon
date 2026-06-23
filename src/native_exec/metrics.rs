@@ -753,6 +753,8 @@ impl NativeCudfMetrics {
                 .with_new_label("outcome", row.outcome.as_str().to_string())
                 .with_new_label("input_edges", row.input_edges.to_string())
                 .with_new_label("vertex_upper_bound", row.vertex_upper_bound.to_string())
+                .with_new_label("vertex_estimate", row.vertex_estimate.to_string())
+                .with_new_label("vertex_estimate_source", row.vertex_estimate_source.as_str().to_string())
                 .with_new_label("vertex_width_bytes", row.vertex_width_bytes.to_string())
                 .with_new_label(
                     "weight_width_bytes",

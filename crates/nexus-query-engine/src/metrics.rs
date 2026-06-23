@@ -823,13 +823,35 @@ impl QueryMetrics {
         status: impl Into<String>,
         context_facts: BTreeMap<String, String>,
     ) {
+        self.record_graph_budget_tracking_with_boundary(
+            operation,
+            crate::graph_memory::GRAPH_MEMORY_BOUNDARY,
+            Some("cugraph_workspace_preflight".to_string()),
+            budget_bytes,
+            allocator_high_water_bytes,
+            status,
+            context_facts,
+        );
+    }
+
+    /// Records a graph-related budget-tracking RMM resource with an explicit boundary.
+    pub fn record_graph_budget_tracking_with_boundary(
+        &mut self,
+        operation: impl Into<String>,
+        boundary: impl Into<String>,
+        unresolved_contract: Option<String>,
+        budget_bytes: u64,
+        allocator_high_water_bytes: Option<u64>,
+        status: impl Into<String>,
+        context_facts: BTreeMap<String, String>,
+    ) {
         self.max_task_observed_peak_bytes = max_option(self.max_task_observed_peak_bytes, allocator_high_water_bytes);
         if let Some(compiled_task_id) = self.current_compiled_task_id.clone() {
             self.record_task_budget_observation(&compiled_task_id, allocator_high_water_bytes, None);
         }
         self.budgeted_execution_events.push(BudgetedExecutionEvent {
             operation: operation.into(),
-            boundary: crate::graph_memory::GRAPH_MEMORY_BOUNDARY.to_string(),
+            boundary: boundary.into(),
             budget_bytes,
             enforcement: "budget_tracking_memory_resource".to_string(),
             status: status.into(),
@@ -837,7 +859,7 @@ impl QueryMetrics {
             retained_bytes: None,
             output_bytes: None,
             output_rows: None,
-            unresolved_contract: Some("cugraph_workspace_preflight".to_string()),
+            unresolved_contract,
             context_facts,
         });
     }

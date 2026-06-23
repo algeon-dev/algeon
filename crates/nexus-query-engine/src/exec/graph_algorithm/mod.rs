@@ -837,6 +837,7 @@ fn admit_graph_memory(
         input_edges,
         context.bounded_device_budget_bytes(),
         false,
+        None,
     )?;
     let model = crate::graph_memory::GraphMemoryModel;
     let request = model.reservation_request(node_id, &report, context.device_memory_space());
@@ -871,8 +872,12 @@ pub(super) fn graph_memory_reservation_report(
     input_edges: u64,
     budget_bytes: Option<u64>,
     allow_nulls: bool,
+    vertex_estimate: Option<crate::graph_memory::GraphVertexEstimate>,
 ) -> Result<crate::graph_memory::GraphReservationReport> {
-    let model_input = graph_memory_model_input_for_frame(input, spec, input_edges, allow_nulls)?;
+    let mut model_input = graph_memory_model_input_for_frame(input, spec, input_edges, allow_nulls)?;
+    if let Some(vertex_estimate) = vertex_estimate {
+        model_input = model_input.with_vertex_estimate(vertex_estimate);
+    }
     let model = crate::graph_memory::GraphMemoryModel;
     let estimate = model.estimate(spec, model_input)?;
     Ok(crate::graph_memory::GraphReservationReport::from_estimate(node_id, estimate, budget_bytes))
@@ -927,8 +932,23 @@ impl GraphBudgetObservation {
     }
 
     fn record(&self, metrics: &mut QueryMetrics) {
-        metrics.record_graph_budget_tracking(
+        self.record_with_boundary(
+            metrics,
+            crate::graph_memory::GRAPH_MEMORY_BOUNDARY,
+            Some("cugraph_workspace_preflight"),
+        );
+    }
+
+    fn record_with_boundary(
+        &self,
+        metrics: &mut QueryMetrics,
+        boundary: &'static str,
+        unresolved_contract: Option<&'static str>,
+    ) {
+        metrics.record_graph_budget_tracking_with_boundary(
             self.operation,
+            boundary,
+            unresolved_contract.map(str::to_string),
             self.budget_bytes,
             self.allocator_high_water_bytes,
             self.status,
@@ -1325,6 +1345,21 @@ fn attach_graph_budget_error_facts(
 
 #[cfg(feature = "cugraph")]
 fn record_graph_budget_observation_from_error(metrics: &mut QueryMetrics, error: &QueryError) {
+    record_graph_budget_observation_from_error_with_boundary(
+        metrics,
+        error,
+        crate::graph_memory::GRAPH_MEMORY_BOUNDARY,
+        Some("cugraph_workspace_preflight"),
+    );
+}
+
+#[cfg(feature = "cugraph")]
+fn record_graph_budget_observation_from_error_with_boundary(
+    metrics: &mut QueryMetrics,
+    error: &QueryError,
+    boundary: &'static str,
+    unresolved_contract: Option<&'static str>,
+) {
     let Some(operation) = error.fact_value("graph_budget_operation") else {
         return;
     };
@@ -1340,8 +1375,10 @@ fn record_graph_budget_observation_from_error(metrics: &mut QueryMetrics, error:
             context_facts.insert(key.to_string(), value.to_string());
         }
     }
-    metrics.record_graph_budget_tracking(
+    metrics.record_graph_budget_tracking_with_boundary(
         operation.to_string(),
+        boundary,
+        unresolved_contract.map(str::to_string),
         budget_bytes,
         peak_bytes,
         status.to_string(),
@@ -1674,6 +1711,88 @@ fn graph_memory_model_input_for_frame(
         spec.algorithm.consumes_weight(),
         weight_width_bytes,
     ))
+}
+
+#[cfg(feature = "cugraph")]
+pub(in crate::exec) fn runtime_exact_vertex_estimate_with_budget(
+    context: &ExecutionContext,
+    frame: &DataFrame,
+    spec: &crate::plan::GraphAlgorithmSpec,
+    budget_limit_bytes: u64,
+    metrics: &mut QueryMetrics,
+) -> Result<crate::graph_memory::GraphVertexEstimate> {
+    let operation = "nexus_query_engine.graph_algorithm.graph_memory_vertex_estimate";
+    let runtime = graph_execution_runtime(context, Some(budget_limit_bytes), operation)?;
+    let estimate = runtime_exact_vertex_estimate_in_runtime(runtime.as_ref(), frame, spec);
+    match estimate {
+        Ok(estimate) => {
+            if let Some(observation) = graph_budget_observation(runtime.as_ref(), operation, "budget_tracking_enforced")
+            {
+                observation.record_with_boundary(
+                    metrics,
+                    crate::graph_memory::GRAPH_VERTEX_ESTIMATE_BOUNDARY,
+                    Some("graph_vertex_estimate_probe"),
+                );
+            }
+            Ok(estimate)
+        },
+        Err(error) => {
+            let error = attach_graph_budget_error_facts(error, runtime.as_ref(), operation);
+            record_graph_budget_observation_from_error_with_boundary(
+                metrics,
+                &error,
+                crate::graph_memory::GRAPH_VERTEX_ESTIMATE_BOUNDARY,
+                Some("graph_vertex_estimate_probe"),
+            );
+            Err(error)
+        },
+    }
+}
+
+#[cfg(feature = "cugraph")]
+fn runtime_exact_vertex_estimate_in_runtime(
+    runtime: &cudf::Runtime,
+    frame: &DataFrame,
+    spec: &crate::plan::GraphAlgorithmSpec,
+) -> Result<crate::graph_memory::GraphVertexEstimate> {
+    let operation = "nexus_query_engine.graph_algorithm.graph_memory_vertex_estimate";
+    let source = frame
+        .series(&spec.edge_columns.source)
+        .map_err(|error| QueryError::from_cudf(operation, "failed to read graph source column", error))?;
+    let destination = frame
+        .series(&spec.edge_columns.destination)
+        .map_err(|error| QueryError::from_cudf(operation, "failed to read graph destination column", error))?;
+    let source_dtype = source
+        .dtype()
+        .map_err(|error| QueryError::from_cudf(operation, "failed to inspect graph source dtype", error))?;
+    let destination_dtype = destination
+        .dtype()
+        .map_err(|error| QueryError::from_cudf(operation, "failed to inspect graph destination dtype", error))?;
+    if source_dtype.id() != destination_dtype.id() {
+        return Err(QueryError::new(
+            QueryErrorCode::UnsupportedType,
+            operation,
+            "cuGraph source and destination columns must have the same vertex dtype",
+        )
+        .with_fact("src_col", &spec.edge_columns.source)
+        .with_fact("dst_col", &spec.edge_columns.destination)
+        .with_fact("src_cudf_dtype", format!("{source_dtype:?}"))
+        .with_fact("dst_cudf_dtype", format!("{destination_dtype:?}")));
+    }
+    let source = source.copy_into_runtime(runtime).map_err(|error| {
+        QueryError::from_cudf(operation, "failed to place graph source column in budgeted runtime", error)
+    })?;
+    let destination = destination.copy_into_runtime(runtime).map_err(|error| {
+        QueryError::from_cudf(operation, "failed to place graph destination column in budgeted runtime", error)
+    })?;
+    let count = cudf::Series::concat(&[&source, &destination])
+        .and_then(|series| series.nunique())
+        .map_err(|error| QueryError::from_cudf(operation, "failed to count distinct graph endpoints", error))?;
+    let count = u64::try_from(count).map_err(|error| {
+        QueryError::new(QueryErrorCode::InvalidPlan, operation, "runtime graph vertex estimate does not fit u64")
+            .with_source(error)
+    })?;
+    Ok(crate::graph_memory::GraphVertexEstimate::runtime_exact_distinct(count))
 }
 
 #[cfg(feature = "cugraph")]
