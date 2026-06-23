@@ -311,7 +311,7 @@ fn client_status_message(error: &Error) -> String {
         _ => error.message().to_string(),
     };
     let message = append_unsupported_column_context(error, message);
-    append_graph_predicate_context(error, message)
+    append_graph_context(error, message)
 }
 
 fn append_unsupported_column_context(error: &Error, message: String) -> String {
@@ -328,25 +328,60 @@ fn append_unsupported_column_context(error: &Error, message: String) -> String {
     )
 }
 
-fn append_graph_predicate_context(error: &Error, message: String) -> String {
-    let Some(role) = error.fact_value("predicate_role") else {
-        return message;
-    };
+/// Enriches the client-facing message for cuGraph SQL planning/validation
+/// rejections.
+///
+/// These rejections wrap a native `nexus-query-engine` error whose specific
+/// `message` (e.g. "exact betweenness requires explicit seeds or k above the
+/// configured vertex threshold") and structured facts (`reason`,
+/// `required_option`, `predicate_role`) are the actionable diagnostic, but the
+/// adapter overrides the client message with a generic wrapper such as "native
+/// cuGraph SQL GPU-resident query execution failed". This surfaces the
+/// underlying native message and key facts so callers see what to fix.
+///
+/// Only client-actionable graph validation errors are enriched. Internal,
+/// execution, dependency, and invariant graph failures stay generic (they were
+/// already collapsed to "internal server error ..." upstream, and the graph
+/// kind gate keeps them generic here too) so genuinely unexpected failures do
+/// not leak internal detail.
+fn append_graph_context(error: &Error, message: String) -> String {
     let graph_context = error.operation().contains("cugraph")
         || error.fact_value("native_operation").is_some_and(|operation| operation.contains("graph_algorithm"));
-    if !graph_context {
+    if !graph_context || !is_client_actionable_graph_error(error.kind()) {
         return message;
     }
+    // Surface the specific native message when the adapter overrode the client
+    // message with a generic wrapper. The native message carries the precise
+    // validation cause; the generic adapter message does not.
+    let message = match error.fact_value("native_message") {
+        Some(native_message)
+            if native_message != message && native_message != error.message() && !message.contains(native_message) =>
+        {
+            format!("{message}: {native_message}")
+        },
+        _ => message,
+    };
     let mut context = Vec::new();
     if let Some(reason) = error.fact_value("reason")
         && !message.contains("reason=")
     {
         context.push(format!("reason={reason}"));
     }
-    if !message.contains("predicate_role=") {
+    if let Some(required_option) = error.fact_value("required_option")
+        && !message.contains("required_option=")
+    {
+        context.push(format!("required_option={required_option}"));
+    }
+    if let Some(role) = error.fact_value("predicate_role")
+        && !message.contains("predicate_role=")
+    {
         context.push(format!("predicate_role={role}"));
     }
     if context.is_empty() { message } else { format!("{message}; {}", context.join("; ")) }
+}
+
+fn is_client_actionable_graph_error(kind: ErrorKind) -> bool {
+    matches!(kind, ErrorKind::Planning | ErrorKind::InvalidInput | ErrorKind::Unsupported)
 }
 
 fn diagnostic_status_message(error: &Error) -> String {
@@ -815,6 +850,86 @@ mod tests {
         assert!(status.message().contains("reason=partial_source_vertices_absent"));
         assert!(status.message().contains("predicate_role=source_vertices"));
         assert_no_diagnostic_fields(status.message());
+    }
+
+    #[test]
+    fn adapter_graph_unsupported_validation_facts_are_client_visible() {
+        let status = datafusion_error_to_status_for_operation(
+            Error::new(
+                ErrorCode::UnsupportedType,
+                "datafusion_nexus.cugraph_sql.execute_gpu",
+                "native cuGraph SQL GPU-resident query execution failed",
+            )
+            .with_fact("native_message", "BFS predicate id column dtype must match the graph vertex dtype")
+            .with_fact("reason", "predicate_dtype_mismatch")
+            .with_fact("predicate_role", "target_vertices")
+            .into(),
+            TEST_OPERATION,
+        );
+
+        assert_eq!(status.code(), Code::Unimplemented);
+        assert_error_metadata(&status, "unsupported_type", "unsupported", "permanent");
+        assert!(status.message().contains("BFS predicate id column dtype must match the graph vertex dtype"));
+        assert!(status.message().contains("reason=predicate_dtype_mismatch"));
+        assert!(status.message().contains("predicate_role=target_vertices"));
+        assert_no_diagnostic_fields(status.message());
+    }
+
+    #[test]
+    fn adapter_graph_planning_rejection_surfaces_native_message_and_facts() {
+        // Mirrors the `Error` shape produced by `Error::from_native` for a
+        // cuGraph betweenness vertex-threshold rejection: a generic adapter
+        // message overriding the specific native message, with the native
+        // message and structured facts preserved as facts.
+        let status = datafusion_error_to_status_for_operation(
+            Error::new(
+                ErrorCode::InvalidExecutionPlan,
+                "datafusion_nexus.cugraph_sql.execute_gpu",
+                "native cuGraph SQL GPU-resident query execution failed",
+            )
+            .with_fact(
+                "native_message",
+                "exact betweenness requires explicit seeds or k above the configured vertex threshold",
+            )
+            .with_fact("reason", "exact_betweenness_vertex_threshold_exceeded")
+            .with_fact("required_option", "seeds_or_k")
+            .into(),
+            TEST_OPERATION,
+        );
+
+        assert_eq!(status.code(), Code::InvalidArgument);
+        assert_error_metadata(&status, "invalid_execution_plan", "planning", "permanent");
+        assert!(
+            status
+                .message()
+                .contains("exact betweenness requires explicit seeds or k above the configured vertex threshold")
+        );
+        assert!(status.message().contains("reason=exact_betweenness_vertex_threshold_exceeded"));
+        assert!(status.message().contains("required_option=seeds_or_k"));
+        assert_no_diagnostic_fields(status.message());
+    }
+
+    #[test]
+    fn adapter_graph_execution_failure_stays_generic() {
+        // An internal/execution-kind graph failure must not surface the native
+        // message: it is collapsed to the generic internal message and the
+        // graph-context enrichment is gated to client-actionable graph kinds.
+        let status = datafusion_error_to_status_for_operation(
+            Error::new(
+                ErrorCode::Internal,
+                "datafusion_nexus.cugraph_sql.execute_gpu",
+                "native cuGraph SQL GPU-resident query execution failed",
+            )
+            .with_fact("native_message", "internal cuGraph scheduler state corruption")
+            .with_fact("reason", "internal_scheduler_state")
+            .into(),
+            TEST_OPERATION,
+        );
+
+        assert_eq!(status.code(), Code::Internal);
+        assert_eq!(status.message(), "internal server error while processing the request");
+        assert!(!status.message().contains("internal cuGraph scheduler state"));
+        assert!(!status.message().contains("reason="));
     }
 
     #[test]
