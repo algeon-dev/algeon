@@ -430,8 +430,14 @@ fn execute_bounded_generic_graph_algorithm(
     let null_edge_rows_dropped =
         prior_null_edge_rows_dropped.saturating_add(input_rows.saturating_sub(sanitized_input_rows));
 
+    let mut runtime_spec = RuntimeGraphSpecResolution::CheckedNoRewrite;
     let mut graph_reservation = None;
     let graph_memory_limit_bytes = if crate::graph_memory::graph_memory_reservation_required(graph.spec.algorithm) {
+        if let Err(error) = validate_betweenness_static_seed_policy(&graph.spec) {
+            drop(filtered_input);
+            reservations.release(input_reservation, metrics);
+            return Err(error.with_fact_if_absent("node_id", node_id));
+        }
         let vertex_estimate = match graph_memory_vertex_estimate_with_reservation(
             context,
             node_id,
@@ -447,12 +453,30 @@ fn execute_bounded_generic_graph_algorithm(
                 return Err(error.with_fact_if_absent("node_id", node_id));
             },
         };
+        if let Some(vertex_estimate) = vertex_estimate
+            && let Err(error) = validate_betweenness_seed_policy_for_vertex_count(&graph.spec, vertex_estimate.count)
+        {
+            drop(filtered_input);
+            reservations.release(input_reservation, metrics);
+            return Err(error.with_fact_if_absent("node_id", node_id));
+        }
+        runtime_spec =
+            runtime_graph_spec_resolution_after_bounded_seed_validation(&graph.spec, vertex_estimate.is_some());
+        let device_total_memory_bytes = match graph_device_total_memory_bytes(context) {
+            Ok(device_total_memory_bytes) => device_total_memory_bytes,
+            Err(error) => {
+                drop(filtered_input);
+                reservations.release(input_reservation, metrics);
+                return Err(error.with_fact_if_absent("node_id", node_id));
+            },
+        };
         let report = match graph_memory_reservation_report(
             node_id,
             &graph.spec,
             filtered_input.frame(),
             sanitized_input_rows,
             Some(reservations.remaining_bytes()),
+            device_total_memory_bytes,
             false,
             vertex_estimate,
         ) {
@@ -525,6 +549,7 @@ fn execute_bounded_generic_graph_algorithm(
         context,
         node_id,
         graph,
+        runtime_spec,
         filtered_input,
         side_inputs,
         graph_memory_limit_bytes,

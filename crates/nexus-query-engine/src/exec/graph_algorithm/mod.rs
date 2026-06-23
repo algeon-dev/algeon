@@ -40,6 +40,30 @@ static FORCE_NEXT_GRAPH_ADAPTIVE_FULL_ATTEMPT_RESOURCE_EXHAUSTED: AtomicBool = A
 static FORCE_NEXT_GRAPH_ADAPTIVE_CHUNK_ATTEMPT_RESOURCE_EXHAUSTED: AtomicBool = AtomicBool::new(false);
 
 #[cfg(feature = "cugraph")]
+pub(in crate::exec) enum RuntimeGraphSpecResolution {
+    Unresolved,
+    CheckedNoRewrite,
+    Rewritten(crate::plan::GraphAlgorithmSpec),
+}
+
+#[cfg(feature = "cugraph")]
+impl RuntimeGraphSpecResolution {
+    fn from_optional(spec: Option<crate::plan::GraphAlgorithmSpec>) -> Self {
+        match spec {
+            Some(spec) => Self::Rewritten(spec),
+            None => Self::CheckedNoRewrite,
+        }
+    }
+
+    fn spec_or<'a>(&'a self, fallback: &'a crate::plan::GraphAlgorithmSpec) -> &'a crate::plan::GraphAlgorithmSpec {
+        match self {
+            Self::Unresolved | Self::CheckedNoRewrite => fallback,
+            Self::Rewritten(spec) => spec,
+        }
+    }
+}
+
+#[cfg(feature = "cugraph")]
 #[doc(hidden)]
 pub fn force_next_graph_adaptive_full_attempt_resource_exhausted_for_test() {
     FORCE_NEXT_GRAPH_ADAPTIVE_FULL_ATTEMPT_RESOURCE_EXHAUSTED.store(true, Ordering::SeqCst);
@@ -104,11 +128,15 @@ pub(super) fn execute_graph_algorithm(
     let sanitized_input_rows = input.num_rows() as u64;
     let null_edge_rows_dropped =
         prior_null_edge_rows_dropped.saturating_add(input_rows.saturating_sub(sanitized_input_rows));
-    admit_graph_memory(context, node_id, &node.spec, &input, sanitized_input_rows, metrics)?;
+    let runtime_spec =
+        RuntimeGraphSpecResolution::from_optional(graph_spec_with_runtime_betweenness_seeds(&input, &node.spec)?);
+    let spec = runtime_spec.spec_or(&node.spec);
+    admit_graph_memory(context, node_id, spec, &input, sanitized_input_rows, metrics)?;
     execute_graph_algorithm_sanitized(
         context,
         node_id,
         node,
+        runtime_spec,
         GpuDataFrame::new(input),
         side_inputs,
         None,
@@ -124,6 +152,7 @@ pub(super) fn execute_graph_algorithm_sanitized(
     context: &ExecutionContext,
     node_id: NodeId,
     node: &crate::plan::GraphAlgorithmNode,
+    runtime_spec: RuntimeGraphSpecResolution,
     input: GpuDataFrame,
     side_inputs: BTreeMap<NodeId, GpuDataFrame>,
     graph_memory_limit_bytes: Option<u64>,
@@ -133,8 +162,13 @@ pub(super) fn execute_graph_algorithm_sanitized(
     metrics: &mut QueryMetrics,
 ) -> Result<GpuDataFrame> {
     let boundary_before = metrics.boundary.clone();
-    let runtime_spec = graph_spec_with_runtime_betweenness_seeds(input.frame(), &node.spec)?;
-    let spec = runtime_spec.as_ref().unwrap_or(&node.spec);
+    let runtime_spec = match runtime_spec {
+        RuntimeGraphSpecResolution::Unresolved => {
+            resolve_runtime_graph_spec_for_execution(context, input.frame(), &node.spec, graph_memory_limit_bytes)?
+        },
+        runtime_spec => runtime_spec,
+    };
+    let spec = runtime_spec.spec_or(&node.spec);
     let executor = graph_algorithm_executor(spec.algorithm)?;
     let adaptive_retry_inputs = graph_adaptive_retry_seed_batches(spec).map(|batches| {
         (
@@ -247,10 +281,91 @@ fn should_retry_graph_resource_exhausted(
 }
 
 #[cfg(feature = "cugraph")]
+fn resolve_runtime_graph_spec_for_execution(
+    context: &ExecutionContext,
+    input: &DataFrame,
+    spec: &crate::plan::GraphAlgorithmSpec,
+    graph_memory_limit_bytes: Option<u64>,
+) -> Result<RuntimeGraphSpecResolution> {
+    let Some(operation) = betweenness_seed_policy_operation(spec) else {
+        return Ok(RuntimeGraphSpecResolution::CheckedNoRewrite);
+    };
+    let Some(limit_bytes) = graph_memory_limit_bytes else {
+        return graph_spec_with_runtime_betweenness_seeds(input, spec).map(RuntimeGraphSpecResolution::from_optional);
+    };
+    let runtime = graph_execution_runtime(context, Some(limit_bytes), operation)?;
+    let result = graph_spec_with_runtime_betweenness_seeds_in_runtime(input, spec, Some(runtime.as_ref()));
+    result
+        .map(RuntimeGraphSpecResolution::from_optional)
+        .map_err(|error| attach_graph_budget_error_facts(error, runtime.as_ref(), operation))
+}
+
+#[cfg(feature = "cugraph")]
+fn betweenness_seed_policy_operation(spec: &crate::plan::GraphAlgorithmSpec) -> Option<&'static str> {
+    match &spec.params {
+        crate::plan::GraphAlgorithmParams::BetweennessCentrality(_) => {
+            Some("nexus_query_engine.graph_algorithm.betweenness_seed_policy")
+        },
+        crate::plan::GraphAlgorithmParams::EdgeBetweennessCentrality(_) => {
+            Some("nexus_query_engine.graph_algorithm.edge_betweenness_seed_policy")
+        },
+        _ => None,
+    }
+}
+
+#[cfg(feature = "cugraph")]
 fn graph_spec_with_runtime_betweenness_seeds(
     input: &DataFrame,
     spec: &crate::plan::GraphAlgorithmSpec,
 ) -> Result<Option<crate::plan::GraphAlgorithmSpec>> {
+    graph_spec_with_runtime_betweenness_seeds_in_runtime(input, spec, None)
+}
+
+#[cfg(feature = "cugraph")]
+fn graph_spec_with_runtime_betweenness_seeds_in_runtime(
+    input: &DataFrame,
+    spec: &crate::plan::GraphAlgorithmSpec,
+    runtime: Option<&cudf::Runtime>,
+) -> Result<Option<crate::plan::GraphAlgorithmSpec>> {
+    let (seeds, k, operation) = match &spec.params {
+        crate::plan::GraphAlgorithmParams::BetweennessCentrality(params) => {
+            (params.seeds.as_ref(), params.k, "nexus_query_engine.graph_algorithm.betweenness_seed_policy")
+        },
+        crate::plan::GraphAlgorithmParams::EdgeBetweennessCentrality(params) => {
+            (params.seeds.as_ref(), params.k, "nexus_query_engine.graph_algorithm.edge_betweenness_seed_policy")
+        },
+        _ => return Ok(None),
+    };
+
+    if seeds.is_some() {
+        validate_betweenness_seed_policy_for_vertex_count(spec, 0)?;
+        return Ok(None);
+    }
+
+    let vertices = sorted_graph_vertices_i64(input, spec, operation, runtime)?;
+    let vertex_count = vertices.len() as u64;
+    validate_betweenness_seed_policy_for_vertex_count(spec, vertex_count)?;
+    if let Some(k) = k {
+        let k_usize = usize::try_from(k).map_err(|_| {
+            QueryError::new(QueryErrorCode::InvalidPlan, operation, "betweenness k does not fit this platform's usize")
+                .with_fact("algorithm", spec.algorithm.as_str())
+                .with_fact("k", k)
+        })?;
+        return graph_spec_with_betweenness_seeds(
+            spec,
+            crate::plan::GraphBetweennessSeeds::I64(vertices.into_iter().take(k_usize).collect()),
+        )
+        .map(Some);
+    }
+
+    Ok(None)
+}
+
+#[cfg(feature = "cugraph")]
+pub(in crate::exec) fn validate_betweenness_seed_policy_for_vertex_count(
+    spec: &crate::plan::GraphAlgorithmSpec,
+    vertex_count: u64,
+) -> Result<()> {
     let (seeds, k, exact_vertex_threshold, operation) = match &spec.params {
         crate::plan::GraphAlgorithmParams::BetweennessCentrality(params) => (
             params.seeds.as_ref(),
@@ -264,43 +379,12 @@ fn graph_spec_with_runtime_betweenness_seeds(
             params.exact_vertex_threshold,
             "nexus_query_engine.graph_algorithm.edge_betweenness_seed_policy",
         ),
-        _ => return Ok(None),
+        _ => return Ok(()),
     };
 
-    if seeds.is_some() && k.is_some() {
-        return Err(QueryError::new(
-            QueryErrorCode::InvalidPlan,
-            operation,
-            "betweenness seeds and k are mutually exclusive",
-        )
-        .with_fact("algorithm", spec.algorithm.as_str()));
-    }
-    if let Some(seeds) = seeds {
-        if seeds.is_empty() {
-            return Err(QueryError::new(
-                QueryErrorCode::InvalidPlan,
-                operation,
-                "betweenness seed list must not be empty",
-            )
-            .with_fact("algorithm", spec.algorithm.as_str()));
-        }
-        return Ok(None);
-    }
-
-    let vertices = sorted_graph_vertices_i64(input, spec, operation)?;
-    let vertex_count = vertices.len() as u64;
+    validate_betweenness_static_seed_policy_parts(spec.algorithm, seeds, k, operation)?;
     if let Some(k) = k {
-        if k == 0 {
-            return Err(QueryError::new(QueryErrorCode::InvalidPlan, operation, "betweenness k must be at least 1")
-                .with_fact("algorithm", spec.algorithm.as_str())
-                .with_fact("k", k));
-        }
-        let k_usize = usize::try_from(k).map_err(|_| {
-            QueryError::new(QueryErrorCode::InvalidPlan, operation, "betweenness k does not fit this platform's usize")
-                .with_fact("algorithm", spec.algorithm.as_str())
-                .with_fact("k", k)
-        })?;
-        if k_usize > vertices.len() {
+        if k > vertex_count {
             return Err(QueryError::new(
                 QueryErrorCode::InvalidPlan,
                 operation,
@@ -311,11 +395,10 @@ fn graph_spec_with_runtime_betweenness_seeds(
             .with_fact("k", k)
             .with_fact("actual_vertex_count", vertex_count));
         }
-        return graph_spec_with_betweenness_seeds(
-            spec,
-            crate::plan::GraphBetweennessSeeds::I64(vertices.into_iter().take(k_usize).collect()),
-        )
-        .map(Some);
+        return Ok(());
+    }
+    if seeds.is_some() {
+        return Ok(());
     }
 
     if vertex_count > exact_vertex_threshold {
@@ -330,7 +413,89 @@ fn graph_spec_with_runtime_betweenness_seeds(
         .with_fact("exact_vertex_threshold", exact_vertex_threshold)
         .with_fact("required_option", "seeds_or_k"));
     }
-    Ok(None)
+    Ok(())
+}
+
+#[cfg(feature = "cugraph")]
+pub(in crate::exec) fn validate_betweenness_static_seed_policy(spec: &crate::plan::GraphAlgorithmSpec) -> Result<()> {
+    let (seeds, k, operation) = match &spec.params {
+        crate::plan::GraphAlgorithmParams::BetweennessCentrality(params) => {
+            (params.seeds.as_ref(), params.k, "nexus_query_engine.graph_algorithm.betweenness_seed_policy")
+        },
+        crate::plan::GraphAlgorithmParams::EdgeBetweennessCentrality(params) => {
+            (params.seeds.as_ref(), params.k, "nexus_query_engine.graph_algorithm.edge_betweenness_seed_policy")
+        },
+        _ => return Ok(()),
+    };
+    validate_betweenness_static_seed_policy_parts(spec.algorithm, seeds, k, operation)
+}
+
+#[cfg(feature = "cugraph")]
+fn validate_betweenness_static_seed_policy_parts(
+    algorithm: crate::plan::GraphAlgorithm,
+    seeds: Option<&crate::plan::GraphBetweennessSeeds>,
+    k: Option<u64>,
+    operation: &'static str,
+) -> Result<()> {
+    if seeds.is_some() && k.is_some() {
+        return Err(QueryError::new(
+            QueryErrorCode::InvalidPlan,
+            operation,
+            "betweenness seeds and k are mutually exclusive",
+        )
+        .with_fact("algorithm", algorithm.as_str()));
+    }
+    if let Some(seeds) = seeds {
+        if seeds.is_empty() {
+            return Err(QueryError::new(
+                QueryErrorCode::InvalidPlan,
+                operation,
+                "betweenness seed list must not be empty",
+            )
+            .with_fact("algorithm", algorithm.as_str()));
+        }
+        return Ok(());
+    }
+    if let Some(k) = k {
+        if k == 0 {
+            return Err(QueryError::new(QueryErrorCode::InvalidPlan, operation, "betweenness k must be at least 1")
+                .with_fact("algorithm", algorithm.as_str())
+                .with_fact("k", k));
+        }
+        return Ok(());
+    }
+    Ok(())
+}
+
+#[cfg(feature = "cugraph")]
+pub(in crate::exec) fn runtime_graph_spec_resolution_after_bounded_seed_validation(
+    spec: &crate::plan::GraphAlgorithmSpec,
+    vertex_count_validated: bool,
+) -> RuntimeGraphSpecResolution {
+    match &spec.params {
+        crate::plan::GraphAlgorithmParams::BetweennessCentrality(params) => {
+            bounded_betweenness_runtime_resolution(params.seeds.is_some(), params.k.is_some(), vertex_count_validated)
+        },
+        crate::plan::GraphAlgorithmParams::EdgeBetweennessCentrality(params) => {
+            bounded_betweenness_runtime_resolution(params.seeds.is_some(), params.k.is_some(), vertex_count_validated)
+        },
+        _ => RuntimeGraphSpecResolution::CheckedNoRewrite,
+    }
+}
+
+#[cfg(feature = "cugraph")]
+fn bounded_betweenness_runtime_resolution(
+    has_seeds: bool,
+    has_k: bool,
+    vertex_count_validated: bool,
+) -> RuntimeGraphSpecResolution {
+    if has_k {
+        RuntimeGraphSpecResolution::Unresolved
+    } else if has_seeds || vertex_count_validated {
+        RuntimeGraphSpecResolution::CheckedNoRewrite
+    } else {
+        RuntimeGraphSpecResolution::Unresolved
+    }
 }
 
 #[cfg(feature = "cugraph")]
@@ -338,11 +503,12 @@ fn sorted_graph_vertices_i64(
     input: &DataFrame,
     spec: &crate::plan::GraphAlgorithmSpec,
     operation: &'static str,
+    runtime: Option<&cudf::Runtime>,
 ) -> Result<Vec<i64>> {
-    let source = input
+    let mut source = input
         .series(&spec.edge_columns.source)
         .map_err(|error| QueryError::from_cudf(operation, "failed to read graph source column", error))?;
-    let destination = input
+    let mut destination = input
         .series(&spec.edge_columns.destination)
         .map_err(|error| QueryError::from_cudf(operation, "failed to read graph destination column", error))?;
     let source_dtype = source
@@ -361,6 +527,14 @@ fn sorted_graph_vertices_i64(
         .with_fact("dst_col", &spec.edge_columns.destination)
         .with_fact("src_cudf_dtype", format!("{source_dtype:?}"))
         .with_fact("dst_cudf_dtype", format!("{destination_dtype:?}")));
+    }
+    if let Some(runtime) = runtime {
+        source = source.copy_into_runtime(runtime).map_err(|error| {
+            QueryError::from_cudf(operation, "failed to place graph source column in budgeted runtime", error)
+        })?;
+        destination = destination.copy_into_runtime(runtime).map_err(|error| {
+            QueryError::from_cudf(operation, "failed to place graph destination column in budgeted runtime", error)
+        })?;
     }
     let vertices = cudf::Series::concat(&[&source, &destination])
         .and_then(|series| series.unique())
@@ -836,6 +1010,7 @@ fn admit_graph_memory(
         input,
         input_edges,
         context.bounded_device_budget_bytes(),
+        graph_device_total_memory_bytes(context)?,
         false,
         None,
     )?;
@@ -871,16 +1046,31 @@ pub(super) fn graph_memory_reservation_report(
     input: &DataFrame,
     input_edges: u64,
     budget_bytes: Option<u64>,
+    device_total_memory_bytes: Option<u64>,
     allow_nulls: bool,
     vertex_estimate: Option<crate::graph_memory::GraphVertexEstimate>,
 ) -> Result<crate::graph_memory::GraphReservationReport> {
     let mut model_input = graph_memory_model_input_for_frame(input, spec, input_edges, allow_nulls)?;
+    if let Some(device_total_memory_bytes) = device_total_memory_bytes {
+        model_input = model_input.with_device_total_memory_bytes(device_total_memory_bytes);
+    }
     if let Some(vertex_estimate) = vertex_estimate {
         model_input = model_input.with_vertex_estimate(vertex_estimate);
     }
     let model = crate::graph_memory::GraphMemoryModel;
     let estimate = model.estimate(spec, model_input)?;
     Ok(crate::graph_memory::GraphReservationReport::from_estimate(node_id, estimate, budget_bytes))
+}
+
+#[cfg(feature = "cugraph")]
+pub(in crate::exec) fn graph_device_total_memory_bytes(context: &ExecutionContext) -> Result<Option<u64>> {
+    context.runtime().device().available_memory().map(|memory| Some(memory.total_bytes)).map_err(|error| {
+        QueryError::from_cudf(
+            "nexus_query_engine.graph_algorithm.graph_memory_device",
+            "failed to query CUDA device memory metadata for graph memory pricing",
+            error,
+        )
+    })
 }
 
 // Common return envelope for algorithm-specific cuGraph executors.

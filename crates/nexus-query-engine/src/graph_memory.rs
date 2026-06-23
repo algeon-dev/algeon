@@ -29,6 +29,12 @@ pub const GRAPH_MEMORY_ESTIMATE_EXCEEDS_BUDGET_REASON: &str = "graph_memory_esti
 /// live graph reservation.
 pub const GRAPH_MEMORY_BUDGET_TRACKING_MIN_LIMIT_BYTES: u64 = 1024 * 1024;
 
+/// cuGraph's single-GPU vertex-betweenness implementation tags concurrent
+/// sources with a `uint16_t` origin id. The requested seed count can be much
+/// larger, but those sources are not all resident in one source-by-vertex
+/// workspace at the same time.
+const BETWEENNESS_MAX_CONCURRENT_SOURCES: u64 = u16::MAX as u64;
+
 /// Conservative class assigned to a cuGraph algorithm for approximate pricing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum GraphMemoryClass {
@@ -163,6 +169,9 @@ pub struct GraphMemoryModelInput {
     pub weight_width_bytes: Option<u64>,
     /// Whether the graph has a stable edge-id column.
     pub has_edge_id: bool,
+    /// Total bytes reported by the CUDA device. This lets seed-dependent
+    /// algorithms mirror cuGraph's physical-memory source batching heuristic.
+    pub device_total_memory_bytes: Option<u64>,
     /// Better vertex-count signal when available.
     pub vertex_estimate: Option<GraphVertexEstimate>,
 }
@@ -177,6 +186,13 @@ impl GraphMemoryModelInput {
     /// Attach refined vertex-count evidence.
     pub fn with_vertex_estimate(mut self, estimate: GraphVertexEstimate) -> Self {
         self.vertex_estimate = Some(estimate);
+        self
+    }
+
+    /// Attach physical device-memory evidence for algorithms whose cuGraph
+    /// implementation chooses resident batch width from total GPU memory.
+    pub fn with_device_total_memory_bytes(mut self, total_bytes: u64) -> Self {
+        self.device_total_memory_bytes = Some(total_bytes);
         self
     }
 }
@@ -320,9 +336,10 @@ impl GraphMemoryModel {
             } else {
                 0
             });
-        let output_bytes = output_bytes_for_algorithm(spec.algorithm, vertex_estimate, input.input_edges);
-        let seed_count = graph_seed_count(&spec.params, vertex_estimate);
-        let workspace_bytes = workspace_bytes_for_class(class, input, vertex_estimate, seed_count);
+        let output_bytes = output_bytes_for_algorithm(spec.algorithm, input, vertex_estimate);
+        let seed_input = graph_seed_memory_input(&spec.params, vertex_estimate);
+        let seed_count = seed_input.map(|seed_input| seed_input.requested_count);
+        let workspace_bytes = workspace_bytes_for_algorithm(spec.algorithm, class, input, vertex_estimate, seed_input);
         let requested_bytes = construction_bytes.saturating_add(output_bytes).saturating_add(workspace_bytes).max(1);
 
         Ok(GraphMemoryEstimate {
@@ -426,15 +443,41 @@ pub const fn graph_memory_reservation_required(algorithm: GraphAlgorithm) -> boo
     }
 }
 
-fn graph_seed_count(params: &GraphAlgorithmParams, vertex_upper_bound: u64) -> Option<u64> {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct GraphSeedMemoryInput {
+    requested_count: u64,
+    explicit_seed_list: bool,
+    requires_runtime_seed_selection: bool,
+}
+
+fn graph_seed_memory_input(params: &GraphAlgorithmParams, vertex_estimate: u64) -> Option<GraphSeedMemoryInput> {
     match params {
-        GraphAlgorithmParams::BetweennessCentrality(params) => Some(
-            params.seeds.as_ref().map_or_else(|| params.k.unwrap_or(vertex_upper_bound), |seeds| seeds.len() as u64),
-        ),
-        GraphAlgorithmParams::EdgeBetweennessCentrality(params) => Some(
-            params.seeds.as_ref().map_or_else(|| params.k.unwrap_or(vertex_upper_bound), |seeds| seeds.len() as u64),
-        ),
+        GraphAlgorithmParams::BetweennessCentrality(params) => {
+            Some(betweenness_seed_memory_input(params.seeds.as_ref(), params.k, vertex_estimate))
+        },
+        GraphAlgorithmParams::EdgeBetweennessCentrality(params) => {
+            Some(betweenness_seed_memory_input(params.seeds.as_ref(), params.k, vertex_estimate))
+        },
         _ => None,
+    }
+}
+
+fn betweenness_seed_memory_input(
+    seeds: Option<&crate::plan::GraphBetweennessSeeds>,
+    k: Option<u64>,
+    vertex_estimate: u64,
+) -> GraphSeedMemoryInput {
+    match seeds {
+        Some(seeds) => GraphSeedMemoryInput {
+            requested_count: seeds.len() as u64,
+            explicit_seed_list: true,
+            requires_runtime_seed_selection: false,
+        },
+        None => GraphSeedMemoryInput {
+            requested_count: k.unwrap_or(vertex_estimate),
+            explicit_seed_list: k.is_some(),
+            requires_runtime_seed_selection: k.is_some(),
+        },
     }
 }
 
@@ -446,37 +489,155 @@ fn construction_multiplier(policy: GraphConstructionPolicy, directed: bool) -> u
     }
 }
 
-fn output_bytes_for_algorithm(algorithm: GraphAlgorithm, vertex_upper_bound: u64, input_edges: u64) -> u64 {
+fn output_bytes_for_algorithm(algorithm: GraphAlgorithm, input: GraphMemoryModelInput, vertex_estimate: u64) -> u64 {
     match algorithm {
-        GraphAlgorithm::KCore | GraphAlgorithm::MinimumSpanningTree => input_edges.saturating_mul(16),
-        GraphAlgorithm::Hits | GraphAlgorithm::DegreesAll => vertex_upper_bound.saturating_mul(24),
-        GraphAlgorithm::Bfs | GraphAlgorithm::Sssp => vertex_upper_bound.saturating_mul(24),
-        GraphAlgorithm::ForceAtlas2 => vertex_upper_bound.saturating_mul(16),
-        _ => vertex_upper_bound.saturating_mul(16),
+        GraphAlgorithm::EdgeBetweennessCentrality => {
+            input.input_edges.saturating_mul(edge_betweenness_output_row_width(input))
+        },
+        GraphAlgorithm::KCore | GraphAlgorithm::MinimumSpanningTree => input.input_edges.saturating_mul(16),
+        GraphAlgorithm::Hits | GraphAlgorithm::DegreesAll => vertex_estimate.saturating_mul(24),
+        GraphAlgorithm::Bfs | GraphAlgorithm::Sssp => vertex_estimate.saturating_mul(24),
+        GraphAlgorithm::ForceAtlas2 => vertex_estimate.saturating_mul(16),
+        _ => vertex_estimate.saturating_mul(16),
     }
 }
 
-fn workspace_bytes_for_class(
+fn edge_betweenness_output_row_width(input: GraphMemoryModelInput) -> u64 {
+    input.vertex_width_bytes.max(8).saturating_mul(2).saturating_add(8).saturating_add(if input.has_edge_id {
+        input.vertex_width_bytes.max(8)
+    } else {
+        0
+    })
+}
+
+fn workspace_bytes_for_algorithm(
+    algorithm: GraphAlgorithm,
     class: GraphMemoryClass,
     input: GraphMemoryModelInput,
-    vertex_upper_bound: u64,
-    seed_count: Option<u64>,
+    vertex_estimate: u64,
+    seed_input: Option<GraphSeedMemoryInput>,
 ) -> u64 {
-    let vertex_array = vertex_upper_bound.saturating_mul(input.vertex_width_bytes.max(8));
+    let vertex_array = vertex_estimate.saturating_mul(input.vertex_width_bytes.max(8));
     let edge_index = input.input_edges.saturating_mul(input.vertex_width_bytes.saturating_mul(2));
     let output_sized = vertex_array.saturating_mul(3).saturating_add(edge_index);
     match class {
         GraphMemoryClass::OutputSized => output_sized,
         GraphMemoryClass::MultiArray => output_sized.saturating_mul(4),
         GraphMemoryClass::WorkspaceHeavyDataDependent => {
-            let superlinear_probe = vertex_upper_bound.saturating_mul(vertex_upper_bound.min(1024)).saturating_mul(4);
+            let superlinear_probe = vertex_estimate.saturating_mul(vertex_estimate.min(1024)).saturating_mul(4);
             output_sized.saturating_mul(8).saturating_add(superlinear_probe)
         },
-        GraphMemoryClass::WorkspaceHeavySeedDependent => {
-            let seeds = seed_count.unwrap_or(vertex_upper_bound);
-            output_sized.saturating_add(seeds.saturating_mul(vertex_upper_bound).saturating_mul(4))
+        GraphMemoryClass::WorkspaceHeavySeedDependent => match algorithm {
+            GraphAlgorithm::BetweennessCentrality => {
+                output_sized.saturating_add(vertex_betweenness_workspace_bytes(input, vertex_estimate, seed_input))
+            },
+            GraphAlgorithm::EdgeBetweennessCentrality => {
+                output_sized.saturating_add(edge_betweenness_workspace_bytes(input, vertex_estimate, seed_input))
+            },
+            _ => output_sized,
         },
     }
+}
+
+fn vertex_betweenness_workspace_bytes(
+    input: GraphMemoryModelInput,
+    vertex_estimate: u64,
+    seed_input: Option<GraphSeedMemoryInput>,
+) -> u64 {
+    let requested_sources = seed_input.map_or(vertex_estimate, |seed_input| seed_input.requested_count);
+    let concurrent_sources = vertex_betweenness_concurrent_source_count(input, vertex_estimate, requested_sources);
+    let source_state_bytes = concurrent_sources
+        .saturating_mul(vertex_estimate)
+        .saturating_mul(vertex_betweenness_per_source_vertex_state_width(input));
+    source_state_bytes
+        .saturating_add(explicit_seed_list_bytes(input, seed_input))
+        .saturating_add(runtime_seed_selection_bytes(input, vertex_estimate, seed_input))
+}
+
+fn edge_betweenness_workspace_bytes(
+    input: GraphMemoryModelInput,
+    vertex_estimate: u64,
+    seed_input: Option<GraphSeedMemoryInput>,
+) -> u64 {
+    vertex_estimate
+        .saturating_mul(edge_betweenness_per_source_vertex_state_width(input))
+        .saturating_add(explicit_seed_list_bytes(input, seed_input))
+        .saturating_add(runtime_seed_selection_bytes(input, vertex_estimate, seed_input))
+}
+
+fn explicit_seed_list_bytes(input: GraphMemoryModelInput, seed_input: Option<GraphSeedMemoryInput>) -> u64 {
+    let Some(seed_input) = seed_input else {
+        return 0;
+    };
+    if seed_input.explicit_seed_list { seed_input.requested_count.saturating_mul(input.vertex_width_bytes) } else { 0 }
+}
+
+fn runtime_seed_selection_bytes(
+    input: GraphMemoryModelInput,
+    vertex_estimate: u64,
+    seed_input: Option<GraphSeedMemoryInput>,
+) -> u64 {
+    let Some(seed_input) = seed_input else {
+        return 0;
+    };
+    if !seed_input.requires_runtime_seed_selection {
+        return 0;
+    }
+    let vertex_width = input.vertex_width_bytes.max(8);
+    let endpoint_copy_and_concat = input.input_edges.saturating_mul(vertex_width).saturating_mul(4);
+    let distinct_sort_buffers = vertex_estimate.saturating_mul(vertex_width).saturating_mul(3);
+    endpoint_copy_and_concat.saturating_add(distinct_sort_buffers)
+}
+
+fn vertex_betweenness_concurrent_source_count(
+    input: GraphMemoryModelInput,
+    vertex_estimate: u64,
+    requested_sources: u64,
+) -> u64 {
+    let mut sources = requested_sources.clamp(1, BETWEENNESS_MAX_CONCURRENT_SOURCES);
+    let Some(total_memory_bytes) = input.device_total_memory_bytes else {
+        return sources;
+    };
+    if sources <= 1 || vertex_estimate == 0 {
+        return sources;
+    }
+
+    let bfs_result_bytes_per_source =
+        vertex_estimate.saturating_mul(input.vertex_width_bytes.saturating_add(input.vertex_width_bytes));
+    if bfs_result_bytes_per_source == 0 {
+        return sources;
+    }
+
+    let physical_batch_cap = total_memory_bytes / 4 / bfs_result_bytes_per_source;
+    sources = sources.min(physical_batch_cap).max(1);
+    sources
+}
+
+fn vertex_betweenness_per_source_vertex_state_width(input: GraphMemoryModelInput) -> u64 {
+    let vertex_width = input.vertex_width_bytes.max(8);
+    let edge_width = input.vertex_width_bytes.max(8);
+    let weight_width = input.weight_width_bytes.unwrap_or(8).max(8);
+    let origin_width = 2;
+
+    // Mirrors the live arrays in cuGraph's single-GPU multisource Brandes path:
+    // distances, sigmas, deltas, and distance-level vertex/source buckets plus
+    // their sorted copies. This is intentionally a resident-state shape, not a
+    // total `requested_sources * vertices` traversal-work counter.
+    vertex_width
+        .saturating_add(edge_width)
+        .saturating_add(weight_width)
+        .saturating_add(vertex_width.saturating_mul(2))
+        .saturating_add(origin_width * 2)
+}
+
+fn edge_betweenness_per_source_vertex_state_width(input: GraphMemoryModelInput) -> u64 {
+    let vertex_width = input.vertex_width_bytes.max(8);
+    let edge_width = input.vertex_width_bytes.max(8);
+    let weight_width = input.weight_width_bytes.unwrap_or(8).max(8);
+
+    // Edge betweenness walks requested sources serially in cuGraph, so resident
+    // vertex state is one Brandes source at a time.
+    vertex_width.saturating_add(edge_width).saturating_add(weight_width)
 }
 
 fn saturating_product(left: u64, right: u64) -> u64 {
@@ -496,6 +657,7 @@ pub fn graph_memory_model_input(
         vertex_width_bytes,
         weight_width_bytes: consumes_weight.then_some(weight_width_bytes).flatten(),
         has_edge_id: edge_columns.edge_id.is_some(),
+        device_total_memory_bytes: None,
         vertex_estimate: None,
     }
 }
