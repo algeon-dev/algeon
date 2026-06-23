@@ -484,6 +484,84 @@ fn parquet_read_evidence_reports_stats_pruned_row_groups() {
 }
 
 #[test]
+fn parquet_reader_predicate_bare_boolean_column_root_does_not_crash() {
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("bare_boolean_column_root.parquet");
+    let rt = sample_runtime();
+    write_parquet_df(
+        &path,
+        &["id", "flag"],
+        vec![
+            column_from_slice(&[1i32, 2, 3, 4, 5, 6]).unwrap(),
+            column_from_slice(&[true, false, true, false, true, false]).unwrap(),
+        ],
+        2,
+    );
+    let source = LocalParquetSource::data(
+        [LocalParquetFile::new(&path, "bare-boolean-column-root", []).unwrap()],
+        SourceSchema::new([
+            SourceColumn::new("id", dtype(TypeId::Int32), false).unwrap(),
+            SourceColumn::new("flag", dtype(TypeId::Bool8), false).unwrap(),
+        ])
+        .unwrap(),
+        ["id", "flag"],
+        [
+            SourceOutputColumn::new("id", SourceColumnRef::ReadColumn(0)).unwrap(),
+            SourceOutputColumn::new("flag", SourceColumnRef::ReadColumn(1)).unwrap(),
+        ],
+        [],
+        [],
+    )
+    .unwrap()
+    .with_reader_predicate(Arc::new(AstExpression::left_column(1).unwrap()))
+    .unwrap();
+
+    let output = read_single_chunk_with_evidence(&rt, &source);
+    let pruning = output.read_evidence().and_then(|evidence| evidence.pruning).unwrap();
+
+    assert_eq!(output.frame().series("id").unwrap().to_vec_strict::<i32>().unwrap(), vec![1, 3, 5]);
+    assert_eq!(output.frame().series("flag").unwrap().to_vec_strict::<bool>().unwrap(), vec![true, true, true]);
+    assert!(pruning.input_row_groups > 0);
+    assert_eq!(pruning.row_groups_after_stats_filter, None);
+}
+
+#[test]
+fn parquet_reader_predicate_bare_boolean_literal_root_does_not_crash() {
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("bare_boolean_literal_root.parquet");
+    let rt = sample_runtime();
+    write_parquet_df(&path, &["id"], vec![column_from_slice(&[1i32, 2, 3]).unwrap()], 2);
+    let source = single_i32_source(&path, "bare-boolean-literal-root")
+        .with_reader_predicate(Arc::new(AstExpression::literal(rt.scalar(true).unwrap()).unwrap()))
+        .unwrap();
+
+    let output = read_single_chunk_with_evidence(&rt, &source);
+    let pruning = output.read_evidence().and_then(|evidence| evidence.pruning).unwrap();
+
+    assert_eq!(output.frame().series("id").unwrap().to_vec_strict::<i32>().unwrap(), vec![1, 2, 3]);
+    assert!(pruning.input_row_groups > 0);
+    assert_eq!(pruning.row_groups_after_stats_filter, None);
+}
+
+#[test]
+fn parquet_reader_predicate_bare_boolean_false_literal_root_filters_all_rows() {
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("bare_boolean_false_literal_root.parquet");
+    let rt = sample_runtime();
+    write_parquet_df(&path, &["id"], vec![column_from_slice(&[1i32, 2, 3]).unwrap()], 2);
+    let source = single_i32_source(&path, "bare-boolean-false-literal-root")
+        .with_reader_predicate(Arc::new(AstExpression::literal(rt.scalar(false).unwrap()).unwrap()))
+        .unwrap();
+
+    let output = read_single_chunk_with_evidence(&rt, &source);
+    let pruning = output.read_evidence().and_then(|evidence| evidence.pruning).unwrap();
+
+    assert_eq!(output.frame().num_rows(), 0);
+    assert!(pruning.input_row_groups > 0);
+    assert_eq!(pruning.row_groups_after_stats_filter, None);
+}
+
+#[test]
 fn parquet_read_evidence_reports_bloom_pruned_row_groups() {
     let rt = sample_runtime();
     let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
