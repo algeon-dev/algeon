@@ -87,6 +87,12 @@ ORDER BY key ASC
 LIMIT 8
 ";
 
+pub(super) const SQL_BARE_BOOLEAN_FILTER_QUERY: &str = "
+SELECT COUNT(*) AS count_rows
+FROM bench
+WHERE flag
+";
+
 pub(super) const SQL_AVG_BY_KEY_NO_FILTER_QUERY: &str = "
 SELECT key, AVG(m00) AS avg_m00
 FROM bench

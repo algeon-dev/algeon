@@ -1,7 +1,9 @@
 use std::{fs::File, sync::Arc};
 
 use arrow::{
-    array::{Date32Array, Decimal128Array, Int32Array, Int64Array, StringArray, TimestampNanosecondArray},
+    array::{
+        BooleanArray, Date32Array, Decimal128Array, Int32Array, Int64Array, StringArray, TimestampNanosecondArray,
+    },
     datatypes::{DataType, Field, Schema, TimeUnit},
     record_batch::RecordBatch,
 };
@@ -76,6 +78,26 @@ pub(super) fn write_decimal32_reader_pushdown_parquet_file(path: &std::path::Pat
     )
     .unwrap();
     let props = WriterProperties::builder().set_max_row_group_row_count(Some(row_count as usize)).build();
+    let file = File::create(path).unwrap();
+    let mut writer = ArrowWriter::try_new(file, schema, Some(props)).unwrap();
+    writer.write(&batch).unwrap();
+    writer.close().unwrap();
+}
+
+pub(super) fn write_bare_boolean_filter_parquet_file(path: &std::path::Path) {
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Int32, false),
+        Field::new("flag", DataType::Boolean, false),
+    ]));
+    let batch = RecordBatch::try_new(
+        Arc::clone(&schema),
+        vec![
+            Arc::new(Int32Array::from(vec![1, 2, 3, 4, 5, 6])),
+            Arc::new(BooleanArray::from(vec![true, false, true, false, true, false])),
+        ],
+    )
+    .unwrap();
+    let props = WriterProperties::builder().set_max_row_group_row_count(Some(2)).build();
     let file = File::create(path).unwrap();
     let mut writer = ArrowWriter::try_new(file, schema, Some(props)).unwrap();
     writer.write(&batch).unwrap();

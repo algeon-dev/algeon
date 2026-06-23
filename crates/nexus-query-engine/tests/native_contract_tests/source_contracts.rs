@@ -197,6 +197,35 @@ fn local_parquet_source_reader_predicate_accepts_decimal_contract() {
 }
 
 #[test]
+fn local_parquet_source_reader_predicate_rejects_degenerate_roots() {
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Int32, false),
+        Field::new("flag", DataType::Boolean, false),
+    ]));
+    let source = LocalParquetSource::from_files(
+        vec![
+            LocalParquetFile::new("/tmp/reader-predicate-degenerate-root.parquet")
+                .with_stable_id("reader-predicate-degenerate-root")
+                .with_file_size_bytes(1024),
+        ],
+        schema,
+        vec!["id".to_string(), "flag".to_string()],
+    );
+
+    assert!(!source.reader_predicate_is_supported(&Expr::column("flag")));
+    assert!(!source.reader_predicate_is_supported(&Expr::literal(LiteralValue::Boolean(true))));
+    assert!(!source.reader_predicate_is_supported(&Expr::Alias {
+        expr: Box::new(Expr::column("flag")),
+        alias: "flag_alias".to_string(),
+    }));
+
+    let safe_operation_root =
+        Expr::binary(Expr::column("flag"), BinaryOp::Eq, Expr::literal(LiteralValue::Boolean(true)));
+    assert!(source.reader_predicate_is_supported(&safe_operation_root));
+    assert!(source.reader_predicate_is_supported(&Expr::logical_not(Expr::column("flag"))));
+}
+
+#[test]
 fn local_parquet_source_reader_predicate_rejects_list_carry_columns() {
     let schema = Arc::new(Schema::new(vec![
         Field::new("key", DataType::UInt32, false),
