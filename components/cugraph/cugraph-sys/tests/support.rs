@@ -1,6 +1,5 @@
 use std::path::PathBuf;
 
-#[allow(dead_code)]
 #[path = "../build_support.rs"]
 mod build_support;
 

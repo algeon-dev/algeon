@@ -40,17 +40,19 @@ pub(crate) fn edge_betweenness_centrality<T: Transposition, V: CugraphElement>(
     let mut error: *mut cugraph_error_t = ptr::null_mut();
 
     let vertex_list_ptr = vertex_list.map(|v| v.as_ptr() as *const _).unwrap_or(ptr::null());
+    let do_expensive_check = params.do_expensive_check || vertex_list.is_some();
 
     // SAFETY: `vertex_list_ptr` is either null or borrowed from a live device
-    // view validated against the graph vertex dtype, and `result`/`error` are
-    // valid out-pointers.
+    // view validated against the graph vertex dtype. Non-null vertex lists
+    // force libcugraph validation so out-of-range vertices cannot drive
+    // unchecked native indexing. `result`/`error` are valid out-pointers.
     unsafe {
         let code = cugraph_edge_betweenness_centrality(
             handle.handle_ptr(),
             graph.as_ptr(),
             vertex_list_ptr,
             to_bool_t(params.normalized),
-            to_bool_t(params.do_expensive_check),
+            to_bool_t(do_expensive_check),
             &mut result,
             &mut error,
         );

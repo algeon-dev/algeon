@@ -257,13 +257,16 @@ fn pagerank_impl<V: CugraphElement, W: CugraphElement>(
         Some(p) => (p.vertices.as_ptr() as *const _, p.values.as_ptr() as *const _),
         None => (ptr::null(), ptr::null()),
     };
+    let do_expensive_check =
+        do_expensive_check || precomputed_weights.is_some() || initial_guess.is_some() || personalization.is_some();
 
     let mut result: *mut cugraph_centrality_result_t = ptr::null_mut();
     let mut error: *mut cugraph_error_t = ptr::null_mut();
 
     // SAFETY: all optional input pointers are either null or borrowed from
-    // validated device views that outlive the call, and `result`/`error` are
-    // valid out-pointers.
+    // validated device views that outlive the call. Non-null user vertex
+    // arrays force libcugraph validation so out-of-range vertices cannot drive
+    // unchecked native indexing. `result`/`error` are valid out-pointers.
     unsafe {
         let code = match call {
             PageRankCall::Standard => cugraph_pagerank_allow_nonconvergence(

@@ -73,12 +73,15 @@ pub(crate) fn hits<V: CugraphElement, W: CugraphElement>(
         Some(initial_hubs) => (initial_hubs.vertices.as_ptr() as *const _, initial_hubs.values.as_ptr() as *const _),
         None => (ptr::null(), ptr::null()),
     };
+    let do_expensive_check = params.do_expensive_check || initial_hubs.is_some();
 
     let mut result: *mut cugraph_hits_result_t = ptr::null_mut();
     let mut error: *mut cugraph_error_t = ptr::null_mut();
 
     // SAFETY: optional input pointers are either null or borrowed from live
-    // device views validated above, and `result`/`error` are valid out-pointers.
+    // device views validated above. Non-null initial hub vertices force
+    // libcugraph validation so out-of-range vertices cannot drive unchecked
+    // native indexing. `result`/`error` are valid out-pointers.
     unsafe {
         let code = cugraph_hits(
             handle.handle_ptr(),
@@ -88,7 +91,7 @@ pub(crate) fn hits<V: CugraphElement, W: CugraphElement>(
             initial_vertices_ptr,
             initial_values_ptr,
             to_bool_t(params.normalize),
-            to_bool_t(params.do_expensive_check),
+            to_bool_t(do_expensive_check),
             &mut result,
             &mut error,
         );

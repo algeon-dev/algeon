@@ -93,16 +93,6 @@ mod types;
 pub use borrowed::{BorrowedInputOrderingPlan, testing};
 pub use bridge::device_array_view_from_slice;
 pub use egress::IntoSeries;
-pub use ingress::{
-    graph_from_borrowed_columns, graph_from_borrowed_table_view, graph_from_dataframe, graph_from_prepared_columns,
-    graph_from_prepared_table_export, graph_from_series, graph_from_table_view,
-};
-pub use options::{
-    DataFrameGraphOptions, GraphConstructionPolicy, ParquetGraphOptions, SeriesGraphOptions, TableGraphOptions,
-};
-pub use parquet::{LoadedGraph, graph_from_parquet};
-pub use types::{cudf_type_to_cugraph, cugraph_type_to_cudf};
-
 pub(crate) use egress::{
     balanced_cut_clustering_result_to_dataframe, betweenness_result_to_dataframe, bfs_result_to_dataframe,
     core_number_result_to_dataframe, cosine_similarity_result_to_dataframe, degrees_result_to_dataframe,
@@ -116,3 +106,12 @@ pub(crate) use egress::{
     strongly_connected_components_result_to_dataframe, triangle_count_result_to_dataframe, vertex_pairs_to_dataframe,
     weakly_connected_components_result_to_dataframe,
 };
+pub use ingress::{
+    graph_from_borrowed_columns, graph_from_borrowed_table_view, graph_from_dataframe, graph_from_prepared_columns,
+    graph_from_prepared_table_export, graph_from_series, graph_from_table_view,
+};
+pub use options::{
+    DataFrameGraphOptions, GraphConstructionPolicy, ParquetGraphOptions, SeriesGraphOptions, TableGraphOptions,
+};
+pub use parquet::{LoadedGraph, graph_from_parquet};
+pub use types::{cudf_type_to_cugraph, cugraph_type_to_cudf};
