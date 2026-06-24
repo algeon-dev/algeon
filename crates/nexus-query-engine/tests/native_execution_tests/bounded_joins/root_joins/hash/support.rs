@@ -179,6 +179,33 @@ fn write_dynamic_filter_probe_parquet(path: &Path) -> Arc<Schema> {
     write_dynamic_filter_probe_rows_parquet(path, &[1, 1, 2, 2, 3, 3], &[10, 11, 20, 21, 30, 31])
 }
 
+fn write_single_i32_parquet(path: &Path, column: &str, values: &[i32]) -> Arc<Schema> {
+    let schema = Arc::new(Schema::new(vec![Field::new(column, DataType::Int32, false)]));
+    let batch =
+        RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(Int32Array::from(values.to_vec()))]).unwrap();
+    write_record_batch_with_row_group_rows(path, Arc::clone(&schema), batch, values.len());
+    schema
+}
+
+fn write_partsupp_dynamic_filter_parquet(path: &Path) -> Arc<Schema> {
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("ps_partkey", DataType::Int32, false),
+        Field::new("ps_suppkey", DataType::Int32, false),
+        Field::new("ps_supplycost", DataType::Int32, false),
+    ]));
+    let batch = RecordBatch::try_new(
+        Arc::clone(&schema),
+        vec![
+            Arc::new(Int32Array::from(vec![1, 2, 3, 4])),
+            Arc::new(Int32Array::from(vec![10, 20, 20, 30])),
+            Arc::new(Int32Array::from(vec![5, 7, 4, 9])),
+        ],
+    )
+    .unwrap();
+    write_record_batch_with_row_group_rows(path, Arc::clone(&schema), batch, 4);
+    schema
+}
+
 fn write_dynamic_filter_probe_rows_parquet(path: &Path, order_ids: &[i32], quantities: &[i32]) -> Arc<Schema> {
     assert_eq!(order_ids.len(), quantities.len());
     let schema = Arc::new(Schema::new(vec![

@@ -19,9 +19,10 @@ use crate::{
         keyed_hash_join_strategy_should_probe_left_one_shot_build_key_uniqueness_with_options,
     },
     dynamic_filter::{
-        DynamicFilter, DynamicFilterConsumer, DynamicFilterProducer, DynamicFilterRoute, DynamicFilterSet,
-        LARGE_KEYSET_DIMENSION_SOURCE_SKIP_REASON, dynamic_filter_consumer_source_feeds_downstream_work_fanout,
-        dynamic_filter_i64_values, dynamic_filter_predicate_for_schema,
+        DynamicFilter, DynamicFilterConsumer, DynamicFilterId, DynamicFilterProducer, DynamicFilterRoute,
+        DynamicFilterSet, LARGE_KEYSET_DIMENSION_SOURCE_SKIP_REASON,
+        dynamic_filter_consumer_source_feeds_downstream_work_fanout, dynamic_filter_i64_values,
+        dynamic_filter_predicate_for_schema,
     },
     error::{QueryError, QueryErrorCode, Result},
     exec::{

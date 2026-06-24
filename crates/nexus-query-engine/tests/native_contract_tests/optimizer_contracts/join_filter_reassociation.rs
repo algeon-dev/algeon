@@ -60,6 +60,77 @@ fn join_filter_reassociation_repeats_until_filter_reaches_base_fact_input() {
 }
 
 #[test]
+fn join_filter_reassociation_uses_parent_projection_to_filter_join_child_before_fact_join() {
+    let plan = projected_parent_join_filter_over_fact_join_plan();
+
+    let result = optimize_query_plan(plan, &NativeOptimizerOptions::default());
+
+    assert_eq!(result.change, NativeOptimizerChange::Changed);
+    assert!(
+        result.diagnostics.join_filter_reassociation.applied_count >= 1,
+        "projected parent join should be reassociated before the large fact join:\n{}",
+        result.plan
+    );
+    assert!(
+        result.plan.nodes().iter().any(|node| {
+            let PlanNode::Join(join) = &node.kind else { return false };
+            join.spec.keys.len() == 1
+                && join.spec.keys[0].left.name() == "s_nationkey"
+                && join.spec.keys[0].right.name() == "n_nationkey"
+                && subtree_contains_gpu_source(&result.plan, join.inputs[0], "supplier")
+                && subtree_contains_gpu_source(&result.plan, join.inputs[1], "nation")
+        }),
+        "filtered dimension join should be pushed to supplier before supplier joins partsupp:\n{}",
+        result.plan
+    );
+    assert!(
+        result.plan.nodes().iter().any(|node| {
+            let PlanNode::Join(join) = &node.kind else { return false };
+            join.spec.keys.len() == 1
+                && join.spec.keys[0].left.name() == "s_suppkey"
+                && join.spec.keys[0].right.name() == "ps_suppkey"
+                && subtree_contains_gpu_source(&result.plan, join.inputs[0], "supplier")
+                && subtree_contains_gpu_source(&result.plan, join.inputs[0], "nation")
+                && subtree_contains_gpu_source(&result.plan, join.inputs[1], "partsupp")
+        }),
+        "partsupp should join after supplier has been filtered by nation/region:\n{}",
+        result.plan
+    );
+}
+
+#[test]
+fn join_filter_reassociation_rejects_shared_projected_parent_to_preserve_projection_fanout() {
+    let plan = shared_projected_parent_join_filter_plan();
+
+    let result = optimize_query_plan(plan, &NativeOptimizerOptions::default());
+
+    assert_eq!(result.diagnostics.join_filter_reassociation.applied_count, 0);
+    assert!(
+        result.diagnostics.join_filter_reassociation.candidates.iter().any(|candidate| {
+            !candidate.applied
+                && candidate.rejected_reason == Some(JoinFilterReassociationRejectedReason::SharedProjectedParent)
+        }),
+        "shared projected parent should be rejected before exposing a shared join producer:\n{}",
+        result.plan
+    );
+    assert_eq!(
+        result
+            .plan
+            .nodes()
+            .iter()
+            .filter(|node| {
+                let PlanNode::Join(join) = &node.kind else { return false };
+                subtree_contains_gpu_source(&result.plan, join.inputs[0], "sales")
+                    && subtree_contains_gpu_source(&result.plan, join.inputs[1], "returns")
+            })
+            .count(),
+        1,
+        "shared projection input should not be duplicated into multiple sales/returns joins:\n{}",
+        result.plan
+    );
+}
+
+#[test]
 fn join_filter_reassociation_pushes_scalar_range_residuals_into_dimension_join_input() {
     let dir = unique_contract_temp_dir("join-filter-scalar-range");
     let date_path = dir.join("date_dim.parquet");
@@ -315,6 +386,144 @@ fn nested_inner_join_filter_plan() -> nexus_query_engine::QueryPlan {
     builder.finish_gpu_resident(date_filtered)
 }
 
+fn projected_parent_join_filter_over_fact_join_plan() -> nexus_query_engine::QueryPlan {
+    let mut builder = QueryPlanBuilder::new();
+    let supplier = builder.add_source(gpu_source("supplier", &["s_suppkey", "s_nationkey"]));
+    let partsupp = builder.add_source(gpu_source("partsupp", &["ps_suppkey", "ps_partkey", "ps_supplycost"]));
+    let nation = builder.add_source(gpu_source("nation", &["n_nationkey", "n_regionkey"]));
+    let region = builder.add_source(gpu_source("region", &["r_regionkey"]));
+
+    let filtered_nation = builder.add_join(
+        nation,
+        region,
+        JoinSpec::new(
+            JoinType::Inner,
+            vec![JoinKey::new(
+                ColumnRef::input(0, "n_regionkey", "n_regionkey"),
+                ColumnRef::input(1, "r_regionkey", "r_regionkey"),
+            )],
+        )
+        .with_output_projection(vec![
+            JoinOutputColumn::left(ColumnRef::input(0, "n_nationkey", "n_nationkey"), "n_nationkey"),
+            JoinOutputColumn::left(ColumnRef::input(0, "n_regionkey", "n_regionkey"), "n_regionkey"),
+        ])
+        .with_build_side(JoinSide::Right),
+        schema(&["n_nationkey", "n_regionkey"]),
+    );
+    let supplier_partsupp = builder.add_join(
+        supplier,
+        partsupp,
+        JoinSpec::new(
+            JoinType::Inner,
+            vec![JoinKey::new(
+                ColumnRef::input(0, "s_suppkey", "s_suppkey"),
+                ColumnRef::input(1, "ps_suppkey", "ps_suppkey"),
+            )],
+        )
+        .with_output_projection(vec![
+            JoinOutputColumn::right(ColumnRef::input(1, "ps_suppkey", "ps_suppkey"), "ps_suppkey"),
+            JoinOutputColumn::right(ColumnRef::input(1, "ps_partkey", "ps_partkey"), "ps_partkey"),
+            JoinOutputColumn::right(ColumnRef::input(1, "ps_supplycost", "ps_supplycost"), "ps_supplycost"),
+            JoinOutputColumn::left(ColumnRef::input(0, "s_nationkey", "s_nationkey"), "s_nationkey"),
+        ])
+        .with_build_side(JoinSide::Right),
+        schema(&["ps_suppkey", "ps_partkey", "ps_supplycost", "s_nationkey"]),
+    );
+    let parent = builder.add_join(
+        filtered_nation,
+        supplier_partsupp,
+        JoinSpec::new(
+            JoinType::Inner,
+            vec![JoinKey::new(
+                ColumnRef::input(0, "n_nationkey", "n_nationkey"),
+                ColumnRef::input(1, "s_nationkey", "s_nationkey"),
+            )],
+        )
+        .with_output_projection(vec![
+            JoinOutputColumn::right(ColumnRef::input(1, "ps_partkey", "ps_partkey"), "ps_partkey"),
+            JoinOutputColumn::right(ColumnRef::input(1, "ps_supplycost", "ps_supplycost"), "ps_supplycost"),
+            JoinOutputColumn::left(ColumnRef::input(0, "n_regionkey", "n_regionkey"), "n_regionkey"),
+        ])
+        .with_build_side(JoinSide::Right),
+        schema(&["ps_partkey", "ps_supplycost", "n_regionkey"]),
+    );
+    let projected = builder.add_projection(
+        parent,
+        vec![
+            ProjectionOutput::new(Expr::column("ps_partkey"), Field::new("ps_partkey", DataType::Int32, false)),
+            ProjectionOutput::new(Expr::column("ps_supplycost"), Field::new("ps_supplycost", DataType::Int32, false)),
+        ],
+    );
+    builder.finish_gpu_resident(projected)
+}
+
+fn shared_projected_parent_join_filter_plan() -> nexus_query_engine::QueryPlan {
+    let mut builder = QueryPlanBuilder::new();
+    let sales = builder.add_source(gpu_source("sales", &["s_item", "s_ticket", "customer", "amount"]));
+    let returns = builder.add_source(gpu_source("returns", &["r_item", "r_ticket", "reason_key", "returned"]));
+    let reason = builder.add_source(gpu_source("reason", &["reason_key", "reason_group"]));
+
+    let sales_returns = builder.add_join(
+        sales,
+        returns,
+        JoinSpec::new(
+            JoinType::Inner,
+            vec![
+                JoinKey::new(ColumnRef::input(0, "s_item", "s_item"), ColumnRef::input(1, "r_item", "r_item")),
+                JoinKey::new(ColumnRef::input(0, "s_ticket", "s_ticket"), ColumnRef::input(1, "r_ticket", "r_ticket")),
+            ],
+        )
+        .with_output_projection(vec![
+            JoinOutputColumn::left(ColumnRef::input(0, "s_item", "s_item"), "s_item"),
+            JoinOutputColumn::left(ColumnRef::input(0, "s_ticket", "s_ticket"), "s_ticket"),
+            JoinOutputColumn::left(ColumnRef::input(0, "customer", "customer"), "customer"),
+            JoinOutputColumn::left(ColumnRef::input(0, "amount", "amount"), "amount"),
+            JoinOutputColumn::right(ColumnRef::input(1, "reason_key", "reason_key"), "reason_key"),
+        ]),
+        schema(&["s_item", "s_ticket", "customer", "amount", "reason_key"]),
+    );
+    let reason_join = builder.add_join(
+        sales_returns,
+        reason,
+        JoinSpec::new(
+            JoinType::Inner,
+            vec![JoinKey::new(
+                ColumnRef::input(0, "reason_key", "reason_key"),
+                ColumnRef::input(1, "reason_key", "reason_key"),
+            )],
+        )
+        .with_output_projection(vec![
+            JoinOutputColumn::left(ColumnRef::input(0, "customer", "customer"), "customer"),
+            JoinOutputColumn::left(ColumnRef::input(0, "amount", "amount"), "amount"),
+            JoinOutputColumn::left(ColumnRef::input(0, "reason_key", "reason_key"), "reason_key"),
+            JoinOutputColumn::right(ColumnRef::input(1, "reason_group", "reason_group"), "reason_group"),
+        ]),
+        schema(&["customer", "amount", "reason_key", "reason_group"]),
+    );
+    let shared_projected = builder.add_projection(
+        reason_join,
+        vec![
+            ProjectionOutput::new(Expr::column("customer"), Field::new("customer", DataType::Int32, false)),
+            ProjectionOutput::new(Expr::column("amount"), Field::new("amount", DataType::Int32, false)),
+            ProjectionOutput::new(Expr::column("reason_key"), Field::new("reason_key", DataType::Int32, false)),
+        ],
+    );
+    let union = builder.add_union(vec![shared_projected, shared_projected], schema(&["customer", "amount", "reason_key"]));
+    builder.finish_gpu_resident(union)
+}
+
+fn subtree_contains_gpu_source(plan: &nexus_query_engine::QueryPlan, node_id: NodeId, source_name: &str) -> bool {
+    let Some(node) = plan.node(node_id) else {
+        return false;
+    };
+    if let PlanNode::Source(source) = &node.kind
+        && let SourceNode::GpuResident(source) = source.as_ref()
+    {
+        return source.input_name == source_name;
+    }
+    node.input_ids().iter().any(|input| subtree_contains_gpu_source(plan, *input, source_name))
+}
+
 fn scalar_range_residual_plan(date_path: &Path, date_schema: Arc<Schema>) -> nexus_query_engine::QueryPlan {
     let mut builder = QueryPlanBuilder::new();
     let sales = builder.add_source(estimated_local_source_with_fields(
@@ -330,12 +539,7 @@ fn scalar_range_residual_plan(date_path: &Path, date_schema: Arc<Schema>) -> nex
                 .with_projected_row_group_bytes(vec![1024], vec![1024]),
         ],
         Arc::clone(&date_schema),
-        vec![
-            "d_date_sk".to_string(),
-            "d_month_seq".to_string(),
-            "d_moy".to_string(),
-            "d_year".to_string(),
-        ],
+        vec!["d_date_sk".to_string(), "d_month_seq".to_string(), "d_moy".to_string(), "d_year".to_string()],
     )));
 
     let date_all = builder.add_projection(
@@ -374,10 +578,7 @@ fn scalar_range_residual_plan(date_path: &Path, date_schema: Arc<Schema>) -> nex
     );
     let month_projection = builder.add_projection(
         december,
-        vec![ProjectionOutput::new(
-            Expr::column("d_month_seq"),
-            Field::new("d_month_seq", DataType::Int32, false),
-        )],
+        vec![ProjectionOutput::new(Expr::column("d_month_seq"), Field::new("d_month_seq", DataType::Int32, false))],
     );
     let lower_projection = builder.add_projection(
         month_projection,
@@ -441,7 +642,8 @@ fn scalar_range_residual_plan(date_path: &Path, date_schema: Arc<Schema>) -> nex
 fn date32_scalar_range_residual_plan(date_path: &Path, date_schema: Arc<Schema>) -> nexus_query_engine::QueryPlan {
     let mut builder = QueryPlanBuilder::new();
     let left_schema = Arc::new(Schema::new(vec![Field::new("d_date", DataType::Date32, false)]));
-    let left = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("left_dates", Arc::clone(&left_schema))));
+    let left =
+        builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("left_dates", Arc::clone(&left_schema))));
     let right = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::from_files(
         vec![
             LocalParquetFile::new(date_path)
@@ -465,10 +667,7 @@ fn date32_scalar_range_residual_plan(date_path: &Path, date_schema: Arc<Schema>)
                     Expr::literal(LiteralValue::IntervalMonthDayNano { months: 0, days: 5, nanoseconds: 0 }),
                 ),
             ))
-            .with_output_projection(vec![JoinOutputColumn::left(
-                ColumnRef::input(0, "d_date", "d_date"),
-                "d_date",
-            )]),
+            .with_output_projection(vec![JoinOutputColumn::left(ColumnRef::input(0, "d_date", "d_date"), "d_date")]),
         left_schema,
     );
     builder.finish_gpu_resident(join)
@@ -504,10 +703,7 @@ fn out_of_range_float_scalar_range_residual_plan(
                 BinaryOp::Lt,
                 Expr::input_column(1, "bound", "bound"),
             ))
-            .with_output_projection(vec![JoinOutputColumn::left(
-                ColumnRef::input(0, "value", "value"),
-                "value",
-            )]),
+            .with_output_projection(vec![JoinOutputColumn::left(ColumnRef::input(0, "value", "value"), "value")]),
         schema(&["value"]),
     );
     builder.finish_gpu_resident(join)

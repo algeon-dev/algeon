@@ -1,7 +1,7 @@
 use arrow::datatypes::SchemaRef as ArrowSchemaRef;
 
 use super::*;
-use crate::Expr;
+use crate::{DynamicFilterConsumerLowering, Expr, metrics::DynamicFilterSourceSnapshot};
 
 impl CompiledGpuTaskExecutor<'_> {
     pub(super) fn produce_hash_join_build_dynamic_filters(
@@ -114,7 +114,7 @@ impl CompiledGpuTaskExecutor<'_> {
             return Ok(());
         }
         if producer_frame.num_rows() > options.large_local_parquet_range_producer_rows
-            && routes.iter().all(route_targets_local_parquet_source)
+            && routes.iter().all(route_targets_reader_lowered_local_parquet_source)
         {
             let producer_frame_bytes = producer_frame.device_allocated_size_bytes().ok();
             let range_routes = routes
@@ -342,6 +342,123 @@ impl CompiledGpuTaskExecutor<'_> {
             self.metrics.record_dynamic_filter_applied(route, &filter, before, after);
         }
         Ok(stream)
+    }
+
+    pub(super) fn apply_ready_dynamic_filters_to_shared_source_resource(
+        &mut self,
+        state: &mut CompiledPipelineState<CompiledGpuResource>,
+        resource: ResidentResourceId,
+    ) -> Result<bool> {
+        let Some(source_node_id) = self.local_parquet_source_node_for_resource(resource) else {
+            return Ok(false);
+        };
+        let already_applied = self.source_post_decode_applied_routes.get(&resource).cloned().unwrap_or_default();
+        let input_payload = state.resource_payload(resource)?;
+        let input = input_payload.clone_frame();
+        let input_reserved_bytes = input_payload.reservation_bytes();
+        let Some((frame, applied_routes)) = self.apply_ready_dynamic_filters_to_shared_source_frame(
+            source_node_id,
+            input,
+            input_reserved_bytes,
+            &already_applied,
+        )?
+        else {
+            return Ok(false);
+        };
+        let old = state.replace_resource_payload(resource, CompiledGpuResource::new(frame))?;
+        <Self as CompiledTaskExecutor>::release_resource(self, resource, old)?;
+        self.source_post_decode_applied_routes.entry(resource).or_default().extend(applied_routes);
+        Ok(true)
+    }
+
+    fn apply_ready_dynamic_filters_to_shared_source_frame(
+        &mut self,
+        source_node_id: NodeId,
+        input: GpuDataFrame,
+        input_reserved_bytes: u64,
+        already_applied: &BTreeSet<DynamicFilterId>,
+    ) -> Result<Option<(ResidentGpuFrame, BTreeSet<DynamicFilterId>)>> {
+        let routes = self
+            .source_post_decode_dynamic_filter_routes(source_node_id)
+            .into_iter()
+            .filter(|route| !already_applied.contains(&route.id))
+            .collect::<Vec<_>>();
+        if routes.is_empty() {
+            return Ok(None);
+        }
+        let Some(source_schema) = self.plan.node(source_node_id).and_then(|node| match &node.kind {
+            PlanNode::Source(source) => match source.as_ref() {
+                SourceNode::LocalParquet(source) => Some(source.schema.clone()),
+                _ => None,
+            },
+            _ => None,
+        }) else {
+            return Ok(None);
+        };
+        let source_snapshot = self.dynamic_filter_source_snapshot(source_node_id)?;
+        let mut input = Some(input);
+        let mut frame: Option<ResidentGpuFrame> = None;
+        let mut applied_routes = BTreeSet::new();
+        for route in &routes {
+            let Some((filter, predicate)) = self.resolve_dynamic_filter_predicate(route, source_schema.as_ref()) else {
+                continue;
+            };
+            let filter_node = FilterNode { input: source_node_id, predicate };
+            let rows_before = frame.as_ref().map_or_else(
+                || input.as_ref().map(|input| input.num_rows() as u64),
+                |frame| Some(frame.frame.num_rows() as u64),
+            );
+            self.metrics.record_dynamic_filter_applied(route, &filter, source_snapshot, source_snapshot);
+            frame = Some(match frame.take() {
+                Some(frame) => execute_bounded_generic_unary(
+                    self.context,
+                    source_node_id,
+                    "compiled_dynamic_filter_source_post_decode",
+                    "compiled_dynamic_filter_source_post_decode_output",
+                    frame,
+                    &mut self.reservations,
+                    self.metrics,
+                    true,
+                    |context, input, token, metrics| {
+                        crate::exec::operators::execute_filter_with_budget(
+                            context,
+                            &filter_node,
+                            input,
+                            token.expect("budget token is created for compiled source dynamic-filter stages"),
+                            metrics,
+                        )
+                    },
+                )?,
+                None => execute_bounded_generic_unary_from_frame(
+                    self.context,
+                    source_node_id,
+                    "compiled_dynamic_filter_source_post_decode",
+                    "compiled_dynamic_filter_source_post_decode_output",
+                    input.take().expect("first source dynamic filter consumes the cloned shared input"),
+                    input_reserved_bytes,
+                    &mut self.reservations,
+                    self.metrics,
+                    true,
+                    |context, input, token, metrics| {
+                        crate::exec::operators::execute_filter_with_budget(
+                            context,
+                            &filter_node,
+                            input,
+                            token.expect("budget token is created for compiled source dynamic-filter stages"),
+                            metrics,
+                        )
+                    },
+                )?,
+            });
+            self.metrics.record_dynamic_filter_source_post_decode_stage(
+                route,
+                &filter,
+                rows_before,
+                frame.as_ref().map(|frame| frame.frame.num_rows() as u64),
+            );
+            applied_routes.insert(route.id);
+        }
+        Ok(frame.map(|frame| (frame, applied_routes)))
     }
 
     pub(super) fn apply_dynamic_filters_to_join_probe_frame(
@@ -729,6 +846,52 @@ impl CompiledGpuTaskExecutor<'_> {
             .collect()
     }
 
+    fn source_post_decode_dynamic_filter_routes(
+        &self,
+        source_node_id: NodeId,
+    ) -> Vec<crate::dynamic_filter::DynamicFilterRoute> {
+        self.plan
+            .dynamic_filter_routes()
+            .iter()
+            .filter(|route| {
+                matches!(
+                    &route.consumer,
+                    DynamicFilterConsumer::LocalParquetSource {
+                        source_node_id: route_source_node_id
+                    } if *route_source_node_id == source_node_id
+                ) && matches!(
+                    route.consumer_lowering,
+                    DynamicFilterConsumerLowering::PostDecodeOnly
+                        | DynamicFilterConsumerLowering::SkippedUnsupportedStaticPredicateMix
+                ) && self.dynamic_filters.produced(route.id).is_some()
+            })
+            .cloned()
+            .collect()
+    }
+
+    fn dynamic_filter_source_snapshot(&self, source_node_id: NodeId) -> Result<DynamicFilterSourceSnapshot> {
+        let Some(source) = self.plan.node(source_node_id).and_then(|node| match &node.kind {
+            PlanNode::Source(source) => match source.as_ref() {
+                SourceNode::LocalParquet(source) => Some(source),
+                _ => None,
+            },
+            _ => None,
+        }) else {
+            return Err(invalid("compiled dynamic-filter source consumer references a missing local parquet source")
+                .with_fact("source_node_id", source_node_id));
+        };
+        let row_groups = source
+            .diagnostics
+            .selected_row_group_stats
+            .as_ref()
+            .map(|stats| stats.selected_row_groups as u64)
+            .or_else(|| source.diagnostics.selected_row_groups.map(|row_groups| row_groups as u64))
+            .unwrap_or(0);
+        let source_bytes =
+            source.diagnostics.selected_row_group_stats.as_ref().and_then(|stats| stats.selected_source_bytes());
+        Ok(DynamicFilterSourceSnapshot { row_groups, source_bytes })
+    }
+
     fn dynamic_filter_consumer_input_schema(
         &self,
         consumer_node_id: NodeId,
@@ -777,6 +940,14 @@ fn join_probe_input_node(join: &JoinNode) -> NodeId {
 
 fn route_targets_local_parquet_source(route: &DynamicFilterRoute) -> bool {
     matches!(route.consumer, DynamicFilterConsumer::LocalParquetSource { .. })
+}
+
+fn route_targets_reader_lowered_local_parquet_source(route: &DynamicFilterRoute) -> bool {
+    route_targets_local_parquet_source(route)
+        && matches!(
+            route.consumer_lowering,
+            DynamicFilterConsumerLowering::ReaderPredicate | DynamicFilterConsumerLowering::MergedReaderPredicate
+        )
 }
 
 fn dynamic_filter_i64_range_from_series(

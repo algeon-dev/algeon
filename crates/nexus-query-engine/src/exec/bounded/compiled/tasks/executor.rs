@@ -22,6 +22,7 @@ pub struct CompiledGpuTaskExecutor<'a> {
     metrics: &'a mut QueryMetrics,
     reservations: ReservationTracker,
     dynamic_filters: DynamicFilterSet,
+    source_post_decode_applied_routes: BTreeMap<ResidentResourceId, BTreeSet<DynamicFilterId>>,
     join_builds: BTreeMap<NodeId, BoundedCompiledJoinBuildState>,
     join_probes: BTreeMap<NodeId, BoundedCompiledJoinProbeState>,
     host_output: Option<RecordBatch>,
@@ -49,6 +50,7 @@ impl<'a> CompiledGpuTaskExecutor<'a> {
             metrics,
             reservations,
             dynamic_filters: DynamicFilterSet::new(),
+            source_post_decode_applied_routes: BTreeMap::new(),
             join_builds: BTreeMap::new(),
             join_probes: BTreeMap::new(),
             host_output: None,
@@ -496,54 +498,58 @@ impl<'a> CompiledGpuTaskExecutor<'a> {
                             .with_fact("compiled_task_id", task.id())
                             .with_fact("plan_node_id", node_id)
                             .with_fact("resident_resource_id", input))
-                    } else if let Some(frame) = self.apply_dynamic_filters_to_filter_shared_frame(
-                        node_id,
-                        filter,
-                        input_payload.clone_frame(),
-                        input_payload.reservation_bytes(),
-                    )? {
-                        execute_bounded_generic_unary(
-                            self.context,
-                            node_id,
-                            "compiled_filter",
-                            "compiled_filter_output",
-                            frame,
-                            &mut self.reservations,
-                            self.metrics,
-                            true,
-                            |context, input, token, metrics| {
-                                crate::exec::operators::execute_filter_with_budget(
-                                    context,
-                                    filter,
-                                    input,
-                                    token.expect("budget token is created for compiled bounded filter stages"),
-                                    metrics,
-                                )
-                            },
-                        )
-                        .map(CompiledGpuResource::new)
                     } else {
-                        execute_bounded_generic_unary_from_frame(
-                            self.context,
+                        self.apply_ready_dynamic_filters_to_shared_source_resource(state, input)?;
+                        let input_payload = state.resource_payload(input)?;
+                        if let Some(frame) = self.apply_dynamic_filters_to_filter_shared_frame(
                             node_id,
-                            "compiled_filter",
-                            "compiled_filter_output",
+                            filter,
                             input_payload.clone_frame(),
                             input_payload.reservation_bytes(),
-                            &mut self.reservations,
-                            self.metrics,
-                            true,
-                            |context, input, token, metrics| {
-                                crate::exec::operators::execute_filter_with_budget(
-                                    context,
-                                    filter,
-                                    input,
-                                    token.expect("budget token is created for compiled bounded filter stages"),
-                                    metrics,
-                                )
-                            },
-                        )
-                        .map(CompiledGpuResource::new)
+                        )? {
+                            execute_bounded_generic_unary(
+                                self.context,
+                                node_id,
+                                "compiled_filter",
+                                "compiled_filter_output",
+                                frame,
+                                &mut self.reservations,
+                                self.metrics,
+                                true,
+                                |context, input, token, metrics| {
+                                    crate::exec::operators::execute_filter_with_budget(
+                                        context,
+                                        filter,
+                                        input,
+                                        token.expect("budget token is created for compiled bounded filter stages"),
+                                        metrics,
+                                    )
+                                },
+                            )
+                            .map(CompiledGpuResource::new)
+                        } else {
+                            execute_bounded_generic_unary_from_frame(
+                                self.context,
+                                node_id,
+                                "compiled_filter",
+                                "compiled_filter_output",
+                                input_payload.clone_frame(),
+                                input_payload.reservation_bytes(),
+                                &mut self.reservations,
+                                self.metrics,
+                                true,
+                                |context, input, token, metrics| {
+                                    crate::exec::operators::execute_filter_with_budget(
+                                        context,
+                                        filter,
+                                        input,
+                                        token.expect("budget token is created for compiled bounded filter stages"),
+                                        metrics,
+                                    )
+                                },
+                            )
+                            .map(CompiledGpuResource::new)
+                        }
                     }
                 }
             },
@@ -608,6 +614,8 @@ impl<'a> CompiledGpuTaskExecutor<'a> {
                             .with_fact("plan_node_id", node_id)
                             .with_fact("resident_resource_id", input))
                     } else {
+                        self.apply_ready_dynamic_filters_to_shared_source_resource(state, input)?;
+                        let input_payload = state.resource_payload(input)?;
                         execute_bounded_generic_unary_from_frame(
                             self.context,
                             node_id,
@@ -731,6 +739,8 @@ impl<'a> CompiledGpuTaskExecutor<'a> {
                     .with_fact("plan_node_id", node_id)
                     .with_fact("resident_resource_id", input))
             } else {
+                self.apply_ready_dynamic_filters_to_shared_source_resource(state, input)?;
+                let input_payload = state.resource_payload(input)?;
                 let input_frame = input_payload.clone_frame();
                 self.produce_hash_join_build_dynamic_filters(node_id, node, &input_frame)?;
                 let strategy = self.select_join_build_strategy(
@@ -884,6 +894,8 @@ impl<'a> CompiledGpuTaskExecutor<'a> {
                     .with_fact("plan_node_id", node_id)
                     .with_fact("resident_resource_id", input));
             } else {
+                self.apply_ready_dynamic_filters_to_shared_source_resource(state, input)?;
+                let input_payload = state.resource_payload(input)?;
                 if let Some(frame) = self.apply_dynamic_filters_to_join_probe_shared_frame(
                     node_id,
                     node,
@@ -1096,6 +1108,7 @@ impl<'a> CompiledGpuTaskExecutor<'a> {
             self.reservations.release(input_reservation, self.metrics);
             result
         } else {
+            self.apply_ready_dynamic_filters_to_shared_source_resource(state, input)?;
             let input_payload = state.resource_payload(input)?;
             execute_compiled_bounded_aggregate_from_frame(
                 self.context,
@@ -1550,6 +1563,15 @@ impl<'a> CompiledGpuTaskExecutor<'a> {
             .iter()
             .find(|candidate| candidate.id() == resource)
             .is_some_and(|resource| resource.consumers().len() > 1)
+    }
+
+    fn local_parquet_source_node_for_resource(&self, resource: ResidentResourceId) -> Option<NodeId> {
+        let producer = self.pipeline.resources().iter().find(|candidate| candidate.id() == resource)?.producer();
+        let source_node_id = self.pipeline.tasks().iter().find(|candidate| candidate.id() == producer)?.plan_node()?;
+        self.plan.node(source_node_id).and_then(|node| match &node.kind {
+            PlanNode::Source(source) if matches!(source.as_ref(), SourceNode::LocalParquet(_)) => Some(source_node_id),
+            _ => None,
+        })
     }
 
     fn join_materialize_output_can_preserve_stream(&self, task: PipelineTaskId, resource: ResidentResourceId) -> bool {

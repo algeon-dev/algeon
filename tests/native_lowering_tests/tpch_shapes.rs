@@ -28,6 +28,13 @@ async fn tpch_recent_bounded_topologies_expose_modeled_facts() {
     );
     let optimized_q2 = nexus_query_engine::optimize_query_plan(native_plan.clone(), &Default::default());
     assert!(
+        optimized_q2.diagnostics.join_filter_reassociation.applied_count >= 1,
+        "q02 should use join-filter reassociation to push nation/region filtering below the partsupp join:\n{}",
+        optimized_q2.plan
+    );
+    assert_q02_reassociated_supplier_filter_precedes_partsupp_join(&optimized_q2.plan);
+    assert_q02_part_partsupp_dynamic_filter_matches_selected_build_side(&optimized_q2.plan);
+    assert!(
         optimized_q2.plan.capability_analysis().admits_multi_join_aggregate_over_join_subplan_topk_pipeline(),
         "optimized q02 should remain admitted after post-root filtering joins are exposed:\n{}",
         optimized_q2.plan
@@ -246,6 +253,63 @@ fn q21_left_only_mixed_residual_join_matches(
         && join.spec.residual_predicate.is_some()
         && !join.spec.output_projection.is_empty()
         && join.spec.output_projection.iter().all(|column| column.side == NativeJoinSide::Left)
+}
+
+fn assert_q02_reassociated_supplier_filter_precedes_partsupp_join(plan: &QueryPlan) {
+    assert!(
+        plan.nodes().iter().any(|node| {
+            let PlanNode::Join(join) = &node.kind else { return false };
+            join.spec.keys.len() == 1
+                && join.spec.keys[0].left.name() == "s_nationkey"
+                && join.spec.keys[0].right.name() == "n_nationkey"
+                && source_tables_below(plan, join.inputs[0]) == BTreeSet::from(["supplier".to_string()])
+                && source_tables_below(plan, join.inputs[1])
+                    == BTreeSet::from(["nation".to_string(), "region".to_string()])
+        }),
+        "q02 should build a supplier filter join from nation/region before joining partsupp:\n{plan}"
+    );
+    assert!(
+        plan.nodes().iter().any(|node| {
+            let PlanNode::Join(join) = &node.kind else { return false };
+            join.spec.keys.len() == 1
+                && join.spec.keys[0].left.name() == "s_suppkey"
+                && join.spec.keys[0].right.name() == "ps_suppkey"
+                && source_tables_below(plan, join.inputs[0])
+                    == BTreeSet::from(["nation".to_string(), "region".to_string(), "supplier".to_string()])
+                && source_tables_below(plan, join.inputs[1]) == BTreeSet::from(["partsupp".to_string()])
+        }),
+        "q02 should join partsupp only after supplier has been filtered by nation/region:\n{plan}"
+    );
+}
+
+fn assert_q02_part_partsupp_dynamic_filter_matches_selected_build_side(plan: &QueryPlan) {
+    let part_builds_partsupp_join = plan.nodes().iter().any(|node| {
+        let PlanNode::Join(join) = &node.kind else { return false };
+        join.spec.build_side == NativeJoinSide::Left
+            && join.spec.keys.len() == 1
+            && join.spec.keys[0].left.name() == "p_partkey"
+            && join.spec.keys[0].right.name() == "ps_partkey"
+    });
+    let (producer_column, consumer_column, consumer_table, expected_lowering) = if part_builds_partsupp_join {
+        ("p_partkey", "ps_partkey", "partsupp", nexus_query_engine::DynamicFilterConsumerLowering::PostDecodeOnly)
+    } else {
+        ("ps_partkey", "p_partkey", "part", nexus_query_engine::DynamicFilterConsumerLowering::ReaderPredicate)
+    };
+
+    assert!(
+        plan.dynamic_filter_routes().iter().any(|route| {
+            route.producer_columns == [producer_column.to_string()]
+                && route.consumer_columns == [consumer_column.to_string()]
+                && route.consumer_lowering == expected_lowering
+                && matches!(
+                    route.consumer,
+                    nexus_query_engine::DynamicFilterConsumer::LocalParquetSource {
+                        source_node_id
+                    } if source_tables_below(plan, source_node_id) == BTreeSet::from([consumer_table.to_string()])
+                )
+        }),
+        "q02 should attach a dynamic filter to the part/partsupp key join for the selected build side:\n{plan}"
+    );
 }
 
 fn native_join_ids(plan: &QueryPlan, join_type: NativeJoinType) -> Vec<(NodeId, &nexus_query_engine::JoinNode)> {
@@ -487,10 +551,15 @@ async fn tpch_q11_lowers_joined_grouped_and_scalar_aggregate_inputs_for_bounded_
         nexus_query_engine::capability::StrictBoundedEnvelope::KeylessConditionalJoinAggregateOverJoinSubplanInputs,
     );
     let aggregate_join_pushdown = &optimized.diagnostics.aggregate_join_pushdown;
-    assert_eq!(aggregate_join_pushdown.applied_count, 2, "optimizer diagnostics={aggregate_join_pushdown:?}");
+    assert_eq!(aggregate_join_pushdown.applied_count, 1, "optimizer diagnostics={aggregate_join_pushdown:?}");
     assert!(
-        aggregate_join_pushdown.candidates.iter().all(|candidate| candidate.applied),
-        "q11 aggregate-over-join inputs should be reduced before their joins: {aggregate_join_pushdown:?}"
+        aggregate_join_pushdown.candidates.iter().any(|candidate| candidate.applied),
+        "q11 grouped aggregate-over-join input should be reduced before its join: {aggregate_join_pushdown:?}"
+    );
+    assert!(
+        aggregate_join_pushdown.candidates.iter().any(|candidate| candidate.rejected_reason
+            == Some(nexus_query_engine::AggregateJoinPushdownRejectedReason::InputNotJoin)),
+        "q11 scalar threshold aggregate should be derived from the grouped branch before aggregate-join pushdown: {aggregate_join_pushdown:?}"
     );
     let preaggregates = optimized
         .plan
@@ -505,7 +574,12 @@ async fn tpch_q11_lowers_joined_grouped_and_scalar_aggregate_inputs_for_bounded_
             _ => None,
         })
         .collect::<Vec<_>>();
-    assert_eq!(preaggregates.len(), 2, "optimized q11 should keep two SUM pre-aggregate leaves:\n{}", optimized.plan);
+    assert_eq!(
+        preaggregates.len(),
+        1,
+        "optimized q11 should keep one shared SUM pre-aggregate leaf:\n{}",
+        optimized.plan
+    );
     assert!(
         preaggregates.iter().all(|aggregate| {
             !aggregate.spec.group_exprs.is_empty()
@@ -529,7 +603,10 @@ async fn tpch_q11_lowers_joined_grouped_and_scalar_aggregate_inputs_for_bounded_
         })
         .expect("optimized q11 should keep a scalar threshold aggregate");
     assert_eq!(scalar_aggregate.spec.aggr_exprs.len(), 1);
-    assert_eq!(scalar_aggregate.spec.aggr_exprs[0].expr, Expr::column("__cudf_preagg_sum_0"));
+    assert_eq!(
+        scalar_aggregate.spec.aggr_exprs[0].expr,
+        Expr::column("sum(partsupp.ps_supplycost * partsupp.ps_availqty)")
+    );
 
     fs::remove_dir_all(dir).unwrap();
 }

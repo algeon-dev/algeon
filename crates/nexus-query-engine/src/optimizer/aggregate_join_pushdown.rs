@@ -10,6 +10,7 @@ use super::{
     unique_join_output_for_name,
 };
 use crate::{
+    datatypes::arrow_fixed_width_byte_size,
     expr::{AggregateExpr, AggregateFunction, AggregateSpec, BinaryOp, CaseWhen, ColumnRef, Expr, LiteralValue},
     plan::{
         AggregateNode, JoinKey, JoinNode, JoinOutputColumn, JoinSide, JoinSpec, JoinType, NodeId, PlanFacts, PlanNode,
@@ -103,6 +104,8 @@ pub enum AggregateJoinPushdownRejectedReason {
     MissingInputField,
     /// Two required pre-aggregate columns would produce the same output name.
     ConflictingPreAggregateOutputName,
+    /// A simple inner-join pre-aggregate matched the large fixed-width detail-risk guard.
+    DetailKeyPreAggregateReductionNotEvidenced,
 }
 
 pub(crate) struct AggregateJoinPushdownResult {
@@ -344,6 +347,41 @@ impl<'a> AggregateJoinPushdownRewriter<'a> {
         )
     }
 
+    fn simple_inner_join_preaggregate_has_large_detail_key_risk(
+        &self,
+        aggregate: &AggregateNode,
+        join: &JoinNode,
+        preagg_side: JoinSide,
+        preagg_group_columns: &[PreAggregateColumn],
+    ) -> Result<bool, AggregateJoinPushdownRejectedReason> {
+        if aggregate.spec.grouping_sets.is_some() || preagg_group_columns.is_empty() {
+            return Ok(false);
+        }
+        let preagg_input = join.inputs[join_side_index(preagg_side)];
+        let Some(input_rows) = self.estimated_rewritten_output_rows(preagg_input) else {
+            return Ok(false);
+        };
+        if !AggregateJoinPushdownPolicy::default().simple_inner_detail_preaggregate_needs_reduction_evidence(input_rows)
+        {
+            return Ok(false);
+        }
+        let input_schema = self
+            .nodes
+            .get(preagg_input.index())
+            .filter(|node| node.id == preagg_input)
+            .map(|node| node.output_schema().clone())
+            .ok_or(AggregateJoinPushdownRejectedReason::MissingInputField)?;
+        for column in preagg_group_columns {
+            let field = input_schema
+                .field_with_name(column.source_name.as_str())
+                .map_err(|_| AggregateJoinPushdownRejectedReason::MissingInputField)?;
+            if arrow_fixed_width_byte_size(field.data_type()).is_none() {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    }
+
     fn rewrite_join_aggregate_with_preagg(
         &mut self,
         aggregate: &AggregateNode,
@@ -370,6 +408,16 @@ impl<'a> AggregateJoinPushdownRewriter<'a> {
                 key_column.display_name(),
                 &preagg_input_schema,
             )?;
+        }
+        if join_type == JoinType::Inner
+            && self.simple_inner_join_preaggregate_has_large_detail_key_risk(
+                aggregate,
+                join,
+                preagg_side,
+                &preagg_group_columns,
+            )?
+        {
+            return Err(AggregateJoinPushdownRejectedReason::DetailKeyPreAggregateReductionNotEvidenced);
         }
 
         let preagg_state_aliases =
@@ -664,6 +712,44 @@ impl<'a> AggregateJoinPushdownRewriter<'a> {
             | PlanNode::Window(_)
             | PlanNode::EdgeNormalize(_)
             | PlanNode::GraphAlgorithm(_) => None,
+        }
+    }
+
+    fn estimated_rewritten_output_rows(&self, node_id: NodeId) -> Option<u64> {
+        let node = self.nodes.get(node_id.index()).filter(|node| node.id == node_id)?;
+        match &node.kind {
+            PlanNode::Source(source) => match source.as_ref() {
+                crate::source::SourceNode::LocalParquet(source) => {
+                    let rows = source
+                        .files
+                        .iter()
+                        .map(|file| {
+                            file.row_group_rows.as_ref()?.iter().try_fold(0_u64, |sum, rows| sum.checked_add(*rows))
+                        })
+                        .try_fold(0_u64, |sum, rows| sum.checked_add(rows?))?;
+                    let rows = source.scan_limit.map_or(rows, |limit| rows.min(limit as u64));
+                    Some(source.max_rows.map_or(rows, |max_rows| rows.min(max_rows as u64)))
+                },
+                crate::source::SourceNode::GpuResident(_) => None,
+                crate::source::SourceNode::LiteralBatch(source) => Some(source.row_count() as u64),
+            },
+            PlanNode::Projection(projection) => self.estimated_rewritten_output_rows(projection.input),
+            PlanNode::Filter(filter) => self.estimated_rewritten_output_rows(filter.input),
+            PlanNode::Window(window) => self.estimated_rewritten_output_rows(window.input),
+            PlanNode::Sort(sort) => self.estimated_rewritten_output_rows(sort.input),
+            PlanNode::Limit(limit) => self.estimated_rewritten_output_rows(limit.input).map(|rows| {
+                limit.spec.fetch.map_or(rows.saturating_sub(limit.spec.skip as u64), |fetch| {
+                    rows.min(limit.spec.skip.saturating_add(fetch) as u64).saturating_sub(limit.spec.skip as u64)
+                })
+            }),
+            PlanNode::Union(union) => union
+                .inputs
+                .iter()
+                .try_fold(0_u64, |total, input| total.checked_add(self.estimated_rewritten_output_rows(*input)?)),
+            PlanNode::Aggregate(aggregate) if aggregate.spec.group_exprs.is_empty() => Some(1),
+            PlanNode::Aggregate(_) | PlanNode::Join(_) | PlanNode::EdgeNormalize(_) | PlanNode::GraphAlgorithm(_) => {
+                None
+            },
         }
     }
 

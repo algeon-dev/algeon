@@ -101,6 +101,231 @@ fn aggregate_join_pushdown_reduces_plain_sum_inner_join_without_semijoining_dupl
 }
 
 #[test]
+fn aggregate_join_pushdown_rejects_large_fixed_width_detail_key_preaggregate_without_reduction_evidence() {
+    let join_schema = schema(&["part_key", "supp_key", "value"]);
+    let aggregate_schema = schema(&["part_key", "sum_value"]);
+
+    let mut builder = QueryPlanBuilder::new();
+    let fact = builder.add_source(estimated_local_source_with_fields(
+        "detail_fact",
+        &["part_key", "supp_key", "value"],
+        4 * 1024 * 1024 * 1024,
+        80_000_000,
+    ));
+    let dim = builder.add_source(estimated_local_source_with_fields("filtered_dim", &["supp_key"], 16 * 1024, 1));
+    let join = builder.add_join(
+        fact,
+        dim,
+        JoinSpec::new(
+            JoinType::Inner,
+            vec![JoinKey::new(
+                ColumnRef::input(0, "supp_key", "supp_key"),
+                ColumnRef::input(1, "supp_key", "supp_key"),
+            )],
+        )
+        .with_output_projection(vec![
+            JoinOutputColumn::left(ColumnRef::input(0, "part_key", "part_key"), "part_key"),
+            JoinOutputColumn::left(ColumnRef::input(0, "supp_key", "supp_key"), "supp_key"),
+            JoinOutputColumn::left(ColumnRef::input(0, "value", "value"), "value"),
+        ])
+        .with_build_side(JoinSide::Right),
+        join_schema,
+    );
+    let aggregate = builder.add_aggregate(
+        join,
+        AggregateSpec::new(
+            vec![Expr::column("part_key")],
+            vec![AggregateExpr::new(AggregateFunction::Sum, Expr::column("value"), "sum_value")],
+        ),
+        aggregate_schema,
+    );
+    let plan = builder.finish_with_host_sink(aggregate);
+
+    let mut options = NativeOptimizerOptions::disabled();
+    options.aggregate_join_pushdown = AggregateJoinPushdownOptions::default();
+    let optimized = optimize_query_plan(plan.clone(), &options);
+
+    assert_eq!(optimized.change, NativeOptimizerChange::Unchanged);
+    assert_eq!(optimized.plan, plan);
+    assert_eq!(optimized.diagnostics.aggregate_join_pushdown.considered_count, 1);
+    assert_eq!(optimized.diagnostics.aggregate_join_pushdown.applied_count, 0);
+    assert_eq!(
+        optimized.diagnostics.aggregate_join_pushdown.candidates[0].rejected_reason,
+        Some(AggregateJoinPushdownRejectedReason::DetailKeyPreAggregateReductionNotEvidenced)
+    );
+}
+
+#[test]
+fn aggregate_join_pushdown_rejects_large_single_join_key_detail_preaggregate_without_reduction_evidence() {
+    let join_schema = schema(&["order_key", "value"]);
+    let aggregate_schema = schema(&["order_key", "sum_value"]);
+
+    let mut builder = QueryPlanBuilder::new();
+    let fact = builder.add_source(estimated_local_source_with_fields(
+        "large_detail_fact",
+        &["order_key", "value"],
+        8 * 1024 * 1024 * 1024,
+        160_000_000,
+    ));
+    let filtered_orders =
+        builder.add_source(estimated_local_source_with_fields("filtered_orders", &["order_key"], 64 * 1024, 10_000));
+    let join = builder.add_join(
+        fact,
+        filtered_orders,
+        JoinSpec::new(
+            JoinType::Inner,
+            vec![JoinKey::new(
+                ColumnRef::input(0, "order_key", "order_key"),
+                ColumnRef::input(1, "order_key", "order_key"),
+            )],
+        )
+        .with_output_projection(vec![
+            JoinOutputColumn::left(ColumnRef::input(0, "order_key", "order_key"), "order_key"),
+            JoinOutputColumn::left(ColumnRef::input(0, "value", "value"), "value"),
+        ])
+        .with_build_side(JoinSide::Right),
+        join_schema,
+    );
+    let aggregate = builder.add_aggregate(
+        join,
+        AggregateSpec::new(
+            vec![Expr::column("order_key")],
+            vec![AggregateExpr::new(AggregateFunction::Sum, Expr::column("value"), "sum_value")],
+        ),
+        aggregate_schema,
+    );
+    let plan = builder.finish_with_host_sink(aggregate);
+
+    let mut options = NativeOptimizerOptions::disabled();
+    options.aggregate_join_pushdown = AggregateJoinPushdownOptions::default();
+    let optimized = optimize_query_plan(plan.clone(), &options);
+
+    assert_eq!(optimized.change, NativeOptimizerChange::Unchanged);
+    assert_eq!(optimized.plan, plan);
+    assert_eq!(optimized.diagnostics.aggregate_join_pushdown.considered_count, 1);
+    assert_eq!(optimized.diagnostics.aggregate_join_pushdown.applied_count, 0);
+    assert_eq!(
+        optimized.diagnostics.aggregate_join_pushdown.candidates[0].rejected_reason,
+        Some(AggregateJoinPushdownRejectedReason::DetailKeyPreAggregateReductionNotEvidenced)
+    );
+}
+
+#[test]
+fn aggregate_join_pushdown_admits_fixed_width_detail_key_below_reduction_evidence_threshold() {
+    let join_schema = schema(&["order_key", "value"]);
+    let aggregate_schema = schema(&["order_key", "sum_value"]);
+
+    let mut builder = QueryPlanBuilder::new();
+    let fact = builder.add_source(estimated_local_source_with_fields(
+        "bounded_detail_fact",
+        &["order_key", "value"],
+        4 * 1024 * 1024 * 1024,
+        63_999_999,
+    ));
+    let filtered_orders =
+        builder.add_source(estimated_local_source_with_fields("small_orders", &["order_key"], 64 * 1024, 10_000));
+    let join = builder.add_join(
+        fact,
+        filtered_orders,
+        JoinSpec::new(
+            JoinType::Inner,
+            vec![JoinKey::new(
+                ColumnRef::input(0, "order_key", "order_key"),
+                ColumnRef::input(1, "order_key", "order_key"),
+            )],
+        )
+        .with_output_projection(vec![
+            JoinOutputColumn::left(ColumnRef::input(0, "order_key", "order_key"), "order_key"),
+            JoinOutputColumn::left(ColumnRef::input(0, "value", "value"), "value"),
+        ])
+        .with_build_side(JoinSide::Right),
+        join_schema,
+    );
+    let aggregate = builder.add_aggregate(
+        join,
+        AggregateSpec::new(
+            vec![Expr::column("order_key")],
+            vec![AggregateExpr::new(AggregateFunction::Sum, Expr::column("value"), "sum_value")],
+        ),
+        aggregate_schema,
+    );
+    let plan = builder.finish_with_host_sink(aggregate);
+
+    let mut options = NativeOptimizerOptions::disabled();
+    options.aggregate_join_pushdown = AggregateJoinPushdownOptions::default();
+    let optimized = optimize_query_plan(plan, &options);
+
+    assert_eq!(optimized.change, NativeOptimizerChange::Changed);
+    assert_eq!(optimized.diagnostics.aggregate_join_pushdown.considered_count, 1);
+    assert_eq!(optimized.diagnostics.aggregate_join_pushdown.applied_count, 1);
+    assert_eq!(optimized.diagnostics.aggregate_join_pushdown.candidates[0].rejected_reason, None);
+}
+
+#[test]
+fn aggregate_join_pushdown_admits_large_variable_width_group_key_preaggregate() {
+    let fact_schema = Arc::new(Schema::new(vec![
+        Field::new("store_name", DataType::Utf8, false),
+        Field::new("dim_key", DataType::Int32, false),
+        Field::new("value", DataType::Int32, false),
+    ]));
+    let join_schema = Arc::new(Schema::new(vec![
+        Field::new("store_name", DataType::Utf8, false),
+        Field::new("value", DataType::Int32, false),
+    ]));
+    let aggregate_schema = Arc::new(Schema::new(vec![
+        Field::new("store_name", DataType::Utf8, false),
+        Field::new("sum_value", DataType::Int32, false),
+    ]));
+
+    let mut builder = QueryPlanBuilder::new();
+    let fact = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::from_files(
+        vec![
+            LocalParquetFile::new("/tmp/large-store-detail.parquet")
+                .with_projected_row_group_bytes(vec![8 * 1024 * 1024 * 1024], vec![8 * 1024 * 1024 * 1024])
+                .with_row_group_rows(vec![80_000_000]),
+        ],
+        Arc::clone(&fact_schema),
+        vec!["store_name".into(), "dim_key".into(), "value".into()],
+    )));
+    let dim = builder.add_source(estimated_local_source_with_fields("filtered_dim_store", &["dim_key"], 64 * 1024, 10));
+    let join = builder.add_join(
+        fact,
+        dim,
+        JoinSpec::new(
+            JoinType::Inner,
+            vec![JoinKey::new(
+                ColumnRef::input(0, "dim_key", "dim_key"),
+                ColumnRef::input(1, "dim_key", "dim_key"),
+            )],
+        )
+        .with_output_projection(vec![
+            JoinOutputColumn::left(ColumnRef::input(0, "store_name", "store_name"), "store_name"),
+            JoinOutputColumn::left(ColumnRef::input(0, "value", "value"), "value"),
+        ])
+        .with_build_side(JoinSide::Right),
+        join_schema,
+    );
+    let aggregate = builder.add_aggregate(
+        join,
+        AggregateSpec::new(
+            vec![Expr::column("store_name")],
+            vec![AggregateExpr::new(AggregateFunction::Sum, Expr::column("value"), "sum_value")],
+        ),
+        aggregate_schema,
+    );
+    let plan = builder.finish_with_host_sink(aggregate);
+
+    let mut options = NativeOptimizerOptions::disabled();
+    options.aggregate_join_pushdown = AggregateJoinPushdownOptions::default();
+    let optimized = optimize_query_plan(plan, &options);
+
+    assert_eq!(optimized.change, NativeOptimizerChange::Changed);
+    assert_eq!(optimized.diagnostics.aggregate_join_pushdown.considered_count, 1);
+    assert_eq!(optimized.diagnostics.aggregate_join_pushdown.applied_count, 1);
+    assert_eq!(optimized.diagnostics.aggregate_join_pushdown.candidates[0].rejected_reason, None);
+}
+
+#[test]
 fn aggregate_join_pushdown_preserves_grouping_id_output_schema_for_grouping_sets() {
     let sales_schema = schema(&["store_sk", "state", "county", "net_profit"]);
     let store_schema = schema(&["store_sk"]);
@@ -258,10 +483,8 @@ fn aggregate_join_pushdown_reduces_left_join_count_on_non_preserved_side() {
     ]));
 
     let mut builder = QueryPlanBuilder::new();
-    let customer = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new(
-        "customer",
-        Arc::clone(&left_schema),
-    )));
+    let customer =
+        builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("customer", Arc::clone(&left_schema))));
     let orders =
         builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("orders", Arc::clone(&right_schema))));
     let join = builder.add_join(
@@ -416,12 +639,7 @@ fn aggregate_join_pushdown_reduces_avg_inner_join_with_explicit_sum_count_state(
     };
     assert_eq!(final_aggregate.spec.group_exprs, vec![Expr::column("reason_desc")]);
     assert_eq!(
-        final_aggregate
-            .spec
-            .aggr_exprs
-            .iter()
-            .map(|expr| expr.function)
-            .collect::<Vec<_>>(),
+        final_aggregate.spec.aggr_exprs.iter().map(|expr| expr.function).collect::<Vec<_>>(),
         vec![AggregateFunction::Sum, AggregateFunction::Sum],
         "final AVG merge must sum partial SUM and COUNT state, not average partial averages"
     );
@@ -438,12 +656,7 @@ fn aggregate_join_pushdown_reduces_avg_inner_join_with_explicit_sum_count_state(
         panic!("left input to reduced join should be the AVG state pre-aggregate");
     };
     assert_eq!(
-        preaggregate
-            .spec
-            .aggr_exprs
-            .iter()
-            .map(|expr| expr.function)
-            .collect::<Vec<_>>(),
+        preaggregate.spec.aggr_exprs.iter().map(|expr| expr.function).collect::<Vec<_>>(),
         vec![AggregateFunction::Sum, AggregateFunction::Count]
     );
     assert_eq!(
@@ -474,21 +687,13 @@ fn aggregate_join_pushdown_splits_large_union_before_small_dimension_join_preagg
         10_000_000,
     ));
     let sales_union = builder.add_union(vec![sales_a, sales_b], Arc::clone(&branch_schema));
-    let date_dim = builder.add_source(estimated_local_source_with_fields(
-        "date_dim",
-        &["date_sk"],
-        1024 * 1024,
-        365,
-    ));
+    let date_dim = builder.add_source(estimated_local_source_with_fields("date_dim", &["date_sk"], 1024 * 1024, 365));
     let date_join = builder.add_join(
         sales_union,
         date_dim,
         JoinSpec::new(
             JoinType::Inner,
-            vec![JoinKey::new(
-                ColumnRef::input(0, "date_sk", "date_sk"),
-                ColumnRef::input(1, "date_sk", "date_sk"),
-            )],
+            vec![JoinKey::new(ColumnRef::input(0, "date_sk", "date_sk"), ColumnRef::input(1, "date_sk", "date_sk"))],
         )
         .with_output_projection(vec![
             JoinOutputColumn::left(ColumnRef::input(0, "store_sk", "store_sk"), "store_sk"),
@@ -497,12 +702,8 @@ fn aggregate_join_pushdown_splits_large_union_before_small_dimension_join_preagg
         .with_build_side(JoinSide::Right),
         date_join_schema,
     );
-    let store = builder.add_source(estimated_local_source_with_fields(
-        "store",
-        &["store_sk", "store_id"],
-        16 * 1024,
-        1_000,
-    ));
+    let store =
+        builder.add_source(estimated_local_source_with_fields("store", &["store_sk", "store_id"], 16 * 1024, 1_000));
     let store_join = builder.add_join(
         date_join,
         store,
@@ -570,19 +771,13 @@ fn aggregate_join_pushdown_splits_large_union_before_small_dimension_join_preagg
 
     let mut replayed_date_input = None;
     for branch_preaggregate_id in &partial_union.inputs {
-        let PlanNode::Aggregate(branch_preaggregate) = &optimized
-            .plan
-            .node(*branch_preaggregate_id)
-            .expect("branch pre-aggregate should exist")
-            .kind
+        let PlanNode::Aggregate(branch_preaggregate) =
+            &optimized.plan.node(*branch_preaggregate_id).expect("branch pre-aggregate should exist").kind
         else {
             panic!("partial union input should be a branch pre-aggregate");
         };
-        let PlanNode::Join(branch_date_join) = &optimized
-            .plan
-            .node(branch_preaggregate.input)
-            .expect("branch pre-aggregate input should exist")
-            .kind
+        let PlanNode::Join(branch_date_join) =
+            &optimized.plan.node(branch_preaggregate.input).expect("branch pre-aggregate input should exist").kind
         else {
             panic!("branch pre-aggregate should consume a branch-local date join");
         };
@@ -618,10 +813,8 @@ fn aggregate_join_pushdown_does_not_split_union_when_any_branch_size_is_unknown(
         512 * 1024 * 1024,
         10_000_000,
     ));
-    let unknown_sales = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new(
-        "unknown_sales",
-        Arc::clone(&branch_schema),
-    )));
+    let unknown_sales = builder
+        .add_source(SourceNode::GpuResident(GpuResidentSource::new("unknown_sales", Arc::clone(&branch_schema))));
     let sales_union = builder.add_union(vec![known_sales, unknown_sales], Arc::clone(&branch_schema));
     let date_dim = builder.add_source(estimated_local_source_with_fields(
         "date_dim_unknown_branch",
@@ -634,10 +827,7 @@ fn aggregate_join_pushdown_does_not_split_union_when_any_branch_size_is_unknown(
         date_dim,
         JoinSpec::new(
             JoinType::Inner,
-            vec![JoinKey::new(
-                ColumnRef::input(0, "date_sk", "date_sk"),
-                ColumnRef::input(1, "date_sk", "date_sk"),
-            )],
+            vec![JoinKey::new(ColumnRef::input(0, "date_sk", "date_sk"), ColumnRef::input(1, "date_sk", "date_sk"))],
         )
         .with_output_projection(vec![
             JoinOutputColumn::left(ColumnRef::input(0, "store_sk", "store_sk"), "store_sk"),
@@ -695,11 +885,8 @@ fn aggregate_join_pushdown_does_not_split_union_when_any_branch_size_is_unknown(
     else {
         panic!("final aggregate should consume the reduced store join");
     };
-    let PlanNode::Aggregate(preaggregate) = &optimized
-        .plan
-        .node(store_join.inputs[0])
-        .expect("store join should consume the date pre-aggregate")
-        .kind
+    let PlanNode::Aggregate(preaggregate) =
+        &optimized.plan.node(store_join.inputs[0]).expect("store join should consume the date pre-aggregate").kind
     else {
         panic!("store join should consume the unsplit date pre-aggregate");
     };

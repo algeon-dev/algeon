@@ -27,7 +27,22 @@ pub(crate) struct SharedSubplanMaterializationResult {
     pub diagnostics: SharedSubplanMaterializationDiagnostics,
 }
 
-pub(crate) fn optimize_shared_subplan_materialization(
+pub(crate) fn optimize_scalar_aggregate_from_grouped_aggregate_if_enabled(
+    plan: QueryPlan,
+    options: &SharedSubplanMaterializationOptions,
+) -> SharedSubplanMaterializationResult {
+    if options.enabled {
+        optimize_scalar_aggregate_from_grouped_aggregate(plan)
+    } else {
+        SharedSubplanMaterializationResult {
+            plan,
+            change: super::NativeOptimizerChange::Unchanged,
+            diagnostics: SharedSubplanMaterializationDiagnostics::default(),
+        }
+    }
+}
+
+pub(crate) fn optimize_shared_subplan_materialization_without_scalar_derivation(
     plan: QueryPlan,
     options: &SharedSubplanMaterializationOptions,
 ) -> SharedSubplanMaterializationResult {
@@ -39,7 +54,11 @@ pub(crate) fn optimize_shared_subplan_materialization(
         };
     }
 
-    let scalar_derivation = optimize_scalar_aggregate_from_grouped_aggregate(plan);
+    let scalar_derivation = SharedSubplanMaterializationResult {
+        plan,
+        change: super::NativeOptimizerChange::Unchanged,
+        diagnostics: SharedSubplanMaterializationDiagnostics::default(),
+    };
     let discovery = discover_shared_subplan_materialization_candidates(&scalar_derivation.plan);
     if discovery.families.is_empty() {
         if scalar_derivation.change.changed() || !scalar_derivation.diagnostics.is_empty() {

@@ -9,12 +9,14 @@ pub(in crate::optimizer) struct AggregateJoinPushdownPolicy {
     union_preagg_min_known_union_bytes: u64,
     union_preagg_max_duplicated_other_bytes: u64,
     union_preagg_min_union_to_duplicated_other_ratio: u64,
+    simple_inner_detail_preagg_min_input_rows: u64,
 }
 
 impl AggregateJoinPushdownPolicy {
     pub(in crate::optimizer) const DEFAULT_UNION_PREAGG_MIN_KNOWN_UNION_BYTES: u64 = 128 * 1024 * 1024;
     pub(in crate::optimizer) const DEFAULT_UNION_PREAGG_MAX_DUPLICATED_OTHER_BYTES: u64 = 64 * 1024 * 1024;
     pub(in crate::optimizer) const DEFAULT_UNION_PREAGG_MIN_UNION_TO_DUPLICATED_OTHER_RATIO: u64 = 4;
+    pub(in crate::optimizer) const DEFAULT_SIMPLE_INNER_DETAIL_PREAGG_MIN_INPUT_ROWS: u64 = 64_000_000;
 
     pub(in crate::optimizer) fn join_union_preaggregate_admitted(
         self,
@@ -30,6 +32,13 @@ impl AggregateJoinPushdownPolicy {
             && known_union_bytes
                 >= duplicated_other_bytes.saturating_mul(self.union_preagg_min_union_to_duplicated_other_ratio)
     }
+
+    pub(in crate::optimizer) fn simple_inner_detail_preaggregate_needs_reduction_evidence(
+        self,
+        input_rows: u64,
+    ) -> bool {
+        input_rows >= self.simple_inner_detail_preagg_min_input_rows
+    }
 }
 
 impl Default for AggregateJoinPushdownPolicy {
@@ -39,6 +48,7 @@ impl Default for AggregateJoinPushdownPolicy {
             union_preagg_max_duplicated_other_bytes: Self::DEFAULT_UNION_PREAGG_MAX_DUPLICATED_OTHER_BYTES,
             union_preagg_min_union_to_duplicated_other_ratio:
                 Self::DEFAULT_UNION_PREAGG_MIN_UNION_TO_DUPLICATED_OTHER_RATIO,
+            simple_inner_detail_preagg_min_input_rows: Self::DEFAULT_SIMPLE_INNER_DETAIL_PREAGG_MIN_INPUT_ROWS,
         }
     }
 }
@@ -96,5 +106,17 @@ mod tests {
         let policy = AggregateJoinPushdownPolicy::default();
 
         assert!(!policy.join_union_preaggregate_admitted(u64::MAX, u64::MAX, 2));
+    }
+
+    #[test]
+    fn simple_inner_detail_preaggregate_requires_evidence_only_for_large_inputs() {
+        let policy = AggregateJoinPushdownPolicy::default();
+
+        assert!(!policy.simple_inner_detail_preaggregate_needs_reduction_evidence(
+            AggregateJoinPushdownPolicy::DEFAULT_SIMPLE_INNER_DETAIL_PREAGG_MIN_INPUT_ROWS - 1
+        ));
+        assert!(policy.simple_inner_detail_preaggregate_needs_reduction_evidence(
+            AggregateJoinPushdownPolicy::DEFAULT_SIMPLE_INNER_DETAIL_PREAGG_MIN_INPUT_ROWS
+        ));
     }
 }

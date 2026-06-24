@@ -63,6 +63,212 @@ fn bounded_native_query_applies_hash_join_build_dynamic_filter_to_probe_source()
 }
 
 #[test]
+fn bounded_native_query_applies_post_decode_filter_to_shared_local_source_frame() {
+    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let dir = unique_temp_dir("nexus-query-engine-bounded-shared-source-post-decode-dynamic-filter");
+    let part_path = dir.join("part.parquet");
+    let partsupp_path = dir.join("partsupp.parquet");
+    let supplier_path = dir.join("supplier.parquet");
+    let part_schema = write_single_i32_parquet(&part_path, "p_partkey", &[1, 3]);
+    let partsupp_schema = write_partsupp_dynamic_filter_parquet(&partsupp_path);
+    let supplier_schema = write_single_i32_parquet(&supplier_path, "s_suppkey", &[10, 20, 30]);
+    let result_schema = Arc::new(Schema::new(vec![
+        Field::new("p_partkey", DataType::Int32, false),
+        Field::new("ps_supplycost", DataType::Int32, false),
+    ]));
+    let partsupp_result_schema = Arc::new(Schema::new(vec![
+        Field::new("ps_partkey", DataType::Int32, false),
+        Field::new("ps_supplycost", DataType::Int32, false),
+    ]));
+
+    let mut builder = QueryPlanBuilder::new();
+    let part = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::from_files(
+        vec![
+            LocalParquetFile::new(&part_path)
+                .with_file_size_bytes(fs::metadata(&part_path).unwrap().len())
+                .with_row_group_rows(vec![2]),
+        ],
+        Arc::clone(&part_schema),
+        vec!["p_partkey".to_string()],
+    )));
+    let partsupp = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::from_files(
+        vec![
+            LocalParquetFile::new(&partsupp_path)
+                .with_file_size_bytes(fs::metadata(&partsupp_path).unwrap().len())
+                .with_row_group_rows(vec![4]),
+        ],
+        Arc::clone(&partsupp_schema),
+        vec!["ps_partkey".to_string(), "ps_suppkey".to_string(), "ps_supplycost".to_string()],
+    )));
+    let supplier = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::from_files(
+        vec![
+            LocalParquetFile::new(&supplier_path)
+                .with_file_size_bytes(fs::metadata(&supplier_path).unwrap().len())
+                .with_row_group_rows(vec![3]),
+        ],
+        Arc::clone(&supplier_schema),
+        vec!["s_suppkey".to_string()],
+    )));
+    let part_partsupp_join = builder.add_join(
+        part,
+        partsupp,
+        JoinSpec::new(
+            JoinType::Inner,
+            vec![JoinKey::new(
+                nexus_query_engine::ColumnRef::input(0, "p_partkey", "p_partkey"),
+                nexus_query_engine::ColumnRef::input(1, "ps_partkey", "ps_partkey"),
+            )],
+        )
+        .with_output_projection(vec![
+            JoinOutputColumn::left(nexus_query_engine::ColumnRef::input(0, "p_partkey", "p_partkey"), "p_partkey"),
+            JoinOutputColumn::right(
+                nexus_query_engine::ColumnRef::input(1, "ps_supplycost", "ps_supplycost"),
+                "ps_supplycost",
+            ),
+        ])
+        .with_build_side(JoinSide::Left),
+        Arc::clone(&result_schema),
+    );
+    let supplier_partsupp = builder.add_join(
+        supplier,
+        partsupp,
+        JoinSpec::new(
+            JoinType::Inner,
+            vec![JoinKey::new(
+                nexus_query_engine::ColumnRef::input(0, "s_suppkey", "s_suppkey"),
+                nexus_query_engine::ColumnRef::input(1, "ps_suppkey", "ps_suppkey"),
+            )],
+        )
+        .with_output_projection(vec![
+            JoinOutputColumn::right(nexus_query_engine::ColumnRef::input(1, "ps_partkey", "ps_partkey"), "ps_partkey"),
+            JoinOutputColumn::right(
+                nexus_query_engine::ColumnRef::input(1, "ps_supplycost", "ps_supplycost"),
+                "ps_supplycost",
+            ),
+        ])
+        .with_build_side(JoinSide::Left),
+        Arc::clone(&partsupp_result_schema),
+    );
+    let partsupp_min = builder.add_aggregate(
+        supplier_partsupp,
+        AggregateSpec::new(
+            vec![Expr::column("ps_partkey")],
+            vec![AggregateExpr::new(AggregateFunction::Min, Expr::column("ps_supplycost"), "min_supplycost")],
+        ),
+        Arc::new(Schema::new(vec![
+            Field::new("ps_partkey", DataType::Int32, false),
+            Field::new("min_supplycost", DataType::Int32, false),
+        ])),
+    );
+    let final_join = builder.add_join(
+        part_partsupp_join,
+        partsupp_min,
+        JoinSpec::new(
+            JoinType::Inner,
+            vec![
+                JoinKey::new(
+                    nexus_query_engine::ColumnRef::input(0, "p_partkey", "p_partkey"),
+                    nexus_query_engine::ColumnRef::input(1, "ps_partkey", "ps_partkey"),
+                ),
+                JoinKey::new(
+                    nexus_query_engine::ColumnRef::input(0, "ps_supplycost", "ps_supplycost"),
+                    nexus_query_engine::ColumnRef::input(1, "min_supplycost", "min_supplycost"),
+                ),
+            ],
+        )
+        .with_output_projection(vec![
+            JoinOutputColumn::left(nexus_query_engine::ColumnRef::input(0, "p_partkey", "p_partkey"), "p_partkey"),
+            JoinOutputColumn::left(
+                nexus_query_engine::ColumnRef::input(0, "ps_supplycost", "ps_supplycost"),
+                "ps_supplycost",
+            ),
+        ])
+        .with_build_side(JoinSide::Right),
+        Arc::clone(&result_schema),
+    );
+    let plan = builder.finish_with_host_sink(final_join);
+    let optimizer_options = nexus_query_engine::NativeOptimizerOptions {
+        dynamic_filter_route_discovery: nexus_query_engine::DynamicFilterRouteDiscoveryOptions::default(),
+        join_build_side_selection: nexus_query_engine::JoinBuildSideSelectionOptions::disabled(),
+        ..nexus_query_engine::NativeOptimizerOptions::disabled()
+    };
+    let optimized = nexus_query_engine::optimize_query_plan(plan, &optimizer_options);
+    assert!(optimized.plan.dynamic_filter_routes().iter().any(|route| {
+        route.consumer_columns == ["ps_partkey".to_string()]
+            && route.consumer_lowering == nexus_query_engine::DynamicFilterConsumerLowering::PostDecodeOnly
+            && matches!(
+                route.consumer,
+                nexus_query_engine::DynamicFilterConsumer::LocalParquetSource { source_node_id }
+                    if source_node_id == partsupp
+            )
+    }));
+    let context = ExecutionContext::builder()
+        .with_shared_runtime(Arc::clone(&runtime))
+        .with_memory_control_policy(MemoryControlPolicy::Bounded {
+            device_budget_bytes: 1024 * 1024,
+            max_source_chunk_bytes: 1024 * 1024,
+            max_row_groups_per_chunk: 1,
+            max_retry_attempts: 1,
+            min_retry_chunk_row_groups: 1,
+        })
+        .build()
+        .unwrap();
+
+    let analysis = optimized.plan.capability_analysis();
+    let pipeline = nexus_query_engine::compile_pipeline(&optimized.plan, &analysis).unwrap();
+    let scheduler = nexus_query_engine::exec::CompiledPipelineScheduler::new(&pipeline).unwrap();
+    let mut metrics = QueryMetrics::default();
+    let gpu_inputs = GpuResidentInputMap::new();
+    let output = {
+        let mut executor = nexus_query_engine::exec::CompiledGpuTaskExecutor::new(
+            &context,
+            &optimized.plan,
+            &pipeline,
+            &gpu_inputs,
+            &mut metrics,
+        )
+        .unwrap();
+        scheduler.run(&mut executor).unwrap();
+        executor.take_host_output().unwrap()
+    };
+    assert_eq!(output.num_rows(), 2);
+    assert_eq!(int32_array(&output, 0).values().as_ref(), &[1, 3]);
+    assert_eq!(int32_array(&output, 1).values().as_ref(), &[5, 4]);
+    assert!(metrics.dynamic_filter_runtime_rows.iter().any(|row| {
+        row.event == "applied"
+            && row.consumer_kind == "local_parquet_source"
+            && row.consumer_node_id == partsupp.to_string()
+            && row.consumer_lowering == "post_decode_only"
+    }));
+    let source_post_decode_rows = metrics
+        .dynamic_filter_runtime_rows
+        .iter()
+        .filter(|row| {
+            row.event == "applied_post_decode"
+                && row.consumer_kind == "local_parquet_source"
+                && row.consumer_node_id == partsupp.to_string()
+                && row.consumer_lowering == "post_decode_only"
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        source_post_decode_rows.len(),
+        1,
+        "shared source post-decode dynamic filter should be materialized once for the shared frame"
+    );
+    assert!(source_post_decode_rows.iter().any(|row| {
+        row.event == "applied_post_decode"
+            && row.consumer_kind == "local_parquet_source"
+            && row.consumer_node_id == partsupp.to_string()
+            && row.consumer_lowering == "post_decode_only"
+            && row.post_decode_rows_before == Some(4)
+            && row.post_decode_rows_after == Some(2)
+    }));
+    assert_eq!(metrics.dynamic_filter_source_post_decode_rows_filtered, 2);
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
 fn bounded_native_query_batches_dynamic_reader_predicate_probe_source_chunks() {
     let runtime = Arc::new(cudf::Runtime::new().unwrap());
     let dir = unique_temp_dir("nexus-query-engine-bounded-root-hash-join-batched-dynamic-reader-filter");
