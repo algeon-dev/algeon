@@ -1,15 +1,11 @@
 use super::*;
 
 pub(super) fn is_retryable_final_sort_error(error: &QueryError) -> bool {
-    matches!(error.code(), QueryErrorCode::MemoryReservationFailed | QueryErrorCode::CudfResourceExhausted)
+    crate::exec::retry::is_retryable_resource_error(error)
 }
 
 pub(super) fn record_final_sort_retry_error(error: &QueryError, metrics: &mut QueryMetrics) {
-    match error.code() {
-        QueryErrorCode::MemoryReservationFailed => metrics.record_retry_reservation_failure(),
-        QueryErrorCode::CudfResourceExhausted => metrics.record_retry_resource_exhausted(),
-        _ => {},
-    }
+    crate::exec::retry::record_retryable_resource_error(error, metrics);
 }
 
 pub(super) fn final_sort_retry_facts(retry_action: &'static str, metrics: &QueryMetrics) -> RetryFacts {

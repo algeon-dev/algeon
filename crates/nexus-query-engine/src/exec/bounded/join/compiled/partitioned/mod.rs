@@ -18,6 +18,12 @@ pub(super) use mixed_keyed::{
     execute_compiled_partitioned_mixed_keyed_residual_join_materialize_preserving_stream,
 };
 
+#[derive(Clone, Copy)]
+pub(super) struct PartitionedJoinRowRange {
+    pub(super) offset: usize,
+    pub(super) len: usize,
+}
+
 pub(super) fn validate_partitioned_hash_equi_join(node: &JoinNode) -> Result<()> {
     validate_executable_join_subset(node)?;
     if matches!(node.spec.join_type, JoinType::Inner | JoinType::Left | JoinType::Full)
@@ -231,26 +237,30 @@ pub(super) fn release_partitioned_join_side(
     reservations.release(reservation, metrics);
 }
 
-pub(super) fn slice_partition_join_side(
+pub(super) fn slice_partition_join_side_range(
     context: &ExecutionContext,
     node_id: NodeId,
     side: JoinSide,
     build_side: JoinSide,
     input: &PartitionedJoinSide,
     partition: usize,
+    range: PartitionedJoinRowRange,
     reservations: &mut ReservationTracker,
     metrics: &mut QueryMetrics,
 ) -> Result<BoundedJoinSideFrame> {
-    let start = *input.offsets.get(partition).ok_or_else(|| {
-        unsupported_bounded_shape(
-            "partitioned join side is missing a partition start offset",
-            "partition_offset_missing",
+    let (partition_start, partition_len) = partition_bounds(input, partition)?;
+    if range.offset > partition_len || range.len > partition_len.saturating_sub(range.offset) {
+        return Err(unsupported_bounded_shape(
+            "partitioned join retry range exceeds partition bounds",
+            "partition_retry_range_invalid",
         )
-    })?;
-    let end = *input.offsets.get(partition + 1).ok_or_else(|| {
-        unsupported_bounded_shape("partitioned join side is missing a partition end offset", "partition_offset_missing")
-    })?;
-    let len = end.saturating_sub(start);
+        .with_fact("partition", partition)
+        .with_fact("partition_rows", partition_len)
+        .with_fact("range_offset", range.offset)
+        .with_fact("range_rows", range.len));
+    }
+    let start = partition_start.saturating_add(range.offset);
+    let len = range.len;
     let overrides = execution_overrides(context);
     let frame = input.frame.with_execution(&overrides).slice(start, len).map_err(|error| {
         QueryError::from_cudf(
@@ -271,6 +281,24 @@ pub(super) fn slice_partition_join_side(
         metrics,
     )?;
     Ok(BoundedJoinSideFrame { frame, _reservation: reservation, rows: len as u64, bytes })
+}
+
+pub(super) fn partition_row_range(input: &PartitionedJoinSide, partition: usize) -> Result<PartitionedJoinRowRange> {
+    let (_, len) = partition_bounds(input, partition)?;
+    Ok(PartitionedJoinRowRange { offset: 0, len })
+}
+
+fn partition_bounds(input: &PartitionedJoinSide, partition: usize) -> Result<(usize, usize)> {
+    let start = *input.offsets.get(partition).ok_or_else(|| {
+        unsupported_bounded_shape(
+            "partitioned join side is missing a partition start offset",
+            "partition_offset_missing",
+        )
+    })?;
+    let end = *input.offsets.get(partition + 1).ok_or_else(|| {
+        unsupported_bounded_shape("partitioned join side is missing a partition end offset", "partition_offset_missing")
+    })?;
+    Ok((start, end.saturating_sub(start)))
 }
 
 pub(super) fn partitioned_streaming_probe_supported(node: &JoinNode) -> bool {

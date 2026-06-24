@@ -1,7 +1,7 @@
 use super::*;
 
 pub(in crate::exec::bounded) fn is_retryable_chunk_error(error: &QueryError) -> bool {
-    matches!(error.code(), QueryErrorCode::MemoryReservationFailed | QueryErrorCode::CudfResourceExhausted)
+    crate::exec::retry::is_retryable_resource_error(error)
 }
 
 pub(in crate::exec::bounded::chunks) fn is_prefetch_chunk_error(error: &QueryError) -> bool {
@@ -10,11 +10,7 @@ pub(in crate::exec::bounded::chunks) fn is_prefetch_chunk_error(error: &QueryErr
 }
 
 pub(in crate::exec) fn record_chunk_retry_error(error: &QueryError, metrics: &mut QueryMetrics) {
-    match error.code() {
-        QueryErrorCode::MemoryReservationFailed => metrics.record_retry_reservation_failure(),
-        QueryErrorCode::CudfResourceExhausted => metrics.record_retry_resource_exhausted(),
-        _ => {},
-    }
+    crate::exec::retry::record_retryable_resource_error(error, metrics);
 }
 
 pub(in crate::exec::bounded) fn split_retryable_chunk(

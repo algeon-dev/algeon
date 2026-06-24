@@ -194,6 +194,7 @@ pub(in crate::exec::bounded) struct PartitionedHashEquiJoinFrameStreamProbeState
     inputs: ResidentFrameStreamPayload,
     partition_count: usize,
     partition_target_bytes: u64,
+    strategy_options: KeyedHashJoinStrategyOptions,
     probe_columns: Vec<String>,
     probe_keys: Vec<String>,
 }

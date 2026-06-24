@@ -97,6 +97,7 @@ fn execute_compiled_partitioned_mixed_keyed_residual_join_materialize_output(
             strategy_options,
             partition_count,
             next_partition: 0,
+            pending_outputs: VecDeque::new(),
             original,
             output_summary: PartitionedJoinOutputSummary::default(),
             metrics_recorded: false,
@@ -393,6 +394,7 @@ struct PartitionedMixedJoinStreamSource {
     strategy_options: KeyedHashJoinStrategyOptions,
     partition_count: usize,
     next_partition: usize,
+    pending_outputs: VecDeque<ResidentGpuFrame>,
     original: PartitionedJoinInputStats,
     output_summary: PartitionedJoinOutputSummary,
     metrics_recorded: bool,
@@ -423,64 +425,55 @@ impl ResidentFrameStreamSource for PartitionedMixedJoinStreamSource {
         reservations: &mut ReservationTracker,
         metrics: &mut QueryMetrics,
     ) -> Option<Result<ResidentGpuFrame>> {
-        if self.next_partition >= self.partition_count {
-            self.record_success_metrics(metrics);
-            self.release(reservations, metrics);
-            return None;
-        }
-        let partition = self.next_partition;
-        self.next_partition += 1;
-        let left_partitioned =
-            self.left_partitioned.as_ref().expect("left partitioned side released before stream end");
-        let right_partitioned =
-            self.right_partitioned.as_ref().expect("right partitioned side released before stream end");
-        let left_part = match slice_partition_join_side(
-            &self.context,
-            self.node_id,
-            JoinSide::Left,
-            self.node.spec.build_side,
-            left_partitioned,
-            partition,
-            reservations,
-            metrics,
-        ) {
-            Ok(partition) => partition,
-            Err(error) => return Some(Err(error)),
-        };
-        let right_part = match slice_partition_join_side(
-            &self.context,
-            self.node_id,
-            JoinSide::Right,
-            self.node.spec.build_side,
-            right_partitioned,
-            partition,
-            reservations,
-            metrics,
-        ) {
-            Ok(partition) => partition,
-            Err(error) => {
-                release_bounded_join_side_frame(left_part, reservations, metrics);
-                return Some(Err(error));
-            },
-        };
-        match materialize_partitioned_mixed_keyed_residual_join_partition(
-            &self.context,
-            self.node_id,
-            &self.node,
-            left_part,
-            right_part,
-            reservations,
-            metrics,
-        ) {
-            Ok(output) => {
-                self.output_summary.record_partition_output(&output);
-                Some(Ok(output.frame))
-            },
-            Err(error) => Some(Err(error)),
+        loop {
+            if let Some(output) = self.pending_outputs.pop_front() {
+                return Some(Ok(output));
+            }
+            if self.next_partition >= self.partition_count {
+                self.record_success_metrics(metrics);
+                self.release(reservations, metrics);
+                return None;
+            }
+            let partition = self.next_partition;
+            self.next_partition += 1;
+            let left_partitioned =
+                self.left_partitioned.as_ref().expect("left partitioned side released before stream end");
+            let right_partitioned =
+                self.right_partitioned.as_ref().expect("right partitioned side released before stream end");
+            let plan = PartitionedJoinDriverPlan {
+                context: &self.context,
+                node_id: self.node_id,
+                node: &self.node,
+                strategy: PARTITIONED_MIXED_KEYED_RESIDUAL_STRATEGY,
+                strategy_options: self.strategy_options,
+                partition_count: self.partition_count,
+                partition_target_bytes: partitioned_join_target_bytes_for_context(&self.context),
+            };
+            match materialize_partitioned_join_partition_with_retry(
+                plan,
+                left_partitioned,
+                right_partitioned,
+                partition,
+                reservations,
+                metrics,
+                &mut materialize_partitioned_mixed_keyed_residual_join_partition,
+            ) {
+                Ok(outputs) => {
+                    for output in outputs {
+                        self.output_summary.record_partition_output(&output);
+                        self.pending_outputs.push_back(output.frame);
+                    }
+                },
+                Err(error) => {
+                    self.release(reservations, metrics);
+                    return Some(Err(error));
+                },
+            }
         }
     }
 
     fn release(&mut self, reservations: &mut ReservationTracker, metrics: &mut QueryMetrics) {
+        release_streamed_join_outputs_reverse(reservations, self.pending_outputs.drain(..).collect(), metrics);
         if let Some(left) = self.left_partitioned.take() {
             release_partitioned_join_side(left, reservations, metrics);
         }
