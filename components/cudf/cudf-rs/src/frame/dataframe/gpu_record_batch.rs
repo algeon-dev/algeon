@@ -8,7 +8,7 @@ use crate::{
     },
     interop::{
         arrow_device::DeviceArrowTableExport,
-        arrow_host::{ArrowHostSchema, validate_arrow_schema},
+        arrow_host::{ArrowHostSchema, cudf_dtype_can_export_to_arrow_type, validate_arrow_schema},
     },
     runtime::ExecutionPlacement,
 };
@@ -30,9 +30,9 @@ impl GpuRecordBatch {
     /// Validate and wrap a GPU DataFrame with an external Arrow schema.
     ///
     /// Validation is copy-free. Field count, field names in order, and
-    /// Arrow-to-cudf logical dtypes must match the DataFrame schema. Arrow
-    /// nullability remains external schema metadata; it is not folded into the
-    /// cudf physical dtype.
+    /// Arrow-to-cudf logical dtypes must be materializable from the DataFrame
+    /// schema under the host-copy export contract. Arrow nullability remains
+    /// external schema metadata; it is not folded into the cudf physical dtype.
     pub fn new(frame: DataFrame, schema: SchemaRef) -> Result<Self> {
         let mapped_schema = validate_frame_schema(&frame, &schema)?;
         Ok(Self { frame, schema, mapped_schema })
@@ -126,7 +126,7 @@ fn validate_frame_schema(frame: &DataFrame, schema_ref: &SchemaRef) -> Result<Ar
 
         let frame_dtype = frame.series(frame_name)?.dtype().map_err(|error| error.reanchor_if_needed(operation))?;
         let schema_dtype = field.cudf_data_type();
-        if frame_dtype != schema_dtype {
+        if !cudf_dtype_can_export_to_arrow_type(frame_dtype, field.arrow_data_type()) {
             return Err(Error::new_with(
                 ErrorCode::UnsupportedDtype,
                 operation,

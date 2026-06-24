@@ -553,6 +553,7 @@ impl Expr {
             Expr::BinaryOp { lhs, op, rhs } => {
                 let left = lhs.eval_with_context(ctx)?;
                 let right = rhs.eval_with_context(ctx)?;
+                let (left, right) = align_decimal_binary_storage(left, right, ctx)?;
                 let lv = left.view()?;
                 let rv = right.view()?;
                 let out_type =
@@ -815,6 +816,58 @@ impl Expr {
             },
         }
     }
+}
+
+fn align_decimal_binary_storage(left: Series, right: Series, ctx: &ExprEvalContext<'_>) -> Result<(Series, Series)> {
+    let left_type = left.dtype()?;
+    let right_type = right.dtype()?;
+    if !(left_type.id().is_decimal() && right_type.id().is_decimal()) || left_type.id() == right_type.id() {
+        return Ok((left, right));
+    }
+
+    let common_storage = common_decimal_storage_type(left_type.id(), right_type.id(), ctx.operation)?;
+    let left_target = DataType::fixed_point(common_storage, left_type.scale());
+    let right_target = DataType::fixed_point(common_storage, right_type.scale());
+    Ok((
+        cast_series_to_binary_operand_dtype(left, left_target, ctx)?,
+        cast_series_to_binary_operand_dtype(right, right_target, ctx)?,
+    ))
+}
+
+fn common_decimal_storage_type(left: TypeId, right: TypeId, operation: &'static str) -> Result<TypeId> {
+    match (decimal_storage_rank(left), decimal_storage_rank(right)) {
+        (Some(left_rank), Some(right_rank)) => Ok(match left_rank.max(right_rank) {
+            0 => TypeId::Decimal32,
+            1 => TypeId::Decimal64,
+            _ => TypeId::Decimal128,
+        }),
+        _ => Err(Error::new_with(
+            ErrorCode::TypeMismatch,
+            operation,
+            "decimal binary storage alignment requires decimal operands",
+        )
+        .with_detail("left_type_id", left.to_string())
+        .with_detail("right_type_id", right.to_string())),
+    }
+}
+
+fn decimal_storage_rank(type_id: TypeId) -> Option<u8> {
+    match type_id {
+        TypeId::Decimal32 => Some(0),
+        TypeId::Decimal64 => Some(1),
+        TypeId::Decimal128 => Some(2),
+        _ => None,
+    }
+}
+
+fn cast_series_to_binary_operand_dtype(series: Series, target: DataType, ctx: &ExprEvalContext<'_>) -> Result<Series> {
+    if series.dtype()? == target {
+        return Ok(series);
+    }
+    let cv = series.view()?;
+    let column = unary::cast_impl(&cv, &target, &ctx.output_domain, ctx.exec_options(), ctx.operation)?;
+    drop(cv);
+    ctx.wrap_column(column)
 }
 
 fn apply_datetime_offset(

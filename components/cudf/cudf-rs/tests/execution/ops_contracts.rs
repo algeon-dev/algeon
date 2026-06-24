@@ -3,7 +3,7 @@ mod datetime_tests;
 mod join_hash_join_execution_tests {
     use cudf::{
         ExecutionOverrides, Runtime,
-        core::Table,
+        core::{ErrorCode, ErrorKind, Table},
         ops::{
             ast::AstExpression,
             join::{self, HashJoin, HashJoinOptions, JoinType, NullEquality},
@@ -284,6 +284,22 @@ mod join_hash_join_execution_tests {
         assert_eq!(hash_join.build_keys().testing_execution_domain_stream_value(), retained_build_stream);
         assert_eq!(last_exec_stream_value(), expected_stream);
         assert_eq!(last_exec_mr_value(), expected_mr);
+    }
+
+    #[test]
+    fn hash_join_pre_build_reservation_contract_is_explicitly_unsupported_until_libcudf_exposes_sizing() {
+        let build_keys = Table::from_columns(vec![explicit_i32_column(&[2, 2, 4], 12019)]).unwrap();
+        let err = HashJoin::pre_build_reservation_size_bytes(
+            &build_keys,
+            HashJoinOptions::new().null_equality(NullEquality::Equal),
+        )
+        .expect_err("libcudf does not expose pre-build reusable hash-join sizing yet");
+
+        assert_eq!(err.code(), ErrorCode::UnsupportedOperation);
+        assert_eq!(err.kind(), ErrorKind::Unsupported);
+        assert_eq!(err.operation(), "hash_join::pre_build_reservation_size_bytes_in");
+        assert_eq!(err.detail_value("reservation_contract"), Some("hash_join_pre_build_reservation_size_bytes"));
+        assert_eq!(err.detail_value("reason"), Some("libcudf_pre_build_hash_join_sizing_unavailable"));
     }
 
     #[test]

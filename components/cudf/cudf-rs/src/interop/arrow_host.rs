@@ -144,7 +144,7 @@ impl ArrowHostSchema {
 ///
 /// This is a copy-free planner/schema helper. It follows the same support
 /// envelope as [`DataFrame::from_record_batch`]: numeric types, Boolean,
-/// Decimal128, Date32, timezone-free timestamps, Utf8, and LargeUtf8.
+/// Decimal128, Date32, timezone-free timestamps, Utf8, LargeUtf8, and Utf8View.
 pub fn cudf_dtype_from_arrow_type(dt: &ArrowDataType) -> Result<DataType> {
     cudf_dtype_from_arrow_type_in(dt, "arrow_host::cudf_dtype_from_arrow_type")
 }
@@ -167,6 +167,24 @@ pub fn is_supported_arrow_type(dt: &ArrowDataType) -> bool {
 /// Return whether this Arrow host type is a supported numeric cudf-rs type.
 pub fn is_supported_arrow_numeric_type(dt: &ArrowDataType) -> bool {
     cudf_dtype_from_arrow_type(dt).map(|dtype| dtype.id().is_numeric()).unwrap_or(false)
+}
+
+/// Return whether a cudf-rs logical dtype can materialize into the requested
+/// Arrow host type without changing the column's logical values.
+///
+/// This follows the export side of the host-copy interop contract. It is not
+/// the same as Arrow import mapping: Decimal32, Decimal64, and Decimal128 all
+/// export as Arrow Decimal128 with the same scale because libcudf retains
+/// decimal scale but not Arrow precision metadata.
+pub fn cudf_dtype_can_export_to_arrow_type(cudf_dtype: DataType, arrow_type: &ArrowDataType) -> bool {
+    match arrow_type {
+        ArrowDataType::Decimal128(_, scale) if cudf_dtype.id().is_decimal() => {
+            cudf_dtype.scale() == arrow_decimal_scale_to_cudf_scale(*scale)
+        },
+        _ => cudf_dtype_from_arrow_type(arrow_type)
+            .map(|arrow_cudf_dtype| arrow_cudf_dtype == cudf_dtype)
+            .unwrap_or(false),
+    }
 }
 
 /// Validate an Arrow schema without copying data and return cudf-rs planner metadata.
@@ -229,7 +247,7 @@ fn cudf_dtype_from_arrow_type_in(dt: &ArrowDataType, operation: &'static str) ->
         ArrowDataType::Decimal128(_, scale) => {
             DataType::fixed_point(TypeId::Decimal128, arrow_decimal_scale_to_cudf_scale(*scale))
         },
-        ArrowDataType::Utf8 | ArrowDataType::LargeUtf8 => DataType::new(TypeId::String),
+        ArrowDataType::Utf8 | ArrowDataType::LargeUtf8 | ArrowDataType::Utf8View => DataType::new(TypeId::String),
         _ => {
             return Err(Error::new_with(
                 ErrorCode::UnsupportedDtype,
@@ -368,7 +386,7 @@ impl DataFrame {
     ///   as 38)
     /// - `Date32`
     /// - `Timestamp(Second|Millisecond|Microsecond|Nanosecond, None)`
-    /// - `Utf8` / `LargeUtf8` (converted to cudf `String`)
+    /// - `Utf8` / `LargeUtf8` / `Utf8View` (converted to cudf `String`)
     ///
     /// # Errors
     ///
@@ -411,7 +429,7 @@ impl Runtime {
 /// - `Decimal128` (preserves values and scale; precision is re-exported as 38)
 /// - `Date32`
 /// - `Timestamp(Second|Millisecond|Microsecond|Nanosecond, None)`
-/// - `Utf8` / `LargeUtf8` (converted to cudf `String`)
+/// - `Utf8` / `LargeUtf8` / `Utf8View` (converted to cudf `String`)
 ///
 /// Unsupported Arrow types will return an error.
 ///
@@ -803,6 +821,7 @@ fn arrow_array_to_column(runtime: &Runtime, arr: &dyn Array, field_name: &str) -
         },
         ArrowDataType::Utf8 => string_array_to_column(runtime, arr),
         ArrowDataType::LargeUtf8 => large_string_array_to_column(runtime, arr),
+        ArrowDataType::Utf8View => string_view_array_to_column(runtime, arr),
         _ => Err(Error::new_with(
             ErrorCode::UnsupportedDtype,
             "arrow::arrow_array_to_column",
@@ -900,6 +919,31 @@ fn large_string_array_to_column(runtime: &Runtime, arr: &dyn Array) -> Result<Co
             "ensure LargeUtf8 fields are backed by Arrow LargeStringArray values",
         )
         .with_detail("arrow_type", format!("{:?}", ArrowDataType::LargeUtf8))
+        .with_detail("actual_arrow_type", format!("{:?}", arr.data_type()))
+    })?;
+
+    let values: Vec<&str> = (0..str_arr.len()).map(|i| str_arr.value(i)).collect();
+
+    match str_arr.nulls() {
+        None => runtime.column_from_strs(&values),
+        Some(null_buf) => {
+            let validity: Vec<bool> = null_buf.iter().collect();
+            runtime.column_from_strs_nullable(&values, &validity)
+        },
+    }
+}
+
+/// Convert an Arrow StringViewArray (Utf8View) to a cudf STRING Column.
+fn string_view_array_to_column(runtime: &Runtime, arr: &dyn Array) -> Result<Column> {
+    let str_arr = arr.as_string_view_opt().ok_or_else(|| {
+        error::foreign_invariant_violation(
+            "arrow::string_view_array_to_column",
+            "expected StringViewArray for Utf8View type",
+            "arrow_array",
+            "unexpected_arrow_array_layout",
+            "ensure Utf8View fields are backed by Arrow StringViewArray values",
+        )
+        .with_detail("arrow_type", format!("{:?}", ArrowDataType::Utf8View))
         .with_detail("actual_arrow_type", format!("{:?}", arr.data_type()))
     })?;
 

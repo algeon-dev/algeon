@@ -503,6 +503,23 @@ extern "C" {
         options: *const cudf_exec_options_t,
     ) -> cudf_status_t;
 
+    pub fn cudf_hash_join_pre_build_reservation_size(
+        build: cudf_table_view_handle,
+        nullable_join: cudf_nullable_join_t,
+        null_equality: cudf_null_equality_t,
+        load_factor: f64,
+        out: *mut usize,
+    ) -> cudf_status_t;
+
+    pub fn cudf_hash_join_pre_build_reservation_size_ex(
+        build: cudf_table_view_handle,
+        nullable_join: cudf_nullable_join_t,
+        null_equality: cudf_null_equality_t,
+        load_factor: f64,
+        out: *mut usize,
+        options: *const cudf_exec_options_t,
+    ) -> cudf_status_t;
+
     pub fn cudf_hash_join_destroy(handle: cudf_hash_join_handle);
 
     pub fn cudf_hash_join_device_allocated_size(handle: cudf_hash_join_handle, out: *mut usize) -> cudf_status_t;
@@ -517,6 +534,23 @@ extern "C" {
     pub fn cudf_hash_join_inner_join_ex(
         join: cudf_hash_join_handle,
         probe: cudf_table_view_handle,
+        out_left_indices: *mut cudf_column_handle,
+        out_right_indices: *mut cudf_column_handle,
+        options: *const cudf_exec_options_t,
+    ) -> cudf_status_t;
+
+    pub fn cudf_hash_join_inner_join_with_output_size(
+        join: cudf_hash_join_handle,
+        probe: cudf_table_view_handle,
+        output_size: usize,
+        out_left_indices: *mut cudf_column_handle,
+        out_right_indices: *mut cudf_column_handle,
+    ) -> cudf_status_t;
+
+    pub fn cudf_hash_join_inner_join_with_output_size_ex(
+        join: cudf_hash_join_handle,
+        probe: cudf_table_view_handle,
+        output_size: usize,
         out_left_indices: *mut cudf_column_handle,
         out_right_indices: *mut cudf_column_handle,
         options: *const cudf_exec_options_t,
@@ -550,6 +584,23 @@ extern "C" {
         options: *const cudf_exec_options_t,
     ) -> cudf_status_t;
 
+    pub fn cudf_hash_join_left_join_with_output_size(
+        join: cudf_hash_join_handle,
+        probe: cudf_table_view_handle,
+        output_size: usize,
+        out_left_indices: *mut cudf_column_handle,
+        out_right_indices: *mut cudf_column_handle,
+    ) -> cudf_status_t;
+
+    pub fn cudf_hash_join_left_join_with_output_size_ex(
+        join: cudf_hash_join_handle,
+        probe: cudf_table_view_handle,
+        output_size: usize,
+        out_left_indices: *mut cudf_column_handle,
+        out_right_indices: *mut cudf_column_handle,
+        options: *const cudf_exec_options_t,
+    ) -> cudf_status_t;
+
     pub fn cudf_hash_join_left_join_size(
         join: cudf_hash_join_handle,
         probe: cudf_table_view_handle,
@@ -573,6 +624,23 @@ extern "C" {
     pub fn cudf_hash_join_full_join_ex(
         join: cudf_hash_join_handle,
         probe: cudf_table_view_handle,
+        out_left_indices: *mut cudf_column_handle,
+        out_right_indices: *mut cudf_column_handle,
+        options: *const cudf_exec_options_t,
+    ) -> cudf_status_t;
+
+    pub fn cudf_hash_join_full_join_with_output_size(
+        join: cudf_hash_join_handle,
+        probe: cudf_table_view_handle,
+        output_size: usize,
+        out_left_indices: *mut cudf_column_handle,
+        out_right_indices: *mut cudf_column_handle,
+    ) -> cudf_status_t;
+
+    pub fn cudf_hash_join_full_join_with_output_size_ex(
+        join: cudf_hash_join_handle,
+        probe: cudf_table_view_handle,
+        output_size: usize,
         out_left_indices: *mut cudf_column_handle,
         out_right_indices: *mut cudf_column_handle,
         options: *const cudf_exec_options_t,

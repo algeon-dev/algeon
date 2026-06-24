@@ -121,8 +121,8 @@ fn test_type_id_try_from_arrow_datatype_rejects_unsupported_types() {
 #[test]
 fn test_arrow_host_dtype_mapping_preserves_logical_metadata() {
     use cudf::interop::arrow_host::{
-        arrow_type_from_cudf_dtype, cudf_dtype_from_arrow_type, is_supported_arrow_numeric_type,
-        is_supported_arrow_type,
+        arrow_type_from_cudf_dtype, cudf_dtype_can_export_to_arrow_type, cudf_dtype_from_arrow_type,
+        is_supported_arrow_numeric_type, is_supported_arrow_type,
     };
 
     assert_eq!(
@@ -150,9 +150,19 @@ fn test_arrow_host_dtype_mapping_preserves_logical_metadata() {
         ArrowDataType::Timestamp(TimeUnit::Millisecond, None)
     );
     assert_eq!(cudf_dtype_from_arrow_type(&ArrowDataType::LargeUtf8).unwrap(), DataType::new(TypeId::String));
+    assert_eq!(cudf_dtype_from_arrow_type(&ArrowDataType::Utf8View).unwrap(), DataType::new(TypeId::String));
     assert!(is_supported_arrow_type(&ArrowDataType::Boolean));
+    assert!(is_supported_arrow_type(&ArrowDataType::Utf8View));
     assert!(is_supported_arrow_numeric_type(&ArrowDataType::Float64));
     assert!(!is_supported_arrow_numeric_type(&ArrowDataType::Boolean));
+    assert!(cudf_dtype_can_export_to_arrow_type(
+        DataType::fixed_point(TypeId::Decimal64, -2),
+        &ArrowDataType::Decimal128(38, 2)
+    ));
+    assert!(!cudf_dtype_can_export_to_arrow_type(
+        DataType::fixed_point(TypeId::Decimal64, -3),
+        &ArrowDataType::Decimal128(38, 2)
+    ));
 }
 
 #[test]
@@ -553,6 +563,25 @@ fn test_to_record_batch_exports_decimal32_and_decimal64_as_decimal128_with_nulls
     assert!(!amount64.is_valid(1));
     assert!(amount64.is_valid(2));
     assert_eq!(amount64.values().as_ref(), &[12345000i128, 0, -678000]);
+}
+
+#[test]
+fn test_gpu_record_batch_accepts_decimal64_under_decimal128_schema_contract() {
+    let decimal64 = nullable_decimal64_series(&[12345, 0, -678], &[true, false, true], -3).unwrap();
+    let frame = DataFrame::from_series([("amount", decimal64)]).unwrap();
+    let schema = Arc::new(Schema::new(vec![Field::new("amount", ArrowDataType::Decimal128(38, 3), true)]));
+
+    let gpu_batch = cudf::frame::dataframe::GpuRecordBatch::new(frame, Arc::clone(&schema)).unwrap();
+    let materialized = gpu_batch.to_host_record_batch().unwrap();
+
+    assert_eq!(materialized.schema(), schema);
+    let amount = materialized.column(0).as_primitive::<arrow::datatypes::Decimal128Type>();
+    assert_eq!(amount.precision(), 38);
+    assert_eq!(amount.scale(), 3);
+    assert!(amount.is_valid(0));
+    assert!(!amount.is_valid(1));
+    assert!(amount.is_valid(2));
+    assert_eq!(amount.values().as_ref(), &[12345000i128, 0, -678000]);
 }
 
 #[test]
@@ -1108,6 +1137,43 @@ fn test_from_record_batch_large_string_array() {
     let df = import_record_batch(&batch).unwrap();
     let strs = df.series("s").unwrap().to_strings_strict().unwrap();
     assert_eq!(strs, vec!["x", "y", "z"]);
+}
+
+#[test]
+fn test_from_record_batch_string_view_array() {
+    let schema = Schema::new(vec![Field::new("s", ArrowDataType::Utf8View, true)]);
+    let batch = RecordBatch::try_new(
+        Arc::new(schema),
+        vec![Arc::new(StringViewArray::from_iter([Some("x"), None, Some("longer-than-inline")]))],
+    )
+    .unwrap();
+
+    let df = import_record_batch(&batch).unwrap();
+    let cv = df.series("s").unwrap();
+    let validity = cv.testing_view().unwrap().to_host_validity().unwrap().unwrap();
+    assert_eq!(validity, vec![true, false, true]);
+    assert_eq!(
+        cv.to_optional_strings().unwrap(),
+        vec![Some("x".to_string()), None, Some("longer-than-inline".to_string())]
+    );
+}
+
+#[test]
+fn test_gpu_record_batch_accepts_utf8_view_schema_contract() {
+    let frame = crate::common::dataframe_from_columns(
+        vec!["s".to_string()],
+        vec![column_from_strs_nullable(&["x", "", "longer-than-inline"], &[true, false, true]).unwrap()],
+    )
+    .unwrap();
+    let schema = Arc::new(Schema::new(vec![Field::new("s", ArrowDataType::Utf8View, true)]));
+
+    let gpu_batch = cudf::frame::dataframe::GpuRecordBatch::new(frame, Arc::clone(&schema)).unwrap();
+    let materialized = gpu_batch.to_host_record_batch().unwrap();
+
+    assert_eq!(materialized.schema(), schema);
+    assert_eq!(materialized.column(0).data_type(), &ArrowDataType::Utf8View);
+    let strings = materialized.column(0).as_string_view();
+    assert_eq!(strings.iter().collect::<Vec<_>>(), vec![Some("x"), None, Some("longer-than-inline")]);
 }
 
 #[test]

@@ -25,8 +25,11 @@ const EXPECTED_GUARDS: &[&str] = &[
     "join::hash_join_create",
     "join::hash_join_destroy",
     "join::hash_join_full_join",
+    "join::hash_join_full_join_with_output_size",
     "join::hash_join_inner_join",
+    "join::hash_join_inner_join_with_output_size",
     "join::hash_join_left_join",
+    "join::hash_join_left_join_with_output_size",
     "join::hash_join_size",
     "join::full_join_indices",
     "join::inner_join_indices",
@@ -188,11 +191,29 @@ fn classify_allowed_guard(file_name: &str, context: &str) -> Option<&'static str
         "join.cpp" if context.contains("hash_join->full_join(*probe_view, {}, exec.stream, exec.mr)") => {
             Some("join::hash_join_full_join")
         },
+        "join.cpp"
+            if context.contains("hash_join->full_join(")
+                && context.contains("std::optional<std::size_t>{output_size}, exec.stream, exec.mr") =>
+        {
+            Some("join::hash_join_full_join_with_output_size")
+        },
         "join.cpp" if context.contains("hash_join->inner_join(*probe_view, {}, exec.stream, exec.mr)") => {
             Some("join::hash_join_inner_join")
         },
+        "join.cpp"
+            if context.contains("hash_join->inner_join(")
+                && context.contains("std::optional<std::size_t>{output_size}, exec.stream, exec.mr") =>
+        {
+            Some("join::hash_join_inner_join_with_output_size")
+        },
         "join.cpp" if context.contains("hash_join->left_join(*probe_view, {}, exec.stream, exec.mr)") => {
             Some("join::hash_join_left_join")
+        },
+        "join.cpp"
+            if context.contains("hash_join->left_join(")
+                && context.contains("std::optional<std::size_t>{output_size}, exec.stream, exec.mr") =>
+        {
+            Some("join::hash_join_left_join_with_output_size")
         },
         "join.cpp" if context.contains("hash_join->inner_join_size(*probe_view, exec.stream)") => {
             Some("join::hash_join_size")

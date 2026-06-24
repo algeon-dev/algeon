@@ -13,9 +13,12 @@ mod series_display_tests;
 
 #[test]
 fn join_indices_and_hash_join_slice6_surface_is_publicly_importable() {
-    use cudf::ops::join::{
-        HashJoin, HashJoinOptions, JoinIndices, NullEquality, full_join_indices, full_join_indices_in,
-        inner_join_indices, inner_join_indices_in, left_join_indices, left_join_indices_in,
+    use cudf::{
+        DataFrame,
+        ops::join::{
+            HashJoin, HashJoinOptions, JoinIndices, NullEquality, full_join_indices, full_join_indices_in,
+            inner_join_indices, inner_join_indices_in, left_join_indices, left_join_indices_in,
+        },
     };
 
     let _options = HashJoinOptions::new().null_equality(NullEquality::Equal);
@@ -24,12 +27,20 @@ fn join_indices_and_hash_join_slice6_surface_is_publicly_importable() {
     let _ = (
         HashJoin::new,
         HashJoin::new_in,
+        HashJoin::pre_build_reservation_size_bytes,
+        HashJoin::pre_build_reservation_size_bytes_in,
         HashJoin::inner_join_indices,
         HashJoin::inner_join_indices_in,
+        HashJoin::inner_join_indices_with_output_size,
+        HashJoin::inner_join_indices_with_output_size_in,
         HashJoin::left_join_indices,
         HashJoin::left_join_indices_in,
+        HashJoin::left_join_indices_with_output_size,
+        HashJoin::left_join_indices_with_output_size_in,
         HashJoin::full_join_indices,
         HashJoin::full_join_indices_in,
+        HashJoin::full_join_indices_with_output_size,
+        HashJoin::full_join_indices_with_output_size_in,
         HashJoin::inner_join_size,
         HashJoin::inner_join_size_in,
         HashJoin::left_join_size,
@@ -38,6 +49,7 @@ fn join_indices_and_hash_join_slice6_surface_is_publicly_importable() {
         HashJoin::full_join_size_in,
         HashJoin::device_allocated_size_bytes,
     );
+    let _ = DataFrame::hash_join_pre_build_reservation_size_bytes::<[&str; 1], &str>;
     let _ = (
         inner_join_indices,
         inner_join_indices_in,
