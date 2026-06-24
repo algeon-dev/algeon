@@ -1715,6 +1715,63 @@ fn test_hash_join_device_allocated_size_reports_retained_build_artifact_bytes() 
 }
 
 #[test]
+fn test_hash_join_size_apis_report_exact_output_rows() {
+    let build_col = make_i32_column(&[2, 2, 4, 6]);
+    let build_tbl = make_table_from_one_column(build_col);
+    let build_tv = make_table_view(build_tbl);
+
+    let mut join: *mut c_void = ptr::null_mut();
+    let status = unsafe {
+        cudf_sys::cudf_hash_join_create(
+            build_tv,
+            cudf_sys::cudf_nullable_join_t::CUDF_NULLABLE_JOIN_YES,
+            cudf_sys::cudf_null_equality_t::CUDF_NULL_EQUALITY_EQUAL,
+            0.5,
+            &mut join,
+        )
+    };
+    assert_eq!(status, cudf_sys::CUDF_SUCCESS);
+    assert!(!join.is_null());
+
+    let probe_tbl = make_table_from_one_column(make_i32_column(&[1, 2, 4, 5]));
+    let probe_tv = make_table_view(probe_tbl);
+    let exec = cudf_sys::ExecutionContext::new();
+
+    let mut out = 0usize;
+    let status = unsafe { cudf_sys::cudf_hash_join_inner_join_size(join, probe_tv, &mut out) };
+    assert_eq!(status, cudf_sys::CUDF_SUCCESS);
+    assert_eq!(out, 3);
+
+    let status = unsafe { cudf_sys::cudf_hash_join_left_join_size(join, probe_tv, &mut out) };
+    assert_eq!(status, cudf_sys::CUDF_SUCCESS);
+    assert_eq!(out, 5);
+
+    let status = unsafe { cudf_sys::cudf_hash_join_full_join_size(join, probe_tv, &mut out) };
+    assert_eq!(status, cudf_sys::CUDF_SUCCESS);
+    assert_eq!(out, 6);
+
+    let status = unsafe { cudf_sys::cudf_hash_join_inner_join_size_ex(join, probe_tv, &mut out, exec.as_raw()) };
+    assert_eq!(status, cudf_sys::CUDF_SUCCESS);
+    assert_eq!(out, 3);
+
+    let status = unsafe { cudf_sys::cudf_hash_join_left_join_size_ex(join, probe_tv, &mut out, exec.as_raw()) };
+    assert_eq!(status, cudf_sys::CUDF_SUCCESS);
+    assert_eq!(out, 5);
+
+    let status = unsafe { cudf_sys::cudf_hash_join_full_join_size_ex(join, probe_tv, &mut out, exec.as_raw()) };
+    assert_eq!(status, cudf_sys::CUDF_SUCCESS);
+    assert_eq!(out, 6);
+
+    unsafe {
+        cudf_sys::cudf_table_view_destroy(probe_tv);
+        cudf_sys::cudf_table_destroy(probe_tbl);
+        cudf_sys::cudf_hash_join_destroy(join);
+        cudf_sys::cudf_table_view_destroy(build_tv);
+        cudf_sys::cudf_table_destroy(build_tbl);
+    }
+}
+
+#[test]
 fn test_hash_join_probe_ex_uses_explicit_memory_resource_for_probe_allocations() {
     let _shim_state = lock_shim_state();
     let previous_raw = current_device_resource_raw();

@@ -395,6 +395,12 @@ int cudf_rust_c_header_smoke(void)
                          cudf_column_handle*,
 
                          const cudf_exec_options_t*) = &cudf_hash_join_inner_join_ex;
+  cudf_status_t (*f22ah_size)(cudf_hash_join_handle, cudf_table_view_handle, size_t*) =
+    &cudf_hash_join_inner_join_size;
+  cudf_status_t (*f22ah_size_ex)(cudf_hash_join_handle,
+                                 cudf_table_view_handle,
+                                 size_t*,
+                                 const cudf_exec_options_t*) = &cudf_hash_join_inner_join_size_ex;
   cudf_status_t (*f22ai)(
     cudf_hash_join_handle, cudf_table_view_handle, cudf_column_handle*, cudf_column_handle*) =
     &cudf_hash_join_left_join;
@@ -404,6 +410,12 @@ int cudf_rust_c_header_smoke(void)
                          cudf_column_handle*,
 
                          const cudf_exec_options_t*) = &cudf_hash_join_left_join_ex;
+  cudf_status_t (*f22aj_size)(cudf_hash_join_handle, cudf_table_view_handle, size_t*) =
+    &cudf_hash_join_left_join_size;
+  cudf_status_t (*f22aj_size_ex)(cudf_hash_join_handle,
+                                 cudf_table_view_handle,
+                                 size_t*,
+                                 const cudf_exec_options_t*) = &cudf_hash_join_left_join_size_ex;
   cudf_status_t (*f22ak)(
     cudf_hash_join_handle, cudf_table_view_handle, cudf_column_handle*, cudf_column_handle*) =
     &cudf_hash_join_full_join;
@@ -413,6 +425,12 @@ int cudf_rust_c_header_smoke(void)
                          cudf_column_handle*,
 
                          const cudf_exec_options_t*) = &cudf_hash_join_full_join_ex;
+  cudf_status_t (*f22al_size)(cudf_hash_join_handle, cudf_table_view_handle, size_t*) =
+    &cudf_hash_join_full_join_size;
+  cudf_status_t (*f22al_size_ex)(cudf_hash_join_handle,
+                                 cudf_table_view_handle,
+                                 size_t*,
+                                 const cudf_exec_options_t*) = &cudf_hash_join_full_join_size_ex;
   cudf_status_t (*f22b)(
     cudf_type_id_t, const void*, int32_t, const cudf_exec_options_t*, cudf_scalar_handle*) =
     &cudf_scalar_create_numeric_ex;

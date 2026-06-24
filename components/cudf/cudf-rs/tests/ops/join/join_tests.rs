@@ -529,6 +529,29 @@ fn test_hash_join_supports_duplicate_build_keys_and_repeated_probes() {
 }
 
 #[test]
+fn test_hash_join_exact_size_matches_probe_indices() {
+    use cudf::ops::join::{HashJoin, HashJoinOptions};
+
+    let build_keys = Table::from_columns(vec![column_from_slice(&[2i32, 2, 4]).unwrap()]).unwrap();
+    let probe_keys = Table::from_columns(vec![column_from_slice(&[1i32, 2, 4, 5]).unwrap()]).unwrap();
+    let probe_view = probe_keys.testing_view().unwrap();
+    let hash_join = HashJoin::new(build_keys, HashJoinOptions::new()).unwrap();
+
+    assert_eq!(
+        hash_join.inner_join_size(&probe_view).unwrap(),
+        hash_join.inner_join_indices(&probe_view).unwrap().left.len().unwrap()
+    );
+    assert_eq!(
+        hash_join.left_join_size(&probe_view).unwrap(),
+        hash_join.left_join_indices(&probe_view).unwrap().left.len().unwrap()
+    );
+    assert_eq!(
+        hash_join.full_join_size(&probe_view).unwrap(),
+        hash_join.full_join_indices(&probe_view).unwrap().left.len().unwrap()
+    );
+}
+
+#[test]
 fn test_hash_join_supports_parallel_probes_from_cloned_handle() {
     use cudf::ops::join::{HashJoin, HashJoinOptions};
 

@@ -6,6 +6,7 @@
 #include "execution_context.h"
 #include "table.h"
 
+#include <stddef.h>
 #include <stdint.h>
 
 #ifdef __cplusplus
@@ -558,6 +559,17 @@ cudf_status_t cudf_hash_join_inner_join_ex(cudf_hash_join_handle join,
                                            cudf_column_handle* out_right_indices,
                                            const cudf_exec_options_t* options);
 
+/// Return the exact row count for an inner probe of a reusable hash-join artifact.
+cudf_status_t cudf_hash_join_inner_join_size(cudf_hash_join_handle join,
+                                             cudf_table_view_handle probe,
+                                             size_t* out);
+
+/// Return the exact row count for an inner probe with explicit execution context.
+cudf_status_t cudf_hash_join_inner_join_size_ex(cudf_hash_join_handle join,
+                                                cudf_table_view_handle probe,
+                                                size_t* out,
+                                                const cudf_exec_options_t* options);
+
 /// Probe a reusable hash-join artifact for left-join gather indices.
 cudf_status_t cudf_hash_join_left_join(cudf_hash_join_handle join,
                                        cudf_table_view_handle probe,
@@ -572,6 +584,17 @@ cudf_status_t cudf_hash_join_left_join_ex(cudf_hash_join_handle join,
                                           cudf_column_handle* out_right_indices,
                                           const cudf_exec_options_t* options);
 
+/// Return the exact row count for a left probe of a reusable hash-join artifact.
+cudf_status_t cudf_hash_join_left_join_size(cudf_hash_join_handle join,
+                                            cudf_table_view_handle probe,
+                                            size_t* out);
+
+/// Return the exact row count for a left probe with explicit execution context.
+cudf_status_t cudf_hash_join_left_join_size_ex(cudf_hash_join_handle join,
+                                               cudf_table_view_handle probe,
+                                               size_t* out,
+                                               const cudf_exec_options_t* options);
+
 /// Probe a reusable hash-join artifact for full-join gather indices.
 cudf_status_t cudf_hash_join_full_join(cudf_hash_join_handle join,
                                        cudf_table_view_handle probe,
@@ -585,6 +608,17 @@ cudf_status_t cudf_hash_join_full_join_ex(cudf_hash_join_handle join,
                                           cudf_column_handle* out_left_indices,
                                           cudf_column_handle* out_right_indices,
                                           const cudf_exec_options_t* options);
+
+/// Return the exact row count for a full probe of a reusable hash-join artifact.
+cudf_status_t cudf_hash_join_full_join_size(cudf_hash_join_handle join,
+                                            cudf_table_view_handle probe,
+                                            size_t* out);
+
+/// Return the exact row count for a full probe with explicit execution context.
+cudf_status_t cudf_hash_join_full_join_size_ex(cudf_hash_join_handle join,
+                                               cudf_table_view_handle probe,
+                                               size_t* out,
+                                               const cudf_exec_options_t* options);
 
 #ifdef __cplusplus
 }

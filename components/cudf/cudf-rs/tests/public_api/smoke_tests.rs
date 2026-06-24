@@ -30,6 +30,12 @@ fn join_indices_and_hash_join_slice6_surface_is_publicly_importable() {
         HashJoin::left_join_indices_in,
         HashJoin::full_join_indices,
         HashJoin::full_join_indices_in,
+        HashJoin::inner_join_size,
+        HashJoin::inner_join_size_in,
+        HashJoin::left_join_size,
+        HashJoin::left_join_size_in,
+        HashJoin::full_join_size,
+        HashJoin::full_join_size_in,
         HashJoin::device_allocated_size_bytes,
     );
     let _ = (
