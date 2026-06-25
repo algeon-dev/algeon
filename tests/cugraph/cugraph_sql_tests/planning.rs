@@ -255,20 +255,8 @@ async fn cugraph_bfs_path_name_is_not_registered_or_aliased() {
         .to_string();
     assert!(error.contains("cugraph_bfs_path"));
 
-    let batches = ctx
-        .sql(
-            "SELECT valid, error_code, message \
-             FROM cugraph_describe_algorithm('cugraph_bfs_path')",
-        )
-        .await
-        .unwrap()
-        .collect()
-        .await
-        .unwrap();
-    let batch = single_batch(&batches);
-    assert!(!bool_value(batch, 0, 0));
-    assert_eq!(string_value(batch, 1, 0), "unknown_algorithm");
-    assert!(string_value(batch, 2, 0).contains("cugraph_bfs_path"));
+    let error = ctx.sql("SELECT * FROM cugraph_describe_algorithm('cugraph_bfs_path')").await.unwrap_err().to_string();
+    assert!(error.contains("unknown cuGraph algorithm function 'cugraph_bfs_path'"));
 
     let batches = ctx
         .sql(

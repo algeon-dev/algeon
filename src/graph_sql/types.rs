@@ -40,7 +40,7 @@ pub const CUGRAPH_LIST_ALGORITHMS_FUNCTION: &str = "cugraph_list_algorithms";
 pub const CUGRAPH_DESCRIBE_ALGORITHM_FUNCTION: &str = "cugraph_describe_algorithm";
 pub const CUGRAPH_VALIDATE_CALL_FUNCTION: &str = "cugraph_validate_call";
 pub const CUGRAPH_LIST_ALGORITHMS_SCHEMA_VERSION: u32 = 7;
-pub const CUGRAPH_DESCRIBE_ALGORITHM_SCHEMA_VERSION: u32 = 9;
+pub const CUGRAPH_DESCRIBE_ALGORITHM_SCHEMA_VERSION: u32 = 10;
 pub const CUGRAPH_VALIDATE_CALL_SCHEMA_VERSION: u32 = 2;
 
 #[derive(Debug, Clone)]
