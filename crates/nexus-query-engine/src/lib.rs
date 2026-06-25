@@ -52,6 +52,7 @@ pub mod pipeline;
 pub mod plan;
 pub mod runtime;
 pub mod source;
+pub mod triage;
 pub(crate) mod util;
 
 /// Common native-engine imports for constructing and executing a plan.
@@ -189,11 +190,19 @@ pub mod runtime_contracts {
 /// Metrics and report evidence contracts.
 pub mod metrics_contracts {
     pub use crate::metrics::{
-        AggregateStrategyDecisionMetrics, BoundaryMetrics, BudgetedExecutionEvent, DynamicFilterRuntimeMetrics,
-        DynamicFilterSourceSnapshot, GraphAlgorithmRuntimeMetrics, JoinOperatorMetrics, JoinStrategyDecisionMetrics,
-        MemoryReservationEvent, MemoryReservationEventAction, MemoryReservationEventOutcome, OperatorMetrics,
-        QueryMetrics, SourceReadParquetEvidenceMetrics, SourceReadRuntimeMetrics, TaskOperatorMetrics,
-        TaskRuntimeMetrics,
+        AggregateStrategyDecisionMetrics, BoundaryMetrics, BudgetedExecutionEvent, CompiledTaskId,
+        DynamicFilterRuntimeMetrics, DynamicFilterSourceSnapshot, GraphAlgorithmRuntimeMetrics, JoinOperatorMetrics,
+        JoinStrategyDecisionMetrics, MemoryReservationEvent, MemoryReservationEventAction,
+        MemoryReservationEventOutcome, MetricAggregation, MetricDescriptor, MetricDirection, MetricUnit,
+        OperatorMetrics, PlanNodeId, PlanTaskMapping, QueryId, QueryMetrics, SourceReadParquetEvidenceMetrics,
+        SourceReadRuntimeMetrics, TaskOperatorMetrics, TaskRuntimeMetrics, TraceId,
+    };
+}
+
+/// Compact triage verdict and signal contracts.
+pub mod triage_contracts {
+    pub use crate::triage::{
+        TriageCode, TriageEvidenceRef, TriageSeverity, TriageSignal, TriageSummary, TriageVerdict,
     };
 }
 
@@ -319,10 +328,12 @@ pub use graph_memory::{
     graph_memory_class, graph_memory_model_input, graph_memory_reservation_required,
 };
 pub use metrics::{
-    AggregateStrategyDecisionMetrics, BoundaryMetrics, BudgetedExecutionEvent, DynamicFilterRuntimeMetrics,
-    DynamicFilterSourceSnapshot, GraphAlgorithmRuntimeMetrics, JoinOperatorMetrics, JoinStrategyDecisionMetrics,
-    MemoryReservationEvent, MemoryReservationEventAction, MemoryReservationEventOutcome, OperatorMetrics, QueryMetrics,
-    SourceReadParquetEvidenceMetrics, SourceReadRuntimeMetrics, TaskOperatorMetrics, TaskRuntimeMetrics,
+    AggregateStrategyDecisionMetrics, BoundaryMetrics, BudgetedExecutionEvent, CompiledTaskId,
+    DynamicFilterRuntimeMetrics, DynamicFilterSourceSnapshot, GraphAlgorithmRuntimeMetrics, JoinOperatorMetrics,
+    JoinStrategyDecisionMetrics, MemoryReservationEvent, MemoryReservationEventAction, MemoryReservationEventOutcome,
+    MetricAggregation, MetricDescriptor, MetricDirection, MetricUnit, OperatorMetrics, PlanNodeId, PlanTaskMapping,
+    QueryId, QueryMetrics, SourceReadParquetEvidenceMetrics, SourceReadRuntimeMetrics, TaskOperatorMetrics,
+    TaskRuntimeMetrics, TraceId,
 };
 pub use mode::{
     AdaptiveExecutionMode, NativePipelineExecutionMode, StatisticalAggregateExecutionMode,
@@ -415,3 +426,4 @@ pub use source::{
     SchemaMappingDisposition, SelectedRowGroupStats, SourceColumnRef, SourceDecodeInput, SourceDiagnostics,
     SourceFormat, SourceNode, ZERO_COLUMN_COUNT_COLUMN, ZeroColumnCountDisposition,
 };
+pub use triage::{TriageCode, TriageEvidenceRef, TriageSeverity, TriageSignal, TriageSummary, TriageVerdict};

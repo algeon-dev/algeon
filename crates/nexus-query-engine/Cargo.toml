@@ -25,6 +25,7 @@ futures = { workspace = true }
 nvml-wrapper = { version = "0.12.1", optional = true }
 object_store = { workspace = true }
 parquet = { workspace = true }
+serde_json = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread"] }
 
 [dev-dependencies]

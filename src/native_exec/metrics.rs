@@ -145,6 +145,7 @@ pub const NATIVE_CUDF_DATAFUSION_METRIC_NAMES: &[&str] = &[
     "final_merge_time",
     "final_sort_time",
     "materialization_time",
+    "native_plan_task_mapping_rows",
 ];
 
 /// Query-keyed sink for native metrics captured while DataFusion wrapper metrics are populated.
@@ -167,9 +168,18 @@ impl NativeMetricsCapture {
         Self { query_id: query_id.into(), sink: Arc::downgrade(&sink) }
     }
 
+    #[cfg(feature = "server")]
+    pub(crate) fn query_id(&self) -> &str {
+        &self.query_id
+    }
+
     fn record_query_metrics(&self, metrics: &QueryMetrics) {
         if let Some(sink) = self.sink.upgrade() {
-            sink.record_query_metrics(&self.query_id, metrics);
+            if metrics.query_id().as_str() == self.query_id.as_ref() {
+                sink.record_query_metrics(&self.query_id, metrics);
+            } else {
+                sink.record_query_metrics(&self.query_id, &metrics.clone().with_query_id(self.query_id.as_ref()));
+            }
         }
     }
 
@@ -192,6 +202,7 @@ impl fmt::Debug for NativeMetricsCapture {
 pub(crate) struct NativeCudfMetrics {
     metrics_set: ExecutionPlanMetricsSet,
     capture: Option<NativeMetricsCapture>,
+    plan_task_mapping_datafusion_shape: Option<String>,
     pub(crate) baseline: BaselineMetrics,
     input_batches: Count,
     input_rows: Count,
@@ -313,13 +324,23 @@ pub(crate) struct NativeCudfMetrics {
 impl NativeCudfMetrics {
     #[cfg(any(test, feature = "server"))]
     pub(crate) fn new(metrics: &ExecutionPlanMetricsSet, partition: usize) -> Self {
-        Self::new_with_capture(metrics, partition, None)
+        Self::new_with_capture_and_shape(metrics, partition, None, None)
     }
 
+    #[cfg(any(feature = "server", feature = "cugraph"))]
     pub(crate) fn new_with_capture(
         metrics: &ExecutionPlanMetricsSet,
         partition: usize,
         capture: Option<NativeMetricsCapture>,
+    ) -> Self {
+        Self::new_with_capture_and_shape(metrics, partition, capture, None)
+    }
+
+    pub(crate) fn new_with_capture_and_shape(
+        metrics: &ExecutionPlanMetricsSet,
+        partition: usize,
+        capture: Option<NativeMetricsCapture>,
+        plan_task_mapping_datafusion_shape: Option<&str>,
     ) -> Self {
         let native_aggregate_strategy_rows = summary_counter(metrics, "native_aggregate_strategy_rows", partition);
         let _ = summary_counter(metrics, "native_join_strategy_rows", partition);
@@ -327,12 +348,14 @@ impl NativeCudfMetrics {
         let _ = summary_counter(metrics, "native_graph_runtime_rows", partition);
         let _ = summary_counter(metrics, "native_task_operator_rows", partition);
         let _ = summary_counter(metrics, "native_task_runtime_rows", partition);
+        let _ = summary_counter(metrics, "native_plan_task_mapping_rows", partition);
         let _ = summary_counter(metrics, "native_dynamic_filter_runtime_rows", partition);
         let _ = summary_counter(metrics, "native_source_read_runtime_rows", partition);
         let _ = summary_counter(metrics, "native_lakehouse_cache_fill_event_snapshot_rows", partition);
         Self {
             metrics_set: metrics.clone(),
             capture,
+            plan_task_mapping_datafusion_shape: plan_task_mapping_datafusion_shape.map(ToString::to_string),
             baseline: BaselineMetrics::new(metrics, partition),
             input_batches: summary_counter(metrics, "input_batches", partition),
             input_rows: summary_counter(metrics, "input_rows", partition),
@@ -537,6 +560,13 @@ impl NativeCudfMetrics {
     }
 
     pub(crate) fn record_query_metrics(&self, metrics: &QueryMetrics) {
+        let enriched_metrics;
+        let metrics = if let Some(shape) = &self.plan_task_mapping_datafusion_shape {
+            enriched_metrics = metrics.clone().with_plan_task_mapping_datafusion_shape(shape);
+            &enriched_metrics
+        } else {
+            metrics
+        };
         self.input_batches.add(count(metrics.input_batches));
         self.input_rows.add(count(metrics.input_rows));
         self.gpu_resident_input_handoffs.add(count(metrics.boundary.gpu_resident_input_handoffs));
@@ -652,6 +682,7 @@ impl NativeCudfMetrics {
         self.record_graph_runtime_rows(metrics);
         self.record_task_operator_rows(metrics);
         self.record_task_runtime_rows(metrics);
+        self.record_plan_task_mapping_rows(metrics);
         self.record_dynamic_filter_runtime_rows(metrics);
         self.record_source_read_runtime_rows(metrics);
         self.record_aggregate_strategy_rows(metrics);
@@ -824,6 +855,28 @@ impl NativeCudfMetrics {
                     row.max_retained_bytes.map_or_else(|| "none".to_string(), |value| value.to_string()),
                 )
                 .global_counter("native_task_runtime_rows")
+                .add(1);
+        }
+    }
+
+    fn record_plan_task_mapping_rows(&self, metrics: &QueryMetrics) {
+        for row in metrics.plan_task_mappings() {
+            MetricBuilder::new(&self.metrics_set)
+                .with_type(MetricType::Summary)
+                .with_new_label("query_id", row.query_id.as_str().to_string())
+                .with_new_label(
+                    "plan_node_id",
+                    row.plan_node_id.as_ref().map_or_else(|| "none".to_string(), |value| value.as_str().to_string()),
+                )
+                .with_new_label(
+                    "compiled_task_id",
+                    row.compiled_task_id
+                        .as_ref()
+                        .map_or_else(|| "none".to_string(), |value| value.as_str().to_string()),
+                )
+                .with_new_label("operator_kind", row.operator_kind.unwrap_or_else(|| "none".to_string()))
+                .with_new_label("datafusion_shape", row.datafusion_shape.unwrap_or_else(|| "none".to_string()))
+                .global_counter("native_plan_task_mapping_rows")
                 .add(1);
         }
     }
@@ -1887,6 +1940,7 @@ mod tests {
         let mut query_metrics = QueryMetrics::default();
 
         query_metrics.record_source_read_runtime(SourceReadRuntimeMetrics {
+            query_id: None,
             source_node_id: "n7".to_string(),
             read_kind: "chunk_batch".to_string(),
             read_strategy: "local_cache_kvikio".to_string(),
@@ -2003,5 +2057,29 @@ mod tests {
         assert_eq!(row.chunk_index, Some(5));
         assert_eq!(row.error_code, "cudf_dependency_failure");
         assert_eq!(row.error_operation, "nexus_query_engine.lakehouse_cache.background_fill.fetch");
+    }
+
+    #[test]
+    fn plan_task_mapping_rows_bridge_correlation_labels() {
+        let metrics_set = ExecutionPlanMetricsSet::new();
+        let native_metrics = NativeCudfMetrics::new_with_capture_and_shape(
+            &metrics_set,
+            0,
+            None,
+            Some("AggregateExec(LocalParquetScan)"),
+        );
+        let mut query_metrics = QueryMetrics::new("q-mapping");
+
+        query_metrics.record_compiled_pipeline_task_mapping("t3", "source_read", Some("n4"));
+        native_metrics.record_query_metrics(&query_metrics);
+
+        let metrics = NativeDataFusionExecutionMetrics::from_metrics(&metrics_set.clone_inner());
+        assert_eq!(metrics.plan_task_mapping_rows.len(), 1);
+        let row = &metrics.plan_task_mapping_rows[0];
+        assert_eq!(row.query_id, "q-mapping");
+        assert_eq!(row.plan_node_id.as_deref(), Some("n4"));
+        assert_eq!(row.compiled_task_id.as_deref(), Some("t3"));
+        assert_eq!(row.operator_kind.as_deref(), Some("source_read"));
+        assert_eq!(row.datafusion_shape.as_deref(), Some("AggregateExec(LocalParquetScan)"));
     }
 }

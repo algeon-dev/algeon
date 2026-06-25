@@ -8,7 +8,10 @@ use super::*;
 use crate::{
     adaptive_runtime::{AdaptiveMemoryHistory, AdaptiveTaskMemoryHistoryShape},
     exec::types::{GpuLocalParquetSourceCache, GpuLocalParquetSourceCacheKey},
-    metrics::{MemoryReservationEvent, MemoryReservationEventAction, MemoryReservationEventOutcome},
+    metrics::{
+        CompiledTaskId, MemoryReservationEvent, MemoryReservationEventAction, MemoryReservationEventOutcome,
+        PlanNodeId, QueryId,
+    },
     mode::NativePipelineExecutionMode,
     pipeline::CompiledPipeline,
     plan::QueryPlan,
@@ -21,7 +24,8 @@ struct ActiveReservationEventContext {
     memory_space: MemorySpaceId,
     memory_boundary: String,
     budget_bytes: u64,
-    node_id: Option<String>,
+    query_id: Option<QueryId>,
+    node_id: Option<PlanNodeId>,
     stage: Option<String>,
     chunk_index: Option<usize>,
     file_index: Option<usize>,
@@ -29,7 +33,7 @@ struct ActiveReservationEventContext {
     row_groups: Option<Vec<usize>>,
     attempt: Option<usize>,
     max_attempts: Option<usize>,
-    compiled_task_id: Option<String>,
+    compiled_task_id: Option<CompiledTaskId>,
     resident_resource_id: Option<String>,
     source_read_contract_quality: Option<String>,
     source_read_planning_bytes: Option<u64>,
@@ -43,6 +47,7 @@ impl ActiveReservationEventContext {
             memory_space: request.memory_space,
             memory_boundary: request.memory_boundary.clone(),
             budget_bytes: request.budget_bytes,
+            query_id: request.query_id.clone(),
             node_id: request.node_id.clone(),
             stage: request.stage.clone(),
             chunk_index: request.chunk_index,
@@ -67,6 +72,7 @@ impl ActiveReservationEventContext {
         current_reserved_bytes: u64,
     ) -> MemoryReservationEvent {
         MemoryReservationEvent {
+            query_id: self.query_id.clone(),
             reservation_kind: self.reservation_kind,
             memory_space: self.memory_space,
             memory_boundary: self.memory_boundary.clone(),
@@ -420,13 +426,14 @@ pub(in crate::exec::bounded) fn reconcile_work_reservation_to_output(
 
 #[derive(Debug)]
 pub(in crate::exec) struct ReservationTracker {
+    query_id: Option<QueryId>,
     memory_space: MemorySpaceId,
     budget_bytes: u64,
     reserved_bytes: Rc<Cell<u64>>,
     local_parquet_source_cache: Option<Arc<GpuLocalParquetSourceCache>>,
     protected_source_cache_keys: Rc<RefCell<HashMap<GpuLocalParquetSourceCacheKey, usize>>>,
     source_cache_baseline_bytes: u64,
-    compiled_task_id: Option<String>,
+    compiled_task_id: Option<CompiledTaskId>,
     resident_resource_id: Option<String>,
     adaptive_task_refinement: Option<AdaptiveTaskReservationRefinement>,
 }
@@ -440,6 +447,7 @@ struct AdaptiveTaskReservationRefinement {
 impl ReservationTracker {
     pub(in crate::exec) fn new(memory_space: MemorySpaceId, budget_bytes: u64) -> Self {
         Self {
+            query_id: None,
             memory_space,
             budget_bytes,
             reserved_bytes: Rc::new(Cell::new(0)),
@@ -458,6 +466,7 @@ impl ReservationTracker {
         metrics: &mut QueryMetrics,
     ) -> Result<Self> {
         let mut tracker = Self::new(context.device_memory_space(), budget_bytes);
+        tracker.query_id = context.query_id().cloned();
         tracker.local_parquet_source_cache = context.local_parquet_source_cache();
         if let Some(cache) = context.local_parquet_source_cache() {
             let retained_bytes = cache.retained_device_bytes()?;
@@ -513,7 +522,7 @@ impl ReservationTracker {
         compiled_task_id: Option<impl ToString>,
         resident_resource_id: Option<impl ToString>,
     ) {
-        self.compiled_task_id = compiled_task_id.map(|value| value.to_string());
+        self.compiled_task_id = compiled_task_id.map(CompiledTaskId::new);
         self.resident_resource_id = resident_resource_id.map(|value| value.to_string());
     }
 
@@ -557,7 +566,7 @@ impl ReservationTracker {
         semantics: ActiveReservationSemantics,
         metrics: &mut QueryMetrics,
     ) -> Result<ActiveReservation> {
-        let request = self.refine_adaptive_task_reservation_request(self.stamp_request(request));
+        let request = self.refine_adaptive_task_reservation_request(self.stamp_request(request, metrics));
         let remaining = self.remaining_bytes();
         if request.requested_bytes > remaining {
             self.reclaim_source_cache_for_request(request.requested_bytes, None, metrics)?;
@@ -605,7 +614,7 @@ impl ReservationTracker {
         let Some(refinement) = &self.adaptive_task_refinement else {
             return request;
         };
-        let Some(compiled_task_id) = request.compiled_task_id.as_deref() else {
+        let Some(compiled_task_id) = request.compiled_task_id.as_ref().map(|value| value.as_str()) else {
             return request;
         };
         let Some(shape) = refinement.task_shapes.get(compiled_task_id) else {
@@ -632,7 +641,7 @@ impl ReservationTracker {
         metrics: &mut QueryMetrics,
     ) -> ActiveReservation {
         self.assert_reservation_belongs_to_tracker(source, "alias_reservation");
-        let request = self.stamp_request(request);
+        let request = self.stamp_request(request, metrics);
         metrics.record_reservation_timeline_event(MemoryReservationEvent::from_request(
             &request,
             MemoryReservationEventOutcome::Applied,
@@ -662,7 +671,7 @@ impl ReservationTracker {
             !reservation.is_alias(),
             "reservation tracker invariant failed during transfer: alias reservations cannot transfer ownership"
         );
-        let request = self.stamp_request(request);
+        let request = self.stamp_request(request, metrics);
         let transferred = reservation.transferred(&request);
         metrics.record_reservation_timeline_event(MemoryReservationEvent::from_request(
             &request,
@@ -686,7 +695,7 @@ impl ReservationTracker {
             reservation.is_alias(),
             "reservation tracker invariant failed during relabel_alias_reservation: only alias reservations can be relabeled"
         );
-        let request = self.stamp_request(request);
+        let request = self.stamp_request(request, metrics);
         let relabeled = reservation.relabeled_alias(&request);
         metrics.record_reservation_timeline_event(MemoryReservationEvent::from_request(
             &request,
@@ -709,6 +718,7 @@ impl ReservationTracker {
             MemoryReservationRequest::new(ReservationKind::SourceCacheRetained, bytes, self.budget_bytes)
                 .with_memory_boundary("source_cache_borrowed")
                 .with_stage("source_cache_hit"),
+            metrics,
         );
         metrics.record_reservation_timeline_event(MemoryReservationEvent::from_request(
             &request,
@@ -737,6 +747,9 @@ impl ReservationTracker {
             if event.compiled_task_id.is_none() {
                 event.compiled_task_id = self.compiled_task_id.clone();
             }
+            if event.query_id.is_none() {
+                event.query_id = self.query_id.clone();
+            }
             if event.resident_resource_id.is_none() {
                 event.resident_resource_id = self.resident_resource_id.clone();
             }
@@ -751,7 +764,7 @@ impl ReservationTracker {
         metrics: &mut QueryMetrics,
     ) -> Result<()> {
         self.validate_reservation_belongs_to_tracker(reservation, "try_grow")?;
-        let request = self.stamp_request(request);
+        let request = self.stamp_request(request, metrics);
         let remaining = self.remaining_bytes();
         if request.requested_bytes > remaining {
             self.reclaim_source_cache_for_request(request.requested_bytes, None, metrics)?;
@@ -806,7 +819,7 @@ impl ReservationTracker {
         self.assert_reservation_belongs_to_tracker(reservation, "shrink_to_observed_with_request");
         let refunded = reservation.shrink_to(observed_bytes);
         if refunded > 0 {
-            let request = self.stamp_request(request);
+            let request = self.stamp_request(request, metrics);
             metrics.record_reservation_timeline_event(MemoryReservationEvent::from_request(
                 &request,
                 MemoryReservationEventOutcome::Applied,
@@ -831,7 +844,7 @@ impl ReservationTracker {
             return Ok(());
         }
 
-        let request = self.stamp_request(request);
+        let request = self.stamp_request(request, metrics);
         let additional_bytes = retained_bytes.saturating_sub(reservation.charged_bytes());
         let remaining = self.remaining_bytes();
         if additional_bytes > remaining {
@@ -874,6 +887,7 @@ impl ReservationTracker {
             MemoryReservationRequest::new(ReservationKind::SourceCacheRetained, released, self.budget_bytes)
                 .with_memory_boundary("source_cache_retained")
                 .with_stage("source_cache_eviction"),
+            metrics,
         );
         metrics.record_reservation_timeline_event(MemoryReservationEvent::from_request(
             &request,
@@ -920,7 +934,7 @@ impl ReservationTracker {
             MemoryReservationRequest::new(ReservationKind::SourceCacheRetained, retained_bytes, self.budget_bytes)
                 .with_memory_boundary("source_cache_retained")
                 .with_stage("source_cache_retained");
-        let request = self.stamp_request(request);
+        let request = self.stamp_request(request, metrics);
         let remaining = self.remaining_bytes();
         if request.requested_bytes > remaining {
             metrics.record_reservation_denied_timeline_event(
@@ -975,9 +989,13 @@ impl ReservationTracker {
         self.protected_source_cache_keys.borrow().keys().cloned().collect()
     }
 
-    fn stamp_request(&self, mut request: MemoryReservationRequest) -> MemoryReservationRequest {
+    fn stamp_request(&self, mut request: MemoryReservationRequest, metrics: &QueryMetrics) -> MemoryReservationRequest {
         request.memory_space = self.memory_space;
         request.budget_bytes = self.budget_bytes;
+        if request.query_id.is_none() {
+            request.query_id =
+                self.query_id.clone().or_else(|| metrics.query_id().is_assigned().then(|| metrics.query_id().clone()));
+        }
         if request.compiled_task_id.is_none() {
             request.compiled_task_id = self.compiled_task_id.clone();
         }

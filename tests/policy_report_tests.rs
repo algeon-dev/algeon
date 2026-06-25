@@ -1,4 +1,5 @@
 use datafusion_nexus::{CandidateOutcome, FallbackReason, GpuCandidate, GpuFallbackPolicy, PlanningReport};
+use nexus_query_engine::{TriageCode, TriageVerdict};
 
 #[test]
 fn gpu_preferred_is_default_development_policy() {
@@ -58,6 +59,15 @@ fn fallback_reason_codes_are_stable_manifest_values() {
 }
 
 #[test]
+fn fallback_reasons_map_to_shared_triage_codes() {
+    assert_eq!(FallbackReason::UnsupportedExpression.triage_code(), TriageCode::UnsupportedExpression);
+    assert_eq!(FallbackReason::NativeBoundedJoinUnsupported.triage_code(), TriageCode::StrictBoundedRejected);
+    assert_eq!(FallbackReason::NativeAdaptivePipelineUnsupported.triage_code(), TriageCode::AdaptivePipelineRejected);
+    assert_eq!(FallbackReason::NativeSourceNonLocalObjectStore.triage_code(), TriageCode::UnsupportedSource);
+    assert_eq!(FallbackReason::IcebergObjectStoreReadUnsupported.triage_code(), TriageCode::UnsupportedSource);
+}
+
+#[test]
 fn planning_report_keeps_rewritten_and_rejected_candidates_in_order() {
     let mut report = PlanningReport::new();
     let filter = GpuCandidate::new("FilterExec", 2);
@@ -75,4 +85,40 @@ fn planning_report_keeps_rewritten_and_rejected_candidates_in_order() {
             CandidateOutcome::Rewritten { candidate: projection_filter },
         ],
     );
+}
+
+#[test]
+fn planning_report_carries_optional_correlation_ids() {
+    let default_report = PlanningReport::from_outcomes([]);
+    assert!(default_report.query_id().is_none());
+    assert!(default_report.trace_id().is_none());
+
+    let report = PlanningReport::from_outcomes([CandidateOutcome::Rejected {
+        candidate: GpuCandidate::new("FilterExec", 2).with_plan_node_id("n12"),
+        reason: FallbackReason::UnsupportedExpression,
+    }])
+    .with_query_id("query-42")
+    .with_trace_id("trace-7");
+
+    assert_eq!(report.query_id().map(|id| id.as_str()), Some("query-42"));
+    assert_eq!(report.trace_id().map(|id| id.as_str()), Some("trace-7"));
+}
+
+#[test]
+fn planning_report_json_includes_triage_summary() {
+    let report = PlanningReport::from_outcomes([CandidateOutcome::Rejected {
+        candidate: GpuCandidate::new("FilterExec", 2).with_plan_node_id("n12"),
+        reason: FallbackReason::UnsupportedExpression,
+    }])
+    .with_query_id("query-42");
+
+    let summary = report.triage_summary();
+    assert_eq!(summary.verdict, TriageVerdict::FellBack);
+    assert_eq!(summary.signals[0].code, TriageCode::UnsupportedExpression);
+
+    let json = report.to_json();
+    assert_eq!(json["triage"]["verdict"], "fell_back");
+    assert_eq!(json["triage"]["signals"][0]["code"], "unsupported_expression");
+    assert_eq!(json["triage"]["signals"][0]["evidence"]["query_id"], "query-42");
+    assert_eq!(json["triage"]["signals"][0]["evidence"]["plan_node_id"], "n12");
 }

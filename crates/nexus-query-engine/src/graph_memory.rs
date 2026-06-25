@@ -6,6 +6,7 @@
 
 use crate::{
     error::{QueryError, QueryErrorCode, Result},
+    metrics::{PlanNodeId, QueryId},
     plan::{
         GraphAlgorithm, GraphAlgorithmParams, GraphAlgorithmSpec, GraphConstructionPolicy, GraphEdgeColumnBindings,
     },
@@ -220,6 +221,7 @@ pub struct GraphMemoryEstimate {
 /// Public graph memory-tier report row.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GraphReservationReport {
+    pub query_id: Option<QueryId>,
     pub node_id: String,
     pub algorithm: GraphAlgorithm,
     pub class: GraphMemoryClass,
@@ -256,6 +258,7 @@ impl GraphReservationReport {
             (Some(_), false) => GraphReservationOutcome::Admitted,
         };
         Self {
+            query_id: None,
             node_id: node_id.to_string(),
             algorithm: estimate.algorithm,
             class: estimate.class,
@@ -373,7 +376,7 @@ impl GraphMemoryModel {
             MemoryReservationRequest::new(ReservationKind::GraphAlgorithm, report.requested_bytes, budget_bytes)
                 .with_memory_space(memory_space)
                 .with_memory_boundary(GRAPH_MEMORY_BOUNDARY)
-                .with_node_id(node_id)
+                .with_node_id(PlanNodeId::new(node_id.to_string()))
                 .with_stage("graph_memory_admission"),
         )
     }

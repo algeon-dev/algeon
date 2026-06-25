@@ -160,8 +160,12 @@ impl ExecutionPlan for NativeCudfExec {
         let schema = self.schema();
         let plan = self.plan.clone();
         let execution_config = self.execution_config.clone();
-        let metrics =
-            NativeCudfMetrics::new_with_capture(&self.metrics, partition, self.execution_config.metrics_capture());
+        let metrics = NativeCudfMetrics::new_with_capture_and_shape(
+            &self.metrics,
+            partition,
+            self.execution_config.metrics_capture(),
+            self.execution_config.plan_task_mapping_datafusion_shape(),
+        );
         let output = futures::stream::once(async move {
             let _elapsed_compute = metrics.baseline.elapsed_compute().timer();
             // Context construction is the configuration/validation stage. Failures here happen

@@ -80,6 +80,7 @@ fn execute_compiled_projected_cross_join_materialize_with_strategy(
     metrics.record_operator_metrics(crate::metrics::OperatorMetrics::join(
         node_id,
         crate::metrics::JoinOperatorMetrics {
+            query_id: None,
             join_type: node.spec.join_type.to_string(),
             execution_strategy: execution_strategy.to_string(),
             key_count: 0,

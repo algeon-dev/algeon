@@ -21,12 +21,13 @@ use nexus_query_engine::{
     MemoryReservationRequest, MemorySpaceId, MissingColumn, NativeOptimizerOptions, NodeId, OperatorMetrics,
     ParquetFieldIdReadBinding, ParquetPositionDeleteFile, ParquetReaderDecimalType, ParquetReaderDecimalTypeId,
     PartitionColumn, PartitionColumnDisposition, PlanNode, PredicateDisposition, ProbeExecutionBoundary,
-    ProjectionOutput, QueryError, QueryErrorCode, QueryErrorKind, QueryErrorStatus, QueryMetrics, QueryPlanBuilder,
-    RejectedSourceFeature, RemoteParquetReadMode, ReservationKind, ResolvedParquetSource,
+    ProjectionOutput, QueryError, QueryErrorCode, QueryErrorKind, QueryErrorStatus, QueryId, QueryMetrics,
+    QueryPlanBuilder, RejectedSourceFeature, RemoteParquetReadMode, ReservationKind, ResolvedParquetSource,
     ResultMaterializationBoundary, ResultSink, RetryFacts, ScanLimitDisposition, SchemaBehavior,
     SchemaMappingDisposition, SortExpr, SortSpec, SourceChunkPlanningPolicy, SourceColumnRef, SourceMetadataCache,
     SourceNode, SourceReadBoundary, SourceSchedulerPolicy, SourceTaskMemoryModel, StrictBoundedContractOwner,
-    StrictBoundedExecutionMode, WindowFunction, WindowSpec, ZERO_COLUMN_COUNT_COLUMN, ZeroColumnCountDisposition,
+    StrictBoundedExecutionMode, TraceId, WindowFunction, WindowSpec, ZERO_COLUMN_COUNT_COLUMN,
+    ZeroColumnCountDisposition,
     capability::{
         AggregateExecutionStage, AggregateExecutionStrategy, CapabilityDecision, ContractQuality, ContractStatus,
         EdgeConsumer, EdgeContractKind, InputRole, KeyedHashJoinStrategyOptions, NodeOperator, OrderingRequirement,
@@ -160,6 +161,70 @@ fn query_error_codes_and_facts_are_stable_without_datafusion() {
     assert_eq!(error.fact_value("reason"), Some("unsupported_expression"));
     assert!(error.to_string().contains("code=unsupported_expression"));
     assert!(error.to_string().contains("expression=\"Utf8 LIKE\""));
+}
+
+#[test]
+fn query_error_carries_typed_correlation_and_fact_labels() {
+    let error = QueryError::new(
+        QueryErrorCode::MemoryReservationFailed,
+        "nexus_query_engine.test.correlation",
+        "reservation denied",
+    )
+    .with_query_id(QueryId::new("query-42"))
+    .with_trace_id(TraceId::new("trace-7"));
+
+    assert_eq!(error.query_id().map(QueryId::as_str), Some("query-42"));
+    assert_eq!(error.trace_id().map(TraceId::as_str), Some("trace-7"));
+    assert_eq!(error.fact_value("query_id"), Some("query-42"));
+    assert_eq!(error.fact_value("trace_id"), Some("trace-7"));
+    assert!(error.to_string().contains("query_id=query-42"));
+}
+
+#[test]
+fn query_error_correlation_stamping_replaces_existing_correlation_facts() {
+    let error = QueryError::new(
+        QueryErrorCode::InvalidPlan,
+        "nexus_query_engine.test.correlation_replace",
+        "correlation changed at adapter boundary",
+    )
+    .with_fact("query_id", "service-local-query")
+    .with_fact("trace_id", "service-local-trace")
+    .with_query_id(QueryId::new("request-query"))
+    .with_trace_id(TraceId::new("request-trace"));
+
+    assert_eq!(error.query_id().map(QueryId::as_str), Some("request-query"));
+    assert_eq!(error.trace_id().map(TraceId::as_str), Some("request-trace"));
+    assert_eq!(error.fact_value("query_id"), Some("request-query"));
+    assert_eq!(error.fact_value("trace_id"), Some("request-trace"));
+}
+
+#[test]
+fn execute_query_plan_stamps_correlation_on_early_errors() {
+    let schema = Arc::new(Schema::new(vec![Field::new("k", DataType::Int32, false)]));
+    let batch = RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(Int32Array::from(vec![1]))]).unwrap();
+    let mut builder = QueryPlanBuilder::new();
+    let source =
+        builder.add_source(SourceNode::LiteralBatch(LiteralBatchSource::new(Arc::clone(&schema), vec![batch])));
+    let plan = builder.finish_with_host_sink(source);
+
+    let cancellation = ExecutionCancellation::new();
+    cancellation.cancel();
+    let context = ExecutionContext::builder()
+        .with_cancellation(cancellation)
+        .with_query_id(QueryId::new("query-exec"))
+        .with_trace_id(TraceId::new("trace-exec"))
+        .build()
+        .unwrap();
+
+    let error = match nexus_query_engine::execute_query_plan(&context, &plan) {
+        Ok(_) => panic!("cancelled context should fail before execution"),
+        Err(error) => error,
+    };
+    assert_eq!(error.code(), QueryErrorCode::Cancelled);
+    assert_eq!(error.query_id().map(QueryId::as_str), Some("query-exec"));
+    assert_eq!(error.trace_id().map(TraceId::as_str), Some("trace-exec"));
+    assert_eq!(error.fact_value("query_id"), Some("query-exec"));
+    assert_eq!(error.fact_value("trace_id"), Some("trace-exec"));
 }
 
 #[test]
@@ -462,6 +527,7 @@ fn query_metrics_have_join_operator_contract() {
     metrics.record_operator_metrics(OperatorMetrics::join(
         "n2",
         JoinOperatorMetrics {
+            query_id: None,
             join_type: "inner".into(),
             execution_strategy: "hash_join".into(),
             key_count: 2,

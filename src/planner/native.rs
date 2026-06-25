@@ -5,6 +5,7 @@ use datafusion::{
     physical_optimizer::PhysicalOptimizerRule,
     physical_plan::ExecutionPlan,
 };
+use nexus_query_engine::QueryId;
 
 use super::CudfOptimizerConfig;
 use crate::{
@@ -211,7 +212,8 @@ impl PhysicalOptimizerRule for CudfNativePhysicalOptimizerRule {
         *self.state.last_input_join_diagnostics.lock().expect("native input join diagnostics mutex poisoned") =
             physical_join_diagnostics(plan.as_ref());
 
-        let effective_config = self.config.with_datafusion_config_options(config)?;
+        let effective_config =
+            self.config.with_datafusion_config_options(config)?.with_query_id_if_absent(QueryId::mint());
         let native_execution_config = effective_config.native_execution_config();
         let native_optimizer_options = effective_config.native_optimizer_options();
         let native_plan_preference_options = effective_config.native_plan_preference_options();

@@ -1643,6 +1643,7 @@ fn materialize_compiled_indices_output(
     metrics.record_operator_metrics(crate::metrics::OperatorMetrics::join(
         node_id,
         crate::metrics::JoinOperatorMetrics {
+            query_id: None,
             join_type: node.spec.join_type.to_string(),
             execution_strategy: execution_strategy.to_string(),
             key_count,

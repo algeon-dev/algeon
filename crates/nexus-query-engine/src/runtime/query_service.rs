@@ -24,6 +24,7 @@ use crate::{
     chunk::SourceChunkPlanningOptions,
     dynamic_filter::DynamicFilterExecutionOptions,
     error::{QueryError, QueryErrorCode, Result},
+    metrics::QueryId,
     mode::{NativePipelineExecutionMode, StddevSampExecutionMode},
 };
 
@@ -1558,6 +1559,8 @@ impl QueryHandle {
         let stream_lease_guard = Arc::new(stream_lease);
         let memory_grant = self.lifetime.memory_grant()?;
         let context = ExecutionContext::from_parts(ExecutionContextParts {
+            query_id: Some(QueryId::new(format!("service-{}", self.query_id))),
+            trace_id: None,
             runtime: stream_lease_guard.shared_runtime(),
             memory_policy: MemoryResourcePolicy::ExternalRuntime,
             memory_control_policy: self.memory_control_policy(),

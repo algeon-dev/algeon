@@ -351,7 +351,7 @@ use crate::{
     expr::{
         AggregateExpr, AggregateFunction, AggregateSpec, BinaryOp, CaseWhen, Expr, LimitSpec, LiteralValue, SortSpec,
     },
-    metrics::{QueryMetrics, SourceReadRuntimeMetrics},
+    metrics::{QueryId, QueryMetrics, SourceReadRuntimeMetrics, TraceId},
     plan::{
         AggregateNode, FilterNode, JoinNode, JoinNullEquality, JoinOutputColumn, JoinSide, JoinType, LimitNode, NodeId,
         PlanNode, ProjectionNode, QueryPlan, ResultSink, SortNode, WindowFrame, WindowNode,
@@ -460,6 +460,20 @@ pub fn execute_query_plan_with_gpu_inputs(
     plan: &QueryPlan,
     gpu_inputs: &GpuResidentInputMap,
 ) -> Result<ExecutionResult> {
+    let query_id = context.query_id().cloned().unwrap_or_else(QueryId::mint);
+    let trace_id = context.trace_id().cloned();
+
+    execute_query_plan_with_correlation(context, plan, gpu_inputs, query_id.clone(), trace_id.clone())
+        .map_err(|error| error.with_query_id(query_id).with_optional_trace_id(trace_id.as_ref()))
+}
+
+fn execute_query_plan_with_correlation(
+    context: &ExecutionContext,
+    plan: &QueryPlan,
+    gpu_inputs: &GpuResidentInputMap,
+    query_id: QueryId,
+    trace_id: Option<TraceId>,
+) -> Result<ExecutionResult> {
     context.check_cancellation("nexus_query_engine.exec.execute_query_plan")?;
     validate_query_plan(plan)?;
     let _order_tracking = DataFusionOrderTrackingGuard::new(
@@ -467,6 +481,8 @@ pub fn execute_query_plan_with_gpu_inputs(
             && plan_requires_datafusion_exact_statistical_order(plan),
     );
     let mut metrics = QueryMetrics {
+        query_id,
+        trace_id,
         memory_control_policy: context.memory_control_policy(),
         execution_boundary_policy: context.boundary_policy(),
         ..Default::default()
@@ -492,6 +508,19 @@ pub fn execute_query_plan_with_gpu_inputs(
         }
     };
     Ok(ExecutionResult::new(output, metrics))
+}
+
+trait QueryErrorCorrelationExt {
+    fn with_optional_trace_id(self, trace_id: Option<&TraceId>) -> Self;
+}
+
+impl QueryErrorCorrelationExt for QueryError {
+    fn with_optional_trace_id(self, trace_id: Option<&TraceId>) -> Self {
+        match trace_id {
+            Some(trace_id) => self.with_trace_id(trace_id.clone()),
+            None => self,
+        }
+    }
 }
 
 /// Materialize a GPU-resident result handle to host Arrow and record boundary metrics.

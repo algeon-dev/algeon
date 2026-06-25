@@ -8,6 +8,13 @@ fn adapter_facade_modules_expose_intentional_contract_groups() {
     let _error_code = error_contracts::ErrorCode::InvalidExecutionPlan;
     let _metric_names: &[&str] = execution_contracts::NATIVE_CUDF_DATAFUSION_METRIC_NAMES;
     let _fallback_header: &str = report_contracts::NATIVE_FALLBACK_PRESSURE_TSV_HEADER;
+    let _mapping_row = report_contracts::NativePlanTaskMappingMetricRow {
+        query_id: "q".to_string(),
+        plan_node_id: None,
+        compiled_task_id: None,
+        operator_kind: None,
+        datafusion_shape: None,
+    };
     let _table_format = table_format_contracts::TableFormat::Iceberg;
     let _mode = engine_contracts::NativePipelineExecutionMode::StrictBounded;
 }

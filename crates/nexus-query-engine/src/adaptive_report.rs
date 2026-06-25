@@ -6,6 +6,8 @@
 
 use std::fmt;
 
+use serde_json::{Value, json};
+
 use crate::{
     adaptive_runtime::AdaptiveMemoryHistorySummary,
     capability::{
@@ -15,6 +17,7 @@ use crate::{
     },
     error::{QueryError, QueryErrorCode, Result},
     exec::QueryOutputMode,
+    metrics::{QueryId, TraceId},
     mode::AdaptiveExecutionMode,
     plan::{QueryPlan, ResultSink},
     runtime::ReservationKind,
@@ -26,6 +29,8 @@ pub const ADAPTIVE_DIAGNOSTIC_CONSTRUCTION_FAILED_REASON: &str = "adaptive_diagn
 /// Report for one adaptive bounded-pipeline admission decision.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AdaptivePipelineReport {
+    query_id: Option<QueryId>,
+    trace_id: Option<TraceId>,
     execution_mode: AdaptiveExecutionMode,
     row: AdaptivePipelineReportRow,
 }
@@ -82,6 +87,42 @@ impl AdaptivePipelineReport {
         self.row.to_stable_kv_row()
     }
 
+    /// Serializes this adaptive pipeline report as named JSON.
+    pub fn to_json(&self) -> Value {
+        json!({
+            "schema": "nexus_query_engine.adaptive_pipeline_report.v1",
+            "query_id": self.query_id.as_ref().map(QueryId::as_str),
+            "trace_id": self.trace_id.as_ref().map(TraceId::as_str),
+            "triage": self.triage_summary().to_json(),
+            "execution_mode": self.execution_mode.as_str(),
+            "row": self.row.to_json(),
+        })
+    }
+
+    /// Returns the query-wide diagnostic correlation id, when assigned.
+    pub fn query_id(&self) -> Option<&QueryId> {
+        self.query_id.as_ref()
+    }
+
+    /// Returns the optional parent trace id.
+    pub fn trace_id(&self) -> Option<&TraceId> {
+        self.trace_id.as_ref()
+    }
+
+    /// Returns this adaptive report with a query id assigned.
+    #[must_use]
+    pub fn with_query_id(mut self, query_id: impl Into<QueryId>) -> Self {
+        self.query_id = Some(query_id.into());
+        self
+    }
+
+    /// Returns this adaptive report with a parent trace id assigned.
+    #[must_use]
+    pub fn with_trace_id(mut self, trace_id: impl Into<TraceId>) -> Self {
+        self.trace_id = Some(trace_id.into());
+        self
+    }
+
     /// Build a rejected report when diagnostics themselves fail.
     pub fn diagnostic_failure(plan: &QueryPlan, rejection_reason: &'static str) -> Self {
         let execution_mode = AdaptiveExecutionMode::UnsupportedAdaptive;
@@ -96,7 +137,7 @@ impl AdaptivePipelineReport {
             final_sink_boundary: AdaptiveFinalSinkBoundary::for_sink(plan.sink()),
             rejection_reason: Some(rejection_reason),
         };
-        Self { execution_mode, row }
+        Self { query_id: None, trace_id: None, execution_mode, row }
     }
 
     fn new(execution_mode: AdaptiveExecutionMode, row: AdaptivePipelineReportRow) -> Result<Self> {
@@ -108,7 +149,7 @@ impl AdaptivePipelineReport {
         match (execution_mode, row.candidate_status) {
             (AdaptiveExecutionMode::Adaptive, AdaptiveCandidateStatus::Admitted)
             | (AdaptiveExecutionMode::UnsupportedAdaptive, AdaptiveCandidateStatus::Rejected) => {
-                Ok(Self { execution_mode, row })
+                Ok(Self { query_id: None, trace_id: None, execution_mode, row })
             },
             _ => Err(adaptive_report_error("adaptive report mode does not match candidate status")
                 .with_fact("row_execution_mode", row.execution_mode.as_str())
@@ -160,6 +201,21 @@ impl AdaptivePipelineReportRow {
             self.final_sink_boundary.materialization_mode.as_str(),
             self.rejection_reason.unwrap_or("none"),
         )
+    }
+
+    /// Serializes this adaptive pipeline row as named JSON.
+    pub fn to_json(&self) -> Value {
+        json!({
+            "execution_mode": self.execution_mode.as_str(),
+            "candidate_status": self.candidate_status.as_str(),
+            "missing_strict_contracts": self.missing_strict_contracts.iter().map(AdaptiveMissingStrictContract::to_json).collect::<Vec<_>>(),
+            "adaptive_strategy": self.adaptive_strategy.as_str(),
+            "runtime_actions_allowed": self.runtime_actions_allowed.to_json(),
+            "memory_history_evidence": self.memory_history_evidence.to_json(),
+            "runtime_action_counts": self.runtime_action_counts.to_json(),
+            "final_sink_boundary": self.final_sink_boundary.to_json(),
+            "rejection_reason": self.rejection_reason,
+        })
     }
 }
 
@@ -256,6 +312,19 @@ impl AdaptiveRuntimeActionsAllowed {
         }
         if actions.is_empty() { "none".to_string() } else { actions.join(",") }
     }
+
+    /// Serializes allowed runtime actions as named booleans.
+    pub fn to_json(self) -> Value {
+        json!({
+            "memory_history_lookup": self.memory_history_lookup,
+            "oom_retry": self.oom_retry,
+            "source_chunk_adjustment": self.source_chunk_adjustment,
+            "spill_to_host": self.spill_to_host,
+            "spill_to_disk": self.spill_to_disk,
+            "downgrade_to_host_materialized": self.downgrade_to_host_materialized,
+            "partial_admission": self.partial_admission,
+        })
+    }
 }
 
 /// Adaptive memory-history evidence used by admission.
@@ -306,6 +375,35 @@ impl AdaptiveMemoryHistoryEvidence {
             ),
         }
     }
+
+    /// Serializes memory-history evidence as named JSON.
+    pub fn to_json(&self) -> Value {
+        match self {
+            Self::NotUsed => json!({
+                "status": self.as_str(),
+                "lookup_attempted": false,
+                "lookup_hit": false,
+                "summary": null,
+            }),
+            Self::LookupMiss => json!({
+                "status": self.as_str(),
+                "lookup_attempted": true,
+                "lookup_hit": false,
+                "summary": null,
+            }),
+            Self::Observed(summary) => json!({
+                "status": self.as_str(),
+                "lookup_attempted": true,
+                "lookup_hit": true,
+                "summary": {
+                    "observation_count": summary.observation_count,
+                    "max_resident_dataframe_peak_bytes": summary.max_resident_dataframe_peak_bytes,
+                    "max_reservation_granted_bytes": summary.max_reservation_granted_bytes,
+                    "max_source_chunks_committed": summary.max_source_chunks_committed,
+                },
+            }),
+        }
+    }
 }
 
 /// Runtime action counters owned by adaptive mode.
@@ -317,6 +415,17 @@ pub struct AdaptiveRuntimeActionCounts {
     pub spill_count: u64,
     /// Number of adaptive downgrade actions.
     pub downgrade_count: u64,
+}
+
+impl AdaptiveRuntimeActionCounts {
+    /// Serializes runtime action counters as named JSON.
+    pub fn to_json(self) -> Value {
+        json!({
+            "retry_count": self.retry_count,
+            "spill_count": self.spill_count,
+            "downgrade_count": self.downgrade_count,
+        })
+    }
 }
 
 /// Final sink and materialization labels for adaptive rows.
@@ -335,6 +444,14 @@ impl AdaptiveFinalSinkBoundary {
             ResultSink::GpuResident { .. } => AdaptiveSinkKind::GpuResident,
         };
         Self { sink_kind, materialization_mode: QueryOutputMode::for_sink(sink) }
+    }
+
+    /// Serializes the final sink boundary as named JSON.
+    pub fn to_json(&self) -> Value {
+        json!({
+            "sink_kind": self.sink_kind.as_str(),
+            "materialization_mode": self.materialization_mode.as_str(),
+        })
     }
 }
 
@@ -421,6 +538,20 @@ impl AdaptiveMissingStrictContract {
             self.contract_quality.as_str(),
             self.unresolved_preflight_gap.unwrap_or("none"),
         )
+    }
+
+    /// Serializes this strict-contract gap as named JSON.
+    pub fn to_json(&self) -> Value {
+        json!({
+            "contract_scope": self.contract_scope.as_str(),
+            "owner": self.owner,
+            "reservation_kind": self.reservation_kind.as_str(),
+            "memory_boundary": self.memory_boundary,
+            "required_contract": self.required_contract,
+            "contract_status": self.contract_status.as_str(),
+            "contract_quality": self.contract_quality.as_str(),
+            "unresolved_preflight_gap": self.unresolved_preflight_gap,
+        })
     }
 }
 

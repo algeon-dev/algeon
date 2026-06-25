@@ -9,6 +9,7 @@ pub(super) fn record_background_cache_file_fill_enqueue_runtime(
     metrics: &mut QueryMetrics,
 ) {
     metrics.record_source_read_runtime(SourceReadRuntimeMetrics {
+        query_id: None,
         source_node_id: source_node_id.to_string(),
         read_kind: "background_cache_fill_file".to_string(),
         read_strategy: file.resolved_source.read_strategy.as_str().to_string(),
@@ -64,6 +65,7 @@ pub(super) fn record_background_cache_chunk_fill_enqueue_runtime(
     metrics: &mut QueryMetrics,
 ) {
     metrics.record_source_read_runtime(SourceReadRuntimeMetrics {
+        query_id: None,
         source_node_id: chunk.source_node_id.to_string(),
         read_kind: "background_cache_fill_chunk".to_string(),
         read_strategy: chunk.resolved_source.read_strategy.as_str().to_string(),
@@ -113,6 +115,7 @@ pub(super) fn record_source_chunk_read_runtime(
     metrics: &mut QueryMetrics,
 ) {
     metrics.record_source_read_runtime(SourceReadRuntimeMetrics {
+        query_id: None,
         source_node_id: chunk.source_node_id.to_string(),
         read_kind: "chunk".to_string(),
         read_strategy: chunk.resolved_source.read_strategy.as_str().to_string(),
@@ -185,6 +188,7 @@ pub(super) fn record_source_chunk_batch_read_runtime(
         .estimated_source_read_bytes
         .unwrap_or_else(|| batch.chunks.iter().map(best_chunk_source_read_bytes).sum());
     metrics.record_source_read_runtime(SourceReadRuntimeMetrics {
+        query_id: None,
         source_node_id: first_chunk.source_node_id.to_string(),
         read_kind: read_kind.to_string(),
         read_strategy: first_chunk.resolved_source.read_strategy.as_str().to_string(),
@@ -255,6 +259,7 @@ pub(super) fn record_source_file_read_runtime(
     metrics: &mut QueryMetrics,
 ) {
     metrics.record_source_read_runtime(SourceReadRuntimeMetrics {
+        query_id: None,
         source_node_id: source_node_id.to_string(),
         read_kind: "file".to_string(),
         read_strategy: file.resolved_source.read_strategy.as_str().to_string(),

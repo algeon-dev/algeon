@@ -234,7 +234,13 @@ fn native_optimizer_rule_rewrites_supported_physical_plan() {
     assert!(optimized.downcast_ref::<NativeCudfExec>().is_some());
     let report = rule.last_report().expect("native optimizer should record a planning report");
     assert_eq!(report.rewritten_count(), 1);
-    assert!(matches!(report.outcomes()[0], CandidateOutcome::Rewritten { .. }));
+    assert!(report.query_id().is_some_and(|query_id| query_id.as_str().starts_with("q-")));
+    match &report.outcomes()[0] {
+        CandidateOutcome::Rewritten { candidate } => {
+            assert!(candidate.plan_node_id.is_some(), "rewritten candidate should carry native plan-node evidence");
+        },
+        other => panic!("expected rewritten candidate, got {other:?}"),
+    }
     assert_eq!(rule.last_source_diagnostics().len(), 1);
     let diagnostics = rule.last_planning_diagnostics().expect("native optimizer should retain diagnostics");
     assert!(diagnostics.strict_bounded_contract.accepted_candidates.is_empty());
@@ -285,6 +291,7 @@ fn native_optimizer_rule_preserves_rejected_plan_for_downstream_fallback() {
     let report = rule.last_report().expect("native optimizer should record a planning report");
     assert_eq!(report.rewritten_count(), 0);
     assert_eq!(report.rejected_count(), 1);
+    assert!(report.query_id().is_some_and(|query_id| query_id.as_str().starts_with("q-")));
     assert!(matches!(
         report.outcomes()[0],
         CandidateOutcome::Rejected { reason: FallbackReason::UnsupportedExpression, .. }

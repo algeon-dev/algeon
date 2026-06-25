@@ -10,7 +10,7 @@ use std::fmt::Write;
 use datafusion::physical_plan::metrics::MetricsSet;
 use nexus_query_engine::{AdaptivePipelineReportRow, StrictBoundedContractGateRow};
 
-use super::*;
+use super::{metrics::NativePlanTaskMappingMetricRow, *};
 use crate::planner::NativeStrictBoundedCompiledGraphDiagnostics;
 
 pub(crate) trait TsvRow {
@@ -229,6 +229,10 @@ pub(super) fn format_task_operator_rows(rows: &[NativeTaskOperatorMetricRow]) ->
 
 pub(super) fn format_task_runtime_rows(rows: &[NativeTaskRuntimeMetricRow]) -> String {
     format_stable_nested_metric_rows(rows, NativeTaskRuntimeMetricRow::to_stable_kv_row)
+}
+
+pub(super) fn format_plan_task_mapping_rows(rows: &[NativePlanTaskMappingMetricRow]) -> String {
+    format_stable_nested_metric_rows(rows, NativePlanTaskMappingMetricRow::to_stable_kv_row)
 }
 
 pub(super) fn write_workload_dataset_metadata(output: &mut String, metadata: Option<&WorkloadDatasetMetadata>) {

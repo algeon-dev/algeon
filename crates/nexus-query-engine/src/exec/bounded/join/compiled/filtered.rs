@@ -668,6 +668,7 @@ fn record_filtered_join_output_metrics(
     metrics.record_operator_metrics(crate::metrics::OperatorMetrics::join(
         node_id,
         crate::metrics::JoinOperatorMetrics {
+            query_id: None,
             join_type: node.spec.join_type.to_string(),
             execution_strategy: "bounded_reusable_filtered_join".to_string(),
             key_count: node.spec.keys.len(),

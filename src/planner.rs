@@ -106,6 +106,12 @@ impl CudfOptimizerConfig {
         self
     }
 
+    /// Attach a query id to the native execution config only when the caller has not supplied one.
+    pub(crate) fn with_query_id_if_absent(mut self, query_id: impl Into<nexus_query_engine::QueryId>) -> Self {
+        self.native_execution_config = self.native_execution_config.with_query_id_if_absent(query_id);
+        self
+    }
+
     /// Replace DataFusion-free native optimizer options.
     pub fn with_native_optimizer_options(mut self, options: nexus_query_engine::NativeOptimizerOptions) -> Self {
         self.native_optimizer_options = options;

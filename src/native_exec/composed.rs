@@ -219,8 +219,12 @@ impl ExecutionPlan for NativeCudfComposedExec {
         let plan = self.plan.clone();
         let execution_config = self.execution_config.clone();
         let gpu_inputs = self.gpu_inputs.clone();
-        let metrics =
-            NativeCudfMetrics::new_with_capture(&self.metrics, partition, self.execution_config.metrics_capture());
+        let metrics = NativeCudfMetrics::new_with_capture_and_shape(
+            &self.metrics,
+            partition,
+            self.execution_config.metrics_capture(),
+            self.execution_config.plan_task_mapping_datafusion_shape(),
+        );
         let output = futures::stream::once(async move {
             // Build one native context for all producer fragments and the consumer so device-resident
             // handles are compatible across the composed execution.

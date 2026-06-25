@@ -425,6 +425,7 @@ impl DatafusionCudfFlightSqlService {
     fn query_planning(
         &self,
         query_id: &str,
+        correlation_id: Option<&str>,
         cancellation: ExecutionCancellation,
         query_service_handle: Option<Arc<QueryHandle>>,
     ) -> QueryPlanning {
@@ -436,6 +437,9 @@ impl DatafusionCudfFlightSqlService {
             .clone()
             .with_cancellation(cancellation)
             .with_metrics_capture(metrics_capture);
+        if let Some(correlation_id) = correlation_id.map(str::trim).filter(|value| !value.is_empty()) {
+            execution_config = execution_config.with_trace_id(correlation_id.to_string());
+        }
         if let Some(handle) = query_service_handle {
             execution_config = execution_config.with_query_service_handle(handle);
         }
@@ -472,7 +476,12 @@ impl DatafusionCudfFlightSqlService {
         // shared with the optimizer rule, but `do_action_cancel_query` cannot
         // reach it until the ticket is registered.
         let native_cancellation = ExecutionCancellation::new();
-        let planning = self.query_planning(&query_id, native_cancellation.clone(), permit.query_service_handle());
+        let planning = self.query_planning(
+            &query_id,
+            correlation_id.as_deref(),
+            native_cancellation.clone(),
+            permit.query_service_handle(),
+        );
         let query_ctx = &planning.ctx;
         let query_state = query_ctx.state();
         let logical_plan = tokio::select! {
@@ -783,7 +792,12 @@ impl DatafusionCudfFlightSqlService {
             return Ok(response);
         }
 
-        let planning = self.query_planning(&query_id, native_cancellation.clone(), query_service_handle);
+        let planning = self.query_planning(
+            &query_id,
+            correlation_id.as_deref(),
+            native_cancellation.clone(),
+            query_service_handle,
+        );
         let query_ctx = &planning.ctx;
         let query_state = query_ctx.state();
         let logical_plan = tokio::select! {
@@ -1115,7 +1129,12 @@ impl DatafusionCudfFlightSqlService {
 
         let lifecycle = QueryLifecycle::new(query_id.clone(), started_at);
         let native_cancellation = ExecutionCancellation::new();
-        let planning = self.query_planning(&query_id, native_cancellation.clone(), permit.query_service_handle());
+        let planning = self.query_planning(
+            &query_id,
+            correlation_id.as_deref(),
+            native_cancellation.clone(),
+            permit.query_service_handle(),
+        );
         let query_ctx = &planning.ctx;
         let state = query_ctx.state();
         let plan = tokio::select! {

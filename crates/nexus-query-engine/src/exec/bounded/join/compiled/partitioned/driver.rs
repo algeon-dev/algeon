@@ -849,6 +849,7 @@ pub(super) fn record_partitioned_join_operator_metrics(
     metrics.record_operator_metrics(crate::metrics::OperatorMetrics::join(
         plan.node_id,
         crate::metrics::JoinOperatorMetrics {
+            query_id: None,
             join_type: plan.node.spec.join_type.to_string(),
             execution_strategy: plan.strategy.execution_strategy.to_string(),
             key_count: plan.node.spec.keys.len(),

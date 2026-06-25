@@ -7,6 +7,10 @@
 
 use std::{collections::BTreeMap, error::Error as StdError, fmt};
 
+use serde_json::{Value, json};
+
+use crate::metrics::{QueryId, TraceId};
+
 type BoxedSourceError = Box<dyn StdError + Send + Sync + 'static>;
 
 /// Native query-engine result type.
@@ -293,14 +297,21 @@ impl Facts {
         let previous = self.values.insert(key, value);
         assert!(previous.is_none(), "nexus-query-engine error fact key inserted twice: {key}");
     }
+
+    fn set(&mut self, key: &'static str, value: String) {
+        assert!(!key.is_empty(), "nexus-query-engine error fact key must not be empty");
+        self.values.insert(key, value);
+    }
 }
 
 /// Structured native-engine error with stable classification and facts.
 pub struct QueryError {
+    query_id: Option<QueryId>,
+    trace_id: Option<TraceId>,
     code: QueryErrorCode,
     operation: &'static str,
     message: String,
-    facts: Facts,
+    facts: Box<Facts>,
     source: Option<BoxedSourceError>,
 }
 
@@ -314,7 +325,7 @@ impl QueryError {
         let message = message.into();
         assert!(!operation.is_empty(), "nexus-query-engine error operation must not be empty");
         assert!(!message.is_empty(), "nexus-query-engine error message must not be empty");
-        Self { code, operation, message, facts: Facts::new(), source: None }
+        Self { query_id: None, trace_id: None, code, operation, message, facts: Box::new(Facts::new()), source: None }
     }
 
     /// Adds one machine-readable fact.
@@ -333,6 +344,24 @@ impl QueryError {
         if self.facts.get(key).is_none() {
             self.facts.insert(key, value.to_string());
         }
+        self
+    }
+
+    /// Assigns a query-wide diagnostic correlation id and mirrors it into facts.
+    #[must_use]
+    pub fn with_query_id(mut self, query_id: impl Into<QueryId>) -> Self {
+        let query_id = query_id.into();
+        self.facts.set("query_id", query_id.to_string());
+        self.query_id = Some(query_id);
+        self
+    }
+
+    /// Assigns an optional parent trace id and mirrors it into facts.
+    #[must_use]
+    pub fn with_trace_id(mut self, trace_id: impl Into<TraceId>) -> Self {
+        let trace_id = trace_id.into();
+        self.facts.set("trace_id", trace_id.to_string());
+        self.trace_id = Some(trace_id);
         self
     }
 
@@ -429,6 +458,16 @@ impl QueryError {
         self.code.status()
     }
 
+    /// Returns the query-wide diagnostic correlation id, when assigned.
+    pub fn query_id(&self) -> Option<&QueryId> {
+        self.query_id.as_ref()
+    }
+
+    /// Returns the optional parent trace id, when assigned.
+    pub fn trace_id(&self) -> Option<&TraceId> {
+        self.trace_id.as_ref()
+    }
+
     /// Returns the stable dotted operation id that produced the error.
     pub fn operation(&self) -> &'static str {
         self.operation
@@ -441,7 +480,7 @@ impl QueryError {
 
     /// Returns the sorted machine-readable fact set.
     pub fn facts(&self) -> &Facts {
-        &self.facts
+        self.facts.as_ref()
     }
 
     pub fn fact_value(&self, key: &str) -> Option<&str> {
@@ -465,6 +504,25 @@ impl QueryError {
             current = error.source();
         }
         None
+    }
+
+    /// Serializes this error as a structured diagnostic JSON object.
+    pub fn to_json(&self) -> Value {
+        let query_id = self.query_id.as_ref().map(QueryId::as_str).or_else(|| self.fact_value("query_id"));
+        let trace_id = self.trace_id.as_ref().map(TraceId::as_str).or_else(|| self.fact_value("trace_id"));
+        json!({
+            "schema": "nexus_query_engine.query_error.v1",
+            "query_id": query_id,
+            "trace_id": trace_id,
+            "triage": self.triage_summary().to_json(),
+            "code": self.code.as_str(),
+            "kind": self.kind().as_str(),
+            "status": self.status().as_str(),
+            "operation": self.operation,
+            "message": self.message,
+            "facts": self.facts.iter().collect::<BTreeMap<_, _>>(),
+            "source": self.source.as_ref().map(|source| source.to_string()),
+        })
     }
 }
 
@@ -545,6 +603,8 @@ impl fmt::Display for QueryError {
 impl fmt::Debug for QueryError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("QueryError")
+            .field("query_id", &self.query_id)
+            .field("trace_id", &self.trace_id)
             .field("code", &self.code)
             .field("kind", &self.kind())
             .field("status", &self.status())

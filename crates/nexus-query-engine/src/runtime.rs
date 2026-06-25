@@ -23,6 +23,7 @@ use crate::{
     capability::AggregateStrategyExecutionOptions,
     chunk::SourceChunkPlanningOptions,
     error::{QueryError, QueryErrorCode, Result},
+    metrics::{QueryId, TraceId},
     mode::{NativePipelineExecutionMode, StddevSampExecutionMode},
 };
 
@@ -305,6 +306,10 @@ impl Default for SourceSchedulerPolicy {
 /// keeps the same runtime/cache handles.
 #[derive(Debug, Clone)]
 pub struct ExecutionContext {
+    /// Optional caller-provided query-wide diagnostic correlation id.
+    query_id: Option<QueryId>,
+    /// Optional parent trace id used to group related query executions.
+    trace_id: Option<TraceId>,
     /// Shared cudf runtime used for GPU work.
     ///
     /// Runtime ownership is explicit: callers may inject an `Arc` to share a
@@ -408,6 +413,8 @@ impl LeasedExecutionContext {
 
 #[derive(Debug)]
 struct ExecutionContextParts {
+    query_id: Option<QueryId>,
+    trace_id: Option<TraceId>,
     runtime: Arc<cudf::Runtime>,
     memory_policy: MemoryResourcePolicy,
     memory_control_policy: MemoryControlPolicy,
@@ -464,6 +471,8 @@ impl ExecutionContext {
                 .expect("default service stream pool size is non-zero");
         let source_fetch_config = SourceFetchConfig::default();
         Ok(Self::from_parts(ExecutionContextParts {
+            query_id: None,
+            trace_id: None,
             runtime,
             memory_policy: MemoryResourcePolicy::ExternalRuntime,
             memory_control_policy: MemoryControlPolicy::Unbounded,
@@ -501,6 +510,8 @@ impl ExecutionContext {
 
     fn from_parts(parts: ExecutionContextParts) -> Self {
         Self {
+            query_id: parts.query_id,
+            trace_id: parts.trace_id,
             runtime: parts.runtime,
             memory_policy: parts.memory_policy,
             memory_control_policy: parts.memory_control_policy,
@@ -556,6 +567,30 @@ impl ExecutionContext {
         Arc::clone(&self.runtime)
     }
 
+    /// Returns the query-wide diagnostic correlation id.
+    pub fn query_id(&self) -> Option<&QueryId> {
+        self.query_id.as_ref()
+    }
+
+    /// Returns the optional parent trace id.
+    pub fn trace_id(&self) -> Option<&TraceId> {
+        self.trace_id.as_ref()
+    }
+
+    /// Returns a cloned context with a different diagnostic query id.
+    pub fn with_query_id(&self, query_id: impl Into<QueryId>) -> Self {
+        let mut context = self.clone();
+        context.query_id = Some(query_id.into());
+        context
+    }
+
+    /// Returns a cloned context with a different diagnostic trace id.
+    pub fn with_trace_id(&self, trace_id: impl Into<TraceId>) -> Self {
+        let mut context = self.clone();
+        context.trace_id = Some(trace_id.into());
+        context
+    }
+
     /// Acquires a same-device leased context for a scheduled source-read worker.
     pub(crate) fn acquire_source_read_lease(&self) -> Result<SourceReadStreamLease> {
         let stream_lease = self
@@ -574,6 +609,8 @@ impl ExecutionContext {
     pub fn with_stream_lease(&self, stream_lease: &StreamLease) -> Result<Self> {
         validate_service_stream_pool_device(stream_lease.pool(), self.runtime.device())?;
         Ok(Self::from_parts(ExecutionContextParts {
+            query_id: self.query_id.clone(),
+            trace_id: self.trace_id.clone(),
             runtime: stream_lease.shared_runtime(),
             memory_policy: MemoryResourcePolicy::ExternalRuntime,
             memory_control_policy: self.memory_control_policy,
@@ -1032,6 +1069,10 @@ impl ExecutionContext {
 /// memory-resource policy.
 #[derive(Debug, Clone, Default)]
 pub struct ExecutionContextBuilder {
+    /// Optional caller-provided diagnostic query id.
+    query_id: Option<QueryId>,
+    /// Optional caller-provided parent trace id.
+    trace_id: Option<TraceId>,
     /// Prebuilt runtime to use instead of constructing one.
     runtime: Option<Arc<cudf::Runtime>>,
     /// CUDA device ordinal used only when this builder constructs the runtime.
@@ -1111,6 +1152,18 @@ impl ExecutionContextBuilder {
     pub fn with_shared_runtime(mut self, runtime: Arc<cudf::Runtime>) -> Self {
         self.runtime = Some(runtime);
         self.memory_policy = MemoryResourcePolicy::ExternalRuntime;
+        self
+    }
+
+    /// Supplies the query-wide diagnostic correlation id.
+    pub fn with_query_id(mut self, query_id: impl Into<QueryId>) -> Self {
+        self.query_id = Some(query_id.into());
+        self
+    }
+
+    /// Supplies the optional parent trace id.
+    pub fn with_trace_id(mut self, trace_id: impl Into<TraceId>) -> Self {
+        self.trace_id = Some(trace_id.into());
         self
     }
 
@@ -1342,6 +1395,8 @@ impl ExecutionContextBuilder {
         let source_fetch_runtime = default_source_fetch_runtime()?;
         let lakehouse_cache_fill_runtime = default_lakehouse_cache_fill_runtime()?;
         let source_object_stores = Arc::new(SourceObjectStoreRegistry::with_profiles(self.source_storage_profiles)?);
+        let query_id = self.query_id;
+        let trace_id = self.trace_id;
         if let Some(runtime) = self.runtime {
             let service_stream_pool_size = self
                 .service_stream_pool_size
@@ -1354,6 +1409,8 @@ impl ExecutionContextBuilder {
                 None => ServiceStreamPool::for_device(runtime.device(), service_stream_pool_size)?,
             };
             return Ok(ExecutionContext::from_parts(ExecutionContextParts {
+                query_id,
+                trace_id,
                 runtime,
                 memory_policy: MemoryResourcePolicy::ExternalRuntime,
                 memory_control_policy: self.memory_control_policy,
@@ -1420,6 +1477,8 @@ impl ExecutionContextBuilder {
             None => ServiceStreamPool::for_device(runtime.device(), service_stream_pool_size)?,
         };
         Ok(ExecutionContext::from_parts(ExecutionContextParts {
+            query_id,
+            trace_id,
             runtime: Arc::new(runtime),
             memory_policy,
             memory_control_policy: self.memory_control_policy,

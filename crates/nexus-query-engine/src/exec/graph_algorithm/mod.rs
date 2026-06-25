@@ -210,6 +210,7 @@ pub(super) fn execute_graph_algorithm_sanitized(
     let output_device_bytes = gpu.device_allocated_size_bytes().ok();
     let boundary_delta = boundary_delta(&boundary_before, &metrics.boundary);
     metrics.record_graph_algorithm_runtime(crate::metrics::GraphAlgorithmRuntimeMetrics {
+        query_id: None,
         node_id: node_id.to_string(),
         algorithm: node.spec.algorithm.as_str().to_string(),
         runtime_outcome: "succeeded".to_string(),
@@ -1018,9 +1019,12 @@ fn admit_graph_memory(
     let request = model.reservation_request(node_id, &report, context.device_memory_space());
     metrics.record_graph_reservation(report.clone());
 
-    let Some(request) = request else {
+    let Some(mut request) = request else {
         return Ok(());
     };
+    if request.query_id.is_none() && metrics.query_id().is_assigned() {
+        request.query_id = Some(metrics.query_id().clone());
+    }
     if report.outcome == crate::graph_memory::GraphReservationOutcome::Denied {
         let granted_bytes = request.budget_bytes;
         metrics.record_reservation_denied_event(&request, granted_bytes);

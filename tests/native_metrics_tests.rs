@@ -1,11 +1,16 @@
 use std::sync::Arc;
 
 use arrow::datatypes::{DataType, Field, Schema};
-use datafusion_nexus::NATIVE_CUDF_DATAFUSION_METRIC_NAMES;
+use datafusion_nexus::{
+    NATIVE_CUDF_DATAFUSION_METRIC_NAMES, NATIVE_DATAFUSION_EXECUTION_TSV_HEADER, NATIVE_DATAFUSION_PLANNING_TSV_HEADER,
+    NATIVE_FALLBACK_PRESSURE_TSV_HEADER, NATIVE_TPCDS_PARITY_TSV_HEADER, native_report_metric_descriptor,
+    native_report_metric_descriptors,
+};
 use nexus_query_engine::{
     ExecutionContext, GpuLocalParquetSourceCache, GpuLocalParquetSourceCacheKey, LocalParquetFile, LocalParquetSource,
-    MemoryControlPolicy, MemoryReservationEventAction, MemoryReservationRequest, MemorySpaceId, QueryMetrics,
-    QueryPlanBuilder, ReservationKind, SourceChunk, SourceChunkPlanningMode, SourceNode,
+    MemoryControlPolicy, MemoryReservationEventAction, MemoryReservationRequest, MemorySpaceId, MetricAggregation,
+    MetricUnit, QueryId, QueryMetrics, QueryPlanBuilder, ReservationKind, SourceChunk, SourceChunkPlanningMode,
+    SourceNode, TraceId,
 };
 
 #[test]
@@ -182,6 +187,86 @@ fn query_metrics_reservation_timeline_records_live_ledger_deltas() {
     assert_eq!(metrics.task_runtime_metrics["t2"].reservation_granted_bytes, 80);
     assert_eq!(metrics.task_runtime_metrics["t2"].reservation_released_bytes, 30);
     assert_eq!(metrics.task_runtime_metrics["t2"].reservation_live_peak_bytes, 80);
+}
+
+#[test]
+fn query_metrics_restamps_existing_runtime_rows_when_query_id_changes() {
+    let mut metrics = QueryMetrics::new("old-query");
+    metrics.record_compiled_pipeline_task_execution("task-1", "source_read");
+    metrics.record_compiled_pipeline_task_mapping("task-1", "source_read", Some("n7"));
+    let request = MemoryReservationRequest::new(ReservationKind::SourceRead, 16, 64)
+        .with_memory_boundary("source_read")
+        .with_node_id("n7")
+        .with_compiled_task_id("task-1");
+
+    metrics.record_reservation_granted_event(&request, 16);
+    metrics.set_query_id("capture-query");
+
+    assert_eq!(metrics.query_id().as_str(), "capture-query");
+    assert_eq!(metrics.reservation_events[0].query_id.as_deref(), Some("capture-query"));
+    assert_eq!(metrics.task_runtime_metrics["task-1"].query_id.as_ref().map(QueryId::as_str), Some("capture-query"));
+    assert_eq!(
+        metrics.task_operator_metrics["source_read"].query_id.as_ref().map(QueryId::as_str),
+        Some("capture-query")
+    );
+    assert!(metrics.plan_task_mappings().iter().all(|row| row.query_id.as_str() == "capture-query"));
+}
+
+#[test]
+fn query_metrics_json_projection_is_catalog_driven() {
+    let mut metrics = QueryMetrics::new("q-json");
+    metrics.trace_id = Some(TraceId::new("request-1"));
+    metrics = metrics.with_plan_task_mapping_datafusion_shape("AggregateExec(LocalParquetScan)");
+    metrics.record_input_batch(42);
+    metrics.record_compiled_pipeline_task_execution("task-1", "source_read");
+    metrics.record_compiled_pipeline_task_mapping("task-1", "source_read", Some("n7"));
+    let request = MemoryReservationRequest::new(ReservationKind::SourceRead, 16, 64)
+        .with_memory_boundary("source_read")
+        .with_node_id("n7")
+        .with_compiled_task_id("task-1");
+    metrics.record_reservation_granted_event(&request, 16);
+
+    let json = metrics.to_json();
+
+    assert_eq!(json["schema"], "nexus_query_engine.query_metrics.v1");
+    assert_eq!(json["query_id"], "q-json");
+    assert_eq!(json["trace_id"], "request-1");
+    assert_eq!(json["triage"]["verdict"], "healthy");
+    assert_eq!(json["metrics"]["input_rows"]["value"], 42);
+    assert_eq!(json["metrics"]["reservation_requested_bytes"]["value"], 16);
+    assert_eq!(json["rows"]["memory_reservations"][0]["query_id"], "q-json");
+    assert_eq!(json["rows"]["plan_task_mappings"][0]["query_id"], "q-json");
+    assert_eq!(json["rows"]["plan_task_mappings"][0]["datafusion_shape"], "AggregateExec(LocalParquetScan)");
+
+    for descriptor in QueryMetrics::descriptors() {
+        assert!(
+            json["metrics"].get(descriptor.name).is_some(),
+            "missing JSON metric value for descriptor {}",
+            descriptor.name
+        );
+    }
+}
+
+#[test]
+fn query_metrics_triage_links_memory_denials_to_reservation_events() {
+    let mut metrics = QueryMetrics::new("q-denied");
+    let request = MemoryReservationRequest::new(ReservationKind::SourceRead, 128, 64)
+        .with_memory_boundary("source_read")
+        .with_node_id("n9")
+        .with_compiled_task_id("task-9");
+
+    metrics.record_reservation_denied_event(&request, 64);
+
+    let summary = metrics.triage_summary();
+    assert_eq!(summary.verdict.as_str(), "degraded");
+    assert_eq!(summary.signals[0].code.as_str(), "memory_reservation_denied");
+
+    let json = metrics.to_json();
+    assert_eq!(json["triage"]["verdict"], "degraded");
+    assert_eq!(json["triage"]["signals"][0]["evidence"]["surface"], "query_metrics.rows.memory_reservations");
+    assert_eq!(json["triage"]["signals"][0]["evidence"]["query_id"], "q-denied");
+    assert_eq!(json["triage"]["signals"][0]["evidence"]["plan_node_id"], "n9");
+    assert_eq!(json["triage"]["signals"][0]["evidence"]["compiled_task_id"], "task-9");
 }
 
 #[test]
@@ -510,5 +595,48 @@ fn native_datafusion_metric_names_cover_bounded_runtime_contract() {
         "materialization_time",
     ] {
         assert!(names.contains(&expected), "missing native DataFusion metric: {expected}");
+    }
+}
+
+#[test]
+fn descriptor_registry_covers_report_tsv_columns_and_datafusion_metrics() {
+    for name in NATIVE_CUDF_DATAFUSION_METRIC_NAMES {
+        assert!(native_report_metric_descriptor(name).is_some(), "missing descriptor for metric {name}");
+    }
+    for header in [
+        NATIVE_FALLBACK_PRESSURE_TSV_HEADER,
+        NATIVE_DATAFUSION_PLANNING_TSV_HEADER,
+        NATIVE_DATAFUSION_EXECUTION_TSV_HEADER,
+        NATIVE_TPCDS_PARITY_TSV_HEADER,
+    ] {
+        for column in header.split('\t') {
+            assert!(native_report_metric_descriptor(column).is_some(), "missing descriptor for TSV column {column}");
+        }
+    }
+
+    let descriptors = QueryMetrics::descriptors();
+    let mut names = descriptors.iter().map(|descriptor| descriptor.name).collect::<Vec<_>>();
+    names.sort_unstable();
+    names.dedup();
+    assert_eq!(names.len(), descriptors.len(), "query metric descriptors must be unique");
+    assert!(descriptors.iter().all(|descriptor| !descriptor.semantics.is_empty()));
+
+    let report_descriptors = native_report_metric_descriptors();
+    let mut report_names = report_descriptors.iter().map(|descriptor| descriptor.name).collect::<Vec<_>>();
+    report_names.sort_unstable();
+    report_names.dedup();
+    assert_eq!(report_names.len(), report_descriptors.len(), "native report descriptors must be unique");
+
+    for (name, unit, aggregation) in [
+        ("query_id", MetricUnit::Label, MetricAggregation::Last),
+        ("outcome", MetricUnit::Label, MetricAggregation::Last),
+        ("reason_code", MetricUnit::Label, MetricAggregation::Last),
+        ("edge_normalize_inserted", MetricUnit::Boolean, MetricAggregation::Last),
+        ("native_task_runtime_rows", MetricUnit::Count, MetricAggregation::RowCount),
+        ("native_plan_task_mapping_rows", MetricUnit::Count, MetricAggregation::RowCount),
+    ] {
+        let descriptor = native_report_metric_descriptor(name).expect("descriptor must exist");
+        assert_eq!(descriptor.unit, unit, "descriptor {name} has wrong unit");
+        assert_eq!(descriptor.aggregation, aggregation, "descriptor {name} has wrong aggregation");
     }
 }

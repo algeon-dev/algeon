@@ -413,7 +413,7 @@ impl AdaptiveMemoryHistory {
             let observation = AdaptiveTaskMemoryObservation::from_task_metrics(task_metrics);
             let mut input_basis_values = BTreeSet::from([input_basis_bytes]);
             input_basis_values.extend(metrics.reservation_events.iter().filter_map(|event| {
-                (event.compiled_task_id.as_deref() == Some(task_id.as_str())
+                (event.compiled_task_id.as_ref().map(|value| value.as_str()) == Some(task_id.as_str())
                     && event.action == MemoryReservationEventAction::Reserve
                     && event.outcome == MemoryReservationEventOutcome::Granted
                     && event.requested_bytes > 0)
