@@ -133,7 +133,7 @@ pub const CUGRAPH_PARITY_SPECS: &[ParitySpec] = &[
         label: "pagerank/karate@alpha=0.85",
         algorithm: CugraphAlgorithm::PageRank,
         dataset: "karate",
-        params_json: r#"{"alpha":0.85,"epsilon":1e-06,"max_iterations":100}"#,
+        params_json: r#"{"alpha":0.85,"epsilon":1e-05,"max_iterations":100}"#,
         seed: None,
         truth_source: ParityTruthSource::OracleJson,
         oracle_relpath: "karate/pagerank__alpha_0_85.json",
@@ -144,7 +144,7 @@ pub const CUGRAPH_PARITY_SPECS: &[ParitySpec] = &[
         label: "personalized_pagerank/karate@vertex=0",
         algorithm: CugraphAlgorithm::PersonalizedPageRank,
         dataset: "karate",
-        params_json: r#"{"alpha":0.85,"epsilon":1e-06,"max_iterations":100,"personalization_table":"ppr_seeds","personalization_vertex_col":"vertex","personalization_value_col":"value","personalization_vertices":[0],"personalization_values":[1.0]}"#,
+        params_json: r#"{"alpha":0.85,"epsilon":1e-05,"max_iterations":100,"personalization_table":"ppr_seeds","personalization_vertex_col":"vertex","personalization_value_col":"value","personalization_vertices":[0],"personalization_values":[1.0]}"#,
         seed: None,
         truth_source: ParityTruthSource::OracleJson,
         oracle_relpath: "karate/personalized_pagerank__vertex_0.json",
@@ -163,10 +163,10 @@ pub const CUGRAPH_PARITY_SPECS: &[ParitySpec] = &[
         tolerance: ParityTolerance::exact(),
     },
     ParitySpec {
-        label: "louvain/karate@resolution=1.0",
+        label: "louvain/karate@default",
         algorithm: CugraphAlgorithm::Louvain,
         dataset: "karate",
-        params_json: r#"{"resolution":1.0}"#,
+        params_json: r#"{"max_level":100,"threshold":1e-07,"resolution":1.0}"#,
         seed: None,
         truth_source: ParityTruthSource::OracleJson,
         oracle_relpath: "karate/louvain__resolution_1_0.json",
@@ -180,7 +180,7 @@ pub const CUGRAPH_PARITY_SPECS: &[ParitySpec] = &[
         // Mirrors `CugraphEigenvectorCentralityParams::default()`. The
         // Python oracle accepts the same keys, so the header round-trip
         // assertion in the parity harness compares apples-to-apples.
-        params_json: r#"{"epsilon":1e-06,"max_iterations":500}"#,
+        params_json: r#"{"epsilon":1e-06,"max_iterations":200}"#,
         seed: None,
         truth_source: ParityTruthSource::OracleJson,
         oracle_relpath: "karate/eigenvector_centrality__default.json",

@@ -4,6 +4,8 @@
     "dataset": "karate",
     "dataset_sha256": "4f0f2f55a69c5171ad36920a077f3e0c9cd1e8a5a3973e4fe39d6e929e3582ce",
     "params": {
+      "max_level": 100,
+      "threshold": 1e-07,
       "resolution": 1.0
     },
     "seed": null,

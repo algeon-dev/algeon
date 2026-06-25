@@ -165,7 +165,7 @@ def _allow_nonconvergence_dataframe(result):
 
 def _pagerank(cugraph_mod, graph, params: Dict[str, Any]) -> Dict[str, Any]:
     alpha = float(params.get("alpha", 0.85))
-    epsilon = float(params.get("epsilon", 1.0e-6))
+    epsilon = float(params.get("epsilon", 1.0e-5))
     max_iterations = int(params.get("max_iterations", 100))
     df = _allow_nonconvergence_dataframe(cugraph_mod.pagerank(
         graph,
@@ -184,7 +184,7 @@ def _personalized_pagerank(cugraph_mod, graph, params: Dict[str, Any]) -> Dict[s
     import cudf as cudf_mod
 
     alpha = float(params.get("alpha", 0.85))
-    epsilon = float(params.get("epsilon", 1.0e-6))
+    epsilon = float(params.get("epsilon", 1.0e-5))
     max_iterations = int(params.get("max_iterations", 100))
     personalization_vertices = params.get("personalization_vertices", [0])
     personalization_values = params.get("personalization_values", [1.0])
@@ -238,8 +238,12 @@ def _bfs(cugraph_mod, graph, params: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def _louvain(cugraph_mod, graph, params: Dict[str, Any]) -> Dict[str, Any]:
+    max_iter = int(params.get("max_level", 100))
+    threshold = float(params.get("threshold", 1.0e-7))
     resolution = float(params.get("resolution", 1.0))
-    df, modularity = cugraph_mod.louvain(graph, resolution=resolution)
+    df, modularity = cugraph_mod.louvain(
+        graph, max_iter=max_iter, threshold=threshold, resolution=resolution
+    )
     df = df.sort_values("vertex").reset_index(drop=True)
     return {
         "vertex": [int(v) for v in df["vertex"].to_pandas().tolist()],
@@ -252,11 +256,11 @@ def _eigenvector_centrality(cugraph_mod, graph, params: Dict[str, Any]) -> Dict[
     """Run cuGraph eigenvector centrality with deterministic key ordering.
 
     Mirrors ``nexus_query_engine::GraphEigenvectorCentralityParams`` defaults
-    (epsilon=1e-6, max_iterations=500) so the harness header round-trip
+    (epsilon=1e-6, max_iterations=200) so the harness header round-trip
     matches the parity spec exactly.
     """
     tol = float(params.get("epsilon", 1.0e-6))
-    max_iter = int(params.get("max_iterations", 500))
+    max_iter = int(params.get("max_iterations", 200))
     df = cugraph_mod.eigenvector_centrality(graph, max_iter=max_iter, tol=tol)
     # cuGraph's eigenvector centrality returns a "eigenvector_centrality"
     # column in some versions and a vertex+value pair in others. Normalize

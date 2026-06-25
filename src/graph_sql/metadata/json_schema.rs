@@ -153,6 +153,18 @@ fn algorithm_options_schema_json(algorithm: CugraphAlgorithm) -> Value {
         CugraphAlgorithmParams::Bfs(_) => bfs_options_schema_json(),
         CugraphAlgorithmParams::Louvain(params) => {
             json!({
+                "max_level": {
+                    "scope": "algorithm",
+                    "type": "UInt32",
+                    "default": params.max_level,
+                    "min": 1
+                },
+                "threshold": {
+                    "scope": "algorithm",
+                    "type": "Float64",
+                    "default": params.threshold,
+                    "min": 0.0
+                },
                 "resolution": {
                     "scope": "algorithm",
                     "type": "Float64",
@@ -360,7 +372,8 @@ fn algorithm_options_schema_json(algorithm: CugraphAlgorithm) -> Value {
                     "scope": "algorithm",
                     "type": "UInt32",
                     "default": params.evs_max_iterations,
-                    "min": 1
+                    "min": 1,
+                    "max": i32::MAX
                 },
                 "k_means_tolerance": {
                     "scope": "algorithm",
@@ -372,7 +385,8 @@ fn algorithm_options_schema_json(algorithm: CugraphAlgorithm) -> Value {
                     "scope": "algorithm",
                     "type": "UInt32",
                     "default": params.k_means_max_iterations,
-                    "min": 1
+                    "min": 1,
+                    "max": i32::MAX
                 },
                 "seed": {
                     "scope": "algorithm",
@@ -817,7 +831,9 @@ fn params_json(params: &CugraphAlgorithmParams) -> Value {
                 "return_target_info": params.output.return_target_info,
             },
         }),
-        CugraphAlgorithmParams::Louvain(params) => json!({"resolution": params.resolution}),
+        CugraphAlgorithmParams::Louvain(params) => {
+            json!({"max_level": params.max_level, "threshold": params.threshold, "resolution": params.resolution})
+        },
         CugraphAlgorithmParams::EigenvectorCentrality(params) => {
             json!({"epsilon": params.epsilon, "max_iterations": params.max_iterations})
         },

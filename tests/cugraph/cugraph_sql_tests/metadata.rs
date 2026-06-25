@@ -131,12 +131,27 @@ async fn cugraph_metadata_list_algorithms_reports_algorithm_metadata() {
             .any(|entry| entry.as_str().is_some_and(|text| text.contains("requires Int32"))),
         "legacy MST metadata must disclose the Int32 vertex dtype limitation",
     );
+
+    let spectral_describe = ctx
+        .sql(
+            "SELECT options_schema_json \
+             FROM cugraph_describe_algorithm('cugraph_spectral_modularity_maximization', 'verbose')",
+        )
+        .await
+        .unwrap()
+        .collect()
+        .await
+        .unwrap();
+    let options_schema = json_value(string_value(single_batch(&spectral_describe), 0, 0));
+    assert_eq!(options_schema["algorithm_options"]["evs_max_iterations"]["max"], i32::MAX);
+    assert_eq!(options_schema["algorithm_options"]["k_means_max_iterations"]["max"], i32::MAX);
 }
 
 #[tokio::test]
 async fn cugraph_louvain_metadata_discloses_weight_arg_is_accepted_but_not_consumed() {
     let state = SessionStateBuilder::new_with_default_features().with_cugraph_sql(CugraphSqlConfig::default()).build();
     let ctx = SessionContext::new_with_state(state);
+    register_edge_memtable(&ctx, "edges", DataType::Int32, DataType::Int32, DataType::Float64);
 
     let batches = ctx
         .sql(
@@ -153,16 +168,48 @@ async fn cugraph_louvain_metadata_discloses_weight_arg_is_accepted_but_not_consu
     assert_eq!(string_value(batch, 0, 0), "ignored");
 
     let describe = ctx
-        .sql("SELECT argument_descriptions_json FROM cugraph_describe_algorithm('cugraph_louvain', 'verbose')")
+        .sql(
+            "SELECT argument_descriptions_json, options_schema_json \
+             FROM cugraph_describe_algorithm('cugraph_louvain', 'verbose')",
+        )
         .await
         .unwrap()
         .collect()
         .await
         .unwrap();
-    let argument_descriptions = json_value(string_value(single_batch(&describe), 0, 0));
+    let describe = single_batch(&describe);
+    let argument_descriptions = json_value(string_value(describe, 0, 0));
     let weight_col = json_array_item_by_name(&argument_descriptions, "weight_col");
     assert_eq!(weight_col["semantic_effect"], "none for this algorithm");
     assert!(weight_col["note"].as_str().unwrap().contains("does not consume weights"));
+    let options_schema = json_value(string_value(describe, 1, 0));
+    let algorithm_options = &options_schema["algorithm_options"];
+    assert_eq!(algorithm_options["max_level"]["default"], 100);
+    assert_eq!(algorithm_options["max_level"]["min"], 1);
+    assert_eq!(algorithm_options["threshold"]["default"], serde_json::json!(1.0e-7));
+    assert_eq!(algorithm_options["threshold"]["min"], 0.0);
+    assert_eq!(algorithm_options["resolution"]["default"], 1.0);
+
+    let validate = ctx
+        .sql(
+            r#"SELECT valid, normalized_options_json
+               FROM cugraph_validate_call(
+                 'cugraph_louvain',
+                 'edges',
+                 '{"src_col":"src","dst_col":"dst","options":{"directed":false,"max_level":24,"threshold":0.00001,"resolution":2.5}}'
+               )"#,
+        )
+        .await
+        .unwrap()
+        .collect()
+        .await
+        .unwrap();
+    let validate = single_batch(&validate);
+    assert!(bool_value(validate, 0, 0), "Louvain validate_call should accept all scalar options");
+    let normalized_options = json_value(string_value(validate, 1, 0));
+    assert_eq!(normalized_options["algorithm_options"]["max_level"], 24);
+    assert_eq!(normalized_options["algorithm_options"]["threshold"], serde_json::json!(0.00001));
+    assert_eq!(normalized_options["algorithm_options"]["resolution"], 2.5);
 }
 
 #[tokio::test]
@@ -304,8 +351,8 @@ async fn cugraph_metadata_describe_algorithm_returns_structured_rows() {
 #[tokio::test]
 async fn cugraph_metadata_schema_versions_and_column_order_are_pinned() {
     assert_eq!(CUGRAPH_LIST_ALGORITHMS_SCHEMA_VERSION, 7);
-    assert_eq!(CUGRAPH_DESCRIBE_ALGORITHM_SCHEMA_VERSION, 10);
-    assert_eq!(CUGRAPH_VALIDATE_CALL_SCHEMA_VERSION, 2);
+    assert_eq!(CUGRAPH_DESCRIBE_ALGORITHM_SCHEMA_VERSION, 11);
+    assert_eq!(CUGRAPH_VALIDATE_CALL_SCHEMA_VERSION, 3);
 
     let state = SessionStateBuilder::new_with_default_features().with_cugraph_sql(CugraphSqlConfig::default()).build();
     let ctx = SessionContext::new_with_state(state);
@@ -901,6 +948,36 @@ async fn cugraph_validate_call_rejects_directed_true_for_undirected_only_algorit
         assert_eq!(string_value(batch, 1, 0), "unsupported_option");
         assert!(string_value(batch, 2, 0).contains(expected), "{}", string_value(batch, 2, 0));
         assert!(!bool_value(batch, 3, 0));
+    }
+}
+
+#[tokio::test]
+async fn cugraph_validate_call_rejects_spectral_iteration_counts_above_libcugraph_int() {
+    let state = SessionStateBuilder::new_with_default_features().with_cugraph_sql(CugraphSqlConfig::default()).build();
+    let ctx = SessionContext::new_with_state(state);
+    register_edge_memtable(&ctx, "edges", DataType::Int32, DataType::Int32, DataType::Float64);
+
+    for (function, option, message) in [
+        (
+            "cugraph_spectral_modularity_maximization",
+            "evs_max_iterations",
+            "evs_max_iterations must be at most i32::MAX",
+        ),
+        (
+            "cugraph_balanced_cut_clustering",
+            "k_means_max_iterations",
+            "k_means_max_iterations must be at most i32::MAX",
+        ),
+    ] {
+        let batch = validate_call_batch(
+            &ctx,
+            function,
+            &format!(r#"{{"src_col":"src","dst_col":"dst","options":{{"{option}":2147483648}}}}"#),
+        )
+        .await;
+        assert!(!bool_value(&batch, 0, 0), "{function} must reject oversized {option}");
+        assert_eq!(string_value(&batch, 1, 0), "invalid_argument");
+        assert!(string_value(&batch, 2, 0).contains(message), "{}", string_value(&batch, 2, 0));
     }
 }
 

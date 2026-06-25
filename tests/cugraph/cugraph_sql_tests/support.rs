@@ -77,7 +77,7 @@ df = cudf.read_parquet(sys.argv[1])
 df = df[df["active"]][["src", "dst", "weight"]]
 graph = cugraph.Graph(directed=True)
 graph.from_cudf_edgelist(df, source="src", destination="dst", edge_attr="weight", renumber=True)
-result = cugraph.pagerank(graph, alpha=0.85, tol=1.0e-6, max_iter=100)
+result = cugraph.pagerank(graph, alpha=0.85, tol=1.0e-5, max_iter=100)
 value_col = "pagerank" if "pagerank" in result.columns else [name for name in result.columns if name != "vertex"][0]
 result = result.rename(columns={value_col: "value"})
 result["vertex"] = result["vertex"].astype("int64")

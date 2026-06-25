@@ -302,6 +302,24 @@ fn parse_options_json(
                 }
             },
             key if algorithm == CugraphAlgorithm::Bfs && is_bfs_predicate_option(key) => {},
+            "max_level" if algorithm == CugraphAlgorithm::Louvain => {
+                let max_level = json_u32(value, key)?;
+                if max_level < 1 {
+                    return Err(plan_error("Louvain max_level must be at least 1"));
+                }
+                if let CugraphAlgorithmParams::Louvain(params) = params {
+                    params.max_level = max_level;
+                }
+            },
+            "threshold" if algorithm == CugraphAlgorithm::Louvain => {
+                let threshold = json_f64(value, key)?;
+                if threshold < 0.0 {
+                    return Err(plan_error("Louvain threshold must be non-negative"));
+                }
+                if let CugraphAlgorithmParams::Louvain(params) = params {
+                    params.threshold = threshold;
+                }
+            },
             "resolution" if algorithm == CugraphAlgorithm::Louvain => {
                 let resolution = json_f64(value, key)?;
                 if resolution <= 0.0 {
@@ -635,6 +653,9 @@ fn parse_options_json(
                 if evs_max_iterations < 1 {
                     return Err(plan_error("evs_max_iterations must be at least 1"));
                 }
+                if evs_max_iterations > i32::MAX as u32 {
+                    return Err(plan_error("evs_max_iterations must be at most i32::MAX"));
+                }
                 match params {
                     CugraphAlgorithmParams::SpectralModularityMaximization(params) => {
                         params.evs_max_iterations = evs_max_iterations
@@ -670,6 +691,9 @@ fn parse_options_json(
                 let k_means_max_iterations = json_u32(value, key)?;
                 if k_means_max_iterations < 1 {
                     return Err(plan_error("k_means_max_iterations must be at least 1"));
+                }
+                if k_means_max_iterations > i32::MAX as u32 {
+                    return Err(plan_error("k_means_max_iterations must be at most i32::MAX"));
                 }
                 match params {
                     CugraphAlgorithmParams::SpectralModularityMaximization(params) => {

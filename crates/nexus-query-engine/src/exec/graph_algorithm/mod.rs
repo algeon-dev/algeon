@@ -2121,7 +2121,9 @@ fn graph_algorithm_parameters(params: &crate::plan::GraphAlgorithmParams) -> Str
             params.source_vertex,
             params.depth_limit.map_or_else(|| "none".to_string(), |value| value.to_string())
         ),
-        crate::plan::GraphAlgorithmParams::Louvain(params) => format!("resolution={}", params.resolution),
+        crate::plan::GraphAlgorithmParams::Louvain(params) => {
+            format!("max_level={},threshold={},resolution={}", params.max_level, params.threshold, params.resolution)
+        },
         crate::plan::GraphAlgorithmParams::EigenvectorCentrality(params) => {
             format!("epsilon={},max_iterations={}", params.epsilon, params.max_iterations)
         },
