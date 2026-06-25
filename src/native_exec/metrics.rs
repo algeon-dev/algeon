@@ -327,7 +327,7 @@ impl NativeCudfMetrics {
         Self::new_with_capture_and_shape(metrics, partition, None, None)
     }
 
-    #[cfg(any(feature = "server", feature = "cugraph"))]
+    #[cfg(any(test, feature = "cugraph"))]
     pub(crate) fn new_with_capture(
         metrics: &ExecutionPlanMetricsSet,
         partition: usize,

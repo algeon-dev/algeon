@@ -45,14 +45,9 @@ use crate::{
 const CATALOG_BACKEND_OP: &str = "datafusion_nexus.iceberg.catalog_backend";
 
 fn catalog_backend_error(message: &'static str, catalog_type: &'static str, source: iceberg::Error) -> Error {
-    let aws_facts = AwsCatalogErrorFacts::from_iceberg_error(&source);
-    let mut error = Error::new(catalog_backend_error_code(&source, aws_facts.as_ref()), CATALOG_BACKEND_OP, message)
-        .with_fact("catalog_type", catalog_type)
-        .with_fact("iceberg_error_kind", source.kind().into_static())
-        .with_fact("iceberg_retryable", source.retryable());
-    if let Some(aws_facts) = aws_facts {
-        error = aws_facts.apply(error);
-    }
+    let error = Error::new(classify_iceberg_catalog_error(&source), CATALOG_BACKEND_OP, message)
+        .with_fact("catalog_type", catalog_type);
+    let error = apply_iceberg_catalog_error_facts(error, &source);
     error.with_source(source)
 }
 
@@ -87,6 +82,21 @@ fn catalog_backend_error_code(source: &iceberg::Error, aws_facts: Option<&AwsCat
         _ if source.retryable() => ErrorCode::SourceTemporaryFailure,
         _ => ErrorCode::CudfDependencyFailure,
     }
+}
+
+pub(super) fn classify_iceberg_catalog_error(source: &iceberg::Error) -> ErrorCode {
+    let aws_facts = AwsCatalogErrorFacts::from_iceberg_error(source);
+    catalog_backend_error_code(source, aws_facts.as_ref())
+}
+
+pub(super) fn apply_iceberg_catalog_error_facts(mut error: Error, source: &iceberg::Error) -> Error {
+    error = error
+        .with_fact("iceberg_error_kind", source.kind().into_static())
+        .with_fact("iceberg_retryable", source.retryable());
+    if let Some(aws_facts) = AwsCatalogErrorFacts::from_iceberg_error(source) {
+        error = aws_facts.apply(error);
+    }
+    error
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

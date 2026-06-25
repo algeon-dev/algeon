@@ -96,7 +96,7 @@ impl TableFormatPlanner for StagingTableFormatPlanner {
                 )
                 .with_fact("table_name", &self.table_name)
                 .with_fact("staging_mode", self.mode.code())
-                .with_fact("source_error", error.to_string())
+                .with_source(error)
             })?;
             let (scan_plan, summary) =
                 stage_object_store_data_files(scan_plan, &self.file_io, self.mode, &table_stage_dir).await.map_err(
@@ -108,7 +108,7 @@ impl TableFormatPlanner for StagingTableFormatPlanner {
                         )
                         .with_fact("table_name", &self.table_name)
                         .with_fact("staging_mode", self.mode.code())
-                        .with_fact("source_error", error.to_string())
+                        .with_boxed_source(error)
                     },
                 )?;
             let scan_plan = scan_plan_with_tpcds_source_unique_keys(&self.table_name, scan_plan);

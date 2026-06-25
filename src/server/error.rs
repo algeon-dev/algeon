@@ -1,10 +1,10 @@
-use std::{error::Error as StdError, fmt};
+use std::{error::Error as StdError, fmt, sync::Arc};
 
 use datafusion::common::{DataFusionError, SchemaError};
 use tonic::{Status, metadata::MetadataValue};
 
 use super::{datafusion_error::find_adapter_error, observability::CapturedError};
-use crate::{Error, ErrorCode, ErrorKind, ErrorStatus, Facts};
+use crate::{Error, ErrorCode, ErrorKind, ErrorStatus, Facts, error::ErrorSourceDiagnostics};
 
 /// Flight SQL response metadata key containing the stable adapter error code.
 pub const ERROR_CODE_METADATA_KEY: &str = "x-datafusion-nexus-error-code";
@@ -12,6 +12,8 @@ pub const ERROR_CODE_METADATA_KEY: &str = "x-datafusion-nexus-error-code";
 pub const ERROR_KIND_METADATA_KEY: &str = "x-datafusion-nexus-error-kind";
 /// Flight SQL response metadata key containing the retry/status classification.
 pub const ERROR_STATUS_METADATA_KEY: &str = "x-datafusion-nexus-error-status";
+/// Flight SQL response metadata key containing the stable adapter operation id.
+pub const ERROR_OPERATION_METADATA_KEY: &str = "x-datafusion-nexus-error-operation";
 /// Flight SQL response metadata key containing the first unsupported column name, when known.
 pub const UNSUPPORTED_COLUMN_METADATA_KEY: &str = "x-datafusion-nexus-unsupported-column";
 /// Flight SQL response metadata key containing the first unsupported column Arrow type, when known.
@@ -203,6 +205,23 @@ impl StdError for ServerSource {
     }
 }
 
+#[derive(Debug)]
+struct StatusSourceDiagnostics {
+    source_chain: Option<String>,
+    root_cause: Option<String>,
+}
+
+impl fmt::Display for StatusSourceDiagnostics {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.source_chain.as_deref().or(self.root_cause.as_deref()) {
+            Some(message) => f.write_str(message),
+            None => f.write_str("no source diagnostics"),
+        }
+    }
+}
+
+impl StdError for StatusSourceDiagnostics {}
+
 impl fmt::Display for ServerError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
@@ -262,19 +281,27 @@ pub(super) fn datafusion_error_to_captured_error(error: &DataFusionError, operat
     let code = classify_datafusion_error(error);
     let message = client_datafusion_error_message(error);
     let datafusion_error = datafusion_error_variant(error);
-    let adapter_error = Error::new(code, operation, message).with_fact("datafusion_error", datafusion_error);
-    CapturedError::from_adapter_error(&adapter_error)
+    CapturedError::from_datafusion_error(
+        error,
+        code,
+        operation,
+        message,
+        vec![("datafusion_error", datafusion_error.to_string())],
+    )
 }
 
 pub(crate) fn adapter_error_to_status(error: &Error) -> Status {
     let message = client_status_message(error);
+    let diagnostics = ErrorSourceDiagnostics::from_source(error.source_error());
     tracing::warn!(
         error_code = error.code().as_str(),
         error_kind = error.kind().as_str(),
         error_status = error.status().as_str(),
         error_operation = error.operation(),
+        error_message = error.message(),
+        error_source_chain = diagnostics.chain(),
+        error_root_cause = diagnostics.root_cause_when_distinct(),
         client_message = message.as_str(),
-        diagnostic = diagnostic_status_message(error).as_str(),
         "converted adapter error to Flight SQL status"
     );
     let status = match error.kind() {
@@ -290,6 +317,17 @@ pub(crate) fn adapter_error_to_status(error: &Error) -> Status {
         },
     };
     status_with_error_metadata(status, error)
+}
+
+pub(super) fn status_source_diagnostics(status: &Status) -> (Option<String>, Option<String>) {
+    let Some(source) = StdError::source(status) else {
+        return (None, None);
+    };
+    if let Some(diagnostics) = source.downcast_ref::<StatusSourceDiagnostics>() {
+        return (diagnostics.source_chain.clone(), diagnostics.root_cause.clone());
+    }
+    let diagnostics = ErrorSourceDiagnostics::from_error(source);
+    (diagnostics.chain().map(str::to_string), diagnostics.root_cause().map(str::to_string))
 }
 
 fn client_status_message(error: &Error) -> String {
@@ -394,14 +432,18 @@ fn is_client_actionable_graph_error(kind: ErrorKind) -> bool {
     matches!(kind, ErrorKind::Planning | ErrorKind::InvalidInput | ErrorKind::Unsupported)
 }
 
-fn diagnostic_status_message(error: &Error) -> String {
-    error.to_string()
-}
-
 fn status_with_error_metadata(mut status: Status, error: &Error) -> Status {
     insert_metadata(status.metadata_mut(), ERROR_CODE_METADATA_KEY, error.code().as_str());
     insert_metadata(status.metadata_mut(), ERROR_KIND_METADATA_KEY, error.kind().as_str());
     insert_metadata(status.metadata_mut(), ERROR_STATUS_METADATA_KEY, error.status().as_str());
+    insert_metadata(status.metadata_mut(), ERROR_OPERATION_METADATA_KEY, error.operation());
+    let diagnostics = ErrorSourceDiagnostics::from_source(error.source_error());
+    if diagnostics.chain().is_some() || diagnostics.root_cause().is_some() {
+        status.set_source(Arc::new(StatusSourceDiagnostics {
+            source_chain: diagnostics.chain().map(str::to_string),
+            root_cause: diagnostics.root_cause().map(str::to_string),
+        }));
+    }
     insert_fact_metadata(status.metadata_mut(), UNSUPPORTED_COLUMN_METADATA_KEY, error, "unsupported_column");
     insert_fact_metadata(status.metadata_mut(), UNSUPPORTED_COLUMN_TYPE_METADATA_KEY, error, "unsupported_column_type");
     insert_fact_metadata(status.metadata_mut(), UNSUPPORTED_COLUMN_ROLE_METADATA_KEY, error, "unsupported_column_role");
@@ -585,12 +627,42 @@ fn datafusion_error_variant(error: &DataFusionError) -> &'static str {
 
 #[cfg(test)]
 mod tests {
+    use std::{error::Error as StdError, fmt};
+
     use datafusion::common::{Column, SchemaError, TableReference};
     use tonic::Code;
 
     use super::*;
 
     const TEST_OPERATION: &str = "datafusion_nexus.server.flight.test.create_logical_plan";
+
+    #[derive(Debug)]
+    struct TestSourceError {
+        message: &'static str,
+        source: Option<Box<dyn StdError + Send + Sync>>,
+    }
+
+    impl TestSourceError {
+        fn leaf(message: &'static str) -> Self {
+            Self { message, source: None }
+        }
+
+        fn with_source(message: &'static str, source: impl StdError + Send + Sync + 'static) -> Self {
+            Self { message, source: Some(Box::new(source)) }
+        }
+    }
+
+    impl fmt::Display for TestSourceError {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            f.write_str(self.message)
+        }
+    }
+
+    impl StdError for TestSourceError {
+        fn source(&self) -> Option<&(dyn StdError + 'static)> {
+            self.source.as_deref().map(|source| source as &(dyn StdError + 'static))
+        }
+    }
 
     #[test]
     fn field_not_found_becomes_invalid_input_with_client_message() {
@@ -800,6 +872,48 @@ mod tests {
         assert_error_metadata(&status, "server_transport_failure", "dependency_failure", "permanent");
         assert_eq!(status.message(), "internal server error while processing the request");
         assert_no_diagnostic_fields(status.message());
+    }
+
+    #[test]
+    fn captured_adapter_error_keeps_structured_fields_separate_from_source_chain() {
+        let error =
+            Error::new(ErrorCode::CudfDependencyFailure, "datafusion_nexus.server.test", "adapter wrapper failed")
+                .with_source(TestSourceError::with_source(
+                    "dependency wrapper",
+                    TestSourceError::leaf("root credential expired"),
+                ));
+
+        let captured = CapturedError::from_adapter_error(&error);
+
+        assert_eq!(captured.message, "adapter wrapper failed");
+        assert_eq!(captured.diagnostic, "dependency wrapper: root credential expired");
+        assert_eq!(captured.source_chain.as_deref(), Some("dependency wrapper: root credential expired"));
+        assert_eq!(captured.root_cause.as_deref(), Some("root credential expired"));
+        assert!(!captured.diagnostic.contains("code="), "{}", captured.diagnostic);
+        assert!(!captured.diagnostic.contains("facts="), "{}", captured.diagnostic);
+    }
+
+    #[test]
+    fn borrowed_datafusion_error_capture_walks_source_chain_without_owned_adapter_wrapper() {
+        let error = DataFusionError::Context(
+            "server wrapper".to_string(),
+            Box::new(DataFusionError::External(Box::new(TestSourceError::with_source(
+                "dependency wrapper",
+                TestSourceError::leaf("root credential expired"),
+            )))),
+        );
+
+        let captured = datafusion_error_to_captured_error(&error, TEST_OPERATION);
+
+        assert_eq!(captured.operation, TEST_OPERATION);
+        assert_eq!(
+            captured.source_chain.as_deref(),
+            Some("server wrapper: dependency wrapper: root credential expired")
+        );
+        assert_eq!(captured.root_cause.as_deref(), Some("root credential expired"));
+        assert!(captured.facts.iter().any(|(key, _)| key == "datafusion_error"));
+        assert!(!captured.diagnostic.contains("code="), "{}", captured.diagnostic);
+        assert!(!captured.diagnostic.contains("facts="), "{}", captured.diagnostic);
     }
 
     #[test]

@@ -503,14 +503,14 @@ fn glue_error(
     credential_source: GlueIcebergCredentialSource,
     source: iceberg::Error,
 ) -> crate::Error {
-    crate::Error::new(crate::ErrorCode::CudfDependencyFailure, LOAD_GLUE_TABLE_OPERATION, message)
+    let error = crate::Error::new(catalog::classify_iceberg_catalog_error(&source), LOAD_GLUE_TABLE_OPERATION, message)
         .with_fact("catalog_type", "glue")
         .with_fact("catalog_name", &config.catalog_name)
         .with_fact("database", &config.database)
         .with_fact("table", &config.table)
         .with_fact("region", &config.region)
-        .with_fact("credential_source", credential_source.code())
-        .with_source(source)
+        .with_fact("credential_source", credential_source.code());
+    catalog::apply_iceberg_catalog_error_facts(error, &source).with_source(source)
 }
 
 pub(crate) fn non_empty(value: Option<String>) -> Option<String> {
@@ -523,6 +523,32 @@ pub(crate) fn non_empty(value: Option<String>) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn legacy_glue_error_reuses_catalog_aws_classification_and_facts() {
+        let config = GlueIcebergTableConfig::new("glue", "db", "tbl", "s3://warehouse", "us-east-1");
+        let source = iceberg::Error::new(iceberg::ErrorKind::Unexpected, "failed to call Glue").with_source(
+            std::io::Error::other(
+                "aws sdk error: ErrorMetadata { code: Some(\"AccessDeniedException\"), \
+                 message: Some(\"Access denied\"), aws_request_id: \"req-123\" }; status code: 403; retryable: false",
+            ),
+        );
+
+        let error = glue_error(
+            "failed to load AWS Glue Iceberg table",
+            &config,
+            GlueIcebergCredentialSource::AwsDefaultChain,
+            source,
+        );
+
+        assert_eq!(error.code(), crate::ErrorCode::SourceAccessDenied);
+        assert_eq!(error.fact_value("aws_error_code"), Some("AccessDeniedException"));
+        assert_eq!(error.fact_value("aws_http_status"), Some("403"));
+        assert_eq!(error.fact_value("aws_retryable"), Some("false"));
+        assert_eq!(error.fact_value("aws_error_detail"), Some("access_denied"));
+        assert_eq!(error.fact_value("credential_source"), Some("aws_default_chain"));
+        assert!(error.source_error().is_some());
+    }
 
     #[test]
     fn explicit_nexus_s3_credentials_insert_static_pair_token_and_default_deny_when_requested() {

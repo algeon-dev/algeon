@@ -21,6 +21,8 @@ const NATIVE_FACT_COLLISION_KEYS: &str = "native_fact_collision_keys";
 /// Adapter result type used before conversion to `DataFusionError`.
 pub type Result<T> = std::result::Result<T, Error>;
 
+const MAX_SOURCE_CHAIN_DEPTH: usize = 32;
+
 /// Machine-readable facts attached to an [`Error`].
 ///
 /// Fact keys are static strings so they can be treated as a documented contract
@@ -67,6 +69,67 @@ pub struct Error {
     source: Option<BoxedSourceError>,
 }
 
+/// Human diagnostics derived from an error source chain.
+///
+/// Boundary logs and retained query diagnostics should keep machine-readable
+/// fields (`code`, `kind`, `status`, `operation`, facts) separate from human
+/// root-cause text. This formatter walks `std::error::Error::source()` and
+/// renders project errors by their human message, not by their structured
+/// `Display` representation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ErrorSourceDiagnostics {
+    chain: Option<String>,
+    root_cause: Option<String>,
+}
+
+impl ErrorSourceDiagnostics {
+    /// Builds diagnostics from `error` and all of its sources.
+    pub fn from_error(error: &(dyn StdError + 'static)) -> Self {
+        Self::from_iter(Some(error))
+    }
+
+    /// Builds diagnostics from an optional source, excluding the wrapper that
+    /// already has explicit machine fields at the current boundary.
+    pub fn from_source(source: Option<&(dyn StdError + 'static)>) -> Self {
+        Self::from_iter(source)
+    }
+
+    /// Full source chain text, with adjacent duplicate messages removed.
+    pub fn chain(&self) -> Option<&str> {
+        self.chain.as_deref()
+    }
+
+    /// Deepest source message.
+    pub fn root_cause(&self) -> Option<&str> {
+        self.root_cause.as_deref()
+    }
+
+    /// Deepest source message when it adds information beyond the full chain.
+    pub fn root_cause_when_distinct(&self) -> Option<&str> {
+        match (self.chain(), self.root_cause()) {
+            (Some(chain), Some(root_cause)) if chain != root_cause => Some(root_cause),
+            _ => None,
+        }
+    }
+
+    fn from_iter(mut current: Option<&(dyn StdError + 'static)>) -> Self {
+        let mut messages = Vec::new();
+        for _ in 0..MAX_SOURCE_CHAIN_DEPTH {
+            let Some(error) = current else {
+                break;
+            };
+            let message = diagnostic_error_message(error);
+            if !message.is_empty() && messages.last() != Some(&message) {
+                messages.push(message);
+            }
+            current = error.source();
+        }
+        let root_cause = messages.last().cloned();
+        let chain = (!messages.is_empty()).then(|| messages.join(": "));
+        Self { chain, root_cause }
+    }
+}
+
 impl Error {
     /// Creates an adapter error with a stable operation id and message.
     ///
@@ -96,6 +159,13 @@ impl Error {
     pub fn with_source<E>(mut self, source: E) -> Self
     where E: StdError + Send + Sync + 'static {
         self.source = Some(Box::new(source));
+        self
+    }
+
+    /// Attaches an already boxed source error, replacing any source already present.
+    #[must_use]
+    pub fn with_boxed_source(mut self, source: Box<dyn StdError + Send + Sync + 'static>) -> Self {
+        self.source = Some(source);
         self
     }
 
@@ -339,5 +409,106 @@ fn quote(value: &str) -> String {
         value.to_string()
     } else {
         format!("{value:?}")
+    }
+}
+
+fn diagnostic_error_message(error: &(dyn StdError + 'static)) -> String {
+    if let Some(error) = error.downcast_ref::<Error>() {
+        return normalize_diagnostic_message(error.message());
+    }
+    if let Some(error) = error.downcast_ref::<nexus_query_engine::QueryError>() {
+        return normalize_diagnostic_message(error.message());
+    }
+    if let Some(error) = error.downcast_ref::<DataFusionError>() {
+        return datafusion_current_error_message(error);
+    }
+    normalize_diagnostic_message(&error.to_string())
+}
+
+fn datafusion_current_error_message(error: &DataFusionError) -> String {
+    match error {
+        DataFusionError::Context(message, _) => normalize_diagnostic_message(message),
+        DataFusionError::Diagnostic(diagnostic, _) => normalize_diagnostic_message(&diagnostic.message),
+        DataFusionError::External(source) => diagnostic_error_message(source.as_ref()),
+        DataFusionError::Collection(errors) => match errors.first() {
+            Some(first) => {
+                let first = datafusion_current_error_message(first);
+                normalize_diagnostic_message(&format!("DataFusion error collection ({} errors): {first}", errors.len()))
+            },
+            None => "DataFusion error collection (0 errors)".to_string(),
+        },
+        DataFusionError::Shared(source) => datafusion_current_error_message(source.as_ref()),
+        _ => normalize_diagnostic_message(&error.message()),
+    }
+}
+
+fn normalize_diagnostic_message(message: &str) -> String {
+    message.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[derive(Debug)]
+    struct TestSourceError {
+        message: &'static str,
+        source: Option<Box<dyn StdError + Send + Sync>>,
+    }
+
+    impl TestSourceError {
+        fn leaf(message: &'static str) -> Self {
+            Self { message, source: None }
+        }
+
+        fn with_source(message: &'static str, source: impl StdError + Send + Sync + 'static) -> Self {
+            Self { message, source: Some(Box::new(source)) }
+        }
+    }
+
+    impl fmt::Display for TestSourceError {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            f.write_str(self.message)
+        }
+    }
+
+    impl StdError for TestSourceError {
+        fn source(&self) -> Option<&(dyn StdError + 'static)> {
+            self.source.as_deref().map(|source| source as &(dyn StdError + 'static))
+        }
+    }
+
+    #[test]
+    fn source_diagnostics_walk_sources_and_deduplicate_adjacent_messages() {
+        let error = TestSourceError::with_source(
+            "dependency wrapper",
+            TestSourceError::with_source("dependency wrapper", TestSourceError::leaf("socket refused")),
+        );
+
+        let diagnostics = ErrorSourceDiagnostics::from_error(&error);
+
+        assert_eq!(diagnostics.chain(), Some("dependency wrapper: socket refused"));
+        assert_eq!(diagnostics.root_cause(), Some("socket refused"));
+        assert_eq!(diagnostics.root_cause_when_distinct(), Some("socket refused"));
+    }
+
+    #[test]
+    fn source_diagnostics_render_project_errors_by_message_not_structured_display() {
+        let native = nexus_query_engine::QueryError::new(
+            nexus_query_engine::QueryErrorCode::CudfDependencyFailure,
+            "nexus_query_engine.test",
+            "native root cause",
+        )
+        .with_fact("native_fact", "value");
+        let adapter = Error::from_native("datafusion_nexus.test", "adapter wrapper", native);
+        let error = DataFusionError::External(Box::new(adapter));
+
+        let diagnostics = ErrorSourceDiagnostics::from_error(&error);
+        let chain = diagnostics.chain().expect("source chain should be present");
+
+        assert_eq!(chain, "adapter wrapper: native root cause");
+        assert_eq!(diagnostics.root_cause(), Some("native root cause"));
+        assert!(!chain.contains("code="), "{chain}");
+        assert!(!chain.contains("facts="), "{chain}");
     }
 }

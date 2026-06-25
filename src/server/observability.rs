@@ -6,11 +6,15 @@ use std::{
 
 use arrow::record_batch::RecordBatch;
 use dashmap::DashMap;
-use datafusion::physical_plan::{ExecutionPlan, displayable, metrics::MetricsSet};
+use datafusion::{
+    common::DataFusionError,
+    physical_plan::{ExecutionPlan, displayable, metrics::MetricsSet},
+};
 use nexus_query_engine::{LakehouseCacheFillEventSnapshot, QueryMetrics};
 
 use crate::{
-    Error,
+    Error, ErrorCode,
+    error::ErrorSourceDiagnostics,
     native_exec::{NativeCudfMetrics, NativeMetricsCaptureSink},
     native_report::{
         NativeDataFusionExecutionReport, NativeDataFusionExecutionWorkloadItem, NativeDataFusionPlanningReport,
@@ -131,7 +135,7 @@ impl QueryObservability {
         let now = Instant::now();
         let mut query = self.ensure_query(query_id, now);
         if matches!(query.outcome, QueryOutcome::Running | QueryOutcome::Dropped) {
-            query.outcome = QueryOutcome::Failed { stage, error };
+            query.outcome = QueryOutcome::Failed { stage, error: Box::new(error) };
             query.completed_at = Some(now);
         }
         drop(query);
@@ -445,7 +449,7 @@ impl CapturedMetrics {
 pub(super) enum QueryOutcome {
     Running,
     Succeeded,
-    Failed { stage: &'static str, error: CapturedError },
+    Failed { stage: &'static str, error: Box<CapturedError> },
     Dropped,
 }
 
@@ -461,7 +465,7 @@ impl QueryOutcome {
 
     fn error(&self) -> Option<&CapturedError> {
         match self {
-            Self::Failed { error, .. } => Some(error),
+            Self::Failed { error, .. } => Some(error.as_ref()),
             Self::Running | Self::Succeeded | Self::Dropped => None,
         }
     }
@@ -476,10 +480,13 @@ pub(super) struct CapturedError {
     pub(super) message: String,
     pub(super) facts: Vec<(String, String)>,
     pub(super) diagnostic: String,
+    pub(super) source_chain: Option<String>,
+    pub(super) root_cause: Option<String>,
 }
 
 impl CapturedError {
     pub(super) fn from_adapter_error(error: &Error) -> Self {
+        let source_diagnostics = ErrorSourceDiagnostics::from_source(error.source_error());
         Self {
             code: error.code().as_str().to_string(),
             kind: error.kind().as_str().to_string(),
@@ -487,7 +494,31 @@ impl CapturedError {
             operation: error.operation().to_string(),
             message: error.message().to_string(),
             facts: error.facts().iter().map(|(key, value)| (key.to_string(), value.to_string())).collect(),
-            diagnostic: error.to_string(),
+            diagnostic: source_diagnostics.chain().unwrap_or_else(|| error.message()).to_string(),
+            source_chain: source_diagnostics.chain().map(str::to_string),
+            root_cause: source_diagnostics.root_cause().map(str::to_string),
+        }
+    }
+
+    pub(super) fn from_datafusion_error(
+        error: &DataFusionError,
+        code: ErrorCode,
+        operation: &'static str,
+        message: String,
+        facts: Vec<(&'static str, String)>,
+    ) -> Self {
+        let source_diagnostics = ErrorSourceDiagnostics::from_error(error);
+        let diagnostic = source_diagnostics.chain().map(str::to_string).unwrap_or_else(|| message.clone());
+        Self {
+            code: code.as_str().to_string(),
+            kind: code.kind().as_str().to_string(),
+            status: code.status().as_str().to_string(),
+            operation: operation.to_string(),
+            diagnostic,
+            message,
+            facts: facts.into_iter().map(|(key, value)| (key.to_string(), value)).collect(),
+            source_chain: source_diagnostics.chain().map(str::to_string),
+            root_cause: source_diagnostics.root_cause().map(str::to_string),
         }
     }
 
@@ -496,14 +527,21 @@ impl CapturedError {
         let code = metadata_value(metadata, super::error::ERROR_CODE_METADATA_KEY).unwrap_or("unknown");
         let kind = metadata_value(metadata, super::error::ERROR_KIND_METADATA_KEY).unwrap_or("unknown");
         let error_status = metadata_value(metadata, super::error::ERROR_STATUS_METADATA_KEY).unwrap_or("unknown");
+        let operation = metadata_value(metadata, super::error::ERROR_OPERATION_METADATA_KEY).unwrap_or("unknown");
+        let (source_chain, root_cause) = super::error::status_source_diagnostics(status);
+        let diagnostic = source_chain
+            .clone()
+            .unwrap_or_else(|| format!("grpc_code={:?} message={}", status.code(), status.message()));
         Self {
             code: code.to_string(),
             kind: kind.to_string(),
             status: error_status.to_string(),
-            operation: "unknown".to_string(),
+            operation: operation.to_string(),
             message: status.message().to_string(),
             facts: Vec::new(),
-            diagnostic: format!("grpc_code={:?} message={}", status.code(), status.message()),
+            diagnostic,
+            source_chain,
+            root_cause,
         }
     }
 
@@ -514,6 +552,8 @@ impl CapturedError {
         let _ = writeln!(output, "operation={}", stable_value(&self.operation));
         let _ = writeln!(output, "message={}", stable_value(&self.message));
         let _ = writeln!(output, "diagnostic={}", stable_value(&self.diagnostic));
+        let _ = writeln!(output, "source_chain={}", stable_value(self.source_chain.as_deref().unwrap_or("")));
+        let _ = writeln!(output, "root_cause={}", stable_value(self.root_cause.as_deref().unwrap_or("")));
         for (key, value) in &self.facts {
             let _ = writeln!(output, "fact.{}={}", stable_value(key), stable_value(value));
         }
@@ -649,6 +689,8 @@ mod tests {
                 message: "statement was cancelled".to_string(),
                 facts: Vec::new(),
                 diagnostic: "cancelled".to_string(),
+                source_chain: None,
+                root_cause: None,
             },
         );
 
@@ -669,6 +711,26 @@ mod tests {
         let captured = store.get("q1").expect("query capture must be retained");
         assert!(matches!(captured.outcome, QueryOutcome::Failed { .. }));
         assert_eq!(captured.completed_at, failed_completed_at);
+    }
+
+    #[test]
+    fn status_capture_preserves_adapter_source_chain_from_status_source() {
+        let store = QueryObservability::new(8, Duration::from_secs(60));
+        store.start_query_with_correlation_id("q1", "select 1", None);
+        let error =
+            Error::new(ErrorCode::Internal, "datafusion_nexus.server.flight.test.encode", "failed to encode response")
+                .with_source(std::io::Error::other("socket closed"));
+        let status = crate::server::error::adapter_error_to_status(&error);
+
+        store.finish_status("q1", "flight_encode", &status);
+
+        let captured = store.get("q1").expect("query capture must be retained");
+        let QueryOutcome::Failed { error, .. } = captured.outcome else {
+            panic!("query should have failed");
+        };
+        assert_eq!(error.operation, "datafusion_nexus.server.flight.test.encode");
+        assert_eq!(error.source_chain.as_deref(), Some("socket closed"));
+        assert_eq!(error.diagnostic, "socket closed");
     }
 
     #[test]
@@ -790,6 +852,8 @@ mod tests {
             message: "native execution failed".to_string(),
             facts: facts.into_iter().map(|(key, value)| (key.to_string(), value.to_string())).collect(),
             diagnostic: "native execution failed".to_string(),
+            source_chain: None,
+            root_cause: None,
         }
     }
 

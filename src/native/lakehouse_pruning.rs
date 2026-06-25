@@ -25,7 +25,9 @@ use nexus_query_engine::{
     seed_dimension_derived_reader_predicates,
 };
 
-use crate::{NativeCudfExec, native::table_format_pruning_policy::TableFormatPruningPolicy};
+use crate::{
+    NativeCudfExec, error::ErrorSourceDiagnostics, native::table_format_pruning_policy::TableFormatPruningPolicy,
+};
 
 type BoxFutureResult<T> = Pin<Box<dyn Future<Output = Result<T>> + Send>>;
 
@@ -81,7 +83,7 @@ async fn prune_native_exec(exec: &NativeCudfExec, runtime_env: &Arc<RuntimeEnv>)
             }
         },
         Err(reason) => {
-            eprintln!("[lakehouse_pruning] event=skip reason={reason}");
+            eprintln!("[lakehouse_pruning] event=skip reason={}", stable_log_field(&reason));
         },
     }
 
@@ -160,7 +162,7 @@ struct StaticPredicatePruneOutcome {
 async fn prune_static_reader_predicate_sources(
     mut plan: QueryPlan,
     runtime_env: &Arc<RuntimeEnv>,
-) -> std::result::Result<StaticPredicatePruneOutcome, &'static str> {
+) -> std::result::Result<StaticPredicatePruneOutcome, String> {
     let source_node_ids = static_reader_predicate_source_node_ids(&plan);
     if source_node_ids.is_empty() {
         return Ok(StaticPredicatePruneOutcome { plan, applied: false, before: 0, after: 0 });
@@ -179,7 +181,8 @@ async fn prune_static_reader_predicate_sources(
         let Some(pruning_expr) = static_row_group_pruning_expr(&source, predicate) else {
             continue;
         };
-        let selections = static_reader_predicate_row_group_selections(runtime_env, &source, &pruning_expr).await?;
+        let selections =
+            static_reader_predicate_row_group_selections(runtime_env, source_node_id, &source, &pruning_expr).await?;
         let result = apply_local_parquet_row_group_selections(plan, source_node_id, &selections);
         if result.applied {
             before = before.saturating_add(result.before);
@@ -217,24 +220,35 @@ fn static_reader_predicate_source_node_ids(plan: &QueryPlan) -> Vec<NodeId> {
 
 async fn static_reader_predicate_row_group_selections(
     runtime_env: &Arc<RuntimeEnv>,
+    source_node_id: NodeId,
     source: &LocalParquetSource,
     predicate: &StaticRowGroupPruningExpr,
-) -> std::result::Result<Vec<LocalParquetRowGroupSelection>, &'static str> {
+) -> std::result::Result<Vec<LocalParquetRowGroupSelection>, String> {
     let mut selections = Vec::with_capacity(source.files.len());
     for file in &source.files {
-        let object = object_store_file(&file.location).map_err(|_| "static_reader_predicate_invalid_object_uri")?;
-        let store = runtime_env
-            .object_store(&object.store_url)
-            .map_err(|_| "static_reader_predicate_object_store_unregistered")?;
-        let metadata = parquet_metadata(store, object.path, file.file_size_bytes)
+        let object = object_store_file(&file.location).map_err(|error| {
+            format!(
+                "static_reader_predicate_invalid_object_uri source_node_id={} reason={}",
+                source_node_id.index(),
+                stable_log_field(&error)
+            )
+        })?;
+        let object_context = object_error_context(source_node_id, &object.path);
+        let store = runtime_env.object_store(&object.store_url).map_err(|error| {
+            format!(
+                "static_reader_predicate_object_store_unregistered {}",
+                foreign_error_diagnostic("runtime_object_store_lookup", &error, &object_context, Some(&object.path))
+            )
+        })?;
+        let metadata = parquet_metadata(store, object.path, file.file_size_bytes, source_node_id)
             .await
-            .map_err(|_| "static_reader_predicate_footer_unavailable")?;
+            .map_err(|error| format!("static_reader_predicate_footer_unavailable {error}"))?;
         let total_row_groups = metadata.num_row_groups();
         let candidates = selected_or_all_row_groups(file.row_groups.as_deref(), total_row_groups);
         let mut row_groups = Vec::with_capacity(candidates.len());
         for row_group_index in candidates {
             let Some(row_group) = metadata.row_groups().get(row_group_index) else {
-                return Err("static_reader_predicate_row_group_out_of_range");
+                return Err("static_reader_predicate_row_group_out_of_range".to_string());
             };
             if static_row_group_may_satisfy_expr(row_group, metadata.file_metadata().schema_descr(), predicate)
                 .unwrap_or(true)
@@ -680,8 +694,14 @@ async fn prune_request(
         return Ok(RequestOutcome::Skipped { target_source_node_id, reason: "missing_dimension_predicate" });
     };
 
-    let Some(key_filter) =
-        derive_dimension_key_filter(runtime_env, dimension_source, &request.dimension_key_column, predicate).await?
+    let Some(key_filter) = derive_dimension_key_filter(
+        runtime_env,
+        request.dimension_source_node_id,
+        dimension_source,
+        &request.dimension_key_column,
+        predicate,
+    )
+    .await?
     else {
         return Ok(RequestOutcome::Skipped { target_source_node_id, reason: "empty_or_unsupported_dimension_range" });
     };
@@ -696,10 +716,15 @@ async fn prune_request(
     let mut per_file_row_group_key_ranges = Vec::with_capacity(target_source.files.len());
     for file in &target_source.files {
         let object = object_store_file(&file.location)?;
-        let store = runtime_env
-            .object_store(&object.store_url)
-            .map_err(|error| foreign_error_diagnostic("runtime_object_store_lookup", &error))?;
-        let metadata = parquet_metadata(store, object.path, file.file_size_bytes).await?;
+        let store = runtime_env.object_store(&object.store_url).map_err(|error| {
+            foreign_error_diagnostic(
+                "runtime_object_store_lookup",
+                &error,
+                &object_error_context(target_source_node_id, &object.path),
+                Some(&object.path),
+            )
+        })?;
+        let metadata = parquet_metadata(store, object.path, file.file_size_bytes, target_source_node_id).await?;
         let selected_row_groups = selected_or_all_row_groups(file.row_groups.as_deref(), metadata.num_row_groups());
         per_file_row_group_key_ranges.push(row_group_key_ranges(
             metadata.as_ref(),
@@ -728,6 +753,7 @@ async fn prune_request(
 
 async fn derive_dimension_key_filter(
     runtime_env: &Arc<RuntimeEnv>,
+    source_node_id: NodeId,
     source: &LocalParquetSource,
     key_column: &str,
     predicate: &Expr,
@@ -741,25 +767,27 @@ async fn derive_dimension_key_filter(
     let mut total_rows = 0usize;
     for file in &source.files {
         let object = object_store_file(&file.location)?;
-        let store = runtime_env
-            .object_store(&object.store_url)
-            .map_err(|error| foreign_error_diagnostic("runtime_object_store_lookup", &error))?;
-        let object_meta = store.head(&object.path).await.map_err(object_store_pruning_error)?;
-        let reader = ParquetObjectReader::new(store, object.path).with_file_size(object_meta.size);
-        let builder = ParquetRecordBatchStreamBuilder::new(reader)
+        let object_context = object_error_context(source_node_id, &object.path);
+        let store = runtime_env.object_store(&object.store_url).map_err(|error| {
+            foreign_error_diagnostic("runtime_object_store_lookup", &error, &object_context, Some(&object.path))
+        })?;
+        let object_meta = store
+            .head(&object.path)
             .await
-            .map_err(|error| foreign_error_diagnostic("parquet_record_batch_stream_builder", &error))?;
+            .map_err(|error| object_store_pruning_error(error, &object_context, &object.path))?;
+        let reader = ParquetObjectReader::new(store, object.path.clone()).with_file_size(object_meta.size);
+        let builder = ParquetRecordBatchStreamBuilder::new(reader).await.map_err(|error| {
+            foreign_error_diagnostic("parquet_record_batch_stream_builder", &error, &object_context, Some(&object.path))
+        })?;
         let row_group_count = builder.metadata().num_row_groups();
         let row_groups = selected_or_all_row_groups(file.row_groups.as_deref(), row_group_count);
         let projection = ProjectionMask::roots(builder.parquet_schema(), projection_indices.iter().copied());
-        let mut stream = builder
-            .with_projection(projection)
-            .with_row_groups(row_groups)
-            .build()
-            .map_err(|error| foreign_error_diagnostic("parquet_record_batch_stream_build", &error))?;
-        while let Some(batch) =
-            stream.try_next().await.map_err(|error| foreign_error_diagnostic("parquet_record_batch_stream", &error))?
-        {
+        let mut stream = builder.with_projection(projection).with_row_groups(row_groups).build().map_err(|error| {
+            foreign_error_diagnostic("parquet_record_batch_stream_build", &error, &object_context, Some(&object.path))
+        })?;
+        while let Some(batch) = stream.try_next().await.map_err(|error| {
+            foreign_error_diagnostic("parquet_record_batch_stream", &error, &object_context, Some(&object.path))
+        })? {
             total_rows = total_rows.saturating_add(batch.num_rows());
             if policy.dimension_row_guard_exceeded(total_rows) {
                 return Err(format!(
@@ -780,12 +808,16 @@ async fn parquet_metadata(
     store: Arc<dyn datafusion::object_store::ObjectStore>,
     path: ObjectStorePath,
     file_size_bytes: Option<u64>,
+    source_node_id: NodeId,
 ) -> std::result::Result<Arc<ParquetMetaData>, String> {
-    let object_meta = store.head(&path).await.map_err(object_store_pruning_error)?;
-    let reader = ParquetObjectReader::new(store, path).with_file_size(file_size_bytes.unwrap_or(object_meta.size));
-    let builder = ParquetRecordBatchStreamBuilder::new(reader)
-        .await
-        .map_err(|error| foreign_error_diagnostic("parquet_record_batch_stream_builder", &error))?;
+    let object_context = object_error_context(source_node_id, &path);
+    let object_meta =
+        store.head(&path).await.map_err(|error| object_store_pruning_error(error, &object_context, &path))?;
+    let reader =
+        ParquetObjectReader::new(store, path.clone()).with_file_size(file_size_bytes.unwrap_or(object_meta.size));
+    let builder = ParquetRecordBatchStreamBuilder::new(reader).await.map_err(|error| {
+        foreign_error_diagnostic("parquet_record_batch_stream_builder", &error, &object_context, Some(&path))
+    })?;
     Ok(Arc::clone(builder.metadata()))
 }
 
@@ -826,17 +858,38 @@ fn object_store_file(location: &ParquetSourceLocation) -> std::result::Result<Ob
     if path.is_empty() {
         return Err("missing_object_path".to_string());
     }
-    let store_url = ObjectStoreUrl::parse(format!("{scheme}://{authority}")).map_err(|error| error.to_string())?;
-    let path = ObjectStorePath::parse(path).map_err(|error| error.to_string())?;
+    let store_url =
+        ObjectStoreUrl::parse(format!("{scheme}://{authority}")).map_err(|_| "invalid_object_store_url".to_string())?;
+    let path = ObjectStorePath::parse(path).map_err(|_| "invalid_object_path".to_string())?;
     Ok(ObjectStoreFile { store_url, path })
 }
 
-fn object_store_pruning_error(error: datafusion::object_store::Error) -> String {
+fn object_error_context(source_node_id: NodeId, path: &ObjectStorePath) -> Vec<(&'static str, String)> {
+    let path = path.to_string();
+    vec![
+        ("source_node_id", source_node_id.to_string()),
+        ("object_path_hash", stable_hash_hex(&path)),
+        ("object_path_leaf", redacted_object_path_leaf(&path)),
+    ]
+}
+
+fn object_store_pruning_error(
+    error: datafusion::object_store::Error,
+    context: &[(&'static str, String)],
+    path: &ObjectStorePath,
+) -> String {
     let kind = object_store_error_kind(&error);
-    match object_store_error_detail(&error) {
-        Some(detail) => format!("object_store_error_kind={kind} object_store_error_detail={detail}"),
-        None => format!("object_store_error_kind={kind}"),
+    let mut fields = vec![format!("object_store_error_kind={kind}")];
+    if let Some(detail) = object_store_error_detail(&error) {
+        fields.push(format!("object_store_error_detail={detail}"));
     }
+    if let Some(chain) = ErrorSourceDiagnostics::from_error(&error).chain() {
+        fields.push(format!("error_source_chain={}", stable_log_field(&redact_object_path(chain, path))));
+    }
+    for (key, value) in context {
+        fields.push(format!("{key}={}", stable_log_field(value)));
+    }
+    fields.join(" ")
 }
 
 fn object_store_error_kind(error: &datafusion::object_store::Error) -> &'static str {
@@ -894,8 +947,25 @@ fn classify_generic_object_store_source(source: &(dyn StdError + 'static)) -> Op
     None
 }
 
-fn foreign_error_diagnostic(kind: &'static str, error: &(dyn StdError + 'static)) -> String {
-    format!("{kind}={}", stable_log_field(&error.to_string()))
+fn foreign_error_diagnostic(
+    kind: &'static str,
+    error: &(dyn StdError + 'static),
+    context: &[(&'static str, String)],
+    redact_path: Option<&ObjectStorePath>,
+) -> String {
+    let diagnostics = ErrorSourceDiagnostics::from_error(error);
+    let chain = diagnostics.chain().map(str::to_string).unwrap_or_else(|| error.to_string());
+    let chain = redact_path.map_or(chain.clone(), |path| redact_object_path(&chain, path));
+    let mut fields = vec![format!("{kind}={}", stable_log_field(&chain))];
+    if let Some(root_cause) = diagnostics.root_cause_when_distinct() {
+        let root_cause =
+            redact_path.map_or_else(|| root_cause.to_string(), |path| redact_object_path(root_cause, path));
+        fields.push(format!("error_root_cause={}", stable_log_field(&root_cause)));
+    }
+    for (key, value) in context {
+        fields.push(format!("{key}={}", stable_log_field(value)));
+    }
+    fields.join(" ")
 }
 
 fn error_chain_text(source: &(dyn StdError + 'static)) -> String {
@@ -917,9 +987,42 @@ fn stable_log_field(value: &str) -> String {
     value.replace(['\t', '\n', '\r'], " ")
 }
 
+fn redact_object_path(message: &str, path: &ObjectStorePath) -> String {
+    let path = path.to_string();
+    let message = if path.is_empty() { message.to_string() } else { message.replace(&path, "<redacted-object-path>") };
+    message
+        .split_whitespace()
+        .map(|token| {
+            if token.contains("://") {
+                "<redacted-uri>".to_string()
+            } else if let Some((prefix, _)) = token.split_once('?') {
+                format!("{prefix}?<redacted-query>")
+            } else {
+                token.to_string()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn redacted_object_path_leaf(path: &str) -> String {
+    let path = path.split_once('?').map_or(path, |(path, _)| path);
+    path.rsplit('/').next().filter(|leaf| !leaf.is_empty()).unwrap_or("<empty>").to_string()
+}
+
+fn stable_hash_hex(value: &str) -> String {
+    let hash = value
+        .as_bytes()
+        .iter()
+        .fold(0xcbf29ce484222325_u64, |hash, byte| (hash ^ u64::from(*byte)).wrapping_mul(0x100000001b3));
+    format!("{hash:016x}")
+}
+
 #[cfg(test)]
 mod tests {
     use std::{
+        error::Error as StdError,
+        fmt,
         fs::{self, File},
         path::{Path, PathBuf},
         sync::Arc,
@@ -941,6 +1044,102 @@ mod tests {
     };
 
     use super::*;
+
+    #[derive(Debug)]
+    struct TestSourceError {
+        message: &'static str,
+        source: Option<Box<dyn StdError + Send + Sync>>,
+    }
+
+    impl TestSourceError {
+        fn leaf(message: &'static str) -> Self {
+            Self { message, source: None }
+        }
+
+        fn with_source(message: &'static str, source: impl StdError + Send + Sync + 'static) -> Self {
+            Self { message, source: Some(Box::new(source)) }
+        }
+    }
+
+    impl fmt::Display for TestSourceError {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            f.write_str(self.message)
+        }
+    }
+
+    impl StdError for TestSourceError {
+        fn source(&self) -> Option<&(dyn StdError + 'static)> {
+            self.source.as_deref().map(|source| source as &(dyn StdError + 'static))
+        }
+    }
+
+    #[test]
+    fn foreign_error_diagnostic_preserves_source_chain_and_resource_context() {
+        let error = TestSourceError::with_source("async wrapper", TestSourceError::leaf("expired token"));
+
+        let diagnostic = foreign_error_diagnostic(
+            "parquet_record_batch_stream",
+            &error,
+            &[
+                ("source_node_id", "n7".to_string()),
+                ("object_path_hash", stable_hash_hex("warehouse/table/data.parquet")),
+                ("object_path_leaf", "data.parquet".to_string()),
+            ],
+            None,
+        );
+
+        assert!(diagnostic.contains("parquet_record_batch_stream=async wrapper: expired token"), "{diagnostic}");
+        assert!(diagnostic.contains("error_root_cause=expired token"), "{diagnostic}");
+        assert!(diagnostic.contains("source_node_id=n7"), "{diagnostic}");
+        assert!(diagnostic.contains("object_path_leaf=data.parquet"), "{diagnostic}");
+        assert!(diagnostic.contains("object_path_hash="), "{diagnostic}");
+        assert!(!diagnostic.contains("warehouse/table"), "{diagnostic}");
+    }
+
+    #[test]
+    fn foreign_error_diagnostic_redacts_object_path_from_source_chain() {
+        let path =
+            ObjectStorePath::parse("warehouse/private/table/data.parquet").expect("test object path should parse");
+        let error = TestSourceError::with_source(
+            "parquet external error for warehouse/private/table/data.parquet",
+            TestSourceError::leaf("read failed for warehouse/private/table/data.parquet"),
+        );
+
+        let diagnostic = foreign_error_diagnostic(
+            "parquet_record_batch_stream_builder",
+            &error,
+            &[
+                ("source_node_id", "n9".to_string()),
+                ("object_path_hash", stable_hash_hex(path.as_ref())),
+                ("object_path_leaf", "data.parquet".to_string()),
+            ],
+            Some(&path),
+        );
+
+        assert!(diagnostic.contains("<redacted-object-path>"), "{diagnostic}");
+        assert!(diagnostic.contains("object_path_leaf=data.parquet"), "{diagnostic}");
+        assert!(!diagnostic.contains("warehouse/private/table"), "{diagnostic}");
+    }
+
+    #[test]
+    fn object_store_pruning_error_redacts_object_path_from_source_chain() {
+        let path =
+            ObjectStorePath::parse("warehouse/private/table/data.parquet").expect("test object path should parse");
+        let error = datafusion::object_store::Error::NotFound {
+            path: path.to_string(),
+            source: Box::new(TestSourceError::leaf("not found")),
+        };
+        let diagnostic = object_store_pruning_error(
+            error,
+            &[("object_path_leaf", "data.parquet".to_string()), ("object_path_hash", stable_hash_hex(path.as_ref()))],
+            &path,
+        );
+
+        assert!(diagnostic.contains("error_source_chain="), "{diagnostic}");
+        assert!(diagnostic.contains("<redacted-object-path>"), "{diagnostic}");
+        assert!(diagnostic.contains("object_path_leaf=data.parquet"), "{diagnostic}");
+        assert!(!diagnostic.contains("warehouse/private/table"), "{diagnostic}");
+    }
 
     #[test]
     fn static_pruning_literal_accepts_decimal128_at_column_scale() {
