@@ -17,14 +17,14 @@ use super::{
     super::{
         CUGRAPH_DESCRIBE_ALGORITHM_FUNCTION, CUGRAPH_DESCRIBE_ALGORITHM_SCHEMA_VERSION,
         CUGRAPH_LIST_ALGORITHMS_FUNCTION, CUGRAPH_LIST_ALGORITHMS_SCHEMA_VERSION, CUGRAPH_OPERATION_REGISTRY,
-        CUGRAPH_VALIDATE_CALL_FUNCTION, CugraphAlgorithm, CugraphSqlConfig, literal_string_arg, plan_error,
-        stable_result_schema,
+        CUGRAPH_VALIDATE_CALL_FUNCTION, CUGRAPH_VALIDATE_CALL_SCHEMA_VERSION, CugraphAlgorithm, CugraphSqlConfig,
+        literal_string_arg, plan_error,
     },
-    ERROR_OK, ERROR_UNKNOWN_ALGORITHM, algorithm_for_metadata_name,
+    ERROR_UNKNOWN_ALGORITHM, algorithm_for_metadata_name,
     descriptions::{
-        argument_descriptions_json, examples_json, limitations_json, purpose, result_field_descriptions_json, summary,
+        argument_descriptions_json, examples_json, limitations_json, result_field_descriptions_json, summary,
     },
-    json_schema::{graph_options_json, mode_schemas_json, option_defaults_json, options_schema_json, schema_json},
+    json_schema::{metadata_output_schema_json, mode_schemas_json, options_schema_json},
     validate::cugraph_validate_call,
 };
 
@@ -161,14 +161,9 @@ fn compact_algorithm_fields() -> Vec<Field> {
     vec![
         Field::new("function_name", DataType::Utf8, false),
         Field::new("algorithm", DataType::Utf8, false),
-        Field::new("enabled", DataType::Boolean, false),
-        Field::new("experimental", DataType::Boolean, false),
-        Field::new("requires_source_vertex", DataType::Boolean, false),
-        Field::new("accepts_weight_arg", DataType::Boolean, false),
-        Field::new("consumes_weight", DataType::Boolean, false),
+        Field::new("source_vertex_policy", DataType::Utf8, false),
         Field::new("weight_col_policy", DataType::Utf8, false),
         Field::new("output_schema_kind", DataType::Utf8, false),
-        Field::new("has_mode_schemas", DataType::Boolean, false),
         Field::new("signature", DataType::Utf8, false),
         Field::new("allowed_arg_counts_json", DataType::Utf8, false),
         Field::new("summary", DataType::Utf8, false),
@@ -178,19 +173,16 @@ fn compact_algorithm_fields() -> Vec<Field> {
 pub(super) fn describe_schema() -> SchemaRef {
     let mut fields = vec![
         Field::new("valid", DataType::Boolean, false),
-        Field::new("error_code", DataType::Utf8, false),
+        Field::new("error_code", DataType::Utf8, true),
         Field::new("message", DataType::Utf8, false),
     ];
     fields.extend(compact_algorithm_fields());
     fields.extend([
         Field::new("output_schema_json", DataType::Utf8, false),
         Field::new("options_schema_json", DataType::Utf8, false),
-        Field::new("default_graph_options_json", DataType::Utf8, false),
         Field::new("argument_descriptions_json", DataType::Utf8, false),
-        Field::new("option_defaults_json", DataType::Utf8, false),
         Field::new("result_field_descriptions_json", DataType::Utf8, false),
         Field::new("limitations_json", DataType::Utf8, false),
-        Field::new("purpose", DataType::Utf8, false),
         Field::new("mode_schemas_json", DataType::Utf8, false),
         Field::new("examples_json", DataType::Utf8, false),
         Field::new("metadata_schema_version", DataType::Int64, false),
@@ -201,8 +193,7 @@ pub(super) fn describe_schema() -> SchemaRef {
 pub(super) fn validate_schema() -> SchemaRef {
     Arc::new(Schema::new(vec![
         Field::new("valid", DataType::Boolean, false),
-        Field::new("severity", DataType::Utf8, false),
-        Field::new("error_code", DataType::Utf8, false),
+        Field::new("error_code", DataType::Utf8, true),
         Field::new("message", DataType::Utf8, false),
         Field::new("function_name", DataType::Utf8, false),
         Field::new("algorithm_enabled", DataType::Boolean, false),
@@ -210,12 +201,13 @@ pub(super) fn validate_schema() -> SchemaRef {
         Field::new("src_col_resolved", DataType::Boolean, false),
         Field::new("dst_col_resolved", DataType::Boolean, false),
         Field::new("weight_col_resolved", DataType::Boolean, false),
-        Field::new("src_dtype", DataType::Utf8, false),
-        Field::new("dst_dtype", DataType::Utf8, false),
-        Field::new("weight_dtype", DataType::Utf8, false),
+        Field::new("src_dtype", DataType::Utf8, true),
+        Field::new("dst_dtype", DataType::Utf8, true),
+        Field::new("weight_dtype", DataType::Utf8, true),
         Field::new("output_schema_json", DataType::Utf8, false),
         Field::new("normalized_options_json", DataType::Utf8, false),
         Field::new("would_execute_gpu", DataType::Boolean, false),
+        Field::new("metadata_schema_version", DataType::Int64, false),
     ]))
 }
 
@@ -227,14 +219,9 @@ fn list_batch(config: &CugraphSqlConfig) -> Result<RecordBatch> {
         vec![
             strings(rows.iter().map(|row| row.function_name.clone()).collect()),
             strings(rows.iter().map(|row| row.algorithm.clone()).collect()),
-            bools(rows.iter().map(|row| row.enabled).collect()),
-            bools(rows.iter().map(|row| row.experimental).collect()),
-            bools(rows.iter().map(|row| row.requires_source_vertex).collect()),
-            bools(rows.iter().map(|row| row.accepts_weight_arg).collect()),
-            bools(rows.iter().map(|row| row.consumes_weight).collect()),
+            strings(rows.iter().map(|row| row.source_vertex_policy.to_string()).collect()),
             strings(rows.iter().map(|row| row.weight_col_policy.to_string()).collect()),
             strings(rows.iter().map(|row| row.output_schema_kind.to_string()).collect()),
-            bools(rows.iter().map(|row| row.has_mode_schemas).collect()),
             strings(rows.iter().map(|row| row.signature.clone()).collect()),
             strings(rows.iter().map(|row| row.allowed_arg_counts_json.clone()).collect()),
             strings(rows.iter().map(|row| row.summary.clone()).collect()),
@@ -250,29 +237,21 @@ fn describe_batch(function_name: &str, config: &CugraphSqlConfig) -> Result<Reco
             describe_schema(),
             vec![
                 bools(vec![false]),
-                strings(vec![ERROR_UNKNOWN_ALGORITHM.to_string()]),
+                opt_strings(vec![Some(ERROR_UNKNOWN_ALGORITHM.to_string())]),
                 strings(vec![format!("unknown cuGraph algorithm function '{function_name}'")]),
                 strings(vec![function_name.to_string()]),
                 strings(vec!["".to_string()]),
-                bools(vec![false]),
-                bools(vec![false]),
-                bools(vec![false]),
-                bools(vec![false]),
-                bools(vec![false]),
                 strings(vec!["".to_string()]),
                 strings(vec!["".to_string()]),
-                bools(vec![false]),
+                strings(vec!["".to_string()]),
                 strings(vec!["".to_string()]),
                 strings(vec!["[]".to_string()]),
                 strings(vec!["".to_string()]),
                 strings(vec!["{}".to_string()]),
                 strings(vec!["{}".to_string()]),
-                strings(vec!["{}".to_string()]),
-                strings(vec!["[]".to_string()]),
-                strings(vec!["{}".to_string()]),
                 strings(vec!["[]".to_string()]),
                 strings(vec!["[]".to_string()]),
-                strings(vec!["".to_string()]),
+                strings(vec!["[]".to_string()]),
                 strings(vec!["{}".to_string()]),
                 strings(vec!["[]".to_string()]),
                 int64s(vec![i64::from(CUGRAPH_DESCRIBE_ALGORITHM_SCHEMA_VERSION)]),
@@ -286,29 +265,21 @@ fn describe_batch(function_name: &str, config: &CugraphSqlConfig) -> Result<Reco
         describe_schema(),
         vec![
             bools(vec![true]),
-            strings(vec![ERROR_OK.to_string()]),
+            opt_strings(vec![None]),
             strings(vec![format!("{} is a registered cuGraph SQL table function", row.function_name)]),
             strings(vec![row.function_name]),
             strings(vec![row.algorithm]),
-            bools(vec![row.enabled]),
-            bools(vec![row.experimental]),
-            bools(vec![row.requires_source_vertex]),
-            bools(vec![row.accepts_weight_arg]),
-            bools(vec![row.consumes_weight]),
+            strings(vec![row.source_vertex_policy.to_string()]),
             strings(vec![row.weight_col_policy.to_string()]),
             strings(vec![row.output_schema_kind.to_string()]),
-            bools(vec![row.has_mode_schemas]),
             strings(vec![row.signature]),
             strings(vec![row.allowed_arg_counts_json]),
             strings(vec![row.summary]),
             strings(vec![row.output_schema_json]),
             strings(vec![row.options_schema_json]),
-            strings(vec![row.default_graph_options_json]),
             strings(vec![argument_descriptions_json(algorithm)]),
-            strings(vec![option_defaults_json(algorithm, config)]),
             strings(vec![result_field_descriptions_json(algorithm)]),
             strings(vec![limitations_json(algorithm)]),
-            strings(vec![purpose(algorithm).to_string()]),
             strings(vec![mode_schemas_json(algorithm)]),
             strings(vec![examples_json(algorithm)]),
             int64s(vec![i64::from(CUGRAPH_DESCRIBE_ALGORITHM_SCHEMA_VERSION)]),
@@ -329,8 +300,7 @@ async fn validate_batch(
         validate_schema(),
         vec![
             bools(vec![row.valid]),
-            strings(vec![row.severity]),
-            strings(vec![row.error_code]),
+            opt_strings(vec![row.error_code]),
             strings(vec![row.message]),
             strings(vec![row.function_name]),
             bools(vec![row.algorithm_enabled]),
@@ -338,12 +308,13 @@ async fn validate_batch(
             bools(vec![row.src_col_resolved]),
             bools(vec![row.dst_col_resolved]),
             bools(vec![row.weight_col_resolved]),
-            strings(vec![row.src_dtype]),
-            strings(vec![row.dst_dtype]),
-            strings(vec![row.weight_dtype]),
+            opt_strings(vec![row.src_dtype]),
+            opt_strings(vec![row.dst_dtype]),
+            opt_strings(vec![row.weight_dtype]),
             strings(vec![row.output_schema_json]),
             strings(vec![row.normalized_options_json]),
             bools(vec![row.would_execute_gpu]),
+            int64s(vec![i64::from(CUGRAPH_VALIDATE_CALL_SCHEMA_VERSION)]),
         ],
     )
     .map_err(Into::into)
@@ -353,20 +324,14 @@ async fn validate_batch(
 struct AlgorithmMetadataRow {
     function_name: String,
     algorithm: String,
-    enabled: bool,
-    experimental: bool,
-    requires_source_vertex: bool,
-    accepts_weight_arg: bool,
-    consumes_weight: bool,
+    source_vertex_policy: &'static str,
     signature: String,
     allowed_arg_counts_json: String,
     output_schema_json: String,
     options_schema_json: String,
-    default_graph_options_json: String,
     summary: String,
     weight_col_policy: &'static str,
     output_schema_kind: &'static str,
-    has_mode_schemas: bool,
 }
 
 fn title_case_algorithm_name(name: &str) -> String {
@@ -398,22 +363,24 @@ fn algorithm_row(algorithm: CugraphAlgorithm, config: &CugraphSqlConfig) -> Algo
     AlgorithmMetadataRow {
         function_name: algorithm.function_name().to_string(),
         algorithm: title_case_algorithm_name(algorithm.native_algorithm().definition().name),
-        enabled: config.allows(algorithm),
-        experimental: false,
-        requires_source_vertex: algorithm.requires_source_vertex(),
-        accepts_weight_arg: true,
-        consumes_weight: algorithm.native_algorithm().weight_policy().consumes_weight(),
+        source_vertex_policy: source_vertex_policy(algorithm),
         signature: signature(algorithm),
         allowed_arg_counts_json: allowed_arg_counts_json(algorithm),
-        output_schema_json: schema_json(&stable_result_schema(algorithm)),
-        options_schema_json: options_schema_json(algorithm),
-        default_graph_options_json: graph_options_json(
-            &algorithm.effective_default_graph_options(&config.default_graph_options),
-        ),
+        output_schema_json: metadata_output_schema_json(algorithm),
+        options_schema_json: options_schema_json(algorithm, config),
         summary: summary(algorithm).to_string(),
         weight_col_policy: algorithm.weight_col_policy(),
         output_schema_kind: algorithm.output_schema_kind(),
-        has_mode_schemas: algorithm.has_mode_schemas(),
+    }
+}
+
+fn source_vertex_policy(algorithm: CugraphAlgorithm) -> &'static str {
+    if algorithm == CugraphAlgorithm::Bfs {
+        "required_scalar_or_list_or_relation"
+    } else if algorithm.requires_source_vertex() {
+        "required_scalar"
+    } else {
+        "none"
     }
 }
 
@@ -448,6 +415,11 @@ fn allowed_arg_counts_json(algorithm: CugraphAlgorithm) -> String {
 
 fn strings(values: Vec<String>) -> ArrayRef {
     Arc::new(StringArray::from(values))
+}
+
+/// Build a nullable `StringArray` where `None` becomes a SQL NULL.
+fn opt_strings(values: Vec<Option<String>>) -> ArrayRef {
+    Arc::new(values.into_iter().collect::<StringArray>())
 }
 
 fn bools(values: Vec<bool>) -> ArrayRef {

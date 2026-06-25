@@ -85,7 +85,7 @@ pub async fn run(url_arg: Option<String>) -> SmokeResult<()> {
 
     let batches = execute_batches(
         &mut client,
-        "SELECT function_name, enabled \
+        "SELECT function_name \
          FROM cugraph_list_algorithms() \
          WHERE function_name IN ('cugraph_bfs', 'cugraph_pagerank') \
          ORDER BY function_name",
@@ -93,9 +93,7 @@ pub async fn run(url_arg: Option<String>) -> SmokeResult<()> {
     .await?;
     let batch = single_batch(&batches)?;
     require_string(batch, 0, 0, "cugraph_bfs")?;
-    require_bool(batch, 1, 0, true)?;
     require_string(batch, 0, 1, "cugraph_pagerank")?;
-    require_bool(batch, 1, 1, true)?;
 
     let validate_sql = format!(
         r#"SELECT valid, error_code, table_resolved, src_dtype, dst_dtype, weight_dtype, would_execute_gpu
@@ -109,13 +107,13 @@ pub async fn run(url_arg: Option<String>) -> SmokeResult<()> {
     let batches = execute_batches(&mut client, &validate_sql).await?;
     let batch = single_batch(&batches)?;
     require_bool(batch, 0, 0, true)?;
-    require_string(batch, 1, 0, "ok")?;
+    require_null(batch, 1, 0)?;
     require_bool(batch, 2, 0, true)?;
     require_string(batch, 3, 0, "Int64")?;
     require_string(batch, 4, 0, "Int64")?;
     match weight_col {
         Some(_) => require_string(batch, 5, 0, "Float64")?,
-        None => require_string(batch, 5, 0, "")?,
+        None => require_null(batch, 5, 0)?,
     }
     require_bool(batch, 6, 0, true)?;
 
@@ -337,9 +335,19 @@ fn single_batch(batches: &[RecordBatch]) -> SmokeResult<&RecordBatch> {
 
 fn require_string(batch: &RecordBatch, column: usize, row: usize, expected: &str) -> SmokeResult<()> {
     let array = batch.column(column).as_any().downcast_ref::<StringArray>().ok_or("expected StringArray")?;
+    if array.is_null(row) {
+        return Err(format!("expected {expected:?}, got NULL").into());
+    }
     let actual = array.value(row);
     if actual != expected {
         return Err(format!("expected {expected:?}, got {actual:?}").into());
+    }
+    Ok(())
+}
+
+fn require_null(batch: &RecordBatch, column: usize, row: usize) -> SmokeResult<()> {
+    if !batch.column(column).is_null(row) {
+        return Err(format!("expected NULL at column {column} row {row}").into());
     }
     Ok(())
 }

@@ -1,9 +1,6 @@
 use serde_json::{Value, json};
 
-use super::{
-    super::{CugraphAlgorithm, stable_result_schema},
-    json_schema::data_type_label,
-};
+use super::super::{CugraphAlgorithm, stable_result_schema};
 
 pub(super) fn argument_descriptions_json(algorithm: CugraphAlgorithm) -> String {
     let mut args = vec![
@@ -14,19 +11,24 @@ pub(super) fn argument_descriptions_json(algorithm: CugraphAlgorithm) -> String 
             "name": "weight_col",
             "type": "Utf8|null",
             "required": algorithm.native_algorithm().weight_policy().requires_weight(),
-            "weight_col_policy": algorithm.weight_col_policy(),
             "semantic_effect": weight_argument_semantic_effect(algorithm),
             "note": weight_argument_note(algorithm)
         }),
         json!({"name": "options_json", "type": "Utf8", "required": false}),
     ];
     if algorithm.requires_source_vertex() {
-        let (source_name, source_type) = if algorithm == CugraphAlgorithm::Bfs {
-            ("source_vertex_or_vertices", "Int64|Utf8|List<Int64>|List<Utf8>|null-with-source_vertices_table")
+        let source = if algorithm == CugraphAlgorithm::Bfs {
+            json!({
+                "name": "source_vertex_or_vertices",
+                "json_key": "source_vertex",
+                "type": "Int64|Utf8|List<Int64>|List<Utf8>|null-with-source_vertices_table",
+                "required": true,
+                "selector_policy": "literal scalar/list source selector, or NULL with source_vertices_table/source_vertex_col options"
+            })
         } else {
-            ("source_vertex", "Int64")
+            json!({"name": "source_vertex", "type": "Int64", "required": true})
         };
-        args.insert(1, json!({"name": source_name, "type": source_type, "required": true}));
+        args.insert(1, source);
     }
     Value::Array(args).to_string()
 }
@@ -54,6 +56,30 @@ fn weight_argument_semantic_effect(algorithm: CugraphAlgorithm) -> &'static str 
 }
 
 pub(super) fn result_field_descriptions_json(algorithm: CugraphAlgorithm) -> String {
+    if algorithm == CugraphAlgorithm::Bfs {
+        return Value::Array(
+            [
+                "vertex",
+                "distance",
+                "predecessor",
+                "reachable",
+                "target_found",
+                "target_distance",
+                "path_index",
+                "source",
+                "target",
+            ]
+            .into_iter()
+            .map(|name| {
+                json!({
+                    "name": name,
+                    "description": result_field_description(algorithm, name)
+                })
+            })
+            .collect(),
+        )
+        .to_string();
+    }
     let schema = stable_result_schema(algorithm);
     Value::Array(
         schema
@@ -62,7 +88,6 @@ pub(super) fn result_field_descriptions_json(algorithm: CugraphAlgorithm) -> Str
             .map(|field| {
                 json!({
                     "name": field.name(),
-                    "data_type": data_type_label(field.data_type()),
                     "description": result_field_description(algorithm, field.name())
                 })
             })
@@ -88,6 +113,16 @@ fn result_field_description(algorithm: CugraphAlgorithm, field_name: &str) -> &'
         (CugraphAlgorithm::Bfs, "predecessor") => {
             "Previous vertex on the discovered BFS tree, null for selected source vertices or unreachable vertices depending on output mode."
         },
+        (CugraphAlgorithm::Bfs, "reachable") => "Whether the vertex is reachable under normalized BFS output.",
+        (CugraphAlgorithm::Bfs, "target_found") => {
+            "Whether a requested target vertex was reached by the BFS traversal."
+        },
+        (CugraphAlgorithm::Bfs, "target_distance") => {
+            "Hop-count distance to the requested target vertex, null when the target was not reached."
+        },
+        (CugraphAlgorithm::Bfs, "path_index") => "Zero-based row position in the reconstructed source-to-target path.",
+        (CugraphAlgorithm::Bfs, "source") => "Source vertex for the reconstructed BFS path.",
+        (CugraphAlgorithm::Bfs, "target") => "Target vertex for the reconstructed BFS path.",
         (CugraphAlgorithm::Sssp, "vertex") => "Vertex reached by the shortest-path traversal.",
         (CugraphAlgorithm::Sssp, "distance") => "Shortest weighted-path distance from the source vertex.",
         (CugraphAlgorithm::Sssp, "predecessor") => {
@@ -156,7 +191,6 @@ pub(super) fn limitations_json(algorithm: CugraphAlgorithm) -> String {
     ];
     if algorithm == CugraphAlgorithm::Bfs {
         limitations.extend([
-            "BFS traversal ignores edge weights; distance is a hop count",
             "source lists and source_vertices_table are multi-source BFS, not one BFS per source",
             "source lists and source_vertices_table must contain at most one source per connected component",
             "raw/normalized output does not expose origin source per vertex",
@@ -212,69 +246,6 @@ pub(super) fn summary(algorithm: CugraphAlgorithm) -> &'static str {
         CugraphAlgorithm::SpectralModularityMaximization => "Cluster vertices with spectral modularity maximization.",
         CugraphAlgorithm::BalancedCutClustering => "Cluster vertices with balanced-cut spectral clustering.",
         CugraphAlgorithm::ForceAtlas2 => "Compute ForceAtlas2 two-dimensional layout coordinates.",
-    }
-}
-
-pub(super) fn purpose(algorithm: CugraphAlgorithm) -> &'static str {
-    match algorithm {
-        CugraphAlgorithm::Bfs => {
-            "Run BFS over an edge-list relation and optionally return normalized reachability, target metadata, or one reconstructed source-to-target path."
-        },
-        CugraphAlgorithm::PageRank => {
-            "Rank vertices by iterative link analysis so high-value vertices are those connected from other high-value vertices."
-        },
-        CugraphAlgorithm::PersonalizedPageRank => {
-            "Rank vertices with PageRank while biasing the teleport distribution using a relation-backed personalization vector."
-        },
-        CugraphAlgorithm::Louvain => {
-            "Assign vertices to communities by optimizing modularity over the edge-list graph."
-        },
-        CugraphAlgorithm::EigenvectorCentrality => {
-            "Score vertices by their connection to other high-scoring vertices using eigenvector centrality."
-        },
-        CugraphAlgorithm::KatzCentrality => {
-            "Score vertices by attenuated walks so direct and indirect neighbors both contribute to centrality."
-        },
-        CugraphAlgorithm::Hits => "Compute hub and authority scores for directed-link style graphs.",
-        CugraphAlgorithm::BetweennessCentrality => {
-            "Score vertices by how often they appear on shortest paths, using exact all-vertex traversal, an explicit seed list, or a deterministic k seed count for approximate results."
-        },
-        CugraphAlgorithm::EdgeBetweennessCentrality => {
-            "Score edges by shortest-path participation, using exact all-vertex traversal, an explicit seed list, or a deterministic k seed count for approximate results."
-        },
-        CugraphAlgorithm::Sssp => {
-            "Find shortest paths from one source vertex, using edge weights when a weight column is supplied."
-        },
-        CugraphAlgorithm::DegreesAll => "Return both incoming and outgoing edge counts for each vertex.",
-        CugraphAlgorithm::InDegreesAll => "Return incoming edge counts for each vertex.",
-        CugraphAlgorithm::OutDegreesAll => "Return outgoing edge counts for each vertex.",
-        CugraphAlgorithm::WeaklyConnectedComponents => {
-            "Label components that are connected when edge direction is ignored."
-        },
-        CugraphAlgorithm::StronglyConnectedComponents => {
-            "Label components whose vertices are mutually reachable under directed edges."
-        },
-        CugraphAlgorithm::TriangleCountAll => {
-            "Count the triangles incident to each vertex in an undirected graph view."
-        },
-        CugraphAlgorithm::CoreNumber => "Compute each vertex's core number to identify dense graph regions.",
-        CugraphAlgorithm::KCore => "Return the edge set induced by the selected k-core subgraph.",
-        CugraphAlgorithm::MinimumSpanningTree => {
-            "Select a minimum-weight spanning tree edge set over an undirected graph view, requiring an explicit weight column."
-        },
-        CugraphAlgorithm::Leiden => {
-            "Assign vertices to communities with Leiden refinement for modularity-style clustering."
-        },
-        CugraphAlgorithm::Ecg => "Assign vertices to communities using ensemble clustering for graphs.",
-        CugraphAlgorithm::SpectralModularityMaximization => {
-            "Cluster vertices by spectral modularity maximization over an undirected graph view."
-        },
-        CugraphAlgorithm::BalancedCutClustering => {
-            "Cluster vertices by optimizing a balanced-cut spectral objective over an undirected graph view."
-        },
-        CugraphAlgorithm::ForceAtlas2 => {
-            "Compute deterministic two-dimensional force-directed layout coordinates for graph visualization."
-        },
     }
 }
 

@@ -667,6 +667,10 @@ pub(super) fn int64_value(batch: &RecordBatch, column: usize, row: usize) -> i64
     batch.column(column).as_any().downcast_ref::<Int64Array>().unwrap().value(row)
 }
 
+pub(super) fn is_null_value(batch: &RecordBatch, column: usize, row: usize) -> bool {
+    batch.column(column).is_null(row)
+}
+
 pub(super) fn unique_temp_dir(prefix: &str) -> std::path::PathBuf {
     let stamp = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
     let dir = std::env::temp_dir().join(format!("{prefix}-{stamp}"));

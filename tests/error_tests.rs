@@ -63,6 +63,10 @@ fn error_code_projections_are_stable_policy_contracts() {
     assert_eq!(ErrorCode::ServiceOverloaded.as_str(), "service_overloaded");
     assert_eq!(ErrorCode::ServiceOverloaded.kind(), ErrorKind::ResourceExhausted);
     assert_eq!(ErrorCode::ServiceOverloaded.status(), ErrorStatus::Temporary);
+
+    assert_eq!(ErrorCode::ServerTransportFailure.as_str(), "server_transport_failure");
+    assert_eq!(ErrorCode::ServerTransportFailure.kind(), ErrorKind::DependencyFailure);
+    assert_eq!(ErrorCode::ServerTransportFailure.status(), ErrorStatus::Permanent);
 }
 
 #[test]

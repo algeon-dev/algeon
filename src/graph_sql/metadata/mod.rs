@@ -7,9 +7,6 @@ pub(crate) use provider::cugraph_metadata_table_functions;
 
 use super::{CUGRAPH_OPERATION_REGISTRY, CugraphAlgorithm};
 
-const SEVERITY_OK: &str = "ok";
-const SEVERITY_ERROR: &str = "error";
-const ERROR_OK: &str = "ok";
 const ERROR_UNKNOWN_ALGORITHM: &str = "unknown_algorithm";
 const ERROR_ALGORITHM_DISABLED: &str = "algorithm_disabled";
 const ERROR_INVALID_CALL_JSON: &str = "invalid_call_json";

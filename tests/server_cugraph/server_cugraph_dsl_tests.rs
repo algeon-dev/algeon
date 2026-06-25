@@ -46,7 +46,7 @@ async fn cugraph_dsl_metadata_and_dry_run_work_over_flight_sql_view() {
 
     let batches = execute_batches(
         &mut client,
-        "SELECT function_name, enabled \
+        "SELECT function_name \
          FROM cugraph_list_algorithms() \
          WHERE function_name IN ('cugraph_bfs', 'cugraph_pagerank') \
          ORDER BY function_name",
@@ -54,9 +54,7 @@ async fn cugraph_dsl_metadata_and_dry_run_work_over_flight_sql_view() {
     .await;
     let batch = single_batch(&batches);
     assert_eq!(string_value(batch, 0, 0), "cugraph_bfs");
-    assert!(bool_value(batch, 1, 0));
     assert_eq!(string_value(batch, 0, 1), "cugraph_pagerank");
-    assert!(bool_value(batch, 1, 1));
 
     let batches = execute_batches(
         &mut client,
@@ -70,7 +68,7 @@ async fn cugraph_dsl_metadata_and_dry_run_work_over_flight_sql_view() {
     .await;
     let batch = single_batch(&batches);
     assert!(bool_value(batch, 0, 0));
-    assert_eq!(string_value(batch, 1, 0), "ok");
+    assert!(is_null_value(batch, 1, 0));
     assert!(bool_value(batch, 2, 0));
     assert_eq!(string_value(batch, 3, 0), "Int64");
     assert_eq!(string_value(batch, 4, 0), "Int64");
@@ -138,7 +136,7 @@ async fn cugraph_dsl_nullable_parquet_edge_schema_validates_over_flight_sql() {
     let _ = fs::remove_dir_all(&dir);
 
     assert!(bool_value(batch, 0, 0));
-    assert_eq!(string_value(batch, 1, 0), "ok");
+    assert!(is_null_value(batch, 1, 0));
     assert!(bool_value(batch, 2, 0));
     assert_eq!(string_value(batch, 3, 0), "Int64");
     assert_eq!(string_value(batch, 4, 0), "Int64");
@@ -614,6 +612,10 @@ fn string_values(batches: &[arrow::record_batch::RecordBatch]) -> String {
 
 fn bool_value(batch: &arrow::record_batch::RecordBatch, column: usize, row: usize) -> bool {
     batch.column(column).as_any().downcast_ref::<BooleanArray>().expect("column must be BooleanArray").value(row)
+}
+
+fn is_null_value(batch: &arrow::record_batch::RecordBatch, column: usize, row: usize) -> bool {
+    batch.column(column).is_null(row)
 }
 
 fn int64_column(batch: &arrow::record_batch::RecordBatch, column: usize) -> Vec<i64> {

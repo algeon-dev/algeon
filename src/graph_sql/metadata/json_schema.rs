@@ -4,6 +4,7 @@ use serde_json::{Map, Value, json};
 use super::super::{
     CUGRAPH_VALIDATE_CALL_FUNCTION, CugraphAlgorithm, CugraphAlgorithmParams, CugraphAlgorithmSpec,
     CugraphBfsPredicateInputs, CugraphBfsSource, CugraphBfsSourceVertex, CugraphGraphOptions, CugraphSqlConfig,
+    stable_result_schema,
 };
 
 pub(super) fn schema_json(schema: &SchemaRef) -> String {
@@ -26,9 +27,17 @@ pub(super) fn schema_json_value(schema: &SchemaRef) -> Value {
     })
 }
 
-pub(super) fn options_schema_json(algorithm: CugraphAlgorithm) -> String {
+pub(super) fn metadata_output_schema_json(algorithm: CugraphAlgorithm) -> String {
+    if algorithm == CugraphAlgorithm::Bfs {
+        return json!({"fields": bfs_raw_mode_fields(false)}).to_string();
+    }
+    schema_json(&stable_result_schema(algorithm))
+}
+
+pub(super) fn options_schema_json(algorithm: CugraphAlgorithm, config: &CugraphSqlConfig) -> String {
+    let graph_options = algorithm.effective_default_graph_options(&config.default_graph_options);
     let mut schema = json!({
-        "graph_options": graph_options_schema_json(),
+        "graph_options": graph_options_schema_json(&graph_options),
         "algorithm_options": algorithm_options_schema_json(algorithm)
     });
     if algorithm == CugraphAlgorithm::Bfs {
@@ -38,32 +47,39 @@ pub(super) fn options_schema_json(algorithm: CugraphAlgorithm) -> String {
                 "default_schema_field": "output_schema_json",
                 "mode_schema_field": "mode_schemas_json",
                 "call_specific_authority": CUGRAPH_VALIDATE_CALL_FUNCTION,
-                "note": "output_schema_json is the concrete default/raw schema; inspect mode_schemas_json or run cugraph_validate_call for mode-specific and table-specific output schemas."
+                "note": "output_schema_json is the generic default/raw schema; inspect mode_schemas_json for generic mode schemas and run cugraph_validate_call for the concrete table-specific output schema."
+            }),
+        );
+        schema.as_object_mut().expect("options schema is an object").insert(
+            "type_aliases".to_string(),
+            json!({
+                "vertex_domain": "same logical vertex domain as src_col and dst_col",
+                "edge_id_domain": "same integer domain as edge_id_col"
             }),
         );
     }
     schema.to_string()
 }
 
-fn graph_options_schema_json() -> Value {
+fn graph_options_schema_json(options: &CugraphGraphOptions) -> Value {
     json!({
         "directed": {
             "scope": "graph",
             "type": "Boolean",
-            "default": "session default",
+            "default": options.directed,
             "description": "Whether graph construction treats edges as directed."
         },
         "renumber": {
             "scope": "graph",
             "type": "Boolean",
-            "default": "session default",
+            "default": options.renumber,
             "description": "Whether graph construction may renumber external vertex identifiers internally."
         },
         "construction_policy": {
             "scope": "graph",
             "type": "Utf8",
             "allowed_values": ["python_cugraph", "raw_libcugraph"],
-            "default": "session default",
+            "default": options.construction_policy.as_str(),
             "description": "Backend policy used to construct the cuGraph graph from the edge relation."
         }
     })
@@ -125,13 +141,13 @@ fn algorithm_options_schema_json(algorithm: CugraphAlgorithm) -> Value {
                     "scope": "side_input",
                     "type": "Utf8",
                     "required": true,
-                    "default": params.personalization.vertex_col
+                    "example": params.personalization.vertex_col
                 },
                 "personalization_value_col": {
                     "scope": "side_input",
                     "type": "Utf8",
                     "required": true,
-                    "default": params.personalization.value_col
+                    "example": params.personalization.value_col
                 }
             })
         },
@@ -539,7 +555,7 @@ fn bfs_options_schema_json() -> Value {
                     "expected_columns": [
                         {
                             "name_from_option": "source_vertex_col",
-                            "type": "same logical vertex domain as src_col and dst_col"
+                            "type_ref": "vertex_domain"
                         }
                     ]
                 }
@@ -551,7 +567,7 @@ fn bfs_options_schema_json() -> Value {
                 "required_with": "source_vertices_table",
                 "description": "Column in source_vertices_table containing BFS source vertex identifiers.",
                 "column_of": "source_vertices_table",
-                "expected_type": "same logical vertex domain as src_col and dst_col"
+                "expected_type_ref": "vertex_domain"
             },
             "output_mode": {
                 "scope": "algorithm",
@@ -572,7 +588,7 @@ fn bfs_options_schema_json() -> Value {
                     "expected_columns": [
                         {
                             "name_from_option": "target_vertex_col",
-                            "type": "same logical vertex domain as src_col and dst_col"
+                            "type_ref": "vertex_domain"
                         }
                     ]
                 }
@@ -584,7 +600,7 @@ fn bfs_options_schema_json() -> Value {
                 "required_when": "output_mode=path or return_target_info=true",
                 "description": "Column in target_vertices_table containing target vertex identifiers.",
                 "column_of": "target_vertices_table",
-                "expected_type": "same logical vertex domain as src_col and dst_col"
+                "expected_type_ref": "vertex_domain"
             },
             "return_target_info": {
                 "scope": "algorithm",
@@ -604,7 +620,7 @@ fn bfs_options_schema_json() -> Value {
                     "expected_columns": [
                         {
                             "name_from_option": "include_vertex_col",
-                            "type": "same logical vertex domain as src_col and dst_col"
+                            "type_ref": "vertex_domain"
                         }
                     ]
                 }
@@ -616,7 +632,7 @@ fn bfs_options_schema_json() -> Value {
                 "required_when": "include_vertices_table is set",
                 "description": "Column in include_vertices_table containing allowed vertex identifiers.",
                 "column_of": "include_vertices_table",
-                "expected_type": "same logical vertex domain as src_col and dst_col"
+                "expected_type_ref": "vertex_domain"
             },
             "exclude_vertices_table": {
                 "scope": "algorithm",
@@ -629,7 +645,7 @@ fn bfs_options_schema_json() -> Value {
                     "expected_columns": [
                         {
                             "name_from_option": "exclude_vertex_col",
-                            "type": "same logical vertex domain as src_col and dst_col"
+                            "type_ref": "vertex_domain"
                         }
                     ]
                 }
@@ -641,7 +657,7 @@ fn bfs_options_schema_json() -> Value {
                 "required_when": "exclude_vertices_table is set",
                 "description": "Column in exclude_vertices_table containing excluded vertex identifiers.",
                 "column_of": "exclude_vertices_table",
-                "expected_type": "same logical vertex domain as src_col and dst_col"
+                "expected_type_ref": "vertex_domain"
             },
             "edge_id_col": {
                 "scope": "algorithm",
@@ -662,7 +678,7 @@ fn bfs_options_schema_json() -> Value {
                     "expected_columns": [
                         {
                             "name_from_option": "include_edge_ids_col",
-                            "type": "same integer domain as edge_id_col"
+                            "type_ref": "edge_id_domain"
                         }
                     ]
                 }
@@ -674,7 +690,7 @@ fn bfs_options_schema_json() -> Value {
                 "defaults_to": "edge_id_col when omitted and include_edge_ids_table is set",
                 "description": "Column in include_edge_ids_table containing allowed edge identifiers.",
                 "column_of": "include_edge_ids_table",
-                "expected_type": "same integer domain as edge_id_col"
+                "expected_type_ref": "edge_id_domain"
             },
             "include_edges_table": {
                 "scope": "algorithm",
@@ -687,15 +703,15 @@ fn bfs_options_schema_json() -> Value {
                     "expected_columns": [
                         {
                             "name_from_option": "include_edge_src_col",
-                            "type": "same logical vertex domain as src_col and dst_col"
+                            "type_ref": "vertex_domain"
                         },
                         {
                             "name_from_option": "include_edge_dst_col",
-                            "type": "same logical vertex domain as src_col and dst_col"
+                            "type_ref": "vertex_domain"
                         },
                         {
                             "name_from_option": "include_edge_id_col",
-                            "type": "same integer domain as edge_id_col",
+                            "type_ref": "edge_id_domain",
                             "optional_when": "edge_id_col is set"
                         }
                     ]
@@ -708,7 +724,7 @@ fn bfs_options_schema_json() -> Value {
                 "required_when": "include_edges_table is set",
                 "description": "Source endpoint column in include_edges_table.",
                 "column_of": "include_edges_table",
-                "expected_type": "same logical vertex domain as src_col and dst_col"
+                "expected_type_ref": "vertex_domain"
             },
             "include_edge_dst_col": {
                 "scope": "algorithm",
@@ -717,7 +733,7 @@ fn bfs_options_schema_json() -> Value {
                 "required_when": "include_edges_table is set",
                 "description": "Destination endpoint column in include_edges_table.",
                 "column_of": "include_edges_table",
-                "expected_type": "same logical vertex domain as src_col and dst_col"
+                "expected_type_ref": "vertex_domain"
             },
             "include_edge_id_col": {
                 "scope": "algorithm",
@@ -726,22 +742,9 @@ fn bfs_options_schema_json() -> Value {
                 "valid_when": "edge_id_col is set",
                 "description": "Optional edge-id column in include_edges_table; when omitted, include_edges matching uses only endpoint columns.",
                 "column_of": "include_edges_table",
-                "expected_type": "same integer domain as edge_id_col"
+                "expected_type_ref": "edge_id_domain"
             }
     })
-}
-
-pub(super) fn option_defaults_json(algorithm: CugraphAlgorithm, config: &CugraphSqlConfig) -> String {
-    let graph_options = algorithm.effective_default_graph_options(&config.default_graph_options);
-    json!({
-        "graph_options": graph_options_value(&graph_options),
-        "algorithm_options": algorithm_option_defaults(algorithm)
-    })
-    .to_string()
-}
-
-pub(super) fn graph_options_json(options: &CugraphGraphOptions) -> String {
-    graph_options_value(options).to_string()
 }
 
 fn graph_options_value(options: &CugraphGraphOptions) -> Value {
@@ -750,81 +753,6 @@ fn graph_options_value(options: &CugraphGraphOptions) -> Value {
         "renumber": options.renumber,
         "construction_policy": options.construction_policy.as_str(),
     })
-}
-
-fn algorithm_option_defaults(algorithm: CugraphAlgorithm) -> Value {
-    match CugraphAlgorithmParams::from_native_defaults(algorithm, None) {
-        CugraphAlgorithmParams::PageRank(params) => {
-            json!({"alpha": params.alpha, "epsilon": params.epsilon, "max_iterations": params.max_iterations})
-        },
-        CugraphAlgorithmParams::PersonalizedPageRank(params) => json!({
-            "alpha": params.pagerank.alpha,
-            "epsilon": params.pagerank.epsilon,
-            "max_iterations": params.pagerank.max_iterations,
-            "personalization_table": null,
-            "personalization_vertex_col": params.personalization.vertex_col,
-            "personalization_value_col": params.personalization.value_col,
-        }),
-        CugraphAlgorithmParams::Bfs(params) => json!({
-            "depth_limit": params.depth_limit,
-            "source_vertices_table": null,
-            "source_vertex_col": null,
-            "edge_id_col": null,
-            "include_vertices_table": null,
-            "include_vertex_col": null,
-            "exclude_vertices_table": null,
-            "exclude_vertex_col": null,
-            "target_vertices_table": null,
-            "target_vertex_col": null,
-            "include_edge_ids_table": null,
-            "include_edge_ids_col": null,
-            "include_edges_table": null,
-            "include_edge_src_col": null,
-            "include_edge_dst_col": null,
-            "include_edge_id_col": null,
-            "output_mode": params.output.mode.as_str(),
-            "return_target_info": params.output.return_target_info,
-        }),
-        CugraphAlgorithmParams::Louvain(params) => json!({"resolution": params.resolution}),
-        CugraphAlgorithmParams::EigenvectorCentrality(params) => {
-            json!({"epsilon": params.epsilon, "max_iterations": params.max_iterations})
-        },
-        CugraphAlgorithmParams::KatzCentrality(params) => {
-            json!({"alpha": params.alpha, "beta": params.beta, "epsilon": params.epsilon, "max_iterations": params.max_iterations})
-        },
-        CugraphAlgorithmParams::Hits(params) => {
-            json!({"epsilon": params.epsilon, "max_iterations": params.max_iterations, "normalize": params.normalize})
-        },
-        CugraphAlgorithmParams::BetweennessCentrality(params) => {
-            json!({"seeds": null, "k": params.k, "normalized": params.normalized, "include_endpoints": params.include_endpoints, "exact_vertex_threshold": params.exact_vertex_threshold})
-        },
-        CugraphAlgorithmParams::EdgeBetweennessCentrality(params) => {
-            json!({"seeds": null, "k": params.k, "normalized": params.normalized, "exact_vertex_threshold": params.exact_vertex_threshold})
-        },
-        CugraphAlgorithmParams::Sssp(params) => json!({"cutoff": params.cutoff}),
-        CugraphAlgorithmParams::CoreNumber(params) => json!({"degree_type": params.degree_type.as_str()}),
-        CugraphAlgorithmParams::KCore(params) => json!({"k": params.k, "degree_type": params.degree_type.as_str()}),
-        CugraphAlgorithmParams::Leiden(params) => {
-            json!({"max_level": params.max_level, "resolution": params.resolution, "theta": params.theta, "seed": params.seed})
-        },
-        CugraphAlgorithmParams::Ecg(params) => {
-            json!({"min_weight": params.min_weight, "ensemble_size": params.ensemble_size, "max_level": params.max_level, "threshold": params.threshold, "resolution": params.resolution, "seed": params.seed})
-        },
-        CugraphAlgorithmParams::SpectralModularityMaximization(params)
-        | CugraphAlgorithmParams::BalancedCutClustering(params) => {
-            json!({"n_clusters": params.n_clusters, "n_eigenvectors": params.n_eigenvectors, "evs_tolerance": params.evs_tolerance, "evs_max_iterations": params.evs_max_iterations, "k_means_tolerance": params.k_means_tolerance, "k_means_max_iterations": params.k_means_max_iterations, "seed": params.seed})
-        },
-        CugraphAlgorithmParams::ForceAtlas2(params) => {
-            json!({"max_iter": params.max_iter, "outbound_attraction_distribution": params.outbound_attraction_distribution, "lin_log_mode": params.lin_log_mode, "prevent_overlapping": params.prevent_overlapping, "overlap_scaling_ratio": params.overlap_scaling_ratio, "edge_weight_influence": params.edge_weight_influence, "jitter_tolerance": params.jitter_tolerance, "barnes_hut_optimize": params.barnes_hut_optimize, "barnes_hut_theta": params.barnes_hut_theta, "scaling_ratio": params.scaling_ratio, "strong_gravity_mode": params.strong_gravity_mode, "gravity": params.gravity, "verbose": params.verbose, "seed": params.seed})
-        },
-        CugraphAlgorithmParams::DegreesAll(_)
-        | CugraphAlgorithmParams::InDegreesAll(_)
-        | CugraphAlgorithmParams::OutDegreesAll(_)
-        | CugraphAlgorithmParams::WeaklyConnectedComponents(_)
-        | CugraphAlgorithmParams::StronglyConnectedComponents(_)
-        | CugraphAlgorithmParams::TriangleCountAll(_)
-        | CugraphAlgorithmParams::MinimumSpanningTree(_) => json!({}),
-    }
 }
 
 pub(super) fn mode_schemas_json(algorithm: CugraphAlgorithm) -> String {
@@ -842,41 +770,51 @@ pub(super) fn mode_schemas_json(algorithm: CugraphAlgorithm) -> String {
 }
 
 fn bfs_raw_mode_schema(with_target_info: bool) -> Value {
+    json!({"fields": bfs_raw_mode_fields(with_target_info)})
+}
+
+fn bfs_raw_mode_fields(with_target_info: bool) -> Vec<Value> {
     let mut fields = vec![
-        json!({"name": "vertex", "type": "Int64|Utf8", "nullable": false}),
-        json!({"name": "distance", "type": "Int64", "nullable": false}),
-        json!({"name": "predecessor", "type": "Int64|Utf8", "nullable": true}),
+        metadata_field("vertex", "Int64|Utf8", false),
+        metadata_field("distance", "Int64", false),
+        metadata_field("predecessor", "Int64|Utf8", true),
     ];
     append_bfs_target_info_fields(&mut fields, with_target_info);
-    Value::Array(fields)
+    fields
 }
 
 fn bfs_normalized_mode_schema(with_target_info: bool) -> Value {
     let mut fields = vec![
-        json!({"name": "vertex", "type": "Int64|Utf8", "nullable": false}),
-        json!({"name": "distance", "type": "Int64", "nullable": true}),
-        json!({"name": "predecessor", "type": "Int64|Utf8", "nullable": true}),
-        json!({"name": "reachable", "type": "Boolean", "nullable": false}),
+        metadata_field("vertex", "Int64|Utf8", false),
+        metadata_field("distance", "Int64", true),
+        metadata_field("predecessor", "Int64|Utf8", true),
+        metadata_field("reachable", "Boolean", false),
     ];
     append_bfs_target_info_fields(&mut fields, with_target_info);
-    Value::Array(fields)
+    json!({"fields": fields})
 }
 
 fn append_bfs_target_info_fields(fields: &mut Vec<Value>, with_target_info: bool) {
     if with_target_info {
-        fields.push(json!({"name": "target_found", "type": "Boolean", "nullable": false}));
-        fields.push(json!({"name": "target_distance", "type": "Int64", "nullable": true}));
+        fields.push(metadata_field("target_found", "Boolean", false));
+        fields.push(metadata_field("target_distance", "Int64", true));
     }
 }
 
 fn bfs_path_mode_schema() -> Value {
-    json!([
-        {"name": "path_index", "type": "Int64", "nullable": false},
-        {"name": "source", "type": "Int64|Utf8", "nullable": false},
-        {"name": "target", "type": "Int64|Utf8", "nullable": false},
-        {"name": "vertex", "type": "Int64|Utf8", "nullable": false},
-        {"name": "distance", "type": "Int64", "nullable": false}
-    ])
+    json!({
+        "fields": [
+            metadata_field("path_index", "Int64", false),
+            metadata_field("source", "Int64|Utf8", false),
+            metadata_field("target", "Int64|Utf8", false),
+            metadata_field("vertex", "Int64|Utf8", false),
+            metadata_field("distance", "Int64", false)
+        ]
+    })
+}
+
+fn metadata_field(name: &str, data_type: &str, nullable: bool) -> Value {
+    json!({"name": name, "data_type": data_type, "nullable": nullable})
 }
 
 pub(super) fn normalized_options_json(spec: &CugraphAlgorithmSpec) -> String {

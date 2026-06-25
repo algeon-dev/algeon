@@ -886,7 +886,7 @@ async fn server_cugraph_session_registers_algorithm_udtfs_when_enabled() {
     );
 
     let batches = ctx
-        .sql("SELECT function_name, enabled FROM cugraph_list_algorithms() WHERE function_name = 'cugraph_pagerank'")
+        .sql("SELECT function_name FROM cugraph_list_algorithms() WHERE function_name = 'cugraph_pagerank'")
         .await
         .unwrap()
         .collect()
