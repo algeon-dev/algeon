@@ -383,6 +383,13 @@ int cudf_rust_c_header_smoke(void)
                          cudf_hash_join_handle*,
 
                          const cudf_exec_options_t*)    = &cudf_hash_join_create_ex;
+  cudf_status_t (*f22ae_size)(cudf_table_view_handle, double, size_t*) =
+    &cudf_hash_join_pre_build_reservation_size;
+  cudf_status_t (*f22ae_size_ex)(cudf_table_view_handle,
+                                 double,
+                                 size_t*,
+
+                                 const cudf_exec_options_t*) = &cudf_hash_join_pre_build_reservation_size_ex;
   void (*f22af)(cudf_hash_join_handle)                  = &cudf_hash_join_destroy;
   cudf_status_t (*f22af_size)(cudf_hash_join_handle, size_t*) =
     &cudf_hash_join_device_allocated_size;
@@ -656,6 +663,8 @@ int cudf_rust_c_header_smoke(void)
   (void)f22ac;
   (void)f22ad;
   (void)f22ae;
+  (void)f22ae_size;
+  (void)f22ae_size_ex;
   (void)f22af;
   (void)f22ag;
   (void)f22ah;

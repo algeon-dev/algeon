@@ -1900,10 +1900,11 @@ impl HashJoin {
     /// Return exact device bytes that must be reserved before building a
     /// reusable hash-join artifact from this build key table.
     ///
-    /// This is a planning contract for bounded engines. It intentionally
-    /// returns [`ErrorCode::UnsupportedOperation`] while libcudf lacks an
-    /// exact pre-build sizing API for `cudf::hash_join`; callers must not
-    /// substitute row-count heuristics for this contract.
+    /// This is a planning contract for bounded engines. It returns the exact
+    /// retained bytes for the reusable hash table and build-key device views,
+    /// without building or retaining the hash table. Build keys that may retain
+    /// equality-preprocessing buffers, such as nested columns or nullable
+    /// string columns with non-empty null payloads, are rejected by libcudf.
     pub fn pre_build_reservation_size_bytes(build: &Table, options: HashJoinOptions) -> Result<usize> {
         let ctx = ExecutionOverrides::new();
         Self::pre_build_reservation_size_bytes_in(build, options, &ctx)
@@ -1912,9 +1913,9 @@ impl HashJoin {
     /// Return exact device bytes that must be reserved before building a
     /// reusable hash-join artifact using a borrowed execution override.
     ///
-    /// The execution override is part of the contract so the eventual sizing
-    /// operation can use the same stream and memory resource as
-    /// [`HashJoin::new_in`] once libcudf exposes that lower-level surface.
+    /// The execution override is part of the contract so sizing validates and
+    /// reports failures under the same stream and memory-resource policy as
+    /// [`HashJoin::new_in`].
     pub fn pre_build_reservation_size_bytes_in(
         build: &Table,
         options: HashJoinOptions,
@@ -1970,8 +1971,6 @@ impl HashJoin {
             unsafe {
                 cudf_sys::cudf_hash_join_pre_build_reservation_size_ex(
                     build_view.raw_handle(),
-                    options.nullable_join_setting().to_raw(),
-                    options.null_eq().to_join_raw(),
                     options.load_factor_value(),
                     &mut out,
                     execution.exec_options(),
@@ -1979,17 +1978,9 @@ impl HashJoin {
             },
             operation,
             [
-                ("nullable_join", format!("{:?}", options.nullable_join_setting()).to_lowercase()),
-                ("null_equality", format!("{:?}", options.null_eq()).to_lowercase()),
                 ("load_factor", options.load_factor_value().to_string()),
                 ("execution_context_provided", true.to_string()),
                 ("reservation_contract", "hash_join_pre_build_reservation_size_bytes".to_string()),
-                ("reason", "libcudf_pre_build_hash_join_sizing_unavailable".to_string()),
-                (
-                    "remedy",
-                    "keep bounded hash-join execution disabled until libcudf exposes exact pre-build sizing"
-                        .to_string(),
-                ),
             ],
         )?;
         Ok(out)
