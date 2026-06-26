@@ -78,6 +78,54 @@ fn list_null_residual_hash_join_plan(
     aggregate_sort_limit_join_plan(join)
 }
 
+fn integer_divide_residual_hash_join_plan(
+    left: Arc<dyn ExecutionPlan>,
+    right: Arc<dyn ExecutionPlan>,
+) -> Arc<dyn ExecutionPlan> {
+    let left_schema = left.schema();
+    let right_schema = right.schema();
+    let filter_schema = Arc::new(Schema::new(vec![
+        left_schema.field_with_name("l_m00").unwrap().clone(),
+        right_schema.field_with_name("r_m01").unwrap().clone(),
+    ]));
+    // Residual join predicates must reject integer divide before it reaches libcudf.
+    let ratio = binary(
+        col("l_m00", &filter_schema).unwrap(),
+        Operator::Divide,
+        col("r_m01", &filter_schema).unwrap(),
+        &filter_schema,
+    )
+    .unwrap();
+    let filter_expr = binary(ratio, Operator::Gt, lit(ScalarValue::Int64(Some(0))), &filter_schema).unwrap();
+    let filter = JoinFilter::new(
+        filter_expr,
+        vec![
+            ColumnIndex { index: left_schema.index_of("l_m00").unwrap(), side: JoinSide::Left },
+            ColumnIndex { index: right_schema.index_of("r_m01").unwrap(), side: JoinSide::Right },
+        ],
+        filter_schema,
+    );
+    let join: Arc<dyn ExecutionPlan> = Arc::new(
+        HashJoinExec::try_new(
+            left,
+            right,
+            vec![(col("key", &left_schema).unwrap(), col("key", &right_schema).unwrap())],
+            Some(filter),
+            &JoinType::Inner,
+            Some(vec![
+                left_schema.index_of("key").unwrap(),
+                left_schema.index_of("l_m00").unwrap(),
+                left_schema.fields().len() + right_schema.index_of("r_m01").unwrap(),
+            ]),
+            PartitionMode::CollectLeft,
+            NullEquality::NullEqualsNothing,
+            false,
+        )
+        .unwrap(),
+    );
+    aggregate_sort_limit_join_plan(join)
+}
+
 fn timestamp_timezone_residual_nested_loop_join_plan(
     left: Arc<dyn ExecutionPlan>,
     right: Arc<dyn ExecutionPlan>,
@@ -191,6 +239,21 @@ fn hash_join_filter_rejects_list_null_predicate_residual() {
     let result = lower_physical_plan_to_native(plan);
 
     assert_native_rejection(&result, FallbackReason::UnsupportedType);
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn hash_join_filter_rejects_integer_divide_residual() {
+    let dir = unique_temp_dir("datafusion-nexus-native-lowering-hash-join-filter-integer-divide");
+    let left_path = dir.join("left.parquet");
+    let right_path = dir.join("right.parquet");
+    write_join_left_parquet_file(&left_path);
+    write_join_right_parquet_file(&right_path);
+    let plan = integer_divide_residual_hash_join_plan(parquet_scan(&left_path), parquet_scan(&right_path));
+
+    let result = lower_physical_plan_to_native(plan);
+
+    assert_native_rejection(&result, FallbackReason::UnsupportedExpression);
     fs::remove_dir_all(dir).unwrap();
 }
 

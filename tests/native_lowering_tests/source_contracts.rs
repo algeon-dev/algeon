@@ -280,6 +280,28 @@ fn pushed_down_case_decimal_divide_predicate_uses_native_post_scan_filter() {
 }
 
 #[test]
+fn pushed_down_integer_divide_predicate_is_rejected_during_native_planning() {
+    // Integer divide in scan-only predicates falls back to CPU; decimal divide
+    // still lowers above.
+    let dir = unique_temp_dir("datafusion-nexus-native-lowering-pushed-integer-divide");
+    let path = dir.join("input.parquet");
+    write_household_demographics_like_parquet_file(&path);
+    let scan = parquet_scan_with_pushed_down_integer_divide_predicate(&path);
+    let plan = aggregate_sort_limit_plan_without_filter(scan, Operator::Plus);
+
+    let result = lower_physical_plan_to_native(plan);
+
+    assert!(result.plans.is_empty(), "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.rejected_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert!(matches!(
+        result.report.outcomes()[0],
+        CandidateOutcome::Rejected { reason: FallbackReason::UnsupportedExpression, .. }
+    ));
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
 fn pushed_down_parquet_predicate_with_different_filter_uses_native_post_scan_filter() {
     let dir = unique_temp_dir("datafusion-nexus-native-lowering-pushed-predicate-mismatch");
     let path = dir.join("input.parquet");

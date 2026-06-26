@@ -144,6 +144,48 @@ fn expression_hash_join_keys_materialize_as_synthetic_projection_columns() {
 }
 
 #[test]
+fn integer_divide_hash_join_key_is_rejected_during_native_planning() {
+    // Join-key projections must reject integer divide before it can reach libcudf.
+    let dir = unique_temp_dir("datafusion-nexus-native-lowering-integer-divide-join-key");
+    let left_path = dir.join("left.parquet");
+    let right_path = dir.join("right.parquet");
+    write_join_left_parquet_file(&left_path);
+    write_join_right_parquet_file(&right_path);
+    let left = parquet_scan(&left_path);
+    let right = parquet_scan(&right_path);
+    let left_schema = left.schema();
+    let right_schema = right.schema();
+    let left_key =
+        binary(col("key", &left_schema).unwrap(), Operator::Divide, lit(ScalarValue::Int32(Some(2))), &left_schema)
+            .unwrap();
+    let join: Arc<dyn ExecutionPlan> = Arc::new(
+        HashJoinExec::try_new(
+            left,
+            right,
+            vec![(left_key, col("key", &right_schema).unwrap())],
+            None,
+            &JoinType::Inner,
+            None,
+            PartitionMode::CollectLeft,
+            NullEquality::NullEqualsNothing,
+            false,
+        )
+        .unwrap(),
+    );
+
+    let result = lower_physical_plan_to_native(join);
+
+    assert!(result.plans.is_empty(), "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.rejected_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert!(matches!(
+        result.report.outcomes()[0],
+        CandidateOutcome::Rejected { reason: FallbackReason::UnsupportedExpression, .. }
+    ));
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
 fn hash_join_fetch_lowers_to_native_limit_above_join() {
     let dir = unique_temp_dir("datafusion-nexus-native-lowering-hash-join-fetch");
     let left_path = dir.join("left.parquet");

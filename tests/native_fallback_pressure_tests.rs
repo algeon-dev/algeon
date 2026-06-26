@@ -101,7 +101,7 @@ async fn native_fallback_pressure_report_summarizes_workload_outcomes() {
         ("cast_rewrite", SQL_CAST_QUERY),
         ("avg_rewrite", SQL_AVG_QUERY),
         ("filtered_rewrite", SQL_FILTERED_QUERY),
-        ("modulo_rewrite", SQL_MODULO_QUERY),
+        ("integer_modulo_fallback", SQL_MODULO_QUERY),
     ];
     let mut items = Vec::with_capacity(workload.len());
     for (query_id, sql) in workload {
@@ -133,8 +133,8 @@ async fn native_fallback_pressure_report_summarizes_workload_outcomes() {
     let report = NativeFallbackPressureReport::collect(items);
 
     assert_eq!(report.rows.len(), 12);
-    assert_eq!(report.rewritten_count(), 10);
-    assert_eq!(report.rejected_count(), 2);
+    assert_eq!(report.rewritten_count(), 9);
+    assert_eq!(report.rejected_count(), 3);
 
     let rewritten = report_row(&report, "sum_rewrite");
     assert_eq!(rewritten.outcome, NativeFallbackPressureOutcome::Rewritten);
@@ -223,11 +223,12 @@ async fn native_fallback_pressure_report_summarizes_workload_outcomes() {
     assert_eq!(distributed_distinct_avg.unsupported_category, None);
     assert!(!distributed_distinct_avg.rejected_before_execution);
 
-    let modulo = report_row(&report, "modulo_rewrite");
-    assert_eq!(modulo.outcome, NativeFallbackPressureOutcome::Rewritten);
-    assert_eq!(modulo.reason_code, None);
-    assert_eq!(modulo.unsupported_category, None);
-    assert!(!modulo.rejected_before_execution);
+    // Integer modulo cannot match DataFusion by-zero errors on GPU, so it is a
+    // pre-execution CPU fallback.
+    let modulo = report_row(&report, "integer_modulo_fallback");
+    assert_eq!(modulo.outcome, NativeFallbackPressureOutcome::Rejected);
+    assert_eq!(modulo.reason_code.as_deref(), Some("unsupported_expression"));
+    assert!(modulo.rejected_before_execution);
 
     let planning_failure = report_row(&report, "q00_planning_failure");
     assert_eq!(planning_failure.physical_root, "PlanningFailure");

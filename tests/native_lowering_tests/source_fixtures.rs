@@ -434,6 +434,26 @@ pub(super) fn parquet_scan_with_pushed_down_case_decimal_divide_predicate(
     DataSourceExec::from_data_source(file_scan)
 }
 
+pub(super) fn parquet_scan_with_pushed_down_integer_divide_predicate(path: &std::path::Path) -> Arc<dyn ExecutionPlan> {
+    let scan = parquet_scan(path);
+    let data_source = scan.downcast_ref::<DataSourceExec>().expect("parquet scan should be DataSourceExec");
+    let (file_scan, parquet_source) =
+        data_source.downcast_to_file_source::<ParquetSource>().expect("parquet scan should use ParquetSource");
+    let table_schema = scan.schema();
+    // Build an integer divide pushed predicate to cover the scan-only fallback path.
+    let dep_count = col("hd_dep_count", &table_schema).unwrap();
+    let vehicle_count = col("hd_vehicle_count", &table_schema).unwrap();
+    let ratio = binary(dep_count, Operator::Divide, vehicle_count, &table_schema).unwrap();
+    let predicate = binary(ratio, Operator::Gt, lit(ScalarValue::Int32(Some(0))), &table_schema).unwrap();
+    let parquet_source = parquet_source.with_predicate(predicate).with_pushdown_filters(true);
+    let file_scan = FileScanConfigBuilder::from(file_scan.clone())
+        .with_projection_indices(Some(vec![0, 2, 4]))
+        .unwrap()
+        .with_source(Arc::new(parquet_source))
+        .build();
+    DataSourceExec::from_data_source(file_scan)
+}
+
 pub(super) fn parquet_scan_with_projection_and_pushed_label_predicate(
     path: &std::path::Path,
 ) -> Arc<dyn ExecutionPlan> {

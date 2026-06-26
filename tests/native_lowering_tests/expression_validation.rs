@@ -439,6 +439,59 @@ async fn direct_friendly_sql_physical_plan_without_scan_predicate_lowers_to_nati
 }
 
 #[test]
+fn integer_division_is_rejected_during_native_planning() {
+    // Integer division stays on CPU until libcudf exposes checked by-zero semantics.
+    let dir = unique_temp_dir("datafusion-nexus-native-lowering-integer-divide");
+    let path = dir.join("input.parquet");
+    write_numeric_parquet_file(&path);
+    let scan = parquet_scan(&path);
+    let scan_schema = scan.schema();
+    let ratio =
+        binary(col("m00", &scan_schema).unwrap(), Operator::Divide, col("m01", &scan_schema).unwrap(), &scan_schema)
+            .unwrap();
+    let plan: Arc<dyn ExecutionPlan> =
+        Arc::new(ProjectionExec::try_new([ProjectionExpr { expr: ratio, alias: "ratio".to_string() }], scan).unwrap());
+
+    let result = lower_physical_plan_to_native(plan);
+
+    assert!(result.plans.is_empty(), "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.rejected_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert!(matches!(
+        result.report.outcomes()[0],
+        CandidateOutcome::Rejected { reason: FallbackReason::UnsupportedExpression, .. }
+    ));
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn integer_modulo_is_rejected_during_native_planning() {
+    // Integer modulo stays on CPU until libcudf exposes checked by-zero semantics.
+    let dir = unique_temp_dir("datafusion-nexus-native-lowering-integer-modulo");
+    let path = dir.join("input.parquet");
+    write_numeric_parquet_file(&path);
+    let scan = parquet_scan(&path);
+    let scan_schema = scan.schema();
+    let remainder =
+        binary(col("m00", &scan_schema).unwrap(), Operator::Modulo, col("m01", &scan_schema).unwrap(), &scan_schema)
+            .unwrap();
+    let plan: Arc<dyn ExecutionPlan> = Arc::new(
+        ProjectionExec::try_new([ProjectionExpr { expr: remainder, alias: "remainder".to_string() }], scan).unwrap(),
+    );
+
+    let result = lower_physical_plan_to_native(plan);
+
+    assert!(result.plans.is_empty(), "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.rejected_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert!(matches!(
+        result.report.outcomes()[0],
+        CandidateOutcome::Rejected { reason: FallbackReason::UnsupportedExpression, .. }
+    ));
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
 fn every_rejected_native_candidate_has_stable_rejection_code() {
     let dir = unique_temp_dir("datafusion-nexus-native-lowering-rejection-codes");
     let path = dir.join("input.parquet");
