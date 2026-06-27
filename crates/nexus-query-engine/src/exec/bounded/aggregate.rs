@@ -140,6 +140,7 @@ fn should_execute_partitioned_source_adjacent_grouped_aggregate(
         && source_adjacent_partitioned_chunks_are_row_group_morsels(&chunk_plan.chunks)
         && source_adjacent_partitioned_raw_retention_fits_budget(context, &chunk_plan.chunks)
         && source_adjacent_group_key_partitioning_fits_rows(bounded, &chunk_plan.chunks)
+        && source_adjacent_group_key_partitioning_fits_chunk_count(context, bounded, &chunk_plan.chunks)
 }
 
 fn source_adjacent_partitioned_chunks_are_row_group_morsels(chunks: &[SourceChunk]) -> bool {
@@ -174,6 +175,19 @@ fn source_adjacent_group_key_partitioning_fits_rows(bounded: &BoundedPlan<'_>, c
     chunks.iter().all(|chunk| {
         BoundedPartitionRowPolicy::default().source_adjacent_group_key_partitioning_fits_rows(chunk.known_row_count)
     })
+}
+
+fn source_adjacent_group_key_partitioning_fits_chunk_count(
+    context: &ExecutionContext,
+    bounded: &BoundedPlan<'_>,
+    chunks: &[SourceChunk],
+) -> bool {
+    if !source_adjacent_grouped_aggregate_has_string_key(bounded)
+        || matches!(context.memory_control_policy(), MemoryControlPolicy::Unbounded)
+    {
+        return true;
+    }
+    BoundedPartitionRowPolicy::default().source_adjacent_group_key_partitioning_fits_chunk_count(chunks.len())
 }
 
 fn source_adjacent_grouped_aggregate_has_string_key(bounded: &BoundedPlan<'_>) -> bool {

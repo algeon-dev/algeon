@@ -27,7 +27,7 @@ use nexus_query_engine::{
 };
 use tokio::sync::Barrier;
 
-const TSV_SCHEMA_VERSION: u32 = 1;
+const TSV_SCHEMA_VERSION: u32 = 2;
 const TSV_COLUMNS: &[&str] = &[
     "row_type",
     "request_index",
@@ -37,6 +37,11 @@ const TSV_COLUMNS: &[&str] = &[
     "iteration",
     "admission_sequence",
     "admission_wait_ms",
+    "device_ordinal",
+    "query_grant_bytes",
+    "service_capacity_bytes",
+    "service_outstanding_bytes_snapshot",
+    "service_available_bytes_snapshot",
     "total_wall_ms",
     "native_wall_ms",
     "planning_outcome",
@@ -182,6 +187,7 @@ struct StressRow {
     iteration: usize,
     admission_sequence: Option<u64>,
     admission_wait_ms: Option<f64>,
+    admission_facts: AdmissionFacts,
     total_wall_ms: f64,
     native_wall_ms: Option<f64>,
     planning_outcome: String,
@@ -193,6 +199,15 @@ struct StressRow {
     cpu_output_fingerprint: Option<String>,
     native_output_fingerprint: Option<String>,
     error: StructuredFailure,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct AdmissionFacts {
+    device_ordinal: Option<usize>,
+    query_grant_bytes: Option<u64>,
+    service_capacity_bytes: Option<u64>,
+    service_outstanding_bytes_snapshot: Option<u64>,
+    service_available_bytes_snapshot: Option<u64>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -290,6 +305,20 @@ impl StressRow {
             self.iteration.to_string(),
             self.admission_sequence.map(|value| value.to_string()).unwrap_or_else(|| "none".to_string()),
             self.admission_wait_ms.map(format_ms).unwrap_or_else(|| "none".to_string()),
+            self.admission_facts.device_ordinal.map(|value| value.to_string()).unwrap_or_else(|| "none".to_string()),
+            self.admission_facts.query_grant_bytes.map(|value| value.to_string()).unwrap_or_else(|| "none".to_string()),
+            self.admission_facts
+                .service_capacity_bytes
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "none".to_string()),
+            self.admission_facts
+                .service_outstanding_bytes_snapshot
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "none".to_string()),
+            self.admission_facts
+                .service_available_bytes_snapshot
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "none".to_string()),
             format_ms(self.total_wall_ms),
             self.native_wall_ms.map(format_ms).unwrap_or_else(|| "none".to_string()),
             self.planning_outcome.clone(),
@@ -397,6 +426,7 @@ async fn run_native_request(
                 total_started.elapsed(),
                 None,
                 None,
+                AdmissionFacts::default(),
                 "not_planned",
                 "not_planned",
                 "not_started",
@@ -410,6 +440,7 @@ async fn run_native_request(
 
     let admission_sequence = Some(handle.admission_sequence());
     let admission_wait_ms = Some(duration_ms(handle.admission_wait()));
+    let admission_facts = admission_facts(&service, &handle)?;
     let query = tpch_query(&request.query_id)?;
     let cpu = cpu_baselines.get(&request.query_id);
     let native_started = Instant::now();
@@ -430,6 +461,7 @@ async fn run_native_request(
                 iteration: request.iteration,
                 admission_sequence,
                 admission_wait_ms,
+                admission_facts,
                 total_wall_ms: duration_ms(total_started.elapsed()),
                 native_wall_ms: Some(duration_ms(native_started.elapsed())),
                 planning_outcome: planning_row.outcome.as_str().to_string(),
@@ -448,6 +480,7 @@ async fn run_native_request(
             total_started.elapsed(),
             admission_sequence,
             admission_wait_ms,
+            admission_facts,
             planning_row.outcome.as_str(),
             planning_row.post_native_execution_path.as_str(),
             "failed",
@@ -461,6 +494,7 @@ async fn run_native_request(
             total_started.elapsed(),
             admission_sequence,
             admission_wait_ms,
+            admission_facts,
             "unknown",
             "unknown",
             "failed",
@@ -515,6 +549,20 @@ async fn collect_native_with_handle(
     Ok(NativeCollectOutcome::Succeeded { planning_row, measurement })
 }
 
+fn admission_facts(
+    service: &QueryService,
+    handle: &nexus_query_engine::QueryHandle,
+) -> DataFusionResult<AdmissionFacts> {
+    let report = service.memory_governor_report().map_err(native_error)?;
+    Ok(AdmissionFacts {
+        device_ordinal: Some(handle.device_ordinal()),
+        query_grant_bytes: Some(handle.device_budget_bytes()),
+        service_capacity_bytes: Some(report.capacity_bytes),
+        service_outstanding_bytes_snapshot: Some(report.outstanding_bytes),
+        service_available_bytes_snapshot: Some(report.available_bytes),
+    })
+}
+
 async fn collect_plan_once(plan: Arc<dyn ExecutionPlan>) -> DataFusionResult<Vec<RecordBatch>> {
     collect(plan, Arc::new(TaskContext::default())).await
 }
@@ -556,6 +604,7 @@ fn run_overload_probe(config: &StressConfig) -> DataFusionResult<StressRow> {
         iteration: 0,
         admission_sequence: None,
         admission_wait_ms: None,
+        admission_facts: AdmissionFacts::default(),
         total_wall_ms: duration_ms(started.elapsed()),
         native_wall_ms: None,
         planning_outcome: "not_planned".to_string(),
@@ -619,6 +668,7 @@ fn failure_row(
     total_wall: Duration,
     admission_sequence: Option<u64>,
     admission_wait_ms: Option<f64>,
+    admission_facts: AdmissionFacts,
     planning_outcome: &str,
     post_native_execution_path: &str,
     native_runtime_outcome: &'static str,
@@ -636,6 +686,7 @@ fn failure_row(
         iteration: request.iteration,
         admission_sequence,
         admission_wait_ms,
+        admission_facts,
         total_wall_ms: duration_ms(total_wall),
         native_wall_ms: None,
         planning_outcome: planning_outcome.to_string(),
@@ -889,7 +940,7 @@ mod tests {
 
     #[test]
     fn stress_tsv_row_contract_matches_columns() {
-        assert_eq!(TSV_SCHEMA_VERSION, 1);
+        assert_eq!(TSV_SCHEMA_VERSION, 2);
         assert_eq!(TSV_COLUMNS.first(), Some(&"row_type"));
         assert_eq!(TSV_COLUMNS.last(), Some(&"error_message"));
         let row = StressRow {
@@ -901,6 +952,7 @@ mod tests {
             iteration: 1,
             admission_sequence: Some(1),
             admission_wait_ms: Some(0.0),
+            admission_facts: AdmissionFacts::default(),
             total_wall_ms: 10.0,
             native_wall_ms: Some(5.0),
             planning_outcome: "accepted_replaced".to_string(),
@@ -928,6 +980,7 @@ mod tests {
                 iteration: 1,
                 admission_sequence: Some(1),
                 admission_wait_ms: Some(0.0),
+                admission_facts: AdmissionFacts::default(),
                 total_wall_ms: 10.0,
                 native_wall_ms: Some(5.0),
                 planning_outcome: "accepted_replaced".to_string(),
@@ -949,6 +1002,7 @@ mod tests {
                 iteration: 2,
                 admission_sequence: None,
                 admission_wait_ms: None,
+                admission_facts: AdmissionFacts::default(),
                 total_wall_ms: 20.0,
                 native_wall_ms: None,
                 planning_outcome: "not_planned".to_string(),

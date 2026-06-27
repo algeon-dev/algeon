@@ -13,6 +13,7 @@ pub(in crate::exec::bounded) struct BoundedPartitionRowPolicy {
     mixed_join_max_partitions: usize,
     hash_frame_stream_min_partitions: usize,
     source_adjacent_group_key_partition_max_input_rows: u64,
+    source_adjacent_group_key_partition_max_chunk_count: usize,
     source_adjacent_partitioned_aggregate_min_partitions: usize,
     source_adjacent_partitioned_aggregate_max_min_partitions: usize,
 }
@@ -24,6 +25,7 @@ impl BoundedPartitionRowPolicy {
     pub(in crate::exec::bounded) const DEFAULT_MIXED_JOIN_MAX_PARTITIONS: usize = 1024;
     pub(in crate::exec::bounded) const DEFAULT_HASH_FRAME_STREAM_MIN_PARTITIONS: usize = 2;
     pub(in crate::exec::bounded) const DEFAULT_SOURCE_ADJACENT_GROUP_KEY_PARTITION_MAX_INPUT_ROWS: u64 = 32_000_000;
+    pub(in crate::exec::bounded) const DEFAULT_SOURCE_ADJACENT_GROUP_KEY_PARTITION_MAX_CHUNK_COUNT: usize = 64;
     pub(in crate::exec::bounded) const DEFAULT_SOURCE_ADJACENT_PARTITIONED_AGGREGATE_MIN_PARTITIONS: usize = 1;
     pub(in crate::exec::bounded) const DEFAULT_SOURCE_ADJACENT_PARTITIONED_AGGREGATE_MAX_MIN_PARTITIONS: usize = 32;
 
@@ -66,6 +68,13 @@ impl BoundedPartitionRowPolicy {
         known_rows.is_some_and(|rows| rows <= self.source_adjacent_group_key_partition_max_input_rows)
     }
 
+    pub(in crate::exec::bounded) fn source_adjacent_group_key_partitioning_fits_chunk_count(
+        self,
+        chunk_count: usize,
+    ) -> bool {
+        chunk_count <= self.source_adjacent_group_key_partition_max_chunk_count
+    }
+
     pub(in crate::exec::bounded) fn source_adjacent_partitioned_aggregate_min_partition_count(
         self,
         chunk_count: usize,
@@ -87,6 +96,8 @@ impl Default for BoundedPartitionRowPolicy {
             hash_frame_stream_min_partitions: Self::DEFAULT_HASH_FRAME_STREAM_MIN_PARTITIONS,
             source_adjacent_group_key_partition_max_input_rows:
                 Self::DEFAULT_SOURCE_ADJACENT_GROUP_KEY_PARTITION_MAX_INPUT_ROWS,
+            source_adjacent_group_key_partition_max_chunk_count:
+                Self::DEFAULT_SOURCE_ADJACENT_GROUP_KEY_PARTITION_MAX_CHUNK_COUNT,
             source_adjacent_partitioned_aggregate_min_partitions:
                 Self::DEFAULT_SOURCE_ADJACENT_PARTITIONED_AGGREGATE_MIN_PARTITIONS,
             source_adjacent_partitioned_aggregate_max_min_partitions:
@@ -158,6 +169,18 @@ mod tests {
             BoundedPartitionRowPolicy::DEFAULT_SOURCE_ADJACENT_GROUP_KEY_PARTITION_MAX_INPUT_ROWS + 1
         )));
         assert!(!policy.source_adjacent_group_key_partitioning_fits_rows(None));
+    }
+
+    #[test]
+    fn source_adjacent_group_key_partitioning_caps_chunk_count() {
+        let policy = BoundedPartitionRowPolicy::default();
+
+        assert!(policy.source_adjacent_group_key_partitioning_fits_chunk_count(
+            BoundedPartitionRowPolicy::DEFAULT_SOURCE_ADJACENT_GROUP_KEY_PARTITION_MAX_CHUNK_COUNT
+        ));
+        assert!(!policy.source_adjacent_group_key_partitioning_fits_chunk_count(
+            BoundedPartitionRowPolicy::DEFAULT_SOURCE_ADJACENT_GROUP_KEY_PARTITION_MAX_CHUNK_COUNT + 1
+        ));
     }
 
     #[test]
