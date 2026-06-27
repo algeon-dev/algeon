@@ -1,4 +1,4 @@
-use std::time::Duration;
+use std::{collections::VecDeque, time::Duration};
 
 use arrow::datatypes::SchemaRef as ArrowSchemaRef;
 
@@ -909,13 +909,16 @@ fn concatenate_partitioned_final_merge_outputs(
             .with_node_id(node_id)
             .with_stage("partitioned_final_merge")
             .with_compiled_task_id(task_id);
-    reconcile_work_reservation_to_output(
+    if let Err(error) = reconcile_work_reservation_to_output(
         reservations,
         &mut concat_reservation,
         output_bytes,
         &output_request,
         metrics,
-    )?;
+    ) {
+        reservations.release(concat_reservation, metrics);
+        return Err(error);
+    }
     let output_reservation = reservations.transfer(concat_reservation, output_request, metrics);
     Ok(CommittedPartial { frame: concatenated, reservation: output_reservation })
 }
@@ -1089,6 +1092,29 @@ pub(in crate::exec::bounded) fn execute_compiled_bounded_final_aggregate_merge(
     };
     let max_attempts = max_retry_attempts.max(1);
 
+    if should_execute_compiled_partitioned_final_aggregate_merge(context, aggregate, input_schema, &partials) {
+        let partial = execute_compiled_partitioned_final_aggregate_merge(
+            context,
+            node_id,
+            aggregate,
+            input_schema,
+            output_schema,
+            partials,
+            reservations,
+            metrics,
+        )?;
+        return execute_compiled_final_aggregate_projection(
+            context,
+            node_id,
+            aggregate,
+            input_schema,
+            output_schema,
+            partial,
+            reservations,
+            metrics,
+        );
+    }
+
     while partials.len() > 1 {
         let mut merge_fan_in = initial_compiled_final_merge_fan_in(context, &partials);
         let mut attempt = 1;
@@ -1146,6 +1172,356 @@ pub(in crate::exec::bounded) fn execute_compiled_bounded_final_aggregate_merge(
     )
 }
 
+fn should_execute_compiled_partitioned_final_aggregate_merge(
+    context: &ExecutionContext,
+    aggregate: &AggregateNode,
+    input_schema: &ArrowSchemaRef,
+    partials: &[CommittedPartial],
+) -> bool {
+    partials.len() > 1
+        && aggregate_strategy_capability_decision(
+            &aggregate.spec,
+            input_schema.as_ref(),
+            AggregateExecutionStage::FinalMerge,
+        )
+        .selected_strategy
+            == AggregateExecutionStrategy::PartitionedMerge
+        && partitioned_final_merge_partition_count(context, partials) > 1
+}
+
+fn execute_compiled_partitioned_final_aggregate_merge(
+    context: &ExecutionContext,
+    node_id: NodeId,
+    aggregate: &AggregateNode,
+    input_schema: &ArrowSchemaRef,
+    output_schema: &ArrowSchemaRef,
+    partials: Vec<CommittedPartial>,
+    reservations: &mut ReservationTracker,
+    metrics: &mut QueryMetrics,
+) -> Result<CommittedPartial> {
+    let partition_count = partitioned_final_merge_partition_count(context, &partials);
+    let final_aggregate = lower_final_aggregate_spec(&aggregate.spec)?;
+    let key_columns = final_aggregate.key_columns;
+    let input_rows = partials.iter().map(|partial| partial.frame.num_rows() as u64).sum::<u64>();
+    let mut pending = partials;
+    let mut partition_inputs = (0..partition_count).map(|_| Vec::new()).collect::<Vec<Vec<CommittedPartial>>>();
+
+    let mut partial_index = 0usize;
+    while !pending.is_empty() {
+        let partial = pending.remove(0);
+        let partitions = match partition_final_merge_partial(
+            context,
+            node_id,
+            partial_index,
+            partial,
+            &key_columns,
+            partition_count,
+            reservations,
+            metrics,
+        ) {
+            Ok(partitions) => partitions,
+            Err(error) => {
+                release_nested_partials_reverse(reservations, partition_inputs, metrics);
+                release_partials_reverse(reservations, pending, metrics);
+                return Err(error);
+            },
+        };
+        for (partition_index, partition) in partitions.into_iter().enumerate() {
+            if partition.frame.num_rows() > 0 {
+                partition_inputs[partition_index].push(partition);
+            } else {
+                reservations.release(partition.reservation, metrics);
+            }
+        }
+        partial_index += 1;
+    }
+
+    let timer = Instant::now();
+    let mut merged_partitions = Vec::with_capacity(partition_count);
+    let mut non_empty_partition_count = 0usize;
+    let mut max_partition_fan_in = 0usize;
+    let mut pending_partition_inputs = partition_inputs.into_iter().enumerate().collect::<VecDeque<_>>();
+    while let Some((partition_index, inputs)) = pending_partition_inputs.pop_front() {
+        if inputs.is_empty() {
+            continue;
+        }
+        non_empty_partition_count += 1;
+        max_partition_fan_in = max_partition_fan_in.max(inputs.len());
+        match execute_compiled_partitioned_final_merge_group(
+            context,
+            node_id,
+            aggregate,
+            input_schema,
+            output_schema,
+            partition_index,
+            inputs,
+            reservations,
+            metrics,
+        ) {
+            Ok(merged) => merged_partitions.push(merged),
+            Err(error) => {
+                release_partials_reverse(reservations, merged_partitions, metrics);
+                release_nested_partials_reverse(
+                    reservations,
+                    pending_partition_inputs.into_iter().map(|(_, inputs)| inputs).collect(),
+                    metrics,
+                );
+                return Err(error);
+            },
+        }
+    }
+    if merged_partitions.is_empty() {
+        return Err(QueryError::new(
+            QueryErrorCode::InvalidPlan,
+            "nexus_query_engine.compiled_final_merge.partitioned",
+            "compiled partitioned final aggregate merge produced no non-empty partitions",
+        )
+        .with_fact("node_id", node_id)
+        .with_fact("partition_count", partition_count));
+    }
+    metrics.record_final_merge_attempt(max_partition_fan_in.max(1));
+    metrics.record_final_merge_level();
+    let mut merged =
+        concatenate_partitioned_final_merge_outputs(context, node_id, merged_partitions, reservations, metrics)?;
+    let elapsed = timer.elapsed();
+    let output_rows = merged.frame.num_rows() as u64;
+    record_compiled_partitioned_final_merge_strategy(
+        context,
+        node_id,
+        aggregate,
+        input_schema,
+        input_rows,
+        output_rows,
+        partition_count,
+        non_empty_partition_count,
+        max_partition_fan_in,
+        elapsed,
+        metrics,
+    );
+    let merged_reservation_bytes = merged.reservation.bytes();
+    merged.reservation = reservations.transfer(
+        merged.reservation,
+        MemoryReservationRequest::new(ReservationKind::FinalMerge, merged_reservation_bytes, reservations.budget())
+            .with_memory_boundary("compiled_partitioned_final_aggregate_merge_output")
+            .with_node_id(node_id)
+            .with_stage("compiled_partitioned_final_merge")
+            .with_compiled_task_id(partitioned_final_merge_task_id(node_id, "compiled_combined_output")),
+        metrics,
+    );
+    Ok(merged)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn execute_compiled_partitioned_final_merge_group(
+    context: &ExecutionContext,
+    node_id: NodeId,
+    aggregate: &AggregateNode,
+    input_schema: &ArrowSchemaRef,
+    output_schema: &ArrowSchemaRef,
+    partition_index: usize,
+    inputs: Vec<CommittedPartial>,
+    reservations: &mut ReservationTracker,
+    metrics: &mut QueryMetrics,
+) -> Result<CommittedPartial> {
+    let requested_bytes = inputs.iter().map(|partial| partial.reservation.bytes()).sum::<u64>();
+    let task_id = partitioned_final_merge_task_id(node_id, format!("compiled_merge.partition{partition_index}"));
+    let mut merge_reservation = match reservations.try_reserve_work(
+        MemoryReservationRequest::new(ReservationKind::FinalMerge, requested_bytes, reservations.budget())
+            .with_memory_boundary("compiled_partitioned_final_aggregate_merge")
+            .with_node_id(node_id)
+            .with_stage("compiled_partitioned_final_merge")
+            .with_attempt(1, 1)
+            .with_compiled_task_id(task_id.clone()),
+        metrics,
+    ) {
+        Ok(reservation) => reservation,
+        Err(error) => {
+            release_partials_reverse(reservations, inputs, metrics);
+            return Err(error);
+        },
+    };
+    let token = match execution_budget_token_for_boundary(
+        context,
+        reservations.available_bytes_including(&merge_reservation),
+        "compiled_partitioned_final_aggregate_merge",
+        "nexus_query_engine.final_merge.compiled_partitioned_merge.budget_token",
+        "failed to create compiled partitioned final aggregate merge budget token",
+    ) {
+        Ok(token) => token,
+        Err(error) => {
+            reservations.release(merge_reservation, metrics);
+            release_partials_reverse(reservations, inputs, metrics);
+            return Err(error);
+        },
+    };
+    let timer = Instant::now();
+    let result = merge_compiled_partitioned_final_aggregate_partials_consuming(
+        context,
+        node_id,
+        aggregate,
+        input_schema,
+        output_schema,
+        partition_index,
+        inputs,
+        &token,
+        &mut merge_reservation,
+        reservations,
+        metrics,
+    );
+    let merge_elapsed = timer.elapsed();
+    drop(token);
+    reservations.release(merge_reservation, metrics);
+    let frame = match result {
+        Ok(frame) => frame,
+        Err(error) => {
+            metrics.final_merge_time += merge_elapsed;
+            return Err(error);
+        },
+    };
+    metrics.final_merge_time += merge_elapsed;
+
+    let output_bytes = observe_device_memory_bytes(&frame, metrics)?;
+    let output_reservation = reservations.try_reserve(
+        MemoryReservationRequest::new(ReservationKind::FinalMerge, output_bytes, reservations.budget())
+            .with_memory_boundary("compiled_partitioned_final_aggregate_merge_output")
+            .with_node_id(node_id)
+            .with_stage("compiled_partitioned_final_merge")
+            .with_attempt(1, 1)
+            .with_compiled_task_id(task_id),
+        metrics,
+    )?;
+    Ok(CommittedPartial { frame, reservation: output_reservation })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn merge_compiled_partitioned_final_aggregate_partials_consuming(
+    context: &ExecutionContext,
+    node_id: NodeId,
+    aggregate: &AggregateNode,
+    input_schema: &ArrowSchemaRef,
+    output_schema: &ArrowSchemaRef,
+    partition_index: usize,
+    partials: Vec<CommittedPartial>,
+    token: &ExecutionBudgetToken,
+    merge_reservation: &mut ActiveReservation,
+    reservations: &mut ReservationTracker,
+    metrics: &mut QueryMetrics,
+) -> Result<GpuDataFrame> {
+    let mut partials = partials;
+    let partial_count = partials.len();
+    let first = partials.remove(0);
+    let first_reservation = first.reservation;
+    let first_frame = first.frame.into_frame();
+    let concatenated = if partials.is_empty() {
+        first_frame
+    } else {
+        let other_frames = partials.iter().map(|partial| partial.frame.frame().clone()).collect::<Vec<_>>();
+        let other_frame_refs = other_frames.iter().collect::<Vec<_>>();
+        let concatenated = first_frame.with_execution(&token.execution_overrides()).concat_many(&other_frame_refs);
+        drop(other_frame_refs);
+        drop(other_frames);
+        drop(first_frame);
+        match concatenated {
+            Ok(frame) => frame,
+            Err(error) => {
+                reservations.release(first_reservation, metrics);
+                release_partials_reverse(reservations, partials, metrics);
+                return Err(attach_budget_token_failure_facts(
+                    QueryError::from_cudf(
+                        "nexus_query_engine.compiled_final_merge.partitioned_concat_partials",
+                        "failed to concatenate compiled partitioned final aggregate partials",
+                        error,
+                    )
+                    .with_fact("node_id", node_id)
+                    .with_fact("partition", partition_index)
+                    .with_fact("partial_aggregate_count", partial_count),
+                    token,
+                ));
+            },
+        }
+    };
+    reservations.release(first_reservation, metrics);
+    let concatenated = GpuDataFrame::new(concatenated);
+    let concatenated_bytes = match observe_device_memory_bytes(&concatenated, metrics) {
+        Ok(bytes) => bytes,
+        Err(error) => {
+            release_partials_reverse(reservations, partials, metrics);
+            return Err(error);
+        },
+    };
+    if concatenated_bytes > merge_reservation.bytes() {
+        let grow_request = MemoryReservationRequest::new(
+            ReservationKind::FinalMerge,
+            concatenated_bytes.saturating_sub(merge_reservation.bytes()),
+            reservations.budget(),
+        )
+        .with_memory_boundary("compiled_partitioned_final_aggregate_merge")
+        .with_node_id(node_id)
+        .with_stage("compiled_partitioned_final_merge")
+        .with_attempt(1, 1)
+        .with_compiled_task_id(partitioned_final_merge_task_id(
+            node_id,
+            format!("compiled_merge.partition{partition_index}"),
+        ));
+        if let Err(error) = reservations.try_grow(merge_reservation, grow_request, metrics) {
+            release_partials_reverse(reservations, partials, metrics);
+            return Err(error);
+        }
+    } else {
+        reservations.shrink_to_observed(merge_reservation, concatenated_bytes, metrics);
+    }
+
+    release_partials_reverse(reservations, partials, metrics);
+    execute_compiled_final_aggregate(context, aggregate, input_schema, output_schema, concatenated, token, metrics)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn record_compiled_partitioned_final_merge_strategy(
+    context: &ExecutionContext,
+    node_id: NodeId,
+    aggregate: &AggregateNode,
+    input_schema: &ArrowSchemaRef,
+    input_rows: u64,
+    output_rows: u64,
+    partition_count: usize,
+    non_empty_partition_count: usize,
+    max_partition_fan_in: usize,
+    elapsed: Duration,
+    metrics: &mut QueryMetrics,
+) {
+    let mut decision = aggregate_strategy_capability_decision(
+        &aggregate.spec,
+        input_schema.as_ref(),
+        AggregateExecutionStage::FinalMerge,
+    );
+    decision.facts.insert("partitioned_merge_partition_count", partition_count.to_string());
+    decision.facts.insert("partitioned_merge_non_empty_partition_count", non_empty_partition_count.to_string());
+    decision.facts.insert("partitioned_merge_max_partition_fan_in", max_partition_fan_in.to_string());
+    decision.facts.insert("partitioned_merge_topk_pruned", "false".to_string());
+    decision.facts.insert("partitioned_merge_topk_keep_rows", "none".to_string());
+    decision.facts.insert("partitioned_merge_topk_partition_count", "0".to_string());
+    decision.facts.insert("partitioned_merge_topk_input_rows", "0".to_string());
+    decision.facts.insert("partitioned_merge_topk_output_rows", "0".to_string());
+    record_grouped_aggregate_strategy_decision(
+        metrics,
+        Some(node_id.to_string()),
+        AggregateExecutionStage::FinalMerge,
+        context.memory_control_policy().as_str(),
+        context.aggregate_strategy_execution_options(),
+        &aggregate.spec,
+        input_schema,
+        input_rows,
+        output_rows,
+        decision,
+        Duration::ZERO,
+        Duration::ZERO,
+        elapsed,
+        Duration::ZERO,
+        elapsed,
+        None,
+    );
+}
+
 fn initial_compiled_final_merge_fan_in(context: &ExecutionContext, partials: &[CommittedPartial]) -> usize {
     let MemoryControlPolicy::Bounded { max_source_chunk_bytes, .. } = context.memory_control_policy() else {
         unreachable!("initial_compiled_final_merge_fan_in is called only for bounded policies");
@@ -1179,6 +1555,7 @@ fn initial_compiled_final_merge_fan_in(context: &ExecutionContext, partials: &[C
 fn compiled_partial_merge_basis_bytes(partial: &CommittedPartial) -> u64 {
     partial.reservation.bytes().max(partial.frame.num_rows() as u64)
 }
+
 fn execute_compiled_final_merge_level_attempt(
     context: &ExecutionContext,
     node_id: NodeId,
@@ -1223,6 +1600,7 @@ fn execute_compiled_final_merge_level_attempt(
 
     Ok(output)
 }
+
 fn execute_compiled_final_merge_group_attempt(
     context: &ExecutionContext,
     node_id: NodeId,
@@ -1296,6 +1674,7 @@ fn execute_compiled_final_merge_group_attempt(
     )?;
     Ok(CommittedPartial { frame, reservation: output_reservation })
 }
+
 fn merge_compiled_final_aggregate_partials(
     context: &ExecutionContext,
     node_id: NodeId,
@@ -1406,13 +1785,19 @@ fn execute_compiled_final_aggregate_projection(
     metrics: &mut QueryMetrics,
 ) -> Result<ResidentGpuFrame> {
     let input_reserved_bytes = input.reservation.bytes();
-    let work_reservation = reservations.try_reserve_work(
+    let work_reservation = match reservations.try_reserve_work(
         MemoryReservationRequest::new(ReservationKind::FinalMerge, input_reserved_bytes, reservations.budget())
             .with_memory_boundary("compiled_aggregate_final_projection")
             .with_node_id(node_id)
             .with_stage("compiled_aggregate_final_projection"),
         metrics,
-    )?;
+    ) {
+        Ok(reservation) => reservation,
+        Err(error) => {
+            reservations.release(input.reservation, metrics);
+            return Err(error);
+        },
+    };
     let token = match execution_budget_token_for_boundary(
         context,
         reservations.available_bytes_including(&work_reservation),

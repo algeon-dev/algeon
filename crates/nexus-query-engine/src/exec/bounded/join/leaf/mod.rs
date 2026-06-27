@@ -36,7 +36,10 @@ mod stream;
 use batching::*;
 use concat::*;
 use dynamic_filter::*;
-pub(in crate::exec::bounded) use planning::plan_bounded_join_leaf_local_parquet_source_stream;
+pub(in crate::exec::bounded) use planning::{
+    plan_bounded_aggregate_input_local_parquet_source_stream, plan_bounded_join_leaf_local_parquet_source_stream,
+    plan_bounded_shared_join_aggregate_local_parquet_source_stream,
+};
 use read_serial::*;
 use reservation::*;
 use scheduler::*;
@@ -420,6 +423,30 @@ where
     } else {
         stream_join_leaf_source_chunks_serial(context, &stream, reservations, metrics, &mut consume)
     }
+}
+
+pub(in crate::exec::bounded) fn stream_bounded_join_leaf_local_parquet_source_chunks<F>(
+    context: &ExecutionContext,
+    stream: BoundedJoinLeafLocalParquetSourceStream,
+    reservations: &mut ReservationTracker,
+    metrics: &mut QueryMetrics,
+    mut consume: F,
+) -> Result<()>
+where
+    F: FnMut(ResidentGpuFrame, &mut ReservationTracker, &mut QueryMetrics) -> Result<()>,
+{
+    for chunk in stream.chunks.clone() {
+        stream_join_leaf_source_chunk_with_consumer_retry(
+            context,
+            &stream,
+            chunk,
+            1,
+            reservations,
+            metrics,
+            &mut consume,
+        )?;
+    }
+    Ok(())
 }
 
 pub(in crate::exec::bounded) fn stream_bounded_join_leaf_local_parquet_source_serial<F>(

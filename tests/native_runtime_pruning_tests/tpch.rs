@@ -247,8 +247,9 @@ async fn native_runtime_tpch_q18_tiny_bounded_resident_aggregate_topk_matches_cp
     assert_eq!(direct_metrics.compiled_pipeline_host_arrow_sinks, 1);
     assert!(direct_metrics.reservation_events.iter().any(|event| {
         event.outcome.as_str() == "granted"
-            && event.reservation_kind == nexus_query_engine::ReservationKind::OperatorOutput
-            && event.memory_boundary == "compiled_aggregate"
+            && event.reservation_kind == nexus_query_engine::ReservationKind::PartialState
+            && event.memory_boundary == "compiled_aggregate_partial_state_work"
+            && event.action == nexus_query_engine::MemoryReservationEventAction::Reserve
     }));
     assert!(direct_metrics.reservation_events.iter().any(|event| {
         event.outcome.as_str() == "granted"

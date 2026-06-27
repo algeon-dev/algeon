@@ -205,12 +205,24 @@ pub(super) fn aggregate_join_build_input_data_plan(left_path: &Path, right_path:
 
     let mut builder = QueryPlanBuilder::new();
     let left = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::from_files(
-        vec![LocalParquetFile::new(left_path).with_file_size_bytes(1024)],
+        vec![
+            LocalParquetFile::new(left_path)
+                .with_file_size_bytes(2048)
+                .with_row_groups(vec![0, 1])
+                .with_row_group_rows(vec![2, 2])
+                .with_row_group_bytes(vec![1024, 1024]),
+        ],
         Arc::clone(&left_schema),
         vec!["id".into(), "amount".into()],
     )));
     let right = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::from_files(
-        vec![LocalParquetFile::new(right_path).with_file_size_bytes(1024)],
+        vec![
+            LocalParquetFile::new(right_path)
+                .with_file_size_bytes(2048)
+                .with_row_groups(vec![0, 1])
+                .with_row_group_rows(vec![2, 1])
+                .with_row_group_bytes(vec![1024, 1024]),
+        ],
         Arc::clone(&right_schema),
         vec!["id".into()],
     )));
@@ -237,6 +249,87 @@ pub(super) fn aggregate_join_build_input_data_plan(left_path: &Path, right_path:
         join_schema,
     );
     builder.finish_with_host_sink(join)
+}
+
+pub(super) fn shared_source_join_build_and_aggregate_data_plan(fact_path: &Path, dim_path: &Path) -> QueryPlan {
+    let fact_schema = Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Int32, false),
+        Field::new("amount", DataType::Int64, false),
+    ]));
+    let dim_schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
+    let joined_schema = Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Int32, false),
+        Field::new("amount", DataType::Int64, false),
+    ]));
+    let aggregate_schema = Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Int32, false),
+        Field::new("sum_amount", DataType::Int64, true),
+    ]));
+    let output_schema = Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Int32, false),
+        Field::new("sum_amount", DataType::Int64, true),
+    ]));
+
+    let mut builder = QueryPlanBuilder::new();
+    let fact = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::from_files(
+        vec![
+            LocalParquetFile::new(fact_path)
+                .with_file_size_bytes(2048)
+                .with_row_groups(vec![0, 1])
+                .with_row_group_rows(vec![2, 2])
+                .with_row_group_bytes(vec![1024, 1024]),
+        ],
+        Arc::clone(&fact_schema),
+        vec!["id".into(), "amount".into()],
+    )));
+    let dim = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::from_files(
+        vec![
+            LocalParquetFile::new(dim_path)
+                .with_file_size_bytes(2048)
+                .with_row_groups(vec![0, 1])
+                .with_row_group_rows(vec![2, 1])
+                .with_row_group_bytes(vec![1024, 1024]),
+        ],
+        Arc::clone(&dim_schema),
+        vec!["id".into()],
+    )));
+    let joined = builder.add_join(
+        dim,
+        fact,
+        JoinSpec::new(
+            JoinType::Inner,
+            vec![JoinKey::new(ColumnRef::input(0, "id", "dim_id"), ColumnRef::input(1, "id", "fact_id"))],
+        )
+        .with_output_projection(vec![
+            JoinOutputColumn::left(ColumnRef::input(0, "id", "id"), "id"),
+            JoinOutputColumn::right(ColumnRef::input(1, "amount", "amount"), "amount"),
+        ])
+        .with_build_side(JoinSide::Right),
+        joined_schema,
+    );
+    let aggregate = builder.add_aggregate(
+        fact,
+        AggregateSpec::new(
+            vec![Expr::column("id")],
+            vec![AggregateExpr::new(AggregateFunction::Sum, Expr::column("amount"), "sum_amount")],
+        ),
+        aggregate_schema,
+    );
+    let joined_with_aggregate = builder.add_join(
+        joined,
+        aggregate,
+        JoinSpec::new(
+            JoinType::Inner,
+            vec![JoinKey::new(ColumnRef::input(0, "id", "joined_id"), ColumnRef::input(1, "id", "agg_id"))],
+        )
+        .with_output_projection(vec![
+            JoinOutputColumn::left(ColumnRef::input(0, "id", "id"), "id"),
+            JoinOutputColumn::right(ColumnRef::input(1, "sum_amount", "sum_amount"), "sum_amount"),
+        ])
+        .with_build_side(JoinSide::Right),
+        output_schema,
+    );
+    builder.finish_with_host_sink(joined_with_aggregate)
 }
 
 pub(super) fn root_filtered_left_only_join_plan(join_type: JoinType) -> QueryPlan {

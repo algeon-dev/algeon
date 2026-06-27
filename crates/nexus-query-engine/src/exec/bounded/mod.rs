@@ -49,9 +49,10 @@ pub(in crate::exec::bounded) use join::{
     execute_bounded_compiled_join_probe_from_frame, execute_bounded_compiled_join_probe_from_frame_stream,
     execute_bounded_compiled_join_probe_from_resident_frame, execute_bounded_compiled_join_probe_from_stream,
     execute_bounded_join_leaf_source, materialize_bounded_join_leaf_local_parquet_source_stream,
-    plan_bounded_join_leaf_local_parquet_source_stream, release_bounded_compiled_join_build_state,
+    plan_bounded_aggregate_input_local_parquet_source_stream, plan_bounded_join_leaf_local_parquet_source_stream,
+    plan_bounded_shared_join_aggregate_local_parquet_source_stream, release_bounded_compiled_join_build_state,
     release_bounded_compiled_join_probe_state, reusable_hash_join_stream_target_output_bytes,
-    try_start_bounded_join_leaf_local_parquet_source_prefetch,
+    stream_bounded_join_leaf_local_parquet_source_chunks, try_start_bounded_join_leaf_local_parquet_source_prefetch,
 };
 pub use join::{
     JoinOutputColumnUpperBoundInput, PER_COLUMN_ALIGNMENT_PADDING_BYTES, STRING_OFFSET_BYTES_CONSERVATIVE,

@@ -177,7 +177,9 @@ fn assert_representative_budgeted_contract(event: &BudgetedExecutionEvent) {
         "nexus_query_engine.aggregate.execute_partial" => {
             assert!(matches!(
                 event.boundary.as_str(),
-                "chunk_operator" | "source_adjacent_partitioned_partial_aggregate"
+                "chunk_operator"
+                    | "source_adjacent_partitioned_partial_aggregate"
+                    | "compiled_aggregate_partial_state_work"
             ));
             assert_budget_event_high_water(event, event.output_bytes.or(event.retained_bytes));
             assert_eq!(
@@ -278,6 +280,27 @@ pub(super) fn assert_granted_reservation_trace(metrics: &QueryMetrics, expected:
     assert_eq!(actual, expected);
 }
 
+pub(super) fn assert_partitioned_final_merge_strategy(metrics: &QueryMetrics) {
+    let decision = metrics
+        .aggregate_strategy_decisions
+        .iter()
+        .find(|decision| {
+            decision.facts.get("execution_stage").map(String::as_str) == Some("final_merge")
+                && decision.facts.get("selected_strategy").map(String::as_str) == Some("partitioned_merge")
+        })
+        .expect("final merge should record partitioned merge strategy");
+    assert_ne!(
+        decision.facts.get("partitioned_merge_partition_count").map(String::as_str),
+        Some("0"),
+        "partitioned final merge should record a positive partition count"
+    );
+    assert!(metrics.reservation_events.iter().any(|event| {
+        event.memory_boundary == "compiled_partitioned_final_aggregate_merge"
+            && event.action == MemoryReservationEventAction::Reserve
+            && event.reservation_kind == ReservationKind::FinalMerge
+    }));
+}
+
 pub(super) fn assert_reservation_events_memory_space(metrics: &QueryMetrics, expected: MemorySpaceId) {
     assert!(!metrics.reservation_events.is_empty(), "expected reservation events to be recorded");
     for event in &metrics.reservation_events {
@@ -312,19 +335,33 @@ pub(super) fn retained_bytes_before_grouped_aggregate_source_read(metrics: &Quer
         .requested_bytes
 }
 
-pub(super) fn grouped_aggregate_chunk_budget_window(metrics: &QueryMetrics) -> (u64, u64, u64) {
+pub(super) fn grouped_aggregate_chunk_budget_window(metrics: &QueryMetrics) -> (u64, u64, u64, u64) {
     let (source_index, _) = grouped_aggregate_source_read_index(metrics);
     let retained_join_subtree_bytes = retained_bytes_before_grouped_aggregate_source_read(metrics);
     let source_read_bytes = metrics.reservation_events[source_index].requested_bytes;
-    let operator_bytes = metrics.reservation_events[source_index + 1..]
+    let operator_event = metrics.reservation_events[source_index + 1..]
         .iter()
         .find(|event| {
             is_granted_admission_event(event)
-                && matches!(event.memory_boundary.as_str(), "chunk_operator" | "compiled_aggregate")
+                && matches!(
+                    event.memory_boundary.as_str(),
+                    "chunk_operator" | "compiled_aggregate" | "compiled_aggregate_partial_state_work"
+                )
         })
-        .expect("mixed aggregate input metrics should include grouped aggregate operator")
-        .requested_bytes;
-    (retained_join_subtree_bytes, source_read_bytes, operator_bytes)
+        .expect("mixed aggregate input metrics should include grouped aggregate operator");
+    let retained_partial_state_bytes = if operator_event.memory_boundary == "compiled_aggregate_partial_state_work" {
+        metrics.reservation_events[source_index + 1..]
+            .iter()
+            .find(|event| {
+                event.outcome.as_str() == "applied"
+                    && event.action == MemoryReservationEventAction::Transfer
+                    && event.memory_boundary == "compiled_aggregate_partial_state"
+            })
+            .map_or(0, |event| event.requested_bytes)
+    } else {
+        0
+    };
+    (retained_join_subtree_bytes, source_read_bytes, operator_event.requested_bytes, retained_partial_state_bytes)
 }
 
 fn grouped_aggregate_source_read_index(metrics: &QueryMetrics) -> (usize, &'static str) {
@@ -334,6 +371,22 @@ fn grouped_aggregate_source_read_index(metrics: &QueryMetrics) -> (usize, &'stat
         .position(|event| is_granted_admission_event(event) && event.memory_boundary == "source_chunk_read")
     {
         return (source_index, "join_pipeline_projection_output");
+    }
+
+    if let Some(partial_index) = metrics.reservation_events.iter().position(|event| {
+        is_granted_admission_event(event) && event.memory_boundary == "compiled_aggregate_partial_state_work"
+    }) {
+        let source_index = metrics.reservation_events[..partial_index]
+            .iter()
+            .rposition(|event| is_granted_admission_event(event) && event.memory_boundary == "join_source_read")
+            .expect("compiled mixed aggregate input metrics should include grouped source read");
+        metrics.reservation_events[..source_index]
+            .iter()
+            .rposition(|event| {
+                is_granted_admission_event(event) && event.memory_boundary == "compiled_projection_output"
+            })
+            .expect("compiled mixed aggregate input metrics should retain a join-subtree projection output");
+        return (source_index, "compiled_projection_output");
     }
 
     let aggregate_index = metrics

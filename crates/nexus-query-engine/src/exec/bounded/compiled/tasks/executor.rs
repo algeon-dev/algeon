@@ -250,6 +250,11 @@ impl<'a> CompiledGpuTaskExecutor<'a> {
                 CompiledGpuResourcePayload::ResidentFrameStream(_) => {
                     Ok(total.saturating_add(self.resource_admission_estimate_bytes(payload)))
                 },
+                CompiledGpuResourcePayload::JoinLeafLocalParquetSource(_)
+                    if task.kind() == PipelineTaskKind::Aggregate =>
+                {
+                    Ok(total.saturating_add(self.resource_admission_estimate_bytes(payload)))
+                },
                 CompiledGpuResourcePayload::ResidentFrame { .. }
                 | CompiledGpuResourcePayload::JoinLeafLocalParquetSource(_)
                 | CompiledGpuResourcePayload::PendingJoinLeafLocalParquetSource(_) => Ok(total),
@@ -328,41 +333,26 @@ impl<'a> CompiledGpuTaskExecutor<'a> {
         })?;
         let resource = match &node.kind {
             PlanNode::Source(source) => match source.as_ref() {
-                SourceNode::LocalParquet(source)
-                    if !self.resource_has_multiple_consumers(output)
-                        && !source.has_position_delete_visible_scan_limit()
-                        && (self.task_feeds_direct_join_input(task.id())
-                            || self.task_feeds_any_join_input_through_unary_chain(task.id())
-                            || self.source_has_dynamic_filter_routes(node_id)) =>
-                {
-                    let has_source_adjacent_stages = self.task_feeds_any_join_input_through_unary_chain(task.id());
-                    let stream = plan_bounded_join_leaf_local_parquet_source_stream(
-                        self.context,
-                        source,
-                        node_id,
-                        has_source_adjacent_stages,
-                        self.metrics,
-                    )?;
-                    if self.task_feeds_direct_join_input(task.id())
-                        && !self.source_has_dynamic_filter_routes(node_id)
-                        && let Some(prefetch) = try_start_bounded_join_leaf_local_parquet_source_prefetch(
+                SourceNode::LocalParquet(source) if !source.has_position_delete_visible_scan_limit() => {
+                    let has_multiple_consumers = self.resource_has_multiple_consumers(output);
+                    let can_defer_source = !has_multiple_consumers
+                        || self.shared_source_consumers_can_clone_source_stream(task.id(), output);
+                    let feeds_direct_join = self.task_feeds_direct_join_input(task.id());
+                    let feeds_join_through_unary = self.task_feeds_any_join_input_through_unary_chain(task.id());
+                    let feeds_aggregate = self.task_feeds_aggregate_input(task.id());
+                    let has_aggregate_source_adjacent_stages =
+                        self.task_feeds_aggregate_input_through_unary_chain(task.id());
+                    let has_join_source_adjacent_stages = feeds_join_through_unary;
+                    let feeds_join = feeds_direct_join || feeds_join_through_unary;
+                    let has_dynamic_filter_routes = self.source_has_dynamic_filter_routes(node_id);
+                    if !can_defer_source && feeds_join {
+                        let stream = plan_bounded_join_leaf_local_parquet_source_stream(
                             self.context,
-                            &stream,
-                            &mut self.reservations,
+                            source,
+                            node_id,
+                            has_join_source_adjacent_stages,
                             self.metrics,
-                        )?
-                    {
-                        return Ok(CompiledTaskOutput::new(vec![(
-                            output,
-                            CompiledGpuResource::pending_join_leaf_local_parquet_source(prefetch),
-                        )]));
-                    }
-                    if has_source_adjacent_stages
-                        || stream.chunk_count() > 1
-                        || self.source_has_dynamic_filter_routes(node_id)
-                    {
-                        Ok(CompiledGpuResource::join_leaf_local_parquet_source(stream))
-                    } else {
+                        )?;
                         materialize_bounded_join_leaf_local_parquet_source_stream(
                             self.context,
                             stream,
@@ -370,6 +360,74 @@ impl<'a> CompiledGpuTaskExecutor<'a> {
                             self.metrics,
                         )
                         .map(CompiledGpuResource::new)
+                    } else if !can_defer_source || (!feeds_join && !feeds_aggregate && !has_dynamic_filter_routes) {
+                        execute_bounded_generic_local_parquet_source(
+                            self.context,
+                            source,
+                            node_id,
+                            &mut self.reservations,
+                            self.metrics,
+                        )
+                        .map(CompiledGpuResource::new)
+                    } else {
+                        let has_source_adjacent_stages =
+                            has_join_source_adjacent_stages || has_aggregate_source_adjacent_stages;
+                        let stream = if feeds_aggregate && (feeds_direct_join || feeds_join_through_unary) {
+                            plan_bounded_shared_join_aggregate_local_parquet_source_stream(
+                                self.context,
+                                source,
+                                node_id,
+                                has_source_adjacent_stages,
+                                self.metrics,
+                            )?
+                        } else if feeds_aggregate {
+                            plan_bounded_aggregate_input_local_parquet_source_stream(
+                                self.context,
+                                source,
+                                node_id,
+                                has_aggregate_source_adjacent_stages,
+                                self.metrics,
+                            )?
+                        } else {
+                            plan_bounded_join_leaf_local_parquet_source_stream(
+                                self.context,
+                                source,
+                                node_id,
+                                has_join_source_adjacent_stages,
+                                self.metrics,
+                            )?
+                        };
+                        if feeds_direct_join
+                            && !has_multiple_consumers
+                            && !has_dynamic_filter_routes
+                            && let Some(prefetch) = try_start_bounded_join_leaf_local_parquet_source_prefetch(
+                                self.context,
+                                &stream,
+                                &mut self.reservations,
+                                self.metrics,
+                            )?
+                        {
+                            return Ok(CompiledTaskOutput::new(vec![(
+                                output,
+                                CompiledGpuResource::pending_join_leaf_local_parquet_source(prefetch),
+                            )]));
+                        }
+                        if feeds_aggregate
+                            || has_multiple_consumers
+                            || has_join_source_adjacent_stages
+                            || stream.chunk_count() > 1
+                            || has_dynamic_filter_routes
+                        {
+                            Ok(CompiledGpuResource::join_leaf_local_parquet_source(stream))
+                        } else {
+                            materialize_bounded_join_leaf_local_parquet_source_stream(
+                                self.context,
+                                stream,
+                                &mut self.reservations,
+                                self.metrics,
+                            )
+                            .map(CompiledGpuResource::new)
+                        }
                     }
                 },
                 source if self.task_feeds_join_input(task.id()) => execute_bounded_join_leaf_source(
@@ -1049,15 +1107,7 @@ impl<'a> CompiledGpuTaskExecutor<'a> {
                 unreachable!("join leaf source payload was checked above")
             };
             let stream = self.apply_dynamic_filters_to_source_stream(*stream)?;
-            let input_frame = materialize_bounded_join_leaf_local_parquet_source_stream(
-                self.context,
-                stream,
-                &mut self.reservations,
-                self.metrics,
-            )?;
-            let input_reserved_bytes = input_frame.reservation.bytes();
-            let input_reservation = input_frame.reservation;
-            let result = execute_compiled_bounded_aggregate_from_frame(
+            execute_compiled_bounded_aggregate_from_source_stream(
                 self.context,
                 node_id,
                 aggregate,
@@ -1070,13 +1120,10 @@ impl<'a> CompiledGpuTaskExecutor<'a> {
                     })?
                     .output_schema(),
                 node.output_schema(),
-                input_frame.frame,
-                input_reserved_bytes,
+                stream,
                 &mut self.reservations,
                 self.metrics,
-            );
-            self.reservations.release(input_reservation, self.metrics);
-            result
+            )
         } else if state.can_consume_task_input_resource(task, input) {
             let input_payload = state.consume_task_input_resource(task, input)?.into_payload();
             let CompiledGpuResourcePayload::ResidentFrame { frame, .. } = input_payload.payload else {
@@ -1108,26 +1155,54 @@ impl<'a> CompiledGpuTaskExecutor<'a> {
             self.reservations.release(input_reservation, self.metrics);
             result
         } else {
-            self.apply_ready_dynamic_filters_to_shared_source_resource(state, input)?;
             let input_payload = state.resource_payload(input)?;
-            execute_compiled_bounded_aggregate_from_frame(
-                self.context,
-                node_id,
-                aggregate,
-                self.plan
-                    .node(aggregate.input)
-                    .ok_or_else(|| {
-                        invalid("compiled aggregate task references a missing aggregate input node")
-                            .with_fact("compiled_task_id", task.id())
-                            .with_fact("plan_node_id", aggregate.input)
-                    })?
-                    .output_schema(),
-                node.output_schema(),
-                input_payload.clone_frame(),
-                input_payload.reservation_bytes(),
-                &mut self.reservations,
-                self.metrics,
-            )
+            if let Some(stream) = input_payload.as_join_leaf_local_parquet_source().cloned() {
+                let stream = self.apply_dynamic_filters_to_source_stream(stream)?;
+                execute_compiled_bounded_aggregate_from_source_stream(
+                    self.context,
+                    node_id,
+                    aggregate,
+                    self.plan
+                        .node(aggregate.input)
+                        .ok_or_else(|| {
+                            invalid("compiled aggregate task references a missing aggregate input node")
+                                .with_fact("compiled_task_id", task.id())
+                                .with_fact("plan_node_id", aggregate.input)
+                        })?
+                        .output_schema(),
+                    node.output_schema(),
+                    stream,
+                    &mut self.reservations,
+                    self.metrics,
+                )
+            } else if matches!(input_payload.payload, CompiledGpuResourcePayload::PendingJoinLeafLocalParquetSource(_))
+            {
+                Err(invalid("compiled aggregate task cannot share a pending source read")
+                    .with_fact("compiled_task_id", task.id())
+                    .with_fact("plan_node_id", node_id)
+                    .with_fact("resident_resource_id", input))
+            } else {
+                self.apply_ready_dynamic_filters_to_shared_source_resource(state, input)?;
+                let input_payload = state.resource_payload(input)?;
+                execute_compiled_bounded_aggregate_from_frame(
+                    self.context,
+                    node_id,
+                    aggregate,
+                    self.plan
+                        .node(aggregate.input)
+                        .ok_or_else(|| {
+                            invalid("compiled aggregate task references a missing aggregate input node")
+                                .with_fact("compiled_task_id", task.id())
+                                .with_fact("plan_node_id", aggregate.input)
+                        })?
+                        .output_schema(),
+                    node.output_schema(),
+                    input_payload.clone_frame(),
+                    input_payload.reservation_bytes(),
+                    &mut self.reservations,
+                    self.metrics,
+                )
+            }
         }
         .map_err(|error| attach_task_facts(error, task, node_id))?;
         self.produce_aggregate_group_key_dynamic_filters(node_id, node.output_schema(), &frame.frame)?;
@@ -1557,12 +1632,90 @@ impl<'a> CompiledGpuTaskExecutor<'a> {
         })
     }
 
+    fn task_feeds_aggregate_input(&self, task: PipelineTaskId) -> bool {
+        self.task_feeds_aggregate_input_path(task).is_some()
+    }
+
+    fn task_feeds_aggregate_input_through_unary_chain(&self, task: PipelineTaskId) -> bool {
+        self.task_feeds_aggregate_input_path(task).unwrap_or(false)
+    }
+
+    fn task_feeds_aggregate_input_path(&self, task: PipelineTaskId) -> Option<bool> {
+        let mut pending = vec![(task, false)];
+        let mut visited = BTreeSet::new();
+
+        while let Some((current, saw_unary)) = pending.pop() {
+            if !visited.insert((current, saw_unary)) {
+                continue;
+            }
+
+            for edge in self.pipeline.edges().iter().filter(|edge| edge.from() == current) {
+                if !matches!(edge.kind(), PipelineEdgeKind::ResidentFrame | PipelineEdgeKind::SharedResidentProducer) {
+                    continue;
+                }
+                let Some(consumer_task) = self.pipeline.tasks().iter().find(|candidate| candidate.id() == edge.to())
+                else {
+                    continue;
+                };
+                match consumer_task.kind() {
+                    PipelineTaskKind::Aggregate => return Some(saw_unary),
+                    PipelineTaskKind::Unary => pending.push((edge.to(), true)),
+                    _ => {},
+                }
+            }
+        }
+
+        None
+    }
+
     fn resource_has_multiple_consumers(&self, resource: ResidentResourceId) -> bool {
         self.pipeline
             .resources()
             .iter()
             .find(|candidate| candidate.id() == resource)
             .is_some_and(|resource| resource.consumers().len() > 1)
+    }
+
+    fn shared_source_consumers_can_clone_source_stream(
+        &self,
+        task: PipelineTaskId,
+        resource: ResidentResourceId,
+    ) -> bool {
+        let Some(resource) = self.pipeline.resources().iter().find(|candidate| candidate.id() == resource) else {
+            return false;
+        };
+        if resource.consumers().len() <= 1 {
+            return true;
+        }
+        let mut feeds_aggregate = false;
+        let all_consumers_can_clone = resource.consumers().iter().all(|consumer| {
+            let Some(edge) = self.pipeline.edges().iter().find(|edge| {
+                edge.from() == task && edge.to() == *consumer && edge.resources().contains(&resource.id())
+            }) else {
+                return false;
+            };
+            match edge.kind() {
+                PipelineEdgeKind::JoinBuildInput | PipelineEdgeKind::JoinProbeInput => true,
+                PipelineEdgeKind::ResidentFrame | PipelineEdgeKind::SharedResidentProducer => {
+                    self.pipeline.tasks().iter().find(|candidate| candidate.id() == *consumer).is_some_and(
+                        |consumer_task| match consumer_task.kind() {
+                            PipelineTaskKind::Aggregate => {
+                                feeds_aggregate = true;
+                                true
+                            },
+                            PipelineTaskKind::Unary => {
+                                let unary_feeds_aggregate = self.task_feeds_aggregate_input(consumer_task.id());
+                                feeds_aggregate |= unary_feeds_aggregate;
+                                self.task_feeds_join_input(consumer_task.id()) || unary_feeds_aggregate
+                            },
+                            _ => false,
+                        },
+                    )
+                },
+                PipelineEdgeKind::Control | PipelineEdgeKind::BarrierOutput | PipelineEdgeKind::SinkInput => false,
+            }
+        });
+        all_consumers_can_clone && feeds_aggregate
     }
 
     fn local_parquet_source_node_for_resource(&self, resource: ResidentResourceId) -> Option<NodeId> {
