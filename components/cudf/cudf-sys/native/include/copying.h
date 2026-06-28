@@ -34,6 +34,19 @@ cudf_status_t cudf_gather_ex(cudf_table_view_handle input,
                              cudf_table_handle* out,
                              const cudf_exec_options_t* options);
 
+/// Return the exact device allocation footprint of gathering `input` by
+/// `gather_map`.
+///
+/// This executes libcudf gather through the selected stream/memory resource,
+/// observes the resulting table allocation size, and releases the temporary
+/// table before returning. The value is therefore the same allocation
+/// footprint that `cudf_gather_ex` would retain for the materialized output.
+cudf_status_t cudf_gather_device_allocated_size_ex(cudf_table_view_handle input,
+                                                   cudf_column_view_handle gather_map,
+                                                   cudf_out_of_bounds_policy_t bounds_policy,
+                                                   size_t* out,
+                                                   const cudf_exec_options_t* options);
+
 /// Scatter rows from `source` into `target` by index.
 /// `scatter_map` must be a non-nullable integral column. libcudf rejects null
 /// maps, but duplicate or out-of-bounds indices are undefined behavior and

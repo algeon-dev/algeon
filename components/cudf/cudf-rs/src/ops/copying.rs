@@ -45,6 +45,37 @@ pub(crate) fn gather_impl(
     unsafe { Table::from_raw_with_domain(out, Arc::clone(output_domain)) }
 }
 
+pub(crate) fn gather_device_allocated_size_impl(
+    input: &TableView<'_>,
+    gather_map: &ColumnView<'_>,
+    bounds_policy: cudf_sys::cudf_out_of_bounds_policy_t,
+    bounds_policy_label: &'static str,
+    exec_options: Option<&cudf_sys::cudf_exec_options_t>,
+    operation: &'static str,
+    reservation_contract: &'static str,
+) -> Result<usize> {
+    let mut out = 0usize;
+    let status = unsafe {
+        cudf_sys::cudf_gather_device_allocated_size_ex(
+            input.raw_handle(),
+            gather_map.raw_handle(),
+            bounds_policy,
+            &mut out,
+            exec_options.map_or(ptr::null(), |options| options as *const _),
+        )
+    };
+    error::check_status_in_with_details(
+        status,
+        operation,
+        [
+            ("bounds_policy", bounds_policy_label.to_owned()),
+            ("execution_context_provided", exec_options.is_some().to_string()),
+            ("reservation_contract", reservation_contract.to_owned()),
+        ],
+    )?;
+    Ok(out)
+}
+
 /// Gather (select) rows from a table by index.
 ///
 /// Produces a new table whose row `i` is `source_table[gather_map[i]]`.

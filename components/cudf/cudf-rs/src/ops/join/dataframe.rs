@@ -28,6 +28,8 @@ use crate::{
     },
 };
 
+const MATERIALIZE_JOIN_INDICES_RESERVATION_CONTRACT: &str = "materialize_join_indices_reservation_size_bytes";
+
 struct JoinSplitKeys<'a, 'key> {
     left_on: &'a [&'key str],
     right_on: &'a [&'key str],
@@ -660,6 +662,40 @@ impl DataFrame {
         self.materialize_join_indices_impl(indices, columns, None, "dataframe::materialize_join_indices")
     }
 
+    /// Return the exact retained device allocation footprint of
+    /// [`materialize_join_indices`](Self::materialize_join_indices) for the
+    /// selected payload columns.
+    ///
+    /// This is a lower-level reservation contract for bounded engines. It is
+    /// implemented in the cuDF layer by materializing non-empty projected
+    /// gather results, observing the table allocation footprint, and releasing
+    /// the temporary result before returning. Empty gather maps return zero
+    /// without executing the gather. Callers should reserve the returned byte
+    /// count before performing the durable materialization.
+    ///
+    /// Cost note: unlike
+    /// [`hash_join_pre_build_reservation_size_bytes`](Self::hash_join_pre_build_reservation_size_bytes),
+    /// this contract executes the non-empty gather end-to-end and discards the
+    /// result. Its cost is comparable to
+    /// [`materialize_join_indices`](Self::materialize_join_indices) itself, so
+    /// reserve-then-materialize roughly doubles the gather work.
+    pub fn materialize_join_indices_reservation_size_bytes<I, S>(
+        &self,
+        indices: &DataFrameJoinIndices,
+        columns: I,
+    ) -> Result<usize>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        self.materialize_join_indices_reservation_size_bytes_impl(
+            indices,
+            columns,
+            None,
+            "dataframe::materialize_join_indices_reservation_size_bytes",
+        )
+    }
+
     /// Left semi join, returning only left-side columns.
     ///
     /// This helper first computes left-side join indices and then gathers the
@@ -926,6 +962,20 @@ impl DataFrame {
         self.materialize_join_indices_impl(indices, columns, Some(ctx), operation)
     }
 
+    pub(crate) fn materialize_join_indices_reservation_size_bytes_in_context<I, S>(
+        &self,
+        indices: &DataFrameJoinIndices,
+        columns: I,
+        ctx: &ExecutionOverrides<'_>,
+        operation: &'static str,
+    ) -> Result<usize>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        self.materialize_join_indices_reservation_size_bytes_impl(indices, columns, Some(ctx), operation)
+    }
+
     fn materialize_join_indices_impl<I, S>(
         &self,
         indices: &DataFrameJoinIndices,
@@ -943,6 +993,39 @@ impl DataFrame {
             None => selected.gather(indices.indices()).map_err(|e| e.reanchor(operation)),
         }
     }
+
+    fn materialize_join_indices_reservation_size_bytes_impl<I, S>(
+        &self,
+        indices: &DataFrameJoinIndices,
+        columns: I,
+        ctx: Option<&ExecutionOverrides<'_>>,
+        operation: &'static str,
+    ) -> Result<usize>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        let selected = self.select(columns).map_err(|e| e.reanchor(operation))?;
+        match ctx {
+            Some(ctx) => selected.gather_device_allocated_size_in_context(
+                indices.indices(),
+                ctx,
+                operation,
+                MATERIALIZE_JOIN_INDICES_RESERVATION_CONTRACT,
+            ),
+            None => {
+                let default_ctx = ExecutionOverrides::new();
+                selected.gather_device_allocated_size_in_context(
+                    indices.indices(),
+                    &default_ctx,
+                    operation,
+                    MATERIALIZE_JOIN_INDICES_RESERVATION_CONTRACT,
+                )
+            },
+        }
+        .map_err(|e| e.reanchor(operation))
+    }
+
     /// Internal split-join dispatch with configurable null equality.
     fn join_split_on_impl_with_null_eq_and_context(
         &self,

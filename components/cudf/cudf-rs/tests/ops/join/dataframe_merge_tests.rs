@@ -1,13 +1,15 @@
 //! Tests for the high-level `DataFrame::merge` API and `MergeOptions` / `JoinType`.
 use cudf::{
     DataFrame, DataFrameHashJoinOptions, DataFrameHashJoinPairIndices, DataFrameJoinIndices, DataFrameJoinOptions,
-    DataFrameJoinPairIndices, ErrorCode, ErrorKind, ExecutionOverrides, JoinType, MergeOptions, testing::prelude::*,
+    DataFrameJoinPairIndices, ErrorCode, ErrorKind, ExecutionOverrides, JoinType, MergeOptions,
+    frame::dataframe::InfoDetail, testing::prelude::*,
 };
 
 use crate::common::{
     assert_duplicate_name_error, assert_missing_column_error, column_from_slice, column_from_slice_nullable,
-    error_context_value, last_exec_mr_value, last_exec_stream_value, last_sync_stream_value, reset_exec_observation,
-    reset_sync_observation, sample_runtime,
+    dependency_wait_call_count_for_stream, error_context_value, last_exec_mr_value, last_exec_stream_value,
+    last_sync_stream_value, reset_dependency_observation, reset_exec_observation, reset_sync_observation,
+    sample_runtime,
 };
 
 // ---------------------------------------------------------------------------
@@ -46,6 +48,10 @@ fn nullable_i32_column(df: &DataFrame, name: &str) -> Vec<Option<i32>> {
 
 fn i32_column(df: &DataFrame, name: &str) -> Vec<i32> {
     df.series(name).unwrap().to_optional_vec::<i32>().unwrap().into_iter().map(|v| v.unwrap()).collect()
+}
+
+fn device_allocated_bytes(df: &DataFrame) -> usize {
+    df.info_with(InfoDetail::DEVICE_ALLOCATED).unwrap().memory_accounting.unwrap().device_allocated_bytes.unwrap()
 }
 
 fn assert_merge_validation_error(err: &cudf::Error, operation: &str, reason: &str, remedy: &str) {
@@ -133,6 +139,76 @@ fn test_dataframe_join_indices_materialize_selected_payload_columns() {
     let mut payload = i32_column(&materialized, "payload");
     payload.sort();
     assert_eq!(payload, vec![200, 400]);
+}
+
+#[test]
+fn test_dataframe_join_indices_materialization_reservation_matches_output_allocation() {
+    let rt = sample_runtime();
+    let left = DataFrame::from_series([
+        ("id", rt.series(&[1i32, 2, 3, 4]).unwrap()),
+        ("score", rt.series(&[10i32, 20, 30, 40]).unwrap()),
+        ("payload", rt.series(&[100i32, 200, 300, 400]).unwrap()),
+    ])
+    .unwrap();
+    let right = DataFrame::from_series([("id", rt.series(&[2i32, 4]).unwrap())]).unwrap();
+
+    let indices = left.left_semi_join_indices(&right, DataFrameJoinOptions::new().on(["id"])).unwrap();
+    let reservation = left.materialize_join_indices_reservation_size_bytes(&indices, ["payload"]).unwrap();
+    let materialized = left.materialize_join_indices(&indices, ["payload"]).unwrap();
+
+    assert_eq!(reservation, device_allocated_bytes(&materialized));
+    assert!(reservation > 0);
+}
+
+#[test]
+fn test_dataframe_join_indices_materialization_reservation_is_zero_for_empty_gather_map() {
+    let rt = sample_runtime();
+    let left = DataFrame::from_series([
+        ("id", rt.series(&[1i32, 2, 3, 4]).unwrap()),
+        ("score", rt.series(&[10i32, 20, 30, 40]).unwrap()),
+        ("payload", rt.series(&[100i32, 200, 300, 400]).unwrap()),
+    ])
+    .unwrap();
+    let right = DataFrame::from_series([("id", rt.series(&[999i32]).unwrap())]).unwrap();
+
+    let indices = left.left_semi_join_indices(&right, DataFrameJoinOptions::new().on(["id"])).unwrap();
+    let reservation = left.materialize_join_indices_reservation_size_bytes(&indices, ["payload"]).unwrap();
+    let materialized = left.materialize_join_indices(&indices, ["payload"]).unwrap();
+
+    assert!(indices.is_empty());
+    assert_eq!(reservation, 0);
+    assert_eq!(device_allocated_bytes(&materialized), 0);
+}
+
+#[test]
+fn test_dataframe_join_indices_materialization_reservation_orders_mixed_domains() {
+    let _event_observation = crate::common::lock_event_observation();
+    let data_rt = sample_runtime();
+    let indices_rt = sample_runtime();
+    let left = DataFrame::from_series([
+        ("id", data_rt.series(&[1i32, 2, 3, 4]).unwrap()),
+        ("score", data_rt.series(&[10i32, 20, 30, 40]).unwrap()),
+    ])
+    .unwrap();
+    let right = DataFrame::from_series([("id", data_rt.series(&[2i32, 4]).unwrap())]).unwrap();
+    let indices_ctx =
+        ExecutionOverrides::new().with_stream(indices_rt.stream()).with_memory_resource(indices_rt.memory_resource());
+    let indices = left
+        .with_execution(&indices_ctx)
+        .left_semi_join_indices(&right, DataFrameJoinOptions::new().on(["id"]))
+        .unwrap();
+    let expected_exec_stream = left.testing_execution_domain_stream_value();
+    let expected_exec_mr = left.testing_execution_domain_mr_value();
+
+    reset_dependency_observation();
+    reset_exec_observation();
+    let reservation = left.materialize_join_indices_reservation_size_bytes(&indices, ["score"]).unwrap();
+    assert_eq!(last_exec_stream_value(), expected_exec_stream);
+    assert_eq!(last_exec_mr_value(), expected_exec_mr);
+    assert_eq!(dependency_wait_call_count_for_stream(expected_exec_stream), 1);
+
+    let materialized = left.materialize_join_indices(&indices, ["score"]).unwrap();
+    assert_eq!(reservation, device_allocated_bytes(&materialized));
 }
 
 #[test]
@@ -236,10 +312,16 @@ fn test_dataframe_hash_join_reuses_build_for_projected_inner_probes_with_duplica
     let first_indices = hash_join.inner_probe(&first_probe, ["pid"]).unwrap();
     assert_eq!(first_reservation_size, first_indices.device_allocated_size_bytes().unwrap());
     assert!(first_indices.device_allocated_size_bytes().unwrap() > 0);
+    let probe_output_reservation =
+        first_probe.materialize_join_indices_reservation_size_bytes(first_indices.probe(), ["score"]).unwrap();
+    let build_output_reservation =
+        hash_join.build().materialize_join_indices_reservation_size_bytes(first_indices.build(), ["value"]).unwrap();
     let first = hash_join.materialize(&first_probe, &first_indices, ["score"], ["value"]).unwrap();
     let second_indices = hash_join.inner_probe(&second_probe, ["pid"]).unwrap();
     let second = hash_join.materialize(&second_probe, &second_indices, ["score"], ["value"]).unwrap();
 
+    assert_eq!(probe_output_reservation, device_allocated_bytes(&first.probe));
+    assert_eq!(build_output_reservation, device_allocated_bytes(&first.build));
     assert_eq!(hash_join.build_keys(), &["id".to_string()]);
     assert_eq!(hash_join.inner_probe_size(&first_probe, ["pid"]).unwrap(), first_indices.len());
     assert_eq!(hash_join.inner_probe_size(&second_probe, ["pid"]).unwrap(), second_indices.len());

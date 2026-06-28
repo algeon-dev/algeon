@@ -50,6 +50,7 @@ fn join_indices_and_hash_join_slice6_surface_is_publicly_importable() {
         HashJoin::device_allocated_size_bytes,
     );
     let _ = DataFrame::hash_join_pre_build_reservation_size_bytes::<[&str; 1], &str>;
+    let _ = DataFrame::materialize_join_indices_reservation_size_bytes::<[&str; 1], &str>;
     let _ = (
         inner_join_indices,
         inner_join_indices_in,

@@ -100,6 +100,31 @@ impl<'df, 'ctx, 'handles> DataFrameExecutionScope<'df, 'ctx, 'handles> {
         )
     }
 
+    /// Return exact reservation bytes for materializing selected columns by
+    /// gathering rows with join indices using the borrowed execution override.
+    ///
+    /// For non-empty gather maps, this measures by executing the gather with
+    /// the borrowed override, reading the output allocation footprint, and
+    /// discarding the temporary result. Its cost is comparable to
+    /// `materialize_join_indices` itself; reserve-then-materialize roughly
+    /// doubles the gather work.
+    pub fn materialize_join_indices_reservation_size_bytes<I, S>(
+        &self,
+        indices: &DataFrameJoinIndices,
+        columns: I,
+    ) -> Result<usize>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        self.df.materialize_join_indices_reservation_size_bytes_in_context(
+            indices,
+            columns,
+            self.ctx,
+            "dataframe::with_execution::materialize_join_indices_reservation_size_bytes",
+        )
+    }
+
     /// Build a reusable hash-join artifact using the borrowed execution override.
     pub fn build_hash_join<I, S>(&self, build_on: I, options: DataFrameHashJoinOptions) -> Result<DataFrameHashJoin>
     where

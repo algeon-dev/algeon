@@ -46,6 +46,19 @@ impl DataFrame {
             "dataframe::with_execution::gather",
         )
     }
+
+    pub(crate) fn gather_device_allocated_size_in_context(
+        &self,
+        indices: &Series,
+        ctx: &ExecutionOverrides<'_>,
+        operation: &'static str,
+        reservation_contract: &'static str,
+    ) -> Result<usize> {
+        let output_domain = ctx.resolve_output_domain(&self.domain)?;
+        let cv = indices.view()?;
+        self.gather_device_allocated_size_by_column_view_impl(&cv, output_domain, operation, reservation_contract)
+    }
+
     pub(crate) fn __debug_gather_in_context(&self, indices: &Series, ctx: &ExecutionOverrides<'_>) -> Result<Self> {
         self.gather_in_context(indices, ctx)
     }
@@ -196,6 +209,35 @@ impl DataFrame {
             operation,
         )?;
         Self::from_table_with_names(result_table, self.column_names_owned())
+    }
+
+    fn gather_device_allocated_size_by_column_view_impl(
+        &self,
+        indices: &ColumnView<'_>,
+        output_domain: Arc<ExecutionDomain>,
+        operation: &'static str,
+        reservation_contract: &'static str,
+    ) -> Result<usize> {
+        let execution = ResolvedExecution::with_output_domain(
+            Arc::clone(&output_domain),
+            [&self.domain, indices.execution_domain()],
+            operation,
+        )?;
+
+        if indices.is_empty()? {
+            return Ok(0);
+        }
+
+        let tv = self.build_table_view()?;
+        copying::gather_device_allocated_size_impl(
+            &tv,
+            indices,
+            cudf_sys::cudf_out_of_bounds_policy_t::CUDF_OUT_OF_BOUNDS_POLICY_NULLIFY,
+            "nullify",
+            Some(execution.exec_options()),
+            operation,
+            reservation_contract,
+        )
     }
 
     fn filter_by_mask_impl(
