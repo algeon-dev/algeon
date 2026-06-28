@@ -109,6 +109,8 @@ enum class pair_join_kind { inner, left, full };
 
 enum class single_side_join_kind { semi, anti };
 
+enum class conditional_join_size_kind { inner, left, semi, anti };
+
 enum class hash_join_probe_kind { inner, left, full };
 
 struct distinct_hash_join_owner {
@@ -159,6 +161,7 @@ cudf_status_t conditional_pair_join_indices_impl(cudf_table_view_handle left,
                                                  cudf_ast_expression_handle predicate,
                                                  cudf_column_handle* out_left_indices,
                                                  cudf_column_handle* out_right_indices,
+                                                 std::optional<std::size_t> output_size,
                                                  cudf_exec_options_t const* options,
                                                  pair_join_kind kind)
 {
@@ -185,11 +188,11 @@ cudf_status_t conditional_pair_join_indices_impl(cudf_table_view_handle left,
       switch (kind) {
         case pair_join_kind::inner:
           indices =
-            cudf::conditional_inner_join(*left_view, *right_view, pred, {}, exec.stream, exec.mr);
+            cudf::conditional_inner_join(*left_view, *right_view, pred, output_size, exec.stream, exec.mr);
           break;
         case pair_join_kind::left:
           indices =
-            cudf::conditional_left_join(*left_view, *right_view, pred, {}, exec.stream, exec.mr);
+            cudf::conditional_left_join(*left_view, *right_view, pred, output_size, exec.stream, exec.mr);
           break;
         case pair_join_kind::full:
           indices =
@@ -210,6 +213,7 @@ cudf_status_t conditional_single_side_join_indices_impl(cudf_table_view_handle l
                                                         cudf_table_view_handle right,
                                                         cudf_ast_expression_handle predicate,
                                                         cudf_column_handle* out_indices,
+                                                        std::optional<std::size_t> output_size,
                                                         cudf_exec_options_t const* options,
                                                         single_side_join_kind kind)
 {
@@ -234,15 +238,59 @@ cudf_status_t conditional_single_side_join_indices_impl(cudf_table_view_handle l
       switch (kind) {
         case single_side_join_kind::semi:
           indices = cudf::conditional_left_semi_join(
-            *left_view, *right_view, pred, {}, exec.stream, exec.mr);
+            *left_view, *right_view, pred, output_size, exec.stream, exec.mr);
           break;
         case single_side_join_kind::anti:
           indices = cudf::conditional_left_anti_join(
-            *left_view, *right_view, pred, {}, exec.stream, exec.mr);
+            *left_view, *right_view, pred, output_size, exec.stream, exec.mr);
           break;
       }
       *out_indices = cudf_release_column_handle(release_join_index_column(std::move(indices)),
                                                 cudf_capture_exec_provenance(exec));
+    }
+    return CUDF_SUCCESS;
+  }
+  CUDF_RUST_CATCH
+}
+
+cudf_status_t conditional_join_size_impl(cudf_table_view_handle left,
+                                         cudf_table_view_handle right,
+                                         cudf_ast_expression_handle predicate,
+                                         size_t* out,
+                                         cudf_exec_options_t const* options,
+                                         conditional_join_size_kind kind)
+{
+  CUDF_RUST_NULL_CHECK(out, "out is null");
+  *out = 0;
+  CUDF_RUST_NULL_CHECK(left, "left is null");
+  CUDF_RUST_NULL_CHECK(right, "right is null");
+  CUDF_RUST_NULL_CHECK(predicate, "predicate is null");
+  CUDF_RUST_TRY
+  {
+    cudf_exec_context exec          = cudf_make_exec_context();
+    cudf_status_t const exec_status = cudf_resolve_exec_options(options, &exec);
+    if (exec_status != CUDF_SUCCESS) { return exec_status; }
+
+    auto* left_view  = static_cast<cudf::table_view*>(left);
+    auto* right_view = static_cast<cudf::table_view*>(right);
+    auto const& pred = cudf_ast_expression_from_handle(predicate);
+
+    {
+      cudf_current_device_resource_guard current_mr{exec.mr_raw};
+      switch (kind) {
+        case conditional_join_size_kind::inner:
+          *out = cudf::conditional_inner_join_size(*left_view, *right_view, pred, exec.stream, exec.mr);
+          break;
+        case conditional_join_size_kind::left:
+          *out = cudf::conditional_left_join_size(*left_view, *right_view, pred, exec.stream, exec.mr);
+          break;
+        case conditional_join_size_kind::semi:
+          *out = cudf::conditional_left_semi_join_size(*left_view, *right_view, pred, exec.stream, exec.mr);
+          break;
+        case conditional_join_size_kind::anti:
+          *out = cudf::conditional_left_anti_join_size(*left_view, *right_view, pred, exec.stream, exec.mr);
+          break;
+      }
     }
     return CUDF_SUCCESS;
   }
@@ -953,7 +1001,55 @@ cudf_status_t cudf_conditional_inner_join_indices_ex(cudf_table_view_handle left
                                                      cudf_exec_options_t const* options)
 {
   return conditional_pair_join_indices_impl(
-    left, right, predicate, out_left_indices, out_right_indices, options, pair_join_kind::inner);
+    left, right, predicate, out_left_indices, out_right_indices, {}, options, pair_join_kind::inner);
+}
+
+cudf_status_t cudf_conditional_inner_join_indices_with_output_size(
+  cudf_table_view_handle left,
+  cudf_table_view_handle right,
+  cudf_ast_expression_handle predicate,
+  size_t output_size,
+  cudf_column_handle* out_left_indices,
+  cudf_column_handle* out_right_indices)
+{
+  return cudf_conditional_inner_join_indices_with_output_size_ex(
+    left, right, predicate, output_size, out_left_indices, out_right_indices, nullptr);
+}
+
+cudf_status_t cudf_conditional_inner_join_indices_with_output_size_ex(
+  cudf_table_view_handle left,
+  cudf_table_view_handle right,
+  cudf_ast_expression_handle predicate,
+  size_t output_size,
+  cudf_column_handle* out_left_indices,
+  cudf_column_handle* out_right_indices,
+  cudf_exec_options_t const* options)
+{
+  return conditional_pair_join_indices_impl(left,
+                                            right,
+                                            predicate,
+                                            out_left_indices,
+                                            out_right_indices,
+                                            std::optional<std::size_t>{output_size},
+                                            options,
+                                            pair_join_kind::inner);
+}
+
+cudf_status_t cudf_conditional_inner_join_size(cudf_table_view_handle left,
+                                               cudf_table_view_handle right,
+                                               cudf_ast_expression_handle predicate,
+                                               size_t* out)
+{
+  return cudf_conditional_inner_join_size_ex(left, right, predicate, out, nullptr);
+}
+
+cudf_status_t cudf_conditional_inner_join_size_ex(cudf_table_view_handle left,
+                                                  cudf_table_view_handle right,
+                                                  cudf_ast_expression_handle predicate,
+                                                  size_t* out,
+                                                  cudf_exec_options_t const* options)
+{
+  return conditional_join_size_impl(left, right, predicate, out, options, conditional_join_size_kind::inner);
 }
 
 cudf_status_t cudf_conditional_left_join_indices(cudf_table_view_handle left,
@@ -974,7 +1070,55 @@ cudf_status_t cudf_conditional_left_join_indices_ex(cudf_table_view_handle left,
                                                     cudf_exec_options_t const* options)
 {
   return conditional_pair_join_indices_impl(
-    left, right, predicate, out_left_indices, out_right_indices, options, pair_join_kind::left);
+    left, right, predicate, out_left_indices, out_right_indices, {}, options, pair_join_kind::left);
+}
+
+cudf_status_t cudf_conditional_left_join_indices_with_output_size(
+  cudf_table_view_handle left,
+  cudf_table_view_handle right,
+  cudf_ast_expression_handle predicate,
+  size_t output_size,
+  cudf_column_handle* out_left_indices,
+  cudf_column_handle* out_right_indices)
+{
+  return cudf_conditional_left_join_indices_with_output_size_ex(
+    left, right, predicate, output_size, out_left_indices, out_right_indices, nullptr);
+}
+
+cudf_status_t cudf_conditional_left_join_indices_with_output_size_ex(
+  cudf_table_view_handle left,
+  cudf_table_view_handle right,
+  cudf_ast_expression_handle predicate,
+  size_t output_size,
+  cudf_column_handle* out_left_indices,
+  cudf_column_handle* out_right_indices,
+  cudf_exec_options_t const* options)
+{
+  return conditional_pair_join_indices_impl(left,
+                                            right,
+                                            predicate,
+                                            out_left_indices,
+                                            out_right_indices,
+                                            std::optional<std::size_t>{output_size},
+                                            options,
+                                            pair_join_kind::left);
+}
+
+cudf_status_t cudf_conditional_left_join_size(cudf_table_view_handle left,
+                                              cudf_table_view_handle right,
+                                              cudf_ast_expression_handle predicate,
+                                              size_t* out)
+{
+  return cudf_conditional_left_join_size_ex(left, right, predicate, out, nullptr);
+}
+
+cudf_status_t cudf_conditional_left_join_size_ex(cudf_table_view_handle left,
+                                                 cudf_table_view_handle right,
+                                                 cudf_ast_expression_handle predicate,
+                                                 size_t* out,
+                                                 cudf_exec_options_t const* options)
+{
+  return conditional_join_size_impl(left, right, predicate, out, options, conditional_join_size_kind::left);
 }
 
 cudf_status_t cudf_conditional_full_join_indices(cudf_table_view_handle left,
@@ -995,7 +1139,7 @@ cudf_status_t cudf_conditional_full_join_indices_ex(cudf_table_view_handle left,
                                                     cudf_exec_options_t const* options)
 {
   return conditional_pair_join_indices_impl(
-    left, right, predicate, out_left_indices, out_right_indices, options, pair_join_kind::full);
+    left, right, predicate, out_left_indices, out_right_indices, {}, options, pair_join_kind::full);
 }
 
 cudf_status_t cudf_conditional_left_semi_join_indices(cudf_table_view_handle left,
@@ -1013,7 +1157,52 @@ cudf_status_t cudf_conditional_left_semi_join_indices_ex(cudf_table_view_handle 
                                                          cudf_exec_options_t const* options)
 {
   return conditional_single_side_join_indices_impl(
-    left, right, predicate, out_indices, options, single_side_join_kind::semi);
+    left, right, predicate, out_indices, {}, options, single_side_join_kind::semi);
+}
+
+cudf_status_t cudf_conditional_left_semi_join_indices_with_output_size(
+  cudf_table_view_handle left,
+  cudf_table_view_handle right,
+  cudf_ast_expression_handle predicate,
+  size_t output_size,
+  cudf_column_handle* out_indices)
+{
+  return cudf_conditional_left_semi_join_indices_with_output_size_ex(
+    left, right, predicate, output_size, out_indices, nullptr);
+}
+
+cudf_status_t cudf_conditional_left_semi_join_indices_with_output_size_ex(
+  cudf_table_view_handle left,
+  cudf_table_view_handle right,
+  cudf_ast_expression_handle predicate,
+  size_t output_size,
+  cudf_column_handle* out_indices,
+  cudf_exec_options_t const* options)
+{
+  return conditional_single_side_join_indices_impl(left,
+                                                   right,
+                                                   predicate,
+                                                   out_indices,
+                                                   std::optional<std::size_t>{output_size},
+                                                   options,
+                                                   single_side_join_kind::semi);
+}
+
+cudf_status_t cudf_conditional_left_semi_join_size(cudf_table_view_handle left,
+                                                   cudf_table_view_handle right,
+                                                   cudf_ast_expression_handle predicate,
+                                                   size_t* out)
+{
+  return cudf_conditional_left_semi_join_size_ex(left, right, predicate, out, nullptr);
+}
+
+cudf_status_t cudf_conditional_left_semi_join_size_ex(cudf_table_view_handle left,
+                                                      cudf_table_view_handle right,
+                                                      cudf_ast_expression_handle predicate,
+                                                      size_t* out,
+                                                      cudf_exec_options_t const* options)
+{
+  return conditional_join_size_impl(left, right, predicate, out, options, conditional_join_size_kind::semi);
 }
 
 cudf_status_t cudf_conditional_left_anti_join_indices(cudf_table_view_handle left,
@@ -1031,7 +1220,52 @@ cudf_status_t cudf_conditional_left_anti_join_indices_ex(cudf_table_view_handle 
                                                          cudf_exec_options_t const* options)
 {
   return conditional_single_side_join_indices_impl(
-    left, right, predicate, out_indices, options, single_side_join_kind::anti);
+    left, right, predicate, out_indices, {}, options, single_side_join_kind::anti);
+}
+
+cudf_status_t cudf_conditional_left_anti_join_indices_with_output_size(
+  cudf_table_view_handle left,
+  cudf_table_view_handle right,
+  cudf_ast_expression_handle predicate,
+  size_t output_size,
+  cudf_column_handle* out_indices)
+{
+  return cudf_conditional_left_anti_join_indices_with_output_size_ex(
+    left, right, predicate, output_size, out_indices, nullptr);
+}
+
+cudf_status_t cudf_conditional_left_anti_join_indices_with_output_size_ex(
+  cudf_table_view_handle left,
+  cudf_table_view_handle right,
+  cudf_ast_expression_handle predicate,
+  size_t output_size,
+  cudf_column_handle* out_indices,
+  cudf_exec_options_t const* options)
+{
+  return conditional_single_side_join_indices_impl(left,
+                                                   right,
+                                                   predicate,
+                                                   out_indices,
+                                                   std::optional<std::size_t>{output_size},
+                                                   options,
+                                                   single_side_join_kind::anti);
+}
+
+cudf_status_t cudf_conditional_left_anti_join_size(cudf_table_view_handle left,
+                                                   cudf_table_view_handle right,
+                                                   cudf_ast_expression_handle predicate,
+                                                   size_t* out)
+{
+  return cudf_conditional_left_anti_join_size_ex(left, right, predicate, out, nullptr);
+}
+
+cudf_status_t cudf_conditional_left_anti_join_size_ex(cudf_table_view_handle left,
+                                                      cudf_table_view_handle right,
+                                                      cudf_ast_expression_handle predicate,
+                                                      size_t* out,
+                                                      cudf_exec_options_t const* options)
+{
+  return conditional_join_size_impl(left, right, predicate, out, options, conditional_join_size_kind::anti);
 }
 
 cudf_status_t cudf_filter_join_indices(cudf_table_view_handle left,

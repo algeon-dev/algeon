@@ -153,6 +153,21 @@ impl<'a> JoinCallContext<'a> {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SizedConditionalPairJoinType {
+    Inner,
+    Left,
+}
+
+impl SizedConditionalPairJoinType {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Inner => "inner",
+            Self::Left => "left",
+        }
+    }
+}
+
 pub(crate) fn join_impl(
     tables: SplitJoinTables<'_, '_>,
     null_equality: NullEquality,
@@ -538,6 +553,80 @@ fn conditional_join_indices_impl(
         [
             ("join_type", format!("{:?}", join_type).to_lowercase()),
             ("execution_context_provided", exec_options.is_some().to_string()),
+            ("output_size_provided", "false".to_string()),
+        ],
+    )?;
+
+    Ok(JoinIndices {
+        left: unsafe { Column::from_raw_with_domain(out_left, Arc::clone(output_domain)) }?,
+        right: unsafe { Column::from_raw_with_domain(out_right, Arc::clone(output_domain)) }?,
+    })
+}
+
+fn conditional_join_indices_with_output_size_impl(
+    left: &TableView<'_>,
+    right: &TableView<'_>,
+    predicate: &AstExpression,
+    join_type: SizedConditionalPairJoinType,
+    output_size: usize,
+    output_domain: &Arc<ExecutionDomain>,
+    exec_options: Option<&cudf_sys::cudf_exec_options_t>,
+    operation: &'static str,
+) -> Result<JoinIndices> {
+    let mut out_left = ptr::null_mut();
+    let mut out_right = ptr::null_mut();
+    let status = match (join_type, exec_options) {
+        (SizedConditionalPairJoinType::Inner, None) => unsafe {
+            cudf_sys::cudf_conditional_inner_join_indices_with_output_size(
+                left.raw_handle(),
+                right.raw_handle(),
+                predicate.raw_handle(),
+                output_size,
+                &mut out_left,
+                &mut out_right,
+            )
+        },
+        (SizedConditionalPairJoinType::Left, None) => unsafe {
+            cudf_sys::cudf_conditional_left_join_indices_with_output_size(
+                left.raw_handle(),
+                right.raw_handle(),
+                predicate.raw_handle(),
+                output_size,
+                &mut out_left,
+                &mut out_right,
+            )
+        },
+        (SizedConditionalPairJoinType::Inner, Some(options)) => unsafe {
+            cudf_sys::cudf_conditional_inner_join_indices_with_output_size_ex(
+                left.raw_handle(),
+                right.raw_handle(),
+                predicate.raw_handle(),
+                output_size,
+                &mut out_left,
+                &mut out_right,
+                options,
+            )
+        },
+        (SizedConditionalPairJoinType::Left, Some(options)) => unsafe {
+            cudf_sys::cudf_conditional_left_join_indices_with_output_size_ex(
+                left.raw_handle(),
+                right.raw_handle(),
+                predicate.raw_handle(),
+                output_size,
+                &mut out_left,
+                &mut out_right,
+                options,
+            )
+        },
+    };
+
+    error::check_status_in_with_details(
+        status,
+        operation,
+        [
+            ("join_type", join_type.as_str().to_string()),
+            ("execution_context_provided", exec_options.is_some().to_string()),
+            ("output_size_provided", "true".to_string()),
         ],
     )?;
 
@@ -552,13 +641,14 @@ fn conditional_single_side_join_indices_impl(
     right: &TableView<'_>,
     predicate: &AstExpression,
     semi_join: bool,
+    output_size: Option<usize>,
     output_domain: &Arc<ExecutionDomain>,
     exec_options: Option<&cudf_sys::cudf_exec_options_t>,
     operation: &'static str,
 ) -> Result<SingleSideJoinIndices> {
     let mut out = ptr::null_mut();
-    let status = match (semi_join, exec_options) {
-        (true, None) => unsafe {
+    let status = match (semi_join, output_size, exec_options) {
+        (true, None, None) => unsafe {
             cudf_sys::cudf_conditional_left_semi_join_indices(
                 left.raw_handle(),
                 right.raw_handle(),
@@ -566,7 +656,7 @@ fn conditional_single_side_join_indices_impl(
                 &mut out,
             )
         },
-        (false, None) => unsafe {
+        (false, None, None) => unsafe {
             cudf_sys::cudf_conditional_left_anti_join_indices(
                 left.raw_handle(),
                 right.raw_handle(),
@@ -574,7 +664,7 @@ fn conditional_single_side_join_indices_impl(
                 &mut out,
             )
         },
-        (true, Some(options)) => unsafe {
+        (true, None, Some(options)) => unsafe {
             cudf_sys::cudf_conditional_left_semi_join_indices_ex(
                 left.raw_handle(),
                 right.raw_handle(),
@@ -583,8 +673,163 @@ fn conditional_single_side_join_indices_impl(
                 options,
             )
         },
-        (false, Some(options)) => unsafe {
+        (false, None, Some(options)) => unsafe {
             cudf_sys::cudf_conditional_left_anti_join_indices_ex(
+                left.raw_handle(),
+                right.raw_handle(),
+                predicate.raw_handle(),
+                &mut out,
+                options,
+            )
+        },
+        (true, Some(output_size), None) => unsafe {
+            cudf_sys::cudf_conditional_left_semi_join_indices_with_output_size(
+                left.raw_handle(),
+                right.raw_handle(),
+                predicate.raw_handle(),
+                output_size,
+                &mut out,
+            )
+        },
+        (false, Some(output_size), None) => unsafe {
+            cudf_sys::cudf_conditional_left_anti_join_indices_with_output_size(
+                left.raw_handle(),
+                right.raw_handle(),
+                predicate.raw_handle(),
+                output_size,
+                &mut out,
+            )
+        },
+        (true, Some(output_size), Some(options)) => unsafe {
+            cudf_sys::cudf_conditional_left_semi_join_indices_with_output_size_ex(
+                left.raw_handle(),
+                right.raw_handle(),
+                predicate.raw_handle(),
+                output_size,
+                &mut out,
+                options,
+            )
+        },
+        (false, Some(output_size), Some(options)) => unsafe {
+            cudf_sys::cudf_conditional_left_anti_join_indices_with_output_size_ex(
+                left.raw_handle(),
+                right.raw_handle(),
+                predicate.raw_handle(),
+                output_size,
+                &mut out,
+                options,
+            )
+        },
+    };
+
+    error::check_status_in_with_details(
+        status,
+        operation,
+        [
+            ("join_type", if semi_join { "left_semi" } else { "left_anti" }.to_string()),
+            ("execution_context_provided", exec_options.is_some().to_string()),
+            ("output_size_provided", output_size.is_some().to_string()),
+        ],
+    )?;
+
+    Ok(SingleSideJoinIndices { indices: unsafe { Column::from_raw_with_domain(out, Arc::clone(output_domain)) }? })
+}
+
+fn conditional_join_size_impl(
+    left: &TableView<'_>,
+    right: &TableView<'_>,
+    predicate: &AstExpression,
+    join_type: SizedConditionalPairJoinType,
+    exec_options: Option<&cudf_sys::cudf_exec_options_t>,
+    operation: &'static str,
+) -> Result<usize> {
+    let mut out = 0usize;
+    let status = match (join_type, exec_options) {
+        (SizedConditionalPairJoinType::Inner, None) => unsafe {
+            cudf_sys::cudf_conditional_inner_join_size(
+                left.raw_handle(),
+                right.raw_handle(),
+                predicate.raw_handle(),
+                &mut out,
+            )
+        },
+        (SizedConditionalPairJoinType::Left, None) => unsafe {
+            cudf_sys::cudf_conditional_left_join_size(
+                left.raw_handle(),
+                right.raw_handle(),
+                predicate.raw_handle(),
+                &mut out,
+            )
+        },
+        (SizedConditionalPairJoinType::Inner, Some(options)) => unsafe {
+            cudf_sys::cudf_conditional_inner_join_size_ex(
+                left.raw_handle(),
+                right.raw_handle(),
+                predicate.raw_handle(),
+                &mut out,
+                options,
+            )
+        },
+        (SizedConditionalPairJoinType::Left, Some(options)) => unsafe {
+            cudf_sys::cudf_conditional_left_join_size_ex(
+                left.raw_handle(),
+                right.raw_handle(),
+                predicate.raw_handle(),
+                &mut out,
+                options,
+            )
+        },
+    };
+
+    error::check_status_in_with_details(
+        status,
+        operation,
+        [
+            ("join_type", join_type.as_str().to_string()),
+            ("execution_context_provided", exec_options.is_some().to_string()),
+        ],
+    )?;
+
+    Ok(out)
+}
+
+fn conditional_single_side_join_size_impl(
+    left: &TableView<'_>,
+    right: &TableView<'_>,
+    predicate: &AstExpression,
+    semi_join: bool,
+    exec_options: Option<&cudf_sys::cudf_exec_options_t>,
+    operation: &'static str,
+) -> Result<usize> {
+    let mut out = 0usize;
+    let status = match (semi_join, exec_options) {
+        (true, None) => unsafe {
+            cudf_sys::cudf_conditional_left_semi_join_size(
+                left.raw_handle(),
+                right.raw_handle(),
+                predicate.raw_handle(),
+                &mut out,
+            )
+        },
+        (false, None) => unsafe {
+            cudf_sys::cudf_conditional_left_anti_join_size(
+                left.raw_handle(),
+                right.raw_handle(),
+                predicate.raw_handle(),
+                &mut out,
+            )
+        },
+        (true, Some(options)) => unsafe {
+            cudf_sys::cudf_conditional_left_semi_join_size_ex(
+                left.raw_handle(),
+                right.raw_handle(),
+                predicate.raw_handle(),
+                &mut out,
+                options,
+            )
+        },
+        (false, Some(options)) => unsafe {
+            cudf_sys::cudf_conditional_left_anti_join_size_ex(
                 left.raw_handle(),
                 right.raw_handle(),
                 predicate.raw_handle(),
@@ -603,7 +848,7 @@ fn conditional_single_side_join_indices_impl(
         ],
     )?;
 
-    Ok(SingleSideJoinIndices { indices: unsafe { Column::from_raw_with_domain(out, Arc::clone(output_domain)) }? })
+    Ok(out)
 }
 
 fn filter_join_kind_raw(join_type: JoinType) -> cudf_sys::cudf_join_kind_t {
@@ -1128,6 +1373,28 @@ fn conditional_join_indices_with_context(
     )
 }
 
+fn conditional_join_indices_with_output_size_with_context(
+    left: &TableView<'_>,
+    right: &TableView<'_>,
+    predicate: &AstExpression,
+    join_type: SizedConditionalPairJoinType,
+    output_size: usize,
+    ctx: &ExecutionOverrides<'_>,
+    operation: &'static str,
+) -> Result<JoinIndices> {
+    let execution = compatible_conditional_join_domain(left, right, predicate, ctx, operation)?;
+    conditional_join_indices_with_output_size_impl(
+        left,
+        right,
+        predicate,
+        join_type,
+        output_size,
+        execution.output_domain(),
+        Some(execution.exec_options()),
+        operation,
+    )
+}
+
 fn conditional_single_side_join_indices_with_context(
     left: &TableView<'_>,
     right: &TableView<'_>,
@@ -1142,10 +1409,57 @@ fn conditional_single_side_join_indices_with_context(
         right,
         predicate,
         semi_join,
+        None,
         execution.output_domain(),
         Some(execution.exec_options()),
         operation,
     )
+}
+
+fn conditional_single_side_join_indices_with_output_size_with_context(
+    left: &TableView<'_>,
+    right: &TableView<'_>,
+    predicate: &AstExpression,
+    semi_join: bool,
+    output_size: usize,
+    ctx: &ExecutionOverrides<'_>,
+    operation: &'static str,
+) -> Result<SingleSideJoinIndices> {
+    let execution = compatible_conditional_join_domain(left, right, predicate, ctx, operation)?;
+    conditional_single_side_join_indices_impl(
+        left,
+        right,
+        predicate,
+        semi_join,
+        Some(output_size),
+        execution.output_domain(),
+        Some(execution.exec_options()),
+        operation,
+    )
+}
+
+fn conditional_join_size_with_context(
+    left: &TableView<'_>,
+    right: &TableView<'_>,
+    predicate: &AstExpression,
+    join_type: SizedConditionalPairJoinType,
+    ctx: &ExecutionOverrides<'_>,
+    operation: &'static str,
+) -> Result<usize> {
+    let execution = compatible_conditional_join_domain(left, right, predicate, ctx, operation)?;
+    conditional_join_size_impl(left, right, predicate, join_type, Some(execution.exec_options()), operation)
+}
+
+fn conditional_single_side_join_size_with_context(
+    left: &TableView<'_>,
+    right: &TableView<'_>,
+    predicate: &AstExpression,
+    semi_join: bool,
+    ctx: &ExecutionOverrides<'_>,
+    operation: &'static str,
+) -> Result<usize> {
+    let execution = compatible_conditional_join_domain(left, right, predicate, ctx, operation)?;
+    conditional_single_side_join_size_impl(left, right, predicate, semi_join, Some(execution.exec_options()), operation)
 }
 
 /// Conditional inner join indices for row pairs where `predicate` is true.
@@ -1189,6 +1503,76 @@ pub fn conditional_inner_join_indices_in(
     conditional_join_indices_with_context(left, right, predicate, JoinType::Inner, ctx, operation)
 }
 
+/// Return the exact output row count for a conditional inner join.
+pub fn conditional_inner_join_size(
+    left: &TableView<'_>,
+    right: &TableView<'_>,
+    predicate: &AstExpression,
+) -> Result<usize> {
+    let ctx = ExecutionOverrides::new();
+    conditional_join_size_with_context(
+        left,
+        right,
+        predicate,
+        SizedConditionalPairJoinType::Inner,
+        &ctx,
+        "join::conditional_inner_join_size",
+    )
+}
+
+/// Return the exact output row count for a conditional inner join using a
+/// borrowed execution override.
+pub fn conditional_inner_join_size_in(
+    left: &TableView<'_>,
+    right: &TableView<'_>,
+    predicate: &AstExpression,
+    ctx: &ExecutionOverrides<'_>,
+) -> Result<usize> {
+    let operation = "join::conditional_inner_join_size_in";
+    conditional_join_size_with_context(left, right, predicate, SizedConditionalPairJoinType::Inner, ctx, operation)
+}
+
+/// Conditional inner join indices using an exact caller-supplied output row
+/// count.
+pub fn conditional_inner_join_indices_with_output_size(
+    left: &TableView<'_>,
+    right: &TableView<'_>,
+    predicate: &AstExpression,
+    output_size: usize,
+) -> Result<JoinIndices> {
+    let ctx = ExecutionOverrides::new();
+    conditional_join_indices_with_output_size_with_context(
+        left,
+        right,
+        predicate,
+        SizedConditionalPairJoinType::Inner,
+        output_size,
+        &ctx,
+        "join::conditional_inner_join_indices_with_output_size",
+    )
+}
+
+/// Conditional inner join indices using a borrowed execution override and an
+/// exact caller-supplied output row count.
+pub fn conditional_inner_join_indices_with_output_size_in(
+    left: &TableView<'_>,
+    right: &TableView<'_>,
+    predicate: &AstExpression,
+    output_size: usize,
+    ctx: &ExecutionOverrides<'_>,
+) -> Result<JoinIndices> {
+    let operation = "join::conditional_inner_join_indices_with_output_size_in";
+    conditional_join_indices_with_output_size_with_context(
+        left,
+        right,
+        predicate,
+        SizedConditionalPairJoinType::Inner,
+        output_size,
+        ctx,
+        operation,
+    )
+}
+
 /// Conditional left join indices preserving all left rows.
 ///
 /// Returned right-side misses contain libcudf's no-match sentinel for
@@ -1226,6 +1610,76 @@ pub fn conditional_left_join_indices_in(
 ) -> Result<JoinIndices> {
     let operation = "join::conditional_left_join_indices_in";
     conditional_join_indices_with_context(left, right, predicate, JoinType::Left, ctx, operation)
+}
+
+/// Return the exact output row count for a conditional left join.
+pub fn conditional_left_join_size(
+    left: &TableView<'_>,
+    right: &TableView<'_>,
+    predicate: &AstExpression,
+) -> Result<usize> {
+    let ctx = ExecutionOverrides::new();
+    conditional_join_size_with_context(
+        left,
+        right,
+        predicate,
+        SizedConditionalPairJoinType::Left,
+        &ctx,
+        "join::conditional_left_join_size",
+    )
+}
+
+/// Return the exact output row count for a conditional left join using a
+/// borrowed execution override.
+pub fn conditional_left_join_size_in(
+    left: &TableView<'_>,
+    right: &TableView<'_>,
+    predicate: &AstExpression,
+    ctx: &ExecutionOverrides<'_>,
+) -> Result<usize> {
+    let operation = "join::conditional_left_join_size_in";
+    conditional_join_size_with_context(left, right, predicate, SizedConditionalPairJoinType::Left, ctx, operation)
+}
+
+/// Conditional left join indices using an exact caller-supplied output row
+/// count.
+pub fn conditional_left_join_indices_with_output_size(
+    left: &TableView<'_>,
+    right: &TableView<'_>,
+    predicate: &AstExpression,
+    output_size: usize,
+) -> Result<JoinIndices> {
+    let ctx = ExecutionOverrides::new();
+    conditional_join_indices_with_output_size_with_context(
+        left,
+        right,
+        predicate,
+        SizedConditionalPairJoinType::Left,
+        output_size,
+        &ctx,
+        "join::conditional_left_join_indices_with_output_size",
+    )
+}
+
+/// Conditional left join indices using a borrowed execution override and an
+/// exact caller-supplied output row count.
+pub fn conditional_left_join_indices_with_output_size_in(
+    left: &TableView<'_>,
+    right: &TableView<'_>,
+    predicate: &AstExpression,
+    output_size: usize,
+    ctx: &ExecutionOverrides<'_>,
+) -> Result<JoinIndices> {
+    let operation = "join::conditional_left_join_indices_with_output_size_in";
+    conditional_join_indices_with_output_size_with_context(
+        left,
+        right,
+        predicate,
+        SizedConditionalPairJoinType::Left,
+        output_size,
+        ctx,
+        operation,
+    )
 }
 
 /// Conditional full join indices preserving unmatched rows from both sides.
@@ -1306,6 +1760,76 @@ pub fn conditional_left_semi_join_indices_in(
     conditional_single_side_join_indices_with_context(left, right, predicate, true, ctx, operation)
 }
 
+/// Return the exact output row count for a conditional left semi join.
+pub fn conditional_left_semi_join_size(
+    left: &TableView<'_>,
+    right: &TableView<'_>,
+    predicate: &AstExpression,
+) -> Result<usize> {
+    let ctx = ExecutionOverrides::new();
+    conditional_single_side_join_size_with_context(
+        left,
+        right,
+        predicate,
+        true,
+        &ctx,
+        "join::conditional_left_semi_join_size",
+    )
+}
+
+/// Return the exact output row count for a conditional left semi join using a
+/// borrowed execution override.
+pub fn conditional_left_semi_join_size_in(
+    left: &TableView<'_>,
+    right: &TableView<'_>,
+    predicate: &AstExpression,
+    ctx: &ExecutionOverrides<'_>,
+) -> Result<usize> {
+    let operation = "join::conditional_left_semi_join_size_in";
+    conditional_single_side_join_size_with_context(left, right, predicate, true, ctx, operation)
+}
+
+/// Conditional left semi join indices using an exact caller-supplied output row
+/// count.
+pub fn conditional_left_semi_join_indices_with_output_size(
+    left: &TableView<'_>,
+    right: &TableView<'_>,
+    predicate: &AstExpression,
+    output_size: usize,
+) -> Result<SingleSideJoinIndices> {
+    let ctx = ExecutionOverrides::new();
+    conditional_single_side_join_indices_with_output_size_with_context(
+        left,
+        right,
+        predicate,
+        true,
+        output_size,
+        &ctx,
+        "join::conditional_left_semi_join_indices_with_output_size",
+    )
+}
+
+/// Conditional left semi join indices using a borrowed execution override and
+/// an exact caller-supplied output row count.
+pub fn conditional_left_semi_join_indices_with_output_size_in(
+    left: &TableView<'_>,
+    right: &TableView<'_>,
+    predicate: &AstExpression,
+    output_size: usize,
+    ctx: &ExecutionOverrides<'_>,
+) -> Result<SingleSideJoinIndices> {
+    let operation = "join::conditional_left_semi_join_indices_with_output_size_in";
+    conditional_single_side_join_indices_with_output_size_with_context(
+        left,
+        right,
+        predicate,
+        true,
+        output_size,
+        ctx,
+        operation,
+    )
+}
+
 /// Conditional left anti join indices for rows from `left` with no matching
 /// `right` row.
 ///
@@ -1343,6 +1867,76 @@ pub fn conditional_left_anti_join_indices_in(
 ) -> Result<SingleSideJoinIndices> {
     let operation = "join::conditional_left_anti_join_indices_in";
     conditional_single_side_join_indices_with_context(left, right, predicate, false, ctx, operation)
+}
+
+/// Return the exact output row count for a conditional left anti join.
+pub fn conditional_left_anti_join_size(
+    left: &TableView<'_>,
+    right: &TableView<'_>,
+    predicate: &AstExpression,
+) -> Result<usize> {
+    let ctx = ExecutionOverrides::new();
+    conditional_single_side_join_size_with_context(
+        left,
+        right,
+        predicate,
+        false,
+        &ctx,
+        "join::conditional_left_anti_join_size",
+    )
+}
+
+/// Return the exact output row count for a conditional left anti join using a
+/// borrowed execution override.
+pub fn conditional_left_anti_join_size_in(
+    left: &TableView<'_>,
+    right: &TableView<'_>,
+    predicate: &AstExpression,
+    ctx: &ExecutionOverrides<'_>,
+) -> Result<usize> {
+    let operation = "join::conditional_left_anti_join_size_in";
+    conditional_single_side_join_size_with_context(left, right, predicate, false, ctx, operation)
+}
+
+/// Conditional left anti join indices using an exact caller-supplied output row
+/// count.
+pub fn conditional_left_anti_join_indices_with_output_size(
+    left: &TableView<'_>,
+    right: &TableView<'_>,
+    predicate: &AstExpression,
+    output_size: usize,
+) -> Result<SingleSideJoinIndices> {
+    let ctx = ExecutionOverrides::new();
+    conditional_single_side_join_indices_with_output_size_with_context(
+        left,
+        right,
+        predicate,
+        false,
+        output_size,
+        &ctx,
+        "join::conditional_left_anti_join_indices_with_output_size",
+    )
+}
+
+/// Conditional left anti join indices using a borrowed execution override and
+/// an exact caller-supplied output row count.
+pub fn conditional_left_anti_join_indices_with_output_size_in(
+    left: &TableView<'_>,
+    right: &TableView<'_>,
+    predicate: &AstExpression,
+    output_size: usize,
+    ctx: &ExecutionOverrides<'_>,
+) -> Result<SingleSideJoinIndices> {
+    let operation = "join::conditional_left_anti_join_indices_with_output_size_in";
+    conditional_single_side_join_indices_with_output_size_with_context(
+        left,
+        right,
+        predicate,
+        false,
+        output_size,
+        ctx,
+        operation,
+    )
 }
 
 fn filter_join_indices_with_context(

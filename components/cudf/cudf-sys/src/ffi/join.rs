@@ -199,6 +199,40 @@ extern "C" {
         options: *const cudf_exec_options_t,
     ) -> cudf_status_t;
 
+    pub fn cudf_conditional_inner_join_indices_with_output_size(
+        left: cudf_table_view_handle,
+        right: cudf_table_view_handle,
+        predicate: cudf_ast_expression_handle,
+        output_size: usize,
+        out_left_indices: *mut cudf_column_handle,
+        out_right_indices: *mut cudf_column_handle,
+    ) -> cudf_status_t;
+
+    pub fn cudf_conditional_inner_join_indices_with_output_size_ex(
+        left: cudf_table_view_handle,
+        right: cudf_table_view_handle,
+        predicate: cudf_ast_expression_handle,
+        output_size: usize,
+        out_left_indices: *mut cudf_column_handle,
+        out_right_indices: *mut cudf_column_handle,
+        options: *const cudf_exec_options_t,
+    ) -> cudf_status_t;
+
+    pub fn cudf_conditional_inner_join_size(
+        left: cudf_table_view_handle,
+        right: cudf_table_view_handle,
+        predicate: cudf_ast_expression_handle,
+        out: *mut usize,
+    ) -> cudf_status_t;
+
+    pub fn cudf_conditional_inner_join_size_ex(
+        left: cudf_table_view_handle,
+        right: cudf_table_view_handle,
+        predicate: cudf_ast_expression_handle,
+        out: *mut usize,
+        options: *const cudf_exec_options_t,
+    ) -> cudf_status_t;
+
     pub fn cudf_conditional_left_join_indices(
         left: cudf_table_view_handle,
         right: cudf_table_view_handle,
@@ -219,6 +253,40 @@ extern "C" {
         predicate: cudf_ast_expression_handle,
         out_left_indices: *mut cudf_column_handle,
         out_right_indices: *mut cudf_column_handle,
+        options: *const cudf_exec_options_t,
+    ) -> cudf_status_t;
+
+    pub fn cudf_conditional_left_join_indices_with_output_size(
+        left: cudf_table_view_handle,
+        right: cudf_table_view_handle,
+        predicate: cudf_ast_expression_handle,
+        output_size: usize,
+        out_left_indices: *mut cudf_column_handle,
+        out_right_indices: *mut cudf_column_handle,
+    ) -> cudf_status_t;
+
+    pub fn cudf_conditional_left_join_indices_with_output_size_ex(
+        left: cudf_table_view_handle,
+        right: cudf_table_view_handle,
+        predicate: cudf_ast_expression_handle,
+        output_size: usize,
+        out_left_indices: *mut cudf_column_handle,
+        out_right_indices: *mut cudf_column_handle,
+        options: *const cudf_exec_options_t,
+    ) -> cudf_status_t;
+
+    pub fn cudf_conditional_left_join_size(
+        left: cudf_table_view_handle,
+        right: cudf_table_view_handle,
+        predicate: cudf_ast_expression_handle,
+        out: *mut usize,
+    ) -> cudf_status_t;
+
+    pub fn cudf_conditional_left_join_size_ex(
+        left: cudf_table_view_handle,
+        right: cudf_table_view_handle,
+        predicate: cudf_ast_expression_handle,
+        out: *mut usize,
         options: *const cudf_exec_options_t,
     ) -> cudf_status_t;
 
@@ -266,6 +334,38 @@ extern "C" {
         options: *const cudf_exec_options_t,
     ) -> cudf_status_t;
 
+    pub fn cudf_conditional_left_semi_join_indices_with_output_size(
+        left: cudf_table_view_handle,
+        right: cudf_table_view_handle,
+        predicate: cudf_ast_expression_handle,
+        output_size: usize,
+        out_indices: *mut cudf_column_handle,
+    ) -> cudf_status_t;
+
+    pub fn cudf_conditional_left_semi_join_indices_with_output_size_ex(
+        left: cudf_table_view_handle,
+        right: cudf_table_view_handle,
+        predicate: cudf_ast_expression_handle,
+        output_size: usize,
+        out_indices: *mut cudf_column_handle,
+        options: *const cudf_exec_options_t,
+    ) -> cudf_status_t;
+
+    pub fn cudf_conditional_left_semi_join_size(
+        left: cudf_table_view_handle,
+        right: cudf_table_view_handle,
+        predicate: cudf_ast_expression_handle,
+        out: *mut usize,
+    ) -> cudf_status_t;
+
+    pub fn cudf_conditional_left_semi_join_size_ex(
+        left: cudf_table_view_handle,
+        right: cudf_table_view_handle,
+        predicate: cudf_ast_expression_handle,
+        out: *mut usize,
+        options: *const cudf_exec_options_t,
+    ) -> cudf_status_t;
+
     pub fn cudf_conditional_left_anti_join_indices(
         left: cudf_table_view_handle,
         right: cudf_table_view_handle,
@@ -284,6 +384,38 @@ extern "C" {
         right: cudf_table_view_handle,
         predicate: cudf_ast_expression_handle,
         out_indices: *mut cudf_column_handle,
+        options: *const cudf_exec_options_t,
+    ) -> cudf_status_t;
+
+    pub fn cudf_conditional_left_anti_join_indices_with_output_size(
+        left: cudf_table_view_handle,
+        right: cudf_table_view_handle,
+        predicate: cudf_ast_expression_handle,
+        output_size: usize,
+        out_indices: *mut cudf_column_handle,
+    ) -> cudf_status_t;
+
+    pub fn cudf_conditional_left_anti_join_indices_with_output_size_ex(
+        left: cudf_table_view_handle,
+        right: cudf_table_view_handle,
+        predicate: cudf_ast_expression_handle,
+        output_size: usize,
+        out_indices: *mut cudf_column_handle,
+        options: *const cudf_exec_options_t,
+    ) -> cudf_status_t;
+
+    pub fn cudf_conditional_left_anti_join_size(
+        left: cudf_table_view_handle,
+        right: cudf_table_view_handle,
+        predicate: cudf_ast_expression_handle,
+        out: *mut usize,
+    ) -> cudf_status_t;
+
+    pub fn cudf_conditional_left_anti_join_size_ex(
+        left: cudf_table_view_handle,
+        right: cudf_table_view_handle,
+        predicate: cudf_ast_expression_handle,
+        out: *mut usize,
         options: *const cudf_exec_options_t,
     ) -> cudf_status_t;
 

@@ -6,7 +6,11 @@ use super::{
 use crate::{
     Expr, JoinType, Result,
     frame::series::Series,
-    ops::{ast::AstExpression, join::MergeOptions, sorting::SortOptions},
+    ops::{
+        ast::AstExpression,
+        join::{MergeOptions, SizedConditionalPairJoinType},
+        sorting::SortOptions,
+    },
     runtime::ExecutionOverrides,
 };
 
@@ -158,6 +162,40 @@ impl<'df, 'ctx, 'handles> DataFrameExecutionScope<'df, 'ctx, 'handles> {
         self.df.conditional_join_indices_in_context(right, predicate, options, JoinType::Inner, self.ctx)
     }
 
+    /// Return the exact conditional inner join row count using the borrowed execution override.
+    pub fn conditional_inner_join_size(
+        &self,
+        right: &DataFrame,
+        predicate: &AstExpression,
+        options: DataFramePredicateJoinOptions,
+    ) -> Result<usize> {
+        self.df.conditional_join_size_in_context(
+            right,
+            predicate,
+            options,
+            SizedConditionalPairJoinType::Inner,
+            self.ctx,
+        )
+    }
+
+    /// Produce conditional inner join row-index pairs using an exact caller-supplied output row count.
+    pub fn conditional_inner_join_indices_with_output_size(
+        &self,
+        right: &DataFrame,
+        predicate: &AstExpression,
+        options: DataFramePredicateJoinOptions,
+        output_size: usize,
+    ) -> Result<DataFrameJoinPairIndices> {
+        self.df.conditional_join_indices_with_output_size_in_context(
+            right,
+            predicate,
+            options,
+            SizedConditionalPairJoinType::Inner,
+            output_size,
+            self.ctx,
+        )
+    }
+
     /// Produce conditional left join row-index pairs using the borrowed execution override.
     pub fn conditional_left_join_indices(
         &self,
@@ -166,6 +204,40 @@ impl<'df, 'ctx, 'handles> DataFrameExecutionScope<'df, 'ctx, 'handles> {
         options: DataFramePredicateJoinOptions,
     ) -> Result<DataFrameJoinPairIndices> {
         self.df.conditional_join_indices_in_context(right, predicate, options, JoinType::Left, self.ctx)
+    }
+
+    /// Return the exact conditional left join row count using the borrowed execution override.
+    pub fn conditional_left_join_size(
+        &self,
+        right: &DataFrame,
+        predicate: &AstExpression,
+        options: DataFramePredicateJoinOptions,
+    ) -> Result<usize> {
+        self.df.conditional_join_size_in_context(
+            right,
+            predicate,
+            options,
+            SizedConditionalPairJoinType::Left,
+            self.ctx,
+        )
+    }
+
+    /// Produce conditional left join row-index pairs using an exact caller-supplied output row count.
+    pub fn conditional_left_join_indices_with_output_size(
+        &self,
+        right: &DataFrame,
+        predicate: &AstExpression,
+        options: DataFramePredicateJoinOptions,
+        output_size: usize,
+    ) -> Result<DataFrameJoinPairIndices> {
+        self.df.conditional_join_indices_with_output_size_in_context(
+            right,
+            predicate,
+            options,
+            SizedConditionalPairJoinType::Left,
+            output_size,
+            self.ctx,
+        )
     }
 
     /// Produce conditional full join row-index pairs using the borrowed execution override.
@@ -188,6 +260,34 @@ impl<'df, 'ctx, 'handles> DataFrameExecutionScope<'df, 'ctx, 'handles> {
         self.df.conditional_single_side_join_indices_in_context(right, predicate, options, true, self.ctx)
     }
 
+    /// Return the exact conditional left semi join row count using the borrowed execution override.
+    pub fn conditional_left_semi_join_size(
+        &self,
+        right: &DataFrame,
+        predicate: &AstExpression,
+        options: DataFramePredicateJoinOptions,
+    ) -> Result<usize> {
+        self.df.conditional_single_side_join_size_in_context(right, predicate, options, true, self.ctx)
+    }
+
+    /// Produce conditional left semi join indices using an exact caller-supplied output row count.
+    pub fn conditional_left_semi_join_indices_with_output_size(
+        &self,
+        right: &DataFrame,
+        predicate: &AstExpression,
+        options: DataFramePredicateJoinOptions,
+        output_size: usize,
+    ) -> Result<DataFrameJoinIndices> {
+        self.df.conditional_single_side_join_indices_with_output_size_in_context(
+            right,
+            predicate,
+            options,
+            true,
+            output_size,
+            self.ctx,
+        )
+    }
+
     /// Produce conditional left anti join indices using the borrowed execution override.
     pub fn conditional_left_anti_join_indices(
         &self,
@@ -196,6 +296,34 @@ impl<'df, 'ctx, 'handles> DataFrameExecutionScope<'df, 'ctx, 'handles> {
         options: DataFramePredicateJoinOptions,
     ) -> Result<DataFrameJoinIndices> {
         self.df.conditional_single_side_join_indices_in_context(right, predicate, options, false, self.ctx)
+    }
+
+    /// Return the exact conditional left anti join row count using the borrowed execution override.
+    pub fn conditional_left_anti_join_size(
+        &self,
+        right: &DataFrame,
+        predicate: &AstExpression,
+        options: DataFramePredicateJoinOptions,
+    ) -> Result<usize> {
+        self.df.conditional_single_side_join_size_in_context(right, predicate, options, false, self.ctx)
+    }
+
+    /// Produce conditional left anti join indices using an exact caller-supplied output row count.
+    pub fn conditional_left_anti_join_indices_with_output_size(
+        &self,
+        right: &DataFrame,
+        predicate: &AstExpression,
+        options: DataFramePredicateJoinOptions,
+        output_size: usize,
+    ) -> Result<DataFrameJoinIndices> {
+        self.df.conditional_single_side_join_indices_with_output_size_in_context(
+            right,
+            predicate,
+            options,
+            false,
+            output_size,
+            self.ctx,
+        )
     }
 
     /// Produce mixed inner join row-index pairs using the borrowed execution override.
