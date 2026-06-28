@@ -1,7 +1,7 @@
 use super::{
-    DataFrame, DataFrameCrossJoinOptions, DataFrameHashJoin, DataFrameHashJoinOptions, DataFrameJoinIndices,
-    DataFrameJoinOptions, DataFrameJoinPairIndices, DataFrameJoinSides, DataFrameMixedJoinOptions,
-    DataFramePredicateJoinOptions, DropDuplicatesOptions, DropNaOptions, WithColumnExpr,
+    DataFrame, DataFrameCrossJoinOptions, DataFrameFilteredJoin, DataFrameFilteredJoinOptions, DataFrameHashJoin,
+    DataFrameHashJoinOptions, DataFrameJoinIndices, DataFrameJoinOptions, DataFrameJoinPairIndices, DataFrameJoinSides,
+    DataFrameMixedJoinOptions, DataFramePredicateJoinOptions, DropDuplicatesOptions, DropNaOptions, WithColumnExpr,
 };
 use crate::{
     Expr, JoinType, Result,
@@ -150,6 +150,33 @@ impl<'df, 'ctx, 'handles> DataFrameExecutionScope<'df, 'ctx, 'handles> {
         S: AsRef<str>,
     {
         self.df.hash_join_pre_build_reservation_size_bytes_in_context(build_on, options, self.ctx)
+    }
+
+    /// Build a reusable filtered-join artifact using the borrowed execution override.
+    pub fn build_filtered_join<I, S>(
+        &self,
+        build_on: I,
+        options: DataFrameFilteredJoinOptions,
+    ) -> Result<DataFrameFilteredJoin>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        self.df.build_filtered_join_in_context(build_on, options, self.ctx)
+    }
+
+    /// Return exact pre-build reservation bytes for a reusable filtered-join
+    /// artifact using the borrowed execution override.
+    pub fn filtered_join_pre_build_reservation_size_bytes<I, S>(
+        &self,
+        build_on: I,
+        options: DataFrameFilteredJoinOptions,
+    ) -> Result<usize>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        self.df.filtered_join_pre_build_reservation_size_bytes_in_context(build_on, options, self.ctx)
     }
 
     /// Produce conditional inner join row-index pairs using the borrowed execution override.

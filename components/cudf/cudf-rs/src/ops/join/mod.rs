@@ -58,7 +58,7 @@ mod dataframe;
 mod options;
 pub(crate) mod testing_hooks;
 
-pub use options::{HashJoinOptions, JoinType, MergeOptions, NullEquality, NullableJoin};
+pub use options::{FilteredJoinOptions, HashJoinOptions, JoinType, MergeOptions, NullEquality, NullableJoin};
 
 use crate::{
     core::{
@@ -2446,9 +2446,20 @@ struct HashJoinHandle {
     _domain: Arc<ExecutionDomain>,
 }
 
+struct FilteredJoinHandle {
+    handle: NonNull<c_void>,
+    _domain: Arc<ExecutionDomain>,
+}
+
 impl fmt::Debug for HashJoinHandle {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("HashJoinHandle").field("handle", &self.handle).finish()
+    }
+}
+
+impl fmt::Debug for FilteredJoinHandle {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("FilteredJoinHandle").field("handle", &self.handle).finish()
     }
 }
 
@@ -2458,9 +2469,21 @@ impl fmt::Debug for HashJoinHandle {
 unsafe impl Send for HashJoinHandle {}
 unsafe impl Sync for HashJoinHandle {}
 
+// SAFETY: libcudf `filtered_join` is documented as reusable for repeated
+// probes. The safe wrapper retains the build table so the borrowed build-side
+// device memory outlives the handle.
+unsafe impl Send for FilteredJoinHandle {}
+unsafe impl Sync for FilteredJoinHandle {}
+
 impl Drop for HashJoinHandle {
     fn drop(&mut self) {
         unsafe { cudf_sys::cudf_hash_join_destroy(self.handle.as_ptr()) };
+    }
+}
+
+impl Drop for FilteredJoinHandle {
+    fn drop(&mut self) {
+        unsafe { cudf_sys::cudf_filtered_join_destroy(self.handle.as_ptr()) };
     }
 }
 
@@ -2481,9 +2504,31 @@ pub struct HashJoin {
     options: HashJoinOptions,
 }
 
+/// Reusable filtered-join build artifact for equality left semi/anti probes.
+///
+/// `FilteredJoin` owns the right/build key table and a libcudf filtered-join
+/// hash table that borrows that build table's device memory. Probe methods
+/// return `INT32` device gather maps indexing rows in the left/probe table;
+/// they do not gather payload columns.
+#[derive(Clone)]
+pub struct FilteredJoin {
+    handle: Arc<FilteredJoinHandle>,
+    build: Arc<Table>,
+    options: FilteredJoinOptions,
+}
+
 impl fmt::Debug for HashJoin {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("HashJoin")
+            .field("options", &self.options)
+            .field("placement", &self.build.execution_domain().placement())
+            .finish()
+    }
+}
+
+impl fmt::Debug for FilteredJoin {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("FilteredJoin")
             .field("options", &self.options)
             .field("placement", &self.build.execution_domain().placement())
             .finish()
@@ -3096,6 +3141,335 @@ impl HashJoin {
         Ok(JoinIndices {
             left: unsafe { Column::from_raw_with_domain(out_left, Arc::clone(output_domain)) }?,
             right: unsafe { Column::from_raw_with_domain(out_right, Arc::clone(output_domain)) }?,
+        })
+    }
+}
+
+impl FilteredJoin {
+    /// Return exact device bytes that must be reserved before building a
+    /// reusable filtered-join artifact from this right-side build key table.
+    ///
+    /// This is a planning contract for bounded engines. libcudf does not
+    /// expose a formula-only filtered-join sizing entry point, so the FFI shim
+    /// builds the artifact against an observing memory resource, reports the
+    /// retained bytes, and immediately releases it.
+    pub fn pre_build_reservation_size_bytes(build: &Table, options: FilteredJoinOptions) -> Result<usize> {
+        let ctx = ExecutionOverrides::new();
+        Self::pre_build_reservation_size_bytes_in(build, options, &ctx)
+    }
+
+    /// Return exact device bytes that must be reserved before building a
+    /// reusable filtered-join artifact using a borrowed execution override.
+    pub fn pre_build_reservation_size_bytes_in(
+        build: &Table,
+        options: FilteredJoinOptions,
+        ctx: &ExecutionOverrides<'_>,
+    ) -> Result<usize> {
+        Self::pre_build_reservation_size_bytes_with_context(
+            build,
+            options,
+            ctx,
+            "filtered_join::pre_build_reservation_size_bytes_in",
+        )
+    }
+
+    /// Build a reusable filtered-join artifact from an owned right-side build key table.
+    pub fn new(build: Table, options: FilteredJoinOptions) -> Result<Self> {
+        let ctx = ExecutionOverrides::new();
+        Self::new_with_context(build, options, &ctx, "filtered_join::new")
+    }
+
+    /// Build a reusable filtered-join artifact using a borrowed execution override.
+    pub fn new_in(build: Table, options: FilteredJoinOptions, ctx: &ExecutionOverrides<'_>) -> Result<Self> {
+        Self::new_with_context(build, options, ctx, "filtered_join::new_in")
+    }
+
+    fn pre_build_reservation_size_bytes_with_context(
+        build: &Table,
+        options: FilteredJoinOptions,
+        ctx: &ExecutionOverrides<'_>,
+        operation: &'static str,
+    ) -> Result<usize> {
+        let build_view = build.view().map_err(|e| e.reanchor_if_needed(operation))?;
+        Self::pre_build_reservation_size_bytes_for_view(&build_view, options, ctx, operation)
+    }
+
+    pub(crate) fn pre_build_reservation_size_bytes_for_view(
+        build_view: &TableView<'_>,
+        options: FilteredJoinOptions,
+        ctx: &ExecutionOverrides<'_>,
+        operation: &'static str,
+    ) -> Result<usize> {
+        let execution = ResolvedExecution::unary(build_view.execution_domain(), ctx, operation)?;
+        let mut out = 0usize;
+        error::check_status_in_with_details(
+            unsafe {
+                cudf_sys::cudf_filtered_join_pre_build_reservation_size_ex(
+                    build_view.raw_handle(),
+                    options.null_eq().to_join_raw(),
+                    options.load_factor_value(),
+                    &mut out,
+                    execution.exec_options(),
+                )
+            },
+            operation,
+            [
+                ("null_equality", format!("{:?}", options.null_eq()).to_lowercase()),
+                ("load_factor", options.load_factor_value().to_string()),
+                ("execution_context_provided", true.to_string()),
+                ("reservation_contract", "filtered_join_pre_build_reservation_size_bytes".to_string()),
+            ],
+        )?;
+        Ok(out)
+    }
+
+    fn new_with_context(
+        build: Table,
+        options: FilteredJoinOptions,
+        ctx: &ExecutionOverrides<'_>,
+        operation: &'static str,
+    ) -> Result<Self> {
+        let handle = {
+            let build_view = build.view().map_err(|e| e.reanchor_if_needed(operation))?;
+            let execution = ResolvedExecution::unary(build.execution_domain(), ctx, operation)?;
+            let mut handle = ptr::null_mut();
+            error::check_status_in_with_details(
+                unsafe {
+                    cudf_sys::cudf_filtered_join_create_ex(
+                        build_view.raw_handle(),
+                        options.null_eq().to_join_raw(),
+                        options.load_factor_value(),
+                        &mut handle,
+                        execution.exec_options(),
+                    )
+                },
+                operation,
+                [
+                    ("null_equality", format!("{:?}", options.null_eq()).to_lowercase()),
+                    ("load_factor", options.load_factor_value().to_string()),
+                    ("execution_context_provided", true.to_string()),
+                ],
+            )?;
+            FilteredJoinHandle {
+                handle: error::require_non_null(handle, operation, "filtered join")?,
+                _domain: Arc::clone(execution.output_domain()),
+            }
+        };
+
+        Ok(Self { handle: Arc::new(handle), build: Arc::new(build), options })
+    }
+
+    /// Returns the retained right-side build key table.
+    pub fn build_keys(&self) -> &Table {
+        &self.build
+    }
+
+    /// Returns the options used when this filtered join was built.
+    pub fn options(&self) -> FilteredJoinOptions {
+        self.options
+    }
+
+    /// Returns the configured null equality setting.
+    pub fn null_eq(&self) -> NullEquality {
+        self.options.null_eq()
+    }
+
+    /// Returns the configured hash-table load factor.
+    pub fn load_factor_value(&self) -> f64 {
+        self.options.load_factor_value()
+    }
+
+    /// Returns bytes retained by this reusable filtered-join build artifact.
+    ///
+    /// This excludes the retained build key table and any per-probe output
+    /// index allocations.
+    pub fn device_allocated_size_bytes(&self) -> Result<usize> {
+        let mut out = 0usize;
+        error::check_status_in(
+            unsafe { cudf_sys::cudf_filtered_join_device_allocated_size(self.handle.handle.as_ptr(), &mut out) },
+            "filtered_join::device_allocated_size_bytes",
+        )?;
+        Ok(out)
+    }
+
+    /// Return the exact output row count for a left semi probe.
+    pub fn left_semi_join_size(&self, probe_keys: &TableView<'_>) -> Result<usize> {
+        let ctx = ExecutionOverrides::new();
+        self.probe_size_with_context(probe_keys, true, &ctx, "filtered_join::left_semi_join_size")
+    }
+
+    /// Return the exact output row count for a left semi probe using a borrowed execution override.
+    pub fn left_semi_join_size_in(&self, probe_keys: &TableView<'_>, ctx: &ExecutionOverrides<'_>) -> Result<usize> {
+        self.probe_size_with_context(probe_keys, true, ctx, "filtered_join::left_semi_join_size_in")
+    }
+
+    /// Return the exact output row count for a left anti probe.
+    pub fn left_anti_join_size(&self, probe_keys: &TableView<'_>) -> Result<usize> {
+        let ctx = ExecutionOverrides::new();
+        self.probe_size_with_context(probe_keys, false, &ctx, "filtered_join::left_anti_join_size")
+    }
+
+    /// Return the exact output row count for a left anti probe using a borrowed execution override.
+    pub fn left_anti_join_size_in(&self, probe_keys: &TableView<'_>, ctx: &ExecutionOverrides<'_>) -> Result<usize> {
+        self.probe_size_with_context(probe_keys, false, ctx, "filtered_join::left_anti_join_size_in")
+    }
+
+    /// Probe with left semi semantics using an exact caller-supplied output row count.
+    pub fn left_semi_join_indices_with_output_size(
+        &self,
+        probe_keys: &TableView<'_>,
+        output_size: usize,
+    ) -> Result<SingleSideJoinIndices> {
+        let ctx = ExecutionOverrides::new();
+        self.probe_indices_with_output_size_in(
+            probe_keys,
+            true,
+            output_size,
+            &ctx,
+            "filtered_join::left_semi_join_indices_with_output_size",
+        )
+    }
+
+    /// Probe with left semi semantics using a borrowed execution override and
+    /// an exact caller-supplied output row count.
+    pub fn left_semi_join_indices_with_output_size_in(
+        &self,
+        probe_keys: &TableView<'_>,
+        output_size: usize,
+        ctx: &ExecutionOverrides<'_>,
+    ) -> Result<SingleSideJoinIndices> {
+        self.probe_indices_with_output_size_in(
+            probe_keys,
+            true,
+            output_size,
+            ctx,
+            "filtered_join::left_semi_join_indices_with_output_size_in",
+        )
+    }
+
+    /// Probe with left anti semantics using an exact caller-supplied output row count.
+    pub fn left_anti_join_indices_with_output_size(
+        &self,
+        probe_keys: &TableView<'_>,
+        output_size: usize,
+    ) -> Result<SingleSideJoinIndices> {
+        let ctx = ExecutionOverrides::new();
+        self.probe_indices_with_output_size_in(
+            probe_keys,
+            false,
+            output_size,
+            &ctx,
+            "filtered_join::left_anti_join_indices_with_output_size",
+        )
+    }
+
+    /// Probe with left anti semantics using a borrowed execution override and
+    /// an exact caller-supplied output row count.
+    pub fn left_anti_join_indices_with_output_size_in(
+        &self,
+        probe_keys: &TableView<'_>,
+        output_size: usize,
+        ctx: &ExecutionOverrides<'_>,
+    ) -> Result<SingleSideJoinIndices> {
+        self.probe_indices_with_output_size_in(
+            probe_keys,
+            false,
+            output_size,
+            ctx,
+            "filtered_join::left_anti_join_indices_with_output_size_in",
+        )
+    }
+
+    fn probe_size_with_context(
+        &self,
+        probe_keys: &TableView<'_>,
+        semi_join: bool,
+        ctx: &ExecutionOverrides<'_>,
+        operation: &'static str,
+    ) -> Result<usize> {
+        let execution =
+            ResolvedExecution::many(probe_keys.execution_domain(), [self.build.execution_domain()], ctx, operation)?;
+        let mut out = 0usize;
+        let status = if semi_join {
+            unsafe {
+                cudf_sys::cudf_filtered_join_left_semi_join_size_ex(
+                    self.handle.handle.as_ptr(),
+                    probe_keys.raw_handle(),
+                    &mut out,
+                    execution.exec_options(),
+                )
+            }
+        } else {
+            unsafe {
+                cudf_sys::cudf_filtered_join_left_anti_join_size_ex(
+                    self.handle.handle.as_ptr(),
+                    probe_keys.raw_handle(),
+                    &mut out,
+                    execution.exec_options(),
+                )
+            }
+        };
+
+        error::check_status_in_with_details(
+            status,
+            operation,
+            [
+                ("join_type", if semi_join { "left_semi" } else { "left_anti" }.to_string()),
+                ("null_equality", format!("{:?}", self.options.null_eq()).to_lowercase()),
+                ("execution_context_provided", true.to_string()),
+                ("reservation_contract", "filtered_join_exact_output_size".to_string()),
+            ],
+        )?;
+        Ok(out)
+    }
+
+    fn probe_indices_with_output_size_in(
+        &self,
+        probe_keys: &TableView<'_>,
+        semi_join: bool,
+        output_size: usize,
+        ctx: &ExecutionOverrides<'_>,
+        operation: &'static str,
+    ) -> Result<SingleSideJoinIndices> {
+        let execution =
+            ResolvedExecution::many(probe_keys.execution_domain(), [self.build.execution_domain()], ctx, operation)?;
+        let mut out = ptr::null_mut();
+        let status = if semi_join {
+            unsafe {
+                cudf_sys::cudf_filtered_join_left_semi_join_with_output_size_ex(
+                    self.handle.handle.as_ptr(),
+                    probe_keys.raw_handle(),
+                    output_size,
+                    &mut out,
+                    execution.exec_options(),
+                )
+            }
+        } else {
+            unsafe {
+                cudf_sys::cudf_filtered_join_left_anti_join_with_output_size_ex(
+                    self.handle.handle.as_ptr(),
+                    probe_keys.raw_handle(),
+                    output_size,
+                    &mut out,
+                    execution.exec_options(),
+                )
+            }
+        };
+
+        error::check_status_in_with_details(
+            status,
+            operation,
+            [
+                ("join_type", if semi_join { "left_semi" } else { "left_anti" }.to_string()),
+                ("null_equality", format!("{:?}", self.options.null_eq()).to_lowercase()),
+                ("execution_context_provided", true.to_string()),
+                ("output_size_provided", true.to_string()),
+                ("output_size", output_size.to_string()),
+            ],
+        )?;
+
+        Ok(SingleSideJoinIndices {
+            indices: unsafe { Column::from_raw_with_domain(out, Arc::clone(execution.output_domain())) }?,
         })
     }
 }

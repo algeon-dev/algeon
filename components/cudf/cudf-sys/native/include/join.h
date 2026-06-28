@@ -37,6 +37,9 @@ typedef enum {
 /// Opaque handle to a reusable libcudf distinct-hash-join build artifact.
 typedef void* cudf_distinct_hash_join_handle;
 
+/// Opaque handle to a reusable libcudf filtered-join build artifact.
+typedef void* cudf_filtered_join_handle;
+
 /// Opaque handle to a reusable libcudf hash-join build artifact.
 typedef void* cudf_hash_join_handle;
 
@@ -643,6 +646,105 @@ cudf_status_t cudf_distinct_hash_join_left_join_ex(cudf_distinct_hash_join_handl
                                                    cudf_table_view_handle probe,
                                                    cudf_column_handle* out,
                                                    const cudf_exec_options_t* options);
+
+/// Build a reusable filtered-join artifact from a right-side build-key table.
+///
+/// The returned handle borrows the underlying build-column device memory, so
+/// the owning columns must outlive the join handle. Probes return left/probe
+/// row indices for equality left semi/anti joins.
+cudf_status_t cudf_filtered_join_create(cudf_table_view_handle build,
+                                        cudf_null_equality_t null_equality,
+                                        double load_factor,
+                                        cudf_filtered_join_handle* out);
+
+/// Build a reusable filtered-join artifact with explicit execution context.
+cudf_status_t cudf_filtered_join_create_ex(cudf_table_view_handle build,
+                                           cudf_null_equality_t null_equality,
+                                           double load_factor,
+                                           cudf_filtered_join_handle* out,
+                                           const cudf_exec_options_t* options);
+
+/// Return exact retained device bytes that must be reserved before building a
+/// reusable filtered-join artifact.
+///
+/// libcudf does not expose a formula-only filtered-join sizing API. This
+/// contract constructs the artifact against an observing memory resource,
+/// reports retained bytes, and immediately releases it.
+cudf_status_t cudf_filtered_join_pre_build_reservation_size(cudf_table_view_handle build,
+                                                            cudf_null_equality_t null_equality,
+                                                            double load_factor,
+                                                            size_t* out);
+
+/// Return exact retained filtered-join build bytes with explicit execution context.
+cudf_status_t cudf_filtered_join_pre_build_reservation_size_ex(cudf_table_view_handle build,
+                                                               cudf_null_equality_t null_equality,
+                                                               double load_factor,
+                                                               size_t* out,
+                                                               const cudf_exec_options_t* options);
+
+/// Destroy a reusable filtered-join handle under its build-time device and
+/// memory resource.
+void cudf_filtered_join_destroy(cudf_filtered_join_handle handle);
+
+/// Return device bytes retained by a reusable filtered-join build artifact.
+cudf_status_t cudf_filtered_join_device_allocated_size(cudf_filtered_join_handle handle,
+                                                       size_t* out);
+
+/// Return the exact row count for a left semi probe.
+cudf_status_t cudf_filtered_join_left_semi_join_size(cudf_filtered_join_handle join,
+                                                     cudf_table_view_handle probe,
+                                                     size_t* out);
+
+/// Return the exact row count for a left semi probe with explicit execution context.
+cudf_status_t cudf_filtered_join_left_semi_join_size_ex(cudf_filtered_join_handle join,
+                                                        cudf_table_view_handle probe,
+                                                        size_t* out,
+                                                        const cudf_exec_options_t* options);
+
+/// Return the exact row count for a left anti probe.
+cudf_status_t cudf_filtered_join_left_anti_join_size(cudf_filtered_join_handle join,
+                                                     cudf_table_view_handle probe,
+                                                     size_t* out);
+
+/// Return the exact row count for a left anti probe with explicit execution context.
+cudf_status_t cudf_filtered_join_left_anti_join_size_ex(cudf_filtered_join_handle join,
+                                                        cudf_table_view_handle probe,
+                                                        size_t* out,
+                                                        const cudf_exec_options_t* options);
+
+/// Probe a reusable filtered join for left semi gather indices with an exact
+/// caller-supplied output row count.
+///
+/// libcudf filtered joins do not accept an output-size hint. This shim validates
+/// the caller-supplied size against the produced index count before returning.
+cudf_status_t cudf_filtered_join_left_semi_join_with_output_size(cudf_filtered_join_handle join,
+                                                                 cudf_table_view_handle probe,
+                                                                 size_t output_size,
+                                                                 cudf_column_handle* out_indices);
+
+/// Probe a reusable filtered join for left semi gather indices with explicit execution context.
+cudf_status_t cudf_filtered_join_left_semi_join_with_output_size_ex(cudf_filtered_join_handle join,
+                                                                    cudf_table_view_handle probe,
+                                                                    size_t output_size,
+                                                                    cudf_column_handle* out_indices,
+                                                                    const cudf_exec_options_t* options);
+
+/// Probe a reusable filtered join for left anti gather indices with an exact
+/// caller-supplied output row count.
+///
+/// libcudf filtered joins do not accept an output-size hint. This shim validates
+/// the caller-supplied size against the produced index count before returning.
+cudf_status_t cudf_filtered_join_left_anti_join_with_output_size(cudf_filtered_join_handle join,
+                                                                 cudf_table_view_handle probe,
+                                                                 size_t output_size,
+                                                                 cudf_column_handle* out_indices);
+
+/// Probe a reusable filtered join for left anti gather indices with explicit execution context.
+cudf_status_t cudf_filtered_join_left_anti_join_with_output_size_ex(cudf_filtered_join_handle join,
+                                                                    cudf_table_view_handle probe,
+                                                                    size_t output_size,
+                                                                    cudf_column_handle* out_indices,
+                                                                    const cudf_exec_options_t* options);
 
 /// Build a reusable hash-join artifact from a build-key table.
 ///
