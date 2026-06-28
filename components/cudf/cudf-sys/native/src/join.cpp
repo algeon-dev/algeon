@@ -131,6 +131,16 @@ struct filtered_join_owner {
   int32_t device                          = 0;
 };
 
+struct filtered_join_probe_owner {
+  std::shared_ptr<void> upstream_mr_lifetime;
+  std::unique_ptr<rmm::mr::statistics_resource_adaptor<rmm::mr::device_memory_resource>>
+    observed_mr;
+  std::unique_ptr<cudf::filtered_join_probe_state> probe;
+  rmm::mr::device_memory_resource* mr_raw = nullptr;
+  std::size_t device_allocated_size_bytes = 0;
+  int32_t device                          = 0;
+};
+
 struct hash_join_owner {
   std::shared_ptr<void> upstream_mr_lifetime;
   std::unique_ptr<rmm::mr::statistics_resource_adaptor<rmm::mr::device_memory_resource>>
@@ -624,6 +634,72 @@ cudf_status_t filtered_join_indices_with_output_size_impl(cudf_filtered_join_han
       CUDF_EXPECTS(indices->size() == output_size,
                    "filtered join output_size does not match produced index count",
                    std::invalid_argument);
+      *out_indices = cudf_release_column_handle(release_join_index_column(std::move(indices)),
+                                                cudf_capture_exec_provenance(exec));
+    }
+    return CUDF_SUCCESS;
+  }
+  CUDF_RUST_CATCH
+}
+
+cudf_status_t filtered_join_begin_probe_impl(cudf_filtered_join_handle join,
+                                             cudf_table_view_handle probe,
+                                             cudf_filtered_join_probe_handle* out,
+                                             cudf_exec_options_t const* options,
+                                             filtered_join_probe_kind kind)
+{
+  CUDF_RUST_NULL_CHECK(out, "out is null");
+  *out = nullptr;
+  CUDF_RUST_NULL_CHECK(join, "join is null");
+  CUDF_RUST_NULL_CHECK(probe, "probe is null");
+  CUDF_RUST_TRY
+  {
+    cudf_exec_context exec          = cudf_make_exec_context();
+    cudf_status_t const exec_status = cudf_resolve_exec_options(options, &exec);
+    if (exec_status != CUDF_SUCCESS) { return exec_status; }
+
+    auto* owner      = static_cast<filtered_join_owner*>(join);
+    auto* probe_view = static_cast<cudf::table_view*>(probe);
+    auto probe_owner = std::make_unique<filtered_join_probe_owner>();
+    probe_owner->device               = exec.device;
+    probe_owner->upstream_mr_lifetime = exec.mr_lifetime;
+    probe_owner->observed_mr =
+      std::make_unique<rmm::mr::statistics_resource_adaptor<rmm::mr::device_memory_resource>>(
+        exec.mr);
+    probe_owner->mr_raw = probe_owner->observed_mr.get();
+    {
+      cudf_current_device_resource_guard current_mr{probe_owner->mr_raw};
+      auto const observed_mr_ref = cudf::get_current_device_resource_ref();
+      probe_owner->probe = kind == filtered_join_probe_kind::semi
+                             ? owner->join->begin_left_semi_probe(*probe_view, exec.stream, observed_mr_ref)
+                             : owner->join->begin_left_anti_probe(*probe_view, exec.stream, observed_mr_ref);
+      auto const bytes = probe_owner->observed_mr->get_bytes_counter().value;
+      probe_owner->device_allocated_size_bytes = bytes > 0 ? static_cast<std::size_t>(bytes) : 0;
+    }
+    *out = static_cast<cudf_filtered_join_probe_handle>(probe_owner.release());
+    return CUDF_SUCCESS;
+  }
+  CUDF_RUST_CATCH
+}
+
+cudf_status_t filtered_join_probe_materialize_indices_impl(
+  cudf_filtered_join_probe_handle handle,
+  cudf_column_handle* out_indices,
+  cudf_exec_options_t const* options)
+{
+  CUDF_RUST_NULL_CHECK(out_indices, "out_indices is null");
+  *out_indices = nullptr;
+  CUDF_RUST_NULL_CHECK(handle, "filtered join probe is null");
+  CUDF_RUST_TRY
+  {
+    cudf_exec_context exec          = cudf_make_exec_context();
+    cudf_status_t const exec_status = cudf_resolve_exec_options(options, &exec);
+    if (exec_status != CUDF_SUCCESS) { return exec_status; }
+
+    auto* owner = static_cast<filtered_join_probe_owner*>(handle);
+    {
+      cudf_current_device_resource_guard current_mr{exec.mr_raw};
+      auto indices = owner->probe->materialize_indices(exec.stream, exec.mr);
       *out_indices = cudf_release_column_handle(release_join_index_column(std::move(indices)),
                                                 cudf_capture_exec_provenance(exec));
     }
@@ -1792,6 +1868,95 @@ cudf_status_t cudf_filtered_join_device_allocated_size(cudf_filtered_join_handle
     return CUDF_SUCCESS;
   }
   CUDF_RUST_CATCH
+}
+
+cudf_status_t cudf_filtered_join_begin_left_semi_probe(cudf_filtered_join_handle join,
+                                                       cudf_table_view_handle probe,
+                                                       cudf_filtered_join_probe_handle* out)
+{
+  return cudf_filtered_join_begin_left_semi_probe_ex(join, probe, out, nullptr);
+}
+
+cudf_status_t cudf_filtered_join_begin_left_semi_probe_ex(cudf_filtered_join_handle join,
+                                                          cudf_table_view_handle probe,
+                                                          cudf_filtered_join_probe_handle* out,
+                                                          cudf_exec_options_t const* options)
+{
+  return filtered_join_begin_probe_impl(join, probe, out, options, filtered_join_probe_kind::semi);
+}
+
+cudf_status_t cudf_filtered_join_begin_left_anti_probe(cudf_filtered_join_handle join,
+                                                       cudf_table_view_handle probe,
+                                                       cudf_filtered_join_probe_handle* out)
+{
+  return cudf_filtered_join_begin_left_anti_probe_ex(join, probe, out, nullptr);
+}
+
+cudf_status_t cudf_filtered_join_begin_left_anti_probe_ex(cudf_filtered_join_handle join,
+                                                          cudf_table_view_handle probe,
+                                                          cudf_filtered_join_probe_handle* out,
+                                                          cudf_exec_options_t const* options)
+{
+  return filtered_join_begin_probe_impl(join, probe, out, options, filtered_join_probe_kind::anti);
+}
+
+void cudf_filtered_join_probe_destroy(cudf_filtered_join_probe_handle handle)
+{
+  if (handle == nullptr) { return; }
+  cudf_clear_error();
+  try {
+    auto* owner = static_cast<filtered_join_probe_owner*>(handle);
+    cudf_device_guard device_guard;
+    cudf_status_t const device_status = device_guard.activate(owner->device);
+    if (device_status != CUDF_SUCCESS) { return; }
+    cudf_current_device_resource_guard current_mr{owner->mr_raw};
+    delete owner;
+  } catch (...) {
+    (void)translate_exception();
+  }
+}
+
+cudf_status_t cudf_filtered_join_probe_output_size(cudf_filtered_join_probe_handle handle,
+                                                   size_t* out)
+{
+  CUDF_RUST_NULL_CHECK(out, "out is null");
+  *out = 0;
+  CUDF_RUST_NULL_CHECK(handle, "filtered join probe is null");
+  CUDF_RUST_TRY
+  {
+    auto* owner = static_cast<filtered_join_probe_owner*>(handle);
+    *out        = static_cast<size_t>(owner->probe->output_size());
+    return CUDF_SUCCESS;
+  }
+  CUDF_RUST_CATCH
+}
+
+cudf_status_t cudf_filtered_join_probe_device_allocated_size(cudf_filtered_join_probe_handle handle,
+                                                             size_t* out)
+{
+  CUDF_RUST_NULL_CHECK(out, "out is null");
+  *out = 0;
+  CUDF_RUST_NULL_CHECK(handle, "filtered join probe is null");
+  CUDF_RUST_TRY
+  {
+    auto* owner = static_cast<filtered_join_probe_owner*>(handle);
+    *out        = owner->device_allocated_size_bytes;
+    return CUDF_SUCCESS;
+  }
+  CUDF_RUST_CATCH
+}
+
+cudf_status_t cudf_filtered_join_probe_materialize_indices(cudf_filtered_join_probe_handle handle,
+                                                           cudf_column_handle* out_indices)
+{
+  return cudf_filtered_join_probe_materialize_indices_ex(handle, out_indices, nullptr);
+}
+
+cudf_status_t cudf_filtered_join_probe_materialize_indices_ex(cudf_filtered_join_probe_handle handle,
+                                                              cudf_column_handle* out_indices,
+                                                              cudf_exec_options_t const* options)
+{
+  return filtered_join_probe_materialize_indices_impl(handle, out_indices, options);
 }
 
 cudf_status_t cudf_filtered_join_left_semi_join_size(cudf_filtered_join_handle join,

@@ -1,7 +1,8 @@
 use crate::{
     cudf_ast_expression_handle, cudf_column_handle, cudf_column_view_handle, cudf_distinct_hash_join_handle,
-    cudf_exec_options_t, cudf_filtered_join_handle, cudf_hash_join_handle, cudf_join_kind_t, cudf_null_equality_t,
-    cudf_nullable_join_t, cudf_status_t, cudf_table_handle, cudf_table_view_handle,
+    cudf_exec_options_t, cudf_filtered_join_handle, cudf_filtered_join_probe_handle, cudf_hash_join_handle,
+    cudf_join_kind_t, cudf_null_equality_t, cudf_nullable_join_t, cudf_status_t, cudf_table_handle,
+    cudf_table_view_handle,
 };
 
 extern "C" {
@@ -651,6 +652,55 @@ extern "C" {
     pub fn cudf_filtered_join_device_allocated_size(
         handle: cudf_filtered_join_handle,
         out: *mut usize,
+    ) -> cudf_status_t;
+
+    pub fn cudf_filtered_join_begin_left_semi_probe(
+        join: cudf_filtered_join_handle,
+        probe: cudf_table_view_handle,
+        out: *mut cudf_filtered_join_probe_handle,
+    ) -> cudf_status_t;
+
+    pub fn cudf_filtered_join_begin_left_semi_probe_ex(
+        join: cudf_filtered_join_handle,
+        probe: cudf_table_view_handle,
+        out: *mut cudf_filtered_join_probe_handle,
+        options: *const cudf_exec_options_t,
+    ) -> cudf_status_t;
+
+    pub fn cudf_filtered_join_begin_left_anti_probe(
+        join: cudf_filtered_join_handle,
+        probe: cudf_table_view_handle,
+        out: *mut cudf_filtered_join_probe_handle,
+    ) -> cudf_status_t;
+
+    pub fn cudf_filtered_join_begin_left_anti_probe_ex(
+        join: cudf_filtered_join_handle,
+        probe: cudf_table_view_handle,
+        out: *mut cudf_filtered_join_probe_handle,
+        options: *const cudf_exec_options_t,
+    ) -> cudf_status_t;
+
+    pub fn cudf_filtered_join_probe_destroy(handle: cudf_filtered_join_probe_handle);
+
+    pub fn cudf_filtered_join_probe_output_size(
+        handle: cudf_filtered_join_probe_handle,
+        out: *mut usize,
+    ) -> cudf_status_t;
+
+    pub fn cudf_filtered_join_probe_device_allocated_size(
+        handle: cudf_filtered_join_probe_handle,
+        out: *mut usize,
+    ) -> cudf_status_t;
+
+    pub fn cudf_filtered_join_probe_materialize_indices(
+        handle: cudf_filtered_join_probe_handle,
+        out_indices: *mut cudf_column_handle,
+    ) -> cudf_status_t;
+
+    pub fn cudf_filtered_join_probe_materialize_indices_ex(
+        handle: cudf_filtered_join_probe_handle,
+        out_indices: *mut cudf_column_handle,
+        options: *const cudf_exec_options_t,
     ) -> cudf_status_t;
 
     pub fn cudf_filtered_join_left_semi_join_size(

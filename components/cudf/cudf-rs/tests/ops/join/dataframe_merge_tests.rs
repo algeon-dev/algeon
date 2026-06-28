@@ -1,8 +1,8 @@
 //! Tests for the high-level `DataFrame::merge` API and `MergeOptions` / `JoinType`.
 use cudf::{
-    DataFrame, DataFrameHashJoinOptions, DataFrameHashJoinPairIndices, DataFrameJoinIndices, DataFrameJoinOptions,
-    DataFrameJoinPairIndices, ErrorCode, ErrorKind, ExecutionOverrides, JoinType, MergeOptions,
-    frame::dataframe::InfoDetail, testing::prelude::*,
+    DataFrame, DataFrameFilteredJoinOptions, DataFrameHashJoinOptions, DataFrameHashJoinPairIndices,
+    DataFrameJoinIndices, DataFrameJoinOptions, DataFrameJoinPairIndices, ErrorCode, ErrorKind, ExecutionOverrides,
+    JoinType, MergeOptions, frame::dataframe::InfoDetail, testing::prelude::*,
 };
 
 use crate::common::{
@@ -284,6 +284,41 @@ fn test_dataframe_full_join_indices_nullify_unmatched_sides() {
         nullable_i32_column(&left_rows, "score").into_iter().zip(nullable_i32_column(&right_rows, "value")).collect();
     rows.sort();
     assert_eq!(rows, vec![(None, Some(300)), (Some(10), None), (Some(20), Some(200))]);
+}
+
+#[test]
+fn test_dataframe_filtered_join_probe_state_materializes_without_second_size_probe() {
+    let rt = sample_runtime();
+    let build = DataFrame::from_series([("id", rt.series(&[2i32, 4]).unwrap())]).unwrap();
+    let probe = DataFrame::from_series([
+        ("pid", rt.series(&[1i32, 2, 2, 4]).unwrap()),
+        ("score", rt.series(&[10i32, 20, 21, 40]).unwrap()),
+    ])
+    .unwrap();
+
+    let filtered_join = build.build_filtered_join(["id"], DataFrameFilteredJoinOptions::new()).unwrap();
+    assert!(filtered_join.device_allocated_size_bytes().unwrap() > 0);
+
+    let semi_state = filtered_join.begin_left_semi_probe(&probe, ["pid"]).unwrap();
+    assert_eq!(semi_state.output_size(), 3);
+    assert!(semi_state.device_allocated_size_bytes().unwrap() > 0);
+    assert_eq!(
+        semi_state.probe_gather_map_reservation_size_bytes().unwrap(),
+        DataFrameJoinIndices::reservation_size_bytes_for_len(semi_state.output_size()).unwrap()
+    );
+    let semi_indices = semi_state.materialize_indices().unwrap();
+    assert_eq!(semi_indices.len(), 3);
+    let semi = filtered_join.materialize_probe(&probe, &semi_indices, ["score"]).unwrap();
+    let mut semi_scores = i32_column(&semi, "score");
+    semi_scores.sort();
+    assert_eq!(semi_scores, vec![20, 21, 40]);
+
+    let anti_state = filtered_join.begin_left_anti_probe(&probe, ["pid"]).unwrap();
+    assert_eq!(anti_state.output_size(), 1);
+    assert!(anti_state.device_allocated_size_bytes().unwrap() > 0);
+    let anti_indices = anti_state.materialize_indices().unwrap();
+    let anti = filtered_join.materialize_probe(&probe, &anti_indices, ["score"]).unwrap();
+    assert_eq!(i32_column(&anti, "score"), vec![10]);
 }
 
 #[test]
