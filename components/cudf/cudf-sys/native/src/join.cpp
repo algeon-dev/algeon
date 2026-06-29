@@ -111,7 +111,7 @@ enum class single_side_join_kind { semi, anti };
 
 enum class conditional_join_size_kind { inner, left, semi, anti };
 
-enum class mixed_join_size_kind { inner, left };
+enum class mixed_join_size_kind { inner, left, full, semi, anti };
 
 enum class hash_join_probe_kind { inner, left, full };
 
@@ -158,6 +158,8 @@ struct mixed_join_size_data_owner {
   std::unique_ptr<rmm::mr::statistics_resource_adaptor<rmm::mr::device_memory_resource>>
     observed_mr;
   std::unique_ptr<rmm::device_uvector<cudf::size_type>> matches_per_row;
+  std::unique_ptr<cudf::mixed_full_join_size_data> full_size_data;
+  std::unique_ptr<cudf::mixed_left_semi_anti_join_size_data> single_size_data;
   std::optional<cudf::table_view> left_equality;
   std::optional<cudf::table_view> right_equality;
   std::optional<cudf::table_view> left_conditional;
@@ -503,14 +505,38 @@ cudf_status_t mixed_join_size_data_impl(cudf_table_view_handle left_equality,
     {
       cudf_current_device_resource_guard current_mr{owner->mr_raw};
       auto const observed_mr_ref = cudf::get_current_device_resource_ref();
-      auto size_data             = kind == mixed_join_size_kind::inner
-                                     ? cudf::mixed_inner_join_size(
-                                         *le, *re, *lc, *rc, pred, null_eq, exec.stream, observed_mr_ref)
-                                     : cudf::mixed_left_join_size(
-                                         *le, *re, *lc, *rc, pred, null_eq, exec.stream, observed_mr_ref);
-      owner->output_size     = size_data.first;
-      owner->matches_per_row = std::move(size_data.second);
-      auto const bytes       = owner->observed_mr->get_bytes_counter().value;
+      switch (kind) {
+        case mixed_join_size_kind::inner: {
+          auto size_data = cudf::mixed_inner_join_size(
+            *le, *re, *lc, *rc, pred, null_eq, exec.stream, observed_mr_ref);
+          owner->output_size     = size_data.first;
+          owner->matches_per_row = std::move(size_data.second);
+          break;
+        }
+        case mixed_join_size_kind::left: {
+          auto size_data = cudf::mixed_left_join_size(
+            *le, *re, *lc, *rc, pred, null_eq, exec.stream, observed_mr_ref);
+          owner->output_size     = size_data.first;
+          owner->matches_per_row = std::move(size_data.second);
+          break;
+        }
+        case mixed_join_size_kind::full:
+          owner->full_size_data =
+            cudf::mixed_full_join_size(*le, *re, *lc, *rc, pred, null_eq, exec.stream, observed_mr_ref);
+          owner->output_size = owner->full_size_data->output_size();
+          break;
+        case mixed_join_size_kind::semi:
+          owner->single_size_data =
+            cudf::mixed_left_semi_join_size(*le, *re, *lc, *rc, pred, null_eq, exec.stream, observed_mr_ref);
+          owner->output_size = owner->single_size_data->output_size();
+          break;
+        case mixed_join_size_kind::anti:
+          owner->single_size_data =
+            cudf::mixed_left_anti_join_size(*le, *re, *lc, *rc, pred, null_eq, exec.stream, observed_mr_ref);
+          owner->output_size = owner->single_size_data->output_size();
+          break;
+      }
+      auto const bytes = owner->observed_mr->get_bytes_counter().value;
       owner->device_allocated_size_bytes = bytes > 0 ? static_cast<std::size_t>(bytes) : 0;
     }
     *out = static_cast<cudf_mixed_join_size_data_handle>(owner.release());
@@ -539,42 +565,89 @@ cudf_status_t mixed_join_size_data_materialize_indices_impl(
     auto* owner = static_cast<mixed_join_size_data_owner*>(size_data);
     CUDF_EXPECTS(owner->device == exec.device,
                  "mixed join size data must be materialized on its creation device");
-    CUDF_EXPECTS(owner->left_equality.has_value(), "mixed join size data missing left equality view");
-    CUDF_EXPECTS(owner->right_equality.has_value(), "mixed join size data missing right equality view");
-    CUDF_EXPECTS(owner->left_conditional.has_value(), "mixed join size data missing left conditional view");
-    CUDF_EXPECTS(owner->right_conditional.has_value(), "mixed join size data missing right conditional view");
-    CUDF_EXPECTS(owner->predicate != nullptr, "mixed join size data missing predicate");
-    auto const& pred = *owner->predicate->expression;
-    auto span = cudf::device_span<cudf::size_type const>{owner->matches_per_row->begin(),
-                                                         owner->matches_per_row->size()};
-    cudf::output_size_data_type output_size_data = std::make_pair(owner->output_size, span);
-
     {
       cudf_current_device_resource_guard current_mr{exec.mr_raw};
-      join_index_pair indices =
-        owner->kind == mixed_join_size_kind::inner
-          ? cudf::mixed_inner_join(*owner->left_equality,
-                                   *owner->right_equality,
-                                   *owner->left_conditional,
-                                   *owner->right_conditional,
-                                   pred,
-                                   owner->null_equality,
-                                   output_size_data,
-                                   exec.stream,
-                                   exec.mr)
-          : cudf::mixed_left_join(*owner->left_equality,
-                                  *owner->right_equality,
-                                  *owner->left_conditional,
-                                  *owner->right_conditional,
-                                  pred,
-                                  owner->null_equality,
-                                  output_size_data,
-                                  exec.stream,
-                                  exec.mr);
+      join_index_pair indices;
+      switch (owner->kind) {
+        case mixed_join_size_kind::inner:
+        case mixed_join_size_kind::left: {
+          CUDF_EXPECTS(owner->left_equality.has_value(), "mixed join size data missing left equality view");
+          CUDF_EXPECTS(owner->right_equality.has_value(), "mixed join size data missing right equality view");
+          CUDF_EXPECTS(owner->left_conditional.has_value(),
+                       "mixed join size data missing left conditional view");
+          CUDF_EXPECTS(owner->right_conditional.has_value(),
+                       "mixed join size data missing right conditional view");
+          CUDF_EXPECTS(owner->predicate != nullptr, "mixed join size data missing predicate");
+          CUDF_EXPECTS(owner->matches_per_row != nullptr, "mixed join size data missing per-row matches");
+          auto const& pred = *owner->predicate->expression;
+          auto span = cudf::device_span<cudf::size_type const>{owner->matches_per_row->begin(),
+                                                               owner->matches_per_row->size()};
+          cudf::output_size_data_type output_size_data = std::make_pair(owner->output_size, span);
+          indices = owner->kind == mixed_join_size_kind::inner
+                      ? cudf::mixed_inner_join(*owner->left_equality,
+                                               *owner->right_equality,
+                                               *owner->left_conditional,
+                                               *owner->right_conditional,
+                                               pred,
+                                               owner->null_equality,
+                                               output_size_data,
+                                               exec.stream,
+                                               exec.mr)
+                      : cudf::mixed_left_join(*owner->left_equality,
+                                              *owner->right_equality,
+                                              *owner->left_conditional,
+                                              *owner->right_conditional,
+                                              pred,
+                                              owner->null_equality,
+                                              output_size_data,
+                                              exec.stream,
+                                              exec.mr);
+          break;
+        }
+        case mixed_join_size_kind::full:
+          CUDF_EXPECTS(owner->full_size_data != nullptr, "mixed full join size data missing state");
+          indices = owner->full_size_data->materialize_indices(exec.stream, exec.mr);
+          break;
+        case mixed_join_size_kind::semi:
+        case mixed_join_size_kind::anti:
+          CUDF_FAIL("mixed semi/anti join size data materializes a single index column");
+      }
       release_join_index_pair(std::move(indices),
                               out_left_indices,
                               out_right_indices,
                               cudf_capture_exec_provenance(exec));
+    }
+    return CUDF_SUCCESS;
+  }
+  CUDF_RUST_CATCH
+}
+
+cudf_status_t mixed_join_size_data_materialize_single_indices_impl(
+  cudf_mixed_join_size_data_handle size_data,
+  cudf_column_handle* out_indices,
+  cudf_exec_options_t const* options)
+{
+  CUDF_RUST_NULL_CHECK(out_indices, "out_indices is null");
+  *out_indices = nullptr;
+  CUDF_RUST_NULL_CHECK(size_data, "size_data is null");
+  CUDF_RUST_TRY
+  {
+    cudf_exec_context exec          = cudf_make_exec_context();
+    cudf_status_t const exec_status = cudf_resolve_exec_options(options, &exec);
+    if (exec_status != CUDF_SUCCESS) { return exec_status; }
+
+    auto* owner = static_cast<mixed_join_size_data_owner*>(size_data);
+    CUDF_EXPECTS(owner->device == exec.device,
+                 "mixed join size data must be materialized on its creation device");
+    CUDF_EXPECTS(owner->kind == mixed_join_size_kind::semi || owner->kind == mixed_join_size_kind::anti,
+                 "mixed pair join size data materializes two index columns");
+    CUDF_EXPECTS(owner->single_size_data != nullptr, "mixed semi/anti join size data missing state");
+    {
+      cudf_current_device_resource_guard current_mr{exec.mr_raw};
+      auto indices = owner->single_size_data->materialize_indices(exec.stream, exec.mr);
+      *out_indices =
+        cudf_release_column_handle(release_join_index_column(std::move(indices)),
+                                   cudf_capture_exec_provenance(exec));
     }
     return CUDF_SUCCESS;
   }
@@ -1914,6 +1987,102 @@ cudf_status_t cudf_mixed_left_join_begin_size_data_ex(cudf_table_view_handle lef
                                    mixed_join_size_kind::left);
 }
 
+cudf_status_t cudf_mixed_full_join_begin_size_data(cudf_table_view_handle left_equality,
+                                                   cudf_table_view_handle right_equality,
+                                                   cudf_table_view_handle left_conditional,
+                                                   cudf_table_view_handle right_conditional,
+                                                   cudf_ast_expression_handle predicate,
+                                                   cudf_null_equality_t null_equality,
+                                                   cudf_mixed_join_size_data_handle* out)
+{
+  return cudf_mixed_full_join_begin_size_data_ex(
+    left_equality, right_equality, left_conditional, right_conditional, predicate, null_equality, out, nullptr);
+}
+
+cudf_status_t cudf_mixed_full_join_begin_size_data_ex(cudf_table_view_handle left_equality,
+                                                      cudf_table_view_handle right_equality,
+                                                      cudf_table_view_handle left_conditional,
+                                                      cudf_table_view_handle right_conditional,
+                                                      cudf_ast_expression_handle predicate,
+                                                      cudf_null_equality_t null_equality,
+                                                      cudf_mixed_join_size_data_handle* out,
+                                                      cudf_exec_options_t const* options)
+{
+  return mixed_join_size_data_impl(left_equality,
+                                   right_equality,
+                                   left_conditional,
+                                   right_conditional,
+                                   predicate,
+                                   null_equality,
+                                   out,
+                                   options,
+                                   mixed_join_size_kind::full);
+}
+
+cudf_status_t cudf_mixed_left_semi_join_begin_size_data(cudf_table_view_handle left_equality,
+                                                        cudf_table_view_handle right_equality,
+                                                        cudf_table_view_handle left_conditional,
+                                                        cudf_table_view_handle right_conditional,
+                                                        cudf_ast_expression_handle predicate,
+                                                        cudf_null_equality_t null_equality,
+                                                        cudf_mixed_join_size_data_handle* out)
+{
+  return cudf_mixed_left_semi_join_begin_size_data_ex(
+    left_equality, right_equality, left_conditional, right_conditional, predicate, null_equality, out, nullptr);
+}
+
+cudf_status_t cudf_mixed_left_semi_join_begin_size_data_ex(cudf_table_view_handle left_equality,
+                                                           cudf_table_view_handle right_equality,
+                                                           cudf_table_view_handle left_conditional,
+                                                           cudf_table_view_handle right_conditional,
+                                                           cudf_ast_expression_handle predicate,
+                                                           cudf_null_equality_t null_equality,
+                                                           cudf_mixed_join_size_data_handle* out,
+                                                           cudf_exec_options_t const* options)
+{
+  return mixed_join_size_data_impl(left_equality,
+                                   right_equality,
+                                   left_conditional,
+                                   right_conditional,
+                                   predicate,
+                                   null_equality,
+                                   out,
+                                   options,
+                                   mixed_join_size_kind::semi);
+}
+
+cudf_status_t cudf_mixed_left_anti_join_begin_size_data(cudf_table_view_handle left_equality,
+                                                        cudf_table_view_handle right_equality,
+                                                        cudf_table_view_handle left_conditional,
+                                                        cudf_table_view_handle right_conditional,
+                                                        cudf_ast_expression_handle predicate,
+                                                        cudf_null_equality_t null_equality,
+                                                        cudf_mixed_join_size_data_handle* out)
+{
+  return cudf_mixed_left_anti_join_begin_size_data_ex(
+    left_equality, right_equality, left_conditional, right_conditional, predicate, null_equality, out, nullptr);
+}
+
+cudf_status_t cudf_mixed_left_anti_join_begin_size_data_ex(cudf_table_view_handle left_equality,
+                                                           cudf_table_view_handle right_equality,
+                                                           cudf_table_view_handle left_conditional,
+                                                           cudf_table_view_handle right_conditional,
+                                                           cudf_ast_expression_handle predicate,
+                                                           cudf_null_equality_t null_equality,
+                                                           cudf_mixed_join_size_data_handle* out,
+                                                           cudf_exec_options_t const* options)
+{
+  return mixed_join_size_data_impl(left_equality,
+                                   right_equality,
+                                   left_conditional,
+                                   right_conditional,
+                                   predicate,
+                                   null_equality,
+                                   out,
+                                   options,
+                                   mixed_join_size_kind::anti);
+}
+
 void cudf_mixed_join_size_data_destroy(cudf_mixed_join_size_data_handle handle)
 {
   if (handle == nullptr) { return; }
@@ -1966,6 +2135,26 @@ cudf_status_t cudf_mixed_join_size_data_device_allocated_size(cudf_mixed_join_si
   CUDF_RUST_CATCH
 }
 
+cudf_status_t cudf_mixed_join_size_data_gather_map_size(cudf_mixed_join_size_data_handle handle,
+                                                        size_t* out)
+{
+  CUDF_RUST_NULL_CHECK(out, "out is null");
+  *out = 0;
+  CUDF_RUST_NULL_CHECK(handle, "mixed join size data is null");
+  CUDF_RUST_TRY
+  {
+    auto* owner = static_cast<mixed_join_size_data_owner*>(handle);
+    cudf_device_guard device_guard;
+    cudf_status_t const device_status = device_guard.activate(owner->device);
+    if (device_status != CUDF_SUCCESS) { return device_status; }
+    auto const map_count =
+      (owner->kind == mixed_join_size_kind::semi || owner->kind == mixed_join_size_kind::anti) ? 1 : 2;
+    *out = owner->output_size * map_count * sizeof(cudf::size_type);
+    return CUDF_SUCCESS;
+  }
+  CUDF_RUST_CATCH
+}
+
 cudf_status_t cudf_mixed_join_size_data_materialize_indices(
   cudf_mixed_join_size_data_handle size_data,
   cudf_column_handle* out_left_indices,
@@ -1983,6 +2172,21 @@ cudf_status_t cudf_mixed_join_size_data_materialize_indices_ex(
 {
   return mixed_join_size_data_materialize_indices_impl(
     size_data, out_left_indices, out_right_indices, options);
+}
+
+cudf_status_t cudf_mixed_join_size_data_materialize_single_indices(
+  cudf_mixed_join_size_data_handle size_data,
+  cudf_column_handle* out_indices)
+{
+  return cudf_mixed_join_size_data_materialize_single_indices_ex(size_data, out_indices, nullptr);
+}
+
+cudf_status_t cudf_mixed_join_size_data_materialize_single_indices_ex(
+  cudf_mixed_join_size_data_handle size_data,
+  cudf_column_handle* out_indices,
+  cudf_exec_options_t const* options)
+{
+  return mixed_join_size_data_materialize_single_indices_impl(size_data, out_indices, options);
 }
 
 cudf_status_t cudf_distinct_hash_join_create(cudf_table_view_handle build,
