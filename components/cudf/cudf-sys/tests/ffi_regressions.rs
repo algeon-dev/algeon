@@ -10,6 +10,8 @@ mod filtered_join_probe_tests;
 mod helpers;
 #[path = "ffi_regressions/io_and_dictionary_tests.rs"]
 mod io_and_dictionary_tests;
+#[path = "ffi_regressions/mixed_join_size_data_tests.rs"]
+mod mixed_join_size_data_tests;
 #[path = "ffi_regressions/operation_validation_tests.rs"]
 mod operation_validation_tests;
 #[path = "ffi_regressions/scalar_and_column_tests.rs"]

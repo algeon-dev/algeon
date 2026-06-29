@@ -1,8 +1,9 @@
 //! Tests for the high-level `DataFrame::merge` API and `MergeOptions` / `JoinType`.
 use cudf::{
     DataFrame, DataFrameFilteredJoinOptions, DataFrameHashJoinOptions, DataFrameHashJoinPairIndices,
-    DataFrameJoinIndices, DataFrameJoinOptions, DataFrameJoinPairIndices, ErrorCode, ErrorKind, ExecutionOverrides,
-    JoinType, MergeOptions, frame::dataframe::InfoDetail, testing::prelude::*,
+    DataFrameJoinIndices, DataFrameJoinOptions, DataFrameJoinPairIndices, DataFrameMixedJoinOptions, ErrorCode,
+    ErrorKind, ExecutionOverrides, JoinType, MergeOptions, frame::dataframe::InfoDetail, ops::ast::AstExpression,
+    testing::prelude::*,
 };
 
 use crate::common::{
@@ -67,6 +68,18 @@ fn assert_single_side_indices_reservation_matches_allocated(indices: &DataFrameJ
         DataFrameJoinIndices::reservation_size_bytes_for_len(indices.len()).unwrap(),
         indices.device_allocated_size_bytes().unwrap()
     );
+}
+
+fn left_less_than_right_predicate() -> AstExpression {
+    AstExpression::less(AstExpression::left_column(0).unwrap(), AstExpression::right_column(0).unwrap()).unwrap()
+}
+
+fn sorted_pair_indices(indices: &DataFrameJoinPairIndices) -> Vec<(i32, i32)> {
+    let left = indices.left().indices().to_optional_vec::<i32>().unwrap();
+    let right = indices.right().indices().to_optional_vec::<i32>().unwrap();
+    let mut pairs: Vec<_> = left.into_iter().zip(right).map(|(left, right)| (left.unwrap(), right.unwrap())).collect();
+    pairs.sort();
+    pairs
 }
 
 // ---------------------------------------------------------------------------
@@ -368,6 +381,49 @@ fn test_dataframe_hash_join_reuses_build_for_projected_inner_probes_with_duplica
     assert_eq!(second_indices.len(), 1);
     assert_eq!(i32_column(&second.probe, "score"), vec![40]);
     assert_eq!(i32_column(&second.build, "value"), vec![400]);
+}
+
+#[test]
+fn test_dataframe_mixed_join_size_data_materializes_inner_and_left_without_recomputing_size() {
+    let rt = sample_runtime();
+    let left = DataFrame::from_series([
+        ("id", rt.series(&[1i32, 1, 2, 2, 4]).unwrap()),
+        ("left_cond", rt.series(&[5i32, 7, 3, 9, 1]).unwrap()),
+        ("score", rt.series(&[50i32, 70, 30, 90, 10]).unwrap()),
+    ])
+    .unwrap();
+    let right = DataFrame::from_series([
+        ("id", rt.series(&[1i32, 1, 2, 2, 3]).unwrap()),
+        ("right_cond", rt.series(&[6i32, 8, 4, 7, 10]).unwrap()),
+        ("value", rt.series(&[60i32, 80, 40, 70, 100]).unwrap()),
+    ])
+    .unwrap();
+    let options = DataFrameMixedJoinOptions::new()
+        .on(["id"])
+        .left_predicate_columns(["left_cond"])
+        .right_predicate_columns(["right_cond"]);
+    let predicate = left_less_than_right_predicate();
+
+    let inner_state = left.mixed_inner_join_size_data(&right, &predicate, options.clone()).unwrap();
+    assert_eq!(inner_state.output_size(), 5);
+    assert!(inner_state.device_allocated_size_bytes().unwrap() > 0);
+    assert_eq!(
+        inner_state.gather_map_reservation_size_bytes().unwrap(),
+        DataFrameJoinPairIndices::reservation_size_bytes_for_len(inner_state.output_size()).unwrap()
+    );
+    let inner_gather_reservation = inner_state.gather_map_reservation_size_bytes().unwrap();
+    let inner_indices = inner_state.materialize_indices().unwrap();
+    assert_eq!(inner_indices.device_allocated_size_bytes().unwrap(), inner_gather_reservation);
+    assert_eq!(sorted_pair_indices(&inner_indices), vec![(0, 0), (0, 1), (1, 1), (2, 2), (2, 3)]);
+
+    let left_state = left.mixed_left_join_size_data(&right, &predicate, options).unwrap();
+    assert_eq!(left_state.output_size(), 7);
+    assert!(left_state.device_allocated_size_bytes().unwrap() > 0);
+    let left_indices = left_state.materialize_indices().unwrap();
+    assert_eq!(
+        sorted_pair_indices(&left_indices),
+        vec![(0, 0), (0, 1), (1, 1), (2, 2), (2, 3), (3, i32::MIN), (4, i32::MIN)]
+    );
 }
 
 #[test]

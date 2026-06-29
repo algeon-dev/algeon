@@ -1,8 +1,8 @@
 //! Semantic tests for mixed equality and conditional join index operations.
 
 use cudf::{
-    DataFrame, DataFrameCrossJoinOptions, DataFrameJoinOptions, DataFrameMixedJoinOptions,
-    DataFramePredicateJoinOptions, ErrorCode, Runtime,
+    DataFrame, DataFrameCrossJoinOptions, DataFrameJoinOptions, DataFrameJoinPairIndices, DataFrameMixedJoinOptions,
+    DataFramePredicateJoinOptions, ErrorCode, ExecutionOverrides, Runtime,
     core::Table,
     ops::{
         ast::AstExpression,
@@ -42,6 +42,15 @@ fn sorted_single_side_indices(indices: &SingleSideJoinIndices) -> Vec<i32> {
     rows
 }
 
+fn sorted_dataframe_join_index_pairs(indices: &DataFrameJoinPairIndices) -> Vec<(i32, i32)> {
+    let left = indices.left().indices().to_vec_strict::<i32>().unwrap();
+    let right = indices.right().indices().to_vec_strict::<i32>().unwrap();
+
+    let mut pairs: Vec<_> = left.into_iter().zip(right).collect();
+    pairs.sort();
+    pairs
+}
+
 fn mixed_inputs() -> (Table, Table, Table, Table) {
     let left_equality = i32_table(&[1, 1, 2, 2, 4]);
     let right_equality = i32_table(&[1, 1, 2, 2, 3]);
@@ -49,6 +58,29 @@ fn mixed_inputs() -> (Table, Table, Table, Table) {
     let right_conditional = i32_table(&[6, 8, 4, 7, 10]);
 
     (left_equality, right_equality, left_conditional, right_conditional)
+}
+
+fn dataframe_mixed_inputs() -> (DataFrame, DataFrame) {
+    let rt = Runtime::new().unwrap();
+    let left = DataFrame::from_series([
+        ("id", rt.series(&[1i32, 1, 2, 2, 4]).unwrap()),
+        ("left_val", rt.series(&[5i32, 7, 3, 9, 1]).unwrap()),
+    ])
+    .unwrap();
+    let right = DataFrame::from_series([
+        ("id", rt.series(&[1i32, 1, 2, 2, 3]).unwrap()),
+        ("right_val", rt.series(&[6i32, 8, 4, 7, 10]).unwrap()),
+    ])
+    .unwrap();
+
+    (left, right)
+}
+
+fn dataframe_mixed_join_options() -> DataFrameMixedJoinOptions {
+    DataFrameMixedJoinOptions::new()
+        .on(["id"])
+        .left_predicate_columns(["left_val"])
+        .right_predicate_columns(["right_val"])
 }
 
 #[test]
@@ -447,6 +479,79 @@ fn dataframe_mixed_join_indices_use_named_equality_and_predicate_columns() {
         .collect::<Vec<_>>();
     pairs.sort();
     assert_eq!(pairs, vec![(0, 0), (0, 1), (1, 1), (2, 2), (2, 3)]);
+}
+
+#[test]
+fn dataframe_mixed_inner_join_size_data_materializes_existing_indices_contract() {
+    let (left, right) = dataframe_mixed_inputs();
+    let predicate = left_less_than_right();
+    let options = dataframe_mixed_join_options();
+    let expected = left.mixed_inner_join_indices(&right, &predicate, options.clone()).unwrap();
+
+    let size_data = left.mixed_inner_join_size_data(&right, &predicate, options).unwrap();
+    let output_size = size_data.output_size();
+    let gather_reservation = size_data.gather_map_reservation_size_bytes().unwrap();
+
+    assert_eq!(output_size, expected.len());
+    assert_eq!(gather_reservation, DataFrameJoinPairIndices::reservation_size_bytes_for_len(output_size).unwrap());
+    assert!(size_data.device_allocated_size_bytes().unwrap() > 0);
+
+    let materialized = size_data.materialize_indices().unwrap();
+
+    assert_eq!(materialized.len(), output_size);
+    assert_eq!(materialized.device_allocated_size_bytes().unwrap(), gather_reservation);
+    assert_eq!(sorted_dataframe_join_index_pairs(&materialized), sorted_dataframe_join_index_pairs(&expected));
+}
+
+#[test]
+fn dataframe_mixed_left_join_size_data_materialize_indices_in_matches_existing_indices_contract() {
+    let (left, right) = dataframe_mixed_inputs();
+    let predicate = left_less_than_right();
+    let options = dataframe_mixed_join_options();
+    let expected = left.mixed_left_join_indices(&right, &predicate, options.clone()).unwrap();
+    let output_rt = Runtime::new().unwrap();
+    let ctx =
+        ExecutionOverrides::new().with_stream(output_rt.stream()).with_memory_resource(output_rt.memory_resource());
+
+    let size_data = left.mixed_left_join_size_data(&right, &predicate, options).unwrap();
+    let output_size = size_data.output_size();
+    let gather_reservation = size_data.gather_map_reservation_size_bytes().unwrap();
+
+    assert_eq!(output_size, expected.len());
+    assert_eq!(gather_reservation, DataFrameJoinPairIndices::reservation_size_bytes_for_len(output_size).unwrap());
+    assert!(size_data.device_allocated_size_bytes().unwrap() > 0);
+
+    let materialized = size_data.materialize_indices_in(&ctx).unwrap();
+
+    assert_eq!(materialized.len(), output_size);
+    assert_eq!(materialized.device_allocated_size_bytes().unwrap(), gather_reservation);
+    assert_eq!(sorted_dataframe_join_index_pairs(&materialized), sorted_dataframe_join_index_pairs(&expected));
+}
+
+#[test]
+fn dataframe_mixed_inner_join_size_data_empty_result_has_zero_gather_reservation() {
+    let rt = Runtime::new().unwrap();
+    let left = DataFrame::from_series([
+        ("id", rt.series(&[1i32, 2]).unwrap()),
+        ("left_val", rt.series(&[10i32, 20]).unwrap()),
+    ])
+    .unwrap();
+    let right = DataFrame::from_series([
+        ("id", rt.series(&[3i32, 4]).unwrap()),
+        ("right_val", rt.series(&[30i32, 40]).unwrap()),
+    ])
+    .unwrap();
+    let predicate = left_less_than_right();
+
+    let size_data = left.mixed_inner_join_size_data(&right, &predicate, dataframe_mixed_join_options()).unwrap();
+
+    assert_eq!(size_data.output_size(), 0);
+    assert_eq!(size_data.gather_map_reservation_size_bytes().unwrap(), 0);
+
+    let materialized = size_data.materialize_indices().unwrap();
+
+    assert!(materialized.is_empty());
+    assert_eq!(materialized.device_allocated_size_bytes().unwrap(), 0);
 }
 
 #[test]
