@@ -1,8 +1,8 @@
 //! Semantic tests for mixed equality and conditional join index operations.
 
 use cudf::{
-    DataFrame, DataFrameCrossJoinOptions, DataFrameJoinOptions, DataFrameJoinPairIndices, DataFrameMixedJoinOptions,
-    DataFramePredicateJoinOptions, ErrorCode, ExecutionOverrides, Runtime,
+    DataFrame, DataFrameCrossJoinOptions, DataFrameJoinIndices, DataFrameJoinOptions, DataFrameJoinPairIndices,
+    DataFrameMixedJoinOptions, DataFramePredicateJoinOptions, ErrorCode, ExecutionOverrides, Runtime,
     core::Table,
     ops::{
         ast::AstExpression,
@@ -11,7 +11,10 @@ use cudf::{
     testing::prelude::*,
 };
 
-use crate::common::{column_from_slice, column_from_slice_nullable};
+use crate::common::{
+    column_from_slice, column_from_slice_nullable, last_exec_mr_value, last_exec_stream_value, lock_event_observation,
+    reset_exec_observation,
+};
 
 const JOIN_NO_MATCH: i32 = i32::MIN;
 
@@ -49,6 +52,28 @@ fn sorted_dataframe_join_index_pairs(indices: &DataFrameJoinPairIndices) -> Vec<
     let mut pairs: Vec<_> = left.into_iter().zip(right).collect();
     pairs.sort();
     pairs
+}
+
+fn sorted_dataframe_join_indices(indices: &DataFrameJoinIndices) -> Vec<i32> {
+    let mut rows = indices.indices().to_vec_strict::<i32>().unwrap();
+    rows.sort();
+    rows
+}
+
+fn assert_pair_indices_execution_domain(
+    indices: &DataFrameJoinPairIndices,
+    expected_stream: usize,
+    expected_mr: usize,
+) {
+    assert_eq!(indices.left().indices().as_column().testing_execution_domain_stream_value(), expected_stream);
+    assert_eq!(indices.right().indices().as_column().testing_execution_domain_stream_value(), expected_stream);
+    assert_eq!(indices.left().indices().as_column().testing_execution_domain_mr_value(), expected_mr);
+    assert_eq!(indices.right().indices().as_column().testing_execution_domain_mr_value(), expected_mr);
+}
+
+fn assert_single_indices_execution_domain(indices: &DataFrameJoinIndices, expected_stream: usize, expected_mr: usize) {
+    assert_eq!(indices.indices().as_column().testing_execution_domain_stream_value(), expected_stream);
+    assert_eq!(indices.indices().as_column().testing_execution_domain_mr_value(), expected_mr);
 }
 
 fn mixed_inputs() -> (Table, Table, Table, Table) {
@@ -529,6 +554,207 @@ fn dataframe_mixed_left_join_size_data_materialize_indices_in_matches_existing_i
 }
 
 #[test]
+fn dataframe_mixed_full_join_size_data_materializes_existing_indices_contract() {
+    let (left, right) = dataframe_mixed_inputs();
+    let predicate = left_less_than_right();
+    let options = dataframe_mixed_join_options();
+    let expected = left.mixed_full_join_indices(&right, &predicate, options.clone()).unwrap();
+
+    let size_data = left.mixed_full_join_size_data(&right, &predicate, options).unwrap();
+    let output_size = size_data.output_size();
+    let gather_reservation = size_data.gather_map_reservation_size_bytes().unwrap();
+
+    assert_eq!(output_size, expected.len());
+    assert_eq!(gather_reservation, DataFrameJoinPairIndices::reservation_size_bytes_for_len(output_size).unwrap());
+    assert!(size_data.device_allocated_size_bytes().unwrap() > 0);
+
+    let materialized = size_data.materialize_indices().unwrap();
+
+    assert_eq!(materialized.len(), output_size);
+    assert_eq!(materialized.device_allocated_size_bytes().unwrap(), gather_reservation);
+    assert_eq!(sorted_dataframe_join_index_pairs(&materialized), sorted_dataframe_join_index_pairs(&expected));
+}
+
+#[test]
+fn dataframe_mixed_full_join_size_data_begin_and_materialize_in_use_borrowed_handles() {
+    let _event_guard = lock_event_observation();
+    let (left, right) = dataframe_mixed_inputs();
+    let predicate = left_less_than_right();
+    let options = dataframe_mixed_join_options();
+    let expected = left.mixed_full_join_indices(&right, &predicate, options.clone()).unwrap();
+    let begin_rt = Runtime::new().unwrap();
+    let materialize_rt = Runtime::new().unwrap();
+    let begin_ctx =
+        ExecutionOverrides::new().with_stream(begin_rt.stream()).with_memory_resource(begin_rt.memory_resource());
+    let materialize_ctx = ExecutionOverrides::new()
+        .with_stream(materialize_rt.stream())
+        .with_memory_resource(materialize_rt.memory_resource());
+    let begin_stream = begin_rt.stream().testing_raw_handle_value();
+    let begin_mr = begin_rt.memory_resource().testing_raw_handle_value();
+    let materialize_stream = materialize_rt.stream().testing_raw_handle_value();
+    let materialize_mr = materialize_rt.memory_resource().testing_raw_handle_value();
+
+    reset_exec_observation();
+    let size_data = left.with_execution(&begin_ctx).mixed_full_join_size_data(&right, &predicate, options).unwrap();
+
+    assert_eq!(last_exec_stream_value(), begin_stream);
+    assert_eq!(last_exec_mr_value(), begin_mr);
+    let output_size = size_data.output_size();
+    let gather_reservation = size_data.gather_map_reservation_size_bytes().unwrap();
+    assert_eq!(output_size, expected.len());
+    assert_eq!(gather_reservation, DataFrameJoinPairIndices::reservation_size_bytes_for_len(output_size).unwrap());
+    assert!(size_data.device_allocated_size_bytes().unwrap() > 0);
+
+    reset_exec_observation();
+    let materialized = size_data.materialize_indices_in(&materialize_ctx).unwrap();
+
+    assert_eq!(last_exec_stream_value(), materialize_stream);
+    assert_eq!(last_exec_mr_value(), materialize_mr);
+    assert_pair_indices_execution_domain(&materialized, materialize_stream, materialize_mr);
+    assert_eq!(materialized.placement().device, materialize_rt.device());
+    assert_eq!(materialized.len(), output_size);
+    assert_eq!(materialized.device_allocated_size_bytes().unwrap(), gather_reservation);
+    assert_eq!(sorted_dataframe_join_index_pairs(&materialized), sorted_dataframe_join_index_pairs(&expected));
+}
+
+#[test]
+fn dataframe_mixed_left_semi_join_size_data_materializes_single_indices_contract() {
+    let (left, right) = dataframe_mixed_inputs();
+    let predicate = left_less_than_right();
+    let options = dataframe_mixed_join_options();
+    let expected = left.mixed_left_semi_join_indices(&right, &predicate, options.clone()).unwrap();
+
+    let size_data = left.mixed_left_semi_join_size_data(&right, &predicate, options).unwrap();
+    let output_size = size_data.output_size();
+    let gather_reservation = size_data.gather_map_reservation_size_bytes().unwrap();
+
+    assert_eq!(output_size, expected.len());
+    assert_eq!(gather_reservation, DataFrameJoinIndices::reservation_size_bytes_for_len(output_size).unwrap());
+    assert_eq!(DataFrameJoinPairIndices::reservation_size_bytes_for_len(output_size).unwrap(), gather_reservation * 2);
+    assert!(size_data.device_allocated_size_bytes().unwrap() > 0);
+
+    let materialized = size_data.materialize_indices().unwrap();
+
+    assert_eq!(materialized.len(), output_size);
+    assert_eq!(materialized.device_allocated_size_bytes().unwrap(), gather_reservation);
+    assert_eq!(sorted_dataframe_join_indices(&materialized), sorted_dataframe_join_indices(&expected));
+}
+
+#[test]
+fn dataframe_mixed_left_semi_join_size_data_begin_and_materialize_in_use_borrowed_handles() {
+    let _event_guard = lock_event_observation();
+    let (left, right) = dataframe_mixed_inputs();
+    let predicate = left_less_than_right();
+    let options = dataframe_mixed_join_options();
+    let expected = left.mixed_left_semi_join_indices(&right, &predicate, options.clone()).unwrap();
+    let begin_rt = Runtime::new().unwrap();
+    let materialize_rt = Runtime::new().unwrap();
+    let begin_ctx =
+        ExecutionOverrides::new().with_stream(begin_rt.stream()).with_memory_resource(begin_rt.memory_resource());
+    let materialize_ctx = ExecutionOverrides::new()
+        .with_stream(materialize_rt.stream())
+        .with_memory_resource(materialize_rt.memory_resource());
+    let begin_stream = begin_rt.stream().testing_raw_handle_value();
+    let begin_mr = begin_rt.memory_resource().testing_raw_handle_value();
+    let materialize_stream = materialize_rt.stream().testing_raw_handle_value();
+    let materialize_mr = materialize_rt.memory_resource().testing_raw_handle_value();
+
+    reset_exec_observation();
+    let size_data =
+        left.with_execution(&begin_ctx).mixed_left_semi_join_size_data(&right, &predicate, options).unwrap();
+
+    assert_eq!(last_exec_stream_value(), begin_stream);
+    assert_eq!(last_exec_mr_value(), begin_mr);
+    let output_size = size_data.output_size();
+    let gather_reservation = size_data.gather_map_reservation_size_bytes().unwrap();
+    assert_eq!(output_size, expected.len());
+    assert_eq!(gather_reservation, DataFrameJoinIndices::reservation_size_bytes_for_len(output_size).unwrap());
+    assert_eq!(DataFrameJoinPairIndices::reservation_size_bytes_for_len(output_size).unwrap(), gather_reservation * 2);
+    assert!(size_data.device_allocated_size_bytes().unwrap() > 0);
+
+    reset_exec_observation();
+    let materialized = size_data.materialize_indices_in(&materialize_ctx).unwrap();
+
+    assert_eq!(last_exec_stream_value(), materialize_stream);
+    assert_eq!(last_exec_mr_value(), materialize_mr);
+    assert_single_indices_execution_domain(&materialized, materialize_stream, materialize_mr);
+    assert_eq!(materialized.placement().device, materialize_rt.device());
+    assert_eq!(materialized.len(), output_size);
+    assert_eq!(materialized.device_allocated_size_bytes().unwrap(), gather_reservation);
+    assert_eq!(sorted_dataframe_join_indices(&materialized), sorted_dataframe_join_indices(&expected));
+}
+
+#[test]
+fn dataframe_mixed_left_anti_join_size_data_materialize_indices_in_matches_existing_indices_contract() {
+    let (left, right) = dataframe_mixed_inputs();
+    let predicate = left_less_than_right();
+    let options = dataframe_mixed_join_options();
+    let expected = left.mixed_left_anti_join_indices(&right, &predicate, options.clone()).unwrap();
+    let output_rt = Runtime::new().unwrap();
+    let ctx =
+        ExecutionOverrides::new().with_stream(output_rt.stream()).with_memory_resource(output_rt.memory_resource());
+
+    let size_data = left.mixed_left_anti_join_size_data(&right, &predicate, options).unwrap();
+    let output_size = size_data.output_size();
+    let gather_reservation = size_data.gather_map_reservation_size_bytes().unwrap();
+
+    assert_eq!(output_size, expected.len());
+    assert_eq!(gather_reservation, DataFrameJoinIndices::reservation_size_bytes_for_len(output_size).unwrap());
+    assert_eq!(DataFrameJoinPairIndices::reservation_size_bytes_for_len(output_size).unwrap(), gather_reservation * 2);
+    assert!(size_data.device_allocated_size_bytes().unwrap() > 0);
+
+    let materialized = size_data.materialize_indices_in(&ctx).unwrap();
+
+    assert_eq!(materialized.len(), output_size);
+    assert_eq!(materialized.device_allocated_size_bytes().unwrap(), gather_reservation);
+    assert_eq!(sorted_dataframe_join_indices(&materialized), sorted_dataframe_join_indices(&expected));
+}
+
+#[test]
+fn dataframe_mixed_left_anti_join_size_data_begin_and_materialize_in_use_borrowed_handles() {
+    let _event_guard = lock_event_observation();
+    let (left, right) = dataframe_mixed_inputs();
+    let predicate = left_less_than_right();
+    let options = dataframe_mixed_join_options();
+    let expected = left.mixed_left_anti_join_indices(&right, &predicate, options.clone()).unwrap();
+    let begin_rt = Runtime::new().unwrap();
+    let materialize_rt = Runtime::new().unwrap();
+    let begin_ctx =
+        ExecutionOverrides::new().with_stream(begin_rt.stream()).with_memory_resource(begin_rt.memory_resource());
+    let materialize_ctx = ExecutionOverrides::new()
+        .with_stream(materialize_rt.stream())
+        .with_memory_resource(materialize_rt.memory_resource());
+    let begin_stream = begin_rt.stream().testing_raw_handle_value();
+    let begin_mr = begin_rt.memory_resource().testing_raw_handle_value();
+    let materialize_stream = materialize_rt.stream().testing_raw_handle_value();
+    let materialize_mr = materialize_rt.memory_resource().testing_raw_handle_value();
+
+    reset_exec_observation();
+    let size_data =
+        left.with_execution(&begin_ctx).mixed_left_anti_join_size_data(&right, &predicate, options).unwrap();
+
+    assert_eq!(last_exec_stream_value(), begin_stream);
+    assert_eq!(last_exec_mr_value(), begin_mr);
+    let output_size = size_data.output_size();
+    let gather_reservation = size_data.gather_map_reservation_size_bytes().unwrap();
+    assert_eq!(output_size, expected.len());
+    assert_eq!(gather_reservation, DataFrameJoinIndices::reservation_size_bytes_for_len(output_size).unwrap());
+    assert_eq!(DataFrameJoinPairIndices::reservation_size_bytes_for_len(output_size).unwrap(), gather_reservation * 2);
+    assert!(size_data.device_allocated_size_bytes().unwrap() > 0);
+
+    reset_exec_observation();
+    let materialized = size_data.materialize_indices_in(&materialize_ctx).unwrap();
+
+    assert_eq!(last_exec_stream_value(), materialize_stream);
+    assert_eq!(last_exec_mr_value(), materialize_mr);
+    assert_single_indices_execution_domain(&materialized, materialize_stream, materialize_mr);
+    assert_eq!(materialized.placement().device, materialize_rt.device());
+    assert_eq!(materialized.len(), output_size);
+    assert_eq!(materialized.device_allocated_size_bytes().unwrap(), gather_reservation);
+    assert_eq!(sorted_dataframe_join_indices(&materialized), sorted_dataframe_join_indices(&expected));
+}
+
+#[test]
 fn dataframe_mixed_inner_join_size_data_empty_result_has_zero_gather_reservation() {
     let rt = Runtime::new().unwrap();
     let left = DataFrame::from_series([
@@ -544,6 +770,32 @@ fn dataframe_mixed_inner_join_size_data_empty_result_has_zero_gather_reservation
     let predicate = left_less_than_right();
 
     let size_data = left.mixed_inner_join_size_data(&right, &predicate, dataframe_mixed_join_options()).unwrap();
+
+    assert_eq!(size_data.output_size(), 0);
+    assert_eq!(size_data.gather_map_reservation_size_bytes().unwrap(), 0);
+
+    let materialized = size_data.materialize_indices().unwrap();
+
+    assert!(materialized.is_empty());
+    assert_eq!(materialized.device_allocated_size_bytes().unwrap(), 0);
+}
+
+#[test]
+fn dataframe_mixed_left_semi_join_size_data_empty_result_has_zero_gather_reservation() {
+    let rt = Runtime::new().unwrap();
+    let left = DataFrame::from_series([
+        ("id", rt.series(&[1i32, 2]).unwrap()),
+        ("left_val", rt.series(&[10i32, 20]).unwrap()),
+    ])
+    .unwrap();
+    let right = DataFrame::from_series([
+        ("id", rt.series(&[3i32, 4]).unwrap()),
+        ("right_val", rt.series(&[30i32, 40]).unwrap()),
+    ])
+    .unwrap();
+    let predicate = left_less_than_right();
+
+    let size_data = left.mixed_left_semi_join_size_data(&right, &predicate, dataframe_mixed_join_options()).unwrap();
 
     assert_eq!(size_data.output_size(), 0);
     assert_eq!(size_data.gather_map_reservation_size_bytes().unwrap(), 0);

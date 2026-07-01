@@ -172,6 +172,7 @@ impl SizedConditionalPairJoinType {
 pub(crate) enum SizedMixedJoinType {
     Inner,
     Left,
+    Full,
 }
 
 impl SizedMixedJoinType {
@@ -179,6 +180,22 @@ impl SizedMixedJoinType {
         match self {
             Self::Inner => "inner",
             Self::Left => "left",
+            Self::Full => "full",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SizedMixedSingleSideJoinType {
+    LeftSemi,
+    LeftAnti,
+}
+
+impl SizedMixedSingleSideJoinType {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::LeftSemi => "left_semi",
+            Self::LeftAnti => "left_anti",
         }
     }
 }
@@ -1110,6 +1127,17 @@ fn mixed_join_begin_size_data_impl<'a>(
                 &mut handle,
             )
         },
+        (SizedMixedJoinType::Full, None) => unsafe {
+            cudf_sys::cudf_mixed_full_join_begin_size_data(
+                tables.left_equality.raw_handle(),
+                tables.right_equality.raw_handle(),
+                tables.left_conditional.raw_handle(),
+                tables.right_conditional.raw_handle(),
+                predicate.raw_handle(),
+                null_eq_ffi,
+                &mut handle,
+            )
+        },
         (SizedMixedJoinType::Inner, Some(options)) => unsafe {
             cudf_sys::cudf_mixed_inner_join_begin_size_data_ex(
                 tables.left_equality.raw_handle(),
@@ -1124,6 +1152,18 @@ fn mixed_join_begin_size_data_impl<'a>(
         },
         (SizedMixedJoinType::Left, Some(options)) => unsafe {
             cudf_sys::cudf_mixed_left_join_begin_size_data_ex(
+                tables.left_equality.raw_handle(),
+                tables.right_equality.raw_handle(),
+                tables.left_conditional.raw_handle(),
+                tables.right_conditional.raw_handle(),
+                predicate.raw_handle(),
+                null_eq_ffi,
+                &mut handle,
+                options,
+            )
+        },
+        (SizedMixedJoinType::Full, Some(options)) => unsafe {
+            cudf_sys::cudf_mixed_full_join_begin_size_data_ex(
                 tables.left_equality.raw_handle(),
                 tables.right_equality.raw_handle(),
                 tables.left_conditional.raw_handle(),
@@ -1157,6 +1197,95 @@ fn mixed_join_begin_size_data_impl<'a>(
         operation,
     )?;
     Ok(MixedJoinSizeData {
+        handle,
+        output_domain: Arc::clone(output_domain),
+        output_size,
+        join_type,
+        _predicate: predicate,
+    })
+}
+
+fn mixed_single_side_join_begin_size_data_impl<'a>(
+    tables: MixedJoinTables<'_, '_>,
+    predicate: &'a AstExpression,
+    null_equality: NullEquality,
+    join_type: SizedMixedSingleSideJoinType,
+    output_domain: &Arc<ExecutionDomain>,
+    exec_options: Option<&cudf_sys::cudf_exec_options_t>,
+    operation: &'static str,
+) -> Result<MixedSingleSideJoinSizeData<'a>> {
+    let mut handle = ptr::null_mut();
+    let null_eq_ffi = null_equality.to_join_raw();
+    let status = match (join_type, exec_options) {
+        (SizedMixedSingleSideJoinType::LeftSemi, None) => unsafe {
+            cudf_sys::cudf_mixed_left_semi_join_begin_size_data(
+                tables.left_equality.raw_handle(),
+                tables.right_equality.raw_handle(),
+                tables.left_conditional.raw_handle(),
+                tables.right_conditional.raw_handle(),
+                predicate.raw_handle(),
+                null_eq_ffi,
+                &mut handle,
+            )
+        },
+        (SizedMixedSingleSideJoinType::LeftAnti, None) => unsafe {
+            cudf_sys::cudf_mixed_left_anti_join_begin_size_data(
+                tables.left_equality.raw_handle(),
+                tables.right_equality.raw_handle(),
+                tables.left_conditional.raw_handle(),
+                tables.right_conditional.raw_handle(),
+                predicate.raw_handle(),
+                null_eq_ffi,
+                &mut handle,
+            )
+        },
+        (SizedMixedSingleSideJoinType::LeftSemi, Some(options)) => unsafe {
+            cudf_sys::cudf_mixed_left_semi_join_begin_size_data_ex(
+                tables.left_equality.raw_handle(),
+                tables.right_equality.raw_handle(),
+                tables.left_conditional.raw_handle(),
+                tables.right_conditional.raw_handle(),
+                predicate.raw_handle(),
+                null_eq_ffi,
+                &mut handle,
+                options,
+            )
+        },
+        (SizedMixedSingleSideJoinType::LeftAnti, Some(options)) => unsafe {
+            cudf_sys::cudf_mixed_left_anti_join_begin_size_data_ex(
+                tables.left_equality.raw_handle(),
+                tables.right_equality.raw_handle(),
+                tables.left_conditional.raw_handle(),
+                tables.right_conditional.raw_handle(),
+                predicate.raw_handle(),
+                null_eq_ffi,
+                &mut handle,
+                options,
+            )
+        },
+    };
+
+    error::check_status_in_with_details(
+        status,
+        operation,
+        [
+            ("join_type", join_type.as_str().to_string()),
+            ("null_equality", format!("{:?}", null_equality).to_lowercase()),
+            ("execution_context_provided", exec_options.is_some().to_string()),
+            ("reservation_contract", "mixed_join_retained_size_data".to_string()),
+        ],
+    )?;
+
+    let handle = MixedJoinSizeDataHandle {
+        handle: error::require_non_null(handle, operation, "mixed join size data")?,
+        _domain: Arc::clone(output_domain),
+    };
+    let mut output_size = 0usize;
+    error::check_status_in(
+        unsafe { cudf_sys::cudf_mixed_join_size_data_output_size(handle.handle.as_ptr(), &mut output_size) },
+        operation,
+    )?;
+    Ok(MixedSingleSideJoinSizeData {
         handle,
         output_domain: Arc::clone(output_domain),
         output_size,
@@ -2154,6 +2283,26 @@ fn mixed_join_begin_size_data_with_context<'a>(
     )
 }
 
+fn mixed_single_side_join_begin_size_data_with_context<'a>(
+    tables: MixedJoinTables<'_, '_>,
+    predicate: &'a AstExpression,
+    null_equality: NullEquality,
+    join_type: SizedMixedSingleSideJoinType,
+    ctx: &ExecutionOverrides<'_>,
+    operation: &'static str,
+) -> Result<MixedSingleSideJoinSizeData<'a>> {
+    let execution = compatible_mixed_join_domain(tables, predicate, ctx, operation)?;
+    mixed_single_side_join_begin_size_data_impl(
+        tables,
+        predicate,
+        null_equality,
+        join_type,
+        execution.output_domain(),
+        Some(execution.exec_options()),
+        operation,
+    )
+}
+
 fn mixed_single_side_join_indices_with_context(
     tables: MixedJoinTables<'_, '_>,
     predicate: &AstExpression,
@@ -2320,6 +2469,26 @@ pub(crate) fn mixed_left_join_begin_size_data_in<'a>(
     )
 }
 
+pub(crate) fn mixed_full_join_begin_size_data_in<'a>(
+    left_equality: &TableView<'_>,
+    right_equality: &TableView<'_>,
+    left_conditional: &TableView<'_>,
+    right_conditional: &TableView<'_>,
+    predicate: &'a AstExpression,
+    null_equality: NullEquality,
+    ctx: &ExecutionOverrides<'_>,
+) -> Result<MixedJoinSizeData<'a>> {
+    let operation = "join::mixed_full_join_begin_size_data_in";
+    mixed_join_begin_size_data_with_context(
+        MixedJoinTables { left_equality, right_equality, left_conditional, right_conditional },
+        predicate,
+        null_equality,
+        SizedMixedJoinType::Full,
+        ctx,
+        operation,
+    )
+}
+
 /// Mixed full join indices preserving unmatched rows from both sides.
 ///
 /// Misses on either side contain libcudf's no-match sentinel for nullifying
@@ -2425,6 +2594,26 @@ pub fn mixed_left_semi_join_indices_in(
     )
 }
 
+pub(crate) fn mixed_left_semi_join_begin_size_data_in<'a>(
+    left_equality: &TableView<'_>,
+    right_equality: &TableView<'_>,
+    left_conditional: &TableView<'_>,
+    right_conditional: &TableView<'_>,
+    predicate: &'a AstExpression,
+    null_equality: NullEquality,
+    ctx: &ExecutionOverrides<'_>,
+) -> Result<MixedSingleSideJoinSizeData<'a>> {
+    let operation = "join::mixed_left_semi_join_begin_size_data_in";
+    mixed_single_side_join_begin_size_data_with_context(
+        MixedJoinTables { left_equality, right_equality, left_conditional, right_conditional },
+        predicate,
+        null_equality,
+        SizedMixedSingleSideJoinType::LeftSemi,
+        ctx,
+        operation,
+    )
+}
+
 /// Mixed left anti join indices for rows from the left equality/conditional
 /// tables with no equality-and-predicate match.
 ///
@@ -2473,6 +2662,26 @@ pub fn mixed_left_anti_join_indices_in(
         predicate,
         null_equality,
         false,
+        ctx,
+        operation,
+    )
+}
+
+pub(crate) fn mixed_left_anti_join_begin_size_data_in<'a>(
+    left_equality: &TableView<'_>,
+    right_equality: &TableView<'_>,
+    left_conditional: &TableView<'_>,
+    right_conditional: &TableView<'_>,
+    predicate: &'a AstExpression,
+    null_equality: NullEquality,
+    ctx: &ExecutionOverrides<'_>,
+) -> Result<MixedSingleSideJoinSizeData<'a>> {
+    let operation = "join::mixed_left_anti_join_begin_size_data_in";
+    mixed_single_side_join_begin_size_data_with_context(
+        MixedJoinTables { left_equality, right_equality, left_conditional, right_conditional },
+        predicate,
+        null_equality,
+        SizedMixedSingleSideJoinType::LeftAnti,
         ctx,
         operation,
     )
@@ -2741,11 +2950,11 @@ pub struct FilteredJoinProbeState {
     semi_join: bool,
 }
 
-/// Retained mixed equality-plus-predicate join size data.
+/// Retained mixed equality-plus-predicate pair-output join size data.
 ///
-/// This state owns libcudf's device-side size-data buffer for one mixed inner
-/// or left join. It exposes the exact output size before gather-map allocation
-/// and materializes the two gather maps from the retained size data. The
+/// This state owns libcudf's device-side size-data buffer for one mixed inner,
+/// left, or full join. It exposes the exact output size before gather-map
+/// allocation and materializes the two gather maps from the retained size data. The
 /// lifetime keeps AST literal owners alive; higher-level wrappers retain input
 /// tables whose column memory is borrowed by the C handle.
 pub(crate) struct MixedJoinSizeData<'a> {
@@ -2753,6 +2962,21 @@ pub(crate) struct MixedJoinSizeData<'a> {
     output_domain: Arc<ExecutionDomain>,
     output_size: usize,
     join_type: SizedMixedJoinType,
+    _predicate: &'a AstExpression,
+}
+
+/// Retained mixed equality-plus-predicate single-output join size data.
+///
+/// This state owns libcudf's device-side size-data buffer for one mixed left
+/// semi or left anti join. It exposes the exact output size before gather-map
+/// allocation and materializes one gather map from the retained size data. The
+/// lifetime keeps AST literal owners alive; higher-level wrappers retain input
+/// tables whose column memory is borrowed by the C handle.
+pub(crate) struct MixedSingleSideJoinSizeData<'a> {
+    handle: MixedJoinSizeDataHandle,
+    output_domain: Arc<ExecutionDomain>,
+    output_size: usize,
+    join_type: SizedMixedSingleSideJoinType,
     _predicate: &'a AstExpression,
 }
 
@@ -2787,6 +3011,16 @@ impl fmt::Debug for FilteredJoinProbeState {
 impl fmt::Debug for MixedJoinSizeData<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("MixedJoinSizeData")
+            .field("join_type", &self.join_type.as_str())
+            .field("output_size", &self.output_size)
+            .field("placement", &self.output_domain.placement())
+            .finish()
+    }
+}
+
+impl fmt::Debug for MixedSingleSideJoinSizeData<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("MixedSingleSideJoinSizeData")
             .field("join_type", &self.join_type.as_str())
             .field("output_size", &self.output_size)
             .field("placement", &self.output_domain.placement())
@@ -3940,6 +4174,18 @@ impl FilteredJoinProbeState {
     }
 }
 
+fn mixed_size_data_gather_map_reservation_size_bytes(
+    handle: &MixedJoinSizeDataHandle,
+    operation: &'static str,
+) -> Result<usize> {
+    let mut out = 0usize;
+    error::check_status_in(
+        unsafe { cudf_sys::cudf_mixed_join_size_data_gather_map_size(handle.handle.as_ptr(), &mut out) },
+        operation,
+    )?;
+    Ok(out)
+}
+
 impl MixedJoinSizeData<'_> {
     /// Returns the exact output row count for this mixed join.
     pub(crate) fn output_size(&self) -> usize {
@@ -3959,20 +4205,10 @@ impl MixedJoinSizeData<'_> {
     /// Return exact bytes that must be reserved for this mixed join's output
     /// gather-map pair.
     pub(crate) fn gather_map_reservation_size_bytes(&self) -> Result<usize> {
-        self.output_size
-            .checked_mul(std::mem::size_of::<i32>())
-            .and_then(|single_map_bytes| single_map_bytes.checked_mul(2))
-            .ok_or_else(|| {
-                Error::new_with(
-                    ErrorCode::ValueOutOfRange,
-                    "mixed_join_size_data::gather_map_reservation_size_bytes",
-                    "mixed join gather-map reservation size overflowed usize",
-                )
-                .with_detail("reason", "size_overflowed_usize")
-                .with_detail("output_rows", self.output_size.to_string())
-                .with_detail("gather_map_count", "2")
-                .with_detail("index_size_bytes", std::mem::size_of::<i32>().to_string())
-            })
+        mixed_size_data_gather_map_reservation_size_bytes(
+            &self.handle,
+            "mixed_join_size_data::gather_map_reservation_size_bytes",
+        )
     }
 
     /// Materialize mixed join gather-map pairs from retained size data.
@@ -4008,6 +4244,65 @@ impl MixedJoinSizeData<'_> {
         Ok(JoinIndices {
             left: unsafe { Column::from_raw_with_domain(out_left, Arc::clone(execution.output_domain())) }?,
             right: unsafe { Column::from_raw_with_domain(out_right, Arc::clone(execution.output_domain())) }?,
+        })
+    }
+}
+
+impl MixedSingleSideJoinSizeData<'_> {
+    /// Returns the exact output row count for this mixed left semi/anti join.
+    pub(crate) fn output_size(&self) -> usize {
+        self.output_size
+    }
+
+    /// Returns bytes retained by libcudf's mixed join size-data buffer.
+    pub(crate) fn device_allocated_size_bytes(&self) -> Result<usize> {
+        let mut out = 0usize;
+        error::check_status_in(
+            unsafe { cudf_sys::cudf_mixed_join_size_data_device_allocated_size(self.handle.handle.as_ptr(), &mut out) },
+            "mixed_single_side_join_size_data::device_allocated_size_bytes",
+        )?;
+        Ok(out)
+    }
+
+    /// Return exact bytes that must be reserved for this mixed join's single
+    /// output gather map.
+    pub(crate) fn gather_map_reservation_size_bytes(&self) -> Result<usize> {
+        mixed_size_data_gather_map_reservation_size_bytes(
+            &self.handle,
+            "mixed_single_side_join_size_data::gather_map_reservation_size_bytes",
+        )
+    }
+
+    /// Materialize mixed left semi/anti join gather map from retained size data.
+    pub(crate) fn materialize_indices(self) -> Result<SingleSideJoinIndices> {
+        let ctx = ExecutionOverrides::new();
+        self.materialize_indices_in(&ctx)
+    }
+
+    /// Materialize mixed left semi/anti join gather map from retained size data
+    /// using a borrowed execution override.
+    pub(crate) fn materialize_indices_in(self, ctx: &ExecutionOverrides<'_>) -> Result<SingleSideJoinIndices> {
+        let operation = "mixed_single_side_join_size_data::materialize_indices_in";
+        let execution = ResolvedExecution::unary(&self.output_domain, ctx, operation)?;
+        let mut out = ptr::null_mut();
+        error::check_status_in_with_details(
+            unsafe {
+                cudf_sys::cudf_mixed_join_size_data_materialize_single_indices_ex(
+                    self.handle.handle.as_ptr(),
+                    &mut out,
+                    execution.exec_options(),
+                )
+            },
+            operation,
+            [
+                ("join_type", self.join_type.as_str().to_string()),
+                ("output_size", self.output_size.to_string()),
+                ("execution_context_provided", true.to_string()),
+                ("reservation_contract", "mixed_join_retained_size_data_materialize_single_indices".to_string()),
+            ],
+        )?;
+        Ok(SingleSideJoinIndices {
+            indices: unsafe { Column::from_raw_with_domain(out, Arc::clone(execution.output_domain())) }?,
         })
     }
 }

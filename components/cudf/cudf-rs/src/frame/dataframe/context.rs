@@ -1,8 +1,8 @@
 use super::{
     DataFrame, DataFrameCrossJoinOptions, DataFrameFilteredJoin, DataFrameFilteredJoinOptions, DataFrameHashJoin,
     DataFrameHashJoinOptions, DataFrameJoinIndices, DataFrameJoinOptions, DataFrameJoinPairIndices, DataFrameJoinSides,
-    DataFrameMixedJoinOptions, DataFrameMixedJoinSizeData, DataFramePredicateJoinOptions, DropDuplicatesOptions,
-    DropNaOptions, WithColumnExpr,
+    DataFrameMixedJoinOptions, DataFrameMixedJoinSizeData, DataFrameMixedSingleSideJoinSizeData,
+    DataFramePredicateJoinOptions, DropDuplicatesOptions, DropNaOptions, WithColumnExpr,
 };
 use crate::{
     Expr, JoinType, Result,
@@ -406,6 +406,22 @@ impl<'df, 'ctx, 'handles> DataFrameExecutionScope<'df, 'ctx, 'handles> {
         )
     }
 
+    /// Begin retained size-data computation for a mixed full join using the borrowed execution override.
+    pub fn mixed_full_join_size_data<'a>(
+        &self,
+        right: &DataFrame,
+        predicate: &'a AstExpression,
+        options: DataFrameMixedJoinOptions,
+    ) -> Result<DataFrameMixedJoinSizeData<'a>> {
+        self.df.mixed_join_size_data_in_context(
+            right,
+            predicate,
+            options,
+            crate::ops::join::SizedMixedJoinType::Full,
+            self.ctx,
+        )
+    }
+
     /// Produce mixed full join row-index pairs using the borrowed execution override.
     pub fn mixed_full_join_indices(
         &self,
@@ -426,6 +442,16 @@ impl<'df, 'ctx, 'handles> DataFrameExecutionScope<'df, 'ctx, 'handles> {
         self.df.mixed_single_side_join_indices_in_context(right, predicate, options, true, self.ctx)
     }
 
+    /// Begin retained size-data computation for a mixed left semi join using the borrowed execution override.
+    pub fn mixed_left_semi_join_size_data<'a>(
+        &self,
+        right: &DataFrame,
+        predicate: &'a AstExpression,
+        options: DataFrameMixedJoinOptions,
+    ) -> Result<DataFrameMixedSingleSideJoinSizeData<'a>> {
+        self.df.mixed_single_side_join_size_data_in_context(right, predicate, options, true, self.ctx)
+    }
+
     /// Produce mixed left anti join indices using the borrowed execution override.
     pub fn mixed_left_anti_join_indices(
         &self,
@@ -434,6 +460,16 @@ impl<'df, 'ctx, 'handles> DataFrameExecutionScope<'df, 'ctx, 'handles> {
         options: DataFrameMixedJoinOptions,
     ) -> Result<DataFrameJoinIndices> {
         self.df.mixed_single_side_join_indices_in_context(right, predicate, options, false, self.ctx)
+    }
+
+    /// Begin retained size-data computation for a mixed left anti join using the borrowed execution override.
+    pub fn mixed_left_anti_join_size_data<'a>(
+        &self,
+        right: &DataFrame,
+        predicate: &'a AstExpression,
+        options: DataFrameMixedJoinOptions,
+    ) -> Result<DataFrameMixedSingleSideJoinSizeData<'a>> {
+        self.df.mixed_single_side_join_size_data_in_context(right, predicate, options, false, self.ctx)
     }
 
     /// Filter existing join-index pairs with a predicate using the borrowed execution override.
