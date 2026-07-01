@@ -2,9 +2,13 @@
 
 use std::process::Command;
 
+use arrow::{
+    array::{Array, AsArray},
+    datatypes::{DataType as ArrowDataType, TimeUnit},
+};
 use cudf::{
     BoundaryKind, DataFrame, DataType, ErrorCode, ExecutionBudgetEnforcement, ExecutionBudgetRequest,
-    ExecutionBudgetStatus, TypeId,
+    ExecutionBudgetStatus, TimestampResolution, TypeId,
     core::{Column, Table},
     frame::dataframe::InfoDetail,
     io::source::{
@@ -237,6 +241,365 @@ fn read_parquet_source_chunk_with_budget_uses_token_allocator_and_reports_observ
 }
 
 #[test]
+fn read_parquet_source_chunk_rejects_cross_source_chunk_with_matching_partition_shape() {
+    let dir = TempDir::new().unwrap();
+    let source_a_path = dir.path().join("source-a.parquet");
+    let source_b_path = dir.path().join("source-b.parquet");
+    let rt = sample_runtime();
+
+    if !write_pyarrow_i32_parquet_with_row_groups(&source_a_path, &[1, 2, 3, 4], 2)
+        || !write_pyarrow_i32_parquet_with_row_groups(&source_b_path, &[10, 20, 30, 40], 2)
+    {
+        return;
+    }
+
+    let source_a = LocalParquetSource::data(
+        [LocalParquetFile::new(&source_a_path, "source-a", [PartitionValue::Int32(9)])
+            .unwrap()
+            .with_row_groups(Some(vec![0]))
+            .with_row_group_metadata(vec![128, 128], vec![2, 2])
+            .unwrap()],
+        SourceSchema::new([
+            SourceColumn::new("id", dtype(TypeId::Int32), false).unwrap(),
+            SourceColumn::new("part", dtype(TypeId::Int32), false).unwrap(),
+        ])
+        .unwrap(),
+        ["id"],
+        [
+            SourceOutputColumn::new("id", SourceColumnRef::ReadColumn(0)).unwrap(),
+            SourceOutputColumn::new("part", SourceColumnRef::Partition(0)).unwrap(),
+        ],
+        [],
+        [PartitionColumn::new("part", dtype(TypeId::Int32), false).unwrap()],
+    )
+    .unwrap();
+    let source_b = LocalParquetSource::data(
+        [LocalParquetFile::new(&source_b_path, "source-b", [PartitionValue::Int32(9)])
+            .unwrap()
+            .with_row_groups(Some(vec![1]))
+            .with_row_group_metadata(vec![128, 128], vec![2, 2])
+            .unwrap()],
+        SourceSchema::new([
+            SourceColumn::new("id", dtype(TypeId::Int32), false).unwrap(),
+            SourceColumn::new("part", dtype(TypeId::Int32), false).unwrap(),
+        ])
+        .unwrap(),
+        ["id"],
+        [
+            SourceOutputColumn::new("id", SourceColumnRef::ReadColumn(0)).unwrap(),
+            SourceOutputColumn::new("part", SourceColumnRef::Partition(0)).unwrap(),
+        ],
+        [],
+        [PartitionColumn::new("part", dtype(TypeId::Int32), false).unwrap()],
+    )
+    .unwrap();
+    let source_a_plan = plan_local_parquet_source_chunks(&source_a, Default::default()).unwrap();
+    let source_a_chunk = &source_a_plan.chunks()[0];
+
+    let err = DataFrame::read_parquet_source_chunk(&rt, &source_b, source_a_chunk, SourceReadMode::FinalOutput)
+        .expect_err("chunk planned from source A must not be accepted for source B");
+    assert_eq!(err.code(), ErrorCode::TypeMismatch);
+    assert_eq!(error_context_value(&err, "reason").as_deref(), Some("source_chunk_path_mismatch"));
+    assert_eq!(error_context_value(&err, "expected_path").as_deref(), Some(source_b_path.to_str().unwrap()));
+    assert_eq!(error_context_value(&err, "actual_path").as_deref(), Some(source_a_path.to_str().unwrap()));
+
+    let token =
+        rt.execution_budget_token(ExecutionBudgetRequest::new(64 * 1024 * 1024).with_boundary("source_read")).unwrap();
+    let budget_err = DataFrame::read_parquet_source_chunk_with_budget(
+        &rt,
+        &source_b,
+        source_a_chunk,
+        SourceReadMode::FinalOutput,
+        &token,
+    )
+    .expect_err("budgeted chunk read must reject a chunk planned from another source");
+    assert_eq!(budget_err.code(), ErrorCode::TypeMismatch);
+    assert_eq!(error_context_value(&budget_err, "reason").as_deref(), Some("source_chunk_path_mismatch"));
+}
+
+#[test]
+fn read_parquet_source_chunk_rejects_cross_source_subset_row_groups_with_same_file_identity() {
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("same-file-row-groups.parquet");
+    let rt = sample_runtime();
+
+    if !write_pyarrow_i32_parquet_with_row_groups(&path, &[1, 2, 3, 4], 2) {
+        return;
+    }
+
+    let schema = || {
+        SourceSchema::new([
+            SourceColumn::new("id", dtype(TypeId::Int32), false).unwrap(),
+            SourceColumn::new("part", dtype(TypeId::Int32), false).unwrap(),
+        ])
+        .unwrap()
+    };
+    let outputs = || {
+        [
+            SourceOutputColumn::new("id", SourceColumnRef::ReadColumn(0)).unwrap(),
+            SourceOutputColumn::new("part", SourceColumnRef::Partition(0)).unwrap(),
+        ]
+    };
+    let partitions = || [PartitionColumn::new("part", dtype(TypeId::Int32), false).unwrap()];
+
+    let source_a = LocalParquetSource::data(
+        [LocalParquetFile::new(&path, "same-file", [PartitionValue::Int32(9)])
+            .unwrap()
+            .with_row_groups(Some(vec![0]))
+            .with_row_group_metadata(vec![128, 128], vec![2, 2])
+            .unwrap()],
+        schema(),
+        ["id"],
+        outputs(),
+        [],
+        partitions(),
+    )
+    .unwrap();
+    let source_b = LocalParquetSource::data(
+        [LocalParquetFile::new(&path, "same-file", [PartitionValue::Int32(9)])
+            .unwrap()
+            .with_row_groups(Some(vec![0, 1]))
+            .with_row_group_metadata(vec![128, 128], vec![2, 2])
+            .unwrap()],
+        schema(),
+        ["id"],
+        outputs(),
+        [],
+        partitions(),
+    )
+    .unwrap();
+    let source_a_plan = plan_local_parquet_source_chunks(&source_a, Default::default()).unwrap();
+    let source_a_chunk = &source_a_plan.chunks()[0];
+
+    let err = DataFrame::read_parquet_source_chunk(&rt, &source_b, source_a_chunk, SourceReadMode::FinalOutput)
+        .expect_err("chunk planned from source A must not be accepted for a superset source B");
+    assert_eq!(err.code(), ErrorCode::TypeMismatch);
+    assert_eq!(error_context_value(&err, "reason").as_deref(), Some("source_chunk_source_row_groups_mismatch"));
+
+    let token =
+        rt.execution_budget_token(ExecutionBudgetRequest::new(64 * 1024 * 1024).with_boundary("source_read")).unwrap();
+    let budget_err = DataFrame::read_parquet_source_chunk_with_budget(
+        &rt,
+        &source_b,
+        source_a_chunk,
+        SourceReadMode::FinalOutput,
+        &token,
+    )
+    .expect_err("budgeted chunk read must reject a chunk planned from a narrower row-group source");
+    assert_eq!(budget_err.code(), ErrorCode::TypeMismatch);
+    assert_eq!(error_context_value(&budget_err, "reason").as_deref(), Some("source_chunk_source_row_groups_mismatch"));
+}
+
+#[test]
+fn read_parquet_source_chunk_rejects_null_partition_chunk_for_non_nullable_source() {
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("partition_identity.parquet");
+    let rt = sample_runtime();
+
+    write_parquet_df(&path, &["id"], vec![column_from_slice(&[1i32, 2]).unwrap()], 0);
+
+    let nullable_source = LocalParquetSource::data(
+        [LocalParquetFile::new(&path, "nullable", [PartitionValue::Null(dtype(TypeId::Int32))]).unwrap()],
+        SourceSchema::new([
+            SourceColumn::new("id", dtype(TypeId::Int32), false).unwrap(),
+            SourceColumn::new("part", dtype(TypeId::Int32), true).unwrap(),
+        ])
+        .unwrap(),
+        ["id"],
+        [
+            SourceOutputColumn::new("id", SourceColumnRef::ReadColumn(0)).unwrap(),
+            SourceOutputColumn::new("part", SourceColumnRef::Partition(0)).unwrap(),
+        ],
+        [],
+        [PartitionColumn::new("part", dtype(TypeId::Int32), true).unwrap()],
+    )
+    .unwrap();
+    let non_nullable_source = LocalParquetSource::data(
+        [LocalParquetFile::new(&path, "non-nullable", [PartitionValue::Int32(7)]).unwrap()],
+        SourceSchema::new([
+            SourceColumn::new("id", dtype(TypeId::Int32), false).unwrap(),
+            SourceColumn::new("part", dtype(TypeId::Int32), false).unwrap(),
+        ])
+        .unwrap(),
+        ["id"],
+        [
+            SourceOutputColumn::new("id", SourceColumnRef::ReadColumn(0)).unwrap(),
+            SourceOutputColumn::new("part", SourceColumnRef::Partition(0)).unwrap(),
+        ],
+        [],
+        [PartitionColumn::new("part", dtype(TypeId::Int32), false).unwrap()],
+    )
+    .unwrap();
+    let nullable_plan = plan_local_parquet_source_chunks(&nullable_source, Default::default()).unwrap();
+    let nullable_chunk = &nullable_plan.chunks()[0];
+
+    let err =
+        DataFrame::read_parquet_source_chunk(&rt, &non_nullable_source, nullable_chunk, SourceReadMode::FinalOutput)
+            .unwrap_err();
+    assert_eq!(err.code(), ErrorCode::NullUnexpected);
+    assert_eq!(error_context_value(&err, "reason").as_deref(), Some("partition_null_for_non_nullable_column"));
+    assert_eq!(error_context_value(&err, "partition_column").as_deref(), Some("part"));
+
+    let token =
+        rt.execution_budget_token(ExecutionBudgetRequest::new(64 * 1024 * 1024).with_boundary("source_read")).unwrap();
+    let budget_err = DataFrame::read_parquet_source_chunk_with_budget(
+        &rt,
+        &non_nullable_source,
+        nullable_chunk,
+        SourceReadMode::FinalOutput,
+        &token,
+    )
+    .unwrap_err();
+    assert_eq!(budget_err.code(), ErrorCode::NullUnexpected);
+    assert_eq!(error_context_value(&budget_err, "reason").as_deref(), Some("partition_null_for_non_nullable_column"));
+    assert_eq!(error_context_value(&budget_err, "partition_column").as_deref(), Some("part"));
+}
+
+#[test]
+fn read_parquet_source_chunk_with_budget_materializes_extended_partition_values() {
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("extended_partitions.parquet");
+    let rt = sample_runtime();
+    let decimal_dtype = DataType::fixed_point(TypeId::Decimal128, -2);
+
+    write_parquet_df(&path, &["id"], vec![column_from_slice(&[1i32, 2]).unwrap()], 0);
+
+    let source = LocalParquetSource::data(
+        [LocalParquetFile::new(
+            &path,
+            "extended",
+            [
+                PartitionValue::Decimal128 { raw: 12345, scale: -2 },
+                PartitionValue::Date32(19_481),
+                PartitionValue::Timestamp { raw: 1_700_000_123_456, resolution: TimestampResolution::Microseconds },
+                PartitionValue::Duration { raw: -42_000_000, resolution: TimestampResolution::Nanoseconds },
+                PartitionValue::Null(dtype(TypeId::Int32)),
+                PartitionValue::Null(decimal_dtype),
+                PartitionValue::Null(dtype(TypeId::TimestampDays)),
+                PartitionValue::Null(dtype(TypeId::TimestampMicroseconds)),
+                PartitionValue::Null(dtype(TypeId::DurationNanoseconds)),
+            ],
+        )
+        .unwrap()],
+        SourceSchema::new([
+            SourceColumn::new("id", dtype(TypeId::Int32), false).unwrap(),
+            SourceColumn::new("amount", decimal_dtype, false).unwrap(),
+            SourceColumn::new("date", dtype(TypeId::TimestampDays), false).unwrap(),
+            SourceColumn::new("ts", dtype(TypeId::TimestampMicroseconds), false).unwrap(),
+            SourceColumn::new("duration", dtype(TypeId::DurationNanoseconds), false).unwrap(),
+            SourceColumn::new("maybe_id", dtype(TypeId::Int32), true).unwrap(),
+            SourceColumn::new("maybe_amount", decimal_dtype, true).unwrap(),
+            SourceColumn::new("maybe_date", dtype(TypeId::TimestampDays), true).unwrap(),
+            SourceColumn::new("maybe_ts", dtype(TypeId::TimestampMicroseconds), true).unwrap(),
+            SourceColumn::new("maybe_duration", dtype(TypeId::DurationNanoseconds), true).unwrap(),
+        ])
+        .unwrap(),
+        ["id"],
+        [
+            SourceOutputColumn::new("id", SourceColumnRef::ReadColumn(0)).unwrap(),
+            SourceOutputColumn::new("amount", SourceColumnRef::Partition(0)).unwrap(),
+            SourceOutputColumn::new("date", SourceColumnRef::Partition(1)).unwrap(),
+            SourceOutputColumn::new("ts", SourceColumnRef::Partition(2)).unwrap(),
+            SourceOutputColumn::new("duration", SourceColumnRef::Partition(3)).unwrap(),
+            SourceOutputColumn::new("maybe_id", SourceColumnRef::Partition(4)).unwrap(),
+            SourceOutputColumn::new("maybe_amount", SourceColumnRef::Partition(5)).unwrap(),
+            SourceOutputColumn::new("maybe_date", SourceColumnRef::Partition(6)).unwrap(),
+            SourceOutputColumn::new("maybe_ts", SourceColumnRef::Partition(7)).unwrap(),
+            SourceOutputColumn::new("maybe_duration", SourceColumnRef::Partition(8)).unwrap(),
+        ],
+        [],
+        [
+            PartitionColumn::new("amount", decimal_dtype, false).unwrap(),
+            PartitionColumn::new("date", dtype(TypeId::TimestampDays), false).unwrap(),
+            PartitionColumn::new("ts", dtype(TypeId::TimestampMicroseconds), false).unwrap(),
+            PartitionColumn::new("duration", dtype(TypeId::DurationNanoseconds), false).unwrap(),
+            PartitionColumn::new("maybe_id", dtype(TypeId::Int32), true).unwrap(),
+            PartitionColumn::new("maybe_amount", decimal_dtype, true).unwrap(),
+            PartitionColumn::new("maybe_date", dtype(TypeId::TimestampDays), true).unwrap(),
+            PartitionColumn::new("maybe_ts", dtype(TypeId::TimestampMicroseconds), true).unwrap(),
+            PartitionColumn::new("maybe_duration", dtype(TypeId::DurationNanoseconds), true).unwrap(),
+        ],
+    )
+    .unwrap();
+    let plan = plan_local_parquet_source_chunks(&source, Default::default()).unwrap();
+    let token =
+        rt.execution_budget_token(ExecutionBudgetRequest::new(64 * 1024 * 1024).with_boundary("source_read")).unwrap();
+
+    let outcome = DataFrame::read_parquet_source_chunk_with_budget(
+        &rt,
+        &source,
+        &plan.chunks()[0],
+        SourceReadMode::FinalOutput,
+        &token,
+    )
+    .unwrap();
+    let df = outcome.value();
+
+    assert_eq!(
+        df.column_names(),
+        vec![
+            "id",
+            "amount",
+            "date",
+            "ts",
+            "duration",
+            "maybe_id",
+            "maybe_amount",
+            "maybe_date",
+            "maybe_ts",
+            "maybe_duration"
+        ]
+    );
+    assert_eq!(df.series("amount").unwrap().dtype().unwrap(), decimal_dtype);
+    assert_eq!(df.series("date").unwrap().dtype().unwrap(), dtype(TypeId::TimestampDays));
+    assert_eq!(df.series("ts").unwrap().dtype().unwrap(), dtype(TypeId::TimestampMicroseconds));
+    assert_eq!(df.series("duration").unwrap().dtype().unwrap(), dtype(TypeId::DurationNanoseconds));
+    assert_eq!(df.series("maybe_id").unwrap().null_count(), 2);
+    assert_eq!(df.series("maybe_amount").unwrap().dtype().unwrap(), decimal_dtype);
+    assert_eq!(df.series("maybe_date").unwrap().dtype().unwrap(), dtype(TypeId::TimestampDays));
+    assert_eq!(df.series("maybe_ts").unwrap().dtype().unwrap(), dtype(TypeId::TimestampMicroseconds));
+    assert_eq!(df.series("maybe_duration").unwrap().dtype().unwrap(), dtype(TypeId::DurationNanoseconds));
+    assert_eq!(df.series("maybe_amount").unwrap().null_count(), 2);
+    assert_eq!(df.series("maybe_date").unwrap().null_count(), 2);
+    assert_eq!(df.series("maybe_ts").unwrap().null_count(), 2);
+    assert_eq!(df.series("maybe_duration").unwrap().null_count(), 2);
+
+    let batch = df.to_record_batch().unwrap();
+    assert_eq!(*batch.schema().field(1).data_type(), ArrowDataType::Decimal128(38, 2));
+    assert_eq!(*batch.schema().field(2).data_type(), ArrowDataType::Date32);
+    assert_eq!(*batch.schema().field(3).data_type(), ArrowDataType::Timestamp(TimeUnit::Microsecond, None));
+    assert_eq!(*batch.schema().field(4).data_type(), ArrowDataType::Duration(TimeUnit::Nanosecond));
+    assert_eq!(*batch.schema().field(5).data_type(), ArrowDataType::Int32);
+    assert!(batch.schema().field(5).is_nullable());
+    assert_eq!(*batch.schema().field(6).data_type(), ArrowDataType::Decimal128(38, 2));
+    assert_eq!(*batch.schema().field(7).data_type(), ArrowDataType::Date32);
+    assert_eq!(*batch.schema().field(8).data_type(), ArrowDataType::Timestamp(TimeUnit::Microsecond, None));
+    assert_eq!(*batch.schema().field(9).data_type(), ArrowDataType::Duration(TimeUnit::Nanosecond));
+    assert!(batch.schema().field(6).is_nullable());
+    assert!(batch.schema().field(7).is_nullable());
+    assert!(batch.schema().field(8).is_nullable());
+    assert!(batch.schema().field(9).is_nullable());
+
+    assert_eq!(batch.column(0).as_primitive::<arrow::datatypes::Int32Type>().values().as_ref(), &[1, 2]);
+    assert_eq!(batch.column(1).as_primitive::<arrow::datatypes::Decimal128Type>().values().as_ref(), &[12345, 12345]);
+    assert_eq!(batch.column(2).as_primitive::<arrow::datatypes::Date32Type>().values().as_ref(), &[19_481, 19_481]);
+    assert_eq!(
+        batch.column(3).as_primitive::<arrow::datatypes::TimestampMicrosecondType>().values().as_ref(),
+        &[1_700_000_123_456, 1_700_000_123_456]
+    );
+    assert_eq!(
+        batch.column(4).as_primitive::<arrow::datatypes::DurationNanosecondType>().values().as_ref(),
+        &[-42_000_000, -42_000_000]
+    );
+    assert!(batch.column(5).is_null(0));
+    assert!(batch.column(5).is_null(1));
+    for column_index in 6..=9 {
+        assert!(batch.column(column_index).is_null(0));
+        assert!(batch.column(column_index).is_null(1));
+    }
+}
+
+#[test]
 fn read_parquet_source_chunk_with_budget_reports_exceeded_budget_facts() {
     let dir = TempDir::new().unwrap();
     let path = dir.path().join("budget_too_small.parquet");
@@ -403,4 +766,46 @@ fn read_parquet_zero_column_count_requires_metadata_and_checked_i64_counts() {
     let overflow_err = DataFrame::read_parquet_source(&rt, &overflow_source).unwrap_err();
     assert_eq!(overflow_err.code(), ErrorCode::UnsupportedOperation);
     assert_eq!(error_context_value(&overflow_err, "reason").as_deref(), Some("row_count_exceeds_i64"));
+}
+
+#[test]
+fn read_parquet_source_chunk_rejects_stale_zero_column_count_metadata() {
+    let rt = sample_runtime();
+    let source_a =
+        LocalParquetSource::zero_column_count([LocalParquetFile::new("same-count.parquet", "same-count", [])
+            .unwrap()
+            .with_row_groups(Some(vec![0]))
+            .with_row_group_metadata(vec![128, 256], vec![2, 3])
+            .unwrap()])
+        .unwrap();
+    let source_b =
+        LocalParquetSource::zero_column_count([LocalParquetFile::new("same-count.parquet", "same-count", [])
+            .unwrap()
+            .with_row_groups(Some(vec![0]))
+            .with_row_group_metadata(vec![128, 256], vec![9, 3])
+            .unwrap()])
+        .unwrap();
+    let source_a_plan = plan_local_parquet_source_chunks(&source_a, Default::default()).unwrap();
+    let source_a_chunk = &source_a_plan.chunks()[0];
+
+    let err = DataFrame::read_parquet_source_chunk(&rt, &source_b, source_a_chunk, SourceReadMode::FinalOutput)
+        .expect_err("zero-column count chunk planned from stale row-count metadata must be rejected");
+    assert_eq!(err.code(), ErrorCode::TypeMismatch);
+    assert_eq!(error_context_value(&err, "reason").as_deref(), Some("source_chunk_row_group_rows_metadata_mismatch"));
+
+    let token =
+        rt.execution_budget_token(ExecutionBudgetRequest::new(64 * 1024 * 1024).with_boundary("source_read")).unwrap();
+    let budget_err = DataFrame::read_parquet_source_chunk_with_budget(
+        &rt,
+        &source_b,
+        source_a_chunk,
+        SourceReadMode::FinalOutput,
+        &token,
+    )
+    .expect_err("budgeted zero-column count chunk read must reject stale row-count metadata");
+    assert_eq!(budget_err.code(), ErrorCode::TypeMismatch);
+    assert_eq!(
+        error_context_value(&budget_err, "reason").as_deref(),
+        Some("source_chunk_row_group_rows_metadata_mismatch")
+    );
 }

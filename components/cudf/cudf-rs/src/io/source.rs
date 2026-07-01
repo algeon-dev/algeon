@@ -27,7 +27,7 @@ use std::{
 use crate::{
     core::{
         error::{Error, ErrorCode, FACT_ACTUAL_COUNT, FACT_COLUMN_INDEX, FACT_EXPECTED_COUNT, Result},
-        types::{DataType, TypeId},
+        types::{DataType, TimestampResolution, TypeId},
     },
     internal::hash::{FastHashSet, fast_hash_set_with_capacity},
 };
@@ -294,6 +294,21 @@ impl LocalParquetSource {
             for (partition_index, (column, value)) in
                 self.partition_columns.iter().zip(file.partition_values.iter()).enumerate()
             {
+                if !is_supported_partition_dtype(value.data_type()) {
+                    return Err(Error::new_with(
+                        ErrorCode::UnsupportedDtype,
+                        operation,
+                        "partition value dtype is not supported by the local Parquet source contract",
+                    )
+                    .with_column(column.name.clone())
+                    .with_detail("reason", "unsupported_partition_value_dtype")
+                    .with_detail("file_index", file_index.to_string())
+                    .with_detail("stable_id", file.stable_id.clone())
+                    .with_detail("path", file.path.display().to_string())
+                    .with_detail("partition_index", partition_index.to_string())
+                    .with_detail("partition_column", column.name.clone())
+                    .with_detail("actual_partition_dtype", dtype_label(value.data_type())));
+                }
                 if !partition_value_matches_dtype(value, column.data_type) {
                     return Err(Error::new_with(
                         ErrorCode::TypeMismatch,
@@ -310,9 +325,184 @@ impl LocalParquetSource {
                     .with_detail("expected_partition_dtype", dtype_label(column.data_type))
                     .with_detail("actual_partition_dtype", dtype_label(value.data_type())));
                 }
+                if value.is_null() && !column.nullable {
+                    return Err(Error::new_with(
+                        ErrorCode::NullUnexpected,
+                        operation,
+                        "null partition value requires a nullable partition column",
+                    )
+                    .with_column(column.name.clone())
+                    .with_detail("reason", "partition_null_for_non_nullable_column")
+                    .with_detail("file_index", file_index.to_string())
+                    .with_detail("stable_id", file.stable_id.clone())
+                    .with_detail("path", file.path.display().to_string())
+                    .with_detail("partition_index", partition_index.to_string())
+                    .with_detail("partition_column", column.name.clone())
+                    .with_detail("partition_dtype", dtype_label(column.data_type)));
+                }
             }
         }
         Ok(())
+    }
+
+    pub(crate) fn validate_chunk_partition_values(&self, chunk: &SourceChunk, operation: &'static str) -> Result<()> {
+        let source_file = self.files.get(chunk.file_index).ok_or_else(|| {
+            Error::new_with(
+                ErrorCode::IndexOutOfBounds,
+                operation,
+                "source chunk file index is out of bounds for supplied source",
+            )
+            .with_fact(FACT_COLUMN_INDEX, chunk.file_index)
+            .with_detail("reason", "source_chunk_file_index_out_of_bounds")
+            .with_detail("chunk_index", chunk.chunk_index.to_string())
+            .with_detail("file_index", chunk.file_index.to_string())
+            .with_detail("source_file_count", self.files.len().to_string())
+            .with_detail("stable_id", chunk.stable_id.clone())
+            .with_detail("path", chunk.path.display().to_string())
+        })?;
+
+        if chunk.partition_values.len() != self.partition_columns.len() {
+            return Err(Error::new_with(
+                ErrorCode::ColumnLengthMismatch,
+                operation,
+                "chunk partition value count does not match source partition column count",
+            )
+            .with_fact(FACT_ACTUAL_COUNT, chunk.partition_values.len())
+            .with_fact(FACT_EXPECTED_COUNT, self.partition_columns.len())
+            .with_detail("reason", "partition_value_count_mismatch")
+            .with_detail("chunk_index", chunk.chunk_index.to_string())
+            .with_detail("file_index", chunk.file_index.to_string())
+            .with_detail("stable_id", chunk.stable_id.clone())
+            .with_detail("path", chunk.path.display().to_string()));
+        }
+
+        for (partition_index, (column, value)) in
+            self.partition_columns.iter().zip(chunk.partition_values.iter()).enumerate()
+        {
+            if !is_supported_partition_dtype(value.data_type()) {
+                return Err(Error::new_with(
+                    ErrorCode::UnsupportedDtype,
+                    operation,
+                    "chunk partition value dtype is not supported by the local Parquet source contract",
+                )
+                .with_column(column.name.clone())
+                .with_detail("reason", "unsupported_partition_value_dtype")
+                .with_detail("chunk_index", chunk.chunk_index.to_string())
+                .with_detail("file_index", chunk.file_index.to_string())
+                .with_detail("stable_id", chunk.stable_id.clone())
+                .with_detail("path", chunk.path.display().to_string())
+                .with_detail("partition_index", partition_index.to_string())
+                .with_detail("partition_column", column.name.clone())
+                .with_detail("actual_partition_dtype", dtype_label(value.data_type())));
+            }
+            if !partition_value_matches_dtype(value, column.data_type) {
+                return Err(Error::new_with(
+                    ErrorCode::TypeMismatch,
+                    operation,
+                    "chunk partition value type does not match source partition column dtype",
+                )
+                .with_column(column.name.clone())
+                .with_detail("reason", "partition_value_type_mismatch")
+                .with_detail("chunk_index", chunk.chunk_index.to_string())
+                .with_detail("file_index", chunk.file_index.to_string())
+                .with_detail("stable_id", chunk.stable_id.clone())
+                .with_detail("path", chunk.path.display().to_string())
+                .with_detail("partition_index", partition_index.to_string())
+                .with_detail("partition_column", column.name.clone())
+                .with_detail("expected_partition_dtype", dtype_label(column.data_type))
+                .with_detail("actual_partition_dtype", dtype_label(value.data_type())));
+            }
+            if value.is_null() && !column.nullable {
+                return Err(Error::new_with(
+                    ErrorCode::NullUnexpected,
+                    operation,
+                    "null chunk partition value requires a nullable source partition column",
+                )
+                .with_column(column.name.clone())
+                .with_detail("reason", "partition_null_for_non_nullable_column")
+                .with_detail("chunk_index", chunk.chunk_index.to_string())
+                .with_detail("file_index", chunk.file_index.to_string())
+                .with_detail("stable_id", chunk.stable_id.clone())
+                .with_detail("path", chunk.path.display().to_string())
+                .with_detail("partition_index", partition_index.to_string())
+                .with_detail("partition_column", column.name.clone())
+                .with_detail("partition_dtype", dtype_label(column.data_type)));
+            }
+        }
+
+        self.validate_chunk_source_membership(chunk, source_file, operation)?;
+        Ok(())
+    }
+
+    fn validate_chunk_source_membership(
+        &self,
+        chunk: &SourceChunk,
+        source_file: &LocalParquetFile,
+        operation: &'static str,
+    ) -> Result<()> {
+        if chunk.path != source_file.path {
+            return Err(source_chunk_mismatch_error(
+                operation,
+                chunk,
+                "source chunk path does not match supplied source file",
+                "source_chunk_path_mismatch",
+            )
+            .with_detail("expected_path", source_file.path.display().to_string())
+            .with_detail("actual_path", chunk.path.display().to_string()));
+        }
+
+        if chunk.stable_id != source_file.stable_id {
+            return Err(source_chunk_mismatch_error(
+                operation,
+                chunk,
+                "source chunk stable id does not match supplied source file",
+                "source_chunk_stable_id_mismatch",
+            )
+            .with_detail("expected_stable_id", source_file.stable_id.clone())
+            .with_detail("actual_stable_id", chunk.stable_id.clone()));
+        }
+
+        let expected_read_columns: &[String] = match self.kind {
+            LocalParquetSourceKind::Data => self.read_columns.as_slice(),
+            LocalParquetSourceKind::MetadataRowCount => &[],
+        };
+        if chunk.read_columns != expected_read_columns {
+            return Err(source_chunk_mismatch_error(
+                operation,
+                chunk,
+                "source chunk read columns do not match supplied source",
+                "source_chunk_read_columns_mismatch",
+            )
+            .with_detail("expected_read_columns", format!("{:?}", expected_read_columns))
+            .with_detail("actual_read_columns", format!("{:?}", chunk.read_columns)));
+        }
+
+        if chunk.partition_values != source_file.partition_values {
+            return Err(source_chunk_mismatch_error(
+                operation,
+                chunk,
+                "source chunk partition values do not match supplied source file",
+                "source_chunk_partition_values_mismatch",
+            )
+            .with_detail("expected_partition_values", format!("{:?}", source_file.partition_values))
+            .with_detail("actual_partition_values", format!("{:?}", chunk.partition_values)));
+        }
+
+        let expected_zero_column_count = self.kind == LocalParquetSourceKind::MetadataRowCount;
+        if chunk.zero_column_count != expected_zero_column_count {
+            return Err(source_chunk_mismatch_error(
+                operation,
+                chunk,
+                "source chunk zero-column-count mode does not match supplied source kind",
+                "source_chunk_zero_column_count_mismatch",
+            )
+            .with_detail("source_kind", self.kind.as_str())
+            .with_detail("expected_zero_column_count", expected_zero_column_count.to_string())
+            .with_detail("actual_zero_column_count", chunk.zero_column_count.to_string()));
+        }
+
+        validate_chunk_row_groups_for_source_file(chunk, source_file, operation)?;
+        validate_chunk_source_file_contract(chunk, source_file, operation)
     }
 
     fn validate_output_and_required_refs(&self, operation: &'static str) -> Result<()> {
@@ -338,6 +528,32 @@ impl LocalParquetSource {
             .with_detail("reason", "source_ref_type_mismatch")
             .with_detail("target_dtype", dtype_label(target.data_type))
             .with_detail("source_dtype", dtype_label(source_dtype)));
+        }
+        if let SourceColumnRef::Partition(index) = source_ref {
+            let partition = self.partition_columns.get(index).ok_or_else(|| {
+                Error::new_with(
+                    ErrorCode::IndexOutOfBounds,
+                    operation,
+                    "partition column reference index is out of bounds",
+                )
+                .with_fact(FACT_COLUMN_INDEX, index)
+                .with_detail("reason", "partition_ref_out_of_bounds")
+                .with_detail("partition_column_count", self.partition_columns.len().to_string())
+            })?;
+            if target.nullable != partition.nullable {
+                return Err(Error::new_with(
+                    ErrorCode::TypeMismatch,
+                    operation,
+                    "partition source column nullability does not match target schema column",
+                )
+                .with_column(name.to_string())
+                .with_detail("reason", "source_ref_nullability_mismatch")
+                .with_detail("source_ref", "partition")
+                .with_detail("partition_index", index.to_string())
+                .with_detail("partition_column", partition.name.clone())
+                .with_detail("target_nullable", target.nullable.to_string())
+                .with_detail("source_nullable", partition.nullable.to_string()));
+            }
         }
         Ok(())
     }
@@ -393,6 +609,15 @@ pub enum LocalParquetSourceKind {
     Data,
     /// Metadata-only row-count source using [`ZERO_COLUMN_COUNT_COLUMN`].
     MetadataRowCount,
+}
+
+impl LocalParquetSourceKind {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Data => "data",
+            Self::MetadataRowCount => "metadata_row_count",
+        }
+    }
 }
 
 /// Output shape requested from source execution.
@@ -511,6 +736,9 @@ pub struct SourceChunk {
     known_file_bytes: Option<u64>,
     known_row_group_bytes: Option<u64>,
     estimated_chunk_bytes: Option<u64>,
+    source_file_row_groups: Option<Vec<usize>>,
+    source_file_row_group_bytes: Option<Vec<u64>>,
+    source_file_row_group_rows: Option<Vec<u64>>,
     read_columns: Vec<String>,
     partition_values: Vec<PartitionValue>,
     zero_column_count: bool,
@@ -656,6 +884,9 @@ pub fn plan_local_parquet_source_chunks(
                 known_file_bytes: file.file_size_bytes,
                 known_row_group_bytes: None,
                 estimated_chunk_bytes: file.file_size_bytes,
+                source_file_row_groups: file.row_groups.clone(),
+                source_file_row_group_bytes: file.row_group_bytes.clone(),
+                source_file_row_group_rows: file.row_group_rows.clone(),
                 read_columns: source.read_columns.clone(),
                 partition_values: file.partition_values.clone(),
                 zero_column_count: false,
@@ -698,6 +929,9 @@ pub fn plan_local_parquet_source_chunks(
                 known_file_bytes: file.file_size_bytes,
                 known_row_group_bytes,
                 estimated_chunk_bytes: known_row_group_bytes,
+                source_file_row_groups: file.row_groups.clone(),
+                source_file_row_group_bytes: Some(row_group_bytes.to_vec()),
+                source_file_row_group_rows: Some(row_group_rows.to_vec()),
                 read_columns: if source.kind == LocalParquetSourceKind::MetadataRowCount {
                     Vec::new()
                 } else {
@@ -999,9 +1233,8 @@ pub struct PartitionColumn {
 impl PartitionColumn {
     /// Create partition column metadata.
     ///
-    /// `nullable` records source schema truth. Phase 1 partition values are
-    /// still non-null, so a nullable partition column may receive non-null
-    /// values but null partition values are not yet represented.
+    /// `nullable` records source schema truth. Typed null partition values
+    /// are accepted only when this flag is true.
     pub fn new(name: impl Into<String>, data_type: DataType, nullable: bool) -> Result<Self> {
         let name = checked_name(name.into(), OP_PARTITION_NEW, "partition column")?;
         Ok(Self { name, data_type, nullable })
@@ -1023,9 +1256,13 @@ impl PartitionColumn {
     }
 }
 
-/// Non-null partition value supported by the Phase 1 source contract.
+/// Partition value supported by the local Parquet source contract.
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub enum PartitionValue {
+    /// Typed null value. The dtype must match the partition column dtype and
+    /// the partition column must be nullable.
+    Null(DataType),
     /// Boolean value.
     Boolean(bool),
     /// Signed 8-bit integer.
@@ -1048,27 +1285,44 @@ pub enum PartitionValue {
     Float32(f32),
     /// 64-bit floating point value.
     Float64(f64),
+    /// Decimal128 raw fixed-point value plus cudf scale.
+    Decimal128 { raw: i128, scale: i32 },
+    /// Arrow Date32-compatible day value, represented as cudf timestamp days.
+    Date32(i32),
+    /// Timezone-less timestamp raw value with explicit resolution.
+    Timestamp { raw: i64, resolution: TimestampResolution },
+    /// Duration raw value with explicit resolution.
+    Duration { raw: i64, resolution: TimestampResolution },
     /// UTF-8 string value.
     String(String),
 }
 
 impl PartitionValue {
-    /// cuDF dtype represented by this non-null partition value.
+    /// cuDF dtype represented by this partition value.
     pub fn data_type(&self) -> DataType {
-        DataType::new(match self {
-            Self::Boolean(_) => TypeId::Bool8,
-            Self::Int8(_) => TypeId::Int8,
-            Self::Int16(_) => TypeId::Int16,
-            Self::Int32(_) => TypeId::Int32,
-            Self::Int64(_) => TypeId::Int64,
-            Self::UInt8(_) => TypeId::UInt8,
-            Self::UInt16(_) => TypeId::UInt16,
-            Self::UInt32(_) => TypeId::UInt32,
-            Self::UInt64(_) => TypeId::UInt64,
-            Self::Float32(_) => TypeId::Float32,
-            Self::Float64(_) => TypeId::Float64,
-            Self::String(_) => TypeId::String,
-        })
+        match self {
+            Self::Null(data_type) => *data_type,
+            Self::Boolean(_) => DataType::new(TypeId::Bool8),
+            Self::Int8(_) => DataType::new(TypeId::Int8),
+            Self::Int16(_) => DataType::new(TypeId::Int16),
+            Self::Int32(_) => DataType::new(TypeId::Int32),
+            Self::Int64(_) => DataType::new(TypeId::Int64),
+            Self::UInt8(_) => DataType::new(TypeId::UInt8),
+            Self::UInt16(_) => DataType::new(TypeId::UInt16),
+            Self::UInt32(_) => DataType::new(TypeId::UInt32),
+            Self::UInt64(_) => DataType::new(TypeId::UInt64),
+            Self::Float32(_) => DataType::new(TypeId::Float32),
+            Self::Float64(_) => DataType::new(TypeId::Float64),
+            Self::Decimal128 { scale, .. } => DataType::fixed_point(TypeId::Decimal128, *scale),
+            Self::Date32(_) => DataType::new(TypeId::TimestampDays),
+            Self::Timestamp { resolution, .. } => DataType::new(resolution.type_id()),
+            Self::Duration { resolution, .. } => DataType::new(resolution.duration_type_id()),
+            Self::String(_) => DataType::new(TypeId::String),
+        }
+    }
+
+    fn is_null(&self) -> bool {
+        matches!(self, Self::Null(_))
     }
 }
 
@@ -1476,9 +1730,27 @@ fn schema_missing_error(operation: &'static str, name: &str) -> Error {
         .with_detail("reason", "schema_column_missing")
 }
 
+fn source_chunk_mismatch_error(
+    operation: &'static str,
+    chunk: &SourceChunk,
+    message: &'static str,
+    reason: &'static str,
+) -> Error {
+    Error::new_with(ErrorCode::TypeMismatch, operation, message)
+        .with_detail("reason", reason)
+        .with_detail("chunk_index", chunk.chunk_index.to_string())
+        .with_detail("file_index", chunk.file_index.to_string())
+        .with_detail("stable_id", chunk.stable_id.clone())
+        .with_detail("path", chunk.path.display().to_string())
+}
+
 fn is_supported_partition_dtype(data_type: DataType) -> bool {
+    let type_id = data_type.id();
+    if !type_id.is_decimal() && data_type.scale() != 0 {
+        return false;
+    }
     matches!(
-        data_type.id(),
+        type_id,
         TypeId::Bool8
             | TypeId::Int8
             | TypeId::Int16
@@ -1491,7 +1763,12 @@ fn is_supported_partition_dtype(data_type: DataType) -> bool {
             | TypeId::Float32
             | TypeId::Float64
             | TypeId::String
-    )
+            | TypeId::Decimal128
+            | TypeId::DurationSeconds
+            | TypeId::DurationMilliseconds
+            | TypeId::DurationMicroseconds
+            | TypeId::DurationNanoseconds
+    ) || type_id.is_timestamp()
 }
 
 fn partition_value_matches_dtype(value: &PartitionValue, data_type: DataType) -> bool {
@@ -1557,6 +1834,209 @@ fn validate_selected_row_groups(
         }
     }
     Ok(())
+}
+
+fn validate_chunk_row_groups_for_source_file(
+    chunk: &SourceChunk,
+    source_file: &LocalParquetFile,
+    operation: &'static str,
+) -> Result<()> {
+    if chunk.reads_all_row_groups && !chunk.row_group_indexes.is_empty() {
+        return Err(source_chunk_mismatch_error(
+            operation,
+            chunk,
+            "source chunk cannot both read all row groups and carry explicit row groups",
+            "source_chunk_reads_all_with_explicit_row_groups",
+        ));
+    }
+
+    if let Some(selected_row_groups) = source_file.row_groups.as_deref() {
+        if chunk.reads_all_row_groups {
+            return Err(source_chunk_mismatch_error(
+                operation,
+                chunk,
+                "source chunk reads all row groups but supplied source has an explicit row-group selection",
+                "source_chunk_reads_all_for_selected_row_groups",
+            )
+            .with_detail("source_row_groups", format!("{:?}", selected_row_groups)));
+        }
+
+        for (row_group_position, row_group) in chunk.row_group_indexes.iter().copied().enumerate() {
+            if !selected_row_groups.contains(&row_group) {
+                return Err(source_chunk_mismatch_error(
+                    operation,
+                    chunk,
+                    "source chunk row group is not selected by supplied source file",
+                    "source_chunk_row_group_not_selected",
+                )
+                .with_fact(FACT_COLUMN_INDEX, row_group)
+                .with_detail("row_group", row_group.to_string())
+                .with_detail("row_group_position", row_group_position.to_string())
+                .with_detail("source_row_groups", format!("{:?}", selected_row_groups)));
+            }
+        }
+    }
+
+    let row_group_count = source_file
+        .row_group_rows
+        .as_ref()
+        .map(Vec::len)
+        .or_else(|| source_file.row_group_bytes.as_ref().map(Vec::len));
+    if let Some(row_group_count) = row_group_count {
+        for (row_group_position, row_group) in chunk.row_group_indexes.iter().copied().enumerate() {
+            if row_group >= row_group_count {
+                let mut err = Error::new_with(
+                    ErrorCode::IndexOutOfBounds,
+                    operation,
+                    "source chunk row group index is out of bounds for supplied source file metadata",
+                )
+                .with_fact(FACT_COLUMN_INDEX, row_group)
+                .with_detail("reason", "source_chunk_row_group_out_of_bounds")
+                .with_detail("chunk_index", chunk.chunk_index.to_string())
+                .with_detail("file_index", chunk.file_index.to_string())
+                .with_detail("stable_id", chunk.stable_id.clone())
+                .with_detail("path", chunk.path.display().to_string())
+                .with_detail("row_group", row_group.to_string())
+                .with_detail("row_group_position", row_group_position.to_string());
+                if row_group_count > 0 {
+                    err = err.with_detail("max_row_group", (row_group_count - 1).to_string());
+                }
+                return Err(err);
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn validate_chunk_source_file_contract(
+    chunk: &SourceChunk,
+    source_file: &LocalParquetFile,
+    operation: &'static str,
+) -> Result<()> {
+    if chunk.source_file_row_groups != source_file.row_groups {
+        return Err(source_chunk_mismatch_error(
+            operation,
+            chunk,
+            "source chunk was planned from a different source file row-group selection",
+            "source_chunk_source_row_groups_mismatch",
+        )
+        .with_detail("expected_source_row_groups", format!("{:?}", source_file.row_groups))
+        .with_detail("actual_source_row_groups", format!("{:?}", chunk.source_file_row_groups)));
+    }
+
+    if chunk.source_file_row_group_bytes != source_file.row_group_bytes {
+        return Err(source_chunk_mismatch_error(
+            operation,
+            chunk,
+            "source chunk was planned from different source file row-group byte metadata",
+            "source_chunk_row_group_bytes_metadata_mismatch",
+        )
+        .with_detail("expected_row_group_bytes", format!("{:?}", source_file.row_group_bytes))
+        .with_detail("actual_row_group_bytes", format!("{:?}", chunk.source_file_row_group_bytes)));
+    }
+
+    if chunk.source_file_row_group_rows != source_file.row_group_rows {
+        return Err(source_chunk_mismatch_error(
+            operation,
+            chunk,
+            "source chunk was planned from different source file row-count metadata",
+            "source_chunk_row_group_rows_metadata_mismatch",
+        )
+        .with_detail("expected_row_group_rows", format!("{:?}", source_file.row_group_rows))
+        .with_detail("actual_row_group_rows", format!("{:?}", chunk.source_file_row_group_rows)));
+    }
+
+    if chunk.known_file_bytes != source_file.file_size_bytes {
+        return Err(source_chunk_mismatch_error(
+            operation,
+            chunk,
+            "source chunk file byte metadata does not match supplied source file",
+            "source_chunk_file_bytes_metadata_mismatch",
+        )
+        .with_detail("expected_file_size_bytes", format!("{:?}", source_file.file_size_bytes))
+        .with_detail("actual_file_size_bytes", format!("{:?}", chunk.known_file_bytes)));
+    }
+
+    let metadata_available = source_file.row_group_bytes.is_some() && source_file.row_group_rows.is_some();
+    let selected_row_groups = chunk_metadata_row_groups(chunk, source_file);
+    let expected_known_row_group_bytes = if metadata_available {
+        checked_row_group_sum(
+            source_file.row_group_bytes.as_deref().expect("metadata_available checked row_group_bytes"),
+            &selected_row_groups,
+        )
+    } else {
+        None
+    };
+    if chunk.known_row_group_bytes != expected_known_row_group_bytes {
+        return Err(source_chunk_mismatch_error(
+            operation,
+            chunk,
+            "source chunk row-group byte metadata does not match supplied source file",
+            "source_chunk_known_row_group_bytes_mismatch",
+        )
+        .with_detail("expected_known_row_group_bytes", format!("{expected_known_row_group_bytes:?}"))
+        .with_detail("actual_known_row_group_bytes", format!("{:?}", chunk.known_row_group_bytes)));
+    }
+
+    let expected_estimated_chunk_bytes =
+        if metadata_available { expected_known_row_group_bytes } else { source_file.file_size_bytes };
+    if chunk.estimated_chunk_bytes != expected_estimated_chunk_bytes {
+        return Err(source_chunk_mismatch_error(
+            operation,
+            chunk,
+            "source chunk byte estimate does not match supplied source file metadata",
+            "source_chunk_estimated_bytes_mismatch",
+        )
+        .with_detail("expected_estimated_chunk_bytes", format!("{expected_estimated_chunk_bytes:?}"))
+        .with_detail("actual_estimated_chunk_bytes", format!("{:?}", chunk.estimated_chunk_bytes)));
+    }
+
+    let expected_size_estimate_based = !metadata_available && source_file.file_size_bytes.is_some();
+    if chunk.size_estimate_based != expected_size_estimate_based {
+        return Err(source_chunk_mismatch_error(
+            operation,
+            chunk,
+            "source chunk size-estimate mode does not match supplied source file metadata",
+            "source_chunk_size_estimate_based_mismatch",
+        )
+        .with_detail("expected_size_estimate_based", expected_size_estimate_based.to_string())
+        .with_detail("actual_size_estimate_based", chunk.size_estimate_based.to_string()));
+    }
+
+    let expected_known_row_count = if metadata_available {
+        checked_row_group_sum(
+            source_file.row_group_rows.as_deref().expect("metadata_available checked row_group_rows"),
+            &selected_row_groups,
+        )
+    } else {
+        None
+    };
+    if chunk.known_row_count != expected_known_row_count {
+        return Err(source_chunk_mismatch_error(
+            operation,
+            chunk,
+            "source chunk row-count metadata does not match supplied source file",
+            "source_chunk_known_row_count_mismatch",
+        )
+        .with_detail("expected_known_row_count", format!("{expected_known_row_count:?}"))
+        .with_detail("actual_known_row_count", format!("{:?}", chunk.known_row_count)));
+    }
+
+    Ok(())
+}
+
+fn chunk_metadata_row_groups(chunk: &SourceChunk, source_file: &LocalParquetFile) -> Vec<usize> {
+    if !chunk.reads_all_row_groups {
+        return chunk.row_group_indexes.clone();
+    }
+
+    let row_group_count = source_file
+        .row_group_rows
+        .as_ref()
+        .map(Vec::len)
+        .or_else(|| source_file.row_group_bytes.as_ref().map(Vec::len));
+    row_group_count.map_or_else(Vec::new, |count| (0..count).collect())
 }
 
 fn checked_row_group_sum(values: &[u64], row_groups: &[usize]) -> Option<u64> {
@@ -1664,7 +2144,7 @@ fn source_row_count_to_i64_with_context(
 }
 
 fn dtype_label(data_type: DataType) -> String {
-    if data_type.id().is_decimal() {
+    if data_type.id().is_decimal() || data_type.scale() != 0 {
         format!("{}(scale={})", data_type.id(), data_type.scale())
     } else {
         data_type.id().to_string()

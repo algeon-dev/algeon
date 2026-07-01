@@ -13,15 +13,18 @@ use super::{
 use crate::{
     core::{
         column::{Column, ColumnView},
-        error::Result,
+        error::{Error, ErrorKind, Result},
     },
-    frame::dataframe::{DataFrame, group_keys::require_non_empty_group_keys},
+    frame::dataframe::{DataFrame, InfoDetail, group_keys::require_non_empty_group_keys},
     internal::resolve::missing_column_error,
     runtime::{
-        execution_context::ExecutionOverrides, execution_domain::ExecutionDomain, execution_resolver::ResolvedExecution,
+        BudgetedExecutionOutcome, ExecutionBudgetToken, execution_context::ExecutionOverrides,
+        execution_domain::ExecutionDomain, execution_resolver::ResolvedExecution,
     },
 };
 
+const GROUPBY_AGG_TEMPORARY_WORKSPACE_CONTRACT_GAP: &str =
+    "libcudf_groupby_aggregate_temporary_workspace_preflight_unavailable";
 const GROUPBY_VALUE_VIEW_INLINE_CAPACITY: usize = 8;
 const GROUPBY_REQUEST_META_INLINE_CAPACITY: usize = 8;
 const GROUPBY_RESULT_NAME_INLINE_CAPACITY: usize = 8;
@@ -186,6 +189,42 @@ impl<'a> GroupBy<'a> {
         self.agg_impl(specs, None, output_domain, "groupby::GroupBy::agg")
     }
 
+    /// Execute the groupby with a hard execution-budget token.
+    ///
+    /// This has the same aggregation semantics and validation as
+    /// [`agg`](Self::agg), but routes execution allocations through the
+    /// token's execution overrides. The returned report records the observed
+    /// output DataFrame device footprint after execution. libcudf groupby
+    /// temporary workspace preflight sizing is not exposed and is recorded as
+    /// an unresolved lower-level contract.
+    pub fn agg_with_budget(
+        &self,
+        specs: &[AggSpec],
+        token: &ExecutionBudgetToken,
+    ) -> Result<BudgetedExecutionOutcome<DataFrame>> {
+        let operation = "groupby::GroupBy::agg_with_budget";
+        let ctx = token.execution_overrides();
+        let output_domain = ctx
+            .resolve_output_domain(self.df.execution_domain())
+            .map_err(|error| error.reanchor_if_needed(operation))?;
+        let exec_options = output_domain.explicit_exec_options_raw();
+        let output = self
+            .agg_impl_with_groupby_error_mapper(specs, exec_options, output_domain, operation, |error| {
+                annotate_groupby_budget_execution_error(error, token, operation)
+            })
+            .map_err(|error| error.reanchor_if_needed(operation))?;
+        let output_bytes = dataframe_device_allocated_size_bytes(&output, operation)?;
+        let output_rows = output.num_rows();
+        let report = token
+            .hard_enforced_report()
+            .with_retained_bytes(output_bytes)
+            .with_output_bytes(output_bytes)
+            .with_output_rows(output_rows)
+            .with_unresolved_contract(GROUPBY_AGG_TEMPORARY_WORKSPACE_CONTRACT_GAP);
+
+        Ok(BudgetedExecutionOutcome::new(output, report))
+    }
+
     /// Execute the groupby with a borrowed per-operation execution override.
     pub(crate) fn agg_in_context(&self, specs: &[AggSpec], ctx: &ExecutionOverrides<'_>) -> Result<DataFrame> {
         let output_domain = ctx.resolve_output_domain(self.df.execution_domain())?;
@@ -207,6 +246,20 @@ impl<'a> GroupBy<'a> {
         output_domain: Arc<ExecutionDomain>,
         operation: &'static str,
     ) -> Result<DataFrame> {
+        self.agg_impl_with_groupby_error_mapper(specs, exec_options, output_domain, operation, |error| error)
+    }
+
+    fn agg_impl_with_groupby_error_mapper<F>(
+        &self,
+        specs: &[AggSpec],
+        exec_options: Option<cudf_sys::cudf_exec_options_t>,
+        output_domain: Arc<ExecutionDomain>,
+        operation: &'static str,
+        map_groupby_error: F,
+    ) -> Result<DataFrame>
+    where
+        F: FnOnce(Error) -> Error,
+    {
         use crate::internal::{
             hash::{FastHashMap, fast_hash_map_with_capacity},
             resolve::{build_borrowed_table_view_from_columns, resolve_column_names},
@@ -299,7 +352,8 @@ impl<'a> GroupBy<'a> {
             &output_domain,
             Some(resolved_exec_options),
             operation,
-        )?;
+        )
+        .map_err(map_groupby_error)?;
 
         let grouped_results: Vec<Vec<Option<Column>>> =
             gb_result.results.into_iter().map(|cols| cols.into_iter().map(Some).collect()).collect();
@@ -340,6 +394,33 @@ impl<'a> GroupBy<'a> {
         /// Shortcut: compute the sample variance (ddof=1) of each named column per group.
         fn var(columns) => GroupByAgg::Variance { ddof: 1 };
     );
+}
+
+fn annotate_groupby_budget_execution_error(
+    error: Error,
+    token: &ExecutionBudgetToken,
+    operation: &'static str,
+) -> Error {
+    match error.kind() {
+        ErrorKind::ResourceExhausted | ErrorKind::DependencyFailure => token.annotate_error(error, operation),
+        _ => error.reanchor_if_needed(operation),
+    }
+}
+
+fn dataframe_device_allocated_size_bytes(frame: &DataFrame, operation: &'static str) -> Result<usize> {
+    let info = frame.info_with(InfoDetail::DEVICE_ALLOCATED).map_err(|error| error.reanchor_if_needed(operation))?;
+    let Some(memory) = info.memory_accounting else {
+        return Err(crate::core::error::invariant_violation(
+            operation,
+            "InfoDetail::DEVICE_ALLOCATED must populate dataframe memory accounting",
+        ));
+    };
+    memory.device_allocated_bytes.ok_or_else(|| {
+        crate::core::error::invariant_violation(
+            operation,
+            "InfoDetail::DEVICE_ALLOCATED must populate dataframe device-allocated bytes",
+        )
+    })
 }
 
 impl<'a, 'ctx, 'handles> GroupByExecutionScope<'a, 'ctx, 'handles> {

@@ -62,6 +62,19 @@ fn test_arrow_datatype_try_from_type_id_supported_mappings() {
         ArrowDataType::try_from(TypeId::TimestampNanoseconds).unwrap(),
         ArrowDataType::Timestamp(TimeUnit::Nanosecond, None)
     );
+    assert_eq!(ArrowDataType::try_from(TypeId::DurationSeconds).unwrap(), ArrowDataType::Duration(TimeUnit::Second));
+    assert_eq!(
+        ArrowDataType::try_from(TypeId::DurationMilliseconds).unwrap(),
+        ArrowDataType::Duration(TimeUnit::Millisecond)
+    );
+    assert_eq!(
+        ArrowDataType::try_from(TypeId::DurationMicroseconds).unwrap(),
+        ArrowDataType::Duration(TimeUnit::Microsecond)
+    );
+    assert_eq!(
+        ArrowDataType::try_from(TypeId::DurationNanoseconds).unwrap(),
+        ArrowDataType::Duration(TimeUnit::Nanosecond)
+    );
 }
 
 #[test]
@@ -104,6 +117,16 @@ fn test_type_id_try_from_arrow_datatype_supported_mappings() {
         TypeId::try_from(&ArrowDataType::Timestamp(TimeUnit::Nanosecond, None)).unwrap(),
         TypeId::TimestampNanoseconds
     );
+    assert_eq!(TypeId::try_from(&ArrowDataType::Duration(TimeUnit::Second)).unwrap(), TypeId::DurationSeconds);
+    assert_eq!(
+        TypeId::try_from(&ArrowDataType::Duration(TimeUnit::Millisecond)).unwrap(),
+        TypeId::DurationMilliseconds
+    );
+    assert_eq!(
+        TypeId::try_from(&ArrowDataType::Duration(TimeUnit::Microsecond)).unwrap(),
+        TypeId::DurationMicroseconds
+    );
+    assert_eq!(TypeId::try_from(&ArrowDataType::Duration(TimeUnit::Nanosecond)).unwrap(), TypeId::DurationNanoseconds);
     assert_eq!(TypeId::try_from(&ArrowDataType::Decimal128(18, 2)).unwrap(), TypeId::Decimal128);
 }
 
@@ -149,6 +172,14 @@ fn test_arrow_host_dtype_mapping_preserves_logical_metadata() {
         arrow_type_from_cudf_dtype(DataType::new(TypeId::TimestampMilliseconds)).unwrap(),
         ArrowDataType::Timestamp(TimeUnit::Millisecond, None)
     );
+    assert_eq!(
+        cudf_dtype_from_arrow_type(&ArrowDataType::Duration(TimeUnit::Nanosecond)).unwrap(),
+        DataType::new(TypeId::DurationNanoseconds)
+    );
+    assert_eq!(
+        arrow_type_from_cudf_dtype(DataType::new(TypeId::DurationMilliseconds)).unwrap(),
+        ArrowDataType::Duration(TimeUnit::Millisecond)
+    );
     assert_eq!(cudf_dtype_from_arrow_type(&ArrowDataType::LargeUtf8).unwrap(), DataType::new(TypeId::String));
     assert_eq!(cudf_dtype_from_arrow_type(&ArrowDataType::Utf8View).unwrap(), DataType::new(TypeId::String));
     assert!(is_supported_arrow_type(&ArrowDataType::Boolean));
@@ -163,6 +194,37 @@ fn test_arrow_host_dtype_mapping_preserves_logical_metadata() {
         DataType::fixed_point(TypeId::Decimal64, -3),
         &ArrowDataType::Decimal128(38, 2)
     ));
+}
+
+#[test]
+fn test_arrow_host_duration_import_export_mappings() {
+    use cudf::interop::arrow_host::{
+        arrow_type_from_cudf_dtype, cudf_dtype_can_export_to_arrow_type, cudf_dtype_from_arrow_type,
+    };
+
+    let cases = [
+        (TimeUnit::Second, TypeId::DurationSeconds),
+        (TimeUnit::Millisecond, TypeId::DurationMilliseconds),
+        (TimeUnit::Microsecond, TypeId::DurationMicroseconds),
+        (TimeUnit::Nanosecond, TypeId::DurationNanoseconds),
+    ];
+    for (unit, type_id) in cases {
+        let arrow_type = ArrowDataType::Duration(unit);
+        let cudf_dtype = DataType::new(type_id);
+
+        assert_eq!(cudf_dtype_from_arrow_type(&arrow_type).unwrap(), cudf_dtype);
+        assert_eq!(arrow_type_from_cudf_dtype(cudf_dtype).unwrap(), arrow_type);
+        assert!(cudf_dtype_can_export_to_arrow_type(cudf_dtype, &arrow_type));
+        assert_eq!(TypeId::try_from(&arrow_type).unwrap(), type_id);
+        assert_eq!(ArrowDataType::try_from(type_id).unwrap(), arrow_type);
+    }
+
+    let duration_days_err = arrow_type_from_cudf_dtype(DataType::new(TypeId::DurationDays))
+        .expect_err("Arrow has no duration day unit for cudf DurationDays export");
+    assert_eq!(duration_days_err.kind(), ErrorKind::Unsupported);
+    assert_eq!(duration_days_err.code(), ErrorCode::UnsupportedDtype);
+    assert_eq!(duration_days_err.operation(), "arrow_host::arrow_type_from_cudf_dtype");
+    assert_eq!(error_context_value(&duration_days_err, "type_id").as_deref(), Some("duration_days"));
 }
 
 #[test]
@@ -593,6 +655,10 @@ fn test_round_trip_nullable_decimal128_date32_and_timestamp_units() {
     let ts_ms = TimestampMillisecondArray::from(vec![Some(1_000), None, Some(3_000)]);
     let ts_us = TimestampMicrosecondArray::from(vec![Some(1_000), None, Some(3_000)]);
     let ts_ns = TimestampNanosecondArray::from(vec![Some(1_000), None, Some(3_000)]);
+    let duration_s = DurationSecondArray::from(vec![Some(4), None, Some(6)]);
+    let duration_ms = DurationMillisecondArray::from(vec![Some(4_000), None, Some(6_000)]);
+    let duration_us = DurationMicrosecondArray::from(vec![Some(4_000), None, Some(6_000)]);
+    let duration_ns = DurationNanosecondArray::from(vec![Some(4_000), None, Some(6_000)]);
     let schema = Schema::new(vec![
         Field::new("amount", ArrowDataType::Decimal128(20, 2), true),
         Field::new("date", ArrowDataType::Date32, true),
@@ -600,10 +666,25 @@ fn test_round_trip_nullable_decimal128_date32_and_timestamp_units() {
         Field::new("ts_ms", ArrowDataType::Timestamp(TimeUnit::Millisecond, None), true),
         Field::new("ts_us", ArrowDataType::Timestamp(TimeUnit::Microsecond, None), true),
         Field::new("ts_ns", ArrowDataType::Timestamp(TimeUnit::Nanosecond, None), true),
+        Field::new("duration_s", ArrowDataType::Duration(TimeUnit::Second), true),
+        Field::new("duration_ms", ArrowDataType::Duration(TimeUnit::Millisecond), true),
+        Field::new("duration_us", ArrowDataType::Duration(TimeUnit::Microsecond), true),
+        Field::new("duration_ns", ArrowDataType::Duration(TimeUnit::Nanosecond), true),
     ]);
     let batch = RecordBatch::try_new(
         Arc::new(schema),
-        vec![Arc::new(amount), Arc::new(date), Arc::new(ts_s), Arc::new(ts_ms), Arc::new(ts_us), Arc::new(ts_ns)],
+        vec![
+            Arc::new(amount),
+            Arc::new(date),
+            Arc::new(ts_s),
+            Arc::new(ts_ms),
+            Arc::new(ts_us),
+            Arc::new(ts_ns),
+            Arc::new(duration_s),
+            Arc::new(duration_ms),
+            Arc::new(duration_us),
+            Arc::new(duration_ns),
+        ],
     )
     .unwrap();
 
@@ -615,6 +696,10 @@ fn test_round_trip_nullable_decimal128_date32_and_timestamp_units() {
     assert_eq!(df.series("ts_ms").unwrap().dtype().unwrap().id(), TypeId::TimestampMilliseconds);
     assert_eq!(df.series("ts_us").unwrap().dtype().unwrap().id(), TypeId::TimestampMicroseconds);
     assert_eq!(df.series("ts_ns").unwrap().dtype().unwrap().id(), TypeId::TimestampNanoseconds);
+    assert_eq!(df.series("duration_s").unwrap().dtype().unwrap().id(), TypeId::DurationSeconds);
+    assert_eq!(df.series("duration_ms").unwrap().dtype().unwrap().id(), TypeId::DurationMilliseconds);
+    assert_eq!(df.series("duration_us").unwrap().dtype().unwrap().id(), TypeId::DurationMicroseconds);
+    assert_eq!(df.series("duration_ns").unwrap().dtype().unwrap().id(), TypeId::DurationNanoseconds);
 
     let round_trip = df.to_record_batch().unwrap();
     assert_eq!(*round_trip.schema().field(0).data_type(), ArrowDataType::Decimal128(38, 2));
@@ -623,6 +708,10 @@ fn test_round_trip_nullable_decimal128_date32_and_timestamp_units() {
     assert_eq!(*round_trip.schema().field(3).data_type(), ArrowDataType::Timestamp(TimeUnit::Millisecond, None));
     assert_eq!(*round_trip.schema().field(4).data_type(), ArrowDataType::Timestamp(TimeUnit::Microsecond, None));
     assert_eq!(*round_trip.schema().field(5).data_type(), ArrowDataType::Timestamp(TimeUnit::Nanosecond, None));
+    assert_eq!(*round_trip.schema().field(6).data_type(), ArrowDataType::Duration(TimeUnit::Second));
+    assert_eq!(*round_trip.schema().field(7).data_type(), ArrowDataType::Duration(TimeUnit::Millisecond));
+    assert_eq!(*round_trip.schema().field(8).data_type(), ArrowDataType::Duration(TimeUnit::Microsecond));
+    assert_eq!(*round_trip.schema().field(9).data_type(), ArrowDataType::Duration(TimeUnit::Nanosecond));
 
     for column_index in 0..round_trip.num_columns() {
         let arr = round_trip.column(column_index);
@@ -654,6 +743,22 @@ fn test_round_trip_nullable_decimal128_date32_and_timestamp_units() {
     assert_eq!(
         round_trip.column(5).as_primitive::<arrow::datatypes::TimestampNanosecondType>().values().as_ref(),
         &[1_000, 0, 3_000]
+    );
+    assert_eq!(
+        round_trip.column(6).as_primitive::<arrow::datatypes::DurationSecondType>().values().as_ref(),
+        &[4, 0, 6]
+    );
+    assert_eq!(
+        round_trip.column(7).as_primitive::<arrow::datatypes::DurationMillisecondType>().values().as_ref(),
+        &[4_000, 0, 6_000]
+    );
+    assert_eq!(
+        round_trip.column(8).as_primitive::<arrow::datatypes::DurationMicrosecondType>().values().as_ref(),
+        &[4_000, 0, 6_000]
+    );
+    assert_eq!(
+        round_trip.column(9).as_primitive::<arrow::datatypes::DurationNanosecondType>().values().as_ref(),
+        &[4_000, 0, 6_000]
     );
 }
 
