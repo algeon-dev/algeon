@@ -3,21 +3,34 @@
 use std::process::Command;
 
 use cudf::{
-    BoundaryKind, DataFrame, DataType, ErrorCode, TypeId,
+    BoundaryKind, DataFrame, DataType, ErrorCode, ExecutionBudgetEnforcement, ExecutionBudgetRequest,
+    ExecutionBudgetStatus, TypeId,
     core::{Column, Table},
+    frame::dataframe::InfoDetail,
     io::source::{
         LocalParquetFile, LocalParquetSource, PartitionColumn, PartitionValue, SourceColumn, SourceColumnRef,
         SourceColumnRole, SourceOutputColumn, SourceReadMode, SourceRequiredColumn, SourceSchema,
         ZERO_COLUMN_COUNT_COLUMN, plan_local_parquet_source_chunks,
     },
     runtime::QueryStageKind,
+    testing::prelude::*,
 };
 use tempfile::TempDir;
 
-use crate::common::{column_from_slice, error_context_value, sample_runtime};
+use crate::common::{
+    column_from_slice, column_from_strs, error_context_value, last_exec_mr_value, reset_exec_observation,
+    sample_runtime,
+};
+
+const PARQUET_SOURCE_DECODED_OUTPUT_PREFLIGHT_CONTRACT_GAP: &str =
+    "libcudf_parquet_decoded_output_preflight_unavailable";
 
 fn dtype(id: TypeId) -> DataType {
     DataType::new(id)
+}
+
+fn dataframe_device_allocated_size_bytes(df: &DataFrame) -> usize {
+    df.info_with(InfoDetail::DEVICE_ALLOCATED).unwrap().memory_accounting.unwrap().device_allocated_bytes.unwrap()
 }
 
 fn write_parquet_df(path: &std::path::Path, column_names: &[&str], columns: Vec<Column>, row_group_size_rows: i32) {
@@ -171,6 +184,134 @@ fn read_parquet_source_chunk_honors_selected_row_groups() {
 
     assert_eq!(df.column_names(), vec!["id"]);
     assert_eq!(df.series("id").unwrap().to_vec_strict::<i32>().unwrap(), vec![3, 4]);
+}
+
+#[test]
+fn read_parquet_source_chunk_with_budget_uses_token_allocator_and_reports_observed_output() {
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("budgeted_source.parquet");
+    let rt = sample_runtime();
+
+    write_parquet_df(&path, &["id"], vec![column_from_slice(&[1i32, 2, 3, 4]).unwrap()], 0);
+
+    let source = LocalParquetSource::data(
+        [LocalParquetFile::new(&path, "budgeted", []).unwrap()],
+        SourceSchema::new([SourceColumn::new("id", dtype(TypeId::Int32), false).unwrap()]).unwrap(),
+        ["id"],
+        [SourceOutputColumn::new("id", SourceColumnRef::ReadColumn(0)).unwrap()],
+        [],
+        [],
+    )
+    .unwrap();
+    let plan = plan_local_parquet_source_chunks(&source, Default::default()).unwrap();
+    let token =
+        rt.execution_budget_token(ExecutionBudgetRequest::new(64 * 1024 * 1024).with_boundary("source_read")).unwrap();
+
+    reset_exec_observation();
+    let outcome = DataFrame::read_parquet_source_chunk_with_budget(
+        &rt,
+        &source,
+        &plan.chunks()[0],
+        SourceReadMode::FinalOutput,
+        &token,
+    )
+    .unwrap();
+    let df = outcome.value();
+    let report = outcome.report();
+    let expected_output_bytes = dataframe_device_allocated_size_bytes(df);
+    let token_mr = token.memory_resource().testing_raw_handle_value();
+
+    assert_eq!(df.column_names(), vec!["id"]);
+    assert_eq!(df.series("id").unwrap().to_vec_strict::<i32>().unwrap(), vec![1, 2, 3, 4]);
+    assert_eq!(df.testing_execution_domain_mr_value(), token_mr);
+    assert_eq!(last_exec_mr_value(), token_mr);
+    assert_eq!(report.request().boundary(), "source_read");
+    assert_eq!(report.request().budget_bytes(), 64 * 1024 * 1024);
+    assert_eq!(report.enforcement(), ExecutionBudgetEnforcement::HardMemoryResourceLimit);
+    assert_eq!(report.status(), ExecutionBudgetStatus::HardEnforced);
+    assert_eq!(report.output_rows(), Some(4));
+    assert_eq!(report.retained_bytes(), Some(expected_output_bytes));
+    assert_eq!(report.output_bytes(), Some(expected_output_bytes));
+    assert_eq!(report.unresolved_contract(), Some(PARQUET_SOURCE_DECODED_OUTPUT_PREFLIGHT_CONTRACT_GAP));
+    assert!(expected_output_bytes > 0);
+}
+
+#[test]
+fn read_parquet_source_chunk_with_budget_reports_exceeded_budget_facts() {
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("budget_too_small.parquet");
+    let rt = sample_runtime();
+
+    write_parquet_df(&path, &["id"], vec![column_from_slice(&[10i32, 20, 30, 40]).unwrap()], 0);
+
+    let source = LocalParquetSource::data(
+        [LocalParquetFile::new(&path, "too-small", []).unwrap()],
+        SourceSchema::new([SourceColumn::new("id", dtype(TypeId::Int32), false).unwrap()]).unwrap(),
+        ["id"],
+        [SourceOutputColumn::new("id", SourceColumnRef::ReadColumn(0)).unwrap()],
+        [],
+        [],
+    )
+    .unwrap();
+    let plan = plan_local_parquet_source_chunks(&source, Default::default()).unwrap();
+    let token = rt.execution_budget_token(ExecutionBudgetRequest::new(1).with_boundary("source_read")).unwrap();
+
+    let err = DataFrame::read_parquet_source_chunk_with_budget(
+        &rt,
+        &source,
+        &plan.chunks()[0],
+        SourceReadMode::FinalOutput,
+        &token,
+    )
+    .expect_err("one-byte budget should not cover parquet decoded output allocations");
+
+    assert_eq!(err.code(), ErrorCode::OutOfMemory);
+    assert_eq!(error_context_value(&err, "budget_boundary").as_deref(), Some("source_read"));
+    assert_eq!(error_context_value(&err, "budget_bytes").as_deref(), Some("1"));
+    assert_eq!(error_context_value(&err, "budget_enforcement").as_deref(), Some("hard_memory_resource_limit"));
+    assert_eq!(error_context_value(&err, "budget_status").as_deref(), Some("exceeded_or_lower_layer_rejected"));
+}
+
+#[test]
+fn read_parquet_source_chunk_with_budget_string_output_keeps_preflight_unresolved() {
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("string_budgeted_source.parquet");
+    let rt = sample_runtime();
+
+    write_parquet_df(&path, &["name"], vec![column_from_strs(&["ALPHA", "BETA", "GAMMA"]).unwrap()], 0);
+
+    let source = LocalParquetSource::data(
+        [LocalParquetFile::new(&path, "strings", []).unwrap()],
+        SourceSchema::new([SourceColumn::new("name", dtype(TypeId::String), false).unwrap()]).unwrap(),
+        ["name"],
+        [SourceOutputColumn::new("name", SourceColumnRef::ReadColumn(0)).unwrap()],
+        [],
+        [],
+    )
+    .unwrap();
+    let plan = plan_local_parquet_source_chunks(&source, Default::default()).unwrap();
+    let token = rt
+        .execution_budget_token(ExecutionBudgetRequest::new(64 * 1024 * 1024).with_boundary("source_read_strings"))
+        .unwrap();
+
+    let outcome = DataFrame::read_parquet_source_chunk_with_budget(
+        &rt,
+        &source,
+        &plan.chunks()[0],
+        SourceReadMode::FinalOutput,
+        &token,
+    )
+    .unwrap();
+    let df = outcome.value();
+    let report = outcome.report();
+
+    assert_eq!(
+        df.series("name").unwrap().to_strings_strict().unwrap(),
+        vec!["ALPHA".to_string(), "BETA".to_string(), "GAMMA".to_string()]
+    );
+    assert_eq!(report.output_rows(), Some(3));
+    assert!(report.output_bytes().unwrap() > 0);
+    assert_eq!(report.unresolved_contract(), Some(PARQUET_SOURCE_DECODED_OUTPUT_PREFLIGHT_CONTRACT_GAP));
 }
 
 #[test]

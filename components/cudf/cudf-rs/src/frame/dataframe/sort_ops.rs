@@ -4,20 +4,27 @@ use smallvec::SmallVec;
 
 use super::{fillna_ops::DropDuplicatesOptions, group_keys::require_non_empty_group_keys, owned::DataFrame};
 use crate::{
-    core::error::Result,
+    core::{
+        column::Column,
+        error::{self, FACT_COLUMN_INDEX, Result},
+    },
     frame::series::Series,
-    internal::resolve::resolve_column_names,
+    internal::{hash::FastIndexMap, resolve::resolve_column_names, temp_table::TempTableView},
     ops::{
         join::MergeOptions,
         sorting::{self, SortOptions},
         stream_compaction::DuplicateKeepOption,
     },
     runtime::{
-        execution_context::ExecutionOverrides, execution_domain::ExecutionDomain, execution_resolver::ResolvedExecution,
+        BudgetedExecutionOutcome, ExecutionBudgetToken, execution_context::ExecutionOverrides,
+        execution_domain::ExecutionDomain, execution_resolver::ResolvedExecution,
     },
 };
 
 const SORT_KEY_INLINE_CAPACITY: usize = 4;
+const PREPARED_SORT_MATERIALIZED_OUTPUT_RESERVATION_CONTRACT: &str =
+    "prepared_sort_materialized_output_reservation_size_bytes";
+const PREPARED_SORT_TEMPORARY_WORKSPACE_CONTRACT_GAP: &str = "libcudf_sort_temporary_workspace_preflight_unavailable";
 
 fn unique_temp_column_name(df: &DataFrame, base: &str) -> String {
     if !df.contains(base) {
@@ -31,6 +38,174 @@ fn unique_temp_column_name(df: &DataFrame, base: &str) -> String {
             return candidate;
         }
         suffix += 1;
+    }
+}
+
+/// Retained DataFrame-level sorted-order plan.
+///
+/// This type owns the input [`DataFrame`] and retains a device-side INT32
+/// sorted-order column. It is intended for bounded query engines that need to
+/// split final sort into explicit phases:
+///
+/// - reserve and then retain the sorted-order row-index column,
+/// - reserve exact materialized output bytes through the gather sizing path,
+/// - materialize the sorted DataFrame by gathering the retained input.
+///
+/// This contract covers the retained sorted-order column and the materialized
+/// gather output. It does **not** expose or estimate libcudf sort temporary
+/// workspace sizing.
+#[derive(Debug, Clone)]
+pub struct DataFramePreparedSort {
+    input: DataFrame,
+    sorted_order: Series,
+}
+
+impl DataFramePreparedSort {
+    pub(crate) fn new(input: DataFrame, sorted_order: Series) -> Self {
+        Self { input, sorted_order }
+    }
+
+    /// Borrow the retained input DataFrame.
+    pub fn input(&self) -> &DataFrame {
+        &self.input
+    }
+
+    /// Borrow the retained INT32 sorted-order gather map.
+    pub fn sorted_order(&self) -> &Series {
+        &self.sorted_order
+    }
+
+    /// Consume this wrapper and return the retained input and sorted-order map.
+    pub fn into_parts(self) -> (DataFrame, Series) {
+        (self.input, self.sorted_order)
+    }
+
+    /// Number of rows in the materialized sorted output.
+    pub fn output_rows(&self) -> usize {
+        self.sorted_order.len()
+    }
+
+    /// Returns `true` when the materialized sorted output would contain no rows.
+    pub fn is_empty(&self) -> bool {
+        self.sorted_order.is_empty()
+    }
+
+    /// Return exact bytes required for a sorted-order INT32 row-index column.
+    ///
+    /// This pre-allocation helper performs no allocation and rejects row counts
+    /// above libcudf's `cudf::size_type` / `INT32_MAX` limit. It only covers
+    /// the retained sorted-order column, not libcudf sort temporary workspace.
+    pub fn sorted_order_reservation_size_bytes_for_len(output_rows: usize) -> Result<usize> {
+        sorting::sorted_order_reservation_size_bytes_for_len(output_rows)
+            .map_err(|error| error.reanchor("dataframe::prepared_sort::sorted_order_reservation_size_bytes_for_len"))
+    }
+
+    /// Return exact bytes required for this prepared sort's retained
+    /// sorted-order column.
+    ///
+    /// This is metadata-only and does not allocate. It does not include libcudf
+    /// sort temporary workspace.
+    pub fn sorted_order_reservation_size_bytes(&self) -> Result<usize> {
+        Self::sorted_order_reservation_size_bytes_for_len(self.output_rows())
+            .map_err(|error| error.reanchor("dataframe::prepared_sort::sorted_order_reservation_size_bytes"))
+    }
+
+    /// Return bytes retained by the prepared INT32 sorted-order column.
+    ///
+    /// This excludes the retained input DataFrame and excludes any libcudf sort
+    /// temporary workspace used while producing the sorted order.
+    pub fn retained_sorted_order_device_allocated_size_bytes(&self) -> Result<usize> {
+        self.sorted_order.device_allocated_size_bytes().map_err(|error| {
+            error.reanchor("dataframe::prepared_sort::retained_sorted_order_device_allocated_size_bytes")
+        })
+    }
+
+    /// Return exact bytes retained by the materialized sorted DataFrame.
+    ///
+    /// This uses the same lower-level gather device-allocation sizing path as
+    /// join-index materialization. For non-empty inputs it executes the gather
+    /// sizing contract and releases any temporary result before returning. The
+    /// result does not include the retained sorted-order column and does not
+    /// include libcudf sort temporary workspace.
+    pub fn materialized_output_reservation_size_bytes(&self) -> Result<usize> {
+        let ctx = ExecutionOverrides::new();
+        self.materialized_output_reservation_size_bytes_in_context(
+            &ctx,
+            "dataframe::prepared_sort::materialized_output_reservation_size_bytes",
+        )
+    }
+
+    /// Return exact materialized output bytes using a borrowed execution
+    /// override.
+    pub fn materialized_output_reservation_size_bytes_in(&self, ctx: &ExecutionOverrides<'_>) -> Result<usize> {
+        self.materialized_output_reservation_size_bytes_in_context(
+            ctx,
+            "dataframe::prepared_sort::materialized_output_reservation_size_bytes_in",
+        )
+    }
+
+    /// Gather the retained input DataFrame using the retained sorted order.
+    pub fn materialize(&self) -> Result<DataFrame> {
+        self.input.gather(&self.sorted_order).map_err(|error| error.reanchor("dataframe::prepared_sort::materialize"))
+    }
+
+    /// Gather the retained input DataFrame using a borrowed execution override.
+    pub fn materialize_in(&self, ctx: &ExecutionOverrides<'_>) -> Result<DataFrame> {
+        self.input
+            .gather_in_context(&self.sorted_order, ctx)
+            .map_err(|error| error.reanchor("dataframe::prepared_sort::materialize_in"))
+    }
+
+    /// Gather the retained input DataFrame using a hard budget token.
+    ///
+    /// The gathered output allocation is routed through the token's limiting
+    /// memory resource. The returned report records the retained sorted-order
+    /// bytes and exact materialized output bytes. libcudf sort temporary
+    /// workspace preflight sizing is still not exposed and is recorded as an
+    /// unresolved lower-level contract.
+    pub fn materialize_with_budget(&self, token: &ExecutionBudgetToken) -> Result<BudgetedExecutionOutcome<DataFrame>> {
+        let operation = "dataframe::prepared_sort::materialize_with_budget";
+        let ctx = token.execution_overrides();
+        let retained_bytes = self
+            .retained_sorted_order_device_allocated_size_bytes()
+            .map_err(|error| token.annotate_error(error, operation))?;
+        let output_bytes = self
+            .materialized_output_reservation_size_bytes_in(&ctx)
+            .map_err(|error| token.annotate_error(error, operation))?;
+        let output = self.materialize_in(&ctx).map_err(|error| token.annotate_error(error, operation))?;
+        let report = token
+            .hard_enforced_report()
+            .with_retained_bytes(retained_bytes)
+            .with_output_bytes(output_bytes)
+            .with_unresolved_contract(PREPARED_SORT_TEMPORARY_WORKSPACE_CONTRACT_GAP);
+
+        Ok(BudgetedExecutionOutcome::new(output, report))
+    }
+
+    /// Alias for [`materialize`](Self::materialize).
+    pub fn execute(&self) -> Result<DataFrame> {
+        self.materialize().map_err(|error| error.reanchor("dataframe::prepared_sort::execute"))
+    }
+
+    /// Alias for [`materialize_with_budget`](Self::materialize_with_budget).
+    pub fn execute_with_budget(&self, token: &ExecutionBudgetToken) -> Result<BudgetedExecutionOutcome<DataFrame>> {
+        self.materialize_with_budget(token)
+            .map_err(|error| error.reanchor("dataframe::prepared_sort::execute_with_budget"))
+    }
+
+    fn materialized_output_reservation_size_bytes_in_context(
+        &self,
+        ctx: &ExecutionOverrides<'_>,
+        operation: &'static str,
+    ) -> Result<usize> {
+        self.input
+            .gather_device_allocated_size_in_context(
+                &self.sorted_order,
+                ctx,
+                operation,
+                PREPARED_SORT_MATERIALIZED_OUTPUT_RESERVATION_CONTRACT,
+            )
+            .map_err(|error| error.reanchor(operation))
     }
 }
 
@@ -75,6 +250,58 @@ impl DataFrame {
         S: AsRef<str>,
     {
         self.sort_values_impl(by, options, None, Arc::clone(&self.domain), "dataframe::sort_values")
+    }
+
+    /// Prepare a retained sorted-order gather map for a later DataFrame sort.
+    ///
+    /// This resolves and validates keys/options with the same user-facing
+    /// rules as [`sort_values`](Self::sort_values), then retains only the INT32
+    /// sorted-order row-index column. Use
+    /// [`DataFramePreparedSort::materialized_output_reservation_size_bytes`]
+    /// to reserve the exact gathered output bytes before calling
+    /// [`DataFramePreparedSort::materialize`].
+    ///
+    /// This contract covers the retained sorted-order bytes and the
+    /// materialized gather output sizing. It does not expose libcudf sort
+    /// temporary workspace sizing.
+    pub fn prepare_sort_values<I, S>(&self, by: I, options: SortOptions) -> Result<DataFramePreparedSort>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        self.prepare_sort_values_impl(by, options, None, Arc::clone(&self.domain), "dataframe::prepare_sort_values")
+    }
+
+    /// Prepare a retained sorted-order gather map using a hard budget token.
+    ///
+    /// Sorted-order creation is routed through the token's limiting memory
+    /// resource. The returned report records the retained sorted-order bytes.
+    /// libcudf sort temporary workspace preflight sizing is still not exposed
+    /// and is recorded as an unresolved lower-level contract.
+    pub fn prepare_sort_values_with_budget<I, S>(
+        &self,
+        by: I,
+        options: SortOptions,
+        token: &ExecutionBudgetToken,
+    ) -> Result<BudgetedExecutionOutcome<DataFramePreparedSort>>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        let operation = "dataframe::prepare_sort_values_with_budget";
+        let ctx = token.execution_overrides();
+        let prepared = self
+            .prepare_sort_values_in_context(by, options, &ctx)
+            .map_err(|error| token.annotate_error(error, operation))?;
+        let retained_bytes = prepared
+            .retained_sorted_order_device_allocated_size_bytes()
+            .map_err(|error| token.annotate_error(error, operation))?;
+        let report = token
+            .hard_enforced_report()
+            .with_retained_bytes(retained_bytes)
+            .with_unresolved_contract(PREPARED_SORT_TEMPORARY_WORKSPACE_CONTRACT_GAP);
+
+        Ok(BudgetedExecutionOutcome::new(prepared, report))
     }
 
     fn sort_values_impl<I, S>(
@@ -122,6 +349,155 @@ impl DataFrame {
         .with_execution_domain(output_domain);
 
         Self::from_table_with_names(result_table, self.column_names_owned())
+    }
+
+    pub(crate) fn prepare_sort_values_in_context<I, S>(
+        &self,
+        by: I,
+        options: SortOptions,
+        ctx: &ExecutionOverrides<'_>,
+    ) -> Result<DataFramePreparedSort>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        let output_domain = ctx.resolve_output_domain(&self.domain)?;
+        self.prepare_sort_values_impl(
+            by,
+            options,
+            output_domain.explicit_exec_options_raw(),
+            output_domain,
+            "dataframe::with_execution::prepare_sort_values",
+        )
+    }
+
+    fn prepare_sort_values_impl<I, S>(
+        &self,
+        by: I,
+        options: SortOptions,
+        exec_options: Option<cudf_sys::cudf_exec_options_t>,
+        output_domain: Arc<ExecutionDomain>,
+        operation: &'static str,
+    ) -> Result<DataFramePreparedSort>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        let execution = ResolvedExecution::with_output_domain(Arc::clone(&output_domain), [&self.domain], operation)?;
+        let resolved_exec_options = exec_options.as_ref().unwrap_or(execution.exec_options());
+
+        let by: SmallVec<[String; SORT_KEY_INLINE_CAPACITY]> = by.into_iter().map(|s| s.as_ref().to_string()).collect();
+        let by_refs: SmallVec<[&str; SORT_KEY_INLINE_CAPACITY]> = by.iter().map(|s| s.as_str()).collect();
+        let key_indices = resolve_column_names(&self.columns, &by_refs, operation)?;
+        let (mut orders, mut null_orders) = options.resolve(by_refs.len(), operation)?;
+
+        let stable_row_position = if options.stable {
+            orders.push(sorting::Order::Ascending);
+            if let Some(null_orders) = null_orders.as_mut() {
+                null_orders.push(sorting::NullOrder::After);
+            }
+            Some(crate::core::column::position_sequence_in_domain(self.row_count, &output_domain, operation)?)
+        } else {
+            None
+        };
+
+        let stable_key_columns;
+        let keys_table = if stable_row_position.is_some() {
+            stable_key_columns = self.sort_key_columns_in_domain(&key_indices, &output_domain, operation)?;
+            Self::build_stable_sort_key_table_for_sorted_order(
+                &stable_key_columns,
+                stable_row_position.as_ref(),
+                operation,
+            )?
+        } else {
+            Self::build_sort_key_table_for_sorted_order(
+                self.columns_map(),
+                &key_indices,
+                stable_row_position.as_ref(),
+                operation,
+            )?
+        };
+        let sorted_order = sorting::sorted_order_impl(
+            keys_table.table(),
+            sorting::SortKeyConfig::new(Some(&orders), null_orders.as_deref()),
+            sorting::SortExecution::new(&output_domain, Some(resolved_exec_options), operation),
+        )?
+        .with_execution_domain(output_domain);
+        let sorted_order = Series::from_column(sorted_order)
+            .map_err(|error| error.reanchor(operation).with_detail("resource", "sorted_order"))?;
+
+        Ok(DataFramePreparedSort::new(self.clone(), sorted_order))
+    }
+
+    fn sort_key_columns_in_domain(
+        &self,
+        key_indices: &[usize],
+        output_domain: &Arc<ExecutionDomain>,
+        operation: &'static str,
+    ) -> Result<Vec<Arc<Column>>> {
+        let should_copy = !ExecutionDomain::same_provenance(&self.domain, output_domain);
+        let mut key_columns = Vec::with_capacity(key_indices.len());
+        for &idx in key_indices {
+            let (_, column) = self.columns.get_index(idx).ok_or_else(|| {
+                error::invariant_violation(operation, "resolved sort key index should always remain valid")
+                    .with_fact(FACT_COLUMN_INDEX, idx)
+            })?;
+            let column = if should_copy {
+                Arc::new(column.copy_into_domain(Arc::clone(output_domain), operation)?)
+            } else {
+                Arc::clone(column)
+            };
+            key_columns.push(column);
+        }
+        Ok(key_columns)
+    }
+
+    fn build_stable_sort_key_table_for_sorted_order<'a>(
+        key_columns: &'a [Arc<Column>],
+        stable_row_position: Option<&'a Column>,
+        operation: &'static str,
+    ) -> Result<TempTableView<'a>> {
+        let mut views = Vec::with_capacity(key_columns.len() + usize::from(stable_row_position.is_some()));
+        for column in key_columns {
+            views.push(column.view()?);
+        }
+        if let Some(stable_row_position) = stable_row_position {
+            views.push(stable_row_position.view()?);
+        }
+
+        if views.is_empty() {
+            return Err(error::invariant_violation(
+                operation,
+                "stable sorted-order key table should contain at least the row-position tie breaker",
+            ));
+        }
+
+        TempTableView::from_column_views(views)
+    }
+
+    fn build_sort_key_table_for_sorted_order<'a>(
+        columns: &'a FastIndexMap<String, Arc<Column>>,
+        key_indices: &[usize],
+        stable_row_position: Option<&'a Column>,
+        operation: &'static str,
+    ) -> Result<TempTableView<'a>> {
+        let mut views = Vec::with_capacity(key_indices.len() + usize::from(stable_row_position.is_some()));
+        for &idx in key_indices {
+            let (_, column) = columns.get_index(idx).ok_or_else(|| {
+                error::invariant_violation(operation, "resolved sort key index should always remain valid")
+                    .with_fact(FACT_COLUMN_INDEX, idx)
+            })?;
+            views.push(column.view()?);
+        }
+        if let Some(stable_row_position) = stable_row_position {
+            views.push(stable_row_position.view()?);
+        }
+
+        if views.is_empty() {
+            crate::internal::resolve::build_borrowed_table_view_from_columns(columns, &[])
+        } else {
+            TempTableView::from_column_views(views)
+        }
     }
 
     pub fn nlargest(&self, n: usize, column: &str) -> Result<Self> {

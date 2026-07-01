@@ -22,6 +22,13 @@ extern "C" {
         out: *mut cudf_memory_resource_handle,
     ) -> cudf_status_t;
 
+    /// Create an owned limiting memory resource handle around `upstream`.
+    pub fn cudf_memory_resource_create_limiting(
+        upstream: cudf_memory_resource_handle,
+        allocation_limit: usize,
+        out: *mut cudf_memory_resource_handle,
+    ) -> cudf_status_t;
+
     /// Destroy a memory resource created by this shim on its owning device.
     pub fn cudf_memory_resource_destroy(handle: cudf_memory_resource_handle, device: i32) -> cudf_status_t;
 

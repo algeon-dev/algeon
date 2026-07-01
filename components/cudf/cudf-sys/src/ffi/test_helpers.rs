@@ -26,6 +26,18 @@ extern "C" {
     /// shim.
     pub fn cudf_test_exec_last_mr_raw(out: *mut *mut c_void) -> cudf_status_t;
 
+    /// Return the number of observed memory resources passed to `_ex` shims
+    /// since the last execution-observation reset.
+    pub fn cudf_test_exec_observed_mr_count(out: *mut usize) -> cudf_status_t;
+
+    /// Return whether memory-resource observations overflowed the fixed-size
+    /// test ring since the last execution-observation reset.
+    pub fn cudf_test_exec_observed_mr_overflowed(out: *mut i32) -> cudf_status_t;
+
+    /// Return the raw pointer of one observed memory resource passed to an
+    /// `_ex` shim since the last execution-observation reset.
+    pub fn cudf_test_exec_observed_mr_raw_at(index: usize, out: *mut *mut c_void) -> cudf_status_t;
+
     /// Return the CUDA device ordinal that was current when the last `_ex`
     /// shim resolved execution options, or -1 if no observation was recorded.
     pub fn cudf_test_exec_last_device(out: *mut i32) -> cudf_status_t;

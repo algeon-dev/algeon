@@ -3,7 +3,7 @@ use super::{
     DataFrameFilteredJoinOptions, DataFrameHashJoin, DataFrameHashJoinOptions, DataFrameJoinIndices,
     DataFrameJoinOptions, DataFrameJoinPairIndices, DataFrameJoinSides, DataFrameMixedJoinOptions,
     DataFrameMixedJoinSizeData, DataFrameMixedSingleSideJoinSizeData, DataFramePredicateJoinOptions,
-    DropDuplicatesOptions, DropNaOptions, WithColumnExpr,
+    DataFramePreparedSort, DropDuplicatesOptions, DropNaOptions, WithColumnExpr,
 };
 use crate::{
     Expr, JoinType, Result,
@@ -72,6 +72,15 @@ impl<'df, 'ctx, 'handles> DataFrameExecutionScope<'df, 'ctx, 'handles> {
         S: AsRef<str>,
     {
         self.df.sort_values_in_context(by, options, self.ctx)
+    }
+
+    /// Prepare a retained sorted-order gather map using the borrowed execution override.
+    pub fn prepare_sort_values<I, S>(&self, by: I, options: SortOptions) -> Result<DataFramePreparedSort>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        self.df.prepare_sort_values_in_context(by, options, self.ctx)
     }
 
     /// Filter rows with a fused expression using the borrowed execution override.

@@ -51,3 +51,4 @@ pub(crate) use row_ops::{
     trigger_dataframe_row_range_end_limit_error_for_test, trigger_dataframe_row_range_overflow_error_for_test,
     trigger_dataframe_row_range_start_limit_error_for_test,
 };
+pub use sort_ops::DataFramePreparedSort;

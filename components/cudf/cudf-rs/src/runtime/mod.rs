@@ -10,6 +10,7 @@
 //! - [`DeviceId`] is a validated CUDA device ordinal
 
 mod boundary;
+mod budget;
 pub mod device;
 pub(crate) mod device_guard;
 pub mod event;
@@ -25,6 +26,10 @@ pub use boundary::{BoundaryKind, BoundaryObservation, BoundaryObserver, QueryMem
 pub(crate) use boundary::{
     BoundaryObserverRef, last_boundary_observation, record_boundary_observation,
     record_boundary_observation_for_observer, record_boundary_observation_in_domain,
+};
+pub use budget::{
+    BudgetedExecutionOutcome, ExecutionBudgetEnforcement, ExecutionBudgetReport, ExecutionBudgetRequest,
+    ExecutionBudgetStatus, ExecutionBudgetToken,
 };
 pub use device::DeviceId;
 pub use event::CudaEvent;
