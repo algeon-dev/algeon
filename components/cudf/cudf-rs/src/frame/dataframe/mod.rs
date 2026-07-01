@@ -42,7 +42,7 @@ pub use join::{
     DataFrameFilteredJoinOptions, DataFrameFilteredJoinProbeState, DataFrameHashJoin, DataFrameHashJoinMaterialized,
     DataFrameHashJoinOptions, DataFrameHashJoinPairIndices, DataFrameJoinIndices, DataFrameJoinOptions,
     DataFrameJoinPairIndices, DataFrameMixedJoinOptions, DataFrameMixedJoinSizeData,
-    DataFrameMixedSingleSideJoinSizeData, DataFramePredicateJoinOptions,
+    DataFrameMixedSingleSideJoinSizeData, DataFramePredicateJoinOptions, DataFrameProjectedCrossJoinPlan,
 };
 pub use owned::{DataFrame, DataFrameJoinSides};
 pub(crate) use owned::{derive_frame_domain_from_columns, resolve_frame_domain_from_authoritative_source};

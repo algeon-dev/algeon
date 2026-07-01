@@ -193,7 +193,7 @@ pub use frame::{
         DataFrameFilteredJoinOptions, DataFrameFilteredJoinProbeState, DataFrameHashJoin,
         DataFrameHashJoinMaterialized, DataFrameHashJoinOptions, DataFrameHashJoinPairIndices, DataFrameJoinIndices,
         DataFrameJoinOptions, DataFrameJoinPairIndices, DataFrameMixedJoinOptions, DataFrameMixedJoinSizeData,
-        DataFrameMixedSingleSideJoinSizeData, DataFramePredicateJoinOptions,
+        DataFrameMixedSingleSideJoinSizeData, DataFramePredicateJoinOptions, DataFrameProjectedCrossJoinPlan,
     },
     series::{HostColumnData, IntoSeries, Series},
 };

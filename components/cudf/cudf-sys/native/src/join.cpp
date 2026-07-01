@@ -8,12 +8,14 @@
 #include <cudf/column/column.hpp>
 #include <cudf/column/column_view.hpp>
 #include <cudf/copying.hpp>
+#include <cudf/filling.hpp>
 #include <cudf/join/conditional_join.hpp>
 #include <cudf/join/distinct_hash_join.hpp>
 #include <cudf/join/filtered_join.hpp>
 #include <cudf/join/hash_join.hpp>
 #include <cudf/join/join.hpp>
 #include <cudf/join/mixed_join.hpp>
+#include <cudf/reshape.hpp>
 #include <cudf/table/table.hpp>
 #include <cudf/table/table_view.hpp>
 #include <cudf/types.hpp>
@@ -61,6 +63,70 @@ std::size_t checked_join_gather_map_size_bytes(std::size_t output_size, std::siz
   CUDF_EXPECTS(element_count <= max_size / size_type_bytes,
                "join gather-map reservation size overflow");
   return element_count * size_type_bytes;
+}
+
+cudf::size_type checked_projected_cross_join_rows(std::size_t rows, char const*)
+{
+  CUDF_EXPECTS(rows <= static_cast<std::size_t>(std::numeric_limits<cudf::size_type>::max()),
+               "projected cross join row count exceeds cudf::size_type maximum");
+  return static_cast<cudf::size_type>(rows);
+}
+
+std::size_t checked_projected_cross_join_output_rows(std::size_t left_num_rows,
+                                                     std::size_t right_num_rows)
+{
+  auto constexpr max_size = std::numeric_limits<std::size_t>::max();
+  CUDF_EXPECTS(left_num_rows == 0 || right_num_rows <= max_size / left_num_rows,
+               "projected cross join output row count overflow");
+  auto const output_rows = left_num_rows * right_num_rows;
+  checked_projected_cross_join_rows(output_rows, "projected cross join output row count");
+  return output_rows;
+}
+
+std::unique_ptr<cudf::table> projected_cross_join_table(cudf::table_view const* left_selected,
+                                                        cudf::table_view const* right_selected,
+                                                        std::size_t left_num_rows,
+                                                        std::size_t right_num_rows,
+                                                        rmm::cuda_stream_view stream,
+                                                        rmm::device_async_resource_ref mr)
+{
+  auto const left_rows_i32 =
+    checked_projected_cross_join_rows(left_num_rows, "left projected cross join row count");
+  auto const right_rows_i32 =
+    checked_projected_cross_join_rows(right_num_rows, "right projected cross join row count");
+  auto const output_rows = checked_projected_cross_join_output_rows(left_num_rows, right_num_rows);
+
+  auto const left_columns  = left_selected == nullptr ? 0 : left_selected->num_columns();
+  auto const right_columns = right_selected == nullptr ? 0 : right_selected->num_columns();
+  CUDF_EXPECTS(left_columns > 0 || right_columns > 0,
+               "projected cross join requires at least one selected output column");
+
+  if (left_selected != nullptr) {
+    CUDF_EXPECTS(left_selected->num_rows() == left_rows_i32,
+                 "left selected table row count does not match left_num_rows");
+  }
+  if (right_selected != nullptr) {
+    CUDF_EXPECTS(right_selected->num_rows() == right_rows_i32,
+                 "right selected table row count does not match right_num_rows");
+  }
+
+  std::vector<std::unique_ptr<cudf::column>> columns;
+  columns.reserve(static_cast<std::size_t>(left_columns + right_columns));
+
+  auto append_columns = [&columns](std::unique_ptr<cudf::table> table) {
+    auto released = table->release();
+    std::move(released.begin(), released.end(), std::back_inserter(columns));
+  };
+
+  if (output_rows == 0) {
+    if (left_columns > 0) { append_columns(cudf::empty_like(*left_selected)); }
+    if (right_columns > 0) { append_columns(cudf::empty_like(*right_selected)); }
+    return std::make_unique<cudf::table>(std::move(columns));
+  }
+
+  if (left_columns > 0) { append_columns(cudf::repeat(*left_selected, right_rows_i32, stream, mr)); }
+  if (right_columns > 0) { append_columns(cudf::tile(*right_selected, left_rows_i32, stream, mr)); }
+  return std::make_unique<cudf::table>(std::move(columns));
 }
 
 /// Materialize a table given a gather map (index column).
@@ -1273,6 +1339,79 @@ cudf_status_t cudf_cross_join_ex(cudf_table_view_handle left,
       cudf_current_device_resource_guard current_mr{exec.mr_raw};
       auto result = cudf::cross_join(*left_view, *right_view, exec.stream, exec.mr);
       *out = cudf_release_table_handle(std::move(result), cudf_capture_exec_provenance(exec));
+    }
+    return CUDF_SUCCESS;
+  }
+  CUDF_RUST_CATCH
+}
+
+cudf_status_t cudf_projected_cross_join(cudf_table_view_handle left_selected,
+                                        cudf_table_view_handle right_selected,
+                                        size_t left_num_rows,
+                                        size_t right_num_rows,
+                                        cudf_table_handle* out)
+{
+  return cudf_projected_cross_join_ex(
+    left_selected, right_selected, left_num_rows, right_num_rows, out, nullptr);
+}
+
+cudf_status_t cudf_projected_cross_join_ex(cudf_table_view_handle left_selected,
+                                           cudf_table_view_handle right_selected,
+                                           size_t left_num_rows,
+                                           size_t right_num_rows,
+                                           cudf_table_handle* out,
+                                           cudf_exec_options_t const* options)
+{
+  CUDF_RUST_NULL_CHECK(out, "out is null");
+  *out = nullptr;
+  CUDF_RUST_TRY
+  {
+    cudf_exec_context exec          = cudf_make_exec_context();
+    cudf_status_t const exec_status = cudf_resolve_exec_options(options, &exec);
+    if (exec_status != CUDF_SUCCESS) { return exec_status; }
+
+    auto* left_view =
+      left_selected == nullptr ? nullptr : static_cast<cudf::table_view*>(left_selected);
+    auto* right_view =
+      right_selected == nullptr ? nullptr : static_cast<cudf::table_view*>(right_selected);
+
+    {
+      cudf_current_device_resource_guard current_mr{exec.mr_raw};
+      auto result = projected_cross_join_table(
+        left_view, right_view, left_num_rows, right_num_rows, exec.stream, exec.mr);
+      *out = cudf_release_table_handle(std::move(result), cudf_capture_exec_provenance(exec));
+    }
+    return CUDF_SUCCESS;
+  }
+  CUDF_RUST_CATCH
+}
+
+cudf_status_t cudf_projected_cross_join_device_allocated_size_ex(
+  cudf_table_view_handle left_selected,
+  cudf_table_view_handle right_selected,
+  size_t left_num_rows,
+  size_t right_num_rows,
+  size_t* out,
+  cudf_exec_options_t const* options)
+{
+  CUDF_RUST_NULL_CHECK(out, "out is null");
+  *out = 0;
+  CUDF_RUST_TRY
+  {
+    cudf_exec_context exec          = cudf_make_exec_context();
+    cudf_status_t const exec_status = cudf_resolve_exec_options(options, &exec);
+    if (exec_status != CUDF_SUCCESS) { return exec_status; }
+
+    auto* left_view =
+      left_selected == nullptr ? nullptr : static_cast<cudf::table_view*>(left_selected);
+    auto* right_view =
+      right_selected == nullptr ? nullptr : static_cast<cudf::table_view*>(right_selected);
+
+    {
+      cudf_current_device_resource_guard current_mr{exec.mr_raw};
+      auto result = projected_cross_join_table(
+        left_view, right_view, left_num_rows, right_num_rows, exec.stream, exec.mr);
+      *out = result->alloc_size();
     }
     return CUDF_SUCCESS;
   }
