@@ -27,6 +27,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <memory>
 #include <optional>
 #include <stdexcept>
@@ -46,6 +47,20 @@ cudf::table_view concat_views(const cudf::table_view& keys, const cudf::table_vi
     cols.push_back(payload.column(i));
   }
   return cudf::table_view(cols);
+}
+
+std::size_t checked_join_gather_map_size_bytes(std::size_t output_size, std::size_t map_count)
+{
+  constexpr auto size_type_bytes = sizeof(cudf::size_type);
+  auto constexpr max_size        = std::numeric_limits<std::size_t>::max();
+  CUDF_EXPECTS(output_size <= static_cast<std::size_t>(std::numeric_limits<cudf::size_type>::max()),
+               "join gather-map row count exceeds cudf::size_type maximum");
+  CUDF_EXPECTS(map_count == 0 || output_size <= max_size / map_count,
+               "join gather-map reservation size overflow");
+  auto const element_count = output_size * map_count;
+  CUDF_EXPECTS(element_count <= max_size / size_type_bytes,
+               "join gather-map reservation size overflow");
+  return element_count * size_type_bytes;
 }
 
 /// Materialize a table given a gather map (index column).
@@ -149,6 +164,20 @@ struct hash_join_owner {
     observed_mr;
   std::unique_ptr<cudf::hash_join> join;
   rmm::mr::device_memory_resource* mr_raw = nullptr;
+  std::size_t device_allocated_size_bytes = 0;
+  int32_t device                          = 0;
+};
+
+struct conditional_full_join_size_data_owner {
+  std::shared_ptr<void> upstream_mr_lifetime;
+  std::unique_ptr<rmm::mr::statistics_resource_adaptor<rmm::mr::device_memory_resource>>
+    observed_mr;
+  std::unique_ptr<cudf::conditional_full_join_size_data> size_data;
+  std::optional<cudf::table_view> left;
+  std::optional<cudf::table_view> right;
+  cudf_ast_expression_owner_ref predicate;
+  rmm::mr::device_memory_resource* mr_raw = nullptr;
+  std::size_t output_size                 = 0;
   std::size_t device_allocated_size_bytes = 0;
   int32_t device                          = 0;
 };
@@ -393,6 +422,86 @@ cudf_status_t mixed_pair_join_indices_impl(cudf_table_view_handle left_equality,
             cudf::mixed_full_join(*le, *re, *lc, *rc, pred, null_eq, {}, exec.stream, exec.mr);
           break;
       }
+      release_join_index_pair(std::move(indices),
+                              out_left_indices,
+                              out_right_indices,
+                              cudf_capture_exec_provenance(exec));
+    }
+    return CUDF_SUCCESS;
+  }
+  CUDF_RUST_CATCH
+}
+
+cudf_status_t conditional_full_join_size_data_impl(
+  cudf_table_view_handle left,
+  cudf_table_view_handle right,
+  cudf_ast_expression_handle predicate,
+  cudf_conditional_full_join_size_data_handle* out,
+  cudf_exec_options_t const* options)
+{
+  CUDF_RUST_NULL_CHECK(out, "out is null");
+  *out = nullptr;
+  CUDF_RUST_NULL_CHECK(left, "left is null");
+  CUDF_RUST_NULL_CHECK(right, "right is null");
+  CUDF_RUST_NULL_CHECK(predicate, "predicate is null");
+  CUDF_RUST_TRY
+  {
+    cudf_exec_context exec          = cudf_make_exec_context();
+    cudf_status_t const exec_status = cudf_resolve_exec_options(options, &exec);
+    if (exec_status != CUDF_SUCCESS) { return exec_status; }
+
+    auto* left_view    = static_cast<cudf::table_view*>(left);
+    auto* right_view   = static_cast<cudf::table_view*>(right);
+    auto const& pred   = cudf_ast_expression_from_handle(predicate);
+    auto owner         = std::make_unique<conditional_full_join_size_data_owner>();
+    owner->device      = exec.device;
+    owner->upstream_mr_lifetime = exec.mr_lifetime;
+    owner->left        = *left_view;
+    owner->right       = *right_view;
+    owner->predicate   = cudf_ast_expression_owner_ref_from_handle(predicate);
+    owner->observed_mr =
+      std::make_unique<rmm::mr::statistics_resource_adaptor<rmm::mr::device_memory_resource>>(
+        exec.mr);
+    owner->mr_raw = owner->observed_mr.get();
+    {
+      cudf_current_device_resource_guard current_mr{owner->mr_raw};
+      auto const observed_mr_ref = cudf::get_current_device_resource_ref();
+      owner->size_data =
+        cudf::conditional_full_join_size(*left_view, *right_view, pred, exec.stream, observed_mr_ref);
+      owner->output_size = owner->size_data->output_size();
+      auto const bytes   = owner->observed_mr->get_bytes_counter().value;
+      owner->device_allocated_size_bytes = bytes > 0 ? static_cast<std::size_t>(bytes) : 0;
+    }
+    *out = static_cast<cudf_conditional_full_join_size_data_handle>(owner.release());
+    return CUDF_SUCCESS;
+  }
+  CUDF_RUST_CATCH
+}
+
+cudf_status_t conditional_full_join_size_data_materialize_indices_impl(
+  cudf_conditional_full_join_size_data_handle size_data,
+  cudf_column_handle* out_left_indices,
+  cudf_column_handle* out_right_indices,
+  cudf_exec_options_t const* options)
+{
+  CUDF_RUST_NULL_CHECK(out_left_indices, "out_left_indices is null");
+  *out_left_indices = nullptr;
+  CUDF_RUST_NULL_CHECK(out_right_indices, "out_right_indices is null");
+  *out_right_indices = nullptr;
+  CUDF_RUST_NULL_CHECK(size_data, "conditional full join size data is null");
+  CUDF_RUST_TRY
+  {
+    cudf_exec_context exec          = cudf_make_exec_context();
+    cudf_status_t const exec_status = cudf_resolve_exec_options(options, &exec);
+    if (exec_status != CUDF_SUCCESS) { return exec_status; }
+
+    auto* owner = static_cast<conditional_full_join_size_data_owner*>(size_data);
+    CUDF_EXPECTS(owner->device == exec.device,
+                 "conditional full join size data must be materialized on its creation device");
+    CUDF_EXPECTS(owner->size_data != nullptr, "conditional full join size data missing state");
+    {
+      cudf_current_device_resource_guard current_mr{exec.mr_raw};
+      auto indices = owner->size_data->materialize_indices(exec.stream, exec.mr);
       release_join_index_pair(std::move(indices),
                               out_left_indices,
                               out_right_indices,
@@ -1554,6 +1663,118 @@ cudf_status_t cudf_conditional_full_join_indices_ex(cudf_table_view_handle left,
     left, right, predicate, out_left_indices, out_right_indices, {}, options, pair_join_kind::full);
 }
 
+cudf_status_t cudf_conditional_full_join_begin_size_data(
+  cudf_table_view_handle left,
+  cudf_table_view_handle right,
+  cudf_ast_expression_handle predicate,
+  cudf_conditional_full_join_size_data_handle* out)
+{
+  return cudf_conditional_full_join_begin_size_data_ex(left, right, predicate, out, nullptr);
+}
+
+cudf_status_t cudf_conditional_full_join_begin_size_data_ex(
+  cudf_table_view_handle left,
+  cudf_table_view_handle right,
+  cudf_ast_expression_handle predicate,
+  cudf_conditional_full_join_size_data_handle* out,
+  cudf_exec_options_t const* options)
+{
+  return conditional_full_join_size_data_impl(left, right, predicate, out, options);
+}
+
+void cudf_conditional_full_join_size_data_destroy(
+  cudf_conditional_full_join_size_data_handle handle)
+{
+  if (handle == nullptr) { return; }
+  cudf_clear_error();
+  try {
+    auto* owner = static_cast<conditional_full_join_size_data_owner*>(handle);
+    cudf_device_guard device_guard;
+    cudf_status_t const device_status = device_guard.activate(owner->device);
+    if (device_status != CUDF_SUCCESS) { return; }
+    cudf_current_device_resource_guard current_mr{owner->mr_raw};
+    delete owner;
+  } catch (...) {
+    (void)translate_exception();
+  }
+}
+
+cudf_status_t cudf_conditional_full_join_size_data_output_size(
+  cudf_conditional_full_join_size_data_handle handle,
+  size_t* out)
+{
+  CUDF_RUST_NULL_CHECK(out, "out is null");
+  *out = 0;
+  CUDF_RUST_NULL_CHECK(handle, "conditional full join size data is null");
+  CUDF_RUST_TRY
+  {
+    auto* owner = static_cast<conditional_full_join_size_data_owner*>(handle);
+    cudf_device_guard device_guard;
+    cudf_status_t const device_status = device_guard.activate(owner->device);
+    if (device_status != CUDF_SUCCESS) { return device_status; }
+    *out = owner->output_size;
+    return CUDF_SUCCESS;
+  }
+  CUDF_RUST_CATCH
+}
+
+cudf_status_t cudf_conditional_full_join_size_data_device_allocated_size(
+  cudf_conditional_full_join_size_data_handle handle,
+  size_t* out)
+{
+  CUDF_RUST_NULL_CHECK(out, "out is null");
+  *out = 0;
+  CUDF_RUST_NULL_CHECK(handle, "conditional full join size data is null");
+  CUDF_RUST_TRY
+  {
+    auto* owner = static_cast<conditional_full_join_size_data_owner*>(handle);
+    cudf_device_guard device_guard;
+    cudf_status_t const device_status = device_guard.activate(owner->device);
+    if (device_status != CUDF_SUCCESS) { return device_status; }
+    *out = owner->device_allocated_size_bytes;
+    return CUDF_SUCCESS;
+  }
+  CUDF_RUST_CATCH
+}
+
+cudf_status_t cudf_conditional_full_join_size_data_gather_map_size(
+  cudf_conditional_full_join_size_data_handle handle,
+  size_t* out)
+{
+  CUDF_RUST_NULL_CHECK(out, "out is null");
+  *out = 0;
+  CUDF_RUST_NULL_CHECK(handle, "conditional full join size data is null");
+  CUDF_RUST_TRY
+  {
+    auto* owner = static_cast<conditional_full_join_size_data_owner*>(handle);
+    cudf_device_guard device_guard;
+    cudf_status_t const device_status = device_guard.activate(owner->device);
+    if (device_status != CUDF_SUCCESS) { return device_status; }
+    *out = checked_join_gather_map_size_bytes(owner->output_size, 2);
+    return CUDF_SUCCESS;
+  }
+  CUDF_RUST_CATCH
+}
+
+cudf_status_t cudf_conditional_full_join_size_data_materialize_indices(
+  cudf_conditional_full_join_size_data_handle size_data,
+  cudf_column_handle* out_left_indices,
+  cudf_column_handle* out_right_indices)
+{
+  return cudf_conditional_full_join_size_data_materialize_indices_ex(
+    size_data, out_left_indices, out_right_indices, nullptr);
+}
+
+cudf_status_t cudf_conditional_full_join_size_data_materialize_indices_ex(
+  cudf_conditional_full_join_size_data_handle size_data,
+  cudf_column_handle* out_left_indices,
+  cudf_column_handle* out_right_indices,
+  cudf_exec_options_t const* options)
+{
+  return conditional_full_join_size_data_materialize_indices_impl(
+    size_data, out_left_indices, out_right_indices, options);
+}
+
 cudf_status_t cudf_conditional_left_semi_join_indices(cudf_table_view_handle left,
                                                       cudf_table_view_handle right,
                                                       cudf_ast_expression_handle predicate,
@@ -2149,7 +2370,7 @@ cudf_status_t cudf_mixed_join_size_data_gather_map_size(cudf_mixed_join_size_dat
     if (device_status != CUDF_SUCCESS) { return device_status; }
     auto const map_count =
       (owner->kind == mixed_join_size_kind::semi || owner->kind == mixed_join_size_kind::anti) ? 1 : 2;
-    *out = owner->output_size * map_count * sizeof(cudf::size_type);
+    *out = checked_join_gather_map_size_bytes(owner->output_size, map_count);
     return CUDF_SUCCESS;
   }
   CUDF_RUST_CATCH

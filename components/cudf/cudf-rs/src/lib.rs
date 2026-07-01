@@ -189,11 +189,11 @@ pub use core::{
 
 pub use frame::{
     dataframe::{
-        DataFrame, DataFrameCrossJoinOptions, DataFrameFilteredJoin, DataFrameFilteredJoinOptions,
-        DataFrameFilteredJoinProbeState, DataFrameHashJoin, DataFrameHashJoinMaterialized, DataFrameHashJoinOptions,
-        DataFrameHashJoinPairIndices, DataFrameJoinIndices, DataFrameJoinOptions, DataFrameJoinPairIndices,
-        DataFrameMixedJoinOptions, DataFrameMixedJoinSizeData, DataFrameMixedSingleSideJoinSizeData,
-        DataFramePredicateJoinOptions,
+        DataFrame, DataFrameConditionalFullJoinSizeData, DataFrameCrossJoinOptions, DataFrameFilteredJoin,
+        DataFrameFilteredJoinOptions, DataFrameFilteredJoinProbeState, DataFrameHashJoin,
+        DataFrameHashJoinMaterialized, DataFrameHashJoinOptions, DataFrameHashJoinPairIndices, DataFrameJoinIndices,
+        DataFrameJoinOptions, DataFrameJoinPairIndices, DataFrameMixedJoinOptions, DataFrameMixedJoinSizeData,
+        DataFrameMixedSingleSideJoinSizeData, DataFramePredicateJoinOptions,
     },
     series::{HostColumnData, IntoSeries, Series},
 };

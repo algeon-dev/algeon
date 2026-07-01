@@ -1,8 +1,9 @@
 use super::{
-    DataFrame, DataFrameCrossJoinOptions, DataFrameFilteredJoin, DataFrameFilteredJoinOptions, DataFrameHashJoin,
-    DataFrameHashJoinOptions, DataFrameJoinIndices, DataFrameJoinOptions, DataFrameJoinPairIndices, DataFrameJoinSides,
-    DataFrameMixedJoinOptions, DataFrameMixedJoinSizeData, DataFrameMixedSingleSideJoinSizeData,
-    DataFramePredicateJoinOptions, DropDuplicatesOptions, DropNaOptions, WithColumnExpr,
+    DataFrame, DataFrameConditionalFullJoinSizeData, DataFrameCrossJoinOptions, DataFrameFilteredJoin,
+    DataFrameFilteredJoinOptions, DataFrameHashJoin, DataFrameHashJoinOptions, DataFrameJoinIndices,
+    DataFrameJoinOptions, DataFrameJoinPairIndices, DataFrameJoinSides, DataFrameMixedJoinOptions,
+    DataFrameMixedJoinSizeData, DataFrameMixedSingleSideJoinSizeData, DataFramePredicateJoinOptions,
+    DropDuplicatesOptions, DropNaOptions, WithColumnExpr,
 };
 use crate::{
     Expr, JoinType, Result,
@@ -276,6 +277,16 @@ impl<'df, 'ctx, 'handles> DataFrameExecutionScope<'df, 'ctx, 'handles> {
         options: DataFramePredicateJoinOptions,
     ) -> Result<DataFrameJoinPairIndices> {
         self.df.conditional_join_indices_in_context(right, predicate, options, JoinType::Full, self.ctx)
+    }
+
+    /// Begin retained size-data computation for a conditional full join using the borrowed execution override.
+    pub fn conditional_full_join_size_data<'a>(
+        &self,
+        right: &DataFrame,
+        predicate: &'a AstExpression,
+        options: DataFramePredicateJoinOptions,
+    ) -> Result<DataFrameConditionalFullJoinSizeData<'a>> {
+        self.df.conditional_full_join_size_data_in_context(right, predicate, options, self.ctx)
     }
 
     /// Produce conditional left semi join indices using the borrowed execution override.
