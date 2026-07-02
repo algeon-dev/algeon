@@ -1,11 +1,37 @@
 //! Tests for DataFrame column-level convenience.
 
-use cudf::{DataType, ErrorCode, ErrorKind, TypeId};
+use arrow::{array::Decimal128Array, datatypes::DataType as ArrowDataType};
+use cudf::{
+    DataFrame, DataType, ErrorCode, ErrorKind, ExecutionBudgetEnforcement, ExecutionBudgetRequest,
+    ExecutionBudgetStatus, TypeId, frame::dataframe::InfoDetail, testing::prelude::*,
+};
 
 use crate::common::{
     assert_missing_column_error, column_from_slice, column_from_slice_nullable, column_from_strs, error_context_value,
-    scalar,
+    lock_event_observation, observed_exec_mr_values, reset_exec_observation, scalar, with_test_runtime,
 };
+
+const DATAFRAME_EXPRESSION_TEMPORARY_WORKSPACE_AND_RELOCATION_CONTRACT_GAP: &str =
+    "libcudf_dataframe_expression_temporary_workspace_and_transient_relocation_preflight_unavailable";
+
+fn decimal128_scale_zero_frame() -> DataFrame {
+    let amount = crate::common::series::<i64>("amount", &[1, -2, 0])
+        .unwrap()
+        .astype(DataType::fixed_point(TypeId::Decimal128, 0))
+        .unwrap();
+    DataFrame::from_series([("amount", amount)]).unwrap()
+}
+
+fn assert_amount_decimal128_scale_8(df: &DataFrame) {
+    let target = DataType::fixed_point(TypeId::Decimal128, -8);
+    let amount = df.series("amount").unwrap();
+    assert_eq!(amount.dtype().unwrap(), target);
+
+    let batch = df.to_record_batch().unwrap();
+    assert_eq!(*batch.schema().field(0).data_type(), ArrowDataType::Decimal128(38, 8));
+    let amount = batch.column(0).as_any().downcast_ref::<Decimal128Array>().unwrap();
+    assert_eq!(amount.values().as_ref(), &[100_000_000i128, -200_000_000, 0]);
+}
 
 // ---------------------------------------------------------------------------
 // Column-level convenience (with_column, fillna_with_scalar, cast_column)
@@ -271,4 +297,210 @@ fn test_cast_column_with_string_sibling_column() {
 
     let qty_vals: Vec<f64> = result.series("qty").unwrap().to_vec_strict::<f64>().unwrap();
     assert_eq!(qty_vals, vec![1.0, 2.0, 3.0]);
+}
+
+fn expect_cudf_err<T>(result: cudf::Result<T>, message: &str) -> cudf::Error {
+    match result {
+        Ok(_) => panic!("{message}"),
+        Err(err) => err,
+    }
+}
+
+fn dataframe_device_allocated_size_bytes(df: &DataFrame) -> usize {
+    df.info_with(InfoDetail::DEVICE_ALLOCATED).unwrap().memory_accounting.unwrap().device_allocated_bytes.unwrap()
+}
+
+fn assert_all_observed_exec_mrs_are_token_mr(token: &cudf::ExecutionBudgetToken) {
+    let expected_mr = token.memory_resource().testing_raw_handle_value();
+    let observed_mrs = observed_exec_mr_values();
+
+    assert!(!observed_mrs.is_empty(), "expected at least one observed budgeted execution allocation route");
+    assert!(
+        observed_mrs.iter().all(|observed| *observed == expected_mr),
+        "expected all observed execution memory resources to be token MR {expected_mr:#x}, got {observed_mrs:?}"
+    );
+}
+
+#[test]
+fn test_with_columns_with_budget_reports_output_and_routes_allocator() {
+    let df = crate::common::dataframe_from_columns(
+        vec!["a".to_string(), "b".to_string()],
+        vec![column_from_slice(&[1i32, 2, 3]).unwrap(), column_from_slice(&[10i32, 20, 30]).unwrap()],
+    )
+    .unwrap();
+    let token = with_test_runtime(|runtime| {
+        runtime
+            .execution_budget_token(ExecutionBudgetRequest::new(64 * 1024 * 1024).with_boundary("shape_with_columns"))
+            .unwrap()
+    });
+
+    let _event_observation = lock_event_observation();
+    reset_exec_observation();
+    let outcome = df.with_columns_with_budget([("sum", cudf::ops::col("a") + cudf::ops::col("b"))], &token).unwrap();
+    let result = outcome.value();
+    let report = outcome.report();
+    let output_bytes = dataframe_device_allocated_size_bytes(result);
+
+    assert_eq!(result.column_names(), &["a", "b", "sum"]);
+    assert_eq!(result.series("sum").unwrap().to_vec_strict::<i32>().unwrap(), vec![11, 22, 33]);
+    assert_eq!(report.request().boundary(), "shape_with_columns");
+    assert_eq!(report.enforcement(), ExecutionBudgetEnforcement::HardMemoryResourceLimit);
+    assert_eq!(report.status(), ExecutionBudgetStatus::HardEnforced);
+    assert_eq!(report.retained_bytes(), Some(output_bytes));
+    assert_eq!(report.output_bytes(), Some(output_bytes));
+    assert_eq!(report.output_rows(), Some(3));
+    assert_eq!(
+        report.unresolved_contract(),
+        Some(DATAFRAME_EXPRESSION_TEMPORARY_WORKSPACE_AND_RELOCATION_CONTRACT_GAP)
+    );
+    assert_eq!(result.testing_execution_domain_mr_value(), token.memory_resource().testing_raw_handle_value());
+    assert_all_observed_exec_mrs_are_token_mr(&token);
+}
+
+#[test]
+fn test_cast_column_with_budget_reports_output_and_routes_allocator() {
+    let df = crate::common::dataframe_from_columns(
+        vec!["id".to_string(), "qty".to_string()],
+        vec![column_from_slice(&[1i32, 2, 3]).unwrap(), column_from_slice(&[10i32, 20, 30]).unwrap()],
+    )
+    .unwrap();
+    let token = with_test_runtime(|runtime| {
+        runtime
+            .execution_budget_token(ExecutionBudgetRequest::new(64 * 1024 * 1024).with_boundary("shape_cast"))
+            .unwrap()
+    });
+
+    let _event_observation = lock_event_observation();
+    reset_exec_observation();
+    let outcome = df.cast_column_with_budget("qty", DataType::new(TypeId::Float64), &token).unwrap();
+    let result = outcome.value();
+    let report = outcome.report();
+    let output_bytes = dataframe_device_allocated_size_bytes(result);
+
+    assert_eq!(result.series("qty").unwrap().dtype().unwrap().id(), TypeId::Float64);
+    assert_eq!(result.series("qty").unwrap().to_vec_strict::<f64>().unwrap(), vec![10.0, 20.0, 30.0]);
+    assert_eq!(report.request().boundary(), "shape_cast");
+    assert_eq!(report.enforcement(), ExecutionBudgetEnforcement::HardMemoryResourceLimit);
+    assert_eq!(report.status(), ExecutionBudgetStatus::HardEnforced);
+    assert_eq!(report.retained_bytes(), Some(output_bytes));
+    assert_eq!(report.output_bytes(), Some(output_bytes));
+    assert_eq!(report.output_rows(), Some(3));
+    assert_eq!(
+        report.unresolved_contract(),
+        Some(DATAFRAME_EXPRESSION_TEMPORARY_WORKSPACE_AND_RELOCATION_CONTRACT_GAP)
+    );
+    assert_eq!(result.testing_execution_domain_mr_value(), token.memory_resource().testing_raw_handle_value());
+    assert_all_observed_exec_mrs_are_token_mr(&token);
+}
+
+#[test]
+fn test_cast_column_decimal128_scale_to_scale_preserves_requested_scale() {
+    let df = decimal128_scale_zero_frame();
+
+    let result = df.cast_column("amount", DataType::fixed_point(TypeId::Decimal128, -8)).unwrap();
+
+    assert_amount_decimal128_scale_8(&result);
+}
+
+#[test]
+fn test_cast_column_with_budget_decimal128_scale_to_scale_reports_output_and_routes_allocator() {
+    let df = decimal128_scale_zero_frame();
+    let token = with_test_runtime(|runtime| {
+        runtime
+            .execution_budget_token(
+                ExecutionBudgetRequest::new(64 * 1024 * 1024).with_boundary("shape_cast_decimal_scale"),
+            )
+            .unwrap()
+    });
+
+    let _event_observation = lock_event_observation();
+    reset_exec_observation();
+    let outcome = df.cast_column_with_budget("amount", DataType::fixed_point(TypeId::Decimal128, -8), &token).unwrap();
+    let result = outcome.value();
+    let report = outcome.report();
+    let output_bytes = dataframe_device_allocated_size_bytes(result);
+
+    assert_amount_decimal128_scale_8(result);
+    assert_eq!(report.request().boundary(), "shape_cast_decimal_scale");
+    assert_eq!(report.enforcement(), ExecutionBudgetEnforcement::HardMemoryResourceLimit);
+    assert_eq!(report.status(), ExecutionBudgetStatus::HardEnforced);
+    assert_eq!(report.retained_bytes(), Some(output_bytes));
+    assert_eq!(report.output_bytes(), Some(output_bytes));
+    assert_eq!(report.output_rows(), Some(3));
+    assert_eq!(
+        report.unresolved_contract(),
+        Some(DATAFRAME_EXPRESSION_TEMPORARY_WORKSPACE_AND_RELOCATION_CONTRACT_GAP)
+    );
+    assert_eq!(result.testing_execution_domain_mr_value(), token.memory_resource().testing_raw_handle_value());
+    assert_all_observed_exec_mrs_are_token_mr(&token);
+}
+
+#[test]
+fn test_with_columns_with_budget_reports_exceeded_budget_details() {
+    let df = crate::common::dataframe_from_columns(
+        vec!["a".to_string(), "b".to_string()],
+        vec![column_from_slice(&[1i32, 2, 3]).unwrap(), column_from_slice(&[10i32, 20, 30]).unwrap()],
+    )
+    .unwrap();
+    let token = with_test_runtime(|runtime| {
+        runtime.execution_budget_token(ExecutionBudgetRequest::new(1).with_boundary("shape_with_columns")).unwrap()
+    });
+
+    let err = expect_cudf_err(
+        df.with_columns_with_budget([("sum", cudf::ops::col("a") + cudf::ops::col("b"))], &token),
+        "one-byte budget should not cover with_columns allocations",
+    );
+
+    assert_eq!(err.code(), ErrorCode::OutOfMemory);
+    assert_eq!(err.operation(), "dataframe::with_columns_with_budget");
+    assert_eq!(error_context_value(&err, "budget_boundary").as_deref(), Some("shape_with_columns"));
+    assert_eq!(error_context_value(&err, "budget_bytes").as_deref(), Some("1"));
+    assert_eq!(error_context_value(&err, "budget_enforcement").as_deref(), Some("hard_memory_resource_limit"));
+    assert_eq!(error_context_value(&err, "budget_status").as_deref(), Some("exceeded_or_lower_layer_rejected"));
+}
+
+#[test]
+fn test_cast_column_with_budget_reports_exceeded_budget_details() {
+    let df = crate::common::dataframe_from_columns(
+        vec!["id".to_string(), "qty".to_string()],
+        vec![column_from_slice(&[1i32, 2, 3]).unwrap(), column_from_slice(&[10i32, 20, 30]).unwrap()],
+    )
+    .unwrap();
+    let token = with_test_runtime(|runtime| {
+        runtime.execution_budget_token(ExecutionBudgetRequest::new(1).with_boundary("shape_cast")).unwrap()
+    });
+
+    let err = expect_cudf_err(
+        df.cast_column_with_budget("qty", DataType::new(TypeId::Float64), &token),
+        "one-byte budget should not cover cast-column allocations",
+    );
+
+    assert_eq!(err.code(), ErrorCode::OutOfMemory);
+    assert_eq!(err.operation(), "dataframe::cast_column_with_budget");
+    assert_eq!(error_context_value(&err, "budget_boundary").as_deref(), Some("shape_cast"));
+    assert_eq!(error_context_value(&err, "budget_bytes").as_deref(), Some("1"));
+    assert_eq!(error_context_value(&err, "budget_enforcement").as_deref(), Some("hard_memory_resource_limit"));
+    assert_eq!(error_context_value(&err, "budget_status").as_deref(), Some("exceeded_or_lower_layer_rejected"));
+}
+
+#[test]
+fn test_cast_column_with_budget_decimal128_scale_to_scale_exceeded_budget_reports_budget_facts() {
+    let df = decimal128_scale_zero_frame();
+    let token = with_test_runtime(|runtime| {
+        runtime
+            .execution_budget_token(ExecutionBudgetRequest::new(1).with_boundary("shape_cast_decimal_scale"))
+            .unwrap()
+    });
+
+    let err = expect_cudf_err(
+        df.cast_column_with_budget("amount", DataType::fixed_point(TypeId::Decimal128, -8), &token),
+        "one-byte budget should not cover Decimal128 scale-to-scale cast allocations",
+    );
+
+    assert_eq!(err.code(), ErrorCode::OutOfMemory);
+    assert_eq!(err.operation(), "dataframe::cast_column_with_budget");
+    assert_eq!(error_context_value(&err, "budget_boundary").as_deref(), Some("shape_cast_decimal_scale"));
+    assert_eq!(error_context_value(&err, "budget_bytes").as_deref(), Some("1"));
+    assert_eq!(error_context_value(&err, "budget_enforcement").as_deref(), Some("hard_memory_resource_limit"));
+    assert_eq!(error_context_value(&err, "budget_status").as_deref(), Some("exceeded_or_lower_layer_rejected"));
 }

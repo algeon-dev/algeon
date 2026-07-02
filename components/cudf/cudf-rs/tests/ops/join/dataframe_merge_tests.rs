@@ -8,9 +8,9 @@ use cudf::{
 
 use crate::common::{
     assert_duplicate_name_error, assert_missing_column_error, column_from_slice, column_from_slice_nullable,
-    dependency_wait_call_count, dependency_wait_call_count_for_stream, error_context_value, last_exec_mr_value,
-    last_exec_stream_value, last_sync_stream_value, reset_dependency_observation, reset_exec_observation,
-    reset_sync_observation, sample_runtime,
+    dependency_wait_call_count_for_stream, error_context_value, last_exec_mr_value, last_exec_stream_value,
+    last_sync_stream_value, reset_dependency_observation, reset_exec_observation, reset_sync_observation,
+    sample_runtime,
 };
 
 // ---------------------------------------------------------------------------
@@ -347,10 +347,11 @@ fn test_projected_cross_join_one_sided_projection_does_not_order_unselected_side
         .unwrap();
 
     reset_dependency_observation();
+    let output_stream = left.testing_execution_domain_stream_value();
     let materialized = plan.materialize().unwrap();
 
-    assert_eq!(materialized.testing_execution_domain_stream_value(), left.testing_execution_domain_stream_value());
-    assert_eq!(dependency_wait_call_count(), 0);
+    assert_eq!(materialized.testing_execution_domain_stream_value(), output_stream);
+    assert_eq!(dependency_wait_call_count_for_stream(output_stream), 0);
 }
 
 #[test]

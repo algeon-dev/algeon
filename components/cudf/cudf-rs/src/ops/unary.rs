@@ -205,6 +205,7 @@ pub(crate) fn cast_impl(
     exec_options: Option<&cudf_sys::cudf_exec_options_t>,
     operation: &'static str,
 ) -> Result<Column> {
+    let input_type = input.data_type()?;
     let dtype_handle = output_type.to_raw_handle_for("unary::cast")?;
     let mut out = ptr::null_mut();
     // SAFETY: input handle is valid (NonNull). dtype_handle was returned by
@@ -219,7 +220,10 @@ pub(crate) fn cast_impl(
         status,
         operation,
         [
+            ("input_type_id", format!("{:?}", input_type.id()).to_lowercase()),
+            ("input_type_scale", input_type.scale().to_string()),
             ("output_type_id", format!("{:?}", output_type.id()).to_lowercase()),
+            ("output_type_scale", output_type.scale().to_string()),
             ("execution_context_provided", exec_options.is_some().to_string()),
         ],
     )?;

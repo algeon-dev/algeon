@@ -1716,6 +1716,7 @@ fn test_hash_join_device_allocated_size_reports_retained_build_artifact_bytes() 
 
 #[test]
 fn test_hash_join_size_apis_report_exact_output_rows() {
+    let _shim_state = lock_shim_state();
     let build_col = make_i32_column(&[2, 2, 4, 6]);
     let build_tbl = make_table_from_one_column(build_col);
     let build_tv = make_table_view(build_tbl);
@@ -1822,6 +1823,7 @@ fn test_hash_join_size_apis_report_exact_output_rows() {
 
 #[test]
 fn test_conditional_join_size_apis_report_exact_output_rows() {
+    let _shim_state = lock_shim_state();
     let left_tbl = make_table_from_one_column(make_i32_column(&[1, 3, 5]));
     let right_tbl = make_table_from_one_column(make_i32_column(&[2, 4]));
     let left_tv = make_table_view(left_tbl);

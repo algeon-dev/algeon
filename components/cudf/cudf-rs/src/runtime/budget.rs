@@ -219,6 +219,7 @@ impl ExecutionBudgetToken {
 
     pub(crate) fn annotate_error(&self, err: Error, operation: &'static str) -> Error {
         err.reanchor_if_needed(operation)
+            .with_detail_if_absent("budget_operation", operation)
             .with_detail_if_absent("budget_boundary", self.request.boundary().to_string())
             .with_detail_if_absent("budget_bytes", self.request.budget_bytes().to_string())
             .with_detail_if_absent("budget_enforcement", ExecutionBudgetEnforcement::HardMemoryResourceLimit.as_str())

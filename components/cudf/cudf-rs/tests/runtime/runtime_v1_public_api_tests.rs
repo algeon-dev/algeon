@@ -4,7 +4,8 @@
 //! execution overrides, copy-into-runtime placement, and mixed-domain
 //! semantics. It intentionally avoids one near-identical test per public API.
 use cudf::{
-    AggSpec, DataFrame, DeviceId, ExecutionOverrides, GroupByAgg, MergeOptions, Runtime, Series, SortOptions, TypeId,
+    AggSpec, DataFrame, DataType, DeviceId, ErrorCode, ExecutionBudgetEnforcement, ExecutionBudgetRequest,
+    ExecutionBudgetStatus, ExecutionOverrides, GroupByAgg, MergeOptions, Runtime, Series, SortOptions, TypeId,
     core::memory::DeviceMemoryResource,
     frame::dataframe::{CsvReadOptions, CsvWriteOptions, JsonWriteOptions, ParquetReadOptions, ParquetWriteOptions},
     ops::expr::{col, when},
@@ -14,9 +15,10 @@ use cudf::{
 use tempfile::TempDir;
 
 use crate::common::{
-    dataframe_device_ptr as device_ptr, dependency_wait_call_count_for_stream, last_exec_mr_value,
-    last_exec_stream_value, last_sync_stream_value, lock_event_observation, reset_dependency_observation,
-    reset_exec_observation, reset_sync_observation, sample_runtime, series_device_ptr,
+    dataframe_device_ptr as device_ptr, dependency_wait_call_count_for_stream, error_context_value, last_exec_mr_value,
+    last_exec_stream_value, last_sync_stream_value, lock_event_observation, observed_exec_mr_overflowed,
+    observed_exec_mr_values, reset_dependency_observation, reset_exec_observation, reset_sync_observation,
+    sample_runtime, series_device_ptr,
 };
 
 fn assert_send_sync<T: Send + Sync>() {}
@@ -625,4 +627,269 @@ fn schema_only_assign_after_copy_into_runtime_preserves_target_residency() {
     assert_eq!(device_ptr(&result, "val"), replacement_ptr);
     assert_eq!(device_ptr(&result, "bonus"), bonus_ptr);
     assert_eq!(result.series("val").unwrap().to_vec_strict::<i32>().unwrap(), vec![7, 8, 9]);
+}
+
+fn expect_cudf_err<T>(result: cudf::Result<T>, message: &str) -> cudf::Error {
+    match result {
+        Ok(_) => panic!("{message}"),
+        Err(err) => err,
+    }
+}
+
+fn assert_all_observed_exec_mrs_are_token_mr(token: &cudf::ExecutionBudgetToken) {
+    let expected_mr = token.memory_resource().testing_raw_handle_value();
+    let observed_mrs = observed_exec_mr_values();
+
+    assert!(!observed_exec_mr_overflowed(), "exec memory-resource observation buffer overflowed");
+    assert!(!observed_mrs.is_empty(), "expected at least one observed budgeted execution allocation route");
+    assert!(
+        observed_mrs.iter().all(|observed| *observed == expected_mr),
+        "expected all observed execution memory resources to be token MR {expected_mr:#x}, got {observed_mrs:?}"
+    );
+}
+
+#[test]
+fn runtime_series_from_scalar_with_budget_reports_output_and_routes_allocator() {
+    let runtime = sample_runtime();
+    let scalar = runtime.scalar(42i32).unwrap();
+    let token = runtime
+        .execution_budget_token(ExecutionBudgetRequest::new(64 * 1024 * 1024).with_boundary("scalar_series"))
+        .unwrap();
+
+    let _event_observation = lock_event_observation();
+    reset_exec_observation();
+    let outcome = runtime.series_from_scalar_with_budget(&scalar, 4, &token).unwrap();
+    let observed_mrs = observed_exec_mr_values();
+    let series = outcome.value();
+    let report = outcome.report();
+    let output_bytes = series.device_allocated_size_bytes().unwrap();
+
+    assert_eq!(
+        observed_mrs.len(),
+        2,
+        "expected scalar staging/copy plus scalar broadcast to execute under observed memory resources"
+    );
+    assert_eq!(series.to_vec_strict::<i32>().unwrap(), vec![42, 42, 42, 42]);
+    assert_eq!(
+        series.as_column().testing_execution_domain_mr_value(),
+        token.memory_resource().testing_raw_handle_value()
+    );
+    assert_all_observed_exec_mrs_are_token_mr(&token);
+    assert_eq!(report.request().boundary(), "scalar_series");
+    assert_eq!(report.enforcement(), ExecutionBudgetEnforcement::HardMemoryResourceLimit);
+    assert_eq!(report.status(), ExecutionBudgetStatus::HardEnforced);
+    assert_eq!(report.retained_bytes(), Some(output_bytes));
+    assert_eq!(report.output_bytes(), Some(output_bytes));
+    assert_eq!(report.output_rows(), Some(4));
+    assert_eq!(report.unresolved_contract(), None);
+}
+
+#[test]
+fn runtime_series_from_value_with_budget_reports_output_and_routes_allocator() {
+    let runtime = sample_runtime();
+    let token = runtime
+        .execution_budget_token(ExecutionBudgetRequest::new(64 * 1024 * 1024).with_boundary("value_series"))
+        .unwrap();
+
+    let _event_observation = lock_event_observation();
+    reset_exec_observation();
+    let outcome = runtime.series_from_value_with_budget(42i32, 4, &token).unwrap();
+    let observed_mrs = observed_exec_mr_values();
+    let series = outcome.value();
+    let report = outcome.report();
+    let output_bytes = series.device_allocated_size_bytes().unwrap();
+
+    assert_eq!(
+        observed_mrs.len(),
+        2,
+        "expected value scalar construction plus scalar broadcast to execute under observed memory resources"
+    );
+    assert_eq!(series.to_vec_strict::<i32>().unwrap(), vec![42, 42, 42, 42]);
+    assert_eq!(
+        series.as_column().testing_execution_domain_mr_value(),
+        token.memory_resource().testing_raw_handle_value()
+    );
+    assert_all_observed_exec_mrs_are_token_mr(&token);
+    assert_eq!(report.request().boundary(), "value_series");
+    assert_eq!(report.enforcement(), ExecutionBudgetEnforcement::HardMemoryResourceLimit);
+    assert_eq!(report.status(), ExecutionBudgetStatus::HardEnforced);
+    assert_eq!(report.retained_bytes(), Some(output_bytes));
+    assert_eq!(report.output_bytes(), Some(output_bytes));
+    assert_eq!(report.output_rows(), Some(4));
+    assert_eq!(
+        report.unresolved_contract(),
+        Some("libcudf_scalar_to_series_temporary_workspace_preflight_unavailable")
+    );
+}
+
+#[test]
+fn runtime_nulls_with_budget_reports_output_and_routes_allocator() {
+    let runtime = sample_runtime();
+    let token = runtime
+        .execution_budget_token(ExecutionBudgetRequest::new(64 * 1024 * 1024).with_boundary("null_series"))
+        .unwrap();
+
+    let _event_observation = lock_event_observation();
+    reset_exec_observation();
+    let outcome = runtime.nulls_with_budget(TypeId::Int32, 4, &token).unwrap();
+    let series = outcome.value();
+    let report = outcome.report();
+    let output_bytes = series.device_allocated_size_bytes().unwrap();
+
+    assert_eq!(series.to_optional_vec::<i32>().unwrap(), vec![None, None, None, None]);
+    assert_eq!(series.null_count(), 4);
+    assert_eq!(
+        series.as_column().testing_execution_domain_mr_value(),
+        token.memory_resource().testing_raw_handle_value()
+    );
+    assert_all_observed_exec_mrs_are_token_mr(&token);
+    assert_eq!(report.request().boundary(), "null_series");
+    assert_eq!(report.enforcement(), ExecutionBudgetEnforcement::HardMemoryResourceLimit);
+    assert_eq!(report.status(), ExecutionBudgetStatus::HardEnforced);
+    assert_eq!(report.retained_bytes(), Some(output_bytes));
+    assert_eq!(report.output_bytes(), Some(output_bytes));
+    assert_eq!(report.output_rows(), Some(4));
+    assert_eq!(report.unresolved_contract(), None);
+}
+
+#[test]
+fn runtime_nulls_with_budget_decimal_scale_reports_budgeted_cast_contract_gap() {
+    let runtime = sample_runtime();
+    let token = runtime
+        .execution_budget_token(ExecutionBudgetRequest::new(64 * 1024 * 1024).with_boundary("decimal_null_series"))
+        .unwrap();
+    let dtype = DataType::fixed_point(TypeId::Decimal64, -2);
+
+    let _event_observation = lock_event_observation();
+    reset_exec_observation();
+    let outcome = runtime.nulls_with_budget(dtype, 4, &token).unwrap();
+    let series = outcome.value();
+    let report = outcome.report();
+    let view = series.as_column().testing_view().unwrap();
+
+    assert_eq!(view.len().unwrap(), 4);
+    assert_eq!(view.null_count().unwrap(), 4);
+    assert_eq!(view.data_type().unwrap(), dtype);
+    assert_eq!(
+        series.as_column().testing_execution_domain_mr_value(),
+        token.memory_resource().testing_raw_handle_value()
+    );
+    assert_all_observed_exec_mrs_are_token_mr(&token);
+    assert_eq!(report.unresolved_contract(), Some("libcudf_decimal_scaled_nulls_budgeted_cast_preflight_unavailable"));
+}
+
+#[test]
+fn runtime_column_from_scalar_with_budget_reports_output_and_routes_allocator() {
+    let runtime = sample_runtime();
+    let scalar = runtime.scalar(42i32).unwrap();
+    let token = runtime
+        .execution_budget_token(ExecutionBudgetRequest::new(64 * 1024 * 1024).with_boundary("scalar_column"))
+        .unwrap();
+
+    let _event_observation = lock_event_observation();
+    reset_exec_observation();
+    let outcome = runtime.column_from_scalar_with_budget(&scalar, 4, &token).unwrap();
+    let (column, report) = outcome.into_parts();
+
+    assert_eq!(column.to_vec::<i32>().unwrap(), vec![42, 42, 42, 42]);
+    assert_eq!(column.testing_execution_domain_mr_value(), token.memory_resource().testing_raw_handle_value());
+    assert_all_observed_exec_mrs_are_token_mr(&token);
+
+    let series = Series::try_from(column).unwrap();
+    let output_bytes = series.device_allocated_size_bytes().unwrap();
+
+    assert_eq!(report.request().boundary(), "scalar_column");
+    assert_eq!(report.enforcement(), ExecutionBudgetEnforcement::HardMemoryResourceLimit);
+    assert_eq!(report.status(), ExecutionBudgetStatus::HardEnforced);
+    assert_eq!(report.retained_bytes(), Some(output_bytes));
+    assert_eq!(report.output_bytes(), Some(output_bytes));
+    assert_eq!(report.output_rows(), Some(4));
+    assert_eq!(report.unresolved_contract(), None);
+}
+
+#[test]
+fn runtime_series_from_scalar_with_budget_reports_exceeded_budget_details() {
+    let runtime = sample_runtime();
+    let scalar = runtime.scalar(42i32).unwrap();
+    let token = runtime.execution_budget_token(ExecutionBudgetRequest::new(1).with_boundary("scalar_series")).unwrap();
+
+    let err = expect_cudf_err(
+        runtime.series_from_scalar_with_budget(&scalar, 1024, &token),
+        "one-byte budget should not cover scalar-to-series allocation",
+    );
+
+    assert_eq!(err.code(), ErrorCode::OutOfMemory);
+    assert_eq!(err.operation(), "runtime::series_from_scalar_with_budget");
+    assert_eq!(
+        error_context_value(&err, "budget_operation").as_deref(),
+        Some("runtime::series_from_scalar_with_budget")
+    );
+    assert_eq!(error_context_value(&err, "budget_boundary").as_deref(), Some("scalar_series"));
+    assert_eq!(error_context_value(&err, "budget_bytes").as_deref(), Some("1"));
+    assert_eq!(error_context_value(&err, "budget_enforcement").as_deref(), Some("hard_memory_resource_limit"));
+    assert_eq!(error_context_value(&err, "budget_status").as_deref(), Some("exceeded_or_lower_layer_rejected"));
+}
+
+#[test]
+fn runtime_series_from_value_with_budget_reports_exceeded_budget_details() {
+    let runtime = sample_runtime();
+    let token = runtime.execution_budget_token(ExecutionBudgetRequest::new(1).with_boundary("value_series")).unwrap();
+
+    let err = expect_cudf_err(
+        runtime.series_from_value_with_budget(42i32, 1024, &token),
+        "one-byte budget should not cover scalar value-to-series allocation",
+    );
+
+    assert_eq!(err.code(), ErrorCode::OutOfMemory);
+    assert_eq!(err.operation(), "runtime::series_from_value_with_budget");
+    assert_eq!(
+        error_context_value(&err, "budget_operation").as_deref(),
+        Some("runtime::series_from_value_with_budget")
+    );
+    assert_eq!(error_context_value(&err, "budget_boundary").as_deref(), Some("value_series"));
+    assert_eq!(error_context_value(&err, "budget_bytes").as_deref(), Some("1"));
+    assert_eq!(error_context_value(&err, "budget_enforcement").as_deref(), Some("hard_memory_resource_limit"));
+    assert_eq!(error_context_value(&err, "budget_status").as_deref(), Some("exceeded_or_lower_layer_rejected"));
+}
+
+#[test]
+fn runtime_nulls_with_budget_reports_exceeded_budget_details() {
+    let runtime = sample_runtime();
+    let token = runtime.execution_budget_token(ExecutionBudgetRequest::new(1).with_boundary("null_series")).unwrap();
+
+    let err = expect_cudf_err(
+        runtime.nulls_with_budget(DataType::from(TypeId::Int32), 1024, &token),
+        "one-byte budget should not cover null-series allocation",
+    );
+
+    assert_eq!(err.code(), ErrorCode::OutOfMemory);
+    assert_eq!(err.operation(), "runtime::nulls_with_budget");
+    assert_eq!(error_context_value(&err, "budget_operation").as_deref(), Some("runtime::nulls_with_budget"));
+    assert_eq!(error_context_value(&err, "budget_boundary").as_deref(), Some("null_series"));
+    assert_eq!(error_context_value(&err, "budget_bytes").as_deref(), Some("1"));
+    assert_eq!(error_context_value(&err, "budget_enforcement").as_deref(), Some("hard_memory_resource_limit"));
+    assert_eq!(error_context_value(&err, "budget_status").as_deref(), Some("exceeded_or_lower_layer_rejected"));
+}
+
+#[test]
+fn runtime_column_from_scalar_with_budget_reports_exceeded_budget_details() {
+    let runtime = sample_runtime();
+    let scalar = runtime.scalar(42i32).unwrap();
+    let token = runtime.execution_budget_token(ExecutionBudgetRequest::new(1).with_boundary("scalar_column")).unwrap();
+
+    let err = expect_cudf_err(
+        runtime.column_from_scalar_with_budget(&scalar, 1024, &token),
+        "one-byte budget should not cover scalar-to-column allocation",
+    );
+
+    assert_eq!(err.code(), ErrorCode::OutOfMemory);
+    assert_eq!(err.operation(), "runtime::column_from_scalar_with_budget");
+    assert_eq!(
+        error_context_value(&err, "budget_operation").as_deref(),
+        Some("runtime::column_from_scalar_with_budget")
+    );
+    assert_eq!(error_context_value(&err, "budget_boundary").as_deref(), Some("scalar_column"));
+    assert_eq!(error_context_value(&err, "budget_bytes").as_deref(), Some("1"));
+    assert_eq!(error_context_value(&err, "budget_enforcement").as_deref(), Some("hard_memory_resource_limit"));
+    assert_eq!(error_context_value(&err, "budget_status").as_deref(), Some("exceeded_or_lower_layer_rejected"));
 }
