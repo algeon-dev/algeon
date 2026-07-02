@@ -3,11 +3,25 @@
 //! All tests require a GPU.
 
 use cudf::{
-    ErrorCode, ErrorKind, TypeId,
+    ErrorCode, ErrorKind, ExecutionBudgetEnforcement, ExecutionBudgetRequest, ExecutionBudgetStatus, ReduceAgg, TypeId,
     core::error::{FactKeyName, FactValue},
+    testing::prelude::*,
 };
 
-use crate::common::error_context_value;
+use crate::common::{error_context_value, last_exec_mr_value, reset_exec_observation, with_test_runtime};
+
+fn assert_no_budget_error_details(err: &cudf::Error) {
+    for key in ["budget_boundary", "budget_bytes", "budget_enforcement", "budget_status"] {
+        assert_eq!(error_context_value(err, key).as_deref(), None, "{key} should not be attached");
+    }
+}
+
+fn expect_cudf_err<T>(result: cudf::Result<T>, message: &str) -> cudf::Error {
+    match result {
+        Ok(_) => panic!("{message}"),
+        Err(error) => error,
+    }
+}
 
 // ===========================================================================
 // sum
@@ -96,6 +110,139 @@ fn test_max_f64() {
     let m = s.max().unwrap();
 
     assert_eq!(m.value::<f64>().unwrap(), 3.0);
+}
+
+#[test]
+fn test_prepared_scalar_max_reports_shape_and_returns_scalar() {
+    let s = crate::common::series::<i32>("x", &[30, 10, 40, 20]).unwrap();
+    let prepared = s.prepare_scalar_reduction(ReduceAgg::Max).unwrap();
+
+    assert_eq!(prepared.input().len(), s.len());
+    assert!(matches!(prepared.aggregation(), ReduceAgg::Max));
+    assert_eq!(prepared.output_type().id(), TypeId::Int32);
+    assert_eq!(prepared.output_shape().output_type().id(), TypeId::Int32);
+    assert_eq!(prepared.output_shape().output_rows(), 1);
+
+    let output = prepared.execute().unwrap();
+    assert_eq!(output.output_rows(), 1);
+    assert_eq!(output.scalar().data_type().unwrap().id(), TypeId::Int32);
+    assert_eq!(output.scalar().value::<i32>().unwrap(), 40);
+    assert_eq!(output.into_scalar().value::<i32>().unwrap(), 40);
+}
+
+#[test]
+fn test_prepared_scalar_sum_i32_reports_int64_output_and_returns_scalar() {
+    let s = crate::common::series::<i32>("x", &[10, 20, 30]).unwrap();
+    let prepared = s.prepare_scalar_reduction(ReduceAgg::Sum).unwrap();
+
+    assert_eq!(prepared.output_type().id(), TypeId::Int64);
+    assert_eq!(prepared.output_shape().output_type().id(), TypeId::Int64);
+    assert_eq!(prepared.output_shape().output_rows(), 1);
+
+    let output = prepared.execute().unwrap();
+    assert_eq!(output.output_rows(), 1);
+    assert_eq!(output.scalar().data_type().unwrap().id(), TypeId::Int64);
+    assert_eq!(output.scalar().value::<i64>().unwrap(), 60);
+}
+
+#[test]
+fn test_prepared_scalar_max_execute_with_budget_reports_contract_and_routes_allocator() {
+    let s = crate::common::series::<i32>("x", &[30, 10, 40, 20]).unwrap();
+    let prepared = s.prepare_scalar_reduction(ReduceAgg::Max).unwrap();
+    let token = with_test_runtime(|runtime| {
+        runtime
+            .execution_budget_token(ExecutionBudgetRequest::new(64 * 1024 * 1024).with_boundary("q15_scalar_max"))
+            .unwrap()
+    });
+
+    reset_exec_observation();
+    let outcome = prepared.execute_with_budget(&token).unwrap();
+    let budgeted_exec_mr = last_exec_mr_value();
+    let output = outcome.value();
+    let report = outcome.report();
+
+    assert_eq!(output.scalar().value::<i32>().unwrap(), 40);
+    assert_eq!(report.request().boundary(), "q15_scalar_max");
+    assert_eq!(report.request().budget_bytes(), 64 * 1024 * 1024);
+    assert_eq!(report.enforcement(), ExecutionBudgetEnforcement::HardMemoryResourceLimit);
+    assert_eq!(report.status(), ExecutionBudgetStatus::HardEnforced);
+    assert_eq!(report.output_rows(), Some(1));
+    assert_eq!(report.retained_bytes(), None);
+    assert_eq!(report.output_bytes(), None);
+    assert_eq!(
+        report.unresolved_contract(),
+        Some("libcudf_scalar_reduction_temporary_workspace_preflight_unavailable")
+    );
+    assert_eq!(
+        budgeted_exec_mr,
+        token.memory_resource().testing_raw_handle_value(),
+        "budgeted scalar reduction should route execution through the budget token allocator",
+    );
+}
+
+#[test]
+fn test_prepared_scalar_max_one_byte_budget_preserves_budget_details() {
+    let s = crate::common::series::<i32>("x", &[30, 10, 40, 20]).unwrap();
+    let prepared = s.prepare_scalar_reduction(ReduceAgg::Max).unwrap();
+    let token = with_test_runtime(|runtime| {
+        runtime.execution_budget_token(ExecutionBudgetRequest::new(1).with_boundary("q15_scalar_max")).unwrap()
+    });
+
+    let err = expect_cudf_err(
+        prepared.execute_with_budget(&token),
+        "one-byte budget should not cover scalar reduction allocations",
+    );
+
+    assert_eq!(err.code(), ErrorCode::OutOfMemory);
+    assert_eq!(err.operation(), "series::prepared_scalar_reduction::execute_with_budget");
+    assert_eq!(error_context_value(&err, "budget_boundary").as_deref(), Some("q15_scalar_max"));
+    assert_eq!(error_context_value(&err, "budget_bytes").as_deref(), Some("1"));
+    assert_eq!(error_context_value(&err, "budget_enforcement").as_deref(), Some("hard_memory_resource_limit"));
+    assert_eq!(error_context_value(&err, "budget_status").as_deref(), Some("exceeded_or_lower_layer_rejected"));
+}
+
+#[test]
+fn test_prepared_scalar_max_all_null_reports_one_row_and_typed_null_scalar() {
+    let s = crate::common::nullable_series::<i32>("x", &[0, 0], &[false, false]).unwrap();
+    let prepared = s.prepare_scalar_reduction(ReduceAgg::Max).unwrap();
+    let output = prepared.execute().unwrap();
+    let scalar = output.scalar();
+
+    assert_eq!(prepared.output_shape().output_rows(), 1);
+    assert_eq!(output.output_rows(), 1);
+    assert_eq!(scalar.data_type().unwrap().id(), TypeId::Int32);
+    assert!(!scalar.is_valid().unwrap());
+}
+
+#[test]
+fn test_prepared_scalar_reduction_unsupported_dtype_has_no_budget_details() {
+    let s = crate::common::series("x", &["a", "b"]).unwrap();
+    let err = expect_cudf_err(s.prepare_scalar_reduction(ReduceAgg::Sum), "expected unsupported dtype error");
+
+    assert_eq!(err.kind(), ErrorKind::Unsupported);
+    assert_eq!(err.code(), ErrorCode::UnsupportedDtype);
+    assert_eq!(err.operation(), "series::prepare_scalar_reduction");
+    assert_eq!(err.fact_value(FactKeyName::TypeId), Some(&FactValue::TypeId(TypeId::String)));
+    assert_no_budget_error_details(&err);
+}
+
+#[test]
+fn test_prepared_scalar_reduction_budget_validation_error_has_no_budget_details() {
+    let s = crate::common::series::<f64>("x", &[2.0, 4.0, 6.0]).unwrap();
+    let prepared = s.prepare_scalar_reduction(ReduceAgg::Std { ddof: u32::MAX }).unwrap();
+    let token = with_test_runtime(|runtime| {
+        runtime
+            .execution_budget_token(ExecutionBudgetRequest::new(64 * 1024 * 1024).with_boundary("std_validation"))
+            .unwrap()
+    });
+
+    let err = expect_cudf_err(prepared.execute_with_budget(&token), "expected ddof range validation error");
+
+    assert_eq!(err.kind(), ErrorKind::Unsupported);
+    assert_eq!(err.code(), ErrorCode::UnsupportedOperation);
+    assert_eq!(err.operation(), "series::prepared_scalar_reduction::execute_with_budget");
+    assert_eq!(error_context_value(&err, "reason").as_deref(), Some("ddof_exceeds_i32_range"));
+    assert_no_budget_error_details(&err);
 }
 
 // ===========================================================================

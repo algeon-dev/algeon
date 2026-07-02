@@ -196,7 +196,10 @@ pub use frame::{
         DataFrameMixedSingleSideJoinSizeData, DataFramePredicateJoinOptions, DataFramePreparedSort,
         DataFrameProjectedCrossJoinPlan,
     },
-    series::{HostColumnData, IntoSeries, Series},
+    series::{
+        HostColumnData, IntoSeries, ScalarReductionOutput, ScalarReductionOutputShape, Series,
+        SeriesPreparedScalarReduction,
+    },
 };
 // — High-level operations —
 pub use ops::Expr;
@@ -204,6 +207,7 @@ pub use ops::{
     groupby::{AggSpec, GroupBy, GroupByAgg, GroupByOptions},
     join::{JoinType, MergeOptions},
     lookup::LookupTable,
+    reduction::ReduceAgg,
     replace::FillPolicy,
     sorting::SortOptions,
     stream_compaction::DuplicateKeepOption,

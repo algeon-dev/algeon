@@ -338,6 +338,21 @@ fn lookup_table_is_publicly_reexported() {
 }
 
 #[test]
+fn scalar_reduction_prepared_surface_is_publicly_reexported() {
+    use cudf::{ReduceAgg, ScalarReductionOutput, ScalarReductionOutputShape, SeriesPreparedScalarReduction, TypeId};
+
+    let s = crate::common::series::<i32>("value", &[10, 40, 30]).unwrap();
+    let prepared: SeriesPreparedScalarReduction<'_> = s.prepare_scalar_reduction(ReduceAgg::Max).unwrap();
+    let shape: &ScalarReductionOutputShape = prepared.output_shape();
+    let output: ScalarReductionOutput = prepared.execute().unwrap();
+
+    assert_eq!(shape.output_type().id(), TypeId::Int32);
+    assert_eq!(shape.output_rows(), 1);
+    assert_eq!(output.output_rows(), 1);
+    assert_eq!(output.scalar().value::<i32>().unwrap(), 40);
+}
+
+#[test]
 fn scoped_control_plane_smoke() {
     use cudf::{AggSpec, DataFrame, ExecutionOverrides, GroupByAgg, Runtime, SortOptions, runtime::CudaStream};
 

@@ -705,12 +705,34 @@ impl Series {
         ctx: &ExecutionOverrides<'_>,
         operation: &'static str,
     ) -> Result<Scalar> {
-        let output_domain = self.resolve_context_output_domain(ctx, operation)?;
-        let cv = self.column.view()?;
         let input_type = self.dtype().map_err(|e| e.reanchor(operation))?;
         let output_type = infer_reduce_output_type(&input_type, &agg, operation)?;
+        self.reduce_prepared_in_context(&agg, &output_type, ctx, operation, |error| error)
+    }
+
+    pub(super) fn reduce_prepared_in_context<F>(
+        &self,
+        agg: &ReduceAgg,
+        output_type: &DataType,
+        ctx: &ExecutionOverrides<'_>,
+        operation: &'static str,
+        map_reduction_error: F,
+    ) -> Result<Scalar>
+    where
+        F: FnOnce(Error) -> Error,
+    {
+        let output_domain = self.resolve_context_output_domain(ctx, operation)?;
+        let cv = self.column.view()?;
         let exec_options = output_domain.explicit_exec_options_raw();
-        reduction::reduce_impl(&cv, &agg, &output_type, &output_domain, exec_options.as_ref(), operation)
+        reduction::reduce_impl_with_status_error_mapper(
+            &cv,
+            agg,
+            output_type,
+            &output_domain,
+            exec_options.as_ref(),
+            operation,
+            map_reduction_error,
+        )
     }
 
     pub(super) fn minmax_with_context(
