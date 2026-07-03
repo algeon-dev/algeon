@@ -14,7 +14,7 @@ pub mod types;
 pub(crate) use column::ColumnView;
 pub use column::{Column, DeviceBuffer, DeviceSlice};
 pub use error::{Error, ErrorCode, ErrorKind, ErrorStatus, Result};
-pub use memory::DeviceMemoryResource;
+pub use memory::{DeviceMemoryResource, DeviceMemoryResourceUsage};
 pub use scalar::Scalar;
 pub use table::Table;
 pub(crate) use table::TableView;

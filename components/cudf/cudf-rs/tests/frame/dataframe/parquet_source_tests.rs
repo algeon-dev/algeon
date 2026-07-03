@@ -37,6 +37,23 @@ fn dataframe_device_allocated_size_bytes(df: &DataFrame) -> usize {
     df.info_with(InfoDetail::DEVICE_ALLOCATED).unwrap().memory_accounting.unwrap().device_allocated_bytes.unwrap()
 }
 
+fn assert_budget_report_high_water(report: &cudf::ExecutionBudgetReport, retained_or_output_bytes: usize) {
+    let high_water = report.allocator_high_water_bytes().expect("budget report should include allocator high-water");
+    assert!(high_water > 0, "allocator high-water should be positive: {report:?}");
+    assert!(
+        high_water >= retained_or_output_bytes,
+        "allocator high-water should cover retained/output bytes: high_water={high_water}, retained_or_output={retained_or_output_bytes}, report={report:?}",
+    );
+    assert!(
+        high_water <= report.request().budget_bytes(),
+        "allocator high-water should stay within budget: high_water={high_water}, report={report:?}",
+    );
+    assert!(
+        report.allocator_peak_aligned_bytes().is_some_and(|bytes| bytes <= report.request().budget_bytes()),
+        "aligned allocator peak should stay within budget: {report:?}",
+    );
+}
+
 fn write_parquet_df(path: &std::path::Path, column_names: &[&str], columns: Vec<Column>, row_group_size_rows: i32) {
     let table = Table::from_columns(columns).unwrap();
     let write_opts = cudf::io::parquet::ParquetTableWriteOptions::builder()
@@ -236,6 +253,7 @@ fn read_parquet_source_chunk_with_budget_uses_token_allocator_and_reports_observ
     assert_eq!(report.output_rows(), Some(4));
     assert_eq!(report.retained_bytes(), Some(expected_output_bytes));
     assert_eq!(report.output_bytes(), Some(expected_output_bytes));
+    assert_budget_report_high_water(report, expected_output_bytes);
     assert_eq!(report.unresolved_contract(), Some(PARQUET_SOURCE_DECODED_OUTPUT_PREFLIGHT_CONTRACT_GAP));
     assert_eq!(report.context_facts().get("source_kind").map(String::as_str), Some("data"));
     assert_eq!(report.context_facts().get("source_read_mode").map(String::as_str), Some("final_output"));
@@ -645,6 +663,10 @@ fn read_parquet_source_chunk_with_budget_reports_exceeded_budget_facts() {
     assert_eq!(error_context_value(&err, "budget_bytes").as_deref(), Some("1"));
     assert_eq!(error_context_value(&err, "budget_enforcement").as_deref(), Some("hard_memory_resource_limit"));
     assert_eq!(error_context_value(&err, "budget_status").as_deref(), Some("exceeded_or_lower_layer_rejected"));
+    assert_eq!(error_context_value(&err, "budget_peak_bytes").as_deref(), Some("0"));
+    assert_eq!(error_context_value(&err, "budget_current_bytes").as_deref(), Some("0"));
+    assert_eq!(error_context_value(&err, "budget_failed_allocation_count").as_deref(), Some("1"));
+    assert!(error_context_value(&err, "budget_largest_failed_allocation_bytes").is_some());
 }
 
 #[test]

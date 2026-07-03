@@ -10,6 +10,7 @@
 #include "filter.h"
 #include "groupby.h"
 #include "join.h"
+#include "memory_resource.h"
 #include "reduction.h"
 #include "sorting.h"
 #include "stream_compaction.h"
@@ -84,6 +85,13 @@ static_assert(offsetof(cudf_exec_options_t, mr) > offsetof(cudf_exec_options_t, 
               "cudf_exec_options_t::mr must follow stream");
 static_assert(sizeof(static_cast<cudf_exec_options_t*>(nullptr)->reserved) == sizeof(uint64_t) * 4,
               "cudf_exec_options_t::reserved must expose four 64-bit slots");
+static_assert(std::is_standard_layout_v<cudf_memory_resource_usage_t>,
+              "cudf_memory_resource_usage_t must be standard layout");
+static_assert(offsetof(cudf_memory_resource_usage_t, struct_size) == 0,
+              "cudf_memory_resource_usage_t::struct_size must be the first field");
+static_assert(sizeof(static_cast<cudf_memory_resource_usage_t*>(nullptr)->reserved) ==
+                sizeof(uint64_t) * CUDF_MEMORY_RESOURCE_USAGE_RESERVED_SLOTS,
+              "cudf_memory_resource_usage_t::reserved must expose the advertised slots");
 static_assert(std::is_standard_layout_v<cudf_row_predicate_node_t>,
               "cudf_row_predicate_node_t must be standard layout");
 static_assert(offsetof(cudf_row_predicate_node_t, kind) == 0,

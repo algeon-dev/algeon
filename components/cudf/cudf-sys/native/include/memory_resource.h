@@ -13,6 +13,29 @@ extern "C" {
 /// Opaque handle to an owning RMM device memory resource.
 typedef void* cudf_memory_resource_handle;
 
+enum { CUDF_MEMORY_RESOURCE_USAGE_RESERVED_SLOTS = 8 };
+
+/// Usage counters exposed by a production budget-tracking memory resource.
+///
+/// `current_bytes` / `peak_bytes` are requested live bytes as seen by the
+/// resource API. `current_aligned_bytes` / `peak_aligned_bytes` are the aligned
+/// byte counters used for hard-limit enforcement.
+typedef struct {
+  size_t struct_size;
+  uint64_t allocation_limit_bytes;
+  uint64_t current_bytes;
+  uint64_t peak_bytes;
+  uint64_t total_bytes;
+  uint64_t current_aligned_bytes;
+  uint64_t peak_aligned_bytes;
+  uint64_t total_allocations;
+  uint64_t current_allocations;
+  uint64_t peak_allocations;
+  uint64_t failed_allocation_count;
+  uint64_t largest_failed_allocation_bytes;
+  uint64_t reserved[CUDF_MEMORY_RESOURCE_USAGE_RESERVED_SLOTS];
+} cudf_memory_resource_usage_t;
+
 /// Create a CUDA (default) memory resource.
 ///
 /// This creates an owned RMM resource object that can be attached to
@@ -39,6 +62,29 @@ cudf_status_t cudf_memory_resource_create_pool(size_t initial_pool_size,
 cudf_status_t cudf_memory_resource_create_limiting(cudf_memory_resource_handle upstream,
                                                    size_t allocation_limit,
                                                    cudf_memory_resource_handle* out);
+
+/// Create a budget-tracking memory resource that wraps an existing memory resource.
+///
+/// The returned resource enforces a hard aligned live-byte limit and records
+/// operation-scoped current/peak allocation counters. Existing upstream
+/// allocations are not counted. The returned handle retains the upstream
+/// resource lifetime and does not change the allocator used by unrelated
+/// `cudf-sys` APIs.
+cudf_status_t cudf_memory_resource_create_budget_tracking(cudf_memory_resource_handle upstream,
+                                                          size_t allocation_limit,
+                                                          cudf_memory_resource_handle* out);
+
+/// Read usage counters from a budget-tracking memory resource.
+///
+/// The returned counters are diagnostic snapshots loaded independently; this
+/// API does not provide a multi-field atomic live-polling snapshot. Operation
+/// reports should query usage after the budgeted call returns.
+///
+/// Returns `CUDF_ERROR_INVALID_OPERATION` if `handle` does not refer to a
+/// budget-tracking resource created by
+/// `cudf_memory_resource_create_budget_tracking`.
+cudf_status_t cudf_memory_resource_usage(cudf_memory_resource_handle handle,
+                                         cudf_memory_resource_usage_t* out);
 
 /// Destroy a memory resource handle on the CUDA device that owns it.
 ///

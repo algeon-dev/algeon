@@ -648,6 +648,36 @@ fn assert_all_observed_exec_mrs_are_token_mr(token: &cudf::ExecutionBudgetToken)
     );
 }
 
+fn assert_budget_report_high_water(report: &cudf::ExecutionBudgetReport, retained_or_output_bytes: usize) {
+    let high_water = report.allocator_high_water_bytes().expect("budget report should include allocator high-water");
+    assert!(high_water > 0, "allocator high-water should be positive: {report:?}");
+    assert!(
+        high_water >= retained_or_output_bytes,
+        "allocator high-water should cover retained/output bytes: high_water={high_water}, retained_or_output={retained_or_output_bytes}, report={report:?}",
+    );
+    assert!(
+        high_water <= report.request().budget_bytes(),
+        "allocator high-water should stay within budget: high_water={high_water}, report={report:?}",
+    );
+    assert!(
+        report.allocator_current_bytes().is_some(),
+        "budget report should include allocator current bytes: {report:?}",
+    );
+    assert!(
+        report.allocator_peak_aligned_bytes().is_some_and(|bytes| bytes <= report.request().budget_bytes()),
+        "aligned allocator peak should stay within budget: {report:?}",
+    );
+}
+
+#[test]
+fn device_memory_resource_budget_tracking_usage_rejects_non_tracking_resource() {
+    let mr = DeviceMemoryResource::cuda().unwrap();
+    let err = mr.budget_tracking_usage().expect_err("plain CUDA MR should not expose budget tracking usage");
+
+    assert_eq!(err.code(), ErrorCode::ForeignInvalidArgument);
+    assert_eq!(err.operation(), "memory::device_memory_resource::budget_tracking_usage");
+}
+
 #[test]
 fn runtime_series_from_scalar_with_budget_reports_output_and_routes_allocator() {
     let runtime = sample_runtime();
@@ -681,6 +711,11 @@ fn runtime_series_from_scalar_with_budget_reports_output_and_routes_allocator() 
     assert_eq!(report.retained_bytes(), Some(output_bytes));
     assert_eq!(report.output_bytes(), Some(output_bytes));
     assert_eq!(report.output_rows(), Some(4));
+    assert_budget_report_high_water(report, output_bytes);
+    let usage = token.memory_resource().budget_tracking_usage().unwrap();
+    assert_eq!(usage.peak_bytes as usize, report.allocator_high_water_bytes().unwrap());
+    assert!(usage.current_bytes >= output_bytes as u64);
+    assert!(usage.peak_aligned_bytes <= report.request().budget_bytes() as u64);
     assert_eq!(report.unresolved_contract(), None);
 }
 
@@ -828,6 +863,10 @@ fn runtime_series_from_scalar_with_budget_reports_exceeded_budget_details() {
     assert_eq!(error_context_value(&err, "budget_bytes").as_deref(), Some("1"));
     assert_eq!(error_context_value(&err, "budget_enforcement").as_deref(), Some("hard_memory_resource_limit"));
     assert_eq!(error_context_value(&err, "budget_status").as_deref(), Some("exceeded_or_lower_layer_rejected"));
+    assert_eq!(error_context_value(&err, "budget_peak_bytes").as_deref(), Some("0"));
+    assert_eq!(error_context_value(&err, "budget_current_bytes").as_deref(), Some("0"));
+    assert_eq!(error_context_value(&err, "budget_failed_allocation_count").as_deref(), Some("1"));
+    assert!(error_context_value(&err, "budget_largest_failed_allocation_bytes").is_some());
 }
 
 #[test]

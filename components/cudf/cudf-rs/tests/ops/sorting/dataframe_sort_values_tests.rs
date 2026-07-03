@@ -48,6 +48,23 @@ fn dataframe_device_allocated_size_bytes(df: &DataFrame) -> usize {
     df.info_with(InfoDetail::DEVICE_ALLOCATED).unwrap().memory_accounting.unwrap().device_allocated_bytes.unwrap()
 }
 
+fn assert_budget_report_high_water(report: &cudf::ExecutionBudgetReport, lower_bound_bytes: usize) {
+    let high_water = report.allocator_high_water_bytes().expect("budget report should include allocator high-water");
+    assert!(high_water > 0, "allocator high-water should be positive: {report:?}");
+    assert!(
+        high_water >= lower_bound_bytes,
+        "allocator high-water should cover lower bound bytes: high_water={high_water}, lower_bound={lower_bound_bytes}, report={report:?}",
+    );
+    assert!(
+        high_water <= report.request().budget_bytes(),
+        "allocator high-water should stay within budget: high_water={high_water}, report={report:?}",
+    );
+    assert!(
+        report.allocator_peak_aligned_bytes().is_some_and(|bytes| bytes <= report.request().budget_bytes()),
+        "aligned allocator peak should stay within budget: {report:?}",
+    );
+}
+
 // ---------------------------------------------------------------------------
 // SortOptions defaults
 // ---------------------------------------------------------------------------
@@ -452,6 +469,7 @@ fn test_prepare_sort_values_with_budget_applies_token_and_reports_retained_order
     assert_eq!(report.status(), ExecutionBudgetStatus::HardEnforced);
     assert_eq!(report.retained_bytes(), Some(expected_order_bytes));
     assert_eq!(report.output_bytes(), None);
+    assert_budget_report_high_water(report, expected_order_bytes);
     assert_eq!(report.unresolved_contract(), Some("libcudf_sort_temporary_workspace_preflight_unavailable"));
     assert_eq!(
         prepared.sorted_order().as_column().testing_execution_domain_mr_value(),
@@ -531,6 +549,7 @@ fn test_prepared_sort_materialize_with_budget_reports_output_size_and_allocator(
     assert_eq!(report.request().boundary(), "final_sort_output");
     assert_eq!(report.retained_bytes(), Some(prepared.retained_sorted_order_device_allocated_size_bytes().unwrap()));
     assert_eq!(report.output_bytes(), Some(output_bytes));
+    assert_budget_report_high_water(report, output_bytes);
     assert_eq!(report.unresolved_contract(), Some("libcudf_sort_temporary_workspace_preflight_unavailable"));
     assert_eq!(
         sorted.testing_execution_domain_mr_value(),
@@ -560,4 +579,8 @@ fn test_prepare_sort_values_with_budget_reports_exceeded_budget_honestly() {
     assert_eq!(error_context_value(&err, "budget_bytes").as_deref(), Some("1"));
     assert_eq!(error_context_value(&err, "budget_enforcement").as_deref(), Some("hard_memory_resource_limit"),);
     assert_eq!(error_context_value(&err, "budget_status").as_deref(), Some("exceeded_or_lower_layer_rejected"),);
+    assert_eq!(error_context_value(&err, "budget_peak_bytes").as_deref(), Some("0"));
+    assert_eq!(error_context_value(&err, "budget_current_bytes").as_deref(), Some("0"));
+    assert_eq!(error_context_value(&err, "budget_failed_allocation_count").as_deref(), Some("1"));
+    assert!(error_context_value(&err, "budget_largest_failed_allocation_bytes").is_some());
 }

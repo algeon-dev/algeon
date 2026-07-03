@@ -5,7 +5,7 @@ use std::{borrow::Cow, collections::BTreeMap};
 use super::{ExecutionOverrides, Runtime};
 use crate::core::{
     error::{Error, Result},
-    memory::DeviceMemoryResource,
+    memory::{DeviceMemoryResource, DeviceMemoryResourceUsage},
 };
 
 /// Request for a bounded operation execution.
@@ -82,6 +82,9 @@ pub struct ExecutionBudgetReport {
     request: ExecutionBudgetRequest,
     enforcement: ExecutionBudgetEnforcement,
     status: ExecutionBudgetStatus,
+    allocator_high_water_bytes: Option<usize>,
+    allocator_current_bytes: Option<usize>,
+    allocator_peak_aligned_bytes: Option<usize>,
     retained_bytes: Option<usize>,
     output_bytes: Option<usize>,
     output_rows: Option<usize>,
@@ -95,12 +98,22 @@ impl ExecutionBudgetReport {
             request,
             enforcement: ExecutionBudgetEnforcement::HardMemoryResourceLimit,
             status: ExecutionBudgetStatus::HardEnforced,
+            allocator_high_water_bytes: None,
+            allocator_current_bytes: None,
+            allocator_peak_aligned_bytes: None,
             retained_bytes: None,
             output_bytes: None,
             output_rows: None,
             unresolved_contract: None,
             context_facts: BTreeMap::new(),
         }
+    }
+
+    pub(crate) fn with_allocator_usage(mut self, usage: DeviceMemoryResourceUsage) -> Self {
+        self.allocator_high_water_bytes = Some(usage.peak_bytes as usize);
+        self.allocator_current_bytes = Some(usage.current_bytes as usize);
+        self.allocator_peak_aligned_bytes = Some(usage.peak_aligned_bytes as usize);
+        self
     }
 
     pub(crate) fn with_retained_bytes(mut self, retained_bytes: usize) -> Self {
@@ -143,6 +156,18 @@ impl ExecutionBudgetReport {
 
     pub fn status(&self) -> ExecutionBudgetStatus {
         self.status
+    }
+
+    pub fn allocator_high_water_bytes(&self) -> Option<usize> {
+        self.allocator_high_water_bytes
+    }
+
+    pub fn allocator_current_bytes(&self) -> Option<usize> {
+        self.allocator_current_bytes
+    }
+
+    pub fn allocator_peak_aligned_bytes(&self) -> Option<usize> {
+        self.allocator_peak_aligned_bytes
     }
 
     pub fn retained_bytes(&self) -> Option<usize> {
@@ -195,7 +220,7 @@ impl<T> BudgetedExecutionOutcome<T> {
     }
 }
 
-/// Hard execution-budget token backed by an RMM limiting memory resource.
+/// Hard execution-budget token backed by a budget-tracking memory resource.
 #[derive(Debug, Clone)]
 pub struct ExecutionBudgetToken {
     request: ExecutionBudgetRequest,
@@ -203,10 +228,10 @@ pub struct ExecutionBudgetToken {
 }
 
 impl ExecutionBudgetToken {
-    /// Create a budget token by wrapping `upstream` in a limiting memory
-    /// resource.
+    /// Create a budget token by wrapping `upstream` in a hard-limiting,
+    /// usage-tracking memory resource.
     pub fn new(upstream: &DeviceMemoryResource, request: ExecutionBudgetRequest) -> Result<Self> {
-        let memory_resource = upstream.limiting(request.budget_bytes())?;
+        let memory_resource = upstream.budget_tracking_limit(request.budget_bytes())?;
         Ok(Self { request, memory_resource })
     }
 
@@ -230,15 +255,33 @@ impl ExecutionBudgetToken {
     }
 
     pub(crate) fn hard_enforced_report(&self) -> ExecutionBudgetReport {
-        ExecutionBudgetReport::hard_enforced(self.request.clone())
+        let report = ExecutionBudgetReport::hard_enforced(self.request.clone());
+        match self.memory_resource.budget_tracking_usage() {
+            Ok(usage) => report.with_allocator_usage(usage),
+            Err(_) => report,
+        }
     }
 
     pub(crate) fn annotate_error(&self, err: Error, operation: &'static str) -> Error {
-        err.reanchor_if_needed(operation)
+        let err = err
+            .reanchor_if_needed(operation)
             .with_detail_if_absent("budget_operation", operation)
             .with_detail_if_absent("budget_boundary", self.request.boundary().to_string())
             .with_detail_if_absent("budget_bytes", self.request.budget_bytes().to_string())
             .with_detail_if_absent("budget_enforcement", ExecutionBudgetEnforcement::HardMemoryResourceLimit.as_str())
-            .with_detail_if_absent("budget_status", "exceeded_or_lower_layer_rejected")
+            .with_detail_if_absent("budget_status", "exceeded_or_lower_layer_rejected");
+        match self.memory_resource.budget_tracking_usage() {
+            Ok(usage) => err
+                .with_detail_if_absent("budget_peak_bytes", usage.peak_bytes.to_string())
+                .with_detail_if_absent("budget_current_bytes", usage.current_bytes.to_string())
+                .with_detail_if_absent("budget_peak_aligned_bytes", usage.peak_aligned_bytes.to_string())
+                .with_detail_if_absent("budget_current_aligned_bytes", usage.current_aligned_bytes.to_string())
+                .with_detail_if_absent("budget_failed_allocation_count", usage.failed_allocation_count.to_string())
+                .with_detail_if_absent(
+                    "budget_largest_failed_allocation_bytes",
+                    usage.largest_failed_allocation_bytes.to_string(),
+                ),
+            Err(_) => err,
+        }
     }
 }
