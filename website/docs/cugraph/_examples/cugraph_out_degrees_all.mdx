@@ -1,0 +1,23 @@
+{/* Hand-owned examples for cugraph_out_degrees_all. NOT generated — safe to edit. */}
+
+This example runs on the [citation network demo dataset](../demo-dataset.mdx).
+
+### A one-query data-integrity audit
+
+Every paper's out-degree should equal its recorded reference count
+(`n_references` was written by the same ingest that emitted the edges). One
+join proves the edge table and the node table agree — for all 4.9M papers:
+
+```sql
+SELECT COUNT(*) AS mismatches
+FROM cugraph_out_degrees_all('citation_edges', 'src', 'dst') d
+JOIN papers p ON p.paper_id = d.vertex
+WHERE d.out_degree <> p.n_references;
+```
+
+| mismatches |
+|---|
+| 0 |
+
+A GPU degree pass plus a SQL predicate makes a cheap referential-integrity
+check for any graph ingest pipeline.

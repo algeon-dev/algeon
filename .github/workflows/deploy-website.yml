@@ -1,0 +1,70 @@
+name: Deploy website
+
+# Build the Docusaurus site in website/ and publish it to GitHub Pages.
+# Served at the apex custom domain https://datafusion.nexus (see
+# website/static/CNAME and website/docusaurus.config.ts).
+
+on:
+  # Deploy on pushes to main that touch the site (or this workflow).
+  push:
+    branches: [main]
+    paths:
+      - 'website/**'
+      - '.github/workflows/deploy-website.yml'
+  # Allow manual runs from the Actions tab.
+  workflow_dispatch:
+
+# Default to read-only; the deploy job elevates to the Pages write scopes it
+# actually needs (actions/deploy-pages recommends job-scoped permissions).
+permissions:
+  contents: read
+
+# Never run two deployments concurrently; let an in-flight run finish so a
+# half-published site is never live.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: website
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: website/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: website/build
+          # website/static/.nojekyll lands in build/ as a dotfile; the action
+          # skips hidden files by default, so opt it back in.
+          include-hidden-files: true
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    # Only the deploy job needs to write Pages + mint the OIDC token.
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

@@ -1,0 +1,8 @@
+{
+  "label": "Reference",
+  "position": 5,
+  "link": {
+    "type": "generated-index",
+    "description": "Stable public contracts: report schemas, metric names, and workload surfaces."
+  }
+}

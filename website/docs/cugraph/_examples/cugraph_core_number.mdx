@@ -1,0 +1,43 @@
+{/* Hand-owned examples for cugraph_core_number. NOT generated — safe to edit. */}
+
+This example runs on the [citation network demo dataset](../demo-dataset.mdx).
+
+### How deep does the densest citation core go?
+
+Core number measures how deep a vertex sits in recursively denser subgraphs
+(with `degree_type: "in_out"`, degree is in + out). Define the result as a
+workspace view, find the deepest shell, and list who lives there:
+
+```sql
+CREATE VIEW cores AS
+SELECT vertex, core_number FROM cugraph_core_number('citation_edges', 'src', 'dst');
+
+SELECT MAX(core_number) AS deepest,
+       COUNT(*) FILTER (WHERE core_number = 70) AS members
+FROM cores;
+```
+
+| deepest | members |
+|---|---|
+| 70 | 5,913 |
+
+```sql
+SELECT p.year, p.title
+FROM cores c JOIN papers p ON p.paper_id = c.vertex
+WHERE c.core_number = 70
+ORDER BY p.n_citation DESC
+LIMIT 6;
+```
+
+| year | title |
+|---|---|
+| 2004 | Distinctive Image Features from Scale-Invariant Keypoints |
+| 2001 | Random Forests |
+| 2011 | LIBSVM: A library for support vector machines |
+| 1995 | The Nature of Statistical Learning Theory |
+| 1995 | Support-Vector Networks |
+| 1986 | A Computational Approach to Edge Detection |
+
+The 70-core — 5,913 papers where everyone has at least 70 combined in/out
+edges to everyone else in the shell — is recognizably the machine-learning /
+computer-vision canon.

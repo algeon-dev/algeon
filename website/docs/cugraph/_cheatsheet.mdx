@@ -1,0 +1,28 @@
+{/* GENERATED FROM cuGraph SQL metadata by website/scripts/gen-cugraph-docs.mjs. Do not edit by hand. */}
+
+| Algorithm | SQL function | Family | Source policy | Weight policy | Output kind | Options | Summary |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| [Balanced Cut Clustering](./algorithms/community/cugraph_balanced_cut_clustering.mdx) | `cugraph_balanced_cut_clustering` | Community Detection | `none` | `ignored` | `fixed` | many | Cluster vertices with balanced-cut spectral clustering. |
+| [Betweenness Centrality](./algorithms/centrality/cugraph_betweenness_centrality.mdx) | `cugraph_betweenness_centrality` | Centrality | `none` | `ignored` | `fixed` | many | Compute exact or explicitly seeded/k-sampled approximate betweenness centrality scores. |
+| [BFS](./algorithms/traversal/cugraph_bfs.mdx) | `cugraph_bfs` | Traversal & Paths | `required_scalar_or_list_or_relation` | `ignored` | `default_mode` | rich | Multi-source-capable breadth-first search; source selectors must contain at most one source per connected component. |
+| [Core Number](./algorithms/structure/cugraph_core_number.mdx) | `cugraph_core_number` | Structure | `none` | `ignored` | `fixed` | few | Compute graph core numbers. |
+| [Degrees All](./algorithms/structure/cugraph_degrees_all.mdx) | `cugraph_degrees_all` | Structure | `none` | `ignored` | `fixed` | none | Compute in-degree and out-degree for every vertex. |
+| [ECG](./algorithms/community/cugraph_ecg.mdx) | `cugraph_ecg` | Community Detection | `none` | `ignored` | `fixed` | many | Detect communities with ensemble clustering for graphs. |
+| [Edge Betweenness Centrality](./algorithms/centrality/cugraph_edge_betweenness_centrality.mdx) | `cugraph_edge_betweenness_centrality` | Centrality | `none` | `ignored` | `fixed` | few | Compute exact or explicitly seeded/k-sampled approximate edge betweenness centrality scores. |
+| [Eigenvector Centrality](./algorithms/centrality/cugraph_eigenvector_centrality.mdx) | `cugraph_eigenvector_centrality` | Centrality | `none` | `ignored` | `fixed` | few | Compute eigenvector centrality scores. |
+| [ForceAtlas2](./algorithms/layout/cugraph_force_atlas2.mdx) | `cugraph_force_atlas2` | Layout | `none` | `optional` | `fixed` | many | Compute ForceAtlas2 two-dimensional layout coordinates. |
+| [HITS](./algorithms/centrality/cugraph_hits.mdx) | `cugraph_hits` | Centrality | `none` | `ignored` | `fixed` | few | Compute HITS hub and authority scores. |
+| [In Degrees All](./algorithms/structure/cugraph_in_degrees_all.mdx) | `cugraph_in_degrees_all` | Structure | `none` | `ignored` | `fixed` | none | Compute in-degree for every vertex. |
+| [K-Core](./algorithms/structure/cugraph_k_core.mdx) | `cugraph_k_core` | Structure | `none` | `ignored` | `fixed` | few | Return the graph k-core edge set. |
+| [Katz Centrality](./algorithms/centrality/cugraph_katz_centrality.mdx) | `cugraph_katz_centrality` | Centrality | `none` | `ignored` | `fixed` | few | Compute Katz centrality scores. |
+| [Leiden](./algorithms/community/cugraph_leiden.mdx) | `cugraph_leiden` | Community Detection | `none` | `ignored` | `fixed` | few | Detect communities with Leiden optimization. |
+| [Louvain](./algorithms/community/cugraph_louvain.mdx) | `cugraph_louvain` | Community Detection | `none` | `ignored` | `fixed` | few | Detect communities with Louvain modularity optimization. |
+| [Minimum Spanning Tree](./algorithms/connectivity/cugraph_minimum_spanning_tree.mdx) | `cugraph_minimum_spanning_tree` | Connectivity | `none` | `required` | `fixed` | none | Compute a minimum spanning tree. |
+| [Out Degrees All](./algorithms/structure/cugraph_out_degrees_all.mdx) | `cugraph_out_degrees_all` | Structure | `none` | `ignored` | `fixed` | none | Compute out-degree for every vertex. |
+| [PageRank](./algorithms/centrality/cugraph_pagerank.mdx) | `cugraph_pagerank` | Centrality | `none` | `optional` | `fixed` | few | Compute PageRank scores. |
+| [Personalized PageRank](./algorithms/centrality/cugraph_personalized_pagerank.mdx) | `cugraph_personalized_pagerank` | Centrality | `none` | `optional` | `fixed` | many | Compute personalized PageRank scores. |
+| [Spectral Modularity Maximization](./algorithms/community/cugraph_spectral_modularity_maximization.mdx) | `cugraph_spectral_modularity_maximization` | Community Detection | `none` | `ignored` | `fixed` | many | Cluster vertices with spectral modularity maximization. |
+| [SSSP](./algorithms/traversal/cugraph_sssp.mdx) | `cugraph_sssp` | Traversal & Paths | `required_scalar` | `optional` | `fixed` | few | Compute single-source shortest paths. |
+| [Strongly Connected Components](./algorithms/connectivity/cugraph_strongly_connected_components.mdx) | `cugraph_strongly_connected_components` | Connectivity | `none` | `ignored` | `fixed` | none | Compute strongly connected components. |
+| [Triangle Count All](./algorithms/structure/cugraph_triangle_count_all.mdx) | `cugraph_triangle_count_all` | Structure | `none` | `ignored` | `fixed` | none | Compute triangle counts for every vertex. |
+| [Weakly Connected Components](./algorithms/connectivity/cugraph_weakly_connected_components.mdx) | `cugraph_weakly_connected_components` | Connectivity | `none` | `ignored` | `fixed` | none | Compute weakly connected components. |

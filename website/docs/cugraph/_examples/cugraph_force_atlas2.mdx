@@ -1,0 +1,59 @@
+{/* Hand-owned examples for cugraph_force_atlas2. NOT generated — safe to edit. */}
+
+import CitationEgoGraph from '@site/src/components/graph/CitationEgoGraph';
+
+This example runs on the [citation network demo dataset](../demo-dataset.mdx).
+
+### Lay out an ego network on the GPU
+
+Three statements build the one-hop world around *Attention Is All You Need*
+(its ~40 references, its 110 most-cited citers, and every citation among
+them), and ForceAtlas2 returns drawable coordinates. A second call —
+`cugraph_louvain` on the same edge view — colors the clusters:
+
+```sql
+CREATE VIEW attention_ego_nodes AS
+SELECT paper_id FROM (
+  SELECT dst AS paper_id FROM citation_edges WHERE src = 2963403868
+  UNION ALL
+  SELECT src AS paper_id FROM (
+    SELECT e.src, p.n_citation
+    FROM citation_edges_by_dst e JOIN papers p ON p.paper_id = e.src
+    WHERE e.dst = 2963403868
+    ORDER BY p.n_citation DESC LIMIT 110) t
+  UNION ALL
+  SELECT 2963403868 AS paper_id
+) u GROUP BY paper_id;
+
+CREATE VIEW attention_ego_edges AS
+SELECT e.src, e.dst
+FROM citation_edges e
+JOIN attention_ego_nodes a ON a.paper_id = e.src
+JOIN attention_ego_nodes b ON b.paper_id = e.dst;
+
+WITH layout AS (
+  SELECT vertex, x, y
+  FROM cugraph_force_atlas2('attention_ego_edges', 'src', 'dst', NULL,
+                            '{"max_iter":500, "seed":42}')),
+community AS (
+  SELECT vertex, "partition"
+  FROM cugraph_louvain('attention_ego_edges', 'src', 'dst'))
+SELECT l.vertex, l.x, l.y, c."partition", p.title, p.year
+FROM layout l
+JOIN community c ON c.vertex = l.vertex
+JOIN papers p ON p.paper_id = l.vertex;
+```
+
+The figure below renders that query's actual output — 133 rows of
+`(vertex, x, y, partition, title, year)` — with no client-side layout at all;
+the browser only draws what the SQL returned. Louvain's partitions turn out
+to be readable research threads (labels assigned by inspecting each
+cluster's members):
+
+<CitationEgoGraph />
+
+`seed` fixes the initial placement, but the parallel layout itself is not
+bit-reproducible — expect slightly different (equally valid) coordinates on
+each run. If downstream queries must agree on positions, snapshot into the
+mutable `datafusion.public` workspace with `CREATE TABLE … AS`; that does not
+write back to the Iceberg source catalog.

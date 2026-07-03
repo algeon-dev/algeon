@@ -1,0 +1,97 @@
+/* Design-page diagram framing. The diagrams themselves are SVG with a
+   computed layout (see Diagram.tsx); this file styles the figure shell
+   (hint, scroll container, caption), node interactivity, and the HTML
+   detail panel below each interactive diagram. */
+
+.figure {
+  margin: 2.4rem 0;
+}
+
+.hint {
+  display: block;
+  margin-bottom: 0.55rem;
+  font-family: var(--nx-dg-mono);
+  font-size: 0.68rem;
+  letter-spacing: 0.05em;
+  text-align: right;
+  color: var(--nx-dg-fg-subtle);
+}
+
+/* Wide diagrams scale down to the SVG's minWidth, then scroll here instead of
+   overflowing the page. */
+.scroll {
+  overflow-x: auto;
+  padding-bottom: 2px;
+}
+
+.caption {
+  margin: 0.85rem 0 0;
+  font-size: 0.8rem;
+  line-height: 1.6;
+  color: var(--nx-dg-fg-muted);
+  text-wrap: pretty;
+}
+
+/* ===== Node interactivity ================================================ */
+.nodeClickable {
+  cursor: pointer;
+}
+.nodeClickable:hover .boxRect,
+.nodeClickable:focus-visible .boxRect {
+  stroke: var(--node-tone);
+}
+.nodeClickable:focus {
+  outline: none;
+}
+.boxRect {
+  transition: stroke 0.15s ease;
+}
+
+/* ===== Detail panel ====================================================== */
+.panel {
+  margin-top: 0.9rem;
+  padding: 0.8rem 0.95rem;
+  border: 1px solid var(--nx-dg-border);
+  border-radius: 8px;
+  background: var(--nx-dg-surface);
+}
+
+.panelHead {
+  display: flex;
+  align-items: baseline;
+  gap: 0.55rem;
+  flex-wrap: wrap;
+}
+
+.panelDot {
+  flex: none;
+  align-self: center;
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+}
+
+.panelName {
+  font-family: var(--nx-dg-mono);
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--nx-dg-fg);
+}
+
+.panelSub {
+  font-family: var(--nx-dg-mono);
+  font-size: 0.7rem;
+  color: var(--nx-dg-fg-subtle);
+}
+
+.panelBody {
+  margin-top: 0.45rem;
+  min-height: 3.6em;
+  font-size: 0.8rem;
+  line-height: 1.65;
+  color: var(--nx-dg-fg-muted);
+  text-wrap: pretty;
+}
+.panelBody code {
+  font-size: 0.95em;
+}

@@ -1,0 +1,86 @@
+{/* Hand-owned examples for cugraph_pagerank. NOT generated — safe to edit. */}
+
+These examples run on the [citation network demo dataset](../demo-dataset.mdx)
+(4.9M papers, 45.6M `src`-cites-`dst` edges).
+
+### What raw citation counts miss
+
+PageRank over the full graph, joined back to paper metadata. Importance flows
+*through* citations: a paper cited by foundational papers outranks a paper with
+more, but shallower, citations.
+
+```sql
+SELECT p.title, p.year, p.n_citation, r.value AS pagerank
+FROM cugraph_pagerank('citation_edges', 'src', 'dst') r
+JOIN papers p ON p.paper_id = r.vertex
+ORDER BY r.value DESC
+LIMIT 5;
+```
+
+| title | year | n_citation | pagerank |
+|---|---|---|---|
+| Finite automata and their decision problems | 1959 | 1,401 | 0.00139 |
+| The Mathematical Theory of Communication | 1949 | 48,327 | 0.00134 |
+| The reduction of two-way automata to one-way automata | 1959 | 224 | 0.00126 |
+| The complexity of theorem-proving procedures | 1971 | 4,592 | 0.00073 |
+| A mathematical theory of communication | 1948 | 22,122 | 0.00066 |
+
+The #1 and #3 papers have modest raw counts (1,401 and 224 citations) — but
+the papers citing them are themselves the roots of computer science, and
+PageRank propagates exactly that. The full call — 45.6M edges, GPU graph
+build, 4.1M scores, join, sort — returns in about 1.5 s.
+
+### A window function over the result: PageRank ranks its own paper
+
+The output of a `cugraph_*` function is a plain relation, so `ROW_NUMBER()`
+works directly on it. Where does the paper that introduced PageRank land, by
+its own algorithm, among 4.9 million papers?
+
+```sql
+WITH ranked AS (
+  SELECT vertex, value, ROW_NUMBER() OVER (ORDER BY value DESC) AS rank
+  FROM cugraph_pagerank('citation_edges', 'src', 'dst'))
+SELECT r.rank, p.title, p.year, r.value
+FROM ranked r JOIN papers p ON p.paper_id = r.vertex
+WHERE r.vertex = 2066636486;
+```
+
+| rank | title | year | value |
+|---|---|---|---|
+| 115 | The anatomy of a large-scale hypertextual Web search engine | 1998 | 0.000143 |
+
+Rank **#115** of 4,894,081.
+
+### SQL decides which graph the GPU sees: the pre-2000 canon
+
+The first argument is any relation name — including a view. Joining the edge
+list to `papers` on **both** endpoints restricts the graph to citations that
+stay within an era, and PageRank then answers "what was the canon before
+2000?".
+
+```sql
+CREATE VIEW edges_pre2000 AS
+SELECT e.src, e.dst
+FROM citation_edges e
+JOIN papers ps ON ps.paper_id = e.src
+JOIN papers pd ON pd.paper_id = e.dst
+WHERE ps.year BETWEEN 1901 AND 2000 AND pd.year BETWEEN 1901 AND 2000;
+
+SELECT p.year, p.title
+FROM cugraph_pagerank('edges_pre2000', 'src', 'dst') r
+JOIN papers p ON p.paper_id = r.vertex
+ORDER BY r.value DESC
+LIMIT 6;
+```
+
+| year | title |
+|---|---|
+| 1959 | Finite automata and their decision problems |
+| 1959 | The reduction of two-way automata to one-way automata |
+| 1949 | The Mathematical Theory of Communication |
+| 1974 | The Design and Analysis of Computer Algorithms |
+| 1958 | Preliminary report: international algebraic language |
+| 1963 | Machine perception of three-dimensional solids |
+
+Automata theory, Shannon, Aho–Hopcroft–Ullman, the ALGOL report: the view's
+`WHERE` clause rewinds the clock and the algorithm re-ranks the field.

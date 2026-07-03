@@ -1,0 +1,244 @@
+---
+sidebar_position: 2
+description: Run cuGraph SQL as a standalone Flight SQL server or embed datafusion-nexus as a library in your own backend.
+---
+
+# Connecting
+
+`datafusion-nexus` exposes the `cugraph_*` functions in two ways. Pick the one
+that matches how you want to run graph queries:
+
+- **Standalone Flight SQL server** — run the `datafusion_nexus_server` binary and
+  connect any Arrow Flight SQL client (for example `arrow_cli`). Best for
+  interactive use, notebooks, and BI tools.
+- **Embedded library** — add the `datafusion-nexus` crate to your own Rust
+  service, register the cuGraph table functions on a DataFusion `SessionContext`,
+  and run SQL in-process. Best when graph analytics are one stage of a larger
+  backend.
+
+Both paths require a build with the `cugraph` feature and a CUDA-capable GPU.
+
+## Option A — Standalone Flight SQL server
+
+### Build
+
+```bash
+cargo build --release --features server,cugraph,iceberg --bin datafusion_nexus_server
+```
+
+### Start
+
+The default website demo uses the local Iceberg REST catalog backed by RustFS.
+Start the stack, load the citation network, then run the server bound to
+localhost:
+
+```bash
+docker compose -f fixture/iceberg-local/docker-compose.yml up -d
+fixture/scripts/fixture.sh iceberg rest load --workload citation_network
+
+NEXUS_SERVER_CUGRAPH_ENABLED=true \
+NEXUS_SERVER_NATIVE_MEMORY_POLICY=unbounded \
+NEXUS_SERVER_BIND=127.0.0.1:50051 \
+DATAFUSION_CATALOG_DEFAULT_CATALOG=datafusion \
+DATAFUSION_CATALOG_DEFAULT_SCHEMA=public \
+NEXUS_ICEBERG_CATALOG_KIND=rest \
+NEXUS_ICEBERG_CATALOG_NAME=lake \
+NEXUS_ICEBERG_NAMESPACE=citation_network \
+NEXUS_ICEBERG_WAREHOUSE=s3://lakehouse/warehouse \
+NEXUS_ICEBERG_REST_URI=http://localhost:8181 \
+NEXUS_ICEBERG_S3_ENDPOINT=http://localhost:9000 \
+NEXUS_ICEBERG_S3_REGION=us-east-1 \
+NEXUS_ICEBERG_S3_PATH_STYLE=true \
+NEXUS_ICEBERG_S3_ACCESS_KEY_ID=cudfadmin \
+NEXUS_ICEBERG_S3_SECRET_ACCESS_KEY=cudfadminsecret \
+NEXUS_SERVER_WORKSPACE_CATALOG=datafusion \
+NEXUS_SERVER_WORKSPACE_SCHEMA=public \
+NEXUS_SERVER_WORKSPACE_BACKING_CATALOG=lake \
+NEXUS_SERVER_WORKSPACE_BACKING_SCHEMA=citation_network \
+NEXUS_SERVER_WORKSPACE_BACKING_ALIASES=citation_edges,citation_edges_by_dst,papers,paper_authors,paper_fos \
+flock /tmp/cudf-gpu.lock bash scripts/run_server.sh
+```
+
+The startup log should show `iceberg_enabled=true`, `cugraph_enabled=true`, a
+non-zero `cugraph_allowed_algorithm_count`, and a workspace overlay backed by
+`lake.citation_network`.
+
+### Connection options
+
+The server is configured entirely through environment variables. The most
+useful ones for cuGraph work:
+
+#### Server core
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `NEXUS_SERVER_BIND` | `0.0.0.0:50051` | Flight SQL listen address. Bind `127.0.0.1` to restrict to localhost. |
+| `NEXUS_SERVER_LOG` | `info` | Log level (`error`/`warn`/`info`/`debug`/`trace`). |
+| `NEXUS_SERVER_MAX_IN_FLIGHT` | `1` | Max concurrent queries; keep low when the GPU is the bottleneck. |
+| `NEXUS_SERVER_CUGRAPH_ENABLED` | `false` | Register the `cugraph_*` SQL functions. Requires the `cugraph` build feature. |
+
+#### cuGraph defaults
+
+These set base graph-construction defaults. Algorithm-specific defaults are
+applied next, and each call's `options_json` overrides both (see
+[Graph construction options](./graph-options.mdx)):
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `NEXUS_SERVER_CUGRAPH_ALGORITHMS` | all | Comma-separated allowlist of enabled algorithms. |
+| `NEXUS_SERVER_CUGRAPH_DIRECTED` | `true` | Base `directed` default. Some algorithms default to `false`; each function page shows the effective default. |
+| `NEXUS_SERVER_CUGRAPH_RENUMBER` | `true` | Default `renumber`. |
+| `NEXUS_SERVER_CUGRAPH_CONSTRUCTION_POLICY` | `python_cugraph` | Default edge-list construction semantics: `python_cugraph` or `raw_libcugraph`. |
+
+#### GPU memory budget
+
+The native engine runs on the GPU, so the device budget must fit your card.
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `NEXUS_SERVER_NATIVE_MEMORY_POLICY` | `bounded` | `bounded` enforces a device budget; `unbounded` lets cuGraph use the whole card. |
+| `NEXUS_SERVER_NATIVE_DEVICE_BUDGET_BYTES` | — | Bounded device budget in bytes. **Must be ≤ the card's free memory**, or every query (even `show tables;`) is rejected at admission with `query_min_budget_exceeds_device_capacity`. |
+| `NEXUS_SERVER_NATIVE_MAX_SOURCE_CHUNK_BYTES` | — | Max bytes per source scan chunk. |
+| `NEXUS_SERVER_NATIVE_MAX_ROW_GROUPS_PER_CHUNK` | — | Max Parquet row groups per chunk. |
+
+:::warning[Size the budget to your GPU]
+The data-center default budget targets an RTX PRO 6000-class GPU with 96 GB
+VRAM and assumes roughly 95 GiB is free for native execution. On a smaller GPU,
+or when other processes reduce free VRAM, set a smaller value, for example
+`NEXUS_SERVER_NATIVE_DEVICE_BUDGET_BYTES=12884901888` (12 GiB), or use
+`NEXUS_SERVER_NATIVE_MEMORY_POLICY=unbounded` for local single-query work when
+the GPU is otherwise idle.
+:::
+
+#### DataFusion session
+
+DataFusion reads its own `SessionConfig::from_env()` keys. The key
+`datafusion.<group>.<name>` maps to the env var by upper-casing and replacing
+`.` with `_`:
+
+| Variable | Maps to | Purpose |
+| --- | --- | --- |
+| `DATAFUSION_EXECUTION_BATCH_SIZE` | `datafusion.execution.batch_size` | DataFusion/fallback operator batch size (default `8192`). |
+| `DATAFUSION_CATALOG_DEFAULT_CATALOG` | `datafusion.catalog.default_catalog` | Default catalog for unqualified names. |
+| `DATAFUSION_CATALOG_DEFAULT_SCHEMA` | `datafusion.catalog.default_schema` | Default schema; the mutable session workspace for `CREATE VIEW` etc. |
+
+#### Iceberg edge sources
+
+The local REST catalog is the primary demo source. It exposes the five
+[citation network tables](./demo-dataset.mdx) as
+`lake.citation_network.citation_edges`, `citation_edges_by_dst`, `papers`,
+`paper_authors`, and `paper_fos`.
+
+A mutable workspace overlay exposes those source tables under unqualified names
+while keeping interactive DDL local to `datafusion.public`:
+
+```bash
+NEXUS_SERVER_WORKSPACE_CATALOG=datafusion \
+NEXUS_SERVER_WORKSPACE_SCHEMA=public \
+NEXUS_SERVER_WORKSPACE_BACKING_CATALOG=lake \
+NEXUS_SERVER_WORKSPACE_BACKING_SCHEMA=citation_network \
+NEXUS_SERVER_WORKSPACE_BACKING_ALIASES=citation_edges,citation_edges_by_dst,papers,paper_authors,paper_fos
+```
+
+With the overlay, `SELECT * FROM citation_edges LIMIT 10` resolves through to
+`lake.citation_network.citation_edges`, and
+`CREATE VIEW target_edges AS ...` writes to `datafusion.public`. CTAS snapshots
+used by a few examples are local workspace tables for deterministic re-use; they
+do not write to `lake.citation_network`. Fully-qualified names keep working too.
+
+Keep `DATAFUSION_CATALOG_DEFAULT_CATALOG=datafusion` and
+`DATAFUSION_CATALOG_DEFAULT_SCHEMA=public` when the backing Iceberg catalog is
+read-only. If the default catalog/schema points directly at Iceberg, interactive
+DDL is routed to that read-only source catalog and may fail.
+
+AWS Glue uses the same catalog contract, but it requires an AWS account,
+warehouse bucket, and credentials. A condensed Glue configuration looks like:
+
+```bash
+NEXUS_ICEBERG_CATALOG_KIND=glue \
+NEXUS_ICEBERG_CATALOG_NAME=glue \
+NEXUS_ICEBERG_NAMESPACE=nexus_graph \
+NEXUS_ICEBERG_GLUE_CATALOG_ID=123456789012 \
+NEXUS_ICEBERG_WAREHOUSE=s3://your-bucket/warehouse \
+AWS_REGION=us-west-2 AWS_DEFAULT_REGION=us-west-2 \
+NEXUS_ICEBERG_S3_REGION=us-west-2 \
+NEXUS_ICEBERG_S3_CREDENTIAL_SOURCE=default_chain \
+NEXUS_ICEBERG_PARQUET_READ_STRATEGY=remote_kvikio \
+NEXUS_SERVER_CUGRAPH_ENABLED=true \
+NEXUS_SERVER_BIND=127.0.0.1:50051 \
+flock /tmp/cudf-gpu.lock bash scripts/run_server.sh
+```
+
+### Connect with arrow_cli
+
+```bash
+arrow_cli --host 127.0.0.1 -P 50051 --timeout 120 --output tsv
+```
+
+:::warning[One statement per line]
+`arrow_cli` sends SQL line by line and does not accumulate to a semicolon, so
+each statement must be on a single line. To keep session-local views (for
+example, BFS source/target tables), pipe multiple statements into one
+`arrow_cli` process.
+:::
+
+Output formats: `--output table` (default, shows column headers), `json`, `csv`,
+`tsv`, `psv`.
+
+## Option B — Embed as a library
+
+Add the crate as a path or git dependency with the `cugraph` feature, then build
+a DataFusion `SessionContext` that has both the native cudf optimizer rule and
+the cuGraph table functions registered.
+
+```toml
+# Cargo.toml
+[dependencies]
+datafusion = { path = "../datafusion/datafusion/core" }
+datafusion-nexus = { path = "../datafusion-nexus", features = ["cugraph"] }
+```
+
+```rust
+use datafusion::execution::SessionStateBuilder;
+use datafusion::prelude::{ParquetReadOptions, SessionContext};
+use datafusion_nexus::{
+    CudfOptimizerConfig, CudfSessionStateBuilderExt, CugraphSqlConfig, GpuFallbackPolicy,
+};
+
+async fn run() -> datafusion::error::Result<()> {
+    // Build a session state with both extensions:
+    //   with_cudf_native  installs the native cudf physical optimizer rule.
+    //     GpuPreferred runs on the GPU when a plan is supported and falls back
+    //     to CPU DataFusion otherwise; use GpuOnly to turn unsupported plans
+    //     into errors instead.
+    //   with_cugraph_sql  registers the cugraph_* SQL table functions. The
+    //     default config enables every algorithm; narrow it with
+    //     CugraphSqlConfig::default().with_allowed_algorithms([...]).
+    let state = SessionStateBuilder::new()
+        .with_default_features()
+        .with_cudf_native(CudfOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred))
+        .with_cugraph_sql(CugraphSqlConfig::default())
+        .build();
+    let ctx = SessionContext::new_with_state(state);
+
+    // Register an edge relation, then call any cugraph_* function from SQL.
+    ctx.register_parquet("edges", "edges.parquet", ParquetReadOptions::default())
+        .await?;
+    let df = ctx
+        .sql("SELECT * FROM cugraph_pagerank('edges', 'src', 'dst')")
+        .await?;
+    df.show().await?;
+    Ok(())
+}
+```
+
+The same [discovery functions](./discovery-and-validation.mdx) work in-process:
+run `SELECT * FROM cugraph_list_algorithms()` or
+`cugraph_validate_call(...)` against your `SessionContext` exactly as you would
+over the server.
+
+:::note[GPU is required either way]
+Whether standalone or embedded, the cuGraph functions execute on the GPU. The
+process must run on a machine with a CUDA-capable device and the matching cuDF /
+cuGraph runtime libraries available.
+:::

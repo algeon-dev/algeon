@@ -1,0 +1,89 @@
+{/* Hand-owned examples for cugraph_bfs. NOT generated — safe to edit. */}
+
+These examples run on the [citation network demo dataset](../demo-dataset.mdx).
+Edges point `src` → `dst` as "cites"; BFS distance is a hop count.
+
+### Swap two arguments to reverse time: the influence wave
+
+Following citations *forward* (`'src', 'dst'`) walks into a paper's reference
+ancestry. Swapping the two column arguments (`'dst', 'src'`) traverses the
+same edges backwards — who cites me, who cites them — without building any new
+table. From AlexNet (2012), each BFS generation is one wave of influence:
+
+```sql
+SELECT b.distance, COUNT(*) AS papers, ROUND(AVG(p.year), 1) AS avg_year
+FROM cugraph_bfs('citation_edges_by_dst', 2163605009, 'dst', 'src', NULL,
+                 '{"depth_limit":3, "output_mode":"normalized"}') b
+JOIN papers p ON p.paper_id = b.vertex
+WHERE b.reachable
+GROUP BY b.distance
+ORDER BY b.distance;
+```
+
+| distance | papers | avg_year |
+|---|---|---|
+| 0 | 1 | 2012.0 |
+| 1 | 12,185 | 2017.5 |
+| 2 | 67,517 | 2017.9 |
+| 3 | 71,541 | 2017.8 |
+
+Three citation generations reach ~151k papers. (The reversed traversal reads
+`citation_edges_by_dst`, which is clustered by `dst`, so the scan prunes well.)
+
+### Path mode with a SQL-defined target
+
+`output_mode: "path"` reconstructs the shortest hop chain between the source
+and a target. The target is not a literal — it is a **relation** that must
+resolve to exactly one row, so a `WHERE` clause on `papers` is enough to say
+"the paper titled *Long short-term memory*". How does BERT (2018) descend
+from LSTM (1997)?
+
+```sql
+CREATE VIEW lstm_target AS
+SELECT paper_id AS vertex FROM papers WHERE title = 'Long short-term memory';
+
+SELECT b.path_index, b.distance, p.year, p.title
+FROM cugraph_bfs('citation_edges', 2896457183, 'src', 'dst', NULL,
+                 '{"output_mode":"path",
+                   "target_vertices_table":"lstm_target",
+                   "target_vertex_col":"vertex"}') b
+JOIN papers p ON p.paper_id = b.vertex
+ORDER BY b.path_index;
+```
+
+| path_index | distance | year | title |
+|---|---|---|---|
+| 0 | 0 | 2018 | BERT: Pre-training of Deep Bidirectional Transformers… |
+| 1 | 1 | 2015 | Semi-supervised Sequence Learning |
+| 2 | 2 | 1997 | Long short-term memory |
+
+Two hops of references separate BERT from LSTM.
+
+### Multi-source BFS from a seed view
+
+Passing `NULL` as the source and pointing `source_vertices_table` at a view
+starts the traversal from every row of a SQL result. Here the three CNN
+classics (AlexNet, VGG, ResNet) form one combined frontier — `distance`
+becomes "hops from the *nearest* founding paper":
+
+```sql
+CREATE VIEW cnn_founders AS
+SELECT paper_id AS vertex FROM papers
+WHERE paper_id IN (2163605009, 1686810756, 2194775991);
+
+SELECT b.distance, COUNT(*) AS papers
+FROM cugraph_bfs('citation_edges_by_dst', NULL, 'dst', 'src', NULL,
+                 '{"source_vertices_table":"cnn_founders",
+                   "source_vertex_col":"vertex",
+                   "depth_limit":2, "output_mode":"normalized"}') b
+JOIN papers p ON p.paper_id = b.vertex
+WHERE b.reachable
+GROUP BY b.distance
+ORDER BY b.distance;
+```
+
+| distance | papers |
+|---|---|
+| 0 | 3 |
+| 1 | 28,776 |
+| 2 | 69,038 |

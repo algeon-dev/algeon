@@ -40,8 +40,12 @@ __pycache__/
 /fixture/iceberg-local/.loader-data/
 /fixture/iceberg-local/.ivy-cache/
 
-# private documentation
-docs/
+# private documentation (repo-root docs/ only; website/docs/ is published)
+/docs/
 
 # test data
 fixture/data/
+
+# website/ (Docusaurus) is tracked and deployed to GitHub Pages via
+# .github/workflows/deploy-website.yml. Its own build artefacts and
+# node_modules are ignored by website/.gitignore.

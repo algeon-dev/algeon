@@ -1,0 +1,93 @@
+---
+title: SSSP
+sidebar_label: SSSP
+description: "Compute single-source shortest paths."
+---
+
+{/* GENERATED FROM cuGraph SQL metadata by website/scripts/gen-cugraph-docs.mjs. Do not edit by hand; edit examples in website/docs/cugraph/_examples/cugraph_sssp.mdx and re-run the generator. */}
+
+# SSSP
+
+SQL function: `cugraph_sssp`
+
+Compute single-source shortest paths.
+
+## Signature
+
+```sql
+cugraph_sssp(table_name, source_vertex [, src_col, dst_col [, weight_col [, options_json]]])
+```
+
+Allowed argument counts: 2, 4, 5, 6.
+
+## Quickstart
+
+```sql
+SELECT * FROM cugraph_sssp('target_edges', 123)
+```
+
+## Positional arguments
+
+| Argument | Type | Required | Default | Notes |
+| --- | --- | --- | --- | --- |
+| `table_name` | `Utf8` | yes |  |  |
+| `source_vertex` | `Int64` | yes |  |  |
+| `src_col` | `Utf8` | no | `src` |  |
+| `dst_col` | `Utf8` | no | `dst` |  |
+| `weight_col` | `Utf8\|null` | no |  | optional edge weight column for graph construction when supported by the algorithm; semantic effect: edge weights affect algorithm results when provided |
+| `options_json` | `Utf8` | no |  |  |
+
+## JSON options
+
+| Option | Type | Default | Constraints | Description |
+| --- | --- | --- | --- | --- |
+| `cutoff` | `Float64\|null` | `null` | min 0 |  |
+
+### Graph construction options
+
+Shared by all cuGraph functions, shown here with this function's defaults. The `construction_policy` option controls whether Nexus requests Python cuGraph-compatible edge normalization or bypasses it for raw libcugraph-style construction; see [graph construction options](../../graph-options.mdx) for the full policy guide.
+
+| Option | Type | Default | Constraints | Description |
+| --- | --- | --- | --- | --- |
+| `construction_policy` | `Utf8` | `"python_cugraph"` | one of `"python_cugraph"`, `"raw_libcugraph"` | Edge-list construction semantics used before calling libcugraph. |
+| `directed` | `Boolean` | `true` |  | Whether graph construction treats edges as directed. |
+| `renumber` | `Boolean` | `true` |  | Whether graph construction may renumber external vertex identifiers internally. |
+
+
+## Output schema
+
+| Column | Type | Nullable | Description |
+| --- | --- | --- | --- |
+| `vertex` | `Int64` | no | Vertex reached by the shortest-path traversal. |
+| `distance` | `Float64` | no | Shortest weighted-path distance from the source vertex. |
+| `predecessor` | `Int64` | yes | Previous vertex on the shortest-path tree, null for the source or unreachable vertices. |
+
+:::note
+These are the generic registry schemas. Run [`cugraph_validate_call`](../../discovery-and-validation.mdx#cugraph_validate_call) for the concrete, table-specific output schema of a particular call.
+:::
+
+
+## Examples
+
+import Examples from '../../_examples/cugraph_sssp.mdx';
+
+<Examples />
+
+## Limitations & notes
+
+- dry-run validates table resolution, column presence, static dtypes, and options only
+- dry-run does not scan edge data, construct a graph, or prove source-vertex existence
+
+## Validate before running
+
+Always dry-run a call before executing it. Validation checks the function, table, columns, dtypes, and options without touching the GPU:
+
+```sql
+SELECT * FROM cugraph_validate_call(
+  'cugraph_sssp',
+  'your_edges_table',
+  '{"src_col":"src","dst_col":"dst"}'
+);
+```
+
+See [Discovery & validation](../../discovery-and-validation.mdx) for the full `cugraph_validate_call` contract.

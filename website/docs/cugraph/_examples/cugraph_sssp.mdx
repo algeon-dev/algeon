@@ -1,0 +1,44 @@
+{/* Hand-owned examples for cugraph_sssp. NOT generated — safe to edit. */}
+
+This example runs on the [citation network demo dataset](../demo-dataset.mdx).
+
+### SQL-derived edge weights: the time-cost of an idea
+
+The citation edges carry a constant weight, but the weight column handed to
+SSSP can be **computed by SQL**. Joining `papers` on both endpoints prices
+each citation hop at the number of years it jumps back — so SSSP `distance`
+becomes the cumulative "travel through time" along the cheapest reference
+chain:
+
+```sql
+CREATE VIEW edges_time_cost AS
+SELECT e.src, e.dst,
+       CAST(GREATEST(1, ps.year - pd.year) AS DOUBLE) AS weight
+FROM citation_edges e
+JOIN papers ps ON ps.paper_id = e.src
+JOIN papers pd ON pd.paper_id = e.dst
+WHERE ps.year > 1900 AND pd.year > 1900;
+
+SELECT CAST(ROUND(s.distance) AS BIGINT) AS time_cost, p.year, p.title
+FROM cugraph_sssp('edges_time_cost', 2963403868, 'src', 'dst', 'weight') s
+JOIN papers p ON p.paper_id = s.vertex
+WHERE s.distance < 1e300
+ORDER BY p.year ASC, s.distance ASC
+LIMIT 6;
+```
+
+| time_cost | year | title |
+|---|---|---|
+| 84 | 1933 | Algebraic Functions |
+| 82 | 1935 | When is a Trigonometric Polynomial Not a Trigonometric Polynomial |
+| 81 | 1936 | Correction to a Note on the Entscheidungsproblem |
+| 81 | 1936 | Toward a Calculus of Concepts |
+| 81 | 1936 | Set-Theoretic Foundations for Logic |
+| 81 | 1936 | A System of Formal Logic without an Analogue to the Curry W. Operator |
+
+Starting from *Attention Is All You Need* (2017), the cheapest reference
+chains reach the 1936 foundations of computability and formal logic at a
+time-cost of 81 years. The `GREATEST(1, …)` clamp keeps weights positive
+(same-year and forward-dated citations cost 1), and the `WHERE` clause drops
+the handful of bogus pre-1900 years in the source data. Unreached vertices
+report an infinite distance, filtered here with `s.distance < 1e300`.
