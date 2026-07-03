@@ -1,8 +1,14 @@
 name: Deploy website
 
-# Build the Docusaurus site in website/ and publish it to GitHub Pages.
-# Served at the apex custom domain https://datafusion.nexus (see
-# website/static/CNAME and website/docusaurus.config.ts).
+# Build the Docusaurus site in website/ and deploy it to Cloudflare Pages
+# (project "datafusion-nexus"), served at the apex custom domain
+# https://datafusion.nexus. The custom domain + TLS are managed in the
+# Cloudflare Pages dashboard, not here. See website/DEPLOY.md.
+#
+# Requires two repository secrets:
+#   CLOUDFLARE_API_TOKEN  - token with "Cloudflare Pages: Edit" permission
+#   CLOUDFLARE_ACCOUNT_ID - the Cloudflare account id
+# Until those are set, the deploy step fails; the build step still validates.
 
 on:
   # Deploy on pushes to main that touch the site (or this workflow).
@@ -14,19 +20,16 @@ on:
   # Allow manual runs from the Actions tab.
   workflow_dispatch:
 
-# Default to read-only; the deploy job elevates to the Pages write scopes it
-# actually needs (actions/deploy-pages recommends job-scoped permissions).
 permissions:
   contents: read
 
-# Never run two deployments concurrently; let an in-flight run finish so a
-# half-published site is never live.
+# Never run two deployments concurrently.
 concurrency:
-  group: pages
+  group: pages-cloudflare
   cancel-in-progress: false
 
 jobs:
-  build:
+  deploy:
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -46,25 +49,12 @@ jobs:
       - name: Build
         run: npm run build
 
-      - name: Upload Pages artifact
-        uses: actions/upload-pages-artifact@v3
+      - name: Deploy to Cloudflare Pages
+        uses: cloudflare/wrangler-action@v3
         with:
-          path: website/build
-          # website/static/.nojekyll lands in build/ as a dotfile; the action
-          # skips hidden files by default, so opt it back in.
-          include-hidden-files: true
-
-  deploy:
-    needs: build
-    runs-on: ubuntu-latest
-    # Only the deploy job needs to write Pages + mint the OIDC token.
-    permissions:
-      pages: write
-      id-token: write
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
-    steps:
-      - name: Deploy to GitHub Pages
-        id: deployment
-        uses: actions/deploy-pages@v4
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          # working-directory scopes wrangler to website/ so build/ resolves.
+          workingDirectory: website
+          command: pages deploy build --project-name=datafusion-nexus --branch=main
+          gitHubToken: ${{ secrets.GITHUB_TOKEN }}

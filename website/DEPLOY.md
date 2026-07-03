@@ -1,75 +1,66 @@
-# Deploying the website to GitHub Pages (custom domain `datafusion.nexus`)
+# Deploying the website to Cloudflare Pages (`datafusion.nexus`)
 
-The `website/` Docusaurus site is built and published to GitHub Pages by
-`.github/workflows/deploy-website.yml` on every push to `main` that touches
-`website/**`. It is served at the apex custom domain **https://datafusion.nexus**
-(Cloudflare-managed DNS).
+The `website/` Docusaurus site is deployed to **Cloudflare Pages** (project
+`datafusion-nexus`) and served at the apex custom domain
+**<https://datafusion.nexus>**. The domain lives in the same Cloudflare account
+that hosts the Pages project, so DNS and TLS are managed entirely in Cloudflare.
 
-## One-time setup (dashboards)
+There are two deploy paths, both live:
 
-Do these once, in order.
+- **Manual** — `wrangler pages deploy` from your machine (fastest for testing).
+- **Automatic** — `.github/workflows/deploy-website.yml` builds and deploys via
+  `cloudflare/wrangler-action` on every push to `main` touching `website/**`
+  (needs the two repository secrets below).
 
-### 1. GitHub → Pages: enable Actions as the source
+## Current state (already done)
 
-Repo → **Settings → Pages**:
+- Pages project `datafusion-nexus` exists (`*.pages.dev`).
+- Custom domain `datafusion.nexus` is attached and **active**, TLS issued by
+  Google Trust Services, `http://` → `https://` redirect in place.
+- Apex DNS: a **proxied (orange-cloud) `CNAME datafusion.nexus →
+  datafusion-nexus.pages.dev`** in the `datafusion.nexus` zone. (Cloudflare
+  Pages custom domains use the orange cloud — the opposite of GitHub Pages.)
 
-- **Build and deployment → Source**: select **GitHub Actions**.
-
-(Do NOT set the custom domain here yet — do it in step 3, after the first
-successful deploy, so the `CNAME` file and the setting agree.)
-
-### 2. Push, and let the workflow run
+## Manual deploy (from your machine)
 
 ```bash
-git push origin main
+cd website
+npm ci                 # first time only
+npm run build          # produces website/build
+npx wrangler pages deploy build --project-name=datafusion-nexus --branch=main
 ```
 
-Watch **Actions → Deploy website**. The first run builds and publishes to the
-`github-pages` environment. When green, the site is live at the default
-`https://morristai.github.io/datafusion-nexus/`-style URL AND already carries the
-`CNAME` file, so GitHub knows the intended custom domain.
+`wrangler` uses your stored login (`npx wrangler login`) or a
+`CLOUDFLARE_API_TOKEN` env var. `--branch=main` publishes to production; any
+other branch name creates a preview deployment at a `*.pages.dev` alias.
 
-### 3. Cloudflare DNS for zone `datafusion.nexus`
+## Automatic deploy (GitHub Actions)
 
-Cloudflare dashboard → zone `datafusion.nexus` → **DNS → Records**. Add:
+The workflow builds Docusaurus then runs
+`wrangler pages deploy build --project-name=datafusion-nexus`. It needs two
+**repository secrets** (Settings → Secrets and variables → Actions):
 
-| Type  | Name  | Target / Content        | Proxy status          |
-|-------|-------|-------------------------|-----------------------|
-| CNAME | `@`   | `morristai.github.io`   | **DNS only (grey)** ← |
-| CNAME | `www` | `morristai.github.io`   | **DNS only (grey)**   |
+| Secret | Value |
+|--------|-------|
+| `CLOUDFLARE_API_TOKEN` | A Cloudflare API token with **Account → Cloudflare Pages → Edit**. Create at My Profile → API Tokens. |
+| `CLOUDFLARE_ACCOUNT_ID` | `YOUR_ACCOUNT_ID` |
 
-Notes:
+Until both secrets exist, the deploy step fails (the build step still runs and
+validates the site). Best set up once the repo has moved to its org, so the
+token and secrets live where the repo does.
 
-- Cloudflare **CNAME flattening** turns the apex `CNAME @` into the correct
-  A/AAAA records automatically — you do NOT need to hardcode GitHub's four
-  Pages IP addresses. (If you ever prefer explicit records instead, use A
-  `185.199.108.153`, `.109.153`, `.110.153`, `.111.153` and their AAAA
-  `2606:50c0:8000::153` … `8003::153`.)
-- **Grey cloud (DNS only) is required initially.** GitHub Pages provisions a
-  Let's Encrypt certificate for `datafusion.nexus` via an HTTP-01 challenge; if
-  Cloudflare proxies (orange cloud) the record before that cert exists, the
-  challenge and TLS fail. Keep it grey until GitHub shows the cert as issued.
+## Custom domain (already configured; for reference / re-creation)
 
-### 4. GitHub → Pages: set + verify the custom domain
+If the domain ever needs re-attaching:
 
-Back in **Settings → Pages**:
+1. Cloudflare dashboard → **Workers & Pages → datafusion-nexus → Custom
+   domains → Set up a custom domain** → `datafusion.nexus`. It offers to create
+   the DNS record automatically.
+2. Or manually, in the `datafusion.nexus` zone → **DNS → Records**: add
+   `CNAME @ → datafusion-nexus.pages.dev`, **Proxied (orange cloud)**.
 
-- **Custom domain**: enter `datafusion.nexus`, Save. GitHub runs a DNS check and
-  begins issuing the TLS certificate (can take a few minutes to ~1 hour).
-- Once the check passes and the cert is issued, tick **Enforce HTTPS**.
-
-### 5. (Optional) Re-enable the Cloudflare proxy
-
-After GitHub shows "certificate issued" and HTTPS is enforced, you MAY switch
-the records to orange-cloud (proxied) for Cloudflare's CDN/caching/DDoS. If you
-do, set Cloudflare **SSL/TLS mode = Full** (not Flexible) to avoid a redirect
-loop. Leaving it grey-cloud is perfectly fine and simplest.
-
-## Ongoing
-
-Edit content under `website/docs/`, push to `main`, and the workflow redeploys.
-The `CNAME` file (`website/static/CNAME`) is copied into every build, so the
-custom domain persists across deploys.
+No `CNAME` file or `.nojekyll` handling is needed — those are GitHub Pages
+concepts and do not apply to Cloudflare Pages.
 
 ## Local preview
 
