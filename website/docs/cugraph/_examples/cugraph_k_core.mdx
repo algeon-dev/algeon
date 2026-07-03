@@ -2,12 +2,12 @@
 
 These examples run on the [citation network demo dataset](../demo-dataset.mdx).
 
-### Extract the conversation backbone — then audit it with SQL
+### Extract the citation backbone and audit it with SQL
 
 Unlike most functions here, `cugraph_k_core` returns **edges**, not scores:
-the subgraph where every remaining vertex keeps at least `k` in-edges *and*
-`k` out-edges. Because the output is reused as an edge relation, materialize it
-in the local workspace; plain SQL can then verify the contract it promises:
+the subgraph where every remaining vertex keeps at least `k` in-edges and `k`
+out-edges. Because the output is reused as an edge relation, materialize it in
+the local workspace; plain SQL can then verify the contract it guarantees:
 
 ```sql
 -- Local workspace materialization; this does not write to lake.citation_network.
@@ -28,9 +28,9 @@ FROM deg;
 |---|---|---|
 | 33,389 | 30 | 30 |
 
-45.6M edges collapse to a 33k-vertex backbone of papers that both cite and
-are cited heavily — and the audit confirms every vertex meets the k=30 floor
-in both directions.
+45.6M edges reduce to a 33k-vertex backbone of papers that both cite and are
+cited heavily, and the audit confirms every vertex meets the k=30 floor in
+both directions.
 
 :::note
 The k-core edge list comes back **symmetrized**: each undirected core edge
@@ -42,7 +42,7 @@ edges). Note also that this per-direction floor is a stricter condition than
 ### Chain it into the next algorithm
 
 The materialized backbone is itself a valid edge relation, so it can feed
-another `cugraph_*` call — a two-stage GPU pipeline held together by a local
+another `cugraph_*` call — a two-stage GPU pipeline connected through a local
 workspace table name:
 
 ```sql

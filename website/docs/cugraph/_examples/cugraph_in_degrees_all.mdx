@@ -2,11 +2,11 @@
 
 This example runs on the [citation network demo dataset](../demo-dataset.mdx).
 
-### In-graph citations vs. what the metadata claims
+### In-graph citations versus reported metadata
 
-`papers.n_citation` is AMiner's global citation count; `in_degree` counts
-only edges present in this corpus. Joining the two measures how much of each
-paper's audience lies *outside* the dataset:
+`papers.n_citation` is AMiner's global citation count; `in_degree` counts only
+edges present in this corpus. Joining the two measures how much of each paper's
+audience lies outside the dataset:
 
 ```sql
 SELECT p.year, d.in_degree AS in_graph, p.n_citation AS reported,

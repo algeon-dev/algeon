@@ -2,13 +2,13 @@
 
 This example runs on the [citation network demo dataset](../demo-dataset.mdx).
 
-### Do citation communities match the field labels?
+### Compare citation communities against field labels
 
-Two views carve out the 2010s AI literature — nodes by field-of-study label,
-edges where **both** endpoints qualify — and Louvain partitions it purely by
-citation structure. Cross-tabulating each community against `primary_fos`
-(with a window function to keep the top 3 labels per community) shows how
-well the labels survive contact with the actual graph:
+Two views select the 2010s AI literature — nodes by field-of-study label,
+edges where **both** endpoints qualify — and Louvain partitions it by citation
+structure alone. Cross-tabulating each community against `primary_fos` (with a
+window function to keep the top 3 labels per community) shows how closely the
+detected communities align with the assigned labels:
 
 ```sql
 CREATE VIEW ai_nodes AS
@@ -57,8 +57,8 @@ ORDER BY members DESC, rn;
 | 3,960 | 2 | Artificial neural network | 337 |
 | 3,960 | 3 | Deep learning | 204 |
 
-Louvain (1,960 communities over 38k papers) recovers real subfield borders:
-a computer-vision community, a sequence-modeling community — and a
+Louvain (1,960 communities over 38k papers) recovers recognizable subfield
+boundaries: a computer-vision community, a sequence-modeling community, and a
 reinforcement-learning community that is 80% one label. Note the quoted
-`"partition"` — the output column name is a SQL keyword. `cugraph_leiden`
-is a drop-in replacement in the same shape.
+`"partition"`, since the output column name is a SQL keyword. `cugraph_leiden`
+is a drop-in replacement with the same call shape.

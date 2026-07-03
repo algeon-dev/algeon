@@ -9,10 +9,10 @@ description: The DBLP / AMiner citation network used by every runnable example i
 The per-algorithm **Examples** in this section all run against one dataset: the
 [DBLP / AMiner Citation Network V12](https://www.kaggle.com/datasets/mathurinache/citation-network-dataset)
 — **4,894,081 papers** connected by **45,564,149 directed citation edges**
-(`src` cites `dst`). It is small enough to fit on one GPU and rich enough to
-ask real questions: every vertex is a paper with a title, year, venue, authors,
-and fields of study, so every algorithm result can be joined back into a
-human-readable story.
+(`src` cites `dst`). It is small enough to fit on one GPU and detailed enough to
+support substantive queries: every vertex is a paper with a title, year, venue,
+authors, and fields of study, so every algorithm result can be joined back to
+human-readable metadata.
 
 The examples were re-run against the local Iceberg REST catalog backed by
 RustFS on a single NVIDIA RTX PRO 6000 (96 GB VRAM). The same SQL can still
@@ -90,12 +90,12 @@ the reproducible path for the website examples.
 ## The two-table pattern
 
 cuGraph functions consume an **edge relation** and return vertex ids. The
-demos lean on one idiom throughout:
+examples follow one pattern throughout:
 
-1. **SQL decides what graph the GPU sees** — a `CREATE VIEW` with joins and
+1. **SQL defines the graph the GPU sees** — a `CREATE VIEW` with joins and
    `WHERE` clauses builds the subgraph (an era, a field, an ego network), and
-   the view name is passed straight to the `cugraph_*` function.
-2. **SQL turns vertex ids back into a story** — the `(vertex, value)` output
+   the view name is passed directly to the `cugraph_*` function.
+2. **SQL turns vertex ids back into results** — the `(vertex, value)` output
    is joined to `papers`, windowed, aggregated, or anti-joined like any table.
 
 ## Seed papers used in the examples

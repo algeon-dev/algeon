@@ -2,11 +2,11 @@
 
 This example runs on the [citation network demo dataset](../demo-dataset.mdx).
 
-### Both directions at once: the hybrid giants
+### In-degree and out-degree in one call
 
 One call returns in-degree and out-degree together, so a compound `WHERE`
-finds papers that are simultaneously heavy citers *and* heavily cited —
-encyclopedic works that anchor a field and survey it at the same time:
+finds papers that are both heavy citers and heavily cited — comprehensive works
+that anchor a field and survey it at the same time:
 
 ```sql
 SELECT d.in_degree, d.out_degree, p.year, p.title

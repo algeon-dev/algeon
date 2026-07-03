@@ -2,13 +2,13 @@
 
 This example runs on the [citation network demo dataset](../demo-dataset.mdx).
 
-### A reading list from a biased walk, filtered by an anti-join
+### Biased walk filtered by an anti-join
 
 Personalized PageRank biases the walk toward seed vertices supplied by a
-relation. Seeding on BERT ranks the papers its intellectual neighborhood
-keeps returning to. The interesting rows are the ones BERT does **not**
-already cite — a `NOT EXISTS` anti-join against the edge table removes the
-direct references, leaving the *hidden* ancestry:
+relation. Seeding on BERT ranks the papers its citation neighborhood returns to
+most often. The rows of interest are the ones BERT does **not** already cite: a
+`NOT EXISTS` anti-join against the edge table removes the direct references,
+leaving the indirect ancestry:
 
 ```sql
 CREATE VIEW bert_seed AS
@@ -39,6 +39,6 @@ LIMIT 8;
 | 0.001872 | 2006 | The PASCAL Recognising Textual Entailment Challenge |
 
 BERT never cites Jelinek's 1975–1983 speech-decoding papers, statistical
-machine translation, or the Penn Treebank — yet the walk finds them two or
+machine translation, or the Penn Treebank, yet the walk reaches them two or
 three references deep. The seed table, the exclusion of the seed itself, and
-the anti-join are all ordinary SQL wrapped around one GPU call.
+the anti-join are all ordinary SQL composed around one GPU call.

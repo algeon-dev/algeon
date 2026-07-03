@@ -2,12 +2,14 @@
 
 These examples run on the [citation network demo dataset](../demo-dataset.mdx).
 
-### Citation loops should not exist — count them anyway
+### Count multi-paper strongly connected components
 
-A citation points backward in time, so a *directed* cycle of citations is a
-small anomaly: two or more papers that all cite each other. SCC finds every
-such loop in one pass. Snapshot the run in the mutable `datafusion.public`
-workspace (labels are per-execution), then census the loops:
+A citation normally points from a newer paper to an older one, so a *directed*
+cycle of citations is an anomaly: two or more papers that cite each other
+directly or transitively. Such a group forms a strongly connected component of
+more than one vertex. SCC finds every component in one pass. Snapshot the run in
+the mutable `datafusion.public` workspace (labels are assigned per execution),
+then count the multi-paper components:
 
 ```sql
 -- Local workspace snapshot; this does not write to lake.citation_network.
@@ -27,12 +29,14 @@ FROM loops;
 |---|---|---|
 | 14,613 | 1,370,029 | 1,404,311 |
 
-The surprise is the giant: **1.37M papers sit inside one strongly connected
-component**. Preprint/journal double versions, simultaneous publication, and
-plain metadata error create enough forward-dated citations to glue a third of
-the graph into one loop — "time travel" is structural in bibliographic data.
+The notable result is the largest component: **1.37M papers sit inside one
+strongly connected component**. Preprint/journal duplicate versions,
+simultaneous publication, and metadata errors introduce enough forward-dated
+citations — a newer paper cited by an older one — to bind roughly a third of the
+graph into a single component. These apparent forward-in-time citations are a
+structural feature of bibliographic data.
 
-### Zoom into the two-paper loops
+### Inspect the two-paper cycles
 
 ```sql
 WITH pairs AS (
@@ -54,6 +58,6 @@ LIMIT 6;
 | 265 | 2018 | DC programming and DCA: thirty years of developments |
 | 265 | 2018 | Convergence Analysis of Difference-of-Convex Algorithm with Subanalytic Data |
 
-12,015 of the 14,613 loops are exactly two papers — same-year companion
-papers and surveys citing each other, exactly what mutual citation looks like
-in practice.
+12,015 of the 14,613 cycles are exactly two papers — same-year companion
+papers and surveys citing each other, the typical form of mutual citation in
+practice.

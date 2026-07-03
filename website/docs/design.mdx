@@ -256,8 +256,9 @@ Do not rename it casually.
 
 ### Why two crates
 
-The split is not cosmetic. `nexus-query-engine` deliberately consumes a closed,
-owned `QueryPlan` instead of DataFusion's open `ExecutionPlan` trait.
+The split is structural, not cosmetic. `nexus-query-engine` deliberately
+consumes a closed, owned `QueryPlan` instead of DataFusion's open
+`ExecutionPlan` trait.
 
 - DataFusion's physical trait changes with DataFusion releases; the engine's IR
   remains a stable native execution contract.

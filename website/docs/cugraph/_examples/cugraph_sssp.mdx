@@ -2,13 +2,12 @@
 
 This example runs on the [citation network demo dataset](../demo-dataset.mdx).
 
-### SQL-derived edge weights: the time-cost of an idea
+### SQL-derived edge weights
 
 The citation edges carry a constant weight, but the weight column handed to
-SSSP can be **computed by SQL**. Joining `papers` on both endpoints prices
-each citation hop at the number of years it jumps back — so SSSP `distance`
-becomes the cumulative "travel through time" along the cheapest reference
-chain:
+SSSP can be **computed by SQL**. Joining `papers` on both endpoints prices each
+citation hop at the number of years it spans, so SSSP `distance` becomes the
+cumulative year span along the cheapest reference chain:
 
 ```sql
 CREATE VIEW edges_time_cost AS

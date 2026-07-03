@@ -2,11 +2,11 @@
 
 This example runs on the [citation network demo dataset](../demo-dataset.mdx).
 
-### How deep does the densest citation core go?
+### Find the densest citation core
 
 Core number measures how deep a vertex sits in recursively denser subgraphs
 (with `degree_type: "in_out"`, degree is in + out). Define the result as a
-workspace view, find the deepest shell, and list who lives there:
+workspace view, find the deepest shell, and list its members:
 
 ```sql
 CREATE VIEW cores AS
@@ -38,6 +38,6 @@ LIMIT 6;
 | 1995 | Support-Vector Networks |
 | 1986 | A Computational Approach to Edge Detection |
 
-The 70-core — 5,913 papers where everyone has at least 70 combined in/out
-edges to everyone else in the shell — is recognizably the machine-learning /
-computer-vision canon.
+The 70-core — 5,913 papers, each with at least 70 combined in/out edges to
+other members of the shell — is recognizably the machine-learning and
+computer-vision literature.

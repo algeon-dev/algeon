@@ -14,7 +14,7 @@
   --ifm-color-primary-lighter: #359962;
   --ifm-color-primary-lightest: #3cad6e;
   --ifm-code-font-size: 95%;
-  --ifm-navbar-background-color: rgba(255, 255, 255, 0.82);
+  --ifm-navbar-background-color: rgba(255, 255, 255, 0.6);
   --docusaurus-highlighted-code-line-bg: rgba(0, 0, 0, 0.1);
 
   --nx-ayu-bg: #0f1419;
@@ -125,7 +125,7 @@
 }
 
 .navbar {
-  background: rgba(255, 255, 255, 0.82);
+  background: rgba(255, 255, 255, 0.6);
   border-bottom: 1px solid rgba(180, 188, 196, 0.42);
   box-shadow: 0 10px 28px rgba(31, 41, 55, 0.08);
   -webkit-backdrop-filter: blur(14px);
@@ -192,6 +192,25 @@
   --ifm-alert-background-color-highlight: rgba(230, 180, 80, 0.18);
   --ifm-alert-foreground-color: var(--nx-ayu-heading);
   --ifm-alert-border-color: var(--nx-ayu-accent);
+}
+
+[data-theme='light'] .footer.footer--dark {
+  background: #f7f8fa;
+  border-top: 1px solid rgba(180, 188, 196, 0.5);
+}
+
+[data-theme='light'] .footer.footer--dark .footer__title {
+  color: #1f2937;
+}
+
+[data-theme='light'] .footer.footer--dark .footer__item,
+[data-theme='light'] .footer.footer--dark .footer__copyright,
+[data-theme='light'] .footer.footer--dark .footer__link-item {
+  color: #4b5563;
+}
+
+[data-theme='light'] .footer.footer--dark .footer__link-item:hover {
+  color: var(--ifm-color-primary-dark);
 }
 
 [data-theme='dark'] .footer,

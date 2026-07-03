@@ -3,12 +3,13 @@
 These examples run on the [citation network demo dataset](../demo-dataset.mdx).
 Edges point `src` → `dst` as "cites"; BFS distance is a hop count.
 
-### Swap two arguments to reverse time: the influence wave
+### Reverse the traversal by swapping two arguments
 
-Following citations *forward* (`'src', 'dst'`) walks into a paper's reference
+Following citations forward (`'src', 'dst'`) walks into a paper's reference
 ancestry. Swapping the two column arguments (`'dst', 'src'`) traverses the
-same edges backwards — who cites me, who cites them — without building any new
-table. From AlexNet (2012), each BFS generation is one wave of influence:
+same edges in the opposite direction — from a paper to the papers that cite it,
+and then their citers — without building a new table. Starting from AlexNet
+(2012), each BFS generation is one hop outward in citing papers:
 
 ```sql
 SELECT b.distance, COUNT(*) AS papers, ROUND(AVG(p.year), 1) AS avg_year
@@ -33,10 +34,10 @@ Three citation generations reach ~151k papers. (The reversed traversal reads
 ### Path mode with a SQL-defined target
 
 `output_mode: "path"` reconstructs the shortest hop chain between the source
-and a target. The target is not a literal — it is a **relation** that must
-resolve to exactly one row, so a `WHERE` clause on `papers` is enough to say
-"the paper titled *Long short-term memory*". How does BERT (2018) descend
-from LSTM (1997)?
+and a target. The target is not a literal; it is a **relation** that must
+resolve to exactly one row, so a `WHERE` clause on `papers` is enough to select
+the paper titled *Long short-term memory*. This query traces the reference path
+from BERT (2018) back to LSTM (1997).
 
 ```sql
 CREATE VIEW lstm_target AS
@@ -63,8 +64,8 @@ Two hops of references separate BERT from LSTM.
 
 Passing `NULL` as the source and pointing `source_vertices_table` at a view
 starts the traversal from every row of a SQL result. Here the three CNN
-classics (AlexNet, VGG, ResNet) form one combined frontier — `distance`
-becomes "hops from the *nearest* founding paper":
+classics (AlexNet, VGG, ResNet) form one combined frontier, so `distance`
+measures hops from the nearest of the three founding papers:
 
 ```sql
 CREATE VIEW cnn_founders AS
