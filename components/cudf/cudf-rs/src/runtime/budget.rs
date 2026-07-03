@@ -1,6 +1,6 @@
 //! Budget tokens for bounded execution boundaries.
 
-use std::borrow::Cow;
+use std::{borrow::Cow, collections::BTreeMap};
 
 use super::{ExecutionOverrides, Runtime};
 use crate::core::{
@@ -86,6 +86,7 @@ pub struct ExecutionBudgetReport {
     output_bytes: Option<usize>,
     output_rows: Option<usize>,
     unresolved_contract: Option<Cow<'static, str>>,
+    context_facts: BTreeMap<String, String>,
 }
 
 impl ExecutionBudgetReport {
@@ -98,6 +99,7 @@ impl ExecutionBudgetReport {
             output_bytes: None,
             output_rows: None,
             unresolved_contract: None,
+            context_facts: BTreeMap::new(),
         }
     }
 
@@ -118,6 +120,16 @@ impl ExecutionBudgetReport {
 
     pub(crate) fn with_unresolved_contract(mut self, unresolved_contract: &'static str) -> Self {
         self.unresolved_contract = Some(Cow::Borrowed(unresolved_contract));
+        self
+    }
+
+    pub(crate) fn with_context_facts<I, K, V>(mut self, facts: I) -> Self
+    where
+        I: IntoIterator<Item = (K, V)>,
+        K: Into<String>,
+        V: ToString,
+    {
+        self.context_facts.extend(facts.into_iter().map(|(key, value)| (key.into(), value.to_string())));
         self
     }
 
@@ -147,6 +159,10 @@ impl ExecutionBudgetReport {
 
     pub fn unresolved_contract(&self) -> Option<&str> {
         self.unresolved_contract.as_deref()
+    }
+
+    pub fn context_facts(&self) -> &BTreeMap<String, String> {
+        &self.context_facts
     }
 }
 

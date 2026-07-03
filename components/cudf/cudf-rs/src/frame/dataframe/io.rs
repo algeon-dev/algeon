@@ -1,4 +1,5 @@
 use std::{
+    collections::BTreeMap,
     path::{Path, PathBuf},
     sync::Arc,
 };
@@ -33,6 +34,83 @@ use crate::{
 
 const PARQUET_SOURCE_DECODED_OUTPUT_PREFLIGHT_CONTRACT_GAP: &str =
     "libcudf_parquet_decoded_output_preflight_unavailable";
+
+fn comma_separated_strings(values: &[String]) -> String {
+    values.join(",")
+}
+
+fn comma_separated_usize(values: &[usize]) -> String {
+    values.iter().map(usize::to_string).collect::<Vec<_>>().join(",")
+}
+
+fn source_column_names<'a>(columns: impl IntoIterator<Item = &'a crate::io::source::SourceOutputColumn>) -> String {
+    columns.into_iter().map(|column| column.name()).collect::<Vec<_>>().join(",")
+}
+
+fn required_column_names<'a>(columns: impl IntoIterator<Item = &'a crate::io::source::SourceRequiredColumn>) -> String {
+    columns.into_iter().map(|column| column.name()).collect::<Vec<_>>().join(",")
+}
+
+fn partition_column_names<'a>(columns: impl IntoIterator<Item = &'a crate::io::source::PartitionColumn>) -> String {
+    columns.into_iter().map(|column| column.name()).collect::<Vec<_>>().join(",")
+}
+
+fn local_parquet_source_kind_str(kind: LocalParquetSourceKind) -> &'static str {
+    match kind {
+        LocalParquetSourceKind::Data => "data",
+        LocalParquetSourceKind::MetadataRowCount => "metadata_row_count",
+    }
+}
+
+fn source_read_mode_str(mode: SourceReadMode) -> &'static str {
+    match mode {
+        SourceReadMode::FinalOutput => "final_output",
+        SourceReadMode::ExecutionFrame => "execution_frame",
+    }
+}
+
+fn parquet_source_budget_context(
+    source: &LocalParquetSource,
+    chunk: &SourceChunk,
+    mode: SourceReadMode,
+) -> BTreeMap<String, String> {
+    let mut facts = BTreeMap::new();
+    facts.insert("source_kind".to_string(), local_parquet_source_kind_str(source.kind()).to_string());
+    facts.insert("source_read_mode".to_string(), source_read_mode_str(mode).to_string());
+    facts.insert("path".to_string(), chunk.path().display().to_string());
+    facts.insert("stable_id".to_string(), chunk.stable_id().to_string());
+    facts.insert("chunk_index".to_string(), chunk.chunk_index().to_string());
+    facts.insert("file_index".to_string(), chunk.file_index().to_string());
+    facts.insert("reads_all_row_groups".to_string(), chunk.reads_all_row_groups().to_string());
+    facts.insert(
+        "selected_row_groups".to_string(),
+        if chunk.reads_all_row_groups() { "all".to_string() } else { comma_separated_usize(chunk.row_group_indexes()) },
+    );
+    if !chunk.reads_all_row_groups() {
+        facts.insert("selected_row_group_count".to_string(), chunk.row_group_indexes().len().to_string());
+    }
+    facts.insert("read_columns".to_string(), comma_separated_strings(chunk.read_columns()));
+    facts.insert("read_column_count".to_string(), chunk.read_columns().len().to_string());
+    facts.insert("projected_columns".to_string(), source_column_names(source.output_columns()));
+    facts.insert("projected_column_count".to_string(), source.output_columns().len().to_string());
+    facts.insert("required_columns".to_string(), required_column_names(source.required_columns()));
+    facts.insert("required_column_count".to_string(), source.required_columns().len().to_string());
+    facts.insert("partition_columns".to_string(), partition_column_names(source.partition_columns()));
+    facts.insert("partition_column_count".to_string(), source.partition_columns().len().to_string());
+    if let Some(known_file_bytes) = chunk.known_file_bytes() {
+        facts.insert("known_file_bytes".to_string(), known_file_bytes.to_string());
+    }
+    if let Some(known_row_group_bytes) = chunk.known_row_group_bytes() {
+        facts.insert("known_row_group_bytes".to_string(), known_row_group_bytes.to_string());
+    }
+    if let Some(estimated_chunk_bytes) = chunk.estimated_chunk_bytes() {
+        facts.insert("estimated_chunk_bytes".to_string(), estimated_chunk_bytes.to_string());
+    }
+    if let Some(known_row_count) = chunk.known_row_count() {
+        facts.insert("known_row_count".to_string(), known_row_count.to_string());
+    }
+    facts
+}
 
 /// Options for [`DataFrame::read_csv_with_options`].
 ///
@@ -942,7 +1020,8 @@ impl DataFrame {
             .with_retained_bytes(output_bytes)
             .with_output_bytes(output_bytes)
             .with_output_rows(output_rows)
-            .with_unresolved_contract(PARQUET_SOURCE_DECODED_OUTPUT_PREFLIGHT_CONTRACT_GAP);
+            .with_unresolved_contract(PARQUET_SOURCE_DECODED_OUTPUT_PREFLIGHT_CONTRACT_GAP)
+            .with_context_facts(parquet_source_budget_context(source, chunk, mode));
 
         Ok(BudgetedExecutionOutcome::new(frame, report))
     }

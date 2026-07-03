@@ -181,6 +181,32 @@ fn test_prepared_scalar_max_execute_with_budget_reports_contract_and_routes_allo
 }
 
 #[test]
+fn test_prepared_scalar_q17_sum_extendedprice_with_budget_reports_current_diagnostics() {
+    let s = crate::common::series::<f64>("l_extendedprice", &[1000.0, 1250.5, 749.5]).unwrap();
+    let prepared = s.prepare_scalar_reduction(ReduceAgg::Sum).unwrap();
+    let token = with_test_runtime(|runtime| {
+        runtime
+            .execution_budget_token(ExecutionBudgetRequest::new(64 * 1024 * 1024).with_boundary("q17_global_sum"))
+            .unwrap()
+    });
+
+    let outcome = prepared.execute_with_budget(&token).unwrap();
+    let output = outcome.value();
+    let report = outcome.report();
+
+    assert_eq!(output.scalar().value::<f64>().unwrap(), 3000.0);
+    assert_eq!(report.request().boundary(), "q17_global_sum");
+    assert_eq!(report.status(), ExecutionBudgetStatus::HardEnforced);
+    assert_eq!(report.output_rows(), Some(1));
+    assert_eq!(report.retained_bytes(), None);
+    assert_eq!(report.output_bytes(), None);
+    assert_eq!(
+        report.unresolved_contract(),
+        Some("libcudf_scalar_reduction_temporary_workspace_preflight_unavailable")
+    );
+}
+
+#[test]
 fn test_prepared_scalar_max_one_byte_budget_preserves_budget_details() {
     let s = crate::common::series::<i32>("x", &[30, 10, 40, 20]).unwrap();
     let prepared = s.prepare_scalar_reduction(ReduceAgg::Max).unwrap();

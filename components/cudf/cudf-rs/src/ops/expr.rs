@@ -265,6 +265,8 @@ pub enum Expr {
     Literal(LitValue),
     /// Element-wise binary operation.
     BinaryOp { lhs: Box<Expr>, op: BinaryOperator, rhs: Box<Expr> },
+    /// Element-wise binary operation with caller-selected output dtype.
+    BinaryOpWithType { lhs: Box<Expr>, op: BinaryOperator, rhs: Box<Expr>, output_type: DataType },
     /// Element-wise unary operation.
     UnaryOp { op: UnaryOperator, input: Box<Expr> },
     /// Cast to a target type.
@@ -396,6 +398,23 @@ impl Expr {
         Expr::BinaryOp { lhs: Box::new(self), op: BinaryOperator::FloorDiv, rhs: Box::new(rhs.into_expr()) }
     }
 
+    /// Element-wise binary operation with an explicit output type.
+    ///
+    /// This is the expression-level counterpart to
+    /// [`Column::binary_op_with_type`](crate::core::Column::binary_op_with_type)
+    /// for callers that need libcudf's `binary_operation(..., output_type)`
+    /// contract instead of cudf-rs inferred output typing. It is useful for
+    /// fixed-point decimal operations where the result scale is a semantic
+    /// requirement of the query plan.
+    pub fn binary_op_with_type(self, rhs: impl IntoExpr, op: BinaryOperator, output_type: impl Into<DataType>) -> Expr {
+        Expr::BinaryOpWithType {
+            lhs: Box::new(self),
+            op,
+            rhs: Box::new(rhs.into_expr()),
+            output_type: output_type.into(),
+        }
+    }
+
     /// Element-wise absolute value.
     pub fn abs(self) -> Expr {
         Expr::UnaryOp { op: UnaryOperator::Abs, input: Box::new(self) }
@@ -506,7 +525,7 @@ impl Expr {
             | Expr::DateTimeOffset { input, .. } => input.output_name(),
             Expr::Reduce { .. } => None,
             // Multi-input or no-source nodes.
-            Expr::BinaryOp { .. } | Expr::Literal(_) | Expr::IfElse { .. } => None,
+            Expr::BinaryOp { .. } | Expr::BinaryOpWithType { .. } | Expr::Literal(_) | Expr::IfElse { .. } => None,
             Expr::InList { input, .. } => input.output_name(),
         }
     }
@@ -550,24 +569,10 @@ impl Expr {
 
             Expr::Literal(lit_val) => ctx.literal(lit_val),
 
-            Expr::BinaryOp { lhs, op, rhs } => {
-                let left = lhs.eval_with_context(ctx)?;
-                let right = rhs.eval_with_context(ctx)?;
-                let (left, right) = align_decimal_binary_storage(left, right, ctx)?;
-                let lv = left.view()?;
-                let rv = right.view()?;
-                let out_type =
-                    binary::infer_binary_output_dtype_in(lv.data_type()?, rv.data_type()?, *op, ctx.operation)?;
-                let col = binary::binary_operation_vv_impl(
-                    &lv,
-                    &rv,
-                    *op,
-                    &out_type,
-                    &ctx.output_domain,
-                    ctx.exec_options(),
-                    ctx.operation,
-                )?;
-                ctx.wrap_column(col)
+            Expr::BinaryOp { lhs, op, rhs } => eval_binary_op_with_context(lhs, *op, rhs, None, ctx),
+
+            Expr::BinaryOpWithType { lhs, op, rhs, output_type } => {
+                eval_binary_op_with_context(lhs, *op, rhs, Some(output_type), ctx)
             },
 
             Expr::UnaryOp { op, input } => {
@@ -816,6 +821,39 @@ impl Expr {
             },
         }
     }
+}
+
+fn eval_binary_op_with_context(
+    lhs: &Expr,
+    op: BinaryOperator,
+    rhs: &Expr,
+    explicit_output_type: Option<&DataType>,
+    ctx: &ExprEvalContext<'_>,
+) -> Result<Series> {
+    let left = lhs.eval_with_context(ctx)?;
+    let right = rhs.eval_with_context(ctx)?;
+    let (left, right) = align_decimal_binary_storage(left, right, ctx)?;
+    let lv = left.view()?;
+    let rv = right.view()?;
+    let inferred_out_type;
+    let out_type = match explicit_output_type {
+        Some(output_type) => output_type,
+        None => {
+            inferred_out_type =
+                binary::infer_binary_output_dtype_in(lv.data_type()?, rv.data_type()?, op, ctx.operation)?;
+            &inferred_out_type
+        },
+    };
+    let col = binary::binary_operation_vv_impl(
+        &lv,
+        &rv,
+        op,
+        out_type,
+        &ctx.output_domain,
+        ctx.exec_options(),
+        ctx.operation,
+    )?;
+    ctx.wrap_column(col)
 }
 
 fn align_decimal_binary_storage(left: Series, right: Series, ctx: &ExprEvalContext<'_>) -> Result<(Series, Series)> {

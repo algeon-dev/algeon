@@ -120,6 +120,45 @@ fn test_groupby_agg_with_budget_applies_token_reports_output_and_matches_agg() {
 }
 
 #[test]
+fn test_groupby_q17_avg_quantity_with_budget_reports_current_diagnostics() {
+    let partkeys = column_from_slice(&[10i32, 20, 10, 20, 30]).unwrap();
+    let quantities = column_from_slice(&[4.0f64, 10.0, 8.0, 30.0, 5.0]).unwrap();
+    let df = crate::common::dataframe_from_columns(
+        vec!["l_partkey".to_string(), "l_quantity".to_string()],
+        vec![partkeys, quantities],
+    )
+    .unwrap();
+    let specs = [AggSpec::new("l_quantity", GroupByAgg::Mean)];
+    let token = with_test_runtime(|runtime| {
+        runtime
+            .execution_budget_token(ExecutionBudgetRequest::new(64 * 1024 * 1024).with_boundary("q17_grouped_avg"))
+            .unwrap()
+    });
+
+    let outcome = df.groupby(["l_partkey"]).agg_with_budget(&specs, &token).unwrap();
+    let result = outcome.value();
+    let report = outcome.report();
+
+    let key_data = result.series("l_partkey").unwrap().to_vec_strict::<i32>().unwrap();
+    let mean_data = result.series("l_quantity_mean").unwrap().to_vec_strict::<f64>().unwrap();
+    let mut pairs: Vec<(i32, f64)> = key_data.into_iter().zip(mean_data).collect();
+    pairs.sort_by_key(|&(key, _)| key);
+
+    assert_eq!(pairs, vec![(10, 6.0), (20, 20.0), (30, 5.0)]);
+    assert_eq!(report.request().boundary(), "q17_grouped_avg");
+    assert_eq!(report.status(), ExecutionBudgetStatus::HardEnforced);
+    assert_eq!(report.output_rows(), Some(result.num_rows()));
+    let output_bytes = report.output_bytes().expect("groupby report should observe post-execution output bytes");
+    let retained_bytes = report.retained_bytes().expect("groupby report should observe post-execution retained bytes");
+    assert!(output_bytes > 0, "groupby output bytes are observed after execution, not preflighted");
+    assert!(retained_bytes > 0, "groupby retained bytes are observed after execution, not preflighted");
+    assert_eq!(
+        report.unresolved_contract(),
+        Some("libcudf_groupby_aggregate_temporary_workspace_preflight_unavailable")
+    );
+}
+
+#[test]
 fn test_groupby_agg_with_budget_reports_exceeded_budget_details() {
     let keys = column_from_slice(&[1i32, 2, 1, 2]).unwrap();
     let vals = column_from_slice(&[10i64, 20, 30, 40]).unwrap();

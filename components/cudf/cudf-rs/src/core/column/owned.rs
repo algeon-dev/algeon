@@ -1152,7 +1152,8 @@ impl Column {
         .map_err(|e| {
             e.reanchor("column::binary_op_with_type")
                 .with_detail("operator", op.name())
-                .with_detail("output_type_id", format!("{:?}", output_type.id()).to_lowercase())
+                .with_detail("output_type_id", output_type.id().to_string())
+                .with_detail("output_type_scale", output_type.scale().to_string())
         })
     }
 
@@ -1337,7 +1338,8 @@ impl Column {
         .map_err(|e| {
             e.reanchor("column::binary_op_scalar_with_type")
                 .with_detail("operator", op.name())
-                .with_detail("output_type_id", format!("{:?}", output_type.id()).to_lowercase())
+                .with_detail("output_type_id", output_type.id().to_string())
+                .with_detail("output_type_scale", output_type.scale().to_string())
         })
     }
 

@@ -15,12 +15,15 @@ use arrow::{
     record_batch::RecordBatch,
 };
 use cudf::{
-    DataFrame, DataType, ErrorCode, ErrorKind, ExecutionOverrides, Runtime, Series, StringSliceOptions,
-    TimestampResolution, TypeId,
+    DataFrame, DataType, ErrorCode, ErrorKind, ExecutionBudgetRequest, ExecutionOverrides, Runtime, Series,
+    StringSliceOptions, TimestampResolution, TypeId,
     core::error::{FactKeyName, FactValue},
-    ops::expr::{
-        Expr, col, lit, lit_decimal32_raw, lit_decimal64_raw, lit_decimal128_raw, lit_duration_raw, lit_null,
-        lit_timestamp_raw, when,
+    ops::{
+        binary::BinaryOperator,
+        expr::{
+            Expr, col, lit, lit_decimal32_raw, lit_decimal64_raw, lit_decimal128_raw, lit_duration_raw, lit_null,
+            lit_timestamp_raw, when,
+        },
     },
 };
 use rapids_interop::{ColumnLayout, DataType as InteropDataType, Placement};
@@ -56,6 +59,25 @@ fn decimal128_df_from_arrow(name: &str, values: Vec<Option<i128>>, precision: u8
     let amount = Decimal128Array::from(values).with_precision_and_scale(precision, scale).unwrap();
     let schema = Schema::new(vec![Field::new(name, ArrowDataType::Decimal128(precision, scale), true)]);
     let batch = RecordBatch::try_new(Arc::new(schema), vec![Arc::new(amount)]).unwrap();
+    let runtime = Runtime::builder().build().unwrap();
+    DataFrame::from_record_batch(&runtime, &batch).unwrap()
+}
+
+fn decimal128_pair_df_from_arrow(
+    left_name: &str,
+    left_values: Vec<Option<i128>>,
+    right_name: &str,
+    right_values: Vec<Option<i128>>,
+    precision: u8,
+    scale: i8,
+) -> DataFrame {
+    let left = Decimal128Array::from(left_values).with_precision_and_scale(precision, scale).unwrap();
+    let right = Decimal128Array::from(right_values).with_precision_and_scale(precision, scale).unwrap();
+    let schema = Schema::new(vec![
+        Field::new(left_name, ArrowDataType::Decimal128(precision, scale), true),
+        Field::new(right_name, ArrowDataType::Decimal128(precision, scale), true),
+    ]);
+    let batch = RecordBatch::try_new(Arc::new(schema), vec![Arc::new(left), Arc::new(right)]).unwrap();
     let runtime = Runtime::builder().build().unwrap();
     DataFrame::from_record_batch(&runtime, &batch).unwrap()
 }
@@ -127,6 +149,15 @@ fn host_export_i128_values(series: &Series) -> Vec<i128> {
         .chunks_exact(std::mem::size_of::<i128>())
         .map(|chunk| i128::from_ne_bytes(chunk.try_into().unwrap()))
         .collect()
+}
+
+fn assert_arrow_decimal128_column(frame: &DataFrame, name: &str, expected_raw_values: &[i128], scale: i8) {
+    let batch = frame.select([name]).unwrap().to_record_batch().unwrap();
+    assert_eq!(*batch.schema().field(0).data_type(), ArrowDataType::Decimal128(38, scale));
+    let values = batch.column(0).as_any().downcast_ref::<Decimal128Array>().unwrap();
+    assert_eq!(values.precision(), 38);
+    assert_eq!(values.scale(), scale);
+    assert_eq!(values.values().as_ref(), expected_raw_values);
 }
 
 fn assert_output_name(expr: Expr, expected: Option<&str>) {
@@ -352,6 +383,61 @@ fn div_col_col() {
     let df = xy_df();
     // cuDF integer division: 10/1=10, 20/2=10, 30/3=10
     assert_eq!(eval_i32((col("x") / col("y")).alias("quot"), &df), vec![10, 10, 10]);
+}
+
+#[test]
+fn binary_expr_decimal128_div_with_explicit_type_preserves_fractional_scale() {
+    let df = decimal128_pair_df_from_arrow(
+        "numerator",
+        vec![Some(100_000_000), Some(100_000_000)],
+        "denominator",
+        vec![Some(400_000_000), Some(200_000_000)],
+        38,
+        8,
+    );
+    let output_type = DataType::fixed_point(TypeId::Decimal128, -8);
+
+    let ratio = col("numerator")
+        .binary_op_with_type(col("denominator"), BinaryOperator::Div, output_type)
+        .alias("ratio")
+        .eval(&df)
+        .unwrap();
+
+    assert_eq!(ratio.dtype().unwrap(), output_type);
+    assert_eq!(host_export_i128_values(&ratio), vec![25_000_000, 50_000_000]);
+
+    let ratio_frame = DataFrame::from_series([("ratio", ratio)]).unwrap();
+    assert_arrow_decimal128_column(&ratio_frame, "ratio", &[25_000_000, 50_000_000], 8);
+}
+
+#[test]
+fn with_columns_with_budget_decimal128_div_with_explicit_type_materializes_fractional_arrow_output() {
+    let df = decimal128_pair_df_from_arrow(
+        "numerator",
+        vec![Some(100_000_000), Some(300_000_000)],
+        "denominator",
+        vec![Some(400_000_000), Some(600_000_000)],
+        38,
+        8,
+    );
+    let output_type = DataType::fixed_point(TypeId::Decimal128, -8);
+    let token = Runtime::builder()
+        .build()
+        .unwrap()
+        .execution_budget_token(ExecutionBudgetRequest::new(64 * 1024 * 1024).with_boundary("decimal_div_expr"))
+        .unwrap();
+
+    let outcome = df
+        .with_columns_with_budget(
+            [("ratio", col("numerator").binary_op_with_type(col("denominator"), BinaryOperator::Div, output_type))],
+            &token,
+        )
+        .unwrap();
+    let result = outcome.value();
+
+    assert_eq!(outcome.report().request().boundary(), "decimal_div_expr");
+    assert_eq!(result.series("ratio").unwrap().dtype().unwrap(), output_type);
+    assert_arrow_decimal128_column(result, "ratio", &[25_000_000, 50_000_000], 8);
 }
 
 #[test]

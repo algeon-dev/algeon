@@ -223,6 +223,7 @@ fn lower_expr(
         },
         Expr::Literal(literal) => lower_literal(df, literal, lowered, operation),
         Expr::BinaryOp { lhs, op, rhs } => lower_binary_expr(df, lhs, *op, rhs, lowered, operation),
+        Expr::BinaryOpWithType { .. } => unsupported_predicate(operation, expr_kind(expr)),
         Expr::UnaryOp { op, input } => lower_unary_expr(df, *op, input, lowered, operation),
         Expr::IsNull(input) => lower_is_null_expr(df, input, lowered, operation),
         Expr::IsNotNull(input) => {
@@ -581,6 +582,7 @@ fn expr_kind(expr: &Expr) -> &'static str {
         Expr::Column(_) => "column",
         Expr::Literal(_) => "literal",
         Expr::BinaryOp { .. } => "binary_op",
+        Expr::BinaryOpWithType { .. } => "binary_op_with_type",
         Expr::UnaryOp { .. } => "unary_op",
         Expr::Cast { .. } => "cast",
         Expr::IsNull(_) => "is_null",

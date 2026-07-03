@@ -1,8 +1,47 @@
 //! Tests for Column-level arithmetic, comparison, and scalar operations.
 
-use cudf::{DataType, Series, TypeId, ops::binary::BinaryOperator, testing::prelude::*};
+use std::sync::Arc;
+
+use arrow::{
+    array::Decimal128Array,
+    datatypes::{DataType as ArrowDataType, Field, Schema},
+    record_batch::RecordBatch,
+};
+use cudf::{
+    DataFrame, DataType, Runtime, Series, TypeId,
+    ops::binary::{self, BinaryOperator},
+    testing::prelude::*,
+};
 
 use crate::common::{column_from_slice, column_from_slice_nullable, column_from_strs, host_export_i64_values, scalar};
+
+fn decimal128_pair_df_from_arrow(
+    left_name: &str,
+    left_values: Vec<Option<i128>>,
+    right_name: &str,
+    right_values: Vec<Option<i128>>,
+    precision: u8,
+    scale: i8,
+) -> DataFrame {
+    let left = Decimal128Array::from(left_values).with_precision_and_scale(precision, scale).unwrap();
+    let right = Decimal128Array::from(right_values).with_precision_and_scale(precision, scale).unwrap();
+    let schema = Schema::new(vec![
+        Field::new(left_name, ArrowDataType::Decimal128(precision, scale), true),
+        Field::new(right_name, ArrowDataType::Decimal128(precision, scale), true),
+    ]);
+    let batch = RecordBatch::try_new(Arc::new(schema), vec![Arc::new(left), Arc::new(right)]).unwrap();
+    let runtime = Runtime::builder().build().unwrap();
+    DataFrame::from_record_batch(&runtime, &batch).unwrap()
+}
+
+fn assert_arrow_decimal128_column(frame: &DataFrame, name: &str, expected_raw_values: &[i128], scale: i8) {
+    let batch = frame.select([name]).unwrap().to_record_batch().unwrap();
+    assert_eq!(*batch.schema().field(0).data_type(), ArrowDataType::Decimal128(38, scale));
+    let values = batch.column(0).as_any().downcast_ref::<Decimal128Array>().unwrap();
+    assert_eq!(values.precision(), 38);
+    assert_eq!(values.scale(), scale);
+    assert_eq!(values.values().as_ref(), expected_raw_values);
+}
 
 // ---------------------------------------------------------------------------
 // Arithmetic methods on Column
@@ -114,6 +153,80 @@ fn test_column_binary_op_with_type() {
     let rv = result.testing_view().unwrap();
     assert_eq!(rv.data_type().unwrap().id(), TypeId::Int64);
     assert_eq!(rv.to_vec::<i64>().unwrap(), vec![11, 22, 33]);
+}
+
+#[test]
+fn test_column_decimal128_div_binary_op_with_type_preserves_fractional_arrow_output() {
+    let df = decimal128_pair_df_from_arrow(
+        "numerator",
+        vec![Some(100_000_000), Some(300_000_000)],
+        "denominator",
+        vec![Some(400_000_000), Some(600_000_000)],
+        38,
+        8,
+    );
+    let output_type = DataType::fixed_point(TypeId::Decimal128, -8);
+
+    let result = df
+        .series("numerator")
+        .unwrap()
+        .as_column()
+        .binary_op_with_type(df.series("denominator").unwrap().as_column(), BinaryOperator::Div, &output_type)
+        .unwrap();
+    let result = Series::from_column(result).unwrap();
+
+    assert_eq!(result.dtype().unwrap(), output_type);
+    let result = DataFrame::from_series([("ratio", result)]).unwrap();
+    assert_arrow_decimal128_column(&result, "ratio", &[25_000_000, 50_000_000], 8);
+}
+
+#[test]
+fn test_column_decimal128_div_scalar_binary_op_with_type_preserves_fractional_arrow_output() {
+    let df = decimal128_pair_df_from_arrow(
+        "numerator",
+        vec![Some(100_000_000), Some(300_000_000)],
+        "unused",
+        vec![Some(1), Some(1)],
+        38,
+        8,
+    );
+    let scalar = Runtime::builder().build().unwrap().decimal128_raw_scalar(400_000_000, -8).unwrap();
+    let output_type = DataType::fixed_point(TypeId::Decimal128, -8);
+
+    let result = df
+        .series("numerator")
+        .unwrap()
+        .as_column()
+        .binary_op_scalar_with_type(&scalar, BinaryOperator::Div, &output_type)
+        .unwrap();
+    let result = Series::from_column(result).unwrap();
+
+    assert_eq!(result.dtype().unwrap(), output_type);
+    let result = DataFrame::from_series([("ratio", result)]).unwrap();
+    assert_arrow_decimal128_column(&result, "ratio", &[25_000_000, 75_000_000], 8);
+}
+
+#[test]
+fn test_scalar_decimal128_div_column_binary_operation_with_type_preserves_fractional_arrow_output() {
+    let df = decimal128_pair_df_from_arrow(
+        "unused",
+        vec![Some(1), Some(1)],
+        "denominator",
+        vec![Some(400_000_000), Some(200_000_000)],
+        38,
+        8,
+    );
+    let scalar = Runtime::builder().build().unwrap().decimal128_raw_scalar(100_000_000, -8).unwrap();
+    let output_type = DataType::fixed_point(TypeId::Decimal128, -8);
+    let denominator = df.series("denominator").unwrap();
+    let denominator = denominator.as_column().testing_view().unwrap();
+
+    let result = binary::binary_operation_sv(&scalar, &denominator, BinaryOperator::Div, &output_type).unwrap();
+    let result = Series::from_column(result).unwrap();
+
+    assert_eq!(result.dtype().unwrap(), output_type);
+    let result = DataFrame::from_series([("ratio", result)]).unwrap();
+    assert_arrow_decimal128_column(&result, "ratio", &[25_000_000, 50_000_000], 8);
 }
 
 #[test]

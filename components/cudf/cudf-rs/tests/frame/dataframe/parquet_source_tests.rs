@@ -237,6 +237,18 @@ fn read_parquet_source_chunk_with_budget_uses_token_allocator_and_reports_observ
     assert_eq!(report.retained_bytes(), Some(expected_output_bytes));
     assert_eq!(report.output_bytes(), Some(expected_output_bytes));
     assert_eq!(report.unresolved_contract(), Some(PARQUET_SOURCE_DECODED_OUTPUT_PREFLIGHT_CONTRACT_GAP));
+    assert_eq!(report.context_facts().get("source_kind").map(String::as_str), Some("data"));
+    assert_eq!(report.context_facts().get("source_read_mode").map(String::as_str), Some("final_output"));
+    assert_eq!(report.context_facts().get("stable_id").map(String::as_str), Some("budgeted"));
+    assert_eq!(report.context_facts().get("chunk_index").map(String::as_str), Some("0"));
+    assert_eq!(report.context_facts().get("file_index").map(String::as_str), Some("0"));
+    assert_eq!(report.context_facts().get("reads_all_row_groups").map(String::as_str), Some("true"));
+    assert_eq!(report.context_facts().get("selected_row_groups").map(String::as_str), Some("all"));
+    assert_eq!(report.context_facts().get("read_columns").map(String::as_str), Some("id"));
+    assert_eq!(report.context_facts().get("read_column_count").map(String::as_str), Some("1"));
+    assert_eq!(report.context_facts().get("projected_columns").map(String::as_str), Some("id"));
+    assert_eq!(report.context_facts().get("projected_column_count").map(String::as_str), Some("1"));
+    assert!(report.context_facts().get("path").is_some_and(|path| path.ends_with("budgeted_source.parquet")));
     assert!(expected_output_bytes > 0);
 }
 
@@ -675,6 +687,60 @@ fn read_parquet_source_chunk_with_budget_string_output_keeps_preflight_unresolve
     assert_eq!(report.output_rows(), Some(3));
     assert!(report.output_bytes().unwrap() > 0);
     assert_eq!(report.unresolved_contract(), Some(PARQUET_SOURCE_DECODED_OUTPUT_PREFLIGHT_CONTRACT_GAP));
+}
+
+#[test]
+fn source_contract_keeps_decoded_output_preflight_unresolved_with_source_estimates() {
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("source_contract.parquet");
+    let rt = sample_runtime();
+
+    if !write_pyarrow_i32_parquet_with_row_groups(&path, &[10, 20, 30, 40], 2) {
+        return;
+    }
+
+    let source = LocalParquetSource::data(
+        [LocalParquetFile::new(&path, "source-contract", [])
+            .unwrap()
+            .with_file_size_bytes(4_096)
+            .with_row_groups(Some(vec![1]))
+            .with_row_group_metadata(vec![1_024, 2_048], vec![2, 2])
+            .unwrap()],
+        SourceSchema::new([SourceColumn::new("id", dtype(TypeId::Int32), false).unwrap()]).unwrap(),
+        ["id"],
+        [SourceOutputColumn::new("id", SourceColumnRef::ReadColumn(0)).unwrap()],
+        [],
+        [],
+    )
+    .unwrap();
+    let plan = plan_local_parquet_source_chunks(&source, Default::default()).unwrap();
+    let chunk = &plan.chunks()[0];
+    let token = rt
+        .execution_budget_token(ExecutionBudgetRequest::new(64 * 1024 * 1024).with_boundary("estimated_source_read"))
+        .unwrap();
+
+    assert!(plan.row_group_metadata_available());
+    assert!(!plan.size_estimate_based());
+    assert_eq!(chunk.row_group_indexes(), &[1]);
+    assert_eq!(chunk.known_file_bytes(), Some(4_096));
+    assert_eq!(chunk.known_row_group_bytes(), Some(2_048));
+    assert_eq!(chunk.estimated_chunk_bytes(), Some(2_048));
+    assert_eq!(chunk.known_row_count(), Some(2));
+
+    let outcome =
+        DataFrame::read_parquet_source_chunk_with_budget(&rt, &source, chunk, SourceReadMode::FinalOutput, &token)
+            .unwrap();
+
+    assert_eq!(outcome.value().series("id").unwrap().to_vec_strict::<i32>().unwrap(), vec![30, 40]);
+    assert_eq!(outcome.report().request().boundary(), "estimated_source_read");
+    assert_eq!(outcome.report().unresolved_contract(), Some(PARQUET_SOURCE_DECODED_OUTPUT_PREFLIGHT_CONTRACT_GAP));
+    assert_eq!(outcome.report().context_facts().get("reads_all_row_groups").map(String::as_str), Some("false"));
+    assert_eq!(outcome.report().context_facts().get("selected_row_groups").map(String::as_str), Some("1"));
+    assert_eq!(outcome.report().context_facts().get("selected_row_group_count").map(String::as_str), Some("1"));
+    assert_eq!(outcome.report().context_facts().get("known_file_bytes").map(String::as_str), Some("4096"));
+    assert_eq!(outcome.report().context_facts().get("known_row_group_bytes").map(String::as_str), Some("2048"));
+    assert_eq!(outcome.report().context_facts().get("estimated_chunk_bytes").map(String::as_str), Some("2048"));
+    assert_eq!(outcome.report().context_facts().get("known_row_count").map(String::as_str), Some("2"));
 }
 
 #[test]
