@@ -8,14 +8,3 @@ error[E0432]: unresolved imports `cudf::Codebook`, `cudf::DictionaryEncodingOpti
   |            |         |                          no `DictionaryKeyOrder` in the root
   |            |         no `DictionaryEncodingOptions` in the root
   |            no `Codebook` in the root
-  |
-  = help: consider importing this struct instead:
-          cudf::frame::factorization::Codebook
-  = help: consider importing this struct instead:
-          cudf::frame::factorization::DictionaryEncodingOptions
-  = help: consider importing this enum instead:
-          cudf::frame::factorization::DictionaryKeyOrder
-  = help: consider importing this struct instead:
-          cudf::frame::factorization::EncodedSeries
-  = help: consider importing this struct instead:
-          cudf::frame::factorization::Factorized

@@ -3,7 +3,7 @@
 //! Facts are machine-readable values that downstreams match on for policy.
 //!
 //! - Each `FactKeyName` binds to exactly one `FactValue` variant; the pairing
-//!   is enforced at the writer-API type layer via `FactKey<T>`.
+//!   is enforced at the writer-API type layer via [`FactKey<T>`].
 //! - Duplicate insertion is a programmer error and is rejected in all build
 //!   profiles — `debug_assert!` is explicitly *not* acceptable.
 //! - Public downstream API is read-only. Internal writers use the typed

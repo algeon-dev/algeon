@@ -550,7 +550,13 @@ impl Scalar {
         self.domain.debug_stream_value()
     }
     pub(crate) fn __debug_rebind_execution_domain_explicit(mut self, identity: u64) -> Result<Self> {
-        self.domain = ExecutionDomain::debug_explicit(identity)?;
+        let target = ExecutionDomain::debug_explicit(identity)?;
+        ExecutionDomain::insert_stream_dependency(
+            &self.domain,
+            &target,
+            "scalar::__debug_rebind_execution_domain_explicit",
+        )?;
+        self.domain = target;
         Ok(self)
     }
 

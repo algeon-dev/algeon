@@ -60,9 +60,7 @@ impl DataFrame {
     ///
     /// Empty input is the logical identity and returns `self.clone()`.
     pub fn filter_all<I>(&self, predicates: I) -> Result<Self>
-    where
-        I: IntoIterator<Item = Expr>,
-    {
+    where I: IntoIterator<Item = Expr> {
         let mut predicates = predicates.into_iter();
         let Some(mut combined) = predicates.next() else {
             return Ok(self.clone());
@@ -81,9 +79,7 @@ impl DataFrame {
     ///
     /// Empty input returns an empty DataFrame with the same schema.
     pub fn filter_any<I>(&self, predicates: I) -> Result<Self>
-    where
-        I: IntoIterator<Item = Expr>,
-    {
+    where I: IntoIterator<Item = Expr> {
         let mut predicates = predicates.into_iter();
         let Some(mut combined) = predicates.next() else {
             return self.empty_with_same_schema();
@@ -100,9 +96,7 @@ impl DataFrame {
     }
 
     pub(crate) fn filter_all_in_context<I>(&self, predicates: I, ctx: &ExecutionOverrides<'_>) -> Result<Self>
-    where
-        I: IntoIterator<Item = Expr>,
-    {
+    where I: IntoIterator<Item = Expr> {
         let mut predicates = predicates.into_iter();
         let Some(mut combined) = predicates.next() else {
             return Ok(self.clone());
@@ -115,9 +109,7 @@ impl DataFrame {
     }
 
     pub(crate) fn filter_any_in_context<I>(&self, predicates: I, ctx: &ExecutionOverrides<'_>) -> Result<Self>
-    where
-        I: IntoIterator<Item = Expr>,
-    {
+    where I: IntoIterator<Item = Expr> {
         let mut predicates = predicates.into_iter();
         let Some(mut combined) = predicates.next() else {
             let output_domain = ctx.resolve_output_domain(&self.domain)?;

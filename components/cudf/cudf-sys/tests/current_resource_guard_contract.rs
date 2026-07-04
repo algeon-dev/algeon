@@ -12,6 +12,7 @@ const EXPECTED_GUARDS: &[&str] = &[
     "filter::apply_boolean_mask",
     "filter::row_predicate_final_apply_boolean_mask",
     "groupby::aggregate",
+    "groupby::scan",
     "io_csv::write_csv",
     "io_json::write_json",
     "io_parquet::write_parquet",
@@ -65,6 +66,7 @@ const EXPECTED_GUARDS: &[&str] = &[
     "sorting::stable_sort_by_key",
     "stream_compaction::distinct",
     "stream_compaction::drop_nulls",
+    "strings::concatenate",
     "strings::like",
     "strings::slice",
 ];
@@ -168,6 +170,7 @@ fn classify_allowed_guard(file_name: &str, context: &str) -> Option<&'static str
         "groupby.cpp" if context.contains("cudf::groupby::groupby gb(*keys_view, null_policy)") => {
             Some("groupby::aggregate")
         },
+        "groupby.cpp" if context.contains("cudf::groupby::scan_request") => Some("groupby::scan"),
         "io_csv.cpp" if context.contains("cudf::io::write_csv(options, exec.stream)") => Some("io_csv::write_csv"),
         "io_json.cpp" if context.contains("cudf::io::write_json(options, exec.stream)") => Some("io_json::write_json"),
         "io_parquet.cpp" if context.contains("cudf::io::write_parquet(options, exec.stream)") => {
@@ -346,6 +349,7 @@ fn classify_allowed_guard(file_name: &str, context: &str) -> Option<&'static str
             Some("stream_compaction::distinct")
         },
         "stream_compaction.cpp" if context.contains("cudf::drop_nulls(") => Some("stream_compaction::drop_nulls"),
+        "strings.cpp" if context.contains("cudf::strings::concatenate(") => Some("strings::concatenate"),
         "strings.cpp" if context.contains("cudf::strings::like(") => Some("strings::like"),
         "strings.cpp" if context.contains("cudf::strings::slice_strings(") => Some("strings::slice"),
         _ => None,

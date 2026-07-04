@@ -14,6 +14,8 @@ mod dataframe_filter_expr_tests;
 mod dataframe_filter_sort_tests;
 #[path = "../ops/groupby/dataframe_group_cumcount_tests.rs"]
 mod dataframe_group_cumcount_tests;
+#[path = "../ops/groupby/dataframe_group_scan_tests.rs"]
+mod dataframe_group_scan_tests;
 #[path = "../ops/groupby/dataframe_groupby_tests.rs"]
 mod dataframe_groupby_tests;
 #[path = "../ops/filter/dataframe_high_level_filter_tests.rs"]

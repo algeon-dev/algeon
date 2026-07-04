@@ -11,7 +11,9 @@ use crate::{
     frame::series::Series,
     internal::{hash::FastIndexMap, resolve::resolve_column_names, temp_table::TempTableView},
     ops::{
+        groupby::{GroupByScanRequest, NullPolicy, groupby_scan_sorted},
         join::MergeOptions,
+        reduction::ScanAgg,
         sorting::{self, SortOptions},
         stream_compaction::DuplicateKeepOption,
     },
@@ -508,6 +510,15 @@ impl DataFrame {
         self.sort_values([column], SortOptions::new())?.head(n)
     }
 
+    /// Return zero-based `Int32` row positions aligned to the current frame order.
+    pub fn row_positions(&self) -> Result<Series> {
+        Series::from_column(crate::core::column::position_sequence_in_domain(
+            self.row_count,
+            &self.domain,
+            "dataframe::row_positions",
+        )?)
+    }
+
     /// Return a zero-based per-group row number for already-sorted rows.
     pub fn group_cumcount<I, S>(&self, keys: I) -> Result<Series>
     where
@@ -548,5 +559,39 @@ impl DataFrame {
 
         let rank = aligned.series(&row_idx_name)?.sub(&aligned.series(&group_start_name)?)?;
         Ok(rank)
+    }
+
+    /// Return a per-group inclusive cumulative scan for already group-sorted rows.
+    ///
+    /// Rows with equal `keys` must be contiguous and in the desired scan order.
+    /// The returned series is row-aligned to this frame.
+    pub fn group_scan_sorted<I, S>(&self, keys: I, value: &str, agg: ScanAgg) -> Result<Series>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        let operation = "dataframe::group_scan_sorted";
+        let keys: SmallVec<[String; SORT_KEY_INLINE_CAPACITY]> =
+            keys.into_iter().map(|key| key.as_ref().to_string()).collect();
+        require_non_empty_group_keys(keys.len(), operation)?;
+
+        let key_refs: SmallVec<[&str; SORT_KEY_INLINE_CAPACITY]> = keys.iter().map(|key| key.as_str()).collect();
+        let key_indices = resolve_column_names(&self.columns, &key_refs, operation)?;
+        let value_indices = resolve_column_names(&self.columns, &[value], operation)?;
+        let value_column = self.columns.get_index(value_indices[0]).ok_or_else(|| {
+            error::invariant_violation(operation, "resolved scan value index should always remain valid")
+                .with_fact(FACT_COLUMN_INDEX, value_indices[0])
+        })?;
+
+        let keys_table = crate::internal::resolve::build_borrowed_table_view_from_columns(&self.columns, &key_indices)?;
+        let value_view = value_column.1.view()?;
+        let aggregations = [agg];
+        let requests = [GroupByScanRequest { values: &value_view, aggregations: &aggregations }];
+        let mut output = groupby_scan_sorted(keys_table.table(), &requests, NullPolicy::Include)?;
+        let result = output.results.pop().and_then(|mut columns| columns.pop()).ok_or_else(|| {
+            error::invariant_violation(operation, "grouped scan returned no result column")
+                .with_detail("requested_aggregations", "1")
+        })?;
+        Series::from_column(result)
     }
 }
