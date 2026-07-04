@@ -49,7 +49,11 @@ const config: Config = {
           sidebarPath: './sidebars.ts',
           editUrl: `${GITHUB_URL}/tree/main/website/`,
         },
-        blog: false,
+        blog: {
+          routeBasePath: 'blog',
+          editUrl: `${GITHUB_URL}/tree/main/website/blog/`,
+          showReadingTime: false,
+        },
         theme: {
           customCss: './src/css/custom.css',
         },
@@ -72,7 +76,7 @@ const config: Config = {
         indexDocs: true,
         // Match `docs.routeBasePath` above (docs are served at the site root).
         docsRouteBasePath: '/',
-        indexBlog: false, // blog is disabled in this site
+        indexBlog: true,
         indexPages: false, // docs-only site; do not index standalone pages
         highlightSearchTermsOnTargetPage: true,
       },
@@ -101,6 +105,11 @@ const config: Config = {
           sidebarId: 'docsSidebar',
           position: 'right',
           label: 'Docs',
+        },
+        {
+          to: '/blog',
+          label: 'Blog',
+          position: 'right',
         },
         {
           href: GITHUB_URL,

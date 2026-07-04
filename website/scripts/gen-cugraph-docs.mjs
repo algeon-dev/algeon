@@ -263,7 +263,7 @@ function renderSchemas(spec) {
     const rows = rs.schemas[mode].fields.map(f => [code(f.name), code(f.data_type), f.nullable ? 'yes' : 'no', cell(fieldDescs[f.name] || '')]);
     out += table(['Column', 'Type', 'Nullable', 'Description'], rows) + '\n';
   }
-  out += `\n:::note\nThese are the generic registry schemas. Run [\`cugraph_validate_call\`](../../discovery-and-validation.mdx#cugraph_validate_call) for the concrete, table-specific output schema of a particular call.\n:::\n`;
+  out += `\n:::note[Concrete schemas are call-specific]\nThese are the generic registry schemas. Run [\`cugraph_validate_call\`](../../discovery-and-validation.mdx#cugraph_validate_call) for the concrete, table-specific output schema of a particular call.\n:::\n`;
   return out;
 }
 
@@ -324,6 +324,7 @@ function renderPage(spec) {
     '',
     '## Validate before running',
     '',
+    ':::tip[Dry-run first]',
     'Always dry-run a call before executing it. Validation checks the function, table, columns, dtypes, and options without touching the GPU:',
     '',
     '```sql',
@@ -331,6 +332,7 @@ function renderPage(spec) {
     '```',
     '',
     `See [Discovery & validation](../../discovery-and-validation.mdx) for the full \`cugraph_validate_call\` contract.`,
+    ':::',
   ].join('\n');
 }
 

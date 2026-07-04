@@ -8,62 +8,42 @@ import {StackDiagram, SystemDiagram} from '@site/src/components/design/Diagram';
 
 # Design
 
-<div className="nx-design-lede">
-  <div className="nx-design-lede-copy">
-    DataFusion Nexus is a <strong>DataFusion-native integration layer</strong>.
-    DataFusion keeps SQL parsing, logical planning, physical planning, catalogs,
-    DataFrame APIs, and CPU execution. Nexus adds opt-in cuDF execution,
-    SQL-visible cuGraph algorithms, Iceberg/lakehouse source handling, and
-    structured diagnostics around that DataFusion session.
-  </div>
-  <ul>
-    <li><strong>For users:</strong> the GPU path is an implementation detail behind ordinary DataFusion or Flight SQL APIs.</li>
-    <li><strong>For developers:</strong> every native decision must be local, reportable, and backed by an adapter or engine contract.</li>
-    <li><strong>Non-goals:</strong> Nexus is not a separate SQL engine, does not accept Substrait plans, and does not implement single-query cross-GPU execution.</li>
-  </ul>
-</div>
+DataFusion Nexus is a **DataFusion-native integration layer**. DataFusion keeps
+SQL parsing, logical planning, physical planning, catalogs, DataFrame APIs, and
+CPU execution. Nexus adds opt-in cuDF execution, SQL-visible cuGraph algorithms,
+Iceberg/lakehouse source handling, and structured diagnostics around that
+DataFusion session.
+
+- **For users:** the GPU path is an implementation detail behind ordinary DataFusion or Flight SQL APIs.
+- **For developers:** every native decision must be local, reportable, and backed by an adapter or engine contract.
+- **Non-goals:** Nexus is not a separate SQL engine, does not accept Substrait plans, and does not implement single-query cross-GPU execution.
 
 ## Read this if
 
-<div className="nx-design-grid nx-design-grid-four nx-design-audience">
-  <div className="nx-design-card">
-    <h3>Backend integrator</h3>
-    <div className="nx-design-card-copy">Start with <a href="#integration-surfaces">Integration surfaces</a> and <a href="#session-wiring">Session wiring</a>. Nexus should fit inside your service boundary, not replace it.</div>
-  </div>
-  <div className="nx-design-card">
-    <h3>Flight SQL operator</h3>
-    <div className="nx-design-card-copy">Read <a href="#lakehouse-and-workspace-boundary">Lakehouse and workspace boundary</a>, then use server config and diagnostics as the deployment contract.</div>
-  </div>
-  <div className="nx-design-card">
-    <h3>Graph SQL user</h3>
-    <div className="nx-design-card-copy">Jump to <a href="#cugraph-sql-path">cuGraph SQL path</a>. Discover and validate calls before running GPU graph work.</div>
-  </div>
-  <div className="nx-design-card">
-    <h3>Native contributor</h3>
-    <div className="nx-design-card-copy">Use <a href="#layering-and-ownership">Layering and ownership</a> and <a href="#developer-checklist">Developer checklist</a> to route code changes.</div>
-  </div>
-</div>
+- **Backend integrator:** Start with [Integration surfaces](#integration-surfaces)
+  and [Session wiring](#session-wiring). Nexus should fit inside your service
+  boundary, not replace it.
+- **Flight SQL operator:** Read
+  [Lakehouse and workspace boundary](#lakehouse-and-workspace-boundary), then
+  use server config and diagnostics as the deployment contract.
+- **Graph SQL user:** Jump to [cuGraph SQL path](#cugraph-sql-path). Discover
+  and validate calls before running GPU graph work.
+- **Native contributor:** Use [Layering and ownership](#layering-and-ownership)
+  and [Developer checklist](#developer-checklist) to route code changes.
 
 ## The design contract
 
-<div className="nx-design-grid nx-design-grid-four">
-  <div className="nx-design-card">
-    <h3>DataFusion stays in charge</h3>
-    <div className="nx-design-card-copy">SQL, catalogs, physical planning, and CPU-readable fallback remain stock DataFusion. GPU-only table-format leaves fail planning if native lowering cannot consume them.</div>
-  </div>
-  <div className="nx-design-card">
-    <h3>The adapter translates</h3>
-    <div className="nx-design-card-copy"><code>src/</code> recognizes DataFusion physical shapes, lowers supported candidates into <code>QueryPlan</code>, and exposes reports.</div>
-  </div>
-  <div className="nx-design-card">
-    <h3>The engine owns native execution</h3>
-    <div className="nx-design-card-copy"><code>crates/nexus-query-engine</code> has no DataFusion dependency. It owns the IR, capability analysis, execution-time context, and executor.</div>
-  </div>
-  <div className="nx-design-card">
-    <h3>RAPIDS capability belongs below</h3>
-    <div className="nx-design-card-copy">Missing GPU APIs, memory hooks, device interop, or graph contracts belong in <code>cudf-rs</code> / <code>cugraph-rs</code>, not adapter workarounds.</div>
-  </div>
-</div>
+- **DataFusion stays in charge:** SQL, catalogs, physical planning, and
+  CPU-readable fallback remain stock DataFusion. GPU-only table-format leaves
+  fail planning if native lowering cannot consume them.
+- **The adapter translates:** `src/` recognizes DataFusion physical shapes,
+  lowers supported candidates into `QueryPlan`, and exposes reports.
+- **The engine owns native execution:** `crates/nexus-query-engine` has no
+  DataFusion dependency. It owns the IR, capability analysis, execution-time
+  context, and executor.
+- **RAPIDS capability belongs below:** Missing GPU APIs, memory hooks, device
+  interop, or graph contracts belong in `cudf-rs` / `cugraph-rs`, not adapter
+  workarounds.
 
 ## Integration surfaces
 
@@ -75,9 +55,11 @@ import {StackDiagram, SystemDiagram} from '@site/src/components/design/Diagram';
 | Iceberg/lakehouse sources | You need Iceberg catalog tables to lower into native table-format scan facts while workspace views stay mutable. | `src/table_format/` |
 | Reports and errors | You need stable evidence for admission, fallback, runtime, graph validation, source access, and failures. | `src/report.rs`, `src/native_report/`, `src/error.rs` |
 
+:::note[cuGraph is optional for embedded sessions]
 The embedded entry point is intentionally small. The cuGraph line is available
 only when the crate is built with `--features cugraph`; omit it for a pure
 relational/Iceberg session.
+:::
 
 ```rust
 let state = SessionStateBuilder::new()
@@ -87,12 +69,14 @@ let state = SessionStateBuilder::new()
     .build();
 ```
 
+:::note[Fallback policy boundary]
 `GpuPreferred` means "use native execution where it is proven supported."
 Rejected CPU-readable candidates are reported and left on DataFusion's CPU
 path. GPU-only table-format scan leaves are different: they are metadata-only
 planning leaves with no CPU Arrow reader, so the leaf guard turns a surviving
 leaf into a structured planning error. `GpuOnly` turns the first native rejection
 into a planning error.
+:::
 
 ### Feature gates
 
@@ -122,7 +106,7 @@ planner inside the adapter.
     {
       id: 'df', lane: 'host', col: 0,
       kind: 'upstream', name: 'DataFusion', note: 'SQL -> physical plan', tone: 'plan',
-      sub: '../datafusion',
+      sub: 'datafusion',
       detail: <>DataFusion owns SQL, logical and physical planning, catalogs,
         and the CPU operators. Nexus participates through session wiring, not
         by replacing the frontend.</>,
@@ -182,12 +166,14 @@ planner inside the adapter.
   table-format leaves, fails before execution with a stable reason code.</>}
 />
 
+:::warning[Runtime failures do not fall back]
 Fallback is a planning-time boundary. If a CPU-readable candidate is rejected,
 DataFusion keeps the CPU plan. If a GPU-only table-format leaf survives native
 planning, the leaf guard fails planning before a placeholder CPU execution path
 can run. Once `NativeCudfExec` or `NativeCudfComposedExec` starts, native
 runtime failures surface as structured errors and metrics; Nexus does not
 silently reroute that already-started native fragment back to CPU.
+:::
 
 ## Session wiring
 
@@ -201,8 +187,10 @@ part of the operable design.
 | `datafusion_nexus_native` | After DataFusion's default rules, before the leaf guard | Run final native lowering, fallback policy, fragment composition, and report capture while DataFusion can still validate the rewritten tree. |
 | `datafusion_nexus_table_format_gpu_only_leaf_guard` | Immediately before `SanityCheckPlan` | Fail fast when a GPU-only table-format leaf survived native planning and would otherwise reach a CPU operator. |
 
+:::warning[Public optimizer rule name]
 The public rule name `datafusion_nexus_native` is also the deduplication key.
 Do not rename it casually.
+:::
 
 ## Layering and ownership
 
@@ -211,7 +199,7 @@ Do not rename it casually.
   nodes={[
     {
       kind: 'upstream', name: 'DataFusion', note: 'SQL · planner · CPU operators', tone: 'plan',
-      sub: '../datafusion',
+      sub: 'datafusion',
       detail: <>Nexus consumes DataFusion physical-plan and
         <code>ExecutionPlan</code> APIs. SQL parsing, catalog resolution, and
         CPU execution remain upstream behavior.</>,
@@ -236,7 +224,7 @@ Do not rename it casually.
     {
       kind: 'bindings', name: 'cudf-rs / cugraph-rs', note: 'safe Rust over RAPIDS', tone: 'gpu',
       boundary: 'FFI / C ABI boundary',
-      sub: '../cudf-rs · ../cugraph-rs',
+      sub: 'cudf · cugraph',
       detail: <>The binding crates own RAII device memory, runtime and stream
         invariants, RAPIDS interop contracts, structured FFI errors, and missing
         low-level capability. Fix GPU foundations here first.</>,
@@ -280,7 +268,7 @@ The current `PlanNode` variants are `Source`, `Filter`, `Projection`,
 | Support a new DataFusion physical shape | `src/native/normalize.rs`, `src/native/lowering/`, `src/native/validate*` | Planning reports and fallback reasons |
 | Add native IR or executor behavior | `crates/nexus-query-engine/src/plan`, `expr`, `source`, `exec` | Engine contract tests and metrics |
 | Admit a bounded compiled shape | `crates/nexus-query-engine/src/capability`, `pipeline`, `exec/bounded` | Strict/adaptive diagnostics; no family-name shortcuts |
-| Improve GPU memory, streams, source readers, or graph interop | `../cudf-rs`, `../cugraph-rs`, `rapids-interop` | Binding crate API and FFI error mapping |
+| Improve GPU memory, streams, source readers, or graph interop | `cudf`, `cugraph`, `rapids-interop` crates | Binding crate API and FFI error mapping |
 | Change public evidence | `src/native_report/`, `src/native_exec/metrics.rs`, `src/error.rs` | Public surface schema/version constants |
 
 ## Admission and execution evidence
@@ -306,14 +294,18 @@ builds the native `ExecutionContext` at the DataFusion/native boundary. The
 engine context then owns execution-time memory control, boundary policy,
 reservation, cache, source scheduling, and retry evidence.
 
+:::warning[Keep strict and adaptive evidence separate]
 Strict and adaptive bounded execution are separate by design. Do not project
 adaptive memory-history rows into strict reports, and do not treat strict
 preflight gaps as adapter-side estimates. Unresolved strict gaps are lower-level
 `cudf-rs` / `libcudf` contract work.
+:::
 
+:::note[Aggregate state is explicit]
 Aggregates follow the same rule: state must be explicit in the engine. AVG is
 partial `SUM + COUNT`, final merge, then final projection; unsupported lookalikes
 stay rejected until their state semantics are modeled and tested.
+:::
 
 ## cuGraph SQL path
 
@@ -412,8 +404,11 @@ keeps these concerns separate:
   workspace, including graph edge views built over source tables.
 - The Flight SQL server can expose a workspace overlay so users get short names
   without teaching a read-only Iceberg catalog to accept views.
-- Iceberg/Glue/S3 is feature-gated behind `--features iceberg`; tests must not
-  require a real AWS account.
+
+:::note[Iceberg feature gate and test boundary]
+Iceberg/Glue/S3 is feature-gated behind `--features iceberg`; tests must not
+require a real AWS account.
+:::
 
 ## Developer checklist
 
@@ -435,6 +430,6 @@ Use this page as the routing table before changing behavior:
   serialization rules.
 - `docs/guide/architecture-internals.md` for the module-by-module extension
   checklist.
-- `Cargo.toml` for feature gates and sibling path dependencies.
+- `Cargo.toml` for feature gates and dependency declarations.
 - `src/native_report/schema.rs`, `src/native_exec/metrics.rs`, and
   `src/error.rs` for stable report, metric, and error contracts.

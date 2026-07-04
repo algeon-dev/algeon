@@ -235,7 +235,7 @@
 }
 
 /* Inline code tokens are identifiers — never break them across lines
-   (e.g. `../cugraph-rs` splitting at the hyphen). Long tokens move to the
+   (e.g. `cugraph_validate_call` splitting at the underscore). Long tokens move to the
    next line whole; tables already scroll horizontally when needed. */
 .markdown :not(pre) > code {
   white-space: nowrap;
@@ -345,6 +345,7 @@
   --nx-design-bridge: #7e8f00;  /* nexus-query-engine — halfway to the GPU */
   --nx-design-gpu: #5e9400;     /* cudf-rs / libcudf / CUDA — NVIDIA green */
   --nx-design-graph: #1f8b4d;   /* cugraph, one step off the cuDF green */
+  --nx-design-lake: #2e7cb4;    /* Iceberg lakehouse blue */
 
   --nx-dg-mono: var(--ifm-font-family-monospace);
   --nx-dg-radius: 10px;
@@ -376,123 +377,29 @@
   --nx-design-bridge: #b5c400;  /* yellow-green hand-off */
   --nx-design-gpu: #76b900;     /* NVIDIA green */
   --nx-design-graph: #2fb56b;   /* cugraph emerald */
+  --nx-design-lake: #5fb3e4;    /* Iceberg lakehouse blue */
 }
 
-/* ===========================================================================
- * Design page content system
- * ---------------------------------------------------------------------------
- * Dense, developer-facing blocks used only by website/docs/design.mdx.
- * ======================================================================== */
-.nx-design-lede {
-  margin: 0 0 1.9rem;
-  padding: 1rem 1.1rem;
-  border: 1px solid var(--nx-dg-border);
-  border-left: 3px solid var(--nx-design-nexus);
-  border-radius: 8px;
-  background:
-    linear-gradient(90deg, color-mix(in srgb, var(--nx-design-nexus) 8%, transparent), transparent 42%),
-    var(--nx-dg-surface);
-}
-
-.nx-design-lede-copy {
-  margin: 0;
-  font-size: 1rem;
-  line-height: 1.7;
-  text-wrap: pretty;
-}
-
-.nx-design-lede ul {
-  display: grid;
-  gap: 0.45rem;
-  margin: 0.9rem 0 0;
-  padding-left: 1.1rem;
-}
-
-.nx-design-lede li {
-  margin: 0;
-}
-
-.nx-design-grid {
-  display: grid;
-  gap: 0.75rem;
-  margin: 1rem 0 1.5rem;
-}
-
-@media (min-width: 760px) {
-  .nx-design-grid-four {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-}
-
-@media (min-width: 1180px) {
-  .nx-design-grid-four {
-    grid-template-columns: repeat(4, minmax(0, 1fr));
-  }
-}
-
-.nx-design-card {
-  min-width: 0;
-  padding: 0.78rem 0.9rem;
-  border: 1px solid var(--nx-dg-border);
-  border-radius: 8px;
-  background: var(--nx-dg-surface);
-}
-
-.nx-design-card h3 {
-  margin: 0 0 0.38rem;
-  font-size: 0.86rem;
-  line-height: 1.25;
-  color: var(--nx-dg-fg);
-}
-
-.nx-design-card-copy {
-  margin: 0;
-  font-size: 0.8rem;
-  line-height: 1.55;
-  color: var(--nx-dg-fg-muted);
-  text-wrap: pretty;
-}
-
-.nx-design-card code {
-  white-space: normal;
-  overflow-wrap: anywhere;
-}
-
-.nx-design-audience .nx-design-card {
-  border-top: 2px solid var(--nx-design-df);
-}
-
-.nx-design-audience .nx-design-card:nth-child(2) {
-  border-top-color: var(--nx-design-nexus);
-}
-
-.nx-design-audience .nx-design-card:nth-child(3) {
-  border-top-color: var(--nx-design-graph);
-}
-
-.nx-design-audience .nx-design-card:nth-child(4) {
-  border-top-color: var(--nx-design-bridge);
-}
-
-.nx-design-lede ~ table {
+/* Design page table sizing. */
+.theme-doc-markdown.markdown:has(h1#design) table {
   font-size: 0.88rem;
 }
 
 @media (max-width: 996px) {
-  .theme-doc-markdown.markdown:has(.nx-design-lede) {
+  .theme-doc-markdown.markdown:has(h1#design) {
     min-width: 0;
     overflow-x: clip;
   }
 
-  .markdown .nx-design-lede ~ table {
+  .theme-doc-markdown.markdown:has(h1#design) table {
     display: block;
     max-width: 100%;
     overflow-x: auto;
   }
 
-  .markdown .nx-design-lede ~ table th,
-  .markdown .nx-design-lede ~ table td,
-  .markdown .nx-design-lede ~ table code {
+  .theme-doc-markdown.markdown:has(h1#design) table th,
+  .theme-doc-markdown.markdown:has(h1#design) table td,
+  .theme-doc-markdown.markdown:has(h1#design) table code {
     overflow-wrap: anywhere;
     white-space: normal;
   }

@@ -30,8 +30,10 @@ decides whether DataFusion Nexus should first make the SQL edge relation match
 Python cuGraph edge-list construction semantics, or pass the relation directly
 to the lower-level libcugraph construction path.
 
+:::tip[Prefer Python-compatible construction]
 Use `python_cugraph` unless you have a specific reason to bypass Python-style
 edge normalization.
+:::
 
 | Policy | Best use | What happens |
 | --- | --- | --- |
@@ -54,6 +56,7 @@ construction:
   the last row in stable input order for each `(src, dst)` pair; undirected
   weighted graphs keep the minimum weight after reverse-edge expansion.
 
+:::note[Edge normalization and null handling]
 The optimizer may skip the physical `EdgeNormalize` operator even when the
 selected policy is `python_cugraph`, but only when it can prove the input edge
 source is already canonical for the requested `directed` and edge-column shape.
@@ -62,6 +65,7 @@ With either construction policy, source and destination nulls are not valid
 graph edges and are dropped before libcugraph receives the edge list. Null
 weights or edge ids only drop rows when the planned algorithm actually consumes
 that column.
+:::
 
 ## How to set it
 

@@ -16,7 +16,9 @@ that matches how you want to run graph queries:
   and run SQL in-process. Best when graph analytics are one stage of a larger
   backend.
 
+:::note[cuGraph needs both feature gate and GPU]
 Both paths require a build with the `cugraph` feature and a CUDA-capable GPU.
+:::
 
 ## Option A — Standalone Flight SQL server
 
@@ -140,6 +142,7 @@ NEXUS_SERVER_WORKSPACE_BACKING_SCHEMA=citation_network \
 NEXUS_SERVER_WORKSPACE_BACKING_ALIASES=citation_edges,citation_edges_by_dst,papers,paper_authors,paper_fos
 ```
 
+:::note[Keep DDL in the workspace]
 With the overlay, `SELECT * FROM citation_edges LIMIT 10` resolves through to
 `lake.citation_network.citation_edges`, and
 `CREATE VIEW target_edges AS ...` writes to `datafusion.public`. CTAS snapshots
@@ -150,9 +153,15 @@ Keep `DATAFUSION_CATALOG_DEFAULT_CATALOG=datafusion` and
 `DATAFUSION_CATALOG_DEFAULT_SCHEMA=public` when the backing Iceberg catalog is
 read-only. If the default catalog/schema points directly at Iceberg, interactive
 DDL is routed to that read-only source catalog and may fail.
+:::
 
+:::note[AWS Glue needs real cloud setup]
 AWS Glue uses the same catalog contract, but it requires an AWS account,
-warehouse bucket, and credentials. A condensed Glue configuration looks like:
+warehouse bucket, and credentials. The local REST configuration above remains
+the reproducible website path.
+:::
+
+A condensed Glue configuration looks like:
 
 ```bash
 NEXUS_ICEBERG_CATALOG_KIND=glue \
@@ -187,15 +196,15 @@ Output formats: `--output table` (default, shows column headers), `json`, `csv`,
 
 ## Option B — Embed as a library
 
-Add the crate as a path or git dependency with the `cugraph` feature, then build
-a DataFusion `SessionContext` that has both the native cudf optimizer rule and
-the cuGraph table functions registered.
+Add the dependencies with the `cugraph` feature, then build a DataFusion
+`SessionContext` that has both the native cudf optimizer rule and the cuGraph
+table functions registered.
 
 ```toml
 # Cargo.toml
 [dependencies]
-datafusion = { path = "../datafusion/datafusion/core" }
-datafusion-nexus = { path = "../datafusion-nexus", features = ["cugraph"] }
+datafusion = "54"
+datafusion-nexus = { version = "0.2", features = ["cugraph"] }
 ```
 
 ```rust

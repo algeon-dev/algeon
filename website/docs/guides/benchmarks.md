@@ -13,4 +13,6 @@ count, iteration count, source cache policy, and source chunk profile.
 # canonical recipes and fixture layout.
 ```
 
-> This page is a scaffold. Wire in the real benchmark recipes here.
+:::note[Scaffold]
+This page is a scaffold. Wire in the real benchmark recipes here.
+:::
