@@ -55,6 +55,7 @@ const EXPECTED_GUARDS: &[&str] = &[
     "join::mixed_join_size_data_materialize_pair_indices",
     "join::mixed_join_size_data_materialize_single_indices",
     "join::mixed_single_side_join_indices",
+    "partitioning::hash_partition",
     "replace::replace_nulls_policy",
     "sorting::is_sorted",
     "sorting::sort",
@@ -304,6 +305,14 @@ fn classify_allowed_guard(file_name: &str, context: &str) -> Option<&'static str
         },
         "join.cpp" if context.contains("hash_join->inner_join_size(*probe_view, exec.stream)") => {
             Some("join::hash_join_size")
+        },
+        "partitioning.cpp"
+            if context.contains("cudf::hash_partition(")
+                && context.contains("cudf::hash_id::HASH_MURMUR3")
+                && context.contains("exec.stream,")
+                && context.contains("exec.mr") =>
+        {
+            Some("partitioning::hash_partition")
         },
         "replace.cpp" if context.contains("cudf::replace_nulls(*view, rp, exec.stream, exec.mr)") => {
             Some("replace::replace_nulls_policy")

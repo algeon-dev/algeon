@@ -120,6 +120,22 @@ extern "C" {
         options: *const cudf_exec_options_t,
     ) -> cudf_status_t;
 
+    /// Row-wise concatenate string columns with an empty separator. Null inputs
+    /// are replaced with empty strings.
+    pub fn cudf_strings_concatenate(
+        columns: *const cudf_column_view_handle,
+        num_columns: i32,
+        out: *mut cudf_column_handle,
+    ) -> cudf_status_t;
+
+    /// Row-wise concatenate string columns with explicit execution context.
+    pub fn cudf_strings_concatenate_ex(
+        columns: *const cudf_column_view_handle,
+        num_columns: i32,
+        out: *mut cudf_column_handle,
+        options: *const cudf_exec_options_t,
+    ) -> cudf_status_t;
+
     /// Strip characters from one or both sides of each string.
     pub fn cudf_strings_strip(
         input: cudf_column_view_handle,

@@ -22,6 +22,7 @@
 #include "io.h"
 #include "join.h"
 #include "memory_resource.h"
+#include "partitioning.h"
 #include "reduction.h"
 #include "replace.h"
 #include "scalar.h"

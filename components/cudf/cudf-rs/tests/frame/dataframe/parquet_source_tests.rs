@@ -718,6 +718,46 @@ fn read_parquet_source_chunk_with_budget_reports_exceeded_budget_facts() {
 }
 
 #[test]
+fn read_parquet_source_chunk_minimum_hard_budget_covers_tiny_data_read() {
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("minimum_budget.parquet");
+    let rt = sample_runtime();
+
+    write_parquet_df(&path, &["id"], vec![column_from_slice(&[10i32, 20]).unwrap()], 0);
+
+    let source = LocalParquetSource::data(
+        [LocalParquetFile::new(&path, "minimum-budget", []).unwrap()],
+        SourceSchema::new([SourceColumn::new("id", dtype(TypeId::Int32), false).unwrap()]).unwrap(),
+        ["id"],
+        [SourceOutputColumn::new("id", SourceColumnRef::ReadColumn(0)).unwrap()],
+        [],
+        [],
+    )
+    .unwrap();
+    let plan = plan_local_parquet_source_chunks(&source, Default::default()).unwrap();
+    let token = rt
+        .execution_budget_token(
+            ExecutionBudgetRequest::new(DataFrame::minimum_parquet_source_read_budget_bytes())
+                .with_boundary("source_read_minimum"),
+        )
+        .unwrap();
+
+    let outcome = DataFrame::read_parquet_source_chunk_with_budget(
+        &rt,
+        &source,
+        &plan.chunks()[0],
+        SourceReadMode::FinalOutput,
+        &token,
+    )
+    .unwrap();
+
+    assert_eq!(outcome.value().series("id").unwrap().to_vec_strict::<i32>().unwrap(), vec![10, 20]);
+    assert_eq!(outcome.report().request().boundary(), "source_read_minimum");
+    assert_eq!(outcome.report().request().budget_bytes(), DataFrame::minimum_parquet_source_read_budget_bytes());
+    assert_eq!(outcome.report().unresolved_contract(), Some(PARQUET_SOURCE_DECODED_OUTPUT_PREFLIGHT_CONTRACT_GAP));
+}
+
+#[test]
 fn read_parquet_source_chunk_with_budget_string_output_keeps_preflight_unresolved() {
     let dir = TempDir::new().unwrap();
     let path = dir.path().join("string_budgeted_source.parquet");

@@ -31,7 +31,7 @@
 //!
 //! During [`Expr::eval`] or [`Expr::eval_in`], each literal is materialized as
 //! a device-resident [`Scalar`] in the resolved output execution domain, then
-//! broadcast into a newly allocated device [`Column`] with
+//! broadcast into a newly allocated device [`Column`](crate::core::Column) with
 //! the input [`DataFrame`] row count. The returned [`Series`] owns that new
 //! column and retains the resolved provenance: by default the input frame's
 //! stream and memory resource, or the same-device borrowed stream and memory
@@ -289,6 +289,8 @@ pub enum Expr {
     Reduce { input: Box<Expr>, agg: ReduceAgg },
     /// String operation.
     StringOp { input: Box<Expr>, op: StringOperator },
+    /// Row-wise string concatenation. Null inputs contribute empty strings.
+    StringConcat(Vec<Expr>),
     /// Datetime component extraction.
     DateTimeComponent { input: Box<Expr>, component: DatetimeComponent },
     /// Calendrical timestamp offset with month, day, and nanosecond fields.
@@ -523,7 +525,7 @@ impl Expr {
             | Expr::StringOp { input, .. }
             | Expr::DateTimeComponent { input, .. }
             | Expr::DateTimeOffset { input, .. } => input.output_name(),
-            Expr::Reduce { .. } => None,
+            Expr::Reduce { .. } | Expr::StringConcat(_) => None,
             // Multi-input or no-source nodes.
             Expr::BinaryOp { .. } | Expr::BinaryOpWithType { .. } | Expr::Literal(_) | Expr::IfElse { .. } => None,
             Expr::InList { input, .. } => input.output_name(),
@@ -752,6 +754,8 @@ impl Expr {
                 ctx.wrap_column(col)
             },
 
+            Expr::StringConcat(inputs) => eval_string_concat(inputs, ctx),
+
             Expr::DateTimeComponent { input, component } => {
                 let series = input.eval_with_context(ctx)?;
                 let cv = series.view()?;
@@ -853,6 +857,24 @@ fn eval_binary_op_with_context(
         ctx.exec_options(),
         ctx.operation,
     )?;
+    ctx.wrap_column(col)
+}
+
+fn eval_string_concat(inputs: &[Expr], ctx: &ExprEvalContext<'_>) -> Result<Series> {
+    if inputs.is_empty() {
+        return Err(Error::new_with(
+            ErrorCode::EmptyInput,
+            ctx.operation,
+            "string concat expression requires at least one input",
+        ));
+    }
+    if inputs.len() == 1 {
+        return inputs[0].eval_with_context(ctx);
+    }
+    let series = inputs.iter().map(|input| input.eval_with_context(ctx)).collect::<Result<Vec<_>>>()?;
+    let views = series.iter().map(Series::view).collect::<Result<Vec<_>>>()?;
+    let view_refs = views.iter().collect::<Vec<_>>();
+    let col = strings::concatenate_impl(&view_refs, ctx.operation)?;
     ctx.wrap_column(col)
 }
 
@@ -1301,6 +1323,14 @@ pub fn lit<L: IntoLit>(value: L) -> Expr {
 /// resolved execution domain.
 pub fn lit_null(dtype: impl Into<DataType>) -> Expr {
     Expr::Literal(LitValue::null(dtype.into()))
+}
+
+/// Row-wise concatenate string expressions with an empty separator.
+///
+/// Null input values contribute empty strings. At least one input expression is
+/// required; a single input is returned unchanged during evaluation.
+pub fn concat(inputs: Vec<Expr>) -> Expr {
+    Expr::StringConcat(inputs)
 }
 
 /// Create a `DECIMAL32` literal from its raw fixed-point representation.

@@ -414,13 +414,13 @@ mod join_hash_join_execution_tests {
     }
 
     #[test]
-    fn hash_join_pre_build_reservation_rejects_nullable_string_build_key() {
+    fn hash_join_pre_build_reservation_matches_nullable_string_build_key() {
         let build_keys = Table::from_columns(vec![
             column_from_strs_nullable(&["alpha", "null-payload", "omega"], &[true, false, true]).unwrap(),
         ])
         .unwrap();
 
-        assert_hash_join_pre_build_invalid_argument(
+        assert_hash_join_pre_build_matches_built_size(
             &build_keys,
             HashJoinOptions::new().null_equality(NullEquality::Equal),
         );

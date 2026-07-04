@@ -250,6 +250,7 @@ fn lower_expr(
         | Expr::Scan { .. }
         | Expr::Reduce { .. }
         | Expr::StringOp { .. }
+        | Expr::StringConcat(_)
         | Expr::DateTimeComponent { .. }
         | Expr::DateTimeOffset { .. }
         | Expr::InList { .. }
@@ -594,6 +595,7 @@ fn expr_kind(expr: &Expr) -> &'static str {
         Expr::Scan { .. } => "scan",
         Expr::Reduce { .. } => "reduce",
         Expr::StringOp { .. } => "string_op",
+        Expr::StringConcat(_) => "string_concat",
         Expr::DateTimeComponent { .. } => "datetime_component",
         Expr::DateTimeOffset { .. } => "datetime_offset",
         Expr::InList { .. } => "in_list",
