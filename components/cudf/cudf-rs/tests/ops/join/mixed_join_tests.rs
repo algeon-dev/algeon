@@ -577,28 +577,28 @@ fn dataframe_mixed_full_join_size_data_materializes_existing_indices_contract() 
 
 #[test]
 fn dataframe_mixed_full_join_size_data_begin_and_materialize_in_use_borrowed_handles() {
+    // libcudf binds mixed full join retained size data to the stream that built it
+    // (cpp/src/join/mixed_join.cu), so begin and materialize must share the same
+    // execution context. The override still has to flow through both calls and
+    // surface on the materialized indices.
     let _event_guard = lock_event_observation();
     let (left, right) = dataframe_mixed_inputs();
     let predicate = left_less_than_right();
     let options = dataframe_mixed_join_options();
     let expected = left.mixed_full_join_indices(&right, &predicate, options.clone()).unwrap();
-    let begin_rt = Runtime::new().unwrap();
-    let materialize_rt = Runtime::new().unwrap();
-    let begin_ctx =
-        ExecutionOverrides::new().with_stream(begin_rt.stream()).with_memory_resource(begin_rt.memory_resource());
-    let materialize_ctx = ExecutionOverrides::new()
-        .with_stream(materialize_rt.stream())
-        .with_memory_resource(materialize_rt.memory_resource());
-    let begin_stream = begin_rt.stream().testing_raw_handle_value();
-    let begin_mr = begin_rt.memory_resource().testing_raw_handle_value();
-    let materialize_stream = materialize_rt.stream().testing_raw_handle_value();
-    let materialize_mr = materialize_rt.memory_resource().testing_raw_handle_value();
+    let borrowed_rt = Runtime::new().unwrap();
+    let borrowed_ctx = ExecutionOverrides::new()
+        .with_stream(borrowed_rt.stream())
+        .with_memory_resource(borrowed_rt.memory_resource());
+    let borrowed_stream = borrowed_rt.stream().testing_raw_handle_value();
+    let borrowed_mr = borrowed_rt.memory_resource().testing_raw_handle_value();
 
     reset_exec_observation();
-    let size_data = left.with_execution(&begin_ctx).mixed_full_join_size_data(&right, &predicate, options).unwrap();
+    let size_data =
+        left.with_execution(&borrowed_ctx).mixed_full_join_size_data(&right, &predicate, options).unwrap();
 
-    assert_eq!(last_exec_stream_value(), begin_stream);
-    assert_eq!(last_exec_mr_value(), begin_mr);
+    assert_eq!(last_exec_stream_value(), borrowed_stream);
+    assert_eq!(last_exec_mr_value(), borrowed_mr);
     let output_size = size_data.output_size();
     let gather_reservation = size_data.gather_map_reservation_size_bytes().unwrap();
     assert_eq!(output_size, expected.len());
@@ -606,15 +606,39 @@ fn dataframe_mixed_full_join_size_data_begin_and_materialize_in_use_borrowed_han
     assert!(size_data.device_allocated_size_bytes().unwrap() > 0);
 
     reset_exec_observation();
-    let materialized = size_data.materialize_indices_in(&materialize_ctx).unwrap();
+    let materialized = size_data.materialize_indices_in(&borrowed_ctx).unwrap();
 
-    assert_eq!(last_exec_stream_value(), materialize_stream);
-    assert_eq!(last_exec_mr_value(), materialize_mr);
-    assert_pair_indices_execution_domain(&materialized, materialize_stream, materialize_mr);
-    assert_eq!(materialized.placement().device, materialize_rt.device());
+    assert_eq!(last_exec_stream_value(), borrowed_stream);
+    assert_eq!(last_exec_mr_value(), borrowed_mr);
+    assert_pair_indices_execution_domain(&materialized, borrowed_stream, borrowed_mr);
+    assert_eq!(materialized.placement().device, borrowed_rt.device());
     assert_eq!(materialized.len(), output_size);
     assert_eq!(materialized.device_allocated_size_bytes().unwrap(), gather_reservation);
     assert_eq!(sorted_dataframe_join_index_pairs(&materialized), sorted_dataframe_join_index_pairs(&expected));
+}
+
+#[test]
+fn dataframe_mixed_full_join_size_data_materialize_indices_in_rejects_foreign_stream() {
+    // Cross-stream materialization of mixed full join retained size data is a hard
+    // upstream error. The binding must surface it cleanly instead of masking the
+    // stream-identity contract.
+    let (left, right) = dataframe_mixed_inputs();
+    let predicate = left_less_than_right();
+    let options = dataframe_mixed_join_options();
+    let begin_rt = Runtime::new().unwrap();
+    let materialize_rt = Runtime::new().unwrap();
+    let begin_ctx =
+        ExecutionOverrides::new().with_stream(begin_rt.stream()).with_memory_resource(begin_rt.memory_resource());
+    let materialize_ctx = ExecutionOverrides::new()
+        .with_stream(materialize_rt.stream())
+        .with_memory_resource(materialize_rt.memory_resource());
+
+    let size_data =
+        left.with_execution(&begin_ctx).mixed_full_join_size_data(&right, &predicate, options).unwrap();
+    let err = size_data
+        .materialize_indices_in(&materialize_ctx)
+        .expect_err("mixed full join retained size data must be materialized on its creator stream");
+    assert_eq!(err.code(), ErrorCode::ForeignInvalidArgument);
 }
 
 #[test]

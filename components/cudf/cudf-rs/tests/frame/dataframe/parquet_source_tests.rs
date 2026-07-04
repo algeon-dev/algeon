@@ -13,8 +13,9 @@ use cudf::{
     frame::dataframe::InfoDetail,
     io::source::{
         LocalParquetFile, LocalParquetSource, PartitionColumn, PartitionValue, SourceColumn, SourceColumnRef,
-        SourceColumnRole, SourceOutputColumn, SourceReadMode, SourceRequiredColumn, SourceSchema,
-        ZERO_COLUMN_COUNT_COLUMN, plan_local_parquet_source_chunks,
+        SourceColumnRole, SourceOutputColumn, SourceReadMode, SourceReaderPredicate, SourceReaderPredicateColumn,
+        SourceReaderPredicateLiteral, SourceRequiredColumn, SourceSchema, ZERO_COLUMN_COUNT_COLUMN,
+        build_local_parquet_reader_predicate, plan_local_parquet_source_chunks,
     },
     ops::ast::AstExpression,
     runtime::QueryStageKind,
@@ -55,6 +56,54 @@ fn assert_budget_report_high_water(report: &cudf::ExecutionBudgetReport, retaine
     );
 }
 
+#[test]
+fn parquet_source_chunk_exact_preflight_reports_fixed_width_output_bound() {
+    let source = LocalParquetSource::data(
+        [LocalParquetFile::new("/tmp/preflight-fixed.parquet", "preflight-fixed", [])
+            .unwrap()
+            .with_row_group_metadata(vec![1_024], vec![10])
+            .unwrap()],
+        SourceSchema::new([SourceColumn::new("id", dtype(TypeId::Int32), false).unwrap()]).unwrap(),
+        ["id"],
+        [SourceOutputColumn::new("id", SourceColumnRef::ReadColumn(0)).unwrap()],
+        [],
+        [],
+    )
+    .unwrap();
+    let plan = plan_local_parquet_source_chunks(&source, Default::default()).unwrap();
+
+    let preflight =
+        DataFrame::parquet_source_chunk_exact_preflight(&source, &plan.chunks()[0], SourceReadMode::FinalOutput)
+            .unwrap()
+            .expect("fixed-width source with row-count metadata should have exact preflight");
+
+    assert_eq!(preflight.retained_output_bytes(), 40);
+    assert_eq!(preflight.required_budget_bytes(), DataFrame::minimum_parquet_source_read_budget_bytes());
+}
+
+#[test]
+fn parquet_source_chunk_exact_preflight_returns_none_for_variable_width_output() {
+    let source = LocalParquetSource::data(
+        [LocalParquetFile::new("/tmp/preflight-string.parquet", "preflight-string", [])
+            .unwrap()
+            .with_row_group_metadata(vec![1_024], vec![10])
+            .unwrap()],
+        SourceSchema::new([SourceColumn::new("name", dtype(TypeId::String), true).unwrap()]).unwrap(),
+        ["name"],
+        [SourceOutputColumn::new("name", SourceColumnRef::ReadColumn(0)).unwrap()],
+        [],
+        [],
+    )
+    .unwrap();
+    let plan = plan_local_parquet_source_chunks(&source, Default::default()).unwrap();
+
+    let preflight =
+        DataFrame::parquet_source_chunk_exact_preflight(&source, &plan.chunks()[0], SourceReadMode::FinalOutput)
+            .unwrap();
+
+    assert_eq!(preflight, None);
+}
+
 fn write_parquet_df(path: &std::path::Path, column_names: &[&str], columns: Vec<Column>, row_group_size_rows: i32) {
     let table = Table::from_columns(columns).unwrap();
     let write_opts = cudf::io::parquet::ParquetTableWriteOptions::builder()
@@ -63,6 +112,44 @@ fn write_parquet_df(path: &std::path::Path, column_names: &[&str], columns: Vec<
         .row_group_size_rows(row_group_size_rows)
         .build();
     cudf::io::parquet::write_parquet(&table, &write_opts).unwrap();
+}
+
+fn write_decimal_parquet_df(path: &std::path::Path, storage_type: TypeId) {
+    let rt = sample_runtime();
+    let dtype = DataType::fixed_point(storage_type, -2);
+    let amount = rt.series(&[-5i64, 0, 1, 2]).unwrap().astype(dtype).unwrap();
+    DataFrame::from_series([("amount", amount)]).unwrap().write_parquet(path).unwrap();
+}
+
+fn decimal_source(path: &std::path::Path) -> LocalParquetSource {
+    let decimal128 = DataType::fixed_point(TypeId::Decimal128, -2);
+    LocalParquetSource::data(
+        [LocalParquetFile::new(path, "decimal", []).unwrap()],
+        SourceSchema::new([SourceColumn::new("amount", decimal128, false).unwrap()]).unwrap(),
+        ["amount"],
+        [SourceOutputColumn::new("amount", SourceColumnRef::ReadColumn(0)).unwrap()],
+        [],
+        [],
+    )
+    .unwrap()
+}
+
+fn decimal_predicate_source(
+    rt: &cudf::Runtime,
+    source: &LocalParquetSource,
+    chunk: &cudf::io::source::SourceChunk,
+    predicate: SourceReaderPredicate,
+) -> LocalParquetSource {
+    let predicate = build_local_parquet_reader_predicate(rt, source, chunk, &predicate).unwrap();
+    source.clone().with_reader_predicate(std::sync::Arc::new(predicate)).unwrap()
+}
+
+fn assert_decimal_amount_raws(df: &DataFrame, expected: &[i128]) {
+    let batch = df.to_record_batch().unwrap();
+    assert_eq!(*batch.schema().field(0).data_type(), ArrowDataType::Decimal128(38, 2));
+    let amount = batch.column(0).as_primitive::<arrow::datatypes::Decimal128Type>();
+    assert_eq!(amount.scale(), 2);
+    assert_eq!(amount.values().as_ref(), expected);
 }
 
 fn write_pyarrow_i32_parquet_with_row_groups(path: &std::path::Path, values: &[i32], row_group_size: usize) -> bool {
@@ -134,6 +221,145 @@ fn read_parquet_source_single_file_projects_and_records_boundary() {
         DataFrame::read_parquet_source_with_mode(&rt, &source, SourceReadMode::ExecutionFrame).unwrap();
     assert_eq!(execution_frame.column_names(), vec!["id_alias", "filter_only"]);
     assert_eq!(execution_frame.series("filter_only").unwrap().to_vec_strict::<i32>().unwrap(), vec![7, 8, 9]);
+}
+
+#[test]
+fn decimal_reader_predicate_matches_decimal32_backed_source_column() {
+    assert_decimal_reader_predicate_matches_backed_source_column(TypeId::Decimal32);
+}
+
+#[test]
+fn decimal_reader_predicate_matches_decimal64_backed_source_column() {
+    assert_decimal_reader_predicate_matches_backed_source_column(TypeId::Decimal64);
+}
+
+#[test]
+fn decimal_reader_predicate_matches_decimal128_backed_source_column() {
+    assert_decimal_reader_predicate_matches_backed_source_column(TypeId::Decimal128);
+}
+
+fn assert_decimal_reader_predicate_matches_backed_source_column(storage_type: TypeId) {
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join(format!("decimal_reader_predicate_{storage_type}.parquet"));
+    let rt = sample_runtime();
+
+    write_decimal_parquet_df(&path, storage_type);
+    let source = decimal_source(&path);
+    let plan = plan_local_parquet_source_chunks(&source, Default::default()).unwrap();
+    let chunk = &plan.chunks()[0];
+
+    let eq_source = decimal_predicate_source(
+        &rt,
+        &source,
+        chunk,
+        SourceReaderPredicate::equal(
+            SourceReaderPredicateColumn::read_column("amount", 0).unwrap(),
+            SourceReaderPredicateLiteral::Decimal128 { raw: -500, scale: -2 },
+        ),
+    );
+    let eq_frame = DataFrame::read_parquet_source_chunk(&rt, &eq_source, chunk, SourceReadMode::FinalOutput).unwrap();
+    assert_decimal_amount_raws(&eq_frame, &[-500]);
+
+    let ge_source = decimal_predicate_source(
+        &rt,
+        &source,
+        chunk,
+        SourceReaderPredicate::greater_equal(
+            SourceReaderPredicateColumn::read_column("amount", 0).unwrap(),
+            SourceReaderPredicateLiteral::Decimal128 { raw: 100, scale: -2 },
+        ),
+    );
+    let token = rt
+        .execution_budget_token(ExecutionBudgetRequest::new(64 * 1024 * 1024).with_boundary("decimal_source_read"))
+        .unwrap();
+    let ge_outcome =
+        DataFrame::read_parquet_source_chunk_with_budget(&rt, &ge_source, chunk, SourceReadMode::FinalOutput, &token)
+            .unwrap();
+    assert_decimal_amount_raws(ge_outcome.value(), &[100, 200]);
+}
+
+#[test]
+fn decimal_reader_predicate_supports_integer_and_in_list_literals() {
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("decimal_reader_predicate_in_list.parquet");
+    let rt = sample_runtime();
+
+    write_decimal_parquet_df(&path, TypeId::Decimal32);
+    let source = decimal_source(&path);
+    let plan = plan_local_parquet_source_chunks(&source, Default::default()).unwrap();
+    let chunk = &plan.chunks()[0];
+    let predicate = SourceReaderPredicate::in_list(
+        SourceReaderPredicateColumn::read_column("amount", 0).unwrap(),
+        vec![SourceReaderPredicateLiteral::Int64(-5), SourceReaderPredicateLiteral::Decimal128 { raw: 200, scale: -2 }],
+        false,
+    )
+    .unwrap();
+    let source = decimal_predicate_source(&rt, &source, chunk, predicate);
+
+    let frame = DataFrame::read_parquet_source_chunk(&rt, &source, chunk, SourceReadMode::FinalOutput).unwrap();
+    assert_decimal_amount_raws(&frame, &[-500, 200]);
+}
+
+#[test]
+fn decimal_reader_predicate_rejects_inexact_literal_rescale_before_execution() {
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("decimal_reader_predicate_inexact_rescale.parquet");
+    let rt = sample_runtime();
+
+    write_decimal_parquet_df(&path, TypeId::Decimal32);
+    let source = decimal_source(&path);
+    let plan = plan_local_parquet_source_chunks(&source, Default::default()).unwrap();
+    let err = build_local_parquet_reader_predicate(
+        &rt,
+        &source,
+        &plan.chunks()[0],
+        &SourceReaderPredicate::equal(
+            SourceReaderPredicateColumn::read_column("amount", 0).unwrap(),
+            SourceReaderPredicateLiteral::Decimal128 { raw: 1, scale: -3 },
+        ),
+    )
+    .expect_err("0.001 cannot be represented exactly at source reader scale -2");
+
+    assert_eq!(err.code(), ErrorCode::ValueOutOfRange);
+    assert_eq!(error_context_value(&err, "reason").as_deref(), Some("decimal_literal_rescale_not_exact"));
+    assert_eq!(error_context_value(&err, "source_scale").as_deref(), Some("-3"));
+    assert_eq!(error_context_value(&err, "target_scale").as_deref(), Some("-2"));
+}
+
+#[test]
+fn decimal_reader_predicate_rejects_source_schema_scale_mismatch_before_execution() {
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("decimal_reader_predicate_scale_mismatch.parquet");
+    let rt = sample_runtime();
+
+    write_decimal_parquet_df(&path, TypeId::Decimal32);
+    let decimal128_scale_three = DataType::fixed_point(TypeId::Decimal128, -3);
+    let source = LocalParquetSource::data(
+        [LocalParquetFile::new(&path, "decimal", []).unwrap()],
+        SourceSchema::new([SourceColumn::new("amount", decimal128_scale_three, false).unwrap()]).unwrap(),
+        ["amount"],
+        [SourceOutputColumn::new("amount", SourceColumnRef::ReadColumn(0)).unwrap()],
+        [],
+        [],
+    )
+    .unwrap();
+    let plan = plan_local_parquet_source_chunks(&source, Default::default()).unwrap();
+
+    let err = build_local_parquet_reader_predicate(
+        &rt,
+        &source,
+        &plan.chunks()[0],
+        &SourceReaderPredicate::equal(
+            SourceReaderPredicateColumn::read_column("amount", 0).unwrap(),
+            SourceReaderPredicateLiteral::Decimal128 { raw: 1000, scale: -3 },
+        ),
+    )
+    .expect_err("source schema scale must match the Parquet footer decimal scale");
+
+    assert_eq!(err.code(), ErrorCode::TypeMismatch);
+    assert_eq!(error_context_value(&err, "reason").as_deref(), Some("decimal_scale_mismatch"));
+    assert_eq!(error_context_value(&err, "logical_scale").as_deref(), Some("-3"));
+    assert_eq!(error_context_value(&err, "reader_scale").as_deref(), Some("-2"));
 }
 
 #[test]
@@ -264,7 +490,7 @@ fn read_parquet_source_chunk_with_budget_uses_token_allocator_and_reports_observ
     write_parquet_df(&path, &["id"], vec![column_from_slice(&[1i32, 2, 3, 4]).unwrap()], 0);
 
     let source = LocalParquetSource::data(
-        [LocalParquetFile::new(&path, "budgeted", []).unwrap()],
+        [LocalParquetFile::new(&path, "budgeted", []).unwrap().with_row_group_metadata(vec![128], vec![4]).unwrap()],
         SourceSchema::new([SourceColumn::new("id", dtype(TypeId::Int32), false).unwrap()]).unwrap(),
         ["id"],
         [SourceOutputColumn::new("id", SourceColumnRef::ReadColumn(0)).unwrap()],
@@ -302,7 +528,20 @@ fn read_parquet_source_chunk_with_budget_uses_token_allocator_and_reports_observ
     assert_eq!(report.retained_bytes(), Some(expected_output_bytes));
     assert_eq!(report.output_bytes(), Some(expected_output_bytes));
     assert_budget_report_high_water(report, expected_output_bytes);
-    assert_eq!(report.unresolved_contract(), Some(PARQUET_SOURCE_DECODED_OUTPUT_PREFLIGHT_CONTRACT_GAP));
+    assert_eq!(report.unresolved_contract(), None);
+    assert_eq!(
+        report.context_facts().get("source_read_preflight_contract").map(String::as_str),
+        Some("exact_retained_output_upper_bound")
+    );
+    assert_eq!(
+        report.context_facts().get("source_read_preflight_retained_output_bytes").map(String::as_str),
+        Some("16")
+    );
+    let expected_required_budget = DataFrame::minimum_parquet_source_read_budget_bytes().to_string();
+    assert_eq!(
+        report.context_facts().get("source_read_preflight_required_budget_bytes").map(String::as_str),
+        Some(expected_required_budget.as_str())
+    );
     assert_eq!(report.context_facts().get("source_kind").map(String::as_str), Some("data"));
     assert_eq!(report.context_facts().get("source_read_mode").map(String::as_str), Some("final_output"));
     assert_eq!(report.context_facts().get("stable_id").map(String::as_str), Some("budgeted"));
@@ -715,6 +954,15 @@ fn read_parquet_source_chunk_with_budget_reports_exceeded_budget_facts() {
     assert_eq!(error_context_value(&err, "budget_current_bytes").as_deref(), Some("0"));
     assert_eq!(error_context_value(&err, "budget_failed_allocation_count").as_deref(), Some("1"));
     assert!(error_context_value(&err, "budget_largest_failed_allocation_bytes").is_some());
+    let budget = err.budget_exhaustion().expect("budgeted source read should expose typed budget detail");
+    assert_eq!(budget.hard_budget_bytes(), 1);
+    assert_eq!(budget.peak_bytes(), 0);
+    assert_eq!(budget.peak_aligned_bytes(), 0);
+    assert_eq!(budget.current_bytes(), 0);
+    assert_eq!(budget.failed_allocation_count(), 1);
+    assert!(budget.largest_failed_allocation_bytes() > 0);
+    assert_eq!(budget.boundary(), "source_read");
+    assert_eq!(budget.operation(), "dataframe::read_parquet_source_chunk_with_budget");
 }
 
 #[test]

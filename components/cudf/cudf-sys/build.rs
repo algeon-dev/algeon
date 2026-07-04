@@ -171,6 +171,7 @@ fn main() {
     }
     for path in directives.iter().filter_map(|directive| link_search_path(directive)) {
         emit_runtime_search_path(path);
+        println!("cargo:runtime-lib-dir={}", path.display());
         println!("cargo:metadata=runtime-lib-dir={}", path.display());
     }
 

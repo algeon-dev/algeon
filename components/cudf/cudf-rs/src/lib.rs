@@ -182,7 +182,7 @@ pub mod testing;
 // — Primary entry points —
 // — Types and error —
 pub use core::{
-    error::{Error, ErrorCode, ErrorKind, ErrorStatus, Result},
+    error::{BudgetExhaustionDetail, Error, ErrorCode, ErrorKind, ErrorStatus, Result},
     memory::{DeviceMemoryResource, DeviceMemoryResourceUsage},
     scalar::IntoRuntimeScalar,
     types::{CudfType, DataType, NullEquality, NullPolicy, TimestampResolution, TypeId},
@@ -195,7 +195,7 @@ pub use frame::{
         DataFrameHashJoinMaterialized, DataFrameHashJoinOptions, DataFrameHashJoinPairIndices, DataFrameJoinIndices,
         DataFrameJoinOptions, DataFrameJoinPairIndices, DataFrameMemoryIdentity, DataFrameMixedJoinOptions,
         DataFrameMixedJoinSizeData, DataFrameMixedSingleSideJoinSizeData, DataFramePredicateJoinOptions,
-        DataFramePreparedSort, DataFrameProjectedCrossJoinPlan, FrameMemoryEffect,
+        DataFramePreparedSort, DataFrameProjectedCrossJoinPlan, FrameMemoryEffect, ParquetSourceReadPreflight,
     },
     series::{
         HostColumnData, IntoSeries, ScalarReductionOutput, ScalarReductionOutputShape, Series,

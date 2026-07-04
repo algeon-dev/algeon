@@ -38,7 +38,7 @@ pub use info::{
 };
 pub use io::{
     CsvReadOptions, CsvWriteOptions, JsonReadOptions, JsonWriteOptions, MultiParquetReadOptions, ParquetReadOptions,
-    ParquetWriteOptions,
+    ParquetSourceReadPreflight, ParquetWriteOptions,
 };
 pub use join::{
     DataFrameConditionalFullJoinSizeData, DataFrameCrossJoinOptions, DataFrameFilteredJoin,
