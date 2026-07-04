@@ -232,8 +232,8 @@ fn parquet_source_planning_surface_is_publicly_importable_under_io_source() {
     use cudf::{
         DataType, TypeId,
         io::source::{
-            ByteRangeDisposition, LocalParquetFile, LocalParquetSource, LocalParquetSourceKind, PartitionColumn,
-            PartitionColumnDisposition, PartitionValue, PredicateDisposition, RejectedSourceFeature,
+            ByteRangeDisposition, LocalParquetFile, LocalParquetSource, LocalParquetSourceKind, ParquetSourceLocation,
+            PartitionColumn, PartitionColumnDisposition, PartitionValue, PredicateDisposition, RejectedSourceFeature,
             SchemaMappingDisposition, SourceChunk, SourceChunkPlan, SourceChunkPlanningPolicy, SourceColumn,
             SourceColumnRef, SourceColumnRole, SourceFormat, SourceOutputColumn, SourceReadMode, SourceRequiredColumn,
             SourceSchema, ZERO_COLUMN_COUNT_COLUMN, ZeroColumnCountDisposition, plan_local_parquet_source_chunks,
@@ -242,6 +242,7 @@ fn parquet_source_planning_surface_is_publicly_importable_under_io_source() {
     };
 
     fn assert_source(_: &LocalParquetSource) {}
+    fn assert_location(_: &ParquetSourceLocation) {}
     fn assert_plan(_: &SourceChunkPlan) {}
     fn assert_chunk(_: &SourceChunk) {}
     fn assert_source_reader(_: fn(&cudf::Runtime, &LocalParquetSource) -> cudf::Result<cudf::DataFrame>) {}
@@ -278,6 +279,7 @@ fn parquet_source_planning_surface_is_publicly_importable_under_io_source() {
 
     let diagnostics = source.diagnostics();
     assert_eq!(source.kind(), LocalParquetSourceKind::Data);
+    assert_location(source.files()[0].location());
     assert_eq!(diagnostics.format(), SourceFormat::Parquet);
     assert_eq!(diagnostics.predicate_disposition(), PredicateDisposition::Absent);
     assert_eq!(diagnostics.byte_range_disposition(), ByteRangeDisposition::FullFiles);

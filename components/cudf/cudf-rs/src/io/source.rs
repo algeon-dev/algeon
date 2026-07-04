@@ -52,6 +52,58 @@ const OP_PLAN_CHUNKS: &str = "io::source::plan_local_parquet_source_chunks";
 const OP_ROW_GROUP_TO_I32: &str = "io::source::source_row_group_index_to_i32";
 const OP_ROW_COUNT_TO_I64: &str = "io::source::source_row_count_to_i64";
 
+/// Explicit Parquet source location represented by the checked source
+/// contract.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum ParquetSourceLocation {
+    LocalPath(PathBuf),
+    ObjectStoreUri(String),
+}
+
+impl ParquetSourceLocation {
+    pub fn local_path(path: impl AsRef<Path>) -> Result<Self> {
+        let path = path.as_ref().to_path_buf();
+        validate_local_path(&path)?;
+        Ok(Self::LocalPath(path))
+    }
+
+    pub fn object_store_uri(uri: impl Into<String>) -> Result<Self> {
+        let uri = uri.into();
+        validate_object_store_uri(&uri)?;
+        Ok(Self::ObjectStoreUri(uri))
+    }
+
+    pub fn reader_path(&self) -> String {
+        match self {
+            Self::LocalPath(path) => path.display().to_string(),
+            Self::ObjectStoreUri(uri) => uri.clone(),
+        }
+    }
+
+    pub fn read_capability(&self) -> &'static str {
+        match self {
+            Self::LocalPath(_) => "local_file_system",
+            Self::ObjectStoreUri(uri) if uri_scheme(uri).is_some_and(|scheme| scheme.eq_ignore_ascii_case("s3")) => {
+                "object_store:s3"
+            },
+            Self::ObjectStoreUri(_) => "object_store:unsupported",
+        }
+    }
+
+    pub fn display(&self) -> impl fmt::Display + '_ {
+        self
+    }
+}
+
+impl fmt::Display for ParquetSourceLocation {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::LocalPath(path) => write!(f, "{}", path.display()),
+            Self::ObjectStoreUri(uri) => f.write_str(uri),
+        }
+    }
+}
+
 /// A complete checked local Parquet source contract.
 ///
 /// Fields are private so callers cannot mutate the plan into an inconsistent
@@ -797,6 +849,7 @@ impl SourceChunkPlan {
 pub struct SourceChunk {
     chunk_index: usize,
     file_index: usize,
+    location: ParquetSourceLocation,
     path: PathBuf,
     stable_id: String,
     row_group_indexes: Vec<usize>,
@@ -916,6 +969,7 @@ impl SourceChunk {
         let chunk = Self {
             chunk_index,
             file_index,
+            location: source_file.location.clone(),
             path: source_file.path.clone(),
             stable_id: source_file.stable_id.clone(),
             row_group_indexes: if reads_all_row_groups { Vec::new() } else { selected_row_groups },
@@ -962,6 +1016,11 @@ impl SourceChunk {
     /// Local filesystem path for this chunk's file.
     pub fn path(&self) -> &Path {
         &self.path
+    }
+
+    /// Explicit source location for this chunk's file.
+    pub fn location(&self) -> &ParquetSourceLocation {
+        &self.location
     }
 
     /// Stable caller-provided file identity.
@@ -1105,6 +1164,7 @@ pub fn plan_local_parquet_source_chunks(
             chunks.push(SourceChunk {
                 chunk_index: chunks.len(),
                 file_index,
+                location: file.location.clone(),
                 path: file.path.clone(),
                 stable_id: file.stable_id.clone(),
                 row_group_indexes: file.row_groups.clone().unwrap_or_default(),
@@ -1174,6 +1234,7 @@ pub fn plan_local_parquet_source_chunks(
             chunks.push(SourceChunk {
                 chunk_index: chunks.len(),
                 file_index,
+                location: file.location.clone(),
                 path: file.path.clone(),
                 stable_id: file.stable_id.clone(),
                 row_group_indexes: if reads_all_row_groups { Vec::new() } else { row_groups.clone() },
@@ -1222,6 +1283,7 @@ pub fn plan_local_parquet_source_chunks(
 /// File-local facts for a local Parquet source.
 #[derive(Debug, Clone, PartialEq)]
 pub struct LocalParquetFile {
+    location: ParquetSourceLocation,
     path: PathBuf,
     stable_id: String,
     file_size_bytes: Option<u64>,
@@ -1247,8 +1309,8 @@ impl LocalParquetFile {
         S: Into<String>,
         V: IntoIterator<Item = PartitionValue>,
     {
+        let location = ParquetSourceLocation::local_path(path.as_ref())?;
         let path = path.as_ref().to_path_buf();
-        validate_local_path(&path)?;
         let stable_id = stable_id.into();
         if stable_id.is_empty() {
             return Err(Error::new_with(ErrorCode::EmptyInput, OP_FILE_NEW, "file stable_id must not be empty")
@@ -1257,6 +1319,7 @@ impl LocalParquetFile {
         }
 
         Ok(Self {
+            location,
             path,
             stable_id,
             file_size_bytes: None,
@@ -1269,6 +1332,53 @@ impl LocalParquetFile {
             row_group_rows: None,
             partition_values: partition_values.into_iter().collect(),
         })
+    }
+
+    /// Create an object-store Parquet file descriptor.
+    ///
+    /// Currently this admits `s3://...` URIs because libcudf/kvikIO owns the
+    /// lower remote read implementation. Unsupported schemes are rejected
+    /// here instead of being represented as local paths.
+    pub fn object_store_uri<U, S, V>(uri: U, stable_id: S, partition_values: V) -> Result<Self>
+    where
+        U: Into<String>,
+        S: Into<String>,
+        V: IntoIterator<Item = PartitionValue>,
+    {
+        let uri = uri.into();
+        let location = ParquetSourceLocation::object_store_uri(uri.clone())?;
+        let reader_path = object_store_reader_path(&uri);
+        let stable_id = stable_id.into();
+        if stable_id.is_empty() {
+            return Err(Error::new_with(ErrorCode::EmptyInput, OP_FILE_NEW, "file stable_id must not be empty")
+                .with_detail("reason", "empty_stable_id")
+                .with_detail("path", uri));
+        }
+
+        Ok(Self {
+            location,
+            path: PathBuf::from(reader_path),
+            stable_id,
+            file_size_bytes: None,
+            row_groups: None,
+            row_group_bytes: None,
+            projected_row_group_compressed_bytes: None,
+            projected_row_group_uncompressed_bytes: None,
+            pure_filter_row_group_compressed_bytes: None,
+            pure_filter_row_group_uncompressed_bytes: None,
+            row_group_rows: None,
+            partition_values: partition_values.into_iter().collect(),
+        })
+    }
+
+    /// Explicit source location.
+    pub fn location(&self) -> &ParquetSourceLocation {
+        &self.location
+    }
+
+    /// Path string passed to libcudf's Parquet reader.
+    pub fn reader_path(&self) -> String {
+        self.location.reader_path()
     }
 
     /// Attach a known full-file size in bytes.
@@ -2003,6 +2113,64 @@ fn validate_local_path(path: &Path) -> Result<()> {
         .with_detail("rejected_features", RejectedSourceFeature::NonLocalSource.as_str()));
     }
     Ok(())
+}
+
+fn validate_object_store_uri(uri: &str) -> Result<()> {
+    if uri.is_empty() {
+        return Err(Error::new_with(ErrorCode::EmptyInput, OP_FILE_NEW, "object-store URI must not be empty")
+            .with_detail("reason", "empty_object_store_uri")
+            .with_detail("resource", "location"));
+    }
+
+    let Some(scheme) = uri_scheme(uri) else {
+        return Err(Error::new_with(
+            ErrorCode::UnsupportedOperation,
+            OP_FILE_NEW,
+            "object-store Parquet sources require an explicit URI scheme",
+        )
+        .with_detail("reason", "missing_object_store_scheme")
+        .with_detail("path", uri)
+        .with_detail("rejected_features", RejectedSourceFeature::NonLocalSource.as_str()));
+    };
+
+    if !scheme.eq_ignore_ascii_case("s3") {
+        return Err(Error::new_with(
+            ErrorCode::UnsupportedOperation,
+            OP_FILE_NEW,
+            "object-store Parquet source scheme is not supported",
+        )
+        .with_detail("reason", "unsupported_object_store_scheme")
+        .with_detail("scheme", scheme.to_ascii_lowercase())
+        .with_detail("path", uri)
+        .with_detail("rejected_features", RejectedSourceFeature::NonLocalSource.as_str()));
+    }
+
+    Ok(())
+}
+
+fn uri_scheme(value: &str) -> Option<&str> {
+    value.split_once("://").map(|(scheme, _)| scheme).filter(|scheme| !scheme.is_empty())
+}
+
+fn object_store_reader_path(uri: &str) -> String {
+    if let Some(path) = s3_https_reader_path(uri) {
+        return path;
+    }
+    uri.to_string()
+}
+
+fn s3_https_reader_path(uri: &str) -> Option<String> {
+    let rest = uri.strip_prefix("s3://")?;
+    let (bucket, key) = rest.split_once('/')?;
+    if bucket.is_empty() || key.is_empty() {
+        return None;
+    }
+    let region = std::env::var("AWS_REGION")
+        .ok()
+        .filter(|value| !value.is_empty())
+        .or_else(|| std::env::var("AWS_DEFAULT_REGION").ok().filter(|value| !value.is_empty()))
+        .unwrap_or_else(|| "us-east-1".to_string());
+    Some(format!("https://{bucket}.s3.{region}.amazonaws.com/{key}"))
 }
 
 fn validate_unique_strings<'a>(
