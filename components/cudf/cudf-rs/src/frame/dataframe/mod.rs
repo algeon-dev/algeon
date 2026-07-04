@@ -31,7 +31,9 @@ pub(crate) use fillna_ops::trigger_dataframe_dropna_subset_count_limit_error_for
 pub use fillna_ops::{DropDuplicatesOptions, DropNaHow, DropNaOptions};
 pub use gpu_record_batch::GpuRecordBatch;
 pub use info::{
-    ColumnMemoryAccounting, DataFrameColumnInfo, DataFrameInfo, DataFrameMemoryAccounting, DataTypeCount, InfoDetail,
+    ColumnMemoryAccounting, ColumnMemoryIdentity, DataFrameColumnInfo, DataFrameColumnMemoryIdentity, DataFrameInfo,
+    DataFrameMemoryAccounting, DataFrameMemoryIdentity, DataTypeCount, FrameColumnMemoryAlias, FrameMemoryEffect,
+    InfoDetail,
 };
 pub use io::{
     CsvReadOptions, CsvWriteOptions, JsonReadOptions, JsonWriteOptions, MultiParquetReadOptions, ParquetReadOptions,

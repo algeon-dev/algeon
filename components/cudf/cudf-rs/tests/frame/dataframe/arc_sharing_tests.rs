@@ -6,7 +6,7 @@
 //! Sharing is verified by comparing device pointers: two `ColumnView`s that
 //! originate from the same `Arc<Column>` will report the same `as_ptr()`.
 
-use cudf::DataFrame;
+use cudf::{DataFrame, FrameMemoryEffect};
 
 use crate::common::{column_from_slice, dataframe_device_ptr as device_ptr};
 
@@ -101,6 +101,45 @@ fn test_select_reorder_shares_columns() {
     // Even after reordering, the GPU memory is shared.
     assert_eq!(device_ptr(&df, "id"), device_ptr(&reordered, "id"));
     assert_eq!(device_ptr(&df, "flag"), device_ptr(&reordered, "flag"));
+}
+
+#[test]
+fn test_select_memory_effect_reports_retained_owner_aliases() {
+    let df = sample_df();
+    let selected = df.select(["flag", "id"]).unwrap();
+    let effect = df.select_memory_effect(["flag", "id"]).unwrap();
+
+    assert!(effect.is_alias_of_input());
+    let FrameMemoryEffect::AliasOfInput { input, output_columns } = effect else {
+        panic!("select should report an alias-of-input memory effect");
+    };
+
+    assert_eq!(input, df.memory_identity());
+    assert_eq!(output_columns.len(), 2);
+    assert_eq!(output_columns[0].input_position, 2);
+    assert_eq!(output_columns[0].input_name, "flag");
+    assert_eq!(output_columns[0].output_position, 0);
+    assert_eq!(output_columns[0].output_name, "flag");
+    assert_eq!(output_columns[1].input_position, 0);
+    assert_eq!(output_columns[1].input_name, "id");
+    assert_eq!(output_columns[1].output_position, 1);
+    assert_eq!(output_columns[1].output_name, "id");
+
+    let selected_identity = selected.memory_identity();
+    assert_eq!(output_columns[0].identity, selected_identity.columns[0].identity);
+    assert_eq!(output_columns[1].identity, selected_identity.columns[1].identity);
+}
+
+#[test]
+fn test_empty_select_memory_effect_reports_zero_column_alias() {
+    let df = sample_df();
+    let effect = df.select_memory_effect(std::iter::empty::<&str>()).unwrap();
+
+    let FrameMemoryEffect::AliasOfInput { input, output_columns } = effect else {
+        panic!("empty select should still be a schema-only alias operation");
+    };
+    assert_eq!(input, df.memory_identity());
+    assert!(output_columns.is_empty());
 }
 
 // ---------------------------------------------------------------------------

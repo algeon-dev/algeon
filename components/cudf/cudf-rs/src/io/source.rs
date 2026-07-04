@@ -9,19 +9,21 @@
 //! `LocalParquetSource` is not a generic file-source trait and is not an
 //! Iceberg table-scan contract. Richer planners should lower into this type
 //! only when the resulting scan is truthfully representable as local Parquet
-//! files with direct by-name read-column mapping and explicit metadata.
+//! files with explicit read-column mapping, nullable missing-column
+//! materialization, and explicit metadata.
 //!
 //! Future source capabilities should be additive and explicitly named.
 //! Predicate pruning, object stores, byte ranges, row-level selection, Iceberg
 //! delete files, Iceberg field-id or name mapping, partition transforms, and
 //! GDS/KvikIO direct-read policy all need their own source facts before callers
-//! may rely on them. Phase 1 local sources therefore reject or keep those
-//! planner facts downstream instead of silently treating them as ordinary local
-//! full-file reads.
+//! may rely on them. Local sources therefore reject or keep those planner facts
+//! downstream instead of silently treating them as ordinary local full-file
+//! reads.
 
 use std::{
     fmt,
     path::{Path, PathBuf},
+    sync::Arc,
 };
 
 use crate::{
@@ -30,6 +32,7 @@ use crate::{
         types::{DataType, TimestampResolution, TypeId},
     },
     internal::hash::{FastHashSet, fast_hash_set_with_capacity},
+    ops::ast::AstExpression,
 };
 
 /// Synthetic column name used by metadata-only zero-column count sources.
@@ -55,7 +58,7 @@ const OP_ROW_COUNT_TO_I64: &str = "io::source::source_row_count_to_i64";
 /// shape after construction. Use [`LocalParquetSource::data`] for normal data
 /// reads and [`LocalParquetSource::zero_column_count`] for metadata-only count
 /// sources.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 pub struct LocalParquetSource {
     kind: LocalParquetSourceKind,
     files: Vec<LocalParquetFile>,
@@ -64,6 +67,20 @@ pub struct LocalParquetSource {
     output_columns: Vec<SourceOutputColumn>,
     required_columns: Vec<SourceRequiredColumn>,
     partition_columns: Vec<PartitionColumn>,
+    reader_predicate: Option<Arc<AstExpression>>,
+}
+
+impl PartialEq for LocalParquetSource {
+    fn eq(&self, other: &Self) -> bool {
+        self.kind == other.kind
+            && self.files == other.files
+            && self.schema == other.schema
+            && self.read_columns == other.read_columns
+            && self.output_columns == other.output_columns
+            && self.required_columns == other.required_columns
+            && self.partition_columns == other.partition_columns
+            && self.reader_predicate.is_some() == other.reader_predicate.is_some()
+    }
 }
 
 impl LocalParquetSource {
@@ -97,6 +114,7 @@ impl LocalParquetSource {
             output_columns: output_columns.into_iter().collect(),
             required_columns: required_columns.into_iter().collect(),
             partition_columns: partition_columns.into_iter().collect(),
+            reader_predicate: None,
         };
         source.validate(OP_SOURCE_DATA)?;
         Ok(source)
@@ -135,6 +153,7 @@ impl LocalParquetSource {
             output_columns: vec![SourceOutputColumn::new(ZERO_COLUMN_COUNT_COLUMN, SourceColumnRef::ZeroColumnCount)?],
             required_columns: Vec::new(),
             partition_columns: Vec::new(),
+            reader_predicate: None,
         };
         source.validate(OP_SOURCE_COUNT)?;
         Ok(source)
@@ -173,6 +192,26 @@ impl LocalParquetSource {
     /// Explicit caller-provided partition columns.
     pub fn partition_columns(&self) -> &[PartitionColumn] {
         &self.partition_columns
+    }
+
+    /// Optional reader-level Parquet predicate.
+    pub fn reader_predicate(&self) -> Option<&Arc<AstExpression>> {
+        self.reader_predicate.as_ref()
+    }
+
+    /// Attach a reader-level Parquet predicate to this data source.
+    pub fn with_reader_predicate(mut self, predicate: Arc<AstExpression>) -> Result<Self> {
+        if self.kind != LocalParquetSourceKind::Data {
+            return Err(Error::new_with(
+                ErrorCode::UnsupportedOperation,
+                OP_SOURCE_DATA,
+                "reader predicates are only valid for local Parquet data sources",
+            )
+            .with_detail("reason", "reader_predicate_on_non_data_source"));
+        }
+        self.reader_predicate = Some(predicate);
+        self.validate(OP_SOURCE_DATA)?;
+        Ok(self)
     }
 
     /// Compute diagnostics from checked source facts.
@@ -517,6 +556,29 @@ impl LocalParquetSource {
 
     fn validate_named_ref(&self, name: &str, source_ref: SourceColumnRef, operation: &'static str) -> Result<()> {
         let target = self.schema.column(name).ok_or_else(|| schema_missing_error(operation, name))?;
+        if source_ref == SourceColumnRef::MissingNull {
+            if !target.nullable {
+                return Err(Error::new_with(
+                    ErrorCode::NullUnexpected,
+                    operation,
+                    "missing source columns can only materialize nullable target columns",
+                )
+                .with_column(name.to_string())
+                .with_detail("reason", "missing_null_for_non_nullable_column")
+                .with_detail("target_dtype", dtype_label(target.data_type)));
+            }
+            if !is_supported_missing_null_dtype(target.data_type) {
+                return Err(Error::new_with(
+                    ErrorCode::UnsupportedDtype,
+                    operation,
+                    "missing source column dtype is not supported by local Parquet source materialization",
+                )
+                .with_column(name.to_string())
+                .with_detail("reason", "unsupported_missing_null_dtype")
+                .with_detail("target_dtype", dtype_label(target.data_type)));
+            }
+            return Ok(());
+        }
         let source_dtype = self.source_ref_dtype(source_ref, operation)?;
         if target.data_type != source_dtype {
             return Err(Error::new_with(
@@ -598,6 +660,12 @@ impl LocalParquetSource {
                 }
                 Ok(DataType::new(TypeId::Int64))
             },
+            SourceColumnRef::MissingNull => Err(Error::new_with(
+                ErrorCode::InvariantViolation,
+                operation,
+                "missing null source references are validated against their target schema column",
+            )
+            .with_detail("reason", "missing_null_ref_without_target")),
         }
     }
 }
@@ -735,9 +803,18 @@ pub struct SourceChunk {
     reads_all_row_groups: bool,
     known_file_bytes: Option<u64>,
     known_row_group_bytes: Option<u64>,
+    known_projected_compressed_bytes: Option<u64>,
+    known_projected_uncompressed_bytes: Option<u64>,
+    known_pure_filter_compressed_bytes: Option<u64>,
+    known_pure_filter_uncompressed_bytes: Option<u64>,
     estimated_chunk_bytes: Option<u64>,
+    estimated_source_read_bytes: Option<u64>,
     source_file_row_groups: Option<Vec<usize>>,
     source_file_row_group_bytes: Option<Vec<u64>>,
+    source_file_projected_compressed_bytes: Option<Vec<u64>>,
+    source_file_projected_uncompressed_bytes: Option<Vec<u64>>,
+    source_file_pure_filter_compressed_bytes: Option<Vec<u64>>,
+    source_file_pure_filter_uncompressed_bytes: Option<Vec<u64>>,
     source_file_row_group_rows: Option<Vec<u64>>,
     read_columns: Vec<String>,
     partition_values: Vec<PartitionValue>,
@@ -747,6 +824,131 @@ pub struct SourceChunk {
 }
 
 impl SourceChunk {
+    /// Build one planned chunk descriptor from an already-validated source file
+    /// and caller-selected row groups.
+    ///
+    /// This is the direct descriptor path for higher-level planners that have
+    /// already decided split boundaries. It validates source membership and
+    /// derives byte/row-count facts from metadata already attached to the
+    /// [`LocalParquetSource`]; it does not run policy-based chunk planning.
+    pub fn from_source_file_selection(
+        source: &LocalParquetSource,
+        file_index: usize,
+        chunk_index: usize,
+        row_group_indexes: Option<Vec<usize>>,
+    ) -> Result<Self> {
+        source.validate(OP_PLAN_CHUNKS)?;
+        let source_file = source.files.get(file_index).ok_or_else(|| {
+            Error::new_with(
+                ErrorCode::IndexOutOfBounds,
+                OP_PLAN_CHUNKS,
+                "source chunk file index is out of bounds for supplied source",
+            )
+            .with_fact(FACT_COLUMN_INDEX, file_index)
+            .with_detail("reason", "source_chunk_file_index_out_of_bounds")
+            .with_detail("file_index", file_index.to_string())
+            .with_detail("source_file_count", source.files.len().to_string())
+        })?;
+        validate_source_file_metadata_lengths(source_file, file_index)?;
+
+        let metadata_available = source_file.row_group_bytes.is_some() && source_file.row_group_rows.is_some();
+        if source.kind == LocalParquetSourceKind::MetadataRowCount && !metadata_available {
+            return Err(missing_row_group_row_count_metadata_error(source_file, file_index));
+        }
+
+        let reads_all_row_groups = row_group_indexes.is_none();
+        let selected_row_groups = match row_group_indexes {
+            Some(row_groups) => row_groups,
+            None => {
+                source_file.row_groups.clone().unwrap_or_else(|| chunk_metadata_row_groups_for_source_file(source_file))
+            },
+        };
+
+        if let Some(row_group_rows) = source_file.row_group_rows.as_deref() {
+            validate_selected_row_groups(source_file, file_index, &selected_row_groups, row_group_rows.len())?;
+        }
+
+        let known_row_group_bytes =
+            optional_checked_row_group_sum(source_file.row_group_bytes.as_deref(), &selected_row_groups);
+        let known_projected_compressed_bytes = optional_checked_row_group_sum(
+            source_file.projected_row_group_compressed_bytes.as_deref(),
+            &selected_row_groups,
+        );
+        let known_projected_uncompressed_bytes = optional_checked_row_group_sum(
+            source_file.projected_row_group_uncompressed_bytes.as_deref(),
+            &selected_row_groups,
+        );
+        let known_pure_filter_compressed_bytes = optional_checked_row_group_sum(
+            source_file.pure_filter_row_group_compressed_bytes.as_deref(),
+            &selected_row_groups,
+        );
+        let known_pure_filter_uncompressed_bytes = optional_checked_row_group_sum(
+            source_file.pure_filter_row_group_uncompressed_bytes.as_deref(),
+            &selected_row_groups,
+        );
+        let estimated_chunk_bytes = if metadata_available {
+            known_projected_uncompressed_bytes.or(known_row_group_bytes)
+        } else {
+            source_file.file_size_bytes
+        };
+        let estimated_source_read_bytes = if metadata_available {
+            known_projected_uncompressed_bytes
+                .zip(known_pure_filter_uncompressed_bytes)
+                .and_then(|(projected, filter)| projected.checked_add(filter))
+                .or(known_row_group_bytes)
+                .or(estimated_chunk_bytes)
+        } else {
+            source_file.file_size_bytes
+        };
+        let known_row_count = if let Some(row_group_rows) = source_file.row_group_rows.as_deref() {
+            Some(checked_row_group_row_count(
+                source_file,
+                file_index,
+                chunk_index,
+                row_group_rows,
+                &selected_row_groups,
+            )?)
+        } else {
+            None
+        };
+        let size_estimate_based = !metadata_available && source_file.file_size_bytes.is_some();
+
+        let chunk = Self {
+            chunk_index,
+            file_index,
+            path: source_file.path.clone(),
+            stable_id: source_file.stable_id.clone(),
+            row_group_indexes: if reads_all_row_groups { Vec::new() } else { selected_row_groups },
+            reads_all_row_groups,
+            known_file_bytes: source_file.file_size_bytes,
+            known_row_group_bytes,
+            known_projected_compressed_bytes,
+            known_projected_uncompressed_bytes,
+            known_pure_filter_compressed_bytes,
+            known_pure_filter_uncompressed_bytes,
+            estimated_chunk_bytes,
+            estimated_source_read_bytes,
+            source_file_row_groups: source_file.row_groups.clone(),
+            source_file_row_group_bytes: source_file.row_group_bytes.clone(),
+            source_file_projected_compressed_bytes: source_file.projected_row_group_compressed_bytes.clone(),
+            source_file_projected_uncompressed_bytes: source_file.projected_row_group_uncompressed_bytes.clone(),
+            source_file_pure_filter_compressed_bytes: source_file.pure_filter_row_group_compressed_bytes.clone(),
+            source_file_pure_filter_uncompressed_bytes: source_file.pure_filter_row_group_uncompressed_bytes.clone(),
+            source_file_row_group_rows: source_file.row_group_rows.clone(),
+            read_columns: if source.kind == LocalParquetSourceKind::MetadataRowCount {
+                Vec::new()
+            } else {
+                source.read_columns.clone()
+            },
+            partition_values: source_file.partition_values.clone(),
+            zero_column_count: source.kind == LocalParquetSourceKind::MetadataRowCount,
+            known_row_count,
+            size_estimate_based,
+        };
+        source.validate_chunk_partition_values(&chunk, OP_PLAN_CHUNKS)?;
+        Ok(chunk)
+    }
+
     /// Plan-local chunk index.
     pub fn chunk_index(&self) -> usize {
         self.chunk_index
@@ -802,9 +1004,34 @@ impl SourceChunk {
         self.known_row_group_bytes
     }
 
+    /// Known sum of projected output compressed bytes, if available.
+    pub fn known_projected_compressed_bytes(&self) -> Option<u64> {
+        self.known_projected_compressed_bytes
+    }
+
+    /// Known sum of projected output uncompressed bytes, if available.
+    pub fn known_projected_uncompressed_bytes(&self) -> Option<u64> {
+        self.known_projected_uncompressed_bytes
+    }
+
+    /// Known sum of pure-filter compressed bytes, if available.
+    pub fn known_pure_filter_compressed_bytes(&self) -> Option<u64> {
+        self.known_pure_filter_compressed_bytes
+    }
+
+    /// Known sum of pure-filter uncompressed bytes, if available.
+    pub fn known_pure_filter_uncompressed_bytes(&self) -> Option<u64> {
+        self.known_pure_filter_uncompressed_bytes
+    }
+
     /// Estimated chunk bytes used for source scheduling.
     pub fn estimated_chunk_bytes(&self) -> Option<u64> {
         self.estimated_chunk_bytes
+    }
+
+    /// Estimated bytes that may be materialized during source read/decode.
+    pub fn estimated_source_read_bytes(&self) -> Option<u64> {
+        self.estimated_source_read_bytes
     }
 
     /// Decoded Parquet read columns for this chunk.
@@ -862,6 +1089,7 @@ pub fn plan_local_parquet_source_chunks(
         if matches!(file.row_groups.as_deref(), Some([])) {
             continue;
         }
+        validate_source_file_metadata_lengths(file, file_index)?;
 
         let row_group_bytes = file.row_group_bytes.as_deref();
         let row_group_rows = file.row_group_rows.as_deref();
@@ -883,9 +1111,18 @@ pub fn plan_local_parquet_source_chunks(
                 reads_all_row_groups: file.row_groups.is_none(),
                 known_file_bytes: file.file_size_bytes,
                 known_row_group_bytes: None,
+                known_projected_compressed_bytes: None,
+                known_projected_uncompressed_bytes: None,
+                known_pure_filter_compressed_bytes: None,
+                known_pure_filter_uncompressed_bytes: None,
                 estimated_chunk_bytes: file.file_size_bytes,
+                estimated_source_read_bytes: file.file_size_bytes,
                 source_file_row_groups: file.row_groups.clone(),
                 source_file_row_group_bytes: file.row_group_bytes.clone(),
+                source_file_projected_compressed_bytes: file.projected_row_group_compressed_bytes.clone(),
+                source_file_projected_uncompressed_bytes: file.projected_row_group_uncompressed_bytes.clone(),
+                source_file_pure_filter_compressed_bytes: file.pure_filter_row_group_compressed_bytes.clone(),
+                source_file_pure_filter_uncompressed_bytes: file.pure_filter_row_group_uncompressed_bytes.clone(),
                 source_file_row_group_rows: file.row_group_rows.clone(),
                 read_columns: source.read_columns.clone(),
                 partition_values: file.partition_values.clone(),
@@ -911,10 +1148,25 @@ pub fn plan_local_parquet_source_chunks(
             continue;
         }
 
-        let chunk_groups = split_row_groups_for_policy(&selected_row_groups, row_group_bytes, policy);
+        let chunk_planning_bytes = file.projected_row_group_uncompressed_bytes.as_deref().unwrap_or(row_group_bytes);
+        let chunk_groups = split_row_groups_for_policy(&selected_row_groups, chunk_planning_bytes, policy);
         let single_all_row_group_chunk = reads_all_from_source && chunk_groups.len() == 1;
         for row_groups in chunk_groups {
             let known_row_group_bytes = checked_row_group_sum(row_group_bytes, &row_groups);
+            let known_projected_compressed_bytes =
+                optional_checked_row_group_sum(file.projected_row_group_compressed_bytes.as_deref(), &row_groups);
+            let known_projected_uncompressed_bytes =
+                optional_checked_row_group_sum(file.projected_row_group_uncompressed_bytes.as_deref(), &row_groups);
+            let known_pure_filter_compressed_bytes =
+                optional_checked_row_group_sum(file.pure_filter_row_group_compressed_bytes.as_deref(), &row_groups);
+            let known_pure_filter_uncompressed_bytes =
+                optional_checked_row_group_sum(file.pure_filter_row_group_uncompressed_bytes.as_deref(), &row_groups);
+            let estimated_chunk_bytes = known_projected_uncompressed_bytes.or(known_row_group_bytes);
+            let estimated_source_read_bytes = known_projected_uncompressed_bytes
+                .zip(known_pure_filter_uncompressed_bytes)
+                .and_then(|(projected, filter)| projected.checked_add(filter))
+                .or(known_row_group_bytes)
+                .or(estimated_chunk_bytes);
             let known_row_count =
                 checked_row_group_row_count(file, file_index, chunks.len(), row_group_rows, &row_groups)?;
 
@@ -928,9 +1180,18 @@ pub fn plan_local_parquet_source_chunks(
                 reads_all_row_groups,
                 known_file_bytes: file.file_size_bytes,
                 known_row_group_bytes,
-                estimated_chunk_bytes: known_row_group_bytes,
+                known_projected_compressed_bytes,
+                known_projected_uncompressed_bytes,
+                known_pure_filter_compressed_bytes,
+                known_pure_filter_uncompressed_bytes,
+                estimated_chunk_bytes,
+                estimated_source_read_bytes,
                 source_file_row_groups: file.row_groups.clone(),
                 source_file_row_group_bytes: Some(row_group_bytes.to_vec()),
+                source_file_projected_compressed_bytes: file.projected_row_group_compressed_bytes.clone(),
+                source_file_projected_uncompressed_bytes: file.projected_row_group_uncompressed_bytes.clone(),
+                source_file_pure_filter_compressed_bytes: file.pure_filter_row_group_compressed_bytes.clone(),
+                source_file_pure_filter_uncompressed_bytes: file.pure_filter_row_group_uncompressed_bytes.clone(),
                 source_file_row_group_rows: Some(row_group_rows.to_vec()),
                 read_columns: if source.kind == LocalParquetSourceKind::MetadataRowCount {
                     Vec::new()
@@ -966,6 +1227,10 @@ pub struct LocalParquetFile {
     file_size_bytes: Option<u64>,
     row_groups: Option<Vec<usize>>,
     row_group_bytes: Option<Vec<u64>>,
+    projected_row_group_compressed_bytes: Option<Vec<u64>>,
+    projected_row_group_uncompressed_bytes: Option<Vec<u64>>,
+    pure_filter_row_group_compressed_bytes: Option<Vec<u64>>,
+    pure_filter_row_group_uncompressed_bytes: Option<Vec<u64>>,
     row_group_rows: Option<Vec<u64>>,
     partition_values: Vec<PartitionValue>,
 }
@@ -997,6 +1262,10 @@ impl LocalParquetFile {
             file_size_bytes: None,
             row_groups: None,
             row_group_bytes: None,
+            projected_row_group_compressed_bytes: None,
+            projected_row_group_uncompressed_bytes: None,
+            pure_filter_row_group_compressed_bytes: None,
+            pure_filter_row_group_uncompressed_bytes: None,
             row_group_rows: None,
             partition_values: partition_values.into_iter().collect(),
         })
@@ -1022,20 +1291,54 @@ impl LocalParquetFile {
     /// The two vectors must have the same length because both are indexed by
     /// file-local row-group ordinal.
     pub fn with_row_group_metadata(mut self, row_group_bytes: Vec<u64>, row_group_rows: Vec<u64>) -> Result<Self> {
-        if row_group_bytes.len() != row_group_rows.len() {
-            return Err(Error::new_with(
-                ErrorCode::ColumnLengthMismatch,
-                OP_FILE_METADATA,
-                "row-group metadata vectors must have matching lengths",
-            )
-            .with_fact(FACT_ACTUAL_COUNT, row_group_rows.len())
-            .with_fact(FACT_EXPECTED_COUNT, row_group_bytes.len())
-            .with_detail("reason", "row_group_metadata_count_mismatch")
-            .with_detail("stable_id", self.stable_id.clone())
-            .with_detail("path", self.path.display().to_string()));
-        }
+        validate_matching_row_group_metadata_lengths(
+            OP_FILE_METADATA,
+            self.stable_id.as_str(),
+            &self.path,
+            "row_group_metadata_count_mismatch",
+            row_group_bytes.len(),
+            row_group_rows.len(),
+        )?;
         self.row_group_bytes = Some(row_group_bytes);
         self.row_group_rows = Some(row_group_rows);
+        Ok(self)
+    }
+
+    /// Attach projected output row-group byte metadata.
+    pub fn with_projected_row_group_bytes(
+        mut self,
+        compressed_bytes: Vec<u64>,
+        uncompressed_bytes: Vec<u64>,
+    ) -> Result<Self> {
+        validate_matching_row_group_metadata_lengths(
+            OP_FILE_METADATA,
+            self.stable_id.as_str(),
+            &self.path,
+            "projected_row_group_metadata_count_mismatch",
+            compressed_bytes.len(),
+            uncompressed_bytes.len(),
+        )?;
+        self.projected_row_group_compressed_bytes = Some(compressed_bytes);
+        self.projected_row_group_uncompressed_bytes = Some(uncompressed_bytes);
+        Ok(self)
+    }
+
+    /// Attach pure-filter row-group byte metadata.
+    pub fn with_pure_filter_row_group_bytes(
+        mut self,
+        compressed_bytes: Vec<u64>,
+        uncompressed_bytes: Vec<u64>,
+    ) -> Result<Self> {
+        validate_matching_row_group_metadata_lengths(
+            OP_FILE_METADATA,
+            self.stable_id.as_str(),
+            &self.path,
+            "pure_filter_row_group_metadata_count_mismatch",
+            compressed_bytes.len(),
+            uncompressed_bytes.len(),
+        )?;
+        self.pure_filter_row_group_compressed_bytes = Some(compressed_bytes);
+        self.pure_filter_row_group_uncompressed_bytes = Some(uncompressed_bytes);
         Ok(self)
     }
 
@@ -1062,6 +1365,26 @@ impl LocalParquetFile {
     /// Row-group byte metadata, if supplied.
     pub fn row_group_bytes(&self) -> Option<&[u64]> {
         self.row_group_bytes.as_deref()
+    }
+
+    /// Projected output compressed byte metadata, if supplied.
+    pub fn projected_row_group_compressed_bytes(&self) -> Option<&[u64]> {
+        self.projected_row_group_compressed_bytes.as_deref()
+    }
+
+    /// Projected output uncompressed byte metadata, if supplied.
+    pub fn projected_row_group_uncompressed_bytes(&self) -> Option<&[u64]> {
+        self.projected_row_group_uncompressed_bytes.as_deref()
+    }
+
+    /// Pure-filter compressed byte metadata, if supplied.
+    pub fn pure_filter_row_group_compressed_bytes(&self) -> Option<&[u64]> {
+        self.pure_filter_row_group_compressed_bytes.as_deref()
+    }
+
+    /// Pure-filter uncompressed byte metadata, if supplied.
+    pub fn pure_filter_row_group_uncompressed_bytes(&self) -> Option<&[u64]> {
+        self.pure_filter_row_group_uncompressed_bytes.as_deref()
     }
 
     /// Row-group row-count metadata, if supplied.
@@ -1206,7 +1529,8 @@ pub enum SourceColumnRole {
     PureFilter,
 }
 
-/// A reference to a decoded read column, partition column, or synthetic count.
+/// A reference to a decoded read column, partition column, synthetic count, or
+/// nullable missing source column.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum SourceColumnRef {
     /// Decoded read projection ordinal.
@@ -1220,6 +1544,10 @@ pub enum SourceColumnRef {
     /// Synthetic metadata row-count column. Valid only for
     /// [`LocalParquetSourceKind::MetadataRowCount`].
     ZeroColumnCount,
+    /// Nullable logical column absent from the physical file schema. Valid only
+    /// for data sources whose target schema column is nullable and whose dtype
+    /// can be materialized as a typed null column.
+    MissingNull,
 }
 
 /// An explicit partition column to be materialized after reading a file/chunk.
@@ -1364,6 +1692,15 @@ impl SourceDiagnostics {
             LocalParquetSourceKind::MetadataRowCount => ZeroColumnCountDisposition::Represented,
         };
 
+        let schema_mapping_disposition =
+            if source.output_columns.iter().any(|column| column.source == SourceColumnRef::MissingNull)
+                || source.required_columns.iter().any(|column| column.source == SourceColumnRef::MissingNull)
+            {
+                SchemaMappingDisposition::MissingNullableColumns
+            } else {
+                SchemaMappingDisposition::DirectByName
+            };
+
         Self {
             format: SourceFormat::Parquet,
             direct_device_read: true,
@@ -1371,7 +1708,11 @@ impl SourceDiagnostics {
             ranged_file_count: 0,
             known_bytes,
             selected_row_groups,
-            predicate_disposition: PredicateDisposition::Absent,
+            predicate_disposition: if source.reader_predicate.is_some() {
+                PredicateDisposition::ReaderPushdown
+            } else {
+                PredicateDisposition::Absent
+            },
             byte_range_disposition: ByteRangeDisposition::FullFiles,
             partition_column_disposition: if source.partition_columns.is_empty() {
                 PartitionColumnDisposition::Absent
@@ -1379,7 +1720,7 @@ impl SourceDiagnostics {
                 PartitionColumnDisposition::Represented
             },
             zero_column_count_disposition,
-            schema_mapping_disposition: SchemaMappingDisposition::DirectByName,
+            schema_mapping_disposition,
             read_column_count: source.read_columns.len(),
             output_column_count: source.output_columns.len(),
             pure_filter_column_count,
@@ -1479,6 +1820,10 @@ pub enum PredicateDisposition {
     Absent,
     /// Predicate was used for pruning only.
     PruningOnly,
+    /// Predicate was represented as a reader-level Parquet predicate.
+    ReaderPushdown,
+    /// Predicate remains a native post-scan filter.
+    NativePostScanOnly,
     /// Predicate execution could not be represented.
     Rejected,
 }
@@ -1521,6 +1866,9 @@ pub enum ZeroColumnCountDisposition {
 pub enum SchemaMappingDisposition {
     /// Direct exact by-name mapping.
     DirectByName,
+    /// One or more nullable logical columns are absent from the physical file
+    /// schema and represented as typed null columns.
+    MissingNullableColumns,
     /// Schema mapping could not be represented.
     Rejected,
 }
@@ -1596,6 +1944,8 @@ stable_display!(SourceFormat, {
 stable_display!(PredicateDisposition, {
     PredicateDisposition::Absent => "absent",
     PredicateDisposition::PruningOnly => "pruning_only",
+    PredicateDisposition::ReaderPushdown => "reader_pushdown",
+    PredicateDisposition::NativePostScanOnly => "native_post_scan_only",
     PredicateDisposition::Rejected => "rejected",
 });
 stable_display!(ByteRangeDisposition, {
@@ -1615,6 +1965,7 @@ stable_display!(ZeroColumnCountDisposition, {
 });
 stable_display!(SchemaMappingDisposition, {
     SchemaMappingDisposition::DirectByName => "direct_by_name",
+    SchemaMappingDisposition::MissingNullableColumns => "missing_nullable_columns",
     SchemaMappingDisposition::Rejected => "rejected",
 });
 
@@ -1730,6 +2081,29 @@ fn schema_missing_error(operation: &'static str, name: &str) -> Error {
         .with_detail("reason", "schema_column_missing")
 }
 
+fn validate_matching_row_group_metadata_lengths(
+    operation: &'static str,
+    stable_id: &str,
+    path: &Path,
+    reason: &'static str,
+    expected_count: usize,
+    actual_count: usize,
+) -> Result<()> {
+    if expected_count != actual_count {
+        return Err(Error::new_with(
+            ErrorCode::ColumnLengthMismatch,
+            operation,
+            "row-group metadata vectors must have matching lengths",
+        )
+        .with_fact(FACT_ACTUAL_COUNT, actual_count)
+        .with_fact(FACT_EXPECTED_COUNT, expected_count)
+        .with_detail("reason", reason)
+        .with_detail("stable_id", stable_id.to_string())
+        .with_detail("path", path.display().to_string()));
+    }
+    Ok(())
+}
+
 fn source_chunk_mismatch_error(
     operation: &'static str,
     chunk: &SourceChunk,
@@ -1769,6 +2143,10 @@ fn is_supported_partition_dtype(data_type: DataType) -> bool {
             | TypeId::DurationMicroseconds
             | TypeId::DurationNanoseconds
     ) || type_id.is_timestamp()
+}
+
+fn is_supported_missing_null_dtype(data_type: DataType) -> bool {
+    is_supported_partition_dtype(data_type)
 }
 
 fn partition_value_matches_dtype(value: &PartitionValue, data_type: DataType) -> bool {
@@ -1836,6 +2214,52 @@ fn validate_selected_row_groups(
     Ok(())
 }
 
+fn validate_source_file_metadata_lengths(file: &LocalParquetFile, file_index: usize) -> Result<()> {
+    let expected_count = [
+        file.row_group_bytes.as_ref(),
+        file.projected_row_group_compressed_bytes.as_ref(),
+        file.projected_row_group_uncompressed_bytes.as_ref(),
+        file.pure_filter_row_group_compressed_bytes.as_ref(),
+        file.pure_filter_row_group_uncompressed_bytes.as_ref(),
+        file.row_group_rows.as_ref(),
+    ]
+    .into_iter()
+    .flatten()
+    .next()
+    .map(Vec::len);
+    let Some(expected_count) = expected_count else {
+        return Ok(());
+    };
+
+    for (field, values) in [
+        ("row_group_bytes", file.row_group_bytes.as_ref()),
+        ("projected_row_group_compressed_bytes", file.projected_row_group_compressed_bytes.as_ref()),
+        ("projected_row_group_uncompressed_bytes", file.projected_row_group_uncompressed_bytes.as_ref()),
+        ("pure_filter_row_group_compressed_bytes", file.pure_filter_row_group_compressed_bytes.as_ref()),
+        ("pure_filter_row_group_uncompressed_bytes", file.pure_filter_row_group_uncompressed_bytes.as_ref()),
+        ("row_group_rows", file.row_group_rows.as_ref()),
+    ] {
+        if let Some(values) = values {
+            if values.len() != expected_count {
+                return Err(Error::new_with(
+                    ErrorCode::ColumnLengthMismatch,
+                    OP_PLAN_CHUNKS,
+                    "row-group metadata vectors must have matching lengths",
+                )
+                .with_fact(FACT_ACTUAL_COUNT, values.len())
+                .with_fact(FACT_EXPECTED_COUNT, expected_count)
+                .with_detail("reason", "row_group_metadata_count_mismatch")
+                .with_detail("field", field.to_string())
+                .with_detail("file_index", file_index.to_string())
+                .with_detail("stable_id", file.stable_id.clone())
+                .with_detail("path", file.path.display().to_string()));
+            }
+        }
+    }
+
+    Ok(())
+}
+
 fn validate_chunk_row_groups_for_source_file(
     chunk: &SourceChunk,
     source_file: &LocalParquetFile,
@@ -1880,8 +2304,12 @@ fn validate_chunk_row_groups_for_source_file(
     let row_group_count = source_file
         .row_group_rows
         .as_ref()
-        .map(Vec::len)
-        .or_else(|| source_file.row_group_bytes.as_ref().map(Vec::len));
+        .or(source_file.row_group_bytes.as_ref())
+        .or(source_file.projected_row_group_uncompressed_bytes.as_ref())
+        .or(source_file.projected_row_group_compressed_bytes.as_ref())
+        .or(source_file.pure_filter_row_group_uncompressed_bytes.as_ref())
+        .or(source_file.pure_filter_row_group_compressed_bytes.as_ref())
+        .map(Vec::len);
     if let Some(row_group_count) = row_group_count {
         for (row_group_position, row_group) in chunk.row_group_indexes.iter().copied().enumerate() {
             if row_group >= row_group_count {
@@ -1936,6 +2364,74 @@ fn validate_chunk_source_file_contract(
         .with_detail("actual_row_group_bytes", format!("{:?}", chunk.source_file_row_group_bytes)));
     }
 
+    if chunk.source_file_projected_compressed_bytes != source_file.projected_row_group_compressed_bytes {
+        return Err(source_chunk_mismatch_error(
+            operation,
+            chunk,
+            "source chunk was planned from different projected compressed byte metadata",
+            "source_chunk_projected_compressed_metadata_mismatch",
+        )
+        .with_detail(
+            "expected_projected_compressed_bytes",
+            format!("{:?}", source_file.projected_row_group_compressed_bytes),
+        )
+        .with_detail(
+            "actual_projected_compressed_bytes",
+            format!("{:?}", chunk.source_file_projected_compressed_bytes),
+        ));
+    }
+
+    if chunk.source_file_projected_uncompressed_bytes != source_file.projected_row_group_uncompressed_bytes {
+        return Err(source_chunk_mismatch_error(
+            operation,
+            chunk,
+            "source chunk was planned from different projected uncompressed byte metadata",
+            "source_chunk_projected_uncompressed_metadata_mismatch",
+        )
+        .with_detail(
+            "expected_projected_uncompressed_bytes",
+            format!("{:?}", source_file.projected_row_group_uncompressed_bytes),
+        )
+        .with_detail(
+            "actual_projected_uncompressed_bytes",
+            format!("{:?}", chunk.source_file_projected_uncompressed_bytes),
+        ));
+    }
+
+    if chunk.source_file_pure_filter_compressed_bytes != source_file.pure_filter_row_group_compressed_bytes {
+        return Err(source_chunk_mismatch_error(
+            operation,
+            chunk,
+            "source chunk was planned from different pure-filter compressed byte metadata",
+            "source_chunk_pure_filter_compressed_metadata_mismatch",
+        )
+        .with_detail(
+            "expected_pure_filter_compressed_bytes",
+            format!("{:?}", source_file.pure_filter_row_group_compressed_bytes),
+        )
+        .with_detail(
+            "actual_pure_filter_compressed_bytes",
+            format!("{:?}", chunk.source_file_pure_filter_compressed_bytes),
+        ));
+    }
+
+    if chunk.source_file_pure_filter_uncompressed_bytes != source_file.pure_filter_row_group_uncompressed_bytes {
+        return Err(source_chunk_mismatch_error(
+            operation,
+            chunk,
+            "source chunk was planned from different pure-filter uncompressed byte metadata",
+            "source_chunk_pure_filter_uncompressed_metadata_mismatch",
+        )
+        .with_detail(
+            "expected_pure_filter_uncompressed_bytes",
+            format!("{:?}", source_file.pure_filter_row_group_uncompressed_bytes),
+        )
+        .with_detail(
+            "actual_pure_filter_uncompressed_bytes",
+            format!("{:?}", chunk.source_file_pure_filter_uncompressed_bytes),
+        ));
+    }
+
     if chunk.source_file_row_group_rows != source_file.row_group_rows {
         return Err(source_chunk_mismatch_error(
             operation,
@@ -1979,8 +2475,111 @@ fn validate_chunk_source_file_contract(
         .with_detail("actual_known_row_group_bytes", format!("{:?}", chunk.known_row_group_bytes)));
     }
 
-    let expected_estimated_chunk_bytes =
-        if metadata_available { expected_known_row_group_bytes } else { source_file.file_size_bytes };
+    let expected_known_projected_compressed_bytes = if metadata_available {
+        optional_checked_row_group_sum(
+            source_file.projected_row_group_compressed_bytes.as_deref(),
+            &selected_row_groups,
+        )
+    } else {
+        None
+    };
+    if chunk.known_projected_compressed_bytes != expected_known_projected_compressed_bytes {
+        return Err(source_chunk_mismatch_error(
+            operation,
+            chunk,
+            "source chunk projected compressed byte metadata does not match supplied source file",
+            "source_chunk_known_projected_compressed_bytes_mismatch",
+        )
+        .with_detail(
+            "expected_known_projected_compressed_bytes",
+            format!("{expected_known_projected_compressed_bytes:?}"),
+        )
+        .with_detail(
+            "actual_known_projected_compressed_bytes",
+            format!("{:?}", chunk.known_projected_compressed_bytes),
+        ));
+    }
+
+    let expected_known_projected_uncompressed_bytes = if metadata_available {
+        optional_checked_row_group_sum(
+            source_file.projected_row_group_uncompressed_bytes.as_deref(),
+            &selected_row_groups,
+        )
+    } else {
+        None
+    };
+    if chunk.known_projected_uncompressed_bytes != expected_known_projected_uncompressed_bytes {
+        return Err(source_chunk_mismatch_error(
+            operation,
+            chunk,
+            "source chunk projected uncompressed byte metadata does not match supplied source file",
+            "source_chunk_known_projected_uncompressed_bytes_mismatch",
+        )
+        .with_detail(
+            "expected_known_projected_uncompressed_bytes",
+            format!("{expected_known_projected_uncompressed_bytes:?}"),
+        )
+        .with_detail(
+            "actual_known_projected_uncompressed_bytes",
+            format!("{:?}", chunk.known_projected_uncompressed_bytes),
+        ));
+    }
+
+    let expected_known_pure_filter_compressed_bytes = if metadata_available {
+        optional_checked_row_group_sum(
+            source_file.pure_filter_row_group_compressed_bytes.as_deref(),
+            &selected_row_groups,
+        )
+    } else {
+        None
+    };
+    if chunk.known_pure_filter_compressed_bytes != expected_known_pure_filter_compressed_bytes {
+        return Err(source_chunk_mismatch_error(
+            operation,
+            chunk,
+            "source chunk pure-filter compressed byte metadata does not match supplied source file",
+            "source_chunk_known_pure_filter_compressed_bytes_mismatch",
+        )
+        .with_detail(
+            "expected_known_pure_filter_compressed_bytes",
+            format!("{expected_known_pure_filter_compressed_bytes:?}"),
+        )
+        .with_detail(
+            "actual_known_pure_filter_compressed_bytes",
+            format!("{:?}", chunk.known_pure_filter_compressed_bytes),
+        ));
+    }
+
+    let expected_known_pure_filter_uncompressed_bytes = if metadata_available {
+        optional_checked_row_group_sum(
+            source_file.pure_filter_row_group_uncompressed_bytes.as_deref(),
+            &selected_row_groups,
+        )
+    } else {
+        None
+    };
+    if chunk.known_pure_filter_uncompressed_bytes != expected_known_pure_filter_uncompressed_bytes {
+        return Err(source_chunk_mismatch_error(
+            operation,
+            chunk,
+            "source chunk pure-filter uncompressed byte metadata does not match supplied source file",
+            "source_chunk_known_pure_filter_uncompressed_bytes_mismatch",
+        )
+        .with_detail(
+            "expected_known_pure_filter_uncompressed_bytes",
+            format!("{expected_known_pure_filter_uncompressed_bytes:?}"),
+        )
+        .with_detail(
+            "actual_known_pure_filter_uncompressed_bytes",
+            format!("{:?}", chunk.known_pure_filter_uncompressed_bytes),
+        ));
+    }
+
+    let expected_estimated_chunk_bytes = if metadata_available {
+        expected_known_projected_uncompressed_bytes.or(expected_known_row_group_bytes)
+    } else {
+        source_file.file_size_bytes
+    };
     if chunk.estimated_chunk_bytes != expected_estimated_chunk_bytes {
         return Err(source_chunk_mismatch_error(
             operation,
@@ -1990,6 +2589,26 @@ fn validate_chunk_source_file_contract(
         )
         .with_detail("expected_estimated_chunk_bytes", format!("{expected_estimated_chunk_bytes:?}"))
         .with_detail("actual_estimated_chunk_bytes", format!("{:?}", chunk.estimated_chunk_bytes)));
+    }
+
+    let expected_estimated_source_read_bytes = if metadata_available {
+        expected_known_projected_uncompressed_bytes
+            .zip(expected_known_pure_filter_uncompressed_bytes)
+            .and_then(|(projected, filter)| projected.checked_add(filter))
+            .or(expected_known_row_group_bytes)
+            .or(expected_estimated_chunk_bytes)
+    } else {
+        source_file.file_size_bytes
+    };
+    if chunk.estimated_source_read_bytes != expected_estimated_source_read_bytes {
+        return Err(source_chunk_mismatch_error(
+            operation,
+            chunk,
+            "source chunk source-read byte estimate does not match supplied source file metadata",
+            "source_chunk_estimated_source_read_bytes_mismatch",
+        )
+        .with_detail("expected_estimated_source_read_bytes", format!("{expected_estimated_source_read_bytes:?}"))
+        .with_detail("actual_estimated_source_read_bytes", format!("{:?}", chunk.estimated_source_read_bytes)));
     }
 
     let expected_size_estimate_based = !metadata_available && source_file.file_size_bytes.is_some();
@@ -2031,16 +2650,28 @@ fn chunk_metadata_row_groups(chunk: &SourceChunk, source_file: &LocalParquetFile
         return chunk.row_group_indexes.clone();
     }
 
+    chunk_metadata_row_groups_for_source_file(source_file)
+}
+
+fn chunk_metadata_row_groups_for_source_file(source_file: &LocalParquetFile) -> Vec<usize> {
     let row_group_count = source_file
         .row_group_rows
         .as_ref()
-        .map(Vec::len)
-        .or_else(|| source_file.row_group_bytes.as_ref().map(Vec::len));
+        .or(source_file.row_group_bytes.as_ref())
+        .or(source_file.projected_row_group_uncompressed_bytes.as_ref())
+        .or(source_file.projected_row_group_compressed_bytes.as_ref())
+        .or(source_file.pure_filter_row_group_uncompressed_bytes.as_ref())
+        .or(source_file.pure_filter_row_group_compressed_bytes.as_ref())
+        .map(Vec::len);
     row_group_count.map_or_else(Vec::new, |count| (0..count).collect())
 }
 
 fn checked_row_group_sum(values: &[u64], row_groups: &[usize]) -> Option<u64> {
     row_groups.iter().try_fold(0u64, |acc, &row_group| acc.checked_add(values[row_group]))
+}
+
+fn optional_checked_row_group_sum(values: Option<&[u64]>, row_groups: &[usize]) -> Option<u64> {
+    checked_row_group_sum(values?, row_groups)
 }
 
 fn checked_row_group_row_count(

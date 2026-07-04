@@ -60,10 +60,77 @@ fn run_clang_format_check(clang_format: &Path, config_path: &Path, lint_files: &
     );
 }
 
+/// Wipe the CMake build directory when the cached `CMAKE_INSTALL_PREFIX` no
+/// longer matches the cargo `OUT_DIR`. CMake otherwise sometimes drops the
+/// `-DCMAKE_INSTALL_PREFIX=` flag during an auto-reconfigure (e.g. when the
+/// host compiler changed between cargo invocations) and falls back to
+/// `/usr/local`, which then fails the install step with EACCES on systems
+/// where `/usr/local/lib` is not user-writable.
+fn discard_stale_cmake_build_dir() {
+    let Ok(out_dir) = env::var("OUT_DIR") else { return };
+    let out_dir = PathBuf::from(out_dir);
+    let build_dir = out_dir.join("build");
+    let cache_path = build_dir.join("CMakeCache.txt");
+    let Ok(cache) = fs::read_to_string(&cache_path) else { return };
+    let expected = format!("CMAKE_INSTALL_PREFIX:PATH={}", out_dir.display());
+    if cache.lines().any(|line| line == expected) && cached_compilers_match_env(&cache) {
+        return;
+    }
+    eprintln!(
+        "cudf-sys build.rs: stale CMake cache detected in {}; \
+         removing {} so cmake-rs can configure cleanly with OUT_DIR {}",
+        cache_path.display(),
+        build_dir.display(),
+        out_dir.display(),
+    );
+    if let Err(error) = fs::remove_dir_all(&build_dir) {
+        panic!("failed to remove stale cmake build directory at {}: {error}", build_dir.display(),);
+    }
+}
+
+fn cached_compilers_match_env(cache: &str) -> bool {
+    cached_compiler_matches_env(cache, "CMAKE_C_COMPILER", "CC")
+        && cached_compiler_matches_env(cache, "CMAKE_CXX_COMPILER", "CXX")
+}
+
+fn cached_compiler_matches_env(cache: &str, cache_key: &str, env_key: &str) -> bool {
+    let Some(expected) = compiler_from_env(env_key) else { return true };
+    let Some(cached) = cmake_cache_value(cache, cache_key) else { return false };
+    paths_equivalent(Path::new(cached), &expected)
+}
+
+fn cmake_cache_value<'a>(cache: &'a str, key: &str) -> Option<&'a str> {
+    cache.lines().find_map(|line| {
+        let (cache_name_and_type, value) = line.split_once('=')?;
+        let (cache_name, _) = cache_name_and_type.split_once(':')?;
+        (cache_name == key).then_some(value)
+    })
+}
+
+fn compiler_from_env(env_key: &str) -> Option<PathBuf> {
+    let raw = env::var(env_key).ok()?;
+    let raw = raw.trim();
+    if raw.is_empty() || raw.contains(char::is_whitespace) {
+        return None;
+    }
+
+    let path = PathBuf::from(raw);
+    if path.components().count() > 1 { Some(path) } else { build_support::find_required_executable(raw).ok() }
+}
+
+fn paths_equivalent(left: &Path, right: &Path) -> bool {
+    match (fs::canonicalize(left), fs::canonicalize(right)) {
+        (Ok(left), Ok(right)) => left == right,
+        _ => left == right,
+    }
+}
+
 fn main() {
     let target_os =
         env::var("CARGO_CFG_TARGET_OS").unwrap_or_else(|error| panic!("failed to read CARGO_CFG_TARGET_OS: {error}"));
     build_support::ensure_supported_target_os(&target_os).unwrap_or_else(|error| panic!("{error}"));
+
+    discard_stale_cmake_build_dir();
 
     let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
     let native_dir = build_support::native_dir(&manifest_dir);

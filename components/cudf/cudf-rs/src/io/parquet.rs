@@ -17,6 +17,7 @@ use crate::{
         table::Table,
     },
     io::TableReadOutput,
+    ops::ast::AstExpression,
     runtime::Runtime,
 };
 
@@ -36,6 +37,8 @@ pub struct ParquetTableReadOptions {
     num_rows: Option<usize>,
     #[builder(default, setter(transform = |groups: &[i32]| if groups.is_empty() { None } else { Some(groups.to_vec()) }))]
     row_groups: Option<Vec<i32>>,
+    #[builder(default, setter(strip_option, into))]
+    predicate: Option<Arc<AstExpression>>,
     #[builder(setter(prefix = "with_", transform = |runtime: &Runtime| runtime.clone()))]
     runtime: Runtime,
 }
@@ -47,9 +50,10 @@ impl ParquetTableReadOptions {
         skip_rows: usize,
         num_rows: Option<usize>,
         row_groups: Option<Vec<i32>>,
+        predicate: Option<Arc<AstExpression>>,
         runtime: Runtime,
     ) -> Self {
-        Self { filepath, columns, skip_rows, num_rows, row_groups, runtime }
+        Self { filepath, columns, skip_rows, num_rows, row_groups, predicate, runtime }
     }
 }
 
@@ -140,13 +144,15 @@ pub fn read_parquet_table(options: &ParquetTableReadOptions) -> Result<TableRead
         Some(rg) if !rg.is_empty() => (rg.as_ptr(), rg.len() as i32),
         _ => (ptr::null(), 0),
     };
+    let predicate = options.predicate.as_ref().map_or(ptr::null_mut(), |predicate| predicate.raw_handle());
 
     error::check_status_in_with_details(
         // SAFETY: filepath is a valid CString. col_ptrs is either null or a
         // valid pointer to num_cols CString pointers. rg_ptr is either null
-        // or a valid pointer to num_rg i32 values.
+        // or a valid pointer to num_rg i32 values. predicate is either null
+        // or an owned AST handle retained by options for the duration of this call.
         unsafe {
-            cudf_sys::cudf_io_read_parquet_with_metadata_ex(
+            cudf_sys::cudf_io_read_parquet_with_metadata_filter_ex(
                 filepath.as_ptr(),
                 col_ptrs,
                 num_cols,
@@ -154,6 +160,7 @@ pub fn read_parquet_table(options: &ParquetTableReadOptions) -> Result<TableRead
                 num_rows,
                 rg_ptr,
                 num_rg,
+                predicate,
                 &mut table_handle,
                 &mut names_ptr,
                 &mut num_names,

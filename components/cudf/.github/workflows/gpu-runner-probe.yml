@@ -1,0 +1,82 @@
+name: GPU Runner Probe
+
+on:
+  workflow_dispatch:
+
+jobs:
+  probe:
+    runs-on:
+      group: trend-emu-large
+      labels:
+        - nvidia-ubuntu-2404-4c28g176gb-16gbgpu
+    steps:
+      - name: Runner system info
+        continue-on-error: true
+        run: |
+          echo "===== uname ====="
+          uname -a
+          echo "===== OS release ====="
+          cat /etc/os-release || true
+          echo "===== CPU ====="
+          lscpu || true
+          echo "===== Memory ====="
+          free -h || true
+          echo "===== Disk ====="
+          df -h || true
+
+      - name: nvidia-smi
+        continue-on-error: true
+        run: |
+          echo "===== nvidia-smi ====="
+          nvidia-smi || echo "nvidia-smi not available"
+          echo "===== nvidia-smi -q (detailed) ====="
+          nvidia-smi -q || true
+
+      - name: GPU driver and CUDA runtime version
+        continue-on-error: true
+        run: |
+          echo "===== driver version ====="
+          nvidia-smi --query-gpu=driver_version --format=csv,noheader || true
+          echo "===== GPU name ====="
+          nvidia-smi --query-gpu=name --format=csv,noheader || true
+          echo "===== CUDA version reported by driver ====="
+          nvidia-smi | grep -i "CUDA Version" || true
+
+      - name: CUDA toolkit (nvcc)
+        continue-on-error: true
+        run: |
+          echo "===== which nvcc ====="
+          which nvcc || echo "nvcc not in PATH"
+          echo "===== nvcc --version ====="
+          nvcc --version || true
+          echo "===== /usr/local/cuda* ====="
+          ls -la /usr/local/ | grep -i cuda || true
+
+      - name: Common tool versions
+        continue-on-error: true
+        run: |
+          echo "===== gcc ====="; gcc --version || true
+          echo "===== g++ ====="; g++ --version || true
+          echo "===== make ====="; make --version || true
+          echo "===== cmake ====="; cmake --version || true
+          echo "===== python3 ====="; python3 --version || true
+          echo "===== pip3 ====="; pip3 --version || true
+          echo "===== docker ====="; docker --version || true
+          echo "===== git ====="; git --version || true
+          echo "===== curl ====="; curl --version || true
+
+      - name: GPU compute sanity check (Python + CUDA via docker if available)
+        continue-on-error: true
+        run: |
+          echo "===== Try docker GPU access ====="
+          if command -v docker >/dev/null 2>&1; then
+            docker run --rm --gpus all nvidia/cuda:12.4.1-base-ubuntu22.04 nvidia-smi || echo "docker --gpus all failed"
+          else
+            echo "docker not installed"
+          fi
+
+      - name: Environment variables
+        continue-on-error: true
+        run: |
+          echo "===== env (filtered) ====="
+          env | grep -iE 'cuda|nvidia|path|runner' | sort || true

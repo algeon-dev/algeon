@@ -193,9 +193,9 @@ pub use frame::{
         DataFrame, DataFrameConditionalFullJoinSizeData, DataFrameCrossJoinOptions, DataFrameFilteredJoin,
         DataFrameFilteredJoinOptions, DataFrameFilteredJoinProbeState, DataFrameHashJoin,
         DataFrameHashJoinMaterialized, DataFrameHashJoinOptions, DataFrameHashJoinPairIndices, DataFrameJoinIndices,
-        DataFrameJoinOptions, DataFrameJoinPairIndices, DataFrameMixedJoinOptions, DataFrameMixedJoinSizeData,
-        DataFrameMixedSingleSideJoinSizeData, DataFramePredicateJoinOptions, DataFramePreparedSort,
-        DataFrameProjectedCrossJoinPlan,
+        DataFrameJoinOptions, DataFrameJoinPairIndices, DataFrameMemoryIdentity, DataFrameMixedJoinOptions,
+        DataFrameMixedJoinSizeData, DataFrameMixedSingleSideJoinSizeData, DataFramePredicateJoinOptions,
+        DataFramePreparedSort, DataFrameProjectedCrossJoinPlan, FrameMemoryEffect,
     },
     series::{
         HostColumnData, IntoSeries, ScalarReductionOutput, ScalarReductionOutputShape, Series,

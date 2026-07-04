@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use cudf::{
     DataType, ErrorCode, TimestampResolution, TypeId,
     io::source::{
@@ -8,6 +10,7 @@ use cudf::{
         ZeroColumnCountDisposition, plan_local_parquet_source_chunks, source_row_count_to_i64,
         source_row_group_index_to_i32,
     },
+    ops::ast::AstExpression,
 };
 
 fn dtype(id: TypeId) -> DataType {
@@ -71,6 +74,92 @@ fn data_source_derives_diagnostics_and_read_column_refs_are_decoded_ordinals() {
     assert_eq!(diagnostics.output_column_count(), 3);
     assert_eq!(diagnostics.pure_filter_column_count(), 1);
     assert!(diagnostics.rejected_features().is_empty());
+}
+
+#[test]
+fn predicate_disposition_names_cover_reader_pushdown_contract() {
+    assert_eq!(PredicateDisposition::Absent.as_str(), "absent");
+    assert_eq!(PredicateDisposition::PruningOnly.as_str(), "pruning_only");
+    assert_eq!(PredicateDisposition::ReaderPushdown.as_str(), "reader_pushdown");
+    assert_eq!(PredicateDisposition::NativePostScanOnly.as_str(), "native_post_scan_only");
+    assert_eq!(PredicateDisposition::Rejected.as_str(), "rejected");
+}
+
+#[test]
+fn data_source_reader_predicate_sets_reader_pushdown_diagnostics() {
+    let predicate =
+        AstExpression::equal(AstExpression::left_column(0).unwrap(), AstExpression::left_column(0).unwrap()).unwrap();
+    let source = LocalParquetSource::data(
+        [partitioned_file()],
+        base_schema(),
+        ["id", "payload", "filter_only"],
+        [
+            SourceOutputColumn::new("id", SourceColumnRef::ReadColumn(0)).unwrap(),
+            SourceOutputColumn::new("payload", SourceColumnRef::ReadColumn(1)).unwrap(),
+        ],
+        [SourceRequiredColumn::new("filter_only", SourceColumnRef::ReadColumn(2), SourceColumnRole::PureFilter)
+            .unwrap()],
+        [PartitionColumn::new("region", dtype(TypeId::String), false).unwrap()],
+    )
+    .unwrap()
+    .with_reader_predicate(Arc::new(predicate))
+    .unwrap();
+
+    assert!(source.reader_predicate().is_some());
+    assert_eq!(source.diagnostics().predicate_disposition(), PredicateDisposition::ReaderPushdown);
+}
+
+#[test]
+fn data_source_represents_missing_nullable_columns_as_schema_mapping() {
+    let source = LocalParquetSource::data(
+        [LocalParquetFile::new("part-0.parquet", "part-0", [])
+            .unwrap()
+            .with_row_group_metadata(vec![100], vec![3])
+            .unwrap()],
+        SourceSchema::new([
+            SourceColumn::new("id", dtype(TypeId::Int64), false).unwrap(),
+            SourceColumn::new("missing_payload", dtype(TypeId::Int32), true).unwrap(),
+        ])
+        .unwrap(),
+        ["id"],
+        [
+            SourceOutputColumn::new("id", SourceColumnRef::ReadColumn(0)).unwrap(),
+            SourceOutputColumn::new("missing_payload", SourceColumnRef::MissingNull).unwrap(),
+        ],
+        [],
+        [],
+    )
+    .unwrap();
+
+    let diagnostics = source.diagnostics();
+    assert!(diagnostics.direct_device_read());
+    assert_eq!(diagnostics.schema_mapping_disposition(), SchemaMappingDisposition::MissingNullableColumns);
+    assert_eq!(diagnostics.read_column_count(), 1);
+    assert_eq!(diagnostics.output_column_count(), 2);
+    assert!(diagnostics.rejected_features().is_empty());
+}
+
+#[test]
+fn data_source_rejects_non_nullable_missing_null_columns() {
+    let err = LocalParquetSource::data(
+        [LocalParquetFile::new("part-0.parquet", "part-0", []).unwrap()],
+        SourceSchema::new([
+            SourceColumn::new("id", dtype(TypeId::Int64), false).unwrap(),
+            SourceColumn::new("missing_payload", dtype(TypeId::Int32), false).unwrap(),
+        ])
+        .unwrap(),
+        ["id"],
+        [
+            SourceOutputColumn::new("id", SourceColumnRef::ReadColumn(0)).unwrap(),
+            SourceOutputColumn::new("missing_payload", SourceColumnRef::MissingNull).unwrap(),
+        ],
+        [],
+        [],
+    )
+    .unwrap_err();
+
+    assert_eq!(err.code(), ErrorCode::NullUnexpected);
+    assert_eq!(err.detail_value("reason"), Some("missing_null_for_non_nullable_column"));
 }
 
 #[test]
@@ -629,6 +718,44 @@ fn chunk_planning_expands_all_row_groups_and_honors_byte_policy_with_metadata() 
     assert_eq!(plan.chunks()[1].estimated_chunk_bytes(), Some(250));
     assert_eq!(plan.chunks()[2].row_group_indexes(), [2]);
     assert_eq!(plan.chunks()[2].estimated_chunk_bytes(), Some(100));
+}
+
+#[test]
+fn chunk_planning_uses_projected_uncompressed_bytes_before_read_bytes() {
+    let source = LocalParquetSource::data(
+        [LocalParquetFile::new("projected.parquet", "projected", [])
+            .unwrap()
+            .with_row_group_metadata(vec![1_000, 1_000, 1_000, 1_000], vec![1, 1, 1, 1])
+            .unwrap()
+            .with_projected_row_group_bytes(vec![50, 50, 50, 50], vec![100, 100, 100, 100])
+            .unwrap()
+            .with_pure_filter_row_group_bytes(vec![100, 100, 100, 100], vec![400, 400, 400, 400])
+            .unwrap()],
+        SourceSchema::new([
+            SourceColumn::new("id", dtype(TypeId::Int64), false).unwrap(),
+            SourceColumn::new("payload", dtype(TypeId::Int64), false).unwrap(),
+        ])
+        .unwrap(),
+        ["id", "payload"],
+        [SourceOutputColumn::new("id", SourceColumnRef::ReadColumn(0)).unwrap()],
+        [SourceRequiredColumn::new("payload", SourceColumnRef::ReadColumn(1), SourceColumnRole::PureFilter).unwrap()],
+        [],
+    )
+    .unwrap();
+    let policy = SourceChunkPlanningPolicy::new(Some(250), 8).unwrap();
+
+    let plan = plan_local_parquet_source_chunks(&source, policy).unwrap();
+
+    assert_eq!(plan.chunks().len(), 2);
+    assert_eq!(plan.chunks()[0].row_group_indexes(), [0, 1]);
+    assert_eq!(plan.chunks()[0].known_row_group_bytes(), Some(2_000));
+    assert_eq!(plan.chunks()[0].known_projected_compressed_bytes(), Some(100));
+    assert_eq!(plan.chunks()[0].known_projected_uncompressed_bytes(), Some(200));
+    assert_eq!(plan.chunks()[0].known_pure_filter_compressed_bytes(), Some(200));
+    assert_eq!(plan.chunks()[0].known_pure_filter_uncompressed_bytes(), Some(800));
+    assert_eq!(plan.chunks()[0].estimated_chunk_bytes(), Some(200));
+    assert_eq!(plan.chunks()[0].estimated_source_read_bytes(), Some(1_000));
+    assert_eq!(plan.chunks()[1].row_group_indexes(), [2, 3]);
 }
 
 #[test]
