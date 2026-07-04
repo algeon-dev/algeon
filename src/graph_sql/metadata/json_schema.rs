@@ -79,7 +79,7 @@ fn graph_options_schema_json(options: &CugraphGraphOptions) -> Value {
             "type": "Utf8",
             "allowed_values": ["python_cugraph", "raw_libcugraph"],
             "default": options.construction_policy.as_str(),
-            "description": "Backend policy used to construct the cuGraph graph from the edge relation."
+            "description": "Edge-list construction semantics used before calling libcugraph."
         }
     })
 }
