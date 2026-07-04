@@ -152,7 +152,10 @@ add_library(
   src/partitioning.cpp
   src/filter.cpp
   src/groupby.cpp
-  src/join.cpp
+  src/join_hash.cpp
+  src/join_conditional.cpp
+  src/join_mixed.cpp
+  src/join_filter.cpp
   src/unary.cpp
   src/binary.cpp
   src/reduction.cpp

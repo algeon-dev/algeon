@@ -132,6 +132,14 @@ impl<'df, 'ctx, 'handles> DataFrameExecutionScope<'df, 'ctx, 'handles> {
     /// discarding the temporary result. Its cost is comparable to
     /// `materialize_join_indices` itself; reserve-then-materialize roughly
     /// doubles the gather work.
+    ///
+    /// Doc-only deprecation: this helper is retained for legacy callers that
+    /// need an exact post-gather allocation measurement with a borrowed
+    /// execution override. It is an executable preflight, not a closed-form
+    /// bound, and can allocate the full gather working set before the caller has
+    /// reserved the returned bytes. New bounded execution paths should prefer an
+    /// explicit closed-form reservation contract and then reconcile the
+    /// observed retained size after materialization.
     pub fn materialize_join_indices_reservation_size_bytes<I, S>(
         &self,
         indices: &DataFrameJoinIndices,

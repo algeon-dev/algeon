@@ -165,8 +165,7 @@ fn dataframe_conditional_full_join_size_data_materialize_indices_in_uses_executi
     let ctx =
         ExecutionOverrides::new().with_stream(output_rt.stream()).with_memory_resource(output_rt.memory_resource());
 
-    let size_data =
-        left.with_execution(&ctx).conditional_full_join_size_data(&right, &predicate, options).unwrap();
+    let size_data = left.with_execution(&ctx).conditional_full_join_size_data(&right, &predicate, options).unwrap();
     let output_size = size_data.output_size();
     let gather_reservation = size_data.gather_map_reservation_size_bytes().unwrap();
 
@@ -187,9 +186,8 @@ fn dataframe_conditional_full_join_size_data_materialize_indices_in_rejects_fore
     let predicate = left_less_than_right();
     let options = dataframe_conditional_options();
     let foreign_rt = Runtime::new().unwrap();
-    let foreign_ctx = ExecutionOverrides::new()
-        .with_stream(foreign_rt.stream())
-        .with_memory_resource(foreign_rt.memory_resource());
+    let foreign_ctx =
+        ExecutionOverrides::new().with_stream(foreign_rt.stream()).with_memory_resource(foreign_rt.memory_resource());
 
     let size_data = left.conditional_full_join_size_data(&right, &predicate, options).unwrap();
     let err = size_data
