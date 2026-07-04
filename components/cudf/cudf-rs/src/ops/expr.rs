@@ -269,6 +269,8 @@ pub enum Expr {
     BinaryOpWithType { lhs: Box<Expr>, op: BinaryOperator, rhs: Box<Expr>, output_type: DataType },
     /// Element-wise unary operation.
     UnaryOp { op: UnaryOperator, input: Box<Expr> },
+    /// Element-wise SQL-style rounding. Half-way ties round away from zero.
+    Round { input: Box<Expr>, decimal_places: i32 },
     /// Cast to a target type.
     Cast { input: Box<Expr>, target: DataType },
     /// Null-check: produces BOOL8 where `true` = null.
@@ -442,6 +444,14 @@ impl Expr {
         Expr::UnaryOp { op: UnaryOperator::Floor, input: Box::new(self) }
     }
 
+    /// Element-wise SQL-style rounding.
+    ///
+    /// Half-way ties round away from zero, matching DataFusion and common SQL
+    /// `ROUND` behavior rather than cuDF's `Rint` half-even unary operator.
+    pub fn round(self, decimal_places: i32) -> Expr {
+        Expr::Round { input: Box::new(self), decimal_places }
+    }
+
     // -- Null fill / cumulative builders (Phase 2) -------------------------
 
     /// Replace null values with a scalar. Name: `fillna` (matches `Series::fillna`).
@@ -518,6 +528,7 @@ impl Expr {
             | Expr::IsNull(input)
             | Expr::IsNotNull(input)
             | Expr::UnaryOp { input, .. }
+            | Expr::Round { input, .. }
             | Expr::FillNaScalar { input, .. }
             | Expr::FillNaExpr { input, .. }
             | Expr::FillNullPolicy { input, .. }
@@ -581,6 +592,19 @@ impl Expr {
                 let series = input.eval_with_context(ctx)?;
                 let cv = series.view()?;
                 let col = unary::unary_operation_impl(&cv, *op, &ctx.output_domain, ctx.exec_options(), ctx.operation)?;
+                ctx.wrap_column(col)
+            },
+
+            Expr::Round { input, decimal_places } => {
+                let series = input.eval_with_context(ctx)?;
+                let cv = series.view()?;
+                let col = unary::round_half_up_impl(
+                    &cv,
+                    *decimal_places,
+                    &ctx.output_domain,
+                    ctx.exec_options(),
+                    ctx.operation,
+                )?;
                 ctx.wrap_column(col)
             },
 

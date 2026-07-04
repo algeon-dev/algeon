@@ -130,6 +130,46 @@ pub(crate) fn unary_operation_impl(
     unsafe { Column::from_raw_with_domain(out, Arc::clone(output_domain)) }
 }
 
+/// Round values away from zero at half-way ties.
+pub fn round_half_up(input: &ColumnView<'_>, decimal_places: i32) -> Result<Column> {
+    let ctx = ExecutionOverrides::new();
+    let execution = ResolvedExecution::unary(input.execution_domain(), &ctx, "unary::round_half_up")?;
+    round_half_up_impl(
+        input,
+        decimal_places,
+        execution.output_domain(),
+        Some(execution.exec_options()),
+        "unary::round_half_up",
+    )
+}
+
+pub(crate) fn round_half_up_impl(
+    input: &ColumnView<'_>,
+    decimal_places: i32,
+    output_domain: &Arc<ExecutionDomain>,
+    exec_options: Option<&cudf_sys::cudf_exec_options_t>,
+    operation: &'static str,
+) -> Result<Column> {
+    let mut out = ptr::null_mut();
+    let status = match exec_options {
+        Some(options) => unsafe {
+            cudf_sys::cudf_round_half_up_ex(input.raw_handle(), decimal_places, &mut out, options)
+        },
+        None => unsafe { cudf_sys::cudf_round_half_up(input.raw_handle(), decimal_places, &mut out) },
+    };
+    error::check_status_in_with_details(
+        status,
+        operation,
+        [
+            ("decimal_places", decimal_places.to_string()),
+            ("rounding_method", "half_up".to_string()),
+            ("execution_context_provided", exec_options.is_some().to_string()),
+        ],
+    )?;
+    // SAFETY: out was returned by a successful FFI call, transferring ownership.
+    unsafe { Column::from_raw_with_domain(out, Arc::clone(output_domain)) }
+}
+
 /// Return a boolean column with each element logically negated.
 ///
 /// Input must be Bool8. Equivalent to `unary_operation(input, UnaryOperator::Not)`.

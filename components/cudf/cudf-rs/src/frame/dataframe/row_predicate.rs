@@ -60,7 +60,9 @@ impl DataFrame {
     ///
     /// Empty input is the logical identity and returns `self.clone()`.
     pub fn filter_all<I>(&self, predicates: I) -> Result<Self>
-    where I: IntoIterator<Item = Expr> {
+    where
+        I: IntoIterator<Item = Expr>,
+    {
         let mut predicates = predicates.into_iter();
         let Some(mut combined) = predicates.next() else {
             return Ok(self.clone());
@@ -79,7 +81,9 @@ impl DataFrame {
     ///
     /// Empty input returns an empty DataFrame with the same schema.
     pub fn filter_any<I>(&self, predicates: I) -> Result<Self>
-    where I: IntoIterator<Item = Expr> {
+    where
+        I: IntoIterator<Item = Expr>,
+    {
         let mut predicates = predicates.into_iter();
         let Some(mut combined) = predicates.next() else {
             return self.empty_with_same_schema();
@@ -96,7 +100,9 @@ impl DataFrame {
     }
 
     pub(crate) fn filter_all_in_context<I>(&self, predicates: I, ctx: &ExecutionOverrides<'_>) -> Result<Self>
-    where I: IntoIterator<Item = Expr> {
+    where
+        I: IntoIterator<Item = Expr>,
+    {
         let mut predicates = predicates.into_iter();
         let Some(mut combined) = predicates.next() else {
             return Ok(self.clone());
@@ -109,7 +115,9 @@ impl DataFrame {
     }
 
     pub(crate) fn filter_any_in_context<I>(&self, predicates: I, ctx: &ExecutionOverrides<'_>) -> Result<Self>
-    where I: IntoIterator<Item = Expr> {
+    where
+        I: IntoIterator<Item = Expr>,
+    {
         let mut predicates = predicates.into_iter();
         let Some(mut combined) = predicates.next() else {
             let output_domain = ctx.resolve_output_domain(&self.domain)?;
@@ -225,6 +233,7 @@ fn lower_expr(
         Expr::BinaryOp { lhs, op, rhs } => lower_binary_expr(df, lhs, *op, rhs, lowered, operation),
         Expr::BinaryOpWithType { .. } => unsupported_predicate(operation, expr_kind(expr)),
         Expr::UnaryOp { op, input } => lower_unary_expr(df, *op, input, lowered, operation),
+        Expr::Round { .. } => unsupported_predicate(operation, expr_kind(expr)),
         Expr::IsNull(input) => lower_is_null_expr(df, input, lowered, operation),
         Expr::IsNotNull(input) => {
             let (is_null_index, _) = lower_is_null_expr(df, input, lowered, operation)?;
@@ -585,6 +594,7 @@ fn expr_kind(expr: &Expr) -> &'static str {
         Expr::BinaryOp { .. } => "binary_op",
         Expr::BinaryOpWithType { .. } => "binary_op_with_type",
         Expr::UnaryOp { .. } => "unary_op",
+        Expr::Round { .. } => "round",
         Expr::Cast { .. } => "cast",
         Expr::IsNull(_) => "is_null",
         Expr::IsNotNull(_) => "is_not_null",

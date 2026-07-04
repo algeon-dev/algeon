@@ -20,6 +20,20 @@ extern "C" {
         options: *const cudf_exec_options_t,
     ) -> cudf_status_t;
 
+    pub fn cudf_round_half_up(
+        input: cudf_column_view_handle,
+        decimal_places: i32,
+        out: *mut cudf_column_handle,
+    ) -> cudf_status_t;
+
+    /// When `options->mr` is non-NULL, it must outlive the returned column.
+    pub fn cudf_round_half_up_ex(
+        input: cudf_column_view_handle,
+        decimal_places: i32,
+        out: *mut cudf_column_handle,
+        options: *const cudf_exec_options_t,
+    ) -> cudf_status_t;
+
     pub fn cudf_is_null(input: cudf_column_view_handle, out: *mut cudf_column_handle) -> cudf_status_t;
 
     /// When `options->mr` is non-NULL, it must outlive the returned column.
