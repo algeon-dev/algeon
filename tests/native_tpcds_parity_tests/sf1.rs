@@ -74,7 +74,7 @@ async fn tpcds_sf1_q06_matches_after_hash_join_reservation_contract_fix() {
     assert_eq!(report.rows.len(), 1);
 
     let row = &report.rows[0];
-    assert_whole_native_parity_row(row, "q06", ParityComparisonMode::OrderedExact, 46);
+    assert_whole_native_parity_row(row, "q06", ParityComparisonMode::OrderedExact, 45);
     assert_ne!(row.parity_status, ParityStatus::NativeRejected);
 }
 
@@ -113,8 +113,8 @@ async fn tpcds_sf1_q85_matches_after_shared_resident_pipeline_contract_fix() {
     assert_eq!(row.native_runtime_outcome, NativeDataFusionRuntimeOutcome::Succeeded);
     assert_eq!(row.parity_status, ParityStatus::Matched);
     assert_eq!(row.comparison_mode, ParityComparisonMode::OrderedExact);
-    assert_eq!(row.cpu_output_rows, Some(1));
-    assert_eq!(row.native_output_rows, Some(1));
+    assert_eq!(row.cpu_output_rows, Some(6));
+    assert_eq!(row.native_output_rows, Some(6));
     assert_eq!(row.native_reservation_denied_count, Some(0));
     assert_eq!(row.native_retry_count, Some(0));
     assert_eq!(row.native_runtime_failure, None);
@@ -176,7 +176,7 @@ async fn tpcds_sf1_case_residual_post_filter_queries_match_after_one_shot_admiss
     let report = NativeTpcdsParityReport::collect(items, ParityFloatTolerance::exact());
     assert_eq!(report.rows.len(), 4);
 
-    for (query_id, output_rows) in [("q04", 6), ("q11", 90), ("q31", 44), ("q74", 92)] {
+    for (query_id, output_rows) in [("q04", 8), ("q11", 88), ("q31", 51), ("q74", 92)] {
         let row = report.rows.iter().find(|row| row.query_id == query_id).expect("query row should exist");
         assert_eq!(row.cpu_planning_status, ParityStageStatus::Succeeded, "{query_id}");
         assert_eq!(row.cpu_runtime_status, ParityStageStatus::Succeeded, "{query_id}");
@@ -359,7 +359,7 @@ async fn tpcds_sf1_root_full_sort_join_aggregate_queries_match_as_whole_native()
     let report = NativeTpcdsParityReport::collect(items, ParityFloatTolerance::exact());
     assert_eq!(report.rows.len(), 5);
 
-    for (query_id, output_rows) in [("q24", 1), ("q31", 44), ("q34", 455), ("q64", 2), ("q73", 1)] {
+    for (query_id, output_rows) in [("q24", 3), ("q31", 51), ("q34", 451), ("q64", 10), ("q73", 5)] {
         let row = report.rows.iter().find(|row| row.query_id == query_id).expect("query row should exist");
         assert_whole_native_parity_row(row, query_id, ParityComparisonMode::OrderedExact, output_rows);
     }
@@ -851,7 +851,7 @@ async fn tpcds_sf1_partition_aggregate_window_queries_match_as_whole_native() {
     let report = NativeTpcdsParityReport::collect(items, ParityFloatTolerance::exact());
     assert_eq!(report.rows.len(), 3);
 
-    for (query_id, output_rows) in [("q12", 100), ("q20", 100), ("q98", 2521)] {
+    for (query_id, output_rows) in [("q12", 100), ("q20", 100), ("q98", 2516)] {
         let row = report.rows.iter().find(|row| row.query_id == query_id).expect("query row should exist");
         assert_eq!(row.cpu_planning_status, ParityStageStatus::Succeeded, "{query_id}");
         assert_eq!(row.cpu_runtime_status, ParityStageStatus::Succeeded, "{query_id}");
@@ -929,8 +929,8 @@ async fn tpcds_sf1_rank_window_union_query_matches_as_whole_native() {
     assert_eq!(row.native_runtime_outcome, NativeDataFusionRuntimeOutcome::Succeeded);
     assert_eq!(row.parity_status, ParityStatus::Matched);
     assert_eq!(row.comparison_mode, ParityComparisonMode::OrderedExact);
-    assert_eq!(row.cpu_output_rows, Some(34));
-    assert_eq!(row.native_output_rows, Some(34));
+    assert_eq!(row.cpu_output_rows, Some(32));
+    assert_eq!(row.native_output_rows, Some(32));
     assert_eq!(row.native_reservation_denied_count, Some(0));
     assert_eq!(row.native_retry_count, Some(0));
     assert_eq!(row.native_runtime_failure, None);
@@ -994,7 +994,7 @@ async fn tpcds_sf1_mark_join_queries_match_as_whole_native() {
     let report = NativeTpcdsParityReport::collect(items, ParityFloatTolerance::exact());
     assert_eq!(report.rows.len(), 3);
 
-    for (query_id, output_rows) in [("q10", 6), ("q35", 100), ("q45", 19)] {
+    for (query_id, output_rows) in [("q10", 5), ("q35", 100), ("q45", 19)] {
         let row = report.rows.iter().find(|row| row.query_id == query_id).expect("query row should exist");
         assert_eq!(row.cpu_planning_status, ParityStageStatus::Succeeded, "{query_id}");
         assert_eq!(row.cpu_runtime_status, ParityStageStatus::Succeeded, "{query_id}");
@@ -1034,7 +1034,7 @@ async fn tpcds_sf1_host_arrow_join_boundary_queries_match_with_partial_native_ch
     let report = NativeTpcdsParityReport::collect(items, ParityFloatTolerance::exact());
     assert_eq!(report.rows.len(), 1);
 
-    let (query_id, output_rows) = ("q17", 0);
+    let (query_id, output_rows) = ("q17", 1);
     let row = report.rows.iter().find(|row| row.query_id == query_id).expect("query row should exist");
     assert_eq!(row.cpu_planning_status, ParityStageStatus::Succeeded, "{query_id}");
     assert_eq!(row.cpu_runtime_status, ParityStageStatus::Succeeded, "{query_id}");
@@ -1206,7 +1206,7 @@ tpcds_sf1_union_query_parity_test!(tpcds_sf1_union_q33_matches_as_whole_native, 
 tpcds_sf1_union_query_parity_test!(tpcds_sf1_union_q56_matches_as_whole_native, "q56", 100);
 tpcds_sf1_union_query_parity_test!(tpcds_sf1_union_q60_matches_as_whole_native, "q60", 100);
 tpcds_sf1_union_query_parity_test!(tpcds_sf1_union_q66_matches_as_whole_native, "q66", 5);
-tpcds_sf1_union_query_parity_test!(tpcds_sf1_union_q71_matches_as_whole_native, "q71", 1031);
+tpcds_sf1_union_query_parity_test!(tpcds_sf1_union_q71_matches_as_whole_native, "q71", 1018);
 tpcds_sf1_union_query_parity_test!(tpcds_sf1_union_q75_matches_as_whole_native, "q75", 100);
 tpcds_sf1_union_query_parity_test!(tpcds_sf1_union_q76_matches_as_whole_native, "q76", 100);
 
@@ -1230,7 +1230,7 @@ async fn tpcds_sf1_projection_scalar_queries_match_current_admission_contract() 
     let report = NativeTpcdsParityReport::collect(items, ParityFloatTolerance::exact());
     assert_eq!(report.rows.len(), 3);
 
-    for (query_id, output_rows) in [("q02", 2513), ("q78", 100), ("q84", 16)] {
+    for (query_id, output_rows) in [("q02", 2513), ("q78", 100), ("q84", 25)] {
         let row = report.rows.iter().find(|row| row.query_id == query_id).expect("query row should exist");
         assert_whole_native_parity_row(row, query_id, ParityComparisonMode::OrderedExact, output_rows);
     }
@@ -1316,16 +1316,16 @@ fn tpcds_sf1_root_topk_join_aggregate_queries_match_as_whole_native() {
         // Cargo target's memory contract and belongs in explicit TPC-DS reports.
         for (query_id, output_rows) in [
             ("q01", 100),
-            ("q04", 6),
-            ("q11", 90),
+            ("q04", 8),
+            ("q11", 88),
             ("q41", 4),
             ("q46", 100),
-            ("q58", 5),
+            ("q58", 3),
             ("q68", 100),
             ("q74", 92),
             ("q78", 100),
             ("q79", 100),
-            ("q83", 24),
+            ("q83", 21),
         ] {
             assert_tpcds_sf1_single_query_whole_native_parity(
                 root,

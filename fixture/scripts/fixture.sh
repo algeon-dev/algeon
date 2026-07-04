@@ -5,17 +5,6 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-has_arg() {
-  local wanted="$1"
-  shift
-  for arg in "$@"; do
-    if [[ "${arg}" == "${wanted}" || "${arg}" == "${wanted}="* ]]; then
-      return 0
-    fi
-  done
-  return 1
-}
-
 usage() {
   cat <<'USAGE'
 Usage:
@@ -25,9 +14,9 @@ Usage:
   fixture.sh iceberg rest load --workload tpch|tpcds|citation_network [--scale sf1]
   fixture.sh iceberg glue-moto load --workload tpch|tpcds [--scale sf1]
 
-This is a thin router. TPC-H / TPC-DS generation (and layout optimization) live in
-fixture/scripts/gen_tpch.py and gen_tpcds.py; other workloads live under
-fixture/scripts/workloads/. Run a gen_*.py with --help for the full flag set.
+This is a thin router. TPC-H / TPC-DS generation uses tpchgen-rs and rewrites
+the final Parquet layout with sorted, Snappy-compressed row groups by default.
+Run a gen_*.py with --help for the full flag set.
 USAGE
 }
 
@@ -47,15 +36,9 @@ shift 2
 
 case "${domain}:${command}" in
   tpch:generate)
-    if ! has_arg "--variant" "$@" && ! has_arg "--out-root" "$@"; then
-      set -- --variant raw --no-verify "$@"
-    fi
     exec python3 "${SCRIPT_DIR}/gen_tpch.py" "$@"
     ;;
   tpcds:generate)
-    if ! has_arg "--variant" "$@" && ! has_arg "--out-root" "$@"; then
-      set -- --variant raw --no-verify "$@"
-    fi
     exec python3 "${SCRIPT_DIR}/gen_tpcds.py" "$@"
     ;;
   clickbench:fetch)
