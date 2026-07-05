@@ -125,6 +125,107 @@ fn paths_equivalent(left: &Path, right: &Path) -> bool {
     }
 }
 
+/// Locate the pre-built `libcudf.so` based on the same env vars cudf-sys's
+/// CMake uses to find libcudf: `CUDF_INSTALL_DIR` (preferred) or
+/// `CUDF_CPP_BUILD_DIR`.
+fn locate_prebuilt_libcudf() -> Option<PathBuf> {
+    if let Ok(install_dir) = env::var("CUDF_INSTALL_DIR") {
+        for sub in ["lib", "lib64"] {
+            let candidate = PathBuf::from(&install_dir).join(sub).join("libcudf.so");
+            if candidate.is_file() {
+                return Some(candidate);
+            }
+        }
+    }
+    if let Ok(build_dir) = env::var("CUDF_CPP_BUILD_DIR") {
+        let candidate = PathBuf::from(build_dir).join("libcudf.so");
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+    }
+    None
+}
+
+/// Walk `dir` and return the most recently modified C++ source/header file
+/// (path and mtime) along with the count of files newer than `baseline`.
+fn find_newest_source(
+    dir: &Path,
+    baseline: std::time::SystemTime,
+) -> (Option<(PathBuf, std::time::SystemTime)>, usize) {
+    let mut newest: Option<(PathBuf, std::time::SystemTime)> = None;
+    let mut newer_than_baseline = 0usize;
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(current) = stack.pop() {
+        let Ok(entries) = fs::read_dir(&current) else { continue };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let Ok(file_type) = entry.file_type() else { continue };
+            if file_type.is_dir() {
+                stack.push(path);
+                continue;
+            }
+            let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+            if !matches!(ext, "cpp" | "cu" | "hpp" | "cuh" | "h") {
+                continue;
+            }
+            let Ok(meta) = entry.metadata() else { continue };
+            let Ok(mtime) = meta.modified() else { continue };
+            if mtime > baseline {
+                newer_than_baseline += 1;
+            }
+            if newest.as_ref().map_or(true, |(_, t)| mtime > *t) {
+                newest = Some((path, mtime));
+            }
+        }
+    }
+    (newest, newer_than_baseline)
+}
+
+/// Warn (via `cargo:warning=`) when libcudf C++ sources are newer than the
+/// installed `libcudf.so`, which usually means the user edited or pulled cudf
+/// without re-running `./build.sh libcudf`. Set
+/// `CUDF_RS_SKIP_STALENESS_CHECK=1` to suppress.
+fn check_libcudf_staleness(manifest_dir: &Path) {
+    println!("cargo:rerun-if-env-changed=CUDF_RS_SKIP_STALENESS_CHECK");
+    if env::var_os("CUDF_RS_SKIP_STALENESS_CHECK").is_some() {
+        return;
+    }
+
+    let Some(libcudf_so) = locate_prebuilt_libcudf() else { return };
+    let Ok(libcudf_meta) = fs::metadata(&libcudf_so) else { return };
+    let Ok(libcudf_mtime) = libcudf_meta.modified() else { return };
+
+    // cudf-sys lives at <repo>/cudf-sys, libcudf submodule at <repo>/cudf.
+    let cudf_cpp = manifest_dir.join("../cudf/cpp");
+    let scan_dirs = [cudf_cpp.join("src"), cudf_cpp.join("include")];
+
+    let mut newest: Option<(PathBuf, std::time::SystemTime)> = None;
+    let mut total_newer = 0usize;
+    for dir in &scan_dirs {
+        if !dir.is_dir() {
+            return;
+        }
+        let (dir_newest, count) = find_newest_source(dir, libcudf_mtime);
+        total_newer += count;
+        if let Some(candidate) = dir_newest {
+            if newest.as_ref().map_or(true, |(_, t)| candidate.1 > *t) {
+                newest = Some(candidate);
+            }
+        }
+    }
+
+    if total_newer == 0 {
+        return;
+    }
+
+    let display_path = newest.as_ref().map(|(p, _)| p.display().to_string()).unwrap_or_default();
+    println!(
+        "cargo:warning=libcudf appears stale: {total_newer} source file(s) under cudf/cpp/{{src,include}} are newer than {}. Re-run `./build.sh libcudf` in cudf/ to rebuild. (newest: {}) Set CUDF_RS_SKIP_STALENESS_CHECK=1 to silence.",
+        libcudf_so.display(),
+        display_path,
+    );
+}
+
 fn main() {
     let target_os =
         env::var("CARGO_CFG_TARGET_OS").unwrap_or_else(|error| panic!("failed to read CARGO_CFG_TARGET_OS: {error}"));
@@ -133,6 +234,7 @@ fn main() {
     discard_stale_cmake_build_dir();
 
     let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
+    check_libcudf_staleness(&manifest_dir);
     let native_dir = build_support::native_dir(&manifest_dir);
     let clang_tidy_config = build_support::clang_tidy_config_path(&manifest_dir);
     let clang_format_config = build_support::clang_format_config_path(&manifest_dir);

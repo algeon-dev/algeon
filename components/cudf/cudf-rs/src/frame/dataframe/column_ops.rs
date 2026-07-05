@@ -101,6 +101,17 @@ impl DataFrame {
         Ok(Self { columns: new_columns, row_count, domain })
     }
 
+    pub(crate) fn with_column_in_domain(
+        &self,
+        name: &str,
+        col: impl IntoSeries,
+        output_domain: Arc<ExecutionDomain>,
+        operation: &'static str,
+    ) -> Result<Self> {
+        let series: Series = col.into_series()?;
+        self.assemble_with_columns_in_domain(vec![name.to_string()], vec![series], output_domain, operation)
+    }
+
     /// Return a new DataFrame with multiple columns added or replaced from
     /// `(name, Series)` pairs.
     ///

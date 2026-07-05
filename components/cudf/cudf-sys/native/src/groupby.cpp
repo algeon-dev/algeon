@@ -16,6 +16,7 @@
 #include <cudf/utilities/memory_resource.hpp>
 #include <cudf/utilities/span.hpp>
 
+#include <algorithm>
 #include <functional>
 #include <memory>
 #include <vector>
@@ -29,6 +30,11 @@ bool should_fail_next_groupby_negative_total_columns()
   g_fail_next_groupby_negative_total_columns = false;
   return true;
 }
+
+struct prepared_groupby_owner {
+  std::unique_ptr<cudf::groupby::groupby> groupby;
+  cudf_handle_provenance provenance;
+};
 
 cudf_status_t to_cudf_null_policy(cudf_null_policy_t input,
                                   cudf::null_policy* out,
@@ -176,13 +182,37 @@ cudf_status_t cudf_groupby_aggregate_ex(cudf_table_view_handle keys,
                                         int32_t* out_total_columns,
                                         cudf_exec_options_t const* options)
 {
+  return cudf_groupby_aggregate_with_keys_are_sorted_ex(keys,
+                                                        values,
+                                                        aggregations,
+                                                        agg_counts,
+                                                        num_requests,
+                                                        num_aggregations,
+                                                        keys_null_policy,
+                                                        0,
+                                                        out_keys,
+                                                        out_values,
+                                                        out_total_columns,
+                                                        options);
+}
+
+static cudf_status_t cudf_groupby_aggregate_from_groupby(cudf::groupby::groupby& gb,
+                                                         const cudf_column_view_handle* values,
+                                                         const cudf_aggregation_handle* aggregations,
+                                                         const int32_t* agg_counts,
+                                                         int32_t num_requests,
+                                                         int32_t num_aggregations,
+                                                         cudf_table_handle* out_keys,
+                                                         cudf_column_handle** out_values,
+                                                         int32_t* out_total_columns,
+                                                         cudf_exec_options_t const* options)
+{
   CUDF_RUST_NULL_CHECK(out_keys, "out_keys is null");
   *out_keys = nullptr;
   CUDF_RUST_NULL_CHECK(out_values, "out_values is null");
   *out_values = nullptr;
   CUDF_RUST_NULL_CHECK(out_total_columns, "out_total_columns is null");
   *out_total_columns = 0;
-  CUDF_RUST_NULL_CHECK(keys, "keys is null");
   if (num_requests < 0) {
     set_error("num_requests must be >= 0");
     return CUDF_ERROR_INVALID_OPERATION;
@@ -196,20 +226,14 @@ cudf_status_t cudf_groupby_aggregate_ex(cudf_table_view_handle keys,
     CUDF_RUST_NULL_CHECK(agg_counts, "agg_counts is null");
   }
   if (num_aggregations > 0) { CUDF_RUST_NULL_CHECK(aggregations, "aggregations is null"); }
-  cudf::null_policy null_policy;
-  cudf_status_t status = to_cudf_null_policy(keys_null_policy, &null_policy, "keys_null_policy");
-  if (status != CUDF_SUCCESS) { return status; }
   CUDF_RUST_TRY
   {
     auto exec                       = std::unique_ptr<cudf_exec_context>{};
     cudf_status_t const exec_status = cudf_resolve_required_exec_options(options, &exec);
     if (exec_status != CUDF_SUCCESS) { return exec_status; }
 
-    auto* keys_view = static_cast<cudf::table_view*>(keys);
-
     {
       cudf_current_device_resource_guard current_mr{exec->mr_raw};
-      cudf::groupby::groupby gb(*keys_view, null_policy);
 
       // Build aggregation requests.
       std::vector<cudf::groupby::aggregation_request> requests;
@@ -283,6 +307,148 @@ cudf_status_t cudf_groupby_aggregate_ex(cudf_table_view_handle keys,
     }
 
     return CUDF_SUCCESS;
+  }
+  CUDF_RUST_CATCH
+}
+
+cudf_status_t cudf_prepared_groupby_create_ex(cudf_table_view_handle keys,
+                                              cudf_null_policy_t keys_null_policy,
+                                              int32_t keys_are_sorted,
+                                              cudf_prepared_groupby_handle* out,
+                                              cudf_exec_options_t const* options)
+{
+  CUDF_RUST_NULL_CHECK(out, "out is null");
+  *out = nullptr;
+  CUDF_RUST_NULL_CHECK(keys, "keys is null");
+  cudf::null_policy null_policy;
+  cudf_status_t status = to_cudf_null_policy(keys_null_policy, &null_policy, "keys_null_policy");
+  if (status != CUDF_SUCCESS) { return status; }
+  CUDF_RUST_TRY
+  {
+    auto exec                       = std::unique_ptr<cudf_exec_context>{};
+    cudf_status_t const exec_status = cudf_resolve_required_exec_options(options, &exec);
+    if (exec_status != CUDF_SUCCESS) { return exec_status; }
+
+    auto* keys_view = static_cast<cudf::table_view*>(keys);
+    auto owner      = std::make_unique<prepared_groupby_owner>();
+    owner->provenance = cudf_capture_exec_provenance(*exec);
+    {
+      cudf_current_device_resource_guard current_mr{exec->mr_raw};
+      owner->groupby = std::make_unique<cudf::groupby::groupby>(
+        *keys_view, null_policy, keys_are_sorted == 0 ? cudf::sorted::NO : cudf::sorted::YES);
+    }
+    *out = static_cast<cudf_prepared_groupby_handle>(owner.release());
+    return CUDF_SUCCESS;
+  }
+  CUDF_RUST_CATCH
+}
+
+void cudf_prepared_groupby_destroy(cudf_prepared_groupby_handle handle)
+{
+  if (handle == nullptr) { return; }
+  cudf_clear_error();
+  auto* owner = static_cast<prepared_groupby_owner*>(handle);
+  auto provenance = owner->provenance;
+  (void)cudf_destroy_under_provenance(provenance, [owner] { delete owner; });
+}
+
+cudf_status_t cudf_prepared_groupby_prepare_groups_ex(cudf_prepared_groupby_handle groupby,
+                                                      int64_t* out_num_groups,
+                                                      size_t* out_grouped_key_output_bytes,
+                                                      int64_t* out_max_group_size,
+                                                      cudf_exec_options_t const* options)
+{
+  CUDF_RUST_NULL_CHECK(out_num_groups, "out_num_groups is null");
+  CUDF_RUST_NULL_CHECK(out_grouped_key_output_bytes, "out_grouped_key_output_bytes is null");
+  CUDF_RUST_NULL_CHECK(out_max_group_size, "out_max_group_size is null");
+  *out_num_groups = 0;
+  *out_grouped_key_output_bytes = 0;
+  *out_max_group_size = 0;
+  CUDF_RUST_NULL_CHECK(groupby, "groupby is null");
+  CUDF_RUST_TRY
+  {
+    auto exec                       = std::unique_ptr<cudf_exec_context>{};
+    cudf_status_t const exec_status = cudf_resolve_required_exec_options(options, &exec);
+    if (exec_status != CUDF_SUCCESS) { return exec_status; }
+
+    auto* prepared = static_cast<prepared_groupby_owner*>(groupby);
+    {
+      cudf_current_device_resource_guard current_mr{exec->mr_raw};
+      auto groups = prepared->groupby->get_groups({}, exec->stream, *exec->mr);
+      if (groups.keys != nullptr) { *out_grouped_key_output_bytes = groups.keys->alloc_size(); }
+      if (groups.offsets.empty()) {
+        *out_num_groups = 0;
+      } else {
+        *out_num_groups = static_cast<int64_t>(groups.offsets.size() - 1);
+        cudf::size_type max_group_size = 0;
+        for (std::size_t i = 1; i < groups.offsets.size(); ++i) {
+          max_group_size = std::max(max_group_size, groups.offsets[i] - groups.offsets[i - 1]);
+        }
+        *out_max_group_size = static_cast<int64_t>(max_group_size);
+      }
+    }
+    return CUDF_SUCCESS;
+  }
+  CUDF_RUST_CATCH
+}
+
+cudf_status_t cudf_prepared_groupby_aggregate_ex(cudf_prepared_groupby_handle groupby,
+                                                 const cudf_column_view_handle* values,
+                                                 const cudf_aggregation_handle* aggregations,
+                                                 const int32_t* agg_counts,
+                                                 int32_t num_requests,
+                                                 int32_t num_aggregations,
+                                                 cudf_table_handle* out_keys,
+                                                 cudf_column_handle** out_values,
+                                                 int32_t* out_total_columns,
+                                                 cudf_exec_options_t const* options)
+{
+  CUDF_RUST_NULL_CHECK(groupby, "groupby is null");
+  auto* prepared = static_cast<prepared_groupby_owner*>(groupby);
+  return cudf_groupby_aggregate_from_groupby(*prepared->groupby,
+                                             values,
+                                             aggregations,
+                                             agg_counts,
+                                             num_requests,
+                                             num_aggregations,
+                                             out_keys,
+                                             out_values,
+                                             out_total_columns,
+                                             options);
+}
+
+cudf_status_t cudf_groupby_aggregate_with_keys_are_sorted_ex(cudf_table_view_handle keys,
+                                                             const cudf_column_view_handle* values,
+                                                             const cudf_aggregation_handle* aggregations,
+                                                             const int32_t* agg_counts,
+                                                             int32_t num_requests,
+                                                             int32_t num_aggregations,
+                                                             cudf_null_policy_t keys_null_policy,
+                                                             int32_t keys_are_sorted,
+                                                             cudf_table_handle* out_keys,
+                                                             cudf_column_handle** out_values,
+                                                             int32_t* out_total_columns,
+                                                             cudf_exec_options_t const* options)
+{
+  CUDF_RUST_NULL_CHECK(keys, "keys is null");
+  cudf::null_policy null_policy;
+  cudf_status_t status = to_cudf_null_policy(keys_null_policy, &null_policy, "keys_null_policy");
+  if (status != CUDF_SUCCESS) { return status; }
+  CUDF_RUST_TRY
+  {
+    auto* keys_view = static_cast<cudf::table_view*>(keys);
+    cudf::groupby::groupby gb(
+      *keys_view, null_policy, keys_are_sorted == 0 ? cudf::sorted::NO : cudf::sorted::YES);
+    return cudf_groupby_aggregate_from_groupby(gb,
+                                               values,
+                                               aggregations,
+                                               agg_counts,
+                                               num_requests,
+                                               num_aggregations,
+                                               out_keys,
+                                               out_values,
+                                               out_total_columns,
+                                               options);
   }
   CUDF_RUST_CATCH
 }

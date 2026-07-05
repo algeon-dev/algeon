@@ -14,8 +14,8 @@ pub(crate) mod testing_hooks;
 pub(crate) use agg::groupby_aggregate_impl;
 pub use agg::{
     AggregationRequest, GroupByAgg, GroupByAggregationOutput, GroupByScanOutput, GroupByScanRequest, NullPolicy,
-    groupby_aggregate, groupby_scan_sorted,
+    PreparedGroupBy, PreparedGroupByFacts, groupby_aggregate, groupby_aggregate_sorted, groupby_scan_sorted,
 };
-pub use dataframe::{AggSpec, GroupBy, GroupByExecutionScope, GroupByOptions, ShiftSpec};
+pub use dataframe::{AggSpec, GroupBy, GroupByExecutionScope, GroupByOptions, PreparedDataFrameGroupBy, ShiftSpec};
 pub(crate) use output::value_counts_result_columns;
 pub use shift::{GroupByShiftOutput, GroupByShiftRequest, groupby_shift};

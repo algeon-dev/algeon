@@ -20,6 +20,9 @@ typedef void* cudf_aggregation_handle;
 /// Opaque handle to a cudf::groupby_scan_aggregation.
 typedef void* cudf_groupby_scan_aggregation_handle;
 
+/// Opaque handle to a reusable cudf::groupby::groupby object.
+typedef void* cudf_prepared_groupby_handle;
+
 /// Aggregation kinds.
 typedef enum {
   CUDF_AGG_SUM = 0,
@@ -68,6 +71,54 @@ void cudf_groupby_scan_aggregation_destroy(cudf_groupby_scan_aggregation_handle 
 /// validate Rust-side foreign-contract classification.
 void cudf_test_groupby_fail_next_negative_total_columns();
 
+/// Create a reusable groupby handle for a key table.
+///
+/// The returned handle borrows the columns referenced by `keys`; those columns
+/// must outlive the handle. If `keys_are_sorted` is non-zero, the caller asserts
+/// that key columns are ascending with nulls after, matching cuDF's pre-sorted
+/// key contract.
+cudf_status_t cudf_prepared_groupby_create_ex(cudf_table_view_handle keys,
+                                              cudf_null_policy_t keys_null_policy,
+                                              int32_t keys_are_sorted,
+                                              cudf_prepared_groupby_handle* out,
+                                              const cudf_exec_options_t* options);
+
+/// Destroy a reusable groupby handle.
+void cudf_prepared_groupby_destroy(cudf_prepared_groupby_handle handle);
+
+/// Prepare reusable grouping state and return stable cardinality facts.
+///
+/// This calls cuDF's `groupby::get_groups` without value columns. The returned
+/// `out_num_groups` is derived from cuDF's group offsets after the handle's
+/// null-key policy is applied. `out_grouped_key_output_bytes` reports the exact
+/// device allocation footprint of the grouped-key table materialized by this
+/// call, and `out_max_group_size` is computed from cuDF's host group offsets.
+/// Temporary grouped-key output is released before this call returns; these are
+/// grouped-output facts, not retained prepared-handle state bytes. The prepared
+/// groupby handle remains reusable for subsequent aggregate calls.
+cudf_status_t cudf_prepared_groupby_prepare_groups_ex(cudf_prepared_groupby_handle groupby,
+                                                      int64_t* out_num_groups,
+                                                      size_t* out_grouped_key_output_bytes,
+                                                      int64_t* out_max_group_size,
+                                                      const cudf_exec_options_t* options);
+
+/// Execute an aggregation through a reusable groupby handle.
+///
+/// The handle borrows its key columns; value columns and aggregation handles
+/// are borrowed for the duration of this call only. `options` must name an
+/// explicit valid device and non-NULL stream/MR. `options->mr` must outlive the
+/// returned keys table and every returned result column.
+cudf_status_t cudf_prepared_groupby_aggregate_ex(cudf_prepared_groupby_handle groupby,
+                                                 const cudf_column_view_handle* values,
+                                                 const cudf_aggregation_handle* aggregations,
+                                                 const int32_t* agg_counts,
+                                                 int32_t num_requests,
+                                                 int32_t num_aggregations,
+                                                 cudf_table_handle* out_keys,
+                                                 cudf_column_handle** out_values,
+                                                 int32_t* out_total_columns,
+                                                 const cudf_exec_options_t* options);
+
 /// Perform a groupby aggregation with explicit execution context.
 ///
 /// @param keys           Table view of grouping key columns.
@@ -100,6 +151,27 @@ cudf_status_t cudf_groupby_aggregate_ex(cudf_table_view_handle keys,
                                         cudf_column_handle** out_values,
                                         int32_t* out_total_columns,
                                         const cudf_exec_options_t* options);
+
+/// Perform a groupby aggregation with explicit execution context and sorted-key
+/// contract.
+///
+/// If `keys_are_sorted` is non-zero, the caller asserts that key columns are
+/// ascending with nulls after, matching cuDF's pre-sorted key contract.
+/// `options` must name an explicit valid device and non-NULL stream/MR.
+/// `options->mr` must outlive the returned keys table and every returned
+/// result column.
+cudf_status_t cudf_groupby_aggregate_with_keys_are_sorted_ex(cudf_table_view_handle keys,
+                                                             const cudf_column_view_handle* values,
+                                                             const cudf_aggregation_handle* aggregations,
+                                                             const int32_t* agg_counts,
+                                                             int32_t num_requests,
+                                                             int32_t num_aggregations,
+                                                             cudf_null_policy_t keys_null_policy,
+                                                             int32_t keys_are_sorted,
+                                                             cudf_table_handle* out_keys,
+                                                             cudf_column_handle** out_values,
+                                                             int32_t* out_total_columns,
+                                                             const cudf_exec_options_t* options);
 
 /// Perform a grouped prefix scan with explicit execution context.
 ///
