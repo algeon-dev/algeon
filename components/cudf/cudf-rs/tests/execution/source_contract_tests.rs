@@ -121,6 +121,7 @@ const SAFE_LAYER_NON_EXECUTION_FFI_ALLOWLIST: &[(&str, &str)] = &[
     ("cudf_filtered_join_probe_device_allocated_size", "metadata-only cached join planning accessor"),
     ("cudf_filtered_join_probe_output_size", "metadata-only cached join planning accessor"),
     ("cudf_free_column_array", "pure lifecycle for returned handle arrays"),
+    ("cudf_gds_driver_available", "process-local GDS capability probe with no stream or allocator inputs"),
     ("cudf_groupby_scan_aggregation_create", "descriptor-only aggregation factory"),
     ("cudf_groupby_scan_aggregation_destroy", "pure lifecycle"),
     ("cudf_prepared_groupby_destroy", "pure lifecycle"),

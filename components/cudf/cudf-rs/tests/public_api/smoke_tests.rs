@@ -327,6 +327,31 @@ fn parquet_source_planning_surface_is_publicly_importable_under_io_source() {
 }
 
 #[test]
+fn fast_hash_surface_is_publicly_importable() {
+    use cudf::hash::{
+        FastHashMap, FastHashSet, FastIndexMap, fast_hash_map_with_capacity, fast_hash_set_with_capacity,
+        fast_index_map, fast_index_map_with_capacity,
+    };
+
+    let mut map: FastHashMap<String, i32> = fast_hash_map_with_capacity(4);
+    map.insert("a".to_string(), 1);
+    assert_eq!(map.get("a"), Some(&1));
+
+    let mut set: FastHashSet<&str> = fast_hash_set_with_capacity(4);
+    set.insert("x");
+    assert!(set.contains("x"));
+
+    let mut index_map: FastIndexMap<String, i32> = fast_index_map_with_capacity(2);
+    index_map.insert("first".to_string(), 0);
+    index_map.insert("second".to_string(), 1);
+    let keys: Vec<&str> = index_map.keys().map(String::as_str).collect();
+    assert_eq!(keys, ["first", "second"]);
+
+    let empty: FastIndexMap<String, i32> = fast_index_map();
+    assert!(empty.is_empty());
+}
+
+#[test]
 fn query_expression_surface_is_publicly_importable() {
     use cudf::{
         ops::expr::col,
