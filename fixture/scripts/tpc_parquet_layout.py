@@ -11,7 +11,7 @@ import sys
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable, Sequence
+from typing import Iterable, Literal, Sequence
 
 import pyarrow as pa
 import pyarrow.compute as pc
@@ -19,6 +19,7 @@ import pyarrow.parquet as pq
 
 
 DEFAULT_ROW_GROUP_BYTES = 8 * 1024 * 1024
+OptimizeEngine = Literal["duckdb", "pyarrow"]
 
 
 @dataclass(frozen=True)
@@ -38,11 +39,18 @@ def scale_label(scale: float) -> str:
 
 
 def parse_scales(values: Sequence[str] | None) -> list[float]:
-    scales = [float(value) for value in values] if values else [1.0]
+    scales = [parse_scale(value) for value in values] if values else [1.0]
     for scale in scales:
         if scale <= 0:
             raise ValueError(f"scale must be positive, got {scale}")
     return scales
+
+
+def parse_scale(value: str) -> float:
+    normalized = value.strip().lower()
+    if normalized.startswith("sf"):
+        normalized = normalized[2:]
+    return float(normalized)
 
 
 def resolve_output_dir(*, workload: str, scale: float, out: Path | None, out_root: Path | None) -> Path:
@@ -156,6 +164,30 @@ def rows_per_group(table: pa.Table, target_bytes: int) -> int:
     return max(1, min(1_000_000, int(target_bytes / bytes_per_row)))
 
 
+def source_files(source: Path) -> list[Path]:
+    if source.is_dir():
+        files = sorted(source.rglob("*.parquet"))
+        if not files:
+            raise FileNotFoundError(f"no parquet files under {source}")
+        return files
+    return [source]
+
+
+def rows_per_group_from_metadata(source: Path, target_bytes: int) -> int:
+    total_rows = 0
+    total_bytes = 0
+    for file in source_files(source):
+        metadata = pq.ParquetFile(file).metadata
+        total_rows += metadata.num_rows
+        for rg_index in range(metadata.num_row_groups):
+            row_group = metadata.row_group(rg_index)
+            total_bytes += max(0, row_group.total_byte_size)
+    if total_rows <= 0 or total_bytes <= 0:
+        return 1
+    bytes_per_row = max(1.0, total_bytes / total_rows)
+    return max(1, min(1_000_000, int(target_bytes / bytes_per_row)))
+
+
 def write_optimized_table(
     *,
     table: pa.Table,
@@ -174,6 +206,80 @@ def write_optimized_table(
     )
 
 
+def sql_string(value: str) -> str:
+    return "'" + value.replace("'", "''") + "'"
+
+
+def duckdb_read_parquet_source(source: Path) -> str:
+    files = source_files(source)
+    if len(files) == 1:
+        return f"read_parquet({sql_string(str(files[0]))})"
+    paths = ", ".join(sql_string(str(path)) for path in files)
+    return f"read_parquet([{paths}])"
+
+
+def duckdb_select_list(source: Path, layout: TableLayout) -> str:
+    schema = pq.read_schema(source_files(source)[0])
+    rename_map = dict(layout.field_renames)
+    cast_map = dict(layout.field_casts)
+    fields = []
+    for source_name in schema.names:
+        final_name = rename_map.get(source_name, source_name)
+        expr = f'"{source_name}"'
+        cast_type = cast_map.get(final_name)
+        if cast_type is not None:
+            expr = f"CAST({expr} AS {duckdb_cast_type(cast_type)})"
+        if final_name != source_name or cast_type is not None:
+            expr = f'{expr} AS "{final_name}"'
+        fields.append(expr)
+    unknown = sorted(set(cast_map) - {rename_map.get(name, name) for name in schema.names})
+    if unknown:
+        raise ValueError(f"field casts reference missing columns: {unknown}")
+    return ", ".join(fields)
+
+
+def duckdb_cast_type(name: str) -> str:
+    if name == "int64":
+        return "BIGINT"
+    raise ValueError(f"unsupported fixture cast type: {name}")
+
+
+def optimize_table_with_duckdb(
+    *,
+    source: Path,
+    output_file: Path,
+    layout: TableLayout,
+    row_group_bytes: int,
+    compression: str,
+) -> None:
+    duckdb = shutil.which("duckdb")
+    if duckdb is None:
+        raise FileNotFoundError("duckdb executable not found; install duckdb or pass --optimize-engine pyarrow")
+    output_file.parent.mkdir(parents=True, exist_ok=True)
+    select_list = duckdb_select_list(source, layout)
+    read_source = duckdb_read_parquet_source(source)
+    order_by = ", ".join(f'"{key}"' for key in layout.sort_keys)
+    order_clause = f" ORDER BY {order_by}" if order_by else ""
+    row_group_rows = rows_per_group_from_metadata(source, row_group_bytes)
+    temp_directory = output_file.parent / ".duckdb-tmp"
+    temp_directory.mkdir(parents=True, exist_ok=True)
+    sql = "\n".join(
+        [
+            f"SET temp_directory={sql_string(str(temp_directory))};",
+            "SET preserve_insertion_order=false;",
+            f"COPY (SELECT * FROM (SELECT {select_list} FROM {read_source}){order_clause})",
+            (
+                f"TO {sql_string(str(output_file))} "
+                f"(FORMAT PARQUET, COMPRESSION {compression.upper()}, ROW_GROUP_SIZE {row_group_rows});"
+            ),
+        ]
+    )
+    try:
+        run([duckdb, "-c", sql])
+    finally:
+        shutil.rmtree(temp_directory, ignore_errors=True)
+
+
 def optimize_layout(
     *,
     raw_dir: Path,
@@ -182,6 +288,7 @@ def optimize_layout(
     row_group_bytes: int,
     compression: str,
     force: bool,
+    engine: OptimizeEngine = "duckdb",
 ) -> None:
     output_dir.parent.mkdir(parents=True, exist_ok=True)
     temp_dir: Path | None = Path(tempfile.mkdtemp(prefix=f".{output_dir.name}.tmp.", dir=output_dir.parent))
@@ -197,22 +304,35 @@ def optimize_layout(
             else:
                 raise FileNotFoundError(f"missing generated table {layout.name} under {raw_dir}")
             print(f"optimizing {layout.name}", file=sys.stderr, flush=True)
-            table = rename_table_fields(read_table(source), layout.field_renames)
-            table = cast_table_fields(table, layout.field_casts)
-            table = sort_table(table, layout.sort_keys)
-            write_optimized_table(
-                table=table,
-                output_file=temp_dir / f"{layout.name}.parquet",
-                sort_keys=layout.sort_keys,
-                row_group_bytes=row_group_bytes,
-                compression=compression,
-            )
+            output_file = temp_dir / f"{layout.name}.parquet"
+            if engine == "duckdb":
+                optimize_table_with_duckdb(
+                    source=source,
+                    output_file=output_file,
+                    layout=layout,
+                    row_group_bytes=row_group_bytes,
+                    compression=compression,
+                )
+            elif engine == "pyarrow":
+                table = rename_table_fields(read_table(source), layout.field_renames)
+                table = cast_table_fields(table, layout.field_casts)
+                table = sort_table(table, layout.sort_keys)
+                write_optimized_table(
+                    table=table,
+                    output_file=output_file,
+                    sort_keys=layout.sort_keys,
+                    row_group_bytes=row_group_bytes,
+                    compression=compression,
+                )
+            else:
+                raise ValueError(f"unsupported optimize engine: {engine}")
 
         assert temp_dir is not None
         manifest = {
             "layout": "single_file_per_table_sorted_row_groups",
             "row_group_bytes": row_group_bytes,
             "compression": compression.upper(),
+            "optimize_engine": engine,
             "parquet_sorting_columns_metadata": False,
             "tables": [
                 {

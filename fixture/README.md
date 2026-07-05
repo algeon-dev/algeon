@@ -25,8 +25,9 @@ fixture/data/
 
 `fixture/scripts/gen_tpch.py` and `gen_tpcds.py` own the full lifecycle —
 generation, layout optimization, and Parquet metadata verification — for each
-dataset. Both use `~/code/tpchgen-rs` by default, write Snappy
-Parquet, and make `optimized` the default `--variant`:
+dataset. Both use `~/code/tpchgen-rs` by default, write Snappy Parquet, use the
+release `tpcgen-cli` build by default, and make `optimized` the default
+`--variant`:
 
 ```bash
 # Optimized SF1 and SF10 into the in-repo fixture roots:
@@ -38,17 +39,20 @@ fixture/scripts/gen_tpch.py --scale 1 --scale 10 --variant both --out-root /opt/
 fixture/scripts/gen_tpcds.py --scale 1 --scale 10 --variant both --out-root /opt/dlami/nvme/tpcds --force
 ```
 
-`gen_tpch.py` drives `tpcgen-cli tpch parquet`; `gen_tpcds.py` builds a small
-temporary Rust writer under `target/tpcds-arrow-parquet` that consumes
-`tpchgen-rs/tpcdsgen-arrow`. The shared optimizer rewrites the final files as one
-Parquet file per table, sorted by workload-specific pruning keys, with row-group
-statistics and Snappy compression. Verification checks the expected table set,
-SF1/SF10 row counts, row-group presence, compression, and monotonic row-group
-min/max for the leading sort key. The files deliberately omit Parquet footer
-sorting-column metadata; the physical row-group ordering is for pruning stats,
-not for advertising source output ordering to DataFusion. Run either generator
-with `--help` for the full flag set (compression, row-group target bytes, batch
-size, threads, raw/optimized output).
+Both scripts drive `tpcgen-cli`: `gen_tpch.py` uses `tpcgen-cli tpch parquet`,
+and `gen_tpcds.py` uses `tpcgen-cli tpcds parquet`. The shared optimizer rewrites
+the final files as one Parquet file per table, sorted by workload-specific
+pruning keys, with row-group statistics and Snappy compression. DuckDB is not
+used to generate TPC rows; it only post-processes raw `tpcgen-cli` Parquet into
+the benchmark layout. DuckDB is the default optimizer engine so large scales can
+sort through its external temp storage; pass `--optimize-engine pyarrow` for the
+older in-memory path.
+Verification checks the expected table set, SF1/SF10/SF100 row counts, row-group
+presence, compression, and monotonic row-group min/max for the leading sort key.
+The files deliberately omit Parquet footer sorting-column metadata; the physical
+row-group ordering is for pruning stats, not for advertising source output
+ordering to DataFusion. Run either generator with `--help` for the full flag set
+(compression, row-group target bytes, profile, threads, raw/optimized output).
 
 ### Setting it up on a new host / for a new developer
 
