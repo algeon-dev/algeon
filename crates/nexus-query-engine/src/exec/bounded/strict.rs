@@ -265,10 +265,6 @@ fn compiled_bounded_pipeline_required_error(
     .with_fact("legacy_bounded_join_path_bridge", "disabled")
     .with_fact("result_sink_kind", sink_kind);
 
-    for (key, value) in &projection.facts {
-        error = error.with_fact_if_absent(key, value.as_str());
-    }
-
     if let Some(pipeline) = pipeline {
         error = error
             .with_fact("compiled_task_count", pipeline.tasks().len())
@@ -277,6 +273,12 @@ fn compiled_bounded_pipeline_required_error(
             .with_fact("compiled_resource_count", pipeline.resources().len())
             .with_fact("compiled_gate_count", pipeline.gates().len())
             .with_fact("compiled_sink_kind", pipeline.sink().kind().as_str());
+    }
+
+    // Projection facts may repeat pipeline-derived keys; the pipeline values
+    // above are authoritative, so only absent keys are added here.
+    for (key, value) in &projection.facts {
+        error = error.with_fact_if_absent(key, value.as_str());
     }
 
     error
