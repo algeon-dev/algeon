@@ -47,6 +47,8 @@ pub enum Expr {
     StringConcat(Vec<Expr>),
     /// Datetime component extraction.
     DateTimeComponent { input: Box<Expr>, component: DatetimeComponent },
+    /// Datetime floor/truncation.
+    DateTimeFloor { input: Box<Expr>, frequency: DatetimeRoundingFrequency },
     /// Calendrical timestamp offset with month, day, and nanosecond fields.
     DateTimeOffset { input: Box<Expr>, months: i32, days: i32, nanoseconds: i64 },
     /// Conditional: row-wise `if cond then true_val else false_val`.
@@ -287,6 +289,7 @@ impl Expr {
             | Expr::Scan { input, .. }
             | Expr::StringOp { input, .. }
             | Expr::DateTimeComponent { input, .. }
+            | Expr::DateTimeFloor { input, .. }
             | Expr::DateTimeOffset { input, .. } => input.output_name(),
             Expr::Reduce { .. } | Expr::StringConcat(_) => None,
             // Multi-input or no-source nodes.
@@ -535,6 +538,16 @@ impl Expr {
                         ctx.exec_options(),
                         ctx.operation,
                     )?,
+                    StringOperator::ReplaceWithBackrefs { pattern, replacement } => {
+                        string_ops::replace_with_backrefs_impl(
+                            &cv,
+                            pattern,
+                            replacement,
+                            &ctx.output_domain,
+                            ctx.exec_options(),
+                            ctx.operation,
+                        )?
+                    },
                     StringOperator::Slice(options) => {
                         string_ops::slice_impl(&cv, *options, &ctx.output_domain, ctx.exec_options(), ctx.operation)?
                     },
@@ -550,6 +563,19 @@ impl Expr {
                 let col = datetime_ops::extract_component_impl(
                     &cv,
                     *component,
+                    &ctx.output_domain,
+                    ctx.exec_options(),
+                    ctx.operation,
+                )?;
+                ctx.wrap_column(col)
+            },
+
+            Expr::DateTimeFloor { input, frequency } => {
+                let series = input.eval_with_context(ctx)?;
+                let cv = series.view()?;
+                let col = datetime_ops::floor_datetimes_impl(
+                    &cv,
+                    *frequency,
                     &ctx.output_domain,
                     ctx.exec_options(),
                     ctx.operation,

@@ -12,6 +12,8 @@
 #include <cudf/strings/combine.hpp>
 #include <cudf/strings/contains.hpp>
 #include <cudf/strings/find.hpp>
+#include <cudf/strings/regex/regex_program.hpp>
+#include <cudf/strings/replace_re.hpp>
 #include <cudf/strings/slice.hpp>
 #include <cudf/strings/strings_column_view.hpp>
 #include <cudf/strings/strip.hpp>
@@ -19,6 +21,7 @@
 #include <cudf/utilities/default_stream.hpp>
 #include <cudf/utilities/memory_resource.hpp>
 
+#include <string>
 #include <string_view>
 #include <vector>
 
@@ -66,6 +69,19 @@ static cudf_status_t validate_like_arguments(char const* pattern,
   }
   if (escape_character_len > 0 && escape_character == nullptr) {
     set_error("escape_character is null");
+    return CUDF_ERROR_NULL;
+  }
+  return CUDF_SUCCESS;
+}
+
+static cudf_status_t validate_string_range(char const* value, int32_t value_len, char const* value_name)
+{
+  if (value_len < 0) {
+    set_error(std::string{value_name} + "_len must be non-negative");
+    return CUDF_ERROR_INVALID_OPERATION;
+  }
+  if (value_len > 0 && value == nullptr) {
+    set_error(std::string{value_name} + " is null");
     return CUDF_ERROR_NULL;
   }
   return CUDF_SUCCESS;
@@ -284,6 +300,60 @@ cudf_status_t cudf_strings_like_ex(cudf_column_view_handle input,
       cudf_current_device_resource_guard current_mr{exec.mr_raw};
       auto result = cudf::strings::like(
         to_strings_view(input), pattern_view, escape_view, exec.stream, exec.mr);
+      exec.stream.synchronize();
+      cudf_record_synchronized_stream(exec.stream);
+      *out = cudf_release_column_handle(std::move(result));
+    }
+    return CUDF_SUCCESS;
+  }
+  CUDF_RUST_CATCH
+}
+
+// ---------------------------------------------------------------------------
+// Regex replace
+// ---------------------------------------------------------------------------
+
+cudf_status_t cudf_strings_replace_with_backrefs(cudf_column_view_handle input,
+                                                 char const* pattern,
+                                                 int32_t pattern_len,
+                                                 char const* replacement,
+                                                 int32_t replacement_len,
+                                                 cudf_column_handle* out)
+{
+  return cudf_strings_replace_with_backrefs_ex(
+    input, pattern, pattern_len, replacement, replacement_len, out, nullptr);
+}
+
+cudf_status_t cudf_strings_replace_with_backrefs_ex(cudf_column_view_handle input,
+                                                    char const* pattern,
+                                                    int32_t pattern_len,
+                                                    char const* replacement,
+                                                    int32_t replacement_len,
+                                                    cudf_column_handle* out,
+                                                    cudf_exec_options_t const* options)
+{
+  CUDF_RUST_NULL_CHECK(out, "out is null");
+  *out = nullptr;
+  CUDF_RUST_NULL_CHECK(input, "input is null");
+  cudf_status_t const pattern_status = validate_string_range(pattern, pattern_len, "pattern");
+  if (pattern_status != CUDF_SUCCESS) { return pattern_status; }
+  cudf_status_t const replacement_status =
+    validate_string_range(replacement, replacement_len, "replacement");
+  if (replacement_status != CUDF_SUCCESS) { return replacement_status; }
+
+  CUDF_RUST_TRY
+  {
+    cudf_exec_context exec          = cudf_make_exec_context();
+    cudf_status_t const exec_status = cudf_resolve_exec_options(options, &exec);
+    if (exec_status != CUDF_SUCCESS) { return exec_status; }
+
+    auto const pattern_view     = make_host_string_view(pattern, pattern_len);
+    auto const replacement_view = make_host_string_view(replacement, replacement_len);
+    {
+      cudf_current_device_resource_guard current_mr{exec.mr_raw};
+      auto prog   = cudf::strings::regex_program::create(pattern_view);
+      auto result = cudf::strings::replace_with_backrefs(
+        to_strings_view(input), *prog, replacement_view, exec.stream, exec.mr);
       exec.stream.synchronize();
       cudf_record_synchronized_stream(exec.stream);
       *out = cudf_release_column_handle(std::move(result));

@@ -29,6 +29,57 @@ pub enum DatetimeComponent {
     Day = 2,
 }
 
+/// Datetime floor/ceil/round frequencies supported by cudf-rs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[repr(i32)]
+pub enum DatetimeRoundingFrequency {
+    Day = 0,
+    Hour = 1,
+    Minute = 2,
+    Second = 3,
+    Millisecond = 4,
+    Microsecond = 5,
+    Nanosecond = 6,
+}
+
+impl DatetimeRoundingFrequency {
+    pub(crate) const fn name(self) -> &'static str {
+        match self {
+            DatetimeRoundingFrequency::Day => "day",
+            DatetimeRoundingFrequency::Hour => "hour",
+            DatetimeRoundingFrequency::Minute => "minute",
+            DatetimeRoundingFrequency::Second => "second",
+            DatetimeRoundingFrequency::Millisecond => "millisecond",
+            DatetimeRoundingFrequency::Microsecond => "microsecond",
+            DatetimeRoundingFrequency::Nanosecond => "nanosecond",
+        }
+    }
+
+    pub(crate) fn to_raw(self) -> cudf_sys::cudf_datetime_rounding_frequency_t {
+        match self {
+            DatetimeRoundingFrequency::Day => cudf_sys::cudf_datetime_rounding_frequency_t::CUDF_DATETIME_ROUNDING_DAY,
+            DatetimeRoundingFrequency::Hour => {
+                cudf_sys::cudf_datetime_rounding_frequency_t::CUDF_DATETIME_ROUNDING_HOUR
+            },
+            DatetimeRoundingFrequency::Minute => {
+                cudf_sys::cudf_datetime_rounding_frequency_t::CUDF_DATETIME_ROUNDING_MINUTE
+            },
+            DatetimeRoundingFrequency::Second => {
+                cudf_sys::cudf_datetime_rounding_frequency_t::CUDF_DATETIME_ROUNDING_SECOND
+            },
+            DatetimeRoundingFrequency::Millisecond => {
+                cudf_sys::cudf_datetime_rounding_frequency_t::CUDF_DATETIME_ROUNDING_MILLISECOND
+            },
+            DatetimeRoundingFrequency::Microsecond => {
+                cudf_sys::cudf_datetime_rounding_frequency_t::CUDF_DATETIME_ROUNDING_MICROSECOND
+            },
+            DatetimeRoundingFrequency::Nanosecond => {
+                cudf_sys::cudf_datetime_rounding_frequency_t::CUDF_DATETIME_ROUNDING_NANOSECOND
+            },
+        }
+    }
+}
+
 impl DatetimeComponent {
     pub(crate) const fn name(self) -> &'static str {
         match self {
@@ -76,6 +127,41 @@ fn require_timestamp_offset_input(input: &ColumnView<'_>, operation: &'static st
             .with_fact(FACT_TYPE_ID, type_id)
             .with_detail("expected_family", "timestamp"))
     }
+}
+
+/// Floor timestamp values to the requested frequency.
+pub fn floor_datetimes(input: &ColumnView<'_>, frequency: DatetimeRoundingFrequency) -> Result<Column> {
+    let ctx = ExecutionOverrides::new();
+    let execution = ResolvedExecution::unary(input.execution_domain(), &ctx, "datetime::floor")?;
+    floor_datetimes_impl(input, frequency, execution.output_domain(), Some(execution.exec_options()), "datetime::floor")
+}
+
+pub(crate) fn floor_datetimes_impl(
+    input: &ColumnView<'_>,
+    frequency: DatetimeRoundingFrequency,
+    output_domain: &Arc<ExecutionDomain>,
+    exec_options: Option<&cudf_sys::cudf_exec_options_t>,
+    operation: &'static str,
+) -> Result<Column> {
+    let input_type_id = require_timestamp_offset_input(input, operation)?;
+    let mut out = ptr::null_mut();
+    let frequency_ffi = frequency.to_raw();
+    let status = match exec_options {
+        Some(options) => unsafe {
+            cudf_sys::cudf_datetime_floor_ex(input.raw_handle(), frequency_ffi, &mut out, options)
+        },
+        None => unsafe { cudf_sys::cudf_datetime_floor(input.raw_handle(), frequency_ffi, &mut out) },
+    };
+    error::check_status_in_with_details(
+        status,
+        operation,
+        [
+            ("frequency", frequency.name().to_string()),
+            ("input_type_id", input_type_id.to_string()),
+            ("execution_context_provided", exec_options.is_some().to_string()),
+        ],
+    )?;
+    unsafe { Column::from_raw_with_domain(out, Arc::clone(output_domain)) }
 }
 
 /// Extract a datetime component as a new `INT16` column.

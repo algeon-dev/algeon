@@ -253,6 +253,7 @@ fn lower_expr(
         | Expr::StringOp { .. }
         | Expr::StringConcat(_)
         | Expr::DateTimeComponent { .. }
+        | Expr::DateTimeFloor { .. }
         | Expr::DateTimeOffset { .. }
         | Expr::InList { .. }
         | Expr::IfElse { .. } => unsupported_predicate(operation, expr_kind(expr)),
@@ -599,6 +600,7 @@ fn expr_kind(expr: &Expr) -> &'static str {
         Expr::StringOp { .. } => "string_op",
         Expr::StringConcat(_) => "string_concat",
         Expr::DateTimeComponent { .. } => "datetime_component",
+        Expr::DateTimeFloor { .. } => "datetime_floor",
         Expr::DateTimeOffset { .. } => "datetime_offset",
         Expr::InList { .. } => "in_list",
         Expr::IfElse { .. } => "if_else",
