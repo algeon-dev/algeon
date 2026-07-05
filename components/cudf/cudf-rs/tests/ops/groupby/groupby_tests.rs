@@ -2,13 +2,14 @@
 use cudf::{
     ErrorCode, ErrorKind,
     core::Table,
-    ops::groupby::{self, AggregationRequest, GroupByAgg, NullPolicy},
+    ops::groupby::{self, AggregationRequest, GroupByAgg, NullPolicy, PreparedGroupBy},
     testing::prelude::*,
 };
 
 use crate::common::{
-    arm_next_groupby_negative_total_columns_fault, column_from_slice, error_context_value, explicit_i32_column,
-    last_exec_mr_value, last_exec_stream_value, last_sync_stream_value, reset_exec_observation, reset_sync_observation,
+    arm_next_groupby_negative_total_columns_fault, column_from_slice, column_from_slice_nullable,
+    dataframe_from_columns, error_context_value, explicit_i32_column, last_exec_mr_value, last_exec_stream_value,
+    last_sync_stream_value, reset_exec_observation, reset_sync_observation,
 };
 
 fn assert_groupby_validation_error(err: &cudf::Error, operation: &str, reason: &str, remedy: &str) {
@@ -111,6 +112,112 @@ fn test_groupby_sum() {
     pairs.sort_by_key(|&(k, _)| k);
 
     assert_eq!(pairs, vec![(1, 40), (2, 60)]);
+}
+
+#[test]
+fn test_groupby_aggregate_sorted_uses_sorted_key_contract() {
+    // Keys are ascending with duplicate groups contiguous, matching cuDF's
+    // sorted-key groupby aggregate contract.
+    let keys_col = column_from_slice(&[1i32, 1, 2, 2, 3]).unwrap();
+    let vals_col = column_from_slice(&[10i64, 30, 20, 40, 5]).unwrap();
+
+    let keys_table = Table::from_columns(vec![keys_col]).unwrap();
+    let kv = keys_table.testing_view().unwrap();
+
+    let vals_view = vals_col.testing_view().unwrap();
+    let requests = [AggregationRequest { values: &vals_view, aggregations: &[GroupByAgg::Sum] }];
+
+    let result = groupby::groupby_aggregate_sorted(&kv, &requests, NullPolicy::Exclude).unwrap();
+
+    let keys: Vec<i32> = result.keys.testing_view().unwrap().column(0).unwrap().to_vec::<i32>().unwrap();
+    let sums: Vec<i64> = result.results[0][0].testing_view().unwrap().to_vec::<i64>().unwrap();
+    let mut pairs: Vec<(i32, i64)> = keys.into_iter().zip(sums).collect();
+    pairs.sort_by_key(|&(key, _)| key);
+
+    assert_eq!(pairs, vec![(1, 40), (2, 60), (3, 5)]);
+}
+
+#[test]
+fn test_prepared_groupby_reuses_key_state_for_multiple_aggregations() {
+    let keys_col = column_from_slice(&[1i32, 2, 1, 3, 2, 3]).unwrap();
+    let left_vals = column_from_slice(&[10i64, 20, 30, 40, 50, 60]).unwrap();
+    let right_vals = column_from_slice(&[1i64, 2, 3, 4, 5, 6]).unwrap();
+
+    let keys_table = Table::from_columns(vec![keys_col]).unwrap();
+    let keys_view = keys_table.testing_view().unwrap();
+    let prepared = PreparedGroupBy::new(&keys_view, NullPolicy::Exclude).unwrap();
+    let prepared_facts = prepared.prepare_groups().unwrap();
+    assert_eq!(prepared_facts.num_groups, 3);
+    assert!(prepared_facts.grouped_key_output_bytes > 0);
+    assert_eq!(prepared_facts.max_group_size, 2);
+
+    let left_view = left_vals.testing_view().unwrap();
+    let left_requests = [AggregationRequest { values: &left_view, aggregations: &[GroupByAgg::Sum] }];
+    let left_result = prepared.aggregate(&left_requests).unwrap();
+
+    let right_view = right_vals.testing_view().unwrap();
+    let right_requests =
+        [AggregationRequest { values: &right_view, aggregations: &[GroupByAgg::Min, GroupByAgg::Max] }];
+    let right_result = prepared.aggregate(&right_requests).unwrap();
+
+    let left_keys: Vec<i32> = left_result.keys.testing_view().unwrap().column(0).unwrap().to_vec::<i32>().unwrap();
+    let left_sums: Vec<i64> = left_result.results[0][0].testing_view().unwrap().to_vec::<i64>().unwrap();
+    let mut left_pairs: Vec<(i32, i64)> = left_keys.into_iter().zip(left_sums).collect();
+    left_pairs.sort_by_key(|&(key, _)| key);
+    assert_eq!(left_pairs, vec![(1, 40), (2, 70), (3, 100)]);
+
+    let right_keys: Vec<i32> = right_result.keys.testing_view().unwrap().column(0).unwrap().to_vec::<i32>().unwrap();
+    let mins: Vec<i64> = right_result.results[0][0].testing_view().unwrap().to_vec::<i64>().unwrap();
+    let maxes: Vec<i64> = right_result.results[0][1].testing_view().unwrap().to_vec::<i64>().unwrap();
+    let mut triples: Vec<(i32, i64, i64)> =
+        right_keys.into_iter().zip(mins.into_iter().zip(maxes)).map(|(key, (min, max))| (key, min, max)).collect();
+    triples.sort_by_key(|&(key, _, _)| key);
+    assert_eq!(triples, vec![(1, 1, 3), (2, 2, 5), (3, 4, 6)]);
+}
+
+#[test]
+fn test_prepared_groupby_preserves_include_null_key_contract() {
+    let keys_col = column_from_slice_nullable(&[1i32, 0, 1, 0, 2], &[true, false, true, false, true]).unwrap();
+    let vals_col = column_from_slice(&[10i64, 20, 30, 40, 5]).unwrap();
+
+    let keys_table = Table::from_columns(vec![keys_col]).unwrap();
+    let keys_view = keys_table.testing_view().unwrap();
+    let prepared = PreparedGroupBy::new(&keys_view, NullPolicy::Include).unwrap();
+    let prepared_facts = prepared.prepare_groups().unwrap();
+    assert_eq!(prepared_facts.num_groups, 3);
+    assert!(prepared_facts.grouped_key_output_bytes > 0);
+    assert_eq!(prepared_facts.max_group_size, 2);
+    let vals_view = vals_col.testing_view().unwrap();
+    let requests = [AggregationRequest { values: &vals_view, aggregations: &[GroupByAgg::Sum] }];
+
+    let result = prepared.aggregate(&requests).unwrap();
+
+    let keys = result.keys.testing_view().unwrap().column(0).unwrap().to_optional_vec::<i32>().unwrap();
+    let sums = result.results[0][0].testing_view().unwrap().to_vec::<i64>().unwrap();
+    let mut pairs: Vec<(Option<i32>, i64)> = keys.into_iter().zip(sums).collect();
+    pairs.sort_by_key(|&(key, _)| key);
+    assert_eq!(pairs, vec![(None, 60), (Some(1), 40), (Some(2), 5)]);
+}
+
+#[test]
+fn test_dataframe_groupby_prepare_groups_reports_null_policy_cardinality() {
+    let keys = column_from_slice_nullable(&[1i32, 0, 1, 0, 2], &[true, false, true, false, true]).unwrap();
+    let values = column_from_slice(&[10i64, 20, 30, 40, 5]).unwrap();
+    let df = dataframe_from_columns(vec!["key".to_string(), "value".to_string()], vec![keys, values]).unwrap();
+
+    let exclude_facts = df.groupby(["key"]).prepare_groups().unwrap();
+    assert_eq!(exclude_facts.num_groups, 2);
+    assert!(exclude_facts.grouped_key_output_bytes > 0);
+    assert_eq!(exclude_facts.max_group_size, 2);
+
+    let include_facts = df
+        .groupby(["key"])
+        .options(cudf::GroupByOptions::builder().include_null_keys(true).build())
+        .prepare_groups()
+        .unwrap();
+    assert_eq!(include_facts.num_groups, 3);
+    assert!(include_facts.grouped_key_output_bytes > 0);
+    assert_eq!(include_facts.max_group_size, 2);
 }
 
 #[test]

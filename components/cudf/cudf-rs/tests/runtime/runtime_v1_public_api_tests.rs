@@ -268,6 +268,14 @@ fn dataframe_in_context_routes_representative_operation_families_through_context
     assert_frame_residency(&grouped, df.testing_execution_domain_id(), ctx_stream, ctx_mr);
     assert_eq!(sorted_i32_i64_rows(&grouped, "id", "val_sum"), vec![(1, 10), (2, 60), (3, 30)]);
 
+    reset_dependency_observation();
+    reset_exec_observation();
+    let prepared_facts = df.groupby(["id"]).with_execution(&ctx).prepare_groups().unwrap();
+    assert_eq!(last_exec_stream_value(), ctx_stream);
+    assert_eq!(last_exec_mr_value(), ctx_mr);
+    assert_eq!(dependency_wait_call_count_for_stream(ctx_stream), 1);
+    assert_eq!(prepared_facts.num_groups, 3);
+
     reset_exec_observation();
     let filtered = df.with_execution(&ctx).filter_expr(col("id").ge(2i32) & col("val").lt(35i32)).unwrap();
     assert_eq!(last_exec_stream_value(), ctx_stream);
@@ -298,6 +306,14 @@ fn dataframe_in_context_routes_representative_operation_families_through_context
     );
     assert_eq!(sorted_i32_i32_rows(&with_columns, "id", "score"), vec![(1, 11), (2, 22), (2, 42), (3, 33)]);
     assert_eq!(with_columns.series("id_total").unwrap().to_vec_strict::<i64>().unwrap(), vec![8, 8, 8, 8]);
+
+    reset_exec_observation();
+    let with_position = df.with_execution(&ctx).with_position_column("row_id").unwrap();
+    assert_eq!(last_exec_stream_value(), ctx_stream);
+    assert_eq!(last_exec_mr_value(), ctx_mr);
+    assert_frame_residency(&with_position, df.testing_execution_domain_id(), ctx_stream, ctx_mr);
+    assert_eq!(with_position.series("row_id").unwrap().to_vec_strict::<i32>().unwrap(), vec![0, 1, 2, 3]);
+    assert_eq!(with_position.series("val").unwrap().as_column().testing_execution_domain_stream_value(), ctx_stream);
 
     let default_with_columns = df.with_columns([("score", col("id") + col("val"))]).unwrap();
     assert_eq!(

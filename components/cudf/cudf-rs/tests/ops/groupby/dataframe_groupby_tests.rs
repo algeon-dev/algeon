@@ -138,6 +138,90 @@ fn test_groupby_agg_with_budget_applies_token_reports_output_and_matches_agg() {
 }
 
 #[test]
+fn test_prepare_sort_groupby_with_budget_reports_exact_group_facts_and_reuses_handle() {
+    let keys = column_from_slice(&[1i32, 2, 1, 2]).unwrap();
+    let vals = column_from_slice(&[10i64, 20, 30, 40]).unwrap();
+    let df =
+        crate::common::dataframe_from_columns(vec!["key".to_string(), "value".to_string()], vec![keys, vals]).unwrap();
+    let specs = [AggSpec::new("value", GroupByAgg::Sum)];
+    let expected = df.groupby(["key"]).agg(&specs).unwrap();
+    let token = with_test_runtime(|runtime| {
+        runtime
+            .execution_budget_token(
+                ExecutionBudgetRequest::new(64 * 1024 * 1024).with_boundary("prepared_sort_groupby"),
+            )
+            .unwrap()
+    });
+
+    reset_exec_observation();
+    let outcome = df.groupby(["key"]).prepare_sort_groupby_with_budget(&token).unwrap();
+    let prepared_exec_mr = last_exec_mr_value();
+    let prepared = outcome.value();
+    let facts = prepared.prepared_facts();
+    let report = outcome.report();
+
+    assert_eq!(facts.num_groups, 2);
+    assert!(facts.grouped_key_output_bytes > 0);
+    assert_eq!(facts.max_group_size, 2);
+    assert_eq!(report.request().boundary(), "prepared_sort_groupby");
+    assert_eq!(report.enforcement(), ExecutionBudgetEnforcement::StreamBoundReservation);
+    assert_eq!(report.status(), ExecutionBudgetStatus::ReservationEnforced);
+    assert_eq!(report.output_rows(), Some(facts.num_groups));
+    assert_eq!(report.output_bytes(), None);
+    assert_eq!(report.retained_bytes(), None);
+    assert_eq!(report.unresolved_contract(), Some("libcudf_prepared_groupby_retained_state_memory_unavailable"));
+    assert_eq!(
+        report.context_facts().get("prepared_groupby_strategy").map(String::as_str),
+        Some("prepared_sort_groupby")
+    );
+    assert_eq!(report.context_facts().get("prepared_groupby_num_groups").map(String::as_str), Some("2"));
+    assert_eq!(
+        report.context_facts().get("prepared_groupby_grouped_key_output_bytes").map(String::as_str),
+        Some(facts.grouped_key_output_bytes.to_string().as_str())
+    );
+    assert_eq!(report.context_facts().get("prepared_groupby_max_group_size").map(String::as_str), Some("2"));
+    assert_eq!(
+        report.context_facts().get("prepared_groupby_memory_facts_status").map(String::as_str),
+        Some("grouped_key_output_only_retained_state_unavailable")
+    );
+    assert_eq!(
+        prepared_exec_mr,
+        token.memory_resource().testing_raw_handle_value(),
+        "budgeted prepared groupby should route preparation through the device manager resource",
+    );
+
+    reset_exec_observation();
+    let agg_outcome = prepared.agg_with_budget(&specs, &token).unwrap();
+    let prepared_agg_exec_mr = last_exec_mr_value();
+    let result = agg_outcome.value();
+    let agg_report = agg_outcome.report();
+    let output_bytes = dataframe_device_allocated_size_bytes(result);
+    assert_eq!(groupby_sum_pairs(&result), groupby_sum_pairs(&expected));
+    assert_eq!(agg_report.request().boundary(), "prepared_sort_groupby");
+    assert_eq!(agg_report.enforcement(), ExecutionBudgetEnforcement::StreamBoundReservation);
+    assert_eq!(agg_report.status(), ExecutionBudgetStatus::ReservationEnforced);
+    assert_eq!(agg_report.output_rows(), Some(result.num_rows()));
+    assert_eq!(agg_report.output_bytes(), Some(output_bytes));
+    assert_eq!(agg_report.retained_bytes(), Some(output_bytes));
+    assert_budget_report_high_water(agg_report, output_bytes);
+    assert_eq!(
+        agg_report.unresolved_contract(),
+        Some("libcudf_groupby_aggregate_temporary_workspace_preflight_unavailable")
+    );
+    assert_eq!(
+        agg_report.context_facts().get("prepared_groupby_strategy").map(String::as_str),
+        Some("prepared_sort_groupby")
+    );
+    assert_eq!(agg_report.context_facts().get("prepared_groupby_num_groups").map(String::as_str), Some("2"));
+    assert_eq!(prepared_agg_exec_mr, token.memory_resource().testing_raw_handle_value());
+    assert_eq!(
+        result.testing_execution_domain_mr_value(),
+        token.memory_resource().testing_raw_handle_value(),
+        "budgeted prepared aggregate output should retain the device manager resource",
+    );
+}
+
+#[test]
 fn test_groupby_q17_avg_quantity_with_budget_reports_current_diagnostics() {
     let partkeys = column_from_slice(&[10i32, 20, 10, 20, 30]).unwrap();
     let quantities = column_from_slice(&[4.0f64, 10.0, 8.0, 30.0, 5.0]).unwrap();

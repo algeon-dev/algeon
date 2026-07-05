@@ -4,7 +4,7 @@
 //! `Series` or plain Rust values, while keeping one low-level smoke path
 //! through `view()` plus `cudf::ops::*`.
 use cudf::{
-    DataFrame, TypeId,
+    DataFrame, ExecutionOverrides, TypeId,
     core::error::{FactKeyName, FactValue},
     ops::{copying, filter as low_level_filter, search},
     testing::prelude::*,
@@ -262,6 +262,63 @@ fn test_with_encoded_and_decoded_column_workflows() {
 
     let decoded = encoded.with_decoded_column("kind_roundtrip", "kind_id", &codebook).unwrap();
     assert_eq!(decoded.series("kind_roundtrip").unwrap().to_strings_strict().unwrap(), vec!["b", "a", "c", "a"]);
+}
+
+#[test]
+fn test_with_decoded_column_preserves_null_codes_as_null_values() {
+    let df = DataFrame::from_series([(
+        "kind",
+        crate::common::unnamed_nullable_series(&["b", "", "a", "b"], &[true, false, true, true]).unwrap(),
+    )])
+    .unwrap();
+    let codebook = df.codebook("kind").unwrap();
+    let encoded = df.with_encoded_column("kind_id", "kind", &codebook).unwrap();
+
+    let decoded = encoded.with_decoded_column("kind_roundtrip", "kind_id", &codebook).unwrap();
+
+    assert_eq!(
+        decoded.series("kind_roundtrip").unwrap().to_optional_strings().unwrap(),
+        vec![Some("b".to_string()), None, Some("a".to_string()), Some("b".to_string())]
+    );
+}
+
+#[test]
+fn test_with_execution_encoded_and_decoded_columns_use_borrowed_context_domain() {
+    let _event_observation = crate::common::lock_event_observation();
+    let df_runtime = sample_runtime();
+    let ctx_runtime = sample_runtime();
+    let df = DataFrame::from_series([(
+        "kind",
+        df_runtime.series(&["segment-alpha-long", "segment-beta-long", "segment-alpha-long"]).unwrap(),
+    )])
+    .unwrap();
+    let codebook = df.codebook("kind").unwrap();
+    let ctx =
+        ExecutionOverrides::new().with_stream(ctx_runtime.stream()).with_memory_resource(ctx_runtime.memory_resource());
+    let expected_stream = ctx_runtime.stream().testing_raw_handle_value();
+    let expected_mr = ctx_runtime.memory_resource().testing_raw_handle_value();
+
+    crate::common::reset_dependency_observation();
+    reset_exec_observation();
+    let encoded = df.with_execution(&ctx).with_encoded_column("kind_id", "kind", &codebook).unwrap();
+
+    assert_eq!(encoded.series("kind_id").unwrap().to_vec_strict::<i32>().unwrap(), vec![0, 1, 0]);
+    assert_eq!(encoded.testing_execution_domain_stream_value(), expected_stream);
+    assert_eq!(encoded.testing_execution_domain_mr_value(), expected_mr);
+    assert_eq!(last_exec_stream_value(), expected_stream);
+    assert_eq!(last_exec_mr_value(), expected_mr);
+
+    reset_exec_observation();
+    let decoded = encoded.with_execution(&ctx).with_decoded_column("kind_roundtrip", "kind_id", &codebook).unwrap();
+
+    assert_eq!(
+        decoded.series("kind_roundtrip").unwrap().to_strings_strict().unwrap(),
+        vec!["segment-alpha-long", "segment-beta-long", "segment-alpha-long"]
+    );
+    assert_eq!(decoded.testing_execution_domain_stream_value(), expected_stream);
+    assert_eq!(decoded.testing_execution_domain_mr_value(), expected_mr);
+    assert_eq!(last_exec_stream_value(), expected_stream);
+    assert_eq!(last_exec_mr_value(), expected_mr);
 }
 
 #[test]
