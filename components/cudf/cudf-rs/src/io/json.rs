@@ -119,15 +119,16 @@ impl JsonTableWriteOptions {
 
 /// Write a table to a JSON file.
 pub fn write_json(table: &Table, options: &JsonTableWriteOptions) -> Result<()> {
-    let exec_options = options.runtime.as_ref().map(|runtime| runtime.execution_domain().exec_options_raw());
+    let operation = "io::json::write_json";
     let table_view = table.view()?;
-    write_json_with_exec(&table_view, options, exec_options.as_ref())
+    let execution = super::resolve_write_execution(&table_view, options.runtime(), operation)?;
+    write_json_with_exec(&table_view, options, execution.exec_options())
 }
 
 pub(crate) fn write_json_with_exec(
     table: &crate::core::TableView<'_>,
     options: &JsonTableWriteOptions,
-    exec_options: Option<&cudf_sys::cudf_exec_options_t>,
+    exec_options: &cudf_sys::cudf_exec_options_t,
 ) -> Result<()> {
     let operation = "io::json::write_json";
     let filepath = super::path_to_cstring(&options.filepath, operation)?;
@@ -166,28 +167,16 @@ pub(crate) fn write_json_with_exec(
     let names_ptr = if c_name_ptrs.is_empty() { ptr::null() } else { c_name_ptrs.as_ptr() };
 
     error::check_status_in_with_details(
-        match exec_options {
-            Some(exec_options) => unsafe {
-                cudf_sys::cudf_io_write_json_ex(
-                    table.raw_handle(),
-                    filepath.as_ptr(),
-                    names_ptr,
-                    c_names.len() as i32,
-                    i32::from(options.lines),
-                    i32::from(options.include_nulls),
-                    exec_options,
-                )
-            },
-            None => unsafe {
-                cudf_sys::cudf_io_write_json(
-                    table.raw_handle(),
-                    filepath.as_ptr(),
-                    names_ptr,
-                    c_names.len() as i32,
-                    i32::from(options.lines),
-                    i32::from(options.include_nulls),
-                )
-            },
+        unsafe {
+            cudf_sys::cudf_io_write_json_ex(
+                table.raw_handle(),
+                filepath.as_ptr(),
+                names_ptr,
+                c_names.len() as i32,
+                i32::from(options.lines),
+                i32::from(options.include_nulls),
+                exec_options,
+            )
         },
         operation,
         [("lines", options.lines.to_string()), ("include_nulls", options.include_nulls.to_string())],

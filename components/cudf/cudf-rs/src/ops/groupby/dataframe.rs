@@ -188,7 +188,7 @@ impl<'a> GroupBy<'a> {
     /// - Any key or value column name is not in the DataFrame's schema
     pub fn agg(&self, specs: &[AggSpec]) -> Result<DataFrame> {
         let output_domain = Arc::clone(self.df.execution_domain());
-        self.agg_impl(specs, None, output_domain, "groupby::GroupBy::agg")
+        self.agg_impl(specs, output_domain, "groupby::GroupBy::agg")
     }
 
     /// Execute the groupby with a hard execution-budget token.
@@ -209,16 +209,15 @@ impl<'a> GroupBy<'a> {
         let output_domain = ctx
             .resolve_output_domain(self.df.execution_domain())
             .map_err(|error| error.reanchor_if_needed(operation))?;
-        let exec_options = output_domain.explicit_exec_options_raw();
         let output = self
-            .agg_impl_with_groupby_error_mapper(specs, exec_options, output_domain, operation, |error| {
+            .agg_impl_with_groupby_error_mapper(specs, output_domain, operation, |error| {
                 annotate_groupby_budget_execution_error(error, token, operation)
             })
             .map_err(|error| error.reanchor_if_needed(operation))?;
         let output_bytes = dataframe_device_allocated_size_bytes(&output, operation)?;
         let output_rows = output.num_rows();
         let report = token
-            .hard_enforced_report()
+            .reservation_enforced_report()
             .with_retained_bytes(output_bytes)
             .with_output_bytes(output_bytes)
             .with_output_rows(output_rows)
@@ -230,12 +229,7 @@ impl<'a> GroupBy<'a> {
     /// Execute the groupby with a borrowed per-operation execution override.
     pub(crate) fn agg_in_context(&self, specs: &[AggSpec], ctx: &ExecutionOverrides<'_>) -> Result<DataFrame> {
         let output_domain = ctx.resolve_output_domain(self.df.execution_domain())?;
-        self.agg_impl(
-            specs,
-            output_domain.explicit_exec_options_raw(),
-            output_domain,
-            "groupby::GroupBy::with_execution::agg",
-        )
+        self.agg_impl(specs, output_domain, "groupby::GroupBy::with_execution::agg")
     }
     pub(crate) fn __debug_agg_in_context(&self, specs: &[AggSpec], ctx: &ExecutionOverrides<'_>) -> Result<DataFrame> {
         self.agg_in_context(specs, ctx)
@@ -244,17 +238,15 @@ impl<'a> GroupBy<'a> {
     fn agg_impl(
         &self,
         specs: &[AggSpec],
-        exec_options: Option<cudf_sys::cudf_exec_options_t>,
         output_domain: Arc<ExecutionDomain>,
         operation: &'static str,
     ) -> Result<DataFrame> {
-        self.agg_impl_with_groupby_error_mapper(specs, exec_options, output_domain, operation, |error| error)
+        self.agg_impl_with_groupby_error_mapper(specs, output_domain, operation, |error| error)
     }
 
     fn agg_impl_with_groupby_error_mapper<F>(
         &self,
         specs: &[AggSpec],
-        exec_options: Option<cudf_sys::cudf_exec_options_t>,
         output_domain: Arc<ExecutionDomain>,
         operation: &'static str,
         map_groupby_error: F,
@@ -270,7 +262,6 @@ impl<'a> GroupBy<'a> {
         let execution =
             ResolvedExecution::with_output_domain(Arc::clone(&output_domain), [self.df.execution_domain()], operation)?;
         let output_domain = Arc::clone(execution.output_domain());
-        let resolved_exec_options = exec_options.as_ref().unwrap_or(execution.exec_options());
 
         require_non_empty_group_keys(self.keys.len(), operation)?;
 
@@ -352,7 +343,7 @@ impl<'a> GroupBy<'a> {
             &requests,
             self.options.null_policy(),
             &output_domain,
-            Some(resolved_exec_options),
+            execution.exec_options(),
             operation,
         )
         .map_err(map_groupby_error)?;
@@ -415,20 +406,14 @@ impl<'a> GroupBy<'a> {
     /// type as the corresponding column.
     pub fn shift(&self, specs: &[ShiftSpec]) -> Result<DataFrame> {
         let output_domain = Arc::clone(self.df.execution_domain());
-        self.shift_impl(specs, None, output_domain, false, "groupby::GroupBy::shift")
+        self.shift_impl(specs, output_domain, false, "groupby::GroupBy::shift")
     }
 
     /// Apply a per-group row shift with a borrowed per-operation execution
     /// override.
     pub(crate) fn shift_in_context(&self, specs: &[ShiftSpec], ctx: &ExecutionOverrides<'_>) -> Result<DataFrame> {
         let output_domain = ctx.resolve_output_domain(self.df.execution_domain())?;
-        self.shift_impl(
-            specs,
-            output_domain.explicit_exec_options_raw(),
-            output_domain,
-            false,
-            "groupby::GroupBy::with_execution::shift",
-        )
+        self.shift_impl(specs, output_domain, false, "groupby::GroupBy::with_execution::shift")
     }
 
     /// Apply a per-group row shift, asserting that key columns are already
@@ -439,13 +424,12 @@ impl<'a> GroupBy<'a> {
     /// produces undefined output ordering within groups.
     pub fn shift_sorted(&self, specs: &[ShiftSpec]) -> Result<DataFrame> {
         let output_domain = Arc::clone(self.df.execution_domain());
-        self.shift_impl(specs, None, output_domain, true, "groupby::GroupBy::shift_sorted")
+        self.shift_impl(specs, output_domain, true, "groupby::GroupBy::shift_sorted")
     }
 
     fn shift_impl(
         &self,
         specs: &[ShiftSpec],
-        exec_options: Option<cudf_sys::cudf_exec_options_t>,
         output_domain: Arc<ExecutionDomain>,
         keys_are_sorted: bool,
         operation: &'static str,
@@ -463,7 +447,6 @@ impl<'a> GroupBy<'a> {
             .collect();
         let execution = ResolvedExecution::with_output_domain(Arc::clone(&output_domain), secondaries, operation)?;
         let output_domain = Arc::clone(execution.output_domain());
-        let resolved_exec_options = exec_options.as_ref().unwrap_or(execution.exec_options());
 
         require_non_empty_group_keys(self.keys.len(), operation)?;
 
@@ -509,7 +492,7 @@ impl<'a> GroupBy<'a> {
             self.options.null_policy(),
             keys_are_sorted,
             &output_domain,
-            Some(resolved_exec_options),
+            execution.exec_options(),
             operation,
         )?;
 

@@ -160,9 +160,9 @@ impl DataFramePreparedSort {
 
     /// Gather the retained input DataFrame using a hard budget token.
     ///
-    /// The gathered output allocation is routed through the token's limiting
-    /// memory resource. The returned report records the retained sorted-order
-    /// bytes and exact materialized output bytes. libcudf sort temporary
+    /// The gathered output allocation is routed through the token's
+    /// stream-bound reservation. The returned report records the retained
+    /// sorted-order bytes and exact materialized output bytes. libcudf sort temporary
     /// workspace preflight sizing is still not exposed and is recorded as an
     /// unresolved lower-level contract.
     pub fn materialize_with_budget(&self, token: &ExecutionBudgetToken) -> Result<BudgetedExecutionOutcome<DataFrame>> {
@@ -176,7 +176,7 @@ impl DataFramePreparedSort {
             .map_err(|error| token.annotate_error(error, operation))?;
         let output = self.materialize_in(&ctx).map_err(|error| token.annotate_error(error, operation))?;
         let report = token
-            .hard_enforced_report()
+            .reservation_enforced_report()
             .with_retained_bytes(retained_bytes)
             .with_output_bytes(output_bytes)
             .with_unresolved_contract(PREPARED_SORT_TEMPORARY_WORKSPACE_CONTRACT_GAP);
@@ -224,13 +224,7 @@ impl DataFrame {
         S: AsRef<str>,
     {
         let output_domain = ctx.resolve_output_domain(&self.domain)?;
-        self.sort_values_impl(
-            by,
-            options,
-            output_domain.explicit_exec_options_raw(),
-            output_domain,
-            "dataframe::with_execution::sort_values",
-        )
+        self.sort_values_impl(by, options, output_domain, "dataframe::with_execution::sort_values")
     }
     pub(crate) fn __debug_sort_values_in_context<I, S>(
         &self,
@@ -251,7 +245,7 @@ impl DataFrame {
         I: IntoIterator<Item = S>,
         S: AsRef<str>,
     {
-        self.sort_values_impl(by, options, None, Arc::clone(&self.domain), "dataframe::sort_values")
+        self.sort_values_impl(by, options, Arc::clone(&self.domain), "dataframe::sort_values")
     }
 
     /// Prepare a retained sorted-order gather map for a later DataFrame sort.
@@ -271,13 +265,14 @@ impl DataFrame {
         I: IntoIterator<Item = S>,
         S: AsRef<str>,
     {
-        self.prepare_sort_values_impl(by, options, None, Arc::clone(&self.domain), "dataframe::prepare_sort_values")
+        self.prepare_sort_values_impl(by, options, Arc::clone(&self.domain), "dataframe::prepare_sort_values")
     }
 
     /// Prepare a retained sorted-order gather map using a hard budget token.
     ///
-    /// Sorted-order creation is routed through the token's limiting memory
-    /// resource. The returned report records the retained sorted-order bytes.
+    /// Sorted-order creation is routed through the token's stream-bound
+    /// reservation. The returned report records the retained sorted-order
+    /// bytes.
     /// libcudf sort temporary workspace preflight sizing is still not exposed
     /// and is recorded as an unresolved lower-level contract.
     pub fn prepare_sort_values_with_budget<I, S>(
@@ -299,7 +294,7 @@ impl DataFrame {
             .retained_sorted_order_device_allocated_size_bytes()
             .map_err(|error| token.annotate_error(error, operation))?;
         let report = token
-            .hard_enforced_report()
+            .reservation_enforced_report()
             .with_retained_bytes(retained_bytes)
             .with_unresolved_contract(PREPARED_SORT_TEMPORARY_WORKSPACE_CONTRACT_GAP);
 
@@ -310,7 +305,6 @@ impl DataFrame {
         &self,
         by: I,
         options: SortOptions,
-        exec_options: Option<cudf_sys::cudf_exec_options_t>,
         output_domain: Arc<ExecutionDomain>,
         operation: &'static str,
     ) -> Result<Self>
@@ -319,7 +313,6 @@ impl DataFrame {
         S: AsRef<str>,
     {
         let execution = ResolvedExecution::with_output_domain(Arc::clone(&output_domain), [&self.domain], operation)?;
-        let resolved_exec_options = exec_options.as_ref().unwrap_or(execution.exec_options());
 
         let by: SmallVec<[String; SORT_KEY_INLINE_CAPACITY]> = by.into_iter().map(|s| s.as_ref().to_string()).collect();
         let by_refs: SmallVec<[&str; SORT_KEY_INLINE_CAPACITY]> = by.iter().map(|s| s.as_str()).collect();
@@ -336,7 +329,7 @@ impl DataFrame {
                 &tv,
                 sorting::SortKeyConfig::new(Some(&orders), null_order_ref),
                 options.stable,
-                sorting::SortExecution::new(&output_domain, Some(resolved_exec_options), operation),
+                sorting::SortExecution::new(&output_domain, execution.exec_options(), operation),
             )?
         } else {
             let keys_table = tv.select_columns(&key_indices)?;
@@ -345,7 +338,7 @@ impl DataFrame {
                 &keys_table,
                 sorting::SortKeyConfig::new(Some(&orders), null_order_ref),
                 options.stable,
-                sorting::SortExecution::new(&output_domain, Some(resolved_exec_options), operation),
+                sorting::SortExecution::new(&output_domain, execution.exec_options(), operation),
             )?
         }
         .with_execution_domain(output_domain);
@@ -364,20 +357,13 @@ impl DataFrame {
         S: AsRef<str>,
     {
         let output_domain = ctx.resolve_output_domain(&self.domain)?;
-        self.prepare_sort_values_impl(
-            by,
-            options,
-            output_domain.explicit_exec_options_raw(),
-            output_domain,
-            "dataframe::with_execution::prepare_sort_values",
-        )
+        self.prepare_sort_values_impl(by, options, output_domain, "dataframe::with_execution::prepare_sort_values")
     }
 
     fn prepare_sort_values_impl<I, S>(
         &self,
         by: I,
         options: SortOptions,
-        exec_options: Option<cudf_sys::cudf_exec_options_t>,
         output_domain: Arc<ExecutionDomain>,
         operation: &'static str,
     ) -> Result<DataFramePreparedSort>
@@ -386,7 +372,6 @@ impl DataFrame {
         S: AsRef<str>,
     {
         let execution = ResolvedExecution::with_output_domain(Arc::clone(&output_domain), [&self.domain], operation)?;
-        let resolved_exec_options = exec_options.as_ref().unwrap_or(execution.exec_options());
 
         let by: SmallVec<[String; SORT_KEY_INLINE_CAPACITY]> = by.into_iter().map(|s| s.as_ref().to_string()).collect();
         let by_refs: SmallVec<[&str; SORT_KEY_INLINE_CAPACITY]> = by.iter().map(|s| s.as_str()).collect();
@@ -422,7 +407,7 @@ impl DataFrame {
         let sorted_order = sorting::sorted_order_impl(
             keys_table.table(),
             sorting::SortKeyConfig::new(Some(&orders), null_orders.as_deref()),
-            sorting::SortExecution::new(&output_domain, Some(resolved_exec_options), operation),
+            sorting::SortExecution::new(&output_domain, execution.exec_options(), operation),
         )?
         .with_execution_domain(output_domain);
         let sorted_order = Series::from_column(sorted_order)

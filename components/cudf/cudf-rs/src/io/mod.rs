@@ -40,11 +40,15 @@ use std::{
     ffi::{CStr, CString, c_char},
     fs,
     path::Path,
+    sync::Arc,
 };
 
-use crate::core::{
-    error::{self, Error, ErrorCode, FACT_COLUMN_INDEX, Result},
-    table::Table,
+use crate::{
+    core::{
+        error::{self, Error, ErrorCode, FACT_COLUMN_INDEX, Result},
+        table::{Table, TableView},
+    },
+    runtime::{Runtime, execution_resolver::ResolvedExecution},
 };
 
 pub mod csv;
@@ -56,6 +60,17 @@ pub mod source;
 pub struct TableReadOutput {
     pub table: Table,
     pub column_names: Option<Vec<String>>,
+}
+
+fn resolve_write_execution(
+    table: &TableView<'_>,
+    runtime: Option<&Runtime>,
+    operation: &'static str,
+) -> Result<ResolvedExecution> {
+    let write_domain = runtime
+        .map(|runtime| Arc::clone(runtime.execution_domain()))
+        .unwrap_or_else(|| Arc::clone(table.execution_domain()));
+    ResolvedExecution::with_output_domain(write_domain, [table.execution_domain()], operation)
 }
 
 /// Build a domestic IO error carrying the offending path and the underlying

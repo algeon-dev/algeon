@@ -138,7 +138,7 @@ impl DataFrame {
         if !ExecutionDomain::same_provenance(&self.domain, &output_domain) {
             ExecutionDomain::insert_stream_dependency(&self.domain, &output_domain, operation)?;
         }
-        let exec_options = output_domain.explicit_exec_options_raw();
+        let exec_options = output_domain.exec_options_raw();
         let tv = self.build_table_view()?;
         let result_table = filter::apply_row_predicate_impl(
             &tv,
@@ -146,7 +146,7 @@ impl DataFrame {
             lowered.root_index,
             &lowered.scalars,
             &output_domain,
-            exec_options.as_ref(),
+            &exec_options,
             operation,
         )?;
         Self::from_table_with_names(result_table, self.column_names_owned())
@@ -168,13 +168,8 @@ impl DataFrame {
         )?;
         let output_domain = Arc::clone(execution.output_domain());
         let tv = self.build_table_view()?;
-        let result_table = filter::apply_boolean_mask_impl(
-            &tv,
-            &mask_view,
-            &output_domain,
-            Some(execution.exec_options()),
-            operation,
-        )?;
+        let result_table =
+            filter::apply_boolean_mask_impl(&tv, &mask_view, &output_domain, execution.exec_options(), operation)?;
         Self::from_table_with_names(result_table, self.column_names_owned())
     }
 }

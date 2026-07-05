@@ -147,7 +147,7 @@ unsafe impl Sync for DistinctHashJoinHandle {}
 
 impl DistinctHashJoinHandle {
     fn new(build: &TableView<'_>, domain: &Arc<ExecutionDomain>, operation: &'static str) -> Result<Self> {
-        let exec_options = domain.explicit_exec_options_raw();
+        let exec_options = domain.exec_options_raw();
         let mut handle = ptr::null_mut();
         error::check_status_in_with_details(
             unsafe {
@@ -155,11 +155,11 @@ impl DistinctHashJoinHandle {
                     build.raw_handle(),
                     cudf_sys::cudf_null_equality_t::CUDF_NULL_EQUALITY_EQUAL,
                     &mut handle,
-                    exec_options.as_ref().map_or(ptr::null(), |options| options as *const _),
+                    &exec_options,
                 )
             },
             operation,
-            [("execution_context_provided", exec_options.is_some().to_string())],
+            [("execution_authority", "retained_domain".to_string())],
         )?;
         Ok(Self {
             handle: error::require_non_null(handle, operation, "distinct hash join")?,
@@ -173,7 +173,7 @@ impl DistinctHashJoinHandle {
         output_domain: &Arc<ExecutionDomain>,
         operation: &'static str,
     ) -> Result<Column> {
-        let exec_options = output_domain.explicit_exec_options_raw();
+        let exec_options = output_domain.exec_options_raw();
         let mut handle = ptr::null_mut();
         error::check_status_in_with_details(
             unsafe {
@@ -181,11 +181,11 @@ impl DistinctHashJoinHandle {
                     self.handle.as_ptr(),
                     probe.raw_handle(),
                     &mut handle,
-                    exec_options.as_ref().map_or(ptr::null(), |options| options as *const _),
+                    &exec_options,
                 )
             },
             operation,
-            [("execution_context_provided", exec_options.is_some().to_string())],
+            [("execution_authority", "retained_domain".to_string())],
         )?;
         unsafe { Column::from_raw_with_domain(handle, Arc::clone(output_domain)) }
     }
@@ -232,7 +232,7 @@ fn execute_probe(
         &backend,
         &meta,
         execution.output_domain(),
-        Some(execution.exec_options()),
+        execution.exec_options(),
         operation,
     )
 }
@@ -243,7 +243,7 @@ fn execute_reusable_probe(
     backend: &DistinctHashJoinHandle,
     meta: &ProbeMetadata,
     output_domain: &Arc<ExecutionDomain>,
-    exec_options: Option<&cudf_sys::cudf_exec_options_t>,
+    exec_options: &cudf_sys::cudf_exec_options_t,
     operation: &'static str,
 ) -> Result<Column> {
     if meta.input_count == 0 {
@@ -502,7 +502,7 @@ impl LookupTable {
             self.backend.as_ref(),
             &meta,
             execution.output_domain(),
-            Some(execution.exec_options()),
+            execution.exec_options(),
             operation,
         )
         .map_err(|e| e.reanchor_if_needed(operation))?;

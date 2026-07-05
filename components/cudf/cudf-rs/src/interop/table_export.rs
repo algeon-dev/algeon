@@ -516,7 +516,7 @@ pub(super) fn prepare_partitioned_device_table_export_from_columns<'a>(
 
     for group in producer.grouped_borrowed_columns() {
         let export = prepare_device_table_export_from_columns(
-            group.columns.into_iter(),
+            group.columns,
             producer.num_rows(),
             None,
             &group.domain,

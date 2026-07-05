@@ -6,50 +6,14 @@ fn mixed_join_indices_impl(
     null_equality: NullEquality,
     join_type: JoinType,
     output_domain: &Arc<ExecutionDomain>,
-    exec_options: Option<&cudf_sys::cudf_exec_options_t>,
+    exec_options: &cudf_sys::cudf_exec_options_t,
     operation: &'static str,
 ) -> Result<JoinIndices> {
     let mut out_left = ptr::null_mut();
     let mut out_right = ptr::null_mut();
     let null_eq_ffi = null_equality.to_join_raw();
-    let status = match (join_type, exec_options) {
-        (JoinType::Inner, None) => unsafe {
-            cudf_sys::cudf_mixed_inner_join_indices(
-                tables.left_equality.raw_handle(),
-                tables.right_equality.raw_handle(),
-                tables.left_conditional.raw_handle(),
-                tables.right_conditional.raw_handle(),
-                predicate.raw_handle(),
-                null_eq_ffi,
-                &mut out_left,
-                &mut out_right,
-            )
-        },
-        (JoinType::Left, None) => unsafe {
-            cudf_sys::cudf_mixed_left_join_indices(
-                tables.left_equality.raw_handle(),
-                tables.right_equality.raw_handle(),
-                tables.left_conditional.raw_handle(),
-                tables.right_conditional.raw_handle(),
-                predicate.raw_handle(),
-                null_eq_ffi,
-                &mut out_left,
-                &mut out_right,
-            )
-        },
-        (JoinType::Full, None) => unsafe {
-            cudf_sys::cudf_mixed_full_join_indices(
-                tables.left_equality.raw_handle(),
-                tables.right_equality.raw_handle(),
-                tables.left_conditional.raw_handle(),
-                tables.right_conditional.raw_handle(),
-                predicate.raw_handle(),
-                null_eq_ffi,
-                &mut out_left,
-                &mut out_right,
-            )
-        },
-        (JoinType::Inner, Some(options)) => unsafe {
+    let status = match join_type {
+        JoinType::Inner => unsafe {
             cudf_sys::cudf_mixed_inner_join_indices_ex(
                 tables.left_equality.raw_handle(),
                 tables.right_equality.raw_handle(),
@@ -59,10 +23,10 @@ fn mixed_join_indices_impl(
                 null_eq_ffi,
                 &mut out_left,
                 &mut out_right,
-                options,
+                exec_options,
             )
         },
-        (JoinType::Left, Some(options)) => unsafe {
+        JoinType::Left => unsafe {
             cudf_sys::cudf_mixed_left_join_indices_ex(
                 tables.left_equality.raw_handle(),
                 tables.right_equality.raw_handle(),
@@ -72,10 +36,10 @@ fn mixed_join_indices_impl(
                 null_eq_ffi,
                 &mut out_left,
                 &mut out_right,
-                options,
+                exec_options,
             )
         },
-        (JoinType::Full, Some(options)) => unsafe {
+        JoinType::Full => unsafe {
             cudf_sys::cudf_mixed_full_join_indices_ex(
                 tables.left_equality.raw_handle(),
                 tables.right_equality.raw_handle(),
@@ -85,12 +49,12 @@ fn mixed_join_indices_impl(
                 null_eq_ffi,
                 &mut out_left,
                 &mut out_right,
-                options,
+                exec_options,
             )
         },
     };
 
-    check_join_indices_status(status, null_equality, exec_options.is_some(), operation)?;
+    check_join_indices_status(status, null_equality, operation)?;
 
     Ok(JoinIndices {
         left: unsafe { Column::from_raw_with_domain(out_left, Arc::clone(output_domain)) }?,
@@ -104,46 +68,13 @@ fn mixed_join_begin_size_data_impl<'a>(
     null_equality: NullEquality,
     join_type: SizedMixedJoinType,
     output_domain: &Arc<ExecutionDomain>,
-    exec_options: Option<&cudf_sys::cudf_exec_options_t>,
+    exec_options: &cudf_sys::cudf_exec_options_t,
     operation: &'static str,
 ) -> Result<MixedJoinSizeData<'a>> {
     let mut handle = ptr::null_mut();
     let null_eq_ffi = null_equality.to_join_raw();
-    let status = match (join_type, exec_options) {
-        (SizedMixedJoinType::Inner, None) => unsafe {
-            cudf_sys::cudf_mixed_inner_join_begin_size_data(
-                tables.left_equality.raw_handle(),
-                tables.right_equality.raw_handle(),
-                tables.left_conditional.raw_handle(),
-                tables.right_conditional.raw_handle(),
-                predicate.raw_handle(),
-                null_eq_ffi,
-                &mut handle,
-            )
-        },
-        (SizedMixedJoinType::Left, None) => unsafe {
-            cudf_sys::cudf_mixed_left_join_begin_size_data(
-                tables.left_equality.raw_handle(),
-                tables.right_equality.raw_handle(),
-                tables.left_conditional.raw_handle(),
-                tables.right_conditional.raw_handle(),
-                predicate.raw_handle(),
-                null_eq_ffi,
-                &mut handle,
-            )
-        },
-        (SizedMixedJoinType::Full, None) => unsafe {
-            cudf_sys::cudf_mixed_full_join_begin_size_data(
-                tables.left_equality.raw_handle(),
-                tables.right_equality.raw_handle(),
-                tables.left_conditional.raw_handle(),
-                tables.right_conditional.raw_handle(),
-                predicate.raw_handle(),
-                null_eq_ffi,
-                &mut handle,
-            )
-        },
-        (SizedMixedJoinType::Inner, Some(options)) => unsafe {
+    let status = match join_type {
+        SizedMixedJoinType::Inner => unsafe {
             cudf_sys::cudf_mixed_inner_join_begin_size_data_ex(
                 tables.left_equality.raw_handle(),
                 tables.right_equality.raw_handle(),
@@ -152,10 +83,10 @@ fn mixed_join_begin_size_data_impl<'a>(
                 predicate.raw_handle(),
                 null_eq_ffi,
                 &mut handle,
-                options,
+                exec_options,
             )
         },
-        (SizedMixedJoinType::Left, Some(options)) => unsafe {
+        SizedMixedJoinType::Left => unsafe {
             cudf_sys::cudf_mixed_left_join_begin_size_data_ex(
                 tables.left_equality.raw_handle(),
                 tables.right_equality.raw_handle(),
@@ -164,10 +95,10 @@ fn mixed_join_begin_size_data_impl<'a>(
                 predicate.raw_handle(),
                 null_eq_ffi,
                 &mut handle,
-                options,
+                exec_options,
             )
         },
-        (SizedMixedJoinType::Full, Some(options)) => unsafe {
+        SizedMixedJoinType::Full => unsafe {
             cudf_sys::cudf_mixed_full_join_begin_size_data_ex(
                 tables.left_equality.raw_handle(),
                 tables.right_equality.raw_handle(),
@@ -176,7 +107,7 @@ fn mixed_join_begin_size_data_impl<'a>(
                 predicate.raw_handle(),
                 null_eq_ffi,
                 &mut handle,
-                options,
+                exec_options,
             )
         },
     };
@@ -187,7 +118,7 @@ fn mixed_join_begin_size_data_impl<'a>(
         [
             ("join_type", join_type.as_str().to_string()),
             ("null_equality", format!("{:?}", null_equality).to_lowercase()),
-            ("execution_context_provided", exec_options.is_some().to_string()),
+            ("execution_authority", "retained_domain".to_string()),
             ("reservation_contract", "mixed_join_retained_size_data".to_string()),
         ],
     )?;
@@ -216,35 +147,13 @@ fn mixed_single_side_join_begin_size_data_impl<'a>(
     null_equality: NullEquality,
     join_type: SizedMixedSingleSideJoinType,
     output_domain: &Arc<ExecutionDomain>,
-    exec_options: Option<&cudf_sys::cudf_exec_options_t>,
+    exec_options: &cudf_sys::cudf_exec_options_t,
     operation: &'static str,
 ) -> Result<MixedSingleSideJoinSizeData<'a>> {
     let mut handle = ptr::null_mut();
     let null_eq_ffi = null_equality.to_join_raw();
-    let status = match (join_type, exec_options) {
-        (SizedMixedSingleSideJoinType::LeftSemi, None) => unsafe {
-            cudf_sys::cudf_mixed_left_semi_join_begin_size_data(
-                tables.left_equality.raw_handle(),
-                tables.right_equality.raw_handle(),
-                tables.left_conditional.raw_handle(),
-                tables.right_conditional.raw_handle(),
-                predicate.raw_handle(),
-                null_eq_ffi,
-                &mut handle,
-            )
-        },
-        (SizedMixedSingleSideJoinType::LeftAnti, None) => unsafe {
-            cudf_sys::cudf_mixed_left_anti_join_begin_size_data(
-                tables.left_equality.raw_handle(),
-                tables.right_equality.raw_handle(),
-                tables.left_conditional.raw_handle(),
-                tables.right_conditional.raw_handle(),
-                predicate.raw_handle(),
-                null_eq_ffi,
-                &mut handle,
-            )
-        },
-        (SizedMixedSingleSideJoinType::LeftSemi, Some(options)) => unsafe {
+    let status = match join_type {
+        SizedMixedSingleSideJoinType::LeftSemi => unsafe {
             cudf_sys::cudf_mixed_left_semi_join_begin_size_data_ex(
                 tables.left_equality.raw_handle(),
                 tables.right_equality.raw_handle(),
@@ -253,10 +162,10 @@ fn mixed_single_side_join_begin_size_data_impl<'a>(
                 predicate.raw_handle(),
                 null_eq_ffi,
                 &mut handle,
-                options,
+                exec_options,
             )
         },
-        (SizedMixedSingleSideJoinType::LeftAnti, Some(options)) => unsafe {
+        SizedMixedSingleSideJoinType::LeftAnti => unsafe {
             cudf_sys::cudf_mixed_left_anti_join_begin_size_data_ex(
                 tables.left_equality.raw_handle(),
                 tables.right_equality.raw_handle(),
@@ -265,7 +174,7 @@ fn mixed_single_side_join_begin_size_data_impl<'a>(
                 predicate.raw_handle(),
                 null_eq_ffi,
                 &mut handle,
-                options,
+                exec_options,
             )
         },
     };
@@ -276,7 +185,7 @@ fn mixed_single_side_join_begin_size_data_impl<'a>(
         [
             ("join_type", join_type.as_str().to_string()),
             ("null_equality", format!("{:?}", null_equality).to_lowercase()),
-            ("execution_context_provided", exec_options.is_some().to_string()),
+            ("execution_authority", "retained_domain".to_string()),
             ("reservation_contract", "mixed_join_retained_size_data".to_string()),
         ],
     )?;
@@ -305,35 +214,13 @@ fn mixed_single_side_join_indices_impl(
     null_equality: NullEquality,
     semi_join: bool,
     output_domain: &Arc<ExecutionDomain>,
-    exec_options: Option<&cudf_sys::cudf_exec_options_t>,
+    exec_options: &cudf_sys::cudf_exec_options_t,
     operation: &'static str,
 ) -> Result<SingleSideJoinIndices> {
     let mut out = ptr::null_mut();
     let null_eq_ffi = null_equality.to_join_raw();
-    let status = match (semi_join, exec_options) {
-        (true, None) => unsafe {
-            cudf_sys::cudf_mixed_left_semi_join_indices(
-                tables.left_equality.raw_handle(),
-                tables.right_equality.raw_handle(),
-                tables.left_conditional.raw_handle(),
-                tables.right_conditional.raw_handle(),
-                predicate.raw_handle(),
-                null_eq_ffi,
-                &mut out,
-            )
-        },
-        (false, None) => unsafe {
-            cudf_sys::cudf_mixed_left_anti_join_indices(
-                tables.left_equality.raw_handle(),
-                tables.right_equality.raw_handle(),
-                tables.left_conditional.raw_handle(),
-                tables.right_conditional.raw_handle(),
-                predicate.raw_handle(),
-                null_eq_ffi,
-                &mut out,
-            )
-        },
-        (true, Some(options)) => unsafe {
+    let status = if semi_join {
+        unsafe {
             cudf_sys::cudf_mixed_left_semi_join_indices_ex(
                 tables.left_equality.raw_handle(),
                 tables.right_equality.raw_handle(),
@@ -342,10 +229,11 @@ fn mixed_single_side_join_indices_impl(
                 predicate.raw_handle(),
                 null_eq_ffi,
                 &mut out,
-                options,
+                exec_options,
             )
-        },
-        (false, Some(options)) => unsafe {
+        }
+    } else {
+        unsafe {
             cudf_sys::cudf_mixed_left_anti_join_indices_ex(
                 tables.left_equality.raw_handle(),
                 tables.right_equality.raw_handle(),
@@ -354,21 +242,15 @@ fn mixed_single_side_join_indices_impl(
                 predicate.raw_handle(),
                 null_eq_ffi,
                 &mut out,
-                options,
+                exec_options,
             )
-        },
+        }
     };
 
-    check_join_indices_status(status, null_equality, exec_options.is_some(), operation)?;
+    check_join_indices_status(status, null_equality, operation)?;
 
     Ok(SingleSideJoinIndices { indices: unsafe { Column::from_raw_with_domain(out, Arc::clone(output_domain)) }? })
 }
-
-/// Inner join: returns only rows with matching keys in both tables.
-///
-/// `left_keys` and `right_keys` define the join condition.
-/// `left_payload` and `right_payload` are additional columns carried through.
-/// The result tables contain keys + payload columns concatenated.
 
 fn mixed_join_indices_with_context(
     tables: MixedJoinTables<'_, '_>,
@@ -385,7 +267,7 @@ fn mixed_join_indices_with_context(
         null_equality,
         join_type,
         execution.output_domain(),
-        Some(execution.exec_options()),
+        execution.exec_options(),
         operation,
     )
 }
@@ -405,7 +287,7 @@ fn mixed_join_begin_size_data_with_context<'a>(
         null_equality,
         join_type,
         execution.output_domain(),
-        Some(execution.exec_options()),
+        execution.exec_options(),
         operation,
     )
 }
@@ -425,7 +307,7 @@ fn mixed_single_side_join_begin_size_data_with_context<'a>(
         null_equality,
         join_type,
         execution.output_domain(),
-        Some(execution.exec_options()),
+        execution.exec_options(),
         operation,
     )
 }
@@ -445,7 +327,7 @@ fn mixed_single_side_join_indices_with_context(
         null_equality,
         semi_join,
         execution.output_domain(),
-        Some(execution.exec_options()),
+        execution.exec_options(),
         operation,
     )
 }
@@ -818,9 +700,6 @@ pub(crate) fn mixed_left_anti_join_begin_size_data_in<'a>(
 // Low-level join functions
 // ---------------------------------------------------------------------------
 
-/// Full (outer) join: all rows from both sides are preserved, with
-/// null-padding where there is no match.
-
 fn mixed_size_data_gather_map_reservation_size_bytes(
     handle: &MixedJoinSizeDataHandle,
     operation: &'static str,
@@ -884,7 +763,7 @@ impl MixedJoinSizeData<'_> {
             [
                 ("join_type", self.join_type.as_str().to_string()),
                 ("output_size", self.output_size.to_string()),
-                ("execution_context_provided", true.to_string()),
+                ("execution_authority", "resolved_domain".to_string()),
                 ("reservation_contract", "mixed_join_retained_size_data_materialize_indices".to_string()),
             ],
         )?;
@@ -944,7 +823,7 @@ impl MixedSingleSideJoinSizeData<'_> {
             [
                 ("join_type", self.join_type.as_str().to_string()),
                 ("output_size", self.output_size.to_string()),
-                ("execution_context_provided", true.to_string()),
+                ("execution_authority", "resolved_domain".to_string()),
                 ("reservation_contract", "mixed_join_retained_size_data_materialize_single_indices".to_string()),
             ],
         )?;

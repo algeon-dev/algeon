@@ -105,15 +105,16 @@ impl CsvTableWriteOptions {
 
 /// Write a table to a CSV file.
 pub fn write_csv(table: &Table, options: &CsvTableWriteOptions) -> Result<()> {
-    let exec_options = options.runtime.as_ref().map(|runtime| runtime.execution_domain().exec_options_raw());
+    let operation = "io::csv::write_csv";
     let table_view = table.view()?;
-    write_csv_with_exec(&table_view, options, exec_options.as_ref())
+    let execution = super::resolve_write_execution(&table_view, options.runtime(), operation)?;
+    write_csv_with_exec(&table_view, options, execution.exec_options())
 }
 
 pub(crate) fn write_csv_with_exec(
     table: &crate::core::TableView<'_>,
     options: &CsvTableWriteOptions,
-    exec_options: Option<&cudf_sys::cudf_exec_options_t>,
+    exec_options: &cudf_sys::cudf_exec_options_t,
 ) -> Result<()> {
     let filepath = super::path_to_cstring(&options.filepath, "io::csv::write_csv")?;
 
@@ -161,28 +162,16 @@ pub(crate) fn write_csv_with_exec(
     error::check_status_in_with_details(
         // SAFETY: table handle is valid (NonNull). filepath is a valid CString (converted above).
         // name_ptrs is either null or a valid pointer to num_cols CString pointers.
-        match exec_options {
-            Some(exec_options) => unsafe {
-                cudf_sys::cudf_io_write_csv_ex(
-                    table.raw_handle(),
-                    filepath.as_ptr(),
-                    name_ptrs,
-                    num_cols,
-                    options.delimiter as std::os::raw::c_char,
-                    if options.include_header { 1 } else { 0 },
-                    exec_options,
-                )
-            },
-            None => unsafe {
-                cudf_sys::cudf_io_write_csv(
-                    table.raw_handle(),
-                    filepath.as_ptr(),
-                    name_ptrs,
-                    num_cols,
-                    options.delimiter as std::os::raw::c_char,
-                    if options.include_header { 1 } else { 0 },
-                )
-            },
+        unsafe {
+            cudf_sys::cudf_io_write_csv_ex(
+                table.raw_handle(),
+                filepath.as_ptr(),
+                name_ptrs,
+                num_cols,
+                options.delimiter as std::os::raw::c_char,
+                if options.include_header { 1 } else { 0 },
+                exec_options,
+            )
         },
         "io::csv::write_csv",
         [

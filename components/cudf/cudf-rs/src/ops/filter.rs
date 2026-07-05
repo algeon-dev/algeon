@@ -71,21 +71,13 @@ pub(crate) fn apply_boolean_mask_impl(
     input: &TableView<'_>,
     mask: &ColumnView<'_>,
     output_domain: &Arc<ExecutionDomain>,
-    exec_options: Option<&cudf_sys::cudf_exec_options_t>,
+    exec_options: &cudf_sys::cudf_exec_options_t,
     operation: &'static str,
 ) -> Result<Table> {
     let mut out = ptr::null_mut();
-    let status = match exec_options {
-        Some(options) => unsafe {
-            cudf_sys::cudf_apply_boolean_mask_ex(input.raw_handle(), mask.raw_handle(), &mut out, options)
-        },
-        None => unsafe { cudf_sys::cudf_apply_boolean_mask(input.raw_handle(), mask.raw_handle(), &mut out) },
-    };
-    error::check_status_in_with_details(
-        status,
-        operation,
-        [("execution_context_provided", exec_options.is_some().to_string())],
-    )?;
+    let status =
+        unsafe { cudf_sys::cudf_apply_boolean_mask_ex(input.raw_handle(), mask.raw_handle(), &mut out, exec_options) };
+    error::check_status_in_with_details(status, operation, [("execution_authority", "retained_domain".to_string())])?;
     unsafe { Table::from_raw_with_domain(out, Arc::clone(output_domain)) }
 }
 
@@ -109,7 +101,7 @@ pub fn apply_boolean_mask(input: &TableView<'_>, mask: &ColumnView<'_>) -> Resul
         input,
         mask,
         execution.output_domain(),
-        Some(execution.exec_options()),
+        execution.exec_options(),
         "filter::apply_boolean_mask",
     )
 }
@@ -120,31 +112,20 @@ pub(crate) fn apply_row_predicate_impl(
     root_index: i32,
     retained_scalars: &[Scalar],
     output_domain: &Arc<ExecutionDomain>,
-    exec_options: Option<&cudf_sys::cudf_exec_options_t>,
+    exec_options: &cudf_sys::cudf_exec_options_t,
     operation: &'static str,
 ) -> Result<Table> {
     let _retained_scalars = retained_scalars;
     let mut out = ptr::null_mut();
-    let status = match exec_options {
-        Some(options) => unsafe {
-            cudf_sys::cudf_filter_rows_by_predicate_ex(
-                input.raw_handle(),
-                nodes.as_ptr(),
-                error::usize_to_i32(nodes.len(), operation, "node_count")?,
-                root_index,
-                &mut out,
-                options,
-            )
-        },
-        None => unsafe {
-            cudf_sys::cudf_filter_rows_by_predicate(
-                input.raw_handle(),
-                nodes.as_ptr(),
-                error::usize_to_i32(nodes.len(), operation, "node_count")?,
-                root_index,
-                &mut out,
-            )
-        },
+    let status = unsafe {
+        cudf_sys::cudf_filter_rows_by_predicate_ex(
+            input.raw_handle(),
+            nodes.as_ptr(),
+            error::usize_to_i32(nodes.len(), operation, "node_count")?,
+            root_index,
+            &mut out,
+            exec_options,
+        )
     };
     error::check_status_in_with_details(
         status,
@@ -152,7 +133,7 @@ pub(crate) fn apply_row_predicate_impl(
         [
             ("node_count", nodes.len().to_string()),
             ("root_index", root_index.to_string()),
-            ("execution_context_provided", exec_options.is_some().to_string()),
+            ("execution_authority", "retained_domain".to_string()),
         ],
     )?;
     unsafe { Table::from_raw_with_domain(out, Arc::clone(output_domain)) }

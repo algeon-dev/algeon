@@ -83,12 +83,14 @@ impl DeviceBuffer {
         let byte_len = mem::size_of_val(data);
         let buf = Self::create_on_current_device(byte_len, domain)?;
         if byte_len > 0 {
+            let exec_options = buf.domain.exec_options_raw();
             error::check_status_in(
                 unsafe {
-                    cudf_sys::cudf_device_buffer_copy_from_host(
+                    cudf_sys::cudf_device_buffer_copy_from_host_ex(
                         buf.handle.as_ptr(),
                         data.as_ptr() as *const c_void,
                         byte_len,
+                        &exec_options,
                     )
                 },
                 "device_buffer::from_host_data_in_runtime",

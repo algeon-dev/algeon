@@ -362,7 +362,13 @@ impl Expr {
             Expr::UnaryOp { op, input } => {
                 let series = input.eval_with_context(ctx)?;
                 let cv = series.view()?;
-                let col = unary::unary_operation_impl(&cv, *op, &ctx.output_domain, ctx.exec_options(), ctx.operation)?;
+                let col = unary::unary_operation_impl(
+                    &cv,
+                    *op,
+                    &ctx.output_domain,
+                    ctx.required_exec_options(),
+                    ctx.operation,
+                )?;
                 ctx.wrap_column(col)
             },
 
@@ -373,7 +379,7 @@ impl Expr {
                     &cv,
                     *decimal_places,
                     &ctx.output_domain,
-                    ctx.exec_options(),
+                    ctx.required_exec_options(),
                     ctx.operation,
                 )?;
                 ctx.wrap_column(col)
@@ -382,7 +388,8 @@ impl Expr {
             Expr::Cast { input, target } => {
                 let series = input.eval_with_context(ctx)?;
                 let cv = series.view()?;
-                let col = unary::cast_impl(&cv, target, &ctx.output_domain, ctx.exec_options(), ctx.operation)?;
+                let col =
+                    unary::cast_impl(&cv, target, &ctx.output_domain, ctx.required_exec_options(), ctx.operation)?;
                 ctx.wrap_column(col)
             },
 
@@ -403,7 +410,7 @@ impl Expr {
                     &cv,
                     target,
                     &ctx.output_domain,
-                    ctx.exec_options(),
+                    ctx.required_exec_options(),
                     "expr::try_cast",
                 )?;
                 ctx.wrap_column(col)
@@ -412,14 +419,14 @@ impl Expr {
             Expr::IsNull(input) => {
                 let series = input.eval_with_context(ctx)?;
                 let cv = series.view()?;
-                let col = unary::is_null_impl(&cv, &ctx.output_domain, ctx.exec_options(), ctx.operation)?;
+                let col = unary::is_null_impl(&cv, &ctx.output_domain, ctx.required_exec_options(), ctx.operation)?;
                 ctx.wrap_column(col)
             },
 
             Expr::IsNotNull(input) => {
                 let series = input.eval_with_context(ctx)?;
                 let cv = series.view()?;
-                let col = unary::is_valid_impl(&cv, &ctx.output_domain, ctx.exec_options(), ctx.operation)?;
+                let col = unary::is_valid_impl(&cv, &ctx.output_domain, ctx.required_exec_options(), ctx.operation)?;
                 ctx.wrap_column(col)
             },
 
@@ -436,7 +443,7 @@ impl Expr {
                     &cv,
                     &scalar,
                     &ctx.output_domain,
-                    ctx.exec_options(),
+                    ctx.required_exec_options(),
                     ctx.operation,
                 )?;
                 ctx.wrap_column(col)
@@ -451,7 +458,7 @@ impl Expr {
                     &cv,
                     &fill_cv,
                     &ctx.output_domain,
-                    ctx.exec_options(),
+                    ctx.required_exec_options(),
                     ctx.operation,
                 )?;
                 ctx.wrap_column(col)
@@ -464,7 +471,7 @@ impl Expr {
                     &cv,
                     *policy,
                     &ctx.output_domain,
-                    ctx.exec_options(),
+                    ctx.required_exec_options(),
                     ctx.operation,
                 )?;
                 ctx.wrap_column(col)
@@ -479,7 +486,7 @@ impl Expr {
                     ScanType::Inclusive,
                     NullPolicy::Exclude,
                     &ctx.output_domain,
-                    ctx.exec_options(),
+                    ctx.required_exec_options(),
                     ctx.operation,
                 )?;
                 ctx.wrap_column(col)
@@ -490,8 +497,14 @@ impl Expr {
                 let dt = series.dtype()?;
                 let cv = series.view()?;
                 let out_type = crate::frame::series::reduction::infer_reduce_output_type(&dt, agg, "expr::reduce")?;
-                let scalar =
-                    reduction::reduce_impl(&cv, agg, &out_type, &ctx.output_domain, ctx.exec_options(), ctx.operation)?;
+                let scalar = reduction::reduce_impl(
+                    &cv,
+                    agg,
+                    &out_type,
+                    &ctx.output_domain,
+                    ctx.required_exec_options(),
+                    ctx.operation,
+                )?;
                 let col = Column::from_scalar(&scalar, ctx.df.num_rows())?;
                 ctx.wrap_column(col)
             },
@@ -501,10 +514,10 @@ impl Expr {
                 let cv = series.view()?;
                 let col = match op {
                     StringOperator::Lower => {
-                        string_ops::to_lower_impl(&cv, &ctx.output_domain, ctx.exec_options(), ctx.operation)?
+                        string_ops::to_lower_impl(&cv, &ctx.output_domain, ctx.required_exec_options(), ctx.operation)?
                     },
                     StringOperator::Upper => {
-                        string_ops::to_upper_impl(&cv, &ctx.output_domain, ctx.exec_options(), ctx.operation)?
+                        string_ops::to_upper_impl(&cv, &ctx.output_domain, ctx.required_exec_options(), ctx.operation)?
                     },
                     StringOperator::Strip => {
                         let empty = Scalar::from_str_in_domain("", &ctx.output_domain)?;
@@ -513,7 +526,7 @@ impl Expr {
                             StripSide::Both,
                             &empty,
                             &ctx.output_domain,
-                            ctx.exec_options(),
+                            ctx.required_exec_options(),
                             ctx.operation,
                         )?
                     },
@@ -524,7 +537,7 @@ impl Expr {
                             StripSide::Left,
                             &empty,
                             &ctx.output_domain,
-                            ctx.exec_options(),
+                            ctx.required_exec_options(),
                             ctx.operation,
                         )?
                     },
@@ -535,23 +548,29 @@ impl Expr {
                             StripSide::Right,
                             &empty,
                             &ctx.output_domain,
-                            ctx.exec_options(),
+                            ctx.required_exec_options(),
                             ctx.operation,
                         )?
                     },
-                    StringOperator::Len => {
-                        string_ops::count_characters_impl(&cv, &ctx.output_domain, ctx.exec_options(), ctx.operation)?
-                    },
-                    StringOperator::ByteCount => {
-                        string_ops::count_bytes_impl(&cv, &ctx.output_domain, ctx.exec_options(), ctx.operation)?
-                    },
+                    StringOperator::Len => string_ops::count_characters_impl(
+                        &cv,
+                        &ctx.output_domain,
+                        ctx.required_exec_options(),
+                        ctx.operation,
+                    )?,
+                    StringOperator::ByteCount => string_ops::count_bytes_impl(
+                        &cv,
+                        &ctx.output_domain,
+                        ctx.required_exec_options(),
+                        ctx.operation,
+                    )?,
                     StringOperator::Contains(pat) => {
                         let scalar = Scalar::from_str_in_domain(pat, &ctx.output_domain)?;
                         string_ops::str_contains_impl(
                             &cv,
                             &scalar,
                             &ctx.output_domain,
-                            ctx.exec_options(),
+                            ctx.required_exec_options(),
                             ctx.operation,
                         )?
                     },
@@ -561,20 +580,26 @@ impl Expr {
                             &cv,
                             &scalar,
                             &ctx.output_domain,
-                            ctx.exec_options(),
+                            ctx.required_exec_options(),
                             ctx.operation,
                         )?
                     },
                     StringOperator::EndsWith(pat) => {
                         let scalar = Scalar::from_str_in_domain(pat, &ctx.output_domain)?;
-                        string_ops::ends_with_impl(&cv, &scalar, &ctx.output_domain, ctx.exec_options(), ctx.operation)?
+                        string_ops::ends_with_impl(
+                            &cv,
+                            &scalar,
+                            &ctx.output_domain,
+                            ctx.required_exec_options(),
+                            ctx.operation,
+                        )?
                     },
                     StringOperator::Like { pattern, escape } => string_ops::like_impl(
                         &cv,
                         pattern,
                         escape.as_deref(),
                         &ctx.output_domain,
-                        ctx.exec_options(),
+                        ctx.required_exec_options(),
                         ctx.operation,
                     )?,
                     StringOperator::ReplaceWithBackrefs { pattern, replacement } => {
@@ -583,13 +608,17 @@ impl Expr {
                             pattern,
                             replacement,
                             &ctx.output_domain,
-                            ctx.exec_options(),
+                            ctx.required_exec_options(),
                             ctx.operation,
                         )?
                     },
-                    StringOperator::Slice(options) => {
-                        string_ops::slice_impl(&cv, *options, &ctx.output_domain, ctx.exec_options(), ctx.operation)?
-                    },
+                    StringOperator::Slice(options) => string_ops::slice_impl(
+                        &cv,
+                        *options,
+                        &ctx.output_domain,
+                        ctx.required_exec_options(),
+                        ctx.operation,
+                    )?,
                 };
                 ctx.wrap_column(col)
             },
@@ -603,7 +632,7 @@ impl Expr {
                     &cv,
                     *component,
                     &ctx.output_domain,
-                    ctx.exec_options(),
+                    ctx.required_exec_options(),
                     ctx.operation,
                 )?;
                 ctx.wrap_column(col)
@@ -616,7 +645,7 @@ impl Expr {
                     &cv,
                     *frequency,
                     &ctx.output_domain,
-                    ctx.exec_options(),
+                    ctx.required_exec_options(),
                     ctx.operation,
                 )?;
                 ctx.wrap_column(col)
@@ -639,7 +668,7 @@ impl Expr {
                     &false_cv,
                     &cond_cv,
                     &ctx.output_domain,
-                    ctx.exec_options(),
+                    ctx.required_exec_options(),
                     ctx.operation,
                 )?;
                 ctx.wrap_column(col)
@@ -659,7 +688,7 @@ impl Expr {
                     &haystack_view,
                     &input_view,
                     &ctx.output_domain,
-                    ctx.exec_options(),
+                    ctx.required_exec_options(),
                     ctx.operation,
                 )?;
                 let col = if *negated {
@@ -668,7 +697,7 @@ impl Expr {
                         &view,
                         UnaryOperator::Not,
                         &ctx.output_domain,
-                        ctx.exec_options(),
+                        ctx.required_exec_options(),
                         ctx.operation,
                     )?
                 } else {
@@ -707,7 +736,7 @@ fn eval_binary_op_with_context(
         op,
         out_type,
         &ctx.output_domain,
-        ctx.exec_options(),
+        ctx.required_exec_options(),
         ctx.operation,
     )?;
     ctx.wrap_column(col)
@@ -778,7 +807,7 @@ fn cast_series_to_binary_operand_dtype(series: Series, target: DataType, ctx: &E
         return Ok(series);
     }
     let cv = series.view()?;
-    let column = unary::cast_impl(&cv, &target, &ctx.output_domain, ctx.exec_options(), ctx.operation)?;
+    let column = unary::cast_impl(&cv, &target, &ctx.output_domain, ctx.required_exec_options(), ctx.operation)?;
     drop(cv);
     ctx.wrap_column(column)
 }
@@ -796,7 +825,7 @@ fn apply_datetime_offset(
             &cv,
             months,
             &ctx.output_domain,
-            ctx.exec_options(),
+            ctx.required_exec_options(),
             ctx.operation,
         )?;
         drop(cv);
@@ -846,7 +875,7 @@ fn apply_datetime_offset(
             BinaryOperator::Add,
             &out_type,
             &ctx.output_domain,
-            ctx.exec_options(),
+            ctx.required_exec_options(),
             ctx.operation,
         )?
     };
@@ -937,17 +966,6 @@ pub fn col(name: impl Into<String>) -> Expr {
 pub fn concat(inputs: Vec<Expr>) -> Expr {
     Expr::StringConcat(inputs)
 }
-
-/// Create a `DECIMAL32` literal from its raw fixed-point representation.
-///
-/// `scale` is the cudf fixed-point scale, so a raw value of `12345` with
-/// scale `-2` represents `123.45`. Evaluation broadcasts the scalar to the
-/// input DataFrame row count.
-///
-/// Constructing the expression is allocation-free. Evaluation creates a
-/// device scalar and broadcasts it into a newly allocated device column in the
-/// resolved execution domain, retaining that provenance on the returned
-/// [`Series`]. Evaluation does not intentionally synchronize the host before
 
 // ===========================================================================
 // IntoExpr trait

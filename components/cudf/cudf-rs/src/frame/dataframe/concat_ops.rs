@@ -171,7 +171,7 @@ impl DataFrame {
     /// Returns an error if the schemas do not match (different names, count,
     /// order, or types).
     pub fn concat(&self, other: &DataFrame) -> Result<Self> {
-        self.concat_many_impl(&[other], None, None, "dataframe::concat")
+        self.concat_many_impl(&[other], None, "dataframe::concat")
     }
 
     /// Concatenate multiple DataFrames row-wise.
@@ -188,7 +188,7 @@ impl DataFrame {
     /// Returns an error if any DataFrame's schema does not match `self`
     /// (different names, count, order, or types).
     pub fn concat_many(&self, others: &[&DataFrame]) -> Result<Self> {
-        self.concat_many_impl(others, None, None, "dataframe::concat_many")
+        self.concat_many_impl(others, None, "dataframe::concat_many")
     }
 
     pub fn concat_by_name(&self, other: &DataFrame, options: ConcatByNameOptions) -> Result<Self> {
@@ -203,7 +203,7 @@ impl DataFrame {
 
         let output_names = concat_by_name_output_order(self, others);
         if output_names.is_empty() {
-            return self.concat_many_impl(others, None, None, operation);
+            return self.concat_many_impl(others, None, operation);
         }
 
         let dtypes = concat_by_name_schema(self, others, &output_names, options.alignment, operation)?;
@@ -214,7 +214,7 @@ impl DataFrame {
             .collect::<Result<Vec<_>>>()?;
         let aligned_other_refs: Vec<&DataFrame> = aligned_others.iter().collect();
 
-        aligned_self.concat_many_impl(&aligned_other_refs, None, None, operation)
+        aligned_self.concat_many_impl(&aligned_other_refs, None, operation)
     }
 
     /// Concatenate two DataFrames row-wise using a borrowed per-operation execution override.
@@ -226,13 +226,12 @@ impl DataFrame {
     pub(crate) fn concat_many_in_context(&self, others: &[&DataFrame], ctx: &ExecutionOverrides<'_>) -> Result<Self> {
         let output_domain = ctx.resolve_output_domain(&self.domain)?;
         let operation = "dataframe::with_execution::concat_many";
-        self.concat_many_impl(others, output_domain.explicit_exec_options_raw(), Some(output_domain), operation)
+        self.concat_many_impl(others, Some(output_domain), operation)
     }
 
     fn concat_many_impl(
         &self,
         others: &[&DataFrame],
-        exec_options: Option<cudf_sys::cudf_exec_options_t>,
         forced_output_domain: Option<Arc<ExecutionDomain>>,
         operation: &'static str,
     ) -> Result<Self> {
@@ -247,7 +246,6 @@ impl DataFrame {
             operation,
         )?;
         let output_domain = Arc::clone(execution.output_domain());
-        let resolved_exec_options = exec_options.as_ref().unwrap_or(execution.exec_options());
 
         for other in others {
             self.validate_concat_schema(other, operation)?;
@@ -263,7 +261,7 @@ impl DataFrame {
         }
 
         let result_table =
-            ops::concatenate::concatenate_tables_with_exec(&table_refs, &output_domain, Some(resolved_exec_options))?;
+            ops::concatenate::concatenate_tables_with_exec(&table_refs, &output_domain, execution.exec_options())?;
 
         Self::from_table_with_names(result_table, self.column_names_owned())
     }

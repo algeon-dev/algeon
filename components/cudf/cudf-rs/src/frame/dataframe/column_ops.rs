@@ -239,7 +239,7 @@ impl DataFrame {
             .map_err(|error| annotate_dataframe_budget_execution_error(error, token, operation))?;
         let output_bytes = dataframe_device_allocated_size_bytes(&output, operation)?;
         let report = token
-            .hard_enforced_report()
+            .reservation_enforced_report()
             .with_retained_bytes(output_bytes)
             .with_output_bytes(output_bytes)
             .with_output_rows(output.num_rows())
@@ -377,7 +377,7 @@ impl DataFrame {
     /// This is the budgeted counterpart to [`cast_column`](Self::cast_column).
     /// It uses the expression materialization path so the cast allocation, and
     /// any required unchanged-column relocation into the budgeted output
-    /// provenance, are routed through the token allocator.
+    /// provenance, are routed through the token's stream-bound reservation.
     pub fn cast_column_with_budget(
         &self,
         column: &str,
@@ -406,12 +406,12 @@ impl DataFrame {
 
         ExecutionDomain::insert_stream_dependency(value.execution_domain(), col.execution_domain(), operation)?;
         let cv = col.view()?;
-        let exec_options = col.execution_domain().explicit_exec_options_raw();
+        let exec_options = col.execution_domain().exec_options_raw();
         let new_col = crate::ops::replace::replace_nulls_with_exec_options(
             &cv,
             value,
             col.execution_domain(),
-            exec_options.as_ref(),
+            &exec_options,
             operation,
         )?;
 

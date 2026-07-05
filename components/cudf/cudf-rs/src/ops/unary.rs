@@ -102,29 +102,23 @@ impl UnaryOperator {
 pub fn unary_operation(input: &ColumnView<'_>, op: UnaryOperator) -> Result<Column> {
     let ctx = ExecutionOverrides::new();
     let execution = ResolvedExecution::unary(input.execution_domain(), &ctx, "unary::unary_operation")?;
-    unary_operation_impl(input, op, execution.output_domain(), Some(execution.exec_options()), "unary::unary_operation")
+    unary_operation_impl(input, op, execution.output_domain(), execution.exec_options(), "unary::unary_operation")
 }
 
 pub(crate) fn unary_operation_impl(
     input: &ColumnView<'_>,
     op: UnaryOperator,
     output_domain: &Arc<ExecutionDomain>,
-    exec_options: Option<&cudf_sys::cudf_exec_options_t>,
+    exec_options: &cudf_sys::cudf_exec_options_t,
     operation: &'static str,
 ) -> Result<Column> {
     let mut out = ptr::null_mut();
     let op_ffi = op.to_raw();
-    let status = match exec_options {
-        Some(options) => unsafe { cudf_sys::cudf_unary_operation_ex(input.raw_handle(), op_ffi, &mut out, options) },
-        None => unsafe { cudf_sys::cudf_unary_operation(input.raw_handle(), op_ffi, &mut out) },
-    };
+    let status = unsafe { cudf_sys::cudf_unary_operation_ex(input.raw_handle(), op_ffi, &mut out, exec_options) };
     error::check_status_in_with_details(
         status,
         operation,
-        [
-            ("operator", format!("{:?}", op).to_lowercase()),
-            ("execution_context_provided", exec_options.is_some().to_string()),
-        ],
+        [("operator", format!("{:?}", op).to_lowercase()), ("execution_authority", "retained_domain".to_string())],
     )?;
     // SAFETY: out was returned by a successful FFI call, transferring ownership.
     unsafe { Column::from_raw_with_domain(out, Arc::clone(output_domain)) }
@@ -138,7 +132,7 @@ pub fn round_half_up(input: &ColumnView<'_>, decimal_places: i32) -> Result<Colu
         input,
         decimal_places,
         execution.output_domain(),
-        Some(execution.exec_options()),
+        execution.exec_options(),
         "unary::round_half_up",
     )
 }
@@ -147,23 +141,18 @@ pub(crate) fn round_half_up_impl(
     input: &ColumnView<'_>,
     decimal_places: i32,
     output_domain: &Arc<ExecutionDomain>,
-    exec_options: Option<&cudf_sys::cudf_exec_options_t>,
+    exec_options: &cudf_sys::cudf_exec_options_t,
     operation: &'static str,
 ) -> Result<Column> {
     let mut out = ptr::null_mut();
-    let status = match exec_options {
-        Some(options) => unsafe {
-            cudf_sys::cudf_round_half_up_ex(input.raw_handle(), decimal_places, &mut out, options)
-        },
-        None => unsafe { cudf_sys::cudf_round_half_up(input.raw_handle(), decimal_places, &mut out) },
-    };
+    let status = unsafe { cudf_sys::cudf_round_half_up_ex(input.raw_handle(), decimal_places, &mut out, exec_options) };
     error::check_status_in_with_details(
         status,
         operation,
         [
             ("decimal_places", decimal_places.to_string()),
             ("rounding_method", "half_up".to_string()),
-            ("execution_context_provided", exec_options.is_some().to_string()),
+            ("execution_authority", "retained_domain".to_string()),
         ],
     )?;
     // SAFETY: out was returned by a successful FFI call, transferring ownership.
@@ -181,25 +170,18 @@ pub fn logical_not(input: &ColumnView<'_>) -> Result<Column> {
 pub fn is_null(input: &ColumnView<'_>) -> Result<Column> {
     let ctx = ExecutionOverrides::new();
     let execution = ResolvedExecution::unary(input.execution_domain(), &ctx, "unary::is_null")?;
-    is_null_impl(input, execution.output_domain(), Some(execution.exec_options()), "unary::is_null")
+    is_null_impl(input, execution.output_domain(), execution.exec_options(), "unary::is_null")
 }
 
 pub(crate) fn is_null_impl(
     input: &ColumnView<'_>,
     output_domain: &Arc<ExecutionDomain>,
-    exec_options: Option<&cudf_sys::cudf_exec_options_t>,
+    exec_options: &cudf_sys::cudf_exec_options_t,
     operation: &'static str,
 ) -> Result<Column> {
     let mut out = ptr::null_mut();
-    let status = match exec_options {
-        Some(options) => unsafe { cudf_sys::cudf_is_null_ex(input.raw_handle(), &mut out, options) },
-        None => unsafe { cudf_sys::cudf_is_null(input.raw_handle(), &mut out) },
-    };
-    error::check_status_in_with_details(
-        status,
-        operation,
-        [("execution_context_provided", exec_options.is_some().to_string())],
-    )?;
+    let status = unsafe { cudf_sys::cudf_is_null_ex(input.raw_handle(), &mut out, exec_options) };
+    error::check_status_in_with_details(status, operation, [("execution_authority", "retained_domain".to_string())])?;
     // SAFETY: out was returned by a successful FFI call, transferring ownership.
     unsafe { Column::from_raw_with_domain(out, Arc::clone(output_domain)) }
 }
@@ -208,25 +190,18 @@ pub(crate) fn is_null_impl(
 pub fn is_valid(input: &ColumnView<'_>) -> Result<Column> {
     let ctx = ExecutionOverrides::new();
     let execution = ResolvedExecution::unary(input.execution_domain(), &ctx, "unary::is_valid")?;
-    is_valid_impl(input, execution.output_domain(), Some(execution.exec_options()), "unary::is_valid")
+    is_valid_impl(input, execution.output_domain(), execution.exec_options(), "unary::is_valid")
 }
 
 pub(crate) fn is_valid_impl(
     input: &ColumnView<'_>,
     output_domain: &Arc<ExecutionDomain>,
-    exec_options: Option<&cudf_sys::cudf_exec_options_t>,
+    exec_options: &cudf_sys::cudf_exec_options_t,
     operation: &'static str,
 ) -> Result<Column> {
     let mut out = ptr::null_mut();
-    let status = match exec_options {
-        Some(options) => unsafe { cudf_sys::cudf_is_valid_ex(input.raw_handle(), &mut out, options) },
-        None => unsafe { cudf_sys::cudf_is_valid(input.raw_handle(), &mut out) },
-    };
-    error::check_status_in_with_details(
-        status,
-        operation,
-        [("execution_context_provided", exec_options.is_some().to_string())],
-    )?;
+    let status = unsafe { cudf_sys::cudf_is_valid_ex(input.raw_handle(), &mut out, exec_options) };
+    error::check_status_in_with_details(status, operation, [("execution_authority", "retained_domain".to_string())])?;
     // SAFETY: out was returned by a successful FFI call, transferring ownership.
     unsafe { Column::from_raw_with_domain(out, Arc::clone(output_domain)) }
 }
@@ -235,14 +210,14 @@ pub(crate) fn is_valid_impl(
 pub fn cast(input: &ColumnView<'_>, output_type: &DataType) -> Result<Column> {
     let ctx = ExecutionOverrides::new();
     let execution = ResolvedExecution::unary(input.execution_domain(), &ctx, "unary::cast")?;
-    cast_impl(input, output_type, execution.output_domain(), Some(execution.exec_options()), "unary::cast")
+    cast_impl(input, output_type, execution.output_domain(), execution.exec_options(), "unary::cast")
 }
 
 pub(crate) fn cast_impl(
     input: &ColumnView<'_>,
     output_type: &DataType,
     output_domain: &Arc<ExecutionDomain>,
-    exec_options: Option<&cudf_sys::cudf_exec_options_t>,
+    exec_options: &cudf_sys::cudf_exec_options_t,
     operation: &'static str,
 ) -> Result<Column> {
     let input_type = input.data_type()?;
@@ -250,10 +225,7 @@ pub(crate) fn cast_impl(
     let mut out = ptr::null_mut();
     // SAFETY: input handle is valid (NonNull). dtype_handle was returned by
     // a successful to_raw_handle_for call.
-    let status = match exec_options {
-        Some(options) => unsafe { cudf_sys::cudf_cast_ex(input.raw_handle(), dtype_handle, &mut out, options) },
-        None => unsafe { cudf_sys::cudf_cast(input.raw_handle(), dtype_handle, &mut out) },
-    };
+    let status = unsafe { cudf_sys::cudf_cast_ex(input.raw_handle(), dtype_handle, &mut out, exec_options) };
     // SAFETY: dtype_handle is a valid handle that must be destroyed.
     unsafe { cudf_sys::cudf_data_type_destroy(dtype_handle) };
     error::check_status_in_with_details(
@@ -264,7 +236,7 @@ pub(crate) fn cast_impl(
             ("input_type_scale", input_type.scale().to_string()),
             ("output_type_id", format!("{:?}", output_type.id()).to_lowercase()),
             ("output_type_scale", output_type.scale().to_string()),
-            ("execution_context_provided", exec_options.is_some().to_string()),
+            ("execution_authority", "retained_domain".to_string()),
         ],
     )?;
     // SAFETY: out was returned by a successful FFI call, transferring ownership.
@@ -299,25 +271,18 @@ pub fn is_supported_cast(from: &DataType, to: &DataType) -> Result<bool> {
 pub fn is_nan(input: &ColumnView<'_>) -> Result<Column> {
     let ctx = ExecutionOverrides::new();
     let execution = ResolvedExecution::unary(input.execution_domain(), &ctx, "unary::is_nan")?;
-    is_nan_impl(input, execution.output_domain(), Some(execution.exec_options()), "unary::is_nan")
+    is_nan_impl(input, execution.output_domain(), execution.exec_options(), "unary::is_nan")
 }
 
 pub(crate) fn is_nan_impl(
     input: &ColumnView<'_>,
     output_domain: &Arc<ExecutionDomain>,
-    exec_options: Option<&cudf_sys::cudf_exec_options_t>,
+    exec_options: &cudf_sys::cudf_exec_options_t,
     operation: &'static str,
 ) -> Result<Column> {
     let mut out = ptr::null_mut();
-    let status = match exec_options {
-        Some(options) => unsafe { cudf_sys::cudf_is_nan_ex(input.raw_handle(), &mut out, options) },
-        None => unsafe { cudf_sys::cudf_is_nan(input.raw_handle(), &mut out) },
-    };
-    error::check_status_in_with_details(
-        status,
-        operation,
-        [("execution_context_provided", exec_options.is_some().to_string())],
-    )?;
+    let status = unsafe { cudf_sys::cudf_is_nan_ex(input.raw_handle(), &mut out, exec_options) };
+    error::check_status_in_with_details(status, operation, [("execution_authority", "retained_domain".to_string())])?;
     // SAFETY: out was returned by a successful FFI call, transferring ownership.
     unsafe { Column::from_raw_with_domain(out, Arc::clone(output_domain)) }
 }
@@ -326,25 +291,18 @@ pub(crate) fn is_nan_impl(
 pub fn is_not_nan(input: &ColumnView<'_>) -> Result<Column> {
     let ctx = ExecutionOverrides::new();
     let execution = ResolvedExecution::unary(input.execution_domain(), &ctx, "unary::is_not_nan")?;
-    is_not_nan_impl(input, execution.output_domain(), Some(execution.exec_options()), "unary::is_not_nan")
+    is_not_nan_impl(input, execution.output_domain(), execution.exec_options(), "unary::is_not_nan")
 }
 
 pub(crate) fn is_not_nan_impl(
     input: &ColumnView<'_>,
     output_domain: &Arc<ExecutionDomain>,
-    exec_options: Option<&cudf_sys::cudf_exec_options_t>,
+    exec_options: &cudf_sys::cudf_exec_options_t,
     operation: &'static str,
 ) -> Result<Column> {
     let mut out = ptr::null_mut();
-    let status = match exec_options {
-        Some(options) => unsafe { cudf_sys::cudf_is_not_nan_ex(input.raw_handle(), &mut out, options) },
-        None => unsafe { cudf_sys::cudf_is_not_nan(input.raw_handle(), &mut out) },
-    };
-    error::check_status_in_with_details(
-        status,
-        operation,
-        [("execution_context_provided", exec_options.is_some().to_string())],
-    )?;
+    let status = unsafe { cudf_sys::cudf_is_not_nan_ex(input.raw_handle(), &mut out, exec_options) };
+    error::check_status_in_with_details(status, operation, [("execution_authority", "retained_domain".to_string())])?;
     // SAFETY: out was returned by a successful FFI call, transferring ownership.
     unsafe { Column::from_raw_with_domain(out, Arc::clone(output_domain)) }
 }

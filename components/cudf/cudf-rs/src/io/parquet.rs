@@ -217,15 +217,16 @@ impl ParquetTableWriteOptions {
 /// Returns an error if `column_names` were set on the options and their count
 /// does not match the number of columns in the table.
 pub fn write_parquet(table: &Table, options: &ParquetTableWriteOptions) -> Result<()> {
-    let exec_options = options.runtime.as_ref().map(|runtime| runtime.execution_domain().exec_options_raw());
+    let operation = "io::parquet::write_parquet";
     let table_view = table.view()?;
-    write_parquet_with_exec(&table_view, options, exec_options.as_ref())
+    let execution = super::resolve_write_execution(&table_view, options.runtime(), operation)?;
+    write_parquet_with_exec(&table_view, options, execution.exec_options())
 }
 
 pub(crate) fn write_parquet_with_exec(
     table: &crate::core::TableView<'_>,
     options: &ParquetTableWriteOptions,
-    exec_options: Option<&cudf_sys::cudf_exec_options_t>,
+    exec_options: &cudf_sys::cudf_exec_options_t,
 ) -> Result<()> {
     let filepath = super::path_to_cstring(&options.filepath, "io::parquet::write_parquet")?;
 
@@ -274,26 +275,15 @@ pub(crate) fn write_parquet_with_exec(
     error::check_status_in_with_details(
         // SAFETY: table handle is valid (NonNull). filepath is a valid CString.
         // name_ptrs is either null or a valid pointer to num_cols CString pointers.
-        match exec_options {
-            Some(exec_options) => unsafe {
-                cudf_sys::cudf_io_write_parquet_ex(
-                    table.raw_handle(),
-                    filepath.as_ptr(),
-                    name_ptrs,
-                    num_cols,
-                    options.row_group_size_rows,
-                    exec_options,
-                )
-            },
-            None => unsafe {
-                cudf_sys::cudf_io_write_parquet(
-                    table.raw_handle(),
-                    filepath.as_ptr(),
-                    name_ptrs,
-                    num_cols,
-                    options.row_group_size_rows,
-                )
-            },
+        unsafe {
+            cudf_sys::cudf_io_write_parquet_ex(
+                table.raw_handle(),
+                filepath.as_ptr(),
+                name_ptrs,
+                num_cols,
+                options.row_group_size_rows,
+                exec_options,
+            )
         },
         "io::parquet::write_parquet",
         [("column_name_count", num_cols.to_string())],

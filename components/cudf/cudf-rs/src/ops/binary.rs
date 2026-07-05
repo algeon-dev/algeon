@@ -347,13 +347,12 @@ fn infer_temporal_binary_output(
                 return Ok(DataType::new(rhs));
             }
         },
-        BinaryOperator::Div => {
+        BinaryOperator::Div
             // libcudf compiled chrono operators accept integral duration
             // divisors; floating divisors are rejected before FFI.
-            if lhs.is_duration() && rhs.is_integral() {
+            if lhs.is_duration() && rhs.is_integral() => {
                 return Ok(DataType::new(lhs));
-            }
-        },
+            },
         BinaryOperator::Mod => {
             if lhs.is_duration() && rhs.is_integral() {
                 return Ok(DataType::new(lhs));
@@ -362,11 +361,10 @@ fn infer_temporal_binary_output(
                 return Ok(DataType::new(lhs));
             }
         },
-        BinaryOperator::Pymod => {
-            if lhs.is_duration() && rhs.is_duration() && lhs.duration_resolution() == rhs.duration_resolution() {
+        BinaryOperator::Pymod
+            if lhs.is_duration() && rhs.is_duration() && lhs.duration_resolution() == rhs.duration_resolution() => {
                 return Ok(DataType::new(lhs));
-            }
-        },
+            },
         BinaryOperator::Pmod => {},
         _ => {},
     }
@@ -496,7 +494,7 @@ pub fn binary_operation_vv(
         op,
         output_type,
         execution.output_domain(),
-        Some(execution.exec_options()),
+        execution.exec_options(),
         "binary::binary_operation_vv",
     )
 }
@@ -507,7 +505,7 @@ pub(crate) fn binary_operation_vv_impl(
     op: BinaryOperator,
     output_type: &DataType,
     output_domain: &Arc<ExecutionDomain>,
-    exec_options: Option<&cudf_sys::cudf_exec_options_t>,
+    exec_options: &cudf_sys::cudf_exec_options_t,
     operation: &'static str,
 ) -> Result<Column> {
     let lhs_decimal_division_cast;
@@ -541,20 +539,15 @@ pub(crate) fn binary_operation_vv_impl(
     let op_ffi = op.to_raw();
     // SAFETY: lhs and rhs handles are valid (NonNull). dtype_handle was
     // returned by a successful to_raw_handle_for call.
-    let status = match exec_options {
-        Some(options) => unsafe {
-            cudf_sys::cudf_binary_operation_vv_ex(
-                lhs.raw_handle(),
-                rhs.raw_handle(),
-                op_ffi,
-                dtype_handle,
-                &mut out,
-                options,
-            )
-        },
-        None => unsafe {
-            cudf_sys::cudf_binary_operation_vv(lhs.raw_handle(), rhs.raw_handle(), op_ffi, dtype_handle, &mut out)
-        },
+    let status = unsafe {
+        cudf_sys::cudf_binary_operation_vv_ex(
+            lhs.raw_handle(),
+            rhs.raw_handle(),
+            op_ffi,
+            dtype_handle,
+            &mut out,
+            exec_options,
+        )
     };
     // SAFETY: dtype_handle is a valid handle that must be destroyed.
     unsafe { cudf_sys::cudf_data_type_destroy(dtype_handle) };
@@ -565,7 +558,7 @@ pub(crate) fn binary_operation_vv_impl(
             ("operator", op.name().to_string()),
             ("output_type_id", output_type.id().to_string()),
             ("output_type_scale", output_type.scale().to_string()),
-            ("execution_context_provided", exec_options.is_some().to_string()),
+            ("execution_authority", "retained_domain".to_string()),
         ],
     )?;
     // SAFETY: out was returned by a successful FFI call, transferring ownership.
@@ -702,7 +695,7 @@ fn cast_decimal_division_operand(
     input: &ColumnView<'_>,
     target: DataType,
     output_domain: &Arc<ExecutionDomain>,
-    exec_options: Option<&cudf_sys::cudf_exec_options_t>,
+    exec_options: &cudf_sys::cudf_exec_options_t,
     operation: &'static str,
 ) -> Result<Option<Column>> {
     if input.data_type()? == target {
@@ -831,7 +824,7 @@ pub fn binary_operation_vs(
         op,
         output_type,
         execution.output_domain(),
-        Some(execution.exec_options()),
+        execution.exec_options(),
         "binary::binary_operation_vs",
     )
 }
@@ -842,7 +835,7 @@ pub(crate) fn binary_operation_vs_impl(
     op: BinaryOperator,
     output_type: &DataType,
     output_domain: &Arc<ExecutionDomain>,
-    exec_options: Option<&cudf_sys::cudf_exec_options_t>,
+    exec_options: &cudf_sys::cudf_exec_options_t,
     operation: &'static str,
 ) -> Result<Column> {
     let lhs_decimal_division_cast;
@@ -869,20 +862,15 @@ pub(crate) fn binary_operation_vs_impl(
     let op_ffi = op.to_raw();
     // SAFETY: lhs (ColumnView) and rhs (Scalar) handles are valid (NonNull).
     // dtype_handle was returned by a successful to_raw_handle_for call.
-    let status = match exec_options {
-        Some(options) => unsafe {
-            cudf_sys::cudf_binary_operation_vs_ex(
-                lhs.raw_handle(),
-                rhs.raw_handle(),
-                op_ffi,
-                dtype_handle,
-                &mut out,
-                options,
-            )
-        },
-        None => unsafe {
-            cudf_sys::cudf_binary_operation_vs(lhs.raw_handle(), rhs.raw_handle(), op_ffi, dtype_handle, &mut out)
-        },
+    let status = unsafe {
+        cudf_sys::cudf_binary_operation_vs_ex(
+            lhs.raw_handle(),
+            rhs.raw_handle(),
+            op_ffi,
+            dtype_handle,
+            &mut out,
+            exec_options,
+        )
     };
     // SAFETY: dtype_handle is a valid handle that must be destroyed.
     unsafe { cudf_sys::cudf_data_type_destroy(dtype_handle) };
@@ -893,7 +881,7 @@ pub(crate) fn binary_operation_vs_impl(
             ("operator", op.name().to_string()),
             ("output_type_id", output_type.id().to_string()),
             ("output_type_scale", output_type.scale().to_string()),
-            ("execution_context_provided", exec_options.is_some().to_string()),
+            ("execution_authority", "retained_domain".to_string()),
         ],
     )?;
     // SAFETY: out was returned by a successful FFI call, transferring ownership.
@@ -921,7 +909,7 @@ pub fn binary_operation_sv(
         op,
         output_type,
         execution.output_domain(),
-        Some(execution.exec_options()),
+        execution.exec_options(),
         "binary::binary_operation_sv",
     )
 }
@@ -932,7 +920,7 @@ fn binary_operation_sv_impl(
     op: BinaryOperator,
     output_type: &DataType,
     output_domain: &Arc<ExecutionDomain>,
-    exec_options: Option<&cudf_sys::cudf_exec_options_t>,
+    exec_options: &cudf_sys::cudf_exec_options_t,
     operation: &'static str,
 ) -> Result<Column> {
     let lhs_decimal_division_scalar;
@@ -959,20 +947,15 @@ fn binary_operation_sv_impl(
     let op_ffi = op.to_raw();
     // SAFETY: lhs (Scalar) and rhs (ColumnView) handles are valid (NonNull).
     // dtype_handle was returned by a successful to_raw_handle_for call.
-    let status = match exec_options {
-        Some(options) => unsafe {
-            cudf_sys::cudf_binary_operation_sv_ex(
-                lhs.raw_handle(),
-                rhs.raw_handle(),
-                op_ffi,
-                dtype_handle,
-                &mut out,
-                options,
-            )
-        },
-        None => unsafe {
-            cudf_sys::cudf_binary_operation_sv(lhs.raw_handle(), rhs.raw_handle(), op_ffi, dtype_handle, &mut out)
-        },
+    let status = unsafe {
+        cudf_sys::cudf_binary_operation_sv_ex(
+            lhs.raw_handle(),
+            rhs.raw_handle(),
+            op_ffi,
+            dtype_handle,
+            &mut out,
+            exec_options,
+        )
     };
     // SAFETY: dtype_handle is a valid handle that must be destroyed.
     unsafe { cudf_sys::cudf_data_type_destroy(dtype_handle) };
@@ -983,7 +966,7 @@ fn binary_operation_sv_impl(
             ("operator", op.name().to_string()),
             ("output_type_id", output_type.id().to_string()),
             ("output_type_scale", output_type.scale().to_string()),
-            ("execution_context_provided", exec_options.is_some().to_string()),
+            ("execution_authority", "retained_domain".to_string()),
         ],
     )?;
     // SAFETY: out was returned by a successful FFI call, transferring ownership.

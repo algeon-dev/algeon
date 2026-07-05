@@ -91,7 +91,7 @@ use crate::{
 struct ExprEvalContext<'df> {
     df: &'df DataFrame,
     output_domain: Arc<ExecutionDomain>,
-    exec_options: Option<cudf_sys::cudf_exec_options_t>,
+    exec_options: cudf_sys::cudf_exec_options_t,
     operation: &'static str,
     normalized_columns: RefCell<FastHashMap<String, Series>>,
 }
@@ -99,7 +99,7 @@ struct ExprEvalContext<'df> {
 impl<'df> ExprEvalContext<'df> {
     fn new(df: &'df DataFrame, overrides: &ExecutionOverrides<'_>, operation: &'static str) -> Result<Self> {
         let output_domain = overrides.resolve_output_domain(df.execution_domain())?;
-        let exec_options = output_domain.explicit_exec_options_raw();
+        let exec_options = output_domain.exec_options_raw();
         Ok(Self {
             df,
             output_domain,
@@ -110,7 +110,7 @@ impl<'df> ExprEvalContext<'df> {
     }
 
     fn with_output_domain(df: &'df DataFrame, output_domain: Arc<ExecutionDomain>, operation: &'static str) -> Self {
-        let exec_options = output_domain.explicit_exec_options_raw();
+        let exec_options = output_domain.exec_options_raw();
         Self {
             df,
             output_domain,
@@ -120,8 +120,8 @@ impl<'df> ExprEvalContext<'df> {
         }
     }
 
-    fn exec_options(&self) -> Option<&cudf_sys::cudf_exec_options_t> {
-        self.exec_options.as_ref()
+    fn required_exec_options(&self) -> &cudf_sys::cudf_exec_options_t {
+        &self.exec_options
     }
 
     fn output_domain(&self) -> Arc<ExecutionDomain> {

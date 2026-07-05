@@ -133,8 +133,6 @@ pub fn lit_duration_raw(raw: i64, resolution: TimestampResolution) -> Expr {
     }))
 }
 
-/// Begin a conditional expression chain:
-
 // ===========================================================================
 // IntoLit trait
 // ===========================================================================

@@ -139,14 +139,14 @@ struct MixedJoinTables<'a, 'view> {
 #[derive(Clone, Copy)]
 pub(crate) struct JoinCallContext<'a> {
     output_domain: &'a Arc<ExecutionDomain>,
-    exec_options: Option<&'a cudf_sys::cudf_exec_options_t>,
+    exec_options: &'a cudf_sys::cudf_exec_options_t,
     operation: &'static str,
 }
 
 impl<'a> JoinCallContext<'a> {
     pub(crate) fn new(
         output_domain: &'a Arc<ExecutionDomain>,
-        exec_options: Option<&'a cudf_sys::cudf_exec_options_t>,
+        exec_options: &'a cudf_sys::cudf_exec_options_t,
         operation: &'static str,
     ) -> Self {
         Self { output_domain, exec_options, operation }
@@ -215,7 +215,6 @@ pub use mixed::*;
 fn check_join_indices_status(
     status: cudf_sys::cudf_status_t,
     null_equality: NullEquality,
-    exec_options_present: bool,
     operation: &'static str,
 ) -> Result<()> {
     error::check_status_in_with_details(
@@ -223,7 +222,7 @@ fn check_join_indices_status(
         operation,
         [
             ("null_equality", format!("{:?}", null_equality).to_lowercase()),
-            ("execution_context_provided", exec_options_present.to_string()),
+            ("execution_authority", "resolved_domain".to_string()),
         ],
     )
 }

@@ -27,20 +27,16 @@ fn murmurhash3_x86_32_impl(
     input: &TableView<'_>,
     seed: u32,
     output_domain: &Arc<ExecutionDomain>,
-    exec_options: Option<&cudf_sys::cudf_exec_options_t>,
+    exec_options: &cudf_sys::cudf_exec_options_t,
     operation: &'static str,
 ) -> Result<Column> {
     let mut out = ptr::null_mut();
-    let status = match exec_options {
-        Some(options) => unsafe {
-            cudf_sys::cudf_hashing_murmurhash3_x86_32_ex(input.raw_handle(), seed, &mut out, options)
-        },
-        None => unsafe { cudf_sys::cudf_hashing_murmurhash3_x86_32(input.raw_handle(), seed, &mut out) },
-    };
+    let status =
+        unsafe { cudf_sys::cudf_hashing_murmurhash3_x86_32_ex(input.raw_handle(), seed, &mut out, exec_options) };
     error::check_status_in_with_details(
         status,
         operation,
-        [("seed", seed.to_string()), ("execution_context_provided", exec_options.is_some().to_string())],
+        [("seed", seed.to_string()), ("execution_authority", "retained_domain".to_string())],
     )?;
     unsafe { Column::from_raw_with_domain(out, Arc::clone(output_domain)) }
 }
@@ -49,18 +45,15 @@ fn xxhash_64_impl(
     input: &TableView<'_>,
     seed: u64,
     output_domain: &Arc<ExecutionDomain>,
-    exec_options: Option<&cudf_sys::cudf_exec_options_t>,
+    exec_options: &cudf_sys::cudf_exec_options_t,
     operation: &'static str,
 ) -> Result<Column> {
     let mut out = ptr::null_mut();
-    let status = match exec_options {
-        Some(options) => unsafe { cudf_sys::cudf_hashing_xxhash_64_ex(input.raw_handle(), seed, &mut out, options) },
-        None => unsafe { cudf_sys::cudf_hashing_xxhash_64(input.raw_handle(), seed, &mut out) },
-    };
+    let status = unsafe { cudf_sys::cudf_hashing_xxhash_64_ex(input.raw_handle(), seed, &mut out, exec_options) };
     error::check_status_in_with_details(
         status,
         operation,
-        [("seed", seed.to_string()), ("execution_context_provided", exec_options.is_some().to_string())],
+        [("seed", seed.to_string()), ("execution_authority", "retained_domain".to_string())],
     )?;
     unsafe { Column::from_raw_with_domain(out, Arc::clone(output_domain)) }
 }
@@ -76,7 +69,7 @@ pub fn murmurhash3_x86_32(input: &TableView<'_>, seed: u32) -> Result<Column> {
         input,
         seed,
         execution.output_domain(),
-        Some(execution.exec_options()),
+        execution.exec_options(),
         "hashing::murmurhash3_x86_32",
     )
 }
@@ -87,5 +80,5 @@ pub fn murmurhash3_x86_32(input: &TableView<'_>, seed: u32) -> Result<Column> {
 pub fn xxhash_64(input: &TableView<'_>, seed: u64) -> Result<Column> {
     let ctx = ExecutionOverrides::new();
     let execution = ResolvedExecution::unary(input.execution_domain(), &ctx, "hashing::xxhash_64")?;
-    xxhash_64_impl(input, seed, execution.output_domain(), Some(execution.exec_options()), "hashing::xxhash_64")
+    xxhash_64_impl(input, seed, execution.output_domain(), execution.exec_options(), "hashing::xxhash_64")
 }
