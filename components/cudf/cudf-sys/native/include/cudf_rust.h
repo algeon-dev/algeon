@@ -17,6 +17,7 @@
 #include "event.h"
 #include "execution_context.h"
 #include "filter.h"
+#include "gds.h"
 #include "groupby.h"
 #include "hashing.h"
 #include "io.h"

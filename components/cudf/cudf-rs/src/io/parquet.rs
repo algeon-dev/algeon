@@ -2,6 +2,7 @@
 
 use std::{
     ffi::CString,
+    marker::PhantomData,
     os::raw::c_char,
     path::{Path, PathBuf},
     ptr,
@@ -21,14 +22,25 @@ use crate::{
     runtime::Runtime,
 };
 
-/// Options for reading a Parquet file into a low-level [`Table`].
+/// Options for reading Parquet into a low-level [`Table`].
+///
+/// The source must be exactly one of:
+///
+/// - `filepath`: a path-based libcudf/KvikIO read.
+/// - `filebytes`: a borrowed host-memory Parquet payload.
+///
+/// Host-buffer reads borrow `filebytes` only for the duration of the reader
+/// call. The returned table owns device-resident decoded columns and does not
+/// retain a pointer into the host buffer.
 ///
 /// **Advanced.** Most users should prefer
 /// [`DataFrame::read_parquet`](crate::DataFrame::read_parquet).
 #[derive(Debug, Clone, TypedBuilder)]
-pub struct ParquetTableReadOptions {
-    #[builder(setter(transform = |path: impl AsRef<Path>| path.as_ref().to_path_buf()))]
-    filepath: PathBuf,
+pub struct ParquetTableReadOptions<'a> {
+    #[builder(default, setter(transform = |path: impl AsRef<Path>| Some(path.as_ref().to_path_buf())))]
+    filepath: Option<PathBuf>,
+    #[builder(default, setter(transform = |bytes: &'a [u8]| Some(bytes)))]
+    filebytes: Option<&'a [u8]>,
     #[builder(default, setter(transform = |names: &[&str]| Some(names.iter().map(|s| (*s).to_string()).collect())))]
     columns: Option<Vec<String>>,
     #[builder(default)]
@@ -41,9 +53,11 @@ pub struct ParquetTableReadOptions {
     predicate: Option<Arc<AstExpression>>,
     #[builder(setter(prefix = "with_", transform = |runtime: &Runtime| runtime.clone()))]
     runtime: Runtime,
+    #[builder(default, setter(skip))]
+    _lifetime: PhantomData<&'a [u8]>,
 }
 
-impl ParquetTableReadOptions {
+impl<'a> ParquetTableReadOptions<'a> {
     pub(crate) fn from_parts(
         filepath: PathBuf,
         columns: Option<Vec<String>>,
@@ -53,7 +67,39 @@ impl ParquetTableReadOptions {
         predicate: Option<Arc<AstExpression>>,
         runtime: Runtime,
     ) -> Self {
-        Self { filepath, columns, skip_rows, num_rows, row_groups, predicate, runtime }
+        Self {
+            filepath: Some(filepath),
+            filebytes: None,
+            columns,
+            skip_rows,
+            num_rows,
+            row_groups,
+            predicate,
+            runtime,
+            _lifetime: PhantomData,
+        }
+    }
+
+    pub(crate) fn from_host_buffer_parts(
+        filebytes: &'a [u8],
+        columns: Option<Vec<String>>,
+        skip_rows: usize,
+        num_rows: Option<usize>,
+        row_groups: Option<Vec<i32>>,
+        predicate: Option<Arc<AstExpression>>,
+        runtime: Runtime,
+    ) -> Self {
+        Self {
+            filepath: None,
+            filebytes: Some(filebytes),
+            columns,
+            skip_rows,
+            num_rows,
+            row_groups,
+            predicate,
+            runtime,
+            _lifetime: PhantomData,
+        }
     }
 }
 
@@ -85,10 +131,44 @@ fn row_group_combination_error(
 /// Returns the table data and the column names stored in the Parquet file's
 /// schema. This avoids having to hardcode column indices when working with
 /// Parquet files.
-pub fn read_parquet_table(options: &ParquetTableReadOptions) -> Result<TableReadOutput> {
+pub fn read_parquet_table(options: &ParquetTableReadOptions<'_>) -> Result<TableReadOutput> {
     const OPERATION: &str = "io::parquet::read_parquet_table";
-    let filepath = super::path_to_cstring(&options.filepath, OPERATION)?;
-    super::validate_input_path(&options.filepath, OPERATION)?;
+    let filepath = options.filepath.as_ref().map(|path| super::path_to_cstring(path, OPERATION)).transpose()?;
+    if let Some(path) = options.filepath.as_ref() {
+        super::validate_input_path(path, OPERATION)?;
+    }
+    match (options.filepath.as_ref(), options.filebytes) {
+        (Some(_), Some(_)) => {
+            return Err(Error::new_with(
+                ErrorCode::ForeignInvalidArgument,
+                OPERATION,
+                "Parquet read options must select exactly one source",
+            )
+            .with_detail("resource", "parquet_source")
+            .with_detail("reason", "ambiguous_source")
+            .with_detail("remedy", "set either filepath or filebytes, not both"));
+        },
+        (None, None) => {
+            return Err(Error::new_with(
+                ErrorCode::ForeignInvalidArgument,
+                OPERATION,
+                "Parquet read options must select a source",
+            )
+            .with_detail("resource", "parquet_source")
+            .with_detail("reason", "missing_source")
+            .with_detail("remedy", "set filepath for path reads or filebytes for host-buffer reads"));
+        },
+        (None, Some(bytes)) if bytes.is_empty() => {
+            return Err(Error::new_with(
+                ErrorCode::EmptyInput,
+                OPERATION,
+                "host-buffer Parquet reads require a non-empty buffer",
+            )
+            .with_detail("resource", "filebytes")
+            .with_detail("reason", "empty_host_buffer"));
+        },
+        _ => {},
+    }
     let num_rows_context = options.num_rows.map(|num_rows| num_rows.to_string()).unwrap_or_else(|| "all".to_string());
 
     // Validate that row_groups is not combined with skip_rows or num_rows.
@@ -146,7 +226,7 @@ pub fn read_parquet_table(options: &ParquetTableReadOptions) -> Result<TableRead
     };
     let predicate = options.predicate.as_ref().map_or(ptr::null_mut(), |predicate| predicate.raw_handle());
 
-    error::check_status_in_with_details(
+    let status = if let Some(filepath) = filepath.as_ref() {
         // SAFETY: filepath is a valid CString. col_ptrs is either null or a
         // valid pointer to num_cols CString pointers. rg_ptr is either null
         // or a valid pointer to num_rg i32 values. predicate is either null
@@ -166,12 +246,38 @@ pub fn read_parquet_table(options: &ParquetTableReadOptions) -> Result<TableRead
                 &mut num_names,
                 &exec_options,
             )
-        },
+        }
+    } else {
+        let bytes = options.filebytes.expect("source validation requires filebytes when filepath is absent");
+        // SAFETY: bytes is a non-empty borrowed host buffer that outlives this
+        // FFI call. Other pointers follow the same contracts as the path reader.
+        unsafe {
+            cudf_sys::cudf_io_read_parquet_from_host_buffer_with_metadata_filter_ex(
+                bytes.as_ptr().cast(),
+                bytes.len(),
+                col_ptrs,
+                num_cols,
+                skip_rows,
+                num_rows,
+                rg_ptr,
+                num_rg,
+                predicate,
+                &mut table_handle,
+                &mut names_ptr,
+                &mut num_names,
+                &exec_options,
+            )
+        }
+    };
+
+    error::check_status_in_with_details(
+        status,
         OPERATION,
         [
             ("column_name_count", num_cols.to_string()),
             ("skip_rows", options.skip_rows.to_string()),
             ("num_rows", num_rows_context),
+            ("parquet_source", if options.filebytes.is_some() { "host_buffer" } else { "filepath" }.to_string()),
         ],
     )?;
 

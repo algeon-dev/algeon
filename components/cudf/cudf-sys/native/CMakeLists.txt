@@ -151,6 +151,7 @@ add_library(
   src/sorting.cpp
   src/partitioning.cpp
   src/filter.cpp
+  src/gds.cpp
   src/groupby.cpp
   src/join_hash.cpp
   src/join_conditional.cpp
@@ -205,6 +206,7 @@ target_compile_definitions(
 target_link_options(cudf_rust PRIVATE "-Wl,--no-undefined")
 
 target_link_libraries(cudf_rust PUBLIC cudf::cudf)
+target_link_libraries(cudf_rust PRIVATE ${CMAKE_DL_LIBS})
 
 # ##################################################################################################
 # * cudart options --------------------------------------------------------------------------------

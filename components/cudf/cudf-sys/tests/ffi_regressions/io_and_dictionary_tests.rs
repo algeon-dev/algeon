@@ -57,6 +57,55 @@ fn test_io_read_parquet_missing_file_clears_out() {
 }
 
 #[test]
+fn test_io_read_parquet_from_host_buffer_invalid_args_clear_out() {
+    let _shim_state = lock_shim_state();
+    let (_stream, _mr, exec) = io_exec_options();
+    let mut out = std::ptr::dangling_mut::<c_void>();
+    let status = unsafe {
+        cudf_sys::cudf_io_read_parquet_from_host_buffer_ex(
+            ptr::null(),
+            16,
+            ptr::null(),
+            0,
+            0,
+            -1,
+            ptr::null(),
+            0,
+            &mut out,
+            &exec,
+        )
+    };
+
+    assert_eq!(status, cudf_sys::CUDF_ERROR_NULL);
+    assert!(out.is_null());
+}
+
+#[test]
+fn test_io_read_parquet_from_host_buffer_empty_buffer_rejected() {
+    let _shim_state = lock_shim_state();
+    let (_stream, _mr, exec) = io_exec_options();
+    let bytes = [0u8; 1];
+    let mut out = std::ptr::dangling_mut::<c_void>();
+    let status = unsafe {
+        cudf_sys::cudf_io_read_parquet_from_host_buffer_ex(
+            bytes.as_ptr().cast(),
+            0,
+            ptr::null(),
+            0,
+            0,
+            -1,
+            ptr::null(),
+            0,
+            &mut out,
+            &exec,
+        )
+    };
+
+    assert_eq!(status, cudf_sys::CUDF_ERROR_INVALID_OPERATION);
+    assert!(out.is_null());
+}
+
+#[test]
 fn test_non_io_runtime_error_maps_to_unknown() {
     let _shim_state = lock_shim_state();
     let status = unsafe { cudf_sys::cudf_test_throw_runtime_error() };
@@ -100,6 +149,38 @@ fn test_io_read_parquet_with_metadata_invalid_args_clear_outputs() {
             -1,
             ptr::null(),
             0,
+            &mut out_table,
+            &mut out_names,
+            &mut out_num_names,
+            &exec,
+        )
+    };
+
+    assert_eq!(status, cudf_sys::CUDF_ERROR_INVALID_OPERATION);
+    assert!(out_table.is_null());
+    assert!(out_names.is_null());
+    assert_eq!(out_num_names, 0);
+}
+
+#[test]
+fn test_io_read_parquet_from_host_buffer_with_metadata_invalid_args_clear_outputs() {
+    let _shim_state = lock_shim_state();
+    let (_stream, _mr, exec) = io_exec_options();
+    let bytes = [0u8; 8];
+    let mut out_table = std::ptr::dangling_mut::<c_void>();
+    let mut out_names = std::ptr::dangling_mut::<*mut c_char>();
+    let mut out_num_names = -1;
+    let status = unsafe {
+        cudf_sys::cudf_io_read_parquet_from_host_buffer_with_metadata_filter_ex(
+            bytes.as_ptr().cast(),
+            bytes.len(),
+            ptr::null(),
+            -1,
+            0,
+            -1,
+            ptr::null(),
+            0,
+            ptr::null_mut(),
             &mut out_table,
             &mut out_names,
             &mut out_num_names,
