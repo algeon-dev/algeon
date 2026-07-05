@@ -4,6 +4,9 @@
  * work well for content-centric websites.
  */
 
+@tailwind components;
+@tailwind utilities;
+
 /* You can override the default Infima variables here. */
 :root {
   --ifm-color-primary: #2e8555;
@@ -245,6 +248,10 @@
   border: 1px solid var(--nx-ayu-line);
 }
 
+.theme-code-block .token.table {
+  display: inline;
+}
+
 .navbar__search .navbar__search-input {
   background:
     rgba(15, 20, 25, 0.08) var(--ifm-navbar-search-input-icon) no-repeat 1rem
@@ -402,5 +409,28 @@
   .theme-doc-markdown.markdown:has(h1#design) table code {
     overflow-wrap: anywhere;
     white-space: normal;
+  }
+}
+
+/* cuGraph overview cheatsheet: give prose room while keeping the
+   generated table horizontally scrollable when the viewport is narrow. */
+.cugraph-function-cheatsheet {
+  max-width: 100%;
+  overflow-x: auto;
+}
+
+.cugraph-function-cheatsheet table {
+  width: max-content;
+}
+
+.cugraph-function-cheatsheet table th:last-child,
+.cugraph-function-cheatsheet table td:last-child {
+  min-width: 30rem;
+}
+
+@media (max-width: 996px) {
+  .cugraph-function-cheatsheet table th:last-child,
+  .cugraph-function-cheatsheet table td:last-child {
+    min-width: 22rem;
   }
 }

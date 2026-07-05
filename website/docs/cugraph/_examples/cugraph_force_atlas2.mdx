@@ -52,10 +52,8 @@ members):
 
 <CitationEgoGraph />
 
-:::note[Snapshot layouts that must be reused]
 `seed` fixes the initial placement, but the parallel layout itself is not
 bit-reproducible — expect slightly different (equally valid) coordinates on
 each run. If downstream queries must agree on positions, snapshot into the
 mutable `datafusion.public` workspace with `CREATE TABLE … AS`; that does not
 write back to the Iceberg source catalog.
-:::

@@ -112,6 +112,20 @@ const prismDark = {
       },
     },
     {
+      types: ['key', 'property'],
+      languages: ['toml'],
+      style: {
+        color: '#bfbdb6',
+      },
+    },
+    {
+      types: ['variable'],
+      languages: ['bash', 'sh', 'shell'],
+      style: {
+        color: '#59c2ff',
+      },
+    },
+    {
       types: ['deleted'],
       style: {
         color: '#f07178',

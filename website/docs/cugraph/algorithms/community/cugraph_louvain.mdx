@@ -4,7 +4,7 @@ sidebar_label: Louvain
 description: "Detect communities with Louvain modularity optimization."
 ---
 
-{/* GENERATED FROM cuGraph SQL metadata by website/scripts/gen-cugraph-docs.mjs. Do not edit by hand; edit examples in website/docs/cugraph/_examples/cugraph_louvain.mdx and re-run the generator. */}
+{/* GENERATED FROM cuGraph SQL metadata by website/scripts/gen-cugraph-docs.mjs. Do not edit by hand; edit the matching hand-owned example partial and re-run the generator. */}
 
 # Louvain
 
@@ -34,7 +34,7 @@ SELECT * FROM cugraph_louvain('target_edges')
 | `src_col` | `Utf8` | no | `src` |  |
 | `dst_col` | `Utf8` | no | `dst` |  |
 | `weight_col` | `Utf8\|null` | no |  | accepted as an edge-column binding; native algorithm execution does not consume weights; semantic effect: none for this algorithm |
-| `options_json` | `Utf8` | no |  |  |
+| `options_json` | `Utf8` | no |  | JSON string with algorithm-specific options plus shared graph construction options. |
 
 ## JSON options
 
@@ -44,9 +44,9 @@ SELECT * FROM cugraph_louvain('target_edges')
 | `resolution` | `Float64` | `1` | &gt; 0 |  |
 | `threshold` | `Float64` | `1e-7` | min 0 |  |
 
-### Graph construction options
+### Graph Construction Options
 
-Shared by all cuGraph functions, shown here with this function's defaults. The `construction_policy` option controls whether Nexus requests Python cuGraph-compatible edge normalization or bypasses it for raw libcugraph-style construction; see [graph construction options](../../graph-options.mdx) for the full policy guide.
+Shared by all cuGraph functions, shown here with this function's defaults. The `construction_policy` option controls whether Nexus requests Python cuGraph-compatible edge normalization or bypasses it for raw libcugraph-style construction; see [Graph Construction Options](../../graph-options.mdx) for the full policy guide.
 
 | Option | Type | Default | Constraints | Description |
 | --- | --- | --- | --- | --- |
@@ -62,9 +62,7 @@ Shared by all cuGraph functions, shown here with this function's defaults. The `
 | `vertex` | `Int64` | no | Vertex assigned to a Louvain community. |
 | `partition` | `Int64` | no | Community identifier assigned by Louvain. |
 
-:::note[Concrete schemas are call-specific]
-These are the generic registry schemas. Run [`cugraph_validate_call`](../../discovery-and-validation.mdx#cugraph_validate_call) for the concrete, table-specific output schema of a particular call.
-:::
+**Concrete schemas are call-specific.** These are the generic registry schemas. Run [`cugraph_validate_call`](../../discovery-and-validation.mdx#cugraph_validate_call) for the concrete, table-specific output schema of a particular call.
 
 
 ## Examples
@@ -80,7 +78,6 @@ import Examples from '../../_examples/cugraph_louvain.mdx';
 
 ## Validate before running
 
-:::tip[Dry-run first]
 Always dry-run a call before executing it. Validation checks the function, table, columns, dtypes, and options without touching the GPU:
 
 ```sql
@@ -91,5 +88,4 @@ SELECT * FROM cugraph_validate_call(
 );
 ```
 
-See [Discovery & validation](../../discovery-and-validation.mdx) for the full `cugraph_validate_call` contract.
-:::
+See [Discovery & Validation](../../discovery-and-validation.mdx) for the full `cugraph_validate_call` contract.

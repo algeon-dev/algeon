@@ -1,9 +1,11 @@
 ---
 sidebar_position: 3
+title: Discovery & Validation
+sidebar_label: Discovery & Validation
 description: The cugraph_list_algorithms, cugraph_describe_algorithm, and cugraph_validate_call meta functions.
 ---
 
-# Discovery & validation
+# Discovery & Validation
 
 Three meta functions let humans and agents discover the API and check calls
 without reading server source.
@@ -19,6 +21,14 @@ SELECT * FROM cugraph_list_algorithms();
 Columns: `function_name`, `algorithm`, `source_vertex_policy`,
 `weight_col_policy`, `output_schema_kind`, `signature`,
 `allowed_arg_counts_json`, `summary`, `metadata_schema_version`.
+
+Policy columns use stable machine-readable values:
+
+| Field | Values |
+| --- | --- |
+| `source_vertex_policy` | `none` means the function has no source vertex input; `required_scalar` means a single source vertex is required; `required_scalar_or_list_or_relation` means the function accepts a scalar, list, or source-vertex relation. |
+| `weight_col_policy` | `ignored` means `weight_col` is accepted only as an edge-column binding and does not affect results; `optional` means weights affect results when provided; `required` means the function requires a weight column. |
+| `output_schema_kind` | `fixed` means the registry schema shape is fixed; `default_mode` means options such as `output_mode` can change the result schema. |
 
 ## `cugraph_describe_algorithm`
 
@@ -67,7 +77,7 @@ Output columns (in order):
 | `would_execute_gpu` | whether execution would dispatch to the GPU |
 | `metadata_schema_version` | metadata contract version |
 
-### What validation does and does not do
+### What validation does & does not do
 
 **Does:** confirm the function exists and is enabled; resolve the relation;
 check that src/dst/weight/predicate columns exist; check vertex dtype
@@ -75,7 +85,5 @@ compatibility; validate JSON option names, types, and values; enforce
 conditional requirements (for example, BFS path mode needs a target relation);
 and compute the concrete output schema.
 
-:::warning[Validation is not execution]
-Validation does not scan edge rows, materialize Parquet, build the graph, launch
+**Does Not:** scan edge rows, materialize Parquet, build the graph, launch
 CUDA, or prove the source vertex or target row actually exists.
-:::

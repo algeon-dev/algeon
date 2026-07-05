@@ -33,13 +33,11 @@ Three citation generations reach ~151k papers. (The reversed traversal reads
 
 ### Path mode with a SQL-defined target
 
-:::note[Path mode uses a target relation]
 `output_mode: "path"` reconstructs the shortest hop chain between the source
 and a target. The target is not a literal; it is a **relation** that must
 resolve to exactly one row, so a `WHERE` clause on `papers` is enough to select
 the paper titled *Long short-term memory*. This query traces the reference path
 from BERT (2018) back to LSTM (1997).
-:::
 
 ```sql
 CREATE VIEW lstm_target AS

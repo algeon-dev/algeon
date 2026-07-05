@@ -12,7 +12,7 @@ parallelism, GPU test binaries throttled by the `gpu` test group:
 
 ```bash
 cd datafusion-nexus
-flock /tmp/cudf-gpu.lock cargo nextest run --all-features --no-fail-fast
+flock /tmp/cudf-gpu.lock cargo nextest run --features cugraph,server --no-fail-fast
 ```
 
 :::warning[Do not run only the GPU group]
@@ -51,26 +51,19 @@ cargo test -p nexus-query-engine
 cargo test --test native_lowering_tests <substring>
 ```
 
-`cargo nextest run --all-features` is the deterministic unit/integration
-surface. It intentionally contains **no external-service E2E** — nothing in
-the Cargo test targets needs a real AWS account or a running catalog.
-External E2E lives in explicit tool invocations instead; see the
-[Iceberg local E2E guide](../guides/iceberg-e2e.md):
-
-```bash
-fixture/scripts/e2e.sh iceberg-local --reuse-parquet
-```
+`cargo nextest run` is the deterministic unit/integration surface. It
+intentionally contains **no external-service E2E** — nothing in the Cargo test
+targets needs a real AWS account or a running catalog. External E2E lives in
+explicit tool invocations instead.
 
 ## Feature flags
 
 | Feature | Enables |
 | --- | --- |
-| `iceberg` | Iceberg / Glue / S3 providers, tests, smoke reports, benchmarks |
-| `server` | Arrow Flight SQL server |
 | `cugraph` | cuGraph graph algorithms callable from SQL |
+| `server` | Arrow Flight SQL server |
 
 ```bash
-cargo test --features iceberg --test iceberg_tests
 cargo run --features server --bin datafusion_nexus_server
 ```
 
@@ -87,4 +80,4 @@ RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
 For any performance claim, use `--release` builds, compare rows produced by
 the same harness, and label warmup count, iteration count, source cache
 policy, and source chunk profile. See the
-[benchmark guide](../guides/benchmarks.md).
+[benchmark reference](../reference/benchmarks/).

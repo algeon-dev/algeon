@@ -20,12 +20,17 @@
     "@docusaurus/preset-classic": "3.10.1",
     "@easyops-cn/docusaurus-search-local": "^0.55.2",
     "@mdx-js/react": "^3.0.0",
+    "@tremor/react": "^3.18.7",
+    "autoprefixer": "^10.4.21",
     "clsx": "^2.0.0",
     "graphology": "^0.26.0",
+    "graphology-types": "^0.24.8",
+    "postcss": "^8.5.6",
     "prism-react-renderer": "^2.3.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
-    "sigma": "^3.0.3"
+    "sigma": "^3.0.3",
+    "tailwindcss": "^3.4.17"
   },
   "devDependencies": {
     "@docusaurus/module-type-aliases": "3.10.1",

@@ -4,7 +4,7 @@ sidebar_label: Katz Centrality
 description: "Compute Katz centrality scores."
 ---
 
-{/* GENERATED FROM cuGraph SQL metadata by website/scripts/gen-cugraph-docs.mjs. Do not edit by hand; edit examples in website/docs/cugraph/_examples/cugraph_katz_centrality.mdx and re-run the generator. */}
+{/* GENERATED FROM cuGraph SQL metadata by website/scripts/gen-cugraph-docs.mjs. Do not edit by hand; edit the matching hand-owned example partial and re-run the generator. */}
 
 # Katz Centrality
 
@@ -34,7 +34,7 @@ SELECT * FROM cugraph_katz_centrality('target_edges')
 | `src_col` | `Utf8` | no | `src` |  |
 | `dst_col` | `Utf8` | no | `dst` |  |
 | `weight_col` | `Utf8\|null` | no |  | accepted as an edge-column binding; native algorithm execution does not consume weights; semantic effect: none for this algorithm |
-| `options_json` | `Utf8` | no |  |  |
+| `options_json` | `Utf8` | no |  | JSON string with algorithm-specific options plus shared graph construction options. |
 
 ## JSON options
 
@@ -45,9 +45,9 @@ SELECT * FROM cugraph_katz_centrality('target_edges')
 | `epsilon` | `Float64` | `0.000001` | &gt; 0 |  |
 | `max_iterations` | `UInt32` | `1000` | min 1 |  |
 
-### Graph construction options
+### Graph Construction Options
 
-Shared by all cuGraph functions, shown here with this function's defaults. The `construction_policy` option controls whether Nexus requests Python cuGraph-compatible edge normalization or bypasses it for raw libcugraph-style construction; see [graph construction options](../../graph-options.mdx) for the full policy guide.
+Shared by all cuGraph functions, shown here with this function's defaults. The `construction_policy` option controls whether Nexus requests Python cuGraph-compatible edge normalization or bypasses it for raw libcugraph-style construction; see [Graph Construction Options](../../graph-options.mdx) for the full policy guide.
 
 | Option | Type | Default | Constraints | Description |
 | --- | --- | --- | --- | --- |
@@ -63,9 +63,7 @@ Shared by all cuGraph functions, shown here with this function's defaults. The `
 | `vertex` | `Int64` | no | Vertex receiving the Katz centrality score. |
 | `value` | `Float64` | no | Katz centrality score for the vertex. |
 
-:::note[Concrete schemas are call-specific]
-These are the generic registry schemas. Run [`cugraph_validate_call`](../../discovery-and-validation.mdx#cugraph_validate_call) for the concrete, table-specific output schema of a particular call.
-:::
+**Concrete schemas are call-specific.** These are the generic registry schemas. Run [`cugraph_validate_call`](../../discovery-and-validation.mdx#cugraph_validate_call) for the concrete, table-specific output schema of a particular call.
 
 
 ## Examples
@@ -81,7 +79,6 @@ import Examples from '../../_examples/cugraph_katz_centrality.mdx';
 
 ## Validate before running
 
-:::tip[Dry-run first]
 Always dry-run a call before executing it. Validation checks the function, table, columns, dtypes, and options without touching the GPU:
 
 ```sql
@@ -92,5 +89,4 @@ SELECT * FROM cugraph_validate_call(
 );
 ```
 
-See [Discovery & validation](../../discovery-and-validation.mdx) for the full `cugraph_validate_call` contract.
-:::
+See [Discovery & Validation](../../discovery-and-validation.mdx) for the full `cugraph_validate_call` contract.

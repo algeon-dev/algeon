@@ -1,0 +1,124 @@
+---
+sidebar_position: 3
+description: Run the built-in DataFusion Nexus Flight SQL server and connect to it with Apache Arrow ADBC or arrow_cli.
+---
+
+# Flight SQL Server
+
+Run the standalone server when DataFusion Nexus should be a GPU query backend
+behind an API or tool that does not embed Rust. Clients connect with Apache
+Arrow Flight SQL and receive Arrow-native result batches.
+
+## Build
+
+Build the server with the features your endpoint needs. Add `cugraph` for graph
+SQL and `iceberg` for Iceberg/Glue/REST/S3 sources:
+
+```bash
+cargo build --release --features server,cugraph,iceberg --bin datafusion_nexus_server
+```
+
+## Start the citation demo server
+
+The website examples use the local Iceberg REST catalog backed by RustFS. Start
+that stack, load the citation network, then run the server bound to localhost:
+
+```bash
+docker compose -f fixture/iceberg-local/docker-compose.yml up -d
+fixture/scripts/fixture.sh iceberg rest load --workload citation_network
+
+NEXUS_SERVER_CUGRAPH_ENABLED=true \
+NEXUS_SERVER_NATIVE_MEMORY_POLICY=unbounded \
+NEXUS_SERVER_BIND=127.0.0.1:50051 \
+DATAFUSION_CATALOG_DEFAULT_CATALOG=datafusion \
+DATAFUSION_CATALOG_DEFAULT_SCHEMA=public \
+NEXUS_ICEBERG_CATALOG_KIND=rest \
+NEXUS_ICEBERG_CATALOG_NAME=lake \
+NEXUS_ICEBERG_NAMESPACE=citation_network \
+NEXUS_ICEBERG_WAREHOUSE=s3://lakehouse/warehouse \
+NEXUS_ICEBERG_REST_URI=http://localhost:8181 \
+NEXUS_ICEBERG_S3_ENDPOINT=http://localhost:9000 \
+NEXUS_ICEBERG_S3_REGION=us-east-1 \
+NEXUS_ICEBERG_S3_PATH_STYLE=true \
+NEXUS_ICEBERG_S3_ACCESS_KEY_ID=cudfadmin \
+NEXUS_ICEBERG_S3_SECRET_ACCESS_KEY=cudfadminsecret \
+NEXUS_SERVER_WORKSPACE_CATALOG=datafusion \
+NEXUS_SERVER_WORKSPACE_SCHEMA=public \
+NEXUS_SERVER_WORKSPACE_BACKING_CATALOG=lake \
+NEXUS_SERVER_WORKSPACE_BACKING_SCHEMA=citation_network \
+NEXUS_SERVER_WORKSPACE_BACKING_ALIASES=citation_edges,citation_edges_by_dst,papers,paper_authors,paper_fos \
+flock /tmp/cudf-gpu.lock bash scripts/run_server.sh
+```
+
+The startup log should show `iceberg_enabled=true`, `cugraph_enabled=true`, a
+non-zero `cugraph_allowed_algorithm_count`, and a workspace overlay backed by
+`lake.citation_network`.
+
+For the meaning of each server variable, see
+[Server configuration](./server-configuration.mdx). For the tables used by the
+graph examples, see the [demo dataset](../cugraph/demo-dataset.mdx).
+
+## Connect from application code with ADBC
+
+The production client path is the
+[Apache Arrow ADBC Flight SQL driver](https://arrow.apache.org/adbc/current/driver/flight_sql.html)
+for the language your service is written in. ADBC gives the client a library API
+over Arrow Flight SQL and returns Arrow-native result data, so your backend can
+own pooling, auth, query construction, validation, and response formatting.
+
+Use the server bind address as the Flight SQL URI:
+
+| Setting | Local demo value | Notes |
+| --- | --- | --- |
+| Flight SQL URI | `grpc://127.0.0.1:50051` | Translate to the equivalent `uri` setting for your language binding if it names schemes differently. |
+| Query timeout | `120s` or higher | Graph algorithms may scan large edge tables and run GPU kernels before returning the first batch. |
+| Result shape | Arrow record batches / Arrow table | Convert at your service boundary to Arrow IPC, Parquet, JSON, or your app model. |
+
+For example, a Python service can use the ADBC DB-API wrapper:
+
+```python
+from adbc_driver_flightsql import dbapi
+
+
+with dbapi.connect(uri="grpc://127.0.0.1:50051") as conn:
+    with conn.cursor() as cur:
+        cur.execute("SELECT * FROM cugraph_list_algorithms()")
+        algorithms = cur.fetch_arrow_table()
+
+        cur.execute(
+            """
+            SELECT vertex, pagerank
+            FROM cugraph_pagerank('citation_edges', 'src', 'dst')
+            ORDER BY pagerank DESC
+            LIMIT 10
+            """
+        )
+        top_vertices = cur.fetch_arrow_table()
+```
+
+The same contract applies from Java, Go, C/C++, Rust, Python, or any other
+runtime with an ADBC Flight SQL driver: configure the driver with the Flight SQL
+URI, execute SQL, and consume Arrow batches in the client-side service.
+
+## Smoke-test with arrow_cli
+
+[`arrow_cli`](https://github.com/sundy-li/arrow_cli) is useful for checking that the server is reachable, reproducing a
+SQL statement by hand, and debugging an ADBC client. Application code should use
+an ADBC driver library instead.
+
+```bash
+arrow_cli --host 127.0.0.1 -P 50051 --timeout 120 --output tsv
+```
+
+:::warning[One statement per line]
+`arrow_cli` sends SQL line by line and does not accumulate to a semicolon, so
+each statement must be on a single line. To keep session-local views, pipe
+multiple statements into one `arrow_cli` process.
+:::
+
+Output formats: `--output table` (default, shows column headers), `json`, `csv`,
+`tsv`, `psv`.
+
+Whether standalone or embedded, native execution runs on the GPU. The process
+must run on a machine with a CUDA-capable device and the matching cuDF and,
+when graph SQL is enabled, cuGraph runtime libraries available.

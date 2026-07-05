@@ -3,7 +3,7 @@
 # server into website/cugraph-specs/. Run once when the metadata contract
 # changes, then re-run gen-cugraph-docs.mjs. Build never needs the server.
 #
-# Prereqs: a running server (see docs/cugraph/connecting), arrow_cli on PATH.
+# Prereqs: a running cuGraph-enabled server and arrow_cli on PATH.
 #   cargo build --release --features server-cugraph --bin datafusion_nexus_server
 #   NEXUS_SERVER_CUGRAPH_ENABLED=true \
 #   NEXUS_SERVER_BIND=127.0.0.1:50051 bash scripts/run_server.sh

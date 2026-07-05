@@ -1,0 +1,136 @@
+.benchmark {
+  display: flex;
+  flex-direction: column;
+  gap: 1.25rem;
+  margin: 1rem 0 2rem;
+  min-width: 0;
+  overflow-x: clip;
+}
+
+.benchmark code {
+  display: inline;
+  overflow-wrap: anywhere;
+  white-space: normal;
+  word-break: break-word;
+}
+
+.header {
+  align-items: flex-start;
+}
+
+.eyebrow {
+  color: var(--ifm-color-primary);
+  font-size: 0.82rem;
+  font-weight: 700;
+  letter-spacing: 0;
+  margin: 0 0 0.35rem;
+  text-transform: uppercase;
+}
+
+.benchmarkFacts {
+  color: var(--ifm-font-color-secondary);
+  font-size: 1rem;
+  line-height: 1.65;
+  margin: 0.65rem 0 0;
+  max-width: 64rem;
+  padding-left: 1.15rem;
+}
+
+.benchmarkFacts li {
+  margin: 0.2rem 0;
+  padding-left: 0.1rem;
+}
+
+.benchmarkFacts strong {
+  color: var(--ifm-heading-color);
+}
+
+.chartCard {
+  border: 1px solid var(--ifm-color-emphasis-200);
+  border-radius: 8px;
+}
+
+.chartCaption {
+  color: var(--ifm-font-color-secondary);
+  font-size: 0.84rem;
+  margin: 0 0 0.85rem;
+}
+
+.chartNotes {
+  color: var(--ifm-font-color-secondary);
+  display: grid;
+  font-size: 0.82rem;
+  gap: 0.35rem;
+  line-height: 1.45;
+  margin: -0.35rem 0 0.9rem;
+  padding-left: 1.05rem;
+}
+
+.chartNotes strong {
+  color: var(--ifm-heading-color);
+}
+
+.chartPanel {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.chartCard {
+  min-width: 0;
+}
+
+.tabChartCard {
+  overflow: hidden;
+}
+
+.chartTabs {
+  border-bottom: 1px solid var(--ifm-color-emphasis-200);
+  margin-bottom: 0;
+  min-width: 0;
+}
+
+.chartTabs :global(.tabs__item) {
+  font-size: 0.86rem;
+  letter-spacing: 0;
+}
+
+.chartTabs + :global(.margin-top--md) {
+  margin-top: 0 !important;
+}
+
+.chart {
+  height: 29rem;
+}
+
+.tablePanel {
+  max-width: 100%;
+  overflow-x: auto;
+}
+
+.resultsTable {
+  font-size: 0.86rem;
+}
+
+.queryCell {
+  color: var(--ifm-heading-color);
+  font-weight: 700;
+}
+
+[data-theme='dark'] .chartCard {
+  background: var(--nx-ayu-surface);
+  border-color: var(--nx-ayu-line);
+}
+
+@media (max-width: 560px) {
+  .benchmarkFacts {
+    font-size: 0.95rem;
+  }
+
+  .benchmark code {
+    word-break: break-all;
+  }
+
+  .chart {
+    height: 22rem;
+  }
+}

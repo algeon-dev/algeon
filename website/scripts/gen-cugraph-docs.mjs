@@ -1,12 +1,12 @@
 #!/usr/bin/env node
-// GENERATOR for the cuGraph SQL API docs. Pure transform: reads committed
+// GENERATOR for the cuGraph SQL API pages. Pure transform: reads committed
 // verbose specs from website/cugraph-specs/*.json and writes MDX under
-// website/docs/cugraph/. Deterministic, no network, no server.
+// the cuGraph content tree. Deterministic, no network, no server.
 //
 //   node website/scripts/gen-cugraph-docs.mjs
 //
 // Re-run after capture-cugraph-specs.sh refreshes the specs. Never writes into
-// docs/cugraph/examples/ (hand-owned) or the hand-written cross-cutting pages.
+// hand-owned examples or the hand-written cross-cutting pages.
 import { readFileSync, readdirSync, writeFileSync, mkdirSync, existsSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -34,7 +34,7 @@ const FAMILIES = {
   traversal:    { label: 'Traversal & Paths', position: 4, functions: ['cugraph_bfs','cugraph_sssp'] },
   connectivity: { label: 'Connectivity', position: 5, functions: ['cugraph_weakly_connected_components','cugraph_strongly_connected_components','cugraph_minimum_spanning_tree'] },
   structure:    { label: 'Structure', position: 6, functions: ['cugraph_degrees_all','cugraph_in_degrees_all','cugraph_out_degrees_all','cugraph_triangle_count_all','cugraph_core_number','cugraph_k_core'] },
-  layout:       { label: 'Layout', position: 7, functions: ['cugraph_force_atlas2'] },
+  layout:       { label: 'Layout', position: 1, functions: ['cugraph_force_atlas2'] },
 };
 
 function familyOf(fn) {
@@ -196,22 +196,56 @@ function optionDescription(name, o) {
   return o.description || '';
 }
 
-function optionComplexity(spec) {
-  if (spec.function_name === 'cugraph_bfs') return 'rich';
+function algorithmOptionCount(spec) {
   const opts = JSON.parse(spec.options_schema_json).algorithm_options || {};
-  const n = Object.keys(opts).length;
-  if (n === 0) return 'none';
-  if (n <= 4) return 'few';
-  return 'many';
+  return String(Object.keys(opts).length);
 }
 
-const BANNER = (fn) => `{/* GENERATED FROM cuGraph SQL metadata by website/scripts/gen-cugraph-docs.mjs. Do not edit by hand; edit examples in website/docs/cugraph/_examples/${fn}.mdx and re-run the generator. */}`;
+function sourceInputLabel(policy) {
+  switch (policy) {
+    case 'none':
+      return 'not needed';
+    case 'required_scalar':
+      return 'single source';
+    case 'required_scalar_or_list_or_relation':
+      return 'source selector';
+    default:
+      return code(policy);
+  }
+}
+
+function weightColumnLabel(policy) {
+  switch (policy) {
+    case 'ignored':
+      return 'not used';
+    case 'optional':
+      return 'optional';
+    case 'required':
+      return 'required';
+    default:
+      return code(policy);
+  }
+}
+
+function outputSchemaLabel(kind) {
+  switch (kind) {
+    case 'fixed':
+      return 'fixed';
+    case 'default_mode':
+      return 'mode-dependent';
+    default:
+      return code(kind);
+  }
+}
+
+const BANNER = (fn) => `{/* GENERATED FROM cuGraph SQL metadata by website/scripts/gen-cugraph-docs.mjs. Do not edit by hand; edit the matching hand-owned example partial and re-run the generator. */}`;
 
 function renderArguments(spec) {
   const args = JSON.parse(spec.argument_descriptions_json);
   const rows = args.map(a => {
     const notes = [
       a.note,
+      a.name === 'options_json' ? 'JSON string with algorithm-specific options plus shared graph construction options.' : '',
       a.semantic_effect ? `semantic effect: ${a.semantic_effect}` : '',
       a.selector_policy ? `selector: ${a.selector_policy}` : '',
     ].filter(Boolean).join('; ');
@@ -244,7 +278,7 @@ function renderOptions(spec) {
   // ForceAtlas2 directed=false) are visible, not hidden behind a generic link.
   const graph = o.graph_options || {};
   if (Object.keys(graph).length > 0) {
-    out += `\n\n### Graph construction options\n\nShared by all cuGraph functions, shown here with this function's defaults. The \`construction_policy\` option controls whether Nexus requests Python cuGraph-compatible edge normalization or bypasses it for raw libcugraph-style construction; see [graph construction options](../../graph-options.mdx) for the full policy guide.\n\n`;
+    out += `\n\n### Graph Construction Options\n\nShared by all cuGraph functions, shown here with this function's defaults. The \`construction_policy\` option controls whether Nexus requests Python cuGraph-compatible edge normalization or bypasses it for raw libcugraph-style construction; see [Graph Construction Options](../../graph-options.mdx) for the full policy guide.\n\n`;
     out += optionTable(graph);
     out += '\n';
   }
@@ -263,7 +297,7 @@ function renderSchemas(spec) {
     const rows = rs.schemas[mode].fields.map(f => [code(f.name), code(f.data_type), f.nullable ? 'yes' : 'no', cell(fieldDescs[f.name] || '')]);
     out += table(['Column', 'Type', 'Nullable', 'Description'], rows) + '\n';
   }
-  out += `\n:::note[Concrete schemas are call-specific]\nThese are the generic registry schemas. Run [\`cugraph_validate_call\`](../../discovery-and-validation.mdx#cugraph_validate_call) for the concrete, table-specific output schema of a particular call.\n:::\n`;
+  out += `\n**Concrete schemas are call-specific.** These are the generic registry schemas. Run [\`cugraph_validate_call\`](../../discovery-and-validation.mdx#cugraph_validate_call) for the concrete, table-specific output schema of a particular call.\n`;
   return out;
 }
 
@@ -324,15 +358,13 @@ function renderPage(spec) {
     '',
     '## Validate before running',
     '',
-    ':::tip[Dry-run first]',
     'Always dry-run a call before executing it. Validation checks the function, table, columns, dtypes, and options without touching the GPU:',
     '',
     '```sql',
     validateCall,
     '```',
     '',
-    `See [Discovery & validation](../../discovery-and-validation.mdx) for the full \`cugraph_validate_call\` contract.`,
-    ':::',
+    `See [Discovery & Validation](../../discovery-and-validation.mdx) for the full \`cugraph_validate_call\` contract.`,
   ].join('\n');
 }
 
@@ -344,12 +376,23 @@ function renderCheatsheet(specs) {
     // Links resolve relative to overview.mdx (which imports this partial), so
     // they point into the algorithms/ subtree.
     const link = `[${cell(s.algorithm)}](./algorithms/${slug}/${fn}.mdx)`;
-    return [link, code(fn), cell(fam), code(s.source_vertex_policy), code(s.weight_col_policy), code(s.output_schema_kind), optionComplexity(s), cell(s.summary)];
+    return [
+      link,
+      code(fn),
+      cell(fam),
+      sourceInputLabel(s.source_vertex_policy),
+      weightColumnLabel(s.weight_col_policy),
+      outputSchemaLabel(s.output_schema_kind),
+      algorithmOptionCount(s),
+      cell(s.summary),
+    ];
   });
   return [
     '{/* GENERATED FROM cuGraph SQL metadata by website/scripts/gen-cugraph-docs.mjs. Do not edit by hand. */}',
     '',
-    table(['Algorithm', 'SQL function', 'Family', 'Source policy', 'Weight policy', 'Output kind', 'Options', 'Summary'], rows),
+    'Cheatsheet columns are human summaries of registry metadata. Source input says whether the function needs a source selector; Weight column says whether `weight_col` affects execution; Output schema says whether the result schema is fixed or mode-dependent. The Algorithm options column counts only algorithm-specific JSON options; shared graph construction options are documented on each function page.',
+    '',
+    table(['Algorithm', 'SQL function', 'Family', 'Source input', 'Weight column', 'Output schema', 'Algorithm options', 'Summary'], rows),
   ].join('\n');
 }
 
@@ -363,16 +406,14 @@ function seedExample(spec) {
     `{/* Hand-owned examples for ${fn}. NOT generated — safe to edit. */}`,
     `{/* Add dataset-specific runnable examples here against your own tables. */}`,
     '',
-    'Canonical call (generic table/column names):',
+    'Canonical call shape using `target_edges` as the edge table:',
     '',
     '```sql',
     spec.primary_example_sql,
     '```',
     '',
-    ':::info[Dataset-specific examples]',
-    'TODO: add runnable examples against a concrete dataset (edge table, real',
-    'vertex ids, expected output). These are intentionally left for a follow-up.',
-    ':::',
+    'Use the same shape with your registered edge table or view; configure',
+    'algorithm and graph options through `options_json` as described above.',
   ].join('\n');
   write(path, body);
   return true;

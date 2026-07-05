@@ -55,11 +55,9 @@ DataFusion session.
 | Iceberg/lakehouse sources | You need Iceberg catalog tables to lower into native table-format scan facts while workspace views stay mutable. | `src/table_format/` |
 | Reports and errors | You need stable evidence for admission, fallback, runtime, graph validation, source access, and failures. | `src/report.rs`, `src/native_report/`, `src/error.rs` |
 
-:::note[cuGraph is optional for embedded sessions]
 The embedded entry point is intentionally small. The cuGraph line is available
 only when the crate is built with `--features cugraph`; omit it for a pure
-relational/Iceberg session.
-:::
+relational session.
 
 ```rust
 let state = SessionStateBuilder::new()
@@ -69,14 +67,14 @@ let state = SessionStateBuilder::new()
     .build();
 ```
 
-:::note[Fallback policy boundary]
+### Fallback policy boundary
+
 `GpuPreferred` means "use native execution where it is proven supported."
 Rejected CPU-readable candidates are reported and left on DataFusion's CPU
 path. GPU-only table-format scan leaves are different: they are metadata-only
 planning leaves with no CPU Arrow reader, so the leaf guard turns a surviving
 leaf into a structured planning error. `GpuOnly` turns the first native rejection
 into a planning error.
-:::
 
 ### Feature gates
 
@@ -301,11 +299,9 @@ preflight gaps as adapter-side estimates. Unresolved strict gaps are lower-level
 `cudf-rs` / `libcudf` contract work.
 :::
 
-:::note[Aggregate state is explicit]
 Aggregates follow the same rule: state must be explicit in the engine. AVG is
 partial `SUM + COUNT`, final merge, then final projection; unsupported lookalikes
 stay rejected until their state semantics are modeled and tested.
-:::
 
 ## cuGraph SQL path
 
@@ -405,10 +401,8 @@ keeps these concerns separate:
 - The Flight SQL server can expose a workspace overlay so users get short names
   without teaching a read-only Iceberg catalog to accept views.
 
-:::note[Iceberg feature gate and test boundary]
 Iceberg/Glue/S3 is feature-gated behind `--features iceberg`; tests must not
 require a real AWS account.
-:::
 
 ## Developer checklist
 
@@ -416,20 +410,16 @@ Use this page as the routing table before changing behavior:
 
 | If you are changing... | Inspect first | Keep stable |
 | --- | --- | --- |
-| Native rewrite coverage | `docs/guide/architecture-internals.md`, `src/native/normalize.rs`, `src/native/lowering/`, `src/native/validate*` | `PlanningReport`, `FallbackReason`, rule names |
+| Native rewrite coverage | `src/native/normalize.rs`, `src/native/lowering/`, `src/native/validate*` | `PlanningReport`, `FallbackReason`, rule names |
 | Native execution semantics | `crates/nexus-query-engine/src/exec/`, `capability/`, `pipeline/` | Strict/adaptive separation and reservation evidence |
 | cuGraph SQL behavior | `src/graph_sql/types.rs`, `parser.rs`, `metadata/`, `exec.rs`, engine `exec/graph_algorithm/` | Metadata schema versions and validation output |
-| Iceberg/source behavior | `src/table_format/`, `src/table_format/iceberg/`, server workspace docs | Source diagnostics and credential-safe error facts |
+| Iceberg/source behavior | `src/table_format/`, `src/table_format/iceberg/`, server workspace configuration | Source diagnostics and credential-safe error facts |
 | Public diagnostics | `src/native_report/schema.rs`, `src/native_exec/metrics.rs`, `src/error.rs` | TSV headers, schema versions, metric names, `ErrorCode`s |
 
 ## Authoritative references
 
 - [cuGraph SQL API](./cugraph/overview.mdx) for callable graph algorithms and
   validation metadata.
-- `AGENTS.md` for repository invariants, canonical build/test commands, and GPU
-  serialization rules.
-- `docs/guide/architecture-internals.md` for the module-by-module extension
-  checklist.
 - `Cargo.toml` for feature gates and dependency declarations.
 - `src/native_report/schema.rs`, `src/native_exec/metrics.rs`, and
   `src/error.rs` for stable report, metric, and error contracts.

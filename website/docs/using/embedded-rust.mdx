@@ -1,0 +1,62 @@
+---
+sidebar_position: 2
+sidebar_label: DataFusion Session
+description: Integrate DataFusion Nexus by installing the native cuDF optimizer and optional cuGraph SQL functions on a DataFusion SessionContext.
+---
+
+# DataFusion Session
+
+Embed DataFusion Nexus when graph or GPU-accelerated SQL is one stage inside a
+Rust service you already own. Your service keeps control of request handling,
+auth, pooling, query construction, validation, and response formatting.
+
+Add the dependencies with the features you need:
+
+```toml
+# Cargo.toml
+[dependencies]
+datafusion = "54"
+datafusion-nexus = { version = "0.2", features = ["cugraph", "iceberg"] }
+```
+
+Build a DataFusion `SessionContext` with the native cuDF optimizer rule and,
+when graph SQL is needed, the cuGraph table functions:
+
+```rust
+use datafusion::execution::SessionStateBuilder;
+use datafusion::prelude::{ParquetReadOptions, SessionContext};
+use datafusion_nexus::{
+    CudfOptimizerConfig, CudfSessionStateBuilderExt, CugraphSqlConfig, GpuFallbackPolicy,
+};
+
+async fn run() -> datafusion::error::Result<()> {
+    let state = SessionStateBuilder::new()
+        .with_default_features()
+        .with_cudf_native(CudfOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred))
+        .with_cugraph_sql(CugraphSqlConfig::default())
+        .build();
+    let ctx = SessionContext::new_with_state(state);
+
+    ctx.register_parquet("edges", "edges.parquet", ParquetReadOptions::default())
+        .await?;
+
+    let df = ctx
+        .sql("SELECT * FROM cugraph_pagerank('edges', 'src', 'dst')")
+        .await?;
+    df.show().await?;
+    Ok(())
+}
+```
+
+`GpuPreferred` runs supported physical-plan fragments on the GPU and leaves
+unsupported CPU-readable fragments on stock DataFusion. Use `GpuOnly` when an
+unsupported native fragment should fail planning instead.
+
+`CugraphSqlConfig::default()` registers every supported `cugraph_*` function.
+Use `CugraphSqlConfig::default().with_allowed_algorithms([...])` to narrow the
+SQL-visible graph surface for a service.
+
+The same [discovery and validation functions](../cugraph/discovery-and-validation.mdx)
+work in-process: run `SELECT * FROM cugraph_list_algorithms()` or
+`cugraph_validate_call(...)` against your `SessionContext` before executing GPU
+graph work.

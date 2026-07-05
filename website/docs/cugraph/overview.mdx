@@ -1,15 +1,16 @@
 ---
 sidebar_position: 1
 slug: /cugraph
-description: SQL-visible cuGraph graph algorithms over the DataFusion Nexus Flight SQL server.
+description: SQL-visible cuGraph graph algorithms over DataFusion Nexus SQL sessions.
 ---
 
 # cuGraph SQL API
 
 DataFusion Nexus exposes NVIDIA RAPIDS **cuGraph** algorithms as SQL table
-functions over its Flight SQL server. Each `cugraph_*` function reads an edge
-relation, builds a GPU graph, runs an algorithm, and returns rows you can
-compose with ordinary SQL.
+functions over DataFusion SQL sessions, whether the session is embedded in a
+Rust process or served remotely through Flight SQL. Each `cugraph_*` function
+reads an edge relation, builds a GPU graph, runs an algorithm, and returns rows
+you can compose with ordinary SQL.
 
 This section is the self-describing contract for discovering and calling those
 functions — the same metadata an agent reads at runtime, rendered for humans.
@@ -25,7 +26,7 @@ cugraph_<algorithm>(table_name [, src_col, dst_col [, weight_col [, options_json
 - **`table_name`** — an edge relation (a registered table or view of edges).
 - **`src_col` / `dst_col`** — endpoint columns; default to `src` / `dst`.
 - **`weight_col`** — optional edge weight column. Whether it affects results
-  depends on the algorithm's weight policy (see the cheat sheet below).
+  depends on the function's **Weight column** entry in the cheat sheet below.
 - **`options_json`** — a JSON string of algorithm and graph options.
 
 A few functions take extra positional arguments (for example, `cugraph_bfs`
@@ -55,11 +56,14 @@ takes a source vertex); see each function's page for its exact signature.
    statically check a call.
 4. **Execute** — run the call once validation returns `valid = true`.
 
-See [Discovery & validation](./discovery-and-validation.mdx) for details, and
-[Connecting](./connecting.mdx) to start a server and client.
+See [Discovery & Validation](./discovery-and-validation.mdx) for details. To
+run these functions in a process or server, see
+[Integrating Nexus](../using/overview.mdx).
 
 ## All functions at a glance
 
 import Cheatsheet from './_cheatsheet.mdx';
 
+<div className="cugraph-function-cheatsheet">
 <Cheatsheet />
+</div>
