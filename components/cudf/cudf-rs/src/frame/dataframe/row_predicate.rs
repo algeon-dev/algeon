@@ -245,6 +245,7 @@ fn lower_expr(
         },
         Expr::Alias { inner, .. } => lower_expr(df, inner, lowered, operation),
         Expr::Cast { .. }
+        | Expr::TryCast { .. }
         | Expr::FillNaScalar { .. }
         | Expr::FillNaExpr { .. }
         | Expr::FillNullPolicy { .. }
@@ -589,6 +590,7 @@ fn expr_kind(expr: &Expr) -> &'static str {
         Expr::UnaryOp { .. } => "unary_op",
         Expr::Round { .. } => "round",
         Expr::Cast { .. } => "cast",
+        Expr::TryCast { .. } => "try_cast",
         Expr::IsNull(_) => "is_null",
         Expr::IsNotNull(_) => "is_not_null",
         Expr::Alias { .. } => "alias",

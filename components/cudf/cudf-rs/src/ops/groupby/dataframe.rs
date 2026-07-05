@@ -9,11 +9,13 @@ use super::{
     agg::{AggregationRequest, GroupByAgg, NullPolicy, groupby_aggregate_impl},
     errors::unsupported_groupby_validation_error,
     output::take_groupby_result_columns_for_output,
+    shift::{GroupByShiftRequest, groupby_shift_impl},
 };
 use crate::{
     core::{
         column::{Column, ColumnView},
         error::{Error, ErrorKind, Result},
+        scalar::Scalar,
     },
     frame::dataframe::{DataFrame, InfoDetail, group_keys::require_non_empty_group_keys},
     internal::resolve::missing_column_error,
@@ -394,6 +396,193 @@ impl<'a> GroupBy<'a> {
         /// Shortcut: compute the sample variance (ddof=1) of each named column per group.
         fn var(columns) => GroupByAgg::Variance { ddof: 1 };
     );
+
+    /// Apply a per-group row shift to each column named by `specs`.
+    ///
+    /// This is the building block for SQL `LAG(value, offset, default)` and
+    /// `LEAD(value, offset, default)` window functions. Within each group
+    /// libcudf shifts the column by the requested offset and fills
+    /// indeterminate output rows with `fill_value`. The returned
+    /// [`DataFrame`] contains the key columns followed by one shifted column
+    /// per spec, in spec order. Row order within each group matches the input
+    /// row order, but the inter-group order is libcudf-defined and may differ
+    /// across calls.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `specs` is empty, a referenced column does not
+    /// exist, or a `ShiftSpec`'s `fill_value` does not have the same data
+    /// type as the corresponding column.
+    pub fn shift(&self, specs: &[ShiftSpec]) -> Result<DataFrame> {
+        let output_domain = Arc::clone(self.df.execution_domain());
+        self.shift_impl(specs, None, output_domain, false, "groupby::GroupBy::shift")
+    }
+
+    /// Apply a per-group row shift with a borrowed per-operation execution
+    /// override.
+    pub(crate) fn shift_in_context(&self, specs: &[ShiftSpec], ctx: &ExecutionOverrides<'_>) -> Result<DataFrame> {
+        let output_domain = ctx.resolve_output_domain(self.df.execution_domain())?;
+        self.shift_impl(
+            specs,
+            output_domain.explicit_exec_options_raw(),
+            output_domain,
+            false,
+            "groupby::GroupBy::with_execution::shift",
+        )
+    }
+
+    /// Apply a per-group row shift, asserting that key columns are already
+    /// ascending with nulls after.
+    ///
+    /// Use this overload when keys come from a prior sort step so libcudf can
+    /// skip its internal key sort. Passing keys that are not actually sorted
+    /// produces undefined output ordering within groups.
+    pub fn shift_sorted(&self, specs: &[ShiftSpec]) -> Result<DataFrame> {
+        let output_domain = Arc::clone(self.df.execution_domain());
+        self.shift_impl(specs, None, output_domain, true, "groupby::GroupBy::shift_sorted")
+    }
+
+    fn shift_impl(
+        &self,
+        specs: &[ShiftSpec],
+        exec_options: Option<cudf_sys::cudf_exec_options_t>,
+        output_domain: Arc<ExecutionDomain>,
+        keys_are_sorted: bool,
+        operation: &'static str,
+    ) -> Result<DataFrame> {
+        use crate::internal::resolve::{build_borrowed_table_view_from_columns, resolve_column_names};
+
+        // Fill scalars may come from a different runtime / stream than the
+        // dataframe, so include each `spec.fill_value.execution_domain()` in
+        // the resolver inputs. Without this, libcudf would receive the
+        // scalars on the output stream with no same-device check or stream
+        // dependency, matching the contract that `copying::shift` and the
+        // low-level `groupby_shift` already enforce.
+        let secondaries: Vec<&Arc<ExecutionDomain>> = std::iter::once(self.df.execution_domain())
+            .chain(specs.iter().map(|spec| spec.fill_value.execution_domain()))
+            .collect();
+        let execution = ResolvedExecution::with_output_domain(Arc::clone(&output_domain), secondaries, operation)?;
+        let output_domain = Arc::clone(execution.output_domain());
+        let resolved_exec_options = exec_options.as_ref().unwrap_or(execution.exec_options());
+
+        require_non_empty_group_keys(self.keys.len(), operation)?;
+
+        if specs.is_empty() {
+            return Err(unsupported_groupby_validation_error(
+                operation,
+                "at least one shift spec is required",
+                "empty_shift_specs",
+                "provide at least one ShiftSpec to GroupBy::shift",
+            ));
+        }
+
+        let columns = self.df.columns_map();
+        for spec in specs {
+            if !columns.contains_key(spec.column.as_str()) {
+                return Err(missing_column_error(operation, &spec.column));
+            }
+        }
+
+        let key_refs: SmallVec<[&str; GROUPBY_REQUEST_META_INLINE_CAPACITY]> =
+            self.keys.iter().map(|s| s.as_str()).collect();
+        let key_indices = resolve_column_names(columns, &key_refs, operation)?;
+        drop(key_refs);
+        let keys_table = build_borrowed_table_view_from_columns(columns, &key_indices)?;
+
+        let mut value_views: SmallVec<[ColumnView<'_>; GROUPBY_VALUE_VIEW_INLINE_CAPACITY]> =
+            SmallVec::with_capacity(specs.len());
+        for spec in specs {
+            let arc_col =
+                columns.get(spec.column.as_str()).ok_or_else(|| missing_column_error(operation, &spec.column))?;
+            value_views.push(arc_col.view()?);
+        }
+
+        let requests: SmallVec<[GroupByShiftRequest<'_>; GROUPBY_VALUE_VIEW_INLINE_CAPACITY]> = value_views
+            .iter()
+            .zip(specs.iter())
+            .map(|(values, spec)| GroupByShiftRequest { values, offset: spec.offset, fill_value: &spec.fill_value })
+            .collect();
+
+        let result = groupby_shift_impl(
+            keys_table.table(),
+            &requests,
+            self.options.null_policy(),
+            keys_are_sorted,
+            &output_domain,
+            Some(resolved_exec_options),
+            operation,
+        )?;
+
+        let result_keys_cols = result.keys.into_columns()?;
+        let result_values_cols = result.values.into_columns()?;
+
+        let mut final_cols: Vec<Column> = Vec::with_capacity(result_keys_cols.len() + result_values_cols.len());
+        final_cols.extend(result_keys_cols);
+        final_cols.extend(result_values_cols);
+
+        let mut schema_names: Vec<String> = Vec::with_capacity(self.keys.len() + specs.len());
+        schema_names.extend(self.keys.iter().cloned());
+        schema_names.extend(specs.iter().map(|spec| spec.resolved_output_name()));
+
+        DataFrame::new(schema_names, final_cols)
+    }
+}
+
+/// Specification for one column in [`GroupBy::shift`].
+///
+/// `offset` matches libcudf's `cudf::size_type` convention: positive offsets
+/// move each row toward larger indices within its group (SQL `LAG`), and
+/// negative offsets move each row toward smaller indices (SQL `LEAD`).
+/// `fill_value` materializes the indeterminate output rows that fall outside
+/// the group; it must have the same data type as the column. A null-valued
+/// fill scalar forces the output column to be nullable.
+#[derive(Debug)]
+pub struct ShiftSpec {
+    column: String,
+    offset: i32,
+    fill_value: Scalar,
+    alias: Option<String>,
+}
+
+impl ShiftSpec {
+    /// Create a new shift specification for `column`.
+    pub fn new(column: impl Into<String>, offset: i32, fill_value: Scalar) -> Self {
+        Self { column: column.into(), offset, fill_value, alias: None }
+    }
+
+    /// Set an output column alias.
+    pub fn with_alias(mut self, alias: impl Into<String>) -> Self {
+        self.alias = Some(alias.into());
+        self
+    }
+
+    /// Input column to shift.
+    pub fn input_column(&self) -> &str {
+        &self.column
+    }
+
+    /// Shift offset.
+    pub fn offset(&self) -> i32 {
+        self.offset
+    }
+
+    /// Fill value used for indeterminate output rows.
+    pub fn fill_value(&self) -> &Scalar {
+        &self.fill_value
+    }
+
+    /// Explicit output alias, if one was provided.
+    pub fn alias(&self) -> Option<&str> {
+        self.alias.as_deref()
+    }
+
+    /// Output column name: alias if set, otherwise `{column}_shift`.
+    pub fn resolved_output_name(&self) -> String {
+        match &self.alias {
+            Some(alias) => alias.clone(),
+            None => format!("{}_shift", self.column),
+        }
+    }
 }
 
 fn annotate_groupby_budget_execution_error(
@@ -427,6 +616,11 @@ impl<'a, 'ctx, 'handles> GroupByExecutionScope<'a, 'ctx, 'handles> {
     /// Execute the groupby with the given aggregation specifications.
     pub fn agg(&self, specs: &[AggSpec]) -> Result<DataFrame> {
         self.groupby.agg_in_context(specs, self.ctx)
+    }
+
+    /// Apply a per-group row shift using this scope's execution override.
+    pub fn shift(&self, specs: &[ShiftSpec]) -> Result<DataFrame> {
+        self.groupby.shift_in_context(specs, self.ctx)
     }
 
     groupby_shortcuts!(

@@ -6,11 +6,14 @@
 
 #include <cudf/column/column.hpp>
 #include <cudf/column/column_view.hpp>
+#include <cudf/copying.hpp>
 #include <cudf/scalar/scalar.hpp>
+#include <cudf/scalar/scalar_factories.hpp>
 #include <cudf/strings/attributes.hpp>
 #include <cudf/strings/case.hpp>
 #include <cudf/strings/combine.hpp>
 #include <cudf/strings/contains.hpp>
+#include <cudf/strings/convert/convert_integers.hpp>
 #include <cudf/strings/find.hpp>
 #include <cudf/strings/regex/regex_program.hpp>
 #include <cudf/strings/replace_re.hpp>
@@ -18,8 +21,10 @@
 #include <cudf/strings/strings_column_view.hpp>
 #include <cudf/strings/strip.hpp>
 #include <cudf/table/table_view.hpp>
+#include <cudf/types.hpp>
 #include <cudf/utilities/default_stream.hpp>
 #include <cudf/utilities/memory_resource.hpp>
+#include <cudf/utilities/traits.hpp>
 
 #include <string>
 #include <string_view>
@@ -574,6 +579,59 @@ cudf_status_t cudf_strings_count_bytes_ex(cudf_column_view_handle input,
     {
       auto result = cudf::strings::count_bytes(to_strings_view(input), exec.stream, exec.mr);
       *out        = cudf_release_column_handle(std::move(result));
+    }
+    return CUDF_SUCCESS;
+  }
+  CUDF_RUST_CATCH
+}
+
+// ---------------------------------------------------------------------------
+// Numeric conversion (null-on-failure / TRY_CAST contract)
+// ---------------------------------------------------------------------------
+
+cudf_status_t cudf_strings_try_to_integers(cudf_column_view_handle input,
+                                           cudf_data_type_handle output_type,
+                                           cudf_column_handle* out)
+{
+  return cudf_strings_try_to_integers_ex(input, output_type, out, nullptr);
+}
+
+cudf_status_t cudf_strings_try_to_integers_ex(cudf_column_view_handle input,
+                                              cudf_data_type_handle output_type,
+                                              cudf_column_handle* out,
+                                              cudf_exec_options_t const* options)
+{
+  CUDF_RUST_NULL_CHECK(out, "out is null");
+  *out = nullptr;
+  CUDF_RUST_NULL_CHECK(input, "input is null");
+  CUDF_RUST_NULL_CHECK(output_type, "output_type is null");
+  CUDF_RUST_TRY
+  {
+    cudf_exec_context exec          = cudf_make_exec_context();
+    cudf_status_t const exec_status = cudf_resolve_exec_options(options, &exec);
+    if (exec_status != CUDF_SUCCESS) { return exec_status; }
+
+    auto strings_view = to_strings_view(input);
+    auto* dtype       = static_cast<cudf::data_type*>(output_type);
+    if (!cudf::is_integral(*dtype)) {
+      set_error("cudf_strings_try_to_integers: output_type must be an integral type");
+      return CUDF_ERROR_TYPE;
+    }
+
+    {
+      // `is_integer(input, output_type)` produces true only when the input
+      // string parses cleanly AND fits the requested integer type. It returns
+      // null for null input rows. `to_integers` performs the parse (returning
+      // undefined values for rejected rows, null for null input). Masking the
+      // parsed column against the validity mask with a default-constructed
+      // (invalid) scalar gives TRY_CAST semantics: success → parsed value,
+      // parse failure or overflow → null, null input → null.
+      auto valid_mask = cudf::strings::is_integer(strings_view, *dtype, exec.stream, exec.mr);
+      auto integers   = cudf::strings::to_integers(strings_view, *dtype, exec.stream, exec.mr);
+      auto null_value = cudf::make_default_constructed_scalar(*dtype, exec.stream, exec.mr);
+      auto result =
+        cudf::copy_if_else(integers->view(), *null_value, valid_mask->view(), exec.stream, exec.mr);
+      *out = cudf_release_column_handle(std::move(result));
     }
     return CUDF_SUCCESS;
   }

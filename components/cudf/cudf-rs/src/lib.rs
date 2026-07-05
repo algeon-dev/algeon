@@ -205,7 +205,7 @@ pub use frame::{
 // — High-level operations —
 pub use ops::Expr;
 pub use ops::{
-    groupby::{AggSpec, GroupBy, GroupByAgg, GroupByOptions},
+    groupby::{AggSpec, GroupBy, GroupByAgg, GroupByOptions, ShiftSpec},
     join::{JoinType, MergeOptions},
     lookup::LookupTable,
     reduction::ReduceAgg,

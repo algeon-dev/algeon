@@ -1,18 +1,23 @@
 #include "groupby.h"
 
 #include "execution_context_internal.hpp"
+#include "handle_provenance.hpp"
+#include "scalar_handle.hpp"
 #include "shim_common.h"
 
 #include <cudf/aggregation.hpp>
 #include <cudf/column/column.hpp>
 #include <cudf/column/column_view.hpp>
 #include <cudf/groupby.hpp>
+#include <cudf/scalar/scalar.hpp>
 #include <cudf/table/table.hpp>
 #include <cudf/table/table_view.hpp>
 #include <cudf/types.hpp>
 #include <cudf/utilities/default_stream.hpp>
 #include <cudf/utilities/memory_resource.hpp>
+#include <cudf/utilities/span.hpp>
 
+#include <functional>
 #include <memory>
 #include <vector>
 
@@ -440,6 +445,112 @@ cudf_status_t cudf_groupby_scan_ex(cudf_table_view_handle keys,
       *out_keys          = cudf_release_table_handle(std::move(result_keys), cudf_capture_exec_provenance(exec));
       *out_total_columns = total;
       *out_values        = col_array;
+    }
+
+    return CUDF_SUCCESS;
+  }
+  CUDF_RUST_CATCH
+}
+
+cudf_status_t cudf_groupby_shift(cudf_table_view_handle keys,
+                                 cudf_column_view_handle const* values,
+                                 int32_t const* offsets,
+                                 cudf_scalar_handle const* fill_values,
+                                 int32_t num_value_columns,
+                                 cudf_null_policy_t keys_null_policy,
+                                 int32_t keys_are_sorted,
+                                 cudf_table_handle* out_keys,
+                                 cudf_table_handle* out_values)
+{
+  return cudf_groupby_shift_ex(keys,
+                               values,
+                               offsets,
+                               fill_values,
+                               num_value_columns,
+                               keys_null_policy,
+                               keys_are_sorted,
+                               out_keys,
+                               out_values,
+                               nullptr);
+}
+
+cudf_status_t cudf_groupby_shift_ex(cudf_table_view_handle keys,
+                                    cudf_column_view_handle const* values,
+                                    int32_t const* offsets,
+                                    cudf_scalar_handle const* fill_values,
+                                    int32_t num_value_columns,
+                                    cudf_null_policy_t keys_null_policy,
+                                    int32_t keys_are_sorted,
+                                    cudf_table_handle* out_keys,
+                                    cudf_table_handle* out_values,
+                                    cudf_exec_options_t const* options)
+{
+  CUDF_RUST_NULL_CHECK(out_keys, "out_keys is null");
+  *out_keys = nullptr;
+  CUDF_RUST_NULL_CHECK(out_values, "out_values is null");
+  *out_values = nullptr;
+  CUDF_RUST_NULL_CHECK(keys, "keys is null");
+  if (num_value_columns < 0) {
+    set_error("num_value_columns must be >= 0");
+    return CUDF_ERROR_INVALID_OPERATION;
+  }
+  if (num_value_columns > 0) {
+    CUDF_RUST_NULL_CHECK(values, "values is null");
+    CUDF_RUST_NULL_CHECK(offsets, "offsets is null");
+    CUDF_RUST_NULL_CHECK(fill_values, "fill_values is null");
+  }
+
+  cudf::null_policy null_policy;
+  cudf_status_t status = to_cudf_null_policy(keys_null_policy, &null_policy, "keys_null_policy");
+  if (status != CUDF_SUCCESS) { return status; }
+
+  CUDF_RUST_TRY
+  {
+    auto* keys_view                 = static_cast<cudf::table_view*>(keys);
+    cudf_exec_context exec          = cudf_make_exec_context();
+    cudf_status_t const exec_status = cudf_resolve_exec_options(options, &exec);
+    if (exec_status != CUDF_SUCCESS) { return exec_status; }
+
+    std::vector<cudf::column_view> value_columns;
+    value_columns.reserve(static_cast<size_t>(num_value_columns));
+    std::vector<cudf::size_type> offsets_host;
+    offsets_host.reserve(static_cast<size_t>(num_value_columns));
+    std::vector<std::reference_wrapper<cudf::scalar const>> fill_refs;
+    fill_refs.reserve(static_cast<size_t>(num_value_columns));
+    for (int32_t i = 0; i < num_value_columns; ++i) {
+      CUDF_RUST_NULL_CHECK(values[i], "value column view handle is null");
+      CUDF_RUST_NULL_CHECK(fill_values[i], "fill_values entry is null");
+      value_columns.push_back(*static_cast<cudf::column_view*>(values[i]));
+      offsets_host.push_back(static_cast<cudf::size_type>(offsets[i]));
+      fill_refs.emplace_back(cudf_scalar_from_handle_const(fill_values[i]));
+    }
+    cudf::table_view values_table_view{value_columns};
+
+    {
+      cudf_current_device_resource_guard current_mr{exec.mr_raw};
+      cudf::groupby::groupby gb(*keys_view,
+                                null_policy,
+                                keys_are_sorted != 0 ? cudf::sorted::YES : cudf::sorted::NO);
+      auto [result_keys, result_values] = gb.shift(
+        values_table_view,
+        cudf::host_span<cudf::size_type const>(offsets_host.data(), offsets_host.size()),
+        fill_refs,
+        exec.stream,
+        exec.mr);
+
+      // Publish both handles only after both releases succeed so a host
+      // allocation failure on the second handle does not leave Rust without
+      // ownership of the first.
+      cudf_table_handle keys_handle   = cudf_release_table_handle(std::move(result_keys), cudf_capture_exec_provenance(exec));
+      cudf_table_handle values_handle = nullptr;
+      try {
+        values_handle = cudf_release_table_handle(std::move(result_values), cudf_capture_exec_provenance(exec));
+      } catch (...) {
+        cudf_table_destroy(keys_handle);
+        throw;
+      }
+      *out_keys   = keys_handle;
+      *out_values = values_handle;
     }
 
     return CUDF_SUCCESS;

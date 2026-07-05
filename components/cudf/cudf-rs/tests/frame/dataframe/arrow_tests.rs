@@ -507,6 +507,36 @@ fn test_round_trip_i32() {
 }
 
 #[test]
+fn test_zero_column_export_preserves_logical_row_count() {
+    let df =
+        crate::common::dataframe_from_columns(vec!["a".to_string()], vec![column_from_slice(&[1i32, 2, 3]).unwrap()])
+            .unwrap()
+            .select(Vec::<&str>::new())
+            .unwrap();
+
+    let batch = df.to_record_batch().unwrap();
+    assert_eq!(batch.num_columns(), 0);
+    assert_eq!(batch.num_rows(), 3);
+}
+
+#[test]
+fn test_zero_column_gpu_record_batch_materialization_preserves_logical_row_count() {
+    let frame =
+        crate::common::dataframe_from_columns(vec!["a".to_string()], vec![column_from_slice(&[1i32, 2, 3]).unwrap()])
+            .unwrap()
+            .select(Vec::<&str>::new())
+            .unwrap();
+    let schema = Arc::new(Schema::empty());
+
+    let gpu_batch = cudf::frame::dataframe::GpuRecordBatch::new(frame, Arc::clone(&schema)).unwrap();
+    let batch = gpu_batch.to_host_record_batch().unwrap();
+
+    assert_eq!(batch.schema(), schema);
+    assert_eq!(batch.num_columns(), 0);
+    assert_eq!(batch.num_rows(), 3);
+}
+
+#[test]
 fn test_round_trip_i64() {
     let df = crate::common::dataframe_from_columns(
         vec!["x".to_string()],

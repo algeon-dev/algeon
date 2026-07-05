@@ -2,7 +2,7 @@ use std::os::raw::c_void;
 
 use crate::{
     cudf_aggregation_kind_t, cudf_column_handle, cudf_column_view_handle, cudf_exec_options_t, cudf_null_policy_t,
-    cudf_reduce_aggregation_kind_t, cudf_status_t, cudf_table_handle, cudf_table_view_handle,
+    cudf_reduce_aggregation_kind_t, cudf_scalar_handle, cudf_status_t, cudf_table_handle, cudf_table_view_handle,
 };
 
 extern "C" {
@@ -93,4 +93,39 @@ extern "C" {
     /// Free a heap-allocated array of owning column handles returned by this
     /// shim. Does not destroy the individual columns.
     pub fn cudf_free_column_array(array: *mut cudf_column_handle);
+
+    /// Perform a per-group row shift.
+    ///
+    /// `values`, `offsets`, and `fill_values` must all have length
+    /// `num_value_columns`. libcudf returns a keys table and a values table of
+    /// identical row count; within each group the row order matches the input
+    /// row order, while group-to-group order is libcudf-defined.
+    pub fn cudf_groupby_shift(
+        keys: cudf_table_view_handle,
+        values: *const cudf_column_view_handle,
+        offsets: *const i32,
+        fill_values: *const cudf_scalar_handle,
+        num_value_columns: i32,
+        keys_null_policy: cudf_null_policy_t,
+        keys_are_sorted: i32,
+        out_keys: *mut cudf_table_handle,
+        out_values: *mut cudf_table_handle,
+    ) -> cudf_status_t;
+
+    /// Grouped shift with explicit execution context.
+    ///
+    /// When `options->mr` is non-null, it must outlive the returned keys and
+    /// values tables.
+    pub fn cudf_groupby_shift_ex(
+        keys: cudf_table_view_handle,
+        values: *const cudf_column_view_handle,
+        offsets: *const i32,
+        fill_values: *const cudf_scalar_handle,
+        num_value_columns: i32,
+        keys_null_policy: cudf_null_policy_t,
+        keys_are_sorted: i32,
+        out_keys: *mut cudf_table_handle,
+        out_values: *mut cudf_table_handle,
+        options: *const cudf_exec_options_t,
+    ) -> cudf_status_t;
 }

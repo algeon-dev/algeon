@@ -10,6 +10,7 @@ use crate::{
         column::{Column, ColumnView},
         error::{self, Result},
         scalar::Scalar,
+        types::DataType,
     },
     runtime::{
         execution_context::ExecutionOverrides, execution_domain::ExecutionDomain, execution_resolver::ResolvedExecution,
@@ -500,6 +501,48 @@ pub(crate) fn count_bytes_impl(
         Some(options) => unsafe { cudf_sys::cudf_strings_count_bytes_ex(input.raw_handle(), &mut out, options) },
         None => unsafe { cudf_sys::cudf_strings_count_bytes(input.raw_handle(), &mut out) },
     };
+    error::check_status_in(status, operation)?;
+    unsafe { Column::from_raw_with_domain(out, Arc::clone(output_domain)) }
+}
+
+// ---------------------------------------------------------------------------
+// Numeric conversion (null-on-failure / TRY_CAST contract)
+// ---------------------------------------------------------------------------
+
+/// Parse each string element as an integer of `output_type`, producing null
+/// rows for any element that does not parse cleanly or whose value would
+/// overflow the target type. Null inputs stay null. Mirrors SQL `TRY_CAST`
+/// semantics for `STRING → INTEGER`.
+///
+/// `output_type` must be an integral type. Boolean is not accepted.
+pub fn try_to_integers(input: &ColumnView<'_>, output_type: &DataType) -> Result<Column> {
+    let ctx = ExecutionOverrides::new();
+    let execution = ResolvedExecution::unary(input.execution_domain(), &ctx, "strings::try_to_integers")?;
+    try_to_integers_impl(
+        input,
+        output_type,
+        execution.output_domain(),
+        Some(execution.exec_options()),
+        "strings::try_to_integers",
+    )
+}
+
+pub(crate) fn try_to_integers_impl(
+    input: &ColumnView<'_>,
+    output_type: &DataType,
+    output_domain: &Arc<ExecutionDomain>,
+    exec_options: Option<&cudf_sys::cudf_exec_options_t>,
+    operation: &'static str,
+) -> Result<Column> {
+    let dtype_handle = output_type.to_raw_handle_for(operation)?;
+    let mut out = ptr::null_mut();
+    let status = match exec_options {
+        Some(options) => unsafe {
+            cudf_sys::cudf_strings_try_to_integers_ex(input.raw_handle(), dtype_handle, &mut out, options)
+        },
+        None => unsafe { cudf_sys::cudf_strings_try_to_integers(input.raw_handle(), dtype_handle, &mut out) },
+    };
+    unsafe { cudf_sys::cudf_data_type_destroy(dtype_handle) };
     error::check_status_in(status, operation)?;
     unsafe { Column::from_raw_with_domain(out, Arc::clone(output_domain)) }
 }

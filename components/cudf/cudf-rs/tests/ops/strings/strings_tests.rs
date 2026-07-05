@@ -6,7 +6,7 @@
 //!
 //! All tests require a GPU.
 
-use cudf::{ExecutionOverrides, StringSliceOptions, StripSide, TypeId, testing::RawHandleTestingExt};
+use cudf::{DataType, ExecutionOverrides, StringSliceOptions, StripSide, TypeId, testing::RawHandleTestingExt};
 
 // ===========================================================================
 // Case conversion
@@ -343,4 +343,71 @@ fn test_str_len_display_omits_input_name() {
     let result = s.str().len().unwrap();
     let output = format!("{}", result);
     assert!(!output.contains("col"), "len output should not expose schema names: {}", output);
+}
+
+// ===========================================================================
+// try_to_integers (SQL TRY_CAST string -> integer)
+// ===========================================================================
+
+#[test]
+fn test_str_try_to_integers_int32_parses_valid_rejects_invalid() {
+    // Valid, valid, parse-failure (alpha), overflow (> i32::MAX), negative.
+    let s = crate::common::series("s", &["42", "0", "abc", "2147483648", "-17"]).unwrap();
+    let result = s.str().try_to_integers(&DataType::new(TypeId::Int32)).unwrap();
+    assert_eq!(result.dtype().unwrap().id(), TypeId::Int32);
+    assert_eq!(result.to_optional_vec::<i32>().unwrap(), vec![Some(42), Some(0), None, None, Some(-17)]);
+}
+
+#[test]
+fn test_str_try_to_integers_propagates_input_nulls() {
+    let s = crate::common::nullable_series("s", &["123", "x", "45"], &[true, false, true]).unwrap();
+    let result = s.str().try_to_integers(&DataType::new(TypeId::Int32)).unwrap();
+    assert_eq!(result.to_optional_vec::<i32>().unwrap(), vec![Some(123), None, Some(45)]);
+}
+
+#[test]
+fn test_str_try_to_integers_target_type_overflow_yields_null() {
+    // 200 fits in UInt8; 256 overflows; -1 is rejected for an unsigned target.
+    let s = crate::common::series("s", &["200", "256", "-1"]).unwrap();
+    let result = s.str().try_to_integers(&DataType::new(TypeId::UInt8)).unwrap();
+    assert_eq!(result.to_optional_vec::<u8>().unwrap(), vec![Some(200), None, None]);
+}
+
+#[test]
+fn test_str_try_to_integers_empty_input() {
+    let s = crate::common::series::<&str>("s", &[]).unwrap();
+    let result = s.str().try_to_integers(&DataType::new(TypeId::Int64)).unwrap();
+    assert!(result.is_empty());
+    assert_eq!(result.dtype().unwrap().id(), TypeId::Int64);
+}
+
+#[test]
+fn test_str_try_to_integers_rejects_non_integer_target_type() {
+    let s = crate::common::series("s", &["1.5"]).unwrap();
+    let err = s.str().try_to_integers(&DataType::new(TypeId::Float64)).expect_err("Float64 target must be rejected");
+    assert!(format!("{err}").contains("integral"), "error should mention integral target: {err}");
+}
+
+#[test]
+fn test_expr_try_cast_dispatches_to_strings_try_to_integers() {
+    use cudf::{DataFrame, ops::expr::col};
+
+    let s = crate::common::series("s", &["7", "bad", "11"]).unwrap();
+    let df = DataFrame::from_series([("s", s)]).unwrap();
+    let result = df.with_columns(vec![col("s").try_cast(TypeId::Int32).alias("v")]).unwrap();
+    let series = result.series("v").unwrap();
+    assert_eq!(series.dtype().unwrap().id(), TypeId::Int32);
+    assert_eq!(series.to_optional_vec::<i32>().unwrap(), vec![Some(7), None, Some(11)]);
+}
+
+#[test]
+fn test_expr_try_cast_unsupported_pair_returns_error() {
+    use cudf::{DataFrame, ops::expr::col};
+
+    let s = crate::common::series("s", &["7"]).unwrap();
+    let df = DataFrame::from_series([("s", s)]).unwrap();
+    let err = df
+        .with_columns(vec![col("s").try_cast(TypeId::Float64).alias("v")])
+        .expect_err("Float64 target must be rejected by TRY_CAST expr");
+    assert!(format!("{err}").contains("STRING"), "error should mention STRING source: {err}");
 }
