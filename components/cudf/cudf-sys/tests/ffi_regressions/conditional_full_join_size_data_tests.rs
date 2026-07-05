@@ -2,7 +2,7 @@ use std::{ffi::c_void, ptr};
 
 use crate::{
     helpers::{make_i32_column, make_table_from_one_column, make_table_view, read_i32_column_data},
-    support::{OwnedStream, lock_shim_state},
+    support::{OwnedMemoryResource, OwnedStream, lock_shim_state, required_exec_options},
 };
 
 const JOIN_NO_MATCH: i32 = i32::MIN;
@@ -91,14 +91,18 @@ fn read_all_i32(col: *mut c_void) -> Vec<i32> {
 #[test]
 fn conditional_full_join_size_data_reports_and_materializes_pair_contract() {
     let _shim_state = lock_shim_state();
+    let stream = OwnedStream::new();
+    let mr = OwnedMemoryResource::new_cuda();
+    let exec = required_exec_options(&stream.borrowed(), &mr.borrowed());
     let inputs = ConditionalJoinInputs::new(&[2, 5, 9], &[1, 3, 6]);
     let mut size_data: *mut c_void = ptr::null_mut();
     let status = unsafe {
-        cudf_sys::cudf_conditional_full_join_begin_size_data(
+        cudf_sys::cudf_conditional_full_join_begin_size_data_ex(
             inputs.left,
             inputs.right,
             inputs.predicate,
             &mut size_data,
+            &exec,
         )
     };
     assert_eq!(status, cudf_sys::CUDF_SUCCESS);
@@ -118,10 +122,11 @@ fn conditional_full_join_size_data_reports_and_materializes_pair_contract() {
     let mut left_indices: *mut c_void = ptr::null_mut();
     let mut right_indices: *mut c_void = ptr::null_mut();
     let status = unsafe {
-        cudf_sys::cudf_conditional_full_join_size_data_materialize_indices(
+        cudf_sys::cudf_conditional_full_join_size_data_materialize_indices_ex(
             size_data,
             &mut left_indices,
             &mut right_indices,
+            &exec,
         )
     };
     assert_eq!(status, cudf_sys::CUDF_SUCCESS);
@@ -138,14 +143,18 @@ fn conditional_full_join_size_data_reports_and_materializes_pair_contract() {
 #[test]
 fn conditional_full_join_size_data_empty_input_rejects_non_boolean_predicate() {
     let _shim_state = lock_shim_state();
+    let stream = OwnedStream::new();
+    let mr = OwnedMemoryResource::new_cuda();
+    let exec = required_exec_options(&stream.borrowed(), &mr.borrowed());
     let inputs = ConditionalJoinInputs::new_with_predicate(&[], &[1, 2], make_left_add_right_predicate());
     let mut size_data: *mut c_void = ptr::null_mut();
     let status = unsafe {
-        cudf_sys::cudf_conditional_full_join_begin_size_data(
+        cudf_sys::cudf_conditional_full_join_begin_size_data_ex(
             inputs.left,
             inputs.right,
             inputs.predicate,
             &mut size_data,
+            &exec,
         )
     };
 
@@ -157,8 +166,8 @@ fn conditional_full_join_size_data_empty_input_rejects_non_boolean_predicate() {
 fn conditional_full_join_size_data_materialized_indices_survive_destroy_before_stream_sync() {
     let _shim_state = lock_shim_state();
     let stream = OwnedStream::new();
-    let borrowed_stream = stream.borrowed();
-    let exec = cudf_sys::ExecutionContext::new().with_stream(&borrowed_stream);
+    let mr = OwnedMemoryResource::new_cuda();
+    let exec = required_exec_options(&stream.borrowed(), &mr.borrowed());
     let inputs = ConditionalJoinInputs::new(&[2, 5, 9], &[1, 3, 6]);
 
     let mut size_data: *mut c_void = ptr::null_mut();
@@ -168,7 +177,7 @@ fn conditional_full_join_size_data_materialized_indices_survive_destroy_before_s
             inputs.right,
             inputs.predicate,
             &mut size_data,
-            exec.as_raw(),
+            &exec,
         )
     };
     assert_eq!(status, cudf_sys::CUDF_SUCCESS);
@@ -181,7 +190,7 @@ fn conditional_full_join_size_data_materialized_indices_survive_destroy_before_s
             size_data,
             &mut left_indices,
             &mut right_indices,
-            exec.as_raw(),
+            &exec,
         )
     };
     assert_eq!(status, cudf_sys::CUDF_SUCCESS);

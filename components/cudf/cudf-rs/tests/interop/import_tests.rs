@@ -627,17 +627,17 @@ mod table_import_contracts {
 
         assert_eq!(err.kind(), InteropErrorKind::InvalidView);
         assert_eq!(
-            interop_error_context_value(&err, "operation").as_deref(),
+            interop_error_context_value(&err, "operation"),
             Some("interop::Table::try_import_from_borrowed_table_view_into_runtime"),
         );
-        assert_eq!(interop_error_context_value(&err, "resource").as_deref(), Some("table_shape"));
-        assert_eq!(interop_error_context_value(&err, "reason").as_deref(), Some("zero_column_non_empty_table"));
-        assert_eq!(interop_error_context_value(&err, "table_row_count").as_deref(), Some("3"));
+        assert_eq!(interop_error_context_value(&err, "resource"), Some("table_shape"));
+        assert_eq!(interop_error_context_value(&err, "reason"), Some("zero_column_non_empty_table"));
+        assert_eq!(interop_error_context_value(&err, "table_row_count"), Some("3"));
         assert_eq!(
-            interop_error_context_value(&err, "remedy").as_deref(),
+            interop_error_context_value(&err, "remedy"),
             Some("provide at least one semantic column or report zero rows"),
         );
-        assert_eq!(interop_error_context_value(&err, "num_rows").as_deref(), None);
+        assert_eq!(interop_error_context_value(&err, "num_rows"), None);
     }
 
     #[test]
@@ -818,18 +818,18 @@ mod dataframe_import_contracts {
 
         assert_eq!(err.kind(), InteropErrorKind::InvalidView);
         assert_eq!(
-            interop_error_context_value(&err, "operation").as_deref(),
+            interop_error_context_value(&err, "operation"),
             Some("interop::DataFrame::try_import_from_prepared_table_export_into_runtime"),
         );
-        assert_eq!(interop_error_context_value(&err, "resource").as_deref(), Some("schema_names"));
-        assert_eq!(interop_error_context_value(&err, "reason").as_deref(), Some("missing_schema_names"));
+        assert_eq!(interop_error_context_value(&err, "resource"), Some("schema_names"));
+        assert_eq!(interop_error_context_value(&err, "reason"), Some("missing_schema_names"));
         assert_eq!(
-            interop_error_context_value(&err, "remedy").as_deref(),
+            interop_error_context_value(&err, "remedy"),
             Some(
                 "use DataFrame::try_import_from_prepared_table_export_into_runtime_and_names when the root does not carry schema names"
             ),
         );
-        assert_eq!(interop_error_context_value(&err, "explicit_names_variant").as_deref(), None);
+        assert_eq!(interop_error_context_value(&err, "explicit_names_variant"), None);
     }
 
     #[test]
@@ -881,18 +881,18 @@ mod dataframe_import_contracts {
 
         assert_eq!(err.kind(), InteropErrorKind::InvalidView);
         assert_eq!(
-            interop_error_context_value(&err, "operation").as_deref(),
+            interop_error_context_value(&err, "operation"),
             Some("interop::DataFrame::try_import_from_owned_device_table_transfer_into_runtime"),
         );
-        assert_eq!(interop_error_context_value(&err, "resource").as_deref(), Some("schema_names"));
-        assert_eq!(interop_error_context_value(&err, "reason").as_deref(), Some("missing_schema_names"));
+        assert_eq!(interop_error_context_value(&err, "resource"), Some("schema_names"));
+        assert_eq!(interop_error_context_value(&err, "reason"), Some("missing_schema_names"));
         assert_eq!(
-            interop_error_context_value(&err, "remedy").as_deref(),
+            interop_error_context_value(&err, "remedy"),
             Some(
                 "use DataFrame::try_import_from_owned_device_table_transfer_into_runtime_and_names when the root does not carry schema names"
             ),
         );
-        assert_eq!(interop_error_context_value(&err, "explicit_names_variant").as_deref(), None);
+        assert_eq!(interop_error_context_value(&err, "explicit_names_variant"), None);
     }
 }
 
@@ -919,7 +919,7 @@ mod error_mapping_contracts {
             .unwrap_err();
 
             assert_eq!(err.kind(), InteropErrorKind::ProfileUnsupported);
-            assert_eq!(interop_error_context_value(&err, "profile").as_deref(), Some(expected_profile_name));
+            assert_eq!(interop_error_context_value(&err, "profile"), Some(expected_profile_name));
         }
     }
 
@@ -944,7 +944,7 @@ mod error_mapping_contracts {
             .unwrap_err();
 
             assert_eq!(err.kind(), InteropErrorKind::ProfileUnsupported);
-            assert_eq!(interop_error_context_value(&err, "profile").as_deref(), Some(expected_profile_name));
+            assert_eq!(interop_error_context_value(&err, "profile"), Some(expected_profile_name));
         }
     }
 
@@ -1036,9 +1036,9 @@ mod error_mapping_contracts {
         assert!(!err.to_string().contains("context:"));
         assert!(!err.to_string().contains("phase:"));
         assert_eq!(
-            interop_error_context_value(&err, "operation").as_deref(),
+            interop_error_context_value(&err, "operation"),
             Some("interop::Column::try_import_from_prepared_column_export_into_runtime")
         );
-        assert_eq!(interop_error_context_value(&err, "phase").as_deref(), Some("synchronize"));
+        assert_eq!(interop_error_context_value(&err, "phase"), Some("synchronize"));
     }
 }

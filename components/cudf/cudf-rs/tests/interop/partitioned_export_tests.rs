@@ -236,19 +236,19 @@ fn partitioned_prepared_table_export_import_rejects_runtime_count_mismatch_with_
 
     assert_eq!(err.kind(), InteropErrorKind::ExecutionBindingMismatch);
     assert_eq!(
-        interop_error_context_value(&err, "operation").as_deref(),
+        interop_error_context_value(&err, "operation"),
         Some("interop::Table::try_import_partitioned_local_tables_from_prepared_table_export_into_runtimes"),
     );
-    assert_eq!(interop_error_context_value(&err, "resource").as_deref(), Some("execution_bindings"));
-    assert_eq!(interop_error_context_value(&err, "reason").as_deref(), Some("partition_runtime_count_mismatch"));
-    assert_eq!(interop_error_context_value(&err, "expected_count").as_deref(), Some("2"));
-    assert_eq!(interop_error_context_value(&err, "actual_count").as_deref(), Some("1"));
+    assert_eq!(interop_error_context_value(&err, "resource"), Some("execution_bindings"));
+    assert_eq!(interop_error_context_value(&err, "reason"), Some("partition_runtime_count_mismatch"));
+    assert_eq!(interop_error_context_value(&err, "expected_count"), Some("2"));
+    assert_eq!(interop_error_context_value(&err, "actual_count"), Some("1"));
     assert_eq!(
-        interop_error_context_value(&err, "remedy").as_deref(),
+        interop_error_context_value(&err, "remedy"),
         Some("provide exactly one destination runtime per partition"),
     );
-    assert_eq!(interop_error_context_value(&err, "partition_count").as_deref(), None);
-    assert_eq!(interop_error_context_value(&err, "runtime_count").as_deref(), None);
+    assert_eq!(interop_error_context_value(&err, "partition_count"), None);
+    assert_eq!(interop_error_context_value(&err, "runtime_count"), None);
 }
 
 #[test]
@@ -283,16 +283,10 @@ fn partitioned_prepared_table_export_import_rejects_runtime_on_wrong_device_for_
         "expected partition-local mismatch context, got {:?}",
         err.context()
     );
-    assert_eq!(
-        interop_error_context_value(&err, "left_device").as_deref(),
-        Some(device0.ordinal().to_string().as_str())
-    );
-    assert_eq!(
-        interop_error_context_value(&err, "right_device").as_deref(),
-        Some(device1.ordinal().to_string().as_str())
-    );
-    assert_eq!(interop_error_context_value(&err, "producer_device").as_deref(), None);
-    assert_eq!(interop_error_context_value(&err, "runtime_device").as_deref(), None);
+    assert_eq!(interop_error_context_value(&err, "left_device"), Some(device0.ordinal().to_string().as_str()));
+    assert_eq!(interop_error_context_value(&err, "right_device"), Some(device1.ordinal().to_string().as_str()));
+    assert_eq!(interop_error_context_value(&err, "producer_device"), None);
+    assert_eq!(interop_error_context_value(&err, "runtime_device"), None);
 }
 
 #[test]

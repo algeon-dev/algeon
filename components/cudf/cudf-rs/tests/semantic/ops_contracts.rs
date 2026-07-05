@@ -56,6 +56,8 @@ mod join_tests;
 mod lookup_tests;
 #[path = "../ops/join/mixed_join_tests.rs"]
 mod mixed_join_tests;
+#[path = "../ops/misc/partitioning_tests.rs"]
+mod partitioning_tests;
 #[path = "../ops/misc/query_tests.rs"]
 mod query_tests;
 #[path = "../ops/reduction/reduction_tests.rs"]

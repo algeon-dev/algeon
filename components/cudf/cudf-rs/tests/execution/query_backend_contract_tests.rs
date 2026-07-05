@@ -68,7 +68,7 @@ fn host_record_batch_import_and_export_are_observable_boundaries() {
     let import_count_after = testing::arrow::arrow_host_import_call_count_for_test();
     let import_observation = testing::arrow::last_arrow_host_boundary_observation_for_test().unwrap();
 
-    assert!(import_count_after >= import_count_before + 1);
+    assert!(import_count_after > import_count_before);
     assert_eq!(import_observation.kind, BoundaryKind::HostToDevice);
     assert_eq!(import_observation.query_stage, Some(QueryStageKind::InteropImport));
     assert_eq!(import_observation.placement, runtime.placement());
@@ -90,7 +90,7 @@ fn host_record_batch_import_and_export_are_observable_boundaries() {
     let exported = df.to_record_batch().unwrap();
     let export_observation = testing::arrow::last_arrow_host_boundary_observation_for_test().unwrap();
 
-    assert!(testing::arrow::arrow_host_export_call_count_for_test() >= export_count_before + 1);
+    assert!(testing::arrow::arrow_host_export_call_count_for_test() > export_count_before);
     assert_eq!(export_observation.kind, BoundaryKind::DeviceToHost);
     assert_eq!(export_observation.query_stage, Some(QueryStageKind::FinalMaterialize));
     assert_eq!(export_observation.placement, df.placement());
@@ -355,7 +355,7 @@ fn query_style_chain_keeps_one_override_until_host_materialization() {
     testing::arrow::reset_arrow_host_interop_observation_for_test();
     let import_count_before = testing::arrow::arrow_host_import_call_count_for_test();
     let imported = DataFrame::from_record_batch(&data_runtime, &sample_record_batch()).unwrap();
-    assert!(testing::arrow::arrow_host_import_call_count_for_test() >= import_count_before + 1);
+    assert!(testing::arrow::arrow_host_import_call_count_for_test() > import_count_before);
     assert_frame_residency(
         &imported,
         data_runtime.testing_execution_domain_id(),
@@ -382,7 +382,7 @@ fn query_style_chain_keeps_one_override_until_host_materialization() {
     let exported = projected.to_record_batch().unwrap();
     let export_observation = testing::arrow::last_arrow_host_boundary_observation_for_test().unwrap();
 
-    assert!(testing::arrow::arrow_host_export_call_count_for_test() >= export_count_before + 1);
+    assert!(testing::arrow::arrow_host_export_call_count_for_test() > export_count_before);
     assert_eq!(export_observation.kind, BoundaryKind::DeviceToHost);
     assert_eq!(export_observation.query_stage, Some(QueryStageKind::FinalMaterialize));
     assert_eq!(export_observation.placement, projected.placement());

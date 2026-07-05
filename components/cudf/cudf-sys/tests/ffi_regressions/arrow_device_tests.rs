@@ -3,24 +3,37 @@ use std::{
     ptr,
 };
 
-use crate::{helpers::*, support::lock_shim_state};
+use crate::{
+    helpers::*,
+    support::{OwnedMemoryResource, OwnedStream, lock_shim_state, required_exec_options},
+};
 
-fn export_column_arrow_device(view: *mut c_void) -> (*mut c_void, *mut c_void) {
+fn export_column_arrow_device(view: *mut c_void) -> (*mut c_void, *mut c_void, OwnedStream, OwnedMemoryResource) {
+    let stream = OwnedStream::new();
+    let mr = OwnedMemoryResource::new_cuda();
+    let borrowed_stream = stream.borrowed();
+    let borrowed_mr = mr.borrowed();
+    let options = required_exec_options(&borrowed_stream, &borrowed_mr);
     let mut schema = ptr::null_mut();
     let mut array = ptr::null_mut();
     let mut materialization =
         cudf_sys::cudf_arrow_device_export_materialization_t::CUDF_ARROW_DEVICE_EXPORT_PRODUCER_RETAINED_VIEW;
 
     let status = unsafe {
-        cudf_sys::cudf_arrow_device_column_export(view, ptr::null(), &mut schema, &mut array, &mut materialization)
+        cudf_sys::cudf_arrow_device_column_export(view, &options, &mut schema, &mut array, &mut materialization)
     };
     assert_eq!(status, cudf_sys::CUDF_SUCCESS);
     assert!(!schema.is_null());
     assert!(!array.is_null());
-    (schema, array)
+    (schema, array, stream, mr)
 }
 
-fn export_table_arrow_device(view: *mut c_void) -> (*mut c_void, *mut c_void) {
+fn export_table_arrow_device(view: *mut c_void) -> (*mut c_void, *mut c_void, OwnedStream, OwnedMemoryResource) {
+    let stream = OwnedStream::new();
+    let mr = OwnedMemoryResource::new_cuda();
+    let borrowed_stream = stream.borrowed();
+    let borrowed_mr = mr.borrowed();
+    let options = required_exec_options(&borrowed_stream, &borrowed_mr);
     let mut schema = ptr::null_mut();
     let mut array = ptr::null_mut();
     let mut materialization =
@@ -29,7 +42,7 @@ fn export_table_arrow_device(view: *mut c_void) -> (*mut c_void, *mut c_void) {
     let status = unsafe {
         cudf_sys::cudf_arrow_device_table_export(
             view,
-            ptr::null(),
+            &options,
             ptr::null(),
             0,
             &mut schema,
@@ -40,7 +53,7 @@ fn export_table_arrow_device(view: *mut c_void) -> (*mut c_void, *mut c_void) {
     assert_eq!(status, cudf_sys::CUDF_SUCCESS);
     assert!(!schema.is_null());
     assert!(!array.is_null());
-    (schema, array)
+    (schema, array, stream, mr)
 }
 
 #[repr(C)]
@@ -171,7 +184,7 @@ fn test_arrow_device_column_fixed_width_values_ptr_rejects_string_schema() {
     let _shim_lock = lock_shim_state();
     let column = make_string_column(&["alpha", "beta"]);
     let view = make_column_view(column);
-    let (schema, array) = export_column_arrow_device(view);
+    let (schema, array, _stream, _mr) = export_column_arrow_device(view);
     let mut out = std::ptr::dangling::<c_void>();
 
     let status = unsafe { cudf_sys::cudf_arrow_device_column_fixed_width_values_ptr(schema, array, &mut out) };
@@ -194,7 +207,7 @@ fn test_arrow_device_table_fixed_width_values_ptr_rejects_string_column() {
     let ids = make_i32_column(&[1, 2]);
     let table = make_table_from_columns(vec![words, ids]);
     let view = make_table_view(table);
-    let (schema, array) = export_table_arrow_device(view);
+    let (schema, array, _stream, _mr) = export_table_arrow_device(view);
     let mut out = std::ptr::dangling::<c_void>();
 
     let status = unsafe { cudf_sys::cudf_arrow_device_table_fixed_width_values_ptr(schema, array, 0, &mut out) };

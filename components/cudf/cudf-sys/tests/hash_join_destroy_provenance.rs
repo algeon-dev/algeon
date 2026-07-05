@@ -18,7 +18,12 @@ fn column_destroy_keeps_explicit_memory_resource_alive_after_handle_destroy() {
     assert!(!mr.is_null());
 
     let borrowed = unsafe { cudf_sys::BorrowedMemoryResource::from_raw(mr) };
-    let exec = cudf_sys::ExecutionContext::new().with_memory_resource(&borrowed);
+    let stream = OwnedStream::new();
+    let borrowed_stream = stream.borrowed();
+    let exec = cudf_sys::ExecutionContext::new()
+        .with_device(current_device())
+        .with_stream(&borrowed_stream)
+        .with_memory_resource(&borrowed);
     let data = [1_i32, 2, 3, 4];
     let mut column: *mut c_void = ptr::null_mut();
     let status = unsafe {
@@ -57,7 +62,10 @@ fn distinct_hash_join_destroy_uses_build_memory_resource() {
     let stream = OwnedStream::new();
     let target_stream = stream.borrowed();
     let build_borrowed = build_mr.borrowed();
-    let exec = cudf_sys::ExecutionContext::new().with_stream(&target_stream).with_memory_resource(&build_borrowed);
+    let exec = cudf_sys::ExecutionContext::new()
+        .with_device(current_device())
+        .with_stream(&target_stream)
+        .with_memory_resource(&build_borrowed);
 
     let mut join: *mut c_void = ptr::null_mut();
     let status = unsafe {
@@ -108,7 +116,10 @@ fn hash_join_destroy_uses_build_memory_resource() {
     let stream = OwnedStream::new();
     let target_stream = stream.borrowed();
     let build_borrowed = build_mr.borrowed();
-    let exec = cudf_sys::ExecutionContext::new().with_stream(&target_stream).with_memory_resource(&build_borrowed);
+    let exec = cudf_sys::ExecutionContext::new()
+        .with_device(current_device())
+        .with_stream(&target_stream)
+        .with_memory_resource(&build_borrowed);
 
     let mut join: *mut c_void = ptr::null_mut();
     let status = unsafe {

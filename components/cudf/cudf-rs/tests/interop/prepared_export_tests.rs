@@ -433,16 +433,10 @@ mod lease_contracts {
         common::set_current_device(device0);
         let err = series.try_prepare_device_column_export_with_event(&wrong_device_event).unwrap_err();
         assert_eq!(err.kind(), InteropErrorKind::ReadinessMismatch);
-        assert_eq!(
-            interop_error_context_value(&err, "left_device").as_deref(),
-            Some(device0.ordinal().to_string().as_str())
-        );
-        assert_eq!(
-            interop_error_context_value(&err, "right_device").as_deref(),
-            Some(device1.ordinal().to_string().as_str())
-        );
-        assert_eq!(interop_error_context_value(&err, "producer_device").as_deref(), None);
-        assert_eq!(interop_error_context_value(&err, "event_device").as_deref(), None);
+        assert_eq!(interop_error_context_value(&err, "left_device"), Some(device0.ordinal().to_string().as_str()));
+        assert_eq!(interop_error_context_value(&err, "right_device"), Some(device1.ordinal().to_string().as_str()));
+        assert_eq!(interop_error_context_value(&err, "producer_device"), None);
+        assert_eq!(interop_error_context_value(&err, "event_device"), None);
     }
 
     #[test]
@@ -767,14 +761,14 @@ mod device_export_contracts {
 
         assert_eq!(err.kind(), InteropErrorKind::InvalidView);
         assert_eq!(
-            interop_error_context_value(&err, "operation").as_deref(),
+            interop_error_context_value(&err, "operation"),
             Some("testing::interop::projection::active_range_overflow")
         );
-        assert_eq!(interop_error_context_value(&err, "resource").as_deref(), Some("row_range"));
-        assert_eq!(interop_error_context_value(&err, "reason").as_deref(), Some("end_overflowed_usize"));
-        assert_eq!(interop_error_context_value(&err, "offset").as_deref(), Some(expected.as_str()));
-        assert_eq!(interop_error_context_value(&err, "row_count").as_deref(), Some("1"));
-        assert_eq!(interop_error_context_value(&err, "len").as_deref(), None);
+        assert_eq!(interop_error_context_value(&err, "resource"), Some("row_range"));
+        assert_eq!(interop_error_context_value(&err, "reason"), Some("end_overflowed_usize"));
+        assert_eq!(interop_error_context_value(&err, "offset"), Some(expected.as_str()));
+        assert_eq!(interop_error_context_value(&err, "row_count"), Some("1"));
+        assert_eq!(interop_error_context_value(&err, "len"), None);
     }
 
     #[test]
@@ -783,16 +777,16 @@ mod device_export_contracts {
 
         assert_eq!(err.kind(), InteropErrorKind::InvalidView);
         assert_eq!(
-            interop_error_context_value(&err, "operation").as_deref(),
+            interop_error_context_value(&err, "operation"),
             Some("testing::interop::projection::negative_offset")
         );
-        assert_eq!(interop_error_context_value(&err, "resource").as_deref(), Some("offset"));
-        assert_eq!(interop_error_context_value(&err, "reason").as_deref(), Some("negative_value"));
+        assert_eq!(interop_error_context_value(&err, "resource"), Some("offset"));
+        assert_eq!(interop_error_context_value(&err, "reason"), Some("negative_value"));
         assert_eq!(
-            interop_error_context_value(&err, "remedy").as_deref(),
+            interop_error_context_value(&err, "remedy"),
             Some("normalize the view so offset >= 0 before projection")
         );
-        assert_eq!(interop_error_context_value(&err, "offset").as_deref(), Some("-1"));
+        assert_eq!(interop_error_context_value(&err, "offset"), Some("-1"));
     }
 
     #[test]
@@ -802,15 +796,15 @@ mod device_export_contracts {
 
         assert_eq!(err.kind(), InteropErrorKind::InvalidView);
         assert_eq!(
-            interop_error_context_value(&err, "operation").as_deref(),
+            interop_error_context_value(&err, "operation"),
             Some("testing::interop::projection::missing_string_offsets_child")
         );
-        assert_eq!(interop_error_context_value(&err, "resource").as_deref(), Some("child_count"));
-        assert_eq!(interop_error_context_value(&err, "reason").as_deref(), Some("requires_offsets_child"));
-        assert_eq!(interop_error_context_value(&err, "type_id").as_deref(), Some("string"));
-        assert_eq!(interop_error_context_value(&err, "child_count").as_deref(), Some("0"));
-        assert_eq!(interop_error_context_value(&err, "required_child_count").as_deref(), Some("1"));
-        assert_eq!(interop_error_context_value(&err, "num_children").as_deref(), None);
+        assert_eq!(interop_error_context_value(&err, "resource"), Some("child_count"));
+        assert_eq!(interop_error_context_value(&err, "reason"), Some("requires_offsets_child"));
+        assert_eq!(interop_error_context_value(&err, "type_id"), Some("string"));
+        assert_eq!(interop_error_context_value(&err, "child_count"), Some("0"));
+        assert_eq!(interop_error_context_value(&err, "required_child_count"), Some("1"));
+        assert_eq!(interop_error_context_value(&err, "num_children"), None);
     }
 
     #[test]
@@ -820,14 +814,14 @@ mod device_export_contracts {
 
         assert_eq!(err.kind(), InteropErrorKind::InvalidView);
         assert_eq!(
-            interop_error_context_value(&err, "operation").as_deref(),
+            interop_error_context_value(&err, "operation"),
             Some("testing::interop::projection::list_offsets_width_mismatch")
         );
-        assert_eq!(interop_error_context_value(&err, "resource").as_deref(), Some("offsets_layout"));
-        assert_eq!(interop_error_context_value(&err, "reason").as_deref(), Some("requires_i32_width"));
-        assert_eq!(interop_error_context_value(&err, "actual_width_bytes").as_deref(), Some("8"));
-        assert_eq!(interop_error_context_value(&err, "required_width_bytes").as_deref(), Some("4"));
-        assert_eq!(interop_error_context_value(&err, "offsets_elem_size").as_deref(), None);
+        assert_eq!(interop_error_context_value(&err, "resource"), Some("offsets_layout"));
+        assert_eq!(interop_error_context_value(&err, "reason"), Some("requires_i32_width"));
+        assert_eq!(interop_error_context_value(&err, "actual_width_bytes"), Some("8"));
+        assert_eq!(interop_error_context_value(&err, "required_width_bytes"), Some("4"));
+        assert_eq!(interop_error_context_value(&err, "offsets_elem_size"), None);
     }
 
     #[test]
@@ -837,14 +831,14 @@ mod device_export_contracts {
 
         assert_eq!(err.kind(), InteropErrorKind::InvalidView);
         assert_eq!(
-            interop_error_context_value(&err, "operation").as_deref(),
+            interop_error_context_value(&err, "operation"),
             Some("testing::interop::projection::dictionary_indices_width_mismatch")
         );
-        assert_eq!(interop_error_context_value(&err, "resource").as_deref(), Some("indices_layout"));
-        assert_eq!(interop_error_context_value(&err, "reason").as_deref(), Some("requires_i32_width"));
-        assert_eq!(interop_error_context_value(&err, "actual_width_bytes").as_deref(), Some("2"));
-        assert_eq!(interop_error_context_value(&err, "required_width_bytes").as_deref(), Some("4"));
-        assert_eq!(interop_error_context_value(&err, "indices_elem_size").as_deref(), None);
+        assert_eq!(interop_error_context_value(&err, "resource"), Some("indices_layout"));
+        assert_eq!(interop_error_context_value(&err, "reason"), Some("requires_i32_width"));
+        assert_eq!(interop_error_context_value(&err, "actual_width_bytes"), Some("2"));
+        assert_eq!(interop_error_context_value(&err, "required_width_bytes"), Some("4"));
+        assert_eq!(interop_error_context_value(&err, "indices_elem_size"), None);
     }
 
     #[test]
@@ -853,15 +847,15 @@ mod device_export_contracts {
 
         assert_eq!(err.kind(), InteropErrorKind::InvalidView);
         assert_eq!(
-            interop_error_context_value(&err, "operation").as_deref(),
+            interop_error_context_value(&err, "operation"),
             Some("testing::interop::projection::host_offsets_too_small")
         );
-        assert_eq!(interop_error_context_value(&err, "resource").as_deref(), Some("offsets_range"));
-        assert_eq!(interop_error_context_value(&err, "reason").as_deref(), Some("too_small_for_active_range"));
-        assert_eq!(interop_error_context_value(&err, "offset").as_deref(), Some("3"));
-        assert_eq!(interop_error_context_value(&err, "row_count").as_deref(), Some("2"));
-        assert_eq!(interop_error_context_value(&err, "offset_count").as_deref(), Some("5"));
-        assert_eq!(interop_error_context_value(&err, "offsets_len").as_deref(), None);
+        assert_eq!(interop_error_context_value(&err, "resource"), Some("offsets_range"));
+        assert_eq!(interop_error_context_value(&err, "reason"), Some("too_small_for_active_range"));
+        assert_eq!(interop_error_context_value(&err, "offset"), Some("3"));
+        assert_eq!(interop_error_context_value(&err, "row_count"), Some("2"));
+        assert_eq!(interop_error_context_value(&err, "offset_count"), Some("5"));
+        assert_eq!(interop_error_context_value(&err, "offsets_len"), None);
     }
 
     #[test]
@@ -870,12 +864,12 @@ mod device_export_contracts {
 
         assert_eq!(err.kind(), InteropErrorKind::InvalidView);
         assert_eq!(
-            interop_error_context_value(&err, "operation").as_deref(),
+            interop_error_context_value(&err, "operation"),
             Some("testing::interop::projection::missing_null_mask")
         );
-        assert_eq!(interop_error_context_value(&err, "resource").as_deref(), Some("null_mask_buffer"));
-        assert_eq!(interop_error_context_value(&err, "reason").as_deref(), Some("missing_for_nullable_column"));
-        assert_eq!(interop_error_context_value(&err, "row_count").as_deref(), Some("3"));
+        assert_eq!(interop_error_context_value(&err, "resource"), Some("null_mask_buffer"));
+        assert_eq!(interop_error_context_value(&err, "reason"), Some("missing_for_nullable_column"));
+        assert_eq!(interop_error_context_value(&err, "row_count"), Some("3"));
     }
 
     #[test]
@@ -884,18 +878,18 @@ mod device_export_contracts {
 
         assert_eq!(err.kind(), InteropErrorKind::InvalidView);
         assert_eq!(
-            interop_error_context_value(&err, "operation").as_deref(),
+            interop_error_context_value(&err, "operation"),
             Some("testing::interop::projection::missing_struct_child")
         );
-        assert_eq!(interop_error_context_value(&err, "resource").as_deref(), Some("child_count"));
-        assert_eq!(interop_error_context_value(&err, "reason").as_deref(), Some("requires_child_column"));
+        assert_eq!(interop_error_context_value(&err, "resource"), Some("child_count"));
+        assert_eq!(interop_error_context_value(&err, "reason"), Some("requires_child_column"));
         assert_eq!(
-            interop_error_context_value(&err, "remedy").as_deref(),
+            interop_error_context_value(&err, "remedy"),
             Some("expose at least one child column before projecting struct data")
         );
-        assert_eq!(interop_error_context_value(&err, "type_id").as_deref(), Some("struct"));
-        assert_eq!(interop_error_context_value(&err, "child_count").as_deref(), Some("0"));
-        assert_eq!(interop_error_context_value(&err, "required_child_count").as_deref(), Some("1"));
+        assert_eq!(interop_error_context_value(&err, "type_id"), Some("struct"));
+        assert_eq!(interop_error_context_value(&err, "child_count"), Some("0"));
+        assert_eq!(interop_error_context_value(&err, "required_child_count"), Some("1"));
     }
 
     #[test]
@@ -904,18 +898,12 @@ mod device_export_contracts {
         let expected_column_index = usize::MAX.to_string();
 
         assert_eq!(err.kind(), InteropErrorKind::InvalidView);
-        assert_eq!(
-            interop_error_context_value(&err, "operation").as_deref(),
-            Some("testing::interop::column_index_limit")
-        );
-        assert_eq!(interop_error_context_value(&err, "resource").as_deref(), Some("column_index"));
-        assert_eq!(interop_error_context_value(&err, "reason").as_deref(), Some("exceeds_i32_max"));
-        assert_eq!(
-            interop_error_context_value(&err, "remedy").as_deref(),
-            Some("reduce column_index to fit within i32::MAX")
-        );
-        assert_eq!(interop_error_context_value(&err, "column_index").as_deref(), Some(expected_column_index.as_str()));
-        assert_eq!(interop_error_context_value(&err, "index").as_deref(), None);
+        assert_eq!(interop_error_context_value(&err, "operation"), Some("testing::interop::column_index_limit"));
+        assert_eq!(interop_error_context_value(&err, "resource"), Some("column_index"));
+        assert_eq!(interop_error_context_value(&err, "reason"), Some("exceeds_i32_max"));
+        assert_eq!(interop_error_context_value(&err, "remedy"), Some("reduce column_index to fit within i32::MAX"));
+        assert_eq!(interop_error_context_value(&err, "column_index"), Some(expected_column_index.as_str()));
+        assert_eq!(interop_error_context_value(&err, "index"), None);
     }
 
     #[test]

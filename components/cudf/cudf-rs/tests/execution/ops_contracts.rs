@@ -414,16 +414,31 @@ mod join_hash_join_execution_tests {
     }
 
     #[test]
-    fn hash_join_pre_build_reservation_matches_nullable_string_build_key() {
+    fn hash_join_pre_build_reservation_rejects_nullable_string_build_key_with_null_payload() {
         let build_keys = Table::from_columns(vec![
             column_from_strs_nullable(&["alpha", "null-payload", "omega"], &[true, false, true]).unwrap(),
         ])
         .unwrap();
 
-        assert_hash_join_pre_build_matches_built_size(
+        assert_hash_join_pre_build_invalid_argument(
             &build_keys,
             HashJoinOptions::new().null_equality(NullEquality::Equal),
         );
+    }
+
+    #[test]
+    fn hash_join_new_rejects_nullable_string_build_key_with_null_payload() {
+        let build_keys = Table::from_columns(vec![
+            column_from_strs_nullable(&["alpha", "null-payload", "omega"], &[true, false, true]).unwrap(),
+        ])
+        .unwrap();
+
+        let err = HashJoin::new(build_keys, HashJoinOptions::new().null_equality(NullEquality::Equal))
+            .expect_err("hash join creation must reject retained preprocessing gaps rather than build unstable state");
+
+        assert_eq!(err.kind(), ErrorKind::InvalidInput);
+        assert_eq!(err.code(), ErrorCode::ForeignInvalidArgument);
+        assert_eq!(err.operation(), "hash_join::new");
     }
 
     #[test]

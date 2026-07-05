@@ -465,8 +465,8 @@ fn test_prepare_sort_values_with_budget_applies_token_and_reports_retained_order
 
     assert_eq!(report.request().boundary(), "final_sort");
     assert_eq!(report.request().budget_bytes(), 64 * 1024 * 1024);
-    assert_eq!(report.enforcement(), ExecutionBudgetEnforcement::HardMemoryResourceLimit);
-    assert_eq!(report.status(), ExecutionBudgetStatus::HardEnforced);
+    assert_eq!(report.enforcement(), ExecutionBudgetEnforcement::StreamBoundReservation);
+    assert_eq!(report.status(), ExecutionBudgetStatus::ReservationEnforced);
     assert_eq!(report.retained_bytes(), Some(expected_order_bytes));
     assert_eq!(report.output_bytes(), None);
     assert_budget_report_high_water(report, expected_order_bytes);
@@ -474,12 +474,12 @@ fn test_prepare_sort_values_with_budget_applies_token_and_reports_retained_order
     assert_eq!(
         prepared.sorted_order().as_column().testing_execution_domain_mr_value(),
         token.memory_resource().testing_raw_handle_value(),
-        "prepared sorted-order output should retain the budget token allocator",
+        "prepared sorted-order output should retain the device manager resource",
     );
     assert_eq!(
         last_exec_mr_value(),
         token.memory_resource().testing_raw_handle_value(),
-        "prepared sort execution should route through the budget token allocator",
+        "prepared sort execution should route through the device manager resource",
     );
 }
 
@@ -501,23 +501,23 @@ fn test_prepare_sort_values_with_budget_stable_uses_token_and_matches_sort_value
     let prepare_exec_mrs = observed_exec_mr_values();
     let prepared = outcome.value();
     let actual = prepared.materialize().unwrap();
-    let token_mr = token.memory_resource().testing_raw_handle_value();
+    let manager_mr = token.memory_resource().testing_raw_handle_value();
 
     assert_i32_column_eq(&actual, &expected, "id");
     assert_i32_column_eq(&actual, &expected, "tag");
     assert_eq!(actual.series("tag").unwrap().to_vec_strict::<i32>().unwrap(), vec![10, 20, 30, 40]);
     assert_eq!(
         prepared.sorted_order().as_column().testing_execution_domain_mr_value(),
-        token_mr,
-        "stable prepared sorted-order output should retain the budget token allocator",
+        manager_mr,
+        "stable prepared sorted-order output should retain the device manager resource",
     );
     assert!(
         prepare_exec_mrs.len() >= 3,
         "stable prepared sort should observe at least key copy, tie-breaker sequence, and sorted-order execution; got {prepare_exec_mrs:?}",
     );
     assert!(
-        prepare_exec_mrs.iter().all(|&observed| observed == token_mr),
-        "stable prepared sort tie-breaker, stable key copies, and sorted-order execution should route through the budget token allocator; got {prepare_exec_mrs:?}, expected {token_mr}",
+        prepare_exec_mrs.iter().all(|&observed| observed == manager_mr),
+        "stable prepared sort tie-breaker, stable key copies, and sorted-order execution should route through the device manager resource; got {prepare_exec_mrs:?}, expected {manager_mr}",
     );
     assert_eq!(outcome.report().request().boundary(), "stable_final_sort");
     assert_eq!(outcome.report().retained_bytes(), Some(prepared.sorted_order_reservation_size_bytes().unwrap()));
@@ -527,17 +527,19 @@ fn test_prepare_sort_values_with_budget_stable_uses_token_and_matches_sort_value
 #[test]
 fn test_prepared_sort_materialize_with_budget_reports_output_size_and_allocator() {
     let df = sample_df();
-    let prepare_token = with_test_runtime(|runtime| {
-        runtime
-            .execution_budget_token(ExecutionBudgetRequest::new(64 * 1024 * 1024).with_boundary("final_sort_order"))
-            .unwrap()
-    });
+    let prepared = {
+        let prepare_token = with_test_runtime(|runtime| {
+            runtime
+                .execution_budget_token(ExecutionBudgetRequest::new(64 * 1024 * 1024).with_boundary("final_sort_order"))
+                .unwrap()
+        });
+        df.prepare_sort_values_with_budget(["id"], SortOptions::new(), &prepare_token).unwrap().into_value()
+    };
     let materialize_token = with_test_runtime(|runtime| {
         runtime
             .execution_budget_token(ExecutionBudgetRequest::new(64 * 1024 * 1024).with_boundary("final_sort_output"))
             .unwrap()
     });
-    let prepared = df.prepare_sort_values_with_budget(["id"], SortOptions::new(), &prepare_token).unwrap().into_value();
 
     reset_exec_observation();
     let outcome = prepared.materialize_with_budget(&materialize_token).unwrap();
@@ -554,12 +556,12 @@ fn test_prepared_sort_materialize_with_budget_reports_output_size_and_allocator(
     assert_eq!(
         sorted.testing_execution_domain_mr_value(),
         materialize_token.memory_resource().testing_raw_handle_value(),
-        "materialized output should retain the budget token allocator",
+        "materialized output should retain the device manager resource",
     );
     assert_eq!(
         last_exec_mr_value(),
         materialize_token.memory_resource().testing_raw_handle_value(),
-        "materialize execution should route through the budget token allocator",
+        "materialize execution should route through the device manager resource",
     );
 }
 
@@ -577,7 +579,7 @@ fn test_prepare_sort_values_with_budget_reports_exceeded_budget_honestly() {
     assert_eq!(err.code(), ErrorCode::OutOfMemory);
     assert_eq!(error_context_value(&err, "budget_boundary").as_deref(), Some("final_sort"));
     assert_eq!(error_context_value(&err, "budget_bytes").as_deref(), Some("1"));
-    assert_eq!(error_context_value(&err, "budget_enforcement").as_deref(), Some("hard_memory_resource_limit"),);
+    assert_eq!(error_context_value(&err, "budget_enforcement").as_deref(), Some("stream_bound_reservation"),);
     assert_eq!(error_context_value(&err, "budget_status").as_deref(), Some("exceeded_or_lower_layer_rejected"),);
     assert_eq!(error_context_value(&err, "budget_peak_bytes").as_deref(), Some("0"));
     assert_eq!(error_context_value(&err, "budget_current_bytes").as_deref(), Some("0"));

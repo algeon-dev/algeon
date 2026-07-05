@@ -99,6 +99,18 @@ pub fn set_current_device(device: i32) {
     assert_eq!(st, cudf_sys::CUDF_SUCCESS);
 }
 
+pub fn required_exec_options(
+    stream: &cudf_sys::BorrowedStream<'_>,
+    mr: &cudf_sys::BorrowedMemoryResource<'_>,
+) -> cudf_sys::cudf_exec_options_t {
+    let mut options = cudf_sys::cudf_exec_options_t::defaults();
+    options.device = current_device();
+    options.flags = cudf_sys::CUDF_EXEC_FLAG_DEVICE_EXPLICIT;
+    options.stream = stream.as_raw();
+    options.mr = mr.as_raw();
+    options
+}
+
 pub struct CurrentDeviceRestore {
     previous: i32,
 }

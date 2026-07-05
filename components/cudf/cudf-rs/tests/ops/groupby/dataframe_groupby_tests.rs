@@ -115,8 +115,8 @@ fn test_groupby_agg_with_budget_applies_token_reports_output_and_matches_agg() {
     assert_eq!(groupby_sum_pairs(result), groupby_sum_pairs(&expected));
     assert_eq!(report.request().boundary(), "grouped_sum");
     assert_eq!(report.request().budget_bytes(), 64 * 1024 * 1024);
-    assert_eq!(report.enforcement(), ExecutionBudgetEnforcement::HardMemoryResourceLimit);
-    assert_eq!(report.status(), ExecutionBudgetStatus::HardEnforced);
+    assert_eq!(report.enforcement(), ExecutionBudgetEnforcement::StreamBoundReservation);
+    assert_eq!(report.status(), ExecutionBudgetStatus::ReservationEnforced);
     assert_eq!(report.output_rows(), Some(result.num_rows()));
     assert_eq!(report.output_bytes(), Some(output_bytes));
     assert_eq!(report.retained_bytes(), Some(output_bytes));
@@ -128,12 +128,12 @@ fn test_groupby_agg_with_budget_applies_token_reports_output_and_matches_agg() {
     assert_eq!(
         result.testing_execution_domain_mr_value(),
         token.memory_resource().testing_raw_handle_value(),
-        "budgeted groupby output should retain the budget token allocator",
+        "budgeted groupby output should retain the device manager resource",
     );
     assert_eq!(
         budgeted_exec_mr,
         token.memory_resource().testing_raw_handle_value(),
-        "budgeted groupby execution should route through the budget token allocator",
+        "budgeted groupby execution should route through the device manager resource",
     );
 }
 
@@ -164,7 +164,7 @@ fn test_groupby_q17_avg_quantity_with_budget_reports_current_diagnostics() {
 
     assert_eq!(pairs, vec![(10, 6.0), (20, 20.0), (30, 5.0)]);
     assert_eq!(report.request().boundary(), "q17_grouped_avg");
-    assert_eq!(report.status(), ExecutionBudgetStatus::HardEnforced);
+    assert_eq!(report.status(), ExecutionBudgetStatus::ReservationEnforced);
     assert_eq!(report.output_rows(), Some(result.num_rows()));
     let output_bytes = report.output_bytes().expect("groupby report should observe post-execution output bytes");
     let retained_bytes = report.retained_bytes().expect("groupby report should observe post-execution retained bytes");
@@ -195,7 +195,7 @@ fn test_groupby_agg_with_budget_reports_exceeded_budget_details() {
     assert_eq!(err.operation(), "groupby::GroupBy::agg_with_budget");
     assert_eq!(error_context_value(&err, "budget_boundary").as_deref(), Some("grouped_sum"));
     assert_eq!(error_context_value(&err, "budget_bytes").as_deref(), Some("1"));
-    assert_eq!(error_context_value(&err, "budget_enforcement").as_deref(), Some("hard_memory_resource_limit"));
+    assert_eq!(error_context_value(&err, "budget_enforcement").as_deref(), Some("stream_bound_reservation"));
     assert_eq!(error_context_value(&err, "budget_status").as_deref(), Some("exceeded_or_lower_layer_rejected"));
     assert_eq!(error_context_value(&err, "budget_peak_bytes").as_deref(), Some("0"));
     assert_eq!(error_context_value(&err, "budget_current_bytes").as_deref(), Some("0"));

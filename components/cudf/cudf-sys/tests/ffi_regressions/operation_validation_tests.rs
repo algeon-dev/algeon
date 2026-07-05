@@ -6,9 +6,9 @@ use std::{
 use crate::{
     helpers::*,
     support::{
-        CurrentDeviceResourceRestore, NO_SYNC_RECORDED, OwnedMemoryResource, OwnedStream, current_device_resource_raw,
-        last_error_message, last_exec_mr_raw, last_exec_stream_value, last_exec_sync_stream_value, lock_shim_state,
-        reset_exec_observation, stream_value,
+        CurrentDeviceResourceRestore, NO_SYNC_RECORDED, OwnedMemoryResource, OwnedStream, current_device,
+        current_device_resource_raw, last_error_message, last_exec_mr_raw, last_exec_stream_value,
+        last_exec_sync_stream_value, lock_shim_state, reset_exec_observation, stream_value,
     },
 };
 
@@ -25,12 +25,14 @@ fn read_bool8_column_data(col: *mut c_void) -> Vec<u8> {
     assert_eq!(status, cudf_sys::CUDF_SUCCESS);
     assert!(size >= 0);
 
+    let (_stream, _mr, exec) = strict_exec_owners();
     let mut values = vec![0u8; size as usize];
     let status = unsafe {
-        cudf_sys::cudf_column_view_to_host(
+        cudf_sys::cudf_column_view_to_host_ex(
             view,
             values.as_mut_ptr() as *mut c_void,
             std::mem::size_of_val(values.as_slice()),
+            &exec,
         )
     };
     assert_eq!(status, cudf_sys::CUDF_SUCCESS);
@@ -39,15 +41,38 @@ fn read_bool8_column_data(col: *mut c_void) -> Vec<u8> {
     values
 }
 
+fn required_exec_options(
+    stream: &cudf_sys::BorrowedStream<'_>,
+    mr: &cudf_sys::BorrowedMemoryResource<'_>,
+) -> cudf_sys::cudf_exec_options_t {
+    let mut options = cudf_sys::cudf_exec_options_t::defaults();
+    options.device = current_device();
+    options.flags = cudf_sys::CUDF_EXEC_FLAG_DEVICE_EXPLICIT;
+    options.stream = stream.as_raw();
+    options.mr = mr.as_raw();
+    options
+}
+
+fn strict_exec_owners() -> (OwnedStream, OwnedMemoryResource, cudf_sys::cudf_exec_options_t) {
+    let stream = OwnedStream::new();
+    let mr = OwnedMemoryResource::new_cuda();
+    let borrowed_stream = stream.borrowed();
+    let borrowed_mr = mr.borrowed();
+    let exec = required_exec_options(&borrowed_stream, &borrowed_mr);
+    (stream, mr, exec)
+}
+
 fn make_bool8_column(data: &[u8]) -> *mut c_void {
+    let (_stream, _mr, exec) = strict_exec_owners();
     let mut out: *mut c_void = ptr::null_mut();
     let st = unsafe {
-        cudf_sys::cudf_column_create_numeric(
+        cudf_sys::cudf_column_create_numeric_ex(
             cudf_sys::cudf_type_id_t::CUDF_TYPE_BOOL8,
             data.as_ptr() as *const c_void,
             data.len() as i32,
             ptr::null(),
             0,
+            &exec,
             &mut out,
         )
     };
@@ -163,11 +188,20 @@ fn test_column_view_strings_to_host_empty_rejects_undersized_offsets_buffer() {
     let _shim_state = lock_shim_state();
     let col = make_string_column(&[]);
     let view = make_column_view(col);
+    let (_stream, _mr, exec) = strict_exec_owners();
     let mut offsets = vec![-1i32; 1];
     let mut total_chars = -1;
 
     let st = unsafe {
-        cudf_sys::cudf_column_view_strings_to_host(view, offsets.as_mut_ptr(), 0, ptr::null_mut(), 0, &mut total_chars)
+        cudf_sys::cudf_column_view_strings_to_host_ex(
+            view,
+            offsets.as_mut_ptr(),
+            0,
+            ptr::null_mut(),
+            0,
+            &mut total_chars,
+            &exec,
+        )
     };
     assert_eq!(st, cudf_sys::CUDF_ERROR_INVALID_OPERATION);
     assert_eq!(offsets, vec![-1]);
@@ -186,27 +220,30 @@ fn test_strings_like_validates_pattern_and_escape_arguments() {
     let view = make_column_view(col);
     let pattern = b"a%";
     let escape = b"/";
+    let (_stream, _mr, exec) = strict_exec_owners();
 
     let mut out = std::ptr::NonNull::<c_void>::dangling().as_ptr();
-    let status =
-        unsafe { cudf_sys::cudf_strings_like(view, pattern.as_ptr() as *const c_char, -1, ptr::null(), 0, &mut out) };
+    let status = unsafe {
+        cudf_sys::cudf_strings_like_ex(view, pattern.as_ptr() as *const c_char, -1, ptr::null(), 0, &mut out, &exec)
+    };
     assert_eq!(status, cudf_sys::CUDF_ERROR_INVALID_OPERATION);
     assert!(out.is_null());
 
     out = std::ptr::NonNull::<c_void>::dangling().as_ptr();
-    let status = unsafe { cudf_sys::cudf_strings_like(view, ptr::null(), 1, ptr::null(), 0, &mut out) };
+    let status = unsafe { cudf_sys::cudf_strings_like_ex(view, ptr::null(), 1, ptr::null(), 0, &mut out, &exec) };
     assert_eq!(status, cudf_sys::CUDF_ERROR_NULL);
     assert!(out.is_null());
 
     out = std::ptr::NonNull::<c_void>::dangling().as_ptr();
     let status = unsafe {
-        cudf_sys::cudf_strings_like(
+        cudf_sys::cudf_strings_like_ex(
             view,
             pattern.as_ptr() as *const c_char,
             pattern.len() as i32,
             ptr::null(),
             -1,
             &mut out,
+            &exec,
         )
     };
     assert_eq!(status, cudf_sys::CUDF_ERROR_INVALID_OPERATION);
@@ -214,13 +251,14 @@ fn test_strings_like_validates_pattern_and_escape_arguments() {
 
     out = std::ptr::NonNull::<c_void>::dangling().as_ptr();
     let status = unsafe {
-        cudf_sys::cudf_strings_like(
+        cudf_sys::cudf_strings_like_ex(
             view,
             pattern.as_ptr() as *const c_char,
             pattern.len() as i32,
             escape.as_ptr() as *const c_char,
             2,
             &mut out,
+            &exec,
         )
     };
     assert_eq!(status, cudf_sys::CUDF_ERROR_INVALID_OPERATION);
@@ -228,13 +266,14 @@ fn test_strings_like_validates_pattern_and_escape_arguments() {
 
     out = std::ptr::NonNull::<c_void>::dangling().as_ptr();
     let status = unsafe {
-        cudf_sys::cudf_strings_like(
+        cudf_sys::cudf_strings_like_ex(
             view,
             pattern.as_ptr() as *const c_char,
             pattern.len() as i32,
             ptr::null(),
             1,
             &mut out,
+            &exec,
         )
     };
     assert_eq!(status, cudf_sys::CUDF_ERROR_NULL);
@@ -252,8 +291,8 @@ fn test_strings_like_matches_and_synchronizes_explicit_stream() {
     let col = make_string_column(&["abc", "adc", "ab", "axc"]);
     let view = make_column_view(col);
     let stream = OwnedStream::new();
-    let borrowed_stream = stream.borrowed();
-    let exec = cudf_sys::ExecutionContext::new().with_stream(&borrowed_stream);
+    let mr = OwnedMemoryResource::new_cuda();
+    let exec = required_exec_options(&stream.borrowed(), &mr.borrowed());
     let pattern = b"a_c";
 
     reset_exec_observation();
@@ -266,7 +305,7 @@ fn test_strings_like_matches_and_synchronizes_explicit_stream() {
             ptr::null(),
             0,
             &mut out,
-            exec.as_raw(),
+            &exec,
         )
     };
     assert_eq!(status, cudf_sys::CUDF_SUCCESS);
@@ -289,7 +328,8 @@ fn test_strings_slice_validates_step_and_initializes_output() {
     let view = make_column_view(col);
     let mut out = std::ptr::NonNull::<c_void>::dangling().as_ptr();
 
-    let status = unsafe { cudf_sys::cudf_strings_slice(view, 0, 1, 3, 1, 0, &mut out) };
+    let (_stream, _mr, exec) = strict_exec_owners();
+    let status = unsafe { cudf_sys::cudf_strings_slice_ex(view, 0, 1, 3, 1, 0, &mut out, &exec) };
 
     assert_eq!(status, cudf_sys::CUDF_ERROR_INVALID_OPERATION);
     assert!(out.is_null());
@@ -306,12 +346,12 @@ fn test_strings_slice_uses_validity_flags_and_explicit_stream() {
     let col = make_string_column(&["abcdef", "xy"]);
     let view = make_column_view(col);
     let stream = OwnedStream::new();
-    let borrowed_stream = stream.borrowed();
-    let exec = cudf_sys::ExecutionContext::new().with_stream(&borrowed_stream);
+    let mr = OwnedMemoryResource::new_cuda();
+    let exec = required_exec_options(&stream.borrowed(), &mr.borrowed());
 
     reset_exec_observation();
     let mut out: *mut c_void = ptr::null_mut();
-    let status = unsafe { cudf_sys::cudf_strings_slice_ex(view, 1, 1, 4, 1, 2, &mut out, exec.as_raw()) };
+    let status = unsafe { cudf_sys::cudf_strings_slice_ex(view, 1, 1, 4, 1, 2, &mut out, &exec) };
     assert_eq!(status, cudf_sys::CUDF_SUCCESS);
     assert!(!out.is_null());
     assert_eq!(last_exec_stream_value(), stream_value(stream.as_raw()));
@@ -320,7 +360,7 @@ fn test_strings_slice_uses_validity_flags_and_explicit_stream() {
     unsafe { cudf_sys::cudf_column_destroy(out) };
 
     out = ptr::null_mut();
-    let status = unsafe { cudf_sys::cudf_strings_slice(view, 2, 1, 0, 0, 1, &mut out) };
+    let status = unsafe { cudf_sys::cudf_strings_slice_ex(view, 2, 1, 0, 0, 1, &mut out, &exec) };
     assert_eq!(status, cudf_sys::CUDF_SUCCESS);
     assert!(!out.is_null());
     assert_eq!(read_string_column_data(out), vec!["cdef".to_string(), "".to_string()]);
@@ -339,8 +379,9 @@ fn test_concatenate_columns_null_element_returns_null_error() {
     let view = make_column_view(col);
 
     let views = [view, ptr::null_mut()];
+    let (_stream, _mr, exec) = strict_exec_owners();
     let mut out: *mut c_void = ptr::null_mut();
-    let status = unsafe { cudf_sys::cudf_concatenate_columns(views.as_ptr(), views.len() as i32, &mut out) };
+    let status = unsafe { cudf_sys::cudf_concatenate_columns_ex(views.as_ptr(), views.len() as i32, &exec, &mut out) };
 
     assert_eq!(status, cudf_sys::CUDF_ERROR_NULL);
     assert!(out.is_null());
@@ -359,8 +400,9 @@ fn test_concatenate_tables_null_element_returns_null_error() {
     let tv = make_table_view(tbl);
 
     let tables = [tv, ptr::null_mut()];
+    let (_stream, _mr, exec) = strict_exec_owners();
     let mut out: *mut c_void = ptr::null_mut();
-    let status = unsafe { cudf_sys::cudf_concatenate_tables(tables.as_ptr(), tables.len() as i32, &mut out) };
+    let status = unsafe { cudf_sys::cudf_concatenate_tables_ex(tables.as_ptr(), tables.len() as i32, &exec, &mut out) };
 
     assert_eq!(status, cudf_sys::CUDF_ERROR_NULL);
     assert!(out.is_null());
@@ -378,8 +420,9 @@ fn test_sort_negative_num_keys_rejected() {
     let tbl = make_table_from_one_column(col);
     let tv = make_table_view(tbl);
 
+    let (_stream, _mr, exec) = strict_exec_owners();
     let mut out: *mut c_void = ptr::null_mut();
-    let status = unsafe { cudf_sys::cudf_sort(tv, ptr::null(), ptr::null(), -1, &mut out) };
+    let status = unsafe { cudf_sys::cudf_sort_ex(tv, ptr::null(), ptr::null(), -1, &mut out, &exec) };
 
     assert_eq!(status, cudf_sys::CUDF_ERROR_INVALID_OPERATION);
     assert!(out.is_null());
@@ -398,8 +441,9 @@ fn test_sort_invalid_order_enum_rejected() {
     let tv = make_table_view(tbl);
 
     let column_order = [99i32];
+    let (_stream, _mr, exec) = strict_exec_owners();
     let mut out: *mut c_void = ptr::null_mut();
-    let status = unsafe { cudf_sort_raw(tv, column_order.as_ptr(), ptr::null(), 1, &mut out) };
+    let status = unsafe { cudf_sort_raw(tv, column_order.as_ptr(), ptr::null(), 1, &mut out, &exec) };
 
     assert_eq!(status, cudf_sys::CUDF_ERROR_INVALID_OPERATION);
     assert!(out.is_null());
@@ -418,8 +462,9 @@ fn test_sort_invalid_null_order_enum_rejected() {
     let tv = make_table_view(tbl);
 
     let null_order = [99i32];
+    let (_stream, _mr, exec) = strict_exec_owners();
     let mut out: *mut c_void = ptr::null_mut();
-    let status = unsafe { cudf_sort_raw(tv, ptr::null(), null_order.as_ptr(), 1, &mut out) };
+    let status = unsafe { cudf_sort_raw(tv, ptr::null(), null_order.as_ptr(), 1, &mut out, &exec) };
 
     assert_eq!(status, cudf_sys::CUDF_ERROR_INVALID_OPERATION);
     assert!(out.is_null());
@@ -437,8 +482,9 @@ fn test_drop_nulls_negative_keep_threshold_rejected() {
     let tbl = make_table_from_one_column(col);
     let tv = make_table_view(tbl);
 
+    let (_stream, _mr, exec) = strict_exec_owners();
     let mut out: *mut c_void = ptr::null_mut();
-    let status = unsafe { cudf_sys::cudf_drop_nulls(tv, ptr::null(), 0, -1, &mut out) };
+    let status = unsafe { cudf_sys::cudf_drop_nulls_ex(tv, ptr::null(), 0, -1, &mut out, &exec) };
 
     assert_eq!(status, cudf_sys::CUDF_ERROR_INVALID_OPERATION);
     assert!(out.is_null());
@@ -457,8 +503,9 @@ fn test_drop_nulls_negative_num_keys_rejected() {
     let tv = make_table_view(tbl);
 
     let keys = [0i32];
+    let (_stream, _mr, exec) = strict_exec_owners();
     let mut out: *mut c_void = ptr::null_mut();
-    let status = unsafe { cudf_sys::cudf_drop_nulls(tv, keys.as_ptr(), -1, 1, &mut out) };
+    let status = unsafe { cudf_sys::cudf_drop_nulls_ex(tv, keys.as_ptr(), -1, 1, &mut out, &exec) };
 
     assert_eq!(status, cudf_sys::CUDF_ERROR_INVALID_OPERATION);
     assert!(out.is_null());
@@ -477,8 +524,9 @@ fn test_distinct_negative_num_keys_rejected() {
     let tv = make_table_view(tbl);
 
     let keys = [0i32];
+    let (_stream, _mr, exec) = strict_exec_owners();
     let mut out: *mut c_void = ptr::null_mut();
-    let status = unsafe { cudf_distinct_raw(tv, keys.as_ptr(), -1, 0, 0, 0, &mut out) };
+    let status = unsafe { cudf_distinct_raw(tv, keys.as_ptr(), -1, 0, 0, 0, &mut out, &exec) };
 
     assert_eq!(status, cudf_sys::CUDF_ERROR_INVALID_OPERATION);
     assert!(out.is_null());
@@ -499,8 +547,9 @@ fn test_gather_invalid_bounds_policy_rejected() {
     let map_col = make_i32_column(&[0, 2]);
     let map_view = make_column_view(map_col);
 
+    let (_stream, _mr, exec) = strict_exec_owners();
     let mut out: *mut c_void = ptr::null_mut();
-    let status = unsafe { cudf_gather_raw(tv, map_view, 99, &mut out) };
+    let status = unsafe { cudf_gather_raw(tv, map_view, 99, &mut out, &exec) };
 
     assert_eq!(status, cudf_sys::CUDF_ERROR_INVALID_OPERATION);
     assert!(out.is_null());
@@ -521,17 +570,18 @@ fn test_distinct_invalid_policy_values_rejected() {
     let tv = make_table_view(tbl);
 
     let keys = [0i32];
+    let (_stream, _mr, exec) = strict_exec_owners();
     let mut out: *mut c_void = ptr::null_mut();
 
-    let status = unsafe { cudf_distinct_raw(tv, keys.as_ptr(), 1, 99, 0, 0, &mut out) };
+    let status = unsafe { cudf_distinct_raw(tv, keys.as_ptr(), 1, 99, 0, 0, &mut out, &exec) };
     assert_eq!(status, cudf_sys::CUDF_ERROR_INVALID_OPERATION);
     assert!(out.is_null());
 
-    let status = unsafe { cudf_distinct_raw(tv, keys.as_ptr(), 1, 0, 99, 0, &mut out) };
+    let status = unsafe { cudf_distinct_raw(tv, keys.as_ptr(), 1, 0, 99, 0, &mut out, &exec) };
     assert_eq!(status, cudf_sys::CUDF_ERROR_INVALID_OPERATION);
     assert!(out.is_null());
 
-    let status = unsafe { cudf_distinct_raw(tv, keys.as_ptr(), 1, 0, 0, 99, &mut out) };
+    let status = unsafe { cudf_distinct_raw(tv, keys.as_ptr(), 1, 0, 0, 99, &mut out, &exec) };
     assert_eq!(status, cudf_sys::CUDF_ERROR_INVALID_OPERATION);
     assert!(out.is_null());
 
@@ -545,14 +595,16 @@ fn test_distinct_invalid_policy_values_rejected() {
 fn test_column_create_numeric_negative_size_rejected() {
     let _shim_state = lock_shim_state();
     let data: [i32; 1] = [42];
+    let (_stream, _mr, exec) = strict_exec_owners();
     let mut out: *mut c_void = ptr::null_mut();
     let status = unsafe {
-        cudf_sys::cudf_column_create_numeric(
+        cudf_sys::cudf_column_create_numeric_ex(
             cudf_sys::cudf_type_id_t::CUDF_TYPE_INT32,
             data.as_ptr() as *const c_void,
             -1,
             ptr::null(),
             0,
+            &exec,
             &mut out,
         )
     };
@@ -564,14 +616,16 @@ fn test_column_create_numeric_negative_size_rejected() {
 fn test_column_create_numeric_null_count_out_of_range_rejected() {
     let _shim_state = lock_shim_state();
     let data = [1i32, 2, 3];
+    let (_stream, _mr, exec) = strict_exec_owners();
     let mut out: *mut c_void = ptr::null_mut();
     let status = unsafe {
-        cudf_sys::cudf_column_create_numeric(
+        cudf_sys::cudf_column_create_numeric_ex(
             cudf_sys::cudf_type_id_t::CUDF_TYPE_INT32,
             data.as_ptr() as *const c_void,
             data.len() as i32,
             ptr::null(),
             4,
+            &exec,
             &mut out,
         )
     };
@@ -583,14 +637,16 @@ fn test_column_create_numeric_null_count_out_of_range_rejected() {
 fn test_column_create_numeric_null_count_requires_mask() {
     let _shim_state = lock_shim_state();
     let data = [1i32, 2, 3];
+    let (_stream, _mr, exec) = strict_exec_owners();
     let mut out: *mut c_void = ptr::null_mut();
     let status = unsafe {
-        cudf_sys::cudf_column_create_numeric(
+        cudf_sys::cudf_column_create_numeric_ex(
             cudf_sys::cudf_type_id_t::CUDF_TYPE_INT32,
             data.as_ptr() as *const c_void,
             data.len() as i32,
             ptr::null(),
             2,
+            &exec,
             &mut out,
         )
     };
@@ -602,15 +658,17 @@ fn test_column_create_numeric_null_count_requires_mask() {
 fn test_column_create_fixed_width_from_host_preserves_decimal_scale() {
     let _shim_state = lock_shim_state();
     let data = [12345i128, -67890, 5];
+    let (_stream, _mr, exec) = strict_exec_owners();
     let mut out: *mut c_void = ptr::null_mut();
     let status = unsafe {
-        cudf_sys::cudf_column_create_fixed_width_from_host(
+        cudf_sys::cudf_column_create_fixed_width_from_host_ex(
             cudf_sys::cudf_type_id_t::CUDF_TYPE_DECIMAL128,
             -2,
             data.as_ptr() as *const c_void,
             data.len() as i32,
             ptr::null(),
             0,
+            &exec,
             &mut out,
         )
     };
@@ -635,15 +693,17 @@ fn test_column_create_fixed_width_from_host_preserves_decimal_scale() {
 fn test_column_create_fixed_width_from_host_rejects_nonzero_scale_for_non_decimal() {
     let _shim_state = lock_shim_state();
     let data = [1i32, 2, 3];
+    let (_stream, _mr, exec) = strict_exec_owners();
     let mut out: *mut c_void = ptr::null_mut();
     let status = unsafe {
-        cudf_sys::cudf_column_create_fixed_width_from_host(
+        cudf_sys::cudf_column_create_fixed_width_from_host_ex(
             cudf_sys::cudf_type_id_t::CUDF_TYPE_INT32,
             -2,
             data.as_ptr() as *const c_void,
             data.len() as i32,
             ptr::null(),
             0,
+            &exec,
             &mut out,
         )
     };
@@ -655,15 +715,17 @@ fn test_column_create_fixed_width_from_host_rejects_nonzero_scale_for_non_decima
 #[test]
 fn test_column_create_fixed_width_from_host_rejects_non_fixed_width_type() {
     let _shim_state = lock_shim_state();
+    let (_stream, _mr, exec) = strict_exec_owners();
     let mut out: *mut c_void = ptr::null_mut();
     let status = unsafe {
-        cudf_sys::cudf_column_create_fixed_width_from_host(
+        cudf_sys::cudf_column_create_fixed_width_from_host_ex(
             cudf_sys::cudf_type_id_t::CUDF_TYPE_STRING,
             0,
             ptr::null(),
             0,
             ptr::null(),
             0,
+            &exec,
             &mut out,
         )
     };
@@ -675,15 +737,17 @@ fn test_column_create_fixed_width_from_host_rejects_non_fixed_width_type() {
 fn test_column_create_fixed_width_from_host_null_count_requires_mask() {
     let _shim_state = lock_shim_state();
     let data = [1i32, 2, 3];
+    let (_stream, _mr, exec) = strict_exec_owners();
     let mut out: *mut c_void = ptr::null_mut();
     let status = unsafe {
-        cudf_sys::cudf_column_create_fixed_width_from_host(
+        cudf_sys::cudf_column_create_fixed_width_from_host_ex(
             cudf_sys::cudf_type_id_t::CUDF_TYPE_INT32,
             0,
             data.as_ptr() as *const c_void,
             data.len() as i32,
             ptr::null(),
             1,
+            &exec,
             &mut out,
         )
     };
@@ -698,16 +762,26 @@ fn test_column_view_to_host_string_type_rejected() {
     let string_ptrs = [strings[0].as_ptr(), strings[1].as_ptr()];
     let lengths = [2i32, 2i32];
 
+    let (_stream, _mr, exec) = strict_exec_owners();
     let mut col: *mut c_void = ptr::null_mut();
     let status = unsafe {
-        cudf_sys::cudf_column_create_strings(string_ptrs.as_ptr(), lengths.as_ptr(), 2, ptr::null(), 0, &mut col)
+        cudf_sys::cudf_column_create_strings_ex(
+            string_ptrs.as_ptr(),
+            lengths.as_ptr(),
+            2,
+            ptr::null(),
+            0,
+            &exec,
+            &mut col,
+        )
     };
     assert_eq!(status, cudf_sys::CUDF_SUCCESS);
     assert!(!col.is_null());
 
     let view = make_column_view(col);
     let mut buf = [0u8; 16];
-    let status = unsafe { cudf_sys::cudf_column_view_to_host(view, buf.as_mut_ptr() as *mut c_void, buf.len()) };
+    let status =
+        unsafe { cudf_sys::cudf_column_view_to_host_ex(view, buf.as_mut_ptr() as *mut c_void, buf.len(), &exec) };
     assert_eq!(status, cudf_sys::CUDF_ERROR_TYPE);
 
     unsafe {
@@ -723,9 +797,18 @@ fn test_column_create_strings_negative_length_rejected() {
     let string_ptrs = [strings[0].as_ptr()];
     let lengths = [-1i32];
 
+    let (_stream, _mr, exec) = strict_exec_owners();
     let mut col: *mut c_void = ptr::null_mut();
     let status = unsafe {
-        cudf_sys::cudf_column_create_strings(string_ptrs.as_ptr(), lengths.as_ptr(), 1, ptr::null(), 0, &mut col)
+        cudf_sys::cudf_column_create_strings_ex(
+            string_ptrs.as_ptr(),
+            lengths.as_ptr(),
+            1,
+            ptr::null(),
+            0,
+            &exec,
+            &mut col,
+        )
     };
     assert_eq!(status, cudf_sys::CUDF_ERROR_INVALID_OPERATION);
     assert!(col.is_null());
@@ -737,9 +820,18 @@ fn test_column_create_strings_positive_length_requires_non_null_string_pointer()
     let string_ptrs = [ptr::null()];
     let lengths = [2i32];
 
+    let (_stream, _mr, exec) = strict_exec_owners();
     let mut col: *mut c_void = ptr::null_mut();
     let status = unsafe {
-        cudf_sys::cudf_column_create_strings(string_ptrs.as_ptr(), lengths.as_ptr(), 1, ptr::null(), 0, &mut col)
+        cudf_sys::cudf_column_create_strings_ex(
+            string_ptrs.as_ptr(),
+            lengths.as_ptr(),
+            1,
+            ptr::null(),
+            0,
+            &exec,
+            &mut col,
+        )
     };
     assert_eq!(status, cudf_sys::CUDF_ERROR_NULL);
     assert!(col.is_null());
@@ -751,10 +843,19 @@ fn test_column_create_strings_rejects_count_that_would_overflow_offsets() {
     let strings = [std::ffi::CString::new("").unwrap()];
     let string_ptrs = [strings[0].as_ptr()];
     let lengths = [0i32];
+    let (_stream, _mr, exec) = strict_exec_owners();
 
     let mut col: *mut c_void = std::ptr::NonNull::<c_void>::dangling().as_ptr();
     let status = unsafe {
-        cudf_sys::cudf_column_create_strings(string_ptrs.as_ptr(), lengths.as_ptr(), i32::MAX, ptr::null(), 0, &mut col)
+        cudf_sys::cudf_column_create_strings_ex(
+            string_ptrs.as_ptr(),
+            lengths.as_ptr(),
+            i32::MAX,
+            ptr::null(),
+            0,
+            &exec,
+            &mut col,
+        )
     };
 
     assert_eq!(status, cudf_sys::CUDF_ERROR_INVALID_OPERATION);
@@ -768,13 +869,19 @@ fn test_drop_nulls_zero_num_keys_allows_null_keys_pointer() {
     let col = make_i32_column(&[1, 2, 3]);
     let tbl = make_table_from_one_column(col);
     let tv = make_table_view(tbl);
+    let stream = OwnedStream::new();
+    let mr = OwnedMemoryResource::new_cuda();
+    let borrowed_stream = stream.borrowed();
+    let borrowed_mr = mr.borrowed();
+    let exec = required_exec_options(&borrowed_stream, &borrowed_mr);
 
     let mut out: *mut c_void = ptr::null_mut();
-    let status = unsafe { cudf_sys::cudf_drop_nulls(tv, ptr::null(), 0, 0, &mut out) };
+    let status = unsafe { cudf_sys::cudf_drop_nulls_ex(tv, ptr::null(), 0, 0, &mut out, &exec) };
 
     assert_eq!(status, cudf_sys::CUDF_SUCCESS);
     assert!(!out.is_null());
 
+    stream.synchronize();
     unsafe {
         cudf_sys::cudf_table_destroy(out);
         cudf_sys::cudf_table_view_destroy(tv);
@@ -788,10 +895,15 @@ fn test_distinct_zero_num_keys_allows_null_keys_pointer() {
     let col = make_i32_column(&[1, 2, 2]);
     let tbl = make_table_from_one_column(col);
     let tv = make_table_view(tbl);
+    let stream = OwnedStream::new();
+    let mr = OwnedMemoryResource::new_cuda();
+    let borrowed_stream = stream.borrowed();
+    let borrowed_mr = mr.borrowed();
+    let exec = required_exec_options(&borrowed_stream, &borrowed_mr);
 
     let mut out: *mut c_void = ptr::null_mut();
     let status = unsafe {
-        cudf_sys::cudf_distinct(
+        cudf_sys::cudf_distinct_ex(
             tv,
             ptr::null(),
             0,
@@ -799,12 +911,14 @@ fn test_distinct_zero_num_keys_allows_null_keys_pointer() {
             cudf_sys::cudf_stream_compaction_null_equality_t::CUDF_STREAM_COMPACTION_NULL_EQUALITY_EQUAL,
             cudf_sys::cudf_stream_compaction_nan_equality_t::CUDF_STREAM_COMPACTION_NAN_EQUALITY_ALL_EQUAL,
             &mut out,
+            &exec,
         )
     };
 
     assert_eq!(status, cudf_sys::CUDF_SUCCESS);
     assert!(!out.is_null());
 
+    stream.synchronize();
     unsafe {
         cudf_sys::cudf_table_destroy(out);
         cudf_sys::cudf_table_view_destroy(tv);
@@ -823,8 +937,9 @@ fn test_groupby_negative_num_requests_rejected() {
     let mut out_vals: *mut *mut c_void = ptr::null_mut();
     let mut out_total: i32 = -1;
 
+    let (_stream, _mr, exec) = strict_exec_owners();
     let status = unsafe {
-        cudf_sys::cudf_groupby_aggregate(
+        cudf_sys::cudf_groupby_aggregate_ex(
             keys_view,
             ptr::null(),
             ptr::null(),
@@ -835,6 +950,7 @@ fn test_groupby_negative_num_requests_rejected() {
             &mut out_keys,
             &mut out_vals,
             &mut out_total,
+            &exec,
         )
     };
 
@@ -870,8 +986,9 @@ fn test_groupby_aggregation_count_mismatch_rejected() {
     let mut out_vals: *mut *mut c_void = ptr::null_mut();
     let mut out_total: i32 = -1;
 
+    let (_stream, _mr, exec) = strict_exec_owners();
     let status = unsafe {
-        cudf_sys::cudf_groupby_aggregate(
+        cudf_sys::cudf_groupby_aggregate_ex(
             keys_view,
             values.as_ptr(),
             aggregations.as_ptr(),
@@ -882,6 +999,7 @@ fn test_groupby_aggregation_count_mismatch_rejected() {
             &mut out_keys,
             &mut out_vals,
             &mut out_total,
+            &exec,
         )
     };
 
@@ -930,6 +1048,7 @@ fn test_groupby_invalid_keys_null_policy_rejected() {
     let mut out_keys: *mut c_void = ptr::null_mut();
     let mut out_vals: *mut *mut c_void = ptr::null_mut();
     let mut out_total: i32 = -1;
+    let (_stream, _mr, exec) = strict_exec_owners();
     let status = unsafe {
         cudf_groupby_aggregate_raw(
             keys_view,
@@ -942,6 +1061,7 @@ fn test_groupby_invalid_keys_null_policy_rejected() {
             &mut out_keys,
             &mut out_vals,
             &mut out_total,
+            &exec,
         )
     };
 
@@ -963,6 +1083,9 @@ fn test_groupby_invalid_keys_null_policy_rejected() {
 #[test]
 fn test_groupby_zero_aggregations_returns_null_output_array() {
     let _shim_state = lock_shim_state();
+    let stream = OwnedStream::new();
+    let mr = OwnedMemoryResource::new_cuda();
+    let exec = required_exec_options(&stream.borrowed(), &mr.borrowed());
     let key_col = make_i32_column(&[1, 1, 2]);
     let keys_tbl = make_table_from_one_column(key_col);
     let keys_view = make_table_view(keys_tbl);
@@ -972,7 +1095,7 @@ fn test_groupby_zero_aggregations_returns_null_output_array() {
     let mut out_total: i32 = -1;
 
     let status = unsafe {
-        cudf_sys::cudf_groupby_aggregate(
+        cudf_sys::cudf_groupby_aggregate_ex(
             keys_view,
             ptr::null(),
             ptr::null(),
@@ -983,6 +1106,7 @@ fn test_groupby_zero_aggregations_returns_null_output_array() {
             &mut out_keys,
             &mut out_vals,
             &mut out_total,
+            &exec,
         )
     };
 
@@ -991,6 +1115,7 @@ fn test_groupby_zero_aggregations_returns_null_output_array() {
     assert!(out_vals.is_null());
     assert_eq!(out_total, 0);
 
+    stream.synchronize();
     unsafe {
         cudf_sys::cudf_table_destroy(out_keys);
         cudf_sys::cudf_table_view_destroy(keys_view);
@@ -1007,6 +1132,7 @@ fn assert_join_invalid_null_equality_rejected(
         i32,
         *mut *mut c_void,
         *mut *mut c_void,
+        *const cudf_sys::cudf_exec_options_t,
     ) -> i32,
 ) {
     let left_key_col = make_i32_column(&[1, 2]);
@@ -1022,6 +1148,7 @@ fn assert_join_invalid_null_equality_rejected(
 
     let mut out_left: *mut c_void = ptr::null_mut();
     let mut out_right: *mut c_void = ptr::null_mut();
+    let (_stream, _mr, exec) = strict_exec_owners();
     let status = unsafe {
         join_fn(
             left_keys_view,
@@ -1031,6 +1158,7 @@ fn assert_join_invalid_null_equality_rejected(
             99,
             &mut out_left,
             &mut out_right,
+            &exec,
         )
     };
 
@@ -1052,7 +1180,14 @@ fn assert_join_invalid_null_equality_rejected(
 }
 
 fn assert_join_indices_invalid_null_equality_rejected(
-    join_fn: unsafe extern "C" fn(*mut c_void, *mut c_void, i32, *mut *mut c_void, *mut *mut c_void) -> i32,
+    join_fn: unsafe extern "C" fn(
+        *mut c_void,
+        *mut c_void,
+        i32,
+        *mut *mut c_void,
+        *mut *mut c_void,
+        *const cudf_sys::cudf_exec_options_t,
+    ) -> i32,
 ) {
     let left_key_col = make_i32_column(&[1, 2]);
     let right_key_col = make_i32_column(&[2, 3]);
@@ -1063,7 +1198,8 @@ fn assert_join_indices_invalid_null_equality_rejected(
 
     let mut out_left: *mut c_void = ptr::null_mut();
     let mut out_right: *mut c_void = ptr::null_mut();
-    let status = unsafe { join_fn(left_keys_view, right_keys_view, 99, &mut out_left, &mut out_right) };
+    let (_stream, _mr, exec) = strict_exec_owners();
+    let status = unsafe { join_fn(left_keys_view, right_keys_view, 99, &mut out_left, &mut out_right, &exec) };
 
     assert_eq!(status, cudf_sys::CUDF_ERROR_INVALID_OPERATION);
     assert!(out_left.is_null());
@@ -1079,7 +1215,13 @@ fn assert_join_indices_invalid_null_equality_rejected(
 }
 
 fn assert_filtered_join_indices_invalid_null_equality_rejected(
-    join_fn: unsafe extern "C" fn(*mut c_void, *mut c_void, i32, *mut *mut c_void) -> i32,
+    join_fn: unsafe extern "C" fn(
+        *mut c_void,
+        *mut c_void,
+        i32,
+        *mut *mut c_void,
+        *const cudf_sys::cudf_exec_options_t,
+    ) -> i32,
 ) {
     let left_key_col = make_i32_column(&[1, 2]);
     let right_key_col = make_i32_column(&[2, 3]);
@@ -1089,7 +1231,8 @@ fn assert_filtered_join_indices_invalid_null_equality_rejected(
     let right_keys_view = make_table_view(right_keys_tbl);
 
     let mut out: *mut c_void = ptr::null_mut();
-    let status = unsafe { join_fn(left_keys_view, right_keys_view, 99, &mut out) };
+    let (_stream, _mr, exec) = strict_exec_owners();
+    let status = unsafe { join_fn(left_keys_view, right_keys_view, 99, &mut out, &exec) };
 
     assert_eq!(status, cudf_sys::CUDF_ERROR_INVALID_OPERATION);
     assert!(out.is_null());
@@ -1159,7 +1302,8 @@ fn test_distinct_hash_join_create_invalid_null_equality_rejected() {
     let tv = make_table_view(tbl);
 
     let mut join: *mut c_void = ptr::null_mut();
-    let status = unsafe { cudf_distinct_hash_join_create_raw(tv, 99, &mut join) };
+    let (_stream, _mr, exec) = strict_exec_owners();
+    let status = unsafe { cudf_distinct_hash_join_create_raw(tv, 99, &mut join, &exec) };
 
     assert_eq!(status, cudf_sys::CUDF_ERROR_INVALID_OPERATION);
     assert!(join.is_null());
@@ -1179,6 +1323,7 @@ fn test_hash_join_create_invalid_nullable_join_rejected() {
     let tv = make_table_view(tbl);
 
     let mut join: *mut c_void = ptr::null_mut();
+    let (_stream, _mr, exec) = strict_exec_owners();
     let status = unsafe {
         cudf_hash_join_create_raw(
             tv,
@@ -1186,6 +1331,7 @@ fn test_hash_join_create_invalid_nullable_join_rejected() {
             cudf_sys::cudf_null_equality_t::CUDF_NULL_EQUALITY_EQUAL as i32,
             0.5,
             &mut join,
+            &exec,
         )
     };
 
@@ -1207,7 +1353,8 @@ fn test_hash_join_create_invalid_null_equality_rejected() {
     let tv = make_table_view(tbl);
 
     let mut join: *mut c_void = ptr::null_mut();
-    let status = unsafe { cudf_hash_join_create_raw(tv, 0, 99, 0.5, &mut join) };
+    let (_stream, _mr, exec) = strict_exec_owners();
+    let status = unsafe { cudf_hash_join_create_raw(tv, 0, 99, 0.5, &mut join, &exec) };
 
     assert_eq!(status, cudf_sys::CUDF_ERROR_INVALID_OPERATION);
     assert!(join.is_null());
@@ -1269,6 +1416,7 @@ fn test_conditional_join_default_forms_validate_null_handles_and_clear_outputs()
     let left_tv = make_table_view(left_tbl);
     let right_tv = make_table_view(right_tbl);
     let predicate = make_left_less_than_right_predicate();
+    let (_stream, _mr, exec) = strict_exec_owners();
 
     for (name, join_indices) in [
         ("inner", cudf_conditional_inner_join_indices_raw as ConditionalPairJoinRaw),
@@ -1276,12 +1424,12 @@ fn test_conditional_join_default_forms_validate_null_handles_and_clear_outputs()
         ("full", cudf_conditional_full_join_indices_raw),
     ] {
         let mut out_right = std::ptr::NonNull::<c_void>::dangling().as_ptr();
-        let status = unsafe { join_indices(left_tv, right_tv, predicate, ptr::null_mut(), &mut out_right) };
+        let status = unsafe { join_indices(left_tv, right_tv, predicate, ptr::null_mut(), &mut out_right, &exec) };
         assert_eq!(status, cudf_sys::CUDF_ERROR_NULL, "{name} conditional join null left output");
         assert!(last_error_message().contains("out_left_indices is null"));
 
         let mut out_left = std::ptr::NonNull::<c_void>::dangling().as_ptr();
-        let status = unsafe { join_indices(left_tv, right_tv, predicate, &mut out_left, ptr::null_mut()) };
+        let status = unsafe { join_indices(left_tv, right_tv, predicate, &mut out_left, ptr::null_mut(), &exec) };
         assert_eq!(status, cudf_sys::CUDF_ERROR_NULL, "{name} conditional join null right output");
         assert!(out_left.is_null(), "{name} conditional join must clear left output first");
         assert!(last_error_message().contains("out_right_indices is null"));
@@ -1293,7 +1441,7 @@ fn test_conditional_join_default_forms_validate_null_handles_and_clear_outputs()
         ] {
             let mut out_left = std::ptr::NonNull::<c_void>::dangling().as_ptr();
             let mut out_right = std::ptr::NonNull::<c_void>::dangling().as_ptr();
-            let status = unsafe { join_indices(left, right, pred, &mut out_left, &mut out_right) };
+            let status = unsafe { join_indices(left, right, pred, &mut out_left, &mut out_right, &exec) };
             assert_eq!(status, cudf_sys::CUDF_ERROR_NULL, "{name} conditional join null {case} status");
             assert!(out_left.is_null(), "{name} conditional join must clear left output for null {case}");
             assert!(out_right.is_null(), "{name} conditional join must clear right output for null {case}");
@@ -1305,7 +1453,7 @@ fn test_conditional_join_default_forms_validate_null_handles_and_clear_outputs()
         ("semi", cudf_conditional_left_semi_join_indices_raw as ConditionalSingleJoinRaw),
         ("anti", cudf_conditional_left_anti_join_indices_raw),
     ] {
-        let status = unsafe { join_indices(left_tv, right_tv, predicate, ptr::null_mut()) };
+        let status = unsafe { join_indices(left_tv, right_tv, predicate, ptr::null_mut(), &exec) };
         assert_eq!(status, cudf_sys::CUDF_ERROR_NULL, "{name} conditional join null output");
         assert!(last_error_message().contains("out_indices is null"));
 
@@ -1315,7 +1463,7 @@ fn test_conditional_join_default_forms_validate_null_handles_and_clear_outputs()
             ("predicate", left_tv, right_tv, ptr::null_mut(), "predicate is null"),
         ] {
             let mut out = std::ptr::NonNull::<c_void>::dangling().as_ptr();
-            let status = unsafe { join_indices(left, right, pred, &mut out) };
+            let status = unsafe { join_indices(left, right, pred, &mut out, &exec) };
             assert_eq!(status, cudf_sys::CUDF_ERROR_NULL, "{name} conditional join null {case} status");
             assert!(out.is_null(), "{name} conditional join must clear output for null {case}");
             assert!(last_error_message().contains(message));
@@ -1335,6 +1483,7 @@ fn test_conditional_join_default_forms_validate_null_handles_and_clear_outputs()
 fn test_filter_join_indices_invalid_join_kind_rejected_and_clears_outputs() {
     let _shim_state = lock_shim_state();
     let inputs = FilterJoinTestInputs::new();
+    let (_stream, _mr, exec) = strict_exec_owners();
     let join_indices = cudf_filter_join_indices_raw as FilterJoinIndicesRaw;
 
     let mut out_left = std::ptr::NonNull::<c_void>::dangling().as_ptr();
@@ -1349,6 +1498,7 @@ fn test_filter_join_indices_invalid_join_kind_rejected_and_clears_outputs() {
             FILTER_JOIN_KIND_INVALID,
             &mut out_left,
             &mut out_right,
+            &exec,
         )
     };
 
@@ -1362,7 +1512,10 @@ fn test_filter_join_indices_invalid_join_kind_rejected_and_clears_outputs() {
 fn test_filter_join_indices_unsupported_join_kinds_rejected_and_clear_outputs() {
     let _shim_state = lock_shim_state();
     let inputs = FilterJoinTestInputs::new();
-    let join_indices = cudf_filter_join_indices_raw as FilterJoinIndicesRaw;
+    let stream = OwnedStream::new();
+    let mr = OwnedMemoryResource::new_cuda();
+    let exec = required_exec_options(&stream.borrowed(), &mr.borrowed());
+    let join_indices = cudf_filter_join_indices_ex_raw as FilterJoinIndicesExRaw;
 
     for (name, join_kind) in [("left_semi", FILTER_JOIN_KIND_LEFT_SEMI), ("left_anti", FILTER_JOIN_KIND_LEFT_ANTI)] {
         let mut out_left = std::ptr::NonNull::<c_void>::dangling().as_ptr();
@@ -1377,6 +1530,7 @@ fn test_filter_join_indices_unsupported_join_kinds_rejected_and_clear_outputs() 
                 join_kind,
                 &mut out_left,
                 &mut out_right,
+                &exec,
             )
         };
 
@@ -1392,7 +1546,10 @@ fn test_filter_join_indices_mismatched_index_lengths_rejected_and_clear_outputs(
     let inputs = FilterJoinTestInputs::new();
     let short_right_indices_col = make_i32_column(&[0, 1]);
     let short_right_indices_view = make_column_view(short_right_indices_col);
-    let join_indices = cudf_filter_join_indices_raw as FilterJoinIndicesRaw;
+    let stream = OwnedStream::new();
+    let mr = OwnedMemoryResource::new_cuda();
+    let exec = required_exec_options(&stream.borrowed(), &mr.borrowed());
+    let join_indices = cudf_filter_join_indices_ex_raw as FilterJoinIndicesExRaw;
 
     let mut out_left = std::ptr::NonNull::<c_void>::dangling().as_ptr();
     let mut out_right = std::ptr::NonNull::<c_void>::dangling().as_ptr();
@@ -1406,6 +1563,7 @@ fn test_filter_join_indices_mismatched_index_lengths_rejected_and_clear_outputs(
             FILTER_JOIN_KIND_INNER,
             &mut out_left,
             &mut out_right,
+            &exec,
         )
     };
 
@@ -1424,6 +1582,7 @@ fn test_filter_join_indices_mismatched_index_lengths_rejected_and_clear_outputs(
 fn test_filter_join_indices_null_handles_clear_outputs() {
     let _shim_state = lock_shim_state();
     let inputs = FilterJoinTestInputs::new();
+    let (_stream, _mr, exec) = strict_exec_owners();
     let join_indices = cudf_filter_join_indices_raw as FilterJoinIndicesRaw;
 
     let mut out_right = std::ptr::NonNull::<c_void>::dangling().as_ptr();
@@ -1437,6 +1596,7 @@ fn test_filter_join_indices_null_handles_clear_outputs() {
             FILTER_JOIN_KIND_INNER,
             ptr::null_mut(),
             &mut out_right,
+            &exec,
         )
     };
     assert_eq!(status, cudf_sys::CUDF_ERROR_NULL);
@@ -1453,6 +1613,7 @@ fn test_filter_join_indices_null_handles_clear_outputs() {
             FILTER_JOIN_KIND_INNER,
             &mut out_left,
             ptr::null_mut(),
+            &exec,
         )
     };
     assert_eq!(status, cudf_sys::CUDF_ERROR_NULL);
@@ -1518,6 +1679,7 @@ fn test_filter_join_indices_null_handles_clear_outputs() {
                 FILTER_JOIN_KIND_INNER,
                 &mut out_left,
                 &mut out_right,
+                &exec,
             )
         };
 
@@ -1539,7 +1701,7 @@ fn test_filter_join_indices_ex_uses_explicit_memory_resource_for_allocations_and
     let stream = OwnedStream::new();
     let target_stream = stream.borrowed();
     let target_borrowed = target_mr.borrowed();
-    let exec = cudf_sys::ExecutionContext::new().with_stream(&target_stream).with_memory_resource(&target_borrowed);
+    let exec = required_exec_options(&target_stream, &target_borrowed);
     let join_indices = cudf_filter_join_indices_ex_raw as FilterJoinIndicesExRaw;
 
     let target_before = target_mr.allocation_count();
@@ -1561,7 +1723,7 @@ fn test_filter_join_indices_ex_uses_explicit_memory_resource_for_allocations_and
             FILTER_JOIN_KIND_INNER,
             &mut out_left,
             &mut out_right,
-            exec.as_raw(),
+            &exec,
         )
     };
     let restored_current = current_device_resource_raw();
@@ -1635,7 +1797,7 @@ fn test_hash_join_create_ex_uses_explicit_memory_resource_for_build_allocations(
     let stream = OwnedStream::new();
     let target_stream = stream.borrowed();
     let target_borrowed = target_mr.borrowed();
-    let exec = cudf_sys::ExecutionContext::new().with_stream(&target_stream).with_memory_resource(&target_borrowed);
+    let exec = required_exec_options(&target_stream, &target_borrowed);
 
     let target_before = target_mr.allocation_count();
     reset_exec_observation();
@@ -1648,7 +1810,7 @@ fn test_hash_join_create_ex_uses_explicit_memory_resource_for_build_allocations(
             cudf_sys::cudf_null_equality_t::CUDF_NULL_EQUALITY_EQUAL,
             0.5,
             &mut join,
-            exec.as_raw(),
+            &exec,
         )
     };
 
@@ -1680,6 +1842,11 @@ fn test_hash_join_device_allocated_size_reports_retained_build_artifact_bytes() 
     let col = make_i32_column(&[1, 2, 3, 4, 5, 6, 7, 8]);
     let tbl = make_table_from_one_column(col);
     let tv = make_table_view(tbl);
+    let stream = OwnedStream::new();
+    let target_stream = stream.borrowed();
+    let target_mr = OwnedMemoryResource::new_test_stats();
+    let target_borrowed = target_mr.borrowed();
+    let exec = required_exec_options(&target_stream, &target_borrowed);
 
     let mut out = usize::MAX;
     let status = unsafe { cudf_sys::cudf_hash_join_device_allocated_size(ptr::null_mut(), &mut out) };
@@ -1691,12 +1858,13 @@ fn test_hash_join_device_allocated_size_reports_retained_build_artifact_bytes() 
 
     let mut join: *mut c_void = ptr::null_mut();
     let status = unsafe {
-        cudf_sys::cudf_hash_join_create(
+        cudf_sys::cudf_hash_join_create_ex(
             tv,
             cudf_sys::cudf_nullable_join_t::CUDF_NULLABLE_JOIN_YES,
             cudf_sys::cudf_null_equality_t::CUDF_NULL_EQUALITY_EQUAL,
             0.5,
             &mut join,
+            &exec,
         )
     };
     assert_eq!(status, cudf_sys::CUDF_SUCCESS);
@@ -1720,15 +1888,21 @@ fn test_hash_join_size_apis_report_exact_output_rows() {
     let build_col = make_i32_column(&[2, 2, 4, 6]);
     let build_tbl = make_table_from_one_column(build_col);
     let build_tv = make_table_view(build_tbl);
+    let stream = OwnedStream::new();
+    let target_stream = stream.borrowed();
+    let target_mr = OwnedMemoryResource::new_test_stats();
+    let target_borrowed = target_mr.borrowed();
+    let exec = required_exec_options(&target_stream, &target_borrowed);
 
     let mut join: *mut c_void = ptr::null_mut();
     let status = unsafe {
-        cudf_sys::cudf_hash_join_create(
+        cudf_sys::cudf_hash_join_create_ex(
             build_tv,
             cudf_sys::cudf_nullable_join_t::CUDF_NULLABLE_JOIN_YES,
             cudf_sys::cudf_null_equality_t::CUDF_NULL_EQUALITY_EQUAL,
             0.5,
             &mut join,
+            &exec,
         )
     };
     assert_eq!(status, cudf_sys::CUDF_SUCCESS);
@@ -1736,37 +1910,31 @@ fn test_hash_join_size_apis_report_exact_output_rows() {
 
     let probe_tbl = make_table_from_one_column(make_i32_column(&[1, 2, 4, 5]));
     let probe_tv = make_table_view(probe_tbl);
-    let exec = cudf_sys::ExecutionContext::new();
 
     let mut out = 0usize;
-    let status = unsafe { cudf_sys::cudf_hash_join_inner_join_size(join, probe_tv, &mut out) };
+    let status = unsafe { cudf_sys::cudf_hash_join_inner_join_size_ex(join, probe_tv, &mut out, &exec) };
     assert_eq!(status, cudf_sys::CUDF_SUCCESS);
     assert_eq!(out, 3);
 
-    let status = unsafe { cudf_sys::cudf_hash_join_left_join_size(join, probe_tv, &mut out) };
+    let status = unsafe { cudf_sys::cudf_hash_join_left_join_size_ex(join, probe_tv, &mut out, &exec) };
     assert_eq!(status, cudf_sys::CUDF_SUCCESS);
     assert_eq!(out, 5);
 
-    let status = unsafe { cudf_sys::cudf_hash_join_full_join_size(join, probe_tv, &mut out) };
-    assert_eq!(status, cudf_sys::CUDF_SUCCESS);
-    assert_eq!(out, 6);
-
-    let status = unsafe { cudf_sys::cudf_hash_join_inner_join_size_ex(join, probe_tv, &mut out, exec.as_raw()) };
-    assert_eq!(status, cudf_sys::CUDF_SUCCESS);
-    assert_eq!(out, 3);
-
-    let status = unsafe { cudf_sys::cudf_hash_join_left_join_size_ex(join, probe_tv, &mut out, exec.as_raw()) };
-    assert_eq!(status, cudf_sys::CUDF_SUCCESS);
-    assert_eq!(out, 5);
-
-    let status = unsafe { cudf_sys::cudf_hash_join_full_join_size_ex(join, probe_tv, &mut out, exec.as_raw()) };
+    let status = unsafe { cudf_sys::cudf_hash_join_full_join_size_ex(join, probe_tv, &mut out, &exec) };
     assert_eq!(status, cudf_sys::CUDF_SUCCESS);
     assert_eq!(out, 6);
 
     let mut left_indices = ptr::null_mut();
     let mut right_indices = ptr::null_mut();
     let status = unsafe {
-        cudf_sys::cudf_hash_join_inner_join_with_output_size(join, probe_tv, 3, &mut left_indices, &mut right_indices)
+        cudf_sys::cudf_hash_join_inner_join_with_output_size_ex(
+            join,
+            probe_tv,
+            3,
+            &mut left_indices,
+            &mut right_indices,
+            &exec,
+        )
     };
     assert_eq!(status, cudf_sys::CUDF_SUCCESS);
     assert_eq!(column_len(left_indices), 3);
@@ -1783,7 +1951,7 @@ fn test_hash_join_size_apis_report_exact_output_rows() {
             5,
             &mut left_indices,
             &mut right_indices,
-            exec.as_raw(),
+            &exec,
         )
     };
     assert_eq!(status, cudf_sys::CUDF_SUCCESS);
@@ -1801,7 +1969,7 @@ fn test_hash_join_size_apis_report_exact_output_rows() {
             6,
             &mut left_indices,
             &mut right_indices,
-            exec.as_raw(),
+            &exec,
         )
     };
     assert_eq!(status, cudf_sys::CUDF_SUCCESS);
@@ -1829,57 +1997,60 @@ fn test_conditional_join_size_apis_report_exact_output_rows() {
     let left_tv = make_table_view(left_tbl);
     let right_tv = make_table_view(right_tbl);
     let predicate = make_left_less_than_right_predicate();
-    let exec = cudf_sys::ExecutionContext::new();
+    let stream = OwnedStream::new();
+    let mr = OwnedMemoryResource::new_cuda();
+    let exec = required_exec_options(&stream.borrowed(), &mr.borrowed());
 
     let mut out = 0usize;
-    let status = unsafe { cudf_sys::cudf_conditional_inner_join_size(left_tv, right_tv, predicate, &mut out) };
+    let status =
+        unsafe { cudf_sys::cudf_conditional_inner_join_size_ex(left_tv, right_tv, predicate, &mut out, &exec) };
     assert_eq!(status, cudf_sys::CUDF_SUCCESS);
     assert_eq!(out, 3);
 
-    let status = unsafe { cudf_sys::cudf_conditional_left_join_size(left_tv, right_tv, predicate, &mut out) };
+    let status = unsafe { cudf_sys::cudf_conditional_left_join_size_ex(left_tv, right_tv, predicate, &mut out, &exec) };
     assert_eq!(status, cudf_sys::CUDF_SUCCESS);
     assert_eq!(out, 4);
 
-    let status = unsafe { cudf_sys::cudf_conditional_left_semi_join_size(left_tv, right_tv, predicate, &mut out) };
+    let status =
+        unsafe { cudf_sys::cudf_conditional_left_semi_join_size_ex(left_tv, right_tv, predicate, &mut out, &exec) };
     assert_eq!(status, cudf_sys::CUDF_SUCCESS);
     assert_eq!(out, 2);
 
-    let status = unsafe { cudf_sys::cudf_conditional_left_anti_join_size(left_tv, right_tv, predicate, &mut out) };
+    let status =
+        unsafe { cudf_sys::cudf_conditional_left_anti_join_size_ex(left_tv, right_tv, predicate, &mut out, &exec) };
     assert_eq!(status, cudf_sys::CUDF_SUCCESS);
     assert_eq!(out, 1);
 
     let status =
-        unsafe { cudf_sys::cudf_conditional_inner_join_size_ex(left_tv, right_tv, predicate, &mut out, exec.as_raw()) };
+        unsafe { cudf_sys::cudf_conditional_inner_join_size_ex(left_tv, right_tv, predicate, &mut out, &exec) };
     assert_eq!(status, cudf_sys::CUDF_SUCCESS);
     assert_eq!(out, 3);
 
-    let status =
-        unsafe { cudf_sys::cudf_conditional_left_join_size_ex(left_tv, right_tv, predicate, &mut out, exec.as_raw()) };
+    let status = unsafe { cudf_sys::cudf_conditional_left_join_size_ex(left_tv, right_tv, predicate, &mut out, &exec) };
     assert_eq!(status, cudf_sys::CUDF_SUCCESS);
     assert_eq!(out, 4);
 
-    let status = unsafe {
-        cudf_sys::cudf_conditional_left_semi_join_size_ex(left_tv, right_tv, predicate, &mut out, exec.as_raw())
-    };
+    let status =
+        unsafe { cudf_sys::cudf_conditional_left_semi_join_size_ex(left_tv, right_tv, predicate, &mut out, &exec) };
     assert_eq!(status, cudf_sys::CUDF_SUCCESS);
     assert_eq!(out, 2);
 
-    let status = unsafe {
-        cudf_sys::cudf_conditional_left_anti_join_size_ex(left_tv, right_tv, predicate, &mut out, exec.as_raw())
-    };
+    let status =
+        unsafe { cudf_sys::cudf_conditional_left_anti_join_size_ex(left_tv, right_tv, predicate, &mut out, &exec) };
     assert_eq!(status, cudf_sys::CUDF_SUCCESS);
     assert_eq!(out, 1);
 
     let mut left_indices = ptr::null_mut();
     let mut right_indices = ptr::null_mut();
     let status = unsafe {
-        cudf_sys::cudf_conditional_inner_join_indices_with_output_size(
+        cudf_sys::cudf_conditional_inner_join_indices_with_output_size_ex(
             left_tv,
             right_tv,
             predicate,
             3,
             &mut left_indices,
             &mut right_indices,
+            &exec,
         )
     };
     assert_eq!(status, cudf_sys::CUDF_SUCCESS);
@@ -1898,7 +2069,7 @@ fn test_conditional_join_size_apis_report_exact_output_rows() {
             4,
             &mut left_indices,
             &mut right_indices,
-            exec.as_raw(),
+            &exec,
         )
     };
     assert_eq!(status, cudf_sys::CUDF_SUCCESS);
@@ -1911,12 +2082,13 @@ fn test_conditional_join_size_apis_report_exact_output_rows() {
 
     let mut indices = ptr::null_mut();
     let status = unsafe {
-        cudf_sys::cudf_conditional_left_semi_join_indices_with_output_size(
+        cudf_sys::cudf_conditional_left_semi_join_indices_with_output_size_ex(
             left_tv,
             right_tv,
             predicate,
             2,
             &mut indices,
+            &exec,
         )
     };
     assert_eq!(status, cudf_sys::CUDF_SUCCESS);
@@ -1930,7 +2102,7 @@ fn test_conditional_join_size_apis_report_exact_output_rows() {
             predicate,
             1,
             &mut indices,
-            exec.as_raw(),
+            &exec,
         )
     };
     assert_eq!(status, cudf_sys::CUDF_SUCCESS);
@@ -1957,15 +2129,20 @@ fn test_hash_join_probe_ex_uses_explicit_memory_resource_for_probe_allocations()
     let build_col = make_i32_column(&[1, 2, 3, 4, 5, 6, 7, 8]);
     let build_tbl = make_table_from_one_column(build_col);
     let build_tv = make_table_view(build_tbl);
+    let stream = OwnedStream::new();
+    let target_stream = stream.borrowed();
+    let target_borrowed = target_mr.borrowed();
+    let exec = required_exec_options(&target_stream, &target_borrowed);
 
     let mut join: *mut c_void = ptr::null_mut();
     let status = unsafe {
-        cudf_sys::cudf_hash_join_create(
+        cudf_sys::cudf_hash_join_create_ex(
             build_tv,
             cudf_sys::cudf_nullable_join_t::CUDF_NULLABLE_JOIN_YES,
             cudf_sys::cudf_null_equality_t::CUDF_NULL_EQUALITY_EQUAL,
             0.5,
             &mut join,
+            &exec,
         )
     };
     assert_eq!(status, cudf_sys::CUDF_SUCCESS);
@@ -1973,10 +2150,6 @@ fn test_hash_join_probe_ex_uses_explicit_memory_resource_for_probe_allocations()
 
     let probe_tbl = make_table_from_one_column(make_i32_column(&[8, 7, 42, 1, 2, 99, 3, 4]));
     let probe_tv = make_table_view(probe_tbl);
-    let stream = OwnedStream::new();
-    let target_stream = stream.borrowed();
-    let target_borrowed = target_mr.borrowed();
-    let exec = cudf_sys::ExecutionContext::new().with_stream(&target_stream).with_memory_resource(&target_borrowed);
 
     for (name, probe) in [
         (
@@ -2002,7 +2175,7 @@ fn test_hash_join_probe_ex_uses_explicit_memory_resource_for_probe_allocations()
         let current_borrowed = current_mr.borrowed();
         cudf_sys::test_set_current_device_resource(&current_borrowed)
             .expect("failed to install current sentinel memory resource");
-        let status = unsafe { probe(join, probe_tv, &mut out_left, &mut out_right, exec.as_raw()) };
+        let status = unsafe { probe(join, probe_tv, &mut out_left, &mut out_right, &exec) };
         let restored_current = current_device_resource_raw();
         unsafe { cudf_sys::test_set_current_device_resource_raw(previous_raw) }
             .expect("failed to restore previous current device resource");
@@ -2057,7 +2230,7 @@ fn test_join_indices_ex_uses_explicit_memory_resource_for_allocations_and_proven
     let stream = OwnedStream::new();
     let target_stream = stream.borrowed();
     let target_borrowed = target_mr.borrowed();
-    let exec = cudf_sys::ExecutionContext::new().with_stream(&target_stream).with_memory_resource(&target_borrowed);
+    let exec = required_exec_options(&target_stream, &target_borrowed);
 
     for (name, join_indices) in [
         (
@@ -2091,7 +2264,7 @@ fn test_join_indices_ex_uses_explicit_memory_resource_for_allocations_and_proven
                 cudf_sys::cudf_null_equality_t::CUDF_NULL_EQUALITY_EQUAL,
                 &mut out_left,
                 &mut out_right,
-                exec.as_raw(),
+                &exec,
             )
         };
         let restored_current = current_device_resource_raw();
@@ -2147,7 +2320,7 @@ fn test_filtered_join_indices_ex_uses_explicit_memory_resource_for_allocations_a
     let stream = OwnedStream::new();
     let target_stream = stream.borrowed();
     let target_borrowed = target_mr.borrowed();
-    let exec = cudf_sys::ExecutionContext::new().with_stream(&target_stream).with_memory_resource(&target_borrowed);
+    let exec = required_exec_options(&target_stream, &target_borrowed);
 
     for (name, join_indices) in [
         (
@@ -2172,13 +2345,7 @@ fn test_filtered_join_indices_ex_uses_explicit_memory_resource_for_allocations_a
         cudf_sys::test_set_current_device_resource(&current_borrowed)
             .expect("failed to install current sentinel memory resource");
         let status = unsafe {
-            join_indices(
-                left_tv,
-                right_tv,
-                cudf_sys::cudf_null_equality_t::CUDF_NULL_EQUALITY_EQUAL,
-                &mut out,
-                exec.as_raw(),
-            )
+            join_indices(left_tv, right_tv, cudf_sys::cudf_null_equality_t::CUDF_NULL_EQUALITY_EQUAL, &mut out, &exec)
         };
         let restored_current = current_device_resource_raw();
         unsafe { cudf_sys::test_set_current_device_resource_raw(previous_raw) }
@@ -2230,7 +2397,7 @@ fn test_conditional_join_indices_ex_uses_explicit_memory_resource_for_allocation
     let stream = OwnedStream::new();
     let target_stream = stream.borrowed();
     let target_borrowed = target_mr.borrowed();
-    let exec = cudf_sys::ExecutionContext::new().with_stream(&target_stream).with_memory_resource(&target_borrowed);
+    let exec = required_exec_options(&target_stream, &target_borrowed);
 
     for (name, join_indices) in [
         (
@@ -2257,8 +2424,7 @@ fn test_conditional_join_indices_ex_uses_explicit_memory_resource_for_allocation
         let current_borrowed = current_mr.borrowed();
         cudf_sys::test_set_current_device_resource(&current_borrowed)
             .expect("failed to install current sentinel memory resource");
-        let status =
-            unsafe { join_indices(left_tv, right_tv, predicate, &mut out_left, &mut out_right, exec.as_raw()) };
+        let status = unsafe { join_indices(left_tv, right_tv, predicate, &mut out_left, &mut out_right, &exec) };
         let restored_current = current_device_resource_raw();
         unsafe { cudf_sys::test_set_current_device_resource_raw(previous_raw) }
             .expect("failed to restore previous current device resource");
@@ -2313,7 +2479,7 @@ fn test_conditional_join_indices_ex_uses_explicit_memory_resource_for_allocation
         let current_borrowed = current_mr.borrowed();
         cudf_sys::test_set_current_device_resource(&current_borrowed)
             .expect("failed to install current sentinel memory resource");
-        let status = unsafe { join_indices(left_tv, right_tv, predicate, &mut out, exec.as_raw()) };
+        let status = unsafe { join_indices(left_tv, right_tv, predicate, &mut out, &exec) };
         let restored_current = current_device_resource_raw();
         unsafe { cudf_sys::test_set_current_device_resource_raw(previous_raw) }
             .expect("failed to restore previous current device resource");
@@ -2363,22 +2529,10 @@ fn test_mixed_join_invalid_null_equality_rejected_and_clears_outputs() {
     let left_cond_tv = make_table_view(left_cond_tbl);
     let right_cond_tv = make_table_view(right_cond_tbl);
     let predicate = make_left_less_than_right_predicate();
+    let (_stream, _mr, exec) = strict_exec_owners();
 
     for (name, join_indices) in [
-        (
-            "inner",
-            cudf_mixed_inner_join_indices_raw
-                as unsafe extern "C" fn(
-                    *mut c_void,
-                    *mut c_void,
-                    *mut c_void,
-                    *mut c_void,
-                    *mut c_void,
-                    i32,
-                    *mut *mut c_void,
-                    *mut *mut c_void,
-                ) -> i32,
-        ),
+        ("inner", cudf_mixed_inner_join_indices_raw as MixedPairJoinRaw),
         ("left", cudf_mixed_left_join_indices_raw),
         ("full", cudf_mixed_full_join_indices_raw),
     ] {
@@ -2394,6 +2548,7 @@ fn test_mixed_join_invalid_null_equality_rejected_and_clears_outputs() {
                 99,
                 &mut out_left,
                 &mut out_right,
+                &exec,
             )
         };
 
@@ -2404,24 +2559,13 @@ fn test_mixed_join_invalid_null_equality_rejected_and_clears_outputs() {
     }
 
     for (name, join_indices) in [
-        (
-            "semi",
-            cudf_mixed_left_semi_join_indices_raw
-                as unsafe extern "C" fn(
-                    *mut c_void,
-                    *mut c_void,
-                    *mut c_void,
-                    *mut c_void,
-                    *mut c_void,
-                    i32,
-                    *mut *mut c_void,
-                ) -> i32,
-        ),
+        ("semi", cudf_mixed_left_semi_join_indices_raw as MixedSingleJoinRaw),
         ("anti", cudf_mixed_left_anti_join_indices_raw),
     ] {
         let mut out = std::ptr::NonNull::<c_void>::dangling().as_ptr();
-        let status =
-            unsafe { join_indices(left_eq_tv, right_eq_tv, left_cond_tv, right_cond_tv, predicate, 99, &mut out) };
+        let status = unsafe {
+            join_indices(left_eq_tv, right_eq_tv, left_cond_tv, right_cond_tv, predicate, 99, &mut out, &exec)
+        };
 
         assert_eq!(status, cudf_sys::CUDF_ERROR_INVALID_OPERATION, "{name} mixed join status");
         assert!(out.is_null(), "{name} mixed join must clear output");
@@ -2454,6 +2598,7 @@ fn test_mixed_join_null_handles_clear_outputs() {
     let right_cond_tv = make_table_view(right_cond_tbl);
     let predicate = make_left_less_than_right_predicate();
     let null_equality = cudf_sys::cudf_null_equality_t::CUDF_NULL_EQUALITY_EQUAL as i32;
+    let (_stream, _mr, exec) = strict_exec_owners();
 
     for (name, join_indices) in [
         ("inner", cudf_mixed_inner_join_indices_raw as MixedPairJoinRaw),
@@ -2471,6 +2616,7 @@ fn test_mixed_join_null_handles_clear_outputs() {
                 null_equality,
                 ptr::null_mut(),
                 &mut out_right,
+                &exec,
             )
         };
         assert_eq!(status, cudf_sys::CUDF_ERROR_NULL, "{name} mixed join null left output");
@@ -2487,6 +2633,7 @@ fn test_mixed_join_null_handles_clear_outputs() {
                 null_equality,
                 &mut out_left,
                 ptr::null_mut(),
+                &exec,
             )
         };
         assert_eq!(status, cudf_sys::CUDF_ERROR_NULL, "{name} mixed join null right output");
@@ -2544,6 +2691,7 @@ fn test_mixed_join_null_handles_clear_outputs() {
                     null_equality,
                     &mut out_left,
                     &mut out_right,
+                    &exec,
                 )
             };
             assert_eq!(status, cudf_sys::CUDF_ERROR_NULL, "{name} mixed join null {case} status");
@@ -2566,6 +2714,7 @@ fn test_mixed_join_null_handles_clear_outputs() {
                 predicate,
                 null_equality,
                 ptr::null_mut(),
+                &exec,
             )
         };
         assert_eq!(status, cudf_sys::CUDF_ERROR_NULL, "{name} mixed join null output");
@@ -2612,7 +2761,7 @@ fn test_mixed_join_null_handles_clear_outputs() {
         ] {
             let mut out = std::ptr::NonNull::<c_void>::dangling().as_ptr();
             let status =
-                unsafe { join_indices(left_eq, right_eq, left_cond, right_cond, pred, null_equality, &mut out) };
+                unsafe { join_indices(left_eq, right_eq, left_cond, right_cond, pred, null_equality, &mut out, &exec) };
             assert_eq!(status, cudf_sys::CUDF_ERROR_NULL, "{name} mixed join null {case} status");
             assert!(out.is_null(), "{name} mixed join must clear output for null {case}");
             assert!(last_error_message().contains(message));
@@ -2652,7 +2801,7 @@ fn test_mixed_join_indices_ex_uses_explicit_memory_resource_for_allocations_and_
     let stream = OwnedStream::new();
     let target_stream = stream.borrowed();
     let target_borrowed = target_mr.borrowed();
-    let exec = cudf_sys::ExecutionContext::new().with_stream(&target_stream).with_memory_resource(&target_borrowed);
+    let exec = required_exec_options(&target_stream, &target_borrowed);
 
     for (name, join_indices) in [
         (
@@ -2692,7 +2841,7 @@ fn test_mixed_join_indices_ex_uses_explicit_memory_resource_for_allocations_and_
                 cudf_sys::cudf_null_equality_t::CUDF_NULL_EQUALITY_EQUAL,
                 &mut out_left,
                 &mut out_right,
-                exec.as_raw(),
+                &exec,
             )
         };
         let restored_current = current_device_resource_raw();
@@ -2761,7 +2910,7 @@ fn test_mixed_join_indices_ex_uses_explicit_memory_resource_for_allocations_and_
                 predicate,
                 cudf_sys::cudf_null_equality_t::CUDF_NULL_EQUALITY_EQUAL,
                 &mut out,
-                exec.as_raw(),
+                &exec,
             )
         };
         let restored_current = current_device_resource_raw();
@@ -2816,13 +2965,18 @@ fn test_distinct_hash_join_probe_ex_uses_explicit_memory_resource_for_probe_allo
     let build_col = make_i32_column(&[1, 2, 3, 4, 5, 6, 7, 8]);
     let build_tbl = make_table_from_one_column(build_col);
     let build_tv = make_table_view(build_tbl);
+    let stream = OwnedStream::new();
+    let target_stream = stream.borrowed();
+    let target_borrowed = target_mr.borrowed();
+    let exec = required_exec_options(&target_stream, &target_borrowed);
 
     let mut join: *mut c_void = ptr::null_mut();
     let status = unsafe {
-        cudf_sys::cudf_distinct_hash_join_create(
+        cudf_sys::cudf_distinct_hash_join_create_ex(
             build_tv,
             cudf_sys::cudf_null_equality_t::CUDF_NULL_EQUALITY_EQUAL,
             &mut join,
+            &exec,
         )
     };
     assert_eq!(status, cudf_sys::CUDF_SUCCESS);
@@ -2830,10 +2984,6 @@ fn test_distinct_hash_join_probe_ex_uses_explicit_memory_resource_for_probe_allo
 
     let probe_tbl = make_table_from_one_column(make_i32_column(&[8, 7, 42, 1, 2, 99, 3, 4]));
     let probe_tv = make_table_view(probe_tbl);
-    let stream = OwnedStream::new();
-    let target_stream = stream.borrowed();
-    let target_borrowed = target_mr.borrowed();
-    let exec = cudf_sys::ExecutionContext::new().with_stream(&target_stream).with_memory_resource(&target_borrowed);
 
     let target_before = target_mr.allocation_count();
     let current_before = current_mr.allocation_count();
@@ -2843,7 +2993,7 @@ fn test_distinct_hash_join_probe_ex_uses_explicit_memory_resource_for_probe_allo
     let current_borrowed = current_mr.borrowed();
     cudf_sys::test_set_current_device_resource(&current_borrowed)
         .expect("failed to install current sentinel memory resource");
-    let status = unsafe { cudf_sys::cudf_distinct_hash_join_left_join_ex(join, probe_tv, &mut out, exec.as_raw()) };
+    let status = unsafe { cudf_sys::cudf_distinct_hash_join_left_join_ex(join, probe_tv, &mut out, &exec) };
     let restored_current = current_device_resource_raw();
     unsafe { cudf_sys::test_set_current_device_resource_raw(previous_raw) }
         .expect("failed to restore previous current device resource");
@@ -2893,7 +3043,7 @@ fn test_gather_ex_uses_explicit_memory_resource() {
     let stream = OwnedStream::new();
     let target_stream = stream.borrowed();
     let target_borrowed = target_mr.borrowed();
-    let exec = cudf_sys::ExecutionContext::new().with_stream(&target_stream).with_memory_resource(&target_borrowed);
+    let exec = required_exec_options(&target_stream, &target_borrowed);
     let target_before = target_mr.allocation_count();
     let current_before = current_mr.allocation_count();
 
@@ -2907,7 +3057,7 @@ fn test_gather_ex_uses_explicit_memory_resource() {
             gather_map_view,
             cudf_sys::cudf_out_of_bounds_policy_t::CUDF_OUT_OF_BOUNDS_POLICY_NULLIFY,
             &mut out,
-            exec.as_raw(),
+            &exec,
         )
     };
     let restored_current = current_device_resource_raw();
@@ -2957,7 +3107,7 @@ fn test_cross_join_ex_uses_explicit_memory_resource_for_allocations_and_provenan
     let stream = OwnedStream::new();
     let target_stream = stream.borrowed();
     let target_borrowed = target_mr.borrowed();
-    let exec = cudf_sys::ExecutionContext::new().with_stream(&target_stream).with_memory_resource(&target_borrowed);
+    let exec = required_exec_options(&target_stream, &target_borrowed);
     let target_before = target_mr.allocation_count();
     let current_before = current_mr.allocation_count();
 
@@ -2965,7 +3115,7 @@ fn test_cross_join_ex_uses_explicit_memory_resource_for_allocations_and_provenan
     cudf_sys::test_set_current_device_resource(&current_borrowed)
         .expect("failed to install current sentinel memory resource");
     let mut out: *mut c_void = ptr::null_mut();
-    let status = unsafe { cudf_sys::cudf_cross_join_ex(left_tv, right_tv, &mut out, exec.as_raw()) };
+    let status = unsafe { cudf_sys::cudf_cross_join_ex(left_tv, right_tv, &mut out, &exec) };
     let restored_current = current_device_resource_raw();
     unsafe { cudf_sys::test_set_current_device_resource_raw(previous_raw) }
         .expect("failed to restore previous current device resource");
@@ -3001,6 +3151,9 @@ fn test_cross_join_ex_uses_explicit_memory_resource_for_allocations_and_provenan
 #[test]
 fn test_scatter_null_scatter_map_returns_libcudf_error() {
     let _shim_state = lock_shim_state();
+    let stream = OwnedStream::new();
+    let mr = OwnedMemoryResource::new_cuda();
+    let exec = required_exec_options(&stream.borrowed(), &mr.borrowed());
     let source_tbl = make_table_from_one_column(make_i32_column(&[10, 20]));
     let target_tbl = make_table_from_one_column(make_i32_column(&[1, 2, 3, 4]));
     let source_tv = make_table_view(source_tbl);
@@ -3009,7 +3162,7 @@ fn test_scatter_null_scatter_map_returns_libcudf_error() {
     let scatter_map_view = make_column_view(scatter_map);
 
     let mut out: *mut c_void = ptr::null_mut();
-    let status = unsafe { cudf_scatter_raw(source_tv, scatter_map_view, target_tv, &mut out) };
+    let status = unsafe { cudf_sys::cudf_scatter_ex(source_tv, scatter_map_view, target_tv, &mut out, &exec) };
 
     assert_eq!(status, cudf_sys::CUDF_ERROR_INVALID_ARGUMENT);
     assert!(out.is_null());
@@ -3041,7 +3194,7 @@ fn test_scatter_ex_uses_explicit_memory_resource_for_allocations_and_provenance(
     let stream = OwnedStream::new();
     let target_stream = stream.borrowed();
     let target_borrowed = target_mr.borrowed();
-    let exec = cudf_sys::ExecutionContext::new().with_stream(&target_stream).with_memory_resource(&target_borrowed);
+    let exec = required_exec_options(&target_stream, &target_borrowed);
     let target_before = target_mr.allocation_count();
     let current_before = current_mr.allocation_count();
 
@@ -3049,7 +3202,7 @@ fn test_scatter_ex_uses_explicit_memory_resource_for_allocations_and_provenance(
     cudf_sys::test_set_current_device_resource(&current_borrowed)
         .expect("failed to install current sentinel memory resource");
     let mut out: *mut c_void = ptr::null_mut();
-    let status = unsafe { cudf_sys::cudf_scatter_ex(source_tv, scatter_map_view, target_tv, &mut out, exec.as_raw()) };
+    let status = unsafe { cudf_sys::cudf_scatter_ex(source_tv, scatter_map_view, target_tv, &mut out, &exec) };
     let restored_current = current_device_resource_raw();
     unsafe { cudf_sys::test_set_current_device_resource_raw(previous_raw) }
         .expect("failed to restore previous current device resource");
@@ -3100,7 +3253,7 @@ fn test_apply_boolean_mask_ex_uses_explicit_memory_resource() {
     let stream = OwnedStream::new();
     let target_stream = stream.borrowed();
     let target_borrowed = target_mr.borrowed();
-    let exec = cudf_sys::ExecutionContext::new().with_stream(&target_stream).with_memory_resource(&target_borrowed);
+    let exec = required_exec_options(&target_stream, &target_borrowed);
     let target_before = target_mr.allocation_count();
     let current_before = current_mr.allocation_count();
 
@@ -3108,7 +3261,7 @@ fn test_apply_boolean_mask_ex_uses_explicit_memory_resource() {
     cudf_sys::test_set_current_device_resource(&current_borrowed)
         .expect("failed to install current sentinel memory resource");
     let mut out: *mut c_void = ptr::null_mut();
-    let status = unsafe { cudf_sys::cudf_apply_boolean_mask_ex(input_view, mask_view, &mut out, exec.as_raw()) };
+    let status = unsafe { cudf_sys::cudf_apply_boolean_mask_ex(input_view, mask_view, &mut out, &exec) };
     let restored_current = current_device_resource_raw();
     unsafe { cudf_sys::test_set_current_device_resource_raw(previous_raw) }
         .expect("failed to restore previous current device resource");
@@ -3154,7 +3307,7 @@ fn test_replace_nulls_policy_ex_uses_explicit_memory_resource() {
     let stream = OwnedStream::new();
     let target_stream = stream.borrowed();
     let target_borrowed = target_mr.borrowed();
-    let exec = cudf_sys::ExecutionContext::new().with_stream(&target_stream).with_memory_resource(&target_borrowed);
+    let exec = required_exec_options(&target_stream, &target_borrowed);
     let target_before = target_mr.allocation_count();
     let current_before = current_mr.allocation_count();
 
@@ -3162,7 +3315,7 @@ fn test_replace_nulls_policy_ex_uses_explicit_memory_resource() {
     cudf_sys::test_set_current_device_resource(&current_borrowed)
         .expect("failed to install current sentinel memory resource");
     let mut out: *mut c_void = ptr::null_mut();
-    let status = unsafe { cudf_sys::cudf_replace_nulls_policy_ex(input_view, 0, &mut out, exec.as_raw()) };
+    let status = unsafe { cudf_sys::cudf_replace_nulls_policy_ex(input_view, 0, &mut out, &exec) };
     let restored_current = current_device_resource_raw();
     unsafe { cudf_sys::test_set_current_device_resource_raw(previous_raw) }
         .expect("failed to restore previous current device resource");
@@ -3208,7 +3361,7 @@ fn test_distinct_ex_uses_explicit_memory_resource() {
     let stream = OwnedStream::new();
     let target_stream = stream.borrowed();
     let target_borrowed = target_mr.borrowed();
-    let exec = cudf_sys::ExecutionContext::new().with_stream(&target_stream).with_memory_resource(&target_borrowed);
+    let exec = required_exec_options(&target_stream, &target_borrowed);
     let target_before = target_mr.allocation_count();
     let current_before = current_mr.allocation_count();
 
@@ -3225,7 +3378,7 @@ fn test_distinct_ex_uses_explicit_memory_resource() {
             cudf_sys::cudf_stream_compaction_null_equality_t::CUDF_STREAM_COMPACTION_NULL_EQUALITY_EQUAL,
             cudf_sys::cudf_stream_compaction_nan_equality_t::CUDF_STREAM_COMPACTION_NAN_EQUALITY_ALL_EQUAL,
             &mut out,
-            exec.as_raw(),
+            &exec,
         )
     };
     let restored_current = current_device_resource_raw();
@@ -3271,7 +3424,7 @@ fn test_dictionary_encode_ex_uses_explicit_memory_resource() {
     let stream = OwnedStream::new();
     let target_stream = stream.borrowed();
     let target_borrowed = target_mr.borrowed();
-    let exec = cudf_sys::ExecutionContext::new().with_stream(&target_stream).with_memory_resource(&target_borrowed);
+    let exec = required_exec_options(&target_stream, &target_borrowed);
     let target_before = target_mr.allocation_count();
     let current_before = current_mr.allocation_count();
 
@@ -3280,7 +3433,7 @@ fn test_dictionary_encode_ex_uses_explicit_memory_resource() {
         .expect("failed to install current sentinel memory resource");
     let mut out: *mut c_void = ptr::null_mut();
     let status = unsafe {
-        cudf_sys::cudf_dictionary_encode_ex(view, cudf_sys::cudf_type_id_t::CUDF_TYPE_INT32, &mut out, exec.as_raw())
+        cudf_sys::cudf_dictionary_encode_ex(view, cudf_sys::cudf_type_id_t::CUDF_TYPE_INT32, &mut out, &exec)
     };
     let restored_current = current_device_resource_raw();
     unsafe { cudf_sys::test_set_current_device_resource_raw(previous_raw) }
@@ -3325,7 +3478,7 @@ fn test_dictionary_decode_ex_uses_explicit_memory_resource() {
     let stream = OwnedStream::new();
     let target_stream = stream.borrowed();
     let target_borrowed = target_mr.borrowed();
-    let exec = cudf_sys::ExecutionContext::new().with_stream(&target_stream).with_memory_resource(&target_borrowed);
+    let exec = required_exec_options(&target_stream, &target_borrowed);
     let target_before = target_mr.allocation_count();
     let current_before = current_mr.allocation_count();
 
@@ -3333,7 +3486,7 @@ fn test_dictionary_decode_ex_uses_explicit_memory_resource() {
     cudf_sys::test_set_current_device_resource(&current_borrowed)
         .expect("failed to install current sentinel memory resource");
     let mut out: *mut c_void = ptr::null_mut();
-    let status = unsafe { cudf_sys::cudf_dictionary_decode_ex(dict_view, &mut out, exec.as_raw()) };
+    let status = unsafe { cudf_sys::cudf_dictionary_decode_ex(dict_view, &mut out, &exec) };
     let restored_current = current_device_resource_raw();
     unsafe { cudf_sys::test_set_current_device_resource_raw(previous_raw) }
         .expect("failed to restore previous current device resource");
@@ -3379,7 +3532,7 @@ fn test_dictionary_set_keys_ex_uses_explicit_memory_resource() {
     let stream = OwnedStream::new();
     let target_stream = stream.borrowed();
     let target_borrowed = target_mr.borrowed();
-    let exec = cudf_sys::ExecutionContext::new().with_stream(&target_stream).with_memory_resource(&target_borrowed);
+    let exec = required_exec_options(&target_stream, &target_borrowed);
     let target_before = target_mr.allocation_count();
     let current_before = current_mr.allocation_count();
 
@@ -3387,7 +3540,7 @@ fn test_dictionary_set_keys_ex_uses_explicit_memory_resource() {
     cudf_sys::test_set_current_device_resource(&current_borrowed)
         .expect("failed to install current sentinel memory resource");
     let mut out: *mut c_void = ptr::null_mut();
-    let status = unsafe { cudf_sys::cudf_dictionary_set_keys_ex(dict_view, keys_view, &mut out, exec.as_raw()) };
+    let status = unsafe { cudf_sys::cudf_dictionary_set_keys_ex(dict_view, keys_view, &mut out, &exec) };
     let restored_current = current_device_resource_raw();
     unsafe { cudf_sys::test_set_current_device_resource_raw(previous_raw) }
         .expect("failed to restore previous current device resource");
@@ -3436,7 +3589,7 @@ fn test_dictionary_match_dictionaries_ex_uses_explicit_memory_resource() {
     let stream = OwnedStream::new();
     let target_stream = stream.borrowed();
     let target_borrowed = target_mr.borrowed();
-    let exec = cudf_sys::ExecutionContext::new().with_stream(&target_stream).with_memory_resource(&target_borrowed);
+    let exec = required_exec_options(&target_stream, &target_borrowed);
     let target_before = target_mr.allocation_count();
     let current_before = current_mr.allocation_count();
 
@@ -3451,7 +3604,7 @@ fn test_dictionary_match_dictionaries_ex_uses_explicit_memory_resource() {
             dict_columns.len() as i32,
             &mut out_columns,
             &mut out_count,
-            exec.as_raw(),
+            &exec,
         )
     };
     let restored_current = current_device_resource_raw();
@@ -3498,18 +3651,24 @@ fn test_join_indices_publish_no_outputs_when_second_handle_release_fails() {
     let right_tbl = make_table_from_columns(vec![make_i32_column(&[2, 3, 4])]);
     let left_tv = make_table_view(left_tbl);
     let right_tv = make_table_view(right_tbl);
+    let stream = OwnedStream::new();
+    let target_stream = stream.borrowed();
+    let target_mr = OwnedMemoryResource::new_test_stats();
+    let target_borrowed = target_mr.borrowed();
+    let exec = required_exec_options(&target_stream, &target_borrowed);
 
     let mut left_indices = std::ptr::NonNull::<c_void>::dangling().as_ptr();
     let mut right_indices = std::ptr::NonNull::<c_void>::dangling().as_ptr();
     unsafe { cudf_sys::cudf_test_fail_column_handle_release_after(1) };
 
     let status = unsafe {
-        cudf_sys::cudf_inner_join_indices(
+        cudf_sys::cudf_inner_join_indices_ex(
             left_tv,
             right_tv,
             cudf_sys::cudf_null_equality_t::CUDF_NULL_EQUALITY_EQUAL,
             &mut left_indices,
             &mut right_indices,
+            &exec,
         )
     };
     unsafe { cudf_sys::cudf_test_fail_column_handle_release_after(-1) };
@@ -3532,13 +3691,19 @@ fn test_distinct_hash_join_left_join_returns_build_indices() {
     let build_col = make_i32_column(&[10, 20, 30]);
     let build_tbl = make_table_from_one_column(build_col);
     let build_tv = make_table_view(build_tbl);
+    let stream = OwnedStream::new();
+    let target_stream = stream.borrowed();
+    let target_mr = OwnedMemoryResource::new_test_stats();
+    let target_borrowed = target_mr.borrowed();
+    let exec = required_exec_options(&target_stream, &target_borrowed);
 
     let mut join: *mut c_void = ptr::null_mut();
     let status = unsafe {
-        cudf_sys::cudf_distinct_hash_join_create(
+        cudf_sys::cudf_distinct_hash_join_create_ex(
             build_tv,
             cudf_sys::cudf_null_equality_t::CUDF_NULL_EQUALITY_EQUAL,
             &mut join,
+            &exec,
         )
     };
     assert_eq!(status, cudf_sys::CUDF_SUCCESS);
@@ -3548,7 +3713,7 @@ fn test_distinct_hash_join_left_join_returns_build_indices() {
     let probe_tv = make_table_view(probe_tbl);
     let mut out: *mut c_void = ptr::null_mut();
 
-    let status = unsafe { cudf_distinct_hash_join_left_join_raw(join, probe_tv, &mut out) };
+    let status = unsafe { cudf_sys::cudf_distinct_hash_join_left_join_ex(join, probe_tv, &mut out, &exec) };
     assert_eq!(status, cudf_sys::CUDF_SUCCESS);
     assert!(!out.is_null());
     assert_eq!(read_i32_column_data(out, 4), vec![1, i32::MIN, 0, 2]);
@@ -3575,8 +3740,9 @@ fn test_scan_invalid_scan_type_rejected() {
     assert_eq!(st, cudf_sys::CUDF_SUCCESS);
     assert!(!agg.is_null());
 
+    let (_stream, _mr, exec) = strict_exec_owners();
     let mut out: *mut c_void = ptr::null_mut();
-    let status = unsafe { cudf_scan_raw(view, agg, 99, 0, &mut out) };
+    let status = unsafe { cudf_scan_raw(view, agg, 99, 0, &mut out, &exec) };
 
     assert_eq!(status, cudf_sys::CUDF_ERROR_INVALID_OPERATION);
     assert!(out.is_null());
@@ -3600,10 +3766,12 @@ fn test_scan_invalid_null_policy_rejected() {
     };
     assert_eq!(st, cudf_sys::CUDF_SUCCESS);
     assert!(!agg.is_null());
+    let (_stream, _mr, exec) = strict_exec_owners();
 
     let mut out: *mut c_void = ptr::null_mut();
-    let status =
-        unsafe { cudf_sys::cudf_scan(view, agg, cudf_sys::cudf_scan_type_t::CUDF_SCAN_INCLUSIVE, 99, &mut out) };
+    let status = unsafe {
+        cudf_scan_raw(view, agg, cudf_sys::cudf_scan_type_t::CUDF_SCAN_INCLUSIVE as i32, 99, &mut out, &exec)
+    };
 
     assert_eq!(status, cudf_sys::CUDF_ERROR_INVALID_OPERATION);
     assert!(out.is_null());
@@ -3621,9 +3789,10 @@ fn test_unary_operation_invalid_operator_rejected() {
     let _shim_state = lock_shim_state();
     let col = make_i32_column(&[1, 2, 3]);
     let view = make_column_view(col);
+    let (_stream, _mr, exec) = strict_exec_owners();
 
     let mut out: *mut c_void = ptr::null_mut();
-    let status = unsafe { cudf_unary_operation_raw(view, 99, &mut out) };
+    let status = unsafe { cudf_unary_operation_raw(view, 99, &mut out, &exec) };
 
     assert_eq!(status, cudf_sys::CUDF_ERROR_INVALID_OPERATION);
     assert!(out.is_null());
@@ -3643,9 +3812,10 @@ fn test_binary_operation_vv_invalid_operator_rejected() {
     let lhs_view = make_column_view(lhs_col);
     let rhs_view = make_column_view(rhs_col);
     let dtype = make_i32_data_type();
+    let (_stream, _mr, exec) = strict_exec_owners();
 
     let mut out: *mut c_void = ptr::null_mut();
-    let status = unsafe { cudf_binary_operation_vv_raw(lhs_view, rhs_view, 99, dtype, &mut out) };
+    let status = unsafe { cudf_binary_operation_vv_raw(lhs_view, rhs_view, 99, dtype, &mut out, &exec) };
 
     assert_eq!(status, cudf_sys::CUDF_ERROR_INVALID_OPERATION);
     assert!(out.is_null());
@@ -3667,9 +3837,10 @@ fn test_binary_operation_vs_invalid_operator_rejected() {
     let lhs_view = make_column_view(lhs_col);
     let rhs_scalar = make_i32_scalar(4);
     let dtype = make_i32_data_type();
+    let (_stream, _mr, exec) = strict_exec_owners();
 
     let mut out: *mut c_void = ptr::null_mut();
-    let status = unsafe { cudf_binary_operation_vs_raw(lhs_view, rhs_scalar, 99, dtype, &mut out) };
+    let status = unsafe { cudf_binary_operation_vs_raw(lhs_view, rhs_scalar, 99, dtype, &mut out, &exec) };
 
     assert_eq!(status, cudf_sys::CUDF_ERROR_INVALID_OPERATION);
     assert!(out.is_null());
@@ -3690,9 +3861,10 @@ fn test_binary_operation_sv_invalid_operator_rejected() {
     let rhs_col = make_i32_column(&[1, 2, 3]);
     let rhs_view = make_column_view(rhs_col);
     let dtype = make_i32_data_type();
+    let (_stream, _mr, exec) = strict_exec_owners();
 
     let mut out: *mut c_void = ptr::null_mut();
-    let status = unsafe { cudf_binary_operation_sv_raw(lhs_scalar, rhs_view, 99, dtype, &mut out) };
+    let status = unsafe { cudf_binary_operation_sv_raw(lhs_scalar, rhs_view, 99, dtype, &mut out, &exec) };
 
     assert_eq!(status, cudf_sys::CUDF_ERROR_INVALID_OPERATION);
     assert!(out.is_null());

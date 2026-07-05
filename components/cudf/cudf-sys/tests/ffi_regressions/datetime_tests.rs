@@ -3,28 +3,44 @@ use std::{os::raw::c_void, ptr};
 use crate::{
     helpers::make_column_view,
     support::{
-        NO_SYNC_RECORDED, OwnedStream, current_device_resource_raw, last_error_message, last_exec_mr_raw,
-        last_exec_stream_value, last_exec_sync_stream_value, lock_shim_state, make_stats_memory_resource,
-        reset_exec_observation, stream_value,
+        NO_SYNC_RECORDED, OwnedMemoryResource, OwnedStream, current_device_resource_raw, last_error_message,
+        last_exec_mr_raw, last_exec_stream_value, last_exec_sync_stream_value, lock_shim_state,
+        make_stats_memory_resource, required_exec_options, reset_exec_observation, stream_value,
     },
 };
 
 #[link(name = "cudf_rust")]
 extern "C" {
-    #[link_name = "cudf_datetime_extract_component"]
-    fn cudf_datetime_extract_component_raw(input: *mut c_void, component: i32, out: *mut *mut c_void) -> i32;
+    #[link_name = "cudf_datetime_extract_component_ex"]
+    fn cudf_datetime_extract_component_ex_raw(
+        input: *mut c_void,
+        component: i32,
+        out: *mut *mut c_void,
+        options: *const cudf_sys::cudf_exec_options_t,
+    ) -> i32;
+}
+
+fn required_test_exec() -> (OwnedStream, OwnedMemoryResource, cudf_sys::cudf_exec_options_t) {
+    let stream = OwnedStream::new();
+    let mr = make_stats_memory_resource();
+    let borrowed_stream = stream.borrowed();
+    let borrowed_mr = mr.borrowed();
+    let exec = required_exec_options(&borrowed_stream, &borrowed_mr);
+    (stream, mr, exec)
 }
 
 fn make_timestamp_days_column(values: &[i32]) -> *mut c_void {
+    let (_stream, _mr, exec) = required_test_exec();
     let mut out: *mut c_void = ptr::null_mut();
     let status = unsafe {
-        cudf_sys::cudf_column_create_fixed_width_from_host(
+        cudf_sys::cudf_column_create_fixed_width_from_host_ex(
             cudf_sys::cudf_type_id_t::CUDF_TYPE_TIMESTAMP_DAYS,
             0,
             values.as_ptr() as *const c_void,
             values.len() as i32,
             ptr::null(),
             0,
+            &exec,
             &mut out,
         )
     };
@@ -35,9 +51,11 @@ fn make_timestamp_days_column(values: &[i32]) -> *mut c_void {
 
 fn read_i16_column_data(col: *mut c_void, expected_len: usize) -> Vec<i16> {
     let view = make_column_view(col);
+    let (_stream, _mr, exec) = required_test_exec();
     let mut buf = vec![0i16; expected_len];
     let buf_size = expected_len * std::mem::size_of::<i16>();
-    let status = unsafe { cudf_sys::cudf_column_view_to_host(view, buf.as_mut_ptr() as *mut c_void, buf_size) };
+    let status =
+        unsafe { cudf_sys::cudf_column_view_to_host_ex(view, buf.as_mut_ptr() as *mut c_void, buf_size, &exec) };
     assert_eq!(status, cudf_sys::CUDF_SUCCESS);
     unsafe { cudf_sys::cudf_column_view_destroy(view) };
     buf
@@ -60,12 +78,14 @@ fn test_datetime_extract_component_returns_int16_values() {
     let input = make_timestamp_days_column(&[0, 10_561, 18_321]);
     let view = make_column_view(input);
     let mut out: *mut c_void = ptr::null_mut();
+    let (_stream, _mr, exec) = required_test_exec();
 
     let status = unsafe {
-        cudf_sys::cudf_datetime_extract_component(
+        cudf_sys::cudf_datetime_extract_component_ex(
             view,
             cudf_sys::cudf_datetime_component_t::CUDF_DATETIME_COMPONENT_YEAR,
             &mut out,
+            &exec,
         )
     };
 
@@ -92,7 +112,7 @@ fn test_datetime_extract_component_ex_uses_explicit_stream_and_mr() {
     let default_mr = current_device_resource_raw();
     let borrowed_stream = stream.borrowed();
     let borrowed_mr = mr.borrowed();
-    let exec = cudf_sys::ExecutionContext::new().with_stream(&borrowed_stream).with_memory_resource(&borrowed_mr);
+    let exec = required_exec_options(&borrowed_stream, &borrowed_mr);
     let mut out: *mut c_void = ptr::null_mut();
 
     reset_exec_observation();
@@ -101,7 +121,7 @@ fn test_datetime_extract_component_ex_uses_explicit_stream_and_mr() {
             view,
             cudf_sys::cudf_datetime_component_t::CUDF_DATETIME_COMPONENT_MONTH,
             &mut out,
-            exec.as_raw(),
+            &exec,
         )
     };
 
@@ -126,19 +146,21 @@ fn test_datetime_extract_component_validates_null_handles_and_invalid_component(
     let input = make_timestamp_days_column(&[0]);
     let view = make_column_view(input);
     let mut out: *mut c_void = ptr::null_mut();
+    let (_stream, _mr, exec) = required_test_exec();
 
     let status = unsafe {
-        cudf_sys::cudf_datetime_extract_component(
+        cudf_sys::cudf_datetime_extract_component_ex(
             ptr::null_mut(),
             cudf_sys::cudf_datetime_component_t::CUDF_DATETIME_COMPONENT_YEAR,
             &mut out,
+            &exec,
         )
     };
     assert_eq!(status, cudf_sys::CUDF_ERROR_NULL);
     assert!(out.is_null());
     assert!(last_error_message().contains("input is null"));
 
-    let status = unsafe { cudf_datetime_extract_component_raw(view, 99, &mut out) };
+    let status = unsafe { cudf_datetime_extract_component_ex_raw(view, 99, &mut out, &exec) };
     assert_eq!(status, cudf_sys::CUDF_ERROR_INVALID_OPERATION);
     assert!(out.is_null());
     assert!(last_error_message().contains("invalid datetime component"));

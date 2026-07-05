@@ -6,27 +6,39 @@ use std::{
 use crate::{
     helpers::*,
     support::{
-        NO_SYNC_RECORDED, OwnedStream, current_device_resource_raw, default_stream_value, last_error_message,
-        last_exec_mr_raw, last_exec_stream_value, last_exec_sync_stream_value, lock_shim_state,
-        make_stats_memory_resource, owned_string_value, reset_exec_observation, stream_value,
+        NO_SYNC_RECORDED, OwnedStream, last_error_message, last_exec_mr_raw, last_exec_stream_value,
+        last_exec_sync_stream_value, lock_shim_state, make_stats_memory_resource, owned_string_value,
+        required_exec_options, reset_exec_observation, stream_value,
     },
 };
+
+fn create_device_buffer(size: usize, exec: &cudf_sys::cudf_exec_options_t) -> *mut c_void {
+    let mut buffer: *mut c_void = ptr::null_mut();
+    let st = unsafe { cudf_sys::cudf_device_buffer_create_ex(size, exec, &mut buffer) };
+    assert_eq!(st, cudf_sys::CUDF_SUCCESS);
+    assert!(!buffer.is_null());
+    buffer
+}
+
+fn device_buffer_exec_owners() -> (OwnedStream, crate::support::OwnedMemoryResource, cudf_sys::cudf_exec_options_t) {
+    strict_exec_owners()
+}
+
+fn strict_exec_owners() -> (OwnedStream, crate::support::OwnedMemoryResource, cudf_sys::cudf_exec_options_t) {
+    let stream = OwnedStream::new();
+    let mr = make_stats_memory_resource();
+    let borrowed_stream = stream.borrowed();
+    let borrowed_mr = mr.borrowed();
+    let exec = required_exec_options(&borrowed_stream, &borrowed_mr);
+    (stream, mr, exec)
+}
 
 #[test]
 fn test_scalar_string_value_round_trips_empty_and_non_empty_values() {
     let _shim_state = lock_shim_state();
     for expected in ["hello", ""] {
-        let s = std::ffi::CString::new(expected).unwrap();
-        let mut scalar: *mut c_void = ptr::null_mut();
-        let st = unsafe { cudf_sys::cudf_scalar_create_string(s.as_ptr(), 1, &mut scalar) };
-        assert_eq!(st, cudf_sys::CUDF_SUCCESS);
-
-        let mut out: *mut c_char = ptr::null_mut();
-        let mut len: i32 = -1;
-        let st = unsafe { cudf_sys::cudf_scalar_string_value(scalar, &mut out, &mut len) };
-        assert_eq!(st, cudf_sys::CUDF_SUCCESS);
-        assert_eq!(len as usize, expected.len());
-        assert_eq!(owned_string_value(out, len), expected);
+        let scalar = make_string_scalar(expected);
+        assert_eq!(scalar_string_value(scalar), expected);
 
         unsafe { cudf_sys::cudf_scalar_destroy(scalar) };
     }
@@ -35,10 +47,8 @@ fn test_scalar_string_value_round_trips_empty_and_non_empty_values() {
 #[test]
 fn test_nullable_device_buffer_adoption_rejects_same_handle_for_data_and_mask() {
     let _shim_state = lock_shim_state();
-    let mut buffer: *mut c_void = ptr::null_mut();
-    let st = unsafe { cudf_sys::cudf_device_buffer_create(64, &mut buffer) };
-    assert_eq!(st, cudf_sys::CUDF_SUCCESS);
-    assert!(!buffer.is_null());
+    let (_stream, _mr, exec) = device_buffer_exec_owners();
+    let buffer = create_device_buffer(64, &exec);
 
     let mut out: *mut c_void = ptr::null_mut();
     let st = unsafe {
@@ -61,16 +71,15 @@ fn test_nullable_device_buffer_adoption_rejects_same_handle_for_data_and_mask() 
 #[test]
 fn test_device_buffer_adoption_publish_failure_leaves_buffer_handle_valid() {
     let _shim_state = lock_shim_state();
+    let (_stream, _mr, exec) = device_buffer_exec_owners();
     let values = [10i32, 20, 30];
-    let mut buffer: *mut c_void = ptr::null_mut();
-    let st = unsafe { cudf_sys::cudf_device_buffer_create(std::mem::size_of_val(&values), &mut buffer) };
-    assert_eq!(st, cudf_sys::CUDF_SUCCESS);
-    assert!(!buffer.is_null());
+    let buffer = create_device_buffer(std::mem::size_of_val(&values), &exec);
     let st = unsafe {
-        cudf_sys::cudf_device_buffer_copy_from_host(
+        cudf_sys::cudf_device_buffer_copy_from_host_ex(
             buffer,
             values.as_ptr() as *const c_void,
             std::mem::size_of_val(&values),
+            &exec,
         )
     };
     assert_eq!(st, cudf_sys::CUDF_SUCCESS);
@@ -112,18 +121,16 @@ fn test_device_buffer_adoption_publish_failure_leaves_buffer_handle_valid() {
 #[test]
 fn test_nullable_device_buffer_adoption_publish_failure_leaves_both_handles_valid() {
     let _shim_state = lock_shim_state();
+    let (_stream, _mr, exec) = device_buffer_exec_owners();
     let values = [10i32, 20, 30];
-    let mut data_buffer: *mut c_void = ptr::null_mut();
-    let mut mask_buffer: *mut c_void = ptr::null_mut();
-    let st = unsafe { cudf_sys::cudf_device_buffer_create(std::mem::size_of_val(&values), &mut data_buffer) };
-    assert_eq!(st, cudf_sys::CUDF_SUCCESS);
-    let st = unsafe { cudf_sys::cudf_device_buffer_create(64, &mut mask_buffer) };
-    assert_eq!(st, cudf_sys::CUDF_SUCCESS);
+    let data_buffer = create_device_buffer(std::mem::size_of_val(&values), &exec);
+    let mask_buffer = create_device_buffer(64, &exec);
     let st = unsafe {
-        cudf_sys::cudf_device_buffer_copy_from_host(
+        cudf_sys::cudf_device_buffer_copy_from_host_ex(
             data_buffer,
             values.as_ptr() as *const c_void,
             std::mem::size_of_val(&values),
+            &exec,
         )
     };
     assert_eq!(st, cudf_sys::CUDF_SUCCESS);
@@ -178,10 +185,10 @@ fn test_column_view_null_mask_to_host_ex_supports_sliced_nullable_views() {
         &[true, false, true, true, false, true, false, true, true, false],
     );
     let sliced = make_sliced_column_view(col, 3, 6);
+    let (_stream, _mr, exec) = strict_exec_owners();
 
     let mut mask = vec![0xAAu8; 64];
-    let st =
-        unsafe { cudf_sys::cudf_column_view_null_mask_to_host_ex(sliced, mask.as_mut_ptr(), mask.len(), ptr::null()) };
+    let st = unsafe { cudf_sys::cudf_column_view_null_mask_to_host_ex(sliced, mask.as_mut_ptr(), mask.len(), &exec) };
     assert_eq!(st, cudf_sys::CUDF_SUCCESS, "sliced nullable null-mask export should succeed");
 
     assert_eq!(mask[0], 0b0011_0101, "mask bits should be normalized to the logical slice starting at bit 0");
@@ -196,14 +203,12 @@ fn test_column_view_null_mask_to_host_ex_supports_sliced_nullable_views() {
 #[test]
 fn test_scalar_string_value_owned_output_survives_subsequent_shim_calls() {
     let _shim_state = lock_shim_state();
-    let s = std::ffi::CString::new("hello").unwrap();
-    let mut scalar: *mut c_void = ptr::null_mut();
-    let st = unsafe { cudf_sys::cudf_scalar_create_string(s.as_ptr(), 1, &mut scalar) };
-    assert_eq!(st, cudf_sys::CUDF_SUCCESS);
+    let (_stream, _mr, exec) = strict_exec_owners();
+    let scalar = make_string_scalar("hello");
 
     let mut ptr1: *mut c_char = ptr::null_mut();
     let mut len1: i32 = -1;
-    let st = unsafe { cudf_sys::cudf_scalar_string_value(scalar, &mut ptr1, &mut len1) };
+    let st = unsafe { cudf_sys::cudf_scalar_string_value_ex(scalar, &mut ptr1, &mut len1, &exec) };
     assert_eq!(st, cudf_sys::CUDF_SUCCESS);
 
     let mut type_id = cudf_sys::cudf_type_id_t::CUDF_TYPE_EMPTY;
@@ -213,7 +218,7 @@ fn test_scalar_string_value_owned_output_survives_subsequent_shim_calls() {
 
     let mut ptr2: *mut c_char = ptr::null_mut();
     let mut len2: i32 = -1;
-    let st = unsafe { cudf_sys::cudf_scalar_string_value(scalar, &mut ptr2, &mut len2) };
+    let st = unsafe { cudf_sys::cudf_scalar_string_value_ex(scalar, &mut ptr2, &mut len2, &exec) };
     assert_eq!(st, cudf_sys::CUDF_SUCCESS);
 
     assert_eq!(owned_string_value(ptr1, len1), "hello");
@@ -225,9 +230,10 @@ fn test_scalar_string_value_owned_output_survives_subsequent_shim_calls() {
 #[test]
 fn test_scalar_string_value_null_handle_initializes_outputs_before_failure() {
     let _shim_state = lock_shim_state();
+    let (_stream, _mr, exec) = strict_exec_owners();
     let mut out = std::ptr::NonNull::<c_char>::dangling().as_ptr();
     let mut len: i32 = 123;
-    let st = unsafe { cudf_sys::cudf_scalar_string_value(ptr::null_mut(), &mut out, &mut len) };
+    let st = unsafe { cudf_sys::cudf_scalar_string_value_ex(ptr::null_mut(), &mut out, &mut len, &exec) };
     assert_eq!(st, cudf_sys::CUDF_ERROR_NULL);
     assert!(out.is_null());
     assert_eq!(len, 0);
@@ -236,11 +242,12 @@ fn test_scalar_string_value_null_handle_initializes_outputs_before_failure() {
 #[test]
 fn test_scalar_string_value_wrong_type_initializes_outputs_before_failure() {
     let _shim_state = lock_shim_state();
+    let (_stream, _mr, exec) = strict_exec_owners();
     let scalar = make_i32_scalar(42);
 
     let mut out = std::ptr::NonNull::<c_char>::dangling().as_ptr();
     let mut len: i32 = 123;
-    let st = unsafe { cudf_sys::cudf_scalar_string_value(scalar, &mut out, &mut len) };
+    let st = unsafe { cudf_sys::cudf_scalar_string_value_ex(scalar, &mut out, &mut len, &exec) };
     assert_eq!(st, cudf_sys::CUDF_ERROR_TYPE);
     assert!(out.is_null());
     assert_eq!(len, 0);
@@ -251,15 +258,22 @@ fn test_scalar_string_value_wrong_type_initializes_outputs_before_failure() {
 #[test]
 fn test_scalar_create_numeric_invalid_allows_null_value() {
     let _shim_state = lock_shim_state();
+    let (_stream, _mr, exec) = strict_exec_owners();
     let mut scalar: *mut c_void = ptr::null_mut();
     let st = unsafe {
-        cudf_sys::cudf_scalar_create_numeric(cudf_sys::cudf_type_id_t::CUDF_TYPE_INT32, ptr::null(), 0, &mut scalar)
+        cudf_sys::cudf_scalar_create_numeric_ex(
+            cudf_sys::cudf_type_id_t::CUDF_TYPE_INT32,
+            ptr::null(),
+            0,
+            &exec,
+            &mut scalar,
+        )
     };
     assert_eq!(st, cudf_sys::CUDF_SUCCESS);
     assert!(!scalar.is_null());
 
     let mut is_valid = -1;
-    let st = unsafe { cudf_sys::cudf_scalar_is_valid(scalar, &mut is_valid) };
+    let st = unsafe { cudf_sys::cudf_scalar_is_valid_ex(scalar, &mut is_valid, &exec) };
     assert_eq!(st, cudf_sys::CUDF_SUCCESS);
     assert_eq!(is_valid, 0);
 
@@ -269,9 +283,16 @@ fn test_scalar_create_numeric_invalid_allows_null_value() {
 #[test]
 fn test_scalar_create_numeric_valid_requires_value() {
     let _shim_state = lock_shim_state();
+    let (_stream, _mr, exec) = strict_exec_owners();
     let mut scalar: *mut c_void = ptr::null_mut();
     let st = unsafe {
-        cudf_sys::cudf_scalar_create_numeric(cudf_sys::cudf_type_id_t::CUDF_TYPE_INT32, ptr::null(), 1, &mut scalar)
+        cudf_sys::cudf_scalar_create_numeric_ex(
+            cudf_sys::cudf_type_id_t::CUDF_TYPE_INT32,
+            ptr::null(),
+            1,
+            &exec,
+            &mut scalar,
+        )
     };
     assert_eq!(st, cudf_sys::CUDF_ERROR_NULL);
     assert!(scalar.is_null());
@@ -287,32 +308,45 @@ fn assert_scalar_data_type(scalar: *mut c_void, expected_type: cudf_sys::cudf_ty
 }
 
 fn assert_scalar_validity(scalar: *mut c_void, expected: i32) {
+    let (_stream, _mr, exec) = strict_exec_owners();
     let mut is_valid = -1;
-    let st = unsafe { cudf_sys::cudf_scalar_is_valid(scalar, &mut is_valid) };
+    let st = unsafe { cudf_sys::cudf_scalar_is_valid_ex(scalar, &mut is_valid, &exec) };
     assert_eq!(st, cudf_sys::CUDF_SUCCESS);
     assert_eq!(is_valid, expected);
 }
 
 unsafe fn scalar_raw_value<T: Copy>(scalar: *mut c_void) -> T {
+    let (_stream, _mr, exec) = strict_exec_owners();
     let mut out = std::mem::MaybeUninit::<T>::uninit();
-    let st = unsafe { cudf_sys::cudf_scalar_value(scalar, out.as_mut_ptr() as *mut c_void) };
+    let st = unsafe { cudf_sys::cudf_scalar_value_ex(scalar, out.as_mut_ptr() as *mut c_void, &exec) };
     assert_eq!(st, cudf_sys::CUDF_SUCCESS);
     unsafe { out.assume_init() }
+}
+
+fn scalar_string_value(scalar: *mut c_void) -> String {
+    let (_stream, _mr, exec) = strict_exec_owners();
+    let mut out: *mut c_char = ptr::null_mut();
+    let mut len: i32 = -1;
+    let st = unsafe { cudf_sys::cudf_scalar_string_value_ex(scalar, &mut out, &mut len, &exec) };
+    assert_eq!(st, cudf_sys::CUDF_SUCCESS);
+    owned_string_value(out, len)
 }
 
 #[test]
 fn test_scalar_create_decimal_raw_round_trips_type_scale_validity_and_value() {
     let _shim_state = lock_shim_state();
+    let (_stream, _mr, exec) = strict_exec_owners();
     let scale = -2;
 
     let raw32 = -12345_i32;
     let mut decimal32: *mut c_void = ptr::null_mut();
     let st = unsafe {
-        cudf_sys::cudf_scalar_create_decimal_raw(
+        cudf_sys::cudf_scalar_create_decimal_raw_ex(
             cudf_sys::cudf_type_id_t::CUDF_TYPE_DECIMAL32,
             &raw32 as *const i32 as *const c_void,
             scale,
             1,
+            &exec,
             &mut decimal32,
         )
     };
@@ -324,11 +358,12 @@ fn test_scalar_create_decimal_raw_round_trips_type_scale_validity_and_value() {
     let raw64 = -9_876_543_210_i64;
     let mut decimal64: *mut c_void = ptr::null_mut();
     let st = unsafe {
-        cudf_sys::cudf_scalar_create_decimal_raw(
+        cudf_sys::cudf_scalar_create_decimal_raw_ex(
             cudf_sys::cudf_type_id_t::CUDF_TYPE_DECIMAL64,
             &raw64 as *const i64 as *const c_void,
             scale,
             1,
+            &exec,
             &mut decimal64,
         )
     };
@@ -340,11 +375,12 @@ fn test_scalar_create_decimal_raw_round_trips_type_scale_validity_and_value() {
     let raw128 = -123_456_789_012_345_678_901_234_567_i128;
     let mut decimal128: *mut c_void = ptr::null_mut();
     let st = unsafe {
-        cudf_sys::cudf_scalar_create_decimal_raw(
+        cudf_sys::cudf_scalar_create_decimal_raw_ex(
             cudf_sys::cudf_type_id_t::CUDF_TYPE_DECIMAL128,
             &raw128 as *const i128 as *const c_void,
             scale,
             1,
+            &exec,
             &mut decimal128,
         )
     };
@@ -363,6 +399,7 @@ fn test_scalar_create_decimal_raw_round_trips_type_scale_validity_and_value() {
 #[test]
 fn test_scalar_create_timestamp_raw_round_trips_type_validity_and_value() {
     let _shim_state = lock_shim_state();
+    let (_stream, _mr, exec) = strict_exec_owners();
     let cases = [
         (cudf_sys::cudf_type_id_t::CUDF_TYPE_TIMESTAMP_DAYS, 19_118_i64),
         (cudf_sys::cudf_type_id_t::CUDF_TYPE_TIMESTAMP_SECONDS, 1_651_795_200_i64),
@@ -373,7 +410,7 @@ fn test_scalar_create_timestamp_raw_round_trips_type_validity_and_value() {
 
     for (type_id, raw) in cases {
         let mut scalar: *mut c_void = ptr::null_mut();
-        let st = unsafe { cudf_sys::cudf_scalar_create_timestamp_raw(type_id, raw, 1, &mut scalar) };
+        let st = unsafe { cudf_sys::cudf_scalar_create_timestamp_raw_ex(type_id, raw, 1, &exec, &mut scalar) };
         assert_eq!(st, cudf_sys::CUDF_SUCCESS);
         assert_scalar_data_type(scalar, type_id, 0);
         assert_scalar_validity(scalar, 1);
@@ -389,6 +426,7 @@ fn test_scalar_create_timestamp_raw_round_trips_type_validity_and_value() {
 #[test]
 fn test_scalar_create_duration_raw_round_trips_type_validity_and_value() {
     let _shim_state = lock_shim_state();
+    let (_stream, _mr, exec) = strict_exec_owners();
     let cases = [
         (cudf_sys::cudf_type_id_t::CUDF_TYPE_DURATION_DAYS, -7_i64),
         (cudf_sys::cudf_type_id_t::CUDF_TYPE_DURATION_SECONDS, -123_i64),
@@ -399,7 +437,7 @@ fn test_scalar_create_duration_raw_round_trips_type_validity_and_value() {
 
     for (type_id, raw) in cases {
         let mut scalar: *mut c_void = ptr::null_mut();
-        let st = unsafe { cudf_sys::cudf_scalar_create_duration_raw(type_id, raw, 1, &mut scalar) };
+        let st = unsafe { cudf_sys::cudf_scalar_create_duration_raw_ex(type_id, raw, 1, &exec, &mut scalar) };
         assert_eq!(st, cudf_sys::CUDF_SUCCESS);
         assert_scalar_data_type(scalar, type_id, 0);
         assert_scalar_validity(scalar, 1);
@@ -421,7 +459,7 @@ fn test_scalar_create_raw_ex_constructors_round_trip_with_explicit_exec() {
     let explicit_mr = mr.raw_device_resource();
     let borrowed_stream = stream.borrowed();
     let borrowed_mr = mr.borrowed();
-    let exec = cudf_sys::ExecutionContext::new().with_stream(&borrowed_stream).with_memory_resource(&borrowed_mr);
+    let exec = required_exec_options(&borrowed_stream, &borrowed_mr);
 
     let raw_decimal32 = -12_345_i32;
     let raw_decimal64 = -9_876_543_i64;
@@ -434,9 +472,7 @@ fn test_scalar_create_raw_ex_constructors_round_trip_with_explicit_exec() {
     for (type_id, raw_ptr, scale) in decimal_cases {
         let mut scalar: *mut c_void = ptr::null_mut();
         reset_exec_observation();
-        let st = unsafe {
-            cudf_sys::cudf_scalar_create_decimal_raw_ex(type_id, raw_ptr, scale, 1, exec.as_raw(), &mut scalar)
-        };
+        let st = unsafe { cudf_sys::cudf_scalar_create_decimal_raw_ex(type_id, raw_ptr, scale, 1, &exec, &mut scalar) };
         assert_eq!(st, cudf_sys::CUDF_SUCCESS);
         assert_eq!(last_exec_stream_value(), explicit_stream);
         assert_eq!(last_exec_mr_raw(), explicit_mr);
@@ -468,7 +504,7 @@ fn test_scalar_create_raw_ex_constructors_round_trip_with_explicit_exec() {
     for (type_id, raw) in timestamp_cases {
         let mut scalar: *mut c_void = ptr::null_mut();
         reset_exec_observation();
-        let st = unsafe { cudf_sys::cudf_scalar_create_timestamp_raw_ex(type_id, raw, 1, exec.as_raw(), &mut scalar) };
+        let st = unsafe { cudf_sys::cudf_scalar_create_timestamp_raw_ex(type_id, raw, 1, &exec, &mut scalar) };
         assert_eq!(st, cudf_sys::CUDF_SUCCESS);
         assert_eq!(last_exec_stream_value(), explicit_stream);
         assert_eq!(last_exec_mr_raw(), explicit_mr);
@@ -493,7 +529,7 @@ fn test_scalar_create_raw_ex_constructors_round_trip_with_explicit_exec() {
     for (type_id, raw) in duration_cases {
         let mut scalar: *mut c_void = ptr::null_mut();
         reset_exec_observation();
-        let st = unsafe { cudf_sys::cudf_scalar_create_duration_raw_ex(type_id, raw, 1, exec.as_raw(), &mut scalar) };
+        let st = unsafe { cudf_sys::cudf_scalar_create_duration_raw_ex(type_id, raw, 1, &exec, &mut scalar) };
         assert_eq!(st, cudf_sys::CUDF_SUCCESS);
         assert_eq!(last_exec_stream_value(), explicit_stream);
         assert_eq!(last_exec_mr_raw(), explicit_mr);
@@ -510,70 +546,8 @@ fn test_scalar_create_raw_ex_constructors_round_trip_with_explicit_exec() {
 }
 
 #[test]
-fn test_scalar_create_raw_default_constructors_use_default_exec_without_syncing() {
+fn test_scalar_create_raw_ex_null_and_default_options_are_rejected() {
     let _shim_state = lock_shim_state();
-    let default_stream = default_stream_value();
-    let default_mr = current_device_resource_raw();
-
-    let raw_decimal = -123_i64;
-    let mut decimal: *mut c_void = ptr::null_mut();
-    reset_exec_observation();
-    let st = unsafe {
-        cudf_sys::cudf_scalar_create_decimal_raw(
-            cudf_sys::cudf_type_id_t::CUDF_TYPE_DECIMAL64,
-            &raw_decimal as *const i64 as *const c_void,
-            -2,
-            1,
-            &mut decimal,
-        )
-    };
-    assert_eq!(st, cudf_sys::CUDF_SUCCESS);
-    assert_eq!(last_exec_stream_value(), default_stream);
-    assert_eq!(last_exec_mr_raw(), default_mr);
-    assert_eq!(last_exec_sync_stream_value(), NO_SYNC_RECORDED);
-
-    let mut timestamp: *mut c_void = ptr::null_mut();
-    reset_exec_observation();
-    let st = unsafe {
-        cudf_sys::cudf_scalar_create_timestamp_raw(
-            cudf_sys::cudf_type_id_t::CUDF_TYPE_TIMESTAMP_MICROSECONDS,
-            1_700_000_000,
-            1,
-            &mut timestamp,
-        )
-    };
-    assert_eq!(st, cudf_sys::CUDF_SUCCESS);
-    assert_eq!(last_exec_stream_value(), default_stream);
-    assert_eq!(last_exec_mr_raw(), default_mr);
-    assert_eq!(last_exec_sync_stream_value(), NO_SYNC_RECORDED);
-
-    let mut duration: *mut c_void = ptr::null_mut();
-    reset_exec_observation();
-    let st = unsafe {
-        cudf_sys::cudf_scalar_create_duration_raw(
-            cudf_sys::cudf_type_id_t::CUDF_TYPE_DURATION_NANOSECONDS,
-            -42,
-            1,
-            &mut duration,
-        )
-    };
-    assert_eq!(st, cudf_sys::CUDF_SUCCESS);
-    assert_eq!(last_exec_stream_value(), default_stream);
-    assert_eq!(last_exec_mr_raw(), default_mr);
-    assert_eq!(last_exec_sync_stream_value(), NO_SYNC_RECORDED);
-
-    unsafe {
-        cudf_sys::cudf_scalar_destroy(duration);
-        cudf_sys::cudf_scalar_destroy(timestamp);
-        cudf_sys::cudf_scalar_destroy(decimal);
-    }
-}
-
-#[test]
-fn test_scalar_create_raw_ex_null_and_default_options_use_default_exec_without_syncing() {
-    let _shim_state = lock_shim_state();
-    let default_stream = default_stream_value();
-    let default_mr = current_device_resource_raw();
     let default_exec = cudf_sys::ExecutionContext::new();
 
     for exec_options in [ptr::null(), default_exec.as_raw()] {
@@ -590,13 +564,10 @@ fn test_scalar_create_raw_ex_null_and_default_options_use_default_exec_without_s
                 &mut decimal,
             )
         };
-        assert_eq!(st, cudf_sys::CUDF_SUCCESS);
-        assert_eq!(last_exec_stream_value(), default_stream);
-        assert_eq!(last_exec_mr_raw(), default_mr);
-        assert_eq!(last_exec_sync_stream_value(), NO_SYNC_RECORDED);
+        assert_eq!(st, cudf_sys::CUDF_ERROR_INVALID_OPERATION);
+        assert!(decimal.is_null());
 
         let mut timestamp: *mut c_void = ptr::null_mut();
-        reset_exec_observation();
         let st = unsafe {
             cudf_sys::cudf_scalar_create_timestamp_raw_ex(
                 cudf_sys::cudf_type_id_t::CUDF_TYPE_TIMESTAMP_SECONDS,
@@ -606,13 +577,10 @@ fn test_scalar_create_raw_ex_null_and_default_options_use_default_exec_without_s
                 &mut timestamp,
             )
         };
-        assert_eq!(st, cudf_sys::CUDF_SUCCESS);
-        assert_eq!(last_exec_stream_value(), default_stream);
-        assert_eq!(last_exec_mr_raw(), default_mr);
-        assert_eq!(last_exec_sync_stream_value(), NO_SYNC_RECORDED);
+        assert_eq!(st, cudf_sys::CUDF_ERROR_INVALID_OPERATION);
+        assert!(timestamp.is_null());
 
         let mut duration: *mut c_void = ptr::null_mut();
-        reset_exec_observation();
         let st = unsafe {
             cudf_sys::cudf_scalar_create_duration_raw_ex(
                 cudf_sys::cudf_type_id_t::CUDF_TYPE_DURATION_SECONDS,
@@ -622,16 +590,8 @@ fn test_scalar_create_raw_ex_null_and_default_options_use_default_exec_without_s
                 &mut duration,
             )
         };
-        assert_eq!(st, cudf_sys::CUDF_SUCCESS);
-        assert_eq!(last_exec_stream_value(), default_stream);
-        assert_eq!(last_exec_mr_raw(), default_mr);
-        assert_eq!(last_exec_sync_stream_value(), NO_SYNC_RECORDED);
-
-        unsafe {
-            cudf_sys::cudf_scalar_destroy(duration);
-            cudf_sys::cudf_scalar_destroy(timestamp);
-            cudf_sys::cudf_scalar_destroy(decimal);
-        }
+        assert_eq!(st, cudf_sys::CUDF_ERROR_INVALID_OPERATION);
+        assert!(duration.is_null());
     }
 }
 
@@ -689,7 +649,7 @@ fn test_scalar_create_raw_ex_propagates_exec_option_validation_errors() {
 fn test_scalar_create_raw_rejects_wrong_family_type_ids() {
     let _shim_state = lock_shim_state();
     let raw_decimal = 1_i64;
-    let exec = cudf_sys::ExecutionContext::new();
+    let (_stream, _mr, exec) = strict_exec_owners();
 
     let mut scalar: *mut c_void = ptr::null_mut();
     let st = unsafe {
@@ -698,7 +658,7 @@ fn test_scalar_create_raw_rejects_wrong_family_type_ids() {
             &raw_decimal as *const i64 as *const c_void,
             -2,
             1,
-            exec.as_raw(),
+            &exec,
             &mut scalar,
         )
     };
@@ -712,7 +672,7 @@ fn test_scalar_create_raw_rejects_wrong_family_type_ids() {
             cudf_sys::cudf_type_id_t::CUDF_TYPE_DURATION_SECONDS,
             1,
             1,
-            exec.as_raw(),
+            &exec,
             &mut scalar,
         )
     };
@@ -726,7 +686,7 @@ fn test_scalar_create_raw_rejects_wrong_family_type_ids() {
             cudf_sys::cudf_type_id_t::CUDF_TYPE_TIMESTAMP_SECONDS,
             1,
             1,
-            exec.as_raw(),
+            &exec,
             &mut scalar,
         )
     };
@@ -738,7 +698,7 @@ fn test_scalar_create_raw_rejects_wrong_family_type_ids() {
 #[test]
 fn test_scalar_create_temporal_days_rejects_i64_values_outside_i32_range() {
     let _shim_state = lock_shim_state();
-    let exec = cudf_sys::ExecutionContext::new();
+    let (_stream, _mr, exec) = strict_exec_owners();
     let cases = [
         (cudf_sys::cudf_type_id_t::CUDF_TYPE_TIMESTAMP_DAYS, i64::from(i32::MAX) + 1, true),
         (cudf_sys::cudf_type_id_t::CUDF_TYPE_TIMESTAMP_DAYS, i64::from(i32::MIN) - 1, true),
@@ -749,9 +709,9 @@ fn test_scalar_create_temporal_days_rejects_i64_values_outside_i32_range() {
     for (type_id, raw, is_timestamp) in cases {
         let mut scalar: *mut c_void = ptr::null_mut();
         let st = if is_timestamp {
-            unsafe { cudf_sys::cudf_scalar_create_timestamp_raw_ex(type_id, raw, 1, exec.as_raw(), &mut scalar) }
+            unsafe { cudf_sys::cudf_scalar_create_timestamp_raw_ex(type_id, raw, 1, &exec, &mut scalar) }
         } else {
-            unsafe { cudf_sys::cudf_scalar_create_duration_raw_ex(type_id, raw, 1, exec.as_raw(), &mut scalar) }
+            unsafe { cudf_sys::cudf_scalar_create_duration_raw_ex(type_id, raw, 1, &exec, &mut scalar) }
         };
         assert_eq!(st, cudf_sys::CUDF_ERROR_INVALID_ARGUMENT);
         assert!(scalar.is_null());
@@ -762,6 +722,7 @@ fn test_scalar_create_temporal_days_rejects_i64_values_outside_i32_range() {
 #[test]
 fn test_scalar_create_raw_decimal_invalid_allows_null_value() {
     let _shim_state = lock_shim_state();
+    let (_stream, _mr, exec) = strict_exec_owners();
     let cases = [
         cudf_sys::cudf_type_id_t::CUDF_TYPE_DECIMAL32,
         cudf_sys::cudf_type_id_t::CUDF_TYPE_DECIMAL64,
@@ -770,7 +731,8 @@ fn test_scalar_create_raw_decimal_invalid_allows_null_value() {
 
     for type_id in cases {
         let mut scalar: *mut c_void = ptr::null_mut();
-        let st = unsafe { cudf_sys::cudf_scalar_create_decimal_raw(type_id, ptr::null(), -3, 0, &mut scalar) };
+        let st =
+            unsafe { cudf_sys::cudf_scalar_create_decimal_raw_ex(type_id, ptr::null(), -3, 0, &exec, &mut scalar) };
         assert_eq!(st, cudf_sys::CUDF_SUCCESS);
         assert_scalar_data_type(scalar, type_id, -3);
         assert_scalar_validity(scalar, 0);
@@ -781,6 +743,7 @@ fn test_scalar_create_raw_decimal_invalid_allows_null_value() {
 #[test]
 fn test_scalar_create_raw_temporal_invalid_preserves_dtype() {
     let _shim_state = lock_shim_state();
+    let (_stream, _mr, exec) = strict_exec_owners();
     let cases = [
         cudf_sys::cudf_type_id_t::CUDF_TYPE_TIMESTAMP_DAYS,
         cudf_sys::cudf_type_id_t::CUDF_TYPE_TIMESTAMP_SECONDS,
@@ -804,9 +767,9 @@ fn test_scalar_create_raw_temporal_invalid_preserves_dtype() {
                 | cudf_sys::cudf_type_id_t::CUDF_TYPE_TIMESTAMP_MICROSECONDS
                 | cudf_sys::cudf_type_id_t::CUDF_TYPE_TIMESTAMP_NANOSECONDS
         ) {
-            unsafe { cudf_sys::cudf_scalar_create_timestamp_raw(type_id, 0, 0, &mut scalar) }
+            unsafe { cudf_sys::cudf_scalar_create_timestamp_raw_ex(type_id, 0, 0, &exec, &mut scalar) }
         } else {
-            unsafe { cudf_sys::cudf_scalar_create_duration_raw(type_id, 0, 0, &mut scalar) }
+            unsafe { cudf_sys::cudf_scalar_create_duration_raw_ex(type_id, 0, 0, &exec, &mut scalar) }
         };
         assert_eq!(st, cudf_sys::CUDF_SUCCESS);
         assert_scalar_data_type(scalar, type_id, 0);
@@ -819,12 +782,14 @@ fn test_scalar_create_raw_temporal_invalid_preserves_dtype() {
 fn test_scalar_create_raw_rejects_null_out_and_valid_decimal_null_value() {
     let _shim_state = lock_shim_state();
     let raw = 123_i32;
+    let (_stream, _mr, exec) = strict_exec_owners();
     let st = unsafe {
-        cudf_sys::cudf_scalar_create_decimal_raw(
+        cudf_sys::cudf_scalar_create_decimal_raw_ex(
             cudf_sys::cudf_type_id_t::CUDF_TYPE_DECIMAL32,
             &raw as *const i32 as *const c_void,
             -2,
             1,
+            &exec,
             ptr::null_mut(),
         )
     };
@@ -832,11 +797,12 @@ fn test_scalar_create_raw_rejects_null_out_and_valid_decimal_null_value() {
 
     let mut scalar: *mut c_void = ptr::null_mut();
     let st = unsafe {
-        cudf_sys::cudf_scalar_create_decimal_raw(
+        cudf_sys::cudf_scalar_create_decimal_raw_ex(
             cudf_sys::cudf_type_id_t::CUDF_TYPE_DECIMAL32,
             ptr::null(),
             -2,
             1,
+            &exec,
             &mut scalar,
         )
     };
@@ -847,8 +813,9 @@ fn test_scalar_create_raw_rejects_null_out_and_valid_decimal_null_value() {
 #[test]
 fn test_scalar_create_string_valid_requires_value() {
     let _shim_state = lock_shim_state();
+    let (_stream, _mr, exec) = strict_exec_owners();
     let mut scalar: *mut c_void = ptr::null_mut();
-    let st = unsafe { cudf_sys::cudf_scalar_create_string(ptr::null(), 1, &mut scalar) };
+    let st = unsafe { cudf_sys::cudf_scalar_create_string_ex(ptr::null(), 1, &exec, &mut scalar) };
     assert_eq!(st, cudf_sys::CUDF_ERROR_NULL);
     assert!(scalar.is_null());
 }
@@ -856,13 +823,14 @@ fn test_scalar_create_string_valid_requires_value() {
 #[test]
 fn test_scalar_create_string_invalid_allows_null_value() {
     let _shim_state = lock_shim_state();
+    let (_stream, _mr, exec) = strict_exec_owners();
     let mut scalar: *mut c_void = ptr::null_mut();
-    let st = unsafe { cudf_sys::cudf_scalar_create_string(ptr::null(), 0, &mut scalar) };
+    let st = unsafe { cudf_sys::cudf_scalar_create_string_ex(ptr::null(), 0, &exec, &mut scalar) };
     assert_eq!(st, cudf_sys::CUDF_SUCCESS);
     assert!(!scalar.is_null());
 
     let mut is_valid = -1;
-    let st = unsafe { cudf_sys::cudf_scalar_is_valid(scalar, &mut is_valid) };
+    let st = unsafe { cudf_sys::cudf_scalar_is_valid_ex(scalar, &mut is_valid, &exec) };
     assert_eq!(st, cudf_sys::CUDF_SUCCESS);
     assert_eq!(is_valid, 0);
 
@@ -874,9 +842,10 @@ fn test_column_view_slice_nested_nullable_preserves_logical_offset_in_null_count
     let _shim_state = lock_shim_state();
     let col = make_i32_column_nullable(&[10, 20, 30, 40, 50], &[true, false, true, false, true]);
     let base_view = make_column_view(col);
+    let (_stream, _mr, exec) = strict_exec_owners();
 
     let mut first_slice: *mut c_void = ptr::null_mut();
-    let st = unsafe { cudf_sys::cudf_column_view_slice(base_view, 1, 3, &mut first_slice) };
+    let st = unsafe { cudf_sys::cudf_column_view_slice_ex(base_view, 1, 3, &exec, &mut first_slice) };
     assert_eq!(st, cudf_sys::CUDF_SUCCESS);
     assert!(!first_slice.is_null());
 
@@ -890,7 +859,7 @@ fn test_column_view_slice_nested_nullable_preserves_logical_offset_in_null_count
     assert_eq!(first_null_count, 2);
 
     let mut second_slice: *mut c_void = ptr::null_mut();
-    let st = unsafe { cudf_sys::cudf_column_view_slice(first_slice, 1, 1, &mut second_slice) };
+    let st = unsafe { cudf_sys::cudf_column_view_slice_ex(first_slice, 1, 1, &exec, &mut second_slice) };
     assert_eq!(st, cudf_sys::CUDF_SUCCESS);
     assert!(!second_slice.is_null());
 
@@ -926,8 +895,9 @@ fn test_column_view_slice_rejects_active_offset_overflow() {
     assert_eq!(st, cudf_sys::CUDF_SUCCESS);
     assert!(!view.is_null());
 
+    let (_stream, _mr, exec) = strict_exec_owners();
     let mut slice: *mut c_void = ptr::null_mut();
-    let st = unsafe { cudf_sys::cudf_column_view_slice(view, 1, 1, &mut slice) };
+    let st = unsafe { cudf_sys::cudf_column_view_slice_ex(view, 1, 1, &exec, &mut slice) };
 
     if !slice.is_null() {
         unsafe { cudf_sys::cudf_column_view_destroy(slice) };
@@ -947,6 +917,7 @@ fn test_column_view_strings_to_host_ex_rejects_string_view_without_offsets_child
     assert_eq!(st, cudf_sys::CUDF_SUCCESS);
     assert!(!view.is_null());
 
+    let (_stream, _mr, exec) = strict_exec_owners();
     let mut offsets = vec![-1_i32; 2];
     let mut total_chars = -1_i32;
     let st = unsafe {
@@ -957,7 +928,7 @@ fn test_column_view_strings_to_host_ex_rejects_string_view_without_offsets_child
             ptr::null_mut(),
             0,
             &mut total_chars,
-            ptr::null(),
+            &exec,
         )
     };
 
@@ -975,11 +946,12 @@ fn test_column_view_string_chars_ptr_and_size_ex_reports_active_sliced_chars_spa
     let col = make_string_column(&["zero", "one", "two", "three"]);
     let full_view = make_column_view(col);
     let sliced_view = make_sliced_column_view(col, 1, 2);
+    let (_stream, _mr, exec) = strict_exec_owners();
 
     let mut full_ptr: *const c_void = ptr::null();
     let mut full_size: usize = 0;
     let st = unsafe {
-        cudf_sys::cudf_column_view_string_chars_ptr_and_size_ex(full_view, ptr::null(), &mut full_ptr, &mut full_size)
+        cudf_sys::cudf_column_view_string_chars_ptr_and_size_ex(full_view, &exec, &mut full_ptr, &mut full_size)
     };
     assert_eq!(st, cudf_sys::CUDF_SUCCESS);
     assert!(!full_ptr.is_null());
@@ -988,12 +960,7 @@ fn test_column_view_string_chars_ptr_and_size_ex_reports_active_sliced_chars_spa
     let mut sliced_ptr: *const c_void = ptr::null();
     let mut sliced_size: usize = 0;
     let st = unsafe {
-        cudf_sys::cudf_column_view_string_chars_ptr_and_size_ex(
-            sliced_view,
-            ptr::null(),
-            &mut sliced_ptr,
-            &mut sliced_size,
-        )
+        cudf_sys::cudf_column_view_string_chars_ptr_and_size_ex(sliced_view, &exec, &mut sliced_ptr, &mut sliced_size)
     };
     assert_eq!(st, cudf_sys::CUDF_SUCCESS);
     assert!(!sliced_ptr.is_null());

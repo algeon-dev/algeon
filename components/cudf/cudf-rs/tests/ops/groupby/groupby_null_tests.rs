@@ -86,7 +86,7 @@ fn test_groupby_mean_skips_nulls() {
     let mean_data = result.series("value_mean").unwrap().to_vec_strict::<f64>().unwrap();
 
     let mut pairs: Vec<(i32, f64)> = key_data.into_iter().zip(mean_data).collect();
-    pairs.sort_by(|a, b| a.0.cmp(&b.0));
+    pairs.sort_by_key(|a| a.0);
     // key=1: [10, null] -> mean=10.0 (only one valid element)
     // key=2: [30, 40] -> mean=35.0
     assert!((pairs[0].1 - 10.0).abs() < 1e-10);
