@@ -13,18 +13,14 @@
 extern "C" {
 #endif
 
-/// Apply a boolean mask to a table. Rows where the mask is `true` are kept;
-/// rows where the mask is `false` or null are dropped.
-/// The mask must be a BOOL8 column with the same number of rows as the table.
-cudf_status_t cudf_apply_boolean_mask(cudf_table_view_handle input,
-                                      cudf_column_view_handle mask,
-                                      cudf_table_handle* out);
-
 /// Apply a boolean mask with explicit execution options.
 ///
-/// Passing NULL for `options`, or leaving `options->stream` / `options->mr`
-/// NULL, uses cuDF's default stream and current device memory resource.
-/// When `options->mr` is non-NULL, it must outlive the returned table.
+/// Rows where the mask is `true` are kept; rows where the mask is `false` or
+/// null are dropped. The mask must be a BOOL8 column with the same number of
+/// rows as the table.
+///
+/// `options` must be non-NULL and must carry an explicit device, stream, and
+/// memory resource. `options->mr` must outlive the returned table.
 cudf_status_t cudf_apply_boolean_mask_ex(cudf_table_view_handle input,
                                          cudf_column_view_handle mask,
                                          cudf_table_handle* out,
@@ -50,14 +46,10 @@ typedef struct {
   cudf_scalar_handle literal;
 } cudf_row_predicate_node_t;
 
-/// Evaluate a validated row predicate against a table and filter rows once.
-cudf_status_t cudf_filter_rows_by_predicate(cudf_table_view_handle input,
-                                            cudf_row_predicate_node_t const* nodes,
-                                            int32_t num_nodes,
-                                            int32_t root_index,
-                                            cudf_table_handle* out);
-
 /// Evaluate a validated row predicate with explicit execution options.
+///
+/// `options` must be non-NULL and must carry an explicit device, stream, and
+/// memory resource. `options->mr` must outlive the returned table.
 cudf_status_t cudf_filter_rows_by_predicate_ex(cudf_table_view_handle input,
                                                cudf_row_predicate_node_t const* nodes,
                                                int32_t num_nodes,

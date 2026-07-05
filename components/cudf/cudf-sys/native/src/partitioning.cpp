@@ -9,6 +9,7 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <memory>
 #include <vector>
 
 namespace {
@@ -35,24 +36,6 @@ cudf_status_t copy_column_indices(const int32_t* column_indices,
 }  // namespace
 
 extern "C" {
-cudf_status_t cudf_hash_partition(cudf_table_view_handle input,
-                                  const int32_t* column_indices,
-                                  int32_t num_columns,
-                                  int32_t num_partitions,
-                                  cudf_table_handle* out,
-                                  int32_t* partition_offsets,
-                                  size_t partition_offsets_len)
-{
-  return cudf_hash_partition_ex(input,
-                                column_indices,
-                                num_columns,
-                                num_partitions,
-                                out,
-                                partition_offsets,
-                                partition_offsets_len,
-                                nullptr);
-}
-
 cudf_status_t cudf_hash_partition_ex(cudf_table_view_handle input,
                                      const int32_t* column_indices,
                                      int32_t num_columns,
@@ -80,8 +63,8 @@ cudf_status_t cudf_hash_partition_ex(cudf_table_view_handle input,
 
   CUDF_RUST_TRY
   {
-    cudf_exec_context exec          = cudf_make_exec_context();
-    cudf_status_t const exec_status = cudf_resolve_exec_options(options, &exec);
+    auto exec                       = std::unique_ptr<cudf_exec_context>{};
+    cudf_status_t const exec_status = cudf_resolve_required_exec_options(options, &exec);
     if (exec_status != CUDF_SUCCESS) { return exec_status; }
 
     std::vector<cudf::size_type> columns;
@@ -92,14 +75,14 @@ cudf_status_t cudf_hash_partition_ex(cudf_table_view_handle input,
     auto partitioned = [&] {
       // libcudf hash_partition passes `mr` to the output table, but some
       // temporaries still allocate through RMM's current resource.
-      cudf_current_device_resource_guard current_mr{exec.mr_raw};
+      cudf_current_device_resource_guard current_mr{exec->mr_raw};
       return cudf::hash_partition(*view,
                                   columns,
                                   static_cast<int>(num_partitions),
                                   cudf::hash_id::HASH_MURMUR3,
                                   cudf::DEFAULT_HASH_SEED,
-                                  exec.stream,
-                                  exec.mr);
+                                  exec->stream,
+                                  *exec->mr);
     }();
     auto const& offsets = partitioned.second;
     if (offsets.size() != required_offsets) {

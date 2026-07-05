@@ -5,12 +5,10 @@ use crate::{cudf_column_handle, cudf_device_buffer_handle, cudf_exec_options_t, 
 extern "C" {
     // -- DeviceBuffer (owned GPU memory) -------------------------------------
 
-    /// Allocate a device buffer of `size` bytes using the current per-device
-    /// RMM memory resource. Contents are uninitialized.
-    pub fn cudf_device_buffer_create(size: usize, out: *mut cudf_device_buffer_handle) -> cudf_status_t;
-
-    /// Allocate a device buffer of `size` bytes using the explicit stream and
-    /// memory resource in `options`. Contents are uninitialized.
+    /// Allocate a device buffer of `size` bytes using explicit execution
+    /// options. `options` must name an explicit valid device and non-null
+    /// stream/MR. `options->mr` must outlive the returned buffer and any
+    /// column that later adopts it. Contents are uninitialized.
     pub fn cudf_device_buffer_create_ex(
         size: usize,
         options: *const cudf_exec_options_t,
@@ -30,12 +28,16 @@ extern "C" {
     /// Get the size in bytes of a buffer.
     pub fn cudf_device_buffer_size(handle: cudf_device_buffer_handle, out: *mut usize) -> cudf_status_t;
 
-    /// Copy host data into the device buffer. Synchronizes the default stream
-    /// before return.
-    pub fn cudf_device_buffer_copy_from_host(
+    /// Copy host data into the device buffer with explicit execution options.
+    ///
+    /// `options` must name an explicit valid device, non-null stream, and
+    /// non-null memory resource. The selected device must match the buffer's
+    /// retained provenance. The selected stream is synchronized before return.
+    pub fn cudf_device_buffer_copy_from_host_ex(
         handle: cudf_device_buffer_handle,
         host_data: *const c_void,
         size: usize,
+        options: *const cudf_exec_options_t,
     ) -> cudf_status_t;
 
     /// Create a column by adopting (moving) an existing device buffer.

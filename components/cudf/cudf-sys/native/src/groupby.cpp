@@ -13,7 +13,6 @@
 #include <cudf/table/table.hpp>
 #include <cudf/table/table_view.hpp>
 #include <cudf/types.hpp>
-#include <cudf/utilities/default_stream.hpp>
 #include <cudf/utilities/memory_resource.hpp>
 #include <cudf/utilities/span.hpp>
 
@@ -165,30 +164,6 @@ void cudf_groupby_scan_aggregation_destroy(cudf_groupby_scan_aggregation_handle 
   delete static_cast<cudf::groupby_scan_aggregation*>(handle);
 }
 
-cudf_status_t cudf_groupby_aggregate(cudf_table_view_handle keys,
-                                     const cudf_column_view_handle* values,
-                                     const cudf_aggregation_handle* aggregations,
-                                     const int32_t* agg_counts,
-                                     int32_t num_requests,
-                                     int32_t num_aggregations,
-                                     cudf_null_policy_t keys_null_policy,
-                                     cudf_table_handle* out_keys,
-                                     cudf_column_handle** out_values,
-                                     int32_t* out_total_columns)
-{
-  return cudf_groupby_aggregate_ex(keys,
-                                   values,
-                                   aggregations,
-                                   agg_counts,
-                                   num_requests,
-                                   num_aggregations,
-                                   keys_null_policy,
-                                   out_keys,
-                                   out_values,
-                                   out_total_columns,
-                                   nullptr);
-}
-
 cudf_status_t cudf_groupby_aggregate_ex(cudf_table_view_handle keys,
                                         const cudf_column_view_handle* values,
                                         const cudf_aggregation_handle* aggregations,
@@ -226,14 +201,14 @@ cudf_status_t cudf_groupby_aggregate_ex(cudf_table_view_handle keys,
   if (status != CUDF_SUCCESS) { return status; }
   CUDF_RUST_TRY
   {
-    cudf_exec_context exec          = cudf_make_exec_context();
-    cudf_status_t const exec_status = cudf_resolve_exec_options(options, &exec);
+    auto exec                       = std::unique_ptr<cudf_exec_context>{};
+    cudf_status_t const exec_status = cudf_resolve_required_exec_options(options, &exec);
     if (exec_status != CUDF_SUCCESS) { return exec_status; }
 
     auto* keys_view = static_cast<cudf::table_view*>(keys);
 
     {
-      cudf_current_device_resource_guard current_mr{exec.mr_raw};
+      cudf_current_device_resource_guard current_mr{exec->mr_raw};
       cudf::groupby::groupby gb(*keys_view, null_policy);
 
       // Build aggregation requests.
@@ -269,7 +244,7 @@ cudf_status_t cudf_groupby_aggregate_ex(cudf_table_view_handle keys,
         requests.push_back(std::move(req));
       }
 
-      auto [result_keys, result_values] = gb.aggregate(requests, exec.stream, exec.mr);
+      auto [result_keys, result_values] = gb.aggregate(requests, exec->stream, *exec->mr);
 
       if (should_fail_next_groupby_negative_total_columns()) {
         *out_keys          = cudf_release_table_handle(std::move(result_keys));
@@ -297,12 +272,12 @@ cudf_status_t cudf_groupby_aggregate_ex(cudf_table_view_handle keys,
       int32_t idx = 0;
       for (auto& [results] : result_values) {
         for (auto& col : results) {
-          col_array[idx++] = cudf_release_column_handle(std::move(col), cudf_capture_exec_provenance(exec));
+          col_array[idx++] = cudf_release_column_handle(std::move(col), cudf_capture_exec_provenance(*exec));
         }
       }
 
       // Publish outputs only after all work succeeds.
-      *out_keys          = cudf_release_table_handle(std::move(result_keys), cudf_capture_exec_provenance(exec));
+      *out_keys          = cudf_release_table_handle(std::move(result_keys), cudf_capture_exec_provenance(*exec));
       *out_total_columns = total;
       *out_values        = col_array;
     }
@@ -310,32 +285,6 @@ cudf_status_t cudf_groupby_aggregate_ex(cudf_table_view_handle keys,
     return CUDF_SUCCESS;
   }
   CUDF_RUST_CATCH
-}
-
-cudf_status_t cudf_groupby_scan(cudf_table_view_handle keys,
-                                const cudf_column_view_handle* values,
-                                const cudf_groupby_scan_aggregation_handle* aggregations,
-                                const int32_t* agg_counts,
-                                int32_t num_requests,
-                                int32_t num_aggregations,
-                                cudf_null_policy_t keys_null_policy,
-                                int32_t keys_are_sorted,
-                                cudf_table_handle* out_keys,
-                                cudf_column_handle** out_values,
-                                int32_t* out_total_columns)
-{
-  return cudf_groupby_scan_ex(keys,
-                             values,
-                             aggregations,
-                             agg_counts,
-                             num_requests,
-                             num_aggregations,
-                             keys_null_policy,
-                             keys_are_sorted,
-                             out_keys,
-                             out_values,
-                             out_total_columns,
-                             nullptr);
 }
 
 cudf_status_t cudf_groupby_scan_ex(cudf_table_view_handle keys,
@@ -376,14 +325,14 @@ cudf_status_t cudf_groupby_scan_ex(cudf_table_view_handle keys,
   if (status != CUDF_SUCCESS) { return status; }
   CUDF_RUST_TRY
   {
-    cudf_exec_context exec          = cudf_make_exec_context();
-    cudf_status_t const exec_status = cudf_resolve_exec_options(options, &exec);
+    auto exec                       = std::unique_ptr<cudf_exec_context>{};
+    cudf_status_t const exec_status = cudf_resolve_required_exec_options(options, &exec);
     if (exec_status != CUDF_SUCCESS) { return exec_status; }
 
     auto* keys_view = static_cast<cudf::table_view*>(keys);
 
     {
-      cudf_current_device_resource_guard current_mr{exec.mr_raw};
+      cudf_current_device_resource_guard current_mr{exec->mr_raw};
       cudf::groupby::groupby gb(*keys_view,
                                 null_policy,
                                 keys_are_sorted != 0 ? cudf::sorted::YES : cudf::sorted::NO);
@@ -420,7 +369,7 @@ cudf_status_t cudf_groupby_scan_ex(cudf_table_view_handle keys,
         requests.push_back(std::move(req));
       }
 
-      auto [result_keys, result_values] = gb.scan(requests, exec.stream, exec.mr);
+      auto [result_keys, result_values] = gb.scan(requests, exec->stream, *exec->mr);
 
       int32_t total = 0;
       for (auto& [results] : result_values) {
@@ -438,11 +387,11 @@ cudf_status_t cudf_groupby_scan_ex(cudf_table_view_handle keys,
       int32_t idx = 0;
       for (auto& [results] : result_values) {
         for (auto& col : results) {
-          col_array[idx++] = cudf_release_column_handle(std::move(col), cudf_capture_exec_provenance(exec));
+          col_array[idx++] = cudf_release_column_handle(std::move(col), cudf_capture_exec_provenance(*exec));
         }
       }
 
-      *out_keys          = cudf_release_table_handle(std::move(result_keys), cudf_capture_exec_provenance(exec));
+      *out_keys          = cudf_release_table_handle(std::move(result_keys), cudf_capture_exec_provenance(*exec));
       *out_total_columns = total;
       *out_values        = col_array;
     }
@@ -450,28 +399,6 @@ cudf_status_t cudf_groupby_scan_ex(cudf_table_view_handle keys,
     return CUDF_SUCCESS;
   }
   CUDF_RUST_CATCH
-}
-
-cudf_status_t cudf_groupby_shift(cudf_table_view_handle keys,
-                                 cudf_column_view_handle const* values,
-                                 int32_t const* offsets,
-                                 cudf_scalar_handle const* fill_values,
-                                 int32_t num_value_columns,
-                                 cudf_null_policy_t keys_null_policy,
-                                 int32_t keys_are_sorted,
-                                 cudf_table_handle* out_keys,
-                                 cudf_table_handle* out_values)
-{
-  return cudf_groupby_shift_ex(keys,
-                               values,
-                               offsets,
-                               fill_values,
-                               num_value_columns,
-                               keys_null_policy,
-                               keys_are_sorted,
-                               out_keys,
-                               out_values,
-                               nullptr);
 }
 
 cudf_status_t cudf_groupby_shift_ex(cudf_table_view_handle keys,
@@ -507,8 +434,8 @@ cudf_status_t cudf_groupby_shift_ex(cudf_table_view_handle keys,
   CUDF_RUST_TRY
   {
     auto* keys_view                 = static_cast<cudf::table_view*>(keys);
-    cudf_exec_context exec          = cudf_make_exec_context();
-    cudf_status_t const exec_status = cudf_resolve_exec_options(options, &exec);
+    auto exec                       = std::unique_ptr<cudf_exec_context>{};
+    cudf_status_t const exec_status = cudf_resolve_required_exec_options(options, &exec);
     if (exec_status != CUDF_SUCCESS) { return exec_status; }
 
     std::vector<cudf::column_view> value_columns;
@@ -527,7 +454,7 @@ cudf_status_t cudf_groupby_shift_ex(cudf_table_view_handle keys,
     cudf::table_view values_table_view{value_columns};
 
     {
-      cudf_current_device_resource_guard current_mr{exec.mr_raw};
+      cudf_current_device_resource_guard current_mr{exec->mr_raw};
       cudf::groupby::groupby gb(*keys_view,
                                 null_policy,
                                 keys_are_sorted != 0 ? cudf::sorted::YES : cudf::sorted::NO);
@@ -535,16 +462,16 @@ cudf_status_t cudf_groupby_shift_ex(cudf_table_view_handle keys,
         values_table_view,
         cudf::host_span<cudf::size_type const>(offsets_host.data(), offsets_host.size()),
         fill_refs,
-        exec.stream,
-        exec.mr);
+        exec->stream,
+        *exec->mr);
 
       // Publish both handles only after both releases succeed so a host
       // allocation failure on the second handle does not leave Rust without
       // ownership of the first.
-      cudf_table_handle keys_handle   = cudf_release_table_handle(std::move(result_keys), cudf_capture_exec_provenance(exec));
+      cudf_table_handle keys_handle   = cudf_release_table_handle(std::move(result_keys), cudf_capture_exec_provenance(*exec));
       cudf_table_handle values_handle = nullptr;
       try {
-        values_handle = cudf_release_table_handle(std::move(result_values), cudf_capture_exec_provenance(exec));
+        values_handle = cudf_release_table_handle(std::move(result_values), cudf_capture_exec_provenance(*exec));
       } catch (...) {
         cudf_table_destroy(keys_handle);
         throw;

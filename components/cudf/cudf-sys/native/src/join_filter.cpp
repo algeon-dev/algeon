@@ -3,26 +3,6 @@
 using namespace cudf_rust::join;
 
 extern "C" {
-cudf_status_t cudf_filter_join_indices(cudf_table_view_handle left,
-                                       cudf_table_view_handle right,
-                                       cudf_column_view_handle left_indices,
-                                       cudf_column_view_handle right_indices,
-                                       cudf_ast_expression_handle predicate,
-                                       cudf_join_kind_t join_kind,
-                                       cudf_column_handle* out_left_indices,
-                                       cudf_column_handle* out_right_indices)
-{
-  return cudf_filter_join_indices_ex(left,
-                                     right,
-                                     left_indices,
-                                     right_indices,
-                                     predicate,
-                                     join_kind,
-                                     out_left_indices,
-                                     out_right_indices,
-                                     nullptr);
-}
-
 cudf_status_t cudf_filter_join_indices_ex(cudf_table_view_handle left,
                                           cudf_table_view_handle right,
                                           cudf_column_view_handle left_indices,
@@ -44,14 +24,6 @@ cudf_status_t cudf_filter_join_indices_ex(cudf_table_view_handle left,
                                   options);
 }
 
-cudf_status_t cudf_filtered_join_create(cudf_table_view_handle build,
-                                        cudf_null_equality_t null_equality,
-                                        double load_factor,
-                                        cudf_filtered_join_handle* out)
-{
-  return cudf_filtered_join_create_ex(build, null_equality, load_factor, out, nullptr);
-}
-
 cudf_status_t cudf_filtered_join_create_ex(cudf_table_view_handle build,
                                            cudf_null_equality_t null_equality,
                                            double load_factor,
@@ -59,14 +31,6 @@ cudf_status_t cudf_filtered_join_create_ex(cudf_table_view_handle build,
                                            cudf_exec_options_t const* options)
 {
   return filtered_join_create_impl(build, null_equality, load_factor, out, options);
-}
-
-cudf_status_t cudf_filtered_join_pre_build_reservation_size(cudf_table_view_handle build,
-                                                            cudf_null_equality_t null_equality,
-                                                            double load_factor,
-                                                            size_t* out)
-{
-  return cudf_filtered_join_pre_build_reservation_size_ex(build, null_equality, load_factor, out, nullptr);
 }
 
 cudf_status_t cudf_filtered_join_pre_build_reservation_size_ex(cudf_table_view_handle build,
@@ -90,16 +54,9 @@ void cudf_filtered_join_destroy(cudf_filtered_join_handle handle)
 {
   if (handle == nullptr) { return; }
   cudf_clear_error();
-  try {
-    auto* owner = static_cast<filtered_join_owner*>(handle);
-    cudf_device_guard device_guard;
-    cudf_status_t const device_status = device_guard.activate(owner->device);
-    if (device_status != CUDF_SUCCESS) { return; }
-    cudf_current_device_resource_guard current_mr{owner->mr_raw};
-    delete owner;
-  } catch (...) {
-    (void)translate_exception();
-  }
+  auto* owner      = static_cast<filtered_join_owner*>(handle);
+  auto provenance = cached_join_owner_provenance(*owner);
+  (void)cudf_destroy_under_provenance(provenance, [owner] { delete owner; });
 }
 
 cudf_status_t cudf_filtered_join_device_allocated_size(cudf_filtered_join_handle handle,
@@ -120,26 +77,12 @@ cudf_status_t cudf_filtered_join_device_allocated_size(cudf_filtered_join_handle
   CUDF_RUST_CATCH
 }
 
-cudf_status_t cudf_filtered_join_begin_left_semi_probe(cudf_filtered_join_handle join,
-                                                       cudf_table_view_handle probe,
-                                                       cudf_filtered_join_probe_handle* out)
-{
-  return cudf_filtered_join_begin_left_semi_probe_ex(join, probe, out, nullptr);
-}
-
 cudf_status_t cudf_filtered_join_begin_left_semi_probe_ex(cudf_filtered_join_handle join,
                                                           cudf_table_view_handle probe,
                                                           cudf_filtered_join_probe_handle* out,
                                                           cudf_exec_options_t const* options)
 {
   return filtered_join_begin_probe_impl(join, probe, out, options, filtered_join_probe_kind::semi);
-}
-
-cudf_status_t cudf_filtered_join_begin_left_anti_probe(cudf_filtered_join_handle join,
-                                                       cudf_table_view_handle probe,
-                                                       cudf_filtered_join_probe_handle* out)
-{
-  return cudf_filtered_join_begin_left_anti_probe_ex(join, probe, out, nullptr);
 }
 
 cudf_status_t cudf_filtered_join_begin_left_anti_probe_ex(cudf_filtered_join_handle join,
@@ -154,16 +97,9 @@ void cudf_filtered_join_probe_destroy(cudf_filtered_join_probe_handle handle)
 {
   if (handle == nullptr) { return; }
   cudf_clear_error();
-  try {
-    auto* owner = static_cast<filtered_join_probe_owner*>(handle);
-    cudf_device_guard device_guard;
-    cudf_status_t const device_status = device_guard.activate(owner->device);
-    if (device_status != CUDF_SUCCESS) { return; }
-    cudf_current_device_resource_guard current_mr{owner->mr_raw};
-    delete owner;
-  } catch (...) {
-    (void)translate_exception();
-  }
+  auto* owner      = static_cast<filtered_join_probe_owner*>(handle);
+  auto provenance = cached_join_owner_provenance(*owner);
+  (void)cudf_destroy_under_provenance(provenance, [owner] { delete owner; });
 }
 
 cudf_status_t cudf_filtered_join_probe_output_size(cudf_filtered_join_probe_handle handle,
@@ -196,24 +132,11 @@ cudf_status_t cudf_filtered_join_probe_device_allocated_size(cudf_filtered_join_
   CUDF_RUST_CATCH
 }
 
-cudf_status_t cudf_filtered_join_probe_materialize_indices(cudf_filtered_join_probe_handle handle,
-                                                           cudf_column_handle* out_indices)
-{
-  return cudf_filtered_join_probe_materialize_indices_ex(handle, out_indices, nullptr);
-}
-
 cudf_status_t cudf_filtered_join_probe_materialize_indices_ex(cudf_filtered_join_probe_handle handle,
                                                               cudf_column_handle* out_indices,
                                                               cudf_exec_options_t const* options)
 {
   return filtered_join_probe_materialize_indices_impl(handle, out_indices, options);
-}
-
-cudf_status_t cudf_filtered_join_left_semi_join_size(cudf_filtered_join_handle join,
-                                                     cudf_table_view_handle probe,
-                                                     size_t* out)
-{
-  return cudf_filtered_join_left_semi_join_size_ex(join, probe, out, nullptr);
 }
 
 cudf_status_t cudf_filtered_join_left_semi_join_size_ex(cudf_filtered_join_handle join,
@@ -224,28 +147,12 @@ cudf_status_t cudf_filtered_join_left_semi_join_size_ex(cudf_filtered_join_handl
   return filtered_join_size_impl(join, probe, out, options, filtered_join_probe_kind::semi);
 }
 
-cudf_status_t cudf_filtered_join_left_anti_join_size(cudf_filtered_join_handle join,
-                                                     cudf_table_view_handle probe,
-                                                     size_t* out)
-{
-  return cudf_filtered_join_left_anti_join_size_ex(join, probe, out, nullptr);
-}
-
 cudf_status_t cudf_filtered_join_left_anti_join_size_ex(cudf_filtered_join_handle join,
                                                         cudf_table_view_handle probe,
                                                         size_t* out,
                                                         cudf_exec_options_t const* options)
 {
   return filtered_join_size_impl(join, probe, out, options, filtered_join_probe_kind::anti);
-}
-
-cudf_status_t cudf_filtered_join_left_semi_join_with_output_size(cudf_filtered_join_handle join,
-                                                                 cudf_table_view_handle probe,
-                                                                 size_t output_size,
-                                                                 cudf_column_handle* out_indices)
-{
-  return cudf_filtered_join_left_semi_join_with_output_size_ex(
-    join, probe, output_size, out_indices, nullptr);
 }
 
 cudf_status_t cudf_filtered_join_left_semi_join_with_output_size_ex(cudf_filtered_join_handle join,
@@ -256,15 +163,6 @@ cudf_status_t cudf_filtered_join_left_semi_join_with_output_size_ex(cudf_filtere
 {
   return filtered_join_indices_with_output_size_impl(
     join, probe, output_size, out_indices, options, filtered_join_probe_kind::semi);
-}
-
-cudf_status_t cudf_filtered_join_left_anti_join_with_output_size(cudf_filtered_join_handle join,
-                                                                 cudf_table_view_handle probe,
-                                                                 size_t output_size,
-                                                                 cudf_column_handle* out_indices)
-{
-  return cudf_filtered_join_left_anti_join_with_output_size_ex(
-    join, probe, output_size, out_indices, nullptr);
 }
 
 cudf_status_t cudf_filtered_join_left_anti_join_with_output_size_ex(cudf_filtered_join_handle join,

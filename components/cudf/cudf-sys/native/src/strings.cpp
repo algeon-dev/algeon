@@ -22,10 +22,10 @@
 #include <cudf/strings/strip.hpp>
 #include <cudf/table/table_view.hpp>
 #include <cudf/types.hpp>
-#include <cudf/utilities/default_stream.hpp>
 #include <cudf/utilities/memory_resource.hpp>
 #include <cudf/utilities/traits.hpp>
 
+#include <memory>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -102,11 +102,6 @@ extern "C" {
 // Case conversion
 // ---------------------------------------------------------------------------
 
-cudf_status_t cudf_strings_to_lower(cudf_column_view_handle input, cudf_column_handle* out)
-{
-  return cudf_strings_to_lower_ex(input, out, nullptr);
-}
-
 cudf_status_t cudf_strings_to_lower_ex(cudf_column_view_handle input,
                                        cudf_column_handle* out,
                                        cudf_exec_options_t const* options)
@@ -116,22 +111,18 @@ cudf_status_t cudf_strings_to_lower_ex(cudf_column_view_handle input,
   CUDF_RUST_NULL_CHECK(input, "input is null");
   CUDF_RUST_TRY
   {
-    cudf_exec_context exec          = cudf_make_exec_context();
-    cudf_status_t const exec_status = cudf_resolve_exec_options(options, &exec);
+    auto exec                       = std::unique_ptr<cudf_exec_context>{};
+    cudf_status_t const exec_status = cudf_resolve_required_exec_options(options, &exec);
     if (exec_status != CUDF_SUCCESS) { return exec_status; }
 
     {
-      auto result = cudf::strings::to_lower(to_strings_view(input), exec.stream, exec.mr);
-      *out        = cudf_release_column_handle(std::move(result));
+      cudf_current_device_resource_guard current_mr{exec->mr_raw};
+      auto result = cudf::strings::to_lower(to_strings_view(input), exec->stream, *exec->mr);
+      *out        = cudf_release_column_handle(std::move(result), cudf_capture_exec_provenance(*exec));
     }
     return CUDF_SUCCESS;
   }
   CUDF_RUST_CATCH
-}
-
-cudf_status_t cudf_strings_to_upper(cudf_column_view_handle input, cudf_column_handle* out)
-{
-  return cudf_strings_to_upper_ex(input, out, nullptr);
 }
 
 cudf_status_t cudf_strings_to_upper_ex(cudf_column_view_handle input,
@@ -143,13 +134,14 @@ cudf_status_t cudf_strings_to_upper_ex(cudf_column_view_handle input,
   CUDF_RUST_NULL_CHECK(input, "input is null");
   CUDF_RUST_TRY
   {
-    cudf_exec_context exec          = cudf_make_exec_context();
-    cudf_status_t const exec_status = cudf_resolve_exec_options(options, &exec);
+    auto exec                       = std::unique_ptr<cudf_exec_context>{};
+    cudf_status_t const exec_status = cudf_resolve_required_exec_options(options, &exec);
     if (exec_status != CUDF_SUCCESS) { return exec_status; }
 
     {
-      auto result = cudf::strings::to_upper(to_strings_view(input), exec.stream, exec.mr);
-      *out        = cudf_release_column_handle(std::move(result));
+      cudf_current_device_resource_guard current_mr{exec->mr_raw};
+      auto result = cudf::strings::to_upper(to_strings_view(input), exec->stream, *exec->mr);
+      *out        = cudf_release_column_handle(std::move(result), cudf_capture_exec_provenance(*exec));
     }
     return CUDF_SUCCESS;
   }
@@ -159,13 +151,6 @@ cudf_status_t cudf_strings_to_upper_ex(cudf_column_view_handle input,
 // ---------------------------------------------------------------------------
 // Find / contains / starts_with / ends_with (scalar target)
 // ---------------------------------------------------------------------------
-
-cudf_status_t cudf_strings_contains(cudf_column_view_handle input,
-                                    cudf_scalar_handle target,
-                                    cudf_column_handle* out)
-{
-  return cudf_strings_contains_ex(input, target, out, nullptr);
-}
 
 cudf_status_t cudf_strings_contains_ex(cudf_column_view_handle input,
                                        cudf_scalar_handle target,
@@ -178,27 +163,21 @@ cudf_status_t cudf_strings_contains_ex(cudf_column_view_handle input,
   CUDF_RUST_NULL_CHECK(target, "target is null");
   CUDF_RUST_TRY
   {
-    cudf_exec_context exec          = cudf_make_exec_context();
-    cudf_status_t const exec_status = cudf_resolve_exec_options(options, &exec);
+    auto exec                       = std::unique_ptr<cudf_exec_context>{};
+    cudf_status_t const exec_status = cudf_resolve_required_exec_options(options, &exec);
     if (exec_status != CUDF_SUCCESS) { return exec_status; }
 
     cudf::string_scalar* scalar     = nullptr;
     cudf_status_t const type_status = check_string_scalar(target, &scalar);
     if (type_status != CUDF_SUCCESS) { return type_status; }
     {
-      auto result = cudf::strings::contains(to_strings_view(input), *scalar, exec.stream, exec.mr);
-      *out        = cudf_release_column_handle(std::move(result));
+      cudf_current_device_resource_guard current_mr{exec->mr_raw};
+      auto result = cudf::strings::contains(to_strings_view(input), *scalar, exec->stream, *exec->mr);
+      *out        = cudf_release_column_handle(std::move(result), cudf_capture_exec_provenance(*exec));
     }
     return CUDF_SUCCESS;
   }
   CUDF_RUST_CATCH
-}
-
-cudf_status_t cudf_strings_starts_with(cudf_column_view_handle input,
-                                       cudf_scalar_handle target,
-                                       cudf_column_handle* out)
-{
-  return cudf_strings_starts_with_ex(input, target, out, nullptr);
 }
 
 cudf_status_t cudf_strings_starts_with_ex(cudf_column_view_handle input,
@@ -212,28 +191,22 @@ cudf_status_t cudf_strings_starts_with_ex(cudf_column_view_handle input,
   CUDF_RUST_NULL_CHECK(target, "target is null");
   CUDF_RUST_TRY
   {
-    cudf_exec_context exec          = cudf_make_exec_context();
-    cudf_status_t const exec_status = cudf_resolve_exec_options(options, &exec);
+    auto exec                       = std::unique_ptr<cudf_exec_context>{};
+    cudf_status_t const exec_status = cudf_resolve_required_exec_options(options, &exec);
     if (exec_status != CUDF_SUCCESS) { return exec_status; }
 
     cudf::string_scalar* scalar     = nullptr;
     cudf_status_t const type_status = check_string_scalar(target, &scalar);
     if (type_status != CUDF_SUCCESS) { return type_status; }
     {
+      cudf_current_device_resource_guard current_mr{exec->mr_raw};
       auto result =
-        cudf::strings::starts_with(to_strings_view(input), *scalar, exec.stream, exec.mr);
-      *out = cudf_release_column_handle(std::move(result));
+        cudf::strings::starts_with(to_strings_view(input), *scalar, exec->stream, *exec->mr);
+      *out = cudf_release_column_handle(std::move(result), cudf_capture_exec_provenance(*exec));
     }
     return CUDF_SUCCESS;
   }
   CUDF_RUST_CATCH
-}
-
-cudf_status_t cudf_strings_ends_with(cudf_column_view_handle input,
-                                     cudf_scalar_handle target,
-                                     cudf_column_handle* out)
-{
-  return cudf_strings_ends_with_ex(input, target, out, nullptr);
 }
 
 cudf_status_t cudf_strings_ends_with_ex(cudf_column_view_handle input,
@@ -247,16 +220,17 @@ cudf_status_t cudf_strings_ends_with_ex(cudf_column_view_handle input,
   CUDF_RUST_NULL_CHECK(target, "target is null");
   CUDF_RUST_TRY
   {
-    cudf_exec_context exec          = cudf_make_exec_context();
-    cudf_status_t const exec_status = cudf_resolve_exec_options(options, &exec);
+    auto exec                       = std::unique_ptr<cudf_exec_context>{};
+    cudf_status_t const exec_status = cudf_resolve_required_exec_options(options, &exec);
     if (exec_status != CUDF_SUCCESS) { return exec_status; }
 
     cudf::string_scalar* scalar     = nullptr;
     cudf_status_t const type_status = check_string_scalar(target, &scalar);
     if (type_status != CUDF_SUCCESS) { return type_status; }
     {
-      auto result = cudf::strings::ends_with(to_strings_view(input), *scalar, exec.stream, exec.mr);
-      *out        = cudf_release_column_handle(std::move(result));
+      cudf_current_device_resource_guard current_mr{exec->mr_raw};
+      auto result = cudf::strings::ends_with(to_strings_view(input), *scalar, exec->stream, *exec->mr);
+      *out        = cudf_release_column_handle(std::move(result), cudf_capture_exec_provenance(*exec));
     }
     return CUDF_SUCCESS;
   }
@@ -266,17 +240,6 @@ cudf_status_t cudf_strings_ends_with_ex(cudf_column_view_handle input,
 // ---------------------------------------------------------------------------
 // LIKE
 // ---------------------------------------------------------------------------
-
-cudf_status_t cudf_strings_like(cudf_column_view_handle input,
-                                char const* pattern,
-                                int32_t pattern_len,
-                                char const* escape_character,
-                                int32_t escape_character_len,
-                                cudf_column_handle* out)
-{
-  return cudf_strings_like_ex(
-    input, pattern, pattern_len, escape_character, escape_character_len, out, nullptr);
-}
 
 cudf_status_t cudf_strings_like_ex(cudf_column_view_handle input,
                                    char const* pattern,
@@ -295,19 +258,19 @@ cudf_status_t cudf_strings_like_ex(cudf_column_view_handle input,
 
   CUDF_RUST_TRY
   {
-    cudf_exec_context exec          = cudf_make_exec_context();
-    cudf_status_t const exec_status = cudf_resolve_exec_options(options, &exec);
+    auto exec                       = std::unique_ptr<cudf_exec_context>{};
+    cudf_status_t const exec_status = cudf_resolve_required_exec_options(options, &exec);
     if (exec_status != CUDF_SUCCESS) { return exec_status; }
 
     auto const pattern_view = make_host_string_view(pattern, pattern_len);
     auto const escape_view  = make_host_string_view(escape_character, escape_character_len);
     {
-      cudf_current_device_resource_guard current_mr{exec.mr_raw};
+      cudf_current_device_resource_guard current_mr{exec->mr_raw};
       auto result = cudf::strings::like(
-        to_strings_view(input), pattern_view, escape_view, exec.stream, exec.mr);
-      exec.stream.synchronize();
-      cudf_record_synchronized_stream(exec.stream);
-      *out = cudf_release_column_handle(std::move(result));
+        to_strings_view(input), pattern_view, escape_view, exec->stream, *exec->mr);
+      exec->stream.synchronize();
+      cudf_record_synchronized_stream(exec->stream);
+      *out = cudf_release_column_handle(std::move(result), cudf_capture_exec_provenance(*exec));
     }
     return CUDF_SUCCESS;
   }
@@ -317,17 +280,6 @@ cudf_status_t cudf_strings_like_ex(cudf_column_view_handle input,
 // ---------------------------------------------------------------------------
 // Regex replace
 // ---------------------------------------------------------------------------
-
-cudf_status_t cudf_strings_replace_with_backrefs(cudf_column_view_handle input,
-                                                 char const* pattern,
-                                                 int32_t pattern_len,
-                                                 char const* replacement,
-                                                 int32_t replacement_len,
-                                                 cudf_column_handle* out)
-{
-  return cudf_strings_replace_with_backrefs_ex(
-    input, pattern, pattern_len, replacement, replacement_len, out, nullptr);
-}
 
 cudf_status_t cudf_strings_replace_with_backrefs_ex(cudf_column_view_handle input,
                                                     char const* pattern,
@@ -348,20 +300,20 @@ cudf_status_t cudf_strings_replace_with_backrefs_ex(cudf_column_view_handle inpu
 
   CUDF_RUST_TRY
   {
-    cudf_exec_context exec          = cudf_make_exec_context();
-    cudf_status_t const exec_status = cudf_resolve_exec_options(options, &exec);
+    auto exec                       = std::unique_ptr<cudf_exec_context>{};
+    cudf_status_t const exec_status = cudf_resolve_required_exec_options(options, &exec);
     if (exec_status != CUDF_SUCCESS) { return exec_status; }
 
     auto const pattern_view     = make_host_string_view(pattern, pattern_len);
     auto const replacement_view = make_host_string_view(replacement, replacement_len);
     {
-      cudf_current_device_resource_guard current_mr{exec.mr_raw};
+      cudf_current_device_resource_guard current_mr{exec->mr_raw};
       auto prog   = cudf::strings::regex_program::create(pattern_view);
       auto result = cudf::strings::replace_with_backrefs(
-        to_strings_view(input), *prog, replacement_view, exec.stream, exec.mr);
-      exec.stream.synchronize();
-      cudf_record_synchronized_stream(exec.stream);
-      *out = cudf_release_column_handle(std::move(result));
+        to_strings_view(input), *prog, replacement_view, exec->stream, *exec->mr);
+      exec->stream.synchronize();
+      cudf_record_synchronized_stream(exec->stream);
+      *out = cudf_release_column_handle(std::move(result), cudf_capture_exec_provenance(*exec));
     }
     return CUDF_SUCCESS;
   }
@@ -371,17 +323,6 @@ cudf_status_t cudf_strings_replace_with_backrefs_ex(cudf_column_view_handle inpu
 // ---------------------------------------------------------------------------
 // Slice
 // ---------------------------------------------------------------------------
-
-cudf_status_t cudf_strings_slice(cudf_column_view_handle input,
-                                 int32_t start,
-                                 int32_t start_valid,
-                                 int32_t stop,
-                                 int32_t stop_valid,
-                                 int32_t step,
-                                 cudf_column_handle* out)
-{
-  return cudf_strings_slice_ex(input, start, start_valid, stop, stop_valid, step, out, nullptr);
-}
 
 cudf_status_t cudf_strings_slice_ex(cudf_column_view_handle input,
                                     int32_t start,
@@ -402,20 +343,20 @@ cudf_status_t cudf_strings_slice_ex(cudf_column_view_handle input,
 
   CUDF_RUST_TRY
   {
-    cudf_exec_context exec          = cudf_make_exec_context();
-    cudf_status_t const exec_status = cudf_resolve_exec_options(options, &exec);
+    auto exec                       = std::unique_ptr<cudf_exec_context>{};
+    cudf_status_t const exec_status = cudf_resolve_required_exec_options(options, &exec);
     if (exec_status != CUDF_SUCCESS) { return exec_status; }
 
     {
-      cudf_current_device_resource_guard current_mr{exec.mr_raw};
+      cudf_current_device_resource_guard current_mr{exec->mr_raw};
       cudf::numeric_scalar<cudf::size_type> start_scalar{
-        start, start_valid != 0, exec.stream, exec.mr};
+        start, start_valid != 0, exec->stream, *exec->mr};
       cudf::numeric_scalar<cudf::size_type> stop_scalar{
-        stop, stop_valid != 0, exec.stream, exec.mr};
-      cudf::numeric_scalar<cudf::size_type> step_scalar{step, true, exec.stream, exec.mr};
+        stop, stop_valid != 0, exec->stream, *exec->mr};
+      cudf::numeric_scalar<cudf::size_type> step_scalar{step, true, exec->stream, *exec->mr};
       auto result = cudf::strings::slice_strings(
-        to_strings_view(input), start_scalar, stop_scalar, step_scalar, exec.stream, exec.mr);
-      *out = cudf_release_column_handle(std::move(result));
+        to_strings_view(input), start_scalar, stop_scalar, step_scalar, exec->stream, *exec->mr);
+      *out = cudf_release_column_handle(std::move(result), cudf_capture_exec_provenance(*exec));
     }
     return CUDF_SUCCESS;
   }
@@ -425,13 +366,6 @@ cudf_status_t cudf_strings_slice_ex(cudf_column_view_handle input,
 // ---------------------------------------------------------------------------
 // Concatenate
 // ---------------------------------------------------------------------------
-
-cudf_status_t cudf_strings_concatenate(cudf_column_view_handle const* columns,
-                                       int32_t num_columns,
-                                       cudf_column_handle* out)
-{
-  return cudf_strings_concatenate_ex(columns, num_columns, out, nullptr);
-}
 
 cudf_status_t cudf_strings_concatenate_ex(cudf_column_view_handle const* columns,
                                           int32_t num_columns,
@@ -450,8 +384,8 @@ cudf_status_t cudf_strings_concatenate_ex(cudf_column_view_handle const* columns
   }
   CUDF_RUST_TRY
   {
-    cudf_exec_context exec          = cudf_make_exec_context();
-    cudf_status_t const exec_status = cudf_resolve_exec_options(options, &exec);
+    auto exec                       = std::unique_ptr<cudf_exec_context>{};
+    cudf_status_t const exec_status = cudf_resolve_required_exec_options(options, &exec);
     if (exec_status != CUDF_SUCCESS) { return exec_status; }
 
     std::vector<cudf::column_view> views;
@@ -461,17 +395,17 @@ cudf_status_t cudf_strings_concatenate_ex(cudf_column_view_handle const* columns
     }
 
     {
-      cudf_current_device_resource_guard current_mr{exec.mr_raw};
+      cudf_current_device_resource_guard current_mr{exec->mr_raw};
       cudf::table_view strings_columns{views};
-      cudf::string_scalar separator{"", true, exec.stream, exec.mr};
-      cudf::string_scalar null_replacement{"", true, exec.stream, exec.mr};
+      cudf::string_scalar separator{"", true, exec->stream, *exec->mr};
+      cudf::string_scalar null_replacement{"", true, exec->stream, *exec->mr};
       auto result = cudf::strings::concatenate(strings_columns,
                                                separator,
                                                null_replacement,
                                                cudf::strings::separator_on_nulls::NO,
-                                               exec.stream,
-                                               exec.mr);
-      *out        = cudf_release_column_handle(std::move(result));
+                                               exec->stream,
+                                               *exec->mr);
+      *out        = cudf_release_column_handle(std::move(result), cudf_capture_exec_provenance(*exec));
     }
     return CUDF_SUCCESS;
   }
@@ -481,14 +415,6 @@ cudf_status_t cudf_strings_concatenate_ex(cudf_column_view_handle const* columns
 // ---------------------------------------------------------------------------
 // Strip / trim
 // ---------------------------------------------------------------------------
-
-cudf_status_t cudf_strings_strip(cudf_column_view_handle input,
-                                 cudf_strip_side_t side,
-                                 cudf_scalar_handle to_strip,
-                                 cudf_column_handle* out)
-{
-  return cudf_strings_strip_ex(input, side, to_strip, out, nullptr);
-}
 
 cudf_status_t cudf_strings_strip_ex(cudf_column_view_handle input,
                                     cudf_strip_side_t side,
@@ -502,8 +428,8 @@ cudf_status_t cudf_strings_strip_ex(cudf_column_view_handle input,
   CUDF_RUST_NULL_CHECK(to_strip, "to_strip is null");
   CUDF_RUST_TRY
   {
-    cudf_exec_context exec          = cudf_make_exec_context();
-    cudf_status_t const exec_status = cudf_resolve_exec_options(options, &exec);
+    auto exec                       = std::unique_ptr<cudf_exec_context>{};
+    cudf_status_t const exec_status = cudf_resolve_required_exec_options(options, &exec);
     if (exec_status != CUDF_SUCCESS) { return exec_status; }
 
     cudf::strings::side_type cudf_side;
@@ -518,9 +444,10 @@ cudf_status_t cudf_strings_strip_ex(cudf_column_view_handle input,
     cudf_status_t const type_status = check_string_scalar(to_strip, &scalar);
     if (type_status != CUDF_SUCCESS) { return type_status; }
     {
+      cudf_current_device_resource_guard current_mr{exec->mr_raw};
       auto result =
-        cudf::strings::strip(to_strings_view(input), cudf_side, *scalar, exec.stream, exec.mr);
-      *out = cudf_release_column_handle(std::move(result));
+        cudf::strings::strip(to_strings_view(input), cudf_side, *scalar, exec->stream, *exec->mr);
+      *out = cudf_release_column_handle(std::move(result), cudf_capture_exec_provenance(*exec));
     }
     return CUDF_SUCCESS;
   }
@@ -531,11 +458,6 @@ cudf_status_t cudf_strings_strip_ex(cudf_column_view_handle input,
 // Attributes
 // ---------------------------------------------------------------------------
 
-cudf_status_t cudf_strings_count_characters(cudf_column_view_handle input, cudf_column_handle* out)
-{
-  return cudf_strings_count_characters_ex(input, out, nullptr);
-}
-
 cudf_status_t cudf_strings_count_characters_ex(cudf_column_view_handle input,
                                                cudf_column_handle* out,
                                                cudf_exec_options_t const* options)
@@ -545,22 +467,18 @@ cudf_status_t cudf_strings_count_characters_ex(cudf_column_view_handle input,
   CUDF_RUST_NULL_CHECK(input, "input is null");
   CUDF_RUST_TRY
   {
-    cudf_exec_context exec          = cudf_make_exec_context();
-    cudf_status_t const exec_status = cudf_resolve_exec_options(options, &exec);
+    auto exec                       = std::unique_ptr<cudf_exec_context>{};
+    cudf_status_t const exec_status = cudf_resolve_required_exec_options(options, &exec);
     if (exec_status != CUDF_SUCCESS) { return exec_status; }
 
     {
-      auto result = cudf::strings::count_characters(to_strings_view(input), exec.stream, exec.mr);
-      *out        = cudf_release_column_handle(std::move(result));
+      cudf_current_device_resource_guard current_mr{exec->mr_raw};
+      auto result = cudf::strings::count_characters(to_strings_view(input), exec->stream, *exec->mr);
+      *out        = cudf_release_column_handle(std::move(result), cudf_capture_exec_provenance(*exec));
     }
     return CUDF_SUCCESS;
   }
   CUDF_RUST_CATCH
-}
-
-cudf_status_t cudf_strings_count_bytes(cudf_column_view_handle input, cudf_column_handle* out)
-{
-  return cudf_strings_count_bytes_ex(input, out, nullptr);
 }
 
 cudf_status_t cudf_strings_count_bytes_ex(cudf_column_view_handle input,
@@ -572,13 +490,14 @@ cudf_status_t cudf_strings_count_bytes_ex(cudf_column_view_handle input,
   CUDF_RUST_NULL_CHECK(input, "input is null");
   CUDF_RUST_TRY
   {
-    cudf_exec_context exec          = cudf_make_exec_context();
-    cudf_status_t const exec_status = cudf_resolve_exec_options(options, &exec);
+    auto exec                       = std::unique_ptr<cudf_exec_context>{};
+    cudf_status_t const exec_status = cudf_resolve_required_exec_options(options, &exec);
     if (exec_status != CUDF_SUCCESS) { return exec_status; }
 
     {
-      auto result = cudf::strings::count_bytes(to_strings_view(input), exec.stream, exec.mr);
-      *out        = cudf_release_column_handle(std::move(result));
+      cudf_current_device_resource_guard current_mr{exec->mr_raw};
+      auto result = cudf::strings::count_bytes(to_strings_view(input), exec->stream, *exec->mr);
+      *out        = cudf_release_column_handle(std::move(result), cudf_capture_exec_provenance(*exec));
     }
     return CUDF_SUCCESS;
   }
@@ -588,13 +507,6 @@ cudf_status_t cudf_strings_count_bytes_ex(cudf_column_view_handle input,
 // ---------------------------------------------------------------------------
 // Numeric conversion (null-on-failure / TRY_CAST contract)
 // ---------------------------------------------------------------------------
-
-cudf_status_t cudf_strings_try_to_integers(cudf_column_view_handle input,
-                                           cudf_data_type_handle output_type,
-                                           cudf_column_handle* out)
-{
-  return cudf_strings_try_to_integers_ex(input, output_type, out, nullptr);
-}
 
 cudf_status_t cudf_strings_try_to_integers_ex(cudf_column_view_handle input,
                                               cudf_data_type_handle output_type,
@@ -607,8 +519,8 @@ cudf_status_t cudf_strings_try_to_integers_ex(cudf_column_view_handle input,
   CUDF_RUST_NULL_CHECK(output_type, "output_type is null");
   CUDF_RUST_TRY
   {
-    cudf_exec_context exec          = cudf_make_exec_context();
-    cudf_status_t const exec_status = cudf_resolve_exec_options(options, &exec);
+    auto exec                       = std::unique_ptr<cudf_exec_context>{};
+    cudf_status_t const exec_status = cudf_resolve_required_exec_options(options, &exec);
     if (exec_status != CUDF_SUCCESS) { return exec_status; }
 
     auto strings_view = to_strings_view(input);
@@ -619,6 +531,7 @@ cudf_status_t cudf_strings_try_to_integers_ex(cudf_column_view_handle input,
     }
 
     {
+      cudf_current_device_resource_guard current_mr{exec->mr_raw};
       // `is_integer(input, output_type)` produces true only when the input
       // string parses cleanly AND fits the requested integer type. It returns
       // null for null input rows. `to_integers` performs the parse (returning
@@ -626,12 +539,12 @@ cudf_status_t cudf_strings_try_to_integers_ex(cudf_column_view_handle input,
       // parsed column against the validity mask with a default-constructed
       // (invalid) scalar gives TRY_CAST semantics: success → parsed value,
       // parse failure or overflow → null, null input → null.
-      auto valid_mask = cudf::strings::is_integer(strings_view, *dtype, exec.stream, exec.mr);
-      auto integers   = cudf::strings::to_integers(strings_view, *dtype, exec.stream, exec.mr);
-      auto null_value = cudf::make_default_constructed_scalar(*dtype, exec.stream, exec.mr);
+      auto valid_mask = cudf::strings::is_integer(strings_view, *dtype, exec->stream, *exec->mr);
+      auto integers   = cudf::strings::to_integers(strings_view, *dtype, exec->stream, *exec->mr);
+      auto null_value = cudf::make_default_constructed_scalar(*dtype, exec->stream, *exec->mr);
       auto result =
-        cudf::copy_if_else(integers->view(), *null_value, valid_mask->view(), exec.stream, exec.mr);
-      *out = cudf_release_column_handle(std::move(result));
+        cudf::copy_if_else(integers->view(), *null_value, valid_mask->view(), exec->stream, *exec->mr);
+      *out = cudf_release_column_handle(std::move(result), cudf_capture_exec_provenance(*exec));
     }
     return CUDF_SUCCESS;
   }

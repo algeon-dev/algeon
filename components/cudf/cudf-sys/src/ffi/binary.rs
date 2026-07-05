@@ -6,15 +6,8 @@ use crate::{
 extern "C" {
     // -- Binary --------------------------------------------------------------
 
-    pub fn cudf_binary_operation_vv(
-        lhs: cudf_column_view_handle,
-        rhs: cudf_column_view_handle,
-        op: cudf_binary_operator_t,
-        output_type: cudf_data_type_handle,
-        out: *mut cudf_column_handle,
-    ) -> cudf_status_t;
-
-    /// When `options->mr` is non-NULL, it must outlive the returned column.
+    /// `options` must name an explicit valid device and non-NULL stream/MR.
+    /// `options->mr` must outlive the returned column.
     pub fn cudf_binary_operation_vv_ex(
         lhs: cudf_column_view_handle,
         rhs: cudf_column_view_handle,
@@ -24,15 +17,8 @@ extern "C" {
         options: *const cudf_exec_options_t,
     ) -> cudf_status_t;
 
-    pub fn cudf_binary_operation_vs(
-        lhs: cudf_column_view_handle,
-        rhs: cudf_scalar_handle,
-        op: cudf_binary_operator_t,
-        output_type: cudf_data_type_handle,
-        out: *mut cudf_column_handle,
-    ) -> cudf_status_t;
-
-    /// When `options->mr` is non-NULL, it must outlive the returned column.
+    /// `options` must name an explicit valid device and non-NULL stream/MR.
+    /// `options->mr` must outlive the returned column.
     pub fn cudf_binary_operation_vs_ex(
         lhs: cudf_column_view_handle,
         rhs: cudf_scalar_handle,
@@ -42,15 +28,8 @@ extern "C" {
         options: *const cudf_exec_options_t,
     ) -> cudf_status_t;
 
-    pub fn cudf_binary_operation_sv(
-        lhs: cudf_scalar_handle,
-        rhs: cudf_column_view_handle,
-        op: cudf_binary_operator_t,
-        output_type: cudf_data_type_handle,
-        out: *mut cudf_column_handle,
-    ) -> cudf_status_t;
-
-    /// When `options->mr` is non-NULL, it must outlive the returned column.
+    /// `options` must name an explicit valid device and non-NULL stream/MR.
+    /// `options->mr` must outlive the returned column.
     pub fn cudf_binary_operation_sv_ex(
         lhs: cudf_scalar_handle,
         rhs: cudf_column_view_handle,

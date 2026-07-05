@@ -9,6 +9,12 @@ use crate::{
 extern "C" {
     // -- Arrow Device Column Bridge -----------------------------------------
 
+    /// Export a column view through Arrow C Device ABI using strict explicit
+    /// execution options.
+    ///
+    /// `options` must name an explicit valid device, non-null stream, and
+    /// non-null memory resource. The memory resource must outlive the returned
+    /// device array when bridge-owned storage is materialized.
     pub fn cudf_arrow_device_column_export(
         view: cudf_column_view_handle,
         options: *const cudf_exec_options_t,
@@ -17,6 +23,12 @@ extern "C" {
         out_materialization: *mut cudf_arrow_device_export_materialization_t,
     ) -> cudf_status_t;
 
+    /// Export a table view through Arrow C Device ABI using strict explicit
+    /// execution options.
+    ///
+    /// `options` must name an explicit valid device, non-null stream, and
+    /// non-null memory resource. The memory resource must outlive the returned
+    /// device array when bridge-owned storage is materialized.
     pub fn cudf_arrow_device_table_export(
         view: cudf_table_view_handle,
         options: *const cudf_exec_options_t,
@@ -27,6 +39,12 @@ extern "C" {
         out_materialization: *mut cudf_arrow_device_export_materialization_t,
     ) -> cudf_status_t;
 
+    /// Import an Arrow C Device ABI column using strict explicit execution
+    /// options.
+    ///
+    /// `options` must name an explicit valid device, non-null stream, and
+    /// non-null memory resource. The memory resource must outlive the returned
+    /// column when bridge-owned storage is materialized.
     pub fn cudf_arrow_device_column_import(
         schema: cudf_arrow_schema_handle,
         array: cudf_arrow_device_array_handle,
@@ -35,6 +53,12 @@ extern "C" {
         out_materialization: *mut cudf_arrow_device_import_materialization_t,
     ) -> cudf_status_t;
 
+    /// Import an Arrow C Device ABI table using strict explicit execution
+    /// options.
+    ///
+    /// `options` must name an explicit valid device, non-null stream, and
+    /// non-null memory resource. The memory resource must outlive the returned
+    /// table when bridge-owned storage is materialized.
     pub fn cudf_arrow_device_table_import(
         schema: cudf_arrow_schema_handle,
         array: cudf_arrow_device_array_handle,

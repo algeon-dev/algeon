@@ -20,44 +20,45 @@ class device_memory_resource;
 /// it on destruction. Used inside `cudf_resolve_exec_options()` to activate
 /// the device requested by `cudf_exec_options_t::device`.
 class cudf_device_guard {
- public:
+public:
   cudf_device_guard() = default;
 
   /// Save the current device and switch to `target`.  No-op when
   /// `target` matches the current device.
   cudf_status_t activate(int32_t target);
 
-  ~cudf_device_guard()
-  {
-    if (active_) { cudaSetDevice(previous_); }
+  ~cudf_device_guard() {
+    if (active_) {
+      cudaSetDevice(previous_);
+    }
   }
 
   // non-copyable
-  cudf_device_guard(cudf_device_guard const&) = delete;
+  cudf_device_guard(cudf_device_guard const &) = delete;
 
-  cudf_device_guard& operator=(cudf_device_guard const&) = delete;
+  cudf_device_guard &operator=(cudf_device_guard const &) = delete;
 
   // movable (transfer ownership of the restore obligation)
-  cudf_device_guard(cudf_device_guard&& other) noexcept
-    : previous_(other.previous_), active_(other.active_)
-  {
+  cudf_device_guard(cudf_device_guard &&other) noexcept
+      : previous_(other.previous_), active_(other.active_) {
     other.active_ = false;
   }
 
-  cudf_device_guard& operator=(cudf_device_guard&& other) noexcept
-  {
+  cudf_device_guard &operator=(cudf_device_guard &&other) noexcept {
     if (this != &other) {
-      if (active_) { cudaSetDevice(previous_); }
-      previous_     = other.previous_;
-      active_       = other.active_;
+      if (active_) {
+        cudaSetDevice(previous_);
+      }
+      previous_ = other.previous_;
+      active_ = other.active_;
       other.active_ = false;
     }
     return *this;
   }
 
- private:
+private:
   int32_t previous_ = 0;
-  bool active_      = false;
+  bool active_ = false;
 };
 
 /// RAII guard for libcudf APIs whose public constructor surface still resolves
@@ -65,54 +66,64 @@ class cudf_device_guard {
 /// parameter. Keep this scoped to the smallest call that performs the
 /// allocation and prefer explicit `mr` arguments whenever libcudf offers them.
 class cudf_current_device_resource_guard {
- public:
-  explicit cudf_current_device_resource_guard(rmm::mr::device_memory_resource* target);
+public:
+  explicit cudf_current_device_resource_guard(
+      rmm::mr::device_memory_resource *target);
 
   ~cudf_current_device_resource_guard();
 
-  cudf_current_device_resource_guard(cudf_current_device_resource_guard const&) = delete;
+  cudf_current_device_resource_guard(
+      cudf_current_device_resource_guard const &) = delete;
 
-  cudf_current_device_resource_guard& operator=(cudf_current_device_resource_guard const&) = delete;
+  cudf_current_device_resource_guard &
+  operator=(cudf_current_device_resource_guard const &) = delete;
 
- private:
+private:
   std::unique_lock<std::recursive_mutex> lock_;
-  rmm::mr::device_memory_resource* previous_;
+  rmm::mr::device_memory_resource *previous_;
+  bool restore_previous_ = false;
 };
 
-std::recursive_mutex& cudf_current_device_resource_mutex();
+std::recursive_mutex &cudf_current_device_resource_mutex();
 
 struct cudf_exec_context {
   rmm::cuda_stream_view stream;
-  rmm::device_async_resource_ref mr;
-  rmm::mr::device_memory_resource* mr_raw;
+  std::shared_ptr<void> stream_lifetime;
+  std::shared_ptr<rmm::device_async_resource_ref> mr;
+  rmm::mr::device_memory_resource *mr_raw;
   std::shared_ptr<void> mr_lifetime;
   int32_t device;
   cudf_device_guard guard;
   std::unique_lock<std::recursive_mutex> current_resource_lock;
-  rmm::mr::device_memory_resource* previous_mr_raw = nullptr;
-  bool current_resource_installed                  = false;
+  rmm::mr::device_memory_resource *previous_mr_raw = nullptr;
+  bool current_resource_installed = false;
 
   cudf_exec_context(rmm::cuda_stream_view stream,
-                    rmm::device_async_resource_ref mr,
-                    rmm::mr::device_memory_resource* mr_raw,
-                    std::shared_ptr<void> mr_lifetime,
-                    int32_t device,
+                    std::shared_ptr<void> stream_lifetime,
+                    std::shared_ptr<rmm::device_async_resource_ref> mr,
+                    rmm::mr::device_memory_resource *mr_raw,
+                    std::shared_ptr<void> mr_lifetime, int32_t device,
                     cudf_device_guard guard = {});
 
   ~cudf_exec_context();
 
-  cudf_exec_context(cudf_exec_context const&)            = delete;
-  cudf_exec_context& operator=(cudf_exec_context const&) = delete;
-  cudf_exec_context(cudf_exec_context&& other) noexcept;
-  cudf_exec_context& operator=(cudf_exec_context&&) noexcept = delete;
+  cudf_exec_context(cudf_exec_context const &) = delete;
+  cudf_exec_context &operator=(cudf_exec_context const &) = delete;
+  cudf_exec_context(cudf_exec_context &&other) noexcept;
+  cudf_exec_context &operator=(cudf_exec_context &&) noexcept = delete;
 
   void install_current_device_resource();
 };
 
 cudf_exec_context cudf_make_exec_context();
 
-cudf_status_t cudf_resolve_exec_options(cudf_exec_options_t const* options, cudf_exec_context* out);
+cudf_status_t cudf_resolve_exec_options(cudf_exec_options_t const *options,
+                                        cudf_exec_context *out);
+
+cudf_status_t
+cudf_resolve_required_exec_options(cudf_exec_options_t const *options,
+                                   std::unique_ptr<cudf_exec_context> *out);
 
 void cudf_record_synchronized_stream(rmm::cuda_stream_view stream);
 
-#endif  // CUDF_RUST_EXECUTION_CONTEXT_INTERNAL_HPP
+#endif // CUDF_RUST_EXECUTION_CONTEXT_INTERNAL_HPP

@@ -3,26 +3,6 @@
 using namespace cudf_rust::join;
 
 extern "C" {
-cudf_status_t cudf_mixed_inner_join_indices(cudf_table_view_handle left_equality,
-                                            cudf_table_view_handle right_equality,
-                                            cudf_table_view_handle left_conditional,
-                                            cudf_table_view_handle right_conditional,
-                                            cudf_ast_expression_handle predicate,
-                                            cudf_null_equality_t null_equality,
-                                            cudf_column_handle* out_left_indices,
-                                            cudf_column_handle* out_right_indices)
-{
-  return cudf_mixed_inner_join_indices_ex(left_equality,
-                                          right_equality,
-                                          left_conditional,
-                                          right_conditional,
-                                          predicate,
-                                          null_equality,
-                                          out_left_indices,
-                                          out_right_indices,
-                                          nullptr);
-}
-
 cudf_status_t cudf_mixed_inner_join_indices_ex(cudf_table_view_handle left_equality,
                                                cudf_table_view_handle right_equality,
                                                cudf_table_view_handle left_conditional,
@@ -43,26 +23,6 @@ cudf_status_t cudf_mixed_inner_join_indices_ex(cudf_table_view_handle left_equal
                                       out_right_indices,
                                       options,
                                       pair_join_kind::inner);
-}
-
-cudf_status_t cudf_mixed_left_join_indices(cudf_table_view_handle left_equality,
-                                           cudf_table_view_handle right_equality,
-                                           cudf_table_view_handle left_conditional,
-                                           cudf_table_view_handle right_conditional,
-                                           cudf_ast_expression_handle predicate,
-                                           cudf_null_equality_t null_equality,
-                                           cudf_column_handle* out_left_indices,
-                                           cudf_column_handle* out_right_indices)
-{
-  return cudf_mixed_left_join_indices_ex(left_equality,
-                                         right_equality,
-                                         left_conditional,
-                                         right_conditional,
-                                         predicate,
-                                         null_equality,
-                                         out_left_indices,
-                                         out_right_indices,
-                                         nullptr);
 }
 
 cudf_status_t cudf_mixed_left_join_indices_ex(cudf_table_view_handle left_equality,
@@ -87,26 +47,6 @@ cudf_status_t cudf_mixed_left_join_indices_ex(cudf_table_view_handle left_equali
                                       pair_join_kind::left);
 }
 
-cudf_status_t cudf_mixed_full_join_indices(cudf_table_view_handle left_equality,
-                                           cudf_table_view_handle right_equality,
-                                           cudf_table_view_handle left_conditional,
-                                           cudf_table_view_handle right_conditional,
-                                           cudf_ast_expression_handle predicate,
-                                           cudf_null_equality_t null_equality,
-                                           cudf_column_handle* out_left_indices,
-                                           cudf_column_handle* out_right_indices)
-{
-  return cudf_mixed_full_join_indices_ex(left_equality,
-                                         right_equality,
-                                         left_conditional,
-                                         right_conditional,
-                                         predicate,
-                                         null_equality,
-                                         out_left_indices,
-                                         out_right_indices,
-                                         nullptr);
-}
-
 cudf_status_t cudf_mixed_full_join_indices_ex(cudf_table_view_handle left_equality,
                                               cudf_table_view_handle right_equality,
                                               cudf_table_view_handle left_conditional,
@@ -129,24 +69,6 @@ cudf_status_t cudf_mixed_full_join_indices_ex(cudf_table_view_handle left_equali
                                       pair_join_kind::full);
 }
 
-cudf_status_t cudf_mixed_left_semi_join_indices(cudf_table_view_handle left_equality,
-                                                cudf_table_view_handle right_equality,
-                                                cudf_table_view_handle left_conditional,
-                                                cudf_table_view_handle right_conditional,
-                                                cudf_ast_expression_handle predicate,
-                                                cudf_null_equality_t null_equality,
-                                                cudf_column_handle* out_indices)
-{
-  return cudf_mixed_left_semi_join_indices_ex(left_equality,
-                                              right_equality,
-                                              left_conditional,
-                                              right_conditional,
-                                              predicate,
-                                              null_equality,
-                                              out_indices,
-                                              nullptr);
-}
-
 cudf_status_t cudf_mixed_left_semi_join_indices_ex(cudf_table_view_handle left_equality,
                                                    cudf_table_view_handle right_equality,
                                                    cudf_table_view_handle left_conditional,
@@ -165,24 +87,6 @@ cudf_status_t cudf_mixed_left_semi_join_indices_ex(cudf_table_view_handle left_e
                                              out_indices,
                                              options,
                                              single_side_join_kind::semi);
-}
-
-cudf_status_t cudf_mixed_left_anti_join_indices(cudf_table_view_handle left_equality,
-                                                cudf_table_view_handle right_equality,
-                                                cudf_table_view_handle left_conditional,
-                                                cudf_table_view_handle right_conditional,
-                                                cudf_ast_expression_handle predicate,
-                                                cudf_null_equality_t null_equality,
-                                                cudf_column_handle* out_indices)
-{
-  return cudf_mixed_left_anti_join_indices_ex(left_equality,
-                                              right_equality,
-                                              left_conditional,
-                                              right_conditional,
-                                              predicate,
-                                              null_equality,
-                                              out_indices,
-                                              nullptr);
 }
 
 cudf_status_t cudf_mixed_left_anti_join_indices_ex(cudf_table_view_handle left_equality,
@@ -205,18 +109,6 @@ cudf_status_t cudf_mixed_left_anti_join_indices_ex(cudf_table_view_handle left_e
                                              single_side_join_kind::anti);
 }
 
-cudf_status_t cudf_mixed_inner_join_begin_size_data(cudf_table_view_handle left_equality,
-                                                    cudf_table_view_handle right_equality,
-                                                    cudf_table_view_handle left_conditional,
-                                                    cudf_table_view_handle right_conditional,
-                                                    cudf_ast_expression_handle predicate,
-                                                    cudf_null_equality_t null_equality,
-                                                    cudf_mixed_join_size_data_handle* out)
-{
-  return cudf_mixed_inner_join_begin_size_data_ex(
-    left_equality, right_equality, left_conditional, right_conditional, predicate, null_equality, out, nullptr);
-}
-
 cudf_status_t cudf_mixed_inner_join_begin_size_data_ex(cudf_table_view_handle left_equality,
                                                        cudf_table_view_handle right_equality,
                                                        cudf_table_view_handle left_conditional,
@@ -235,18 +127,6 @@ cudf_status_t cudf_mixed_inner_join_begin_size_data_ex(cudf_table_view_handle le
                                    out,
                                    options,
                                    mixed_join_size_kind::inner);
-}
-
-cudf_status_t cudf_mixed_left_join_begin_size_data(cudf_table_view_handle left_equality,
-                                                   cudf_table_view_handle right_equality,
-                                                   cudf_table_view_handle left_conditional,
-                                                   cudf_table_view_handle right_conditional,
-                                                   cudf_ast_expression_handle predicate,
-                                                   cudf_null_equality_t null_equality,
-                                                   cudf_mixed_join_size_data_handle* out)
-{
-  return cudf_mixed_left_join_begin_size_data_ex(
-    left_equality, right_equality, left_conditional, right_conditional, predicate, null_equality, out, nullptr);
 }
 
 cudf_status_t cudf_mixed_left_join_begin_size_data_ex(cudf_table_view_handle left_equality,
@@ -269,18 +149,6 @@ cudf_status_t cudf_mixed_left_join_begin_size_data_ex(cudf_table_view_handle lef
                                    mixed_join_size_kind::left);
 }
 
-cudf_status_t cudf_mixed_full_join_begin_size_data(cudf_table_view_handle left_equality,
-                                                   cudf_table_view_handle right_equality,
-                                                   cudf_table_view_handle left_conditional,
-                                                   cudf_table_view_handle right_conditional,
-                                                   cudf_ast_expression_handle predicate,
-                                                   cudf_null_equality_t null_equality,
-                                                   cudf_mixed_join_size_data_handle* out)
-{
-  return cudf_mixed_full_join_begin_size_data_ex(
-    left_equality, right_equality, left_conditional, right_conditional, predicate, null_equality, out, nullptr);
-}
-
 cudf_status_t cudf_mixed_full_join_begin_size_data_ex(cudf_table_view_handle left_equality,
                                                       cudf_table_view_handle right_equality,
                                                       cudf_table_view_handle left_conditional,
@@ -301,18 +169,6 @@ cudf_status_t cudf_mixed_full_join_begin_size_data_ex(cudf_table_view_handle lef
                                    mixed_join_size_kind::full);
 }
 
-cudf_status_t cudf_mixed_left_semi_join_begin_size_data(cudf_table_view_handle left_equality,
-                                                        cudf_table_view_handle right_equality,
-                                                        cudf_table_view_handle left_conditional,
-                                                        cudf_table_view_handle right_conditional,
-                                                        cudf_ast_expression_handle predicate,
-                                                        cudf_null_equality_t null_equality,
-                                                        cudf_mixed_join_size_data_handle* out)
-{
-  return cudf_mixed_left_semi_join_begin_size_data_ex(
-    left_equality, right_equality, left_conditional, right_conditional, predicate, null_equality, out, nullptr);
-}
-
 cudf_status_t cudf_mixed_left_semi_join_begin_size_data_ex(cudf_table_view_handle left_equality,
                                                            cudf_table_view_handle right_equality,
                                                            cudf_table_view_handle left_conditional,
@@ -331,18 +187,6 @@ cudf_status_t cudf_mixed_left_semi_join_begin_size_data_ex(cudf_table_view_handl
                                    out,
                                    options,
                                    mixed_join_size_kind::semi);
-}
-
-cudf_status_t cudf_mixed_left_anti_join_begin_size_data(cudf_table_view_handle left_equality,
-                                                        cudf_table_view_handle right_equality,
-                                                        cudf_table_view_handle left_conditional,
-                                                        cudf_table_view_handle right_conditional,
-                                                        cudf_ast_expression_handle predicate,
-                                                        cudf_null_equality_t null_equality,
-                                                        cudf_mixed_join_size_data_handle* out)
-{
-  return cudf_mixed_left_anti_join_begin_size_data_ex(
-    left_equality, right_equality, left_conditional, right_conditional, predicate, null_equality, out, nullptr);
 }
 
 cudf_status_t cudf_mixed_left_anti_join_begin_size_data_ex(cudf_table_view_handle left_equality,
@@ -369,16 +213,9 @@ void cudf_mixed_join_size_data_destroy(cudf_mixed_join_size_data_handle handle)
 {
   if (handle == nullptr) { return; }
   cudf_clear_error();
-  try {
-    auto* owner = static_cast<mixed_join_size_data_owner*>(handle);
-    cudf_device_guard device_guard;
-    cudf_status_t const device_status = device_guard.activate(owner->device);
-    if (device_status != CUDF_SUCCESS) { return; }
-    cudf_current_device_resource_guard current_mr{owner->mr_raw};
-    delete owner;
-  } catch (...) {
-    (void)translate_exception();
-  }
+  auto* owner      = static_cast<mixed_join_size_data_owner*>(handle);
+  auto provenance = cached_join_owner_provenance(*owner);
+  (void)cudf_destroy_under_provenance(provenance, [owner] { delete owner; });
 }
 
 cudf_status_t cudf_mixed_join_size_data_output_size(cudf_mixed_join_size_data_handle handle,
@@ -437,15 +274,6 @@ cudf_status_t cudf_mixed_join_size_data_gather_map_size(cudf_mixed_join_size_dat
   CUDF_RUST_CATCH
 }
 
-cudf_status_t cudf_mixed_join_size_data_materialize_indices(
-  cudf_mixed_join_size_data_handle size_data,
-  cudf_column_handle* out_left_indices,
-  cudf_column_handle* out_right_indices)
-{
-  return cudf_mixed_join_size_data_materialize_indices_ex(
-    size_data, out_left_indices, out_right_indices, nullptr);
-}
-
 cudf_status_t cudf_mixed_join_size_data_materialize_indices_ex(
   cudf_mixed_join_size_data_handle size_data,
   cudf_column_handle* out_left_indices,
@@ -454,13 +282,6 @@ cudf_status_t cudf_mixed_join_size_data_materialize_indices_ex(
 {
   return mixed_join_size_data_materialize_indices_impl(
     size_data, out_left_indices, out_right_indices, options);
-}
-
-cudf_status_t cudf_mixed_join_size_data_materialize_single_indices(
-  cudf_mixed_join_size_data_handle size_data,
-  cudf_column_handle* out_indices)
-{
-  return cudf_mixed_join_size_data_materialize_single_indices_ex(size_data, out_indices, nullptr);
 }
 
 cudf_status_t cudf_mixed_join_size_data_materialize_single_indices_ex(

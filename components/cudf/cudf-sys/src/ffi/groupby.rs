@@ -25,28 +25,11 @@ extern "C" {
 
     pub fn cudf_groupby_scan_aggregation_destroy(handle: *mut c_void);
 
-    /// Perform a groupby aggregation and return the keys table plus a
-    /// heap-allocated flat array of result columns.
-    ///
-    /// On failure, all outputs are initialized to null / zero. When the total
-    /// number of result columns is zero, `out_values` is returned as null.
-    pub fn cudf_groupby_aggregate(
-        keys: cudf_table_view_handle,
-        values: *const cudf_column_view_handle,
-        aggregations: *const *mut c_void,
-        agg_counts: *const i32,
-        num_requests: i32,
-        num_aggregations: i32,
-        keys_null_policy: cudf_null_policy_t,
-        out_keys: *mut cudf_table_handle,
-        out_values: *mut *mut cudf_column_handle,
-        out_total_columns: *mut i32,
-    ) -> cudf_status_t;
-
     /// Groupby aggregate with explicit execution context.
     ///
-    /// When `options->mr` is non-null, it must outlive the returned keys
-    /// table and every returned result column.
+    /// `options` must name an explicit valid device and non-null stream/MR.
+    /// `options->mr` must outlive the returned keys table and every returned
+    /// result column.
     pub fn cudf_groupby_aggregate_ex(
         keys: cudf_table_view_handle,
         values: *const cudf_column_view_handle,
@@ -61,20 +44,11 @@ extern "C" {
         options: *const cudf_exec_options_t,
     ) -> cudf_status_t;
 
-    pub fn cudf_groupby_scan(
-        keys: cudf_table_view_handle,
-        values: *const cudf_column_view_handle,
-        aggregations: *const *mut c_void,
-        agg_counts: *const i32,
-        num_requests: i32,
-        num_aggregations: i32,
-        keys_null_policy: cudf_null_policy_t,
-        keys_are_sorted: i32,
-        out_keys: *mut cudf_table_handle,
-        out_values: *mut *mut cudf_column_handle,
-        out_total_columns: *mut i32,
-    ) -> cudf_status_t;
-
+    /// Grouped prefix scan with explicit execution context.
+    ///
+    /// `options` must name an explicit valid device and non-null stream/MR.
+    /// `options->mr` must outlive the returned keys table and every returned
+    /// result column.
     pub fn cudf_groupby_scan_ex(
         keys: cudf_table_view_handle,
         values: *const cudf_column_view_handle,
@@ -94,28 +68,10 @@ extern "C" {
     /// shim. Does not destroy the individual columns.
     pub fn cudf_free_column_array(array: *mut cudf_column_handle);
 
-    /// Perform a per-group row shift.
-    ///
-    /// `values`, `offsets`, and `fill_values` must all have length
-    /// `num_value_columns`. libcudf returns a keys table and a values table of
-    /// identical row count; within each group the row order matches the input
-    /// row order, while group-to-group order is libcudf-defined.
-    pub fn cudf_groupby_shift(
-        keys: cudf_table_view_handle,
-        values: *const cudf_column_view_handle,
-        offsets: *const i32,
-        fill_values: *const cudf_scalar_handle,
-        num_value_columns: i32,
-        keys_null_policy: cudf_null_policy_t,
-        keys_are_sorted: i32,
-        out_keys: *mut cudf_table_handle,
-        out_values: *mut cudf_table_handle,
-    ) -> cudf_status_t;
-
     /// Grouped shift with explicit execution context.
     ///
-    /// When `options->mr` is non-null, it must outlive the returned keys and
-    /// values tables.
+    /// `options` must name an explicit valid device and non-null stream/MR.
+    /// `options->mr` must outlive the returned keys and values tables.
     pub fn cudf_groupby_shift_ex(
         keys: cudf_table_view_handle,
         values: *const cudf_column_view_handle,

@@ -1,8 +1,9 @@
 use std::{marker::PhantomData, os::raw::c_void};
 
 use crate::{
-    CUDF_SUCCESS, cudf_event_handle, cudf_exec_options_t, cudf_memory_resource_handle, cudf_status_t,
-    cudf_stream_handle, cudf_test_memory_resource_set_current, cudf_test_memory_resource_set_current_raw,
+    CUDF_EXEC_FLAG_DEVICE_EXPLICIT, CUDF_SUCCESS, cudf_event_handle, cudf_exec_options_t, cudf_memory_resource_handle,
+    cudf_status_t, cudf_stream_handle, cudf_test_memory_resource_set_current,
+    cudf_test_memory_resource_set_current_raw,
 };
 
 fn status_to_result(status: cudf_status_t) -> Result<(), cudf_status_t> {
@@ -117,9 +118,10 @@ impl<'a> BorrowedMemoryResource<'a> {
 
 /// Typed builder for `cudf_exec_options_t`.
 ///
-/// Null stream / memory-resource fields preserve cuDF defaults.
-/// If an explicit memory resource is attached, it must outlive any outputs
-/// allocated through the `_ex` call that consumes this context.
+/// Null stream / memory-resource fields preserve cuDF defaults for permissive
+/// `_ex` calls. Strict `_ex` calls require an explicit device, stream, and
+/// memory resource. If an explicit memory resource is attached, it must outlive
+/// any outputs allocated through the `_ex` call that consumes this context.
 #[derive(Debug, Clone, Copy)]
 pub struct ExecutionContext<'a> {
     raw: cudf_exec_options_t,
@@ -130,6 +132,12 @@ pub struct ExecutionContext<'a> {
 impl<'a> ExecutionContext<'a> {
     pub fn new() -> Self {
         Self { raw: cudf_exec_options_t::defaults(), _stream: PhantomData, _mr: PhantomData }
+    }
+
+    pub fn with_device(mut self, device: i32) -> Self {
+        self.raw.device = device;
+        self.raw.flags |= CUDF_EXEC_FLAG_DEVICE_EXPLICIT;
+        self
     }
 
     pub fn with_stream(mut self, stream: &'a BorrowedStream<'a>) -> Self {

@@ -13,21 +13,23 @@ extern "C" {
 #endif
 
 /// Bit 0 of `flags`: when set, `device` was explicitly provided by the caller
-/// and the shim must switch to it before resolving stream/MR defaults.
+/// and the shim must switch to it before entering libcudf.
 #define CUDF_EXEC_FLAG_DEVICE_EXPLICIT 1u
 
 /// Versioned execution options for compute and host-materialization APIs.
 ///
 /// Set `struct_size` to `sizeof(cudf_exec_options_t)`.
 ///
-/// Passing NULL for the options pointer, or NULL for `stream` / `mr`, selects
-/// cuDF's default stream and current device memory resource.
+/// Execution-sensitive production entry points require a non-NULL options
+/// pointer, `CUDF_EXEC_FLAG_DEVICE_EXPLICIT`, a non-NULL `stream`, and a
+/// non-NULL `mr`. Passing NULL for the options pointer, clearing the explicit
+/// device flag, or leaving `stream` / `mr` NULL is only accepted by narrow
+/// permissive diagnostics and legacy regression hooks.
 ///
 /// `device`:  CUDA device ordinal to execute on.  When
 ///            `CUDF_EXEC_FLAG_DEVICE_EXPLICIT` is set in `flags`, the shim
-///            switches to this device before resolving stream/MR defaults.
-///            When the flag is clear, `device` is ignored and the calling
-///            thread's current device is used.
+///            switches to this device before entering libcudf. Production
+///            operation paths reject options with the flag clear.
 ///
 /// `mr` must outlive any outputs allocated through it.
 ///
