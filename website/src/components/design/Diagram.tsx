@@ -634,7 +634,7 @@ export function OverviewDiagram({caption}: {caption?: React.ReactNode}) {
   };
   const nexus: OvSpec = {
     kind: 'query layer', name: 'DataFusion Nexus',
-    note: 'embedded library or Flight SQL server', tone: 'engine',
+    note: 'embedded library or standalone server', tone: 'engine',
   };
   const gpu: OvSpec = {
     kind: 'execution', name: 'GPU', note: 'cuDF · cuGraph', tone: 'gpu',
