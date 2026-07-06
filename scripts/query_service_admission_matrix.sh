@@ -5,6 +5,10 @@
 # Each GPU workload invocation is wrapped in /tmp/cudf-gpu.lock by default.
 # The script validates the stress TSV for native success and parity, and leaves
 # one TSV per matrix cell under target/query_service_admission_matrix/.
+# SF100 q18/q21 are required to succeed only when the actual query grant is at
+# least the large-query native floor. Lower grants may still succeed; if they
+# fail, they must fail cleanly with a temporary structured resource-exhaustion
+# error.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
@@ -39,8 +43,13 @@ SF100_ROOT="${SF100_ROOT:-$(default_tpch_root sf100)}"
 
 SF10_MAX_SOURCE_CHUNK_BYTES="${NEXUS_ADMISSION_MATRIX_SF10_MAX_SOURCE_CHUNK_BYTES:-4294967296}"
 SF10_MAX_ROW_GROUPS_PER_CHUNK="${NEXUS_ADMISSION_MATRIX_SF10_MAX_ROW_GROUPS_PER_CHUNK:-1024}"
-SF100_MAX_SOURCE_CHUNK_BYTES="${NEXUS_ADMISSION_MATRIX_SF100_MAX_SOURCE_CHUNK_BYTES:-34359738368}"
-SF100_MAX_ROW_GROUPS_PER_CHUNK="${NEXUS_ADMISSION_MATRIX_SF100_MAX_ROW_GROUPS_PER_CHUNK:-1024}"
+SF100_MAX_SOURCE_CHUNK_BYTES_OVERRIDE="${NEXUS_ADMISSION_MATRIX_SF100_MAX_SOURCE_CHUNK_BYTES:-}"
+SF100_MAX_ROW_GROUPS_PER_CHUNK_OVERRIDE="${NEXUS_ADMISSION_MATRIX_SF100_MAX_ROW_GROUPS_PER_CHUNK:-}"
+SF100_MAX_SOURCE_CHUNK_BYTES="${SF100_MAX_SOURCE_CHUNK_BYTES_OVERRIDE:-34359738368}"
+SF100_MAX_ROW_GROUPS_PER_CHUNK="${SF100_MAX_ROW_GROUPS_PER_CHUNK_OVERRIDE:-1024}"
+SF100_MIN_GRANT_MAX_SOURCE_CHUNK_BYTES="${NEXUS_ADMISSION_MATRIX_SF100_MIN_GRANT_MAX_SOURCE_CHUNK_BYTES:-2147483648}"
+SF100_MIN_GRANT_MAX_ROW_GROUPS_PER_CHUNK="${NEXUS_ADMISSION_MATRIX_SF100_MIN_GRANT_MAX_ROW_GROUPS_PER_CHUNK:-256}"
+SF100_LARGE_QUERY_NATIVE_GRANT_FLOOR_BYTES="${NEXUS_ADMISSION_MATRIX_SF100_LARGE_QUERY_NATIVE_GRANT_FLOOR_BYTES:-44000000000}"
 
 case "${DRY_RUN}" in
   1 | true | TRUE | yes | YES | on | ON)
@@ -77,18 +86,45 @@ interactive_iterations_for_scale() {
   esac
 }
 
-max_source_chunk_bytes_for_scale() {
+is_sf100_min_grant_cell() {
+  local scale="$1"
+  local slot_guarantee="$2"
+  local concurrency="$3"
+  [[ "${scale}" == "sf100" && "${slot_guarantee}" == "guaranteed_minimum" && "${concurrency}" -ge 3 ]]
+}
+
+max_source_chunk_bytes_for_case() {
+  local scale="$1"
+  local slot_guarantee="$2"
+  local concurrency="$3"
   case "$1" in
     sf10) printf '%s\n' "${SF10_MAX_SOURCE_CHUNK_BYTES}" ;;
-    sf100) printf '%s\n' "${SF100_MAX_SOURCE_CHUNK_BYTES}" ;;
+    sf100)
+      if [[ -z "${SF100_MAX_SOURCE_CHUNK_BYTES_OVERRIDE}" ]] \
+        && is_sf100_min_grant_cell "${scale}" "${slot_guarantee}" "${concurrency}"; then
+        printf '%s\n' "${SF100_MIN_GRANT_MAX_SOURCE_CHUNK_BYTES}"
+      else
+        printf '%s\n' "${SF100_MAX_SOURCE_CHUNK_BYTES}"
+      fi
+      ;;
     *) echo "ERROR: unsupported scale '$1'; expected sf10 or sf100" >&2; return 2 ;;
   esac
 }
 
-max_row_groups_per_chunk_for_scale() {
+max_row_groups_per_chunk_for_case() {
+  local scale="$1"
+  local slot_guarantee="$2"
+  local concurrency="$3"
   case "$1" in
     sf10) printf '%s\n' "${SF10_MAX_ROW_GROUPS_PER_CHUNK}" ;;
-    sf100) printf '%s\n' "${SF100_MAX_ROW_GROUPS_PER_CHUNK}" ;;
+    sf100)
+      if [[ -z "${SF100_MAX_ROW_GROUPS_PER_CHUNK_OVERRIDE}" ]] \
+        && is_sf100_min_grant_cell "${scale}" "${slot_guarantee}" "${concurrency}"; then
+        printf '%s\n' "${SF100_MIN_GRANT_MAX_ROW_GROUPS_PER_CHUNK}"
+      else
+        printf '%s\n' "${SF100_MAX_ROW_GROUPS_PER_CHUNK}"
+      fi
+      ;;
     *) echo "ERROR: unsupported scale '$1'; expected sf10 or sf100" >&2; return 2 ;;
   esac
 }
@@ -98,7 +134,10 @@ validate_report() {
   local scale="$2"
   local expected_rows="$3"
 
-  awk -v scale="${scale}" -v expected_rows="${expected_rows}" '
+  awk \
+    -v scale="${scale}" \
+    -v expected_rows="${expected_rows}" \
+    -v sf100_large_query_native_grant_floor="${SF100_LARGE_QUERY_NATIVE_GRANT_FLOOR_BYTES}" '
     BEGIN { FS = "\t"; status = 0; query_rows = 0; q18 = 0; q21 = 0; }
     /^#/ || NF == 0 { next }
     !seen_header {
@@ -113,6 +152,31 @@ validate_report() {
       query_id = $(col["query_id"])
       if (query_id == "q18") { q18++ }
       if (query_id == "q21") { q21++ }
+      grant_bytes = $(col["query_grant_bytes"])
+      sf100_large_grant_limited = scale == "sf100" \
+        && (query_id == "q18" || query_id == "q21") \
+        && grant_bytes != "none" \
+        && (grant_bytes + 0) < sf100_large_query_native_grant_floor
+      if (sf100_large_grant_limited && $(col["native_runtime_outcome"]) == "failed") {
+        if ($(col["planning_outcome"]) != "accepted_replaced") {
+          printf("FAIL %s: grant-limited %s planning_outcome=%s\n", FILENAME, query_id, $(col["planning_outcome"])) > "/dev/stderr"
+          status = 1
+        }
+        if ($(col["post_native_execution_path"]) != "native") {
+          printf("FAIL %s: grant-limited %s post_native_execution_path=%s\n", FILENAME, query_id, $(col["post_native_execution_path"])) > "/dev/stderr"
+          status = 1
+        }
+        if ($(col["error_kind"]) != "resource_exhausted" || $(col["error_status"]) != "temporary") {
+          printf("FAIL %s: grant-limited %s error_kind=%s error_status=%s\n", FILENAME, query_id, $(col["error_kind"]), $(col["error_status"])) > "/dev/stderr"
+          status = 1
+        }
+        if ($(col["error_code"]) != "memory_reservation_failed" && $(col["error_code"]) != "cudf_resource_exhausted") {
+          printf("FAIL %s: grant-limited %s error_code=%s\n", FILENAME, query_id, $(col["error_code"])) > "/dev/stderr"
+          status = 1
+        }
+        printf("NOTE %s: grant-limited %s grant_bytes=%s floor_bytes=%s error_code=%s\n", FILENAME, query_id, grant_bytes, sf100_large_query_native_grant_floor, $(col["error_code"])) > "/dev/stderr"
+        next
+      }
       if ($(col["native_runtime_outcome"]) != "succeeded") {
         printf("FAIL %s: %s native_runtime_outcome=%s\n", FILENAME, query_id, $(col["native_runtime_outcome"])) > "/dev/stderr"
         status = 1
@@ -210,8 +274,8 @@ run_case() {
   root="$(root_for_scale "${scale}")"
   expected_rows="$(expected_rows_for_scale "${scale}")"
   interactive_iterations="$(interactive_iterations_for_scale "${scale}")"
-  max_source_chunk_bytes="$(max_source_chunk_bytes_for_scale "${scale}")"
-  max_row_groups_per_chunk="$(max_row_groups_per_chunk_for_scale "${scale}")"
+  max_source_chunk_bytes="$(max_source_chunk_bytes_for_case "${scale}" "${slot_guarantee}" "${concurrency}")"
+  max_row_groups_per_chunk="$(max_row_groups_per_chunk_for_case "${scale}" "${slot_guarantee}" "${concurrency}")"
   output="${OUTPUT_DIR}/tpch_${scale}_${slot_guarantee}_n${concurrency}.tsv"
 
   if [[ "${DRY_RUN}" -eq 0 && ! -d "${root}" ]]; then

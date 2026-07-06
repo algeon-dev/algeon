@@ -249,9 +249,10 @@ fn read_local_parquet_source_batch_or_split(
     grow_source_to_observed: bool,
 ) -> Result<Vec<ScheduledLocalParquetReadOutput>> {
     context.check_cancellation("nexus_query_engine.exec.bounded.serial_source_chunk_batch_retry")?;
+    let (max_attempts, min_retry_chunk_row_groups) = source_read_retry_policy(context);
     if batch.is_singleton() {
-        let chunk = batch.chunks.first().expect("singleton source batch has one chunk");
-        return read_local_parquet_chunk_required_only(
+        let chunk = batch.chunks.first().expect("singleton source batch has one chunk").clone();
+        return read_local_parquet_chunk_required_only_or_split(
             context,
             source,
             chunk,
@@ -259,10 +260,10 @@ fn read_local_parquet_source_batch_or_split(
             metrics,
             memory_boundary,
             grow_source_to_observed,
-            true,
-            None,
-        )
-        .map(|output| vec![output]);
+            1,
+            max_attempts,
+            min_retry_chunk_row_groups,
+        );
     }
     match read_local_parquet_chunk_batch_required_only_no_commit(
         context,
@@ -315,6 +316,89 @@ fn read_local_parquet_source_batch_or_split(
     }
 }
 
+fn source_read_retry_policy(context: &ExecutionContext) -> (usize, usize) {
+    match context.memory_control_policy() {
+        MemoryControlPolicy::Bounded { max_retry_attempts, min_retry_chunk_row_groups, .. } => {
+            (max_retry_attempts.max(1), min_retry_chunk_row_groups.max(1))
+        },
+        MemoryControlPolicy::Unbounded => (1, 1),
+    }
+}
+
+fn read_local_parquet_chunk_required_only_or_split(
+    context: &ExecutionContext,
+    source: &LocalParquetSource,
+    chunk: SourceChunk,
+    reservations: &mut ReservationTracker,
+    metrics: &mut QueryMetrics,
+    memory_boundary: &'static str,
+    grow_source_to_observed: bool,
+    attempt: usize,
+    max_attempts: usize,
+    min_retry_chunk_row_groups: usize,
+) -> Result<Vec<ScheduledLocalParquetReadOutput>> {
+    context.check_cancellation("nexus_query_engine.exec.bounded.serial_source_chunk_retry")?;
+    match read_local_parquet_chunk_required_only_attempt(
+        context,
+        source,
+        &chunk,
+        reservations,
+        metrics,
+        memory_boundary,
+        grow_source_to_observed,
+        true,
+        None,
+        attempt,
+        max_attempts,
+    ) {
+        Ok(output) => Ok(vec![output]),
+        Err(error) if is_retryable_chunk_error(&error) => {
+            record_chunk_retry_error(&error, metrics);
+            if attempt < max_attempts
+                && let Some((left, right)) = split_retryable_chunk(&chunk, min_retry_chunk_row_groups)
+            {
+                metrics.record_source_chunk_retry();
+                let mut outputs = read_local_parquet_chunk_required_only_or_split(
+                    context,
+                    source,
+                    left,
+                    reservations,
+                    metrics,
+                    memory_boundary,
+                    grow_source_to_observed,
+                    attempt + 1,
+                    max_attempts,
+                    min_retry_chunk_row_groups,
+                )?;
+                match read_local_parquet_chunk_required_only_or_split(
+                    context,
+                    source,
+                    right,
+                    reservations,
+                    metrics,
+                    memory_boundary,
+                    grow_source_to_observed,
+                    attempt + 1,
+                    max_attempts,
+                    min_retry_chunk_row_groups,
+                ) {
+                    Ok(mut right_outputs) => {
+                        outputs.append(&mut right_outputs);
+                        Ok(outputs)
+                    },
+                    Err(error) => {
+                        release_source_read_outputs_reverse(reservations, outputs, metrics);
+                        Err(error)
+                    },
+                }
+            } else {
+                Err(chunk_retry_facts(&chunk, metrics).attach_to_error(error))
+            }
+        },
+        Err(error) => Err(error),
+    }
+}
+
 fn read_local_parquet_chunk_required_only(
     context: &ExecutionContext,
     source: &LocalParquetSource,
@@ -325,6 +409,34 @@ fn read_local_parquet_chunk_required_only(
     grow_source_to_observed: bool,
     cache_chunks: bool,
     visible_limit_remaining: Option<&mut Option<usize>>,
+) -> Result<ScheduledLocalParquetReadOutput> {
+    read_local_parquet_chunk_required_only_attempt(
+        context,
+        source,
+        chunk,
+        reservations,
+        metrics,
+        memory_boundary,
+        grow_source_to_observed,
+        cache_chunks,
+        visible_limit_remaining,
+        1,
+        1,
+    )
+}
+
+fn read_local_parquet_chunk_required_only_attempt(
+    context: &ExecutionContext,
+    source: &LocalParquetSource,
+    chunk: &SourceChunk,
+    reservations: &mut ReservationTracker,
+    metrics: &mut QueryMetrics,
+    memory_boundary: &'static str,
+    grow_source_to_observed: bool,
+    cache_chunks: bool,
+    visible_limit_remaining: Option<&mut Option<usize>>,
+    attempt: usize,
+    max_attempts: usize,
 ) -> Result<ScheduledLocalParquetReadOutput> {
     metrics.record_source_chunk_attempt();
     if cache_chunks
@@ -344,8 +456,8 @@ fn read_local_parquet_chunk_required_only(
         memory_boundary,
         reservations.budget(),
         chunk,
-        1,
-        1,
+        attempt,
+        max_attempts,
     );
     let mut reservation = reservations.try_reserve(source_request, metrics)?;
     let source_token_budget = reservations.available_bytes_including(&reservation);
@@ -361,8 +473,8 @@ fn read_local_parquet_chunk_required_only(
                 metrics,
                 memory_boundary,
                 &error,
-                1,
-                1,
+                attempt,
+                max_attempts,
             ) {
                 Ok(Some(frame)) => frame,
                 Ok(None) => {
@@ -405,8 +517,8 @@ fn read_local_parquet_chunk_required_only(
             &output.chunk,
             metrics,
             memory_boundary,
-            1,
-            1,
+            attempt,
+            max_attempts,
         )
     } else {
         shrink_source_reservation_to_observed_without_grow(
@@ -416,8 +528,8 @@ fn read_local_parquet_chunk_required_only(
             &output.chunk,
             metrics,
             memory_boundary,
-            1,
-            1,
+            attempt,
+            max_attempts,
         )
     } {
         Ok(observed_bytes) => observed_bytes,
@@ -437,8 +549,8 @@ fn read_local_parquet_chunk_required_only(
             reservations,
             metrics,
             memory_boundary,
-            1,
-            1,
+            attempt,
+            max_attempts,
             output.observed_bytes,
         )?;
     }
@@ -746,6 +858,22 @@ mod tests {
         let predicate_batches = generic_source_chunk_batches(&context, &test_source(true), &scratch_risk_chunks);
         assert_eq!(predicate_batches.len(), 2);
         assert!(predicate_batches.iter().all(SourceChunkBatch::is_singleton));
+    }
+
+    #[test]
+    fn serial_source_chunk_retry_policy_uses_bounded_context() {
+        let context = ExecutionContext::builder()
+            .with_memory_control_policy(MemoryControlPolicy::Bounded {
+                device_budget_bytes: 64 * 1024 * 1024 * 1024,
+                max_source_chunk_bytes: 32 * 1024 * 1024 * 1024,
+                max_row_groups_per_chunk: 1024,
+                max_retry_attempts: 4,
+                min_retry_chunk_row_groups: 8,
+            })
+            .build()
+            .expect("valid bounded context");
+
+        assert_eq!(source_read_retry_policy(&context), (4, 8));
     }
 
     fn test_source(with_reader_predicate: bool) -> LocalParquetSource {
