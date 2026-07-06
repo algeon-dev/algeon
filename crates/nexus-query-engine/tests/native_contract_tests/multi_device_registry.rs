@@ -56,6 +56,50 @@ fn query_service_places_concurrent_runtime_handles_on_distinct_devices_when_avai
 }
 
 #[test]
+fn query_service_memory_failure_callback_counts_budget_failures() {
+    if cudf::DeviceId::count().unwrap_or(0) < 1 {
+        return;
+    }
+    let config = QueryServiceConfig {
+        max_concurrent_queries: 1,
+        max_admission_queue_len: 2,
+        stream_pool_size: Some(3),
+        device_capacity_bytes: Some(64 * 1024 * 1024),
+        admission_wait_timeout: Duration::from_millis(500),
+        ..QueryServiceConfig::default()
+    };
+    let service = QueryService::new_with_device_ordinals_and_deployment(
+        config,
+        vec![0],
+        vec![QueryServiceTenantConfig::new("tenant", 64 * 1024 * 1024)],
+        non_gds_deployment(),
+    )
+    .unwrap();
+
+    let initial_report = service.device_memory_failure_reports().into_iter().next().unwrap();
+    if initial_report.callback_install_unavailable {
+        return;
+    }
+    assert!(initial_report.callback_installed);
+
+    let handle = service.try_admit_query("tenant").unwrap().expect("query should admit");
+    let context = handle.acquire_context().unwrap();
+    let token = context
+        .context()
+        .runtime()
+        .execution_budget_token(cudf::ExecutionBudgetRequest::new(1).with_boundary("nexus_failure_callback"))
+        .unwrap();
+    let error = context.context().runtime().series_from_value_with_budget(1i32, 1024, &token).unwrap_err();
+    assert_eq!(error.kind(), cudf::ErrorKind::ResourceExhausted);
+
+    let report = service.device_memory_failure_reports().into_iter().next().unwrap();
+    assert!(report.callback_installed);
+    assert!(report.allocation_failure_count > initial_report.allocation_failure_count);
+    assert!(report.total_failed_allocation_bytes >= initial_report.total_failed_allocation_bytes);
+    assert!(report.largest_failed_allocation_bytes > 0);
+}
+
+#[test]
 fn multi_device_variable_grants_do_not_reserve_every_future_slot_on_one_device() {
     if cudf::DeviceId::count().unwrap_or(0) < 2 {
         return;

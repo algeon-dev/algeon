@@ -3,7 +3,8 @@
 use std::sync::{Arc, OnceLock};
 
 use super::{
-    DeviceContext, GpuInventory, MemoryGovernor, PlacementPolicy, PlacementRequest, device_budget_bytes_from_facts,
+    DeviceContext, DeviceMemoryFailureReport, DeviceMemoryFailureTracker, GpuInventory, MemoryGovernor,
+    PlacementPolicy, PlacementRequest, device_budget_bytes_from_facts,
 };
 use crate::{
     error::{QueryError, QueryErrorCode, Result},
@@ -82,17 +83,13 @@ impl DeviceRegistry {
                 device_budget_bytes_from_facts(&facts, config.capacity_headroom_bytes, config.fallback_capacity_bytes);
             let capacity_bytes =
                 config.device_capacity_bytes.map_or(inventory_capacity_bytes, |cap| cap.min(inventory_capacity_bytes));
-            let mr_manager = cudf::DeviceMemoryManager::install_for_device(device).map_err(|error| {
-                QueryError::from_cudf(
-                    "nexus_query_engine.gpu.device_registry.memory_manager",
-                    "failed to install device memory manager while installing registry",
-                    error,
-                )
-                .with_fact("device_ordinal", *ordinal)
-            })?;
+            let memory_failure_tracker = DeviceMemoryFailureTracker::for_device(*ordinal);
+            let mr_manager = install_device_memory_manager(device, &memory_failure_tracker)
+                .map_err(|error| error.with_fact("device_ordinal", *ordinal))?;
             let stream_pool = ServiceStreamPool::new(device, config.stream_pool_size)?;
             let governor = MemoryGovernor::new(*ordinal, capacity_bytes)?;
-            contexts[*ordinal] = Some(DeviceContext::new(device, stream_pool, mr_manager, governor, facts)?);
+            contexts[*ordinal] =
+                Some(DeviceContext::new(device, stream_pool, mr_manager, memory_failure_tracker, governor, facts)?);
         }
         Ok(Self { contexts: contexts.into(), device_ordinals: ordinals.into() })
     }
@@ -131,6 +128,11 @@ impl DeviceRegistry {
         self.contexts.iter().filter_map(Option::as_ref)
     }
 
+    /// Allocation-failure reports for all installed devices.
+    pub fn memory_failure_reports(&self) -> Vec<DeviceMemoryFailureReport> {
+        self.contexts().map(DeviceContext::memory_failure_report).collect()
+    }
+
     /// Enabled CUDA ordinals in placement order.
     pub fn device_ordinals(&self) -> &[usize] {
         &self.device_ordinals
@@ -156,6 +158,87 @@ impl DeviceRegistry {
         }
         Ok(false)
     }
+}
+
+fn install_device_memory_manager(
+    device: cudf::DeviceId,
+    memory_failure_tracker: &DeviceMemoryFailureTracker,
+) -> Result<cudf::DeviceMemoryManager> {
+    let callback_state = cudf::DeviceMemoryManager::failure_callback_state_for_device(device).map_err(|error| {
+        QueryError::from_cudf(
+            "nexus_query_engine.gpu.device_registry.memory_manager",
+            "failed to inspect device memory manager failure callback state",
+            error,
+        )
+    })?;
+    if callback_state.exists && !callback_state.failure_callback_installed {
+        memory_failure_tracker.mark_callback_install_unavailable();
+        return cudf::DeviceMemoryManager::install_for_device(device).map_err(|error| {
+            QueryError::from_cudf(
+                "nexus_query_engine.gpu.device_registry.memory_manager",
+                "failed to install existing device memory manager after callback install was unavailable",
+                error,
+            )
+        });
+    }
+    if callback_state.exists && callback_state.failure_callback_installed {
+        let report = memory_failure_tracker.report();
+        if report.callback_installed {
+            return cudf::DeviceMemoryManager::install_for_device(device).map_err(|error| {
+                QueryError::from_cudf(
+                    "nexus_query_engine.gpu.device_registry.memory_manager",
+                    "failed to resolve existing callback-installed device memory manager",
+                    error,
+                )
+            });
+        }
+        memory_failure_tracker.mark_callback_install_unavailable();
+        return cudf::DeviceMemoryManager::install_for_device(device).map_err(|error| {
+            QueryError::from_cudf(
+                "nexus_query_engine.gpu.device_registry.memory_manager",
+                "failed to resolve existing foreign callback-installed device memory manager",
+                error,
+            )
+        });
+    }
+    match cudf::DeviceMemoryManager::install_for_device_with_failure_callback(
+        device,
+        memory_failure_tracker.failure_callback(),
+    ) {
+        Ok(manager) => {
+            memory_failure_tracker.mark_callback_installed();
+            Ok(manager)
+        },
+        Err(error) => {
+            if existing_plain_memory_manager(device)? {
+                memory_failure_tracker.mark_callback_install_unavailable();
+                cudf::DeviceMemoryManager::install_for_device(device).map_err(|fallback_error| {
+                    QueryError::from_cudf(
+                        "nexus_query_engine.gpu.device_registry.memory_manager",
+                        "failed to install existing device memory manager after callback install was unavailable",
+                        fallback_error,
+                    )
+                })
+            } else {
+                Err(QueryError::from_cudf(
+                    "nexus_query_engine.gpu.device_registry.memory_manager",
+                    "failed to install device memory manager while installing registry",
+                    error,
+                ))
+            }
+        },
+    }
+}
+
+fn existing_plain_memory_manager(device: cudf::DeviceId) -> Result<bool> {
+    let state = cudf::DeviceMemoryManager::failure_callback_state_for_device(device).map_err(|error| {
+        QueryError::from_cudf(
+            "nexus_query_engine.gpu.device_registry.memory_manager",
+            "failed to inspect device memory manager failure callback state after install error",
+            error,
+        )
+    })?;
+    Ok(state.exists && !state.failure_callback_installed)
 }
 
 fn validate_registry_config(config: &DeviceRegistryConfig) -> Result<()> {

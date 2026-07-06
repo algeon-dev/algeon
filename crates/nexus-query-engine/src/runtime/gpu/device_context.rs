@@ -5,7 +5,9 @@ use std::sync::{
     atomic::{AtomicUsize, Ordering},
 };
 
-use super::{DeviceFacts, GrantRequest, MemoryGovernor, MemoryGrant};
+use super::{
+    DeviceFacts, DeviceMemoryFailureReport, DeviceMemoryFailureTracker, GrantRequest, MemoryGovernor, MemoryGrant,
+};
 use crate::{
     error::{QueryError, QueryErrorCode, Result},
     runtime::ServiceStreamPool,
@@ -22,6 +24,7 @@ struct DeviceContextInner {
     device: cudf::DeviceId,
     stream_pool: ServiceStreamPool,
     mr_manager: cudf::DeviceMemoryManager,
+    memory_failure_tracker: DeviceMemoryFailureTracker,
     governor: MemoryGovernor,
     facts: DeviceFacts,
     active_queries: AtomicUsize,
@@ -33,6 +36,7 @@ impl DeviceContext {
         device: cudf::DeviceId,
         stream_pool: ServiceStreamPool,
         mr_manager: cudf::DeviceMemoryManager,
+        memory_failure_tracker: DeviceMemoryFailureTracker,
         governor: MemoryGovernor,
         facts: DeviceFacts,
     ) -> Result<Self> {
@@ -63,6 +67,15 @@ impl DeviceContext {
             .with_fact("device_ordinal", device.ordinal())
             .with_fact("memory_manager_device_ordinal", mr_manager.device().ordinal()));
         }
+        if memory_failure_tracker.device_ordinal() != device.ordinal() {
+            return Err(QueryError::new(
+                QueryErrorCode::InvalidPlan,
+                "nexus_query_engine.gpu.device_context",
+                "device context memory failure tracker must match the context device",
+            )
+            .with_fact("device_ordinal", device.ordinal())
+            .with_fact("memory_failure_tracker_device_ordinal", memory_failure_tracker.device_ordinal()));
+        }
         if governor.device_ordinal() != device.ordinal() {
             return Err(QueryError::new(
                 QueryErrorCode::InvalidPlan,
@@ -77,6 +90,7 @@ impl DeviceContext {
                 device,
                 stream_pool,
                 mr_manager,
+                memory_failure_tracker,
                 governor,
                 facts,
                 active_queries: AtomicUsize::new(0),
@@ -97,6 +111,11 @@ impl DeviceContext {
     /// Handle to cudf-rs's process-global per-device memory manager.
     pub fn memory_manager(&self) -> &cudf::DeviceMemoryManager {
         &self.inner.mr_manager
+    }
+
+    /// Signal-only allocation-failure counters from the device memory manager callback.
+    pub fn memory_failure_report(&self) -> DeviceMemoryFailureReport {
+        self.inner.memory_failure_tracker.report()
     }
 
     /// Per-device soft memory grant ledger.

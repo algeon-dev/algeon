@@ -1946,6 +1946,7 @@ impl CompiledTaskExecutor for CompiledGpuTaskExecutor<'_> {
         while let Some((_, build)) = self.join_builds.pop_first() {
             release_bounded_compiled_join_build_state(build, &mut self.reservations, self.metrics);
         }
+        self.reservations.acknowledge_requested_grant_shrink()?;
         Ok(())
     }
 

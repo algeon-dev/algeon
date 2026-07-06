@@ -13,12 +13,13 @@ use std::{
 use tokio::{sync::Notify, time};
 
 use super::{
-    DeploymentIoCapability, ExecutionBoundaryPolicy, ExecutionCancellation, ExecutionContext, ExecutionContextParts,
-    GdsConcurrencyGate, GpuInventory, GrantRequest, HostFetchBudget, LeastLoadedPlacement, MemoryControlPolicy,
-    MemoryGovernor, MemoryGovernorReport, MemoryGrant, MemoryResourcePolicy, PlacementPolicy, PlacementRequest,
-    Priority, QueryQos, SourceChunkPlanningMode, SourceFetchConcurrencyGate, SourceFetchConfig,
-    SourceObjectStoreRegistry, SourceSchedulerPolicy, SourceStorageProfile, default_host_fetch_budget_bytes,
-    default_lakehouse_cache_fill_runtime, default_source_fetch_runtime, validate_service_stream_pool_device,
+    DeploymentIoCapability, DeviceMemoryFailureReport, ExecutionBoundaryPolicy, ExecutionCancellation,
+    ExecutionContext, ExecutionContextParts, GdsConcurrencyGate, GpuInventory, GrantRequest, HostFetchBudget,
+    LeastLoadedPlacement, MemoryControlPolicy, MemoryGovernor, MemoryGovernorReport, MemoryGrant, MemoryResourcePolicy,
+    PlacementPolicy, PlacementRequest, Priority, QueryQos, SourceChunkPlanningMode, SourceFetchConcurrencyGate,
+    SourceFetchConfig, SourceObjectStoreRegistry, SourceSchedulerPolicy, SourceStorageProfile,
+    default_host_fetch_budget_bytes, default_lakehouse_cache_fill_runtime, default_source_fetch_runtime,
+    validate_service_stream_pool_device,
 };
 use crate::{
     adaptive_runtime::AdaptiveMemoryHistory,
@@ -1524,6 +1525,14 @@ impl QueryService {
             return Ok(vec![self.inner.fallback_memory_governor.report()?]);
         };
         resources.devices.contexts().map(|context| context.memory_governor().report()).collect()
+    }
+
+    /// Returns one device memory allocation-failure report for each installed service device.
+    pub fn device_memory_failure_reports(&self) -> Vec<DeviceMemoryFailureReport> {
+        let Some(resources) = &self.inner.resources else {
+            return Vec::new();
+        };
+        resources.devices.memory_failure_reports()
     }
 
     /// Returns the service configuration.

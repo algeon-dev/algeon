@@ -160,6 +160,19 @@ impl QueryAdmission {
                 "failed to read query service memory governor report"
             ),
         }
+        for report in service.device_memory_failure_reports() {
+            tracing::info!(
+                query_id = query_id.unwrap_or(""),
+                event,
+                device_ordinal = report.device_ordinal,
+                callback_installed = report.callback_installed,
+                callback_install_unavailable = report.callback_install_unavailable,
+                allocation_failure_count = report.allocation_failure_count,
+                total_failed_allocation_bytes = report.total_failed_allocation_bytes,
+                largest_failed_allocation_bytes = report.largest_failed_allocation_bytes,
+                "query service device memory failure report"
+            );
+        }
     }
 
     pub fn diagnostics_payload(&self) -> Result<String> {
@@ -228,6 +241,23 @@ impl QueryAdmission {
                             grant.budget_bytes
                         );
                     }
+                }
+
+                output.push_str("\n[device_memory_failure_reports]\n");
+                output.push_str(
+                    "device_ordinal\tcallback_installed\tcallback_install_unavailable\tallocation_failure_count\ttotal_failed_allocation_bytes\tlargest_failed_allocation_bytes\n",
+                );
+                for report in service.device_memory_failure_reports() {
+                    let _ = writeln!(
+                        output,
+                        "{}\t{}\t{}\t{}\t{}\t{}",
+                        report.device_ordinal,
+                        report.callback_installed,
+                        report.callback_install_unavailable,
+                        report.allocation_failure_count,
+                        report.total_failed_allocation_bytes,
+                        report.largest_failed_allocation_bytes
+                    );
                 }
             },
             QueryAdmissionBackend::Semaphore { permits } => {
@@ -418,6 +448,12 @@ mod tests {
         );
         assert!(payload.contains("[memory_governor_grants]\n"), "{payload}");
         assert!(payload.contains("\t1\tnormal\t512\n"), "{payload}");
+        assert!(
+            payload.contains(
+                "[device_memory_failure_reports]\ndevice_ordinal\tcallback_installed\tcallback_install_unavailable\tallocation_failure_count\ttotal_failed_allocation_bytes\tlargest_failed_allocation_bytes\n"
+            ),
+            "{payload}"
+        );
 
         drop(permit);
     }
