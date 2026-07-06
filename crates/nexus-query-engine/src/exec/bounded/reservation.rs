@@ -15,7 +15,7 @@ use crate::{
     mode::NativePipelineExecutionMode,
     pipeline::CompiledPipeline,
     plan::QueryPlan,
-    runtime::{ExecutionContext, MemorySpaceId},
+    runtime::{ExecutionContext, MemoryGrant, MemorySpaceId},
 };
 
 #[derive(Debug, Clone)]
@@ -428,7 +428,7 @@ pub(in crate::exec::bounded) fn reconcile_work_reservation_to_output(
 pub(in crate::exec) struct ReservationTracker {
     query_id: Option<QueryId>,
     memory_space: MemorySpaceId,
-    budget_bytes: u64,
+    budget: ReservationBudget,
     reserved_bytes: Rc<Cell<u64>>,
     local_parquet_source_cache: Option<Arc<GpuLocalParquetSourceCache>>,
     protected_source_cache_keys: Rc<RefCell<HashMap<GpuLocalParquetSourceCacheKey, usize>>>,
@@ -439,6 +439,21 @@ pub(in crate::exec) struct ReservationTracker {
 }
 
 #[derive(Debug, Clone)]
+enum ReservationBudget {
+    Static(u64),
+    AdaptiveGrant(MemoryGrant),
+}
+
+impl ReservationBudget {
+    fn bytes(&self) -> u64 {
+        match self {
+            Self::Static(bytes) => *bytes,
+            Self::AdaptiveGrant(grant) => grant.budget_bytes(),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
 struct AdaptiveTaskReservationRefinement {
     memory_history: Arc<AdaptiveMemoryHistory>,
     task_shapes: BTreeMap<String, AdaptiveTaskMemoryHistoryShape>,
@@ -446,10 +461,14 @@ struct AdaptiveTaskReservationRefinement {
 
 impl ReservationTracker {
     pub(in crate::exec) fn new(memory_space: MemorySpaceId, budget_bytes: u64) -> Self {
+        Self::new_with_budget(memory_space, ReservationBudget::Static(budget_bytes))
+    }
+
+    fn new_with_budget(memory_space: MemorySpaceId, budget: ReservationBudget) -> Self {
         Self {
             query_id: None,
             memory_space,
-            budget_bytes,
+            budget,
             reserved_bytes: Rc::new(Cell::new(0)),
             local_parquet_source_cache: None,
             protected_source_cache_keys: Rc::new(RefCell::new(HashMap::new())),
@@ -465,7 +484,15 @@ impl ReservationTracker {
         budget_bytes: u64,
         metrics: &mut QueryMetrics,
     ) -> Result<Self> {
-        let mut tracker = Self::new(context.device_memory_space(), budget_bytes);
+        let budget = if context.native_pipeline_execution_mode() == NativePipelineExecutionMode::Adaptive {
+            context
+                .memory_grant()
+                .cloned()
+                .map_or(ReservationBudget::Static(budget_bytes), ReservationBudget::AdaptiveGrant)
+        } else {
+            ReservationBudget::Static(budget_bytes)
+        };
+        let mut tracker = Self::new_with_budget(context.device_memory_space(), budget);
         tracker.query_id = context.query_id().cloned();
         tracker.local_parquet_source_cache = context.local_parquet_source_cache();
         if let Some(cache) = context.local_parquet_source_cache() {
@@ -502,7 +529,7 @@ impl ReservationTracker {
     }
 
     pub(in crate::exec) fn budget(&self) -> u64 {
-        self.budget_bytes
+        self.budget.bytes()
     }
 
     pub(in crate::exec) fn reserved_bytes(&self) -> u64 {
@@ -510,7 +537,7 @@ impl ReservationTracker {
     }
 
     pub(in crate::exec) fn remaining_bytes(&self) -> u64 {
-        self.budget_bytes.saturating_sub(self.raw_reserved_bytes())
+        self.budget().saturating_sub(self.raw_reserved_bytes())
     }
 
     pub(in crate::exec) fn can_reserve(&self, requested_bytes: u64) -> bool {
@@ -715,7 +742,7 @@ impl ReservationTracker {
         metrics: &mut QueryMetrics,
     ) -> ActiveReservation {
         let request = self.stamp_request(
-            MemoryReservationRequest::new(ReservationKind::SourceCacheRetained, bytes, self.budget_bytes)
+            MemoryReservationRequest::new(ReservationKind::SourceCacheRetained, bytes, self.budget())
                 .with_memory_boundary("source_cache_borrowed")
                 .with_stage("source_cache_hit"),
             metrics,
@@ -884,7 +911,7 @@ impl ReservationTracker {
         self.source_cache_baseline_bytes = self.source_cache_baseline_bytes.saturating_sub(released);
         self.reserved_bytes.set(self.raw_reserved_bytes().saturating_sub(released));
         let request = self.stamp_request(
-            MemoryReservationRequest::new(ReservationKind::SourceCacheRetained, released, self.budget_bytes)
+            MemoryReservationRequest::new(ReservationKind::SourceCacheRetained, released, self.budget())
                 .with_memory_boundary("source_cache_retained")
                 .with_stage("source_cache_eviction"),
             metrics,
@@ -931,7 +958,7 @@ impl ReservationTracker {
 
     fn try_reserve_source_cache_baseline(&mut self, retained_bytes: u64, metrics: &mut QueryMetrics) -> Result<()> {
         let request =
-            MemoryReservationRequest::new(ReservationKind::SourceCacheRetained, retained_bytes, self.budget_bytes)
+            MemoryReservationRequest::new(ReservationKind::SourceCacheRetained, retained_bytes, self.budget())
                 .with_memory_boundary("source_cache_retained")
                 .with_stage("source_cache_retained");
         let request = self.stamp_request(request, metrics);
@@ -991,7 +1018,7 @@ impl ReservationTracker {
 
     fn stamp_request(&self, mut request: MemoryReservationRequest, metrics: &QueryMetrics) -> MemoryReservationRequest {
         request.memory_space = self.memory_space;
-        request.budget_bytes = self.budget_bytes;
+        request.budget_bytes = self.budget();
         if request.query_id.is_none() {
             request.query_id =
                 self.query_id.clone().or_else(|| metrics.query_id().is_assigned().then(|| metrics.query_id().clone()));
@@ -1045,6 +1072,7 @@ impl ReservationTracker {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::runtime::{GrantRequest, MemoryGovernor};
 
     fn test_request(
         kind: ReservationKind,
@@ -1053,6 +1081,85 @@ mod tests {
         budget: u64,
     ) -> MemoryReservationRequest {
         MemoryReservationRequest::new(kind, bytes, budget).with_memory_boundary(boundary).with_stage("test")
+    }
+
+    #[test]
+    fn adaptive_reservation_tracker_observes_live_grant_growth() -> Result<()> {
+        let governor = MemoryGovernor::new(0, 100)?;
+        let grant = governor.try_request(GrantRequest::new(7, 40, 40))?.expect("initial grant should fit");
+        let mut metrics = QueryMetrics::default();
+        let mut reservations = ReservationTracker::new_with_budget(
+            MemorySpaceId::Device { device_ordinal: 0 },
+            ReservationBudget::AdaptiveGrant(grant.clone()),
+        );
+
+        let first = reservations.try_reserve_owned_resident(
+            test_request(ReservationKind::OperatorOutput, "first", 30, reservations.budget()),
+            &mut metrics,
+        )?;
+        let denied = match reservations.try_reserve_owned_resident(
+            test_request(ReservationKind::OperatorOutput, "before_growth", 20, reservations.budget()),
+            &mut metrics,
+        ) {
+            Ok(_) => panic!("only 10 bytes should remain before grant growth"),
+            Err(error) => error,
+        };
+        assert_eq!(denied.fact_value("granted_bytes"), Some("10"));
+
+        assert!(grant.try_grow_to(70)?);
+        assert_eq!(reservations.budget(), 70);
+        assert_eq!(reservations.remaining_bytes(), 40);
+
+        let second = reservations.try_reserve_owned_resident(
+            test_request(ReservationKind::OperatorOutput, "after_growth", 20, reservations.budget()),
+            &mut metrics,
+        )?;
+
+        let granted = metrics
+            .reservation_events
+            .iter()
+            .rev()
+            .find(|event| {
+                event.outcome == MemoryReservationEventOutcome::Granted
+                    && event.action == MemoryReservationEventAction::Reserve
+                    && event.memory_boundary == "after_growth"
+            })
+            .expect("post-growth reservation should be recorded");
+        assert_eq!(granted.budget_bytes, 70);
+
+        reservations.release(second, &mut metrics);
+        reservations.release(first, &mut metrics);
+        Ok(())
+    }
+
+    #[test]
+    fn static_reservation_tracker_ignores_later_grant_growth() -> Result<()> {
+        let governor = MemoryGovernor::new(0, 100)?;
+        let grant = governor.try_request(GrantRequest::new(8, 40, 40))?.expect("initial grant should fit");
+        let mut metrics = QueryMetrics::default();
+        let mut reservations =
+            ReservationTracker::new(MemorySpaceId::Device { device_ordinal: 0 }, grant.budget_bytes());
+
+        let first = reservations.try_reserve_owned_resident(
+            test_request(ReservationKind::OperatorOutput, "first", 30, reservations.budget()),
+            &mut metrics,
+        )?;
+        assert!(grant.try_grow_to(70)?);
+        assert_eq!(grant.budget_bytes(), 70);
+        assert_eq!(reservations.budget(), 40);
+        assert_eq!(reservations.remaining_bytes(), 10);
+
+        let denied = match reservations.try_reserve_owned_resident(
+            test_request(ReservationKind::OperatorOutput, "after_external_growth", 20, reservations.budget()),
+            &mut metrics,
+        ) {
+            Ok(_) => panic!("static reservation tracker must keep the original budget"),
+            Err(error) => error,
+        };
+        assert_eq!(denied.fact_value("granted_bytes"), Some("10"));
+
+        reservations.release(first, &mut metrics);
+        Ok(())
     }
 
     #[test]
