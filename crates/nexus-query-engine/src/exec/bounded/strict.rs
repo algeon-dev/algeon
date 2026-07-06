@@ -8,9 +8,9 @@ pub(in crate::exec::bounded) use super::compiled::join_strategy::CompiledJoinExe
 #[doc(hidden)]
 pub use super::compiled::{
     CompiledBoundedPipelineSupport, CompiledGpuResource, CompiledGpuTaskExecutor, CompiledPipelineScheduler,
-    CompiledPipelineState, CompiledTaskAdmission, CompiledTaskExecutor, CompiledTaskOutput, ReleasedCompiledResource,
-    ResidentFrameStreamProducerTestHarness, YieldedFrameCounterTestHarness, compiled_bounded_pipeline_support,
-    compiled_bounded_query_plan_support,
+    CompiledPipelineState, CompiledSchedulingCycle, CompiledTaskAdmission, CompiledTaskExecutor, CompiledTaskOutput,
+    ReleasedCompiledResource, ResidentFrameStreamProducerTestHarness, YieldedFrameCounterTestHarness,
+    compiled_bounded_pipeline_support, compiled_bounded_query_plan_support,
 };
 use super::{
     admission::{

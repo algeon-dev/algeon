@@ -502,13 +502,16 @@ impl DatafusionCudfFlightSqlService {
         // Retain the native rule so we can read its `last_report` for the
         // Milestone 4 planning-report log after physical optimization runs.
         let native_rule = Arc::new(CudfNativePhysicalOptimizerRule::new(optimizer_config.clone()));
-        let session_extension =
-            DataFusionNexusSessionConfig::from_optimizer_config(&optimizer_config).frozen_for_backend_admission();
+        let mut session_extension = DataFusionNexusSessionConfig::from_optimizer_config(&optimizer_config);
+        if optimizer_config.native_execution_config().has_query_admission_authority() {
+            session_extension = session_extension.frozen_for_backend_admission();
+        }
         let builder = install_cudf_native_rule_with_session_config(
             SessionStateBuilder::new_from_existing(self.ctx.state()),
             Arc::clone(&native_rule),
             session_extension,
-        );
+        )
+        .expect("server query planning should install a session config derived from the same optimizer config");
         #[cfg(feature = "cugraph")]
         let builder = if let Some(cugraph_sql_config) = &self.cugraph_sql_config {
             builder.with_cugraph_sql(cugraph_sql_config.clone().with_native_execution_config(execution_config))

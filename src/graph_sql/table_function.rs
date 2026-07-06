@@ -23,6 +23,7 @@ use super::{
 use crate::{
     NativeCudfExecutionConfig,
     graph_sql::{CugraphAlgoExec, metadata::cugraph_metadata_table_functions},
+    session::session_state_with_native_execution_config,
 };
 
 #[derive(Debug)]
@@ -75,17 +76,20 @@ impl TableProvider for CugraphAlgoTableProvider {
         if let CugraphAlgorithmParams::Bfs(params) = &spec.params {
             spec.output_schema = bfs_result_schema_for_vertex_domain(params, &vertex_domain);
         }
+        let native_execution_config = self.native_execution_config.clone().with_plan_query_admission_ticket();
+        let planning_state = session_state_with_native_execution_config(session_state, native_execution_config.clone())
+            .unwrap_or_else(|| session_state.clone());
         let scan = LogicalPlanBuilder::scan(table_ref, provider_as_source(provider), None)?.build()?;
         let edge_source_plan = LogicalPlanBuilder::from(scan).project(edge_source_projection(&spec))?.build()?;
-        let edge_source = state.create_physical_plan(&edge_source_plan).await?;
-        let predicate_sources = predicate_source_plans(state, session_state, &spec, &vertex_domain).await?;
+        let edge_source = planning_state.create_physical_plan(&edge_source_plan).await?;
+        let predicate_sources = predicate_source_plans(&planning_state, session_state, &spec, &vertex_domain).await?;
         Ok(Arc::new(CugraphAlgoExec::try_new(
             spec,
             edge_source,
             predicate_sources,
             projection.cloned(),
             limit,
-            self.native_execution_config.clone(),
+            native_execution_config,
         )?))
     }
 }
@@ -165,13 +169,13 @@ fn edge_source_projection(spec: &CugraphAlgorithmSpec) -> Vec<Expr> {
 }
 
 async fn predicate_source_plans(
-    state: &dyn Session,
+    planning_state: &SessionState,
     session_state: &SessionState,
     spec: &CugraphAlgorithmSpec,
     vertex_domain: &CugraphVertexIdDomain,
 ) -> Result<Vec<Arc<dyn ExecutionPlan>>> {
     let mut plans = Vec::new();
-    if let Some(plan) = literal_bfs_source_plan(state, spec, vertex_domain).await? {
+    if let Some(plan) = literal_bfs_source_plan(planning_state, spec, vertex_domain).await? {
         plans.push(plan);
     }
     for source in predicate_source_specs(spec) {
@@ -184,7 +188,7 @@ async fn predicate_source_plans(
         let scan = LogicalPlanBuilder::scan(table_ref, provider_as_source(provider), None)?.build()?;
         let projection = source.columns.iter().map(|column| col(&column.name)).collect::<Vec<_>>();
         let plan = LogicalPlanBuilder::from(scan).project(projection)?.build()?;
-        plans.push(state.create_physical_plan(&plan).await?);
+        plans.push(planning_state.create_physical_plan(&plan).await?);
     }
     Ok(plans)
 }

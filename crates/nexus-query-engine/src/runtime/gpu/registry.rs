@@ -1,6 +1,9 @@
 //! Process-level GPU device registry for service execution.
 
-use std::sync::{Arc, OnceLock};
+use std::{
+    collections::HashMap,
+    sync::{Arc, Mutex, OnceLock},
+};
 
 use super::{
     DeviceContext, DeviceMemoryFailureReport, DeviceMemoryFailureTracker, GpuInventory, MemoryGovernor,
@@ -87,7 +90,7 @@ impl DeviceRegistry {
             let mr_manager = install_device_memory_manager(device, &memory_failure_tracker)
                 .map_err(|error| error.with_fact("device_ordinal", *ordinal))?;
             let stream_pool = ServiceStreamPool::new(device, config.stream_pool_size)?;
-            let governor = MemoryGovernor::new(*ordinal, capacity_bytes)?;
+            let governor = shared_memory_governor(*ordinal, capacity_bytes)?;
             contexts[*ordinal] =
                 Some(DeviceContext::new(device, stream_pool, mr_manager, memory_failure_tracker, governor, facts)?);
         }
@@ -102,8 +105,7 @@ impl DeviceRegistry {
         }
         let config = DeviceRegistryConfig::new(Vec::new(), crate::runtime::DEFAULT_SERVICE_STREAM_POOL_SIZE);
         let registry = Arc::new(Self::install(&super::CudfInventory, &config)?);
-        let _ = SHARED.set(Arc::clone(&registry));
-        Ok(SHARED.get().map(Arc::clone).unwrap_or(registry))
+        Ok(Arc::clone(SHARED.get_or_init(|| registry)))
     }
 
     /// Looks up a context by CUDA device ordinal.
@@ -158,6 +160,35 @@ impl DeviceRegistry {
         }
         Ok(false)
     }
+}
+
+fn shared_memory_governor(device_ordinal: usize, capacity_bytes: u64) -> Result<MemoryGovernor> {
+    static GOVERNORS: OnceLock<Mutex<HashMap<usize, MemoryGovernor>>> = OnceLock::new();
+    let governors = GOVERNORS.get_or_init(|| Mutex::new(HashMap::new()));
+    let mut governors = governors.lock().map_err(|_error| {
+        QueryError::new(
+            QueryErrorCode::Internal,
+            "nexus_query_engine.gpu.device_registry.governor",
+            "device memory governor registry mutex was poisoned",
+        )
+    })?;
+    if let Some(governor) = governors.get(&device_ordinal) {
+        if governor.capacity_bytes() != capacity_bytes {
+            return Err(QueryError::new(
+                QueryErrorCode::InvalidPlan,
+                "nexus_query_engine.gpu.device_registry.governor",
+                "CUDA device memory governor is already installed with a different capacity",
+            )
+            .with_fact("device_ordinal", device_ordinal)
+            .with_fact("existing_capacity_bytes", governor.capacity_bytes())
+            .with_fact("requested_capacity_bytes", capacity_bytes)
+            .with_fact("reason", "device_governor_capacity_conflict"));
+        }
+        return Ok(governor.clone());
+    }
+    let governor = MemoryGovernor::new(device_ordinal, capacity_bytes)?;
+    governors.insert(device_ordinal, governor.clone());
+    Ok(governor)
 }
 
 fn install_device_memory_manager(

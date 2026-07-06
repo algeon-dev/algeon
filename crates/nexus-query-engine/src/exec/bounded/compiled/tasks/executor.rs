@@ -155,7 +155,13 @@ impl<'a> CompiledGpuTaskExecutor<'a> {
             },
         };
         let ResidentGpuFrame { frame, reservation } = *frame;
-        let handle = match GpuResultHandle::new(self.context, frame, self.plan.output_schema().clone()) {
+        let live_reservation = reservation.retain_grant_live_reservation();
+        let handle = match GpuResultHandle::new_with_live_reservation(
+            self.context,
+            frame,
+            self.plan.output_schema().clone(),
+            live_reservation,
+        ) {
             Ok(handle) => handle,
             Err(error) => {
                 self.reservations.release(reservation, self.metrics);
@@ -1948,6 +1954,16 @@ impl CompiledTaskExecutor for CompiledGpuTaskExecutor<'_> {
         }
         self.reservations.acknowledge_requested_grant_shrink()?;
         Ok(())
+    }
+
+    fn before_scheduling_cycle(&mut self) -> Result<CompiledSchedulingCycle> {
+        let budget_before = self.reservations.budget();
+        self.reservations.acknowledge_requested_grant_shrink()?;
+        if self.reservations.budget() < budget_before {
+            Ok(CompiledSchedulingCycle::after_cooperative_shrink_applied())
+        } else {
+            Ok(CompiledSchedulingCycle::default())
+        }
     }
 
     fn live_reserved_bytes(&self) -> Option<u64> {

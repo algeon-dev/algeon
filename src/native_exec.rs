@@ -13,6 +13,8 @@ mod host;
 mod metrics;
 mod producer;
 
+#[cfg(test)]
+pub(crate) use self::admission::task_context_with_query_admission_ticket;
 #[cfg(any(feature = "server", feature = "cugraph"))]
 pub(crate) use self::metrics::NativeCudfMetrics;
 #[cfg(feature = "server")]
@@ -20,7 +22,10 @@ pub(crate) use self::metrics::{NativeMetricsCapture, NativeMetricsCaptureSink};
 #[cfg(feature = "cugraph")]
 pub(crate) use self::producer::{GpuResidentProducerExec, gpu_resident_producer};
 pub(crate) use self::{
-    admission::{QueryAdmissionSource, plan_is_query_admission_wrapped, wrap_plan_with_query_admission_ticket},
+    admission::{
+        QueryAdmissionSource, plan_is_query_admission_wrapped, query_admission_ticket_from_task_context,
+        wrap_plan_with_query_admission_ticket,
+    },
     producer::gpu_resident_producer_input_name,
 };
 pub use self::{

@@ -112,7 +112,13 @@ pub(super) fn execute_bounded_query_plan(
     record_device_memory_observation(&frame.frame, metrics)?;
     match plan.sink() {
         ResultSink::GpuResident { .. } => {
-            let handle = match GpuResultHandle::new(context, frame.frame, Arc::clone(plan.output_schema())) {
+            let live_reservation = frame.reservation.retain_grant_live_reservation();
+            let handle = match GpuResultHandle::new_with_live_reservation(
+                context,
+                frame.frame,
+                Arc::clone(plan.output_schema()),
+                live_reservation,
+            ) {
                 Ok(handle) => handle,
                 Err(error) => {
                     reservations.release(frame.reservation, metrics);

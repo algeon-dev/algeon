@@ -22,7 +22,7 @@ use crate::{
     exec::is_datafusion_order_column_name,
     metrics::QueryMetrics,
     plan::{HashJoinBuildArtifactId, JoinNullEquality, ResultSink},
-    runtime::{DevicePlacement, ExecutionContext},
+    runtime::{DevicePlacement, ExecutionContext, gpu::governor::MemoryGrantLiveReservation},
     source::{LocalParquetSource, ParquetReaderDecimalType, ResolvedParquetSource, SourceColumnRef},
     util::escape_kv_delimited,
 };
@@ -69,13 +69,30 @@ impl QueryOutputMode {
 pub struct GpuDataFrame {
     frame: DataFrame,
     placement: ExecutionPlacement,
+    live_reservation: Option<MemoryGrantLiveReservation>,
 }
 
 impl GpuDataFrame {
     /// Wrap a cuDF frame and record its current execution placement.
     pub fn new(frame: DataFrame) -> Self {
+        Self::new_with_live_reservation(frame, None)
+    }
+
+    /// Wrap a derived cuDF frame while charging it to the same live-residency
+    /// lineage as `source`.
+    pub fn try_new_with_shared_residency(frame: DataFrame, source: &Self) -> Result<Self> {
+        let live_reservation = if let Some(source_live_reservation) = &source.live_reservation {
+            let observed_bytes = Self::new(frame.clone()).device_allocated_size_bytes()?;
+            source_live_reservation.retain_sibling_live_reservation(observed_bytes)?
+        } else {
+            None
+        };
+        Ok(Self::new_with_live_reservation(frame, live_reservation))
+    }
+
+    fn new_with_live_reservation(frame: DataFrame, live_reservation: Option<MemoryGrantLiveReservation>) -> Self {
         let placement = frame.placement();
-        Self { frame, placement }
+        Self { frame, placement, live_reservation }
     }
 
     /// Borrow the underlying cuDF frame.
@@ -85,8 +102,13 @@ impl GpuDataFrame {
 
     /// Consume the wrapper and return the underlying cuDF frame.
     pub fn into_frame(self) -> DataFrame {
+        let (frame, _) = self.into_frame_and_live_reservation();
+        frame
+    }
+
+    fn into_frame_and_live_reservation(self) -> (DataFrame, Option<MemoryGrantLiveReservation>) {
         debug_assert_eq!(self.placement, self.frame.placement());
-        self.frame
+        (self.frame, self.live_reservation)
     }
 
     /// Execution placement observed when the frame entered the engine.
@@ -137,6 +159,7 @@ pub struct GpuResultHandle {
     batch: GpuRecordBatch,
     runtime: Arc<cudf::Runtime>,
     device_placement: DevicePlacement,
+    _live_reservation: Option<MemoryGrantLiveReservation>,
 }
 
 impl GpuResultHandle {
@@ -145,6 +168,15 @@ impl GpuResultHandle {
     /// The frame must already reside on the context's device. Hidden
     /// DataFusion order columns may be stripped before schema binding.
     pub fn new(context: &ExecutionContext, frame: GpuDataFrame, schema: SchemaRef) -> Result<Self> {
+        Self::new_with_live_reservation(context, frame, schema, None)
+    }
+
+    pub(in crate::exec) fn new_with_live_reservation(
+        context: &ExecutionContext,
+        frame: GpuDataFrame,
+        schema: SchemaRef,
+        live_reservation: Option<MemoryGrantLiveReservation>,
+    ) -> Result<Self> {
         if frame.placement().device != context.runtime().device() {
             return Err(QueryError::new(
                 crate::error::QueryErrorCode::InvalidPlan,
@@ -155,14 +187,21 @@ impl GpuResultHandle {
             .with_fact("runtime_device", context.runtime().device().ordinal()));
         }
         let frame = strip_hidden_datafusion_order_columns(frame, &schema)?;
-        let batch = GpuRecordBatch::new(frame.into_frame(), schema).map_err(|error| {
+        let (frame, frame_live_reservation) = frame.into_frame_and_live_reservation();
+        let live_reservation = live_reservation.or(frame_live_reservation);
+        let batch = GpuRecordBatch::new(frame, schema).map_err(|error| {
             QueryError::from_cudf(
                 "nexus_query_engine.gpu_result_handle",
                 "failed to bind native GPU result to its Arrow schema contract",
                 error,
             )
         })?;
-        Ok(Self { batch, runtime: context.shared_runtime(), device_placement: context.device_placement() })
+        Ok(Self {
+            batch,
+            runtime: context.shared_runtime(),
+            device_placement: context.device_placement(),
+            _live_reservation: live_reservation,
+        })
     }
 
     /// Borrow the underlying GPU cuDF frame.
@@ -172,7 +211,8 @@ impl GpuResultHandle {
 
     /// Consume the handle and return its GPU frame wrapper.
     pub fn into_gpu_frame(self) -> GpuDataFrame {
-        GpuDataFrame::new(self.batch.into_frame())
+        let Self { batch, runtime: _, device_placement: _, _live_reservation } = self;
+        GpuDataFrame::new_with_live_reservation(batch.into_frame(), _live_reservation)
     }
 
     /// Arrow schema bound to this result.
@@ -222,7 +262,7 @@ fn strip_hidden_datafusion_order_columns(frame: GpuDataFrame, schema: &SchemaRef
         return Ok(frame);
     }
 
-    let raw = frame.into_frame();
+    let (raw, live_reservation) = frame.into_frame_and_live_reservation();
     let frame_names = raw.column_names();
     let expected_names = schema.fields().iter().map(|field| field.name().as_str()).collect::<Vec<_>>();
     let visible_prefix_matches =
@@ -237,10 +277,10 @@ fn strip_hidden_datafusion_order_columns(frame: GpuDataFrame, schema: &SchemaRef
                 error,
             )
         })?;
-        return Ok(GpuDataFrame::new(selected));
+        return Ok(GpuDataFrame::new_with_live_reservation(selected, live_reservation));
     }
 
-    Ok(GpuDataFrame::new(raw))
+    Ok(GpuDataFrame::new_with_live_reservation(raw, live_reservation))
 }
 
 /// Reusable cuDF hash-join build artifact.

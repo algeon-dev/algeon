@@ -33,12 +33,10 @@ async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let backend = NexusGpuBackend::builder()
         .fallback_policy(GpuFallbackPolicy::GpuPreferred)
         .build()?;
-    let cugraph = CugraphSqlConfig::default()
-        .with_native_execution_config(backend.optimizer_config().native_execution_config().clone());
 
     let state = backend
         .install_on(SessionStateBuilder::new().with_default_features())?
-        .with_cugraph_sql(cugraph)
+        .with_cugraph_sql(CugraphSqlConfig::default())
         .build();
     let ctx = SessionContext::new_with_state(state);
 
@@ -63,13 +61,74 @@ queries, `grant_min = 1/8`, `grant_want = 1/2`, and
 backend share one admission ledger, so concurrent embedded requests cannot each
 claim the full GPU budget independently.
 
+## Admission configuration
+
+Tune admission on the builder, not on sessions. Backend-managed sessions
+freeze the backend-owned native keys: a later
+`SET datafusion_nexus.native.*` on a managed session fails loudly instead of
+silently diverging from the shared ledger.
+
+```rust
+use std::time::Duration;
+use datafusion_nexus::{GrantBand, MemoryShare, NexusAdmissionPolicy, NexusGpuBackend, SlotGuarantee};
+
+let backend = NexusGpuBackend::builder()
+    .admission(
+        NexusAdmissionPolicy::default()
+            .with_max_concurrent_queries(2)
+            .with_grant_band(GrantBand {
+                min: MemoryShare::Fraction(1.0 / 8.0),  // capability floor
+                want: MemoryShare::Fraction(1.0 / 2.0), // target when memory is free
+            })
+            .with_slot_guarantee(SlotGuarantee::GuaranteedMinimum)
+            .with_wait_timeout(Duration::from_secs(60)),
+    )
+    .build()?;
+```
+
+Two runtime behaviors to plan for in your service layer:
+
+- **Admission is lazy and per query.** Planning admits nothing; the first
+  native stream poll admits, and every native fragment of one plan shares one
+  slot and one grant. Under load a query may wait up to `wait_timeout` for its
+  grant; a full queue or an expired wait surfaces as a structured
+  `service_overloaded` (`resource_exhausted`) error — treat it as retryable
+  backpressure, not a query bug.
+- **Build exactly one backend per process per device set.** A second backend
+  on the same device either silently shares the first one's device byte ledger
+  (same resolved budget) or fails loudly at build time (different budget), and
+  in neither case are the two admission queues or slot guarantees merged;
+  share the one backend across every `SessionStateBuilder` instead.
+
+Admission evidence for dashboards and debugging comes from the backend handle,
+alongside the per-query `admission_*` / `query_grant_bytes` DataFusion
+metrics on the native execution nodes:
+
+```rust
+let queue = backend.query_service().admission_snapshot()?;
+let governors = backend.query_service().memory_governor_reports()?;
+let device_failures = backend.query_service().device_memory_failure_reports();
+```
+
+The model behind these knobs — plan-scoped tickets, grant bands, slot
+guarantees, and the layered memory stack — is specified in
+[Admission & memory governance](../design/admission.mdx).
+
+## cuGraph SQL functions
+
 `CugraphSqlConfig::default()` registers every supported `cugraph_*` function.
 Use `CugraphSqlConfig::default().with_allowed_algorithms([...])` to narrow the
-SQL-visible graph surface for a service. When cuGraph is installed on a
-backend-managed session, attach
-`backend.optimizer_config().native_execution_config().clone()` to
-`CugraphSqlConfig` as shown above so graph execution shares the backend
-admission owner.
+SQL-visible graph surface for a service. On a backend-managed session, call
+`with_cugraph_sql` **after** `install_on` (as shown above) or use
+`backend.install_on_with_cugraph_sql(builder, config)`: a cuGraph config
+without its own admission authority automatically inherits the backend's, so
+graph execution shares the backend admission owner. Installing cuGraph on the
+builder *before* `install_on` is rejected at install time. Registering the
+table functions directly on an already-built `SessionContext`
+(`register_cugraph_udtfs`) bypasses backend admission and is not safe for
+backend-managed processes.
+
+## Direct optimizer install
 
 For local single-query experiments, you can still install the raw optimizer rule
 directly:

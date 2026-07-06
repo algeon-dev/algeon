@@ -8,6 +8,7 @@ use arrow_flight::flight_service_server::FlightServiceServer;
 use nexus_query_engine::MemoryControlPolicy;
 use tonic::transport::{Server, server::TcpIncoming};
 
+use crate::GrantBand;
 #[cfg(feature = "iceberg")]
 use crate::table_format::scan::credential_free_endpoint_identity;
 
@@ -102,6 +103,7 @@ async fn serve_inner(config: ServerConfig, listen: Listen) -> Result<()> {
     log_server_config_snapshot(&config);
     warn_if_testing_profile_active(&config);
     warn_if_cugraph_built_but_disabled(&config);
+    warn_if_default_admission_grant_band(&config);
 
     let ctx = Arc::new(session::build_session_context(&config).await?);
     let auth_interceptor = auth::AuthInterceptor::new(config.auth.mode.clone(), auth::TokenStore::new());
@@ -337,6 +339,21 @@ fn warn_if_cugraph_built_but_disabled(config: &ServerConfig) {
 
 #[cfg(not(feature = "cugraph"))]
 fn warn_if_cugraph_built_but_disabled(_config: &ServerConfig) {}
+
+fn warn_if_default_admission_grant_band(config: &ServerConfig) {
+    if config.admission_policy.grant() != GrantBand::default() {
+        return;
+    }
+    tracing::warn!(
+        max_in_flight = config.max_in_flight,
+        admission_grant_min = "1/8",
+        admission_grant_want = "1/2",
+        "server admission is using the default grant band, so a lone query is capped at \
+         50% of the resolved device budget even when max_in_flight is 1. To reproduce \
+         the legacy full-budget band, set NEXUS_SERVER_ADMISSION_GRANT_MIN to 1/max_in_flight \
+         and NEXUS_SERVER_ADMISSION_GRANT_WANT=1.0."
+    );
+}
 
 #[cfg(feature = "cugraph")]
 fn cugraph_registry_algorithm_count() -> usize {

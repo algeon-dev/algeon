@@ -55,8 +55,9 @@ use super::{
 use crate::{
     error::{Error, ErrorCode},
     native_exec::{
-        GpuResidentProducerExec, NativeCudfComposedExec, NativeCudfExec, NativeCudfExecutionConfig, NativeCudfMetrics,
-        gpu_resident_producer as native_gpu_resident_producer,
+        GpuResidentProducerExec, NativeCudfComposedExec, NativeCudfExec, NativeCudfExecutionConfig,
+        NativeCudfGpuProducerExec, NativeCudfMetrics, gpu_resident_producer as native_gpu_resident_producer,
+        query_admission_ticket_from_task_context,
     },
 };
 
@@ -132,22 +133,31 @@ impl CugraphAlgoExec {
             && !self.edge_source_canonical_facts.satisfies_python_options(&self.spec)
     }
 
+    fn validate_standalone_bounded_sources(&self) -> Result<()> {
+        validate_standalone_bounded_cugraph_sources(
+            &self.native_execution_config,
+            self.edge_source.as_ref(),
+            &self.predicate_sources,
+        )
+    }
+
     async fn execute_gpu_result_with_context_impl(
         &self,
         native_context: &ExecutionContext,
         partition: usize,
         task_context: Arc<TaskContext>,
     ) -> Result<(String, GpuResultHandle)> {
+        if partition != 0 {
+            return Err(Error::new(
+                ErrorCode::InvalidExecutionPlan,
+                "datafusion_nexus.cugraph_sql.execute_gpu",
+                "cuGraph SQL GPU-resident producer exposes exactly one output partition",
+            )
+            .with_fact("partition", partition)
+            .into());
+        }
+        self.validate_standalone_bounded_sources()?;
         if is_bfs_path_output(&self.spec) {
-            if partition != 0 {
-                return Err(Error::new(
-                    ErrorCode::InvalidExecutionPlan,
-                    "datafusion_nexus.cugraph_sql.execute_gpu",
-                    "cuGraph SQL GPU-resident producer exposes exactly one output partition",
-                )
-                .with_fact("partition", partition)
-                .into());
-            }
             let metrics = NativeCudfMetrics::new_with_capture(
                 &self.metrics,
                 partition,
@@ -165,7 +175,7 @@ impl CugraphAlgoExec {
                 bfs_path_target_vertex(native_context, &self.spec, &predicate_frames)?.expect("path mode checked");
             let prepared =
                 prepare_bfs_logical_gpu_inputs(native_context, &self.spec, edge_schema, edge_frame, predicate_frames)?;
-            let (batch, query_metrics) = if let Some(codebook) = prepared.logical_codebook {
+            let (batch, query_metrics, path_residency_source) = if let Some(codebook) = prepared.logical_codebook {
                 let (handle, query_metrics) = execute_cugraph_query_to_gpu_with_options(
                     native_context,
                     &prepared.execution_spec,
@@ -189,9 +199,10 @@ impl CugraphAlgoExec {
                         error,
                     ))
                 })?;
-                (batch, query_metrics)
+                let path_residency_source = decoded.clone().into_gpu_frame();
+                (batch, query_metrics, path_residency_source)
             } else {
-                execute_cugraph_query_to_host(
+                let (handle, query_metrics) = execute_cugraph_query_to_gpu_with_options(
                     native_context,
                     &self.spec,
                     prepared.edge_schema,
@@ -200,12 +211,27 @@ impl CugraphAlgoExec {
                     None,
                     None,
                     self.edge_normalize_inserted(),
-                )?
+                )?;
+                let batch = handle.to_host_record_batch().map_err(|error| {
+                    DataFusionError::from(Error::from_native(
+                        "datafusion_nexus.cugraph_sql.path_output",
+                        "failed to materialize cuGraph BFS output for path reconstruction",
+                        error,
+                    ))
+                })?;
+                let path_residency_source = handle.clone().into_gpu_frame();
+                (batch, query_metrics, path_residency_source)
             };
             let path = reconstruct_bfs_path_batch(&self.spec, &batch, path_target)?;
             let path = project_and_limit_host_batch(path, self.projection.as_ref(), self.limit)?;
             let schema = projected_schema(&self.spec.output_schema, self.projection.as_ref())?;
             let frame = record_batches_to_gpu(native_context, Arc::clone(&schema), &[path])?;
+            let frame = retain_mapped_cugraph_frame(
+                frame.into_frame(),
+                &path_residency_source,
+                "datafusion_nexus.cugraph_sql.path_output",
+                "failed to retain BFS path GPU output residency",
+            )?;
             let handle = GpuResultHandle::new(native_context, frame, schema).map_err(|error| {
                 DataFusionError::from(Error::from_native(
                     "datafusion_nexus.cugraph_sql.path_output",
@@ -215,15 +241,6 @@ impl CugraphAlgoExec {
             })?;
             metrics.record_query_metrics(&query_metrics);
             return Ok((self.gpu_result_input_name.clone(), handle));
-        }
-        if partition != 0 {
-            return Err(Error::new(
-                ErrorCode::InvalidExecutionPlan,
-                "datafusion_nexus.cugraph_sql.execute_gpu",
-                "cuGraph SQL GPU-resident producer exposes exactly one output partition",
-            )
-            .with_fact("partition", partition)
-            .into());
         }
         let metrics = NativeCudfMetrics::new_with_capture(
             &self.metrics,
@@ -388,9 +405,14 @@ impl ExecutionPlan for CugraphAlgoExec {
         let default_execution_config = self.native_execution_config.clone();
         let metrics =
             NativeCudfMetrics::new_with_capture(&self.metrics, partition, default_execution_config.metrics_capture());
+        self.validate_standalone_bounded_sources()?;
         let output = futures::stream::once(async move {
             let _elapsed_compute = metrics.baseline.elapsed_compute().timer();
-            let execution_config = cugraph_execution_config(edge_source.as_ref(), &default_execution_config);
+            let execution_config = cugraph_execution_config_for_task_context(
+                edge_source.as_ref(),
+                &default_execution_config,
+                &task_context,
+            );
             let context_lease =
                 execution_config.execution_context_async(Arc::clone(&task_context)).await.map_err(|error| {
                     DataFusionError::from(
@@ -403,11 +425,15 @@ impl ExecutionPlan for CugraphAlgoExec {
                 metrics.record_admission_facts(admission_facts);
             }
             let context = context_lease.context();
+            let execution_task_context =
+                context_lease.task_context().map(Arc::clone).unwrap_or_else(|| Arc::clone(&task_context));
             let edge_schema = edge_source.schema();
             let edge_frame =
-                execute_edge_source_to_gpu(context, Arc::clone(&edge_source), Arc::clone(&task_context)).await?;
+                execute_edge_source_to_gpu(context, Arc::clone(&edge_source), Arc::clone(&execution_task_context))
+                    .await?;
             let predicate_frames =
-                execute_predicate_sources_to_gpu(context, &predicate_sources, Arc::clone(&task_context)).await?;
+                execute_predicate_sources_to_gpu(context, &predicate_sources, Arc::clone(&execution_task_context))
+                    .await?;
             let path_target = bfs_path_target_vertex(context, &spec, &predicate_frames)?;
             let prepared = prepare_bfs_logical_gpu_inputs(context, &spec, edge_schema, edge_frame, predicate_frames)?;
             let (batch, query_metrics) = if let Some(codebook) = prepared.logical_codebook {
@@ -499,11 +525,65 @@ fn edge_execution_config(
     default_execution_config.clone()
 }
 
+#[cfg(test)]
 fn cugraph_execution_config(
     plan: &dyn ExecutionPlan,
     default_execution_config: &NativeCudfExecutionConfig,
 ) -> NativeCudfExecutionConfig {
     edge_execution_config(plan, default_execution_config).with_plan_query_admission_ticket()
+}
+
+fn cugraph_execution_config_for_task_context(
+    plan: &dyn ExecutionPlan,
+    default_execution_config: &NativeCudfExecutionConfig,
+    task_context: &TaskContext,
+) -> NativeCudfExecutionConfig {
+    let execution_config = edge_execution_config(plan, default_execution_config);
+    if let Some(ticket) = query_admission_ticket_from_task_context(task_context) {
+        execution_config.with_existing_query_admission_ticket(ticket)
+    } else {
+        execution_config.with_plan_query_admission_ticket()
+    }
+}
+
+fn validate_standalone_bounded_cugraph_sources(
+    config: &NativeCudfExecutionConfig,
+    edge_source: &dyn ExecutionPlan,
+    predicate_sources: &[Arc<dyn ExecutionPlan>],
+) -> Result<()> {
+    if !config.is_standalone_bounded() {
+        return Ok(());
+    }
+    validate_standalone_bounded_source_contains_no_native_child("edge", edge_source)?;
+    for predicate in predicate_sources {
+        validate_standalone_bounded_source_contains_no_native_child("predicate", predicate.as_ref())?;
+    }
+    Ok(())
+}
+
+fn validate_standalone_bounded_source_contains_no_native_child(
+    source_kind: &'static str,
+    plan: &dyn ExecutionPlan,
+) -> Result<()> {
+    if plan_contains_native_cudf(plan) {
+        return Err(Error::new(
+            ErrorCode::InvalidExecutionPlan,
+            "datafusion_nexus.cugraph_sql.admission",
+            "standalone bounded cuGraph execution cannot execute native cudf child plans without query-service admission",
+        )
+        .with_fact("source_kind", source_kind)
+        .with_fact("remediation", "use NexusGpuBackend::install_on_with_cugraph_sql or unbounded cuGraph execution")
+        .into());
+    }
+    Ok(())
+}
+
+fn plan_contains_native_cudf(plan: &dyn ExecutionPlan) -> bool {
+    plan.downcast_ref::<NativeCudfExec>().is_some()
+        || plan.downcast_ref::<NativeCudfComposedExec>().is_some()
+        || plan.downcast_ref::<NativeCudfGpuProducerExec>().is_some()
+        || plan.downcast_ref::<CugraphAlgoExec>().is_some()
+        || plan.children().iter().any(|child| plan_contains_native_cudf(child.as_ref()))
 }
 
 fn as_native_cudf_exec(plan: &dyn ExecutionPlan) -> Option<&NativeCudfExec> {
@@ -585,7 +665,9 @@ mod tests {
     };
 
     use super::*;
-    use crate::native_exec::{QueryAdmissionSource, wrap_plan_with_query_admission_ticket};
+    use crate::native_exec::{
+        QueryAdmissionSource, task_context_with_query_admission_ticket, wrap_plan_with_query_admission_ticket,
+    };
 
     fn admission_only_source() -> QueryAdmissionSource {
         let tenant_id = TenantId::new("cugraph-test");
@@ -654,6 +736,67 @@ mod tests {
             cugraph_execution_config(wrapped.as_ref(), &default_config).query_admission_ticket_id(),
             expected_ticket_id
         );
+    }
+
+    #[test]
+    fn cugraph_execution_config_prefers_ambient_root_ticket() {
+        let source = admission_only_source();
+        let base = NativeCudfExecutionConfig::bounded(1024, 512, 1, 3, 1).with_query_admission_source(source);
+        let ambient_config = base.clone().with_plan_query_admission_ticket();
+        let local_config = base.with_plan_query_admission_ticket();
+        let ambient_ticket =
+            ambient_config.query_admission_ticket().expect("ambient config should have a root admission ticket");
+        let task_context = task_context_with_query_admission_ticket(Arc::new(TaskContext::default()), ambient_ticket);
+        let plan = EmptyExec::new(Arc::new(Schema::empty()));
+
+        assert_ne!(ambient_config.query_admission_ticket_id(), local_config.query_admission_ticket_id());
+        assert_eq!(
+            cugraph_execution_config_for_task_context(&plan, &local_config, &task_context).query_admission_ticket_id(),
+            ambient_config.query_admission_ticket_id()
+        );
+    }
+
+    #[test]
+    fn standalone_bounded_cugraph_rejects_native_child_execution_without_admission() {
+        let config = NativeCudfExecutionConfig::bounded(2048, 512, 1, 3, 1);
+        let schema = Arc::new(Schema::empty());
+        let mut builder = QueryPlanBuilder::new();
+        let source = builder.add_source(SourceNode::LiteralBatch(LiteralBatchSource::empty(Arc::clone(&schema))));
+        let native_plan = builder.finish_with_host_sink(source);
+        let native_exec =
+            Arc::new(NativeCudfExec::try_new(native_plan, config.clone()).unwrap()) as Arc<dyn ExecutionPlan>;
+
+        let error = validate_standalone_bounded_cugraph_sources(&config, native_exec.as_ref(), &[])
+            .expect_err("standalone bounded cuGraph must not execute a native edge child without admission");
+        assert!(error.to_string().contains("cannot execute native cudf child plans"), "{error}");
+
+        let repartitioned =
+            Arc::new(RepartitionExec::try_new(native_exec, Partitioning::UnknownPartitioning(1)).unwrap())
+                as Arc<dyn ExecutionPlan>;
+        let error = validate_standalone_bounded_cugraph_sources(&config, repartitioned.as_ref(), &[])
+            .expect_err("fallback collect over native children should be rejected");
+
+        assert!(error.to_string().contains("cannot execute native cudf child plans"), "{error}");
+    }
+
+    #[test]
+    fn admission_backed_cugraph_allows_native_child_execution() {
+        let config =
+            NativeCudfExecutionConfig::bounded(2048, 512, 1, 3, 1).with_query_admission_source(admission_only_source());
+        let schema = Arc::new(Schema::empty());
+        let mut builder = QueryPlanBuilder::new();
+        let source = builder.add_source(SourceNode::LiteralBatch(LiteralBatchSource::empty(Arc::clone(&schema))));
+        let native_plan = builder.finish_with_host_sink(source);
+        let native_exec =
+            Arc::new(NativeCudfExec::try_new(native_plan, config.clone()).unwrap()) as Arc<dyn ExecutionPlan>;
+        let repartitioned =
+            Arc::new(RepartitionExec::try_new(Arc::clone(&native_exec), Partitioning::UnknownPartitioning(1)).unwrap())
+                as Arc<dyn ExecutionPlan>;
+
+        validate_standalone_bounded_cugraph_sources(&config, native_exec.as_ref(), &[])
+            .expect("query-service admission owns the native child ledger");
+        validate_standalone_bounded_cugraph_sources(&config, repartitioned.as_ref(), &[])
+            .expect("query-service admission owns fallback-collected native children");
     }
 }
 
@@ -1057,6 +1200,7 @@ fn prepare_bfs_logical_gpu_inputs(
         ));
     }
 
+    let source_edge_frame = edge_frame.clone();
     let edge_frame = edge_frame.into_frame();
     validate_bfs_logical_edge_schema(spec, &edge_schema)?;
     let mut domain_parts = vec![cudf_series(&edge_frame, &spec.src_col)?, cudf_series(&edge_frame, &spec.dst_col)?];
@@ -1111,7 +1255,15 @@ fn prepare_bfs_logical_gpu_inputs(
             DataFrame::from_series([("__source_vertex", source_code)]).map_err(cudf_logical_mapping_error)?;
         let source_schema =
             Arc::new(Schema::new(vec![arrow::datatypes::Field::new("__source_vertex", DataType::Int32, false)]));
-        mapped_predicates.push(CugraphGpuFrame { schema: source_schema, frame: GpuDataFrame::new(source_frame) });
+        mapped_predicates.push(CugraphGpuFrame {
+            schema: source_schema,
+            frame: retain_mapped_cugraph_frame(
+                source_frame,
+                &source_edge_frame,
+                "datafusion_nexus.cugraph_sql.logical_mapping",
+                "failed to retain mapped cuGraph logical source frame residency",
+            )?,
+        });
     }
     for (index, frame) in predicate_frames.into_iter().enumerate() {
         mapped_predicates.push(encode_bfs_logical_predicate_frame(params, index, frame, &codebook)?);
@@ -1122,10 +1274,25 @@ fn prepare_bfs_logical_gpu_inputs(
     Ok(PreparedCugraphInputs {
         execution_spec,
         edge_schema: mapped_edge_schema,
-        edge_frame: GpuDataFrame::new(mapped_edge),
+        edge_frame: retain_mapped_cugraph_frame(
+            mapped_edge,
+            &source_edge_frame,
+            "datafusion_nexus.cugraph_sql.logical_mapping",
+            "failed to retain mapped cuGraph logical edge frame residency",
+        )?,
         predicate_frames: mapped_predicates,
         logical_codebook: Some(codebook),
     })
+}
+
+fn retain_mapped_cugraph_frame(
+    frame: DataFrame,
+    source: &GpuDataFrame,
+    operation: &'static str,
+    message: &'static str,
+) -> Result<GpuDataFrame> {
+    GpuDataFrame::try_new_with_shared_residency(frame, source)
+        .map_err(|error| DataFusionError::from(Error::from_native(operation, message, error)))
 }
 
 fn validate_bfs_logical_edge_schema(spec: &CugraphAlgorithmSpec, edge_schema: &SchemaRef) -> Result<()> {
@@ -1256,6 +1423,7 @@ fn encode_bfs_logical_predicate_frame(
     codebook: &Codebook,
 ) -> Result<CugraphGpuFrame> {
     let mut expected_index = 0;
+    let source_frame = frame.frame.clone();
     let mut raw = frame.frame.into_frame();
     let mut encoded_columns = Vec::new();
     let source_offset = bfs_planned_source_input_offset(params);
@@ -1271,7 +1439,12 @@ fn encode_bfs_logical_predicate_frame(
         }
         return Ok(CugraphGpuFrame {
             schema: remap_bfs_logical_schema(&frame.schema, &encoded_columns)?,
-            frame: GpuDataFrame::new(raw),
+            frame: retain_mapped_cugraph_frame(
+                raw,
+                &source_frame,
+                "datafusion_nexus.cugraph_sql.logical_mapping",
+                "failed to retain mapped cuGraph logical predicate frame residency",
+            )?,
         });
     }
     let index = index.saturating_sub(source_offset);
@@ -1307,7 +1480,12 @@ fn encode_bfs_logical_predicate_frame(
     }
     Ok(CugraphGpuFrame {
         schema: remap_bfs_logical_schema(&frame.schema, &encoded_columns)?,
-        frame: GpuDataFrame::new(raw),
+        frame: retain_mapped_cugraph_frame(
+            raw,
+            &source_frame,
+            "datafusion_nexus.cugraph_sql.logical_mapping",
+            "failed to retain mapped cuGraph logical predicate frame residency",
+        )?,
     })
 }
 
@@ -1386,34 +1564,42 @@ fn decode_bfs_logical_gpu_output(
     codebook: &Codebook,
     output_schema: SchemaRef,
 ) -> Result<GpuResultHandle> {
-    let raw = handle.into_gpu_frame().into_frame();
-    let vertex = decode_code_column(&raw, "vertex", codebook)?
+    let raw_frame = handle.into_gpu_frame();
+    let raw = raw_frame.frame();
+    let vertex = decode_code_column(raw, "vertex", codebook)?
         .copy_into_runtime(context.runtime())
         .map_err(cudf_logical_mapping_error)?;
     let distance =
-        cudf_series(&raw, "distance")?.copy_into_runtime(context.runtime()).map_err(cudf_logical_mapping_error)?;
-    let predecessor = decode_bfs_predecessor_code_column(&raw, codebook)?
+        cudf_series(raw, "distance")?.copy_into_runtime(context.runtime()).map_err(cudf_logical_mapping_error)?;
+    let predecessor = decode_bfs_predecessor_code_column(raw, codebook)?
         .copy_into_runtime(context.runtime())
         .map_err(cudf_logical_mapping_error)?;
     let mut columns = vec![("vertex", vertex), ("distance", distance), ("predecessor", predecessor)];
     let raw_column_names = raw.column_names();
     if raw_column_names.contains(&"reachable") {
         let reachable =
-            cudf_series(&raw, "reachable")?.copy_into_runtime(context.runtime()).map_err(cudf_logical_mapping_error)?;
+            cudf_series(raw, "reachable")?.copy_into_runtime(context.runtime()).map_err(cudf_logical_mapping_error)?;
         columns.push(("reachable", reachable));
     }
     if raw_column_names.contains(&"target_found") {
-        let target_found = cudf_series(&raw, "target_found")?
+        let target_found = cudf_series(raw, "target_found")?
             .copy_into_runtime(context.runtime())
             .map_err(cudf_logical_mapping_error)?;
-        let target_distance = cudf_series(&raw, "target_distance")?
+        let target_distance = cudf_series(raw, "target_distance")?
             .copy_into_runtime(context.runtime())
             .map_err(cudf_logical_mapping_error)?;
         columns.push(("target_found", target_found));
         columns.push(("target_distance", target_distance));
     }
     let frame = DataFrame::from_series(columns).map_err(cudf_logical_mapping_error)?;
-    GpuResultHandle::new(context, GpuDataFrame::new(frame), output_schema).map_err(|error| {
+    let frame = GpuDataFrame::try_new_with_shared_residency(frame, &raw_frame).map_err(|error| {
+        DataFusionError::from(Error::from_native(
+            "datafusion_nexus.cugraph_sql.logical_output",
+            "failed to retain decoded cuGraph logical BFS output residency",
+            error,
+        ))
+    })?;
+    GpuResultHandle::new(context, frame, output_schema).map_err(|error| {
         DataFusionError::from(Error::from_native(
             "datafusion_nexus.cugraph_sql.logical_output",
             "failed to bind decoded cuGraph logical BFS output",
@@ -1585,15 +1771,13 @@ fn bfs_path_target_vertex(
     let frame = predicate_frames
         .get(target_index)
         .ok_or_else(|| plan_error("BFS path output target predicate source was not planned"))?;
-    let handle =
-        GpuResultHandle::new(context, GpuDataFrame::new(frame.frame.frame().clone()), Arc::clone(&frame.schema))
-            .map_err(|error| {
-                DataFusionError::from(Error::from_native(
-                    "datafusion_nexus.cugraph_sql.path_output",
-                    "failed to bind BFS target predicate source for path reconstruction",
-                    error,
-                ))
-            })?;
+    let handle = GpuResultHandle::new(context, frame.frame.clone(), Arc::clone(&frame.schema)).map_err(|error| {
+        DataFusionError::from(Error::from_native(
+            "datafusion_nexus.cugraph_sql.path_output",
+            "failed to bind BFS target predicate source for path reconstruction",
+            error,
+        ))
+    })?;
     let batch = handle.to_host_record_batch().map_err(|error| {
         DataFusionError::from(Error::from_native(
             "datafusion_nexus.cugraph_sql.path_output",

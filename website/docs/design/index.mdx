@@ -278,6 +278,12 @@ The current `PlanNode` variants are `Source`, `Filter`, `Projection`,
 
 ## Admission and execution evidence
 
+Process-wide query admission — concurrency slots, device-memory grant bands,
+and the layered memory-control stack shared by library and server modes — has
+its own page: [Admission & memory governance](./admission.mdx). This section
+covers the *plan-shape* admission that decides whether a candidate lowers
+natively at all.
+
 Admission has two layers. The adapter first normalizes and validates DataFusion
 physical shapes, expressions, Arrow types, sources, and lowering contracts. Once
 that produces a DataFusion-free `QueryPlan`, engine-side capability analysis
@@ -394,7 +400,7 @@ For callers, the recommended workflow is:
    call without scanning edges or launching CUDA.
 4. Execute the `cugraph_*` function once validation returns `valid = true`.
 
-The detailed function reference lives in [cuGraph SQL API](./cugraph/overview.mdx).
+The detailed function reference lives in [cuGraph SQL API](../cugraph/overview.mdx).
 
 ## Lakehouse and workspace boundary
 
@@ -425,7 +431,7 @@ Use this page as the routing table before changing behavior:
 
 ## Authoritative references
 
-- [cuGraph SQL API](./cugraph/overview.mdx) for callable graph algorithms and
+- [cuGraph SQL API](../cugraph/overview.mdx) for callable graph algorithms and
   validation metadata.
 - `Cargo.toml` for feature gates and dependency declarations.
 - `src/native_report/schema.rs`, `src/native_exec/metrics.rs`, and

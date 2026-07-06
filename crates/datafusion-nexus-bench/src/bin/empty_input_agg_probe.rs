@@ -8,7 +8,12 @@
 //!
 //! Run: `flock /tmp/cudf-gpu.lock cargo run -p datafusion-nexus-bench --bin empty_input_agg_probe`
 
-use std::{error::Error, fs, sync::Arc, time::{SystemTime, UNIX_EPOCH}};
+use std::{
+    error::Error,
+    fs,
+    sync::Arc,
+    time::{SystemTime, UNIX_EPOCH},
+};
 
 use arrow::{
     array::{Int32Array, Int64Array},

@@ -34,6 +34,10 @@ pub trait CompiledTaskExecutor {
         Ok(())
     }
 
+    fn before_scheduling_cycle(&mut self) -> Result<CompiledSchedulingCycle> {
+        Ok(CompiledSchedulingCycle::default())
+    }
+
     fn live_reserved_bytes(&self) -> Option<u64> {
         None
     }
@@ -48,6 +52,23 @@ pub trait CompiledTaskExecutor {
         _state: &CompiledPipelineState<Self::Resource>,
     ) -> Result<CompiledTaskAdmission> {
         Ok(CompiledTaskAdmission::admitted())
+    }
+}
+
+/// Scheduler behavior selected by an executor at a scheduling-cycle boundary.
+#[doc(hidden)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct CompiledSchedulingCycle {
+    admit_one_overbudget_task: bool,
+}
+
+impl CompiledSchedulingCycle {
+    pub fn after_cooperative_shrink_applied() -> Self {
+        Self { admit_one_overbudget_task: true }
+    }
+
+    pub fn admits_one_overbudget_task(self) -> bool {
+        self.admit_one_overbudget_task
     }
 }
 
@@ -152,7 +173,14 @@ impl<'a> CompiledPipelineScheduler<'a> {
         let mut state = CompiledPipelineState::new(self.pipeline)?;
 
         while state.completed_task_count() < self.pipeline.tasks().len() {
-            let task = match self.next_runnable_task(&state, executor) {
+            let cycle = match executor.before_scheduling_cycle() {
+                Ok(cycle) => cycle,
+                Err(error) => {
+                    release_live_resources_on_error(executor, &mut state)?;
+                    return Err(error);
+                },
+            };
+            let task = match self.next_runnable_task(&state, executor, cycle) {
                 Ok(task) => task,
                 Err(error) => {
                     release_live_resources_on_error(executor, &mut state)?;
@@ -194,6 +222,7 @@ impl<'a> CompiledPipelineScheduler<'a> {
         &self,
         state: &CompiledPipelineState<E::Resource>,
         executor: &E,
+        cycle: CompiledSchedulingCycle,
     ) -> Result<&'a PipelineTask>
     where
         E: CompiledTaskExecutor,
@@ -224,6 +253,12 @@ impl<'a> CompiledPipelineScheduler<'a> {
             .iter()
             .filter(|(_, admission)| admission.is_admitted())
             .min_by_key(|(task, _)| self.runnable_task_priority(task, state, live_reserved_bytes))
+        {
+            return Ok(*task);
+        }
+        if cycle.admits_one_overbudget_task()
+            && let Some((task, _)) =
+                admissions.iter().min_by_key(|(task, _)| self.runnable_task_priority(task, state, live_reserved_bytes))
         {
             return Ok(*task);
         }

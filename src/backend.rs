@@ -157,11 +157,35 @@ impl NexusGpuBackend {
     }
 
     /// Install this backend's native optimizer into a DataFusion session builder.
-    pub fn install_on(&self, builder: SessionStateBuilder) -> Result<SessionStateBuilder> {
+    pub fn install_on(&self, mut builder: SessionStateBuilder) -> Result<SessionStateBuilder> {
+        #[cfg(feature = "cugraph")]
+        reject_preexisting_cugraph_sql(&mut builder)?;
         let rule = Arc::new(CudfNativePhysicalOptimizerRule::new(self.optimizer_config.clone()));
         let session_config =
             DataFusionNexusSessionConfig::from_optimizer_config(&self.optimizer_config).frozen_for_backend_admission();
-        Ok(install_cudf_native_rule_with_session_config(builder, rule, session_config))
+        install_cudf_native_rule_with_session_config(builder, rule, session_config).map_err(|error| {
+            Error::new(
+                ErrorCode::InvalidRequest,
+                "datafusion_nexus.backend.install_on",
+                "pre-existing datafusion-nexus session config conflicts with backend admission",
+            )
+            .with_fact("reason", "session_config_conflicts_with_backend_admission")
+            .with_source(error)
+        })
+    }
+
+    #[cfg(feature = "cugraph")]
+    pub fn install_on_with_cugraph_sql(
+        &self,
+        builder: SessionStateBuilder,
+        cugraph_config: crate::graph_sql::CugraphSqlConfig,
+    ) -> Result<SessionStateBuilder> {
+        use crate::session::CudfSessionStateBuilderExt;
+
+        let builder = self.install_on(builder)?;
+        Ok(builder.with_cugraph_sql(
+            cugraph_config.with_native_execution_config(self.optimizer_config.native_execution_config().clone()),
+        ))
     }
 
     /// Shared query-service admission owner used by sessions installed from this backend.
@@ -482,7 +506,6 @@ fn backend_query_service_config(
         max_row_groups_per_chunk: resolved.max_row_groups_per_chunk,
         max_retry_attempts: resolved.max_retry_attempts,
         min_retry_chunk_row_groups: resolved.min_retry_chunk_row_groups,
-        ..QueryServiceConfig::default()
     }
 }
 
@@ -595,6 +618,40 @@ fn invalid_backend_config(field: &'static str, message: impl Into<String>) -> Er
     Error::new(ErrorCode::InvalidRequest, "datafusion_nexus.backend.config", message).with_fact("field", field)
 }
 
+#[cfg(feature = "cugraph")]
+fn reject_preexisting_cugraph_sql(builder: &mut SessionStateBuilder) -> Result<()> {
+    let Some(functions) = builder.table_functions().as_ref() else {
+        return Ok(());
+    };
+    let Some(function_name) =
+        functions.keys().filter(|name| is_cugraph_sql_table_function_name(name.as_str())).min().cloned()
+    else {
+        return Ok(());
+    };
+    Err(Error::new(
+        ErrorCode::InvalidRequest,
+        "datafusion_nexus.backend.install_on",
+        "cuGraph SQL must be registered through backend admission",
+    )
+    .with_fact("reason", "preexisting_cugraph_sql_without_backend_admission")
+    .with_fact("table_function", function_name)
+    .with_fact("remediation", "use install_on_with_cugraph_sql or call with_cugraph_sql after install_on"))
+}
+
+#[cfg(feature = "cugraph")]
+fn is_cugraph_sql_table_function_name(name: &str) -> bool {
+    use crate::graph_sql::{
+        CUGRAPH_DESCRIBE_ALGORITHM_FUNCTION, CUGRAPH_LIST_ALGORITHMS_FUNCTION, CUGRAPH_VALIDATE_CALL_FUNCTION,
+        CugraphAlgorithm,
+    };
+
+    CugraphAlgorithm::all().any(|algorithm| algorithm.function_name() == name)
+        || matches!(
+            name,
+            CUGRAPH_LIST_ALGORITHMS_FUNCTION | CUGRAPH_DESCRIBE_ALGORITHM_FUNCTION | CUGRAPH_VALIDATE_CALL_FUNCTION
+        )
+}
+
 fn nongds_deployment() -> DeploymentIoCapability {
     DeploymentIoCapability::from_probe_inputs(
         NvidiaFsProbeStatus::DriverMissing,
@@ -608,6 +665,7 @@ mod tests {
     use datafusion::{
         common::config::{ConfigOptions, ExtensionOptions},
         execution::SessionStateBuilder,
+        prelude::SessionConfig,
     };
 
     use super::*;
@@ -722,7 +780,7 @@ mod tests {
         let backend = NexusGpuBackend::builder()
             .memory_policy(NexusMemoryPolicy::Bounded {
                 device_ordinals: vec![0, 1],
-                device_budget_bytes: 100,
+                device_budget_bytes: 200,
                 max_source_chunk_bytes: 64,
                 max_row_groups_per_chunk: 1,
                 max_retry_attempts: 1,
@@ -798,8 +856,58 @@ mod tests {
             let mut extension = extension.clone();
             let error = extension.set(option.key, "1").unwrap_err();
             assert!(error.to_string().contains(&option.full_key()), "{} should reject", option.full_key());
-            assert!(error.to_string().contains("NexusGpuBackend"));
+            assert!(error.to_string().contains("query-service admission"));
         }
+    }
+
+    #[test]
+    fn backend_install_rejects_conflicting_preexisting_session_extension() {
+        let backend = NexusGpuBackend::builder()
+            .memory_policy(NexusMemoryPolicy::Bounded {
+                device_ordinals: vec![0],
+                device_budget_bytes: 4096,
+                max_source_chunk_bytes: 1024,
+                max_row_groups_per_chunk: 1,
+                max_retry_attempts: 3,
+                min_retry_chunk_row_groups: 1,
+            })
+            .build_admission_only()
+            .unwrap();
+        let mut config = SessionConfig::new();
+        config
+            .options_mut()
+            .extensions
+            .insert(DataFusionNexusSessionConfig::from_optimizer_config(&CudfOptimizerConfig::default()));
+
+        let error = backend.install_on(SessionStateBuilder::new().with_config(config)).unwrap_err();
+
+        assert_eq!(error.code(), ErrorCode::InvalidRequest);
+        assert_eq!(error.fact_value("reason"), Some("session_config_conflicts_with_backend_admission"));
+    }
+
+    #[cfg(feature = "cugraph")]
+    #[test]
+    fn backend_install_rejects_preexisting_cugraph_sql_registration() {
+        use crate::{CugraphSqlConfig, session::CudfSessionStateBuilderExt};
+
+        let backend = NexusGpuBackend::builder()
+            .memory_policy(NexusMemoryPolicy::Bounded {
+                device_ordinals: vec![0],
+                device_budget_bytes: 4096,
+                max_source_chunk_bytes: 1024,
+                max_row_groups_per_chunk: 1,
+                max_retry_attempts: 3,
+                min_retry_chunk_row_groups: 1,
+            })
+            .build_admission_only()
+            .unwrap();
+
+        let builder = SessionStateBuilder::new().with_cugraph_sql(CugraphSqlConfig::default());
+        let error = backend.install_on(builder).unwrap_err();
+
+        assert_eq!(error.code(), ErrorCode::InvalidRequest);
+        assert_eq!(error.fact_value("reason"), Some("preexisting_cugraph_sql_without_backend_admission"));
+        assert!(error.fact_value("table_function").is_some_and(|name| name.starts_with("cugraph_")));
     }
 
     #[test]
@@ -829,7 +937,7 @@ mod tests {
         let error = backend.optimizer_config().with_datafusion_config_options(&options).unwrap_err();
 
         assert!(error.to_string().contains("native.device_budget_bytes"));
-        assert!(error.to_string().contains("NexusGpuBackend"));
+        assert!(error.to_string().contains("query-service admission"));
     }
 
     #[test]
@@ -850,7 +958,7 @@ mod tests {
 
         let error = backend.optimizer_config().with_datafusion_config_options(&options).unwrap_err();
 
-        assert!(error.to_string().contains("native.memory_policy"));
-        assert!(error.to_string().contains("NexusGpuBackend"));
+        assert!(error.to_string().contains("session config must be frozen"));
+        assert!(error.to_string().contains("query-service admission"));
     }
 }
