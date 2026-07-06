@@ -23,7 +23,8 @@ use datafusion_nexus_bench::{
     register_tpch_table_layout, tpch_report_session_config, tpch_tuned_cpu_session_config,
 };
 use nexus_query_engine::{
-    QueryError, QueryService, QueryServiceConfig, QueryServiceTenantConfig, TenantId, harness::StableFnv1a64,
+    QueryError, QueryService, QueryServiceConfig, QueryServiceTenantConfig, SlotGuarantee, TenantId,
+    harness::StableFnv1a64,
 };
 use tokio::sync::Barrier;
 
@@ -66,6 +67,10 @@ const INTERACTIVE_QUERIES_ENV: &str = "CUDF_QUERY_SERVICE_TPCH_INTERACTIVE_QUERY
 const BULK_ITERATIONS_ENV: &str = "CUDF_QUERY_SERVICE_TPCH_BULK_ITERATIONS";
 const INTERACTIVE_ITERATIONS_ENV: &str = "CUDF_QUERY_SERVICE_TPCH_INTERACTIVE_ITERATIONS";
 const TENANT_BUDGET_BYTES_ENV: &str = "CUDF_QUERY_SERVICE_TPCH_TENANT_BUDGET_BYTES";
+const DEVICE_CAPACITY_BYTES_ENV: &str = "CUDF_QUERY_SERVICE_TPCH_DEVICE_CAPACITY_BYTES";
+const TENANT_MIN_GRANT_BYTES_ENV: &str = "CUDF_QUERY_SERVICE_TPCH_TENANT_MIN_GRANT_BYTES";
+const TENANT_WANT_GRANT_BYTES_ENV: &str = "CUDF_QUERY_SERVICE_TPCH_TENANT_WANT_GRANT_BYTES";
+const SLOT_GUARANTEE_ENV: &str = "CUDF_QUERY_SERVICE_TPCH_SLOT_GUARANTEE";
 const MAX_CONCURRENT_QUERIES_ENV: &str = "CUDF_QUERY_SERVICE_TPCH_MAX_CONCURRENT_QUERIES";
 const MAX_ADMISSION_QUEUE_LEN_ENV: &str = "CUDF_QUERY_SERVICE_TPCH_MAX_ADMISSION_QUEUE_LEN";
 const ADMISSION_WAIT_TIMEOUT_MS_ENV: &str = "CUDF_QUERY_SERVICE_TPCH_ADMISSION_WAIT_TIMEOUT_MS";
@@ -101,7 +106,10 @@ struct StressConfig {
     interactive_queries: Vec<String>,
     bulk_iterations: usize,
     interactive_iterations: usize,
-    tenant_budget_bytes: u64,
+    device_capacity_bytes: u64,
+    tenant_min_grant_bytes: u64,
+    tenant_want_grant_bytes: u64,
+    slot_guarantee: SlotGuarantee,
     max_concurrent_queries: usize,
     max_admission_queue_len: usize,
     admission_wait_timeout: Duration,
@@ -116,14 +124,38 @@ impl StressConfig {
             Some(value) => PathBuf::from(value),
             None => default_tpch_parquet_root(datafusion_nexus_bench::TpchDefaultScale::Sf1).into(),
         };
+        let max_concurrent_queries = env_usize(MAX_CONCURRENT_QUERIES_ENV, 1)?;
+        let legacy_tenant_budget_bytes = optional_env_u64(TENANT_BUDGET_BYTES_ENV)?;
+        let tenant_min_grant_bytes = optional_env_u64(TENANT_MIN_GRANT_BYTES_ENV)?;
+        let tenant_want_grant_bytes = optional_env_u64(TENANT_WANT_GRANT_BYTES_ENV)?;
+        if legacy_tenant_budget_bytes.is_some()
+            && (tenant_min_grant_bytes.is_some() || tenant_want_grant_bytes.is_some())
+        {
+            return Err(plan_error(format!(
+                "{TENANT_BUDGET_BYTES_ENV} cannot be combined with {TENANT_MIN_GRANT_BYTES_ENV} or {TENANT_WANT_GRANT_BYTES_ENV}"
+            )));
+        }
+        let device_capacity_bytes = env_u64(
+            DEVICE_CAPACITY_BYTES_ENV,
+            default_device_capacity_bytes(legacy_tenant_budget_bytes, max_concurrent_queries),
+        )?;
+        let default_min_grant_bytes = grant_fraction_bytes(device_capacity_bytes, 1, 8);
+        let default_want_grant_bytes = grant_fraction_bytes(device_capacity_bytes, 1, 2);
         let config = Self {
             dataset_root,
             bulk_queries: query_ids_from_env(BULK_QUERIES_ENV, &["q01", "q09", "q18", "q21"])?,
             interactive_queries: query_ids_from_env(INTERACTIVE_QUERIES_ENV, &["q06", "q14", "q22"])?,
             bulk_iterations: env_usize(BULK_ITERATIONS_ENV, 1)?,
             interactive_iterations: env_usize(INTERACTIVE_ITERATIONS_ENV, 4)?,
-            tenant_budget_bytes: env_u64(TENANT_BUDGET_BYTES_ENV, default_tenant_budget_bytes())?,
-            max_concurrent_queries: env_usize(MAX_CONCURRENT_QUERIES_ENV, 1)?,
+            device_capacity_bytes,
+            tenant_min_grant_bytes: tenant_min_grant_bytes
+                .or(legacy_tenant_budget_bytes)
+                .unwrap_or(default_min_grant_bytes),
+            tenant_want_grant_bytes: tenant_want_grant_bytes
+                .or(legacy_tenant_budget_bytes)
+                .unwrap_or(default_want_grant_bytes),
+            slot_guarantee: env_slot_guarantee(SLOT_GUARANTEE_ENV, SlotGuarantee::GuaranteedMinimum)?,
+            max_concurrent_queries,
             max_admission_queue_len: env_usize(MAX_ADMISSION_QUEUE_LEN_ENV, 64)?,
             admission_wait_timeout: Duration::from_millis(env_u64(ADMISSION_WAIT_TIMEOUT_MS_ENV, 30_000)?),
             max_source_chunk_bytes: env_u64(MAX_SOURCE_CHUNK_BYTES_ENV, 64 * 1024 * 1024)?,
@@ -137,7 +169,29 @@ impl StressConfig {
     fn validate(&self) -> DataFusionResult<()> {
         validate_nonzero(BULK_ITERATIONS_ENV, self.bulk_iterations)?;
         validate_nonzero(INTERACTIVE_ITERATIONS_ENV, self.interactive_iterations)?;
-        validate_nonzero(TENANT_BUDGET_BYTES_ENV, self.tenant_budget_bytes)?;
+        validate_nonzero(DEVICE_CAPACITY_BYTES_ENV, self.device_capacity_bytes)?;
+        validate_nonzero(TENANT_MIN_GRANT_BYTES_ENV, self.tenant_min_grant_bytes)?;
+        validate_nonzero(TENANT_WANT_GRANT_BYTES_ENV, self.tenant_want_grant_bytes)?;
+        if self.tenant_want_grant_bytes < self.tenant_min_grant_bytes {
+            return Err(plan_error(format!(
+                "{TENANT_WANT_GRANT_BYTES_ENV} must be at least {TENANT_MIN_GRANT_BYTES_ENV}"
+            )));
+        }
+        if self.tenant_min_grant_bytes > self.device_capacity_bytes {
+            return Err(plan_error(format!(
+                "{TENANT_MIN_GRANT_BYTES_ENV} must not exceed {DEVICE_CAPACITY_BYTES_ENV}"
+            )));
+        }
+        if self.slot_guarantee == SlotGuarantee::GuaranteedMinimum {
+            let required_min_capacity = self
+                .tenant_min_grant_bytes
+                .saturating_mul(u64::try_from(self.max_concurrent_queries).unwrap_or(u64::MAX));
+            if required_min_capacity > self.device_capacity_bytes {
+                return Err(plan_error(format!(
+                    "{TENANT_MIN_GRANT_BYTES_ENV} must fit {MAX_CONCURRENT_QUERIES_ENV} within {DEVICE_CAPACITY_BYTES_ENV} when {SLOT_GUARANTEE_ENV}=guaranteed_minimum"
+                )));
+            }
+        }
         validate_nonzero(MAX_CONCURRENT_QUERIES_ENV, self.max_concurrent_queries)?;
         validate_nonzero(MAX_ADMISSION_QUEUE_LEN_ENV, self.max_admission_queue_len)?;
         validate_nonzero(MAX_SOURCE_CHUNK_BYTES_ENV, self.max_source_chunk_bytes)?;
@@ -152,7 +206,9 @@ impl StressConfig {
 
     fn service_config(&self) -> QueryServiceConfig {
         QueryServiceConfig {
+            device_capacity_bytes: Some(self.device_capacity_bytes),
             max_concurrent_queries: self.max_concurrent_queries,
+            slot_guarantee: self.slot_guarantee,
             max_admission_queue_len: self.max_admission_queue_len,
             admission_wait_timeout: self.admission_wait_timeout,
             max_source_chunk_bytes: self.max_source_chunk_bytes,
@@ -270,7 +326,10 @@ impl StressReport {
         output.push_str(&format!("# query_service_tpch_stress_tsv_schema_version={TSV_SCHEMA_VERSION}\n"));
         output.push_str(&format!("# dataset_root={}\n", self.config.dataset_root.display()));
         output.push_str(&format!("# dataset_metadata_fingerprint={}\n", self.dataset.metadata_fingerprint));
-        output.push_str(&format!("# tenant_budget_bytes={}\n", self.config.tenant_budget_bytes));
+        output.push_str(&format!("# device_capacity_bytes={}\n", self.config.device_capacity_bytes));
+        output.push_str(&format!("# tenant_min_grant_bytes={}\n", self.config.tenant_min_grant_bytes));
+        output.push_str(&format!("# tenant_want_grant_bytes={}\n", self.config.tenant_want_grant_bytes));
+        output.push_str(&format!("# slot_guarantee={}\n", slot_guarantee_name(self.config.slot_guarantee)));
         output.push_str(&format!("# max_concurrent_queries={}\n", self.config.max_concurrent_queries));
         output.push_str(&format!("# max_admission_queue_len={}\n", self.config.max_admission_queue_len));
         for summary in tenant_summaries(&self.rows) {
@@ -377,9 +436,9 @@ async fn run_stress(
         QueryService::new(
             config.service_config(),
             vec![
-                QueryServiceTenantConfig::new("bulk", config.tenant_budget_bytes),
-                QueryServiceTenantConfig::new("interactive_a", config.tenant_budget_bytes),
-                QueryServiceTenantConfig::new("interactive_b", config.tenant_budget_bytes),
+                tenant_config("bulk", config),
+                tenant_config("interactive_a", config),
+                tenant_config("interactive_b", config),
             ],
         )
         .map_err(native_error)?,
@@ -574,14 +633,9 @@ fn run_overload_probe(config: &StressConfig) -> DataFusionResult<StressRow> {
         admission_wait_timeout: Duration::from_millis(50),
         ..config.service_config()
     };
-    let service = QueryService::new(
-        probe_config,
-        vec![
-            QueryServiceTenantConfig::new("bulk", config.tenant_budget_bytes),
-            QueryServiceTenantConfig::new("interactive_a", config.tenant_budget_bytes),
-        ],
-    )
-    .map_err(native_error)?;
+    let service =
+        QueryService::new(probe_config, vec![tenant_config("bulk", config), tenant_config("interactive_a", config)])
+            .map_err(native_error)?;
     let active = service.admit_query("bulk").map_err(native_error)?;
     let queued_service = service.clone();
     let (ready_sender, ready_receiver) = std::sync::mpsc::channel();
@@ -629,6 +683,10 @@ fn wait_for_queued_len(service: &QueryService, expected: usize) -> DataFusionRes
         std::thread::sleep(Duration::from_millis(5));
     }
     Err(plan_error("timed out waiting for overload probe admission queue"))
+}
+
+fn tenant_config(tenant_id: impl Into<TenantId>, config: &StressConfig) -> QueryServiceTenantConfig {
+    QueryServiceTenantConfig::with_grant_range(tenant_id, config.tenant_min_grant_bytes, config.tenant_want_grant_bytes)
 }
 
 fn build_requests(config: &StressConfig) -> Vec<StressRequest> {
@@ -859,6 +917,41 @@ fn env_u64(name: &'static str, default: u64) -> DataFusionResult<u64> {
     }
 }
 
+fn optional_env_u64(name: &'static str) -> DataFusionResult<Option<u64>> {
+    std::env::var_os(name)
+        .map(|value| {
+            value
+                .to_string_lossy()
+                .parse()
+                .map_err(|error| plan_error(format!("failed to parse {name} as u64: {error}")))
+        })
+        .transpose()
+}
+
+fn env_slot_guarantee(name: &'static str, default: SlotGuarantee) -> DataFusionResult<SlotGuarantee> {
+    match std::env::var_os(name) {
+        Some(value) => parse_slot_guarantee(name, &value.to_string_lossy()),
+        None => Ok(default),
+    }
+}
+
+fn parse_slot_guarantee(name: &'static str, value: &str) -> DataFusionResult<SlotGuarantee> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "guaranteed_minimum" => Ok(SlotGuarantee::GuaranteedMinimum),
+        "optimistic" => Ok(SlotGuarantee::Optimistic),
+        other => {
+            Err(plan_error(format!("failed to parse {name}: expected guaranteed_minimum or optimistic, got {other}")))
+        },
+    }
+}
+
+fn slot_guarantee_name(slot_guarantee: SlotGuarantee) -> &'static str {
+    match slot_guarantee {
+        SlotGuarantee::GuaranteedMinimum => "guaranteed_minimum",
+        SlotGuarantee::Optimistic => "optimistic",
+    }
+}
+
 fn env_bool(name: &'static str, default: bool) -> DataFusionResult<bool> {
     match std::env::var_os(name) {
         Some(value) => match value.to_string_lossy().to_ascii_lowercase().as_str() {
@@ -878,9 +971,15 @@ where T: PartialEq + From<u8> {
     Ok(())
 }
 
-fn default_tenant_budget_bytes() -> u64 {
-    let total = NativeCudfExecutionConfig::auto_sized_device_budget_bytes();
-    (total / 3).max(NativeCudfExecutionConfig::AUTO_SIZED_DEVICE_BUDGET_FALLBACK_BYTES)
+fn default_device_capacity_bytes(legacy_tenant_budget_bytes: Option<u64>, max_concurrent_queries: usize) -> u64 {
+    if let Some(tenant_budget_bytes) = legacy_tenant_budget_bytes {
+        return tenant_budget_bytes.saturating_mul(u64::try_from(max_concurrent_queries).unwrap_or(u64::MAX));
+    }
+    NativeCudfExecutionConfig::auto_sized_device_budget_bytes()
+}
+
+fn grant_fraction_bytes(device_capacity_bytes: u64, numerator: u64, denominator: u64) -> u64 {
+    device_capacity_bytes.saturating_mul(numerator) / denominator
 }
 
 fn adapter_error_from_datafusion(error: &DataFusionError) -> Option<&AdapterError> {
@@ -966,6 +1065,31 @@ mod tests {
             error: StructuredFailure::default(),
         };
         assert_eq!(row.to_tsv_line().split('\t').count(), TSV_COLUMNS.len());
+    }
+
+    #[test]
+    fn stress_config_rejects_overcommitted_guaranteed_minimum_band() {
+        let config = StressConfig {
+            dataset_root: PathBuf::new(),
+            bulk_queries: vec!["q01".to_string()],
+            interactive_queries: vec!["q06".to_string()],
+            bulk_iterations: 1,
+            interactive_iterations: 1,
+            device_capacity_bytes: 100,
+            tenant_min_grant_bytes: 60,
+            tenant_want_grant_bytes: 60,
+            slot_guarantee: SlotGuarantee::GuaranteedMinimum,
+            max_concurrent_queries: 2,
+            max_admission_queue_len: 1,
+            admission_wait_timeout: Duration::from_secs(1),
+            max_source_chunk_bytes: 1,
+            max_row_groups_per_chunk: 1,
+            run_overload_probe: false,
+        };
+
+        let error = config.validate().unwrap_err();
+
+        assert!(error.to_string().contains(SLOT_GUARANTEE_ENV));
     }
 
     #[test]

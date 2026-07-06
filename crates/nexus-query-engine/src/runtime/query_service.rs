@@ -138,6 +138,19 @@ impl QueryServiceTenantConfig {
     }
 }
 
+/// Policy for reserving future admission-slot minimum grants.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum SlotGuarantee {
+    /// Keep enough capacity free for every remaining slot to receive the
+    /// largest configured tenant minimum. This preserves the historical
+    /// fixed-slice safety property.
+    #[default]
+    GuaranteedMinimum,
+    /// Grant from currently available memory without reserving minimum budgets
+    /// for empty slots. Later arrivals wait for their minimum if necessary.
+    Optimistic,
+}
+
 /// Service-level configuration for multi-tenant native query admission.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct QueryServiceConfig {
@@ -176,6 +189,8 @@ pub struct QueryServiceConfig {
     pub device_capacity_bytes: Option<u64>,
     /// Maximum number of admitted query handles active at one time.
     pub max_concurrent_queries: usize,
+    /// Whether empty admission slots reserve future minimum grants.
+    pub slot_guarantee: SlotGuarantee,
     /// Maximum number of queued query admissions across all tenants.
     pub max_admission_queue_len: usize,
     /// Maximum time a query admission may wait before returning `service_overloaded`.
@@ -267,6 +282,7 @@ impl Default for QueryServiceConfig {
             stream_pool_size: None,
             device_capacity_bytes: None,
             max_concurrent_queries: SourceFetchConfig::DEFAULT_HOST_FETCH_MAX_CONCURRENT_OPS,
+            slot_guarantee: SlotGuarantee::GuaranteedMinimum,
             max_admission_queue_len: SourceFetchConfig::DEFAULT_HOST_FETCH_MAX_CONCURRENT_OPS,
             admission_wait_timeout: Duration::from_secs(30),
             max_source_chunk_bytes: 64 * 1024 * 1024,
@@ -1080,6 +1096,9 @@ impl QueryService {
     }
 
     fn reserved_min_bytes_for_remaining_slots(&self, active_queries: usize) -> u64 {
+        if self.inner.config.slot_guarantee == SlotGuarantee::Optimistic {
+            return 0;
+        }
         self.inner
             .max_tenant_min_bytes
             .saturating_mul(u64::try_from(self.remaining_slots_after_current(active_queries)).unwrap_or(u64::MAX))
@@ -1091,6 +1110,9 @@ impl QueryService {
         selected_device: cudf::DeviceId,
         active_queries: usize,
     ) -> Result<u64> {
+        if self.inner.config.slot_guarantee == SlotGuarantee::Optimistic {
+            return Ok(0);
+        }
         let remaining_slots = self.remaining_slots_after_current(active_queries);
         if remaining_slots == 0 || self.inner.max_tenant_min_bytes == 0 {
             return Ok(0);
@@ -2247,6 +2269,30 @@ mod tests {
 
         drop(first);
         assert_eq!(service.memory_governor_report().unwrap().available_bytes, 60);
+    }
+
+    #[test]
+    fn query_service_optimistic_slot_guarantee_does_not_reserve_empty_slot_minima() {
+        let service = QueryService::new_for_admission_tests(
+            QueryServiceConfig {
+                device_capacity_bytes: Some(100),
+                max_concurrent_queries: 4,
+                slot_guarantee: SlotGuarantee::Optimistic,
+                max_admission_queue_len: 8,
+                ..QueryServiceConfig::default()
+            },
+            vec![QueryServiceTenantConfig::with_grant_range("tenant", 10, 60)],
+            non_gds_deployment(),
+        )
+        .unwrap();
+
+        let first = service.try_admit_query("tenant").unwrap().expect("first query should admit want");
+        let second = service.try_admit_query("tenant").unwrap().expect("second query should consume remaining memory");
+
+        assert_eq!(first.device_budget_bytes(), 60);
+        assert_eq!(second.device_budget_bytes(), 40);
+        assert!(service.try_admit_query("tenant").unwrap().is_none());
+        assert_eq!(service.memory_governor_report().unwrap().available_bytes, 0);
     }
 
     #[test]

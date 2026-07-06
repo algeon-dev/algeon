@@ -15,10 +15,11 @@ use datafusion_nexus::server::{
     NEXUS_SERVER_CUGRAPH_DIRECTED_ENV, NEXUS_SERVER_CUGRAPH_RENUMBER_ENV,
 };
 use datafusion_nexus::{
-    CudfOptimizerConfig, DATAFUSION_NEXUS_SESSION_CONFIG_OPTIONS, DataFusionNexusSessionConfig,
-    NativeCudfExecutionConfig,
+    CudfOptimizerConfig, DATAFUSION_NEXUS_SESSION_CONFIG_OPTIONS, DataFusionNexusSessionConfig, MemoryShare,
+    NativeCudfExecutionConfig, SlotGuarantee,
     server::{
-        NEXUS_ICEBERG_GLUE_DATABASE_ENV, NEXUS_SERVER_BIND_ENV, NEXUS_SERVER_CONFIG_FILE_ENV,
+        NEXUS_ICEBERG_GLUE_DATABASE_ENV, NEXUS_SERVER_ADMISSION_GRANT_MIN_ENV, NEXUS_SERVER_ADMISSION_GRANT_WANT_ENV,
+        NEXUS_SERVER_ADMISSION_SLOT_GUARANTEE_ENV, NEXUS_SERVER_BIND_ENV, NEXUS_SERVER_CONFIG_FILE_ENV,
         NEXUS_SERVER_CUGRAPH_ENABLED_ENV, NEXUS_SERVER_DEVICE_BUDGET_FRACTION_ENV, NEXUS_SERVER_GPU_DEVICES_ENV,
         NEXUS_SERVER_MAX_CONCURRENT_QUERIES_ENV, NEXUS_SERVER_MAX_IN_FLIGHT_ENV, NEXUS_SERVER_NATIVE_CONFIG_OPTIONS,
         NEXUS_SERVER_NATIVE_DEVICE_BUDGET_BYTES_ENV, NEXUS_SERVER_NATIVE_HOST_FETCH_ACQUIRE_TIMEOUT_SECS_ENV,
@@ -48,6 +49,10 @@ fn server_config_defaults_to_two_flight_sql_admissions() {
 
     assert_eq!(config.bind_addr.to_string(), "0.0.0.0:50051");
     assert_eq!(config.max_in_flight, 2);
+    assert_eq!(config.admission_policy.max_concurrent_queries(), 2);
+    assert_eq!(config.admission_policy.grant().min, MemoryShare::Fraction(1.0 / 8.0));
+    assert_eq!(config.admission_policy.grant().want, MemoryShare::Fraction(1.0 / 2.0));
+    assert_eq!(config.admission_policy.slot_guarantee(), SlotGuarantee::GuaranteedMinimum);
     assert_eq!(config.gpu_devices, vec![0]);
     assert_eq!(config.device_budget_fraction, None);
     assert_eq!(config.statement_ticket_ttl.as_secs(), 300);
@@ -153,6 +158,66 @@ fn server_config_accepts_preferred_concurrency_knob() {
     let config = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap();
 
     assert_eq!(config.max_in_flight, 3);
+    assert_eq!(config.admission_policy.max_concurrent_queries(), 3);
+}
+
+#[test]
+fn server_config_accepts_admission_grant_band_and_slot_guarantee() {
+    let env = BTreeMap::from([
+        (NEXUS_SERVER_ADMISSION_GRANT_MIN_ENV, "1024".to_string()),
+        (NEXUS_SERVER_ADMISSION_GRANT_WANT_ENV, "0.75".to_string()),
+        (NEXUS_SERVER_ADMISSION_SLOT_GUARANTEE_ENV, "optimistic".to_string()),
+    ]);
+    let config = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap();
+
+    assert_eq!(config.admission_policy.grant().min, MemoryShare::Bytes(1024));
+    assert_eq!(config.admission_policy.grant().want, MemoryShare::Fraction(0.75));
+    assert_eq!(config.admission_policy.slot_guarantee(), SlotGuarantee::Optimistic);
+}
+
+#[test]
+fn server_config_accepts_toml_admission_policy() {
+    let (_dir, env) = env_with_server_toml(
+        r#"
+[admission]
+max_concurrent_queries = 4
+grant_min = 0.25
+grant_want = 0.75
+slot_guarantee = "optimistic"
+"#,
+    );
+    let config = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap();
+
+    assert_eq!(config.max_in_flight, 4);
+    assert_eq!(config.admission_policy.max_concurrent_queries(), 4);
+    assert_eq!(config.admission_policy.grant().min, MemoryShare::Fraction(0.25));
+    assert_eq!(config.admission_policy.grant().want, MemoryShare::Fraction(0.75));
+    assert_eq!(config.admission_policy.slot_guarantee(), SlotGuarantee::Optimistic);
+}
+
+#[test]
+fn server_config_env_overrides_toml_admission_policy() {
+    let (_dir, mut env) = env_with_server_toml(
+        r#"
+[admission]
+max_concurrent_queries = 4
+grant_min = 0.25
+grant_want = 0.50
+slot_guarantee = "guaranteed_minimum"
+"#,
+    );
+    env.insert(NEXUS_SERVER_MAX_CONCURRENT_QUERIES_ENV, "3".to_string());
+    env.insert(NEXUS_SERVER_ADMISSION_GRANT_MIN_ENV, "1024".to_string());
+    env.insert(NEXUS_SERVER_ADMISSION_GRANT_WANT_ENV, "0.75".to_string());
+    env.insert(NEXUS_SERVER_ADMISSION_SLOT_GUARANTEE_ENV, "optimistic".to_string());
+
+    let config = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap();
+
+    assert_eq!(config.max_in_flight, 3);
+    assert_eq!(config.admission_policy.max_concurrent_queries(), 3);
+    assert_eq!(config.admission_policy.grant().min, MemoryShare::Bytes(1024));
+    assert_eq!(config.admission_policy.grant().want, MemoryShare::Fraction(0.75));
+    assert_eq!(config.admission_policy.slot_guarantee(), SlotGuarantee::Optimistic);
 }
 
 #[test]
@@ -558,6 +623,35 @@ fn server_config_rejects_concurrent_unbounded_native_profile() {
     let error = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap_err();
 
     assert!(error.to_string().contains(NEXUS_SERVER_MAX_CONCURRENT_QUERIES_ENV));
+}
+
+#[test]
+fn server_config_rejects_unbounded_native_profile_with_admission_memory_env() {
+    let env = BTreeMap::from([
+        (NEXUS_SERVER_NATIVE_MEMORY_POLICY_ENV, "unbounded".to_string()),
+        (NEXUS_SERVER_ADMISSION_GRANT_MIN_ENV, "0.125".to_string()),
+    ]);
+
+    let error = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap_err();
+
+    assert!(error.to_string().contains(NEXUS_SERVER_ADMISSION_GRANT_MIN_ENV));
+}
+
+#[test]
+fn server_config_rejects_unbounded_native_profile_with_toml_admission_memory_knobs() {
+    let (_dir, env) = env_with_server_toml(
+        r#"
+[native]
+memory_policy = "unbounded"
+
+[admission]
+slot_guarantee = "optimistic"
+"#,
+    );
+
+    let error = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap_err();
+
+    assert!(error.to_string().contains("admission.slot_guarantee"));
 }
 
 #[test]

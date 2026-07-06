@@ -64,7 +64,7 @@ pub use policy::{
 };
 pub use query_service::{
     QueryAdmissionWaiter, QueryHandle, QueryService, QueryServiceAdmissionSnapshot, QueryServiceConfig,
-    QueryServiceTenantConfig, TenantId, TenantQueryContext, TenantQueueDepth,
+    QueryServiceTenantConfig, SlotGuarantee, TenantId, TenantQueryContext, TenantQueueDepth,
 };
 pub use reservation::{MemoryReservationRequest, RetryFacts};
 pub(crate) use service_stream::SourceReadStreamLease;
