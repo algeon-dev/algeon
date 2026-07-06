@@ -50,8 +50,20 @@ pub mod prelude {
     pub use crate::{
         CUDF_NATIVE_PHYSICAL_OPTIMIZER_RULE_NAME, CudfNativePhysicalOptimizerRule, CudfOptimizerConfig,
         CudfSessionStateBuilderExt, DataFusionNexusSessionConfig, FallbackReason, GpuFallbackPolicy, NativeCudfExec,
-        NativeCudfExecutionConfig, NativeMemoryPolicyConfig, PhysicalOptimizerRules, PlanningReport,
+        NativeCudfExecutionConfig, NativeMemoryPolicyConfig, PhysicalOptimizerRules, PlanningReport, Priority,
+        QueryHandle, QueryQos, QueryService, QueryServiceConfig, QueryServiceTenantConfig, TenantId,
         cudf_native_physical_optimizer_rules, cudf_native_physical_optimizer_rules_with_rule,
+    };
+}
+
+/// Query-service admission contracts re-exported by the adapter for embedded
+/// library users.
+pub mod admission_contracts {
+    pub use nexus_query_engine::{
+        DeploymentIoCapability, GdsDriverProbeStatus, KvikioCompatModeStatus, NvidiaFsProbeStatus, Priority,
+        QueryAdmissionWaiter, QueryError, QueryErrorCode, QueryErrorKind, QueryErrorStatus, QueryHandle, QueryQos,
+        QueryService, QueryServiceAdmissionSnapshot, QueryServiceConfig, QueryServiceTenantConfig, Result, TenantId,
+        TenantQueueDepth,
     };
 }
 
@@ -141,11 +153,12 @@ pub mod table_format_contracts {
 /// `nexus_query_engine::{plan,runtime,source,capability,metrics}`.
 pub mod engine_contracts {
     pub use nexus_query_engine::{
-        AdaptiveMemoryHistory, DynamicFilterExecutionOptions, GpuLocalParquetSourceCache,
-        GpuLocalParquetSourceCacheKey, KeyedHashJoinStrategyOptions, NativeOptimizerOptions,
-        NativePipelineExecutionMode, NativePlanCpuPreferenceReason, NativePlanPreferenceOptions, RemoteParquetReadMode,
-        S3SourceStorageCredential, S3SourceStorageProfile, SemijoinReductionOptions, SourceStorageProfile,
-        StatisticalAggregateExecutionMode, StatisticalAggregateToleranceContract,
+        AdaptiveMemoryHistory, DeploymentIoCapability, DynamicFilterExecutionOptions, GdsDriverProbeStatus,
+        GpuLocalParquetSourceCache, GpuLocalParquetSourceCacheKey, KeyedHashJoinStrategyOptions,
+        KvikioCompatModeStatus, MemoryControlPolicy, NativeOptimizerOptions, NativePipelineExecutionMode,
+        NativePlanCpuPreferenceReason, NativePlanPreferenceOptions, NvidiaFsProbeStatus, RemoteParquetReadMode,
+        S3SourceStorageCredential, S3SourceStorageProfile, SemijoinReductionOptions, SourceChunkPlanningMode,
+        SourceStorageProfile, StatisticalAggregateExecutionMode, StatisticalAggregateToleranceContract,
     };
 }
 
@@ -272,12 +285,14 @@ pub use native_report::{
     sql_has_top_level_order_by, sql_top_level_order_by_covers_output_columns,
 };
 pub use nexus_query_engine::{
-    AdaptiveMemoryHistory, DynamicFilterExecutionOptions, GpuLocalParquetSourceCache, GpuLocalParquetSourceCacheKey,
-    KeyedHashJoinStrategyOptions, NativeOptimizerOptions, NativePipelineExecutionMode, NativePlanCpuPreferenceReason,
-    NativePlanPreferenceOptions, RemoteParquetReadMode, S3SourceStorageCredential, S3SourceStorageProfile,
-    SemijoinReductionOptions, SourceStorageProfile, StatisticalAggregateExecutionMode,
-    StatisticalAggregateToleranceContract, TriageCode, TriageEvidenceRef, TriageSeverity, TriageSignal, TriageSummary,
-    TriageVerdict,
+    AdaptiveMemoryHistory, DeploymentIoCapability, DynamicFilterExecutionOptions, GdsDriverProbeStatus,
+    GpuLocalParquetSourceCache, GpuLocalParquetSourceCacheKey, KeyedHashJoinStrategyOptions, KvikioCompatModeStatus,
+    MemoryControlPolicy, NativeOptimizerOptions, NativePipelineExecutionMode, NativePlanCpuPreferenceReason,
+    NativePlanPreferenceOptions, NvidiaFsProbeStatus, Priority, QueryAdmissionWaiter, QueryHandle, QueryQos,
+    QueryService, QueryServiceAdmissionSnapshot, QueryServiceConfig, QueryServiceTenantConfig, RemoteParquetReadMode,
+    S3SourceStorageCredential, S3SourceStorageProfile, SemijoinReductionOptions, SourceChunkPlanningMode,
+    SourceStorageProfile, StatisticalAggregateExecutionMode, StatisticalAggregateToleranceContract, TenantId,
+    TenantQueueDepth, TriageCode, TriageEvidenceRef, TriageSeverity, TriageSignal, TriageSummary, TriageVerdict,
 };
 pub use planner::{
     CUDF_TABLE_FORMAT_GPU_ONLY_LEAF_GUARD_RULE_NAME, CudfNativePhysicalOptimizerRule, CudfOptimizerConfig,

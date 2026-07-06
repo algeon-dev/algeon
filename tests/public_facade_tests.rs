@@ -1,5 +1,6 @@
 use datafusion_nexus::{
-    engine_contracts, error_contracts, execution_contracts, prelude, report_contracts, table_format_contracts,
+    admission_contracts, engine_contracts, error_contracts, execution_contracts, prelude, report_contracts,
+    table_format_contracts,
 };
 
 #[test]
@@ -17,6 +18,10 @@ fn adapter_facade_modules_expose_intentional_contract_groups() {
     };
     let _table_format = table_format_contracts::TableFormat::Iceberg;
     let _mode = engine_contracts::NativePipelineExecutionMode::StrictBounded;
+    let _admission_config = admission_contracts::QueryServiceConfig::default();
+    let _tenant = admission_contracts::QueryServiceTenantConfig::new("tenant", 1024);
+    let _admission_error_code = admission_contracts::QueryErrorCode::ServiceOverloaded;
+    let _priority = prelude::Priority::Normal;
 }
 
 #[cfg(feature = "iceberg")]
