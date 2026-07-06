@@ -77,6 +77,7 @@ struct GovernorState {
 struct ActiveGrant {
     query_id: u64,
     qos: QueryQos,
+    min_bytes: u64,
     budget_bytes: u64,
 }
 
@@ -91,6 +92,7 @@ struct MemoryGrantInner {
     grant_id: u64,
     query_id: u64,
     qos: QueryQos,
+    min_bytes: u64,
     budget_bytes: AtomicU64,
     release_observers: Mutex<Vec<ReleaseObserver>>,
 }
@@ -256,13 +258,17 @@ impl MemoryGovernor {
         let grant_id = state.next_grant_id;
         state.next_grant_id = state.next_grant_id.saturating_add(1);
         state.outstanding_bytes = state.outstanding_bytes.saturating_add(budget_bytes);
-        state.grants.insert(grant_id, ActiveGrant { query_id: request.query_id, qos: request.qos, budget_bytes });
+        state.grants.insert(
+            grant_id,
+            ActiveGrant { query_id: request.query_id, qos: request.qos, min_bytes: request.min_bytes, budget_bytes },
+        );
         Some(MemoryGrant {
             inner: Arc::new(MemoryGrantInner {
                 governor: Arc::clone(&self.inner),
                 grant_id,
                 query_id: request.query_id,
                 qos: request.qos,
+                min_bytes: request.min_bytes,
                 budget_bytes: AtomicU64::new(budget_bytes),
                 release_observers: Mutex::new(Vec::new()),
             }),
@@ -298,6 +304,11 @@ impl MemoryGrant {
     /// QoS metadata attached to the grant request.
     pub fn qos(&self) -> QueryQos {
         self.inner.qos
+    }
+
+    /// Minimum budget floor assigned when this grant was admitted.
+    pub fn min_bytes(&self) -> u64 {
+        self.inner.min_bytes
     }
 
     /// Current grant budget.
@@ -363,6 +374,36 @@ impl MemoryGrant {
         Ok(true)
     }
 
+    /// Attempts to reduce this grant to `target_bytes`, clamped to the
+    /// admission minimum.
+    ///
+    /// This only refunds soft governor capacity. Callers must use it after the
+    /// executor has reached a cooperative boundary and released/replanned any
+    /// resident work above the target.
+    pub fn try_shrink_to(&self, target_bytes: u64) -> Result<bool> {
+        let mut state = self.inner.governor.state.lock().map_err(|_error| {
+            QueryError::new(
+                QueryErrorCode::Internal,
+                "nexus_query_engine.runtime.gpu.memory_grant.try_shrink_to",
+                "memory governor mutex was poisoned",
+            )
+        })?;
+        let Some(active) = state.grants.get_mut(&self.inner.grant_id) else {
+            return Ok(false);
+        };
+        let current_budget = active.budget_bytes;
+        let target_bytes = target_bytes.max(active.min_bytes);
+        if target_bytes >= current_budget {
+            return Ok(true);
+        }
+        let refunded_bytes = current_budget - target_bytes;
+        active.budget_bytes = target_bytes;
+        state.outstanding_bytes = state.outstanding_bytes.saturating_sub(refunded_bytes);
+        self.inner.budget_bytes.store(target_bytes, Ordering::Release);
+        self.inner.governor.available.notify_all();
+        Ok(true)
+    }
+
     /// Adds a callback invoked when the final clone releases this grant.
     pub(crate) fn notify_on_release(&self, observer: ReleaseObserver) -> Result<()> {
         self.inner
@@ -386,6 +427,7 @@ impl std::fmt::Debug for MemoryGrant {
             .field("grant_id", &self.grant_id())
             .field("query_id", &self.query_id())
             .field("qos", &self.qos())
+            .field("min_bytes", &self.min_bytes())
             .field("budget_bytes", &self.budget_bytes())
             .finish()
     }
@@ -484,6 +526,65 @@ mod tests {
         assert!(grant.try_grow(20).unwrap());
         assert_eq!(grant.budget_bytes(), 60);
         assert_eq!(governor.available_bytes().unwrap(), 40);
+    }
+
+    #[test]
+    fn try_shrink_to_refunds_capacity_without_dropping_grant() {
+        let governor = MemoryGovernor::new(0, 100).unwrap();
+        let grant = governor.try_request(GrantRequest::new(1, 30, 80)).unwrap().unwrap();
+
+        assert!(grant.try_shrink_to(50).unwrap());
+        assert_eq!(grant.budget_bytes(), 50);
+        assert_eq!(governor.available_bytes().unwrap(), 50);
+
+        let other = governor.try_request(GrantRequest::new(2, 40, 40)).unwrap().unwrap();
+        assert_eq!(other.budget_bytes(), 40);
+        assert_eq!(governor.available_bytes().unwrap(), 10);
+    }
+
+    #[test]
+    fn try_shrink_to_preserves_admission_floor() {
+        let governor = MemoryGovernor::new(0, 100).unwrap();
+        let grant = governor.try_request(GrantRequest::new(1, 30, 80)).unwrap().unwrap();
+
+        assert!(grant.try_shrink_to(10).unwrap());
+        assert_eq!(grant.min_bytes(), 30);
+        assert_eq!(grant.budget_bytes(), 30);
+        assert_eq!(governor.available_bytes().unwrap(), 70);
+
+        assert!(grant.try_shrink_to(0).unwrap());
+        assert_eq!(grant.budget_bytes(), 30);
+        assert_eq!(governor.available_bytes().unwrap(), 70);
+    }
+
+    #[test]
+    fn try_shrink_to_does_not_grow_grant() {
+        let governor = MemoryGovernor::new(0, 100).unwrap();
+        let grant = governor.try_request(GrantRequest::new(1, 30, 40)).unwrap().unwrap();
+
+        assert!(grant.try_shrink_to(90).unwrap());
+        assert_eq!(grant.budget_bytes(), 40);
+        assert_eq!(governor.available_bytes().unwrap(), 60);
+    }
+
+    #[test]
+    fn blocked_request_wakes_after_shrink() {
+        let governor = MemoryGovernor::new(0, 64).unwrap();
+        let active = governor.try_request(GrantRequest::new(1, 32, 64)).unwrap().unwrap();
+        let waiting_governor = governor.clone();
+        let (sender, receiver) = mpsc::channel();
+        let waiter = thread::spawn(move || {
+            let deadline = Instant::now() + Duration::from_secs(2);
+            let grant = waiting_governor.request(GrantRequest::new(2, 32, 32).with_deadline(deadline)).unwrap();
+            sender.send(grant.budget_bytes()).unwrap();
+        });
+
+        thread::sleep(Duration::from_millis(25));
+        assert!(active.try_shrink_to(32).unwrap());
+
+        assert_eq!(receiver.recv_timeout(Duration::from_secs(1)).unwrap(), 32);
+        waiter.join().unwrap();
+        assert_eq!(governor.available_bytes().unwrap(), 32);
     }
 
     #[test]
