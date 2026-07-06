@@ -570,6 +570,10 @@ impl NativeCudfExecutionConfig {
         self.query_admission_ticket.as_ref().map(|ticket| ticket.id())
     }
 
+    pub(crate) fn query_admission_ticket(&self) -> Option<Arc<QueryAdmissionTicket>> {
+        self.query_admission_ticket.as_ref().map(Arc::clone)
+    }
+
     /// Returns whether execution is bound to a QueryService admission handle.
     pub(crate) fn has_query_service_handle(&self) -> bool {
         self.query_service_handle.is_some()

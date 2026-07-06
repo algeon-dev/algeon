@@ -19,7 +19,10 @@ pub(crate) use self::metrics::NativeCudfMetrics;
 pub(crate) use self::metrics::{NativeMetricsCapture, NativeMetricsCaptureSink};
 #[cfg(feature = "cugraph")]
 pub(crate) use self::producer::{GpuResidentProducerExec, gpu_resident_producer};
-pub(crate) use self::{admission::QueryAdmissionSource, producer::gpu_resident_producer_input_name};
+pub(crate) use self::{
+    admission::{QueryAdmissionSource, plan_is_query_admission_wrapped, wrap_plan_with_query_admission_ticket},
+    producer::gpu_resident_producer_input_name,
+};
 pub use self::{
     composed::NativeCudfComposedExec, config::NativeCudfExecutionConfig, host::NativeCudfExec,
     metrics::NATIVE_CUDF_DATAFUSION_METRIC_NAMES, producer::NativeCudfGpuProducerExec,
