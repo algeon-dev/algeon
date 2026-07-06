@@ -15,6 +15,7 @@ use crate::{
 };
 
 type ReleaseObserver = Arc<dyn Fn() + Send + Sync + 'static>;
+const NO_SHRINK_REQUEST: u64 = 0;
 
 /// Request for a variable per-query GPU memory grant.
 #[derive(Debug, Clone, Copy)]
@@ -79,6 +80,7 @@ struct ActiveGrant {
     qos: QueryQos,
     min_bytes: u64,
     budget_bytes: u64,
+    requested_shrink_target_bytes: u64,
 }
 
 /// RAII query memory grant. Dropping the final clone returns its budget.
@@ -260,7 +262,13 @@ impl MemoryGovernor {
         state.outstanding_bytes = state.outstanding_bytes.saturating_add(budget_bytes);
         state.grants.insert(
             grant_id,
-            ActiveGrant { query_id: request.query_id, qos: request.qos, min_bytes: request.min_bytes, budget_bytes },
+            ActiveGrant {
+                query_id: request.query_id,
+                qos: request.qos,
+                min_bytes: request.min_bytes,
+                budget_bytes,
+                requested_shrink_target_bytes: NO_SHRINK_REQUEST,
+            },
         );
         Some(MemoryGrant {
             inner: Arc::new(MemoryGrantInner {
@@ -314,6 +322,54 @@ impl MemoryGrant {
     /// Current grant budget.
     pub fn budget_bytes(&self) -> u64 {
         self.inner.budget_bytes.load(Ordering::Acquire)
+    }
+
+    /// Records a cooperative shrink target without refunding governor capacity.
+    ///
+    /// This is the request half of chunk-boundary reclamation. The executing
+    /// query must later acknowledge the request at a safe boundary via
+    /// [`Self::try_apply_requested_shrink`], after resident work above the
+    /// target has been released or replanned.
+    pub fn request_shrink_to(&self, target_bytes: u64) -> Result<Option<u64>> {
+        let mut state = self.inner.governor.state.lock().map_err(|_error| {
+            QueryError::new(
+                QueryErrorCode::Internal,
+                "nexus_query_engine.runtime.gpu.memory_grant.request_shrink_to",
+                "memory governor mutex was poisoned",
+            )
+        })?;
+        let Some(active) = state.grants.get_mut(&self.inner.grant_id) else {
+            return Ok(None);
+        };
+        let target_bytes = target_bytes.max(active.min_bytes);
+        if target_bytes >= active.budget_bytes {
+            return Ok(None);
+        }
+
+        let current = active.requested_shrink_target_bytes;
+        let next = if current == NO_SHRINK_REQUEST { target_bytes } else { target_bytes.min(current) };
+        active.requested_shrink_target_bytes = next;
+        Ok(Some(next))
+    }
+
+    /// Returns the currently requested cooperative shrink target, if any.
+    pub fn requested_shrink_target_bytes(&self) -> Result<Option<u64>> {
+        let state = self.inner.governor.state.lock().map_err(|_error| {
+            QueryError::new(
+                QueryErrorCode::Internal,
+                "nexus_query_engine.runtime.gpu.memory_grant.requested_shrink_target_bytes",
+                "memory governor mutex was poisoned",
+            )
+        })?;
+        let Some(active) = state.grants.get(&self.inner.grant_id) else {
+            return Ok(None);
+        };
+        let target_bytes = active.requested_shrink_target_bytes;
+        if target_bytes == NO_SHRINK_REQUEST || target_bytes >= active.budget_bytes {
+            Ok(None)
+        } else {
+            Ok(Some(target_bytes.max(active.min_bytes)))
+        }
     }
 
     /// Attempts to increase this grant by `additional_bytes`.
@@ -398,10 +454,59 @@ impl MemoryGrant {
         }
         let refunded_bytes = current_budget - target_bytes;
         active.budget_bytes = target_bytes;
+        if active.requested_shrink_target_bytes != NO_SHRINK_REQUEST
+            && target_bytes <= active.requested_shrink_target_bytes
+        {
+            active.requested_shrink_target_bytes = NO_SHRINK_REQUEST;
+        }
         state.outstanding_bytes = state.outstanding_bytes.saturating_sub(refunded_bytes);
         self.inner.budget_bytes.store(target_bytes, Ordering::Release);
         self.inner.governor.available.notify_all();
         Ok(true)
+    }
+
+    /// Applies a pending cooperative shrink request as far as
+    /// `live_reserved_bytes` permits.
+    ///
+    /// The method never refunds below the live reservation footprint supplied
+    /// by the executor, so it is safe to call at chunk boundaries before the
+    /// requested target has been fully reached. It returns `true` when no
+    /// shrink request remains pending.
+    pub fn try_apply_requested_shrink(&self, live_reserved_bytes: u64) -> Result<bool> {
+        let mut state = self.inner.governor.state.lock().map_err(|_error| {
+            QueryError::new(
+                QueryErrorCode::Internal,
+                "nexus_query_engine.runtime.gpu.memory_grant.try_apply_requested_shrink",
+                "memory governor mutex was poisoned",
+            )
+        })?;
+        let Some(active) = state.grants.get_mut(&self.inner.grant_id) else {
+            return Ok(false);
+        };
+        let requested_target = active.requested_shrink_target_bytes;
+        if requested_target == NO_SHRINK_REQUEST {
+            return Ok(true);
+        }
+        if requested_target >= active.budget_bytes {
+            active.requested_shrink_target_bytes = NO_SHRINK_REQUEST;
+            return Ok(true);
+        }
+        let safe_target = requested_target.max(live_reserved_bytes).max(active.min_bytes);
+        if safe_target >= active.budget_bytes {
+            return Ok(false);
+        }
+
+        let current_budget = active.budget_bytes;
+        let refunded_bytes = current_budget - safe_target;
+        active.budget_bytes = safe_target;
+        if safe_target <= requested_target {
+            active.requested_shrink_target_bytes = NO_SHRINK_REQUEST;
+        }
+        let request_satisfied = active.requested_shrink_target_bytes == NO_SHRINK_REQUEST;
+        state.outstanding_bytes = state.outstanding_bytes.saturating_sub(refunded_bytes);
+        self.inner.budget_bytes.store(safe_target, Ordering::Release);
+        self.inner.governor.available.notify_all();
+        Ok(request_satisfied)
     }
 
     /// Adds a callback invoked when the final clone releases this grant.
@@ -565,6 +670,86 @@ mod tests {
         assert!(grant.try_shrink_to(90).unwrap());
         assert_eq!(grant.budget_bytes(), 40);
         assert_eq!(governor.available_bytes().unwrap(), 60);
+    }
+
+    #[test]
+    fn shrink_request_does_not_refund_until_acknowledged() {
+        let governor = MemoryGovernor::new(0, 100).unwrap();
+        let grant = governor.try_request(GrantRequest::new(1, 30, 80)).unwrap().unwrap();
+
+        assert_eq!(grant.request_shrink_to(40).unwrap(), Some(40));
+        assert_eq!(grant.requested_shrink_target_bytes().unwrap(), Some(40));
+        assert_eq!(grant.budget_bytes(), 80);
+        assert_eq!(governor.available_bytes().unwrap(), 20);
+
+        let blocked = governor.try_request(GrantRequest::new(2, 30, 30)).unwrap();
+        assert!(blocked.is_none());
+    }
+
+    #[test]
+    fn shrink_request_clamps_to_floor_and_keeps_lowest_target() {
+        let governor = MemoryGovernor::new(0, 100).unwrap();
+        let grant = governor.try_request(GrantRequest::new(1, 30, 80)).unwrap().unwrap();
+
+        assert_eq!(grant.request_shrink_to(60).unwrap(), Some(60));
+        assert_eq!(grant.request_shrink_to(10).unwrap(), Some(30));
+        assert_eq!(grant.request_shrink_to(50).unwrap(), Some(30));
+        assert_eq!(grant.requested_shrink_target_bytes().unwrap(), Some(30));
+    }
+
+    #[test]
+    fn apply_requested_shrink_refunds_only_to_live_reserved_bytes() {
+        let governor = MemoryGovernor::new(0, 100).unwrap();
+        let grant = governor.try_request(GrantRequest::new(1, 30, 80)).unwrap().unwrap();
+
+        assert_eq!(grant.request_shrink_to(40).unwrap(), Some(40));
+        assert!(!grant.try_apply_requested_shrink(55).unwrap());
+        assert_eq!(grant.budget_bytes(), 55);
+        assert_eq!(grant.requested_shrink_target_bytes().unwrap(), Some(40));
+        assert_eq!(governor.available_bytes().unwrap(), 45);
+
+        assert!(grant.try_apply_requested_shrink(35).unwrap());
+        assert_eq!(grant.budget_bytes(), 40);
+        assert_eq!(grant.requested_shrink_target_bytes().unwrap(), None);
+        assert_eq!(governor.available_bytes().unwrap(), 60);
+    }
+
+    #[test]
+    fn direct_shrink_clears_satisfied_request() {
+        let governor = MemoryGovernor::new(0, 100).unwrap();
+        let grant = governor.try_request(GrantRequest::new(1, 30, 80)).unwrap().unwrap();
+
+        assert_eq!(grant.request_shrink_to(40).unwrap(), Some(40));
+        assert!(grant.try_shrink_to(40).unwrap());
+
+        assert_eq!(grant.budget_bytes(), 40);
+        assert_eq!(grant.requested_shrink_target_bytes().unwrap(), None);
+    }
+
+    #[test]
+    fn direct_shrink_above_requested_target_keeps_request_pending() {
+        let governor = MemoryGovernor::new(0, 100).unwrap();
+        let grant = governor.try_request(GrantRequest::new(1, 30, 80)).unwrap().unwrap();
+
+        assert_eq!(grant.request_shrink_to(40).unwrap(), Some(40));
+        assert!(grant.try_shrink_to(60).unwrap());
+
+        assert_eq!(grant.budget_bytes(), 60);
+        assert_eq!(grant.requested_shrink_target_bytes().unwrap(), Some(40));
+    }
+
+    #[test]
+    fn shrink_request_after_satisfied_direct_shrink_is_not_recorded() {
+        let governor = MemoryGovernor::new(0, 100).unwrap();
+        let grant = governor.try_request(GrantRequest::new(1, 30, 80)).unwrap().unwrap();
+
+        assert!(grant.try_shrink_to(40).unwrap());
+        assert_eq!(grant.request_shrink_to(50).unwrap(), None);
+
+        assert_eq!(grant.budget_bytes(), 40);
+        assert_eq!(grant.requested_shrink_target_bytes().unwrap(), None);
+        assert!(grant.try_grow_to(70).unwrap());
+        assert_eq!(grant.requested_shrink_target_bytes().unwrap(), None);
     }
 
     #[test]
