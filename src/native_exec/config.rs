@@ -9,6 +9,7 @@ use std::{
     time::Duration,
 };
 
+use datafusion::execution::context::TaskContext;
 use nexus_query_engine::{
     AdaptiveMemoryHistory, AggregateStrategyExecutionOptions, CudfInventory, DynamicFilterExecutionOptions,
     ExecutionBoundaryPolicy, ExecutionCancellation, ExecutionContext, GpuHashJoinBuildCache, GpuInventory,
@@ -18,7 +19,10 @@ use nexus_query_engine::{
     StddevSampExecutionMode, TenantQueryContext, TraceId, device_budget_bytes_from_facts,
 };
 
-use super::metrics::NativeMetricsCapture;
+use super::{
+    admission::{QueryAdmissionSource, QueryAdmissionTicket, TicketTenantQueryContext},
+    metrics::NativeMetricsCapture,
+};
 use crate::error::Error;
 
 /// Adapter-side native execution configuration.
@@ -51,6 +55,8 @@ pub struct NativeCudfExecutionConfig {
     local_parquet_source_cache: Option<Arc<GpuLocalParquetSourceCache>>,
     source_storage_profiles: Vec<SourceStorageProfile>,
     query_service_handle: Option<Arc<QueryHandle>>,
+    query_admission_source: Option<QueryAdmissionSource>,
+    query_admission_ticket: Option<Arc<QueryAdmissionTicket>>,
     query_id: Option<QueryId>,
     trace_id: Option<TraceId>,
     plan_task_mapping_datafusion_shape: Option<String>,
@@ -62,16 +68,22 @@ pub struct NativeCudfExecutionConfig {
 pub(crate) struct NativeCudfExecutionContext {
     context: ExecutionContext,
     _tenant_context: Option<TenantQueryContext>,
+    _ticket_context: Option<TicketTenantQueryContext>,
 }
 
 impl NativeCudfExecutionContext {
     fn standalone(context: ExecutionContext) -> Self {
-        Self { context, _tenant_context: None }
+        Self { context, _tenant_context: None, _ticket_context: None }
     }
 
     fn tenant_bound(tenant_context: TenantQueryContext) -> Self {
         let context = tenant_context.context().clone();
-        Self { context, _tenant_context: Some(tenant_context) }
+        Self { context, _tenant_context: Some(tenant_context), _ticket_context: None }
+    }
+
+    fn ticket_bound(ticket_context: TicketTenantQueryContext) -> Self {
+        let context = ticket_context.context().context().clone();
+        Self { context, _tenant_context: None, _ticket_context: Some(ticket_context) }
     }
 
     fn with_query_id(mut self, query_id: QueryId) -> Self {
@@ -133,6 +145,8 @@ impl NativeCudfExecutionConfig {
             local_parquet_source_cache: None,
             source_storage_profiles: Vec::new(),
             query_service_handle: None,
+            query_admission_source: None,
+            query_admission_ticket: None,
             query_id: None,
             trace_id: None,
             plan_task_mapping_datafusion_shape: None,
@@ -236,6 +250,8 @@ impl NativeCudfExecutionConfig {
             local_parquet_source_cache: None,
             source_storage_profiles: Vec::new(),
             query_service_handle: None,
+            query_admission_source: None,
+            query_admission_ticket: None,
             query_id: None,
             trace_id: None,
             plan_task_mapping_datafusion_shape: None,
@@ -513,12 +529,43 @@ impl NativeCudfExecutionConfig {
         self.aggregate_strategy_execution_options = handle.aggregate_strategy_execution_options();
         self.source_chunk_planning_options = handle.source_chunk_planning_options();
         self.query_service_handle = Some(handle);
+        self.query_admission_source = None;
+        self.query_admission_ticket = None;
         self
+    }
+
+    pub(crate) fn with_query_admission_source(mut self, source: QueryAdmissionSource) -> Self {
+        if self.query_service_handle.is_none() {
+            self.query_admission_source = Some(source);
+            self.query_admission_ticket = None;
+        }
+        self
+    }
+
+    pub(crate) fn with_plan_query_admission_ticket(mut self) -> Self {
+        if self.query_service_handle.is_none()
+            && self.query_admission_ticket.is_none()
+            && let Some(source) = self.query_admission_source.clone()
+        {
+            self.query_admission_ticket = Some(QueryAdmissionTicket::new(source));
+        }
+        self
+    }
+
+    #[cfg(test)]
+    pub(crate) fn query_admission_ticket_id(&self) -> Option<u64> {
+        self.query_admission_ticket.as_ref().map(|ticket| ticket.id())
     }
 
     /// Returns whether execution is bound to a QueryService admission handle.
     pub(crate) fn has_query_service_handle(&self) -> bool {
         self.query_service_handle.is_some()
+    }
+
+    pub(crate) fn has_query_admission_authority(&self) -> bool {
+        self.query_service_handle.is_some()
+            || self.query_admission_source.is_some()
+            || self.query_admission_ticket.is_some()
     }
 
     /// Memory-control policy copied into the lazily built native context.
@@ -695,6 +742,36 @@ impl NativeCudfExecutionConfig {
         })
     }
 
+    pub(crate) async fn execution_context_async(
+        &self,
+        task_context: Arc<TaskContext>,
+    ) -> crate::error::Result<NativeCudfExecutionContext> {
+        self.validate_query_policies()?;
+        if let Some(ticket) = &self.query_admission_ticket {
+            return ticket
+                .acquire_context(task_context, self.cancellation.clone())
+                .await
+                .map(NativeCudfExecutionContext::ticket_bound)
+                .map(|mut context| {
+                    if let Some(query_id) = self.query_id.clone() {
+                        context = context.with_query_id(query_id);
+                    }
+                    if let Some(trace_id) = self.trace_id.clone() {
+                        context = context.with_trace_id(trace_id);
+                    }
+                    context
+                })
+                .map_err(|error| {
+                    Error::from_native(
+                        "datafusion_nexus.native_exec.context",
+                        "failed to acquire backend query-service native cudf execution context",
+                        self.stamp_native_error_correlation(error),
+                    )
+                });
+        }
+        self.execution_context()
+    }
+
     fn stamp_native_error_correlation(
         &self,
         mut error: nexus_query_engine::QueryError,
@@ -764,7 +841,10 @@ fn fraction_budget_bytes(total_bytes: u64, budget_fraction: f64) -> Option<u64> 
 
 #[cfg(test)]
 mod tests {
-    use nexus_query_engine::{DeviceFacts, QueryError, QueryErrorCode, Result};
+    use nexus_query_engine::{
+        DeploymentIoCapability, DeviceFacts, GdsDriverProbeStatus, KvikioCompatModeStatus, NvidiaFsProbeStatus,
+        QueryError, QueryErrorCode, QueryService, QueryServiceConfig, QueryServiceTenantConfig, Result, TenantId,
+    };
 
     use super::*;
 
@@ -864,6 +944,31 @@ mod tests {
 
         assert_eq!(context.context().query_id().map(QueryId::as_str), Some("query-config"));
         assert_eq!(context.context().trace_id().map(TraceId::as_str), Some("trace-config"));
+    }
+
+    #[test]
+    fn plan_query_admission_ticket_is_shared_by_config_clones() {
+        let tenant_id = TenantId::new("tenant");
+        let deployment = DeploymentIoCapability::from_probe_inputs(
+            NvidiaFsProbeStatus::DriverMissing,
+            KvikioCompatModeStatus::Unset,
+            GdsDriverProbeStatus::ProbeUnimplemented,
+        );
+        let service = QueryService::new_admission_only(
+            QueryServiceConfig::default(),
+            vec![QueryServiceTenantConfig::new(tenant_id.clone(), 1024 * 1024)],
+            deployment,
+        )
+        .unwrap();
+        let source = QueryAdmissionSource::new(service, tenant_id);
+        let base = NativeCudfExecutionConfig::bounded(1024, 512, 1, 3, 1).with_query_admission_source(source);
+        let config = base.clone().with_plan_query_admission_ticket();
+
+        let cloned = config.clone().with_plan_query_admission_ticket();
+        let separate_plan = base.with_plan_query_admission_ticket();
+
+        assert_eq!(config.query_admission_ticket_id(), cloned.query_admission_ticket_id());
+        assert_ne!(config.query_admission_ticket_id(), separate_plan.query_admission_ticket_id());
     }
 
     #[test]

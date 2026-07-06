@@ -229,7 +229,8 @@ impl ExecutionPlan for NativeCudfComposedExec {
             // Build one native context for all producer fragments and the consumer so device-resident
             // handles are compatible across the composed execution.
             let context_lease = execution_config
-                .execution_context()
+                .execution_context_async(Arc::clone(&task_context))
+                .await
                 .map_err(|error| DataFusionError::from(mark_native_runtime_error(error, "runtime_context")))?;
             let context = context_lease.context();
             let mut input_map = GpuResidentInputMap::new();

@@ -31,11 +31,11 @@ use crate::{CugraphAlgorithm, CugraphGraphConstructionPolicy, CugraphGraphOption
 pub const NEXUS_SERVER_BIND_ENV: &str = "NEXUS_SERVER_BIND";
 /// Tracing log filter for the server process. Defaults to `info`.
 pub const NEXUS_SERVER_LOG_ENV: &str = "NEXUS_SERVER_LOG";
-/// Maximum number of Flight SQL statements admitted at once. Defaults to `1`;
+/// Maximum number of Flight SQL statements admitted at once. Defaults to `2`;
 /// set a larger value only when the GPU has enough memory for concurrent work.
 pub const NEXUS_SERVER_MAX_IN_FLIGHT_ENV: &str = "NEXUS_SERVER_MAX_IN_FLIGHT";
 /// Preferred maximum number of Flight SQL statements admitted at once. Defaults
-/// to `1`; `NEXUS_SERVER_MAX_IN_FLIGHT` remains accepted as a compatibility
+/// to `2`; `NEXUS_SERVER_MAX_IN_FLIGHT` remains accepted as a compatibility
 /// alias.
 pub const NEXUS_SERVER_MAX_CONCURRENT_QUERIES_ENV: &str = "NEXUS_SERVER_MAX_CONCURRENT_QUERIES";
 /// Fraction of a GPU's total memory eligible for server native-query budgets.
@@ -321,7 +321,7 @@ pub const NEXUS_ICEBERG_SCAN_PLANNING_TIMEOUT_SECS_ENV: &str = "NEXUS_ICEBERG_SC
 
 const DEFAULT_BIND_ADDR: &str = "0.0.0.0:50051";
 const DEFAULT_LOG_FILTER: &str = "info";
-const DEFAULT_MAX_IN_FLIGHT: usize = 1;
+const DEFAULT_MAX_IN_FLIGHT: usize = 2;
 const DEFAULT_STATEMENT_TICKET_TTL_SECS: u64 = 300;
 #[cfg(feature = "iceberg")]
 const DEFAULT_GLUE_CATALOG_NAME: &str = "glue";
@@ -568,8 +568,10 @@ impl ServerConfig {
         let mut values = EnvValues::new(&mut get);
         let bind_addr = values.socket_addr(NEXUS_SERVER_BIND_ENV, DEFAULT_BIND_ADDR)?;
         let log_filter = values.string(NEXUS_SERVER_LOG_ENV).unwrap_or_else(|| DEFAULT_LOG_FILTER.to_string());
+        let admission_limit_explicit =
+            values.any_present([NEXUS_SERVER_MAX_CONCURRENT_QUERIES_ENV, NEXUS_SERVER_MAX_IN_FLIGHT_ENV]);
         let max_concurrent_queries = server_max_concurrent_queries(&mut values)?;
-        let max_in_flight = max_concurrent_queries.value;
+        let mut max_in_flight = max_concurrent_queries.value;
         let gpu_devices = server_gpu_devices(&mut values)?;
         let device_budget_fraction = values.optional_f64(NEXUS_SERVER_DEVICE_BUDGET_FRACTION_ENV)?;
         let statement_ticket_ttl = Duration::from_secs(
@@ -620,16 +622,18 @@ impl ServerConfig {
         let session_profile = explicit_profile.unwrap_or(default_profile);
 
         overlay.auth.mode.validate()?;
-        if max_in_flight > 1
-            && matches!(
-                native_optimizer_config.native_execution_config().memory_control_policy(),
-                MemoryControlPolicy::Unbounded
-            )
+        if matches!(
+            native_optimizer_config.native_execution_config().memory_control_policy(),
+            MemoryControlPolicy::Unbounded
+        ) && max_in_flight > 1
         {
-            return Err(ServerError::invalid_config(
-                max_concurrent_queries.field,
-                "requires bounded native memory policy when greater than one",
-            ));
+            if admission_limit_explicit {
+                return Err(ServerError::invalid_config(
+                    max_concurrent_queries.field,
+                    "requires bounded native memory policy when greater than one",
+                ));
+            }
+            max_in_flight = 1;
         }
 
         Ok(Self {

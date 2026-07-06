@@ -175,6 +175,14 @@ pub struct DataFusionNexusSessionConfig {
     pub native_pipeline_execution_mode: NativePipelineExecutionMode,
     /// Floating statistical aggregate execution contract.
     pub native_statistical_aggregate_execution_mode: StatisticalAggregateExecutionMode,
+    authority: DataFusionNexusSessionConfigAuthority,
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+enum DataFusionNexusSessionConfigAuthority {
+    #[default]
+    SessionMutable,
+    BackendAdmission,
 }
 
 impl Default for DataFusionNexusSessionConfig {
@@ -230,7 +238,59 @@ impl DataFusionNexusSessionConfig {
             native_source_chunk_planning_mode: execution.source_chunk_planning_mode(),
             native_pipeline_execution_mode: execution.native_pipeline_execution_mode(),
             native_statistical_aggregate_execution_mode: execution.statistical_aggregate_execution_mode(),
+            authority: DataFusionNexusSessionConfigAuthority::SessionMutable,
         }
+    }
+
+    pub(crate) fn frozen_for_backend_admission(mut self) -> Self {
+        self.authority = DataFusionNexusSessionConfigAuthority::BackendAdmission;
+        self
+    }
+
+    pub(crate) fn is_backend_admission_frozen(&self) -> bool {
+        self.authority == DataFusionNexusSessionConfigAuthority::BackendAdmission
+    }
+
+    pub(crate) fn validate_backend_admission_matches(&self, config: &CudfOptimizerConfig) -> DataFusionResult<()> {
+        if !self.is_backend_admission_frozen() {
+            return Ok(());
+        }
+        self.validate_matches_optimizer_config(config)
+    }
+
+    pub(crate) fn validate_matches_optimizer_config(&self, config: &CudfOptimizerConfig) -> DataFusionResult<()> {
+        let expected = Self::from_optimizer_config(config);
+        if self.native_memory_policy != expected.native_memory_policy {
+            return Err(frozen_backend_config_error(NATIVE_MEMORY_POLICY_KEY));
+        }
+        if self.native_device_budget_bytes != expected.native_device_budget_bytes {
+            return Err(frozen_backend_config_error(NATIVE_DEVICE_BUDGET_BYTES_KEY));
+        }
+        if self.native_max_source_chunk_bytes != expected.native_max_source_chunk_bytes {
+            return Err(frozen_backend_config_error(NATIVE_MAX_SOURCE_CHUNK_BYTES_KEY));
+        }
+        if self.native_max_row_groups_per_chunk != expected.native_max_row_groups_per_chunk {
+            return Err(frozen_backend_config_error(NATIVE_MAX_ROW_GROUPS_PER_CHUNK_KEY));
+        }
+        if self.native_max_retry_attempts != expected.native_max_retry_attempts {
+            return Err(frozen_backend_config_error(NATIVE_MAX_RETRY_ATTEMPTS_KEY));
+        }
+        if self.native_min_retry_chunk_row_groups != expected.native_min_retry_chunk_row_groups {
+            return Err(frozen_backend_config_error(NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS_KEY));
+        }
+        if self.native_max_source_reads_in_flight != expected.native_max_source_reads_in_flight {
+            return Err(frozen_backend_config_error(NATIVE_MAX_SOURCE_READS_IN_FLIGHT_KEY));
+        }
+        if self.native_source_chunk_planning_mode != expected.native_source_chunk_planning_mode {
+            return Err(frozen_backend_config_error(NATIVE_SOURCE_CHUNK_PLANNING_MODE_KEY));
+        }
+        if self.native_pipeline_execution_mode != expected.native_pipeline_execution_mode {
+            return Err(frozen_backend_config_error(NATIVE_PIPELINE_EXECUTION_MODE_KEY));
+        }
+        if self.native_statistical_aggregate_execution_mode != expected.native_statistical_aggregate_execution_mode {
+            return Err(frozen_backend_config_error(NATIVE_STATISTICAL_AGGREGATE_EXECUTION_MODE_KEY));
+        }
+        Ok(())
     }
 
     /// Apply these session options to an optimizer config, preserving non-session
@@ -280,6 +340,13 @@ impl DataFusionNexusSessionConfig {
         Ok(())
     }
 
+    fn reject_backend_admission_key(&self, key: &str) -> DataFusionResult<()> {
+        if self.is_backend_admission_frozen() {
+            return Err(frozen_backend_config_error(key));
+        }
+        Ok(())
+    }
+
     fn value_for_key(&self, key: &str) -> String {
         match key {
             NATIVE_MEMORY_POLICY_KEY => self.native_memory_policy.to_string(),
@@ -317,6 +384,7 @@ impl ExtensionOptions for DataFusionNexusSessionConfig {
     }
 
     fn set(&mut self, key: &str, value: &str) -> DataFusionResult<()> {
+        self.reject_backend_admission_key(key)?;
         match key {
             NATIVE_MEMORY_POLICY_KEY => self.native_memory_policy = parse_native_memory_policy(value)?,
             NATIVE_DEVICE_BUDGET_BYTES_KEY => {
@@ -378,17 +446,28 @@ pub fn optimizer_config_with_datafusion_options(
     options: &ConfigOptions,
 ) -> DataFusionResult<CudfOptimizerConfig> {
     if config.native_execution_config().has_query_service_handle() {
-        // QueryService admission is the authority for bounded server/query
-        // execution: it owns the per-query device-budget slice, stream pool,
-        // source-read fan-out, and execution policy. Reapplying a session
-        // extension copied from a longer-lived base SessionState can restore
-        // an unpartitioned server budget and make planning less strict than
-        // runtime. Ignore session overrides on this path so planning and
-        // execution use the same admitted handle contract.
+        // QueryService admission is the authority for bounded server/query execution.
+        if let Some(session_config) = options.extensions.get::<DataFusionNexusSessionConfig>() {
+            session_config.validate_matches_optimizer_config(config)?;
+        }
         return Ok(config.clone());
     }
     match options.extensions.get::<DataFusionNexusSessionConfig>() {
-        Some(session_config) => session_config.apply_to_optimizer_config(config.clone()),
+        Some(session_config) if session_config.is_backend_admission_frozen() => {
+            session_config.validate_backend_admission_matches(config)?;
+            Ok(config.clone())
+        },
+        Some(session_config) => {
+            if config.native_execution_config().has_query_admission_authority() {
+                if !session_config.is_backend_admission_frozen() {
+                    return Err(frozen_backend_config_error(NATIVE_MEMORY_POLICY_KEY));
+                }
+                session_config.validate_backend_admission_matches(config)?;
+                Ok(config.clone())
+            } else {
+                session_config.apply_to_optimizer_config(config.clone())
+            }
+        },
         None => Ok(config.clone()),
     }
 }
@@ -457,4 +536,10 @@ fn require_positive_usize(key: &str, value: usize) -> DataFusionResult<()> {
 
 fn config_error(message: impl Into<String>) -> DataFusionError {
     DataFusionError::Configuration(message.into())
+}
+
+fn frozen_backend_config_error(key: &str) -> DataFusionError {
+    config_error(format!(
+        "{DATAFUSION_NEXUS_CONFIG_PREFIX}.{key} is managed by NexusGpuBackend admission and cannot be overridden"
+    ))
 }

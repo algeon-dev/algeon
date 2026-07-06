@@ -144,7 +144,7 @@ impl ExecutionPlan for NativeCudfExec {
         Ok(self)
     }
 
-    fn execute(&self, partition: usize, _context: Arc<TaskContext>) -> DataFusionResult<SendableRecordBatchStream> {
+    fn execute(&self, partition: usize, task_context: Arc<TaskContext>) -> DataFusionResult<SendableRecordBatchStream> {
         if partition != 0 {
             return Err(Error::new(
                 ErrorCode::InvalidExecutionPlan,
@@ -155,8 +155,9 @@ impl ExecutionPlan for NativeCudfExec {
             .into());
         }
 
-        // The DataFusion `TaskContext` is intentionally unused: runtime, allocator, boundary, and
-        // memory-control state come from `NativeCudfExecutionConfig`.
+        // Runtime, allocator, boundary, and memory-control state come from
+        // `NativeCudfExecutionConfig`; the DataFusion task context scopes
+        // backend admission across native fragments in one execution.
         let schema = self.schema();
         let plan = self.plan.clone();
         let execution_config = self.execution_config.clone();
@@ -171,7 +172,8 @@ impl ExecutionPlan for NativeCudfExec {
             // Context construction is the configuration/validation stage. Failures here happen
             // before the native query starts.
             let context_lease = execution_config
-                .execution_context()
+                .execution_context_async(task_context)
+                .await
                 .map_err(|error| DataFusionError::from(mark_native_runtime_error(error, "runtime_context")))?;
             // Once native execution starts there is no CPU fallback; errors are surfaced with stable
             // facts by `native_query_runtime_error`.

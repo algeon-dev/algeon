@@ -42,12 +42,12 @@ use nexus_query_engine::{
 };
 
 #[test]
-fn server_config_defaults_to_single_flight_sql_admission() {
+fn server_config_defaults_to_two_flight_sql_admissions() {
     let env: BTreeMap<&'static str, String> = BTreeMap::new();
     let config = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap();
 
     assert_eq!(config.bind_addr.to_string(), "0.0.0.0:50051");
-    assert_eq!(config.max_in_flight, 1);
+    assert_eq!(config.max_in_flight, 2);
     assert_eq!(config.gpu_devices, vec![0]);
     assert_eq!(config.device_budget_fraction, None);
     assert_eq!(config.statement_ticket_ttl.as_secs(), 300);
@@ -227,7 +227,7 @@ fn server_config_rejects_device_budget_fraction_with_explicit_device_budget() {
 }
 
 #[test]
-fn query_service_handle_ignores_stale_session_budget_extension() {
+fn query_service_handle_rejects_stale_session_budget_extension() {
     let service = QueryService::new(
         QueryServiceConfig { max_concurrent_queries: 1, stream_pool_size: Some(3), ..QueryServiceConfig::default() },
         vec![QueryServiceTenantConfig::new("tenant", 3 * 1024 * 1024)],
@@ -243,9 +243,11 @@ fn query_service_handle_ignores_stale_session_budget_extension() {
     let mut options = ConfigOptions::default();
     options.extensions.insert(DataFusionNexusSessionConfig::from_optimizer_config(&stale_server_config));
 
-    let effective = query_config.with_datafusion_config_options(&options).unwrap();
+    let error = query_config.with_datafusion_config_options(&options).unwrap_err();
 
-    assert_eq!(effective.native_execution_config().memory_control_policy(), admitted_policy);
+    assert!(error.to_string().contains("native.device_budget_bytes"));
+    assert!(error.to_string().contains("NexusGpuBackend"));
+    assert_eq!(query_config.native_execution_config().memory_control_policy(), admitted_policy);
 }
 
 #[test]
@@ -539,6 +541,7 @@ fn server_config_accepts_explicit_unbounded_native_profile() {
 
     let config = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap();
 
+    assert_eq!(config.max_in_flight, 1);
     assert_eq!(
         config.native_optimizer_config.native_execution_config().memory_control_policy(),
         MemoryControlPolicy::Unbounded
