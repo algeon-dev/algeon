@@ -84,6 +84,7 @@ use tickets::*;
 
 const FLIGHT_SQL_CANCEL_RESULT_CANCELLING: i32 = 2;
 const FLIGHT_SQL_CANCEL_RESULT_NOT_CANCELLABLE: i32 = 3;
+const GET_ADMISSION_STATS_ACTION: &str = "GetAdmissionStats";
 const GET_QUERY_STATS_ACTION: &str = "GetQueryStats";
 const NO_UPDATED_RECORDS_COUNT: i64 = 0;
 const SQL_ANSI92_ENTRY_SQL_BIT_INDEX: i32 = 0;
@@ -1843,6 +1844,37 @@ mod correlation_tests {
         assert!(payload.contains("[structured_error]"), "{payload}");
         assert!(payload.contains("code=cancelled"), "{payload}");
         assert!(payload.contains("operation=datafusion_nexus.server.flight.cancel_query"), "{payload}");
+    }
+
+    #[tokio::test]
+    async fn get_admission_stats_action_returns_current_admission_payload() {
+        let service = test_service();
+
+        let action_types = service
+            .list_custom_actions()
+            .await
+            .expect("custom actions should be listed")
+            .into_iter()
+            .map(|action| action.unwrap().r#type)
+            .collect::<Vec<_>>();
+        assert!(action_types.contains(&GET_QUERY_STATS_ACTION.to_string()), "{action_types:?}");
+        assert!(action_types.contains(&GET_ADMISSION_STATS_ACTION.to_string()), "{action_types:?}");
+
+        let response = service
+            .do_action_fallback(Request::new(arrow_flight::Action {
+                r#type: GET_ADMISSION_STATS_ACTION.to_string(),
+                body: Vec::new().into(),
+            }))
+            .await
+            .expect("GetAdmissionStats action should succeed");
+        let results = response.into_inner().try_collect::<Vec<_>>().await.unwrap();
+        assert_eq!(results.len(), 1);
+        let payload = String::from_utf8(results[0].body.to_vec()).unwrap();
+
+        assert!(payload.contains("# datafusion_nexus_admission_stats=1\n"), "{payload}");
+        assert!(payload.contains("# backend=semaphore\n"), "{payload}");
+        assert!(payload.contains("[admission]\nactive_queries\tqueued_queries\tnext_tenant_id\n"), "{payload}");
+        assert!(payload.contains("[semaphore]\nmax_in_flight\tavailable_permits\n1\t1\n"), "{payload}");
     }
 }
 

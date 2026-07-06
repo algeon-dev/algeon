@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{fmt::Write, sync::Arc};
 
 use nexus_query_engine::{QueryHandle, TenantId};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore, TryAcquireError};
@@ -161,6 +161,90 @@ impl QueryAdmission {
             ),
         }
     }
+
+    pub fn diagnostics_payload(&self) -> Result<String> {
+        let mut output = String::new();
+        let _ = writeln!(output, "# datafusion_nexus_admission_stats=1");
+        let _ = writeln!(output, "# max_in_flight={}", self.max_in_flight);
+        match &self.backend {
+            QueryAdmissionBackend::QueryService { backend } => {
+                let service = backend.query_service();
+                let config = service.config();
+                let _ = writeln!(output, "# backend=query_service");
+                let _ = writeln!(output, "# tenant_id={}", payload_value(backend.tenant_id().as_str()));
+                let _ = writeln!(output, "# device_ordinals={}", payload_value(&join_usize(backend.device_ordinals())));
+                let _ = writeln!(output, "# max_concurrent_queries={}", config.max_concurrent_queries);
+                let _ = writeln!(output, "# max_admission_queue_len={}", config.max_admission_queue_len);
+                let _ = writeln!(output, "# admission_wait_timeout_ms={}", config.admission_wait_timeout.as_millis());
+                let _ = writeln!(output, "# slot_guarantee={}", slot_guarantee_name(config.slot_guarantee));
+
+                let snapshot = service
+                    .admission_snapshot()
+                    .map_err(|error| ServerError::session("failed to read query service admission snapshot", error))?;
+                output.push_str("\n[admission]\n");
+                output.push_str("active_queries\tqueued_queries\tnext_tenant_id\n");
+                let _ = writeln!(
+                    output,
+                    "{}\t{}\t{}",
+                    snapshot.active_queries,
+                    snapshot.queued_queries,
+                    payload_value(snapshot.next_tenant_id.as_ref().map(TenantId::as_str).unwrap_or(""))
+                );
+
+                output.push_str("\n[tenant_queue_depths]\n");
+                output.push_str("tenant_id\tqueued_queries\n");
+                for depth in snapshot.queued_by_tenant {
+                    let _ = writeln!(output, "{}\t{}", payload_value(depth.tenant_id.as_str()), depth.queued_queries);
+                }
+
+                let reports = service.memory_governor_reports().map_err(|error| {
+                    ServerError::session("failed to read query service memory governor reports", error)
+                })?;
+                output.push_str("\n[memory_governor_reports]\n");
+                output.push_str("device_ordinal\tcapacity_bytes\toutstanding_bytes\tavailable_bytes\tactive_grants\n");
+                for report in &reports {
+                    let _ = writeln!(
+                        output,
+                        "{}\t{}\t{}\t{}\t{}",
+                        report.device_ordinal,
+                        report.capacity_bytes,
+                        report.outstanding_bytes,
+                        report.available_bytes,
+                        report.grants.len()
+                    );
+                }
+
+                output.push_str("\n[memory_governor_grants]\n");
+                output.push_str("device_ordinal\tgrant_id\tquery_id\tpriority\tbudget_bytes\n");
+                for report in &reports {
+                    for grant in &report.grants {
+                        let _ = writeln!(
+                            output,
+                            "{}\t{}\t{}\t{}\t{}",
+                            report.device_ordinal,
+                            grant.grant_id,
+                            grant.query_id,
+                            payload_value(grant.priority),
+                            grant.budget_bytes
+                        );
+                    }
+                }
+            },
+            QueryAdmissionBackend::Semaphore { permits } => {
+                let available_permits = permits.available_permits();
+                let active_queries = self.max_in_flight.saturating_sub(available_permits);
+                let _ = writeln!(output, "# backend=semaphore");
+                output.push_str("\n[admission]\n");
+                output.push_str("active_queries\tqueued_queries\tnext_tenant_id\n");
+                let _ = writeln!(output, "{active_queries}\t\t");
+
+                output.push_str("\n[semaphore]\n");
+                output.push_str("max_in_flight\tavailable_permits\n");
+                let _ = writeln!(output, "{}\t{}", self.max_in_flight, available_permits);
+            },
+        }
+        Ok(output)
+    }
 }
 
 #[derive(Debug)]
@@ -224,8 +308,25 @@ fn format_tenant_queue_depths(depths: &[nexus_query_engine::TenantQueueDepth]) -
         .join(",")
 }
 
+fn slot_guarantee_name(slot_guarantee: nexus_query_engine::SlotGuarantee) -> &'static str {
+    match slot_guarantee {
+        nexus_query_engine::SlotGuarantee::GuaranteedMinimum => "guaranteed_minimum",
+        nexus_query_engine::SlotGuarantee::Optimistic => "optimistic",
+    }
+}
+
+fn join_usize(values: &[usize]) -> String {
+    values.iter().map(usize::to_string).collect::<Vec<_>>().join(",")
+}
+
+fn payload_value(value: &str) -> String {
+    value.replace(['\t', '\n', '\r'], " ")
+}
+
 #[cfg(test)]
 mod tests {
+    use nexus_query_engine::QueryServiceConfig;
+
     use super::*;
 
     #[test]
@@ -281,5 +382,57 @@ mod tests {
         let handle = permit.query_service_handle().expect("query service admission should return a handle");
         assert_eq!(handle.device_ordinal(), 0);
         assert_eq!(handle.device_budget_bytes(), 1024);
+    }
+
+    #[test]
+    fn query_service_admission_diagnostics_payload_reports_snapshot_and_governors() {
+        let env = std::collections::BTreeMap::from([
+            (super::super::config::NEXUS_SERVER_MAX_CONCURRENT_QUERIES_ENV, "2".to_string()),
+            (super::super::config::NEXUS_SERVER_NATIVE_DEVICE_BUDGET_BYTES_ENV, "1024".to_string()),
+            (super::super::config::NEXUS_SERVER_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV, "512".to_string()),
+            (super::super::config::NEXUS_SERVER_NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV, "1".to_string()),
+            (super::super::config::NEXUS_SERVER_ADMISSION_GRANT_MIN_ENV, "256".to_string()),
+            (super::super::config::NEXUS_SERVER_ADMISSION_GRANT_WANT_ENV, "512".to_string()),
+        ]);
+        let config = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap();
+        let admission = QueryAdmission::from_server_config_admission_only(&config).unwrap();
+        let permit = admission.try_acquire().unwrap().expect("first query should admit");
+
+        let payload = admission.diagnostics_payload().unwrap();
+
+        assert!(payload.contains("# datafusion_nexus_admission_stats=1\n"), "{payload}");
+        assert!(payload.contains("# backend=query_service\n"), "{payload}");
+        assert!(payload.contains("# max_in_flight=2\n"), "{payload}");
+        assert!(payload.contains("# max_concurrent_queries=2\n"), "{payload}");
+        assert!(payload.contains("# slot_guarantee=guaranteed_minimum\n"), "{payload}");
+        assert!(
+            payload.contains("[admission]\nactive_queries\tqueued_queries\tnext_tenant_id\n1\t0\tdefault\n"),
+            "{payload}"
+        );
+        assert!(payload.contains("[tenant_queue_depths]\ntenant_id\tqueued_queries\ndefault\t0\n"), "{payload}");
+        assert!(
+            payload.contains(
+                "[memory_governor_reports]\ndevice_ordinal\tcapacity_bytes\toutstanding_bytes\tavailable_bytes\tactive_grants\n0\t1024\t512\t512\t1\n"
+            ),
+            "{payload}"
+        );
+        assert!(payload.contains("[memory_governor_grants]\n"), "{payload}");
+        assert!(payload.contains("\t1\tnormal\t512\n"), "{payload}");
+
+        drop(permit);
+    }
+
+    #[test]
+    fn semaphore_admission_diagnostics_payload_reports_permit_counts() {
+        let admission = QueryAdmission::new(2).unwrap();
+        let _permit = admission.try_acquire().unwrap().expect("first query should admit");
+
+        let payload = admission.diagnostics_payload().unwrap();
+
+        assert!(payload.contains("# datafusion_nexus_admission_stats=1\n"), "{payload}");
+        assert!(payload.contains("# backend=semaphore\n"), "{payload}");
+        assert!(payload.contains("# max_in_flight=2\n"), "{payload}");
+        assert!(payload.contains("[admission]\nactive_queries\tqueued_queries\tnext_tenant_id\n1\t\t\n"), "{payload}");
+        assert!(payload.contains("[semaphore]\nmax_in_flight\tavailable_permits\n2\t1\n"), "{payload}");
     }
 }
