@@ -20,6 +20,7 @@ fn query_memory_manager_surface_is_publicly_importable() {
         Runtime, StreamReservationLease,
     };
 
+    let _ = cudf::ExecutionBudgetToken::resize;
     let _ = DeviceMemoryResource::with_failure_callback;
     let _ = StreamReservationLease::resize;
     let _: Option<DeviceMemoryManager> = None;

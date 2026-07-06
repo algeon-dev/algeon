@@ -313,6 +313,56 @@ fn stream_reservation_resize_allows_shrink_below_live_usage_and_blocks_future_al
     assert_eq!(series.len(), 3);
 }
 
+#[test]
+fn execution_budget_token_resize_grows_limit_and_updates_reports() {
+    let runtime = Runtime::builder().with_device_memory_manager().build().unwrap();
+    let mut token =
+        runtime.execution_budget_token(ExecutionBudgetRequest::new(1).with_boundary("resize_grow")).unwrap();
+
+    let err = runtime.series_from_value_with_budget(1i32, 3, &token).unwrap_err();
+    assert_eq!(err.code(), ErrorCode::OutOfMemory);
+    assert_eq!(err.kind(), ErrorKind::ResourceExhausted);
+    assert_eq!(token.request().budget_bytes(), 1);
+    assert_eq!(token.reservation_usage().unwrap().allocation_limit_bytes, 1);
+
+    token.resize(1 << 20).unwrap();
+
+    let outcome = runtime.series_from_value_with_budget(2i32, 3, &token).unwrap();
+    assert_eq!(outcome.value().to_vec_strict::<i32>().unwrap(), vec![2, 2, 2]);
+    assert_eq!(token.request().budget_bytes(), 1 << 20);
+    assert_eq!(outcome.report().request().budget_bytes(), 1 << 20);
+    let usage = token.reservation_usage().unwrap();
+    assert_eq!(usage.allocation_limit_bytes, 1 << 20);
+    assert!(usage.peak_aligned_bytes > 0);
+}
+
+#[test]
+fn execution_budget_token_resize_shrinks_below_live_usage_and_blocks_future_allocations() {
+    let runtime = Runtime::builder().with_device_memory_manager().build().unwrap();
+    let mut token =
+        runtime.execution_budget_token(ExecutionBudgetRequest::new(1 << 20).with_boundary("resize_shrink")).unwrap();
+    let retained = runtime.series_from_value_with_budget(3i32, 3, &token).unwrap();
+    let live_usage = token.reservation_usage().unwrap();
+    assert!(live_usage.current_aligned_bytes > 1);
+
+    token.resize(1).unwrap();
+
+    assert_eq!(token.request().budget_bytes(), 1);
+    let shrunk_usage = token.reservation_usage().unwrap();
+    assert_eq!(shrunk_usage.allocation_limit_bytes, 1);
+    assert!(shrunk_usage.current_aligned_bytes > shrunk_usage.allocation_limit_bytes);
+
+    let err = runtime.series_from_value_with_budget(4i32, 3, &token).unwrap_err();
+    assert_eq!(err.code(), ErrorCode::OutOfMemory);
+    assert_eq!(err.kind(), ErrorKind::ResourceExhausted);
+
+    drop(retained);
+    token.resize(1 << 20).unwrap();
+    let outcome = runtime.series_from_value_with_budget(5i32, 3, &token).unwrap();
+    assert_eq!(outcome.value().to_vec_strict::<i32>().unwrap(), vec![5, 5, 5]);
+    assert_eq!(outcome.report().request().budget_bytes(), 1 << 20);
+}
+
 /// §10.1 invariant contract (replaces the per-op guard contract): with the
 /// device memory domain installed, concurrent execution mixing default
 /// (manager-backed) runtimes and owned-pool runtimes must never disturb the

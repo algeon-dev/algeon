@@ -240,6 +240,17 @@ impl ExecutionBudgetToken {
         Ok(Self { request, lease })
     }
 
+    /// Resize this token's hard stream-bound reservation.
+    ///
+    /// Shrinking below current live usage is allowed by the underlying
+    /// reservation manager. Future allocations fail until enough memory is
+    /// released or the token is grown again.
+    pub fn resize(&mut self, budget_bytes: usize) -> Result<()> {
+        self.lease.resize(budget_bytes)?;
+        self.request.budget_bytes = budget_bytes;
+        Ok(())
+    }
+
     pub fn request(&self) -> &ExecutionBudgetRequest {
         &self.request
     }
