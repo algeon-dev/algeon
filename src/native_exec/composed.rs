@@ -13,16 +13,15 @@ use datafusion::{
     physical_plan::{
         DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties, SendableRecordBatchStream,
         metrics::{ExecutionPlanMetricsSet, MetricsSet, RecordOutput},
-        stream::RecordBatchStreamAdapter,
     },
 };
-use futures::TryStreamExt;
 use nexus_query_engine::{GpuResidentInputMap, QueryOutput, QueryPlan, execute_query_plan_with_gpu_inputs};
 
 use super::{
     common::{
-        conservative_properties, gpu_resident_source_names, mark_native_runtime_error, native_plan_one_line,
-        native_query_runtime_error, write_native_plan_tree,
+        NATIVE_CUDF_COMPOSED_EXEC_HOST_OUTPUT_MEMORY_CONSUMER, conservative_properties, gpu_resident_source_names,
+        mark_native_runtime_error, native_host_output_stream, native_plan_one_line, native_query_runtime_error,
+        write_native_plan_tree,
     },
     config::NativeCudfExecutionConfig,
     metrics::NativeCudfMetrics,
@@ -218,6 +217,7 @@ impl ExecutionPlan for NativeCudfComposedExec {
         let schema = self.schema();
         let plan = self.plan.clone();
         let execution_config = self.execution_config.clone();
+        let account_memory_pool = execution_config.host_output_memory_pool_accounting();
         let gpu_inputs = self.gpu_inputs.clone();
         let metrics = NativeCudfMetrics::new_with_capture_and_shape(
             &self.metrics,
@@ -225,54 +225,59 @@ impl ExecutionPlan for NativeCudfComposedExec {
             self.execution_config.metrics_capture(),
             self.execution_config.plan_task_mapping_datafusion_shape(),
         );
-        let output = futures::stream::once(async move {
-            // Build one native context for all producer fragments and the consumer so device-resident
-            // handles are compatible across the composed execution.
-            let context_lease = execution_config
-                .execution_context_async(Arc::clone(&task_context))
-                .await
-                .map_err(|error| DataFusionError::from(mark_native_runtime_error(error, "runtime_context")))?;
-            let context = context_lease.context();
-            let mut input_map = GpuResidentInputMap::new();
-            for child in gpu_inputs {
-                let (input_name, handle) = execute_gpu_resident_producer_with_context(
-                    child.as_ref(),
-                    context,
-                    partition,
-                    Arc::clone(&task_context),
-                )
-                .await?;
-                input_map.insert(input_name, handle);
-            }
-
-            let _elapsed_compute = metrics.baseline.elapsed_compute().timer();
-            // The consumer query starts after all GPU-resident producer handles are registered. No
-            // CPU fallback is attempted after this point.
-            let result = execute_query_plan_with_gpu_inputs(context, &plan, &input_map).map_err(|error| {
-                DataFusionError::from(native_query_runtime_error(
-                    "datafusion_nexus.native_composed.execute",
-                    "native cudf composed query execution failed",
-                    error,
-                ))
-            })?;
-            let (output, query_metrics) = result.into_parts();
-            metrics.record_query_metrics(&query_metrics);
-            metrics.record_lakehouse_cache_fill_events(&context.drain_lakehouse_cache_fill_event_snapshots());
-            let QueryOutput::HostArrow(batch) = output else {
-                return Err(DataFusionError::from(
-                    Error::new(
-                        ErrorCode::InvalidExecutionPlan,
-                        "datafusion_nexus.native_composed.execute",
-                        "native composed cudf execution produced a non-host result for DataFusion",
+        let output = native_host_output_stream(
+            NATIVE_CUDF_COMPOSED_EXEC_HOST_OUTPUT_MEMORY_CONSUMER,
+            schema,
+            Arc::clone(&task_context),
+            account_memory_pool,
+            async move {
+                // Build one native context for all producer fragments and the consumer so device-resident
+                // handles are compatible across the composed execution.
+                let context_lease = execution_config
+                    .execution_context_async(Arc::clone(&task_context))
+                    .await
+                    .map_err(|error| DataFusionError::from(mark_native_runtime_error(error, "runtime_context")))?;
+                let context = context_lease.context();
+                let mut input_map = GpuResidentInputMap::new();
+                for child in gpu_inputs {
+                    let (input_name, handle) = execute_gpu_resident_producer_with_context(
+                        child.as_ref(),
+                        context,
+                        partition,
+                        Arc::clone(&task_context),
                     )
-                    .with_fact("result_sink", "gpu_resident"),
-                ));
-            };
-            Ok::<Option<RecordBatch>, DataFusionError>(Some(batch.record_output(&metrics.baseline)))
-        })
-        .try_filter_map(|batch| async move { Ok(batch) });
+                    .await?;
+                    input_map.insert(input_name, handle);
+                }
 
-        Ok(Box::pin(RecordBatchStreamAdapter::new(schema, output)))
+                let _elapsed_compute = metrics.baseline.elapsed_compute().timer();
+                // The consumer query starts after all GPU-resident producer handles are registered. No
+                // CPU fallback is attempted after this point.
+                let result = execute_query_plan_with_gpu_inputs(context, &plan, &input_map).map_err(|error| {
+                    DataFusionError::from(native_query_runtime_error(
+                        "datafusion_nexus.native_composed.execute",
+                        "native cudf composed query execution failed",
+                        error,
+                    ))
+                })?;
+                let (output, query_metrics) = result.into_parts();
+                metrics.record_query_metrics(&query_metrics);
+                metrics.record_lakehouse_cache_fill_events(&context.drain_lakehouse_cache_fill_event_snapshots());
+                let QueryOutput::HostArrow(batch) = output else {
+                    return Err(DataFusionError::from(
+                        Error::new(
+                            ErrorCode::InvalidExecutionPlan,
+                            "datafusion_nexus.native_composed.execute",
+                            "native composed cudf execution produced a non-host result for DataFusion",
+                        )
+                        .with_fact("result_sink", "gpu_resident"),
+                    ));
+                };
+                Ok::<RecordBatch, DataFusionError>(batch.record_output(&metrics.baseline))
+            },
+        );
+
+        Ok(output)
     }
 
     fn metrics(&self) -> Option<MetricsSet> {

@@ -41,6 +41,7 @@ pub struct NativeCudfExecutionConfig {
     source_scheduler_policy: SourceSchedulerPolicy,
     source_chunk_planning_mode: SourceChunkPlanningMode,
     source_fetch_config: SourceFetchConfig,
+    host_output_memory_pool_accounting: bool,
     service_stream_pool: Option<ServiceStreamPool>,
     service_stream_pool_size: Option<usize>,
     cancellation: ExecutionCancellation,
@@ -131,6 +132,7 @@ impl NativeCudfExecutionConfig {
             source_scheduler_policy: SourceSchedulerPolicy::default(),
             source_chunk_planning_mode: SourceChunkPlanningMode::default(),
             source_fetch_config: SourceFetchConfig::default(),
+            host_output_memory_pool_accounting: false,
             service_stream_pool: None,
             service_stream_pool_size: None,
             cancellation: ExecutionCancellation::new(),
@@ -236,6 +238,7 @@ impl NativeCudfExecutionConfig {
             source_scheduler_policy: SourceSchedulerPolicy::default(),
             source_chunk_planning_mode: SourceChunkPlanningMode::default(),
             source_fetch_config: SourceFetchConfig::default(),
+            host_output_memory_pool_accounting: false,
             service_stream_pool: None,
             service_stream_pool_size: None,
             cancellation: ExecutionCancellation::new(),
@@ -326,6 +329,16 @@ impl NativeCudfExecutionConfig {
     /// Set the timeout used by blocking object-store SourceFetch resource acquisition.
     pub fn with_host_fetch_acquire_timeout(mut self, timeout: Duration) -> Self {
         self.source_fetch_config.host_fetch_acquire_timeout = timeout;
+        self
+    }
+
+    /// Account native host Arrow output batches against DataFusion's host
+    /// [`MemoryPool`](datafusion::execution::memory_pool::MemoryPool).
+    ///
+    /// This is intentionally host-only. Device memory admission and grants stay
+    /// in the native query service/governor ledger.
+    pub fn with_host_output_memory_pool_accounting(mut self, enabled: bool) -> Self {
+        self.host_output_memory_pool_accounting = enabled;
         self
     }
 
@@ -591,6 +604,12 @@ impl NativeCudfExecutionConfig {
     /// Source IO resource policy used by standalone native execution.
     pub fn source_fetch_config(&self) -> &SourceFetchConfig {
         &self.source_fetch_config
+    }
+
+    /// Whether host Arrow output from native execution is charged to
+    /// DataFusion's host-side memory pool.
+    pub fn host_output_memory_pool_accounting(&self) -> bool {
+        self.host_output_memory_pool_accounting
     }
 
     /// Strict bounded or adaptive pipeline execution mode.

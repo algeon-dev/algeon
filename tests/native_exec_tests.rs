@@ -141,6 +141,12 @@ fn bounded_auto_sized_uses_bounded_defaults_and_prefetch_scheduler() {
             .source_chunk_planning_options(),
         source_chunk_planning_options
     );
+    assert!(!NativeCudfExecutionConfig::bounded_auto_sized().host_output_memory_pool_accounting());
+    assert!(
+        NativeCudfExecutionConfig::bounded_auto_sized()
+            .with_host_output_memory_pool_accounting(true)
+            .host_output_memory_pool_accounting()
+    );
 }
 
 #[test]
@@ -191,6 +197,115 @@ fn native_composed_exec_hands_gpu_result_between_fragments_without_host_material
     assert_eq!(composed_metrics.sum_by_name("gpu_resident_input_handoffs").unwrap().as_usize(), 1);
     assert_eq!(composed_metrics.sum_by_name("host_to_device_uploads").unwrap().as_usize(), 0);
     assert_eq!(composed_metrics.sum_by_name("device_to_host_materializations").unwrap().as_usize(), 1);
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn native_composed_host_output_memory_pool_accounting_fails_fast() {
+    use datafusion::execution::runtime_env::RuntimeEnvBuilder;
+
+    let dir = unique_temp_dir("datafusion-nexus-native-composed-host-output-memory-pool");
+    let path = dir.join("input.parquet");
+    write_parquet_file(&path);
+    let schema = parquet_file_schema();
+    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let config = NativeCudfExecutionConfig::unbounded()
+        .with_shared_runtime(Arc::clone(&runtime))
+        .with_host_output_memory_pool_accounting(true);
+
+    let producer_plan = local_parquet_gpu_resident_plan(&path, Arc::clone(&schema));
+    let producer = Arc::new(NativeCudfGpuProducerExec::try_new("fragment_input", producer_plan).unwrap());
+    let producer_child = Arc::clone(&producer) as Arc<dyn ExecutionPlan>;
+    let consumer_plan = gpu_resident_host_sink_plan("fragment_input", Arc::clone(&schema));
+    let composed = Arc::new(NativeCudfComposedExec::try_new(consumer_plan, vec![producer_child], config).unwrap())
+        as Arc<dyn ExecutionPlan>;
+    let runtime_env = Arc::new(RuntimeEnvBuilder::new().with_memory_limit(1, 1.0).build().unwrap());
+    let task_context = Arc::new(TaskContext::default().with_runtime(Arc::clone(&runtime_env)));
+
+    let error = futures::executor::block_on(collect(composed, task_context))
+        .expect_err("composed native host output should be charged to DataFusion's bounded memory pool");
+
+    assert!(
+        matches!(error.find_root(), DataFusionError::ResourcesExhausted(_)),
+        "expected ResourcesExhausted from composed host-output accounting, got {error:?}"
+    );
+    assert!(
+        error.to_string().contains("NativeCudfComposedExec[host-output]"),
+        "error should identify the composed native host-output memory consumer: {error}"
+    );
+    assert_eq!(runtime_env.memory_pool.reserved(), 0);
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn native_host_output_memory_pool_accounting_fails_fast_in_hybrid_plan() {
+    use datafusion::execution::runtime_env::RuntimeEnvBuilder;
+
+    let dir = unique_temp_dir("datafusion-nexus-native-host-output-memory-pool");
+    let path = dir.join("input.parquet");
+    write_parquet_file(&path);
+
+    let config = NativeCudfExecutionConfig::unbounded().with_host_output_memory_pool_accounting(true);
+    let native_plan = local_parquet_host_sink_plan(&path, parquet_file_schema());
+    let native_child = Arc::new(NativeCudfExec::try_new(native_plan, config).unwrap()) as Arc<dyn ExecutionPlan>;
+    let native_schema = native_child.schema();
+    let hybrid_plan = Arc::new(
+        ProjectionExec::try_new(
+            [ProjectionExpr { expr: col("key", &native_schema).unwrap(), alias: "key".to_string() }],
+            native_child,
+        )
+        .unwrap(),
+    ) as Arc<dyn ExecutionPlan>;
+    let runtime = Arc::new(RuntimeEnvBuilder::new().with_memory_limit(1, 1.0).build().unwrap());
+    let task_context = Arc::new(TaskContext::default().with_runtime(Arc::clone(&runtime)));
+
+    let error = futures::executor::block_on(collect(Arc::clone(&hybrid_plan), task_context))
+        .expect_err("native host output should be charged to the bounded DataFusion memory pool");
+
+    assert!(
+        matches!(error.find_root(), DataFusionError::ResourcesExhausted(_)),
+        "expected ResourcesExhausted from DataFusion MemoryPool, got {error:?}"
+    );
+    assert!(
+        error.to_string().contains("NativeCudfExec[host-output]"),
+        "error should identify the native host-output memory consumer: {error}"
+    );
+    assert_eq!(runtime.memory_pool.reserved(), 0);
+
+    let success_runtime = Arc::new(RuntimeEnvBuilder::new().with_memory_limit(1024 * 1024, 1.0).build().unwrap());
+    let success_task_context = Arc::new(TaskContext::default().with_runtime(Arc::clone(&success_runtime)));
+    let batches = futures::executor::block_on(collect(hybrid_plan, success_task_context)).unwrap();
+    assert_eq!(batches.iter().map(|batch| batch.num_rows()).sum::<usize>(), 3);
+    assert_eq!(success_runtime.memory_pool.reserved(), 0);
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn native_host_output_memory_pool_accounting_releases_on_stream_eof() {
+    use datafusion::execution::runtime_env::RuntimeEnvBuilder;
+    use futures::StreamExt;
+
+    let dir = unique_temp_dir("datafusion-nexus-native-host-output-memory-pool-eof");
+    let path = dir.join("input.parquet");
+    write_parquet_file(&path);
+
+    let config = NativeCudfExecutionConfig::unbounded().with_host_output_memory_pool_accounting(true);
+    let native_plan = local_parquet_host_sink_plan(&path, parquet_file_schema());
+    let native_exec = NativeCudfExec::try_new(native_plan, config).unwrap();
+    let runtime = Arc::new(RuntimeEnvBuilder::new().with_memory_limit(1024 * 1024, 1.0).build().unwrap());
+    let task_context = Arc::new(TaskContext::default().with_runtime(Arc::clone(&runtime)));
+    let mut stream = native_exec.execute(0, task_context).unwrap();
+
+    let batch = futures::executor::block_on(stream.next()).expect("native stream should emit one batch").unwrap();
+    assert_eq!(batch.num_rows(), 3);
+    assert!(runtime.memory_pool.reserved() > 0);
+
+    let eof = futures::executor::block_on(stream.next());
+    assert!(eof.is_none());
+    assert_eq!(runtime.memory_pool.reserved(), 0);
 
     fs::remove_dir_all(dir).unwrap();
 }

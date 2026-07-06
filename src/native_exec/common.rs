@@ -5,19 +5,34 @@
 //! `PlanProperties` and uses the same error tagging at the DataFusion runtime
 //! boundary, so those concerns live here rather than being duplicated.
 
-use std::{collections::BTreeSet, sync::Arc};
+use std::{
+    collections::BTreeSet,
+    future::Future,
+    pin::Pin,
+    sync::Arc,
+    task::{Context, Poll},
+};
 
-use arrow::datatypes::SchemaRef;
+use arrow::{datatypes::SchemaRef, record_batch::RecordBatch};
 use datafusion::{
+    common::{Result as DataFusionResult, utils::memory::get_record_batch_memory_size},
+    execution::{
+        context::TaskContext,
+        memory_pool::{MemoryConsumer, MemoryReservation},
+    },
     physical_expr::{EquivalenceProperties, Partitioning},
     physical_plan::{
-        PlanProperties,
+        PlanProperties, RecordBatchStream, SendableRecordBatchStream,
         execution_plan::{Boundedness, EmissionType},
     },
 };
+use futures::Stream;
 use nexus_query_engine::{PlanNode, QueryPlan, SourceNode};
 
 use crate::error::Error;
+
+pub(super) const NATIVE_CUDF_EXEC_HOST_OUTPUT_MEMORY_CONSUMER: &str = "NativeCudfExec[host-output]";
+pub(super) const NATIVE_CUDF_COMPOSED_EXEC_HOST_OUTPUT_MEMORY_CONSUMER: &str = "NativeCudfComposedExec[host-output]";
 
 /// Conservative `PlanProperties` shared by all native execution wrappers:
 /// one unknown bounded partition, `Final` emission, no ordering guarantees.
@@ -28,6 +43,95 @@ pub(super) fn conservative_properties(schema: SchemaRef) -> Arc<PlanProperties> 
         EmissionType::Final,
         Boundedness::Bounded,
     ))
+}
+
+struct NativeHostOutputBatch {
+    batch: RecordBatch,
+    reservation: Option<MemoryReservation>,
+}
+
+type BoxedNativeHostOutputFuture =
+    Pin<Box<dyn Future<Output = DataFusionResult<NativeHostOutputBatch>> + Send + 'static>>;
+
+enum NativeHostOutputState {
+    Loading(BoxedNativeHostOutputFuture),
+    Ready(Option<RecordBatch>),
+    Done,
+}
+
+struct NativeHostOutputStream {
+    schema: SchemaRef,
+    state: NativeHostOutputState,
+    reservation: Option<MemoryReservation>,
+}
+
+impl Stream for NativeHostOutputStream {
+    type Item = DataFusionResult<RecordBatch>;
+
+    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        loop {
+            match &mut self.state {
+                NativeHostOutputState::Loading(future) => match future.as_mut().poll(cx) {
+                    Poll::Pending => return Poll::Pending,
+                    Poll::Ready(Ok(output)) => {
+                        self.reservation = output.reservation;
+                        self.state = NativeHostOutputState::Ready(Some(output.batch));
+                    },
+                    Poll::Ready(Err(error)) => {
+                        self.state = NativeHostOutputState::Done;
+                        return Poll::Ready(Some(Err(error)));
+                    },
+                },
+                NativeHostOutputState::Ready(batch) => {
+                    let batch = batch.take();
+                    self.state = NativeHostOutputState::Done;
+                    return Poll::Ready(batch.map(Ok));
+                },
+                NativeHostOutputState::Done => {
+                    self.reservation = None;
+                    return Poll::Ready(None);
+                },
+            }
+        }
+    }
+}
+
+impl RecordBatchStream for NativeHostOutputStream {
+    fn schema(&self) -> SchemaRef {
+        Arc::clone(&self.schema)
+    }
+}
+
+/// Builds a one-batch native host-output stream, optionally charging the
+/// materialized Arrow batch to DataFusion's host-side memory pool.
+pub(super) fn native_host_output_stream<F>(
+    consumer_name: &'static str,
+    schema: SchemaRef,
+    task_context: Arc<TaskContext>,
+    account_memory_pool: bool,
+    future: F,
+) -> SendableRecordBatchStream
+where
+    F: Future<Output = DataFusionResult<RecordBatch>> + Send + 'static,
+{
+    let future = async move {
+        let batch = future.await?;
+        let reservation = account_memory_pool
+            .then(|| {
+                let reservation =
+                    MemoryConsumer::new(consumer_name).with_can_spill(false).register(task_context.memory_pool());
+                reservation.try_grow(get_record_batch_memory_size(&batch))?;
+                Ok::<MemoryReservation, datafusion::common::DataFusionError>(reservation)
+            })
+            .transpose()?;
+        Ok(NativeHostOutputBatch { batch, reservation })
+    };
+
+    Box::pin(NativeHostOutputStream {
+        schema,
+        state: NativeHostOutputState::Loading(Box::pin(future)),
+        reservation: None,
+    })
 }
 
 /// Collects `input_name`s of every GPU-resident source node in the plan.
