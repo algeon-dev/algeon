@@ -33,6 +33,30 @@ pub(super) fn find_composed_exec(
     plan.children().into_iter().find_map(|child| find_composed_exec(child.as_ref()))
 }
 
+pub(super) fn find_cugraph_algo_exec(
+    plan: &dyn datafusion::physical_plan::ExecutionPlan,
+) -> Option<&dyn datafusion::physical_plan::ExecutionPlan> {
+    if plan.name() == "CugraphAlgoExec" {
+        return Some(plan);
+    }
+    plan.children().into_iter().find_map(|child| find_cugraph_algo_exec(child.as_ref()))
+}
+
+pub(super) fn plan_contains_native_exec(plan: &dyn datafusion::physical_plan::ExecutionPlan) -> bool {
+    plan.downcast_ref::<NativeCudfExec>().is_some()
+        || plan.downcast_ref::<NativeCudfComposedExec>().is_some()
+        || plan.children().into_iter().any(|child| plan_contains_native_exec(child.as_ref()))
+}
+
+pub(super) fn metric_usize(metrics: &datafusion::physical_plan::metrics::MetricsSet, name: &str) -> usize {
+    metrics.sum_by_name(name).map(|value| value.as_usize()).unwrap_or(0)
+}
+
+pub(super) fn plan_metric_usize(plan: &dyn datafusion::physical_plan::ExecutionPlan, name: &str) -> usize {
+    let own = plan.metrics().as_ref().map(|metrics| metric_usize(metrics, name)).unwrap_or(0);
+    own + plan.children().into_iter().map(|child| plan_metric_usize(child.as_ref(), name)).sum::<usize>()
+}
+
 pub(super) async fn drop_session_context_on_blocking_thread(ctx: SessionContext) {
     tokio::task::spawn_blocking(move || drop(ctx)).await.unwrap();
 }
