@@ -445,8 +445,16 @@ struct QueryServiceResources {
 struct AdmissionState {
     active_queries: usize,
     queued: VecDeque<AdmissionRequest>,
+    active_adaptive_grants: HashMap<u64, ActiveAdaptiveGrant>,
     next_tenant_index: usize,
     closed: bool,
+}
+
+#[derive(Debug, Clone)]
+struct ActiveAdaptiveGrant {
+    device_ordinal: usize,
+    target_bytes: u64,
+    memory_grant: MemoryGrant,
 }
 
 #[derive(Debug, Clone)]
@@ -542,6 +550,7 @@ impl QueryHandleLifetime {
         match self.service.admission.lock() {
             Ok(mut state) => {
                 state.active_queries = state.active_queries.saturating_sub(1);
+                state.active_adaptive_grants.remove(&self.query_id);
                 self.service.notify_admission_available();
             },
             Err(_error) => {
@@ -879,7 +888,17 @@ impl QueryService {
                 let admitted = state.queued.remove(position).expect("admissible request exists");
                 self.attach_admission_release_wakeup(&placed_query.memory_grant)?;
                 state.active_queries = state.active_queries.saturating_add(1);
+                self.register_active_adaptive_grant(
+                    &mut state,
+                    request_id,
+                    placed_query.device_ordinal,
+                    grant_policy,
+                    &placed_query.memory_grant,
+                );
                 self.rotate_after_admission(&mut state, &admitted.tenant_id);
+                if state.queued.is_empty() {
+                    self.grow_active_adaptive_grants_locked(&mut state);
+                }
                 self.inner.notify_admission_available();
                 let admission_sequence = self.inner.next_admission_sequence.fetch_add(1, Ordering::Relaxed);
                 let service = Arc::clone(&self.inner);
@@ -1043,6 +1062,13 @@ impl QueryService {
         };
         self.attach_admission_release_wakeup(&placed_query.memory_grant)?;
         state.active_queries = state.active_queries.saturating_add(1);
+        self.register_active_adaptive_grant(
+            &mut state,
+            query_id,
+            placed_query.device_ordinal,
+            grant_policy,
+            &placed_query.memory_grant,
+        );
         self.rotate_after_admission(&mut state, &tenant_id);
         let admission_sequence = self.inner.next_admission_sequence.fetch_add(1, Ordering::Relaxed);
         let service = Arc::clone(&self.inner);
@@ -1104,6 +1130,14 @@ impl QueryService {
             .saturating_mul(u64::try_from(self.remaining_slots_after_current(active_queries)).unwrap_or(u64::MAX))
     }
 
+    fn reserved_min_bytes_for_empty_slots(&self, active_queries: usize) -> u64 {
+        if self.inner.config.slot_guarantee == SlotGuarantee::Optimistic {
+            return 0;
+        }
+        let empty_slots = self.inner.config.max_concurrent_queries.saturating_sub(active_queries);
+        self.inner.max_tenant_min_bytes.saturating_mul(u64::try_from(empty_slots).unwrap_or(u64::MAX))
+    }
+
     fn reserved_min_bytes_for_selected_device(
         &self,
         resources: &QueryServiceResources,
@@ -1130,6 +1164,38 @@ impl QueryService {
             }
         }
         let slots_to_reserve_on_selected = remaining_slots.saturating_sub(other_device_min_slots);
+        Ok(self
+            .inner
+            .max_tenant_min_bytes
+            .saturating_mul(u64::try_from(slots_to_reserve_on_selected).unwrap_or(u64::MAX)))
+    }
+
+    fn reserved_min_bytes_for_selected_device_empty_slots(
+        &self,
+        resources: &QueryServiceResources,
+        selected_device: cudf::DeviceId,
+        active_queries: usize,
+    ) -> Result<u64> {
+        if self.inner.config.slot_guarantee == SlotGuarantee::Optimistic {
+            return Ok(0);
+        }
+        let empty_slots = self.inner.config.max_concurrent_queries.saturating_sub(active_queries);
+        if empty_slots == 0 || self.inner.max_tenant_min_bytes == 0 {
+            return Ok(0);
+        }
+        let mut other_device_min_slots = 0usize;
+        for context in resources.devices.contexts() {
+            if context.device() == selected_device {
+                continue;
+            }
+            let slots = context.available_bytes()? / self.inner.max_tenant_min_bytes;
+            other_device_min_slots =
+                other_device_min_slots.saturating_add(usize::try_from(slots).unwrap_or(usize::MAX));
+            if other_device_min_slots >= empty_slots {
+                return Ok(0);
+            }
+        }
+        let slots_to_reserve_on_selected = empty_slots.saturating_sub(other_device_min_slots);
         Ok(self
             .inner
             .max_tenant_min_bytes
@@ -1237,9 +1303,9 @@ impl QueryService {
     }
 
     fn attach_admission_release_wakeup(&self, grant: &MemoryGrant) -> Result<()> {
-        let service = Arc::clone(&self.inner);
+        let service = self.clone();
         grant.notify_on_release(Arc::new(move || {
-            let _guard = match service.admission.lock() {
+            let mut guard = match service.inner.admission.lock() {
                 Ok(guard) => guard,
                 Err(_error) => {
                     eprintln!(
@@ -1248,8 +1314,87 @@ impl QueryService {
                     return;
                 },
             };
-            service.notify_admission_available();
+            if guard.queued.is_empty() {
+                service.grow_active_adaptive_grants_locked(&mut guard);
+            }
+            service.inner.notify_admission_available();
         }))
+    }
+
+    fn register_active_adaptive_grant(
+        &self,
+        state: &mut AdmissionState,
+        query_id: u64,
+        device_ordinal: usize,
+        grant_policy: TenantGrantPolicy,
+        memory_grant: &MemoryGrant,
+    ) {
+        if self.inner.config.native_pipeline_execution_mode != NativePipelineExecutionMode::Adaptive {
+            return;
+        }
+        if memory_grant.budget_bytes() >= grant_policy.want_bytes {
+            return;
+        }
+        state.active_adaptive_grants.insert(
+            query_id,
+            ActiveAdaptiveGrant {
+                device_ordinal,
+                target_bytes: grant_policy.want_bytes,
+                memory_grant: memory_grant.clone(),
+            },
+        );
+    }
+
+    fn adaptive_growth_available_bytes(&self, state: &AdmissionState, device_ordinal: usize) -> Result<u64> {
+        let Some(resources) = &self.inner.resources else {
+            let available = self.inner.fallback_memory_governor.available_bytes()?;
+            return Ok(available.saturating_sub(self.reserved_min_bytes_for_empty_slots(state.active_queries)));
+        };
+        let context = resources.devices.context_by_ordinal(device_ordinal)?;
+        let available = context.available_bytes()?;
+        let reserved =
+            self.reserved_min_bytes_for_selected_device_empty_slots(resources, context.device(), state.active_queries)?;
+        Ok(available.saturating_sub(reserved))
+    }
+
+    fn grow_active_adaptive_grants_locked(&self, state: &mut AdmissionState) {
+        if self.inner.config.native_pipeline_execution_mode != NativePipelineExecutionMode::Adaptive {
+            return;
+        }
+        let query_ids = state.active_adaptive_grants.keys().copied().collect::<Vec<_>>();
+        for query_id in query_ids {
+            let Some(active) = state.active_adaptive_grants.get(&query_id).cloned() else {
+                continue;
+            };
+            let current_bytes = active.memory_grant.budget_bytes();
+            if current_bytes >= active.target_bytes {
+                state.active_adaptive_grants.remove(&query_id);
+                continue;
+            }
+            let available_bytes = match self.adaptive_growth_available_bytes(state, active.device_ordinal) {
+                Ok(bytes) => bytes,
+                Err(error) => {
+                    eprintln!("[nexus-query-engine] warning: failed to compute adaptive grant growth: {error}");
+                    continue;
+                },
+            };
+            if available_bytes == 0 {
+                continue;
+            }
+            let grow_bytes = active.target_bytes.saturating_sub(current_bytes).min(available_bytes);
+            match active.memory_grant.try_grow(grow_bytes) {
+                Ok(true) => {
+                    if active.memory_grant.budget_bytes() >= active.target_bytes {
+                        state.active_adaptive_grants.remove(&query_id);
+                    }
+                },
+                Ok(false) => continue,
+                Err(error) => {
+                    eprintln!("[nexus-query-engine] warning: failed to grow adaptive grant: {error}");
+                    continue;
+                },
+            }
+        }
     }
 
     /// Returns the service memory-governor report.
@@ -1416,8 +1561,18 @@ impl QueryAdmissionWaiter {
             let admitted = state.queued.remove(position).expect("admissible request exists");
             self.service.attach_admission_release_wakeup(&placed_query.memory_grant)?;
             state.active_queries = state.active_queries.saturating_add(1);
+            self.service.register_active_adaptive_grant(
+                &mut state,
+                self.request_id,
+                placed_query.device_ordinal,
+                self.grant_policy,
+                &placed_query.memory_grant,
+            );
             self.service.rotate_after_admission(&mut state, &admitted.tenant_id);
             self.queued = false;
+            if state.queued.is_empty() {
+                self.service.grow_active_adaptive_grants_locked(&mut state);
+            }
             self.service.inner.notify_admission_available();
             let admission_sequence = self.service.inner.next_admission_sequence.fetch_add(1, Ordering::Relaxed);
             let service = Arc::clone(&self.service.inner);
@@ -2269,6 +2424,156 @@ mod tests {
 
         drop(first);
         assert_eq!(service.memory_governor_report().unwrap().available_bytes, 60);
+    }
+
+    #[test]
+    fn adaptive_query_service_grows_partial_active_grant_on_release() {
+        let service = QueryService::new_for_admission_tests(
+            QueryServiceConfig {
+                device_capacity_bytes: Some(100),
+                max_concurrent_queries: 2,
+                max_admission_queue_len: 8,
+                native_pipeline_execution_mode: NativePipelineExecutionMode::Adaptive,
+                ..QueryServiceConfig::default()
+            },
+            vec![QueryServiceTenantConfig::with_grant_range("tenant", 10, 95)],
+            non_gds_deployment(),
+        )
+        .unwrap();
+
+        let first = service.try_admit_query("tenant").unwrap().expect("first query should admit want");
+        let second = service.try_admit_query("tenant").unwrap().expect("second query should admit remainder");
+        let second_grant = second.lifetime.memory_grant().unwrap();
+
+        assert_eq!(first.device_budget_bytes(), 90);
+        assert_eq!(second.device_budget_bytes(), 10);
+        assert_eq!(second_grant.budget_bytes(), 10);
+
+        drop(first);
+
+        assert_eq!(second_grant.budget_bytes(), 90);
+        let report = service.memory_governor_report().unwrap();
+        assert_eq!(report.outstanding_bytes, 90);
+        assert_eq!(report.available_bytes, 10);
+    }
+
+    #[test]
+    fn strict_query_service_does_not_grow_partial_active_grant_on_release() {
+        let service = QueryService::new_for_admission_tests(
+            QueryServiceConfig {
+                device_capacity_bytes: Some(100),
+                max_concurrent_queries: 2,
+                max_admission_queue_len: 8,
+                native_pipeline_execution_mode: NativePipelineExecutionMode::StrictBounded,
+                ..QueryServiceConfig::default()
+            },
+            vec![QueryServiceTenantConfig::with_grant_range("tenant", 10, 95)],
+            non_gds_deployment(),
+        )
+        .unwrap();
+
+        let first = service.try_admit_query("tenant").unwrap().expect("first query should admit want");
+        let second = service.try_admit_query("tenant").unwrap().expect("second query should admit remainder");
+        let second_grant = second.lifetime.memory_grant().unwrap();
+
+        drop(first);
+
+        assert_eq!(second_grant.budget_bytes(), 10);
+        let report = service.memory_governor_report().unwrap();
+        assert_eq!(report.outstanding_bytes, 10);
+        assert_eq!(report.available_bytes, 90);
+    }
+
+    #[test]
+    fn adaptive_query_service_preserves_queued_minimum_before_growing_active_grants() {
+        let service = QueryService::new_for_admission_tests(
+            QueryServiceConfig {
+                device_capacity_bytes: Some(100),
+                max_concurrent_queries: 2,
+                max_admission_queue_len: 8,
+                native_pipeline_execution_mode: NativePipelineExecutionMode::Adaptive,
+                ..QueryServiceConfig::default()
+            },
+            vec![QueryServiceTenantConfig::with_grant_range("tenant", 10, 80)],
+            non_gds_deployment(),
+        )
+        .unwrap();
+
+        let first = service.try_admit_query("tenant").unwrap().expect("first query should admit want");
+        let second = service.try_admit_query("tenant").unwrap().expect("second query should admit remainder");
+        let second_grant = second.lifetime.memory_grant().unwrap();
+        let mut queued = service.enqueue_admission("tenant").unwrap();
+
+        drop(first);
+
+        assert_eq!(second_grant.budget_bytes(), 20);
+        let admitted = queued.try_admit().unwrap().expect("queued query should receive released capacity");
+        assert_eq!(admitted.device_budget_bytes(), 80);
+        assert_eq!(second_grant.budget_bytes(), 20);
+    }
+
+    #[test]
+    fn adaptive_query_service_grows_after_queue_drains_when_capacity_remains() {
+        let service = QueryService::new_for_admission_tests(
+            QueryServiceConfig {
+                device_capacity_bytes: Some(100),
+                max_concurrent_queries: 2,
+                max_admission_queue_len: 8,
+                native_pipeline_execution_mode: NativePipelineExecutionMode::Adaptive,
+                ..QueryServiceConfig::default()
+            },
+            vec![
+                QueryServiceTenantConfig::with_grant_range("wide", 10, 80),
+                QueryServiceTenantConfig::new("small", 10),
+            ],
+            non_gds_deployment(),
+        )
+        .unwrap();
+
+        let first = service.try_admit_query("wide").unwrap().expect("first wide query should admit want");
+        let second = service.try_admit_query("wide").unwrap().expect("second wide query should admit remainder");
+        let second_grant = second.lifetime.memory_grant().unwrap();
+        let mut queued = service.enqueue_admission("small").unwrap();
+
+        drop(first);
+
+        assert_eq!(second_grant.budget_bytes(), 20);
+        let admitted = queued.try_admit().unwrap().expect("small queued query should receive its minimum");
+        assert_eq!(admitted.device_budget_bytes(), 10);
+        assert_eq!(second_grant.budget_bytes(), 80);
+    }
+
+    #[test]
+    fn adaptive_blocking_query_service_grows_after_queue_drains_when_capacity_remains() {
+        let service = QueryService::new_for_admission_tests(
+            QueryServiceConfig {
+                device_capacity_bytes: Some(100),
+                max_concurrent_queries: 2,
+                max_admission_queue_len: 8,
+                admission_wait_timeout: Duration::from_secs(1),
+                native_pipeline_execution_mode: NativePipelineExecutionMode::Adaptive,
+                ..QueryServiceConfig::default()
+            },
+            vec![
+                QueryServiceTenantConfig::with_grant_range("wide", 10, 80),
+                QueryServiceTenantConfig::new("small", 10),
+            ],
+            non_gds_deployment(),
+        )
+        .unwrap();
+
+        let first = service.try_admit_query("wide").unwrap().expect("first wide query should admit want");
+        let second = service.try_admit_query("wide").unwrap().expect("second wide query should admit remainder");
+        let second_grant = second.lifetime.memory_grant().unwrap();
+        let queued_service = service.clone();
+        let queued = std::thread::spawn(move || queued_service.admit_query("small").unwrap());
+
+        wait_for_queued_len(&service, 1);
+        drop(first);
+
+        let admitted = queued.join().expect("blocking admission thread should not panic");
+        assert_eq!(admitted.device_budget_bytes(), 10);
+        assert_eq!(second_grant.budget_bytes(), 80);
     }
 
     #[test]
