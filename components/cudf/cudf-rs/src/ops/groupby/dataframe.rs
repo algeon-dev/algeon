@@ -333,7 +333,7 @@ impl PreparedDataFrameGroupBy {
         let execution = ResolvedExecution::many(
             &self.keys_domain,
             requests.iter().map(|request| request.values.execution_domain()),
-            &ctx,
+            ctx,
             operation,
         )?;
         let output_domain = Arc::clone(execution.output_domain());

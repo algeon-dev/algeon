@@ -755,7 +755,6 @@ impl LocalParquetFile {
     {
         let uri = uri.into();
         let location = ParquetSourceLocation::object_store_uri(uri.clone())?;
-        let reader_path = object_store_reader_path(&uri);
         let stable_id = stable_id.into();
         if stable_id.is_empty() {
             return Err(Error::new_with(ErrorCode::EmptyInput, OP_FILE_NEW, "file stable_id must not be empty")
@@ -765,7 +764,7 @@ impl LocalParquetFile {
 
         Ok(Self {
             location,
-            path: PathBuf::from(reader_path),
+            path: PathBuf::from(&uri),
             stable_id,
             file_size_bytes: None,
             row_groups: None,

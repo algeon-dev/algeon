@@ -449,6 +449,7 @@ fn local_files_are_local_and_sources_must_have_files() {
     let s3_file = LocalParquetFile::object_store_uri("s3://bucket/part-0.parquet", "part-0", []).unwrap();
     assert_eq!(s3_file.location().read_capability(), "object_store:s3");
     assert_eq!(s3_file.reader_path(), "s3://bucket/part-0.parquet");
+    assert_eq!(s3_file.path(), std::path::Path::new("s3://bucket/part-0.parquet"));
 
     let unsupported_uri = LocalParquetFile::object_store_uri("gs://bucket/part-0.parquet", "part-0", []).unwrap_err();
     assert_eq!(unsupported_uri.code(), ErrorCode::UnsupportedOperation);
@@ -465,6 +466,28 @@ fn local_files_are_local_and_sources_must_have_files() {
     .unwrap_err();
     assert_eq!(empty_err.code(), ErrorCode::EmptyInput);
     assert_eq!(empty_err.detail_value("reason"), Some("empty_source_files"));
+}
+
+#[test]
+fn object_store_source_chunks_preserve_reader_uri() {
+    let source = LocalParquetSource::data(
+        [LocalParquetFile::object_store_uri("s3://bucket/part-0.parquet", "part-0", [])
+            .unwrap()
+            .with_file_size_bytes(512)],
+        base_schema(),
+        ["id"],
+        [SourceOutputColumn::new("id", SourceColumnRef::ReadColumn(0)).unwrap()],
+        [],
+        [],
+    )
+    .unwrap();
+
+    let plan = plan_local_parquet_source_chunks(&source, SourceChunkPlanningPolicy::default()).unwrap();
+    let chunk = &plan.chunks()[0];
+
+    assert_eq!(chunk.location().read_capability(), "object_store:s3");
+    assert_eq!(chunk.reader_path(), "s3://bucket/part-0.parquet");
+    assert_eq!(chunk.path(), std::path::Path::new("s3://bucket/part-0.parquet"));
 }
 
 #[test]

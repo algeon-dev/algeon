@@ -158,7 +158,7 @@ pub fn read_parquet_table(options: &ParquetTableReadOptions<'_>) -> Result<Table
             .with_detail("reason", "missing_source")
             .with_detail("remedy", "set filepath for path reads or filebytes for host-buffer reads"));
         },
-        (None, Some(bytes)) if bytes.is_empty() => {
+        (None, Some([])) => {
             return Err(Error::new_with(
                 ErrorCode::EmptyInput,
                 OPERATION,

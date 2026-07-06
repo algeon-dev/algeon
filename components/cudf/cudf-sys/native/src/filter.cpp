@@ -33,6 +33,8 @@ thread_local int32_t g_row_predicate_final_filter_call_count = 0;
   switch (op) {
     case CUDF_BINARY_LOGICAL_AND: return cudf::ast::ast_operator::LOGICAL_AND;
     case CUDF_BINARY_LOGICAL_OR: return cudf::ast::ast_operator::LOGICAL_OR;
+    case CUDF_BINARY_NULL_LOGICAL_AND: return cudf::ast::ast_operator::NULL_LOGICAL_AND;
+    case CUDF_BINARY_NULL_LOGICAL_OR: return cudf::ast::ast_operator::NULL_LOGICAL_OR;
     case CUDF_BINARY_EQUAL: return cudf::ast::ast_operator::EQUAL;
     case CUDF_BINARY_NOT_EQUAL: return cudf::ast::ast_operator::NOT_EQUAL;
     case CUDF_BINARY_LESS: return cudf::ast::ast_operator::LESS;

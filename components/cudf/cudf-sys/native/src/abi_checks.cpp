@@ -319,6 +319,11 @@ static_assert(CUDF_BINARY_NULL_NOT_EQUALS ==
               static_cast<int>(cudf::binary_operator::NULL_NOT_EQUALS));
 static_assert(CUDF_BINARY_NULL_MAX == static_cast<int>(cudf::binary_operator::NULL_MAX));
 static_assert(CUDF_BINARY_NULL_MIN == static_cast<int>(cudf::binary_operator::NULL_MIN));
+static_assert(CUDF_BINARY_GENERIC_BINARY == static_cast<int>(cudf::binary_operator::GENERIC_BINARY));
+static_assert(CUDF_BINARY_NULL_LOGICAL_AND ==
+              static_cast<int>(cudf::binary_operator::NULL_LOGICAL_AND));
+static_assert(CUDF_BINARY_NULL_LOGICAL_OR ==
+              static_cast<int>(cudf::binary_operator::NULL_LOGICAL_OR));
 
 static_assert(CUDF_STRIP_LEFT == static_cast<int>(cudf::strings::side_type::LEFT));
 static_assert(CUDF_STRIP_RIGHT == static_cast<int>(cudf::strings::side_type::RIGHT));

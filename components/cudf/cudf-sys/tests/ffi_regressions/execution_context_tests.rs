@@ -112,7 +112,7 @@ fn test_column_copy_requires_explicit_exec_options() {
     assert_eq!(st, cudf_sys::CUDF_SUCCESS);
     assert_eq!(last_exec_stream_value(), explicit_stream);
     assert_eq!(last_exec_sync_stream_value(), NO_SYNC_RECORDED);
-    assert_eq!(read_i32_column_data(explicit_out, 4), vec![1, 2, 3, 4]);
+    assert_eq!(read_i32_column_data_with_exec(explicit_out, 4, &exec), vec![1, 2, 3, 4]);
 
     unsafe {
         cudf_sys::cudf_column_destroy(explicit_out);

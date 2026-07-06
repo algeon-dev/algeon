@@ -126,19 +126,11 @@ pub fn gather(input: &TableView<'_>, gather_map: &ColumnView<'_>) -> Result<Tabl
 ///
 /// # Example
 /// ```ignore
-/// use cudf::Runtime;
-///
-/// let rt = Runtime::new().unwrap();
-/// let df = cudf::dataframe! {
-///     "value" => rt.series(&[10i32, 20, 30]).unwrap(),
-/// }
-/// .unwrap();
-/// let map = rt.series(&[2i32, 0]).unwrap();
-/// let result = df.gather(&map).unwrap();
-/// assert_eq!(
-///     result.series("value").unwrap().to_vec_strict::<i32>().unwrap(),
-///     vec![30, 10]
-/// );
+/// // `ColumnView`/`TableView` have no public constructor, so this advanced
+/// // entry point cannot be demonstrated from outside the crate. See
+/// // `tests/ops/copying/copying_tests.rs::test_gather_unchecked_basic` for an
+/// // executable example.
+/// let result = unsafe { cudf::ops::copying::gather_unchecked(&input, &gather_map)? };
 /// ```
 ///
 /// Prefer [`gather`] unless profiling shows the bounds check is a bottleneck.
@@ -499,19 +491,12 @@ pub fn copy_if_else_in(
 ///
 /// # Example
 /// ```ignore
-/// use cudf::Runtime;
-///
-/// let rt = Runtime::new().unwrap();
-/// let series = rt.series(&[10i32, 20, 30, 40]).unwrap();
-/// let fill = rt.null_scalar::<i32>().unwrap();
-/// let shifted = cudf::ops::copying::shift(
-///     &series.as_column().view().unwrap(),
-///     1,
-///     &fill,
-/// )
-/// .unwrap();
+/// // `ColumnView` has no public constructor, so this low-level entry point
+/// // cannot be demonstrated from outside the crate. See
+/// // `tests/ops/copying/shift_tests.rs::shift_forward_with_null_fill` for an
+/// // executable example.
+/// let shifted = cudf::ops::copying::shift(&input, 1, &fill)?;
 /// // Output: [NULL, 10, 20, 30]
-/// # let _ = shifted;
 /// ```
 pub fn shift(input: &ColumnView<'_>, offset: i32, fill_value: &Scalar) -> Result<Column> {
     let ctx = ExecutionOverrides::new();

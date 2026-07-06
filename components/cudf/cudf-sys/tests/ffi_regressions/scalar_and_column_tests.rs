@@ -36,9 +36,10 @@ fn strict_exec_owners() -> (OwnedStream, crate::support::OwnedMemoryResource, cu
 #[test]
 fn test_scalar_string_value_round_trips_empty_and_non_empty_values() {
     let _shim_state = lock_shim_state();
+    let (_stream, _mr, exec) = strict_exec_owners();
     for expected in ["hello", ""] {
         let scalar = make_string_scalar(expected);
-        assert_eq!(scalar_string_value(scalar), expected);
+        assert_eq!(scalar_string_value(scalar, &exec), expected);
 
         unsafe { cudf_sys::cudf_scalar_destroy(scalar) };
     }
@@ -307,27 +308,24 @@ fn assert_scalar_data_type(scalar: *mut c_void, expected_type: cudf_sys::cudf_ty
     assert_eq!(scale, expected_scale);
 }
 
-fn assert_scalar_validity(scalar: *mut c_void, expected: i32) {
-    let (_stream, _mr, exec) = strict_exec_owners();
+fn assert_scalar_validity(scalar: *mut c_void, exec: &cudf_sys::cudf_exec_options_t, expected: i32) {
     let mut is_valid = -1;
-    let st = unsafe { cudf_sys::cudf_scalar_is_valid_ex(scalar, &mut is_valid, &exec) };
+    let st = unsafe { cudf_sys::cudf_scalar_is_valid_ex(scalar, &mut is_valid, exec) };
     assert_eq!(st, cudf_sys::CUDF_SUCCESS);
     assert_eq!(is_valid, expected);
 }
 
-unsafe fn scalar_raw_value<T: Copy>(scalar: *mut c_void) -> T {
-    let (_stream, _mr, exec) = strict_exec_owners();
+unsafe fn scalar_raw_value<T: Copy>(scalar: *mut c_void, exec: &cudf_sys::cudf_exec_options_t) -> T {
     let mut out = std::mem::MaybeUninit::<T>::uninit();
-    let st = unsafe { cudf_sys::cudf_scalar_value_ex(scalar, out.as_mut_ptr() as *mut c_void, &exec) };
+    let st = unsafe { cudf_sys::cudf_scalar_value_ex(scalar, out.as_mut_ptr() as *mut c_void, exec) };
     assert_eq!(st, cudf_sys::CUDF_SUCCESS);
     unsafe { out.assume_init() }
 }
 
-fn scalar_string_value(scalar: *mut c_void) -> String {
-    let (_stream, _mr, exec) = strict_exec_owners();
+fn scalar_string_value(scalar: *mut c_void, exec: &cudf_sys::cudf_exec_options_t) -> String {
     let mut out: *mut c_char = ptr::null_mut();
     let mut len: i32 = -1;
-    let st = unsafe { cudf_sys::cudf_scalar_string_value_ex(scalar, &mut out, &mut len, &exec) };
+    let st = unsafe { cudf_sys::cudf_scalar_string_value_ex(scalar, &mut out, &mut len, exec) };
     assert_eq!(st, cudf_sys::CUDF_SUCCESS);
     owned_string_value(out, len)
 }
@@ -352,8 +350,8 @@ fn test_scalar_create_decimal_raw_round_trips_type_scale_validity_and_value() {
     };
     assert_eq!(st, cudf_sys::CUDF_SUCCESS);
     assert_scalar_data_type(decimal32, cudf_sys::cudf_type_id_t::CUDF_TYPE_DECIMAL32, scale);
-    assert_scalar_validity(decimal32, 1);
-    assert_eq!(unsafe { scalar_raw_value::<i32>(decimal32) }, raw32);
+    assert_scalar_validity(decimal32, &exec, 1);
+    assert_eq!(unsafe { scalar_raw_value::<i32>(decimal32, &exec) }, raw32);
 
     let raw64 = -9_876_543_210_i64;
     let mut decimal64: *mut c_void = ptr::null_mut();
@@ -369,8 +367,8 @@ fn test_scalar_create_decimal_raw_round_trips_type_scale_validity_and_value() {
     };
     assert_eq!(st, cudf_sys::CUDF_SUCCESS);
     assert_scalar_data_type(decimal64, cudf_sys::cudf_type_id_t::CUDF_TYPE_DECIMAL64, scale);
-    assert_scalar_validity(decimal64, 1);
-    assert_eq!(unsafe { scalar_raw_value::<i64>(decimal64) }, raw64);
+    assert_scalar_validity(decimal64, &exec, 1);
+    assert_eq!(unsafe { scalar_raw_value::<i64>(decimal64, &exec) }, raw64);
 
     let raw128 = -123_456_789_012_345_678_901_234_567_i128;
     let mut decimal128: *mut c_void = ptr::null_mut();
@@ -386,8 +384,8 @@ fn test_scalar_create_decimal_raw_round_trips_type_scale_validity_and_value() {
     };
     assert_eq!(st, cudf_sys::CUDF_SUCCESS);
     assert_scalar_data_type(decimal128, cudf_sys::cudf_type_id_t::CUDF_TYPE_DECIMAL128, scale);
-    assert_scalar_validity(decimal128, 1);
-    assert_eq!(unsafe { scalar_raw_value::<i128>(decimal128) }, raw128);
+    assert_scalar_validity(decimal128, &exec, 1);
+    assert_eq!(unsafe { scalar_raw_value::<i128>(decimal128, &exec) }, raw128);
 
     unsafe {
         cudf_sys::cudf_scalar_destroy(decimal32);
@@ -413,11 +411,11 @@ fn test_scalar_create_timestamp_raw_round_trips_type_validity_and_value() {
         let st = unsafe { cudf_sys::cudf_scalar_create_timestamp_raw_ex(type_id, raw, 1, &exec, &mut scalar) };
         assert_eq!(st, cudf_sys::CUDF_SUCCESS);
         assert_scalar_data_type(scalar, type_id, 0);
-        assert_scalar_validity(scalar, 1);
+        assert_scalar_validity(scalar, &exec, 1);
         if type_id == cudf_sys::cudf_type_id_t::CUDF_TYPE_TIMESTAMP_DAYS {
-            assert_eq!(unsafe { scalar_raw_value::<i32>(scalar) }, raw as i32);
+            assert_eq!(unsafe { scalar_raw_value::<i32>(scalar, &exec) }, raw as i32);
         } else {
-            assert_eq!(unsafe { scalar_raw_value::<i64>(scalar) }, raw);
+            assert_eq!(unsafe { scalar_raw_value::<i64>(scalar, &exec) }, raw);
         }
         unsafe { cudf_sys::cudf_scalar_destroy(scalar) };
     }
@@ -440,11 +438,11 @@ fn test_scalar_create_duration_raw_round_trips_type_validity_and_value() {
         let st = unsafe { cudf_sys::cudf_scalar_create_duration_raw_ex(type_id, raw, 1, &exec, &mut scalar) };
         assert_eq!(st, cudf_sys::CUDF_SUCCESS);
         assert_scalar_data_type(scalar, type_id, 0);
-        assert_scalar_validity(scalar, 1);
+        assert_scalar_validity(scalar, &exec, 1);
         if type_id == cudf_sys::cudf_type_id_t::CUDF_TYPE_DURATION_DAYS {
-            assert_eq!(unsafe { scalar_raw_value::<i32>(scalar) }, raw as i32);
+            assert_eq!(unsafe { scalar_raw_value::<i32>(scalar, &exec) }, raw as i32);
         } else {
-            assert_eq!(unsafe { scalar_raw_value::<i64>(scalar) }, raw);
+            assert_eq!(unsafe { scalar_raw_value::<i64>(scalar, &exec) }, raw);
         }
         unsafe { cudf_sys::cudf_scalar_destroy(scalar) };
     }
@@ -478,16 +476,16 @@ fn test_scalar_create_raw_ex_constructors_round_trip_with_explicit_exec() {
         assert_eq!(last_exec_mr_raw(), explicit_mr);
         assert_eq!(last_exec_sync_stream_value(), NO_SYNC_RECORDED);
         assert_scalar_data_type(scalar, type_id, scale);
-        assert_scalar_validity(scalar, 1);
+        assert_scalar_validity(scalar, &exec, 1);
         match type_id {
             cudf_sys::cudf_type_id_t::CUDF_TYPE_DECIMAL32 => {
-                assert_eq!(unsafe { scalar_raw_value::<i32>(scalar) }, raw_decimal32)
+                assert_eq!(unsafe { scalar_raw_value::<i32>(scalar, &exec) }, raw_decimal32)
             },
             cudf_sys::cudf_type_id_t::CUDF_TYPE_DECIMAL64 => {
-                assert_eq!(unsafe { scalar_raw_value::<i64>(scalar) }, raw_decimal64)
+                assert_eq!(unsafe { scalar_raw_value::<i64>(scalar, &exec) }, raw_decimal64)
             },
             cudf_sys::cudf_type_id_t::CUDF_TYPE_DECIMAL128 => {
-                assert_eq!(unsafe { scalar_raw_value::<i128>(scalar) }, raw_decimal128)
+                assert_eq!(unsafe { scalar_raw_value::<i128>(scalar, &exec) }, raw_decimal128)
             },
             _ => unreachable!(),
         }
@@ -510,11 +508,11 @@ fn test_scalar_create_raw_ex_constructors_round_trip_with_explicit_exec() {
         assert_eq!(last_exec_mr_raw(), explicit_mr);
         assert_eq!(last_exec_sync_stream_value(), NO_SYNC_RECORDED);
         assert_scalar_data_type(scalar, type_id, 0);
-        assert_scalar_validity(scalar, 1);
+        assert_scalar_validity(scalar, &exec, 1);
         if type_id == cudf_sys::cudf_type_id_t::CUDF_TYPE_TIMESTAMP_DAYS {
-            assert_eq!(unsafe { scalar_raw_value::<i32>(scalar) }, raw as i32);
+            assert_eq!(unsafe { scalar_raw_value::<i32>(scalar, &exec) }, raw as i32);
         } else {
-            assert_eq!(unsafe { scalar_raw_value::<i64>(scalar) }, raw);
+            assert_eq!(unsafe { scalar_raw_value::<i64>(scalar, &exec) }, raw);
         }
         unsafe { cudf_sys::cudf_scalar_destroy(scalar) };
     }
@@ -535,11 +533,11 @@ fn test_scalar_create_raw_ex_constructors_round_trip_with_explicit_exec() {
         assert_eq!(last_exec_mr_raw(), explicit_mr);
         assert_eq!(last_exec_sync_stream_value(), NO_SYNC_RECORDED);
         assert_scalar_data_type(scalar, type_id, 0);
-        assert_scalar_validity(scalar, 1);
+        assert_scalar_validity(scalar, &exec, 1);
         if type_id == cudf_sys::cudf_type_id_t::CUDF_TYPE_DURATION_DAYS {
-            assert_eq!(unsafe { scalar_raw_value::<i32>(scalar) }, raw as i32);
+            assert_eq!(unsafe { scalar_raw_value::<i32>(scalar, &exec) }, raw as i32);
         } else {
-            assert_eq!(unsafe { scalar_raw_value::<i64>(scalar) }, raw);
+            assert_eq!(unsafe { scalar_raw_value::<i64>(scalar, &exec) }, raw);
         }
         unsafe { cudf_sys::cudf_scalar_destroy(scalar) };
     }
@@ -735,7 +733,7 @@ fn test_scalar_create_raw_decimal_invalid_allows_null_value() {
             unsafe { cudf_sys::cudf_scalar_create_decimal_raw_ex(type_id, ptr::null(), -3, 0, &exec, &mut scalar) };
         assert_eq!(st, cudf_sys::CUDF_SUCCESS);
         assert_scalar_data_type(scalar, type_id, -3);
-        assert_scalar_validity(scalar, 0);
+        assert_scalar_validity(scalar, &exec, 0);
         unsafe { cudf_sys::cudf_scalar_destroy(scalar) };
     }
 }
@@ -773,7 +771,7 @@ fn test_scalar_create_raw_temporal_invalid_preserves_dtype() {
         };
         assert_eq!(st, cudf_sys::CUDF_SUCCESS);
         assert_scalar_data_type(scalar, type_id, 0);
-        assert_scalar_validity(scalar, 0);
+        assert_scalar_validity(scalar, &exec, 0);
         unsafe { cudf_sys::cudf_scalar_destroy(scalar) };
     }
 }

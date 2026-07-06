@@ -273,9 +273,17 @@ impl SourceChunk {
         self.file_index
     }
 
-    /// Local filesystem path for this chunk's file.
+    /// Path-shaped reader string for this chunk's file.
+    ///
+    /// Local sources contain filesystem paths. Object-store sources preserve the
+    /// caller-provided URI string so libcudf/KvikIO owns remote path handling.
     pub fn path(&self) -> &Path {
         &self.path
+    }
+
+    /// Path or URI string passed to libcudf's Parquet reader.
+    pub fn reader_path(&self) -> String {
+        self.location.reader_path()
     }
 
     /// Explicit source location for this chunk's file.

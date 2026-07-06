@@ -962,7 +962,7 @@ fn read_parquet_source_chunk_frame_with_input(
         let row_groups = if chunk.reads_all_row_groups() { None } else { Some(chunk.row_group_indexes_i32()?) };
         let table_options = match input {
             SourceChunkReadInput::Path => ParquetTableReadOptions::from_parts(
-                chunk.path().to_path_buf(),
+                std::path::PathBuf::from(chunk.reader_path()),
                 Some(chunk.read_columns().to_vec()),
                 0,
                 None,
