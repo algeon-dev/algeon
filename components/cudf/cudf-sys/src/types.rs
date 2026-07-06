@@ -430,6 +430,7 @@ pub type cudf_event_handle = *mut c_void;
 pub type cudf_memory_resource_handle = *mut c_void;
 pub type cudf_memory_manager_handle = *mut c_void;
 pub type cudf_reservation_handle = *mut c_void;
+pub type cudf_memory_failure_callback_t = Option<unsafe extern "C" fn(bytes: usize, callback_arg: *mut c_void) -> i32>;
 pub type cudf_arrow_schema_handle = *mut c_void;
 pub type cudf_arrow_device_array_handle = *mut c_void;
 

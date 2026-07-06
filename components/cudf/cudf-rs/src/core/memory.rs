@@ -86,8 +86,13 @@
 //! ```
 
 use std::{
+    ffi::c_void,
+    panic::{AssertUnwindSafe, catch_unwind},
     ptr::{self, NonNull},
-    sync::Arc,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
 };
 
 use crate::{
@@ -212,6 +217,8 @@ pub struct DeviceMemoryResource {
 struct DeviceMemoryResourceHandle {
     raw: NonNull<std::ffi::c_void>,
     device: DeviceId,
+    // Keeps callback state alive until after `raw` is destroyed in Drop.
+    _failure_callback: Option<Arc<FailureCallbackState>>,
 }
 
 // SAFETY: RMM device_memory_resource implementations are thread-safe — allocate()
@@ -219,6 +226,30 @@ struct DeviceMemoryResourceHandle {
 // to an RMM allocator that supports concurrent access from multiple threads.
 unsafe impl Send for DeviceMemoryResourceHandle {}
 unsafe impl Sync for DeviceMemoryResourceHandle {}
+
+type FailureCallback = dyn Fn(usize) -> bool + Send + Sync + 'static;
+
+struct FailureCallbackState {
+    callback: Arc<FailureCallback>,
+    panicked: AtomicBool,
+}
+
+unsafe extern "C" fn failure_callback_trampoline(bytes: usize, callback_arg: *mut c_void) -> i32 {
+    if callback_arg.is_null() {
+        return 0;
+    }
+    let state = unsafe { &*(callback_arg as *const FailureCallbackState) };
+    if state.panicked.load(Ordering::Acquire) {
+        return 0;
+    }
+    match catch_unwind(AssertUnwindSafe(|| (state.callback)(bytes))) {
+        Ok(retry) => i32::from(retry),
+        Err(_) => {
+            state.panicked.store(true, Ordering::Release);
+            0
+        },
+    }
+}
 
 /// Process-local reservation-aware memory manager for one CUDA device.
 ///
@@ -434,10 +465,20 @@ impl DeviceMemoryResource {
     }
 
     fn from_created_handle(handle: *mut std::ffi::c_void, device: DeviceId, constructor: &'static str) -> Result<Self> {
+        Self::from_created_handle_with_callback(handle, device, constructor, None)
+    }
+
+    fn from_created_handle_with_callback(
+        handle: *mut std::ffi::c_void,
+        device: DeviceId,
+        constructor: &'static str,
+        failure_callback: Option<Arc<FailureCallbackState>>,
+    ) -> Result<Self> {
         Ok(Self {
             handle: Arc::new(DeviceMemoryResourceHandle {
                 raw: error::require_non_null(handle, constructor, "device memory resource")?,
                 device,
+                _failure_callback: failure_callback,
             }),
         })
     }
@@ -527,6 +568,43 @@ impl DeviceMemoryResource {
             ],
         )?;
         Self::from_created_handle(handle, self.device(), "memory::device_memory_resource::limiting")
+    }
+
+    /// Create a failure-callback memory resource around this resource.
+    ///
+    /// The returned resource calls `callback(bytes)` when the upstream resource
+    /// throws an RMM out-of-memory error. Returning `true` retries the failed
+    /// allocation; returning `false` preserves the original allocation failure.
+    ///
+    /// The callback runs inside RMM's allocation path on the allocating thread,
+    /// so it must be re-entrancy-safe and must not allocate through the same
+    /// memory resource. Panics are caught at the FFI boundary and treated as
+    /// `false`, so Rust unwinding never crosses into C++.
+    pub fn with_failure_callback(&self, callback: Arc<dyn Fn(usize) -> bool + Send + Sync + 'static>) -> Result<Self> {
+        let _guard = DeviceGuard::new(self.device())?;
+        let callback_state = Arc::new(FailureCallbackState { callback, panicked: AtomicBool::new(false) });
+        let mut handle = ptr::null_mut();
+        // SAFETY: handle is initialized to null and set by the C shim on success.
+        // The callback state is stored in the returned handle so `callback_arg`
+        // remains valid until the native resource is destroyed.
+        error::check_status_in_with_details(
+            unsafe {
+                cudf_sys::cudf_memory_resource_create_failure_callback(
+                    self.handle.raw.as_ptr(),
+                    Some(failure_callback_trampoline),
+                    Arc::as_ptr(&callback_state) as *mut c_void,
+                    &mut handle,
+                )
+            },
+            "memory::device_memory_resource::with_failure_callback",
+            [("upstream_device", self.device().ordinal().to_string())],
+        )?;
+        Self::from_created_handle_with_callback(
+            handle,
+            self.device(),
+            "memory::device_memory_resource::with_failure_callback",
+            Some(callback_state),
+        )
     }
 
     /// Create a hard-limiting memory resource that also reports current and
@@ -624,6 +702,7 @@ impl DeviceMemoryResource {
                     "stats memory resource",
                 )?,
                 device,
+                _failure_callback: None,
             }),
         })
     }
@@ -641,6 +720,13 @@ impl Drop for DeviceMemoryResourceHandle {
     fn drop(&mut self) {
         let status = unsafe { cudf_sys::cudf_memory_resource_destroy(self.raw.as_ptr(), self.device.ordinal_raw()) };
         if status != cudf_sys::CUDF_SUCCESS {
+            if let Some(callback) = self._failure_callback.take() {
+                // Native destroy can be rejected when the resource is installed
+                // as current. In that case the native adaptor may still call
+                // `callback_arg`, so leak only the callback state instead of
+                // leaving a dangling Rust pointer behind.
+                std::mem::forget(callback);
+            }
             eprintln!(
                 "[cudf::DeviceMemoryResourceHandle] warning: failed to destroy memory resource on device {}",
                 self.device.ordinal_raw()

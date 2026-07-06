@@ -2,12 +2,12 @@ mod common;
 
 use std::sync::{
     Arc,
-    atomic::{AtomicBool, Ordering},
+    atomic::{AtomicBool, AtomicUsize, Ordering},
 };
 
 use cudf::{
-    DeviceMemoryManager, ErrorKind, ExecutionBudgetRequest, ExecutionBudgetStatus, Runtime, SortOptions,
-    StreamReservationLease, testing::prelude::*,
+    DeviceId, DeviceMemoryManager, DeviceMemoryResource, ErrorCode, ErrorKind, ExecutionBudgetRequest,
+    ExecutionBudgetStatus, Runtime, SortOptions, StreamReservationLease, testing::prelude::*,
 };
 
 fn assert_send_sync<T: Send + Sync>() {}
@@ -204,6 +204,70 @@ fn reservation_limit_failure_is_stream_local() {
     let outcome = large_rt.series_from_value_with_budget(2i32, 1024, &large).unwrap();
     assert_eq!(outcome.value().to_vec_strict::<i32>().unwrap()[0], 2);
     assert_eq!(large.reservation_usage().unwrap().failed_allocation_count, 0);
+}
+
+#[test]
+fn failure_callback_memory_resource_retries_until_callback_declines() {
+    let device = DeviceId::current().unwrap();
+    let upstream = DeviceMemoryResource::cuda_on(device).unwrap();
+    let limiting = upstream.limiting(1).unwrap();
+    let calls = Arc::new(AtomicUsize::new(0));
+    let callback_calls = Arc::clone(&calls);
+    let callback = Arc::new(move |bytes: usize| {
+        assert!(bytes > 0);
+        callback_calls.fetch_add(1, Ordering::SeqCst) == 0
+    });
+    let callback_mr = limiting.with_failure_callback(callback).unwrap();
+    let runtime = Runtime::builder().with_device(device).with_memory_resource(callback_mr).build().unwrap();
+
+    let err = runtime.series(&[1i32, 2, 3]).unwrap_err();
+
+    assert_eq!(err.code(), ErrorCode::OutOfMemory);
+    assert_eq!(err.kind(), ErrorKind::ResourceExhausted);
+    assert_eq!(calls.load(Ordering::SeqCst), 2);
+}
+
+#[test]
+fn failure_callback_memory_resource_catches_rust_panics() {
+    let device = DeviceId::current().unwrap();
+    let upstream = DeviceMemoryResource::cuda_on(device).unwrap();
+    let limiting = upstream.limiting(1).unwrap();
+    let calls = Arc::new(AtomicUsize::new(0));
+    let callback_calls = Arc::clone(&calls);
+    let callback = Arc::new(move |_bytes: usize| -> bool {
+        callback_calls.fetch_add(1, Ordering::SeqCst);
+        panic!("failure callback panic must not cross FFI");
+    });
+    let callback_mr = limiting.with_failure_callback(callback).unwrap();
+    let runtime = Runtime::builder().with_device(device).with_memory_resource(callback_mr).build().unwrap();
+
+    let err = runtime.series(&[1i32, 2, 3]).unwrap_err();
+
+    assert_eq!(err.code(), ErrorCode::OutOfMemory);
+    assert_eq!(err.kind(), ErrorKind::ResourceExhausted);
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn failure_callback_memory_resource_retries_stream_reservation_limit_failures() {
+    let manager_runtime = Runtime::builder().with_device_memory_manager().build().unwrap();
+    let device = manager_runtime.device();
+    let manager = manager_runtime.device_memory_manager().unwrap();
+    let calls = Arc::new(AtomicUsize::new(0));
+    let callback_calls = Arc::clone(&calls);
+    let callback = Arc::new(move |bytes: usize| {
+        assert!(bytes > 0);
+        callback_calls.fetch_add(1, Ordering::SeqCst) == 0
+    });
+    let callback_mr = manager.resource().with_failure_callback(callback).unwrap();
+    let runtime = Runtime::builder().with_device(device).with_memory_resource(callback_mr).build().unwrap();
+    let _lease = manager.reserve_stream(runtime.stream(), 9001, 1).unwrap();
+
+    let err = runtime.series(&[1i32, 2, 3]).unwrap_err();
+
+    assert_eq!(err.code(), ErrorCode::OutOfMemory);
+    assert_eq!(err.kind(), ErrorKind::ResourceExhausted);
+    assert_eq!(calls.load(Ordering::SeqCst), 2);
 }
 
 /// §10.1 invariant contract (replaces the per-op guard contract): with the
