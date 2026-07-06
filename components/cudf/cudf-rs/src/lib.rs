@@ -232,7 +232,8 @@ pub mod testing;
 pub use core::{
     error::{BudgetExhaustionDetail, Error, ErrorCode, ErrorKind, ErrorStatus, Result},
     memory::{
-        DeviceMemoryManager, DeviceMemoryResource, DeviceMemoryResourceUsage, ReservationUsage, StreamReservationLease,
+        DeviceMemoryManager, DeviceMemoryManagerFailureCallbackState, DeviceMemoryResource, DeviceMemoryResourceUsage,
+        ReservationUsage, StreamReservationLease,
     },
     scalar::IntoRuntimeScalar,
     types::{CudfType, DataType, NullEquality, NullPolicy, TimestampResolution, TypeId},

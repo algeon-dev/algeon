@@ -16,12 +16,15 @@ mod series_display_tests;
 #[test]
 fn query_memory_manager_surface_is_publicly_importable() {
     use cudf::{
-        DeviceMemoryManager, DeviceMemoryResource, ExecutionBudgetEnforcement, ExecutionBudgetStatus, ReservationUsage,
-        Runtime, StreamReservationLease,
+        DeviceMemoryManager, DeviceMemoryManagerFailureCallbackState, DeviceMemoryResource, ExecutionBudgetEnforcement,
+        ExecutionBudgetStatus, ReservationUsage, Runtime, StreamReservationLease,
     };
 
     let _ = cudf::ExecutionBudgetToken::resize;
     let _ = DeviceMemoryResource::with_failure_callback;
+    let _ = DeviceMemoryManager::install_for_device_with_failure_callback;
+    let _ = DeviceMemoryManager::failure_callback_state_for_device;
+    let _: Option<DeviceMemoryManagerFailureCallbackState> = None;
     let _ = StreamReservationLease::resize;
     let _: Option<DeviceMemoryManager> = None;
     let _: Option<StreamReservationLease> = None;
