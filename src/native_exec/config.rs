@@ -76,16 +76,22 @@ pub(crate) struct NativeCudfExecutionContext {
     record_admission_facts: bool,
     _tenant_context: Option<TenantQueryContext>,
     _ticket_context: Option<TicketTenantQueryContext>,
+    #[cfg(debug_assertions)]
+    _standalone_bounded_context_guard: Option<StandaloneBoundedContextDebugGuard>,
 }
 
 impl NativeCudfExecutionContext {
     fn standalone(context: ExecutionContext) -> Self {
+        #[cfg(debug_assertions)]
+        let standalone_bounded_context_guard = standalone_bounded_context_debug_guard(&context);
         Self {
             context,
             admission_facts: None,
             record_admission_facts: false,
             _tenant_context: None,
             _ticket_context: None,
+            #[cfg(debug_assertions)]
+            _standalone_bounded_context_guard: standalone_bounded_context_guard,
         }
     }
 
@@ -101,6 +107,8 @@ impl NativeCudfExecutionContext {
             record_admission_facts,
             _tenant_context: Some(tenant_context),
             _ticket_context: None,
+            #[cfg(debug_assertions)]
+            _standalone_bounded_context_guard: None,
         }
     }
 
@@ -113,6 +121,8 @@ impl NativeCudfExecutionContext {
             record_admission_facts: ticket_context.should_record_admission_facts(),
             _tenant_context: None,
             _ticket_context: Some(ticket_context),
+            #[cfg(debug_assertions)]
+            _standalone_bounded_context_guard: None,
         }
     }
 
@@ -133,6 +143,65 @@ impl NativeCudfExecutionContext {
     pub(crate) fn admission_facts(&self) -> Option<QueryAdmissionFacts> {
         self.record_admission_facts.then_some(())?;
         self.admission_facts
+    }
+}
+
+#[cfg(debug_assertions)]
+#[derive(Debug)]
+struct StandaloneBoundedContextDebugGuard {
+    device_ordinal: usize,
+}
+
+#[cfg(debug_assertions)]
+fn standalone_bounded_context_counts() -> &'static std::sync::Mutex<std::collections::BTreeMap<usize, usize>> {
+    static COUNTS: OnceLock<std::sync::Mutex<std::collections::BTreeMap<usize, usize>>> = OnceLock::new();
+    COUNTS.get_or_init(Default::default)
+}
+
+#[cfg(debug_assertions)]
+fn standalone_bounded_context_debug_guard(context: &ExecutionContext) -> Option<StandaloneBoundedContextDebugGuard> {
+    if !matches!(context.memory_control_policy(), MemoryControlPolicy::Bounded { .. }) {
+        return None;
+    }
+    let device_ordinal = match context.device_placement() {
+        nexus_query_engine::DevicePlacement::SingleDevice { device_ordinal } => device_ordinal,
+        _ => return None,
+    };
+    Some(StandaloneBoundedContextDebugGuard::new(device_ordinal))
+}
+
+#[cfg(debug_assertions)]
+impl StandaloneBoundedContextDebugGuard {
+    fn new(device_ordinal: usize) -> Self {
+        let guard = Self { device_ordinal };
+        let previous_count = {
+            let mut counts = standalone_bounded_context_counts()
+                .lock()
+                .expect("standalone bounded native context debug registry poisoned");
+            let count = counts.entry(device_ordinal).or_default();
+            let previous_count = *count;
+            *count += 1;
+            previous_count
+        };
+        debug_assert_eq!(
+            previous_count, 0,
+            "concurrent unadmitted bounded native contexts on CUDA device {device_ordinal}; use NexusGpuBackend to share QueryService admission"
+        );
+        guard
+    }
+}
+
+#[cfg(debug_assertions)]
+impl Drop for StandaloneBoundedContextDebugGuard {
+    fn drop(&mut self) {
+        if let Ok(mut counts) = standalone_bounded_context_counts().lock()
+            && let Some(count) = counts.get_mut(&self.device_ordinal)
+        {
+            *count = count.saturating_sub(1);
+            if *count == 0 {
+                counts.remove(&self.device_ordinal);
+            }
+        }
     }
 }
 
@@ -1012,6 +1081,25 @@ mod tests {
 
         assert_eq!(context.context().query_id().map(QueryId::as_str), Some("query-config"));
         assert_eq!(context.context().trace_id().map(TraceId::as_str), Some("trace-config"));
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    fn standalone_bounded_debug_guard_is_per_device_and_releases() {
+        {
+            let _first = StandaloneBoundedContextDebugGuard::new(10_001);
+            let _other_device = StandaloneBoundedContextDebugGuard::new(10_002);
+        }
+
+        let _again_after_release = StandaloneBoundedContextDebugGuard::new(10_001);
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "concurrent unadmitted bounded native contexts")]
+    fn standalone_bounded_debug_guard_panics_on_same_device_overlap() {
+        let _first = StandaloneBoundedContextDebugGuard::new(10_003);
+        let _second = StandaloneBoundedContextDebugGuard::new(10_003);
     }
 
     #[test]

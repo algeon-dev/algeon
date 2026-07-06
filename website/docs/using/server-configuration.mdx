@@ -15,8 +15,23 @@ and for production-style Iceberg deployments.
 | --- | --- | --- |
 | `NEXUS_SERVER_BIND` | `0.0.0.0:50051` | Flight SQL listen address. Bind `127.0.0.1` to restrict to localhost. |
 | `NEXUS_SERVER_LOG` | `info` | Log level (`error`/`warn`/`info`/`debug`/`trace`). |
-| `NEXUS_SERVER_MAX_IN_FLIGHT` | `1` | Max concurrent queries; keep low when the GPU is the bottleneck. |
 | `NEXUS_SERVER_CUGRAPH_ENABLED` | `false` | Register the `cugraph_*` SQL functions. Requires the `cugraph` build feature. |
+
+## Admission
+
+Server admission is byte-denominated and slot-bounded. The default admits two
+queries, guarantees each admitted query at least `1/8` of the resolved device
+budget, and lets a query use up to `1/2` of that budget when memory is
+available.
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `NEXUS_SERVER_MAX_CONCURRENT_QUERIES` | `2` | Preferred max admitted statements. |
+| `NEXUS_SERVER_MAX_IN_FLIGHT` | `2` | Compatibility alias for `NEXUS_SERVER_MAX_CONCURRENT_QUERIES`. Set only one, or set both to the same value. |
+| `NEXUS_SERVER_ADMISSION_GRANT_MIN` | `0.125` | Minimum per-query grant. Accepts a fraction of device capacity or an explicit byte count. |
+| `NEXUS_SERVER_ADMISSION_GRANT_WANT` | `0.5` | Preferred per-query grant when memory is available. Accepts a fraction or bytes. |
+| `NEXUS_SERVER_ADMISSION_SLOT_GUARANTEE` | `guaranteed_minimum` | `guaranteed_minimum` reserves enough memory for empty slots; `optimistic` grants work-conservingly and lets large arrivals wait for memory. |
+| `NEXUS_SERVER_GPU_DEVICES` | `0` | Comma-separated CUDA device ordinals used for independent query placement. |
 
 ## cuGraph defaults
 
@@ -39,7 +54,8 @@ The native engine runs on the GPU, so the device budget must fit your card.
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `NEXUS_SERVER_NATIVE_MEMORY_POLICY` | `bounded` | `bounded` enforces a device budget; `unbounded` lets native execution use the whole card. |
-| `NEXUS_SERVER_NATIVE_DEVICE_BUDGET_BYTES` | unset | Bounded device budget in bytes. Must be no larger than the card's free memory, or every query is rejected at admission with `query_min_budget_exceeds_device_capacity`. |
+| `NEXUS_SERVER_DEVICE_BUDGET_FRACTION` | unset | Fraction of total device memory eligible for native query budgets. `1.0` preserves the historical auto-sized `total - headroom` behavior. |
+| `NEXUS_SERVER_NATIVE_DEVICE_BUDGET_BYTES` | unset | Explicit bounded planning budget in bytes. When set, the source chunk byte and row-group limits must also be set. |
 | `NEXUS_SERVER_NATIVE_MAX_SOURCE_CHUNK_BYTES` | unset | Max bytes per source scan chunk. |
 | `NEXUS_SERVER_NATIVE_MAX_ROW_GROUPS_PER_CHUNK` | unset | Max Parquet row groups per chunk. |
 
@@ -47,9 +63,9 @@ The native engine runs on the GPU, so the device budget must fit your card.
 The data-center default budget targets an RTX PRO 6000-class GPU with 96 GB
 VRAM and assumes roughly 95 GiB is free for native execution. On a smaller GPU,
 or when other processes reduce free VRAM, set a smaller value, for example
-`NEXUS_SERVER_NATIVE_DEVICE_BUDGET_BYTES=12884901888` (12 GiB), or use
-`NEXUS_SERVER_NATIVE_MEMORY_POLICY=unbounded` for local single-query work when
-the GPU is otherwise idle.
+`NEXUS_SERVER_DEVICE_BUDGET_FRACTION=0.5`. Use
+`NEXUS_SERVER_NATIVE_MEMORY_POLICY=unbounded` only for local single-query work
+when the GPU is otherwise idle.
 :::
 
 ## DataFusion session

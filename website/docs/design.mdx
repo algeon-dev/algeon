@@ -55,15 +55,22 @@ DataFusion session.
 | Iceberg/lakehouse sources | You need Iceberg catalog tables to lower into native table-format scan facts while workspace views stay mutable. | `src/table_format/` |
 | Reports and errors | You need stable evidence for admission, fallback, runtime, graph validation, source access, and failures. | `src/report.rs`, `src/native_report/`, `src/error.rs` |
 
-The embedded entry point is intentionally small. The cuGraph line is available
-only when the crate is built with `--features cugraph`; omit it for a pure
-relational session.
+The preferred embedded entry point is a process-scoped `NexusGpuBackend`. It
+installs the native optimizer and gives every installed session the same
+QueryService admission owner and device-memory governor. The cuGraph line is
+available only when the crate is built with `--features cugraph`; omit it for a
+pure relational session.
 
 ```rust
-let state = SessionStateBuilder::new()
-    .with_default_features()
-    .with_cudf_native(CudfOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred))
-    .with_cugraph_sql(CugraphSqlConfig::default())
+let backend = NexusGpuBackend::builder()
+    .fallback_policy(GpuFallbackPolicy::GpuPreferred)
+    .build()?;
+let cugraph = CugraphSqlConfig::default()
+    .with_native_execution_config(backend.optimizer_config().native_execution_config().clone());
+
+let state = backend
+    .install_on(SessionStateBuilder::new().with_default_features())?
+    .with_cugraph_sql(cugraph)
     .build();
 ```
 
