@@ -1253,6 +1253,11 @@ fn io_ex_entries_use_required_exec_options() {
         (
             IO_PARQUET_CPP,
             "cudf_io_read_parquet_with_metadata_filter_ex",
+            "cudf_status_t cudf_io_read_parquet_multi_with_metadata_filter_ex",
+        ),
+        (
+            IO_PARQUET_CPP,
+            "cudf_io_read_parquet_multi_with_metadata_filter_ex",
             "cudf_status_t cudf_io_read_parquet_from_host_buffer_with_metadata_filter_ex",
         ),
         (
@@ -1326,7 +1331,7 @@ fn io_duplicate_non_ex_production_apis_are_removed() {
         (
             "Parquet native source",
             IO_PARQUET_CPP,
-            "cudf_io_write_parquet_ex(table, filepath, column_names, num_columns, row_group_size_rows, nullptr)",
+            "cudf_io_write_parquet_ex(table, filepath, column_names, num_columns, row_group_size_rows, dictionary_policy, nullptr)",
         ),
     ] {
         assert!(

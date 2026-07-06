@@ -79,6 +79,29 @@ extern "C" {
         options: *const cudf_exec_options_t,
     ) -> cudf_status_t;
 
+    /// Read multiple Parquet files with metadata, explicit execution context,
+    /// and an optional libcudf AST reader predicate.
+    ///
+    /// `filepaths` must contain `num_files` non-null strings. Per-file row
+    /// groups are encoded by `row_group_offsets` with length
+    /// `num_files + 1`; pass null offsets and zero row groups to read all row
+    /// groups from every file.
+    pub fn cudf_io_read_parquet_multi_with_metadata_filter_ex(
+        filepaths: *const *const c_char,
+        num_files: i32,
+        columns: *const *const c_char,
+        num_columns: i32,
+        row_group_offsets: *const i32,
+        num_row_group_offsets: i32,
+        row_groups: *const i32,
+        num_row_groups: i32,
+        predicate: cudf_ast_expression_handle,
+        out_table: *mut cudf_table_handle,
+        out_names: *mut *mut *mut c_char,
+        out_num_names: *mut i32,
+        options: *const cudf_exec_options_t,
+    ) -> cudf_status_t;
+
     /// Read Parquet from a host-memory buffer with metadata, explicit
     /// execution context, and an optional libcudf AST reader predicate.
     ///
@@ -117,6 +140,7 @@ extern "C" {
         column_names: *const *const c_char,
         num_columns: i32,
         row_group_size_rows: i32,
+        dictionary_policy: i32,
         options: *const cudf_exec_options_t,
     ) -> cudf_status_t;
 }

@@ -39,6 +39,7 @@ const EXPECTED_GUARDS: &[&str] = &[
     "io_parquet::read_parquet_host_buffer",
     "io_parquet::read_parquet_with_metadata",
     "io_parquet::read_parquet_with_metadata_filter_file",
+    "io_parquet::read_parquet_with_metadata_filter_multi_file",
     "io_parquet::read_parquet_with_metadata_filter_host_buffer",
     "io_parquet::write_parquet",
     "join::distinct_hash_join_create",
@@ -383,6 +384,8 @@ fn classify_allowed_guard(file_name: &str, context: &str, guard_block: &str) -> 
         {
             if context.contains("std::string(filepath)") {
                 Some("io_parquet::read_parquet_with_metadata_filter_file")
+            } else if context.contains("grouped_row_groups") {
+                Some("io_parquet::read_parquet_with_metadata_filter_multi_file")
             } else if context.contains("host_span<std::byte const>") {
                 Some("io_parquet::read_parquet_with_metadata_filter_host_buffer")
             } else {
