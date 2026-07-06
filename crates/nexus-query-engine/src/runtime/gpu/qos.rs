@@ -48,8 +48,9 @@ impl QueryQos {
 
     /// Creates QoS metadata with an explicit non-zero budget weight.
     ///
-    /// The current admission scheduler uses `priority`; `budget_weight` is
-    /// carried through the public shape for the memory-governor share contract.
+    /// `priority` controls queued admission order. `budget_weight` controls
+    /// proportional adaptive grant growth when released memory is shared across
+    /// partial active grants.
     pub const fn with_budget_weight(mut self, budget_weight: u32) -> Self {
         self.budget_weight = if budget_weight == 0 { Self::DEFAULT_BUDGET_WEIGHT } else { budget_weight };
         self

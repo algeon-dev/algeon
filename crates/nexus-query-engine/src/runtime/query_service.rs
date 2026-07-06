@@ -1,7 +1,7 @@
 //! Multi-tenant service admission harness for native execution.
 
 use std::{
-    collections::{HashMap, VecDeque},
+    collections::{BTreeMap, BTreeSet, HashMap, VecDeque},
     fmt,
     sync::{
         Arc, Condvar, Mutex,
@@ -456,6 +456,13 @@ struct ActiveAdaptiveGrant {
     min_bytes: u64,
     target_bytes: u64,
     memory_grant: MemoryGrant,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct AdaptiveGrowthCandidate {
+    query_id: u64,
+    missing_bytes: u64,
+    weight: u32,
 }
 
 #[derive(Debug, Clone)]
@@ -1363,18 +1370,10 @@ impl QueryService {
         if self.inner.config.native_pipeline_execution_mode != NativePipelineExecutionMode::Adaptive {
             return;
         }
-        let query_ids = state.active_adaptive_grants.keys().copied().collect::<Vec<_>>();
-        for query_id in query_ids {
-            let Some(active) = state.active_adaptive_grants.get(&query_id).cloned() else {
-                continue;
-            };
-            let current_bytes = active.memory_grant.budget_bytes();
-            let target_bytes = active.target_bytes.max(active.min_bytes);
-            if current_bytes >= target_bytes {
-                state.active_adaptive_grants.remove(&query_id);
-                continue;
-            }
-            let available_bytes = match self.adaptive_growth_available_bytes(state, active.device_ordinal) {
+        let device_ordinals =
+            state.active_adaptive_grants.values().map(|active| active.device_ordinal).collect::<BTreeSet<_>>();
+        for device_ordinal in device_ordinals {
+            let available_bytes = match self.adaptive_growth_available_bytes(state, device_ordinal) {
                 Ok(bytes) => bytes,
                 Err(error) => {
                     eprintln!("[nexus-query-engine] warning: failed to compute adaptive grant growth: {error}");
@@ -1384,18 +1383,53 @@ impl QueryService {
             if available_bytes == 0 {
                 continue;
             }
-            let grow_bytes = target_bytes.saturating_sub(current_bytes).min(available_bytes);
-            match active.memory_grant.try_grow(grow_bytes) {
-                Ok(true) => {
-                    if active.memory_grant.budget_bytes() >= target_bytes {
+            let mut candidates = Vec::new();
+            let query_ids = state
+                .active_adaptive_grants
+                .iter()
+                .filter_map(|(query_id, active)| (active.device_ordinal == device_ordinal).then_some(*query_id))
+                .collect::<Vec<_>>();
+            for query_id in query_ids {
+                let Some(active) = state.active_adaptive_grants.get(&query_id) else {
+                    continue;
+                };
+                let current_bytes = active.memory_grant.budget_bytes();
+                let target_bytes = active.target_bytes.max(active.min_bytes);
+                if current_bytes >= target_bytes {
+                    state.active_adaptive_grants.remove(&query_id);
+                    continue;
+                }
+                candidates.push(AdaptiveGrowthCandidate {
+                    query_id,
+                    missing_bytes: target_bytes.saturating_sub(current_bytes),
+                    weight: active.memory_grant.qos().budget_weight(),
+                });
+            }
+            for (query_id, allocated_bytes) in weighted_adaptive_growth_allocations(&candidates, available_bytes) {
+                let Some(active) = state.active_adaptive_grants.get(&query_id).cloned() else {
+                    continue;
+                };
+                let current_bytes = active.memory_grant.budget_bytes();
+                let target_bytes = active.target_bytes.max(active.min_bytes);
+                let grow_bytes = target_bytes.saturating_sub(current_bytes).min(allocated_bytes);
+                if grow_bytes == 0 {
+                    if current_bytes >= target_bytes {
                         state.active_adaptive_grants.remove(&query_id);
                     }
-                },
-                Ok(false) => continue,
-                Err(error) => {
-                    eprintln!("[nexus-query-engine] warning: failed to grow adaptive grant: {error}");
                     continue;
-                },
+                }
+                match active.memory_grant.try_grow(grow_bytes) {
+                    Ok(true) => {
+                        if active.memory_grant.budget_bytes() >= target_bytes {
+                            state.active_adaptive_grants.remove(&query_id);
+                        }
+                    },
+                    Ok(false) => continue,
+                    Err(error) => {
+                        eprintln!("[nexus-query-engine] warning: failed to grow adaptive grant: {error}");
+                        continue;
+                    },
+                }
             }
         }
     }
@@ -1509,6 +1543,86 @@ impl QueryService {
             state.next_tenant_index = (index + 1) % self.inner.tenant_order.len();
         }
     }
+}
+
+fn weighted_adaptive_growth_allocations(
+    candidates: &[AdaptiveGrowthCandidate],
+    available_bytes: u64,
+) -> Vec<(u64, u64)> {
+    if available_bytes == 0 || candidates.is_empty() {
+        return Vec::new();
+    }
+
+    let mut remaining = candidates
+        .iter()
+        .filter_map(|candidate| {
+            (candidate.missing_bytes > 0).then_some(AdaptiveGrowthCandidate {
+                query_id: candidate.query_id,
+                missing_bytes: candidate.missing_bytes,
+                weight: candidate.weight.max(QueryQos::DEFAULT_BUDGET_WEIGHT),
+            })
+        })
+        .collect::<Vec<_>>();
+    remaining.sort_by_key(|candidate| candidate.query_id);
+
+    let mut available = available_bytes;
+    let mut allocations = BTreeMap::<u64, u64>::new();
+    while available > 0 && !remaining.is_empty() {
+        let total_weight = remaining.iter().map(|candidate| u128::from(candidate.weight)).sum::<u128>().max(1);
+        let mut round_allocations = vec![0u64; remaining.len()];
+        let mut remainders = Vec::with_capacity(remaining.len());
+        let mut round_total = 0u64;
+        for (index, candidate) in remaining.iter().enumerate() {
+            let weighted_available = u128::from(available).saturating_mul(u128::from(candidate.weight));
+            let base_share = (weighted_available / total_weight).min(u128::from(candidate.missing_bytes)) as u64;
+            round_allocations[index] = base_share;
+            round_total = round_total.saturating_add(base_share);
+            if base_share < candidate.missing_bytes {
+                remainders.push((index, weighted_available % total_weight, candidate.weight, candidate.query_id));
+            }
+        }
+
+        remainders.sort_by(|left, right| {
+            right.1.cmp(&left.1).then_with(|| right.2.cmp(&left.2)).then_with(|| left.3.cmp(&right.3))
+        });
+        if round_total == 0 {
+            let Some((index, ..)) = remainders.first().copied() else {
+                break;
+            };
+            round_allocations[index] = 1;
+            round_total = 1;
+        } else if round_total < available {
+            let mut extra = available - round_total;
+            for (index, ..) in remainders {
+                if extra == 0 {
+                    break;
+                }
+                if round_allocations[index] < remaining[index].missing_bytes {
+                    round_allocations[index] = round_allocations[index].saturating_add(1);
+                    round_total = round_total.saturating_add(1);
+                    extra -= 1;
+                }
+            }
+        }
+
+        if round_total == 0 {
+            break;
+        }
+        for (index, bytes) in round_allocations.into_iter().enumerate() {
+            if bytes == 0 {
+                continue;
+            }
+            let candidate = &mut remaining[index];
+            let bytes = bytes.min(candidate.missing_bytes);
+            let allocation = allocations.entry(candidate.query_id).or_default();
+            *allocation = allocation.saturating_add(bytes);
+            candidate.missing_bytes = candidate.missing_bytes.saturating_sub(bytes);
+        }
+        available = available.saturating_sub(round_total);
+        remaining.retain(|candidate| candidate.missing_bytes > 0);
+    }
+
+    allocations.into_iter().collect()
 }
 
 impl QueryAdmissionWaiter {
@@ -2544,6 +2658,67 @@ mod tests {
         let admitted = queued.try_admit().unwrap().expect("small queued query should receive its minimum");
         assert_eq!(admitted.device_budget_bytes(), 10);
         assert_eq!(second_grant.budget_bytes(), 80);
+    }
+
+    #[test]
+    fn adaptive_growth_allocations_cap_and_redistribute_by_weight() {
+        let allocations = weighted_adaptive_growth_allocations(
+            &[
+                AdaptiveGrowthCandidate { query_id: 1, missing_bytes: 10, weight: 10 },
+                AdaptiveGrowthCandidate { query_id: 2, missing_bytes: 100, weight: 1 },
+                AdaptiveGrowthCandidate { query_id: 3, missing_bytes: 100, weight: 1 },
+            ],
+            60,
+        );
+
+        assert_eq!(allocations, vec![(1, 10), (2, 25), (3, 25)]);
+    }
+
+    #[test]
+    fn adaptive_query_service_grows_partial_grants_by_budget_weight() {
+        let service = QueryService::new_for_admission_tests(
+            QueryServiceConfig {
+                device_capacity_bytes: Some(100),
+                max_concurrent_queries: 4,
+                max_admission_queue_len: 8,
+                native_pipeline_execution_mode: NativePipelineExecutionMode::Adaptive,
+                ..QueryServiceConfig::default()
+            },
+            vec![QueryServiceTenantConfig::with_grant_range("tenant", 10, 70)],
+            non_gds_deployment(),
+        )
+        .unwrap();
+
+        let first = service.try_admit_query("tenant").unwrap().expect("first query should admit want");
+        let high = service
+            .try_admit_query_with_qos("tenant", QueryQos::new(Priority::Normal).with_budget_weight(4))
+            .unwrap()
+            .expect("second query should admit minimum");
+        let low_a = service
+            .try_admit_query_with_qos("tenant", QueryQos::new(Priority::Normal).with_budget_weight(1))
+            .unwrap()
+            .expect("third query should admit minimum");
+        let low_b = service
+            .try_admit_query_with_qos("tenant", QueryQos::new(Priority::Normal).with_budget_weight(1))
+            .unwrap()
+            .expect("fourth query should admit minimum");
+        let high_grant = high.lifetime.memory_grant().unwrap();
+        let low_a_grant = low_a.lifetime.memory_grant().unwrap();
+        let low_b_grant = low_b.lifetime.memory_grant().unwrap();
+
+        assert_eq!(first.device_budget_bytes(), 70);
+        assert_eq!(high_grant.budget_bytes(), 10);
+        assert_eq!(low_a_grant.budget_bytes(), 10);
+        assert_eq!(low_b_grant.budget_bytes(), 10);
+
+        drop(first);
+
+        assert_eq!(high_grant.budget_bytes(), 50);
+        assert_eq!(low_a_grant.budget_bytes(), 20);
+        assert_eq!(low_b_grant.budget_bytes(), 20);
+        let report = service.memory_governor_report().unwrap();
+        assert_eq!(report.outstanding_bytes, 90);
+        assert_eq!(report.available_bytes, 10);
     }
 
     #[test]
