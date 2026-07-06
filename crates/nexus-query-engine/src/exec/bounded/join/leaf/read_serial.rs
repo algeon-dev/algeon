@@ -64,7 +64,13 @@ pub(super) fn read_join_leaf_source_batches_serial(
                 min_retry_chunk_row_groups,
                 grow_source_to_observed,
             ) {
-                Ok(mut outputs) => chunks.append(&mut outputs),
+                Ok(mut outputs) => {
+                    chunks.append(&mut outputs);
+                    if let Err(error) = reservations.acknowledge_requested_grant_shrink() {
+                        release_join_source_chunks_reverse(reservations, chunks, metrics);
+                        return Err(error);
+                    }
+                },
                 Err(error) => {
                     release_join_source_chunks_reverse(reservations, chunks, metrics);
                     return Err(error);
@@ -84,7 +90,13 @@ pub(super) fn read_join_leaf_source_batches_serial(
             min_retry_chunk_row_groups,
             grow_source_to_observed,
         ) {
-            Ok(mut outputs) => chunks.append(&mut outputs),
+            Ok(mut outputs) => {
+                chunks.append(&mut outputs);
+                if let Err(error) = reservations.acknowledge_requested_grant_shrink() {
+                    release_join_source_chunks_reverse(reservations, chunks, metrics);
+                    return Err(error);
+                }
+            },
             Err(error) => {
                 release_join_source_chunks_reverse(reservations, chunks, metrics);
                 return Err(error);

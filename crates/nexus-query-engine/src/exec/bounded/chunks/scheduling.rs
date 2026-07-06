@@ -71,13 +71,27 @@ pub(in crate::exec::bounded) fn execute_bounded_chunks_with_source_scheduler(
             Err(error) if is_prefetch_chunk_error(&error) && is_retryable_chunk_error(&error) => {
                 metrics.record_source_read_prefetch_abandoned();
                 queue.abandon_all(index + 1, reservations, metrics);
-                partials.extend(execute_bounded_chunk_with_retry(context, bounded, chunk, reservations, metrics)?);
-                queue.ensure_current_required(context, bounded.source, chunks, reservations, metrics, max_attempts)?;
+                let chunk_partials =
+                    match execute_bounded_chunk_with_retry(context, bounded, chunk, reservations, metrics) {
+                        Ok(partials) => partials,
+                        Err(error) => {
+                            release_committed_partials_reverse(reservations, partials, metrics);
+                            return Err(error);
+                        },
+                    };
+                partials.extend(chunk_partials);
+                acknowledge_chunk_boundary_or_release(&mut queue, index + 1, reservations, &mut partials, metrics)?;
+                if let Err(error) =
+                    queue.ensure_current_required(context, bounded.source, chunks, reservations, metrics, max_attempts)
+                {
+                    release_committed_partials_reverse(reservations, partials, metrics);
+                    return Err(error);
+                }
                 continue;
             },
             Err(error) if is_retryable_chunk_error(&error) => {
                 queue.abandon_all(index + 1, reservations, metrics);
-                partials.extend(retry_after_chunk_error(
+                let chunk_partials = match retry_after_chunk_error(
                     context,
                     bounded,
                     chunk.clone(),
@@ -87,11 +101,28 @@ pub(in crate::exec::bounded) fn execute_bounded_chunks_with_source_scheduler(
                     1,
                     max_attempts,
                     min_retry_chunk_row_groups,
-                )?);
-                queue.ensure_current_required(context, bounded.source, chunks, reservations, metrics, max_attempts)?;
+                ) {
+                    Ok(partials) => partials,
+                    Err(error) => {
+                        release_committed_partials_reverse(reservations, partials, metrics);
+                        return Err(error);
+                    },
+                };
+                partials.extend(chunk_partials);
+                acknowledge_chunk_boundary_or_release(&mut queue, index + 1, reservations, &mut partials, metrics)?;
+                if let Err(error) =
+                    queue.ensure_current_required(context, bounded.source, chunks, reservations, metrics, max_attempts)
+                {
+                    release_committed_partials_reverse(reservations, partials, metrics);
+                    return Err(error);
+                }
                 continue;
             },
-            Err(error) => return Err(error),
+            Err(error) => {
+                queue.abandon_all(index + 1, reservations, metrics);
+                release_committed_partials_reverse(reservations, partials, metrics);
+                return Err(error);
+            },
         };
 
         let prefetch_during_operator = !bounded.has_source_adjacent_stages();
@@ -116,7 +147,7 @@ pub(in crate::exec::bounded) fn execute_bounded_chunks_with_source_scheduler(
             Ok(partial) => partials.push(partial),
             Err(error) if is_retryable_chunk_error(&error) => {
                 queue.abandon_all(index + 1, reservations, metrics);
-                partials.extend(retry_after_chunk_error(
+                let chunk_partials = match retry_after_chunk_error(
                     context,
                     bounded,
                     chunk.clone(),
@@ -126,18 +157,54 @@ pub(in crate::exec::bounded) fn execute_bounded_chunks_with_source_scheduler(
                     1,
                     max_attempts,
                     min_retry_chunk_row_groups,
-                )?);
-                queue.ensure_current_required(context, bounded.source, chunks, reservations, metrics, max_attempts)?;
+                ) {
+                    Ok(partials) => partials,
+                    Err(error) => {
+                        release_committed_partials_reverse(reservations, partials, metrics);
+                        return Err(error);
+                    },
+                };
+                partials.extend(chunk_partials);
+                acknowledge_chunk_boundary_or_release(&mut queue, index + 1, reservations, &mut partials, metrics)?;
+                if let Err(error) =
+                    queue.ensure_current_required(context, bounded.source, chunks, reservations, metrics, max_attempts)
+                {
+                    release_committed_partials_reverse(reservations, partials, metrics);
+                    return Err(error);
+                }
+                continue;
             },
             Err(error) => {
                 queue.abandon_all(index + 1, reservations, metrics);
+                release_committed_partials_reverse(reservations, partials, metrics);
                 return Err(error);
             },
         }
-        queue.ensure_current_required(context, bounded.source, chunks, reservations, metrics, max_attempts)?;
+        acknowledge_chunk_boundary_or_release(&mut queue, index + 1, reservations, &mut partials, metrics)?;
+        if let Err(error) =
+            queue.ensure_current_required(context, bounded.source, chunks, reservations, metrics, max_attempts)
+        {
+            release_committed_partials_reverse(reservations, partials, metrics);
+            return Err(error);
+        }
     }
 
     Ok(partials)
+}
+
+fn acknowledge_chunk_boundary_or_release(
+    queue: &mut OrderedSourceReadQueue,
+    next_chunk_index: usize,
+    reservations: &mut ReservationTracker,
+    partials: &mut Vec<CommittedPartial>,
+    metrics: &mut QueryMetrics,
+) -> Result<()> {
+    if let Err(error) = reservations.acknowledge_requested_grant_shrink() {
+        queue.abandon_all(next_chunk_index, reservations, metrics);
+        release_committed_partials_reverse(reservations, std::mem::take(partials), metrics);
+        return Err(error);
+    }
+    Ok(())
 }
 
 struct OrderedSourceReadQueue {

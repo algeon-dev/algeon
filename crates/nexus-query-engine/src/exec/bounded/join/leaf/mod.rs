@@ -276,6 +276,11 @@ impl BoundedJoinLeafLocalParquetSourcePrefetch {
                 .or_else(|| output.chunk.known_read_row_group_count().map(|row_groups| row_groups as u64))
                 .unwrap_or_else(|| output.chunk.row_group_count() as u64),
         );
+        if let Err(error) = reservations.acknowledge_requested_grant_shrink() {
+            drop(output.frame);
+            reservations.release(output.reservation, metrics);
+            return Err(error);
+        }
         Ok(ResidentGpuFrame { frame: output.frame, reservation: output.reservation })
     }
 
@@ -454,6 +459,7 @@ where
             metrics,
             &mut consume,
         )?;
+        reservations.acknowledge_requested_grant_shrink()?;
     }
     Ok(())
 }

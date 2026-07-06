@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use super::state::CompiledPipelineState;
+use super::state::{CompiledPipelineState, ReleasedCompiledResource};
 use crate::{
     error::{QueryError, QueryErrorCode, Result},
     pipeline::{
@@ -177,11 +177,9 @@ impl<'a> CompiledPipelineScheduler<'a> {
                     return Err(error);
                 },
             };
-            for resource in released {
-                if let Err(error) = executor.release_resource(resource.id(), resource.into_payload()) {
-                    release_live_resources_on_error(executor, &mut state)?;
-                    return Err(error);
-                }
+            if let Err(error) = release_completed_resources(executor, released) {
+                let _cleanup_result = release_live_resources_on_error(executor, &mut state);
+                return Err(error);
             }
         }
 
@@ -318,11 +316,44 @@ impl<'a> CompiledPipelineScheduler<'a> {
 
 fn release_live_resources_on_error<E>(executor: &mut E, state: &mut CompiledPipelineState<E::Resource>) -> Result<()>
 where E: CompiledTaskExecutor {
+    let mut first_error = None;
     for resource in state.drain_live_resources() {
-        executor.release_resource(resource.id(), resource.into_payload())?;
+        if let Err(error) = executor.release_resource(resource.id(), resource.into_payload())
+            && first_error.is_none()
+        {
+            first_error = Some(error);
+        }
     }
-    executor.cleanup_after_error()?;
-    Ok(())
+    if let Err(error) = executor.cleanup_after_error()
+        && first_error.is_none()
+    {
+        first_error = Some(error);
+    }
+    match first_error {
+        Some(error) => Err(error),
+        None => Ok(()),
+    }
+}
+
+fn release_completed_resources<E>(
+    executor: &mut E,
+    resources: Vec<ReleasedCompiledResource<E::Resource>>,
+) -> Result<()>
+where
+    E: CompiledTaskExecutor,
+{
+    let mut first_error = None;
+    for resource in resources {
+        if let Err(error) = executor.release_resource(resource.id(), resource.into_payload())
+            && first_error.is_none()
+        {
+            first_error = Some(error);
+        }
+    }
+    match first_error {
+        Some(error) => Err(error),
+        None => Ok(()),
+    }
 }
 
 fn build_dependencies(pipeline: &CompiledPipeline) -> BTreeMap<PipelineTaskId, BTreeSet<PipelineTaskId>> {

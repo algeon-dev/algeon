@@ -99,6 +99,11 @@ pub(super) fn read_join_leaf_source_chunks_with_scheduler(
                 .unwrap_or_else(|| chunk.row_group_count() as u64),
         );
         chunks.push((output.frame, output.reservation));
+        if let Err(error) = reservations.acknowledge_requested_grant_shrink() {
+            abandon_join_leaf_reads(pending, reservations, metrics);
+            release_join_source_chunks_reverse(reservations, chunks, metrics);
+            return Err(error);
+        }
 
         if let Err(error) = fill_optional_join_leaf_reads(
             context,
