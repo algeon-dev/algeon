@@ -12,6 +12,11 @@ const NATIVE_REPORT_DESCRIPTOR_NAMES: &[&str] = &[
     "adaptive_pipeline_rows",
     "adaptive_retry_count",
     "adaptive_spill_count",
+    "admission_sequence",
+    "admission_sequence_observed",
+    "admission_wait_ms",
+    "admission_wait_time",
+    "admission_wait_time_observed",
     "aggregate_encoded_key_partial_elapsed_ns",
     "aggregate_exact_cardinality_probe_count",
     "aggregate_exact_cardinality_probe_elapsed_ns",
@@ -35,6 +40,8 @@ const NATIVE_REPORT_DESCRIPTOR_NAMES: &[&str] = &[
     "cpu_output_rows",
     "cpu_planning_status",
     "cpu_runtime_status",
+    "device_ordinal",
+    "device_ordinal_observed",
     "device_to_device_copied_bytes",
     "device_to_device_copies",
     "device_to_host_materializations",
@@ -155,6 +162,8 @@ const NATIVE_REPORT_DESCRIPTOR_NAMES: &[&str] = &[
     "post_native_plan_root",
     "probe_execution_boundary_reusable",
     "query_id",
+    "query_grant_bytes",
+    "query_grant_bytes_observed",
     "read_columns",
     "reason_code",
     "rejected_before_execution",
@@ -294,6 +303,7 @@ fn aggregation_for_name(name: &str) -> MetricAggregation {
         || name == "native_runtime_started"
         || name == "rejected_before_execution"
         || name == "edge_normalize_inserted"
+        || matches!(name, "admission_sequence" | "device_ordinal" | "query_grant_bytes")
     {
         MetricAggregation::Last
     } else {

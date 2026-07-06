@@ -5,7 +5,10 @@
 //! happen later when execution builds the native query context.
 
 use std::{
-    sync::{Arc, OnceLock},
+    sync::{
+        Arc, OnceLock,
+        atomic::{AtomicBool, Ordering},
+    },
     time::Duration,
 };
 
@@ -20,7 +23,7 @@ use nexus_query_engine::{
 };
 
 use super::{
-    admission::{QueryAdmissionSource, QueryAdmissionTicket, TicketTenantQueryContext},
+    admission::{QueryAdmissionFacts, QueryAdmissionSource, QueryAdmissionTicket, TicketTenantQueryContext},
     metrics::NativeMetricsCapture,
 };
 use crate::error::Error;
@@ -56,6 +59,7 @@ pub struct NativeCudfExecutionConfig {
     local_parquet_source_cache: Option<Arc<GpuLocalParquetSourceCache>>,
     source_storage_profiles: Vec<SourceStorageProfile>,
     query_service_handle: Option<Arc<QueryHandle>>,
+    query_admission_facts_recorded: Option<Arc<AtomicBool>>,
     query_admission_source: Option<QueryAdmissionSource>,
     query_admission_ticket: Option<Arc<QueryAdmissionTicket>>,
     query_id: Option<QueryId>,
@@ -68,23 +72,48 @@ pub struct NativeCudfExecutionConfig {
 #[derive(Debug)]
 pub(crate) struct NativeCudfExecutionContext {
     context: ExecutionContext,
+    admission_facts: Option<QueryAdmissionFacts>,
+    record_admission_facts: bool,
     _tenant_context: Option<TenantQueryContext>,
     _ticket_context: Option<TicketTenantQueryContext>,
 }
 
 impl NativeCudfExecutionContext {
     fn standalone(context: ExecutionContext) -> Self {
-        Self { context, _tenant_context: None, _ticket_context: None }
+        Self {
+            context,
+            admission_facts: None,
+            record_admission_facts: false,
+            _tenant_context: None,
+            _ticket_context: None,
+        }
     }
 
-    fn tenant_bound(tenant_context: TenantQueryContext) -> Self {
+    fn tenant_bound(
+        tenant_context: TenantQueryContext,
+        admission_facts: QueryAdmissionFacts,
+        record_admission_facts: bool,
+    ) -> Self {
         let context = tenant_context.context().clone();
-        Self { context, _tenant_context: Some(tenant_context), _ticket_context: None }
+        Self {
+            context,
+            admission_facts: Some(admission_facts),
+            record_admission_facts,
+            _tenant_context: Some(tenant_context),
+            _ticket_context: None,
+        }
     }
 
     fn ticket_bound(ticket_context: TicketTenantQueryContext) -> Self {
         let context = ticket_context.context().context().clone();
-        Self { context, _tenant_context: None, _ticket_context: Some(ticket_context) }
+        let admission_facts = ticket_context.admission_facts();
+        Self {
+            context,
+            admission_facts: Some(admission_facts),
+            record_admission_facts: ticket_context.should_record_admission_facts(),
+            _tenant_context: None,
+            _ticket_context: Some(ticket_context),
+        }
     }
 
     fn with_query_id(mut self, query_id: QueryId) -> Self {
@@ -99,6 +128,11 @@ impl NativeCudfExecutionContext {
 
     pub(crate) fn context(&self) -> &ExecutionContext {
         &self.context
+    }
+
+    pub(crate) fn admission_facts(&self) -> Option<QueryAdmissionFacts> {
+        self.record_admission_facts.then_some(())?;
+        self.admission_facts
     }
 }
 
@@ -147,6 +181,7 @@ impl NativeCudfExecutionConfig {
             local_parquet_source_cache: None,
             source_storage_profiles: Vec::new(),
             query_service_handle: None,
+            query_admission_facts_recorded: None,
             query_admission_source: None,
             query_admission_ticket: None,
             query_id: None,
@@ -253,6 +288,7 @@ impl NativeCudfExecutionConfig {
             local_parquet_source_cache: None,
             source_storage_profiles: Vec::new(),
             query_service_handle: None,
+            query_admission_facts_recorded: None,
             query_admission_source: None,
             query_admission_ticket: None,
             query_id: None,
@@ -542,6 +578,7 @@ impl NativeCudfExecutionConfig {
         self.aggregate_strategy_execution_options = handle.aggregate_strategy_execution_options();
         self.source_chunk_planning_options = handle.source_chunk_planning_options();
         self.query_service_handle = Some(handle);
+        self.query_admission_facts_recorded = Some(Arc::new(AtomicBool::new(false)));
         self.query_admission_source = None;
         self.query_admission_ticket = None;
         self
@@ -550,6 +587,7 @@ impl NativeCudfExecutionConfig {
     pub(crate) fn with_query_admission_source(mut self, source: QueryAdmissionSource) -> Self {
         if self.query_service_handle.is_none() {
             self.query_admission_source = Some(source);
+            self.query_admission_facts_recorded = None;
             self.query_admission_ticket = None;
         }
         self
@@ -695,9 +733,16 @@ impl NativeCudfExecutionConfig {
     pub(crate) fn execution_context(&self) -> crate::error::Result<NativeCudfExecutionContext> {
         self.validate_query_policies()?;
         if let Some(handle) = &self.query_service_handle {
+            let admission_facts = QueryAdmissionFacts::from_handle(handle.as_ref());
+            let admission_facts_recorded = self.query_admission_facts_recorded.clone();
             return handle
                 .acquire_context_with_cancellation(self.cancellation.clone())
-                .map(NativeCudfExecutionContext::tenant_bound)
+                .map(|tenant_context| {
+                    let record_admission_facts = admission_facts_recorded
+                        .as_ref()
+                        .is_some_and(|recorded| !recorded.swap(true, Ordering::AcqRel));
+                    NativeCudfExecutionContext::tenant_bound(tenant_context, admission_facts, record_admission_facts)
+                })
                 .map(|mut context| {
                     if let Some(query_id) = self.query_id.clone() {
                         context = context.with_query_id(query_id);
@@ -992,6 +1037,31 @@ mod tests {
 
         assert_eq!(config.query_admission_ticket_id(), cloned.query_admission_ticket_id());
         assert_ne!(config.query_admission_ticket_id(), separate_plan.query_admission_ticket_id());
+    }
+
+    #[test]
+    fn query_service_handle_admission_facts_record_once_across_config_clones() {
+        let deployment = DeploymentIoCapability::from_probe_inputs(
+            NvidiaFsProbeStatus::DriverMissing,
+            KvikioCompatModeStatus::Unset,
+            GdsDriverProbeStatus::ProbeUnimplemented,
+        );
+        let service = QueryService::new_admission_only(
+            QueryServiceConfig { max_concurrent_queries: 1, ..QueryServiceConfig::default() },
+            vec![QueryServiceTenantConfig::new("tenant", 1024 * 1024)],
+            deployment,
+        )
+        .unwrap();
+        let handle = Arc::new(service.try_admit_query("tenant").unwrap().expect("query should admit"));
+        let config = NativeCudfExecutionConfig::bounded_auto_sized().with_query_service_handle(handle);
+        let cloned = config.clone();
+        let marker = config.query_admission_facts_recorded.as_ref().expect("direct handle configs must have a marker");
+        let cloned_marker =
+            cloned.query_admission_facts_recorded.as_ref().expect("cloned direct handle configs must have a marker");
+
+        assert!(Arc::ptr_eq(marker, cloned_marker));
+        assert!(!marker.swap(true, Ordering::AcqRel));
+        assert!(cloned_marker.swap(true, Ordering::AcqRel));
     }
 
     #[test]

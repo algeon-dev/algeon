@@ -218,5 +218,7 @@ pub enum NativeDataFusionRuntime {
     Failed {
         /// Human-readable failure detail.
         message: String,
+        /// Root-plan DataFusion metrics captured after the failure, when available.
+        metrics: Option<MetricsSet>,
     },
 }

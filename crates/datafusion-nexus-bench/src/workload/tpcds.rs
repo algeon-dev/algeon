@@ -831,7 +831,7 @@ async fn execute_tpcds_native_plan(plan: Arc<dyn ExecutionPlan>) -> NativeDataFu
             let metrics = plan.metrics().unwrap_or_default();
             NativeDataFusionRuntime::Succeeded { output_batches, output_rows, output_bytes, metrics }
         },
-        Err(error) => NativeDataFusionRuntime::Failed { message: error.to_string() },
+        Err(error) => NativeDataFusionRuntime::Failed { message: error.to_string(), metrics: plan.metrics() },
     }
 }
 

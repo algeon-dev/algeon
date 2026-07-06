@@ -38,14 +38,14 @@ impl NativeDataFusionRuntimeSummary {
                 output_bytes: Some(output_bytes),
                 metrics: NativeDataFusionExecutionMetrics::from_metrics(&metrics),
             },
-            NativeDataFusionRuntime::Failed { message } => Self {
+            NativeDataFusionRuntime::Failed { message, metrics } => Self {
                 started: true,
                 outcome: NativeDataFusionRuntimeOutcome::Failed,
                 failure: Some(stable_tsv_field(&message)),
                 output_batches: None,
                 output_rows: None,
                 output_bytes: None,
-                metrics: NativeDataFusionExecutionMetrics::default(),
+                metrics: metrics.as_ref().map(NativeDataFusionExecutionMetrics::from_metrics).unwrap_or_default(),
             },
         }
     }

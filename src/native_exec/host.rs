@@ -179,6 +179,9 @@ impl ExecutionPlan for NativeCudfExec {
                     .execution_context_async(task_context)
                     .await
                     .map_err(|error| DataFusionError::from(mark_native_runtime_error(error, "runtime_context")))?;
+                if let Some(admission_facts) = context_lease.admission_facts() {
+                    metrics.record_admission_facts(admission_facts);
+                }
                 // Once native execution starts there is no CPU fallback; errors are surfaced with stable
                 // facts by `native_query_runtime_error`.
                 let result = execute_query_plan(context_lease.context(), &plan).map_err(|error| {

@@ -299,6 +299,12 @@ pub(super) fn metric_duration_nanos(metrics: &MetricsSet, name: &str) -> Option<
     (nanos > 0).then_some(nanos)
 }
 
+pub(super) fn optional_observed_metric_duration_nanos(metrics: &MetricsSet, name: &str) -> Option<usize> {
+    let observed_name = format!("{name}_observed");
+    let observed = metrics.sum_by_name(&observed_name).map(|value| value.as_usize()).unwrap_or(0);
+    (observed > 0).then(|| metrics.sum_by_name(name).map(|value| value.as_usize()).unwrap_or(0))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

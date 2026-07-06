@@ -237,6 +237,9 @@ impl ExecutionPlan for NativeCudfComposedExec {
                     .execution_context_async(Arc::clone(&task_context))
                     .await
                     .map_err(|error| DataFusionError::from(mark_native_runtime_error(error, "runtime_context")))?;
+                if let Some(admission_facts) = context_lease.admission_facts() {
+                    metrics.record_admission_facts(admission_facts);
+                }
                 let context = context_lease.context();
                 let mut input_map = GpuResidentInputMap::new();
                 for child in gpu_inputs {
