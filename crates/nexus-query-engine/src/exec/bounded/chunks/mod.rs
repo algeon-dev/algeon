@@ -225,7 +225,13 @@ fn execute_bounded_source_adjacent_chunk_batches_serial(
     for batch in batches {
         context.check_cancellation("nexus_query_engine.exec.bounded.source_adjacent_chunk_batch")?;
         match execute_bounded_source_adjacent_chunk_batch_or_split(context, bounded, batch, reservations, metrics) {
-            Ok(mut batch_partials) => partials.append(&mut batch_partials),
+            Ok(mut batch_partials) => {
+                partials.append(&mut batch_partials);
+                if let Err(error) = reservations.acknowledge_requested_grant_shrink() {
+                    release_committed_partials_reverse(reservations, partials, metrics);
+                    return Err(error);
+                }
+            },
             Err(error) => {
                 release_committed_partials_reverse(reservations, partials, metrics);
                 return Err(error);

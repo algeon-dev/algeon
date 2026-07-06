@@ -540,6 +540,13 @@ impl ReservationTracker {
         self.budget().saturating_sub(self.raw_reserved_bytes())
     }
 
+    pub(in crate::exec) fn acknowledge_requested_grant_shrink(&self) -> Result<bool> {
+        match &self.budget {
+            ReservationBudget::Static(_) => Ok(true),
+            ReservationBudget::AdaptiveGrant(grant) => grant.try_apply_requested_shrink(self.raw_reserved_bytes()),
+        }
+    }
+
     pub(in crate::exec) fn can_reserve(&self, requested_bytes: u64) -> bool {
         requested_bytes <= self.remaining_bytes()
     }
@@ -1159,6 +1166,90 @@ mod tests {
         assert_eq!(denied.fact_value("granted_bytes"), Some("10"));
 
         reservations.release(first, &mut metrics);
+        Ok(())
+    }
+
+    #[test]
+    fn static_reservation_tracker_acknowledges_grant_shrink_as_noop() -> Result<()> {
+        let reservations = ReservationTracker::new(MemorySpaceId::Device { device_ordinal: 0 }, 100);
+
+        assert!(reservations.acknowledge_requested_grant_shrink()?);
+        assert_eq!(reservations.budget(), 100);
+        Ok(())
+    }
+
+    #[test]
+    fn adaptive_reservation_tracker_acknowledges_shrink_without_underflowing_live_reservations() -> Result<()> {
+        let governor = MemoryGovernor::new(0, 100)?;
+        let grant = governor.try_request(GrantRequest::new(7, 30, 80))?.expect("initial grant should fit");
+        let mut metrics = QueryMetrics::default();
+        let mut reservations = ReservationTracker::new_with_budget(
+            MemorySpaceId::Device { device_ordinal: 0 },
+            ReservationBudget::AdaptiveGrant(grant.clone()),
+        );
+        let live = reservations.try_reserve_owned_resident(
+            test_request(ReservationKind::OperatorOutput, "live", 55, reservations.budget()),
+            &mut metrics,
+        )?;
+
+        assert_eq!(grant.request_shrink_to(40)?, Some(40));
+        assert!(!reservations.acknowledge_requested_grant_shrink()?);
+
+        assert_eq!(reservations.reserved_bytes(), 55);
+        assert_eq!(grant.budget_bytes(), 55);
+        assert_eq!(grant.requested_shrink_target_bytes()?, Some(40));
+        assert_eq!(governor.available_bytes()?, 45);
+
+        reservations.release(live, &mut metrics);
+        Ok(())
+    }
+
+    #[test]
+    fn adaptive_reservation_tracker_completes_shrink_after_live_bytes_drop() -> Result<()> {
+        let governor = MemoryGovernor::new(0, 100)?;
+        let grant = governor.try_request(GrantRequest::new(7, 30, 80))?.expect("initial grant should fit");
+        let mut metrics = QueryMetrics::default();
+        let mut reservations = ReservationTracker::new_with_budget(
+            MemorySpaceId::Device { device_ordinal: 0 },
+            ReservationBudget::AdaptiveGrant(grant.clone()),
+        );
+        let live = reservations.try_reserve_owned_resident(
+            test_request(ReservationKind::OperatorOutput, "live", 55, reservations.budget()),
+            &mut metrics,
+        )?;
+
+        assert_eq!(grant.request_shrink_to(40)?, Some(40));
+        assert!(!reservations.acknowledge_requested_grant_shrink()?);
+        reservations.release(live, &mut metrics);
+        assert!(reservations.acknowledge_requested_grant_shrink()?);
+
+        assert_eq!(reservations.reserved_bytes(), 0);
+        assert_eq!(grant.budget_bytes(), 40);
+        assert_eq!(grant.requested_shrink_target_bytes()?, None);
+        assert_eq!(governor.available_bytes()?, 60);
+        Ok(())
+    }
+
+    #[test]
+    fn adaptive_reservation_tracker_shrink_ack_counts_source_cache_baseline() -> Result<()> {
+        let governor = MemoryGovernor::new(0, 100)?;
+        let grant = governor.try_request(GrantRequest::new(7, 30, 80))?.expect("initial grant should fit");
+        let mut metrics = QueryMetrics::default();
+        let mut reservations = ReservationTracker::new_with_budget(
+            MemorySpaceId::Device { device_ordinal: 0 },
+            ReservationBudget::AdaptiveGrant(grant.clone()),
+        );
+
+        reservations.try_reserve_source_cache_baseline(55, &mut metrics)?;
+        assert_eq!(reservations.reserved_bytes(), 0);
+        assert_eq!(reservations.raw_reserved_bytes(), 55);
+        assert_eq!(grant.request_shrink_to(40)?, Some(40));
+
+        assert!(!reservations.acknowledge_requested_grant_shrink()?);
+
+        assert_eq!(grant.budget_bytes(), 55);
+        assert_eq!(grant.requested_shrink_target_bytes()?, Some(40));
+        assert_eq!(governor.available_bytes()?, 45);
         Ok(())
     }
 
