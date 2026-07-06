@@ -97,6 +97,7 @@ struct MemoryGrantInner {
     min_bytes: u64,
     budget_bytes: AtomicU64,
     release_observers: Mutex<Vec<ReleaseObserver>>,
+    budget_decrease_observers: Mutex<Vec<ReleaseObserver>>,
 }
 
 /// Point-in-time governor report. This is intentionally separate from strict
@@ -279,6 +280,7 @@ impl MemoryGovernor {
                 min_bytes: request.min_bytes,
                 budget_bytes: AtomicU64::new(budget_bytes),
                 release_observers: Mutex::new(Vec::new()),
+                budget_decrease_observers: Mutex::new(Vec::new()),
             }),
         })
     }
@@ -462,6 +464,8 @@ impl MemoryGrant {
         state.outstanding_bytes = state.outstanding_bytes.saturating_sub(refunded_bytes);
         self.inner.budget_bytes.store(target_bytes, Ordering::Release);
         self.inner.governor.available.notify_all();
+        drop(state);
+        self.notify_budget_decrease_observers();
         Ok(true)
     }
 
@@ -506,6 +510,8 @@ impl MemoryGrant {
         state.outstanding_bytes = state.outstanding_bytes.saturating_sub(refunded_bytes);
         self.inner.budget_bytes.store(safe_target, Ordering::Release);
         self.inner.governor.available.notify_all();
+        drop(state);
+        self.notify_budget_decrease_observers();
         Ok(request_satisfied)
     }
 
@@ -523,6 +529,35 @@ impl MemoryGrant {
             })?
             .push(observer);
         Ok(())
+    }
+
+    /// Adds a callback invoked after this grant's budget decreases.
+    pub(crate) fn notify_on_budget_decrease(&self, observer: ReleaseObserver) -> Result<()> {
+        self.inner
+            .budget_decrease_observers
+            .lock()
+            .map_err(|_error| {
+                QueryError::new(
+                    QueryErrorCode::Internal,
+                    "nexus_query_engine.runtime.gpu.memory_grant.notify_on_budget_decrease",
+                    "memory grant budget-decrease observer mutex was poisoned",
+                )
+            })?
+            .push(observer);
+        Ok(())
+    }
+
+    fn notify_budget_decrease_observers(&self) {
+        let observers = match self.inner.budget_decrease_observers.lock() {
+            Ok(observers) => observers.clone(),
+            Err(_error) => {
+                eprintln!("[nexus-query-engine] warning: failed to notify memory grant budget-decrease observers");
+                Vec::new()
+            },
+        };
+        for observer in observers {
+            observer();
+        }
     }
 }
 
@@ -736,6 +771,40 @@ mod tests {
 
         assert_eq!(grant.budget_bytes(), 60);
         assert_eq!(grant.requested_shrink_target_bytes().unwrap(), Some(40));
+    }
+
+    #[test]
+    fn budget_decrease_observer_runs_on_shrink_not_grow() {
+        let governor = MemoryGovernor::new(0, 100).unwrap();
+        let grant = governor.try_request(GrantRequest::new(1, 30, 40)).unwrap().unwrap();
+        let observer_governor = governor.clone();
+        let (sender, receiver) = mpsc::channel();
+        grant
+            .notify_on_budget_decrease(Arc::new(move || {
+                sender.send(observer_governor.available_bytes().unwrap()).unwrap();
+            }))
+            .unwrap();
+
+        assert!(grant.try_grow_to(70).unwrap());
+        assert!(receiver.try_recv().is_err());
+
+        assert!(grant.try_shrink_to(50).unwrap());
+        assert_eq!(receiver.recv_timeout(Duration::from_secs(1)).unwrap(), 50);
+    }
+
+    #[test]
+    fn budget_decrease_observer_runs_only_when_requested_shrink_is_applied() {
+        let governor = MemoryGovernor::new(0, 100).unwrap();
+        let grant = governor.try_request(GrantRequest::new(1, 30, 80)).unwrap().unwrap();
+        let (sender, receiver) = mpsc::channel();
+        grant.notify_on_budget_decrease(Arc::new(move || sender.send(()).unwrap())).unwrap();
+
+        assert_eq!(grant.request_shrink_to(40).unwrap(), Some(40));
+        assert!(receiver.try_recv().is_err());
+
+        assert!(!grant.try_apply_requested_shrink(55).unwrap());
+        receiver.recv_timeout(Duration::from_secs(1)).unwrap();
+        assert!(receiver.try_recv().is_err());
     }
 
     #[test]
