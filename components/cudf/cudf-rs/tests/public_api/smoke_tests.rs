@@ -21,6 +21,7 @@ fn query_memory_manager_surface_is_publicly_importable() {
     };
 
     let _ = DeviceMemoryResource::with_failure_callback;
+    let _ = StreamReservationLease::resize;
     let _: Option<DeviceMemoryManager> = None;
     let _: Option<StreamReservationLease> = None;
     let _: Option<ReservationUsage> = None;

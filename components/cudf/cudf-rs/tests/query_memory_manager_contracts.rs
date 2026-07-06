@@ -270,6 +270,49 @@ fn failure_callback_memory_resource_retries_stream_reservation_limit_failures() 
     assert_eq!(calls.load(Ordering::SeqCst), 2);
 }
 
+#[test]
+fn stream_reservation_resize_grows_limit_for_later_allocations() {
+    let runtime = Runtime::builder().with_device_memory_manager().build().unwrap();
+    let lease = runtime.stream_reservation(9101, 1).unwrap();
+
+    let err = runtime.series(&[1i32, 2, 3]).unwrap_err();
+    assert_eq!(err.code(), ErrorCode::OutOfMemory);
+    assert_eq!(err.kind(), ErrorKind::ResourceExhausted);
+    assert_eq!(lease.usage().unwrap().allocation_limit_bytes, 1);
+
+    lease.resize(1 << 20).unwrap();
+
+    let series = runtime.series(&[1i32, 2, 3]).unwrap();
+    assert_eq!(series.len(), 3);
+    let usage = lease.usage().unwrap();
+    assert_eq!(usage.allocation_limit_bytes, 1 << 20);
+    assert!(usage.peak_aligned_bytes > 0);
+}
+
+#[test]
+fn stream_reservation_resize_allows_shrink_below_live_usage_and_blocks_future_allocations() {
+    let runtime = Runtime::builder().with_device_memory_manager().build().unwrap();
+    let lease = runtime.stream_reservation(9102, 1 << 20).unwrap();
+    let retained = runtime.series(&[1i32, 2, 3]).unwrap();
+    let live_usage = lease.usage().unwrap();
+    assert!(live_usage.current_aligned_bytes > 1);
+
+    lease.resize(1).unwrap();
+
+    let shrunk_usage = lease.usage().unwrap();
+    assert_eq!(shrunk_usage.allocation_limit_bytes, 1);
+    assert!(shrunk_usage.current_aligned_bytes > shrunk_usage.allocation_limit_bytes);
+
+    let err = runtime.series(&[4i32, 5, 6]).unwrap_err();
+    assert_eq!(err.code(), ErrorCode::OutOfMemory);
+    assert_eq!(err.kind(), ErrorKind::ResourceExhausted);
+
+    drop(retained);
+    lease.resize(1 << 20).unwrap();
+    let series = runtime.series(&[4i32, 5, 6]).unwrap();
+    assert_eq!(series.len(), 3);
+}
+
 /// §10.1 invariant contract (replaces the per-op guard contract): with the
 /// device memory domain installed, concurrent execution mixing default
 /// (manager-backed) runtimes and owned-pool runtimes must never disturb the

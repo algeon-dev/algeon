@@ -77,6 +77,9 @@ extern "C" {
         out: *mut cudf_memory_resource_usage_t,
     ) -> cudf_status_t;
 
+    /// Resize the live-byte limit for an attached reservation.
+    pub fn cudf_reservation_resize(reservation: cudf_reservation_handle, limit_bytes: usize) -> cudf_status_t;
+
     /// Detach a reservation from its stream and destroy the reservation handle.
     pub fn cudf_reservation_detach(reservation: cudf_reservation_handle) -> cudf_status_t;
 

@@ -146,6 +146,7 @@ const SAFE_LAYER_NON_EXECUTION_FFI_ALLOWLIST: &[(&str, &str)] = &[
     ("cudf_memory_manager_for_device", "runtime device memory-manager lifecycle"),
     ("cudf_memory_manager_resource", "runtime device memory-manager lifecycle"),
     ("cudf_reservation_detach", "runtime stream-reservation lifecycle"),
+    ("cudf_reservation_resize", "runtime stream-reservation lifecycle"),
     ("cudf_reservation_usage", "metadata-only stream-reservation accounting"),
     ("cudf_mixed_join_size_data_destroy", "provenance-bound lifecycle"),
     ("cudf_mixed_join_size_data_device_allocated_size", "metadata-only cached join planning accessor"),
