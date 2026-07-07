@@ -361,14 +361,14 @@ pub(in crate::exec::bounded) fn execute_bounded_join_leaf_source(
         crate::source::SourceNode::GpuResident(source) => {
             let frame = read_gpu_resident_source(context, source, gpu_inputs, metrics)?;
             let requested_bytes = observe_device_memory_bytes(&frame, metrics)?;
-            let reservation = reservations.try_reserve(
+            let reservation = reservations.borrow_resident(
                 MemoryReservationRequest::new(ReservationKind::SourceRead, requested_bytes, reservations.budget())
                     .with_memory_boundary("gpu_resident_join_input")
                     .with_node_id(node_id)
                     .with_stage("gpu_resident_join_input")
                     .with_attempt(1, 1),
                 metrics,
-            )?;
+            );
             Ok(ResidentGpuFrame { frame, reservation })
         },
         crate::source::SourceNode::LiteralBatch(source) => {

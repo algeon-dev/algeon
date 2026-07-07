@@ -159,6 +159,28 @@ fn compiled_scheduler_allows_one_overbudget_task_after_cooperative_shrink() {
 }
 
 #[test]
+fn compiled_scheduler_allows_overbudget_task_after_release_resource_applies_shrink() {
+    let pipeline = independent_two_source_pipeline();
+    let scheduler = CompiledPipelineScheduler::new(&pipeline).expect("pipeline should be schedulable");
+    let mut executor = MockExecutor::new()
+        .with_scheduler_memory_pressure()
+        .with_admission_remaining_bytes(100)
+        .with_remaining_bytes_after_task(PipelineTaskId::new(2), 50)
+        .with_task_admission_required_bytes(PipelineTaskId::new(1), 70)
+        .with_remaining_bytes_after_task(PipelineTaskId::new(1), 100)
+        .with_cooperative_shrink_after_release_for(ResidentResourceId::new(0));
+
+    let state = scheduler.run(&mut executor).expect("release-time shrink should permit one progress task");
+
+    assert_eq!(
+        state.execution_order(),
+        &[PipelineTaskId::new(0), PipelineTaskId::new(2), PipelineTaskId::new(1), PipelineTaskId::new(3)]
+    );
+    assert_eq!(executor.released, vec![ResidentResourceId::new(0), ResidentResourceId::new(1)]);
+    assert_eq!(state.live_resource_count(), 0);
+}
+
+#[test]
 fn compiled_scheduler_runs_shared_resident_fanout_and_releases_after_all_consumers() {
     let pipeline = shared_resident_fanout_pipeline();
     let scheduler = CompiledPipelineScheduler::new(&pipeline).expect("shared fan-out pipeline should be schedulable");

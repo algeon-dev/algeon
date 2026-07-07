@@ -74,6 +74,7 @@ pub(crate) struct QueryAdmissionTicket {
 #[derive(Debug)]
 struct ActiveQueryAdmissionTicket {
     ticket: Arc<QueryAdmissionTicket>,
+    round_task_context: Arc<TaskContext>,
 }
 
 pub(crate) fn query_admission_ticket_from_task_context(
@@ -94,7 +95,8 @@ pub(crate) fn task_context_with_query_admission_ticket(
     }
 
     let mut session_config = task_context.session_config().clone();
-    session_config.set_extension(Arc::new(ActiveQueryAdmissionTicket { ticket }));
+    session_config
+        .set_extension(Arc::new(ActiveQueryAdmissionTicket { ticket, round_task_context: Arc::clone(&task_context) }));
     Arc::new(TaskContext::new(
         task_context.task_id(),
         task_context.session_id(),
@@ -432,7 +434,11 @@ impl QueryAdmissionTicket {
     }
 
     fn task_key(task_context: &Arc<TaskContext>) -> usize {
-        Arc::as_ptr(task_context) as usize
+        task_context
+            .session_config()
+            .get_extension::<ActiveQueryAdmissionTicket>()
+            .map(|extension| Arc::as_ptr(&extension.round_task_context) as usize)
+            .unwrap_or_else(|| Arc::as_ptr(task_context) as usize)
     }
 
     fn remove_stale_rounds_locked(state: &mut TicketState) {
@@ -814,6 +820,31 @@ mod tests {
 
         let second = ticket.begin_execution_round(Arc::clone(&task_context)).unwrap();
         assert_eq!(second.epoch(), 2);
+    }
+
+    #[test]
+    fn admission_wrapper_repeated_execute_with_same_context_shares_one_round() {
+        let (ticket, _service, _tenant_id) = admission_only_ticket();
+        let input = Arc::new(EmptyExec::new(Arc::new(Schema::empty()))) as Arc<dyn ExecutionPlan>;
+        let wrapped = NativeAdmissionExec::new(input, Arc::clone(&ticket));
+        let task_context = Arc::new(TaskContext::default());
+        let task_key = QueryAdmissionTicket::task_key(&task_context);
+
+        let first = wrapped.execute(0, Arc::clone(&task_context)).unwrap();
+        let second = wrapped.execute(0, Arc::clone(&task_context)).unwrap();
+
+        {
+            let state = ticket.state.lock().unwrap();
+            assert_eq!(state.rounds.len(), 1, "one caller TaskContext must own one execution round");
+            let round = state.rounds.get(&task_key).expect("round must be keyed by the caller TaskContext");
+            assert_eq!(round.active_streams, 2);
+        }
+
+        drop(first);
+        assert_eq!(ticket.state.lock().unwrap().rounds.get(&task_key).map(|round| round.active_streams), Some(1));
+
+        drop(second);
+        assert!(!ticket.state.lock().unwrap().rounds.contains_key(&task_key));
     }
 
     #[tokio::test]
