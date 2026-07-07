@@ -151,6 +151,50 @@ pub fn build_local_parquet_reader_predicate(
     lower_source_reader_predicate(runtime, source, chunk, predicate)
 }
 
+/// Build a libcudf reader predicate that is valid for every chunk in a
+/// multi-file local Parquet batch.
+///
+/// Decimal predicates are batch-stable only when every selected chunk resolves
+/// each predicate column to the same libcudf reader dtype. This protects mixed
+/// Parquet decimal physical encodings from sharing a predicate scalar typed for
+/// a different file.
+pub fn build_local_parquet_reader_batch_predicate(
+    runtime: &Runtime,
+    source: &LocalParquetSource,
+    chunks: &[SourceChunk],
+    predicate: &SourceReaderPredicate,
+) -> Result<AstExpression> {
+    let Some(first) = chunks.first() else {
+        return Err(Error::new_with(
+            ErrorCode::EmptyInput,
+            OP_SOURCE_READER_PREDICATE,
+            "source reader predicate batch requires at least one source chunk",
+        )
+        .with_detail("reason", "empty_batch"));
+    };
+    source.validate_chunk_partition_values(first, OP_SOURCE_READER_PREDICATE)?;
+    let first_types = source_reader_predicate_target_types(source, first, predicate)?;
+    for chunk in chunks.iter().skip(1) {
+        source.validate_chunk_partition_values(chunk, OP_SOURCE_READER_PREDICATE)?;
+        let chunk_types = source_reader_predicate_target_types(source, chunk, predicate)?;
+        if chunk_types != first_types {
+            return Err(Error::new_with(
+                ErrorCode::TypeMismatch,
+                OP_SOURCE_READER_PREDICATE,
+                "source reader predicate batch requires stable predicate column dtypes",
+            )
+            .with_detail("reason", "batch_reader_predicate_dtype_mismatch")
+            .with_detail("first_chunk_index", first.chunk_index().to_string())
+            .with_detail("first_file_index", first.file_index().to_string())
+            .with_detail("chunk_index", chunk.chunk_index().to_string())
+            .with_detail("file_index", chunk.file_index().to_string())
+            .with_detail("first_types", format!("{first_types:?}"))
+            .with_detail("chunk_types", format!("{chunk_types:?}")));
+        }
+    }
+    lower_source_reader_predicate(runtime, source, first, predicate)
+}
+
 fn lower_source_reader_predicate(
     runtime: &Runtime,
     source: &LocalParquetSource,
@@ -215,6 +259,37 @@ fn lower_source_reader_predicate(
                 .map_err(|error| error.reanchor(OP_SOURCE_READER_PREDICATE).with_detail("reason", "ast_not_failed"))
         },
     }
+}
+
+fn source_reader_predicate_target_types(
+    source: &LocalParquetSource,
+    chunk: &SourceChunk,
+    predicate: &SourceReaderPredicate,
+) -> Result<Vec<(usize, DataType)>> {
+    let mut types = Vec::new();
+    collect_source_reader_predicate_target_types(source, chunk, predicate, &mut types)?;
+    Ok(types)
+}
+
+fn collect_source_reader_predicate_target_types(
+    source: &LocalParquetSource,
+    chunk: &SourceChunk,
+    predicate: &SourceReaderPredicate,
+    types: &mut Vec<(usize, DataType)>,
+) -> Result<()> {
+    match predicate {
+        SourceReaderPredicate::Comparison { column, .. } | SourceReaderPredicate::InList { column, .. } => {
+            types.push(resolve_source_reader_column(source, chunk, column)?);
+        },
+        SourceReaderPredicate::And(left, right) | SourceReaderPredicate::Or(left, right) => {
+            collect_source_reader_predicate_target_types(source, chunk, left, types)?;
+            collect_source_reader_predicate_target_types(source, chunk, right, types)?;
+        },
+        SourceReaderPredicate::Not(input) => {
+            collect_source_reader_predicate_target_types(source, chunk, input, types)?;
+        },
+    }
+    Ok(())
 }
 
 fn source_reader_column_ast(read_index: usize) -> Result<AstExpression> {

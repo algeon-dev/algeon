@@ -15,7 +15,8 @@ use cudf::{
         LocalParquetFile, LocalParquetSource, PartitionColumn, PartitionValue, SourceColumn, SourceColumnRef,
         SourceColumnRole, SourceOutputColumn, SourceReadMode, SourceReaderPredicate, SourceReaderPredicateColumn,
         SourceReaderPredicateLiteral, SourceRequiredColumn, SourceSchema, ZERO_COLUMN_COUNT_COLUMN,
-        build_local_parquet_reader_predicate, plan_local_parquet_source_chunks,
+        build_local_parquet_reader_batch_predicate, build_local_parquet_reader_predicate,
+        plan_local_parquet_source_chunks,
     },
     ops::ast::AstExpression,
     runtime::QueryStageKind,
@@ -122,9 +123,16 @@ fn write_decimal_parquet_df(path: &std::path::Path, storage_type: TypeId) {
 }
 
 fn decimal_source(path: &std::path::Path) -> LocalParquetSource {
+    decimal_source_from_paths([path])
+}
+
+fn decimal_source_from_paths<'a>(paths: impl IntoIterator<Item = &'a std::path::Path>) -> LocalParquetSource {
     let decimal128 = DataType::fixed_point(TypeId::Decimal128, -2);
     LocalParquetSource::data(
-        [LocalParquetFile::new(path, "decimal", []).unwrap()],
+        paths
+            .into_iter()
+            .enumerate()
+            .map(|(index, path)| LocalParquetFile::new(path, format!("decimal-{index}"), []).unwrap()),
         SourceSchema::new([SourceColumn::new("amount", decimal128, false).unwrap()]).unwrap(),
         ["amount"],
         [SourceOutputColumn::new("amount", SourceColumnRef::ReadColumn(0)).unwrap()],
@@ -279,6 +287,63 @@ fn assert_decimal_reader_predicate_matches_backed_source_column(storage_type: Ty
 }
 
 #[test]
+fn decimal_reader_batch_predicate_reads_decimal32_backed_chunks() {
+    let dir = TempDir::new().unwrap();
+    let first = dir.path().join("decimal_reader_batch_predicate_first.parquet");
+    let second = dir.path().join("decimal_reader_batch_predicate_second.parquet");
+    let rt = sample_runtime();
+
+    write_decimal_parquet_df(&first, TypeId::Decimal32);
+    write_decimal_parquet_df(&second, TypeId::Decimal32);
+    let source = decimal_source_from_paths([first.as_path(), second.as_path()]);
+    let plan = plan_local_parquet_source_chunks(&source, Default::default()).unwrap();
+    assert_eq!(plan.chunks().len(), 2);
+    let predicate = SourceReaderPredicate::greater_equal(
+        SourceReaderPredicateColumn::read_column("amount", 0).unwrap(),
+        SourceReaderPredicateLiteral::Decimal128 { raw: 100, scale: -2 },
+    );
+    let predicate = build_local_parquet_reader_batch_predicate(&rt, &source, plan.chunks(), &predicate).unwrap();
+    let source = source.with_reader_predicate(std::sync::Arc::new(predicate)).unwrap();
+    let token = rt
+        .execution_budget_token(ExecutionBudgetRequest::new(64 * 1024 * 1024).with_boundary("decimal_batch_read"))
+        .unwrap();
+
+    let outcome = DataFrame::read_parquet_source_chunks_with_budget(
+        &rt,
+        &source,
+        plan.chunks(),
+        SourceReadMode::FinalOutput,
+        &token,
+    )
+    .unwrap();
+
+    assert_decimal_amount_raws(outcome.value(), &[100, 200, 100, 200]);
+}
+
+#[test]
+fn decimal_reader_batch_predicate_rejects_mixed_decimal_storage_types() {
+    let dir = TempDir::new().unwrap();
+    let first = dir.path().join("decimal_reader_batch_predicate_decimal32.parquet");
+    let second = dir.path().join("decimal_reader_batch_predicate_decimal64.parquet");
+    let rt = sample_runtime();
+
+    write_decimal_parquet_df(&first, TypeId::Decimal32);
+    write_decimal_parquet_df(&second, TypeId::Decimal64);
+    let source = decimal_source_from_paths([first.as_path(), second.as_path()]);
+    let plan = plan_local_parquet_source_chunks(&source, Default::default()).unwrap();
+    let predicate = SourceReaderPredicate::greater_equal(
+        SourceReaderPredicateColumn::read_column("amount", 0).unwrap(),
+        SourceReaderPredicateLiteral::Decimal128 { raw: 100, scale: -2 },
+    );
+
+    let err = build_local_parquet_reader_batch_predicate(&rt, &source, plan.chunks(), &predicate)
+        .expect_err("mixed decimal physical types must not share one batch reader predicate");
+
+    assert_eq!(err.code(), ErrorCode::TypeMismatch);
+    assert_eq!(error_context_value(&err, "reason").as_deref(), Some("batch_reader_predicate_dtype_mismatch"));
+}
+
+#[test]
 fn decimal_reader_predicate_supports_integer_and_in_list_literals() {
     let dir = TempDir::new().unwrap();
     let path = dir.path().join("decimal_reader_predicate_in_list.parquet");
@@ -407,6 +472,123 @@ fn read_parquet_source_chunk_applies_reader_predicate() {
     assert_eq!(frame.column_names(), vec!["id", "value"]);
     assert_eq!(frame.series("id").unwrap().to_vec_strict::<i32>().unwrap(), vec![2, 3]);
     assert_eq!(frame.series("value").unwrap().to_vec_strict::<i64>().unwrap(), vec![20, 30]);
+}
+
+#[test]
+fn read_parquet_source_chunks_with_budget_preserves_row_group_selection_and_file_order() {
+    let dir = TempDir::new().unwrap();
+    let first = dir.path().join("batch-first.parquet");
+    let second = dir.path().join("batch-second.parquet");
+    let rt = sample_runtime();
+
+    if !write_pyarrow_i32_parquet_with_row_groups(&first, &[1, 2, 3, 4], 2)
+        || !write_pyarrow_i32_parquet_with_row_groups(&second, &[10, 20, 30, 40], 2)
+    {
+        return;
+    }
+
+    let source = LocalParquetSource::data(
+        [
+            LocalParquetFile::new(&first, "first", [])
+                .unwrap()
+                .with_row_groups(Some(vec![0]))
+                .with_row_group_metadata(vec![128, 128], vec![2, 2])
+                .unwrap(),
+            LocalParquetFile::new(&second, "second", [])
+                .unwrap()
+                .with_row_groups(Some(vec![1]))
+                .with_row_group_metadata(vec![128, 128], vec![2, 2])
+                .unwrap(),
+        ],
+        SourceSchema::new([SourceColumn::new("id", dtype(TypeId::Int32), false).unwrap()]).unwrap(),
+        ["id"],
+        [SourceOutputColumn::new("id", SourceColumnRef::ReadColumn(0)).unwrap()],
+        [],
+        [],
+    )
+    .unwrap();
+    let plan = plan_local_parquet_source_chunks(&source, Default::default()).unwrap();
+    assert_eq!(plan.chunks().len(), 2);
+
+    let token = rt
+        .execution_budget_token(ExecutionBudgetRequest::new(64 * 1024 * 1024).with_boundary("source_batch_read"))
+        .unwrap();
+    let outcome = DataFrame::read_parquet_source_chunks_with_budget(
+        &rt,
+        &source,
+        plan.chunks(),
+        SourceReadMode::FinalOutput,
+        &token,
+    )
+    .unwrap();
+
+    assert_eq!(outcome.value().series("id").unwrap().to_vec_strict::<i32>().unwrap(), vec![1, 2, 30, 40]);
+    assert_eq!(outcome.report().request().boundary(), "source_batch_read");
+    assert_eq!(outcome.report().status(), ExecutionBudgetStatus::ReservationEnforced);
+    assert_eq!(outcome.report().output_rows(), Some(4));
+    assert_eq!(outcome.report().context_facts().get("chunk_count").map(String::as_str), Some("2"));
+    assert_eq!(outcome.report().context_facts().get("known_row_count").map(String::as_str), Some("4"));
+}
+
+#[test]
+fn read_parquet_source_chunks_with_budget_applies_reader_predicate_to_batch() {
+    let dir = TempDir::new().unwrap();
+    let first = dir.path().join("batch-predicate-first.parquet");
+    let second = dir.path().join("batch-predicate-second.parquet");
+    let rt = sample_runtime();
+
+    if !write_pyarrow_i32_parquet_with_row_groups(&first, &[1, 2, 3, 4], 2)
+        || !write_pyarrow_i32_parquet_with_row_groups(&second, &[10, 20, 30, 40], 2)
+    {
+        return;
+    }
+
+    let predicate = AstExpression::greater(
+        AstExpression::left_column(0).unwrap(),
+        AstExpression::literal(rt.scalar(12i32).unwrap()).unwrap(),
+    )
+    .unwrap();
+    let source = LocalParquetSource::data(
+        [
+            LocalParquetFile::new(&first, "first", [])
+                .unwrap()
+                .with_row_groups(Some(vec![0, 1]))
+                .with_row_group_metadata(vec![128, 128], vec![2, 2])
+                .unwrap(),
+            LocalParquetFile::new(&second, "second", [])
+                .unwrap()
+                .with_row_groups(Some(vec![0, 1]))
+                .with_row_group_metadata(vec![128, 128], vec![2, 2])
+                .unwrap(),
+        ],
+        SourceSchema::new([SourceColumn::new("id", dtype(TypeId::Int32), false).unwrap()]).unwrap(),
+        ["id"],
+        [SourceOutputColumn::new("id", SourceColumnRef::ReadColumn(0)).unwrap()],
+        [],
+        [],
+    )
+    .unwrap()
+    .with_reader_predicate(std::sync::Arc::new(predicate))
+    .unwrap();
+    let plan = plan_local_parquet_source_chunks(&source, Default::default()).unwrap();
+    assert_eq!(plan.chunks().len(), 2);
+    assert!(plan.chunks().iter().all(cudf::io::source::SourceChunk::selects_all_known_file_row_groups));
+
+    let token = rt
+        .execution_budget_token(ExecutionBudgetRequest::new(64 * 1024 * 1024).with_boundary("source_batch_read"))
+        .unwrap();
+    let outcome = DataFrame::read_parquet_source_chunks_with_budget(
+        &rt,
+        &source,
+        plan.chunks(),
+        SourceReadMode::FinalOutput,
+        &token,
+    )
+    .unwrap();
+
+    assert_eq!(source.diagnostics().predicate_disposition(), cudf::io::source::PredicateDisposition::ReaderPushdown);
+    assert_eq!(outcome.value().series("id").unwrap().to_vec_strict::<i32>().unwrap(), vec![20, 30, 40]);
+    assert_eq!(outcome.report().context_facts().get("chunk_count").map(String::as_str), Some("2"));
 }
 
 #[test]
