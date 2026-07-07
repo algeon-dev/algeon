@@ -15,6 +15,7 @@ mod dimension_pruning;
 mod dynamic_filter;
 mod join_build_side;
 mod join_filter_reassociation;
+mod lineage;
 mod local_parquet_source_reuse;
 mod outer_join_null_rejection;
 mod outer_join_null_rejection_policy;
