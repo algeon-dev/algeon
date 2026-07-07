@@ -145,6 +145,23 @@ void maybe_fail_strings_host_import(strings_host_import_fault fault) {
   }
 }
 
+cudf_status_t resolve_column_view_null_count(cudf::column_view const &view,
+                                             rmm::cuda_stream_view stream,
+                                             int32_t *out) {
+  auto const stored = view.null_count();
+  if (stored >= 0) {
+    *out = stored;
+    return CUDF_SUCCESS;
+  }
+  if (!view.nullable() || view.size() == 0) {
+    *out = 0;
+    return CUDF_SUCCESS;
+  }
+
+  *out = view.null_count(0, view.size(), stream);
+  return CUDF_SUCCESS;
+}
+
 class host_source_copy_sync_guard {
 public:
   explicit host_source_copy_sync_guard(rmm::cuda_stream_view stream)
@@ -788,6 +805,30 @@ cudf_status_t cudf_column_view_null_count(cudf_column_view_handle handle,
   CUDF_RUST_CATCH
 }
 
+cudf_status_t cudf_column_view_null_count_ex(
+    cudf_column_view_handle handle, cudf_exec_options_t const *options,
+    int32_t *out) {
+  CUDF_RUST_NULL_CHECK(out, "out is null");
+  *out = 0;
+  CUDF_RUST_NULL_CHECK(handle, "handle is null");
+  cudf_status_t const fail_status = maybe_fail_column_view_metadata_read();
+  if (fail_status != CUDF_SUCCESS) {
+    return fail_status;
+  }
+  CUDF_RUST_TRY {
+    auto exec = std::unique_ptr<cudf_exec_context>{};
+    cudf_status_t const exec_status =
+        cudf_resolve_required_exec_options(options, &exec);
+    if (exec_status != CUDF_SUCCESS) {
+      return exec_status;
+    }
+
+    auto *view = static_cast<cudf::column_view *>(handle);
+    return resolve_column_view_null_count(*view, exec->stream, out);
+  }
+  CUDF_RUST_CATCH
+}
+
 cudf_status_t cudf_column_view_nullable(cudf_column_view_handle handle,
                                         int32_t *out) {
   CUDF_RUST_NULL_CHECK(out, "out is null");
@@ -1004,9 +1045,17 @@ cudf_status_t cudf_column_view_slice_ex(cudf_column_view_handle handle,
       children.emplace_back(view->child(index));
     }
 
-    auto const null_count =
-        view->nullable() ? view->null_count(start, start + len, exec->stream)
-                         : 0;
+    auto null_count = cudf::size_type{0};
+    if (view->nullable()) {
+      auto const parent_null_count = view->null_count();
+      if (len == 0 || parent_null_count == 0) {
+        null_count = 0;
+      } else if (parent_null_count == view->size()) {
+        null_count = len;
+      } else {
+        null_count = view->null_count(start, start + len, exec->stream);
+      }
+    }
 
     auto *slice = new cudf::column_view(view->type(), len, view->head(),
                                         view->null_mask(), null_count,

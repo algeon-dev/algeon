@@ -1,6 +1,5 @@
 //! Tests for DataFrame I/O integration.
-use std::fs;
-use std::os::unix::ffi::OsStringExt;
+use std::{fs, os::unix::ffi::OsStringExt};
 
 use cudf::{
     BoundaryKind, DataFrame, ErrorCode, ErrorKind,

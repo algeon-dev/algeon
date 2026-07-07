@@ -3,7 +3,12 @@ mod source_contract_support;
 const COLUMN_CPP: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/native/src/column.cpp"));
 
 #[test]
-fn column_slice_uses_public_column_view_null_count_api() {
+fn column_slice_resolves_active_range_null_count_with_required_exec_options() {
+    let null_count_helper_body = function_region(
+        COLUMN_CPP,
+        "cudf_status_t resolve_column_view_null_count",
+        "class host_source_copy_sync_guard",
+    );
     let slice_ex_body = function_region(
         COLUMN_CPP,
         "cudf_status_t cudf_column_view_slice_ex",
@@ -12,10 +17,32 @@ fn column_slice_uses_public_column_view_null_count_api() {
 
     assert!(
         source_contract_support::contains_normalized(
-            slice_ex_body,
-            "auto const null_count = view->nullable() ? view->null_count(start, start + len, exec->stream) : 0;"
+            null_count_helper_body,
+            "*out = view.null_count(0, view.size(), stream);"
         ),
-        "expected column.cpp to use the public column_view::null_count overload with the resolved execution stream for sliced views"
+        "expected unknown column-view null counts to use libcudf's range-aware null_count API on the resolved stream"
+    );
+    assert!(
+        source_contract_support::contains_normalized(
+            slice_ex_body,
+            "cudf_resolve_required_exec_options(options, &exec);"
+        ),
+        "expected column_view_slice_ex to require explicit execution options before resolving active-range null counts"
+    );
+    assert!(
+        source_contract_support::contains_normalized(slice_ex_body, "parent_null_count == 0"),
+        "expected column_view_slice_ex to avoid active-range null-count work when parent metadata proves no nulls"
+    );
+    assert!(
+        source_contract_support::contains_normalized(slice_ex_body, "parent_null_count == view->size()"),
+        "expected column_view_slice_ex to avoid active-range null-count work when parent metadata proves all nulls"
+    );
+    assert!(
+        source_contract_support::contains_normalized(
+            slice_ex_body,
+            "null_count = view->null_count(start, start + len, exec->stream);"
+        ),
+        "expected column_view_slice_ex to resolve mixed/unknown active-range null counts on the resolved execution stream"
     );
     assert!(
         !source_contract_support::contains_normalized(

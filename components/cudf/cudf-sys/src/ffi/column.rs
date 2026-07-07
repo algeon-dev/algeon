@@ -175,6 +175,11 @@ extern "C" {
     pub fn cudf_column_view_size(handle: cudf_column_view_handle, out: *mut i32) -> cudf_status_t;
 
     pub fn cudf_column_view_null_count(handle: cudf_column_view_handle, out: *mut i32) -> cudf_status_t;
+    pub fn cudf_column_view_null_count_ex(
+        handle: cudf_column_view_handle,
+        options: *const cudf_exec_options_t,
+        out: *mut i32,
+    ) -> cudf_status_t;
 
     pub fn cudf_column_view_nullable(handle: cudf_column_view_handle, out: *mut i32) -> cudf_status_t;
 
@@ -217,8 +222,8 @@ extern "C" {
     /// Create a sliced borrowed column view with explicit execution options.
     ///
     /// `options` must be non-null and must name an explicit valid device,
-    /// non-null stream, and non-null memory resource. The selected stream is
-    /// used for null-count computation when the source view is nullable.
+    /// non-null stream, and non-null memory resource. Nullable slices resolve
+    /// their active-range null count on the selected stream before returning.
     pub fn cudf_column_view_slice_ex(
         handle: cudf_column_view_handle,
         offset: i32,

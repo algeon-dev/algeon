@@ -118,7 +118,6 @@ cudf_status_t cudf_device_guard::activate(int32_t target) {
   return CUDF_SUCCESS;
 }
 
-// Parquet reads are currently serialized through the active execution context.
 cudf_current_device_resource_guard::cudf_current_device_resource_guard(
     rmm::mr::device_memory_resource *target)
     : lock_(cudf_current_device_resource_mutex()),

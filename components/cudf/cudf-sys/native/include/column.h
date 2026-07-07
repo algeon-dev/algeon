@@ -228,9 +228,18 @@ cudf_status_t cudf_column_view_data_type(cudf_column_view_handle handle,
 cudf_status_t cudf_column_view_size(cudf_column_view_handle handle,
                                     int32_t *out);
 
-/// Get the null count of a column_view.
+/// Get the stored null count metadata of a column_view.
 cudf_status_t cudf_column_view_null_count(cudf_column_view_handle handle,
                                           int32_t *out);
+
+/// Resolve the null count of a column_view with explicit execution options.
+///
+/// `options` must be non-NULL and must name an explicit valid device, a
+/// non-NULL stream, and a non-NULL memory resource. If the view carries an
+/// unknown null count, the selected stream is used to compute it.
+cudf_status_t cudf_column_view_null_count_ex(
+    cudf_column_view_handle handle, const cudf_exec_options_t *options,
+    int32_t *out);
 
 /// Force the next column-view metadata read (`size` or `null_count`) to fail.
 void cudf_test_fail_next_column_view_metadata_read();
@@ -369,9 +378,9 @@ cudf_status_t cudf_column_view_offset(cudf_column_view_handle handle,
 /// This is zero-copy with respect to device data: it creates only a new
 /// `cudf::column_view` handle. `options` must be non-NULL and must name an
 /// explicit valid device, a non-NULL stream, and a non-NULL memory resource.
-/// `options->stream` is used for null-count computation when the source view is
-/// nullable. The memory resource is retained only for provenance; this helper
-/// does not allocate output storage.
+/// Nullable slices resolve their active-range null count on the selected
+/// stream before returning. The memory resource is retained only for
+/// provenance; this helper does not allocate output storage.
 cudf_status_t cudf_column_view_slice_ex(cudf_column_view_handle handle,
                                         int32_t offset, int32_t length,
                                         const cudf_exec_options_t *options,

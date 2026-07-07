@@ -107,6 +107,11 @@ fn required_exec_options_resolver_rejects_ambient_execution_and_does_not_install
         );
     }
 
+    assert!(
+        source_contract_support::contains_normalized(body, "record_exec_context((*out)->stream, (*out)->mr_raw);"),
+        "strict resolver must observe the resolved stream and memory resource before production execution"
+    );
+
     for forbidden_marker in [
         "cudf_make_exec_context",
         "get_current_device_resource",
@@ -217,6 +222,7 @@ fn column_ex_entries_use_required_exec_options() {
         ("cudf_column_copy_from_view_ex", "cudf_status_t cudf_column_copy_from_borrowed_view_ex"),
         ("cudf_column_copy_from_borrowed_view_ex", "cudf_status_t cudf_column_create_from_owned_device_transfer"),
         ("cudf_column_payload_size_ex", "cudf_status_t cudf_column_device_allocated_size"),
+        ("cudf_column_view_null_count_ex", "cudf_status_t cudf_column_view_nullable"),
         ("cudf_column_view_list_sliced_child_ex", "cudf_status_t cudf_column_view_data_ptr"),
         ("cudf_column_view_string_chars_ptr_and_size_ex", "cudf_status_t cudf_column_view_null_mask_ptr"),
         ("cudf_column_view_slice_ex", "cudf_status_t cudf_column_view_to_host_ex"),

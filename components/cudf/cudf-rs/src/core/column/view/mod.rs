@@ -157,6 +157,10 @@ impl<'a> ColumnView<'a> {
     }
 
     /// Returns the number of null (invalid) elements.
+    ///
+    /// This is a metadata read when libcudf already carries an exact null
+    /// count. For borrowed views whose null count is unknown, libcudf computes
+    /// the count on this view's retained execution stream before returning.
     pub fn null_count(&self) -> Result<usize> {
         let mut out: i32 = 0;
         // SAFETY: self.handle is valid (NonNull from construction/from_raw).
@@ -165,6 +169,15 @@ impl<'a> ColumnView<'a> {
             "column_view::null_count",
         )
         .map_err(classify_column_view_metadata_error)?;
+        if out < 0 {
+            let exec_options = self.domain.exec_options_raw();
+            // SAFETY: self.handle is valid (NonNull from construction/from_raw).
+            error::check_status_in(
+                unsafe { cudf_sys::cudf_column_view_null_count_ex(self.handle.as_ptr(), &exec_options, &mut out) },
+                "column_view::null_count",
+            )
+            .map_err(classify_column_view_metadata_error)?;
+        }
         usize::try_from(out).map_err(|_| {
             foreign_column_view_metadata_contract_error("column_view::null_count", "column null count must be >= 0")
                 .with_detail("null_count", out.to_string())
