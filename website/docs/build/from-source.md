@@ -91,7 +91,7 @@ flock /tmp/cudf-gpu.lock cargo test --all-features
 ```
 
 Tests execute on the GPU, so they take the global GPU lock (see
-[Testing](./testing.md#gpu-serialization)).
+[Tests](./tests.md#gpu-serialization)).
 
 ## 4. Build libcugraph
 
@@ -159,5 +159,5 @@ flock /tmp/cudf-gpu.lock cargo nextest run --features cugraph,server --no-fail-f
 
 `--features cugraph,server` builds the full GPU stack plus the Flight SQL
 server. The nextest invocation is the canonical local check — one flocked run
-covers the CPU and GPU lanes together. See [Testing](./testing.md) for the lane
+covers the CPU and GPU lanes together. See [Tests](./tests.md) for the lane
 model, `scripts/check_all.sh`, and the feature matrix.

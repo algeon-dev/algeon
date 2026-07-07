@@ -1,0 +1,165 @@
+---
+sidebar_position: 1
+slug: /design/native-lowering
+description: "How DataFusion Nexus lowers supported physical plans to native cuDF execution: the rewrite rule, fallback policy, session wiring, and plan-shape admission evidence."
+---
+
+import {SystemDiagram} from '@site/src/components/design/Diagram';
+
+# Native Lowering & Fallback
+
+This page covers the *plan-time* native boundary: how a DataFusion physical
+plan candidate becomes a native `QueryPlan`, what happens when it is rejected,
+and what evidence every decision leaves behind. Process-wide runtime admission
+— concurrency slots, grant bands, and device-memory governance — is a separate
+contract described in [Admission & Memory Governance](./admission.mdx). The
+architecture overview and layering rules live on the [Design](./index.mdx)
+page.
+
+## Relational acceleration path
+
+Supported relational fragments lower after DataFusion physical planning. That
+timing is deliberate: the physical plan already encodes aggregate mode,
+partitioning, projection pushdown, join shape, sort requirements, and file scan
+facts. Starting from a logical plan would duplicate DataFusion's physical
+planner inside the adapter.
+
+<SystemDiagram
+  ariaLabel="Relational native execution path"
+  lanes={[
+    {id: 'host', label: 'host'},
+    {id: 'gpu', label: 'gpu', tone: 'gpu'},
+  ]}
+  nodes={[
+    {
+      id: 'df', lane: 'host', col: 0,
+      kind: 'upstream', name: 'DataFusion', note: 'SQL -> physical plan', tone: 'plan',
+      sub: 'datafusion',
+      detail: <>DataFusion owns SQL, logical and physical planning, catalogs,
+        and the CPU operators. Nexus participates through session wiring, not
+        by replacing the frontend.</>,
+    },
+    {
+      id: 'rule', lane: 'host', col: 1,
+      kind: 'adapter', name: 'native rewrite', note: ['datafusion_nexus_native', 'PlanningReport'], tone: 'engine',
+      sub: 'src/session.rs · src/planner/native.rs · src/native/',
+      detail: <>The final native rewrite rule is the relational decision point.
+        It normalizes and validates DataFusion physical candidates, lowers
+        admitted candidates with <code>lower_physical_plan_to_native</code>, and
+        records every <code>Rewritten</code> or <code>Rejected</code> outcome in
+        a <code>PlanningReport</code>. Session wiring also installs a count-only
+        probe and a table-format leaf guard around this rule.</>,
+    },
+    {
+      id: 'native', lane: 'gpu', col: 2,
+      kind: 'engine', name: 'NativeCudfExec', note: 'QueryPlan on cuDF', tone: 'gpu',
+      sub: 'src/native_exec/ · crates/nexus-query-engine',
+      detail: <>DataFusion sees a normal <code>ExecutionPlan</code> wrapper.
+        Inside it is an engine-owned <code>QueryPlan</code>. Host Arrow batches
+        cross to cuDF at the boundary, the native plan runs through
+        <code>nexus-query-engine</code>, and results return according to the
+        sink: host Arrow batches or a GPU-resident handle for composed
+        fragments.</>,
+    },
+    {
+      id: 'cpu', lane: 'host', col: 2,
+      kind: 'fallback', name: 'original operators', note: 'structured rejection', tone: 'reject',
+      sub: 'stock DataFusion execution',
+      detail: <>A rejected CPU-readable candidate keeps its original DataFusion
+        operators. GPU-only table-format leaves cannot execute through a CPU
+        Arrow reader, so the leaf guard converts leftovers into a structured
+        planning error. Either way, rejection is reportable: the
+        <code>FallbackReason</code> says which operator, expression, type,
+        source contract, reservation contract, or policy blocked the native
+        path.</>,
+    },
+    {
+      id: 'out', lane: 'host', col: 3,
+      kind: 'output', name: 'Arrow stream', note: 'same caller contract', tone: 'plain',
+      sub: 'arrow::RecordBatch',
+      detail: <>Both paths produce ordinary Arrow <code>RecordBatch</code>es
+        at the DataFusion boundary. A caller using DataFusion or Flight SQL
+        should not need a different API because a subtree ran on the GPU.</>,
+    },
+  ]}
+  edges={[
+    {from: 'df', to: 'rule'},
+    {from: 'rule', to: 'native', label: 'admitted'},
+    {from: 'rule', to: 'cpu', label: 'rejected', dashed: true},
+    {from: 'native', to: 'out'},
+    {from: 'cpu', to: 'out'},
+  ]}
+  caption={<>The GPU path is a reported rewrite of supported physical subtrees.
+  Rejection preserves CPU-readable DataFusion operators or, for GPU-only
+  table-format leaves, fails before execution with a stable reason code.</>}
+/>
+
+:::warning[Runtime failures do not fall back]
+Fallback is a planning-time boundary. If a CPU-readable candidate is rejected,
+DataFusion keeps the CPU plan. If a GPU-only table-format leaf survives native
+planning, the leaf guard fails planning before a placeholder CPU execution path
+can run. Once `NativeCudfExec` or `NativeCudfComposedExec` starts, native
+runtime failures surface as structured errors and metrics; Nexus does not
+silently reroute that already-started native fragment back to CPU.
+:::
+
+## Fallback policy boundary
+
+`GpuPreferred` means "use native execution where it is proven supported."
+Rejected CPU-readable candidates are reported and left on DataFusion's CPU
+path. GPU-only table-format scan leaves are different: they are metadata-only
+planning leaves with no CPU Arrow reader, so the leaf guard turns a surviving
+leaf into a structured planning error. `GpuOnly` turns the first native rejection
+into a planning error.
+
+## Session wiring
+
+`with_cudf_native` installs three physical optimizer hooks. Only the final
+rewrite is the public relational decision point, but the surrounding hooks are
+part of the operable design.
+
+| Hook | Position | Why it exists |
+| --- | --- | --- |
+| `datafusion_nexus_native_count_only` | Before DataFusion `aggregate_statistics` | Detect count-only shapes before DataFusion's statistics shortcut hides the native candidate. |
+| `datafusion_nexus_native` | After DataFusion's default rules, before the leaf guard | Run final native lowering, fallback policy, fragment composition, and report capture while DataFusion can still validate the rewritten tree. |
+| `datafusion_nexus_table_format_gpu_only_leaf_guard` | Immediately before `SanityCheckPlan` | Fail fast when a GPU-only table-format leaf survived native planning and would otherwise reach a CPU operator. |
+
+:::warning[Public optimizer rule name]
+The public rule name `datafusion_nexus_native` is also the deduplication key.
+Do not rename it casually.
+:::
+
+## Plan-shape admission and execution evidence
+
+Plan-shape admission decides whether a candidate lowers natively at all. It has
+two layers. The adapter first normalizes and validates DataFusion physical
+shapes, expressions, Arrow types, sources, and lowering contracts. Once that
+produces a DataFusion-free `QueryPlan`, engine-side capability analysis does
+capability-first admission for bounded and compiled execution. A native IR
+candidate is not admitted because it matches a broad query family; it is
+admitted because the required node, edge, invariant, and reservation contracts
+are locally supported.
+
+| Boundary | Code | Evidence developers should assert |
+| --- | --- | --- |
+| Adapter candidate selection | `src/native/normalize.rs`, `src/native/validate.rs`, `src/native/lowering/` | `PlanningReport` rows with `CandidateOutcome::Rewritten` or `CandidateOutcome::Rejected` and a `FallbackReason`. |
+| Engine capability analysis | `crates/nexus-query-engine/src/capability/entry.rs` | Per-node, edge, invariant, aggregate-strategy, and envelope-admission decisions. |
+| Strict bounded execution | `crates/nexus-query-engine/src/exec/bounded/strict.rs` | `StrictBoundedContractReport`; every `ReservationRequirement` is satisfied before execution. |
+| Adaptive bounded execution | `crates/nexus-query-engine/src/exec/bounded/adaptive.rs` | `AdaptivePipelineReport`; runtime-action counts and optional memory-history evidence stay adaptive-only. |
+| Runtime execution | `execute_query_plan` / `execute_query_plan_with_gpu_inputs` | `QueryMetrics`, DataFusion metrics, and native TSV reports, not printed plans. |
+
+Adapter-side `NativeCudfExecutionConfig` stores the DataFusion-facing knobs and
+builds the native `ExecutionContext` at the DataFusion/native boundary. The
+engine context then owns execution-time memory control, boundary policy,
+reservation, cache, source scheduling, and retry evidence.
+
+:::warning[Keep strict and adaptive evidence separate]
+Strict and adaptive bounded execution are separate by design. Do not project
+adaptive memory-history rows into strict reports, and do not treat strict
+preflight gaps as adapter-side estimates. Unresolved strict gaps are lower-level
+`cudf-rs` / `libcudf` contract work.
+:::
+
+Aggregates follow the same rule: state must be explicit in the engine. AVG is
+partial `SUM + COUNT`, final merge, then final projection; unsupported lookalikes
+stay rejected until their state semantics are modeled and tested.

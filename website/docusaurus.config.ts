@@ -103,7 +103,7 @@ const config: Config = {
           type: 'docSidebar',
           sidebarId: 'docsSidebar',
           position: 'right',
-          label: 'Guide',
+          label: 'Docs',
         },
         {
           to: '/blog',

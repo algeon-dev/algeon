@@ -23,9 +23,9 @@ You can use it in two ways:
   `NexusGpuBackend` installs GPU execution on DataFusion sessions while sharing
   one admission queue and GPU memory governor across concurrent requests. With
   the `cugraph` feature, add `with_cugraph_sql` for graph algorithms.
-- **As a server** — run the built-in Arrow Flight SQL server and connect from
+- **As a standalone server** — run the built-in Arrow Flight SQL server and connect from
   your backend with the Apache Arrow ADBC Flight SQL driver. See
-  [Integrating Nexus](./using/overview.mdx) to pick an integration surface or
+  [Integrating Nexus](./integration/overview.mdx) to pick an integration surface or
   start a server.
 
 ## Architecture at a glance
@@ -115,13 +115,13 @@ boundary behind the `cugraph_*` SQL functions.
 
 - [Design](./design/index.mdx) — the integration surfaces, execution boundary, and
   diagnostic contracts.
-- [Integrating Nexus](./using/overview.mdx) — embedded Rust setup, Flight SQL
+- [Integrating Nexus](./integration/overview.mdx) — embedded Rust setup, Flight SQL
   server startup, client connection, and server configuration.
 - [cuGraph SQL API](./cugraph/overview.mdx) — discover and call the
   `cugraph_*` table functions.
-- [Build & Test](./building/overview.md) — the full from-source build:
+- [Build & Test](./build/overview.md) — the full from-source build:
   CUDA/compiler prerequisites, environment, upstream native libraries, and
   the verified test surface.
-- [Reference Benchmarks](./reference/benchmarks/) — benchmark evidence and
-  result summaries.
-- [Guides](./guides/iceberg-e2e.md) — local end-to-end operational flows.
+- [Reference](./reference/index.md) — support boundaries, benchmark evidence,
+  and native execution contracts.
+- [Guides](./guides/index.md) — local end-to-end operational flows.

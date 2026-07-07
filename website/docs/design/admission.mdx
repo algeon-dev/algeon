@@ -6,7 +6,7 @@ description: "How DataFusion Nexus admits concurrent GPU queries: one device led
 
 import {FlowDiagram, StackDiagram} from '@site/src/components/design/Diagram';
 
-# Admission & memory governance
+# Admission & Memory Governance
 
 GPU device memory is the one resource a DataFusion session cannot pretend is
 elastic. Nexus therefore treats **admission** — deciding when a query may start
@@ -19,8 +19,11 @@ concept shared by both consumption modes:
   the *same* backend policy. Env vars are a presentation layer, not a second
   admission implementation.
 
-The rest of this page is the contract: who owns the ledger, when admission
-happens, how grants are sized, and which layer enforces what.
+This page governs *runtime* resources. Whether a candidate lowers natively at
+all — plan-shape admission — is a separate plan-time contract described in
+[Native Lowering & Fallback](./native-lowering.mdx). The rest of this page is
+the runtime contract: who owns the ledger, when admission happens, how grants
+are sized, and which layer enforces what.
 
 ## Design rules
 
@@ -176,15 +179,18 @@ Backend-managed sessions **freeze** the backend-owned native keys:
 the shared ledger. Configure those knobs on the builder.
 
 :::warning[Build one backend per process per device set]
-The per-ordinal governor is claimed process-globally: a second backend on the
-same ordinal with the *same* resolved budget silently shares the first one's
-byte ledger (each sees the other's grants), and a *different* budget is
-rejected loudly at build time (`device_governor_capacity_conflict`). Sharing
-the byte ledger does not merge admission queues or slot guarantees, though —
-two backends still jointly promise more `GuaranteedMinimum` slots than the
-device can honor — so share the one backend object instead of building a
-second. The plain `with_cudf_native` path (no backend) keeps the historical
-per-query-full-budget behavior and is only safe for one query at a time.
+The per-ordinal governor is claimed process-globally, and `GuaranteedMinimum`
+claims are exclusive: with the default slot guarantee a second backend on the
+same ordinal is rejected loudly at build time
+(`shared_governor_guaranteed_minimum_conflict`; a mismatched budget fails as
+`device_governor_capacity_conflict`). The claim frees only after the first
+backend's last query handle drains, so a rebuild must drop the old backend
+first. Two `Optimistic` backends may coexist on one ordinal — they then share
+the byte ledger (each sees the other's grants) but not admission queues or
+slot guarantees. In every case, share the one backend object instead of
+building a second. The plain `with_cudf_native` path (no backend) keeps the
+historical per-query-full-budget behavior and is only safe for one query at a
+time.
 :::
 
 ## Grant bands and slot guarantees
@@ -336,14 +342,15 @@ from log archaeology.
 
 ## Where the boundaries are
 
-- **cuGraph:** graph SQL executes eagerly through table functions. Each
-  `cugraph_*` call plans its edge and predicate sources under its own
-  plan-scoped ticket, so the graph context and its nested native fragments —
-  direct, composed, or fallback — share one slot and one grant. A query that
-  mixes separately rewritten native fragments with a cuGraph call currently
-  admits the two plans on two tickets, and the memory-side unification of
-  graph workspaces with the governor is likewise tracked work, not a settled
-  contract.
+- **cuGraph:** graph SQL executes eagerly through table functions. The
+  admission ticket is ambient per query: a `cugraph_*` call executing inside a
+  natively rewritten plan joins that plan's ticket, and a standalone
+  `cugraph_*` query — including its fallback-planned edge and predicate
+  fragments — admits exactly once through its own. Standalone *bounded*
+  sessions (no backend) refuse to execute native fragments inside a
+  `cugraph_*` call — a loud structured error instead of a second full-budget
+  ledger. The memory-side unification of graph workspaces with the governor
+  remains tracked work, not a settled contract.
 - **Capability-first admission is unchanged.** Admission grants memory
   *capacity*; it never re-introduces estimate-driven plan admission. Rejections
   stay local and structured (operator, expression, type, source, reservation

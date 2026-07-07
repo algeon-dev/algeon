@@ -1,5 +1,5 @@
 ---
-sidebar_position: 2
+sidebar_position: 3
 description: Arrow, cuDF, and cuGraph data type support boundaries for native DataFusion Nexus execution.
 ---
 
