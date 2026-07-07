@@ -1,6 +1,5 @@
 //! Tests for DataFrame I/O integration.
 use std::fs;
-#[cfg(unix)]
 use std::os::unix::ffi::OsStringExt;
 
 use cudf::{
@@ -468,7 +467,6 @@ fn test_dataframe_read_parquet_nonexistent_file_reports_not_found() {
     assert_eq!(err.kind(), ErrorKind::DependencyFailure);
 }
 
-#[cfg(unix)]
 #[test]
 fn test_dataframe_read_csv_rejects_non_utf8_path_with_high_level_operation_context() {
     let rt = sample_runtime();

@@ -179,14 +179,14 @@ async fn dataframe_drop_inside_spawn_blocking_is_safe() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn dataframe_returned_from_spawn_blocking_drops_on_async_thread() {
-    // Move DataFrame into spawn_blocking, return it, drop on the async task.
+    // Move DataFrame into spawn_blocking, return it, and drop it after await.
     let df = sample_df();
     let result = tokio::task::spawn_blocking(move || df.sort_values(["id"], SortOptions::new()))
         .await
         .expect("blocking task panicked")
         .expect("sort_values failed");
 
-    // result (DataFrame) is now owned by the async task.
+    // result (DataFrame) is now owned by the async test after await.
     assert_eq!(result.num_rows(), 5);
     // Dropping result here (on the async thread) must not leak or crash.
     drop(result);
@@ -445,7 +445,7 @@ async fn concurrent_sort_on_shared_arc_dataframe() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn async_runtime_stays_responsive_during_dataframe_gpu_ops() {
-    // Heartbeat task: counts async ticks while GPU work runs.
+    // Heartbeat counter: counts async ticks while GPU work runs.
     let ticker = tokio::spawn(async {
         let start = Instant::now();
         let mut ticks = 0usize;

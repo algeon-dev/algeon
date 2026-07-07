@@ -100,6 +100,56 @@ fn normalized_cmake_bool_from_env_reads_optional_env_input() {
 }
 
 #[test]
+fn cmake_cache_value_reads_typed_entries() {
+    let cache = "CMAKE_INSTALL_PREFIX:PATH=/tmp/out\nCUDF_INSTALL_DIR:STRING=/opt/cudf\n";
+
+    assert_eq!(build_support::cmake_cache_value(cache, "CMAKE_INSTALL_PREFIX"), Some("/tmp/out"));
+    assert_eq!(build_support::cmake_cache_value(cache, "CUDF_INSTALL_DIR"), Some("/opt/cudf"));
+    assert_eq!(build_support::cmake_cache_value(cache, "MISSING"), None);
+}
+
+#[test]
+fn cached_cudf_discovery_matches_install_env_and_rejects_stale_paths() {
+    let _guard = ENV_LOCK.lock().unwrap();
+    std::env::set_var("CUDF_INSTALL_DIR", "/opt/current-cudf");
+    std::env::remove_var("CUDF_CPP_BUILD_DIR");
+
+    assert!(build_support::cached_cudf_discovery_matches_env(
+        "CUDF_INSTALL_DIR:STRING=/opt/current-cudf\ncudf_DIR:PATH=/opt/current-cudf/lib/cmake/cudf\n",
+    ));
+    assert!(!build_support::cached_cudf_discovery_matches_env("CUDF_INSTALL_DIR:STRING=/opt/old-cudf\n"));
+    assert!(!build_support::cached_cudf_discovery_matches_env(
+        "CUDF_INSTALL_DIR:STRING=/opt/current-cudf\nCUDF_CPP_BUILD_DIR:STRING=/tmp/old-build\n",
+    ));
+
+    std::env::remove_var("CUDF_INSTALL_DIR");
+}
+
+#[test]
+fn cached_cudf_discovery_matches_build_env_and_rejects_mode_switch_cache() {
+    let _guard = ENV_LOCK.lock().unwrap();
+    std::env::remove_var("CUDF_INSTALL_DIR");
+    std::env::set_var("CUDF_CPP_BUILD_DIR", "/opt/cudf/cpp/build");
+
+    assert!(build_support::cached_cudf_discovery_matches_env("CUDF_CPP_BUILD_DIR:STRING=/opt/cudf/cpp/build\n"));
+    assert!(!build_support::cached_cudf_discovery_matches_env("CUDF_CPP_BUILD_DIR:STRING=/opt/cudf/cpp/old\n"));
+    assert!(!build_support::cached_cudf_discovery_matches_env(
+        "CUDF_INSTALL_DIR:STRING=/opt/old-install\nCUDF_CPP_BUILD_DIR:STRING=/opt/cudf/cpp/build\n",
+    ));
+
+    std::env::remove_var("CUDF_CPP_BUILD_DIR");
+}
+
+#[test]
+fn cached_cudf_discovery_defers_missing_env_to_cmake_contract() {
+    let _guard = ENV_LOCK.lock().unwrap();
+    std::env::remove_var("CUDF_INSTALL_DIR");
+    std::env::remove_var("CUDF_CPP_BUILD_DIR");
+
+    assert!(build_support::cached_cudf_discovery_matches_env("CUDF_INSTALL_DIR:STRING=/opt/old-cudf\n"));
+}
+
+#[test]
 fn supported_target_os_accepts_linux_only() {
     build_support::ensure_supported_target_os("linux").expect("linux target should be accepted");
 
@@ -341,12 +391,6 @@ fn find_executable_in_path_reports_missing_binary() {
 
 #[test]
 fn find_executable_in_path_finds_executable_binaries() {
-    #[cfg(not(unix))]
-    {
-        let _ = ();
-    }
-
-    #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
 

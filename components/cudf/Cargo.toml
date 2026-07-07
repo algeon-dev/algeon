@@ -7,8 +7,25 @@ version = "0.2.0"
 edition = "2021"
 rust-version = "1.94.0"
 license = "Apache-2.0"
-repository = "https://github.com/morristai/cudf-rs"
+repository = "https://github.com/DataFusion-Nexus/cudf-rs"
+homepage = "https://github.com/DataFusion-Nexus/cudf-rs"
 
-[workspace.lints.clippy]
-dbg_macro = "deny"
-todo = "deny"
+[workspace.dependencies]
+ahash = "0.8"
+arrow = "58"
+bitflags = "2"
+cmake = "0.1"
+csv = "1.4"
+cudf-sys = { path = "cudf-sys", version = "0.2.0" }
+indexmap = "2"
+parquet = { version = "=58.3", default-features = false }
+rapids-interop = { path = "rapids-interop", version = "0.2.0" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+smallvec = "1.15"
+static_assertions = "1"
+strum = { version = "0.28", features = ["derive"] }
+tempfile = "3"
+tokio = "1"
+trybuild = "1"
+typed-builder = "0.23"

@@ -809,7 +809,7 @@ impl RuntimeBuilder {
     ///
     /// This is the query-backend path: the runtime keeps one explicit stream,
     /// while allocator accounting is controlled by stream-bound reservation
-    /// leases rather than replacing the memory resource for each task.
+    /// leases rather than replacing the memory resource for each execution.
     pub fn with_device_memory_manager(mut self) -> Self {
         self.mr_selection = MemoryResourceSelection::DeviceMemoryManager;
         self

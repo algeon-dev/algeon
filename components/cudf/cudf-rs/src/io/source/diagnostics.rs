@@ -90,7 +90,8 @@ impl SourceDiagnostics {
         self.file_count
     }
 
-    /// Number of ranged files. Phase 1 accepts only full local files.
+    /// Number of ranged files. The local Parquet path currently accepts only
+    /// full local files.
     pub fn ranged_file_count(&self) -> usize {
         self.ranged_file_count
     }

@@ -60,12 +60,10 @@ fn run_clang_format_check(clang_format: &Path, config_path: &Path, lint_files: &
     );
 }
 
-/// Wipe the CMake build directory when the cached `CMAKE_INSTALL_PREFIX` no
-/// longer matches the cargo `OUT_DIR`. CMake otherwise sometimes drops the
-/// `-DCMAKE_INSTALL_PREFIX=` flag during an auto-reconfigure (e.g. when the
-/// host compiler changed between cargo invocations) and falls back to
-/// `/usr/local`, which then fails the install step with EACCES on systems
-/// where `/usr/local/lib` is not user-writable.
+/// Wipe the CMake build directory when cached configure-time inputs no longer
+/// match the current Cargo build. CMake otherwise keeps stale cache entries
+/// across auto-reconfigures, including the libcudf discovery prefix, and may
+/// silently ignore updated environment variables.
 fn discard_stale_cmake_build_dir() {
     let Ok(out_dir) = env::var("OUT_DIR") else { return };
     let out_dir = PathBuf::from(out_dir);
@@ -73,12 +71,15 @@ fn discard_stale_cmake_build_dir() {
     let cache_path = build_dir.join("CMakeCache.txt");
     let Ok(cache) = fs::read_to_string(&cache_path) else { return };
     let expected = format!("CMAKE_INSTALL_PREFIX:PATH={}", out_dir.display());
-    if cache.lines().any(|line| line == expected) && cached_compilers_match_env(&cache) {
+    if cache.lines().any(|line| line == expected)
+        && cached_compilers_match_env(&cache)
+        && build_support::cached_cudf_discovery_matches_env(&cache)
+    {
         return;
     }
     eprintln!(
         "cudf-sys build.rs: stale CMake cache detected in {}; \
-         removing {} so cmake-rs can configure cleanly with OUT_DIR {}",
+         removing {} so cmake-rs can configure cleanly with OUT_DIR {} and current libcudf discovery env",
         cache_path.display(),
         build_dir.display(),
         out_dir.display(),
@@ -95,16 +96,8 @@ fn cached_compilers_match_env(cache: &str) -> bool {
 
 fn cached_compiler_matches_env(cache: &str, cache_key: &str, env_key: &str) -> bool {
     let Some(expected) = compiler_from_env(env_key) else { return true };
-    let Some(cached) = cmake_cache_value(cache, cache_key) else { return false };
-    paths_equivalent(Path::new(cached), &expected)
-}
-
-fn cmake_cache_value<'a>(cache: &'a str, key: &str) -> Option<&'a str> {
-    cache.lines().find_map(|line| {
-        let (cache_name_and_type, value) = line.split_once('=')?;
-        let (cache_name, _) = cache_name_and_type.split_once(':')?;
-        (cache_name == key).then_some(value)
-    })
+    let Some(cached) = build_support::cmake_cache_value(cache, cache_key) else { return false };
+    build_support::paths_equivalent(Path::new(cached), &expected)
 }
 
 fn compiler_from_env(env_key: &str) -> Option<PathBuf> {
@@ -116,13 +109,6 @@ fn compiler_from_env(env_key: &str) -> Option<PathBuf> {
 
     let path = PathBuf::from(raw);
     if path.components().count() > 1 { Some(path) } else { build_support::find_required_executable(raw).ok() }
-}
-
-fn paths_equivalent(left: &Path, right: &Path) -> bool {
-    match (fs::canonicalize(left), fs::canonicalize(right)) {
-        (Ok(left), Ok(right)) => left == right,
-        _ => left == right,
-    }
 }
 
 /// Locate the pre-built `libcudf.so` based on the same env vars cudf-sys's

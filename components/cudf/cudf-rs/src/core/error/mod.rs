@@ -678,10 +678,11 @@ pub(crate) fn check_status_in(status: cudf_sys::cudf_status_t, operation: &'stat
 
 /// Convert a C shim status, attaching diagnostic details on failure.
 ///
-/// Transitional: during Phase 1 this takes `(&'static str, String)` pairs —
-/// the same shape the legacy API used — and stores them as `details`. A
-/// follow-up phase will split canonical facts out into a separate typed
-/// helper.
+/// Attach non-canonical diagnostic details supplied by FFI boundaries.
+///
+/// Canonical facts should use typed fact helpers; this helper is reserved for
+/// annotations that are useful for diagnosis but are not part of the stable
+/// machine-readable error identity.
 pub(crate) fn check_status_in_with<I>(
     status: cudf_sys::cudf_status_t,
     operation: &'static str,

@@ -24,7 +24,7 @@ async fn test_cudf_api_inside_spawn_blocking_is_thread_safe_and_runtime_responsi
     let data: Vec<i32> = (0..4096).collect();
     let shared = Arc::new(column_from_slice(&data).unwrap());
 
-    // Heartbeat task: if Tokio's async worker gets blocked, tick count will stall.
+    // Heartbeat counter: if Tokio's async worker gets blocked, tick count will stall.
     let ticker = tokio::spawn(async {
         let start = Instant::now();
         let mut ticks = 0usize;

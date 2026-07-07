@@ -221,7 +221,7 @@ impl Expr {
         Expr::Round { input: Box::new(self), decimal_places }
     }
 
-    // -- Null fill / cumulative builders (Phase 2) -------------------------
+    // -- Null fill / cumulative builders ----------------------------------
 
     /// Replace null values with a scalar. Name: `fillna` (matches `Series::fillna`).
     pub fn fillna(self, value: impl IntoLit) -> Expr {
@@ -267,7 +267,7 @@ impl Expr {
         Expr::Scan { input: Box::new(self), agg: ScanAgg::Product }
     }
 
-    // -- String builders (Phase 4a) ----------------------------------------
+    // -- String builders ---------------------------------------------------
 
     /// Access string expression methods for string-specific transforms.
     pub fn str(self) -> ExprStringNamespace {

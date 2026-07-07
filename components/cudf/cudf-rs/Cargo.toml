@@ -6,30 +6,30 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
+homepage.workspace = true
+keywords = ["cuda", "cudf", "dataframe", "gpu", "rapids"]
+categories = ["api-bindings", "science"]
 autoexamples = false
 
-[lints]
-workspace = true
-
 [dependencies]
-cudf-sys = { path = "../cudf-sys" }
-rapids-interop = { path = "../rapids-interop" }
-ahash = "0.8"
-arrow = { version = "58" }
-bitflags = "2"
-csv = "1.4"
-indexmap = "2"
-parquet = { version = "=58.3.0", default-features = false }
-typed-builder = "0.23"
-smallvec = "1.15"
-strum = { version = "0.28", features = ["derive"] }
+cudf-sys.workspace = true
+rapids-interop.workspace = true
+ahash.workspace = true
+arrow.workspace = true
+bitflags.workspace = true
+csv.workspace = true
+indexmap.workspace = true
+parquet.workspace = true
+smallvec.workspace = true
+strum.workspace = true
+typed-builder.workspace = true
 
 
 [dev-dependencies]
-indexmap = { version = "2", features = ["serde"] }
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-static_assertions = "1"
-tempfile = "3"
-tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
-trybuild = "1"
+indexmap = { workspace = true, features = ["serde"] }
+serde.workspace = true
+serde_json.workspace = true
+static_assertions.workspace = true
+tempfile.workspace = true
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
+trybuild.workspace = true
