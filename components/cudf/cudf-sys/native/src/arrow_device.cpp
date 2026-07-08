@@ -815,6 +815,7 @@ cudf_status_t cudf_arrow_device_column_import(
     }
 
     {
+      cudf_current_device_resource_guard current_mr{exec->mr_raw};
       auto imported = cudf::from_arrow_device_column(schema_ptr, &staged_input,
                                                      exec->stream, *exec->mr);
       if (!arrow_device_column_supported(*imported)) {
@@ -864,6 +865,7 @@ cudf_status_t cudf_arrow_device_table_import(
     }
 
     {
+      cudf_current_device_resource_guard current_mr{exec->mr_raw};
       auto imported = cudf::from_arrow_device(schema_ptr, &staged_input,
                                               exec->stream, *exec->mr);
       if (!arrow_device_top_level_supported(*imported)) {

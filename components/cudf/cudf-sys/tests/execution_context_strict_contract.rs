@@ -215,6 +215,7 @@ fn copying_ex_entries_use_required_exec_options() {
 fn column_ex_entries_use_required_exec_options() {
     for (function, end_marker) in [
         ("create_column_from_device_data_impl", "extern \"C\""),
+        ("cudf_column_create_empty_ex", "cudf_status_t cudf_column_create_numeric_ex"),
         ("cudf_column_create_numeric_ex", "cudf_status_t cudf_column_create_fixed_width_from_host_ex"),
         ("cudf_column_create_fixed_width_from_host_ex", "cudf_status_t cudf_column_create_sequence_ex"),
         ("cudf_column_create_sequence_ex", "cudf_status_t cudf_column_copy_ex"),
@@ -248,6 +249,9 @@ fn column_ex_entries_use_required_exec_options() {
 #[test]
 fn column_duplicate_non_ex_production_apis_are_removed() {
     for (name, source, marker) in [
+        ("column native header", COLUMN_H, "cudf_status_t cudf_column_create_empty("),
+        ("column native source", COLUMN_CPP, "cudf_status_t cudf_column_create_empty("),
+        ("column Rust FFI", COLUMN_FFI_RS, "pub fn cudf_column_create_empty("),
         ("column native header", COLUMN_H, "cudf_status_t cudf_column_create_numeric("),
         ("column native source", COLUMN_CPP, "cudf_status_t cudf_column_create_numeric("),
         ("column Rust FFI", COLUMN_FFI_RS, "pub fn cudf_column_create_numeric("),
@@ -1259,17 +1263,27 @@ fn io_ex_entries_use_required_exec_options() {
         (
             IO_PARQUET_CPP,
             "cudf_io_read_parquet_with_metadata_filter_ex",
+            "cudf_status_t cudf_io_read_remote_parquet_with_metadata_filter_ex",
+        ),
+        (
+            IO_PARQUET_CPP,
+            "cudf_io_read_remote_parquet_with_metadata_filter_ex",
             "cudf_status_t cudf_io_read_parquet_multi_with_metadata_filter_ex",
         ),
         (
             IO_PARQUET_CPP,
             "cudf_io_read_parquet_multi_with_metadata_filter_ex",
+            "cudf_status_t cudf_io_read_parquet_multi_mixed_with_metadata_filter_ex",
+        ),
+        (
+            IO_PARQUET_CPP,
+            "cudf_io_read_parquet_multi_mixed_with_metadata_filter_ex",
             "cudf_status_t cudf_io_read_parquet_from_host_buffer_with_metadata_filter_ex",
         ),
         (
             IO_PARQUET_CPP,
             "cudf_io_read_parquet_from_host_buffer_with_metadata_filter_ex",
-            "void cudf_io_free_column_names",
+            "int32_t cudf_io_remote_parquet_kvikio_remote_io_enabled",
         ),
     ] {
         let body = function_region(source, &format!("cudf_status_t {function}"), end_marker);
@@ -1283,6 +1297,38 @@ fn io_ex_entries_use_required_exec_options() {
         );
         assert!(!body.contains("cudf_make_exec_context"), "{function} must not seed execution from ambient defaults");
     }
+}
+
+#[test]
+fn remote_parquet_device_read_orders_external_device_write_after_requested_stream() {
+    let async_body =
+        function_region(IO_PARQUET_CPP, "std::future<size_t> device_read_async", "size_t device_read(size_t offset,");
+    let sync_pointer_body =
+        function_region(IO_PARQUET_CPP, "size_t device_read(size_t offset,", "std::unique_ptr<buffer> device_read");
+    let owned_buffer_body =
+        function_region(IO_PARQUET_CPP, "std::unique_ptr<buffer> device_read", "[[nodiscard]] size_t size()");
+
+    assert!(
+        source_contract_support::contains_normalized(
+            async_body,
+            "stream.synchronize(); cudf_record_synchronized_stream(stream); return handle_.pread(dst, read_size, offset, read_size);"
+        ),
+        "remote Parquet device_read_async must wait for prior requested-stream work before KvikIO writes into the supplied device pointer"
+    );
+    assert!(
+        source_contract_support::contains_normalized(
+            sync_pointer_body,
+            "return device_read_async(offset, size, dst, stream).get();"
+        ) && !sync_pointer_body.contains("handle_.pread"),
+        "remote Parquet synchronous pointer device_read must delegate through synchronized device_read_async"
+    );
+    assert!(
+        source_contract_support::contains_normalized(
+            owned_buffer_body,
+            "device_read(offset, read_size, reinterpret_cast<uint8_t*>(out.data()), stream);"
+        ) && !owned_buffer_body.contains("handle_.pread"),
+        "remote Parquet owned-buffer device_read must delegate through synchronized pointer device_read"
+    );
 }
 
 #[test]

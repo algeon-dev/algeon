@@ -14,6 +14,11 @@ fn column_slice_resolves_active_range_null_count_with_required_exec_options() {
         "cudf_status_t cudf_column_view_slice_ex",
         "cudf_status_t cudf_column_view_to_host_ex",
     );
+    let null_count_ex_body = function_region(
+        COLUMN_CPP,
+        "cudf_status_t cudf_column_view_null_count_ex",
+        "cudf_status_t cudf_column_view_nullable",
+    );
 
     assert!(
         source_contract_support::contains_normalized(
@@ -52,12 +57,18 @@ fn column_slice_resolves_active_range_null_count_with_required_exec_options() {
         "column.cpp still depends on the non-exported cudf::detail::null_count symbol"
     );
     assert!(
-        !slice_ex_body.contains("cudf_current_device_resource_mutex"),
-        "column_view_slice must not serialize null-count computation on the current-device-resource mutex"
+        source_contract_support::contains_normalized(
+            slice_ex_body,
+            "cudf_current_device_resource_guard current_mr{exec->mr_raw}; null_count = view->null_count(start, start + len, exec->stream);"
+        ),
+        "expected column_view_slice_ex to scope lazy active-range null-count computation under the caller's execution memory resource"
     );
     assert!(
-        !slice_ex_body.contains("cudf_current_device_resource_guard"),
-        "column_view_slice must not install the process-global current device resource for null-count computation"
+        source_contract_support::contains_normalized(
+            null_count_ex_body,
+            "return resolve_column_view_null_count(*view, exec->stream, exec->mr_raw, out);"
+        ),
+        "expected column_view_null_count_ex to pass the resolved memory resource into the null-count helper"
     );
 }
 

@@ -8,7 +8,11 @@ use crate::{
 extern "C" {
     // -- Column (owning) -----------------------------------------------------
 
-    pub fn cudf_column_create_empty(type_id: cudf_type_id_t, out: *mut cudf_column_handle) -> cudf_status_t;
+    pub fn cudf_column_create_empty_ex(
+        type_id: cudf_type_id_t,
+        options: *const cudf_exec_options_t,
+        out: *mut cudf_column_handle,
+    ) -> cudf_status_t;
 
     /// Create a fixed-width column by copying from borrowed host buffers with
     /// explicit execution options.

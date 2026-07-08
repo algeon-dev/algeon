@@ -147,6 +147,7 @@ void maybe_fail_strings_host_import(strings_host_import_fault fault) {
 
 cudf_status_t resolve_column_view_null_count(cudf::column_view const &view,
                                              rmm::cuda_stream_view stream,
+                                             rmm::mr::device_memory_resource *mr_raw,
                                              int32_t *out) {
   auto const stored = view.null_count();
   if (stored >= 0) {
@@ -158,6 +159,7 @@ cudf_status_t resolve_column_view_null_count(cudf::column_view const &view,
     return CUDF_SUCCESS;
   }
 
+  cudf_current_device_resource_guard current_mr{mr_raw};
   *out = view.null_count(0, view.size(), stream);
   return CUDF_SUCCESS;
 }
@@ -223,6 +225,7 @@ static cudf_status_t create_column_from_device_data_impl(
     }
 
     if (size == 0) {
+      cudf_current_device_resource_guard current_mr{exec->mr_raw};
       auto col = cudf::make_empty_column(dtype);
       *out = cudf_release_column_handle(std::move(col),
                                         cudf_capture_exec_provenance(*exec));
@@ -340,14 +343,26 @@ cudf_status_t cudf_test_column_view_create_synthetic_string_without_children(
   CUDF_RUST_CATCH
 }
 
-cudf_status_t cudf_column_create_empty(cudf_type_id_t type_id,
-                                       cudf_column_handle *out) {
+cudf_status_t cudf_column_create_empty_ex(cudf_type_id_t type_id,
+                                          cudf_exec_options_t const *options,
+                                          cudf_column_handle *out) {
   CUDF_RUST_NULL_CHECK(out, "out is null");
   *out = nullptr;
   CUDF_RUST_TRY {
     cudf::data_type dtype(to_cudf_type_id(type_id));
-    auto col = cudf::make_empty_column(dtype);
-    *out = cudf_release_column_handle(std::move(col));
+    auto exec = std::unique_ptr<cudf_exec_context>{};
+    cudf_status_t const exec_status =
+        cudf_resolve_required_exec_options(options, &exec);
+    if (exec_status != CUDF_SUCCESS) {
+      return exec_status;
+    }
+
+    {
+      cudf_current_device_resource_guard current_mr{exec->mr_raw};
+      auto col = cudf::make_empty_column(dtype);
+      *out = cudf_release_column_handle(std::move(col),
+                                        cudf_capture_exec_provenance(*exec));
+    }
     return CUDF_SUCCESS;
   }
   CUDF_RUST_CATCH
@@ -535,6 +550,7 @@ cudf_status_t cudf_column_create_sequence_ex(cudf_scalar_handle init,
     }
 
     {
+      cudf_current_device_resource_guard current_mr{exec->mr_raw};
       auto col = cudf::sequence(static_cast<cudf::size_type>(size), init_scalar,
                                 step_scalar, exec->stream, *exec->mr);
       *out = cudf_release_column_handle(std::move(col),
@@ -560,6 +576,7 @@ cudf_status_t cudf_column_copy_ex(cudf_column_handle src,
     }
 
     {
+      cudf_current_device_resource_guard current_mr{exec->mr_raw};
       auto copy =
           cudf_column_state_from_handle(src).deep_copy(exec->stream, *exec->mr);
       *out = cudf_release_column_handle(std::move(copy),
@@ -586,6 +603,7 @@ cudf_status_t cudf_column_copy_from_view_ex(cudf_column_view_handle src,
     }
 
     {
+      cudf_current_device_resource_guard current_mr{exec->mr_raw};
       auto copy = std::make_unique<cudf::column>(view, exec->stream, *exec->mr);
       *out = cudf_release_column_handle(std::move(copy),
                                         cudf_capture_exec_provenance(*exec));
@@ -648,6 +666,7 @@ cudf_status_t cudf_column_copy_from_borrowed_view_ex(
         static_cast<cudf::size_type>(null_count),
         static_cast<cudf::size_type>(offset)};
     {
+      cudf_current_device_resource_guard current_mr{exec->mr_raw};
       auto copy = std::make_unique<cudf::column>(view, exec->stream, *exec->mr);
       *out = cudf_release_column_handle(std::move(copy),
                                         cudf_capture_exec_provenance(*exec));
@@ -824,7 +843,7 @@ cudf_status_t cudf_column_view_null_count_ex(
     }
 
     auto *view = static_cast<cudf::column_view *>(handle);
-    return resolve_column_view_null_count(*view, exec->stream, out);
+    return resolve_column_view_null_count(*view, exec->stream, exec->mr_raw, out);
   }
   CUDF_RUST_CATCH
 }
@@ -892,11 +911,8 @@ cudf_column_view_list_sliced_child_ex(cudf_column_view_handle handle,
     }
 
     cudf::lists_column_view const lists{*view};
-    {
-      cudf_current_device_resource_guard current_mr{exec->mr_raw};
-      auto *child = new cudf::column_view(lists.get_sliced_child(exec->stream));
-      *out = static_cast<cudf_column_view_handle>(child);
-    }
+    auto *child = new cudf::column_view(lists.get_sliced_child(exec->stream));
+    *out = static_cast<cudf_column_view_handle>(child);
     return CUDF_SUCCESS;
   }
   CUDF_RUST_CATCH
@@ -942,12 +958,10 @@ cudf_status_t cudf_column_view_string_chars_ptr_and_size_ex(
     cudf::strings_column_view scv(*view);
     cudf::size_type first_offset = 0;
     cudf::size_type last_offset = 0;
-    {
-      auto const offsets =
-          cudf::strings::detail::get_first_and_last_offset(scv, exec->stream);
-      first_offset = static_cast<cudf::size_type>(offsets.first);
-      last_offset = static_cast<cudf::size_type>(offsets.second);
-    }
+    auto const offsets =
+        cudf::strings::detail::get_first_and_last_offset(scv, exec->stream);
+    first_offset = static_cast<cudf::size_type>(offsets.first);
+    last_offset = static_cast<cudf::size_type>(offsets.second);
     if (first_offset < 0 || last_offset < first_offset) {
       set_error("string chars span is invalid");
       return CUDF_ERROR_INVALID_OPERATION;
@@ -1053,6 +1067,7 @@ cudf_status_t cudf_column_view_slice_ex(cudf_column_view_handle handle,
       } else if (parent_null_count == view->size()) {
         null_count = len;
       } else {
+        cudf_current_device_resource_guard current_mr{exec->mr_raw};
         null_count = view->null_count(start, start + len, exec->stream);
       }
     }
@@ -1207,6 +1222,7 @@ cudf_status_t cudf_column_create_strings_ex(
     }
 
     if (num_strings == 0) {
+      cudf_current_device_resource_guard current_mr{exec->mr_raw};
       auto col =
           cudf::make_empty_column(cudf::data_type(cudf::type_id::STRING));
       *out = cudf_release_column_handle(std::move(col),
@@ -1297,10 +1313,14 @@ cudf_status_t cudf_column_create_strings_ex(
     if (dev_null_mask.has_value()) {
       null_mask_buffer = std::move(*dev_null_mask);
     }
-    auto col = cudf::make_strings_column(
-        static_cast<cudf::size_type>(num_strings), std::move(offsets_col),
-        std::move(*dev_chars), static_cast<cudf::size_type>(null_count),
-        std::move(null_mask_buffer));
+    std::unique_ptr<cudf::column> col;
+    {
+      cudf_current_device_resource_guard current_mr{exec->mr_raw};
+      col = cudf::make_strings_column(
+          static_cast<cudf::size_type>(num_strings), std::move(offsets_col),
+          std::move(*dev_chars), static_cast<cudf::size_type>(null_count),
+          std::move(null_mask_buffer));
+    }
     maybe_fail_strings_host_import(
         strings_host_import_fault::after_make_strings_column);
 
@@ -1389,7 +1409,7 @@ cudf_status_t cudf_column_view_strings_to_host_ex(
         // In cudf 25.x the chars are embedded in the offsets column's parent
         // We need to get chars from the strings_column_view
         cudf::strings_column_view scv(*view);
-        auto chars_ptr = scv.chars_begin(exec->stream);
+        char const *chars_ptr = scv.chars_begin(exec->stream);
 
         // chars_begin does NOT account for view offset, but the offsets
         // already tell us where chars start (offsets_buf[0] = char_begin).

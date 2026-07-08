@@ -1,6 +1,8 @@
 use std::{collections::BTreeSet, fs, path::Path};
 
 const EXPECTED_GUARDS: &[&str] = &[
+    "arrow_device::column_import",
+    "arrow_device::table_import",
     "binary::binary_operation_sv",
     "binary::binary_operation_vs",
     "binary::binary_operation_vv",
@@ -10,9 +12,19 @@ const EXPECTED_GUARDS: &[&str] = &[
     "copying::gather",
     "copying::gather_device_allocated_size",
     "copying::scatter",
+    "copying::shift",
+    "column::copy",
     "column::copy_bitmask",
+    "column::copy_from_borrowed_view",
+    "column::copy_from_view",
+    "column::create_empty_explicit",
+    "column::create_empty_from_device_data",
+    "column::create_empty_strings",
+    "column::create_sequence",
+    "column::create_strings",
     "column::from_scalar",
-    "column::list_sliced_child",
+    "column::view_null_count",
+    "column::view_slice_null_count",
     "datetime::add_calendrical_months_scalar",
     "datetime::extract_component",
     "datetime::floor",
@@ -40,6 +52,8 @@ const EXPECTED_GUARDS: &[&str] = &[
     "io_parquet::read_parquet_with_metadata",
     "io_parquet::read_parquet_with_metadata_filter_file",
     "io_parquet::read_parquet_with_metadata_filter_multi_file",
+    "io_parquet::read_parquet_with_metadata_filter_remote_datasource",
+    "io_parquet::read_parquet_with_metadata_filter_mixed_datasource_multi_file",
     "io_parquet::read_parquet_with_metadata_filter_host_buffer",
     "io_parquet::write_parquet",
     "join::distinct_hash_join_create",
@@ -95,6 +109,12 @@ const EXPECTED_GUARDS: &[&str] = &[
     "sorting::sorted_order",
     "sorting::stable_sort",
     "sorting::stable_sort_by_key",
+    "scalar::copy",
+    "scalar::create_decimal",
+    "scalar::create_duration",
+    "scalar::create_numeric",
+    "scalar::create_string",
+    "scalar::create_timestamp",
     "stream_compaction::distinct",
     "stream_compaction::drop_nulls",
     "strings::contains",
@@ -110,6 +130,7 @@ const EXPECTED_GUARDS: &[&str] = &[
     "strings::to_lower",
     "strings::to_upper",
     "strings::try_to_integers",
+    "table::copy",
     "unary::cast",
     "unary::is_nan",
     "unary::is_not_nan",
@@ -117,6 +138,154 @@ const EXPECTED_GUARDS: &[&str] = &[
     "unary::is_valid",
     "unary::round_half_up",
     "unary::unary_operation",
+];
+
+struct RequiredCurrentResourceGuard {
+    file_name: &'static str,
+    label: &'static str,
+    needle: &'static str,
+    expected_occurrences: usize,
+}
+
+const REQUIRED_CURRENT_RESOURCE_GUARDS: &[RequiredCurrentResourceGuard] = &[
+    RequiredCurrentResourceGuard {
+        file_name: "arrow_device.cpp",
+        label: "arrow_device::column_import",
+        needle: "cudf::from_arrow_device_column(schema_ptr, &staged_input,",
+        expected_occurrences: 1,
+    },
+    RequiredCurrentResourceGuard {
+        file_name: "arrow_device.cpp",
+        label: "arrow_device::table_import",
+        needle: "cudf::from_arrow_device(schema_ptr, &staged_input,",
+        expected_occurrences: 1,
+    },
+    RequiredCurrentResourceGuard {
+        file_name: "column.cpp",
+        label: "column::copy",
+        needle: "cudf_column_state_from_handle(src).deep_copy(exec->stream, *exec->mr)",
+        expected_occurrences: 1,
+    },
+    RequiredCurrentResourceGuard {
+        file_name: "column.cpp",
+        label: "column::copy_from_view",
+        needle: "std::make_unique<cudf::column>(view, exec->stream, *exec->mr)",
+        expected_occurrences: 2,
+    },
+    RequiredCurrentResourceGuard {
+        file_name: "column.cpp",
+        label: "column::create_empty_dtype",
+        needle: "auto col = cudf::make_empty_column(dtype);",
+        expected_occurrences: 2,
+    },
+    RequiredCurrentResourceGuard {
+        file_name: "column.cpp",
+        label: "column::create_empty_strings",
+        needle: "cudf::make_empty_column(cudf::data_type(cudf::type_id::STRING));",
+        expected_occurrences: 1,
+    },
+    RequiredCurrentResourceGuard {
+        file_name: "column.cpp",
+        label: "column::create_sequence",
+        needle: "auto col = cudf::sequence(static_cast<cudf::size_type>(size), init_scalar,",
+        expected_occurrences: 1,
+    },
+    RequiredCurrentResourceGuard {
+        file_name: "column.cpp",
+        label: "column::create_strings",
+        needle: "col = cudf::make_strings_column(",
+        expected_occurrences: 1,
+    },
+    RequiredCurrentResourceGuard {
+        file_name: "column.cpp",
+        label: "column::view_null_count",
+        needle: "view.null_count(0, view.size(), stream)",
+        expected_occurrences: 1,
+    },
+    RequiredCurrentResourceGuard {
+        file_name: "column.cpp",
+        label: "column::view_slice_null_count",
+        needle: "view->null_count(start, start + len, exec->stream)",
+        expected_occurrences: 1,
+    },
+    RequiredCurrentResourceGuard {
+        file_name: "io_csv.cpp",
+        label: "io_csv::write_csv",
+        needle: "cudf::io::write_csv(options, exec->stream)",
+        expected_occurrences: 1,
+    },
+    RequiredCurrentResourceGuard {
+        file_name: "io_json.cpp",
+        label: "io_json::write_json",
+        needle: "cudf::io::write_json(options, exec->stream)",
+        expected_occurrences: 1,
+    },
+    RequiredCurrentResourceGuard {
+        file_name: "io_parquet.cpp",
+        label: "io_parquet::read_parquet",
+        needle: "cudf::io::read_parquet",
+        expected_occurrences: 8,
+    },
+    RequiredCurrentResourceGuard {
+        file_name: "io_parquet.cpp",
+        label: "io_parquet::write_parquet",
+        needle: "cudf::io::write_parquet(options, exec->stream)",
+        expected_occurrences: 1,
+    },
+    RequiredCurrentResourceGuard {
+        file_name: "join_common.hpp",
+        label: "join::hash_join_size",
+        needle: "hash_join->inner_join_size(*probe_view, exec->stream)",
+        expected_occurrences: 1,
+    },
+    RequiredCurrentResourceGuard {
+        file_name: "sorting.cpp",
+        label: "sorting::is_sorted",
+        needle: "cudf::is_sorted(*view, orders, null_orders, exec->stream)",
+        expected_occurrences: 1,
+    },
+    RequiredCurrentResourceGuard {
+        file_name: "scalar.cpp",
+        label: "scalar::create_numeric",
+        needle: "s = make_numeric_scalar<int8_t>(value, valid, exec->stream, *exec->mr);",
+        expected_occurrences: 1,
+    },
+    RequiredCurrentResourceGuard {
+        file_name: "scalar.cpp",
+        label: "scalar::create_decimal",
+        needle: "s = make_decimal_scalar<numeric::decimal32>(value, scale, valid,",
+        expected_occurrences: 1,
+    },
+    RequiredCurrentResourceGuard {
+        file_name: "scalar.cpp",
+        label: "scalar::create_timestamp",
+        needle: "status = make_timestamp_scalar<cudf::timestamp_D>(",
+        expected_occurrences: 1,
+    },
+    RequiredCurrentResourceGuard {
+        file_name: "scalar.cpp",
+        label: "scalar::create_duration",
+        needle: "status = make_duration_scalar<cudf::duration_D>(",
+        expected_occurrences: 1,
+    },
+    RequiredCurrentResourceGuard {
+        file_name: "scalar.cpp",
+        label: "scalar::create_string",
+        needle: "s = std::make_unique<cudf::string_scalar>(str_val, is_valid != 0,",
+        expected_occurrences: 1,
+    },
+    RequiredCurrentResourceGuard {
+        file_name: "scalar.cpp",
+        label: "scalar::copy",
+        needle: "copy = std::make_unique<cudf::numeric_scalar<TYPE>>(",
+        expected_occurrences: 1,
+    },
+    RequiredCurrentResourceGuard {
+        file_name: "table.cpp",
+        label: "table::copy",
+        needle: "cudf_table_state_from_handle(src).deep_copy(exec->stream, *exec->mr)",
+        expected_occurrences: 1,
+    },
 ];
 
 #[test]
@@ -146,6 +315,15 @@ fn current_device_resource_guard_stays_on_explicit_allowlist() {
             let normalized_context = context.replace("*exec->mr", "exec->mr");
             let normalized_guard_block = guard_block.replace("*exec->mr", "exec->mr");
             match classify_allowed_guard(file_name, &normalized_context, &normalized_guard_block) {
+                Some(label) if !guard_block_classifies_same_operation(file_name, label, &normalized_guard_block) => {
+                    violations.push(format!(
+                        "{}:{} allowlisted guard context `{}` does not classify the same sensitive operation inside the guard block:\n{}",
+                        file_name,
+                        index + 1,
+                        label,
+                        guard_block
+                    ));
+                },
                 Some(label) if seen.insert(label) => {},
                 Some(label) => violations.push(format!(
                     "{}:{} duplicate allowlisted guard context `{}`",
@@ -165,15 +343,283 @@ fn current_device_resource_guard_stays_on_explicit_allowlist() {
 
     let expected: BTreeSet<_> = EXPECTED_GUARDS.iter().copied().collect();
     let missing: Vec<_> = expected.difference(&seen).copied().collect();
-    if !violations.is_empty() || !missing.is_empty() {
+    let unexpected: Vec<_> = seen.difference(&expected).copied().collect();
+    if !violations.is_empty() || !missing.is_empty() || !unexpected.is_empty() {
         panic!(
             "cudf_current_device_resource_guard must stay scoped to libcudf APIs without an \
              explicit memory_resource parameter, or APIs proven to use RMM's current resource \
-             for temporaries despite an explicit memory_resource argument.\nviolations:\n{}\nmissing expected guards: {:?}",
+             for temporaries despite an explicit memory_resource argument.\nviolations:\n{}\nmissing expected guards: {:?}\nunexpected classified guards: {:?}",
             violations.join("\n\n"),
-            missing
+            missing,
+            unexpected
         );
     }
+}
+
+#[test]
+fn current_resource_sensitive_libcudf_calls_stay_under_guard() {
+    let src_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("native/src");
+    let mut violations = Vec::new();
+
+    for required in REQUIRED_CURRENT_RESOURCE_GUARDS {
+        let path = src_dir.join(required.file_name);
+        let source = fs::read_to_string(&path).expect("native source file must be readable");
+        let lines: Vec<_> = source.lines().collect();
+        let mut seen = 0usize;
+
+        for (index, line) in lines.iter().enumerate() {
+            if !line.contains(required.needle) {
+                continue;
+            }
+            seen += 1;
+            if !is_line_under_current_resource_guard(&lines, index) {
+                violations.push(format!(
+                    "{}:{} current-resource-sensitive libcudf call `{}` is not under cudf_current_device_resource_guard:\n{}",
+                    required.file_name,
+                    index + 1,
+                    required.label,
+                    context_around(&lines, index)
+                ));
+            }
+        }
+
+        if seen != required.expected_occurrences {
+            violations.push(format!(
+                "{} expected {} occurrence(s) of `{}`, saw {}",
+                required.label, required.expected_occurrences, required.needle, seen
+            ));
+        }
+    }
+
+    if !violations.is_empty() {
+        panic!(
+            "libcudf calls that resolve temporaries from RMM current resource must keep current \
+             resource scoped to the caller's execution MR.\n{}",
+            violations.join("\n\n")
+        );
+    }
+}
+
+#[test]
+fn rmm_device_buffer_stream_allocations_use_explicit_memory_resource() {
+    let src_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("native/src");
+    let mut violations = Vec::new();
+
+    for entry in fs::read_dir(&src_dir).expect("native/src must be readable") {
+        let path = entry.expect("native/src entry must be readable").path();
+        let is_join_common = path.file_name().and_then(|name| name.to_str()) == Some("join_common.hpp");
+        if path.extension().and_then(|ext| ext.to_str()) != Some("cpp") && !is_join_common {
+            continue;
+        }
+
+        let source = fs::read_to_string(&path).expect("native source file must be readable");
+        let lines: Vec<_> = source.lines().collect();
+        for (index, line) in lines.iter().enumerate() {
+            if !line.contains("rmm::device_buffer") {
+                continue;
+            }
+            let statement = statement_from(&lines, index);
+            if statement.contains("stream")
+                && !statement.contains("*exec->mr")
+                && !statement.contains("*exec.mr")
+                && !statement.contains("*mr_")
+            {
+                let file_name = path.file_name().and_then(|name| name.to_str()).unwrap_or("<unknown>");
+                violations.push(format!(
+                    "{}:{} rmm::device_buffer stream allocation must pass an explicit memory resource:\n{}",
+                    file_name,
+                    index + 1,
+                    statement
+                ));
+            }
+        }
+    }
+
+    if !violations.is_empty() {
+        panic!(
+            "rmm::device_buffer(size, stream) uses RMM current resource; pass the caller's explicit \
+             execution memory resource instead.\n{}",
+            violations.join("\n\n")
+        );
+    }
+}
+
+fn is_line_under_current_resource_guard(lines: &[&str], index: usize) -> bool {
+    let ranges = block_ranges(lines);
+    lines[..=index]
+        .iter()
+        .enumerate()
+        .filter(|(_, line)| line.contains("cudf_current_device_resource_guard current_mr"))
+        .any(|(guard_index, _)| {
+            innermost_block_range_containing_line(&ranges, guard_index).is_some_and(|(_, end)| index <= end)
+        })
+}
+
+fn block_ranges(lines: &[&str]) -> Vec<(usize, usize)> {
+    let mut stack = Vec::new();
+    let mut ranges = Vec::new();
+    for (index, line) in lines.iter().enumerate() {
+        for ch in line.chars() {
+            match ch {
+                '{' => stack.push(index),
+                '}' => {
+                    if let Some(start) = stack.pop() {
+                        ranges.push((start, index));
+                    }
+                },
+                _ => {},
+            }
+        }
+    }
+    let end = lines.len().saturating_sub(1);
+    ranges.extend(stack.into_iter().map(|start| (start, end)));
+    ranges
+}
+
+fn innermost_block_range_containing_line(ranges: &[(usize, usize)], line: usize) -> Option<(usize, usize)> {
+    ranges
+        .iter()
+        .copied()
+        .filter(|(start, end)| *start <= line && line <= *end && line < *end)
+        .min_by_key(|(start, end)| end - start)
+}
+
+fn statement_from(lines: &[&str], index: usize) -> String {
+    let mut out = Vec::new();
+    for line in &lines[index..] {
+        out.push(*line);
+        if line.contains(';') {
+            break;
+        }
+    }
+    out.join("\n")
+}
+
+#[test]
+fn guard_scope_detector_rejects_sibling_blocks() {
+    let lines = [
+        "void f() {",
+        "  {",
+        "    cudf_current_device_resource_guard current_mr{exec->mr_raw};",
+        "  }",
+        "  cudf::io::write_csv(options, exec->stream);",
+        "}",
+    ];
+
+    assert!(!is_line_under_current_resource_guard(&lines, 4));
+}
+
+fn guard_block_contains_sensitive_operation(guard_block: &str) -> bool {
+    [
+        "cudf::",
+        "std::make_unique<cudf::",
+        "deep_copy(",
+        "materialize_indices(",
+        "view.null_count(",
+        "view->null_count(",
+        "make_numeric_scalar<",
+        "make_decimal_scalar<",
+        "make_timestamp_scalar<",
+        "make_duration_scalar<",
+        "cudf_groupby_aggregate_from_groupby(",
+        "projected_cross_join_table(",
+        "distinct_join->",
+        "hash_join->",
+        "owner->join->",
+    ]
+    .iter()
+    .any(|needle| guard_block.contains(needle))
+}
+
+fn guard_block_classifies_same_operation(file_name: &str, label: &str, guard_block: &str) -> bool {
+    if !guard_block_contains_sensitive_operation(guard_block) {
+        return false;
+    }
+    if classify_allowed_guard(file_name, guard_block, guard_block) == Some(label) {
+        return true;
+    }
+
+    match label {
+        "column::copy_from_borrowed_view" => {
+            contains_normalized(guard_block, "std::make_unique<cudf::column>(view, exec->stream, exec->mr)")
+        },
+        "column::create_empty_from_device_data" | "column::create_empty_explicit" => {
+            guard_block.contains("auto col = cudf::make_empty_column(dtype)")
+        },
+        "io_parquet::read_parquet_file"
+        | "io_parquet::read_parquet_host_buffer"
+        | "io_parquet::read_parquet_with_metadata"
+        | "io_parquet::read_parquet_with_metadata_filter_file"
+        | "io_parquet::read_parquet_with_metadata_filter_multi_file"
+        | "io_parquet::read_parquet_with_metadata_filter_host_buffer" => {
+            contains_normalized(guard_block, "cudf::io::read_parquet(options, exec->stream, exec->mr)")
+        },
+        "io_parquet::read_parquet_with_metadata_filter_remote_datasource"
+        | "io_parquet::read_parquet_with_metadata_filter_mixed_datasource_multi_file" => contains_normalized(
+            guard_block,
+            "cudf::io::read_parquet(std::move(sources), {}, options, exec->stream, exec->mr)",
+        ),
+        "join::conditional_full_join_size_data_materialize_indices" => {
+            contains_normalized(guard_block, "owner->size_data->materialize_indices(exec->stream, exec->mr)")
+        },
+        "join::filtered_join_probe_materialize_indices" => {
+            contains_normalized(guard_block, "owner->probe->materialize_indices(exec->stream, exec->mr)")
+        },
+        "join::mixed_join_size_data_materialize_pair_indices" => {
+            guard_block.contains("cudf::mixed_inner_join(")
+                || guard_block.contains("cudf::mixed_left_join(")
+                || contains_normalized(
+                    guard_block,
+                    "owner->full_size_data->materialize_indices(exec->stream, exec->mr)",
+                )
+        },
+        "join::mixed_join_size_data_materialize_single_indices" => {
+            contains_normalized(guard_block, "owner->single_size_data->materialize_indices(exec->stream, exec->mr)")
+        },
+        _ => false,
+    }
+}
+
+#[test]
+fn allowlist_classifier_rejects_sensitive_calls_in_sibling_blocks() {
+    let context = r#"
+      {
+        cudf_current_device_resource_guard current_mr{exec->mr_raw};
+      }
+      {
+        auto mask = cudf::copy_bitmask(*view, exec->stream, exec->mr);
+      }
+    "#;
+    let guard_block = r#"
+      {
+        cudf_current_device_resource_guard current_mr{exec->mr_raw};
+      }
+    "#;
+
+    assert_eq!(classify_allowed_guard("column.cpp", context, guard_block), None);
+    assert!(!guard_block_classifies_same_operation("column.cpp", "column::copy_bitmask", guard_block));
+
+    let unrelated_guard_block = r#"
+      {
+        cudf_current_device_resource_guard current_mr{exec->mr_raw};
+        auto rounded = cudf::round(*view, decimal_places, method, exec->stream, exec->mr);
+      }
+    "#;
+    assert!(!guard_block_classifies_same_operation("column.cpp", "column::copy_bitmask", unrelated_guard_block));
+}
+
+#[test]
+fn guard_scope_detector_accepts_guarded_call_after_braced_initializer() {
+    let lines = [
+        "void f() {",
+        "  {",
+        "    cudf_current_device_resource_guard current_mr{exec->mr_raw};",
+        "    cudf::io::write_csv(options, exec->stream);",
+        "  }",
+        "}",
+    ];
+
+    assert!(is_line_under_current_resource_guard(&lines, 3));
 }
 
 fn context_around(lines: &[&str], index: usize) -> String {
@@ -183,23 +629,11 @@ fn context_around(lines: &[&str], index: usize) -> String {
 }
 
 fn guard_block_around(lines: &[&str], index: usize) -> String {
-    let start = (0..index).rev().find(|candidate| lines[*candidate].contains('{')).unwrap_or(index);
-    let mut depth = 0i32;
-    for (offset, line) in lines[start..].iter().enumerate() {
-        for ch in line.chars() {
-            match ch {
-                '{' => depth += 1,
-                '}' => {
-                    depth -= 1;
-                    if depth == 0 {
-                        return lines[start..=start + offset].join("\n");
-                    }
-                },
-                _ => {},
-            }
-        }
+    let ranges = block_ranges(lines);
+    if let Some((start, end)) = innermost_block_range_containing_line(&ranges, index) {
+        return lines[start..=end].join("\n");
     }
-    lines[start..(index + 8).min(lines.len())].join("\n")
+    lines[index..(index + 8).min(lines.len())].join("\n")
 }
 
 fn is_join_source(file_name: &str) -> bool {
@@ -217,6 +651,12 @@ fn contains_normalized(haystack: &str, needle: &str) -> bool {
 
 fn classify_allowed_guard(file_name: &str, context: &str, guard_block: &str) -> Option<&'static str> {
     match file_name {
+        "arrow_device.cpp" if context.contains("cudf::from_arrow_device_column(schema_ptr, &staged_input,") => {
+            Some("arrow_device::column_import")
+        },
+        "arrow_device.cpp" if context.contains("cudf::from_arrow_device(schema_ptr, &staged_input,") => {
+            Some("arrow_device::table_import")
+        },
         "binary.cpp"
             if context
                 .contains("cudf::binary_operation(*lhs_view, *rhs_view, cudf_op, *dtype, exec->stream, exec->mr)") =>
@@ -268,12 +708,52 @@ fn classify_allowed_guard(file_name: &str, context: &str, guard_block: &str) -> 
             Some("copying::copy_if_else")
         },
         "copying.cpp" if context.contains("cudf::shift(*input_view,") => Some("copying::shift"),
-        "column.cpp" if contains_normalized(context, "cudf::copy_bitmask(*view, exec->stream, exec->mr)") => {
+        "column.cpp"
+            if contains_normalized(context, "cudf_column_state_from_handle(src).deep_copy(exec->stream, exec->mr)") =>
+        {
+            Some("column::copy")
+        },
+        "column.cpp" if contains_normalized(guard_block, "cudf::copy_bitmask(*view, exec->stream, exec->mr)") => {
             Some("column::copy_bitmask")
         },
+        "column.cpp"
+            if context.contains("cudf::column_view const view{")
+                && contains_normalized(context, "std::make_unique<cudf::column>(view, exec->stream, exec->mr)") =>
+        {
+            Some("column::copy_from_borrowed_view")
+        },
+        "column.cpp"
+            if contains_normalized(context, "std::make_unique<cudf::column>(view, exec->stream, exec->mr)") =>
+        {
+            Some("column::copy_from_view")
+        },
+        "column.cpp"
+            if context.contains("device_data") && context.contains("auto col = cudf::make_empty_column(dtype)") =>
+        {
+            Some("column::create_empty_from_device_data")
+        },
+        "column.cpp"
+            if context.contains("exec_options_t const *options")
+                && !context.contains("device_data")
+                && context.contains("auto col = cudf::make_empty_column(dtype)") =>
+        {
+            Some("column::create_empty_explicit")
+        },
+        "column.cpp"
+            if guard_block.contains("cudf::make_empty_column") && guard_block.contains("cudf::type_id::STRING") =>
+        {
+            Some("column::create_empty_strings")
+        },
+        "column.cpp"
+            if context.contains("auto col = cudf::sequence(static_cast<cudf::size_type>(size), init_scalar,") =>
+        {
+            Some("column::create_sequence")
+        },
+        "column.cpp" if context.contains("cudf::make_strings_column(") => Some("column::create_strings"),
         "column.cpp" if context.contains("cudf::make_column_from_scalar(") => Some("column::from_scalar"),
-        "column.cpp" if contains_normalized(context, "lists.get_sliced_child(exec->stream)") => {
-            Some("column::list_sliced_child")
+        "column.cpp" if context.contains("view.null_count(0, view.size(), stream)") => Some("column::view_null_count"),
+        "column.cpp" if context.contains("view->null_count(start, start + len, exec->stream)") => {
+            Some("column::view_slice_null_count")
         },
         "datetime.cpp" if context.contains("cudf::datetime::extract_datetime_component(") => {
             Some("datetime::extract_component")
@@ -343,7 +823,7 @@ fn classify_allowed_guard(file_name: &str, context: &str, guard_block: &str) -> 
         "io_csv.cpp" if contains_normalized(context, "cudf::io::read_csv(options, exec->stream, exec->mr)") => {
             Some("io_csv::read_csv")
         },
-        "io_csv.cpp" if contains_normalized(context, "cudf::io::write_csv(options, exec->stream)") => {
+        "io_csv.cpp" if contains_normalized(guard_block, "cudf::io::write_csv(options, exec->stream)") => {
             Some("io_csv::write_csv")
         },
         "io_json.cpp"
@@ -388,6 +868,20 @@ fn classify_allowed_guard(file_name: &str, context: &str, guard_block: &str) -> 
                 Some("io_parquet::read_parquet_with_metadata_filter_multi_file")
             } else if context.contains("host_span<std::byte const>") {
                 Some("io_parquet::read_parquet_with_metadata_filter_host_buffer")
+            } else {
+                None
+            }
+        },
+        "io_parquet.cpp"
+            if contains_normalized(
+                context,
+                "result = cudf::io::read_parquet(std::move(sources), {}, options, exec->stream, exec->mr)",
+            ) =>
+        {
+            if context.contains("make_counted_remote_source(uri, profile") {
+                Some("io_parquet::read_parquet_with_metadata_filter_remote_datasource")
+            } else if context.contains("grouped_row_groups") {
+                Some("io_parquet::read_parquet_with_metadata_filter_mixed_datasource_multi_file")
             } else {
                 None
             }
@@ -641,6 +1135,20 @@ fn classify_allowed_guard(file_name: &str, context: &str, guard_block: &str) -> 
         "search.cpp" if context.contains("cudf::contains(*haystack_view, *needles_view, exec->stream, exec->mr)") => {
             Some("search::contains")
         },
+        "scalar.cpp" if guard_block.contains("make_numeric_scalar<int8_t>") => Some("scalar::create_numeric"),
+        "scalar.cpp" if guard_block.contains("make_decimal_scalar<numeric::decimal32>") => {
+            Some("scalar::create_decimal")
+        },
+        "scalar.cpp" if guard_block.contains("make_timestamp_scalar<cudf::timestamp_D>") => {
+            Some("scalar::create_timestamp")
+        },
+        "scalar.cpp" if guard_block.contains("make_duration_scalar<cudf::duration_D>") => {
+            Some("scalar::create_duration")
+        },
+        "scalar.cpp" if context.contains("std::make_unique<cudf::string_scalar>(str_val") => {
+            Some("scalar::create_string")
+        },
+        "scalar.cpp" if guard_block.contains("std::make_unique<cudf::numeric_scalar<TYPE>>") => Some("scalar::copy"),
         "sorting.cpp" if contains_normalized(context, "cudf::is_sorted(*view, orders, null_orders, exec->stream)") => {
             Some("sorting::is_sorted")
         },
@@ -720,6 +1228,11 @@ fn classify_allowed_guard(file_name: &str, context: &str, guard_block: &str) -> 
         "strings.cpp" if context.contains("cudf::strings::count_characters(") => Some("strings::count_characters"),
         "strings.cpp" if context.contains("cudf::strings::count_bytes(") => Some("strings::count_bytes"),
         "strings.cpp" if context.contains("TRY_CAST semantics") => Some("strings::try_to_integers"),
+        "table.cpp"
+            if contains_normalized(context, "cudf_table_state_from_handle(src).deep_copy(exec->stream, exec->mr)") =>
+        {
+            Some("table::copy")
+        },
         _ => None,
     }
 }
