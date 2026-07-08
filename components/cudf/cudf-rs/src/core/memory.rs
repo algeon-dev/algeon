@@ -19,9 +19,11 @@
 //! Query-style bounded execution should use the device-level manager plus
 //! stream-bound reservations: allocate a [`crate::Runtime`], create an
 //! [`crate::ExecutionBudgetToken`] or [`StreamReservationLease`], and execute
-//! with the lease's stream and manager resource. This keeps one long-lived
-//! allocator adaptor per device while charging allocations to the active
-//! stream-bound reservation.
+//! with the lease's stream and manager resource. Query engines that need one
+//! hard cap across several streams can create a [`ReservationArena`] and attach
+//! stream leases as members under it. This keeps one long-lived allocator
+//! adaptor per device while charging allocations to the active stream-bound
+//! reservation and, when present, its parent arena.
 //!
 //! Explicit CUDA and pool resources remain available for advanced library use,
 //! diagnostics, tests, and non-query workflows. Use
@@ -118,6 +120,122 @@ pub struct DeviceMemoryResourceUsage {
     pub largest_failed_allocation_bytes: u64,
 }
 
+/// Physical CUDA async-pool counters.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DeviceMemoryPoolUsage {
+    pub reserved_current_bytes: u64,
+    pub reserved_high_bytes: u64,
+    pub used_current_bytes: u64,
+    pub used_high_bytes: u64,
+}
+
+/// Action returned by a reclaim-capable device-memory failure callback.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum DeviceMemoryFailureAction {
+    /// Preserve the original allocation failure.
+    Decline,
+    /// Retry the failed allocation without reclaiming through cudf-rs.
+    Retry,
+    /// Trim idle async-pool pages and retry if trimming succeeds.
+    TrimAndRetry,
+}
+
+impl DeviceMemoryFailureAction {
+    fn to_sys(self) -> cudf_sys::cudf_memory_failure_action_t {
+        match self {
+            Self::Decline => cudf_sys::cudf_memory_failure_action_t::CUDF_MEMORY_FAILURE_ACTION_DECLINE,
+            Self::Retry => cudf_sys::cudf_memory_failure_action_t::CUDF_MEMORY_FAILURE_ACTION_RETRY,
+            Self::TrimAndRetry => cudf_sys::cudf_memory_failure_action_t::CUDF_MEMORY_FAILURE_ACTION_TRIM_AND_RETRY,
+        }
+    }
+}
+
+/// Source category for a device-memory allocation failure.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeviceMemoryFailureSource {
+    /// A physical upstream allocation failed.
+    Physical,
+    /// A stream reservation or reservation arena limit rejected the allocation.
+    ReservationLimit,
+    /// A newer native library reported a source this cudf-rs version does not know.
+    Unknown(u32),
+}
+
+impl DeviceMemoryFailureSource {
+    fn from_sys(value: u32) -> Self {
+        match value {
+            value if value == cudf_sys::cudf_memory_failure_source_t::CUDF_MEMORY_FAILURE_SOURCE_PHYSICAL as u32 => {
+                Self::Physical
+            },
+            value
+                if value
+                    == cudf_sys::cudf_memory_failure_source_t::CUDF_MEMORY_FAILURE_SOURCE_RESERVATION_LIMIT as u32 =>
+            {
+                Self::ReservationLimit
+            },
+            other => Self::Unknown(other),
+        }
+    }
+}
+
+/// Allocation-failure payload passed to reclaim-capable failure callbacks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DeviceMemoryFailureInfo {
+    pub device: DeviceId,
+    pub source: DeviceMemoryFailureSource,
+    pub requested_bytes: u64,
+    pub callback_attempt: u32,
+    pub trim_retry_count: u32,
+    pub pool_usage: Option<DeviceMemoryPoolUsage>,
+}
+
+impl DeviceMemoryFailureInfo {
+    const TRIM_RETRY_IDLE_TO_REQUEST_RATIO: u64 = 10;
+
+    fn from_sys(value: cudf_sys::cudf_memory_failure_info_t) -> Self {
+        let pool_usage =
+            (value.flags & cudf_sys::CUDF_MEMORY_FAILURE_INFO_HAS_POOL_USAGE != 0).then_some(DeviceMemoryPoolUsage {
+                reserved_current_bytes: value.pool_reserved_current_bytes,
+                reserved_high_bytes: value.pool_reserved_high_bytes,
+                used_current_bytes: value.pool_used_current_bytes,
+                used_high_bytes: value.pool_used_high_bytes,
+            });
+        let device = if value.device_ordinal >= 0 {
+            DeviceId::from_validated_ordinal_raw(value.device_ordinal)
+        } else {
+            DeviceId::DEFAULT
+        };
+        Self {
+            device,
+            source: DeviceMemoryFailureSource::from_sys(value.failure_source),
+            requested_bytes: value.requested_bytes,
+            callback_attempt: value.callback_attempt,
+            trim_retry_count: value.trim_retry_count,
+            pool_usage,
+        }
+    }
+
+    /// Returns whether trimming idle async-pool pages is likely to help the
+    /// failed allocation, using cudf-rs' default trim-retry policy.
+    pub fn should_trim_and_retry(&self) -> bool {
+        if self.source != DeviceMemoryFailureSource::Physical {
+            return false;
+        }
+        let Some(pool_usage) = self.pool_usage else {
+            return false;
+        };
+        if self.requested_bytes == 0 || self.trim_retry_count > 0 {
+            return false;
+        }
+        if pool_usage.reserved_current_bytes <= pool_usage.used_current_bytes {
+            return false;
+        }
+        let idle_bytes = pool_usage.reserved_current_bytes - pool_usage.used_current_bytes;
+        idle_bytes / self.requested_bytes >= Self::TRIM_RETRY_IDLE_TO_REQUEST_RATIO
+    }
+}
+
 /// Whether cudf-rs has already installed a process-local device memory manager
 /// for a CUDA device, and whether that manager was created with a failure
 /// callback.
@@ -125,6 +243,7 @@ pub struct DeviceMemoryResourceUsage {
 pub struct DeviceMemoryManagerFailureCallbackState {
     pub exists: bool,
     pub failure_callback_installed: bool,
+    pub failure_callback_panicked: bool,
 }
 
 impl From<cudf_sys::cudf_memory_resource_usage_t> for DeviceMemoryResourceUsage {
@@ -142,6 +261,57 @@ impl From<cudf_sys::cudf_memory_resource_usage_t> for DeviceMemoryResourceUsage 
             failed_allocation_count: value.failed_allocation_count,
             largest_failed_allocation_bytes: value.largest_failed_allocation_bytes,
         }
+    }
+}
+
+impl From<cudf_sys::cudf_memory_pool_usage_t> for DeviceMemoryPoolUsage {
+    fn from(value: cudf_sys::cudf_memory_pool_usage_t) -> Self {
+        Self {
+            reserved_current_bytes: value.reserved_current_bytes,
+            reserved_high_bytes: value.reserved_high_bytes,
+            used_current_bytes: value.used_current_bytes,
+            used_high_bytes: value.used_high_bytes,
+        }
+    }
+}
+
+/// Physical base used by the process-local device memory manager.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeviceMemoryManagerBase {
+    /// Use CUDA's stream-ordered async memory pool.
+    CudaAsync { initial_pool_size: Option<usize>, release_threshold: Option<usize> },
+    /// Use RMM's pool resource around the raw CUDA resource.
+    Pool { initial_pool_size: usize, maximum_pool_size: Option<usize> },
+}
+
+impl Default for DeviceMemoryManagerBase {
+    fn default() -> Self {
+        Self::CudaAsync { initial_pool_size: None, release_threshold: None }
+    }
+}
+
+/// Options applied when a device memory manager is first created.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct DeviceMemoryManagerOptions {
+    pub base: DeviceMemoryManagerBase,
+}
+
+impl DeviceMemoryManagerOptions {
+    fn to_sys(self) -> cudf_sys::cudf_memory_manager_options_t {
+        let mut out = cudf_sys::cudf_memory_manager_options_t::default();
+        match self.base {
+            DeviceMemoryManagerBase::CudaAsync { initial_pool_size, release_threshold } => {
+                out.base_kind = cudf_sys::cudf_memory_manager_base_kind_t::CUDF_MEMORY_MANAGER_BASE_CUDA_ASYNC;
+                out.initial_pool_size_bytes = initial_pool_size.unwrap_or(0) as u64;
+                out.release_threshold_bytes = release_threshold.unwrap_or(usize::MAX) as u64;
+            },
+            DeviceMemoryManagerBase::Pool { initial_pool_size, maximum_pool_size } => {
+                out.base_kind = cudf_sys::cudf_memory_manager_base_kind_t::CUDF_MEMORY_MANAGER_BASE_POOL;
+                out.initial_pool_size_bytes = initial_pool_size as u64;
+                out.maximum_pool_size_bytes = maximum_pool_size.unwrap_or(0) as u64;
+            },
+        }
+        out
     }
 }
 
@@ -168,11 +338,54 @@ pub struct ReservationUsage {
     pub largest_failed_allocation_bytes: u64,
 }
 
+/// Usage counters for a query-scoped reservation arena.
+///
+/// The counters include allocations retained by member reservations even after
+/// those members have detached from their streams.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ReservationArenaUsage {
+    pub arena_id: u64,
+    pub active: bool,
+    pub active_members: u64,
+    pub allocation_limit_bytes: u64,
+    pub current_bytes: u64,
+    pub peak_bytes: u64,
+    pub total_bytes: u64,
+    pub current_aligned_bytes: u64,
+    pub peak_aligned_bytes: u64,
+    pub total_allocations: u64,
+    pub current_allocations: u64,
+    pub peak_allocations: u64,
+    pub failed_allocation_count: u64,
+    pub largest_failed_allocation_bytes: u64,
+}
+
 impl From<cudf_sys::cudf_memory_resource_usage_t> for ReservationUsage {
     fn from(value: cudf_sys::cudf_memory_resource_usage_t) -> Self {
         Self {
             reservation_id: value.reserved[0],
             attached: value.reserved[1] != 0,
+            allocation_limit_bytes: value.allocation_limit_bytes,
+            current_bytes: value.current_bytes,
+            peak_bytes: value.peak_bytes,
+            total_bytes: value.total_bytes,
+            current_aligned_bytes: value.current_aligned_bytes,
+            peak_aligned_bytes: value.peak_aligned_bytes,
+            total_allocations: value.total_allocations,
+            current_allocations: value.current_allocations,
+            peak_allocations: value.peak_allocations,
+            failed_allocation_count: value.failed_allocation_count,
+            largest_failed_allocation_bytes: value.largest_failed_allocation_bytes,
+        }
+    }
+}
+
+impl From<cudf_sys::cudf_memory_resource_usage_t> for ReservationArenaUsage {
+    fn from(value: cudf_sys::cudf_memory_resource_usage_t) -> Self {
+        Self {
+            arena_id: value.reserved[0],
+            active: value.reserved[1] != 0,
+            active_members: value.reserved[2],
             allocation_limit_bytes: value.allocation_limit_bytes,
             current_bytes: value.current_bytes,
             peak_bytes: value.peak_bytes,
@@ -227,8 +440,9 @@ pub struct DeviceMemoryResource {
 struct DeviceMemoryResourceHandle {
     raw: NonNull<std::ffi::c_void>,
     device: DeviceId,
-    // Keeps callback state alive until after `raw` is destroyed in Drop.
-    _failure_callback: Option<Arc<FailureCallbackState>>,
+    // Keeps callback states alive until after `raw` and any native upstream
+    // lifetimes retained by derived resources are destroyed in Drop.
+    _failure_callbacks: Vec<Arc<FailureCallbackState>>,
 }
 
 // SAFETY: RMM device_memory_resource implementations are thread-safe — allocate()
@@ -237,14 +451,27 @@ struct DeviceMemoryResourceHandle {
 unsafe impl Send for DeviceMemoryResourceHandle {}
 unsafe impl Sync for DeviceMemoryResourceHandle {}
 
-type FailureCallback = dyn Fn(usize) -> bool + Send + Sync + 'static;
+type FailureCallback = dyn Fn(DeviceMemoryFailureInfo) -> DeviceMemoryFailureAction + Send + Sync + 'static;
 
 struct FailureCallbackState {
     callback: Arc<FailureCallback>,
     panicked: AtomicBool,
 }
 
-unsafe extern "C" fn failure_callback_trampoline(bytes: usize, callback_arg: *mut c_void) -> i32 {
+impl FailureCallbackState {
+    fn new(callback: Arc<FailureCallback>) -> Self {
+        Self { callback, panicked: AtomicBool::new(false) }
+    }
+
+    fn has_panicked(&self) -> bool {
+        self.panicked.load(Ordering::Acquire)
+    }
+}
+
+unsafe extern "C" fn failure_callback_trampoline(
+    info: *const cudf_sys::cudf_memory_failure_info_t,
+    callback_arg: *mut c_void,
+) -> i32 {
     if callback_arg.is_null() {
         return 0;
     }
@@ -252,13 +479,35 @@ unsafe extern "C" fn failure_callback_trampoline(bytes: usize, callback_arg: *mu
     if state.panicked.load(Ordering::Acquire) {
         return 0;
     }
-    match catch_unwind(AssertUnwindSafe(|| (state.callback)(bytes))) {
-        Ok(retry) => i32::from(retry),
+    if info.is_null() {
+        return 0;
+    }
+    let info = DeviceMemoryFailureInfo::from_sys(unsafe { *info });
+    match catch_unwind(AssertUnwindSafe(|| (state.callback)(info))) {
+        Ok(action) => action.to_sys() as i32,
         Err(_) => {
-            state.panicked.store(true, Ordering::Release);
+            if !state.panicked.swap(true, Ordering::AcqRel) {
+                eprintln!(
+                    "[cudf] warning: device memory failure callback panicked while handling allocation failure for {} bytes; disabling callback",
+                    info.requested_bytes
+                );
+            }
             0
         },
     }
+}
+
+fn wrap_simple_failure_callback(callback: Arc<dyn Fn(usize) -> bool + Send + Sync + 'static>) -> Arc<FailureCallback> {
+    Arc::new(move |info| {
+        if info.should_trim_and_retry() {
+            return DeviceMemoryFailureAction::TrimAndRetry;
+        }
+        if callback(info.requested_bytes as usize) {
+            DeviceMemoryFailureAction::Retry
+        } else {
+            DeviceMemoryFailureAction::Decline
+        }
+    })
 }
 
 fn device_manager_failure_callbacks() -> &'static Mutex<HashMap<i32, Arc<FailureCallbackState>>> {
@@ -303,7 +552,19 @@ pub struct StreamReservationLease {
     // stream dropped first, a recycled raw stream value could inherit this
     // dying reservation's accounting.
     reservation: ReservationHandle,
+    arena: Option<ReservationArena>,
     stream: CudaStream,
+    manager: DeviceMemoryManager,
+}
+
+/// Query-scoped parent reservation shared by stream-bound member leases.
+///
+/// Dropping the final handle prevents new members from attaching. Existing
+/// allocations made by member leases remain accounted natively until those GPU
+/// allocations are released.
+#[derive(Clone, Debug)]
+pub struct ReservationArena {
+    handle: Arc<ReservationArenaHandle>,
     manager: DeviceMemoryManager,
 }
 
@@ -312,9 +573,18 @@ struct ReservationHandle {
     raw: NonNull<std::ffi::c_void>,
 }
 
+#[derive(Debug)]
+struct ReservationArenaHandle {
+    raw: NonNull<std::ffi::c_void>,
+}
+
 // SAFETY: native detach/usage paths are synchronized by the manager.
 unsafe impl Send for ReservationHandle {}
 unsafe impl Sync for ReservationHandle {}
+
+// SAFETY: native arena usage/resize/destroy paths are synchronized by the manager.
+unsafe impl Send for ReservationArenaHandle {}
+unsafe impl Sync for ReservationArenaHandle {}
 
 impl DeviceMemoryManager {
     /// Explicitly install the memory domain for `device` (idempotent).
@@ -349,6 +619,15 @@ impl DeviceMemoryManager {
         Self::for_device(device)
     }
 
+    /// Explicitly install the memory domain for `device` with physical-base
+    /// options.
+    ///
+    /// Options only affect first creation for a device. If a manager already
+    /// exists, the existing process-local manager is returned.
+    pub fn install_for_device_with_options(device: DeviceId, options: DeviceMemoryManagerOptions) -> Result<Self> {
+        Self::for_device_with_options(device, options)
+    }
+
     /// Explicitly install the memory domain for `device` with a process-lifetime
     /// allocation-failure callback.
     ///
@@ -356,9 +635,10 @@ impl DeviceMemoryManager {
     /// installs the reservation-aware allocator as the device's current RMM
     /// resource, then wraps that allocator in RMM's failure-callback adaptor.
     /// The callback observes reservation-limit failures and upstream
-    /// out-of-memory failures. It runs inside the allocating thread and must
-    /// be re-entrancy-safe: do not allocate through the same resource, block
-    /// on application locks, or unwind.
+    /// out-of-memory failures, with [`DeviceMemoryFailureInfo::source`]
+    /// distinguishing which retry actions can help. It runs inside the
+    /// allocating thread and must be re-entrancy-safe: do not allocate through
+    /// the same resource, block on application locks, or unwind.
     ///
     /// Later calls for a manager that was already installed with a failure
     /// callback return the existing manager; the original callback remains in
@@ -369,7 +649,49 @@ impl DeviceMemoryManager {
         device: DeviceId,
         callback: Arc<dyn Fn(usize) -> bool + Send + Sync + 'static>,
     ) -> Result<Self> {
-        Self::for_device_with_failure_callback(device, callback)
+        Self::for_device_with_failure_callback_details_and_options(
+            device,
+            wrap_simple_failure_callback(callback),
+            DeviceMemoryManagerOptions::default(),
+        )
+    }
+
+    /// Explicitly install the memory domain for `device` with a
+    /// reclaim-capable process-lifetime allocation-failure callback.
+    pub fn install_for_device_with_failure_callback_details(
+        device: DeviceId,
+        callback: Arc<dyn Fn(DeviceMemoryFailureInfo) -> DeviceMemoryFailureAction + Send + Sync + 'static>,
+    ) -> Result<Self> {
+        Self::for_device_with_failure_callback_details_and_options(
+            device,
+            callback,
+            DeviceMemoryManagerOptions::default(),
+        )
+    }
+
+    /// Explicitly install the memory domain for `device` with physical-base
+    /// options and a process-lifetime allocation-failure callback.
+    pub fn install_for_device_with_failure_callback_and_options(
+        device: DeviceId,
+        callback: Arc<dyn Fn(usize) -> bool + Send + Sync + 'static>,
+        options: DeviceMemoryManagerOptions,
+    ) -> Result<Self> {
+        Self::for_device_with_failure_callback_details_and_options(
+            device,
+            wrap_simple_failure_callback(callback),
+            options,
+        )
+    }
+
+    /// Explicitly install the memory domain for `device` with physical-base
+    /// options and a reclaim-capable process-lifetime allocation-failure
+    /// callback.
+    pub fn install_for_device_with_failure_callback_details_and_options(
+        device: DeviceId,
+        callback: Arc<dyn Fn(DeviceMemoryFailureInfo) -> DeviceMemoryFailureAction + Send + Sync + 'static>,
+        options: DeviceMemoryManagerOptions,
+    ) -> Result<Self> {
+        Self::for_device_with_failure_callback_details_and_options(device, callback, options)
     }
 
     /// Returns whether `device` already has a process-local memory manager and
@@ -384,10 +706,19 @@ impl DeviceMemoryManager {
     /// the current RMM resource for `device`. Later calls return aliases to
     /// the same manager and resource.
     pub fn for_device(device: DeviceId) -> Result<Self> {
+        Self::for_device_with_options(device, DeviceMemoryManagerOptions::default())
+    }
+
+    /// Resolve the process-local manager for `device`, creating it with
+    /// `options` if needed.
+    pub fn for_device_with_options(device: DeviceId, options: DeviceMemoryManagerOptions) -> Result<Self> {
         let _guard = DeviceGuard::new(device)?;
+        let options = options.to_sys();
         let mut manager = ptr::null_mut();
         error::check_status_in_with_details(
-            unsafe { cudf_sys::cudf_memory_manager_for_device(device.ordinal_raw(), &mut manager) },
+            unsafe {
+                cudf_sys::cudf_memory_manager_for_device_with_options(device.ordinal_raw(), &options, &mut manager)
+            },
             "memory::device_memory_manager::for_device",
             [("device", device.ordinal().to_string())],
         )?;
@@ -404,12 +735,14 @@ impl DeviceMemoryManager {
         Ok(Self { handle: Arc::new(DeviceMemoryManagerHandle { raw: manager, device }), resource })
     }
 
-    fn for_device_with_failure_callback(
+    fn for_device_with_failure_callback_details_and_options(
         device: DeviceId,
-        callback: Arc<dyn Fn(usize) -> bool + Send + Sync + 'static>,
+        callback: Arc<dyn Fn(DeviceMemoryFailureInfo) -> DeviceMemoryFailureAction + Send + Sync + 'static>,
+        options: DeviceMemoryManagerOptions,
     ) -> Result<Self> {
         let _guard = DeviceGuard::new(device)?;
         let device_ordinal = device.ordinal_raw();
+        let options = options.to_sys();
         let native_state_before = Self::failure_callback_state_for_device_raw(device)?;
         let callbacks = device_manager_failure_callbacks();
         let mut callbacks = callbacks.lock().map_err(|_| {
@@ -434,22 +767,23 @@ impl DeviceMemoryManager {
             Entry::Occupied(entry) => Arc::clone(entry.get()),
             Entry::Vacant(entry) => {
                 inserted_callback_state = true;
-                Arc::clone(entry.insert(Arc::new(FailureCallbackState { callback, panicked: AtomicBool::new(false) })))
+                Arc::clone(entry.insert(Arc::new(FailureCallbackState::new(callback))))
             },
         };
 
         let callback_arg = Arc::as_ptr(&callback_state) as *mut c_void;
         let mut manager = ptr::null_mut();
         let status = unsafe {
-            cudf_sys::cudf_memory_manager_for_device_with_failure_callback(
+            cudf_sys::cudf_memory_manager_for_device_with_failure_callback_v2_and_options(
                 device.ordinal_raw(),
                 Some(failure_callback_trampoline),
                 callback_arg,
+                &options,
                 &mut manager,
             )
         };
         if status != cudf_sys::CUDF_SUCCESS {
-            let native_state = Self::failure_callback_state_for_device_raw(device);
+            let native_state = Self::native_failure_callback_state_for_device_raw(device);
             if inserted_callback_state
                 && callbacks.get(&device_ordinal).is_some_and(|state| Arc::ptr_eq(state, &callback_state))
                 && native_state.as_ref().is_ok_and(|state| !state.exists || !state.failure_callback_installed)
@@ -481,6 +815,24 @@ impl DeviceMemoryManager {
     }
 
     fn failure_callback_state_for_device_raw(device: DeviceId) -> Result<DeviceMemoryManagerFailureCallbackState> {
+        let mut state = Self::native_failure_callback_state_for_device_raw(device)?;
+        if state.failure_callback_installed {
+            let callbacks = device_manager_failure_callbacks().lock().map_err(|_| {
+                error::Error::new_with(
+                    error::ErrorCode::InvariantViolation,
+                    "memory::device_memory_manager::failure_callback_state_for_device",
+                    "device memory manager failure callback registry mutex was poisoned",
+                )
+            })?;
+            state.failure_callback_panicked =
+                callbacks.get(&device.ordinal_raw()).is_some_and(|state| state.has_panicked());
+        }
+        Ok(state)
+    }
+
+    fn native_failure_callback_state_for_device_raw(
+        device: DeviceId,
+    ) -> Result<DeviceMemoryManagerFailureCallbackState> {
         let _guard = DeviceGuard::new(device)?;
         let mut exists = 0;
         let mut failure_callback_installed = 0;
@@ -498,6 +850,7 @@ impl DeviceMemoryManager {
         Ok(DeviceMemoryManagerFailureCallbackState {
             exists: exists != 0,
             failure_callback_installed: failure_callback_installed != 0,
+            failure_callback_panicked: false,
         })
     }
 
@@ -511,12 +864,71 @@ impl DeviceMemoryManager {
         &self.resource
     }
 
+    /// Read physical CUDA async-pool counters for this manager.
+    pub fn pool_usage(&self) -> Result<DeviceMemoryPoolUsage> {
+        let mut usage = cudf_sys::cudf_memory_pool_usage_t::default();
+        error::check_status_in_with_details(
+            unsafe { cudf_sys::cudf_memory_manager_pool_usage(self.handle.raw.as_ptr(), &mut usage) },
+            "memory::device_memory_manager::pool_usage",
+            [("device", self.device().ordinal().to_string())],
+        )?;
+        Ok(usage.into())
+    }
+
+    /// Explicitly trim idle bytes from this manager's CUDA async pool.
+    pub fn trim_to(&self, keep_bytes: u64) -> Result<()> {
+        error::check_status_in_with_details(
+            unsafe { cudf_sys::cudf_memory_manager_trim_to(self.handle.raw.as_ptr(), keep_bytes) },
+            "memory::device_memory_manager::trim_to",
+            [("device", self.device().ordinal().to_string()), ("keep_bytes", keep_bytes.to_string())],
+        )
+    }
+
     /// Attach a hard live-byte reservation to `stream`.
     pub fn reserve_stream(
         &self,
         stream: &CudaStream,
         reservation_id: u64,
         limit_bytes: usize,
+    ) -> Result<StreamReservationLease> {
+        self.reserve_stream_with_arena(stream, reservation_id, limit_bytes, None)
+    }
+
+    /// Create a query-scoped reservation arena owned by this manager.
+    pub fn reservation_arena(&self, arena_id: u64, limit_bytes: usize) -> Result<ReservationArena> {
+        let mut arena = ptr::null_mut();
+        error::check_status_in_with_details(
+            unsafe {
+                cudf_sys::cudf_memory_manager_create_reservation_arena(
+                    self.handle.raw.as_ptr(),
+                    arena_id,
+                    limit_bytes,
+                    &mut arena,
+                )
+            },
+            "memory::device_memory_manager::reservation_arena",
+            [
+                ("device", self.device().ordinal().to_string()),
+                ("arena_id", arena_id.to_string()),
+                ("limit_bytes", limit_bytes.to_string()),
+            ],
+        )?;
+        let arena = ReservationArenaHandle {
+            raw: error::require_non_null(
+                arena,
+                "memory::device_memory_manager::reservation_arena",
+                "reservation arena",
+            )?,
+        };
+        Ok(ReservationArena { handle: Arc::new(arena), manager: self.clone() })
+    }
+
+    fn reserve_stream_with_arena(
+        &self,
+        stream: &CudaStream,
+        reservation_id: u64,
+        limit_bytes: usize,
+        arena: Option<&ReservationArena>,
     ) -> Result<StreamReservationLease> {
         if stream.device() != self.device() {
             return Err(error::Error::new_with(
@@ -529,10 +941,33 @@ impl DeviceMemoryManager {
             .with_detail("resource", "stream_and_memory_manager")
             .with_detail("reason", "cross_device_stream_reservation"));
         }
+        if let Some(arena) = arena {
+            if arena.manager.device() != self.device() {
+                return Err(error::Error::new_with(
+                    error::ErrorCode::RuntimeBindingMismatch,
+                    "memory::device_memory_manager::reserve_stream",
+                    "reservation arena requires arena and memory manager to be on the same CUDA device",
+                )
+                .with_fact(error::FACT_LEFT_DEVICE, error::DeviceIdFact(arena.manager.device().ordinal_raw()))
+                .with_fact(error::FACT_RIGHT_DEVICE, error::DeviceIdFact(self.device().ordinal_raw()))
+                .with_detail("resource", "arena_and_memory_manager")
+                .with_detail("reason", "cross_device_reservation_arena"));
+            }
+        }
 
         let mut reservation = ptr::null_mut();
-        error::check_status_in_with_details(
-            unsafe {
+        let status = match arena {
+            Some(arena) => unsafe {
+                cudf_sys::cudf_memory_manager_attach_reservation_to_arena(
+                    self.handle.raw.as_ptr(),
+                    stream.as_raw(),
+                    arena.handle.raw.as_ptr(),
+                    reservation_id,
+                    limit_bytes,
+                    &mut reservation,
+                )
+            },
+            None => unsafe {
                 cudf_sys::cudf_memory_manager_attach_reservation(
                     self.handle.raw.as_ptr(),
                     stream.as_raw(),
@@ -541,6 +976,9 @@ impl DeviceMemoryManager {
                     &mut reservation,
                 )
             },
+        };
+        error::check_status_in_with_details(
+            status,
             "memory::device_memory_manager::reserve_stream",
             [
                 ("device", self.device().ordinal().to_string()),
@@ -555,7 +993,51 @@ impl DeviceMemoryManager {
                 "stream reservation",
             )?,
         };
-        Ok(StreamReservationLease { manager: self.clone(), stream: stream.clone(), reservation })
+        Ok(StreamReservationLease { manager: self.clone(), stream: stream.clone(), arena: arena.cloned(), reservation })
+    }
+}
+
+impl ReservationArena {
+    /// Manager that owns this arena.
+    pub fn manager(&self) -> &DeviceMemoryManager {
+        &self.manager
+    }
+
+    /// CUDA device owned by this arena's manager.
+    pub fn device(&self) -> DeviceId {
+        self.manager.device()
+    }
+
+    /// Attach a stream-bound member reservation to this arena.
+    pub fn reserve_stream(
+        &self,
+        stream: &CudaStream,
+        reservation_id: u64,
+        limit_bytes: usize,
+    ) -> Result<StreamReservationLease> {
+        self.manager.reserve_stream_with_arena(stream, reservation_id, limit_bytes, Some(self))
+    }
+
+    /// Snapshot usage counters for this arena.
+    pub fn usage(&self) -> Result<ReservationArenaUsage> {
+        let mut usage = cudf_sys::cudf_memory_resource_usage_t::default();
+        error::check_status_in(
+            unsafe { cudf_sys::cudf_reservation_arena_usage(self.handle.raw.as_ptr(), &mut usage) },
+            "memory::reservation_arena::usage",
+        )?;
+        Ok(usage.into())
+    }
+
+    /// Resize this arena's hard live-byte limit.
+    ///
+    /// Shrinking below current live usage is allowed. Future member allocations
+    /// fail until enough memory is released or the arena is grown again.
+    pub fn resize(&self, limit_bytes: usize) -> Result<()> {
+        error::check_status_in_with_details(
+            unsafe { cudf_sys::cudf_reservation_arena_resize(self.handle.raw.as_ptr(), limit_bytes) },
+            "memory::reservation_arena::resize",
+            [("device", self.device().ordinal().to_string()), ("limit_bytes", limit_bytes.to_string())],
+        )
     }
 }
 
@@ -573,6 +1055,11 @@ impl StreamReservationLease {
     /// Device-level memory resource to place in explicit execution options.
     pub fn memory_resource(&self) -> &DeviceMemoryResource {
         self.manager.resource()
+    }
+
+    /// Parent reservation arena for this lease, when it is an arena member.
+    pub fn reservation_arena(&self) -> Option<&ReservationArena> {
+        self.arena.as_ref()
     }
 
     /// Snapshot usage counters for this reservation.
@@ -603,6 +1090,15 @@ impl StreamReservationLease {
     }
 }
 
+impl Drop for ReservationArenaHandle {
+    fn drop(&mut self) {
+        let status = unsafe { cudf_sys::cudf_reservation_arena_destroy(self.raw.as_ptr()) };
+        if status != cudf_sys::CUDF_SUCCESS {
+            eprintln!("[cudf::ReservationArena] warning: failed to destroy reservation arena");
+        }
+    }
+}
+
 impl Drop for ReservationHandle {
     fn drop(&mut self) {
         let status = unsafe { cudf_sys::cudf_reservation_detach(self.raw.as_ptr()) };
@@ -618,20 +1114,20 @@ impl DeviceMemoryResource {
     }
 
     fn from_created_handle(handle: *mut std::ffi::c_void, device: DeviceId, constructor: &'static str) -> Result<Self> {
-        Self::from_created_handle_with_callback(handle, device, constructor, None)
+        Self::from_created_handle_with_callbacks(handle, device, constructor, Vec::new())
     }
 
-    fn from_created_handle_with_callback(
+    fn from_created_handle_with_callbacks(
         handle: *mut std::ffi::c_void,
         device: DeviceId,
         constructor: &'static str,
-        failure_callback: Option<Arc<FailureCallbackState>>,
+        failure_callbacks: Vec<Arc<FailureCallbackState>>,
     ) -> Result<Self> {
         Ok(Self {
             handle: Arc::new(DeviceMemoryResourceHandle {
                 raw: error::require_non_null(handle, constructor, "device memory resource")?,
                 device,
-                _failure_callback: failure_callback,
+                _failure_callbacks: failure_callbacks,
             }),
         })
     }
@@ -693,6 +1189,42 @@ impl DeviceMemoryResource {
         Self::from_created_handle(handle, device, "memory::device_memory_resource::pool_on")
     }
 
+    /// Create a cudaMallocAsync-backed memory resource handle on the calling
+    /// thread's current device.
+    ///
+    /// `release_threshold = None` keeps the CUDA default used by this crate:
+    /// retain idle memory across synchronizations until an explicit
+    /// [`Self::trim_to`] call.
+    pub fn cuda_async(initial_pool_size: Option<usize>, release_threshold: Option<usize>) -> Result<Self> {
+        Self::cuda_async_on(DeviceId::current()?, initial_pool_size, release_threshold)
+    }
+
+    /// Create a cudaMallocAsync-backed memory resource handle on an explicit
+    /// device.
+    pub fn cuda_async_on(
+        device: DeviceId,
+        initial_pool_size: Option<usize>,
+        release_threshold: Option<usize>,
+    ) -> Result<Self> {
+        let _guard = DeviceGuard::new(device)?;
+        let mut handle = ptr::null_mut();
+        error::check_status_in_with_details(
+            unsafe {
+                cudf_sys::cudf_memory_resource_create_cuda_async(
+                    initial_pool_size.unwrap_or(0),
+                    release_threshold.unwrap_or(usize::MAX) as u64,
+                    &mut handle,
+                )
+            },
+            "memory::device_memory_resource::cuda_async_on",
+            [
+                ("initial_pool_size", initial_pool_size.map_or_else(|| "None".to_string(), |size| size.to_string())),
+                ("release_threshold", release_threshold.map_or_else(|| "None".to_string(), |size| size.to_string())),
+            ],
+        )?;
+        Self::from_created_handle(handle, device, "memory::device_memory_resource::cuda_async_on")
+    }
+
     /// Create a hard-limiting memory resource around this resource.
     ///
     /// The returned resource uses `self` as its upstream allocator and rejects
@@ -720,29 +1252,48 @@ impl DeviceMemoryResource {
                 ("upstream_device", self.device().ordinal().to_string()),
             ],
         )?;
-        Self::from_created_handle(handle, self.device(), "memory::device_memory_resource::limiting")
+        Self::from_created_handle_with_callbacks(
+            handle,
+            self.device(),
+            "memory::device_memory_resource::limiting",
+            self.handle._failure_callbacks.clone(),
+        )
     }
 
     /// Create a failure-callback memory resource around this resource.
     ///
-    /// The returned resource calls `callback(bytes)` when the upstream resource
-    /// throws an RMM out-of-memory error. Returning `true` retries the failed
-    /// allocation; returning `false` preserves the original allocation failure.
+    /// The returned resource first applies cudf-rs' default trim-retry policy
+    /// when the failure payload shows enough idle async-pool memory. If that
+    /// policy does not request a retry, it calls `callback(bytes)`. Returning
+    /// `true` retries the failed allocation; returning `false` preserves the
+    /// original allocation failure.
     ///
     /// The callback runs inside RMM's allocation path on the allocating thread,
     /// so it must be re-entrancy-safe and must not allocate through the same
     /// memory resource. Panics are caught at the FFI boundary and treated as
     /// `false`, so Rust unwinding never crosses into C++.
     pub fn with_failure_callback(&self, callback: Arc<dyn Fn(usize) -> bool + Send + Sync + 'static>) -> Result<Self> {
+        self.with_failure_callback_details(wrap_simple_failure_callback(callback))
+    }
+
+    /// Create a reclaim-capable failure-callback memory resource around this
+    /// resource.
+    ///
+    /// The callback receives device, request, retry-attempt, and async-pool
+    /// usage facts and returns a [`DeviceMemoryFailureAction`].
+    pub fn with_failure_callback_details(
+        &self,
+        callback: Arc<dyn Fn(DeviceMemoryFailureInfo) -> DeviceMemoryFailureAction + Send + Sync + 'static>,
+    ) -> Result<Self> {
         let _guard = DeviceGuard::new(self.device())?;
-        let callback_state = Arc::new(FailureCallbackState { callback, panicked: AtomicBool::new(false) });
+        let callback_state = Arc::new(FailureCallbackState::new(callback));
         let mut handle = ptr::null_mut();
         // SAFETY: handle is initialized to null and set by the C shim on success.
         // The callback state is stored in the returned handle so `callback_arg`
         // remains valid until the native resource is destroyed.
         error::check_status_in_with_details(
             unsafe {
-                cudf_sys::cudf_memory_resource_create_failure_callback(
+                cudf_sys::cudf_memory_resource_create_failure_callback_v2(
                     self.handle.raw.as_ptr(),
                     Some(failure_callback_trampoline),
                     Arc::as_ptr(&callback_state) as *mut c_void,
@@ -752,11 +1303,13 @@ impl DeviceMemoryResource {
             "memory::device_memory_resource::with_failure_callback",
             [("upstream_device", self.device().ordinal().to_string())],
         )?;
-        Self::from_created_handle_with_callback(
+        let mut failure_callbacks = self.handle._failure_callbacks.clone();
+        failure_callbacks.push(callback_state);
+        Self::from_created_handle_with_callbacks(
             handle,
             self.device(),
             "memory::device_memory_resource::with_failure_callback",
-            Some(callback_state),
+            failure_callbacks,
         )
     }
 
@@ -785,7 +1338,12 @@ impl DeviceMemoryResource {
                 ("upstream_device", self.device().ordinal().to_string()),
             ],
         )?;
-        Self::from_created_handle(handle, self.device(), "memory::device_memory_resource::budget_tracking_limit")
+        Self::from_created_handle_with_callbacks(
+            handle,
+            self.device(),
+            "memory::device_memory_resource::budget_tracking_limit",
+            self.handle._failure_callbacks.clone(),
+        )
     }
 
     /// Read usage counters from a budget-tracking memory resource.
@@ -803,6 +1361,26 @@ impl DeviceMemoryResource {
             "memory::device_memory_resource::budget_tracking_usage",
         )?;
         Ok(usage.into())
+    }
+
+    /// Read physical CUDA async-pool counters for this resource.
+    pub fn pool_usage(&self) -> Result<DeviceMemoryPoolUsage> {
+        let mut usage = cudf_sys::cudf_memory_pool_usage_t::default();
+        error::check_status_in_with_details(
+            unsafe { cudf_sys::cudf_memory_resource_pool_usage(self.handle.raw.as_ptr(), &mut usage) },
+            "memory::device_memory_resource::pool_usage",
+            [("device", self.device().ordinal().to_string())],
+        )?;
+        Ok(usage.into())
+    }
+
+    /// Explicitly trim idle bytes from this resource's CUDA async pool.
+    pub fn trim_to(&self, keep_bytes: u64) -> Result<()> {
+        error::check_status_in_with_details(
+            unsafe { cudf_sys::cudf_memory_resource_trim_to(self.handle.raw.as_ptr(), keep_bytes) },
+            "memory::device_memory_resource::trim_to",
+            [("device", self.device().ordinal().to_string()), ("keep_bytes", keep_bytes.to_string())],
+        )
     }
 
     /// The CUDA device this memory resource was created on.
@@ -855,9 +1433,26 @@ impl DeviceMemoryResource {
                     "stats memory resource",
                 )?,
                 device,
-                _failure_callback: None,
+                _failure_callbacks: Vec::new(),
             }),
         })
+    }
+    pub(crate) fn __test_fail_first_allocation(&self) -> Result<Self> {
+        let _guard = DeviceGuard::new(self.device())?;
+        let mut handle = ptr::null_mut();
+        error::check_status_in_with_details(
+            unsafe {
+                cudf_sys::cudf_test_memory_resource_create_fail_first_allocation(self.handle.raw.as_ptr(), &mut handle)
+            },
+            "memory::device_memory_resource::__test_fail_first_allocation",
+            [("upstream_device", self.device().ordinal().to_string())],
+        )?;
+        Self::from_created_handle_with_callbacks(
+            handle,
+            self.device(),
+            "memory::device_memory_resource::__test_fail_first_allocation",
+            self.handle._failure_callbacks.clone(),
+        )
     }
     pub(crate) fn __test_allocation_count(&self) -> Result<i64> {
         let mut out = 0_i64;
@@ -873,12 +1468,12 @@ impl Drop for DeviceMemoryResourceHandle {
     fn drop(&mut self) {
         let status = unsafe { cudf_sys::cudf_memory_resource_destroy(self.raw.as_ptr(), self.device.ordinal_raw()) };
         if status != cudf_sys::CUDF_SUCCESS {
-            if let Some(callback) = self._failure_callback.take() {
+            if !self._failure_callbacks.is_empty() {
                 // Native destroy can be rejected when the resource is installed
                 // as current. In that case the native adaptor may still call
-                // `callback_arg`, so leak only the callback state instead of
-                // leaving a dangling Rust pointer behind.
-                std::mem::forget(callback);
+                // `callback_arg`, so leak only the callback states instead of
+                // leaving dangling Rust pointers behind.
+                std::mem::forget(std::mem::take(&mut self._failure_callbacks));
             }
             eprintln!(
                 "[cudf::DeviceMemoryResourceHandle] warning: failed to destroy memory resource on device {}",

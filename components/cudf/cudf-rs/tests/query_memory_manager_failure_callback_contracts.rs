@@ -21,6 +21,7 @@ fn manager_installed_failure_callback_observes_reservation_failures_and_preserve
     let state = DeviceMemoryManager::failure_callback_state_for_device(device).unwrap();
     assert!(state.exists);
     assert!(state.failure_callback_installed);
+    assert!(!state.failure_callback_panicked);
     let runtime = Runtime::builder().with_device(device).with_device_memory_manager().build().unwrap();
 
     assert_eq!(

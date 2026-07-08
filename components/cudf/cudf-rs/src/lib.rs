@@ -129,11 +129,13 @@
 //!   services should claim devices explicitly at startup via
 //!   [`DeviceMemoryManager::install_for_device`].
 //! - **Pipeline** — one pipeline = one [`Runtime`] (its own CUDA stream),
-//!   plus a [`StreamReservationLease`] when the pipeline needs a memory
-//!   budget. Pipelines on the same device share the physical pool and are
-//!   partitioned logically by reservation accounting. Anti-pattern: do
-//!   **not** share one `Runtime` across pipelines — they would serialize on
-//!   its stream and their budget accounting would blur together.
+//!   plus a [`StreamReservationLease`] when the pipeline needs its own memory
+//!   budget. Query engines can create a [`ReservationArena`] as a parent
+//!   budget and attach multiple stream leases as members under it. Pipelines
+//!   on the same device share the physical pool and are partitioned logically
+//!   by reservation accounting. Anti-pattern: do **not** share one `Runtime`
+//!   across pipelines — they would serialize on its stream and their budget
+//!   accounting would blur together.
 //! - **Operation** — every operation executes with explicit
 //!   device + stream + memory resource. The memory resource governs
 //!   **outputs only**, exactly like upstream libcudf's `mr` parameter;
@@ -232,8 +234,10 @@ pub mod testing;
 pub use core::{
     error::{BudgetExhaustionDetail, Error, ErrorCode, ErrorKind, ErrorStatus, Result},
     memory::{
-        DeviceMemoryManager, DeviceMemoryManagerFailureCallbackState, DeviceMemoryResource, DeviceMemoryResourceUsage,
-        ReservationUsage, StreamReservationLease,
+        DeviceMemoryFailureAction, DeviceMemoryFailureInfo, DeviceMemoryFailureSource, DeviceMemoryManager,
+        DeviceMemoryManagerBase, DeviceMemoryManagerFailureCallbackState, DeviceMemoryManagerOptions,
+        DeviceMemoryPoolUsage, DeviceMemoryResource, DeviceMemoryResourceUsage, ReservationArena,
+        ReservationArenaUsage, ReservationUsage, StreamReservationLease,
     },
     scalar::IntoRuntimeScalar,
     types::{CudfType, DataType, NullEquality, NullPolicy, TimestampResolution, TypeId},

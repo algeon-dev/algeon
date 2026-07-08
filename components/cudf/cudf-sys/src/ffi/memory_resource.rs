@@ -1,8 +1,9 @@
 use std::os::raw::c_void;
 
 use crate::{
-    cudf_memory_failure_callback_t, cudf_memory_manager_handle, cudf_memory_resource_handle,
-    cudf_memory_resource_usage_t, cudf_reservation_handle, cudf_status_t, cudf_stream_handle,
+    cudf_memory_failure_callback_t, cudf_memory_failure_callback_v2_t, cudf_memory_manager_handle,
+    cudf_memory_manager_options_t, cudf_memory_pool_usage_t, cudf_memory_resource_handle, cudf_memory_resource_usage_t,
+    cudf_reservation_arena_handle, cudf_reservation_handle, cudf_status_t, cudf_stream_handle,
 };
 
 extern "C" {
@@ -25,6 +26,13 @@ extern "C" {
         out: *mut cudf_memory_resource_handle,
     ) -> cudf_status_t;
 
+    /// Create an owned cudaMallocAsync-backed memory resource handle.
+    pub fn cudf_memory_resource_create_cuda_async(
+        initial_pool_size: usize,
+        release_threshold: u64,
+        out: *mut cudf_memory_resource_handle,
+    ) -> cudf_status_t;
+
     /// Create an owned limiting memory resource handle around `upstream`.
     pub fn cudf_memory_resource_create_limiting(
         upstream: cudf_memory_resource_handle,
@@ -36,6 +44,14 @@ extern "C" {
     pub fn cudf_memory_resource_create_failure_callback(
         upstream: cudf_memory_resource_handle,
         callback: cudf_memory_failure_callback_t,
+        callback_arg: *mut c_void,
+        out: *mut cudf_memory_resource_handle,
+    ) -> cudf_status_t;
+
+    /// Create an owned reclaim-capable failure-callback memory resource handle around `upstream`.
+    pub fn cudf_memory_resource_create_failure_callback_v2(
+        upstream: cudf_memory_resource_handle,
+        callback: cudf_memory_failure_callback_v2_t,
         callback_arg: *mut c_void,
         out: *mut cudf_memory_resource_handle,
     ) -> cudf_status_t;
@@ -53,8 +69,24 @@ extern "C" {
         out: *mut cudf_memory_resource_usage_t,
     ) -> cudf_status_t;
 
+    /// Read physical CUDA async-pool counters from an async-pool-backed resource.
+    pub fn cudf_memory_resource_pool_usage(
+        handle: cudf_memory_resource_handle,
+        out: *mut cudf_memory_pool_usage_t,
+    ) -> cudf_status_t;
+
+    /// Explicitly trim idle bytes from an async-pool-backed resource.
+    pub fn cudf_memory_resource_trim_to(handle: cudf_memory_resource_handle, keep_bytes: u64) -> cudf_status_t;
+
     /// Resolve the process-local reservation-aware memory manager for one CUDA device.
     pub fn cudf_memory_manager_for_device(device: i32, out: *mut cudf_memory_manager_handle) -> cudf_status_t;
+
+    /// Resolve the process-local reservation-aware memory manager for one CUDA device with options.
+    pub fn cudf_memory_manager_for_device_with_options(
+        device: i32,
+        options: *const cudf_memory_manager_options_t,
+        out: *mut cudf_memory_manager_handle,
+    ) -> cudf_status_t;
 
     /// Resolve the process-local reservation-aware memory manager for one CUDA
     /// device, installing a process-lifetime failure callback if this call
@@ -63,6 +95,36 @@ extern "C" {
         device: i32,
         callback: cudf_memory_failure_callback_t,
         callback_arg: *mut c_void,
+        out: *mut cudf_memory_manager_handle,
+    ) -> cudf_status_t;
+
+    /// Resolve the process-local reservation-aware memory manager for one CUDA
+    /// device, installing a reclaim-capable process-lifetime failure callback
+    /// if this call creates the manager.
+    pub fn cudf_memory_manager_for_device_with_failure_callback_v2(
+        device: i32,
+        callback: cudf_memory_failure_callback_v2_t,
+        callback_arg: *mut c_void,
+        out: *mut cudf_memory_manager_handle,
+    ) -> cudf_status_t;
+
+    /// Resolve the process-local reservation-aware memory manager for one CUDA
+    /// device with options and a process-lifetime failure callback.
+    pub fn cudf_memory_manager_for_device_with_failure_callback_and_options(
+        device: i32,
+        callback: cudf_memory_failure_callback_t,
+        callback_arg: *mut c_void,
+        options: *const cudf_memory_manager_options_t,
+        out: *mut cudf_memory_manager_handle,
+    ) -> cudf_status_t;
+
+    /// Resolve the process-local reservation-aware memory manager for one CUDA
+    /// device with options and a reclaim-capable process-lifetime failure callback.
+    pub fn cudf_memory_manager_for_device_with_failure_callback_v2_and_options(
+        device: i32,
+        callback: cudf_memory_failure_callback_v2_t,
+        callback_arg: *mut c_void,
+        options: *const cudf_memory_manager_options_t,
         out: *mut cudf_memory_manager_handle,
     ) -> cudf_status_t;
 
@@ -79,10 +141,37 @@ extern "C" {
         out: *mut cudf_memory_resource_handle,
     ) -> cudf_status_t;
 
+    /// Read physical CUDA async-pool counters for a device memory manager.
+    pub fn cudf_memory_manager_pool_usage(
+        manager: cudf_memory_manager_handle,
+        out: *mut cudf_memory_pool_usage_t,
+    ) -> cudf_status_t;
+
+    /// Explicitly trim idle bytes from a device memory manager's async pool.
+    pub fn cudf_memory_manager_trim_to(manager: cudf_memory_manager_handle, keep_bytes: u64) -> cudf_status_t;
+
     /// Attach a hard live-byte reservation to a CUDA stream.
     pub fn cudf_memory_manager_attach_reservation(
         manager: cudf_memory_manager_handle,
         stream: cudf_stream_handle,
+        reservation_id: u64,
+        limit_bytes: usize,
+        out: *mut cudf_reservation_handle,
+    ) -> cudf_status_t;
+
+    /// Create a query-scoped reservation arena for a memory manager.
+    pub fn cudf_memory_manager_create_reservation_arena(
+        manager: cudf_memory_manager_handle,
+        arena_id: u64,
+        limit_bytes: usize,
+        out: *mut cudf_reservation_arena_handle,
+    ) -> cudf_status_t;
+
+    /// Attach a stream-bound reservation as an arena member.
+    pub fn cudf_memory_manager_attach_reservation_to_arena(
+        manager: cudf_memory_manager_handle,
+        stream: cudf_stream_handle,
+        arena: cudf_reservation_arena_handle,
         reservation_id: u64,
         limit_bytes: usize,
         out: *mut cudf_reservation_handle,
@@ -99,6 +188,18 @@ extern "C" {
 
     /// Detach a reservation from its stream and destroy the reservation handle.
     pub fn cudf_reservation_detach(reservation: cudf_reservation_handle) -> cudf_status_t;
+
+    /// Read usage counters for a live reservation arena.
+    pub fn cudf_reservation_arena_usage(
+        arena: cudf_reservation_arena_handle,
+        out: *mut cudf_memory_resource_usage_t,
+    ) -> cudf_status_t;
+
+    /// Resize the live-byte limit for a reservation arena.
+    pub fn cudf_reservation_arena_resize(arena: cudf_reservation_arena_handle, limit_bytes: usize) -> cudf_status_t;
+
+    /// Destroy a reservation arena handle.
+    pub fn cudf_reservation_arena_destroy(arena: cudf_reservation_arena_handle) -> cudf_status_t;
 
     /// Destroy a memory resource created by this shim on its owning device.
     pub fn cudf_memory_resource_destroy(handle: cudf_memory_resource_handle, device: i32) -> cudf_status_t;

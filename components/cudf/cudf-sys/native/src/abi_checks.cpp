@@ -104,6 +104,59 @@ static_assert(offsetof(cudf_memory_resource_usage_t, struct_size) == 0,
 static_assert(sizeof(static_cast<cudf_memory_resource_usage_t*>(nullptr)->reserved) ==
                 sizeof(uint64_t) * CUDF_MEMORY_RESOURCE_USAGE_RESERVED_SLOTS,
               "cudf_memory_resource_usage_t::reserved must expose the advertised slots");
+static_assert(sizeof(cudf_memory_manager_base_kind_t) == sizeof(int32_t),
+              "cudf_memory_manager_base_kind_t must be 32-bit");
+static_assert(sizeof(cudf_memory_failure_action_t) == sizeof(int32_t),
+              "cudf_memory_failure_action_t must be 32-bit");
+static_assert(CUDF_MEMORY_FAILURE_ACTION_DECLINE == 0);
+static_assert(CUDF_MEMORY_FAILURE_ACTION_RETRY == 1);
+static_assert(CUDF_MEMORY_FAILURE_ACTION_TRIM_AND_RETRY == 2);
+static_assert(sizeof(cudf_memory_failure_source_t) == sizeof(int32_t),
+              "cudf_memory_failure_source_t must be 32-bit");
+static_assert(CUDF_MEMORY_FAILURE_SOURCE_PHYSICAL == 0);
+static_assert(CUDF_MEMORY_FAILURE_SOURCE_RESERVATION_LIMIT == 1);
+static_assert(std::is_standard_layout_v<cudf_memory_pool_usage_t>,
+              "cudf_memory_pool_usage_t must be standard layout");
+static_assert(offsetof(cudf_memory_pool_usage_t, struct_size) == 0,
+              "cudf_memory_pool_usage_t::struct_size must be the first field");
+static_assert(sizeof(static_cast<cudf_memory_pool_usage_t*>(nullptr)->reserved) ==
+                sizeof(uint64_t) * CUDF_MEMORY_POOL_USAGE_RESERVED_SLOTS,
+              "cudf_memory_pool_usage_t::reserved must expose the advertised slots");
+static_assert(std::is_standard_layout_v<cudf_memory_failure_info_t>,
+              "cudf_memory_failure_info_t must be standard layout");
+static_assert(offsetof(cudf_memory_failure_info_t, struct_size) == 0,
+              "cudf_memory_failure_info_t::struct_size must be the first field");
+static_assert(sizeof(static_cast<cudf_memory_failure_info_t*>(nullptr)->device_ordinal) ==
+                sizeof(int32_t),
+              "cudf_memory_failure_info_t::device_ordinal must be 32-bit");
+static_assert(sizeof(static_cast<cudf_memory_failure_info_t*>(nullptr)->flags) ==
+                sizeof(uint32_t),
+              "cudf_memory_failure_info_t::flags must be 32-bit");
+static_assert(sizeof(static_cast<cudf_memory_failure_info_t*>(nullptr)->failure_source) ==
+                sizeof(uint32_t),
+              "cudf_memory_failure_info_t::failure_source must be 32-bit");
+static_assert(sizeof(static_cast<cudf_memory_failure_info_t*>(nullptr)
+                       ->reserved_failure_info_padding) == sizeof(uint32_t),
+              "cudf_memory_failure_info_t::reserved_failure_info_padding must be 32-bit");
+static_assert(sizeof(static_cast<cudf_memory_failure_info_t*>(nullptr)->failure_source) +
+                  sizeof(static_cast<cudf_memory_failure_info_t*>(nullptr)
+                           ->reserved_failure_info_padding) +
+                  sizeof(static_cast<cudf_memory_failure_info_t*>(nullptr)->reserved) ==
+                sizeof(uint64_t) * CUDF_MEMORY_FAILURE_INFO_RESERVED_SLOTS,
+              "cudf_memory_failure_info_t failure source must fit in the advertised reserved slots");
+static_assert(std::is_standard_layout_v<cudf_memory_manager_options_t>,
+              "cudf_memory_manager_options_t must be standard layout");
+static_assert(offsetof(cudf_memory_manager_options_t, struct_size) == 0,
+              "cudf_memory_manager_options_t::struct_size must be the first field");
+static_assert(sizeof(static_cast<cudf_memory_manager_options_t*>(nullptr)->base_kind) ==
+                sizeof(int32_t),
+              "cudf_memory_manager_options_t::base_kind must be 32-bit");
+static_assert(sizeof(static_cast<cudf_memory_manager_options_t*>(nullptr)->flags) ==
+                sizeof(uint32_t),
+              "cudf_memory_manager_options_t::flags must be 32-bit");
+static_assert(sizeof(static_cast<cudf_memory_manager_options_t*>(nullptr)->reserved) ==
+                sizeof(uint64_t) * CUDF_MEMORY_MANAGER_OPTIONS_RESERVED_SLOTS,
+              "cudf_memory_manager_options_t::reserved must expose the advertised slots");
 static_assert(std::is_standard_layout_v<cudf_row_predicate_node_t>,
               "cudf_row_predicate_node_t must be standard layout");
 static_assert(offsetof(cudf_row_predicate_node_t, kind) == 0,
@@ -156,6 +209,8 @@ static_assert(CUDF_ERROR_UNKNOWN == 8);
 static_assert(CUDF_ERROR_FATAL_CUDA == 9);
 static_assert(CUDF_ERROR_INVALID_ARGUMENT == 10);
 static_assert(CUDF_ERROR_UNSUPPORTED == 11);
+static_assert(CUDF_MEMORY_MANAGER_BASE_CUDA_ASYNC == 0);
+static_assert(CUDF_MEMORY_MANAGER_BASE_POOL == 1);
 
 static_assert(CUDF_DEVICE_ATTRIBUTE_MULTIPROCESSOR_COUNT == 1);
 static_assert(CUDF_DEVICE_ATTRIBUTE_MANAGED_MEMORY == 2);

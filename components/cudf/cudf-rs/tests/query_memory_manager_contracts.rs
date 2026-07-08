@@ -2,12 +2,13 @@ mod common;
 
 use std::sync::{
     Arc,
-    atomic::{AtomicBool, AtomicUsize, Ordering},
+    atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering},
 };
 
 use cudf::{
-    DeviceId, DeviceMemoryManager, DeviceMemoryResource, ErrorCode, ErrorKind, ExecutionBudgetRequest,
-    ExecutionBudgetStatus, Runtime, SortOptions, StreamReservationLease, testing::prelude::*,
+    DeviceId, DeviceMemoryFailureAction, DeviceMemoryFailureSource, DeviceMemoryManager, DeviceMemoryManagerBase,
+    DeviceMemoryManagerOptions, DeviceMemoryResource, ErrorCode, ErrorKind, ExecutionBudgetEnforcement,
+    ExecutionBudgetRequest, ExecutionBudgetStatus, Runtime, SortOptions, StreamReservationLease, testing::prelude::*,
 };
 
 fn assert_send_sync<T: Send + Sync>() {}
@@ -24,6 +25,21 @@ fn current_device_resource_raw_value() -> usize {
     out as usize
 }
 
+fn expect_device_buffer_error(result: cudf::Result<cudf::core::DeviceBuffer>) -> cudf::Error {
+    match result {
+        Ok(_) => panic!("expected device buffer allocation to fail"),
+        Err(error) => error,
+    }
+}
+
+fn failure_source_code(source: DeviceMemoryFailureSource) -> u32 {
+    match source {
+        DeviceMemoryFailureSource::Physical => 0,
+        DeviceMemoryFailureSource::ReservationLimit => 1,
+        DeviceMemoryFailureSource::Unknown(value) => value,
+    }
+}
+
 #[test]
 fn default_runtime_uses_device_level_memory_manager_resource() {
     let rt = Runtime::builder().build().unwrap();
@@ -37,8 +53,237 @@ fn default_runtime_uses_device_level_memory_manager_resource() {
 }
 
 #[test]
+fn cuda_async_resource_exposes_pool_usage_and_explicit_trim() {
+    let device = DeviceId::current().unwrap();
+    let allocation_size = 32 * 1024 * 1024;
+    let mr = DeviceMemoryResource::cuda_async_on(device, None, None).unwrap();
+    let runtime = Runtime::builder().with_device(device).with_memory_resource(mr.clone()).build().unwrap();
+
+    let buffer = runtime.device_buffer(allocation_size).unwrap();
+    runtime.synchronize().unwrap();
+    drop(buffer);
+    runtime.synchronize().unwrap();
+
+    let before = mr.pool_usage().unwrap();
+    assert!(
+        before.reserved_current_bytes >= allocation_size as u64,
+        "async pool should retain idle bytes before explicit trim: {before:?}"
+    );
+    assert_eq!(before.used_current_bytes, 0);
+
+    mr.trim_to(0).unwrap();
+
+    let after = mr.pool_usage().unwrap();
+    assert_eq!(after.used_current_bytes, 0);
+    assert!(
+        after.reserved_current_bytes < before.reserved_current_bytes,
+        "explicit trim should release idle async-pool bytes: before={before:?} after={after:?}"
+    );
+}
+
+#[test]
+fn device_memory_manager_default_async_pool_exposes_usage_and_trim() {
+    let device = DeviceId::current().unwrap();
+    let manager = DeviceMemoryManager::install_for_device_with_options(
+        device,
+        DeviceMemoryManagerOptions {
+            base: DeviceMemoryManagerBase::CudaAsync { initial_pool_size: None, release_threshold: None },
+        },
+    )
+    .unwrap();
+
+    manager.trim_to(0).unwrap();
+    let usage = manager.pool_usage().unwrap();
+    assert!(usage.reserved_current_bytes >= usage.used_current_bytes);
+    assert!(usage.reserved_high_bytes >= usage.reserved_current_bytes);
+    assert!(usage.used_high_bytes >= usage.used_current_bytes);
+}
+
+#[test]
+fn failure_callback_trims_idle_async_pool_and_retries_before_rust_callback() {
+    let device = DeviceId::current().unwrap();
+    let idle_bytes = 128 * 1024 * 1024;
+    let request_bytes = 1 * 1024 * 1024;
+    let async_mr = DeviceMemoryResource::cuda_async_on(device, None, None).unwrap();
+    let priming_runtime =
+        Runtime::builder().with_device(device).with_memory_resource(async_mr.clone()).build().unwrap();
+
+    let buffer = priming_runtime.device_buffer(idle_bytes).unwrap();
+    priming_runtime.synchronize().unwrap();
+    drop(buffer);
+    priming_runtime.synchronize().unwrap();
+
+    let before = async_mr.pool_usage().unwrap();
+    assert_eq!(before.used_current_bytes, 0);
+    assert!(
+        before.reserved_current_bytes >= (10 * request_bytes) as u64,
+        "test setup must leave enough idle async-pool bytes to trigger trim retry: {before:?}"
+    );
+
+    let fail_first = async_mr.testing_fail_first_allocation().unwrap();
+    let rust_callback_calls = Arc::new(AtomicUsize::new(0));
+    let callback_calls = Arc::clone(&rust_callback_calls);
+    let callback = Arc::new(move |_bytes: usize| {
+        callback_calls.fetch_add(1, Ordering::SeqCst);
+        false
+    });
+    let retrying_mr = fail_first.with_failure_callback(callback).unwrap();
+    let runtime = Runtime::builder().with_device(device).with_memory_resource(retrying_mr).build().unwrap();
+
+    let buffer = runtime.device_buffer(request_bytes).unwrap();
+    runtime.synchronize().unwrap();
+
+    assert_eq!(
+        rust_callback_calls.load(Ordering::SeqCst),
+        0,
+        "native trim-retry should recover before invoking the Rust failure callback"
+    );
+    let after = async_mr.pool_usage().unwrap();
+    assert!(
+        after.reserved_current_bytes < before.reserved_current_bytes,
+        "trim-retry should release idle async-pool pages before retrying: before={before:?} after={after:?}"
+    );
+    assert!(after.used_current_bytes >= request_bytes as u64);
+    drop(buffer);
+}
+
+#[test]
+fn detailed_failure_callback_reports_pool_usage_and_can_trim_retry() {
+    let device = DeviceId::current().unwrap();
+    let idle_bytes = 128 * 1024 * 1024;
+    let request_bytes = 1 * 1024 * 1024;
+    let async_mr = DeviceMemoryResource::cuda_async_on(device, None, None).unwrap();
+    let priming_runtime =
+        Runtime::builder().with_device(device).with_memory_resource(async_mr.clone()).build().unwrap();
+
+    let buffer = priming_runtime.device_buffer(idle_bytes).unwrap();
+    priming_runtime.synchronize().unwrap();
+    drop(buffer);
+    priming_runtime.synchronize().unwrap();
+
+    let before = async_mr.pool_usage().unwrap();
+    assert_eq!(before.used_current_bytes, 0);
+    assert!(before.reserved_current_bytes >= (10 * request_bytes) as u64);
+
+    let fail_first = async_mr.testing_fail_first_allocation().unwrap();
+    let callback_calls = Arc::new(AtomicUsize::new(0));
+    let seen_device = Arc::new(AtomicUsize::new(usize::MAX));
+    let seen_source = Arc::new(AtomicU32::new(u32::MAX));
+    let seen_attempt = Arc::new(AtomicU32::new(u32::MAX));
+    let seen_trim_count = Arc::new(AtomicU32::new(u32::MAX));
+    let seen_requested = Arc::new(AtomicU64::new(0));
+    let seen_reserved = Arc::new(AtomicU64::new(0));
+    let seen_used = Arc::new(AtomicU64::new(u64::MAX));
+    let callback = {
+        let callback_calls = Arc::clone(&callback_calls);
+        let seen_device = Arc::clone(&seen_device);
+        let seen_source = Arc::clone(&seen_source);
+        let seen_attempt = Arc::clone(&seen_attempt);
+        let seen_trim_count = Arc::clone(&seen_trim_count);
+        let seen_requested = Arc::clone(&seen_requested);
+        let seen_reserved = Arc::clone(&seen_reserved);
+        let seen_used = Arc::clone(&seen_used);
+        Arc::new(move |info: cudf::DeviceMemoryFailureInfo| {
+            callback_calls.fetch_add(1, Ordering::SeqCst);
+            seen_device.store(info.device.ordinal(), Ordering::SeqCst);
+            seen_source.store(failure_source_code(info.source), Ordering::SeqCst);
+            seen_attempt.store(info.callback_attempt, Ordering::SeqCst);
+            seen_trim_count.store(info.trim_retry_count, Ordering::SeqCst);
+            seen_requested.store(info.requested_bytes, Ordering::SeqCst);
+            let pool_usage = info.pool_usage.expect("detailed callback should expose async pool usage");
+            seen_reserved.store(pool_usage.reserved_current_bytes, Ordering::SeqCst);
+            seen_used.store(pool_usage.used_current_bytes, Ordering::SeqCst);
+            if info.should_trim_and_retry() {
+                DeviceMemoryFailureAction::TrimAndRetry
+            } else {
+                DeviceMemoryFailureAction::Decline
+            }
+        })
+    };
+    let retrying_mr = fail_first.with_failure_callback_details(callback).unwrap();
+    let runtime = Runtime::builder().with_device(device).with_memory_resource(retrying_mr).build().unwrap();
+
+    let buffer = runtime.device_buffer(request_bytes).unwrap();
+    runtime.synchronize().unwrap();
+
+    assert_eq!(callback_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(seen_device.load(Ordering::SeqCst), device.ordinal());
+    assert_eq!(seen_source.load(Ordering::SeqCst), 0);
+    assert_eq!(seen_attempt.load(Ordering::SeqCst), 0);
+    assert_eq!(seen_trim_count.load(Ordering::SeqCst), 0);
+    assert_eq!(seen_requested.load(Ordering::SeqCst), request_bytes as u64);
+    assert_eq!(seen_used.load(Ordering::SeqCst), 0);
+    assert!(seen_reserved.load(Ordering::SeqCst) >= (10 * request_bytes) as u64);
+    let after = async_mr.pool_usage().unwrap();
+    assert!(
+        after.reserved_current_bytes < before.reserved_current_bytes,
+        "callback-requested trim should release idle async-pool pages: before={before:?} after={after:?}"
+    );
+    drop(buffer);
+}
+
+#[test]
+fn detailed_failure_callback_reports_reservation_limit_source_and_does_not_trim() {
+    let manager_runtime = Runtime::builder().with_device_memory_manager().build().unwrap();
+    let device = manager_runtime.device();
+    let manager = manager_runtime.device_memory_manager().unwrap();
+    let idle_bytes = 128 * 1024 * 1024;
+
+    manager.trim_to(0).unwrap();
+    let buffer = manager_runtime.device_buffer(idle_bytes).unwrap();
+    manager_runtime.synchronize().unwrap();
+    drop(buffer);
+    manager_runtime.synchronize().unwrap();
+
+    let before = manager.pool_usage().unwrap();
+    assert_eq!(before.used_current_bytes, 0);
+    assert!(
+        before.reserved_current_bytes >= idle_bytes as u64,
+        "test setup must leave idle async-pool bytes before reservation rejection: {before:?}"
+    );
+
+    let callback_calls = Arc::new(AtomicUsize::new(0));
+    let seen_source = Arc::new(AtomicU32::new(u32::MAX));
+    let seen_should_trim = Arc::new(AtomicBool::new(true));
+    let seen_trim_count = Arc::new(AtomicU32::new(u32::MAX));
+    let callback = {
+        let callback_calls = Arc::clone(&callback_calls);
+        let seen_source = Arc::clone(&seen_source);
+        let seen_should_trim = Arc::clone(&seen_should_trim);
+        let seen_trim_count = Arc::clone(&seen_trim_count);
+        Arc::new(move |info: cudf::DeviceMemoryFailureInfo| {
+            callback_calls.fetch_add(1, Ordering::SeqCst);
+            seen_source.store(failure_source_code(info.source), Ordering::SeqCst);
+            seen_should_trim.store(info.should_trim_and_retry(), Ordering::SeqCst);
+            seen_trim_count.store(info.trim_retry_count, Ordering::SeqCst);
+            DeviceMemoryFailureAction::TrimAndRetry
+        })
+    };
+    let callback_mr = manager.resource().with_failure_callback_details(callback).unwrap();
+    let runtime = Runtime::builder().with_device(device).with_memory_resource(callback_mr).build().unwrap();
+    let _lease = manager.reserve_stream(runtime.stream(), 9002, 1).unwrap();
+
+    let err = runtime.series(&[1i32, 2, 3]).unwrap_err();
+
+    assert_eq!(err.code(), ErrorCode::OutOfMemory);
+    assert_eq!(err.kind(), ErrorKind::ResourceExhausted);
+    assert_eq!(callback_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(seen_source.load(Ordering::SeqCst), 1);
+    assert!(!seen_should_trim.load(Ordering::SeqCst));
+    assert_eq!(seen_trim_count.load(Ordering::SeqCst), 0);
+
+    let after = manager.pool_usage().unwrap();
+    assert_eq!(
+        after.reserved_current_bytes, before.reserved_current_bytes,
+        "reservation-limit trim-and-retry requests must not trim the shared pool: before={before:?} after={after:?}"
+    );
+    assert_eq!(after.used_current_bytes, before.used_current_bytes);
+}
+
+#[test]
 fn device_memory_manager_runtime_uses_one_device_level_resource_with_stream_reservations() {
     assert_send_sync::<DeviceMemoryManager>();
+    assert_send_sync::<cudf::ReservationArena>();
     assert_send_sync::<StreamReservationLease>();
 
     let rt = Runtime::builder().with_device_memory_manager().build().unwrap();
@@ -55,6 +300,116 @@ fn device_memory_manager_runtime_uses_one_device_level_resource_with_stream_rese
     assert_eq!(usage.reservation_id, 42);
     assert!(usage.attached);
     assert_eq!(usage.allocation_limit_bytes, 64 * 1024 * 1024);
+}
+
+#[test]
+fn reservation_arena_enforces_query_cap_across_streams() {
+    let left = Runtime::builder().with_device_memory_manager().build().unwrap();
+    let right = Runtime::builder().with_device_memory_manager().build().unwrap();
+    let manager = left.device_memory_manager().unwrap();
+    let arena = manager.reservation_arena(30_001, 12 * 1024 * 1024).unwrap();
+    let left_lease = arena.reserve_stream(left.stream(), 30_101, 16 * 1024 * 1024).unwrap();
+    let right_lease = arena.reserve_stream(right.stream(), 30_202, 16 * 1024 * 1024).unwrap();
+
+    let left_buffer = left.device_buffer(8 * 1024 * 1024).unwrap();
+    let err = expect_device_buffer_error(right.device_buffer(8 * 1024 * 1024));
+
+    assert_eq!(err.kind(), ErrorKind::ResourceExhausted);
+    assert_eq!(left_lease.usage().unwrap().failed_allocation_count, 0);
+    assert!(
+        right_lease.usage().unwrap().failed_allocation_count > 0,
+        "member usage should record failures caused by the parent arena cap"
+    );
+    let arena_usage = arena.usage().unwrap();
+    assert_eq!(arena_usage.arena_id, 30_001);
+    assert_eq!(arena_usage.active_members, 2);
+    assert!(arena_usage.failed_allocation_count > 0);
+    assert!(arena_usage.current_bytes >= 8 * 1024 * 1024);
+
+    drop(left_buffer);
+}
+
+#[test]
+fn reservation_arena_resize_grows_and_shrinks_parent_limit() {
+    let left = Runtime::builder().with_device_memory_manager().build().unwrap();
+    let right = Runtime::builder().with_device_memory_manager().build().unwrap();
+    let manager = left.device_memory_manager().unwrap();
+    let arena = manager.reservation_arena(30_002, 12 * 1024 * 1024).unwrap();
+    let _left_lease = arena.reserve_stream(left.stream(), 30_111, 32 * 1024 * 1024).unwrap();
+    let _right_lease = arena.reserve_stream(right.stream(), 30_222, 32 * 1024 * 1024).unwrap();
+
+    let left_buffer = left.device_buffer(8 * 1024 * 1024).unwrap();
+    let err = expect_device_buffer_error(right.device_buffer(8 * 1024 * 1024));
+    assert_eq!(err.kind(), ErrorKind::ResourceExhausted);
+
+    arena.resize(20 * 1024 * 1024).unwrap();
+    let right_buffer = right.device_buffer(8 * 1024 * 1024).unwrap();
+    let grown = arena.usage().unwrap();
+    assert_eq!(grown.allocation_limit_bytes, 20 * 1024 * 1024);
+    assert!(grown.current_bytes >= 16 * 1024 * 1024);
+
+    arena.resize(1).unwrap();
+    let shrunk = arena.usage().unwrap();
+    assert_eq!(shrunk.allocation_limit_bytes, 1);
+    assert!(shrunk.current_aligned_bytes > shrunk.allocation_limit_bytes);
+    let err = expect_device_buffer_error(right.device_buffer(1));
+    assert_eq!(err.kind(), ErrorKind::ResourceExhausted);
+
+    drop(left_buffer);
+    drop(right_buffer);
+    arena.resize(1024 * 1024).unwrap();
+    let buffer = right.device_buffer(1024).unwrap();
+    assert_eq!(buffer.size_bytes().unwrap(), 1024);
+}
+
+#[test]
+fn reservation_arena_counts_retained_allocations_after_member_detach() {
+    let runtime = Runtime::builder().with_device_memory_manager().build().unwrap();
+    let manager = runtime.device_memory_manager().unwrap();
+    let arena = manager.reservation_arena(30_003, 16 * 1024 * 1024).unwrap();
+    let lease = arena.reserve_stream(runtime.stream(), 30_303, 16 * 1024 * 1024).unwrap();
+
+    let buffer = runtime.device_buffer(4 * 1024 * 1024).unwrap();
+    let while_attached = arena.usage().unwrap();
+    assert_eq!(while_attached.active_members, 1);
+    assert!(while_attached.current_bytes >= 4 * 1024 * 1024);
+
+    drop(lease);
+
+    let after_detach = arena.usage().unwrap();
+    assert_eq!(after_detach.active_members, 0);
+    assert!(
+        after_detach.current_bytes >= 4 * 1024 * 1024,
+        "retained allocation should keep charging the arena after its member detaches"
+    );
+
+    drop(buffer);
+
+    let after_drop = arena.usage().unwrap();
+    assert!(
+        after_drop.current_bytes < after_detach.current_bytes,
+        "dropping retained allocation must release arena accounting"
+    );
+}
+
+#[test]
+fn execution_budget_token_can_attach_as_arena_member() {
+    let runtime = Runtime::builder().with_device_memory_manager().build().unwrap();
+    let manager = runtime.device_memory_manager().unwrap();
+    let arena = manager.reservation_arena(30_004, 64 * 1024 * 1024).unwrap();
+    let token = cudf::ExecutionBudgetToken::from_runtime_in_arena(
+        &runtime,
+        ExecutionBudgetRequest::new(64 * 1024 * 1024).with_boundary("arena_member"),
+        &arena,
+    )
+    .unwrap();
+
+    let outcome = runtime.series_from_value_with_budget(13i32, 4096, &token).unwrap();
+
+    assert_eq!(token.enforcement(), ExecutionBudgetEnforcement::ReservationArenaMember);
+    assert_eq!(outcome.report().enforcement(), ExecutionBudgetEnforcement::ReservationArenaMember);
+    assert_eq!(outcome.report().status(), ExecutionBudgetStatus::ReservationEnforced);
+    assert!(arena.usage().unwrap().current_bytes >= outcome.value().device_allocated_size_bytes().unwrap() as u64);
 }
 
 #[test]
@@ -246,6 +601,33 @@ fn failure_callback_memory_resource_catches_rust_panics() {
     assert_eq!(err.code(), ErrorCode::OutOfMemory);
     assert_eq!(err.kind(), ErrorKind::ResourceExhausted);
     assert_eq!(calls.load(Ordering::SeqCst), 1);
+
+    let err = runtime.series(&[4i32, 5, 6]).unwrap_err();
+
+    assert_eq!(err.code(), ErrorCode::OutOfMemory);
+    assert_eq!(err.kind(), ErrorKind::ResourceExhausted);
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn failure_callback_memory_resource_caps_retries_when_callback_keeps_retrying() {
+    let device = DeviceId::current().unwrap();
+    let upstream = DeviceMemoryResource::cuda_on(device).unwrap();
+    let limiting = upstream.limiting(1).unwrap();
+    let calls = Arc::new(AtomicUsize::new(0));
+    let callback_calls = Arc::clone(&calls);
+    let callback = Arc::new(move |_bytes: usize| {
+        callback_calls.fetch_add(1, Ordering::SeqCst);
+        true
+    });
+    let callback_mr = limiting.with_failure_callback(callback).unwrap();
+    let runtime = Runtime::builder().with_device(device).with_memory_resource(callback_mr).build().unwrap();
+
+    let err = runtime.series(&[1i32, 2, 3]).unwrap_err();
+
+    assert_eq!(err.code(), ErrorCode::OutOfMemory);
+    assert_eq!(err.kind(), ErrorKind::ResourceExhausted);
+    assert_eq!(calls.load(Ordering::SeqCst), 8);
 }
 
 #[test]

@@ -430,11 +430,40 @@ pub type cudf_event_handle = *mut c_void;
 pub type cudf_memory_resource_handle = *mut c_void;
 pub type cudf_memory_manager_handle = *mut c_void;
 pub type cudf_reservation_handle = *mut c_void;
+pub type cudf_reservation_arena_handle = *mut c_void;
 pub type cudf_memory_failure_callback_t = Option<unsafe extern "C" fn(bytes: usize, callback_arg: *mut c_void) -> i32>;
+pub type cudf_memory_failure_callback_v2_t =
+    Option<unsafe extern "C" fn(info: *const cudf_memory_failure_info_t, callback_arg: *mut c_void) -> i32>;
 pub type cudf_arrow_schema_handle = *mut c_void;
 pub type cudf_arrow_device_array_handle = *mut c_void;
 
 pub const CUDF_MEMORY_RESOURCE_USAGE_RESERVED_SLOTS: usize = 8;
+pub const CUDF_MEMORY_POOL_USAGE_RESERVED_SLOTS: usize = 4;
+pub const CUDF_MEMORY_MANAGER_OPTIONS_RESERVED_SLOTS: usize = 4;
+pub const CUDF_MEMORY_FAILURE_INFO_RESERVED_SLOTS: usize = 4;
+pub const CUDF_MEMORY_FAILURE_INFO_HAS_POOL_USAGE: u32 = 1 << 0;
+
+#[repr(i32)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum cudf_memory_manager_base_kind_t {
+    CUDF_MEMORY_MANAGER_BASE_CUDA_ASYNC = 0,
+    CUDF_MEMORY_MANAGER_BASE_POOL = 1,
+}
+
+#[repr(i32)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum cudf_memory_failure_action_t {
+    CUDF_MEMORY_FAILURE_ACTION_DECLINE = 0,
+    CUDF_MEMORY_FAILURE_ACTION_RETRY = 1,
+    CUDF_MEMORY_FAILURE_ACTION_TRIM_AND_RETRY = 2,
+}
+
+#[repr(i32)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum cudf_memory_failure_source_t {
+    CUDF_MEMORY_FAILURE_SOURCE_PHYSICAL = 0,
+    CUDF_MEMORY_FAILURE_SOURCE_RESERVATION_LIMIT = 1,
+}
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -475,6 +504,112 @@ impl cudf_memory_resource_usage_t {
 }
 
 impl Default for cudf_memory_resource_usage_t {
+    fn default() -> Self {
+        Self::defaults()
+    }
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct cudf_memory_pool_usage_t {
+    pub struct_size: usize,
+    pub reserved_current_bytes: u64,
+    pub reserved_high_bytes: u64,
+    pub used_current_bytes: u64,
+    pub used_high_bytes: u64,
+    pub reserved: [u64; CUDF_MEMORY_POOL_USAGE_RESERVED_SLOTS],
+}
+
+impl cudf_memory_pool_usage_t {
+    pub const fn defaults() -> Self {
+        Self {
+            struct_size: std::mem::size_of::<Self>(),
+            reserved_current_bytes: 0,
+            reserved_high_bytes: 0,
+            used_current_bytes: 0,
+            used_high_bytes: 0,
+            reserved: [0; CUDF_MEMORY_POOL_USAGE_RESERVED_SLOTS],
+        }
+    }
+}
+
+impl Default for cudf_memory_pool_usage_t {
+    fn default() -> Self {
+        Self::defaults()
+    }
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct cudf_memory_failure_info_t {
+    pub struct_size: usize,
+    pub device_ordinal: i32,
+    pub flags: u32,
+    pub callback_attempt: u32,
+    pub trim_retry_count: u32,
+    pub requested_bytes: u64,
+    pub pool_reserved_current_bytes: u64,
+    pub pool_reserved_high_bytes: u64,
+    pub pool_used_current_bytes: u64,
+    pub pool_used_high_bytes: u64,
+    pub failure_source: u32,
+    pub reserved_failure_info_padding: u32,
+    pub reserved: [u64; CUDF_MEMORY_FAILURE_INFO_RESERVED_SLOTS - 1],
+}
+
+impl cudf_memory_failure_info_t {
+    pub const fn defaults() -> Self {
+        Self {
+            struct_size: std::mem::size_of::<Self>(),
+            device_ordinal: -1,
+            flags: 0,
+            callback_attempt: 0,
+            trim_retry_count: 0,
+            requested_bytes: 0,
+            pool_reserved_current_bytes: 0,
+            pool_reserved_high_bytes: 0,
+            pool_used_current_bytes: 0,
+            pool_used_high_bytes: 0,
+            failure_source: cudf_memory_failure_source_t::CUDF_MEMORY_FAILURE_SOURCE_PHYSICAL as u32,
+            reserved_failure_info_padding: 0,
+            reserved: [0; CUDF_MEMORY_FAILURE_INFO_RESERVED_SLOTS - 1],
+        }
+    }
+}
+
+impl Default for cudf_memory_failure_info_t {
+    fn default() -> Self {
+        Self::defaults()
+    }
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct cudf_memory_manager_options_t {
+    pub struct_size: usize,
+    pub base_kind: cudf_memory_manager_base_kind_t,
+    pub flags: u32,
+    pub initial_pool_size_bytes: u64,
+    pub maximum_pool_size_bytes: u64,
+    pub release_threshold_bytes: u64,
+    pub reserved: [u64; CUDF_MEMORY_MANAGER_OPTIONS_RESERVED_SLOTS],
+}
+
+impl cudf_memory_manager_options_t {
+    pub const fn defaults() -> Self {
+        Self {
+            struct_size: std::mem::size_of::<Self>(),
+            base_kind: cudf_memory_manager_base_kind_t::CUDF_MEMORY_MANAGER_BASE_CUDA_ASYNC,
+            flags: 0,
+            initial_pool_size_bytes: 0,
+            maximum_pool_size_bytes: 0,
+            release_threshold_bytes: u64::MAX,
+            reserved: [0; CUDF_MEMORY_MANAGER_OPTIONS_RESERVED_SLOTS],
+        }
+    }
+}
+
+impl Default for cudf_memory_manager_options_t {
     fn default() -> Self {
         Self::defaults()
     }

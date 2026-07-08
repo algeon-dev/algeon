@@ -67,6 +67,12 @@ impl DeviceId {
         Ok(Self(device))
     }
 
+    /// Create a device id from a native callback payload that already came
+    /// from cudf-rs' device-bound resource path.
+    pub(crate) const fn from_validated_ordinal_raw(ordinal: i32) -> Self {
+        Self(ordinal)
+    }
+
     /// Return the number of CUDA-capable devices visible to the process.
     ///
     /// The result is cached after the first call (device count does not change

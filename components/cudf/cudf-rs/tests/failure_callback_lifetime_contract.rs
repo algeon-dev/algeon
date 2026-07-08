@@ -45,3 +45,23 @@ fn failure_callback_state_survives_destroy_rejection_while_resource_is_current()
         "callback state must not be freed when native destroy is rejected while the resource is current"
     );
 }
+
+#[test]
+fn derived_resource_retains_failure_callback_state_after_parent_handle_drop() {
+    let device = DeviceId::current().unwrap();
+    let upstream = DeviceMemoryResource::cuda_on(device).unwrap();
+    let callback: Arc<dyn Fn(usize) -> bool + Send + Sync + 'static> = Arc::new(|_| false);
+    let weak_callback: Weak<dyn Fn(usize) -> bool + Send + Sync + 'static> = Arc::downgrade(&callback);
+    let callback_mr = upstream.with_failure_callback(callback).unwrap();
+    let derived = callback_mr.limiting(1).unwrap();
+
+    drop(callback_mr);
+
+    assert!(
+        weak_callback.upgrade().is_some(),
+        "derived resources must retain Rust callback state while native upstream callback adaptors remain reachable"
+    );
+
+    drop(derived);
+    assert!(weak_callback.upgrade().is_none(), "callback state should release when the derived resource drops");
+}
