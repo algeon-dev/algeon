@@ -6,8 +6,8 @@ use cudf::{
 };
 
 use crate::common::{
-    column_from_slice, column_from_slice_nullable, column_from_strs, error_context_value, last_exec_stream_value,
-    last_sync_stream_value, reset_exec_observation, reset_sync_observation,
+    column_from_slice, column_from_slice_nullable, column_from_strs, error_context_value, last_exec_mr_value,
+    last_exec_stream_value, last_sync_stream_value, reset_exec_observation, reset_sync_observation,
 };
 
 fn factorize_column(column: cudf::core::Column) -> (Series, Series) {
@@ -121,6 +121,7 @@ fn test_factorize_with_nulls() {
 #[test]
 fn test_factorize_empty_column() {
     let col = column_from_slice::<i32>(&[]).unwrap();
+    reset_exec_observation();
     let (codes, uniques) = factorize_column(col);
 
     let codes_view = codes.testing_view().unwrap();
@@ -128,6 +129,16 @@ fn test_factorize_empty_column() {
 
     assert_eq!(codes_view.len().unwrap(), 0);
     assert_eq!(uniques_view.len().unwrap(), 0);
+    assert_eq!(last_exec_stream_value(), codes.as_column().testing_execution_domain_stream_value());
+    assert_eq!(last_exec_mr_value(), codes.as_column().testing_execution_domain_mr_value());
+    assert_eq!(
+        uniques.as_column().testing_execution_domain_stream_value(),
+        codes.as_column().testing_execution_domain_stream_value()
+    );
+    assert_eq!(
+        uniques.as_column().testing_execution_domain_mr_value(),
+        codes.as_column().testing_execution_domain_mr_value()
+    );
 }
 
 #[test]
@@ -287,6 +298,7 @@ fn test_factorize_uniques_support_safe_positional_codebook_round_trip() {
 fn test_factorize_retains_input_provenance_and_syncs_on_input_stream_end_to_end() {
     let input = column_from_slice(&[9i32, 7, 9, 8]).unwrap().testing_rebind_execution_domain_explicit(605).unwrap();
     let expected_stream = input.testing_execution_domain_stream_value();
+    let expected_mr = input.testing_execution_domain_mr_value();
     let expected_domain = input.testing_execution_domain_id();
     let input = Series::from_column(input).unwrap();
 
@@ -299,7 +311,10 @@ fn test_factorize_retains_input_provenance_and_syncs_on_input_stream_end_to_end(
     assert_eq!(uniques.as_column().testing_execution_domain_id(), expected_domain);
     assert_eq!(codes.as_column().testing_execution_domain_stream_value(), expected_stream);
     assert_eq!(uniques.as_column().testing_execution_domain_stream_value(), expected_stream);
+    assert_eq!(codes.as_column().testing_execution_domain_mr_value(), expected_mr);
+    assert_eq!(uniques.as_column().testing_execution_domain_mr_value(), expected_mr);
     assert_eq!(last_exec_stream_value(), expected_stream);
+    assert_eq!(last_exec_mr_value(), expected_mr);
 
     reset_sync_observation();
     let codes_host = codes.testing_view().unwrap().to_vec::<i32>().unwrap();
