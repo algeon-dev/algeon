@@ -163,6 +163,58 @@ fn test_io_read_parquet_with_metadata_invalid_args_clear_outputs() {
 }
 
 #[test]
+fn test_io_read_parquet_multi_mixed_all_local_flags_allow_null_profiles() {
+    let _shim_state = lock_shim_state();
+    let (_stream, _mr, exec) = io_exec_options();
+    let path = unique_missing_path("parquet");
+    let filepaths = [path.as_ptr()];
+    let remote_source_flags = [0_i32];
+    let mut out_table = std::ptr::dangling_mut::<c_void>();
+    let mut out_names = std::ptr::dangling_mut::<*mut c_char>();
+    let mut out_num_names = -1;
+    let mut evidence = cudf_sys::cudf_io_remote_parquet_read_evidence_t {
+        backend: -99,
+        fallback_reason: -99,
+        supports_device_read: -99,
+        device_read_used: -99,
+        remote_bytes: -99,
+        remote_range_count: -99,
+        host_read_bytes: -99,
+        host_read_count: -99,
+        device_read_bytes: -99,
+        device_read_count: -99,
+    };
+
+    let status = unsafe {
+        cudf_sys::cudf_io_read_parquet_multi_mixed_with_metadata_filter_ex(
+            filepaths.as_ptr(),
+            remote_source_flags.as_ptr(),
+            ptr::null(),
+            filepaths.len() as i32,
+            ptr::null(),
+            0,
+            ptr::null(),
+            0,
+            ptr::null(),
+            0,
+            ptr::null_mut(),
+            &mut out_table,
+            &mut out_names,
+            &mut out_num_names,
+            &mut evidence,
+            &exec,
+        )
+    };
+
+    assert_eq!(status, cudf_sys::CUDF_ERROR_IO);
+    assert!(out_table.is_null());
+    assert!(out_names.is_null());
+    assert_eq!(out_num_names, 0);
+    assert_eq!(evidence.backend, 0);
+    assert_eq!(evidence.fallback_reason, 1);
+}
+
+#[test]
 fn test_io_read_parquet_from_host_buffer_with_metadata_invalid_args_clear_outputs() {
     let _shim_state = lock_shim_state();
     let (_stream, _mr, exec) = io_exec_options();
@@ -367,6 +419,53 @@ fn test_io_write_parquet_ex_uses_explicit_memory_resource_for_writer_temporaries
     );
 
     stream.synchronize();
+    let _ = std::fs::remove_file(path_buf);
+    unsafe {
+        cudf_sys::cudf_table_view_destroy(tv);
+        cudf_sys::cudf_table_destroy(tbl);
+    }
+}
+
+#[test]
+fn test_io_probe_path_datasource_reports_local_file_capability_and_size() {
+    let _shim_state = lock_shim_state();
+    let (_stream, _mr, exec) = io_exec_options();
+    let col = make_i32_column(&[10, 20, 30]);
+    let tbl = make_table_from_one_column(col);
+    let tv = make_table_view(tbl);
+    let path = unique_missing_path("parquet");
+    let path_buf = std::path::PathBuf::from(path.as_c_str().to_string_lossy().into_owned());
+
+    let status = unsafe { cudf_sys::cudf_io_write_parquet_ex(tv, path.as_ptr(), ptr::null(), 0, 0, -1, &exec) };
+    assert_eq!(status, cudf_sys::CUDF_SUCCESS, "{}", last_error_message());
+
+    let mut probe = cudf_sys::cudf_io_datasource_probe_result_t {
+        can_open: -1,
+        supports_device_read: -1,
+        device_read_preferred: -1,
+        size_bytes: -1,
+    };
+    let status = unsafe { cudf_sys::cudf_io_probe_path_datasource(path.as_ptr(), 4096, &mut probe) };
+    assert_eq!(status, cudf_sys::CUDF_SUCCESS, "{}", last_error_message());
+    assert_eq!(probe.can_open, 1);
+    assert!(probe.size_bytes > 0);
+    assert_eq!(probe.size_bytes as u64, std::fs::metadata(&path_buf).unwrap().len());
+    assert!(matches!(probe.supports_device_read, 0 | 1));
+    assert!(matches!(probe.device_read_preferred, 0 | 1));
+
+    let mut null_path_probe = cudf_sys::cudf_io_datasource_probe_result_t {
+        can_open: -1,
+        supports_device_read: -1,
+        device_read_preferred: -1,
+        size_bytes: -2,
+    };
+    let status = unsafe { cudf_sys::cudf_io_probe_path_datasource(ptr::null(), 4096, &mut null_path_probe) };
+    assert_eq!(status, cudf_sys::CUDF_ERROR_NULL);
+    assert_eq!(null_path_probe.can_open, 0);
+    assert_eq!(null_path_probe.supports_device_read, 0);
+    assert_eq!(null_path_probe.device_read_preferred, 0);
+    assert_eq!(null_path_probe.size_bytes, -1);
+
     let _ = std::fs::remove_file(path_buf);
     unsafe {
         cudf_sys::cudf_table_view_destroy(tv);

@@ -22,6 +22,40 @@ typedef enum {
   CUDF_TEST_IO_METADATA_FAULT_ZERO_NAME_COUNT     = 5,
 } cudf_test_io_metadata_fault_t;
 
+typedef struct {
+  int32_t can_open;
+  int32_t supports_device_read;
+  int32_t device_read_preferred;
+  int64_t size_bytes;
+} cudf_io_datasource_probe_result_t;
+
+typedef struct {
+  const char* aws_region;
+  const char* aws_access_key_id;
+  const char* aws_secret_access_key;
+  const char* aws_session_token;
+  const char* aws_endpoint_url;
+  /// -1 = unset, 0 = virtual-hosted style, 1 = path-style.
+  int32_t path_style_access;
+  /// 1 = unsigned/public request, 0 = signed/default-chain request.
+  int32_t unsigned_request;
+  /// Full object size in bytes when known by the caller, or -1 when unknown.
+  int64_t known_size_bytes;
+} cudf_io_remote_parquet_profile_t;
+
+typedef struct {
+  int32_t backend;
+  int32_t fallback_reason;
+  int32_t supports_device_read;
+  int32_t device_read_used;
+  int64_t remote_bytes;
+  int64_t remote_range_count;
+  int64_t host_read_bytes;
+  int64_t host_read_count;
+  int64_t device_read_bytes;
+  int64_t device_read_count;
+} cudf_io_remote_parquet_read_evidence_t;
+
 // ---------------------------------------------------------------------------
 // Parquet
 // ---------------------------------------------------------------------------
@@ -127,6 +161,24 @@ cudf_status_t cudf_io_read_parquet_with_metadata_filter_ex(const char* filepath,
                                                            int32_t* out_num_names,
                                                            const cudf_exec_options_t* exec_options);
 
+/// Read remote Parquet through an explicit KvikIO-backed datasource with
+/// scoped, non-global S3 options and read evidence.
+cudf_status_t cudf_io_read_remote_parquet_with_metadata_filter_ex(
+  const char* uri,
+  const cudf_io_remote_parquet_profile_t* profile,
+  const char** columns,
+  int32_t num_columns,
+  int64_t skip_rows,
+  int64_t num_rows,
+  const int32_t* row_groups,
+  int32_t num_row_groups,
+  cudf_ast_expression_handle predicate,
+  cudf_table_handle* out_table,
+  char*** out_names,
+  int32_t* out_num_names,
+  cudf_io_remote_parquet_read_evidence_t* out_evidence,
+  const cudf_exec_options_t* exec_options);
+
 /// Read multiple Parquet files with metadata, explicit execution context, and
 /// an optional libcudf AST reader predicate.
 ///
@@ -157,6 +209,29 @@ cudf_status_t cudf_io_read_parquet_multi_with_metadata_filter_ex(
   int32_t* out_num_names,
   const cudf_exec_options_t* exec_options);
 
+/// Read multiple Parquet files, allowing selected files to use explicit
+/// KvikIO-backed remote datasources with scoped S3 options and aggregate read
+/// evidence. `remote_source_flags` has `num_files` entries; non-zero entries
+/// use the matching `profiles` entry as a remote datasource, and zero entries
+/// use libcudf's ordinary path datasource for that file.
+cudf_status_t cudf_io_read_parquet_multi_mixed_with_metadata_filter_ex(
+  const char** filepaths,
+  const int32_t* remote_source_flags,
+  const cudf_io_remote_parquet_profile_t* profiles,
+  int32_t num_files,
+  const char** columns,
+  int32_t num_columns,
+  const int32_t* row_group_offsets,
+  int32_t num_row_group_offsets,
+  const int32_t* row_groups,
+  int32_t num_row_groups,
+  cudf_ast_expression_handle predicate,
+  cudf_table_handle* out_table,
+  char*** out_names,
+  int32_t* out_num_names,
+  cudf_io_remote_parquet_read_evidence_t* out_evidence,
+  const cudf_exec_options_t* exec_options);
+
 /// Read Parquet from a host buffer with metadata, explicit execution context,
 /// and an optional libcudf AST reader predicate.
 ///
@@ -181,6 +256,28 @@ cudf_status_t cudf_io_read_parquet_from_host_buffer_with_metadata_filter_ex(
 
 /// Free column name array returned by metadata readers.
 void cudf_io_free_column_names(char** names, int32_t num_names);
+
+/// Returns the remote Parquet KvikIO build capability:
+/// - 1: libcudf was compiled with CUDF_KVIKIO_REMOTE_IO
+/// - 0: libcudf was compiled without CUDF_KVIKIO_REMOTE_IO
+/// - -1: reserved for unknown/unreported future states
+int32_t cudf_io_remote_parquet_kvikio_remote_io_enabled(void);
+
+/// Opens a path datasource and reports datasource-level read capability without
+/// launching a Parquet decode. `preferred_read_size` controls the
+/// `is_device_read_preferred` query; pass -1 when no size is known.
+cudf_status_t cudf_io_probe_path_datasource(const char* filepath,
+                                            int64_t preferred_read_size,
+                                            cudf_io_datasource_probe_result_t* out);
+
+/// Opens a scoped remote datasource and reports datasource-level read
+/// capability without launching a Parquet decode. This may contact the remote
+/// service to resolve file size.
+cudf_status_t cudf_io_probe_remote_parquet_datasource(
+  const char* uri,
+  const cudf_io_remote_parquet_profile_t* profile,
+  int64_t preferred_read_size,
+  cudf_io_datasource_probe_result_t* out);
 
 /// Write a table to a Parquet file.
 /// `column_names` is an array of null-terminated strings (one per column).

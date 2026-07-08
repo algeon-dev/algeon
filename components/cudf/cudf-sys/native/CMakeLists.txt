@@ -105,6 +105,7 @@ else()
 endif()
 
 rapids_find_package(cudf REQUIRED)
+find_package(kvikio CONFIG QUIET)
 
 get_target_property(CUDF_CXX_FLAGS cudf::cudf CUDF_CXX_FLAGS)
 get_target_property(CUDF_CUDA_FLAGS cudf::cudf CUDF_CUDA_FLAGS)
@@ -123,6 +124,32 @@ endif()
 if("${CUDF_CUDA_DEFINITIONS}" STREQUAL "CUDF_CUDA_DEFINITIONS-NOTFOUND")
   set(CUDF_CUDA_DEFINITIONS "")
 endif()
+
+set(CUDF_RUST_LIBCUDF_KVIKIO_REMOTE_IO_STATUS "unknown")
+if(DEFINED CUDF_KVIKIO_REMOTE_IO)
+  if(CUDF_KVIKIO_REMOTE_IO)
+    set(CUDF_RUST_LIBCUDF_KVIKIO_REMOTE_IO_STATUS "enabled")
+  else()
+    set(CUDF_RUST_LIBCUDF_KVIKIO_REMOTE_IO_STATUS "disabled")
+  endif()
+elseif(DEFINED CUDF_CPP_BUILD_DIR AND EXISTS "${CUDF_CPP_BUILD_DIR}/CMakeCache.txt")
+  file(
+    STRINGS "${CUDF_CPP_BUILD_DIR}/CMakeCache.txt" CUDF_RUST_KVIKIO_REMOTE_IO_CACHE
+    REGEX "^CUDF_KVIKIO_REMOTE_IO:BOOL="
+  )
+  if(CUDF_RUST_KVIKIO_REMOTE_IO_CACHE MATCHES "=(ON|TRUE|1)$")
+    set(CUDF_RUST_LIBCUDF_KVIKIO_REMOTE_IO_STATUS "enabled")
+  elseif(CUDF_RUST_KVIKIO_REMOTE_IO_CACHE MATCHES "=(OFF|FALSE|0)$")
+    set(CUDF_RUST_LIBCUDF_KVIKIO_REMOTE_IO_STATUS "disabled")
+  endif()
+endif()
+if(CUDF_RUST_LIBCUDF_KVIKIO_REMOTE_IO_STATUS STREQUAL "enabled" AND NOT TARGET kvikio::kvikio)
+  message(
+    FATAL_ERROR
+      "libcudf reports KvikIO remote IO enabled, but the kvikio::kvikio CMake target was not found"
+  )
+endif()
+message(STATUS "libcudf KvikIO remote IO build status: ${CUDF_RUST_LIBCUDF_KVIKIO_REMOTE_IO_STATUS}")
 
 # ##################################################################################################
 # * library target --------------------------------------------------------------------------------
@@ -202,10 +229,18 @@ target_compile_definitions(
   cudf_rust PUBLIC "$<$<COMPILE_LANGUAGE:CXX>:${CUDF_CXX_DEFINITIONS}>"
                    "$<$<COMPILE_LANGUAGE:CUDA>:${CUDF_CUDA_DEFINITIONS}>"
 )
+if(CUDF_RUST_LIBCUDF_KVIKIO_REMOTE_IO_STATUS STREQUAL "enabled")
+  target_compile_definitions(cudf_rust PRIVATE CUDF_RUST_LIBCUDF_KVIKIO_REMOTE_IO_ENABLED)
+elseif(CUDF_RUST_LIBCUDF_KVIKIO_REMOTE_IO_STATUS STREQUAL "disabled")
+  target_compile_definitions(cudf_rust PRIVATE CUDF_RUST_LIBCUDF_KVIKIO_REMOTE_IO_DISABLED)
+endif()
 
 target_link_options(cudf_rust PRIVATE "-Wl,--no-undefined")
 
 target_link_libraries(cudf_rust PUBLIC cudf::cudf)
+if(TARGET kvikio::kvikio)
+  target_link_libraries(cudf_rust PUBLIC kvikio::kvikio)
+endif()
 target_link_libraries(cudf_rust PRIVATE ${CMAKE_DL_LIBS})
 
 # ##################################################################################################

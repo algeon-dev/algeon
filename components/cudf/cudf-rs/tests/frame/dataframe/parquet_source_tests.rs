@@ -11,12 +11,15 @@ use cudf::{
     ExecutionBudgetStatus, TimestampResolution, TypeId,
     core::{Column, Table},
     frame::dataframe::InfoDetail,
-    io::source::{
-        LocalParquetFile, LocalParquetSource, PartitionColumn, PartitionValue, SourceColumn, SourceColumnRef,
-        SourceColumnRole, SourceOutputColumn, SourceReadMode, SourceReaderPredicate, SourceReaderPredicateColumn,
-        SourceReaderPredicateLiteral, SourceRequiredColumn, SourceSchema, ZERO_COLUMN_COUNT_COLUMN,
-        build_local_parquet_reader_batch_predicate, build_local_parquet_reader_predicate,
-        plan_local_parquet_source_chunks,
+    io::{
+        parquet::{RemoteParquetProfile, RemoteReadMode},
+        source::{
+            LocalParquetFile, LocalParquetSource, PartitionColumn, PartitionValue, SourceColumn, SourceColumnRef,
+            SourceColumnRole, SourceOutputColumn, SourceReadMode, SourceReaderPredicate, SourceReaderPredicateColumn,
+            SourceReaderPredicateLiteral, SourceRequiredColumn, SourceSchema, ZERO_COLUMN_COUNT_COLUMN,
+            build_local_parquet_reader_batch_predicate, build_local_parquet_reader_predicate,
+            plan_local_parquet_source_chunks,
+        },
     },
     ops::ast::AstExpression,
     runtime::QueryStageKind,
@@ -229,6 +232,20 @@ fn read_parquet_source_single_file_projects_and_records_boundary() {
         DataFrame::read_parquet_source_with_mode(&rt, &source, SourceReadMode::ExecutionFrame).unwrap();
     assert_eq!(execution_frame.column_names(), vec!["id_alias", "filter_only"]);
     assert_eq!(execution_frame.series("filter_only").unwrap().to_vec_strict::<i32>().unwrap(), vec![7, 8, 9]);
+
+    let plan = plan_local_parquet_source_chunks(&source, Default::default()).unwrap();
+    let output = DataFrame::read_parquet_source_chunk_with_evidence(
+        &rt,
+        &source,
+        &plan.chunks()[0],
+        SourceReadMode::FinalOutput,
+    )
+    .unwrap();
+    let evidence = output.read_evidence().expect("local path reads should report Parquet read evidence");
+    assert_eq!(evidence.input_kind, "local_path");
+    assert_eq!(evidence.requested_remote_read_mode, None);
+    assert_eq!(evidence.backend, "libcudf_path_reader");
+    assert_eq!(evidence.fallback_reason, "not_applicable");
 }
 
 #[test]
@@ -513,7 +530,7 @@ fn read_parquet_source_chunks_with_budget_preserves_row_group_selection_and_file
     let token = rt
         .execution_budget_token(ExecutionBudgetRequest::new(64 * 1024 * 1024).with_boundary("source_batch_read"))
         .unwrap();
-    let outcome = DataFrame::read_parquet_source_chunks_with_budget(
+    let outcome = DataFrame::read_parquet_source_chunks_with_budget_with_evidence(
         &rt,
         &source,
         plan.chunks(),
@@ -522,7 +539,12 @@ fn read_parquet_source_chunks_with_budget_preserves_row_group_selection_and_file
     )
     .unwrap();
 
-    assert_eq!(outcome.value().series("id").unwrap().to_vec_strict::<i32>().unwrap(), vec![1, 2, 30, 40]);
+    let evidence = outcome.value().read_evidence().expect("local batch reads should report Parquet read evidence");
+    assert_eq!(evidence.input_kind, "local_path_multi");
+    assert_eq!(evidence.requested_remote_read_mode, None);
+    assert_eq!(evidence.backend, "libcudf_path_reader");
+    assert_eq!(evidence.fallback_reason, "not_applicable");
+    assert_eq!(outcome.value().frame().series("id").unwrap().to_vec_strict::<i32>().unwrap(), vec![1, 2, 30, 40],);
     assert_eq!(outcome.report().request().boundary(), "source_batch_read");
     assert_eq!(outcome.report().status(), ExecutionBudgetStatus::ReservationEnforced);
     assert_eq!(outcome.report().output_rows(), Some(4));
@@ -589,6 +611,51 @@ fn read_parquet_source_chunks_with_budget_applies_reader_predicate_to_batch() {
     assert_eq!(source.diagnostics().predicate_disposition(), cudf::io::source::PredicateDisposition::ReaderPushdown);
     assert_eq!(outcome.value().series("id").unwrap().to_vec_strict::<i32>().unwrap(), vec![20, 30, 40]);
     assert_eq!(outcome.report().context_facts().get("chunk_count").map(String::as_str), Some("2"));
+}
+
+#[test]
+fn read_parquet_source_chunks_with_budget_validates_remote_sources_at_multi_reader_boundary() {
+    let rt = sample_runtime();
+    let remote_profile = RemoteParquetProfile::shared_process_env().with_endpoint("http://local\0host:9000");
+    let source = LocalParquetSource::data(
+        [
+            LocalParquetFile::object_store_uri("s3://bucket/table/first.parquet", "first", [])
+                .unwrap()
+                .with_remote_parquet_contract(remote_profile.clone(), RemoteReadMode::RequireDirect)
+                .unwrap()
+                .with_row_group_metadata(vec![128], vec![2])
+                .unwrap(),
+            LocalParquetFile::object_store_uri("s3://bucket/table/second.parquet", "second", [])
+                .unwrap()
+                .with_remote_parquet_contract(remote_profile, RemoteReadMode::RequireDirect)
+                .unwrap()
+                .with_row_group_metadata(vec![128], vec![2])
+                .unwrap(),
+        ],
+        SourceSchema::new([SourceColumn::new("id", dtype(TypeId::Int32), false).unwrap()]).unwrap(),
+        ["id"],
+        [SourceOutputColumn::new("id", SourceColumnRef::ReadColumn(0)).unwrap()],
+        [],
+        [],
+    )
+    .unwrap();
+    let plan = plan_local_parquet_source_chunks(&source, Default::default()).unwrap();
+    assert_eq!(plan.chunks().len(), 2);
+
+    let token = rt
+        .execution_budget_token(ExecutionBudgetRequest::new(64 * 1024 * 1024).with_boundary("remote_batch_read"))
+        .unwrap();
+    let error = DataFrame::read_parquet_source_chunks_with_budget(
+        &rt,
+        &source,
+        plan.chunks(),
+        SourceReadMode::FinalOutput,
+        &token,
+    )
+    .expect_err("remote multi-source profile with an interior null should be rejected before libcudf opens S3");
+
+    assert_eq!(error.code(), ErrorCode::NullUnexpected);
+    assert_eq!(error_context_value(&error, "resource").as_deref(), Some("aws_endpoint_url"));
 }
 
 #[test]
@@ -812,7 +879,7 @@ fn read_parquet_source_chunk_with_budget_from_host_buffer_uses_token_allocator()
         .unwrap();
 
     reset_exec_observation();
-    let outcome = DataFrame::read_parquet_source_chunk_with_budget_from_host_buffer(
+    let outcome = DataFrame::read_parquet_source_chunk_with_budget_from_host_buffer_with_evidence(
         &rt,
         &source,
         &plan.chunks()[0],
@@ -821,7 +888,12 @@ fn read_parquet_source_chunk_with_budget_from_host_buffer_uses_token_allocator()
         &token,
     )
     .unwrap();
-    let df = outcome.value();
+    let evidence = outcome.value().read_evidence().expect("host-buffer reads should report Parquet read evidence");
+    assert_eq!(evidence.input_kind, "host_buffer");
+    assert_eq!(evidence.requested_remote_read_mode, None);
+    assert_eq!(evidence.backend, "host_buffer");
+    assert_eq!(evidence.fallback_reason, "not_applicable");
+    let df = outcome.value().frame();
     let report = outcome.report();
     let expected_output_bytes = dataframe_device_allocated_size_bytes(df);
     let manager_mr = token.memory_resource().testing_raw_handle_value();
@@ -990,6 +1062,50 @@ fn read_parquet_source_chunk_rejects_cross_source_subset_row_groups_with_same_fi
     .expect_err("budgeted chunk read must reject a chunk planned from a narrower row-group source");
     assert_eq!(budget_err.code(), ErrorCode::TypeMismatch);
     assert_eq!(error_context_value(&budget_err, "reason").as_deref(), Some("source_chunk_source_row_groups_mismatch"));
+}
+
+#[test]
+fn parquet_source_chunk_preflight_rejects_stale_remote_contract_with_same_file_identity() {
+    let schema = || SourceSchema::new([SourceColumn::new("id", dtype(TypeId::Int32), false).unwrap()]).unwrap();
+    let outputs = || [SourceOutputColumn::new("id", SourceColumnRef::ReadColumn(0)).unwrap()];
+    let uri = "s3://bucket/table/part-0.parquet";
+    let source_a = LocalParquetSource::data(
+        [LocalParquetFile::object_store_uri(uri, "same-file", [])
+            .unwrap()
+            .with_remote_parquet_contract(
+                RemoteParquetProfile::shared_process_env().with_region("us-west-2"),
+                RemoteReadMode::AllowHostFallback,
+            )
+            .unwrap()
+            .with_row_group_metadata(vec![128], vec![2])
+            .unwrap()],
+        schema(),
+        ["id"],
+        outputs(),
+        [],
+        [],
+    )
+    .unwrap();
+    let source_b = LocalParquetSource::data(
+        [LocalParquetFile::object_store_uri(uri, "same-file", [])
+            .unwrap()
+            .with_row_group_metadata(vec![128], vec![2])
+            .unwrap()],
+        schema(),
+        ["id"],
+        outputs(),
+        [],
+        [],
+    )
+    .unwrap();
+    let plan = plan_local_parquet_source_chunks(&source_a, Default::default()).unwrap();
+
+    let err =
+        DataFrame::parquet_source_chunk_exact_preflight(&source_b, &plan.chunks()[0], SourceReadMode::FinalOutput)
+            .expect_err("chunk planned with a different remote contract must not be accepted");
+
+    assert_eq!(err.code(), ErrorCode::TypeMismatch);
+    assert_eq!(error_context_value(&err, "reason").as_deref(), Some("source_chunk_location_mismatch"));
 }
 
 #[test]

@@ -5,7 +5,7 @@ use super::*;
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum ParquetSourceLocation {
     LocalPath(PathBuf),
-    ObjectStoreUri(String),
+    ObjectStoreUri(crate::io::parquet::RemoteParquetSource),
 }
 
 impl ParquetSourceLocation {
@@ -18,20 +18,29 @@ impl ParquetSourceLocation {
     pub fn object_store_uri(uri: impl Into<String>) -> Result<Self> {
         let uri = uri.into();
         validate_object_store_uri(&uri)?;
-        Ok(Self::ObjectStoreUri(uri))
+        Ok(Self::ObjectStoreUri(crate::io::parquet::RemoteParquetSource::s3(uri)?))
     }
 
     pub fn reader_path(&self) -> String {
         match self {
             Self::LocalPath(path) => path.display().to_string(),
-            Self::ObjectStoreUri(uri) => uri.clone(),
+            Self::ObjectStoreUri(source) => source.reader_path().to_string(),
+        }
+    }
+
+    pub fn remote_source(&self) -> Option<&crate::io::parquet::RemoteParquetSource> {
+        match self {
+            Self::LocalPath(_) => None,
+            Self::ObjectStoreUri(source) => Some(source),
         }
     }
 
     pub fn read_capability(&self) -> &'static str {
         match self {
             Self::LocalPath(_) => "local_file_system",
-            Self::ObjectStoreUri(uri) if uri_scheme(uri).is_some_and(|scheme| scheme.eq_ignore_ascii_case("s3")) => {
+            Self::ObjectStoreUri(source)
+                if uri_scheme(source.uri()).is_some_and(|scheme| scheme.eq_ignore_ascii_case("s3")) =>
+            {
                 "object_store:s3"
             },
             Self::ObjectStoreUri(_) => "object_store:unsupported",
@@ -47,7 +56,7 @@ impl fmt::Display for ParquetSourceLocation {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::LocalPath(path) => write!(f, "{}", path.display()),
-            Self::ObjectStoreUri(uri) => f.write_str(uri),
+            Self::ObjectStoreUri(source) => f.write_str(source.uri()),
         }
     }
 }
@@ -501,6 +510,17 @@ impl LocalParquetSource {
             .with_detail("actual_stable_id", chunk.stable_id.clone()));
         }
 
+        if chunk.location != source_file.location {
+            return Err(source_chunk_mismatch_error(
+                operation,
+                chunk,
+                "source chunk location contract does not match supplied source file",
+                "source_chunk_location_mismatch",
+            )
+            .with_detail("expected_location", format!("{:?}", source_file.location))
+            .with_detail("actual_location", format!("{:?}", chunk.location)));
+        }
+
         let expected_read_columns: &[String] = match self.kind {
             LocalParquetSourceKind::Data => self.read_columns.as_slice(),
             LocalParquetSourceKind::MetadataRowCount => &[],
@@ -702,7 +722,40 @@ pub struct LocalParquetFile {
     pub(super) pure_filter_row_group_compressed_bytes: Option<Vec<u64>>,
     pub(super) pure_filter_row_group_uncompressed_bytes: Option<Vec<u64>>,
     pub(super) row_group_rows: Option<Vec<u64>>,
+    pub(super) reader_decimal_types: Vec<ParquetReaderDecimalType>,
     pub(super) partition_values: Vec<PartitionValue>,
+}
+
+/// Per-file Parquet decimal reader type for one decoded read column.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct ParquetReaderDecimalType {
+    column_name: String,
+    data_type: DataType,
+}
+
+impl ParquetReaderDecimalType {
+    pub fn new(column_name: impl Into<String>, data_type: DataType) -> Result<Self> {
+        let column_name = checked_name(column_name.into(), OP_FILE_METADATA, "reader decimal column")?;
+        if !data_type.id().is_decimal() {
+            return Err(Error::new_with(
+                ErrorCode::UnsupportedDtype,
+                OP_FILE_METADATA,
+                "reader decimal type metadata requires a decimal dtype",
+            )
+            .with_column(column_name)
+            .with_detail("reason", "reader_decimal_type_not_decimal")
+            .with_detail("data_type_id", data_type.id().to_string()));
+        }
+        Ok(Self { column_name, data_type })
+    }
+
+    pub fn column_name(&self) -> &str {
+        &self.column_name
+    }
+
+    pub fn data_type(&self) -> DataType {
+        self.data_type
+    }
 }
 
 impl LocalParquetFile {
@@ -738,6 +791,7 @@ impl LocalParquetFile {
             pure_filter_row_group_compressed_bytes: None,
             pure_filter_row_group_uncompressed_bytes: None,
             row_group_rows: None,
+            reader_decimal_types: Vec::new(),
             partition_values: partition_values.into_iter().collect(),
         })
     }
@@ -774,6 +828,7 @@ impl LocalParquetFile {
             pure_filter_row_group_compressed_bytes: None,
             pure_filter_row_group_uncompressed_bytes: None,
             row_group_rows: None,
+            reader_decimal_types: Vec::new(),
             partition_values: partition_values.into_iter().collect(),
         })
     }
@@ -783,9 +838,35 @@ impl LocalParquetFile {
         &self.location
     }
 
+    /// Typed remote Parquet source when this file is an object-store URI.
+    pub fn remote_source(&self) -> Option<&crate::io::parquet::RemoteParquetSource> {
+        self.location.remote_source()
+    }
+
     /// Path string passed to libcudf's Parquet reader.
     pub fn reader_path(&self) -> String {
         self.location.reader_path()
+    }
+
+    /// Attach a typed remote Parquet profile and read policy.
+    pub fn with_remote_parquet_contract(
+        mut self,
+        profile: crate::io::parquet::RemoteParquetProfile,
+        read_mode: crate::io::parquet::RemoteReadMode,
+    ) -> Result<Self> {
+        let ParquetSourceLocation::ObjectStoreUri(source) = &mut self.location else {
+            return Err(Error::new_with(
+                ErrorCode::UnsupportedOperation,
+                OP_FILE_REMOTE_CONTRACT,
+                "remote Parquet contracts can only be attached to object-store sources",
+            )
+            .with_detail("reason", "non_remote_source")
+            .with_detail("path", self.path.display().to_string()));
+        };
+        let updated = source.clone().with_profile(profile).with_read_mode(read_mode);
+        updated.validate_contract_for_current_reader(OP_FILE_REMOTE_CONTRACT)?;
+        *source = updated;
+        Ok(self)
     }
 
     /// Attach a known full-file size in bytes.
@@ -859,6 +940,18 @@ impl LocalParquetFile {
         Ok(self)
     }
 
+    /// Attach per-read-column decimal storage types proven from Parquet metadata.
+    pub fn with_reader_decimal_types<I>(mut self, reader_decimal_types: I) -> Result<Self>
+    where I: IntoIterator<Item = ParquetReaderDecimalType> {
+        self.reader_decimal_types = reader_decimal_types.into_iter().collect();
+        validate_unique_strings(
+            self.reader_decimal_types.iter().map(|dtype| dtype.column_name.as_str()),
+            OP_FILE_METADATA,
+            "reader_decimal_column",
+        )?;
+        Ok(self)
+    }
+
     /// Local filesystem path.
     pub fn path(&self) -> &Path {
         &self.path
@@ -907,6 +1000,11 @@ impl LocalParquetFile {
     /// Row-group row-count metadata, if supplied.
     pub fn row_group_rows(&self) -> Option<&[u64]> {
         self.row_group_rows.as_deref()
+    }
+
+    /// Per-read-column decimal storage types proven from Parquet metadata.
+    pub fn reader_decimal_types(&self) -> &[ParquetReaderDecimalType] {
+        &self.reader_decimal_types
     }
 
     /// Per-file partition values in [`LocalParquetSource::partition_columns`]

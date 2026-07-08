@@ -2,13 +2,20 @@ use std::sync::Arc;
 
 use cudf::{
     DataType, ErrorCode, TimestampResolution, TypeId,
-    io::source::{
-        ByteRangeDisposition, LocalParquetFile, LocalParquetSource, LocalParquetSourceKind, PartitionColumn,
-        PartitionColumnDisposition, PartitionValue, PredicateDisposition, RejectedSourceFeature,
-        SchemaMappingDisposition, SourceChunkPlanningPolicy, SourceColumn, SourceColumnRef, SourceColumnRole,
-        SourceFormat, SourceOutputColumn, SourceRequiredColumn, SourceSchema, ZERO_COLUMN_COUNT_COLUMN,
-        ZeroColumnCountDisposition, plan_local_parquet_source_chunks, source_row_count_to_i64,
-        source_row_group_index_to_i32,
+    io::{
+        parquet::{
+            RemoteCredentialMode, RemoteParquetBackendBuildStatus, RemoteParquetCapabilityDisposition,
+            RemoteParquetProfile, RemoteParquetSource, RemoteReadMode, probe_remote_parquet_datasource,
+            remote_parquet_backend_build_status, remote_parquet_capability,
+        },
+        source::{
+            ByteRangeDisposition, LocalParquetFile, LocalParquetSource, LocalParquetSourceKind, PartitionColumn,
+            PartitionColumnDisposition, PartitionValue, PredicateDisposition, RejectedSourceFeature,
+            SchemaMappingDisposition, SourceChunkPlanningPolicy, SourceColumn, SourceColumnRef, SourceColumnRole,
+            SourceFormat, SourceOutputColumn, SourceRequiredColumn, SourceSchema, ZERO_COLUMN_COUNT_COLUMN,
+            ZeroColumnCountDisposition, plan_local_parquet_source_chunks, source_row_count_to_i64,
+            source_row_group_index_to_i32,
+        },
     },
     ops::ast::AstExpression,
 };
@@ -450,6 +457,13 @@ fn local_files_are_local_and_sources_must_have_files() {
     assert_eq!(s3_file.location().read_capability(), "object_store:s3");
     assert_eq!(s3_file.reader_path(), "s3://bucket/part-0.parquet");
     assert_eq!(s3_file.path(), std::path::Path::new("s3://bucket/part-0.parquet"));
+    assert_eq!(s3_file.remote_source().unwrap().uri(), "s3://bucket/part-0.parquet");
+
+    let uppercase_s3_file = LocalParquetFile::object_store_uri("S3://bucket/part-0.parquet", "part-0-upper", [])
+        .expect("S3 URI schemes are case-insensitive");
+    assert_eq!(uppercase_s3_file.location().read_capability(), "object_store:s3");
+    assert_eq!(uppercase_s3_file.remote_source().unwrap().uri(), "S3://bucket/part-0.parquet");
+    assert_eq!(RemoteParquetSource::s3("S3://bucket/part-0.parquet").unwrap().uri(), "S3://bucket/part-0.parquet");
 
     let unsupported_uri = LocalParquetFile::object_store_uri("gs://bucket/part-0.parquet", "part-0", []).unwrap_err();
     assert_eq!(unsupported_uri.code(), ErrorCode::UnsupportedOperation);
@@ -488,6 +502,155 @@ fn object_store_source_chunks_preserve_reader_uri() {
     assert_eq!(chunk.location().read_capability(), "object_store:s3");
     assert_eq!(chunk.reader_path(), "s3://bucket/part-0.parquet");
     assert_eq!(chunk.path(), std::path::Path::new("s3://bucket/part-0.parquet"));
+    assert_eq!(chunk.remote_source().unwrap().uri(), "s3://bucket/part-0.parquet");
+}
+
+#[test]
+fn typed_remote_parquet_source_reports_conservative_capability() {
+    let source = RemoteParquetSource::s3("s3://bucket/part-0.parquet").unwrap();
+    assert_eq!(source.uri(), "s3://bucket/part-0.parquet");
+
+    let capability = remote_parquet_capability(&source);
+    let expected_disposition = match capability.backend_build_status {
+        RemoteParquetBackendBuildStatus::KvikioRemoteIoDisabled => {
+            RemoteParquetCapabilityDisposition::PathReaderUnverified
+        },
+        RemoteParquetBackendBuildStatus::KvikioRemoteIoEnabled => {
+            RemoteParquetCapabilityDisposition::KvikioRemoteDatasource
+        },
+        RemoteParquetBackendBuildStatus::Unknown => RemoteParquetCapabilityDisposition::PathReaderUnverified,
+    };
+    assert_eq!(capability.disposition, expected_disposition);
+    assert_eq!(capability.uri_scheme, "s3");
+    assert_eq!(capability.read_mode, RemoteReadMode::PreferDirect);
+    assert_eq!(capability.credential_mode, RemoteCredentialMode::SharedProcessEnv);
+    assert_eq!(capability.backend_build_status, remote_parquet_backend_build_status());
+    assert_eq!(RemoteParquetBackendBuildStatus::Unknown.as_str(), "unknown");
+    assert_eq!(RemoteParquetBackendBuildStatus::KvikioRemoteIoDisabled.as_str(), "kvikio_remote_io_disabled");
+    assert_eq!(RemoteParquetBackendBuildStatus::KvikioRemoteIoEnabled.as_str(), "kvikio_remote_io_enabled");
+
+    let required = source.clone().with_read_mode(RemoteReadMode::RequireDirect);
+    let capability = remote_parquet_capability(&required);
+    let expected_required_disposition = match capability.backend_build_status {
+        RemoteParquetBackendBuildStatus::KvikioRemoteIoDisabled => {
+            RemoteParquetCapabilityDisposition::BackendBuildDisabled
+        },
+        RemoteParquetBackendBuildStatus::KvikioRemoteIoEnabled => {
+            RemoteParquetCapabilityDisposition::KvikioRemoteDatasource
+        },
+        RemoteParquetBackendBuildStatus::Unknown => RemoteParquetCapabilityDisposition::DirectEvidenceUnavailable,
+    };
+    assert_eq!(capability.disposition, expected_required_disposition);
+    assert_eq!(capability.read_mode, RemoteReadMode::RequireDirect);
+    assert_eq!(capability.backend_build_status, remote_parquet_backend_build_status());
+
+    let scoped = source.clone().with_profile(
+        RemoteParquetProfile::shared_process_env().with_credential_mode(RemoteCredentialMode::ScopedProfile),
+    );
+    let capability = remote_parquet_capability(&scoped);
+    let expected_scoped_disposition = match capability.backend_build_status {
+        RemoteParquetBackendBuildStatus::KvikioRemoteIoDisabled => {
+            RemoteParquetCapabilityDisposition::BackendBuildDisabled
+        },
+        RemoteParquetBackendBuildStatus::KvikioRemoteIoEnabled => {
+            RemoteParquetCapabilityDisposition::KvikioRemoteDatasource
+        },
+        RemoteParquetBackendBuildStatus::Unknown => RemoteParquetCapabilityDisposition::CredentialModeUnsupported,
+    };
+    assert_eq!(capability.disposition, expected_scoped_disposition);
+    assert_eq!(capability.credential_mode, RemoteCredentialMode::ScopedProfile);
+
+    let unsupported = RemoteParquetSource::s3("gs://bucket/part-0.parquet").unwrap_err();
+    assert_eq!(unsupported.code(), ErrorCode::UnsupportedOperation);
+    assert_eq!(unsupported.detail_value("reason"), Some("unsupported_uri_scheme"));
+
+    let debug_profile = RemoteParquetProfile::shared_process_env()
+        .with_profile_id("rest-s3")
+        .with_endpoint("https://access:secret@example.invalid");
+    let debug_source = source.with_profile(debug_profile);
+    let debug = format!("{debug_source:?}");
+    assert!(debug.contains("rest-s3"));
+    assert!(debug.contains("<configured>"));
+    assert!(!debug.contains("https://access"));
+    assert!(!debug.contains("access:secret"));
+    assert!(!debug.contains("secret"));
+    assert!(!debug.contains("bucket/part-0.parquet"));
+}
+
+#[test]
+fn remote_parquet_datasource_probe_rejects_virtual_hosted_custom_endpoint_before_open() {
+    let source = RemoteParquetSource::s3("s3://bucket/part-0.parquet").unwrap().with_profile(
+        RemoteParquetProfile::shared_process_env().with_endpoint("http://localhost:9000").with_path_style_access(false),
+    );
+
+    let error = probe_remote_parquet_datasource(&source, Some(4096))
+        .expect_err("virtual-hosted custom endpoint must fail before libcudf datasource open");
+    assert_eq!(error.code(), ErrorCode::UnsupportedOperation);
+    assert_eq!(error.detail_value("reason"), Some("remote_direct_virtual_hosted_endpoint_unsupported"));
+}
+
+#[test]
+fn remote_parquet_datasource_probe_rejects_secret_bearing_endpoint_without_echoing_it() {
+    let source = RemoteParquetSource::s3("s3://bucket/part-0.parquet").unwrap().with_profile(
+        RemoteParquetProfile::shared_process_env()
+            .with_endpoint("https://access:secret@example.invalid")
+            .with_path_style_access(true),
+    );
+
+    let error = probe_remote_parquet_datasource(&source, Some(4096))
+        .expect_err("secret-bearing endpoint must fail before libcudf datasource open");
+    assert_eq!(error.code(), ErrorCode::UnsupportedOperation);
+    assert_eq!(error.detail_value("reason"), Some("endpoint_contains_secret_bearing_components"));
+    let message = error.to_string();
+    assert!(!message.contains("access:secret"));
+    assert!(!message.contains("https://access"));
+    assert!(!message.contains("example.invalid"));
+}
+
+#[test]
+fn remote_parquet_datasource_probe_rejects_oversized_preferred_read_size_before_open() {
+    let source = RemoteParquetSource::s3("s3://bucket/part-0.parquet").unwrap();
+
+    let error = probe_remote_parquet_datasource(&source, Some(i64::MAX as u64 + 1))
+        .expect_err("oversized preferred read size must fail before libcudf datasource open");
+    assert_eq!(error.code(), ErrorCode::UnsupportedOperation);
+    assert_eq!(error.detail_value("reason"), Some("preferred_read_size_exceeds_i64_max"));
+}
+
+#[test]
+fn object_store_file_preserves_typed_remote_profile_and_mode() {
+    let profile = RemoteParquetProfile::shared_process_env()
+        .with_profile_id("lakehouse-prod")
+        .with_region("us-west-2")
+        .with_endpoint("https://s3.us-west-2.amazonaws.com")
+        .with_path_style_access(true);
+    let file = LocalParquetFile::object_store_uri("s3://bucket/part-0.parquet", "part-0", [])
+        .unwrap()
+        .with_remote_parquet_contract(profile, RemoteReadMode::AllowHostFallback)
+        .unwrap();
+    let source = file.remote_source().unwrap();
+
+    assert_eq!(source.uri(), "s3://bucket/part-0.parquet");
+    assert_eq!(source.read_mode(), RemoteReadMode::AllowHostFallback);
+    assert_eq!(source.profile().profile_id(), Some("lakehouse-prod"));
+    assert_eq!(source.profile().region(), Some("us-west-2"));
+    assert_eq!(source.profile().path_style_access(), Some(true));
+    assert_eq!(source.profile().credential_mode(), RemoteCredentialMode::SharedProcessEnv);
+
+    let scoped_profile =
+        RemoteParquetProfile::shared_process_env().with_credential_mode(RemoteCredentialMode::ScopedProfile);
+    let scoped_file = LocalParquetFile::object_store_uri("s3://bucket/part-0.parquet", "part-0", [])
+        .unwrap()
+        .with_remote_parquet_contract(scoped_profile, RemoteReadMode::PreferDirect)
+        .unwrap();
+    assert_eq!(scoped_file.remote_source().unwrap().profile().credential_mode(), RemoteCredentialMode::ScopedProfile);
+
+    let local_err = LocalParquetFile::new("part-0.parquet", "part-0", [])
+        .unwrap()
+        .with_remote_parquet_contract(RemoteParquetProfile::shared_process_env(), RemoteReadMode::PreferDirect)
+        .unwrap_err();
+    assert_eq!(local_err.code(), ErrorCode::UnsupportedOperation);
+    assert_eq!(local_err.detail_value("reason"), Some("non_remote_source"));
 }
 
 #[test]

@@ -48,6 +48,7 @@ pub const ZERO_COLUMN_COUNT_COLUMN: &str = "__cudf_zero_column_row_count";
 
 const OP_FILE_NEW: &str = "io::source::LocalParquetFile::new";
 const OP_FILE_METADATA: &str = "io::source::LocalParquetFile::with_row_group_metadata";
+const OP_FILE_REMOTE_CONTRACT: &str = "io::source::LocalParquetFile::with_remote_parquet_contract";
 const OP_SOURCE_DATA: &str = "io::source::LocalParquetSource::data";
 const OP_SOURCE_COUNT: &str = "io::source::LocalParquetSource::zero_column_count";
 const OP_SCHEMA_NEW: &str = "io::source::SourceSchema::new";
@@ -76,7 +77,9 @@ pub use diagnostics::{
     ByteRangeDisposition, PartitionColumnDisposition, PredicateDisposition, RejectedSourceFeature,
     SchemaMappingDisposition, SourceDiagnostics, SourceFormat, ZeroColumnCountDisposition,
 };
-pub use local_parquet::{LocalParquetFile, LocalParquetSource, LocalParquetSourceKind, ParquetSourceLocation};
+pub use local_parquet::{
+    LocalParquetFile, LocalParquetSource, LocalParquetSourceKind, ParquetReaderDecimalType, ParquetSourceLocation,
+};
 pub use partition::{PartitionColumn, PartitionValue};
 pub use predicate::{
     SourceReaderPredicate, SourceReaderPredicateColumn, SourceReaderPredicateLiteral, SourceReaderPredicateOp,
@@ -588,6 +591,17 @@ fn validate_chunk_source_file_contract(
         )
         .with_detail("expected_row_group_rows", format!("{:?}", source_file.row_group_rows))
         .with_detail("actual_row_group_rows", format!("{:?}", chunk.source_file_row_group_rows)));
+    }
+
+    if chunk.reader_decimal_types != source_file.reader_decimal_types {
+        return Err(source_chunk_mismatch_error(
+            operation,
+            chunk,
+            "source chunk was planned from different reader decimal type metadata",
+            "source_chunk_reader_decimal_type_metadata_mismatch",
+        )
+        .with_detail("expected_reader_decimal_types", format!("{:?}", source_file.reader_decimal_types))
+        .with_detail("actual_reader_decimal_types", format!("{:?}", chunk.reader_decimal_types)));
     }
 
     if chunk.known_file_bytes != source_file.file_size_bytes {
