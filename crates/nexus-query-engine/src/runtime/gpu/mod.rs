@@ -11,6 +11,7 @@ pub mod registry;
 
 pub use comms::{GpuComms, SingleDeviceComms};
 pub use device_context::DeviceContext;
+pub(crate) use governor::BudgetChangeObserver;
 pub use governor::{GrantRequest, MemoryGovernor, MemoryGovernorGrantRow, MemoryGovernorReport, MemoryGrant};
 pub use inventory::{CudfInventory, DeviceFacts, GpuInventory, device_budget_bytes_from_facts};
 pub use memory_failure::{DeviceMemoryFailureReport, DeviceMemoryFailureTracker};

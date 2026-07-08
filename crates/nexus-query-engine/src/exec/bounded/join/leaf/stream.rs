@@ -93,6 +93,10 @@ where
             let Some((left, right)) = batch.split_for_retry() else {
                 return Err(error);
             };
+            crate::exec::retry::backoff_before_retry(
+                context,
+                "nexus_query_engine.exec.bounded.join_leaf_stream_batch_split_retry",
+            )?;
             stream_join_leaf_source_batch_or_split_with_consumer(
                 context,
                 stream,
@@ -226,6 +230,10 @@ where
         && let Some((left, right)) = split_retryable_chunk(&chunk, stream.min_retry_chunk_row_groups)
     {
         metrics.record_source_chunk_retry();
+        crate::exec::retry::backoff_before_retry(
+            context,
+            "nexus_query_engine.exec.bounded.join_leaf_stream_source_split_retry",
+        )?;
         stream_join_leaf_source_chunk_with_consumer_retry(
             context,
             stream,

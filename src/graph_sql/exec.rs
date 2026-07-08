@@ -44,8 +44,8 @@ use nexus_query_engine::{
     GraphMstParams, GraphOutDegreesAllParams, GraphPageRankParams,
     GraphPageRankPersonalizationInput as NativeGraphPageRankPersonalizationInput, GraphPersonalizedPageRankParams,
     GraphPredicateInput as NativeGraphPredicateInput, GraphSccParams, GraphSpectralClusteringParams, GraphSsspParams,
-    GraphTriangleCountAllParams, GraphWccParams, LimitSpec, LiteralValue, ProjectionOutput, QueryMetrics, QueryOutput,
-    QueryPlanBuilder, SourceNode, execute_query_plan, execute_query_plan_with_gpu_inputs,
+    GraphTriangleCountAllParams, GraphWccParams, LimitSpec, LiteralValue, MemoryControlPolicy, ProjectionOutput,
+    QueryMetrics, QueryOutput, QueryPlanBuilder, SourceNode, execute_query_plan, execute_query_plan_with_gpu_inputs,
 };
 
 use super::{
@@ -413,6 +413,13 @@ impl ExecutionPlan for CugraphAlgoExec {
                 &default_execution_config,
                 &task_context,
             );
+            let _unbounded_native_execution_permit = match execution_config.memory_control_policy() {
+                MemoryControlPolicy::Unbounded => match execution_config.unbounded_native_execution_limiter() {
+                    Some(limiter) => Some(limiter.acquire().await?),
+                    None => None,
+                },
+                MemoryControlPolicy::Bounded { .. } => None,
+            };
             let task_context = task_context_with_cugraph_execution_ticket(&execution_config, task_context);
             let context_lease =
                 execution_config.execution_context_async(Arc::clone(&task_context)).await.map_err(|error| {

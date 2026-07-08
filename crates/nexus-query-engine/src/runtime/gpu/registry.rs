@@ -232,7 +232,7 @@ fn install_device_memory_manager(
             )
         });
     }
-    match cudf::DeviceMemoryManager::install_for_device_with_failure_callback(
+    match cudf::DeviceMemoryManager::install_for_device_with_failure_callback_details(
         device,
         memory_failure_tracker.failure_callback(),
     ) {

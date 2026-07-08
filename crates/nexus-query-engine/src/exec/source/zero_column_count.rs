@@ -98,7 +98,6 @@ pub(super) fn zero_column_count_chunk_frame_with_budget(
         .with_fact("budget_bytes", budget_bytes)
     })?;
     let token = context
-        .runtime()
         .execution_budget_token(ExecutionBudgetRequest::new(budget).with_boundary(budget_boundary))
         .map_err(|error| {
             QueryError::from_cudf_with_budget_details(

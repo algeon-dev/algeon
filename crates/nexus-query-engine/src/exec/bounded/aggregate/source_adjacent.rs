@@ -169,6 +169,10 @@ fn execute_source_adjacent_raw_source_batch(
             let Some((left, right)) = batch.split_for_retry() else {
                 return Err(error);
             };
+            crate::exec::retry::backoff_before_retry(
+                context,
+                "nexus_query_engine.exec.bounded.source_adjacent_raw_source_batch_split_retry",
+            )?;
             let mut raw_inputs =
                 execute_source_adjacent_raw_source_batch(context, bounded, left, reservations, metrics)?;
             match execute_source_adjacent_raw_source_batch(context, bounded, right, reservations, metrics) {

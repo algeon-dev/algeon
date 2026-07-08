@@ -201,10 +201,18 @@ if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
 fi
 
 suite="${1:-}"
-if [[ "${suite}" != "iceberg-local" ]]; then
-  usage >&2
-  die "unsupported e2e suite '${suite:-}' (expected iceberg-local)"
-fi
+case "${suite}" in
+  iceberg-local) ;;
+  embedded-backend)
+    shift
+    echo "warning: fixture/scripts/e2e.sh embedded-backend moved to crates/datafusion-nexus-examples/scripts/e2e.sh" >&2
+    exec "${REPO_ROOT}/crates/datafusion-nexus-examples/scripts/e2e.sh" "$@"
+    ;;
+  *)
+    usage >&2
+    die "unsupported e2e suite '${suite:-}' (expected iceberg-local)"
+    ;;
+esac
 shift
 
 while [[ $# -gt 0 ]]; do

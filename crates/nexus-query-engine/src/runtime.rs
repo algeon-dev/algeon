@@ -7,8 +7,9 @@
 //! change them only with the same care as a report schema change.
 
 use std::{
+    collections::HashMap,
     sync::{
-        Arc, Mutex,
+        Arc, Mutex, OnceLock, Weak,
         atomic::{AtomicBool, Ordering},
     },
     time::{Duration, Instant},
@@ -330,6 +331,8 @@ pub struct ExecutionContext {
     memory_control_policy: MemoryControlPolicy,
     /// Optional soft per-query memory grant backing bounded execution.
     memory_grant: Option<MemoryGrant>,
+    /// Optional native arena that mirrors the current grant budget.
+    grant_reservation_arena: Option<Arc<cudf::ReservationArena>>,
     /// Execution boundary contract used by source reads, build/probe reuse, and
     /// result materialization.
     boundary_policy: ExecutionBoundaryPolicy,
@@ -419,6 +422,7 @@ struct ExecutionContextParts {
     memory_policy: MemoryResourcePolicy,
     memory_control_policy: MemoryControlPolicy,
     memory_grant: Option<MemoryGrant>,
+    grant_reservation_arena: Option<Arc<cudf::ReservationArena>>,
     boundary_policy: ExecutionBoundaryPolicy,
     source_scheduler_policy: SourceSchedulerPolicy,
     source_chunk_planning_mode: SourceChunkPlanningMode,
@@ -477,6 +481,7 @@ impl ExecutionContext {
             memory_policy: MemoryResourcePolicy::ExternalRuntime,
             memory_control_policy: MemoryControlPolicy::Unbounded,
             memory_grant: None,
+            grant_reservation_arena: None,
             boundary_policy: ExecutionBoundaryPolicy::default(),
             source_scheduler_policy: SourceSchedulerPolicy::default(),
             source_chunk_planning_mode: SourceChunkPlanningMode::default(),
@@ -516,6 +521,7 @@ impl ExecutionContext {
             memory_policy: parts.memory_policy,
             memory_control_policy: parts.memory_control_policy,
             memory_grant: parts.memory_grant,
+            grant_reservation_arena: parts.grant_reservation_arena,
             boundary_policy: parts.boundary_policy,
             source_scheduler_policy: parts.source_scheduler_policy,
             source_chunk_planning_mode: parts.source_chunk_planning_mode,
@@ -615,6 +621,7 @@ impl ExecutionContext {
             memory_policy: MemoryResourcePolicy::ExternalRuntime,
             memory_control_policy: self.memory_control_policy,
             memory_grant: self.memory_grant.clone(),
+            grant_reservation_arena: self.grant_reservation_arena.clone(),
             boundary_policy: self.boundary_policy,
             source_scheduler_policy: self.source_scheduler_policy,
             source_chunk_planning_mode: self.source_chunk_planning_mode,
@@ -719,6 +726,21 @@ impl ExecutionContext {
     /// Returns the soft governor grant carried by this context, when present.
     pub fn memory_grant(&self) -> Option<&MemoryGrant> {
         self.memory_grant.as_ref()
+    }
+
+    /// Creates a hard execution-budget token for this context's runtime stream.
+    ///
+    /// Contexts carrying a memory grant attach the token as a member of the
+    /// grant-backed arena. Other contexts use the runtime's standalone stream
+    /// reservation path.
+    pub fn execution_budget_token(
+        &self,
+        request: cudf::ExecutionBudgetRequest,
+    ) -> cudf::Result<cudf::ExecutionBudgetToken> {
+        match self.grant_reservation_arena.as_ref() {
+            Some(arena) => cudf::ExecutionBudgetToken::from_runtime_in_arena(self.runtime(), request, arena.as_ref()),
+            None => self.runtime().execution_budget_token(request),
+        }
     }
 
     /// Returns the effective bounded device budget used by reservation tracking.
@@ -1408,6 +1430,7 @@ impl ExecutionContextBuilder {
                 },
                 None => ServiceStreamPool::for_device(runtime.device(), service_stream_pool_size)?,
             };
+            let grant_reservation_arena = create_grant_reservation_arena(runtime.as_ref(), self.memory_grant.as_ref())?;
             return Ok(ExecutionContext::from_parts(ExecutionContextParts {
                 query_id,
                 trace_id,
@@ -1415,6 +1438,7 @@ impl ExecutionContextBuilder {
                 memory_policy: MemoryResourcePolicy::ExternalRuntime,
                 memory_control_policy: self.memory_control_policy,
                 memory_grant: self.memory_grant.clone(),
+                grant_reservation_arena,
                 boundary_policy: self.boundary_policy,
                 source_scheduler_policy: self.source_scheduler_policy,
                 source_chunk_planning_mode: self.source_chunk_planning_mode,
@@ -1476,13 +1500,16 @@ impl ExecutionContextBuilder {
             },
             None => ServiceStreamPool::for_device(runtime.device(), service_stream_pool_size)?,
         };
+        let runtime = Arc::new(runtime);
+        let grant_reservation_arena = create_grant_reservation_arena(runtime.as_ref(), self.memory_grant.as_ref())?;
         Ok(ExecutionContext::from_parts(ExecutionContextParts {
             query_id,
             trace_id,
-            runtime: Arc::new(runtime),
+            runtime,
             memory_policy,
             memory_control_policy: self.memory_control_policy,
             memory_grant: self.memory_grant,
+            grant_reservation_arena,
             boundary_policy: self.boundary_policy,
             source_scheduler_policy: self.source_scheduler_policy,
             source_chunk_planning_mode: self.source_chunk_planning_mode,
@@ -1523,6 +1550,104 @@ fn validate_service_stream_pool_device(pool: &ServiceStreamPool, runtime_device:
         .with_fact("runtime_device_ordinal", runtime_device.ordinal()));
     }
     Ok(())
+}
+
+fn create_grant_reservation_arena(
+    runtime: &cudf::Runtime,
+    memory_grant: Option<&MemoryGrant>,
+) -> Result<Option<Arc<cudf::ReservationArena>>> {
+    let Some(grant) = memory_grant else {
+        return Ok(None);
+    };
+    let grant_key = grant.identity_key();
+    let mut registry = grant_reservation_arena_registry().lock().map_err(|_error| {
+        QueryError::new(
+            QueryErrorCode::Internal,
+            "nexus_query_engine.runtime.grant_reservation_arena",
+            "grant reservation arena registry mutex was poisoned",
+        )
+    })?;
+    if let Some(arena) = registry.get(&grant_key).and_then(Weak::upgrade) {
+        if arena.device() != runtime.device() {
+            return Err(QueryError::new(
+                QueryErrorCode::InvalidPlan,
+                "nexus_query_engine.runtime.grant_reservation_arena",
+                "memory grant reservation arena device does not match execution runtime device",
+            )
+            .with_fact("grant_id", grant.grant_id())
+            .with_fact("query_id", grant.query_id())
+            .with_fact("arena_device_ordinal", arena.device().ordinal())
+            .with_fact("runtime_device_ordinal", runtime.device().ordinal()));
+        }
+        return Ok(Some(arena));
+    }
+    registry.remove(&grant_key);
+
+    let limit_bytes = usize::try_from(grant.budget_bytes()).map_err(|_error| {
+        QueryError::new(
+            QueryErrorCode::InvalidPlan,
+            "nexus_query_engine.runtime.grant_reservation_arena",
+            "memory grant budget exceeds platform usize range",
+        )
+        .with_fact("grant_id", grant.grant_id())
+        .with_fact("query_id", grant.query_id())
+        .with_fact("budget_bytes", grant.budget_bytes())
+    })?;
+    let manager = runtime.device_memory_manager().map_err(|error| {
+        QueryError::from_cudf(
+            "nexus_query_engine.runtime.grant_reservation_arena",
+            "failed to resolve device memory manager for grant-backed reservation arena",
+            error,
+        )
+        .with_fact("grant_id", grant.grant_id())
+        .with_fact("query_id", grant.query_id())
+    })?;
+    let arena = manager.reservation_arena(grant.grant_id(), limit_bytes).map_err(|error| {
+        QueryError::from_cudf(
+            "nexus_query_engine.runtime.grant_reservation_arena",
+            "failed to create grant-backed reservation arena",
+            error,
+        )
+        .with_fact("grant_id", grant.grant_id())
+        .with_fact("query_id", grant.query_id())
+        .with_fact("budget_bytes", grant.budget_bytes())
+    })?;
+    let arena = Arc::new(arena);
+    let observer_arena = Arc::clone(&arena);
+    let observer_sequence = Arc::new(Mutex::new(0_u64));
+    let resize_observer: gpu::BudgetChangeObserver = Arc::new(move |change| {
+        let mut applied_sequence = match observer_sequence.lock() {
+            Ok(applied_sequence) => applied_sequence,
+            Err(_error) => {
+                eprintln!(
+                    "[nexus-query-engine] warning: failed to apply memory grant reservation arena resize after sequence mutex poison"
+                );
+                return;
+            },
+        };
+        if change.sequence < *applied_sequence {
+            return;
+        }
+        let Ok(limit_bytes) = usize::try_from(change.budget_bytes) else {
+            eprintln!(
+                "[nexus-query-engine] warning: memory grant budget exceeded platform usize range while resizing reservation arena"
+            );
+            return;
+        };
+        if let Err(error) = observer_arena.resize(limit_bytes) {
+            eprintln!("[nexus-query-engine] warning: failed to resize grant reservation arena: {error}");
+        }
+        *applied_sequence = change.sequence;
+    });
+    let initial_budget = grant.notify_on_budget_change(Arc::clone(&resize_observer))?;
+    registry.insert(grant_key, Arc::downgrade(&arena));
+    resize_observer(initial_budget);
+    Ok(Some(arena))
+}
+
+fn grant_reservation_arena_registry() -> &'static Mutex<HashMap<usize, Weak<cudf::ReservationArena>>> {
+    static REGISTRY: OnceLock<Mutex<HashMap<usize, Weak<cudf::ReservationArena>>>> = OnceLock::new();
+    REGISTRY.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
 #[cfg(test)]

@@ -1,0 +1,216 @@
+---
+sidebar_position: 2.5
+sidebar_label: Embedded Backend Example
+description: Run one Rust process with REST pipelines and Flight SQL sharing a single DataFusion Nexus GPU backend.
+---
+
+# Embedded Backend Example
+
+The embedded backend example runs one process with two frontends:
+
+- REST endpoints for predefined citation-network pipelines.
+- Arrow Flight SQL for ad-hoc SQL, metadata, prepared statements, and cancel.
+
+Both frontends share one `NexusGpuBackend` and one base `SessionContext`. REST
+requests use the backend-installed session's plan-scoped admission tickets.
+Flight SQL statements issue Flight tickets first and acquire GPU admission only
+when a native plan starts executing. Native work from both paths draws slots and
+memory grants from the same query-service ledger, which is exposed by
+`GET /api/gpu`; CPU fallback work is bounded separately by the server fallback
+statement limit.
+
+```text
+                                   one backend process
+                        +----------------------------------------+
+A: HTTP client ---------->   example HTTP API                    |
+                        |    /api/pipelines, /api/gpu            |
+                        |                  |                     |
+                        |                  |                     |
+B: Flight SQL client ---->   Flight SQL frontend                 |
+                        |    SQL, metadata, cancel               |
+                        |                  |                     |
+                        |                  v                     |
+                        |   shared DataFusion SessionContext     |
+                        |                  |                     |
+                        |                  v                     |
+                        |   NexusGpuBackend                      |
+                        |   QueryService admission ledger        |
+                        |                  |                     |
+                        |                  v                     |
+                        |   cuDF / cuGraph on CUDA               |
+                        +------------------|---------------------+
+                                           |
+                                           v
+                         Iceberg REST catalog
+                         lake.citation_network tables
+                                           |
+                                           v
+                         RustFS/S3 staged Citation Network Parquet
+```
+
+Use this shape when a Rust service owns product workflows but still needs an
+expert SQL side door for notebooks, operators, or BI tools. The demo is
+deliberately neutral: the pipelines are named by the capability they exercise,
+not by a fictional product domain.
+
+## What It Demonstrates
+
+| Surface | What it proves |
+| --- | --- |
+| REST | Predefined, parameter-validated SQL and graph pipelines can return JSON rows and planning reports. |
+| Flight SQL | Ad-hoc clients see the same catalog workspace and can run SQL, prepared statements, metadata calls, and cancel. |
+| Shared backend | REST and Flight native execution share one admission queue, one memory-governor ledger, and one CUDA runtime owner. |
+| Iceberg REST | The Citation Network demo tables are registered with Iceberg `add_files`, so the local catalog references existing Parquet files instead of rewriting them. |
+
+## Data Prerequisite
+
+The example uses the [Citation Network demo dataset](../cugraph/demo-dataset.mdx):
+4,894,081 papers and 45,564,149 citation edges. Generate the Parquet files from
+the upstream `dblp.v12.json` file, then load them into the local Iceberg REST
+catalog with `add-files` mode:
+
+```bash
+python3 fixture/scripts/dblp_ingest.py \
+  --source-json /path/to/dblp.v12.json \
+  --out-root fixture/data/demo \
+  --overwrite
+
+docker compose -f fixture/iceberg-local/docker-compose.yml up -d
+fixture/scripts/fixture.sh iceberg rest load \
+  --workload citation_network \
+  --load-mode add-files
+```
+
+`add-files` stages the Parquet files into RustFS and Iceberg references those
+staged files in place. Do not delete the staging prefix while the local REST
+catalog metadata is live. The REST fixture metadata is ephemeral, so rerun the
+loader after every fresh `docker compose up`.
+
+## Run It
+
+The example consumes the same server configuration contract as the
+[Flight SQL server](./flight-sql-server.mdx), plus `EXAMPLE_REST_BIND`.
+`EXAMPLE_REST_BIND` is the bind address for this example's own axum HTTP API
+(`/healthz`, `/api/pipelines`, `/api/gpu`). It is not the Iceberg REST catalog
+endpoint; the Iceberg REST catalog endpoint is `NEXUS_ICEBERG_REST_URI`.
+
+It requires bounded native memory admission; an unbounded server memory policy
+is rejected because the demo is about one shared query-service ledger.
+
+```bash
+EXAMPLE_REST_BIND=127.0.0.1:8080 \
+NEXUS_SERVER_BIND=127.0.0.1:50051 \
+NEXUS_SERVER_SESSION_PROFILE=native \
+NEXUS_SERVER_MAX_CONCURRENT_QUERIES=1 \
+NEXUS_SERVER_CUGRAPH_ENABLED=true \
+DATAFUSION_CATALOG_DEFAULT_CATALOG=datafusion \
+DATAFUSION_CATALOG_DEFAULT_SCHEMA=public \
+NEXUS_ICEBERG_CATALOG_KIND=rest \
+NEXUS_ICEBERG_CATALOG_NAME=lake \
+NEXUS_ICEBERG_NAMESPACE=citation_network \
+NEXUS_ICEBERG_WAREHOUSE=s3://lakehouse/warehouse \
+NEXUS_ICEBERG_REST_URI=http://localhost:8181 \
+NEXUS_ICEBERG_S3_ENDPOINT=http://localhost:9000 \
+NEXUS_ICEBERG_S3_REGION=us-east-1 \
+NEXUS_ICEBERG_S3_PATH_STYLE=true \
+NEXUS_ICEBERG_S3_ACCESS_KEY_ID=cudfadmin \
+NEXUS_ICEBERG_S3_SECRET_ACCESS_KEY=cudfadminsecret \
+NEXUS_SERVER_WORKSPACE_CATALOG=datafusion \
+NEXUS_SERVER_WORKSPACE_SCHEMA=public \
+NEXUS_SERVER_WORKSPACE_BACKING_CATALOG=lake \
+NEXUS_SERVER_WORKSPACE_BACKING_SCHEMA=citation_network \
+NEXUS_SERVER_WORKSPACE_BACKING_ALIASES=papers,paper_fos,citation_edges,citation_edges_by_dst \
+flock /tmp/cudf-gpu.lock \
+cargo run -p datafusion-nexus-examples --bin embedded_backend
+```
+
+Use the exact Iceberg keys shown above. `NEXUS_ICEBERG_CATALOG=rest` is not a
+server config key, and `NEXUS_ICEBERG_REST_WAREHOUSE` is not read by the REST
+catalog path. If startup reports `AWS_REGION is required for Glue Iceberg`, the
+server did not see `NEXUS_ICEBERG_CATALOG_KIND=rest`.
+
+The example HTTP API frontend binds to `EXAMPLE_REST_BIND`. The Flight SQL
+frontend binds to `NEXUS_SERVER_BIND`. The backend connects to the Iceberg REST
+catalog at `NEXUS_ICEBERG_REST_URI`.
+
+## REST Pipelines
+
+List the available pipelines and run one:
+
+```bash
+curl http://127.0.0.1:8080/healthz
+curl http://127.0.0.1:8080/api/pipelines
+
+curl -X POST http://127.0.0.1:8080/api/pipelines/sql_aggregate_topk \
+  -H 'content-type: application/json' \
+  -d '{"year_from":2010,"year_to":2020,"limit":10}'
+```
+
+The predefined pipelines are:
+
+| Pipeline | Capability |
+| --- | --- |
+| `sql_aggregate_topk` | Filter, sort, and limit over `papers`. |
+| `sql_join_facets` | Join `paper_fos` to `papers`, then group and aggregate. |
+| `graph_pagerank_topk` | Run `cugraph_pagerank`, join vertices back to papers, and return top scores. |
+| `graph_bfs_hops` | Run `cugraph_bfs`, join vertices back to papers, and aggregate by hop distance. |
+
+Each pipeline also exposes a plan endpoint:
+
+```bash
+curl http://127.0.0.1:8080/api/pipelines/sql_aggregate_topk/plan
+```
+
+The response contains the native `PlanningReport` JSON for the pipeline's
+default parameters. Treat `Rewritten` and `Rejected` report outcomes as the
+execution evidence. Do not depend on printed physical plans.
+
+## Ad-Hoc Flight SQL
+
+Flight SQL clients connect to the same process at `grpc://127.0.0.1:50051`.
+They see the same unqualified workspace names as the REST pipelines.
+
+```bash
+printf '%s\n' \
+  "SELECT count(*) FROM papers" \
+  "CREATE VIEW ai_edges AS SELECT e.src, e.dst, e.weight FROM citation_edges e JOIN paper_fos f ON e.src = f.paper_id WHERE f.fos_name = 'Artificial intelligence'" \
+  "SELECT vertex, distance FROM cugraph_bfs('ai_edges', 2963403868, 'src', 'dst', NULL, '{\"depth_limit\":1,\"output_mode\":\"normalized\"}') ORDER BY distance, vertex LIMIT 10" |
+  arrow_cli --host 127.0.0.1 -P 50051 --timeout 120 --output table
+```
+
+Keep multi-statement experiments in one client process when they depend on
+session-local views.
+
+## E2E Suite
+
+The black-box suite starts the local stack, loads the citation network with
+`--load-mode add-files`, spawns the example process, and checks catalog truth,
+REST pipeline results, Flight SQL graph queries, shared-ledger overload, and
+graceful shutdown:
+
+```bash
+fixture/scripts/e2e.sh embedded-backend
+```
+
+Use `--skip-stack` when the REST catalog and RustFS are already running, and
+`--reload` when you want the loader to drop and re-add the Iceberg tables.
+The suite intentionally fails fast with acquisition instructions if the
+citation-network Parquet files are missing.
+
+## Embedding APIs
+
+The example is built on the same public APIs available to application code:
+
+- `NexusGpuBackend::from_server_config(&config)` builds the bounded backend
+  from the server configuration contract.
+- `FlightSqlServer::builder().backend(backend.clone())` runs the built-in
+  Flight SQL server on that backend.
+- `server.session_context()` returns the shared base session for sibling
+  frontends.
+- `build_session_context_with_backend(&config, Some(&backend))` is the
+  lower-level session builder for REST-only or custom frontend embedders.
+
+Injected sessions and backends are validated together. A caller-built session
+must carry the same backend admission source, and server config that conflicts
+with an injected backend is rejected instead of silently creating a second GPU
+authority.

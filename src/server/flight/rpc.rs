@@ -43,35 +43,7 @@ impl FlightSqlService for DatafusionCudfFlightSqlService {
             self.observability.seal(&query_id);
             return Err(status);
         }
-        let queued_at = Instant::now();
         drop(_query_enter);
-        let permit = match self
-            .acquire_statement_permit(&query_id, correlation_id.as_deref())
-            .instrument(DatafusionCudfFlightSqlService::query_stage_span(
-                Some(&query_span),
-                &query_id,
-                correlation_id.as_deref(),
-                "admission",
-            ))
-            .await
-        {
-            Ok(permit) => permit,
-            Err(status) => {
-                log_statement_status(&query_id, "admission", queued_at, &status);
-                self.observability.finish_status(&query_id, "admission", &status);
-                self.observability.seal(&query_id);
-                return Err(status);
-            },
-        };
-        let admission_wait_ms = queued_at.elapsed().as_millis();
-        if admission_wait_ms > 0 || self.admission.max_in_flight() > 1 {
-            tracing::info!(
-                query_id,
-                admission_wait_ms,
-                max_in_flight = self.admission.max_in_flight(),
-                "admitted Flight SQL statement for planning"
-            );
-        }
         let info = match self
             .statement_flight_info(
                 query_id.clone(),
@@ -79,7 +51,6 @@ impl FlightSqlService for DatafusionCudfFlightSqlService {
                 correlation_id.clone(),
                 request.into_inner(),
                 planning_started_at,
-                permit,
                 StatementTicketKind::Statement,
                 None,
             )
@@ -159,26 +130,7 @@ impl FlightSqlService for DatafusionCudfFlightSqlService {
             prepared_statement_handle = handle.as_str(),
             "planning Flight SQL prepared statement"
         );
-        let queued_at = Instant::now();
         drop(_query_enter);
-        let permit = match self
-            .acquire_statement_permit(&query_id, correlation_id.as_deref())
-            .instrument(DatafusionCudfFlightSqlService::query_stage_span(
-                Some(&query_span),
-                &query_id,
-                correlation_id.as_deref(),
-                "admission",
-            ))
-            .await
-        {
-            Ok(permit) => permit,
-            Err(status) => {
-                log_statement_status(&query_id, "admission", queued_at, &status);
-                self.observability.finish_status(&query_id, "admission", &status);
-                self.observability.seal(&query_id);
-                return Err(status);
-            },
-        };
         let info = match self
             .statement_flight_info(
                 query_id.clone(),
@@ -186,7 +138,6 @@ impl FlightSqlService for DatafusionCudfFlightSqlService {
                 correlation_id.clone(),
                 request.into_inner(),
                 planning_started_at,
-                permit,
                 StatementTicketKind::PreparedStatement,
                 Some(handle.clone()),
             )
@@ -693,9 +644,8 @@ impl FlightSqlService for DatafusionCudfFlightSqlService {
         }
         // Plan logically to derive the result-set schema the client needs
         // up-front. This does *not* run the physical optimizer rule and does
-        // not consume an admission permit — the real plan / admission /
-        // ticket happen later in `get_flight_info_prepared_statement` when
-        // the client actually executes this prepared statement.
+        // not consume GPU admission; the physical plan and plan-scoped native
+        // ticket happen later when the client executes this prepared statement.
         let state = self.ctx.state();
         drop(_query_enter);
         let logical_plan = tokio::select! {

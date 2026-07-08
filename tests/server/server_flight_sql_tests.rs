@@ -1,6 +1,12 @@
 #![cfg(feature = "server")]
 
-use std::{fs::File, net::TcpListener, path::Path, sync::Arc, time::Duration};
+use std::{
+    fs::File,
+    net::TcpListener,
+    path::Path,
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use arrow::{
     array::{Array, BooleanArray, Int32Array, Int64Array, StringArray, UInt8Array, UInt32Array, UnionArray},
@@ -19,14 +25,19 @@ use arrow_flight::{
         SqlSupportedUnions, TicketStatementQuery, client::FlightSqlServiceClient,
     },
 };
-use datafusion_nexus::server::{
-    ServerConfig,
-    error::{ERROR_CODE_METADATA_KEY, ERROR_KIND_METADATA_KEY, ERROR_STATUS_METADATA_KEY},
-    serve_with_listener,
+use datafusion::prelude::ParquetReadOptions;
+use datafusion_nexus::{
+    NexusGpuBackend, SlotGuarantee,
+    server::{
+        FlightSqlServer, ServerConfig, ServerShutdown,
+        error::{ERROR_CODE_METADATA_KEY, ERROR_KIND_METADATA_KEY, ERROR_STATUS_METADATA_KEY},
+        serve_with_listener,
+    },
 };
 use futures::TryStreamExt;
 use parquet::{arrow::ArrowWriter, file::properties::WriterProperties};
 use prost::Message as _;
+use tokio_util::sync::CancellationToken;
 use tonic::{Code, transport::Endpoint};
 
 const QUERY_ID_METADATA_KEY: &str = "x-datafusion-nexus-query-id";
@@ -54,6 +65,161 @@ async fn flight_sql_client_can_run_select_one() {
     assert_eq!(batches[0].num_rows(), 1);
     assert_eq!(batches[0].num_columns(), 1);
     assert_eq!(int_value(batches[0].column(0)), Some(1));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn flight_sql_builder_can_run_select_one_and_shutdown_by_token() {
+    let (listener, addr) = free_local_addr();
+    let mut config = ServerConfig::from_env_get(|_| None).unwrap();
+    config.bind_addr = addr;
+    config.admission_policy = config.admission_policy.with_slot_guarantee(SlotGuarantee::Optimistic);
+    let shutdown = CancellationToken::new();
+    let server = FlightSqlServer::builder()
+        .config(config)
+        .listener(listener)
+        .shutdown(ServerShutdown::Token(shutdown.clone()))
+        .build()
+        .await
+        .unwrap();
+    assert_eq!(server.local_addr(), Some(addr));
+
+    let server = tokio::spawn(async move { server.serve().await });
+    let mut client = connect_with_retry(addr).await;
+
+    let flight_info = client.execute("select 1 as one".to_string(), None).await.unwrap();
+    let ticket = flight_info.endpoint.first().and_then(|endpoint| endpoint.ticket.clone()).unwrap();
+    let batches = client.do_get(ticket).await.unwrap().try_collect::<Vec<_>>().await.unwrap();
+    drop(client);
+    shutdown.cancel();
+    let server_result = tokio::time::timeout(Duration::from_secs(10), server)
+        .await
+        .expect("token shutdown should drain promptly")
+        .expect("server task should not panic");
+
+    server_result.expect("token shutdown should stop the server cleanly");
+    assert_eq!(batches.len(), 1);
+    assert_eq!(int_value(batches[0].column(0)), Some(1));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn flight_sql_cpu_fallback_statement_never_enters_gpu_ledger() {
+    let (listener, addr) = free_local_addr();
+    let mut config = ServerConfig::from_env_get(|_| None).unwrap();
+    config.bind_addr = addr;
+    let backend = NexusGpuBackend::from_server_config(&config).unwrap().expect("default server config is bounded");
+    let shutdown = CancellationToken::new();
+    let server = FlightSqlServer::builder()
+        .config(config)
+        .backend(backend.clone())
+        .listener(listener)
+        .shutdown(ServerShutdown::Token(shutdown.clone()))
+        .build()
+        .await
+        .unwrap();
+
+    let server = tokio::spawn(async move { server.serve().await });
+    let mut client = connect_with_retry(addr).await;
+
+    let flight_info =
+        client.execute("select regexp_replace('abc', 'a', 'x') as rewritten".to_string(), None).await.unwrap();
+    let snapshot = backend.query_service().admission_snapshot().unwrap();
+    assert_eq!(snapshot.active_queries, 0);
+    assert_eq!(snapshot.queued_queries, 0);
+    let ticket = flight_info.endpoint.first().and_then(|endpoint| endpoint.ticket.clone()).unwrap();
+    let batches = client.do_get(ticket).await.unwrap().try_collect::<Vec<_>>().await.unwrap();
+    let snapshot = backend.query_service().admission_snapshot().unwrap();
+    assert_eq!(snapshot.active_queries, 0);
+    assert_eq!(snapshot.queued_queries, 0);
+
+    drop(client);
+    shutdown.cancel();
+    let server_result = tokio::time::timeout(Duration::from_secs(10), server)
+        .await
+        .expect("token shutdown should drain promptly")
+        .expect("server task should not panic");
+
+    server_result.expect("token shutdown should stop the server cleanly");
+    assert_eq!(string_value(batches[0].column(0)), Some("xbc"));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn flight_sql_builder_shares_injected_backend_with_session_context() {
+    let (listener, addr) = free_local_addr();
+    let mut config = ServerConfig::from_env_get(|_| None).unwrap();
+    config.bind_addr = addr;
+    config.max_in_flight = 1;
+    config.admission_policy =
+        config.admission_policy.with_max_concurrent_queries(1).with_slot_guarantee(SlotGuarantee::Optimistic);
+    let backend = NexusGpuBackend::from_server_config(&config).unwrap().expect("default server config is bounded");
+    let dir = tempfile::Builder::new().prefix("datafusion-nexus-flight-sql-shared-backend-").tempdir().unwrap();
+    let parquet_path = dir.path().join("edges.parquet");
+    write_update_edges_parquet(&parquet_path);
+
+    let shutdown = CancellationToken::new();
+    let server = FlightSqlServer::builder()
+        .config(config)
+        .backend(backend.clone())
+        .listener(listener)
+        .shutdown(ServerShutdown::Token(shutdown.clone()))
+        .build()
+        .await
+        .unwrap();
+    assert!(server.backend().unwrap().query_service().same_service(backend.query_service()));
+    let ctx = Arc::clone(server.session_context());
+    ctx.register_parquet("shared_edges", parquet_path.to_str().unwrap(), ParquetReadOptions::default()).await.unwrap();
+
+    let server = tokio::spawn(async move { server.serve().await });
+    let mut client = connect_with_retry(addr).await;
+    let flight_info =
+        client.execute("select src from shared_edges order by src limit 1".to_string(), None).await.unwrap();
+    assert_eq!(
+        backend.query_service().admission_snapshot().unwrap().active_queries,
+        0,
+        "GetFlightInfo must not acquire GPU admission before DoGet"
+    );
+
+    let direct_handle = backend
+        .query_service()
+        .admit_async(backend.tenant_id().clone())
+        .await
+        .expect("direct backend admission should occupy the shared slot");
+    assert_eq!(backend.query_service().admission_snapshot().unwrap().active_queries, 1);
+
+    let ticket = flight_info.endpoint.first().and_then(|endpoint| endpoint.ticket.clone()).unwrap();
+    let flight_query =
+        tokio::spawn(async move { client.do_get(ticket).await.unwrap().try_collect::<Vec<_>>().await.unwrap() });
+
+    let session_ctx = Arc::clone(&ctx);
+    let session_query = tokio::spawn(async move {
+        let df = session_ctx.sql("select src from shared_edges order by src limit 1").await.unwrap();
+        df.collect().await
+    });
+    wait_for_shared_ledger_queue(&backend, 2).await;
+    direct_handle.finish();
+    drop(direct_handle);
+
+    let flight_batches = tokio::time::timeout(Duration::from_secs(10), flight_query)
+        .await
+        .expect("Flight query should finish after direct backend admission releases")
+        .expect("Flight query task should not panic");
+    let session_batches = tokio::time::timeout(Duration::from_secs(10), session_query)
+        .await
+        .expect("session query should finish after direct backend admission releases")
+        .expect("session query task should not panic")
+        .unwrap();
+
+    shutdown.cancel();
+    let server_result = tokio::time::timeout(Duration::from_secs(10), server)
+        .await
+        .expect("token shutdown should drain promptly")
+        .expect("server task should not panic");
+
+    server_result.expect("token shutdown should stop the server cleanly");
+    assert_eq!(flight_batches.iter().map(RecordBatch::num_rows).sum::<usize>(), 1);
+    assert_eq!(session_batches.iter().map(RecordBatch::num_rows).sum::<usize>(), 1);
+    let snapshot = backend.query_service().admission_snapshot().unwrap();
+    assert_eq!(snapshot.active_queries, 0);
+    assert_eq!(snapshot.queued_queries, 0);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -859,7 +1025,7 @@ async fn missing_column_errors_are_invalid_input_with_structured_code() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn unconsumed_statement_ticket_holds_admission_permit() {
+async fn unconsumed_statement_ticket_does_not_block_get_flight_info() {
     let (listener, addr) = free_local_addr();
     let mut config = ServerConfig::from_env_get(|_| None).unwrap();
     config.bind_addr = addr;
@@ -874,15 +1040,15 @@ async fn unconsumed_statement_ticket_holds_admission_permit() {
     let first_ticket = first_info.endpoint.first().and_then(|endpoint| endpoint.ticket.clone()).unwrap();
 
     let mut second = tokio::spawn(async move { second_client.execute("select 2 as two".to_string(), None).await });
-    assert!(
-        tokio::time::timeout(Duration::from_millis(150), &mut second).await.is_err(),
-        "second GetFlightInfo must wait while the first ticket holds the only admission permit"
-    );
+    let second_info = tokio::time::timeout(Duration::from_secs(5), &mut second)
+        .await
+        .expect("second GetFlightInfo must not wait on an unconsumed ticket")
+        .unwrap()
+        .unwrap();
 
     let batches = first_client.do_get(first_ticket).await.unwrap().try_collect::<Vec<_>>().await.unwrap();
     assert_eq!(int_value(batches[0].column(0)), Some(1));
 
-    let second_info = tokio::time::timeout(Duration::from_secs(5), second).await.unwrap().unwrap().unwrap();
     let second_ticket = second_info.endpoint.first().and_then(|endpoint| endpoint.ticket.clone()).unwrap();
     let batches = first_client.do_get(second_ticket).await.unwrap().try_collect::<Vec<_>>().await.unwrap();
 
@@ -892,7 +1058,7 @@ async fn unconsumed_statement_ticket_holds_admission_permit() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn abandoned_statement_ticket_expires_and_releases_admission_permit() {
+async fn abandoned_statement_ticket_expires_and_invalidates_do_get() {
     let (listener, addr) = free_local_addr();
     let mut config = ServerConfig::from_env_get(|_| None).unwrap();
     config.bind_addr = addr;
@@ -909,12 +1075,13 @@ async fn abandoned_statement_ticket_expires_and_releases_admission_permit() {
     let second_info =
         tokio::time::timeout(Duration::from_secs(5), second_client.execute("select 2 as two".to_string(), None))
             .await
-            .expect("second GetFlightInfo should proceed after the first ticket expires")
+            .expect("second GetFlightInfo should proceed while the first ticket is unconsumed")
             .unwrap();
     let second_ticket = second_info.endpoint.first().and_then(|endpoint| endpoint.ticket.clone()).unwrap();
     let batches = second_client.do_get(second_ticket).await.unwrap().try_collect::<Vec<_>>().await.unwrap();
     assert_eq!(int_value(batches[0].column(0)), Some(2));
 
+    tokio::time::sleep(Duration::from_millis(75)).await;
     let error = first_client.do_get(first_ticket).await.unwrap_err();
 
     server.abort();
@@ -1634,6 +1801,21 @@ async fn connect_with_retry(addr: std::net::SocketAddr) -> FlightSqlServiceClien
     }
 }
 
+async fn wait_for_shared_ledger_queue(backend: &NexusGpuBackend, expected_queued_queries: usize) {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let snapshot = backend.query_service().admission_snapshot().unwrap();
+        if snapshot.active_queries == 1 && snapshot.queued_queries == expected_queued_queries {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "queries did not queue on the shared backend: expected active=1 queued={expected_queued_queries}, snapshot={snapshot:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+}
+
 async fn execute_batches(
     client: &mut FlightSqlServiceClient<tonic::transport::Channel>,
     sql: &str,
@@ -1713,6 +1895,10 @@ fn int_value(array: &arrow::array::ArrayRef) -> Option<i64> {
         .downcast_ref::<Int64Array>()
         .map(|array| array.value(0))
         .or_else(|| array.as_any().downcast_ref::<Int32Array>().map(|array| i64::from(array.value(0))))
+}
+
+fn string_value(array: &arrow::array::ArrayRef) -> Option<&str> {
+    array.as_any().downcast_ref::<StringArray>().map(|array| array.value(0))
 }
 
 fn sql_info_string(batch: &arrow::record_batch::RecordBatch, info: SqlInfo) -> String {

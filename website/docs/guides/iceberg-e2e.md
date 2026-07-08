@@ -28,12 +28,15 @@ For the website cuGraph examples, load the DBLP / AMiner citation network into
 the same REST catalog:
 
 ```bash
-fixture/scripts/fixture.sh iceberg rest load --workload citation_network
+fixture/scripts/fixture.sh iceberg rest load \
+  --workload citation_network \
+  --load-mode add-files
 ```
 
 That creates namespace `citation_network` with `citation_edges`,
 `citation_edges_by_dst`, `papers`, `paper_authors`, and `paper_fos`. Run the
-server with `NEXUS_ICEBERG_CATALOG_KIND=rest`,
+loader again after a fresh compose stack starts; `add-files` registers staged
+Parquet files in place. Run the server with `NEXUS_ICEBERG_CATALOG_KIND=rest`,
 `NEXUS_ICEBERG_CATALOG_NAME=lake`, and
 `NEXUS_ICEBERG_NAMESPACE=citation_network`; the cuGraph examples use the workspace
 overlay so those tables are available as unqualified names.

@@ -8,6 +8,9 @@ use std::{env, error::Error};
 
 type ToolResult<T> = Result<T, Box<dyn Error + Send + Sync>>;
 
+#[cfg(all(feature = "embedded-backend-e2e", not(test)))]
+#[path = "../e2e/embedded_backend_e2e.rs"]
+mod embedded_backend_e2e;
 #[cfg(not(test))]
 #[path = "../e2e/flight_sql_cugraph_smoke.rs"]
 mod flight_sql_cugraph_smoke;
@@ -37,6 +40,7 @@ async fn main() -> ToolResult<()> {
         Some("iceberg-glue-moto-e2e") => run_iceberg_glue_moto_e2e().await,
         Some("server-iceberg-glue-moto-e2e") => run_server_iceberg_glue_moto_e2e().await,
         Some("server-iceberg-glue-remote-direct-e2e") => run_server_iceberg_glue_remote_direct_e2e().await,
+        Some("embedded-backend-e2e") => run_embedded_backend_e2e(env::args().skip(2).collect()).await,
         Some("-h" | "--help") | None => {
             print_usage();
             if command.is_none() { Err("missing tool command".into()) } else { Ok(()) }
@@ -58,7 +62,8 @@ fn print_usage() {
            cargo run -p datafusion-nexus-tools --features iceberg-e2e -- iceberg-rest-local-e2e\n\
            cargo run -p datafusion-nexus-tools --features iceberg-e2e -- iceberg-glue-moto-e2e\n\
            cargo run -p datafusion-nexus-tools --features server-iceberg-e2e -- server-iceberg-glue-moto-e2e\n\
-           flock /tmp/cudf-gpu.lock cargo run -p datafusion-nexus-tools --features server-iceberg-e2e -- server-iceberg-glue-remote-direct-e2e"
+           flock /tmp/cudf-gpu.lock cargo run -p datafusion-nexus-tools --features server-iceberg-e2e -- server-iceberg-glue-remote-direct-e2e\n\
+           flock /tmp/cudf-gpu.lock cargo run -p datafusion-nexus-tools --features embedded-backend-e2e -- embedded-backend-e2e"
     );
 }
 
@@ -121,4 +126,14 @@ async fn run_server_iceberg_glue_remote_direct_e2e() -> ToolResult<()> {
 async fn run_server_iceberg_glue_remote_direct_e2e() -> ToolResult<()> {
     Err("server-iceberg-glue-remote-direct-e2e requires --features server-iceberg-e2e and normal cargo run execution"
         .into())
+}
+
+#[cfg(all(feature = "embedded-backend-e2e", not(test)))]
+async fn run_embedded_backend_e2e(args: Vec<String>) -> ToolResult<()> {
+    embedded_backend_e2e::run(args).await
+}
+
+#[cfg(not(all(feature = "embedded-backend-e2e", not(test))))]
+async fn run_embedded_backend_e2e(_args: Vec<String>) -> ToolResult<()> {
+    Err("embedded-backend-e2e requires --features embedded-backend-e2e and normal cargo run execution".into())
 }

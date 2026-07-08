@@ -7,7 +7,7 @@ script streams that file once and writes the DataFusion-Nexus graph-fixture layo
 cuGraph SQL UDFs can read only the necessary bytes into the GPU before the showcase
 enrichment JOIN back to rich paper metadata.
 
-Output layout (mirrors ``snap_ingest.py``), under ``<out-root>/citation_network/v1``:
+Output layout under ``<out-root>/citation_network/v1``:
 
 - ``parquet/edges_by_src.parquet``   directed citation edges clustered by ``(src, dst, edge_id)``
 - ``parquet/edges_by_dst.parquet``   same edges clustered by ``(dst, src, edge_id)``
@@ -17,8 +17,8 @@ Output layout (mirrors ``snap_ingest.py``), under ``<out-root>/citation_network/
 - ``manifest.json`` + ``source.json``
 
 Vertex IDs stay as the raw AMiner Int64 paper ids (no dense remap / codebook), matching
-the SNAP fixtures; cuGraph consumes Int64 ``src``/``dst`` directly and the enrichment JOIN
-keys on the same ids.
+the cuGraph SQL fixture convention; cuGraph consumes Int64 ``src``/``dst`` directly and
+the enrichment JOIN keys on the same ids.
 
 Parquet is written with Snappy compression (fastest libcudf/nvCOMP GPU decode; the edge
 tables are the bytes streamed onto the device for cuGraph), format v2.6, per-column
@@ -1141,7 +1141,7 @@ def convert(spec: DatasetSpec, args: argparse.Namespace) -> dict[str, Any]:
 
     manifest = {
         "schema_version": 1,
-        "generator": "fixture/scripts/graph/dblp_ingest.py",
+        "generator": "fixture/scripts/dblp_ingest.py",
         "generated_at_unix": int(time.time()),
         "repo_root": str(REPO_ROOT),
         "dataset": {

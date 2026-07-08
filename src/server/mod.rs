@@ -2,13 +2,15 @@
 
 #[cfg(feature = "iceberg")]
 use std::borrow::Cow;
-use std::{sync::Arc, time::Instant};
+use std::{future::Future, net::SocketAddr, pin::Pin, sync::Arc, time::Instant};
 
 use arrow_flight::flight_service_server::FlightServiceServer;
+use datafusion::prelude::SessionContext;
 use nexus_query_engine::MemoryControlPolicy;
+use tokio_util::sync::CancellationToken;
 use tonic::transport::{Server, server::TcpIncoming};
 
-use crate::GrantBand;
+use crate::NexusGpuBackend;
 #[cfg(feature = "iceberg")]
 use crate::table_format::scan::credential_free_endpoint_identity;
 
@@ -29,7 +31,9 @@ pub use auth::{AuthConfig, AuthInterceptor, AuthMode, Principal, StaticUserConfi
 pub use config::*;
 pub use diagnostics::{FlightSqlNativeRejectClass, log_leaf_guard_rejection, log_native_planning_report};
 pub use error::{Result, ServerError};
-pub use session::{apply_session_profile, build_session_config, build_session_context};
+pub use session::{
+    apply_session_profile, build_session_config, build_session_context, build_session_context_with_backend,
+};
 
 #[cfg(feature = "iceberg")]
 pub use crate::{
@@ -37,6 +41,168 @@ pub use crate::{
     NEXUS_ICEBERG_REMOTE_DIRECT_READ_MODE_ENV, NEXUS_LAKEHOUSE_CACHE_MAX_BYTES_ENV, NEXUS_LAKEHOUSE_CACHE_POLICY_ENV,
     NEXUS_LAKEHOUSE_CACHE_ROOT_ENV,
 };
+
+/// Flight SQL server shutdown source.
+#[derive(Debug, Clone, Default)]
+pub enum ServerShutdown {
+    /// Install SIGINT/SIGTERM handlers and preserve the standalone server
+    /// escalation watchdog.
+    #[default]
+    OsSignals,
+    /// Drain when the caller-controlled token is cancelled.
+    Token(CancellationToken),
+}
+
+/// Builder for the embeddable Flight SQL server.
+#[derive(Default)]
+pub struct FlightSqlServerBuilder {
+    config: Option<ServerConfig>,
+    backend: Option<NexusGpuBackend>,
+    session_context: Option<Arc<SessionContext>>,
+    listener: Option<std::net::TcpListener>,
+    shutdown: ServerShutdown,
+}
+
+/// Embeddable Flight SQL server assembled from a [`ServerConfig`].
+pub struct FlightSqlServer {
+    service: flight::DatafusionCudfFlightSqlService,
+    listen: Listen,
+    shutdown: ServerShutdown,
+    ctx: Arc<SessionContext>,
+    backend: Option<NexusGpuBackend>,
+    local_addr: Option<SocketAddr>,
+}
+
+impl FlightSqlServer {
+    pub fn builder() -> FlightSqlServerBuilder {
+        FlightSqlServerBuilder::default()
+    }
+
+    /// Shared base session used by the server. Embedded frontends can clone it.
+    pub fn session_context(&self) -> &Arc<SessionContext> {
+        &self.ctx
+    }
+
+    /// Shared backend used by the server, when bounded query-service admission is active.
+    pub fn backend(&self) -> Option<&NexusGpuBackend> {
+        self.backend.as_ref()
+    }
+
+    /// Address of an adopted listener, when the caller pre-bound the socket.
+    pub fn local_addr(&self) -> Option<SocketAddr> {
+        self.local_addr
+    }
+
+    pub async fn serve(self) -> Result<()> {
+        serve_built_server(self).await
+    }
+}
+
+impl FlightSqlServerBuilder {
+    pub fn config(mut self, config: ServerConfig) -> Self {
+        self.config = Some(config);
+        self
+    }
+
+    pub fn backend(mut self, backend: NexusGpuBackend) -> Self {
+        self.backend = Some(backend);
+        self
+    }
+
+    pub fn session_context(mut self, ctx: Arc<SessionContext>) -> Self {
+        self.session_context = Some(ctx);
+        self
+    }
+
+    pub fn listener(mut self, listener: std::net::TcpListener) -> Self {
+        self.listener = Some(listener);
+        self
+    }
+
+    pub fn shutdown(mut self, shutdown: ServerShutdown) -> Self {
+        self.shutdown = shutdown;
+        self
+    }
+
+    pub async fn build(self) -> Result<FlightSqlServer> {
+        let config = self.config.ok_or_else(|| {
+            ServerError::builder_validation(
+                "server_config_required",
+                "server config is required to build Flight SQL server",
+            )
+        })?;
+        ensure_single_librmm_runtime_mapping()?;
+        let listen = match self.listener {
+            Some(listener) => Listen::Prebound(listener),
+            None => Listen::Addr(config.bind_addr),
+        };
+        let addr = listen.addr()?;
+        log_server_config_snapshot(&config);
+        warn_if_testing_profile_active(&config);
+        warn_if_cugraph_built_but_disabled(&config);
+
+        if self.session_context.is_some() && self.backend.is_none() {
+            return Err(ServerError::builder_validation(
+                "server_session_without_backend",
+                "an injected server session_context requires an injected backend",
+            ));
+        }
+
+        let backend = match self.backend {
+            Some(backend) => {
+                validate_injected_backend_matches_config(&backend, &config)?;
+                Some(backend)
+            },
+            None => NexusGpuBackend::from_server_config(&config)?,
+        };
+
+        let admission_init_start = Instant::now();
+        let admission = Arc::new(admission::QueryAdmission::from_backend(backend.as_ref(), &config)?);
+        tracing::info!(
+            elapsed_ms = u64::try_from(admission_init_start.elapsed().as_millis()).unwrap_or(u64::MAX),
+            "query admission controller initialized"
+        );
+        admission.log_query_service_state(None, "server_startup");
+
+        let mut native_optimizer_config = backend
+            .as_ref()
+            .map_or_else(|| config.native_optimizer_config.clone(), |backend| backend.optimizer_config().clone());
+        if let Some(limiter) = admission.unbounded_native_execution_limiter() {
+            native_optimizer_config = native_optimizer_config.with_unbounded_native_execution_limiter(limiter);
+        }
+
+        let ctx = match self.session_context {
+            Some(ctx) => {
+                let backend = backend.as_ref().expect("injected session_context requires injected backend");
+                validate_injected_session_matches_backend(&ctx, backend)?;
+                ctx
+            },
+            None => {
+                let mut session_config = config.clone();
+                session_config.native_optimizer_config = native_optimizer_config.clone();
+                Arc::new(session::build_session_context_with_backend(&session_config, backend.as_ref()).await?)
+            },
+        };
+
+        let auth_interceptor = auth::AuthInterceptor::new(config.auth.mode.clone(), auth::TokenStore::new());
+        log_auth_mode_snapshot(&config.auth.mode);
+        let service = flight::DatafusionCudfFlightSqlService::new(
+            Arc::clone(&ctx),
+            native_optimizer_config.clone(),
+            config.session_profile,
+            admission,
+            config.statement_ticket_ttl,
+            auth_interceptor,
+            #[cfg(feature = "cugraph")]
+            config.cugraph.as_ref().map(|cugraph| {
+                session::cugraph_sql_config(cugraph, native_optimizer_config.native_execution_config().clone())
+            }),
+        )
+        .with_server_config_diagnostics(&config);
+        let local_addr = matches!(&listen, Listen::Prebound(_)).then_some(addr);
+        Ok(FlightSqlServer { service, listen, shutdown: self.shutdown, ctx, backend, local_addr })
+    }
+}
 
 /// Initialize the process-wide CUDA device context for `ordinal`.
 ///
@@ -56,17 +222,16 @@ pub fn init_cuda_device(ordinal: usize) -> Result<()> {
 /// Start the Flight SQL server and serve until SIGINT/SIGTERM.
 ///
 /// Graceful shutdown sequence on signal:
-/// 1. Close the admission gate so pending and future statement admits
+/// 1. Close the admission gate so pending and future execution admits
 ///    fail fast instead of acquiring a permit during drain.
 /// 2. Cancel the server-wide shutdown [`tokio_util::sync::CancellationToken`].
 ///    Every per-statement token is a child of this token, so cancellation
-///    cascades to statements already admitted as well as any that race in
-///    between permit acquisition and registry insert.
+///    cascades to statements already executing as well as tickets still waiting
+///    for `DoGet`.
 /// 3. Let tonic stop accepting new connections and drain existing RPCs; the
 ///    `serve_with_shutdown` future returns once the last RPC finishes.
 pub async fn serve(config: ServerConfig) -> Result<()> {
-    let addr = config.bind_addr;
-    serve_inner(config, Listen::Addr(addr)).await
+    FlightSqlServer::builder().config(config).build().await?.serve().await
 }
 
 /// Serve on an already-bound listener instead of binding `config.bind_addr`.
@@ -80,7 +245,7 @@ pub async fn serve(config: ServerConfig) -> Result<()> {
 /// refused. `config.bind_addr` is ignored in favour of the listener's own
 /// address.
 pub async fn serve_with_listener(config: ServerConfig, listener: std::net::TcpListener) -> Result<()> {
-    serve_inner(config, Listen::Prebound(listener)).await
+    FlightSqlServer::builder().config(config).listener(listener).build().await?.serve().await
 }
 
 /// How [`serve_inner`] obtains its TCP socket.
@@ -92,79 +257,30 @@ enum Listen {
     Prebound(std::net::TcpListener),
 }
 
-async fn serve_inner(config: ServerConfig, listen: Listen) -> Result<()> {
-    ensure_single_librmm_runtime_mapping()?;
-    let addr = match &listen {
-        Listen::Addr(addr) => *addr,
-        Listen::Prebound(listener) => listener
-            .local_addr()
-            .map_err(|error| ServerError::session("failed to read Flight SQL listener address", error))?,
-    };
-    log_server_config_snapshot(&config);
-    warn_if_testing_profile_active(&config);
-    warn_if_cugraph_built_but_disabled(&config);
-    warn_if_default_admission_grant_band(&config);
+impl Listen {
+    fn addr(&self) -> Result<SocketAddr> {
+        match self {
+            Listen::Addr(addr) => Ok(*addr),
+            Listen::Prebound(listener) => listener
+                .local_addr()
+                .map_err(|error| ServerError::session("failed to read Flight SQL listener address", error)),
+        }
+    }
+}
 
-    let ctx = Arc::new(session::build_session_context(&config).await?);
-    let auth_interceptor = auth::AuthInterceptor::new(config.auth.mode.clone(), auth::TokenStore::new());
-    log_auth_mode_snapshot(&config.auth.mode);
-    // Building the admission controller is where the process-wide CUDA device
-    // context is first established (the query-service backend resolves the
-    // device, which implicitly runs `cuInit()` on the first call in a process).
-    // That cold start is a one-time cost of a couple of seconds; time it so the
-    // startup latency is visible in the logs rather than looking like a hang
-    // before the bind.
-    let admission_init_start = Instant::now();
-    let admission = Arc::new(admission::QueryAdmission::from_server_config(&config)?);
-    tracing::info!(
-        elapsed_ms = u64::try_from(admission_init_start.elapsed().as_millis()).unwrap_or(u64::MAX),
-        "query admission controller initialized"
-    );
-    admission.log_query_service_state(None, "server_startup");
-    let service = flight::DatafusionCudfFlightSqlService::new(
-        ctx,
-        config.native_optimizer_config.clone(),
-        config.session_profile,
-        admission,
-        config.statement_ticket_ttl,
-        auth_interceptor,
-        #[cfg(feature = "cugraph")]
-        config.cugraph.as_ref().map(|cugraph| {
-            session::cugraph_sql_config(cugraph, config.native_optimizer_config.native_execution_config().clone())
-        }),
-    )
-    .with_server_config_diagnostics(&config);
+async fn serve_built_server(server: FlightSqlServer) -> Result<()> {
+    let FlightSqlServer { service, listen, shutdown, .. } = server;
+    let addr = listen.addr()?;
     let admission = Arc::clone(service.admission());
     let cancellations = Arc::clone(service.cancellations());
     let shutdown_token = service.shutdown_token().clone();
-
     tracing::info!(
         bind_addr = %addr,
-        max_in_flight = config.max_in_flight,
+        max_in_flight = admission.max_in_flight(),
         "starting datafusion-nexus Flight SQL server"
     );
 
-    // Hand back the escalation-watchdog handle so we can abort it once the
-    // server has drained. Without this, a SIGINT received after a clean
-    // shutdown (e.g. when `serve` is called repeatedly in tests) would still
-    // trigger the spawned `process::exit`.
-    let (watchdog_tx, watchdog_rx) = tokio::sync::oneshot::channel();
-    let shutdown = async move {
-        wait_for_shutdown_signal().await;
-        admission.close();
-        let in_flight = cancellations.len();
-        shutdown_token.cancel();
-        tracing::info!(in_flight, "received shutdown signal; draining datafusion-nexus Flight SQL server");
-        // Stay listening for further signals during drain so a hung drain can
-        // be force-exited with a second Ctrl-C / SIGTERM. 130 is the
-        // conventional exit code for SIGINT-terminated processes.
-        let watchdog = tokio::spawn(async {
-            wait_for_shutdown_signal().await;
-            tracing::warn!("received second shutdown signal during drain; forcing immediate exit");
-            std::process::exit(130);
-        });
-        let _ = watchdog_tx.send(watchdog);
-    };
+    let (shutdown, watchdog_rx) = shutdown_future(shutdown, admission, cancellations, shutdown_token);
 
     let builder = Server::builder().add_service(FlightServiceServer::new(service));
     let server_result = match listen {
@@ -186,13 +302,218 @@ async fn serve_inner(config: ServerConfig, listen: Listen) -> Result<()> {
     // Abort the watchdog if it was armed. If the serve future returned before
     // the shutdown future ran (e.g. a bind/listen error), the oneshot sender
     // was dropped — `recv` returns Err and there is nothing to abort.
-    if let Ok(watchdog) = watchdog_rx.await {
+    if let Some(mut watchdog_rx) = watchdog_rx
+        && let Ok(watchdog) = (&mut watchdog_rx).await
+    {
         watchdog.abort();
     }
     server_result.map_err(|error| ServerError::transport_at_addr(addr, error))?;
 
     tracing::info!("datafusion-nexus Flight SQL server stopped");
     Ok(())
+}
+
+type ShutdownFuture = Pin<Box<dyn Future<Output = ()> + Send>>;
+
+fn shutdown_future(
+    shutdown: ServerShutdown,
+    admission: Arc<admission::QueryAdmission>,
+    cancellations: Arc<cancel::QueryCancellation>,
+    shutdown_token: CancellationToken,
+) -> (ShutdownFuture, Option<tokio::sync::oneshot::Receiver<tokio::task::JoinHandle<()>>>) {
+    match shutdown {
+        ServerShutdown::OsSignals => {
+            // Hand back the escalation-watchdog handle so we can abort it once
+            // the server has drained. Without this, a SIGINT received after a
+            // clean shutdown would still trigger the spawned `process::exit`.
+            let (watchdog_tx, watchdog_rx) = tokio::sync::oneshot::channel();
+            let shutdown = async move {
+                wait_for_shutdown_signal().await;
+                admission.close();
+                let in_flight = cancellations.len();
+                shutdown_token.cancel();
+                tracing::info!(in_flight, "received shutdown signal; draining datafusion-nexus Flight SQL server");
+                let watchdog = tokio::spawn(async {
+                    wait_for_shutdown_signal().await;
+                    tracing::warn!("received second shutdown signal during drain; forcing immediate exit");
+                    std::process::exit(130);
+                });
+                let _ = watchdog_tx.send(watchdog);
+            };
+            (Box::pin(shutdown), Some(watchdog_rx))
+        },
+        ServerShutdown::Token(token) => {
+            let shutdown = async move {
+                token.cancelled().await;
+                admission.close();
+                let in_flight = cancellations.len();
+                shutdown_token.cancel();
+                tracing::info!(in_flight, "received shutdown token; draining datafusion-nexus Flight SQL server");
+            };
+            (Box::pin(shutdown), None)
+        },
+    }
+}
+
+fn validate_injected_backend_matches_config(backend: &NexusGpuBackend, config: &ServerConfig) -> Result<()> {
+    let MemoryControlPolicy::Bounded { device_budget_bytes: config_device_budget_bytes, .. } =
+        config.native_optimizer_config.native_execution_config().memory_control_policy()
+    else {
+        return Err(ServerError::builder_validation(
+            "server_backend_unbounded_config",
+            "an injected backend requires bounded native memory policy in the server config",
+        ));
+    };
+
+    let service_config = backend.query_service().config();
+    let normalized_admission_policy = admission::server_admission_policy(config);
+    if config.max_in_flight != service_config.max_concurrent_queries {
+        return Err(ServerError::builder_conflict(
+            "server_backend_admission_conflict",
+            "max_in_flight",
+            config.max_in_flight,
+            service_config.max_concurrent_queries,
+        ));
+    }
+    if config.gpu_devices != backend.device_ordinals() {
+        return Err(ServerError::builder_conflict(
+            "server_backend_admission_conflict",
+            "gpu_devices",
+            format_usize_list(&config.gpu_devices),
+            format_usize_list(backend.device_ordinals()),
+        ));
+    }
+    if normalized_admission_policy.slot_guarantee() != service_config.slot_guarantee {
+        return Err(ServerError::builder_conflict(
+            "server_backend_admission_conflict",
+            "slot_guarantee",
+            slot_guarantee_value(normalized_admission_policy.slot_guarantee()),
+            slot_guarantee_value(service_config.slot_guarantee),
+        ));
+    }
+    if normalized_admission_policy.max_queued() != service_config.max_admission_queue_len {
+        return Err(ServerError::builder_conflict(
+            "server_backend_admission_conflict",
+            "admission.max_queued",
+            normalized_admission_policy.max_queued(),
+            service_config.max_admission_queue_len,
+        ));
+    }
+    if normalized_admission_policy.wait_timeout() != service_config.admission_wait_timeout {
+        return Err(ServerError::builder_conflict(
+            "server_backend_admission_conflict",
+            "admission.wait_timeout",
+            normalized_admission_policy.wait_timeout().as_millis(),
+            service_config.admission_wait_timeout.as_millis(),
+        ));
+    }
+    let backend_capacity = service_config.device_capacity_bytes.ok_or_else(|| {
+        ServerError::builder_validation(
+            "server_backend_admission_conflict",
+            "injected backend does not expose a bounded device capacity",
+        )
+    })?;
+    if config_device_budget_bytes != backend_capacity {
+        let field = if config.device_budget_fraction.is_some() {
+            config::NEXUS_SERVER_DEVICE_BUDGET_FRACTION_ENV
+        } else {
+            config::NEXUS_SERVER_NATIVE_DEVICE_BUDGET_BYTES_ENV
+        };
+        return Err(ServerError::builder_conflict(
+            "server_backend_admission_conflict",
+            field,
+            config_device_budget_bytes,
+            backend_capacity,
+        ));
+    }
+
+    let config_grant = normalized_admission_policy
+        .resolve_grant_band_bytes(
+            backend_capacity,
+            config.gpu_devices.len(),
+            config.native_optimizer_config.native_execution_config().native_pipeline_execution_mode(),
+        )
+        .map_err(|error| ServerError::session("failed to resolve server admission grant band", error))?;
+    let MemoryControlPolicy::Bounded { device_budget_bytes: backend_min, .. } =
+        backend.optimizer_config().native_execution_config().memory_control_policy()
+    else {
+        return Err(ServerError::builder_validation(
+            "server_backend_admission_conflict",
+            "injected backend native optimizer config is not bounded",
+        ));
+    };
+    let backend_want = backend
+        .query_service()
+        .tenant_budget(backend.tenant_id())
+        .map_err(|error| ServerError::session("failed to inspect injected backend tenant budget", error))?;
+    if config_grant.min_bytes != backend_min {
+        return Err(ServerError::builder_conflict(
+            "server_backend_admission_conflict",
+            "admission.grant_min",
+            config_grant.min_bytes,
+            backend_min,
+        ));
+    }
+    if config_grant.want_bytes != backend_want {
+        return Err(ServerError::builder_conflict(
+            "server_backend_admission_conflict",
+            "admission.grant_want",
+            config_grant.want_bytes,
+            backend_want,
+        ));
+    }
+    let config_fallback_limit = config.native_optimizer_config.cpu_fallback_max_concurrent_statements();
+    let backend_fallback_limit = backend.optimizer_config().cpu_fallback_max_concurrent_statements();
+    if config_fallback_limit != backend_fallback_limit {
+        return Err(ServerError::builder_conflict(
+            "server_backend_admission_conflict",
+            "fallback.max_concurrent_statements",
+            config_fallback_limit.map(|value| value.get()).unwrap_or(0),
+            backend_fallback_limit.map(|value| value.get()).unwrap_or(0),
+        ));
+    }
+    let config_fallback_timeout = config_fallback_limit.and(config.native_optimizer_config.cpu_fallback_wait_timeout());
+    let backend_fallback_timeout = backend_fallback_limit.and(backend.optimizer_config().cpu_fallback_wait_timeout());
+    if config_fallback_timeout != backend_fallback_timeout {
+        return Err(ServerError::builder_conflict(
+            "server_backend_admission_conflict",
+            "fallback.wait_timeout_ms",
+            config_fallback_timeout.map(|value| value.as_millis()).unwrap_or(0),
+            backend_fallback_timeout.map(|value| value.as_millis()).unwrap_or(0),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_injected_session_matches_backend(ctx: &SessionContext, backend: &NexusGpuBackend) -> Result<()> {
+    let state = ctx.state();
+    let Some(optimizer_config) = crate::session::installed_cudf_native_optimizer_config(&state) else {
+        return Err(ServerError::builder_validation(
+            "server_session_backend_mismatch",
+            "injected session_context does not have the datafusion-nexus native optimizer installed",
+        ));
+    };
+    if !optimizer_config
+        .native_execution_config()
+        .query_admission_source_matches(backend.query_service(), backend.tenant_id())
+    {
+        return Err(ServerError::builder_validation(
+            "server_session_backend_mismatch",
+            "injected session_context is not installed on the injected backend query service",
+        ));
+    }
+    Ok(())
+}
+
+fn format_usize_list(values: &[usize]) -> String {
+    values.iter().map(usize::to_string).collect::<Vec<_>>().join(",")
+}
+
+fn slot_guarantee_value(slot_guarantee: nexus_query_engine::SlotGuarantee) -> &'static str {
+    match slot_guarantee {
+        nexus_query_engine::SlotGuarantee::GuaranteedMinimum => "guaranteed_minimum",
+        nexus_query_engine::SlotGuarantee::Optimistic => "optimistic",
+    }
 }
 
 #[cfg(feature = "iceberg")]
@@ -209,6 +530,14 @@ fn log_server_config_snapshot(config: &ServerConfig) {
             tracing::info!(
                 bind_addr = %config.bind_addr,
                 max_in_flight = config.max_in_flight,
+                cpu_fallback_max_concurrent_statements = config
+                    .cpu_fallback_max_concurrent_statements
+                    .map(|value| value.get())
+                    .unwrap_or(0),
+                cpu_fallback_wait_timeout_ms = config
+                    .cpu_fallback_wait_timeout
+                    .map(|value| value.as_millis())
+                    .unwrap_or(0),
                 statement_ticket_ttl_secs = config.statement_ticket_ttl.as_secs(),
                 log_filter = %config.log_filter,
                 session_profile = %config.session_profile,
@@ -247,6 +576,14 @@ fn log_server_config_snapshot(config: &ServerConfig) {
         None => tracing::info!(
             bind_addr = %config.bind_addr,
             max_in_flight = config.max_in_flight,
+            cpu_fallback_max_concurrent_statements = config
+                .cpu_fallback_max_concurrent_statements
+                .map(|value| value.get())
+                .unwrap_or(0),
+            cpu_fallback_wait_timeout_ms = config
+                .cpu_fallback_wait_timeout
+                .map(|value| value.as_millis())
+                .unwrap_or(0),
             statement_ticket_ttl_secs = config.statement_ticket_ttl.as_secs(),
             log_filter = %config.log_filter,
             session_profile = %config.session_profile,
@@ -283,6 +620,14 @@ fn log_server_config_snapshot(config: &ServerConfig) {
     tracing::info!(
         bind_addr = %config.bind_addr,
         max_in_flight = config.max_in_flight,
+        cpu_fallback_max_concurrent_statements = config
+            .cpu_fallback_max_concurrent_statements
+            .map(|value| value.get())
+            .unwrap_or(0),
+        cpu_fallback_wait_timeout_ms = config
+            .cpu_fallback_wait_timeout
+            .map(|value| value.as_millis())
+            .unwrap_or(0),
         statement_ticket_ttl_secs = config.statement_ticket_ttl.as_secs(),
         log_filter = %config.log_filter,
         session_profile = %config.session_profile,
@@ -339,21 +684,6 @@ fn warn_if_cugraph_built_but_disabled(config: &ServerConfig) {
 
 #[cfg(not(feature = "cugraph"))]
 fn warn_if_cugraph_built_but_disabled(_config: &ServerConfig) {}
-
-fn warn_if_default_admission_grant_band(config: &ServerConfig) {
-    if config.admission_policy.grant() != GrantBand::default() {
-        return;
-    }
-    tracing::warn!(
-        max_in_flight = config.max_in_flight,
-        admission_grant_min = "1/8",
-        admission_grant_want = "1/2",
-        "server admission is using the default grant band, so a lone query is capped at \
-         50% of the resolved device budget even when max_in_flight is 1. To reproduce \
-         the legacy full-budget band, set NEXUS_SERVER_ADMISSION_GRANT_MIN to 1/max_in_flight \
-         and NEXUS_SERVER_ADMISSION_GRANT_WANT=1.0."
-    );
-}
 
 #[cfg(feature = "cugraph")]
 fn cugraph_registry_algorithm_count() -> usize {
@@ -630,8 +960,33 @@ fn distinct_librmm_mappings(maps: &str) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
+    use std::num::NonZeroUsize;
+
+    use arrow::datatypes::{DataType, Field, Schema};
+    use datafusion::{
+        common::config::ConfigOptions,
+        logical_expr::Operator,
+        physical_expr::expressions::{binary, col},
+        physical_optimizer::PhysicalOptimizerRule,
+        physical_plan::{
+            ExecutionPlan,
+            empty::EmptyExec,
+            projection::{ProjectionExec, ProjectionExpr},
+        },
+    };
+    use tokio_util::sync::CancellationToken;
+
     use super::*;
-    use crate::CudfOptimizerConfig;
+    use crate::{
+        CandidateOutcome, CudfNativePhysicalOptimizerRule, CudfOptimizerConfig, FallbackReason, GrantBand, MemoryShare,
+        NativeCudfExecutionConfig, NexusAdmissionPolicy, NexusMemoryPolicy, SlotGuarantee,
+    };
+
+    const TEST_DEVICE_BUDGET_BYTES: u64 = 4096;
+    const TEST_MAX_SOURCE_CHUNK_BYTES: u64 = 1024;
+    const TEST_MAX_ROW_GROUPS_PER_CHUNK: usize = 1;
+    const TEST_MAX_RETRY_ATTEMPTS: usize = 3;
+    const TEST_MIN_RETRY_CHUNK_ROW_GROUPS: usize = 1;
 
     fn base_config(profile: ServerSessionProfile) -> ServerConfig {
         ServerConfig {
@@ -639,6 +994,8 @@ mod tests {
             log_filter: "info".to_string(),
             max_in_flight: 1,
             admission_policy: crate::NexusAdmissionPolicy::default().with_max_concurrent_queries(1),
+            cpu_fallback_max_concurrent_statements: None,
+            cpu_fallback_wait_timeout: None,
             gpu_devices: vec![0],
             device_budget_fraction: None,
             statement_ticket_ttl: std::time::Duration::from_secs(60),
@@ -650,6 +1007,322 @@ mod tests {
             iceberg: None,
             #[cfg(feature = "cugraph")]
             cugraph: None,
+        }
+    }
+
+    fn bounded_config(max_concurrent_queries: usize) -> ServerConfig {
+        let mut config = base_config(ServerSessionProfile::Native);
+        config.max_in_flight = max_concurrent_queries;
+        config.admission_policy = NexusAdmissionPolicy::default().with_max_concurrent_queries(max_concurrent_queries);
+        config.native_optimizer_config =
+            CudfOptimizerConfig::default().with_native_execution_config(NativeCudfExecutionConfig::bounded(
+                TEST_DEVICE_BUDGET_BYTES,
+                TEST_MAX_SOURCE_CHUNK_BYTES,
+                TEST_MAX_ROW_GROUPS_PER_CHUNK,
+                TEST_MAX_RETRY_ATTEMPTS,
+                TEST_MIN_RETRY_CHUNK_ROW_GROUPS,
+            ));
+        config
+    }
+
+    fn unbounded_config() -> ServerConfig {
+        let mut config = base_config(ServerSessionProfile::Native);
+        config.max_in_flight = 1;
+        config.admission_policy = NexusAdmissionPolicy::default().with_max_concurrent_queries(1);
+        config.native_optimizer_config =
+            CudfOptimizerConfig::default().with_native_execution_config(NativeCudfExecutionConfig::unbounded());
+        config
+    }
+
+    fn admission_only_backend(max_concurrent_queries: usize) -> NexusGpuBackend {
+        NexusGpuBackend::builder()
+            .memory_policy(NexusMemoryPolicy::Bounded {
+                device_ordinals: vec![0],
+                device_budget_bytes: TEST_DEVICE_BUDGET_BYTES,
+                max_source_chunk_bytes: TEST_MAX_SOURCE_CHUNK_BYTES,
+                max_row_groups_per_chunk: TEST_MAX_ROW_GROUPS_PER_CHUNK,
+                max_retry_attempts: TEST_MAX_RETRY_ATTEMPTS,
+                min_retry_chunk_row_groups: TEST_MIN_RETRY_CHUNK_ROW_GROUPS,
+            })
+            .admission(NexusAdmissionPolicy::default().with_max_concurrent_queries(max_concurrent_queries))
+            .build_admission_only()
+            .expect("admission-only backend should build")
+    }
+
+    fn empty_exec_plan() -> Arc<dyn ExecutionPlan> {
+        Arc::new(EmptyExec::new(Arc::new(Schema::empty())))
+    }
+
+    fn unsupported_projection_plan() -> Arc<dyn ExecutionPlan> {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("m00", DataType::Int64, false),
+            Field::new("m01", DataType::Int64, false),
+        ]));
+        let input = Arc::new(EmptyExec::new(Arc::clone(&schema))) as Arc<dyn ExecutionPlan>;
+        let remainder =
+            binary(col("m00", &schema).unwrap(), Operator::Modulo, col("m01", &schema).unwrap(), &schema).unwrap();
+
+        Arc::new(
+            ProjectionExec::try_new([ProjectionExpr { expr: remainder, alias: "remainder".to_string() }], input)
+                .unwrap(),
+        )
+    }
+
+    #[tokio::test]
+    async fn builder_rejects_session_context_without_injected_backend() {
+        let config = bounded_config(1);
+        let ctx = Arc::new(SessionContext::new());
+
+        let error = builder_error(FlightSqlServer::builder().config(config).session_context(ctx)).await;
+
+        assert_eq!(error.fact_value("reason"), Some("server_session_without_backend"));
+    }
+
+    #[tokio::test]
+    async fn builder_rejects_injected_backend_with_unbounded_config() {
+        let backend = admission_only_backend(1);
+
+        let error = builder_error(FlightSqlServer::builder().config(unbounded_config()).backend(backend)).await;
+
+        assert_eq!(error.fact_value("reason"), Some("server_backend_unbounded_config"));
+    }
+
+    #[tokio::test]
+    async fn builder_rejects_injected_backend_admission_conflict() {
+        let backend = admission_only_backend(1);
+
+        let error = builder_error(FlightSqlServer::builder().config(bounded_config(2)).backend(backend)).await;
+
+        assert_eq!(error.fact_value("reason"), Some("server_backend_admission_conflict"));
+        assert_eq!(error.fact_value("config_field"), Some("max_in_flight"));
+    }
+
+    #[tokio::test]
+    async fn builder_validation_uses_normalized_max_in_flight_for_default_queue_limit() {
+        let mut config = bounded_config(1);
+        config.max_in_flight = 2;
+        let backend = NexusGpuBackend::from_optimizer_config_for_admission_only(
+            config.native_optimizer_config.clone(),
+            config.gpu_devices.clone(),
+            admission::server_admission_policy(&config),
+            nexus_query_engine::TenantId::new("default"),
+        )
+        .unwrap()
+        .expect("bounded config should build backend");
+
+        validate_injected_backend_matches_config(&backend, &config).unwrap();
+    }
+
+    #[tokio::test]
+    async fn builder_rejects_injected_backend_grant_band_conflict() {
+        let backend = admission_only_backend(1);
+        let mut config = bounded_config(1);
+        config.admission_policy = config
+            .admission_policy
+            .with_grant_band(GrantBand { min: MemoryShare::Bytes(256), want: MemoryShare::Bytes(2048) });
+
+        let error = builder_error(FlightSqlServer::builder().config(config).backend(backend)).await;
+
+        assert_eq!(error.fact_value("reason"), Some("server_backend_admission_conflict"));
+        assert_eq!(error.fact_value("config_field"), Some("admission.grant_min"));
+    }
+
+    #[tokio::test]
+    async fn builder_rejects_injected_backend_slot_guarantee_conflict() {
+        let backend = admission_only_backend(1);
+        let mut config = bounded_config(1);
+        config.admission_policy = config.admission_policy.with_slot_guarantee(SlotGuarantee::Optimistic);
+
+        let error = builder_error(FlightSqlServer::builder().config(config).backend(backend)).await;
+
+        assert_eq!(error.fact_value("reason"), Some("server_backend_admission_conflict"));
+        assert_eq!(error.fact_value("config_field"), Some("slot_guarantee"));
+    }
+
+    #[tokio::test]
+    async fn builder_rejects_injected_backend_queue_limit_conflict() {
+        let backend = admission_only_backend(1);
+        let mut config = bounded_config(1);
+        config.admission_policy = config.admission_policy.with_max_queued(3);
+
+        let error = builder_error(FlightSqlServer::builder().config(config).backend(backend)).await;
+
+        assert_eq!(error.fact_value("reason"), Some("server_backend_admission_conflict"));
+        assert_eq!(error.fact_value("config_field"), Some("admission.max_queued"));
+    }
+
+    #[tokio::test]
+    async fn builder_rejects_injected_backend_wait_timeout_conflict() {
+        let backend = admission_only_backend(1);
+        let mut config = bounded_config(1);
+        config.admission_policy = config.admission_policy.with_wait_timeout(std::time::Duration::from_secs(5));
+
+        let error = builder_error(FlightSqlServer::builder().config(config).backend(backend)).await;
+
+        assert_eq!(error.fact_value("reason"), Some("server_backend_admission_conflict"));
+        assert_eq!(error.fact_value("config_field"), Some("admission.wait_timeout"));
+    }
+
+    #[tokio::test]
+    async fn builder_rejects_injected_backend_gpu_device_conflict() {
+        let backend = admission_only_backend(1);
+        let mut config = bounded_config(1);
+        config.gpu_devices = vec![1];
+
+        let error = builder_error(FlightSqlServer::builder().config(config).backend(backend)).await;
+
+        assert_eq!(error.fact_value("reason"), Some("server_backend_admission_conflict"));
+        assert_eq!(error.fact_value("config_field"), Some("gpu_devices"));
+    }
+
+    #[tokio::test]
+    async fn builder_rejects_injected_backend_device_budget_fraction_conflict() {
+        let backend = admission_only_backend(1);
+        let mut config = bounded_config(1);
+        config.device_budget_fraction = Some(0.5);
+        config.native_optimizer_config =
+            CudfOptimizerConfig::default().with_native_execution_config(NativeCudfExecutionConfig::bounded(
+                TEST_DEVICE_BUDGET_BYTES / 2,
+                TEST_MAX_SOURCE_CHUNK_BYTES,
+                TEST_MAX_ROW_GROUPS_PER_CHUNK,
+                TEST_MAX_RETRY_ATTEMPTS,
+                TEST_MIN_RETRY_CHUNK_ROW_GROUPS,
+            ));
+
+        let error = builder_error(FlightSqlServer::builder().config(config).backend(backend)).await;
+
+        assert_eq!(error.fact_value("reason"), Some("server_backend_admission_conflict"));
+        assert_eq!(error.fact_value("config_field"), Some(config::NEXUS_SERVER_DEVICE_BUDGET_FRACTION_ENV));
+    }
+
+    #[tokio::test]
+    async fn builder_rejects_injected_backend_fallback_wait_timeout_conflict() {
+        let mut backend_config = bounded_config(1);
+        backend_config.native_optimizer_config = backend_config
+            .native_optimizer_config
+            .with_cpu_fallback_wait_timeout(std::time::Duration::from_millis(7000))
+            .with_cpu_fallback_max_concurrent_statements(NonZeroUsize::new(1).unwrap());
+        let backend = NexusGpuBackend::from_optimizer_config_for_admission_only(
+            backend_config.native_optimizer_config.clone(),
+            backend_config.gpu_devices.clone(),
+            admission::server_admission_policy(&backend_config),
+            nexus_query_engine::TenantId::new("default"),
+        )
+        .unwrap()
+        .expect("bounded config should build backend");
+
+        let mut config = bounded_config(1);
+        config.native_optimizer_config = config
+            .native_optimizer_config
+            .with_cpu_fallback_wait_timeout(std::time::Duration::from_millis(5000))
+            .with_cpu_fallback_max_concurrent_statements(NonZeroUsize::new(1).unwrap());
+
+        let error = builder_error(FlightSqlServer::builder().config(config).backend(backend)).await;
+
+        assert_eq!(error.fact_value("reason"), Some("server_backend_admission_conflict"));
+        assert_eq!(error.fact_value("config_field"), Some("fallback.wait_timeout_ms"));
+    }
+
+    #[tokio::test]
+    async fn build_session_context_with_backend_installs_backend_admission_source() {
+        let config = bounded_config(1);
+        let backend = admission_only_backend(1);
+
+        let ctx = build_session_context_with_backend(&config, Some(&backend)).await.unwrap();
+        let state = ctx.state();
+        let optimizer_config =
+            crate::session::installed_cudf_native_optimizer_config(&state).expect("native optimizer installed");
+
+        assert!(
+            optimizer_config
+                .native_execution_config()
+                .query_admission_source_matches(backend.query_service(), backend.tenant_id())
+        );
+    }
+
+    #[test]
+    fn server_cpu_fallback_limit_reaches_optimizer_fallback_plan() {
+        let mut config = bounded_config(1);
+        config.native_optimizer_config =
+            config.native_optimizer_config.with_cpu_fallback_max_concurrent_statements(NonZeroUsize::new(1).unwrap());
+        let rule = CudfNativePhysicalOptimizerRule::new(config.native_optimizer_config.clone());
+        let fallback_plan = unsupported_projection_plan();
+
+        let optimized = rule.optimize(fallback_plan, &ConfigOptions::new()).unwrap();
+        let fallback_report = rule.last_report().expect("optimizer should retain a fallback planning report");
+
+        assert_eq!(fallback_report.rewritten_count(), 0, "outcomes={:?}", fallback_report.outcomes());
+        assert!(matches!(
+            fallback_report.outcomes(),
+            [CandidateOutcome::Rejected { reason: FallbackReason::UnsupportedExpression, .. }]
+        ));
+        assert!(
+            crate::native_exec::plan_is_cpu_fallback_limited(optimized.as_ref()),
+            "configured server fallback limit must wrap non-rewritten CPU fallback plans"
+        );
+
+        let optimized_empty = rule.optimize(empty_exec_plan(), &ConfigOptions::new()).unwrap();
+        let empty_report = rule.last_report().expect("optimizer should retain an empty-input planning report");
+
+        assert_eq!(empty_report.rewritten_count(), 1, "outcomes={:?}", empty_report.outcomes());
+        assert_eq!(empty_report.rejected_count(), 0, "outcomes={:?}", empty_report.outcomes());
+        assert!(
+            !crate::native_exec::plan_is_cpu_fallback_limited(optimized_empty.as_ref()),
+            "rewritten EmptyExec plans must not take the CPU fallback limiter"
+        );
+    }
+
+    #[tokio::test]
+    async fn builder_installs_unbounded_native_execution_limit() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let mut config = unbounded_config();
+        config.bind_addr = listener.local_addr().unwrap();
+        let server = FlightSqlServer::builder()
+            .config(config)
+            .listener(listener)
+            .shutdown(ServerShutdown::Token(CancellationToken::new()))
+            .build()
+            .await
+            .unwrap();
+
+        assert_eq!(
+            server
+                .service
+                .native_optimizer_config()
+                .native_execution_config()
+                .unbounded_native_max_concurrent_queries()
+                .map(|value| value.get()),
+            Some(1)
+        );
+        let state = server.session_context().state();
+        let optimizer_config =
+            crate::session::installed_cudf_native_optimizer_config(&state).expect("native optimizer installed");
+        assert_eq!(
+            optimizer_config
+                .native_execution_config()
+                .unbounded_native_max_concurrent_queries()
+                .map(|value| value.get()),
+            Some(1)
+        );
+    }
+
+    #[tokio::test]
+    async fn builder_rejects_injected_session_context_from_different_backend() {
+        let config = bounded_config(1);
+        let session_backend = admission_only_backend(1);
+        let server_backend = admission_only_backend(1);
+        let ctx = Arc::new(build_session_context_with_backend(&config, Some(&session_backend)).await.unwrap());
+
+        let error =
+            builder_error(FlightSqlServer::builder().config(config).backend(server_backend).session_context(ctx)).await;
+
+        assert_eq!(error.fact_value("reason"), Some("server_session_backend_mismatch"));
+    }
+
+    async fn builder_error(builder: FlightSqlServerBuilder) -> ServerError {
+        match builder.build().await {
+            Ok(_) => panic!("builder should reject invalid configuration"),
+            Err(error) => error,
         }
     }
 

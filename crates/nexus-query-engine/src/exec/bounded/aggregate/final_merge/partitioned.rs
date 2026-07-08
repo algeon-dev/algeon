@@ -60,6 +60,10 @@ pub(in crate::exec::bounded) fn execute_final_aggregate_merge(
                     {
                         merge_fan_in = reduced_fan_in;
                         attempt += 1;
+                        crate::exec::retry::backoff_before_retry(
+                            context,
+                            "nexus_query_engine.exec.bounded.final_merge_fan_in_retry",
+                        )?;
                         continue;
                     }
 

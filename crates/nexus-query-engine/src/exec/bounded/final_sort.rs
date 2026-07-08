@@ -80,6 +80,10 @@ pub(super) fn execute_final_sort_node_with_retry(
             if max_attempts > 1
                 && let Some(limit) = limit
             {
+                crate::exec::retry::backoff_before_retry(
+                    final_sort.context,
+                    "nexus_query_engine.exec.bounded.final_sort_hierarchical_topk_retry",
+                )?;
                 match final_sort.hierarchical_topk(limit, input, 2) {
                     Ok(output) => {
                         final_sort.metrics.final_sort_time += timer.elapsed();
@@ -225,7 +229,6 @@ impl FinalSortExecutor<'_> {
     ) -> Result<cudf::ExecutionBudgetToken> {
         let budget = usize::try_from(budget_bytes).unwrap_or(usize::MAX);
         self.context
-            .runtime()
             .execution_budget_token(ExecutionBudgetRequest::new(budget).with_boundary(boundary))
             .map_err(|error| {
                 QueryError::from_cudf_with_budget_details(

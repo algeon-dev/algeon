@@ -48,6 +48,8 @@ pub mod error_contracts {
 /// Common adapter imports for applications that install the native optimizer
 /// and execute supported DataFusion plans.
 pub mod prelude {
+    #[cfg(feature = "server")]
+    pub use crate::server::{FlightSqlServer, FlightSqlServerBuilder, ServerShutdown};
     pub use crate::{
         CUDF_NATIVE_PHYSICAL_OPTIMIZER_RULE_NAME, CudfNativePhysicalOptimizerRule, CudfOptimizerConfig,
         CudfSessionStateBuilderExt, DataFusionNexusSessionConfig, FallbackReason, GpuFallbackPolicy, GrantBand,

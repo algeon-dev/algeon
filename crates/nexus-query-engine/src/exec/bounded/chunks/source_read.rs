@@ -284,6 +284,10 @@ fn read_local_parquet_source_batch_or_split(
             let Some((left, right)) = batch.split_for_retry() else {
                 return Err(error);
             };
+            crate::exec::retry::backoff_before_retry(
+                context,
+                "nexus_query_engine.exec.bounded.source_read_batch_split_retry",
+            )?;
             let mut outputs = read_local_parquet_source_batch_or_split(
                 context,
                 source,
@@ -358,6 +362,10 @@ fn read_local_parquet_chunk_required_only_or_split(
                 && let Some((left, right)) = split_retryable_chunk(&chunk, min_retry_chunk_row_groups)
             {
                 metrics.record_source_chunk_retry();
+                crate::exec::retry::backoff_before_retry(
+                    context,
+                    "nexus_query_engine.exec.bounded.serial_source_chunk_split_retry",
+                )?;
                 let mut outputs = read_local_parquet_chunk_required_only_or_split(
                     context,
                     source,

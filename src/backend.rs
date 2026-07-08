@@ -4,8 +4,9 @@ use std::{collections::BTreeSet, sync::Arc, time::Duration};
 
 use datafusion::execution::SessionStateBuilder;
 use nexus_query_engine::{
-    DeploymentIoCapability, GdsDriverProbeStatus, KvikioCompatModeStatus, MemoryControlPolicy, NvidiaFsProbeStatus,
-    QueryService, QueryServiceConfig, QueryServiceTenantConfig, SlotGuarantee, TenantId,
+    DeploymentIoCapability, GdsDriverProbeStatus, KvikioCompatModeStatus, MemoryControlPolicy,
+    NativePipelineExecutionMode, NvidiaFsProbeStatus, QueryService, QueryServiceConfig, QueryServiceTenantConfig,
+    SlotGuarantee, TenantId,
 };
 
 use crate::{
@@ -16,6 +17,8 @@ use crate::{
 
 const DEFAULT_BACKEND_TENANT_ID: &str = "default";
 const DEFAULT_ADMISSION_QUEUE_MULTIPLIER: usize = 64;
+const DEFAULT_GRANT_MIN: MemoryShare = MemoryShare::Fraction(1.0 / 8.0);
+const DEFAULT_GRANT_WANT: MemoryShare = MemoryShare::PolicyDefault;
 
 /// Process-scoped native GPU backend shared by one or more DataFusion sessions.
 #[derive(Debug, Clone)]
@@ -55,7 +58,8 @@ impl Default for NexusMemoryPolicy {
 #[derive(Debug, Clone, PartialEq)]
 pub struct NexusAdmissionPolicy {
     max_concurrent_queries: usize,
-    grant: GrantBand,
+    grant_min: Option<MemoryShare>,
+    grant_want: Option<MemoryShare>,
     slot_guarantee: SlotGuarantee,
     max_queued: Option<usize>,
     wait_timeout: Duration,
@@ -68,12 +72,19 @@ pub enum MemoryShare {
     Fraction(f64),
     /// Explicit byte count.
     Bytes(u64),
+    /// Use the backend policy-derived default.
+    ///
+    /// This is valid for [`GrantBand::want`]. It is rejected anywhere a
+    /// concrete byte/fraction share is required.
+    PolicyDefault,
 }
 
 /// Minimum and preferred device-memory grant for each admitted query.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct GrantBand {
     pub min: MemoryShare,
+    /// Preferred grant. Use [`MemoryShare::PolicyDefault`] to keep the
+    /// backend-derived default.
     pub want: MemoryShare,
 }
 
@@ -84,7 +95,26 @@ impl NexusAdmissionPolicy {
     }
 
     pub fn with_grant_band(mut self, grant: GrantBand) -> Self {
-        self.grant = grant;
+        self.grant_min = Some(grant.min);
+        self.grant_want = if grant.want == MemoryShare::PolicyDefault { None } else { Some(grant.want) };
+        self
+    }
+
+    /// Override only the minimum per-query grant.
+    ///
+    /// If `want` is not set explicitly, the backend derives it from the final
+    /// slot guarantee, execution mode, device count, and this minimum.
+    pub fn with_grant_min(mut self, min: MemoryShare) -> Self {
+        self.grant_min = Some(min);
+        self
+    }
+
+    /// Override only the preferred per-query grant.
+    ///
+    /// The default minimum remains in force unless [`Self::with_grant_min`] or
+    /// [`Self::with_grant_band`] is also used.
+    pub fn with_grant_want(mut self, want: MemoryShare) -> Self {
+        self.grant_want = if want == MemoryShare::PolicyDefault { None } else { Some(want) };
         self
     }
 
@@ -108,7 +138,10 @@ impl NexusAdmissionPolicy {
     }
 
     pub fn grant(&self) -> GrantBand {
-        self.grant
+        GrantBand {
+            min: self.grant_min.unwrap_or(DEFAULT_GRANT_MIN),
+            want: self.grant_want.unwrap_or(DEFAULT_GRANT_WANT),
+        }
     }
 
     pub fn slot_guarantee(&self) -> SlotGuarantee {
@@ -128,7 +161,8 @@ impl Default for NexusAdmissionPolicy {
     fn default() -> Self {
         Self {
             max_concurrent_queries: 2,
-            grant: GrantBand::default(),
+            grant_min: None,
+            grant_want: None,
             slot_guarantee: SlotGuarantee::GuaranteedMinimum,
             max_queued: None,
             wait_timeout: Duration::from_secs(60),
@@ -138,7 +172,7 @@ impl Default for NexusAdmissionPolicy {
 
 impl Default for GrantBand {
     fn default() -> Self {
-        Self { min: MemoryShare::Fraction(1.0 / 8.0), want: MemoryShare::Fraction(1.0 / 2.0) }
+        Self { min: DEFAULT_GRANT_MIN, want: DEFAULT_GRANT_WANT }
     }
 }
 
@@ -157,9 +191,13 @@ impl NexusGpuBackend {
     }
 
     /// Install this backend's native optimizer into a DataFusion session builder.
-    pub fn install_on(&self, mut builder: SessionStateBuilder) -> Result<SessionStateBuilder> {
+    pub fn install_on(&self, builder: SessionStateBuilder) -> Result<SessionStateBuilder> {
         #[cfg(feature = "cugraph")]
-        reject_preexisting_cugraph_sql(&mut builder)?;
+        let builder = {
+            let mut builder = builder;
+            reject_preexisting_cugraph_sql(&mut builder)?;
+            builder
+        };
         let rule = Arc::new(CudfNativePhysicalOptimizerRule::new(self.optimizer_config.clone()));
         let session_config =
             DataFusionNexusSessionConfig::from_optimizer_config(&self.optimizer_config).frozen_for_backend_admission();
@@ -251,7 +289,11 @@ impl NexusGpuBackend {
         admission_only: bool,
     ) -> Result<Self> {
         validate_admission_policy(&admission_policy)?;
-        let grant_band = resolve_grant_band(resolved.planning_device_budget_bytes, admission_policy.grant)?;
+        let grant_band = admission_policy.resolve_grant_band_bytes(
+            resolved.planning_device_budget_bytes,
+            resolved.device_ordinals.len(),
+            resolved.execution_config.native_pipeline_execution_mode(),
+        )?;
         validate_grant_band_slot_guarantee(
             resolved.planning_device_budget_bytes,
             resolved.device_ordinals.len(),
@@ -528,18 +570,56 @@ fn validate_admission_policy(policy: &NexusAdmissionPolicy) -> Result<()> {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct ResolvedGrantBand {
-    min_bytes: u64,
-    want_bytes: u64,
+pub(crate) struct ResolvedGrantBand {
+    pub(crate) min_bytes: u64,
+    pub(crate) want_bytes: u64,
 }
 
-fn resolve_grant_band(capacity_bytes: u64, grant: GrantBand) -> Result<ResolvedGrantBand> {
-    let min_bytes = resolve_memory_share("grant.min", grant.min, capacity_bytes)?;
-    let want_bytes = resolve_memory_share("grant.want", grant.want, capacity_bytes)?;
-    if want_bytes < min_bytes {
-        return Err(invalid_backend_config("grant.want", "must be at least grant.min"));
+impl NexusAdmissionPolicy {
+    pub(crate) fn resolve_grant_band_bytes(
+        &self,
+        capacity_bytes: u64,
+        device_count: usize,
+        native_pipeline_execution_mode: NativePipelineExecutionMode,
+    ) -> Result<ResolvedGrantBand> {
+        let min_bytes = resolve_memory_share("grant.min", self.grant().min, capacity_bytes)?;
+        let want_bytes = match self.grant_want {
+            Some(want) => resolve_memory_share("grant.want", want, capacity_bytes)?,
+            None => default_grant_want_bytes(
+                capacity_bytes,
+                min_bytes,
+                device_count,
+                self.max_concurrent_queries,
+                self.slot_guarantee,
+                native_pipeline_execution_mode,
+            )?,
+        };
+        if want_bytes < min_bytes {
+            return Err(invalid_backend_config("grant.want", "must be at least grant.min"));
+        }
+        Ok(ResolvedGrantBand { min_bytes, want_bytes })
     }
-    Ok(ResolvedGrantBand { min_bytes, want_bytes })
+}
+
+fn default_grant_want_bytes(
+    capacity_bytes: u64,
+    min_bytes: u64,
+    device_count: usize,
+    max_concurrent_queries: usize,
+    slot_guarantee: SlotGuarantee,
+    native_pipeline_execution_mode: NativePipelineExecutionMode,
+) -> Result<u64> {
+    validate_positive_u64("device_capacity_bytes", capacity_bytes)?;
+    if slot_guarantee == SlotGuarantee::Optimistic
+        && native_pipeline_execution_mode == NativePipelineExecutionMode::StrictBounded
+    {
+        let effective_devices = device_count.max(1);
+        let slots_per_device = max_concurrent_queries.div_ceil(effective_devices).max(1);
+        let reserved_for_arrivals =
+            min_bytes.saturating_mul(u64::try_from(slots_per_device.saturating_sub(1)).unwrap_or(u64::MAX));
+        return Ok(capacity_bytes.saturating_sub(reserved_for_arrivals).max(min_bytes));
+    }
+    Ok(capacity_bytes)
 }
 
 fn resolve_memory_share(field: &'static str, share: MemoryShare, capacity_bytes: u64) -> Result<u64> {
@@ -555,6 +635,9 @@ fn resolve_memory_share(field: &'static str, share: MemoryShare, capacity_bytes:
             let bytes = (capacity_bytes as f64 * fraction).floor() as u64;
             validate_positive_u64(field, bytes)?;
             Ok(bytes)
+        },
+        MemoryShare::PolicyDefault => {
+            Err(invalid_backend_config(field, "policy default is not a concrete memory share"))
         },
     }
 }
@@ -690,7 +773,13 @@ mod tests {
         assert_eq!(backend.query_service().config().slot_guarantee, SlotGuarantee::GuaranteedMinimum);
         assert_eq!(backend.device_ordinals(), &[0, 1]);
         assert_eq!(backend.query_service().config().device_capacity_bytes, Some(4096));
-        assert_eq!(backend.query_service().tenant_budget(backend.tenant_id()).unwrap(), 2048);
+        assert_eq!(backend.query_service().tenant_budget(backend.tenant_id()).unwrap(), 4096);
+        let handle = backend
+            .query_service()
+            .try_admit_query(backend.tenant_id().clone())
+            .unwrap()
+            .expect("first query should admit");
+        assert_eq!(handle.device_budget_bytes(), 3584);
         assert_eq!(
             backend.optimizer_config().native_execution_config().memory_control_policy(),
             MemoryControlPolicy::Bounded {
@@ -726,6 +815,20 @@ mod tests {
 
         assert_eq!(error.code(), ErrorCode::InvalidRequest);
         assert_eq!(error.fact_value("field"), Some("grant.want"));
+    }
+
+    #[test]
+    fn backend_rejects_policy_default_grant_min() {
+        let error = NexusGpuBackend::builder()
+            .admission(
+                NexusAdmissionPolicy::default()
+                    .with_grant_band(GrantBand { min: MemoryShare::PolicyDefault, want: MemoryShare::PolicyDefault }),
+            )
+            .build_admission_only()
+            .unwrap_err();
+
+        assert_eq!(error.code(), ErrorCode::InvalidRequest);
+        assert_eq!(error.fact_value("field"), Some("grant.min"));
     }
 
     #[test]
@@ -773,6 +876,121 @@ mod tests {
 
         assert_eq!(backend.query_service().config().slot_guarantee, SlotGuarantee::Optimistic);
         assert_eq!(backend.query_service().tenant_budget(backend.tenant_id()).unwrap(), 60);
+    }
+
+    #[test]
+    fn backend_default_optimistic_strict_want_keeps_per_device_arrival_cushion() {
+        let backend = NexusGpuBackend::builder()
+            .memory_policy(NexusMemoryPolicy::Bounded {
+                device_ordinals: vec![0],
+                device_budget_bytes: 800,
+                max_source_chunk_bytes: 64,
+                max_row_groups_per_chunk: 1,
+                max_retry_attempts: 1,
+                min_retry_chunk_row_groups: 1,
+            })
+            .admission(
+                NexusAdmissionPolicy::default()
+                    .with_max_concurrent_queries(3)
+                    .with_slot_guarantee(SlotGuarantee::Optimistic),
+            )
+            .build_admission_only()
+            .unwrap();
+
+        assert_eq!(backend.query_service().tenant_budget(backend.tenant_id()).unwrap(), 600);
+    }
+
+    #[test]
+    fn backend_default_optimistic_strict_want_uses_effective_slots_per_device() {
+        let backend = NexusGpuBackend::builder()
+            .memory_policy(NexusMemoryPolicy::Bounded {
+                device_ordinals: vec![0, 1],
+                device_budget_bytes: 800,
+                max_source_chunk_bytes: 64,
+                max_row_groups_per_chunk: 1,
+                max_retry_attempts: 1,
+                min_retry_chunk_row_groups: 1,
+            })
+            .admission(
+                NexusAdmissionPolicy::default()
+                    .with_max_concurrent_queries(5)
+                    .with_slot_guarantee(SlotGuarantee::Optimistic),
+            )
+            .build_admission_only()
+            .unwrap();
+
+        assert_eq!(backend.query_service().tenant_budget(backend.tenant_id()).unwrap(), 600);
+    }
+
+    #[test]
+    fn backend_policy_default_grant_want_round_trips_without_pinning_full_capacity() {
+        let policy = NexusAdmissionPolicy::default()
+            .with_max_concurrent_queries(5)
+            .with_slot_guarantee(SlotGuarantee::Optimistic);
+        assert_eq!(policy.grant().want, MemoryShare::PolicyDefault);
+        let backend = NexusGpuBackend::builder()
+            .memory_policy(NexusMemoryPolicy::Bounded {
+                device_ordinals: vec![0],
+                device_budget_bytes: 800,
+                max_source_chunk_bytes: 64,
+                max_row_groups_per_chunk: 1,
+                max_retry_attempts: 1,
+                min_retry_chunk_row_groups: 1,
+            })
+            .admission(
+                NexusAdmissionPolicy::default()
+                    .with_max_concurrent_queries(policy.max_concurrent_queries())
+                    .with_slot_guarantee(policy.slot_guarantee())
+                    .with_grant_band(policy.grant()),
+            )
+            .build_admission_only()
+            .unwrap();
+
+        assert_eq!(backend.query_service().tenant_budget(backend.tenant_id()).unwrap(), 400);
+    }
+
+    #[cfg(feature = "server")]
+    #[test]
+    fn backend_default_optimistic_adaptive_want_uses_full_capacity() {
+        let adaptive = CudfOptimizerConfig::default().with_native_execution_config(
+            NativeCudfExecutionConfig::bounded(800, 64, 1, 1, 1)
+                .with_native_pipeline_execution_mode(NativePipelineExecutionMode::Adaptive),
+        );
+        let adaptive = NexusGpuBackend::from_optimizer_config_for_admission_only(
+            adaptive,
+            vec![0],
+            NexusAdmissionPolicy::default()
+                .with_max_concurrent_queries(3)
+                .with_slot_guarantee(SlotGuarantee::Optimistic),
+            TenantId::new("default"),
+        )
+        .unwrap()
+        .unwrap();
+
+        assert_eq!(adaptive.query_service().tenant_budget(adaptive.tenant_id()).unwrap(), 800);
+    }
+
+    #[test]
+    fn backend_explicit_grant_want_overrides_optimistic_strict_default() {
+        let backend = NexusGpuBackend::builder()
+            .memory_policy(NexusMemoryPolicy::Bounded {
+                device_ordinals: vec![0],
+                device_budget_bytes: 800,
+                max_source_chunk_bytes: 64,
+                max_row_groups_per_chunk: 1,
+                max_retry_attempts: 1,
+                min_retry_chunk_row_groups: 1,
+            })
+            .admission(
+                NexusAdmissionPolicy::default()
+                    .with_max_concurrent_queries(3)
+                    .with_slot_guarantee(SlotGuarantee::Optimistic)
+                    .with_grant_want(MemoryShare::Bytes(700)),
+            )
+            .build_admission_only()
+            .unwrap();
+
+        assert_eq!(backend.query_service().tenant_budget(backend.tenant_id()).unwrap(), 700);
     }
 
     #[test]
@@ -854,6 +1072,10 @@ mod tests {
 
         for option in DATAFUSION_NEXUS_SESSION_CONFIG_OPTIONS {
             let mut extension = extension.clone();
+            if option.key.starts_with("request.") {
+                extension.set(option.key, "1").unwrap();
+                continue;
+            }
             let error = extension.set(option.key, "1").unwrap_err();
             assert!(error.to_string().contains(&option.full_key()), "{} should reject", option.full_key());
             assert!(error.to_string().contains("query-service admission"));

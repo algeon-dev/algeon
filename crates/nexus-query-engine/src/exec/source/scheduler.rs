@@ -244,6 +244,7 @@ fn try_finish_scheduled_source_read_with_corrected_budget(
     };
     record_chunk_retry_error(error, metrics);
     metrics.record_source_chunk_retry();
+    crate::exec::retry::backoff_before_retry(context, "nexus_query_engine.source_scheduler.budget_retry")?;
     let request = source_read_request(
         ReservationKind::SourceRead,
         budget_boundary,

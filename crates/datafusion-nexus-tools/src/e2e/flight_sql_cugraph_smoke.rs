@@ -24,7 +24,6 @@ const ICEBERG_DST_COL_ENV: &str = "NEXUS_CUGRAPH_SMOKE_ICEBERG_DST_COL";
 const ICEBERG_WEIGHT_COL_ENV: &str = "NEXUS_CUGRAPH_SMOKE_ICEBERG_WEIGHT_COL";
 const RESULT_MODE_ENV: &str = "NEXUS_CUGRAPH_SMOKE_RESULT_MODE";
 
-const DEFAULT_ICEBERG_EDGE_TABLE: &str = "glue.nexus_graph.pokec_edges_by_src";
 const DEFAULT_ICEBERG_SRC_COL: &str = "src";
 const DEFAULT_ICEBERG_DST_COL: &str = "dst";
 const DEFAULT_ICEBERG_WEIGHT_COL: &str = "weight";
@@ -157,7 +156,7 @@ impl SmokeSource {
         match std::env::var(SOURCE_ENV).unwrap_or_else(|_| "local_parquet".to_string()).as_str() {
             "local_parquet" | "local" => Ok(Self::LocalParquet),
             "iceberg" | "remote_iceberg" => Ok(Self::Iceberg {
-                edge_table: env_or_default(ICEBERG_EDGE_TABLE_ENV, DEFAULT_ICEBERG_EDGE_TABLE),
+                edge_table: required_nonempty_env(ICEBERG_EDGE_TABLE_ENV)?,
                 src_col: env_or_default(ICEBERG_SRC_COL_ENV, DEFAULT_ICEBERG_SRC_COL),
                 dst_col: env_or_default(ICEBERG_DST_COL_ENV, DEFAULT_ICEBERG_DST_COL),
                 weight_col: optional_nonempty_env(ICEBERG_WEIGHT_COL_ENV).or_else(|| {
@@ -214,6 +213,10 @@ impl GraphResultMode {
 
 fn env_or_default(name: &str, default: &str) -> String {
     optional_nonempty_env(name).unwrap_or_else(|| default.to_string())
+}
+
+fn required_nonempty_env(name: &str) -> SmokeResult<String> {
+    optional_nonempty_env(name).ok_or_else(|| format!("{name} must be set when {SOURCE_ENV}=iceberg").into())
 }
 
 fn optional_nonempty_env(name: &str) -> Option<String> {

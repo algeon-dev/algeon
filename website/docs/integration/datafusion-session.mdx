@@ -56,10 +56,15 @@ unsupported CPU-readable fragments on stock DataFusion. Use `GpuOnly` when an
 unsupported native fragment should fail planning instead.
 
 `NexusGpuBackend::builder().build()` uses bounded device memory, two admitted
-queries, `grant_min = 1/8`, `grant_want = 1/2`, and
+queries, `grant_min = 1/8`, a policy-derived `grant_want`, and
 `SlotGuarantee::GuaranteedMinimum` by default. Sessions installed from the same
-backend share one admission ledger, so concurrent embedded requests cannot each
-claim the full GPU budget independently.
+backend share one admission ledger; with the default guarantee, a lone query
+can use the device budget that is not reserved for remaining slot floors.
+
+For a complete multi-frontend service shape built on that same backend, see
+the [Embedded Backend Example](./embedded-backend-example.mdx). It runs REST
+pipelines and the built-in Flight SQL server in one process over a shared
+`NexusGpuBackend` and `SessionContext`.
 
 ## Admission configuration
 
@@ -78,13 +83,31 @@ let backend = NexusGpuBackend::builder()
             .with_max_concurrent_queries(2)
             .with_grant_band(GrantBand {
                 min: MemoryShare::Fraction(1.0 / 8.0),  // capability floor
-                want: MemoryShare::Fraction(1.0 / 2.0), // target when memory is free
+                want: MemoryShare::Fraction(1.0),       // explicit full-capacity target
             })
             .with_slot_guarantee(SlotGuarantee::GuaranteedMinimum)
             .with_wait_timeout(Duration::from_secs(60)),
     )
     .build()?;
 ```
+
+For per-statement sizing, use the request namespace instead of mutating backend
+policy in embedded DataFusion sessions:
+
+```sql
+SET datafusion_nexus.request.requested_grant_bytes = '1073741824';
+SELECT ...;
+SET datafusion_nexus.request.requested_grant_bytes = 'none';
+```
+
+`datafusion_nexus.request.requested_grant_bytes` is read when the optimizer
+creates the plan ticket. It changes only the preferred grant for that optimized
+statement; it does not change the tenant minimum, slot guarantee, queue limit, or
+backend policy. The value is allowed even on backend-managed frozen sessions,
+but query-service admission rejects it if it is below `grant_min`, above
+`grant_want`, or above device capacity. Flight SQL rejects
+`SET datafusion_nexus.*` because request policy is lowered from server or tenant
+defaults there, not mutable session state.
 
 Two runtime behaviors to plan for in your service layer:
 
@@ -104,8 +127,9 @@ Two runtime behaviors to plan for in your service layer:
   instead.
 
 Admission evidence for dashboards and debugging comes from the backend handle,
-alongside the per-query `admission_*` / `query_grant_bytes` DataFusion
-metrics on the native execution nodes:
+alongside the per-query `admission_*`, `query_grant_bytes`,
+`reservation_live_peak_bytes`, allocator high-water, reservation-denial, and
+retry metrics on the native execution nodes:
 
 ```rust
 let queue = backend.query_service().admission_snapshot()?;

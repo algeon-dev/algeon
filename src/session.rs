@@ -7,7 +7,7 @@
 
 use std::sync::Arc;
 
-#[cfg(feature = "cugraph")]
+#[cfg(any(feature = "server", feature = "cugraph"))]
 use datafusion::execution::SessionState;
 use datafusion::{
     common::Result as DataFusionResult,
@@ -124,8 +124,8 @@ pub(crate) fn session_state_with_native_execution_config(
     Some(SessionStateBuilder::new_from_existing(state.clone()).with_physical_optimizer_rules(rules).build())
 }
 
-#[cfg(feature = "cugraph")]
-fn installed_cudf_native_optimizer_config(state: &SessionState) -> Option<CudfOptimizerConfig> {
+#[cfg(any(feature = "server", feature = "cugraph"))]
+pub(crate) fn installed_cudf_native_optimizer_config(state: &SessionState) -> Option<CudfOptimizerConfig> {
     installed_cudf_native_optimizer_config_from_rules(state.physical_optimizers())
 }
 
@@ -165,14 +165,14 @@ fn installed_cudf_native_optimizer_config_from_builder(
         .and_then(|rules| installed_cudf_native_optimizer_config_from_rules(rules))
 }
 
-#[cfg(feature = "cugraph")]
+#[cfg(any(feature = "server", feature = "cugraph"))]
 fn installed_cudf_native_optimizer_config_from_rules(
     rules: &[Arc<dyn PhysicalOptimizerRule + Send + Sync>],
 ) -> Option<CudfOptimizerConfig> {
     rules.iter().find_map(|rule| cudf_native_optimizer_config_from_rule(rule.as_ref()))
 }
 
-#[cfg(feature = "cugraph")]
+#[cfg(any(feature = "server", feature = "cugraph"))]
 fn cudf_native_optimizer_config_from_rule(
     rule: &(dyn PhysicalOptimizerRule + Send + Sync),
 ) -> Option<CudfOptimizerConfig> {

@@ -11,7 +11,9 @@ use super::CudfOptimizerConfig;
 use crate::{
     Error, ErrorCode,
     native_exec::{
-        NativeCudfComposedExec, NativeCudfExec, plan_is_query_admission_wrapped, wrap_plan_with_query_admission_ticket,
+        NativeCudfComposedExec, NativeCudfExec, plan_is_cpu_fallback_limited, plan_is_query_admission_wrapped,
+        plan_is_unbounded_native_execution_limited, wrap_plan_with_cpu_fallback_limit,
+        wrap_plan_with_query_admission_ticket, wrap_plan_with_unbounded_native_execution_limit,
     },
     native_report::{NativeJoinDiagnosticSummary, physical_join_diagnostics},
     physical_plan::physical_plan_shape,
@@ -25,8 +27,8 @@ mod strict_bounded;
 
 pub use adaptive::{NativeAdaptivePipelineCandidateDiagnostics, NativeAdaptivePipelineDiagnostics};
 use attempt::{
-    apply_native_fallback_policy, optimize_count_only_native_plan, optimize_final_native_plan,
-    peel_cooperative_native_exec,
+    NativeOptimizationAttempt, apply_native_fallback_policy, optimize_count_only_native_plan,
+    optimize_final_native_plan, peel_cooperative_native_exec,
 };
 pub use strict_bounded::{
     NativeStrictBoundedAcceptedCandidateDiagnostics, NativeStrictBoundedCompiledGraphDiagnostics,
@@ -203,6 +205,12 @@ impl PhysicalOptimizerRule for CudfNativePhysicalOptimizerRule {
         if plan_is_query_admission_wrapped(plan.as_ref()) {
             return Ok(plan);
         }
+        if plan_is_unbounded_native_execution_limited(plan.as_ref()) {
+            return Ok(plan);
+        }
+        if plan_is_cpu_fallback_limited(plan.as_ref()) {
+            return Ok(plan);
+        }
         if plan.downcast_ref::<NativeCudfExec>().is_some() || plan.downcast_ref::<NativeCudfComposedExec>().is_some() {
             return Ok(plan);
         }
@@ -241,11 +249,7 @@ impl PhysicalOptimizerRule for CudfNativePhysicalOptimizerRule {
             )?,
         };
         let mut optimized = apply_native_fallback_policy(Arc::clone(&plan), optimized, &effective_config)?;
-        if optimized.rewritten
-            && let Some(ticket) = native_execution_config.query_admission_ticket()
-        {
-            optimized.plan = wrap_plan_with_query_admission_ticket(optimized.plan, ticket);
-        }
+        apply_execution_admission_wrappers(self.stage, &mut optimized, &effective_config, native_execution_config);
         *self.state.last_report.lock().map_err(|_| {
             datafusion::common::DataFusionError::from(Error::new(
                 ErrorCode::Internal,
@@ -277,5 +281,90 @@ impl PhysicalOptimizerRule for CudfNativePhysicalOptimizerRule {
 
     fn schema_check(&self) -> bool {
         true
+    }
+}
+
+fn apply_execution_admission_wrappers(
+    stage: NativeOptimizerStage,
+    optimized: &mut NativeOptimizationAttempt,
+    effective_config: &CudfOptimizerConfig,
+    native_execution_config: &crate::native_exec::NativeCudfExecutionConfig,
+) {
+    if optimized.rewritten
+        && let Some(ticket) = native_execution_config.query_admission_ticket()
+    {
+        optimized.plan = wrap_plan_with_query_admission_ticket(Arc::clone(&optimized.plan), ticket);
+    } else if optimized.rewritten
+        && matches!(native_execution_config.memory_control_policy(), nexus_query_engine::MemoryControlPolicy::Unbounded)
+        && let Some(limiter) = native_execution_config.unbounded_native_execution_limiter()
+    {
+        optimized.plan = wrap_plan_with_unbounded_native_execution_limit(Arc::clone(&optimized.plan), limiter);
+    } else if !optimized.rewritten
+        && stage == NativeOptimizerStage::Final
+        && let Some(limiter) = effective_config.cpu_fallback_statement_limiter()
+    {
+        optimized.plan = wrap_plan_with_cpu_fallback_limit(Arc::clone(&optimized.plan), limiter);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::num::NonZeroUsize;
+
+    use arrow::datatypes::Schema;
+    use datafusion::physical_plan::empty::EmptyExec;
+
+    use super::*;
+
+    fn attempt(rewritten: bool) -> NativeOptimizationAttempt {
+        NativeOptimizationAttempt {
+            plan: Arc::new(EmptyExec::new(Arc::new(Schema::empty()))),
+            report: PlanningReport::new(),
+            native_optimizer: nexus_query_engine::NativeOptimizerDiagnostics::default(),
+            source_diagnostics: Vec::new(),
+            strict_bounded_contract: NativeStrictBoundedContractDiagnostics::default(),
+            adaptive_pipeline: NativeAdaptivePipelineDiagnostics::default(),
+            rewritten,
+        }
+    }
+
+    #[test]
+    fn final_rewritten_plan_does_not_consume_cpu_fallback_limiter_in_library_mode() {
+        let config =
+            CudfOptimizerConfig::default().with_cpu_fallback_max_concurrent_statements(NonZeroUsize::new(1).unwrap());
+        let native_execution_config = config.native_execution_config().clone();
+        let mut optimized = attempt(true);
+
+        apply_execution_admission_wrappers(
+            NativeOptimizerStage::Final,
+            &mut optimized,
+            &config,
+            &native_execution_config,
+        );
+
+        assert!(
+            !plan_is_cpu_fallback_limited(optimized.plan.as_ref()),
+            "rewritten GPU plans must not be wrapped by the CPU fallback limiter"
+        );
+    }
+
+    #[test]
+    fn final_non_rewritten_plan_is_cpu_fallback_limited_when_configured() {
+        let config =
+            CudfOptimizerConfig::default().with_cpu_fallback_max_concurrent_statements(NonZeroUsize::new(1).unwrap());
+        let native_execution_config = config.native_execution_config().clone();
+        let mut optimized = attempt(false);
+
+        apply_execution_admission_wrappers(
+            NativeOptimizerStage::Final,
+            &mut optimized,
+            &config,
+            &native_execution_config,
+        );
+
+        assert!(
+            plan_is_cpu_fallback_limited(optimized.plan.as_ref()),
+            "non-rewritten final plans should be wrapped by the configured CPU fallback limiter"
+        );
     }
 }

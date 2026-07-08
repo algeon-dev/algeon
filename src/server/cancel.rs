@@ -13,7 +13,7 @@
 //!
 //! # Lifetime
 //!
-//! Entries are inserted after an admitted ticket is consumed, before any
+//! Entries are inserted after a statement ticket is consumed, before any
 //! execution branch can return. `QueryExecutionGuard::drop` removes the entry
 //! and, if the stream was dropped before a terminal result, cancels both the
 //! native flag and Flight token. Before a ticket is issued, shutdown still
@@ -71,7 +71,7 @@ impl QueryCancellation {
 
     /// Number of statements currently registered for cancellation. Used by
     /// graceful shutdown to report how many in-flight queries it is draining.
-    /// Statements that have been admitted but not yet inserted (before ticket
+    /// Statements that have been planned but not yet inserted (before ticket
     /// consumption or during the narrow handoff into `execute_ticket`) are not
     /// counted; cancellation of those is handled by the shared shutdown token in
     /// [`crate::server::flight::DatafusionCudfFlightSqlService`].

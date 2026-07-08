@@ -303,6 +303,10 @@ where
         && partitioned_join_probe_split_supported(plan.node)
         && let Some((left_work, right_work)) = split_partitioned_join_probe_work(plan.node, work, policy.min_probe_rows)
     {
+        crate::exec::retry::backoff_before_retry(
+            plan.context,
+            "nexus_query_engine.exec.bounded.partitioned_join_probe_split_retry",
+        )?;
         return materialize_partitioned_join_retry_children(
             plan,
             left_partitioned,
@@ -317,6 +321,10 @@ where
     }
 
     if can_repartition_partitioned_join_work(work) {
+        crate::exec::retry::backoff_before_retry(
+            plan.context,
+            "nexus_query_engine.exec.bounded.partitioned_join_repartition_retry",
+        )?;
         return materialize_repartitioned_join_work_with_retry(
             plan,
             left_partitioned,

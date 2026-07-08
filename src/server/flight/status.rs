@@ -99,6 +99,9 @@ pub(super) fn verify_sql_statement_namespace(
     session_update_message: &'static str,
 ) -> crate::Result<()> {
     match statement {
+        Statement::SetVariable(set) if operation == "datafusion_nexus.server.flight.do_put_update.verify_plan" => {
+            reject_flight_datafusion_nexus_session_key(&set.variable, operation)
+        },
         Statement::SetVariable(_) | Statement::ResetVariable(_) => {
             if operation == "datafusion_nexus.server.flight.do_put_update.verify_plan" {
                 Ok(())
@@ -115,6 +118,21 @@ pub(super) fn verify_sql_statement_namespace(
             "SQL PREPARE, EXECUTE, and DEALLOCATE are not supported through Flight SQL",
         )),
     }
+}
+
+fn reject_flight_datafusion_nexus_session_key(variable: &str, operation: &'static str) -> crate::Result<()> {
+    let normalized = variable.trim().to_ascii_lowercase();
+    if normalized != "datafusion_nexus" && !normalized.starts_with("datafusion_nexus.") {
+        return Ok(());
+    }
+    Err(Error::new(
+        ErrorCode::InvalidRequest,
+        operation,
+        "Flight SQL does not support session-scoped datafusion-nexus keys; configure datafusion-nexus request policy through server or tenant defaults",
+    )
+    .with_fact("reason", "flight_session_scoped_datafusion_nexus_keys_unsupported")
+    .with_fact("config_key", variable)
+    .with_fact("configuration_scope", "server_or_tenant_defaults"))
 }
 
 pub(super) fn verify_update_ddl(ddl: &DdlStatement, operation: &'static str) -> crate::Result<()> {
@@ -170,17 +188,9 @@ pub(super) fn arrow_flight_error_to_status_for_operation(
     }
 }
 
-pub(super) fn server_error_to_status(error: ServerError) -> Status {
-    adapter_error_to_status(error.as_adapter_error())
-}
-
 pub(super) fn adapter_error_status(error: Error) -> Status {
     let operation = error.operation();
     datafusion_error_to_status_for_operation(error.into(), operation)
-}
-
-pub(super) fn adapter_error_status_with_query_id(error: Error, query_id: &str) -> Status {
-    status_with_query_id(adapter_error_status(error), query_id)
 }
 
 pub(super) fn flight_sql_transactions_unsupported_error() -> Error {
@@ -197,10 +207,6 @@ pub(super) fn server_shutdown_error() -> Error {
         "datafusion_nexus.server.flight.shutdown",
         "server shutting down; statement aborted",
     )
-}
-
-pub(super) fn server_shutdown_status(query_id: &str) -> Status {
-    adapter_error_status_with_query_id(server_shutdown_error(), query_id)
 }
 
 /// Disambiguate per-statement cancellation: if the parent shutdown token has

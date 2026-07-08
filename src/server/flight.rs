@@ -41,7 +41,7 @@ use datafusion::{
     prelude::SessionContext,
 };
 use futures::{Stream, StreamExt, TryStreamExt};
-use nexus_query_engine::{ExecutionCancellation, QueryHandle};
+use nexus_query_engine::ExecutionCancellation;
 use prost::Message;
 use tokio_util::sync::CancellationToken;
 use tonic::{Code, Request, Response, Status, Streaming, metadata::MetadataValue};
@@ -49,16 +49,13 @@ use tracing::Instrument;
 use uuid::Uuid;
 
 use super::{
-    admission::{QueryAdmission, QueryAdmissionPermit},
+    admission::QueryAdmission,
     auth::{AuthInterceptor, handle_handshake},
     cancel::QueryCancellation,
     config::ServerSessionProfile,
     datafusion_error::find_adapter_error,
     diagnostics::{log_leaf_guard_rejection, log_native_planning_report},
-    error::{
-        ServerError, adapter_error_to_status, datafusion_error_to_captured_error,
-        datafusion_error_to_status_for_operation,
-    },
+    error::{adapter_error_to_status, datafusion_error_to_captured_error, datafusion_error_to_status_for_operation},
     observability::{CapturedError, QueryObservability},
     table_format_operator_fast_fail::fast_fail_unsupported_table_format_operator_plan,
 };
@@ -101,8 +98,6 @@ const READ_ONLY_SCHEMA_PROVIDER_REGISTER_TABLE_MESSAGE: &str = "schema provider 
 /// demands it. Hitting the cap returns `RESOURCE_EXHAUSTED` rather than
 /// silently evicting another connection's prepared statement.
 const MAX_PREPARED_STATEMENTS: usize = 1024;
-const ADMISSION_SWEEP_POLL_INTERVAL: Duration = Duration::from_millis(50);
-
 /// A live Flight SQL prepared statement.
 ///
 /// JDBC clients such as DataGrip prepare a statement once and then re-run the
@@ -180,9 +175,9 @@ pub struct DatafusionCudfFlightSqlService {
     prepared_statements: Arc<DashMap<String, PreparedStatementEntry>>,
     statement_ticket_ttl: Duration,
     /// Parent token that every per-statement token is derived from. Cancelled
-    /// by [`crate::server::serve`] on SIGINT/SIGTERM so any statement that
-    /// has been admitted but not yet registered (or any statement still to
-    /// register) sees a pre-cancelled token and stops at the first await.
+    /// by [`crate::server::serve`] on SIGINT/SIGTERM so statements already
+    /// registered for execution and tickets still waiting for `DoGet` see
+    /// cancellation at the first await.
     shutdown_token: CancellationToken,
     /// Bearer-token validator + handshake credential store. Cloned into
     /// the service from [`crate::server::serve`] so the same
@@ -476,12 +471,16 @@ impl DatafusionCudfFlightSqlService {
         &self.shutdown_token
     }
 
+    #[cfg(test)]
+    pub(crate) fn native_optimizer_config(&self) -> &CudfOptimizerConfig {
+        &self.native_optimizer_config
+    }
+
     fn query_planning(
         &self,
         query_id: &str,
         correlation_id: Option<&str>,
         cancellation: ExecutionCancellation,
-        query_service_handle: Option<Arc<QueryHandle>>,
     ) -> QueryPlanning {
         let observability: Arc<dyn NativeMetricsCaptureSink> = self.observability.clone();
         let metrics_capture = NativeMetricsCapture::new(query_id.to_string(), observability);
@@ -493,9 +492,6 @@ impl DatafusionCudfFlightSqlService {
             .with_metrics_capture(metrics_capture);
         if let Some(correlation_id) = correlation_id.map(str::trim).filter(|value| !value.is_empty()) {
             execution_config = execution_config.with_trace_id(correlation_id.to_string());
-        }
-        if let Some(handle) = query_service_handle {
-            execution_config = execution_config.with_query_service_handle(handle);
         }
         let optimizer_config =
             self.native_optimizer_config.clone().with_native_execution_config(execution_config.clone());
@@ -529,7 +525,6 @@ impl DatafusionCudfFlightSqlService {
         correlation_id: Option<String>,
         descriptor: FlightDescriptor,
         started_at: Instant,
-        permit: QueryAdmissionPermit,
         ticket_kind: StatementTicketKind,
         prepared_handle: Option<String>,
     ) -> Result<FlightInfo, Status> {
@@ -538,12 +533,7 @@ impl DatafusionCudfFlightSqlService {
         // shared with the optimizer rule, but `do_action_cancel_query` cannot
         // reach it until the ticket is registered.
         let native_cancellation = ExecutionCancellation::new();
-        let planning = self.query_planning(
-            &query_id,
-            correlation_id.as_deref(),
-            native_cancellation.clone(),
-            permit.query_service_handle(),
-        );
+        let planning = self.query_planning(&query_id, correlation_id.as_deref(), native_cancellation.clone());
         let query_ctx = &planning.ctx;
         let query_state = query_ctx.state();
         let logical_plan = tokio::select! {
@@ -637,78 +627,9 @@ impl DatafusionCudfFlightSqlService {
                 native_cancellation,
                 started_at,
                 issued_at: Instant::now(),
-                _permit: permit,
             },
         );
         Ok(info)
-    }
-
-    async fn acquire_statement_permit(
-        &self,
-        query_id: &str,
-        correlation_id: Option<&str>,
-    ) -> Result<QueryAdmissionPermit, Status> {
-        self.expire_stale_tickets(Instant::now());
-        match self.admission.try_acquire() {
-            Ok(Some(permit)) => {
-                Self::log_query_service_admission(query_id, &permit);
-                self.admission.log_query_service_state(Some(query_id), "statement_admitted");
-                return Ok(permit);
-            },
-            Ok(None) => {},
-            Err(error) => {
-                let status = if self.shutdown_token.is_cancelled() {
-                    server_shutdown_status(query_id)
-                } else {
-                    server_error_to_status(error)
-                };
-                return Err(status_with_query_id_and_correlation_id(status, query_id, correlation_id));
-            },
-        }
-
-        let mut acquire = Box::pin(self.admission.acquire());
-        loop {
-            let sleep_for = self.next_ticket_expiration_delay(Instant::now()).unwrap_or(ADMISSION_SWEEP_POLL_INTERVAL);
-            let sleep_for = sleep_for.min(ADMISSION_SWEEP_POLL_INTERVAL);
-            tokio::select! {
-                result = &mut acquire => {
-                    let permit = result
-                        .map_err(|error| {
-                            let status = if self.shutdown_token.is_cancelled() {
-                                server_shutdown_status(query_id)
-                            } else {
-                                server_error_to_status(error)
-                            };
-                            status_with_query_id_and_correlation_id(status, query_id, correlation_id)
-                        })?;
-                    Self::log_query_service_admission(query_id, &permit);
-                    self.admission.log_query_service_state(Some(query_id), "statement_admitted");
-                    return Ok(permit);
-                },
-                _ = tokio::time::sleep(sleep_for) => {
-                    self.expire_stale_tickets(Instant::now());
-                },
-                _ = self.shutdown_token.cancelled() => {
-                    self.admission.close();
-                    return Err(status_with_query_id_and_correlation_id(
-                        server_shutdown_status(query_id),
-                        query_id,
-                        correlation_id,
-                    ));
-                },
-            }
-        }
-    }
-
-    fn log_query_service_admission(query_id: &str, permit: &QueryAdmissionPermit) {
-        if let Some(handle) = permit.query_service_handle() {
-            tracing::info!(
-                query_id,
-                query_service_query_id = handle.query_id(),
-                query_service_budget_bytes = handle.device_budget_bytes(),
-                "admitted Flight SQL statement through query service"
-            );
-        }
     }
 
     fn expire_stale_tickets(&self, now: Instant) {
@@ -728,16 +649,6 @@ impl DatafusionCudfFlightSqlService {
             );
             false
         });
-    }
-
-    fn next_ticket_expiration_delay(&self, now: Instant) -> Option<Duration> {
-        self.tickets
-            .iter()
-            .map(|ticket| {
-                let age = now.saturating_duration_since(ticket.issued_at);
-                self.statement_ticket_ttl.saturating_sub(age)
-            })
-            .min()
     }
 
     async fn execute_ticket(
@@ -761,7 +672,7 @@ impl DatafusionCudfFlightSqlService {
         })?;
 
         // Derive from `shutdown_token` so cancellation cascades to statements
-        // that race in between permit acquisition and registry insert.
+        // that race in between ticket consumption and cancellation registry insert.
         let token = self.shutdown_token.child_token();
         let StatementTicket {
             query_id,
@@ -771,7 +682,6 @@ impl DatafusionCudfFlightSqlService {
             prepared_handle,
             native_cancellation,
             started_at,
-            _permit: permit,
             ..
         } = ticket;
         let correlation_id = correlation_id.or(request_correlation_id);
@@ -785,13 +695,11 @@ impl DatafusionCudfFlightSqlService {
                 "executing Flight SQL statement ticket"
             );
         }
-        let query_service_handle = permit.query_service_handle();
-
         self.cancellations.insert(query_id.clone(), token.clone(), native_cancellation.clone());
         let native_cancellation_for_bridge = native_cancellation.clone();
         let token_for_bridge = token.clone();
         // Native cancellation is cooperative. A cancelled query keeps its
-        // worker and QueryService admission until the current libcudf/CUDA call
+        // worker and native execution admission until the current libcudf/CUDA call
         // reaches the next cancellation boundary; this does not promise kernel
         // preemption.
         let native_cancel_bridge = tokio::spawn(async move {
@@ -800,8 +708,8 @@ impl DatafusionCudfFlightSqlService {
         });
         let lifecycle = Arc::new(QueryLifecycle::new(query_id.clone(), started_at));
         // Construct the guard before any post-ticket branch so cancellation
-        // registration, permit lifetime, and observability cleanup stay tied
-        // together after the ticket leaves `self.tickets`.
+        // registration and observability cleanup stay tied together after the
+        // ticket leaves `self.tickets`.
         let guard = QueryExecutionGuard {
             query_id: query_id.clone(),
             correlation_id: correlation_id.clone(),
@@ -811,7 +719,6 @@ impl DatafusionCudfFlightSqlService {
             native_cancellation: native_cancellation.clone(),
             native_cancel_bridge,
             shutdown_token: self.shutdown_token.clone(),
-            _permit: permit,
             lifecycle: Arc::clone(&lifecycle),
         };
         if token.is_cancelled() {
@@ -866,12 +773,7 @@ impl DatafusionCudfFlightSqlService {
             return Ok(response);
         }
 
-        let planning = self.query_planning(
-            &query_id,
-            correlation_id.as_deref(),
-            native_cancellation.clone(),
-            query_service_handle,
-        );
+        let planning = self.query_planning(&query_id, correlation_id.as_deref(), native_cancellation.clone());
         let query_ctx = &planning.ctx;
         let query_state = query_ctx.state();
         let logical_plan = tokio::select! {
@@ -1189,30 +1091,11 @@ impl DatafusionCudfFlightSqlService {
             "executing Flight SQL update statement"
         );
 
-        let queued_at = Instant::now();
         drop(_query_enter);
-        let permit = match self
-            .acquire_statement_permit(&query_id, correlation_id.as_deref())
-            .instrument(Self::query_stage_span(Some(&query_span), &query_id, correlation_id.as_deref(), "admission"))
-            .await
-        {
-            Ok(permit) => permit,
-            Err(status) => {
-                log_statement_status(&query_id, "admission", queued_at, &status);
-                self.observability.finish_status(&query_id, "admission", &status);
-                self.observability.seal(&query_id);
-                return Err(status);
-            },
-        };
 
         let lifecycle = QueryLifecycle::new(query_id.clone(), started_at);
         let native_cancellation = ExecutionCancellation::new();
-        let planning = self.query_planning(
-            &query_id,
-            correlation_id.as_deref(),
-            native_cancellation.clone(),
-            permit.query_service_handle(),
-        );
+        let planning = self.query_planning(&query_id, correlation_id.as_deref(), native_cancellation.clone());
         let query_ctx = &planning.ctx;
         let state = query_ctx.state();
         let plan = tokio::select! {
@@ -2139,7 +2022,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn planning_timeout_releases_single_flight_sql_admission_permit() {
+    async fn planning_timeout_consumes_statement_ticket_without_holding_admission() {
         let schema = iceberg_test_schema();
         let planner =
             Arc::new(SleepingPlanner::new(native_admissible_scan_plan(Arc::clone(&schema)), Duration::from_millis(50)));
@@ -2176,8 +2059,8 @@ mod tests {
 
         tokio::time::timeout(Duration::from_secs(1), issue_statement_ticket(&service, "SELECT 1 AS one"))
             .await
-            .expect("second statement should not wait on the timed-out query's admission permit")
-            .expect("second statement should acquire admission and issue a ticket");
+            .expect("second statement should not wait on the timed-out query")
+            .expect("second statement should issue a ticket");
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -2229,6 +2112,65 @@ mod tests {
         assert!(payload.contains("fact.iceberg_enabled=true"), "{payload}");
         assert!(payload.contains("fact.workspace_catalog=datafusion"), "{payload}");
         assert!(payload.contains("fact.workspace_schema=public"), "{payload}");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn update_set_datafusion_nexus_key_is_rejected_loudly() {
+        let ctx = Arc::new(SessionContext::new());
+        let service = DatafusionCudfFlightSqlService::new(
+            ctx,
+            CudfOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred),
+            ServerSessionProfile::Native,
+            Arc::new(QueryAdmission::new(1).expect("test admission limit")),
+            Duration::from_secs(30),
+            AuthInterceptor::new(AuthMode::Disabled, TokenStore::new()),
+            #[cfg(feature = "cugraph")]
+            None,
+        );
+        let query_id = "reject-nexus-set".to_string();
+        let sql = "SET datafusion_nexus.request.requested_grant_bytes = '1048576'".to_string();
+        service.observability.start_query_with_correlation_id(query_id.clone(), sql.clone(), None);
+
+        let status = service
+            .execute_update_sql(query_id.clone(), sql, None, UpdateStatementKind::Statement)
+            .await
+            .expect_err("Flight update SET for datafusion-nexus keys should be rejected");
+
+        assert_eq!(status.code(), Code::InvalidArgument);
+        assert_status_metadata(&status, "invalid_request", "invalid_input", "permanent");
+        assert!(status.message().contains("server or tenant defaults"), "status={status:?}");
+        let payload = service
+            .observability
+            .get(&query_id)
+            .expect("failed SET update should retain query stats")
+            .to_query_stats_payload();
+        assert!(payload.contains("fact.reason=flight_session_scoped_datafusion_nexus_keys_unsupported"), "{payload}");
+        assert!(payload.contains("fact.config_key=datafusion_nexus.request.requested_grant_bytes"), "{payload}");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn update_set_plain_datafusion_key_still_succeeds() {
+        let ctx = Arc::new(SessionContext::new());
+        let service = DatafusionCudfFlightSqlService::new(
+            ctx,
+            CudfOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred),
+            ServerSessionProfile::Native,
+            Arc::new(QueryAdmission::new(1).expect("test admission limit")),
+            Duration::from_secs(30),
+            AuthInterceptor::new(AuthMode::Disabled, TokenStore::new()),
+            #[cfg(feature = "cugraph")]
+            None,
+        );
+        let query_id = "plain-datafusion-set".to_string();
+        let sql = "SET datafusion.execution.batch_size = '1024'".to_string();
+        service.observability.start_query_with_correlation_id(query_id.clone(), sql.clone(), None);
+
+        let count = service
+            .execute_update_sql(query_id, sql, None, UpdateStatementKind::Statement)
+            .await
+            .expect("plain DataFusion SET should keep existing update-lane behavior");
+
+        assert_eq!(count, NO_UPDATED_RECORDS_COUNT);
     }
 
     async fn issue_statement_ticket(

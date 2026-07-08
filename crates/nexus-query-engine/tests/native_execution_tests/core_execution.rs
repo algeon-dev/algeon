@@ -1,5 +1,113 @@
 use super::*;
 
+fn expect_device_buffer_error(result: cudf::Result<cudf::core::DeviceBuffer>) -> cudf::Error {
+    match result {
+        Ok(_) => panic!("expected device buffer allocation to fail"),
+        Err(error) => error,
+    }
+}
+
+#[test]
+fn grant_backed_budget_tokens_share_arena_across_stream_leases() {
+    let runtime = Arc::new(cudf::Runtime::builder().with_device_memory_manager().build().unwrap());
+    let governor = MemoryGovernor::new(runtime.device().ordinal(), 64 * 1024 * 1024).unwrap();
+    let grant = governor.request(GrantRequest::new(1, 12 * 1024 * 1024, 12 * 1024 * 1024)).unwrap();
+    let context =
+        ExecutionContext::builder().with_shared_runtime(Arc::clone(&runtime)).with_memory_grant(grant).build().unwrap();
+
+    assert_eq!(governor.report().unwrap().outstanding_bytes, 12 * 1024 * 1024);
+
+    let grant = context.memory_grant().unwrap().clone();
+    let probe_token = context
+        .execution_budget_token(cudf::ExecutionBudgetRequest::new(1024 * 1024).with_boundary("grant_arena_probe"))
+        .unwrap();
+    assert_eq!(
+        probe_token
+            .reservation_arena_usage()
+            .unwrap()
+            .expect("grant-backed token should expose arena usage")
+            .allocation_limit_bytes,
+        governor.report().unwrap().outstanding_bytes
+    );
+    assert!(grant.try_grow(4 * 1024 * 1024).unwrap());
+    assert_eq!(governor.report().unwrap().outstanding_bytes, 16 * 1024 * 1024);
+    assert_eq!(
+        probe_token
+            .reservation_arena_usage()
+            .unwrap()
+            .expect("grant-backed token should expose arena usage")
+            .allocation_limit_bytes,
+        16 * 1024 * 1024
+    );
+    assert!(grant.try_shrink_to(12 * 1024 * 1024).unwrap());
+    assert_eq!(governor.report().unwrap().outstanding_bytes, 12 * 1024 * 1024);
+    assert_eq!(
+        probe_token
+            .reservation_arena_usage()
+            .unwrap()
+            .expect("grant-backed token should expose arena usage")
+            .allocation_limit_bytes,
+        12 * 1024 * 1024
+    );
+    drop(probe_token);
+
+    let left_token = context
+        .execution_budget_token(cudf::ExecutionBudgetRequest::new(16 * 1024 * 1024).with_boundary("grant_arena_left"))
+        .unwrap();
+    assert_eq!(left_token.enforcement(), cudf::ExecutionBudgetEnforcement::ReservationArenaMember);
+    let left_buffer = context.runtime().device_buffer(8 * 1024 * 1024).unwrap();
+
+    let stream_lease = context.service_stream_pool().acquire().unwrap();
+    let leased_context = context.with_owned_stream_lease(stream_lease).unwrap();
+    let right_context = leased_context.context();
+    let right_token = right_context
+        .execution_budget_token(cudf::ExecutionBudgetRequest::new(16 * 1024 * 1024).with_boundary("grant_arena_right"))
+        .unwrap();
+    assert_eq!(right_token.enforcement(), cudf::ExecutionBudgetEnforcement::ReservationArenaMember);
+
+    let err = expect_device_buffer_error(right_context.runtime().device_buffer(8 * 1024 * 1024));
+    assert_eq!(err.kind(), cudf::ErrorKind::ResourceExhausted);
+
+    drop(left_buffer);
+
+    let right_buffer = right_context.runtime().device_buffer(8 * 1024 * 1024).unwrap();
+    assert_eq!(right_buffer.size_bytes().unwrap(), 8 * 1024 * 1024);
+}
+
+#[test]
+fn shared_memory_grant_contexts_reuse_one_arena_parent() {
+    let left_runtime = Arc::new(cudf::Runtime::builder().with_device_memory_manager().build().unwrap());
+    let right_runtime = Arc::new(cudf::Runtime::builder().with_device_memory_manager().build().unwrap());
+    let governor = MemoryGovernor::new(left_runtime.device().ordinal(), 64 * 1024 * 1024).unwrap();
+    let grant = governor.request(GrantRequest::new(2, 12 * 1024 * 1024, 12 * 1024 * 1024)).unwrap();
+    let left_context = ExecutionContext::builder()
+        .with_shared_runtime(Arc::clone(&left_runtime))
+        .with_memory_grant(grant.clone())
+        .build()
+        .unwrap();
+    let right_context = ExecutionContext::builder()
+        .with_shared_runtime(Arc::clone(&right_runtime))
+        .with_memory_grant(grant)
+        .build()
+        .unwrap();
+
+    let left_token = left_context
+        .execution_budget_token(cudf::ExecutionBudgetRequest::new(16 * 1024 * 1024).with_boundary("shared_grant_left"))
+        .unwrap();
+    let right_token = right_context
+        .execution_budget_token(cudf::ExecutionBudgetRequest::new(16 * 1024 * 1024).with_boundary("shared_grant_right"))
+        .unwrap();
+    assert_eq!(
+        left_token.reservation_arena_usage().unwrap().unwrap().allocation_limit_bytes,
+        right_token.reservation_arena_usage().unwrap().unwrap().allocation_limit_bytes
+    );
+
+    let left_buffer = left_context.runtime().device_buffer(8 * 1024 * 1024).unwrap();
+    let err = expect_device_buffer_error(right_context.runtime().device_buffer(8 * 1024 * 1024));
+    assert_eq!(err.kind(), cudf::ErrorKind::ResourceExhausted);
+    drop(left_buffer);
+}
+
 #[test]
 fn native_query_executes_direct_parquet_pipeline_to_host_sink() {
     let dir = unique_temp_dir("nexus-query-engine-native-execution");
@@ -543,6 +651,165 @@ fn native_query_executes_union_over_gpu_resident_inputs() {
     assert_eq!(batch.num_rows(), 3);
     assert_eq!(int32_array(batch, 0).values().as_ref(), &[1, 2, 3]);
     assert_eq!(int64_array(batch, 1).values().as_ref(), &[10, 20, 30]);
+}
+
+#[test]
+fn bounded_native_query_executes_union_over_gpu_resident_inputs() {
+    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("key", DataType::Int32, false),
+        Field::new("payload", DataType::Int64, false),
+    ]));
+    let left_batch = RecordBatch::try_new(
+        Arc::clone(&schema),
+        vec![Arc::new(Int32Array::from(vec![1, 2])), Arc::new(Int64Array::from(vec![10, 20]))],
+    )
+    .unwrap();
+    let right_batch = RecordBatch::try_new(
+        Arc::clone(&schema),
+        vec![Arc::new(Int32Array::from(vec![3])), Arc::new(Int64Array::from(vec![30]))],
+    )
+    .unwrap();
+
+    let mut builder = QueryPlanBuilder::new();
+    let left = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("left", Arc::clone(&schema))));
+    let right = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("right", Arc::clone(&schema))));
+    let union = builder.add_union(vec![left, right], Arc::clone(&schema));
+    let plan = builder.finish_with_host_sink(union);
+    let context = ExecutionContext::builder()
+        .with_shared_runtime(Arc::clone(&runtime))
+        .with_memory_control_policy(MemoryControlPolicy::Bounded {
+            device_budget_bytes: 64 * 1024 * 1024,
+            max_source_chunk_bytes: 1024,
+            max_row_groups_per_chunk: 1,
+            max_retry_attempts: 1,
+            min_retry_chunk_row_groups: 1,
+        })
+        .build()
+        .unwrap();
+    let mut gpu_inputs = GpuResidentInputMap::new();
+    gpu_inputs.insert(
+        "left".to_string(),
+        GpuResultHandle::new(
+            &context,
+            GpuDataFrame::new(DataFrame::from_record_batch(&runtime, &left_batch).unwrap()),
+            Arc::clone(&schema),
+        )
+        .unwrap(),
+    );
+    gpu_inputs.insert(
+        "right".to_string(),
+        GpuResultHandle::new(
+            &context,
+            GpuDataFrame::new(DataFrame::from_record_batch(&runtime, &right_batch).unwrap()),
+            Arc::clone(&schema),
+        )
+        .unwrap(),
+    );
+
+    let result = execute_query_plan_with_gpu_inputs(&context, &plan, &gpu_inputs).unwrap();
+    let QueryOutput::HostArrow(batch) = result.output() else {
+        panic!("host sink should materialize one RecordBatch");
+    };
+    assert_eq!(batch.num_rows(), 3);
+    assert_eq!(int32_array(batch, 0).values().as_ref(), &[1, 2, 3]);
+    assert_eq!(int64_array(batch, 1).values().as_ref(), &[10, 20, 30]);
+}
+
+#[test]
+fn bounded_native_query_executes_join_over_gpu_resident_inputs() {
+    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let left_schema = Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Int32, false),
+        Field::new("lval", DataType::Int64, false),
+    ]));
+    let right_schema = Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Int32, false),
+        Field::new("rval", DataType::Int64, false),
+    ]));
+    let output_schema = Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Int32, false),
+        Field::new("lval", DataType::Int64, false),
+        Field::new("rval", DataType::Int64, false),
+    ]));
+    let left_batch = RecordBatch::try_new(
+        Arc::clone(&left_schema),
+        vec![Arc::new(Int32Array::from(vec![1, 2, 3])), Arc::new(Int64Array::from(vec![10, 20, 30]))],
+    )
+    .unwrap();
+    let right_batch = RecordBatch::try_new(
+        Arc::clone(&right_schema),
+        vec![Arc::new(Int32Array::from(vec![2, 3, 4])), Arc::new(Int64Array::from(vec![200, 300, 400]))],
+    )
+    .unwrap();
+
+    let mut builder = QueryPlanBuilder::new();
+    let left = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("left", Arc::clone(&left_schema))));
+    let right = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("right", Arc::clone(&right_schema))));
+    let join = builder.add_join(
+        left,
+        right,
+        JoinSpec::new(
+            JoinType::Inner,
+            vec![JoinKey::new(
+                nexus_query_engine::ColumnRef::input(0, "id", "left_id"),
+                nexus_query_engine::ColumnRef::input(1, "id", "right_id"),
+            )],
+        )
+        .with_output_projection(vec![
+            JoinOutputColumn::left(nexus_query_engine::ColumnRef::input(0, "id", "id"), "id"),
+            JoinOutputColumn::left(nexus_query_engine::ColumnRef::input(0, "lval", "lval"), "lval"),
+            JoinOutputColumn::right(nexus_query_engine::ColumnRef::input(1, "rval", "rval"), "rval"),
+        ])
+        .with_null_equality(JoinNullEquality::NullsDoNotMatch)
+        .with_build_side(JoinSide::Right),
+        Arc::clone(&output_schema),
+    );
+    let sort = builder.add_sort(
+        join,
+        SortSpec::new(vec![SortExpr::new(Expr::column("id"), false, false)]),
+        Arc::clone(&output_schema),
+    );
+    let plan = builder.finish_with_host_sink(sort);
+    let context = ExecutionContext::builder()
+        .with_shared_runtime(Arc::clone(&runtime))
+        .with_memory_control_policy(MemoryControlPolicy::Bounded {
+            device_budget_bytes: 64 * 1024 * 1024,
+            max_source_chunk_bytes: 1024,
+            max_row_groups_per_chunk: 1,
+            max_retry_attempts: 1,
+            min_retry_chunk_row_groups: 1,
+        })
+        .build()
+        .unwrap();
+    let mut gpu_inputs = GpuResidentInputMap::new();
+    gpu_inputs.insert(
+        "left".to_string(),
+        GpuResultHandle::new(
+            &context,
+            GpuDataFrame::new(DataFrame::from_record_batch(&runtime, &left_batch).unwrap()),
+            Arc::clone(&left_schema),
+        )
+        .unwrap(),
+    );
+    gpu_inputs.insert(
+        "right".to_string(),
+        GpuResultHandle::new(
+            &context,
+            GpuDataFrame::new(DataFrame::from_record_batch(&runtime, &right_batch).unwrap()),
+            Arc::clone(&right_schema),
+        )
+        .unwrap(),
+    );
+
+    let result = execute_query_plan_with_gpu_inputs(&context, &plan, &gpu_inputs).unwrap();
+    let QueryOutput::HostArrow(batch) = result.output() else {
+        panic!("host sink should materialize joined rows");
+    };
+    assert_eq!(batch.num_rows(), 2);
+    assert_eq!(int32_array(batch, 0).values().as_ref(), &[2, 3]);
+    assert_eq!(int64_array(batch, 1).values().as_ref(), &[20, 30]);
+    assert_eq!(int64_array(batch, 2).values().as_ref(), &[200, 300]);
 }
 
 fn write_position_delete_parquet(path: &Path, data_file_path: &str, positions: &[i64], other_positions: &[i64]) {

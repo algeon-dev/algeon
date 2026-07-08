@@ -19,9 +19,11 @@ use datafusion_nexus::{
     NativeCudfExecutionConfig, SlotGuarantee,
     server::{
         NEXUS_ICEBERG_GLUE_DATABASE_ENV, NEXUS_SERVER_ADMISSION_GRANT_MIN_ENV, NEXUS_SERVER_ADMISSION_GRANT_WANT_ENV,
-        NEXUS_SERVER_ADMISSION_SLOT_GUARANTEE_ENV, NEXUS_SERVER_BIND_ENV, NEXUS_SERVER_CONFIG_FILE_ENV,
-        NEXUS_SERVER_CUGRAPH_ENABLED_ENV, NEXUS_SERVER_DEVICE_BUDGET_FRACTION_ENV, NEXUS_SERVER_GPU_DEVICES_ENV,
-        NEXUS_SERVER_MAX_CONCURRENT_QUERIES_ENV, NEXUS_SERVER_MAX_IN_FLIGHT_ENV, NEXUS_SERVER_NATIVE_CONFIG_OPTIONS,
+        NEXUS_SERVER_ADMISSION_SLOT_GUARANTEE_ENV, NEXUS_SERVER_ADMISSION_WAIT_TIMEOUT_MS_ENV, NEXUS_SERVER_BIND_ENV,
+        NEXUS_SERVER_CONFIG_FILE_ENV, NEXUS_SERVER_CPU_FALLBACK_MAX_CONCURRENT_STATEMENTS_ENV,
+        NEXUS_SERVER_CPU_FALLBACK_WAIT_TIMEOUT_MS_ENV, NEXUS_SERVER_CUGRAPH_ENABLED_ENV,
+        NEXUS_SERVER_DEVICE_BUDGET_FRACTION_ENV, NEXUS_SERVER_GPU_DEVICES_ENV, NEXUS_SERVER_MAX_CONCURRENT_QUERIES_ENV,
+        NEXUS_SERVER_MAX_IN_FLIGHT_ENV, NEXUS_SERVER_NATIVE_CONFIG_OPTIONS,
         NEXUS_SERVER_NATIVE_DEVICE_BUDGET_BYTES_ENV, NEXUS_SERVER_NATIVE_HOST_FETCH_ACQUIRE_TIMEOUT_SECS_ENV,
         NEXUS_SERVER_NATIVE_MAX_RETRY_ATTEMPTS_ENV, NEXUS_SERVER_NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV,
         NEXUS_SERVER_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV, NEXUS_SERVER_NATIVE_MAX_SOURCE_READS_IN_FLIGHT_ENV,
@@ -43,16 +45,24 @@ use nexus_query_engine::{
 };
 
 #[test]
-fn server_config_defaults_to_two_flight_sql_admissions() {
+fn server_config_defaults_to_two_native_query_admissions() {
     let env: BTreeMap<&'static str, String> = BTreeMap::new();
     let config = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap();
 
     assert_eq!(config.bind_addr.to_string(), "0.0.0.0:50051");
     assert_eq!(config.max_in_flight, 2);
     assert_eq!(config.admission_policy.max_concurrent_queries(), 2);
+    assert_eq!(config.cpu_fallback_max_concurrent_statements.map(|value| value.get()), Some(2));
+    assert_eq!(
+        config.native_optimizer_config.cpu_fallback_max_concurrent_statements().map(|value| value.get()),
+        Some(2)
+    );
     assert_eq!(config.admission_policy.grant().min, MemoryShare::Fraction(1.0 / 8.0));
-    assert_eq!(config.admission_policy.grant().want, MemoryShare::Fraction(1.0 / 2.0));
+    assert_eq!(config.admission_policy.grant().want, MemoryShare::PolicyDefault);
     assert_eq!(config.admission_policy.slot_guarantee(), SlotGuarantee::GuaranteedMinimum);
+    assert_eq!(config.admission_policy.wait_timeout(), Duration::from_secs(60));
+    assert_eq!(config.cpu_fallback_wait_timeout, Some(Duration::from_secs(30)));
+    assert_eq!(config.native_optimizer_config.cpu_fallback_wait_timeout(), Some(Duration::from_secs(30)));
     assert_eq!(config.gpu_devices, vec![0]);
     assert_eq!(config.device_budget_fraction, None);
     assert_eq!(config.statement_ticket_ttl.as_secs(), 300);
@@ -63,6 +73,84 @@ fn server_config_defaults_to_two_flight_sql_admissions() {
     );
     #[cfg(feature = "cugraph")]
     assert!(config.cugraph.is_none(), "cuGraph Flight SQL exposure must be disabled by default");
+}
+
+#[test]
+fn server_config_accepts_cpu_fallback_statement_limit_env() {
+    let env = BTreeMap::from([(NEXUS_SERVER_CPU_FALLBACK_MAX_CONCURRENT_STATEMENTS_ENV, "4".to_string())]);
+
+    let config = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap();
+
+    assert_eq!(config.cpu_fallback_max_concurrent_statements.map(|value| value.get()), Some(4));
+    assert_eq!(
+        config.native_optimizer_config.cpu_fallback_max_concurrent_statements().map(|value| value.get()),
+        Some(4)
+    );
+}
+
+#[test]
+fn server_config_accepts_cpu_fallback_wait_timeout_env() {
+    let env = BTreeMap::from([(NEXUS_SERVER_CPU_FALLBACK_WAIT_TIMEOUT_MS_ENV, "250".to_string())]);
+
+    let config = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap();
+
+    assert_eq!(config.cpu_fallback_wait_timeout, Some(Duration::from_millis(250)));
+    assert_eq!(config.native_optimizer_config.cpu_fallback_wait_timeout(), Some(Duration::from_millis(250)));
+}
+
+#[test]
+fn server_config_zero_cpu_fallback_wait_timeout_waits_indefinitely() {
+    let env = BTreeMap::from([(NEXUS_SERVER_CPU_FALLBACK_WAIT_TIMEOUT_MS_ENV, "0".to_string())]);
+
+    let config = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap();
+
+    assert_eq!(config.cpu_fallback_wait_timeout, None);
+    assert_eq!(config.native_optimizer_config.cpu_fallback_wait_timeout(), None);
+}
+
+#[test]
+fn server_config_zero_cpu_fallback_statement_limit_disables_bound() {
+    let env = BTreeMap::from([(NEXUS_SERVER_CPU_FALLBACK_MAX_CONCURRENT_STATEMENTS_ENV, "0".to_string())]);
+
+    let config = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap();
+
+    assert_eq!(config.cpu_fallback_max_concurrent_statements, None);
+    assert_eq!(config.native_optimizer_config.cpu_fallback_max_concurrent_statements(), None);
+    assert_eq!(config.cpu_fallback_wait_timeout, Some(Duration::from_secs(30)));
+    assert_eq!(config.native_optimizer_config.cpu_fallback_wait_timeout(), None);
+}
+
+#[test]
+fn server_config_accepts_toml_cpu_fallback_statement_limit() {
+    let (_dir, env) = env_with_server_toml(
+        r#"
+[fallback]
+max_concurrent_statements = 3
+"#,
+    );
+
+    let config = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap();
+
+    assert_eq!(config.cpu_fallback_max_concurrent_statements.map(|value| value.get()), Some(3));
+    assert_eq!(
+        config.native_optimizer_config.cpu_fallback_max_concurrent_statements().map(|value| value.get()),
+        Some(3)
+    );
+}
+
+#[test]
+fn server_config_accepts_toml_cpu_fallback_wait_timeout() {
+    let (_dir, env) = env_with_server_toml(
+        r#"
+[fallback]
+wait_timeout_ms = 125
+"#,
+    );
+
+    let config = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap();
+
+    assert_eq!(config.cpu_fallback_wait_timeout, Some(Duration::from_millis(125)));
+    assert_eq!(config.native_optimizer_config.cpu_fallback_wait_timeout(), Some(Duration::from_millis(125)));
 }
 
 #[test]
@@ -98,8 +186,11 @@ fn server_native_config_option_descriptors_cover_toml_env_and_session_keys() {
         assert_eq!(option.env_var, env_var);
     }
 
-    let session_keys =
-        DATAFUSION_NEXUS_SESSION_CONFIG_OPTIONS.iter().map(|option| option.full_key()).collect::<BTreeSet<_>>();
+    let session_keys = DATAFUSION_NEXUS_SESSION_CONFIG_OPTIONS
+        .iter()
+        .map(|option| option.full_key())
+        .filter(|key| key.starts_with("datafusion_nexus.native."))
+        .collect::<BTreeSet<_>>();
     let server_session_keys = NEXUS_SERVER_NATIVE_CONFIG_OPTIONS
         .iter()
         .filter_map(|option| option.session_key.map(str::to_string))
@@ -176,6 +267,15 @@ fn server_config_accepts_admission_grant_band_and_slot_guarantee() {
 }
 
 #[test]
+fn server_config_accepts_grant_min_without_pinning_policy_default_want() {
+    let env = BTreeMap::from([(NEXUS_SERVER_ADMISSION_GRANT_MIN_ENV, "1024".to_string())]);
+    let config = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap();
+
+    assert_eq!(config.admission_policy.grant().min, MemoryShare::Bytes(1024));
+    assert_eq!(config.admission_policy.grant().want, MemoryShare::PolicyDefault);
+}
+
+#[test]
 fn server_config_accepts_toml_admission_policy() {
     let (_dir, env) = env_with_server_toml(
         r#"
@@ -204,12 +304,14 @@ max_concurrent_queries = 4
 grant_min = 0.25
 grant_want = 0.50
 slot_guarantee = "guaranteed_minimum"
+wait_timeout_ms = 45000
 "#,
     );
     env.insert(NEXUS_SERVER_MAX_CONCURRENT_QUERIES_ENV, "3".to_string());
     env.insert(NEXUS_SERVER_ADMISSION_GRANT_MIN_ENV, "1024".to_string());
     env.insert(NEXUS_SERVER_ADMISSION_GRANT_WANT_ENV, "0.75".to_string());
     env.insert(NEXUS_SERVER_ADMISSION_SLOT_GUARANTEE_ENV, "optimistic".to_string());
+    env.insert(NEXUS_SERVER_ADMISSION_WAIT_TIMEOUT_MS_ENV, "5000".to_string());
 
     let config = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap();
 
@@ -218,6 +320,7 @@ slot_guarantee = "guaranteed_minimum"
     assert_eq!(config.admission_policy.grant().min, MemoryShare::Bytes(1024));
     assert_eq!(config.admission_policy.grant().want, MemoryShare::Fraction(0.75));
     assert_eq!(config.admission_policy.slot_guarantee(), SlotGuarantee::Optimistic);
+    assert_eq!(config.admission_policy.wait_timeout(), Duration::from_millis(5000));
 }
 
 #[test]
@@ -230,6 +333,14 @@ fn server_config_rejects_conflicting_admission_aliases() {
 
     assert!(error.to_string().contains(NEXUS_SERVER_MAX_CONCURRENT_QUERIES_ENV));
     assert!(error.to_string().contains(NEXUS_SERVER_MAX_IN_FLIGHT_ENV));
+}
+
+#[test]
+fn server_config_rejects_zero_admission_wait_timeout() {
+    let env = BTreeMap::from([(NEXUS_SERVER_ADMISSION_WAIT_TIMEOUT_MS_ENV, "0".to_string())]);
+    let error = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap_err();
+
+    assert!(error.to_string().contains(NEXUS_SERVER_ADMISSION_WAIT_TIMEOUT_MS_ENV));
 }
 
 #[test]

@@ -1,0 +1,38 @@
+[package]
+name = "datafusion-nexus-examples"
+description = "Runnable embedding examples for datafusion-nexus."
+version = { workspace = true }
+edition = "2024"
+rust-version = { workspace = true }
+publish = false
+default-run = "embedded_backend"
+
+[lints]
+workspace = true
+
+[dependencies]
+anyhow = { workspace = true }
+arrow = { workspace = true }
+arrow-json = { workspace = true }
+axum = { workspace = true }
+cudf-sys = { workspace = true }
+cugraph-sys = { workspace = true }
+datafusion = { workspace = true }
+datafusion-nexus = { workspace = true, features = ["server-cugraph", "iceberg"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "signal"] }
+tokio-util = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+[lib]
+name = "datafusion_nexus_examples"
+path = "src/lib.rs"
+test = false
+doctest = false
+
+[[bin]]
+name = "embedded_backend"
+path = "src/bin/embedded_backend.rs"
+test = false

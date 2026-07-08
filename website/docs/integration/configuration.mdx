@@ -23,17 +23,30 @@ SQL server and for production-style Iceberg deployments.
 
 Server admission is byte-denominated and slot-bounded. The default admits two
 queries, guarantees each admitted query at least `1/8` of the resolved device
-budget, and lets a query use up to `1/2` of that budget when memory is
-available.
+budget, and derives the preferred grant from the slot guarantee and native
+pipeline mode. With the default `guaranteed_minimum` policy, a lone query can
+use the full device budget minus the floor reserved for remaining slots.
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `NEXUS_SERVER_MAX_CONCURRENT_QUERIES` | `2` | Preferred max admitted statements. |
+| `NEXUS_SERVER_MAX_CONCURRENT_QUERIES` | `2` | Preferred max GPU-native/query-service admissions. |
 | `NEXUS_SERVER_MAX_IN_FLIGHT` | `2` | Compatibility alias for `NEXUS_SERVER_MAX_CONCURRENT_QUERIES`. Set only one, or set both to the same value. |
 | `NEXUS_SERVER_ADMISSION_GRANT_MIN` | `0.125` | Minimum per-query grant. Accepts a fraction of device capacity or an explicit byte count. |
-| `NEXUS_SERVER_ADMISSION_GRANT_WANT` | `0.5` | Preferred per-query grant when memory is available. Accepts a fraction or bytes. |
+| `NEXUS_SERVER_ADMISSION_GRANT_WANT` | policy-derived | Preferred per-query grant when memory is available. Accepts a fraction or bytes. |
 | `NEXUS_SERVER_ADMISSION_SLOT_GUARANTEE` | `guaranteed_minimum` | `guaranteed_minimum` reserves enough memory for empty slots; `optimistic` grants work-conservingly and lets large arrivals wait for memory. |
+| `NEXUS_SERVER_ADMISSION_WAIT_TIMEOUT_MS` | `60000` | Maximum query-service admission wait before a structured overload error. |
 | `NEXUS_SERVER_GPU_DEVICES` | `0` | Comma-separated CUDA device ordinals used for independent query placement. |
+
+## CPU fallback bound
+
+CPU-readable plans rejected by native lowering run on DataFusion, not through
+the GPU admission ledger. Server mode bounds those fallback statements with a
+separate host-side semaphore.
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `NEXUS_SERVER_CPU_FALLBACK_MAX_CONCURRENT_STATEMENTS` | `2` | Maximum concurrent CPU fallback statements. Set `0` to disable the bound. |
+| `NEXUS_SERVER_CPU_FALLBACK_WAIT_TIMEOUT_MS` | `30000` | Maximum wait for a CPU fallback permit before `service_overloaded`; set `0` to wait indefinitely. |
 
 ## cuGraph defaults
 
@@ -81,6 +94,17 @@ DataFusion reads its own `SessionConfig::from_env()` keys. The key
 | `DATAFUSION_EXECUTION_BATCH_SIZE` | `datafusion.execution.batch_size` | DataFusion/fallback operator batch size (default `8192`). |
 | `DATAFUSION_CATALOG_DEFAULT_CATALOG` | `datafusion.catalog.default_catalog` | Default catalog for unqualified names. |
 | `DATAFUSION_CATALOG_DEFAULT_SCHEMA` | `datafusion.catalog.default_schema` | Default schema; the mutable session workspace for `CREATE VIEW` etc. |
+
+Nexus also registers `datafusion_nexus.native.*` session keys for direct
+optimizer installs. Backend-managed sessions freeze those native policy keys so
+they cannot diverge from the shared admission ledger. The
+`datafusion_nexus.request.*` namespace is intentionally request-scoped and stays
+mutable on those embedded DataFusion sessions. Set
+`datafusion_nexus.request.requested_grant_bytes` through SQL or DataFusion's
+session-option API after Nexus registers the extension. Flight SQL does not
+support session-scoped `datafusion_nexus.*` keys through SQL `SET`; configure
+server or tenant defaults instead. The server does not load request keys from a
+`DATAFUSION_NEXUS_*` environment variable during startup.
 
 ## Iceberg sources and workspace overlay
 

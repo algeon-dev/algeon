@@ -24,6 +24,7 @@ use crate::{
     NativeCudfExecutionConfig,
     graph_sql::{CugraphAlgoExec, metadata::cugraph_metadata_table_functions},
     session::session_state_with_native_execution_config,
+    session_config::DataFusionNexusSessionConfig,
 };
 
 #[derive(Debug)]
@@ -76,7 +77,9 @@ impl TableProvider for CugraphAlgoTableProvider {
         if let CugraphAlgorithmParams::Bfs(params) = &spec.params {
             spec.output_schema = bfs_result_schema_for_vertex_domain(params, &vertex_domain);
         }
-        let native_execution_config = self.native_execution_config.clone().with_plan_query_admission_ticket();
+        let native_execution_config =
+            native_execution_config_with_request_options(session_state, self.native_execution_config.clone())
+                .with_plan_query_admission_ticket();
         let planning_state = session_state_with_native_execution_config(session_state, native_execution_config.clone())
             .unwrap_or_else(|| session_state.clone());
         let scan = LogicalPlanBuilder::scan(table_ref, provider_as_source(provider), None)?.build()?;
@@ -92,6 +95,16 @@ impl TableProvider for CugraphAlgoTableProvider {
             native_execution_config,
         )?))
     }
+}
+
+fn native_execution_config_with_request_options(
+    session_state: &SessionState,
+    native_execution_config: NativeCudfExecutionConfig,
+) -> NativeCudfExecutionConfig {
+    let Some(session_config) = session_state.config_options().extensions.get::<DataFusionNexusSessionConfig>() else {
+        return native_execution_config;
+    };
+    native_execution_config.with_requested_grant_bytes(session_config.request_requested_grant_bytes)
 }
 
 #[derive(Debug)]
@@ -383,4 +396,28 @@ fn validate_predicate_source_schema(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use datafusion::execution::SessionStateBuilder;
+
+    use super::*;
+
+    #[test]
+    fn native_execution_config_with_request_options_reads_session_request_grant() {
+        let mut builder = SessionStateBuilder::new();
+        let session_config = builder.config().get_or_insert_with(Default::default);
+        let mut nexus_config = DataFusionNexusSessionConfig::default();
+        nexus_config.request_requested_grant_bytes = Some(512);
+        session_config.options_mut().extensions.insert(nexus_config);
+        let state = builder.build();
+
+        let execution_config = native_execution_config_with_request_options(
+            &state,
+            NativeCudfExecutionConfig::bounded(1024, 512, 1, 3, 1),
+        );
+
+        assert_eq!(execution_config.requested_grant_bytes(), Some(512));
+    }
 }

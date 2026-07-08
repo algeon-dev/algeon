@@ -1,0 +1,293 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AD/Entra BloodHound — Holistic Attack-Surface View</title>
+<style>
+  :root {
+    --bg: #0a0c10; --panel: #12161cdd; --border: #232a33;
+    --fg: #e6edf3; --muted: #8b949e; --accent: #ff2d95;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--bg);
+    color: var(--fg); font: 13px/1.45 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif; }
+  #app { position: fixed; inset: 0; }
+  #sigma { position: absolute; inset: 0; }
+
+  .panel { position: absolute; z-index: 5; background: var(--panel);
+    border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px;
+    backdrop-filter: blur(6px); box-shadow: 0 6px 24px #0008; }
+
+  #hud-title { position: absolute; top: 14px; left: 16px; z-index: 5; }
+  #hud-title h1 { margin: 0; font-size: 17px; font-weight: 650; letter-spacing: .2px; }
+  #hud-title #subtitle { margin: 2px 0 0; color: var(--muted); font-size: 12px; }
+
+  #hud-stats { top: 66px; left: 16px; width: 236px; }
+  .stat-row { display: flex; justify-content: space-between; padding: 2px 0; }
+  .stat-row span { color: var(--muted); }
+  .stat-row b { font-variant-numeric: tabular-nums; }
+
+  #hud-controls { top: 66px; right: 16px; width: 246px; display: flex; flex-direction: column; gap: 9px; }
+  #search { width: 100%; background: #0d1117; border: 1px solid var(--border);
+    color: var(--fg); border-radius: 7px; padding: 7px 9px; outline: none; }
+  #search:focus { border-color: var(--accent); }
+  .ctl { display: flex; align-items: center; gap: 7px; color: var(--fg); cursor: pointer; user-select: none; }
+  .seg { display: flex; align-items: center; gap: 6px; }
+  .seg span { color: var(--muted); }
+  .seg button, .reset { background: #0d1117; border: 1px solid var(--border);
+    color: var(--fg); border-radius: 6px; padding: 4px 9px; cursor: pointer; }
+  .seg button.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .reset:hover, .seg button:hover { border-color: var(--muted); }
+  .hint { margin: 2px 0 0; color: var(--muted); font-size: 11px; }
+
+  #hud-legend { bottom: 16px; left: 16px; max-width: 300px; display: flex; gap: 18px; }
+  .legend-block h4 { margin: 0 0 6px; font-size: 11px; text-transform: uppercase;
+    letter-spacing: .6px; color: var(--muted); font-weight: 600; }
+  .legend-item { display: flex; align-items: center; gap: 7px; padding: 1px 0; white-space: nowrap; }
+  .swatch { width: 11px; height: 11px; border-radius: 3px; flex: 0 0 auto; }
+  .swatch.line { height: 3px; width: 16px; border-radius: 2px; }
+
+  #tooltip { position: absolute; z-index: 9; pointer-events: none; max-width: 320px;
+    background: #0d1117f2; border: 1px solid var(--border); border-radius: 8px;
+    padding: 9px 11px; box-shadow: 0 8px 28px #000a; }
+  #tooltip .tt-title { font-weight: 650; margin-bottom: 4px; word-break: break-all; }
+  #tooltip .tt-row { color: var(--muted); }
+  #tooltip .tt-row b { color: var(--fg); font-weight: 500; }
+  #tooltip .tt-hv { color: var(--accent); font-weight: 600; }
+  .hidden { display: none; }
+
+  #loading { position: absolute; inset: 0; display: flex; align-items: center;
+    justify-content: center; z-index: 20; color: var(--muted); font-size: 15px;
+    background: var(--bg); padding: 30px; text-align: center; }
+  #loading code { color: #79c0ff; background: #161b22; padding: 1px 5px; border-radius: 4px; }
+  #err { color: #ff7b72; max-width: 620px; line-height: 1.7; }
+</style>
+</head>
+<body>
+<div id="app">
+  <div id="sigma"></div>
+
+  <header id="hud-title">
+    <h1>AD / Entra BloodHound — Holistic Attack-Surface View</h1>
+    <p id="subtitle">cuGraph ForceAtlas2 layout · sigma.js render</p>
+  </header>
+
+  <section id="hud-stats" class="panel">
+    <div class="stat-row"><span>Full graph</span><b id="s-full">—</b></div>
+    <div class="stat-row"><span>Rendered slice</span><b id="s-rendered">—</b></div>
+    <div class="stat-row"><span>Crown jewels</span><b id="s-crown">—</b></div>
+    <div class="stat-row"><span>Hybrid bridges</span><b id="s-bridge">—</b></div>
+    <div class="stat-row"><span>Layout coords</span><b id="s-coords">—</b></div>
+  </section>
+
+  <section id="hud-controls" class="panel">
+    <input id="search" type="text" placeholder="🔍 find by name / SID / UPN…" autocomplete="off" />
+    <label class="ctl"><input type="checkbox" id="t-bridge"> Spotlight hybrid bridges</label>
+    <label class="ctl"><input type="checkbox" id="t-crown"> Crown jewels only</label>
+    <div class="seg">
+      <span>Source:</span>
+      <button data-src="all" class="on">All</button>
+      <button data-src="active_directory">AD</button>
+      <button data-src="azure">Azure</button>
+    </div>
+    <button id="reset" class="reset">Reset view</button>
+    <p class="hint">Hover a node for details · click to isolate its neighborhood</p>
+  </section>
+
+  <section id="hud-legend" class="panel">
+    <div class="legend-block">
+      <h4>Node kind</h4>
+      <div id="legend-nodes"></div>
+    </div>
+    <div class="legend-block">
+      <h4>Edge / privilege</h4>
+      <div id="legend-edges"></div>
+    </div>
+  </section>
+
+  <div id="tooltip" class="hidden"></div>
+  <div id="loading">Loading graph…</div>
+</div>
+
+<script src="./vendor/graphology.umd.min.js"></script>
+<script src="./vendor/sigma.min.js"></script>
+<script>
+const $ = (s) => document.querySelector(s);
+const loading = $("#loading");
+const fail = (msg) => { if (loading) { loading.style.display = "flex"; loading.innerHTML = '<div id="err">' + msg + "</div>"; } };
+window.addEventListener("error", (e) => fail("JS error: <code>" + (e.message || e.error) + "</code>"));
+
+(async function () {
+  let data, stats;
+  try {
+    const [g, s] = await Promise.all([
+      fetch("./out/graph.json").then((r) => { if (!r.ok) throw new Error("graph.json " + r.status); return r.json(); }),
+      fetch("./out/stats.json").then((r) => r.json()).catch(() => null),
+    ]);
+    data = g; stats = s;
+  } catch (e) {
+    fail("Could not load <code>out/graph.json</code> (" + e.message + ").<br><br>" +
+      "Browsers block <code>fetch()</code> over <code>file://</code>. Serve this folder:" +
+      "<br><br><code>cd scripts/holistic &amp;&amp; python3 -m http.server 8000</code><br>" +
+      "then open <code>http://localhost:8000/</code>");
+    return;
+  }
+
+  const GraphLib = window.graphology.Graph || window.graphology;
+  const graph = new GraphLib({ multi: true, type: "directed", allowSelfLoops: true });
+  graph.import({ attributes: data.attributes, nodes: data.nodes, edges: data.edges });
+
+  const fmt = (n) => n.toLocaleString();
+  if (stats) {
+    $("#s-full").textContent = fmt(stats.full_graph.nodes) + " / " + fmt(stats.full_graph.edges) + " e";
+    $("#s-rendered").textContent = fmt(stats.rendered.nodes) + " / " + fmt(stats.rendered.edges) + " e";
+    $("#s-crown").textContent = fmt(stats.crown_jewels_rendered);
+    $("#s-bridge").textContent = fmt(stats.hybrid_bridges_rendered);
+    $("#s-coords").textContent = stats.render_coords;
+  }
+
+  const NODE_LEGEND = stats ? stats.node_colors : {};
+  const presentKinds = new Set();
+  graph.forEachNode((_, a) => presentKinds.add(a.kind));
+  const lnodes = $("#legend-nodes");
+  Object.entries(NODE_LEGEND).filter(([k]) => presentKinds.has(k)).forEach(([k, c]) => {
+    lnodes.insertAdjacentHTML("beforeend",
+      '<div class="legend-item"><span class="swatch" style="background:' + c + '"></span>' + k + "</div>");
+  });
+  [
+    ["#ff2d95", "ADSyncedTo (hybrid pivot)"],
+    ["#f85149", "AD ACL takeover"],
+    ["#ffa657", "Azure RBAC grant"],
+    ["#bc8cff", "AZ RunsAs (SP)"],
+    ["#2ea043", "Group membership"],
+    ["#39c5cf", "Session / logon"],
+    ["#3a4048", "Containment (structure)"],
+  ].forEach(([c, label]) => {
+    $("#legend-edges").insertAdjacentHTML("beforeend",
+      '<div class="legend-item"><span class="swatch line" style="background:' + c + '"></span>' + label + "</div>");
+  });
+
+  // mark bridge endpoints (for spotlight mode)
+  graph.forEachEdge((e, a, s, t) => {
+    if (a.kind === "ADSyncedTo") {
+      graph.setNodeAttribute(s, "is_bridge", true);
+      graph.setNodeAttribute(t, "is_bridge", true);
+    }
+  });
+
+  const Sigma = window.Sigma;
+  const renderer = new Sigma(graph, $("#sigma"), {
+    defaultEdgeColor: "#30363d",
+    labelColor: { color: "#e6edf3" },
+    labelSize: 12,
+    labelWeight: "600",
+    labelRenderedSizeThreshold: 13,   // only big nodes (crown jewels) self-label
+    zIndex: true,
+    enableEdgeEvents: true,
+  });
+
+  let hovered = null, hoodCache = null;
+  let onlyCrown = false, spotlightBridge = false, srcFilter = "all";
+
+  function neighborhood(node) {
+    const set = new Set([node]);
+    graph.forEachNeighbor(node, (n) => set.add(n));
+    return set;
+  }
+
+  renderer.setSetting("nodeReducer", (node, d) => {
+    const r = Object.assign({}, d);
+    if (srcFilter !== "all" && d.source !== srcFilter) { r.hidden = true; return r; }
+    if (onlyCrown && !d.high_value) { r.hidden = true; return r; }
+    if (spotlightBridge && !d.is_bridge && !d.high_value) { r.color = "#2a2f37"; r.label = ""; }
+    if (hoodCache) {
+      if (hoodCache.has(node)) { r.zIndex = 2; r.label = d.label; }
+      else { r.color = "#262b33"; r.label = ""; }
+    }
+    if (d.high_value) r.zIndex = (r.zIndex || 0) + 1;
+    return r;
+  });
+
+  renderer.setSetting("edgeReducer", (edge, d) => {
+    const r = Object.assign({}, d);
+    const s = graph.source(edge), t = graph.target(edge);
+    if (srcFilter !== "all") {
+      const sd = graph.getNodeAttribute(s, "source"), td = graph.getNodeAttribute(t, "source");
+      if (sd !== srcFilter && td !== srcFilter && d.source_kind !== "hybrid") { r.hidden = true; return r; }
+    }
+    if (onlyCrown && !(graph.getNodeAttribute(s, "high_value") && graph.getNodeAttribute(t, "high_value"))) {
+      r.hidden = true; return r;
+    }
+    if (spotlightBridge && d.kind !== "ADSyncedTo") r.color = "#1c2026";
+    if (hoodCache) {
+      if (hoodCache.has(s) && hoodCache.has(t)) r.zIndex = 2;
+      else { r.hidden = true; }
+    }
+    return r;
+  });
+
+  const tip = $("#tooltip");
+  function showTip(node, x, y) {
+    const a = graph.getNodeAttributes(node);
+    tip.innerHTML =
+      '<div class="tt-title" style="color:' + a.color + '">' + a.label + "</div>" +
+      '<div class="tt-row">kind <b>' + a.kind + "</b> · " + a.source + "</div>" +
+      '<div class="tt-row">scope <b>' + (a.scope || "—") + "</b></div>" +
+      '<div class="tt-row">degree <b>' + a.degree + "</b>" +
+      (a.high_value ? ' · <span class="tt-hv">CROWN JEWEL (tier ' + a.risk_tier + ")</span>" : "") + "</div>" +
+      '<div class="tt-row" style="margin-top:4px;font-size:11px">' + a.nid + "</div>";
+    tip.style.left = Math.min(x + 14, window.innerWidth - 340) + "px";
+    tip.style.top = (y + 14) + "px";
+    tip.classList.remove("hidden");
+  }
+  renderer.on("enterNode", ({ node }) => {
+    const p = renderer.getNodeDisplayData(node);
+    const v = renderer.framedGraphToViewport(p);
+    showTip(node, v.x, v.y);
+  });
+  renderer.on("leaveNode", () => tip.classList.add("hidden"));
+  renderer.on("clickNode", ({ node }) => {
+    hovered = (hovered === node) ? null : node;
+    hoodCache = hovered ? neighborhood(hovered) : null;
+    renderer.refresh();
+  });
+  renderer.on("clickStage", () => { hovered = null; hoodCache = null; renderer.refresh(); });
+
+  $("#t-crown").addEventListener("change", (e) => { onlyCrown = e.target.checked; renderer.refresh(); });
+  $("#t-bridge").addEventListener("change", (e) => { spotlightBridge = e.target.checked; renderer.refresh(); });
+  document.querySelectorAll(".seg button").forEach((b) =>
+    b.addEventListener("click", () => {
+      document.querySelectorAll(".seg button").forEach((x) => x.classList.remove("on"));
+      b.classList.add("on"); srcFilter = b.dataset.src; renderer.refresh();
+    }));
+  $("#reset").addEventListener("click", () => {
+    onlyCrown = spotlightBridge = false; srcFilter = "all"; hovered = null; hoodCache = null;
+    $("#t-crown").checked = $("#t-bridge").checked = false;
+    document.querySelectorAll(".seg button").forEach((x) => x.classList.toggle("on", x.dataset.src === "all"));
+    renderer.getCamera().animatedReset(); renderer.refresh();
+  });
+
+  const search = $("#search");
+  search.addEventListener("input", () => {
+    const q = search.value.trim().toLowerCase();
+    if (!q) { hovered = null; hoodCache = null; renderer.refresh(); return; }
+    let hit = null;
+    graph.forEachNode((n, a) => {
+      if (hit) return;
+      if ((a.label && a.label.toLowerCase().includes(q)) || (a.nid && a.nid.toLowerCase().includes(q))) hit = n;
+    });
+    if (hit) {
+      hovered = hit; hoodCache = neighborhood(hit);
+      const p = renderer.getNodeDisplayData(hit);
+      renderer.getCamera().animate({ x: p.x, y: p.y, ratio: 0.4 }, { duration: 500 });
+      renderer.refresh();
+    }
+  });
+
+  loading.style.display = "none";
+  window.__sigmaReady = true;
+})();
+</script>
+</body>
+</html>
