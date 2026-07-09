@@ -14,8 +14,8 @@ use datafusion::common::{
     config::{ConfigEntry, ConfigExtension, ConfigOptions, ExtensionOptions},
 };
 use nexus_query_engine::{
-    GraphMemoryCalibrationOverride, GraphTopologyFamily, MemoryControlPolicy, NativePipelineExecutionMode,
-    SourceChunkPlanningMode, SourceSchedulerPolicy, StatisticalAggregateExecutionMode,
+    GraphMemoryCalibrationOverride, MemoryControlPolicy, NativePipelineExecutionMode, SourceChunkPlanningMode,
+    SourceSchedulerPolicy, StatisticalAggregateExecutionMode,
 };
 
 use crate::{CudfOptimizerConfig, Error, ErrorCode, NativeCudfExecutionConfig};
@@ -35,7 +35,6 @@ const NATIVE_STATISTICAL_AGGREGATE_EXECUTION_MODE_KEY: &str = "native.statistica
 const REQUEST_REQUESTED_GRANT_MIN_BYTES_KEY: &str = "request.requested_grant_min_bytes";
 const REQUEST_REQUESTED_GRANT_BYTES_KEY: &str = "request.requested_grant_bytes";
 const REQUEST_GRAPH_RAW_INPUT_EDGES_KEY: &str = "request.graph_raw_input_edges";
-const REQUEST_GRAPH_TOPOLOGY_FAMILY_KEY: &str = "request.graph_topology_family";
 
 /// Discoverable metadata for one `datafusion_nexus.native.*` session option.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -143,12 +142,6 @@ pub const DATAFUSION_NEXUS_SESSION_CONFIG_OPTIONS: &[DataFusionNexusSessionConfi
         bounded_only: false,
         description: "Session-scoped fallback raw graph edge count used for graph admission when exact plan evidence is unavailable.",
     },
-    DataFusionNexusSessionConfigOption {
-        key: REQUEST_GRAPH_TOPOLOGY_FAMILY_KEY,
-        value_type: "enum: unknown|citation_like_sparse|dense_remapped_sparse|rmat_graph500_like",
-        bounded_only: false,
-        description: "Session-scoped graph topology family used by graph admission; apply only when every graph in the session matches that documented calibration key.",
-    },
 ];
 
 /// Native memory-control policy label used by the DataFusion config extension.
@@ -211,10 +204,7 @@ pub struct DataFusionNexusSessionConfig {
     pub request_requested_grant_bytes: Option<u64>,
     /// Request-scoped raw edge rows before graph normalization.
     request_graph_raw_input_edges: Option<u64>,
-    /// Request-scoped topology family used by graph memory calibration.
-    request_graph_topology_family: GraphTopologyFamily,
     request_graph_raw_input_edges_configured: bool,
-    request_graph_topology_family_configured: bool,
     authority: DataFusionNexusSessionConfigAuthority,
 }
 
@@ -282,9 +272,7 @@ impl DataFusionNexusSessionConfig {
             request_requested_grant_min_bytes: execution.requested_grant_min_bytes(),
             request_requested_grant_bytes: execution.requested_grant_bytes(),
             request_graph_raw_input_edges: graph_memory_calibration.raw_input_edges,
-            request_graph_topology_family: graph_memory_calibration.topology_family,
             request_graph_raw_input_edges_configured: false,
-            request_graph_topology_family_configured: false,
             authority: DataFusionNexusSessionConfigAuthority::SessionMutable,
         }
     }
@@ -386,10 +374,7 @@ impl DataFusionNexusSessionConfig {
     }
 
     pub(crate) fn graph_memory_calibration_override(&self) -> GraphMemoryCalibrationOverride {
-        GraphMemoryCalibrationOverride {
-            raw_input_edges: self.request_graph_raw_input_edges,
-            topology_family: self.request_graph_topology_family,
-        }
+        GraphMemoryCalibrationOverride { raw_input_edges: self.request_graph_raw_input_edges }
     }
 
     /// Request-scoped raw edge rows before graph normalization.
@@ -412,27 +397,6 @@ impl DataFusionNexusSessionConfig {
         self
     }
 
-    /// Request-scoped topology family used by graph memory calibration.
-    pub fn request_graph_topology_family(&self) -> GraphTopologyFamily {
-        self.request_graph_topology_family
-    }
-
-    /// Set request-scoped topology family used by graph memory calibration.
-    ///
-    /// `GraphTopologyFamily::Unknown` is an explicit request reset and will
-    /// override service-scoped calibration when this session config is applied
-    /// to an acquired context.
-    pub fn set_request_graph_topology_family(&mut self, topology_family: GraphTopologyFamily) {
-        self.request_graph_topology_family = topology_family;
-        self.request_graph_topology_family_configured = true;
-    }
-
-    /// Return this config with request-scoped topology family set.
-    pub fn with_request_graph_topology_family(mut self, topology_family: GraphTopologyFamily) -> Self {
-        self.set_request_graph_topology_family(topology_family);
-        self
-    }
-
     pub(crate) fn apply_graph_memory_calibration_request_options(
         &self,
         mut execution: NativeCudfExecutionConfig,
@@ -441,9 +405,6 @@ impl DataFusionNexusSessionConfig {
         let request = self.graph_memory_calibration_override();
         if self.request_graph_raw_input_edges_configured || request.raw_input_edges != base.raw_input_edges {
             execution = execution.with_graph_raw_input_edges_override(request.raw_input_edges);
-        }
-        if self.request_graph_topology_family_configured || request.topology_family != base.topology_family {
-            execution = execution.with_graph_topology_family_override(request.topology_family);
         }
         execution
     }
@@ -497,7 +458,6 @@ impl DataFusionNexusSessionConfig {
             REQUEST_GRAPH_RAW_INPUT_EDGES_KEY => {
                 self.request_graph_raw_input_edges.map_or_else(|| "none".to_string(), |value| value.to_string())
             },
-            REQUEST_GRAPH_TOPOLOGY_FAMILY_KEY => self.request_graph_topology_family.to_string(),
             _ => unreachable!("unknown datafusion-nexus session config key: {key}"),
         }
     }
@@ -584,9 +544,6 @@ impl ExtensionOptions for DataFusionNexusSessionConfig {
             },
             REQUEST_GRAPH_RAW_INPUT_EDGES_KEY => {
                 self.set_request_graph_raw_input_edges(parse_optional_positive_u64(key, value)?);
-            },
-            REQUEST_GRAPH_TOPOLOGY_FAMILY_KEY => {
-                self.set_request_graph_topology_family(parse_graph_topology_family(value)?);
             },
             _ => return Err(config_error(format!("Config value \"{key}\" not found on DataFusionNexusSessionConfig"))),
         }
@@ -683,18 +640,6 @@ fn parse_statistical_aggregate_execution_mode(value: &str) -> DataFusionResult<S
         "gpu_native_tolerant" => Ok(StatisticalAggregateExecutionMode::GpuNativeTolerant),
         other => Err(config_error(format!(
             "must be `datafusion_exact_host_welford` or `gpu_native_tolerant`, got `{other}`"
-        ))),
-    }
-}
-
-fn parse_graph_topology_family(value: &str) -> DataFusionResult<GraphTopologyFamily> {
-    match value.trim().to_ascii_lowercase().as_str() {
-        "" | "none" | "null" | "default" | "unknown" => Ok(GraphTopologyFamily::Unknown),
-        "citation_like_sparse" => Ok(GraphTopologyFamily::CitationLikeSparse),
-        "dense_remapped_sparse" => Ok(GraphTopologyFamily::DenseRemappedSparse),
-        "rmat_graph500_like" => Ok(GraphTopologyFamily::RMatGraph500Like),
-        other => Err(config_error(format!(
-            "must be `unknown`, `citation_like_sparse`, `dense_remapped_sparse`, or `rmat_graph500_like`, got `{other}`"
         ))),
     }
 }
@@ -812,8 +757,6 @@ mod tests {
         assert_eq!(session_config.request_requested_grant_bytes, Some(1536));
         session_config.set(REQUEST_GRAPH_RAW_INPUT_EDGES_KEY, "45564149").unwrap();
         assert_eq!(session_config.request_graph_raw_input_edges, Some(45_564_149));
-        session_config.set(REQUEST_GRAPH_TOPOLOGY_FAMILY_KEY, "citation_like_sparse").unwrap();
-        assert_eq!(session_config.request_graph_topology_family, GraphTopologyFamily::CitationLikeSparse);
 
         session_config.set(REQUEST_REQUESTED_GRANT_MIN_BYTES_KEY, "default").unwrap();
         assert_eq!(session_config.request_requested_grant_min_bytes, None);
@@ -821,8 +764,6 @@ mod tests {
         assert_eq!(session_config.request_requested_grant_bytes, None);
         session_config.set(REQUEST_GRAPH_RAW_INPUT_EDGES_KEY, "default").unwrap();
         assert_eq!(session_config.request_graph_raw_input_edges, None);
-        session_config.set(REQUEST_GRAPH_TOPOLOGY_FAMILY_KEY, "default").unwrap();
-        assert_eq!(session_config.request_graph_topology_family, GraphTopologyFamily::Unknown);
     }
 
     #[test]
@@ -848,7 +789,6 @@ mod tests {
         session_config.set(REQUEST_REQUESTED_GRANT_MIN_BYTES_KEY, "768").unwrap();
         session_config.set(REQUEST_REQUESTED_GRANT_BYTES_KEY, "1024").unwrap();
         session_config.set(REQUEST_GRAPH_RAW_INPUT_EDGES_KEY, "45564149").unwrap();
-        session_config.set(REQUEST_GRAPH_TOPOLOGY_FAMILY_KEY, "citation_like_sparse").unwrap();
         let mut options = ConfigOptions::default();
         options.extensions.insert(session_config);
 
@@ -858,7 +798,6 @@ mod tests {
         assert_eq!(effective.native_execution_config().requested_grant_bytes(), Some(1024));
         let graph_calibration = effective.native_execution_config().graph_memory_calibration_override();
         assert_eq!(graph_calibration.raw_input_edges, Some(45_564_149));
-        assert_eq!(graph_calibration.topology_family, GraphTopologyFamily::CitationLikeSparse);
         assert_eq!(
             effective.native_execution_config().memory_control_policy(),
             MemoryControlPolicy::Bounded {
@@ -873,9 +812,7 @@ mod tests {
 
     #[test]
     fn default_request_graph_options_do_not_override_service_acquired_calibration() {
-        let service_override = GraphMemoryCalibrationOverride::default()
-            .with_raw_input_edges(45_564_149)
-            .with_topology_family(GraphTopologyFamily::CitationLikeSparse);
+        let service_override = GraphMemoryCalibrationOverride::default().with_raw_input_edges(45_564_149);
         let base = CudfOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred)
             .with_native_execution_config(NativeCudfExecutionConfig::bounded_auto_sized());
         let mut options = ConfigOptions::default();
@@ -895,15 +832,12 @@ mod tests {
 
     #[test]
     fn explicit_request_graph_reset_overrides_service_acquired_calibration() {
-        let service_override = GraphMemoryCalibrationOverride::default()
-            .with_raw_input_edges(45_564_149)
-            .with_topology_family(GraphTopologyFamily::CitationLikeSparse);
+        let service_override = GraphMemoryCalibrationOverride::default().with_raw_input_edges(45_564_149);
         let base = CudfOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred)
             .with_native_execution_config(NativeCudfExecutionConfig::bounded_auto_sized());
         let mut session_config =
             DataFusionNexusSessionConfig::from_optimizer_config(&base).frozen_for_backend_admission();
         session_config.set(REQUEST_GRAPH_RAW_INPUT_EDGES_KEY, "none").unwrap();
-        session_config.set(REQUEST_GRAPH_TOPOLOGY_FAMILY_KEY, "unknown").unwrap();
         let mut options = ConfigOptions::default();
         options.extensions.insert(session_config);
 
@@ -919,15 +853,12 @@ mod tests {
 
     #[test]
     fn public_request_graph_reset_setters_mark_request_options_configured() {
-        let service_override = GraphMemoryCalibrationOverride::default()
-            .with_raw_input_edges(45_564_149)
-            .with_topology_family(GraphTopologyFamily::CitationLikeSparse);
+        let service_override = GraphMemoryCalibrationOverride::default().with_raw_input_edges(45_564_149);
         let base = CudfOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred)
             .with_native_execution_config(NativeCudfExecutionConfig::bounded_auto_sized());
         let mut session_config =
             DataFusionNexusSessionConfig::from_optimizer_config(&base).frozen_for_backend_admission();
         session_config.set_request_graph_raw_input_edges(None);
-        session_config.set_request_graph_topology_family(GraphTopologyFamily::Unknown);
         let mut options = ConfigOptions::default();
         options.extensions.insert(session_config);
 

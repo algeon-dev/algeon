@@ -22,12 +22,6 @@ pub const GRAPH_MEMORY_BOUNDARY: &str = "graph_memory";
 /// Temporary bounded-admission probe that measures distinct graph endpoints.
 pub const GRAPH_VERTEX_ESTIMATE_BOUNDARY: &str = "graph_memory_vertex_estimate";
 
-/// Legacy edge-byte multiplier retained for report/test compatibility.
-///
-/// The exact-vertex probe is now sized by [`graph_vertex_estimate_probe_bytes`]
-/// so narrower vertex dtypes still reserve the distinct workspace.
-pub const GRAPH_VERTEX_ESTIMATE_PROBE_EDGE_MULTIPLIER: u64 = 6;
-
 /// Minimum exact-vertex probe reservation.
 ///
 /// The edge-scaled model dominates for real graph inputs. This floor handles
@@ -51,6 +45,61 @@ pub const GRAPH_MEMORY_BUDGET_TRACKING_MIN_LIMIT_BYTES: u64 = 1024 * 1024;
 /// larger, but those sources are not all resident in one source-by-vertex
 /// workspace at the same time.
 const BETWEENNESS_MAX_CONCURRENT_SOURCES: u64 = u16::MAX as u64;
+
+// The constants below mirror allocation shapes in the pinned cuGraph checkout;
+// `graph_memory_pricing_constants_match_pinned_cugraph_sources` fails loudly
+// when the mirrored upstream code drifts.
+
+/// `sizeof(origin_t)` in cuGraph's resident push tuple
+/// `(vertex_t, origin_t, edge_t)` (`betweenness_centrality_impl.cuh`); the two
+/// vertex-width components are added per-call, this is only the middle field.
+const BETWEENNESS_SOURCE_ORIGIN_WIDTH_BYTES: u64 = 2;
+/// cuGraph's `max_edge_tuple_data_ratio = 0.25`: multi-source BFS batches its
+/// frontier so resident push tuples never exceed a quarter of total device
+/// memory. Pricing above this ceiling would charge for an allocation
+/// libcugraph cannot make.
+const BETWEENNESS_PUSH_TUPLE_DEVICE_MEMORY_DENOMINATOR: u64 = 4;
+/// After 2-core pruning, cuGraph extracts the low-to-high-degree oriented edge
+/// list and rebuilds a graph from it (`extract_transform_if_e` →
+/// `create_graph_from_edgelist`): one src plus one dst column per DFG edge.
+const TRIANGLE_COUNT_DFG_REBUILD_VERTEX_COLUMNS: u64 = 2;
+/// Endpoint (src, dst) pair list that
+/// `transform_reduce_dst_nbr_intersection_of_e_endpoints_by_v` iterates;
+/// priced over all DFG edges at once as the unchunked upper bound.
+const TRIANGLE_COUNT_PAIR_LIST_VERTEX_COLUMNS: u64 = 2;
+/// `nbr_intersection` allocates its intersection index buffer from per-pair
+/// min degrees ("upper bound for intersection sizes") and keeps a same-order
+/// companion live across compaction — two buffers that scale with the chunk's
+/// min-degree sum rather than with E.
+const TRIANGLE_COUNT_PEAK_INTERSECTION_VERTEX_COLUMNS: u64 = 2;
+/// Envelope for the V-sized arrays concurrently live across the 2-core /
+/// renumber / count phases of `triangle_count_impl.cuh` (`core_numbers`,
+/// `renumber_map`, flag and count arrays).
+const TRIANGLE_COUNT_VERTEX_SCRATCH_COLUMNS: u64 = 4;
+/// Graph construction sorts/renumbers the edge list holding a staged copy of
+/// both endpoint columns. This transient is what the construction term alone
+/// under-covered on the DBLP calibration point.
+const TRIANGLE_COUNT_SORT_STAGING_VERTEX_COLUMNS: u64 = 2;
+/// Statistics-absent fallback envelope, deliberately LINEAR in edge count so
+/// the plan-time path (which never sees runtime statistics) cannot collapse
+/// back into the superlinear `V*min(V,1024)` whole-device ask, while still
+/// dominating the measured DBLP pool peak with wide margin. Pinned on both
+/// sides by `graph_memory_model_keeps_triangle_no_stats_fallback_topology_independent`
+/// (floor: ask >= measured peak) and
+/// `graph_memory_model_keeps_triangle_plan_time_fallback_below_whole_device_ticket`
+/// (ceiling: ticket stays well under device capacity).
+const TRIANGLE_COUNT_NO_STATS_EDGE_VERTEX_COLUMNS: u64 = 24;
+/// Numerator of the 5/4 peak-chunk safety margin: cuGraph chunks intersection
+/// work by dense renumbered dst id, which cannot be reproduced from sparse
+/// external ids, so pricing assumes peak chunk = average chunk (min-degree
+/// sum / chunk count) times this margin. On skewed degree distributions the
+/// true peak can exceed the margin; that residual under-ask is deliberately
+/// left to the graph stream lease, which contains it as a per-query retryable
+/// allocation failure instead of shared-pool pressure.
+const TRIANGLE_COUNT_CHUNK_SAFETY_NUMERATOR: u64 = 5;
+/// Denominator of the 5/4 peak-chunk safety margin described on
+/// [`TRIANGLE_COUNT_CHUNK_SAFETY_NUMERATOR`].
+const TRIANGLE_COUNT_CHUNK_SAFETY_DENOMINATOR: u64 = 4;
 
 /// Conservative class assigned to a cuGraph algorithm for approximate pricing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -87,41 +136,6 @@ impl std::fmt::Display for GraphMemoryClass {
     }
 }
 
-/// Topology family used by calibrated graph memory pricing.
-///
-/// Unknown stays conservative. Callers should only select a named family from
-/// fixture metadata or a documented calibration run, not from runtime history.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
-pub enum GraphTopologyFamily {
-    /// No topology calibration is available for this graph.
-    #[default]
-    Unknown,
-    /// Sparse citation-like graphs with raw, non-dense vertex ids.
-    CitationLikeSparse,
-    /// Sparse graphs whose vertex ids have been densely remapped.
-    DenseRemappedSparse,
-    /// R-MAT / Graph500-like skewed synthetic graphs.
-    RMatGraph500Like,
-}
-
-impl GraphTopologyFamily {
-    /// Stable label used in reports and calibration keys.
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Unknown => "unknown",
-            Self::CitationLikeSparse => "citation_like_sparse",
-            Self::DenseRemappedSparse => "dense_remapped_sparse",
-            Self::RMatGraph500Like => "rmat_graph500_like",
-        }
-    }
-}
-
-impl std::fmt::Display for GraphTopologyFamily {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(self.as_str())
-    }
-}
-
 /// Optional externally supplied graph calibration metadata.
 ///
 /// Defaults intentionally carry no calibration. Callers should only provide
@@ -130,25 +144,17 @@ impl std::fmt::Display for GraphTopologyFamily {
 pub struct GraphMemoryCalibrationOverride {
     /// Raw edge rows before explicit edge normalization, when known.
     pub raw_input_edges: Option<u64>,
-    /// Topology family used to select calibrated constants.
-    pub topology_family: GraphTopologyFamily,
 }
 
 impl GraphMemoryCalibrationOverride {
     /// Returns an override with no calibration metadata.
     pub const fn none() -> Self {
-        Self { raw_input_edges: None, topology_family: GraphTopologyFamily::Unknown }
+        Self { raw_input_edges: None }
     }
 
     /// Attaches raw pre-normalization edge-row evidence.
     pub const fn with_raw_input_edges(mut self, raw_input_edges: u64) -> Self {
         self.raw_input_edges = Some(raw_input_edges);
-        self
-    }
-
-    /// Attaches a documented topology calibration family.
-    pub const fn with_topology_family(mut self, topology_family: GraphTopologyFamily) -> Self {
-        self.topology_family = topology_family;
         self
     }
 
@@ -159,7 +165,7 @@ impl GraphMemoryCalibrationOverride {
         {
             input = input.with_raw_input_edges(raw_input_edges);
         }
-        input.with_topology_family(self.topology_family)
+        input
     }
 }
 
@@ -258,10 +264,6 @@ pub enum GraphCalibrationSource {
     None,
     /// Raw pre-normalization edge-count evidence was available.
     RawInputEdges,
-    /// A topology family selected calibrated constants.
-    TopologyFamily,
-    /// Both raw edge evidence and a topology family were available.
-    RawInputEdgesAndTopologyFamily,
 }
 
 impl GraphCalibrationSource {
@@ -270,8 +272,6 @@ impl GraphCalibrationSource {
         match self {
             Self::None => "none",
             Self::RawInputEdges => "raw_input_edges",
-            Self::TopologyFamily => "topology_family",
-            Self::RawInputEdgesAndTopologyFamily => "raw_input_edges_and_topology_family",
         }
     }
 }
@@ -311,6 +311,70 @@ impl GraphVertexEstimate {
     }
 }
 
+/// Runtime-derived topology evidence collected from the resident graph edge frame.
+///
+/// Some fields are direct measurements and some are conservative pricing terms
+/// derived from measured degree distributions. Fields that are not relevant to
+/// the probed algorithm are left unset.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct GraphStatistics {
+    /// Exact distinct endpoint count measured from the runtime edge-list frame.
+    pub exact_vertices: u64,
+    /// Maximum source out-degree when degree statistics were requested.
+    pub degree_max: Option<u64>,
+    /// 99th percentile source out-degree when degree statistics were requested.
+    pub degree_p99: Option<u64>,
+    /// Sum of oriented min-degree terms used by triangle-count workspace pricing.
+    pub sum_min_degree_oriented: Option<u64>,
+    /// Edge count in cuGraph's low-degree-to-high-degree oriented triangle DFG.
+    pub oriented_edge_count: Option<u64>,
+    /// Runtime-derived peak chunk min-degree pricing term used by triangle-count workspace pricing.
+    pub peak_chunk_min_degree_sum: Option<u64>,
+    /// Sum of resident source out-degrees used by betweenness push batching.
+    pub sum_out_degree: Option<u64>,
+}
+
+impl GraphStatistics {
+    /// Start a statistics row from exact runtime vertex evidence.
+    pub const fn runtime_exact_vertices(exact_vertices: u64) -> Self {
+        Self {
+            exact_vertices,
+            degree_max: None,
+            degree_p99: None,
+            sum_min_degree_oriented: None,
+            oriented_edge_count: None,
+            peak_chunk_min_degree_sum: None,
+            sum_out_degree: None,
+        }
+    }
+
+    /// Attach source out-degree distribution evidence.
+    pub const fn with_degree_distribution(mut self, degree_max: u64, degree_p99: u64) -> Self {
+        self.degree_max = Some(degree_max);
+        self.degree_p99 = Some(degree_p99);
+        self
+    }
+
+    /// Attach betweenness push-batching evidence.
+    pub const fn with_sum_out_degree(mut self, sum_out_degree: u64) -> Self {
+        self.sum_out_degree = Some(sum_out_degree);
+        self
+    }
+
+    /// Attach triangle-count oriented min-degree evidence and derived chunk pricing term.
+    pub const fn with_triangle_min_degree(
+        mut self,
+        sum_min_degree_oriented: u64,
+        oriented_edge_count: u64,
+        peak_chunk_min_degree_sum: u64,
+    ) -> Self {
+        self.sum_min_degree_oriented = Some(sum_min_degree_oriented);
+        self.oriented_edge_count = Some(oriented_edge_count);
+        self.peak_chunk_min_degree_sum = Some(peak_chunk_min_degree_sum);
+        self
+    }
+}
+
 /// Plan/runtime inputs used by the approximate graph memory model.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct GraphMemoryModelInput {
@@ -331,8 +395,8 @@ pub struct GraphMemoryModelInput {
     pub vertex_estimate: Option<GraphVertexEstimate>,
     /// Whether an edge-normalize operator was inserted before graph execution.
     pub edge_normalize_inserted: bool,
-    /// Topology family used to select calibrated constants.
-    pub topology_family: GraphTopologyFamily,
+    /// Runtime topology evidence used by data-dependent pricing, when available.
+    pub statistics: Option<GraphStatistics>,
 }
 
 impl GraphMemoryModelInput {
@@ -359,6 +423,12 @@ impl GraphMemoryModelInput {
         self
     }
 
+    /// Attach runtime graph statistics used by data-dependent pricing.
+    pub fn with_statistics(mut self, statistics: GraphStatistics) -> Self {
+        self.statistics = Some(statistics);
+        self
+    }
+
     /// Attach physical device-memory evidence for algorithms whose cuGraph
     /// implementation chooses resident batch width from total GPU memory.
     pub fn with_device_total_memory_bytes(mut self, total_bytes: u64) -> Self {
@@ -369,12 +439,6 @@ impl GraphMemoryModelInput {
     /// Mark the input as having passed through explicit edge normalization.
     pub fn with_edge_normalize_inserted(mut self, inserted: bool) -> Self {
         self.edge_normalize_inserted = inserted;
-        self
-    }
-
-    /// Attach a documented topology calibration family.
-    pub fn with_topology_family(mut self, topology_family: GraphTopologyFamily) -> Self {
-        self.topology_family = topology_family;
         self
     }
 }
@@ -396,7 +460,6 @@ pub struct GraphMemoryEstimate {
     pub renumber: bool,
     pub construction_policy: GraphConstructionPolicy,
     pub edge_normalize_inserted: bool,
-    pub topology_family: GraphTopologyFamily,
     pub calibration_source: GraphCalibrationSource,
     pub seed_count: Option<u64>,
     pub seed_mode: Option<GraphSeedMode>,
@@ -460,7 +523,6 @@ pub struct GraphReservationReport {
     pub renumber: bool,
     pub construction_policy: GraphConstructionPolicy,
     pub edge_normalize_inserted: bool,
-    pub topology_family: GraphTopologyFamily,
     pub calibration_source: GraphCalibrationSource,
     pub seed_count: Option<u64>,
     pub seed_mode: Option<GraphSeedMode>,
@@ -469,6 +531,7 @@ pub struct GraphReservationReport {
     pub requested_bytes: u64,
     pub budget_bytes: Option<u64>,
     pub graph_model_error_ratio: Option<GraphModelErrorRatio>,
+    pub statistics: Option<GraphStatistics>,
     pub reason: Option<&'static str>,
 }
 
@@ -504,7 +567,6 @@ impl GraphReservationReport {
             renumber: estimate.renumber,
             construction_policy: estimate.construction_policy,
             edge_normalize_inserted: estimate.edge_normalize_inserted,
-            topology_family: estimate.topology_family,
             calibration_source: estimate.calibration_source,
             seed_count: estimate.seed_count,
             seed_mode: estimate.seed_mode,
@@ -513,8 +575,15 @@ impl GraphReservationReport {
             requested_bytes,
             budget_bytes,
             graph_model_error_ratio: None,
+            statistics: None,
             reason: denied.then_some(GRAPH_MEMORY_ESTIMATE_EXCEEDS_BUDGET_REASON),
         }
+    }
+
+    /// Attach runtime graph statistics evidence to this row.
+    pub fn with_statistics(mut self, statistics: GraphStatistics) -> Self {
+        self.statistics = Some(statistics);
+        self
     }
 
     /// Attach the observed model error ratio for a completed graph execution.
@@ -539,7 +608,6 @@ impl GraphReservationReport {
             .with_fact("renumber", self.renumber)
             .with_fact("construction_policy", self.construction_policy.as_str())
             .with_fact("edge_normalize_inserted", self.edge_normalize_inserted)
-            .with_fact("topology_family", self.topology_family.as_str())
             .with_fact("calibration_source", self.calibration_source.as_str())
             .with_fact("data_dependent", self.data_dependent);
         if let Some(raw_input_edges) = self.raw_input_edges {
@@ -616,7 +684,6 @@ impl GraphMemoryModel {
             renumber: spec.graph_options.renumber,
             construction_policy: spec.graph_options.policy,
             edge_normalize_inserted: input.edge_normalize_inserted,
-            topology_family: input.topology_family,
             calibration_source,
             seed_count,
             seed_mode,
@@ -785,8 +852,10 @@ fn workspace_bytes_for_algorithm(
     seed_input: Option<GraphSeedMemoryInput>,
 ) -> u64 {
     let vertex_array = vertex_estimate.saturating_mul(input.vertex_width_bytes.max(8));
-    let edge_index = input.input_edges.saturating_mul(input.vertex_width_bytes.saturating_mul(2));
-    let output_sized = vertex_array.saturating_mul(3).saturating_add(edge_index);
+    // Graph construction keeps copied endpoints live while sorting/renumbering
+    // through an additional per-edge vertex-width staging vector.
+    let edge_index_workspace = input.input_edges.saturating_mul(input.vertex_width_bytes.saturating_mul(3));
+    let output_sized = vertex_array.saturating_mul(3).saturating_add(edge_index_workspace);
     match class {
         GraphMemoryClass::OutputSized => output_sized,
         GraphMemoryClass::MultiArray => output_sized.saturating_mul(4),
@@ -812,45 +881,43 @@ fn legacy_workspace_heavy_data_dependent_bytes(vertex_estimate: u64, output_size
 }
 
 fn triangle_count_workspace_bytes(input: GraphMemoryModelInput, vertex_estimate: u64) -> u64 {
-    if input.topology_family != GraphTopologyFamily::CitationLikeSparse || input.vertex_width_bytes != 8 {
-        let vertex_array = vertex_estimate.saturating_mul(input.vertex_width_bytes.max(8));
-        let edge_index = input.input_edges.saturating_mul(input.vertex_width_bytes.saturating_mul(2));
-        return legacy_workspace_heavy_data_dependent_bytes(
-            vertex_estimate,
-            vertex_array.saturating_mul(3).saturating_add(edge_index),
-        );
+    if let Some(statistics) = input.statistics
+        && statistics.oriented_edge_count.is_some()
+        && statistics.peak_chunk_min_degree_sum.is_some()
+    {
+        return triangle_count_mechanistic_workspace_bytes(input, statistics);
     }
-    let edge_workspace = graph_edge_working_set_bytes(input).saturating_mul(triangle_count_topology_multiplier(input));
-    let vertex_workspace = vertex_estimate
-        .saturating_mul(input.vertex_width_bytes.max(8))
-        .saturating_mul(triangle_count_vertex_array_multiplier(input));
-    edge_workspace.saturating_add(vertex_workspace)
+    triangle_count_conservative_workspace_bytes(input, vertex_estimate)
 }
 
-fn graph_edge_working_set_bytes(input: GraphMemoryModelInput) -> u64 {
-    input.input_edges.saturating_mul(
-        input.vertex_width_bytes.saturating_mul(2).saturating_add(input.weight_width_bytes.unwrap_or(0)),
-    )
+fn triangle_count_conservative_workspace_bytes(input: GraphMemoryModelInput, vertex_estimate: u64) -> u64 {
+    let vertex_width = input.vertex_width_bytes.max(1);
+    let vertex_scratch =
+        vertex_estimate.saturating_mul(vertex_width.max(8)).saturating_mul(TRIANGLE_COUNT_VERTEX_SCRATCH_COLUMNS);
+    let edge_workspace =
+        input.input_edges.saturating_mul(vertex_width).saturating_mul(TRIANGLE_COUNT_NO_STATS_EDGE_VERTEX_COLUMNS);
+    edge_workspace.saturating_add(vertex_scratch)
 }
 
-fn triangle_count_topology_multiplier(input: GraphMemoryModelInput) -> u64 {
-    match input.topology_family {
-        GraphTopologyFamily::CitationLikeSparse if input.vertex_width_bytes == 8 => 3,
-        GraphTopologyFamily::CitationLikeSparse
-        | GraphTopologyFamily::DenseRemappedSparse
-        | GraphTopologyFamily::RMatGraph500Like
-        | GraphTopologyFamily::Unknown => 8,
-    }
-}
-
-fn triangle_count_vertex_array_multiplier(input: GraphMemoryModelInput) -> u64 {
-    match input.topology_family {
-        GraphTopologyFamily::CitationLikeSparse if input.vertex_width_bytes == 8 => 3,
-        GraphTopologyFamily::CitationLikeSparse
-        | GraphTopologyFamily::DenseRemappedSparse
-        | GraphTopologyFamily::RMatGraph500Like
-        | GraphTopologyFamily::Unknown => 8,
-    }
+fn triangle_count_mechanistic_workspace_bytes(input: GraphMemoryModelInput, statistics: GraphStatistics) -> u64 {
+    let vertex_width = input.vertex_width_bytes.max(1);
+    let exact_vertices = statistics.exact_vertices;
+    let oriented_edges = statistics.oriented_edge_count.unwrap_or(0);
+    let peak_min_degree = statistics.peak_chunk_min_degree_sum.unwrap_or(0);
+    let dfg_rebuild =
+        oriented_edges.saturating_mul(vertex_width).saturating_mul(TRIANGLE_COUNT_DFG_REBUILD_VERTEX_COLUMNS);
+    let pair_list = oriented_edges.saturating_mul(vertex_width).saturating_mul(TRIANGLE_COUNT_PAIR_LIST_VERTEX_COLUMNS);
+    let peak_intersection =
+        peak_min_degree.saturating_mul(vertex_width).saturating_mul(TRIANGLE_COUNT_PEAK_INTERSECTION_VERTEX_COLUMNS);
+    let vertex_scratch =
+        exact_vertices.saturating_mul(vertex_width.max(8)).saturating_mul(TRIANGLE_COUNT_VERTEX_SCRATCH_COLUMNS);
+    let sort_staging =
+        input.input_edges.saturating_mul(vertex_width).saturating_mul(TRIANGLE_COUNT_SORT_STAGING_VERTEX_COLUMNS);
+    dfg_rebuild
+        .saturating_add(pair_list)
+        .saturating_add(peak_intersection)
+        .saturating_add(vertex_scratch)
+        .saturating_add(sort_staging)
 }
 
 fn vertex_betweenness_workspace_bytes(
@@ -864,6 +931,7 @@ fn vertex_betweenness_workspace_bytes(
         .saturating_mul(vertex_estimate)
         .saturating_mul(vertex_betweenness_per_source_vertex_state_width(input));
     source_state_bytes
+        .saturating_add(betweenness_push_batch_workspace_bytes(input, concurrent_sources))
         .saturating_add(explicit_seed_list_bytes(input, seed_input))
         .saturating_add(runtime_seed_selection_bytes(input, vertex_estimate, seed_input))
 }
@@ -875,8 +943,32 @@ fn edge_betweenness_workspace_bytes(
 ) -> u64 {
     vertex_estimate
         .saturating_mul(edge_betweenness_per_source_vertex_state_width(input))
+        .saturating_add(betweenness_push_batch_workspace_bytes(input, 1))
         .saturating_add(explicit_seed_list_bytes(input, seed_input))
         .saturating_add(runtime_seed_selection_bytes(input, vertex_estimate, seed_input))
+}
+
+fn betweenness_push_batch_workspace_bytes(input: GraphMemoryModelInput, resident_source_copies: u64) -> u64 {
+    let tuple_width = input
+        .vertex_width_bytes
+        .max(8)
+        .saturating_add(BETWEENNESS_SOURCE_ORIGIN_WIDTH_BYTES)
+        .saturating_add(input.vertex_width_bytes.max(8));
+    let pushes = input
+        .statistics
+        .and_then(|statistics| statistics.sum_out_degree)
+        .unwrap_or_else(|| input.input_edges.saturating_mul(resident_source_copies.max(1)));
+    if tuple_width == 0 || pushes == 0 {
+        return 0;
+    }
+    let resident_pushes = input
+        .device_total_memory_bytes
+        .map(|total_memory_bytes| {
+            let cap = total_memory_bytes / BETWEENNESS_PUSH_TUPLE_DEVICE_MEMORY_DENOMINATOR / tuple_width;
+            pushes.min(cap.max(1))
+        })
+        .unwrap_or(pushes);
+    resident_pushes.saturating_mul(tuple_width)
 }
 
 fn explicit_seed_list_bytes(input: GraphMemoryModelInput, seed_input: Option<GraphSeedMemoryInput>) -> u64 {
@@ -974,8 +1066,8 @@ pub fn graph_memory_model_input(
         has_edge_id: edge_columns.edge_id.is_some(),
         device_total_memory_bytes: None,
         vertex_estimate: None,
+        statistics: None,
         edge_normalize_inserted: false,
-        topology_family: GraphTopologyFamily::Unknown,
     }
 }
 
@@ -1131,25 +1223,91 @@ fn graph_plan_edge_counts(
 
 /// Size the exact-vertex probe reservation.
 ///
-/// The probe copies both endpoint columns, concatenates them, and distincts the
-/// result. The hash/sort workspace term keeps Int32 probes from being capped
-/// below the distinct live set.
+/// The probe copies both endpoint columns, concatenates them, distincts the
+/// result, and sorts vertices for deterministic seed selection. Under the
+/// graph stream lease this includes output buffers and cudf temporary
+/// workspaces, so the multiplier is intentionally higher than the old
+/// output-only budget-tracking estimate.
 pub fn graph_vertex_estimate_probe_bytes(input: GraphMemoryModelInput, remaining_bytes: u64) -> u64 {
     input
         .input_edges
-        .saturating_mul(input.vertex_width_bytes.saturating_mul(4).saturating_add(16))
+        .saturating_mul(input.vertex_width_bytes.saturating_mul(16).saturating_add(16))
         .max(GRAPH_VERTEX_ESTIMATE_PROBE_MIN_BYTES)
         .min(remaining_bytes)
         .max(1)
 }
 
-fn graph_calibration_source(input: GraphMemoryModelInput) -> GraphCalibrationSource {
-    match (input.raw_input_edges.is_some(), input.topology_family != GraphTopologyFamily::Unknown) {
-        (false, false) => GraphCalibrationSource::None,
-        (true, false) => GraphCalibrationSource::RawInputEdges,
-        (false, true) => GraphCalibrationSource::TopologyFamily,
-        (true, true) => GraphCalibrationSource::RawInputEdgesAndTopologyFamily,
+/// Size the bounded runtime statistics probe.
+///
+/// Algorithms that only need exact endpoint cardinality use the narrower
+/// exact-vertex probe. Algorithms whose admission depends on additional
+/// topology evidence get the full transient graph-statistics window; the probe
+/// reservation is released before the graph-stage reservation, so this does not
+/// inflate the final graph ask.
+pub fn graph_runtime_statistics_probe_bytes(
+    algorithm: GraphAlgorithm,
+    input: GraphMemoryModelInput,
+    remaining_bytes: u64,
+) -> u64 {
+    if graph_runtime_statistics_requires_algorithm_evidence(algorithm) {
+        remaining_bytes.max(1)
+    } else {
+        graph_vertex_estimate_probe_bytes(input, remaining_bytes)
     }
+}
+
+const fn graph_runtime_statistics_requires_algorithm_evidence(algorithm: GraphAlgorithm) -> bool {
+    matches!(
+        algorithm,
+        GraphAlgorithm::TriangleCountAll
+            | GraphAlgorithm::BetweennessCentrality
+            | GraphAlgorithm::EdgeBetweennessCentrality
+    )
+}
+
+/// Derive the triangle-count peak chunk min-degree pricing term.
+///
+/// cuGraph chunks DFG endpoint pairs by dense destination id, which is not
+/// directly observable from sparse external vertex ids. Use the average chunk
+/// load implied by the measured full min-degree sum plus a fixed safety margin;
+/// the graph stream lease turns residual under-margin into a contained,
+/// retryable allocation failure instead of shared-pool pressure.
+pub fn triangle_count_peak_chunk_min_degree_pricing_term(
+    sum_min_degree_oriented: u64,
+    oriented_edge_count: u64,
+    device_multiprocessor_count: Option<u32>,
+) -> u64 {
+    if sum_min_degree_oriented == 0 || oriented_edge_count == 0 {
+        return 0;
+    }
+    let sm_count = u64::from(device_multiprocessor_count.unwrap_or(1)).max(1);
+    let max_chunk_size = sm_count.saturating_mul(1 << 15).max(1);
+    let chunk_count = ceil_div_u64(oriented_edge_count, max_chunk_size).max(1);
+    let average_chunk = ceil_div_u64(sum_min_degree_oriented, chunk_count);
+    ceil_saturating_ratio(average_chunk, TRIANGLE_COUNT_CHUNK_SAFETY_NUMERATOR, TRIANGLE_COUNT_CHUNK_SAFETY_DENOMINATOR)
+        .min(sum_min_degree_oriented)
+}
+
+fn graph_calibration_source(input: GraphMemoryModelInput) -> GraphCalibrationSource {
+    if input.raw_input_edges.is_some() { GraphCalibrationSource::RawInputEdges } else { GraphCalibrationSource::None }
+}
+
+fn ceil_div_u64(value: u64, denominator: u64) -> u64 {
+    if denominator == 0 {
+        return u64::MAX;
+    }
+    let numerator = u128::from(value);
+    let denominator = u128::from(denominator);
+    numerator.div_ceil(denominator).min(u128::from(u64::MAX)) as u64
+}
+
+fn ceil_saturating_ratio(value: u64, numerator: u64, denominator: u64) -> u64 {
+    if denominator == 0 {
+        return u64::MAX;
+    }
+    let product = u128::from(value).saturating_mul(u128::from(numerator));
+    let rounded = product.saturating_add(u128::from(denominator - 1)) / u128::from(denominator);
+    rounded.min(u128::from(u64::MAX)) as u64
 }
 
 fn edge_normalize_output_row_upper_bound(raw_input_edges: u64, spec: &EdgeNormalizeSpec) -> u64 {
@@ -1276,7 +1434,6 @@ mod tests {
         assert_eq!(estimate.vertex_width_bytes, 8);
         assert_eq!(estimate.weight_width_bytes, None);
         assert!(estimate.edge_normalize_inserted);
-        assert_eq!(estimate.topology_family, GraphTopologyFamily::Unknown);
         assert_eq!(estimate.calibration_source, GraphCalibrationSource::RawInputEdges);
     }
 
@@ -1288,9 +1445,7 @@ mod tests {
             vec!["src".to_string(), "dst".to_string(), "weight".to_string()],
         );
         let plan = triangle_plan(source);
-        let calibration = GraphMemoryCalibrationOverride::none()
-            .with_raw_input_edges(100)
-            .with_topology_family(GraphTopologyFamily::CitationLikeSparse);
+        let calibration = GraphMemoryCalibrationOverride::none().with_raw_input_edges(100);
 
         let estimates = graph_memory_estimates_for_plan(&plan, calibration, None).unwrap();
 
@@ -1298,7 +1453,7 @@ mod tests {
         let estimate = &estimates[0].estimate;
         assert_eq!(estimate.raw_input_edges, Some(100));
         assert_eq!(estimate.input_edges, 200);
-        assert_eq!(estimate.topology_family, GraphTopologyFamily::CitationLikeSparse);
+        assert_eq!(estimate.calibration_source, GraphCalibrationSource::RawInputEdges);
     }
 
     #[test]

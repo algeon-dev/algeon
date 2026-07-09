@@ -414,7 +414,6 @@ mod tests {
         nexus_config.request_requested_grant_min_bytes = Some(384);
         nexus_config.request_requested_grant_bytes = Some(512);
         nexus_config.set_request_graph_raw_input_edges(Some(45_564_149));
-        nexus_config.set_request_graph_topology_family(nexus_query_engine::GraphTopologyFamily::CitationLikeSparse);
         session_config.options_mut().extensions.insert(nexus_config);
         let state = builder.build();
 
@@ -427,6 +426,5 @@ mod tests {
         assert_eq!(execution_config.requested_grant_bytes(), Some(512));
         let graph_calibration = execution_config.graph_memory_calibration_override();
         assert_eq!(graph_calibration.raw_input_edges, Some(45_564_149));
-        assert_eq!(graph_calibration.topology_family, nexus_query_engine::GraphTopologyFamily::CitationLikeSparse);
     }
 }

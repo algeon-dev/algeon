@@ -16,9 +16,9 @@ use datafusion::execution::context::TaskContext;
 use nexus_query_engine::{
     AdaptiveMemoryHistory, AggregateStrategyExecutionOptions, CudfInventory, DynamicFilterExecutionOptions,
     ExecutionBoundaryPolicy, ExecutionCancellation, ExecutionContext, GpuHashJoinBuildCache, GpuInventory,
-    GpuLocalParquetSourceCache, GraphMemoryCalibrationOverride, GraphTopologyFamily, KeyedHashJoinStrategyOptions,
-    MemoryControlPolicy, MemoryResourcePolicy, NativePipelineExecutionMode, QueryGrantRequest, QueryHandle, QueryId,
-    ServiceStreamPool, SourceChunkPlanningMode, SourceChunkPlanningOptions, SourceFetchConfig, SourceSchedulerPolicy,
+    GpuLocalParquetSourceCache, GraphMemoryCalibrationOverride, KeyedHashJoinStrategyOptions, MemoryControlPolicy,
+    MemoryResourcePolicy, NativePipelineExecutionMode, QueryGrantRequest, QueryHandle, QueryId, ServiceStreamPool,
+    SourceChunkPlanningMode, SourceChunkPlanningOptions, SourceFetchConfig, SourceSchedulerPolicy,
     SourceStorageProfile, StddevSampExecutionMode, TenantQueryContext, TraceId, device_budget_bytes_from_facts,
 };
 
@@ -64,7 +64,6 @@ pub struct NativeCudfExecutionConfig {
     source_chunk_planning_options: SourceChunkPlanningOptions,
     graph_memory_calibration_override: GraphMemoryCalibrationOverride,
     graph_raw_input_edges_override_configured: bool,
-    graph_topology_family_override_configured: bool,
     adaptive_memory_history: Option<Arc<AdaptiveMemoryHistory>>,
     hash_join_build_cache: Option<Arc<GpuHashJoinBuildCache>>,
     local_parquet_source_cache: Option<Arc<GpuLocalParquetSourceCache>>,
@@ -290,7 +289,6 @@ impl NativeCudfExecutionConfig {
             source_chunk_planning_options: SourceChunkPlanningOptions::default(),
             graph_memory_calibration_override: GraphMemoryCalibrationOverride::default(),
             graph_raw_input_edges_override_configured: false,
-            graph_topology_family_override_configured: false,
             adaptive_memory_history: None,
             hash_join_build_cache: None,
             local_parquet_source_cache: None,
@@ -403,7 +401,6 @@ impl NativeCudfExecutionConfig {
             source_chunk_planning_options: SourceChunkPlanningOptions::default(),
             graph_memory_calibration_override: GraphMemoryCalibrationOverride::default(),
             graph_raw_input_edges_override_configured: false,
-            graph_topology_family_override_configured: false,
             adaptive_memory_history: None,
             hash_join_build_cache: None,
             local_parquet_source_cache: None,
@@ -637,19 +634,12 @@ impl NativeCudfExecutionConfig {
     pub fn with_graph_memory_calibration_override(mut self, override_: GraphMemoryCalibrationOverride) -> Self {
         self.graph_memory_calibration_override = override_;
         self.graph_raw_input_edges_override_configured = true;
-        self.graph_topology_family_override_configured = true;
         self
     }
 
     pub(crate) fn with_graph_raw_input_edges_override(mut self, raw_input_edges: Option<u64>) -> Self {
         self.graph_memory_calibration_override.raw_input_edges = raw_input_edges;
         self.graph_raw_input_edges_override_configured = true;
-        self
-    }
-
-    pub(crate) fn with_graph_topology_family_override(mut self, topology_family: GraphTopologyFamily) -> Self {
-        self.graph_memory_calibration_override.topology_family = topology_family;
-        self.graph_topology_family_override_configured = true;
         self
     }
 
@@ -1141,9 +1131,6 @@ impl NativeCudfExecutionConfig {
         if self.graph_raw_input_edges_override_configured {
             current.raw_input_edges = self.graph_memory_calibration_override.raw_input_edges;
         }
-        if self.graph_topology_family_override_configured {
-            current.topology_family = self.graph_memory_calibration_override.topology_family;
-        }
         current
     }
 
@@ -1350,9 +1337,7 @@ mod tests {
 
     #[test]
     fn service_acquired_context_preserves_service_graph_calibration_without_adapter_override() {
-        let service_override = GraphMemoryCalibrationOverride::default()
-            .with_raw_input_edges(45_564_149)
-            .with_topology_family(GraphTopologyFamily::CitationLikeSparse);
+        let service_override = GraphMemoryCalibrationOverride::default().with_raw_input_edges(45_564_149);
         let config = NativeCudfExecutionConfig::bounded_auto_sized();
 
         assert_eq!(
@@ -1363,26 +1348,15 @@ mod tests {
 
     #[test]
     fn service_acquired_context_applies_only_configured_adapter_graph_calibration_fields() {
-        let service_override = GraphMemoryCalibrationOverride::default()
-            .with_raw_input_edges(45_564_149)
-            .with_topology_family(GraphTopologyFamily::CitationLikeSparse);
+        let service_override = GraphMemoryCalibrationOverride::default().with_raw_input_edges(45_564_149);
 
         let raw_reset = NativeCudfExecutionConfig::bounded_auto_sized().with_graph_raw_input_edges_override(None);
         assert_eq!(
             raw_reset.graph_memory_calibration_override_for_acquired_service_context(service_override),
-            GraphMemoryCalibrationOverride::default().with_topology_family(GraphTopologyFamily::CitationLikeSparse)
+            GraphMemoryCalibrationOverride::default()
         );
 
-        let topology_reset = NativeCudfExecutionConfig::bounded_auto_sized()
-            .with_graph_topology_family_override(GraphTopologyFamily::Unknown);
-        assert_eq!(
-            topology_reset.graph_memory_calibration_override_for_acquired_service_context(service_override),
-            GraphMemoryCalibrationOverride::default().with_raw_input_edges(45_564_149)
-        );
-
-        let full_override = GraphMemoryCalibrationOverride::default()
-            .with_raw_input_edges(99)
-            .with_topology_family(GraphTopologyFamily::DenseRemappedSparse);
+        let full_override = GraphMemoryCalibrationOverride::default().with_raw_input_edges(99);
         let config =
             NativeCudfExecutionConfig::bounded_auto_sized().with_graph_memory_calibration_override(full_override);
         assert_eq!(

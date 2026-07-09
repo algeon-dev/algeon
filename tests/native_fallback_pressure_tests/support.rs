@@ -303,7 +303,7 @@ pub(super) fn native_execution_metrics_set() -> datafusion::physical_plan::metri
         .with_new_label("renumber", "true")
         .with_new_label("construction_policy", "python_cugraph")
         .with_new_label("edge_normalize_inserted", "false")
-        .with_new_label("topology_family", "unknown")
+        .with_new_label("calibration_source", "none")
         .with_new_label("seed_count", "none")
         .with_new_label("seed_mode", "none")
         .with_new_label("data_dependent", "false")

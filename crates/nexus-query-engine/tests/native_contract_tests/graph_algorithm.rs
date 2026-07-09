@@ -10,11 +10,12 @@ use nexus_query_engine::{
     GraphEdgeBetweennessCentralityParams, GraphEdgeColumnBindings, GraphLayoutRequirement, GraphLouvainParams,
     GraphMemoryClass, GraphMemoryModel, GraphMemoryModelInput, GraphModelErrorRatio, GraphOutputSchemaKind,
     GraphPageRankParams, GraphPredicateInput, GraphReservationOutcome, GraphReservationReport, GraphSeedMode,
-    GraphSourceVertexRequirement, GraphTopologyFamily, GraphTriangleCountAllParams, GraphVertexEstimate,
+    GraphSourceVertexRequirement, GraphStatistics, GraphTriangleCountAllParams, GraphVertexEstimate,
     GraphVertexEstimateSource, GraphVertexIdTypeSupport, GraphWeightPolicy, PlanNode, QueryErrorCode, QueryPlan,
     QueryPlanBuilder, SourceNode, StrictBoundedContractReport, StrictBoundedExecutionMode,
     capability::{CapabilityDecision, ContractQuality, ContractStatus, NodeOperator},
-    graph_memory_class, graph_memory_reservation_required, stable_graph_result_schema,
+    graph_memory_class, graph_memory_reservation_required, graph_runtime_statistics_probe_bytes,
+    graph_vertex_estimate_probe_bytes, stable_graph_result_schema, triangle_count_peak_chunk_min_degree_pricing_term,
 };
 
 #[test]
@@ -412,8 +413,8 @@ fn graph_memory_report_admits_and_denies_without_strict_contract_projection() {
                 has_edge_id: false,
                 device_total_memory_bytes: None,
                 vertex_estimate: None,
+                statistics: None,
                 edge_normalize_inserted: false,
-                topology_family: GraphTopologyFamily::Unknown,
             },
         )
         .unwrap();
@@ -421,6 +422,7 @@ fn graph_memory_report_admits_and_denies_without_strict_contract_projection() {
     assert_eq!(estimate.vertex_upper_bound, 200);
     assert_eq!(estimate.vertex_estimate, 200);
     assert_eq!(estimate.vertex_estimate_source, GraphVertexEstimateSource::EdgeEndpointUpperBound);
+    assert_eq!(estimate.requested_bytes, 12_800);
     assert!(estimate.requested_bytes > 0);
 
     let admitted = GraphReservationReport::from_estimate(
@@ -472,8 +474,8 @@ fn graph_memory_model_uses_refined_vertex_estimate_for_sparse_graph_admission() 
         has_edge_id: false,
         device_total_memory_bytes: None,
         vertex_estimate: None,
+        statistics: None,
         edge_normalize_inserted: false,
-        topology_family: GraphTopologyFamily::Unknown,
     };
 
     let fallback = GraphMemoryModel.estimate(&spec, input).unwrap();
@@ -519,8 +521,8 @@ fn graph_memory_model_clamps_refined_vertex_estimate_to_endpoint_upper_bound() {
                 has_edge_id: false,
                 device_total_memory_bytes: None,
                 vertex_estimate: Some(GraphVertexEstimate::graph_metadata(999)),
+                statistics: None,
                 edge_normalize_inserted: false,
-                topology_family: GraphTopologyFamily::Unknown,
             },
         )
         .unwrap();
@@ -531,7 +533,7 @@ fn graph_memory_model_clamps_refined_vertex_estimate_to_endpoint_upper_bound() {
 }
 
 #[test]
-fn graph_memory_model_records_calibration_key_and_reprices_triangle_count_by_edges() {
+fn graph_memory_model_keeps_triangle_no_stats_fallback_topology_independent() {
     let spec = GraphAlgorithmSpec::with_stable_schema(
         GraphAlgorithm::TriangleCountAll,
         GraphEdgeColumnBindings::new("src", "dst", None::<&str>),
@@ -546,8 +548,8 @@ fn graph_memory_model_records_calibration_key_and_reprices_triangle_count_by_edg
         has_edge_id: false,
         device_total_memory_bytes: None,
         vertex_estimate: Some(GraphVertexEstimate::runtime_exact_distinct(4_146_772)),
+        statistics: None,
         edge_normalize_inserted: true,
-        topology_family: GraphTopologyFamily::CitationLikeSparse,
     };
 
     let estimate = GraphMemoryModel.estimate(&spec, input).unwrap();
@@ -555,37 +557,204 @@ fn graph_memory_model_records_calibration_key_and_reprices_triangle_count_by_edg
     assert_eq!(estimate.raw_input_edges, Some(45_564_149));
     assert_eq!(estimate.input_edges, 91_128_298);
     assert!(estimate.edge_normalize_inserted);
-    assert_eq!(estimate.topology_family, GraphTopologyFamily::CitationLikeSparse);
-    assert_eq!(estimate.calibration_source, GraphCalibrationSource::RawInputEdgesAndTopologyFamily);
+    assert_eq!(estimate.calibration_source, GraphCalibrationSource::RawInputEdges);
     assert_eq!(estimate.vertex_width_bytes, 8);
     assert_eq!(estimate.weight_width_bytes, None);
     assert_eq!(estimate.vertex_estimate, 4_146_772);
-    assert_eq!(estimate.requested_bytes, 7_555_657_248);
     assert!(
         estimate.requested_bytes >= 6_617_470_861,
-        "production triangle-count ask must cover the live-measured DBLP CUDA async-pool peak"
-    );
-
-    let unknown_topology =
-        GraphMemoryModel.estimate(&spec, input.with_topology_family(GraphTopologyFamily::Unknown)).unwrap();
-    assert!(
-        unknown_topology.requested_bytes > estimate.requested_bytes,
-        "unknown topology must keep a larger fallback than the documented citation-like calibration key"
-    );
-    assert!(
-        unknown_topology.requested_bytes >= 31_044_534_080,
-        "unknown topology must not be lowered below the pre-calibration DBLP triangle-count ask"
-    );
-    assert!(
-        estimate.requested_bytes < 31_044_534_080 / 2,
-        "triangle-count pricing should no longer be dominated by the old V*min(V,1024) term"
+        "topology-independent no-stats triangle-count fallback must cover the live-measured DBLP CUDA async-pool peak"
     );
 
     let report = GraphReservationReport::from_estimate("g0", estimate, Some(10_000_000_000));
     assert_eq!(report.raw_input_edges, Some(45_564_149));
     assert!(report.edge_normalize_inserted);
-    assert_eq!(report.topology_family, GraphTopologyFamily::CitationLikeSparse);
-    assert_eq!(report.calibration_source, GraphCalibrationSource::RawInputEdgesAndTopologyFamily);
+    assert_eq!(report.calibration_source, GraphCalibrationSource::RawInputEdges);
+}
+
+#[test]
+fn graph_memory_model_prices_triangle_count_from_runtime_statistics_formula() {
+    let spec = GraphAlgorithmSpec::with_stable_schema(
+        GraphAlgorithm::TriangleCountAll,
+        GraphEdgeColumnBindings::new("src", "dst", None::<&str>),
+        GraphConstructionOptions { directed: false, renumber: true, policy: GraphConstructionPolicy::RawLibcugraph },
+        GraphAlgorithmParams::TriangleCountAll(GraphTriangleCountAllParams),
+    );
+    let statistics = GraphStatistics::runtime_exact_vertices(20)
+        .with_sum_out_degree(200)
+        .with_degree_distribution(8, 8)
+        .with_triangle_min_degree(70, 50, 30);
+    let input = GraphMemoryModelInput {
+        raw_input_edges: Some(100),
+        input_edges: 200,
+        vertex_width_bytes: 8,
+        weight_width_bytes: None,
+        has_edge_id: false,
+        device_total_memory_bytes: None,
+        vertex_estimate: Some(GraphVertexEstimate::runtime_exact_distinct(20)),
+        statistics: Some(statistics),
+        edge_normalize_inserted: true,
+    };
+
+    let estimate = GraphMemoryModel.estimate(&spec, input).unwrap();
+
+    assert_eq!(estimate.requested_bytes, 13_120);
+}
+
+#[test]
+fn graph_memory_model_prices_dblp_triangle_from_runtime_statistics_above_measured_peak() {
+    let spec = GraphAlgorithmSpec::with_stable_schema(
+        GraphAlgorithm::TriangleCountAll,
+        GraphEdgeColumnBindings::new("src", "dst", None::<&str>),
+        GraphConstructionOptions { directed: false, renumber: true, policy: GraphConstructionPolicy::RawLibcugraph },
+        GraphAlgorithmParams::TriangleCountAll(GraphTriangleCountAllParams),
+    );
+    let peak_chunk_min_degree_sum =
+        triangle_count_peak_chunk_min_degree_pricing_term(493_000_000, 45_476_753, Some(188));
+    assert_eq!(peak_chunk_min_degree_sum, 77_031_250);
+    let statistics = GraphStatistics::runtime_exact_vertices(4_146_772)
+        .with_degree_distribution(128, 34)
+        .with_triangle_min_degree(493_000_000, 45_476_753, peak_chunk_min_degree_sum);
+    let input = GraphMemoryModelInput {
+        raw_input_edges: Some(45_564_149),
+        input_edges: 91_128_298,
+        vertex_width_bytes: 8,
+        weight_width_bytes: None,
+        has_edge_id: false,
+        device_total_memory_bytes: Some(101_449_662_464),
+        vertex_estimate: Some(GraphVertexEstimate::runtime_exact_distinct(4_146_772)),
+        statistics: Some(statistics),
+        edge_normalize_inserted: true,
+    };
+
+    let estimate = GraphMemoryModel.estimate(&spec, input).unwrap();
+
+    assert_eq!(estimate.requested_bytes, 7_360_481_984);
+    assert!(
+        estimate.requested_bytes >= 6_617_470_861,
+        "runtime-statistics DBLP triangle ask must cover the measured CUDA async-pool peak"
+    );
+    assert!(
+        estimate.requested_bytes < 12_681_207_808 - 2_190_000_000,
+        "runtime-statistics DBLP triangle ask should fit the default min grant after the live edge reservation"
+    );
+}
+
+#[test]
+fn graph_memory_model_keeps_triangle_plan_time_fallback_below_whole_device_ticket() {
+    let spec = GraphAlgorithmSpec::with_stable_schema(
+        GraphAlgorithm::TriangleCountAll,
+        GraphEdgeColumnBindings::new("src", "dst", None::<&str>),
+        GraphConstructionOptions { directed: false, renumber: true, policy: GraphConstructionPolicy::RawLibcugraph },
+        GraphAlgorithmParams::TriangleCountAll(GraphTriangleCountAllParams),
+    );
+    let input = GraphMemoryModelInput {
+        raw_input_edges: Some(45_564_149),
+        input_edges: 91_128_298,
+        vertex_width_bytes: 8,
+        weight_width_bytes: None,
+        has_edge_id: false,
+        device_total_memory_bytes: Some(101_449_662_464),
+        vertex_estimate: None,
+        statistics: None,
+        edge_normalize_inserted: true,
+    };
+
+    let estimate = GraphMemoryModel.estimate(&spec, input).unwrap();
+
+    assert_eq!(estimate.vertex_estimate, 182_256_596);
+    assert_eq!(estimate.requested_bytes, 33_535_213_664);
+    assert!(
+        estimate.requested_bytes < 101_449_662_464 / 2,
+        "plan-time triangle fallback should remain a packing hint, not collapse to tenant want"
+    );
+}
+
+#[test]
+fn graph_runtime_statistics_probe_reserves_remaining_window_for_triangle_evidence() {
+    let input = GraphMemoryModelInput {
+        raw_input_edges: Some(45_564_149),
+        input_edges: 45_564_149,
+        vertex_width_bytes: 8,
+        weight_width_bytes: None,
+        has_edge_id: false,
+        device_total_memory_bytes: Some(101_449_662_464),
+        vertex_estimate: None,
+        statistics: None,
+        edge_normalize_inserted: false,
+    };
+    let default_min_grant = 101_449_662_464 / 8;
+    let remaining_after_live_input = default_min_grant - 2_190_000_000;
+    let exact_vertex_only_probe = graph_vertex_estimate_probe_bytes(input, remaining_after_live_input);
+
+    assert_eq!(exact_vertex_only_probe, 6_561_237_456);
+    assert_eq!(
+        graph_runtime_statistics_probe_bytes(GraphAlgorithm::PageRank, input, remaining_after_live_input),
+        exact_vertex_only_probe,
+        "algorithms that only need exact vertices should keep the narrower probe"
+    );
+    assert_eq!(
+        graph_runtime_statistics_probe_bytes(GraphAlgorithm::TriangleCountAll, input, remaining_after_live_input),
+        remaining_after_live_input,
+        "triangle runtime evidence should receive the full transient probe window"
+    );
+}
+
+#[test]
+fn graph_memory_pricing_constants_match_pinned_cugraph_sources() {
+    let triangle_intersection =
+        read_cugraph_source("cpp/include/cugraph/prims/transform_reduce_dst_nbr_intersection_of_e_endpoints_by_v.cuh");
+    let triangle_intersection_compact = without_ascii_whitespace(&triangle_intersection);
+    assert!(
+        triangle_intersection_compact
+            .contains("static_cast<size_t>(handle.get_device_properties().multiProcessorCount)*(1<<15)"),
+        "triangle-count chunk pricing must track cuGraph's SM * 2^15 intersection chunk size"
+    );
+    assert!(
+        triangle_intersection.contains("auto [intersection_offsets, intersection_indices]"),
+        "triangle-count pricing assumes cuGraph materializes intersection offsets and indices"
+    );
+    assert!(
+        triangle_intersection.contains("detail::nbr_intersection(handle"),
+        "triangle-count pricing assumes the transform-reduce primitive delegates to nbr_intersection"
+    );
+
+    let nbr_intersection = read_cugraph_source("cpp/include/cugraph/prims/detail/nbr_intersection.cuh");
+    let nbr_intersection_compact = without_ascii_whitespace(&nbr_intersection);
+    assert!(
+        nbr_intersection.contains("initially store minimum degrees (upper bound for intersection sizes)"),
+        "triangle-count pricing uses min-degree as cuGraph's pre-compaction intersection upper bound"
+    );
+    assert!(
+        nbr_intersection_compact
+            .contains("nbr_intersection_indices.resize(nbr_intersection_offsets.back_element(handle.get_stream()),handle.get_stream())"),
+        "triangle-count pricing assumes intersection indices are allocated from the min-degree offsets before compaction"
+    );
+    assert!(
+        nbr_intersection_compact.contains("nbr_intersection_indices.resize(cuda::std::distance"),
+        "triangle-count pricing assumes cuGraph compacts intersection indices after materialization"
+    );
+
+    let betweenness = read_cugraph_source("cpp/src/centrality/betweenness_centrality_impl.cuh");
+    let betweenness_compact = without_ascii_whitespace(&betweenness);
+    assert!(
+        betweenness_compact.contains("autoconstexprmax_edge_tuple_data_ratio=0.25;"),
+        "betweenness push-batch pricing must track cuGraph's /4 edge tuple memory cap"
+    );
+    assert!(
+        betweenness_compact.contains("(sizeof(vertex_t)+sizeof(origin_t)+sizeof(edge_t))"),
+        "betweenness push-batch pricing must track the cuGraph push tuple layout"
+    );
+    assert!(
+        betweenness_compact.contains("usingorigin_t=uint16_t;")
+            && betweenness_compact.contains("std::numeric_limits<origin_t>::max()"),
+        "betweenness source batching must track cuGraph's uint16_t source-origin cap"
+    );
+    assert!(
+        betweenness_compact.contains("autoconstexprmax_multisource_bfs_result_ratio=0.25;")
+            && betweenness_compact.contains("std::numeric_limits<uint16_t>::max()"),
+        "betweenness resident-source pricing must track cuGraph's /4 BFS result cap and uint16_t source limit"
+    );
 }
 
 #[test]
@@ -610,8 +779,8 @@ fn graph_memory_model_is_dtype_sensitive_for_calibrated_sparse_keys() {
         has_edge_id: false,
         device_total_memory_bytes: None,
         vertex_estimate: Some(GraphVertexEstimate::runtime_exact_distinct(100_000)),
+        statistics: None,
         edge_normalize_inserted: false,
-        topology_family: GraphTopologyFamily::CitationLikeSparse,
     };
 
     for spec in [&pagerank_spec, &louvain_spec] {
@@ -638,15 +807,21 @@ fn graph_memory_model_is_dtype_sensitive_for_calibrated_sparse_keys() {
         has_edge_id: false,
         device_total_memory_bytes: None,
         vertex_estimate: Some(GraphVertexEstimate::runtime_exact_distinct(100_000)),
+        statistics: None,
         edge_normalize_inserted: false,
-        topology_family: GraphTopologyFamily::CitationLikeSparse,
     };
     let narrow = GraphMemoryModel.estimate(&triangle_spec, triangle_input(4)).unwrap();
     let wide = GraphMemoryModel.estimate(&triangle_spec, triangle_input(8)).unwrap();
-    assert!(
-        narrow.requested_bytes > wide.requested_bytes,
-        "Int32 citation-like triangle-count inputs must use the conservative fallback until a dtype-specific calibration exists"
-    );
+    assert!(wide.requested_bytes > narrow.requested_bytes, "triangle-count pricing must vary with vertex dtype width");
+}
+
+fn read_cugraph_source(relative: &str) -> String {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../cugraph-rs/cugraph").join(relative);
+    std::fs::read_to_string(&path).unwrap_or_else(|error| panic!("failed to read {}: {error}", path.display()))
+}
+
+fn without_ascii_whitespace(source: &str) -> String {
+    source.chars().filter(|character| !character.is_ascii_whitespace()).collect()
 }
 
 #[test]
@@ -672,8 +847,8 @@ fn graph_memory_model_error_ratio_is_fixed_point_and_optional_on_zero_peak() {
                 has_edge_id: false,
                 device_total_memory_bytes: None,
                 vertex_estimate: None,
+                statistics: None,
                 edge_normalize_inserted: false,
-                topology_family: GraphTopologyFamily::Unknown,
             },
         )
         .unwrap();
@@ -713,8 +888,8 @@ fn betweenness_seed_count_reports_requested_sources_and_prices_resident_source_s
                 has_edge_id: false,
                 device_total_memory_bytes: None,
                 vertex_estimate: None,
+                statistics: None,
                 edge_normalize_inserted: false,
-                topology_family: GraphTopologyFamily::Unknown,
             },
         )
         .unwrap();
@@ -743,8 +918,8 @@ fn betweenness_seed_count_reports_requested_sources_and_prices_resident_source_s
                 has_edge_id: false,
                 device_total_memory_bytes: None,
                 vertex_estimate: None,
+                statistics: None,
                 edge_normalize_inserted: false,
-                topology_family: GraphTopologyFamily::Unknown,
             },
         )
         .unwrap();
@@ -771,8 +946,8 @@ fn betweenness_seed_count_reports_requested_sources_and_prices_resident_source_s
                 has_edge_id: false,
                 device_total_memory_bytes: None,
                 vertex_estimate: Some(GraphVertexEstimate::runtime_exact_distinct(7)),
+                statistics: None,
                 edge_normalize_inserted: false,
-                topology_family: GraphTopologyFamily::Unknown,
             },
         )
         .unwrap();
@@ -811,8 +986,8 @@ fn vertex_betweenness_source_workspace_uses_cugraph_physical_batch_cap() {
         has_edge_id: false,
         device_total_memory_bytes: Some(device_total_memory_bytes),
         vertex_estimate: Some(GraphVertexEstimate::runtime_exact_distinct(vertex_estimate)),
+        statistics: None,
         edge_normalize_inserted: false,
-        topology_family: GraphTopologyFamily::Unknown,
     };
 
     let capped = GraphMemoryModel.estimate(&spec_for_k(cugraph_batch_cap), input).unwrap();
@@ -825,6 +1000,114 @@ fn vertex_betweenness_source_workspace_uses_cugraph_physical_batch_cap() {
         oversized.requested_bytes - capped.requested_bytes,
         expected_seed_list_delta,
         "k-only vertex betweenness should price additional requested sources as seed-list storage only"
+    );
+}
+
+#[test]
+fn vertex_betweenness_push_batch_workspace_scales_with_resident_sources() {
+    let spec_for_seeds = |seeds| {
+        GraphAlgorithmSpec::with_stable_schema(
+            GraphAlgorithm::BetweennessCentrality,
+            GraphEdgeColumnBindings::new("src", "dst", None::<&str>),
+            GraphConstructionOptions { directed: true, renumber: true, policy: GraphConstructionPolicy::RawLibcugraph },
+            GraphAlgorithmParams::BetweennessCentrality(GraphBetweennessCentralityParams {
+                seeds: Some(GraphBetweennessSeeds::I64(seeds)),
+                ..Default::default()
+            }),
+        )
+    };
+    let input = GraphMemoryModelInput {
+        raw_input_edges: None,
+        input_edges: 100,
+        vertex_width_bytes: 8,
+        weight_width_bytes: None,
+        has_edge_id: false,
+        device_total_memory_bytes: None,
+        vertex_estimate: Some(GraphVertexEstimate::runtime_exact_distinct(10)),
+        statistics: Some(GraphStatistics::runtime_exact_vertices(10).with_sum_out_degree(100)),
+        edge_normalize_inserted: false,
+    };
+
+    let one_source = GraphMemoryModel.estimate(&spec_for_seeds(vec![0]), input).unwrap();
+    let three_sources = GraphMemoryModel.estimate(&spec_for_seeds(vec![0, 1, 2]), input).unwrap();
+
+    assert_eq!(one_source.seed_count, Some(1));
+    assert_eq!(three_sources.seed_count, Some(3));
+    let per_source_vertex_state_width = 44;
+    let expected_delta = 2 * 10 * per_source_vertex_state_width + 2 * 8;
+    assert_eq!(
+        three_sources.requested_bytes - one_source.requested_bytes,
+        expected_delta,
+        "multi-source vertex betweenness must not multiply an already resident-source push statistic"
+    );
+}
+
+#[test]
+fn vertex_betweenness_push_batch_workspace_caps_statistics_present_branch() {
+    let device_total_memory_bytes = 1_024 * 1_024 * 1_024;
+    let spec = GraphAlgorithmSpec::with_stable_schema(
+        GraphAlgorithm::BetweennessCentrality,
+        GraphEdgeColumnBindings::new("src", "dst", None::<&str>),
+        GraphConstructionOptions { directed: true, renumber: true, policy: GraphConstructionPolicy::RawLibcugraph },
+        GraphAlgorithmParams::BetweennessCentrality(GraphBetweennessCentralityParams {
+            seeds: Some(GraphBetweennessSeeds::I64(vec![0])),
+            ..Default::default()
+        }),
+    );
+    let input_for_sum = |sum_out_degree| GraphMemoryModelInput {
+        raw_input_edges: None,
+        input_edges: 1_000,
+        vertex_width_bytes: 8,
+        weight_width_bytes: None,
+        has_edge_id: false,
+        device_total_memory_bytes: Some(device_total_memory_bytes),
+        vertex_estimate: Some(GraphVertexEstimate::runtime_exact_distinct(1_000)),
+        statistics: Some(GraphStatistics::runtime_exact_vertices(1_000).with_sum_out_degree(sum_out_degree)),
+        edge_normalize_inserted: false,
+    };
+
+    let uncapped = GraphMemoryModel.estimate(&spec, input_for_sum(1_000)).unwrap();
+    let capped = GraphMemoryModel.estimate(&spec, input_for_sum(u64::MAX / 18)).unwrap();
+    let tuple_width = 18;
+    let push_cap_bytes = (device_total_memory_bytes / 4 / tuple_width) * tuple_width;
+
+    assert_eq!(
+        capped.requested_bytes - uncapped.requested_bytes,
+        push_cap_bytes - 1_000 * tuple_width,
+        "statistics-present betweenness push term must exercise cuGraph's total-memory / 4 cap"
+    );
+}
+
+#[test]
+fn vertex_betweenness_dblp_top64_statistics_fits_24gb_budget() {
+    let spec = GraphAlgorithmSpec::with_stable_schema(
+        GraphAlgorithm::BetweennessCentrality,
+        GraphEdgeColumnBindings::new("src", "dst", None::<&str>),
+        GraphConstructionOptions { directed: true, renumber: true, policy: GraphConstructionPolicy::RawLibcugraph },
+        GraphAlgorithmParams::BetweennessCentrality(GraphBetweennessCentralityParams {
+            k: Some(64),
+            exact_vertex_threshold: 4_146_772,
+            ..Default::default()
+        }),
+    );
+    let input = GraphMemoryModelInput {
+        raw_input_edges: Some(45_564_149),
+        input_edges: 45_564_149,
+        vertex_width_bytes: 8,
+        weight_width_bytes: None,
+        has_edge_id: false,
+        device_total_memory_bytes: Some(101_449_662_464),
+        vertex_estimate: Some(GraphVertexEstimate::runtime_exact_distinct(4_146_772)),
+        statistics: Some(GraphStatistics::runtime_exact_vertices(4_146_772).with_sum_out_degree(35_893)),
+        edge_normalize_inserted: false,
+    };
+
+    let estimate = GraphMemoryModel.estimate(&spec, input).unwrap();
+
+    assert_eq!(estimate.requested_bytes, 15_323_491_202);
+    assert!(
+        estimate.requested_bytes < 24 * 1024 * 1024 * 1024,
+        "DBLP betweenness k=64 with resident-source degree statistics should fit a 24 GiB graph budget"
     );
 }
 
@@ -849,8 +1132,8 @@ fn edge_betweenness_seed_count_does_not_price_all_requested_sources_as_resident(
         has_edge_id: false,
         device_total_memory_bytes: None,
         vertex_estimate: Some(GraphVertexEstimate::runtime_exact_distinct(1_000)),
+        statistics: None,
         edge_normalize_inserted: false,
-        topology_family: GraphTopologyFamily::Unknown,
     };
 
     let small = GraphMemoryModel.estimate(&spec_for_k(10), input).unwrap();
@@ -883,8 +1166,8 @@ fn edge_betweenness_output_pricing_scales_with_edges() {
         has_edge_id: false,
         device_total_memory_bytes: None,
         vertex_estimate: Some(GraphVertexEstimate::runtime_exact_distinct(1_000)),
+        statistics: None,
         edge_normalize_inserted: false,
-        topology_family: GraphTopologyFamily::Unknown,
     };
 
     let small = GraphMemoryModel.estimate(&spec, input_for_edges(1_000)).unwrap();
@@ -927,8 +1210,8 @@ fn betweenness_k_seed_selection_prices_endpoint_distinct_sort_transient() {
         has_edge_id: false,
         device_total_memory_bytes: None,
         vertex_estimate: Some(GraphVertexEstimate::runtime_exact_distinct(1_000)),
+        statistics: None,
         edge_normalize_inserted: false,
-        topology_family: GraphTopologyFamily::Unknown,
     };
 
     for algorithm in [GraphAlgorithm::BetweennessCentrality, GraphAlgorithm::EdgeBetweennessCentrality] {

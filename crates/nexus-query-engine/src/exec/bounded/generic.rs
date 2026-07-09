@@ -444,7 +444,7 @@ fn execute_bounded_generic_graph_algorithm(
             reservations.release(input_reservation, metrics);
             return Err(error.with_fact_if_absent("node_id", node_id));
         }
-        let vertex_estimate = match graph_memory_vertex_estimate_with_reservation(
+        let graph_statistics_probe = match graph_memory_vertex_estimate_with_reservation(
             context,
             node_id,
             &graph.spec,
@@ -452,22 +452,23 @@ fn execute_bounded_generic_graph_algorithm(
             reservations,
             metrics,
         ) {
-            Ok(vertex_estimate) => vertex_estimate,
+            Ok(probe) => probe,
             Err(error) => {
                 drop(filtered_input);
                 reservations.release(input_reservation, metrics);
                 return Err(error.with_fact_if_absent("node_id", node_id));
             },
         };
-        if let Some(vertex_estimate) = vertex_estimate
-            && let Err(error) = validate_betweenness_seed_policy_for_vertex_count(&graph.spec, vertex_estimate.count)
+        if let Some(probe) = &graph_statistics_probe
+            && let Err(error) =
+                validate_betweenness_seed_policy_for_vertex_count(&graph.spec, probe.vertex_estimate.count)
         {
             drop(filtered_input);
             reservations.release(input_reservation, metrics);
             return Err(error.with_fact_if_absent("node_id", node_id));
         }
         runtime_spec =
-            runtime_graph_spec_resolution_after_bounded_seed_validation(&graph.spec, vertex_estimate.is_some());
+            runtime_graph_spec_resolution_after_bounded_seed_validation(&graph.spec, graph_statistics_probe.is_some());
         let device_total_memory_bytes = match graph_device_total_memory_bytes(context) {
             Ok(device_total_memory_bytes) => device_total_memory_bytes,
             Err(error) => {
@@ -493,7 +494,8 @@ fn execute_bounded_generic_graph_algorithm(
             Some(graph_reservable_remaining_bytes),
             device_total_memory_bytes,
             false,
-            vertex_estimate,
+            graph_statistics_probe.as_ref().map(|probe| probe.vertex_estimate),
+            graph_statistics_probe.as_ref().map(|probe| probe.statistics),
         ) {
             Ok(report) => report,
             Err(error) => {
@@ -648,21 +650,21 @@ fn graph_memory_vertex_estimate_with_reservation(
     input: &DataFrame,
     reservations: &mut ReservationTracker,
     metrics: &mut QueryMetrics,
-) -> Result<Option<crate::graph_memory::GraphVertexEstimate>> {
+) -> Result<Option<crate::exec::graph_algorithm::RuntimeGraphStatisticsProbe>> {
     let remaining = reservations.reservable_remaining_bytes()?;
     if remaining == 0 {
         return Ok(None);
     }
     let model_input =
         crate::exec::graph_algorithm::graph_memory_model_input_for_frame(input, spec, input.num_rows() as u64, false)?;
-    let probe_bytes = crate::graph_memory::graph_vertex_estimate_probe_bytes(model_input, remaining);
+    let probe_bytes = crate::graph_memory::graph_runtime_statistics_probe_bytes(spec.algorithm, model_input, remaining);
     let request = MemoryReservationRequest::new(ReservationKind::GraphAlgorithm, probe_bytes, reservations.budget())
         .with_memory_boundary(crate::graph_memory::GRAPH_VERTEX_ESTIMATE_BOUNDARY)
         .with_node_id(node_id)
         .with_stage("graph_memory_vertex_estimate");
     let reservation = reservations.try_reserve_work(request, metrics)?;
     let limit_bytes = reservation.bytes();
-    let estimate = runtime_exact_vertex_estimate_with_budget(context, input, spec, limit_bytes, metrics);
+    let estimate = runtime_graph_statistics_probe_with_budget(context, input, spec, limit_bytes, metrics);
     reservations.release(reservation, metrics);
     match estimate {
         Ok(estimate) => Ok(Some(estimate)),

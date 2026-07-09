@@ -980,12 +980,7 @@ mod tests {
         let want = 2 * 1024 * 1024 * 1024;
         let capacity = 4 * 1024 * 1024 * 1024;
         let source = admission_source_with_band(min, want, capacity);
-        let config = NativeCudfExecutionConfig::bounded(min, 512, 1, 3, 1)
-            .with_query_admission_source(source)
-            .with_graph_memory_calibration_override(
-                nexus_query_engine::GraphMemoryCalibrationOverride::none()
-                    .with_topology_family(nexus_query_engine::GraphTopologyFamily::CitationLikeSparse),
-            );
+        let config = NativeCudfExecutionConfig::bounded(min, 512, 1, 3, 1).with_query_admission_source(source);
 
         let exec = CugraphAlgoExec::try_new(triangle_spec(), memory_edge_source(300), vec![], None, None, config)
             .expect("cuGraph exec should build with graph-aware admission ticket");
@@ -1000,14 +995,9 @@ mod tests {
     #[test]
     fn cugraph_graph_model_ask_prefers_exact_edge_rows_over_configured_raw_edges() {
         let min = 64 * 1024 * 1024;
-        let config = NativeCudfExecutionConfig::bounded(min, 512, 1, 3, 1).with_graph_memory_calibration_override(
-            nexus_query_engine::GraphMemoryCalibrationOverride::none()
-                .with_topology_family(nexus_query_engine::GraphTopologyFamily::CitationLikeSparse),
-        );
+        let config = NativeCudfExecutionConfig::bounded(min, 512, 1, 3, 1);
         let stale_config = config.clone().with_graph_memory_calibration_override(
-            nexus_query_engine::GraphMemoryCalibrationOverride::none()
-                .with_raw_input_edges(30_000)
-                .with_topology_family(nexus_query_engine::GraphTopologyFamily::CitationLikeSparse),
+            nexus_query_engine::GraphMemoryCalibrationOverride::none().with_raw_input_edges(30_000),
         );
         let edge_source = memory_edge_source(300);
 
@@ -1028,12 +1018,7 @@ mod tests {
         let want = 2 * 1024 * 1024 * 1024;
         let capacity = 4 * 1024 * 1024 * 1024;
         let source = admission_source_with_band(min, want, capacity);
-        let config = NativeCudfExecutionConfig::bounded(min, 512, 1, 3, 1)
-            .with_query_admission_source(source)
-            .with_graph_memory_calibration_override(
-                nexus_query_engine::GraphMemoryCalibrationOverride::none()
-                    .with_topology_family(nexus_query_engine::GraphTopologyFamily::CitationLikeSparse),
-            );
+        let config = NativeCudfExecutionConfig::bounded(min, 512, 1, 3, 1).with_query_admission_source(source);
         let edge_source = native_edge_source(vec![100, 200], &config);
 
         let exec = CugraphAlgoExec::try_new(triangle_spec(), edge_source, vec![], None, None, config)
@@ -1056,9 +1041,7 @@ mod tests {
         let config = NativeCudfExecutionConfig::bounded(min, 512, 1, 3, 1)
             .with_query_admission_source(source)
             .with_graph_memory_calibration_override(
-                nexus_query_engine::GraphMemoryCalibrationOverride::none()
-                    .with_raw_input_edges(300)
-                    .with_topology_family(nexus_query_engine::GraphTopologyFamily::CitationLikeSparse),
+                nexus_query_engine::GraphMemoryCalibrationOverride::none().with_raw_input_edges(300),
             );
         let edge_source = sorted_native_edge_source(vec![100, 200], &config);
 

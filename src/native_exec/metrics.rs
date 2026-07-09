@@ -862,7 +862,6 @@ impl NativeCudfMetrics {
                 .with_new_label("renumber", row.renumber.to_string())
                 .with_new_label("construction_policy", row.construction_policy.as_str().to_string())
                 .with_new_label("edge_normalize_inserted", row.edge_normalize_inserted.to_string())
-                .with_new_label("topology_family", row.topology_family.as_str().to_string())
                 .with_new_label("calibration_source", row.calibration_source.as_str().to_string())
                 .with_new_label(
                     "seed_count",
@@ -882,6 +881,47 @@ impl NativeCudfMetrics {
                 .with_new_label(
                     "graph_model_error_ratio",
                     row.graph_model_error_ratio.map_or_else(|| "none".to_string(), |ratio| ratio.as_decimal_string()),
+                )
+                .with_new_label(
+                    "graph_statistics_exact_vertices",
+                    row.statistics
+                        .map_or_else(|| "none".to_string(), |statistics| statistics.exact_vertices.to_string()),
+                )
+                .with_new_label(
+                    "graph_statistics_degree_max",
+                    row.statistics
+                        .and_then(|statistics| statistics.degree_max)
+                        .map_or_else(|| "none".to_string(), |value| value.to_string()),
+                )
+                .with_new_label(
+                    "graph_statistics_degree_p99",
+                    row.statistics
+                        .and_then(|statistics| statistics.degree_p99)
+                        .map_or_else(|| "none".to_string(), |value| value.to_string()),
+                )
+                .with_new_label(
+                    "graph_statistics_sum_min_degree_oriented",
+                    row.statistics
+                        .and_then(|statistics| statistics.sum_min_degree_oriented)
+                        .map_or_else(|| "none".to_string(), |value| value.to_string()),
+                )
+                .with_new_label(
+                    "graph_statistics_oriented_edge_count",
+                    row.statistics
+                        .and_then(|statistics| statistics.oriented_edge_count)
+                        .map_or_else(|| "none".to_string(), |value| value.to_string()),
+                )
+                .with_new_label(
+                    "graph_statistics_peak_chunk_min_degree_sum",
+                    row.statistics
+                        .and_then(|statistics| statistics.peak_chunk_min_degree_sum)
+                        .map_or_else(|| "none".to_string(), |value| value.to_string()),
+                )
+                .with_new_label(
+                    "graph_statistics_sum_out_degree",
+                    row.statistics
+                        .and_then(|statistics| statistics.sum_out_degree)
+                        .map_or_else(|| "none".to_string(), |value| value.to_string()),
                 )
                 .with_new_label("reason", row.reason.unwrap_or("none").to_string())
                 .global_counter("native_graph_reservation_rows")

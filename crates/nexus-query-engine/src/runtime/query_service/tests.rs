@@ -1,6 +1,6 @@
 use super::*;
 use crate::{
-    graph_memory::{GraphMemoryCalibrationOverride, GraphTopologyFamily},
+    graph_memory::GraphMemoryCalibrationOverride,
     runtime::{GdsDriverProbeStatus, KvikioCompatModeStatus, NvidiaFsProbeStatus},
 };
 
@@ -652,9 +652,7 @@ fn query_service_resources_use_independent_lakehouse_cache_fill_limits() {
 
 #[test]
 fn query_service_context_carries_graph_calibration_override() {
-    let graph_memory_calibration_override = GraphMemoryCalibrationOverride::default()
-        .with_raw_input_edges(45_564_149)
-        .with_topology_family(GraphTopologyFamily::CitationLikeSparse);
+    let graph_memory_calibration_override = GraphMemoryCalibrationOverride::default().with_raw_input_edges(45_564_149);
     let config = QueryServiceConfig { graph_memory_calibration_override, ..QueryServiceConfig::default() };
     let service = QueryService::new_with_deployment(
         config,
