@@ -100,7 +100,11 @@ optimizer installs. Backend-managed sessions freeze those native policy keys so
 they cannot diverge from the shared admission ledger. The
 `datafusion_nexus.request.*` namespace is intentionally request-scoped and stays
 mutable on those embedded DataFusion sessions. Set
-`datafusion_nexus.request.requested_grant_bytes` through SQL or DataFusion's
+`datafusion_nexus.request.requested_grant_bytes` (preferred grant),
+`datafusion_nexus.request.requested_grant_min_bytes` (request-scoped grant
+floor: admit with at least this much or keep queueing), or
+`datafusion_nexus.request.graph_raw_input_edges` (edge-count evidence for graph
+memory pricing when source statistics are unavailable) through SQL or DataFusion's
 session-option API after Nexus registers the extension. Flight SQL does not
 support session-scoped `datafusion_nexus.*` keys through SQL `SET`; configure
 server or tenant defaults instead. The server does not load request keys from a

@@ -249,13 +249,26 @@ only for fixed-slice tenants where `min == want`.
 `datafusion_nexus.request.requested_grant_bytes` is a request-scoped preferred
 grant override. The optimizer reads it when it mints the plan admission ticket;
 all native fragments in that optimized plan share the same ask. Unset or
-`none` uses the backend's tenant `want`.
+`none` uses the backend's tenant `want` — with one exception: for
+graph-dominated plans the ticket ask is derived from the graph memory model
+(edge-count and dtype evidence in the lowered plan), so a `cugraph_*` query no
+longer asks for the whole card by default. An explicit
+`requested_grant_bytes` always wins over the derived ask.
 
 The key overrides only `want`, never `min`. The request must be greater than or
 equal to the tenant `min`, less than or equal to the tenant `want`, and no larger
 than device capacity. Values outside that range fail loudly during
 query-service admission. They are not silently clamped, because a mistyped ask
 would otherwise change concurrency behavior without evidence.
+
+`datafusion_nexus.request.requested_grant_min_bytes` is the floor-side
+companion: a request-scoped minimum grant inside the tenant band. Admission
+either returns a grant at least that large or keeps the query queued (up to
+`wait_timeout`) — it never admits a query into a grant the plan already knows
+is fatal, which turns "wait, get a leftover grant, then die on the memory
+gate" into "wait until enough memory is actually free". It is validated with
+the same loud out-of-range rejection as the want-side key and does not change
+the tenant band itself.
 
 Small asks leave more grant room for backfill. Large asks reserve more up front
 when the query is known to need it. Tune from evidence: per-query reports expose
@@ -308,9 +321,11 @@ allocator high-water bytes, and retry counters.
         device: each <code>ExecutionBudgetToken</code> is a per-stream member
         lease under the query arena. Native allocation accounting charges the
         arena parent first, then the member, so concurrent streams cannot exceed
-        the query grant. Over-limit allocations fail as structured
-        <code>ResourceExhausted</code> (retryable upstream). The
-        reclaim-capable failure callback receives device, request, and
+        the query grant. The cuGraph graph stage runs on such a member lease
+        too, so libcugraph workspace allocations are charged to the query
+        rather than landing on the bare device pool. Over-limit allocations
+        fail as structured <code>ResourceExhausted</code> (retryable upstream).
+        The reclaim-capable failure callback receives device, request, and
         async-pool reserved/used counters; the backend can ask cudf-rs to trim
         idle async-pool pages once, then retry the failed allocation.</>,
     },
@@ -425,8 +440,16 @@ from log archaeology.
   fragments — admits exactly once through its own. Standalone *bounded*
   sessions (no backend) refuse to execute native fragments inside a
   `cugraph_*` call — a loud structured error instead of a second full-budget
-  ledger. The memory-side unification of graph workspaces with the governor
-  remains tracked work, not a settled contract.
+  ledger. Graph workspace memory follows the same governance contract as
+  relational work: a runtime statistics probe on the resident edge frame
+  (exact distinct vertices, plus degree evidence for the workspace-heavy
+  algorithms) prices the graph stage, that ask is gated against the query's
+  actual grant, and the stage then executes under a per-stream budget token
+  charged to the query's grant arena — libcugraph workspace allocations
+  included. A stage priced too low fails as a contained, retryable structured
+  error on that one query instead of pressuring the shared pool, and graph
+  reservation rows carry the measured statistics, `graph_peak_bytes`, and the
+  model error ratio so pricing drift is visible in every report.
 - **Capability-first admission is unchanged.** Admission grants memory
   *capacity*; it never re-introduces estimate-driven plan admission. Rejections
   stay local and structured (operator, expression, type, source, reservation
