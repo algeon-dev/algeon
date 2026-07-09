@@ -4,6 +4,8 @@ use source_contract_support::contains_normalized;
 
 const EXECUTION_CONTEXT_CPP: &str =
     include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/native/src/execution_context.cpp"));
+const EXECUTION_CONTEXT_INTERNAL_HPP: &str =
+    include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/native/src/execution_context_internal.hpp"));
 const ARROW_DEVICE_CPP: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/native/src/arrow_device.cpp"));
 const BINARY_H: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/native/include/binary.h"));
 const BINARY_CPP: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/native/src/binary.cpp"));
@@ -127,17 +129,53 @@ fn required_exec_options_resolver_rejects_ambient_execution_and_does_not_install
 }
 
 #[test]
-fn execution_context_memory_resource_ref_is_not_type_erased_through_any_resource() {
+fn execution_context_memory_resource_ref_retains_type_erased_resource_lifetime() {
     assert!(
-        !EXECUTION_CONTEXT_CPP.contains("cuda::mr::any_resource"),
-        "execution-context memory-resource refs must be built directly from the raw RMM resource; \
-         type-erasing through cuda::mr::any_resource makes copied refs depend on a separate \
-         object lifetime"
+        EXECUTION_CONTEXT_INTERNAL_HPP
+            .contains("std::shared_ptr<cuda::mr::any_resource<cuda::mr::device_accessible>> mr"),
+        "26.06 execution contexts must retain the CCCL type-erased resource object that backs \
+         copied resource refs"
+    );
+    assert!(
+        source_contract_support::contains_normalized(
+            EXECUTION_CONTEXT_CPP,
+            "return std::make_shared<cuda::mr::any_resource<cuda::mr::device_accessible>>( rmm::mr::any_device_resource_from_raw(raw));"
+        ),
+        "execution contexts must build the retained any_resource from the shim-owned raw resource \
+         identity, not from ambient current-resource state"
+    );
+    assert!(
+        EXECUTION_CONTEXT_CPP.contains("resource_ref_lifetime"),
+        "execution contexts must retain the any_resource lifetime alongside the owner lifetime"
     );
     assert!(
         !EXECUTION_CONTEXT_CPP.contains("device_memory_resource_view"),
-        "execution-context code should rely on rmm::device_async_resource_ref's direct raw-resource \
-         constructor so copied refs rebuild their own device_memory_resource_view"
+        "execution-context code should not depend on the removed pre-26.06 resource-view internals"
+    );
+}
+
+#[test]
+fn permissive_exec_options_resolver_guards_current_resource_identity_map() {
+    let body = function_region(
+        EXECUTION_CONTEXT_CPP,
+        "cudf_status_t cudf_resolve_exec_options",
+        "cudf_status_t\ncudf_resolve_required_exec_options",
+    );
+
+    let mut default_mr_lookups = 0;
+    for (index, _) in body.match_indices("out->mr_raw = cudf_tracked_current_device_resource_raw();") {
+        default_mr_lookups += 1;
+        let prefix_start = index.saturating_sub(256);
+        let lookup_prefix = &body[prefix_start..index];
+        assert!(
+            lookup_prefix.contains("std::scoped_lock lock{cudf_current_device_resource_mutex()}"),
+            "permissive/default execution resolution must guard current-resource identity lookups"
+        );
+    }
+
+    assert_eq!(
+        default_mr_lookups, 2,
+        "permissive resolver should only read ambient current-resource identity for the null-options and default-options paths"
     );
 }
 
@@ -707,6 +745,16 @@ fn join_duplicate_non_ex_production_apis_are_removed() {
         ("join Rust FFI", JOIN_FFI_RS, "pub fn cudf_mixed_left_anti_join_indices("),
     ] {
         assert!(!source.contains(marker), "{name} must not retain duplicate non-_ex production API `{marker}`");
+    }
+}
+
+#[test]
+fn filtered_join_shim_uses_2606_right_filter_constructor() {
+    for (name, source) in [("join hash source", JOIN_HASH_CPP), ("join common source", JOIN_COMMON_HPP)] {
+        assert!(
+            !source.contains("set_as_build_table"),
+            "{name} must use the cuDF 26.06 filtered_join constructors that always treat the retained table as right/filter"
+        );
     }
 }
 

@@ -267,6 +267,10 @@ fn main() {
     rerun_if_changed_recursive(&native_dir.join("src"));
     rerun_if_changed_recursive(&native_dir.join("include"));
     println!("cargo:rerun-if-changed={}", native_dir.join("CMakeLists.txt").display());
+    println!("cargo:rerun-if-changed={}", manifest_dir.join("../cudf/cpp/build/CMakeCache.txt").display());
+    if let Ok(cudf_cpp_build_dir) = env::var("CUDF_CPP_BUILD_DIR") {
+        println!("cargo:rerun-if-changed={}", PathBuf::from(cudf_cpp_build_dir).join("CMakeCache.txt").display());
+    }
     println!("cargo:rerun-if-changed={}", native_dir.join(".clang-tidy").display());
     println!("cargo:rerun-if-changed={}", clang_format_config.display());
     println!("cargo:rerun-if-changed=build_support.rs");

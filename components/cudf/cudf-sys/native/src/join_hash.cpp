@@ -383,7 +383,7 @@ cudf_status_t cudf_left_semi_join_indices_ex(cudf_table_view_handle left_keys,
 
     {
       cudf_current_device_resource_guard current_mr{exec->mr_raw};
-      cudf::filtered_join join{*rk, null_eq, cudf::set_as_build_table::RIGHT, 0.5, exec->stream};
+      cudf::filtered_join join{*rk, null_eq, 0.5, exec->stream};
       auto indices = join.semi_join(*lk, exec->stream, *exec->mr);
       *out_indices = cudf_release_column_handle(release_join_index_column(std::move(indices)),
                                                 cudf_capture_exec_provenance(*exec));
@@ -417,7 +417,7 @@ cudf_status_t cudf_left_anti_join_indices_ex(cudf_table_view_handle left_keys,
 
     {
       cudf_current_device_resource_guard current_mr{exec->mr_raw};
-      cudf::filtered_join join{*rk, null_eq, cudf::set_as_build_table::RIGHT, 0.5, exec->stream};
+      cudf::filtered_join join{*rk, null_eq, 0.5, exec->stream};
       auto indices = join.anti_join(*lk, exec->stream, *exec->mr);
       *out_indices = cudf_release_column_handle(release_join_index_column(std::move(indices)),
                                                 cudf_capture_exec_provenance(*exec));

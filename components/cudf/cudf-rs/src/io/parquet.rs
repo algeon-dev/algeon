@@ -490,6 +490,16 @@ pub struct ParquetReadEvidence {
     pub remote_range_count: Option<u64>,
     pub device_read_support: &'static str,
     pub backend_build_status: RemoteParquetBackendBuildStatus,
+    pub pruning: Option<ParquetPruningEvidence>,
+}
+
+/// Row-group pruning evidence returned by libcudf for a Parquet read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ParquetPruningEvidence {
+    /// Row groups participating in this read after any caller row-group selection.
+    pub input_row_groups: u64,
+    pub row_groups_after_stats_filter: Option<u64>,
+    pub row_groups_after_bloom_filter: Option<u64>,
 }
 
 impl ParquetReadEvidence {
@@ -503,6 +513,7 @@ impl ParquetReadEvidence {
             remote_range_count: None,
             device_read_support: "not_reported_by_libcudf",
             backend_build_status: remote_parquet_backend_build_status(),
+            pruning: None,
         }
     }
 
@@ -516,6 +527,7 @@ impl ParquetReadEvidence {
             remote_range_count: None,
             device_read_support: "not_applicable",
             backend_build_status: RemoteParquetBackendBuildStatus::Unknown,
+            pruning: None,
         }
     }
 
@@ -529,7 +541,13 @@ impl ParquetReadEvidence {
             remote_range_count: None,
             device_read_support: "not_applicable",
             backend_build_status: RemoteParquetBackendBuildStatus::Unknown,
+            pruning: None,
         }
+    }
+
+    fn with_pruning(mut self, pruning: Option<ParquetPruningEvidence>) -> Self {
+        self.pruning = pruning;
+        self
     }
 }
 
@@ -814,6 +832,33 @@ fn empty_remote_read_evidence_raw() -> cudf_sys::cudf_io_remote_parquet_read_evi
     }
 }
 
+fn empty_pruning_evidence_raw() -> cudf_sys::cudf_io_parquet_pruning_evidence_t {
+    cudf_sys::cudf_io_parquet_pruning_evidence_t {
+        input_row_groups: -1,
+        has_row_groups_after_stats_filter: 0,
+        row_groups_after_stats_filter: -1,
+        has_row_groups_after_bloom_filter: 0,
+        row_groups_after_bloom_filter: -1,
+    }
+}
+
+fn pruning_evidence_from_raw(raw: cudf_sys::cudf_io_parquet_pruning_evidence_t) -> Option<ParquetPruningEvidence> {
+    let input_row_groups = u64::try_from(raw.input_row_groups).ok()?;
+    Some(ParquetPruningEvidence {
+        input_row_groups,
+        row_groups_after_stats_filter: if raw.has_row_groups_after_stats_filter != 0 {
+            u64::try_from(raw.row_groups_after_stats_filter).ok()
+        } else {
+            None
+        },
+        row_groups_after_bloom_filter: if raw.has_row_groups_after_bloom_filter != 0 {
+            u64::try_from(raw.row_groups_after_bloom_filter).ok()
+        } else {
+            None
+        },
+    })
+}
+
 fn remote_read_evidence_from_raw(
     source: Option<&RemoteParquetSource>,
     input_kind: &'static str,
@@ -844,6 +889,7 @@ fn remote_read_evidence_from_raw(
         remote_range_count: u64::try_from(raw.remote_range_count).ok(),
         device_read_support,
         backend_build_status: remote_parquet_backend_build_status(),
+        pruning: None,
     }
 }
 
@@ -1054,6 +1100,7 @@ pub(crate) fn read_parquet_table_with_evidence(
     let predicate = options.predicate.as_ref().map_or(ptr::null_mut(), |predicate| predicate.raw_handle());
 
     let mut remote_raw_evidence = empty_remote_read_evidence_raw();
+    let mut pruning_raw_evidence = empty_pruning_evidence_raw();
     let remote_profile_ffi =
         options.remote_source.as_ref().map(|source| RemoteProfileFfi::new(source.profile(), OPERATION)).transpose()?;
     let remote_profile_raw = options
@@ -1085,6 +1132,7 @@ pub(crate) fn read_parquet_table_with_evidence(
                 &mut names_ptr,
                 &mut num_names,
                 &mut remote_raw_evidence,
+                &mut pruning_raw_evidence,
                 &exec_options,
             )
         }
@@ -1106,6 +1154,7 @@ pub(crate) fn read_parquet_table_with_evidence(
                 &mut table_handle,
                 &mut names_ptr,
                 &mut num_names,
+                &mut pruning_raw_evidence,
                 &exec_options,
             )
         }
@@ -1127,6 +1176,7 @@ pub(crate) fn read_parquet_table_with_evidence(
                 &mut table_handle,
                 &mut names_ptr,
                 &mut num_names,
+                &mut pruning_raw_evidence,
                 &exec_options,
             )
         }
@@ -1136,6 +1186,7 @@ pub(crate) fn read_parquet_table_with_evidence(
             options.remote_source.as_ref().expect("remote source exists when explicit remote datasource is used");
         read_evidence = remote_read_evidence_from_raw(Some(source), "remote_path", remote_raw_evidence);
     }
+    read_evidence = read_evidence.with_pruning(pruning_evidence_from_raw(pruning_raw_evidence));
 
     error::check_status_in_with_details(
         status,
@@ -1342,6 +1393,7 @@ pub(crate) fn read_parquet_multi_table(options: &ParquetMultiTableReadOptions) -
     let mut names_ptr: *mut *mut c_char = ptr::null_mut();
     let mut num_names: i32 = 0;
     let mut remote_raw_evidence = empty_remote_read_evidence_raw();
+    let mut pruning_raw_evidence = empty_pruning_evidence_raw();
 
     // SAFETY: filepath_ptrs and column/row-group buffers are valid for this
     // call. The predicate handle, when present, is retained by options.
@@ -1365,6 +1417,7 @@ pub(crate) fn read_parquet_multi_table(options: &ParquetMultiTableReadOptions) -
                 &mut names_ptr,
                 &mut num_names,
                 &mut remote_raw_evidence,
+                &mut pruning_raw_evidence,
                 &exec_options,
             )
         }
@@ -1383,6 +1436,7 @@ pub(crate) fn read_parquet_multi_table(options: &ParquetMultiTableReadOptions) -
                 &mut table_handle,
                 &mut names_ptr,
                 &mut num_names,
+                &mut pruning_raw_evidence,
                 &exec_options,
             )
         }
@@ -1421,7 +1475,8 @@ pub(crate) fn read_parquet_multi_table(options: &ParquetMultiTableReadOptions) -
         ))
     } else {
         multi_table_read_evidence(&options.inputs)
-    };
+    }
+    .map(|evidence| evidence.with_pruning(pruning_evidence_from_raw(pruning_raw_evidence)));
     if let Some(evidence) = read_evidence.as_ref() {
         validate_require_direct_evidence(
             evidence,
@@ -1448,6 +1503,7 @@ fn multi_table_read_evidence(inputs: &[ParquetMultiTableInput]) -> Option<Parque
             remote_range_count: None,
             device_read_support: "not_applicable",
             backend_build_status: RemoteParquetBackendBuildStatus::Unknown,
+            pruning: None,
         });
     }
     let requested_remote_read_mode = remote_sources
@@ -1463,6 +1519,7 @@ fn multi_table_read_evidence(inputs: &[ParquetMultiTableInput]) -> Option<Parque
         remote_range_count: None,
         device_read_support: "not_reported_by_libcudf",
         backend_build_status: remote_parquet_backend_build_status(),
+        pruning: None,
     })
 }
 
@@ -1480,6 +1537,7 @@ mod tests {
             remote_range_count: Some(3),
             device_read_support: "supported_used",
             backend_build_status: RemoteParquetBackendBuildStatus::KvikioRemoteIoEnabled,
+            pruning: None,
         }
     }
 
@@ -1499,6 +1557,7 @@ mod tests {
             remote_range_count: None,
             device_read_support: "not_reported_by_libcudf",
             backend_build_status: RemoteParquetBackendBuildStatus::Unknown,
+            pruning: None,
         };
 
         let error = validate_require_direct_evidence(&evidence, true, "test").unwrap_err();

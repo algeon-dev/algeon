@@ -9,10 +9,6 @@
 #include <memory>
 #include <utility>
 
-namespace rmm::mr {
-class device_memory_resource;
-} // namespace rmm::mr
-
 struct cudf_handle_provenance {
   int32_t device;
   std::shared_ptr<void> stream_lifetime;

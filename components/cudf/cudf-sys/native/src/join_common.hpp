@@ -28,7 +28,6 @@
 
 #include <rmm/device_uvector.hpp>
 #include <rmm/mr/statistics_resource_adaptor.hpp>
-
 #include <cstddef>
 #include <cstdint>
 #include <limits>
@@ -200,6 +199,9 @@ enum class hash_join_probe_kind { inner, left, full };
 
 enum class filtered_join_probe_kind { semi, anti };
 
+using statistics_resource_box =
+  rmm::mr::device_memory_resource_box<rmm::mr::statistics_resource_adaptor>;
+
 struct distinct_hash_join_owner {
   std::shared_ptr<void> upstream_mr_lifetime;
   std::shared_ptr<void> stream_lifetime;
@@ -211,8 +213,7 @@ struct distinct_hash_join_owner {
 struct filtered_join_owner {
   std::shared_ptr<void> upstream_mr_lifetime;
   std::shared_ptr<void> stream_lifetime;
-  std::unique_ptr<rmm::mr::statistics_resource_adaptor<rmm::mr::device_memory_resource>>
-    observed_mr;
+  std::unique_ptr<statistics_resource_box> observed_mr;
   std::unique_ptr<cudf::filtered_join> join;
   rmm::mr::device_memory_resource* mr_raw = nullptr;
   std::size_t device_allocated_size_bytes = 0;
@@ -222,8 +223,7 @@ struct filtered_join_owner {
 struct filtered_join_probe_owner {
   std::shared_ptr<void> upstream_mr_lifetime;
   std::shared_ptr<void> stream_lifetime;
-  std::unique_ptr<rmm::mr::statistics_resource_adaptor<rmm::mr::device_memory_resource>>
-    observed_mr;
+  std::unique_ptr<statistics_resource_box> observed_mr;
   std::unique_ptr<cudf::filtered_join_probe_state> probe;
   rmm::mr::device_memory_resource* mr_raw = nullptr;
   std::size_t device_allocated_size_bytes = 0;
@@ -242,8 +242,7 @@ struct hash_join_owner {
 struct conditional_full_join_size_data_owner {
   std::shared_ptr<void> upstream_mr_lifetime;
   std::shared_ptr<void> stream_lifetime;
-  std::unique_ptr<rmm::mr::statistics_resource_adaptor<rmm::mr::device_memory_resource>>
-    observed_mr;
+  std::unique_ptr<statistics_resource_box> observed_mr;
   std::unique_ptr<cudf::conditional_full_join_size_data> size_data;
   std::optional<cudf::table_view> left;
   std::optional<cudf::table_view> right;
@@ -257,8 +256,7 @@ struct conditional_full_join_size_data_owner {
 struct mixed_join_size_data_owner {
   std::shared_ptr<void> upstream_mr_lifetime;
   std::shared_ptr<void> stream_lifetime;
-  std::unique_ptr<rmm::mr::statistics_resource_adaptor<rmm::mr::device_memory_resource>>
-    observed_mr;
+  std::unique_ptr<statistics_resource_box> observed_mr;
   std::unique_ptr<rmm::device_uvector<cudf::size_type>> matches_per_row;
   std::unique_ptr<cudf::mixed_full_join_size_data> full_size_data;
   std::unique_ptr<cudf::mixed_left_semi_anti_join_size_data> single_size_data;
@@ -539,9 +537,8 @@ inline cudf_status_t conditional_full_join_size_data_impl(
     owner->left        = *left_view;
     owner->right       = *right_view;
     owner->predicate   = cudf_ast_expression_owner_ref_from_handle(predicate);
-    owner->observed_mr =
-      std::make_unique<rmm::mr::statistics_resource_adaptor<rmm::mr::device_memory_resource>>(
-        *exec->mr);
+    owner->observed_mr = std::make_unique<statistics_resource_box>(
+      cuda::mr::any_resource<cuda::mr::device_accessible>{*exec->mr});
     owner->mr_raw = owner->observed_mr.get();
     {
       cudf_current_device_resource_guard current_mr{owner->mr_raw};
@@ -549,7 +546,7 @@ inline cudf_status_t conditional_full_join_size_data_impl(
       owner->size_data =
         cudf::conditional_full_join_size(*left_view, *right_view, pred, exec->stream, observed_mr_ref);
       owner->output_size = owner->size_data->output_size();
-      auto const bytes   = owner->observed_mr->get_bytes_counter().value;
+      auto const bytes   = owner->observed_mr->resource().get_bytes_counter().value;
       owner->device_allocated_size_bytes = bytes > 0 ? static_cast<std::size_t>(bytes) : 0;
     }
     *out = static_cast<cudf_conditional_full_join_size_data_handle>(owner.release());
@@ -688,9 +685,8 @@ inline cudf_status_t mixed_join_size_data_impl(cudf_table_view_handle left_equal
     owner->predicate            = cudf_ast_expression_owner_ref_from_handle(predicate);
     owner->null_equality        = null_eq;
     owner->kind                 = kind;
-    owner->observed_mr =
-      std::make_unique<rmm::mr::statistics_resource_adaptor<rmm::mr::device_memory_resource>>(
-        *exec->mr);
+    owner->observed_mr = std::make_unique<statistics_resource_box>(
+      cuda::mr::any_resource<cuda::mr::device_accessible>{*exec->mr});
     owner->mr_raw = owner->observed_mr.get();
     {
       cudf_current_device_resource_guard current_mr{owner->mr_raw};
@@ -726,7 +722,7 @@ inline cudf_status_t mixed_join_size_data_impl(cudf_table_view_handle left_equal
           owner->output_size = owner->single_size_data->output_size();
           break;
       }
-      auto const bytes = owner->observed_mr->get_bytes_counter().value;
+      auto const bytes = owner->observed_mr->resource().get_bytes_counter().value;
       owner->device_allocated_size_bytes = bytes > 0 ? static_cast<std::size_t>(bytes) : 0;
     }
     *out = static_cast<cudf_mixed_join_size_data_handle>(owner.release());
@@ -971,15 +967,14 @@ inline cudf_status_t filtered_join_create_impl(cudf_table_view_handle build,
     owner->device    = exec->device;
     owner->upstream_mr_lifetime = exec->mr_lifetime;
     owner->stream_lifetime      = exec->stream_lifetime;
-    owner->observed_mr =
-      std::make_unique<rmm::mr::statistics_resource_adaptor<rmm::mr::device_memory_resource>>(
-        *exec->mr);
+    owner->observed_mr = std::make_unique<statistics_resource_box>(
+      cuda::mr::any_resource<cuda::mr::device_accessible>{*exec->mr});
     owner->mr_raw = owner->observed_mr.get();
     {
       cudf_current_device_resource_guard current_mr{owner->mr_raw};
       owner->join = std::make_unique<cudf::filtered_join>(
-        *build_view, null_eq, cudf::set_as_build_table::RIGHT, load_factor, exec->stream);
-      auto const bytes = owner->observed_mr->get_bytes_counter().value;
+        *build_view, null_eq, load_factor, exec->stream);
+      auto const bytes = owner->observed_mr->resource().get_bytes_counter().value;
       owner->device_allocated_size_bytes = bytes > 0 ? static_cast<std::size_t>(bytes) : 0;
     }
     *out = static_cast<cudf_filtered_join_handle>(owner.release());
@@ -1075,9 +1070,8 @@ inline cudf_status_t filtered_join_begin_probe_impl(cudf_filtered_join_handle jo
     probe_owner->device               = exec->device;
     probe_owner->upstream_mr_lifetime = exec->mr_lifetime;
     probe_owner->stream_lifetime      = exec->stream_lifetime;
-    probe_owner->observed_mr =
-      std::make_unique<rmm::mr::statistics_resource_adaptor<rmm::mr::device_memory_resource>>(
-        *exec->mr);
+    probe_owner->observed_mr = std::make_unique<statistics_resource_box>(
+      cuda::mr::any_resource<cuda::mr::device_accessible>{*exec->mr});
     probe_owner->mr_raw = probe_owner->observed_mr.get();
     {
       cudf_current_device_resource_guard current_mr{probe_owner->mr_raw};
@@ -1085,7 +1079,7 @@ inline cudf_status_t filtered_join_begin_probe_impl(cudf_filtered_join_handle jo
       probe_owner->probe = kind == filtered_join_probe_kind::semi
                              ? owner->join->begin_left_semi_probe(*probe_view, exec->stream, observed_mr_ref)
                              : owner->join->begin_left_anti_probe(*probe_view, exec->stream, observed_mr_ref);
-      auto const bytes = probe_owner->observed_mr->get_bytes_counter().value;
+      auto const bytes = probe_owner->observed_mr->resource().get_bytes_counter().value;
       probe_owner->device_allocated_size_bytes = bytes > 0 ? static_cast<std::size_t>(bytes) : 0;
     }
     *out = static_cast<cudf_filtered_join_probe_handle>(probe_owner.release());
