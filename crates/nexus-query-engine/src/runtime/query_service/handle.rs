@@ -316,6 +316,7 @@ impl QueryHandle {
             stddev_samp_execution_mode: self.service.config.stddev_samp_execution_mode,
             aggregate_strategy_execution_options: self.service.config.aggregate_strategy_execution_options,
             source_chunk_planning_options: self.service.config.source_chunk_planning_options,
+            graph_memory_calibration_override: self.service.config.graph_memory_calibration_override,
             adaptive_memory_history: Some(Arc::new(AdaptiveMemoryHistory::default())),
             hash_join_build_cache: None,
             local_parquet_source_cache: None,

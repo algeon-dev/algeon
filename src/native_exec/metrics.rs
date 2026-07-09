@@ -823,6 +823,10 @@ impl NativeCudfMetrics {
                     "output_device_bytes",
                     row.output_device_bytes.map_or_else(|| "none".to_string(), |value| value.to_string()),
                 )
+                .with_new_label(
+                    "graph_peak_bytes",
+                    row.graph_peak_bytes.map_or_else(|| "none".to_string(), |value| value.to_string()),
+                )
                 .with_new_label("elapsed_ns", row.elapsed_ns.to_string())
                 .with_new_label("gpu_resident_input_handoffs", row.gpu_resident_input_handoffs.to_string())
                 .with_new_label("host_to_device_uploads", row.host_to_device_uploads.to_string())
@@ -840,6 +844,10 @@ impl NativeCudfMetrics {
                 .with_new_label("algorithm", row.algorithm.as_str().to_string())
                 .with_new_label("class", row.class.as_str().to_string())
                 .with_new_label("outcome", row.outcome.as_str().to_string())
+                .with_new_label(
+                    "raw_input_edges",
+                    row.raw_input_edges.map_or_else(|| "none".to_string(), |value| value.to_string()),
+                )
                 .with_new_label("input_edges", row.input_edges.to_string())
                 .with_new_label("vertex_upper_bound", row.vertex_upper_bound.to_string())
                 .with_new_label("vertex_estimate", row.vertex_estimate.to_string())
@@ -853,15 +861,27 @@ impl NativeCudfMetrics {
                 .with_new_label("directed", row.directed.to_string())
                 .with_new_label("renumber", row.renumber.to_string())
                 .with_new_label("construction_policy", row.construction_policy.as_str().to_string())
+                .with_new_label("edge_normalize_inserted", row.edge_normalize_inserted.to_string())
+                .with_new_label("topology_family", row.topology_family.as_str().to_string())
+                .with_new_label("calibration_source", row.calibration_source.as_str().to_string())
                 .with_new_label(
                     "seed_count",
                     row.seed_count.map_or_else(|| "none".to_string(), |value| value.to_string()),
                 )
+                .with_new_label(
+                    "seed_mode",
+                    row.seed_mode.map_or_else(|| "none".to_string(), |mode| mode.as_str().to_string()),
+                )
                 .with_new_label("data_dependent", row.data_dependent.to_string())
+                .with_new_label("model_requested_bytes", row.model_requested_bytes.to_string())
                 .with_new_label("requested_bytes", row.requested_bytes.to_string())
                 .with_new_label(
                     "budget_bytes",
                     row.budget_bytes.map_or_else(|| "none".to_string(), |value| value.to_string()),
+                )
+                .with_new_label(
+                    "graph_model_error_ratio",
+                    row.graph_model_error_ratio.map_or_else(|| "none".to_string(), |ratio| ratio.as_decimal_string()),
                 )
                 .with_new_label("reason", row.reason.unwrap_or("none").to_string())
                 .global_counter("native_graph_reservation_rows")

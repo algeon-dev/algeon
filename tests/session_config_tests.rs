@@ -11,8 +11,9 @@ use datafusion_nexus::{
     NativeMemoryPolicyConfig,
 };
 use nexus_query_engine::{
-    MemoryControlPolicy, NativePipelineExecutionMode, QueryService, QueryServiceConfig, QueryServiceTenantConfig,
-    SourceChunkPlanningMode, SourceSchedulerPolicy, StatisticalAggregateExecutionMode,
+    GraphTopologyFamily, MemoryControlPolicy, NativePipelineExecutionMode, QueryService, QueryServiceConfig,
+    QueryServiceTenantConfig, SlotGuarantee, SourceChunkPlanningMode, SourceSchedulerPolicy,
+    StatisticalAggregateExecutionMode,
 };
 
 #[test]
@@ -44,7 +45,10 @@ fn datafusion_nexus_session_config_applies_native_bounded_options() {
     options.set("datafusion_nexus.native.source_chunk_planning_mode", "local_parquet_throughput").unwrap();
     options.set("datafusion_nexus.native.pipeline_execution_mode", "adaptive").unwrap();
     options.set("datafusion_nexus.native.statistical_aggregate_execution_mode", "gpu_native_tolerant").unwrap();
+    options.set("datafusion_nexus.request.requested_grant_min_bytes", "1024").unwrap();
     options.set("datafusion_nexus.request.requested_grant_bytes", "1536").unwrap();
+    options.set("datafusion_nexus.request.graph_raw_input_edges", "45564149").unwrap();
+    options.set("datafusion_nexus.request.graph_topology_family", "citation_like_sparse").unwrap();
 
     let effective = base.with_datafusion_config_options(&options).unwrap();
     let native = effective.native_execution_config();
@@ -63,7 +67,11 @@ fn datafusion_nexus_session_config_applies_native_bounded_options() {
     assert_eq!(native.source_chunk_planning_mode(), SourceChunkPlanningMode::LocalParquetThroughput);
     assert_eq!(native.native_pipeline_execution_mode(), NativePipelineExecutionMode::Adaptive);
     assert_eq!(native.statistical_aggregate_execution_mode(), StatisticalAggregateExecutionMode::GpuNativeTolerant);
+    assert_eq!(native.requested_grant_min_bytes(), Some(1024));
     assert_eq!(native.requested_grant_bytes(), Some(1536));
+    let graph_calibration = native.graph_memory_calibration_override();
+    assert_eq!(graph_calibration.raw_input_edges, Some(45_564_149));
+    assert_eq!(graph_calibration.topology_family, GraphTopologyFamily::CitationLikeSparse);
 }
 
 #[test]
@@ -102,8 +110,17 @@ fn datafusion_nexus_session_config_rejects_invalid_values() {
     let error = options.set("datafusion_nexus.native.pipeline_execution_mode", "strict").unwrap_err();
     assert!(error.to_string().contains("strict_bounded"));
 
+    let error = options.set("datafusion_nexus.request.requested_grant_min_bytes", "0").unwrap_err();
+    assert!(error.to_string().contains("request.requested_grant_min_bytes"));
+
     let error = options.set("datafusion_nexus.request.requested_grant_bytes", "0").unwrap_err();
     assert!(error.to_string().contains("request.requested_grant_bytes"));
+
+    let error = options.set("datafusion_nexus.request.graph_raw_input_edges", "0").unwrap_err();
+    assert!(error.to_string().contains("request.graph_raw_input_edges"));
+
+    let error = options.set("datafusion_nexus.request.graph_topology_family", "dense-ish").unwrap_err();
+    assert!(error.to_string().contains("citation_like_sparse"));
 }
 
 #[test]
@@ -121,7 +138,12 @@ fn datafusion_nexus_session_config_rejects_bounded_settings_while_unbounded() {
 #[test]
 fn datafusion_nexus_request_grant_rejects_pre_admitted_query_handle() {
     let service = QueryService::new(
-        QueryServiceConfig { max_concurrent_queries: 1, stream_pool_size: Some(3), ..QueryServiceConfig::default() },
+        QueryServiceConfig {
+            max_concurrent_queries: 1,
+            stream_pool_size: Some(3),
+            slot_guarantee: SlotGuarantee::Optimistic,
+            ..QueryServiceConfig::default()
+        },
         vec![QueryServiceTenantConfig::new("tenant", 3 * 1024 * 1024)],
     )
     .unwrap();
@@ -141,9 +163,41 @@ fn datafusion_nexus_request_grant_rejects_pre_admitted_query_handle() {
 }
 
 #[test]
+fn datafusion_nexus_request_grant_min_rejects_pre_admitted_query_handle() {
+    let service = QueryService::new(
+        QueryServiceConfig {
+            max_concurrent_queries: 1,
+            stream_pool_size: Some(3),
+            slot_guarantee: SlotGuarantee::Optimistic,
+            ..QueryServiceConfig::default()
+        },
+        vec![QueryServiceTenantConfig::new("tenant", 3 * 1024 * 1024)],
+    )
+    .unwrap();
+    let handle = Arc::new(service.try_admit_query("tenant").unwrap().expect("query should admit"));
+    let base = CudfOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred).with_native_execution_config(
+        NativeCudfExecutionConfig::bounded_auto_sized().with_query_service_handle(handle),
+    );
+    let mut options = options_with_nexus_extension(&base);
+
+    options.set("datafusion_nexus.request.requested_grant_min_bytes", "1048576").unwrap();
+    let error = base.with_datafusion_config_options(&options).unwrap_err();
+    let adapter_error = adapter_error(&error);
+
+    assert_eq!(adapter_error.code(), ErrorCode::InvalidRequest);
+    assert_eq!(adapter_error.fact_value("reason"), Some("request_grant_pre_admitted_query_handle"));
+    assert_eq!(adapter_error.fact_value("requested_grant_min_bytes"), Some("1048576"));
+}
+
+#[test]
 fn datafusion_nexus_pre_admitted_query_handle_without_request_grant_is_unchanged() {
     let service = QueryService::new(
-        QueryServiceConfig { max_concurrent_queries: 1, stream_pool_size: Some(3), ..QueryServiceConfig::default() },
+        QueryServiceConfig {
+            max_concurrent_queries: 1,
+            stream_pool_size: Some(3),
+            slot_guarantee: SlotGuarantee::Optimistic,
+            ..QueryServiceConfig::default()
+        },
         vec![QueryServiceTenantConfig::new("tenant", 3 * 1024 * 1024)],
     )
     .unwrap();
@@ -155,6 +209,7 @@ fn datafusion_nexus_pre_admitted_query_handle_without_request_grant_is_unchanged
 
     let effective = base.with_datafusion_config_options(&options).unwrap();
 
+    assert_eq!(effective.native_execution_config().requested_grant_min_bytes(), None);
     assert_eq!(effective.native_execution_config().requested_grant_bytes(), None);
     assert_eq!(
         effective.native_execution_config().memory_control_policy(),
@@ -222,8 +277,26 @@ fn datafusion_nexus_session_config_option_descriptors_document_scope_and_types()
     assert!(
         DATAFUSION_NEXUS_SESSION_CONFIG_OPTIONS
             .iter()
+            .any(|option| option.full_key() == "datafusion_nexus.request.requested_grant_min_bytes"
+                && option.value_type == "positive integer bytes or none")
+    );
+    assert!(
+        DATAFUSION_NEXUS_SESSION_CONFIG_OPTIONS
+            .iter()
             .any(|option| option.full_key() == "datafusion_nexus.request.requested_grant_bytes"
                 && option.value_type == "positive integer bytes or none")
+    );
+    assert!(
+        DATAFUSION_NEXUS_SESSION_CONFIG_OPTIONS
+            .iter()
+            .any(|option| option.full_key() == "datafusion_nexus.request.graph_raw_input_edges"
+                && option.value_type == "positive integer edges or none")
+    );
+    assert!(
+        DATAFUSION_NEXUS_SESSION_CONFIG_OPTIONS
+            .iter()
+            .any(|option| option.full_key() == "datafusion_nexus.request.graph_topology_family"
+                && option.value_type.contains("citation_like_sparse"))
     );
 }
 
@@ -250,23 +323,40 @@ async fn datafusion_nexus_request_config_can_be_set_and_reset_through_sql() {
         SessionStateBuilder::new().with_cudf_native(CudfOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred)).build();
     let ctx = SessionContext::new_with_state(state);
 
+    ctx.sql("SET datafusion_nexus.request.requested_grant_min_bytes = '1024'").await.unwrap().collect().await.unwrap();
     ctx.sql("SET datafusion_nexus.request.requested_grant_bytes = '1536'").await.unwrap().collect().await.unwrap();
+    ctx.sql("SET datafusion_nexus.request.graph_raw_input_edges = '45564149'").await.unwrap().collect().await.unwrap();
+    ctx.sql("SET datafusion_nexus.request.graph_topology_family = 'citation_like_sparse'")
+        .await
+        .unwrap()
+        .collect()
+        .await
+        .unwrap();
     let state = ctx.state();
     let extension = state
         .config_options()
         .extensions
         .get::<DataFusionNexusSessionConfig>()
         .expect("extension remains registered after SQL SET");
+    assert_eq!(extension.request_requested_grant_min_bytes, Some(1024));
     assert_eq!(extension.request_requested_grant_bytes, Some(1536));
+    assert_eq!(extension.request_graph_raw_input_edges(), Some(45_564_149));
+    assert_eq!(extension.request_graph_topology_family(), GraphTopologyFamily::CitationLikeSparse);
 
+    ctx.sql("SET datafusion_nexus.request.requested_grant_min_bytes = 'none'").await.unwrap().collect().await.unwrap();
     ctx.sql("SET datafusion_nexus.request.requested_grant_bytes = 'none'").await.unwrap().collect().await.unwrap();
+    ctx.sql("SET datafusion_nexus.request.graph_raw_input_edges = 'none'").await.unwrap().collect().await.unwrap();
+    ctx.sql("SET datafusion_nexus.request.graph_topology_family = 'unknown'").await.unwrap().collect().await.unwrap();
     let state = ctx.state();
     let extension = state
         .config_options()
         .extensions
         .get::<DataFusionNexusSessionConfig>()
         .expect("extension remains registered after SQL reset");
+    assert_eq!(extension.request_requested_grant_min_bytes, None);
     assert_eq!(extension.request_requested_grant_bytes, None);
+    assert_eq!(extension.request_graph_raw_input_edges(), None);
+    assert_eq!(extension.request_graph_topology_family(), GraphTopologyFamily::Unknown);
 }
 
 fn options_with_nexus_extension(config: &CudfOptimizerConfig) -> ConfigOptions {

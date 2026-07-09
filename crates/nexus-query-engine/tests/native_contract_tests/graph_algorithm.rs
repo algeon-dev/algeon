@@ -6,12 +6,13 @@ use nexus_query_engine::{
     GRAPH_ALGORITHM_STRICT_BOUNDED_REQUIRED_CONTRACT, GRAPH_MEMORY_BUDGET_TRACKING_MIN_LIMIT_BYTES,
     GRAPH_OPERATION_REGISTRY, GpuResidentSource, GraphAlgorithm, GraphAlgorithmParams, GraphAlgorithmSpec,
     GraphBetweennessCentralityParams, GraphBetweennessSeeds, GraphBfsEndpointPolicy, GraphBfsParams,
-    GraphBfsPredicateInputs, GraphConstructionOptions, GraphConstructionPolicy, GraphEdgeBetweennessCentralityParams,
-    GraphEdgeColumnBindings, GraphLayoutRequirement, GraphLouvainParams, GraphMemoryClass, GraphMemoryModel,
-    GraphMemoryModelInput, GraphOutputSchemaKind, GraphPageRankParams, GraphPredicateInput, GraphReservationOutcome,
-    GraphReservationReport, GraphSourceVertexRequirement, GraphVertexEstimate, GraphVertexEstimateSource,
-    GraphVertexIdTypeSupport, GraphWeightPolicy, PlanNode, QueryErrorCode, QueryPlan, QueryPlanBuilder, SourceNode,
-    StrictBoundedContractReport, StrictBoundedExecutionMode,
+    GraphBfsPredicateInputs, GraphCalibrationSource, GraphConstructionOptions, GraphConstructionPolicy,
+    GraphEdgeBetweennessCentralityParams, GraphEdgeColumnBindings, GraphLayoutRequirement, GraphLouvainParams,
+    GraphMemoryClass, GraphMemoryModel, GraphMemoryModelInput, GraphModelErrorRatio, GraphOutputSchemaKind,
+    GraphPageRankParams, GraphPredicateInput, GraphReservationOutcome, GraphReservationReport, GraphSeedMode,
+    GraphSourceVertexRequirement, GraphTopologyFamily, GraphTriangleCountAllParams, GraphVertexEstimate,
+    GraphVertexEstimateSource, GraphVertexIdTypeSupport, GraphWeightPolicy, PlanNode, QueryErrorCode, QueryPlan,
+    QueryPlanBuilder, SourceNode, StrictBoundedContractReport, StrictBoundedExecutionMode,
     capability::{CapabilityDecision, ContractQuality, ContractStatus, NodeOperator},
     graph_memory_class, graph_memory_reservation_required, stable_graph_result_schema,
 };
@@ -38,6 +39,7 @@ fn graph_algorithm_builder_records_ir_contracts_and_display_summary() {
     assert!(graph.spec.graph_options.directed);
     assert!(graph.spec.graph_options.renumber);
     assert_eq!(graph.spec.graph_options.policy, GraphConstructionPolicy::RawLibcugraph);
+    assert!(graph.spec.edge_normalize_inserted);
     assert_eq!(graph.output_schema().as_ref(), stable_graph_result_schema(GraphAlgorithm::PageRank).as_ref());
 
     let normalize_node = plan.node(graph.input).expect("graph input must exist");
@@ -154,6 +156,7 @@ fn raw_graph_construction_policy_does_not_insert_edge_normalize() {
     };
     assert_eq!(graph.input.index(), 0);
     assert_eq!(graph.spec.graph_options.policy, GraphConstructionPolicy::RawLibcugraph);
+    assert!(!graph.spec.edge_normalize_inserted);
     assert!(!plan.to_string().contains("EdgeNormalize"));
 }
 
@@ -402,12 +405,15 @@ fn graph_memory_report_admits_and_denies_without_strict_contract_projection() {
         .estimate(
             &spec,
             GraphMemoryModelInput {
+                raw_input_edges: None,
                 input_edges: 100,
                 vertex_width_bytes: 4,
                 weight_width_bytes: Some(4),
                 has_edge_id: false,
                 device_total_memory_bytes: None,
                 vertex_estimate: None,
+                edge_normalize_inserted: false,
+                topology_family: GraphTopologyFamily::Unknown,
             },
         )
         .unwrap();
@@ -459,12 +465,15 @@ fn graph_memory_model_uses_refined_vertex_estimate_for_sparse_graph_admission() 
         GraphAlgorithmParams::Louvain(Default::default()),
     );
     let input = GraphMemoryModelInput {
+        raw_input_edges: None,
         input_edges: 1_000_000,
         vertex_width_bytes: 8,
         weight_width_bytes: None,
         has_edge_id: false,
         device_total_memory_bytes: None,
         vertex_estimate: None,
+        edge_normalize_inserted: false,
+        topology_family: GraphTopologyFamily::Unknown,
     };
 
     let fallback = GraphMemoryModel.estimate(&spec, input).unwrap();
@@ -503,12 +512,15 @@ fn graph_memory_model_clamps_refined_vertex_estimate_to_endpoint_upper_bound() {
         .estimate(
             &spec,
             GraphMemoryModelInput {
+                raw_input_edges: None,
                 input_edges: 5,
                 vertex_width_bytes: 4,
                 weight_width_bytes: None,
                 has_edge_id: false,
                 device_total_memory_bytes: None,
                 vertex_estimate: Some(GraphVertexEstimate::graph_metadata(999)),
+                edge_normalize_inserted: false,
+                topology_family: GraphTopologyFamily::Unknown,
             },
         )
         .unwrap();
@@ -516,6 +528,167 @@ fn graph_memory_model_clamps_refined_vertex_estimate_to_endpoint_upper_bound() {
     assert_eq!(estimate.vertex_upper_bound, 10);
     assert_eq!(estimate.vertex_estimate, 10);
     assert_eq!(estimate.vertex_estimate_source, GraphVertexEstimateSource::GraphMetadata);
+}
+
+#[test]
+fn graph_memory_model_records_calibration_key_and_reprices_triangle_count_by_edges() {
+    let spec = GraphAlgorithmSpec::with_stable_schema(
+        GraphAlgorithm::TriangleCountAll,
+        GraphEdgeColumnBindings::new("src", "dst", None::<&str>),
+        GraphConstructionOptions { directed: false, renumber: true, policy: GraphConstructionPolicy::RawLibcugraph },
+        GraphAlgorithmParams::TriangleCountAll(GraphTriangleCountAllParams),
+    );
+    let input = GraphMemoryModelInput {
+        raw_input_edges: Some(45_564_149),
+        input_edges: 91_128_298,
+        vertex_width_bytes: 8,
+        weight_width_bytes: None,
+        has_edge_id: false,
+        device_total_memory_bytes: None,
+        vertex_estimate: Some(GraphVertexEstimate::runtime_exact_distinct(4_146_772)),
+        edge_normalize_inserted: true,
+        topology_family: GraphTopologyFamily::CitationLikeSparse,
+    };
+
+    let estimate = GraphMemoryModel.estimate(&spec, input).unwrap();
+
+    assert_eq!(estimate.raw_input_edges, Some(45_564_149));
+    assert_eq!(estimate.input_edges, 91_128_298);
+    assert!(estimate.edge_normalize_inserted);
+    assert_eq!(estimate.topology_family, GraphTopologyFamily::CitationLikeSparse);
+    assert_eq!(estimate.calibration_source, GraphCalibrationSource::RawInputEdgesAndTopologyFamily);
+    assert_eq!(estimate.vertex_width_bytes, 8);
+    assert_eq!(estimate.weight_width_bytes, None);
+    assert_eq!(estimate.vertex_estimate, 4_146_772);
+    assert_eq!(estimate.requested_bytes, 7_555_657_248);
+    assert!(
+        estimate.requested_bytes >= 6_617_470_861,
+        "production triangle-count ask must cover the live-measured DBLP CUDA async-pool peak"
+    );
+
+    let unknown_topology =
+        GraphMemoryModel.estimate(&spec, input.with_topology_family(GraphTopologyFamily::Unknown)).unwrap();
+    assert!(
+        unknown_topology.requested_bytes > estimate.requested_bytes,
+        "unknown topology must keep a larger fallback than the documented citation-like calibration key"
+    );
+    assert!(
+        unknown_topology.requested_bytes >= 31_044_534_080,
+        "unknown topology must not be lowered below the pre-calibration DBLP triangle-count ask"
+    );
+    assert!(
+        estimate.requested_bytes < 31_044_534_080 / 2,
+        "triangle-count pricing should no longer be dominated by the old V*min(V,1024) term"
+    );
+
+    let report = GraphReservationReport::from_estimate("g0", estimate, Some(10_000_000_000));
+    assert_eq!(report.raw_input_edges, Some(45_564_149));
+    assert!(report.edge_normalize_inserted);
+    assert_eq!(report.topology_family, GraphTopologyFamily::CitationLikeSparse);
+    assert_eq!(report.calibration_source, GraphCalibrationSource::RawInputEdgesAndTopologyFamily);
+}
+
+#[test]
+fn graph_memory_model_is_dtype_sensitive_for_calibrated_sparse_keys() {
+    let pagerank_spec = GraphAlgorithmSpec::with_stable_schema(
+        GraphAlgorithm::PageRank,
+        GraphEdgeColumnBindings::new("src", "dst", Some("weight")),
+        GraphConstructionOptions { directed: true, renumber: true, policy: GraphConstructionPolicy::RawLibcugraph },
+        GraphAlgorithmParams::PageRank(GraphPageRankParams::default()),
+    );
+    let louvain_spec = GraphAlgorithmSpec::with_stable_schema(
+        GraphAlgorithm::Louvain,
+        GraphEdgeColumnBindings::new("src", "dst", Some("weight")),
+        GraphConstructionOptions { directed: false, renumber: true, policy: GraphConstructionPolicy::RawLibcugraph },
+        GraphAlgorithmParams::Louvain(Default::default()),
+    );
+    let input = |vertex_width_bytes, weight_width_bytes| GraphMemoryModelInput {
+        raw_input_edges: Some(1_000_000),
+        input_edges: 1_000_000,
+        vertex_width_bytes,
+        weight_width_bytes: Some(weight_width_bytes),
+        has_edge_id: false,
+        device_total_memory_bytes: None,
+        vertex_estimate: Some(GraphVertexEstimate::runtime_exact_distinct(100_000)),
+        edge_normalize_inserted: false,
+        topology_family: GraphTopologyFamily::CitationLikeSparse,
+    };
+
+    for spec in [&pagerank_spec, &louvain_spec] {
+        let narrow = GraphMemoryModel.estimate(spec, input(4, 4)).unwrap();
+        let wide = GraphMemoryModel.estimate(spec, input(8, 8)).unwrap();
+        assert!(
+            wide.requested_bytes > narrow.requested_bytes,
+            "{} pricing must vary with vertex and weight dtype widths",
+            spec.algorithm.as_str()
+        );
+    }
+
+    let triangle_spec = GraphAlgorithmSpec::with_stable_schema(
+        GraphAlgorithm::TriangleCountAll,
+        GraphEdgeColumnBindings::new("src", "dst", None::<&str>),
+        GraphConstructionOptions { directed: false, renumber: true, policy: GraphConstructionPolicy::RawLibcugraph },
+        GraphAlgorithmParams::TriangleCountAll(GraphTriangleCountAllParams),
+    );
+    let triangle_input = |vertex_width_bytes| GraphMemoryModelInput {
+        raw_input_edges: Some(1_000_000),
+        input_edges: 1_000_000,
+        vertex_width_bytes,
+        weight_width_bytes: None,
+        has_edge_id: false,
+        device_total_memory_bytes: None,
+        vertex_estimate: Some(GraphVertexEstimate::runtime_exact_distinct(100_000)),
+        edge_normalize_inserted: false,
+        topology_family: GraphTopologyFamily::CitationLikeSparse,
+    };
+    let narrow = GraphMemoryModel.estimate(&triangle_spec, triangle_input(4)).unwrap();
+    let wide = GraphMemoryModel.estimate(&triangle_spec, triangle_input(8)).unwrap();
+    assert!(
+        narrow.requested_bytes > wide.requested_bytes,
+        "Int32 citation-like triangle-count inputs must use the conservative fallback until a dtype-specific calibration exists"
+    );
+}
+
+#[test]
+fn graph_memory_model_error_ratio_is_fixed_point_and_optional_on_zero_peak() {
+    assert_eq!(GraphModelErrorRatio::from_requested_and_measured(4096, 2048).unwrap().as_decimal_string(), "2.000");
+    assert_eq!(GraphModelErrorRatio::from_requested_and_measured(5000, 2000).unwrap().as_decimal_string(), "2.500");
+    assert!(GraphModelErrorRatio::from_requested_and_measured(4096, 0).is_none());
+
+    let spec = GraphAlgorithmSpec::with_stable_schema(
+        GraphAlgorithm::PageRank,
+        GraphEdgeColumnBindings::new("src", "dst", None::<&str>),
+        GraphConstructionOptions { directed: true, renumber: true, policy: GraphConstructionPolicy::RawLibcugraph },
+        GraphAlgorithmParams::PageRank(GraphPageRankParams::default()),
+    );
+    let estimate = GraphMemoryModel
+        .estimate(
+            &spec,
+            GraphMemoryModelInput {
+                raw_input_edges: None,
+                input_edges: 100,
+                vertex_width_bytes: 4,
+                weight_width_bytes: None,
+                has_edge_id: false,
+                device_total_memory_bytes: None,
+                vertex_estimate: None,
+                edge_normalize_inserted: false,
+                topology_family: GraphTopologyFamily::Unknown,
+            },
+        )
+        .unwrap();
+    let requested_bytes = estimate.requested_bytes;
+    assert!(requested_bytes < GRAPH_MEMORY_BUDGET_TRACKING_MIN_LIMIT_BYTES);
+    let mut report =
+        GraphReservationReport::from_estimate("g0", estimate, Some(GRAPH_MEMORY_BUDGET_TRACKING_MIN_LIMIT_BYTES));
+    assert_eq!(report.model_requested_bytes, requested_bytes);
+    assert_eq!(report.requested_bytes, GRAPH_MEMORY_BUDGET_TRACKING_MIN_LIMIT_BYTES);
+    report.record_model_error_ratio(requested_bytes);
+    assert_eq!(
+        report.graph_model_error_ratio.unwrap().as_decimal_string(),
+        "1.000",
+        "model error ratio must use the raw model ask, not the bounded reservation floor"
+    );
 }
 
 #[test]
@@ -533,17 +706,21 @@ fn betweenness_seed_count_reports_requested_sources_and_prices_resident_source_s
         .estimate(
             &spec,
             GraphMemoryModelInput {
+                raw_input_edges: None,
                 input_edges: 100,
                 vertex_width_bytes: 4,
                 weight_width_bytes: None,
                 has_edge_id: false,
                 device_total_memory_bytes: None,
                 vertex_estimate: None,
+                edge_normalize_inserted: false,
+                topology_family: GraphTopologyFamily::Unknown,
             },
         )
         .unwrap();
     assert_eq!(estimate.class, GraphMemoryClass::WorkspaceHeavySeedDependent);
     assert_eq!(estimate.seed_count, Some(3));
+    assert_eq!(estimate.seed_mode, Some(GraphSeedMode::ExplicitSeedList));
     assert!(estimate.data_dependent);
 
     let k_spec = GraphAlgorithmSpec::with_stable_schema(
@@ -559,16 +736,20 @@ fn betweenness_seed_count_reports_requested_sources_and_prices_resident_source_s
         .estimate(
             &k_spec,
             GraphMemoryModelInput {
+                raw_input_edges: None,
                 input_edges: 100,
                 vertex_width_bytes: 4,
                 weight_width_bytes: None,
                 has_edge_id: false,
                 device_total_memory_bytes: None,
                 vertex_estimate: None,
+                edge_normalize_inserted: false,
+                topology_family: GraphTopologyFamily::Unknown,
             },
         )
         .unwrap();
     assert_eq!(k_estimate.seed_count, Some(5));
+    assert_eq!(k_estimate.seed_mode, Some(GraphSeedMode::RuntimeKSelection));
 
     let all_vertex_estimate = GraphMemoryModel
         .estimate(
@@ -583,18 +764,22 @@ fn betweenness_seed_count_reports_requested_sources_and_prices_resident_source_s
                 GraphAlgorithmParams::BetweennessCentrality(GraphBetweennessCentralityParams::default()),
             ),
             GraphMemoryModelInput {
+                raw_input_edges: None,
                 input_edges: 100,
                 vertex_width_bytes: 4,
                 weight_width_bytes: None,
                 has_edge_id: false,
                 device_total_memory_bytes: None,
                 vertex_estimate: Some(GraphVertexEstimate::runtime_exact_distinct(7)),
+                edge_normalize_inserted: false,
+                topology_family: GraphTopologyFamily::Unknown,
             },
         )
         .unwrap();
     assert_eq!(all_vertex_estimate.vertex_upper_bound, 200);
     assert_eq!(all_vertex_estimate.vertex_estimate, 7);
     assert_eq!(all_vertex_estimate.seed_count, Some(7));
+    assert_eq!(all_vertex_estimate.seed_mode, Some(GraphSeedMode::AllVertices));
 }
 
 #[test]
@@ -619,12 +804,15 @@ fn vertex_betweenness_source_workspace_uses_cugraph_physical_batch_cap() {
         )
     };
     let input = GraphMemoryModelInput {
+        raw_input_edges: None,
         input_edges: 1_000_000,
         vertex_width_bytes,
         weight_width_bytes: None,
         has_edge_id: false,
         device_total_memory_bytes: Some(device_total_memory_bytes),
         vertex_estimate: Some(GraphVertexEstimate::runtime_exact_distinct(vertex_estimate)),
+        edge_normalize_inserted: false,
+        topology_family: GraphTopologyFamily::Unknown,
     };
 
     let capped = GraphMemoryModel.estimate(&spec_for_k(cugraph_batch_cap), input).unwrap();
@@ -654,12 +842,15 @@ fn edge_betweenness_seed_count_does_not_price_all_requested_sources_as_resident(
         )
     };
     let input = GraphMemoryModelInput {
+        raw_input_edges: None,
         input_edges: 1_000,
         vertex_width_bytes: 8,
         weight_width_bytes: None,
         has_edge_id: false,
         device_total_memory_bytes: None,
         vertex_estimate: Some(GraphVertexEstimate::runtime_exact_distinct(1_000)),
+        edge_normalize_inserted: false,
+        topology_family: GraphTopologyFamily::Unknown,
     };
 
     let small = GraphMemoryModel.estimate(&spec_for_k(10), input).unwrap();
@@ -685,12 +876,15 @@ fn edge_betweenness_output_pricing_scales_with_edges() {
         }),
     );
     let input_for_edges = |input_edges| GraphMemoryModelInput {
+        raw_input_edges: None,
         input_edges,
         vertex_width_bytes: 8,
         weight_width_bytes: None,
         has_edge_id: false,
         device_total_memory_bytes: None,
         vertex_estimate: Some(GraphVertexEstimate::runtime_exact_distinct(1_000)),
+        edge_normalize_inserted: false,
+        topology_family: GraphTopologyFamily::Unknown,
     };
 
     let small = GraphMemoryModel.estimate(&spec, input_for_edges(1_000)).unwrap();
@@ -726,12 +920,15 @@ fn betweenness_k_seed_selection_prices_endpoint_distinct_sort_transient() {
         other => panic!("unexpected algorithm {other:?}"),
     };
     let input_for_edges = |input_edges| GraphMemoryModelInput {
+        raw_input_edges: None,
         input_edges,
         vertex_width_bytes: 8,
         weight_width_bytes: None,
         has_edge_id: false,
         device_total_memory_bytes: None,
         vertex_estimate: Some(GraphVertexEstimate::runtime_exact_distinct(1_000)),
+        edge_normalize_inserted: false,
+        topology_family: GraphTopologyFamily::Unknown,
     };
 
     for algorithm in [GraphAlgorithm::BetweennessCentrality, GraphAlgorithm::EdgeBetweennessCentrality] {

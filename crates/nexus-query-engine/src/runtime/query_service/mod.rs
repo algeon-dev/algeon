@@ -81,6 +81,55 @@ pub struct TenantQueueDepth {
     pub queued_queries: usize,
 }
 
+/// Request-scoped query-service grant overrides.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct QueryGrantRequest {
+    /// Optional per-request minimum grant floor in bytes.
+    pub requested_grant_min_bytes: Option<u64>,
+    /// Optional per-request preferred grant in bytes.
+    pub requested_grant_bytes: Option<u64>,
+}
+
+impl QueryGrantRequest {
+    /// Creates an empty request that uses the tenant grant band unchanged.
+    pub const fn new() -> Self {
+        Self { requested_grant_min_bytes: None, requested_grant_bytes: None }
+    }
+
+    /// Creates a request with only a preferred grant override.
+    pub const fn with_requested_grant_bytes(requested_grant_bytes: u64) -> Self {
+        Self { requested_grant_min_bytes: None, requested_grant_bytes: Some(requested_grant_bytes) }
+    }
+
+    /// Creates a request with only a minimum grant floor override.
+    pub const fn with_requested_grant_min_bytes(requested_grant_min_bytes: u64) -> Self {
+        Self { requested_grant_min_bytes: Some(requested_grant_min_bytes), requested_grant_bytes: None }
+    }
+
+    /// Sets the per-request preferred grant override.
+    #[must_use]
+    pub const fn prefer(mut self, requested_grant_bytes: u64) -> Self {
+        self.requested_grant_bytes = Some(requested_grant_bytes);
+        self
+    }
+
+    /// Sets the per-request minimum grant floor override.
+    #[must_use]
+    pub const fn floor(mut self, requested_grant_min_bytes: u64) -> Self {
+        self.requested_grant_min_bytes = Some(requested_grant_min_bytes);
+        self
+    }
+}
+
+/// Effective grant band for one query-service tenant request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct QueryGrantBand {
+    /// Minimum grant bytes admission must provide before the query can run.
+    pub min_bytes: u64,
+    /// Preferred grant bytes admission tries to provide when capacity allows.
+    pub want_bytes: u64,
+}
+
 #[derive(Debug)]
 struct QueryServiceInner {
     config: QueryServiceConfig,
@@ -112,6 +161,16 @@ struct TenantGrantPolicy {
 impl TenantGrantPolicy {
     fn with_requested_grant_bytes(self, requested_grant_bytes: u64) -> Self {
         Self { want_bytes: requested_grant_bytes, ..self }
+    }
+
+    fn with_requested_grant_min_bytes(self, requested_grant_min_bytes: u64) -> Self {
+        Self { min_bytes: requested_grant_min_bytes, ..self }
+    }
+}
+
+impl From<TenantGrantPolicy> for QueryGrantBand {
+    fn from(policy: TenantGrantPolicy) -> Self {
+        Self { min_bytes: policy.min_bytes, want_bytes: policy.want_bytes }
     }
 }
 
@@ -487,8 +546,26 @@ impl QueryService {
         qos: QueryQos,
         requested_grant_bytes: Option<u64>,
     ) -> Result<QueryHandle> {
+        let grant_request = QueryGrantRequest { requested_grant_bytes, ..QueryGrantRequest::new() };
+        self.admit_query_with_qos_and_grant_request(tenant_id, qos, grant_request)
+    }
+
+    /// Admits a query with caller-supplied QoS metadata and optional explicit
+    /// minimum/preferred grant overrides.
+    ///
+    /// `requested_grant_min_bytes` raises the per-request floor inside the
+    /// tenant's configured `[min, want]` band. Admission either grants at least
+    /// that floor or queues the request; it never admits the request below the
+    /// floor. `requested_grant_bytes` overrides only the preferred grant. Invalid
+    /// request bands are rejected instead of silently clamped.
+    pub fn admit_query_with_qos_and_grant_request(
+        &self,
+        tenant_id: impl Into<TenantId>,
+        qos: QueryQos,
+        grant_request: QueryGrantRequest,
+    ) -> Result<QueryHandle> {
         let tenant_id = tenant_id.into();
-        let grant_policy = self.tenant_grant_policy_for_request(&tenant_id, requested_grant_bytes)?;
+        let grant_policy = self.tenant_grant_policy_for_request(&tenant_id, grant_request)?;
         let request_id = self.inner.next_query_id.fetch_add(1, Ordering::Relaxed);
         let requested_at = Instant::now();
         let deadline = requested_at.checked_add(self.inner.config.admission_wait_timeout).unwrap_or(requested_at);
@@ -549,12 +626,7 @@ impl QueryService {
                     let now = Instant::now();
                     if now >= deadline {
                         self.abandon_queued_request_locked(&mut state, request_id);
-                        return Err(service_overloaded_error(
-                            "memory_grant_wait_timeout",
-                            &tenant_id,
-                            state.queued.len(),
-                            self.inner.config.max_admission_queue_len,
-                        ));
+                        return Err(self.memory_grant_wait_timeout_error(&tenant_id, grant_policy, state.queued.len()));
                     }
                     let wait = deadline.saturating_duration_since(now);
                     let (next_state, timeout) =
@@ -568,12 +640,7 @@ impl QueryService {
                     state = next_state;
                     if timeout.timed_out() {
                         self.abandon_queued_request_locked(&mut state, request_id);
-                        return Err(service_overloaded_error(
-                            "memory_grant_wait_timeout",
-                            &tenant_id,
-                            state.queued.len(),
-                            self.inner.config.max_admission_queue_len,
-                        ));
+                        return Err(self.memory_grant_wait_timeout_error(&tenant_id, grant_policy, state.queued.len()));
                     }
                     continue;
                 };
@@ -677,14 +744,23 @@ impl QueryService {
         qos: QueryQos,
         requested_grant_bytes: Option<u64>,
     ) -> Result<QueryHandle> {
+        let grant_request = QueryGrantRequest { requested_grant_bytes, ..QueryGrantRequest::new() };
+        self.admit_async_with_qos_and_grant_request(tenant_id, qos, grant_request).await
+    }
+
+    /// Admits a query asynchronously with caller-supplied QoS metadata and
+    /// optional explicit minimum/preferred grant overrides.
+    pub async fn admit_async_with_qos_and_grant_request(
+        &self,
+        tenant_id: impl Into<TenantId>,
+        qos: QueryQos,
+        grant_request: QueryGrantRequest,
+    ) -> Result<QueryHandle> {
         let tenant_id = tenant_id.into();
-        if let Some(handle) =
-            self.try_admit_query_with_qos_and_requested_grant_bytes(tenant_id.clone(), qos, requested_grant_bytes)?
-        {
+        if let Some(handle) = self.try_admit_query_with_qos_and_grant_request(tenant_id.clone(), qos, grant_request)? {
             return Ok(handle);
         }
-        let mut waiter =
-            self.enqueue_admission_with_qos_and_requested_grant_bytes(tenant_id, qos, requested_grant_bytes)?;
+        let mut waiter = self.enqueue_admission_with_qos_and_grant_request(tenant_id, qos, grant_request)?;
         loop {
             let notified = self.inner.admission_notify.notified();
             tokio::pin!(notified);
@@ -717,8 +793,20 @@ impl QueryService {
         qos: QueryQos,
         requested_grant_bytes: Option<u64>,
     ) -> Result<QueryAdmissionWaiter> {
+        let grant_request = QueryGrantRequest { requested_grant_bytes, ..QueryGrantRequest::new() };
+        self.enqueue_admission_with_qos_and_grant_request(tenant_id, qos, grant_request)
+    }
+
+    /// Enqueues a query admission request with caller-supplied QoS metadata and
+    /// optional explicit minimum/preferred grant overrides.
+    pub fn enqueue_admission_with_qos_and_grant_request(
+        &self,
+        tenant_id: impl Into<TenantId>,
+        qos: QueryQos,
+        grant_request: QueryGrantRequest,
+    ) -> Result<QueryAdmissionWaiter> {
         let tenant_id = tenant_id.into();
-        let grant_policy = self.tenant_grant_policy_for_request(&tenant_id, requested_grant_bytes)?;
+        let grant_policy = self.tenant_grant_policy_for_request(&tenant_id, grant_request)?;
         let request_id = self.inner.next_query_id.fetch_add(1, Ordering::Relaxed);
         let requested_at = Instant::now();
         let deadline = requested_at.checked_add(self.inner.config.admission_wait_timeout).unwrap_or(requested_at);
@@ -780,8 +868,20 @@ impl QueryService {
         qos: QueryQos,
         requested_grant_bytes: Option<u64>,
     ) -> Result<Option<QueryHandle>> {
+        let grant_request = QueryGrantRequest { requested_grant_bytes, ..QueryGrantRequest::new() };
+        self.try_admit_query_with_qos_and_grant_request(tenant_id, qos, grant_request)
+    }
+
+    /// Attempts to admit a query with caller-supplied QoS metadata and optional
+    /// explicit minimum/preferred grant overrides.
+    pub fn try_admit_query_with_qos_and_grant_request(
+        &self,
+        tenant_id: impl Into<TenantId>,
+        qos: QueryQos,
+        grant_request: QueryGrantRequest,
+    ) -> Result<Option<QueryHandle>> {
         let tenant_id = tenant_id.into();
-        let grant_policy = self.tenant_grant_policy_for_request(&tenant_id, requested_grant_bytes)?;
+        let grant_policy = self.tenant_grant_policy_for_request(&tenant_id, grant_request)?;
         let mut state = self.lock_admission()?;
         if state.closed {
             return Err(service_closed_error(&tenant_id));
@@ -843,9 +943,53 @@ impl QueryService {
         self.tenant_grant_policy(tenant_id).map(|grant| grant.want_bytes)
     }
 
+    /// Returns the configured grant band for a tenant.
+    pub fn tenant_grant_band(&self, tenant_id: &TenantId) -> Result<QueryGrantBand> {
+        self.tenant_grant_policy(tenant_id).map(Into::into)
+    }
+
     /// Resolve the effective preferred grant for a tenant request.
     pub fn tenant_requested_budget(&self, tenant_id: &TenantId, requested_grant_bytes: Option<u64>) -> Result<u64> {
-        self.tenant_grant_policy_for_request(tenant_id, requested_grant_bytes).map(|grant| grant.want_bytes)
+        let grant_request = QueryGrantRequest { requested_grant_bytes, ..QueryGrantRequest::new() };
+        self.tenant_grant_policy_for_request(tenant_id, grant_request).map(|grant| grant.want_bytes)
+    }
+
+    /// Resolve the effective preferred grant for a tenant request with an
+    /// optional request-specific grant floor.
+    pub fn tenant_requested_budget_with_grant_request(
+        &self,
+        tenant_id: &TenantId,
+        grant_request: QueryGrantRequest,
+    ) -> Result<u64> {
+        self.tenant_grant_policy_for_request(tenant_id, grant_request).map(|grant| grant.want_bytes)
+    }
+
+    /// Resolve the effective grant band for a tenant request.
+    pub fn tenant_requested_grant_band_with_grant_request(
+        &self,
+        tenant_id: &TenantId,
+        grant_request: QueryGrantRequest,
+    ) -> Result<QueryGrantBand> {
+        self.tenant_grant_policy_for_request(tenant_id, grant_request).map(Into::into)
+    }
+
+    /// Largest device capacity represented by this query service.
+    pub fn max_device_capacity_bytes(&self) -> u64 {
+        self.inner.resources.as_ref().map_or_else(
+            || self.inner.fallback_memory_governor.capacity_bytes(),
+            |resources| resources.devices.contexts().map(|context| context.capacity_bytes()).max().unwrap_or(0),
+        )
+    }
+
+    /// Largest physical device-total byte count represented by this query service.
+    ///
+    /// Admission-only services have no CUDA inventory, so they fall back to the
+    /// configured governor capacity used by deterministic CPU-only tests.
+    pub fn max_device_total_memory_bytes(&self) -> u64 {
+        self.inner.resources.as_ref().map_or_else(
+            || self.max_device_capacity_bytes(),
+            |resources| resources.devices.contexts().map(|context| context.facts().total_bytes).max().unwrap_or(0),
+        )
     }
 
     fn tenant_grant_policy(&self, tenant_id: &TenantId) -> Result<TenantGrantPolicy> {
@@ -862,14 +1006,31 @@ impl QueryService {
     fn tenant_grant_policy_for_request(
         &self,
         tenant_id: &TenantId,
-        requested_grant_bytes: Option<u64>,
+        grant_request: QueryGrantRequest,
     ) -> Result<TenantGrantPolicy> {
         let grant_policy = self.tenant_grant_policy(tenant_id)?;
-        let Some(requested_grant_bytes) = requested_grant_bytes else {
-            return Ok(grant_policy);
-        };
-        self.validate_requested_grant_bytes(tenant_id, grant_policy, requested_grant_bytes)?;
-        Ok(grant_policy.with_requested_grant_bytes(requested_grant_bytes))
+        if let Some(requested_grant_bytes) = grant_request.requested_grant_bytes {
+            self.validate_requested_grant_bytes(tenant_id, grant_policy, requested_grant_bytes)?;
+        }
+        if let Some(requested_grant_min_bytes) = grant_request.requested_grant_min_bytes {
+            self.validate_requested_grant_min_bytes(tenant_id, grant_policy, requested_grant_min_bytes)?;
+        }
+        let mut effective_policy = grant_policy;
+        if let Some(requested_grant_min_bytes) = grant_request.requested_grant_min_bytes {
+            effective_policy = effective_policy.with_requested_grant_min_bytes(requested_grant_min_bytes);
+        }
+        if let Some(requested_grant_bytes) = grant_request.requested_grant_bytes {
+            effective_policy = effective_policy.with_requested_grant_bytes(requested_grant_bytes);
+        }
+        if effective_policy.want_bytes < effective_policy.min_bytes {
+            return Err(invalid_requested_grant_range_error(
+                tenant_id,
+                grant_policy,
+                grant_request,
+                "requested_grant_below_requested_minimum",
+            ));
+        }
+        Ok(effective_policy)
     }
 
     fn validate_requested_grant_bytes(
@@ -909,11 +1070,77 @@ impl QueryService {
         Ok(())
     }
 
-    fn max_device_capacity_bytes(&self) -> u64 {
-        self.inner.resources.as_ref().map_or_else(
-            || self.inner.fallback_memory_governor.capacity_bytes(),
-            |resources| resources.devices.contexts().map(|context| context.capacity_bytes()).max().unwrap_or(0),
-        )
+    fn validate_requested_grant_min_bytes(
+        &self,
+        tenant_id: &TenantId,
+        grant_policy: TenantGrantPolicy,
+        requested_grant_min_bytes: u64,
+    ) -> Result<()> {
+        if requested_grant_min_bytes < grant_policy.min_bytes {
+            return Err(invalid_requested_grant_min_error(
+                tenant_id,
+                grant_policy,
+                requested_grant_min_bytes,
+                self.max_device_capacity_bytes(),
+                "requested_grant_min_below_tenant_minimum",
+            ));
+        }
+        if requested_grant_min_bytes > grant_policy.want_bytes {
+            return Err(invalid_requested_grant_min_error(
+                tenant_id,
+                grant_policy,
+                requested_grant_min_bytes,
+                self.max_device_capacity_bytes(),
+                "requested_grant_min_above_tenant_want",
+            ));
+        }
+        let max_device_capacity_bytes = self.max_device_capacity_bytes();
+        if requested_grant_min_bytes > max_device_capacity_bytes {
+            return Err(invalid_requested_grant_min_error(
+                tenant_id,
+                grant_policy,
+                requested_grant_min_bytes,
+                max_device_capacity_bytes,
+                "requested_grant_min_above_device_capacity",
+            ));
+        }
+        if self.inner.config.slot_guarantee == SlotGuarantee::GuaranteedMinimum {
+            let idle_grant_ceiling = self.guaranteed_min_idle_grant_ceiling_bytes()?;
+            if requested_grant_min_bytes > idle_grant_ceiling {
+                return Err(invalid_requested_grant_min_error(
+                    tenant_id,
+                    grant_policy,
+                    requested_grant_min_bytes,
+                    max_device_capacity_bytes,
+                    "requested_grant_min_above_guaranteed_min_slot_ceiling",
+                )
+                .with_fact("guaranteed_min_idle_grant_ceiling_bytes", idle_grant_ceiling)
+                .with_fact("max_concurrent_queries", self.inner.config.max_concurrent_queries)
+                .with_fact("max_tenant_min_device_budget_bytes", self.inner.max_tenant_min_bytes)
+                .with_fact("slot_guarantee", self.inner.config.slot_guarantee.as_str()));
+            }
+        }
+        Ok(())
+    }
+
+    fn guaranteed_min_idle_grant_ceiling_bytes(&self) -> Result<u64> {
+        if self.inner.config.slot_guarantee == SlotGuarantee::Optimistic {
+            return Ok(self.max_device_capacity_bytes());
+        }
+        let Some(resources) = &self.inner.resources else {
+            return Ok(self
+                .inner
+                .fallback_memory_governor
+                .capacity_bytes()
+                .saturating_sub(self.reserved_min_bytes_for_remaining_slots(0)));
+        };
+        let mut ceiling = 0u64;
+        for context in resources.devices.contexts() {
+            let reserved_for_remaining_slots =
+                self.reserved_min_bytes_for_selected_device(resources, context.device(), 0)?;
+            ceiling = ceiling.max(context.capacity_bytes().saturating_sub(reserved_for_remaining_slots));
+        }
+        Ok(ceiling)
     }
 
     fn remaining_slots_after_current(&self, active_queries: usize) -> usize {
@@ -1502,6 +1729,31 @@ impl QueryService {
         Ok(false)
     }
 
+    fn memory_grant_wait_timeout_error(
+        &self,
+        tenant_id: &TenantId,
+        grant_policy: TenantGrantPolicy,
+        queued_queries: usize,
+    ) -> QueryError {
+        let mut error = service_overloaded_error(
+            "memory_grant_wait_timeout",
+            tenant_id,
+            queued_queries,
+            self.inner.config.max_admission_queue_len,
+        )
+        .with_fact("requested_grant_min_bytes", grant_policy.min_bytes)
+        .with_fact("requested_grant_bytes", grant_policy.want_bytes)
+        .with_fact("effective_min_device_budget_bytes", grant_policy.min_bytes)
+        .with_fact("effective_want_device_budget_bytes", grant_policy.want_bytes)
+        .with_fact("slot_guarantee", self.inner.config.slot_guarantee.as_str())
+        .with_fact("max_concurrent_queries", self.inner.config.max_concurrent_queries)
+        .with_fact("max_tenant_min_device_budget_bytes", self.inner.max_tenant_min_bytes);
+        if let Ok(ceiling) = self.guaranteed_min_idle_grant_ceiling_bytes() {
+            error = error.with_fact("guaranteed_min_idle_grant_ceiling_bytes", ceiling);
+        }
+        error
+    }
+
     fn rotate_after_admission(&self, state: &mut AdmissionState, tenant_id: &TenantId) {
         if let Some(index) = self.inner.tenant_order.iter().position(|candidate| candidate == tenant_id) {
             state.next_tenant_index = (index + 1) % self.inner.tenant_order.len();
@@ -1526,5 +1778,50 @@ fn invalid_requested_grant_error(
     .with_fact("min_device_budget_bytes", grant_policy.min_bytes)
     .with_fact("tenant_want_device_budget_bytes", grant_policy.want_bytes)
     .with_fact("max_device_capacity_bytes", max_device_capacity_bytes)
+    .with_fact("reason", reason)
+}
+
+fn invalid_requested_grant_min_error(
+    tenant_id: &TenantId,
+    grant_policy: TenantGrantPolicy,
+    requested_grant_min_bytes: u64,
+    max_device_capacity_bytes: u64,
+    reason: &'static str,
+) -> QueryError {
+    QueryError::new(
+        QueryErrorCode::InvalidPlan,
+        "nexus_query_engine.query_service.requested_grant_min",
+        "requested query grant minimum bytes must be within the tenant grant band and device capacity",
+    )
+    .with_fact("tenant_id", tenant_id.as_str())
+    .with_fact("requested_grant_min_bytes", requested_grant_min_bytes)
+    .with_fact("min_device_budget_bytes", grant_policy.min_bytes)
+    .with_fact("tenant_want_device_budget_bytes", grant_policy.want_bytes)
+    .with_fact("max_device_capacity_bytes", max_device_capacity_bytes)
+    .with_fact("reason", reason)
+}
+
+fn invalid_requested_grant_range_error(
+    tenant_id: &TenantId,
+    grant_policy: TenantGrantPolicy,
+    grant_request: QueryGrantRequest,
+    reason: &'static str,
+) -> QueryError {
+    QueryError::new(
+        QueryErrorCode::InvalidPlan,
+        "nexus_query_engine.query_service.requested_grant_range",
+        "requested query grant preferred bytes must be at least the requested minimum bytes",
+    )
+    .with_fact("tenant_id", tenant_id.as_str())
+    .with_fact(
+        "requested_grant_min_bytes",
+        grant_request.requested_grant_min_bytes.map_or_else(|| "none".to_string(), |value| value.to_string()),
+    )
+    .with_fact(
+        "requested_grant_bytes",
+        grant_request.requested_grant_bytes.map_or_else(|| "none".to_string(), |value| value.to_string()),
+    )
+    .with_fact("min_device_budget_bytes", grant_policy.min_bytes)
+    .with_fact("tenant_want_device_budget_bytes", grant_policy.want_bytes)
     .with_fact("reason", reason)
 }

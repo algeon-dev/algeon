@@ -63,6 +63,7 @@ fn native_datafusion_execution_report_records_runtime_boundaries() {
     assert!(row.metrics.graph_runtime_rows[0].renumber);
     assert_eq!(row.metrics.graph_runtime_rows[0].algorithm_metadata, "converged=true,iterations=12");
     assert_eq!(row.metrics.graph_runtime_rows[0].output_device_bytes, Some(320));
+    assert_eq!(row.metrics.graph_runtime_rows[0].graph_peak_bytes, Some(2048));
     assert_eq!(row.metrics.task_operator_rows.len(), 1);
     assert_eq!(row.metrics.task_operator_rows[0].operator_kind, "source_read");
     assert_eq!(row.metrics.task_operator_rows[0].task_count, 3);
@@ -211,11 +212,17 @@ fn native_datafusion_execution_report_records_runtime_boundaries() {
     assert_eq!(row.metrics.graph_reservation_rows[0].algorithm, "pagerank");
     assert_eq!(row.metrics.graph_reservation_rows[0].class, "output_sized");
     assert_eq!(row.metrics.graph_reservation_rows[0].outcome, "admitted");
+    assert_eq!(row.metrics.graph_reservation_rows[0].raw_input_edges, None);
+    assert!(!row.metrics.graph_reservation_rows[0].edge_normalize_inserted);
+    assert_eq!(row.metrics.graph_reservation_rows[0].topology_family, "unknown");
+    assert_eq!(row.metrics.graph_reservation_rows[0].seed_mode, "none");
+    assert_eq!(row.metrics.graph_reservation_rows[0].model_requested_bytes, 4096);
     assert_eq!(row.metrics.graph_reservation_rows[0].requested_bytes, 4096);
     assert_eq!(row.metrics.graph_reservation_rows[0].budget_bytes, Some(1048576));
+    assert_eq!(row.metrics.graph_reservation_rows[0].graph_model_error_ratio.as_deref(), Some("2.000"));
 
     let text = report.to_tsv();
-    assert_eq!(NATIVE_DATAFUSION_EXECUTION_TSV_SCHEMA_VERSION, 48);
+    assert_eq!(NATIVE_DATAFUSION_EXECUTION_TSV_SCHEMA_VERSION, 52);
     assert_eq!(NATIVE_DATAFUSION_EXECUTION_TSV_HEADER.split('\t').count(), 136);
     assert!(NATIVE_DATAFUSION_EXECUTION_TSV_HEADER.contains(
         "\trejected_before_execution\tadmission_sequence\tadmission_wait_ms\tdevice_ordinal\tquery_grant_bytes\tnative_runtime_started\t"
@@ -261,6 +268,12 @@ fn native_datafusion_execution_report_records_runtime_boundaries() {
     assert!(text.contains("selected_strategy=libcudf_groupby,execution_stage=partial"));
     assert!(text.contains("algorithm=pagerank,class=output_sized,outcome=admitted"));
     assert!(text.contains("algorithm=pagerank,runtime_outcome=succeeded"));
+    assert!(text.contains("graph_peak_bytes=2048"));
+    assert!(text.contains("raw_input_edges=none"));
+    assert!(text.contains("topology_family=unknown"));
+    assert!(text.contains("seed_mode=none"));
+    assert!(text.contains("model_requested_bytes=4096"));
+    assert!(text.contains("graph_model_error_ratio=2.000"));
     assert!(
         text.contains(
             "construction_policy=python_cugraph,source_column=src,destination_column=dst,weight_column=weight"

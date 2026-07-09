@@ -1,4 +1,5 @@
 use super::*;
+use crate::graph_memory::GraphMemoryCalibrationOverride;
 
 /// Stable tenant identifier used by service-level admission and future caches.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -159,6 +160,8 @@ pub struct QueryServiceConfig {
     pub aggregate_strategy_execution_options: AggregateStrategyExecutionOptions,
     /// Expert local-throughput source chunk planning policy copied into tenant contexts.
     pub source_chunk_planning_options: SourceChunkPlanningOptions,
+    /// Optional service-scoped graph calibration metadata copied into tenant contexts.
+    pub graph_memory_calibration_override: GraphMemoryCalibrationOverride,
     /// Optional service stream pool size. `None` uses the SM-aware default.
     pub stream_pool_size: Option<usize>,
     /// Soft memory-governor capacity for the configured CUDA device.
@@ -258,6 +261,7 @@ impl Default for QueryServiceConfig {
             keyed_hash_join_strategy_options: KeyedHashJoinStrategyOptions::default(),
             aggregate_strategy_execution_options: AggregateStrategyExecutionOptions::default(),
             source_chunk_planning_options: SourceChunkPlanningOptions::default(),
+            graph_memory_calibration_override: GraphMemoryCalibrationOverride::default(),
             stream_pool_size: None,
             device_capacity_bytes: None,
             max_concurrent_queries: SourceFetchConfig::DEFAULT_HOST_FETCH_MAX_CONCURRENT_OPS,

@@ -21,7 +21,9 @@ pub struct NativeGraphReservationMetricRow {
     pub class: String,
     /// Admission outcome label.
     pub outcome: String,
-    /// Edge rows after null-edge filtering.
+    /// Raw edge rows before explicit edge normalization, if known.
+    pub raw_input_edges: Option<usize>,
+    /// Effective graph-stage edge rows after null filtering and normalization.
     pub input_edges: usize,
     /// Conservative vertex upper bound used by the model.
     pub vertex_upper_bound: usize,
@@ -41,14 +43,26 @@ pub struct NativeGraphReservationMetricRow {
     pub renumber: bool,
     /// Graph construction policy label.
     pub construction_policy: String,
+    /// Whether an explicit edge-normalize operator fed this graph stage.
+    pub edge_normalize_inserted: bool,
+    /// Topology family used by calibrated graph memory pricing.
+    pub topology_family: String,
+    /// Provenance for non-default graph calibration inputs.
+    pub calibration_source: String,
     /// Seed count for seed-dependent algorithms, when applicable.
     pub seed_count: Option<usize>,
+    /// Seed-selection mode for seed-dependent algorithms, or `none`.
+    pub seed_mode: String,
     /// Whether the estimate is flagged as data-dependent.
     pub data_dependent: bool,
+    /// Raw graph model ask before bounded reservation floors.
+    pub model_requested_bytes: usize,
     /// Requested graph-tier bytes.
     pub requested_bytes: usize,
     /// Bounded device budget bytes, when bounded.
     pub budget_bytes: Option<usize>,
+    /// Model ask divided by measured graph-stage peak, when observed.
+    pub graph_model_error_ratio: Option<String>,
     /// Stable denial reason or `none`.
     pub reason: String,
 }
@@ -57,11 +71,12 @@ impl NativeGraphReservationMetricRow {
     /// Serializes this nested row as stable comma-separated key/value pairs.
     pub fn to_stable_kv_row(&self) -> String {
         format!(
-            "node_id={},algorithm={},class={},outcome={},input_edges={},vertex_upper_bound={},vertex_estimate={},vertex_estimate_source={},vertex_width_bytes={},weight_width_bytes={},has_edge_id={},directed={},renumber={},construction_policy={},seed_count={},data_dependent={},requested_bytes={},budget_bytes={},reason={}",
+            "node_id={},algorithm={},class={},outcome={},raw_input_edges={},input_edges={},vertex_upper_bound={},vertex_estimate={},vertex_estimate_source={},vertex_width_bytes={},weight_width_bytes={},has_edge_id={},directed={},renumber={},construction_policy={},edge_normalize_inserted={},topology_family={},calibration_source={},seed_count={},seed_mode={},data_dependent={},model_requested_bytes={},requested_bytes={},budget_bytes={},graph_model_error_ratio={},reason={}",
             self.node_id,
             self.algorithm,
             self.class,
             self.outcome,
+            optional_usize(self.raw_input_edges),
             self.input_edges,
             self.vertex_upper_bound,
             self.vertex_estimate,
@@ -72,10 +87,16 @@ impl NativeGraphReservationMetricRow {
             self.directed,
             self.renumber,
             self.construction_policy,
+            self.edge_normalize_inserted,
+            self.topology_family,
+            self.calibration_source,
             optional_usize(self.seed_count),
+            self.seed_mode,
             self.data_dependent,
+            self.model_requested_bytes,
             self.requested_bytes,
             optional_usize(self.budget_bytes),
+            optional_str(self.graph_model_error_ratio.as_deref()),
             self.reason,
         )
     }
@@ -120,6 +141,8 @@ pub struct NativeGraphRuntimeMetricRow {
     pub output_columns: usize,
     /// Output device bytes, when known.
     pub output_device_bytes: Option<usize>,
+    /// Graph-stage allocator high-water bytes, when observed.
+    pub graph_peak_bytes: Option<usize>,
     /// Runtime elapsed nanoseconds.
     pub elapsed_ns: usize,
     /// GPU-resident input handoffs for this algorithm.
@@ -134,7 +157,7 @@ impl NativeGraphRuntimeMetricRow {
     /// Serializes this nested row as stable comma-separated key/value pairs.
     pub fn to_stable_kv_row(&self) -> String {
         format!(
-            "node_id={},algorithm={},runtime_outcome={},input_boundary={},output_boundary={},construction_policy={},source_column={},destination_column={},weight_column={},directed={},renumber={},algorithm_parameters={},algorithm_metadata={},input_rows={},input_columns={},output_rows={},output_columns={},output_device_bytes={},elapsed_ns={},gpu_resident_input_handoffs={},host_to_device_uploads={},device_to_host_materializations={}",
+            "node_id={},algorithm={},runtime_outcome={},input_boundary={},output_boundary={},construction_policy={},source_column={},destination_column={},weight_column={},directed={},renumber={},algorithm_parameters={},algorithm_metadata={},input_rows={},input_columns={},output_rows={},output_columns={},output_device_bytes={},graph_peak_bytes={},elapsed_ns={},gpu_resident_input_handoffs={},host_to_device_uploads={},device_to_host_materializations={}",
             self.node_id,
             self.algorithm,
             self.runtime_outcome,
@@ -153,6 +176,7 @@ impl NativeGraphRuntimeMetricRow {
             self.output_rows,
             self.output_columns,
             optional_usize(self.output_device_bytes),
+            optional_usize(self.graph_peak_bytes),
             self.elapsed_ns,
             self.gpu_resident_input_handoffs,
             self.host_to_device_uploads,
@@ -214,6 +238,7 @@ fn labels_to_graph_runtime_row(labels: BTreeMap<&str, &str>) -> NativeGraphRunti
         output_rows: usize_label(&labels, "output_rows"),
         output_columns: usize_label(&labels, "output_columns"),
         output_device_bytes: optional_usize_label(&labels, "output_device_bytes"),
+        graph_peak_bytes: optional_usize_label(&labels, "graph_peak_bytes"),
         elapsed_ns: usize_label(&labels, "elapsed_ns"),
         gpu_resident_input_handoffs: usize_label(&labels, "gpu_resident_input_handoffs"),
         host_to_device_uploads: usize_label(&labels, "host_to_device_uploads"),
@@ -227,6 +252,7 @@ fn labels_to_graph_reservation_row(labels: BTreeMap<&str, &str>) -> NativeGraphR
         algorithm: string_label(&labels, "algorithm"),
         class: string_label(&labels, "class"),
         outcome: string_label(&labels, "outcome"),
+        raw_input_edges: optional_usize_label(&labels, "raw_input_edges"),
         input_edges: usize_label(&labels, "input_edges"),
         vertex_upper_bound: usize_label(&labels, "vertex_upper_bound"),
         vertex_estimate: usize_label(&labels, "vertex_estimate"),
@@ -237,10 +263,16 @@ fn labels_to_graph_reservation_row(labels: BTreeMap<&str, &str>) -> NativeGraphR
         directed: bool_label(&labels, "directed"),
         renumber: bool_label(&labels, "renumber"),
         construction_policy: string_label(&labels, "construction_policy"),
+        edge_normalize_inserted: bool_label(&labels, "edge_normalize_inserted"),
+        topology_family: string_label(&labels, "topology_family"),
+        calibration_source: string_label(&labels, "calibration_source"),
         seed_count: optional_usize_label(&labels, "seed_count"),
+        seed_mode: string_label(&labels, "seed_mode"),
         data_dependent: bool_label(&labels, "data_dependent"),
+        model_requested_bytes: usize_label(&labels, "model_requested_bytes"),
         requested_bytes: usize_label(&labels, "requested_bytes"),
         budget_bytes: optional_usize_label(&labels, "budget_bytes"),
+        graph_model_error_ratio: optional_string_label(&labels, "graph_model_error_ratio"),
         reason: string_label(&labels, "reason"),
     }
 }

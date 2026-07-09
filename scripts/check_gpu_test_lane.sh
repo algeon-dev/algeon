@@ -67,6 +67,7 @@ datafusion-nexus-bench::tpcds_workload_tests
 datafusion-nexus-bench::tpch_workload_tests
 datafusion-nexus-bench::bin/cpu_tpch_profile_sweep
 datafusion-nexus-bench::bin/c1_mixed_fallback_experiment
+datafusion-nexus-bench::bin/cugraph_admission_stress
 datafusion-nexus-bench::bin/cugraph_sql_construction_report
 datafusion-nexus-bench::bin/empty_input_agg_probe
 datafusion-nexus-bench::bin/native_clickbench_benchmark

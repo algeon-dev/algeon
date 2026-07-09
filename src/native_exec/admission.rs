@@ -22,7 +22,10 @@ use datafusion::{
     },
 };
 use futures::Stream;
-use nexus_query_engine::{ExecutionCancellation, QueryHandle, QueryQos, QueryService, TenantId, TenantQueryContext};
+use nexus_query_engine::{
+    ExecutionCancellation, QueryGrantBand, QueryGrantRequest, QueryHandle, QueryQos, QueryService, TenantId,
+    TenantQueryContext,
+};
 use tokio::sync::Notify;
 
 use crate::error::Error;
@@ -48,6 +51,17 @@ impl QueryAdmissionSource {
     #[cfg(feature = "server")]
     pub(crate) fn tenant_id(&self) -> &TenantId {
         &self.tenant_id
+    }
+
+    pub(crate) fn requested_grant_band(
+        &self,
+        request: QueryGrantRequest,
+    ) -> nexus_query_engine::Result<QueryGrantBand> {
+        self.service.tenant_requested_grant_band_with_grant_request(&self.tenant_id, request)
+    }
+
+    pub(crate) fn max_device_total_memory_bytes(&self) -> u64 {
+        self.service.max_device_total_memory_bytes()
     }
 }
 
@@ -77,6 +91,7 @@ pub(crate) struct QueryAdmissionTicket {
     #[cfg(test)]
     id: u64,
     source: QueryAdmissionSource,
+    requested_grant_min_bytes: Option<u64>,
     requested_grant_bytes: Option<u64>,
     state: Mutex<TicketState>,
     notify: Arc<Notify>,
@@ -188,13 +203,18 @@ struct TicketAdmitResetGuard {
 }
 
 impl QueryAdmissionTicket {
-    pub(crate) fn new(source: QueryAdmissionSource, requested_grant_bytes: Option<u64>) -> Arc<Self> {
+    pub(crate) fn new(
+        source: QueryAdmissionSource,
+        requested_grant_min_bytes: Option<u64>,
+        requested_grant_bytes: Option<u64>,
+    ) -> Arc<Self> {
         #[cfg(test)]
         static NEXT_TICKET_ID: AtomicU64 = AtomicU64::new(1);
         Arc::new(Self {
             #[cfg(test)]
             id: NEXT_TICKET_ID.fetch_add(1, Ordering::Relaxed),
             source,
+            requested_grant_min_bytes,
             requested_grant_bytes,
             state: Mutex::new(TicketState::default()),
             notify: Arc::new(Notify::new()),
@@ -209,6 +229,11 @@ impl QueryAdmissionTicket {
     #[cfg(test)]
     pub(crate) fn requested_grant_bytes(&self) -> Option<u64> {
         self.requested_grant_bytes
+    }
+
+    #[cfg(test)]
+    pub(crate) fn requested_grant_min_bytes(&self) -> Option<u64> {
+        self.requested_grant_min_bytes
     }
 
     pub(crate) fn begin_execution_round(
@@ -299,10 +324,13 @@ impl QueryAdmissionTicket {
         let handle = match self
             .source
             .service
-            .admit_async_with_qos_and_requested_grant_bytes(
+            .admit_async_with_qos_and_grant_request(
                 self.source.tenant_id.clone(),
                 self.source.qos,
-                self.requested_grant_bytes,
+                QueryGrantRequest {
+                    requested_grant_min_bytes: self.requested_grant_min_bytes,
+                    requested_grant_bytes: self.requested_grant_bytes,
+                },
             )
             .await
         {
@@ -701,7 +729,8 @@ mod tests {
     fn admission_only_ticket() -> (Arc<QueryAdmissionTicket>, QueryService, TenantId) {
         let tenant_id = TenantId::new("tenant");
         let service = admission_only_service(&tenant_id);
-        let ticket = QueryAdmissionTicket::new(QueryAdmissionSource::new(service.clone(), tenant_id.clone()), None);
+        let ticket =
+            QueryAdmissionTicket::new(QueryAdmissionSource::new(service.clone(), tenant_id.clone()), None, None);
         (ticket, service, tenant_id)
     }
 
@@ -739,11 +768,21 @@ mod tests {
             nongds_deployment(),
         )
         .unwrap();
-        let ticket = QueryAdmissionTicket::new(QueryAdmissionSource::new(service.clone(), tenant_id), Some(512));
+        let ticket =
+            QueryAdmissionTicket::new(QueryAdmissionSource::new(service.clone(), tenant_id), Some(384), Some(512));
 
+        assert_eq!(ticket.requested_grant_min_bytes(), Some(384));
         assert_eq!(ticket.requested_grant_bytes(), Some(512));
         assert_eq!(
-            service.tenant_requested_budget(&ticket.source.tenant_id, ticket.requested_grant_bytes()).unwrap(),
+            service
+                .tenant_requested_budget_with_grant_request(
+                    &ticket.source.tenant_id,
+                    QueryGrantRequest {
+                        requested_grant_min_bytes: ticket.requested_grant_min_bytes(),
+                        requested_grant_bytes: ticket.requested_grant_bytes(),
+                    },
+                )
+                .unwrap(),
             512
         );
     }

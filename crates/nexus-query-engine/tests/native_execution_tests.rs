@@ -19,13 +19,15 @@ use cudf::DataFrame;
 #[cfg(feature = "cugraph")]
 use nexus_query_engine::{
     AdaptiveMemoryHistory, GRAPH_MEMORY_BUDGET_TRACKING_MIN_LIMIT_BYTES, GRAPH_VERTEX_ESTIMATE_BOUNDARY,
-    GraphAlgorithm, GraphAlgorithmParams, GraphAlgorithmSpec, GraphBetweennessCentralityParams, GraphBetweennessSeeds,
-    GraphBfsEndpointPolicy, GraphBfsParams, GraphBfsPredicateInputs, GraphConstructionOptions, GraphConstructionPolicy,
-    GraphEdgeBetweennessCentralityParams, GraphEdgeColumnBindings, GraphEdgePredicateInput, GraphMemoryModel,
-    GraphMemoryModelInput, GraphPageRankParams, GraphPredicateInput, GraphReservationOutcome, GraphVertexEstimate,
-    GraphVertexEstimateSource, NativePipelineExecutionMode,
+    GRAPH_VERTEX_ESTIMATE_PROBE_MIN_BYTES, GraphAlgorithm, GraphAlgorithmParams, GraphAlgorithmSpec,
+    GraphBetweennessCentralityParams, GraphBetweennessSeeds, GraphBfsEndpointPolicy, GraphBfsParams,
+    GraphBfsPredicateInputs, GraphConstructionOptions, GraphConstructionPolicy, GraphEdgeBetweennessCentralityParams,
+    GraphEdgeColumnBindings, GraphEdgePredicateInput, GraphMemoryCalibrationOverride, GraphMemoryModel,
+    GraphMemoryModelInput, GraphPageRankParams, GraphPredicateInput, GraphReservationOutcome, GraphSeedMode,
+    GraphTopologyFamily, GraphVertexEstimate, GraphVertexEstimateSource, NativePipelineExecutionMode,
     force_next_graph_adaptive_chunk_attempt_resource_exhausted_for_test,
-    force_next_graph_adaptive_full_attempt_resource_exhausted_for_test, stable_graph_result_schema,
+    force_next_graph_adaptive_full_attempt_resource_exhausted_for_test, graph_vertex_estimate_probe_bytes,
+    stable_graph_result_schema,
 };
 use nexus_query_engine::{
     AggregateExpr, AggregateFunction, AggregateSpec, BinaryOp, BoundedJoinReservationContract,

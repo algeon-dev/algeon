@@ -485,6 +485,7 @@ fn execute_bounded_generic_graph_algorithm(
             },
         };
         let report = match graph_memory_reservation_report(
+            context,
             node_id,
             &graph.spec,
             filtered_input.frame(),
@@ -559,7 +560,6 @@ fn execute_bounded_generic_graph_algorithm(
             },
         }
     }
-
     let output = match execute_graph_algorithm_sanitized(
         context,
         node_id,
@@ -653,7 +653,10 @@ fn graph_memory_vertex_estimate_with_reservation(
     if remaining == 0 {
         return Ok(None);
     }
-    let request = MemoryReservationRequest::new(ReservationKind::GraphAlgorithm, remaining, reservations.budget())
+    let model_input =
+        crate::exec::graph_algorithm::graph_memory_model_input_for_frame(input, spec, input.num_rows() as u64, false)?;
+    let probe_bytes = crate::graph_memory::graph_vertex_estimate_probe_bytes(model_input, remaining);
+    let request = MemoryReservationRequest::new(ReservationKind::GraphAlgorithm, probe_bytes, reservations.budget())
         .with_memory_boundary(crate::graph_memory::GRAPH_VERTEX_ESTIMATE_BOUNDARY)
         .with_node_id(node_id)
         .with_stage("graph_memory_vertex_estimate");
@@ -661,7 +664,11 @@ fn graph_memory_vertex_estimate_with_reservation(
     let limit_bytes = reservation.bytes();
     let estimate = runtime_exact_vertex_estimate_with_budget(context, input, spec, limit_bytes, metrics);
     reservations.release(reservation, metrics);
-    estimate.map(Some)
+    match estimate {
+        Ok(estimate) => Ok(Some(estimate)),
+        Err(error) if error.code() == QueryErrorCode::CudfResourceExhausted => Ok(None),
+        Err(error) => Err(error),
+    }
 }
 
 pub(in crate::exec::bounded) fn release_reservations_reverse(

@@ -4,11 +4,14 @@
 //! graph fragment before entering cuGraph so bounded service admission can fail
 //! locally with structured facts instead of relying on a raw RMM OOM.
 
+use arrow::datatypes::{DataType, SchemaRef};
+
 use crate::{
     error::{QueryError, QueryErrorCode, Result},
     metrics::{PlanNodeId, QueryId},
     plan::{
-        GraphAlgorithm, GraphAlgorithmParams, GraphAlgorithmSpec, GraphConstructionPolicy, GraphEdgeColumnBindings,
+        EdgeNormalizeSpec, GraphAlgorithm, GraphAlgorithmParams, GraphAlgorithmSpec, GraphConstructionPolicy,
+        GraphEdgeColumnBindings, NodeId, PlanNode, QueryPlan, estimated_output_rows,
     },
     runtime::{MemoryReservationRequest, MemorySpaceId, ReservationKind},
 };
@@ -18,6 +21,19 @@ pub const GRAPH_MEMORY_BOUNDARY: &str = "graph_memory";
 
 /// Temporary bounded-admission probe that measures distinct graph endpoints.
 pub const GRAPH_VERTEX_ESTIMATE_BOUNDARY: &str = "graph_memory_vertex_estimate";
+
+/// Legacy edge-byte multiplier retained for report/test compatibility.
+///
+/// The exact-vertex probe is now sized by [`graph_vertex_estimate_probe_bytes`]
+/// so narrower vertex dtypes still reserve the distinct workspace.
+pub const GRAPH_VERTEX_ESTIMATE_PROBE_EDGE_MULTIPLIER: u64 = 6;
+
+/// Minimum exact-vertex probe reservation.
+///
+/// The edge-scaled model dominates for real graph inputs. This floor handles
+/// tiny graphs where RMM allocation alignment and cudf distinct intermediates
+/// exceed the byte-exact column copy size.
+pub const GRAPH_VERTEX_ESTIMATE_PROBE_MIN_BYTES: u64 = 64 * 1024;
 
 /// Stable local rejection reason for graph estimate denial.
 pub const GRAPH_MEMORY_ESTIMATE_EXCEEDS_BUDGET_REASON: &str = "graph_memory_estimate_exceeds_budget";
@@ -66,6 +82,110 @@ impl GraphMemoryClass {
 }
 
 impl std::fmt::Display for GraphMemoryClass {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// Topology family used by calibrated graph memory pricing.
+///
+/// Unknown stays conservative. Callers should only select a named family from
+/// fixture metadata or a documented calibration run, not from runtime history.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub enum GraphTopologyFamily {
+    /// No topology calibration is available for this graph.
+    #[default]
+    Unknown,
+    /// Sparse citation-like graphs with raw, non-dense vertex ids.
+    CitationLikeSparse,
+    /// Sparse graphs whose vertex ids have been densely remapped.
+    DenseRemappedSparse,
+    /// R-MAT / Graph500-like skewed synthetic graphs.
+    RMatGraph500Like,
+}
+
+impl GraphTopologyFamily {
+    /// Stable label used in reports and calibration keys.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Unknown => "unknown",
+            Self::CitationLikeSparse => "citation_like_sparse",
+            Self::DenseRemappedSparse => "dense_remapped_sparse",
+            Self::RMatGraph500Like => "rmat_graph500_like",
+        }
+    }
+}
+
+impl std::fmt::Display for GraphTopologyFamily {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// Optional externally supplied graph calibration metadata.
+///
+/// Defaults intentionally carry no calibration. Callers should only provide
+/// these values from fixture metadata or a documented calibration run.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct GraphMemoryCalibrationOverride {
+    /// Raw edge rows before explicit edge normalization, when known.
+    pub raw_input_edges: Option<u64>,
+    /// Topology family used to select calibrated constants.
+    pub topology_family: GraphTopologyFamily,
+}
+
+impl GraphMemoryCalibrationOverride {
+    /// Returns an override with no calibration metadata.
+    pub const fn none() -> Self {
+        Self { raw_input_edges: None, topology_family: GraphTopologyFamily::Unknown }
+    }
+
+    /// Attaches raw pre-normalization edge-row evidence.
+    pub const fn with_raw_input_edges(mut self, raw_input_edges: u64) -> Self {
+        self.raw_input_edges = Some(raw_input_edges);
+        self
+    }
+
+    /// Attaches a documented topology calibration family.
+    pub const fn with_topology_family(mut self, topology_family: GraphTopologyFamily) -> Self {
+        self.topology_family = topology_family;
+        self
+    }
+
+    /// Applies this override to model input.
+    pub fn apply_to_input(self, mut input: GraphMemoryModelInput) -> GraphMemoryModelInput {
+        if input.raw_input_edges.is_none()
+            && let Some(raw_input_edges) = self.raw_input_edges
+        {
+            input = input.with_raw_input_edges(raw_input_edges);
+        }
+        input.with_topology_family(self.topology_family)
+    }
+}
+
+/// Source-selection mode for seed-dependent graph algorithms.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum GraphSeedMode {
+    /// Caller supplied a concrete seed list.
+    ExplicitSeedList,
+    /// Runtime must select `k` sources from graph vertices.
+    RuntimeKSelection,
+    /// Algorithm executes over every vertex as a source.
+    AllVertices,
+}
+
+impl GraphSeedMode {
+    /// Stable label used in reports.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::ExplicitSeedList => "explicit_seed_list",
+            Self::RuntimeKSelection => "runtime_k_selection",
+            Self::AllVertices => "all_vertices",
+        }
+    }
+}
+
+impl std::fmt::Display for GraphSeedMode {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(self.as_str())
     }
@@ -130,6 +250,38 @@ impl std::fmt::Display for GraphVertexEstimateSource {
     }
 }
 
+/// Provenance for non-default graph calibration inputs visible on reports.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub enum GraphCalibrationSource {
+    /// No explicit graph calibration key was selected.
+    #[default]
+    None,
+    /// Raw pre-normalization edge-count evidence was available.
+    RawInputEdges,
+    /// A topology family selected calibrated constants.
+    TopologyFamily,
+    /// Both raw edge evidence and a topology family were available.
+    RawInputEdgesAndTopologyFamily,
+}
+
+impl GraphCalibrationSource {
+    /// Stable label used in reports.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::RawInputEdges => "raw_input_edges",
+            Self::TopologyFamily => "topology_family",
+            Self::RawInputEdgesAndTopologyFamily => "raw_input_edges_and_topology_family",
+        }
+    }
+}
+
+impl std::fmt::Display for GraphCalibrationSource {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
 /// Refined vertex-count evidence for graph memory pricing.
 ///
 /// Non-runtime callers must pass an exact or safety-padded count; admission uses
@@ -162,6 +314,8 @@ impl GraphVertexEstimate {
 /// Plan/runtime inputs used by the approximate graph memory model.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct GraphMemoryModelInput {
+    /// Raw edge rows before any explicit edge-normalize operator, when known.
+    pub raw_input_edges: Option<u64>,
     /// Edge-row count after graph edge filtering/normalization.
     pub input_edges: u64,
     /// Width in bytes of the vertex id type.
@@ -175,6 +329,10 @@ pub struct GraphMemoryModelInput {
     pub device_total_memory_bytes: Option<u64>,
     /// Better vertex-count signal when available.
     pub vertex_estimate: Option<GraphVertexEstimate>,
+    /// Whether an edge-normalize operator was inserted before graph execution.
+    pub edge_normalize_inserted: bool,
+    /// Topology family used to select calibrated constants.
+    pub topology_family: GraphTopologyFamily,
 }
 
 impl GraphMemoryModelInput {
@@ -182,6 +340,17 @@ impl GraphMemoryModelInput {
     /// distinct endpoints.
     pub fn vertex_upper_bound(self) -> u64 {
         self.input_edges.saturating_mul(2)
+    }
+
+    /// Raw edge count when known, otherwise the effective graph-stage count.
+    pub fn raw_edge_count(self) -> u64 {
+        self.raw_input_edges.unwrap_or(self.input_edges)
+    }
+
+    /// Attach raw pre-normalization edge-row evidence.
+    pub fn with_raw_input_edges(mut self, raw_input_edges: u64) -> Self {
+        self.raw_input_edges = Some(raw_input_edges);
+        self
     }
 
     /// Attach refined vertex-count evidence.
@@ -196,6 +365,18 @@ impl GraphMemoryModelInput {
         self.device_total_memory_bytes = Some(total_bytes);
         self
     }
+
+    /// Mark the input as having passed through explicit edge normalization.
+    pub fn with_edge_normalize_inserted(mut self, inserted: bool) -> Self {
+        self.edge_normalize_inserted = inserted;
+        self
+    }
+
+    /// Attach a documented topology calibration family.
+    pub fn with_topology_family(mut self, topology_family: GraphTopologyFamily) -> Self {
+        self.topology_family = topology_family;
+        self
+    }
 }
 
 /// Approximate graph memory estimate.
@@ -203,6 +384,7 @@ impl GraphMemoryModelInput {
 pub struct GraphMemoryEstimate {
     pub algorithm: GraphAlgorithm,
     pub class: GraphMemoryClass,
+    pub raw_input_edges: Option<u64>,
     pub input_edges: u64,
     pub vertex_upper_bound: u64,
     pub vertex_estimate: u64,
@@ -213,9 +395,49 @@ pub struct GraphMemoryEstimate {
     pub directed: bool,
     pub renumber: bool,
     pub construction_policy: GraphConstructionPolicy,
+    pub edge_normalize_inserted: bool,
+    pub topology_family: GraphTopologyFamily,
+    pub calibration_source: GraphCalibrationSource,
     pub seed_count: Option<u64>,
+    pub seed_mode: Option<GraphSeedMode>,
     pub data_dependent: bool,
     pub requested_bytes: u64,
+}
+
+/// Planning-time graph memory estimate for a node in a native query plan.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GraphPlanMemoryEstimate {
+    pub node_id: NodeId,
+    pub estimate: GraphMemoryEstimate,
+}
+
+/// Fixed-point `ask / measured_peak` ratio for graph model calibration drift.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct GraphModelErrorRatio {
+    milli_ratio: u64,
+}
+
+impl GraphModelErrorRatio {
+    /// Build a ratio from model-requested bytes and measured graph peak bytes.
+    pub fn from_requested_and_measured(requested_bytes: u64, measured_peak_bytes: u64) -> Option<Self> {
+        if measured_peak_bytes == 0 {
+            return None;
+        }
+        let numerator = u128::from(requested_bytes).saturating_mul(1000);
+        let rounded = numerator.saturating_add(u128::from(measured_peak_bytes / 2)) / u128::from(measured_peak_bytes);
+        Some(Self { milli_ratio: rounded.min(u128::from(u64::MAX)) as u64 })
+    }
+
+    /// Stable decimal string with three fractional digits.
+    pub fn as_decimal_string(self) -> String {
+        format!("{}.{:03}", self.milli_ratio / 1000, self.milli_ratio % 1000)
+    }
+}
+
+impl std::fmt::Display for GraphModelErrorRatio {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.as_decimal_string())
+    }
 }
 
 /// Public graph memory-tier report row.
@@ -226,6 +448,7 @@ pub struct GraphReservationReport {
     pub algorithm: GraphAlgorithm,
     pub class: GraphMemoryClass,
     pub outcome: GraphReservationOutcome,
+    pub raw_input_edges: Option<u64>,
     pub input_edges: u64,
     pub vertex_upper_bound: u64,
     pub vertex_estimate: u64,
@@ -236,10 +459,16 @@ pub struct GraphReservationReport {
     pub directed: bool,
     pub renumber: bool,
     pub construction_policy: GraphConstructionPolicy,
+    pub edge_normalize_inserted: bool,
+    pub topology_family: GraphTopologyFamily,
+    pub calibration_source: GraphCalibrationSource,
     pub seed_count: Option<u64>,
+    pub seed_mode: Option<GraphSeedMode>,
     pub data_dependent: bool,
+    pub model_requested_bytes: u64,
     pub requested_bytes: u64,
     pub budget_bytes: Option<u64>,
+    pub graph_model_error_ratio: Option<GraphModelErrorRatio>,
     pub reason: Option<&'static str>,
 }
 
@@ -263,6 +492,7 @@ impl GraphReservationReport {
             algorithm: estimate.algorithm,
             class: estimate.class,
             outcome,
+            raw_input_edges: estimate.raw_input_edges,
             input_edges: estimate.input_edges,
             vertex_upper_bound: estimate.vertex_upper_bound,
             vertex_estimate: estimate.vertex_estimate,
@@ -273,12 +503,24 @@ impl GraphReservationReport {
             directed: estimate.directed,
             renumber: estimate.renumber,
             construction_policy: estimate.construction_policy,
+            edge_normalize_inserted: estimate.edge_normalize_inserted,
+            topology_family: estimate.topology_family,
+            calibration_source: estimate.calibration_source,
             seed_count: estimate.seed_count,
+            seed_mode: estimate.seed_mode,
             data_dependent: estimate.data_dependent,
+            model_requested_bytes: estimate.requested_bytes,
             requested_bytes,
             budget_bytes,
+            graph_model_error_ratio: None,
             reason: denied.then_some(GRAPH_MEMORY_ESTIMATE_EXCEEDS_BUDGET_REASON),
         }
+    }
+
+    /// Attach the observed model error ratio for a completed graph execution.
+    pub fn record_model_error_ratio(&mut self, measured_peak_bytes: u64) {
+        self.graph_model_error_ratio =
+            GraphModelErrorRatio::from_requested_and_measured(self.model_requested_bytes, measured_peak_bytes);
     }
 
     /// Builds the structured local admission error for a denied graph fragment.
@@ -296,9 +538,18 @@ impl GraphReservationReport {
             .with_fact("directed", self.directed)
             .with_fact("renumber", self.renumber)
             .with_fact("construction_policy", self.construction_policy.as_str())
+            .with_fact("edge_normalize_inserted", self.edge_normalize_inserted)
+            .with_fact("topology_family", self.topology_family.as_str())
+            .with_fact("calibration_source", self.calibration_source.as_str())
             .with_fact("data_dependent", self.data_dependent);
+        if let Some(raw_input_edges) = self.raw_input_edges {
+            error = error.with_fact("raw_input_edges", raw_input_edges);
+        }
         if let Some(seed_count) = self.seed_count {
             error = error.with_fact("seed_count", seed_count);
+        }
+        if let Some(seed_mode) = self.seed_mode {
+            error = error.with_fact("seed_mode", seed_mode.as_str());
         }
         error
     }
@@ -332,8 +583,11 @@ impl GraphMemoryModel {
             .saturating_add(input.weight_width_bytes.unwrap_or(0))
             .saturating_add(if input.has_edge_id { input.vertex_width_bytes } else { 0 });
         let construction_multiplier = construction_multiplier(spec.graph_options.policy, spec.graph_options.directed);
-        let construction_bytes = saturating_product(input.input_edges, edge_row_width)
+        let normalized_edge_bytes = saturating_product(input.input_edges, edge_row_width);
+        let normalization_transient_bytes = if input.edge_normalize_inserted { normalized_edge_bytes } else { 0 };
+        let construction_bytes = normalized_edge_bytes
             .saturating_mul(construction_multiplier)
+            .saturating_add(normalization_transient_bytes)
             .saturating_add(if spec.graph_options.renumber {
                 saturating_product(vertex_estimate, input.vertex_width_bytes.saturating_mul(3))
             } else {
@@ -342,12 +596,15 @@ impl GraphMemoryModel {
         let output_bytes = output_bytes_for_algorithm(spec.algorithm, input, vertex_estimate);
         let seed_input = graph_seed_memory_input(&spec.params, vertex_estimate);
         let seed_count = seed_input.map(|seed_input| seed_input.requested_count);
+        let seed_mode = seed_input.map(|seed_input| seed_input.mode);
         let workspace_bytes = workspace_bytes_for_algorithm(spec.algorithm, class, input, vertex_estimate, seed_input);
         let requested_bytes = construction_bytes.saturating_add(output_bytes).saturating_add(workspace_bytes).max(1);
+        let calibration_source = graph_calibration_source(input);
 
         Ok(GraphMemoryEstimate {
             algorithm: spec.algorithm,
             class,
+            raw_input_edges: input.raw_input_edges,
             input_edges: input.input_edges,
             vertex_upper_bound,
             vertex_estimate,
@@ -358,7 +615,11 @@ impl GraphMemoryModel {
             directed: spec.graph_options.directed,
             renumber: spec.graph_options.renumber,
             construction_policy: spec.graph_options.policy,
+            edge_normalize_inserted: input.edge_normalize_inserted,
+            topology_family: input.topology_family,
+            calibration_source,
             seed_count,
+            seed_mode,
             data_dependent: class.is_data_dependent(),
             requested_bytes,
         })
@@ -449,6 +710,7 @@ pub const fn graph_memory_reservation_required(algorithm: GraphAlgorithm) -> boo
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct GraphSeedMemoryInput {
     requested_count: u64,
+    mode: GraphSeedMode,
     explicit_seed_list: bool,
     requires_runtime_seed_selection: bool,
 }
@@ -473,11 +735,13 @@ fn betweenness_seed_memory_input(
     match seeds {
         Some(seeds) => GraphSeedMemoryInput {
             requested_count: seeds.len() as u64,
+            mode: GraphSeedMode::ExplicitSeedList,
             explicit_seed_list: true,
             requires_runtime_seed_selection: false,
         },
         None => GraphSeedMemoryInput {
             requested_count: k.unwrap_or(vertex_estimate),
+            mode: if k.is_some() { GraphSeedMode::RuntimeKSelection } else { GraphSeedMode::AllVertices },
             explicit_seed_list: k.is_some(),
             requires_runtime_seed_selection: k.is_some(),
         },
@@ -526,9 +790,9 @@ fn workspace_bytes_for_algorithm(
     match class {
         GraphMemoryClass::OutputSized => output_sized,
         GraphMemoryClass::MultiArray => output_sized.saturating_mul(4),
-        GraphMemoryClass::WorkspaceHeavyDataDependent => {
-            let superlinear_probe = vertex_estimate.saturating_mul(vertex_estimate.min(1024)).saturating_mul(4);
-            output_sized.saturating_mul(8).saturating_add(superlinear_probe)
+        GraphMemoryClass::WorkspaceHeavyDataDependent => match algorithm {
+            GraphAlgorithm::TriangleCountAll => triangle_count_workspace_bytes(input, vertex_estimate),
+            _ => legacy_workspace_heavy_data_dependent_bytes(vertex_estimate, output_sized),
         },
         GraphMemoryClass::WorkspaceHeavySeedDependent => match algorithm {
             GraphAlgorithm::BetweennessCentrality => {
@@ -539,6 +803,53 @@ fn workspace_bytes_for_algorithm(
             },
             _ => output_sized,
         },
+    }
+}
+
+fn legacy_workspace_heavy_data_dependent_bytes(vertex_estimate: u64, output_sized: u64) -> u64 {
+    let superlinear_probe = vertex_estimate.saturating_mul(vertex_estimate.min(1024)).saturating_mul(4);
+    output_sized.saturating_mul(8).saturating_add(superlinear_probe)
+}
+
+fn triangle_count_workspace_bytes(input: GraphMemoryModelInput, vertex_estimate: u64) -> u64 {
+    if input.topology_family != GraphTopologyFamily::CitationLikeSparse || input.vertex_width_bytes != 8 {
+        let vertex_array = vertex_estimate.saturating_mul(input.vertex_width_bytes.max(8));
+        let edge_index = input.input_edges.saturating_mul(input.vertex_width_bytes.saturating_mul(2));
+        return legacy_workspace_heavy_data_dependent_bytes(
+            vertex_estimate,
+            vertex_array.saturating_mul(3).saturating_add(edge_index),
+        );
+    }
+    let edge_workspace = graph_edge_working_set_bytes(input).saturating_mul(triangle_count_topology_multiplier(input));
+    let vertex_workspace = vertex_estimate
+        .saturating_mul(input.vertex_width_bytes.max(8))
+        .saturating_mul(triangle_count_vertex_array_multiplier(input));
+    edge_workspace.saturating_add(vertex_workspace)
+}
+
+fn graph_edge_working_set_bytes(input: GraphMemoryModelInput) -> u64 {
+    input.input_edges.saturating_mul(
+        input.vertex_width_bytes.saturating_mul(2).saturating_add(input.weight_width_bytes.unwrap_or(0)),
+    )
+}
+
+fn triangle_count_topology_multiplier(input: GraphMemoryModelInput) -> u64 {
+    match input.topology_family {
+        GraphTopologyFamily::CitationLikeSparse if input.vertex_width_bytes == 8 => 3,
+        GraphTopologyFamily::CitationLikeSparse
+        | GraphTopologyFamily::DenseRemappedSparse
+        | GraphTopologyFamily::RMatGraph500Like
+        | GraphTopologyFamily::Unknown => 8,
+    }
+}
+
+fn triangle_count_vertex_array_multiplier(input: GraphMemoryModelInput) -> u64 {
+    match input.topology_family {
+        GraphTopologyFamily::CitationLikeSparse if input.vertex_width_bytes == 8 => 3,
+        GraphTopologyFamily::CitationLikeSparse
+        | GraphTopologyFamily::DenseRemappedSparse
+        | GraphTopologyFamily::RMatGraph500Like
+        | GraphTopologyFamily::Unknown => 8,
     }
 }
 
@@ -656,11 +967,351 @@ pub fn graph_memory_model_input(
     weight_width_bytes: Option<u64>,
 ) -> GraphMemoryModelInput {
     GraphMemoryModelInput {
+        raw_input_edges: None,
         input_edges,
         vertex_width_bytes,
         weight_width_bytes: consumes_weight.then_some(weight_width_bytes).flatten(),
         has_edge_id: edge_columns.edge_id.is_some(),
         device_total_memory_bytes: None,
         vertex_estimate: None,
+        edge_normalize_inserted: false,
+        topology_family: GraphTopologyFamily::Unknown,
+    }
+}
+
+/// Estimate graph memory asks for graph nodes whose plan/config facts are known.
+///
+/// Missing row-count evidence is treated as unknown and skips that graph node.
+/// This keeps admission pricing deterministic without inventing cardinality.
+pub fn graph_memory_estimates_for_plan(
+    plan: &QueryPlan,
+    calibration_override: GraphMemoryCalibrationOverride,
+    device_total_memory_bytes: Option<u64>,
+) -> Result<Vec<GraphPlanMemoryEstimate>> {
+    let mut estimates = Vec::new();
+    for node in plan.nodes() {
+        let PlanNode::GraphAlgorithm(graph) = &node.kind else {
+            continue;
+        };
+        if !graph_memory_reservation_required(graph.spec.algorithm) {
+            continue;
+        }
+        let Some(mut input) = graph_memory_model_input_for_plan_node(plan, graph, calibration_override)? else {
+            continue;
+        };
+        input = calibration_override.apply_to_input(input);
+        if let Some(device_total_memory_bytes) = device_total_memory_bytes {
+            input = input.with_device_total_memory_bytes(device_total_memory_bytes);
+        }
+        let estimate = GraphMemoryModel.estimate(&graph.spec, input)?;
+        estimates.push(GraphPlanMemoryEstimate { node_id: node.id, estimate });
+    }
+    Ok(estimates)
+}
+
+/// Estimate graph memory for a graph edge list when planning has direct edge-count evidence.
+pub fn graph_memory_estimate_for_edge_list(
+    spec: &GraphAlgorithmSpec,
+    input_schema: &SchemaRef,
+    input_edges: u64,
+    raw_input_edges: Option<u64>,
+    calibration_override: GraphMemoryCalibrationOverride,
+    device_total_memory_bytes: Option<u64>,
+) -> Result<GraphMemoryEstimate> {
+    let mut input = graph_memory_model_input_for_edge_list(spec, input_schema, input_edges, raw_input_edges)?;
+    if let Some(device_total_memory_bytes) = device_total_memory_bytes {
+        input = input.with_device_total_memory_bytes(device_total_memory_bytes);
+    }
+    GraphMemoryModel.estimate(spec, calibration_override.apply_to_input(input))
+}
+
+/// Estimate the row count produced by a native edge-list plan, when the plan
+/// carries deterministic planning evidence.
+pub fn graph_edge_list_output_rows_for_plan(plan: &QueryPlan) -> Option<u64> {
+    estimated_output_rows(plan, plan.root_id())
+}
+
+fn graph_memory_model_input_for_plan_node(
+    plan: &QueryPlan,
+    graph: &crate::plan::GraphAlgorithmNode,
+    calibration_override: GraphMemoryCalibrationOverride,
+) -> Result<Option<GraphMemoryModelInput>> {
+    let Some(edge_counts) = graph_plan_edge_counts(plan, graph.input, calibration_override.raw_input_edges) else {
+        return Ok(None);
+    };
+    let input_schema =
+        plan.node(graph.input).ok_or_else(|| missing_graph_input_error(graph.input))?.output_schema().clone();
+    Ok(Some(graph_memory_model_input_for_edge_list(
+        &graph.spec,
+        &input_schema,
+        edge_counts.input_edges,
+        edge_counts.raw_input_edges,
+    )?))
+}
+
+fn graph_memory_model_input_for_edge_list(
+    spec: &GraphAlgorithmSpec,
+    input_schema: &SchemaRef,
+    input_edges: u64,
+    raw_input_edges: Option<u64>,
+) -> Result<GraphMemoryModelInput> {
+    let source_width = graph_vertex_field_width(input_schema, &spec.edge_columns.source, "source", spec.algorithm)?;
+    let destination_width =
+        graph_vertex_field_width(input_schema, &spec.edge_columns.destination, "destination", spec.algorithm)?;
+    if source_width != destination_width {
+        return Err(QueryError::new(
+            QueryErrorCode::UnsupportedType,
+            "nexus_query_engine.graph_memory.plan_estimate",
+            "cuGraph source and destination columns must have the same vertex dtype",
+        )
+        .with_fact("src_col", &spec.edge_columns.source)
+        .with_fact("dst_col", &spec.edge_columns.destination)
+        .with_fact("src_width_bytes", source_width)
+        .with_fact("dst_width_bytes", destination_width));
+    }
+    if let Some(edge_id) = &spec.edge_columns.edge_id {
+        let edge_id_width = graph_vertex_field_width(input_schema, edge_id, "edge_id", spec.algorithm)?;
+        if edge_id_width != source_width {
+            return Err(QueryError::new(
+                QueryErrorCode::UnsupportedType,
+                "nexus_query_engine.graph_memory.plan_estimate",
+                "cuGraph edge-id column dtype must match the graph vertex dtype",
+            )
+            .with_fact("edge_id_col", edge_id)
+            .with_fact("edge_id_width_bytes", edge_id_width)
+            .with_fact("vertex_width_bytes", source_width));
+        }
+    }
+
+    let weight_width_bytes = if spec.algorithm.consumes_weight() {
+        spec.edge_columns
+            .weight
+            .as_ref()
+            .map(|weight| graph_weight_field_width(input_schema, weight, spec.algorithm))
+            .transpose()?
+    } else {
+        None
+    };
+    let mut input = graph_memory_model_input(
+        input_edges,
+        source_width,
+        &spec.edge_columns,
+        spec.algorithm.consumes_weight(),
+        weight_width_bytes,
+    )
+    .with_edge_normalize_inserted(spec.edge_normalize_inserted);
+    if let Some(raw_input_edges) = raw_input_edges {
+        input = input.with_raw_input_edges(raw_input_edges);
+    }
+    Ok(input)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct GraphPlanEdgeCounts {
+    raw_input_edges: Option<u64>,
+    input_edges: u64,
+}
+
+fn graph_plan_edge_counts(
+    plan: &QueryPlan,
+    graph_input: NodeId,
+    configured_raw_input_edges: Option<u64>,
+) -> Option<GraphPlanEdgeCounts> {
+    let node = plan.node(graph_input)?;
+    if let PlanNode::EdgeNormalize(edge_normalize) = &node.kind {
+        let raw_input_edges = estimated_output_rows(plan, edge_normalize.input).or(configured_raw_input_edges)?;
+        return Some(GraphPlanEdgeCounts {
+            raw_input_edges: Some(raw_input_edges),
+            input_edges: edge_normalize_output_row_upper_bound(raw_input_edges, &edge_normalize.spec),
+        });
+    }
+    let input_edges = estimated_output_rows(plan, graph_input).or(configured_raw_input_edges)?;
+    Some(GraphPlanEdgeCounts { raw_input_edges: configured_raw_input_edges, input_edges })
+}
+
+/// Size the exact-vertex probe reservation.
+///
+/// The probe copies both endpoint columns, concatenates them, and distincts the
+/// result. The hash/sort workspace term keeps Int32 probes from being capped
+/// below the distinct live set.
+pub fn graph_vertex_estimate_probe_bytes(input: GraphMemoryModelInput, remaining_bytes: u64) -> u64 {
+    input
+        .input_edges
+        .saturating_mul(input.vertex_width_bytes.saturating_mul(4).saturating_add(16))
+        .max(GRAPH_VERTEX_ESTIMATE_PROBE_MIN_BYTES)
+        .min(remaining_bytes)
+        .max(1)
+}
+
+fn graph_calibration_source(input: GraphMemoryModelInput) -> GraphCalibrationSource {
+    match (input.raw_input_edges.is_some(), input.topology_family != GraphTopologyFamily::Unknown) {
+        (false, false) => GraphCalibrationSource::None,
+        (true, false) => GraphCalibrationSource::RawInputEdges,
+        (false, true) => GraphCalibrationSource::TopologyFamily,
+        (true, true) => GraphCalibrationSource::RawInputEdgesAndTopologyFamily,
+    }
+}
+
+fn edge_normalize_output_row_upper_bound(raw_input_edges: u64, spec: &EdgeNormalizeSpec) -> u64 {
+    raw_input_edges.saturating_mul(if spec.add_reverse { 2 } else { 1 })
+}
+
+fn graph_vertex_field_width(
+    schema: &SchemaRef,
+    column: &str,
+    role: &'static str,
+    algorithm: GraphAlgorithm,
+) -> Result<u64> {
+    let field = schema.field_with_name(column).map_err(|_error| graph_field_error(column, role, algorithm))?;
+    match field.data_type() {
+        DataType::Int32 => Ok(4),
+        DataType::Int64 => Ok(8),
+        other => Err(graph_field_type_error(column, role, algorithm, other)),
+    }
+}
+
+fn graph_weight_field_width(schema: &SchemaRef, column: &str, algorithm: GraphAlgorithm) -> Result<u64> {
+    let field = schema.field_with_name(column).map_err(|_error| graph_field_error(column, "weight", algorithm))?;
+    match field.data_type() {
+        DataType::Float32 => Ok(4),
+        DataType::Float64 => Ok(8),
+        other => Err(graph_field_type_error(column, "weight", algorithm, other)),
+    }
+}
+
+fn graph_field_error(column: &str, role: &'static str, algorithm: GraphAlgorithm) -> QueryError {
+    QueryError::new(
+        QueryErrorCode::InvalidPlan,
+        "nexus_query_engine.graph_memory.plan_estimate",
+        "graph memory plan estimate could not resolve an edge-list column",
+    )
+    .with_fact("algorithm", algorithm.as_str())
+    .with_fact("column", column)
+    .with_fact("role", role)
+}
+
+fn graph_field_type_error(
+    column: &str,
+    role: &'static str,
+    algorithm: GraphAlgorithm,
+    data_type: &DataType,
+) -> QueryError {
+    QueryError::new(
+        QueryErrorCode::UnsupportedType,
+        "nexus_query_engine.graph_memory.plan_estimate",
+        "graph memory plan estimate only supports fixed-width cuGraph edge types",
+    )
+    .with_fact("algorithm", algorithm.as_str())
+    .with_fact("column", column)
+    .with_fact("role", role)
+    .with_fact("arrow_type", format!("{data_type:?}"))
+}
+
+fn missing_graph_input_error(input: NodeId) -> QueryError {
+    QueryError::new(
+        QueryErrorCode::InvalidPlan,
+        "nexus_query_engine.graph_memory.plan_estimate",
+        "graph memory plan estimate referenced a missing graph input node",
+    )
+    .with_fact("input", input.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use arrow::datatypes::{Field, Schema};
+
+    use super::*;
+    use crate::{
+        LocalParquetFile, LocalParquetSource, QueryPlanBuilder, SourceNode,
+        plan::{GraphConstructionOptions, GraphTriangleCountAllParams},
+    };
+
+    fn edge_schema() -> SchemaRef {
+        Arc::new(Schema::new(vec![
+            Field::new("src", DataType::Int64, false),
+            Field::new("dst", DataType::Int64, false),
+            Field::new("weight", DataType::Float64, false),
+        ]))
+    }
+
+    fn triangle_plan(source: LocalParquetSource) -> QueryPlan {
+        let mut builder = QueryPlanBuilder::new();
+        let source = builder.add_source(SourceNode::LocalParquet(source));
+        let spec = GraphAlgorithmSpec::with_stable_schema(
+            GraphAlgorithm::TriangleCountAll,
+            GraphEdgeColumnBindings::new("src", "dst", Some("weight")),
+            GraphConstructionOptions {
+                directed: false,
+                renumber: true,
+                policy: GraphConstructionPolicy::PythonCugraph,
+            },
+            GraphAlgorithmParams::TriangleCountAll(GraphTriangleCountAllParams),
+        );
+        let graph = builder.try_add_graph_algorithm(source, spec).unwrap();
+        builder.finish_with_host_sink(graph)
+    }
+
+    #[test]
+    fn graph_memory_estimates_for_plan_use_row_group_rows_and_edge_normalize_upper_bound() {
+        let source = LocalParquetSource::from_files(
+            vec![LocalParquetFile::new("edges.parquet").with_row_group_rows(vec![10, 5])],
+            edge_schema(),
+            vec!["src".to_string(), "dst".to_string(), "weight".to_string()],
+        );
+        let plan = triangle_plan(source);
+
+        let estimates = graph_memory_estimates_for_plan(
+            &plan,
+            GraphMemoryCalibrationOverride::none().with_raw_input_edges(100),
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(estimates.len(), 1);
+        let estimate = &estimates[0].estimate;
+        assert_eq!(estimate.raw_input_edges, Some(15));
+        assert_eq!(estimate.input_edges, 30);
+        assert_eq!(estimate.vertex_width_bytes, 8);
+        assert_eq!(estimate.weight_width_bytes, None);
+        assert!(estimate.edge_normalize_inserted);
+        assert_eq!(estimate.topology_family, GraphTopologyFamily::Unknown);
+        assert_eq!(estimate.calibration_source, GraphCalibrationSource::RawInputEdges);
+    }
+
+    #[test]
+    fn graph_memory_estimates_for_plan_can_use_configured_raw_edges_when_plan_rows_are_unknown() {
+        let source = LocalParquetSource::from_files(
+            vec![LocalParquetFile::new("edges.parquet")],
+            edge_schema(),
+            vec!["src".to_string(), "dst".to_string(), "weight".to_string()],
+        );
+        let plan = triangle_plan(source);
+        let calibration = GraphMemoryCalibrationOverride::none()
+            .with_raw_input_edges(100)
+            .with_topology_family(GraphTopologyFamily::CitationLikeSparse);
+
+        let estimates = graph_memory_estimates_for_plan(&plan, calibration, None).unwrap();
+
+        assert_eq!(estimates.len(), 1);
+        let estimate = &estimates[0].estimate;
+        assert_eq!(estimate.raw_input_edges, Some(100));
+        assert_eq!(estimate.input_edges, 200);
+        assert_eq!(estimate.topology_family, GraphTopologyFamily::CitationLikeSparse);
+    }
+
+    #[test]
+    fn graph_memory_estimates_for_plan_skip_graph_nodes_without_edge_count_evidence() {
+        let source = LocalParquetSource::from_files(
+            vec![LocalParquetFile::new("edges.parquet")],
+            edge_schema(),
+            vec!["src".to_string(), "dst".to_string(), "weight".to_string()],
+        );
+        let plan = triangle_plan(source);
+
+        let estimates = graph_memory_estimates_for_plan(&plan, GraphMemoryCalibrationOverride::none(), None).unwrap();
+
+        assert!(estimates.is_empty());
     }
 }

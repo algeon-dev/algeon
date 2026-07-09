@@ -130,8 +130,7 @@ pub(super) fn execute_graph_algorithm(
         prior_null_edge_rows_dropped.saturating_add(input_rows.saturating_sub(sanitized_input_rows));
     let runtime_spec =
         RuntimeGraphSpecResolution::from_optional(graph_spec_with_runtime_betweenness_seeds(&input, &node.spec)?);
-    let spec = runtime_spec.spec_or(&node.spec);
-    admit_graph_memory(context, node_id, spec, &input, sanitized_input_rows, metrics)?;
+    admit_graph_memory(context, node_id, &node.spec, &input, sanitized_input_rows, metrics)?;
     execute_graph_algorithm_sanitized(
         context,
         node_id,
@@ -182,6 +181,8 @@ pub(super) fn execute_graph_algorithm_sanitized(
     });
     let inputs = GraphAlgorithmExecutionInputs { edge_list: input, side_inputs, graph_memory_limit_bytes };
     let timer = Instant::now();
+    let graph_budget_event_start = metrics.budgeted_execution_events.len();
+    let pool_usage_before = graph_pool_usage_snapshot(context);
     let result = match execute_graph_algorithm_attempt(context, spec, inputs, executor) {
         Ok(result) => result,
         Err(error) if should_retry_graph_resource_exhausted(context, &error, adaptive_retry_inputs.as_ref()) => {
@@ -200,6 +201,7 @@ pub(super) fn execute_graph_algorithm_sanitized(
         },
         Err(error) => return Err(error),
     };
+    let pool_usage_after = graph_pool_usage_snapshot(context);
     let elapsed = timer.elapsed();
     metrics.operator_time += elapsed;
     for observation in &result.budget_observations {
@@ -208,6 +210,16 @@ pub(super) fn execute_graph_algorithm_sanitized(
 
     let gpu = GpuDataFrame::new(result.frame);
     let output_device_bytes = gpu.device_allocated_size_bytes().ok();
+    let budget_graph_peak_bytes = metrics
+        .budgeted_execution_events
+        .iter()
+        .skip(graph_budget_event_start)
+        .filter(|event| event.boundary == crate::graph_memory::GRAPH_MEMORY_BOUNDARY)
+        .filter_map(|event| event.allocator_high_water_bytes)
+        .max();
+    let pool_graph_peak_bytes = graph_pool_high_water_delta(pool_usage_before, pool_usage_after);
+    let graph_peak_bytes = pool_graph_peak_bytes.or(budget_graph_peak_bytes).or(Some(0));
+    metrics.record_graph_model_error_ratio(&node_id.to_string(), node.spec.algorithm.as_str(), pool_graph_peak_bytes);
     let boundary_delta = boundary_delta(&boundary_before, &metrics.boundary);
     metrics.record_graph_algorithm_runtime(crate::metrics::GraphAlgorithmRuntimeMetrics {
         query_id: None,
@@ -229,12 +241,31 @@ pub(super) fn execute_graph_algorithm_sanitized(
         output_rows: gpu.num_rows() as u64,
         output_columns: gpu.num_columns() as u64,
         output_device_bytes,
+        graph_peak_bytes,
         elapsed_ns: u64::try_from(elapsed.as_nanos()).unwrap_or(u64::MAX),
         gpu_resident_input_handoffs: boundary_delta.gpu_resident_input_handoffs,
         host_to_device_uploads: boundary_delta.host_to_device_uploads,
         device_to_host_materializations: boundary_delta.device_to_host_materializations,
     });
     Ok(gpu)
+}
+
+#[cfg(feature = "cugraph")]
+fn graph_pool_usage_snapshot(context: &ExecutionContext) -> Option<cudf::DeviceMemoryPoolUsage> {
+    context.runtime().device_memory_manager().ok()?.pool_usage().ok()
+}
+
+#[cfg(feature = "cugraph")]
+fn graph_pool_high_water_delta(
+    before: Option<cudf::DeviceMemoryPoolUsage>,
+    after: Option<cudf::DeviceMemoryPoolUsage>,
+) -> Option<u64> {
+    let before = before?;
+    let after = after?;
+    if after.used_high_bytes <= before.used_high_bytes {
+        return None;
+    }
+    Some(after.used_high_bytes.saturating_sub(before.used_current_bytes))
 }
 
 #[cfg(feature = "cugraph")]
@@ -1006,6 +1037,7 @@ fn admit_graph_memory(
         return Ok(());
     }
     let report = graph_memory_reservation_report(
+        context,
         node_id,
         spec,
         input,
@@ -1045,6 +1077,7 @@ fn admit_graph_memory(
 
 #[cfg(feature = "cugraph")]
 pub(super) fn graph_memory_reservation_report(
+    context: &ExecutionContext,
     node_id: NodeId,
     spec: &crate::plan::GraphAlgorithmSpec,
     input: &DataFrame,
@@ -1055,9 +1088,11 @@ pub(super) fn graph_memory_reservation_report(
     vertex_estimate: Option<crate::graph_memory::GraphVertexEstimate>,
 ) -> Result<crate::graph_memory::GraphReservationReport> {
     let mut model_input = graph_memory_model_input_for_frame(input, spec, input_edges, allow_nulls)?;
+    model_input = context.graph_memory_calibration_override().apply_to_input(model_input);
     if let Some(device_total_memory_bytes) = device_total_memory_bytes {
         model_input = model_input.with_device_total_memory_bytes(device_total_memory_bytes);
     }
+    model_input = model_input.with_edge_normalize_inserted(spec.edge_normalize_inserted);
     if let Some(vertex_estimate) = vertex_estimate {
         model_input = model_input.with_vertex_estimate(vertex_estimate);
     }
@@ -1436,18 +1471,21 @@ fn graph_execution_runtime(
     graph_memory_limit_bytes: Option<u64>,
     operation: &'static str,
 ) -> Result<std::sync::Arc<cudf::Runtime>> {
-    let Some(limit_bytes) = graph_memory_limit_bytes else {
-        return Ok(context.shared_runtime());
+    let (limit_bytes, limit) = match graph_memory_limit_bytes {
+        Some(limit_bytes) => {
+            let limit = usize::try_from(limit_bytes).map_err(|_| {
+                QueryError::new(
+                    QueryErrorCode::InvalidPlan,
+                    "nexus_query_engine.graph_algorithm.budget_tracking_runtime",
+                    "graph memory reservation does not fit this platform's usize budget limit",
+                )
+                .with_fact("operation", operation)
+                .with_fact("graph_memory_limit_bytes", limit_bytes)
+            })?;
+            (limit_bytes, limit)
+        },
+        None => (usize::MAX as u64, usize::MAX),
     };
-    let limit = usize::try_from(limit_bytes).map_err(|_| {
-        QueryError::new(
-            QueryErrorCode::InvalidPlan,
-            "nexus_query_engine.graph_algorithm.budget_tracking_runtime",
-            "graph memory reservation does not fit this platform's usize budget limit",
-        )
-        .with_fact("operation", operation)
-        .with_fact("graph_memory_limit_bytes", limit_bytes)
-    })?;
     let budget_mr = context.runtime().memory_resource().budget_tracking_limit(limit).map_err(|error| {
         QueryError::from_cudf(
             "nexus_query_engine.graph_algorithm.budget_tracking_runtime",
@@ -1852,7 +1890,7 @@ pub(super) fn project_edge_list(
 }
 
 #[cfg(feature = "cugraph")]
-fn graph_memory_model_input_for_frame(
+pub(in crate::exec) fn graph_memory_model_input_for_frame(
     frame: &DataFrame,
     spec: &crate::plan::GraphAlgorithmSpec,
     input_edges: u64,
