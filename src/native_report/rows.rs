@@ -11,9 +11,8 @@ use nexus_query_engine::{AdaptivePipelineReportRow, StrictBoundedContractGateRow
 use super::{
     metrics::NativeDataFusionExecutionMetrics,
     schema::{
-        NATIVE_DATAFUSION_EXECUTION_TSV_COLUMNS, NATIVE_DATAFUSION_EXECUTION_TSV_SCHEMA_VERSION,
-        NATIVE_DATAFUSION_PLANNING_TSV_COLUMNS, NATIVE_DATAFUSION_PLANNING_TSV_SCHEMA_VERSION,
-        NATIVE_FALLBACK_PRESSURE_TSV_COLUMNS, NATIVE_FALLBACK_PRESSURE_TSV_SCHEMA_VERSION,
+        NATIVE_DATAFUSION_EXECUTION_TSV_COLUMNS, NATIVE_DATAFUSION_PLANNING_TSV_COLUMNS,
+        NATIVE_FALLBACK_PRESSURE_TSV_COLUMNS,
     },
     tsv::{
         TsvRow, format_adaptive_pipeline_rows, format_aggregate_strategy_rows, format_dynamic_filter_runtime_rows,
@@ -341,7 +340,6 @@ pub struct NativeSourceDiagnosticSummary {
 
 impl TsvRow for NativeFallbackPressureRow {
     const COLUMNS: &'static [&'static str] = NATIVE_FALLBACK_PRESSURE_TSV_COLUMNS;
-    const SCHEMA_VERSION: u32 = NATIVE_FALLBACK_PRESSURE_TSV_SCHEMA_VERSION;
 
     fn fields(&self) -> Vec<String> {
         vec![
@@ -363,7 +361,6 @@ impl TsvRow for NativeFallbackPressureRow {
 
 impl TsvRow for NativeDataFusionPlanningRow {
     const COLUMNS: &'static [&'static str] = NATIVE_DATAFUSION_PLANNING_TSV_COLUMNS;
-    const SCHEMA_VERSION: u32 = NATIVE_DATAFUSION_PLANNING_TSV_SCHEMA_VERSION;
 
     fn fields(&self) -> Vec<String> {
         vec![
@@ -393,7 +390,6 @@ impl TsvRow for NativeDataFusionPlanningRow {
 
 impl TsvRow for NativeDataFusionExecutionRow {
     const COLUMNS: &'static [&'static str] = NATIVE_DATAFUSION_EXECUTION_TSV_COLUMNS;
-    const SCHEMA_VERSION: u32 = NATIVE_DATAFUSION_EXECUTION_TSV_SCHEMA_VERSION;
 
     fn fields(&self) -> Vec<String> {
         let mut plan_task_mapping_rows = self.metrics.plan_task_mapping_rows.clone();
@@ -558,11 +554,8 @@ mod tests {
     #[test]
     fn native_report_row_contract_headers_match_public_constants() {
         assert_eq!(NativeFallbackPressureRow::COLUMNS.join("\t"), NATIVE_FALLBACK_PRESSURE_TSV_HEADER);
-        assert_eq!(NativeFallbackPressureRow::SCHEMA_VERSION, NATIVE_FALLBACK_PRESSURE_TSV_SCHEMA_VERSION);
         assert_eq!(NativeDataFusionPlanningRow::COLUMNS.join("\t"), NATIVE_DATAFUSION_PLANNING_TSV_HEADER);
-        assert_eq!(NativeDataFusionPlanningRow::SCHEMA_VERSION, NATIVE_DATAFUSION_PLANNING_TSV_SCHEMA_VERSION);
         assert_eq!(NativeDataFusionExecutionRow::COLUMNS.join("\t"), NATIVE_DATAFUSION_EXECUTION_TSV_HEADER);
-        assert_eq!(NativeDataFusionExecutionRow::SCHEMA_VERSION, NATIVE_DATAFUSION_EXECUTION_TSV_SCHEMA_VERSION);
     }
 
     #[test]

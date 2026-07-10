@@ -1,9 +1,10 @@
 //! Execution-time slot bound for unbounded native GPU plans.
 
+#[cfg(any(test, feature = "server"))]
+use std::num::NonZeroUsize;
 use std::{
     any::Any,
     future::Future,
-    num::NonZeroUsize,
     pin::Pin,
     sync::Arc,
     task::{Context, Poll},
@@ -37,6 +38,7 @@ impl UnboundedNativeExecutionLimiter {
         Self { permits: Arc::new(Semaphore::new(max_concurrent_queries.get())), max_concurrent_queries }
     }
 
+    #[cfg(feature = "server")]
     pub(crate) fn from_shared_semaphore(
         permits: Arc<Semaphore>,
         #[cfg_attr(not(test), allow(unused_variables))] max_concurrent_queries: NonZeroUsize,

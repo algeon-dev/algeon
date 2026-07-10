@@ -334,7 +334,6 @@ fn report_tsv_distinguishes_native_source_read_from_cpu_arrow_fallback() {
 
     let tsv = report.to_tsv();
     let mut lines = tsv.lines();
-    assert_eq!(lines.next(), Some("# native_iceberg_smoke_report_tsv_schema_version=10"));
     let header = lines.next().expect("header line");
     let row_line = lines.next().expect("row line");
     let expected_columns = [
@@ -528,7 +527,6 @@ fn direct_s3_scan_plan_produces_cpu_baseline_listing_url_without_staging() {
 
 fn tsv_field<'a>(tsv: &'a str, column: &str) -> &'a str {
     let mut lines = tsv.lines();
-    let _schema_version = lines.next().expect("schema version line");
     let header = lines.next().expect("header line").split('\t').collect::<Vec<_>>();
     let row = lines.next().expect("data row").split('\t').collect::<Vec<_>>();
     let index = header.iter().position(|field| *field == column).expect("column present");

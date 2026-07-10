@@ -81,11 +81,7 @@ pub(crate) fn cugraph_sql_config(
     config: &super::config::CugraphServerConfig,
     native_execution_config: crate::NativeCudfExecutionConfig,
 ) -> CugraphSqlConfig {
-    let mut sql = match &config.allowed_algorithms {
-        Some(algorithms) => CugraphSqlConfig::default().with_allowed_algorithms(algorithms.iter().copied()),
-        None => CugraphSqlConfig::default(),
-    };
-    sql.default_graph_options = config.default_graph_options.clone();
+    let sql = CugraphSqlConfig { default_graph_options: config.default_graph_options.clone(), ..Default::default() };
     sql.with_native_execution_config(native_execution_config)
 }
 

@@ -18,13 +18,12 @@ const DOCS_DIR = join(WEBSITE, 'docs', 'cugraph');
 // Algorithm reference pages live one layer below the cuGraph guides
 // (overview/connecting/discovery/graph-options), under cugraph/algorithms/.
 const ALGORITHMS_DIR = join(DOCS_DIR, 'algorithms');
-const EXPECTED_SCHEMA_VERSION = 11;
 const REQUIRED_KEYS = [
   'function_name', 'algorithm', 'source_vertex_policy', 'weight_col_policy',
   'output_schema_kind', 'signature', 'allowed_arg_counts_json', 'summary',
   'primary_example_sql', 'result_schemas_json', 'options_schema_json',
   'argument_descriptions_json', 'result_field_descriptions_json',
-  'limitations_json', 'examples_json', 'metadata_schema_version',
+  'limitations_json', 'examples_json',
 ];
 
 // family slug -> { label, position, functions[] } ; position drives sidebar order
@@ -48,9 +47,6 @@ function loadSpecs() {
     const spec = JSON.parse(readFileSync(join(SPEC_DIR, f), 'utf8'));
     for (const k of REQUIRED_KEYS) {
       if (!(k in spec)) throw new Error(`${f}: missing required key "${k}" — metadata contract changed`);
-    }
-    if (spec.metadata_schema_version !== EXPECTED_SCHEMA_VERSION) {
-      throw new Error(`${f}: metadata_schema_version ${spec.metadata_schema_version} != expected ${EXPECTED_SCHEMA_VERSION}. Review the spec, update EXPECTED_SCHEMA_VERSION and the renderers, then regenerate.`);
     }
     if (f !== `${spec.function_name}.json`) {
       throw new Error(`${f}: filename does not match function_name "${spec.function_name}" — a stale spec was left behind; re-run capture-cugraph-specs.sh`);

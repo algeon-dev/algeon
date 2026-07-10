@@ -756,6 +756,7 @@ impl NativeCudfExecutionConfig {
         self.requested_grant_bytes
     }
 
+    #[cfg(feature = "server")]
     pub(crate) fn with_unbounded_native_execution_limiter(mut self, limiter: UnboundedNativeExecutionLimiter) -> Self {
         self.unbounded_native_execution_limiter = Some(limiter);
         self
@@ -817,6 +818,7 @@ impl NativeCudfExecutionConfig {
         Ok(Some(priced.clamp(band.min_bytes, band.want_bytes)))
     }
 
+    #[cfg(feature = "cugraph")]
     pub(crate) fn with_graph_aware_plan_query_admission_ticket(
         mut self,
         graph_model_ask_bytes: Option<u64>,
@@ -855,6 +857,7 @@ impl NativeCudfExecutionConfig {
         self.query_admission_ticket_for_task_context(task_context).map(|ticket| ticket.id())
     }
 
+    #[cfg(any(test, feature = "cugraph"))]
     pub(crate) fn query_admission_ticket(&self) -> Option<Arc<QueryAdmissionTicket>> {
         self.query_admission_ticket.as_ref().map(Arc::clone)
     }

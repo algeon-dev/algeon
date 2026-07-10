@@ -1,12 +1,10 @@
 use datafusion_nexus::{
-    NATIVE_TPCDS_PARITY_TSV_HEADER, NATIVE_TPCDS_PARITY_TSV_SCHEMA_VERSION, NativeDataFusionPostNativeExecutionPath,
-    NativeTpcdsParityExternalOutputSummary, NativeTpcdsParityReport, NativeTpcdsParityRow, ParityComparisonMode,
-    ParityFloatTolerance, ParityStatus,
+    NATIVE_TPCDS_PARITY_TSV_HEADER, NativeDataFusionPostNativeExecutionPath, NativeTpcdsParityExternalOutputSummary,
+    NativeTpcdsParityReport, NativeTpcdsParityRow, ParityComparisonMode, ParityFloatTolerance, ParityStatus,
 };
 
 #[test]
-fn parity_tsv_header_pins_schema_version_and_columns() {
-    assert_eq!(NATIVE_TPCDS_PARITY_TSV_SCHEMA_VERSION, 4);
+fn parity_tsv_header_pins_columns() {
     let columns: Vec<&str> = NATIVE_TPCDS_PARITY_TSV_HEADER.split('\t').collect();
     assert_eq!(
         columns,
@@ -46,7 +44,7 @@ fn parity_tsv_header_pins_schema_version_and_columns() {
 }
 
 #[test]
-fn parity_report_to_tsv_emits_schema_version_and_header() {
+fn parity_report_to_tsv_emits_metadata_and_header() {
     let row = NativeTpcdsParityRow {
         query_id: "q01".to_string(),
         cpu_planning_status: datafusion_nexus::ParityStageStatus::Succeeded,
@@ -80,10 +78,7 @@ fn parity_report_to_tsv_emits_schema_version_and_header() {
         );
     let tsv = report.to_tsv();
     let first_line = tsv.lines().next().unwrap();
-    assert_eq!(
-        first_line,
-        format!("# native_tpcds_parity_tsv_schema_version={NATIVE_TPCDS_PARITY_TSV_SCHEMA_VERSION}")
-    );
+    assert_eq!(first_line, "# parity_float_tolerance_absolute=0");
     assert!(tsv.contains("# statistical_aggregate_execution_mode=gpu_native_tolerant\n"));
     assert!(tsv.contains("# statistical_aggregate_tolerance_contract=float_tolerant\n"));
     assert!(tsv.contains("# stddev_samp_execution_mode=gpu_native_tolerant\n"));

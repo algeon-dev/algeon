@@ -23,7 +23,6 @@ use datafusion_nexus::{
     GpuFallbackPolicy, NativeCudfExecutionConfig, NativeDataFusionExecutionMetrics, NativePipelineExecutionMode,
 };
 
-const SCHEMA_VERSION: u32 = 1;
 const ROWS_ENV: &str = "CUDF_CUGRAPH_CONSTRUCTION_ROWS";
 const MEMORY_POLICY_ENV: &str = "CUDF_CUGRAPH_CONSTRUCTION_MEMORY_POLICY";
 const DEVICE_BUDGET_BYTES_ENV: &str = "CUDF_CUGRAPH_CONSTRUCTION_DEVICE_BUDGET_BYTES";
@@ -79,7 +78,6 @@ async fn run_report(dir: &Path, rows: usize) -> Result<(), Box<dyn Error>> {
     ctx.register_parquet("synthetic_edges", path.to_str().unwrap(), ParquetReadOptions::default()).await?;
     register_views(&ctx).await?;
 
-    println!("# cugraph_sql_construction_report_tsv_schema_version={SCHEMA_VERSION}");
     println!(
         "# rows={rows}\tmemory_policy={}\tdevice_budget_bytes={}\tmax_source_chunk_bytes={}",
         std::env::var(MEMORY_POLICY_ENV).unwrap_or_else(|_| "bounded".to_string()),
@@ -418,7 +416,6 @@ mod tests {
     #[test]
     fn report_tsv_row_contract_matches_columns() {
         let row = ReportRow::failed(variants()[0], 10, "bad\tfailure".to_string());
-        assert_eq!(SCHEMA_VERSION, 1);
         assert_eq!(COLUMNS.first(), Some(&"variant"));
         assert_eq!(COLUMNS.last(), Some(&"failure"));
         assert_eq!(row.to_tsv().split('\t').count(), COLUMNS.len());

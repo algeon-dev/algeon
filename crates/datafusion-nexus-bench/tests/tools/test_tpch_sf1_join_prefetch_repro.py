@@ -126,7 +126,6 @@ def write_tpch_tsv(
             )
 
     lines = [
-        "# native_tpch_benchmark_tsv_schema_version=18",
         f"# tpch_benchmark_native_max_source_reads_in_flight={max_source_reads_in_flight}",
         "\t".join(header),
     ]

@@ -4,8 +4,8 @@ use crate::StatisticalAggregateExecutionMode;
 /// In-memory fallback-pressure report.
 ///
 /// Rows describe native candidate acceptance or rejection before execution.
-/// TSV serialization writes [`NATIVE_FALLBACK_PRESSURE_TSV_SCHEMA_VERSION`],
-/// optional workload metadata, then [`NATIVE_FALLBACK_PRESSURE_TSV_HEADER`].
+/// TSV serialization writes optional workload metadata, then
+/// [`NATIVE_FALLBACK_PRESSURE_TSV_HEADER`].
 /// Optional planning fields serialize as `none`; missing dataset content
 /// fingerprints serialize as `not_computed`.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -64,11 +64,6 @@ impl NativeFallbackPressureReport {
     /// Serializes the report as TSV with metadata comments followed by rows.
     pub fn to_tsv(&self) -> String {
         let mut output = String::new();
-        let _ = writeln!(
-            output,
-            "# native_fallback_pressure_tsv_schema_version={}",
-            NativeFallbackPressureRow::SCHEMA_VERSION
-        );
         write_workload_dataset_metadata(&mut output, self.workload_dataset.as_ref());
         debug_assert_eq!(NativeFallbackPressureRow::COLUMNS.join("\t"), NATIVE_FALLBACK_PRESSURE_TSV_HEADER);
         output.push_str(NATIVE_FALLBACK_PRESSURE_TSV_HEADER);
@@ -83,8 +78,7 @@ impl NativeFallbackPressureReport {
 /// In-memory DataFusion planning report after the native optimizer rule.
 ///
 /// Rows describe post-optimizer native coverage and structured fallback
-/// reasons. TSV serialization preserves header order for
-/// [`NATIVE_DATAFUSION_PLANNING_TSV_SCHEMA_VERSION`].
+/// reasons. TSV serialization preserves header order.
 /// Optional planning fields serialize as `none`; missing dataset content
 /// fingerprints serialize as `not_computed`.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -142,11 +136,6 @@ impl NativeDataFusionPlanningReport {
     /// Serializes the report as TSV with metadata comments followed by rows.
     pub fn to_tsv(&self) -> String {
         let mut output = String::new();
-        let _ = writeln!(
-            output,
-            "# native_datafusion_planning_tsv_schema_version={}",
-            NativeDataFusionPlanningRow::SCHEMA_VERSION
-        );
         write_workload_dataset_metadata(&mut output, self.workload_dataset.as_ref());
         debug_assert_eq!(NativeDataFusionPlanningRow::COLUMNS.join("\t"), NATIVE_DATAFUSION_PLANNING_TSV_HEADER);
         output.push_str(NATIVE_DATAFUSION_PLANNING_TSV_HEADER);
@@ -208,11 +197,6 @@ impl NativeDataFusionExecutionReport {
     /// Serializes the report as TSV with metadata comments followed by rows.
     pub fn to_tsv(&self) -> String {
         let mut output = String::new();
-        let _ = writeln!(
-            output,
-            "# native_datafusion_execution_tsv_schema_version={}",
-            NativeDataFusionExecutionRow::SCHEMA_VERSION
-        );
         if let Some(mode) = self.statistical_aggregate_execution_mode {
             let _ = writeln!(output, "# statistical_aggregate_execution_mode={}", mode.as_str());
             let _ =

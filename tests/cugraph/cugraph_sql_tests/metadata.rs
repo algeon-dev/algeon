@@ -349,11 +349,7 @@ async fn cugraph_metadata_describe_algorithm_returns_structured_rows() {
 }
 
 #[tokio::test]
-async fn cugraph_metadata_schema_versions_and_column_order_are_pinned() {
-    assert_eq!(CUGRAPH_LIST_ALGORITHMS_SCHEMA_VERSION, 7);
-    assert_eq!(CUGRAPH_DESCRIBE_ALGORITHM_SCHEMA_VERSION, 11);
-    assert_eq!(CUGRAPH_VALIDATE_CALL_SCHEMA_VERSION, 3);
-
+async fn cugraph_metadata_column_order_is_pinned() {
     let state = SessionStateBuilder::new_with_default_features().with_cugraph_sql(CugraphSqlConfig::default()).build();
     let ctx = SessionContext::new_with_state(state);
 
@@ -369,15 +365,12 @@ async fn cugraph_metadata_schema_versions_and_column_order_are_pinned() {
             "signature",
             "allowed_arg_counts_json",
             "summary",
-            "metadata_schema_version",
         ],
     );
     let list_batches = list_df.collect().await.unwrap();
     let list_batch = single_batch(&list_batches);
     assert!(list_batch.num_rows() > 0);
     assert_json_columns_parse_and_have_no_control_chars(list_batch);
-    let version_column = list_batch.schema().index_of("metadata_schema_version").unwrap();
-    assert_eq!(int64_value(list_batch, version_column, 0), i64::from(CUGRAPH_LIST_ALGORITHMS_SCHEMA_VERSION));
 
     let describe_df = ctx.sql("SELECT * FROM cugraph_describe_algorithm('cugraph_bfs')").await.unwrap();
     assert_eq!(
@@ -391,14 +384,11 @@ async fn cugraph_metadata_schema_versions_and_column_order_are_pinned() {
             "allowed_arg_counts_json",
             "summary",
             "primary_example_sql",
-            "metadata_schema_version",
         ],
     );
     let describe_batches = describe_df.collect().await.unwrap();
     let describe_batch = single_batch(&describe_batches);
     assert_json_columns_parse_and_have_no_control_chars(describe_batch);
-    let version_column = describe_batch.schema().index_of("metadata_schema_version").unwrap();
-    assert_eq!(int64_value(describe_batch, version_column, 0), i64::from(CUGRAPH_DESCRIBE_ALGORITHM_SCHEMA_VERSION));
 
     let verbose_describe_df =
         ctx.sql("SELECT * FROM cugraph_describe_algorithm('cugraph_bfs', 'verbose')").await.unwrap();
@@ -420,17 +410,11 @@ async fn cugraph_metadata_schema_versions_and_column_order_are_pinned() {
             "result_field_descriptions_json",
             "limitations_json",
             "examples_json",
-            "metadata_schema_version",
         ],
     );
     let verbose_describe_batches = verbose_describe_df.collect().await.unwrap();
     let verbose_describe_batch = single_batch(&verbose_describe_batches);
     assert_json_columns_parse_and_have_no_control_chars(verbose_describe_batch);
-    let version_column = verbose_describe_batch.schema().index_of("metadata_schema_version").unwrap();
-    assert_eq!(
-        int64_value(verbose_describe_batch, version_column, 0),
-        i64::from(CUGRAPH_DESCRIBE_ALGORITHM_SCHEMA_VERSION)
-    );
 
     register_edge_memtable(&ctx, "pinned_edges", DataType::Int64, DataType::Int64, DataType::Float64);
     let validate_df = ctx
@@ -450,7 +434,6 @@ async fn cugraph_metadata_schema_versions_and_column_order_are_pinned() {
             "error_code",
             "message",
             "function_name",
-            "algorithm_enabled",
             "table_resolved",
             "src_col_resolved",
             "dst_col_resolved",
@@ -461,14 +444,11 @@ async fn cugraph_metadata_schema_versions_and_column_order_are_pinned() {
             "output_schema_json",
             "normalized_options_json",
             "would_execute_gpu",
-            "metadata_schema_version",
         ],
     );
     let validate_batches = validate_df.collect().await.unwrap();
     let validate_batch = single_batch(&validate_batches);
     assert_json_columns_parse_and_have_no_control_chars(validate_batch);
-    let version_column = validate_batch.schema().index_of("metadata_schema_version").unwrap();
-    assert_eq!(int64_value(validate_batch, version_column, 0), i64::from(CUGRAPH_VALIDATE_CALL_SCHEMA_VERSION));
 }
 
 #[tokio::test]
@@ -529,9 +509,7 @@ async fn cugraph_metadata_validate_call_checks_temp_view_schema_without_gpu_exec
 
 #[tokio::test]
 async fn cugraph_metadata_validate_call_returns_stable_invalid_rows() {
-    let state = SessionStateBuilder::new_with_default_features()
-        .with_cugraph_sql(CugraphSqlConfig::default().with_allowed_algorithms([CugraphAlgorithm::PageRank]))
-        .build();
+    let state = SessionStateBuilder::new_with_default_features().with_cugraph_sql(CugraphSqlConfig::default()).build();
     let ctx = SessionContext::new_with_state(state);
     register_edge_memtable(&ctx, "bad_edges", DataType::Utf8, DataType::Int64, DataType::Float64);
     register_edge_memtable(&ctx, "mismatch_edges", DataType::Int32, DataType::Int64, DataType::Float64);
@@ -543,14 +521,6 @@ async fn cugraph_metadata_validate_call_returns_stable_invalid_rows() {
         "bad_edges",
         r#"{"src_col":"src","dst_col":"dst"}"#,
         "unknown_algorithm",
-    )
-    .await;
-    assert_validate_error(
-        &ctx,
-        "cugraph_bfs",
-        "bad_edges",
-        r#"{"source_vertex":0,"src_col":"src","dst_col":"dst"}"#,
-        "algorithm_disabled",
     )
     .await;
     assert_validate_error(

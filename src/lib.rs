@@ -11,8 +11,7 @@
 //!   materialize native GPU results back to Arrow or pass GPU-resident
 //!   fragments between native subplans.
 //! - [`native_report`] defines the TSV/report contracts emitted by benchmark
-//!   and diagnostic binaries. Column order and schema-version constants are
-//!   part of the public surface.
+//!   and diagnostic binaries. Column order is part of the public surface.
 //!
 //! DataFusion-specific planning belongs here. DataFusion-free native IR,
 //! runtime policy, capability admission, and cudf-rs execution live in
@@ -80,10 +79,8 @@ pub mod report_contracts {
     pub use crate::{
         TriageCode, TriageEvidenceRef, TriageSeverity, TriageSignal, TriageSummary, TriageVerdict,
         native_report::{
-            NATIVE_DATAFUSION_EXECUTION_TSV_HEADER, NATIVE_DATAFUSION_EXECUTION_TSV_SCHEMA_VERSION,
-            NATIVE_DATAFUSION_PLANNING_TSV_HEADER, NATIVE_DATAFUSION_PLANNING_TSV_SCHEMA_VERSION,
-            NATIVE_FALLBACK_PRESSURE_TSV_HEADER, NATIVE_FALLBACK_PRESSURE_TSV_SCHEMA_VERSION,
-            NATIVE_TPCDS_PARITY_TSV_HEADER, NATIVE_TPCDS_PARITY_TSV_SCHEMA_VERSION, NativeAggregateStrategyMetricRow,
+            NATIVE_DATAFUSION_EXECUTION_TSV_HEADER, NATIVE_DATAFUSION_PLANNING_TSV_HEADER,
+            NATIVE_FALLBACK_PRESSURE_TSV_HEADER, NATIVE_TPCDS_PARITY_TSV_HEADER, NativeAggregateStrategyMetricRow,
             NativeDataFusionExecutionMetrics, NativeDataFusionExecutionReport, NativeDataFusionExecutionRow,
             NativeDataFusionExecutionWorkloadInput, NativeDataFusionExecutionWorkloadItem,
             NativeDataFusionPlanningOutcome, NativeDataFusionPlanningReport, NativeDataFusionPlanningRow,
@@ -112,8 +109,7 @@ pub mod report_contracts {
 pub mod coverage_contracts {
     pub use crate::{
         gpu_coverage::{
-            NEXUS_EXPLAIN_COVERAGE_FUNCTION, NEXUS_EXPLAIN_COVERAGE_SCHEMA_VERSION, QUERY_GPU_COVERAGE_JSON_SCHEMA,
-            QUERY_GPU_COVERAGE_SCHEMA_VERSION, QueryGpuCoverage, QueryGpuCoverageConfidence, QueryGpuCoverageDomains,
+            NEXUS_EXPLAIN_COVERAGE_FUNCTION, QueryGpuCoverage, QueryGpuCoverageConfidence, QueryGpuCoverageDomains,
             QueryGpuCoverageOverall, QueryGpuCudfNativeCoverage, QueryGpuCugraphCall, QueryGpuCugraphOperatorDomain,
             QueryGpuFallbackReason, QueryGpuFallbackReasonKind, QueryGpuPresence, QueryGpuRejectionPhase,
             QueryGpuRuntimeCaveat, QueryGpuValidatedUnder, validate_query,
@@ -208,19 +204,18 @@ pub mod iceberg_contracts {
 pub mod graph_contracts {
     pub use crate::graph_sql::{
         CUGRAPH_BALANCED_CUT_CLUSTERING_FUNCTION, CUGRAPH_BFS_FUNCTION, CUGRAPH_CORE_NUMBER_FUNCTION,
-        CUGRAPH_DEGREES_ALL_FUNCTION, CUGRAPH_DESCRIBE_ALGORITHM_FUNCTION, CUGRAPH_DESCRIBE_ALGORITHM_SCHEMA_VERSION,
-        CUGRAPH_ECG_FUNCTION, CUGRAPH_EIGENVECTOR_CENTRALITY_FUNCTION, CUGRAPH_FORCE_ATLAS2_FUNCTION,
-        CUGRAPH_HITS_FUNCTION, CUGRAPH_IN_DEGREES_ALL_FUNCTION, CUGRAPH_K_CORE_FUNCTION,
-        CUGRAPH_KATZ_CENTRALITY_FUNCTION, CUGRAPH_LEIDEN_FUNCTION, CUGRAPH_LIST_ALGORITHMS_FUNCTION,
-        CUGRAPH_LIST_ALGORITHMS_SCHEMA_VERSION, CUGRAPH_LOUVAIN_FUNCTION, CUGRAPH_MINIMUM_SPANNING_TREE_FUNCTION,
-        CUGRAPH_OPERATION_REGISTRY, CUGRAPH_OUT_DEGREES_ALL_FUNCTION, CUGRAPH_PAGERANK_FUNCTION,
-        CUGRAPH_PERSONALIZED_PAGERANK_FUNCTION, CUGRAPH_SPECTRAL_MODULARITY_MAXIMIZATION_FUNCTION,
-        CUGRAPH_SSSP_FUNCTION, CUGRAPH_STRONGLY_CONNECTED_COMPONENTS_FUNCTION, CUGRAPH_TRIANGLE_COUNT_ALL_FUNCTION,
-        CUGRAPH_VALIDATE_CALL_FUNCTION, CUGRAPH_VALIDATE_CALL_SCHEMA_VERSION,
-        CUGRAPH_WEAKLY_CONNECTED_COMPONENTS_FUNCTION, CugraphAlgoTableProvider, CugraphAlgorithm,
-        CugraphAlgorithmParams, CugraphAlgorithmSpec, CugraphBfsOutputMode, CugraphBfsOutputOptions, CugraphBfsParams,
-        CugraphBfsSource, CugraphBfsSourceVertex, CugraphCoreNumberParams, CugraphDegreesAllParams, CugraphEcgParams,
-        CugraphEigenvectorCentralityParams, CugraphForceAtlas2Params, CugraphGraphConstructionPolicy,
+        CUGRAPH_DEGREES_ALL_FUNCTION, CUGRAPH_DESCRIBE_ALGORITHM_FUNCTION, CUGRAPH_ECG_FUNCTION,
+        CUGRAPH_EIGENVECTOR_CENTRALITY_FUNCTION, CUGRAPH_FORCE_ATLAS2_FUNCTION, CUGRAPH_HITS_FUNCTION,
+        CUGRAPH_IN_DEGREES_ALL_FUNCTION, CUGRAPH_K_CORE_FUNCTION, CUGRAPH_KATZ_CENTRALITY_FUNCTION,
+        CUGRAPH_LEIDEN_FUNCTION, CUGRAPH_LIST_ALGORITHMS_FUNCTION, CUGRAPH_LOUVAIN_FUNCTION,
+        CUGRAPH_MINIMUM_SPANNING_TREE_FUNCTION, CUGRAPH_OPERATION_REGISTRY, CUGRAPH_OUT_DEGREES_ALL_FUNCTION,
+        CUGRAPH_PAGERANK_FUNCTION, CUGRAPH_PERSONALIZED_PAGERANK_FUNCTION,
+        CUGRAPH_SPECTRAL_MODULARITY_MAXIMIZATION_FUNCTION, CUGRAPH_SSSP_FUNCTION,
+        CUGRAPH_STRONGLY_CONNECTED_COMPONENTS_FUNCTION, CUGRAPH_TRIANGLE_COUNT_ALL_FUNCTION,
+        CUGRAPH_VALIDATE_CALL_FUNCTION, CUGRAPH_WEAKLY_CONNECTED_COMPONENTS_FUNCTION, CugraphAlgoTableProvider,
+        CugraphAlgorithm, CugraphAlgorithmParams, CugraphAlgorithmSpec, CugraphBfsOutputMode, CugraphBfsOutputOptions,
+        CugraphBfsParams, CugraphBfsSource, CugraphBfsSourceVertex, CugraphCoreNumberParams, CugraphDegreesAllParams,
+        CugraphEcgParams, CugraphEigenvectorCentralityParams, CugraphForceAtlas2Params, CugraphGraphConstructionPolicy,
         CugraphGraphOptions, CugraphHitsParams, CugraphInDegreesAllParams, CugraphKCoreDegreeType, CugraphKCoreParams,
         CugraphKatzCentralityParams, CugraphLeidenParams, CugraphLouvainParams, CugraphMstParams,
         CugraphOperationDefinition, CugraphOutDegreesAllParams, CugraphPageRankParams,
@@ -242,8 +237,7 @@ pub use backend::{
 };
 pub use error::{Error, ErrorCode, ErrorKind, ErrorStatus, Facts, Result};
 pub use gpu_coverage::{
-    NEXUS_EXPLAIN_COVERAGE_FUNCTION, NEXUS_EXPLAIN_COVERAGE_SCHEMA_VERSION, QUERY_GPU_COVERAGE_JSON_SCHEMA,
-    QUERY_GPU_COVERAGE_SCHEMA_VERSION, QueryGpuCoverage, QueryGpuCoverageConfidence, QueryGpuCoverageDomains,
+    NEXUS_EXPLAIN_COVERAGE_FUNCTION, QueryGpuCoverage, QueryGpuCoverageConfidence, QueryGpuCoverageDomains,
     QueryGpuCoverageOverall, QueryGpuCudfNativeCoverage, QueryGpuCugraphCall, QueryGpuCugraphOperatorDomain,
     QueryGpuFallbackReason, QueryGpuFallbackReasonKind, QueryGpuPresence, QueryGpuRejectionPhase,
     QueryGpuRuntimeCaveat, QueryGpuValidatedUnder, validate_query,
@@ -252,25 +246,24 @@ pub use gpu_coverage_sql::register_gpu_coverage_udtf;
 #[cfg(feature = "cugraph")]
 pub use graph_sql::{
     CUGRAPH_BALANCED_CUT_CLUSTERING_FUNCTION, CUGRAPH_BFS_FUNCTION, CUGRAPH_CORE_NUMBER_FUNCTION,
-    CUGRAPH_DEGREES_ALL_FUNCTION, CUGRAPH_DESCRIBE_ALGORITHM_FUNCTION, CUGRAPH_DESCRIBE_ALGORITHM_SCHEMA_VERSION,
-    CUGRAPH_ECG_FUNCTION, CUGRAPH_EIGENVECTOR_CENTRALITY_FUNCTION, CUGRAPH_FORCE_ATLAS2_FUNCTION,
-    CUGRAPH_HITS_FUNCTION, CUGRAPH_IN_DEGREES_ALL_FUNCTION, CUGRAPH_K_CORE_FUNCTION, CUGRAPH_KATZ_CENTRALITY_FUNCTION,
-    CUGRAPH_LEIDEN_FUNCTION, CUGRAPH_LIST_ALGORITHMS_FUNCTION, CUGRAPH_LIST_ALGORITHMS_SCHEMA_VERSION,
-    CUGRAPH_LOUVAIN_FUNCTION, CUGRAPH_MINIMUM_SPANNING_TREE_FUNCTION, CUGRAPH_OPERATION_REGISTRY,
-    CUGRAPH_OUT_DEGREES_ALL_FUNCTION, CUGRAPH_PAGERANK_FUNCTION, CUGRAPH_PERSONALIZED_PAGERANK_FUNCTION,
+    CUGRAPH_DEGREES_ALL_FUNCTION, CUGRAPH_DESCRIBE_ALGORITHM_FUNCTION, CUGRAPH_ECG_FUNCTION,
+    CUGRAPH_EIGENVECTOR_CENTRALITY_FUNCTION, CUGRAPH_FORCE_ATLAS2_FUNCTION, CUGRAPH_HITS_FUNCTION,
+    CUGRAPH_IN_DEGREES_ALL_FUNCTION, CUGRAPH_K_CORE_FUNCTION, CUGRAPH_KATZ_CENTRALITY_FUNCTION,
+    CUGRAPH_LEIDEN_FUNCTION, CUGRAPH_LIST_ALGORITHMS_FUNCTION, CUGRAPH_LOUVAIN_FUNCTION,
+    CUGRAPH_MINIMUM_SPANNING_TREE_FUNCTION, CUGRAPH_OPERATION_REGISTRY, CUGRAPH_OUT_DEGREES_ALL_FUNCTION,
+    CUGRAPH_PAGERANK_FUNCTION, CUGRAPH_PERSONALIZED_PAGERANK_FUNCTION,
     CUGRAPH_SPECTRAL_MODULARITY_MAXIMIZATION_FUNCTION, CUGRAPH_SSSP_FUNCTION,
     CUGRAPH_STRONGLY_CONNECTED_COMPONENTS_FUNCTION, CUGRAPH_TRIANGLE_COUNT_ALL_FUNCTION,
-    CUGRAPH_VALIDATE_CALL_FUNCTION, CUGRAPH_VALIDATE_CALL_SCHEMA_VERSION, CUGRAPH_WEAKLY_CONNECTED_COMPONENTS_FUNCTION,
-    CugraphAlgoTableProvider, CugraphAlgorithm, CugraphAlgorithmParams, CugraphAlgorithmSpec, CugraphBfsOutputMode,
-    CugraphBfsOutputOptions, CugraphBfsParams, CugraphBfsSource, CugraphBfsSourceVertex, CugraphCoreNumberParams,
-    CugraphDegreesAllParams, CugraphEcgParams, CugraphEigenvectorCentralityParams, CugraphForceAtlas2Params,
-    CugraphGraphConstructionPolicy, CugraphGraphOptions, CugraphHitsParams, CugraphInDegreesAllParams,
-    CugraphKCoreDegreeType, CugraphKCoreParams, CugraphKatzCentralityParams, CugraphLeidenParams, CugraphLouvainParams,
-    CugraphMstParams, CugraphOperationDefinition, CugraphOutDegreesAllParams, CugraphPageRankParams,
-    CugraphPageRankPersonalizationTable, CugraphPersonalizedPageRankParams, CugraphSccParams,
-    CugraphSpectralClusteringParams, CugraphSqlConfig, CugraphSsspParams, CugraphTableReference,
-    CugraphTriangleCountAllParams, CugraphWccParams, cugraph_table_functions, parse_cugraph_algorithm_spec,
-    register_cugraph_udtfs, stable_result_schema,
+    CUGRAPH_VALIDATE_CALL_FUNCTION, CUGRAPH_WEAKLY_CONNECTED_COMPONENTS_FUNCTION, CugraphAlgoTableProvider,
+    CugraphAlgorithm, CugraphAlgorithmParams, CugraphAlgorithmSpec, CugraphBfsOutputMode, CugraphBfsOutputOptions,
+    CugraphBfsParams, CugraphBfsSource, CugraphBfsSourceVertex, CugraphCoreNumberParams, CugraphDegreesAllParams,
+    CugraphEcgParams, CugraphEigenvectorCentralityParams, CugraphForceAtlas2Params, CugraphGraphConstructionPolicy,
+    CugraphGraphOptions, CugraphHitsParams, CugraphInDegreesAllParams, CugraphKCoreDegreeType, CugraphKCoreParams,
+    CugraphKatzCentralityParams, CugraphLeidenParams, CugraphLouvainParams, CugraphMstParams,
+    CugraphOperationDefinition, CugraphOutDegreesAllParams, CugraphPageRankParams, CugraphPageRankPersonalizationTable,
+    CugraphPersonalizedPageRankParams, CugraphSccParams, CugraphSpectralClusteringParams, CugraphSqlConfig,
+    CugraphSsspParams, CugraphTableReference, CugraphTriangleCountAllParams, CugraphWccParams, cugraph_table_functions,
+    parse_cugraph_algorithm_spec, register_cugraph_udtfs, stable_result_schema,
 };
 #[cfg(feature = "iceberg")]
 pub use iceberg::catalog::{
@@ -294,10 +287,8 @@ pub use native_exec::{
     NativeCudfGpuProducerExec,
 };
 pub use native_report::{
-    NATIVE_DATAFUSION_EXECUTION_TSV_HEADER, NATIVE_DATAFUSION_EXECUTION_TSV_SCHEMA_VERSION,
-    NATIVE_DATAFUSION_PLANNING_TSV_HEADER, NATIVE_DATAFUSION_PLANNING_TSV_SCHEMA_VERSION,
-    NATIVE_FALLBACK_PRESSURE_TSV_HEADER, NATIVE_FALLBACK_PRESSURE_TSV_SCHEMA_VERSION, NATIVE_TPCDS_PARITY_TSV_HEADER,
-    NATIVE_TPCDS_PARITY_TSV_SCHEMA_VERSION, NativeAggregateStrategyMetricRow, NativeDataFusionExecutionMetrics,
+    NATIVE_DATAFUSION_EXECUTION_TSV_HEADER, NATIVE_DATAFUSION_PLANNING_TSV_HEADER, NATIVE_FALLBACK_PRESSURE_TSV_HEADER,
+    NATIVE_TPCDS_PARITY_TSV_HEADER, NativeAggregateStrategyMetricRow, NativeDataFusionExecutionMetrics,
     NativeDataFusionExecutionReport, NativeDataFusionExecutionRow, NativeDataFusionExecutionWorkloadInput,
     NativeDataFusionExecutionWorkloadItem, NativeDataFusionPlanningOutcome, NativeDataFusionPlanningReport,
     NativeDataFusionPlanningRow, NativeDataFusionPlanningWorkloadInput, NativeDataFusionPlanningWorkloadItem,

@@ -61,8 +61,7 @@ The result is one row:
 | `planning_did_io` | `true` when the plan involved a table-format (Iceberg) source, whose planning performs manifest/footer IO |
 | `fallback_reason_count` | number of entries in the JSON `fallback_reasons` list |
 | `runtime_caveat_count` | number of entries in the JSON `runtime_caveats` list |
-| `coverage_json` | the complete versioned verdict (`datafusion_nexus.query_gpu_coverage.v1`) |
-| `coverage_schema_version` | row-contract version, currently `1` |
+| `coverage_json` | the complete structured verdict |
 
 Validation expects exactly **one SELECT/query statement**. Multi-statement
 input, non-query statements, and SQL that calls `nexus_explain_coverage`

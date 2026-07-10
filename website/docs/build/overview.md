@@ -13,9 +13,11 @@ means building **two native CUDA libraries** (libcudf, libcugraph) and **three
 Rust workspaces** in a fixed, bottom-up order.
 
 This guide walks the whole path: system prerequisites, environment variables,
-cloning, building each layer, and running the verified test surface. Every
-command in it was executed end-to-end in a clean sandbox with no inherited
-shell state (see [Environment](./environment.md#validated-against-shell-state-leakage)).
+cloning, building each layer, optionally packaging the Flight SQL server into a
+Docker image, and running the verified test surface. The source-build path was
+executed end-to-end in a clean sandbox with no inherited shell state (see
+[Environment](./environment.md#validated-against-shell-state-leakage)); the
+Docker path is documented separately in [Building with Docker](./docker.md).
 
 ## The stack
 
@@ -62,6 +64,10 @@ previous one.
 4. **cugraph-rs** — `cargo build` / `cargo test` against that build tree.
 5. **datafusion-nexus** — `cargo build` plus the nextest suite. Cargo pulls the
    remaining dependencies (including Apache DataFusion) from crates.io.
+6. **Docker image** — optional packaging for the standalone Flight SQL server.
+   `docker/build.sh` stages the release binary and the locally built forked
+   RAPIDS libraries; `docker build` then harvests the CUDA runtime libraries
+   into a runnable image ([Building with Docker](./docker.md)).
 
 ## Requirements
 

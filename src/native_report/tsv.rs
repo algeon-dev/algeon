@@ -15,7 +15,6 @@ use crate::planner::NativeStrictBoundedCompiledGraphDiagnostics;
 
 pub(crate) trait TsvRow {
     const COLUMNS: &'static [&'static str];
-    const SCHEMA_VERSION: u32;
 
     fn fields(&self) -> Vec<String>;
 

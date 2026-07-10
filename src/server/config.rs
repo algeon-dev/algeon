@@ -25,7 +25,7 @@ use crate::{
 };
 use crate::{CudfOptimizerConfig, GpuFallbackPolicy, MemoryShare, NativeCudfExecutionConfig, NexusAdmissionPolicy};
 #[cfg(feature = "cugraph")]
-use crate::{CugraphAlgorithm, CugraphGraphConstructionPolicy, CugraphGraphOptions};
+use crate::{CugraphGraphConstructionPolicy, CugraphGraphOptions};
 
 /// Socket address the Flight SQL server listens on. Defaults to `0.0.0.0:50051`.
 pub const NEXUS_SERVER_BIND_ENV: &str = "NEXUS_SERVER_BIND";
@@ -264,9 +264,6 @@ pub const NEXUS_SERVER_NATIVE_CONFIG_OPTIONS: &[NexusServerNativeConfigOption] =
 /// env file can serve both artifact flavors; `true` and every other cuGraph
 /// setting are still rejected there.
 pub const NEXUS_SERVER_CUGRAPH_ENABLED_ENV: &str = "NEXUS_SERVER_CUGRAPH_ENABLED";
-/// Optional comma-separated allowlist of cuGraph SQL function names, such as
-/// `cugraph_pagerank`. When unset, all registered cuGraph functions are enabled.
-pub const NEXUS_SERVER_CUGRAPH_ALGORITHMS_ENV: &str = "NEXUS_SERVER_CUGRAPH_ALGORITHMS";
 /// Default cuGraph edge direction setting for SQL calls. Accepts boolean
 /// values; per-call `options_json` can override it.
 pub const NEXUS_SERVER_CUGRAPH_DIRECTED_ENV: &str = "NEXUS_SERVER_CUGRAPH_DIRECTED";
@@ -616,9 +613,6 @@ pub struct IcebergTableRegistrationConfig {
 #[cfg(feature = "cugraph")]
 #[derive(Debug, Clone, PartialEq)]
 pub struct CugraphServerConfig {
-    /// Optional SQL-function allowlist. `None` means all registry algorithms
-    /// are registered; `Some` registers only the named algorithms.
-    pub allowed_algorithms: Option<std::collections::BTreeSet<CugraphAlgorithm>>,
     /// Operator-level graph construction defaults used by cuGraph SQL UDTFs.
     /// Per-call `options_json` still overrides these values.
     pub default_graph_options: CugraphGraphOptions,
@@ -1858,7 +1852,6 @@ fn parse_iceberg_tables(env_name: &'static str, raw: &str) -> Result<Vec<Iceberg
 #[cfg(feature = "cugraph")]
 fn cugraph_config(values: &mut EnvValues<'_>) -> Result<Option<CugraphServerConfig>> {
     let requested = values.any_present([
-        NEXUS_SERVER_CUGRAPH_ALGORITHMS_ENV,
         NEXUS_SERVER_CUGRAPH_DIRECTED_ENV,
         NEXUS_SERVER_CUGRAPH_RENUMBER_ENV,
         NEXUS_SERVER_CUGRAPH_CONSTRUCTION_POLICY_ENV,
@@ -1874,10 +1867,6 @@ fn cugraph_config(values: &mut EnvValues<'_>) -> Result<Option<CugraphServerConf
         return Ok(None);
     }
 
-    let allowed_algorithms = values
-        .string(NEXUS_SERVER_CUGRAPH_ALGORITHMS_ENV)
-        .map(|raw| parse_cugraph_algorithms(NEXUS_SERVER_CUGRAPH_ALGORITHMS_ENV, &raw))
-        .transpose()?;
     let mut default_graph_options = CugraphGraphOptions::default();
     if let Some(directed) = values.optional_bool(NEXUS_SERVER_CUGRAPH_DIRECTED_ENV)? {
         default_graph_options.directed = directed;
@@ -1890,26 +1879,7 @@ fn cugraph_config(values: &mut EnvValues<'_>) -> Result<Option<CugraphServerConf
             parse_cugraph_construction_policy(NEXUS_SERVER_CUGRAPH_CONSTRUCTION_POLICY_ENV, &raw)?;
     }
 
-    Ok(Some(CugraphServerConfig { allowed_algorithms, default_graph_options }))
-}
-
-#[cfg(feature = "cugraph")]
-fn parse_cugraph_algorithms(env_name: &'static str, raw: &str) -> Result<std::collections::BTreeSet<CugraphAlgorithm>> {
-    let mut algorithms = std::collections::BTreeSet::new();
-    for entry in raw.split(',').map(str::trim).filter(|entry| !entry.is_empty()) {
-        let algorithm =
-            CugraphAlgorithm::all().find(|algorithm| algorithm.function_name() == entry).ok_or_else(|| {
-                ServerError::invalid_config(
-                    env_name,
-                    format!("unknown cuGraph algorithm `{entry}`; use SQL function names such as `cugraph_pagerank`"),
-                )
-            })?;
-        algorithms.insert(algorithm);
-    }
-    if algorithms.is_empty() {
-        return Err(ServerError::invalid_config(env_name, "must contain at least one SQL function name"));
-    }
-    Ok(algorithms)
+    Ok(Some(CugraphServerConfig { default_graph_options }))
 }
 
 #[cfg(feature = "cugraph")]
@@ -1968,7 +1938,6 @@ fn reject_cugraph_env_without_feature(values: &mut EnvValues<'_>) -> Result<()> 
     // An explicit `NEXUS_SERVER_CUGRAPH_ENABLED=false` requests no capability
     // and is accepted, so one env file can serve both artifact flavors.
     if values.any_present([
-        NEXUS_SERVER_CUGRAPH_ALGORITHMS_ENV,
         NEXUS_SERVER_CUGRAPH_DIRECTED_ENV,
         NEXUS_SERVER_CUGRAPH_RENUMBER_ENV,
         NEXUS_SERVER_CUGRAPH_CONSTRUCTION_POLICY_ENV,

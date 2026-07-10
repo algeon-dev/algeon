@@ -61,7 +61,6 @@ use crate::{
 
 type SmokeResult<T> = Result<T, Box<dyn StdError + Send + Sync>>;
 
-const REPORT_SCHEMA_VERSION: u32 = 10;
 const REPORT_COLUMNS: &[&str] = &[
     "query_id",
     "fixture_mode",

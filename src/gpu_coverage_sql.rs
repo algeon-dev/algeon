@@ -17,7 +17,7 @@ use datafusion::{
 };
 
 use crate::{
-    Error, ErrorCode, NEXUS_EXPLAIN_COVERAGE_FUNCTION, NEXUS_EXPLAIN_COVERAGE_SCHEMA_VERSION, QueryGpuCoverage,
+    Error, ErrorCode, NEXUS_EXPLAIN_COVERAGE_FUNCTION, QueryGpuCoverage,
     gpu_coverage::{coverage_validator_recursion_error, gpu_coverage_validation_in_progress},
     validate_query,
 };
@@ -94,7 +94,6 @@ fn coverage_schema() -> SchemaRef {
         Field::new("fallback_reason_count", DataType::Int64, false),
         Field::new("runtime_caveat_count", DataType::Int64, false),
         Field::new("coverage_json", DataType::Utf8, false),
-        Field::new("coverage_schema_version", DataType::Int64, false),
     ]))
 }
 
@@ -114,7 +113,6 @@ fn coverage_batch(coverage: &QueryGpuCoverage) -> Result<RecordBatch> {
             int64s(vec![usize_to_i64(coverage.fallback_reasons.len(), "fallback_reason_count")?]),
             int64s(vec![usize_to_i64(coverage.runtime_caveats.len(), "runtime_caveat_count")?]),
             strings(vec![coverage.to_json().to_string()]),
-            int64s(vec![i64::from(NEXUS_EXPLAIN_COVERAGE_SCHEMA_VERSION)]),
         ],
     )
     .map_err(Into::into)
@@ -163,7 +161,6 @@ fn int64s(values: Vec<i64>) -> ArrayRef {
 
 #[cfg(test)]
 mod tests {
-    use arrow::array::AsArray;
     use datafusion::execution::SessionStateBuilder;
 
     use super::*;
@@ -191,7 +188,7 @@ mod tests {
 
         let batches = ctx
             .sql(
-                "SELECT overall, cudf_native_coverage, coverage_json, coverage_schema_version \
+                "SELECT overall, cudf_native_coverage, coverage_json \
                  FROM nexus_explain_coverage('SELECT 1')",
             )
             .await
@@ -206,7 +203,6 @@ mod tests {
         let json: serde_json::Value = serde_json::from_str(string_value(batch, 2, 0)).unwrap();
         assert_eq!(json["overall"]["verdict"], string_value(batch, 0, 0));
         assert_eq!(json["domains"]["cudf_native_coverage"], string_value(batch, 1, 0));
-        assert_eq!(batch.column(3).as_primitive::<arrow::datatypes::Int64Type>().value(0), 1);
     }
 
     #[tokio::test]

@@ -9,12 +9,11 @@ impl IcebergNativeSmokeReport {
     pub fn to_tsv(&self) -> String {
         let rows = self.rows.iter().map(IcebergNativeSmokeReportRow::to_tsv_row).collect::<Vec<_>>().join("\n");
         let header = REPORT_COLUMNS.join("\t");
-        format!("# native_iceberg_smoke_report_tsv_schema_version={REPORT_SCHEMA_VERSION}\n{header}\n{rows}\n",)
+        format!("{header}\n{rows}\n")
     }
 }
 
 pub fn write_smoke_tsv_header(writer: &mut dyn Write) -> SmokeResult<()> {
-    writeln!(writer, "# native_iceberg_smoke_report_tsv_schema_version={REPORT_SCHEMA_VERSION}")?;
     writeln!(writer, "{}", REPORT_COLUMNS.join("\t"))?;
     writer.flush()?;
     Ok(())

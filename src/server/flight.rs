@@ -99,6 +99,7 @@ const READ_ONLY_SCHEMA_PROVIDER_REGISTER_TABLE_MESSAGE: &str = "schema provider 
 /// demands it. Hitting the cap returns `RESOURCE_EXHAUSTED` rather than
 /// silently evicting another connection's prepared statement.
 const MAX_PREPARED_STATEMENTS: usize = 1024;
+
 /// A live Flight SQL prepared statement.
 ///
 /// JDBC clients such as DataGrip prepare a statement once and then re-run the

@@ -2,8 +2,7 @@
 //!
 //! The constants and row structs re-exported from this module are consumed by
 //! benchmark binaries and external comparison scripts. TSV header order is
-//! stable within a schema version; adding, removing, renaming, or reordering a
-//! column requires bumping the corresponding `*_TSV_SCHEMA_VERSION`.
+//! part of the report contract for consumers that parse these diagnostics.
 //! Sentinel strings such as `none`, `unknown`, `not_run`, and `not_computed`
 //! are part of the report contract when emitted by the TSV helpers.
 
@@ -94,13 +93,11 @@ pub use schema::{
     NATIVE_CANDIDATE_SHAPE_FAMILY_SORT_MIXED_HASH_NESTED_LOOP_JOIN_INPUT,
     NATIVE_CANDIDATE_SHAPE_FAMILY_SORT_PRESERVING_MERGE_FETCH_LOCAL_PARQUET_DISTRIBUTED_AGGREGATE,
     NATIVE_CANDIDATE_SHAPE_FAMILY_UNSUPPORTED_NATIVE_PHYSICAL_PLAN, NATIVE_DATAFUSION_EXECUTION_TSV_HEADER,
-    NATIVE_DATAFUSION_EXECUTION_TSV_SCHEMA_VERSION, NATIVE_DATAFUSION_PLANNING_TSV_HEADER,
-    NATIVE_DATAFUSION_PLANNING_TSV_SCHEMA_VERSION, NATIVE_FALLBACK_PRESSURE_TSV_HEADER,
-    NATIVE_FALLBACK_PRESSURE_TSV_SCHEMA_VERSION,
+    NATIVE_DATAFUSION_PLANNING_TSV_HEADER, NATIVE_FALLBACK_PRESSURE_TSV_HEADER,
 };
 pub use tpcds_parity::{
-    NATIVE_TPCDS_PARITY_TSV_HEADER, NATIVE_TPCDS_PARITY_TSV_SCHEMA_VERSION, NativeTpcdsParityCpuOutcome,
-    NativeTpcdsParityExternalOutput, NativeTpcdsParityExternalOutputStatus, NativeTpcdsParityExternalOutputSummary,
+    NATIVE_TPCDS_PARITY_TSV_HEADER, NativeTpcdsParityCpuOutcome, NativeTpcdsParityExternalOutput,
+    NativeTpcdsParityExternalOutputStatus, NativeTpcdsParityExternalOutputSummary,
     NativeTpcdsParityNativePlanningOutcome, NativeTpcdsParityNativeRuntimeOutcome, NativeTpcdsParityPlanningOutcome,
     NativeTpcdsParityReport, NativeTpcdsParityRow, NativeTpcdsParityWorkloadItem, ParityComparisonMode,
     ParityComparisonResult, ParityFloatTolerance, ParityStageStatus, ParityStatus, compare_record_batches,

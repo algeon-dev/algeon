@@ -13,7 +13,7 @@ const NATIVE_DYNAMIC_FILTER_RUNTIME_ROWS_METRIC_NAME: &str = "native_dynamic_fil
 ///
 /// The value describes observed runtime reduction, not whether a filter route
 /// was produced or reached a consumer. The string values are public TSV
-/// sentinels and should remain stable within a report schema version.
+/// sentinels and should remain stable.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NativeDynamicFilterMeasuredReductionStatus {
     /// No dynamic-filter runtime evidence was observed.

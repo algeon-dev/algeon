@@ -558,8 +558,6 @@ fn log_server_config_snapshot(config: &ServerConfig) {
                 native_statistical_aggregate_execution_mode = %native_execution.statistical_aggregate_execution_mode(),
                 cugraph_enabled = cugraph_enabled(config),
                 cugraph_registry_algorithm_count = cugraph_registry_algorithm_count(),
-                cugraph_allowed_algorithm_count = cugraph_allowed_algorithm_count(config),
-                cugraph_allowed_algorithms = %cugraph_allowed_algorithms(config),
                 iceberg_enabled = true,
                 iceberg_catalog_name = %iceberg.catalog_name,
                 iceberg_catalog_type = %snapshot.catalog_type,
@@ -604,8 +602,6 @@ fn log_server_config_snapshot(config: &ServerConfig) {
             native_statistical_aggregate_execution_mode = %native_execution.statistical_aggregate_execution_mode(),
             cugraph_enabled = cugraph_enabled(config),
             cugraph_registry_algorithm_count = cugraph_registry_algorithm_count(),
-            cugraph_allowed_algorithm_count = cugraph_allowed_algorithm_count(config),
-            cugraph_allowed_algorithms = %cugraph_allowed_algorithms(config),
             iceberg_enabled = false,
             "server config snapshot"
         ),
@@ -648,8 +644,6 @@ fn log_server_config_snapshot(config: &ServerConfig) {
         native_statistical_aggregate_execution_mode = %native_execution.statistical_aggregate_execution_mode(),
         cugraph_enabled = cugraph_enabled(config),
         cugraph_registry_algorithm_count = cugraph_registry_algorithm_count(),
-        cugraph_allowed_algorithm_count = cugraph_allowed_algorithm_count(config),
-        cugraph_allowed_algorithms = %cugraph_allowed_algorithms(config),
         "server config snapshot"
     );
 }
@@ -696,34 +690,6 @@ fn cugraph_registry_algorithm_count() -> usize {
 #[cfg(not(feature = "cugraph"))]
 fn cugraph_registry_algorithm_count() -> usize {
     0
-}
-
-#[cfg(feature = "cugraph")]
-fn cugraph_allowed_algorithm_count(config: &ServerConfig) -> usize {
-    match config.cugraph.as_ref().and_then(|cugraph| cugraph.allowed_algorithms.as_ref()) {
-        Some(algorithms) => algorithms.len(),
-        None if config.cugraph.is_some() => crate::CUGRAPH_OPERATION_REGISTRY.len(),
-        None => 0,
-    }
-}
-
-#[cfg(not(feature = "cugraph"))]
-fn cugraph_allowed_algorithm_count(_config: &ServerConfig) -> usize {
-    0
-}
-
-#[cfg(feature = "cugraph")]
-fn cugraph_allowed_algorithms(config: &ServerConfig) -> String {
-    match config.cugraph.as_ref().and_then(|cugraph| cugraph.allowed_algorithms.as_ref()) {
-        Some(algorithms) => algorithms.iter().map(|algorithm| algorithm.function_name()).collect::<Vec<_>>().join(","),
-        None if config.cugraph.is_some() => "all".to_string(),
-        None => "none".to_string(),
-    }
-}
-
-#[cfg(not(feature = "cugraph"))]
-fn cugraph_allowed_algorithms(_config: &ServerConfig) -> String {
-    "unavailable".to_string()
 }
 
 struct NativeMemorySnapshot {

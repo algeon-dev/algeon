@@ -157,7 +157,6 @@ ENV LD_LIBRARY_PATH=/app/lib \
 #
 # ── cuGraph SQL DSL (image must be built with the cugraph feature) ──────────
 #   NEXUS_SERVER_CUGRAPH_ENABLED       true | false
-#   NEXUS_SERVER_CUGRAPH_ALGORITHMS    csv allowlist, e.g. cugraph_pagerank,cugraph_bfs
 #   NEXUS_SERVER_CUGRAPH_DIRECTED  NEXUS_SERVER_CUGRAPH_RENUMBER
 #   NEXUS_SERVER_CUGRAPH_CONSTRUCTION_POLICY   python_cugraph | raw_libcugraph
 #
