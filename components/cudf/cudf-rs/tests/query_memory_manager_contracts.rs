@@ -1,7 +1,7 @@
 mod common;
 
 use std::sync::{
-    Arc,
+    Arc, PoisonError, RwLock, RwLockReadGuard, RwLockWriteGuard,
     atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering},
 };
 
@@ -12,6 +12,29 @@ use cudf::{
 };
 
 fn assert_send_sync<T: Send + Sync>() {}
+
+/// The per-device memory manager and its CUDA async pool are process-global,
+/// so pool usage observed through [`DeviceMemoryManager::pool_usage`] is
+/// shared mutable state across this binary's parallel test threads.
+///
+/// Tests that allocate, free, or trim through the shared device pool hold the
+/// shared guard (they may run concurrently with each other). Tests that
+/// assert absolute pool-usage values (`used_current_bytes == 0`,
+/// before/after equality) hold the exclusive guard so no sibling can disturb
+/// the pool inside their critical section.
+///
+/// Take the guard as the FIRST statement of the test body so every device
+/// allocation drops — releasing its pool accounting — before the guard is
+/// released.
+static DEVICE_POOL_STATE: RwLock<()> = RwLock::new(());
+
+fn shared_device_pool_guard() -> RwLockReadGuard<'static, ()> {
+    DEVICE_POOL_STATE.read().unwrap_or_else(PoisonError::into_inner)
+}
+
+fn exclusive_device_pool_guard() -> RwLockWriteGuard<'static, ()> {
+    DEVICE_POOL_STATE.write().unwrap_or_else(PoisonError::into_inner)
+}
 
 fn set_current_device_for_runtime(rt: &Runtime) {
     let status = unsafe { cudf_sys::cudf_cuda_set_device(rt.device().ordinal() as i32) };
@@ -83,6 +106,7 @@ fn cuda_async_resource_exposes_pool_usage_and_explicit_trim() {
 
 #[test]
 fn device_memory_manager_default_async_pool_exposes_usage_and_trim() {
+    let _pool_state = shared_device_pool_guard();
     let device = DeviceId::current().unwrap();
     let manager = DeviceMemoryManager::install_for_device_with_options(
         device,
@@ -224,6 +248,10 @@ fn detailed_failure_callback_reports_pool_usage_and_can_trim_retry() {
 
 #[test]
 fn detailed_failure_callback_reports_reservation_limit_source_and_does_not_trim() {
+    // This test asserts absolute shared-pool state (`used_current_bytes == 0`
+    // and before/after usage equality), so it must exclude every sibling that
+    // allocates from or trims the process-global device pool.
+    let _pool_state = exclusive_device_pool_guard();
     let manager_runtime = Runtime::builder().with_device_memory_manager().build().unwrap();
     let device = manager_runtime.device();
     let manager = manager_runtime.device_memory_manager().unwrap();
@@ -304,6 +332,7 @@ fn device_memory_manager_runtime_uses_one_device_level_resource_with_stream_rese
 
 #[test]
 fn reservation_arena_enforces_query_cap_across_streams() {
+    let _pool_state = shared_device_pool_guard();
     let left = Runtime::builder().with_device_memory_manager().build().unwrap();
     let right = Runtime::builder().with_device_memory_manager().build().unwrap();
     let manager = left.device_memory_manager().unwrap();
@@ -331,6 +360,7 @@ fn reservation_arena_enforces_query_cap_across_streams() {
 
 #[test]
 fn reservation_arena_resize_grows_and_shrinks_parent_limit() {
+    let _pool_state = shared_device_pool_guard();
     let left = Runtime::builder().with_device_memory_manager().build().unwrap();
     let right = Runtime::builder().with_device_memory_manager().build().unwrap();
     let manager = left.device_memory_manager().unwrap();
@@ -364,6 +394,7 @@ fn reservation_arena_resize_grows_and_shrinks_parent_limit() {
 
 #[test]
 fn reservation_arena_counts_retained_allocations_after_member_detach() {
+    let _pool_state = shared_device_pool_guard();
     let runtime = Runtime::builder().with_device_memory_manager().build().unwrap();
     let manager = runtime.device_memory_manager().unwrap();
     let arena = manager.reservation_arena(30_003, 16 * 1024 * 1024).unwrap();
@@ -394,6 +425,7 @@ fn reservation_arena_counts_retained_allocations_after_member_detach() {
 
 #[test]
 fn execution_budget_token_can_attach_as_arena_member() {
+    let _pool_state = shared_device_pool_guard();
     let runtime = Runtime::builder().with_device_memory_manager().build().unwrap();
     let manager = runtime.device_memory_manager().unwrap();
     let arena = manager.reservation_arena(30_004, 64 * 1024 * 1024).unwrap();
@@ -431,6 +463,7 @@ fn query_execution_context_reserves_stream_against_device_manager_resource() {
 
 #[test]
 fn concurrent_stream_reservations_share_device_resource_without_counter_crosstalk() {
+    let _pool_state = shared_device_pool_guard();
     let left = Runtime::builder().with_device_memory_manager().build().unwrap();
     let right = Runtime::builder().with_device_memory_manager().build().unwrap();
     let device_mr = left.memory_resource().testing_raw_handle_value();
@@ -483,6 +516,7 @@ fn concurrent_stream_reservations_share_device_resource_without_counter_crosstal
 
 #[test]
 fn concurrent_reserved_query_work_leaves_current_resource_on_device_adaptor() {
+    let _pool_state = shared_device_pool_guard();
     let left = Runtime::builder().with_device_memory_manager().build().unwrap();
     let right = Runtime::builder().with_device_memory_manager().build().unwrap();
     let device_mr = left.device_memory_manager().unwrap().resource().testing_raw_handle_value();
@@ -524,6 +558,7 @@ fn concurrent_reserved_query_work_leaves_current_resource_on_device_adaptor() {
 
 #[test]
 fn reservation_usage_releases_retained_output_by_allocation_identity() {
+    let _pool_state = shared_device_pool_guard();
     let rt = Runtime::builder().with_device_memory_manager().build().unwrap();
     let token = rt
         .execution_budget_token(ExecutionBudgetRequest::new(64 * 1024 * 1024).with_boundary("retained_output"))
@@ -545,6 +580,7 @@ fn reservation_usage_releases_retained_output_by_allocation_identity() {
 
 #[test]
 fn reservation_limit_failure_is_stream_local() {
+    let _pool_state = shared_device_pool_guard();
     let small_rt = Runtime::builder().with_device_memory_manager().build().unwrap();
     let large_rt = Runtime::builder().with_device_memory_manager().build().unwrap();
     let small = small_rt.execution_budget_token(ExecutionBudgetRequest::new(1).with_boundary("small_query")).unwrap();
@@ -654,6 +690,7 @@ fn failure_callback_memory_resource_retries_stream_reservation_limit_failures() 
 
 #[test]
 fn stream_reservation_resize_grows_limit_for_later_allocations() {
+    let _pool_state = shared_device_pool_guard();
     let runtime = Runtime::builder().with_device_memory_manager().build().unwrap();
     let lease = runtime.stream_reservation(9101, 1).unwrap();
 
@@ -673,6 +710,7 @@ fn stream_reservation_resize_grows_limit_for_later_allocations() {
 
 #[test]
 fn stream_reservation_resize_allows_shrink_below_live_usage_and_blocks_future_allocations() {
+    let _pool_state = shared_device_pool_guard();
     let runtime = Runtime::builder().with_device_memory_manager().build().unwrap();
     let lease = runtime.stream_reservation(9102, 1 << 20).unwrap();
     let retained = runtime.series(&[1i32, 2, 3]).unwrap();
@@ -697,6 +735,7 @@ fn stream_reservation_resize_allows_shrink_below_live_usage_and_blocks_future_al
 
 #[test]
 fn execution_budget_token_resize_grows_limit_and_updates_reports() {
+    let _pool_state = shared_device_pool_guard();
     let runtime = Runtime::builder().with_device_memory_manager().build().unwrap();
     let mut token =
         runtime.execution_budget_token(ExecutionBudgetRequest::new(1).with_boundary("resize_grow")).unwrap();
@@ -720,6 +759,7 @@ fn execution_budget_token_resize_grows_limit_and_updates_reports() {
 
 #[test]
 fn execution_budget_token_resize_shrinks_below_live_usage_and_blocks_future_allocations() {
+    let _pool_state = shared_device_pool_guard();
     let runtime = Runtime::builder().with_device_memory_manager().build().unwrap();
     let mut token =
         runtime.execution_budget_token(ExecutionBudgetRequest::new(1 << 20).with_boundary("resize_shrink")).unwrap();
@@ -752,6 +792,7 @@ fn execution_budget_token_resize_shrinks_below_live_usage_and_blocks_future_allo
 /// any observed change means a per-op swap was reintroduced.
 #[test]
 fn concurrent_owned_pool_and_manager_runtimes_preserve_device_current_resource() {
+    let _pool_state = shared_device_pool_guard();
     let manager_rt = Runtime::builder().with_device_memory_manager().build().unwrap();
     let device_mr = manager_rt.device_memory_manager().unwrap().resource().testing_raw_handle_value();
     set_current_device_for_runtime(&manager_rt);
@@ -805,6 +846,7 @@ fn concurrent_owned_pool_and_manager_runtimes_preserve_device_current_resource()
 /// an over-limit failure must stay local to its pipeline.
 #[test]
 fn concurrent_temp_heavy_pipelines_keep_reservation_accounting_isolated() {
+    let _pool_state = shared_device_pool_guard();
     const ROWS: usize = 1 << 20;
     const ROW_BYTES: usize = ROWS * std::mem::size_of::<i32>();
 
