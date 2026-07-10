@@ -1,16 +1,18 @@
 use std::{fs, sync::Arc, time::Duration};
 
+use arrow::compute::SortOptions as ArrowSortOptions;
 use datafusion::{
     common::{DataFusionError, config::ConfigOptions},
     execution::context::TaskContext,
     logical_expr::Operator,
-    physical_expr::expressions::col,
+    physical_expr::{LexOrdering, PhysicalSortExpr, expressions::col},
     physical_optimizer::PhysicalOptimizerRule,
     physical_plan::{
         ExecutionPlan, collect, displayable,
         execution_plan::Boundedness,
         limit::LocalLimitExec,
         projection::{ProjectionExec, ProjectionExpr},
+        sorts::sort::SortExec,
     },
 };
 use datafusion_nexus::{
@@ -337,6 +339,29 @@ fn native_optimizer_composes_feature_neutral_gpu_resident_producer_child() {
 }
 
 #[test]
+fn native_optimizer_composed_exec_preserves_root_sort_ordering_properties() {
+    let producer = Arc::new(NativeCudfGpuProducerExec::try_new("fragment_input", gpu_resident_plan()).unwrap());
+    let producer_child = Arc::clone(&producer) as Arc<dyn ExecutionPlan>;
+    let child_schema = producer_child.schema();
+    let ordering = LexOrdering::new([PhysicalSortExpr::new(
+        col("key", &child_schema).unwrap(),
+        ArrowSortOptions::new(false, false),
+    )])
+    .expect("root sort ordering should be non-empty");
+    let plan: Arc<dyn ExecutionPlan> = Arc::new(SortExec::new(ordering, producer_child));
+    let expected_ordering = plan.properties().output_ordering().cloned();
+    assert!(expected_ordering.is_some());
+    let rule = CudfNativePhysicalOptimizerRule::new(native_optimizer_config());
+
+    let optimized = rule.optimize(plan, &ConfigOptions::default()).unwrap();
+
+    assert!(optimized.downcast_ref::<NativeCudfComposedExec>().is_some());
+    assert_eq!(optimized.properties().output_ordering().cloned(), expected_ordering);
+    let report = rule.last_report().expect("native optimizer should record a planning report");
+    assert_eq!(report.rewritten_count(), 1);
+}
+
+#[test]
 fn native_optimizer_rule_rewrites_supported_physical_plan() {
     let dir = unique_temp_dir("datafusion-nexus-native-exec-optimizer");
     let path = dir.join("input.parquet");
@@ -365,6 +390,47 @@ fn native_optimizer_rule_rewrites_supported_physical_plan() {
         diagnostics.strict_bounded_contract.non_join_bounded_plan_reason.as_deref(),
         Some(STRICT_BOUNDED_NON_JOIN_OUTSIDE_REPORT_SCOPE_REASON)
     );
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn native_optimizer_rule_propagates_declared_scan_output_ordering_to_wrapper_properties() {
+    let dir = unique_temp_dir("datafusion-nexus-native-exec-ordered-scan-properties");
+    let path = dir.join("input.parquet");
+    write_sorted_parquet_file(&path);
+    let plan = parquet_scan_with_declared_output_ordering(&path);
+    let expected_ordering = plan.properties().output_ordering().cloned();
+    assert!(expected_ordering.is_some());
+    let rule = CudfNativePhysicalOptimizerRule::new(native_optimizer_config());
+
+    let optimized = rule.optimize(plan, &ConfigOptions::default()).unwrap();
+
+    assert!(optimized.downcast_ref::<NativeCudfExec>().is_some());
+    assert_eq!(optimized.properties().output_ordering().cloned(), expected_ordering);
+    let report = rule.last_report().expect("native optimizer should record a planning report");
+    assert_eq!(report.rewritten_count(), 1);
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn native_optimizer_does_not_compose_ordered_scan_through_aggregate() {
+    let dir = unique_temp_dir("datafusion-nexus-native-exec-ordered-aggregate-composition");
+    let path = dir.join("input.parquet");
+    write_sorted_parquet_file(&path);
+    let scan = parquet_scan_with_declared_output_ordering(&path);
+    let plan = grouped_sum_aggregate_plan(scan);
+    assert!(plan.properties().output_ordering().is_some());
+    let rule = CudfNativePhysicalOptimizerRule::new(native_optimizer_config());
+
+    let optimized = rule.optimize(plan, &ConfigOptions::default()).unwrap();
+
+    assert!(optimized.downcast_ref::<NativeCudfComposedExec>().is_none());
+    let report = rule.last_report().expect("native optimizer should record a planning report");
+    assert!(report.outcomes().iter().any(|outcome| {
+        matches!(outcome, CandidateOutcome::Rejected { reason: FallbackReason::NativeOrderedOutputUnsupported, .. })
+    }));
 
     fs::remove_dir_all(dir).unwrap();
 }

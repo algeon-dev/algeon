@@ -10,6 +10,7 @@ use arrow::record_batch::RecordBatch;
 use datafusion::{
     common::{DataFusionError, Result as DataFusionResult},
     execution::context::TaskContext,
+    physical_expr::EquivalenceProperties,
     physical_plan::{
         DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties, SendableRecordBatchStream,
         metrics::{ExecutionPlanMetricsSet, MetricsSet, RecordOutput},
@@ -20,7 +21,8 @@ use nexus_query_engine::{QueryOutput, QueryPlan, execute_query_plan};
 use super::{
     common::{
         NATIVE_CUDF_EXEC_HOST_OUTPUT_MEMORY_CONSUMER, conservative_properties, mark_native_runtime_error,
-        native_host_output_stream, native_plan_one_line, native_query_runtime_error, write_native_plan_tree,
+        native_host_output_stream, native_plan_one_line, native_query_runtime_error, properties_with_equivalence,
+        write_native_plan_tree,
     },
     config::NativeCudfExecutionConfig,
     metrics::NativeCudfMetrics,
@@ -46,6 +48,22 @@ impl NativeCudfExec {
     /// GPU-resident sinks are rejected here because regular `ExecutionPlan::execute` must stream
     /// host Arrow `RecordBatch` output to DataFusion.
     pub fn try_new(plan: QueryPlan, execution_config: NativeCudfExecutionConfig) -> crate::error::Result<Self> {
+        Self::try_new_with_cache(plan, execution_config, None)
+    }
+
+    pub(crate) fn try_new_with_equivalence_properties(
+        plan: QueryPlan,
+        execution_config: NativeCudfExecutionConfig,
+        eq_properties: EquivalenceProperties,
+    ) -> crate::error::Result<Self> {
+        Self::try_new_with_cache(plan, execution_config, Some(eq_properties))
+    }
+
+    fn try_new_with_cache(
+        plan: QueryPlan,
+        execution_config: NativeCudfExecutionConfig,
+        eq_properties: Option<EquivalenceProperties>,
+    ) -> crate::error::Result<Self> {
         if !plan.sink().materializes_host_boundary() {
             return Err(Error::new(
                 ErrorCode::InvalidExecutionPlan,
@@ -54,13 +72,12 @@ impl NativeCudfExec {
             )
             .with_fact("result_sink", "gpu_resident"));
         }
+        let cache = match eq_properties {
+            Some(eq_properties) => properties_with_equivalence(Arc::clone(plan.output_schema()), eq_properties)?,
+            None => conservative_properties(Arc::clone(plan.output_schema())),
+        };
 
-        Ok(Self {
-            cache: conservative_properties(Arc::clone(plan.output_schema())),
-            plan,
-            execution_config,
-            metrics: ExecutionPlanMetricsSet::new(),
-        })
+        Ok(Self { cache, plan, execution_config, metrics: ExecutionPlanMetricsSet::new() })
     }
 
     pub fn native_plan(&self) -> &QueryPlan {

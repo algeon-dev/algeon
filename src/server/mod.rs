@@ -29,7 +29,10 @@ mod workspace;
 
 pub use auth::{AuthConfig, AuthInterceptor, AuthMode, Principal, StaticUserConfig, TokenStore};
 pub use config::*;
-pub use diagnostics::{FlightSqlNativeRejectClass, log_leaf_guard_rejection, log_native_planning_report};
+pub use diagnostics::{
+    FlightSqlNativeRejectClass, log_leaf_guard_rejection, log_native_planning_report,
+    log_native_planning_report_for_tables,
+};
 pub use error::{Result, ServerError};
 pub use session::{
     apply_session_profile, build_session_config, build_session_context, build_session_context_with_backend,

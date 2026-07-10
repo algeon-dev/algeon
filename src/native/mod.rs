@@ -17,8 +17,8 @@ use std::sync::Arc;
 use datafusion::physical_plan::ExecutionPlan;
 use lowering::lower_normalized_plan;
 use nexus_query_engine::{
-    PlanNode as NativePlanNode, QueryPlan as NativeQueryPlan, SourceDiagnostics as NativeSourceDiagnostics,
-    SourceNode as NativeSourceNode,
+    NodeId as NativeNodeId, PlanNode as NativePlanNode, QueryPlan as NativeQueryPlan,
+    SourceDiagnostics as NativeSourceDiagnostics, SourceNode as NativeSourceNode,
 };
 use normalize::normalize_native_plan;
 use source::source_diagnostics_for_normalized_plan;
@@ -105,6 +105,20 @@ fn lower_physical_plan_to_native_with_mode(
                 }
             },
             |native_plan| {
+                if plan.properties().output_ordering().is_some()
+                    && !native_plan_reproduces_declared_output_ordering(&native_plan)
+                {
+                    let mut report = PlanningReport::new();
+                    report.push_rejected(
+                        normalized.candidate.clone(),
+                        crate::policy::FallbackReason::NativeOrderedOutputUnsupported,
+                    );
+                    return NativeLoweringResult {
+                        plans: Vec::new(),
+                        report,
+                        source_diagnostics: source_diagnostics_for_native_plan(&native_plan),
+                    };
+                }
                 let source_diagnostics = source_diagnostics_for_native_plan(&native_plan);
                 let mut report = PlanningReport::new();
                 report.push_rewritten(normalized.candidate.clone());
@@ -131,4 +145,227 @@ fn source_diagnostics_for_native_plan(plan: &NativeQueryPlan) -> Vec<NativeSourc
             _ => None,
         })
         .collect()
+}
+
+pub(crate) fn native_plan_reproduces_declared_output_ordering(plan: &NativeQueryPlan) -> bool {
+    native_node_reproduces_declared_output_ordering(plan, plan.root_id(), &mut Vec::new())
+}
+
+fn native_node_reproduces_declared_output_ordering(
+    plan: &NativeQueryPlan,
+    node_id: NativeNodeId,
+    stack: &mut Vec<NativeNodeId>,
+) -> bool {
+    if stack.contains(&node_id) {
+        return false;
+    }
+    let Some(node) = plan.node(node_id) else {
+        return false;
+    };
+    stack.push(node_id);
+    let reproduced = match &node.kind {
+        NativePlanNode::Source(source) => match source.as_ref() {
+            NativeSourceNode::LocalParquet(_) | NativeSourceNode::LiteralBatch(_) => true,
+            NativeSourceNode::GpuResident(_) => false,
+        },
+        NativePlanNode::Filter(filter) => native_node_reproduces_declared_output_ordering(plan, filter.input, stack),
+        NativePlanNode::Projection(projection) => {
+            native_node_reproduces_declared_output_ordering(plan, projection.input, stack)
+        },
+        NativePlanNode::Limit(limit) => native_node_reproduces_declared_output_ordering(plan, limit.input, stack),
+        NativePlanNode::Sort(_) => true,
+        NativePlanNode::Aggregate(_)
+        | NativePlanNode::Window(_)
+        | NativePlanNode::Join(_)
+        | NativePlanNode::Union(_)
+        | NativePlanNode::EdgeNormalize(_)
+        | NativePlanNode::GraphAlgorithm(_) => false,
+    };
+    stack.pop();
+    reproduced
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use arrow::{
+        datatypes::{DataType, Field, Schema, SchemaRef},
+        record_batch::RecordBatch,
+    };
+    use nexus_query_engine::{
+        AggregateExpr, AggregateFunction, AggregateSpec, Expr, GpuResidentSource, GraphAlgorithm, GraphAlgorithmParams,
+        GraphConstructionOptions, GraphEdgeColumnBindings, GraphPageRankParams, JoinSpec, JoinType, LimitSpec,
+        LiteralBatchSource, LiteralValue, LocalParquetSource, ProjectionOutput, QueryPlan, QueryPlanBuilder, SortExpr,
+        SortSpec, SourceNode, WindowFunction, WindowSpec,
+        plan::{EdgeNormalizeSpec, graph_result_schema_for_params},
+    };
+
+    use super::native_plan_reproduces_declared_output_ordering;
+
+    #[test]
+    fn order_reproduction_audit_accepts_local_parquet_filter_projection_limit() {
+        let mut builder = QueryPlanBuilder::new();
+        let source = builder.add_source(SourceNode::LocalParquet(local_parquet_source()));
+        let filter = builder.add_filter(source, Expr::literal(LiteralValue::Boolean(true)), key_schema());
+        let projection = builder.add_projection(
+            filter,
+            vec![ProjectionOutput::new(Expr::column("key"), Field::new("key", DataType::UInt32, false))],
+        );
+        let limit = builder.add_limit(projection, LimitSpec::fetch(1), key_schema());
+        let plan = builder.finish_with_host_sink(limit);
+
+        assert!(native_plan_reproduces_declared_output_ordering(&plan));
+    }
+
+    #[test]
+    fn order_reproduction_audit_accepts_native_sort() {
+        let mut builder = QueryPlanBuilder::new();
+        let source = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("input", key_schema())));
+        let sort = builder.add_sort(
+            source,
+            SortSpec::new(vec![SortExpr::new(Expr::column("key"), false, false)]),
+            key_schema(),
+        );
+        let plan = builder.finish_with_host_sink(sort);
+
+        assert!(native_plan_reproduces_declared_output_ordering(&plan));
+    }
+
+    #[test]
+    fn order_reproduction_audit_accepts_literal_batch_source() {
+        let schema = key_schema();
+        let batch = RecordBatch::new_empty(Arc::clone(&schema));
+        let mut builder = QueryPlanBuilder::new();
+        let source = builder.add_source(SourceNode::LiteralBatch(LiteralBatchSource::new(schema, vec![batch])));
+        let plan = builder.finish_with_host_sink(source);
+
+        assert!(native_plan_reproduces_declared_output_ordering(&plan));
+    }
+
+    #[test]
+    fn order_reproduction_audit_rejects_gpu_resident_source() {
+        let mut builder = QueryPlanBuilder::new();
+        let source = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("input", key_schema())));
+        let plan = builder.finish_with_host_sink(source);
+
+        assert!(!native_plan_reproduces_declared_output_ordering(&plan));
+    }
+
+    #[test]
+    fn order_reproduction_audit_rejects_aggregate_window_join_union_edge_normalize_and_graph_algorithm() {
+        let cases =
+            [aggregate_plan(), window_plan(), join_plan(), union_plan(), edge_normalize_plan(), graph_algorithm_plan()];
+
+        for plan in cases {
+            assert!(!native_plan_reproduces_declared_output_ordering(&plan), "{plan}");
+        }
+    }
+
+    fn aggregate_plan() -> QueryPlan {
+        let aggregate_schema = Arc::new(Schema::new(vec![
+            Field::new("key", DataType::UInt32, false),
+            Field::new("count_key", DataType::UInt64, false),
+        ]));
+        let mut builder = QueryPlanBuilder::new();
+        let source = builder.add_source(SourceNode::LocalParquet(local_parquet_source()));
+        let aggregate = builder.add_aggregate(
+            source,
+            AggregateSpec::new(
+                vec![Expr::column("key")],
+                vec![AggregateExpr::new(AggregateFunction::Count, Expr::column("key"), "count_key")],
+            ),
+            aggregate_schema,
+        );
+        builder.finish_with_host_sink(aggregate)
+    }
+
+    fn window_plan() -> QueryPlan {
+        let window_schema = Arc::new(Schema::new(vec![
+            Field::new("key", DataType::UInt32, false),
+            Field::new("rank", DataType::UInt64, false),
+        ]));
+        let mut builder = QueryPlanBuilder::new();
+        let source = builder.add_source(SourceNode::LocalParquet(local_parquet_source()));
+        let window = builder.add_window(
+            source,
+            WindowSpec::new(
+                Vec::new(),
+                vec![SortExpr::new(Expr::column("key"), false, false)],
+                vec![WindowFunction::Rank { alias: "rank".to_string() }],
+            ),
+            window_schema,
+        );
+        builder.finish_with_host_sink(window)
+    }
+
+    fn join_plan() -> QueryPlan {
+        let mut builder = QueryPlanBuilder::new();
+        let left = builder.add_source(SourceNode::LocalParquet(local_parquet_source()));
+        let right = builder.add_source(SourceNode::LocalParquet(local_parquet_source()));
+        let join = builder.add_join(left, right, JoinSpec::new(JoinType::Cross, Vec::new()), key_schema());
+        builder.finish_with_host_sink(join)
+    }
+
+    fn union_plan() -> QueryPlan {
+        let mut builder = QueryPlanBuilder::new();
+        let left = builder.add_source(SourceNode::LocalParquet(local_parquet_source()));
+        let right = builder.add_source(SourceNode::LocalParquet(local_parquet_source()));
+        let union = builder.add_union(vec![left, right], key_schema());
+        builder.finish_with_host_sink(union)
+    }
+
+    fn edge_normalize_plan() -> QueryPlan {
+        let mut builder = QueryPlanBuilder::new();
+        let source = builder.add_source(SourceNode::LocalParquet(edge_local_parquet_source()));
+        let normalize = builder.add_edge_normalize(
+            source,
+            EdgeNormalizeSpec::python_cugraph(
+                GraphEdgeColumnBindings::new("src", "dst", Option::<String>::None),
+                &GraphConstructionOptions::default(),
+            ),
+            edge_schema(),
+        );
+        builder.finish_with_host_sink(normalize)
+    }
+
+    fn graph_algorithm_plan() -> QueryPlan {
+        let mut builder = QueryPlanBuilder::new();
+        let source = builder.add_source(SourceNode::LocalParquet(edge_local_parquet_source()));
+        let params = GraphAlgorithmParams::PageRank(GraphPageRankParams::default());
+        let output_schema = graph_result_schema_for_params(&params);
+        let graph = builder.add_graph_algorithm(
+            source,
+            nexus_query_engine::GraphAlgorithmSpec::new(
+                GraphAlgorithm::PageRank,
+                GraphEdgeColumnBindings::new("src", "dst", Option::<String>::None),
+                GraphConstructionOptions {
+                    policy: nexus_query_engine::GraphConstructionPolicy::RawLibcugraph,
+                    ..Default::default()
+                },
+                params,
+                output_schema,
+            ),
+        );
+        builder.finish_with_host_sink(graph)
+    }
+
+    fn local_parquet_source() -> LocalParquetSource {
+        LocalParquetSource::new("ordered.parquet", key_schema(), vec!["key".to_string()])
+    }
+
+    fn edge_local_parquet_source() -> LocalParquetSource {
+        LocalParquetSource::new("edges.parquet", edge_schema(), vec!["src".to_string(), "dst".to_string()])
+    }
+
+    fn key_schema() -> SchemaRef {
+        Arc::new(Schema::new(vec![Field::new("key", DataType::UInt32, false)]))
+    }
+
+    fn edge_schema() -> SchemaRef {
+        Arc::new(Schema::new(vec![
+            Field::new("src", DataType::Int64, false),
+            Field::new("dst", DataType::Int64, false),
+        ]))
+    }
 }

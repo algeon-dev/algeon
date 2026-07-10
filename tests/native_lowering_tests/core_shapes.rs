@@ -1,3 +1,6 @@
+use arrow::{array::Int32Array, record_batch::RecordBatch};
+use datafusion::datasource::memory::MemorySourceConfig;
+
 use super::*;
 
 #[test]
@@ -286,6 +289,29 @@ fn order_sensitive_single_file_group_scan_limit_lowers_to_native_source() {
 }
 
 #[test]
+fn parquet_sorting_columns_scan_limit_lowers_to_native_source() {
+    let dir = unique_temp_dir("datafusion-nexus-native-lowering-sorting-columns-scan-limit");
+    let path = dir.join("input.parquet");
+    write_sorted_numeric_parquet_file_with_sorting_columns(&path);
+    let scan = parquet_scan(&path).with_fetch(Some(1)).unwrap();
+    assert!(scan.properties().output_ordering().is_some());
+
+    let result = lower_physical_plan_to_native(scan);
+
+    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    let source = native_local_parquet_source(&result.plans[0]);
+    assert_eq!(source.scan_limit, Some(1));
+    assert_eq!(source.diagnostics.scan_limit_disposition.as_str(), "represented");
+    assert!(source.diagnostics.rejected_features.is_empty());
+    assert_eq!(result.source_diagnostics.len(), 1);
+    assert_eq!(result.source_diagnostics[0].scan_limit_disposition.as_str(), "represented");
+    assert!(result.source_diagnostics[0].rejected_features.iter().all(|feature| feature.as_str() != "file_ordering"));
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
 fn order_sensitive_multi_file_group_scan_limit_remains_rejected() {
     let dir = unique_temp_dir("datafusion-nexus-native-lowering-order-sensitive-multi-group");
     write_numeric_parquet_file(&dir.join("part-000.parquet"));
@@ -306,6 +332,141 @@ fn order_sensitive_multi_file_group_scan_limit_remains_rejected() {
     assert!(result.source_diagnostics[0].rejected_features.iter().any(|feature| feature.as_str() == "preserve_order"));
 
     fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn declared_output_ordering_single_file_group_scan_lowers_to_native_source() {
+    let dir = unique_temp_dir("datafusion-nexus-native-lowering-declared-output-ordering");
+    let path = dir.join("input.parquet");
+    write_sorted_numeric_parquet_file(&path);
+    let scan = parquet_scan_with_declared_output_ordering(&path);
+    assert!(scan.properties().output_ordering().is_some());
+    let plan = aggregate_sort_limit_plan(scan, Operator::Plus);
+
+    let result = lower_physical_plan_to_native(plan);
+
+    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    let source = native_local_parquet_source(&result.plans[0]);
+    assert_eq!(source.file_count(), 1);
+    assert!(source.diagnostics.rejected_features.is_empty());
+    assert_eq!(result.source_diagnostics.len(), 1);
+    assert!(result.source_diagnostics[0].rejected_features.iter().all(|feature| feature.as_str() != "output_ordering"));
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn parquet_sorting_columns_inferred_output_ordering_lowers_to_native_source() {
+    let dir = unique_temp_dir("datafusion-nexus-native-lowering-parquet-sorting-columns");
+    let path = dir.join("input.parquet");
+    write_sorted_numeric_parquet_file_with_sorting_columns(&path);
+    let scan = parquet_scan(&path);
+    assert!(scan.properties().output_ordering().is_some());
+
+    let result = lower_physical_plan_to_native(scan);
+
+    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    let source = native_local_parquet_source(&result.plans[0]);
+    assert_eq!(source.file_count(), 1);
+    assert!(source.diagnostics.rejected_features.is_empty());
+    assert_eq!(result.source_diagnostics.len(), 1);
+    assert!(result.source_diagnostics[0].rejected_features.iter().all(|feature| feature.as_str() != "output_ordering"));
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn declared_output_ordering_single_file_group_multi_file_scan_lowers_to_native_source() {
+    let dir = unique_temp_dir("datafusion-nexus-native-lowering-declared-output-ordering-multi-file");
+    write_sorted_numeric_parquet_file_with_keys(&dir.join("part-000.parquet"), &[1, 1, 2]);
+    write_sorted_numeric_parquet_file_with_keys(&dir.join("part-001.parquet"), &[3, 3, 4]);
+    let scan = parquet_scan_with_declared_output_ordering(&dir);
+    let plan = aggregate_sort_limit_plan(scan, Operator::Plus);
+
+    let result = lower_physical_plan_to_native(plan);
+
+    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    let source = native_local_parquet_source(&result.plans[0]);
+    assert_eq!(source.file_count(), 2);
+    assert!(source.diagnostics.rejected_features.is_empty());
+    assert_eq!(result.source_diagnostics.len(), 1);
+    assert!(result.source_diagnostics[0].rejected_features.iter().all(|feature| feature.as_str() != "output_ordering"));
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn declared_output_ordering_multi_file_group_scan_remains_rejected() {
+    let dir = unique_temp_dir("datafusion-nexus-native-lowering-declared-output-ordering-multi-group");
+    write_sorted_numeric_parquet_file_with_keys(&dir.join("part-000.parquet"), &[1, 1, 2]);
+    write_sorted_numeric_parquet_file_with_keys(&dir.join("part-001.parquet"), &[3, 3, 4]);
+    let scan = parquet_scan_with_declared_output_ordering_one_file_per_group(&dir);
+    assert!(scan.properties().output_ordering().is_some());
+    let plan = aggregate_sort_limit_plan(scan, Operator::Plus);
+
+    let result = lower_physical_plan_to_native(plan);
+
+    assert!(result.plans.is_empty());
+    assert_eq!(result.rejected_count(), 1);
+    assert!(matches!(
+        result.report.outcomes()[0],
+        CandidateOutcome::Rejected { reason: FallbackReason::NativeSourceOutputOrdering, .. }
+    ));
+    assert_eq!(result.source_diagnostics.len(), 1);
+    assert!(result.source_diagnostics[0].rejected_features.iter().any(|feature| feature.as_str() == "output_ordering"));
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn declared_output_ordering_claim_through_aggregate_is_rejected() {
+    let dir = unique_temp_dir("datafusion-nexus-native-lowering-ordered-aggregate-claim");
+    let path = dir.join("input.parquet");
+    write_sorted_numeric_parquet_file(&path);
+    let scan = parquet_scan_with_declared_output_ordering(&path);
+    let plan = grouped_sum_aggregate_plan(scan);
+    assert!(plan.properties().output_ordering().is_some());
+
+    let result = lower_physical_plan_to_native(plan);
+
+    assert!(result.plans.is_empty());
+    assert_eq!(result.rejected_count(), 1);
+    assert!(matches!(
+        result.report.outcomes()[0],
+        CandidateOutcome::Rejected { reason: FallbackReason::NativeOrderedOutputUnsupported, .. }
+    ));
+    assert_eq!(result.source_diagnostics.len(), 1);
+    assert!(result.source_diagnostics[0].rejected_features.is_empty());
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn declared_output_ordering_multi_partition_memory_source_is_rejected() {
+    let schema = Arc::new(Schema::new(vec![Field::new("key", DataType::Int32, false)]));
+    let first_batch = RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(Int32Array::from(vec![1, 2]))]).unwrap();
+    let second_batch = RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(Int32Array::from(vec![3, 4]))]).unwrap();
+    let ordering =
+        LexOrdering::new([PhysicalSortExpr::new(col("key", &schema).unwrap(), ArrowSortOptions::new(false, false))])
+            .unwrap();
+    let source = MemorySourceConfig::try_new(&[vec![first_batch], vec![second_batch]], Arc::clone(&schema), None)
+        .unwrap()
+        .try_with_sort_information(vec![ordering])
+        .unwrap();
+    let plan = DataSourceExec::from_data_source(source) as Arc<dyn ExecutionPlan>;
+    assert!(plan.properties().output_ordering().is_some());
+
+    let result = lower_physical_plan_to_native(plan);
+
+    assert!(result.plans.is_empty());
+    assert_eq!(result.rejected_count(), 1);
+    assert!(matches!(
+        result.report.outcomes()[0],
+        CandidateOutcome::Rejected { reason: FallbackReason::NativeOrderedOutputUnsupported, .. }
+    ));
 }
 
 #[test]

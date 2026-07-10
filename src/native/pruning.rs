@@ -65,9 +65,6 @@ pub(super) fn coalesced_local_parquet_scan_files<'a>(
 ) -> Result<Vec<CoalescedLocalParquetFile<'a>>, FallbackReason> {
     let mut coverages = Vec::<FileCoverage<'a>>::new();
     for file in files {
-        if file.ordering.is_some() {
-            return Err(FallbackReason::NativeSourceFileOrdering);
-        }
         if let Some(range) = &file.range
             && (range.start < 0
                 || range.end <= range.start

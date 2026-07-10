@@ -462,6 +462,9 @@ fn normalize_native_input(
     }
     if let Some(source_exec) = plan.downcast_ref::<DataSourceExec>() {
         if data_source_is_memory(source_exec) {
+            if ordered_multi_partition_memory_source_is_unsupported(source_exec) {
+                return Err(NativePlanRejection { candidate, reason: FallbackReason::NativeOrderedOutputUnsupported });
+            }
             return Ok(NormalizedNativeInput::LiteralSource(NormalizedNativeLiteralSource::Memory(source_exec)));
         }
         return Ok(NormalizedNativeInput::Source(NormalizedNativeSource {
@@ -592,6 +595,13 @@ fn peel_repartition(plan: &dyn ExecutionPlan) -> &dyn ExecutionPlan {
 
 fn data_source_is_memory(source_exec: &DataSourceExec) -> bool {
     source_exec.data_source().downcast_ref::<MemorySourceConfig>().is_some()
+}
+
+fn ordered_multi_partition_memory_source_is_unsupported(source_exec: &DataSourceExec) -> bool {
+    source_exec
+        .data_source()
+        .downcast_ref::<MemorySourceConfig>()
+        .is_some_and(|memory| source_exec.properties().output_ordering().is_some() && memory.partitions().len() > 1)
 }
 
 fn wrap_shape(operator: &str, input: String) -> String {

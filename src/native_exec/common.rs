@@ -29,7 +29,7 @@ use datafusion::{
 use futures::Stream;
 use nexus_query_engine::{PlanNode, QueryPlan, SourceNode};
 
-use crate::error::Error;
+use crate::error::{Error, ErrorCode};
 
 pub(super) const NATIVE_CUDF_EXEC_HOST_OUTPUT_MEMORY_CONSUMER: &str = "NativeCudfExec[host-output]";
 pub(super) const NATIVE_CUDF_COMPOSED_EXEC_HOST_OUTPUT_MEMORY_CONSUMER: &str = "NativeCudfComposedExec[host-output]";
@@ -37,12 +37,32 @@ pub(super) const NATIVE_CUDF_COMPOSED_EXEC_HOST_OUTPUT_MEMORY_CONSUMER: &str = "
 /// Conservative `PlanProperties` shared by all native execution wrappers:
 /// one unknown bounded partition, `Final` emission, no ordering guarantees.
 pub(super) fn conservative_properties(schema: SchemaRef) -> Arc<PlanProperties> {
-    Arc::new(PlanProperties::new(
-        EquivalenceProperties::new(schema),
+    properties_with_equivalence(schema.clone(), EquivalenceProperties::new(schema))
+        .expect("fresh equivalence properties must match schema")
+}
+
+/// DataFusion-facing native wrappers expose one bounded output partition and
+/// may adopt the replaced subtree's semantic equivalence properties when the
+/// native plan has already proven it reproduces the declared ordering.
+pub(super) fn properties_with_equivalence(
+    schema: SchemaRef,
+    eq_properties: EquivalenceProperties,
+) -> crate::error::Result<Arc<PlanProperties>> {
+    if eq_properties.schema().as_ref() != schema.as_ref() {
+        return Err(Error::new(
+            ErrorCode::InvalidExecutionPlan,
+            "datafusion_nexus.native_exec.properties",
+            "native wrapper equivalence properties must match output schema",
+        )
+        .with_fact("equivalence_schema_fields", eq_properties.schema().fields().len())
+        .with_fact("output_schema_fields", schema.fields().len()));
+    }
+    Ok(Arc::new(PlanProperties::new(
+        eq_properties,
         Partitioning::UnknownPartitioning(1),
         EmissionType::Final,
         Boundedness::Bounded,
-    ))
+    )))
 }
 
 struct NativeHostOutputBatch {

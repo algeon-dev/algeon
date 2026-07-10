@@ -12,6 +12,10 @@ use arrow::{
 };
 use datafusion::{
     common::{DataFusionError, NullEquality, ScalarValue},
+    datasource::{
+        physical_plan::{FileScanConfigBuilder, ParquetSource},
+        source::DataSourceExec,
+    },
     functions_aggregate::{count::count_udaf, sum::sum_udaf},
     logical_expr::Operator,
     parquet::arrow::ArrowWriter,
@@ -137,6 +141,20 @@ pub(super) fn parquet_scan(path: &std::path::Path) -> Arc<dyn ExecutionPlan> {
     let df =
         futures::executor::block_on(ctx.read_parquet(path.to_str().unwrap(), ParquetReadOptions::default())).unwrap();
     futures::executor::block_on(df.create_physical_plan()).unwrap()
+}
+
+pub(super) fn parquet_scan_with_declared_output_ordering(path: &std::path::Path) -> Arc<dyn ExecutionPlan> {
+    let scan = parquet_scan(path);
+    let ordering = LexOrdering::new([PhysicalSortExpr::new(
+        col("key", &scan.schema()).unwrap(),
+        ArrowSortOptions::new(false, false),
+    )])
+    .expect("declared key ordering should be non-empty");
+    let data_source = scan.downcast_ref::<DataSourceExec>().expect("parquet scan should be DataSourceExec");
+    let (file_scan, _parquet_source) =
+        data_source.downcast_to_file_source::<ParquetSource>().expect("parquet scan should use ParquetSource");
+    let file_scan = FileScanConfigBuilder::from(file_scan.clone()).with_output_ordering(vec![ordering]).build();
+    DataSourceExec::from_data_source(file_scan)
 }
 
 pub(super) fn join_aggregate_sort_limit_sql_plan(
@@ -376,6 +394,20 @@ pub(super) fn aggregate_sort_limit_plan(
     Arc::new(LocalLimitExec::new(sort, 2))
 }
 
+pub(super) fn grouped_sum_aggregate_plan(scan: Arc<dyn ExecutionPlan>) -> Arc<dyn ExecutionPlan> {
+    let scan_schema = scan.schema();
+    let group_by = PhysicalGroupBy::new_single(vec![(col("key", &scan_schema).unwrap(), "key".to_string())]);
+    let sum = AggregateExprBuilder::new(sum_udaf(), vec![col("m00", &scan_schema).unwrap()])
+        .schema(Arc::clone(&scan_schema))
+        .alias("sum_m00")
+        .build()
+        .unwrap();
+    Arc::new(
+        AggregateExec::try_new(AggregateMode::Single, group_by, vec![Arc::new(sum)], vec![None], scan, scan_schema)
+            .unwrap(),
+    )
+}
+
 pub(super) fn unsupported_try_cast_projection_aggregate_sort_limit_plan(
     scan: Arc<dyn ExecutionPlan>,
 ) -> Arc<dyn ExecutionPlan> {
@@ -443,6 +475,21 @@ pub(super) fn write_parquet_file(path: &std::path::Path) {
     let mut writer = ArrowWriter::try_new(file, schema, None).unwrap();
     writer.write(&batch).unwrap();
     writer.close().unwrap();
+}
+
+pub(super) fn write_sorted_parquet_file(path: &std::path::Path) {
+    let schema = parquet_file_schema();
+    let batch = RecordBatch::try_new(
+        Arc::clone(&schema),
+        vec![
+            Arc::new(Int32Array::from(vec![1, 1, 2])),
+            Arc::new(Int32Array::from(vec![5, 20, 10])),
+            Arc::new(Int64Array::from(vec![100, 300, 200])),
+            Arc::new(Int64Array::from(vec![1, 3, 2])),
+        ],
+    )
+    .unwrap();
+    write_batch(path, schema, batch);
 }
 
 pub(super) fn write_join_left_parquet_file(path: &std::path::Path) {

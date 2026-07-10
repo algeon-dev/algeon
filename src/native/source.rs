@@ -47,11 +47,11 @@ pub(super) fn validate_slice1_parquet_scan(
     if !native_parquet_file_reader_factory_is_supported(parquet_source) {
         return Err(FallbackReason::NativeSourceParquetFileReaderFactory);
     }
+    if !native_declared_output_ordering_scan_is_supported(file_scan) {
+        return Err(FallbackReason::NativeSourceOutputOrdering);
+    }
     if !native_preserve_order_scan_is_supported(file_scan) {
         return Err(FallbackReason::NativeSourcePreserveOrder);
-    }
-    if !file_scan.output_ordering.is_empty() {
-        return Err(FallbackReason::NativeSourceOutputOrdering);
     }
     if parquet_source
         .filter()
@@ -65,6 +65,10 @@ pub(super) fn validate_slice1_parquet_scan(
 
 pub(super) fn native_preserve_order_scan_is_supported(file_scan: &FileScanConfig) -> bool {
     !file_scan.preserve_order || file_scan.file_groups.len() == 1
+}
+
+pub(super) fn native_declared_output_ordering_scan_is_supported(file_scan: &FileScanConfig) -> bool {
+    file_scan.output_ordering.is_empty() || file_scan.file_groups.len() == 1
 }
 
 pub(super) fn native_parquet_file_reader_factory_is_supported(parquet_source: &ParquetSource) -> bool {
@@ -103,9 +107,6 @@ pub(super) fn local_parquet_files(
     let mut native_files = Vec::with_capacity(scan_files.len());
     for (file_index, scan_file) in scan_files.iter().enumerate() {
         let file = scan_file.file;
-        if file.ordering.is_some() {
-            return Err(FallbackReason::NativeSourceFileOrdering);
-        }
         let path = local_object_path_to_filesystem(file.object_meta.location.as_ref());
         let stable_id = format!("local:{}:{}", path.display(), file.object_meta.size);
         let mut native_file =

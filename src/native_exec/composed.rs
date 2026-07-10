@@ -10,6 +10,7 @@ use arrow::record_batch::RecordBatch;
 use datafusion::{
     common::{DataFusionError, Result as DataFusionResult},
     execution::context::TaskContext,
+    physical_expr::EquivalenceProperties,
     physical_plan::{
         DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties, SendableRecordBatchStream,
         metrics::{ExecutionPlanMetricsSet, MetricsSet, RecordOutput},
@@ -21,7 +22,7 @@ use super::{
     common::{
         NATIVE_CUDF_COMPOSED_EXEC_HOST_OUTPUT_MEMORY_CONSUMER, conservative_properties, gpu_resident_source_names,
         mark_native_runtime_error, native_host_output_stream, native_plan_one_line, native_query_runtime_error,
-        write_native_plan_tree,
+        properties_with_equivalence, write_native_plan_tree,
     },
     config::NativeCudfExecutionConfig,
     metrics::NativeCudfMetrics,
@@ -53,6 +54,24 @@ impl NativeCudfComposedExec {
         plan: QueryPlan,
         gpu_inputs: Vec<Arc<dyn ExecutionPlan>>,
         execution_config: NativeCudfExecutionConfig,
+    ) -> crate::error::Result<Self> {
+        Self::try_new_with_cache(plan, gpu_inputs, execution_config, None)
+    }
+
+    pub(crate) fn try_new_with_equivalence_properties(
+        plan: QueryPlan,
+        gpu_inputs: Vec<Arc<dyn ExecutionPlan>>,
+        execution_config: NativeCudfExecutionConfig,
+        eq_properties: EquivalenceProperties,
+    ) -> crate::error::Result<Self> {
+        Self::try_new_with_cache(plan, gpu_inputs, execution_config, Some(eq_properties))
+    }
+
+    fn try_new_with_cache(
+        plan: QueryPlan,
+        gpu_inputs: Vec<Arc<dyn ExecutionPlan>>,
+        execution_config: NativeCudfExecutionConfig,
+        eq_properties: Option<EquivalenceProperties>,
     ) -> crate::error::Result<Self> {
         // Constructor validation preserves the composed execution contract: the final consumer must
         // host-materialize, every child must be a GPU-resident producer, and required/provided GPU
@@ -112,14 +131,12 @@ impl NativeCudfComposedExec {
             )
             .with_fact("unused_inputs", unused_inputs.join(",")));
         }
+        let cache = match eq_properties {
+            Some(eq_properties) => properties_with_equivalence(Arc::clone(plan.output_schema()), eq_properties)?,
+            None => conservative_properties(Arc::clone(plan.output_schema())),
+        };
 
-        Ok(Self {
-            cache: conservative_properties(Arc::clone(plan.output_schema())),
-            plan,
-            gpu_inputs,
-            execution_config,
-            metrics: ExecutionPlanMetricsSet::new(),
-        })
+        Ok(Self { cache, plan, gpu_inputs, execution_config, metrics: ExecutionPlanMetricsSet::new() })
     }
 
     pub fn native_plan(&self) -> &QueryPlan {
@@ -198,9 +215,14 @@ impl ExecutionPlan for NativeCudfComposedExec {
         self: Arc<Self>,
         children: Vec<Arc<dyn ExecutionPlan>>,
     ) -> DataFusionResult<Arc<dyn ExecutionPlan>> {
-        NativeCudfComposedExec::try_new(self.plan.clone(), children, self.execution_config.clone())
-            .map(|plan| Arc::new(plan) as Arc<dyn ExecutionPlan>)
-            .map_err(DataFusionError::from)
+        NativeCudfComposedExec::try_new_with_equivalence_properties(
+            self.plan.clone(),
+            children,
+            self.execution_config.clone(),
+            self.cache.equivalence_properties().clone(),
+        )
+        .map(|plan| Arc::new(plan) as Arc<dyn ExecutionPlan>)
+        .map_err(DataFusionError::from)
     }
 
     fn execute(&self, partition: usize, task_context: Arc<TaskContext>) -> DataFusionResult<SendableRecordBatchStream> {

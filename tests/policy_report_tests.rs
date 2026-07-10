@@ -24,6 +24,7 @@ fn fallback_reason_codes_are_stable_manifest_values() {
             "native_small_selective_residual_join_cpu_preferred",
         ),
         (FallbackReason::NativeSmallSelectiveFullSortCpuPreferred, "native_small_selective_full_sort_cpu_preferred"),
+        (FallbackReason::NativeOrderedOutputUnsupported, "native_ordered_output_unsupported"),
         (FallbackReason::NativeSourceNonLocalObjectStore, "native_source_non_local_object_store"),
         (FallbackReason::NativeSourcePartitionColumns, "native_source_partition_columns"),
         (FallbackReason::NativeSourceExprAdapter, "native_source_expr_adapter"),
@@ -121,4 +122,19 @@ fn planning_report_json_includes_triage_summary() {
     assert_eq!(json["triage"]["signals"][0]["code"], "unsupported_expression");
     assert_eq!(json["triage"]["signals"][0]["evidence"]["query_id"], "query-42");
     assert_eq!(json["triage"]["signals"][0]["evidence"]["plan_node_id"], "n12");
+}
+
+#[test]
+fn planning_report_json_includes_data_layout_fixable_headline_fact() {
+    let report = PlanningReport::from_outcomes([CandidateOutcome::Rejected {
+        candidate: GpuCandidate::new("AggregateExec(LocalParquetScan)", 2),
+        reason: FallbackReason::NativeOrderedOutputUnsupported,
+    }]);
+
+    let json = report.to_json();
+    assert_eq!(json["headline_facts"]["data_layout_fixable_rejection"], true);
+    assert_eq!(json["headline_facts"]["data_layout_fixable_reason_code"], "native_ordered_output_unsupported");
+    assert_eq!(json["headline_facts"]["data_layout_fixable_property"], "declared_output_ordering");
+    assert_eq!(json["headline_facts"]["data_layout_fixable_candidate_shape"], "AggregateExec(LocalParquetScan)");
+    assert_eq!(json["headline_facts"]["data_layout_fixable_outcome_index"], 0);
 }

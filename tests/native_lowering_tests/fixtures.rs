@@ -10,7 +10,10 @@ use arrow::{
     datatypes::{DataType, Field, Fields, Schema, TimeUnit},
     record_batch::RecordBatch,
 };
-use datafusion::parquet::{arrow::ArrowWriter, file::properties::WriterProperties};
+use datafusion::parquet::{
+    arrow::ArrowWriter,
+    file::{metadata::SortingColumn, properties::WriterProperties},
+};
 
 pub(super) fn write_numeric_parquet_file(path: &std::path::Path) {
     let schema = Arc::new(Schema::new(vec![
@@ -30,6 +33,51 @@ pub(super) fn write_numeric_parquet_file(path: &std::path::Path) {
     )
     .unwrap();
     write_batch(path, schema, batch);
+}
+
+pub(super) fn write_sorted_numeric_parquet_file(path: &std::path::Path) {
+    write_sorted_numeric_parquet_file_with_keys(path, &[1, 1, 2]);
+}
+
+pub(super) fn write_sorted_numeric_parquet_file_with_sorting_columns(path: &std::path::Path) {
+    write_sorted_numeric_parquet_file_with_keys_and_props(
+        path,
+        &[1, 1, 2],
+        Some(
+            WriterProperties::builder()
+                .set_sorting_columns(Some(vec![SortingColumn { column_idx: 0, descending: false, nulls_first: false }]))
+                .build(),
+        ),
+    );
+}
+
+pub(super) fn write_sorted_numeric_parquet_file_with_keys(path: &std::path::Path, keys: &[i32]) {
+    write_sorted_numeric_parquet_file_with_keys_and_props(path, keys, None);
+}
+
+fn write_sorted_numeric_parquet_file_with_keys_and_props(
+    path: &std::path::Path,
+    keys: &[i32],
+    props: Option<WriterProperties>,
+) {
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("key", DataType::Int32, false),
+        Field::new("payload", DataType::Int32, false),
+        Field::new("m00", DataType::Int64, false),
+        Field::new("m01", DataType::Int64, false),
+    ]));
+    let row_ids = (0..keys.len()).map(|index| i64::try_from(index + 1).unwrap()).collect::<Vec<_>>();
+    let batch = RecordBatch::try_new(
+        Arc::clone(&schema),
+        vec![
+            Arc::new(Int32Array::from(keys.to_vec())),
+            Arc::new(Int32Array::from(keys.iter().map(|key| key * 10).collect::<Vec<_>>())),
+            Arc::new(Int64Array::from(row_ids.iter().map(|index| index * 100).collect::<Vec<_>>())),
+            Arc::new(Int64Array::from(row_ids)),
+        ],
+    )
+    .unwrap();
+    write_batch_with_props(path, schema, batch, props);
 }
 
 pub(super) fn write_snap_edge_parquet_file(path: &std::path::Path) {
@@ -591,8 +639,17 @@ pub(super) fn write_discounted_revenue_lineitem_parquet_file(path: &std::path::P
 }
 
 fn write_batch(path: &std::path::Path, schema: Arc<Schema>, batch: RecordBatch) {
+    write_batch_with_props(path, schema, batch, None);
+}
+
+fn write_batch_with_props(
+    path: &std::path::Path,
+    schema: Arc<Schema>,
+    batch: RecordBatch,
+    props: Option<WriterProperties>,
+) {
     let file = File::create(path).unwrap();
-    let mut writer = ArrowWriter::try_new(file, schema, None).unwrap();
+    let mut writer = ArrowWriter::try_new(file, schema, props).unwrap();
     writer.write(&batch).unwrap();
     writer.close().unwrap();
 }

@@ -83,6 +83,20 @@ pub(super) fn aggregate_sort_limit_plan_without_filter(
     Arc::new(LocalLimitExec::new(sort, 2))
 }
 
+pub(super) fn grouped_sum_aggregate_plan(scan: Arc<dyn ExecutionPlan>) -> Arc<dyn ExecutionPlan> {
+    let scan_schema = scan.schema();
+    let group_by = PhysicalGroupBy::new_single(vec![(col("key", &scan_schema).unwrap(), "key".to_string())]);
+    let sum = AggregateExprBuilder::new(sum_udaf(), vec![col("m00", &scan_schema).unwrap()])
+        .schema(Arc::clone(&scan_schema))
+        .alias("sum_m00")
+        .build()
+        .unwrap();
+    Arc::new(
+        AggregateExec::try_new(AggregateMode::Single, group_by, vec![Arc::new(sum)], vec![None], scan, scan_schema)
+            .unwrap(),
+    )
+}
+
 pub(super) fn grouped_late_column_multi_sum_sort_limit_plan(scan: Arc<dyn ExecutionPlan>) -> Arc<dyn ExecutionPlan> {
     let scan_schema = scan.schema();
     let group_by = PhysicalGroupBy::new_single(vec![(col("payload", &scan_schema).unwrap(), "payload".to_string())]);
