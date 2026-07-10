@@ -40,6 +40,33 @@ extern "C" {
         options: *const cudf_exec_options_t,
     ) -> cudf_status_t;
 
+    /// Copy host data into a range of the device buffer without
+    /// synchronizing the stream.
+    ///
+    /// Issues `cudaMemcpyAsync` into the buffer at byte offset `dst_offset`
+    /// on the selected stream and returns immediately. The caller must keep
+    /// `host_data` valid and unmodified until the copy completes in stream
+    /// order (record and wait a CUDA event on the same stream). For true
+    /// asynchronous overlap `host_data` should be page-locked (see
+    /// `cudf_pinned_host_alloc`).
+    pub fn cudf_device_buffer_copy_from_host_range_async_ex(
+        handle: cudf_device_buffer_handle,
+        dst_offset: usize,
+        host_data: *const c_void,
+        size: usize,
+        options: *const cudf_exec_options_t,
+    ) -> cudf_status_t;
+
+    /// Allocate page-locked (pinned) host memory, portable across CUDA
+    /// devices. Release with `cudf_pinned_host_free`. Pinned memory is a
+    /// scarce global resource; retain and reuse allocations as staging slabs
+    /// instead of allocating per operation.
+    pub fn cudf_pinned_host_alloc(size: usize, out: *mut *mut c_void) -> cudf_status_t;
+
+    /// Release pinned host memory from `cudf_pinned_host_alloc`. Safe to
+    /// call with null (no-op).
+    pub fn cudf_pinned_host_free(ptr: *mut c_void) -> cudf_status_t;
+
     /// Create a column by adopting (moving) an existing device buffer.
     /// Zero-copy: no device-to-device memcpy occurs.
     ///

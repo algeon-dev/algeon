@@ -256,6 +256,67 @@ cudf_device_buffer_copy_from_host_ex(cudf_device_buffer_handle handle,
   CUDF_RUST_CATCH
 }
 
+cudf_status_t cudf_device_buffer_copy_from_host_range_async_ex(
+    cudf_device_buffer_handle handle, size_t dst_offset,
+    const void *host_data, size_t size, cudf_exec_options_t const *options) {
+  CUDF_RUST_NULL_CHECK(handle, "handle is null");
+  CUDF_RUST_NULL_CHECK(host_data, "host_data is null");
+  auto &owner = device_buffer_owner_from_handle(handle);
+  auto &buf = owner.buffer;
+  if (dst_offset > buf.size() || size > buf.size() - dst_offset) {
+    set_error("copy range exceeds buffer size");
+    return CUDF_ERROR_INVALID_OPERATION;
+  }
+  if (size == 0) {
+    return CUDF_SUCCESS;
+  }
+  CUDF_RUST_TRY {
+    auto exec = std::unique_ptr<cudf_exec_context>{};
+    cudf_status_t const exec_status =
+        cudf_resolve_required_exec_options(options, &exec);
+    if (exec_status != CUDF_SUCCESS) {
+      return exec_status;
+    }
+    if (exec->device != owner.provenance.device) {
+      set_error("exec options device must match device buffer provenance");
+      return CUDF_ERROR_INVALID_OPERATION;
+    }
+
+    CUDF_CUDA_TRY(cudaMemcpyAsync(
+        static_cast<char *>(buf.data()) + dst_offset, host_data, size,
+        cudaMemcpyHostToDevice, exec->stream.value()));
+    return CUDF_SUCCESS;
+  }
+  CUDF_RUST_CATCH
+}
+
+cudf_status_t cudf_pinned_host_alloc(size_t size, void **out) {
+  CUDF_RUST_NULL_CHECK(out, "out is null");
+  *out = nullptr;
+  if (size == 0) {
+    set_error("pinned host allocation size must be greater than zero");
+    return CUDF_ERROR_INVALID_OPERATION;
+  }
+  CUDF_RUST_TRY {
+    void *ptr = nullptr;
+    CUDF_CUDA_TRY(cudaHostAlloc(&ptr, size, cudaHostAllocPortable));
+    *out = ptr;
+    return CUDF_SUCCESS;
+  }
+  CUDF_RUST_CATCH
+}
+
+cudf_status_t cudf_pinned_host_free(void *ptr) {
+  if (ptr == nullptr) {
+    return CUDF_SUCCESS;
+  }
+  CUDF_RUST_TRY {
+    CUDF_CUDA_TRY(cudaFreeHost(ptr));
+    return CUDF_SUCCESS;
+  }
+  CUDF_RUST_CATCH
+}
+
 cudf_status_t cudf_column_adopt_device_buffer(cudf_type_id_t type_id,
                                               cudf_device_buffer_handle buffer,
                                               int32_t row_count,

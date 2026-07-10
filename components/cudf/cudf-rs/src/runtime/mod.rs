@@ -19,6 +19,7 @@ pub mod event;
 pub mod execution_context;
 pub(crate) mod execution_domain;
 pub(crate) mod execution_resolver;
+pub(crate) mod host_staging;
 mod owner;
 mod placement;
 mod query_execution_context;

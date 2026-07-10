@@ -68,6 +68,45 @@ cudf_device_buffer_copy_from_host_ex(cudf_device_buffer_handle handle,
                                      const void *host_data, size_t size,
                                      const cudf_exec_options_t *options);
 
+/// Copy host data into a range of the device buffer without synchronizing.
+///
+/// Issues a `cudaMemcpyAsync` of `size` bytes from `host_data` into the
+/// buffer at byte offset `dst_offset` on the selected stream and returns
+/// immediately. `dst_offset + size` must not exceed the buffer's size.
+///
+/// Unlike `cudf_device_buffer_copy_from_host_ex`, the stream is NOT
+/// synchronized before return. The caller must guarantee that `host_data`
+/// stays valid and unmodified until the copy completes in stream order
+/// (e.g. by recording a CUDA event on the same stream after this call and
+/// waiting on it before reusing the host region). For true asynchronous
+/// overlap `host_data` should point into page-locked (pinned) host memory
+/// such as an allocation from `cudf_pinned_host_alloc`; pageable sources
+/// fall back to the driver's staged copy path.
+///
+/// `options` must be non-NULL and must name an explicit valid device, a
+/// non-NULL stream, and a non-NULL memory resource. The explicit device must
+/// match the buffer's retained provenance.
+///
+/// Returns CUDF_ERROR_INVALID_OPERATION if the range is out of bounds.
+cudf_status_t cudf_device_buffer_copy_from_host_range_async_ex(
+    cudf_device_buffer_handle handle, size_t dst_offset,
+    const void *host_data, size_t size, const cudf_exec_options_t *options);
+
+/// Allocate `size` bytes of page-locked (pinned) host memory.
+///
+/// The allocation is portable across CUDA devices (`cudaHostAllocPortable`).
+/// Pinned host memory is a scarce global resource: callers should retain and
+/// reuse allocations (e.g. as staging slabs) instead of allocating per
+/// operation.
+///
+/// On success `*out` is a valid host pointer that must be released with
+/// `cudf_pinned_host_free`. `size` must be greater than zero.
+cudf_status_t cudf_pinned_host_alloc(size_t size, void **out);
+
+/// Release pinned host memory allocated by `cudf_pinned_host_alloc`.
+/// Safe to call with NULL (no-op).
+cudf_status_t cudf_pinned_host_free(void *ptr);
+
 /// Create a column by adopting (moving) an existing device buffer.
 /// Zero-copy: no device-to-device memcpy occurs.
 ///

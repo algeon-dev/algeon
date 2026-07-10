@@ -130,6 +130,8 @@ const SAFE_LAYER_NON_EXECUTION_FFI_ALLOWLIST: &[(&str, &str)] = &[
     ("cudf_hash_join_destroy", "provenance-bound lifecycle"),
     ("cudf_hash_join_device_allocated_size", "metadata-only cached join planning accessor"),
     ("cudf_io_free_column_names", "pure lifecycle for IO metadata"),
+    ("cudf_pinned_host_alloc", "pinned host staging slab lifecycle; no stream or allocator inputs"),
+    ("cudf_pinned_host_free", "pinned host staging slab lifecycle; no stream or allocator inputs"),
     ("cudf_io_probe_remote_parquet_datasource", "metadata-only remote datasource capability probe"),
     ("cudf_io_remote_parquet_kvikio_remote_io_enabled", "metadata-only remote Parquet build capability probe"),
     ("cudf_is_supported_cast", "metadata-only cast support query"),
