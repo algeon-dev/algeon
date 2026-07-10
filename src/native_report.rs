@@ -64,11 +64,8 @@ mod workload;
 
 pub use dataset::WorkloadDatasetMetadata;
 pub use descriptor::{native_report_metric_descriptor, native_report_metric_descriptors, native_report_metric_names};
-pub(crate) use diagnostics::join_diagnostics as physical_join_diagnostics;
-use diagnostics::{
-    candidate_shape_family, physical_plan_shape, post_native_plan_coverage, summarize_source_diagnostics,
-    unsupported_category,
-};
+use diagnostics::{candidate_shape_family, physical_plan_shape, summarize_source_diagnostics, unsupported_category};
+pub(crate) use diagnostics::{join_diagnostics as physical_join_diagnostics, post_native_plan_coverage};
 pub use metrics::{
     NativeAggregateStrategyMetricRow, NativeDataFusionExecutionMetrics, NativeDynamicFilterMeasuredReductionStatus,
     NativeDynamicFilterPostDecodeReductionStage, NativeDynamicFilterRuntimeMetricRow,

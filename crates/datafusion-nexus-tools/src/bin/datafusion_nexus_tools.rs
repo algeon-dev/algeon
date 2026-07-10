@@ -29,6 +29,9 @@ mod server_iceberg_glue_moto_e2e;
 #[cfg(all(feature = "server-iceberg-e2e", not(test)))]
 #[path = "../e2e/server_iceberg_glue_remote_direct_e2e.rs"]
 mod server_iceberg_glue_remote_direct_e2e;
+#[cfg(all(feature = "validate-query", not(test)))]
+#[path = "../validate_query.rs"]
+mod validate_query;
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> ToolResult<()> {
@@ -41,6 +44,7 @@ async fn main() -> ToolResult<()> {
         Some("server-iceberg-glue-moto-e2e") => run_server_iceberg_glue_moto_e2e().await,
         Some("server-iceberg-glue-remote-direct-e2e") => run_server_iceberg_glue_remote_direct_e2e().await,
         Some("embedded-backend-e2e") => run_embedded_backend_e2e(env::args().skip(2).collect()).await,
+        Some("validate-query") => run_validate_query(env::args().skip(2).collect()).await,
         Some("-h" | "--help") | None => {
             print_usage();
             if command.is_none() { Err("missing tool command".into()) } else { Ok(()) }
@@ -57,6 +61,7 @@ fn print_usage() {
         "datafusion_nexus_tools\n\
          \n\
          USAGE:\n\
+           cargo run -p datafusion-nexus-tools --features validate-query -- validate-query --sql <SQL> [--format json|human] [--parquet TABLE=PATH]...\n\
            cargo run -p datafusion-nexus-tools -- flight-sql-cugraph-smoke [URL]\n\
            cargo run -p datafusion-nexus-tools -- flight-sql-query [URL] [SQL]\n\
            cargo run -p datafusion-nexus-tools --features iceberg-e2e -- iceberg-rest-local-e2e\n\
@@ -85,6 +90,16 @@ async fn run_flight_sql_query(args: Vec<String>) -> ToolResult<()> {
 #[cfg(test)]
 async fn run_flight_sql_query(_args: Vec<String>) -> ToolResult<()> {
     Err("flight-sql-query requires normal cargo run execution".into())
+}
+
+#[cfg(all(feature = "validate-query", not(test)))]
+async fn run_validate_query(args: Vec<String>) -> ToolResult<()> {
+    validate_query::run(args).await
+}
+
+#[cfg(not(all(feature = "validate-query", not(test))))]
+async fn run_validate_query(_args: Vec<String>) -> ToolResult<()> {
+    Err("validate-query requires --features validate-query and normal cargo run execution".into())
 }
 
 #[cfg(all(feature = "iceberg-e2e", not(test)))]

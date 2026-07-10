@@ -1,6 +1,6 @@
 use datafusion_nexus::{
-    admission_contracts, engine_contracts, error_contracts, execution_contracts, prelude, report_contracts,
-    table_format_contracts,
+    admission_contracts, coverage_contracts, engine_contracts, error_contracts, execution_contracts, prelude,
+    report_contracts, table_format_contracts,
 };
 
 #[test]
@@ -21,6 +21,11 @@ fn adapter_facade_modules_expose_intentional_contract_groups() {
     let _admission_config = admission_contracts::QueryServiceConfig::default();
     let _tenant = admission_contracts::QueryServiceTenantConfig::new("tenant", 1024);
     let _admission_error_code = admission_contracts::QueryErrorCode::ServiceOverloaded;
+    let _coverage_schema: &str = coverage_contracts::QUERY_GPU_COVERAGE_JSON_SCHEMA;
+    let _coverage_version = coverage_contracts::QUERY_GPU_COVERAGE_SCHEMA_VERSION;
+    let _coverage_sql_function: &str = coverage_contracts::NEXUS_EXPLAIN_COVERAGE_FUNCTION;
+    let _coverage_sql_schema_version = coverage_contracts::NEXUS_EXPLAIN_COVERAGE_SCHEMA_VERSION;
+    let _coverage_verdict = coverage_contracts::QueryGpuCoverageOverall::CpuOnly;
     let _backend_builder = prelude::NexusGpuBackend::builder()
         .fallback_policy(prelude::GpuFallbackPolicy::GpuPreferred)
         .admission(prelude::NexusAdmissionPolicy::default());

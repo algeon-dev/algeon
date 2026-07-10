@@ -12,6 +12,7 @@ workspace = true
 
 [features]
 default = []
+validate-query = ["dep:datafusion", "dep:datafusion-nexus"]
 cugraph-oracle = ["dep:datafusion-nexus", "datafusion-nexus/cugraph"]
 iceberg-e2e = [
   "dep:datafusion",

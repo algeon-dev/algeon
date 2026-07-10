@@ -16,7 +16,7 @@ use datafusion_nexus::server::{
 };
 use datafusion_nexus::{
     CudfOptimizerConfig, DATAFUSION_NEXUS_SESSION_CONFIG_OPTIONS, DataFusionNexusSessionConfig, MemoryShare,
-    NativeCudfExecutionConfig, SlotGuarantee,
+    NEXUS_EXPLAIN_COVERAGE_FUNCTION, NativeCudfExecutionConfig, SlotGuarantee,
     server::{
         NEXUS_ICEBERG_GLUE_DATABASE_ENV, NEXUS_SERVER_ADMISSION_GRANT_MIN_ENV, NEXUS_SERVER_ADMISSION_GRANT_WANT_ENV,
         NEXUS_SERVER_ADMISSION_SLOT_GUARANTEE_ENV, NEXUS_SERVER_ADMISSION_WAIT_TIMEOUT_MS_ENV, NEXUS_SERVER_BIND_ENV,
@@ -1048,6 +1048,29 @@ fn server_cugraph_config_accepts_enabled_env() {
     assert_eq!(cugraph.default_graph_options.construction_policy, CugraphGraphConstructionPolicy::RawLibcugraph);
 }
 
+#[tokio::test]
+async fn server_session_exposes_gpu_coverage_table_function() {
+    let env = BTreeMap::from([(NEXUS_SERVER_NATIVE_MEMORY_POLICY_ENV, "unbounded".to_string())]);
+    let config = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap();
+    let ctx = datafusion_nexus::server::build_session_context(&config).await.unwrap();
+
+    assert!(
+        ctx.state().table_functions().contains_key(NEXUS_EXPLAIN_COVERAGE_FUNCTION),
+        "server sessions must expose GPU coverage validation through the Flight SQL table-function path"
+    );
+
+    let batches = ctx
+        .sql("SELECT overall, coverage_json FROM nexus_explain_coverage('SELECT 1')")
+        .await
+        .unwrap()
+        .collect()
+        .await
+        .unwrap();
+    assert_eq!(batches[0].num_rows(), 1);
+    let json: serde_json::Value = serde_json::from_str(batch_string_value(&batches[0], 1)).unwrap();
+    assert_eq!(json["overall"]["verdict"], batch_string_value(&batches[0], 0));
+}
+
 #[cfg(feature = "cugraph")]
 #[test]
 fn server_cugraph_config_rejects_unknown_algorithm() {
@@ -1308,6 +1331,10 @@ fn edge_table() -> Arc<dyn datafusion::datasource::TableProvider> {
 
 fn batch_i64_value(batch: &arrow::record_batch::RecordBatch, column: usize) -> i64 {
     batch.column(column).as_any().downcast_ref::<arrow::array::Int64Array>().unwrap().value(0)
+}
+
+fn batch_string_value(batch: &arrow::record_batch::RecordBatch, column: usize) -> &str {
+    batch.column(column).as_any().downcast_ref::<arrow::array::StringArray>().unwrap().value(0)
 }
 
 #[test]

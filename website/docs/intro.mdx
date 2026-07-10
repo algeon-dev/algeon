@@ -57,6 +57,11 @@ You can use it in two ways:
 - **Explainable planning.** Planning reports record which parts of a plan
   executed on the GPU, which fell back to CPU, and the reason for each. Errors
   carry stable codes and machine-readable facts rather than log messages alone.
+  [GPU coverage validation](./integration/gpu-coverage-validation.mdx) turns
+  this into a question you can ask before running a query:
+  `SELECT * FROM nexus_explain_coverage('<sql>')` reports whether the planned
+  path stays on the GPU and which operator, expression, type, or source forces
+  CPU execution.
 - **Bounded GPU memory.** Bounded mode plans each query against a GPU memory
   budget: shapes without a provable memory contract are rejected at planning
   time, and admitted queries receive their reservation before execution.

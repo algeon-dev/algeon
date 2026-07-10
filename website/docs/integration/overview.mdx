@@ -30,6 +30,10 @@ feature adds SQL-visible `cugraph_*` table functions on these surfaces, and the
 4. If you use graph SQL, discover and validate the available functions with
    [`cugraph_list_algorithms`](../cugraph/discovery-and-validation.mdx) and
    `cugraph_validate_call`.
+5. Before shipping a query, check whether its planned path stays on the GPU —
+   and why not, if it doesn't — with
+   [GPU coverage validation](./gpu-coverage-validation.mdx)
+   (`nexus_explain_coverage` in SQL, `validate_query` in Rust).
 
 The [cuGraph SQL API](../cugraph/overview.mdx) section is the function-level
 contract: call signatures, graph options, validation metadata, demo dataset,

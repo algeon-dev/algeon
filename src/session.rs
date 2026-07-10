@@ -7,11 +7,9 @@
 
 use std::sync::Arc;
 
-#[cfg(any(feature = "server", feature = "cugraph"))]
-use datafusion::execution::SessionState;
 use datafusion::{
     common::Result as DataFusionResult,
-    execution::SessionStateBuilder,
+    execution::{SessionState, SessionStateBuilder},
     physical_optimizer::{PhysicalOptimizerRule, optimizer::PhysicalOptimizer},
 };
 
@@ -20,6 +18,7 @@ use crate::NativeCudfExecutionConfig;
 #[cfg(feature = "cugraph")]
 use crate::graph_sql::{CugraphSqlConfig, cugraph_table_functions};
 use crate::{
+    gpu_coverage_sql::gpu_coverage_table_function,
     planner::{
         CUDF_TABLE_FORMAT_GPU_ONLY_LEAF_GUARD_RULE_NAME, CudfNativePhysicalOptimizerRule, CudfOptimizerConfig,
         CudfTableFormatGpuOnlyLeafGuardRule,
@@ -84,6 +83,7 @@ impl CudfSessionStateBuilderExt for SessionStateBuilder {
 
     fn with_cudf_native_rule(mut self, rule: Arc<CudfNativePhysicalOptimizerRule>) -> Self {
         ensure_datafusion_nexus_session_config(&mut self, rule.config());
+        install_gpu_coverage_table_function(&mut self);
         let mut rules = take_physical_optimizer_rules(&mut self);
         insert_cudf_native_rules_before_final_validation(&mut rules, rule);
         self.with_physical_optimizer_rules(rules)
@@ -106,6 +106,7 @@ pub(crate) fn install_cudf_native_rule_with_session_config(
         }
     }
     session_config.options_mut().extensions.insert(session_extension);
+    install_gpu_coverage_table_function(&mut builder);
     let mut rules = take_physical_optimizer_rules(&mut builder);
     insert_cudf_native_rules_before_final_validation(&mut rules, rule);
     Ok(builder.with_physical_optimizer_rules(rules))
@@ -124,7 +125,6 @@ pub(crate) fn session_state_with_native_execution_config(
     Some(SessionStateBuilder::new_from_existing(state.clone()).with_physical_optimizer_rules(rules).build())
 }
 
-#[cfg(any(feature = "server", feature = "cugraph"))]
 pub(crate) fn installed_cudf_native_optimizer_config(state: &SessionState) -> Option<CudfOptimizerConfig> {
     installed_cudf_native_optimizer_config_from_rules(state.physical_optimizers())
 }
@@ -165,14 +165,12 @@ fn installed_cudf_native_optimizer_config_from_builder(
         .and_then(|rules| installed_cudf_native_optimizer_config_from_rules(rules))
 }
 
-#[cfg(any(feature = "server", feature = "cugraph"))]
 fn installed_cudf_native_optimizer_config_from_rules(
     rules: &[Arc<dyn PhysicalOptimizerRule + Send + Sync>],
 ) -> Option<CudfOptimizerConfig> {
     rules.iter().find_map(|rule| cudf_native_optimizer_config_from_rule(rule.as_ref()))
 }
 
-#[cfg(any(feature = "server", feature = "cugraph"))]
 fn cudf_native_optimizer_config_from_rule(
     rule: &(dyn PhysicalOptimizerRule + Send + Sync),
 ) -> Option<CudfOptimizerConfig> {
@@ -185,6 +183,11 @@ fn ensure_datafusion_nexus_session_config(builder: &mut SessionStateBuilder, con
     if session_config.options().extensions.get::<DataFusionNexusSessionConfig>().is_none() {
         session_config.options_mut().extensions.insert(DataFusionNexusSessionConfig::from_optimizer_config(config));
     }
+}
+
+fn install_gpu_coverage_table_function(builder: &mut SessionStateBuilder) {
+    let function = gpu_coverage_table_function();
+    builder.table_functions().get_or_insert_with(Default::default).insert(function.name().to_string(), function);
 }
 
 fn take_physical_optimizer_rules(builder: &mut SessionStateBuilder) -> PhysicalOptimizerRules {
