@@ -2373,49 +2373,28 @@ fn record_batches_to_gpu(
             ))
         });
     };
-    let mut frames = batches
-        .iter()
-        .map(|batch| {
-            cudf::DataFrame::from_record_batch(context.runtime(), batch).map_err(|error| {
-                DataFusionError::from(Error::from_native(
-                    "datafusion_nexus.cugraph_sql.edge_source_host_import",
-                    "failed to import host Arrow edge-source batch into cudf",
-                    nexus_query_engine::QueryError::from_cudf(
-                        "datafusion_nexus.cugraph_sql.edge_source_host_import",
-                        "failed to import host Arrow edge-source batch into cudf",
-                        error,
-                    ),
-                ))
-            })
-        })
-        .collect::<Result<Vec<_>>>()?;
-    if frames.len() == 1 {
-        return Ok(GpuDataFrame::new(frames.remove(0)));
-    }
-    let first = frames.remove(0);
-    let rest = frames.iter().collect::<Vec<_>>();
-    let concatenated = first.concat_many(&rest).map_err(|error| {
+    let imported = cudf::DataFrame::from_record_batches(context.runtime(), batches).map_err(|error| {
         DataFusionError::from(Error::from_native(
             "datafusion_nexus.cugraph_sql.edge_source_host_import",
-            "failed to concatenate imported cuGraph edge-source batches",
+            "failed to import host Arrow edge-source batches into cudf",
             nexus_query_engine::QueryError::from_cudf(
                 "datafusion_nexus.cugraph_sql.edge_source_host_import",
-                "failed to concatenate imported cuGraph edge-source batches",
+                "failed to import host Arrow edge-source batches into cudf",
                 error,
             ),
         ))
     })?;
-    if concatenated.num_columns() != first_batch.num_columns() {
+    if imported.num_columns() != first_batch.num_columns() {
         return Err(Error::new(
             ErrorCode::InvalidExecutionPlan,
             "datafusion_nexus.cugraph_sql.edge_source_host_import",
             "cuGraph edge-source import changed column count",
         )
         .with_fact("expected_column_count", first_batch.num_columns())
-        .with_fact("actual_column_count", concatenated.num_columns())
+        .with_fact("actual_column_count", imported.num_columns())
         .into());
     }
-    Ok(GpuDataFrame::new(concatenated))
+    Ok(GpuDataFrame::new(imported))
 }
 
 fn execute_cugraph_query_to_host(
