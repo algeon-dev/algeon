@@ -224,6 +224,10 @@ struct filtered_join_probe_owner {
   std::shared_ptr<void> upstream_mr_lifetime;
   std::shared_ptr<void> stream_lifetime;
   std::unique_ptr<statistics_resource_box> observed_mr;
+  // Stable storage for the resource ref handed to libcudf: retained device
+  // buffers capture a ref to this object, so it must outlive `probe` (members
+  // destroy in reverse declaration order).
+  std::shared_ptr<cuda::mr::any_resource<cuda::mr::device_accessible>> observed_mr_ref_storage;
   std::unique_ptr<cudf::filtered_join_probe_state> probe;
   rmm::mr::device_memory_resource* mr_raw = nullptr;
   std::size_t device_allocated_size_bytes = 0;
@@ -243,6 +247,9 @@ struct conditional_full_join_size_data_owner {
   std::shared_ptr<void> upstream_mr_lifetime;
   std::shared_ptr<void> stream_lifetime;
   std::unique_ptr<statistics_resource_box> observed_mr;
+  // Stable storage for the resource ref handed to libcudf: retained device
+  // buffers capture a ref to this object, so it must outlive `size_data`.
+  std::shared_ptr<cuda::mr::any_resource<cuda::mr::device_accessible>> observed_mr_ref_storage;
   std::unique_ptr<cudf::conditional_full_join_size_data> size_data;
   std::optional<cudf::table_view> left;
   std::optional<cudf::table_view> right;
@@ -257,6 +264,9 @@ struct mixed_join_size_data_owner {
   std::shared_ptr<void> upstream_mr_lifetime;
   std::shared_ptr<void> stream_lifetime;
   std::unique_ptr<statistics_resource_box> observed_mr;
+  // Stable storage for the resource ref handed to libcudf: retained device
+  // buffers capture a ref to this object, so it must outlive the size data.
+  std::shared_ptr<cuda::mr::any_resource<cuda::mr::device_accessible>> observed_mr_ref_storage;
   std::unique_ptr<rmm::device_uvector<cudf::size_type>> matches_per_row;
   std::unique_ptr<cudf::mixed_full_join_size_data> full_size_data;
   std::unique_ptr<cudf::mixed_left_semi_anti_join_size_data> single_size_data;
@@ -333,7 +343,6 @@ inline cudf_status_t conditional_pair_join_indices_impl(cudf_table_view_handle l
     auto const& pred = cudf_ast_expression_from_handle(predicate);
 
     {
-      cudf_current_device_resource_guard current_mr{exec->mr_raw};
       join_index_pair indices;
       switch (kind) {
         case pair_join_kind::inner:
@@ -383,7 +392,6 @@ inline cudf_status_t conditional_single_side_join_indices_impl(cudf_table_view_h
     auto const& pred = cudf_ast_expression_from_handle(predicate);
 
     {
-      cudf_current_device_resource_guard current_mr{exec->mr_raw};
       std::unique_ptr<rmm::device_uvector<cudf::size_type>> indices;
       switch (kind) {
         case single_side_join_kind::semi:
@@ -426,7 +434,6 @@ inline cudf_status_t conditional_join_size_impl(cudf_table_view_handle left,
     auto const& pred = cudf_ast_expression_from_handle(predicate);
 
     {
-      cudf_current_device_resource_guard current_mr{exec->mr_raw};
       switch (kind) {
         case conditional_join_size_kind::inner:
           *out = cudf::conditional_inner_join_size(*left_view, *right_view, pred, exec->stream, *exec->mr);
@@ -483,7 +490,6 @@ inline cudf_status_t mixed_pair_join_indices_impl(cudf_table_view_handle left_eq
     auto const& pred = cudf_ast_expression_from_handle(predicate);
 
     {
-      cudf_current_device_resource_guard current_mr{exec->mr_raw};
       join_index_pair indices;
       switch (kind) {
         case pair_join_kind::inner:
@@ -540,11 +546,15 @@ inline cudf_status_t conditional_full_join_size_data_impl(
     owner->observed_mr = std::make_unique<statistics_resource_box>(
       cuda::mr::any_resource<cuda::mr::device_accessible>{*exec->mr});
     owner->mr_raw = owner->observed_mr.get();
+    owner->observed_mr_ref_storage =
+      std::make_shared<cuda::mr::any_resource<cuda::mr::device_accessible>>(
+        rmm::mr::any_device_resource_from_raw(owner->observed_mr.get()));
     {
-      cudf_current_device_resource_guard current_mr{owner->mr_raw};
-      auto const observed_mr_ref = cudf::get_current_device_resource_ref();
-      owner->size_data =
-        cudf::conditional_full_join_size(*left_view, *right_view, pred, exec->stream, observed_mr_ref);
+      // Route the retained size-data allocation through the statistics box
+      // explicitly so its byte counter observes it (device-domain invariant:
+      // the per-device current resource is never swapped per operation).
+      owner->size_data = cudf::conditional_full_join_size(
+        *left_view, *right_view, pred, exec->stream, *owner->observed_mr_ref_storage);
       owner->output_size = owner->size_data->output_size();
       auto const bytes   = owner->observed_mr->resource().get_bytes_counter().value;
       owner->device_allocated_size_bytes = bytes > 0 ? static_cast<std::size_t>(bytes) : 0;
@@ -577,7 +587,6 @@ inline cudf_status_t conditional_full_join_size_data_materialize_indices_impl(
                  "conditional full join size data must be materialized on its creation device");
     CUDF_EXPECTS(owner->size_data != nullptr, "conditional full join size data missing state");
     {
-      cudf_current_device_resource_guard current_mr{exec->mr_raw};
       auto indices = owner->size_data->materialize_indices(exec->stream, *exec->mr);
       release_join_index_pair(std::move(indices),
                               out_left_indices,
@@ -622,7 +631,6 @@ inline cudf_status_t mixed_single_side_join_indices_impl(cudf_table_view_handle 
     auto const& pred = cudf_ast_expression_from_handle(predicate);
 
     {
-      cudf_current_device_resource_guard current_mr{exec->mr_raw};
       std::unique_ptr<rmm::device_uvector<cudf::size_type>> indices;
       switch (kind) {
         case single_side_join_kind::semi:
@@ -688,9 +696,13 @@ inline cudf_status_t mixed_join_size_data_impl(cudf_table_view_handle left_equal
     owner->observed_mr = std::make_unique<statistics_resource_box>(
       cuda::mr::any_resource<cuda::mr::device_accessible>{*exec->mr});
     owner->mr_raw = owner->observed_mr.get();
+    owner->observed_mr_ref_storage =
+      std::make_shared<cuda::mr::any_resource<cuda::mr::device_accessible>>(
+        rmm::mr::any_device_resource_from_raw(owner->observed_mr.get()));
     {
-      cudf_current_device_resource_guard current_mr{owner->mr_raw};
-      auto const observed_mr_ref = cudf::get_current_device_resource_ref();
+      // Route retained size-data allocations through the statistics box
+      // explicitly (the per-device current resource is never swapped).
+      auto& observed_mr_ref = *owner->observed_mr_ref_storage;
       switch (kind) {
         case mixed_join_size_kind::inner: {
           auto size_data = cudf::mixed_inner_join_size(
@@ -752,7 +764,6 @@ inline cudf_status_t mixed_join_size_data_materialize_indices_impl(
     CUDF_EXPECTS(owner->device == exec->device,
                  "mixed join size data must be materialized on its creation device");
     {
-      cudf_current_device_resource_guard current_mr{exec->mr_raw};
       join_index_pair indices;
       switch (owner->kind) {
         case mixed_join_size_kind::inner:
@@ -829,7 +840,6 @@ inline cudf_status_t mixed_join_size_data_materialize_single_indices_impl(
                  "mixed pair join size data materializes two index columns");
     CUDF_EXPECTS(owner->single_size_data != nullptr, "mixed semi/anti join size data missing state");
     {
-      cudf_current_device_resource_guard current_mr{exec->mr_raw};
       auto indices = owner->single_size_data->materialize_indices(exec->stream, *exec->mr);
       *out_indices =
         cudf_release_column_handle(release_join_index_column(std::move(indices)),
@@ -896,7 +906,6 @@ inline cudf_status_t filter_join_indices_impl(cudf_table_view_handle left,
       static_cast<std::size_t>(right_indices_view->size())};
 
     {
-      cudf_current_device_resource_guard current_mr{exec->mr_raw};
       auto indices = cudf::filter_join_indices(
         *left_view, *right_view, left_span, right_span, pred, kind, exec->stream, *exec->mr);
       release_join_index_pair(std::move(indices),
@@ -930,7 +939,6 @@ inline cudf_status_t hash_join_size_impl(cudf_hash_join_handle join,
     auto* probe_view = static_cast<cudf::table_view*>(probe);
 
     {
-      cudf_current_device_resource_guard current_mr{exec->mr_raw};
       switch (kind) {
         case hash_join_probe_kind::inner: *out = hash_join->inner_join_size(*probe_view, exec->stream); break;
         case hash_join_probe_kind::left: *out = hash_join->left_join_size(*probe_view, exec->stream); break;
@@ -967,15 +975,16 @@ inline cudf_status_t filtered_join_create_impl(cudf_table_view_handle build,
     owner->device    = exec->device;
     owner->upstream_mr_lifetime = exec->mr_lifetime;
     owner->stream_lifetime      = exec->stream_lifetime;
-    owner->observed_mr = std::make_unique<statistics_resource_box>(
-      cuda::mr::any_resource<cuda::mr::device_accessible>{*exec->mr});
-    owner->mr_raw = owner->observed_mr.get();
+    owner->mr_raw = exec->mr_raw;
+    // The filtered-join build constructor takes no memory resource: its hash
+    // table allocates through the device memory domain. Retained bytes are
+    // derived from the pre-build sizing formula, mirroring cudf::hash_join.
+    auto const reservation_size =
+      cudf::filtered_join::pre_build_reservation_size(*build_view, load_factor);
     {
-      cudf_current_device_resource_guard current_mr{owner->mr_raw};
       owner->join = std::make_unique<cudf::filtered_join>(
         *build_view, null_eq, load_factor, exec->stream);
-      auto const bytes = owner->observed_mr->resource().get_bytes_counter().value;
-      owner->device_allocated_size_bytes = bytes > 0 ? static_cast<std::size_t>(bytes) : 0;
+      owner->device_allocated_size_bytes = reservation_size;
     }
     *out = static_cast<cudf_filtered_join_handle>(owner.release());
     return CUDF_SUCCESS;
@@ -1002,7 +1011,6 @@ inline cudf_status_t filtered_join_size_impl(cudf_filtered_join_handle join,
     auto* owner      = static_cast<filtered_join_owner*>(join);
     auto* probe_view = static_cast<cudf::table_view*>(probe);
     {
-      cudf_current_device_resource_guard current_mr{exec->mr_raw};
       auto indices = kind == filtered_join_probe_kind::semi
                        ? owner->join->semi_join(*probe_view, exec->stream, *exec->mr)
                        : owner->join->anti_join(*probe_view, exec->stream, *exec->mr);
@@ -1033,7 +1041,6 @@ inline cudf_status_t filtered_join_indices_with_output_size_impl(cudf_filtered_j
     auto* owner      = static_cast<filtered_join_owner*>(join);
     auto* probe_view = static_cast<cudf::table_view*>(probe);
     {
-      cudf_current_device_resource_guard current_mr{exec->mr_raw};
       auto indices = kind == filtered_join_probe_kind::semi
                        ? owner->join->semi_join(*probe_view, exec->stream, *exec->mr)
                        : owner->join->anti_join(*probe_view, exec->stream, *exec->mr);
@@ -1073,9 +1080,13 @@ inline cudf_status_t filtered_join_begin_probe_impl(cudf_filtered_join_handle jo
     probe_owner->observed_mr = std::make_unique<statistics_resource_box>(
       cuda::mr::any_resource<cuda::mr::device_accessible>{*exec->mr});
     probe_owner->mr_raw = probe_owner->observed_mr.get();
+    probe_owner->observed_mr_ref_storage =
+      std::make_shared<cuda::mr::any_resource<cuda::mr::device_accessible>>(
+        rmm::mr::any_device_resource_from_raw(probe_owner->observed_mr.get()));
     {
-      cudf_current_device_resource_guard current_mr{probe_owner->mr_raw};
-      auto const observed_mr_ref = cudf::get_current_device_resource_ref();
+      // Route retained probe-state allocations through the statistics box
+      // explicitly (the per-device current resource is never swapped).
+      auto& observed_mr_ref = *probe_owner->observed_mr_ref_storage;
       probe_owner->probe = kind == filtered_join_probe_kind::semi
                              ? owner->join->begin_left_semi_probe(*probe_view, exec->stream, observed_mr_ref)
                              : owner->join->begin_left_anti_probe(*probe_view, exec->stream, observed_mr_ref);
@@ -1104,7 +1115,6 @@ inline cudf_status_t filtered_join_probe_materialize_indices_impl(
 
     auto* owner = static_cast<filtered_join_probe_owner*>(handle);
     {
-      cudf_current_device_resource_guard current_mr{exec->mr_raw};
       auto indices = owner->probe->materialize_indices(exec->stream, *exec->mr);
       *out_indices = cudf_release_column_handle(release_join_index_column(std::move(indices)),
                                                 cudf_capture_exec_provenance(*exec));

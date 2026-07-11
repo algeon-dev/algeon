@@ -81,7 +81,6 @@ cudf_status_t cudf_datetime_extract_component_ex(cudf_column_view_handle input,
     auto* view = static_cast<cudf::column_view*>(input);
 
     {
-      cudf_current_device_resource_guard current_mr{exec->mr_raw};
       auto result =
         cudf::datetime::extract_datetime_component(*view, cudf_component, exec->stream, *exec->mr);
       *out = cudf_release_column_handle(std::move(result), cudf_capture_exec_provenance(*exec));
@@ -111,7 +110,6 @@ cudf_status_t cudf_datetime_floor_ex(cudf_column_view_handle input,
     auto* view = static_cast<cudf::column_view*>(input);
 
     {
-      cudf_current_device_resource_guard current_mr{exec->mr_raw};
       auto result = cudf::datetime::floor_datetimes(*view, cudf_frequency, exec->stream, *exec->mr);
       *out        = cudf_release_column_handle(std::move(result), cudf_capture_exec_provenance(*exec));
     }
@@ -136,7 +134,6 @@ cudf_status_t cudf_datetime_add_calendrical_months_scalar_ex(cudf_column_view_ha
 
     auto* view = static_cast<cudf::column_view*>(input);
     {
-      cudf_current_device_resource_guard current_mr{exec->mr_raw};
       cudf::numeric_scalar<int32_t> months_scalar(months, true, exec->stream, *exec->mr);
       auto result =
         cudf::datetime::add_calendrical_months(*view, months_scalar, exec->stream, *exec->mr);

@@ -165,7 +165,6 @@ cudf_status_t cudf_reduce_ex(cudf_column_view_handle input,
     auto* dtype      = static_cast<cudf::data_type*>(output_type);
 
     {
-      cudf_current_device_resource_guard current_mr{exec->mr_raw};
       auto result = cudf::reduce(*view, *reduce_agg, *dtype, exec->stream, *exec->mr);
       *out = cudf_release_scalar_handle(std::move(result), cudf_capture_exec_provenance(*exec));
     }
@@ -201,7 +200,6 @@ cudf_status_t cudf_scan_ex(cudf_column_view_handle input,
     auto* scan_agg = static_cast<cudf::scan_aggregation*>(agg);
 
     {
-      cudf_current_device_resource_guard current_mr{exec->mr_raw};
       auto result =
         cudf::scan(*view, *scan_agg, cudf_scan_type, cudf_null_policy, exec->stream, *exec->mr);
       *out = cudf_release_column_handle(std::move(result), cudf_capture_exec_provenance(*exec));
@@ -230,7 +228,6 @@ cudf_status_t cudf_minmax_ex(cudf_column_view_handle input,
     auto* view = static_cast<cudf::column_view*>(input);
 
     {
-      cudf_current_device_resource_guard current_mr{exec->mr_raw};
       auto [min_scalar, max_scalar] = cudf::minmax(*view, exec->stream, *exec->mr);
       *out_min =
         cudf_release_scalar_handle(std::move(min_scalar), cudf_capture_exec_provenance(*exec));

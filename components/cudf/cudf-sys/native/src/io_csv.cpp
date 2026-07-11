@@ -33,7 +33,6 @@ cudf_status_t cudf_io_read_csv_ex(const char* filepath,
       has_header ? 0 : -1);
 
     {
-      cudf_current_device_resource_guard current_mr{exec->mr_raw};
       auto options         = builder.build();
       auto [tbl, metadata] = cudf::io::read_csv(options, exec->stream, *exec->mr);
 
@@ -85,7 +84,6 @@ cudf_status_t cudf_io_write_csv_ex(cudf_table_view_handle table,
 
     auto options = builder.build();
     {
-      cudf_current_device_resource_guard current_mr{exec->mr_raw};
       cudf::io::write_csv(options, exec->stream);
     }
     return CUDF_SUCCESS;

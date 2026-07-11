@@ -47,7 +47,6 @@ cudf_status_t cudf_unary_operation_ex(cudf_column_view_handle input,
     auto *view = static_cast<cudf::column_view *>(input);
 
     {
-      cudf_current_device_resource_guard current_mr{exec->mr_raw};
       auto result = cudf::unary_operation(*view, cudf_op, exec->stream, *exec->mr);
       *out = cudf_release_column_handle(std::move(result), cudf_capture_exec_provenance(*exec));
     }
@@ -73,7 +72,6 @@ cudf_status_t cudf_round_half_up_ex(cudf_column_view_handle input,
     auto *view = static_cast<cudf::column_view *>(input);
 
     {
-      cudf_current_device_resource_guard current_mr{exec->mr_raw};
       auto const method = cudf::rounding_method::HALF_UP;
       auto result =
           (view->type().id() == cudf::type_id::FLOAT32 ||
@@ -104,7 +102,6 @@ cudf_status_t cudf_is_null_ex(cudf_column_view_handle input,
     auto *view = static_cast<cudf::column_view *>(input);
 
     {
-      cudf_current_device_resource_guard current_mr{exec->mr_raw};
       auto result = cudf::is_null(*view, exec->stream, *exec->mr);
       *out = cudf_release_column_handle(std::move(result), cudf_capture_exec_provenance(*exec));
     }
@@ -129,7 +126,6 @@ cudf_status_t cudf_is_valid_ex(cudf_column_view_handle input,
     auto *view = static_cast<cudf::column_view *>(input);
 
     {
-      cudf_current_device_resource_guard current_mr{exec->mr_raw};
       auto result = cudf::is_valid(*view, exec->stream, *exec->mr);
       *out = cudf_release_column_handle(std::move(result), cudf_capture_exec_provenance(*exec));
     }
@@ -157,7 +153,6 @@ cudf_status_t cudf_cast_ex(cudf_column_view_handle input,
     auto *dtype = static_cast<cudf::data_type *>(output_type);
 
     {
-      cudf_current_device_resource_guard current_mr{exec->mr_raw};
       auto result = cudf::cast(*view, *dtype, exec->stream, *exec->mr);
       *out = cudf_release_column_handle(std::move(result), cudf_capture_exec_provenance(*exec));
     }
@@ -199,7 +194,6 @@ cudf_status_t cudf_is_nan_ex(cudf_column_view_handle input,
     auto *view = static_cast<cudf::column_view *>(input);
 
     {
-      cudf_current_device_resource_guard current_mr{exec->mr_raw};
       auto result = cudf::is_nan(*view, exec->stream, *exec->mr);
       *out = cudf_release_column_handle(std::move(result), cudf_capture_exec_provenance(*exec));
     }
@@ -224,7 +218,6 @@ cudf_status_t cudf_is_not_nan_ex(cudf_column_view_handle input,
     auto *view = static_cast<cudf::column_view *>(input);
 
     {
-      cudf_current_device_resource_guard current_mr{exec->mr_raw};
       auto result = cudf::is_not_nan(*view, exec->stream, *exec->mr);
       *out = cudf_release_column_handle(std::move(result), cudf_capture_exec_provenance(*exec));
     }

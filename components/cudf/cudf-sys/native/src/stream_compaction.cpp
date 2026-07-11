@@ -43,7 +43,6 @@ cudf_status_t cudf_drop_nulls_ex(cudf_table_view_handle input,
     if (num_keys > 0) { key_vec.assign(keys, keys + num_keys); }
 
     {
-      cudf_current_device_resource_guard current_mr{exec->mr_raw};
       auto result = cudf::drop_nulls(*view, key_vec, keep_threshold, exec->stream, *exec->mr);
       *out        = cudf_release_table_handle(std::move(result), cudf_capture_exec_provenance(*exec));
     }
@@ -115,7 +114,6 @@ cudf_status_t cudf_distinct_ex(cudf_table_view_handle input,
     if (num_keys > 0) { key_vec.assign(keys, keys + num_keys); }
 
     {
-      cudf_current_device_resource_guard current_mr{exec->mr_raw};
       auto result =
         cudf::distinct(*view, key_vec, keep_opt, nulls_eq, nans_eq, exec->stream, *exec->mr);
       *out = cudf_release_table_handle(std::move(result), cudf_capture_exec_provenance(*exec));

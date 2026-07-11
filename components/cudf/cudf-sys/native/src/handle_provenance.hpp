@@ -43,7 +43,6 @@ cudf_call_under_provenance(cudf_handle_provenance const &provenance,
       return device_status;
     }
 
-    cudf_current_device_resource_guard current_mr{provenance.mr_raw};
     std::forward<Callable>(call)();
     return CUDF_SUCCESS;
   } catch (...) {
@@ -61,7 +60,6 @@ cudf_invoke_under_provenance(cudf_handle_provenance const &provenance,
     throw cudf::logic_error("failed to activate handle provenance device");
   }
 
-  cudf_current_device_resource_guard current_mr{provenance.mr_raw};
   return std::forward<Callable>(call)();
 }
 
@@ -75,7 +73,6 @@ cudf_destroy_under_provenance(cudf_handle_provenance const &provenance,
       return cudf_provenance_cleanup_result::not_run;
     }
 
-    cudf_current_device_resource_guard current_mr{provenance.mr_raw};
     std::forward<Callable>(cleanup)();
     return cudf_provenance_cleanup_result::completed;
   } catch (...) {

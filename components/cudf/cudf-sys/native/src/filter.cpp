@@ -158,7 +158,6 @@ cudf_status_t cudf_apply_boolean_mask_ex(cudf_table_view_handle input,
     if (exec_status != CUDF_SUCCESS) { return exec_status; }
 
     {
-      cudf_current_device_resource_guard current_mr{exec->mr_raw};
       auto result = cudf::apply_boolean_mask(*view, *mask_view, exec->stream, *exec->mr);
       *out        = cudf_release_table_handle(std::move(result), cudf_capture_exec_provenance(*exec));
     }
@@ -249,7 +248,6 @@ cudf_status_t cudf_filter_rows_by_predicate_ex(cudf_table_view_handle input,
     {
       ++g_row_predicate_filter_call_count;
       ++g_row_predicate_compute_mask_call_count;
-      cudf_current_device_resource_guard current_mr{exec->mr_raw};
       auto mask =
         cudf::compute_column(*view, resolve_operand(lowered, root_index), exec->stream, *exec->mr);
       if (mask->type().id() != cudf::type_id::BOOL8) {

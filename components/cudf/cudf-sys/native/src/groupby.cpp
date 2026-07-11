@@ -359,7 +359,6 @@ cudf_status_t cudf_prepared_groupby_create_ex(cudf_table_view_handle keys,
     auto owner      = std::make_unique<prepared_groupby_owner>();
     owner->provenance = cudf_capture_exec_provenance(*exec);
     {
-      cudf_current_device_resource_guard current_mr{exec->mr_raw};
       owner->groupby = std::make_unique<cudf::groupby::groupby>(
         *keys_view, null_policy, keys_are_sorted == 0 ? cudf::sorted::NO : cudf::sorted::YES);
     }
@@ -399,7 +398,6 @@ cudf_status_t cudf_prepared_groupby_prepare_groups_ex(cudf_prepared_groupby_hand
 
     auto* prepared = static_cast<prepared_groupby_owner*>(groupby);
     {
-      cudf_current_device_resource_guard current_mr{exec->mr_raw};
       auto groups = prepared->groupby->get_groups({}, exec->stream, *exec->mr);
       if (groups.keys != nullptr) { *out_grouped_key_output_bytes = groups.keys->alloc_size(); }
       if (groups.offsets.empty()) {
@@ -446,7 +444,6 @@ cudf_status_t cudf_prepared_groupby_aggregate_ex(cudf_prepared_groupby_handle gr
 
     auto* prepared = static_cast<prepared_groupby_owner*>(groupby);
     {
-      cudf_current_device_resource_guard current_mr{exec->mr_raw};
       return cudf_groupby_aggregate_from_groupby(
         *prepared->groupby, requests, out_keys, out_values, out_total_columns, *exec);
     }
@@ -487,7 +484,6 @@ cudf_status_t cudf_groupby_aggregate_with_keys_are_sorted_ex(cudf_table_view_han
 
     auto* keys_view = static_cast<cudf::table_view*>(keys);
     {
-      cudf_current_device_resource_guard current_mr{exec->mr_raw};
       cudf::groupby::groupby gb(
         *keys_view, null_policy, keys_are_sorted == 0 ? cudf::sorted::NO : cudf::sorted::YES);
       return cudf_groupby_aggregate_from_groupby(gb, requests, out_keys, out_values, out_total_columns, *exec);
@@ -541,7 +537,6 @@ cudf_status_t cudf_groupby_scan_ex(cudf_table_view_handle keys,
     auto* keys_view = static_cast<cudf::table_view*>(keys);
 
     {
-      cudf_current_device_resource_guard current_mr{exec->mr_raw};
       cudf::groupby::groupby gb(*keys_view,
                                 null_policy,
                                 keys_are_sorted != 0 ? cudf::sorted::YES : cudf::sorted::NO);
@@ -663,7 +658,6 @@ cudf_status_t cudf_groupby_shift_ex(cudf_table_view_handle keys,
     cudf::table_view values_table_view{value_columns};
 
     {
-      cudf_current_device_resource_guard current_mr{exec->mr_raw};
       cudf::groupby::groupby gb(*keys_view,
                                 null_policy,
                                 keys_are_sorted != 0 ? cudf::sorted::YES : cudf::sorted::NO);

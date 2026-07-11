@@ -147,7 +147,6 @@ void maybe_fail_strings_host_import(strings_host_import_fault fault) {
 
 cudf_status_t resolve_column_view_null_count(cudf::column_view const &view,
                                              rmm::cuda_stream_view stream,
-                                             rmm::mr::device_memory_resource *mr_raw,
                                              int32_t *out) {
   auto const stored = view.null_count();
   if (stored >= 0) {
@@ -159,7 +158,6 @@ cudf_status_t resolve_column_view_null_count(cudf::column_view const &view,
     return CUDF_SUCCESS;
   }
 
-  cudf_current_device_resource_guard current_mr{mr_raw};
   *out = view.null_count(0, view.size(), stream);
   return CUDF_SUCCESS;
 }
@@ -225,7 +223,6 @@ static cudf_status_t create_column_from_device_data_impl(
     }
 
     if (size == 0) {
-      cudf_current_device_resource_guard current_mr{exec->mr_raw};
       auto col = cudf::make_empty_column(dtype);
       *out = cudf_release_column_handle(std::move(col),
                                         cudf_capture_exec_provenance(*exec));
@@ -358,7 +355,6 @@ cudf_status_t cudf_column_create_empty_ex(cudf_type_id_t type_id,
     }
 
     {
-      cudf_current_device_resource_guard current_mr{exec->mr_raw};
       auto col = cudf::make_empty_column(dtype);
       *out = cudf_release_column_handle(std::move(col),
                                         cudf_capture_exec_provenance(*exec));
@@ -550,7 +546,6 @@ cudf_status_t cudf_column_create_sequence_ex(cudf_scalar_handle init,
     }
 
     {
-      cudf_current_device_resource_guard current_mr{exec->mr_raw};
       auto col = cudf::sequence(static_cast<cudf::size_type>(size), init_scalar,
                                 step_scalar, exec->stream, *exec->mr);
       *out = cudf_release_column_handle(std::move(col),
@@ -576,7 +571,6 @@ cudf_status_t cudf_column_copy_ex(cudf_column_handle src,
     }
 
     {
-      cudf_current_device_resource_guard current_mr{exec->mr_raw};
       auto copy =
           cudf_column_state_from_handle(src).deep_copy(exec->stream, *exec->mr);
       *out = cudf_release_column_handle(std::move(copy),
@@ -603,7 +597,6 @@ cudf_status_t cudf_column_copy_from_view_ex(cudf_column_view_handle src,
     }
 
     {
-      cudf_current_device_resource_guard current_mr{exec->mr_raw};
       auto copy = std::make_unique<cudf::column>(view, exec->stream, *exec->mr);
       *out = cudf_release_column_handle(std::move(copy),
                                         cudf_capture_exec_provenance(*exec));
@@ -666,7 +659,6 @@ cudf_status_t cudf_column_copy_from_borrowed_view_ex(
         static_cast<cudf::size_type>(null_count),
         static_cast<cudf::size_type>(offset)};
     {
-      cudf_current_device_resource_guard current_mr{exec->mr_raw};
       auto copy = std::make_unique<cudf::column>(view, exec->stream, *exec->mr);
       *out = cudf_release_column_handle(std::move(copy),
                                         cudf_capture_exec_provenance(*exec));
@@ -843,7 +835,7 @@ cudf_status_t cudf_column_view_null_count_ex(
     }
 
     auto *view = static_cast<cudf::column_view *>(handle);
-    return resolve_column_view_null_count(*view, exec->stream, exec->mr_raw, out);
+    return resolve_column_view_null_count(*view, exec->stream, out);
   }
   CUDF_RUST_CATCH
 }
@@ -1067,7 +1059,6 @@ cudf_status_t cudf_column_view_slice_ex(cudf_column_view_handle handle,
       } else if (parent_null_count == view->size()) {
         null_count = len;
       } else {
-        cudf_current_device_resource_guard current_mr{exec->mr_raw};
         null_count = view->null_count(start, start + len, exec->stream);
       }
     }
@@ -1153,7 +1144,6 @@ cudf_column_view_null_mask_to_host_ex(cudf_column_view_handle handle,
     size_t compact_mask_bytes = (static_cast<size_t>(view->size()) + 7) / 8;
     std::optional<rmm::device_buffer> normalized_mask;
     {
-      cudf_current_device_resource_guard current_mr{exec->mr_raw};
       normalized_mask.emplace(
           cudf::copy_bitmask(*view, exec->stream, *exec->mr));
     }
@@ -1222,7 +1212,6 @@ cudf_status_t cudf_column_create_strings_ex(
     }
 
     if (num_strings == 0) {
-      cudf_current_device_resource_guard current_mr{exec->mr_raw};
       auto col =
           cudf::make_empty_column(cudf::data_type(cudf::type_id::STRING));
       *out = cudf_release_column_handle(std::move(col),
@@ -1315,7 +1304,6 @@ cudf_status_t cudf_column_create_strings_ex(
     }
     std::unique_ptr<cudf::column> col;
     {
-      cudf_current_device_resource_guard current_mr{exec->mr_raw};
       col = cudf::make_strings_column(
           static_cast<cudf::size_type>(num_strings), std::move(offsets_col),
           std::move(*dev_chars), static_cast<cudf::size_type>(null_count),
@@ -1456,7 +1444,6 @@ cudf_status_t cudf_column_from_scalar_ex(cudf_scalar_handle scalar,
       // temporaries from RMM's current resource despite receiving an explicit
       // memory_resource_ref. Keep current aligned with the explicit MR for
       // this allocation boundary.
-      cudf_current_device_resource_guard current_mr{exec->mr_raw};
       auto col = cudf::make_column_from_scalar(
           sc, static_cast<cudf::size_type>(size), exec->stream, *exec->mr);
       *out = cudf_release_column_handle(std::move(col),

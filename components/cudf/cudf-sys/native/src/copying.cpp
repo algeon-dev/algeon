@@ -45,7 +45,6 @@ cudf_status_t cudf_gather_ex(cudf_table_view_handle input,
     if (exec_status != CUDF_SUCCESS) { return exec_status; }
 
     {
-      cudf_current_device_resource_guard current_mr{exec->mr_raw};
       auto result = cudf::gather(*view, *map_view, policy, exec->stream, *exec->mr);
       *out        = cudf_release_table_handle(std::move(result), cudf_capture_exec_provenance(*exec));
     }
@@ -83,7 +82,6 @@ cudf_status_t cudf_gather_device_allocated_size_ex(cudf_table_view_handle input,
     if (exec_status != CUDF_SUCCESS) { return exec_status; }
 
     {
-      cudf_current_device_resource_guard current_mr{exec->mr_raw};
       auto result = cudf::gather(*view, *map_view, policy, exec->stream, *exec->mr);
       *out        = result->alloc_size();
     }
@@ -114,7 +112,6 @@ cudf_status_t cudf_scatter_ex(cudf_table_view_handle source,
     if (exec_status != CUDF_SUCCESS) { return exec_status; }
 
     {
-      cudf_current_device_resource_guard current_mr{exec->mr_raw};
       auto result = cudf::scatter(*source_view, *map_view, *target_view, exec->stream, *exec->mr);
       *out = cudf_release_table_handle(std::move(result), cudf_capture_exec_provenance(*exec));
     }
@@ -144,7 +141,6 @@ cudf_status_t cudf_copy_if_else_vv_ex(cudf_column_view_handle lhs,
     if (exec_status != CUDF_SUCCESS) { return exec_status; }
 
     {
-      cudf_current_device_resource_guard current_mr{exec->mr_raw};
       auto result = cudf::copy_if_else(*lhs_view, *rhs_view, *mask_view, exec->stream, *exec->mr);
       *out        = cudf_release_column_handle(std::move(result), cudf_capture_exec_provenance(*exec));
     }
@@ -173,7 +169,6 @@ cudf_status_t cudf_shift_ex(cudf_column_view_handle input,
     if (exec_status != CUDF_SUCCESS) { return exec_status; }
 
     {
-      cudf_current_device_resource_guard current_mr{exec->mr_raw};
       auto result = cudf::shift(*input_view,
                                 static_cast<cudf::size_type>(offset),
                                 fill_scalar,

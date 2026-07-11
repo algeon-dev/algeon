@@ -1,8 +1,13 @@
 mod common;
 
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
+
 use cudf::{
-    DeviceMemoryManager, ErrorKind, ExecutionBudgetRequest, ExecutionBudgetStatus, Runtime, StreamReservationLease,
-    testing::prelude::*,
+    DeviceMemoryManager, ErrorKind, ExecutionBudgetRequest, ExecutionBudgetStatus, Runtime, SortOptions,
+    StreamReservationLease, testing::prelude::*,
 };
 
 fn assert_send_sync<T: Send + Sync>() {}
@@ -199,4 +204,137 @@ fn reservation_limit_failure_is_stream_local() {
     let outcome = large_rt.series_from_value_with_budget(2i32, 1024, &large).unwrap();
     assert_eq!(outcome.value().to_vec_strict::<i32>().unwrap()[0], 2);
     assert_eq!(large.reservation_usage().unwrap().failed_allocation_count, 0);
+}
+
+/// §10.1 invariant contract (replaces the per-op guard contract): with the
+/// device memory domain installed, concurrent execution mixing default
+/// (manager-backed) runtimes and owned-pool runtimes must never disturb the
+/// device's current resource. In the device-domain model nothing swaps it, so
+/// any observed change means a per-op swap was reintroduced.
+#[test]
+fn concurrent_owned_pool_and_manager_runtimes_preserve_device_current_resource() {
+    let manager_rt = Runtime::builder().with_device_memory_manager().build().unwrap();
+    let device_mr = manager_rt.device_memory_manager().unwrap().resource().testing_raw_handle_value();
+    set_current_device_for_runtime(&manager_rt);
+    assert_eq!(current_device_resource_raw_value(), device_mr);
+
+    let stop = Arc::new(AtomicBool::new(false));
+    let poller = {
+        let stop = Arc::clone(&stop);
+        std::thread::spawn(move || {
+            let mut observations = 0u64;
+            while !stop.load(Ordering::Relaxed) {
+                assert_eq!(
+                    current_device_resource_raw_value(),
+                    device_mr,
+                    "device current resource changed during concurrent mixed-runtime execution"
+                );
+                observations += 1;
+            }
+            observations
+        })
+    };
+
+    let manager_worker = std::thread::spawn(move || {
+        for _ in 0..40 {
+            let series = manager_rt.series(&[3i32, 1, 2, 5, 4]).unwrap();
+            let sorted = series.sort_values(SortOptions::default()).unwrap();
+            assert_eq!(sorted.to_vec_strict::<i32>().unwrap(), vec![1, 2, 3, 4, 5]);
+        }
+    });
+    let owned_pool_worker = std::thread::spawn(move || {
+        let rt = Runtime::builder().with_pool_memory_resource(64 * 1024 * 1024, None).build().unwrap();
+        for _ in 0..40 {
+            let series = rt.series(&[30i32, 10, 20]).unwrap();
+            let sorted = series.sort_values(SortOptions::default()).unwrap();
+            assert_eq!(sorted.to_vec_strict::<i32>().unwrap(), vec![10, 20, 30]);
+        }
+    });
+
+    manager_worker.join().unwrap();
+    owned_pool_worker.join().unwrap();
+    stop.store(true, Ordering::Relaxed);
+    let observations = poller.join().unwrap();
+    assert!(observations > 0, "invariant poller never observed the current resource");
+    assert_eq!(current_device_resource_raw_value(), device_mr);
+}
+
+/// §10.3 accounting correctness: two pipelines (two runtimes, each with its
+/// own stream reservation) run temporary-heavy work concurrently. Temporaries
+/// resolve through the device adaptor and are charged by stream, so each
+/// pipeline's reservation must see its own usage (including temporaries) and
+/// an over-limit failure must stay local to its pipeline.
+#[test]
+fn concurrent_temp_heavy_pipelines_keep_reservation_accounting_isolated() {
+    const ROWS: usize = 1 << 20;
+    const ROW_BYTES: usize = ROWS * std::mem::size_of::<i32>();
+
+    let left = Runtime::builder().with_device_memory_manager().build().unwrap();
+    let right = Runtime::builder().with_device_memory_manager().build().unwrap();
+    let left_lease = left.stream_reservation(9101, 64 * 1024 * 1024).unwrap();
+    let right_lease = right.stream_reservation(9202, 1).unwrap();
+
+    let left_worker = std::thread::spawn(move || {
+        let data: Vec<i32> = (0..ROWS as i32).rev().collect();
+        let series = left.series(&data).unwrap();
+        let sorted = series.sort_values(SortOptions::default()).unwrap();
+        assert_eq!(sorted.len(), ROWS);
+        let usage = left_lease.usage().unwrap();
+        assert_eq!(usage.reservation_id, 9101);
+        assert_eq!(usage.failed_allocation_count, 0, "well-budgeted pipeline must not observe failures");
+        // Input column + sort temporaries (order map, materialized output) all
+        // charge this reservation: the peak must clearly exceed one column.
+        assert!(
+            usage.peak_bytes as usize >= 2 * ROW_BYTES,
+            "sort temporaries were not charged to the owning pipeline's reservation: peak {} < {}",
+            usage.peak_bytes,
+            2 * ROW_BYTES
+        );
+        usage.peak_bytes
+    });
+
+    let right_worker = std::thread::spawn(move || {
+        // A 1-byte budget cannot even hold the input column: the failure must
+        // surface in this pipeline only, as a resource-exhausted error.
+        let err = right.series(&[1i32, 2, 3]).unwrap_err();
+        assert_eq!(err.kind(), ErrorKind::ResourceExhausted);
+        let usage = right_lease.usage().unwrap();
+        assert_eq!(usage.reservation_id, 9202);
+        assert!(usage.failed_allocation_count > 0);
+        assert_eq!(usage.current_bytes, 0, "failed allocations must not leak accounted bytes");
+    });
+
+    let left_peak = left_worker.join().unwrap();
+    right_worker.join().unwrap();
+    assert!(left_peak > 0);
+}
+
+/// §10.4 outputs routing: explicit memory resources still flow to output
+/// allocations after the global lock removal — an owned-pool runtime's
+/// outputs carry its pool, while the device current resource (temporaries'
+/// route) stays on the device adaptor.
+#[test]
+fn explicit_output_memory_resource_routing_survives_lock_removal() {
+    let manager_rt = Runtime::builder().with_device_memory_manager().build().unwrap();
+    let device_mr = manager_rt.device_memory_manager().unwrap().resource().testing_raw_handle_value();
+
+    let owned = Runtime::builder().with_pool_memory_resource(64 * 1024 * 1024, None).build().unwrap();
+    let owned_mr = owned.memory_resource().testing_raw_handle_value();
+    assert_ne!(owned_mr, device_mr);
+
+    let series = owned.series(&[5i32, 1, 4]).unwrap();
+    let sorted = series.sort_values(SortOptions::default()).unwrap();
+    assert_eq!(sorted.to_vec_strict::<i32>().unwrap(), vec![1, 4, 5]);
+    assert_eq!(
+        sorted.as_column().testing_execution_domain_mr_value(),
+        owned_mr,
+        "outputs must keep routing through the explicitly provided memory resource"
+    );
+
+    set_current_device_for_runtime(&owned);
+    assert_eq!(
+        current_device_resource_raw_value(),
+        device_mr,
+        "running on an owned-pool runtime must not install its pool as the device current resource"
+    );
 }

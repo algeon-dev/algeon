@@ -35,7 +35,6 @@ cudf_status_t cudf_inner_join_ex(cudf_table_view_handle left_keys,
     auto* rp = static_cast<cudf::table_view*>(right_payload);
 
     {
-      cudf_current_device_resource_guard current_mr{exec->mr_raw};
       auto [left_indices, right_indices] =
         cudf::inner_join(*lk, *rk, null_eq, exec->stream, *exec->mr);
 
@@ -87,7 +86,6 @@ cudf_status_t cudf_left_join_ex(cudf_table_view_handle left_keys,
     auto* rp = static_cast<cudf::table_view*>(right_payload);
 
     {
-      cudf_current_device_resource_guard current_mr{exec->mr_raw};
       auto [left_indices, right_indices] = cudf::left_join(*lk, *rk, null_eq, exec->stream, *exec->mr);
 
       auto left_full  = concat_views(*lk, *lp);
@@ -138,7 +136,6 @@ cudf_status_t cudf_full_join_ex(cudf_table_view_handle left_keys,
     auto* rp = static_cast<cudf::table_view*>(right_payload);
 
     {
-      cudf_current_device_resource_guard current_mr{exec->mr_raw};
       auto [left_indices, right_indices] = cudf::full_join(*lk, *rk, null_eq, exec->stream, *exec->mr);
 
       auto left_full  = concat_views(*lk, *lp);
@@ -176,7 +173,6 @@ cudf_status_t cudf_cross_join_ex(cudf_table_view_handle left,
     auto* right_view = static_cast<cudf::table_view*>(right);
 
     {
-      cudf_current_device_resource_guard current_mr{exec->mr_raw};
       auto result = cudf::cross_join(*left_view, *right_view, exec->stream, *exec->mr);
       *out = cudf_release_table_handle(std::move(result), cudf_capture_exec_provenance(*exec));
     }
@@ -206,7 +202,6 @@ cudf_status_t cudf_projected_cross_join_ex(cudf_table_view_handle left_selected,
       right_selected == nullptr ? nullptr : static_cast<cudf::table_view*>(right_selected);
 
     {
-      cudf_current_device_resource_guard current_mr{exec->mr_raw};
       auto result = projected_cross_join_table(
         left_view, right_view, left_num_rows, right_num_rows, exec->stream, *exec->mr);
       *out = cudf_release_table_handle(std::move(result), cudf_capture_exec_provenance(*exec));
@@ -238,7 +233,6 @@ cudf_status_t cudf_projected_cross_join_device_allocated_size_ex(
       right_selected == nullptr ? nullptr : static_cast<cudf::table_view*>(right_selected);
 
     {
-      cudf_current_device_resource_guard current_mr{exec->mr_raw};
       auto result = projected_cross_join_table(
         left_view, right_view, left_num_rows, right_num_rows, exec->stream, *exec->mr);
       *out = result->alloc_size();
@@ -274,7 +268,6 @@ cudf_status_t cudf_inner_join_indices_ex(cudf_table_view_handle left_keys,
     auto* rk = static_cast<cudf::table_view*>(right_keys);
 
     {
-      cudf_current_device_resource_guard current_mr{exec->mr_raw};
       release_join_index_pair(cudf::inner_join(*lk, *rk, null_eq, exec->stream, *exec->mr),
                               out_left_indices,
                               out_right_indices,
@@ -311,7 +304,6 @@ cudf_status_t cudf_left_join_indices_ex(cudf_table_view_handle left_keys,
     auto* rk = static_cast<cudf::table_view*>(right_keys);
 
     {
-      cudf_current_device_resource_guard current_mr{exec->mr_raw};
       release_join_index_pair(cudf::left_join(*lk, *rk, null_eq, exec->stream, *exec->mr),
                               out_left_indices,
                               out_right_indices,
@@ -348,7 +340,6 @@ cudf_status_t cudf_full_join_indices_ex(cudf_table_view_handle left_keys,
     auto* rk = static_cast<cudf::table_view*>(right_keys);
 
     {
-      cudf_current_device_resource_guard current_mr{exec->mr_raw};
       release_join_index_pair(cudf::full_join(*lk, *rk, null_eq, exec->stream, *exec->mr),
                               out_left_indices,
                               out_right_indices,
@@ -382,7 +373,6 @@ cudf_status_t cudf_left_semi_join_indices_ex(cudf_table_view_handle left_keys,
     auto* rk = static_cast<cudf::table_view*>(right_keys);
 
     {
-      cudf_current_device_resource_guard current_mr{exec->mr_raw};
       cudf::filtered_join join{*rk, null_eq, 0.5, exec->stream};
       auto indices = join.semi_join(*lk, exec->stream, *exec->mr);
       *out_indices = cudf_release_column_handle(release_join_index_column(std::move(indices)),
@@ -416,7 +406,6 @@ cudf_status_t cudf_left_anti_join_indices_ex(cudf_table_view_handle left_keys,
     auto* rk = static_cast<cudf::table_view*>(right_keys);
 
     {
-      cudf_current_device_resource_guard current_mr{exec->mr_raw};
       cudf::filtered_join join{*rk, null_eq, 0.5, exec->stream};
       auto indices = join.anti_join(*lk, exec->stream, *exec->mr);
       *out_indices = cudf_release_column_handle(release_join_index_column(std::move(indices)),
@@ -451,7 +440,6 @@ cudf_status_t cudf_distinct_hash_join_create_ex(cudf_table_view_handle build,
     owner->stream_lifetime      = exec->stream_lifetime;
     owner->mr_raw               = exec->mr_raw;
     {
-      cudf_current_device_resource_guard current_mr{exec->mr_raw};
       owner->join =
         std::make_unique<cudf::distinct_hash_join>(*build_view, null_eq, 0.5, exec->stream);
     }
@@ -489,7 +477,6 @@ cudf_status_t cudf_distinct_hash_join_left_join_ex(cudf_distinct_hash_join_handl
     auto* distinct_join = owner->join.get();
     auto* probe_view    = static_cast<cudf::table_view*>(probe);
     {
-      cudf_current_device_resource_guard current_mr{exec->mr_raw};
       auto indices = distinct_join->left_join(*probe_view, exec->stream, *exec->mr);
       *out         = cudf_release_column_handle(release_join_index_column(std::move(indices)),
                                         cudf_capture_exec_provenance(*exec));
@@ -530,7 +517,6 @@ cudf_status_t cudf_hash_join_create_ex(cudf_table_view_handle build,
     auto const reservation_size =
       cudf::hash_join::pre_build_reservation_size(*build_view, load_factor);
     {
-      cudf_current_device_resource_guard current_mr{exec->mr_raw};
       owner->join =
         std::make_unique<cudf::hash_join>(*build_view, nullable, null_eq, load_factor, exec->stream);
       owner->device_allocated_size_bytes = reservation_size;
@@ -611,7 +597,6 @@ cudf_status_t cudf_hash_join_inner_join_ex(cudf_hash_join_handle join,
     auto* probe_view = static_cast<cudf::table_view*>(probe);
 
     {
-      cudf_current_device_resource_guard current_mr{exec->mr_raw};
       release_join_index_pair(hash_join->inner_join(*probe_view, {}, exec->stream, *exec->mr),
                               out_left_indices,
                               out_right_indices,
@@ -646,7 +631,6 @@ cudf_status_t cudf_hash_join_inner_join_with_output_size_ex(cudf_hash_join_handl
     auto* probe_view = static_cast<cudf::table_view*>(probe);
 
     {
-      cudf_current_device_resource_guard current_mr{exec->mr_raw};
       release_join_index_pair(hash_join->inner_join(
                                 *probe_view, std::optional<std::size_t>{output_size}, exec->stream, *exec->mr),
                               out_left_indices,
@@ -689,7 +673,6 @@ cudf_status_t cudf_hash_join_left_join_ex(cudf_hash_join_handle join,
     auto* probe_view = static_cast<cudf::table_view*>(probe);
 
     {
-      cudf_current_device_resource_guard current_mr{exec->mr_raw};
       release_join_index_pair(hash_join->left_join(*probe_view, {}, exec->stream, *exec->mr),
                               out_left_indices,
                               out_right_indices,
@@ -724,7 +707,6 @@ cudf_status_t cudf_hash_join_left_join_with_output_size_ex(cudf_hash_join_handle
     auto* probe_view = static_cast<cudf::table_view*>(probe);
 
     {
-      cudf_current_device_resource_guard current_mr{exec->mr_raw};
       release_join_index_pair(hash_join->left_join(
                                 *probe_view, std::optional<std::size_t>{output_size}, exec->stream, *exec->mr),
                               out_left_indices,
@@ -767,7 +749,6 @@ cudf_status_t cudf_hash_join_full_join_ex(cudf_hash_join_handle join,
     auto* probe_view = static_cast<cudf::table_view*>(probe);
 
     {
-      cudf_current_device_resource_guard current_mr{exec->mr_raw};
       release_join_index_pair(hash_join->full_join(*probe_view, {}, exec->stream, *exec->mr),
                               out_left_indices,
                               out_right_indices,
@@ -802,7 +783,6 @@ cudf_status_t cudf_hash_join_full_join_with_output_size_ex(cudf_hash_join_handle
     auto* probe_view = static_cast<cudf::table_view*>(probe);
 
     {
-      cudf_current_device_resource_guard current_mr{exec->mr_raw};
       release_join_index_pair(hash_join->full_join(
                                 *probe_view, std::optional<std::size_t>{output_size}, exec->stream, *exec->mr),
                               out_left_indices,

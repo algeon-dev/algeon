@@ -357,9 +357,25 @@ class reservation_aware_resource_adaptor final : public rmm::mr::device_memory_r
     }
 
     if (reservation != nullptr) {
-      std::scoped_lock lock{mutex_};
-      commit_allocation(*reservation, bytes, aligned_bytes);
-      allocations_[ptr] = allocation_record{bytes, aligned_bytes, reservation};
+      try {
+        std::scoped_lock lock{mutex_};
+        // Insert before commit: the map insert is the only throwing step, and
+        // commit_allocation is pure arithmetic, so a throw here always means
+        // "reserved but never committed".
+        allocations_[ptr] = allocation_record{bytes, aligned_bytes, reservation};
+        commit_allocation(*reservation, bytes, aligned_bytes);
+      } catch (...) {
+        // Bookkeeping failed (e.g. bad_alloc on rehash): release the upstream
+        // allocation and roll the reservation back so neither the GPU block
+        // nor the accounted bytes leak.
+        upstream_.deallocate(stream, ptr, bytes, alignment);
+        {
+          std::scoped_lock lock{mutex_};
+          allocations_.erase(ptr);
+          rollback_reserved_allocation(*reservation, bytes, aligned_bytes);
+        }
+        throw;
+      }
     }
     return ptr;
   }
@@ -451,6 +467,24 @@ std::unordered_map<int32_t, rmm::mr::device_memory_resource*>& current_memory_re
   return identities;
 }
 
+// Protects only the identity/default maps above. The critical section is a
+// map lookup or insert (tens of nanoseconds) and must never span a libcudf
+// call. rmm's own set_current_device_resource carries per-device locking.
+std::mutex& current_memory_resource_identity_mutex()
+{
+  static std::mutex mutex;
+  return mutex;
+}
+
+// Caller must hold current_memory_resource_identity_mutex().
+rmm::mr::device_memory_resource* set_current_device_resource_raw_locked(
+  int32_t device, rmm::mr::device_memory_resource* target)
+{
+  rmm::mr::set_current_device_resource(rmm::mr::any_device_resource_from_raw(target));
+  current_memory_resource_identities()[device] = target;
+  return target;
+}
+
 int32_t current_cuda_device()
 {
   int32_t device = 0;
@@ -528,7 +562,8 @@ std::shared_ptr<device_memory_manager_state> make_memory_manager_for_current_dev
   owner.mr                  = std::move(adaptor);
   register_memory_resource_lifetime(manager->owner);
 
-  std::scoped_lock current_lock{cudf_current_device_resource_mutex()};
+  // Device-domain invariant: this is the one production install point. The
+  // adaptor stays the device's current resource for the process lifetime.
   cudf_set_current_device_resource_raw(owner.mr.get());
   return manager;
 }
@@ -541,21 +576,20 @@ const char* bad_alloc::what() const noexcept { return _what.c_str(); }
 rmm::mr::device_memory_resource* cudf_tracked_current_device_resource_raw()
 {
   auto const device = current_cuda_device();
-  auto& identities  = current_memory_resource_identities();
-  auto const found  = identities.find(device);
+  std::scoped_lock lock{current_memory_resource_identity_mutex()};
+  auto& identities = current_memory_resource_identities();
+  auto const found = identities.find(device);
   if (found != identities.end()) { return found->second; }
 
-  auto* initial = default_memory_resource_for_device(device);
-  cudf_set_current_device_resource_raw(initial);
-  return initial;
+  return set_current_device_resource_raw_locked(device,
+                                                default_memory_resource_for_device(device));
 }
 
 void cudf_set_current_device_resource_raw(rmm::mr::device_memory_resource* target)
 {
   auto const device = current_cuda_device();
-  rmm::mr::set_current_device_resource(
-    rmm::mr::any_device_resource_from_raw(target));
-  current_memory_resource_identities()[device] = target;
+  std::scoped_lock lock{current_memory_resource_identity_mutex()};
+  set_current_device_resource_raw_locked(device, target);
 }
 
 rmm::mr::device_memory_resource* cudf_memory_resource_raw_from_handle(
@@ -713,7 +747,6 @@ cudf_status_t cudf_memory_resource_destroy(cudf_memory_resource_handle handle, i
     cudf_device_guard guard;
     cudf_status_t const status = guard.activate(device);
     if (status != CUDF_SUCCESS) { return status; }
-    std::scoped_lock lock{cudf_current_device_resource_mutex()};
     auto* state = static_cast<memory_resource_handle_state*>(handle);
     auto& owner = *state->owner;
     if (!state->non_owning_alias && cudf_tracked_current_device_resource_raw() == owner.mr.get()) {
@@ -947,7 +980,6 @@ cudf_status_t cudf_test_memory_resource_set_current(cudf_memory_resource_handle 
   CUDF_RUST_TRY
   {
     auto& owner = memory_resource_owner_from_handle(handle);
-    std::scoped_lock lock{cudf_current_device_resource_mutex()};
     cudf_set_current_device_resource_raw(owner.mr.get());
     return CUDF_SUCCESS;
   }
@@ -959,7 +991,6 @@ cudf_status_t cudf_test_memory_resource_set_current_raw(void* raw_mr)
   CUDF_RUST_NULL_CHECK(raw_mr, "raw_mr is null");
   CUDF_RUST_TRY
   {
-    std::scoped_lock lock{cudf_current_device_resource_mutex()};
     cudf_set_current_device_resource_raw(static_cast<rmm::mr::device_memory_resource*>(raw_mr));
     return CUDF_SUCCESS;
   }
