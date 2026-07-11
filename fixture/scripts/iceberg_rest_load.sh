@@ -192,6 +192,22 @@ put_empty_s3_object() {
     --body /dev/null >/dev/null
 }
 
+purge_rustfs_key_dir() {
+  # RustFS 1.0.0-beta leaves an orphaned internal data directory behind when an
+  # existing object is overwritten or deleted; the orphan then surfaces as a
+  # phantom CommonPrefix that breaks S3A directory probing (Spark add_files /
+  # spark.read.parquet fail with FileNotFoundException on a UUID child). Purge
+  # the key directory inside the fixture container before re-uploading. Only
+  # applies to the local compose stack; skip silently elsewhere.
+  local uri="$1"
+  local bucket key
+  bucket="$(s3_uri_bucket "${uri}")"
+  key="$(s3_uri_key "${uri}")"
+  if ${DOCKER} ps --format '{{.Names}}' 2>/dev/null | grep -qx "cudf-iceberg-rustfs"; then
+    ${DOCKER} exec cudf-iceberg-rustfs sh -c "rm -rf '/data/rustfs/${bucket}/${key}'" >/dev/null 2>&1 || true
+  fi
+}
+
 stage_table_specs_for_add_files() {
   local specs="$1"
   local warehouse_without_scheme="${WAREHOUSE#s3://}"
@@ -258,6 +274,7 @@ stage_table_specs_for_add_files() {
       if remote_size="$(s3_object_content_length "${dest}")"; then
         if [[ "${RELOAD}" == "1" ]]; then
           echo "[iceberg-rest-load] refreshing staged parquet -> ${dest}"
+          purge_rustfs_key_dir "${dest}"
           aws_cli_for_loader s3 cp "${copy_args[@]}"
         elif [[ "${remote_size}" == "${local_size}" ]]; then
           echo "[iceberg-rest-load] staging exists, leaving referenced file unchanged -> ${dest}"
@@ -279,6 +296,7 @@ stage_table_specs_for_add_files() {
       if [[ "${RELOAD}" == "1" ]]; then
         echo "[iceberg-rest-load] refreshing staged parquet prefix -> ${dest}"
         aws_cli_for_loader s3 rm "${dest}" --recursive >/dev/null
+        purge_rustfs_key_dir "${dest}"
         aws_cli_for_loader s3 cp "${copy_args[@]}"
         put_empty_s3_object "${marker}"
       elif s3_object_content_length "${marker}" >/dev/null; then
@@ -297,7 +315,9 @@ stage_table_specs_for_add_files() {
       return 2
     fi
 
-    staged_specs+=("${table}=${dest}")
+    # Three-part spec: schema comes from the local mount (no S3A round trip),
+    # add_files registers the staged S3 objects.
+    staged_specs+=("${table}=${source}=${dest}")
   done
 
   STAGED_TABLE_SPECS="$(IFS=','; echo "${staged_specs[*]}")"
