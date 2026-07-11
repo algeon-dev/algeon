@@ -1810,3 +1810,40 @@ fn runtime_column_from_scalar_executes_on_target_device() {
         common::last_exec_device()
     );
 }
+
+/// Device-domain concurrency (P0-6 §10.5): one pipeline per device running
+/// concurrently must not interact — each device keeps its own memory domain
+/// installed, work completes correctly on both, and neither pipeline blocks
+/// on host-side state owned by the other.
+#[test]
+fn concurrent_per_device_pipelines_share_no_state() {
+    if !should_run_multi_gpu_test() {
+        return;
+    }
+    let (device0, device1) = first_two_test_devices();
+
+    let domain0 = cudf::DeviceMemoryManager::install_for_device(device0).unwrap();
+    let domain1 = cudf::DeviceMemoryManager::install_for_device(device1).unwrap();
+    let mr0 = domain0.resource().testing_raw_handle_value();
+    let mr1 = domain1.resource().testing_raw_handle_value();
+    assert_ne!(mr0, mr1, "device memory domains must be independent");
+
+    let worker = |device: DeviceId, pipeline_id: u64| {
+        std::thread::spawn(move || {
+            let rt = Runtime::builder().with_device(device).build().unwrap();
+            let _lease = rt.stream_reservation(pipeline_id, 256 * 1024 * 1024).unwrap();
+            for _ in 0..20 {
+                let data: Vec<i32> = (0..4096).rev().collect();
+                let series = rt.series(&data).unwrap();
+                let sorted = series.sort_values(SortOptions::default()).unwrap();
+                assert_eq!(sorted.sum_value::<i64>().unwrap(), (0..4096i64).sum::<i64>());
+            }
+            rt.memory_resource().testing_raw_handle_value()
+        })
+    };
+
+    let pipeline0 = worker(device0, 50);
+    let pipeline1 = worker(device1, 51);
+    assert_eq!(pipeline0.join().unwrap(), mr0);
+    assert_eq!(pipeline1.join().unwrap(), mr1);
+}

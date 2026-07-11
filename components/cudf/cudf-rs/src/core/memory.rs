@@ -251,9 +251,14 @@ unsafe impl Sync for DeviceMemoryManagerHandle {}
 /// until those retained objects are destroyed.
 #[derive(Debug)]
 pub struct StreamReservationLease {
-    manager: DeviceMemoryManager,
-    stream: CudaStream,
+    // Field order is load-bearing: Rust drops fields in declaration order,
+    // and the reservation must detach while the stream (whose raw value keys
+    // the native attachment map) and the manager are still alive. If the
+    // stream dropped first, a recycled raw stream value could inherit this
+    // dying reservation's accounting.
     reservation: ReservationHandle,
+    stream: CudaStream,
+    manager: DeviceMemoryManager,
 }
 
 #[derive(Debug)]
@@ -266,6 +271,35 @@ unsafe impl Send for ReservationHandle {}
 unsafe impl Sync for ReservationHandle {}
 
 impl DeviceMemoryManager {
+    /// Explicitly install the memory domain for `device` (idempotent).
+    ///
+    /// cudf-rs owns the memory management of every CUDA device it uses: the
+    /// first time a device's manager is created, its reservation-aware
+    /// adaptor is installed as RMM's current resource for that device — and
+    /// it stays installed for the process lifetime. By default that happens
+    /// implicitly on the first `Runtime` build for the device; services
+    /// should instead call this once per device at startup so the
+    /// installation point is explicit, failures surface before the first
+    /// query, and other in-process rmm consumers see the final resource from
+    /// the start.
+    ///
+    /// ```no_run
+    /// use cudf::{DeviceId, DeviceMemoryManager, Runtime};
+    ///
+    /// // Service startup: claim every device the service will use.
+    /// for ordinal in 0..DeviceId::count().unwrap() {
+    ///     DeviceMemoryManager::install_for_device(DeviceId::new(ordinal).unwrap()).unwrap();
+    /// }
+    ///
+    /// // Each pipeline then gets its own Runtime (own stream) plus a
+    /// // stream reservation for budgeting; they share the device domain.
+    /// let rt = Runtime::builder().build().unwrap();
+    /// let _lease = rt.stream_reservation(1, 1 << 30).unwrap();
+    /// ```
+    pub fn install_for_device(device: DeviceId) -> Result<Self> {
+        Self::for_device(device)
+    }
+
     /// Resolve the process-local manager for `device`, creating it if needed.
     ///
     /// On first creation the manager installs its reservation-aware adaptor as

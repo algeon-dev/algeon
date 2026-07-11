@@ -775,9 +775,19 @@ impl RuntimeBuilder {
 
     /// Override the runtime's owned default device memory resource.
     ///
-    /// The supplied handle becomes the runtime's default allocator for
-    /// supported constructors and operations that execute in this runtime.
-    /// Use this when allocator ownership should live on the runtime itself.
+    /// **Outputs-only semantics** (matching upstream libcudf's `mr`
+    /// parameter): the supplied handle receives the *output* allocations of
+    /// operations that execute in this runtime. Temporary allocations made
+    /// inside libcudf kernels always resolve through the device's long-lived
+    /// memory domain (the per-device current resource installed at domain
+    /// creation) and are accounted per stream — they are never routed into
+    /// this resource. Use this when output buffers must live on a specific
+    /// allocator (for example, interop buffers handed to an external system).
+    ///
+    /// For memory budgeting, do not reach for an owned resource: attach a
+    /// [`StreamReservationLease`](crate::StreamReservationLease) to the
+    /// runtime's stream instead (see [`Runtime::stream_reservation`]); it
+    /// accounts outputs *and* temporaries for the pipeline.
     ///
     /// If [`with_device`](Self::with_device) is also set, `mr` must have been
     /// created on that same device. Otherwise, `build()` rejects the
@@ -793,10 +803,13 @@ impl RuntimeBuilder {
     /// resolved and entered, so this path does not depend on unrelated ambient
     /// current-device state at call time.
     ///
-    /// Use this when you specifically need a fresh pool owned by the runtime
-    /// and do not need the allocator handle before `build()`. For normal
-    /// query-backend bounded execution, the default device-level memory
-    /// manager plus stream-bound reservations is the preferred model.
+    /// **Outputs-only semantics**: like
+    /// [`with_memory_resource`](Self::with_memory_resource), the pool receives
+    /// only output allocations; libcudf temporaries route through the
+    /// device's memory domain and are accounted per stream. An owned pool is
+    /// therefore not a budgeting tool — use the default device-level memory
+    /// manager plus stream-bound reservations
+    /// ([`Runtime::stream_reservation`]) to bound a pipeline's memory.
     ///
     /// - `initial_pool_size`: initial pool allocation in bytes.
     /// - `maximum_pool_size`: maximum pool size in bytes, or `None` for unbounded.
