@@ -15,6 +15,14 @@ support substantive queries: every vertex is a paper with a title, year, venue,
 authors, and fields of study, so every algorithm result can be joined back to
 human-readable metadata.
 
+:::note[Dataset vintage]
+The V12 snapshot was compiled on **2020-04-09**, so this corpus is old by
+design: it stops in early 2020, misses everything published since, and its
+citation counts reflect that moment rather than today. Treat every example
+result as a property of this fixed snapshot, not a statement about the current
+literature.
+:::
+
 The examples were re-run against the local Iceberg REST catalog backed by
 RustFS on a single NVIDIA RTX PRO 6000 (96 GB VRAM). That machine is the
 validation host, not the minimum requirement: this citation-network demo also
@@ -78,6 +86,25 @@ CREATE EXTERNAL TABLE paper_fos STORED AS PARQUET LOCATION '<data>/parquet/paper
 AWS Glue can serve the same table layout for remote demos, but it requires an
 AWS account, a warehouse bucket, and credential setup. The local REST catalog is
 the reproducible path for the website examples.
+
+## Int32 renumbering for the legacy algorithms
+
+Three legacy cuGraph algorithms (`cugraph_spectral_modularity_maximization`,
+`cugraph_balanced_cut_clustering`, `cugraph_minimum_spanning_tree`) require
+**Int32 vertex columns**. AMiner paper ids do not fit: 42% of them exceed
+2,147,483,647 (the maximum id is 3,009,038,462), so a plain `CAST` overflows.
+The examples renumber in SQL instead — materialize a dense mapping once, then
+join it onto the edge view:
+
+```sql
+CREATE TABLE my_vertex_ids AS
+SELECT paper_id, CAST(ROW_NUMBER() OVER (ORDER BY paper_id) AS INT) AS vid
+FROM (SELECT src AS paper_id FROM my_edges UNION SELECT dst FROM my_edges);
+```
+
+Materializing with `CREATE TABLE ... AS` (not a view) matters: it keeps the
+window function out of the cuGraph table-function input, and the mapping table
+joins results back to `papers` afterwards.
 
 ## The two-table pattern
 

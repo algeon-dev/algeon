@@ -1,10 +1,59 @@
 {/* Hand-owned examples for cugraph_leiden. NOT generated — safe to edit. */}
-{/* Add dataset-specific runnable examples here against your own tables. */}
 
-Canonical call shape using `target_edges` as the edge table:
+This example runs on the [citation network demo dataset](../demo-dataset.mdx).
+
+### Where Leiden disagrees with Louvain
+
+Leiden takes the same call shape as
+[`cugraph_louvain`](../algorithms/community/cugraph_louvain.mdx) but adds a
+refinement phase that guarantees well-connected communities, splitting
+clusters Louvain merges. Joining the two partitions on `vertex` shows exactly
+where. The views are the Louvain example's 2010s AI subgraph:
 
 ```sql
-SELECT * FROM cugraph_leiden('target_edges')
+CREATE OR REPLACE VIEW ai_nodes AS
+SELECT paper_id FROM papers
+WHERE year >= 2010 AND primary_fos IN (
+  'Deep learning', 'Artificial neural network', 'Convolutional neural network',
+  'Recurrent neural network', 'Natural language processing',
+  'Reinforcement learning', 'Image segmentation', 'Feature extraction',
+  'Object detection', 'Speech recognition');
+
+CREATE OR REPLACE VIEW ai_edges AS
+SELECT e.src, e.dst
+FROM citation_edges e
+JOIN ai_nodes a ON a.paper_id = e.src
+JOIN ai_nodes b ON b.paper_id = e.dst;
+
+WITH lv AS (
+  SELECT vertex, "partition" AS louvain_c FROM cugraph_louvain('ai_edges', 'src', 'dst')),
+ld AS (
+  SELECT vertex, "partition" AS leiden_c FROM cugraph_leiden('ai_edges', 'src', 'dst')),
+joint AS (
+  SELECT lv.louvain_c, ld.leiden_c, COUNT(*) AS n
+  FROM lv JOIN ld ON ld.vertex = lv.vertex
+  GROUP BY lv.louvain_c, ld.leiden_c)
+SELECT louvain_c,
+       SUM(n) AS members,
+       COUNT(*) FILTER (WHERE n >= 50) AS leiden_parts
+FROM joint
+GROUP BY louvain_c
+HAVING SUM(n) > 2500
+ORDER BY leiden_parts DESC, members DESC;
 ```
 
-Use the same shape with your registered edge table or view; configure algorithm and graph options through `options_json` as described above.
+| louvain_c | members | leiden_parts |
+|---|---|---|
+| 0 | 10,684 | 8 |
+| 1 | 6,707 | 7 |
+| 3 | 5,118 | 3 |
+| 2 | 3,960 | 3 |
+
+Louvain's 10,684-paper computer-vision community shatters into eight Leiden
+communities of 50+ members; overall the same graph yields 1,960 Louvain
+communities versus 2,670 for Leiden. When a Louvain community is only held
+together by a few incidental citations, Leiden's refinement phase is what
+separates it — the guarantee that every returned community is internally
+connected is the reason to prefer Leiden as the default. Both runs are
+deterministic here (`seed` defaults to 0), which is why the community ids in
+this table are stable across sessions.

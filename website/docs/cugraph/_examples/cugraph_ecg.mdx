@@ -1,10 +1,69 @@
 {/* Hand-owned examples for cugraph_ecg. NOT generated — safe to edit. */}
-{/* Add dataset-specific runnable examples here against your own tables. */}
 
-Canonical call shape using `target_edges` as the edge table:
+This example runs on the [citation network demo dataset](../demo-dataset.mdx).
+
+### Benchmark the ensemble against single-run algorithms
+
+ECG runs an ensemble of Louvain passes (`ensemble_size`, default 10), reweights
+edges by how often their endpoints co-cluster, and clusters the consensus. Is
+that worth it? Because every `cugraph_*` function returns a plain relation, one
+statement can run all three community algorithms on the same subgraph (the
+Louvain example's 2010s AI views) and score them against the human-assigned
+`primary_fos` labels — the share of members in a community carrying its
+dominant label:
 
 ```sql
-SELECT * FROM cugraph_ecg('target_edges')
+CREATE OR REPLACE VIEW ai_nodes AS
+SELECT paper_id FROM papers
+WHERE year >= 2010 AND primary_fos IN (
+  'Deep learning', 'Artificial neural network', 'Convolutional neural network',
+  'Recurrent neural network', 'Natural language processing',
+  'Reinforcement learning', 'Image segmentation', 'Feature extraction',
+  'Object detection', 'Speech recognition');
+
+CREATE OR REPLACE VIEW ai_edges AS
+SELECT e.src, e.dst
+FROM citation_edges e
+JOIN ai_nodes a ON a.paper_id = e.src
+JOIN ai_nodes b ON b.paper_id = e.dst;
+
+WITH labeled AS (
+  SELECT 'louvain' AS algorithm, c."partition" AS community, p.primary_fos
+  FROM cugraph_louvain('ai_edges', 'src', 'dst') c
+  JOIN papers p ON p.paper_id = c.vertex
+  UNION ALL
+  SELECT 'leiden', c."partition", p.primary_fos
+  FROM cugraph_leiden('ai_edges', 'src', 'dst') c
+  JOIN papers p ON p.paper_id = c.vertex
+  UNION ALL
+  SELECT 'ecg', c."partition", p.primary_fos
+  FROM cugraph_ecg('ai_edges', 'src', 'dst') c
+  JOIN papers p ON p.paper_id = c.vertex),
+counts AS (
+  SELECT algorithm, community, primary_fos, COUNT(*) AS n
+  FROM labeled GROUP BY 1, 2, 3),
+sized AS (
+  SELECT algorithm, community, SUM(n) AS members, MAX(n) AS top_label
+  FROM counts GROUP BY 1, 2)
+SELECT algorithm,
+       COUNT(*) AS communities,
+       COUNT(*) FILTER (WHERE members >= 100) AS ge100,
+       ROUND(SUM(top_label) FILTER (WHERE members >= 100) * 100.0
+             / SUM(members) FILTER (WHERE members >= 100), 1) AS purity_pct
+FROM sized
+GROUP BY algorithm
+ORDER BY purity_pct DESC;
 ```
 
-Use the same shape with your registered edge table or view; configure algorithm and graph options through `options_json` as described above.
+| algorithm | communities | ge100 | purity_pct |
+|---|---|---|---|
+| leiden | 2,670 | 16 | 44.1 |
+| ecg | 5,014 | 41 | 41.7 |
+| louvain | 1,960 | 14 | 38.5 |
+
+Three GPU graph builds plus the joins and aggregation return together in about
+one second. ECG's consensus is deliberately conservative: it only keeps
+vertices together when most ensemble members agree, so it produces the finest
+partition (5,014 communities, 41 of them with 100+ papers) and beats a single
+Louvain run on label purity. Determinism comes from `seed` (default 0);
+`ensemble_size` trades run time for consensus stability.

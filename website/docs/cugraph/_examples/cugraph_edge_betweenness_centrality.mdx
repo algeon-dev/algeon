@@ -1,10 +1,51 @@
 {/* Hand-owned examples for cugraph_edge_betweenness_centrality. NOT generated — safe to edit. */}
-{/* Add dataset-specific runnable examples here against your own tables. */}
 
-Canonical call shape using `target_edges` as the edge table:
+This example runs on the [citation network demo dataset](../demo-dataset.mdx).
+
+### The citations that bridge subfields
+
+Where [vertex betweenness](../algorithms/centrality/cugraph_betweenness_centrality.mdx)
+scores papers, edge betweenness scores individual **citations**. The output is
+one row per edge (`source`, `destination`, `score`), so joining `papers` twice
+labels both ends of each load-bearing link. The graph is the same ~38k-vertex
+2010s AI subgraph used by the Louvain and betweenness examples:
 
 ```sql
-SELECT * FROM cugraph_edge_betweenness_centrality('target_edges')
+CREATE OR REPLACE VIEW ai_nodes AS
+SELECT paper_id FROM papers
+WHERE year >= 2010 AND primary_fos IN (
+  'Deep learning', 'Artificial neural network', 'Convolutional neural network',
+  'Recurrent neural network', 'Natural language processing',
+  'Reinforcement learning', 'Image segmentation', 'Feature extraction',
+  'Object detection', 'Speech recognition');
+
+CREATE OR REPLACE VIEW ai_edges AS
+SELECT e.src, e.dst
+FROM citation_edges e
+JOIN ai_nodes a ON a.paper_id = e.src
+JOIN ai_nodes b ON b.paper_id = e.dst;
+
+SELECT ps.title AS citing, pd.title AS cited, ROUND(b.score, 5) AS edge_betweenness
+FROM cugraph_edge_betweenness_centrality('ai_edges', 'src', 'dst') b
+JOIN papers ps ON ps.paper_id = b.source
+JOIN papers pd ON pd.paper_id = b.destination
+ORDER BY b.score DESC
+LIMIT 5;
 ```
 
-Use the same shape with your registered edge table or view; configure algorithm and graph options through `options_json` as described above.
+| citing | cited | edge_betweenness |
+|---|---|---|
+| Rich Feature Hierarchies for Accurate Object Detection and Semantic Segmentation | Regionlets for Generic Object Detection | 0.00022 |
+| Squeeze-and-Excitation Networks | Regularized Evolution for Image Classifier Architecture Search | 0.00021 |
+| Improving object detection with deep convolutional networks via Bayesian optimization and structured prediction | Deep learning in neural networks | 0.00017 |
+| SqueezeNet: AlexNet-level accuracy with 50x fewer parameters and \<0.5MB model size | Shallow Networks for High-Accuracy Road Object-Detection | 0.00016 |
+| A survey on deep learning in medical image analysis | Deep Learning Convolutional Networks for Multiphoton Microscopy Vasculature Segmentation. | 0.00014 |
+
+The pattern is the classic edge-betweenness signature: the top links are not
+famous-cites-famous, they are the single citations that connect a hub (R-CNN,
+SENet, SqueezeNet, a survey) to an otherwise peripheral cluster — the bridge a
+whole niche crosses to reach the rest of the field. Exact edge betweenness
+touches every source–edge pair, so this call is much heavier than its vertex
+counterpart: about 1.5 minutes on this subgraph, versus sub-second for vertex
+betweenness. The same `exact_vertex_threshold` / `k` / `seeds` policy applies
+on larger graphs.
