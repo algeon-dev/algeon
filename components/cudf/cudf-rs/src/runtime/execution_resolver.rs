@@ -7,12 +7,24 @@
 
 use std::sync::Arc;
 
-use super::{execution_context::ExecutionOverrides, execution_domain::ExecutionDomain};
+use super::{
+    execution_context::ExecutionOverrides,
+    execution_domain::{ConsumerCompletionFence, ExecutionDomain},
+};
 use crate::core::error::Result;
 
+/// Resolved placement for one consuming operation.
+///
+/// Besides the output domain and FFI exec options, this carries the
+/// [`ConsumerCompletionFence`] for every ordered cross-stream input. Keep the
+/// `ResolvedExecution` alive across the FFI call that enqueues the operation:
+/// when it drops, the fence records a completion event on the output stream
+/// and makes each cross-stream input's retained stream wait on it, so
+/// stream-ordered deallocation of an input can never race the consumer.
 pub(crate) struct ResolvedExecution {
     output_domain: Arc<ExecutionDomain>,
     exec_options: cudf_sys::cudf_exec_options_t,
+    consumer_fence: ConsumerCompletionFence,
 }
 
 impl ResolvedExecution {
@@ -21,9 +33,7 @@ impl ResolvedExecution {
         ctx: &ExecutionOverrides<'_>,
         operation: &'static str,
     ) -> Result<Self> {
-        let output_domain = ctx.resolve_output_domain(primary)?;
-        Self::require_same_device_and_order(primary, &output_domain, operation)?;
-        Ok(Self::new(output_domain))
+        Self::many(primary, [], ctx, operation)
     }
 
     pub(crate) fn binary(
@@ -42,8 +52,12 @@ impl ResolvedExecution {
         operation: &'static str,
     ) -> Result<Self> {
         let output_domain = ctx.resolve_output_domain(primary)?;
-        Self::require_same_device_and_order(primary, &output_domain, operation)?;
-        Self::with_output_domain(output_domain, secondaries, operation)
+        let mut resolved = Self::new(output_domain, operation);
+        resolved.order_input(primary)?;
+        for secondary in secondaries {
+            resolved.order_input(secondary)?;
+        }
+        Ok(resolved)
     }
 
     pub(crate) fn with_output_domain<'a>(
@@ -51,18 +65,17 @@ impl ResolvedExecution {
         secondaries: impl IntoIterator<Item = &'a Arc<ExecutionDomain>>,
         operation: &'static str,
     ) -> Result<Self> {
+        let mut resolved = Self::new(output_domain, operation);
         for secondary in secondaries {
-            Self::require_same_device_and_order(secondary, &output_domain, operation)?;
+            resolved.order_input(secondary)?;
         }
-        Ok(Self::new(output_domain))
+        Ok(resolved)
     }
 
-    pub(crate) fn require_same_device_and_order(
-        source: &Arc<ExecutionDomain>,
-        target: &Arc<ExecutionDomain>,
-        operation: &'static str,
-    ) -> Result<()> {
-        ExecutionDomain::insert_stream_dependency(source, target, operation)
+    /// Order an additional input into the output domain (forward fence) and
+    /// register it for the reverse completion fence fired on drop.
+    pub(crate) fn order_input(&mut self, input: &Arc<ExecutionDomain>) -> Result<()> {
+        self.consumer_fence.order_input(input)
     }
 
     pub(crate) fn output_domain(&self) -> &Arc<ExecutionDomain> {
@@ -73,9 +86,10 @@ impl ResolvedExecution {
         &self.exec_options
     }
 
-    fn new(output_domain: Arc<ExecutionDomain>) -> Self {
+    fn new(output_domain: Arc<ExecutionDomain>, operation: &'static str) -> Self {
         let exec_options = output_domain.exec_options_raw();
-        Self { output_domain, exec_options }
+        let consumer_fence = ConsumerCompletionFence::for_output(&output_domain, operation);
+        Self { output_domain, exec_options, consumer_fence }
     }
 }
 
@@ -220,6 +234,101 @@ mod tests {
 
         assert_eq!(execution.output_domain().debug_stream_value(), expected_stream);
         assert_eq!(dependency_wait_call_count_for_stream(expected_stream), 2);
+    }
+
+    #[test]
+    fn dropping_resolution_fences_cross_stream_inputs_after_consumer() {
+        let _event_observation = lock_event_observation();
+        let primary = runtime();
+        let secondary = runtime();
+        let ctx = ExecutionOverrides::new();
+        let output_stream = primary.stream().__debug_raw_handle_value();
+        let secondary_stream = secondary.stream().__debug_raw_handle_value();
+
+        reset_dependency_observation();
+        let execution = ResolvedExecution::binary(
+            primary.execution_domain(),
+            secondary.execution_domain(),
+            &ctx,
+            "execution_resolver::test::reverse_fence_binary",
+        )
+        .unwrap();
+        // Forward fence only at resolve time: the output stream waits on the
+        // secondary's event; the secondary stream has no waits yet.
+        assert_eq!(dependency_wait_call_count_for_stream(output_stream), 1);
+        assert_eq!(dependency_wait_call_count_for_stream(secondary_stream), 0);
+
+        drop(execution);
+        // Reverse fence at drop: the secondary's retained stream waits on the
+        // consumer-completion event recorded on the output stream, so its
+        // stream-ordered deallocations cannot race the consuming kernel.
+        assert_eq!(dependency_wait_call_count_for_stream(secondary_stream), 1);
+        assert_eq!(dependency_wait_call_count_for_stream(output_stream), 1);
+    }
+
+    #[test]
+    fn dropping_same_provenance_resolution_inserts_no_waits() {
+        let _event_observation = lock_event_observation();
+        let rt = runtime();
+        let ctx = ExecutionOverrides::new();
+        let stream = rt.stream().__debug_raw_handle_value();
+
+        reset_dependency_observation();
+        let execution = ResolvedExecution::binary(
+            rt.execution_domain(),
+            rt.execution_domain(),
+            &ctx,
+            "execution_resolver::test::same_provenance_reverse_fence",
+        )
+        .unwrap();
+        drop(execution);
+        assert_eq!(dependency_wait_call_count_for_stream(stream), 0);
+    }
+
+    #[test]
+    fn dropping_unary_override_resolution_fences_primary_stream() {
+        let _event_observation = lock_event_observation();
+        let rt = runtime();
+        let override_stream = CudaStream::new().unwrap();
+        let override_mr = DeviceMemoryResource::pool(TEST_POOL_BYTES, None).unwrap();
+        let ctx = ExecutionOverrides::new().with_stream(&override_stream).with_memory_resource(&override_mr);
+        let primary_stream = rt.stream().__debug_raw_handle_value();
+        let output_stream = override_stream.__debug_raw_handle_value();
+
+        reset_dependency_observation();
+        let execution = ResolvedExecution::unary(
+            rt.execution_domain(),
+            &ctx,
+            "execution_resolver::test::reverse_fence_unary_override",
+        )
+        .unwrap();
+        assert_eq!(dependency_wait_call_count_for_stream(output_stream), 1);
+        assert_eq!(dependency_wait_call_count_for_stream(primary_stream), 0);
+
+        drop(execution);
+        assert_eq!(dependency_wait_call_count_for_stream(primary_stream), 1);
+    }
+
+    #[test]
+    fn dropping_many_resolution_fences_each_distinct_input_stream_once() {
+        let _event_observation = lock_event_observation();
+        let primary = runtime();
+        let secondary = runtime();
+        let ctx = ExecutionOverrides::new();
+        let secondary_stream = secondary.stream().__debug_raw_handle_value();
+
+        reset_dependency_observation();
+        let execution = ResolvedExecution::many(
+            primary.execution_domain(),
+            [secondary.execution_domain(), secondary.execution_domain()],
+            &ctx,
+            "execution_resolver::test::reverse_fence_dedupe",
+        )
+        .unwrap();
+        drop(execution);
+        // The same input stream ordered twice still gets exactly one reverse
+        // wait: registration deduplicates by stream identity.
+        assert_eq!(dependency_wait_call_count_for_stream(secondary_stream), 1);
     }
 
     #[test]

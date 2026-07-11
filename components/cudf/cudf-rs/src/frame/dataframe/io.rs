@@ -660,18 +660,16 @@ fn reanchor_multi_parquet_schema_error(
         .with_detail("path", filepath.display().to_string())
 }
 
+/// Order the frame's retained stream into the write stream and return the
+/// consumer-completion fence. Callers must hold the fence across the write
+/// FFI call so the frame's stream waits for the in-flight write on drop.
 fn prepare_write_domain(
     frame_domain: &Arc<ExecutionDomain>,
     write_domain: &Arc<ExecutionDomain>,
     operation: &'static str,
-) -> Result<()> {
+) -> Result<crate::runtime::execution_domain::ConsumerCompletionFence> {
     ExecutionDomain::require_same_device_for_mixed_inputs(frame_domain, write_domain, operation)?;
-
-    if !ExecutionDomain::same_provenance(frame_domain, write_domain) {
-        ExecutionDomain::insert_stream_dependency(frame_domain, write_domain, operation)?;
-    }
-
-    Ok(())
+    ExecutionDomain::insert_stream_dependency(frame_domain, write_domain, operation)
 }
 
 fn missing_source_row_count_error(operation: &'static str, chunk: &SourceChunk) -> Error {
@@ -1764,7 +1762,7 @@ impl DataFrame {
         } else {
             Arc::clone(&self.domain)
         };
-        prepare_write_domain(&self.domain, &write_domain, "dataframe::write_csv_with_options")?;
+        let _consumer_fence = prepare_write_domain(&self.domain, &write_domain, "dataframe::write_csv_with_options")?;
         let tv = self.build_table_view()?;
         let exec_options = write_domain.exec_options_raw();
         csv::write_csv_with_exec(&tv, &opts, &exec_options)?;
@@ -2240,7 +2238,8 @@ impl DataFrame {
         } else {
             Arc::clone(&self.domain)
         };
-        prepare_write_domain(&self.domain, &write_domain, "dataframe::write_parquet_with_options")?;
+        let _consumer_fence =
+            prepare_write_domain(&self.domain, &write_domain, "dataframe::write_parquet_with_options")?;
         let tv = self.build_table_view()?;
         let exec_options = write_domain.exec_options_raw();
         parquet::write_parquet_with_exec(&tv, &table_options, &exec_options)?;
@@ -2316,7 +2315,7 @@ impl DataFrame {
         } else {
             Arc::clone(&self.domain)
         };
-        prepare_write_domain(&self.domain, &write_domain, "dataframe::write_json_with_options")?;
+        let _consumer_fence = prepare_write_domain(&self.domain, &write_domain, "dataframe::write_json_with_options")?;
         let tv = self.build_table_view()?;
         let exec_options = write_domain.exec_options_raw();
         json::write_json_with_exec(&tv, &opts, &exec_options)?;

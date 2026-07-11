@@ -490,9 +490,7 @@ impl DataFrame {
             return Ok(self.columns.clone());
         }
 
-        ExecutionDomain::insert_stream_dependency(&self.domain, output_domain, operation)
-            .map_err(|e| e.with_detail("target_domain", output_domain.debug_label()))?;
-
+        // copy_into_domain installs both fence directions per column.
         let mut copied: FastIndexMap<String, Arc<Column>> = fast_index_map_with_capacity(self.columns.len());
         for (name, column) in &self.columns {
             let rebound = column

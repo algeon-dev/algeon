@@ -24,7 +24,10 @@ use crate::{
         },
     },
     ops::{binary, unary},
-    runtime::{Runtime, execution_domain::ExecutionDomain},
+    runtime::{
+        Runtime,
+        execution_domain::{ConsumerCompletionFence, ExecutionDomain},
+    },
 };
 
 fn usize_to_i32_len(len: usize, what: &'static str, operation: &'static str) -> Result<i32> {
@@ -181,6 +184,11 @@ impl Column {
     }
 
     pub(crate) fn copy_into_domain(&self, domain: Arc<ExecutionDomain>, operation: &'static str) -> Result<Self> {
+        // Two-way ordering with the source provenance: the copy enqueued below
+        // reads this column on the target stream, and the fence (dropped after
+        // the FFI call) keeps the source stream from reusing its buffers under
+        // the in-flight copy.
+        let _consumer_fence = ExecutionDomain::insert_stream_dependency(&self.domain, &domain, operation)?;
         let mut handle = ptr::null_mut();
         let exec_options = domain.exec_options_raw();
         error::check_status_in(
@@ -866,7 +874,7 @@ impl Column {
     }
     pub(crate) fn __debug_rebind_execution_domain_explicit(mut self, identity: u64) -> Result<Self> {
         let target = ExecutionDomain::debug_explicit(identity)?;
-        ExecutionDomain::insert_stream_dependency(
+        let _consumer_fence = ExecutionDomain::insert_stream_dependency(
             &self.domain,
             &target,
             "column::__debug_rebind_execution_domain_explicit",
@@ -884,7 +892,7 @@ fn require_runtime_matches_buffer_device(
     runtime: &Runtime,
     buffer_domain: &Arc<ExecutionDomain>,
     operation: &'static str,
-) -> Result<Arc<ExecutionDomain>> {
+) -> Result<(Arc<ExecutionDomain>, ConsumerCompletionFence)> {
     let runtime_device = runtime.device();
     let device_snapshot = buffer_domain.device_snapshot();
     if runtime_device.ordinal() as i32 != device_snapshot {
@@ -900,8 +908,8 @@ fn require_runtime_matches_buffer_device(
     }
 
     let output_domain = Arc::clone(runtime.execution_domain());
-    ExecutionDomain::insert_stream_dependency(buffer_domain, &output_domain, operation)?;
-    Ok(output_domain)
+    let consumer_fence = ExecutionDomain::insert_stream_dependency(buffer_domain, &output_domain, operation)?;
+    Ok((output_domain, consumer_fence))
 }
 
 impl Column {
@@ -958,13 +966,14 @@ impl Column {
         }
 
         let (raw_buf, buffer_domain) = buffer.into_raw_parts();
-        let output_domain = match require_runtime_matches_buffer_device(runtime, &buffer_domain, operation) {
-            Ok(domain) => domain,
-            Err(err) => {
-                let _cleanup = unsafe { super::DeviceBuffer::from_raw_parts(raw_buf, buffer_domain) };
-                return Err(err);
-            },
-        };
+        let (output_domain, _consumer_fence) =
+            match require_runtime_matches_buffer_device(runtime, &buffer_domain, operation) {
+                Ok(resolved) => resolved,
+                Err(err) => {
+                    let _cleanup = unsafe { super::DeviceBuffer::from_raw_parts(raw_buf, buffer_domain) };
+                    return Err(err);
+                },
+            };
 
         let mut handle = ptr::null_mut();
         let status =
@@ -1079,19 +1088,24 @@ impl Column {
 
         let (raw_data, data_domain) = data_buffer.into_raw_parts();
         let (raw_mask, mask_domain) = null_mask_buffer.into_raw_parts();
-        let output_domain = match require_runtime_matches_buffer_device(runtime, &data_domain, operation) {
-            Ok(domain) => domain,
-            Err(err) => {
-                let _data_cleanup = unsafe { super::DeviceBuffer::from_raw_parts(raw_data, data_domain) };
-                let _mask_cleanup = unsafe { super::DeviceBuffer::from_raw_parts(raw_mask, mask_domain) };
-                return Err(err);
-            },
-        };
-        if let Err(err) = ExecutionDomain::insert_stream_dependency(&mask_domain, &output_domain, operation) {
-            let _data_cleanup = unsafe { super::DeviceBuffer::from_raw_parts(raw_data, data_domain) };
-            let _mask_cleanup = unsafe { super::DeviceBuffer::from_raw_parts(raw_mask, mask_domain) };
-            return Err(err);
-        }
+        let (output_domain, _consumer_fence) =
+            match require_runtime_matches_buffer_device(runtime, &data_domain, operation) {
+                Ok(resolved) => resolved,
+                Err(err) => {
+                    let _data_cleanup = unsafe { super::DeviceBuffer::from_raw_parts(raw_data, data_domain) };
+                    let _mask_cleanup = unsafe { super::DeviceBuffer::from_raw_parts(raw_mask, mask_domain) };
+                    return Err(err);
+                },
+            };
+        let _mask_consumer_fence =
+            match ExecutionDomain::insert_stream_dependency(&mask_domain, &output_domain, operation) {
+                Ok(fence) => fence,
+                Err(err) => {
+                    let _data_cleanup = unsafe { super::DeviceBuffer::from_raw_parts(raw_data, data_domain) };
+                    let _mask_cleanup = unsafe { super::DeviceBuffer::from_raw_parts(raw_mask, mask_domain) };
+                    return Err(err);
+                },
+            };
 
         let mut handle = ptr::null_mut();
         let status = unsafe {

@@ -336,8 +336,7 @@ fn clone_or_copy_series_into_domain(
         return Ok(series.clone());
     }
 
-    ExecutionDomain::insert_stream_dependency(series.as_column().execution_domain(), output_domain, operation)
-        .map_err(|e| e.with_detail("target_domain", output_domain.debug_label()))?;
+    // copy_into_domain installs both fence directions internally.
     let column = series
         .as_column()
         .copy_into_domain(Arc::clone(output_domain), operation)

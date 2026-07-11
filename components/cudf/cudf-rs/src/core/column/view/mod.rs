@@ -833,13 +833,12 @@ impl ColumnView<'_> {
                 .with_detail("values_type_id", values_type_id_str.clone())
         })?;
 
-        if !ExecutionDomain::same_provenance(values.execution_domain(), &self.domain) {
+        let _consumer_fence =
             ExecutionDomain::insert_stream_dependency(values.execution_domain(), &self.domain, "column_view::isin")
                 .map_err(|e| {
                     e.with_detail("input_type_id", input_type_id_str.clone())
                         .with_detail("values_type_id", values_type_id_str.clone())
                 })?;
-        }
 
         let exec_options = self.domain.exec_options_raw();
         search::contains_impl(values, self, &self.domain, &exec_options, "column_view::isin").map_err(|e| {

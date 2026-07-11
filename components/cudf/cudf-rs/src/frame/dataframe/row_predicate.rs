@@ -135,9 +135,7 @@ impl DataFrame {
             },
             Err(err) => return Err(err),
         };
-        if !ExecutionDomain::same_provenance(&self.domain, &output_domain) {
-            ExecutionDomain::insert_stream_dependency(&self.domain, &output_domain, operation)?;
-        }
+        let _consumer_fence = ExecutionDomain::insert_stream_dependency(&self.domain, &output_domain, operation)?;
         let exec_options = output_domain.exec_options_raw();
         let tv = self.build_table_view()?;
         let result_table = filter::apply_row_predicate_impl(

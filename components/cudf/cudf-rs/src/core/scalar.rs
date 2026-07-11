@@ -440,7 +440,9 @@ impl Scalar {
             return self.recreate_in_domain_via_host(dtype, domain, operation);
         }
 
-        ExecutionDomain::insert_stream_dependency(&self.domain, domain, operation)?;
+        // Hold the fence across the copy below: it keeps the source scalar's
+        // stream from reusing its device bytes while the copy is in flight.
+        let _consumer_fence = ExecutionDomain::insert_stream_dependency(&self.domain, domain, operation)?;
 
         let mut handle = ptr::null_mut();
         let exec_options = domain.exec_options_raw();
@@ -551,7 +553,7 @@ impl Scalar {
     }
     pub(crate) fn __debug_rebind_execution_domain_explicit(mut self, identity: u64) -> Result<Self> {
         let target = ExecutionDomain::debug_explicit(identity)?;
-        ExecutionDomain::insert_stream_dependency(
+        let _consumer_fence = ExecutionDomain::insert_stream_dependency(
             &self.domain,
             &target,
             "scalar::__debug_rebind_execution_domain_explicit",

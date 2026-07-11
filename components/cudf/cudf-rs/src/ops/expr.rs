@@ -141,8 +141,7 @@ impl<'df> ExprEvalContext<'df> {
         let normalized = if ExecutionDomain::same_provenance(column.execution_domain(), &self.output_domain) {
             column
         } else {
-            ExecutionDomain::insert_stream_dependency(column.execution_domain(), &self.output_domain, self.operation)
-                .map_err(|error| error.with_column(name.to_string()))?;
+            // copy_into_domain installs both fence directions internally.
             Arc::new(
                 column
                     .copy_into_domain(Arc::clone(&self.output_domain), self.operation)

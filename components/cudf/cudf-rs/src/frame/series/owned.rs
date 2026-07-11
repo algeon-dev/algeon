@@ -644,8 +644,7 @@ impl Series {
             return Ok(Arc::clone(column));
         }
 
-        ExecutionDomain::insert_stream_dependency(column.execution_domain(), output_domain, operation)?;
-
+        // copy_into_domain installs both fence directions internally.
         column.copy_into_domain(Arc::clone(output_domain), operation).map(Arc::new)
     }
 
