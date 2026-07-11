@@ -55,6 +55,10 @@ fn f64_df(name: &str, data: &[f64]) -> DataFrame {
     df_with_series(name, crate::common::series::<f64>(name, data).unwrap())
 }
 
+fn nullable_f64_df(name: &str, data: &[f64], validity: &[bool]) -> DataFrame {
+    df_with_series(name, crate::common::nullable_series::<f64>(name, data, validity).unwrap())
+}
+
 fn decimal128_df_from_arrow(name: &str, values: Vec<Option<i128>>, precision: u8, scale: i8) -> DataFrame {
     let amount = Decimal128Array::from(values).with_precision_and_scale(precision, scale).unwrap();
     let schema = Schema::new(vec![Field::new(name, ArrowDataType::Decimal128(precision, scale), true)]);
@@ -716,6 +720,39 @@ fn cast_i32_to_f64() {
     let result = eval(col("x").cast(TypeId::Float64).alias("xf"), &df);
     assert_eq!(result.dtype().unwrap().id(), TypeId::Float64);
     assert_eq!(result.to_vec_strict::<f64>().unwrap(), vec![10.0, 20.0, 30.0]);
+}
+
+#[test]
+fn cast_f64_to_i64_truncates_and_preserves_nulls() {
+    let df = nullable_f64_df("x", &[1.9, -1.9, 0.0], &[true, true, false]);
+
+    let result = eval(col("x").cast(TypeId::Int64).alias("xi"), &df);
+
+    assert_eq!(result.dtype().unwrap().id(), TypeId::Int64);
+    assert_eq!(result.to_optional_vec::<i64>().unwrap(), vec![Some(1), Some(-1), None]);
+}
+
+#[test]
+fn cast_f64_to_i64_rejects_nan_and_unrepresentable_values() {
+    let df = f64_df("x", &[f64::NAN, f64::INFINITY, 1.0e40]);
+
+    let err = col("x").cast(TypeId::Int64).alias("xi").eval(&df).unwrap_err();
+
+    assert_eq!(err.code(), ErrorCode::ValueOutOfRange);
+}
+
+#[test]
+fn dataframe_cast_column_f64_to_i64_uses_checked_semantics() {
+    let df = nullable_f64_df("x", &[1.9, -1.9, 0.0], &[true, true, false]);
+
+    let result = df.cast_column("x", TypeId::Int64).unwrap();
+
+    assert_eq!(result.series("x").unwrap().dtype().unwrap().id(), TypeId::Int64);
+    assert_eq!(result.series("x").unwrap().to_optional_vec::<i64>().unwrap(), vec![Some(1), Some(-1), None]);
+
+    let invalid = f64_df("x", &[f64::NAN, f64::INFINITY, 1.0e40]);
+    let err = invalid.cast_column("x", TypeId::Int64).unwrap_err();
+    assert_eq!(err.code(), ErrorCode::ValueOutOfRange);
 }
 
 #[test]

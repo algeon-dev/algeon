@@ -13,7 +13,10 @@
 //! These tests therefore forbid the guard/swap machinery everywhere instead
 //! of allowlisting its call sites.
 
-use std::{fs, path::Path, path::PathBuf};
+use std::{
+    fs,
+    path::{Path, PathBuf},
+};
 
 fn native_source_files() -> Vec<PathBuf> {
     let mut files = Vec::new();
