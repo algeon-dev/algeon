@@ -209,6 +209,18 @@ fn test_arrow_host_dtype_mapping_preserves_logical_metadata() {
         DataType::new(TypeId::TimestampNanoseconds)
     );
     assert_eq!(
+        cudf_dtype_from_arrow_type(&ArrowDataType::Date64).unwrap(),
+        DataType::new(TypeId::TimestampMilliseconds)
+    );
+    assert_eq!(
+        cudf_dtype_from_arrow_type(&ArrowDataType::Time32(TimeUnit::Millisecond)).unwrap(),
+        DataType::new(TypeId::DurationMilliseconds)
+    );
+    assert_eq!(
+        cudf_dtype_from_arrow_type(&ArrowDataType::Time64(TimeUnit::Nanosecond)).unwrap(),
+        DataType::new(TypeId::DurationNanoseconds)
+    );
+    assert_eq!(
         arrow_type_from_cudf_dtype(DataType::new(TypeId::TimestampMilliseconds)).unwrap(),
         ArrowDataType::Timestamp(TimeUnit::Millisecond, None)
     );
@@ -933,6 +945,61 @@ fn test_round_trip_nullable_decimal128_date32_and_timestamp_units() {
     assert_eq!(
         round_trip.column(9).as_primitive::<arrow::datatypes::DurationNanosecondType>().values().as_ref(),
         &[4_000, 0, 6_000]
+    );
+}
+
+#[test]
+fn test_gpu_record_batch_preserves_date64_and_time_schema_contract() {
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("date64", ArrowDataType::Date64, false),
+        Field::new("time_s", ArrowDataType::Time32(TimeUnit::Second), false),
+        Field::new("time_ms", ArrowDataType::Time32(TimeUnit::Millisecond), false),
+        Field::new("time_us", ArrowDataType::Time64(TimeUnit::Microsecond), false),
+        Field::new("time_ns", ArrowDataType::Time64(TimeUnit::Nanosecond), false),
+    ]));
+    let batch = RecordBatch::try_new(
+        Arc::clone(&schema),
+        vec![
+            Arc::new(Date64Array::from(vec![1_577_836_800_000, 1_580_428_800_000])),
+            Arc::new(Time32SecondArray::from(vec![1, 86_399])),
+            Arc::new(Time32MillisecondArray::from(vec![1_000, 86_399_000])),
+            Arc::new(Time64MicrosecondArray::from(vec![1_000_000, 86_399_000_000])),
+            Arc::new(Time64NanosecondArray::from(vec![1_000_000_000, 86_399_000_000_000])),
+        ],
+    )
+    .unwrap();
+
+    let df = import_record_batch(&batch).unwrap();
+
+    assert_eq!(df.num_rows(), 2);
+    assert_eq!(df.series("date64").unwrap().dtype().unwrap().id(), TypeId::TimestampMilliseconds);
+    assert_eq!(df.series("time_s").unwrap().dtype().unwrap().id(), TypeId::DurationSeconds);
+    assert_eq!(df.series("time_ms").unwrap().dtype().unwrap().id(), TypeId::DurationMilliseconds);
+    assert_eq!(df.series("time_us").unwrap().dtype().unwrap().id(), TypeId::DurationMicroseconds);
+    assert_eq!(df.series("time_ns").unwrap().dtype().unwrap().id(), TypeId::DurationNanoseconds);
+
+    let materialized =
+        cudf::frame::dataframe::GpuRecordBatch::new(df, Arc::clone(&schema)).unwrap().to_host_record_batch().unwrap();
+    assert_eq!(materialized.schema().as_ref(), schema.as_ref());
+    assert_eq!(
+        materialized.column(0).as_primitive::<arrow::datatypes::Date64Type>().values().as_ref(),
+        &[1_577_836_800_000, 1_580_428_800_000]
+    );
+    assert_eq!(
+        materialized.column(1).as_primitive::<arrow::datatypes::Time32SecondType>().values().as_ref(),
+        &[1, 86_399]
+    );
+    assert_eq!(
+        materialized.column(2).as_primitive::<arrow::datatypes::Time32MillisecondType>().values().as_ref(),
+        &[1_000, 86_399_000]
+    );
+    assert_eq!(
+        materialized.column(3).as_primitive::<arrow::datatypes::Time64MicrosecondType>().values().as_ref(),
+        &[1_000_000, 86_399_000_000]
+    );
+    assert_eq!(
+        materialized.column(4).as_primitive::<arrow::datatypes::Time64NanosecondType>().values().as_ref(),
+        &[1_000_000_000, 86_399_000_000_000]
     );
 }
 

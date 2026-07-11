@@ -34,10 +34,10 @@ fn failure_callback_state_survives_destroy_rejection_while_resource_is_current()
     let callback: Arc<dyn Fn(usize) -> bool + Send + Sync + 'static> = Arc::new(|_| false);
     let weak_callback: Weak<dyn Fn(usize) -> bool + Send + Sync + 'static> = Arc::downgrade(&callback);
     let callback_mr = limiting.with_failure_callback(callback).unwrap();
-    let borrowed = callback_mr.as_borrowed_sys();
-
-    cudf_sys::test_set_current_device_resource(&borrowed).expect("failed to install callback memory resource");
-    drop(borrowed);
+    {
+        let borrowed = callback_mr.as_borrowed_sys();
+        cudf_sys::test_set_current_device_resource(&borrowed).expect("failed to install callback memory resource");
+    }
     drop(callback_mr);
 
     assert!(

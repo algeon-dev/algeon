@@ -14,8 +14,7 @@ use crate::{
 // libcudf join APIs return INT32 row indices (`cudf::size_type`).
 const JOIN_GATHER_MAP_INDEX_SIZE_BYTES: usize = std::mem::size_of::<i32>();
 const JOIN_GATHER_MAP_MAX_ROWS: usize = i32::MAX as usize;
-const EQUALITY_JOIN_OUTPUT_SIZE_PREFLIGHT_CONTRACT_GAP: &str =
-    "libcudf_equality_join_output_size_preflight_unavailable";
+const EQUALITY_JOIN_OUTPUT_SIZE_PREFLIGHT_CONTRACT: &str = "keyed_equality_join_output_size_preflight";
 
 fn join_gather_map_reservation_size_bytes(
     output_rows: usize,
@@ -634,18 +633,21 @@ pub struct DataFrameJoinPairIndices {
 }
 
 impl DataFrameJoinPairIndices {
-    /// Named lower-level contract gap for one-shot equality join output-size
+    /// Named lower-level contract for one-shot equality join output-size
     /// preflight.
     ///
-    /// libcudf does not currently expose an exact output row-count preflight
-    /// for one-shot inner, left, or full equality join index creation. After
-    /// indices are materialized, [`len`](Self::len),
+    /// libcudf exposes exact output row-count preflights for reusable hash
+    /// joins. Engines can use the preflight before one-shot inner, left, or
+    /// full equality join index creation, then use [`len`](Self::len),
     /// [`device_allocated_size_bytes`](Self::device_allocated_size_bytes), and
     /// [`reservation_size_bytes_for_len`](Self::reservation_size_bytes_for_len)
-    /// provide exact facts for retained gather-map reporting. Strict bounded
-    /// engines that require pre-execution output-size evidence should surface
-    /// this contract name rather than estimate the join output size.
-    pub const OUTPUT_SIZE_PREFLIGHT_CONTRACT_GAP: &'static str = EQUALITY_JOIN_OUTPUT_SIZE_PREFLIGHT_CONTRACT_GAP;
+    /// for exact retained gather-map reporting.
+    pub const OUTPUT_SIZE_PREFLIGHT_CONTRACT: &'static str = EQUALITY_JOIN_OUTPUT_SIZE_PREFLIGHT_CONTRACT;
+    #[deprecated(
+        since = "0.1.0",
+        note = "renamed to OUTPUT_SIZE_PREFLIGHT_CONTRACT after the bounded engine started using the exact preflight"
+    )]
+    pub const OUTPUT_SIZE_PREFLIGHT_CONTRACT_GAP: &'static str = Self::OUTPUT_SIZE_PREFLIGHT_CONTRACT;
 
     pub(crate) fn new(left: Series, right: Series) -> Self {
         Self { left: DataFrameJoinIndices::new(left), right: DataFrameJoinIndices::new(right) }
