@@ -963,7 +963,10 @@ fn test_column_view_string_chars_ptr_and_size_ex_reports_active_sliced_chars_spa
     assert_eq!(st, cudf_sys::CUDF_SUCCESS);
     assert!(!sliced_ptr.is_null());
     assert_eq!(sliced_ptr, full_ptr);
-    assert_eq!(sliced_size, "onetwo".len());
+    // The pointer is the chars BASE and the slice's offsets index from that
+    // base, so the span must cover everything the slice references:
+    // "zero" + "one" + "two" — ending at the last byte of "two".
+    assert_eq!(sliced_size, "zeroonetwo".len());
 
     unsafe {
         cudf_sys::cudf_column_view_destroy(sliced_view);

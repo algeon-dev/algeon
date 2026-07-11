@@ -16,7 +16,10 @@
 //!    partial execution options.
 //! 5. **Allocator context** — explicit memory resource is passed through.
 //! 6. **cudf-rs type contracts** — CudaStream, DeviceMemoryResource are Send+Sync.
-use std::{ffi::c_void, ptr};
+use std::{
+    ffi::{c_char, c_void},
+    ptr,
+};
 
 use cudf::{
     DeviceId,
@@ -557,6 +560,91 @@ fn column_to_host_ex_uses_explicit_stream() {
 
     assert_eq!(host_buf, data, "host data should match original");
 
+    destroy_column_view(view);
+    destroy_column(col);
+}
+
+/// `cudf_column_view_to_host_ex` on a sliced view must copy from the sliced
+/// element offset, scaled by the element width — not by single bytes.
+#[test]
+fn column_to_host_ex_reads_sliced_view_from_element_offset() {
+    let data: [i32; 6] = [10, 20, 30, 40, 50, 60];
+    let col = create_i32_column_raw(&data);
+    let view = column_view_raw(col);
+
+    let (_stream, _mr, exec) = strict_exec_owners();
+    let mut sliced: cudf_sys::cudf_column_view_handle = ptr::null_mut();
+    let status = unsafe { cudf_sys::cudf_column_view_slice_ex(view, 2, 3, &exec, &mut sliced) };
+    assert_eq!(status, cudf_sys::CUDF_SUCCESS, "cudf_column_view_slice_ex failed");
+    assert!(!sliced.is_null());
+
+    let mut host_buf = [0i32; 3];
+    let status = unsafe {
+        cudf_sys::cudf_column_view_to_host_ex(
+            sliced,
+            host_buf.as_mut_ptr() as *mut c_void,
+            std::mem::size_of_val(&host_buf),
+            &exec,
+        )
+    };
+    assert_eq!(status, cudf_sys::CUDF_SUCCESS, "cudf_column_view_to_host_ex failed");
+    assert_eq!(host_buf, [30, 40, 50], "sliced view must copy from offset * elem_size");
+
+    destroy_column_view(sliced);
+    destroy_column_view(view);
+    destroy_column(col);
+}
+
+/// `cudf_column_view_strings_to_host_ex` on a sliced STRING view must read
+/// the offsets child starting at the parent view's offset.
+#[test]
+fn strings_to_host_ex_accounts_for_sliced_parent_view_offset() {
+    let strings = [c"aa", c"bbb", c"c", c"dddd"];
+    let ptrs: Vec<*const c_char> = strings.iter().map(|s| s.as_ptr()).collect();
+    let lengths: Vec<i32> = strings.iter().map(|s| s.to_bytes().len() as i32).collect();
+
+    let (_stream, _mr, exec) = strict_exec_owners();
+    let mut col: cudf_sys::cudf_column_handle = ptr::null_mut();
+    let status = unsafe {
+        cudf_sys::cudf_column_create_strings_ex(
+            ptrs.as_ptr(),
+            lengths.as_ptr(),
+            strings.len() as i32,
+            ptr::null(),
+            0,
+            &exec,
+            &mut col,
+        )
+    };
+    assert_eq!(status, cudf_sys::CUDF_SUCCESS, "cudf_column_create_strings_ex failed");
+    assert!(!col.is_null());
+    let view = column_view_raw(col);
+
+    let mut sliced: cudf_sys::cudf_column_view_handle = ptr::null_mut();
+    let status = unsafe { cudf_sys::cudf_column_view_slice_ex(view, 1, 2, &exec, &mut sliced) };
+    assert_eq!(status, cudf_sys::CUDF_SUCCESS, "cudf_column_view_slice_ex failed");
+    assert!(!sliced.is_null());
+
+    let mut offsets = [0i32; 3];
+    let mut chars = [0u8; 16];
+    let mut total_chars_bytes = 0i32;
+    let status = unsafe {
+        cudf_sys::cudf_column_view_strings_to_host_ex(
+            sliced,
+            offsets.as_mut_ptr(),
+            std::mem::size_of_val(&offsets),
+            chars.as_mut_ptr() as *mut c_char,
+            chars.len(),
+            &mut total_chars_bytes,
+            &exec,
+        )
+    };
+    assert_eq!(status, cudf_sys::CUDF_SUCCESS, "cudf_column_view_strings_to_host_ex failed");
+    assert_eq!(total_chars_bytes, 4, "sliced rows are \"bbb\" and \"c\"");
+    assert_eq!(offsets, [0, 3, 4], "offsets must be rebased to the slice");
+    assert_eq!(&chars[..4], b"bbbc", "chars must come from the sliced rows");
+
+    destroy_column_view(sliced);
     destroy_column_view(view);
     destroy_column(col);
 }

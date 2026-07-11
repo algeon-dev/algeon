@@ -959,15 +959,20 @@ cudf_status_t cudf_column_view_string_chars_ptr_and_size_ex(
       return CUDF_ERROR_INVALID_OPERATION;
     }
 
-    auto const active_bytes = static_cast<uint64_t>(last_offset - first_offset);
-    if (active_bytes >
+    // The returned pointer is the BASE of the chars buffer, and the slice's
+    // offsets index from that base, so the reported span must end at
+    // last_offset — not span last_offset - first_offset bytes. Otherwise a
+    // sliced view with first_offset > 0 under-reports the bound and rows near
+    // the end of the slice reference bytes past the declared span.
+    auto const span_bytes = static_cast<uint64_t>(last_offset);
+    if (span_bytes >
         static_cast<uint64_t>(std::numeric_limits<size_t>::max())) {
       set_error("string chars span exceeds size_t range");
       return CUDF_ERROR_INVALID_OPERATION;
     }
 
     *out_ptr = scv.chars_begin(exec->stream);
-    *out_size = static_cast<size_t>(active_bytes);
+    *out_size = static_cast<size_t>(span_bytes);
     return CUDF_SUCCESS;
   }
   CUDF_RUST_CATCH
@@ -1097,8 +1102,12 @@ cudf_status_t cudf_column_view_to_host_ex(cudf_column_view_handle handle,
       set_error("Buffer too small");
       return CUDF_ERROR_INVALID_OPERATION;
     }
-    // Copy from device to host.
-    CUDF_CUDA_TRY(cudaMemcpyAsync(host_buf, view->data<uint8_t>(), needed,
+    // Copy from device to host. data<uint8_t>() would advance by
+    // offset() * sizeof(uint8_t) bytes regardless of the element width, so
+    // compute the sliced start from head() with the real element size.
+    auto const *src = view->head<uint8_t>() +
+                      static_cast<size_t>(view->offset()) * elem_size;
+    CUDF_CUDA_TRY(cudaMemcpyAsync(host_buf, src, needed,
                                   cudaMemcpyDeviceToHost,
                                   exec->stream.value()));
     // This API promises the caller's host buffer is populated on return.
@@ -1371,8 +1380,10 @@ cudf_status_t cudf_column_view_strings_to_host_ex(
       return CUDF_ERROR_INVALID_OPERATION;
     }
 
-    // Account for view offset in the offsets child
-    auto offsets_data = offsets_view.data<int32_t>();
+    // Account for view offset: a sliced parent view keeps its full offsets
+    // child, so the active rows' offsets start at the parent's offset() in
+    // addition to any offset carried by the child itself.
+    auto offsets_data = offsets_view.data<int32_t>() + view->offset();
     CUDF_CUDA_TRY(cudaMemcpyAsync(offsets_buf, offsets_data,
                                   needed_offsets_bytes, cudaMemcpyDeviceToHost,
                                   exec->stream.value()));

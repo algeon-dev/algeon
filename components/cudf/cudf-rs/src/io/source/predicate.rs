@@ -549,7 +549,11 @@ fn parquet_reader_decimal_dtype(path: &Path, read_column: &str, read_index: usiz
 }
 
 fn parquet_descriptor_matches_column(descriptor: &ColumnDescriptor, column_name: &str) -> bool {
-    descriptor.name() == column_name || descriptor.path().parts().last().is_some_and(|part| part == column_name)
+    // `column_name` is a top-level schema column, so it may only match a leaf
+    // whose full dotted path is exactly that name (depth 1). Matching on leaf
+    // name alone would let a nested leaf like `s.id` shadow top-level `id`.
+    let parts = descriptor.path().parts();
+    parts.len() == 1 && parts[0] == column_name
 }
 
 fn parquet_decimal_precision_scale(descriptor: &ColumnDescriptor) -> Option<(i32, i32)> {
