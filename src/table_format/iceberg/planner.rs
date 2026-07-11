@@ -31,8 +31,8 @@ use iceberg::{
     scan::{FileScanTask, FileScanTaskDeleteFile},
     spec::{
         DataContentType, DataFile, DataFileFormat, Datum, Literal, Manifest, ManifestContentType, ManifestEntry,
-        ManifestFile, ManifestList, NestedField, PartitionSpec, PrimitiveLiteral, Schema as IcebergSchema,
-        SchemaRef as IcebergSchemaRef, SnapshotRef, Struct, Transform, Type,
+        ManifestFile, ManifestList, NameMapping as IcebergNameMapping, NestedField, PartitionSpec, PrimitiveLiteral,
+        Schema as IcebergSchema, SchemaRef as IcebergSchemaRef, SnapshotRef, Struct, Transform, Type,
     },
     table::Table,
 };

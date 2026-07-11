@@ -757,12 +757,14 @@ pub(super) fn append_task_facts(
         ));
     }
 
-    if task.name_mapping.is_some() {
-        plan.unsupported_features.push(TableFormatUnsupportedFeature::for_file(
-            TableFormatUnsupportedFeatureCode::IcebergNameMappingUnsupported,
-            file_id.clone(),
-            "Iceberg name mapping requires explicit native field-id mapping support",
-        ));
+    if let Some(name_mapping) = task.name_mapping.as_deref() {
+        if !name_mapping_is_projection_identity(name_mapping, task.schema(), &task.project_field_ids) {
+            plan.unsupported_features.push(TableFormatUnsupportedFeature::for_file(
+                TableFormatUnsupportedFeatureCode::IcebergNameMappingUnsupported,
+                file_id.clone(),
+                "Iceberg name mapping is not an identity of the scan schema; non-identity mappings require explicit native field-id mapping support",
+            ));
+        }
     }
 
     let partition_spec = task.partition_spec.as_deref();
@@ -855,6 +857,48 @@ pub(super) fn append_partition_values(
     }
     data_file.partition_values = values;
     Ok(())
+}
+
+/// Whether `mapping` resolves every projected top-level field exactly the way
+/// the native scan already resolves it — by the schema field name.
+///
+/// The native Parquet scan matches file columns by name
+/// (`append_projected_column_mapping` emits the schema field name as the file
+/// column name), so a name mapping is admissible iff following it can never
+/// disagree with name-based resolution:
+///
+/// - every projected field id has exactly one root mapped-field entry, whose
+///   single name is exactly the schema field name and which has no nested
+///   children, and
+/// - no other root entry claims that field name (an alias entry could bind the
+///   same file column to a different field id than name-based resolution).
+///
+/// Java writers attach exactly such identity mappings automatically (e.g.
+/// Spark's `add_files` imports of Parquet files that carry no field ids).
+/// Anything else keeps the structured rejection.
+pub(super) fn name_mapping_is_projection_identity(
+    mapping: &IcebergNameMapping,
+    schema: &IcebergSchema,
+    projected_field_ids: &[i32],
+) -> bool {
+    projected_field_ids.iter().all(|field_id| {
+        let Some(field) = schema.as_struct().field_by_id(*field_id) else {
+            return false;
+        };
+        let mut identity_entries = mapping.fields().iter().filter(|entry| entry.field_id() == Some(*field_id));
+        let Some(entry) = identity_entries.next() else {
+            return false;
+        };
+        if identity_entries.next().is_some() {
+            return false;
+        }
+        let identity = entry.fields().is_empty() && entry.names() == std::slice::from_ref(&field.name);
+        let name_claimed_elsewhere = mapping
+            .fields()
+            .iter()
+            .any(|other| other.field_id() != Some(*field_id) && other.names().contains(&field.name));
+        identity && !name_claimed_elsewhere
+    })
 }
 
 pub(super) fn append_projected_column_mapping(
