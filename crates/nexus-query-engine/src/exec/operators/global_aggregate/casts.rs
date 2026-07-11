@@ -113,6 +113,7 @@ fn cast_reduction_output_columns_impl(
 ) -> Result<DataFrame> {
     for expr in spec.aggr_exprs.iter().filter(|expr| {
         matches!(expr.function, AggregateFunction::Sum | AggregateFunction::Min | AggregateFunction::Max)
+            || matches!(expr.function, AggregateFunction::Median)
             || expr.function.is_floating_statistical()
     }) {
         let field = output_schema.field_with_name(expr.alias.as_str()).map_err(|_error| {

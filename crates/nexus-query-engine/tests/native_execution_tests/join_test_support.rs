@@ -443,21 +443,32 @@ pub(super) fn residual_validation_error(
     keys: Vec<JoinKey>,
     residual: Expr,
 ) -> nexus_query_engine::QueryError {
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
     let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
+    residual_validation_error_with_schema(join_type, keys, residual, schema, vec!["id"])
+}
+
+pub(super) fn residual_validation_error_with_schema(
+    join_type: JoinType,
+    keys: Vec<JoinKey>,
+    residual: Expr,
+    schema: Arc<Schema>,
+    read_columns: Vec<&str>,
+) -> nexus_query_engine::QueryError {
+    let runtime = Arc::new(cudf::Runtime::new().unwrap());
     let output_schema = Arc::new(Schema::new(vec![
         Field::new("left_id", DataType::Int32, true),
         Field::new("right_id", DataType::Int32, true),
     ]));
+    let read_columns = read_columns.into_iter().map(str::to_string).collect::<Vec<_>>();
     let left_source = LocalParquetSource::new(
         "/tmp/does-not-need-to-exist-for-residual-validation-left.parquet",
         Arc::clone(&schema),
-        vec!["id".into()],
+        read_columns.clone(),
     );
     let right_source = LocalParquetSource::new(
         "/tmp/does-not-need-to-exist-for-residual-validation-right.parquet",
         Arc::clone(&schema),
-        vec!["id".into()],
+        read_columns,
     );
 
     let mut builder = QueryPlanBuilder::new();

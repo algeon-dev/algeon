@@ -228,6 +228,12 @@ fn lower_source_reader_ast_expr(
         | Expr::Substring { .. }
         | Expr::Lower(_)
         | Expr::Upper(_)
+        | Expr::Trim { .. }
+        | Expr::LTrim { .. }
+        | Expr::RTrim { .. }
+        | Expr::StringContains { .. }
+        | Expr::StartsWith { .. }
+        | Expr::EndsWith { .. }
         | Expr::StringLength { .. }
         | Expr::RegexpReplace { .. }
         | Expr::Concat(_)
@@ -449,10 +455,14 @@ fn cudf_source_reader_predicate_literal(expr: &Expr) -> Result<CudfSourceReaderP
             scale: crate::datatypes::arrow_decimal_scale_to_cudf_scale(*scale),
         }),
         LiteralValue::Date32(value) => Ok(CudfSourceReaderPredicateLiteral::Date32(*value)),
-        LiteralValue::Timestamp { .. } | LiteralValue::Duration { .. } => Err(QueryError::new(
+        LiteralValue::Date64(_)
+        | LiteralValue::Time32 { .. }
+        | LiteralValue::Time64 { .. }
+        | LiteralValue::Timestamp { .. }
+        | LiteralValue::Duration { .. } => Err(QueryError::new(
             QueryErrorCode::UnsupportedExpression,
             OP_READER_PREDICATE,
-            "source-aware reader predicates do not yet support temporal timestamp/duration literals",
+            "source-aware reader predicates do not yet support temporal literals",
         )
         .with_fact("literal", value)),
         LiteralValue::Null(data_type) => Err(QueryError::new(
@@ -578,6 +588,13 @@ fn lower_source_reader_ast_literal(
             _ => runtime.decimal128_raw_scalar(*raw, crate::datatypes::arrow_decimal_scale_to_cudf_scale(*scale)),
         },
         LiteralValue::Date32(value) => runtime.timestamp_raw_scalar(i64::from(*value), cudf::TimestampResolution::Days),
+        LiteralValue::Date64(value) => runtime.timestamp_raw_scalar(*value, cudf::TimestampResolution::Milliseconds),
+        LiteralValue::Time32 { raw, unit } => {
+            runtime.duration_raw_scalar(i64::from(*raw), timestamp_unit_to_cudf_resolution(unit))
+        },
+        LiteralValue::Time64 { raw, unit } => {
+            runtime.duration_raw_scalar(*raw, timestamp_unit_to_cudf_resolution(unit))
+        },
         LiteralValue::Timestamp { raw, unit } => {
             runtime.timestamp_raw_scalar(*raw, timestamp_unit_to_cudf_resolution(unit))
         },

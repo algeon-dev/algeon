@@ -8,6 +8,8 @@ pub(in crate::native_report) fn candidate_shape_family(candidate: &GpuCandidate)
 
     let root = if shape.starts_with("SortPreservingMergeExec(fetch)") {
         "sort_preserving_merge_fetch"
+    } else if shape.starts_with("SortPreservingMergeExec") {
+        "sort_preserving_merge"
     } else if shape.starts_with("LocalLimitExec") {
         "local_limit_sort"
     } else if shape.starts_with("SortExec(fetch)") {
@@ -91,8 +93,45 @@ fn root_is_aggregate_shape(shape: &str) -> bool {
         || shape.starts_with("LocalLimitExec(SortExec(FinalAggregateExec")
         || shape.starts_with("LocalLimitExec(SortExec(ProjectionExec(AggregateExec")
         || shape.starts_with("LocalLimitExec(SortExec(ProjectionExec(FinalAggregateExec")
+        || shape.starts_with("SortPreservingMergeExec(AggregateExec")
+        || shape.starts_with("SortPreservingMergeExec(FinalAggregateExec")
+        || shape.starts_with("SortPreservingMergeExec(ProjectionExec(AggregateExec")
+        || shape.starts_with("SortPreservingMergeExec(ProjectionExec(FinalAggregateExec")
+        || shape.starts_with("SortPreservingMergeExec(SortExec(AggregateExec")
+        || shape.starts_with("SortPreservingMergeExec(SortExec(FinalAggregateExec")
+        || shape.starts_with("SortPreservingMergeExec(SortExec(ProjectionExec(AggregateExec")
+        || shape.starts_with("SortPreservingMergeExec(SortExec(ProjectionExec(FinalAggregateExec")
+        || shape.starts_with("SortPreservingMergeExec(fetch)(AggregateExec")
+        || shape.starts_with("SortPreservingMergeExec(fetch)(FinalAggregateExec")
+        || shape.starts_with("SortPreservingMergeExec(fetch)(ProjectionExec(AggregateExec")
+        || shape.starts_with("SortPreservingMergeExec(fetch)(ProjectionExec(FinalAggregateExec")
         || shape.starts_with("SortPreservingMergeExec(fetch)(SortExec(AggregateExec")
         || shape.starts_with("SortPreservingMergeExec(fetch)(SortExec(FinalAggregateExec")
         || shape.starts_with("SortPreservingMergeExec(fetch)(SortExec(ProjectionExec(AggregateExec")
         || shape.starts_with("SortPreservingMergeExec(fetch)(SortExec(ProjectionExec(FinalAggregateExec")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sort_preserving_merge_shapes_keep_aggregate_family() {
+        for shape in [
+            "SortPreservingMergeExec(AggregateExec(LocalParquetScan))",
+            "SortPreservingMergeExec(SortExec(AggregateExec(LocalParquetScan)))",
+        ] {
+            let candidate = GpuCandidate::with_operator_count(shape, 2, 3);
+
+            assert_eq!(candidate_shape_family(&candidate), "sort_preserving_merge_local_parquet_aggregate", "{shape}");
+        }
+    }
+
+    #[test]
+    fn sort_preserving_merge_fetch_without_child_sort_keeps_aggregate_family() {
+        let candidate =
+            GpuCandidate::with_operator_count("SortPreservingMergeExec(fetch)(AggregateExec(LocalParquetScan))", 2, 2);
+
+        assert_eq!(candidate_shape_family(&candidate), "sort_preserving_merge_fetch_local_parquet_aggregate");
+    }
 }

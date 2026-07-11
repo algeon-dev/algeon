@@ -446,6 +446,40 @@ fn filtered_global_strategy_rejects_large_statistical_state() {
 }
 
 #[test]
+fn filtered_global_strategy_rejects_large_median_state() {
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("value", DataType::Float64, true),
+        Field::new("flag", DataType::Boolean, true),
+    ]));
+    let spec = AggregateSpec::new(
+        Vec::new(),
+        vec![
+            AggregateExpr::new(AggregateFunction::Median, Expr::column("value"), "median_value")
+                .with_filter(Some(Expr::column("flag"))),
+        ],
+    );
+    let error = select_filtered_global_aggregate_strategy(
+        &spec,
+        &schema,
+        300_000_000,
+        8 * 1024 * 1024 * 1024,
+        AggregateExecutionStage::Single,
+    )
+    .expect_err("large filtered median state should be rejected instead of segmented");
+
+    assert_eq!(error.code(), QueryErrorCode::UnsupportedPlanShape);
+    assert_eq!(error.fact_value("filtered_aggregate_scope"), Some("global"));
+    assert_eq!(error.fact_value("filtered_input_unsupported_stateful_merge"), Some("true"));
+    assert_eq!(error.fact_value("filtered_input_materialization_strategy"), Some("rejected"));
+    assert_eq!(
+        error.fact_value("rejected_candidate_strategies"),
+        Some(
+            "filtered_global_single_pass_materialized:filtered_input_materialization_estimate_exceeds_threshold;filtered_global_segmented_state:unsupported_stateful_filtered_merge"
+        )
+    );
+}
+
+#[test]
 fn filtered_global_segmented_failure_records_error_budget_progress_and_partial_evidence() {
     let (schema, spec) = filtered_global_q09_like_spec(15);
     let decision = select_filtered_global_aggregate_strategy(
@@ -574,6 +608,41 @@ fn filtered_grouped_strategy_rejects_large_nunique_state() {
     assert_eq!(error.fact_value("filtered_aggregate_scope"), Some("grouped"));
     assert_eq!(error.fact_value("filtered_input_unsupported_stateful_merge"), Some("true"));
     assert_eq!(error.fact_value("filtered_input_materialization_strategy"), Some("rejected"));
+}
+
+#[test]
+fn filtered_grouped_strategy_rejects_large_median_state() {
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("key", DataType::Int32, false),
+        Field::new("value", DataType::Float64, true),
+        Field::new("flag", DataType::Boolean, true),
+    ]));
+    let spec = AggregateSpec::new(
+        vec![Expr::column("key")],
+        vec![
+            AggregateExpr::new(AggregateFunction::Median, Expr::column("value"), "median_value")
+                .with_filter(Some(Expr::column("flag"))),
+        ],
+    );
+    let error = select_filtered_grouped_aggregate_strategy(
+        &spec,
+        &schema,
+        300_000_000,
+        8 * 1024 * 1024 * 1024,
+        AggregateExecutionStage::Single,
+    )
+    .expect_err("large filtered grouped median state should be rejected instead of segmented");
+
+    assert_eq!(error.code(), QueryErrorCode::UnsupportedPlanShape);
+    assert_eq!(error.fact_value("filtered_aggregate_scope"), Some("grouped"));
+    assert_eq!(error.fact_value("filtered_input_unsupported_stateful_merge"), Some("true"));
+    assert_eq!(error.fact_value("filtered_input_materialization_strategy"), Some("rejected"));
+    assert_eq!(
+        error.fact_value("rejected_candidate_strategies"),
+        Some(
+            "filtered_grouped_single_pass_materialized:filtered_input_materialization_estimate_exceeds_threshold;filtered_grouped_segmented_state:unsupported_stateful_filtered_merge"
+        )
+    );
 }
 
 #[test]

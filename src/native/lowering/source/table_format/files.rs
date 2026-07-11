@@ -54,9 +54,12 @@ pub(super) fn table_format_local_parquet_file(
     if !file.position_delete_files.is_empty() {
         native_file = native_file.with_position_delete_files(table_format_position_delete_files(file)?);
     }
+    if !file.equality_delete_files.is_empty() {
+        native_file = native_file.with_equality_delete_files(table_format_equality_delete_files(scan_plan, file)?);
+    }
     if requirements.read_columns.is_empty()
         && file.row_groups.is_none()
-        && !file.has_position_delete_files()
+        && !file.has_row_delete_files()
         && let Some(row_count) = file.row_count
     {
         native_file = native_file.with_row_group_rows(vec![row_count]);
@@ -70,6 +73,59 @@ pub(super) fn table_format_local_parquet_file(
         }
     }
     Ok(attach_row_group_byte_metadata(native_file, requirements))
+}
+
+pub(super) fn table_format_equality_delete_files(
+    scan_plan: &TableFormatScanPlan,
+    file: &TableFormatDataFile,
+) -> Result<Vec<NativeParquetEqualityDeleteFile>, FallbackReason> {
+    file.equality_delete_files
+        .iter()
+        .map(|delete_file| {
+            if !delete_file.is_supported_equality_delete() {
+                return Err(FallbackReason::IcebergDeleteFilesUnsupported);
+            }
+            let equality_ids = delete_file.equality_ids.clone().ok_or(FallbackReason::IcebergDeleteFilesUnsupported)?;
+            let equality_columns = equality_delete_column_names(scan_plan, &equality_ids)?;
+            let resolved_source =
+                delete_file.resolved_parquet_source.clone().ok_or(FallbackReason::IcebergDeleteFilesUnsupported)?;
+            let mut native_delete = NativeParquetEqualityDeleteFile::from_resolved_parquet_source(
+                delete_file.id.clone(),
+                resolved_source,
+                equality_ids,
+                equality_columns,
+            )
+            .map_err(|_error| FallbackReason::IcebergDeleteFilesUnsupported)?;
+            if let Some(size_bytes) = delete_file.size_bytes {
+                native_delete = native_delete.with_file_size_bytes(size_bytes);
+            }
+            if let Some(row_count) = delete_file.row_count {
+                native_delete = native_delete.with_row_count(row_count);
+            }
+            Ok(native_delete)
+        })
+        .collect()
+}
+
+fn equality_delete_column_names(
+    scan_plan: &TableFormatScanPlan,
+    equality_ids: &[i32],
+) -> Result<Vec<String>, FallbackReason> {
+    equality_ids
+        .iter()
+        .map(|field_id| {
+            let column = scan_plan
+                .projected_columns
+                .iter()
+                .chain(scan_plan.pure_filter_columns.iter())
+                .find(|column| column.field_id == Some(*field_id))
+                .ok_or(FallbackReason::IcebergDeleteFilesUnsupported)?;
+            if column.source != TableFormatColumnSource::DirectTopLevelFileColumn {
+                return Err(FallbackReason::IcebergDeleteFilesUnsupported);
+            }
+            column.source_name.clone().ok_or(FallbackReason::IcebergDeleteFilesUnsupported)
+        })
+        .collect()
 }
 
 pub(super) fn table_format_position_delete_files(

@@ -53,6 +53,26 @@ pub enum LiteralValue {
     },
     /// Arrow `Date32` scalar, encoded as days since the Unix epoch.
     Date32(i32),
+    /// Arrow `Date64` scalar, encoded as milliseconds since the Unix epoch.
+    Date64(i64),
+    /// Arrow `Time32` scalar.
+    ///
+    /// `raw` is the count of `unit` intervals since midnight.
+    Time32 {
+        /// Time-of-day value in the given unit.
+        raw: i32,
+        /// Time resolution. Arrow permits only seconds and milliseconds.
+        unit: TimeUnit,
+    },
+    /// Arrow `Time64` scalar.
+    ///
+    /// `raw` is the count of `unit` intervals since midnight.
+    Time64 {
+        /// Time-of-day value in the given unit.
+        raw: i64,
+        /// Time resolution. Arrow permits only microseconds and nanoseconds.
+        unit: TimeUnit,
+    },
     /// Arrow timestamp scalar without a timezone.
     ///
     /// `raw` is the count of `unit` intervals since the Unix epoch.
@@ -103,6 +123,9 @@ impl LiteralValue {
             Self::LargeUtf8(_) => DataType::LargeUtf8,
             Self::Decimal128 { precision, scale, .. } => DataType::Decimal128(*precision, *scale),
             Self::Date32(_) => DataType::Date32,
+            Self::Date64(_) => DataType::Date64,
+            Self::Time32 { unit, .. } => DataType::Time32(*unit),
+            Self::Time64 { unit, .. } => DataType::Time64(*unit),
             Self::Timestamp { unit, .. } => DataType::Timestamp(*unit, None),
             Self::Duration { unit, .. } => DataType::Duration(*unit),
             Self::IntervalMonthDayNano { .. } => DataType::Interval(IntervalUnit::MonthDayNano),
@@ -130,6 +153,9 @@ impl fmt::Display for LiteralValue {
                 write!(f, "DECIMAL128({raw}, precision={precision}, scale={scale})")
             },
             Self::Date32(value) => write!(f, "DATE32({value})"),
+            Self::Date64(value) => write!(f, "DATE64({value})"),
+            Self::Time32 { raw, unit } => write!(f, "TIME32({raw}, {unit:?})"),
+            Self::Time64 { raw, unit } => write!(f, "TIME64({raw}, {unit:?})"),
             Self::Timestamp { raw, unit } => write!(f, "TIMESTAMP({raw}, {unit:?})"),
             Self::Duration { raw, unit } => write!(f, "DURATION({raw}, {unit:?})"),
             Self::IntervalMonthDayNano { months, days, nanoseconds } => {

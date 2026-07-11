@@ -163,7 +163,7 @@ pub(super) fn file_request(source: &LocalParquetSource, file: &LocalParquetFile)
     if !file.resolved_source.remote_host_buffer_ranged_enabled {
         return None;
     }
-    if file.has_position_delete_files() {
+    if file.has_row_delete_files() {
         return None;
     }
     if !matches!(file.location, crate::source::ParquetSourceLocation::ObjectStoreUri { .. }) {

@@ -181,6 +181,223 @@ fn pushed_down_parquet_predicate_without_filter_is_reader_pushdown() {
 }
 
 #[test]
+fn pushed_down_parquet_predicate_with_source_limit_lowers_limit_after_reader_predicate() {
+    let dir = unique_temp_dir("datafusion-nexus-native-lowering-pushed-predicate-source-limit");
+    let path = dir.join("input.parquet");
+    write_numeric_parquet_file(&path);
+    let scan = parquet_scan_with_source_limit(parquet_scan_with_pushed_down_predicate(&path), 3);
+
+    let result = lower_physical_plan_to_native(scan);
+
+    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.source_diagnostics.len(), 1);
+    assert_eq!(result.source_diagnostics[0].predicate_disposition.as_str(), "reader_pushdown");
+    assert!(result.source_diagnostics[0].rejected_features.is_empty());
+    let source = native_local_parquet_source(&result.plans[0]);
+    assert_eq!(source.scan_limit, None, "pushed predicates must be applied before the scan limit");
+    assert!(source.reader_predicate.is_some());
+    let limits = result.plans[0]
+        .nodes()
+        .iter()
+        .filter_map(|node| match &node.kind {
+            PlanNode::Limit(limit) => Some(limit),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(limits.len(), 1, "native plan should apply the scan limit after the predicate:\n{}", result.plans[0]);
+    assert_eq!(limits[0].spec.fetch, Some(3));
+    assert!(native_filter_exprs(&result.plans[0]).is_empty());
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn pushed_down_post_scan_predicate_with_source_limit_lowers_filter_then_limit() {
+    let dir = unique_temp_dir("datafusion-nexus-native-lowering-pushed-post-scan-predicate-source-limit");
+    let path = dir.join("input.parquet");
+    write_household_demographics_like_parquet_file(&path);
+    let scan = parquet_scan_with_source_limit(parquet_scan_with_pushed_down_case_decimal_divide_predicate(&path), 3);
+
+    let result = lower_physical_plan_to_native(scan);
+
+    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.source_diagnostics.len(), 1);
+    assert_eq!(result.source_diagnostics[0].predicate_disposition.as_str(), "native_post_scan_only");
+    assert!(result.source_diagnostics[0].rejected_features.is_empty());
+    let source = native_local_parquet_source(&result.plans[0]);
+    assert_eq!(source.scan_limit, None, "pushed predicates must be applied before the scan limit");
+    assert!(source.reader_predicate.is_none());
+    let post_scan_filters = native_filter_exprs(&result.plans[0]);
+    assert_eq!(post_scan_filters.len(), 1);
+    let limit_node = result.plans[0]
+        .nodes()
+        .iter()
+        .find_map(|node| match &node.kind {
+            PlanNode::Limit(limit) if limit.spec.fetch == Some(3) => Some(limit),
+            _ => None,
+        })
+        .expect("native plan should apply scan limit after post-scan filter");
+    let limit_input = result.plans[0].node(limit_node.input).expect("limit input should exist");
+    let limit_is_after_filter = match &limit_input.kind {
+        PlanNode::Filter(_) => true,
+        PlanNode::Projection(projection) => {
+            result.plans[0].node(projection.input).is_some_and(|node| matches!(node.kind, PlanNode::Filter(_)))
+        },
+        _ => false,
+    };
+    assert!(limit_is_after_filter, "limit should be above the predicate filter:\n{}", result.plans[0]);
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn empty_local_parquet_scan_lowers_to_empty_literal_source() {
+    let dir = unique_temp_dir("datafusion-nexus-native-lowering-empty-local-scan");
+    let path = dir.join("input.parquet");
+    write_numeric_parquet_file(&path);
+    let scan = parquet_scan_without_files(parquet_scan_with_projection_indices(&path, vec![0, 2]));
+
+    let result = lower_physical_plan_to_native(scan);
+
+    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    assert!(result.source_diagnostics.is_empty());
+    assert!(native_local_parquet_sources(&result.plans[0]).is_empty());
+    let literal_sources = native_literal_batch_sources(&result.plans[0]);
+    assert_eq!(literal_sources.len(), 1);
+    assert_eq!(literal_sources[0].row_count(), 0);
+    let field_names = literal_sources[0].schema.fields().iter().map(|field| field.name().as_str()).collect::<Vec<_>>();
+    assert_eq!(field_names, vec!["key", "m00"]);
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn empty_s3_parquet_scan_lowers_to_empty_literal_source() {
+    let dir = unique_temp_dir("datafusion-nexus-native-lowering-empty-s3-scan");
+    let path = dir.join("input.parquet");
+    write_numeric_parquet_file(&path);
+    let scan = parquet_scan_without_files(parquet_scan_with_object_store_url_and_location(
+        &path,
+        ObjectStoreUrl::parse("s3://bucket").unwrap(),
+        "table/input.parquet",
+    ));
+
+    let result = lower_physical_plan_to_native(scan);
+
+    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    assert!(result.source_diagnostics.is_empty());
+    assert!(native_local_parquet_sources(&result.plans[0]).is_empty());
+    let literal_sources = native_literal_batch_sources(&result.plans[0]);
+    assert_eq!(literal_sources.len(), 1);
+    assert_eq!(literal_sources[0].row_count(), 0);
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn empty_local_parquet_scan_with_filter_projection_lowers_to_projected_empty_literal_source() {
+    let dir = unique_temp_dir("datafusion-nexus-native-lowering-empty-local-filter-projection");
+    let path = dir.join("input.parquet");
+    write_numeric_parquet_file(&path);
+    let scan = parquet_scan_without_files(parquet_scan(&path));
+    let scan_schema = scan.schema();
+    let predicate =
+        binary(col("payload", &scan_schema).unwrap(), Operator::GtEq, lit(ScalarValue::Int32(Some(10))), &scan_schema)
+            .unwrap();
+    let plan: Arc<dyn ExecutionPlan> = Arc::new(
+        datafusion::physical_plan::filter::FilterExecBuilder::new(predicate, scan)
+            .apply_projection(Some(vec![0, 2]))
+            .unwrap()
+            .build()
+            .unwrap(),
+    );
+
+    let result = lower_physical_plan_to_native(plan);
+
+    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    assert!(result.source_diagnostics.is_empty());
+    assert!(native_filter_exprs(&result.plans[0]).is_empty());
+    assert!(native_local_parquet_sources(&result.plans[0]).is_empty());
+    let literal_sources = native_literal_batch_sources(&result.plans[0]);
+    assert_eq!(literal_sources.len(), 1);
+    assert_eq!(literal_sources[0].row_count(), 0);
+    let field_names = literal_sources[0].schema.fields().iter().map(|field| field.name().as_str()).collect::<Vec<_>>();
+    assert_eq!(field_names, vec!["key", "m00"]);
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn empty_local_parquet_scan_with_source_limit_lowers_to_empty_literal_source() {
+    let dir = unique_temp_dir("datafusion-nexus-native-lowering-empty-local-source-limit");
+    let path = dir.join("input.parquet");
+    write_numeric_parquet_file(&path);
+    let scan = parquet_scan_without_files(parquet_scan_with_source_limit(parquet_scan(&path), 3));
+
+    let result = lower_physical_plan_to_native(scan);
+
+    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    assert!(result.source_diagnostics.is_empty());
+    assert!(native_local_parquet_sources(&result.plans[0]).is_empty());
+    assert!(result.plans[0].nodes().iter().all(|node| !matches!(node.kind, PlanNode::Limit(_))));
+    let literal_sources = native_literal_batch_sources(&result.plans[0]);
+    assert_eq!(literal_sources.len(), 1);
+    assert_eq!(literal_sources[0].row_count(), 0);
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn empty_local_parquet_scan_with_pushed_predicate_and_source_limit_lowers_to_empty_literal_source() {
+    let dir = unique_temp_dir("datafusion-nexus-native-lowering-empty-local-predicate-source-limit");
+    let path = dir.join("input.parquet");
+    write_numeric_parquet_file(&path);
+    let scan =
+        parquet_scan_without_files(parquet_scan_with_source_limit(parquet_scan_with_pushed_down_predicate(&path), 3));
+
+    let result = lower_physical_plan_to_native(scan);
+
+    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    assert!(result.source_diagnostics.is_empty());
+    assert!(native_local_parquet_sources(&result.plans[0]).is_empty());
+    assert!(native_filter_exprs(&result.plans[0]).is_empty());
+    assert!(result.plans[0].nodes().iter().all(|node| !matches!(node.kind, PlanNode::Limit(_))));
+    let literal_sources = native_literal_batch_sources(&result.plans[0]);
+    assert_eq!(literal_sources.len(), 1);
+    assert_eq!(literal_sources[0].row_count(), 0);
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn empty_local_parquet_aggregate_lowers_through_literal_source() {
+    let dir = unique_temp_dir("datafusion-nexus-native-lowering-empty-local-aggregate");
+    let path = dir.join("input.parquet");
+    write_numeric_parquet_file(&path);
+    let plan = count_only_sort_limit_plan(parquet_scan_without_files(parquet_scan(&path)));
+
+    let result = lower_physical_plan_to_native(plan);
+
+    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    assert!(result.source_diagnostics.is_empty());
+    assert!(native_local_parquet_sources(&result.plans[0]).is_empty());
+    let literal_sources = native_literal_batch_sources(&result.plans[0]);
+    assert_eq!(literal_sources.len(), 1);
+    assert_eq!(literal_sources[0].row_count(), 0);
+    assert_eq!(native_aggregate_functions(&result.plans[0]), vec![AggregateFunction::Count]);
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
 fn pushed_down_scan_only_decimal_predicate_uses_reader_pushdown() {
     let dir = unique_temp_dir("datafusion-nexus-native-lowering-pushed-decimal-post-scan");
     let path = dir.join("input.parquet");
@@ -355,11 +572,151 @@ fn full_file_byte_range_coalesces_to_native_source() {
 }
 
 #[test]
-fn partial_byte_range_is_rejected_with_source_reason() {
+fn partial_byte_range_maps_to_row_group_selection() {
     let dir = unique_temp_dir("datafusion-nexus-native-lowering-partial-ranged-file");
     let path = dir.join("input.parquet");
-    write_numeric_parquet_file(&path);
-    let scan = parquet_scan_with_partial_byte_range(&path);
+    write_row_group_pruning_parquet_file(&path);
+    let row_group_offsets = row_group_range_pruning_offsets(&path);
+    assert!(row_group_offsets.len() >= 2, "fixture must have at least two row groups");
+    let scan = parquet_scan_with_explicit_byte_ranges(&path, vec![(row_group_offsets[0], row_group_offsets[1])]);
+    let plan = aggregate_sort_limit_plan(scan, Operator::Plus);
+
+    let result = lower_physical_plan_to_native(plan);
+
+    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    let source = native_local_parquet_source(&result.plans[0]);
+    assert_eq!(source.file_count(), 1);
+    assert_eq!(source.files[0].row_groups.as_deref(), Some(&[0][..]));
+    assert_eq!(source.diagnostics.ranged_file_count, 1);
+    assert_eq!(source.diagnostics.byte_range_disposition.as_str(), "row_group_selection");
+    assert_eq!(source.diagnostics.selected_row_groups, Some(1));
+    assert!(source.diagnostics.direct_device_read);
+    assert!(source.diagnostics.rejected_features.is_empty());
+    assert_eq!(result.source_diagnostics.len(), 1);
+    assert_eq!(result.source_diagnostics[0].ranged_file_count, 1);
+    assert_eq!(result.source_diagnostics[0].byte_range_disposition.as_str(), "row_group_selection");
+    assert_eq!(result.source_diagnostics[0].selected_row_groups, Some(1));
+    assert!(result.source_diagnostics[0].rejected_features.is_empty());
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn partial_byte_range_owns_row_groups_by_start_offset_boundaries() {
+    let dir = unique_temp_dir("datafusion-nexus-native-lowering-row-group-byte-range");
+    let path = dir.join("input.parquet");
+    write_row_group_pruning_parquet_file(&path);
+    let row_group_offsets = row_group_range_pruning_offsets(&path);
+    assert!(row_group_offsets.len() >= 4, "fixture must have at least four row groups");
+    let scan = parquet_scan_with_explicit_byte_ranges(&path, vec![(row_group_offsets[1], row_group_offsets[3])]);
+    let plan = aggregate_sort_limit_plan(scan, Operator::Plus);
+
+    let result = lower_physical_plan_to_native(plan);
+
+    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    let source = native_local_parquet_source(&result.plans[0]);
+    assert_eq!(source.files[0].row_groups.as_deref(), Some(&[1, 2][..]));
+    assert_eq!(source.diagnostics.ranged_file_count, 1);
+    assert_eq!(source.diagnostics.byte_range_disposition.as_str(), "row_group_selection");
+    assert_eq!(source.diagnostics.selected_row_groups, Some(2));
+    assert!(source.diagnostics.direct_device_read);
+    assert!(source.diagnostics.rejected_features.is_empty());
+    assert_eq!(result.source_diagnostics[0].byte_range_disposition.as_str(), "row_group_selection");
+    assert_eq!(result.source_diagnostics[0].selected_row_groups, Some(2));
+    assert!(result.source_diagnostics[0].rejected_features.is_empty());
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn partial_byte_range_with_access_plan_lowers_to_selected_row_groups() {
+    let dir = unique_temp_dir("datafusion-nexus-native-lowering-ranged-access-plan");
+    let path = dir.join("input.parquet");
+    write_row_group_pruning_parquet_file(&path);
+    let row_group_offsets = row_group_range_pruning_offsets(&path);
+    assert!(row_group_offsets.len() >= 4, "fixture must have at least four row groups");
+    let access_plan = ParquetAccessPlan::new(vec![
+        RowGroupAccess::Skip,
+        RowGroupAccess::Scan,
+        RowGroupAccess::Skip,
+        RowGroupAccess::Scan,
+    ]);
+    let scan = parquet_scan_with_explicit_byte_ranges_and_access_plan(
+        &path,
+        vec![(row_group_offsets[1], row_group_offsets[3])],
+        access_plan,
+    );
+    let plan = aggregate_sort_limit_plan(scan, Operator::Plus);
+
+    let result = lower_physical_plan_to_native(plan);
+
+    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    let source = native_local_parquet_source(&result.plans[0]);
+    assert_eq!(source.file_count(), 1);
+    assert_eq!(source.files[0].row_groups.as_deref(), Some(&[1][..]));
+    assert_eq!(source.diagnostics.ranged_file_count, 1);
+    assert_eq!(source.diagnostics.byte_range_disposition.as_str(), "row_group_selection");
+    assert_eq!(source.diagnostics.selected_row_groups, Some(1));
+    assert!(source.diagnostics.direct_device_read);
+    assert!(source.diagnostics.rejected_features.is_empty());
+    assert_eq!(result.source_diagnostics.len(), 1);
+    assert_eq!(result.source_diagnostics[0].byte_range_disposition.as_str(), "row_group_selection");
+    assert_eq!(result.source_diagnostics[0].selected_row_groups, Some(1));
+    assert!(result.source_diagnostics[0].rejected_features.is_empty());
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn partial_byte_range_ignores_row_level_selection_outside_range() {
+    let dir = unique_temp_dir("datafusion-nexus-native-lowering-ranged-selection-outside");
+    let path = dir.join("input.parquet");
+    write_row_group_pruning_parquet_file(&path);
+    let row_group_offsets = row_group_range_pruning_offsets(&path);
+    assert!(row_group_offsets.len() >= 4, "fixture must have at least four row groups");
+    let row_selection = RowSelection::from(vec![RowSelector::select(1), RowSelector::skip(1)]);
+    let access_plan = ParquetAccessPlan::new(vec![
+        RowGroupAccess::Selection(row_selection),
+        RowGroupAccess::Scan,
+        RowGroupAccess::Skip,
+        RowGroupAccess::Skip,
+    ]);
+    let scan = parquet_scan_with_explicit_byte_ranges_and_access_plan(
+        &path,
+        vec![(row_group_offsets[1], row_group_offsets[2])],
+        access_plan,
+    );
+    let plan = aggregate_sort_limit_plan(scan, Operator::Plus);
+
+    let result = lower_physical_plan_to_native(plan);
+
+    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    let source = native_local_parquet_source(&result.plans[0]);
+    assert_eq!(source.files[0].row_groups.as_deref(), Some(&[1][..]));
+    assert_eq!(source.diagnostics.byte_range_disposition.as_str(), "row_group_selection");
+    assert_eq!(source.diagnostics.selected_row_groups, Some(1));
+    assert!(source.diagnostics.rejected_features.is_empty());
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn partial_byte_range_rejects_access_plan_length_mismatch() {
+    let dir = unique_temp_dir("datafusion-nexus-native-lowering-ranged-access-plan-len");
+    let path = dir.join("input.parquet");
+    write_row_group_pruning_parquet_file(&path);
+    let row_group_offsets = row_group_range_pruning_offsets(&path);
+    assert!(row_group_offsets.len() >= 4, "fixture must have at least four row groups");
+    let access_plan = ParquetAccessPlan::new(vec![RowGroupAccess::Scan]);
+    let scan = parquet_scan_with_explicit_byte_ranges_and_access_plan(
+        &path,
+        vec![(row_group_offsets[2], row_group_offsets[3])],
+        access_plan,
+    );
     let plan = aggregate_sort_limit_plan(scan, Operator::Plus);
 
     let result = lower_physical_plan_to_native(plan);
@@ -370,8 +727,6 @@ fn partial_byte_range_is_rejected_with_source_reason() {
         result.report.outcomes()[0],
         CandidateOutcome::Rejected { reason: FallbackReason::NativeSourceByteRange, .. }
     ));
-    assert_eq!(result.source_diagnostics.len(), 1);
-    assert_eq!(result.source_diagnostics[0].ranged_file_count, 1);
     assert_eq!(result.source_diagnostics[0].byte_range_disposition.as_str(), "rejected");
     assert!(result.source_diagnostics[0].rejected_features.iter().any(|feature| feature.as_str() == "byte_range"));
 
@@ -379,17 +734,19 @@ fn partial_byte_range_is_rejected_with_source_reason() {
 }
 
 #[test]
-fn partial_byte_range_with_access_plan_lowers_to_selected_row_groups() {
-    let dir = unique_temp_dir("datafusion-nexus-native-lowering-ranged-access-plan");
-    let path = dir.join("input.parquet");
-    write_numeric_parquet_file(&path);
-    let access_plan = ParquetAccessPlan::new(vec![
-        RowGroupAccess::Skip,
-        RowGroupAccess::Scan,
-        RowGroupAccess::Skip,
-        RowGroupAccess::Scan,
-    ]);
-    let scan = parquet_scan_with_partial_byte_range_and_access_plan(&path, access_plan);
+fn mixed_partial_byte_range_and_full_file_reports_selected_row_group_total() {
+    let dir = unique_temp_dir("datafusion-nexus-native-lowering-mixed-ranged-files");
+    let first = dir.join("part-000.parquet");
+    let second = dir.join("part-001.parquet");
+    write_row_group_pruning_parquet_file(&first);
+    write_row_group_pruning_parquet_file(&second);
+    let row_group_offsets = row_group_range_pruning_offsets(&first);
+    assert!(row_group_offsets.len() >= 2, "fixture must have at least two row groups");
+    let scan = parquet_scan_with_named_file_byte_ranges(
+        &dir,
+        "part-000.parquet",
+        vec![(row_group_offsets[0], row_group_offsets[1])],
+    );
     let plan = aggregate_sort_limit_plan(scan, Operator::Plus);
 
     let result = lower_physical_plan_to_native(plan);
@@ -397,17 +754,12 @@ fn partial_byte_range_with_access_plan_lowers_to_selected_row_groups() {
     assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
     let source = native_local_parquet_source(&result.plans[0]);
-    assert_eq!(source.file_count(), 1);
-    assert_eq!(source.files[0].row_groups.as_deref(), Some(&[1, 3][..]));
+    assert_eq!(source.file_count(), 2);
     assert_eq!(source.diagnostics.ranged_file_count, 1);
     assert_eq!(source.diagnostics.byte_range_disposition.as_str(), "row_group_selection");
-    assert_eq!(source.diagnostics.selected_row_groups, Some(2));
-    assert!(source.diagnostics.direct_device_read);
+    assert_eq!(source.diagnostics.selected_row_groups, Some(5));
+    assert_eq!(result.source_diagnostics[0].selected_row_groups, Some(5));
     assert!(source.diagnostics.rejected_features.is_empty());
-    assert_eq!(result.source_diagnostics.len(), 1);
-    assert_eq!(result.source_diagnostics[0].byte_range_disposition.as_str(), "row_group_selection");
-    assert_eq!(result.source_diagnostics[0].selected_row_groups, Some(2));
-    assert!(result.source_diagnostics[0].rejected_features.is_empty());
 
     fs::remove_dir_all(dir).unwrap();
 }
@@ -491,8 +843,101 @@ fn overlapping_byte_ranges_are_rejected_with_source_reason() {
     fs::remove_dir_all(dir).unwrap();
 }
 
+fn assert_s3_remote_native_source(source: &nexus_query_engine::LocalParquetSource, expected_uri: &str) {
+    assert_eq!(source.file_count(), 1);
+    let file = &source.files[0];
+    assert_eq!(file.location.read_capability(), "object_store:s3");
+    assert_eq!(file.resolved_source.original_location, expected_uri);
+    assert_eq!(file.resolved_source.reader_location, expected_uri);
+    assert!(file.stable_id.starts_with("object_store:s3:fnv64:"));
+    assert!(!file.stable_id.contains("bucket"));
+    assert!(!file.stable_id.contains("table/input.parquet"));
+    assert_eq!(source.diagnostics.source_read_strategy, file.resolved_source.read_strategy.as_str());
+    assert_eq!(source.diagnostics.source_decode_input, file.resolved_source.decode_input.as_str());
+    assert_eq!(source.diagnostics.credential_mode, file.resolved_source.credential_mode.as_str());
+    assert!(!source.diagnostics.direct_device_read);
+    assert!(source.diagnostics.rejected_features.iter().all(|feature| feature.as_str() != "non_local_object_store"));
+}
+
 #[test]
-fn remote_parquet_object_store_is_rejected_with_source_reason() {
+fn s3_parquet_object_store_scan_lowers_to_remote_native_source() {
+    let dir = unique_temp_dir("datafusion-nexus-native-lowering-s3-store");
+    let path = dir.join("input.parquet");
+    write_numeric_parquet_file(&path);
+    let scan = parquet_scan_with_object_store_url_and_location(
+        &path,
+        ObjectStoreUrl::parse("s3://bucket").unwrap(),
+        "table/input.parquet",
+    );
+    let expected_uri = "s3://bucket/table/input.parquet";
+
+    let result = lower_physical_plan_to_native(scan);
+
+    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.source_diagnostics.len(), 1);
+    assert!(result.source_diagnostics[0].rejected_features.is_empty());
+    assert!(!result.source_diagnostics[0].direct_device_read);
+    let source = native_local_parquet_source(&result.plans[0]);
+    assert_s3_remote_native_source(source, expected_uri);
+    assert_eq!(result.source_diagnostics[0].source_read_strategy, source.diagnostics.source_read_strategy);
+    assert_eq!(result.source_diagnostics[0].source_decode_input, source.diagnostics.source_decode_input);
+    assert_eq!(result.source_diagnostics[0].credential_mode, source.diagnostics.credential_mode);
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn s3_multi_file_parquet_object_store_scan_rejects_unverified_footer_schema() {
+    let dir = unique_temp_dir("datafusion-nexus-native-lowering-s3-store-multi-file");
+    let first_path = dir.join("part-0.parquet");
+    let second_path = dir.join("part-1.parquet");
+    write_numeric_parquet_file(&first_path);
+    write_numeric_parquet_file(&second_path);
+    let scan = parquet_scan_with_object_store_url(&dir, ObjectStoreUrl::parse("s3://bucket").unwrap());
+
+    let result = lower_physical_plan_to_native(scan);
+
+    assert!(result.plans.is_empty());
+    assert_eq!(result.rejected_count(), 1);
+    assert!(matches!(
+        result.report.outcomes()[0],
+        CandidateOutcome::Rejected { reason: FallbackReason::NativeSourceSchemaMapping, .. }
+    ));
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn s3_parquet_object_store_aggregate_root_preserves_remote_source_diagnostics() {
+    let dir = unique_temp_dir("datafusion-nexus-native-lowering-s3-store-aggregate");
+    let path = dir.join("input.parquet");
+    write_numeric_parquet_file(&path);
+    let scan = parquet_scan_with_object_store_url_and_location(
+        &path,
+        ObjectStoreUrl::parse("s3://bucket").unwrap(),
+        "table/input.parquet",
+    );
+    let plan = aggregate_sort_limit_plan(scan, Operator::Plus);
+    let expected_uri = "s3://bucket/table/input.parquet";
+
+    let result = lower_physical_plan_to_native(plan);
+
+    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.source_diagnostics.len(), 1);
+    assert!(result.source_diagnostics[0].rejected_features.is_empty());
+    let source = native_local_parquet_source(&result.plans[0]);
+    assert_s3_remote_native_source(source, expected_uri);
+    assert_eq!(result.source_diagnostics[0].source_read_strategy, source.diagnostics.source_read_strategy);
+    assert_eq!(result.source_diagnostics[0].source_decode_input, source.diagnostics.source_decode_input);
+    assert_eq!(result.source_diagnostics[0].credential_mode, source.diagnostics.credential_mode);
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn non_s3_parquet_object_store_is_rejected_with_source_reason() {
     let dir = unique_temp_dir("datafusion-nexus-native-lowering-remote-store");
     let path = dir.join("input.parquet");
     write_numeric_parquet_file(&path);
@@ -518,6 +963,19 @@ fn remote_parquet_object_store_is_rejected_with_source_reason() {
     assert_eq!(result.source_diagnostics[0].partition_column_disposition.as_str(), "absent");
 
     fs::remove_dir_all(dir).unwrap();
+}
+
+fn row_group_range_pruning_offsets(path: &std::path::Path) -> Vec<i64> {
+    let reader = SerializedFileReader::try_from(path).unwrap();
+    reader
+        .metadata()
+        .row_groups()
+        .iter()
+        .map(|row_group| {
+            let column = row_group.column(0);
+            column.dictionary_page_offset().unwrap_or_else(|| column.data_page_offset())
+        })
+        .collect()
 }
 
 #[test]

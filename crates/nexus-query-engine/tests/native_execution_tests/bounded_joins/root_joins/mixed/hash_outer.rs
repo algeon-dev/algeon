@@ -155,6 +155,11 @@ fn bounded_native_query_executes_root_full_hash_join_with_symmetric_unmatched_ro
     assert_eq!(join_metrics.build_side, "right");
     assert_eq!(join_metrics.probe_side, "left");
     assert_eq!(join_metrics.output_rows, 5);
+    assert!(metrics.reservation_events.iter().any(|event| {
+        event.reservation_kind == ReservationKind::GatherMap
+            && event.memory_boundary == "join_full_size_preflight_workspace"
+            && event.action == MemoryReservationEventAction::Reserve
+    }));
 
     let QueryOutput::HostArrow(batch) = result.output() else {
         panic!("host sink should materialize one RecordBatch");

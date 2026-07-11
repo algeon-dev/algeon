@@ -41,15 +41,15 @@ pub(in crate::native::lowering) fn table_format_zero_column_count_metadata_is_av
         && scan_plan
             .data_files
             .iter()
-            .all(|file| file.row_count.is_some() && file.row_groups.is_none() && !file.has_position_delete_files())
+            .all(|file| file.row_count.is_some() && file.row_groups.is_none() && !file.has_row_delete_files())
 }
 
 pub(in crate::native::lowering) fn table_format_count_star_mixed_row_count_metadata_can_split(
     scan_plan: &TableFormatScanPlan,
 ) -> bool {
     table_format_count_star_probe_can_lower(scan_plan)
-        && scan_plan.data_files.iter().any(|file| file.row_count.is_some() && !file.has_position_delete_files())
-        && scan_plan.data_files.iter().any(|file| file.row_count.is_none() || file.has_position_delete_files())
+        && scan_plan.data_files.iter().any(|file| file.row_count.is_some() && !file.has_row_delete_files())
+        && scan_plan.data_files.iter().any(|file| file.row_count.is_none() || file.has_row_delete_files())
 }
 
 pub(in crate::native::lowering) fn table_format_count_star_probe_can_lower(scan_plan: &TableFormatScanPlan) -> bool {
@@ -73,7 +73,7 @@ pub(in crate::native::lowering) fn lower_table_format_count_star_mixed_row_count
         scan_plan
             .data_files
             .iter()
-            .filter(|file| file.row_count.is_some() && !file.has_position_delete_files())
+            .filter(|file| file.row_count.is_some() && !file.has_row_delete_files())
             .cloned()
             .collect(),
     );
@@ -82,7 +82,7 @@ pub(in crate::native::lowering) fn lower_table_format_count_star_mixed_row_count
         scan_plan
             .data_files
             .iter()
-            .filter(|file| file.row_count.is_none() || file.has_position_delete_files())
+            .filter(|file| file.row_count.is_none() || file.has_row_delete_files())
             .cloned()
             .collect(),
     );
@@ -259,12 +259,8 @@ pub(super) fn table_format_explicit_count_star_probe_column<'a>(
         .chain(scan_plan.projected_columns.iter())
         .filter(|mapping| mapping.source == TableFormatColumnSource::DirectTopLevelFileColumn)
         .filter_map(|mapping| {
-            let source_name = mapping.source_name.as_ref().unwrap_or(&mapping.logical_name);
-            let index = file_schema.index_of(source_name).ok();
-            let field_supported = index.and_then(|index| file_schema.fields().get(index)).is_some_and(|field| {
-                table_format_arrow_data_types_match_except_list_child_names(field.data_type(), &mapping.data_type)
-                    && is_supported_native_type(field.data_type())
-            });
+            let index = table_format_count_star_probe_candidate_file_index(mapping, file_schema);
+            let field_supported = index.is_some();
             let field_id_supported = mapping.field_id.is_some() && is_supported_native_type(&mapping.data_type);
             (field_supported || field_id_supported).then(|| TableFormatCountStarFallbackColumn {
                 read_column: mapping.logical_name.clone(),
@@ -273,6 +269,25 @@ pub(super) fn table_format_explicit_count_star_probe_column<'a>(
             })
         })
         .next()
+}
+
+fn table_format_count_star_probe_candidate_file_index(
+    mapping: &TableFormatColumnMapping,
+    file_schema: &SchemaRef,
+) -> Option<usize> {
+    let compatible_indices = mapping
+        .field_id_physical_name_candidates()
+        .filter_map(|name| {
+            let index = file_schema.index_of(name).ok()?;
+            let field = file_schema.fields().get(index)?;
+            (table_format_arrow_data_types_match_except_list_child_names(field.data_type(), &mapping.data_type)
+                && is_supported_native_type(field.data_type()))
+            .then_some(index)
+        })
+        .collect::<BTreeSet<_>>();
+    let mut indices = compatible_indices.into_iter();
+    let index = indices.next()?;
+    indices.next().is_none().then_some(index)
 }
 
 pub(super) fn table_format_first_supported_file_column(

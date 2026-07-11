@@ -179,6 +179,10 @@ fn join_strategy_specific_reservations_are_modeled(
             task_runtime_attachment_has_modeled_reservation_gate(
                 pipeline,
                 group.materialize,
+                ReservationKind::HashTable,
+            ) && task_runtime_attachment_has_modeled_reservation_gate(
+                pipeline,
+                group.materialize,
                 ReservationKind::GatherMap,
             )
         },

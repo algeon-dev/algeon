@@ -124,6 +124,10 @@ pub(in crate::exec) fn walk_join_residual_columns(
         | Expr::IsNotNull(inner)
         | Expr::Cast { expr: inner, .. }
         | Expr::TryCast { expr: inner, .. }
+        | Expr::StringContains { expr: inner, .. }
+        | Expr::StartsWith { expr: inner, .. }
+        | Expr::EndsWith { expr: inner, .. }
+        | Expr::DateTrunc { expr: inner, .. }
         | Expr::Abs(inner)
         | Expr::Sqrt { expr: inner, .. }
         | Expr::Round { expr: inner, .. }
@@ -162,10 +166,12 @@ pub(in crate::exec) fn walk_join_residual_columns(
         | Expr::Substring { .. }
         | Expr::Lower(_)
         | Expr::Upper(_)
+        | Expr::Trim { .. }
+        | Expr::LTrim { .. }
+        | Expr::RTrim { .. }
         | Expr::StringLength { .. }
         | Expr::RegexpReplace { .. }
-        | Expr::Extract { .. }
-        | Expr::DateTrunc { .. } => Err(QueryError::new(
+        | Expr::Extract { .. } => Err(QueryError::new(
             QueryErrorCode::UnsupportedExpression,
             operation,
             "native join residual predicates do not yet support this expression family",
@@ -406,6 +412,12 @@ fn lower_join_ast_expr(
         | Expr::Substring { .. }
         | Expr::Lower(_)
         | Expr::Upper(_)
+        | Expr::Trim { .. }
+        | Expr::LTrim { .. }
+        | Expr::RTrim { .. }
+        | Expr::StringContains { .. }
+        | Expr::StartsWith { .. }
+        | Expr::EndsWith { .. }
         | Expr::StringLength { .. }
         | Expr::RegexpReplace { .. }
         | Expr::Concat(_)
@@ -593,6 +605,12 @@ fn expr_contains_interval_literal(expr: &Expr) -> bool {
         | Expr::TryCast { expr, .. }
         | Expr::Lower(expr)
         | Expr::Upper(expr)
+        | Expr::Trim { expr, .. }
+        | Expr::LTrim { expr, .. }
+        | Expr::RTrim { expr, .. }
+        | Expr::StringContains { expr, .. }
+        | Expr::StartsWith { expr, .. }
+        | Expr::EndsWith { expr, .. }
         | Expr::StringLength { expr, .. }
         | Expr::RegexpReplace { expr, .. }
         | Expr::Extract { expr, .. }
@@ -672,6 +690,13 @@ fn lower_join_ast_literal(context: &ExecutionContext, value: &LiteralValue) -> R
             runtime.decimal128_raw_scalar(*raw, crate::datatypes::arrow_decimal_scale_to_cudf_scale(*scale))
         },
         LiteralValue::Date32(value) => runtime.timestamp_raw_scalar(i64::from(*value), cudf::TimestampResolution::Days),
+        LiteralValue::Date64(value) => runtime.timestamp_raw_scalar(*value, cudf::TimestampResolution::Milliseconds),
+        LiteralValue::Time32 { raw, unit } => {
+            runtime.duration_raw_scalar(i64::from(*raw), timestamp_unit_to_cudf_resolution(unit))
+        },
+        LiteralValue::Time64 { raw, unit } => {
+            runtime.duration_raw_scalar(*raw, timestamp_unit_to_cudf_resolution(unit))
+        },
         LiteralValue::Timestamp { raw, unit } => {
             runtime.timestamp_raw_scalar(*raw, timestamp_unit_to_cudf_resolution(unit))
         },

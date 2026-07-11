@@ -20,13 +20,6 @@ use crate::{
     pipeline::CompiledPipeline,
 };
 
-const ADAPTIVE_ROLLUP_RANK_TOPK_REQUIRES_EXPLICIT_CONTRACT_REASON: &str =
-    "adaptive_rollup_rank_topk_after_aggregate_join_pushdown_requires_explicit_contract";
-const ADAPTIVE_PROJECTION_GLOBAL_LIMIT_REQUIRES_EXPLICIT_CONTRACT_REASON: &str =
-    "adaptive_projection_global_limit_requires_explicit_contract";
-const ADAPTIVE_EXACT_STATISTICAL_JOIN_FINAL_FULL_SORT_REQUIRES_EXPLICIT_CONTRACT_REASON: &str =
-    "adaptive_exact_statistical_join_final_full_sort_requires_explicit_contract";
-
 /// Adaptive bounded admission evidence for a join-capable query plan.
 ///
 /// The report is always present. A compiled pipeline is present only when
@@ -96,15 +89,10 @@ pub fn adaptive_bounded_pipeline_admission_with_memory_history(
         return Ok(None);
     }
 
-    let runtime_evidence = runtime_evidence_for_plan(plan, memory_history);
     let admission =
         capability_first_bounded_pipeline_admission(plan)?.expect("join plan should produce admission evidence");
+    let runtime_evidence = runtime_evidence_for_plan(plan, memory_history, admission.envelope());
     let (candidate_status, adaptive_strategy, rejection_reason, pipeline) = match admission.candidate_status() {
-        CapabilityFirstCandidateStatus::Admitted
-            if let Some(reason) = adaptive_strict_only_envelope_reason(admission.envelope()) =>
-        {
-            (AdaptiveCandidateStatus::Rejected, AdaptiveStrategy::Unsupported, Some(reason), None)
-        },
         CapabilityFirstCandidateStatus::Admitted => (
             AdaptiveCandidateStatus::Admitted,
             AdaptiveStrategy::ConservativeCompiledPipeline,
@@ -125,21 +113,6 @@ pub fn adaptive_bounded_pipeline_admission_with_memory_history(
         admission.rejection_projection(),
     )?;
     Ok(Some(AdaptivePipelineAdmission { report, pipeline }))
-}
-
-fn adaptive_strict_only_envelope_reason(envelope: Option<StrictBoundedEnvelope>) -> Option<&'static str> {
-    match envelope {
-        Some(StrictBoundedEnvelope::RollupRankTopKAfterAggregateJoinPushdown) => {
-            Some(ADAPTIVE_ROLLUP_RANK_TOPK_REQUIRES_EXPLICIT_CONTRACT_REASON)
-        },
-        Some(StrictBoundedEnvelope::ProjectionGlobalLimit) => {
-            Some(ADAPTIVE_PROJECTION_GLOBAL_LIMIT_REQUIRES_EXPLICIT_CONTRACT_REASON)
-        },
-        Some(StrictBoundedEnvelope::ExactStatisticalJoinFinalFullSort) => {
-            Some(ADAPTIVE_EXACT_STATISTICAL_JOIN_FINAL_FULL_SORT_REQUIRES_EXPLICIT_CONTRACT_REASON)
-        },
-        _ => None,
-    }
 }
 
 fn execute_adaptive_bounded_pipeline(
@@ -249,19 +222,18 @@ fn adaptive_candidate_error(message: &'static str, row: &AdaptivePipelineReportR
 fn runtime_evidence_for_plan(
     plan: &QueryPlan,
     memory_history: Option<&AdaptiveMemoryHistory>,
+    envelope: Option<StrictBoundedEnvelope>,
 ) -> AdaptiveAdmissionRuntimeEvidence {
-    let Some(memory_history) = memory_history else {
-        return AdaptiveAdmissionRuntimeEvidence::default();
-    };
-
-    let memory_history_evidence = memory_history
-        .lookup_query_plan(plan)
-        .map_or(AdaptiveMemoryHistoryEvidence::LookupMiss, AdaptiveMemoryHistoryEvidence::Observed);
-    AdaptiveAdmissionRuntimeEvidence {
-        runtime_actions_allowed: AdaptiveRuntimeActionsAllowed {
-            memory_history_lookup: true,
-            ..AdaptiveRuntimeActionsAllowed::default()
+    let _ = envelope;
+    let mut runtime_actions_allowed = AdaptiveRuntimeActionsAllowed::default();
+    let memory_history_evidence = match memory_history {
+        Some(memory_history) => {
+            runtime_actions_allowed.memory_history_lookup = true;
+            memory_history
+                .lookup_query_plan(plan)
+                .map_or(AdaptiveMemoryHistoryEvidence::LookupMiss, AdaptiveMemoryHistoryEvidence::Observed)
         },
-        memory_history_evidence,
-    }
+        None => AdaptiveMemoryHistoryEvidence::NotUsed,
+    };
+    AdaptiveAdmissionRuntimeEvidence { runtime_actions_allowed, memory_history_evidence }
 }

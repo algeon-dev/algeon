@@ -348,6 +348,12 @@ fn static_row_group_pruning_expr(source: &LocalParquetSource, expr: &Expr) -> Op
         | Expr::TryCast { .. }
         | Expr::Like { .. }
         | Expr::Substring { .. }
+        | Expr::Trim { .. }
+        | Expr::LTrim { .. }
+        | Expr::RTrim { .. }
+        | Expr::StringContains { .. }
+        | Expr::StartsWith { .. }
+        | Expr::EndsWith { .. }
         | Expr::Lower(_)
         | Expr::Upper(_)
         | Expr::StringLength { .. }
@@ -448,6 +454,7 @@ fn static_pruning_literal(value: &LiteralValue, column_type: &DataType) -> Optio
         LiteralValue::UInt32(value) => Some(StaticPruningLiteral::Int64(i64::from(*value))),
         LiteralValue::UInt64(value) => i64::try_from(*value).ok().map(StaticPruningLiteral::Int64),
         LiteralValue::Date32(value) => Some(StaticPruningLiteral::Int64(i64::from(*value))),
+        LiteralValue::Date64(value) => Some(StaticPruningLiteral::Int64(*value)),
         LiteralValue::Timestamp { raw, .. } => Some(StaticPruningLiteral::Int64(*raw)),
         LiteralValue::Float32(value) => Some(StaticPruningLiteral::Float64(f64::from(*value))),
         LiteralValue::Float64(value) => Some(StaticPruningLiteral::Float64(*value)),
@@ -465,6 +472,8 @@ fn static_pruning_literal(value: &LiteralValue, column_type: &DataType) -> Optio
         LiteralValue::Boolean(_)
         | LiteralValue::Utf8(_)
         | LiteralValue::LargeUtf8(_)
+        | LiteralValue::Time32 { .. }
+        | LiteralValue::Time64 { .. }
         | LiteralValue::Duration { .. }
         | LiteralValue::IntervalMonthDayNano { .. }
         | LiteralValue::Null(_) => None,

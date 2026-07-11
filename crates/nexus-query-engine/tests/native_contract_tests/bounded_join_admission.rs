@@ -51,7 +51,6 @@ fn assert_modeled_reservation_facts_are_consistent(
                     "source_contract"
                         | "aggregate_contract"
                         | "final_sort_contract"
-                        | "keyed_equality_join_output_size_preflight"
                         | "join_filtered_build_key_deduplicate_output_contract"
                 ),
                 "{label}: {kind} hard-budgeted requirement must name a lower-level preflight contract"
@@ -112,8 +111,37 @@ fn assert_strict_report_lacks_modeled_subcontract(
     );
 }
 
+fn assert_hash_join_prebuild_exact_requirement(
+    requirements: &[nexus_query_engine::capability::ReservationRequirement],
+    label: &str,
+) {
+    assert!(
+        requirements.iter().any(|requirement| {
+            requirement.kind == ReservationKind::HashTable
+                && requirement.memory_boundary == "join_keyed_equality_preflight_hash_table"
+                && requirement.required_contract == "hash_join_pre_build_reservation_size_bytes"
+                && requirement.status == ContractStatus::Modeled
+                && requirement.quality == ContractQuality::ExactPreflight
+        }),
+        "{label}: equality-join output-size preflight must model its temporary hash-table reservation"
+    );
+}
+
+fn assert_hash_join_prebuild_exact_gate(pipeline: &nexus_query_engine::CompiledPipeline, label: &str) {
+    assert!(
+        pipeline.gates().iter().any(|gate| {
+            gate.reservation_kind() == ReservationKind::HashTable
+                && gate.memory_boundary() == "join_keyed_equality_preflight_hash_table"
+                && gate.required_contract() == "hash_join_pre_build_reservation_size_bytes"
+                && gate.status() == ContractStatus::Modeled
+                && gate.quality() == ContractQuality::ExactPreflight
+        }),
+        "{label}: compiled pipeline must carry the temporary hash-table exact preflight gate"
+    );
+}
+
 #[test]
-fn large_keyed_inner_build_selects_partitioned_strategy_without_hash_table_gate() {
+fn large_keyed_inner_build_selects_partitioned_strategy_with_hash_preflight_gate() {
     let plan = large_keyed_join_strategy_plan(JoinType::Inner);
     let analysis = plan.capability_analysis();
 
@@ -123,10 +151,7 @@ fn large_keyed_inner_build_selects_partitioned_strategy_without_hash_table_gate(
         .iter()
         .find(|node| matches!(node.operator, NodeOperator::Join { .. }))
         .expect("plan should contain a join capability row");
-    assert!(
-        join.local_requirements.iter().all(|requirement| requirement.kind != ReservationKind::HashTable),
-        "large partitioned keyed joins must not require a reusable hash-table gate"
-    );
+    assert_hash_join_prebuild_exact_requirement(&join.local_requirements, "large partitioned keyed join");
 
     let facts = plan
         .bounded_join_modeled_facts(ExecutionBoundaryPolicy::default())
@@ -139,20 +164,17 @@ fn large_keyed_inner_build_selects_partitioned_strategy_without_hash_table_gate(
     assert_eq!(facts.get("probe_reuse_count").map(String::as_str), Some("n2:1"));
 
     let pipeline = nexus_query_engine::compile_pipeline(&plan, &analysis).expect("partitioned join should compile");
-    assert!(
-        pipeline.gates().iter().all(|gate| gate.reservation_kind() != ReservationKind::HashTable),
-        "compiled partitioned join pipeline must not carry a reusable hash-table gate"
-    );
+    assert_hash_join_prebuild_exact_gate(&pipeline, "compiled partitioned join pipeline");
     assert!(
         pipeline.gates().iter().any(|gate| {
             gate.reservation_kind() == ReservationKind::GatherMap
-                && gate.memory_boundary() == "join_one_shot_indices"
-                && gate.required_contract() == "keyed_join_indices_observed_retained_bytes"
-                && gate.quality() == ContractQuality::ObservedRetainedState
+                && gate.memory_boundary() == "join_partition_indices"
+                && gate.required_contract() == "join_gather_map_reservation_size_bytes"
+                && gate.quality() == ContractQuality::ExactPreflight
         }),
-        "compiled partitioned join pipeline should report observed retained index bytes honestly"
+        "compiled partitioned join pipeline should report exact preflight index bytes honestly"
     );
-    assert_one_shot_output_preflight_gap(&pipeline, "large keyed inner join");
+    assert_one_shot_output_preflight_contract(&pipeline, "large keyed inner join");
 }
 
 #[test]
@@ -177,7 +199,7 @@ fn plan_captured_keyed_hash_join_strategy_options_drive_strict_admission_facts()
 }
 
 #[test]
-fn large_keyed_left_and_full_builds_select_partitioned_strategy_without_hash_table_gate() {
+fn large_keyed_left_and_full_builds_select_partitioned_strategy_with_hash_preflight_gate() {
     for join_type in [JoinType::Left, JoinType::Full] {
         let plan = large_keyed_join_strategy_plan(join_type);
         let analysis = plan.capability_analysis();
@@ -188,10 +210,7 @@ fn large_keyed_left_and_full_builds_select_partitioned_strategy_without_hash_tab
             .iter()
             .find(|node| matches!(node.operator, NodeOperator::Join { .. }))
             .expect("plan should contain a join capability row");
-        assert!(
-            join.local_requirements.iter().all(|requirement| requirement.kind != ReservationKind::HashTable),
-            "{join_type} large partitioned keyed joins must not require a reusable hash-table gate"
-        );
+        assert_hash_join_prebuild_exact_requirement(&join.local_requirements, "left/full large partitioned keyed join");
 
         let facts = plan
             .bounded_join_modeled_facts(ExecutionBoundaryPolicy::default())
@@ -206,11 +225,8 @@ fn large_keyed_left_and_full_builds_select_partitioned_strategy_without_hash_tab
         assert_eq!(facts.get("partitioned_hash_join_rejected_reason"), None);
 
         let pipeline = nexus_query_engine::compile_pipeline(&plan, &analysis).expect("partitioned join should compile");
-        assert!(
-            pipeline.gates().iter().all(|gate| gate.reservation_kind() != ReservationKind::HashTable),
-            "{join_type} compiled partitioned join pipeline must not carry a reusable hash-table gate"
-        );
-        assert_one_shot_output_preflight_gap(&pipeline, &format!("large keyed {join_type} join"));
+        assert_hash_join_prebuild_exact_gate(&pipeline, &format!("large keyed {join_type} join"));
+        assert_one_shot_output_preflight_contract(&pipeline, &format!("large keyed {join_type} join"));
     }
 }
 
@@ -344,57 +360,46 @@ fn unknown_probe_with_small_left_build_selects_reusable_strategy() {
 }
 
 #[test]
-fn small_string_keyed_join_selects_one_shot_strategy_before_runtime() {
+fn small_string_keyed_join_rejects_unsupported_hash_prebuild_contract_before_runtime() {
     let plan = string_keyed_join_strategy_plan();
     let analysis = plan.capability_analysis();
 
-    assert!(!analysis.has_rejections(), "small string-key join should remain executable without reusable pre-build");
-    let facts = plan
-        .bounded_join_modeled_facts(ExecutionBoundaryPolicy::default())
-        .expect("small string-key join should report modeled bounded facts");
-    assert_eq!(facts.get("join_strategy").map(String::as_str), Some("n2:one_shot_equi"));
-    assert_eq!(
-        facts.get("reusable_hash_join_rejected_reason").map(String::as_str),
-        Some("n2:build_key_prebuild_reservation_unsupported")
-    );
-    assert_eq!(
-        facts.get("partitioned_hash_join_rejected_reason").map(String::as_str),
-        Some("n2:small_non_reusable_join_prefers_one_shot")
-    );
-    assert_eq!(facts.get("reusable_prebuild_supported").map(String::as_str), Some("n2:false"));
-
-    let pipeline =
-        nexus_query_engine::compile_pipeline(&plan, &analysis).expect("string-key one-shot join should compile");
-    assert!(
-        pipeline.gates().iter().all(|gate| gate.reservation_kind() != ReservationKind::HashTable),
-        "string-key one-shot joins must not carry reusable hash-table gates"
-    );
-    assert_one_shot_output_preflight_gap(&pipeline, "small string-key one-shot join");
+    assert!(analysis.has_rejections(), "string-key hash pre-build should be rejected before runtime");
+    let rejected_join = analysis
+        .nodes
+        .iter()
+        .find(|node| matches!(node.operator, NodeOperator::Join { join_type: JoinType::Inner, .. }))
+        .expect("string-key plan should contain an inner join capability");
+    let CapabilityDecision::Rejected { reason, facts } = &rejected_join.executable else {
+        panic!("string-key hash pre-build should be rejected as a node capability");
+    };
+    assert_eq!(*reason, "unsupported_hash_join_pre_build_reservation_capability");
+    assert_eq!(facts.get("reason").map(String::as_str), Some("hash_join_pre_build_reservation_unsupported_build_key"));
+    assert_eq!(facts.get("build_key").map(String::as_str), Some("customer_id"));
+    assert_eq!(facts.get("build_key_data_type").map(String::as_str), Some("Utf8"));
+    assert_eq!(facts.get("required_contract").map(String::as_str), Some("hash_join_pre_build_reservation_size_bytes"));
+    assert!(plan.bounded_join_modeled_facts(ExecutionBoundaryPolicy::default()).is_none());
 }
 
 #[test]
-fn large_string_keyed_probe_still_selects_partitioned_strategy() {
+fn large_string_keyed_probe_rejects_unsupported_hash_prebuild_contract_before_runtime() {
     let plan = string_keyed_join_strategy_plan_with_probe(10_000_000, 3 * 1024 * 1024 * 1024, 10, 1024);
     let analysis = plan.capability_analysis();
 
-    assert!(!analysis.has_rejections(), "large string-key probe should remain executable without reusable pre-build");
-    let facts = plan
-        .bounded_join_modeled_facts(ExecutionBoundaryPolicy::default())
-        .expect("large string-key probe should report modeled bounded facts");
-    assert_eq!(facts.get("join_strategy").map(String::as_str), Some("n2:partitioned_hash_equi"));
-    assert_eq!(
-        facts.get("reusable_hash_join_rejected_reason").map(String::as_str),
-        Some("n2:build_key_prebuild_reservation_unsupported")
-    );
-    assert_eq!(facts.get("partitioned_hash_join_rejected_reason"), None);
-
-    let pipeline =
-        nexus_query_engine::compile_pipeline(&plan, &analysis).expect("string-key partitioned join should compile");
-    assert!(
-        pipeline.gates().iter().all(|gate| gate.reservation_kind() != ReservationKind::HashTable),
-        "string-key partitioned joins must not carry reusable hash-table gates"
-    );
-    assert_one_shot_output_preflight_gap(&pipeline, "large string-key partitioned join");
+    assert!(analysis.has_rejections(), "string-key partitioned hash pre-build should be rejected before runtime");
+    let rejected_join = analysis
+        .nodes
+        .iter()
+        .find(|node| matches!(node.operator, NodeOperator::Join { join_type: JoinType::Inner, .. }))
+        .expect("string-key plan should contain an inner join capability");
+    let CapabilityDecision::Rejected { reason, facts } = &rejected_join.executable else {
+        panic!("string-key partitioned hash pre-build should be rejected as a node capability");
+    };
+    assert_eq!(*reason, "unsupported_hash_join_pre_build_reservation_capability");
+    assert_eq!(facts.get("reason").map(String::as_str), Some("hash_join_pre_build_reservation_unsupported_build_key"));
+    assert_eq!(facts.get("build_key").map(String::as_str), Some("customer_id"));
+    assert_eq!(facts.get("build_key_data_type").map(String::as_str), Some("Utf8"));
+    assert!(plan.bounded_join_modeled_facts(ExecutionBoundaryPolicy::default()).is_none());
 }
 
 #[test]
@@ -423,10 +428,7 @@ fn single_use_non_small_keyed_build_selects_partitioned_strategy() {
         .iter()
         .find(|node| matches!(node.operator, NodeOperator::Join { .. }))
         .expect("plan should contain a join capability row");
-    assert!(
-        join.local_requirements.iter().all(|requirement| requirement.kind != ReservationKind::HashTable),
-        "single-use non-small keyed joins should not require a reusable hash-table gate"
-    );
+    assert_hash_join_prebuild_exact_requirement(&join.local_requirements, "single-use non-small keyed join");
 
     let facts = plan
         .bounded_join_modeled_facts(ExecutionBoundaryPolicy::default())
@@ -442,11 +444,8 @@ fn single_use_non_small_keyed_build_selects_partitioned_strategy() {
 
     let pipeline = nexus_query_engine::compile_pipeline(&plan, &analysis)
         .expect("single-use non-small partitioned join should compile");
-    assert!(
-        pipeline.gates().iter().all(|gate| gate.reservation_kind() != ReservationKind::HashTable),
-        "compiled single-use non-small partitioned join must not carry a reusable hash-table gate"
-    );
-    assert_one_shot_output_preflight_gap(&pipeline, "single-use non-small keyed join");
+    assert_hash_join_prebuild_exact_gate(&pipeline, "single-use non-small partitioned join");
+    assert_one_shot_output_preflight_contract(&pipeline, "single-use non-small keyed join");
 }
 
 #[test]
@@ -539,7 +538,7 @@ fn keyed_decimal_division_residual_selects_one_shot_post_filter_strategy() {
     assert_eq!(facts.get("one_shot_equi_rejected_reason"), None);
 }
 
-fn assert_one_shot_output_preflight_gap(pipeline: &nexus_query_engine::CompiledPipeline, label: &str) {
+fn assert_one_shot_output_preflight_contract(pipeline: &nexus_query_engine::CompiledPipeline, label: &str) {
     let gate = pipeline
         .gates()
         .iter()
@@ -548,11 +547,11 @@ fn assert_one_shot_output_preflight_gap(pipeline: &nexus_query_engine::CompiledP
                 && gate.memory_boundary() == "join_output"
                 && gate.required_contract() == "keyed_equality_join_output_size_preflight"
         })
-        .unwrap_or_else(|| panic!("{label}: compiled one-shot join should name the output-size preflight gap"));
+        .unwrap_or_else(|| panic!("{label}: compiled one-shot join should name the output-size preflight contract"));
     assert_eq!(
         gate.quality(),
-        ContractQuality::HardBudgetedReportWithUnresolvedPreflight,
-        "{label}: one-shot output-size gap must not be reported as exact preflight"
+        ContractQuality::ExactPreflight,
+        "{label}: one-shot output-size preflight must be reported as an exact preflight"
     );
 }
 
@@ -1561,7 +1560,7 @@ fn bounded_capability_analysis_rejects_unsupported_join_output_dtype_before_stra
     assert_eq!(*reason, "unsupported_join_output_dtype");
     assert_eq!(facts.get("field_index").map(String::as_str), Some("0"));
     assert_eq!(facts.get("field_name").map(String::as_str), Some("l_key"));
-    assert_eq!(facts.get("dtype").map(String::as_str), Some("Date64"));
+    assert_eq!(facts.get("dtype").map(String::as_str), Some("Binary"));
     assert!(plan.bounded_join_modeled_facts(ExecutionBoundaryPolicy::default()).is_none());
 }
 
@@ -1719,7 +1718,7 @@ fn simple_root_join_plan() -> nexus_query_engine::QueryPlan {
 fn root_join_with_unsupported_output_dtype_plan() -> nexus_query_engine::QueryPlan {
     let left_schema = Arc::new(Schema::new(vec![Field::new("l_key", DataType::Int32, false)]));
     let right_schema = Arc::new(Schema::new(vec![Field::new("r_key", DataType::Int32, false)]));
-    let output_schema = Arc::new(Schema::new(vec![Field::new("l_key", DataType::Date64, false)]));
+    let output_schema = Arc::new(Schema::new(vec![Field::new("l_key", DataType::Binary, false)]));
 
     let mut builder = QueryPlanBuilder::new();
     let left = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::new(

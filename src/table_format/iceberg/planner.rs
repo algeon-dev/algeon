@@ -30,9 +30,10 @@ use iceberg::{
     },
     scan::{FileScanTask, FileScanTaskDeleteFile},
     spec::{
-        DataContentType, DataFile, DataFileFormat, Datum, Literal, Manifest, ManifestContentType, ManifestEntry,
-        ManifestFile, ManifestList, NameMapping as IcebergNameMapping, NestedField, PartitionSpec, PrimitiveLiteral,
-        Schema as IcebergSchema, SchemaRef as IcebergSchemaRef, SnapshotRef, Struct, Transform, Type,
+        DEFAULT_SCHEMA_NAME_MAPPING, DataContentType, DataFile, DataFileFormat, Datum, Literal, Manifest,
+        ManifestContentType, ManifestEntry, ManifestFile, ManifestList, NameMapping as IcebergNameMapping, NestedField,
+        PartitionSpec, PrimitiveLiteral, Schema as IcebergSchema, SchemaRef as IcebergSchemaRef, SnapshotRef, Struct,
+        Transform, Type,
     },
     table::Table,
 };
@@ -523,6 +524,7 @@ impl IcebergTableFormatPlanner {
             .map_err(|error| iceberg_planning_error("failed to resolve Iceberg snapshot schema", error))?;
         let field_ids =
             Arc::new(iceberg_project_field_ids(snapshot_schema.as_ref(), request.projected_column_names.as_deref())?);
+        let name_mapping = default_schema_name_mapping(&self.table)?;
         let manifest_list = load_iceberg_manifest_list(&self.table, &snapshot, timeout_context).await?;
         if !manifest_list.entries().iter().any(|manifest| manifest.content == ManifestContentType::Deletes) {
             return Ok(None);
@@ -590,6 +592,7 @@ impl IcebergTableFormatPlanner {
                     Arc::clone(&snapshot_schema),
                     Arc::clone(&field_ids),
                     partition_spec,
+                    name_mapping.clone(),
                     deletes,
                     request.case_sensitive,
                 );
@@ -649,6 +652,26 @@ fn iceberg_metadata_planning_failure_facts(table: &Table) -> Vec<(&'static str, 
         ),
     ]
 }
+
+fn default_schema_name_mapping(table: &Table) -> Result<Option<Arc<IcebergNameMapping>>> {
+    table
+        .metadata()
+        .properties()
+        .get(DEFAULT_SCHEMA_NAME_MAPPING)
+        .map(|raw| {
+            serde_json::from_str::<IcebergNameMapping>(raw).map(Arc::new).map_err(|error| {
+                Error::new(
+                    ErrorCode::InvalidExecutionPlan,
+                    PLAN_SCAN_OPERATION,
+                    "failed to parse Iceberg schema.name-mapping.default table property",
+                )
+                .with_fact("table_format", TableFormat::Iceberg.code())
+                .with_fact("property", DEFAULT_SCHEMA_NAME_MAPPING)
+                .with_source(error)
+            })
+        })
+        .transpose()
+}
 fn iceberg_planning_error(message: &'static str, source: iceberg::Error) -> Error {
     Error::new(ErrorCode::InvalidExecutionPlan, PLAN_SCAN_OPERATION, message)
         .with_fact("table_format", TableFormat::Iceberg.code())
@@ -663,8 +686,8 @@ mod tests {
     use iceberg::{
         scan::FileScanTask,
         spec::{
-            DataContentType, DataFileBuilder, DataFileFormat, NestedField, PrimitiveType, Schema as IcebergSchema,
-            Struct, Type,
+            DataContentType, DataFileBuilder, DataFileFormat, ManifestStatus, MappedField, NameMapping, NestedField,
+            PrimitiveType, Schema as IcebergSchema, Struct, Type,
         },
     };
     use nexus_query_engine::source::{CredentialMode, ResolvedParquetSource};
@@ -726,6 +749,46 @@ mod tests {
             identity.starts_with("iceberg_snapshot_123_file_") && identity.ends_with("_size_4096_rows_17")
         }));
         assert_eq!(resolved.cache_status.as_str(), "fill_before_read");
+    }
+
+    #[test]
+    fn predicate_free_limit_manifest_entry_task_carries_table_name_mapping() {
+        let data_file = DataFileBuilder::default()
+            .partition_spec_id(0)
+            .content(DataContentType::Data)
+            .file_path("s3://bucket/table/data.parquet".to_string())
+            .file_format(DataFileFormat::Parquet)
+            .file_size_in_bytes(4096)
+            .record_count(17)
+            .partition(Struct::empty())
+            .key_metadata(None)
+            .build()
+            .unwrap();
+        let entry = ManifestEntry {
+            status: ManifestStatus::Added,
+            snapshot_id: Some(7),
+            sequence_number: Some(11),
+            file_sequence_number: Some(13),
+            data_file,
+        };
+        let name_mapping = Arc::new(NameMapping::new(vec![MappedField::new(
+            Some(1),
+            vec!["id".to_string(), "old_id".to_string()],
+            vec![],
+        )]));
+
+        let task = file_scan_task_from_manifest_entry(
+            &entry,
+            iceberg_schema(),
+            Arc::new(vec![1]),
+            None,
+            Some(Arc::clone(&name_mapping)),
+            Vec::new(),
+            true,
+        );
+
+        let task_mapping = task.name_mapping.expect("predicate-free LIMIT task should carry table name mapping");
+        assert_eq!(task_mapping.fields(), name_mapping.fields());
     }
 
     #[test]
@@ -940,6 +1003,48 @@ mod tests {
 
         assert_eq!(plan.data_files.len(), 1);
         assert_eq!(plan.delete_files.len(), 1);
+    }
+
+    #[test]
+    fn predicate_free_scan_limit_does_not_trim_equality_delete_files_by_metadata_lower_bound() {
+        let delete_0 = TableFormatDeleteFile::for_data_file(
+            "delete-0",
+            "file-0",
+            "s3://bucket/table/delete-0.parquet",
+            TableFormatDataFileFormat::Parquet,
+            TableFormatDeleteFileContent::EqualityDeletes,
+        )
+        .with_row_count(10)
+        .with_equality_ids([1]);
+        let mut plan = TableFormatScanPlan::new(TableFormat::Iceberg)
+            .with_scan_limit(Some(1))
+            .with_data_file(
+                TableFormatDataFile::new(
+                    "file-0",
+                    "s3://bucket/table/data-0.parquet",
+                    TableFormatDataFileFormat::Parquet,
+                    TableFormatReadCapability::object_store("s3"),
+                )
+                .with_row_count(10)
+                .with_equality_delete_files(vec![delete_0.clone()]),
+            )
+            .with_data_file(
+                TableFormatDataFile::new(
+                    "file-1",
+                    "s3://bucket/table/data-1.parquet",
+                    TableFormatDataFileFormat::Parquet,
+                    TableFormatReadCapability::object_store("s3"),
+                )
+                .with_row_count(1),
+            )
+            .with_delete_file(delete_0);
+
+        assert_eq!(scan_plan_live_row_lower_bound(&plan), None);
+
+        trim_predicate_free_scan_limit_data_files(&mut plan, false);
+
+        assert_eq!(plan.data_files.iter().map(|file| file.id.as_str()).collect::<Vec<_>>(), vec!["file-0", "file-1"]);
+        assert_eq!(plan.delete_files.iter().map(|file| file.id.as_str()).collect::<Vec<_>>(), vec!["delete-0"]);
     }
 
     #[test]
@@ -1229,7 +1334,7 @@ mod tests {
     }
 
     #[test]
-    fn iceberg_equality_delete_files_remain_structured_rejections() {
+    fn iceberg_equality_delete_files_without_footer_field_id_proof_are_structured_rejections() {
         let delete_file = FileScanTaskDeleteFile {
             file_path: "s3://bucket/table/delete.parquet".to_string(),
             file_size_in_bytes: 512,
@@ -1259,6 +1364,47 @@ mod tests {
                 .unwrap();
 
         assert_eq!(plan.data_files[0].position_delete_files.len(), 0);
+        assert_eq!(plan.data_files[0].equality_delete_files.len(), 0);
+        assert_eq!(plan.delete_files.len(), 1);
+        assert_eq!(plan.delete_files[0].data_file_id, plan.data_files[0].id);
+        assert_eq!(plan.delete_files[0].equality_ids.as_deref(), Some([1].as_slice()));
+        assert!(plan.delete_files[0].is_supported_equality_delete());
+        assert_eq!(plan.unsupported_fallback_reasons(), vec![FallbackReason::IcebergDeleteFilesUnsupported]);
+        assert_eq!(plan.first_rejection_reason(), Some(FallbackReason::IcebergDeleteFilesUnsupported));
+        assert!(!plan.is_native_admissible());
+    }
+
+    #[test]
+    fn iceberg_equality_delete_files_without_key_ids_remain_structured_rejections() {
+        let delete_file = FileScanTaskDeleteFile {
+            file_path: "s3://bucket/table/delete.parquet".to_string(),
+            file_size_in_bytes: 512,
+            file_type: DataContentType::EqualityDeletes,
+            partition_spec_id: 0,
+            equality_ids: None,
+        };
+        let task = FileScanTask {
+            file_size_in_bytes: 4096,
+            start: 0,
+            length: 4096,
+            record_count: Some(17),
+            data_file_path: "s3://bucket/table/data.parquet".to_string(),
+            data_file_format: DataFileFormat::Parquet,
+            schema: iceberg_schema(),
+            project_field_ids: vec![1],
+            predicate: None,
+            deletes: vec![delete_file],
+            partition: Some(Struct::empty()),
+            partition_spec: None,
+            name_mapping: None,
+            case_sensitive: true,
+        };
+
+        let plan =
+            iceberg_file_scan_tasks_to_table_format_scan_plan_with_config(None, None, [task], &Default::default())
+                .unwrap();
+
+        assert_eq!(plan.data_files[0].equality_delete_files.len(), 0);
         assert_eq!(plan.unsupported_fallback_reasons(), vec![FallbackReason::IcebergDeleteFilesUnsupported]);
         assert_eq!(plan.first_rejection_reason(), Some(FallbackReason::IcebergDeleteFilesUnsupported));
         assert!(!plan.is_native_admissible());

@@ -66,10 +66,41 @@ FROM bench
 WHERE payload >= 10
 ";
 
+pub(super) const SQL_MEDIAN_AGGREGATE_QUERY: &str = "
+SELECT key, MEDIAN(m00) AS median_m00
+FROM bench
+WHERE payload >= 10
+GROUP BY key
+ORDER BY median_m00 DESC, key ASC
+LIMIT 2
+";
+
+pub(super) const SQL_GLOBAL_MEDIAN_QUERY: &str = "
+SELECT MEDIAN(m00) AS median_m00
+FROM bench
+WHERE payload >= 10
+";
+
 pub(super) const SQL_ROLLUP_AVG_QUERY: &str = "
 SELECT key, payload, AVG(m00) AS avg_m00
 FROM bench
 GROUP BY ROLLUP(key, payload)
+ORDER BY avg_m00 DESC NULLS LAST, key ASC NULLS LAST, payload ASC NULLS LAST
+LIMIT 10
+";
+
+pub(super) const SQL_CUBE_AVG_QUERY: &str = "
+SELECT key, payload, AVG(m00) AS avg_m00
+FROM bench
+GROUP BY CUBE(key, payload)
+ORDER BY avg_m00 DESC NULLS LAST, key ASC NULLS LAST, payload ASC NULLS LAST
+LIMIT 10
+";
+
+pub(super) const SQL_GROUPING_SETS_AVG_QUERY: &str = "
+SELECT key, payload, AVG(m00) AS avg_m00
+FROM bench
+GROUP BY GROUPING SETS ((key, payload), (key), ())
 ORDER BY avg_m00 DESC NULLS LAST, key ASC NULLS LAST, payload ASC NULLS LAST
 LIMIT 10
 ";
@@ -165,6 +196,14 @@ SELECT key, SUM(CASE WHEN label LIKE 'a%' THEN m00 ELSE m01 END) AS sum_x00
 FROM bench
 GROUP BY key
 ORDER BY sum_x00 DESC, key ASC
+LIMIT 2
+";
+
+pub(super) const SQL_SOURCE_COLUMN_NULLIF_ARGUMENT_REQUIRED_COLUMNS_QUERY: &str = "
+SELECT key, SUM(NULLIF(m00, m01)) AS sum_nullif
+FROM bench
+GROUP BY key
+ORDER BY sum_nullif DESC, key ASC
 LIMIT 2
 ";
 

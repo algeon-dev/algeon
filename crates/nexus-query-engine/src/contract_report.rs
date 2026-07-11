@@ -700,6 +700,7 @@ fn exact_preflight_contract_is_owned_by_lower_layer(kind: ReservationKind, requi
                 "dataframe_gather_output_reservation_size_bytes"
                     | "projected_cross_join_reservation_size_bytes"
                     | "dataframe_gather_output_reservation_size_bytes+projected_cross_join_reservation_size_bytes"
+                    | "keyed_equality_join_output_size_preflight"
             )
         },
         _ => true,

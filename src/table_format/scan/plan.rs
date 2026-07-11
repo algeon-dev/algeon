@@ -158,7 +158,7 @@ impl TableFormatScanPlan {
     /// All-or-nothing native-admission predicate for the current scan plan.
     ///
     /// A plan is admissible only when it has at least one native-readable
-    /// Parquet data file, all associated delete files are supported position
+    /// Parquet data file, all associated delete files are supported row-level
     /// deletes, and no retained unsupported features remain. Object-store S3
     /// files are native-readable through the host-buffer source pipeline, not
     /// through direct device reads.
@@ -166,8 +166,8 @@ impl TableFormatScanPlan {
         self.unsupported_features.is_empty()
             && !self.data_files.is_empty()
             && self.data_files.iter().all(TableFormatDataFile::is_native_parquet_representable)
-            && self.delete_files.iter().all(TableFormatDeleteFile::is_supported_position_delete)
-            && self.delete_files.iter().all(|delete_file| self.position_delete_file_is_associated(delete_file))
+            && self.delete_files.iter().all(TableFormatDeleteFile::is_supported_row_delete)
+            && self.delete_files.iter().all(|delete_file| self.row_delete_file_is_associated(delete_file))
     }
 
     /// Number of source files native lowering may consume.
@@ -211,10 +211,10 @@ impl TableFormatScanPlan {
         if let Some(reason) = self.unsupported_fallback_reasons().into_iter().next() {
             return Some(reason);
         }
-        if self.delete_files.iter().any(|file| !file.is_supported_position_delete()) {
+        if self.delete_files.iter().any(|file| !file.is_supported_row_delete()) {
             return Some(FallbackReason::IcebergDeleteFilesUnsupported);
         }
-        if self.delete_files.iter().any(|file| !self.position_delete_file_is_associated(file)) {
+        if self.delete_files.iter().any(|file| !self.row_delete_file_is_associated(file)) {
             return Some(FallbackReason::IcebergDeleteFilesUnsupported);
         }
         if self.data_files.is_empty() {
@@ -245,10 +245,11 @@ impl TableFormatScanPlan {
             })
     }
 
-    fn position_delete_file_is_associated(&self, delete_file: &TableFormatDeleteFile) -> bool {
+    fn row_delete_file_is_associated(&self, delete_file: &TableFormatDeleteFile) -> bool {
         self.data_files.iter().any(|data_file| {
             data_file.id == delete_file.data_file_id
-                && data_file.position_delete_files.iter().any(|associated| associated.id == delete_file.id)
+                && (data_file.position_delete_files.iter().any(|associated| associated.id == delete_file.id)
+                    || data_file.equality_delete_files.iter().any(|associated| associated.id == delete_file.id))
         })
     }
 

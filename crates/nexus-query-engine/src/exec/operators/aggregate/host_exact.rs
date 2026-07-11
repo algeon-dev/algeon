@@ -90,6 +90,7 @@ impl HostAggregateState {
             AggregateFunction::Min => Self::Min { value: 0.0, seen: false },
             AggregateFunction::Max => Self::Max { value: 0.0, seen: false },
             AggregateFunction::Avg => Self::Avg { sum: 0.0, count: 0 },
+            AggregateFunction::Median => unreachable!("median is not executed by the host-exact aggregate path"),
             function @ (AggregateFunction::StddevSamp
             | AggregateFunction::StddevPop
             | AggregateFunction::VarSamp
@@ -237,6 +238,13 @@ pub(in crate::exec) fn execute_datafusion_exact_host_aggregate_batch(
     metrics: &mut QueryMetrics,
     extra_strategy_facts: Option<&BTreeMap<&'static str, String>>,
 ) -> Result<RecordBatch> {
+    if spec.aggr_exprs.iter().any(|expr| expr.function == AggregateFunction::Median) {
+        return Err(QueryError::new(
+            QueryErrorCode::UnsupportedOperator,
+            "nexus_query_engine.aggregate.stddev_exact.median",
+            "DataFusion-exact statistical aggregate path does not support median aggregate expressions",
+        ));
+    }
     let key_columns = spec
         .group_exprs
         .iter()

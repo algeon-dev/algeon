@@ -38,8 +38,8 @@ const CPU_FALLBACK_PROFILE_HINT: &str = "expected in cpu_fallback session profil
 /// other [`FallbackReason`] codes collapse into [`FlightSqlNativeRejectClass::Other`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FlightSqlNativeRejectClass {
-    /// DataFusion left a full `SortPreservingMergeExec` (no `fetch`) at the
-    /// plan root, which native lowering does not yet support.
+    /// DataFusion left a `SortPreservingMergeExec` edge case that native
+    /// lowering could not safely reproduce.
     NativeSortPreservingMerge,
     /// A GPU-only table-format scan leaf survived native optimization, so the
     /// surrounding plan cannot fall back to DataFusion CPU execution.

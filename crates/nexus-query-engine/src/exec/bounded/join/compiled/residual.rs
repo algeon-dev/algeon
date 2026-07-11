@@ -392,6 +392,25 @@ pub(super) fn rewrite_join_residual_for_candidate(
         },
         Expr::Lower(expr) => Ok(Expr::lower(rewrite_join_residual_for_candidate(expr, residual_output_names)?)),
         Expr::Upper(expr) => Ok(Expr::upper(rewrite_join_residual_for_candidate(expr, residual_output_names)?)),
+        Expr::Trim { expr, trim_chars } => {
+            Ok(Expr::trim(rewrite_join_residual_for_candidate(expr, residual_output_names)?, trim_chars.clone()))
+        },
+        Expr::LTrim { expr, trim_chars } => {
+            Ok(Expr::ltrim(rewrite_join_residual_for_candidate(expr, residual_output_names)?, trim_chars.clone()))
+        },
+        Expr::RTrim { expr, trim_chars } => {
+            Ok(Expr::rtrim(rewrite_join_residual_for_candidate(expr, residual_output_names)?, trim_chars.clone()))
+        },
+        Expr::StringContains { expr, pattern } => Ok(Expr::string_contains(
+            rewrite_join_residual_for_candidate(expr, residual_output_names)?,
+            pattern.clone(),
+        )),
+        Expr::StartsWith { expr, prefix } => {
+            Ok(Expr::starts_with(rewrite_join_residual_for_candidate(expr, residual_output_names)?, prefix.clone()))
+        },
+        Expr::EndsWith { expr, suffix } => {
+            Ok(Expr::ends_with(rewrite_join_residual_for_candidate(expr, residual_output_names)?, suffix.clone()))
+        },
         Expr::StringLength { expr, output_type } => Ok(Expr::string_length(
             rewrite_join_residual_for_candidate(expr, residual_output_names)?,
             output_type.clone(),

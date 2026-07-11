@@ -99,6 +99,7 @@ fn execute_global_aggregate_impl(
             AggregateFunction::Sum
             | AggregateFunction::Min
             | AggregateFunction::Max
+            | AggregateFunction::Median
             | AggregateFunction::StddevSamp
             | AggregateFunction::StddevPop
             | AggregateFunction::VarSamp
@@ -174,6 +175,7 @@ fn reduce_global_aggregate_column_impl(
         AggregateFunction::Sum
             | AggregateFunction::Min
             | AggregateFunction::Max
+            | AggregateFunction::Median
             | AggregateFunction::StddevSamp
             | AggregateFunction::StddevPop
             | AggregateFunction::VarSamp
@@ -290,6 +292,7 @@ fn execute_scalar_reduction(
         AggregateFunction::Sum => series.sum_in(overrides),
         AggregateFunction::Min => series.min_in(overrides),
         AggregateFunction::Max => series.max_in(overrides),
+        AggregateFunction::Median => series.median_in(overrides),
         AggregateFunction::StddevSamp => series.std_in(1, overrides),
         AggregateFunction::StddevPop => series.std_in(0, overrides),
         AggregateFunction::VarSamp => series.var_in(1, overrides),
@@ -321,6 +324,7 @@ fn execute_scalar_reduction_with_budget(
         AggregateFunction::Sum => ReduceAgg::Sum,
         AggregateFunction::Min => ReduceAgg::Min,
         AggregateFunction::Max => ReduceAgg::Max,
+        AggregateFunction::Median => ReduceAgg::Median,
         AggregateFunction::StddevSamp => ReduceAgg::Std { ddof: 1 },
         AggregateFunction::StddevPop => ReduceAgg::Std { ddof: 0 },
         AggregateFunction::VarSamp => ReduceAgg::Variance { ddof: 1 },

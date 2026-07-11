@@ -303,7 +303,7 @@ async fn get_query_stats_surfaces_complete_cpu_fallback_rejection() {
     )
     .await;
     let flight_info = client
-        .execute("SELECT src FROM stats_fallback_edges WHERE TRY_CAST(src AS INT) >= 0 ORDER BY src".to_string(), None)
+        .execute("SELECT src FROM stats_fallback_edges WHERE src % dst >= 0 ORDER BY src".to_string(), None)
         .await
         .unwrap();
     let query_id = query_id_from_statement_flight_info(&flight_info);
@@ -318,12 +318,8 @@ async fn get_query_stats_surfaces_complete_cpu_fallback_rejection() {
 
     let (planning_header, planning_row) = query_stats_tsv_single_row(&payload, "planning");
     assert_eq!(tsv_value(&planning_header, &planning_row, "outcome"), "rejected_before_execution", "{payload}");
-    assert_eq!(
-        tsv_value(&planning_header, &planning_row, "reason_code"),
-        "native_sort_preserving_merge_unsupported",
-        "{payload}"
-    );
-    assert_eq!(tsv_value(&planning_header, &planning_row, "unsupported_category"), "operator_sort", "{payload}");
+    assert_eq!(tsv_value(&planning_header, &planning_row, "reason_code"), "unsupported_expression", "{payload}");
+    assert_eq!(tsv_value(&planning_header, &planning_row, "unsupported_category"), "expression", "{payload}");
     assert_eq!(tsv_value(&planning_header, &planning_row, "post_native_execution_path"), "cpu", "{payload}");
     assert_eq!(tsv_value(&planning_header, &planning_row, "native_plan_fragment_count"), "0", "{payload}");
     assert_eq!(tsv_value(&planning_header, &planning_row, "host_datafusion_boundary_count"), "0", "{payload}");

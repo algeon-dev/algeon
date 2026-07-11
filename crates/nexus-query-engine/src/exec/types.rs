@@ -698,6 +698,11 @@ impl GpuLocalParquetSourceCacheKey {
                 format!("file.{index}.position_delete_files"),
                 &file.position_delete_files,
             );
+            push_equality_delete_files(
+                &mut fingerprint,
+                format!("file.{index}.equality_delete_files"),
+                &file.equality_delete_files,
+            );
             let partition_values = file.partition_values.iter().map(ToString::to_string).collect::<Vec<_>>();
             push_string_vec(&mut fingerprint, format!("file.{index}.partition_values"), &partition_values);
         }
@@ -788,8 +793,10 @@ impl GpuLocalParquetSourceCacheKey {
         push_reader_decimal_types(&mut fingerprint, "chunk.reader_decimal_types", &chunk.reader_decimal_types);
         if let Some(file) = source.files.get(chunk.file_index) {
             push_position_delete_files(&mut fingerprint, "chunk.position_delete_files", &file.position_delete_files);
+            push_equality_delete_files(&mut fingerprint, "chunk.equality_delete_files", &file.equality_delete_files);
         } else {
             push_token(&mut fingerprint, "chunk.position_delete_files.len", "missing");
+            push_token(&mut fingerprint, "chunk.equality_delete_files.len", "missing");
         }
         push_token(
             &mut fingerprint,
@@ -1179,6 +1186,26 @@ fn push_position_delete_files(
     }
 }
 
+fn push_equality_delete_files(
+    output: &mut String,
+    label: impl AsRef<str>,
+    delete_files: &[crate::source::ParquetEqualityDeleteFile],
+) {
+    let label = label.as_ref();
+    push_token(output, format!("{label}.len"), delete_files.len().to_string());
+    for (index, delete_file) in delete_files.iter().enumerate() {
+        let label = format!("{label}.{index}");
+        push_token(output, format!("{label}.id"), delete_file.id.as_str());
+        push_token(output, format!("{label}.location"), delete_file.location.reader_path());
+        push_resolved_source_contract(output, format!("{label}.resolved"), &delete_file.resolved_source);
+        push_token(output, format!("{label}.stable_id"), delete_file.stable_id.as_str());
+        push_i32_vec(output, format!("{label}.equality_ids"), &delete_file.equality_ids);
+        push_string_vec(output, format!("{label}.equality_columns"), &delete_file.equality_columns);
+        push_optional_u64(output, format!("{label}.size"), delete_file.file_size_bytes);
+        push_optional_u64(output, format!("{label}.rows"), delete_file.row_count);
+    }
+}
+
 fn redact_source_cache_fingerprint(output: &mut String, source: &LocalParquetSource) {
     for (index, file) in source.files.iter().enumerate() {
         replace_token_value(
@@ -1216,6 +1243,22 @@ fn redact_source_cache_fingerprint(output: &mut String, source: &LocalParquetSou
                     redacted_position_delete_referenced_data_file(referenced_data_file).as_str(),
                 );
             }
+            redact_resolved_source_contract(output, format!("{label}.resolved"), &delete_file.resolved_source);
+        }
+        for (delete_index, delete_file) in file.equality_delete_files.iter().enumerate() {
+            let label = format!("file.{index}.equality_delete_files.{delete_index}");
+            replace_token_value(
+                output,
+                format!("{label}.location"),
+                delete_file.location.reader_path().as_str(),
+                delete_file.location.diagnostic_location().as_str(),
+            );
+            replace_token_value(
+                output,
+                format!("{label}.stable_id"),
+                delete_file.stable_id.as_str(),
+                delete_file.location.diagnostic_stable_id(delete_file.stable_id.as_str()).as_str(),
+            );
             redact_resolved_source_contract(output, format!("{label}.resolved"), &delete_file.resolved_source);
         }
     }
@@ -1258,6 +1301,22 @@ fn redact_source_chunk_cache_fingerprint(output: &mut String, source: &LocalParq
                     redacted_position_delete_referenced_data_file(referenced_data_file).as_str(),
                 );
             }
+            redact_resolved_source_contract(output, format!("{label}.resolved"), &delete_file.resolved_source);
+        }
+        for (delete_index, delete_file) in file.equality_delete_files.iter().enumerate() {
+            let label = format!("chunk.equality_delete_files.{delete_index}");
+            replace_token_value(
+                output,
+                format!("{label}.location"),
+                delete_file.location.reader_path().as_str(),
+                delete_file.location.diagnostic_location().as_str(),
+            );
+            replace_token_value(
+                output,
+                format!("{label}.stable_id"),
+                delete_file.stable_id.as_str(),
+                delete_file.location.diagnostic_stable_id(delete_file.stable_id.as_str()).as_str(),
+            );
             redact_resolved_source_contract(output, format!("{label}.resolved"), &delete_file.resolved_source);
         }
     }
@@ -1339,6 +1398,13 @@ fn push_string_vec(output: &mut String, label: impl AsRef<str>, values: &[String
 }
 
 fn push_usize_vec(output: &mut String, label: impl AsRef<str>, values: &[usize]) {
+    push_token(output, format!("{}.len", label.as_ref()), values.len().to_string());
+    for (index, value) in values.iter().enumerate() {
+        push_token(output, format!("{}.{}", label.as_ref(), index), value.to_string());
+    }
+}
+
+fn push_i32_vec(output: &mut String, label: impl AsRef<str>, values: &[i32]) {
     push_token(output, format!("{}.len", label.as_ref()), values.len().to_string());
     for (index, value) in values.iter().enumerate() {
         push_token(output, format!("{}.{}", label.as_ref(), index), value.to_string());

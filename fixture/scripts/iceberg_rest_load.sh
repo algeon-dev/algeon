@@ -43,10 +43,10 @@ usage() {
 Usage: iceberg_rest_load.sh [options]
 
 Options:
-  --workload tpch|tpcds|citation_network
+  --workload tpch|tpcds|citation_network|equality_delete
                          Workload to load (default: tpch)
   --scale N|sfN          Scale factor for tpch/tpcds (default: sf1)
-  --load-mode create|add-files
+  --load-mode create|add-files|equality-delete
                          create rewrites tables through Spark; add-files
                          registers staged Parquet files in place (default: create)
   --reload               In add-files mode, drop existing tables before re-adding
@@ -100,17 +100,31 @@ case "${WORKLOAD}" in
   tpch) tables="${TPCH_TABLES}" ;;
   tpcds) tables="${TPCDS_TABLES}" ;;
   citation_network|citation-network) WORKLOAD="citation_network"; tables="${CITATION_NETWORK_TABLES}" ;;
-  *) echo "error: unsupported --workload=${WORKLOAD}; expected tpch, tpcds, or citation_network" >&2; exit 2 ;;
+  equality_delete|equality-delete) WORKLOAD="equality_delete"; tables="eq_deletes" ;;
+  *) echo "error: unsupported --workload=${WORKLOAD}; expected tpch, tpcds, citation_network, or equality_delete" >&2; exit 2 ;;
 esac
 
 case "${LOAD_MODE}" in
-  create|add-files) ;;
-  *) echo "error: unsupported --load-mode=${LOAD_MODE}; expected create or add-files" >&2; exit 2 ;;
+  create|add-files|equality-delete) ;;
+  *) echo "error: unsupported --load-mode=${LOAD_MODE}; expected create, add-files, or equality-delete" >&2; exit 2 ;;
 esac
+
+if [[ "${WORKLOAD}" == "equality_delete" ]]; then
+  if [[ "${LOAD_MODE}" == "create" ]]; then
+    LOAD_MODE="equality-delete"
+  elif [[ "${LOAD_MODE}" != "equality-delete" ]]; then
+    echo "error: equality_delete workload requires --load-mode equality-delete" >&2
+    exit 2
+  fi
+fi
 
 if [[ "${WORKLOAD}" == "citation_network" ]]; then
   data_dir="${CITATION_NETWORK_DATA_DIR}"
   namespace="citation_network"
+elif [[ "${WORKLOAD}" == "equality_delete" ]]; then
+  dataset_root="${DATA_ROOT}/${WORKLOAD}"
+  data_dir="${dataset_root}/sf${SF}/parquet"
+  namespace="${WORKLOAD}_sf${SF}"
 else
   dataset_root="${DATA_ROOT}/${WORKLOAD}"
   data_dir="${dataset_root}/sf${SF}/parquet"
@@ -129,6 +143,9 @@ if [[ "${WORKLOAD}" == "citation_network" ]]; then
     exit 2
   fi
   echo "[iceberg-rest-load] using citation network parquet -> ${data_dir}"
+elif [[ "${WORKLOAD}" == "equality_delete" ]]; then
+  mkdir -p "${data_dir}"
+  echo "[iceberg-rest-load] using generated equality-delete fixture"
 elif [[ "${REUSE_PARQUET}" == "1" && -d "${data_dir}" ]] && compgen -G "${data_dir}/*.parquet" >/dev/null; then
   echo "[iceberg-rest-load] reusing parquet -> ${data_dir}"
 else
@@ -370,7 +387,7 @@ ${DOCKER} run --rm --net host \
   --conf spark.hadoop.fs.s3a.aws.credentials.provider=org.apache.hadoop.fs.s3a.SimpleAWSCredentialsProvider \
   /app/spark_write_iceberg.py "${spark_mode_args[@]}" "${namespace}" /data "${spark_tables}"
 
-if [[ "${WORKLOAD}" == "citation_network" ]]; then
+if [[ "${WORKLOAD}" == "citation_network" || "${WORKLOAD}" == "equality_delete" ]]; then
   echo "[iceberg-rest-load] ${WORKLOAD} done"
 else
   echo "[iceberg-rest-load] ${WORKLOAD} sf${SF} done"

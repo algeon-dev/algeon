@@ -414,6 +414,37 @@ pub(crate) fn keyed_hash_join_strategy_input_facts_for_plan(
     }
 }
 
+pub(crate) fn hash_join_prebuild_reservation_unsupported_build_key_for_plan(
+    plan: &QueryPlan,
+    join: &JoinNode,
+) -> Option<BTreeMap<&'static str, String>> {
+    let build_input = match join.spec.build_side {
+        JoinSide::Left => join.inputs[0],
+        JoinSide::Right => join.inputs[1],
+    };
+    let input = plan.node(build_input)?;
+    let schema = input.output_schema();
+    join.spec.keys.iter().find_map(|key| {
+        let column = match join.spec.build_side {
+            JoinSide::Left => &key.left,
+            JoinSide::Right => &key.right,
+        };
+        let field = schema.field_with_name(column.name()).ok()?;
+        if hash_join_prebuild_reservation_supported_type(field.data_type()) {
+            return None;
+        }
+        Some(BTreeMap::from([
+            ("reason", "hash_join_pre_build_reservation_unsupported_build_key".to_string()),
+            ("build_side", join.spec.build_side.to_string()),
+            ("build_key", column.name().to_string()),
+            ("build_key_data_type", field.data_type().to_string()),
+            ("build_key_nullable", field.is_nullable().to_string()),
+            ("required_contract", "hash_join_pre_build_reservation_size_bytes".to_string()),
+            ("lower_level_owner", "cudf_hash_join_pre_build_reservation_size".to_string()),
+        ]))
+    })
+}
+
 #[cfg(test)]
 pub(crate) fn keyed_hash_join_strategy_decision(
     join: &JoinNode,
@@ -730,6 +761,12 @@ fn expr_requires_post_join_filter(expr: &Expr) -> bool {
         | Expr::TryCast { expr, .. }
         | Expr::Lower(expr)
         | Expr::Upper(expr)
+        | Expr::Trim { expr, .. }
+        | Expr::LTrim { expr, .. }
+        | Expr::RTrim { expr, .. }
+        | Expr::StringContains { expr, .. }
+        | Expr::StartsWith { expr, .. }
+        | Expr::EndsWith { expr, .. }
         | Expr::StringLength { expr, .. }
         | Expr::RegexpReplace { expr, .. }
         | Expr::Extract { expr, .. }
@@ -841,12 +878,12 @@ fn reusable_hash_prebuild_supported_for_plan(plan: &QueryPlan, join: &JoinNode) 
         };
         schema
             .field_with_name(column.name())
-            .map(|field| reusable_hash_prebuild_supported_type(field.data_type()))
+            .map(|field| hash_join_prebuild_reservation_supported_type(field.data_type()))
             .unwrap_or(true)
     })
 }
 
-fn reusable_hash_prebuild_supported_type(data_type: &DataType) -> bool {
+fn hash_join_prebuild_reservation_supported_type(data_type: &DataType) -> bool {
     !matches!(
         data_type,
         DataType::Utf8

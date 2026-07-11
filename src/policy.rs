@@ -63,6 +63,10 @@ pub enum FallbackReason {
     /// Source uses a non-local object store unsupported by native local reads.
     NativeSourceNonLocalObjectStore,
     /// Source partition columns cannot be mapped to native source columns.
+    ///
+    /// Reserved: no current raising site (partition failures raise
+    /// [`Self::NativeSourcePartitionValues`] or [`Self::UnsupportedType`]).
+    /// Kept because reason codes are a stable report contract.
     NativeSourcePartitionColumns,
     /// Source expression adapter cannot be represented in native source IR.
     NativeSourceExprAdapter,
@@ -70,6 +74,9 @@ pub enum FallbackReason {
     /// local-Parquet adapter cannot reproduce.
     NativeSourceParquetFileReaderFactory,
     /// Source scan limit is not supported for this native source shape.
+    ///
+    /// Reserved: no current raising site (native scan limits are supported).
+    /// Kept because reason codes are a stable report contract.
     NativeSourceScanLimit,
     /// Source order-preservation requirements cannot be maintained natively.
     NativeSourcePreserveOrder,
@@ -85,6 +92,10 @@ pub enum FallbackReason {
     /// Source byte ranges are unsupported by native local reads.
     NativeSourceByteRange,
     /// Source file ordering requirements cannot be maintained natively.
+    ///
+    /// Reserved: no current raising site (per-file ordering is carried since
+    /// declared-order native scan support). Kept because reason codes are a
+    /// stable report contract.
     NativeSourceFileOrdering,
     /// Source row-selection metadata cannot be represented natively.
     NativeSourceRowSelection,
@@ -93,6 +104,9 @@ pub enum FallbackReason {
     /// Table-format scan requested an unsupported feature.
     TableFormatUnsupported,
     /// Table-format planning failed before a native scan could be built.
+    ///
+    /// Reserved: no current raising site (real planning failures surface as
+    /// hard errors). Kept because reason codes are a stable report contract.
     TableFormatPlanningFailed,
     /// Iceberg data file is not Parquet.
     IcebergNonParquetDataFile,
@@ -113,6 +127,10 @@ pub enum FallbackReason {
     /// Iceberg object-store read cannot be lowered to native local reads.
     IcebergObjectStoreReadUnsupported,
     /// Iceberg snapshot selection or loading is unsupported.
+    ///
+    /// Reserved: no current raising site (time travel by snapshot id works;
+    /// branch/tag refs are not modeled in scan requests). Kept because reason
+    /// codes are a stable report contract.
     IcebergSnapshotUnsupported,
     /// A GPU-only table-format scan leaf survived native optimization, so the
     /// remaining plan cannot fall back to DataFusion CPU execution.

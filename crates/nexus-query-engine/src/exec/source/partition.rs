@@ -79,6 +79,15 @@ pub(super) fn partition_value_series(
         LiteralValue::Date32(value) => {
             context.runtime().timestamp_raw_scalar(i64::from(*value), cudf::TimestampResolution::Days)
         },
+        LiteralValue::Date64(value) => {
+            context.runtime().timestamp_raw_scalar(*value, cudf::TimestampResolution::Milliseconds)
+        },
+        LiteralValue::Time32 { raw, unit } => {
+            context.runtime().duration_raw_scalar(i64::from(*raw), timestamp_unit_to_cudf_resolution(unit))
+        },
+        LiteralValue::Time64 { raw, unit } => {
+            context.runtime().duration_raw_scalar(*raw, timestamp_unit_to_cudf_resolution(unit))
+        },
         LiteralValue::Timestamp { raw, unit } => {
             context.runtime().timestamp_raw_scalar(*raw, timestamp_unit_to_cudf_resolution(unit))
         },
@@ -132,6 +141,10 @@ fn null_partition_value_scalar(context: &ExecutionContext, data_type: &ArrowData
             context.runtime().null_decimal128_raw_scalar(crate::datatypes::arrow_decimal_scale_to_cudf_scale(*scale))
         },
         ArrowDataType::Date32 => context.runtime().null_timestamp_raw_scalar(cudf::TimestampResolution::Days),
+        ArrowDataType::Date64 => context.runtime().null_timestamp_raw_scalar(cudf::TimestampResolution::Milliseconds),
+        ArrowDataType::Time32(unit) | ArrowDataType::Time64(unit) => {
+            context.runtime().null_duration_raw_scalar(timestamp_unit_to_cudf_resolution(unit))
+        },
         ArrowDataType::Timestamp(unit, _) => {
             context.runtime().null_timestamp_raw_scalar(timestamp_unit_to_cudf_resolution(unit))
         },

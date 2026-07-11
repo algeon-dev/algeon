@@ -125,6 +125,12 @@ pub(crate) fn reader_predicate_expr_references_decimal_column(
             | Expr::Substring { expr, .. }
             | Expr::Lower(expr)
             | Expr::Upper(expr)
+            | Expr::Trim { expr, .. }
+            | Expr::LTrim { expr, .. }
+            | Expr::RTrim { expr, .. }
+            | Expr::StringContains { expr, .. }
+            | Expr::StartsWith { expr, .. }
+            | Expr::EndsWith { expr, .. }
             | Expr::StringLength { expr, .. }
             | Expr::RegexpReplace { expr, .. }
             | Expr::Abs(expr)

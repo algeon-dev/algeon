@@ -100,3 +100,89 @@ fn native_query_rejects_unsupported_residual_expression_families_before_source_r
         assert!(error.fact_value("path").is_none(), "{family}");
     }
 }
+
+#[test]
+fn native_query_rejects_post_join_date_trunc_residual_before_source_read() {
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Int32, false),
+        Field::new("event_ts", DataType::Timestamp(TimeUnit::Nanosecond, None), false),
+    ]));
+    let left_ts = Expr::date_trunc(
+        nexus_query_engine::DatePart::Day,
+        Expr::input_column(0, "event_ts", "left_event_ts"),
+        DataType::Timestamp(TimeUnit::Nanosecond, None),
+    );
+    let right_ts = Expr::date_trunc(
+        nexus_query_engine::DatePart::Day,
+        Expr::input_column(1, "event_ts", "right_event_ts"),
+        DataType::Timestamp(TimeUnit::Nanosecond, None),
+    );
+    let residual = Expr::binary(
+        Expr::case(
+            vec![nexus_query_engine::CaseWhen::new(
+                Expr::binary(
+                    Expr::input_column(0, "id", "left_id"),
+                    BinaryOp::Eq,
+                    Expr::input_column(1, "id", "right_id"),
+                ),
+                left_ts,
+            )],
+            right_ts.clone(),
+        ),
+        BinaryOp::Eq,
+        right_ts,
+    );
+
+    let error = residual_validation_error_with_schema(
+        JoinType::Inner,
+        vec![id_join_key()],
+        residual,
+        schema,
+        vec!["id", "event_ts"],
+    );
+
+    assert_eq!(error.code(), QueryErrorCode::UnsupportedExpression);
+    assert_eq!(error.operation(), "nexus_query_engine.join.validate_residual");
+    assert!(
+        error.fact_value("expression").is_some_and(|expression| expression.contains("DATE_TRUNC")),
+        "DATE_TRUNC should be visible in expression fact: {:?}",
+        error.fact_value("expression")
+    );
+    assert!(error.fact_value("path").is_none());
+}
+
+#[test]
+fn native_query_rejects_post_join_extract_new_fields_before_source_read() {
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Int32, false),
+        Field::new("event_ts", DataType::Timestamp(TimeUnit::Nanosecond, None), false),
+    ]));
+    let residual = Expr::binary(
+        Expr::case(
+            vec![nexus_query_engine::CaseWhen::new(
+                Expr::binary(
+                    Expr::input_column(0, "id", "left_id"),
+                    BinaryOp::Eq,
+                    Expr::input_column(1, "id", "right_id"),
+                ),
+                Expr::extract(nexus_query_engine::DatePart::Hour, Expr::input_column(0, "event_ts", "left_event_ts")),
+            )],
+            Expr::extract(nexus_query_engine::DatePart::Hour, Expr::input_column(1, "event_ts", "right_event_ts")),
+        ),
+        BinaryOp::Gt,
+        Expr::literal(LiteralValue::Int32(0)),
+    );
+
+    let error = residual_validation_error_with_schema(
+        JoinType::Inner,
+        vec![id_join_key()],
+        residual,
+        schema,
+        vec!["id", "event_ts"],
+    );
+
+    assert_eq!(error.code(), QueryErrorCode::UnsupportedExpression);
+    assert_eq!(error.operation(), "nexus_query_engine.join.validate_residual");
+    assert_eq!(error.fact_value("field"), Some("HOUR"));
+    assert!(error.fact_value("path").is_none());
+}

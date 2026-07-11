@@ -256,7 +256,10 @@ const EXISTING_COVERAGE_CASES: &[GpuCoverageSqlCase] = &[
         id: "order_limit_offset",
         feature: GpuCoverageSqlFeature::ExistingCoverage,
         sql: "SELECT id, payload FROM bench ORDER BY payload ASC NULLS LAST LIMIT 2 OFFSET 1",
-        expected: ExpectedGpuCoverageOutcome::Rewritten,
+        expected: ExpectedGpuCoverageOutcome::Rejected {
+            reason: FallbackReason::NativeOrderedOutputUnsupported,
+            unsupported_category: "operator_ordering",
+        },
     },
     GpuCoverageSqlCase {
         id: "intersect_rewrite",

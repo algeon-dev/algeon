@@ -21,10 +21,10 @@ pub(crate) use diagnostics::{
 };
 pub use model::{
     CredentialMode, GpuResidentSource, LakehouseCacheFillMode, LakehouseCacheReadMode, LakehouseCacheStatus,
-    LiteralBatchSource, LocalParquetFile, LocalParquetSource, MissingColumn, ParquetFieldIdReadBinding,
-    ParquetPositionDeleteFile, ParquetReadStrategy, ParquetReaderDecimalType, ParquetReaderDecimalTypeId,
-    ParquetSourceLocation, PartitionColumn, RemoteParquetReadMode, ResolvedParquetSource, SourceColumnRef,
-    SourceDecodeInput, SourceNode, ZERO_COLUMN_COUNT_COLUMN,
+    LiteralBatchSource, LocalParquetFile, LocalParquetSource, MissingColumn, ParquetEqualityDeleteFile,
+    ParquetFieldIdReadBinding, ParquetPositionDeleteFile, ParquetReadStrategy, ParquetReaderDecimalType,
+    ParquetReaderDecimalTypeId, ParquetSourceLocation, PartitionColumn, RemoteParquetReadMode, ResolvedParquetSource,
+    SourceColumnRef, SourceDecodeInput, SourceNode, ZERO_COLUMN_COUNT_COLUMN,
 };
 pub(crate) use reader_predicate_literals::{
     ReaderPredicateDecimalScaleError, reader_predicate_decimal_raw_for_integer_value,

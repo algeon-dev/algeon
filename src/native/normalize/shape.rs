@@ -5,6 +5,8 @@ use super::*;
 // `Operator(left,right)`. Suffixes such as `(fetch)` are part of the operator
 // token, not parsed metadata, so do not rename them casually.
 pub(super) const SORT_PRESERVING_MERGE_SHAPE: &str = "SortPreservingMergeExec";
+pub(super) const SORT_PRESERVING_MERGE_SORT_SHAPE: &str = "SortPreservingMergeExec(SortExec)";
+pub(super) const SORT_PRESERVING_MERGE_FETCH_INPUT_SHAPE: &str = "SortPreservingMergeExec(fetch)";
 pub(super) const SORT_PRESERVING_MERGE_FETCH_SHAPE: &str = "SortPreservingMergeExec(fetch)(SortExec)";
 pub(super) const UNSUPPORTED_NATIVE_PLAN_SHAPE: &str = "UnsupportedNativePhysicalPlan";
 
@@ -99,7 +101,12 @@ pub(super) fn native_stack_candidate_for_input(
         NativeStackRoot::LocalLimit => wrap_shape("LocalLimitExec", wrap_shape("SortExec", aggregate)),
         NativeStackRoot::Sort => wrap_shape("SortExec", aggregate),
         NativeStackRoot::SortFetch => wrap_shape("SortExec(fetch)", aggregate),
-        NativeStackRoot::SortPreservingMergeFetch => {
+        NativeStackRoot::SortPreservingMerge => wrap_shape("SortPreservingMergeExec", aggregate),
+        NativeStackRoot::SortPreservingMergeFetch => wrap_shape("SortPreservingMergeExec(fetch)", aggregate),
+        NativeStackRoot::SortPreservingMergeSort => {
+            wrap_shape("SortPreservingMergeExec", wrap_shape("SortExec", aggregate))
+        },
+        NativeStackRoot::SortPreservingMergeFetchSort => {
             wrap_shape("SortPreservingMergeExec(fetch)", wrap_shape("SortExec", aggregate))
         },
     };
@@ -107,7 +114,12 @@ pub(super) fn native_stack_candidate_for_input(
         + 2
         + usize::from(has_post_aggregate_projection)
         + usize::from(has_pre_aggregate_projection)
-        + usize::from(matches!(root, NativeStackRoot::LocalLimit | NativeStackRoot::SortPreservingMergeFetch))
+        + usize::from(matches!(
+            root,
+            NativeStackRoot::LocalLimit
+                | NativeStackRoot::SortPreservingMergeSort
+                | NativeStackRoot::SortPreservingMergeFetchSort
+        ))
         + if has_distributed_aggregate { 2 } else { 0 };
     GpuCandidate::with_operator_count(shape, output_schema_fields, operator_count)
 }
@@ -126,7 +138,12 @@ pub(super) fn input_root_candidate(
         Some(NativeStackRoot::LocalLimit) => wrap_shape("LocalLimitExec", wrap_shape("SortExec", input)),
         Some(NativeStackRoot::Sort) => wrap_shape("SortExec", input),
         Some(NativeStackRoot::SortFetch) => wrap_shape("SortExec(fetch)", input),
-        Some(NativeStackRoot::SortPreservingMergeFetch) => {
+        Some(NativeStackRoot::SortPreservingMerge) => wrap_shape("SortPreservingMergeExec", input),
+        Some(NativeStackRoot::SortPreservingMergeFetch) => wrap_shape("SortPreservingMergeExec(fetch)", input),
+        Some(NativeStackRoot::SortPreservingMergeSort) => {
+            wrap_shape("SortPreservingMergeExec", wrap_shape("SortExec", input))
+        },
+        Some(NativeStackRoot::SortPreservingMergeFetchSort) => {
             wrap_shape("SortPreservingMergeExec(fetch)", wrap_shape("SortExec", input))
         },
         None => input,
@@ -134,7 +151,14 @@ pub(super) fn input_root_candidate(
     let operator_count = input_operator_count
         + usize::from(has_projection)
         + usize::from(root.is_some())
-        + usize::from(matches!(root, Some(NativeStackRoot::LocalLimit | NativeStackRoot::SortPreservingMergeFetch)));
+        + usize::from(matches!(
+            root,
+            Some(
+                NativeStackRoot::LocalLimit
+                    | NativeStackRoot::SortPreservingMergeSort
+                    | NativeStackRoot::SortPreservingMergeFetchSort
+            )
+        ));
     GpuCandidate::with_operator_count(shape, output_schema_fields, operator_count)
 }
 
@@ -163,7 +187,11 @@ pub(super) fn native_stack_candidate(
         if has_distributed_aggregate {
             9
         } else {
-            operator_count + usize::from(matches!(root, NativeStackRoot::SortPreservingMergeFetch))
+            operator_count
+                + usize::from(matches!(
+                    root,
+                    NativeStackRoot::SortPreservingMergeSort | NativeStackRoot::SortPreservingMergeFetchSort
+                ))
         },
     )
 }
@@ -186,7 +214,12 @@ fn native_sort_stack_shape(
         NativeStackRoot::LocalLimit => wrap_shape("LocalLimitExec", wrap_shape("SortExec", aggregate)),
         NativeStackRoot::Sort => wrap_shape("SortExec", aggregate),
         NativeStackRoot::SortFetch => wrap_shape("SortExec(fetch)", aggregate),
-        NativeStackRoot::SortPreservingMergeFetch => {
+        NativeStackRoot::SortPreservingMerge => wrap_shape("SortPreservingMergeExec", aggregate),
+        NativeStackRoot::SortPreservingMergeFetch => wrap_shape("SortPreservingMergeExec(fetch)", aggregate),
+        NativeStackRoot::SortPreservingMergeSort => {
+            wrap_shape("SortPreservingMergeExec", wrap_shape("SortExec", aggregate))
+        },
+        NativeStackRoot::SortPreservingMergeFetchSort => {
             wrap_shape("SortPreservingMergeExec(fetch)", wrap_shape("SortExec", aggregate))
         },
     }
@@ -200,8 +233,15 @@ fn native_aggregate_shape(
     has_distributed_aggregate: bool,
 ) -> String {
     let mut source = "LocalParquetScan".to_string();
-    if matches!(kind, NativeAggregateShapeKind::SortStack(NativeStackRoot::SortPreservingMergeFetch))
-        && has_distributed_aggregate
+    if matches!(
+        kind,
+        NativeAggregateShapeKind::SortStack(
+            NativeStackRoot::SortPreservingMerge
+                | NativeStackRoot::SortPreservingMergeFetch
+                | NativeStackRoot::SortPreservingMergeSort
+                | NativeStackRoot::SortPreservingMergeFetchSort
+        )
+    ) && has_distributed_aggregate
     {
         source = wrap_shape("RepartitionExec", source);
     }
@@ -214,7 +254,12 @@ fn native_aggregate_shape(
 
     let mut aggregate = if has_distributed_aggregate {
         match kind {
-            NativeAggregateShapeKind::SortStack(NativeStackRoot::SortPreservingMergeFetch) => wrap_shape(
+            NativeAggregateShapeKind::SortStack(
+                NativeStackRoot::SortPreservingMerge
+                | NativeStackRoot::SortPreservingMergeFetch
+                | NativeStackRoot::SortPreservingMergeSort
+                | NativeStackRoot::SortPreservingMergeFetchSort,
+            ) => wrap_shape(
                 "FinalAggregateExec",
                 wrap_shape("RepartitionExec", wrap_shape("PartialAggregateExec", source)),
             ),
@@ -240,8 +285,15 @@ fn native_aggregate_shape_with_input(
     has_pre_projection: bool,
     has_distributed_aggregate: bool,
 ) -> String {
-    if matches!(kind, NativeAggregateShapeKind::SortStack(NativeStackRoot::SortPreservingMergeFetch))
-        && has_distributed_aggregate
+    if matches!(
+        kind,
+        NativeAggregateShapeKind::SortStack(
+            NativeStackRoot::SortPreservingMerge
+                | NativeStackRoot::SortPreservingMergeFetch
+                | NativeStackRoot::SortPreservingMergeSort
+                | NativeStackRoot::SortPreservingMergeFetchSort
+        )
+    ) && has_distributed_aggregate
     {
         input = wrap_shape("RepartitionExec", input);
     }
@@ -251,7 +303,12 @@ fn native_aggregate_shape_with_input(
 
     let mut aggregate = if has_distributed_aggregate {
         match kind {
-            NativeAggregateShapeKind::SortStack(NativeStackRoot::SortPreservingMergeFetch) => wrap_shape(
+            NativeAggregateShapeKind::SortStack(
+                NativeStackRoot::SortPreservingMerge
+                | NativeStackRoot::SortPreservingMergeFetch
+                | NativeStackRoot::SortPreservingMergeSort
+                | NativeStackRoot::SortPreservingMergeFetchSort,
+            ) => wrap_shape(
                 "FinalAggregateExec",
                 wrap_shape("RepartitionExec", wrap_shape("PartialAggregateExec", input)),
             ),

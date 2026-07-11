@@ -51,6 +51,7 @@ pub(super) fn table_format_column_requirements(
     if let Some(filter) = filter {
         collect_required_columns(filter.predicate(), &filter.input().schema(), &mut filter_columns)?;
     }
+    filter_columns.extend(table_format_equality_delete_required_columns(scan_plan)?);
 
     let output_column_set: BTreeSet<String> = output_columns.iter().cloned().collect();
     let predicate_columns =
@@ -192,6 +193,34 @@ pub(super) fn table_format_column_requirements(
         scan_output_columns,
         requires_physical_row_presence: false,
     })
+}
+
+fn table_format_equality_delete_required_columns(
+    scan_plan: &TableFormatScanPlan,
+) -> Result<Vec<String>, FallbackReason> {
+    let mut columns = Vec::new();
+    for data_file in &scan_plan.data_files {
+        for delete_file in &data_file.equality_delete_files {
+            let Some(equality_ids) = delete_file.equality_ids.as_ref().filter(|ids| !ids.is_empty()) else {
+                return Err(FallbackReason::IcebergDeleteFilesUnsupported);
+            };
+            for field_id in equality_ids {
+                let mapping = scan_plan
+                    .projected_columns
+                    .iter()
+                    .chain(scan_plan.pure_filter_columns.iter())
+                    .find(|mapping| mapping.field_id == Some(*field_id))
+                    .ok_or(FallbackReason::IcebergDeleteFilesUnsupported)?;
+                if mapping.source != TableFormatColumnSource::DirectTopLevelFileColumn {
+                    return Err(FallbackReason::IcebergDeleteFilesUnsupported);
+                }
+                if !columns.contains(&mapping.logical_name) {
+                    columns.push(mapping.logical_name.clone());
+                }
+            }
+        }
+    }
+    Ok(columns)
 }
 
 fn table_format_predicate_scan_output_indices(

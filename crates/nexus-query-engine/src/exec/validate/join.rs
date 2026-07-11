@@ -7,7 +7,7 @@ use super::{
     types::{
         is_decimal_type, is_numeric_type, require_arithmetic_type, require_boolean, require_comparable_types,
         require_compatible_types, require_date_or_timestamp, require_integral_type, require_scalar_operator_value,
-        require_string, require_timestamp_second, require_timezone_free_operator_key,
+        require_string, require_timezone_free_operator_key,
     },
     *,
 };
@@ -351,7 +351,7 @@ fn validate_join_residual_column_sides(expr: &Expr) -> Result<()> {
         1 => right = true,
         _ => unreachable!("join residual walker only yields binary input columns"),
     };
-    walk_join_residual_columns(
+    walk_join_residual_column_sides(
         expr,
         "nexus_query_engine.join.validate_residual",
         "join residual column must be input-qualified",
@@ -368,6 +368,77 @@ fn validate_join_residual_column_sides(expr: &Expr) -> Result<()> {
         .with_fact("references_right", right));
     }
     Ok(())
+}
+
+fn walk_join_residual_column_sides(
+    expr: &Expr,
+    operation: &'static str,
+    bad_qualifier_message: &'static str,
+    on_input: &mut impl FnMut(usize, &str),
+) -> Result<()> {
+    match expr {
+        Expr::Column(column) => match column.qualifier() {
+            Some(ColumnQualifier::Input { index }) if matches!(*index, 0 | 1) => {
+                on_input(*index, column.name());
+                Ok(())
+            },
+            qualifier => Err(QueryError::new(QueryErrorCode::UnsupportedExpression, operation, bad_qualifier_message)
+                .with_fact("column", column.name())
+                .with_fact("qualifier", qualifier.map(ToString::to_string).unwrap_or_else(|| "none".to_string()))),
+        },
+        Expr::Literal(_) => Ok(()),
+        Expr::Not(inner)
+        | Expr::IsNull(inner)
+        | Expr::IsNotNull(inner)
+        | Expr::Cast { expr: inner, .. }
+        | Expr::TryCast { expr: inner, .. }
+        | Expr::Like { expr: inner, .. }
+        | Expr::Substring { expr: inner, .. }
+        | Expr::Lower(inner)
+        | Expr::Upper(inner)
+        | Expr::Trim { expr: inner, .. }
+        | Expr::LTrim { expr: inner, .. }
+        | Expr::RTrim { expr: inner, .. }
+        | Expr::StringContains { expr: inner, .. }
+        | Expr::StartsWith { expr: inner, .. }
+        | Expr::EndsWith { expr: inner, .. }
+        | Expr::StringLength { expr: inner, .. }
+        | Expr::RegexpReplace { expr: inner, .. }
+        | Expr::Extract { expr: inner, .. }
+        | Expr::DateTrunc { expr: inner, .. }
+        | Expr::Abs(inner)
+        | Expr::Sqrt { expr: inner, .. }
+        | Expr::Round { expr: inner, .. }
+        | Expr::Alias { expr: inner, .. } => {
+            walk_join_residual_column_sides(inner, operation, bad_qualifier_message, on_input)
+        },
+        Expr::Binary { left, right, .. }
+        | Expr::IsDistinctFrom { left, right }
+        | Expr::IsNotDistinctFrom { left, right } => {
+            walk_join_residual_column_sides(left, operation, bad_qualifier_message, on_input)?;
+            walk_join_residual_column_sides(right, operation, bad_qualifier_message, on_input)
+        },
+        Expr::InList { expr, list, .. } => {
+            walk_join_residual_column_sides(expr, operation, bad_qualifier_message, on_input)?;
+            for item in list {
+                walk_join_residual_column_sides(item, operation, bad_qualifier_message, on_input)?;
+            }
+            Ok(())
+        },
+        Expr::Concat(exprs) => {
+            for expr in exprs {
+                walk_join_residual_column_sides(expr, operation, bad_qualifier_message, on_input)?;
+            }
+            Ok(())
+        },
+        Expr::Case { branches, else_expr } => {
+            for branch in branches {
+                walk_join_residual_column_sides(&branch.when, operation, bad_qualifier_message, on_input)?;
+                walk_join_residual_column_sides(&branch.then, operation, bad_qualifier_message, on_input)?;
+            }
+            walk_join_residual_column_sides(else_expr, operation, bad_qualifier_message, on_input)
+        },
+    }
 }
 
 fn validate_join_residual_expr(
@@ -506,6 +577,12 @@ fn validate_join_residual_expr(
         | Expr::Substring { .. }
         | Expr::Lower(_)
         | Expr::Upper(_)
+        | Expr::Trim { .. }
+        | Expr::LTrim { .. }
+        | Expr::RTrim { .. }
+        | Expr::StringContains { .. }
+        | Expr::StartsWith { .. }
+        | Expr::EndsWith { .. }
         | Expr::StringLength { .. }
         | Expr::RegexpReplace { .. }
         | Expr::Concat(_)
@@ -561,11 +638,19 @@ fn validate_post_join_residual_expr(
             validate_post_join_residual_expr(expr, left_schema, left_available, right_schema, right_available)?;
             Ok(target_type.clone())
         },
-        Expr::Lower(expr) | Expr::Upper(expr) => {
+        Expr::Lower(expr) | Expr::Upper(expr) => validate_post_join_string_unary_expr(
+            expr,
+            left_schema,
+            left_available,
+            right_schema,
+            right_available,
+            "post-join residual string case input",
+        ),
+        Expr::StringContains { expr, .. } | Expr::StartsWith { expr, .. } | Expr::EndsWith { expr, .. } => {
             let data_type =
                 validate_post_join_residual_expr(expr, left_schema, left_available, right_schema, right_available)?;
-            require_string(&data_type, "post-join residual string case input")?;
-            Ok(data_type)
+            require_string(&data_type, "post-join residual string predicate input")?;
+            Ok(ArrowDataType::Boolean)
         },
         Expr::StringLength { expr, output_type } => {
             let data_type =
@@ -581,28 +666,26 @@ fn validate_post_join_residual_expr(
             require_string(output_type, "post-join residual REGEXP_REPLACE output")?;
             Ok(output_type.clone())
         },
-        Expr::DateTrunc { field, expr, output_type } => {
+        Expr::Extract { field, expr } => {
             let data_type =
                 validate_post_join_residual_expr(expr, left_schema, left_available, right_schema, right_available)?;
             match field {
-                DatePart::Minute => {
-                    require_timestamp_second(&data_type, "post-join residual DATE_TRUNC minute input")?;
-                    require_timestamp_second(output_type, "post-join residual DATE_TRUNC minute output")?;
-                    Ok(output_type.clone())
+                DatePart::Year | DatePart::Month | DatePart::Day => {
+                    require_date_or_timestamp(&data_type, "post-join residual EXTRACT input")?;
+                    Ok(ArrowDataType::Int32)
                 },
-                DatePart::Year | DatePart::Month | DatePart::Day => Err(QueryError::new(
+                DatePart::Minute
+                | DatePart::Hour
+                | DatePart::Second
+                | DatePart::Millisecond
+                | DatePart::Microsecond
+                | DatePart::Nanosecond => Err(QueryError::new(
                     QueryErrorCode::UnsupportedExpression,
                     "nexus_query_engine.join.validate_residual",
-                    "post-join residual DATE_TRUNC does not support this field",
+                    "post-join residual EXTRACT does not support this field",
                 )
                 .with_fact("field", field.to_string())),
             }
-        },
-        Expr::Extract { expr, .. } => {
-            let data_type =
-                validate_post_join_residual_expr(expr, left_schema, left_available, right_schema, right_available)?;
-            require_date_or_timestamp(&data_type, "post-join residual EXTRACT input")?;
-            Ok(ArrowDataType::Int32)
         },
         Expr::Abs(expr) => {
             let data_type =
@@ -771,7 +854,13 @@ fn validate_post_join_residual_expr(
         Expr::Alias { expr, .. } => {
             validate_post_join_residual_expr(expr, left_schema, left_available, right_schema, right_available)
         },
-        Expr::TryCast { .. } | Expr::Like { .. } | Expr::Substring { .. } => Err(QueryError::new(
+        Expr::TryCast { .. }
+        | Expr::Like { .. }
+        | Expr::Substring { .. }
+        | Expr::Trim { .. }
+        | Expr::LTrim { .. }
+        | Expr::RTrim { .. }
+        | Expr::DateTrunc { .. } => Err(QueryError::new(
             QueryErrorCode::UnsupportedExpression,
             "nexus_query_engine.join.validate_residual",
             "post-join residual predicates do not yet support this expression family",
@@ -787,6 +876,19 @@ fn join_residual_post_filter_supported(join: &JoinNode) -> bool {
         && join.spec.residual_predicate.as_ref().is_some_and(residual_expr_requires_post_filter)
 }
 
+fn validate_post_join_string_unary_expr(
+    expr: &Expr,
+    left_schema: &SchemaRef,
+    left_available: &BTreeSet<String>,
+    right_schema: &SchemaRef,
+    right_available: &BTreeSet<String>,
+    context: &'static str,
+) -> Result<ArrowDataType> {
+    let data_type = validate_post_join_residual_expr(expr, left_schema, left_available, right_schema, right_available)?;
+    require_string(&data_type, context)?;
+    Ok(data_type)
+}
+
 fn residual_expr_requires_post_filter(expr: &Expr) -> bool {
     match expr {
         Expr::Case { .. } => true,
@@ -797,6 +899,12 @@ fn residual_expr_requires_post_filter(expr: &Expr) -> bool {
         | Expr::TryCast { expr, .. }
         | Expr::Lower(expr)
         | Expr::Upper(expr)
+        | Expr::Trim { expr, .. }
+        | Expr::LTrim { expr, .. }
+        | Expr::RTrim { expr, .. }
+        | Expr::StringContains { expr, .. }
+        | Expr::StartsWith { expr, .. }
+        | Expr::EndsWith { expr, .. }
         | Expr::StringLength { expr, .. }
         | Expr::RegexpReplace { expr, .. }
         | Expr::Extract { expr, .. }
@@ -944,4 +1052,44 @@ fn is_supported_join_residual_ast_cast(source_type: &ArrowDataType, target_type:
     matches!(target_type, ArrowDataType::Int64 | ArrowDataType::UInt64 | ArrowDataType::Float64)
         && (is_numeric_type(source_type) || is_decimal_type(source_type))
         && is_supported_arrow_cast(source_type, target_type)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn residual_column_sides_walks_post_join_string_predicate_inputs() {
+        let expr = Expr::binary(
+            Expr::string_contains(Expr::lower(Expr::input_column(0, "name", "left_name")), "x"),
+            BinaryOp::And,
+            Expr::binary(
+                Expr::input_column(1, "payload", "right_payload"),
+                BinaryOp::Gt,
+                Expr::literal(LiteralValue::Int32(0)),
+            ),
+        );
+
+        validate_join_residual_column_sides(&expr).expect("post-join string predicate should count both sides");
+    }
+
+    #[test]
+    fn residual_column_sides_rejects_bad_qualifier_inside_post_join_string_predicate() {
+        let expr = Expr::binary(
+            Expr::string_contains(Expr::lower(Expr::input_column(2, "name", "bad_name")), "x"),
+            BinaryOp::And,
+            Expr::binary(
+                Expr::input_column(1, "payload", "right_payload"),
+                BinaryOp::Gt,
+                Expr::literal(LiteralValue::Int32(0)),
+            ),
+        );
+
+        let error = validate_join_residual_column_sides(&expr).expect_err("input2 should be rejected");
+
+        assert_eq!(error.code(), QueryErrorCode::UnsupportedExpression);
+        assert_eq!(error.operation(), "nexus_query_engine.join.validate_residual");
+        assert_eq!(error.fact_value("column"), Some("name"));
+        assert_eq!(error.fact_value("qualifier"), Some("input2"));
+    }
 }

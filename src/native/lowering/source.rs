@@ -5,7 +5,9 @@ use datafusion::{
     physical_expr::{PhysicalExpr, expressions::Column, projection::ProjectionExprs},
     physical_plan::ExecutionPlan,
 };
-use nexus_query_engine::{Expr as NativeExpr, QueryPlanBuilder as NativeQueryPlanBuilder};
+use nexus_query_engine::{
+    Expr as NativeExpr, QueryPlanBuilder as NativeQueryPlanBuilder, SourceDiagnostics as NativeSourceDiagnostics,
+};
 
 mod local_parquet;
 mod reader_pushdown;
@@ -64,6 +66,21 @@ pub(super) fn combine_scan_limits(left: Option<usize>, right: Option<usize>) -> 
         (Some(limit), None) | (None, Some(limit)) => Some(limit),
         (None, None) => None,
     }
+}
+
+pub(super) fn preserve_resolved_source_diagnostics(
+    diagnostics: &mut NativeSourceDiagnostics,
+    resolved_source_diagnostics: &NativeSourceDiagnostics,
+) {
+    diagnostics.source_read_strategy = resolved_source_diagnostics.source_read_strategy.clone();
+    diagnostics.source_decode_input = resolved_source_diagnostics.source_decode_input.clone();
+    diagnostics.credential_mode = resolved_source_diagnostics.credential_mode.clone();
+    diagnostics.lakehouse_cache_status = resolved_source_diagnostics.lakehouse_cache_status.clone();
+    diagnostics.lakehouse_cache_read_mode = resolved_source_diagnostics.lakehouse_cache_read_mode.clone();
+    diagnostics.lakehouse_cache_fill_mode = resolved_source_diagnostics.lakehouse_cache_fill_mode.clone();
+    diagnostics.source_fallback_reason = resolved_source_diagnostics.source_fallback_reason.clone();
+    diagnostics.direct_device_read =
+        diagnostics.rejected_features.is_empty() && resolved_source_diagnostics.direct_device_read;
 }
 
 pub(super) enum SourceUnprojectedFilterOutput {

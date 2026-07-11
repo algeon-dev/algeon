@@ -9,7 +9,7 @@ use datafusion::{
         expressions::{Column, Literal},
         window::{PlainAggregateWindowExpr, StandardWindowExpr, WindowExpr},
     },
-    physical_plan::{ExecutionPlan, windows::WindowUDFExpr},
+    physical_plan::windows::WindowUDFExpr,
 };
 use nexus_query_engine::{
     Expr as NativeExpr, LimitSpec as NativeLimitSpec, LiteralValue as NativeLiteralValue,
@@ -24,13 +24,13 @@ use super::{
     expr::{collect_required_field_indices, lower_physical_expr_with_bindings},
     lower_native_input,
     naming::{sanitize_field_name, unique_name_with_suffix},
-    sort::lower_sort_with_input,
+    sort::lower_sort_ordering_with_input,
 };
 use crate::{
     native::{
         literal::{NativeLiteralContext, native_literal_value},
         normalize::{NormalizedNativeSort, NormalizedNativeWindow},
-        validate::{is_supported_native_type, validate_physical_expr, validate_schema, validate_sort},
+        validate::{is_supported_native_type, validate_physical_expr, validate_schema, validate_sort_ordering},
     },
     policy::FallbackReason,
 };
@@ -40,15 +40,22 @@ pub(super) fn lower_sort_input(
     builder: &mut NativeQueryPlanBuilder,
     _required_output_fields: &RequiredFields,
 ) -> Result<LoweredNativeInput, FallbackReason> {
-    validate_schema(sort.sort.schema())?;
-    validate_sort(sort.sort)?;
+    validate_schema(Arc::clone(sort.sort.output_schema()))?;
+    validate_sort_ordering(sort.sort.ordering(), sort.sort.input_schema())?;
     let mut child_required = BTreeSet::new();
-    for sort_expr in sort.sort.expr() {
-        collect_required_field_indices(&sort_expr.expr, &sort.sort.input().schema(), &mut child_required)?;
+    for sort_expr in sort.sort.ordering() {
+        collect_required_field_indices(&sort_expr.expr, sort.sort.input_schema(), &mut child_required)?;
     }
-    child_required.extend(_required_output_fields.requested_indices(sort.sort.schema().fields().len())?);
+    child_required.extend(_required_output_fields.requested_indices(sort.sort.output_schema().fields().len())?);
     let input = lower_native_input(&sort.input, builder, &RequiredFields::only(child_required))?;
-    let sorted = lower_sort_with_input(builder, sort.sort, input, _required_output_fields)?;
+    let sorted = lower_sort_ordering_with_input(
+        builder,
+        sort.sort.ordering(),
+        sort.sort.input_schema(),
+        sort.sort.output_schema(),
+        input,
+        _required_output_fields,
+    )?;
     apply_sort_fetch_limit(builder, sorted, sort.fetch)
 }
 
@@ -347,6 +354,9 @@ fn parse_lag_lead_default(
         | NativeLiteralValue::LargeUtf8(_) => Ok(Some(lowered)),
         NativeLiteralValue::Decimal128 { .. }
         | NativeLiteralValue::Date32(_)
+        | NativeLiteralValue::Date64(_)
+        | NativeLiteralValue::Time32 { .. }
+        | NativeLiteralValue::Time64 { .. }
         | NativeLiteralValue::Timestamp { .. }
         | NativeLiteralValue::Duration { .. }
         | NativeLiteralValue::IntervalMonthDayNano { .. }

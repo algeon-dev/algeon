@@ -20,7 +20,8 @@ The native engine has a cuDF representation for these Arrow data types:
 - Floating point: `Float32`, `Float64`
 - `Decimal128` with valid Arrow decimal precision and scale
 - Strings: `Utf8`, `LargeUtf8`, `Utf8View`
-- `Date32`
+- `Date32`, `Date64`
+- `Time32` and `Time64` at their Arrow-supported resolutions
 - `Timestamp` at second, millisecond, microsecond, or nanosecond resolution
 - `Duration` at second, millisecond, microsecond, or nanosecond resolution
 - `List` / `LargeList` of UTF-8 strings as carry/projection columns
@@ -28,7 +29,9 @@ The native engine has a cuDF representation for these Arrow data types:
 Timezone-aware timestamps and UTF-8 list columns are carry types. They can pass
 through supported source/projection paths, but scalar operators, joins, sorts,
 aggregates, and windows may reject them when they need timezone-free scalar
-keys or list semantics.
+keys or list semantics. Temporal scalar functions also have narrower contracts
+than relational carry/projection support; for example, some date operators
+accept `Date32` or timezone-free timestamps but not `Date64`.
 
 ## Unsupported relational types
 
@@ -38,7 +41,7 @@ These types do not have native execution support today:
   `FixedSizeList`, `ListView`, `LargeListView`, `RunEndEncoded`
 - Numeric / decimal: `Float16`, `Decimal32`, `Decimal64`, `Decimal256`
 - Binary: `Binary`, `LargeBinary`, `FixedSizeBinary`, `BinaryView`
-- Temporal: `Date64`, `Time32`, `Time64`, `Interval`
+- Temporal: `Interval`
 - Lists whose child type is not UTF-8
 - `Null` (the untyped null column type)
 

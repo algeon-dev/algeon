@@ -41,7 +41,9 @@ pub(in crate::exec::bounded) fn execute_compiled_bounded_aggregate_from_stream(
                 metrics,
             );
         }
-        if aggregate_spec_has_floating_statistical_aggregate(&aggregate.spec) {
+        if aggregate_spec_has_floating_statistical_aggregate(&aggregate.spec)
+            || aggregate_spec_has_median(&aggregate.spec)
+        {
             let frames = inputs.collect_remaining_frames_owned(reservations, metrics)?;
             if frames.is_empty() {
                 return execute_compiled_bounded_aggregate_from_empty_input(
@@ -157,9 +159,7 @@ pub(in crate::exec::bounded) fn execute_compiled_bounded_aggregate_from_source_s
     reservations: &mut ReservationTracker,
     metrics: &mut QueryMetrics,
 ) -> Result<ResidentGpuFrame> {
-    if aggregate_spec_has_floating_statistical_aggregate(&aggregate.spec)
-        || aggregate_spec_has_distinct(&aggregate.spec)
-    {
+    if aggregate_spec_requires_whole_input(&aggregate.spec) {
         let input = materialize_bounded_join_leaf_local_parquet_source_stream(context, stream, reservations, metrics)?;
         return execute_compiled_bounded_aggregate_consuming_frame(
             context,

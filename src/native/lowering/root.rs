@@ -2,7 +2,7 @@ use std::{collections::BTreeSet, sync::Arc};
 
 use datafusion::{
     datasource::physical_plan::{FileSource, ParquetSource},
-    physical_plan::{ExecutionPlan, projection::ProjectionExec, sorts::sort::SortExec},
+    physical_plan::{ExecutionPlan, projection::ProjectionExec},
 };
 use nexus_query_engine::{
     LimitSpec as NativeLimitSpec, LocalParquetSource as NativeLocalParquetSource, QueryPlan as NativeQueryPlan,
@@ -21,13 +21,14 @@ use super::{
     executable_schema_and_bindings,
     expr::{collect_required_field_indices, lower_physical_expr_with_bindings},
     lower_native_input, lower_native_input_with_scan_limit, projection_outputs,
-    sort::lower_sort_with_input,
+    sort::lower_sort_ordering_with_input,
     source::{
         SourceUnprojectedFilterOutput, lower_empty_table_format_count_star_source,
         lower_required_file_source_projection_exprs, lower_source_filter_and_projection,
         lower_table_format_count_star_fallback_source, lower_table_format_count_star_mixed_row_count_source,
-        lower_table_format_zero_column_count_source, reader_predicate_proves_local_parquet_at_most_one_row,
-        required_scan_projection, required_scan_projection_requires_native_projection, required_scan_projection_schema,
+        lower_table_format_zero_column_count_source, preserve_resolved_source_diagnostics,
+        reader_predicate_proves_local_parquet_at_most_one_row, required_scan_projection,
+        required_scan_projection_requires_native_projection, required_scan_projection_schema,
         source_bindings_for_schema, source_reader_pushdown_predicate,
         table_format_count_star_mixed_row_count_metadata_can_split, table_format_count_star_probe_can_lower,
         table_format_scan_rejection, table_format_zero_column_count_metadata_is_available,
@@ -37,15 +38,18 @@ use super::{
 };
 use crate::{
     native::{
-        normalize::{NormalizedNativeAggregateRoot, NormalizedNativeInputRoot, NormalizedNativePlan},
+        normalize::{
+            NormalizedNativeAggregateRoot, NormalizedNativeInput, NormalizedNativeInputRoot,
+            NormalizedNativeLiteralSource, NormalizedNativePlan, NormalizedNativeScan, NormalizedNativeSortExprs,
+        },
         pruning::scan_predicate_without_dynamic_filter_hints,
         source::{
-            local_parquet_files, local_parquet_source_diagnostics, native_source_output_schema,
-            required_parquet_column_requirements, validate_slice1_parquet_scan,
+            local_parquet_files, local_parquet_scan_is_empty, local_parquet_source_diagnostics,
+            native_source_output_schema, required_parquet_column_requirements, validate_slice1_parquet_scan,
         },
         validate::{
             native_zero_column_count_source_is_safe, validate_aggregate_for_native_lowering, validate_physical_expr,
-            validate_schema, validate_sort,
+            validate_schema, validate_sort_ordering,
         },
     },
     policy::FallbackReason,
@@ -61,7 +65,7 @@ pub(super) fn lower_slice1_plan(
     let pre_aggregate_projection = root.pre_aggregate_projection;
     let aggregate = root.aggregate;
     let post_aggregate_projection = root.post_aggregate_projection;
-    let sort = normalized.sort;
+    let sort = normalized.sort.as_ref();
     let (file_scan, parquet_source) =
         source_exec.downcast_to_file_source::<ParquetSource>().ok_or(FallbackReason::UnsupportedOperator)?;
     let column_requirements =
@@ -93,10 +97,16 @@ pub(super) fn lower_slice1_plan(
         aggregate,
         post_aggregate_projection,
     })?;
+    if local_parquet_scan_is_empty(file_scan) {
+        if aggregate.group_expr().has_grouping_set() {
+            return Err(FallbackReason::NativeSourceEmpty);
+        }
+        return lower_joined_aggregate_plan(normalized, root);
+    }
     validate_slice1_parquet_scan(file_scan, parquet_source, filter, Arc::clone(&table_schema), &column_requirements)?;
     validate_aggregate_for_native_lowering(aggregate, root.aggregate_allows_partial)?;
     if let Some(sort) = sort {
-        validate_sort(sort)?;
+        validate_sort_ordering(sort.ordering(), sort.input_schema())?;
     }
 
     let native_files =
@@ -149,6 +159,7 @@ pub(super) fn lower_slice1_plan(
         source = source.with_reader_predicate(predicate.expr).with_max_rows(max_rows);
     }
     let reader_pushdown = source.reader_predicate.is_some();
+    let source_contract_diagnostics = source.diagnostics.clone();
     let selected_row_group_stats = source.diagnostics.selected_row_group_stats.clone();
     source.diagnostics = local_parquet_source_diagnostics(
         file_scan,
@@ -159,6 +170,7 @@ pub(super) fn lower_slice1_plan(
         reader_pushdown,
         zero_column_count_safe,
     );
+    preserve_resolved_source_diagnostics(&mut source.diagnostics, &source_contract_diagnostics);
     source.diagnostics.selected_row_group_stats = selected_row_group_stats;
 
     let mut builder = NativeQueryPlanBuilder::new();
@@ -273,12 +285,12 @@ pub(super) fn lower_table_format_zero_column_count_plan(
     let scan_exec = source.table_format_scan_exec().ok_or_else(|| table_format_scan_rejection(source))?;
     let aggregate = root.aggregate;
     let post_aggregate_projection = root.post_aggregate_projection;
-    let sort = normalized.sort;
+    let sort = normalized.sort.as_ref();
 
     validate_aggregate_root_operator_schemas(root, None, post_aggregate_projection, sort)?;
     validate_aggregate_for_native_lowering(aggregate, root.aggregate_allows_partial)?;
     if let Some(sort) = sort {
-        validate_sort(sort)?;
+        validate_sort_ordering(sort.ordering(), sort.input_schema())?;
     }
 
     let mut builder = NativeQueryPlanBuilder::new();
@@ -337,13 +349,16 @@ pub(super) fn lower_joined_aggregate_plan(
     let pre_aggregate_projection = root.pre_aggregate_projection;
     let aggregate = root.aggregate;
     let post_aggregate_projection = root.post_aggregate_projection;
-    let sort = normalized.sort;
+    let sort = normalized.sort.as_ref();
 
+    if aggregate.group_expr().has_grouping_set() && normalized_input_contains_empty_source(&root.input) {
+        return Err(FallbackReason::NativeSourceEmpty);
+    }
     validate_aggregate_root_operator_schemas(root, pre_aggregate_projection, post_aggregate_projection, sort)?;
     validate_aggregate_for_native_lowering(aggregate, root.aggregate_allows_partial)?;
     validate_joined_aggregate_scalar_expressions(root)?;
     if let Some(sort) = sort {
-        validate_sort(sort)?;
+        validate_sort_ordering(sort.ordering(), sort.input_schema())?;
     }
 
     let required_input_fields = required_aggregate_input_fields(aggregate, pre_aggregate_projection)?;
@@ -392,6 +407,35 @@ pub(super) fn lower_joined_aggregate_plan(
     finish_with_post_projection_sort_limit(builder, aggregate_output, post_aggregate_projection, sort, normalized.limit)
 }
 
+fn normalized_input_contains_empty_source(input: &NormalizedNativeInput<'_>) -> bool {
+    match input {
+        NormalizedNativeInput::Source(source) => match source.scan {
+            NormalizedNativeScan::LocalParquet(source_exec) => source_exec
+                .downcast_to_file_source::<ParquetSource>()
+                .is_some_and(|(file_scan, _)| local_parquet_scan_is_empty(file_scan)),
+            NormalizedNativeScan::TableFormat(scan_exec) => scan_exec.scan_plan().data_files.is_empty(),
+        },
+        NormalizedNativeInput::LiteralSource(source) => matches!(source, NormalizedNativeLiteralSource::Empty(_)),
+        NormalizedNativeInput::GpuResidentSource(_) => false,
+        NormalizedNativeInput::Filter(filter) => normalized_input_contains_empty_source(&filter.input),
+        NormalizedNativeInput::Projection(projection) => normalized_input_contains_empty_source(&projection.input),
+        NormalizedNativeInput::Limit(limit) => normalized_input_contains_empty_source(&limit.input),
+        NormalizedNativeInput::Aggregate(aggregate) => normalized_input_contains_empty_source(&aggregate.input),
+        NormalizedNativeInput::Sort(sort) => normalized_input_contains_empty_source(&sort.input),
+        NormalizedNativeInput::Window(window) => normalized_input_contains_empty_source(&window.input),
+        NormalizedNativeInput::HashJoin(join) => {
+            normalized_input_contains_empty_source(&join.left) || normalized_input_contains_empty_source(&join.right)
+        },
+        NormalizedNativeInput::CrossJoin(join) => {
+            normalized_input_contains_empty_source(&join.left) || normalized_input_contains_empty_source(&join.right)
+        },
+        NormalizedNativeInput::NestedLoopJoin(join) => {
+            normalized_input_contains_empty_source(&join.left) || normalized_input_contains_empty_source(&join.right)
+        },
+        NormalizedNativeInput::Union(union) => union.inputs.iter().any(normalized_input_contains_empty_source),
+    }
+}
+
 pub(super) fn lower_input_root_plan(
     normalized: &NormalizedNativePlan<'_>,
     root: &NormalizedNativeInputRoot<'_>,
@@ -402,9 +446,9 @@ pub(super) fn lower_input_root_plan(
             validate_physical_expr(&projection_expr.expr, &projection.input().schema())?;
         }
     }
-    if let Some(sort) = normalized.sort {
-        validate_schema(sort.schema())?;
-        validate_sort(sort)?;
+    if let Some(sort) = normalized.sort.as_ref() {
+        validate_schema(Arc::clone(sort.output_schema()))?;
+        validate_sort_ordering(sort.ordering(), sort.input_schema())?;
     }
 
     let mut builder = NativeQueryPlanBuilder::new();
@@ -414,14 +458,20 @@ pub(super) fn lower_input_root_plan(
         if normalized.sort.is_none() { source_scan_limit_from_limit_spec(normalized.limit) } else { None };
     let lowered_input =
         lower_native_input_with_scan_limit(&root.input, &mut builder, &required_input_fields, pushed_scan_limit)?;
-    finish_with_post_projection_sort_limit(builder, lowered_input, root.projection, normalized.sort, normalized.limit)
+    finish_with_post_projection_sort_limit(
+        builder,
+        lowered_input,
+        root.projection,
+        normalized.sort.as_ref(),
+        normalized.limit,
+    )
 }
 
 fn finish_with_post_projection_sort_limit(
     mut builder: NativeQueryPlanBuilder,
     input: LoweredNativeInput,
     projection: Option<&ProjectionExec>,
-    sort: Option<&SortExec>,
+    sort: Option<&NormalizedNativeSortExprs<'_>>,
     limit: Option<NativeLimitSpec>,
 ) -> Result<NativeQueryPlan, FallbackReason> {
     let output = apply_post_projection_sort_limit(&mut builder, input, projection, sort, limit)?;
@@ -432,7 +482,7 @@ fn apply_post_projection_sort_limit(
     builder: &mut NativeQueryPlanBuilder,
     input: LoweredNativeInput,
     projection: Option<&ProjectionExec>,
-    sort: Option<&SortExec>,
+    sort: Option<&NormalizedNativeSortExprs<'_>>,
     limit: Option<NativeLimitSpec>,
 ) -> Result<LoweredNativeInput, FallbackReason> {
     let projected = if let Some(projection) = projection {
@@ -441,7 +491,14 @@ fn apply_post_projection_sort_limit(
         input
     };
     let sorted_or_projected = if let Some(sort) = sort {
-        lower_sort_with_input(builder, sort, projected, &RequiredFields::all())?
+        lower_sort_ordering_with_input(
+            builder,
+            sort.ordering(),
+            sort.input_schema(),
+            sort.output_schema(),
+            projected,
+            &RequiredFields::all(),
+        )?
     } else {
         projected
     };

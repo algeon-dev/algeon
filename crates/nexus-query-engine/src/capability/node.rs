@@ -97,7 +97,7 @@ fn node_executable_decision(plan: &QueryPlan, node: &QueryNode) -> CapabilityDec
             }
             decision
         },
-        PlanNode::Aggregate(aggregate) => aggregate_node_executable_decision(node.id, aggregate),
+        PlanNode::Aggregate(aggregate) => aggregate_node_executable_decision(plan, node.id, aggregate),
         PlanNode::Window(window) => window_node_executable_decision(node.id, window),
         PlanNode::Sort(sort) => sort_node_executable_decision(node.id, sort),
         PlanNode::Limit(limit) => limit_node_executable_decision(plan, node.id, limit),
@@ -143,7 +143,11 @@ fn expression_node_decision<'a>(
     CapabilityDecision::Satisfied
 }
 
-fn aggregate_node_executable_decision(node_id: NodeId, aggregate: &crate::plan::AggregateNode) -> CapabilityDecision {
+fn aggregate_node_executable_decision(
+    plan: &QueryPlan,
+    node_id: NodeId,
+    aggregate: &crate::plan::AggregateNode,
+) -> CapabilityDecision {
     if let Some(grouping_sets) = &aggregate.spec.grouping_sets
         && let Err(reason) = validate_grouping_sets_capability(&aggregate.spec, grouping_sets)
     {
@@ -157,6 +161,25 @@ fn aggregate_node_executable_decision(node_id: NodeId, aggregate: &crate::plan::
             ],
         );
     }
+    if aggregate.spec.aggr_exprs.iter().any(|expr| expr.function == AggregateFunction::Median)
+        && aggregate.spec.aggr_exprs.iter().any(|expr| expr.function.is_floating_statistical())
+    {
+        return CapabilityDecision::rejected(
+            "unsupported_aggregate_expression_capability",
+            [
+                ("node_id", node_id.to_string()),
+                ("reason", "median_floating_statistical_mixed_unsupported".to_string()),
+                ("expression_family", "aggregate".to_string()),
+                ("expression", "aggregate_spec".to_string()),
+            ],
+        );
+    }
+    let Some(input) = plan.node(aggregate.input) else {
+        return CapabilityDecision::rejected(
+            "unsupported_aggregate_node_capability",
+            [("node_id", node_id.to_string()), ("reason", "missing_input_node".to_string())],
+        );
+    };
     for expr in &aggregate.spec.group_exprs {
         if let Err(rejection) = validate_named_column_expr_capability(expr) {
             return expression_rejection_decision(
@@ -178,8 +201,66 @@ fn aggregate_node_executable_decision(node_id: NodeId, aggregate: &crate::plan::
                 rejection,
             );
         }
+        if aggregate_expr.function == AggregateFunction::Median {
+            let Some(data_type) = aggregate_expr_input_data_type(&aggregate_expr.expr, input.output_schema().as_ref())
+            else {
+                return CapabilityDecision::rejected(
+                    "unsupported_aggregate_expression_capability",
+                    [
+                        ("node_id", node_id.to_string()),
+                        ("reason", "median_requires_column_input".to_string()),
+                        ("expression_family", "aggregate".to_string()),
+                        ("expression", aggregate_expr.expr.to_string()),
+                    ],
+                );
+            };
+            if !is_cudf_median_input_type(data_type) {
+                return CapabilityDecision::rejected(
+                    "unsupported_aggregate_expression_capability",
+                    [
+                        ("node_id", node_id.to_string()),
+                        ("reason", "unsupported_median_input_type".to_string()),
+                        ("expression_family", "aggregate".to_string()),
+                        ("expression", aggregate_expr.expr.to_string()),
+                        ("data_type", format!("{data_type:?}")),
+                    ],
+                );
+            }
+        }
     }
     CapabilityDecision::Satisfied
+}
+
+fn aggregate_expr_input_data_type<'a>(
+    expr: &'a crate::expr::Expr,
+    input_schema: &'a arrow::datatypes::Schema,
+) -> Option<&'a arrow::datatypes::DataType> {
+    match expr {
+        crate::expr::Expr::Column(column) => {
+            input_schema.field_with_name(column.name()).ok().map(|field| field.data_type())
+        },
+        crate::expr::Expr::Cast { target_type, .. } | crate::expr::Expr::TryCast { target_type, .. } => {
+            Some(target_type)
+        },
+        crate::expr::Expr::Alias { expr, .. } => aggregate_expr_input_data_type(expr, input_schema),
+        _ => None,
+    }
+}
+
+fn is_cudf_median_input_type(data_type: &arrow::datatypes::DataType) -> bool {
+    matches!(
+        data_type,
+        arrow::datatypes::DataType::Int8
+            | arrow::datatypes::DataType::Int16
+            | arrow::datatypes::DataType::Int32
+            | arrow::datatypes::DataType::Int64
+            | arrow::datatypes::DataType::UInt8
+            | arrow::datatypes::DataType::UInt16
+            | arrow::datatypes::DataType::UInt32
+            | arrow::datatypes::DataType::UInt64
+            | arrow::datatypes::DataType::Float32
+            | arrow::datatypes::DataType::Float64
+    )
 }
 
 fn window_node_executable_decision(node_id: NodeId, window: &crate::plan::WindowNode) -> CapabilityDecision {
@@ -426,12 +507,30 @@ fn join_node_executable_decision(plan: &QueryPlan, node_id: NodeId, join: &JoinN
             ],
         );
     }
-    if let Some(KeyedHashJoinStrategyDecision::Rejected { reason, facts }) =
-        keyed_hash_join_strategy_decision_for_plan(plan, node_id, join)
-    {
-        let mut facts = facts;
-        facts.insert("node_id", node_id.to_string());
-        return CapabilityDecision::Rejected { reason, facts };
+    if let Some(decision) = keyed_hash_join_strategy_decision_for_plan(plan, node_id, join) {
+        match decision {
+            KeyedHashJoinStrategyDecision::Rejected { reason, facts } => {
+                let mut facts = facts;
+                facts.insert("node_id", node_id.to_string());
+                return CapabilityDecision::Rejected { reason, facts };
+            },
+            KeyedHashJoinStrategyDecision::Selected {
+                strategy:
+                    KeyedHashJoinStrategy::ReusableHashEqui
+                    | KeyedHashJoinStrategy::OneShotEqui
+                    | KeyedHashJoinStrategy::PartitionedHashEqui,
+                ..
+            } => {
+                if let Some(mut facts) = hash_join_prebuild_reservation_unsupported_build_key_for_plan(plan, join) {
+                    facts.insert("node_id", node_id.to_string());
+                    return CapabilityDecision::Rejected {
+                        reason: "unsupported_hash_join_pre_build_reservation_capability",
+                        facts,
+                    };
+                }
+            },
+            KeyedHashJoinStrategyDecision::Selected { .. } => {},
+        }
     }
     CapabilityDecision::Satisfied
 }
@@ -865,7 +964,12 @@ fn node_local_requirements(plan: &QueryPlan, node: &QueryNode) -> Vec<Reservatio
                 })
             ) =>
         {
-            Vec::new()
+            vec![ReservationRequirement::modeled(
+                ReservationKind::HashTable,
+                "join_keyed_equality_preflight_hash_table",
+                "hash_join_pre_build_reservation_size_bytes",
+                ContractQuality::ExactPreflight,
+            )]
         },
         PlanNode::Join(join)
             if matches!(
@@ -1000,6 +1104,12 @@ fn expr_contains_regexp_replace(expr: &Expr) -> bool {
         | Expr::Substring { expr, .. }
         | Expr::Lower(expr)
         | Expr::Upper(expr)
+        | Expr::Trim { expr, .. }
+        | Expr::LTrim { expr, .. }
+        | Expr::RTrim { expr, .. }
+        | Expr::StringContains { expr, .. }
+        | Expr::StartsWith { expr, .. }
+        | Expr::EndsWith { expr, .. }
         | Expr::StringLength { expr, .. }
         | Expr::Abs(expr)
         | Expr::Sqrt { expr, .. }

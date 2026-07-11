@@ -672,6 +672,16 @@ fn expr_signature(expr: &Expr) -> String {
         },
         Expr::Lower(expr) => format!("lower({})", expr_signature(expr)),
         Expr::Upper(expr) => format!("upper({})", expr_signature(expr)),
+        Expr::Trim { expr, trim_chars } => format!("trim:expr={}:chars={}", expr_signature(expr), trim_chars),
+        Expr::LTrim { expr, trim_chars } => format!("ltrim:expr={}:chars={}", expr_signature(expr), trim_chars),
+        Expr::RTrim { expr, trim_chars } => format!("rtrim:expr={}:chars={}", expr_signature(expr), trim_chars),
+        Expr::StringContains { expr, pattern } => {
+            format!("string_contains:expr={}:pattern={}", expr_signature(expr), pattern)
+        },
+        Expr::StartsWith { expr, prefix } => {
+            format!("starts_with:expr={}:prefix={}", expr_signature(expr), prefix)
+        },
+        Expr::EndsWith { expr, suffix } => format!("ends_with:expr={}:suffix={}", expr_signature(expr), suffix),
         Expr::StringLength { expr, output_type } => {
             format!("string_length:expr={}:output={}", expr_signature(expr), data_type_signature(output_type))
         },

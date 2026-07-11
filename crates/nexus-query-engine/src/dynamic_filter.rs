@@ -1084,7 +1084,7 @@ fn merge_source_reader_predicate(source: &mut LocalParquetSource, predicate: Exp
 }
 
 fn source_reader_predicate_merge_is_supported(source: &LocalParquetSource, predicate: &Expr) -> bool {
-    if source.has_position_delete_files() {
+    if source.has_row_delete_files() {
         return false;
     }
     let predicate = match &source.reader_predicate {

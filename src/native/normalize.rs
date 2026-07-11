@@ -41,40 +41,7 @@ pub(super) fn normalize_native_plan(plan: &dyn ExecutionPlan) -> Result<Normaliz
     // projection roots first try aggregate stacks, and bare joins are input
     // roots rather than unsupported unary stacks.
     if let Some(merge) = plan.downcast_ref::<SortPreservingMergeExec>() {
-        let Some(fetch) = merge.fetch() else {
-            return Err(NativePlanRejection {
-                candidate: GpuCandidate::with_operator_count(
-                    SORT_PRESERVING_MERGE_SHAPE,
-                    plan.schema().fields().len(),
-                    1,
-                ),
-                reason: FallbackReason::NativeSortPreservingMergeUnsupported,
-            });
-        };
-        let candidate =
-            GpuCandidate::with_operator_count(SORT_PRESERVING_MERGE_FETCH_SHAPE, plan.schema().fields().len(), 2);
-        let sort = merge.input().downcast_ref::<SortExec>().ok_or(NativePlanRejection {
-            candidate: candidate.clone(),
-            reason: FallbackReason::NativeSortPreservingMergeUnsupported,
-        })?;
-        if !sort_orderings_match(merge.expr(), sort.expr()) {
-            return Err(NativePlanRejection {
-                candidate: candidate.clone(),
-                reason: FallbackReason::NativeSortPreservingMergeUnsupported,
-            });
-        }
-        if sort.fetch().is_some_and(|sort_fetch| sort_fetch < fetch) {
-            return Err(NativePlanRejection {
-                candidate: candidate.clone(),
-                reason: FallbackReason::NativeSortPreservingMergeUnsupported,
-            });
-        }
-        return normalize_sort_stack(
-            NativeStackRoot::SortPreservingMergeFetch,
-            plan.schema().fields().len(),
-            sort,
-            Some(NativeLimitSpec::fetch(fetch)),
-        );
+        return normalize_sort_preserving_merge_root(merge);
     }
 
     if let Some(limit) = plan.downcast_ref::<LocalLimitExec>() {
@@ -204,7 +171,7 @@ fn normalize_sort_stack(
     limit: Option<NativeLimitSpec>,
 ) -> Result<NormalizedNativePlan<'_>, NativePlanRejection> {
     let initial_candidate = native_stack_candidate(root, output_schema_fields, false, true, true, false);
-    if sort.preserve_partitioning() && !matches!(root, NativeStackRoot::SortPreservingMergeFetch) {
+    if !partition_preserving_sort_is_supported(sort, native_stack_root_is_sort_preserving_merge(root)) {
         return Err(NativePlanRejection {
             candidate: initial_candidate,
             reason: FallbackReason::NativePartitionPreservingSortUnsupported,
@@ -239,9 +206,88 @@ fn normalize_sort_stack(
             aggregate_output_schema: aggregate_peel.aggregate_output_schema,
             post_aggregate_projection,
         }),
-        sort: Some(sort),
+        sort: Some(NormalizedNativeSortExprs::from_sort_exec(sort)),
         limit,
     })
+}
+
+fn normalize_sort_preserving_merge_root(
+    merge: &SortPreservingMergeExec,
+) -> Result<NormalizedNativePlan<'_>, NativePlanRejection> {
+    let output_schema_fields = merge.schema().fields().len();
+    let root_without_child_sort = if merge.fetch().is_some() {
+        NativeStackRoot::SortPreservingMergeFetch
+    } else {
+        NativeStackRoot::SortPreservingMerge
+    };
+    let root_with_child_sort = if merge.fetch().is_some() {
+        NativeStackRoot::SortPreservingMergeFetchSort
+    } else {
+        NativeStackRoot::SortPreservingMergeSort
+    };
+    let candidate = sort_preserving_merge_candidate(merge);
+    if !sort_ordering_is_column_keyed(merge.expr()) {
+        return Err(NativePlanRejection { candidate, reason: FallbackReason::NativeSortPreservingMergeUnsupported });
+    }
+    if !plan_output_ordering_matches(merge.input().as_ref(), merge.expr()) {
+        return Err(NativePlanRejection { candidate, reason: FallbackReason::NativeSortPreservingMergeUnsupported });
+    }
+
+    if let Some(sort) = merge.input().downcast_ref::<SortExec>() {
+        if merge.fetch().is_none() && sort.fetch().is_some() {
+            return Err(NativePlanRejection {
+                candidate,
+                reason: FallbackReason::NativeSortPreservingMergeUnsupported,
+            });
+        }
+        if let Some(fetch) = merge.fetch()
+            && sort.fetch().is_some_and(|sort_fetch| sort_fetch < fetch)
+        {
+            return Err(NativePlanRejection {
+                candidate,
+                reason: FallbackReason::NativeSortPreservingMergeUnsupported,
+            });
+        }
+        if sort_orderings_match(merge.expr(), sort.expr()) {
+            return normalize_sort_stack(
+                root_with_child_sort,
+                output_schema_fields,
+                sort,
+                merge.fetch().map(NativeLimitSpec::fetch),
+            );
+        }
+    }
+
+    let input_plan = merge.input().as_ref();
+    let sort = NormalizedNativeSortExprs::from_ordering(merge.expr(), input_plan.schema(), merge.schema());
+    let (projection, input) = peel_root_projection(input_plan);
+    normalize_input_root(
+        output_schema_fields,
+        Some(root_without_child_sort),
+        Some(sort),
+        merge.fetch().map(NativeLimitSpec::fetch),
+        projection,
+        input,
+        candidate,
+    )
+}
+
+fn sort_preserving_merge_candidate(merge: &SortPreservingMergeExec) -> GpuCandidate {
+    if merge.fetch().is_some() {
+        if merge.input().downcast_ref::<SortExec>().is_some() {
+            GpuCandidate::with_operator_count(SORT_PRESERVING_MERGE_FETCH_SHAPE, merge.schema().fields().len(), 2)
+        } else {
+            GpuCandidate::with_operator_count(SORT_PRESERVING_MERGE_FETCH_INPUT_SHAPE, merge.schema().fields().len(), 1)
+        }
+    } else if merge.input().downcast_ref::<SortExec>().is_some() {
+        GpuCandidate::with_operator_count(SORT_PRESERVING_MERGE_SORT_SHAPE, merge.schema().fields().len(), 2)
+    } else {
+        GpuCandidate::with_operator_count(SORT_PRESERVING_MERGE_SHAPE, merge.schema().fields().len(), 1)
+    }
+}
+
+fn plan_output_ordering_matches(plan: &dyn ExecutionPlan, ordering: &LexOrdering) -> bool {
+    plan.properties().output_ordering().is_some_and(|output_ordering| sort_orderings_match(output_ordering, ordering))
 }
 
 fn normalize_global_aggregate_stack<'a>(
@@ -350,26 +396,34 @@ fn normalize_sort_input_root(
     limit: Option<NativeLimitSpec>,
     candidate: GpuCandidate,
 ) -> Result<NormalizedNativePlan<'_>, NativePlanRejection> {
-    if sort.preserve_partitioning() && !matches!(root, NativeStackRoot::SortPreservingMergeFetch) {
+    if !partition_preserving_sort_is_supported(sort, native_stack_root_is_sort_preserving_merge(root)) {
         return Err(NativePlanRejection {
             candidate,
             reason: FallbackReason::NativePartitionPreservingSortUnsupported,
         });
     }
     let (projection, input) = peel_root_projection(sort.input().as_ref());
-    normalize_input_root(output_schema_fields, Some(root), Some(sort), limit, projection, input, candidate)
+    normalize_input_root(
+        output_schema_fields,
+        Some(root),
+        Some(NormalizedNativeSortExprs::from_sort_exec(sort)),
+        limit,
+        projection,
+        input,
+        candidate,
+    )
 }
 
 fn normalize_input_root<'a>(
     output_schema_fields: usize,
     stack_root: Option<NativeStackRoot>,
-    sort: Option<&'a SortExec>,
+    sort: Option<NormalizedNativeSortExprs<'a>>,
     limit: Option<NativeLimitSpec>,
     projection: Option<&'a ProjectionExec>,
     input_plan: &'a dyn ExecutionPlan,
     candidate: GpuCandidate,
 ) -> Result<NormalizedNativePlan<'a>, NativePlanRejection> {
-    let input = normalize_native_input(input_plan, candidate.clone())?;
+    let input = normalize_native_input(input_plan, candidate.clone(), sort.is_some())?;
     let candidate = input_root_candidate(
         stack_root,
         output_schema_fields,
@@ -416,17 +470,34 @@ fn peel_pre_aggregate_projection_and_input(
     candidate: GpuCandidate,
 ) -> Result<(Option<&ProjectionExec>, NormalizedNativeInput<'_>), NativePlanRejection> {
     let (projection, input) = peel_pre_aggregate_projection(aggregate);
-    Ok((projection, normalize_native_input(peel_repartition(input), candidate)?))
+    Ok((projection, normalize_native_input(peel_repartition(input), candidate, false)?))
+}
+
+fn native_stack_root_is_sort_preserving_merge(root: NativeStackRoot) -> bool {
+    matches!(
+        root,
+        NativeStackRoot::SortPreservingMerge
+            | NativeStackRoot::SortPreservingMergeFetch
+            | NativeStackRoot::SortPreservingMergeSort
+            | NativeStackRoot::SortPreservingMergeFetchSort
+    )
+}
+
+fn partition_preserving_sort_is_supported(sort: &SortExec, allow_multi_partition: bool) -> bool {
+    !sort.preserve_partitioning()
+        || allow_multi_partition
+        || sort.input().properties().output_partitioning().partition_count() == 1
 }
 
 fn normalize_native_input(
     plan: &dyn ExecutionPlan,
     candidate: GpuCandidate,
+    allow_ordered_multi_partition_memory_source: bool,
 ) -> Result<NormalizedNativeInput<'_>, NativePlanRejection> {
     if let Some(coalesce) = plan.downcast_ref::<CoalescePartitionsExec>()
         && let Some(fetch) = coalesce.fetch()
     {
-        let input = normalize_native_input(coalesce.input().as_ref(), candidate)?;
+        let input = normalize_native_input(coalesce.input().as_ref(), candidate, false)?;
         return Ok(NormalizedNativeInput::Limit(NormalizedNativeLimit {
             spec: NativeLimitSpec::fetch(fetch),
             input: Box::new(input),
@@ -436,6 +507,8 @@ fn normalize_native_input(
     let plan = peel_repartition(plan);
     if let Some(filter) = plan.downcast_ref::<FilterExec>() {
         let input = peel_repartition(filter.input().as_ref());
+        let child_allows_ordered_multi_partition_memory_source =
+            filter.fetch().is_none() && allow_ordered_multi_partition_memory_source;
         let normalized = if let Some(source_exec) = input.downcast_ref::<DataSourceExec>()
             && !data_source_is_memory(source_exec)
         {
@@ -449,7 +522,7 @@ fn normalize_native_input(
                 filter: Some(filter),
             })
         } else {
-            let input = normalize_native_input(input, candidate)?;
+            let input = normalize_native_input(input, candidate, child_allows_ordered_multi_partition_memory_source)?;
             NormalizedNativeInput::Filter(NormalizedNativeFilter { filter, input: Box::new(input) })
         };
         if let Some(fetch) = filter.fetch() {
@@ -462,7 +535,9 @@ fn normalize_native_input(
     }
     if let Some(source_exec) = plan.downcast_ref::<DataSourceExec>() {
         if data_source_is_memory(source_exec) {
-            if ordered_multi_partition_memory_source_is_unsupported(source_exec) {
+            if !allow_ordered_multi_partition_memory_source
+                && ordered_multi_partition_memory_source_is_unsupported(source_exec)
+            {
                 return Err(NativePlanRejection { candidate, reason: FallbackReason::NativeOrderedOutputUnsupported });
             }
             return Ok(NormalizedNativeInput::LiteralSource(NormalizedNativeLiteralSource::Memory(source_exec)));
@@ -491,7 +566,11 @@ fn normalize_native_input(
         }));
     }
     if let Some(projection) = plan.downcast_ref::<ProjectionExec>() {
-        let input = normalize_native_input(projection.input().as_ref(), candidate)?;
+        let input = normalize_native_input(
+            projection.input().as_ref(),
+            candidate,
+            allow_ordered_multi_partition_memory_source,
+        )?;
         return Ok(NormalizedNativeInput::Projection(NormalizedNativeProjection {
             projection,
             input: Box::new(input),
@@ -499,12 +578,12 @@ fn normalize_native_input(
     }
     if let Some(limit) = plan.downcast_ref::<GlobalLimitExec>() {
         let spec = global_limit_spec(limit, candidate.clone())?;
-        let input = normalize_native_input(limit.input().as_ref(), candidate)?;
+        let input = normalize_native_input(limit.input().as_ref(), candidate, false)?;
         return Ok(NormalizedNativeInput::Limit(NormalizedNativeLimit { spec, input: Box::new(input) }));
     }
     if let Some(aggregate) = plan.downcast_ref::<AggregateExec>() {
         let aggregate_peel = peel_distributed_aggregate_pair_if_present(aggregate, candidate.clone())?;
-        let input = normalize_native_input(aggregate_peel.aggregate.input().as_ref(), candidate)?;
+        let input = normalize_native_input(aggregate_peel.aggregate.input().as_ref(), candidate, false)?;
         return Ok(NormalizedNativeInput::Aggregate(NormalizedNativeAggregate {
             aggregate: aggregate_peel.aggregate,
             aggregate_allows_partial: aggregate_peel.aggregate_allows_partial,
@@ -513,36 +592,36 @@ fn normalize_native_input(
         }));
     }
     if let Some(sort) = plan.downcast_ref::<SortExec>() {
-        if sort.preserve_partitioning() {
+        if !partition_preserving_sort_is_supported(sort, false) {
             return Err(NativePlanRejection {
                 candidate,
                 reason: FallbackReason::NativePartitionPreservingSortUnsupported,
             });
         }
-        let input = normalize_native_input(sort.input().as_ref(), candidate)?;
+        let input = normalize_native_input(sort.input().as_ref(), candidate, true)?;
         return Ok(NormalizedNativeInput::Sort(NormalizedNativeSort {
-            sort,
+            sort: NormalizedNativeSortExprs::from_sort_exec(sort),
             fetch: sort.fetch().map(NativeLimitSpec::fetch),
             input: Box::new(input),
         }));
     }
     if let Some(window) = plan.downcast_ref::<WindowAggExec>() {
-        let input = normalize_native_input(window.input().as_ref(), candidate)?;
+        let input = normalize_native_input(window.input().as_ref(), candidate, false)?;
         return Ok(NormalizedNativeInput::Window(NormalizedNativeWindow {
             window: NormalizedNativeWindowExec::Unbounded(window),
             input: Box::new(input),
         }));
     }
     if let Some(window) = plan.downcast_ref::<BoundedWindowAggExec>() {
-        let input = normalize_native_input(window.input().as_ref(), candidate)?;
+        let input = normalize_native_input(window.input().as_ref(), candidate, false)?;
         return Ok(NormalizedNativeInput::Window(NormalizedNativeWindow {
             window: NormalizedNativeWindowExec::Bounded(window),
             input: Box::new(input),
         }));
     }
     if let Some(join) = plan.downcast_ref::<HashJoinExec>() {
-        let left = normalize_native_input(join.left().as_ref(), candidate.clone())?;
-        let right = normalize_native_input(join.right().as_ref(), candidate)?;
+        let left = normalize_native_input(join.left().as_ref(), candidate.clone(), false)?;
+        let right = normalize_native_input(join.right().as_ref(), candidate, false)?;
         return Ok(NormalizedNativeInput::HashJoin(NormalizedNativeHashJoin {
             join,
             fetch: join.fetch().map(NativeLimitSpec::fetch),
@@ -551,8 +630,8 @@ fn normalize_native_input(
         }));
     }
     if let Some(join) = plan.downcast_ref::<CrossJoinExec>() {
-        let left = normalize_native_input(join.left().as_ref(), candidate.clone())?;
-        let right = normalize_native_input(join.right().as_ref(), candidate)?;
+        let left = normalize_native_input(join.left().as_ref(), candidate.clone(), false)?;
+        let right = normalize_native_input(join.right().as_ref(), candidate, false)?;
         return Ok(NormalizedNativeInput::CrossJoin(NormalizedNativeCrossJoin {
             join,
             left: Box::new(left),
@@ -560,8 +639,8 @@ fn normalize_native_input(
         }));
     }
     if let Some(join) = plan.downcast_ref::<NestedLoopJoinExec>() {
-        let left = normalize_native_input(join.left().as_ref(), candidate.clone())?;
-        let right = normalize_native_input(join.right().as_ref(), candidate)?;
+        let left = normalize_native_input(join.left().as_ref(), candidate.clone(), false)?;
+        let right = normalize_native_input(join.right().as_ref(), candidate, false)?;
         return Ok(NormalizedNativeInput::NestedLoopJoin(NormalizedNativeNestedLoopJoin {
             join,
             left: Box::new(left),
@@ -572,7 +651,7 @@ fn normalize_native_input(
         let inputs = union
             .inputs()
             .iter()
-            .map(|input| normalize_native_input(input.as_ref(), candidate.clone()))
+            .map(|input| normalize_native_input(input.as_ref(), candidate.clone(), false))
             .collect::<Result<Vec<_>, _>>()?;
         return Ok(NormalizedNativeInput::Union(NormalizedNativeUnion { union, inputs }));
     }
@@ -622,7 +701,11 @@ fn sort_orderings_match(left: &LexOrdering, right: &LexOrdering) -> bool {
     left.iter().zip(right.iter()).all(|(left, right)| sort_expr_key(left) == sort_expr_key(right))
 }
 
-fn sort_expr_key(sort_expr: &PhysicalSortExpr) -> Option<(&str, bool, bool)> {
+fn sort_ordering_is_column_keyed(ordering: &LexOrdering) -> bool {
+    !ordering.is_empty() && ordering.iter().all(|sort_expr| sort_expr.expr.downcast_ref::<Column>().is_some())
+}
+
+fn sort_expr_key(sort_expr: &PhysicalSortExpr) -> Option<(usize, &str, bool, bool)> {
     let column = sort_expr.expr.downcast_ref::<Column>()?;
-    Some((column.name(), sort_expr.options.descending, sort_expr.options.nulls_first))
+    Some((column.index(), column.name(), sort_expr.options.descending, sort_expr.options.nulls_first))
 }

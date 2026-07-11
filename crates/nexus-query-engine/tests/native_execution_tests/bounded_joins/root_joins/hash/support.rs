@@ -94,6 +94,17 @@ fn bounded_native_query_executes_root_hash_join_with_ordered_reservations() {
     fs::remove_dir_all(dir).unwrap();
 }
 
+fn assert_temporary_hash_preflight_reserved(metrics: &QueryMetrics) {
+    assert!(
+        metrics.reservation_events.iter().any(|event| {
+            event.outcome.as_str() == "granted"
+                && event.reservation_kind == ReservationKind::HashTable
+                && event.memory_boundary == "join_keyed_equality_preflight_hash_table"
+        }),
+        "exact equality-join output-size preflight should reserve a temporary hash table"
+    );
+}
+
 #[test]
 fn bounded_native_query_uses_single_pass_reusable_probe_for_unique_inner_build() {
     let runtime = Arc::new(cudf::Runtime::new().unwrap());

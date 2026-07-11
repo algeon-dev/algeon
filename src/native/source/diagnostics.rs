@@ -3,6 +3,7 @@ use std::sync::Arc;
 use arrow::datatypes::SchemaRef;
 use datafusion::{
     datasource::physical_plan::{FileScanConfig, ParquetSource},
+    parquet::file::reader::{FileReader, SerializedFileReader},
     physical_plan::filter::FilterExec,
 };
 use nexus_query_engine::{
@@ -14,13 +15,14 @@ use nexus_query_engine::{
 
 use super::{
     NativeParquetColumnRequirements, native_declared_output_ordering_scan_is_supported,
-    native_parquet_file_reader_factory_is_supported, native_preserve_order_scan_is_supported,
-    partition_column_disposition, required_parquet_column_requirements,
+    native_parquet_file_reader_factory_is_supported, native_parquet_object_store_scan_is_supported,
+    native_preserve_order_scan_is_supported, partition_column_disposition, required_parquet_column_requirements,
 };
 use crate::native::{
     normalize::{NormalizedNativeInput, NormalizedNativePlan, NormalizedNativeSource},
     pruning::{
-        LocalParquetByteRangeRepresentation, coalesced_local_parquet_scan_files, has_row_level_selection,
+        CoalescedLocalParquetFile, LocalParquetByteRangeRepresentation, coalesced_local_parquet_scan_files,
+        explicit_row_group_selection, has_row_level_selection, local_object_path_to_filesystem,
         metadata_row_group_selections, parquet_predicate_disposition, selected_row_groups_from_access_plans,
     },
     validate::native_zero_column_count_source_is_safe,
@@ -162,10 +164,13 @@ pub(in crate::native) fn local_parquet_source_diagnostics(
     } else {
         NativeByteRangeDisposition::Rejected
     };
-    let selected_row_groups = selected_row_groups_from_access_plans(&files).or_else(|| {
-        metadata_row_group_selections(&files, file_scan, parquet_source, filter, &source_schema)
-            .map(|selections| selections.iter().map(Vec::len).sum())
-    });
+    let coalesced_selected_row_groups =
+        coalesced_files.as_ref().ok().and_then(|files| selected_row_groups_from_coalesced_files(files));
+    let selected_row_groups =
+        coalesced_selected_row_groups.or_else(|| selected_row_groups_from_access_plans(&files)).or_else(|| {
+            metadata_row_group_selections(&files, file_scan, parquet_source, filter, &source_schema)
+                .map(|selections| selections.iter().map(Vec::len).sum())
+        });
     let read_column_count = column_requirements.map_or(0, |requirements| requirements.read_columns.len());
     let projected_output_column_count =
         column_requirements.map_or(0, |requirements| requirements.projected_output_columns.len());
@@ -192,7 +197,7 @@ pub(in crate::native) fn local_parquet_source_diagnostics(
         });
 
     let mut rejected_features = Vec::new();
-    if !file_scan.object_store_url.as_str().starts_with("file://") {
+    if !native_parquet_object_store_scan_is_supported(file_scan) {
         rejected_features.push(NativeRejectedSourceFeature::NonLocalObjectStore);
     }
     let partition_column_indices =
@@ -247,7 +252,7 @@ pub(in crate::native) fn local_parquet_source_diagnostics(
         if file.range.is_some() && !ranges_are_safely_coalesced {
             rejected_features.push(NativeRejectedSourceFeature::ByteRange);
         }
-        if has_row_level_selection(file) {
+        if has_row_level_selection(file) && !ranges_are_safely_coalesced {
             rejected_features.push(NativeRejectedSourceFeature::RowSelection);
         }
     }
@@ -293,4 +298,28 @@ fn scan_limit_disposition(file_scan: &FileScanConfig) -> NativeScanLimitDisposit
     } else {
         NativeScanLimitDisposition::Represented
     }
+}
+
+fn selected_row_groups_from_coalesced_files(files: &[CoalescedLocalParquetFile<'_>]) -> Option<usize> {
+    let has_row_group_selection = files.iter().any(|file| {
+        file.byte_range_row_groups.is_some()
+            || file.file.extensions.get::<datafusion::datasource::physical_plan::parquet::ParquetAccessPlan>().is_some()
+    });
+    has_row_group_selection.then(|| {
+        files.iter().try_fold(0usize, |total, file| {
+            selected_row_group_count_for_coalesced_file(file).map(|count| total.saturating_add(count))
+        })
+    })?
+}
+
+fn selected_row_group_count_for_coalesced_file(file: &CoalescedLocalParquetFile<'_>) -> Option<usize> {
+    if let Some(row_groups) = &file.byte_range_row_groups {
+        return Some(row_groups.len());
+    }
+    if let Some(row_groups) = explicit_row_group_selection(file.file).ok()? {
+        return Some(row_groups.len());
+    }
+    let path = local_object_path_to_filesystem(file.file.object_meta.location.as_ref());
+    let reader = SerializedFileReader::try_from(path.as_path()).ok()?;
+    Some(reader.metadata().num_row_groups())
 }

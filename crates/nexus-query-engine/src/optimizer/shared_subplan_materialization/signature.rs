@@ -450,6 +450,27 @@ fn canonicalize_aggregate_input_expr(plan: &QueryPlan, input: NodeId, expr: &Exp
         },
         Expr::Lower(expr) => Expr::Lower(Box::new(canonicalize_aggregate_input_expr(plan, input, expr))),
         Expr::Upper(expr) => Expr::Upper(Box::new(canonicalize_aggregate_input_expr(plan, input, expr))),
+        Expr::Trim { expr, trim_chars } => Expr::trim(
+            canonicalize_aggregate_input_expr(plan, input, expr),
+            trim_chars.clone(),
+        ),
+        Expr::LTrim { expr, trim_chars } => Expr::ltrim(
+            canonicalize_aggregate_input_expr(plan, input, expr),
+            trim_chars.clone(),
+        ),
+        Expr::RTrim { expr, trim_chars } => Expr::rtrim(
+            canonicalize_aggregate_input_expr(plan, input, expr),
+            trim_chars.clone(),
+        ),
+        Expr::StringContains { expr, pattern } => {
+            Expr::string_contains(canonicalize_aggregate_input_expr(plan, input, expr), pattern.clone())
+        },
+        Expr::StartsWith { expr, prefix } => {
+            Expr::starts_with(canonicalize_aggregate_input_expr(plan, input, expr), prefix.clone())
+        },
+        Expr::EndsWith { expr, suffix } => {
+            Expr::ends_with(canonicalize_aggregate_input_expr(plan, input, expr), suffix.clone())
+        },
         Expr::StringLength { expr, output_type } => Expr::StringLength {
             expr: Box::new(canonicalize_aggregate_input_expr(plan, input, expr)),
             output_type: output_type.clone(),

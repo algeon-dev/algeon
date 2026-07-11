@@ -1318,6 +1318,18 @@ fn cudf_partition_value(value: &LiteralValue) -> Result<cudf::io::source::Partit
             scale: crate::datatypes::arrow_decimal_scale_to_cudf_scale(*scale),
         }),
         LiteralValue::Date32(value) => Ok(cudf::io::source::PartitionValue::Date32(*value)),
+        LiteralValue::Date64(value) => Ok(cudf::io::source::PartitionValue::Timestamp {
+            raw: *value,
+            resolution: cudf::TimestampResolution::Milliseconds,
+        }),
+        LiteralValue::Time32 { raw, unit } => Ok(cudf::io::source::PartitionValue::Duration {
+            raw: i64::from(*raw),
+            resolution: timestamp_unit_to_cudf_resolution(unit),
+        }),
+        LiteralValue::Time64 { raw, unit } => Ok(cudf::io::source::PartitionValue::Duration {
+            raw: *raw,
+            resolution: timestamp_unit_to_cudf_resolution(unit),
+        }),
         LiteralValue::Timestamp { raw, unit } => Ok(cudf::io::source::PartitionValue::Timestamp {
             raw: *raw,
             resolution: timestamp_unit_to_cudf_resolution(unit),

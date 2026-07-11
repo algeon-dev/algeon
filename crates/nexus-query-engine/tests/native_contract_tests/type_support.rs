@@ -40,6 +40,23 @@ fn timestamp_with_timezone_type_support_policy_is_carry_only() {
 }
 
 #[test]
+fn temporal_type_support_policy_accepts_date64_and_time_types() {
+    let cases = [
+        (DataType::Date64, TypeId::TimestampMilliseconds),
+        (DataType::Time32(TimeUnit::Second), TypeId::DurationSeconds),
+        (DataType::Time32(TimeUnit::Millisecond), TypeId::DurationMilliseconds),
+        (DataType::Time64(TimeUnit::Microsecond), TypeId::DurationMicroseconds),
+        (DataType::Time64(TimeUnit::Nanosecond), TypeId::DurationNanoseconds),
+    ];
+
+    for (arrow_type, cudf_type_id) in cases {
+        assert!(is_supported_arrow_type(&arrow_type), "{arrow_type:?}");
+        assert_eq!(cudf_dtype_from_arrow_type(&arrow_type), Some(CudfDataType::new(cudf_type_id)));
+        assert!(is_supported_arrow_implicit_cast(&arrow_type, &arrow_type), "{arrow_type:?}");
+    }
+}
+
+#[test]
 fn list_string_type_support_policy_is_carry_only() {
     let list_utf8 = DataType::List(Arc::new(Field::new("item", DataType::Utf8, true)));
     let large_list_large_utf8 = DataType::LargeList(Arc::new(Field::new("element", DataType::LargeUtf8, true)));

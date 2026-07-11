@@ -231,6 +231,76 @@ pub(super) fn bounded_join_request(
         .with_attempt(1, 1)
 }
 
+pub(super) fn reserve_full_join_size_preflight_workspace(
+    node_id: NodeId,
+    node: &JoinNode,
+    build_rows: u64,
+    left_join_output_rows: u64,
+    reservations: &mut ReservationTracker,
+    metrics: &mut QueryMetrics,
+) -> Result<Option<ActiveReservation>> {
+    if node.spec.join_type != JoinType::Full {
+        return Ok(None);
+    }
+    let bytes = full_join_size_preflight_workspace_reservation_bytes(node, build_rows, left_join_output_rows)?;
+    if bytes == 0 {
+        return Ok(None);
+    }
+    reservations
+        .try_reserve(
+            bounded_join_request(
+                ReservationKind::GatherMap,
+                "join_full_size_preflight_workspace",
+                bytes,
+                reservations.budget(),
+                node_id,
+            ),
+            metrics,
+        )
+        .map(Some)
+}
+
+fn full_join_size_preflight_workspace_reservation_bytes(
+    node: &JoinNode,
+    build_rows: u64,
+    left_join_output_rows: u64,
+) -> Result<u64> {
+    let temporary_index_rows = left_join_output_rows.checked_add(build_rows).ok_or_else(|| {
+        QueryError::new(
+            QueryErrorCode::MemoryReservationFailed,
+            "nexus_query_engine.bounded.join.full_size_preflight_workspace",
+            "full join size preflight temporary index-row upper bound overflowed",
+        )
+        .with_fact("join_type", node.spec.join_type)
+        .with_fact("build_rows", build_rows)
+        .with_fact("left_join_output_rows", left_join_output_rows)
+    })?;
+    let temporary_index_rows = usize::try_from(temporary_index_rows).map_err(|_error| {
+        QueryError::new(
+            QueryErrorCode::MemoryReservationFailed,
+            "nexus_query_engine.bounded.join.full_size_preflight_workspace",
+            "full join size preflight temporary index-row upper bound exceeds platform usize range",
+        )
+        .with_fact("join_type", node.spec.join_type)
+        .with_fact("build_rows", build_rows)
+        .with_fact("left_join_output_rows", left_join_output_rows)
+        .with_fact("temporary_index_rows", temporary_index_rows)
+    })?;
+    cudf::DataFrameJoinIndices::reservation_size_bytes_for_len(temporary_index_rows).map(|bytes| bytes as u64).map_err(
+        |error| {
+            QueryError::from_cudf(
+                "nexus_query_engine.bounded.join.full_size_preflight_workspace",
+                "failed to size full join size-preflight temporary index workspace",
+                error,
+            )
+            .with_fact("join_type", node.spec.join_type)
+            .with_fact("build_rows", build_rows)
+            .with_fact("left_join_output_rows", left_join_output_rows)
+            .with_fact("temporary_index_rows", temporary_index_rows)
+        },
+    )
+}
+
 // Diagnostic trace surface for the bounded-join output-materialize preflight.
 // Gated by `CUDF_BOUNDED_JOIN_MATERIALIZE_TRACE=1`. Emits per-call entry /
 // success / failure events on stderr with the reservation-tracker snapshot

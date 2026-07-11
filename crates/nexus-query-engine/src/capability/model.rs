@@ -114,6 +114,12 @@ pub struct StrictUnresolvedPreflightGap {
 pub const STRICT_UNRESOLVED_PREFLIGHT_GAPS: &[StrictUnresolvedPreflightGap] = &[
     StrictUnresolvedPreflightGap {
         kind: ReservationKind::SourceRead,
+        required_contract: "row_delete_application_contract",
+        unresolved_gap: "libcudf_row_delete_application_preflight_unavailable",
+        retirement_requirement: "cudf-rs/libcudf row-delete file read, anti-join, and workspace preflight for strict source chunks",
+    },
+    StrictUnresolvedPreflightGap {
+        kind: ReservationKind::SourceRead,
         required_contract: "source_contract",
         unresolved_gap: "libcudf_parquet_decoded_output_preflight_unavailable",
         retirement_requirement: "cudf-rs/libcudf decoded-output preflight for planned row groups and projected columns",
@@ -147,12 +153,6 @@ pub const STRICT_UNRESOLVED_PREFLIGHT_GAPS: &[StrictUnresolvedPreflightGap] = &[
         required_contract: "final_sort_contract",
         unresolved_gap: "libcudf_final_sort_order_preflight_unavailable",
         retirement_requirement: "cudf-rs/libcudf final sort or top-k output and temporary-workspace preflight",
-    },
-    StrictUnresolvedPreflightGap {
-        kind: ReservationKind::JoinOutput,
-        required_contract: "keyed_equality_join_output_size_preflight",
-        unresolved_gap: "libcudf_equality_join_output_size_preflight_unavailable",
-        retirement_requirement: "cudf-rs/libcudf exact output row-count preflight for keyed inner/left/full equality join indices",
     },
     StrictUnresolvedPreflightGap {
         kind: ReservationKind::OperatorOutput,

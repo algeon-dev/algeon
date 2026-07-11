@@ -40,6 +40,13 @@ impl GpuCandidate {
         self.plan_node_id = Some(plan_node_id.into());
         self
     }
+
+    pub(crate) fn with_outer_operator(mut self, operator: &str) -> Self {
+        self.shape = format!("{operator}({})", self.shape);
+        self.operator_count += 1;
+        self.plan_node_id = None;
+        self
+    }
 }
 
 /// Planning outcome for one native GPU candidate.
@@ -130,6 +137,14 @@ impl PlanningReport {
         for outcome in &mut self.outcomes {
             if let CandidateOutcome::Rewritten { candidate } = outcome {
                 candidate.plan_node_id = Some(plan_node_id.clone());
+            }
+        }
+    }
+
+    pub(crate) fn wrap_rewritten_candidates_with_outer_operator(&mut self, operator: &str) {
+        for outcome in &mut self.outcomes {
+            if let CandidateOutcome::Rewritten { candidate } = outcome {
+                *candidate = candidate.clone().with_outer_operator(operator);
             }
         }
     }

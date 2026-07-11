@@ -12,6 +12,7 @@ pub(super) fn adaptive_memory_history_key_probe_plan(
         AggregateFunction::Sum | AggregateFunction::Min | AggregateFunction::Max | AggregateFunction::Avg => {
             value_type.clone()
         },
+        AggregateFunction::Median => DataType::Float64,
         AggregateFunction::StddevSamp
         | AggregateFunction::StddevPop
         | AggregateFunction::VarSamp

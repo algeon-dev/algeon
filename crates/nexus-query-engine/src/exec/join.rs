@@ -26,7 +26,6 @@ pub(super) use output::{
 };
 pub(super) use residual::{
     JoinResidualColumns, lower_join_match_predicate, lower_join_residual_predicate, residual_input_columns,
-    walk_join_residual_columns,
 };
 
 enum EquiJoinIndices {

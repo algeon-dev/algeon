@@ -41,45 +41,31 @@ pub(super) fn execute_compiled_one_shot_equi_join_materialize(
     validate_one_shot_equi_join(node)?;
     let left_keys = node.spec.keys.iter().map(|key| key.left.name().to_string()).collect::<Vec<_>>();
     let right_keys = node.spec.keys.iter().map(|key| key.right.name().to_string()).collect::<Vec<_>>();
-    let options = dataframe_join_options(&left_keys, &right_keys, node.spec.null_equality);
     let overrides = execution_overrides(context);
     let timer = Instant::now();
-    let pair_indices = match node.spec.join_type {
-        JoinType::Inner => left.frame.with_execution(&overrides).inner_join_indices(&right.frame, options),
-        JoinType::Left => left.frame.with_execution(&overrides).left_join_indices(&right.frame, options),
-        JoinType::Full => left.frame.with_execution(&overrides).full_join_indices(&right.frame, options),
-        JoinType::LeftSemi | JoinType::LeftAnti | JoinType::LeftMark | JoinType::Cross => {
-            unreachable!("validated above")
-        },
-    }
-    .map_err(|error| join_index_error(error, node))?;
-    let index_bytes = pair_indices.device_allocated_size_bytes().map(|bytes| bytes as u64).map_err(|error| {
-        QueryError::from_cudf(
-            "nexus_query_engine.bounded.join.one_shot_index_bytes",
-            "failed to observe compiled one-shot join index memory",
-            error,
-        )
-        .with_fact("join_type", node.spec.join_type)
-    })?;
-    let gather_map_reservation = match reservations.try_reserve(
-        bounded_join_request(
-            ReservationKind::GatherMap,
-            "join_one_shot_indices",
-            index_bytes,
-            reservations.budget(),
-            node_id,
-        ),
+    let preflight_indices = match materialize_compiled_keyed_equality_join_indices_with_preflight(
+        context,
+        node_id,
+        node,
+        &left,
+        &right,
+        node.spec.build_side,
+        &left_keys,
+        &right_keys,
+        "join_one_shot_indices",
+        reservations,
         metrics,
+        &overrides,
     ) {
-        Ok(reservation) => reservation,
+        Ok(indices) => indices,
         Err(error) => {
-            drop(pair_indices);
+            release_bounded_join_side_frame(left, reservations, metrics);
+            release_bounded_join_side_frame(right, reservations, metrics);
             return Err(error);
         },
     };
-    let output_rows = pair_indices.len() as u64;
-    let indices = CompiledJoinIndices::Pair { left: pair_indices.left().clone(), right: pair_indices.right().clone() };
-    drop(pair_indices);
+    let CompiledEqualityJoinPreflightIndices { indices, gather_map_reservation, index_bytes, output_rows } =
+        preflight_indices;
     if node.spec.residual_predicate.is_some() {
         let (output, chunk_metrics) = materialize_compiled_one_shot_residual_output(
             context,
@@ -337,52 +323,34 @@ pub(super) fn materialize_compiled_one_shot_equi_join_probe_chunk(
 ) -> Result<ResidentGpuFrame> {
     let left_keys = node.spec.keys.iter().map(|key| key.left.name().to_string()).collect::<Vec<_>>();
     let right_keys = node.spec.keys.iter().map(|key| key.right.name().to_string()).collect::<Vec<_>>();
-    let options = dataframe_join_options(&left_keys, &right_keys, node.spec.null_equality);
     let overrides = execution_overrides(context);
     let timer = Instant::now();
-    let pair_indices = {
-        let (left, right) = match build_side {
-            JoinSide::Left => (build, &probe),
-            JoinSide::Right => (&probe, build),
-        };
-        match node.spec.join_type {
-            JoinType::Inner => left.frame.with_execution(&overrides).inner_join_indices(&right.frame, options),
-            JoinType::Left => left.frame.with_execution(&overrides).left_join_indices(&right.frame, options),
-            JoinType::Full => left.frame.with_execution(&overrides).full_join_indices(&right.frame, options),
-            JoinType::LeftSemi | JoinType::LeftAnti | JoinType::LeftMark | JoinType::Cross => {
-                unreachable!("validated above")
-            },
-        }
-    }
-    .map_err(|error| join_index_error(error, node))?;
-    let index_bytes = pair_indices.device_allocated_size_bytes().map(|bytes| bytes as u64).map_err(|error| {
-        QueryError::from_cudf(
-            "nexus_query_engine.bounded.join.one_shot_index_bytes",
-            "failed to observe compiled streamed one-shot join index memory",
-            error,
-        )
-        .with_fact("join_type", node.spec.join_type)
-    })?;
-    let gather_map_reservation = match reservations.try_reserve(
-        bounded_join_request(
-            ReservationKind::GatherMap,
-            "join_one_shot_indices",
-            index_bytes,
-            reservations.budget(),
-            node_id,
-        ),
+    let (left_input, right_input) = match build_side {
+        JoinSide::Left => (build, &probe),
+        JoinSide::Right => (&probe, build),
+    };
+    let preflight_indices = match materialize_compiled_keyed_equality_join_indices_with_preflight(
+        context,
+        node_id,
+        node,
+        left_input,
+        right_input,
+        build_side,
+        &left_keys,
+        &right_keys,
+        "join_one_shot_indices",
+        reservations,
         metrics,
+        &overrides,
     ) {
-        Ok(reservation) => reservation,
+        Ok(indices) => indices,
         Err(error) => {
-            drop(pair_indices);
-            drop(probe);
+            release_bounded_join_side_frame(probe, reservations, metrics);
             return Err(error);
         },
     };
-    let output_rows = pair_indices.len() as u64;
-    let indices = CompiledJoinIndices::Pair { left: pair_indices.left().clone(), right: pair_indices.right().clone() };
-    drop(pair_indices);
+    let CompiledEqualityJoinPreflightIndices { indices, gather_map_reservation, index_bytes, output_rows } =
+        preflight_indices;
     let probe_rows = probe.rows;
     let probe_bytes = probe.bytes;
     if node.spec.residual_predicate.is_some() {

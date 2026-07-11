@@ -101,6 +101,33 @@ pub enum Expr {
     },
     Lower(Box<Expr>),
     Upper(Box<Expr>),
+    Trim {
+        expr: Box<Expr>,
+        trim_chars: String,
+    },
+    LTrim {
+        expr: Box<Expr>,
+        trim_chars: String,
+    },
+    RTrim {
+        expr: Box<Expr>,
+        trim_chars: String,
+    },
+    /// Literal substring containment test.
+    StringContains {
+        expr: Box<Expr>,
+        pattern: String,
+    },
+    /// Literal prefix test.
+    StartsWith {
+        expr: Box<Expr>,
+        prefix: String,
+    },
+    /// Literal suffix test.
+    EndsWith {
+        expr: Box<Expr>,
+        suffix: String,
+    },
     /// SQL `CHARACTER_LENGTH(expr)` string expression.
     StringLength {
         /// String expression whose characters are counted.
@@ -302,6 +329,30 @@ impl Expr {
         Self::Upper(Box::new(expr))
     }
 
+    pub fn trim(expr: Self, trim_chars: impl Into<String>) -> Self {
+        Self::Trim { expr: Box::new(expr), trim_chars: trim_chars.into() }
+    }
+
+    pub fn ltrim(expr: Self, trim_chars: impl Into<String>) -> Self {
+        Self::LTrim { expr: Box::new(expr), trim_chars: trim_chars.into() }
+    }
+
+    pub fn rtrim(expr: Self, trim_chars: impl Into<String>) -> Self {
+        Self::RTrim { expr: Box::new(expr), trim_chars: trim_chars.into() }
+    }
+
+    pub fn string_contains(expr: Self, pattern: impl Into<String>) -> Self {
+        Self::StringContains { expr: Box::new(expr), pattern: pattern.into() }
+    }
+
+    pub fn starts_with(expr: Self, prefix: impl Into<String>) -> Self {
+        Self::StartsWith { expr: Box::new(expr), prefix: prefix.into() }
+    }
+
+    pub fn ends_with(expr: Self, suffix: impl Into<String>) -> Self {
+        Self::EndsWith { expr: Box::new(expr), suffix: suffix.into() }
+    }
+
     pub fn string_length(expr: Self, output_type: DataType) -> Self {
         Self::StringLength { expr: Box::new(expr), output_type }
     }
@@ -416,6 +467,12 @@ impl fmt::Display for Expr {
             },
             Self::Lower(expr) => write!(f, "LOWER({expr})"),
             Self::Upper(expr) => write!(f, "UPPER({expr})"),
+            Self::Trim { expr, trim_chars } => write!(f, "TRIM({trim_chars:?} FROM {expr})"),
+            Self::LTrim { expr, trim_chars } => write!(f, "LTRIM({expr}, {trim_chars:?})"),
+            Self::RTrim { expr, trim_chars } => write!(f, "RTRIM({expr}, {trim_chars:?})"),
+            Self::StringContains { expr, pattern } => write!(f, "CONTAINS({expr}, {pattern:?})"),
+            Self::StartsWith { expr, prefix } => write!(f, "STARTS_WITH({expr}, {prefix:?})"),
+            Self::EndsWith { expr, suffix } => write!(f, "ENDS_WITH({expr}, {suffix:?})"),
             Self::StringLength { expr, output_type } => write!(f, "CHARACTER_LENGTH({expr})::{output_type}"),
             Self::RegexpReplace { expr, pattern, replacement, output_type } => {
                 write!(f, "REGEXP_REPLACE({expr}, {pattern:?}, {replacement:?})::{output_type}")
@@ -487,7 +544,12 @@ pub enum DatePart {
     Year,
     Month,
     Day,
+    Hour,
     Minute,
+    Second,
+    Millisecond,
+    Microsecond,
+    Nanosecond,
 }
 
 impl fmt::Display for DatePart {
@@ -496,7 +558,12 @@ impl fmt::Display for DatePart {
             Self::Year => "YEAR",
             Self::Month => "MONTH",
             Self::Day => "DAY",
+            Self::Hour => "HOUR",
             Self::Minute => "MINUTE",
+            Self::Second => "SECOND",
+            Self::Millisecond => "MILLISECOND",
+            Self::Microsecond => "MICROSECOND",
+            Self::Nanosecond => "NANOSECOND",
         })
     }
 }
@@ -687,6 +754,12 @@ pub enum AggregateFunction {
     NUnique,
     /// SQL AVG represented logically; execution expands it to sum/count state.
     Avg,
+    /// SQL median over non-null inputs.
+    ///
+    /// Median is not mergeable through the existing partial/final aggregate
+    /// state model and must remain single-stage unless an explicit state
+    /// representation is added.
+    Median,
     /// SQL sample standard deviation.
     StddevSamp,
     /// SQL population standard deviation.
@@ -722,6 +795,7 @@ impl AggregateFunction {
             Self::Count => "count",
             Self::NUnique => "nunique",
             Self::Avg => "avg",
+            Self::Median => "median",
             Self::StddevSamp => "stddev_samp",
             Self::StddevPop => "stddev_pop",
             Self::VarSamp => "var_samp",

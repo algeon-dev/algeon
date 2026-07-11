@@ -377,10 +377,10 @@ fn apply_source_scan_limit_to_chunks(
     let Some(scan_limit) = source.scan_limit else {
         return Ok(chunks);
     };
-    if source.files.iter().any(LocalParquetFile::has_position_delete_files) {
+    if source.files.iter().any(LocalParquetFile::has_row_delete_files) {
         // Raw-row prefix trimming can under-produce visible rows when the
-        // prefix is deleted. Execution must apply deletes per chunk before
-        // deciding whether a scan limit is satisfied.
+        // prefix is deleted. Execution must apply row deletes per chunk
+        // before deciding whether a scan limit is satisfied.
         return Ok(chunks);
     }
     if chunks.is_empty() {

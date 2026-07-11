@@ -4,6 +4,7 @@
 //! produces a stable `(reason, expression_family)` rejection for reports.
 
 use super::{model::*, *};
+use crate::DatePart;
 
 // Stable report facts for an expression capability miss.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -123,12 +124,24 @@ pub(super) fn validate_general_expr_capability(expr: &Expr) -> Result<(), Expres
         },
         Expr::Cast { expr, .. }
         | Expr::TryCast { expr, .. }
-        | Expr::Extract { expr, .. }
-        | Expr::DateTrunc { expr, .. }
         | Expr::Lower(expr)
         | Expr::Upper(expr)
+        | Expr::Trim { expr, .. }
+        | Expr::LTrim { expr, .. }
+        | Expr::RTrim { expr, .. }
+        | Expr::StringContains { expr, .. }
+        | Expr::StartsWith { expr, .. }
+        | Expr::EndsWith { expr, .. }
         | Expr::StringLength { expr, .. }
         | Expr::RegexpReplace { expr, .. } => validate_general_expr_capability(expr),
+        Expr::Extract { field, expr } => {
+            validate_general_expr_capability(expr)?;
+            validate_extract_field_capability(*field)
+        },
+        Expr::DateTrunc { field, expr, .. } => {
+            validate_general_expr_capability(expr)?;
+            validate_date_trunc_field_capability(*field)
+        },
         Expr::Abs(expr) => validate_general_expr_capability(expr),
         Expr::Sqrt { expr, .. } => validate_general_expr_capability(expr),
         Expr::Concat(exprs) => {
@@ -248,6 +261,12 @@ pub(super) fn validate_join_residual_expr_capability(expr: &Expr) -> Result<(), 
         | Expr::Substring { .. }
         | Expr::Lower(_)
         | Expr::Upper(_)
+        | Expr::Trim { .. }
+        | Expr::LTrim { .. }
+        | Expr::RTrim { .. }
+        | Expr::StringContains { .. }
+        | Expr::StartsWith { .. }
+        | Expr::EndsWith { .. }
         | Expr::StringLength { .. }
         | Expr::RegexpReplace { .. }
         | Expr::Concat(_)
@@ -279,12 +298,17 @@ pub(super) fn validate_post_join_residual_expr_capability(expr: &Expr) -> Result
         | Expr::TryCast { expr, .. }
         | Expr::Lower(expr)
         | Expr::Upper(expr)
+        | Expr::StringContains { expr, .. }
+        | Expr::StartsWith { expr, .. }
+        | Expr::EndsWith { expr, .. }
         | Expr::StringLength { expr, .. }
         | Expr::RegexpReplace { expr, .. }
-        | Expr::Extract { expr, .. }
-        | Expr::DateTrunc { expr, .. }
         | Expr::Abs(expr)
         | Expr::Sqrt { expr, .. } => validate_post_join_residual_expr_capability(expr),
+        Expr::Extract { field, expr } => {
+            validate_post_join_residual_expr_capability(expr)?;
+            validate_post_join_extract_field_capability(*field)
+        },
         Expr::Round { expr, .. } => validate_post_join_residual_expr_capability(expr),
         Expr::Concat(exprs) => {
             if exprs.is_empty() {
@@ -326,9 +350,54 @@ pub(super) fn validate_post_join_residual_expr_capability(expr: &Expr) -> Result
             }
             validate_post_join_residual_expr_capability(else_expr)
         },
-        Expr::Like { .. } | Expr::Substring { .. } => Err(ExpressionCapabilityRejection {
+        Expr::Like { .. }
+        | Expr::Substring { .. }
+        | Expr::Trim { .. }
+        | Expr::LTrim { .. }
+        | Expr::RTrim { .. }
+        | Expr::DateTrunc { .. } => Err(ExpressionCapabilityRejection {
             reason: "post_join_residual_expression_family_not_supported",
             expression_family: expr_family(expr),
+        }),
+    }
+}
+
+fn validate_extract_field_capability(field: DatePart) -> Result<(), ExpressionCapabilityRejection> {
+    match field {
+        DatePart::Year | DatePart::Month | DatePart::Day | DatePart::Minute => Ok(()),
+        DatePart::Hour | DatePart::Second | DatePart::Millisecond | DatePart::Microsecond | DatePart::Nanosecond => {
+            Err(ExpressionCapabilityRejection { reason: "extract_field_not_supported", expression_family: "extract" })
+        },
+    }
+}
+
+fn validate_post_join_extract_field_capability(field: DatePart) -> Result<(), ExpressionCapabilityRejection> {
+    match field {
+        DatePart::Year | DatePart::Month | DatePart::Day => Ok(()),
+        DatePart::Minute
+        | DatePart::Hour
+        | DatePart::Second
+        | DatePart::Millisecond
+        | DatePart::Microsecond
+        | DatePart::Nanosecond => Err(ExpressionCapabilityRejection {
+            reason: "post_join_extract_field_not_supported",
+            expression_family: "extract",
+        }),
+    }
+}
+
+fn validate_date_trunc_field_capability(field: DatePart) -> Result<(), ExpressionCapabilityRejection> {
+    match field {
+        DatePart::Day
+        | DatePart::Hour
+        | DatePart::Minute
+        | DatePart::Second
+        | DatePart::Millisecond
+        | DatePart::Microsecond
+        | DatePart::Nanosecond => Ok(()),
+        DatePart::Year | DatePart::Month => Err(ExpressionCapabilityRejection {
+            reason: "date_trunc_field_not_supported",
+            expression_family: "date_trunc",
         }),
     }
 }
@@ -489,6 +558,12 @@ pub(super) fn expr_family(expr: &Expr) -> &'static str {
         Expr::Substring { .. } => "substring",
         Expr::Lower(_) => "lower",
         Expr::Upper(_) => "upper",
+        Expr::Trim { .. } => "trim",
+        Expr::LTrim { .. } => "ltrim",
+        Expr::RTrim { .. } => "rtrim",
+        Expr::StringContains { .. } => "string_contains",
+        Expr::StartsWith { .. } => "starts_with",
+        Expr::EndsWith { .. } => "ends_with",
         Expr::StringLength { .. } => "string_length",
         Expr::RegexpReplace { .. } => "regexp_replace",
         Expr::Concat(_) => "concat",

@@ -2189,6 +2189,12 @@ fn assert_no_non_decimal_binary_output_types(expr: &Expr, message: &str) {
         | Expr::TryCast { expr: inner, .. }
         | Expr::Like { expr: inner, .. }
         | Expr::Substring { expr: inner, .. }
+        | Expr::Trim { expr: inner, .. }
+        | Expr::LTrim { expr: inner, .. }
+        | Expr::RTrim { expr: inner, .. }
+        | Expr::StringContains { expr: inner, .. }
+        | Expr::StartsWith { expr: inner, .. }
+        | Expr::EndsWith { expr: inner, .. }
         | Expr::Lower(inner)
         | Expr::Upper(inner)
         | Expr::StringLength { expr: inner, .. }

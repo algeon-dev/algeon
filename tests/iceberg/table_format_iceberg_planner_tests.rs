@@ -1,17 +1,22 @@
-use std::sync::Arc;
+use std::{fs, path::PathBuf, sync::Arc};
 
 use arrow::datatypes::DataType;
 use datafusion_nexus::{
     FallbackReason, TableFormatColumnSource, TableFormatDataFileFormat, TableFormatDeleteFileContent,
     TableFormatDirectDeviceReadDisposition, TableFormatPartitionTransform, TableFormatReadCapability,
-    TableFormatScalarValue, iceberg::iceberg_file_scan_tasks_to_table_format_scan_plan,
+    TableFormatScalarValue, TableFormatScanRequest,
+    iceberg::{IcebergTableFormatPlanner, iceberg_file_scan_tasks_to_table_format_scan_plan},
 };
 use iceberg::{
+    TableIdent,
+    io::FileIO,
     scan::{FileScanTask, FileScanTaskDeleteFile},
     spec::{
-        DataContentType, DataFileFormat, Literal, MappedField, NameMapping, NestedField, PartitionSpec, PrimitiveType,
-        Schema, Struct, Transform, Type,
+        DataContentType, DataFileBuilder, DataFileFormat, Literal, ManifestListWriter, ManifestWriterBuilder,
+        MappedField, NameMapping, NestedField, PartitionSpec, PrimitiveType, Schema, Struct, TableMetadata, Transform,
+        Type,
     },
+    table::Table,
 };
 
 fn iceberg_schema() -> Arc<Schema> {
@@ -128,6 +133,118 @@ fn timestamp_decimal_partition_task(path: impl Into<String>) -> FileScanTask {
         partition_spec: Some(Arc::new(partition_spec)),
         name_mapping: None,
         case_sensitive: true,
+    }
+}
+
+fn task_with_partition_spec_source_absent_from_scan_schema(path: impl Into<String>) -> FileScanTask {
+    let scan_schema = iceberg_schema();
+    let spec_schema = Arc::new(
+        Schema::builder()
+            .with_fields([
+                Arc::new(NestedField::required(1, "id", Type::Primitive(PrimitiveType::Long))),
+                Arc::new(NestedField::optional(99, "legacy_bucket", Type::Primitive(PrimitiveType::Long))),
+            ])
+            .build()
+            .unwrap(),
+    );
+    let partition_spec = PartitionSpec::builder(spec_schema)
+        .add_partition_field("legacy_bucket", "legacy_bucket", Transform::Identity)
+        .unwrap()
+        .build()
+        .unwrap();
+
+    FileScanTask {
+        file_size_in_bytes: 4096,
+        start: 0,
+        length: 4096,
+        record_count: Some(17),
+        data_file_path: path.into(),
+        data_file_format: DataFileFormat::Parquet,
+        schema: scan_schema,
+        project_field_ids: vec![1],
+        predicate: None,
+        deletes: Vec::new(),
+        partition: Some(Struct::from_iter([Some(Literal::long(7))])),
+        partition_spec: Some(Arc::new(partition_spec)),
+        name_mapping: None,
+        case_sensitive: true,
+    }
+}
+
+struct MetadataOnlyIcebergFixture {
+    _temp_dir: tempfile::TempDir,
+    table_location: PathBuf,
+    table: Table,
+}
+
+impl MetadataOnlyIcebergFixture {
+    fn new() -> Self {
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let table_location = temp_dir.path().join("table1");
+        let metadata_dir = table_location.join("metadata");
+        fs::create_dir_all(&metadata_dir).unwrap();
+
+        let manifest_list1_location = metadata_dir.join("manifests_list_1.avro");
+        let manifest_list2_location = metadata_dir.join("manifests_list_2.avro");
+        let table_metadata1_location = metadata_dir.join("v1.json");
+        let template_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../iceberg-rust/crates/iceberg/testdata/example_table_metadata_v2.json");
+        let metadata_json = fs::read_to_string(template_path)
+            .unwrap()
+            .replace("{{ table_location }}", table_location.to_str().unwrap())
+            .replace("{{ manifest_list_1_location }}", manifest_list1_location.to_str().unwrap())
+            .replace("{{ manifest_list_2_location }}", manifest_list2_location.to_str().unwrap())
+            .replace("{{ table_metadata_1_location }}", table_metadata1_location.to_str().unwrap());
+        let table_metadata = serde_json::from_str::<TableMetadata>(&metadata_json).unwrap();
+        let table = Table::builder()
+            .metadata(table_metadata)
+            .identifier(TableIdent::from_strs(["db", "table1"]).unwrap())
+            .file_io(FileIO::new_with_fs())
+            .metadata_location(table_metadata1_location.to_str().unwrap())
+            .runtime(iceberg::test_utils::test_runtime())
+            .build()
+            .unwrap();
+
+        Self { _temp_dir: temp_dir, table_location, table }
+    }
+
+    async fn write_current_manifest_list(&self) {
+        let current_snapshot = self.table.metadata().current_snapshot().unwrap();
+        let current_schema = current_snapshot.schema(self.table.metadata()).unwrap();
+        let current_partition_spec = self.table.metadata().default_partition_spec();
+        let manifest_path = self.table_location.join("metadata/data_manifest.avro");
+        let manifest_output = self.table.file_io().new_output(manifest_path.to_str().unwrap()).unwrap();
+        let mut writer = ManifestWriterBuilder::new(
+            manifest_output,
+            Some(current_snapshot.snapshot_id()),
+            current_schema.clone(),
+            current_partition_spec.as_ref().clone(),
+        )
+        .build_v2_data();
+        let data_file = DataFileBuilder::default()
+            .partition_spec_id(0)
+            .content(DataContentType::Data)
+            .file_path(format!("{}/data-0001.parquet", self.table_location.to_str().unwrap()))
+            .file_format(DataFileFormat::Parquet)
+            .file_size_in_bytes(4096)
+            .record_count(17)
+            .partition(Struct::from_iter([Some(Literal::long(100))]))
+            .key_metadata(None)
+            .build()
+            .unwrap();
+        writer.add_file(data_file, current_snapshot.sequence_number()).unwrap();
+        let data_file_manifest = writer.write_manifest_file().await.unwrap();
+
+        let manifest_list_writer =
+            self.table.file_io().new_output(current_snapshot.manifest_list()).unwrap().writer().await.unwrap();
+        let mut manifest_list_write = ManifestListWriter::v2(
+            manifest_list_writer,
+            current_snapshot.snapshot_id(),
+            current_snapshot.parent_snapshot_id(),
+            current_snapshot.sequence_number(),
+        );
+        manifest_list_write.add_manifests(vec![data_file_manifest].into_iter()).unwrap();
+        manifest_list_write.close().await.unwrap();
     }
 }
 
@@ -251,6 +368,45 @@ fn identity_timestamp_and_decimal_partition_values_keep_typed_metadata_literals(
 }
 
 #[test]
+fn partition_spec_source_absent_from_scan_schema_is_structured_rejection() {
+    let plan = iceberg_file_scan_tasks_to_table_format_scan_plan(
+        Some("45679".to_string()),
+        Some("aws_glue".to_string()),
+        [task_with_partition_spec_source_absent_from_scan_schema("s3://lakehouse/warehouse/events/data-0001.parquet")],
+    )
+    .unwrap();
+
+    assert!(!plan.is_native_admissible());
+    assert_eq!(plan.unsupported_fallback_reasons(), vec![FallbackReason::IcebergPartitionTransformUnsupported]);
+    assert_eq!(
+        plan.diagnostics().rejected_feature_list,
+        vec![FallbackReason::IcebergPartitionTransformUnsupported.code().to_string()]
+    );
+}
+
+#[tokio::test]
+async fn table_format_planner_carries_plan_files_partition_spec_into_scan_plan() {
+    let fixture = MetadataOnlyIcebergFixture::new();
+    fixture.write_current_manifest_list().await;
+    let plan = IcebergTableFormatPlanner::new(fixture.table)
+        .plan_table_format_scan(TableFormatScanRequest::default())
+        .await
+        .unwrap();
+
+    assert!(plan.is_native_admissible());
+    assert_eq!(plan.unsupported_fallback_reasons(), Vec::<FallbackReason>::new());
+    assert_eq!(plan.data_files.len(), 1);
+    assert_eq!(plan.data_files[0].partition_values.len(), 1);
+    let partition = &plan.data_files[0].partition_values[0];
+    assert_eq!(partition.column_name, "x");
+    assert_eq!(partition.transform, TableFormatPartitionTransform::Identity);
+    assert_eq!(partition.value, TableFormatScalarValue::Int64(100));
+
+    let mapping = plan.projected_columns.iter().find(|mapping| mapping.logical_name == "x").unwrap();
+    assert_eq!(mapping.source, TableFormatColumnSource::IdentityPartitionValue);
+}
+
+#[test]
 fn position_delete_files_are_preserved_and_admit_native_execution() {
     let delete_file = FileScanTaskDeleteFile {
         file_path: "/tmp/iceberg/table/delete-0001.parquet".to_string(),
@@ -282,6 +438,41 @@ fn position_delete_files_are_preserved_and_admit_native_execution() {
     assert_eq!(diagnostics.admitted_native_source_file_count, 1);
     assert!(diagnostics.rejected_feature_list.is_empty());
     assert_eq!(diagnostics.direct_device_read_disposition, TableFormatDirectDeviceReadDisposition::Eligible);
+}
+
+#[test]
+fn equality_delete_files_are_preserved_but_reject_without_delete_footer_field_id_proof() {
+    let delete_file = FileScanTaskDeleteFile {
+        file_path: "/tmp/iceberg/table/delete-0001.parquet".to_string(),
+        file_size_in_bytes: 512,
+        file_type: DataContentType::EqualityDeletes,
+        partition_spec_id: 0,
+        equality_ids: Some(vec![1]),
+    };
+
+    let plan = iceberg_file_scan_tasks_to_table_format_scan_plan(
+        Some("67890".to_string()),
+        Some("local".to_string()),
+        [file_scan_task("/tmp/iceberg/table/data-0001.parquet", DataFileFormat::Parquet, vec![delete_file])],
+    )
+    .unwrap();
+
+    assert!(!plan.is_native_admissible());
+    assert_eq!(plan.delete_files.len(), 1);
+    assert_eq!(plan.delete_files[0].location, "/tmp/iceberg/table/delete-0001.parquet");
+    assert_eq!(plan.delete_files[0].format, TableFormatDataFileFormat::Parquet);
+    assert_eq!(plan.delete_files[0].content, TableFormatDeleteFileContent::EqualityDeletes);
+    assert_eq!(plan.delete_files[0].size_bytes, Some(512));
+    assert_eq!(plan.delete_files[0].equality_ids.as_deref(), Some([1].as_slice()));
+    assert_eq!(plan.data_files[0].position_delete_files.len(), 0);
+    assert_eq!(plan.data_files[0].equality_delete_files.len(), 0);
+    assert_eq!(plan.unsupported_fallback_reasons(), vec![FallbackReason::IcebergDeleteFilesUnsupported]);
+
+    let diagnostics = plan.diagnostics();
+    assert_eq!(diagnostics.planned_delete_file_count, 1);
+    assert_eq!(diagnostics.admitted_native_source_file_count, 0);
+    assert_eq!(diagnostics.rejected_feature_list, vec!["iceberg_delete_files_unsupported".to_string()]);
+    assert_eq!(diagnostics.direct_device_read_disposition, TableFormatDirectDeviceReadDisposition::Rejected);
 }
 
 #[test]
@@ -330,6 +521,10 @@ fn name_mapping_task(mapping: NameMapping) -> FileScanTask {
     }
 }
 
+fn count_star_name_mapping_task(mapping: NameMapping) -> FileScanTask {
+    FileScanTask { project_field_ids: vec![], record_count: None, ..name_mapping_task(mapping) }
+}
+
 #[test]
 fn identity_name_mapping_is_admitted_natively() {
     // Spark's `add_files` attaches an identity mapping (each schema field name
@@ -350,14 +545,59 @@ fn identity_name_mapping_is_admitted_natively() {
 }
 
 #[test]
-fn non_identity_name_mapping_is_rejected_with_structured_reason() {
-    // A renamed source column means by-name resolution and the mapping would
-    // bind different file columns; the scan must not be admitted natively.
+fn non_identity_name_mapping_is_admitted_with_field_id_source_names() {
+    // A renamed source column is safe when the physical fallback names are
+    // carried into native field-id binding instead of relying on by-name
+    // resolution.
     let plan = iceberg_file_scan_tasks_to_table_format_scan_plan(
         Some("13579".to_string()),
         Some("rest".to_string()),
         [name_mapping_task(NameMapping::new(vec![
             MappedField::new(Some(1), vec!["identifier".to_string()], vec![]),
+            MappedField::new(Some(2), vec!["shipmode".to_string()], vec![]),
+        ]))],
+    )
+    .unwrap();
+
+    assert!(plan.is_native_admissible());
+    assert_eq!(plan.unsupported_fallback_reasons(), Vec::<FallbackReason>::new());
+    let id = plan.projected_columns.iter().find(|mapping| mapping.logical_name == "id").unwrap();
+    assert_eq!(id.field_id_source_names, vec!["identifier".to_string()]);
+    let shipmode = plan.projected_columns.iter().find(|mapping| mapping.logical_name == "shipmode").unwrap();
+    assert_eq!(shipmode.field_id_source_names, vec!["shipmode".to_string()]);
+}
+
+#[test]
+fn count_star_name_mapping_carrier_is_admitted_with_field_id_source_names() {
+    // COUNT(*) scans with missing row-count metadata synthesize a pure-filter
+    // row-presence carrier before per-task projected columns are appended; it
+    // must still carry Iceberg name-mapping aliases.
+    let plan = iceberg_file_scan_tasks_to_table_format_scan_plan(
+        Some("13579".to_string()),
+        Some("rest".to_string()),
+        [count_star_name_mapping_task(NameMapping::new(vec![
+            MappedField::new(Some(1), vec!["identifier".to_string()], vec![]),
+            MappedField::new(Some(2), vec!["shipmode".to_string()], vec![]),
+        ]))],
+    )
+    .unwrap();
+
+    assert!(plan.is_native_admissible());
+    assert_eq!(plan.unsupported_fallback_reasons(), Vec::<FallbackReason>::new());
+    assert!(plan.projected_columns.is_empty());
+    assert_eq!(plan.pure_filter_columns.len(), 1);
+    let carrier = &plan.pure_filter_columns[0];
+    assert_eq!(carrier.logical_name, "id");
+    assert_eq!(carrier.field_id_source_names, vec!["identifier".to_string()]);
+}
+
+#[test]
+fn count_star_name_mapping_rejects_ambiguous_carrier_aliases() {
+    let plan = iceberg_file_scan_tasks_to_table_format_scan_plan(
+        Some("13579".to_string()),
+        Some("rest".to_string()),
+        [count_star_name_mapping_task(NameMapping::new(vec![
+            MappedField::new(Some(1), vec!["identifier".to_string(), "shipmode".to_string()], vec![]),
             MappedField::new(Some(2), vec!["shipmode".to_string()], vec![]),
         ]))],
     )

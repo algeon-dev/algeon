@@ -43,6 +43,10 @@ pub fn cudf_dtype_from_arrow_type(data_type: &ArrowDataType) -> Option<CudfDataT
         ArrowDataType::Decimal128(precision, scale) => is_supported_decimal128(*precision, *scale)
             .then(|| CudfDataType::fixed_point(TypeId::Decimal128, arrow_decimal_scale_to_cudf_scale(*scale))),
         ArrowDataType::Date32 => Some(CudfDataType::new(TypeId::TimestampDays)),
+        ArrowDataType::Date64 => Some(CudfDataType::new(TypeId::TimestampMilliseconds)),
+        ArrowDataType::Time32(unit) | ArrowDataType::Time64(unit) => {
+            Some(CudfDataType::new(timestamp_unit_to_cudf_resolution(unit).duration_type_id()))
+        },
         ArrowDataType::Timestamp(unit, _) => Some(CudfDataType::new(timestamp_unit_to_cudf_resolution(unit).type_id())),
         ArrowDataType::Duration(unit) => {
             Some(CudfDataType::new(timestamp_unit_to_cudf_resolution(unit).duration_type_id()))

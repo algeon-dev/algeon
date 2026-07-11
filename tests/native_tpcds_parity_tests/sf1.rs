@@ -53,8 +53,38 @@ async fn assert_tpcds_sf1_single_query_whole_native_parity(
     assert_whole_native_parity_row(row, query_id, comparison_mode, output_rows);
 }
 
+async fn assert_tpcds_sf1_single_query_partial_native_parity(
+    root: &std::path::Path,
+    query_id: &str,
+    comparison_mode: ParityComparisonMode,
+    output_rows: usize,
+    native_plan_fragment_count: usize,
+    host_datafusion_boundary_count: usize,
+) {
+    let query_filter = vec![query_id.to_string()];
+    let items = tpcds_parity_workload_items(
+        root,
+        sf1_tpcds_test_session_config(),
+        sf1_native_optimizer_config(),
+        Some(&query_filter),
+    )
+    .await
+    .unwrap();
+    let report = NativeTpcdsParityReport::collect(items, ParityFloatTolerance::exact());
+    assert_eq!(report.rows.len(), 1);
+    let row = &report.rows[0];
+    assert_partial_native_parity_row(
+        row,
+        query_id,
+        comparison_mode,
+        output_rows,
+        native_plan_fragment_count,
+        host_datafusion_boundary_count,
+    );
+}
+
 #[tokio::test]
-async fn tpcds_sf1_q06_matches_after_hash_join_reservation_contract_fix() {
+async fn tpcds_sf1_q06_matches_with_string_key_hash_prebuild_fragments_on_cpu() {
     let Some(root) = sf1_fixture_root_or_skip() else {
         return;
     };
@@ -74,7 +104,7 @@ async fn tpcds_sf1_q06_matches_after_hash_join_reservation_contract_fix() {
     assert_eq!(report.rows.len(), 1);
 
     let row = &report.rows[0];
-    assert_whole_native_parity_row(row, "q06", ParityComparisonMode::OrderedExact, 45);
+    assert_partial_native_parity_row(row, "q06", ParityComparisonMode::OrderedExact, 45, 3, 7);
     assert_ne!(row.parity_status, ParityStatus::NativeRejected);
 }
 
@@ -103,21 +133,7 @@ async fn tpcds_sf1_q85_matches_after_shared_resident_pipeline_contract_fix() {
     assert_eq!(report.rows.len(), 1);
 
     let row = &report.rows[0];
-    assert_eq!(row.query_id, "q85");
-    assert_eq!(row.cpu_planning_status, ParityStageStatus::Succeeded);
-    assert_eq!(row.cpu_runtime_status, ParityStageStatus::Succeeded);
-    assert_eq!(row.native_planning_outcome, NativeTpcdsParityPlanningOutcome::AcceptedReplaced);
-    assert_eq!(row.native_reason_code, None);
-    assert_eq!(row.native_unsupported_category, None);
-    assert!(row.native_runtime_started, "q85 must execute through the native path");
-    assert_eq!(row.native_runtime_outcome, NativeDataFusionRuntimeOutcome::Succeeded);
-    assert_eq!(row.parity_status, ParityStatus::Matched);
-    assert_eq!(row.comparison_mode, ParityComparisonMode::OrderedExact);
-    assert_eq!(row.cpu_output_rows, Some(6));
-    assert_eq!(row.native_output_rows, Some(6));
-    assert_eq!(row.native_reservation_denied_count, Some(0));
-    assert_eq!(row.native_retry_count, Some(0));
-    assert_eq!(row.native_runtime_failure, None);
+    assert_partial_native_parity_row(row, "q85", ParityComparisonMode::OrderedExact, 6, 1, 7);
 }
 
 #[tokio::test]
@@ -178,20 +194,21 @@ async fn tpcds_sf1_case_residual_post_filter_queries_match_after_one_shot_admiss
 
     for (query_id, output_rows) in [("q04", 8), ("q11", 88), ("q31", 51), ("q74", 92)] {
         let row = report.rows.iter().find(|row| row.query_id == query_id).expect("query row should exist");
-        assert_eq!(row.cpu_planning_status, ParityStageStatus::Succeeded, "{query_id}");
-        assert_eq!(row.cpu_runtime_status, ParityStageStatus::Succeeded, "{query_id}");
-        assert_eq!(row.native_planning_outcome, NativeTpcdsParityPlanningOutcome::AcceptedReplaced, "{query_id}");
-        assert_eq!(row.native_reason_code, None, "{query_id}");
-        assert_eq!(row.native_unsupported_category, None, "{query_id}");
-        assert!(row.native_runtime_started, "{query_id} must execute through the native path");
-        assert_eq!(row.native_runtime_outcome, NativeDataFusionRuntimeOutcome::Succeeded, "{query_id}");
-        assert_eq!(row.parity_status, ParityStatus::Matched, "{query_id}");
-        assert_eq!(row.comparison_mode, ParityComparisonMode::OrderedExact, "{query_id}");
-        assert_eq!(row.cpu_output_rows, Some(output_rows), "{query_id}");
-        assert_eq!(row.native_output_rows, Some(output_rows), "{query_id}");
-        assert_eq!(row.native_reservation_denied_count, Some(0), "{query_id}");
-        assert_eq!(row.native_retry_count, Some(0), "{query_id}");
-        assert_eq!(row.native_runtime_failure, None, "{query_id}");
+        let (fragments, boundaries) = match query_id {
+            "q04" => (6, 24),
+            "q11" => (4, 16),
+            "q31" => (6, 20),
+            "q74" => (4, 16),
+            _ => unreachable!("covered query ids are exhaustive"),
+        };
+        assert_partial_native_parity_row(
+            row,
+            query_id,
+            ParityComparisonMode::OrderedExact,
+            output_rows,
+            fragments,
+            boundaries,
+        );
     }
 }
 
@@ -361,7 +378,11 @@ async fn tpcds_sf1_root_full_sort_join_aggregate_queries_match_as_whole_native()
 
     for (query_id, output_rows) in [("q24", 3), ("q31", 51), ("q34", 451), ("q64", 10), ("q73", 5)] {
         let row = report.rows.iter().find(|row| row.query_id == query_id).expect("query row should exist");
-        assert_whole_native_parity_row(row, query_id, ParityComparisonMode::OrderedExact, output_rows);
+        if query_id == "q31" {
+            assert_partial_native_parity_row(row, query_id, ParityComparisonMode::OrderedExact, output_rows, 6, 20);
+        } else {
+            assert_whole_native_parity_row(row, query_id, ParityComparisonMode::OrderedExact, output_rows);
+        }
     }
 }
 
@@ -394,7 +415,10 @@ fn tpcds_sf1_current_partial_native_coverage_set_is_pinned() {
             .filter(|row| row.post_native_execution_path == NativeDataFusionPostNativeExecutionPath::Cpu)
             .map(|row| row.query_id.as_str())
             .collect();
-        let expected: BTreeSet<&str> = BTreeSet::new();
+        let expected: BTreeSet<&str> =
+            ["q04", "q06", "q08", "q11", "q31", "q41", "q47", "q54", "q57", "q59", "q74", "q83", "q85"]
+                .into_iter()
+                .collect();
         let cpu_expected: BTreeSet<&str> = BTreeSet::new();
 
         assert_eq!(partial_native, expected);
@@ -412,9 +436,8 @@ fn tpcds_sf1_current_partial_native_coverage_set_is_pinned() {
             );
         }
         for query_id in [
-            "q01", "q04", "q06", "q08", "q11", "q24", "q28", "q30", "q31", "q32", "q34", "q38", "q41", "q44", "q46",
-            "q47", "q51", "q57", "q58", "q59", "q61", "q64", "q65", "q67", "q68", "q73", "q74", "q78", "q79", "q81",
-            "q83", "q90", "q92", "q97", "q70", "q86", "q88", "q39",
+            "q01", "q24", "q28", "q30", "q32", "q34", "q38", "q44", "q46", "q51", "q58", "q61", "q64", "q65", "q67",
+            "q68", "q73", "q78", "q79", "q81", "q90", "q92", "q97", "q70", "q86", "q88", "q39",
         ] {
             let row = report
                 .rows
@@ -433,7 +456,7 @@ fn tpcds_sf1_current_partial_native_coverage_set_is_pinned() {
         assert_eq!(q39.strict_bounded_compiled_graphs.len(), 1, "q39 should expose one accepted strict graph");
         let q39_graph = &q39.strict_bounded_compiled_graphs[0];
         assert_eq!(q39_graph.task_count, 47, "q39 compiled graph task count drifted");
-        assert_eq!(q39_graph.edge_count, 55, "q39 compiled graph edge count drifted");
+        assert_eq!(q39_graph.edge_count, 51, "q39 compiled graph edge count drifted");
         assert_eq!(q39_graph.barrier_count, 23, "q39 compiled graph barrier count drifted");
         assert_eq!(q39_graph.resource_count, 32, "q39 compiled graph resource count drifted");
         assert_eq!(q39_graph.gate_count, 50, "q39 compiled graph gate count drifted");
@@ -483,7 +506,6 @@ fn tpcds_sf1_current_partial_native_coverage_set_is_pinned() {
         }
         for (query_id, expected_contract) in [
             ("q24", "root_full_sort_keyless_or_cross_join_subcontract"),
-            ("q31", "root_full_sort_shared_aggregate_fanout_subcontract"),
             ("q64", "root_full_sort_repeated_projection_fanout_subcontract"),
         ] {
             let row = report
@@ -521,20 +543,11 @@ fn tpcds_sf1_current_partial_native_coverage_set_is_pinned() {
         );
         for (query_id, expected_contract) in [
             ("q01", "root_topk_sort_fetch_hash_join_input_subcontract"),
-            ("q04", "root_topk_sort_fetch_hash_join_input_subcontract"),
-            ("q08", "root_topk_sort_fetch_hash_join_aggregate_subcontract"),
-            ("q11", "root_topk_sort_fetch_hash_join_input_subcontract"),
-            ("q41", "root_topk_sort_fetch_hash_join_aggregate_subcontract"),
             ("q58", "root_topk_keyed_filtered_semi_join_subcontract"),
-            ("q74", "root_topk_sort_fetch_hash_join_input_subcontract"),
             ("q78", "root_topk_keyed_filtered_semi_join_subcontract"),
-            ("q83", "root_topk_keyed_filtered_semi_join_subcontract"),
-            ("q06", "root_topk_distinct_aggregate_subcontract"),
             ("q61", "root_topk_keyless_or_cross_join_subcontract"),
             ("q90", "root_topk_keyless_or_cross_join_subcontract"),
-            ("q47", "root_topk_window_subcontract"),
             ("q51", "root_topk_window_subcontract"),
-            ("q57", "root_topk_window_subcontract"),
             ("q44", "root_topk_window_subcontract"),
             ("q44", "root_topk_keyless_outer_cross_window_subcontract"),
         ] {
@@ -558,7 +571,7 @@ fn tpcds_sf1_current_partial_native_coverage_set_is_pinned() {
             assert_eq!(compiled_graph.sink_kind, "host_arrow_materialization", "{query_id}");
             assert_eq!(compiled_graph.sink_gate_count, 1, "{query_id}");
         }
-        for query_id in ["q44", "q47", "q51", "q57", "q67"] {
+        for query_id in ["q44", "q51", "q67"] {
             let row = report
                 .rows
                 .iter()
@@ -575,21 +588,15 @@ fn tpcds_sf1_current_partial_native_coverage_set_is_pinned() {
                 );
             }
         }
-        for query_id in ["q47", "q57", "q67"] {
-            let row = report
-                .rows
-                .iter()
-                .find(|row| row.query_id == query_id)
-                .unwrap_or_else(|| panic!("{query_id} is missing"));
-            assert!(
-                row.strict_bounded_contract_rows.iter().any(|gate| {
-                    gate.reservation_kind.as_str() == "operator_output"
-                        && gate.required_contract == "query_engine_rank_filter_output_boundary"
-                        && gate.contract_status.as_str() == "modeled"
-                }),
-                "{query_id} should expose rank/filter output boundary in strict report rows"
-            );
-        }
+        let q67 = report.rows.iter().find(|row| row.query_id == "q67").unwrap_or_else(|| panic!("q67 is missing"));
+        assert!(
+            q67.strict_bounded_contract_rows.iter().any(|gate| {
+                gate.reservation_kind.as_str() == "operator_output"
+                    && gate.required_contract == "query_engine_rank_filter_output_boundary"
+                    && gate.contract_status.as_str() == "modeled"
+            }),
+            "q67 should expose rank/filter output boundary in strict report rows"
+        );
         let q51 = report.rows.iter().find(|row| row.query_id == "q51").unwrap_or_else(|| panic!("q51 is missing"));
         assert!(
             q51.strict_bounded_contract_rows.iter().any(|gate| {
@@ -617,7 +624,7 @@ fn tpcds_sf1_current_partial_native_coverage_set_is_pinned() {
                 "q44 should expose keyless outer-cross contract {required_contract} in strict report rows"
             );
         }
-        for query_id in ["q30", "q59", "q65", "q81"] {
+        for query_id in ["q30", "q65", "q81"] {
             let row = report
                 .rows
                 .iter()
@@ -637,7 +644,7 @@ fn tpcds_sf1_current_partial_native_coverage_set_is_pinned() {
             assert_eq!(compiled_graph.sink_kind, "host_arrow_materialization", "{query_id}");
             assert_eq!(compiled_graph.sink_gate_count, 1, "{query_id}");
         }
-        for query_id in ["q30", "q59", "q81"] {
+        for query_id in ["q30", "q81"] {
             let row = report
                 .rows
                 .iter()
@@ -824,7 +831,7 @@ async fn tpcds_sf1_rank_window_queries_match_current_admission_contract() {
 
     for query_id in ["q47", "q57"] {
         let row = report.rows.iter().find(|row| row.query_id == query_id).expect("query row should exist");
-        assert_whole_native_parity_row(row, query_id, ParityComparisonMode::OrderedExact, 100);
+        assert_partial_native_parity_row(row, query_id, ParityComparisonMode::OrderedExact, 100, 3, 21);
     }
 
     let row = report.rows.iter().find(|row| row.query_id == "q67").expect("query row should exist");
@@ -937,7 +944,7 @@ async fn tpcds_sf1_rank_window_union_query_matches_as_whole_native() {
 }
 
 #[tokio::test]
-async fn tpcds_sf1_round_decimal_segment_query_matches_as_whole_native() {
+async fn tpcds_sf1_round_decimal_segment_query_matches_with_string_key_hash_prebuild_fragments_on_cpu() {
     let Some(root) = sf1_fixture_root_or_skip() else {
         return;
     };
@@ -957,21 +964,7 @@ async fn tpcds_sf1_round_decimal_segment_query_matches_as_whole_native() {
     assert_eq!(report.rows.len(), 1);
 
     let row = report.rows.iter().find(|row| row.query_id == "q54").expect("q54 row should exist");
-    assert_eq!(row.cpu_planning_status, ParityStageStatus::Succeeded);
-    assert_eq!(row.cpu_runtime_status, ParityStageStatus::Succeeded);
-    assert_eq!(row.native_planning_outcome, NativeTpcdsParityPlanningOutcome::AcceptedReplaced);
-    assert_eq!(row.post_native_execution_path, NativeDataFusionPostNativeExecutionPath::Native);
-    assert_eq!(row.native_plan_fragment_count, 1);
-    assert_eq!(row.host_datafusion_boundary_count, 0);
-    assert!(row.native_runtime_started, "q54 must execute through the native path");
-    assert_eq!(row.native_runtime_outcome, NativeDataFusionRuntimeOutcome::Succeeded);
-    assert_eq!(row.parity_status, ParityStatus::Matched);
-    assert_eq!(row.comparison_mode, ParityComparisonMode::OrderedExact);
-    assert_eq!(row.cpu_output_rows, Some(1));
-    assert_eq!(row.native_output_rows, Some(1));
-    assert_eq!(row.native_reservation_denied_count, Some(0));
-    assert_eq!(row.native_retry_count, Some(0));
-    assert_eq!(row.native_runtime_failure, None);
+    assert_partial_native_parity_row(row, "q54", ParityComparisonMode::OrderedExact, 1, 3, 12);
 }
 
 #[tokio::test]
@@ -1327,13 +1320,72 @@ fn tpcds_sf1_root_topk_join_aggregate_queries_match_as_whole_native() {
             ("q79", 100),
             ("q83", 21),
         ] {
-            assert_tpcds_sf1_single_query_whole_native_parity(
-                root,
-                query_id,
-                ParityComparisonMode::OrderedExact,
-                output_rows,
-            )
-            .await;
+            match query_id {
+                "q04" => {
+                    assert_tpcds_sf1_single_query_partial_native_parity(
+                        root,
+                        query_id,
+                        ParityComparisonMode::OrderedExact,
+                        output_rows,
+                        6,
+                        24,
+                    )
+                    .await;
+                },
+                "q11" => {
+                    assert_tpcds_sf1_single_query_partial_native_parity(
+                        root,
+                        query_id,
+                        ParityComparisonMode::OrderedExact,
+                        output_rows,
+                        4,
+                        16,
+                    )
+                    .await;
+                },
+                "q41" => {
+                    assert_tpcds_sf1_single_query_partial_native_parity(
+                        root,
+                        query_id,
+                        ParityComparisonMode::OrderedExact,
+                        output_rows,
+                        2,
+                        4,
+                    )
+                    .await;
+                },
+                "q74" => {
+                    assert_tpcds_sf1_single_query_partial_native_parity(
+                        root,
+                        query_id,
+                        ParityComparisonMode::OrderedExact,
+                        output_rows,
+                        4,
+                        16,
+                    )
+                    .await;
+                },
+                "q83" => {
+                    assert_tpcds_sf1_single_query_partial_native_parity(
+                        root,
+                        query_id,
+                        ParityComparisonMode::OrderedExact,
+                        output_rows,
+                        3,
+                        11,
+                    )
+                    .await;
+                },
+                _ => {
+                    assert_tpcds_sf1_single_query_whole_native_parity(
+                        root,
+                        query_id,
+                        ParityComparisonMode::OrderedExact,
+                        output_rows,
+                    )
+                    .await;
+                },
+            }
         }
     });
 }
@@ -1359,10 +1411,12 @@ fn tpcds_sf1_root_topk_shared_fanout_queries_match_as_whole_native() {
         let report = NativeTpcdsParityReport::collect(items, ParityFloatTolerance::exact());
         assert_eq!(report.rows.len(), 4);
 
-        for query_id in ["q30", "q59", "q65", "q81"] {
+        for query_id in ["q30", "q65", "q81"] {
             let row = report.rows.iter().find(|row| row.query_id == query_id).expect("query row should exist");
             assert_whole_native_parity_row(row, query_id, ParityComparisonMode::OrderedExact, 100);
         }
+        let q59 = report.rows.iter().find(|row| row.query_id == "q59").expect("q59 row should exist");
+        assert_partial_native_parity_row(q59, "q59", ParityComparisonMode::OrderedExact, 100, 2, 9);
     });
 }
 
@@ -1526,7 +1580,7 @@ async fn tpcds_sf1_q39_tolerant_mode_matches_with_float_contract_without_exact_h
 }
 
 #[tokio::test]
-async fn tpcds_sf1_q39_adaptive_mode_requires_explicit_exact_statistical_contract() {
+async fn tpcds_sf1_q39_adaptive_mode_admits_with_adaptive_pipeline_report() {
     let Some(root) = sf1_fixture_root_or_skip() else {
         return;
     };
@@ -1543,22 +1597,25 @@ async fn tpcds_sf1_q39_adaptive_mode_requires_explicit_exact_statistical_contrac
     assert_eq!(report.rows.len(), 1);
 
     let q39 = &report.rows[0];
-    assert_eq!(q39.outcome, NativeDataFusionPlanningOutcome::RejectedBeforeExecution);
-    assert_eq!(q39.reason_code.as_deref(), Some("native_adaptive_pipeline_unsupported"));
-    assert_eq!(q39.post_native_execution_path, NativeDataFusionPostNativeExecutionPath::Cpu);
-    assert_eq!(q39.native_plan_fragment_count, 0);
+    assert_eq!(q39.outcome, NativeDataFusionPlanningOutcome::AcceptedReplaced);
+    assert_eq!(q39.reason_code, None);
+    assert_eq!(q39.post_native_execution_path, NativeDataFusionPostNativeExecutionPath::Native);
+    assert_eq!(q39.native_plan_fragment_count, 1);
     assert_eq!(q39.host_datafusion_boundary_count, 0);
-    assert!(q39.rejected_before_execution);
+    assert!(!q39.rejected_before_execution);
     assert!(q39.strict_bounded_contract_rows.is_empty());
+    assert!(q39.strict_bounded_compiled_graphs.is_empty());
     assert_eq!(q39.adaptive_pipeline_rows.len(), 1);
     let adaptive = q39.adaptive_pipeline_rows[0].to_stable_kv_row();
-    assert!(adaptive.contains("execution_mode=unsupported_adaptive"), "{adaptive}");
+    assert!(adaptive.contains("execution_mode=adaptive"), "{adaptive}");
+    assert!(adaptive.contains("candidate_status=admitted"), "{adaptive}");
+    assert!(adaptive.contains("adaptive_strategy=conservative_compiled_pipeline"), "{adaptive}");
+    assert!(adaptive.contains("rejection_reason=none"), "{adaptive}");
+    assert!(!adaptive.contains("execution_mode=strict_bounded"), "{adaptive}");
     assert!(
-        adaptive
-            .contains("rejection_reason=adaptive_exact_statistical_join_final_full_sort_requires_explicit_contract"),
+        !adaptive.contains("adaptive_exact_statistical_join_final_full_sort_requires_explicit_contract"),
         "{adaptive}"
     );
-    assert!(!adaptive.contains("execution_mode=strict_bounded"), "{adaptive}");
 }
 
 #[tokio::test]

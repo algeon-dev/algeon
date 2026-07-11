@@ -247,6 +247,101 @@ fn aggregate_strategy_capability_rejects_encoded_key_for_filter_and_distinct_loc
 }
 
 #[test]
+fn aggregate_strategy_capability_treats_median_as_single_stage_only() {
+    let input_schema =
+        Schema::new(vec![Field::new("key", DataType::Utf8, false), Field::new("value", DataType::Int64, false)]);
+    let aggregate = AggregateSpec::new(
+        vec![Expr::column("key")],
+        vec![AggregateExpr::new(AggregateFunction::Median, Expr::column("value"), "median_value")],
+    );
+
+    let partial = aggregate_strategy_capability_decision(&aggregate, &input_schema, AggregateExecutionStage::Partial);
+    assert_eq!(partial.selected_strategy, AggregateExecutionStrategy::LibcudfGroupby);
+    assert_eq!(
+        partial.facts.get("encoded_key_partial_rejected_reason").map(String::as_str),
+        Some("encoded_key_partial_median_unsupported")
+    );
+    assert_eq!(
+        partial.facts.get("prepared_sort_groupby_rejected_reason").map(String::as_str),
+        Some("prepared_sort_groupby_median_requires_single_stage")
+    );
+    assert_eq!(
+        partial.facts.get("partitioned_merge_rejected_reason").map(String::as_str),
+        Some("partitioned_merge_requires_final_merge_stage")
+    );
+
+    let final_merge =
+        aggregate_strategy_capability_decision(&aggregate, &input_schema, AggregateExecutionStage::FinalMerge);
+    assert_eq!(final_merge.selected_strategy, AggregateExecutionStrategy::LibcudfGroupby);
+    assert_eq!(
+        final_merge.facts.get("encoded_key_partial_rejected_reason").map(String::as_str),
+        Some("encoded_key_partial_requires_partial_stage")
+    );
+    assert_eq!(
+        final_merge.facts.get("prepared_sort_groupby_rejected_reason").map(String::as_str),
+        Some("prepared_sort_groupby_requires_partial_or_single_stage")
+    );
+    assert_eq!(
+        final_merge.facts.get("partitioned_merge_rejected_reason").map(String::as_str),
+        Some("partitioned_merge_median_unsupported")
+    );
+}
+
+#[test]
+fn aggregate_node_capability_rejects_mixed_median_and_floating_statistical_functions() {
+    let input_schema = Arc::new(Schema::new(vec![Field::new("value", DataType::Float64, false)]));
+    let output_schema = Arc::new(Schema::new(vec![
+        Field::new("stdev_value", DataType::Float64, true),
+        Field::new("median_value", DataType::Float64, true),
+    ]));
+    let aggregate = AggregateSpec::new(
+        vec![],
+        vec![
+            AggregateExpr::new(AggregateFunction::StddevSamp, Expr::column("value"), "stdev_value"),
+            AggregateExpr::new(AggregateFunction::Median, Expr::column("value"), "median_value"),
+        ],
+    );
+
+    let mut builder = QueryPlanBuilder::new();
+    let source = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("input", input_schema)));
+    let aggregate_id = builder.add_aggregate(source, aggregate, output_schema);
+    let plan = builder.finish_gpu_resident(aggregate_id);
+    let analysis = plan.capability_analysis();
+
+    let node = analysis.nodes.iter().find(|node| node.node_id == aggregate_id).expect("aggregate node capability");
+    let CapabilityDecision::Rejected { reason, facts } = &node.executable else {
+        panic!("mixed median/statistical aggregate should reject, got {:?}", node.executable);
+    };
+    assert_eq!(*reason, "unsupported_aggregate_expression_capability");
+    assert_eq!(facts.get("reason").map(String::as_str), Some("median_floating_statistical_mixed_unsupported"));
+    assert_eq!(facts.get("expression_family").map(String::as_str), Some("aggregate"));
+}
+
+#[test]
+fn aggregate_node_capability_rejects_decimal_median_input_type() {
+    let input_schema = Arc::new(Schema::new(vec![Field::new("amount", DataType::Decimal128(15, 2), false)]));
+    let output_schema = Arc::new(Schema::new(vec![Field::new("median_amount", DataType::Decimal128(15, 2), true)]));
+    let aggregate = AggregateSpec::new(
+        vec![],
+        vec![AggregateExpr::new(AggregateFunction::Median, Expr::column("amount"), "median_amount")],
+    );
+
+    let mut builder = QueryPlanBuilder::new();
+    let source = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("input", input_schema)));
+    let aggregate_id = builder.add_aggregate(source, aggregate, output_schema);
+    let plan = builder.finish_gpu_resident(aggregate_id);
+    let analysis = plan.capability_analysis();
+
+    let node = analysis.nodes.iter().find(|node| node.node_id == aggregate_id).expect("aggregate node capability");
+    let CapabilityDecision::Rejected { reason, facts } = &node.executable else {
+        panic!("Decimal median aggregate should reject, got {:?}", node.executable);
+    };
+    assert_eq!(*reason, "unsupported_aggregate_expression_capability");
+    assert_eq!(facts.get("reason").map(String::as_str), Some("unsupported_median_input_type"));
+    assert_eq!(facts.get("data_type").map(String::as_str), Some("Decimal128(15, 2)"));
+}
+
+#[test]
 fn aggregate_strategy_capability_admits_single_stage_prepared_sort_groupby() {
     let input_schema =
         Schema::new(vec![Field::new("key", DataType::Utf8, false), Field::new("value", DataType::Int64, false)]);

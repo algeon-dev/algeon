@@ -49,7 +49,8 @@ datafusion-nexus-tools. The suite is explicit Cargo run tooling; it is not part
 of cargo test --all-features.
 
 Options:
-  --workload tpch        Workload loaded for REST E2E (default: tpch)
+  --workload tpch|equality_delete
+                         Workload loaded for REST E2E (default: tpch)
   --scale N|sfN          Scale factor loaded for REST E2E (default: sf1)
   --reuse-parquet        Reuse generated Parquet under fixture/iceberg-local/.loader-data
   --no-load              Do not run the REST loader before the E2E runner
@@ -311,12 +312,32 @@ if [[ ! "${SCALE}" =~ ^[0-9]+$ ]]; then
 fi
 case "${WORKLOAD}" in
   tpch) ;;
+  equality_delete|equality-delete) WORKLOAD="equality_delete" ;;
   *)
     if [[ "${RUN_REST}" == "1" ]]; then
-      die "iceberg-local REST E2E currently requires --workload tpch because the runner validates the nation table"
+      die "iceberg-local REST E2E currently supports --workload tpch or equality_delete"
     fi
     ;;
 esac
+
+if [[ "${WORKLOAD}" == "equality_delete" ]]; then
+  if [[ "${RUN_REST}" != "1" ]]; then
+    die "equality_delete workload requires the REST E2E runner"
+  fi
+  RUN_GLUE=0
+  RUN_SERVER=0
+  RUN_REMOTE_DIRECT=0
+  LOAD_GLUE=0
+  if [[ "${REST_TABLE}" == "nation" && -z "${NEXUS_ICEBERG_REST_E2E_TABLE:-}" ]]; then
+    REST_TABLE="eq_deletes"
+  fi
+  if [[ "${REST_GROUP_COL}" == "n_regionkey" && -z "${NEXUS_ICEBERG_REST_E2E_GROUP_COL:-}" ]]; then
+    REST_GROUP_COL="grp"
+  fi
+  if [[ -z "${REST_EXPECTED_ROWS}" ]]; then
+    REST_EXPECTED_ROWS="4"
+  fi
+fi
 
 if [[ "${RUN_REST}" != "1" && "${RUN_GLUE}" != "1" && "${RUN_SERVER}" != "1" && "${RUN_REMOTE_DIRECT}" != "1" ]]; then
   die "no E2E runners selected"
@@ -410,6 +431,12 @@ if [[ "${RUN_REST}" == "1" ]]; then
   )
   if [[ -n "${REST_EXPECTED_ROWS}" ]]; then
     rest_env+=("NEXUS_ICEBERG_REST_E2E_EXPECTED_ROWS=${REST_EXPECTED_ROWS}")
+  fi
+  if [[ "${WORKLOAD}" == "equality_delete" ]]; then
+    rest_env+=(
+      "NEXUS_ICEBERG_REST_E2E_EXPECTED_EQ_DELETE_FILES=1"
+      "NEXUS_ICEBERG_REST_E2E_EXPECTED_IDS=1,3,4,5"
+    )
   fi
   if [[ "${GPU_PARITY}" == "1" ]]; then
     rest_env+=("NEXUS_ICEBERG_REST_E2E_GPU_PARITY=1")
