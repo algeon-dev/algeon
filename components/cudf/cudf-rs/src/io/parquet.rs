@@ -531,6 +531,34 @@ impl ParquetReadEvidence {
         }
     }
 
+    pub(crate) fn local_path_footer_materialized() -> Self {
+        Self {
+            requested_remote_read_mode: None,
+            input_kind: "local_path",
+            backend: "parquet_footer_materialized",
+            fallback_reason: "all_null_columns_elided",
+            remote_bytes: None,
+            remote_range_count: None,
+            device_read_support: "not_applicable",
+            backend_build_status: RemoteParquetBackendBuildStatus::Unknown,
+            pruning: None,
+        }
+    }
+
+    pub(crate) fn local_path_multi_footer_materialized() -> Self {
+        Self {
+            requested_remote_read_mode: None,
+            input_kind: "local_path_multi",
+            backend: "parquet_footer_materialized",
+            fallback_reason: "all_null_columns_elided",
+            remote_bytes: None,
+            remote_range_count: None,
+            device_read_support: "not_applicable",
+            backend_build_status: RemoteParquetBackendBuildStatus::Unknown,
+            pruning: None,
+        }
+    }
+
     fn host_buffer() -> Self {
         Self {
             requested_remote_read_mode: None,

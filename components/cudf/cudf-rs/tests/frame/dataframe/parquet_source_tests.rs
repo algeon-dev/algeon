@@ -1,10 +1,11 @@
 //! Tests for high-level local Parquet source execution.
 
-use std::{fs, process::Command};
+use std::{fs, process::Command, sync::Arc};
 
 use arrow::{
-    array::{Array, AsArray},
-    datatypes::{DataType as ArrowDataType, TimeUnit},
+    array::{Array, AsArray, Int64Array},
+    datatypes::{DataType as ArrowDataType, Field, Schema, TimeUnit},
+    record_batch::RecordBatch,
 };
 use cudf::{
     BoundaryKind, DataFrame, DataType, ErrorCode, ExecutionBudgetEnforcement, ExecutionBudgetRequest,
@@ -14,10 +15,10 @@ use cudf::{
     io::{
         parquet::{RemoteParquetProfile, RemoteReadMode},
         source::{
-            LocalParquetFile, LocalParquetSource, PartitionColumn, PartitionValue, SourceColumn, SourceColumnRef,
-            SourceColumnRole, SourceOutputColumn, SourceReadMode, SourceReaderPredicate, SourceReaderPredicateColumn,
-            SourceReaderPredicateLiteral, SourceRequiredColumn, SourceSchema, ZERO_COLUMN_COUNT_COLUMN,
-            build_local_parquet_reader_batch_predicate, build_local_parquet_reader_predicate,
+            LocalParquetFile, LocalParquetSource, PartitionColumn, PartitionValue, SourceChunkPlanningPolicy,
+            SourceColumn, SourceColumnRef, SourceColumnRole, SourceOutputColumn, SourceReadMode, SourceReaderPredicate,
+            SourceReaderPredicateColumn, SourceReaderPredicateLiteral, SourceRequiredColumn, SourceSchema,
+            ZERO_COLUMN_COUNT_COLUMN, build_local_parquet_reader_batch_predicate, build_local_parquet_reader_predicate,
             plan_local_parquet_source_chunks,
         },
     },
@@ -25,6 +26,7 @@ use cudf::{
     runtime::QueryStageKind,
     testing::prelude::*,
 };
+use parquet::{arrow::ArrowWriter, file::properties::WriterProperties};
 use tempfile::TempDir;
 
 use crate::common::{
@@ -203,6 +205,196 @@ fn read_single_chunk_with_evidence(
     assert_eq!(plan.chunks().len(), 1);
     DataFrame::read_parquet_source_chunk_with_evidence(rt, source, &plan.chunks()[0], SourceReadMode::FinalOutput)
         .unwrap()
+}
+
+#[test]
+fn read_parquet_source_chunk_reads_arrow_writer_all_null_optional_column_row_group() {
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("all_null_optional.parquet");
+    let rt = sample_runtime();
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("payload", ArrowDataType::Int64, false),
+        Field::new("m00", ArrowDataType::Int64, true),
+    ]));
+    let batch = RecordBatch::try_new(
+        Arc::clone(&schema),
+        vec![Arc::new(Int64Array::from(vec![1, 2, 3, 4])), Arc::new(Int64Array::from(vec![None, None, None, None]))],
+    )
+    .unwrap();
+    let props = WriterProperties::builder().set_max_row_group_row_count(Some(2)).build();
+    let file = fs::File::create(&path).unwrap();
+    let mut writer = ArrowWriter::try_new(file, Arc::clone(&schema), Some(props)).unwrap();
+    writer.write(&batch).unwrap();
+    writer.close().unwrap();
+
+    let source = LocalParquetSource::data(
+        [LocalParquetFile::new(&path, "all-null-optional", [])
+            .unwrap()
+            .with_row_group_metadata(vec![88, 88], vec![2, 2])
+            .unwrap()],
+        SourceSchema::new([
+            SourceColumn::new("payload", dtype(TypeId::Int64), false).unwrap(),
+            SourceColumn::new("m00", dtype(TypeId::Int64), true).unwrap(),
+        ])
+        .unwrap(),
+        ["payload", "m00"],
+        [
+            SourceOutputColumn::new("payload", SourceColumnRef::ReadColumn(0)).unwrap(),
+            SourceOutputColumn::new("m00", SourceColumnRef::ReadColumn(1)).unwrap(),
+        ],
+        [],
+        [],
+    )
+    .unwrap();
+    let plan = plan_local_parquet_source_chunks(&source, SourceChunkPlanningPolicy::new(None, 1).unwrap()).unwrap();
+
+    assert_eq!(plan.chunks().len(), 2);
+    let first =
+        DataFrame::read_parquet_source_chunk(&rt, &source, &plan.chunks()[0], SourceReadMode::FinalOutput).unwrap();
+    let second =
+        DataFrame::read_parquet_source_chunk(&rt, &source, &plan.chunks()[1], SourceReadMode::FinalOutput).unwrap();
+
+    assert_eq!(first.num_rows(), 2);
+    assert_eq!(first.series("payload").unwrap().to_vec_strict::<i64>().unwrap(), vec![1, 2]);
+    assert_eq!(first.series("m00").unwrap().null_count(), 2);
+    assert_eq!(second.num_rows(), 2);
+    assert_eq!(second.series("payload").unwrap().to_vec_strict::<i64>().unwrap(), vec![3, 4]);
+    assert_eq!(second.series("m00").unwrap().null_count(), 2);
+
+    let token = rt
+        .execution_budget_token(ExecutionBudgetRequest::new(64 * 1024 * 1024).with_boundary("all_null_batch_read"))
+        .unwrap();
+    let batch = DataFrame::read_parquet_source_chunks_with_budget(
+        &rt,
+        &source,
+        plan.chunks(),
+        SourceReadMode::FinalOutput,
+        &token,
+    )
+    .unwrap();
+
+    assert_eq!(batch.value().num_rows(), 4);
+    assert_eq!(batch.value().series("payload").unwrap().to_vec_strict::<i64>().unwrap(), vec![1, 2, 3, 4]);
+    assert_eq!(batch.value().series("m00").unwrap().null_count(), 4);
+    drop(batch);
+    drop(token);
+
+    let null_only_source = LocalParquetSource::data(
+        [LocalParquetFile::new(&path, "all-null-only", [])
+            .unwrap()
+            .with_row_group_metadata(vec![88, 88], vec![2, 2])
+            .unwrap()],
+        SourceSchema::new([SourceColumn::new("m00", dtype(TypeId::Int64), true).unwrap()]).unwrap(),
+        ["m00"],
+        [SourceOutputColumn::new("m00", SourceColumnRef::ReadColumn(0)).unwrap()],
+        [],
+        [],
+    )
+    .unwrap();
+    let null_only_plan =
+        plan_local_parquet_source_chunks(&null_only_source, SourceChunkPlanningPolicy::new(None, 1).unwrap()).unwrap();
+    let token = rt
+        .execution_budget_token(ExecutionBudgetRequest::new(64 * 1024 * 1024).with_boundary("all_null_only_read"))
+        .unwrap();
+    let null_only = DataFrame::read_parquet_source_chunk_with_budget_with_evidence(
+        &rt,
+        &null_only_source,
+        &null_only_plan.chunks()[0],
+        SourceReadMode::FinalOutput,
+        &token,
+    )
+    .unwrap();
+    assert_eq!(null_only.value().frame().series("m00").unwrap().null_count(), 2);
+    let evidence = null_only.value().read_evidence().unwrap();
+    assert_eq!(evidence.input_kind, "local_path");
+    assert_eq!(evidence.backend, "parquet_footer_materialized");
+    drop(null_only);
+    drop(token);
+
+    let token = rt
+        .execution_budget_token(ExecutionBudgetRequest::new(64 * 1024 * 1024).with_boundary("all_null_only_batch"))
+        .unwrap();
+    let null_only_batch = DataFrame::read_parquet_source_chunks_with_budget_with_evidence(
+        &rt,
+        &null_only_source,
+        null_only_plan.chunks(),
+        SourceReadMode::FinalOutput,
+        &token,
+    )
+    .unwrap();
+    assert_eq!(null_only_batch.value().frame().series("m00").unwrap().null_count(), 4);
+    let evidence = null_only_batch.value().read_evidence().unwrap();
+    assert_eq!(evidence.input_kind, "local_path_multi");
+    assert_eq!(evidence.backend, "parquet_footer_materialized");
+}
+
+#[test]
+fn read_parquet_source_chunks_handles_mixed_all_null_optional_column_row_groups() {
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("mixed_all_null_optional.parquet");
+    let rt = sample_runtime();
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("payload", ArrowDataType::Int64, false),
+        Field::new("m00", ArrowDataType::Int64, true),
+    ]));
+    let batch = RecordBatch::try_new(
+        Arc::clone(&schema),
+        vec![
+            Arc::new(Int64Array::from(vec![1, 2, 3, 4])),
+            Arc::new(Int64Array::from(vec![None, None, Some(30), Some(40)])),
+        ],
+    )
+    .unwrap();
+    let props = WriterProperties::builder().set_max_row_group_row_count(Some(2)).build();
+    let file = fs::File::create(&path).unwrap();
+    let mut writer = ArrowWriter::try_new(file, Arc::clone(&schema), Some(props)).unwrap();
+    writer.write(&batch).unwrap();
+    writer.close().unwrap();
+
+    let source = LocalParquetSource::data(
+        [LocalParquetFile::new(&path, "mixed-all-null-optional", [])
+            .unwrap()
+            .with_row_group_metadata(vec![88, 88], vec![2, 2])
+            .unwrap()],
+        SourceSchema::new([
+            SourceColumn::new("payload", dtype(TypeId::Int64), false).unwrap(),
+            SourceColumn::new("m00", dtype(TypeId::Int64), true).unwrap(),
+        ])
+        .unwrap(),
+        ["payload", "m00"],
+        [
+            SourceOutputColumn::new("payload", SourceColumnRef::ReadColumn(0)).unwrap(),
+            SourceOutputColumn::new("m00", SourceColumnRef::ReadColumn(1)).unwrap(),
+        ],
+        [],
+        [],
+    )
+    .unwrap();
+    let plan = plan_local_parquet_source_chunks(&source, SourceChunkPlanningPolicy::new(None, 1).unwrap()).unwrap();
+    assert_eq!(plan.chunks().len(), 2);
+
+    let token = rt
+        .execution_budget_token(ExecutionBudgetRequest::new(64 * 1024 * 1024).with_boundary("mixed_all_null_batch"))
+        .unwrap();
+    let outcome = DataFrame::read_parquet_source_chunks_with_budget_with_evidence(
+        &rt,
+        &source,
+        plan.chunks(),
+        SourceReadMode::FinalOutput,
+        &token,
+    )
+    .unwrap();
+
+    let df = outcome.value().frame();
+    assert_eq!(df.series("payload").unwrap().to_vec_strict::<i64>().unwrap(), vec![1, 2, 3, 4]);
+    assert_eq!(df.series("m00").unwrap().null_count(), 2);
+    let batch = df.to_record_batch().unwrap();
+    assert!(batch.column(1).is_null(0));
+    assert!(batch.column(1).is_null(1));
+    assert_eq!(&batch.column(1).as_primitive::<arrow::datatypes::Int64Type>().values().as_ref()[2..], &[30, 40]);
+    let evidence = outcome.value().read_evidence().unwrap();
+    assert_eq!(evidence.input_kind, "local_path_multi");
+    assert_eq!(evidence.backend, "parquet_footer_materialized");
 }
 
 #[test]
