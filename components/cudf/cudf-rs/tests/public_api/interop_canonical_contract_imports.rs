@@ -28,7 +28,8 @@ fn assert_runtime_releaser_release(
 ) {
 }
 
-fn main() {
+#[test]
+fn interop_canonical_contract_imports_are_publicly_importable() {
     let _ = std::any::TypeId::of::<Runtime>();
     let _ = std::any::TypeId::of::<DeviceArrowColumnExport>();
     let _ = CompletionAuthority::SynchronousByReturn;

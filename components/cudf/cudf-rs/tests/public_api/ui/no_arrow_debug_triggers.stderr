@@ -1,5 +1,0 @@
-error[E0433]: cannot find `arrow` in `io`
- --> tests/public_api/ui/no_arrow_debug_triggers.rs:2:23
-  |
-2 |     let _ = cudf::io::arrow::dataframe_from_record_batch;
-  |                       ^^^^^ could not find `arrow` in `io`

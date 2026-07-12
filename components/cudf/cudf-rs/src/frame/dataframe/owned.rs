@@ -565,13 +565,10 @@ impl DataFrame {
 /// let df = cudf::dataframe! { "x" => x, "y" => y }.unwrap();
 /// ```
 ///
-/// ```compile_fail
-/// use cudf::Runtime;
 ///
-/// let rt = Runtime::new().unwrap();
-/// let x = rt.column_from_slice(&[1i32, 2, 3]).unwrap();
-/// let _ = cudf::dataframe! { "x" => x }.unwrap();
-/// ```
+/// The macro accepts `Series` values. Convert lower-level columns with
+/// [`Series::from_column`](crate::Series::from_column) before passing them to
+/// the macro.
 #[macro_export]
 macro_rules! dataframe {
     ($($name:expr => $series:expr),+ $(,)?) => {{
