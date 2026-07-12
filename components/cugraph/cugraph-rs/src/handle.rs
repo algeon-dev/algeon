@@ -154,7 +154,7 @@ impl Drop for RuntimeResourceHandleOwner {
 pub(crate) struct ResourceHandleLease {
     // Keep `shim` before `runtime` so the native runtime-bound shim is torn
     // down before releasing the retained cudf runtime owner.
-    shim: Arc<RuntimeResourceHandleOwner>,
+    _shim: Arc<RuntimeResourceHandleOwner>,
     runtime: Arc<cudf::Runtime>,
     raw: *mut cugraph_resource_handle_t,
     device: i32,
@@ -173,7 +173,7 @@ impl ResourceHandleLease {
         raw: *mut cugraph_resource_handle_t,
         device: i32,
     ) -> Self {
-        Self { shim: Arc::new(shim), runtime, raw, device }
+        Self { _shim: Arc::new(shim), runtime, raw, device }
     }
 
     fn raw(&self) -> *mut cugraph_resource_handle_t {
@@ -188,17 +188,13 @@ impl ResourceHandleLease {
         self.runtime.as_ref()
     }
 
-    pub(crate) fn same_owner(&self, other: &Self) -> bool {
-        Arc::ptr_eq(&self.shim, &other.shim)
-    }
-
     pub(crate) fn same_runtime_owner(&self, other: &Self) -> bool {
         Arc::ptr_eq(&self.runtime, &other.runtime)
     }
 
     #[cfg(test)]
     fn shim_device(&self) -> i32 {
-        self.shim.device
+        self._shim.device
     }
 }
 
