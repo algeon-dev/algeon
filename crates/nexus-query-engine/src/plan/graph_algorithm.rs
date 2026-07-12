@@ -2093,6 +2093,29 @@ impl GraphAlgorithmSpec {
     }
 }
 
+/// Resident graph key this spec will try to use during execution, when known at planning time.
+///
+/// Keep this function in sync with graph execution dispatch. It intentionally
+/// returns `None` for paths that currently bypass the resident graph cache, such
+/// as edge-id graph construction and BFS include-edges filtering.
+pub fn planned_resident_graph_key(
+    descriptor: &GraphResidencyDescriptor,
+    spec: &GraphAlgorithmSpec,
+) -> Option<ResidentGraphKey> {
+    if spec.edge_columns.edge_id.is_some() {
+        return None;
+    }
+    match (&spec.algorithm, &spec.params) {
+        (GraphAlgorithm::Bfs, GraphAlgorithmParams::Bfs(params)) if params.predicates.include_edges.is_none() => {
+            Some(descriptor.resident_key(spec, GraphResidencyOrientation::Forward))
+        },
+        (GraphAlgorithm::PageRank, GraphAlgorithmParams::PageRank(_)) => {
+            Some(descriptor.resident_key(spec, GraphResidencyOrientation::Transposed))
+        },
+        _ => None,
+    }
+}
+
 /// Native graph algorithm operation over one edge-list input.
 #[derive(Debug, Clone, PartialEq)]
 pub struct GraphAlgorithmNode {

@@ -17,8 +17,8 @@ use nexus_query_engine::{
     AdaptiveMemoryHistory, AggregateStrategyExecutionOptions, CudfInventory, DynamicFilterExecutionOptions,
     ExecutionBoundaryPolicy, ExecutionCancellation, ExecutionContext, GpuHashJoinBuildCache, GpuInventory,
     GpuLocalParquetSourceCache, GraphMemoryCalibrationOverride, KeyedHashJoinStrategyOptions, MemoryControlPolicy,
-    MemoryResourcePolicy, NativePipelineExecutionMode, QueryGrantRequest, QueryHandle, QueryId, ServiceStreamPool,
-    SourceChunkPlanningMode, SourceChunkPlanningOptions, SourceFetchConfig, SourceSchedulerPolicy,
+    MemoryResourcePolicy, NativePipelineExecutionMode, QueryGrantRequest, QueryHandle, QueryId, QueryPlacementHint,
+    ServiceStreamPool, SourceChunkPlanningMode, SourceChunkPlanningOptions, SourceFetchConfig, SourceSchedulerPolicy,
     SourceStorageProfile, StddevSampExecutionMode, TenantQueryContext, TraceId, device_budget_bytes_from_facts,
 };
 
@@ -833,14 +833,23 @@ impl NativeCudfExecutionConfig {
         &self,
         requested_grant_bytes: Option<u64>,
     ) -> Option<Arc<QueryAdmissionTicket>> {
+        self.new_plan_query_admission_ticket_with_placement_hint(requested_grant_bytes, QueryPlacementHint::default())
+    }
+
+    pub(crate) fn new_plan_query_admission_ticket_with_placement_hint(
+        &self,
+        requested_grant_bytes: Option<u64>,
+        placement_hint: QueryPlacementHint,
+    ) -> Option<Arc<QueryAdmissionTicket>> {
         if self.query_service_handle.is_some() {
             return None;
         }
         let source = self.query_admission_source.clone()?;
-        Some(QueryAdmissionTicket::new(
+        Some(QueryAdmissionTicket::new_with_placement_hint(
             source,
             self.requested_grant_min_bytes,
             self.requested_grant_bytes.or(requested_grant_bytes),
+            placement_hint,
         ))
     }
 
@@ -869,9 +878,12 @@ impl NativeCudfExecutionConfig {
     pub(crate) fn with_graph_aware_plan_query_admission_ticket(
         mut self,
         graph_model_ask_bytes: Option<u64>,
+        placement_hint: QueryPlacementHint,
     ) -> nexus_query_engine::Result<Self> {
         let requested_grant_bytes = self.graph_aware_requested_grant_bytes_for_model_ask(graph_model_ask_bytes)?;
-        if let Some(ticket) = self.new_plan_query_admission_ticket(requested_grant_bytes) {
+        if let Some(ticket) =
+            self.new_plan_query_admission_ticket_with_placement_hint(requested_grant_bytes, placement_hint)
+        {
             self.query_admission_ticket = Some(ticket);
         }
         Ok(self)

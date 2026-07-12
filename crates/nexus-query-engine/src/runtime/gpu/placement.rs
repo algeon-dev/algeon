@@ -1,10 +1,47 @@
 //! Placement policies for independent query scheduling across devices.
 
+#[cfg(feature = "cugraph")]
+use std::collections::BTreeSet;
+
 use super::DeviceRegistry;
-use crate::error::{QueryError, Result};
+use crate::{
+    error::{QueryError, Result},
+    plan::ResidentGraphKey,
+};
+
+/// Optional placement metadata for one query-service admission request.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct QueryPlacementHint {
+    /// Prefer devices that already retain this graph key in their local graph cache.
+    pub resident_graph_key: Option<ResidentGraphKey>,
+}
+
+impl QueryPlacementHint {
+    /// Creates an empty placement hint.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Creates a graph-cache affinity hint for a resident graph key.
+    pub fn for_resident_graph_key(resident_graph_key: ResidentGraphKey) -> Self {
+        Self { resident_graph_key: Some(resident_graph_key) }
+    }
+
+    /// Borrow the resident graph key requested by this hint, when any.
+    pub fn resident_graph_key(&self) -> Option<&ResidentGraphKey> {
+        self.resident_graph_key.as_ref()
+    }
+
+    /// Whether this hint carries no placement metadata.
+    pub fn is_empty(&self) -> bool {
+        self.resident_graph_key.is_none()
+    }
+}
 
 /// Placement input for one admitted query.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct PlacementRequest {
     /// Minimum device-memory bytes required to place the query.
     pub min_device_budget_bytes: u64,
@@ -12,6 +49,8 @@ pub struct PlacementRequest {
     pub want_device_budget_bytes: u64,
     /// Optional tenant identifier for affinity policies.
     pub tenant_id: Option<String>,
+    /// Optional query-local placement hints.
+    pub placement_hint: QueryPlacementHint,
 }
 
 impl PlacementRequest {
@@ -21,17 +60,29 @@ impl PlacementRequest {
             min_device_budget_bytes: device_budget_bytes,
             want_device_budget_bytes: device_budget_bytes,
             tenant_id: None,
+            placement_hint: QueryPlacementHint::default(),
         }
     }
 
     /// Creates a placement request with separate minimum and preferred budgets.
     pub fn with_grant_range(min_device_budget_bytes: u64, want_device_budget_bytes: u64) -> Self {
-        Self { min_device_budget_bytes, want_device_budget_bytes, tenant_id: None }
+        Self {
+            min_device_budget_bytes,
+            want_device_budget_bytes,
+            tenant_id: None,
+            placement_hint: QueryPlacementHint::default(),
+        }
     }
 
     /// Adds tenant identity for policies that need tenant affinity.
     pub fn with_tenant_id(mut self, tenant_id: impl Into<String>) -> Self {
         self.tenant_id = Some(tenant_id.into());
+        self
+    }
+
+    /// Adds optional placement metadata for policy composition.
+    pub fn with_placement_hint(mut self, placement_hint: QueryPlacementHint) -> Self {
+        self.placement_hint = placement_hint;
         self
     }
 }
@@ -174,6 +225,36 @@ fn rank_best_fit_device_loads(mut loads: Vec<DeviceLoad>, min_device_budget_byte
     loads.into_iter().map(|load| load.ordinal).collect()
 }
 
+#[cfg(feature = "cugraph")]
+pub(crate) fn rank_cache_affine_candidates(
+    candidates: Vec<cudf::DeviceId>,
+    cache_hit_ordinals: &BTreeSet<usize>,
+) -> Vec<cudf::DeviceId> {
+    rank_cache_affine_by(candidates, cache_hit_ordinals, |device| device.ordinal())
+}
+
+#[cfg(feature = "cugraph")]
+fn rank_cache_affine_by<T>(
+    candidates: Vec<T>,
+    cache_hit_ordinals: &BTreeSet<usize>,
+    ordinal: impl Fn(&T) -> usize,
+) -> Vec<T> {
+    if cache_hit_ordinals.is_empty() || candidates.len() <= 1 {
+        return candidates;
+    }
+    let mut hits = Vec::new();
+    let mut misses = Vec::new();
+    for candidate in candidates {
+        if cache_hit_ordinals.contains(&ordinal(&candidate)) {
+            hits.push(candidate);
+        } else {
+            misses.push(candidate);
+        }
+    }
+    hits.extend(misses);
+    hits
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -217,6 +298,37 @@ mod tests {
         );
 
         assert_eq!(ranked, vec![2, 0, 1]);
+    }
+
+    #[cfg(feature = "cugraph")]
+    #[test]
+    fn cache_affine_ranking_stably_partitions_hit_devices() {
+        let candidates = vec![0, 1, 2, 3];
+        let hit_ordinals = BTreeSet::from([2, 0]);
+
+        let ranked = rank_cache_affine_by(candidates, &hit_ordinals, |ordinal| *ordinal);
+
+        assert_eq!(ranked, vec![0, 2, 1, 3]);
+    }
+
+    #[cfg(feature = "cugraph")]
+    #[test]
+    fn cache_affine_ranking_preserves_identity_without_hits() {
+        let candidates = vec![1, 0];
+
+        let ranked = rank_cache_affine_by(candidates, &BTreeSet::new(), |ordinal| *ordinal);
+
+        assert_eq!(ranked, vec![1, 0]);
+    }
+
+    #[cfg(feature = "cugraph")]
+    #[test]
+    fn cache_affine_ranking_leaves_single_candidate_unchanged() {
+        let candidates = vec![1];
+
+        let ranked = rank_cache_affine_by(candidates, &BTreeSet::from([1]), |ordinal| *ordinal);
+
+        assert_eq!(ranked, vec![1]);
     }
 
     #[test]

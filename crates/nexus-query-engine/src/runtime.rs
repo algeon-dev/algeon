@@ -51,8 +51,8 @@ pub use gpu::{
     BestFitPlacement, CudfInventory, DeviceContext, DeviceFacts, DeviceMemoryFailureReport, DeviceRegistry,
     DeviceRegistryConfig, EvictableMemoryObserver, EvictableMemoryPressure, GpuComms, GpuInventory, GrantRequest,
     LeastLoadedPlacement, MemoryGovernor, MemoryGovernorGrantRow, MemoryGovernorReport, MemoryGrant,
-    PinnedDevicePlacement, Placement, PlacementPolicy, PlacementRequest, Priority, QueryPlacementPolicy, QueryQos,
-    SingleDeviceComms, device_budget_bytes_from_facts,
+    PinnedDevicePlacement, Placement, PlacementPolicy, PlacementRequest, Priority, QueryPlacementHint,
+    QueryPlacementPolicy, QueryQos, SingleDeviceComms, device_budget_bytes_from_facts,
 };
 pub use io_capability::{
     DEFAULT_GDS_LOCAL_MOUNT_ROOT, DeploymentIoCapability, GdsAvailabilityStatus, GdsDriverProbeStatus,
@@ -66,8 +66,9 @@ pub use policy::{
     DevicePlacement, MemoryControlPolicy, MemoryResourcePolicy, MemorySpaceId, ReservationKind, SourceChunkPlanningMode,
 };
 pub use query_service::{
-    QueryAdmissionWaiter, QueryGrantBand, QueryGrantRequest, QueryHandle, QueryService, QueryServiceAdmissionSnapshot,
-    QueryServiceConfig, QueryServiceTenantConfig, SlotGuarantee, TenantId, TenantQueryContext, TenantQueueDepth,
+    QueryAdmissionRequest, QueryAdmissionWaiter, QueryGrantBand, QueryGrantRequest, QueryHandle, QueryService,
+    QueryServiceAdmissionSnapshot, QueryServiceConfig, QueryServiceTenantConfig, SlotGuarantee, TenantId,
+    TenantQueryContext, TenantQueueDepth,
 };
 pub use reservation::{MemoryReservationRequest, RetryFacts};
 pub(crate) use service_stream::SourceReadStreamLease;

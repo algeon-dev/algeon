@@ -1145,6 +1145,23 @@ impl GpuResidentGraphCache {
         Ok(self.lock()?.retained_device_bytes)
     }
 
+    /// Whether this device cache currently has a live copy for `resident_key`.
+    ///
+    /// This is a host-side placement hint only: it must not perform CUDA work,
+    /// call the memory governor, or acquire locks beyond the cache mutex because
+    /// query-service admission may call it while holding the admission mutex.
+    pub fn contains_resident_key(&self, resident_key: &ResidentGraphKey) -> Result<bool> {
+        let state = self.lock()?;
+        Ok(state
+            .available
+            .iter()
+            .any(|(key, entry)| &key.resident_key == resident_key && entry.runtime_owner.upgrade().is_some())
+            || state
+                .checked_out
+                .iter()
+                .any(|(key, entry)| &key.resident_key == resident_key && entry.runtime_owner.upgrade().is_some()))
+    }
+
     pub(in crate::exec) fn companion_runtime_for_context(
         &self,
         context: &ExecutionContext,

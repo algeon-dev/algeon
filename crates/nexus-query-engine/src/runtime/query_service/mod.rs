@@ -12,12 +12,14 @@ use std::{
 
 use tokio::{sync::Notify, time};
 
+#[cfg(feature = "cugraph")]
+use super::gpu::placement::rank_cache_affine_candidates;
 use super::{
     CudfInventory, DeploymentIoCapability, DeviceMemoryFailureReport, ExecutionBoundaryPolicy, ExecutionCancellation,
     ExecutionContext, ExecutionContextParts, GdsConcurrencyGate, GpuInventory, GrantRequest, HostFetchBudget,
     LakehouseCacheFillEventSink, MemoryControlPolicy, MemoryGovernor, MemoryGovernorReport, MemoryGrant,
-    MemoryResourcePolicy, PlacementPolicy, PlacementRequest, Priority, QueryPlacementPolicy, QueryQos,
-    SourceChunkPlanningMode, SourceFetchConcurrencyGate, SourceFetchConfig, SourceObjectStoreRegistry,
+    MemoryResourcePolicy, PlacementPolicy, PlacementRequest, Priority, QueryPlacementHint, QueryPlacementPolicy,
+    QueryQos, SourceChunkPlanningMode, SourceFetchConcurrencyGate, SourceFetchConfig, SourceObjectStoreRegistry,
     SourceSchedulerPolicy, SourceStorageProfile, default_host_fetch_budget_bytes, default_lakehouse_cache_fill_runtime,
     default_service_stream_pool_size_for_device, default_source_fetch_runtime, gpu::DeviceActiveQuerySlot,
     validate_service_stream_pool_device,
@@ -119,6 +121,43 @@ impl QueryGrantRequest {
     #[must_use]
     pub const fn floor(mut self, requested_grant_min_bytes: u64) -> Self {
         self.requested_grant_min_bytes = Some(requested_grant_min_bytes);
+        self
+    }
+}
+
+/// Complete request-scoped metadata for one query-service admission attempt.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct QueryAdmissionRequest {
+    /// Priority and adaptive budget-growth metadata.
+    pub qos: QueryQos,
+    /// Optional request-specific memory grant overrides.
+    pub grant_request: QueryGrantRequest,
+    /// Optional placement hints used only to order candidate devices.
+    pub placement_hint: QueryPlacementHint,
+}
+
+impl QueryAdmissionRequest {
+    /// Creates a request with default QoS, tenant-default grants, and no placement hint.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Sets caller-supplied QoS metadata.
+    pub fn with_qos(mut self, qos: QueryQos) -> Self {
+        self.qos = qos;
+        self
+    }
+
+    /// Sets request-scoped minimum/preferred grant overrides.
+    pub fn with_grant_request(mut self, grant_request: QueryGrantRequest) -> Self {
+        self.grant_request = grant_request;
+        self
+    }
+
+    /// Sets optional placement metadata.
+    pub fn with_placement_hint(mut self, placement_hint: QueryPlacementHint) -> Self {
+        self.placement_hint = placement_hint;
         self
     }
 }
@@ -719,12 +758,27 @@ impl QueryService {
         qos: QueryQos,
         grant_request: QueryGrantRequest,
     ) -> Result<QueryHandle> {
+        self.admit_query_with_request(
+            tenant_id,
+            QueryAdmissionRequest::new().with_qos(qos).with_grant_request(grant_request),
+        )
+    }
+
+    /// Admits a query with consolidated request-scoped admission metadata.
+    pub fn admit_query_with_request(
+        &self,
+        tenant_id: impl Into<TenantId>,
+        request: QueryAdmissionRequest,
+    ) -> Result<QueryHandle> {
         let tenant_id = tenant_id.into();
-        let grant_policy = self.tenant_grant_policy_for_request(&tenant_id, grant_request)?;
+        let grant_policy = self.tenant_grant_policy_for_request(&tenant_id, request.grant_request)?;
+        let qos = request.qos;
+        let placement_hint = request.placement_hint;
         let request_id = self.inner.next_query_id.fetch_add(1, Ordering::Relaxed);
         let requested_at = Instant::now();
         let deadline = requested_at.checked_add(self.inner.config.admission_wait_timeout).unwrap_or(requested_at);
-        let request = AdmissionRequest { request_id, tenant_id: tenant_id.clone(), grant_policy, qos, deadline };
+        let request =
+            AdmissionRequest { request_id, tenant_id: tenant_id.clone(), grant_policy, qos, placement_hint, deadline };
 
         let mut slot_notifications = PendingDeviceSlotNotifications::default();
         let mut state = self.lock_admission()?;
@@ -763,6 +817,7 @@ impl QueryService {
                     request_id,
                     grant_policy,
                     qos,
+                    &state.queued[position].placement_hint,
                     Some(deadline),
                     state.active_queries,
                     &mut slot_notifications,
@@ -922,11 +977,24 @@ impl QueryService {
         qos: QueryQos,
         grant_request: QueryGrantRequest,
     ) -> Result<QueryHandle> {
+        self.admit_async_with_request(
+            tenant_id,
+            QueryAdmissionRequest::new().with_qos(qos).with_grant_request(grant_request),
+        )
+        .await
+    }
+
+    /// Admits a query asynchronously with consolidated request-scoped admission metadata.
+    pub async fn admit_async_with_request(
+        &self,
+        tenant_id: impl Into<TenantId>,
+        request: QueryAdmissionRequest,
+    ) -> Result<QueryHandle> {
         let tenant_id = tenant_id.into();
-        if let Some(handle) = self.try_admit_query_with_qos_and_grant_request(tenant_id.clone(), qos, grant_request)? {
+        if let Some(handle) = self.try_admit_query_with_request(tenant_id.clone(), request.clone())? {
             return Ok(handle);
         }
-        let mut waiter = self.enqueue_admission_with_qos_and_grant_request(tenant_id, qos, grant_request)?;
+        let mut waiter = self.enqueue_admission_with_request(tenant_id, request)?;
         loop {
             let notified = self.inner.admission_notify.notified();
             tokio::pin!(notified);
@@ -971,8 +1039,22 @@ impl QueryService {
         qos: QueryQos,
         grant_request: QueryGrantRequest,
     ) -> Result<QueryAdmissionWaiter> {
+        self.enqueue_admission_with_request(
+            tenant_id,
+            QueryAdmissionRequest::new().with_qos(qos).with_grant_request(grant_request),
+        )
+    }
+
+    /// Enqueues a query admission request with consolidated request-scoped metadata.
+    pub fn enqueue_admission_with_request(
+        &self,
+        tenant_id: impl Into<TenantId>,
+        request: QueryAdmissionRequest,
+    ) -> Result<QueryAdmissionWaiter> {
         let tenant_id = tenant_id.into();
-        let grant_policy = self.tenant_grant_policy_for_request(&tenant_id, grant_request)?;
+        let grant_policy = self.tenant_grant_policy_for_request(&tenant_id, request.grant_request)?;
+        let qos = request.qos;
+        let placement_hint = request.placement_hint;
         let request_id = self.inner.next_query_id.fetch_add(1, Ordering::Relaxed);
         let requested_at = Instant::now();
         let deadline = requested_at.checked_add(self.inner.config.admission_wait_timeout).unwrap_or(requested_at);
@@ -994,6 +1076,7 @@ impl QueryService {
             tenant_id: tenant_id.clone(),
             grant_policy,
             qos,
+            placement_hint,
             deadline,
         });
         self.inner.notify_admission_available();
@@ -1046,8 +1129,22 @@ impl QueryService {
         qos: QueryQos,
         grant_request: QueryGrantRequest,
     ) -> Result<Option<QueryHandle>> {
+        self.try_admit_query_with_request(
+            tenant_id,
+            QueryAdmissionRequest::new().with_qos(qos).with_grant_request(grant_request),
+        )
+    }
+
+    /// Attempts to admit a query with consolidated request-scoped metadata.
+    pub fn try_admit_query_with_request(
+        &self,
+        tenant_id: impl Into<TenantId>,
+        request: QueryAdmissionRequest,
+    ) -> Result<Option<QueryHandle>> {
         let tenant_id = tenant_id.into();
-        let grant_policy = self.tenant_grant_policy_for_request(&tenant_id, grant_request)?;
+        let grant_policy = self.tenant_grant_policy_for_request(&tenant_id, request.grant_request)?;
+        let qos = request.qos;
+        let placement_hint = request.placement_hint;
         let mut slot_notifications = PendingDeviceSlotNotifications::default();
         let mut state = self.lock_admission()?;
         if state.closed {
@@ -1063,6 +1160,7 @@ impl QueryService {
             query_id,
             grant_policy,
             qos,
+            &placement_hint,
             None,
             state.active_queries,
             &mut slot_notifications,
@@ -1586,6 +1684,7 @@ impl QueryService {
         query_id: u64,
         grant_policy: TenantGrantPolicy,
         qos: QueryQos,
+        placement_hint: &QueryPlacementHint,
         deadline: Option<Instant>,
         active_queries: usize,
         slot_notifications: &mut PendingDeviceSlotNotifications,
@@ -1613,7 +1712,8 @@ impl QueryService {
         };
 
         let placement_request = PlacementRequest::with_grant_range(grant_policy.min_bytes, grant_policy.want_bytes)
-            .with_tenant_id(tenant_id.as_str());
+            .with_tenant_id(tenant_id.as_str())
+            .with_placement_hint(placement_hint.clone());
         let mut any_device_can_fit_minimum = false;
         for device in self.placement_candidates(resources, &placement_request)? {
             let context = resources.devices.context(device)?;
@@ -1830,7 +1930,8 @@ impl QueryService {
         };
 
         let placement_request = PlacementRequest::with_grant_range(min_bytes, request.grant_policy.want_bytes)
-            .with_tenant_id(request.tenant_id.as_str());
+            .with_tenant_id(request.tenant_id.as_str())
+            .with_placement_hint(request.placement_hint.clone());
         for device in self.placement_candidates(resources, &placement_request)? {
             let context = resources.devices.context(device)?;
             if context.capacity_bytes() < min_bytes {
@@ -1862,7 +1963,29 @@ impl QueryService {
         resources: &QueryServiceResources,
         request: &PlacementRequest,
     ) -> Result<Vec<cudf::DeviceId>> {
-        self.inner.config.placement_policy.candidates(&resources.devices, request)
+        let candidates = self.inner.config.placement_policy.candidates(&resources.devices, request)?;
+        #[cfg(feature = "cugraph")]
+        if let Some(resident_graph_key) = request.placement_hint.resident_graph_key() {
+            let mut hit_ordinals = BTreeSet::new();
+            for device in &candidates {
+                if let Some(cache) = resources.resident_graph_cache_for_device(device.ordinal()) {
+                    match cache.contains_resident_key(resident_graph_key) {
+                        Ok(true) => {
+                            hit_ordinals.insert(device.ordinal());
+                        },
+                        Ok(false) => {},
+                        Err(error) => {
+                            eprintln!(
+                                "[nexus-query-engine] warning: failed to inspect resident graph cache for placement affinity on device {}: {error}",
+                                device.ordinal()
+                            );
+                        },
+                    }
+                }
+            }
+            return Ok(rank_cache_affine_candidates(candidates, &hit_ordinals));
+        }
+        Ok(candidates)
     }
 
     fn device_active_query_cap_allows(&self, context: &super::DeviceContext) -> bool {

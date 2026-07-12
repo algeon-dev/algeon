@@ -21,7 +21,7 @@ pub use inventory::{CudfInventory, DeviceFacts, GpuInventory, device_budget_byte
 pub use memory_failure::{DeviceMemoryFailureReport, DeviceMemoryFailureTracker};
 pub use placement::{
     BestFitPlacement, LeastLoadedPlacement, PinnedDevicePlacement, PlacementPolicy, PlacementRequest,
-    QueryPlacementPolicy,
+    QueryPlacementHint, QueryPlacementPolicy,
 };
 pub use qos::{Priority, QueryQos};
 pub use registry::{DeviceRegistry, DeviceRegistryConfig};

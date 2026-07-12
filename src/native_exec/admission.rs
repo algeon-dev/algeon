@@ -23,8 +23,8 @@ use datafusion::{
 };
 use futures::Stream;
 use nexus_query_engine::{
-    ExecutionCancellation, QueryGrantBand, QueryGrantRequest, QueryHandle, QueryQos, QueryService, TenantId,
-    TenantQueryContext,
+    ExecutionCancellation, QueryAdmissionRequest, QueryGrantBand, QueryGrantRequest, QueryHandle, QueryPlacementHint,
+    QueryQos, QueryService, TenantId, TenantQueryContext,
 };
 use tokio::sync::Notify;
 
@@ -93,6 +93,7 @@ pub(crate) struct QueryAdmissionTicket {
     source: QueryAdmissionSource,
     requested_grant_min_bytes: Option<u64>,
     requested_grant_bytes: Option<u64>,
+    placement_hint: QueryPlacementHint,
     state: Mutex<TicketState>,
     notify: Arc<Notify>,
 }
@@ -208,6 +209,20 @@ impl QueryAdmissionTicket {
         requested_grant_min_bytes: Option<u64>,
         requested_grant_bytes: Option<u64>,
     ) -> Arc<Self> {
+        Self::new_with_placement_hint(
+            source,
+            requested_grant_min_bytes,
+            requested_grant_bytes,
+            QueryPlacementHint::default(),
+        )
+    }
+
+    pub(crate) fn new_with_placement_hint(
+        source: QueryAdmissionSource,
+        requested_grant_min_bytes: Option<u64>,
+        requested_grant_bytes: Option<u64>,
+        placement_hint: QueryPlacementHint,
+    ) -> Arc<Self> {
         #[cfg(test)]
         static NEXT_TICKET_ID: AtomicU64 = AtomicU64::new(1);
         Arc::new(Self {
@@ -216,6 +231,7 @@ impl QueryAdmissionTicket {
             source,
             requested_grant_min_bytes,
             requested_grant_bytes,
+            placement_hint,
             state: Mutex::new(TicketState::default()),
             notify: Arc::new(Notify::new()),
         })
@@ -229,6 +245,11 @@ impl QueryAdmissionTicket {
     #[cfg(test)]
     pub(crate) fn requested_grant_bytes(&self) -> Option<u64> {
         self.requested_grant_bytes
+    }
+
+    #[cfg(all(test, feature = "cugraph"))]
+    pub(crate) fn placement_hint(&self) -> &QueryPlacementHint {
+        &self.placement_hint
     }
 
     #[cfg(test)]
@@ -324,13 +345,15 @@ impl QueryAdmissionTicket {
         let handle = match self
             .source
             .service
-            .admit_async_with_qos_and_grant_request(
+            .admit_async_with_request(
                 self.source.tenant_id.clone(),
-                self.source.qos,
-                QueryGrantRequest {
-                    requested_grant_min_bytes: self.requested_grant_min_bytes,
-                    requested_grant_bytes: self.requested_grant_bytes,
-                },
+                QueryAdmissionRequest::new()
+                    .with_qos(self.source.qos)
+                    .with_grant_request(QueryGrantRequest {
+                        requested_grant_min_bytes: self.requested_grant_min_bytes,
+                        requested_grant_bytes: self.requested_grant_bytes,
+                    })
+                    .with_placement_hint(self.placement_hint.clone()),
             )
             .await
         {

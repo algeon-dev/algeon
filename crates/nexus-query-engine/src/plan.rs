@@ -47,7 +47,7 @@ pub use graph_algorithm::{
     GraphSccParams, GraphSourceFingerprint, GraphSourceFingerprintBypassReason, GraphSourceVertexRequirement,
     GraphSpectralClusteringParams, GraphSsspParams, GraphTriangleCountAllParams, GraphVertexIdTypeSupport,
     GraphWccParams, GraphWeightPolicy, ResidentGraphKey, graph_residency_descriptor_for_edge_plan,
-    graph_result_schema_for_params, stable_graph_result_schema,
+    graph_result_schema_for_params, planned_resident_graph_key, stable_graph_result_schema,
 };
 pub use join::{
     HashJoinBuildArtifactId, JoinKey, JoinNode, JoinNullEquality, JoinOutputColumn, JoinSide, JoinSpec, JoinType,
