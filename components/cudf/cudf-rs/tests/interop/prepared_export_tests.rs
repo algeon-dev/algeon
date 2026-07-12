@@ -369,6 +369,78 @@ mod lease_contracts {
     }
 
     #[test]
+    fn into_prepared_column_export_with_event_retains_the_readiness_event() {
+        let _observation_lock = lock_event_observation();
+        let producer_stream = CudaStream::new().unwrap();
+        let producer_runtime = Runtime::builder().with_stream(producer_stream.clone()).build().unwrap();
+        let column = producer_runtime.column_from_slice(&[1i32, 2, 3]).unwrap();
+        let producer_ready = CudaEvent::new().unwrap();
+        producer_ready.record(&producer_stream).unwrap();
+        let producer_event_raw = producer_ready.testing_interop_raw_handle_value();
+
+        let export = column.try_into_prepared_device_column_export_with_event(&producer_ready).unwrap();
+        // The consuming `'static` export stores only the raw event pointer in
+        // its readiness, so it must co-own the event: dropping the caller's
+        // handle must leave the readiness event alive for lease activation.
+        drop(producer_ready);
+
+        let consumer_stream = CudaStream::new().unwrap();
+        let _consumer_runtime = Runtime::builder()
+            .with_device(producer_runtime.device())
+            .with_stream(consumer_stream.clone())
+            .build()
+            .unwrap();
+
+        reset_event_observation();
+        let baseline = observed_stream_wait_call_count_for_event_raw(producer_event_raw);
+        let lease = export
+            .try_activate_read_lease(
+                shared_stream_read_start(&consumer_stream),
+                shared_same_device_completion(&consumer_stream),
+            )
+            .unwrap();
+        assert!(observed_stream_wait_call_count_for_event_raw(producer_event_raw) > baseline);
+
+        let witness = expect_shared_witness(lease.complete().unwrap(), CompletionWitnessKind::ConsumerStream);
+        witness.synchronize().unwrap();
+    }
+
+    #[test]
+    fn into_prepared_table_export_with_event_retains_the_readiness_event() {
+        let _observation_lock = lock_event_observation();
+        let producer_stream = CudaStream::new().unwrap();
+        let producer_runtime = Runtime::builder().with_stream(producer_stream.clone()).build().unwrap();
+        let column = producer_runtime.column_from_slice(&[4i32, 5, 6]).unwrap();
+        let table = Table::from_columns(vec![column]).unwrap();
+        let producer_ready = CudaEvent::new().unwrap();
+        producer_ready.record(&producer_stream).unwrap();
+        let producer_event_raw = producer_ready.testing_interop_raw_handle_value();
+
+        let export = table.try_into_prepared_device_table_export_with_event(&producer_ready).unwrap();
+        drop(producer_ready);
+
+        let consumer_stream = CudaStream::new().unwrap();
+        let _consumer_runtime = Runtime::builder()
+            .with_device(producer_runtime.device())
+            .with_stream(consumer_stream.clone())
+            .build()
+            .unwrap();
+
+        reset_event_observation();
+        let baseline = observed_stream_wait_call_count_for_event_raw(producer_event_raw);
+        let lease = export
+            .try_activate_read_lease(
+                shared_stream_read_start(&consumer_stream),
+                shared_same_device_completion(&consumer_stream),
+            )
+            .unwrap();
+        assert!(observed_stream_wait_call_count_for_event_raw(producer_event_raw) > baseline);
+
+        let witness = expect_shared_witness(lease.complete().unwrap(), CompletionWitnessKind::ConsumerStream);
+        witness.synchronize().unwrap();
+    }
+
+    #[test]
     fn guaranteed_fallback_shared_drop_synchronizes_consumer_stream() {
         let _observation_lock = lock_event_observation();
         let producer_runtime = Runtime::builder().build().unwrap();

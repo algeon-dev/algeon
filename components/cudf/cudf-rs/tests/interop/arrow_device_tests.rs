@@ -750,6 +750,40 @@ fn series_device_arrow_import_retains_owned_abi_release_until_imported_column_dr
 }
 
 #[test]
+fn owned_abi_release_callbacks_support_spec_compliant_struct_moves() {
+    let _observation_lock = lock_event_observation();
+    let runtime = Runtime::builder().build().unwrap();
+    let series = runtime.series(&[7i32, 8, 9]).unwrap();
+    let abi = series.try_prepare_device_arrow_export().unwrap().into_owned_abi_parts();
+    let (schema, array, _materialization) = abi.into_raw_abi();
+
+    // A spec-compliant consumer (Arrow C++ ImportDeviceArray, arrow-rs
+    // FFI_Arrow*::from_raw) moves the structs into its own storage, marks the
+    // sources released, and later runs release on its own copies. The Arrow C
+    // Data Interface forbids the release callback from freeing the struct it
+    // is handed, so releasing these stack copies must not crash or free them.
+    unsafe {
+        let schema = schema.cast::<ArrowSchema>();
+        let array = array.cast::<ArrowDeviceArray>();
+
+        let mut moved_schema = std::ptr::read(schema);
+        (*schema).release = None;
+        // arrow-rs moves only the embedded `ArrowArray` out of an
+        // `ArrowDeviceArray`, so release must cope with a bare array copy.
+        let mut moved_array = std::ptr::read(std::ptr::addr_of!((*array).array));
+        (*array).array.release = None;
+
+        let release = moved_schema.release.expect("moved schema must carry a release callback");
+        release(&mut moved_schema);
+        assert!(moved_schema.release.is_none(), "schema release must mark the copy as released");
+
+        let release = moved_array.release.expect("moved array must carry a release callback");
+        release(&mut moved_array);
+        assert!(moved_array.release.is_none(), "array release must mark the copy as released");
+    }
+}
+
+#[test]
 fn foreign_device_arrow_column_from_raw_abi_parts_rejects_null_schema_and_array() {
     let err = match unsafe {
         cudf::interop::arrow_device::ForeignDeviceArrowColumn::from_raw_abi_parts(

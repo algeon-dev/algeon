@@ -50,6 +50,7 @@ fn prepare_from_owned_column_root_with_readiness(
     column: Column,
     operation: &'static str,
     readiness: ProducerReadiness<'_>,
+    retained_event: Option<CudaEvent>,
 ) -> Result<PreparedColumnExport<'static>, InteropError> {
     let retained_column = Arc::new(column);
     let view =
@@ -66,9 +67,14 @@ fn prepare_from_owned_column_root_with_readiness(
         export_diagnostics(),
     )
     .map(|export| {
-        export
-            .with_lease_backend(runtime_lease::shared_cuda_lease_backend_with_observation(observation, observer))
-            .with_retained_owner_arc(Arc::clone(&retained_column))
+        let export =
+            export.with_lease_backend(runtime_lease::shared_cuda_lease_backend_with_observation(observation, observer));
+        match retained_event {
+            // `to_static_readiness` stores only the raw CUDA event pointer, so
+            // the export must co-own the event for its whole lifetime.
+            Some(event) => export.with_retained_owner_arc(Arc::new((Arc::clone(&retained_column), event))),
+            None => export.with_retained_owner_arc(Arc::clone(&retained_column)),
+        }
     })
     .map_err(|error| error.with_context("operation", operation))
 }
@@ -100,7 +106,7 @@ pub(super) fn prepare_into_owned_column_root(
     operation: &'static str,
 ) -> Result<PreparedColumnExport<'static>, InteropError> {
     let readiness = prepared_device_readiness(operation, column.execution_domain())?.1;
-    prepare_from_owned_column_root_with_readiness(column, operation, readiness)
+    prepare_from_owned_column_root_with_readiness(column, operation, readiness, None)
 }
 
 pub(super) fn prepare_host_from_owned_column(
@@ -431,7 +437,7 @@ impl Column {
     ) -> Result<PreparedColumnExport<'static>, InteropError> {
         let operation = "interop::Column::try_into_prepared_device_column_export_with_event";
         let readiness = prepared_device_event_readiness(operation, self.execution_domain(), event)?.1;
-        prepare_from_owned_column_root_with_readiness(self, operation, readiness)
+        prepare_from_owned_column_root_with_readiness(self, operation, readiness, Some(event.clone()))
     }
 }
 
