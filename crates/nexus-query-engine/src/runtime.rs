@@ -49,9 +49,10 @@ pub use bounded_join::{
 };
 pub use gpu::{
     BestFitPlacement, CudfInventory, DeviceContext, DeviceFacts, DeviceMemoryFailureReport, DeviceRegistry,
-    DeviceRegistryConfig, GpuComms, GpuInventory, GrantRequest, LeastLoadedPlacement, MemoryGovernor,
-    MemoryGovernorGrantRow, MemoryGovernorReport, MemoryGrant, PinnedDevicePlacement, Placement, PlacementPolicy,
-    PlacementRequest, Priority, QueryPlacementPolicy, QueryQos, SingleDeviceComms, device_budget_bytes_from_facts,
+    DeviceRegistryConfig, EvictableMemoryObserver, EvictableMemoryPressure, GpuComms, GpuInventory, GrantRequest,
+    LeastLoadedPlacement, MemoryGovernor, MemoryGovernorGrantRow, MemoryGovernorReport, MemoryGrant,
+    PinnedDevicePlacement, Placement, PlacementPolicy, PlacementRequest, Priority, QueryPlacementPolicy, QueryQos,
+    SingleDeviceComms, device_budget_bytes_from_facts,
 };
 pub use io_capability::{
     DEFAULT_GDS_LOCAL_MOUNT_ROOT, DeploymentIoCapability, GdsAvailabilityStatus, GdsDriverProbeStatus,

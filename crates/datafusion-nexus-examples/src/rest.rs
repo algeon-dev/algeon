@@ -108,6 +108,8 @@ async fn gpu(State(state): State<AppState>) -> Result<Json<Value>, AppError> {
             "capacity_bytes": report.capacity_bytes,
             "outstanding_bytes": report.outstanding_bytes,
             "available_bytes": report.available_bytes,
+            "evictable_bytes": report.evictable_bytes,
+            "free_bytes": report.free_bytes,
             "grants": report.grants.into_iter().map(|grant| json!({
                 "grant_id": grant.grant_id,
                 "query_id": grant.query_id,

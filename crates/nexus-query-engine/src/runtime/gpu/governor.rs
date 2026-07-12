@@ -16,6 +16,11 @@ use crate::{
 
 type ReleaseObserver = Arc<dyn Fn() + Send + Sync + 'static>;
 pub(crate) type BudgetChangeObserver = Arc<dyn Fn(BudgetChange) + Send + Sync + 'static>;
+/// Callback used by caches to release evictable device bytes under grant pressure.
+///
+/// The returned byte count is advisory diagnostics only; the governor always
+/// recomputes pressure from its own ledger after each observer callback.
+pub type EvictableMemoryObserver = Arc<dyn Fn(EvictableMemoryPressure) -> Result<u64> + Send + Sync + 'static>;
 const NO_SHRINK_REQUEST: u64 = 0;
 
 /// Ordered memory-grant budget update delivered to observers.
@@ -23,6 +28,23 @@ const NO_SHRINK_REQUEST: u64 = 0;
 pub(crate) struct BudgetChange {
     pub(crate) budget_bytes: u64,
     pub(crate) sequence: u64,
+}
+
+/// Memory-pressure request delivered to evictable-cache observers.
+///
+/// Observers should evict up to `requested_evict_bytes` on this device and
+/// return the number of bytes actually released from the governor's evictable
+/// ledger. They are invoked without holding the governor state mutex.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EvictableMemoryPressure {
+    pub device_ordinal: usize,
+    pub query_id: u64,
+    pub requested_evict_bytes: u64,
+    pub min_grant_bytes: u64,
+    pub want_grant_bytes: u64,
+    pub outstanding_bytes: u64,
+    pub evictable_bytes: u64,
+    pub free_bytes: u64,
 }
 
 /// Request for a variable per-query GPU memory grant.
@@ -67,18 +89,33 @@ pub struct MemoryGovernor {
     inner: Arc<MemoryGovernorInner>,
 }
 
-#[derive(Debug)]
 struct MemoryGovernorInner {
     device_ordinal: usize,
     capacity_bytes: u64,
     state: Mutex<GovernorState>,
+    evictable_memory_observers: Mutex<Vec<EvictableMemoryObserver>>,
     available: Condvar,
+}
+
+impl std::fmt::Debug for MemoryGovernorInner {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MemoryGovernorInner")
+            .field("device_ordinal", &self.device_ordinal)
+            .field("capacity_bytes", &self.capacity_bytes)
+            .field("state", &self.state)
+            .field(
+                "evictable_memory_observer_count",
+                &self.evictable_memory_observers.lock().ok().map(|observers| observers.len()),
+            )
+            .finish_non_exhaustive()
+    }
 }
 
 #[derive(Debug)]
 struct GovernorState {
     next_grant_id: u64,
     outstanding_bytes: u64,
+    evictable_bytes: u64,
     grants: BTreeMap<u64, ActiveGrant>,
 }
 
@@ -131,6 +168,8 @@ pub struct MemoryGovernorReport {
     pub device_ordinal: usize,
     pub capacity_bytes: u64,
     pub outstanding_bytes: u64,
+    pub evictable_bytes: u64,
+    pub free_bytes: u64,
     pub available_bytes: u64,
     pub grants: Vec<MemoryGovernorGrantRow>,
 }
@@ -160,7 +199,13 @@ impl MemoryGovernor {
             inner: Arc::new(MemoryGovernorInner {
                 device_ordinal,
                 capacity_bytes,
-                state: Mutex::new(GovernorState { next_grant_id: 1, outstanding_bytes: 0, grants: BTreeMap::new() }),
+                state: Mutex::new(GovernorState {
+                    next_grant_id: 1,
+                    outstanding_bytes: 0,
+                    evictable_bytes: 0,
+                    grants: BTreeMap::new(),
+                }),
+                evictable_memory_observers: Mutex::new(Vec::new()),
                 available: Condvar::new(),
             }),
         })
@@ -176,16 +221,86 @@ impl MemoryGovernor {
         self.inner.capacity_bytes
     }
 
-    /// Returns currently ungranted bytes.
+    /// Returns bytes grantable to queries, including bytes that can be made
+    /// free by synchronous evictable-cache observers.
     pub fn available_bytes(&self) -> Result<u64> {
         let state = self.lock_state("available_bytes")?;
-        Ok(self.inner.capacity_bytes.saturating_sub(state.outstanding_bytes))
+        Ok(Self::grantable_bytes_locked(self.inner.capacity_bytes, &state))
+    }
+
+    /// Returns immediate unreserved bytes, excluding bytes held by evictable caches.
+    pub fn free_bytes(&self) -> Result<u64> {
+        let state = self.lock_state("free_bytes")?;
+        Ok(Self::free_bytes_locked(self.inner.capacity_bytes, &state))
+    }
+
+    /// Returns bytes currently charged to evictable caches.
+    pub fn evictable_bytes(&self) -> Result<u64> {
+        let state = self.lock_state("evictable_bytes")?;
+        Ok(state.evictable_bytes)
+    }
+
+    /// Registers a synchronous evictable-cache pressure observer.
+    pub fn register_evictable_memory_observer(&self, observer: EvictableMemoryObserver) -> Result<()> {
+        self.inner
+            .evictable_memory_observers
+            .lock()
+            .map_err(|_error| {
+                QueryError::new(
+                    QueryErrorCode::Internal,
+                    "nexus_query_engine.runtime.gpu.memory_governor.register_evictable_memory_observer",
+                    "memory governor evictable observer mutex was poisoned",
+                )
+            })?
+            .push(observer);
+        Ok(())
+    }
+
+    /// Attempts to charge bytes retained by an evictable cache.
+    ///
+    /// The charge succeeds only when immediate free capacity can cover the
+    /// bytes. Existing evictable entries should evict and call
+    /// [`Self::release_evictable_bytes`] before retrying a larger insertion.
+    pub fn try_reserve_evictable_bytes(&self, bytes: u64) -> Result<bool> {
+        if bytes == 0 {
+            return Ok(true);
+        }
+        let mut state = self.lock_state("try_reserve_evictable_bytes")?;
+        if Self::free_bytes_locked(self.inner.capacity_bytes, &state) < bytes {
+            return Ok(false);
+        }
+        state.evictable_bytes = state.evictable_bytes.saturating_add(bytes);
+        Ok(true)
+    }
+
+    /// Releases bytes previously charged to the evictable-cache ledger.
+    pub fn release_evictable_bytes(&self, bytes: u64) -> Result<u64> {
+        if bytes == 0 {
+            return Ok(0);
+        }
+        let mut state = self.lock_state("release_evictable_bytes")?;
+        let released = bytes.min(state.evictable_bytes);
+        if released == 0 {
+            return Ok(0);
+        }
+        state.evictable_bytes = state.evictable_bytes.saturating_sub(released);
+        self.inner.available.notify_all();
+        Ok(released)
     }
 
     /// Attempts to grant immediately. Returns `Ok(None)` when less than
     /// `min_bytes` is available.
     pub fn try_request(&self, request: GrantRequest) -> Result<Option<MemoryGrant>> {
         self.validate_request(&request)?;
+        let mut state = self.lock_state("try_request")?;
+        if let Some(grant) = self.try_grant_locked(&mut state, request) {
+            return Ok(Some(grant));
+        }
+        let Some(pressure) = self.evictable_pressure_locked(&state, request) else {
+            return Ok(None);
+        };
+        drop(state);
+        self.notify_evictable_memory_observers(pressure)?;
         let mut state = self.lock_state("try_request")?;
         Ok(self.try_grant_locked(&mut state, request))
     }
@@ -194,14 +309,22 @@ impl MemoryGovernor {
     pub fn request(&self, request: GrantRequest) -> Result<MemoryGrant> {
         self.validate_request(&request)?;
         let mut state = self.lock_state("request")?;
+        let mut eviction_attempted = false;
         loop {
             if let Some(grant) = self.try_grant_locked(&mut state, request) {
                 return Ok(grant);
             }
+            if !eviction_attempted && let Some(pressure) = self.evictable_pressure_locked(&state, request) {
+                drop(state);
+                self.notify_evictable_memory_observers(pressure)?;
+                state = self.lock_state("request")?;
+                eviction_attempted = true;
+                continue;
+            }
             if let Some(deadline) = request.deadline {
                 let now = Instant::now();
                 if now >= deadline {
-                    return Err(Self::timeout_error(&request, self.inner.capacity_bytes, state.outstanding_bytes));
+                    return Err(Self::timeout_error(&request, self.inner.capacity_bytes, &state));
                 }
                 let wait = deadline.saturating_duration_since(now);
                 let (next_state, timeout) = self.inner.available.wait_timeout(state, wait).map_err(|_error| {
@@ -212,10 +335,10 @@ impl MemoryGovernor {
                     )
                 })?;
                 state = next_state;
-                if timeout.timed_out()
-                    && self.inner.capacity_bytes.saturating_sub(state.outstanding_bytes) < request.min_bytes
+                eviction_attempted = false;
+                if timeout.timed_out() && Self::free_bytes_locked(self.inner.capacity_bytes, &state) < request.min_bytes
                 {
-                    return Err(Self::timeout_error(&request, self.inner.capacity_bytes, state.outstanding_bytes));
+                    return Err(Self::timeout_error(&request, self.inner.capacity_bytes, &state));
                 }
             } else {
                 state = self.inner.available.wait(state).map_err(|_error| {
@@ -225,6 +348,7 @@ impl MemoryGovernor {
                         "memory governor mutex was poisoned while waiting",
                     )
                 })?;
+                eviction_attempted = false;
             }
         }
     }
@@ -246,7 +370,9 @@ impl MemoryGovernor {
             device_ordinal: self.inner.device_ordinal,
             capacity_bytes: self.inner.capacity_bytes,
             outstanding_bytes: state.outstanding_bytes,
-            available_bytes: self.inner.capacity_bytes.saturating_sub(state.outstanding_bytes),
+            evictable_bytes: state.evictable_bytes,
+            free_bytes: Self::free_bytes_locked(self.inner.capacity_bytes, &state),
+            available_bytes: Self::grantable_bytes_locked(self.inner.capacity_bytes, &state),
             grants,
         })
     }
@@ -277,11 +403,11 @@ impl MemoryGovernor {
     }
 
     fn try_grant_locked(&self, state: &mut GovernorState, request: GrantRequest) -> Option<MemoryGrant> {
-        let available = self.inner.capacity_bytes.saturating_sub(state.outstanding_bytes);
-        if available < request.min_bytes {
+        let free = Self::free_bytes_locked(self.inner.capacity_bytes, state);
+        if free < request.min_bytes {
             return None;
         }
-        let budget_bytes = request.want_bytes.min(available);
+        let budget_bytes = request.want_bytes.min(free);
         let grant_id = state.next_grant_id;
         state.next_grant_id = state.next_grant_id.saturating_add(1);
         state.outstanding_bytes = state.outstanding_bytes.saturating_add(budget_bytes);
@@ -313,7 +439,90 @@ impl MemoryGovernor {
         })
     }
 
-    fn timeout_error(request: &GrantRequest, capacity_bytes: u64, outstanding_bytes: u64) -> QueryError {
+    fn evictable_pressure_locked(
+        &self,
+        state: &GovernorState,
+        request: GrantRequest,
+    ) -> Option<EvictableMemoryPressure> {
+        let free_bytes = Self::free_bytes_locked(self.inner.capacity_bytes, state);
+        if free_bytes >= request.min_bytes || state.evictable_bytes == 0 {
+            return None;
+        }
+        let grantable_bytes = Self::grantable_bytes_locked(self.inner.capacity_bytes, state);
+        if grantable_bytes < request.min_bytes {
+            return None;
+        }
+        // Cache eviction is deliberately admission-floor driven: reclaim enough
+        // for progress, but do not evict warm cache entries merely to satisfy a
+        // preferred grant size.
+        Some(EvictableMemoryPressure {
+            device_ordinal: self.inner.device_ordinal,
+            query_id: request.query_id,
+            requested_evict_bytes: request.min_bytes.saturating_sub(free_bytes),
+            min_grant_bytes: request.min_bytes,
+            want_grant_bytes: request.want_bytes,
+            outstanding_bytes: state.outstanding_bytes,
+            evictable_bytes: state.evictable_bytes,
+            free_bytes,
+        })
+    }
+
+    fn notify_evictable_memory_observers(&self, pressure: EvictableMemoryPressure) -> Result<()> {
+        let observers = self
+            .inner
+            .evictable_memory_observers
+            .lock()
+            .map_err(|_error| {
+                QueryError::new(
+                    QueryErrorCode::Internal,
+                    "nexus_query_engine.runtime.gpu.memory_governor.notify_evictable_memory_observers",
+                    "memory governor evictable observer mutex was poisoned",
+                )
+            })?
+            .clone();
+        let target_free_bytes = pressure.free_bytes.saturating_add(pressure.requested_evict_bytes);
+        for observer in observers {
+            let Some(next_pressure) = self.evictable_pressure_for_target(pressure, target_free_bytes)? else {
+                break;
+            };
+            if let Err(error) = observer(next_pressure) {
+                eprintln!(
+                    "[nexus-query-engine] warning: evictable memory observer failed under grant pressure: {error}"
+                );
+            }
+        }
+        Ok(())
+    }
+
+    fn evictable_pressure_for_target(
+        &self,
+        original: EvictableMemoryPressure,
+        target_free_bytes: u64,
+    ) -> Result<Option<EvictableMemoryPressure>> {
+        let state = self.lock_state("evictable_pressure_for_target")?;
+        let free_bytes = Self::free_bytes_locked(self.inner.capacity_bytes, &state);
+        let requested_evict_bytes = target_free_bytes.saturating_sub(free_bytes).min(state.evictable_bytes);
+        if requested_evict_bytes == 0 {
+            return Ok(None);
+        }
+        Ok(Some(EvictableMemoryPressure {
+            requested_evict_bytes,
+            outstanding_bytes: state.outstanding_bytes,
+            evictable_bytes: state.evictable_bytes,
+            free_bytes,
+            ..original
+        }))
+    }
+
+    fn grantable_bytes_locked(capacity_bytes: u64, state: &GovernorState) -> u64 {
+        capacity_bytes.saturating_sub(state.outstanding_bytes)
+    }
+
+    fn free_bytes_locked(capacity_bytes: u64, state: &GovernorState) -> u64 {
+        capacity_bytes.saturating_sub(state.outstanding_bytes.saturating_add(state.evictable_bytes))
+    }
+
+    fn timeout_error(request: &GrantRequest, capacity_bytes: u64, state: &GovernorState) -> QueryError {
         QueryError::new(
             QueryErrorCode::ServiceOverloaded,
             "nexus_query_engine.runtime.gpu.memory_governor.request",
@@ -324,7 +533,9 @@ impl MemoryGovernor {
         .with_fact("min_bytes", request.min_bytes)
         .with_fact("want_bytes", request.want_bytes)
         .with_fact("capacity_bytes", capacity_bytes)
-        .with_fact("outstanding_bytes", outstanding_bytes)
+        .with_fact("outstanding_bytes", state.outstanding_bytes)
+        .with_fact("evictable_bytes", state.evictable_bytes)
+        .with_fact("free_bytes", Self::free_bytes_locked(capacity_bytes, state))
     }
 }
 
@@ -544,7 +755,7 @@ impl MemoryGrant {
                 "memory governor mutex was poisoned",
             )
         })?;
-        let available = self.inner.governor.capacity_bytes.saturating_sub(state.outstanding_bytes);
+        let available = MemoryGovernor::free_bytes_locked(self.inner.governor.capacity_bytes, &state);
         if available < additional_bytes {
             return Ok(false);
         }
@@ -577,7 +788,7 @@ impl MemoryGrant {
             return Ok(true);
         }
         let additional_bytes = target_bytes - current_budget;
-        let available = self.inner.governor.capacity_bytes.saturating_sub(state.outstanding_bytes);
+        let available = MemoryGovernor::free_bytes_locked(self.inner.governor.capacity_bytes, &state);
         if available < additional_bytes {
             return Ok(false);
         }
@@ -1237,6 +1448,134 @@ mod tests {
     }
 
     #[test]
+    fn evictable_bytes_are_reported_as_grantable_but_not_free() {
+        let governor = MemoryGovernor::new(0, 100).unwrap();
+
+        assert!(governor.try_reserve_evictable_bytes(60).unwrap());
+        assert_eq!(governor.evictable_bytes().unwrap(), 60);
+        assert_eq!(governor.free_bytes().unwrap(), 40);
+        assert_eq!(governor.available_bytes().unwrap(), 100);
+
+        let report = governor.report().unwrap();
+        assert_eq!(report.outstanding_bytes, 0);
+        assert_eq!(report.evictable_bytes, 60);
+        assert_eq!(report.free_bytes, 40);
+        assert_eq!(report.available_bytes, 100);
+
+        let grant = governor.try_request(GrantRequest::new(1, 30, 50)).unwrap().unwrap();
+        assert_eq!(grant.budget_bytes(), 40);
+        assert_eq!(governor.free_bytes().unwrap(), 0);
+        assert_eq!(governor.available_bytes().unwrap(), 60);
+        assert!(!governor.try_reserve_evictable_bytes(1).unwrap());
+    }
+
+    #[test]
+    fn pressure_observer_releases_evictable_bytes_before_grant() {
+        let governor = MemoryGovernor::new(0, 100).unwrap();
+        assert!(governor.try_reserve_evictable_bytes(80).unwrap());
+        let observer_governor = governor.clone();
+        let (sender, receiver) = mpsc::channel();
+        governor
+            .register_evictable_memory_observer(Arc::new(move |pressure| {
+                let report = observer_governor.report().unwrap();
+                sender.send((pressure, report.free_bytes)).unwrap();
+                observer_governor.release_evictable_bytes(pressure.requested_evict_bytes)
+            }))
+            .unwrap();
+
+        let grant = governor.try_request(GrantRequest::new(7, 40, 50)).unwrap().unwrap();
+
+        assert_eq!(grant.budget_bytes(), 40);
+        let (pressure, observer_free_bytes) = receiver.recv_timeout(Duration::from_secs(1)).unwrap();
+        assert_eq!(pressure.device_ordinal, 0);
+        assert_eq!(pressure.query_id, 7);
+        assert_eq!(pressure.requested_evict_bytes, 20);
+        assert_eq!(pressure.min_grant_bytes, 40);
+        assert_eq!(pressure.want_grant_bytes, 50);
+        assert_eq!(observer_free_bytes, 20);
+        let report = governor.report().unwrap();
+        assert_eq!(report.outstanding_bytes, 40);
+        assert_eq!(report.evictable_bytes, 60);
+        assert_eq!(report.free_bytes, 0);
+        assert_eq!(report.available_bytes, 60);
+    }
+
+    #[test]
+    fn pressure_observer_cannot_fake_released_evictable_bytes() {
+        let governor = MemoryGovernor::new(0, 100).unwrap();
+        assert!(governor.try_reserve_evictable_bytes(80).unwrap());
+        governor
+            .register_evictable_memory_observer(Arc::new(move |pressure| Ok(pressure.requested_evict_bytes)))
+            .unwrap();
+
+        assert!(governor.try_request(GrantRequest::new(7, 40, 50)).unwrap().is_none());
+        let report = governor.report().unwrap();
+        assert_eq!(report.outstanding_bytes, 0);
+        assert_eq!(report.evictable_bytes, 80);
+        assert_eq!(report.free_bytes, 20);
+    }
+
+    #[test]
+    fn pressure_observer_error_does_not_skip_later_observer() {
+        let governor = MemoryGovernor::new(0, 100).unwrap();
+        assert!(governor.try_reserve_evictable_bytes(80).unwrap());
+        let failing_observer_called = Arc::new(AtomicU64::new(0));
+        let succeeding_observer_called = Arc::new(AtomicU64::new(0));
+        let failing_count = Arc::clone(&failing_observer_called);
+        governor
+            .register_evictable_memory_observer(Arc::new(move |_pressure| {
+                failing_count.fetch_add(1, Ordering::AcqRel);
+                Err(QueryError::new(
+                    QueryErrorCode::Internal,
+                    "nexus_query_engine.runtime.gpu.memory_governor.test_observer",
+                    "synthetic observer failure",
+                ))
+            }))
+            .unwrap();
+        let observer_governor = governor.clone();
+        let succeeding_count = Arc::clone(&succeeding_observer_called);
+        governor
+            .register_evictable_memory_observer(Arc::new(move |pressure| {
+                succeeding_count.fetch_add(1, Ordering::AcqRel);
+                observer_governor.release_evictable_bytes(pressure.requested_evict_bytes)
+            }))
+            .unwrap();
+
+        let grant = governor.try_request(GrantRequest::new(7, 40, 50)).unwrap().unwrap();
+
+        assert_eq!(grant.budget_bytes(), 40);
+        assert_eq!(failing_observer_called.load(Ordering::Acquire), 1);
+        assert_eq!(succeeding_observer_called.load(Ordering::Acquire), 1);
+        let report = governor.report().unwrap();
+        assert_eq!(report.outstanding_bytes, 40);
+        assert_eq!(report.evictable_bytes, 60);
+        assert_eq!(report.free_bytes, 0);
+    }
+
+    #[test]
+    fn blocked_request_wakes_after_evictable_release() {
+        let governor = MemoryGovernor::new(0, 64).unwrap();
+        assert!(governor.try_reserve_evictable_bytes(64).unwrap());
+        let waiting_governor = governor.clone();
+        let (sender, receiver) = mpsc::channel();
+        let waiter = thread::spawn(move || {
+            let deadline = Instant::now() + Duration::from_secs(2);
+            let grant = waiting_governor.request(GrantRequest::new(2, 32, 32).with_deadline(deadline)).unwrap();
+            sender.send(grant.budget_bytes()).unwrap();
+        });
+
+        thread::sleep(Duration::from_millis(25));
+        assert_eq!(governor.release_evictable_bytes(32).unwrap(), 32);
+
+        assert_eq!(receiver.recv_timeout(Duration::from_secs(1)).unwrap(), 32);
+        waiter.join().unwrap();
+        let report = governor.report().unwrap();
+        assert_eq!(report.outstanding_bytes, 0);
+        assert_eq!(report.evictable_bytes, 32);
+        assert_eq!(report.free_bytes, 32);
+    }
+
+    #[test]
     fn report_is_separate_grant_surface() {
         let governor = MemoryGovernor::new(1, 100).unwrap();
         let _grant = governor
@@ -1248,6 +1587,8 @@ mod tests {
         assert_eq!(report.device_ordinal, 1);
         assert_eq!(report.capacity_bytes, 100);
         assert_eq!(report.outstanding_bytes, 25);
+        assert_eq!(report.evictable_bytes, 0);
+        assert_eq!(report.free_bytes, 75);
         assert_eq!(report.available_bytes, 75);
         assert_eq!(report.grants.len(), 1);
         assert_eq!(report.grants[0].priority, "high");

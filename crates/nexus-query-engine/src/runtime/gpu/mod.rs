@@ -13,7 +13,10 @@ pub use comms::{GpuComms, SingleDeviceComms};
 pub(crate) use device_context::DeviceActiveQuerySlot;
 pub use device_context::DeviceContext;
 pub(crate) use governor::BudgetChangeObserver;
-pub use governor::{GrantRequest, MemoryGovernor, MemoryGovernorGrantRow, MemoryGovernorReport, MemoryGrant};
+pub use governor::{
+    EvictableMemoryObserver, EvictableMemoryPressure, GrantRequest, MemoryGovernor, MemoryGovernorGrantRow,
+    MemoryGovernorReport, MemoryGrant,
+};
 pub use inventory::{CudfInventory, DeviceFacts, GpuInventory, device_budget_bytes_from_facts};
 pub use memory_failure::{DeviceMemoryFailureReport, DeviceMemoryFailureTracker};
 pub use placement::{

@@ -191,7 +191,8 @@ impl DeviceContext {
         }
     }
 
-    /// Capacity bytes not currently granted to admitted queries.
+    /// Bytes grantable to admitted queries, including evictable cache bytes
+    /// that can be synchronously released by the device memory governor.
     pub fn available_bytes(&self) -> Result<u64> {
         self.inner.governor.available_bytes()
     }
