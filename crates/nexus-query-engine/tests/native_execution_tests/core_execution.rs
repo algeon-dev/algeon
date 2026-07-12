@@ -1876,6 +1876,218 @@ fn bounded_local_parquet_source_cache_reuses_equivalent_relowered_scan_contract(
 }
 
 #[test]
+fn bounded_local_parquet_source_cache_governor_owns_evictable_bytes() {
+    let dir = unique_temp_dir("nexus-query-engine-bounded-source-cache-governor");
+    let path = dir.join("input.parquet");
+    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let _input_schema = write_row_grouped_input_parquet(&path);
+    let source_schema = Arc::new(Schema::new(vec![
+        Field::new("key", DataType::Int32, false),
+        Field::new("payload", DataType::Int64, false),
+    ]));
+    let governor = MemoryGovernor::new(runtime.device().ordinal(), 64 * 1024 * 1024).unwrap();
+    let cache = Arc::new(GpuLocalParquetSourceCache::new_governor_backed(64 * 1024 * 1024, governor.clone()));
+    GpuLocalParquetSourceCache::register_governor_pressure_observer(&cache).unwrap();
+    let file_size = fs::metadata(&path).unwrap().len();
+
+    let build_plan = || {
+        let source = LocalParquetSource::from_files(
+            vec![LocalParquetFile::new(&path).with_stable_id("stable-input").with_file_size_bytes(file_size)],
+            Arc::clone(&source_schema),
+            vec!["key".to_string(), "payload".to_string()],
+        );
+
+        let mut builder = QueryPlanBuilder::new();
+        let source = builder.add_source(SourceNode::LocalParquet(source));
+        builder.finish_with_host_sink(source)
+    };
+    let build_context = || {
+        ExecutionContext::builder()
+            .with_shared_runtime(Arc::clone(&runtime))
+            .with_memory_control_policy(MemoryControlPolicy::Bounded {
+                device_budget_bytes: 8 * 1024 * 1024 * 1024,
+                max_source_chunk_bytes: 1024 * 1024,
+                max_row_groups_per_chunk: 1,
+                max_retry_attempts: 1,
+                min_retry_chunk_row_groups: 1,
+            })
+            .with_local_parquet_source_cache(Arc::clone(&cache))
+            .build()
+            .unwrap()
+    };
+
+    let first = execute_query_plan(&build_context(), &build_plan()).unwrap();
+    assert_eq!(first.metrics().source_cache_hits, 0);
+    assert_eq!(first.metrics().source_cache_inserts, 3);
+    assert!(
+        first.metrics().reservation_events.iter().all(|event| {
+            event.reservation_kind != ReservationKind::SourceCacheRetained || event.charged_delta_bytes == 0
+        }),
+        "governor-backed cache inserts must not charge a per-query source-cache baseline"
+    );
+    let retained_bytes = cache.retained_device_bytes().unwrap();
+    assert!(retained_bytes > 0);
+    let report = governor.report().unwrap();
+    assert_eq!(report.evictable_bytes, retained_bytes);
+    assert_eq!(report.outstanding_bytes, 0);
+    assert_eq!(report.free_bytes, report.capacity_bytes.saturating_sub(retained_bytes));
+
+    let second = execute_query_plan(&build_context(), &build_plan()).unwrap();
+    assert_eq!(second.metrics().source_cache_hits, 3);
+    assert_eq!(second.metrics().source_cache_misses, 0);
+    assert_eq!(governor.evictable_bytes().unwrap(), retained_bytes);
+
+    drop(first);
+    drop(second);
+    let pressure_grant = governor
+        .try_request(GrantRequest::new(99, governor.capacity_bytes(), governor.capacity_bytes()))
+        .unwrap()
+        .expect("admission should evict unpinned source-cache entries");
+    assert_eq!(pressure_grant.budget_bytes(), governor.capacity_bytes());
+    assert_eq!(cache.retained_device_bytes().unwrap(), 0);
+    assert_eq!(governor.evictable_bytes().unwrap(), 0);
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn bounded_local_parquet_source_cache_pressure_skips_gpu_resident_hit_until_drop() {
+    let dir = unique_temp_dir("nexus-query-engine-bounded-source-cache-governor-pinned");
+    let path = dir.join("input.parquet");
+    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let _input_schema = write_row_grouped_input_parquet(&path);
+    let source_schema = Arc::new(Schema::new(vec![
+        Field::new("key", DataType::Int32, false),
+        Field::new("payload", DataType::Int64, false),
+    ]));
+    let governor = MemoryGovernor::new(runtime.device().ordinal(), 64 * 1024 * 1024).unwrap();
+    let cache = Arc::new(GpuLocalParquetSourceCache::new_governor_backed(64 * 1024 * 1024, governor.clone()));
+    GpuLocalParquetSourceCache::register_governor_pressure_observer(&cache).unwrap();
+    let file_size = fs::metadata(&path).unwrap().len();
+
+    let build_plan = || {
+        let source = LocalParquetSource::from_files(
+            vec![LocalParquetFile::new(&path).with_stable_id("stable-input").with_file_size_bytes(file_size)],
+            Arc::clone(&source_schema),
+            vec!["key".to_string(), "payload".to_string()],
+        );
+
+        let mut builder = QueryPlanBuilder::new();
+        let source = builder.add_source(SourceNode::LocalParquet(source));
+        builder.finish_gpu_resident(source)
+    };
+    let build_context = || {
+        ExecutionContext::builder()
+            .with_shared_runtime(Arc::clone(&runtime))
+            .with_memory_control_policy(MemoryControlPolicy::Bounded {
+                device_budget_bytes: 8 * 1024 * 1024 * 1024,
+                max_source_chunk_bytes: 1024 * 1024,
+                max_row_groups_per_chunk: 3,
+                max_retry_attempts: 1,
+                min_retry_chunk_row_groups: 1,
+            })
+            .with_local_parquet_source_cache(Arc::clone(&cache))
+            .build()
+            .unwrap()
+    };
+
+    let cold = execute_query_plan(&build_context(), &build_plan()).unwrap();
+    assert_eq!(cold.metrics().source_cache_inserts, 1);
+    drop(cold);
+    let retained_bytes = cache.retained_device_bytes().unwrap();
+    assert!(retained_bytes > 0);
+
+    let warm = execute_query_plan(&build_context(), &build_plan()).unwrap();
+    assert_eq!(warm.metrics().source_cache_hits, 1);
+    let QueryOutput::GpuResident(_handle) = warm.output() else {
+        panic!("test plan should retain the cached frame as a GPU-resident output");
+    };
+    assert!(
+        governor
+            .try_request(GrantRequest::new(100, governor.capacity_bytes(), governor.capacity_bytes()))
+            .unwrap()
+            .is_none(),
+        "pressure admission must not evict a pinned cache entry"
+    );
+    assert_eq!(cache.retained_device_bytes().unwrap(), retained_bytes);
+    assert_eq!(governor.evictable_bytes().unwrap(), retained_bytes);
+
+    drop(warm);
+    let grant = governor
+        .try_request(GrantRequest::new(101, governor.capacity_bytes(), governor.capacity_bytes()))
+        .unwrap()
+        .expect("unpinned cache entry should be evicted under pressure");
+    assert_eq!(grant.budget_bytes(), governor.capacity_bytes());
+    assert_eq!(cache.retained_device_bytes().unwrap(), 0);
+    assert_eq!(governor.evictable_bytes().unwrap(), 0);
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn bounded_local_parquet_source_cache_scheduled_aggregate_warm_hit_skips_reinsert() {
+    let dir = unique_temp_dir("nexus-query-engine-bounded-source-cache-scheduled-aggregate");
+    let path = dir.join("input.parquet");
+    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let input_schema = write_final_merge_retry_input_parquet(&path, 4);
+    let output_schema = Arc::new(Schema::new(vec![Field::new("key", DataType::Int32, false)]));
+    let governor = MemoryGovernor::new(runtime.device().ordinal(), 64 * 1024 * 1024).unwrap();
+    let cache = Arc::new(GpuLocalParquetSourceCache::new_governor_backed(64 * 1024 * 1024, governor));
+    let file_size = fs::metadata(&path).unwrap().len();
+
+    let build_plan = || {
+        let source = LocalParquetSource::from_files(
+            vec![LocalParquetFile::new(&path).with_file_size_bytes(file_size)],
+            Arc::clone(&input_schema),
+            vec!["key".to_string()],
+        );
+        let aggregate = AggregateSpec::new(vec![Expr::column("key")], vec![]);
+        let sort = SortSpec::new(vec![SortExpr::new(Expr::column("key"), false, false)]);
+
+        let mut builder = QueryPlanBuilder::new();
+        let source = builder.add_source(SourceNode::LocalParquet(source));
+        let aggregate = builder.add_aggregate(source, aggregate, Arc::clone(&output_schema));
+        let sort = builder.add_sort(aggregate, sort, Arc::clone(&output_schema));
+        builder.finish_with_host_sink(sort)
+    };
+    let build_context = || {
+        ExecutionContext::builder()
+            .with_shared_runtime(Arc::clone(&runtime))
+            .with_memory_control_policy(MemoryControlPolicy::Bounded {
+                device_budget_bytes: 8 * 1024 * 1024 * 1024,
+                max_source_chunk_bytes: 1024 * 1024,
+                max_row_groups_per_chunk: 1,
+                max_retry_attempts: 1,
+                min_retry_chunk_row_groups: 1,
+            })
+            .with_source_scheduler_policy(SourceSchedulerPolicy::new(2))
+            .with_local_parquet_source_cache(Arc::clone(&cache))
+            .build()
+            .unwrap()
+    };
+
+    let cold = execute_query_plan(&build_context(), &build_plan()).unwrap();
+    assert_eq!(cold.metrics().source_cache_hits, 0);
+    assert!(cold.metrics().source_cache_inserts > 0);
+
+    let warm = execute_query_plan(&build_context(), &build_plan()).unwrap();
+    let warm_metrics = warm.metrics();
+    assert!(warm_metrics.source_cache_hits > 0);
+    assert_eq!(warm_metrics.source_cache_misses, 0);
+    assert!(
+        warm_metrics.source_cache_insert_skipped > 0,
+        "scheduled warm-hit path should attempt insert and resolve it as already-present"
+    );
+
+    let QueryOutput::HostArrow(batch) = warm.output() else {
+        panic!("host sink should materialize one RecordBatch");
+    };
+    assert_eq!(int32_array(batch, 0).values().as_ref(), &[0, 1, 2, 3]);
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
 fn bounded_local_parquet_source_cache_binds_execution_frame_schema_with_pure_filter_columns() {
     let dir = unique_temp_dir("nexus-query-engine-bounded-source-cache-execution-frame-schema");
     let path = dir.join("input.parquet");

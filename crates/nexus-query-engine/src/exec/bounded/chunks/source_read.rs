@@ -763,10 +763,17 @@ pub(in crate::exec::bounded) fn try_read_cached_local_parquet_chunk(
     metrics.record_source_cache_lookup_time(lookup_timer.elapsed());
     if let Some((handle, retained_device_bytes)) = cached {
         metrics.record_source_cache_hit(cache.retained_device_bytes()?);
+        let frame = handle.into_gpu_frame();
+        let source_cache_pin = frame.source_cache_pin();
         return Ok(Some(ScheduledLocalParquetReadOutput {
             chunk: chunk.clone(),
-            frame: handle.into_gpu_frame(),
-            reservation: reservations.borrow_accounted_source_cache(key, retained_device_bytes, metrics),
+            frame,
+            reservation: reservations.borrow_accounted_source_cache(
+                key,
+                retained_device_bytes,
+                source_cache_pin,
+                metrics,
+            ),
             observed_bytes: retained_device_bytes,
             observed_row_group_count: Some(observed_row_group_count),
         }));
@@ -801,7 +808,9 @@ pub(in crate::exec::bounded) fn insert_bounded_local_parquet_source_cache(
     let handle = GpuResultHandle::new(context, frame.clone(), schema)?;
     let protected_keys = reservations.source_cache_protected_keys_with(&key);
     let insert = cache.insert_if_absent_protecting(key.clone(), handle, retained_device_bytes, &protected_keys)?;
-    reservations.release_source_cache_baseline_bytes(insert.evicted_device_bytes, metrics);
+    if !cache.is_governor_backed() {
+        reservations.release_source_cache_baseline_bytes(insert.evicted_device_bytes, metrics);
+    }
     match insert.outcome {
         GpuLocalParquetSourceCacheInsert::Inserted => {
             metrics.record_source_cache_insert(insert.retained_device_bytes);

@@ -710,6 +710,7 @@ fn query_service_context_carries_local_parquet_source_cache() {
         .expect("service context should carry the per-device source cache");
 
     assert_eq!(context_cache.max_retained_device_bytes(), 4096);
+    assert!(context_cache.is_governor_backed());
     assert!(Arc::ptr_eq(&service_cache, &context_cache));
 }
 

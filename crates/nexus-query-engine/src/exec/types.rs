@@ -7,7 +7,7 @@
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
     fmt::Write,
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, Weak},
 };
 
 use arrow::{datatypes::SchemaRef, record_batch::RecordBatch};
@@ -22,7 +22,10 @@ use crate::{
     exec::is_datafusion_order_column_name,
     metrics::QueryMetrics,
     plan::{HashJoinBuildArtifactId, JoinNullEquality, ResultSink},
-    runtime::{DevicePlacement, ExecutionContext, gpu::governor::MemoryGrantLiveReservation},
+    runtime::{
+        DevicePlacement, ExecutionContext,
+        gpu::governor::{EvictableMemoryPressure, MemoryGovernor, MemoryGrantLiveReservation},
+    },
     source::{LocalParquetSource, ParquetReaderDecimalType, ResolvedParquetSource, SourceColumnRef},
     util::escape_kv_delimited,
 };
@@ -70,6 +73,7 @@ pub struct GpuDataFrame {
     frame: DataFrame,
     placement: ExecutionPlacement,
     live_reservation: Option<MemoryGrantLiveReservation>,
+    source_cache_pin: Option<GpuLocalParquetSourceCachePin>,
 }
 
 impl GpuDataFrame {
@@ -87,12 +91,20 @@ impl GpuDataFrame {
         } else {
             None
         };
-        Ok(Self::new_with_live_reservation(frame, live_reservation))
+        Ok(Self::new_with_residency(frame, live_reservation, source.source_cache_pin.clone()))
     }
 
     fn new_with_live_reservation(frame: DataFrame, live_reservation: Option<MemoryGrantLiveReservation>) -> Self {
+        Self::new_with_residency(frame, live_reservation, None)
+    }
+
+    fn new_with_residency(
+        frame: DataFrame,
+        live_reservation: Option<MemoryGrantLiveReservation>,
+        source_cache_pin: Option<GpuLocalParquetSourceCachePin>,
+    ) -> Self {
         let placement = frame.placement();
-        Self { frame, placement, live_reservation }
+        Self { frame, placement, live_reservation, source_cache_pin }
     }
 
     /// Borrow the underlying cuDF frame.
@@ -107,8 +119,15 @@ impl GpuDataFrame {
     }
 
     fn into_frame_and_live_reservation(self) -> (DataFrame, Option<MemoryGrantLiveReservation>) {
+        let (frame, live_reservation, _source_cache_pin) = self.into_frame_and_residency();
+        (frame, live_reservation)
+    }
+
+    fn into_frame_and_residency(
+        self,
+    ) -> (DataFrame, Option<MemoryGrantLiveReservation>, Option<GpuLocalParquetSourceCachePin>) {
         debug_assert_eq!(self.placement, self.frame.placement());
-        (self.frame, self.live_reservation)
+        (self.frame, self.live_reservation, self.source_cache_pin)
     }
 
     /// Execution placement observed when the frame entered the engine.
@@ -147,6 +166,10 @@ impl GpuDataFrame {
             })?;
         Ok(bytes as u64)
     }
+
+    pub(in crate::exec) fn source_cache_pin(&self) -> Option<GpuLocalParquetSourceCachePin> {
+        self.source_cache_pin.clone()
+    }
 }
 
 /// GPU-resident query result bound to an Arrow schema and runtime.
@@ -159,7 +182,8 @@ pub struct GpuResultHandle {
     batch: GpuRecordBatch,
     runtime: Arc<cudf::Runtime>,
     device_placement: DevicePlacement,
-    _live_reservation: Option<MemoryGrantLiveReservation>,
+    live_reservation: Option<MemoryGrantLiveReservation>,
+    source_cache_pin: Option<GpuLocalParquetSourceCachePin>,
 }
 
 impl GpuResultHandle {
@@ -187,7 +211,7 @@ impl GpuResultHandle {
             .with_fact("runtime_device", context.runtime().device().ordinal()));
         }
         let frame = strip_hidden_datafusion_order_columns(frame, &schema)?;
-        let (frame, frame_live_reservation) = frame.into_frame_and_live_reservation();
+        let (frame, frame_live_reservation, source_cache_pin) = frame.into_frame_and_residency();
         let live_reservation = live_reservation.or(frame_live_reservation);
         let batch = GpuRecordBatch::new(frame, schema).map_err(|error| {
             QueryError::from_cudf(
@@ -200,7 +224,8 @@ impl GpuResultHandle {
             batch,
             runtime: context.shared_runtime(),
             device_placement: context.device_placement(),
-            _live_reservation: live_reservation,
+            live_reservation,
+            source_cache_pin,
         })
     }
 
@@ -211,8 +236,8 @@ impl GpuResultHandle {
 
     /// Consume the handle and return its GPU frame wrapper.
     pub fn into_gpu_frame(self) -> GpuDataFrame {
-        let Self { batch, runtime: _, device_placement: _, _live_reservation } = self;
-        GpuDataFrame::new_with_live_reservation(batch.into_frame(), _live_reservation)
+        let Self { batch, runtime: _, device_placement: _, live_reservation, source_cache_pin } = self;
+        GpuDataFrame::new_with_residency(batch.into_frame(), live_reservation, source_cache_pin)
     }
 
     /// Arrow schema bound to this result.
@@ -228,6 +253,20 @@ impl GpuResultHandle {
     /// Native-engine device placement recorded at handle creation.
     pub fn device_placement(&self) -> DevicePlacement {
         self.device_placement
+    }
+
+    pub(crate) fn has_live_reservation(&self) -> bool {
+        self.live_reservation.is_some()
+    }
+
+    pub(crate) fn has_source_cache_pin(&self) -> bool {
+        self.source_cache_pin.is_some()
+    }
+
+    fn with_source_cache_pin(mut self, pin: GpuLocalParquetSourceCachePin) -> Self {
+        debug_assert!(self.source_cache_pin.is_none(), "source-cache entry handles must not already carry pins");
+        self.source_cache_pin = Some(pin);
+        self
     }
 
     /// Current cuDF execution placement for the underlying batch.
@@ -262,7 +301,7 @@ fn strip_hidden_datafusion_order_columns(frame: GpuDataFrame, schema: &SchemaRef
         return Ok(frame);
     }
 
-    let (raw, live_reservation) = frame.into_frame_and_live_reservation();
+    let (raw, live_reservation, source_cache_pin) = frame.into_frame_and_residency();
     let frame_names = raw.column_names();
     let expected_names = schema.fields().iter().map(|field| field.name().as_str()).collect::<Vec<_>>();
     let visible_prefix_matches =
@@ -277,10 +316,10 @@ fn strip_hidden_datafusion_order_columns(frame: GpuDataFrame, schema: &SchemaRef
                 error,
             )
         })?;
-        return Ok(GpuDataFrame::new_with_live_reservation(selected, live_reservation));
+        return Ok(GpuDataFrame::new_with_residency(selected, live_reservation, source_cache_pin));
     }
 
-    Ok(GpuDataFrame::new_with_live_reservation(raw, live_reservation))
+    Ok(GpuDataFrame::new_with_residency(raw, live_reservation, source_cache_pin))
 }
 
 /// Reusable cuDF hash-join build artifact.
@@ -848,6 +887,8 @@ struct GpuLocalParquetSourceCacheEntry {
     handle: GpuResultHandle,
     retained_device_bytes: u64,
     last_access_epoch: u64,
+    in_use_count: u64,
+    generation: u64,
 }
 
 #[derive(Clone, PartialEq, Eq, Hash)]
@@ -875,6 +916,51 @@ struct GpuLocalParquetSourceCacheState {
     cache: HashMap<GpuLocalParquetSourceCacheEntryKey, GpuLocalParquetSourceCacheEntry>,
     retained_device_bytes: u64,
     next_access_epoch: u64,
+    next_entry_generation: u64,
+}
+
+struct GpuLocalParquetSourceCacheInner {
+    max_retained_device_bytes: u64,
+    governor: Option<MemoryGovernor>,
+    state: Mutex<GpuLocalParquetSourceCacheState>,
+}
+
+impl Drop for GpuLocalParquetSourceCacheInner {
+    fn drop(&mut self) {
+        let Some(governor) = &self.governor else {
+            return;
+        };
+        let Ok(state) = self.state.get_mut() else {
+            return;
+        };
+        let retained_device_bytes = state.retained_device_bytes;
+        if retained_device_bytes > 0 {
+            let _ = governor.release_evictable_bytes(retained_device_bytes);
+            state.retained_device_bytes = 0;
+        }
+    }
+}
+
+#[derive(Clone)]
+pub(in crate::exec) struct GpuLocalParquetSourceCachePin {
+    _inner: Arc<GpuLocalParquetSourceCachePinInner>,
+}
+
+struct GpuLocalParquetSourceCachePinInner {
+    cache: Arc<GpuLocalParquetSourceCacheInner>,
+    entry_key: GpuLocalParquetSourceCacheEntryKey,
+    generation: u64,
+}
+
+impl Drop for GpuLocalParquetSourceCachePinInner {
+    fn drop(&mut self) {
+        if let Ok(mut state) = self.cache.state.lock()
+            && let Some(entry) = state.cache.get_mut(&self.entry_key)
+            && entry.generation == self.generation
+        {
+            entry.in_use_count = entry.in_use_count.saturating_sub(1);
+        }
+    }
 }
 
 /// LRU cache for GPU-resident local Parquet source results.
@@ -885,15 +971,15 @@ struct GpuLocalParquetSourceCacheState {
 /// without evicting entries for other runtimes, while a schema mismatch is
 /// treated as an invalid plan.
 pub struct GpuLocalParquetSourceCache {
-    max_retained_device_bytes: u64,
-    state: Mutex<GpuLocalParquetSourceCacheState>,
+    inner: Arc<GpuLocalParquetSourceCacheInner>,
 }
 
 impl std::fmt::Debug for GpuLocalParquetSourceCache {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let state = self.state.lock().ok();
+        let state = self.inner.state.lock().ok();
         f.debug_struct("GpuLocalParquetSourceCache")
-            .field("max_retained_device_bytes", &self.max_retained_device_bytes)
+            .field("max_retained_device_bytes", &self.inner.max_retained_device_bytes)
+            .field("governor_backed", &self.is_governor_backed())
             .field("entry_count", &state.as_ref().map(|state| state.cache.len()))
             .field("retained_device_bytes", &state.as_ref().map(|state| state.retained_device_bytes))
             .finish()
@@ -903,12 +989,49 @@ impl std::fmt::Debug for GpuLocalParquetSourceCache {
 impl GpuLocalParquetSourceCache {
     /// Create an empty source cache with a retained-device-byte capacity.
     pub fn new(max_retained_device_bytes: u64) -> Self {
-        Self { max_retained_device_bytes, state: Mutex::new(GpuLocalParquetSourceCacheState::default()) }
+        Self::new_with_governor(max_retained_device_bytes, None)
+    }
+
+    /// Create an empty source cache whose retained bytes are charged to a
+    /// device memory governor as evictable cache residency.
+    pub fn new_governor_backed(max_retained_device_bytes: u64, governor: MemoryGovernor) -> Self {
+        Self::new_with_governor(max_retained_device_bytes, Some(governor))
+    }
+
+    fn new_with_governor(max_retained_device_bytes: u64, governor: Option<MemoryGovernor>) -> Self {
+        Self {
+            inner: Arc::new(GpuLocalParquetSourceCacheInner {
+                max_retained_device_bytes,
+                governor,
+                state: Mutex::new(GpuLocalParquetSourceCacheState::default()),
+            }),
+        }
     }
 
     /// Maximum retained device bytes allowed by this cache.
     pub fn max_retained_device_bytes(&self) -> u64 {
-        self.max_retained_device_bytes
+        self.inner.max_retained_device_bytes
+    }
+
+    /// Whether retained bytes are owned by the per-device memory governor's
+    /// evictable ledger instead of by per-query reservation baselines.
+    pub fn is_governor_backed(&self) -> bool {
+        self.inner.governor.is_some()
+    }
+
+    /// Register this cache as a synchronous evictable-memory observer on its
+    /// backing governor.
+    pub fn register_governor_pressure_observer(cache: &Arc<Self>) -> Result<()> {
+        let Some(governor) = cache.inner.governor.as_ref().cloned() else {
+            return Ok(());
+        };
+        let weak_cache: Weak<Self> = Arc::downgrade(cache);
+        governor.register_evictable_memory_observer(Arc::new(move |pressure| {
+            let Some(cache) = weak_cache.upgrade() else {
+                return Ok(0);
+            };
+            cache.handle_memory_pressure(pressure)
+        }))
     }
 
     /// Number of retained source-result entries.
@@ -932,7 +1055,7 @@ impl GpuLocalParquetSourceCache {
         protected_keys: &HashSet<GpuLocalParquetSourceCacheKey>,
     ) -> Result<u64> {
         let mut state = self.lock()?;
-        Ok(state.evict_at_least(target_device_bytes, protected_keys))
+        self.evict_at_least_locked(&mut state, target_device_bytes, protected_keys)
     }
 
     pub(crate) fn get(
@@ -947,17 +1070,23 @@ impl GpuLocalParquetSourceCache {
         let Some(entry) = state.cache.get_mut(&entry_key) else {
             return Ok(None);
         };
-        entry.last_access_epoch = access_epoch;
-        let handle = entry.handle.clone();
-        let retained_device_bytes = entry.retained_device_bytes;
-        drop(state);
-        if !handle.can_reuse_for_source_cache(context, schema)? {
-            let mut state = self.lock()?;
-            if let Some(removed) = state.cache.remove(&entry_key) {
-                state.retained_device_bytes = state.retained_device_bytes.saturating_sub(removed.retained_device_bytes);
-            }
+        if !entry.handle.can_reuse_for_source_cache(context, schema)? {
+            let released = if entry.in_use_count == 0 { state.remove_entry(&entry_key) } else { 0 };
+            drop(state);
+            self.release_governor_evictable_bytes(released)?;
             return Ok(None);
         }
+        entry.in_use_count = entry.in_use_count.saturating_add(1);
+        entry.last_access_epoch = access_epoch;
+        let pin = GpuLocalParquetSourceCachePin {
+            _inner: Arc::new(GpuLocalParquetSourceCachePinInner {
+                cache: Arc::clone(&self.inner),
+                entry_key: entry_key.clone(),
+                generation: entry.generation,
+            }),
+        };
+        let handle = entry.handle.clone().with_source_cache_pin(pin);
+        let retained_device_bytes = entry.retained_device_bytes;
         Ok(Some((handle, retained_device_bytes)))
     }
 
@@ -987,16 +1116,47 @@ impl GpuLocalParquetSourceCache {
                 retained_device_bytes: retained_before,
             });
         }
-        if retained_device_bytes > self.max_retained_device_bytes {
+        if handle.has_live_reservation() {
+            return Err(QueryError::new(
+                crate::error::QueryErrorCode::InvalidPlan,
+                "nexus_query_engine.gpu_local_parquet_source_cache.insert",
+                "cannot retain a source cache entry that carries a query live-reservation",
+            )
+            .with_fact("reason", "query_live_reservation_in_cache_handle"));
+        }
+        if handle.has_source_cache_pin() {
+            return Err(QueryError::new(
+                crate::error::QueryErrorCode::InvalidPlan,
+                "nexus_query_engine.gpu_local_parquet_source_cache.insert",
+                "cannot retain a source cache entry that already carries a source-cache pin",
+            )
+            .with_fact("reason", "source_cache_pin_in_cache_handle"));
+        }
+        if retained_device_bytes > self.inner.max_retained_device_bytes {
             return Ok(GpuLocalParquetSourceCacheInsertResult {
                 outcome: GpuLocalParquetSourceCacheInsert::CapacitySkipped,
                 evicted_device_bytes: 0,
                 retained_device_bytes: retained_before,
             });
         }
+        if !self.governor_can_admit_after_cache_eviction(&state, retained_device_bytes, protected_keys)? {
+            return Ok(GpuLocalParquetSourceCacheInsertResult {
+                outcome: GpuLocalParquetSourceCacheInsert::CapacitySkipped,
+                evicted_device_bytes: 0,
+                retained_device_bytes: state.retained_device_bytes,
+            });
+        }
         let evicted_device_bytes =
-            state.evict_until_fits(self.max_retained_device_bytes, retained_device_bytes, protected_keys);
-        if state.retained_device_bytes.saturating_add(retained_device_bytes) > self.max_retained_device_bytes {
+            state.evict_until_fits(self.inner.max_retained_device_bytes, retained_device_bytes, protected_keys);
+        self.release_governor_evictable_bytes(evicted_device_bytes)?;
+        if state.retained_device_bytes.saturating_add(retained_device_bytes) > self.inner.max_retained_device_bytes {
+            return Ok(GpuLocalParquetSourceCacheInsertResult {
+                outcome: GpuLocalParquetSourceCacheInsert::CapacitySkipped,
+                evicted_device_bytes,
+                retained_device_bytes: state.retained_device_bytes,
+            });
+        }
+        if !self.reserve_governor_evictable_bytes(retained_device_bytes)? {
             return Ok(GpuLocalParquetSourceCacheInsertResult {
                 outcome: GpuLocalParquetSourceCacheInsert::CapacitySkipped,
                 evicted_device_bytes,
@@ -1004,9 +1164,17 @@ impl GpuLocalParquetSourceCache {
             });
         }
         let last_access_epoch = state.next_epoch();
-        state
-            .cache
-            .insert(entry_key, GpuLocalParquetSourceCacheEntry { handle, retained_device_bytes, last_access_epoch });
+        let generation = state.next_generation();
+        state.cache.insert(
+            entry_key,
+            GpuLocalParquetSourceCacheEntry {
+                handle,
+                retained_device_bytes,
+                last_access_epoch,
+                in_use_count: 0,
+                generation,
+            },
+        );
         state.retained_device_bytes = state.retained_device_bytes.saturating_add(retained_device_bytes);
         Ok(GpuLocalParquetSourceCacheInsertResult {
             outcome: GpuLocalParquetSourceCacheInsert::Inserted,
@@ -1016,13 +1184,67 @@ impl GpuLocalParquetSourceCache {
     }
 
     fn lock(&self) -> Result<std::sync::MutexGuard<'_, GpuLocalParquetSourceCacheState>> {
-        self.state.lock().map_err(|_| {
+        self.inner.state.lock().map_err(|_| {
             QueryError::new(
                 crate::error::QueryErrorCode::InvalidPlan,
                 "nexus_query_engine.gpu_local_parquet_source_cache",
                 "native GPU local Parquet source cache lock was poisoned",
             )
         })
+    }
+
+    fn handle_memory_pressure(&self, pressure: EvictableMemoryPressure) -> Result<u64> {
+        let Some(governor) = &self.inner.governor else {
+            return Ok(0);
+        };
+        if pressure.device_ordinal != governor.device_ordinal() {
+            return Ok(0);
+        }
+        let mut state = self.lock()?;
+        self.evict_at_least_locked(&mut state, pressure.requested_evict_bytes, &HashSet::new())
+    }
+
+    fn evict_at_least_locked(
+        &self,
+        state: &mut GpuLocalParquetSourceCacheState,
+        target_device_bytes: u64,
+        protected_keys: &HashSet<GpuLocalParquetSourceCacheKey>,
+    ) -> Result<u64> {
+        let evicted_device_bytes = state.evict_at_least(target_device_bytes, protected_keys);
+        self.release_governor_evictable_bytes(evicted_device_bytes)?;
+        Ok(evicted_device_bytes)
+    }
+
+    fn governor_can_admit_after_cache_eviction(
+        &self,
+        state: &GpuLocalParquetSourceCacheState,
+        retained_device_bytes: u64,
+        protected_keys: &HashSet<GpuLocalParquetSourceCacheKey>,
+    ) -> Result<bool> {
+        let Some(governor) = &self.inner.governor else {
+            return Ok(true);
+        };
+        let evictable_for_capacity = state.evictable_bytes_until_fits(
+            self.inner.max_retained_device_bytes,
+            retained_device_bytes,
+            protected_keys,
+        );
+        let free_bytes = governor.free_bytes()?;
+        Ok(free_bytes.saturating_add(evictable_for_capacity) >= retained_device_bytes)
+    }
+
+    fn reserve_governor_evictable_bytes(&self, retained_device_bytes: u64) -> Result<bool> {
+        let Some(governor) = &self.inner.governor else {
+            return Ok(true);
+        };
+        governor.try_reserve_evictable_bytes(retained_device_bytes)
+    }
+
+    fn release_governor_evictable_bytes(&self, released_device_bytes: u64) -> Result<u64> {
+        let Some(governor) = &self.inner.governor else {
+            return Ok(released_device_bytes);
+        };
+        governor.release_evictable_bytes(released_device_bytes)
     }
 }
 
@@ -1031,6 +1253,12 @@ impl GpuLocalParquetSourceCacheState {
         let epoch = self.next_access_epoch;
         self.next_access_epoch = self.next_access_epoch.saturating_add(1);
         epoch
+    }
+
+    fn next_generation(&mut self) -> u64 {
+        let generation = self.next_entry_generation;
+        self.next_entry_generation = self.next_entry_generation.saturating_add(1);
+        generation
     }
 
     fn evict_until_fits(
@@ -1052,6 +1280,31 @@ impl GpuLocalParquetSourceCacheState {
         evicted_device_bytes
     }
 
+    fn evictable_bytes_until_fits(
+        &self,
+        max_retained_device_bytes: u64,
+        incoming_retained_device_bytes: u64,
+        protected_keys: &HashSet<GpuLocalParquetSourceCacheKey>,
+    ) -> u64 {
+        let mut retained_device_bytes = self.retained_device_bytes;
+        let mut evictable_device_bytes = 0u64;
+        let mut candidates = self
+            .cache
+            .iter()
+            .filter(|(key, entry)| entry.in_use_count == 0 && !protected_keys.contains(&key.source_key))
+            .map(|(_key, entry)| (entry.last_access_epoch, entry.retained_device_bytes))
+            .collect::<Vec<_>>();
+        candidates.sort_unstable_by_key(|(last_access_epoch, _bytes)| *last_access_epoch);
+        for (_last_access_epoch, candidate_bytes) in candidates {
+            if retained_device_bytes.saturating_add(incoming_retained_device_bytes) <= max_retained_device_bytes {
+                break;
+            }
+            retained_device_bytes = retained_device_bytes.saturating_sub(candidate_bytes);
+            evictable_device_bytes = evictable_device_bytes.saturating_add(candidate_bytes);
+        }
+        evictable_device_bytes
+    }
+
     fn evict_at_least(
         &mut self,
         target_device_bytes: u64,
@@ -1070,13 +1323,21 @@ impl GpuLocalParquetSourceCacheState {
         evicted_device_bytes
     }
 
+    fn remove_entry(&mut self, entry_key: &GpuLocalParquetSourceCacheEntryKey) -> u64 {
+        let Some(removed) = self.cache.remove(entry_key) else {
+            return 0;
+        };
+        self.retained_device_bytes = self.retained_device_bytes.saturating_sub(removed.retained_device_bytes);
+        removed.retained_device_bytes
+    }
+
     fn lru_unprotected_key(
         &self,
         protected_keys: &HashSet<GpuLocalParquetSourceCacheKey>,
     ) -> Option<GpuLocalParquetSourceCacheEntryKey> {
         self.cache
             .iter()
-            .filter(|(key, _entry)| !protected_keys.contains(&key.source_key))
+            .filter(|(key, entry)| entry.in_use_count == 0 && !protected_keys.contains(&key.source_key))
             .min_by_key(|(_key, entry)| entry.last_access_epoch)
             .map(|(key, _entry)| key.clone())
     }
