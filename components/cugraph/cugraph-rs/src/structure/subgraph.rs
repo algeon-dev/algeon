@@ -13,12 +13,15 @@ use crate::{
     array::RawDeviceArrayView,
     cuda::DeviceGuard,
     error::{Result, require_non_null},
+    handle::ResourceHandleLease,
     structure::typed_results::{IntegerValues, ScoreValues, SizeValues, VertexIds},
 };
 
 pub(crate) struct InducedSubgraphResult {
     raw: *mut cugraph_induced_subgraph_result_t,
     device: i32,
+    // Keeps a runtime-bound cuGraph handle alive until after Drop frees `raw`.
+    _resource_handle_lease: Option<ResourceHandleLease>,
     _nosend_nosync: PhantomData<*mut ()>,
 }
 
@@ -27,9 +30,10 @@ impl InducedSubgraphResult {
         raw: *mut cugraph_induced_subgraph_result_t,
         device: i32,
         operation: &'static str,
+        resource_handle_lease: Option<ResourceHandleLease>,
     ) -> Result<Self> {
         let raw = require_non_null(raw, operation, "induced_subgraph_result")?;
-        Ok(Self { raw, device, _nosend_nosync: PhantomData })
+        Ok(Self { raw, device, _resource_handle_lease: resource_handle_lease, _nosend_nosync: PhantomData })
     }
 
     fn raw_view(
@@ -123,7 +127,7 @@ mod tests {
     #[test]
     fn induced_subgraph_result_from_raw_rejects_null() {
         // SAFETY: this exercises the constructor's null guard only.
-        let err = match unsafe { InducedSubgraphResult::from_raw(ptr::null_mut(), 0, "test") } {
+        let err = match unsafe { InducedSubgraphResult::from_raw(ptr::null_mut(), 0, "test", None) } {
             Err(err) => err,
             Ok(_) => panic!("null must be rejected"),
         };

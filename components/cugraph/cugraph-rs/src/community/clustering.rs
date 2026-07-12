@@ -14,7 +14,7 @@ use crate::{
     cuda::DeviceGuard,
     error::{Error, ErrorKind, Result, check_error, require_non_null},
     graph::{Forward, Graph},
-    handle::EnteredContext,
+    handle::{EnteredContext, ResourceHandleLease},
     params::{IterationCount, NonNegativeF64},
     random::RngState,
     structure::VertexIds,
@@ -62,6 +62,8 @@ pub type BalancedCutClusteringParams = SpectralClusteringParams;
 pub(crate) struct ClusteringResult {
     raw: *mut cugraph_clustering_result_t,
     device: i32,
+    // Keeps a runtime-bound cuGraph handle alive until after Drop frees `raw`.
+    _resource_handle_lease: Option<ResourceHandleLease>,
     _nosend_nosync: std::marker::PhantomData<*mut ()>,
 }
 
@@ -70,9 +72,18 @@ impl ClusteringResult {
     ///
     /// `raw` must be a valid, non-null pointer returned by a cuGraph
     /// clustering C API. Ownership is transferred to this struct.
-    pub(crate) unsafe fn from_raw(raw: *mut cugraph_clustering_result_t, device: i32) -> Result<Self> {
+    pub(crate) unsafe fn from_raw(
+        raw: *mut cugraph_clustering_result_t,
+        device: i32,
+        resource_handle_lease: Option<ResourceHandleLease>,
+    ) -> Result<Self> {
         let raw = require_non_null(raw, "ClusteringResult::from_raw", "clustering_result")?;
-        Ok(Self { raw, device, _nosend_nosync: std::marker::PhantomData })
+        Ok(Self {
+            raw,
+            device,
+            _resource_handle_lease: resource_handle_lease,
+            _nosend_nosync: std::marker::PhantomData,
+        })
     }
 
     fn raw_view(
@@ -132,11 +143,15 @@ macro_rules! define_clustering_result {
             /// `raw` must be a valid, non-null pointer returned by the
             /// matching cuGraph C API. Ownership is transferred to this
             /// struct.
-            pub(crate) unsafe fn from_raw(raw: *mut cugraph_clustering_result_t, device: i32) -> Result<Self> {
+            pub(crate) unsafe fn from_raw(
+                raw: *mut cugraph_clustering_result_t,
+                device: i32,
+                resource_handle_lease: Option<ResourceHandleLease>,
+            ) -> Result<Self> {
                 // SAFETY: caller upholds the contract documented on this fn, which
                 // matches `ClusteringResult::from_raw`'s requirements (valid non-null
                 // pointer with transferred ownership).
-                Ok(Self(unsafe { ClusteringResult::from_raw(raw, device) }?))
+                Ok(Self(unsafe { ClusteringResult::from_raw(raw, device, resource_handle_lease) }?))
             }
 
             /// Vertex ids in the clustering output.
@@ -179,11 +194,15 @@ impl BalancedCutClusteringResult {
     /// `raw` must be a valid, non-null pointer returned by
     /// `cugraph_balanced_cut_clustering`. Ownership is transferred to this
     /// struct.
-    pub(crate) unsafe fn from_raw(raw: *mut cugraph_clustering_result_t, device: i32) -> Result<Self> {
+    pub(crate) unsafe fn from_raw(
+        raw: *mut cugraph_clustering_result_t,
+        device: i32,
+        resource_handle_lease: Option<ResourceHandleLease>,
+    ) -> Result<Self> {
         // SAFETY: caller upholds the contract documented on this fn, which matches
         // `ClusteringResult::from_raw`'s requirements (valid non-null pointer with
         // transferred ownership).
-        Ok(Self(unsafe { ClusteringResult::from_raw(raw, device) }?))
+        Ok(Self(unsafe { ClusteringResult::from_raw(raw, device, resource_handle_lease) }?))
     }
 
     /// Vertex ids in the clustering output.
@@ -218,7 +237,7 @@ pub(crate) fn spectral_modularity_maximization(
         "spectral_modularity_maximization",
     )?;
     // SAFETY: on success, cuGraph transfers ownership of the result pointer.
-    unsafe { SpectralClusteringResult::from_raw(raw, handle.device()) }
+    unsafe { SpectralClusteringResult::from_raw(raw, handle.device(), handle.runtime_bound_lease()) }
 }
 
 #[allow(deprecated)]
@@ -231,7 +250,7 @@ pub(crate) fn balanced_cut_clustering(
     let raw =
         run_clustering(handle, rng_state, graph, params, cugraph_balanced_cut_clustering, "balanced_cut_clustering")?;
     // SAFETY: on success, cuGraph transfers ownership of the result pointer.
-    unsafe { BalancedCutClusteringResult::from_raw(raw, handle.device()) }
+    unsafe { BalancedCutClusteringResult::from_raw(raw, handle.device(), handle.runtime_bound_lease()) }
 }
 
 type ClusteringFn = unsafe extern "C" fn(
@@ -399,7 +418,7 @@ mod tests {
     #[test]
     fn clustering_result_from_raw_rejects_null() {
         // SAFETY: this exercises the constructor's null guard only.
-        let err = match unsafe { ClusteringResult::from_raw(ptr::null_mut(), 0) } {
+        let err = match unsafe { ClusteringResult::from_raw(ptr::null_mut(), 0, None) } {
             Err(err) => err,
             Ok(_) => panic!("null must be rejected"),
         };

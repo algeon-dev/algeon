@@ -49,7 +49,9 @@ pub(crate) fn minimum_spanning_tree<T>(
     let result = require_non_null(result, "minimum_spanning_tree", "induced_subgraph_result")?;
 
     // SAFETY: on success, cuGraph transfers ownership of the result pointer.
-    let inner = unsafe { InducedSubgraphResult::from_raw(result, handle.device(), "minimum_spanning_tree") }?;
+    let inner = unsafe {
+        InducedSubgraphResult::from_raw(result, handle.device(), "minimum_spanning_tree", handle.runtime_bound_lease())
+    }?;
     Ok(MinimumSpanningTreeResult(inner))
 }
 

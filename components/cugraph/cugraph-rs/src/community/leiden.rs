@@ -73,5 +73,5 @@ pub(crate) fn leiden(
     let result = require_non_null(result, "leiden", "hierarchical_clustering_result")?;
 
     // SAFETY: on success, cuGraph transfers ownership of the result pointer.
-    unsafe { LeidenResult::from_raw(result, handle.device()) }
+    unsafe { LeidenResult::from_raw(result, handle.device(), handle.runtime_bound_lease()) }
 }

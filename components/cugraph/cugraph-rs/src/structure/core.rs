@@ -16,7 +16,7 @@ use crate::{
     cuda::DeviceGuard,
     error::{Error, Result, check_error, require_non_null},
     graph::Graph,
-    handle::EnteredContext,
+    handle::{EnteredContext, ResourceHandleLease},
     structure::typed_results::{IntegerValues, ScoreValues, VertexIds},
     types::to_bool_t,
 };
@@ -106,7 +106,7 @@ pub(crate) fn core_number<T>(
     let result = require_non_null(result, "core_number", "core_result")?;
 
     // SAFETY: on success, cuGraph transfers ownership of the result pointer.
-    unsafe { CoreNumberResult::from_raw(result, handle.device()) }
+    unsafe { CoreNumberResult::from_raw(result, handle.device(), handle.runtime_bound_lease()) }
 }
 
 /// Extract a k-core subgraph.
@@ -140,7 +140,7 @@ pub(crate) fn k_core<T>(
     let result = require_non_null(result, "k_core", "k_core_result")?;
 
     // SAFETY: on success, cuGraph transfers ownership of the result pointer.
-    unsafe { KCoreResult::from_raw(result, handle.device()) }
+    unsafe { KCoreResult::from_raw(result, handle.device(), handle.runtime_bound_lease()) }
 }
 
 /// Result of a core-number computation.
@@ -150,6 +150,8 @@ pub(crate) fn k_core<T>(
 pub struct CoreNumberResult {
     raw: *mut cugraph_core_result_t,
     device: i32,
+    // Keeps a runtime-bound cuGraph handle alive until after Drop frees `raw`.
+    _resource_handle_lease: Option<ResourceHandleLease>,
     _nosend_nosync: PhantomData<*mut ()>,
 }
 
@@ -166,9 +168,13 @@ impl CoreNumberResult {
     ///
     /// `raw` must be a valid, non-null pointer returned by
     /// `cugraph_core_number`. Ownership is transferred to this struct.
-    pub(crate) unsafe fn from_raw(raw: *mut cugraph_core_result_t, device: i32) -> Result<Self> {
+    pub(crate) unsafe fn from_raw(
+        raw: *mut cugraph_core_result_t,
+        device: i32,
+        resource_handle_lease: Option<ResourceHandleLease>,
+    ) -> Result<Self> {
         let raw = require_non_null(raw, "CoreNumberResult::from_raw", "core_result")?;
-        Ok(Self { raw, device, _nosend_nosync: PhantomData })
+        Ok(Self { raw, device, _resource_handle_lease: resource_handle_lease, _nosend_nosync: PhantomData })
     }
 
     pub(crate) fn as_ptr(&self) -> *const cugraph_core_result_t {
@@ -238,6 +244,8 @@ impl Drop for CoreNumberResult {
 pub struct KCoreResult {
     raw: *mut cugraph_k_core_result_t,
     device: i32,
+    // Keeps a runtime-bound cuGraph handle alive until after Drop frees `raw`.
+    _resource_handle_lease: Option<ResourceHandleLease>,
     _nosend_nosync: PhantomData<*mut ()>,
 }
 
@@ -254,9 +262,13 @@ impl KCoreResult {
     ///
     /// `raw` must be a valid, non-null pointer returned by `cugraph_k_core`.
     /// Ownership is transferred to this struct.
-    pub(crate) unsafe fn from_raw(raw: *mut cugraph_k_core_result_t, device: i32) -> Result<Self> {
+    pub(crate) unsafe fn from_raw(
+        raw: *mut cugraph_k_core_result_t,
+        device: i32,
+        resource_handle_lease: Option<ResourceHandleLease>,
+    ) -> Result<Self> {
         let raw = require_non_null(raw, "KCoreResult::from_raw", "k_core_result")?;
-        Ok(Self { raw, device, _nosend_nosync: PhantomData })
+        Ok(Self { raw, device, _resource_handle_lease: resource_handle_lease, _nosend_nosync: PhantomData })
     }
 
     fn raw_view(
@@ -343,7 +355,7 @@ mod tests {
     #[test]
     fn core_number_result_from_raw_rejects_null() {
         // SAFETY: this exercises the constructor's null guard only.
-        let err = match unsafe { CoreNumberResult::from_raw(ptr::null_mut(), 0) } {
+        let err = match unsafe { CoreNumberResult::from_raw(ptr::null_mut(), 0, None) } {
             Err(err) => err,
             Ok(_) => panic!("null must be rejected"),
         };
@@ -354,7 +366,7 @@ mod tests {
     #[test]
     fn k_core_result_from_raw_rejects_null() {
         // SAFETY: this exercises the constructor's null guard only.
-        let err = match unsafe { KCoreResult::from_raw(ptr::null_mut(), 0) } {
+        let err = match unsafe { KCoreResult::from_raw(ptr::null_mut(), 0, None) } {
             Err(err) => err,
             Ok(_) => panic!("null must be rejected"),
         };

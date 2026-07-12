@@ -103,7 +103,7 @@ where
 
     // SAFETY: on success, cuGraph transfers ownership of the paths result to
     // the caller.
-    let paths = unsafe { PathsResult::from_raw(result, handle.device(), "sssp") }?;
+    let paths = unsafe { PathsResult::from_raw(result, handle.device(), "sssp", handle.runtime_bound_lease()) }?;
     Ok(SsspResult { paths })
 }
 

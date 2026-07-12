@@ -97,5 +97,5 @@ pub(crate) fn louvain(
     let result = require_non_null(result, "louvain", "hierarchical_clustering_result")?;
 
     // SAFETY: on success, cuGraph transfers ownership of the result pointer.
-    unsafe { LouvainResult::from_raw(result, handle.device()) }
+    unsafe { LouvainResult::from_raw(result, handle.device(), handle.runtime_bound_lease()) }
 }

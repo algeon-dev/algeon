@@ -62,5 +62,12 @@ pub(crate) fn edge_betweenness_centrality<T: Transposition, V: CugraphElement>(
 
     let result = require_non_null(result, "edge_betweenness_centrality", "edge_centrality_result")?;
     // SAFETY: on success, cuGraph returns ownership of `result` to the caller.
-    unsafe { EdgeBetweennessCentralityResult::from_raw(result, handle.device(), graph.has_edge_ids()) }
+    unsafe {
+        EdgeBetweennessCentralityResult::from_raw(
+            result,
+            handle.device(),
+            graph.has_edge_ids(),
+            handle.runtime_bound_lease(),
+        )
+    }
 }

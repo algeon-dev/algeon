@@ -76,7 +76,7 @@ pub(crate) fn create_vertex_pairs<T, V: CugraphElement>(
 
     let result = require_non_null(result, "create_vertex_pairs", "vertex_pairs")?;
     // SAFETY: on success, cuGraph transfers ownership of the vertex pairs.
-    unsafe { VertexPairs::from_raw(result, handle.device(), "create_vertex_pairs") }
+    unsafe { VertexPairs::from_raw(result, handle.device(), "create_vertex_pairs", handle.runtime_bound_lease()) }
 }
 
 fn pairwise_similarity(
@@ -107,7 +107,15 @@ fn pairwise_similarity(
     }
 
     // SAFETY: on success, cuGraph transfers ownership of the result pointer.
-    unsafe { SimilarityResultInner::from_pairwise_raw(result, pairs, handle.device(), operation) }
+    unsafe {
+        SimilarityResultInner::from_pairwise_raw(
+            result,
+            pairs,
+            handle.device(),
+            operation,
+            handle.runtime_bound_lease(),
+        )
+    }
 }
 
 fn all_pairs_similarity<V: CugraphElement>(
@@ -141,7 +149,9 @@ fn all_pairs_similarity<V: CugraphElement>(
     }
 
     // SAFETY: on success, cuGraph transfers ownership of the result pointer.
-    unsafe { SimilarityResultInner::from_all_pairs_raw(result, handle.device(), operation) }
+    unsafe {
+        SimilarityResultInner::from_all_pairs_raw(result, handle.device(), operation, handle.runtime_bound_lease())
+    }
 }
 
 macro_rules! define_pairwise {

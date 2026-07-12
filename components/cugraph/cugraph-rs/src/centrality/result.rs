@@ -22,6 +22,7 @@ use crate::{
     array::RawDeviceArrayView,
     cuda::DeviceGuard,
     error::{Error, ErrorKind, Result, require_non_null},
+    handle::ResourceHandleLease,
     structure::typed_results::{IntegerValues, ScoreValues, VertexIds},
     types::try_from_bool_t,
 };
@@ -34,6 +35,8 @@ use crate::{
 pub(crate) struct CentralityResult {
     raw: *mut cugraph_centrality_result_t,
     device: i32,
+    // Keeps a runtime-bound cuGraph handle alive until after Drop frees `raw`.
+    _resource_handle_lease: Option<ResourceHandleLease>,
     _nosend_nosync: PhantomData<*mut ()>,
 }
 
@@ -44,9 +47,13 @@ impl CentralityResult {
     ///
     /// `raw` must be a valid, non-null pointer returned by a cuGraph centrality
     /// C API function. Ownership is transferred to this struct.
-    pub(crate) unsafe fn from_raw(raw: *mut cugraph_centrality_result_t, device: i32) -> Result<Self> {
+    pub(crate) unsafe fn from_raw(
+        raw: *mut cugraph_centrality_result_t,
+        device: i32,
+        resource_handle_lease: Option<ResourceHandleLease>,
+    ) -> Result<Self> {
         let raw = require_non_null(raw, "CentralityResult::from_raw", "centrality_result")?;
-        Ok(Self { raw, device, _nosend_nosync: PhantomData })
+        Ok(Self { raw, device, _resource_handle_lease: resource_handle_lease, _nosend_nosync: PhantomData })
     }
 
     pub(crate) fn vertices_raw(&self) -> Result<RawDeviceArrayView<'_>> {
@@ -136,10 +143,14 @@ impl PageRankResult {
     /// `raw` must be a valid, non-null pointer returned by
     /// `cugraph_pagerank_allow_nonconvergence`.
     /// Ownership is transferred to this struct.
-    pub(crate) unsafe fn from_raw(raw: *mut cugraph_centrality_result_t, device: i32) -> Result<Self> {
+    pub(crate) unsafe fn from_raw(
+        raw: *mut cugraph_centrality_result_t,
+        device: i32,
+        resource_handle_lease: Option<ResourceHandleLease>,
+    ) -> Result<Self> {
         // SAFETY: the caller transfers ownership of a live cuGraph result to
         // this wrapper on success.
-        Ok(Self(unsafe { CentralityResult::from_raw(raw, device) }?))
+        Ok(Self(unsafe { CentralityResult::from_raw(raw, device, resource_handle_lease) }?))
     }
 
     /// Get the vertex ids as a runtime-typed device array view.
@@ -205,11 +216,15 @@ impl EigenvectorCentralityResult {
     /// `raw` must be a valid, non-null pointer returned by
     /// `cugraph_eigenvector_centrality`. Ownership is transferred to this
     /// struct.
-    pub(crate) unsafe fn from_raw(raw: *mut cugraph_centrality_result_t, device: i32) -> Result<Self> {
+    pub(crate) unsafe fn from_raw(
+        raw: *mut cugraph_centrality_result_t,
+        device: i32,
+        resource_handle_lease: Option<ResourceHandleLease>,
+    ) -> Result<Self> {
         // SAFETY: caller upholds the contract documented on this fn, which matches
         // `CentralityResult::from_raw`'s requirements (valid non-null pointer with
         // transferred ownership).
-        Ok(Self(unsafe { CentralityResult::from_raw(raw, device) }?))
+        Ok(Self(unsafe { CentralityResult::from_raw(raw, device, resource_handle_lease) }?))
     }
 
     /// Get the vertex ids as a runtime-typed device array view.
@@ -261,11 +276,15 @@ impl KatzCentralityResult {
     ///
     /// `raw` must be a valid, non-null pointer returned by
     /// `cugraph_katz_centrality`. Ownership is transferred to this struct.
-    pub(crate) unsafe fn from_raw(raw: *mut cugraph_centrality_result_t, device: i32) -> Result<Self> {
+    pub(crate) unsafe fn from_raw(
+        raw: *mut cugraph_centrality_result_t,
+        device: i32,
+        resource_handle_lease: Option<ResourceHandleLease>,
+    ) -> Result<Self> {
         // SAFETY: caller upholds the contract documented on this fn, which matches
         // `CentralityResult::from_raw`'s requirements (valid non-null pointer with
         // transferred ownership).
-        Ok(Self(unsafe { CentralityResult::from_raw(raw, device) }?))
+        Ok(Self(unsafe { CentralityResult::from_raw(raw, device, resource_handle_lease) }?))
     }
 
     /// Get the vertex ids as a runtime-typed device array view.
@@ -323,6 +342,8 @@ pub(crate) struct EdgeCentralityResult {
     raw: *mut cugraph_edge_centrality_result_t,
     device: i32,
     has_edge_ids: bool,
+    // Keeps a runtime-bound cuGraph handle alive until after Drop frees `raw`.
+    _resource_handle_lease: Option<ResourceHandleLease>,
     _nosend_nosync: PhantomData<*mut ()>,
 }
 
@@ -335,9 +356,16 @@ impl EdgeCentralityResult {
         raw: *mut cugraph_edge_centrality_result_t,
         device: i32,
         has_edge_ids: bool,
+        resource_handle_lease: Option<ResourceHandleLease>,
     ) -> Result<Self> {
         let raw = require_non_null(raw, "EdgeCentralityResult::from_raw", "edge_centrality_result")?;
-        Ok(Self { raw, device, has_edge_ids, _nosend_nosync: PhantomData })
+        Ok(Self {
+            raw,
+            device,
+            has_edge_ids,
+            _resource_handle_lease: resource_handle_lease,
+            _nosend_nosync: PhantomData,
+        })
     }
 
     fn raw_view(
@@ -415,11 +443,12 @@ impl EdgeBetweennessCentralityResult {
         raw: *mut cugraph_edge_centrality_result_t,
         device: i32,
         has_edge_ids: bool,
+        resource_handle_lease: Option<ResourceHandleLease>,
     ) -> Result<Self> {
         // SAFETY: caller upholds the contract documented on this fn, which matches
         // `EdgeCentralityResult::from_raw`'s requirements (valid non-null pointer
         // with transferred ownership).
-        Ok(Self(unsafe { EdgeCentralityResult::from_raw(raw, device, has_edge_ids) }?))
+        Ok(Self(unsafe { EdgeCentralityResult::from_raw(raw, device, has_edge_ids, resource_handle_lease) }?))
     }
 
     /// Source vertices for each edge centrality score.
@@ -457,6 +486,8 @@ impl EdgeBetweennessCentralityResult {
 pub struct HitsResult {
     raw: *mut cugraph_hits_result_t,
     device: i32,
+    // Keeps a runtime-bound cuGraph handle alive until after Drop frees `raw`.
+    _resource_handle_lease: Option<ResourceHandleLease>,
     _nosend_nosync: PhantomData<*mut ()>,
 }
 
@@ -471,9 +502,13 @@ impl HitsResult {
     ///
     /// `raw` must be a valid, non-null pointer returned by `cugraph_hits`.
     /// Ownership is transferred to this struct.
-    pub(crate) unsafe fn from_raw(raw: *mut cugraph_hits_result_t, device: i32) -> Result<Self> {
+    pub(crate) unsafe fn from_raw(
+        raw: *mut cugraph_hits_result_t,
+        device: i32,
+        resource_handle_lease: Option<ResourceHandleLease>,
+    ) -> Result<Self> {
         let raw = require_non_null(raw, "HitsResult::from_raw", "hits_result")?;
-        Ok(Self { raw, device, _nosend_nosync: PhantomData })
+        Ok(Self { raw, device, _resource_handle_lease: resource_handle_lease, _nosend_nosync: PhantomData })
     }
 
     fn raw_view(
@@ -553,10 +588,14 @@ impl BetweennessCentralityResult {
     /// `raw` must be a valid, non-null pointer returned by
     /// `cugraph_betweenness_centrality`. Ownership is transferred to this
     /// struct.
-    pub(crate) unsafe fn from_raw(raw: *mut cugraph_centrality_result_t, device: i32) -> Result<Self> {
+    pub(crate) unsafe fn from_raw(
+        raw: *mut cugraph_centrality_result_t,
+        device: i32,
+        resource_handle_lease: Option<ResourceHandleLease>,
+    ) -> Result<Self> {
         // SAFETY: the caller transfers ownership of a live cuGraph result to
         // this wrapper on success.
-        Ok(Self(unsafe { CentralityResult::from_raw(raw, device) }?))
+        Ok(Self(unsafe { CentralityResult::from_raw(raw, device, resource_handle_lease) }?))
     }
 
     /// Get the vertex ids as a runtime-typed device array view.
@@ -601,7 +640,7 @@ mod tests {
     #[test]
     fn centrality_result_from_raw_rejects_null() {
         // SAFETY: this exercises the constructor's null guard only.
-        let err = match unsafe { CentralityResult::from_raw(ptr::null_mut(), 0) } {
+        let err = match unsafe { CentralityResult::from_raw(ptr::null_mut(), 0, None) } {
             Err(err) => err,
             Ok(_) => panic!("null must be rejected"),
         };
@@ -612,7 +651,7 @@ mod tests {
     #[test]
     fn edge_centrality_result_from_raw_rejects_null() {
         // SAFETY: this exercises the constructor's null guard only.
-        let err = match unsafe { EdgeCentralityResult::from_raw(ptr::null_mut(), 0, false) } {
+        let err = match unsafe { EdgeCentralityResult::from_raw(ptr::null_mut(), 0, false, None) } {
             Err(err) => err,
             Ok(_) => panic!("null must be rejected"),
         };
@@ -623,7 +662,7 @@ mod tests {
     #[test]
     fn hits_result_from_raw_rejects_null() {
         // SAFETY: this exercises the constructor's null guard only.
-        let err = match unsafe { HitsResult::from_raw(ptr::null_mut(), 0) } {
+        let err = match unsafe { HitsResult::from_raw(ptr::null_mut(), 0, None) } {
             Err(err) => err,
             Ok(_) => panic!("null must be rejected"),
         };

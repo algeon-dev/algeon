@@ -15,7 +15,7 @@ use crate::{
     cuda::DeviceGuard,
     error::{Error, ErrorKind, Result, check_error, require_non_null},
     graph::{Forward, Graph},
-    handle::EnteredContext,
+    handle::{EnteredContext, ResourceHandleLease},
     structure::{
         VertexSelection,
         typed_results::{Distances, VertexIds},
@@ -26,6 +26,8 @@ use crate::{
 pub(crate) struct PathsResult {
     raw: *mut cugraph_paths_result_t,
     device: i32,
+    // Keeps a runtime-bound cuGraph handle alive until after Drop frees `raw`.
+    _resource_handle_lease: Option<ResourceHandleLease>,
     _nosend_nosync: PhantomData<*mut ()>,
 }
 
@@ -40,9 +42,10 @@ impl PathsResult {
         raw: *mut cugraph_paths_result_t,
         device: i32,
         operation: &'static str,
+        resource_handle_lease: Option<ResourceHandleLease>,
     ) -> Result<Self> {
         let raw = require_non_null(raw, operation, "paths_result")?;
-        Ok(Self { raw, device, _nosend_nosync: PhantomData })
+        Ok(Self { raw, device, _resource_handle_lease: resource_handle_lease, _nosend_nosync: PhantomData })
     }
 
     fn raw_view(
@@ -123,6 +126,8 @@ impl Drop for PathsResult {
 /// Result of extracting concrete paths from a BFS or SSSP paths result.
 pub struct ExtractPathsResult {
     storage: ExtractPathsStorage,
+    // Keeps a runtime-bound cuGraph handle alive until after Drop frees native storage.
+    _resource_handle_lease: Option<ResourceHandleLease>,
     _nosend_nosync: PhantomData<*mut ()>,
 }
 
@@ -143,17 +148,30 @@ impl ExtractPathsResult {
         raw: *mut cugraph_extract_paths_result_t,
         device: i32,
         operation: &'static str,
+        resource_handle_lease: Option<ResourceHandleLease>,
     ) -> Result<Self> {
         let raw = require_non_null(raw, operation, "extract_paths_result")?;
-        Ok(Self { storage: ExtractPathsStorage::Native { raw, device }, _nosend_nosync: PhantomData })
+        Ok(Self {
+            storage: ExtractPathsStorage::Native { raw, device },
+            _resource_handle_lease: resource_handle_lease,
+            _nosend_nosync: PhantomData,
+        })
     }
 
     pub(crate) fn from_i32_paths(paths: DeviceArray<i32>, max_path_length: usize) -> Self {
-        Self { storage: ExtractPathsStorage::I32 { paths, max_path_length }, _nosend_nosync: PhantomData }
+        Self {
+            storage: ExtractPathsStorage::I32 { paths, max_path_length },
+            _resource_handle_lease: None,
+            _nosend_nosync: PhantomData,
+        }
     }
 
     pub(crate) fn from_i64_paths(paths: DeviceArray<i64>, max_path_length: usize) -> Self {
-        Self { storage: ExtractPathsStorage::I64 { paths, max_path_length }, _nosend_nosync: PhantomData }
+        Self {
+            storage: ExtractPathsStorage::I64 { paths, max_path_length },
+            _resource_handle_lease: None,
+            _nosend_nosync: PhantomData,
+        }
     }
 
     /// Maximum row length in the extracted row-major path matrix.
@@ -252,7 +270,7 @@ pub(crate) fn extract_paths<'a, V: CugraphElement + 'a>(
 
     // SAFETY: on success, cuGraph transfers ownership of the result pointer to
     // the caller.
-    unsafe { ExtractPathsResult::from_raw(result, handle.device(), operation) }
+    unsafe { ExtractPathsResult::from_raw(result, handle.device(), operation, handle.runtime_bound_lease()) }
 }
 
 #[cfg(test)]
@@ -263,7 +281,7 @@ mod tests {
     fn paths_result_from_raw_rejects_null() {
         // SAFETY: passing a null pointer is an intentional invalid input — the
         // function's null check rejects it before any dereference happens.
-        let err = unsafe { PathsResult::from_raw(std::ptr::null_mut(), 0, "test_paths_result") }
+        let err = unsafe { PathsResult::from_raw(std::ptr::null_mut(), 0, "test_paths_result", None) }
             .expect_err("null paths result should fail");
         assert_eq!(err.kind(), ErrorKind::Unexpected);
         assert_eq!(err.operation(), "test_paths_result");
@@ -273,7 +291,7 @@ mod tests {
     fn extract_paths_result_from_raw_rejects_null() {
         // SAFETY: passing a null pointer is an intentional invalid input — the
         // function's null check rejects it before any dereference happens.
-        let err = unsafe { ExtractPathsResult::from_raw(std::ptr::null_mut(), 0, "test_extract_paths_result") }
+        let err = unsafe { ExtractPathsResult::from_raw(std::ptr::null_mut(), 0, "test_extract_paths_result", None) }
             .expect_err("null extract paths result should fail");
         assert_eq!(err.kind(), ErrorKind::Unexpected);
         assert_eq!(err.operation(), "test_extract_paths_result");

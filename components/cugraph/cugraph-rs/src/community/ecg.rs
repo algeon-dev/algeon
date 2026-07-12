@@ -80,5 +80,5 @@ pub(crate) fn ecg(
     let result = require_non_null(result, "ecg", "hierarchical_clustering_result")?;
 
     // SAFETY: on success, cuGraph transfers ownership of the result pointer.
-    unsafe { EcgResult::from_raw(result, handle.device()) }
+    unsafe { EcgResult::from_raw(result, handle.device(), handle.runtime_bound_lease()) }
 }

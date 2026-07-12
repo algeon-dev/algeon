@@ -16,7 +16,7 @@ use crate::{
     cuda::DeviceGuard,
     error::{Error, ErrorKind, Result, check_error, require_non_null},
     graph::{Graph, Transposed},
-    handle::EnteredContext,
+    handle::{EnteredContext, ResourceHandleLease},
     structure::typed_results::VertexIds,
     types::{CugraphElement, DataType, to_bool_t},
 };
@@ -52,7 +52,7 @@ pub(crate) fn degrees<V: CugraphElement>(
         check_error(code, error, "degrees")?;
     }
 
-    DegreesResult::from_raw(result, handle.device())
+    DegreesResult::from_raw(result, handle.device(), handle.runtime_bound_lease())
 }
 
 /// Compute only in-degrees for vertices in a graph.
@@ -86,7 +86,7 @@ pub(crate) fn in_degrees<V: CugraphElement>(
         check_error(code, error, "in_degrees")?;
     }
 
-    InDegreesResult::from_raw(result, handle.device())
+    InDegreesResult::from_raw(result, handle.device(), handle.runtime_bound_lease())
 }
 
 /// Compute only out-degrees for vertices in a graph.
@@ -120,7 +120,7 @@ pub(crate) fn out_degrees<T, V: CugraphElement>(
         check_error(code, error, "out_degrees")?;
     }
 
-    OutDegreesResult::from_raw(result, handle.device())
+    OutDegreesResult::from_raw(result, handle.device(), handle.runtime_bound_lease())
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -200,13 +200,20 @@ impl<'a> DegreeValues<'a> {
 struct DegreeResultInner {
     raw: *mut cugraph_degrees_result_t,
     device: i32,
+    // Keeps a runtime-bound cuGraph handle alive until after Drop frees `raw`.
+    _resource_handle_lease: Option<ResourceHandleLease>,
     _nosend_nosync: PhantomData<*mut ()>,
 }
 
 impl DegreeResultInner {
-    fn new(raw: *mut cugraph_degrees_result_t, device: i32, operation: &'static str) -> Result<Self> {
+    fn new(
+        raw: *mut cugraph_degrees_result_t,
+        device: i32,
+        operation: &'static str,
+        resource_handle_lease: Option<ResourceHandleLease>,
+    ) -> Result<Self> {
         let raw = require_non_null(raw, operation, "degrees_result")?;
-        Ok(Self { raw, device, _nosend_nosync: PhantomData })
+        Ok(Self { raw, device, _resource_handle_lease: resource_handle_lease, _nosend_nosync: PhantomData })
     }
 
     fn raw_view(
@@ -260,8 +267,12 @@ impl std::fmt::Debug for DegreesResult {
 }
 
 impl DegreesResult {
-    fn from_raw(raw: *mut cugraph_degrees_result_t, device: i32) -> Result<Self> {
-        Ok(Self(DegreeResultInner::new(raw, device, "degrees")?))
+    fn from_raw(
+        raw: *mut cugraph_degrees_result_t,
+        device: i32,
+        resource_handle_lease: Option<ResourceHandleLease>,
+    ) -> Result<Self> {
+        Ok(Self(DegreeResultInner::new(raw, device, "degrees", resource_handle_lease)?))
     }
 
     /// Get the vertex ids as a runtime-typed device array view.
@@ -303,8 +314,12 @@ impl std::fmt::Debug for InDegreesResult {
 }
 
 impl InDegreesResult {
-    fn from_raw(raw: *mut cugraph_degrees_result_t, device: i32) -> Result<Self> {
-        Ok(Self(DegreeResultInner::new(raw, device, "in_degrees")?))
+    fn from_raw(
+        raw: *mut cugraph_degrees_result_t,
+        device: i32,
+        resource_handle_lease: Option<ResourceHandleLease>,
+    ) -> Result<Self> {
+        Ok(Self(DegreeResultInner::new(raw, device, "in_degrees", resource_handle_lease)?))
     }
 
     /// Get the vertex ids as a runtime-typed device array view.
@@ -341,8 +356,12 @@ impl std::fmt::Debug for OutDegreesResult {
 }
 
 impl OutDegreesResult {
-    fn from_raw(raw: *mut cugraph_degrees_result_t, device: i32) -> Result<Self> {
-        Ok(Self(DegreeResultInner::new(raw, device, "out_degrees")?))
+    fn from_raw(
+        raw: *mut cugraph_degrees_result_t,
+        device: i32,
+        resource_handle_lease: Option<ResourceHandleLease>,
+    ) -> Result<Self> {
+        Ok(Self(DegreeResultInner::new(raw, device, "out_degrees", resource_handle_lease)?))
     }
 
     /// Get the vertex ids as a runtime-typed device array view.

@@ -101,5 +101,5 @@ pub(crate) fn hits<V: CugraphElement, W: CugraphElement>(
 
     let result = require_non_null(result, "hits", "hits_result")?;
     // SAFETY: on success, cuGraph returns ownership of `result` to the caller.
-    unsafe { HitsResult::from_raw(result, handle.device()) }
+    unsafe { HitsResult::from_raw(result, handle.device(), handle.runtime_bound_lease()) }
 }

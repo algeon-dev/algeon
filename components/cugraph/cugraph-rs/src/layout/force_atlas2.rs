@@ -57,7 +57,7 @@ use crate::{
     cuda::DeviceGuard,
     error::{Error, ErrorKind, Result, check_error, require_non_null},
     graph::{Graph, Transposition},
-    handle::EnteredContext,
+    handle::{EnteredContext, ResourceHandleLease},
     params::{ClosedUnitF64, IterationCount, NonNegativeF64, PositiveF64, defaults},
     random::RngState,
     structure::{
@@ -202,6 +202,8 @@ pub struct InitialPositions<'a, V: CugraphElement = i32, W: CugraphElement = f32
 pub struct LayoutResult {
     raw: *mut cugraph_layout_result_t,
     device: i32,
+    // Keeps a runtime-bound cuGraph handle alive until after Drop frees `raw`.
+    _resource_handle_lease: Option<ResourceHandleLease>,
     _nosend_nosync: PhantomData<*mut ()>,
 }
 
@@ -218,9 +220,13 @@ impl LayoutResult {
     ///
     /// `raw` must be a valid, non-null pointer returned by the cuGraph layout
     /// C API. Ownership is transferred to this struct.
-    unsafe fn from_raw(raw: *mut cugraph_layout_result_t, device: i32) -> Result<Self> {
+    unsafe fn from_raw(
+        raw: *mut cugraph_layout_result_t,
+        device: i32,
+        resource_handle_lease: Option<ResourceHandleLease>,
+    ) -> Result<Self> {
         let raw = require_non_null(raw, "LayoutResult::from_raw", "layout_result")?;
-        Ok(Self { raw, device, _nosend_nosync: PhantomData })
+        Ok(Self { raw, device, _resource_handle_lease: resource_handle_lease, _nosend_nosync: PhantomData })
     }
 
     /// Get the vertex ids as a runtime-typed device array view.
@@ -514,8 +520,7 @@ pub(crate) fn force_atlas2<T: Transposition, V: CugraphElement, W: CugraphElemen
     let result = require_non_null(result, "force_atlas2", "layout_result")?;
 
     // SAFETY: on success, cuGraph returns ownership of `result` to the caller.
-    // SAFETY: on success, cuGraph returns ownership of `result` to the caller.
-    unsafe { LayoutResult::from_raw(result, handle.device()) }
+    unsafe { LayoutResult::from_raw(result, handle.device(), handle.runtime_bound_lease()) }
 }
 
 #[cfg(test)]
@@ -527,7 +532,7 @@ mod layout_result_constructor_tests {
     #[test]
     fn layout_result_from_raw_rejects_null() {
         // SAFETY: this exercises the constructor's null guard only.
-        let err = unsafe { LayoutResult::from_raw(ptr::null_mut(), 0) }.expect_err("null must be rejected");
+        let err = unsafe { LayoutResult::from_raw(ptr::null_mut(), 0, None) }.expect_err("null must be rejected");
         assert_eq!(err.kind(), ErrorKind::Unexpected);
         assert_eq!(err.operation(), "LayoutResult::from_raw");
     }
