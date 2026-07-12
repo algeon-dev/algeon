@@ -8,6 +8,7 @@ pub(super) fn execute_edge_normalize(
     input: GpuDataFrame,
     metrics: &mut QueryMetrics,
 ) -> Result<GpuDataFrame> {
+    let graph_residency = input.graph_residency().cloned();
     // Edge normalization only restructures topology (reverse/dedup); a null
     // weight or edge_id must not drop an edge here. Weight-null conflicts are
     // resolved by the weight combiner during deduplication, not by dropping.
@@ -78,7 +79,11 @@ pub(super) fn execute_edge_normalize(
     }
 
     metrics.operator_time += timer.elapsed();
-    Ok(GpuDataFrame::new(frame))
+    let output = GpuDataFrame::new(frame);
+    Ok(match graph_residency {
+        Some(graph_residency) => output.with_graph_residency(graph_residency),
+        None => output,
+    })
 }
 
 fn project_edge_columns(frame: DataFrame, spec: &EdgeNormalizeSpec, node_id: NodeId) -> Result<DataFrame> {

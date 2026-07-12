@@ -2,20 +2,24 @@ use std::sync::Arc;
 
 use arrow::datatypes::{DataType, Field, Schema};
 use nexus_query_engine::{
-    GRAPH_ALGORITHM_STRICT_BOUNDED_LOWER_LEVEL_CONTRACTS, GRAPH_ALGORITHM_STRICT_BOUNDED_MEMORY_BOUNDARY,
-    GRAPH_ALGORITHM_STRICT_BOUNDED_REQUIRED_CONTRACT, GRAPH_MEMORY_BUDGET_TRACKING_MIN_LIMIT_BYTES,
-    GRAPH_OPERATION_REGISTRY, GpuResidentSource, GraphAlgorithm, GraphAlgorithmParams, GraphAlgorithmSpec,
-    GraphBetweennessCentralityParams, GraphBetweennessSeeds, GraphBfsEndpointPolicy, GraphBfsParams,
-    GraphBfsPredicateInputs, GraphCalibrationSource, GraphConstructionOptions, GraphConstructionPolicy,
-    GraphEdgeBetweennessCentralityParams, GraphEdgeColumnBindings, GraphLayoutRequirement, GraphLouvainParams,
-    GraphMemoryClass, GraphMemoryModel, GraphMemoryModelInput, GraphModelErrorRatio, GraphOutputSchemaKind,
-    GraphPageRankParams, GraphPredicateInput, GraphReservationOutcome, GraphReservationReport, GraphSeedMode,
-    GraphSourceVertexRequirement, GraphStatistics, GraphTriangleCountAllParams, GraphVertexEstimate,
-    GraphVertexEstimateSource, GraphVertexIdTypeSupport, GraphWeightPolicy, PlanNode, QueryErrorCode, QueryPlan,
-    QueryPlanBuilder, SourceNode, StrictBoundedContractReport, StrictBoundedExecutionMode,
+    BinaryOp, CredentialMode, Expr, GRAPH_ALGORITHM_STRICT_BOUNDED_LOWER_LEVEL_CONTRACTS,
+    GRAPH_ALGORITHM_STRICT_BOUNDED_MEMORY_BOUNDARY, GRAPH_ALGORITHM_STRICT_BOUNDED_REQUIRED_CONTRACT,
+    GRAPH_MEMORY_BUDGET_TRACKING_MIN_LIMIT_BYTES, GRAPH_OPERATION_REGISTRY, GpuResidentSource, GraphAlgorithm,
+    GraphAlgorithmParams, GraphAlgorithmSpec, GraphBetweennessCentralityParams, GraphBetweennessSeeds,
+    GraphBfsEndpointPolicy, GraphBfsParams, GraphBfsPredicateInputs, GraphCalibrationSource, GraphConstructionOptions,
+    GraphConstructionPolicy, GraphEdgeBetweennessCentralityParams, GraphEdgeColumnBindings, GraphLayoutRequirement,
+    GraphLouvainParams, GraphMemoryClass, GraphMemoryModel, GraphMemoryModelInput, GraphModelErrorRatio,
+    GraphOutputSchemaKind, GraphPageRankParams, GraphPredicateInput, GraphReservationOutcome, GraphReservationReport,
+    GraphResidencyDescriptor, GraphResidencyOrientation, GraphResidencyPlanAnalysis, GraphSeedMode,
+    GraphSourceFingerprintBypassReason, GraphSourceVertexRequirement, GraphStatistics, GraphTriangleCountAllParams,
+    GraphVertexEstimate, GraphVertexEstimateSource, GraphVertexIdTypeSupport, GraphWeightPolicy, LiteralValue,
+    LocalParquetFile, LocalParquetSource, ParquetFieldIdReadBinding, ParquetPositionDeleteFile, PlanNode,
+    ProjectionOutput, QueryErrorCode, QueryPlan, QueryPlanBuilder, ResolvedParquetSource, SourceNode,
+    StrictBoundedContractReport, StrictBoundedExecutionMode,
     capability::{CapabilityDecision, ContractQuality, ContractStatus, NodeOperator},
-    graph_memory_class, graph_memory_reservation_required, graph_runtime_statistics_probe_bytes,
-    graph_vertex_estimate_probe_bytes, stable_graph_result_schema, triangle_count_peak_chunk_min_degree_pricing_term,
+    graph_memory_class, graph_memory_reservation_required, graph_residency_descriptor_for_edge_plan,
+    graph_runtime_statistics_probe_bytes, graph_vertex_estimate_probe_bytes, stable_graph_result_schema,
+    triangle_count_peak_chunk_min_degree_pricing_term,
 };
 
 #[test]
@@ -65,6 +69,267 @@ fn graph_algorithm_builder_records_ir_contracts_and_display_summary() {
     assert!(display.contains("renumber=true"));
     assert!(display.contains("construction_policy=raw_libcugraph"));
     assert!(display.contains("output_schema_fields=2"));
+}
+
+#[test]
+fn graph_residency_descriptor_sees_through_edge_projection() {
+    let plan = graph_edge_source_plan(&["src", "dst", "weight"], Some(&["src", "dst", "weight"]));
+    let spec = GraphAlgorithmSpec::with_stable_schema(
+        GraphAlgorithm::PageRank,
+        GraphEdgeColumnBindings::new("src", "dst", Some("weight")),
+        GraphConstructionOptions { directed: true, renumber: true, policy: GraphConstructionPolicy::RawLibcugraph },
+        GraphAlgorithmParams::PageRank(GraphPageRankParams::default()),
+    );
+
+    let GraphResidencyPlanAnalysis::Keyable(descriptor) = graph_residency_descriptor_for_edge_plan(&plan, &spec) else {
+        panic!("projected local parquet graph edge source should be keyable");
+    };
+    assert!(descriptor.source_fingerprint.as_str().starts_with("graph-source-v1-fnv64-"));
+    assert_eq!(descriptor.vertex_data_type, DataType::Int64);
+    assert_eq!(descriptor.weight_data_type, Some(DataType::Float64));
+
+    let forward = descriptor.resident_key(&spec, GraphResidencyOrientation::Forward);
+    let transposed = descriptor.resident_key(&spec, GraphResidencyOrientation::Transposed);
+    assert_ne!(forward, transposed);
+    assert_eq!(forward.weight_column.as_deref(), Some("weight"));
+}
+
+#[test]
+fn graph_residency_descriptor_ignores_unconsumed_weight_without_python_normalization() {
+    let with_extra_weight = graph_edge_source_plan(&["src", "dst", "weight"], Some(&["src", "dst"]));
+    let without_extra_weight = graph_edge_source_plan(&["src", "dst"], Some(&["src", "dst"]));
+    let spec = GraphAlgorithmSpec::with_stable_schema(
+        GraphAlgorithm::Bfs,
+        GraphEdgeColumnBindings::new("src", "dst", Some("weight")),
+        GraphConstructionOptions { directed: true, renumber: true, policy: GraphConstructionPolicy::RawLibcugraph },
+        GraphAlgorithmParams::Bfs(Box::new(GraphBfsParams::new(7, None))),
+    );
+
+    let GraphResidencyPlanAnalysis::Keyable(with_extra_weight) =
+        graph_residency_descriptor_for_edge_plan(&with_extra_weight, &spec)
+    else {
+        panic!("extra unconsumed weight source should still be keyable");
+    };
+    let GraphResidencyPlanAnalysis::Keyable(without_extra_weight) =
+        graph_residency_descriptor_for_edge_plan(&without_extra_weight, &spec)
+    else {
+        panic!("unweighted source should be keyable");
+    };
+
+    assert_eq!(with_extra_weight.source_fingerprint, without_extra_weight.source_fingerprint);
+    assert_eq!(with_extra_weight.weight_data_type, None);
+}
+
+#[test]
+fn graph_residency_descriptor_includes_weight_used_by_python_normalization() {
+    let plan = graph_edge_source_plan(&["src", "dst", "weight"], Some(&["src", "dst", "weight"]));
+    let spec = GraphAlgorithmSpec::with_stable_schema(
+        GraphAlgorithm::Bfs,
+        GraphEdgeColumnBindings::new("src", "dst", Some("weight")),
+        GraphConstructionOptions::default(),
+        GraphAlgorithmParams::Bfs(Box::new(GraphBfsParams::new(7, None))),
+    )
+    .with_edge_normalize_inserted(true);
+
+    let GraphResidencyPlanAnalysis::Keyable(descriptor) = graph_residency_descriptor_for_edge_plan(&plan, &spec) else {
+        panic!("python-normalized weighted source should be keyable");
+    };
+
+    assert_eq!(descriptor.weight_data_type, Some(DataType::Float64));
+}
+
+#[test]
+fn graph_residency_fingerprint_distinguishes_rowset_and_preparation_contracts() {
+    let raw_spec = graph_residency_bfs_spec(GraphEdgeColumnBindings::new("src", "dst", None::<String>));
+    let base_plan = graph_edge_source_plan(&["src", "dst"], Some(&["src", "dst"]));
+    let base = graph_keyable_descriptor(&base_plan, &raw_spec);
+
+    let swapped_spec = graph_residency_bfs_spec(GraphEdgeColumnBindings::new("dst", "src", None::<String>));
+    assert_ne!(base.source_fingerprint, graph_keyable_descriptor(&base_plan, &swapped_spec).source_fingerprint);
+
+    let mtime_plan = graph_edge_source_plan_from_source(
+        graph_local_parquet_source_with_file(
+            &["src", "dst"],
+            graph_local_parquet_file()
+                .with_stable_id("local:/tmp/graph-residency.parquet:1024:mtime=2026-07-12T00:00:01Z"),
+        ),
+        Some(&["src", "dst"]),
+    );
+    assert_ne!(base.source_fingerprint, graph_keyable_descriptor(&mtime_plan, &raw_spec).source_fingerprint);
+
+    let row_group_plan = graph_edge_source_plan_from_source(
+        graph_local_parquet_source_with_file(&["src", "dst"], graph_local_parquet_file().with_row_groups(vec![1])),
+        Some(&["src", "dst"]),
+    );
+    assert_ne!(base.source_fingerprint, graph_keyable_descriptor(&row_group_plan, &raw_spec).source_fingerprint);
+
+    let scan_limit_plan = graph_edge_source_plan_from_source(
+        graph_local_parquet_source(&["src", "dst"]).with_scan_limit(Some(10)),
+        Some(&["src", "dst"]),
+    );
+    assert_ne!(base.source_fingerprint, graph_keyable_descriptor(&scan_limit_plan, &raw_spec).source_fingerprint);
+
+    let predicate = Expr::binary(Expr::column("src"), BinaryOp::Gt, Expr::literal(LiteralValue::Int64(7)));
+    let predicate_plan = graph_edge_source_plan_from_source(
+        graph_local_parquet_source(&["src", "dst"]).with_reader_predicate(predicate),
+        Some(&["src", "dst"]),
+    );
+    assert_ne!(base.source_fingerprint, graph_keyable_descriptor(&predicate_plan, &raw_spec).source_fingerprint);
+
+    let python_spec = GraphAlgorithmSpec::with_stable_schema(
+        GraphAlgorithm::Bfs,
+        GraphEdgeColumnBindings::new("src", "dst", None::<String>),
+        GraphConstructionOptions::default(),
+        GraphAlgorithmParams::Bfs(Box::new(GraphBfsParams::new(7, None))),
+    )
+    .with_edge_normalize_inserted(true);
+    assert_ne!(
+        base.resident_key(&raw_spec, GraphResidencyOrientation::Forward),
+        graph_keyable_descriptor(&base_plan, &python_spec)
+            .resident_key(&python_spec, GraphResidencyOrientation::Forward),
+    );
+}
+
+#[test]
+fn graph_residency_descriptor_distinguishes_object_store_content_identity() {
+    let spec = graph_residency_bfs_spec(GraphEdgeColumnBindings::new("src", "dst", None::<String>));
+    let content_a = graph_edge_source_plan_from_source(
+        graph_local_parquet_source_with_file(&["src", "dst"], graph_object_store_parquet_file("etag-a")),
+        Some(&["src", "dst"]),
+    );
+    let content_b = graph_edge_source_plan_from_source(
+        graph_local_parquet_source_with_file(&["src", "dst"], graph_object_store_parquet_file("etag-b")),
+        Some(&["src", "dst"]),
+    );
+    assert_ne!(
+        graph_keyable_descriptor(&content_a, &spec).source_fingerprint,
+        graph_keyable_descriptor(&content_b, &spec).source_fingerprint,
+    );
+
+    let weak_identity = graph_edge_source_plan_from_source(
+        graph_local_parquet_source_with_file(
+            &["src", "dst"],
+            graph_object_store_parquet_file("weak_size_1024_rows_10"),
+        ),
+        Some(&["src", "dst"]),
+    );
+    assert_eq!(
+        graph_residency_descriptor_for_edge_plan(&weak_identity, &spec).bypass_reason(),
+        Some(GraphSourceFingerprintBypassReason::UnstableSourceIdentity),
+    );
+
+    let weak_etag = graph_edge_source_plan_from_source(
+        graph_local_parquet_source_with_file(&["src", "dst"], graph_object_store_parquet_file("W/\"etag\"")),
+        Some(&["src", "dst"]),
+    );
+    assert_eq!(
+        graph_residency_descriptor_for_edge_plan(&weak_etag, &spec).bypass_reason(),
+        Some(GraphSourceFingerprintBypassReason::UnstableSourceIdentity),
+    );
+
+    let empty_identity = graph_edge_source_plan_from_source(
+        graph_local_parquet_source_with_file(&["src", "dst"], graph_object_store_parquet_file("  ")),
+        Some(&["src", "dst"]),
+    );
+    assert_eq!(
+        graph_residency_descriptor_for_edge_plan(&empty_identity, &spec).bypass_reason(),
+        Some(GraphSourceFingerprintBypassReason::UnstableSourceIdentity),
+    );
+}
+
+#[test]
+fn graph_residency_descriptor_bypasses_delete_files_and_unstable_identity() {
+    let delete_file = ParquetPositionDeleteFile::from_resolved_parquet_source(
+        "graph-delete",
+        ResolvedParquetSource::local_kvikio("/tmp/graph-deletes.parquet"),
+    )
+    .expect("delete source should be valid");
+    let delete_source = graph_local_parquet_source_with_file(
+        &["src", "dst"],
+        graph_local_parquet_file().with_position_delete_files(vec![delete_file]),
+    );
+    let delete_plan = graph_edge_source_plan_from_source(delete_source, Some(&["src", "dst"]));
+    let spec = GraphAlgorithmSpec::with_stable_schema(
+        GraphAlgorithm::Bfs,
+        GraphEdgeColumnBindings::new("src", "dst", None::<String>),
+        GraphConstructionOptions { directed: true, renumber: true, policy: GraphConstructionPolicy::RawLibcugraph },
+        GraphAlgorithmParams::Bfs(Box::new(GraphBfsParams::new(7, None))),
+    );
+    assert_eq!(
+        graph_residency_descriptor_for_edge_plan(&delete_plan, &spec).bypass_reason(),
+        Some(GraphSourceFingerprintBypassReason::DeleteFilesPresent),
+    );
+
+    let unstable_source = graph_local_parquet_source_with_file(
+        &["src", "dst"],
+        LocalParquetFile::new("/tmp/graph-unstable.parquet").with_file_size_bytes(1024),
+    );
+    let unstable_plan = graph_edge_source_plan_from_source(unstable_source, Some(&["src", "dst"]));
+    assert_eq!(
+        graph_residency_descriptor_for_edge_plan(&unstable_plan, &spec).bypass_reason(),
+        Some(GraphSourceFingerprintBypassReason::UnstableSourceIdentity),
+    );
+}
+
+#[test]
+fn graph_residency_descriptor_bypasses_field_id_transforms_and_gpu_inputs() {
+    let spec = graph_residency_bfs_spec(GraphEdgeColumnBindings::new("src", "dst", None::<String>));
+
+    let field_id_source = graph_local_parquet_source_with_file(
+        &["src", "dst"],
+        graph_local_parquet_file().with_field_id_read_bindings(vec![ParquetFieldIdReadBinding::new(
+            17,
+            "src",
+            "src_physical",
+            0,
+            false,
+            DataType::Int64,
+        )]),
+    );
+    let field_id_plan = graph_edge_source_plan_from_source(field_id_source, Some(&["src", "dst"]));
+    assert_eq!(
+        graph_residency_descriptor_for_edge_plan(&field_id_plan, &spec).bypass_reason(),
+        Some(GraphSourceFingerprintBypassReason::FieldIdReadBindingsPresent),
+    );
+
+    let local_source = graph_local_parquet_source(&["src", "dst"]);
+    let output_schema = Arc::clone(local_source.output_schema());
+    let mut builder = QueryPlanBuilder::new();
+    let source = builder.add_source(SourceNode::LocalParquet(local_source));
+    let filter = builder.add_filter(source, Expr::literal(LiteralValue::Boolean(true)), output_schema);
+    let filtered_plan = builder.finish_gpu_resident(filter);
+    assert_eq!(
+        graph_residency_descriptor_for_edge_plan(&filtered_plan, &spec).bypass_reason(),
+        Some(GraphSourceFingerprintBypassReason::UnsupportedTransformedInput),
+    );
+
+    let mut builder = QueryPlanBuilder::new();
+    let gpu = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("edges", edge_schema_no_weight())));
+    let gpu_plan = builder.finish_gpu_resident(gpu);
+    assert_eq!(
+        graph_residency_descriptor_for_edge_plan(&gpu_plan, &spec).bypass_reason(),
+        Some(GraphSourceFingerprintBypassReason::NonLocalParquetSource),
+    );
+}
+
+#[test]
+fn graph_residency_descriptor_reports_vertex_dtype_mismatch() {
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("src", DataType::Int64, false),
+        Field::new("dst", DataType::Int32, false),
+    ]));
+    let source = LocalParquetSource::from_files(
+        vec![graph_local_parquet_file()],
+        schema,
+        vec!["src".to_string(), "dst".to_string()],
+    );
+    let plan = graph_edge_source_plan_from_source(source, Some(&["src", "dst"]));
+    let spec = graph_residency_bfs_spec(GraphEdgeColumnBindings::new("src", "dst", None::<String>));
+
+    assert_eq!(
+        graph_residency_descriptor_for_edge_plan(&plan, &spec).bypass_reason(),
+        Some(GraphSourceFingerprintBypassReason::EdgeVertexDataTypeMismatch),
+    );
 }
 
 #[test]
@@ -1713,6 +1978,93 @@ fn assert_graph_directedness_rejection(plan: &QueryPlan, algorithm: &str, direct
     );
 }
 
+fn graph_residency_bfs_spec(edge_columns: GraphEdgeColumnBindings) -> GraphAlgorithmSpec {
+    GraphAlgorithmSpec::with_stable_schema(
+        GraphAlgorithm::Bfs,
+        edge_columns,
+        GraphConstructionOptions { directed: true, renumber: true, policy: GraphConstructionPolicy::RawLibcugraph },
+        GraphAlgorithmParams::Bfs(Box::new(GraphBfsParams::new(7, None))),
+    )
+}
+
+fn graph_keyable_descriptor(plan: &QueryPlan, spec: &GraphAlgorithmSpec) -> GraphResidencyDescriptor {
+    let GraphResidencyPlanAnalysis::Keyable(descriptor) = graph_residency_descriptor_for_edge_plan(plan, spec) else {
+        panic!("graph edge source should be keyable");
+    };
+    descriptor
+}
+
+fn graph_edge_source_plan(read_columns: &[&str], projection: Option<&[&str]>) -> QueryPlan {
+    graph_edge_source_plan_from_source(graph_local_parquet_source(read_columns), projection)
+}
+
+fn graph_edge_source_plan_from_source(source: LocalParquetSource, projection: Option<&[&str]>) -> QueryPlan {
+    let mut builder = QueryPlanBuilder::new();
+    let source = builder.add_source(SourceNode::LocalParquet(source));
+    let root = match projection {
+        Some(columns) => builder.add_projection(
+            source,
+            columns
+                .iter()
+                .map(|column| {
+                    ProjectionOutput::new(
+                        Expr::column(*column),
+                        graph_edge_field(column).expect("test projection column must exist"),
+                    )
+                })
+                .collect(),
+        ),
+        None => source,
+    };
+    builder.finish_gpu_resident(root)
+}
+
+fn graph_local_parquet_source(read_columns: &[&str]) -> LocalParquetSource {
+    graph_local_parquet_source_with_file(read_columns, graph_local_parquet_file())
+}
+
+fn graph_local_parquet_source_with_file(read_columns: &[&str], file: LocalParquetFile) -> LocalParquetSource {
+    let fields = read_columns
+        .iter()
+        .map(|column| graph_edge_field(column).expect("test source column must exist"))
+        .collect::<Vec<_>>();
+    let schema = Arc::new(Schema::new(fields));
+    LocalParquetSource::from_files(
+        vec![file],
+        schema,
+        read_columns.iter().map(|column| (*column).to_string()).collect(),
+    )
+}
+
+fn graph_local_parquet_file() -> LocalParquetFile {
+    LocalParquetFile::new("/tmp/graph-residency.parquet")
+        .with_stable_id("local:/tmp/graph-residency.parquet:1024:mtime=2026-07-12T00:00:00Z")
+        .with_file_size_bytes(1024)
+        .with_row_groups(vec![0, 2])
+}
+
+fn graph_object_store_parquet_file(content_identity: &str) -> LocalParquetFile {
+    let resolved = ResolvedParquetSource::remote_host_buffer(
+        "s3://bucket/graph-residency.parquet",
+        "s3://bucket/graph-residency.parquet",
+        CredentialMode::SharedProcessEnv,
+    )
+    .with_content_identity(content_identity);
+    LocalParquetFile::from_resolved_parquet_source(resolved)
+        .expect("object-store graph source should be valid")
+        .with_file_size_bytes(1024)
+        .with_row_groups(vec![0, 2])
+}
+
+fn graph_edge_field(column: &str) -> Option<Field> {
+    match column {
+        "src" | "dst" => Some(Field::new(column, DataType::Int64, false)),
+        "weight" => Some(Field::new(column, DataType::Float64, false)),
+        "edge_id" => Some(Field::new(column, DataType::Int64, false)),
+        _ => None,
+    }
+}
+
 fn graph_plan(algorithm: GraphAlgorithm, params: GraphAlgorithmParams, input_schema: Arc<Schema>) -> QueryPlan {
     graph_plan_with_options(algorithm, params, GraphConstructionOptions::default(), input_schema)
 }
@@ -1754,6 +2106,10 @@ fn edge_schema(vertex_type: DataType, weight_type: DataType, weight_nullable: bo
         Field::new("dst", vertex_type, false),
         Field::new("weight", weight_type, weight_nullable),
     ]))
+}
+
+fn edge_schema_no_weight() -> Arc<Schema> {
+    Arc::new(Schema::new(vec![Field::new("src", DataType::Int64, false), Field::new("dst", DataType::Int64, false)]))
 }
 
 fn edge_schema_with_vertex_nullability(vertex_type: DataType, weight_type: DataType) -> Arc<Schema> {

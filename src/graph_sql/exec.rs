@@ -43,11 +43,12 @@ use nexus_query_engine::{
     GraphKCoreDegreeType, GraphKCoreParams, GraphKatzCentralityParams, GraphLeidenParams, GraphLouvainParams,
     GraphMstParams, GraphOutDegreesAllParams, GraphPageRankParams,
     GraphPageRankPersonalizationInput as NativeGraphPageRankPersonalizationInput, GraphPersonalizedPageRankParams,
-    GraphPredicateInput as NativeGraphPredicateInput, GraphSccParams, GraphSpectralClusteringParams, GraphSsspParams,
-    GraphTriangleCountAllParams, GraphWccParams, LimitSpec, LiteralValue, MemoryControlPolicy, PlanNode,
-    ProjectionOutput, QueryMetrics, QueryOutput, QueryPlanBuilder, SourceNode, execute_query_plan,
-    execute_query_plan_with_gpu_inputs, graph_edge_list_output_rows_for_plan, graph_memory_estimate_for_edge_list,
-    graph_memory_reservation_required,
+    GraphPredicateInput as NativeGraphPredicateInput, GraphResidencyDescriptor, GraphResidencyPlanAnalysis,
+    GraphSccParams, GraphSpectralClusteringParams, GraphSsspParams, GraphTriangleCountAllParams, GraphWccParams,
+    LimitSpec, LiteralValue, MemoryControlPolicy, PlanNode, ProjectionOutput, QueryMetrics, QueryOutput,
+    QueryPlanBuilder, SourceNode, execute_query_plan, execute_query_plan_with_gpu_inputs,
+    graph_edge_list_output_rows_for_plan, graph_memory_estimate_for_edge_list, graph_memory_reservation_required,
+    graph_residency_descriptor_for_edge_plan,
 };
 
 use super::{
@@ -74,6 +75,7 @@ pub struct CugraphAlgoExec {
     limit: Option<usize>,
     native_execution_config: NativeCudfExecutionConfig,
     edge_source_canonical_facts: CugraphEdgeCanonicalFacts,
+    graph_residency: Option<GraphResidencyDescriptor>,
     gpu_result_input_name: String,
     metrics: ExecutionPlanMetricsSet,
     cache: Arc<PlanProperties>,
@@ -112,6 +114,7 @@ impl CugraphAlgoExec {
         let schema = projected_schema(&spec.output_schema, projection.as_ref())?;
         let edge_source_canonical_facts = cugraph_edge_canonical_facts(edge_source.as_ref(), &spec);
         let edge_normalize_inserted = cugraph_edge_normalize_inserted(&spec, &edge_source_canonical_facts);
+        let graph_residency = cugraph_graph_residency_descriptor(&spec, edge_source.as_ref(), edge_normalize_inserted);
         let native_execution_config = cugraph_execution_config_with_graph_aware_ticket(
             &spec,
             edge_source.as_ref(),
@@ -126,6 +129,7 @@ impl CugraphAlgoExec {
             limit,
             native_execution_config,
             edge_source_canonical_facts,
+            graph_residency,
             gpu_result_input_name,
             metrics: ExecutionPlanMetricsSet::new(),
             cache: Arc::new(PlanProperties::new(
@@ -194,6 +198,7 @@ impl CugraphAlgoExec {
             let edge_frame =
                 execute_edge_source_to_gpu(native_context, Arc::clone(&self.edge_source), Arc::clone(&task_context))
                     .await?;
+            let edge_frame = attach_graph_residency(edge_frame, self.graph_residency.as_ref());
             let predicate_frames =
                 execute_predicate_sources_to_gpu(native_context, &self.predicate_sources, Arc::clone(&task_context))
                     .await?;
@@ -278,6 +283,7 @@ impl CugraphAlgoExec {
         let edge_frame =
             execute_edge_source_to_gpu(native_context, Arc::clone(&self.edge_source), Arc::clone(&task_context))
                 .await?;
+        let edge_frame = attach_graph_residency(edge_frame, self.graph_residency.as_ref());
         let predicate_frames =
             execute_predicate_sources_to_gpu(native_context, &self.predicate_sources, Arc::clone(&task_context))
                 .await?;
@@ -427,6 +433,7 @@ impl ExecutionPlan for CugraphAlgoExec {
         let predicate_sources = self.predicate_sources.clone();
         let projection = self.projection.clone();
         let limit = self.limit;
+        let graph_residency = self.graph_residency.clone();
         let edge_normalize_inserted = self.edge_normalize_inserted();
         let default_execution_config = self.native_execution_config.clone();
         let metrics =
@@ -465,6 +472,7 @@ impl ExecutionPlan for CugraphAlgoExec {
             let edge_frame =
                 execute_edge_source_to_gpu(context, Arc::clone(&edge_source), Arc::clone(&execution_task_context))
                     .await?;
+            let edge_frame = attach_graph_residency(edge_frame, graph_residency.as_ref());
             let predicate_frames =
                 execute_predicate_sources_to_gpu(context, &predicate_sources, Arc::clone(&execution_task_context))
                     .await?;
@@ -691,6 +699,60 @@ fn graph_edge_source_output_rows(edge_source: &dyn ExecutionPlan) -> Option<u64>
     None
 }
 
+fn cugraph_graph_residency_descriptor(
+    spec: &CugraphAlgorithmSpec,
+    edge_source: &dyn ExecutionPlan,
+    edge_normalize_inserted: bool,
+) -> Option<GraphResidencyDescriptor> {
+    let native_spec = native_graph_spec_for_residency(spec, edge_normalize_inserted);
+    let analysis = if let Some(native) = as_native_cudf_exec(edge_source) {
+        graph_residency_descriptor_for_edge_plan(native.native_plan(), &native_spec)
+    } else if let Some(native) = as_native_cudf_composed_exec(edge_source) {
+        graph_residency_descriptor_for_edge_plan(native.native_plan(), &native_spec)
+    } else if let Some(native) = edge_source.downcast_ref::<NativeCudfGpuProducerExec>() {
+        graph_residency_descriptor_for_edge_plan(native.native_plan(), &native_spec)
+    } else {
+        GraphResidencyPlanAnalysis::Bypass(
+            nexus_query_engine::GraphSourceFingerprintBypassReason::NonLocalParquetSource,
+        )
+    };
+    match analysis {
+        GraphResidencyPlanAnalysis::Keyable(descriptor) => Some(descriptor),
+        GraphResidencyPlanAnalysis::Bypass(_) => None,
+    }
+}
+
+fn native_graph_spec_for_residency(spec: &CugraphAlgorithmSpec, edge_normalize_inserted: bool) -> GraphAlgorithmSpec {
+    let mut edge_columns =
+        GraphEdgeColumnBindings::new(spec.src_col.clone(), spec.dst_col.clone(), spec.weight_col.clone());
+    if let Some(edge_id) = &spec.edge_id_col {
+        edge_columns = edge_columns.with_edge_id(edge_id.clone());
+    }
+    let algorithm = native_algorithm(spec.algorithm);
+    GraphAlgorithmSpec::with_stable_schema(
+        algorithm,
+        edge_columns,
+        GraphConstructionOptions {
+            directed: spec.graph_options.directed,
+            renumber: spec.graph_options.renumber,
+            policy: if edge_normalize_inserted {
+                GraphConstructionPolicy::PythonCugraph
+            } else {
+                GraphConstructionPolicy::RawLibcugraph
+            },
+        },
+        algorithm.definition().default_params(),
+    )
+    .with_edge_normalize_inserted(edge_normalize_inserted)
+}
+
+fn attach_graph_residency(frame: GpuDataFrame, graph_residency: Option<&GraphResidencyDescriptor>) -> GpuDataFrame {
+    match graph_residency {
+        Some(graph_residency) => frame.with_graph_residency(graph_residency.clone()),
+        None => frame,
+    }
+}
+
 fn native_plan_is_graph_ticket_light_edge_source(native_plan: &nexus_query_engine::QueryPlan) -> bool {
     native_plan.nodes().iter().all(|node| {
         matches!(node.kind, PlanNode::Source(_) | PlanNode::Filter(_) | PlanNode::Projection(_) | PlanNode::Limit(_))
@@ -846,7 +908,7 @@ mod tests {
     };
     use nexus_query_engine::{
         DeploymentIoCapability, Expr, GdsDriverProbeStatus, KvikioCompatModeStatus, LiteralBatchSource,
-        LocalParquetFile, LocalParquetSource, NvidiaFsProbeStatus, QueryService, QueryServiceConfig,
+        LocalParquetFile, LocalParquetSource, NvidiaFsProbeStatus, ProjectionOutput, QueryService, QueryServiceConfig,
         QueryServiceTenantConfig, SortExpr, SortSpec, TenantId,
     };
 
@@ -946,6 +1008,30 @@ mod tests {
         Arc::new(NativeCudfExec::try_new(plan, config.clone()).unwrap()) as Arc<dyn ExecutionPlan>
     }
 
+    fn native_graph_residency_edge_source(config: &NativeCudfExecutionConfig) -> Arc<dyn ExecutionPlan> {
+        let file = LocalParquetFile::new("edges.parquet")
+            .with_stable_id("local:edges.parquet:1024:mtime=2026-07-12T00:00:00Z")
+            .with_file_size_bytes(1024)
+            .with_row_group_rows(vec![100, 200]);
+        let source = LocalParquetSource::from_files(
+            vec![file],
+            edge_schema(),
+            vec!["src".to_string(), "dst".to_string(), "weight".to_string()],
+        );
+        let mut builder = QueryPlanBuilder::new();
+        let source = builder.add_source(SourceNode::LocalParquet(source));
+        let projected = builder.add_projection(
+            source,
+            vec![
+                ProjectionOutput::new(Expr::column("src"), Field::new("src", DataType::Int64, false)),
+                ProjectionOutput::new(Expr::column("dst"), Field::new("dst", DataType::Int64, false)),
+                ProjectionOutput::new(Expr::column("weight"), Field::new("weight", DataType::Float64, false)),
+            ],
+        );
+        let plan = builder.finish_with_host_sink(projected);
+        Arc::new(NativeCudfExec::try_new(plan, config.clone()).unwrap()) as Arc<dyn ExecutionPlan>
+    }
+
     fn triangle_spec() -> CugraphAlgorithmSpec {
         let params = CugraphAlgorithmParams::TriangleCountAll(CugraphTriangleCountAllParams);
         CugraphAlgorithmSpec {
@@ -1039,6 +1125,25 @@ mod tests {
 
         assert!(requested >= min);
         assert!(requested < want, "native edge-source graph ask should not default to tenant want");
+    }
+
+    #[test]
+    fn cugraph_algo_exec_records_graph_residency_for_native_edge_source() {
+        let config = NativeCudfExecutionConfig::unbounded();
+        let edge_source = native_graph_residency_edge_source(&config);
+
+        let exec = CugraphAlgoExec::try_new(triangle_spec(), edge_source, vec![], None, None, config)
+            .expect("cuGraph exec should build for native edge source");
+        let descriptor = exec.graph_residency.as_ref().expect("native parquet edge source should be keyable");
+
+        assert!(descriptor.source_fingerprint.as_str().starts_with("graph-source-v1-fnv64-"));
+        assert_eq!(descriptor.vertex_data_type, DataType::Int64);
+        assert_eq!(
+            descriptor.weight_data_type,
+            Some(DataType::Float64),
+            "Python-compatible edge normalization must keep weight in the source fingerprint even for algorithms \
+             that do not consume weights directly",
+        );
     }
 
     #[test]

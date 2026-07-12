@@ -154,7 +154,12 @@ fn native_parquet_file_for_scan(
 ) -> Result<NativeLocalParquetFile, FallbackReason> {
     if file_scan.object_store_url.as_str().starts_with("file://") {
         let path = local_object_path_to_filesystem(file.object_meta.location.as_ref());
-        let stable_id = format!("local:{}:{}", path.display(), file.object_meta.size);
+        let stable_id = format!(
+            "local:{}:{}:mtime={}",
+            path.display(),
+            file.object_meta.size,
+            file.object_meta.last_modified.to_rfc3339()
+        );
         return Ok(NativeLocalParquetFile::new(path)
             .with_stable_id(stable_id)
             .with_file_size_bytes(file.object_meta.size));
