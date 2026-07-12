@@ -205,6 +205,13 @@ impl QueryAdmission {
                         .local_parquet_source_cache_max_retained_bytes
                         .map_or_else(|| "none".to_string(), |value| value.to_string())
                 );
+                let _ = writeln!(
+                    output,
+                    "# resident_graph_cache_max_retained_bytes={}",
+                    config
+                        .resident_graph_cache_max_retained_bytes
+                        .map_or_else(|| "none".to_string(), |value| value.to_string())
+                );
 
                 let snapshot = service
                     .admission_snapshot()
@@ -396,7 +403,7 @@ mod tests {
 
     #[test]
     fn server_backend_partitions_budget_and_sizes_stream_pool() {
-        let env = std::collections::BTreeMap::from([
+        let mut env = std::collections::BTreeMap::from([
             (super::super::config::NEXUS_SERVER_MAX_CONCURRENT_QUERIES_ENV, "3".to_string()),
             (super::super::config::NEXUS_SERVER_NATIVE_DEVICE_BUDGET_BYTES_ENV, "3072".to_string()),
             (super::super::config::NEXUS_SERVER_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV, "1024".to_string()),
@@ -404,6 +411,13 @@ mod tests {
             (super::super::config::NEXUS_SERVER_NATIVE_MAX_SOURCE_READS_IN_FLIGHT_ENV, "2".to_string()),
             (super::super::config::NEXUS_SERVER_NATIVE_SOURCE_CACHE_MAX_RETAINED_BYTES_ENV, "2048".to_string()),
         ]);
+        if cfg!(feature = "cugraph") {
+            env.insert(super::super::config::NEXUS_SERVER_CUGRAPH_ENABLED_ENV, "true".to_string());
+            env.insert(
+                super::super::config::NEXUS_SERVER_NATIVE_GRAPH_CACHE_MAX_RETAINED_BYTES_ENV,
+                "4096".to_string(),
+            );
+        }
         let config = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap();
 
         let admission = QueryAdmission::from_server_config_admission_only(&config).unwrap();
@@ -422,6 +436,8 @@ mod tests {
         assert_eq!(service.config().max_admission_queue_len, 192);
         assert_eq!(service.config().admission_wait_timeout, std::time::Duration::from_secs(60));
         assert_eq!(service.config().local_parquet_source_cache_max_retained_bytes, Some(2048));
+        #[cfg(feature = "cugraph")]
+        assert_eq!(service.config().resident_graph_cache_max_retained_bytes, Some(4096));
         assert_eq!(service.tenant_budget(backend.tenant_id()).unwrap(), 3072);
 
         let permit = admission.try_acquire().unwrap().expect("first query should admit");
@@ -473,7 +489,7 @@ mod tests {
 
     #[test]
     fn query_service_admission_diagnostics_payload_reports_snapshot_and_governors() {
-        let env = std::collections::BTreeMap::from([
+        let mut env = std::collections::BTreeMap::from([
             (super::super::config::NEXUS_SERVER_MAX_CONCURRENT_QUERIES_ENV, "2".to_string()),
             (super::super::config::NEXUS_SERVER_NATIVE_DEVICE_BUDGET_BYTES_ENV, "1024".to_string()),
             (super::super::config::NEXUS_SERVER_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV, "512".to_string()),
@@ -482,6 +498,13 @@ mod tests {
             (super::super::config::NEXUS_SERVER_ADMISSION_GRANT_WANT_ENV, "512".to_string()),
             (super::super::config::NEXUS_SERVER_NATIVE_SOURCE_CACHE_MAX_RETAINED_BYTES_ENV, "2048".to_string()),
         ]);
+        if cfg!(feature = "cugraph") {
+            env.insert(super::super::config::NEXUS_SERVER_CUGRAPH_ENABLED_ENV, "true".to_string());
+            env.insert(
+                super::super::config::NEXUS_SERVER_NATIVE_GRAPH_CACHE_MAX_RETAINED_BYTES_ENV,
+                "4096".to_string(),
+            );
+        }
         let config = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap();
         let admission = QueryAdmission::from_server_config_admission_only(&config).unwrap();
         let permit = admission.try_acquire().unwrap().expect("first query should admit");
@@ -496,6 +519,10 @@ mod tests {
         assert!(payload.contains("# placement_policy=least_loaded\n"), "{payload}");
         assert!(payload.contains("# slot_guarantee=guaranteed_minimum\n"), "{payload}");
         assert!(payload.contains("# local_parquet_source_cache_max_retained_bytes=2048\n"), "{payload}");
+        #[cfg(feature = "cugraph")]
+        assert!(payload.contains("# resident_graph_cache_max_retained_bytes=4096\n"), "{payload}");
+        #[cfg(not(feature = "cugraph"))]
+        assert!(payload.contains("# resident_graph_cache_max_retained_bytes=none\n"), "{payload}");
         assert!(
             payload.contains("[admission]\nactive_queries\tqueued_queries\tnext_tenant_id\n1\t0\tdefault\n"),
             "{payload}"

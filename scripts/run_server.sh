@@ -112,6 +112,13 @@ export NEXUS_SERVER_MAX_CONCURRENT_QUERIES="${NEXUS_SERVER_MAX_CONCURRENT_QUERIE
 # NEXUS_SERVER_NATIVE_SOURCE_CHUNK_PLANNING_MODE
 #   conservative | local_parquet_throughput
 #
+# NEXUS_SERVER_NATIVE_SOURCE_CACHE_MAX_RETAINED_BYTES
+#   Opt-in per-device decoded local-Parquet source cache capacity in bytes.
+#
+# NEXUS_SERVER_NATIVE_GRAPH_CACHE_MAX_RETAINED_BYTES
+#   Opt-in per-device parked cuGraph cache capacity in bytes (requires a binary
+#   built with the cugraph feature).
+#
 # NEXUS_SERVER_NATIVE_PIPELINE_EXECUTION_MODE
 #   strict_bounded | adaptive
 #

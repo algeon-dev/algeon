@@ -25,12 +25,12 @@ use datafusion_nexus::{
         NEXUS_SERVER_CPU_FALLBACK_WAIT_TIMEOUT_MS_ENV, NEXUS_SERVER_CUGRAPH_ENABLED_ENV,
         NEXUS_SERVER_DEVICE_BUDGET_FRACTION_ENV, NEXUS_SERVER_GPU_DEVICES_ENV, NEXUS_SERVER_MAX_CONCURRENT_QUERIES_ENV,
         NEXUS_SERVER_MAX_IN_FLIGHT_ENV, NEXUS_SERVER_NATIVE_CONFIG_OPTIONS,
-        NEXUS_SERVER_NATIVE_DEVICE_BUDGET_BYTES_ENV, NEXUS_SERVER_NATIVE_HOST_FETCH_ACQUIRE_TIMEOUT_SECS_ENV,
-        NEXUS_SERVER_NATIVE_MAX_RETRY_ATTEMPTS_ENV, NEXUS_SERVER_NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV,
-        NEXUS_SERVER_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV, NEXUS_SERVER_NATIVE_MAX_SOURCE_READS_IN_FLIGHT_ENV,
-        NEXUS_SERVER_NATIVE_MEMORY_POLICY_ENV, NEXUS_SERVER_NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS_ENV,
-        NEXUS_SERVER_NATIVE_PIPELINE_EXECUTION_MODE_ENV, NEXUS_SERVER_NATIVE_SOURCE_CACHE_MAX_RETAINED_BYTES_ENV,
-        NEXUS_SERVER_NATIVE_SOURCE_CHUNK_PLANNING_MODE_ENV,
+        NEXUS_SERVER_NATIVE_DEVICE_BUDGET_BYTES_ENV, NEXUS_SERVER_NATIVE_GRAPH_CACHE_MAX_RETAINED_BYTES_ENV,
+        NEXUS_SERVER_NATIVE_HOST_FETCH_ACQUIRE_TIMEOUT_SECS_ENV, NEXUS_SERVER_NATIVE_MAX_RETRY_ATTEMPTS_ENV,
+        NEXUS_SERVER_NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV, NEXUS_SERVER_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV,
+        NEXUS_SERVER_NATIVE_MAX_SOURCE_READS_IN_FLIGHT_ENV, NEXUS_SERVER_NATIVE_MEMORY_POLICY_ENV,
+        NEXUS_SERVER_NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS_ENV, NEXUS_SERVER_NATIVE_PIPELINE_EXECUTION_MODE_ENV,
+        NEXUS_SERVER_NATIVE_SOURCE_CACHE_MAX_RETAINED_BYTES_ENV, NEXUS_SERVER_NATIVE_SOURCE_CHUNK_PLANNING_MODE_ENV,
         NEXUS_SERVER_NATIVE_STATISTICAL_AGGREGATE_EXECUTION_MODE_ENV, NEXUS_SERVER_STATEMENT_TICKET_TTL_SECS_ENV,
         NEXUS_SERVER_WORKSPACE_BACKING_ALIASES_ENV, NEXUS_SERVER_WORKSPACE_BACKING_CATALOG_ENV,
         NEXUS_SERVER_WORKSPACE_BACKING_SCHEMA_ENV, NEXUS_SERVER_WORKSPACE_CATALOG_ENV,
@@ -229,6 +229,7 @@ fn server_native_config_option_descriptors_cover_toml_env_and_session_keys() {
         ("native.source_chunk_planning_mode", NEXUS_SERVER_NATIVE_SOURCE_CHUNK_PLANNING_MODE_ENV),
         ("native.host_fetch_acquire_timeout_secs", NEXUS_SERVER_NATIVE_HOST_FETCH_ACQUIRE_TIMEOUT_SECS_ENV),
         ("native.source_cache_max_retained_bytes", NEXUS_SERVER_NATIVE_SOURCE_CACHE_MAX_RETAINED_BYTES_ENV),
+        ("native.graph_cache_max_retained_bytes", NEXUS_SERVER_NATIVE_GRAPH_CACHE_MAX_RETAINED_BYTES_ENV),
         ("native.pipeline_execution_mode", NEXUS_SERVER_NATIVE_PIPELINE_EXECUTION_MODE_ENV),
         ("native.statistical_aggregate_execution_mode", NEXUS_SERVER_NATIVE_STATISTICAL_AGGREGATE_EXECUTION_MODE_ENV),
     ];
@@ -280,6 +281,7 @@ fn server_native_config_option_descriptors_document_scope() {
             "native.max_source_reads_in_flight",
             "native.source_chunk_planning_mode",
             "native.source_cache_max_retained_bytes",
+            "native.graph_cache_max_retained_bytes",
             "native.pipeline_execution_mode",
         ])
     );
@@ -694,7 +696,7 @@ fn server_config_accepts_bounded_native_profile() {
 
 #[test]
 fn server_config_accepts_extended_native_query_knobs() {
-    let env = BTreeMap::from([
+    let mut env = BTreeMap::from([
         (NEXUS_SERVER_NATIVE_DEVICE_BUDGET_BYTES_ENV, "1024".to_string()),
         (NEXUS_SERVER_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV, "512".to_string()),
         (NEXUS_SERVER_NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV, "8".to_string()),
@@ -707,6 +709,10 @@ fn server_config_accepts_extended_native_query_knobs() {
         (NEXUS_SERVER_NATIVE_PIPELINE_EXECUTION_MODE_ENV, "adaptive".to_string()),
         (NEXUS_SERVER_NATIVE_STATISTICAL_AGGREGATE_EXECUTION_MODE_ENV, "gpu_native_tolerant".to_string()),
     ]);
+    if cfg!(feature = "cugraph") {
+        env.insert(NEXUS_SERVER_CUGRAPH_ENABLED_ENV, "true".to_string());
+        env.insert(NEXUS_SERVER_NATIVE_GRAPH_CACHE_MAX_RETAINED_BYTES_ENV, "512".to_string());
+    }
 
     let config = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap();
     let native = config.native_optimizer_config.native_execution_config();
@@ -725,13 +731,18 @@ fn server_config_accepts_extended_native_query_knobs() {
     assert_eq!(native.source_chunk_planning_mode(), SourceChunkPlanningMode::LocalParquetThroughput);
     assert_eq!(native.source_fetch_config().host_fetch_acquire_timeout, Duration::from_secs(12));
     assert_eq!(native.query_service_local_parquet_source_cache_max_retained_bytes(), Some(256));
+    #[cfg(feature = "cugraph")]
+    assert_eq!(native.query_service_resident_graph_cache_max_retained_bytes(), Some(512));
+    #[cfg(not(feature = "cugraph"))]
+    assert_eq!(native.query_service_resident_graph_cache_max_retained_bytes(), None);
     assert_eq!(native.native_pipeline_execution_mode(), NativePipelineExecutionMode::Adaptive);
     assert_eq!(native.statistical_aggregate_execution_mode(), StatisticalAggregateExecutionMode::GpuNativeTolerant);
 }
 
 #[test]
 fn server_config_accepts_toml_native_query_knobs() {
-    let (_dir, env) = env_with_server_toml(
+    let graph_cache_toml = if cfg!(feature = "cugraph") { "graph_cache_max_retained_bytes = 512\n" } else { "" };
+    let toml = format!(
         r#"
 [native]
 device_budget_bytes = 1024
@@ -743,10 +754,15 @@ max_source_reads_in_flight = 4
 source_chunk_planning_mode = "local_parquet_throughput"
 host_fetch_acquire_timeout_secs = 12
 source_cache_max_retained_bytes = 256
+{graph_cache_toml}
 pipeline_execution_mode = "adaptive"
 statistical_aggregate_execution_mode = "gpu_native_tolerant"
-"#,
+"#
     );
+    let (_dir, mut env) = env_with_server_toml(&toml);
+    if cfg!(feature = "cugraph") {
+        env.insert(NEXUS_SERVER_CUGRAPH_ENABLED_ENV, "true".to_string());
+    }
 
     let config = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap();
     let native = config.native_optimizer_config.native_execution_config();
@@ -765,6 +781,10 @@ statistical_aggregate_execution_mode = "gpu_native_tolerant"
     assert_eq!(native.source_chunk_planning_mode(), SourceChunkPlanningMode::LocalParquetThroughput);
     assert_eq!(native.source_fetch_config().host_fetch_acquire_timeout, Duration::from_secs(12));
     assert_eq!(native.query_service_local_parquet_source_cache_max_retained_bytes(), Some(256));
+    #[cfg(feature = "cugraph")]
+    assert_eq!(native.query_service_resident_graph_cache_max_retained_bytes(), Some(512));
+    #[cfg(not(feature = "cugraph"))]
+    assert_eq!(native.query_service_resident_graph_cache_max_retained_bytes(), None);
     assert_eq!(native.native_pipeline_execution_mode(), NativePipelineExecutionMode::Adaptive);
     assert_eq!(native.statistical_aggregate_execution_mode(), StatisticalAggregateExecutionMode::GpuNativeTolerant);
 }
@@ -983,15 +1003,20 @@ fn server_config_rejects_unbounded_native_profile_with_bounded_scheduler_knobs()
 }
 
 #[test]
-fn server_config_rejects_unbounded_native_profile_with_source_cache_knob() {
-    let env = BTreeMap::from([
-        (NEXUS_SERVER_NATIVE_MEMORY_POLICY_ENV, "unbounded".to_string()),
-        (NEXUS_SERVER_NATIVE_SOURCE_CACHE_MAX_RETAINED_BYTES_ENV, "1024".to_string()),
-    ]);
+fn server_config_rejects_unbounded_native_profile_with_cache_knobs() {
+    for cache_env in [
+        NEXUS_SERVER_NATIVE_SOURCE_CACHE_MAX_RETAINED_BYTES_ENV,
+        NEXUS_SERVER_NATIVE_GRAPH_CACHE_MAX_RETAINED_BYTES_ENV,
+    ] {
+        let env = BTreeMap::from([
+            (NEXUS_SERVER_NATIVE_MEMORY_POLICY_ENV, "unbounded".to_string()),
+            (cache_env, "1024".to_string()),
+        ]);
 
-    let error = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap_err();
+        let error = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap_err();
 
-    assert!(error.to_string().contains(NEXUS_SERVER_NATIVE_MEMORY_POLICY_ENV));
+        assert!(error.to_string().contains(NEXUS_SERVER_NATIVE_MEMORY_POLICY_ENV), "{cache_env}: {error}");
+    }
 }
 
 #[test]
@@ -1075,12 +1100,69 @@ fn server_config_rejects_zero_host_fetch_acquire_timeout() {
 }
 
 #[test]
-fn server_config_rejects_zero_source_cache_max_retained_bytes() {
-    let env = BTreeMap::from([(NEXUS_SERVER_NATIVE_SOURCE_CACHE_MAX_RETAINED_BYTES_ENV, "0".to_string())]);
+fn server_config_rejects_zero_cache_max_retained_bytes() {
+    for cache_env in [
+        NEXUS_SERVER_NATIVE_SOURCE_CACHE_MAX_RETAINED_BYTES_ENV,
+        NEXUS_SERVER_NATIVE_GRAPH_CACHE_MAX_RETAINED_BYTES_ENV,
+    ] {
+        let env = BTreeMap::from([(cache_env, "0".to_string())]);
+
+        let error = ServerConfig::from_env_get(|env_name| env.get(env_name).cloned()).unwrap_err();
+
+        assert!(error.to_string().contains(cache_env), "{cache_env}: {error}");
+    }
+}
+
+#[cfg(not(feature = "cugraph"))]
+#[test]
+fn server_config_rejects_graph_cache_without_cugraph_feature() {
+    let env = BTreeMap::from([(NEXUS_SERVER_NATIVE_GRAPH_CACHE_MAX_RETAINED_BYTES_ENV, "1024".to_string())]);
 
     let error = ServerConfig::from_env_get(|env_name| env.get(env_name).cloned()).unwrap_err();
 
-    assert!(error.to_string().contains(NEXUS_SERVER_NATIVE_SOURCE_CACHE_MAX_RETAINED_BYTES_ENV));
+    assert!(error.to_string().contains(NEXUS_SERVER_NATIVE_GRAPH_CACHE_MAX_RETAINED_BYTES_ENV));
+}
+
+#[cfg(feature = "cugraph")]
+#[test]
+fn server_config_rejects_graph_cache_when_cugraph_sql_is_disabled() {
+    let env = BTreeMap::from([(NEXUS_SERVER_NATIVE_GRAPH_CACHE_MAX_RETAINED_BYTES_ENV, "1024".to_string())]);
+
+    let error = ServerConfig::from_env_get(|env_name| env.get(env_name).cloned()).unwrap_err();
+
+    assert!(error.to_string().contains(NEXUS_SERVER_NATIVE_GRAPH_CACHE_MAX_RETAINED_BYTES_ENV));
+    assert!(error.to_string().contains(NEXUS_SERVER_CUGRAPH_ENABLED_ENV));
+}
+
+#[cfg(feature = "cugraph")]
+#[test]
+fn server_config_rejects_toml_graph_cache_when_cugraph_sql_is_disabled() {
+    let (_dir, env) = env_with_server_toml(
+        r#"
+[native]
+graph_cache_max_retained_bytes = 1024
+"#,
+    );
+
+    let error = ServerConfig::from_env_get(|env_name| env.get(env_name).cloned()).unwrap_err();
+
+    assert!(error.to_string().contains("native.graph_cache_max_retained_bytes"));
+    assert!(error.to_string().contains(NEXUS_SERVER_CUGRAPH_ENABLED_ENV));
+}
+
+#[cfg(not(feature = "cugraph"))]
+#[test]
+fn server_config_rejects_toml_graph_cache_without_cugraph_feature() {
+    let (_dir, env) = env_with_server_toml(
+        r#"
+[native]
+graph_cache_max_retained_bytes = 1024
+"#,
+    );
+
+    let error = ServerConfig::from_env_get(|env_name| env.get(env_name).cloned()).unwrap_err();
+
+    assert!(error.to_string().contains("native.graph_cache_max_retained_bytes"));
 }
 
 #[test]
@@ -1106,6 +1188,13 @@ host_fetch_acquire_timeout_secs = 0
 source_cache_max_retained_bytes = 0
 "#,
             "native.source_cache_max_retained_bytes",
+        ),
+        (
+            r#"
+[native]
+graph_cache_max_retained_bytes = 0
+"#,
+            "native.graph_cache_max_retained_bytes",
         ),
     ] {
         let (_dir, env) = env_with_server_toml(toml_body);

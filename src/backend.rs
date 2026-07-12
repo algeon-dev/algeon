@@ -566,7 +566,8 @@ fn backend_query_service_config(
         graph_memory_calibration_override: execution_config.graph_memory_calibration_override(),
         local_parquet_source_cache_max_retained_bytes: execution_config
             .query_service_local_parquet_source_cache_max_retained_bytes(),
-        resident_graph_cache_max_retained_bytes: None,
+        resident_graph_cache_max_retained_bytes: execution_config
+            .query_service_resident_graph_cache_max_retained_bytes(),
         stream_pool_size: Some(backend_stream_pool_size(
             max_concurrent_queries,
             execution_config.source_scheduler_policy().max_source_reads_in_flight(),
@@ -942,6 +943,72 @@ mod tests {
 
         assert_eq!(error.code(), ErrorCode::InvalidExecutionPlan);
         assert_eq!(error.fact_value("field"), Some("local_parquet_source_cache_max_retained_bytes"));
+    }
+
+    #[cfg(feature = "cugraph")]
+    #[test]
+    fn backend_propagates_query_service_resident_graph_cache_capacity() {
+        let execution_config = NativeCudfExecutionConfig::bounded(4096, 1024, 1, 3, 1)
+            .with_query_service_resident_graph_cache_max_retained_bytes(Some(2048));
+        let optimizer_config = CudfOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred)
+            .with_native_execution_config(execution_config.clone());
+        let resolved = ResolvedBackendMemoryPolicy {
+            device_ordinals: vec![0, 1],
+            planning_device_budget_bytes: 4096,
+            execution_config,
+            max_source_chunk_bytes: 1024,
+            max_row_groups_per_chunk: 1,
+            max_retry_attempts: 3,
+            min_retry_chunk_row_groups: 1,
+        };
+
+        let backend = NexusGpuBackend::build_bounded(
+            optimizer_config,
+            resolved,
+            NexusAdmissionPolicy::default().with_max_concurrent_queries(2),
+            TenantId::new("tenant"),
+            true,
+        )
+        .unwrap();
+
+        assert_eq!(backend.query_service().config().resident_graph_cache_max_retained_bytes, Some(2048));
+        assert_eq!(
+            backend
+                .optimizer_config()
+                .native_execution_config()
+                .query_service_resident_graph_cache_max_retained_bytes(),
+            Some(2048)
+        );
+    }
+
+    #[cfg(feature = "cugraph")]
+    #[test]
+    fn backend_rejects_zero_query_service_resident_graph_cache_capacity() {
+        let execution_config = NativeCudfExecutionConfig::bounded(4096, 1024, 1, 3, 1)
+            .with_query_service_resident_graph_cache_max_retained_bytes(Some(0));
+        let optimizer_config = CudfOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred)
+            .with_native_execution_config(execution_config.clone());
+        let resolved = ResolvedBackendMemoryPolicy {
+            device_ordinals: vec![0],
+            planning_device_budget_bytes: 4096,
+            execution_config,
+            max_source_chunk_bytes: 1024,
+            max_row_groups_per_chunk: 1,
+            max_retry_attempts: 3,
+            min_retry_chunk_row_groups: 1,
+        };
+
+        let error = NexusGpuBackend::build_bounded(
+            optimizer_config,
+            resolved,
+            NexusAdmissionPolicy::default().with_max_concurrent_queries(1),
+            TenantId::new("tenant"),
+            true,
+        )
+        .unwrap_err();
+
+        assert_eq!(error.code(), ErrorCode::InvalidExecutionPlan);
+        assert_eq!(error.fact_value("field"), Some("resident_graph_cache_max_retained_bytes"));
     }
 
     #[test]
