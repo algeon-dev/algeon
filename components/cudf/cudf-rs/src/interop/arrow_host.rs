@@ -30,12 +30,17 @@
 //! assert_eq!(df2.num_columns(), 2);
 //! ```
 
-use std::{cell::Cell, sync::Arc};
+use std::{cell::Cell, ffi::c_void, sync::Arc};
 
 use arrow::{
     array::*,
-    datatypes::{DataType as ArrowDataType, Schema, TimeUnit},
+    buffer::{NullBuffer, OffsetBuffer, ScalarBuffer},
+    datatypes::{DataType as ArrowDataType, Field, FieldRef, Schema, TimeUnit},
     record_batch::{RecordBatch, RecordBatchOptions},
+};
+use rapids_interop::{
+    BoundBytes, BufferBinding, BufferId, ColumnId, ColumnLayout, DataType as InteropDataType, PhysicalValidity,
+    Placement, PreparedColumnExport, ProducerReadiness, SchemaNullability, SemanticColumn, TypeId as InteropTypeId,
 };
 
 use crate::{
@@ -144,8 +149,10 @@ impl ArrowHostSchema {
 ///
 /// This is a copy-free planner/schema helper. It follows the same support
 /// envelope as [`DataFrame::from_record_batch`]: numeric types, Boolean,
-/// Decimal128, Date32, timezone-free timestamps, durations with Arrow time
-/// units, Utf8, LargeUtf8, and Utf8View.
+/// Decimal128, Date32, timestamps, durations with Arrow time units, Utf8,
+/// LargeUtf8, Utf8View, and top-level `List` / `LargeList` with string-like
+/// children. Timestamp timezone metadata is accepted as an Arrow schema
+/// contract; cuDF stores the physical epoch values and resolution.
 pub fn cudf_dtype_from_arrow_type(dt: &ArrowDataType) -> Result<DataType> {
     cudf_dtype_from_arrow_type_in(dt, "arrow_host::cudf_dtype_from_arrow_type")
 }
@@ -181,6 +188,9 @@ pub fn cudf_dtype_can_export_to_arrow_type(cudf_dtype: DataType, arrow_type: &Ar
     match arrow_type {
         ArrowDataType::Decimal128(_, scale) if cudf_dtype.id().is_decimal() => {
             cudf_dtype.scale() == arrow_decimal_scale_to_cudf_scale(*scale)
+        },
+        ArrowDataType::List(field) | ArrowDataType::LargeList(field) if cudf_dtype.id() == TypeId::List => {
+            list_string_child_is_supported(field)
         },
         _ => cudf_dtype_from_arrow_type(arrow_type)
             .map(|arrow_cudf_dtype| arrow_cudf_dtype == cudf_dtype)
@@ -232,27 +242,18 @@ fn cudf_dtype_from_arrow_type_in(dt: &ArrowDataType, operation: &'static str) ->
         ArrowDataType::Float64 => DataType::new(TypeId::Float64),
         ArrowDataType::Boolean => DataType::new(TypeId::Bool8),
         ArrowDataType::Date32 => DataType::new(TypeId::TimestampDays),
-        ArrowDataType::Timestamp(TimeUnit::Second, None) => DataType::new(TypeId::TimestampSeconds),
-        ArrowDataType::Timestamp(TimeUnit::Millisecond, None) => DataType::new(TypeId::TimestampMilliseconds),
-        ArrowDataType::Timestamp(TimeUnit::Microsecond, None) => DataType::new(TypeId::TimestampMicroseconds),
-        ArrowDataType::Timestamp(TimeUnit::Nanosecond, None) => DataType::new(TypeId::TimestampNanoseconds),
+        ArrowDataType::Timestamp(unit, _) => cudf_timestamp_dtype(unit),
         ArrowDataType::Duration(TimeUnit::Second) => DataType::new(TypeId::DurationSeconds),
         ArrowDataType::Duration(TimeUnit::Millisecond) => DataType::new(TypeId::DurationMilliseconds),
         ArrowDataType::Duration(TimeUnit::Microsecond) => DataType::new(TypeId::DurationMicroseconds),
         ArrowDataType::Duration(TimeUnit::Nanosecond) => DataType::new(TypeId::DurationNanoseconds),
-        ArrowDataType::Timestamp(_, Some(_)) => {
-            return Err(Error::new_with(
-                ErrorCode::UnsupportedDtype,
-                operation,
-                format!("unsupported Arrow timestamp with timezone for cudf conversion: {:?}", dt),
-            )
-            .with_detail("arrow_type", format!("{:?}", dt))
-            .with_detail("reason", "timezone_not_supported"));
-        },
         ArrowDataType::Decimal128(_, scale) => {
             DataType::fixed_point(TypeId::Decimal128, arrow_decimal_scale_to_cudf_scale(*scale))
         },
         ArrowDataType::Utf8 | ArrowDataType::LargeUtf8 | ArrowDataType::Utf8View => DataType::new(TypeId::String),
+        ArrowDataType::List(field) | ArrowDataType::LargeList(field) if list_string_child_is_supported(field) => {
+            DataType::new(TypeId::List)
+        },
         _ => {
             return Err(Error::new_with(
                 ErrorCode::UnsupportedDtype,
@@ -265,6 +266,19 @@ fn cudf_dtype_from_arrow_type_in(dt: &ArrowDataType, operation: &'static str) ->
     };
 
     Ok(dtype)
+}
+
+fn list_string_child_is_supported(field: &FieldRef) -> bool {
+    matches!(field.data_type(), ArrowDataType::Utf8 | ArrowDataType::LargeUtf8 | ArrowDataType::Utf8View)
+}
+
+fn cudf_timestamp_dtype(unit: &TimeUnit) -> DataType {
+    match unit {
+        TimeUnit::Second => DataType::new(TypeId::TimestampSeconds),
+        TimeUnit::Millisecond => DataType::new(TypeId::TimestampMilliseconds),
+        TimeUnit::Microsecond => DataType::new(TypeId::TimestampMicroseconds),
+        TimeUnit::Nanosecond => DataType::new(TypeId::TimestampNanoseconds),
+    }
 }
 
 fn arrow_type_from_cudf_dtype_in(dtype: DataType, operation: &'static str) -> Result<ArrowDataType> {
@@ -331,6 +345,7 @@ impl DataFrame {
     /// - `DurationSeconds`, `DurationMilliseconds`, `DurationMicroseconds`,
     ///   and `DurationNanoseconds` as Arrow durations.
     /// - `String` (converted to Arrow `Utf8`)
+    /// - `List` with `String` children (converted to Arrow `List<Utf8>`)
     ///
     /// # Errors
     ///
@@ -405,7 +420,7 @@ impl DataFrame {
     /// - `Decimal128` (preserves values and scale; precision is re-exported
     ///   as 38)
     /// - `Date32`
-    /// - `Timestamp(Second|Millisecond|Microsecond|Nanosecond, None)`
+    /// - `Timestamp(Second|Millisecond|Microsecond|Nanosecond, _)`
     /// - `Duration(Second|Millisecond|Microsecond|Nanosecond)`
     /// - `Utf8` / `LargeUtf8` / `Utf8View` (converted to cudf `String`)
     ///
@@ -449,7 +464,7 @@ impl Runtime {
 /// - `Boolean`
 /// - `Decimal128` (preserves values and scale; precision is re-exported as 38)
 /// - `Date32`
-/// - `Timestamp(Second|Millisecond|Microsecond|Nanosecond, None)`
+/// - `Timestamp(Second|Millisecond|Microsecond|Nanosecond, _)`
 /// - `Duration(Second|Millisecond|Microsecond|Nanosecond)`
 /// - `Utf8` / `LargeUtf8` / `Utf8View` (converted to cudf `String`)
 ///
@@ -559,6 +574,7 @@ fn column_view_to_arrow(cv: &ColumnView<'_>, dtype: DataType) -> Result<Arc<dyn 
         TypeId::DurationMilliseconds => fixed_width_to_arrow::<i64, arrow::datatypes::DurationMillisecondType>(cv),
         TypeId::DurationMicroseconds => fixed_width_to_arrow::<i64, arrow::datatypes::DurationMicrosecondType>(cv),
         TypeId::DurationNanoseconds => fixed_width_to_arrow::<i64, arrow::datatypes::DurationNanosecondType>(cv),
+        TypeId::List => list_to_arrow(cv),
         _ => Err(Error::new_with(
             ErrorCode::UnsupportedDtype,
             "arrow::column_view_to_arrow",
@@ -676,6 +692,90 @@ where
     Ok(Arc::new(arr))
 }
 
+fn list_to_arrow(cv: &ColumnView<'_>) -> Result<Arc<dyn Array>> {
+    let operation = "arrow::list_to_arrow";
+    let len = cv.len()?;
+    let root_offset_raw = cv.offset()?;
+    let root_offset = usize::try_from(root_offset_raw).map_err(|_| {
+        Error::new_with(ErrorCode::IndexOutOfBounds, operation, "list column offset must be non-negative")
+            .with_detail("offset", root_offset_raw.to_string())
+            .with_detail("reason", "negative_list_offset")
+    })?;
+    let root_end = root_offset.checked_add(len).ok_or_else(|| {
+        Error::new_with(ErrorCode::ValueOutOfRange, operation, "list active range overflowed usize")
+            .with_detail("offset", root_offset.to_string())
+            .with_detail("row_count", len.to_string())
+            .with_detail("reason", "list_range_overflow")
+    })?;
+
+    let offsets_view = cv.child(0)?;
+    let offsets_type = offsets_view.data_type()?;
+    if offsets_type.id() != TypeId::Int32 {
+        return Err(Error::new_with(
+            ErrorCode::UnsupportedLayout,
+            operation,
+            "list offsets child must be Int32 for Arrow host export",
+        )
+        .with_detail("offsets_type", format!("{:?}", offsets_type.id()))
+        .with_detail("reason", "unsupported_list_offsets_type"));
+    }
+    let host_offsets = offsets_view.to_vec::<i32>()?;
+    if host_offsets.len() <= root_end {
+        return Err(Error::new_with(
+            ErrorCode::IndexOutOfBounds,
+            operation,
+            "list offsets child is too small for the active logical range",
+        )
+        .with_detail("offset", root_offset.to_string())
+        .with_detail("row_count", len.to_string())
+        .with_detail("offset_count", host_offsets.len().to_string())
+        .with_detail("reason", "list_offsets_too_small"));
+    }
+
+    let base_child_offset = host_offsets[root_offset];
+    if base_child_offset < 0 {
+        return Err(Error::new_with(ErrorCode::ValueOutOfRange, operation, "list offsets must be non-negative")
+            .with_detail("offset_index", root_offset.to_string())
+            .with_detail("offset_value", base_child_offset.to_string())
+            .with_detail("reason", "negative_list_child_offset"));
+    }
+    let mut normalized_offsets = Vec::with_capacity(len + 1);
+    let mut previous = base_child_offset;
+    for (position, raw_offset) in host_offsets[root_offset..=root_end].iter().copied().enumerate() {
+        if raw_offset < previous {
+            return Err(Error::new_with(ErrorCode::ValueOutOfRange, operation, "list offsets must be non-decreasing")
+                .with_detail("offset_index", (root_offset + position).to_string())
+                .with_detail("previous_offset", previous.to_string())
+                .with_detail("offset_value", raw_offset.to_string())
+                .with_detail("reason", "non_monotonic_list_offsets"));
+        }
+        normalized_offsets.push(raw_offset - base_child_offset);
+        previous = raw_offset;
+    }
+
+    let child_view = cv.list_sliced_child()?;
+    let child_dtype = child_view.data_type()?;
+    if child_dtype.id() != TypeId::String {
+        return Err(Error::new_with(
+            ErrorCode::UnsupportedDtype,
+            operation,
+            "Arrow host export currently supports only List<String> columns",
+        )
+        .with_fact(FACT_TYPE_ID, child_dtype.id())
+        .with_detail("reason", "unsupported_list_child_type"));
+    }
+    let child_array = column_view_to_arrow(&child_view, child_dtype)?;
+    let child_nullable = child_view.nullable()?;
+    let child_field = Arc::new(Field::new("item", child_array.data_type().clone(), child_nullable));
+    let offsets = OffsetBuffer::new(ScalarBuffer::from(normalized_offsets));
+    let nulls = cv.to_host_validity()?.and_then(|mask| {
+        let nulls = NullBuffer::from(mask);
+        (nulls.null_count() > 0).then_some(nulls)
+    });
+    let array = ListArray::try_new(child_field, offsets, child_array, nulls).map_err(map_list_arrow_error)?;
+    Ok(Arc::new(array))
+}
+
 fn map_decimal_to_arrow_error(error: arrow::error::ArrowError) -> Error {
     error::foreign_invariant_violation(
         "arrow::decimal128_to_arrow",
@@ -683,6 +783,17 @@ fn map_decimal_to_arrow_error(error: arrow::error::ArrowError) -> Error {
         "arrow_array",
         "invalid_arrow_decimal_array",
         "ensure cudf Decimal128 scale fits Arrow Decimal128 metadata",
+    )
+    .with_source(error)
+}
+
+fn map_list_arrow_error(error: arrow::error::ArrowError) -> Error {
+    error::foreign_invariant_violation(
+        "arrow::list_to_arrow",
+        error.to_string(),
+        "arrow_array",
+        "invalid_arrow_list_array",
+        "ensure list offsets, child values, and validity buffers form a valid Arrow ListArray",
     )
     .with_source(error)
 }
@@ -807,32 +918,7 @@ fn arrow_array_to_column(runtime: &Runtime, arr: &dyn Array, field_name: &str) -
             arr,
             DataType::new(TypeId::TimestampDays),
         ),
-        ArrowDataType::Timestamp(TimeUnit::Second, None) => primitive_arrow_to_fixed_width_column::<
-            arrow::datatypes::TimestampSecondType,
-        >(
-            runtime, arr, DataType::new(TypeId::TimestampSeconds)
-        ),
-        ArrowDataType::Timestamp(TimeUnit::Millisecond, None) => {
-            primitive_arrow_to_fixed_width_column::<arrow::datatypes::TimestampMillisecondType>(
-                runtime,
-                arr,
-                DataType::new(TypeId::TimestampMilliseconds),
-            )
-        },
-        ArrowDataType::Timestamp(TimeUnit::Microsecond, None) => {
-            primitive_arrow_to_fixed_width_column::<arrow::datatypes::TimestampMicrosecondType>(
-                runtime,
-                arr,
-                DataType::new(TypeId::TimestampMicroseconds),
-            )
-        },
-        ArrowDataType::Timestamp(TimeUnit::Nanosecond, None) => {
-            primitive_arrow_to_fixed_width_column::<arrow::datatypes::TimestampNanosecondType>(
-                runtime,
-                arr,
-                DataType::new(TypeId::TimestampNanoseconds),
-            )
-        },
+        ArrowDataType::Timestamp(unit, _) => timestamp_arrow_to_column(runtime, arr, unit),
         ArrowDataType::Duration(TimeUnit::Second) => primitive_arrow_to_fixed_width_column::<
             arrow::datatypes::DurationSecondType,
         >(runtime, arr, DataType::new(TypeId::DurationSeconds)),
@@ -851,17 +937,31 @@ fn arrow_array_to_column(runtime: &Runtime, arr: &dyn Array, field_name: &str) -
         >(
             runtime, arr, DataType::new(TypeId::DurationNanoseconds)
         ),
-        ArrowDataType::Timestamp(_, Some(_)) => Err(Error::new_with(
-            ErrorCode::UnsupportedDtype,
-            "arrow::arrow_array_to_column",
-            format!("unsupported Arrow timestamp with timezone for column '{}': {:?}", field_name, dt),
-        )
-        .with_detail("field_name", field_name.to_string())
-        .with_detail("arrow_type", format!("{:?}", dt))
-        .with_detail("reason", "timezone_not_supported")),
         ArrowDataType::Decimal128(_, scale) => {
             let dtype = DataType::fixed_point(TypeId::Decimal128, arrow_decimal_scale_to_cudf_scale(*scale));
             decimal128_array_to_column(runtime, arr, dtype)
+        },
+        ArrowDataType::List(field) if list_string_child_is_supported(field) => {
+            let list = arr.as_any().downcast_ref::<ListArray>().ok_or_else(|| {
+                unexpected_arrow_array_layout_error(
+                    "arrow::list_array_to_column",
+                    "expected ListArray for List type",
+                    dt,
+                    arr.data_type(),
+                )
+            })?;
+            list_array_to_column(runtime, field, list.values().as_ref(), list.value_offsets(), list.nulls(), field_name)
+        },
+        ArrowDataType::LargeList(field) if list_string_child_is_supported(field) => {
+            let list = arr.as_any().downcast_ref::<LargeListArray>().ok_or_else(|| {
+                unexpected_arrow_array_layout_error(
+                    "arrow::large_list_array_to_column",
+                    "expected LargeListArray for LargeList type",
+                    dt,
+                    arr.data_type(),
+                )
+            })?;
+            list_array_to_column(runtime, field, list.values().as_ref(), list.value_offsets(), list.nulls(), field_name)
         },
         ArrowDataType::Utf8 => string_array_to_column(runtime, arr),
         ArrowDataType::LargeUtf8 => large_string_array_to_column(runtime, arr),
@@ -874,6 +974,328 @@ fn arrow_array_to_column(runtime: &Runtime, arr: &dyn Array, field_name: &str) -
         .with_detail("field_name", field_name.to_string())
         .with_detail("arrow_type", format!("{:?}", dt))),
     }
+}
+
+fn timestamp_arrow_to_column(runtime: &Runtime, arr: &dyn Array, unit: &TimeUnit) -> Result<Column> {
+    match unit {
+        TimeUnit::Second => primitive_arrow_to_fixed_width_column::<arrow::datatypes::TimestampSecondType>(
+            runtime,
+            arr,
+            DataType::new(TypeId::TimestampSeconds),
+        ),
+        TimeUnit::Millisecond => primitive_arrow_to_fixed_width_column::<arrow::datatypes::TimestampMillisecondType>(
+            runtime,
+            arr,
+            DataType::new(TypeId::TimestampMilliseconds),
+        ),
+        TimeUnit::Microsecond => primitive_arrow_to_fixed_width_column::<arrow::datatypes::TimestampMicrosecondType>(
+            runtime,
+            arr,
+            DataType::new(TypeId::TimestampMicroseconds),
+        ),
+        TimeUnit::Nanosecond => primitive_arrow_to_fixed_width_column::<arrow::datatypes::TimestampNanosecondType>(
+            runtime,
+            arr,
+            DataType::new(TypeId::TimestampNanoseconds),
+        ),
+    }
+}
+
+fn list_array_to_column<O>(
+    runtime: &Runtime,
+    child_field: &FieldRef,
+    values: &dyn Array,
+    offsets: &[O],
+    nulls: Option<&NullBuffer>,
+    field_name: &str,
+) -> Result<Column>
+where
+    O: Copy + Into<i128>,
+{
+    let operation = "arrow::list_array_to_column";
+    let (normalized_offsets, child_start, child_len) = normalize_list_offsets(offsets, operation, field_name)?;
+    let child_values = values.slice(child_start, child_len);
+    let (child_offsets, child_data, child_validity) =
+        string_like_array_host_buffers(child_values.as_ref(), child_field.data_type(), operation)?;
+    let list_offsets = encode_host_i32_values(&normalized_offsets);
+
+    let root_validity = physical_validity_from_nulls(nulls, BufferId::new(1));
+    let child_validity = physical_validity_from_optional_mask(child_validity, BufferId::new(4));
+
+    let mut bindings = Vec::new();
+    let mut retained_buffers = Vec::new();
+    push_host_binding(operation, &mut bindings, &mut retained_buffers, BufferId::new(0), list_offsets)?;
+    if let Some((buffer, _null_count)) = root_validity.buffer.as_ref() {
+        push_host_binding(operation, &mut bindings, &mut retained_buffers, BufferId::new(1), Arc::clone(buffer))?;
+    }
+    push_host_binding(operation, &mut bindings, &mut retained_buffers, BufferId::new(2), child_offsets)?;
+    push_host_binding(operation, &mut bindings, &mut retained_buffers, BufferId::new(3), child_data)?;
+    if let Some((buffer, _null_count)) = child_validity.buffer.as_ref() {
+        push_host_binding(operation, &mut bindings, &mut retained_buffers, BufferId::new(4), Arc::clone(buffer))?;
+    }
+
+    let list_column = SemanticColumn::new(
+        ColumnId::new(0),
+        InteropDataType::new(InteropTypeId::List),
+        normalized_offsets.len().saturating_sub(1),
+        0,
+        root_validity.validity,
+        if nulls.is_some() { SchemaNullability::Nullable } else { SchemaNullability::NonNullable },
+        ColumnLayout::List { offsets: BufferId::new(0), child: ColumnId::new(1) },
+    );
+    let child_column = SemanticColumn::new(
+        ColumnId::new(1),
+        InteropDataType::new(InteropTypeId::String),
+        child_len,
+        0,
+        child_validity.validity,
+        if child_field.is_nullable() { SchemaNullability::Nullable } else { SchemaNullability::NonNullable },
+        ColumnLayout::BinaryLike { offsets: BufferId::new(2), data: BufferId::new(3) },
+    );
+    let export = PreparedColumnExport::try_new_with_semantic_columns(
+        list_column.clone(),
+        vec![list_column, child_column],
+        bindings,
+        ProducerReadiness::HostVisible,
+        super::host_export_diagnostics(),
+    )
+    .map_err(|error| error::from_interop_in(error, operation))?
+    .with_retained_host_buffers(retained_buffers);
+
+    Column::try_import_from_prepared_column_export_into_runtime(&export, runtime)
+        .map_err(|error| error::from_interop_in(error, operation))
+}
+
+fn normalize_list_offsets<O>(
+    offsets: &[O],
+    operation: &'static str,
+    field_name: &str,
+) -> Result<(Vec<i32>, usize, usize)>
+where
+    O: Copy + Into<i128>,
+{
+    if offsets.is_empty() {
+        return Err(Error::new_with(ErrorCode::EmptyInput, operation, "Arrow list offsets must not be empty")
+            .with_detail("field_name", field_name.to_string())
+            .with_detail("reason", "empty_list_offsets"));
+    }
+    let base = offsets[0].into();
+    if base < 0 {
+        return Err(Error::new_with(ErrorCode::ValueOutOfRange, operation, "Arrow list offsets must be non-negative")
+            .with_detail("field_name", field_name.to_string())
+            .with_detail("offset_index", "0")
+            .with_detail("offset_value", base.to_string())
+            .with_detail("reason", "negative_list_offset"));
+    }
+    let child_start = usize::try_from(base).map_err(|_| {
+        Error::new_with(ErrorCode::ValueOutOfRange, operation, "Arrow list child offset does not fit usize")
+            .with_detail("field_name", field_name.to_string())
+            .with_detail("offset_value", base.to_string())
+            .with_detail("reason", "list_offset_usize_overflow")
+    })?;
+
+    let mut normalized = Vec::with_capacity(offsets.len());
+    let mut previous = base;
+    for (index, raw) in offsets.iter().copied().map(Into::into).enumerate() {
+        if raw < previous {
+            return Err(Error::new_with(
+                ErrorCode::ValueOutOfRange,
+                operation,
+                "Arrow list offsets must be monotonically non-decreasing",
+            )
+            .with_detail("field_name", field_name.to_string())
+            .with_detail("offset_index", index.to_string())
+            .with_detail("previous_offset", previous.to_string())
+            .with_detail("offset_value", raw.to_string())
+            .with_detail("reason", "non_monotonic_list_offsets"));
+        }
+        let value = raw - base;
+        normalized.push(i32::try_from(value).map_err(|_| {
+            Error::new_with(
+                ErrorCode::ValueOutOfRange,
+                operation,
+                "Arrow list offsets exceed cuDF's Int32 list offset range",
+            )
+            .with_detail("field_name", field_name.to_string())
+            .with_detail("offset_index", index.to_string())
+            .with_detail("offset_value", raw.to_string())
+            .with_detail("reason", "list_offset_i32_overflow")
+        })?);
+        previous = raw;
+    }
+    let child_len = usize::try_from(previous - base).map_err(|_| {
+        Error::new_with(ErrorCode::ValueOutOfRange, operation, "Arrow list child length does not fit usize")
+            .with_detail("field_name", field_name.to_string())
+            .with_detail("reason", "list_child_len_usize_overflow")
+    })?;
+    Ok((normalized, child_start, child_len))
+}
+
+struct PreparedValidity {
+    validity: PhysicalValidity,
+    buffer: Option<(Arc<[u8]>, usize)>,
+}
+
+fn physical_validity_from_nulls(nulls: Option<&NullBuffer>, id: BufferId) -> PreparedValidity {
+    let Some(nulls) = nulls else {
+        return PreparedValidity { validity: PhysicalValidity::NoValidityBuffer, buffer: None };
+    };
+    if nulls.null_count() == 0 {
+        return PreparedValidity { validity: PhysicalValidity::NoValidityBuffer, buffer: None };
+    }
+    let buffer: Arc<[u8]> = Arc::from(nulls.validity().to_vec());
+    PreparedValidity {
+        validity: PhysicalValidity::ValidityMask { mask: id, null_count: Some(nulls.null_count()) },
+        buffer: Some((buffer, nulls.null_count())),
+    }
+}
+
+fn physical_validity_from_optional_mask(mask: Option<Vec<bool>>, id: BufferId) -> PreparedValidity {
+    let Some(mask) = mask else {
+        return PreparedValidity { validity: PhysicalValidity::NoValidityBuffer, buffer: None };
+    };
+    let nulls = NullBuffer::from(mask);
+    if nulls.null_count() == 0 {
+        return PreparedValidity { validity: PhysicalValidity::NoValidityBuffer, buffer: None };
+    }
+    let buffer: Arc<[u8]> = Arc::from(nulls.validity().to_vec());
+    PreparedValidity {
+        validity: PhysicalValidity::ValidityMask { mask: id, null_count: Some(nulls.null_count()) },
+        buffer: Some((buffer, nulls.null_count())),
+    }
+}
+
+fn push_host_binding(
+    operation: &'static str,
+    bindings: &mut Vec<BufferBinding<'static>>,
+    retained_buffers: &mut Vec<Arc<[u8]>>,
+    id: BufferId,
+    buffer: Arc<[u8]>,
+) -> Result<()> {
+    let binding = BufferBinding::new(
+        id,
+        BoundBytes::from_raw_parts(buffer.as_ptr() as *mut c_void, buffer.len())
+            .map_err(|error| error::from_interop_in(error, operation))?,
+        Placement::Host,
+    );
+    bindings.push(binding);
+    retained_buffers.push(buffer);
+    Ok(())
+}
+
+fn string_like_array_host_buffers(
+    arr: &dyn Array,
+    expected_type: &ArrowDataType,
+    operation: &'static str,
+) -> Result<(Arc<[u8]>, Arc<[u8]>, Option<Vec<bool>>)> {
+    if arr.data_type() != expected_type {
+        return Err(Error::new_with(
+            ErrorCode::TypeMismatch,
+            operation,
+            "Arrow list child array type must match its child field type",
+        )
+        .with_detail("expected_arrow_type", format!("{expected_type:?}"))
+        .with_detail("actual_arrow_type", format!("{:?}", arr.data_type()))
+        .with_detail("reason", "list_child_type_mismatch"));
+    }
+    let strings = string_like_values(arr, expected_type, operation)?;
+    let validity = (arr.null_count() > 0).then(|| (0..arr.len()).map(|index| arr.is_valid(index)).collect::<Vec<_>>());
+    let offsets = encode_host_string_offsets(operation, &strings)?;
+    let data: Arc<[u8]> =
+        Arc::from(strings.iter().flat_map(|value| value.as_bytes().iter().copied()).collect::<Vec<_>>());
+    Ok((offsets, data, validity))
+}
+
+fn string_like_values(arr: &dyn Array, expected_type: &ArrowDataType, operation: &'static str) -> Result<Vec<String>> {
+    match expected_type {
+        ArrowDataType::Utf8 => {
+            let strings = arr.as_any().downcast_ref::<StringArray>().ok_or_else(|| {
+                unexpected_arrow_array_layout_error(
+                    operation,
+                    "expected StringArray for List<Utf8> child",
+                    expected_type,
+                    arr.data_type(),
+                )
+            })?;
+            Ok((0..strings.len())
+                .map(|index| if strings.is_valid(index) { strings.value(index).to_string() } else { String::new() })
+                .collect())
+        },
+        ArrowDataType::LargeUtf8 => {
+            let strings = arr.as_any().downcast_ref::<LargeStringArray>().ok_or_else(|| {
+                unexpected_arrow_array_layout_error(
+                    operation,
+                    "expected LargeStringArray for List<LargeUtf8> child",
+                    expected_type,
+                    arr.data_type(),
+                )
+            })?;
+            Ok((0..strings.len())
+                .map(|index| if strings.is_valid(index) { strings.value(index).to_string() } else { String::new() })
+                .collect())
+        },
+        ArrowDataType::Utf8View => {
+            let strings = arr.as_string_view_opt().ok_or_else(|| {
+                unexpected_arrow_array_layout_error(
+                    operation,
+                    "expected StringViewArray for List<Utf8View> child",
+                    expected_type,
+                    arr.data_type(),
+                )
+            })?;
+            Ok((0..strings.len())
+                .map(|index| if strings.is_valid(index) { strings.value(index).to_string() } else { String::new() })
+                .collect())
+        },
+        _ => Err(Error::new_with(
+            ErrorCode::UnsupportedDtype,
+            operation,
+            "Arrow list host import currently supports only string-like children",
+        )
+        .with_detail("arrow_type", format!("{expected_type:?}"))
+        .with_detail("reason", "unsupported_list_child_type")),
+    }
+}
+
+fn encode_host_i32_values(values: &[i32]) -> Arc<[u8]> {
+    Arc::from(values.iter().flat_map(|value| value.to_ne_bytes()).collect::<Vec<_>>())
+}
+
+fn encode_host_string_offsets(operation: &'static str, strings: &[String]) -> Result<Arc<[u8]>> {
+    let mut offsets = Vec::with_capacity(strings.len() + 1);
+    let mut total_bytes = 0usize;
+    offsets.push(0i32);
+
+    for value in strings {
+        total_bytes = total_bytes.checked_add(value.len()).ok_or_else(|| {
+            Error::new_with(ErrorCode::ValueOutOfRange, operation, "string byte range overflowed usize")
+                .with_detail("reason", "string_byte_len_overflow")
+        })?;
+        offsets.push(i32::try_from(total_bytes).map_err(|_| {
+            Error::new_with(ErrorCode::ValueOutOfRange, operation, "string byte offsets exceed Arrow Utf8 range")
+                .with_detail("byte_len", total_bytes.to_string())
+                .with_detail("reason", "string_offset_i32_overflow")
+        })?);
+    }
+
+    Ok(encode_host_i32_values(&offsets))
+}
+
+fn unexpected_arrow_array_layout_error(
+    operation: &'static str,
+    message: &'static str,
+    arrow_type: &ArrowDataType,
+    actual_arrow_type: &ArrowDataType,
+) -> Error {
+    error::foreign_invariant_violation(
+        operation,
+        message,
+        "arrow_array",
+        "unexpected_arrow_array_layout",
+        "ensure Arrow arrays match their declared field layouts",
+    )
+    .with_detail("arrow_type", format!("{arrow_type:?}"))
+    .with_detail("actual_arrow_type", format!("{actual_arrow_type:?}"))
 }
 
 /// Convert a primitive Arrow array to a cudf Column.

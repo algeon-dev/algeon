@@ -1,7 +1,12 @@
+use std::sync::Arc;
+
 use arrow::{
-    array::ArrayRef,
+    array::{Array, ArrayRef, PrimitiveArray},
     compute::cast,
-    datatypes::SchemaRef,
+    datatypes::{
+        DataType as ArrowDataType, SchemaRef, TimeUnit, TimestampMicrosecondType, TimestampMillisecondType,
+        TimestampNanosecondType, TimestampSecondType,
+    },
     record_batch::{RecordBatch, RecordBatchOptions},
 };
 
@@ -178,6 +183,10 @@ fn record_batch_with_schema_contract(batch: RecordBatch, schema: &SchemaRef) -> 
                 return Ok(column.clone());
             }
 
+            if let Some(column) = timestamp_array_with_schema_timezone(column.as_ref(), field.data_type())? {
+                return Ok(column);
+            }
+
             cast(column.as_ref(), field.data_type()).map_err(|error| {
                 map_arrow_schema_contract_error(operation, error)
                     .with_detail("field_name", field.name().clone())
@@ -194,6 +203,51 @@ fn record_batch_with_schema_contract(batch: RecordBatch, schema: &SchemaRef) -> 
         map_arrow_schema_contract_error(operation, error)
             .with_detail("schema_contract_failure", "schema_record_batch_build_failed")
     })
+}
+
+fn timestamp_array_with_schema_timezone(column: &dyn Array, expected_type: &ArrowDataType) -> Result<Option<ArrayRef>> {
+    let (actual_unit, expected_unit, expected_timezone) = match (column.data_type(), expected_type) {
+        (
+            ArrowDataType::Timestamp(actual_unit, _),
+            ArrowDataType::Timestamp(expected_unit, Some(expected_timezone)),
+        ) if actual_unit == expected_unit => (actual_unit, expected_unit, expected_timezone.clone()),
+        _ => return Ok(None),
+    };
+
+    let timezone = Some(expected_timezone);
+    let array: ArrayRef = match (actual_unit, expected_unit) {
+        (TimeUnit::Second, TimeUnit::Second) => {
+            Arc::new(timestamp_array_with_timezone::<TimestampSecondType>(column, timezone)?)
+        },
+        (TimeUnit::Millisecond, TimeUnit::Millisecond) => {
+            Arc::new(timestamp_array_with_timezone::<TimestampMillisecondType>(column, timezone)?)
+        },
+        (TimeUnit::Microsecond, TimeUnit::Microsecond) => {
+            Arc::new(timestamp_array_with_timezone::<TimestampMicrosecondType>(column, timezone)?)
+        },
+        (TimeUnit::Nanosecond, TimeUnit::Nanosecond) => {
+            Arc::new(timestamp_array_with_timezone::<TimestampNanosecondType>(column, timezone)?)
+        },
+        _ => unreachable!("timestamp units checked above"),
+    };
+    Ok(Some(array))
+}
+
+fn timestamp_array_with_timezone<T>(column: &dyn Array, timezone: Option<Arc<str>>) -> Result<PrimitiveArray<T>>
+where T: arrow::datatypes::ArrowTimestampType {
+    let array = column.as_any().downcast_ref::<PrimitiveArray<T>>().ok_or_else(|| {
+        error::foreign_invariant_violation(
+            "dataframe::GpuRecordBatch::to_host_record_batch",
+            "timestamp column has an unexpected Arrow primitive layout",
+            "record_batch",
+            "invalid_arrow_schema_contract",
+            "ensure materialized timestamp columns use the Arrow primitive array matching their unit",
+        )
+        .with_detail("actual_arrow_type", format!("{:?}", column.data_type()))
+        .with_detail("expected_arrow_type", format!("{:?}", ArrowDataType::Timestamp(T::UNIT, timezone.clone())))
+        .with_detail("schema_contract_failure", "timestamp_schema_timezone_layout_mismatch")
+    })?;
+    Ok(array.clone().with_timezone_opt(timezone))
 }
 
 fn map_arrow_schema_contract_error(operation: &'static str, error: arrow::error::ArrowError) -> Error {
