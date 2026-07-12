@@ -635,7 +635,7 @@ pub(crate) fn usize_to_i64(value: usize, operation: &'static str, field: &'stati
 // FFI status translation
 // --------------------------------------------------------------------------
 
-fn leaf_code_for_status(status: cudf_sys::cudf_status_t) -> ErrorCode {
+fn leaf_code_for_status(status: cudf_sys::cudf_status_t, message: &str) -> ErrorCode {
     match status {
         cudf_sys::CUDF_ERROR_INVALID_ARGUMENT | cudf_sys::CUDF_ERROR_INVALID_OPERATION | cudf_sys::CUDF_ERROR_TYPE => {
             ErrorCode::ForeignInvalidArgument
@@ -644,10 +644,34 @@ fn leaf_code_for_status(status: cudf_sys::cudf_status_t) -> ErrorCode {
         cudf_sys::CUDF_ERROR_FATAL_CUDA => ErrorCode::FatalCuda,
         cudf_sys::CUDF_ERROR_OUT_OF_MEMORY => ErrorCode::OutOfMemory,
         cudf_sys::CUDF_ERROR_UNSUPPORTED => ErrorCode::UnsupportedOperation,
+        cudf_sys::CUDF_ERROR_IO if is_transient_cuda_io_message(message) => ErrorCode::TransientIoFailure,
         cudf_sys::CUDF_ERROR_IO => ErrorCode::IoFailure,
         cudf_sys::CUDF_ERROR_NULL => ErrorCode::NullUnexpected,
         cudf_sys::CUDF_ERROR_INDEX => ErrorCode::IndexOutOfBounds,
         _ => ErrorCode::ForeignInvariantViolation,
+    }
+}
+
+fn is_transient_cuda_io_message(message: &str) -> bool {
+    let normalized = message.to_ascii_lowercase();
+    let invalid_value = normalized.contains("cudaerrorinvalidvalue") && normalized.contains("invalid argument");
+    let copy_context = normalized.contains("cuda_memcpy.cu")
+        || normalized.contains("cudamemsetasync")
+        || normalized.contains("device_buffer.cpp")
+        || normalized.contains("h2d ctor")
+        || normalized.contains("d->h")
+        || normalized.contains("thrust");
+
+    invalid_value && copy_context
+}
+
+fn error_for_ffi_status(status: cudf_sys::cudf_status_t, operation: &'static str, message: String) -> Error {
+    let code = leaf_code_for_status(status, &message);
+    let error = Error::new_with(code, operation, message);
+    if code == ErrorCode::TransientIoFailure {
+        error.with_detail("transient_promotion", "cuda_invalid_value_copy")
+    } else {
+        error
     }
 }
 
@@ -671,9 +695,8 @@ pub(crate) fn check_status_in(status: cudf_sys::cudf_status_t, operation: &'stat
     if status == cudf_sys::CUDF_SUCCESS {
         return Ok(());
     }
-    let code = leaf_code_for_status(status);
     let message = read_ffi_last_error_message();
-    Err(Error::new_with(code, operation, message))
+    Err(error_for_ffi_status(status, operation, message))
 }
 
 /// Convert a C shim status, attaching diagnostic details on failure.

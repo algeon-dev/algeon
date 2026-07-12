@@ -98,6 +98,9 @@ pub enum ErrorCode {
     FatalCuda,
     /// An I/O path (file, Arrow reader) failed.
     IoFailure,
+    /// A libcudf I/O path reported a CUDA copy/memset failure signature that
+    /// is known to be transient in concurrent reader/writer workloads.
+    TransientIoFailure,
 
     // -- Domestic soft-panic leaf --------------------------------------------
     /// An invariant in our own code was violated (soft-panic replacement).
@@ -148,6 +151,7 @@ impl fmt::Display for ErrorCode {
             ErrorCode::CudaRuntime => "CudaRuntime",
             ErrorCode::FatalCuda => "FatalCuda",
             ErrorCode::IoFailure => "IoFailure",
+            ErrorCode::TransientIoFailure => "TransientIoFailure",
             ErrorCode::InvariantViolation => "InvariantViolation",
             ErrorCode::ForeignInvalidArgument => "ForeignInvalidArgument",
             ErrorCode::ForeignTransientDependencyFailure => "ForeignTransientDependencyFailure",
@@ -257,6 +261,7 @@ pub const fn kind_for_code(code: ErrorCode) -> ErrorKind {
         ErrorCode::CudaRuntime
         | ErrorCode::FatalCuda
         | ErrorCode::IoFailure
+        | ErrorCode::TransientIoFailure
         | ErrorCode::ForeignTransientDependencyFailure
         | ErrorCode::ForeignPersistentDependencyFailure => ErrorKind::DependencyFailure,
 
@@ -272,6 +277,7 @@ pub const fn status_for_code(code: ErrorCode) -> ErrorStatus {
     match code {
         ErrorCode::OutOfMemory
         | ErrorCode::CudaRuntime
+        | ErrorCode::TransientIoFailure
         | ErrorCode::ForeignTransientDependencyFailure
         | ErrorCode::ForeignResourceExhausted => ErrorStatus::Temporary,
 

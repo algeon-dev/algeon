@@ -13,9 +13,17 @@ const FILTER_RS: &str = include_str!("../../src/ops/filter.rs");
 const GROUPBY_AGG_RS: &str = include_str!("../../src/ops/groupby/agg.rs");
 const GROUPBY_SHIFT_RS: &str = include_str!("../../src/ops/groupby/shift.rs");
 const HASHING_RS: &str = include_str!("../../src/ops/hashing.rs");
+const IO_MOD_RS: &str = include_str!("../../src/io/mod.rs");
 const IO_CSV_RS: &str = include_str!("../../src/io/csv.rs");
 const IO_JSON_RS: &str = include_str!("../../src/io/json.rs");
 const IO_PARQUET_RS: &str = include_str!("../../src/io/parquet.rs");
+const IO_SOURCE_MOD_RS: &str = include_str!("../../src/io/source/mod.rs");
+const IO_SOURCE_CHUNK_RS: &str = include_str!("../../src/io/source/chunk.rs");
+const IO_SOURCE_DIAGNOSTICS_RS: &str = include_str!("../../src/io/source/diagnostics.rs");
+const IO_SOURCE_LOCAL_PARQUET_RS: &str = include_str!("../../src/io/source/local_parquet.rs");
+const IO_SOURCE_PARTITION_RS: &str = include_str!("../../src/io/source/partition.rs");
+const IO_SOURCE_PREDICATE_RS: &str = include_str!("../../src/io/source/predicate.rs");
+const IO_SOURCE_SCHEMA_RS: &str = include_str!("../../src/io/source/schema.rs");
 const JOIN_CONDITIONAL_RS: &str = include_str!("../../src/ops/join/conditional.rs");
 const JOIN_FILTER_RS: &str = include_str!("../../src/ops/join/filter.rs");
 const JOIN_HASH_RS: &str = include_str!("../../src/ops/join/hash.rs");
@@ -929,6 +937,68 @@ fn io_write_helpers_require_explicit_execution_options() {
         assert!(!body.contains(ambient_call), "{function} must not call the ambient non-_ex FFI entry point");
         assert!(!body.contains("match exec_options"), "{function} must not branch on optional execution options");
     }
+}
+
+#[test]
+fn safe_io_layer_contains_no_process_global_libcudf_lock() {
+    let mut violations = Vec::new();
+    let scanned_sources = [
+        ("io/mod.rs", IO_MOD_RS),
+        ("io/csv.rs", IO_CSV_RS),
+        ("io/json.rs", IO_JSON_RS),
+        ("io/parquet.rs", IO_PARQUET_RS),
+        ("io/source/mod.rs", IO_SOURCE_MOD_RS),
+        ("io/source/chunk.rs", IO_SOURCE_CHUNK_RS),
+        ("io/source/diagnostics.rs", IO_SOURCE_DIAGNOSTICS_RS),
+        ("io/source/local_parquet.rs", IO_SOURCE_LOCAL_PARQUET_RS),
+        ("io/source/partition.rs", IO_SOURCE_PARTITION_RS),
+        ("io/source/predicate.rs", IO_SOURCE_PREDICATE_RS),
+        ("io/source/schema.rs", IO_SOURCE_SCHEMA_RS),
+    ];
+    let expected_io_source_files = scanned_sources
+        .iter()
+        .map(|(name, _)| *name)
+        .filter(|name| name.starts_with("io/source/"))
+        .collect::<BTreeSet<_>>();
+    let actual_io_source_files = fs::read_dir(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/io/source"))
+        .unwrap()
+        .map(|entry| {
+            let entry = entry.unwrap();
+            format!("io/source/{}", entry.file_name().to_string_lossy())
+        })
+        .filter(|name| name.ends_with(".rs"))
+        .collect::<BTreeSet<_>>();
+    assert_eq!(
+        actual_io_source_files,
+        expected_io_source_files.into_iter().map(str::to_string).collect::<BTreeSet<_>>(),
+        "safe IO lock tripwire must scan every src/io/source/*.rs file"
+    );
+
+    for (name, source) in scanned_sources {
+        for (line_index, line) in source.lines().enumerate() {
+            for forbidden in [
+                "lock_libcudf_io",
+                "libcudf_io_guard",
+                "Mutex<",
+                "MutexGuard",
+                "OnceLock<Mutex",
+                "RwLock<",
+                "Semaphore",
+            ] {
+                if line.contains(forbidden) {
+                    violations.push(format!("{name}:{} forbidden `{forbidden}`:\n{line}", line_index + 1));
+                }
+            }
+        }
+    }
+
+    assert!(
+        violations.is_empty(),
+        "the device-domain concurrency model forbids Rust-side synchronization guards in safe IO source code that \
+         could serialize libcudf calls; IO calls must rely on explicit execution options and C++ provenance/lifetime \
+         retention.\n{}",
+        violations.join("\n\n")
+    );
 }
 
 #[test]

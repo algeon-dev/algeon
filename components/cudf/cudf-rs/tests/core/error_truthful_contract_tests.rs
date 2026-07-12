@@ -41,6 +41,56 @@ fn status_projection_is_defined_for_every_public_error_code() {
     }
 }
 
+#[test]
+fn transient_io_failure_is_a_temporary_dependency_leaf() {
+    assert_eq!(kind_for_code(ErrorCode::TransientIoFailure), ErrorKind::DependencyFailure);
+    assert_eq!(status_for_code(ErrorCode::TransientIoFailure), ErrorStatus::Temporary);
+}
+
+#[test]
+fn ffi_io_status_promotes_only_known_cuda_copy_transients() {
+    let transient = cudf::testing::core::ffi_io_status_error_for_test(
+        "CUDA error encountered at: cudf/cpp/src/utilities/cuda_memcpy.cu:43: 1 cudaErrorInvalidValue invalid argument",
+        "testing::ffi_status_error_for_test",
+    );
+    assert_eq!(transient.code(), ErrorCode::TransientIoFailure);
+    assert_eq!(transient.kind(), ErrorKind::DependencyFailure);
+    assert_eq!(transient.status(), ErrorStatus::Temporary);
+    assert!(transient.is_retryable());
+    assert_eq!(transient.detail_values("transient_promotion").collect::<Vec<_>>(), vec!["cuda_invalid_value_copy"]);
+
+    let ordinary = cudf::testing::core::ffi_io_status_error_for_test(
+        "Failed to open local parquet file: No such file or directory",
+        "testing::ffi_status_error_for_test",
+    );
+    assert_eq!(ordinary.code(), ErrorCode::IoFailure);
+    assert_eq!(ordinary.kind(), ErrorKind::DependencyFailure);
+    assert_eq!(ordinary.status(), ErrorStatus::Permanent);
+    assert!(!ordinary.is_retryable());
+
+    let os_invalid_argument = cudf::testing::core::ffi_io_status_error_for_test(
+        "Failed to open local parquet file: invalid argument in thrust path",
+        "testing::ffi_status_error_for_test",
+    );
+    assert_eq!(os_invalid_argument.code(), ErrorCode::IoFailure);
+    assert_eq!(os_invalid_argument.status(), ErrorStatus::Permanent);
+    assert!(!os_invalid_argument.is_retryable());
+
+    let cuda_invalid_value_without_copy_context = cudf::testing::core::ffi_io_status_error_for_test(
+        "cudaErrorInvalidValue invalid argument while opening input path",
+        "testing::ffi_status_error_for_test",
+    );
+    assert_eq!(cuda_invalid_value_without_copy_context.code(), ErrorCode::IoFailure);
+    assert_eq!(cuda_invalid_value_without_copy_context.status(), ErrorStatus::Permanent);
+
+    let cuda = cudf::testing::core::ffi_cuda_status_error_for_test(
+        "cudaErrorInvalidValue invalid argument",
+        "testing::ffi_status_error_for_test",
+    );
+    assert_eq!(cuda.code(), ErrorCode::CudaRuntime);
+    assert_eq!(cuda.status(), ErrorStatus::Temporary);
+}
+
 // `Facts` duplicate-insert and wrong-variant tests live as crate-internal
 // unit tests in `cudf-rs/src/core/error/facts.rs` because the writer surface
 // is not downstream-visible, so the tests cannot live outside the crate.

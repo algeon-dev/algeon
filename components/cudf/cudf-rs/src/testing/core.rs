@@ -1,4 +1,4 @@
-use crate::core::{DeviceMemoryResource, Result};
+use crate::core::{DeviceMemoryResource, Error, Result};
 
 /// Build a stats memory resource for allocation-accounting tests.
 pub fn stats_memory_resource() -> Result<DeviceMemoryResource> {
@@ -31,6 +31,18 @@ pub fn trigger_range_limit_error_for_test() -> Result<()> {
 /// repeated details, a source chain, and multiple reanchor hops.
 pub fn trigger_truthful_error_contract_for_test() -> Result<()> {
     crate::core::error::testing_hooks::trigger_truthful_error_contract_for_test()
+}
+
+/// Translate a synthetic FFI status/message pair through the same leaf-code
+/// classifier used by the production status boundary.
+pub fn ffi_io_status_error_for_test(message: impl Into<String>, operation: &'static str) -> Error {
+    crate::core::error::testing_hooks::ffi_io_status_error_for_test(message, operation)
+}
+
+/// Translate a synthetic CUDA FFI status/message pair through the same
+/// leaf-code classifier used by the production status boundary.
+pub fn ffi_cuda_status_error_for_test(message: impl Into<String>, operation: &'static str) -> Error {
+    crate::core::error::testing_hooks::ffi_cuda_status_error_for_test(message, operation)
 }
 
 /// Trigger a synthetic error that reanchors twice at the same operation so

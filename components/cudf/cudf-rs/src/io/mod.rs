@@ -40,7 +40,7 @@ use std::{
     ffi::{CStr, CString, c_char},
     fs,
     path::Path,
-    sync::{Arc, Mutex, MutexGuard, OnceLock},
+    sync::Arc,
 };
 
 use crate::{
@@ -55,14 +55,6 @@ pub mod csv;
 pub mod json;
 pub mod parquet;
 pub mod source;
-
-pub(crate) fn lock_libcudf_io(operation: &'static str) -> Result<MutexGuard<'static, ()>> {
-    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-    LOCK.get_or_init(|| Mutex::new(())).lock().map_err(|_| {
-        error::invariant_violation(operation, "libcudf IO guard lock was poisoned")
-            .with_detail("resource", "libcudf_io_guard")
-    })
-}
 
 /// Probe whether the cuFile driver can be opened by this process.
 ///

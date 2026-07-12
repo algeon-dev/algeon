@@ -874,6 +874,7 @@ impl RuntimeBuilder {
         // Temporarily switch to the target device so that any auto-created
         // stream or memory resource lands on the correct GPU.
         let _guard = DeviceGuard::new(device)?;
+        let device_manager = DeviceMemoryManager::for_device(device)?;
 
         let stream = match stream {
             Some(stream) => stream,
@@ -884,7 +885,7 @@ impl RuntimeBuilder {
             MemoryResourceSelection::Pool { initial_pool_size, maximum_pool_size } => {
                 DeviceMemoryResource::pool_on(device, initial_pool_size, maximum_pool_size)?
             },
-            MemoryResourceSelection::DeviceMemoryManager => DeviceMemoryManager::for_device(device)?.resource().clone(),
+            MemoryResourceSelection::DeviceMemoryManager => device_manager.resource().clone(),
         };
         let domain = ExecutionDomain::from_handles_on_device(device, stream, mr, boundary_observer)?;
         Ok(Runtime { domain })

@@ -13,6 +13,22 @@ pub(crate) fn from_interop_in_for_test(error: InteropError, operation: &'static 
     super::from_interop_in(error, operation)
 }
 
+pub(crate) fn ffi_status_error_for_test(
+    status: cudf_sys::cudf_status_t,
+    message: impl Into<String>,
+    operation: &'static str,
+) -> Error {
+    super::error_for_ffi_status(status, operation, message.into())
+}
+
+pub(crate) fn ffi_io_status_error_for_test(message: impl Into<String>, operation: &'static str) -> Error {
+    ffi_status_error_for_test(cudf_sys::CUDF_ERROR_IO, message, operation)
+}
+
+pub(crate) fn ffi_cuda_status_error_for_test(message: impl Into<String>, operation: &'static str) -> Error {
+    ffi_status_error_for_test(cudf_sys::CUDF_ERROR_CUDA, message, operation)
+}
+
 #[must_use]
 pub(crate) fn reanchor_for_test(err: Error, operation: &'static str) -> Error {
     err.reanchor(operation)
