@@ -5,7 +5,7 @@
 //! work on the current thread. Both types are **not** `Send` or `Sync`
 //! because GPU state is thread-local.
 
-use std::{fmt, marker::PhantomData, mem::ManuallyDrop, ptr, ptr::NonNull, sync::Arc};
+use std::{fmt, marker::PhantomData, mem::ManuallyDrop, ptr, ptr::NonNull, rc::Rc, sync::Arc};
 
 use cudf::DeviceId;
 use cugraph_sys::{
@@ -20,60 +20,39 @@ use crate::{
 };
 
 enum ResourceHandleState {
-    LocalOwned {
-        raw: *mut cugraph_resource_handle_t,
-        device: i32,
-    },
-    // Keep `shim` before `runtime` so the native runtime-bound shim is torn
-    // down before releasing the retained cudf runtime owner.
-    RuntimeBound {
-        raw: *mut cugraph_resource_handle_t,
-        device: i32,
-        #[allow(dead_code)]
-        shim: RuntimeResourceHandleOwner,
-        runtime: Arc<cudf::Runtime>,
-    },
-    ExternalBorrowed {
-        raw: *mut cugraph_resource_handle_t,
-        device: i32,
-    },
-    ExternalOwned {
-        raw: *mut cugraph_resource_handle_t,
-        device: i32,
-    },
+    LocalOwned { raw: *mut cugraph_resource_handle_t, device: i32 },
+    RuntimeBound { lease: ResourceHandleLease },
+    ExternalBorrowed { raw: *mut cugraph_resource_handle_t, device: i32 },
+    ExternalOwned { raw: *mut cugraph_resource_handle_t, device: i32 },
 }
 
 impl ResourceHandleState {
     fn raw(&self) -> *mut cugraph_resource_handle_t {
         match self {
-            Self::LocalOwned { raw, .. }
-            | Self::RuntimeBound { raw, .. }
-            | Self::ExternalBorrowed { raw, .. }
-            | Self::ExternalOwned { raw, .. } => *raw,
-        }
-    }
-
-    fn raw_mut(&mut self) -> &mut *mut cugraph_resource_handle_t {
-        match self {
-            Self::LocalOwned { raw, .. }
-            | Self::RuntimeBound { raw, .. }
-            | Self::ExternalBorrowed { raw, .. }
-            | Self::ExternalOwned { raw, .. } => raw,
+            Self::LocalOwned { raw, .. } | Self::ExternalBorrowed { raw, .. } | Self::ExternalOwned { raw, .. } => *raw,
+            Self::RuntimeBound { lease } => lease.raw(),
         }
     }
 
     fn device(&self) -> i32 {
         match self {
             Self::LocalOwned { device, .. }
-            | Self::RuntimeBound { device, .. }
             | Self::ExternalBorrowed { device, .. }
             | Self::ExternalOwned { device, .. } => *device,
+            Self::RuntimeBound { lease } => lease.device(),
         }
     }
 
     fn runtime(&self) -> Option<&cudf::Runtime> {
         match self {
-            Self::RuntimeBound { runtime, .. } => Some(runtime.as_ref()),
+            Self::RuntimeBound { lease } => Some(lease.runtime()),
+            Self::LocalOwned { .. } | Self::ExternalBorrowed { .. } | Self::ExternalOwned { .. } => None,
+        }
+    }
+
+    fn runtime_bound_lease(&self) -> Option<ResourceHandleLease> {
+        match self {
+            Self::RuntimeBound { lease } => Some(lease.clone()),
             Self::LocalOwned { .. } | Self::ExternalBorrowed { .. } | Self::ExternalOwned { .. } => None,
         }
     }
@@ -84,10 +63,6 @@ impl ResourceHandleState {
 
     fn uses_external_comm_metadata(&self) -> bool {
         matches!(self, Self::ExternalBorrowed { .. } | Self::ExternalOwned { .. })
-    }
-
-    fn owns_raw(&self) -> bool {
-        matches!(self, Self::LocalOwned { .. } | Self::ExternalOwned { .. })
     }
 }
 
@@ -155,6 +130,55 @@ impl Drop for RuntimeResourceHandleOwner {
         let _guard = DeviceGuard::switch_to_for_drop(self.device, "RuntimeResourceHandleOwner::drop").ok();
         // SAFETY: this owner is the unique runtime-bound owner for the shim.
         unsafe { cugraph_rs_runtime_resource_handle_destroy(self.raw.as_ptr()) };
+    }
+}
+
+/// Cloneable owner lease for runtime-bound cuGraph handles.
+///
+/// Native graph objects can retain allocations or RAFT-side state associated
+/// with a runtime-bound cuGraph resource handle used for graph construction or
+/// an algorithm call. The Rust `Graph` wrapper keeps these leases until graph
+/// teardown so the native shim and cudf runtime outlive any graph state that
+/// may reference them.
+#[derive(Clone)]
+pub(crate) struct ResourceHandleLease {
+    // Keep `shim` before `runtime` so the native runtime-bound shim is torn
+    // down before releasing the retained cudf runtime owner.
+    shim: Rc<RuntimeResourceHandleOwner>,
+    runtime: Arc<cudf::Runtime>,
+    raw: *mut cugraph_resource_handle_t,
+    device: i32,
+}
+
+impl ResourceHandleLease {
+    fn new(
+        shim: RuntimeResourceHandleOwner,
+        runtime: Arc<cudf::Runtime>,
+        raw: *mut cugraph_resource_handle_t,
+        device: i32,
+    ) -> Self {
+        Self { shim: Rc::new(shim), runtime, raw, device }
+    }
+
+    fn raw(&self) -> *mut cugraph_resource_handle_t {
+        self.raw
+    }
+
+    fn device(&self) -> i32 {
+        self.device
+    }
+
+    fn runtime(&self) -> &cudf::Runtime {
+        self.runtime.as_ref()
+    }
+
+    pub(crate) fn same_owner(&self, other: &Self) -> bool {
+        Rc::ptr_eq(&self.shim, &other.shim)
+    }
+
+    #[cfg(test)]
+    fn shim_device(&self) -> i32 {
+        self.shim.device
     }
 }
 
@@ -235,6 +259,10 @@ impl EnteredContext<'_> {
     pub fn runtime(&self) -> Option<&cudf::Runtime> {
         self.owner.runtime()
     }
+
+    pub(crate) fn runtime_bound_lease(&self) -> Option<ResourceHandleLease> {
+        self.owner.runtime_bound_lease()
+    }
 }
 
 impl fmt::Debug for ResourceHandle {
@@ -276,10 +304,8 @@ impl ResourceHandle {
         let operation = "ResourceHandle::for_runtime";
         let device = runtime.device().ordinal() as i32;
         let (shim, raw) = RuntimeResourceHandleOwner::create(&runtime, operation)?;
-        Ok(Self {
-            state: ResourceHandleState::RuntimeBound { raw, device, shim, runtime },
-            _nosend_nosync: PhantomData,
-        })
+        let lease = ResourceHandleLease::new(shim, runtime, raw, device);
+        Ok(Self { state: ResourceHandleState::RuntimeBound { lease }, _nosend_nosync: PhantomData })
     }
 
     fn new_on_device(device: i32) -> Result<Self> {
@@ -430,6 +456,10 @@ impl ResourceHandle {
         self.state.runtime()
     }
 
+    pub(crate) fn runtime_bound_lease(&self) -> Option<ResourceHandleLease> {
+        self.state.runtime_bound_lease()
+    }
+
     /// The communicator rank carried by this handle.
     ///
     /// Handles created through [`for_runtime`](Self::for_runtime)
@@ -476,11 +506,19 @@ impl ResourceHandle {
 
 impl Drop for ResourceHandle {
     fn drop(&mut self) {
-        if self.state.owns_raw() && !self.state.raw().is_null() {
-            let _guard = DeviceGuard::switch_to_for_drop(self.state.device(), "ResourceHandle::drop").ok();
-            // SAFETY: owned handles are freed exactly once here.
-            unsafe { cugraph_free_resource_handle(self.state.raw()) };
-            *self.state.raw_mut() = ptr::null_mut();
+        match &mut self.state {
+            ResourceHandleState::LocalOwned { raw, device } | ResourceHandleState::ExternalOwned { raw, device }
+                if !raw.is_null() =>
+            {
+                let _guard = DeviceGuard::switch_to_for_drop(*device, "ResourceHandle::drop").ok();
+                // SAFETY: owned handles are freed exactly once here.
+                unsafe { cugraph_free_resource_handle(*raw) };
+                *raw = ptr::null_mut();
+            },
+            ResourceHandleState::LocalOwned { .. }
+            | ResourceHandleState::RuntimeBound { .. }
+            | ResourceHandleState::ExternalBorrowed { .. }
+            | ResourceHandleState::ExternalOwned { .. } => {},
         }
     }
 }
@@ -555,11 +593,11 @@ mod tests {
         let handle = ResourceHandle::for_runtime(runtime).expect("resource handle");
 
         match &handle.state {
-            ResourceHandleState::RuntimeBound { raw, device, shim, .. } => {
-                assert!(!raw.is_null(), "runtime-bound state must retain the live cuGraph handle pointer");
-                assert_eq!(*device, handle.device(), "runtime-bound state must carry the handle device");
+            ResourceHandleState::RuntimeBound { lease } => {
+                assert!(!lease.raw().is_null(), "runtime-bound state must retain the live cuGraph handle pointer");
+                assert_eq!(lease.device(), handle.device(), "runtime-bound state must carry the handle device");
                 assert!(
-                    shim.device >= 0,
+                    lease.shim_device() >= 0,
                     "runtime-bound state must retain the native shim that owns the coupled RAFT + cuGraph lifetime"
                 );
             },

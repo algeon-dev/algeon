@@ -555,6 +555,7 @@ fn run_random_walks<V: CugraphElement>(
     graph.validate_vertex_input_dtype(V::data_type(), operation, "start_vertices")?;
     let mut result: *mut cugraph_random_walk_result_t = ptr::null_mut();
     let mut error: *mut cugraph_error_t = ptr::null_mut();
+    let graph_ptr = graph.as_ptr(handle, operation)?;
 
     // SAFETY: `graph`, `rng_state`, and `start_vertices` are live cuGraph
     // objects, and `result`/`error` are valid out-pointers.
@@ -562,7 +563,7 @@ fn run_random_walks<V: CugraphElement>(
         let code = function(
             handle.handle_ptr(),
             rng_state.as_ptr(),
-            graph.as_ptr(),
+            graph_ptr,
             start_vertices.as_ptr(),
             max_length,
             &mut result,
@@ -585,6 +586,7 @@ pub(crate) fn node2vec_random_walks<V: CugraphElement>(
     graph.validate_vertex_input_dtype(V::data_type(), "node2vec_random_walks", "start_vertices")?;
     let mut result: *mut cugraph_random_walk_result_t = ptr::null_mut();
     let mut error: *mut cugraph_error_t = ptr::null_mut();
+    let graph_ptr = graph.as_ptr(handle, "node2vec_random_walks")?;
 
     // SAFETY: `graph`, `rng_state`, and `start_vertices` are live cuGraph
     // objects, and `result`/`error` are valid out-pointers.
@@ -592,7 +594,7 @@ pub(crate) fn node2vec_random_walks<V: CugraphElement>(
         let code = cugraph_sys::cugraph_node2vec_random_walks(
             handle.handle_ptr(),
             rng_state.as_ptr(),
-            graph.as_ptr(),
+            graph_ptr,
             start_vertices.as_ptr(),
             params.max_length.get(),
             params.p.get(),
@@ -619,13 +621,14 @@ where
     graph.validate_vertex_input_dtype(V::data_type(), "select_random_vertices", "vertices")?;
     let mut vertices: *mut cugraph_type_erased_device_array_t = ptr::null_mut();
     let mut error: *mut cugraph_error_t = ptr::null_mut();
+    let graph_ptr = graph.as_ptr(handle, "select_random_vertices")?;
 
     // SAFETY: `graph` and `rng_state` are live cuGraph objects, and
     // `vertices`/`error` are valid out-pointers.
     unsafe {
         let code = cugraph_select_random_vertices(
             handle.handle_ptr(),
-            graph.as_ptr(),
+            graph_ptr,
             rng_state.as_ptr(),
             num_vertices,
             &mut vertices,
@@ -665,6 +668,7 @@ pub(crate) fn homogeneous_uniform_neighbor_sample<V: CugraphElement>(
     let mut result: *mut cugraph_sample_result_t = ptr::null_mut();
     let mut error: *mut cugraph_error_t = ptr::null_mut();
     let label_offsets = starting_vertex_label_offsets.map(|v| v.as_ptr()).unwrap_or(ptr::null_mut());
+    let graph_ptr = graph.as_ptr(handle, "homogeneous_uniform_neighbor_sample")?;
 
     // SAFETY: all input pointers are either null or live cuGraph view handles,
     // and `result`/`error` are valid out-pointers.
@@ -672,7 +676,7 @@ pub(crate) fn homogeneous_uniform_neighbor_sample<V: CugraphElement>(
         let code = cugraph_homogeneous_uniform_neighbor_sample(
             handle.handle_ptr(),
             rng_state.as_ptr(),
-            graph.as_ptr(),
+            graph_ptr,
             start_vertices.as_ptr(),
             label_offsets,
             fan_out.as_ptr(),
@@ -702,6 +706,7 @@ pub(crate) fn homogeneous_biased_neighbor_sample<V: CugraphElement>(
     let mut result: *mut cugraph_sample_result_t = ptr::null_mut();
     let mut error: *mut cugraph_error_t = ptr::null_mut();
     let label_offsets = starting_vertex_label_offsets.map(|v| v.as_ptr()).unwrap_or(ptr::null_mut());
+    let graph_ptr = graph.as_ptr(handle, "homogeneous_biased_neighbor_sample")?;
 
     // SAFETY: all input pointers are either null or live cuGraph view handles,
     // and `result`/`error` are valid out-pointers. Edge biases are null because
@@ -712,7 +717,7 @@ pub(crate) fn homogeneous_biased_neighbor_sample<V: CugraphElement>(
         let code = cugraph_homogeneous_biased_neighbor_sample(
             handle.handle_ptr(),
             rng_state.as_ptr(),
-            graph.as_ptr(),
+            graph_ptr,
             ptr::null(),
             start_vertices.as_ptr(),
             label_offsets,
@@ -767,6 +772,7 @@ where
     let mut error: *mut cugraph_error_t = ptr::null_mut();
     let times = starting_vertex_times.map(|v| v.as_ptr()).unwrap_or(ptr::null_mut());
     let label_offsets = starting_vertex_label_offsets.map(|v| v.as_ptr()).unwrap_or(ptr::null_mut());
+    let graph_ptr = graph.as_ptr(handle, "homogeneous_uniform_temporal_neighbor_sample")?;
 
     // SAFETY: all input pointers are either null or live cuGraph view handles,
     // `temporal_property_name` is a live NUL-terminated C string, and
@@ -775,7 +781,7 @@ where
         let code = cugraph_homogeneous_uniform_temporal_neighbor_sample(
             handle.handle_ptr(),
             rng_state.as_ptr(),
-            graph.as_ptr(),
+            graph_ptr,
             temporal_property_name.as_ptr(),
             start_vertices.as_ptr(),
             times,
@@ -831,6 +837,7 @@ where
     let mut error: *mut cugraph_error_t = ptr::null_mut();
     let times = starting_vertex_times.map(|v| v.as_ptr()).unwrap_or(ptr::null_mut());
     let label_offsets = starting_vertex_label_offsets.map(|v| v.as_ptr()).unwrap_or(ptr::null_mut());
+    let graph_ptr = graph.as_ptr(handle, "homogeneous_biased_temporal_neighbor_sample")?;
 
     // SAFETY: all input pointers are either null or live cuGraph view handles,
     // `temporal_property_name` is a live NUL-terminated C string, and
@@ -840,7 +847,7 @@ where
         let code = cugraph_homogeneous_biased_temporal_neighbor_sample(
             handle.handle_ptr(),
             rng_state.as_ptr(),
-            graph.as_ptr(),
+            graph_ptr,
             temporal_property_name.as_ptr(),
             ptr::null(),
             start_vertices.as_ptr(),

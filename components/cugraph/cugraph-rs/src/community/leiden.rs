@@ -50,6 +50,7 @@ pub(crate) fn leiden(
 ) -> Result<LeidenResult> {
     let mut result: *mut cugraph_hierarchical_clustering_result_t = ptr::null_mut();
     let mut error: *mut cugraph_error_t = ptr::null_mut();
+    let graph_ptr = graph.as_ptr(handle, "leiden")?;
 
     // SAFETY: `graph` is a live cuGraph graph object matching Leiden's
     // forward-layout requirement, `rng_state` is a live cuGraph RNG state, and
@@ -58,7 +59,7 @@ pub(crate) fn leiden(
         let code = cugraph_leiden(
             handle.handle_ptr(),
             rng_state.as_ptr(),
-            graph.as_ptr(),
+            graph_ptr,
             usize::from(params.max_level),
             params.resolution.get(),
             params.theta.get(),

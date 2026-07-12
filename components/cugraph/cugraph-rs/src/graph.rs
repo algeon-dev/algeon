@@ -40,7 +40,7 @@
 //!     .unwrap();
 //! ```
 
-use std::{any::Any, marker::PhantomData, num::NonZeroUsize, ptr, sync::Arc};
+use std::{any::Any, cell::RefCell, marker::PhantomData, num::NonZeroUsize, ptr, sync::Arc};
 
 use cugraph_sys::{
     cugraph_decompress_to_edgelist, cugraph_edgelist_free, cugraph_edgelist_get_destinations,
@@ -54,7 +54,7 @@ use crate::{
     array::{DeviceArray, DeviceArrayView, RawDeviceArrayView},
     cuda::DeviceGuard,
     error::{Error, ErrorKind, Result, check_error, require_non_null},
-    handle::EnteredContext,
+    handle::{EnteredContext, ResourceHandleLease},
     structure::{ResolvedVertexSelection, VertexIds, VertexSelection},
     types::{CugraphElement, DataType, GraphProperties, to_bool_t},
 };
@@ -111,6 +111,14 @@ impl Transposition for Transposed {
 /// ([`vertex_dtype`](Graph::vertex_dtype)) and edge weights
 /// ([`weight_dtype`](Graph::weight_dtype)), enabling downstream code to
 /// interpret algorithm results without guessing.
+///
+/// When a graph is constructed or operated on with a
+/// [`ResourceHandle`](crate::handle::ResourceHandle) created by
+/// [`ResourceHandle::for_runtime`](crate::handle::ResourceHandle::for_runtime),
+/// the graph retains a private lease on that runtime-bound native handle until
+/// the graph is dropped. This keeps native graph teardown safe when cuGraph
+/// records allocations or RAFT-side state associated with the runtime-bound
+/// handle used by construction or later algorithms.
 pub struct Graph<T = Forward> {
     raw: *mut cugraph_graph_t,
     device: i32,
@@ -121,6 +129,10 @@ pub struct Graph<T = Forward> {
     has_edge_ids: bool,
     edge_id_dtype: Option<DataType>,
     pending_input_completion: Option<DeferredInputCompletion>,
+    // Runtime-bound resource handles used to build or operate on the graph
+    // can own native state referenced during cugraph_graph_free. Keep these
+    // leases alive until after Graph::drop runs.
+    resource_handle_leases: RefCell<Vec<ResourceHandleLease>>,
     _nosend_nosync: PhantomData<*mut ()>,
     _transposition: PhantomData<T>,
 }
@@ -323,6 +335,30 @@ impl<T> Graph<T> {
         self
     }
 
+    fn retain_runtime_bound_handle(&self, handle: &EnteredContext<'_>, operation: &'static str) -> Result<()> {
+        if handle.device() != self.device {
+            return Err(Error::new(ErrorKind::InvalidInput, operation)
+                .with_message("graph and resource handle must be on the same CUDA device")
+                .with_context("graph_device", self.device.to_string())
+                .with_context("handle_device", handle.device().to_string()));
+        }
+
+        let Some(lease) = handle.runtime_bound_lease() else {
+            return Ok(());
+        };
+
+        let mut leases = self.resource_handle_leases.try_borrow_mut().map_err(|_| {
+            Error::new(ErrorKind::InvalidState, operation)
+                .with_message("graph runtime-bound resource-handle lease ledger is already borrowed")
+        })?;
+
+        if !leases.iter().any(|existing| existing.same_owner(&lease)) {
+            leases.push(lease);
+        }
+
+        Ok(())
+    }
+
     /// Structural properties declared when this graph was constructed.
     ///
     /// These are the graph-construction properties Rust passed to cuGraph
@@ -373,8 +409,9 @@ impl<T> Graph<T> {
         crate::sampling::select_random_vertices(handle, self, rng_state, num_vertices)
     }
 
-    pub(crate) fn as_ptr(&self) -> *mut cugraph_graph_t {
-        self.raw
+    pub(crate) fn as_ptr(&self, handle: &EnteredContext<'_>, operation: &'static str) -> Result<*mut cugraph_graph_t> {
+        self.retain_runtime_bound_handle(handle, operation)?;
+        Ok(self.raw)
     }
 
     fn edge_count_impl(
@@ -391,7 +428,7 @@ impl<T> Graph<T> {
         unsafe {
             let code = cugraph_decompress_to_edgelist(
                 handle.handle_ptr(),
-                self.as_ptr(),
+                self.as_ptr(handle, operation)?,
                 to_bool_t(do_expensive_check),
                 &mut edgelist,
                 &mut error,
@@ -771,6 +808,7 @@ impl<'a> GraphBuilder<'a> {
             has_edge_ids: self.edge_ids.is_some(),
             edge_id_dtype,
             pending_input_completion: None,
+            resource_handle_leases: RefCell::new(handle.runtime_bound_lease().into_iter().collect()),
             _nosend_nosync: PhantomData,
             _transposition: PhantomData,
         })

@@ -39,13 +39,14 @@ pub(crate) fn triangle_count<T, V: CugraphElement>(
     let mut result: *mut cugraph_triangle_count_result_t = ptr::null_mut();
     let mut error: *mut cugraph_error_t = ptr::null_mut();
     let start_ptr = start.map(|v| v.as_ptr().cast_const()).unwrap_or(ptr::null());
+    let graph_ptr = graph.as_ptr(handle, "triangle_count")?;
 
     // SAFETY: `start_ptr` is either null or borrowed from a live device view,
     // and `result`/`error` are valid out-pointers.
     unsafe {
         let code = cugraph_triangle_count(
             handle.handle_ptr(),
-            graph.as_ptr(),
+            graph_ptr,
             start_ptr,
             to_bool_t(params.do_expensive_check),
             &mut result,

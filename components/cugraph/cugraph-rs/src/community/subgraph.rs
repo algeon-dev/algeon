@@ -64,13 +64,14 @@ pub(crate) fn k_truss_subgraph<T>(
 ) -> Result<KTrussSubgraphResult> {
     let mut result: *mut cugraph_induced_subgraph_result_t = ptr::null_mut();
     let mut error: *mut cugraph_error_t = ptr::null_mut();
+    let graph_ptr = graph.as_ptr(handle, "k_truss_subgraph")?;
 
     // SAFETY: `graph` and `handle` are live for the duration of the call, and
     // `result`/`error` are valid out-pointers.
     unsafe {
         let code = cugraph_k_truss_subgraph(
             handle.handle_ptr(),
-            graph.as_ptr(),
+            graph_ptr,
             params.k.get(),
             to_bool_t(params.do_expensive_check),
             &mut result,
@@ -95,13 +96,14 @@ pub(crate) fn extract_ego<T, V: CugraphElement>(
 ) -> Result<ExtractEgoResult> {
     let mut result: *mut cugraph_induced_subgraph_result_t = ptr::null_mut();
     let mut error: *mut cugraph_error_t = ptr::null_mut();
+    let graph_ptr = graph.as_ptr(handle, "extract_ego")?;
 
     // SAFETY: `source_vertices` is a live device view validated by `Graph`,
     // and `result`/`error` are valid out-pointers.
     unsafe {
         let code = cugraph_extract_ego(
             handle.handle_ptr(),
-            graph.as_ptr(),
+            graph_ptr,
             source_vertices.as_ptr().cast_const(),
             params.radius.get(),
             to_bool_t(params.do_expensive_check),

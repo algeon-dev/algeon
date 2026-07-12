@@ -58,13 +58,14 @@ pub(crate) fn create_vertex_pairs<T, V: CugraphElement>(
 
     let mut result: *mut cugraph_vertex_pairs_t = ptr::null_mut();
     let mut error: *mut cugraph_error_t = ptr::null_mut();
+    let graph_ptr = graph.as_ptr(handle, "create_vertex_pairs")?;
 
     // SAFETY: handle, graph, and input views are live for the duration of the
     // call, and `result`/`error` are valid out-pointers.
     unsafe {
         let code = cugraph_create_vertex_pairs(
             handle.handle_ptr(),
-            graph.as_ptr(),
+            graph_ptr,
             first.as_ptr().cast_const(),
             second.as_ptr().cast_const(),
             &mut result,
@@ -88,13 +89,14 @@ fn pairwise_similarity(
 ) -> Result<SimilarityResultInner> {
     let mut result: *mut cugraph_similarity_result_t = ptr::null_mut();
     let mut error: *mut cugraph_error_t = ptr::null_mut();
+    let graph_ptr = graph.as_ptr(handle, operation)?;
 
     // SAFETY: handle, graph, and vertex pairs are live for the duration of the
     // call, and `result`/`error` are valid out-pointers.
     unsafe {
         let code = call(
             handle.handle_ptr(),
-            graph.as_ptr(),
+            graph_ptr,
             pairs.as_ptr_const(),
             to_bool_t(params.use_weight),
             to_bool_t(params.do_expensive_check),
@@ -120,13 +122,14 @@ fn all_pairs_similarity<V: CugraphElement>(
     let mut error: *mut cugraph_error_t = ptr::null_mut();
     let vertices_ptr = vertices.map(|v| v.as_ptr().cast_const()).unwrap_or(ptr::null());
     let topk = params.topk.map(|value| value.get()).unwrap_or(usize::MAX);
+    let graph_ptr = graph.as_ptr(handle, operation)?;
 
     // SAFETY: handle, graph, and optional vertices view are live for the
     // duration of the call, and `result`/`error` are valid out-pointers.
     unsafe {
         let code = call(
             handle.handle_ptr(),
-            graph.as_ptr(),
+            graph_ptr,
             vertices_ptr,
             to_bool_t(params.use_weight),
             topk,

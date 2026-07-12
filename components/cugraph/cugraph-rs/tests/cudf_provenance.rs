@@ -2,13 +2,16 @@
 //! compatibility requirements.
 mod common;
 
+use std::collections::{BTreeMap, HashMap};
+
 use common::{
     cudf::{
         assert_score_maps_close_f32, explicit_runtime, explicit_runtime_owner, python_undirected_multigraph_dataframe,
         python_weighted_reciprocal_expected_pagerank_map, runtime_bound_handle,
     },
     support::{
-        BFS_SOURCE_VERTEX_I32, SIMPLE_CHAIN_DST_I64, SIMPLE_CHAIN_SRC_I64, TRIANGLE_TAIL_DST_I32,
+        BFS_SOURCE_VERTEX_I32, DISCONNECTED_TWO_CYCLES_DST_I32, DISCONNECTED_TWO_CYCLES_SRC_I32, SIMPLE_CHAIN_DST_I64,
+        SIMPLE_CHAIN_SRC_I64, SSSP_GRAPH_DST_I32, SSSP_GRAPH_SRC_I32, SSSP_GRAPH_WEIGHT_F32, TRIANGLE_TAIL_DST_I32,
         TRIANGLE_TAIL_SRC_I32, TRIANGLE_TAIL_WEIGHT_F32, bfs_distance_map_i32_result, bfs_distance_map_i64_result,
     },
 };
@@ -21,7 +24,9 @@ use cugraph::{
     },
     graph::{Forward, Transposed},
     handle::ResourceHandle,
-    traversal::BfsParams,
+    labeling::{ConnectedComponentsParams, WeaklyConnectedComponentsResult},
+    params::NonNegativeF64,
+    traversal::{BfsParams, SsspParams, SsspResult},
     types::GraphProperties,
 };
 use rapids_interop::{BorrowedColumnView, CudaStreamHandle, ExecutionBinding};
@@ -68,6 +73,45 @@ fn borrowed_with_device<'a>(column: &BorrowedColumnView<'a>, device: i32) -> Bor
         execution,
     )
     .expect("borrowed column with overridden device")
+}
+
+fn sssp_distance_map_i32_f32(handle: &cugraph::EnteredContext<'_>, result: &SsspResult) -> HashMap<i32, f32> {
+    let vertices = result.vertex_ids().expect("vertex_ids").to_vec_i32(handle).expect("vertices");
+    let distances = result.distances().expect("distances").to_vec_f32(handle).expect("distances");
+    vertices.into_iter().zip(distances).collect()
+}
+
+fn assert_f32_maps_close(actual: &HashMap<i32, f32>, expected: &HashMap<i32, f32>, tolerance: f32, label: &str) {
+    assert_eq!(actual.len(), expected.len(), "{label} entry count mismatch");
+    for (vertex, expected_distance) in expected {
+        let actual_distance = actual.get(vertex).expect("vertex entry");
+        assert!(
+            (actual_distance - expected_distance).abs() <= tolerance,
+            "{label} mismatch for vertex {vertex}: expected {expected_distance}, got {actual_distance}"
+        );
+    }
+}
+
+fn normalized_wcc_labels(
+    handle: &cugraph::EnteredContext<'_>,
+    result: &WeaklyConnectedComponentsResult,
+) -> BTreeMap<i32, usize> {
+    let vertices = result.vertex_ids().expect("vertex_ids").to_vec_i32(handle).expect("vertices");
+    let labels = result.labels().expect("labels").to_vec_i32(handle).expect("labels");
+    let mut label_ids = BTreeMap::<i32, usize>::new();
+    let mut next_id = 0usize;
+    vertices
+        .into_iter()
+        .zip(labels)
+        .map(|(vertex, label)| {
+            let id = *label_ids.entry(label).or_insert_with(|| {
+                let id = next_id;
+                next_id += 1;
+                id
+            });
+            (vertex, id)
+        })
+        .collect()
 }
 
 #[test]
@@ -129,6 +173,108 @@ fn runtime_bound_handle_cross_device_borrowed_columns_are_rejected() {
         borrowed_columns_ordering_plan(&handle, &src_foreign, &dst_foreign, None).expect_err("cross-device reject");
     assert_eq!(err.kind(), cugraph::ErrorKind::InvalidInput);
     assert_eq!(err.operation(), "cudf_interop::testing::borrowed_columns_ordering_plan");
+}
+
+#[test]
+fn graph_built_on_one_runtime_runs_forward_algorithms_on_same_device_runtime() {
+    let _guard = common::cudf::cuda_test_serial_guard();
+    let build_runtime = explicit_runtime_owner();
+    let build_handle = runtime_bound_handle(&build_runtime);
+    let build_entered = build_handle
+        .enter("graph_built_on_one_runtime_runs_forward_algorithms_on_same_device_runtime_build")
+        .expect("build entered");
+
+    let src = build_runtime.series(SSSP_GRAPH_SRC_I32).expect("src");
+    let dst = build_runtime.series(SSSP_GRAPH_DST_I32).expect("dst");
+    let weight = build_runtime.series(SSSP_GRAPH_WEIGHT_F32).expect("weight");
+    let opts = SeriesGraphOptions::default().renumber();
+    let mut graph =
+        graph_from_series::<Forward>(&build_entered, &src, &dst, Some(&weight), &opts).expect("build graph");
+
+    let build_sources = DeviceArray::from_slice(&build_entered, &[BFS_SOURCE_VERTEX_I32]).expect("build sources");
+    let build_sources_view = build_sources.view().expect("build sources view");
+    let expected_bfs = graph
+        .bfs(&build_entered, &build_sources_view, &BfsParams::default())
+        .map(|result| bfs_distance_map_i32_result(&build_entered, &result))
+        .expect("baseline bfs");
+    let sssp_params = SsspParams::default().with_cutoff(NonNegativeF64::new(10.0).expect("cutoff"));
+    let expected_sssp = graph
+        .sssp(&build_entered, 0i32, &sssp_params)
+        .map(|result| sssp_distance_map_i32_f32(&build_entered, &result))
+        .expect("baseline sssp");
+
+    drop(build_entered);
+    let build_device = build_handle.device();
+
+    {
+        let consumer_runtime = explicit_runtime_owner();
+        let consumer_handle = runtime_bound_handle(&consumer_runtime);
+        let consumer_entered = consumer_handle
+            .enter("graph_built_on_one_runtime_runs_forward_algorithms_on_same_device_runtime_consume")
+            .expect("consumer entered");
+        assert_eq!(build_device, consumer_handle.device());
+
+        let consumer_sources =
+            DeviceArray::from_slice(&consumer_entered, &[BFS_SOURCE_VERTEX_I32]).expect("consumer sources");
+        let consumer_sources_view = consumer_sources.view().expect("consumer sources view");
+        let actual_bfs = graph
+            .bfs(&consumer_entered, &consumer_sources_view, &BfsParams::default())
+            .map(|result| bfs_distance_map_i32_result(&consumer_entered, &result))
+            .expect("cross-runtime bfs");
+        let actual_sssp = graph
+            .sssp(&consumer_entered, 0i32, &sssp_params)
+            .map(|result| sssp_distance_map_i32_f32(&consumer_entered, &result))
+            .expect("cross-runtime sssp");
+
+        assert_eq!(actual_bfs, expected_bfs);
+        assert_f32_maps_close(&actual_sssp, &expected_sssp, 1.0e-5, "cross-runtime sssp");
+    }
+
+    drop(graph);
+}
+
+#[test]
+fn graph_built_on_one_runtime_runs_transposed_algorithms_on_same_device_runtime() {
+    let _guard = common::cudf::cuda_test_serial_guard();
+    let build_runtime = explicit_runtime_owner();
+    let build_handle = runtime_bound_handle(&build_runtime);
+    let build_entered = build_handle
+        .enter("graph_built_on_one_runtime_runs_transposed_algorithms_on_same_device_runtime_build")
+        .expect("build entered");
+
+    let src = build_runtime.series(DISCONNECTED_TWO_CYCLES_SRC_I32).expect("src");
+    let dst = build_runtime.series(DISCONNECTED_TWO_CYCLES_DST_I32).expect("dst");
+    let opts = SeriesGraphOptions::default().properties(GraphProperties::undirected()).renumber();
+    let mut graph = graph_from_series::<Transposed>(&build_entered, &src, &dst, None, &opts).expect("build graph");
+
+    let expected_pagerank = common::cudf::pagerank_score_map(&build_entered, &mut graph);
+    let expected_wcc = graph
+        .weakly_connected_components(&build_entered, &ConnectedComponentsParams::default())
+        .map(|result| normalized_wcc_labels(&build_entered, &result))
+        .expect("baseline wcc");
+
+    drop(build_entered);
+    let build_device = build_handle.device();
+
+    {
+        let consumer_runtime = explicit_runtime_owner();
+        let consumer_handle = runtime_bound_handle(&consumer_runtime);
+        let consumer_entered = consumer_handle
+            .enter("graph_built_on_one_runtime_runs_transposed_algorithms_on_same_device_runtime_consume")
+            .expect("consumer entered");
+        assert_eq!(build_device, consumer_handle.device());
+
+        let actual_pagerank = common::cudf::pagerank_score_map(&consumer_entered, &mut graph);
+        let actual_wcc = graph
+            .weakly_connected_components(&consumer_entered, &ConnectedComponentsParams::default())
+            .map(|result| normalized_wcc_labels(&consumer_entered, &result))
+            .expect("cross-runtime wcc");
+
+        assert_score_maps_close_f32(&actual_pagerank, &expected_pagerank, 1.0e-6, "cross-runtime pagerank");
+        assert_eq!(actual_wcc, expected_wcc);
+    }
+
+    drop(graph);
 }
 
 #[test]
