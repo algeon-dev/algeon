@@ -10,6 +10,7 @@ pub(super) struct QueryHandleLifetime {
     active_contexts: AtomicUsize,
     root_context: Mutex<Option<ExecutionContext>>,
     memory_grant: Mutex<Option<MemoryGrant>>,
+    device_slot: Mutex<Option<DeviceActiveQuerySlot>>,
 }
 
 #[derive(Debug)]
@@ -23,6 +24,7 @@ impl QueryHandleLifetime {
         tenant_id: TenantId,
         query_id: u64,
         memory_grant: MemoryGrant,
+        device_slot: Option<DeviceActiveQuerySlot>,
     ) -> Arc<Self> {
         Arc::new(Self {
             service,
@@ -33,6 +35,7 @@ impl QueryHandleLifetime {
             active_contexts: AtomicUsize::new(0),
             root_context: Mutex::new(None),
             memory_grant: Mutex::new(Some(memory_grant)),
+            device_slot: Mutex::new(device_slot),
         })
     }
 
@@ -86,6 +89,9 @@ impl QueryHandleLifetime {
             },
         }
         self.shrink_memory_grant_to_live_floor();
+        if let Some(device_ordinal) = self.release_device_slot() {
+            notify_shared_device_admission_available(device_ordinal);
+        }
         self.service.notify_admission_available();
         match self.root_context.lock() {
             Ok(mut context) => {
@@ -101,6 +107,20 @@ impl QueryHandleLifetime {
             },
             Err(_error) => {
                 eprintln!("[nexus-query-engine] warning: failed to drop poisoned query service memory grant");
+            },
+        }
+    }
+
+    fn release_device_slot(&self) -> Option<usize> {
+        match self.device_slot.lock() {
+            Ok(mut slot) => slot.take().map(|slot| {
+                let device_ordinal = slot.device_ordinal();
+                drop(slot);
+                device_ordinal
+            }),
+            Err(_error) => {
+                eprintln!("[nexus-query-engine] warning: failed to drop poisoned query service device slot");
+                None
             },
         }
     }

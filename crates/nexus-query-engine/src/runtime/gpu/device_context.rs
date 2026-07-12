@@ -20,6 +20,30 @@ pub struct DeviceContext {
 }
 
 #[derive(Debug)]
+pub(crate) struct DeviceActiveQuerySlot {
+    device_ordinal: usize,
+    active_queries: Arc<AtomicUsize>,
+}
+
+impl DeviceActiveQuerySlot {
+    /// CUDA device ordinal whose per-device admission slot is held.
+    pub(crate) fn device_ordinal(&self) -> usize {
+        self.device_ordinal
+    }
+
+    #[cfg(test)]
+    pub(crate) fn new_for_test(device_ordinal: usize, active_queries: Arc<AtomicUsize>) -> Self {
+        Self { device_ordinal, active_queries }
+    }
+}
+
+impl Drop for DeviceActiveQuerySlot {
+    fn drop(&mut self) {
+        self.active_queries.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
+#[derive(Debug)]
 struct DeviceContextInner {
     device: cudf::DeviceId,
     stream_pool: ServiceStreamPool,
@@ -27,7 +51,7 @@ struct DeviceContextInner {
     memory_failure_tracker: DeviceMemoryFailureTracker,
     governor: MemoryGovernor,
     facts: DeviceFacts,
-    active_queries: AtomicUsize,
+    active_queries: Arc<AtomicUsize>,
 }
 
 impl DeviceContext {
@@ -39,6 +63,7 @@ impl DeviceContext {
         memory_failure_tracker: DeviceMemoryFailureTracker,
         governor: MemoryGovernor,
         facts: DeviceFacts,
+        active_queries: Arc<AtomicUsize>,
     ) -> Result<Self> {
         if device.ordinal() != facts.device {
             return Err(QueryError::new(
@@ -93,7 +118,7 @@ impl DeviceContext {
                 memory_failure_tracker,
                 governor,
                 facts,
-                active_queries: AtomicUsize::new(0),
+                active_queries,
             }),
         })
     }
@@ -133,9 +158,37 @@ impl DeviceContext {
         self.inner.governor.capacity_bytes()
     }
 
-    /// Number of currently admitted queries on this device.
+    /// Number of currently admitted queries on this CUDA device ordinal across
+    /// every `QueryService` in this process.
     pub fn active_queries(&self) -> usize {
         self.inner.active_queries.load(Ordering::Acquire)
+    }
+
+    /// Attempts to acquire one per-device active-query slot.
+    pub(crate) fn try_acquire_query_slot(
+        &self,
+        max_queries_per_device: Option<usize>,
+    ) -> Option<DeviceActiveQuerySlot> {
+        let mut current = self.inner.active_queries.load(Ordering::Acquire);
+        loop {
+            if max_queries_per_device.is_some_and(|cap| current >= cap) {
+                return None;
+            }
+            match self.inner.active_queries.compare_exchange_weak(
+                current,
+                current.saturating_add(1),
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => {
+                    return Some(DeviceActiveQuerySlot {
+                        device_ordinal: self.inner.device.ordinal(),
+                        active_queries: Arc::clone(&self.inner.active_queries),
+                    });
+                },
+                Err(actual) => current = actual,
+            }
+        }
     }
 
     /// Capacity bytes not currently granted to admitted queries.
@@ -144,19 +197,10 @@ impl DeviceContext {
     }
 
     /// Attempts to grant a query budget against this device's governor.
+    ///
+    /// This only updates the memory-governor ledger. Per-device active-query
+    /// slots are tracked separately by [`Self::try_acquire_query_slot`].
     pub fn try_grant_query(&self, request: GrantRequest) -> Result<Option<MemoryGrant>> {
-        let Some(grant) = self.inner.governor.try_request(request)? else {
-            return Ok(None);
-        };
-        let context = self.clone();
-        grant.notify_on_release(Arc::new(move || {
-            context.release_query_grant();
-        }))?;
-        self.inner.active_queries.fetch_add(1, Ordering::AcqRel);
-        Ok(Some(grant))
-    }
-
-    fn release_query_grant(&self) {
-        self.inner.active_queries.fetch_sub(1, Ordering::AcqRel);
+        self.inner.governor.try_request(request)
     }
 }

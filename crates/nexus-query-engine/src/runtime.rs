@@ -48,10 +48,10 @@ pub use bounded_join::{
     BoundedJoinReservationContract, BoundedJoinReservationRequirement, BoundedJoinReservationStatus,
 };
 pub use gpu::{
-    CudfInventory, DeviceContext, DeviceFacts, DeviceMemoryFailureReport, DeviceRegistry, DeviceRegistryConfig,
-    GpuComms, GpuInventory, GrantRequest, LeastLoadedPlacement, MemoryGovernor, MemoryGovernorGrantRow,
-    MemoryGovernorReport, MemoryGrant, PinnedDevicePlacement, Placement, PlacementPolicy, PlacementRequest, Priority,
-    QueryQos, SingleDeviceComms, device_budget_bytes_from_facts,
+    BestFitPlacement, CudfInventory, DeviceContext, DeviceFacts, DeviceMemoryFailureReport, DeviceRegistry,
+    DeviceRegistryConfig, GpuComms, GpuInventory, GrantRequest, LeastLoadedPlacement, MemoryGovernor,
+    MemoryGovernorGrantRow, MemoryGovernorReport, MemoryGrant, PinnedDevicePlacement, Placement, PlacementPolicy,
+    PlacementRequest, Priority, QueryPlacementPolicy, QueryQos, SingleDeviceComms, device_budget_bytes_from_facts,
 };
 pub use io_capability::{
     DEFAULT_GDS_LOCAL_MOUNT_ROOT, DeploymentIoCapability, GdsAvailabilityStatus, GdsDriverProbeStatus,

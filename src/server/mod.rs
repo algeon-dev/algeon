@@ -394,6 +394,22 @@ fn validate_injected_backend_matches_config(backend: &NexusGpuBackend, config: &
             slot_guarantee_value(service_config.slot_guarantee),
         ));
     }
+    if normalized_admission_policy.max_queries_per_device() != service_config.max_queries_per_device {
+        return Err(ServerError::builder_conflict(
+            "server_backend_admission_conflict",
+            "admission.max_queries_per_device",
+            format_optional_usize(normalized_admission_policy.max_queries_per_device()),
+            format_optional_usize(service_config.max_queries_per_device),
+        ));
+    }
+    if normalized_admission_policy.placement_policy() != service_config.placement_policy {
+        return Err(ServerError::builder_conflict(
+            "server_backend_admission_conflict",
+            "admission.placement_policy",
+            placement_policy_value(normalized_admission_policy.placement_policy()),
+            placement_policy_value(service_config.placement_policy),
+        ));
+    }
     if normalized_admission_policy.max_queued() != service_config.max_admission_queue_len {
         return Err(ServerError::builder_conflict(
             "server_backend_admission_conflict",
@@ -516,6 +532,19 @@ fn slot_guarantee_value(slot_guarantee: nexus_query_engine::SlotGuarantee) -> &'
     match slot_guarantee {
         nexus_query_engine::SlotGuarantee::GuaranteedMinimum => "guaranteed_minimum",
         nexus_query_engine::SlotGuarantee::Optimistic => "optimistic",
+    }
+}
+
+fn format_optional_usize(value: Option<usize>) -> String {
+    value.map_or_else(|| "none".to_string(), |value| value.to_string())
+}
+
+fn placement_policy_value(policy: nexus_query_engine::QueryPlacementPolicy) -> String {
+    match policy {
+        nexus_query_engine::QueryPlacementPolicy::LeastLoaded => "least_loaded".to_string(),
+        nexus_query_engine::QueryPlacementPolicy::BestFit => "best_fit".to_string(),
+        nexus_query_engine::QueryPlacementPolicy::Pinned { device_ordinal } => format!("pinned:{device_ordinal}"),
+        _ => "unknown".to_string(),
     }
 }
 
@@ -948,7 +977,7 @@ mod tests {
     use super::*;
     use crate::{
         CandidateOutcome, CudfNativePhysicalOptimizerRule, CudfOptimizerConfig, FallbackReason, GrantBand, MemoryShare,
-        NativeCudfExecutionConfig, NexusAdmissionPolicy, NexusMemoryPolicy, SlotGuarantee,
+        NativeCudfExecutionConfig, NexusAdmissionPolicy, NexusMemoryPolicy, QueryPlacementPolicy, SlotGuarantee,
     };
 
     const TEST_DEVICE_BUDGET_BYTES: u64 = 4096;
@@ -1106,6 +1135,30 @@ mod tests {
 
         assert_eq!(error.fact_value("reason"), Some("server_backend_admission_conflict"));
         assert_eq!(error.fact_value("config_field"), Some("slot_guarantee"));
+    }
+
+    #[tokio::test]
+    async fn builder_rejects_injected_backend_per_device_cap_conflict() {
+        let backend = admission_only_backend(1);
+        let mut config = bounded_config(1);
+        config.admission_policy = config.admission_policy.with_max_queries_per_device(Some(1));
+
+        let error = builder_error(FlightSqlServer::builder().config(config).backend(backend)).await;
+
+        assert_eq!(error.fact_value("reason"), Some("server_backend_admission_conflict"));
+        assert_eq!(error.fact_value("config_field"), Some("admission.max_queries_per_device"));
+    }
+
+    #[tokio::test]
+    async fn builder_rejects_injected_backend_placement_policy_conflict() {
+        let backend = admission_only_backend(1);
+        let mut config = bounded_config(1);
+        config.admission_policy = config.admission_policy.with_placement_policy(QueryPlacementPolicy::BestFit);
+
+        let error = builder_error(FlightSqlServer::builder().config(config).backend(backend)).await;
+
+        assert_eq!(error.fact_value("reason"), Some("server_backend_admission_conflict"));
+        assert_eq!(error.fact_value("config_field"), Some("admission.placement_policy"));
     }
 
     #[tokio::test]

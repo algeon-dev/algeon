@@ -1,11 +1,11 @@
 use std::{
-    sync::{Mutex, MutexGuard, OnceLock},
+    sync::{Mutex, MutexGuard, OnceLock, mpsc},
     time::Duration,
 };
 
 use nexus_query_engine::{
-    DeploymentIoCapability, GdsDriverProbeStatus, KvikioCompatModeStatus, NvidiaFsProbeStatus, QueryService,
-    QueryServiceConfig, QueryServiceTenantConfig, SlotGuarantee,
+    DeploymentIoCapability, GdsDriverProbeStatus, KvikioCompatModeStatus, NvidiaFsProbeStatus, QueryGrantRequest,
+    QueryPlacementPolicy, QueryService, QueryServiceConfig, QueryServiceTenantConfig, SlotGuarantee, TenantId,
 };
 
 const TEST_DEVICE_CAPACITY_BYTES: u64 = 64 * 1024 * 1024;
@@ -64,6 +64,165 @@ fn query_service_places_concurrent_runtime_handles_on_distinct_devices_when_avai
     assert_eq!(reports[1].capacity_bytes, TEST_DEVICE_CAPACITY_BYTES);
     assert_eq!(reports[0].outstanding_bytes, first.device_budget_bytes());
     assert_eq!(reports[1].outstanding_bytes, second.device_budget_bytes());
+}
+
+#[test]
+fn best_fit_placement_packs_before_spreading() {
+    if cudf::DeviceId::count().unwrap_or(0) < 2 {
+        return;
+    }
+    let _guard = service_claim_test_guard();
+    let query_budget = TEST_DEVICE_CAPACITY_BYTES / 4;
+    let config = QueryServiceConfig {
+        max_concurrent_queries: 2,
+        max_admission_queue_len: 8,
+        stream_pool_size: Some(6),
+        device_capacity_bytes: Some(TEST_DEVICE_CAPACITY_BYTES),
+        admission_wait_timeout: Duration::from_millis(500),
+        slot_guarantee: SlotGuarantee::Optimistic,
+        placement_policy: QueryPlacementPolicy::BestFit,
+        ..QueryServiceConfig::default()
+    };
+    let service = QueryService::new_with_device_ordinals_and_deployment(
+        config,
+        vec![0, 1],
+        vec![QueryServiceTenantConfig::new("tenant", query_budget)],
+        non_gds_deployment(),
+    )
+    .unwrap();
+
+    let first = service.try_admit_query("tenant").unwrap().expect("first query should admit");
+    let second = service.try_admit_query("tenant").unwrap().expect("second query should admit");
+
+    assert_eq!(first.device_ordinal(), 0);
+    assert_eq!(second.device_ordinal(), 0);
+}
+
+#[test]
+fn max_queries_per_device_forces_spread_and_then_blocks() {
+    if cudf::DeviceId::count().unwrap_or(0) < 2 {
+        return;
+    }
+    let _guard = service_claim_test_guard();
+    let query_budget = TEST_DEVICE_CAPACITY_BYTES / 4;
+    let config = QueryServiceConfig {
+        max_concurrent_queries: 3,
+        max_queries_per_device: Some(1),
+        max_admission_queue_len: 8,
+        stream_pool_size: Some(9),
+        device_capacity_bytes: Some(TEST_DEVICE_CAPACITY_BYTES),
+        admission_wait_timeout: Duration::from_millis(500),
+        slot_guarantee: SlotGuarantee::Optimistic,
+        placement_policy: QueryPlacementPolicy::BestFit,
+        ..QueryServiceConfig::default()
+    };
+    let service = QueryService::new_with_device_ordinals_and_deployment(
+        config,
+        vec![0, 1],
+        vec![QueryServiceTenantConfig::new("tenant", query_budget)],
+        non_gds_deployment(),
+    )
+    .unwrap();
+
+    let first = service.try_admit_query("tenant").unwrap().expect("first query should admit");
+    let second = service.try_admit_query("tenant").unwrap().expect("second query should admit");
+
+    assert_eq!(first.device_ordinal(), 0);
+    assert_eq!(second.device_ordinal(), 1);
+    assert!(service.try_admit_query("tenant").unwrap().is_none());
+}
+
+#[test]
+fn pinned_placement_uses_selected_device() {
+    if cudf::DeviceId::count().unwrap_or(0) < 2 {
+        return;
+    }
+    let _guard = service_claim_test_guard();
+    let query_budget = TEST_DEVICE_CAPACITY_BYTES / 4;
+    let config = QueryServiceConfig {
+        max_concurrent_queries: 2,
+        max_admission_queue_len: 8,
+        stream_pool_size: Some(6),
+        device_capacity_bytes: Some(TEST_DEVICE_CAPACITY_BYTES),
+        admission_wait_timeout: Duration::from_millis(500),
+        slot_guarantee: SlotGuarantee::Optimistic,
+        placement_policy: QueryPlacementPolicy::Pinned { device_ordinal: 1 },
+        ..QueryServiceConfig::default()
+    };
+    let service = QueryService::new_with_device_ordinals_and_deployment(
+        config,
+        vec![0, 1],
+        vec![QueryServiceTenantConfig::new("tenant", query_budget)],
+        non_gds_deployment(),
+    )
+    .unwrap();
+
+    let first = service.try_admit_query("tenant").unwrap().expect("first query should admit");
+    let second = service.try_admit_query("tenant").unwrap().expect("second query should admit");
+
+    assert_eq!(first.device_ordinal(), 1);
+    assert_eq!(second.device_ordinal(), 1);
+}
+
+#[test]
+fn pinned_guaranteed_minimum_reserves_future_slots_on_pinned_device() {
+    if cudf::DeviceId::count().unwrap_or(0) < 2 {
+        return;
+    }
+    let _guard = service_claim_test_guard();
+    let min_budget = TEST_DEVICE_CAPACITY_BYTES / 2;
+    let config = QueryServiceConfig {
+        max_concurrent_queries: 2,
+        max_admission_queue_len: 8,
+        stream_pool_size: Some(6),
+        device_capacity_bytes: Some(TEST_DEVICE_CAPACITY_BYTES),
+        admission_wait_timeout: Duration::from_millis(500),
+        placement_policy: QueryPlacementPolicy::Pinned { device_ordinal: 0 },
+        ..QueryServiceConfig::default()
+    };
+    let service = QueryService::new_with_device_ordinals_and_deployment(
+        config,
+        vec![0, 1],
+        vec![QueryServiceTenantConfig::with_grant_range("tenant", min_budget, TEST_DEVICE_CAPACITY_BYTES)],
+        non_gds_deployment(),
+    )
+    .unwrap();
+
+    let first = service.try_admit_query("tenant").unwrap().expect("first query should admit");
+    let second = service.try_admit_query("tenant").unwrap().expect("second query should admit");
+
+    assert_eq!(first.device_ordinal(), 0);
+    assert_eq!(second.device_ordinal(), 0);
+    assert_eq!(first.device_budget_bytes(), min_budget);
+    assert_eq!(second.device_budget_bytes(), min_budget);
+}
+
+#[test]
+fn pinned_placement_rejects_device_outside_registry() {
+    if cudf::DeviceId::count().unwrap_or(0) < 1 {
+        return;
+    }
+    let _guard = service_claim_test_guard();
+    let config = QueryServiceConfig {
+        max_concurrent_queries: 1,
+        max_admission_queue_len: 2,
+        stream_pool_size: Some(3),
+        device_capacity_bytes: Some(TEST_DEVICE_CAPACITY_BYTES),
+        admission_wait_timeout: Duration::from_millis(500),
+        slot_guarantee: SlotGuarantee::Optimistic,
+        placement_policy: QueryPlacementPolicy::Pinned { device_ordinal: 1 },
+        ..QueryServiceConfig::default()
+    };
+
+    let error = QueryService::new_with_device_ordinals_and_deployment(
+        config,
+        vec![0],
+        vec![QueryServiceTenantConfig::new("tenant", TEST_DEVICE_CAPACITY_BYTES)],
+        non_gds_deployment(),
+    )
+    .unwrap_err();
+
+    assert_eq!(error.fact_value("reason"), Some("pinned_device_not_configured"));
 }
 
 #[test]
@@ -147,10 +306,181 @@ fn query_services_on_same_device_share_memory_governor_ledger() {
     let first = first_service.try_admit_query("tenant").unwrap().expect("first service should admit");
 
     assert!(second_service.try_admit_query("tenant").unwrap().is_none());
-    assert_eq!(second_service.memory_governor_report().unwrap().outstanding_bytes, first.device_budget_bytes());
+    assert_eq!(second_service.memory_governor_reports().unwrap()[0].outstanding_bytes, first.device_budget_bytes());
 
     drop(first);
     assert!(second_service.try_admit_query("tenant").unwrap().is_some());
+}
+
+#[test]
+fn max_queries_per_device_cap_is_shared_across_services_on_same_device() {
+    if cudf::DeviceId::count().unwrap_or(0) < 1 {
+        return;
+    }
+    let _guard = service_claim_test_guard();
+    let query_budget = TEST_DEVICE_CAPACITY_BYTES / 4;
+    let config = QueryServiceConfig {
+        max_concurrent_queries: 1,
+        max_queries_per_device: Some(1),
+        max_admission_queue_len: 2,
+        stream_pool_size: Some(3),
+        device_capacity_bytes: Some(TEST_DEVICE_CAPACITY_BYTES),
+        admission_wait_timeout: Duration::from_millis(500),
+        slot_guarantee: SlotGuarantee::Optimistic,
+        ..QueryServiceConfig::default()
+    };
+    let first_service = QueryService::new_with_device_ordinals_and_deployment(
+        config.clone(),
+        vec![0],
+        vec![QueryServiceTenantConfig::new("tenant", query_budget)],
+        non_gds_deployment(),
+    )
+    .unwrap();
+    let second_service = QueryService::new_with_device_ordinals_and_deployment(
+        config,
+        vec![0],
+        vec![QueryServiceTenantConfig::new("tenant", query_budget)],
+        non_gds_deployment(),
+    )
+    .unwrap();
+
+    let first = first_service.try_admit_query("tenant").unwrap().expect("first service should admit");
+
+    assert!(second_service.try_admit_query("tenant").unwrap().is_none());
+
+    drop(first);
+    assert!(second_service.try_admit_query("tenant").unwrap().is_some());
+}
+
+#[test]
+fn max_queries_per_device_release_wakes_waiter_in_other_service() {
+    if cudf::DeviceId::count().unwrap_or(0) < 1 {
+        return;
+    }
+    let _guard = service_claim_test_guard();
+    let query_budget = TEST_DEVICE_CAPACITY_BYTES / 4;
+    let config = QueryServiceConfig {
+        max_concurrent_queries: 1,
+        max_queries_per_device: Some(1),
+        max_admission_queue_len: 2,
+        stream_pool_size: Some(3),
+        device_capacity_bytes: Some(TEST_DEVICE_CAPACITY_BYTES),
+        admission_wait_timeout: Duration::from_secs(2),
+        slot_guarantee: SlotGuarantee::Optimistic,
+        ..QueryServiceConfig::default()
+    };
+    let first_service = QueryService::new_with_device_ordinals_and_deployment(
+        config.clone(),
+        vec![0],
+        vec![QueryServiceTenantConfig::new("tenant", query_budget)],
+        non_gds_deployment(),
+    )
+    .unwrap();
+    let second_service = QueryService::new_with_device_ordinals_and_deployment(
+        config,
+        vec![0],
+        vec![QueryServiceTenantConfig::new("tenant", query_budget)],
+        non_gds_deployment(),
+    )
+    .unwrap();
+
+    let first = first_service.try_admit_query("tenant").unwrap().expect("first service should admit");
+    let waiting_service = second_service.clone();
+    let (sender, receiver) = mpsc::channel();
+    let waiter = std::thread::spawn(move || {
+        let result = waiting_service
+            .admit_query("tenant")
+            .map(|handle| handle.device_ordinal())
+            .map_err(|error| error.to_string());
+        sender.send(result).expect("main thread should receive waiter result");
+    });
+
+    let deadline = std::time::Instant::now() + Duration::from_secs(1);
+    while second_service.admission_snapshot().unwrap().queued_queries == 0 {
+        assert!(std::time::Instant::now() < deadline, "second service did not queue before release");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    drop(first);
+
+    let admitted_device = receiver.recv_timeout(Duration::from_secs(3)).expect("waiter should wake before timeout");
+    waiter.join().expect("waiter thread should finish");
+    assert_eq!(admitted_device.unwrap(), 0);
+}
+
+#[test]
+fn max_queries_per_device_releases_with_handle_even_when_context_retains_grant() {
+    if cudf::DeviceId::count().unwrap_or(0) < 1 {
+        return;
+    }
+    let _guard = service_claim_test_guard();
+    let query_budget = TEST_DEVICE_CAPACITY_BYTES / 4;
+    let config = QueryServiceConfig {
+        max_concurrent_queries: 2,
+        max_queries_per_device: Some(1),
+        max_admission_queue_len: 2,
+        stream_pool_size: Some(6),
+        device_capacity_bytes: Some(TEST_DEVICE_CAPACITY_BYTES),
+        admission_wait_timeout: Duration::from_millis(500),
+        slot_guarantee: SlotGuarantee::Optimistic,
+        ..QueryServiceConfig::default()
+    };
+    let service = QueryService::new_with_device_ordinals_and_deployment(
+        config,
+        vec![0],
+        vec![QueryServiceTenantConfig::new("tenant", query_budget)],
+        non_gds_deployment(),
+    )
+    .unwrap();
+
+    let first = service.try_admit_query("tenant").unwrap().expect("first query should admit");
+    let tenant_context = first.acquire_context().unwrap();
+    let retained_context = tenant_context.context().clone();
+    drop(tenant_context);
+    first.finish();
+
+    let second = service.try_admit_query("tenant").unwrap().expect("released handle should free per-device cap");
+    assert_eq!(second.device_ordinal(), 0);
+    drop(retained_context);
+}
+
+#[test]
+fn guaranteed_min_requested_floor_validation_uses_idle_capacity_not_live_device_slots() {
+    if cudf::DeviceId::count().unwrap_or(0) < 1 {
+        return;
+    }
+    let _guard = service_claim_test_guard();
+    let min_budget = TEST_DEVICE_CAPACITY_BYTES / 16;
+    let requested_floor = TEST_DEVICE_CAPACITY_BYTES / 2;
+    let config = QueryServiceConfig {
+        max_concurrent_queries: 4,
+        max_queries_per_device: Some(4),
+        max_admission_queue_len: 8,
+        stream_pool_size: Some(12),
+        device_capacity_bytes: Some(TEST_DEVICE_CAPACITY_BYTES),
+        admission_wait_timeout: Duration::from_millis(500),
+        slot_guarantee: SlotGuarantee::GuaranteedMinimum,
+        ..QueryServiceConfig::default()
+    };
+    let service = QueryService::new_with_device_ordinals_and_deployment(
+        config,
+        vec![0],
+        vec![QueryServiceTenantConfig::with_grant_range("tenant", min_budget, TEST_DEVICE_CAPACITY_BYTES)],
+        non_gds_deployment(),
+    )
+    .unwrap();
+
+    let _first = service.try_admit_query("tenant").unwrap().expect("first query should admit");
+    let _second = service.try_admit_query("tenant").unwrap().expect("second query should admit");
+    let _third = service.try_admit_query("tenant").unwrap().expect("third query should admit");
+
+    let band = service
+        .tenant_requested_grant_band_with_grant_request(
+            &TenantId::new("tenant"),
+            QueryGrantRequest::with_requested_grant_min_bytes(requested_floor),
+        )
+        .expect("live active slots must not collapse the idle guaranteed-minimum ceiling");
+
+    assert_eq!(band.min_bytes, requested_floor);
 }
 
 #[test]

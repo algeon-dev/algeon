@@ -18,7 +18,9 @@ use datafusion_nexus::{
     NEXUS_EXPLAIN_COVERAGE_FUNCTION, NativeCudfExecutionConfig, SlotGuarantee,
     server::{
         NEXUS_ICEBERG_GLUE_DATABASE_ENV, NEXUS_SERVER_ADMISSION_GRANT_MIN_ENV, NEXUS_SERVER_ADMISSION_GRANT_WANT_ENV,
-        NEXUS_SERVER_ADMISSION_SLOT_GUARANTEE_ENV, NEXUS_SERVER_ADMISSION_WAIT_TIMEOUT_MS_ENV, NEXUS_SERVER_BIND_ENV,
+        NEXUS_SERVER_ADMISSION_MAX_QUERIES_PER_DEVICE_ENV, NEXUS_SERVER_ADMISSION_PINNED_DEVICE_ENV,
+        NEXUS_SERVER_ADMISSION_PLACEMENT_POLICY_ENV, NEXUS_SERVER_ADMISSION_SLOT_GUARANTEE_ENV,
+        NEXUS_SERVER_ADMISSION_WAIT_TIMEOUT_MS_ENV, NEXUS_SERVER_ADMISSION_WORKLOAD_PROFILE_ENV, NEXUS_SERVER_BIND_ENV,
         NEXUS_SERVER_CONFIG_FILE_ENV, NEXUS_SERVER_CPU_FALLBACK_MAX_CONCURRENT_STATEMENTS_ENV,
         NEXUS_SERVER_CPU_FALLBACK_WAIT_TIMEOUT_MS_ENV, NEXUS_SERVER_CUGRAPH_ENABLED_ENV,
         NEXUS_SERVER_DEVICE_BUDGET_FRACTION_ENV, NEXUS_SERVER_GPU_DEVICES_ENV, NEXUS_SERVER_MAX_CONCURRENT_QUERIES_ENV,
@@ -39,8 +41,8 @@ use datafusion_nexus::{TableFormatLakehouseCachePolicy, TableFormatParquetReadSt
 #[cfg(feature = "iceberg")]
 use nexus_query_engine::S3SourceStorageCredential;
 use nexus_query_engine::{
-    MemoryControlPolicy, NativePipelineExecutionMode, QueryService, QueryServiceConfig, QueryServiceTenantConfig,
-    SourceChunkPlanningMode, StatisticalAggregateExecutionMode,
+    MemoryControlPolicy, NativePipelineExecutionMode, QueryPlacementPolicy, QueryService, QueryServiceConfig,
+    QueryServiceTenantConfig, SourceChunkPlanningMode, StatisticalAggregateExecutionMode,
 };
 
 #[test]
@@ -58,6 +60,8 @@ fn server_config_defaults_to_two_native_query_admissions() {
     );
     assert_eq!(config.admission_policy.grant().min, MemoryShare::Fraction(1.0 / 8.0));
     assert_eq!(config.admission_policy.grant().want, MemoryShare::PolicyDefault);
+    assert_eq!(config.admission_policy.max_queries_per_device(), None);
+    assert_eq!(config.admission_policy.placement_policy(), QueryPlacementPolicy::LeastLoaded);
     assert_eq!(config.admission_policy.slot_guarantee(), SlotGuarantee::GuaranteedMinimum);
     assert_eq!(config.admission_policy.wait_timeout(), Duration::from_secs(60));
     assert_eq!(config.cpu_fallback_wait_timeout, Some(Duration::from_secs(30)));
@@ -72,6 +76,65 @@ fn server_config_defaults_to_two_native_query_admissions() {
     );
     #[cfg(feature = "cugraph")]
     assert!(config.cugraph.is_none(), "cuGraph Flight SQL exposure must be disabled by default");
+}
+
+#[test]
+fn server_config_small_query_admission_profile_sets_serving_defaults() {
+    let env = BTreeMap::from([
+        (NEXUS_SERVER_ADMISSION_WORKLOAD_PROFILE_ENV, "small_query".to_string()),
+        (NEXUS_SERVER_GPU_DEVICES_ENV, "0,1".to_string()),
+    ]);
+
+    let config = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap();
+
+    assert_eq!(config.max_in_flight, 16);
+    assert_eq!(config.admission_policy.max_concurrent_queries(), 16);
+    assert_eq!(config.admission_policy.grant().min, MemoryShare::Bytes(1 << 30));
+    assert_eq!(config.admission_policy.grant().want, MemoryShare::PolicyDefault);
+    assert_eq!(config.admission_policy.slot_guarantee(), SlotGuarantee::Optimistic);
+}
+
+#[test]
+fn server_config_small_query_admission_profile_counts_only_pinned_device() {
+    let env = BTreeMap::from([
+        (NEXUS_SERVER_ADMISSION_WORKLOAD_PROFILE_ENV, "small_query".to_string()),
+        (NEXUS_SERVER_GPU_DEVICES_ENV, "0,1".to_string()),
+        (NEXUS_SERVER_ADMISSION_PLACEMENT_POLICY_ENV, "pinned".to_string()),
+        (NEXUS_SERVER_ADMISSION_PINNED_DEVICE_ENV, "1".to_string()),
+    ]);
+
+    let config = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap();
+
+    assert_eq!(config.max_in_flight, 8);
+    assert_eq!(config.admission_policy.max_concurrent_queries(), 8);
+    assert_eq!(config.admission_policy.placement_policy(), QueryPlacementPolicy::Pinned { device_ordinal: 1 });
+    assert_eq!(config.admission_policy.grant().min, MemoryShare::Bytes(1 << 30));
+    assert_eq!(config.admission_policy.slot_guarantee(), SlotGuarantee::Optimistic);
+}
+
+#[test]
+fn server_config_explicit_admission_limit_and_grant_min_override_small_query_profile() {
+    let env = BTreeMap::from([
+        (NEXUS_SERVER_ADMISSION_WORKLOAD_PROFILE_ENV, "small_query".to_string()),
+        (NEXUS_SERVER_GPU_DEVICES_ENV, "0,1".to_string()),
+        (NEXUS_SERVER_MAX_CONCURRENT_QUERIES_ENV, "3".to_string()),
+        (NEXUS_SERVER_ADMISSION_GRANT_MIN_ENV, "0.25".to_string()),
+    ]);
+
+    let config = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap();
+
+    assert_eq!(config.max_in_flight, 3);
+    assert_eq!(config.admission_policy.max_concurrent_queries(), 3);
+    assert_eq!(config.admission_policy.grant().min, MemoryShare::Fraction(0.25));
+}
+
+#[test]
+fn server_config_rejects_invalid_admission_workload_profile() {
+    let env = BTreeMap::from([(NEXUS_SERVER_ADMISSION_WORKLOAD_PROFILE_ENV, "graph_burst".to_string())]);
+
+    let error = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap_err();
+
+    assert!(error.to_string().contains(NEXUS_SERVER_ADMISSION_WORKLOAD_PROFILE_ENV));
 }
 
 #[test]
@@ -266,6 +329,30 @@ fn server_config_accepts_admission_grant_band_and_slot_guarantee() {
 }
 
 #[test]
+fn server_config_accepts_admission_placement_policy_and_per_device_cap() {
+    let env = BTreeMap::from([
+        (NEXUS_SERVER_ADMISSION_PLACEMENT_POLICY_ENV, "best_fit".to_string()),
+        (NEXUS_SERVER_ADMISSION_MAX_QUERIES_PER_DEVICE_ENV, "8".to_string()),
+    ]);
+    let config = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap();
+
+    assert_eq!(config.admission_policy.placement_policy(), QueryPlacementPolicy::BestFit);
+    assert_eq!(config.admission_policy.max_queries_per_device(), Some(8));
+}
+
+#[test]
+fn server_config_accepts_pinned_admission_placement() {
+    let env = BTreeMap::from([
+        (NEXUS_SERVER_GPU_DEVICES_ENV, "0,1".to_string()),
+        (NEXUS_SERVER_ADMISSION_PLACEMENT_POLICY_ENV, "pinned".to_string()),
+        (NEXUS_SERVER_ADMISSION_PINNED_DEVICE_ENV, "1".to_string()),
+    ]);
+    let config = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap();
+
+    assert_eq!(config.admission_policy.placement_policy(), QueryPlacementPolicy::Pinned { device_ordinal: 1 });
+}
+
+#[test]
 fn server_config_accepts_grant_min_without_pinning_policy_default_want() {
     let env = BTreeMap::from([(NEXUS_SERVER_ADMISSION_GRANT_MIN_ENV, "1024".to_string())]);
     let config = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap();
@@ -279,7 +366,11 @@ fn server_config_accepts_toml_admission_policy() {
     let (_dir, env) = env_with_server_toml(
         r#"
 [admission]
+workload_profile = "small_query"
 max_concurrent_queries = 4
+max_queries_per_device = 2
+placement_policy = "pinned"
+pinned_device_ordinal = 0
 grant_min = 0.25
 grant_want = 0.75
 slot_guarantee = "optimistic"
@@ -289,6 +380,8 @@ slot_guarantee = "optimistic"
 
     assert_eq!(config.max_in_flight, 4);
     assert_eq!(config.admission_policy.max_concurrent_queries(), 4);
+    assert_eq!(config.admission_policy.max_queries_per_device(), Some(2));
+    assert_eq!(config.admission_policy.placement_policy(), QueryPlacementPolicy::Pinned { device_ordinal: 0 });
     assert_eq!(config.admission_policy.grant().min, MemoryShare::Fraction(0.25));
     assert_eq!(config.admission_policy.grant().want, MemoryShare::Fraction(0.75));
     assert_eq!(config.admission_policy.slot_guarantee(), SlotGuarantee::Optimistic);
@@ -300,6 +393,8 @@ fn server_config_env_overrides_toml_admission_policy() {
         r#"
 [admission]
 max_concurrent_queries = 4
+max_queries_per_device = 2
+placement_policy = "least_loaded"
 grant_min = 0.25
 grant_want = 0.50
 slot_guarantee = "guaranteed_minimum"
@@ -309,6 +404,8 @@ wait_timeout_ms = 45000
     env.insert(NEXUS_SERVER_MAX_CONCURRENT_QUERIES_ENV, "3".to_string());
     env.insert(NEXUS_SERVER_ADMISSION_GRANT_MIN_ENV, "1024".to_string());
     env.insert(NEXUS_SERVER_ADMISSION_GRANT_WANT_ENV, "0.75".to_string());
+    env.insert(NEXUS_SERVER_ADMISSION_MAX_QUERIES_PER_DEVICE_ENV, "3".to_string());
+    env.insert(NEXUS_SERVER_ADMISSION_PLACEMENT_POLICY_ENV, "best_fit".to_string());
     env.insert(NEXUS_SERVER_ADMISSION_SLOT_GUARANTEE_ENV, "optimistic".to_string());
     env.insert(NEXUS_SERVER_ADMISSION_WAIT_TIMEOUT_MS_ENV, "5000".to_string());
 
@@ -316,10 +413,28 @@ wait_timeout_ms = 45000
 
     assert_eq!(config.max_in_flight, 3);
     assert_eq!(config.admission_policy.max_concurrent_queries(), 3);
+    assert_eq!(config.admission_policy.max_queries_per_device(), Some(3));
+    assert_eq!(config.admission_policy.placement_policy(), QueryPlacementPolicy::BestFit);
     assert_eq!(config.admission_policy.grant().min, MemoryShare::Bytes(1024));
     assert_eq!(config.admission_policy.grant().want, MemoryShare::Fraction(0.75));
     assert_eq!(config.admission_policy.slot_guarantee(), SlotGuarantee::Optimistic);
     assert_eq!(config.admission_policy.wait_timeout(), Duration::from_millis(5000));
+}
+
+#[test]
+fn server_config_env_placement_policy_override_ignores_toml_pinned_device() {
+    let (_dir, mut env) = env_with_server_toml(
+        r#"
+[admission]
+placement_policy = "pinned"
+pinned_device_ordinal = 0
+"#,
+    );
+    env.insert(NEXUS_SERVER_ADMISSION_PLACEMENT_POLICY_ENV, "best_fit".to_string());
+
+    let config = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap();
+
+    assert_eq!(config.admission_policy.placement_policy(), QueryPlacementPolicy::BestFit);
 }
 
 #[test]
@@ -340,6 +455,52 @@ fn server_config_rejects_zero_admission_wait_timeout() {
     let error = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap_err();
 
     assert!(error.to_string().contains(NEXUS_SERVER_ADMISSION_WAIT_TIMEOUT_MS_ENV));
+}
+
+#[test]
+fn server_config_rejects_zero_max_queries_per_device() {
+    let env = BTreeMap::from([(NEXUS_SERVER_ADMISSION_MAX_QUERIES_PER_DEVICE_ENV, "0".to_string())]);
+    let error = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap_err();
+
+    assert!(error.to_string().contains(NEXUS_SERVER_ADMISSION_MAX_QUERIES_PER_DEVICE_ENV));
+}
+
+#[test]
+fn server_config_rejects_invalid_placement_policy() {
+    let env = BTreeMap::from([(NEXUS_SERVER_ADMISSION_PLACEMENT_POLICY_ENV, "packed".to_string())]);
+    let error = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap_err();
+
+    assert!(error.to_string().contains(NEXUS_SERVER_ADMISSION_PLACEMENT_POLICY_ENV));
+}
+
+#[test]
+fn server_config_rejects_pinned_placement_without_device() {
+    let env = BTreeMap::from([(NEXUS_SERVER_ADMISSION_PLACEMENT_POLICY_ENV, "pinned".to_string())]);
+    let error = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap_err();
+
+    assert!(error.to_string().contains(NEXUS_SERVER_ADMISSION_PINNED_DEVICE_ENV));
+}
+
+#[test]
+fn server_config_rejects_pinned_device_without_pinned_policy() {
+    let env = BTreeMap::from([(NEXUS_SERVER_ADMISSION_PINNED_DEVICE_ENV, "0".to_string())]);
+    let error = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap_err();
+
+    assert!(error.to_string().contains(NEXUS_SERVER_ADMISSION_PINNED_DEVICE_ENV));
+    assert!(error.to_string().contains(NEXUS_SERVER_ADMISSION_PLACEMENT_POLICY_ENV));
+}
+
+#[test]
+fn server_config_rejects_pinned_device_outside_gpu_devices() {
+    let env = BTreeMap::from([
+        (NEXUS_SERVER_GPU_DEVICES_ENV, "0".to_string()),
+        (NEXUS_SERVER_ADMISSION_PLACEMENT_POLICY_ENV, "pinned".to_string()),
+        (NEXUS_SERVER_ADMISSION_PINNED_DEVICE_ENV, "1".to_string()),
+    ]);
+    let error = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap_err();
+
+    assert!(error.to_string().contains(NEXUS_SERVER_ADMISSION_PINNED_DEVICE_ENV));
+    assert!(error.to_string().contains(NEXUS_SERVER_GPU_DEVICES_ENV));
 }
 
 #[test]
@@ -748,6 +909,18 @@ fn server_config_rejects_unbounded_native_profile_with_admission_memory_env() {
 }
 
 #[test]
+fn server_config_rejects_unbounded_native_profile_with_admission_workload_profile() {
+    let env = BTreeMap::from([
+        (NEXUS_SERVER_NATIVE_MEMORY_POLICY_ENV, "unbounded".to_string()),
+        (NEXUS_SERVER_ADMISSION_WORKLOAD_PROFILE_ENV, "small_query".to_string()),
+    ]);
+
+    let error = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap_err();
+
+    assert!(error.to_string().contains(NEXUS_SERVER_ADMISSION_WORKLOAD_PROFILE_ENV));
+}
+
+#[test]
 fn server_config_rejects_unbounded_native_profile_with_toml_admission_memory_knobs() {
     let (_dir, env) = env_with_server_toml(
         r#"
@@ -762,6 +935,18 @@ slot_guarantee = "optimistic"
     let error = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap_err();
 
     assert!(error.to_string().contains("admission.slot_guarantee"));
+}
+
+#[test]
+fn server_config_rejects_unbounded_native_profile_with_placement_knob() {
+    let env = BTreeMap::from([
+        (NEXUS_SERVER_NATIVE_MEMORY_POLICY_ENV, "unbounded".to_string()),
+        (NEXUS_SERVER_ADMISSION_PLACEMENT_POLICY_ENV, "best_fit".to_string()),
+    ]);
+
+    let error = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap_err();
+
+    assert!(error.to_string().contains(NEXUS_SERVER_ADMISSION_PLACEMENT_POLICY_ENV));
 }
 
 #[test]

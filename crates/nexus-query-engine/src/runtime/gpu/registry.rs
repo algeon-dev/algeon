@@ -2,7 +2,7 @@
 
 use std::{
     collections::HashMap,
-    sync::{Arc, Mutex, OnceLock},
+    sync::{Arc, Mutex, OnceLock, atomic::AtomicUsize},
 };
 
 use super::{
@@ -91,8 +91,16 @@ impl DeviceRegistry {
                 .map_err(|error| error.with_fact("device_ordinal", *ordinal))?;
             let stream_pool = ServiceStreamPool::new(device, config.stream_pool_size)?;
             let governor = shared_memory_governor(*ordinal, capacity_bytes)?;
-            contexts[*ordinal] =
-                Some(DeviceContext::new(device, stream_pool, mr_manager, memory_failure_tracker, governor, facts)?);
+            let active_queries = shared_active_query_counter(*ordinal)?;
+            contexts[*ordinal] = Some(DeviceContext::new(
+                device,
+                stream_pool,
+                mr_manager,
+                memory_failure_tracker,
+                governor,
+                facts,
+                active_queries,
+            )?);
         }
         Ok(Self { contexts: contexts.into(), device_ordinals: ordinals.into() })
     }
@@ -189,6 +197,19 @@ fn shared_memory_governor(device_ordinal: usize, capacity_bytes: u64) -> Result<
     let governor = MemoryGovernor::new(device_ordinal, capacity_bytes)?;
     governors.insert(device_ordinal, governor.clone());
     Ok(governor)
+}
+
+fn shared_active_query_counter(device_ordinal: usize) -> Result<Arc<AtomicUsize>> {
+    static ACTIVE_QUERIES: OnceLock<Mutex<HashMap<usize, Arc<AtomicUsize>>>> = OnceLock::new();
+    let active_queries = ACTIVE_QUERIES.get_or_init(|| Mutex::new(HashMap::new()));
+    let mut active_queries = active_queries.lock().map_err(|_error| {
+        QueryError::new(
+            QueryErrorCode::Internal,
+            "nexus_query_engine.gpu.device_registry.active_queries",
+            "device active-query counter registry mutex was poisoned",
+        )
+    })?;
+    Ok(Arc::clone(active_queries.entry(device_ordinal).or_default()))
 }
 
 fn install_device_memory_manager(

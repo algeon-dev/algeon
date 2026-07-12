@@ -4,7 +4,7 @@ use std::{
     collections::{BTreeMap, BTreeSet, HashMap, VecDeque},
     fmt,
     sync::{
-        Arc, Condvar, Mutex, OnceLock,
+        Arc, Condvar, Mutex, OnceLock, Weak,
         atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
     },
     time::{Duration, Instant},
@@ -15,11 +15,12 @@ use tokio::{sync::Notify, time};
 use super::{
     CudfInventory, DeploymentIoCapability, DeviceMemoryFailureReport, ExecutionBoundaryPolicy, ExecutionCancellation,
     ExecutionContext, ExecutionContextParts, GdsConcurrencyGate, GpuInventory, GrantRequest, HostFetchBudget,
-    LakehouseCacheFillEventSink, LeastLoadedPlacement, MemoryControlPolicy, MemoryGovernor, MemoryGovernorReport,
-    MemoryGrant, MemoryResourcePolicy, PlacementPolicy, PlacementRequest, Priority, QueryQos, SourceChunkPlanningMode,
-    SourceFetchConcurrencyGate, SourceFetchConfig, SourceObjectStoreRegistry, SourceSchedulerPolicy,
-    SourceStorageProfile, default_host_fetch_budget_bytes, default_lakehouse_cache_fill_runtime,
-    default_service_stream_pool_size_for_device, default_source_fetch_runtime, validate_service_stream_pool_device,
+    LakehouseCacheFillEventSink, MemoryControlPolicy, MemoryGovernor, MemoryGovernorReport, MemoryGrant,
+    MemoryResourcePolicy, PlacementPolicy, PlacementRequest, Priority, QueryPlacementPolicy, QueryQos,
+    SourceChunkPlanningMode, SourceFetchConcurrencyGate, SourceFetchConfig, SourceObjectStoreRegistry,
+    SourceSchedulerPolicy, SourceStorageProfile, default_host_fetch_budget_bytes, default_lakehouse_cache_fill_runtime,
+    default_service_stream_pool_size_for_device, default_source_fetch_runtime, gpu::DeviceActiveQuerySlot,
+    validate_service_stream_pool_device,
 };
 use crate::{
     adaptive_runtime::AdaptiveMemoryHistory,
@@ -48,7 +49,7 @@ use config::guaranteed_min_slot_capacity_for_capacities;
 pub use config::{QueryServiceConfig, QueryServiceTenantConfig, SlotGuarantee, TenantId};
 use config::{
     admission_capacity_bounds, default_stream_pool_size_for_ordinals, guaranteed_min_slot_capacity,
-    minimum_stream_pool_size, validate_stream_pool_admission_capacity,
+    minimum_stream_pool_size, placement_policy_admits_ordinal, validate_stream_pool_admission_capacity,
 };
 use handle::QueryHandleLifetime;
 pub use handle::{QueryHandle, TenantQueryContext};
@@ -274,6 +275,121 @@ fn governor_claim_conflicts(state: &GovernorClaimState, requested: SlotGuarantee
     }
 }
 
+fn validate_placement_policy_for_resources(
+    config: &QueryServiceConfig,
+    resources: Option<&QueryServiceResources>,
+) -> Result<()> {
+    let QueryPlacementPolicy::Pinned { device_ordinal } = config.placement_policy else {
+        return Ok(());
+    };
+    let valid = resources.map_or(config.device_ordinal == device_ordinal, |resources| {
+        resources.devices.context_by_ordinal(device_ordinal).is_ok()
+    });
+    if valid {
+        return Ok(());
+    }
+    Err(QueryError::new(
+        QueryErrorCode::InvalidPlan,
+        "nexus_query_engine.query_service.config.validate",
+        "pinned query placement device must be one of the query service devices",
+    )
+    .with_fact("field", "placement_policy")
+    .with_fact("reason", "pinned_device_not_configured")
+    .with_fact("pinned_device_ordinal", device_ordinal))
+}
+
+fn register_shared_device_admission_waiters(inner: &Arc<QueryServiceInner>) -> Result<()> {
+    let Some(resources) = &inner.resources else {
+        return Ok(());
+    };
+    let mut waiters = shared_device_admission_waiters().lock().map_err(|_error| {
+        QueryError::new(
+            QueryErrorCode::Internal,
+            "nexus_query_engine.query_service.admission_waiters",
+            "shared device admission waiter registry mutex was poisoned",
+        )
+    })?;
+    for ordinal in resources.devices.device_ordinals() {
+        let waiters_for_device = waiters.entry(*ordinal).or_default();
+        prune_dead_shared_device_admission_waiters(waiters_for_device);
+        waiters_for_device.push(Arc::downgrade(inner));
+    }
+    Ok(())
+}
+
+fn shared_device_admission_waiters() -> &'static Mutex<HashMap<usize, Vec<Weak<QueryServiceInner>>>> {
+    static WAITERS: OnceLock<Mutex<HashMap<usize, Vec<Weak<QueryServiceInner>>>>> = OnceLock::new();
+    WAITERS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn prune_dead_shared_device_admission_waiters(waiters_for_device: &mut Vec<Weak<QueryServiceInner>>) {
+    waiters_for_device.retain(|weak| weak.strong_count() > 0);
+}
+
+fn notify_shared_device_admission_available(device_ordinal: usize) {
+    let services = match shared_device_admission_waiters().lock() {
+        Ok(mut waiters) => {
+            let Some(waiters_for_device) = waiters.get_mut(&device_ordinal) else {
+                return;
+            };
+            let mut services = Vec::with_capacity(waiters_for_device.len());
+            waiters_for_device.retain(|weak| {
+                if let Some(service) = weak.upgrade() {
+                    services.push(service);
+                    true
+                } else {
+                    false
+                }
+            });
+            services
+        },
+        Err(_error) => {
+            eprintln!(
+                "[nexus-query-engine] warning: failed to lock shared device admission waiter registry for wakeup"
+            );
+            return;
+        },
+    };
+    for service in services {
+        let Ok(_guard) = service.admission.lock() else {
+            eprintln!("[nexus-query-engine] warning: failed to lock query service admission for shared device wakeup");
+            continue;
+        };
+        service.notify_admission_available();
+    }
+}
+
+#[derive(Debug, Default)]
+struct PendingDeviceSlotNotifications {
+    device_ordinals: Vec<usize>,
+}
+
+impl PendingDeviceSlotNotifications {
+    fn release_slot(&mut self, slot: DeviceActiveQuerySlot) {
+        let device_ordinal = slot.device_ordinal();
+        drop(slot);
+        self.device_ordinals.push(device_ordinal);
+    }
+
+    fn has_pending(&self) -> bool {
+        !self.device_ordinals.is_empty()
+    }
+
+    fn notify(&mut self) {
+        self.device_ordinals.sort_unstable();
+        self.device_ordinals.dedup();
+        for device_ordinal in self.device_ordinals.drain(..) {
+            notify_shared_device_admission_available(device_ordinal);
+        }
+    }
+}
+
+impl Drop for PendingDeviceSlotNotifications {
+    fn drop(&mut self) {
+        self.notify();
+    }
+}
+
 impl QueryService {
     /// Returns true when both handles point at the same service instance.
     pub fn same_service(&self, other: &Self) -> bool {
@@ -404,6 +520,7 @@ impl QueryService {
     ) -> Result<Self> {
         let mut resources = resources;
         config.validate(&deployment)?;
+        validate_placement_policy_for_resources(&config, resources.as_ref())?;
         if tenants.is_empty() {
             return Err(QueryError::new(
                 QueryErrorCode::InvalidPlan,
@@ -460,7 +577,7 @@ impl QueryService {
             .with_fact("reason", "zero"));
         }
         let (max_admissible_device_capacity_bytes, total_admissible_capacity_bytes) =
-            admission_capacity_bounds(resources.as_ref(), device_capacity_bytes);
+            admission_capacity_bounds(resources.as_ref(), device_capacity_bytes, config.placement_policy);
         for (tenant_id, grant) in &tenant_grants {
             if grant.min_bytes > max_admissible_device_capacity_bytes {
                 return Err(QueryError::new(
@@ -475,8 +592,13 @@ impl QueryService {
             }
         }
         if config.slot_guarantee == SlotGuarantee::GuaranteedMinimum {
-            let guaranteed_min_slots =
-                guaranteed_min_slot_capacity(resources.as_ref(), device_capacity_bytes, max_tenant_min_bytes);
+            let guaranteed_min_slots = guaranteed_min_slot_capacity(
+                resources.as_ref(),
+                device_capacity_bytes,
+                max_tenant_min_bytes,
+                config.max_queries_per_device,
+                config.placement_policy,
+            );
             if guaranteed_min_slots < config.max_concurrent_queries {
                 let guaranteed_min_capacity = max_tenant_min_bytes.saturating_mul(max_concurrent_queries_u64);
                 return Err(QueryError::new(
@@ -494,26 +616,32 @@ impl QueryService {
             }
         }
         if let Some(resources) = resources.as_mut() {
-            resources._governor_claim =
-                Some(claim_governor_ordinals(resources.devices.device_ordinals(), config.slot_guarantee)?);
+            let claim_ordinals = resources
+                .devices
+                .device_ordinals()
+                .iter()
+                .copied()
+                .filter(|ordinal| placement_policy_admits_ordinal(config.placement_policy, *ordinal))
+                .collect::<Vec<_>>();
+            resources._governor_claim = Some(claim_governor_ordinals(&claim_ordinals, config.slot_guarantee)?);
         }
         let fallback_memory_governor = MemoryGovernor::new(config.device_ordinal, device_capacity_bytes)?;
 
-        Ok(Self {
-            inner: Arc::new(QueryServiceInner {
-                config,
-                tenant_grants,
-                tenant_order,
-                max_tenant_min_bytes,
-                fallback_memory_governor,
-                resources,
-                admission: Mutex::new(AdmissionState::default()),
-                admission_available: Condvar::new(),
-                admission_notify: Notify::new(),
-                next_query_id: AtomicU64::new(1),
-                next_admission_sequence: AtomicU64::new(1),
-            }),
-        })
+        let inner = Arc::new(QueryServiceInner {
+            config,
+            tenant_grants,
+            tenant_order,
+            max_tenant_min_bytes,
+            fallback_memory_governor,
+            resources,
+            admission: Mutex::new(AdmissionState::default()),
+            admission_available: Condvar::new(),
+            admission_notify: Notify::new(),
+            next_query_id: AtomicU64::new(1),
+            next_admission_sequence: AtomicU64::new(1),
+        });
+        register_shared_device_admission_waiters(&inner)?;
+        Ok(Self { inner })
     }
 
     /// Admits a query for `tenant_id` under round-robin tenant fairness.
@@ -571,6 +699,7 @@ impl QueryService {
         let deadline = requested_at.checked_add(self.inner.config.admission_wait_timeout).unwrap_or(requested_at);
         let request = AdmissionRequest { request_id, tenant_id: tenant_id.clone(), grant_policy, qos, deadline };
 
+        let mut slot_notifications = PendingDeviceSlotNotifications::default();
         let mut state = self.lock_admission()?;
         if state.closed {
             return Err(service_closed_error(&tenant_id));
@@ -609,6 +738,7 @@ impl QueryService {
                     qos,
                     Some(deadline),
                     state.active_queries,
+                    &mut slot_notifications,
                 ) {
                     Ok(placed_query) => placed_query,
                     Err(error) => {
@@ -622,6 +752,14 @@ impl QueryService {
                     {
                         self.abandon_queued_request_locked(&mut state, request_id);
                         return Err(error);
+                    }
+                    if slot_notifications.has_pending() {
+                        drop(state);
+                        slot_notifications.notify();
+                        state = self.lock_admission()?;
+                        if state.closed {
+                            continue;
+                        }
                     }
                     let now = Instant::now();
                     if now >= deadline {
@@ -671,6 +809,7 @@ impl QueryService {
                         tenant_id.clone(),
                         request_id,
                         placed_query.memory_grant,
+                        placed_query.device_slot,
                     ),
                     service,
                     tenant_id,
@@ -882,6 +1021,7 @@ impl QueryService {
     ) -> Result<Option<QueryHandle>> {
         let tenant_id = tenant_id.into();
         let grant_policy = self.tenant_grant_policy_for_request(&tenant_id, grant_request)?;
+        let mut slot_notifications = PendingDeviceSlotNotifications::default();
         let mut state = self.lock_admission()?;
         if state.closed {
             return Err(service_closed_error(&tenant_id));
@@ -891,8 +1031,15 @@ impl QueryService {
             return Ok(None);
         }
         let query_id = self.inner.next_query_id.fetch_add(1, Ordering::Relaxed);
-        let Some(placed_query) =
-            self.try_place_query(&tenant_id, query_id, grant_policy, qos, None, state.active_queries)?
+        let Some(placed_query) = self.try_place_query(
+            &tenant_id,
+            query_id,
+            grant_policy,
+            qos,
+            None,
+            state.active_queries,
+            &mut slot_notifications,
+        )?
         else {
             return Ok(None);
         };
@@ -917,6 +1064,7 @@ impl QueryService {
                 tenant_id.clone(),
                 query_id,
                 placed_query.memory_grant,
+                placed_query.device_slot,
             ),
             service,
             tenant_id,
@@ -1136,8 +1284,11 @@ impl QueryService {
         };
         let mut ceiling = 0u64;
         for context in resources.devices.contexts() {
+            if !self.placement_policy_admits_ordinal(context.device().ordinal()) {
+                continue;
+            }
             let reserved_for_remaining_slots =
-                self.reserved_min_bytes_for_selected_device(resources, context.device(), 0)?;
+                self.reserved_min_bytes_for_selected_device_at_idle(resources, context.device())?;
             ceiling = ceiling.max(context.capacity_bytes().saturating_sub(reserved_for_remaining_slots));
         }
         Ok(ceiling)
@@ -1151,17 +1302,107 @@ impl QueryService {
         if self.inner.config.slot_guarantee == SlotGuarantee::Optimistic {
             return 0;
         }
-        self.inner
-            .max_tenant_min_bytes
-            .saturating_mul(u64::try_from(self.remaining_slots_after_current(active_queries)).unwrap_or(u64::MAX))
+        let remaining_slots = self
+            .remaining_slots_after_current(active_queries)
+            .min(self.future_slots_after_current_on_fallback_device(active_queries));
+        self.inner.max_tenant_min_bytes.saturating_mul(u64::try_from(remaining_slots).unwrap_or(u64::MAX))
     }
 
     fn reserved_min_bytes_for_empty_slots(&self, active_queries: usize) -> u64 {
         if self.inner.config.slot_guarantee == SlotGuarantee::Optimistic {
             return 0;
         }
-        let empty_slots = self.inner.config.max_concurrent_queries.saturating_sub(active_queries);
+        let empty_slots = self
+            .inner
+            .config
+            .max_concurrent_queries
+            .saturating_sub(active_queries)
+            .min(self.future_slots_on_fallback_device(active_queries));
         self.inner.max_tenant_min_bytes.saturating_mul(u64::try_from(empty_slots).unwrap_or(u64::MAX))
+    }
+
+    fn future_slots_after_current_on_fallback_device(&self, active_queries: usize) -> usize {
+        self.inner.config.max_queries_per_device.map_or(usize::MAX, |max_queries_per_device| {
+            max_queries_per_device.saturating_sub(active_queries.saturating_add(1))
+        })
+    }
+
+    fn future_slots_on_fallback_device(&self, active_queries: usize) -> usize {
+        self.inner
+            .config
+            .max_queries_per_device
+            .map_or(usize::MAX, |max_queries_per_device| max_queries_per_device.saturating_sub(active_queries))
+    }
+
+    fn future_min_slots_on_device(
+        &self,
+        context: &super::DeviceContext,
+        min_bytes: u64,
+        active_after_selected: usize,
+    ) -> Result<usize> {
+        if min_bytes == 0 {
+            return Ok(usize::MAX);
+        }
+        let memory_slots = usize::try_from(context.available_bytes()? / min_bytes).unwrap_or(usize::MAX);
+        let capped_slots = self.inner.config.max_queries_per_device.map_or(memory_slots, |max_queries_per_device| {
+            memory_slots.min(max_queries_per_device.saturating_sub(active_after_selected))
+        });
+        Ok(capped_slots)
+    }
+
+    fn idle_future_min_slots_on_device(
+        &self,
+        capacity_bytes: u64,
+        min_bytes: u64,
+        active_after_selected: usize,
+    ) -> usize {
+        if min_bytes == 0 {
+            return usize::MAX;
+        }
+        let memory_slots = usize::try_from(capacity_bytes / min_bytes).unwrap_or(usize::MAX);
+        self.inner.config.max_queries_per_device.map_or(memory_slots, |max_queries_per_device| {
+            memory_slots.min(max_queries_per_device.saturating_sub(active_after_selected))
+        })
+    }
+
+    fn reserved_min_bytes_for_selected_device_at_idle(
+        &self,
+        resources: &QueryServiceResources,
+        selected_device: cudf::DeviceId,
+    ) -> Result<u64> {
+        if self.inner.config.slot_guarantee == SlotGuarantee::Optimistic {
+            return Ok(0);
+        }
+        let remaining_slots = self.remaining_slots_after_current(0);
+        if remaining_slots == 0 || self.inner.max_tenant_min_bytes == 0 {
+            return Ok(0);
+        }
+        let selected_context = resources.devices.context(selected_device)?;
+        let mut other_device_min_slots = 0usize;
+        for context in resources.devices.contexts() {
+            if context.device() == selected_device {
+                continue;
+            }
+            if !self.placement_policy_admits_ordinal(context.device().ordinal()) {
+                continue;
+            }
+            let slots =
+                self.idle_future_min_slots_on_device(context.capacity_bytes(), self.inner.max_tenant_min_bytes, 0);
+            other_device_min_slots = other_device_min_slots.saturating_add(slots);
+            if other_device_min_slots >= remaining_slots {
+                return Ok(0);
+            }
+        }
+        let slots_to_reserve_on_selected = remaining_slots.saturating_sub(other_device_min_slots);
+        let selected_future_slots =
+            self.idle_future_min_slots_on_device(selected_context.capacity_bytes(), self.inner.max_tenant_min_bytes, 1);
+        if slots_to_reserve_on_selected > selected_future_slots {
+            return Ok(u64::MAX);
+        }
+        Ok(self
+            .inner
+            .max_tenant_min_bytes
+            .saturating_mul(u64::try_from(slots_to_reserve_on_selected).unwrap_or(u64::MAX)))
     }
 
     fn reserved_min_bytes_for_selected_device(
@@ -1177,19 +1418,31 @@ impl QueryService {
         if remaining_slots == 0 || self.inner.max_tenant_min_bytes == 0 {
             return Ok(0);
         }
+        let selected_context = resources.devices.context(selected_device)?;
         let mut other_device_min_slots = 0usize;
         for context in resources.devices.contexts() {
             if context.device() == selected_device {
                 continue;
             }
-            let slots = context.available_bytes()? / self.inner.max_tenant_min_bytes;
-            other_device_min_slots =
-                other_device_min_slots.saturating_add(usize::try_from(slots).unwrap_or(usize::MAX));
+            if !self.placement_policy_admits_ordinal(context.device().ordinal()) {
+                continue;
+            }
+            let slots =
+                self.future_min_slots_on_device(context, self.inner.max_tenant_min_bytes, context.active_queries())?;
+            other_device_min_slots = other_device_min_slots.saturating_add(slots);
             if other_device_min_slots >= remaining_slots {
                 return Ok(0);
             }
         }
         let slots_to_reserve_on_selected = remaining_slots.saturating_sub(other_device_min_slots);
+        let selected_future_slots = self.future_min_slots_on_device(
+            selected_context,
+            self.inner.max_tenant_min_bytes,
+            selected_context.active_queries().saturating_add(1),
+        )?;
+        if slots_to_reserve_on_selected > selected_future_slots {
+            return Ok(u64::MAX);
+        }
         Ok(self
             .inner
             .max_tenant_min_bytes
@@ -1209,19 +1462,31 @@ impl QueryService {
         if empty_slots == 0 || self.inner.max_tenant_min_bytes == 0 {
             return Ok(0);
         }
+        let selected_context = resources.devices.context(selected_device)?;
         let mut other_device_min_slots = 0usize;
         for context in resources.devices.contexts() {
             if context.device() == selected_device {
                 continue;
             }
-            let slots = context.available_bytes()? / self.inner.max_tenant_min_bytes;
-            other_device_min_slots =
-                other_device_min_slots.saturating_add(usize::try_from(slots).unwrap_or(usize::MAX));
+            if !self.placement_policy_admits_ordinal(context.device().ordinal()) {
+                continue;
+            }
+            let slots =
+                self.future_min_slots_on_device(context, self.inner.max_tenant_min_bytes, context.active_queries())?;
+            other_device_min_slots = other_device_min_slots.saturating_add(slots);
             if other_device_min_slots >= empty_slots {
                 return Ok(0);
             }
         }
         let slots_to_reserve_on_selected = empty_slots.saturating_sub(other_device_min_slots);
+        let selected_future_slots = self.future_min_slots_on_device(
+            selected_context,
+            self.inner.max_tenant_min_bytes,
+            selected_context.active_queries(),
+        )?;
+        if slots_to_reserve_on_selected > selected_future_slots {
+            return Ok(u64::MAX);
+        }
         Ok(self
             .inner
             .max_tenant_min_bytes
@@ -1244,6 +1509,22 @@ impl QueryService {
                 .min(available_bytes.saturating_sub(reserved_for_remaining_slots))
                 .max(grant_policy.min_bytes),
         )
+    }
+
+    fn adaptive_shrink_deficit_bytes(
+        available_bytes: u64,
+        min_bytes: u64,
+        reserved_for_remaining_slots: u64,
+        capacity_bytes: u64,
+    ) -> Option<u64> {
+        if reserved_for_remaining_slots == u64::MAX {
+            return None;
+        }
+        let required_floor = min_bytes.checked_add(reserved_for_remaining_slots)?;
+        if required_floor > capacity_bytes || available_bytes >= required_floor {
+            return None;
+        }
+        Some(required_floor - available_bytes)
     }
 
     fn try_grant_from_governor(
@@ -1280,8 +1561,12 @@ impl QueryService {
         qos: QueryQos,
         deadline: Option<Instant>,
         active_queries: usize,
+        slot_notifications: &mut PendingDeviceSlotNotifications,
     ) -> Result<Option<PlacedQuery>> {
         let Some(resources) = &self.inner.resources else {
+            if !self.fallback_active_query_cap_allows(active_queries) {
+                return Ok(None);
+            }
             let Some(memory_grant) = self.try_grant_from_governor(
                 &self.inner.fallback_memory_governor,
                 query_id,
@@ -1293,13 +1578,17 @@ impl QueryService {
             else {
                 return Ok(None);
             };
-            return Ok(Some(PlacedQuery { device_ordinal: self.inner.config.device_ordinal, memory_grant }));
+            return Ok(Some(PlacedQuery {
+                device_ordinal: self.inner.config.device_ordinal,
+                memory_grant,
+                device_slot: None,
+            }));
         };
 
         let placement_request = PlacementRequest::with_grant_range(grant_policy.min_bytes, grant_policy.want_bytes)
             .with_tenant_id(tenant_id.as_str());
         let mut any_device_can_fit_minimum = false;
-        for device in LeastLoadedPlacement.candidates(&resources.devices, &placement_request)? {
+        for device in self.placement_candidates(resources, &placement_request)? {
             let context = resources.devices.context(device)?;
             if context.capacity_bytes() >= grant_policy.min_bytes {
                 any_device_can_fit_minimum = true;
@@ -1314,13 +1603,27 @@ impl QueryService {
             else {
                 continue;
             };
+            let Some(device_slot) = context.try_acquire_query_slot(self.inner.config.max_queries_per_device) else {
+                continue;
+            };
             let mut request = GrantRequest::new(query_id, grant_policy.min_bytes, want_bytes);
             request = request.with_qos(qos);
             if let Some(deadline) = deadline {
                 request = request.with_deadline(deadline);
             }
-            if let Some(memory_grant) = context.try_grant_query(request)? {
-                return Ok(Some(PlacedQuery { device_ordinal: device.ordinal(), memory_grant }));
+            match context.try_grant_query(request) {
+                Ok(Some(memory_grant)) => {
+                    return Ok(Some(PlacedQuery {
+                        device_ordinal: device.ordinal(),
+                        memory_grant,
+                        device_slot: Some(device_slot),
+                    }));
+                },
+                Ok(None) => slot_notifications.release_slot(device_slot),
+                Err(error) => {
+                    slot_notifications.release_slot(device_slot);
+                    return Err(error);
+                },
             }
         }
         if any_device_can_fit_minimum {
@@ -1485,6 +1788,9 @@ impl QueryService {
 
         let min_bytes = request.grant_policy.min_bytes;
         let Some(resources) = &self.inner.resources else {
+            if !self.fallback_active_query_cap_allows(state.active_queries) {
+                return Ok(());
+            }
             let available_bytes = self.inner.fallback_memory_governor.available_bytes()?;
             if available_bytes < min_bytes {
                 self.request_active_adaptive_grant_shrink_on_device_locked(
@@ -1498,22 +1804,56 @@ impl QueryService {
 
         let placement_request = PlacementRequest::with_grant_range(min_bytes, request.grant_policy.want_bytes)
             .with_tenant_id(request.tenant_id.as_str());
-        for device in LeastLoadedPlacement.candidates(&resources.devices, &placement_request)? {
+        for device in self.placement_candidates(resources, &placement_request)? {
             let context = resources.devices.context(device)?;
             if context.capacity_bytes() < min_bytes {
                 continue;
             }
+            if !self.device_active_query_cap_allows(context) {
+                continue;
+            }
             let available_bytes = context.available_bytes()?;
-            if available_bytes >= min_bytes {
+            let reserved_for_remaining_slots =
+                self.reserved_min_bytes_for_selected_device(resources, device, state.active_queries)?;
+            if self.grant_budget_bytes(available_bytes, request.grant_policy, reserved_for_remaining_slots).is_some() {
                 return Ok(());
             }
-            self.request_active_adaptive_grant_shrink_on_device_locked(
-                state,
-                device.ordinal(),
-                min_bytes - available_bytes,
-            )?;
+            if let Some(deficit_bytes) = Self::adaptive_shrink_deficit_bytes(
+                available_bytes,
+                min_bytes,
+                reserved_for_remaining_slots,
+                context.capacity_bytes(),
+            ) {
+                self.request_active_adaptive_grant_shrink_on_device_locked(state, device.ordinal(), deficit_bytes)?;
+            }
         }
         Ok(())
+    }
+
+    fn placement_candidates(
+        &self,
+        resources: &QueryServiceResources,
+        request: &PlacementRequest,
+    ) -> Result<Vec<cudf::DeviceId>> {
+        self.inner.config.placement_policy.candidates(&resources.devices, request)
+    }
+
+    fn device_active_query_cap_allows(&self, context: &super::DeviceContext) -> bool {
+        self.inner
+            .config
+            .max_queries_per_device
+            .is_none_or(|max_queries_per_device| context.active_queries() < max_queries_per_device)
+    }
+
+    fn placement_policy_admits_ordinal(&self, ordinal: usize) -> bool {
+        placement_policy_admits_ordinal(self.inner.config.placement_policy, ordinal)
+    }
+
+    fn fallback_active_query_cap_allows(&self, active_queries: usize) -> bool {
+        self.inner
+            .config
+            .max_queries_per_device
+            .is_none_or(|max_queries_per_device| active_queries < max_queries_per_device)
     }
 
     fn request_active_adaptive_grant_shrink_on_device_locked(
@@ -1592,6 +1932,7 @@ impl QueryService {
     }
 
     /// Returns the service memory-governor report.
+    #[deprecated(note = "use memory_governor_reports() to inspect every service device")]
     pub fn memory_governor_report(&self) -> Result<MemoryGovernorReport> {
         if let Some(resources) = &self.inner.resources {
             return resources.devices.context_by_ordinal(self.inner.config.device_ordinal)?.memory_governor().report();
@@ -1706,6 +2047,9 @@ impl QueryService {
 
     fn request_can_receive_minimum_grant(&self, state: &AdmissionState, request: &AdmissionRequest) -> Result<bool> {
         let Some(resources) = &self.inner.resources else {
+            if !self.fallback_active_query_cap_allows(state.active_queries) {
+                return Ok(false);
+            }
             let available_bytes = self.inner.fallback_memory_governor.available_bytes()?;
             return Ok(self
                 .grant_budget_bytes(
@@ -1715,7 +2059,14 @@ impl QueryService {
                 )
                 .is_some());
         };
-        for context in resources.devices.contexts() {
+        let placement_request =
+            PlacementRequest::with_grant_range(request.grant_policy.min_bytes, request.grant_policy.want_bytes)
+                .with_tenant_id(request.tenant_id.as_str());
+        for device in self.placement_candidates(resources, &placement_request)? {
+            let context = resources.devices.context(device)?;
+            if !self.device_active_query_cap_allows(context) {
+                continue;
+            }
             let reserved_for_remaining_slots =
                 self.reserved_min_bytes_for_selected_device(resources, context.device(), state.active_queries)?;
             if context.capacity_bytes() >= request.grant_policy.min_bytes

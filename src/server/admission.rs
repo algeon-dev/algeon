@@ -184,6 +184,15 @@ impl QueryAdmission {
                 let _ = writeln!(output, "# tenant_id={}", payload_value(backend.tenant_id().as_str()));
                 let _ = writeln!(output, "# device_ordinals={}", payload_value(&join_usize(backend.device_ordinals())));
                 let _ = writeln!(output, "# max_concurrent_queries={}", config.max_concurrent_queries);
+                let _ = writeln!(
+                    output,
+                    "# max_queries_per_device={}",
+                    config.max_queries_per_device.map_or_else(|| "none".to_string(), |value| value.to_string())
+                );
+                let _ = writeln!(output, "# placement_policy={}", config.placement_policy.as_str());
+                if let nexus_query_engine::QueryPlacementPolicy::Pinned { device_ordinal } = config.placement_policy {
+                    let _ = writeln!(output, "# pinned_device_ordinal={device_ordinal}");
+                }
                 let _ = writeln!(output, "# max_admission_queue_len={}", config.max_admission_queue_len);
                 let _ = writeln!(output, "# admission_wait_timeout_ms={}", config.admission_wait_timeout.as_millis());
                 let _ = writeln!(output, "# slot_guarantee={}", slot_guarantee_name(config.slot_guarantee));
@@ -390,6 +399,8 @@ mod tests {
         let service = backend.query_service();
 
         assert_eq!(service.config().max_concurrent_queries, 3);
+        assert_eq!(service.config().max_queries_per_device, None);
+        assert_eq!(service.config().placement_policy, nexus_query_engine::QueryPlacementPolicy::LeastLoaded);
         assert_eq!(service.config().device_ordinal, 0);
         assert_eq!(service.config().device_capacity_bytes, Some(3072));
         assert_eq!(service.config().stream_pool_size, Some(9));
@@ -465,6 +476,8 @@ mod tests {
         assert!(payload.contains("# backend=query_service\n"), "{payload}");
         assert!(payload.contains("# max_in_flight=2\n"), "{payload}");
         assert!(payload.contains("# max_concurrent_queries=2\n"), "{payload}");
+        assert!(payload.contains("# max_queries_per_device=none\n"), "{payload}");
+        assert!(payload.contains("# placement_policy=least_loaded\n"), "{payload}");
         assert!(payload.contains("# slot_guarantee=guaranteed_minimum\n"), "{payload}");
         assert!(
             payload.contains("[admission]\nactive_queries\tqueued_queries\tnext_tenant_id\n1\t0\tdefault\n"),

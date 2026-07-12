@@ -57,8 +57,8 @@ pub mod prelude {
         MemoryShare, NEXUS_EXPLAIN_COVERAGE_FUNCTION, NativeCudfExec, NativeCudfExecutionConfig,
         NativeMemoryPolicyConfig, NexusAdmissionPolicy, NexusGpuBackend, NexusGpuBackendBuilder, NexusMemoryPolicy,
         PhysicalOptimizerRules, PlanningReport, Priority, QueryGpuCoverage, QueryGpuCoverageOverall, QueryGrantRequest,
-        QueryHandle, QueryQos, QueryService, QueryServiceConfig, QueryServiceTenantConfig, SlotGuarantee, TenantId,
-        cudf_native_physical_optimizer_rules, cudf_native_physical_optimizer_rules_with_rule,
+        QueryHandle, QueryPlacementPolicy, QueryQos, QueryService, QueryServiceConfig, QueryServiceTenantConfig,
+        SlotGuarantee, TenantId, cudf_native_physical_optimizer_rules, cudf_native_physical_optimizer_rules_with_rule,
         register_gpu_coverage_udtf, validate_query,
     };
 }
@@ -69,7 +69,7 @@ pub mod admission_contracts {
     pub use nexus_query_engine::{
         DeploymentIoCapability, GdsDriverProbeStatus, KvikioCompatModeStatus, NvidiaFsProbeStatus, Priority,
         QueryAdmissionWaiter, QueryError, QueryErrorCode, QueryErrorKind, QueryErrorStatus, QueryGrantRequest,
-        QueryHandle, QueryQos, QueryService, QueryServiceAdmissionSnapshot, QueryServiceConfig,
+        QueryHandle, QueryPlacementPolicy, QueryQos, QueryService, QueryServiceAdmissionSnapshot, QueryServiceConfig,
         QueryServiceTenantConfig, Result, SlotGuarantee, TenantId, TenantQueueDepth,
     };
 }
@@ -313,11 +313,11 @@ pub use nexus_query_engine::{
     GpuLocalParquetSourceCache, GpuLocalParquetSourceCacheKey, KeyedHashJoinStrategyOptions, KvikioCompatModeStatus,
     MemoryControlPolicy, NativeOptimizerOptions, NativePipelineExecutionMode, NativePlanCpuPreferenceReason,
     NativePlanPreferenceOptions, NvidiaFsProbeStatus, Priority, QueryAdmissionWaiter, QueryGrantRequest, QueryHandle,
-    QueryQos, QueryService, QueryServiceAdmissionSnapshot, QueryServiceConfig, QueryServiceTenantConfig,
-    RemoteParquetReadMode, S3SourceStorageCredential, S3SourceStorageProfile, SemijoinReductionOptions, SlotGuarantee,
-    SourceChunkPlanningMode, SourceStorageProfile, StatisticalAggregateExecutionMode,
-    StatisticalAggregateToleranceContract, TenantId, TenantQueueDepth, TriageCode, TriageEvidenceRef, TriageSeverity,
-    TriageSignal, TriageSummary, TriageVerdict,
+    QueryPlacementPolicy, QueryQos, QueryService, QueryServiceAdmissionSnapshot, QueryServiceConfig,
+    QueryServiceTenantConfig, RemoteParquetReadMode, S3SourceStorageCredential, S3SourceStorageProfile,
+    SemijoinReductionOptions, SlotGuarantee, SourceChunkPlanningMode, SourceStorageProfile,
+    StatisticalAggregateExecutionMode, StatisticalAggregateToleranceContract, TenantId, TenantQueueDepth, TriageCode,
+    TriageEvidenceRef, TriageSeverity, TriageSignal, TriageSummary, TriageVerdict,
 };
 pub use planner::{
     CUDF_TABLE_FORMAT_GPU_ONLY_LEAF_GUARD_RULE_NAME, CudfNativePhysicalOptimizerRule, CudfOptimizerConfig,
