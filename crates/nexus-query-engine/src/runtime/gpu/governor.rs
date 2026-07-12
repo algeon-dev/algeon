@@ -273,6 +273,49 @@ impl MemoryGovernor {
         Ok(true)
     }
 
+    /// Returns whether an active grant from this governor has enough budget to
+    /// cover bytes that are being retained as evictable cache memory.
+    #[cfg(any(test, feature = "cugraph"))]
+    pub(crate) fn grant_can_cover_evictable_bytes(&self, grant: &MemoryGrant, bytes: u64) -> Result<bool> {
+        if bytes == 0 {
+            return Ok(true);
+        }
+        if !Arc::ptr_eq(&self.inner, &grant.inner.governor) {
+            return Ok(false);
+        }
+        let state = self.lock_state("grant_can_cover_evictable_bytes")?;
+        let Some(active) = state.grants.get(&grant.inner.grant_id) else {
+            return Ok(false);
+        };
+        Ok(bytes <= active.budget_bytes)
+    }
+
+    /// Charges evictable cache bytes that are already covered by an active
+    /// grant from this governor.
+    ///
+    /// This intentionally does not reduce the grant's outstanding bytes. While
+    /// the grant is alive the governor may be temporarily over-accounted, which
+    /// prevents admitting additional work. Once the grant drops, the retained
+    /// bytes remain charged as evictable cache memory.
+    #[cfg(any(test, feature = "cugraph"))]
+    pub(crate) fn try_reserve_evictable_bytes_from_grant(&self, grant: &MemoryGrant, bytes: u64) -> Result<bool> {
+        if bytes == 0 {
+            return Ok(true);
+        }
+        if !Arc::ptr_eq(&self.inner, &grant.inner.governor) {
+            return Ok(false);
+        }
+        let mut state = self.lock_state("try_reserve_evictable_bytes_from_grant")?;
+        let Some(active) = state.grants.get(&grant.inner.grant_id) else {
+            return Ok(false);
+        };
+        if bytes > active.budget_bytes {
+            return Ok(false);
+        }
+        state.evictable_bytes = state.evictable_bytes.saturating_add(bytes);
+        Ok(true)
+    }
+
     /// Releases bytes previously charged to the evictable-cache ledger.
     pub fn release_evictable_bytes(&self, bytes: u64) -> Result<u64> {
         if bytes == 0 {
@@ -1522,6 +1565,39 @@ mod tests {
         assert_eq!(governor.free_bytes().unwrap(), 0);
         assert_eq!(governor.available_bytes().unwrap(), 60);
         assert!(!governor.try_reserve_evictable_bytes(1).unwrap());
+    }
+
+    #[test]
+    fn evictable_bytes_can_be_reserved_from_active_grant_budget() {
+        let governor = MemoryGovernor::new(0, 100).unwrap();
+        let grant = governor.try_request(GrantRequest::new(1, 100, 100)).unwrap().unwrap();
+
+        assert_eq!(governor.free_bytes().unwrap(), 0);
+        assert!(!governor.try_reserve_evictable_bytes(100).unwrap());
+        assert!(governor.grant_can_cover_evictable_bytes(&grant, 100).unwrap());
+        assert!(governor.try_reserve_evictable_bytes_from_grant(&grant, 100).unwrap());
+
+        let active_report = governor.report().unwrap();
+        assert_eq!(active_report.outstanding_bytes, 100);
+        assert_eq!(active_report.evictable_bytes, 100);
+        assert_eq!(active_report.free_bytes, 0);
+
+        drop(grant);
+        let retained_report = governor.report().unwrap();
+        assert_eq!(retained_report.outstanding_bytes, 0);
+        assert_eq!(retained_report.evictable_bytes, 100);
+        assert_eq!(retained_report.free_bytes, 0);
+    }
+
+    #[test]
+    fn evictable_grant_transfer_respects_active_grant_budget() {
+        let governor = MemoryGovernor::new(0, 100).unwrap();
+        let grant = governor.try_request(GrantRequest::new(1, 30, 50)).unwrap().unwrap();
+
+        assert!(!governor.grant_can_cover_evictable_bytes(&grant, 51).unwrap());
+        assert!(!governor.try_reserve_evictable_bytes_from_grant(&grant, 51).unwrap());
+        assert!(governor.grant_can_cover_evictable_bytes(&grant, 50).unwrap());
+        assert!(governor.try_reserve_evictable_bytes_from_grant(&grant, 50).unwrap());
     }
 
     #[test]

@@ -1075,6 +1075,9 @@ fn graph_residency_descriptor_for_local_parquet_source(
     source: &crate::source::LocalParquetSource,
     bindings: &EffectiveGraphEdgeBindings,
 ) -> std::result::Result<GraphResidencyDescriptor, GraphSourceFingerprintBypassReason> {
+    if source.scan_limit.is_some() {
+        return Err(GraphSourceFingerprintBypassReason::UnsupportedTransformedInput);
+    }
     if source.files.iter().any(|file| !file.position_delete_files.is_empty() || !file.equality_delete_files.is_empty())
     {
         return Err(GraphSourceFingerprintBypassReason::DeleteFilesPresent);

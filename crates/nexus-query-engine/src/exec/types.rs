@@ -20,6 +20,8 @@ use cudf::{
 
 #[cfg(feature = "cugraph")]
 use crate::plan::ResidentGraphKey;
+#[cfg(feature = "cugraph")]
+use crate::runtime::gpu::governor::MemoryGrant;
 use crate::{
     chunk::SourceChunk,
     error::{QueryError, Result},
@@ -1270,7 +1272,8 @@ impl GpuResidentGraphCache {
         if state.copy_count_for_resident_key(&entry_key.resident_key) >= self.inner.max_copies_per_key {
             return Ok(GpuResidentGraphCacheInsert::CopyLimitSkipped);
         }
-        if !self.governor_can_admit_after_cache_eviction(&state, retained_device_bytes)? {
+        let memory_grant = context.memory_grant();
+        if !self.governor_can_admit_after_cache_eviction(&state, retained_device_bytes, memory_grant)? {
             return Ok(GpuResidentGraphCacheInsert::CapacitySkipped);
         }
         let eviction = state.evict_until_fits(self.inner.max_retained_device_bytes, retained_device_bytes);
@@ -1288,7 +1291,7 @@ impl GpuResidentGraphCache {
             drop(eviction);
             return Ok(GpuResidentGraphCacheInsert::CapacitySkipped);
         }
-        let reserved = match self.reserve_governor_evictable_bytes(retained_device_bytes) {
+        let reserved = match self.reserve_governor_evictable_bytes(retained_device_bytes, memory_grant) {
             Ok(reserved) => reserved,
             Err(error) => {
                 drop(state);
@@ -1347,6 +1350,7 @@ impl GpuResidentGraphCache {
         &self,
         state: &GpuResidentGraphCacheState,
         retained_device_bytes: u64,
+        memory_grant: Option<&MemoryGrant>,
     ) -> Result<bool> {
         let Some(governor) = &self.inner.governor else {
             return Ok(true);
@@ -1354,14 +1358,30 @@ impl GpuResidentGraphCache {
         let evictable_for_capacity =
             state.evictable_bytes_until_fits(self.inner.max_retained_device_bytes, retained_device_bytes);
         let free_bytes = governor.free_bytes()?;
-        Ok(free_bytes.saturating_add(evictable_for_capacity) >= retained_device_bytes)
+        if free_bytes.saturating_add(evictable_for_capacity) >= retained_device_bytes {
+            return Ok(true);
+        }
+        match memory_grant {
+            Some(memory_grant) => governor.grant_can_cover_evictable_bytes(memory_grant, retained_device_bytes),
+            None => Ok(false),
+        }
     }
 
-    fn reserve_governor_evictable_bytes(&self, retained_device_bytes: u64) -> Result<bool> {
+    fn reserve_governor_evictable_bytes(
+        &self,
+        retained_device_bytes: u64,
+        memory_grant: Option<&MemoryGrant>,
+    ) -> Result<bool> {
         let Some(governor) = &self.inner.governor else {
             return Ok(true);
         };
-        governor.try_reserve_evictable_bytes(retained_device_bytes)
+        if governor.try_reserve_evictable_bytes(retained_device_bytes)? {
+            return Ok(true);
+        }
+        match memory_grant {
+            Some(memory_grant) => governor.try_reserve_evictable_bytes_from_grant(memory_grant, retained_device_bytes),
+            None => Ok(false),
+        }
     }
 
     fn release_governor_evictable_bytes(&self, released_device_bytes: u64) -> Result<u64> {

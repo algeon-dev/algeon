@@ -411,13 +411,14 @@ fn execute_bounded_generic_graph_algorithm(
     let ResidentGpuFrame { frame: input_frame, reservation: input_reservation } = input;
     let input_rows = input_frame.num_rows() as u64;
     let input_columns = input_frame.num_columns() as u64;
+    let input_graph_residency = input_frame.graph_residency().cloned();
     let prior_null_edge_rows_dropped = graph_input_null_edge_rows_dropped(metrics, graph.input);
 
     let null_filter_scope = super::edge_null_filter::EdgeNullFilterScope {
         weight: graph.spec.algorithm.consumes_weight(),
         edge_id: graph.spec.edge_columns.edge_id.is_some(),
     };
-    let filtered_input = match super::edge_null_filter::filter_null_edge_rows(
+    let filtered_input_frame = match super::edge_null_filter::filter_null_edge_rows(
         context,
         node_id,
         "graph_edge_null_filter",
@@ -426,15 +427,21 @@ fn execute_bounded_generic_graph_algorithm(
         null_filter_scope,
         metrics,
     ) {
-        Ok(frame) => GpuDataFrame::new(frame),
+        Ok(frame) => frame,
         Err(error) => {
             reservations.release(input_reservation, metrics);
             return Err(error.with_fact_if_absent("node_id", node_id));
         },
     };
-    let sanitized_input_rows = filtered_input.num_rows() as u64;
+    let sanitized_input_rows = filtered_input_frame.num_rows() as u64;
     let null_edge_rows_dropped =
         prior_null_edge_rows_dropped.saturating_add(input_rows.saturating_sub(sanitized_input_rows));
+    let mut filtered_input = GpuDataFrame::new(filtered_input_frame);
+    if null_edge_rows_dropped == 0
+        && let Some(graph_residency) = input_graph_residency
+    {
+        filtered_input = filtered_input.with_graph_residency(graph_residency);
+    }
 
     let mut runtime_spec = RuntimeGraphSpecResolution::CheckedNoRewrite;
     let mut graph_reservation = None;
