@@ -15,6 +15,11 @@ pub(super) fn execute_bfs(
         .with_fact("algorithm", spec.algorithm.as_str()));
     };
 
+    let resident_graph_key = if params.predicates.include_edges.is_none() {
+        resident_graph_key_for_input::<cugraph::Forward>(&input, spec)
+    } else {
+        None
+    };
     let input = input.into_frame();
     let (mut edges, vertex_type) = project_edge_list(&input, spec)?;
     let options = table_graph_options(spec);
@@ -261,6 +266,7 @@ pub(super) fn execute_bfs(
             context,
             graph_memory_limit_bytes,
             spec,
+            resident_graph_key,
             edges,
             options,
             "datafusion_nexus_cugraph_bfs",
@@ -1227,6 +1233,7 @@ pub(super) fn execute_sssp(
         context,
         inputs.graph_memory_limit_bytes,
         spec,
+        None,
         edges,
         options,
         "datafusion_nexus_cugraph_sssp",

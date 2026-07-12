@@ -190,11 +190,21 @@ struct QueryServiceResources {
     source_object_stores: Arc<SourceObjectStoreRegistry>,
     deployment_io_capability: DeploymentIoCapability,
     local_parquet_source_caches: HashMap<usize, Arc<GpuLocalParquetSourceCache>>,
+    #[cfg(feature = "cugraph")]
+    resident_graph_caches: HashMap<usize, Arc<crate::exec::GpuResidentGraphCache>>,
 }
 
 impl QueryServiceResources {
     fn local_parquet_source_cache_for_device(&self, device_ordinal: usize) -> Option<Arc<GpuLocalParquetSourceCache>> {
         self.local_parquet_source_caches.get(&device_ordinal).map(Arc::clone)
+    }
+
+    #[cfg(feature = "cugraph")]
+    fn resident_graph_cache_for_device(
+        &self,
+        device_ordinal: usize,
+    ) -> Option<Arc<crate::exec::GpuResidentGraphCache>> {
+        self.resident_graph_caches.get(&device_ordinal).map(Arc::clone)
     }
 }
 
@@ -456,6 +466,9 @@ impl QueryService {
         let devices = super::DeviceRegistry::install(&super::CudfInventory, &registry_config)?;
         let local_parquet_source_caches =
             local_parquet_source_caches_for_devices(&devices, config.local_parquet_source_cache_max_retained_bytes)?;
+        #[cfg(feature = "cugraph")]
+        let resident_graph_caches =
+            resident_graph_caches_for_devices(&devices, config.resident_graph_cache_max_retained_bytes)?;
         let resources = QueryServiceResources {
             devices,
             _governor_claim: None,
@@ -479,6 +492,8 @@ impl QueryService {
             )?),
             deployment_io_capability,
             local_parquet_source_caches,
+            #[cfg(feature = "cugraph")]
+            resident_graph_caches,
         };
         Self::build(config, tenants, Some(resources))
     }
@@ -2143,6 +2158,26 @@ fn local_parquet_source_caches_for_devices(
     Ok(caches)
 }
 
+#[cfg(feature = "cugraph")]
+fn resident_graph_caches_for_devices(
+    devices: &super::DeviceRegistry,
+    max_retained_bytes: Option<u64>,
+) -> Result<HashMap<usize, Arc<crate::exec::GpuResidentGraphCache>>> {
+    let Some(max_retained_bytes) = max_retained_bytes else {
+        return Ok(HashMap::new());
+    };
+    let mut caches = HashMap::new();
+    for device in devices.contexts() {
+        let cache = Arc::new(crate::exec::GpuResidentGraphCache::new_governor_backed(
+            max_retained_bytes,
+            device.memory_governor().clone(),
+        ));
+        crate::exec::GpuResidentGraphCache::register_governor_pressure_observer(&cache)?;
+        caches.insert(device.device().ordinal(), cache);
+    }
+    Ok(caches)
+}
+
 #[cfg(test)]
 fn local_parquet_source_caches_for_ordinals(
     device_ordinals: &[usize],
@@ -2155,6 +2190,21 @@ fn local_parquet_source_caches_for_ordinals(
         .iter()
         .copied()
         .map(|ordinal| (ordinal, Arc::new(GpuLocalParquetSourceCache::new(max_retained_bytes))))
+        .collect()
+}
+
+#[cfg(all(test, feature = "cugraph"))]
+fn resident_graph_caches_for_ordinals(
+    device_ordinals: &[usize],
+    max_retained_bytes: Option<u64>,
+) -> HashMap<usize, Arc<crate::exec::GpuResidentGraphCache>> {
+    let Some(max_retained_bytes) = max_retained_bytes else {
+        return HashMap::new();
+    };
+    device_ordinals
+        .iter()
+        .copied()
+        .map(|ordinal| (ordinal, Arc::new(crate::exec::GpuResidentGraphCache::new(max_retained_bytes))))
         .collect()
 }
 

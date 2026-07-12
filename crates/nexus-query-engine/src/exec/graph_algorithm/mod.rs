@@ -6,6 +6,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 #[cfg(feature = "cugraph")]
 use arrow::datatypes::SchemaRef;
 
+#[cfg(feature = "cugraph")]
+use super::types::GpuResidentGraphTransposition;
 use super::*;
 
 #[cfg(feature = "cugraph")]
@@ -125,6 +127,7 @@ pub(super) fn execute_graph_algorithm(
 ) -> Result<GpuDataFrame> {
     let input_rows = input.num_rows() as u64;
     let input_columns = input.num_columns() as u64;
+    let input_graph_residency = input.graph_residency().cloned();
     let prior_null_edge_rows_dropped = graph_input_null_edge_rows_dropped(metrics, node.input);
     let null_filter_scope = super::edge_null_filter::EdgeNullFilterScope {
         weight: node.spec.algorithm.consumes_weight(),
@@ -146,12 +149,18 @@ pub(super) fn execute_graph_algorithm(
     let graph_memory_limit_bytes =
         admit_graph_memory(context, node_id, &node.spec, &input, sanitized_input_rows, metrics)?;
     let runtime_spec = runtime_graph_spec_resolution_after_bounded_seed_validation(&node.spec, false);
+    let mut sanitized_input = GpuDataFrame::new(input);
+    if null_edge_rows_dropped == 0
+        && let Some(graph_residency) = input_graph_residency
+    {
+        sanitized_input = sanitized_input.with_graph_residency(graph_residency);
+    }
     execute_graph_algorithm_sanitized(
         context,
         node_id,
         node,
         runtime_spec,
-        GpuDataFrame::new(input),
+        sanitized_input,
         side_inputs,
         graph_memory_limit_bytes,
         input_rows,
@@ -1399,6 +1408,39 @@ pub(super) fn run_with_cugraph_graph<T, F>(
     context: &ExecutionContext,
     graph_memory_limit_bytes: Option<u64>,
     _spec: &crate::plan::GraphAlgorithmSpec,
+    resident_graph_key: Option<crate::plan::ResidentGraphKey>,
+    edges: DataFrame,
+    options: cugraph::cudf_interop::TableGraphOptions,
+    operation: &'static str,
+    f: F,
+) -> Result<GraphAlgorithmExecutionResult>
+where
+    T: GpuResidentGraphTransposition,
+    F: FnOnce(
+        &cudf::Runtime,
+        &cugraph::EnteredContext<'_>,
+        &mut cugraph::Graph<T>,
+    ) -> Result<GraphAlgorithmExecutionResult>,
+{
+    if let (Some(cache), Some(resident_graph_key)) = (context.resident_graph_cache(), resident_graph_key) {
+        return run_with_cached_cugraph_graph::<T, F>(
+            context,
+            graph_memory_limit_bytes,
+            resident_graph_key,
+            edges,
+            options,
+            operation,
+            f,
+            cache,
+        );
+    }
+    run_with_uncached_cugraph_graph::<T, F>(context, graph_memory_limit_bytes, edges, options, operation, f)
+}
+
+#[cfg(feature = "cugraph")]
+fn run_with_uncached_cugraph_graph<T, F>(
+    context: &ExecutionContext,
+    graph_memory_limit_bytes: Option<u64>,
     edges: DataFrame,
     options: cugraph::cudf_interop::TableGraphOptions,
     operation: &'static str,
@@ -1447,6 +1489,138 @@ where
             )
         })?;
     attach_graph_budget_observation(f(budget.runtime.as_ref(), &entered, &mut graph), budget.token.as_ref(), operation)
+}
+
+#[cfg(feature = "cugraph")]
+fn run_with_cached_cugraph_graph<T, F>(
+    context: &ExecutionContext,
+    graph_memory_limit_bytes: Option<u64>,
+    resident_graph_key: crate::plan::ResidentGraphKey,
+    edges: DataFrame,
+    options: cugraph::cudf_interop::TableGraphOptions,
+    operation: &'static str,
+    f: F,
+    cache: std::sync::Arc<crate::exec::GpuResidentGraphCache>,
+) -> Result<GraphAlgorithmExecutionResult>
+where
+    T: GpuResidentGraphTransposition,
+    F: FnOnce(
+        &cudf::Runtime,
+        &cugraph::EnteredContext<'_>,
+        &mut cugraph::Graph<T>,
+    ) -> Result<GraphAlgorithmExecutionResult>,
+{
+    let runtime = cache.companion_runtime_for_context(context, operation)?;
+    let budget = graph_execution_budget_with_runtime(
+        context,
+        graph_memory_limit_bytes,
+        crate::graph_memory::GRAPH_MEMORY_BOUNDARY,
+        operation,
+        std::sync::Arc::clone(&runtime),
+    )?;
+    let handle = cugraph::ResourceHandle::for_runtime(std::sync::Arc::clone(&runtime)).map_err(map_cugraph_error(
+        "nexus_query_engine.graph_algorithm.resource_handle",
+        "failed to bind cuGraph resource handle to the resident graph cache runtime",
+    ))?;
+    let entered = handle.enter(operation).map_err(map_cugraph_error(
+        "nexus_query_engine.graph_algorithm.enter",
+        "failed to enter cuGraph resident graph cache execution context",
+    ))?;
+
+    if let Some(mut checkout) = cache.checkout::<T>(&resident_graph_key, context)? {
+        let retained_device_bytes = checkout.retained_device_bytes();
+        let parked = checkout.take_parked();
+        match parked.resume(&entered) {
+            Ok(mut graph) => {
+                let result = f(runtime.as_ref(), &entered, &mut graph);
+                return match result {
+                    Ok(result) => match graph.park(&entered) {
+                        Ok(parked) => {
+                            let cache_metadata = match checkout.return_parked(parked) {
+                                Ok(()) => format!("hit;retained_device_bytes={retained_device_bytes}"),
+                                Err(_error) => "hit_return_failed".to_string(),
+                            };
+                            attach_graph_budget_observation(
+                                Ok(with_graph_cache_metadata(result, &cache_metadata)),
+                                budget.token.as_ref(),
+                                operation,
+                            )
+                        },
+                        Err(_error) => attach_graph_budget_observation(
+                            Ok(with_graph_cache_metadata(result, "hit_repark_failed")),
+                            budget.token.as_ref(),
+                            operation,
+                        ),
+                    },
+                    Err(error) => Err(attach_graph_budget_error_facts(error, budget.token.as_ref(), operation)),
+                };
+            },
+            Err(_error) => {
+                // The cugraph-rs v1 contract consumes the parked graph on a
+                // resume error. Treat the cache entry as lost and continue with
+                // a cold build so cache corruption does not fail the query.
+            },
+        }
+    }
+
+    let export = edges.try_prepare_device_table_export().map_err(|error| {
+        QueryError::new(
+            QueryErrorCode::CudfDependencyFailure,
+            "nexus_query_engine.graph_algorithm.prepare_table_export",
+            "failed to prepare cuGraph edge-list table export",
+        )
+        .with_source(error)
+    })?;
+    let build_current_bytes_before = graph_budget_current_bytes(budget.token.as_ref());
+    let mut graph =
+        cugraph::cudf_interop::graph_from_prepared_table_export::<T>(&entered, &export, &options).map_err(|error| {
+            attach_graph_budget_error_facts(
+                map_cugraph_error(
+                    "nexus_query_engine.graph_algorithm.build_graph",
+                    "failed to build cuGraph graph from edge-list table",
+                )(error),
+                budget.token.as_ref(),
+                operation,
+            )
+        })?;
+    let result = f(runtime.as_ref(), &entered, &mut graph);
+    match result {
+        Ok(result) => {
+            let retained_device_bytes = graph_retained_device_bytes_upper_bound(
+                budget.token.as_ref(),
+                build_current_bytes_before,
+                &result.frame,
+            );
+            match graph.park(&entered) {
+                Ok(parked) => {
+                    let insert = cache.insert_if_absent(resident_graph_key, context, parked, retained_device_bytes)?;
+                    let metadata = match insert {
+                        crate::exec::GpuResidentGraphCacheInsert::Inserted => {
+                            format!("miss_inserted;retained_device_bytes={retained_device_bytes}")
+                        },
+                        crate::exec::GpuResidentGraphCacheInsert::AlreadyPresent => "miss_already_present".to_string(),
+                        crate::exec::GpuResidentGraphCacheInsert::CapacitySkipped => {
+                            "miss_capacity_skipped".to_string()
+                        },
+                        crate::exec::GpuResidentGraphCacheInsert::CopyLimitSkipped => {
+                            "miss_copy_limit_skipped".to_string()
+                        },
+                    };
+                    attach_graph_budget_observation(
+                        Ok(with_graph_cache_metadata(result, &metadata)),
+                        budget.token.as_ref(),
+                        operation,
+                    )
+                },
+                Err(_error) => attach_graph_budget_observation(
+                    Ok(with_graph_cache_metadata(result, "miss_park_failed")),
+                    budget.token.as_ref(),
+                    operation,
+                ),
+            }
+        },
+        Err(error) => Err(attach_graph_budget_error_facts(error, budget.token.as_ref(), operation)),
+    }
 }
 
 /// Build a cuGraph graph through `GraphBuilder` when the native edge list
@@ -1502,30 +1676,7 @@ fn graph_execution_budget(
     budget_boundary: &'static str,
     operation: &'static str,
 ) -> Result<GraphExecutionBudget> {
-    let limit_bytes = graph_memory_limit_bytes.unwrap_or(usize::MAX as u64);
-
-    let limit = usize::try_from(limit_bytes).map_err(|_| {
-        QueryError::new(
-            QueryErrorCode::InvalidPlan,
-            "nexus_query_engine.graph_algorithm.execution_budget",
-            "graph memory reservation does not fit this platform's usize budget limit",
-        )
-        .with_fact("operation", operation)
-        .with_fact("budget_boundary", budget_boundary)
-        .with_fact("graph_memory_limit_bytes", limit_bytes)
-    })?;
-    let token = context
-        .execution_budget_token(cudf::ExecutionBudgetRequest::new(limit).with_boundary(budget_boundary))
-        .map_err(|error| {
-            QueryError::from_cudf_with_budget_details(
-                "nexus_query_engine.graph_algorithm.execution_budget",
-                "failed to attach graph execution memory reservation",
-                error,
-            )
-            .with_fact("operation", operation)
-            .with_fact("budget_boundary", budget_boundary)
-            .with_fact("graph_memory_limit_bytes", limit_bytes)
-        })?;
+    let token = graph_execution_budget_token(context, graph_memory_limit_bytes, budget_boundary, operation)?;
     let runtime = cudf::Runtime::builder()
         .with_device(context.runtime().device())
         .with_stream(context.runtime().stream().clone())
@@ -1539,9 +1690,54 @@ fn graph_execution_budget(
             )
             .with_fact("operation", operation)
             .with_fact("budget_boundary", budget_boundary)
-            .with_fact("graph_memory_limit_bytes", limit_bytes)
+            .with_fact("graph_memory_limit_bytes", graph_memory_limit_bytes.unwrap_or(usize::MAX as u64))
         })?;
     Ok(GraphExecutionBudget { runtime: std::sync::Arc::new(runtime), token: Some(token) })
+}
+
+#[cfg(feature = "cugraph")]
+fn graph_execution_budget_with_runtime(
+    context: &ExecutionContext,
+    graph_memory_limit_bytes: Option<u64>,
+    budget_boundary: &'static str,
+    operation: &'static str,
+    runtime: std::sync::Arc<cudf::Runtime>,
+) -> Result<GraphExecutionBudget> {
+    let token = graph_execution_budget_token(context, graph_memory_limit_bytes, budget_boundary, operation)?;
+    Ok(GraphExecutionBudget { runtime, token: Some(token) })
+}
+
+#[cfg(feature = "cugraph")]
+fn graph_execution_budget_token(
+    context: &ExecutionContext,
+    graph_memory_limit_bytes: Option<u64>,
+    budget_boundary: &'static str,
+    operation: &'static str,
+) -> Result<cudf::ExecutionBudgetToken> {
+    let limit_bytes = graph_memory_limit_bytes.unwrap_or(usize::MAX as u64);
+
+    let limit = usize::try_from(limit_bytes).map_err(|_| {
+        QueryError::new(
+            QueryErrorCode::InvalidPlan,
+            "nexus_query_engine.graph_algorithm.execution_budget",
+            "graph memory reservation does not fit this platform's usize budget limit",
+        )
+        .with_fact("operation", operation)
+        .with_fact("budget_boundary", budget_boundary)
+        .with_fact("graph_memory_limit_bytes", limit_bytes)
+    })?;
+    context.execution_budget_token(cudf::ExecutionBudgetRequest::new(limit).with_boundary(budget_boundary)).map_err(
+        |error| {
+            QueryError::from_cudf_with_budget_details(
+                "nexus_query_engine.graph_algorithm.execution_budget",
+                "failed to attach graph execution memory reservation",
+                error,
+            )
+            .with_fact("operation", operation)
+            .with_fact("budget_boundary", budget_boundary)
+            .with_fact("graph_memory_limit_bytes", limit_bytes)
+        },
+    )
 }
 
 #[cfg(feature = "cugraph")]
@@ -1571,6 +1767,38 @@ fn graph_budget_observation(
     let usage = token.reservation_usage().ok()?;
     let arena_usage = token.reservation_arena_usage().ok().flatten();
     Some(GraphBudgetObservation::from_reservation_usage(operation, token, usage, arena_usage, status))
+}
+
+#[cfg(feature = "cugraph")]
+fn graph_budget_current_bytes(token: Option<&cudf::ExecutionBudgetToken>) -> Option<u64> {
+    token?.reservation_usage().ok().map(|usage| usage.current_bytes)
+}
+
+#[cfg(feature = "cugraph")]
+fn graph_retained_device_bytes_upper_bound(
+    token: Option<&cudf::ExecutionBudgetToken>,
+    before_current_bytes: Option<u64>,
+    output: &DataFrame,
+) -> u64 {
+    let Some(after_current_bytes) = graph_budget_current_bytes(token) else {
+        return 0;
+    };
+    let output_device_bytes = GpuDataFrame::new(output.clone()).device_allocated_size_bytes().unwrap_or(0);
+    after_current_bytes.saturating_sub(before_current_bytes.unwrap_or(0)).saturating_sub(output_device_bytes)
+}
+
+#[cfg(feature = "cugraph")]
+fn with_graph_cache_metadata(
+    mut result: GraphAlgorithmExecutionResult,
+    cache_metadata: &str,
+) -> GraphAlgorithmExecutionResult {
+    if result.algorithm_metadata.is_empty() {
+        result.algorithm_metadata = format!("graph_cache={cache_metadata}");
+    } else {
+        result.algorithm_metadata.push_str(",graph_cache=");
+        result.algorithm_metadata.push_str(cache_metadata);
+    }
+    result
 }
 
 #[cfg(feature = "cugraph")]
@@ -1947,6 +2175,17 @@ pub(super) fn project_edge_list(
         .with_fact("edge_id_col", spec.edge_columns.edge_id.as_deref().unwrap_or("<none>"))
     })?;
     Ok((edges, source_type.id()))
+}
+
+#[cfg(feature = "cugraph")]
+pub(super) fn resident_graph_key_for_input<T>(
+    input: &GpuDataFrame,
+    spec: &crate::plan::GraphAlgorithmSpec,
+) -> Option<crate::plan::ResidentGraphKey>
+where
+    T: GpuResidentGraphTransposition,
+{
+    input.graph_residency().map(|descriptor| descriptor.resident_key(spec, T::orientation()))
 }
 
 #[cfg(feature = "cugraph")]

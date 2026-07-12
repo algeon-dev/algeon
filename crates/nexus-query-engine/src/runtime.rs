@@ -391,6 +391,9 @@ pub struct ExecutionContext {
     /// Bounded execution charges retained cache bytes to the reservation ledger
     /// before admitting source or operator work.
     local_parquet_source_cache: Option<Arc<crate::exec::GpuLocalParquetSourceCache>>,
+    /// Optional durable GPU resident graph cache.
+    #[cfg(feature = "cugraph")]
+    resident_graph_cache: Option<Arc<crate::exec::GpuResidentGraphCache>>,
     /// Optional owned stream lease kept alive by contexts derived from it.
     stream_lease_guard: Option<Arc<StreamLease>>,
     /// Whether this context was created from a QueryService admission handle.
@@ -451,6 +454,8 @@ struct ExecutionContextParts {
     adaptive_memory_history: Option<Arc<AdaptiveMemoryHistory>>,
     hash_join_build_cache: Option<Arc<crate::exec::GpuHashJoinBuildCache>>,
     local_parquet_source_cache: Option<Arc<crate::exec::GpuLocalParquetSourceCache>>,
+    #[cfg(feature = "cugraph")]
+    resident_graph_cache: Option<Arc<crate::exec::GpuResidentGraphCache>>,
     stream_lease_guard: Option<Arc<StreamLease>>,
     query_service_admitted: bool,
 }
@@ -514,6 +519,8 @@ impl ExecutionContext {
             adaptive_memory_history: None,
             hash_join_build_cache: None,
             local_parquet_source_cache: None,
+            #[cfg(feature = "cugraph")]
+            resident_graph_cache: None,
             stream_lease_guard: None,
             query_service_admitted: false,
         }))
@@ -552,6 +559,8 @@ impl ExecutionContext {
             adaptive_memory_history: parts.adaptive_memory_history,
             hash_join_build_cache: parts.hash_join_build_cache,
             local_parquet_source_cache: parts.local_parquet_source_cache,
+            #[cfg(feature = "cugraph")]
+            resident_graph_cache: parts.resident_graph_cache,
             stream_lease_guard: parts.stream_lease_guard,
             query_service_admitted: parts.query_service_admitted,
         }
@@ -653,6 +662,8 @@ impl ExecutionContext {
             adaptive_memory_history: self.adaptive_memory_history.as_ref().map(Arc::clone),
             hash_join_build_cache: self.hash_join_build_cache.as_ref().map(Arc::clone),
             local_parquet_source_cache: self.local_parquet_source_cache.as_ref().map(Arc::clone),
+            #[cfg(feature = "cugraph")]
+            resident_graph_cache: self.resident_graph_cache.as_ref().map(Arc::clone),
             stream_lease_guard: None,
             query_service_admitted: self.query_service_admitted,
         }))
@@ -1100,6 +1111,12 @@ impl ExecutionContext {
     pub fn local_parquet_source_cache(&self) -> Option<Arc<crate::exec::GpuLocalParquetSourceCache>> {
         self.local_parquet_source_cache.as_ref().map(Arc::clone)
     }
+
+    /// Returns the durable GPU resident graph cache, when configured.
+    #[cfg(feature = "cugraph")]
+    pub fn resident_graph_cache(&self) -> Option<Arc<crate::exec::GpuResidentGraphCache>> {
+        self.resident_graph_cache.as_ref().map(Arc::clone)
+    }
 }
 
 /// Builder for [`ExecutionContext`].
@@ -1170,6 +1187,9 @@ pub struct ExecutionContextBuilder {
     hash_join_build_cache: Option<Arc<crate::exec::GpuHashJoinBuildCache>>,
     /// Optional durable local-Parquet source cache.
     local_parquet_source_cache: Option<Arc<crate::exec::GpuLocalParquetSourceCache>>,
+    /// Optional durable resident graph cache.
+    #[cfg(feature = "cugraph")]
+    resident_graph_cache: Option<Arc<crate::exec::GpuResidentGraphCache>>,
 }
 
 impl ExecutionContextBuilder {
@@ -1396,6 +1416,13 @@ impl ExecutionContextBuilder {
         self
     }
 
+    /// Provides the durable GPU resident graph cache.
+    #[cfg(feature = "cugraph")]
+    pub fn with_resident_graph_cache(mut self, cache: Arc<crate::exec::GpuResidentGraphCache>) -> Self {
+        self.resident_graph_cache = Some(cache);
+        self
+    }
+
     /// Validates policies, constructs or records the runtime, and returns a context.
     ///
     /// Validation failures carry report-facing facts such as
@@ -1491,6 +1518,8 @@ impl ExecutionContextBuilder {
                 adaptive_memory_history: self.adaptive_memory_history,
                 hash_join_build_cache: self.hash_join_build_cache,
                 local_parquet_source_cache: self.local_parquet_source_cache,
+                #[cfg(feature = "cugraph")]
+                resident_graph_cache: self.resident_graph_cache,
                 stream_lease_guard: None,
                 query_service_admitted: false,
             }));
@@ -1563,6 +1592,8 @@ impl ExecutionContextBuilder {
             adaptive_memory_history: self.adaptive_memory_history,
             hash_join_build_cache: self.hash_join_build_cache,
             local_parquet_source_cache: self.local_parquet_source_cache,
+            #[cfg(feature = "cugraph")]
+            resident_graph_cache: self.resident_graph_cache,
             stream_lease_guard: None,
             query_service_admitted: false,
         }))

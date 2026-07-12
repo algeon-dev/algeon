@@ -566,6 +566,7 @@ fn backend_query_service_config(
         graph_memory_calibration_override: execution_config.graph_memory_calibration_override(),
         local_parquet_source_cache_max_retained_bytes: execution_config
             .query_service_local_parquet_source_cache_max_retained_bytes(),
+        resident_graph_cache_max_retained_bytes: None,
         stream_pool_size: Some(backend_stream_pool_size(
             max_concurrent_queries,
             execution_config.source_scheduler_policy().max_source_reads_in_flight(),
