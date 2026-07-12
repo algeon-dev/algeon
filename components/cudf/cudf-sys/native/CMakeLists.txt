@@ -218,6 +218,7 @@ add_library(
   src/handle_provenance.cpp
   src/ast.cpp
   src/arrow_device.cpp
+  src/arrow_host.cpp
   src/types.cpp
   src/owning_handle.cpp
   src/column.cpp

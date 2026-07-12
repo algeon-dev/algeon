@@ -30,12 +30,13 @@
 //! assert_eq!(df2.num_columns(), 2);
 //! ```
 
-use std::{cell::Cell, ffi::c_void, sync::Arc};
+use std::{cell::Cell, ffi::c_void, ptr, sync::Arc};
 
 use arrow::{
     array::*,
     buffer::{NullBuffer, OffsetBuffer, ScalarBuffer},
     datatypes::{DataType as ArrowDataType, Field, FieldRef, Schema, TimeUnit},
+    ffi::{FFI_ArrowArray, FFI_ArrowSchema},
     record_batch::{RecordBatch, RecordBatchOptions},
 };
 use rapids_interop::{
@@ -602,6 +603,17 @@ pub(super) fn map_numeric_to_arrow_error(error: arrow::error::ArrowError) -> Err
         "arrow_array",
         "invalid_arrow_primitive_array",
         "ensure Arrow primitive values and null buffers have matching logical lengths",
+    )
+    .with_source(error)
+}
+
+fn map_arrow_ffi_export_error(operation: &'static str, error: arrow::error::ArrowError) -> Error {
+    error::foreign_invariant_violation(
+        operation,
+        error.to_string(),
+        "arrow_array",
+        "invalid_arrow_c_data_export",
+        "ensure the Arrow array can be exported through the Arrow C Data Interface",
     )
     .with_source(error)
 }
@@ -1352,9 +1364,37 @@ fn bool_to_column(runtime: &Runtime, arr: &dyn Array) -> Result<Column> {
     }
 }
 
+fn string_like_arrow_host_column_to_column(
+    runtime: &Runtime,
+    arr: &dyn Array,
+    operation: &'static str,
+) -> Result<Column> {
+    let data = arr.to_data();
+    let ffi_array = FFI_ArrowArray::new(&data);
+    let ffi_schema =
+        FFI_ArrowSchema::try_from(data.data_type()).map_err(|error| map_arrow_ffi_export_error(operation, error))?;
+    let exec_options = runtime.execution_domain().exec_options_raw();
+    let mut handle = ptr::null_mut();
+
+    error::check_status_in(
+        unsafe {
+            cudf_sys::cudf_arrow_host_column_import_ex(
+                (&ffi_schema as *const FFI_ArrowSchema).cast::<c_void>(),
+                (&ffi_array as *const FFI_ArrowArray).cast::<c_void>(),
+                &exec_options,
+                &mut handle,
+            )
+        },
+        operation,
+    )?;
+
+    unsafe { Column::from_raw_with_domain(handle, Arc::clone(runtime.execution_domain())) }
+        .map_err(|error| error.reanchor(operation))
+}
+
 /// Convert an Arrow StringArray (Utf8) to a cudf STRING Column.
 fn string_array_to_column(runtime: &Runtime, arr: &dyn Array) -> Result<Column> {
-    let str_arr = arr.as_any().downcast_ref::<StringArray>().ok_or_else(|| {
+    let _str_arr = arr.as_any().downcast_ref::<StringArray>().ok_or_else(|| {
         error::foreign_invariant_violation(
             "arrow::string_array_to_column",
             "expected StringArray for Utf8 type",
@@ -1366,20 +1406,12 @@ fn string_array_to_column(runtime: &Runtime, arr: &dyn Array) -> Result<Column> 
         .with_detail("actual_arrow_type", format!("{:?}", arr.data_type()))
     })?;
 
-    let values: Vec<&str> = (0..str_arr.len()).map(|i| str_arr.value(i)).collect();
-
-    match str_arr.nulls() {
-        None => runtime.column_from_strs(&values),
-        Some(null_buf) => {
-            let validity: Vec<bool> = null_buf.iter().collect();
-            runtime.column_from_strs_nullable(&values, &validity)
-        },
-    }
+    string_like_arrow_host_column_to_column(runtime, arr, "arrow::string_array_to_column")
 }
 
 /// Convert an Arrow LargeStringArray (LargeUtf8) to a cudf STRING Column.
 fn large_string_array_to_column(runtime: &Runtime, arr: &dyn Array) -> Result<Column> {
-    let str_arr = arr.as_any().downcast_ref::<LargeStringArray>().ok_or_else(|| {
+    let _str_arr = arr.as_any().downcast_ref::<LargeStringArray>().ok_or_else(|| {
         error::foreign_invariant_violation(
             "arrow::large_string_array_to_column",
             "expected LargeStringArray for LargeUtf8 type",
@@ -1391,20 +1423,12 @@ fn large_string_array_to_column(runtime: &Runtime, arr: &dyn Array) -> Result<Co
         .with_detail("actual_arrow_type", format!("{:?}", arr.data_type()))
     })?;
 
-    let values: Vec<&str> = (0..str_arr.len()).map(|i| str_arr.value(i)).collect();
-
-    match str_arr.nulls() {
-        None => runtime.column_from_strs(&values),
-        Some(null_buf) => {
-            let validity: Vec<bool> = null_buf.iter().collect();
-            runtime.column_from_strs_nullable(&values, &validity)
-        },
-    }
+    string_like_arrow_host_column_to_column(runtime, arr, "arrow::large_string_array_to_column")
 }
 
 /// Convert an Arrow StringViewArray (Utf8View) to a cudf STRING Column.
 fn string_view_array_to_column(runtime: &Runtime, arr: &dyn Array) -> Result<Column> {
-    let str_arr = arr.as_string_view_opt().ok_or_else(|| {
+    let _str_arr = arr.as_string_view_opt().ok_or_else(|| {
         error::foreign_invariant_violation(
             "arrow::string_view_array_to_column",
             "expected StringViewArray for Utf8View type",
@@ -1416,15 +1440,7 @@ fn string_view_array_to_column(runtime: &Runtime, arr: &dyn Array) -> Result<Col
         .with_detail("actual_arrow_type", format!("{:?}", arr.data_type()))
     })?;
 
-    let values: Vec<&str> = (0..str_arr.len()).map(|i| str_arr.value(i)).collect();
-
-    match str_arr.nulls() {
-        None => runtime.column_from_strs(&values),
-        Some(null_buf) => {
-            let validity: Vec<bool> = null_buf.iter().collect();
-            runtime.column_from_strs_nullable(&values, &validity)
-        },
-    }
+    string_like_arrow_host_column_to_column(runtime, arr, "arrow::string_view_array_to_column")
 }
 
 // ---------------------------------------------------------------------------

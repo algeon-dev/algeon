@@ -162,42 +162,6 @@ cudf_status_t resolve_column_view_null_count(cudf::column_view const &view,
   return CUDF_SUCCESS;
 }
 
-class host_source_copy_sync_guard {
-public:
-  explicit host_source_copy_sync_guard(rmm::cuda_stream_view stream)
-      : stream_{stream} {}
-
-  host_source_copy_sync_guard(host_source_copy_sync_guard const &) = delete;
-
-  host_source_copy_sync_guard &
-  operator=(host_source_copy_sync_guard const &) = delete;
-
-  ~host_source_copy_sync_guard() noexcept {
-    if (!copy_may_be_pending_) {
-      return;
-    }
-    try {
-      stream_.synchronize();
-      cudf_record_synchronized_stream(stream_);
-    } catch (...) {
-      // Destructors cannot report synchronization failures without masking the
-      // original error; explicit synchronize calls still propagate failures.
-    }
-  }
-
-  void mark_copy_may_be_pending() noexcept { copy_may_be_pending_ = true; }
-
-  void synchronize_and_release() {
-    stream_.synchronize();
-    cudf_record_synchronized_stream(stream_);
-    copy_may_be_pending_ = false;
-  }
-
-private:
-  rmm::cuda_stream_view stream_;
-  bool copy_may_be_pending_ = false;
-};
-
 } // namespace
 
 static cudf_status_t create_column_from_device_data_impl(
@@ -402,7 +366,7 @@ cudf_status_t cudf_column_create_numeric_ex(cudf_type_id_t type_id,
     // Copy host data to device.
     std::optional<rmm::device_buffer> dev_data;
     std::optional<rmm::device_buffer> dev_null_mask;
-    host_source_copy_sync_guard host_copy_guard{exec->stream};
+    cudf_host_source_copy_sync_guard host_copy_guard{exec->stream};
     if (data_bytes > 0) {
       host_copy_guard.mark_copy_may_be_pending();
     }
@@ -482,7 +446,7 @@ cudf_status_t cudf_column_create_fixed_width_from_host_ex(
     std::vector<uint8_t> padded_mask;
     std::optional<rmm::device_buffer> dev_data;
     std::optional<rmm::device_buffer> dev_null_mask;
-    host_source_copy_sync_guard host_copy_guard{exec->stream};
+    cudf_host_source_copy_sync_guard host_copy_guard{exec->stream};
     if (data_bytes > 0) {
       host_copy_guard.mark_copy_may_be_pending();
     }
@@ -1264,7 +1228,7 @@ cudf_status_t cudf_column_create_strings_ex(
     std::optional<rmm::device_buffer> dev_offsets;
     std::optional<rmm::device_buffer> dev_chars;
     std::optional<rmm::device_buffer> dev_null_mask;
-    host_source_copy_sync_guard host_copy_guard{exec->stream};
+    cudf_host_source_copy_sync_guard host_copy_guard{exec->stream};
 
     auto const offsets_count = num_strings_size + 1;
     auto const offsets_bytes = offsets_count * sizeof(int32_t);
@@ -1370,32 +1334,56 @@ cudf_status_t cudf_column_view_strings_to_host_ex(
     }
     auto offsets_view = view->child(0);
     auto offsets_count = n + 1;
+    auto const offsets_count_size = static_cast<size_t>(offsets_count);
 
     // Copy offsets to host
     size_t needed_offsets_bytes =
-        static_cast<size_t>(offsets_count) * sizeof(int32_t);
+        offsets_count_size * sizeof(int32_t);
     CUDF_RUST_NULL_CHECK(offsets_buf, "offsets_buf is null");
     if (offsets_buf_size < needed_offsets_bytes) {
       set_error("offsets buffer too small");
       return CUDF_ERROR_INVALID_OPERATION;
     }
 
-    // Account for view offset: a sliced parent view keeps its full offsets
-    // child, so the active rows' offsets start at the parent's offset() in
-    // addition to any offset carried by the child itself.
-    auto offsets_data = offsets_view.data<int32_t>() + view->offset();
-    CUDF_CUDA_TRY(cudaMemcpyAsync(offsets_buf, offsets_data,
-                                  needed_offsets_bytes, cudaMemcpyDeviceToHost,
-                                  exec->stream.value()));
-    // We need the copied offsets on host before we can size the chars copy.
-    exec->stream.synchronize();
-    cudf_record_synchronized_stream(exec->stream);
+    std::vector<int64_t> host_offsets(offsets_count_size);
+    auto const offsets_type = offsets_view.type().id();
+    if (offsets_type == cudf::type_id::INT32) {
+      std::vector<int32_t> raw_offsets(offsets_count_size);
+      auto offsets_data = offsets_view.data<int32_t>() + view->offset();
+      CUDF_CUDA_TRY(cudaMemcpyAsync(
+          raw_offsets.data(), offsets_data, offsets_count_size * sizeof(int32_t),
+          cudaMemcpyDeviceToHost, exec->stream.value()));
+      exec->stream.synchronize();
+      cudf_record_synchronized_stream(exec->stream);
+      for (size_t i = 0; i < offsets_count_size; ++i) {
+        host_offsets[i] = raw_offsets[i];
+      }
+    } else if (offsets_type == cudf::type_id::INT64) {
+      auto offsets_data = offsets_view.data<int64_t>() + view->offset();
+      CUDF_CUDA_TRY(cudaMemcpyAsync(
+          host_offsets.data(), offsets_data,
+          offsets_count_size * sizeof(int64_t), cudaMemcpyDeviceToHost,
+          exec->stream.value()));
+      exec->stream.synchronize();
+      cudf_record_synchronized_stream(exec->stream);
+    } else {
+      set_error("string offsets child must be INT32 or INT64");
+      return CUDF_ERROR_TYPE;
+    }
 
     // Compute total chars bytes from offsets
-    int32_t char_begin = offsets_buf[0];
-    int32_t char_end = offsets_buf[offsets_count - 1];
-    int32_t total = char_end - char_begin;
-    *total_chars_bytes = total;
+    int64_t char_begin = host_offsets[0];
+    int64_t char_end = host_offsets[offsets_count_size - 1];
+    if (char_begin < 0 || char_end < char_begin) {
+      set_error("string offsets are invalid");
+      return CUDF_ERROR_INVALID_OPERATION;
+    }
+    int64_t total = char_end - char_begin;
+    if (total > static_cast<int64_t>(std::numeric_limits<int32_t>::max())) {
+      set_error("string chars span exceeds INT32_MAX");
+      return CUDF_ERROR_INVALID_OPERATION;
+    }
+    *total_chars_bytes = static_cast<int32_t>(total);
 
     if (total > 0) {
       auto const total_chars = static_cast<size_t>(total);
@@ -1406,12 +1394,12 @@ cudf_status_t cudf_column_view_strings_to_host_ex(
         }
 
         // In cudf 25.x the chars are embedded in the offsets column's parent
-        // We need to get chars from the strings_column_view
+        // We need to get chars from the strings_column_view.
         cudf::strings_column_view scv(*view);
         char const *chars_ptr = scv.chars_begin(exec->stream);
 
         // chars_begin does NOT account for view offset, but the offsets
-        // already tell us where chars start (offsets_buf[0] = char_begin).
+        // already tell us where chars start (host_offsets[0] = char_begin).
         CUDF_CUDA_TRY(cudaMemcpyAsync(chars_buf, chars_ptr + char_begin,
                                       total_chars, cudaMemcpyDeviceToHost,
                                       exec->stream.value()));
@@ -1423,8 +1411,15 @@ cudf_status_t cudf_column_view_strings_to_host_ex(
     }
 
     // Adjust offsets to be zero-based for the caller
-    for (int i = 0; i < offsets_count; ++i) {
-      offsets_buf[i] -= char_begin;
+    for (size_t i = 0; i < offsets_count_size; ++i) {
+      auto const normalized = host_offsets[i] - char_begin;
+      if (normalized < 0 ||
+          normalized >
+              static_cast<int64_t>(std::numeric_limits<int32_t>::max())) {
+        set_error("normalized string offset exceeds INT32 range");
+        return CUDF_ERROR_INVALID_OPERATION;
+      }
+      offsets_buf[i] = static_cast<int32_t>(normalized);
     }
 
     return CUDF_SUCCESS;

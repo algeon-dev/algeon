@@ -7,7 +7,7 @@ fn column_slice_resolves_active_range_null_count_with_required_exec_options() {
     let null_count_helper_body = function_region(
         COLUMN_CPP,
         "cudf_status_t resolve_column_view_null_count",
-        "class host_source_copy_sync_guard",
+        "static cudf_status_t create_column_from_device_data_impl",
     );
     let slice_ex_body = function_region(
         COLUMN_CPP,

@@ -1408,6 +1408,20 @@ fn test_from_record_batch_nullable_string_array() {
 }
 
 #[test]
+fn test_from_record_batch_string_slice_import_uses_logical_range() {
+    let schema = Schema::new(vec![Field::new("s", ArrowDataType::Utf8, true)]);
+    let source: Arc<dyn Array> =
+        Arc::new(StringArray::from(vec![Some("skip"), Some("kept"), None, Some("also-kept"), Some("tail")]));
+    let batch = RecordBatch::try_new(Arc::new(schema), vec![source.slice(1, 3)]).unwrap();
+
+    let df = import_record_batch(&batch).unwrap();
+    assert_eq!(
+        df.series("s").unwrap().to_optional_strings().unwrap(),
+        vec![Some("kept".to_string()), None, Some("also-kept".to_string())]
+    );
+}
+
+#[test]
 fn test_from_record_batch_large_string_array() {
     let schema = Schema::new(vec![Field::new("s", ArrowDataType::LargeUtf8, false)]);
     let batch =
@@ -1416,6 +1430,20 @@ fn test_from_record_batch_large_string_array() {
     let df = import_record_batch(&batch).unwrap();
     let strs = df.series("s").unwrap().to_strings_strict().unwrap();
     assert_eq!(strs, vec!["x", "y", "z"]);
+}
+
+#[test]
+fn test_from_record_batch_large_string_slice_import_uses_logical_range() {
+    let schema = Schema::new(vec![Field::new("s", ArrowDataType::LargeUtf8, true)]);
+    let source: Arc<dyn Array> =
+        Arc::new(LargeStringArray::from(vec![Some("skip"), Some("wide"), None, Some("also-wide"), Some("tail")]));
+    let batch = RecordBatch::try_new(Arc::new(schema), vec![source.slice(1, 3)]).unwrap();
+
+    let df = import_record_batch(&batch).unwrap();
+    assert_eq!(
+        df.series("s").unwrap().to_optional_strings().unwrap(),
+        vec![Some("wide".to_string()), None, Some("also-wide".to_string())]
+    );
 }
 
 #[test]
@@ -1433,6 +1461,20 @@ fn test_from_record_batch_string_view_array() {
     assert_eq!(validity, vec![true, false, true]);
     assert_eq!(
         cv.to_optional_strings().unwrap(),
+        vec![Some("x".to_string()), None, Some("longer-than-inline".to_string())]
+    );
+}
+
+#[test]
+fn test_from_record_batch_string_view_slice_import_uses_logical_range() {
+    let schema = Schema::new(vec![Field::new("s", ArrowDataType::Utf8View, true)]);
+    let source: Arc<dyn Array> =
+        Arc::new(StringViewArray::from_iter([Some("skip"), Some("x"), None, Some("longer-than-inline"), Some("tail")]));
+    let batch = RecordBatch::try_new(Arc::new(schema), vec![source.slice(1, 3)]).unwrap();
+
+    let df = import_record_batch(&batch).unwrap();
+    assert_eq!(
+        df.series("s").unwrap().to_optional_strings().unwrap(),
         vec![Some("x".to_string()), None, Some("longer-than-inline".to_string())]
     );
 }
