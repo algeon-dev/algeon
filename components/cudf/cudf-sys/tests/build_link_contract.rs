@@ -4,13 +4,20 @@ mod build_support;
 
 use std::{
     fs,
-    path::Path,
+    path::{Path, PathBuf},
+    process::Command,
     time::{SystemTime, UNIX_EPOCH},
 };
 
 static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 const BUILD_RS: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/build.rs"));
 const NATIVE_CMAKELISTS: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/native/CMakeLists.txt"));
+const NATIVE_DISCOVERY_CMAKE: &str =
+    include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/native/cmake/cudf-discovery.cmake"));
+
+fn native_cmake_contract_contains(expected: &str) -> bool {
+    NATIVE_CMAKELISTS.contains(expected) || NATIVE_DISCOVERY_CMAKE.contains(expected)
+}
 
 #[test]
 fn manifest_parser_ignores_comments_and_blank_lines() {
@@ -166,6 +173,7 @@ fn build_script_tracks_build_support_and_cargo_link_template_changes() {
         let expected = format!("cargo:rerun-if-changed={tracked}");
         assert!(BUILD_RS.contains(&expected), "expected build.rs to track {tracked} with `{expected}`");
     }
+    assert!(BUILD_RS.contains("cmake/cudf-discovery.cmake"), "expected build.rs to track the CMake discovery helper");
     assert!(
         BUILD_RS.contains("manifest_dir.join(\"../cudf/cpp/build/CMakeCache.txt\")"),
         "expected build.rs to track the local libcudf CMakeCache used for remote IO capability detection"
@@ -251,6 +259,29 @@ fn build_script_replays_runtime_link_search_paths_as_rpath_and_metadata() {
 }
 
 #[test]
+fn build_script_treats_rapids_logger_runtime_library_as_optional() {
+    for expected in [
+        "emit_required_runtime_dep_library_metadata",
+        "\"rmm-runtime-lib\"",
+        "\"librmm.so\"",
+        "\"_deps/rmm-build\"",
+        "emit_optional_runtime_dep_library_metadata(",
+        "\"rapids-logger-runtime-lib\"",
+        "\"librapids_logger.so\"",
+        "\"_deps/rapids_logger-build\"",
+        "\"rapids-logger-linkage\"",
+        "\"absorbed\"",
+    ] {
+        assert!(BUILD_RS.contains(expected), "expected build.rs to contain runtime metadata contract `{expected}`");
+    }
+
+    assert!(
+        !BUILD_RS.contains("no shared {file_name} found under the libcudf discovery prefix"),
+        "expected build.rs to avoid warning generically for optional runtime dependencies"
+    );
+}
+
+#[test]
 fn build_script_checks_target_os_before_configuring_cmake() {
     assert!(
         BUILD_RS.contains("CARGO_CFG_TARGET_OS"),
@@ -287,15 +318,112 @@ fn native_cmakelists_gates_build_tree_remote_metadata_to_matching_install_prefix
     for expected in [
         "cudf_rust_cache_value",
         "CMAKE_INSTALL_PREFIX",
-        "CUDF_RUST_CUDF_BUILD_INSTALL_PREFIX_REAL",
-        "CUDF_RUST_CUDF_INSTALL_DIR_REAL",
-        "STREQUAL CUDF_RUST_CUDF_INSTALL_DIR_REAL",
+        "cudf_rust_build_install_prefix_real",
+        "cudf_rust_install_dir_real",
+        "STREQUAL cudf_rust_install_dir_real",
         "CUDF_RUST_CUDF_BUILD_DIR_EXPLICIT",
         "Ignoring sibling libcudf build metadata",
     ] {
         assert!(
-            NATIVE_CMAKELISTS.contains(expected),
+            native_cmake_contract_contains(expected),
             "expected native/CMakeLists.txt to gate build-tree remote capability evidence with `{expected}`"
+        );
+    }
+}
+
+#[test]
+fn cmake_discovery_helper_collects_package_prefixes_after_install_guard_matches() {
+    let unique = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+    let temp_dir = std::env::temp_dir().join(format!("cudf-sys-cmake-discovery-contract-{unique}"));
+    let install_dir = temp_dir.join("install");
+    let other_install_dir = temp_dir.join("other-install");
+    let build_dir = temp_dir.join("build");
+    let rapids_logger_dir = build_dir.join("_deps/rapids_logger-build");
+    let nvtx_dir = build_dir.join("_deps/nvtx3-build");
+    let empty_dir = build_dir.join("_deps/empty-build");
+    let cache_path = build_dir.join("CMakeCache.txt");
+    let script_path = temp_dir.join("check.cmake");
+    let discovery_helper = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("native/cmake/cudf-discovery.cmake");
+
+    fs::create_dir_all(&install_dir).unwrap();
+    fs::create_dir_all(&other_install_dir).unwrap();
+    fs::create_dir_all(&rapids_logger_dir).unwrap();
+    fs::create_dir_all(&nvtx_dir).unwrap();
+    fs::create_dir_all(&empty_dir).unwrap();
+    fs::write(rapids_logger_dir.join("rapids_logger-config.cmake"), "").unwrap();
+    fs::write(nvtx_dir.join("nvtx3Config.cmake"), "").unwrap();
+    fs::write(
+        &cache_path,
+        format!(
+            "\
+CMAKE_INSTALL_PREFIX:PATH={}
+RAPIDS_LOGGER_BINARY_DIR:STATIC={}
+NVTX3_BINARY_DIR:STATIC={}
+EMPTY_BINARY_DIR:STATIC={}
+MISSING_BINARY_DIR:STATIC={}
+",
+            install_dir.display(),
+            rapids_logger_dir.display(),
+            nvtx_dir.display(),
+            empty_dir.display(),
+            build_dir.join("_deps/missing-build").display()
+        ),
+    )
+    .unwrap();
+    fs::write(
+        &script_path,
+        format!(
+            "\
+include(\"{helper}\")
+cudf_rust_build_dir_metadata_matches_install(\"{build}\" \"{install}\" OFF use_matching)
+if(NOT use_matching)
+  message(FATAL_ERROR \"expected matching install prefix to enable build metadata\")
+endif()
+cudf_rust_build_dir_metadata_matches_install(\"{build}\" \"{other_install}\" OFF use_mismatch)
+if(use_mismatch)
+  message(FATAL_ERROR \"expected mismatched install prefix to disable build metadata\")
+endif()
+cudf_rust_collect_package_prefixes(\"{cache}\" prefixes)
+set(expected \"{rapids_logger};{nvtx}\")
+if(NOT prefixes STREQUAL expected)
+  message(FATAL_ERROR \"unexpected package prefixes: ${{prefixes}}\")
+endif()
+",
+            helper = discovery_helper.display(),
+            build = build_dir.display(),
+            install = install_dir.display(),
+            other_install = other_install_dir.display(),
+            cache = cache_path.display(),
+            rapids_logger = rapids_logger_dir.display(),
+            nvtx = nvtx_dir.display()
+        ),
+    )
+    .unwrap();
+
+    let output = Command::new("cmake").arg("-P").arg(&script_path).output().unwrap();
+    assert!(
+        output.status.success(),
+        "cmake discovery contract failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    fs::remove_dir_all(&temp_dir).unwrap();
+}
+
+#[test]
+fn native_cmakelists_uses_matching_build_tree_package_prefix_metadata() {
+    for expected in [
+        "cudf_rust_collect_package_prefixes",
+        "REGEX \"^[A-Za-z0-9_]+_BINARY_DIR:[^=]*=\"",
+        "\"${candidate}/*Config.cmake\"",
+        "\"${candidate}/*config.cmake\"",
+        "CUDF_RUST_CUDF_BUILD_PACKAGE_PREFIXES",
+        "list(PREPEND CMAKE_PREFIX_PATH ${CUDF_RUST_CUDF_BUILD_DIR} ${CUDF_RUST_CUDF_BUILD_PACKAGE_PREFIXES}",
+    ] {
+        assert!(
+            native_cmake_contract_contains(expected),
+            "expected native/CMakeLists.txt to use matching build-tree package prefix metadata with `{expected}`"
         );
     }
 }
