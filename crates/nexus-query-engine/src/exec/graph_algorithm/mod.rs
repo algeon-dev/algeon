@@ -1407,7 +1407,7 @@ impl CugraphExecutionSession {
 pub(super) fn run_with_cugraph_graph<T, F>(
     context: &ExecutionContext,
     graph_memory_limit_bytes: Option<u64>,
-    _spec: &crate::plan::GraphAlgorithmSpec,
+    spec: &crate::plan::GraphAlgorithmSpec,
     resident_graph_key: Option<crate::plan::ResidentGraphKey>,
     edges: DataFrame,
     options: cugraph::cudf_interop::TableGraphOptions,
@@ -1422,7 +1422,8 @@ where
         &mut cugraph::Graph<T>,
     ) -> Result<GraphAlgorithmExecutionResult>,
 {
-    if let (Some(cache), Some(resident_graph_key)) = (context.resident_graph_cache(), resident_graph_key) {
+    let resident_graph_cache = context.resident_graph_cache();
+    if let (Some(cache), Some(resident_graph_key)) = (resident_graph_cache.as_ref(), resident_graph_key) {
         return run_with_cached_cugraph_graph::<T, F>(
             context,
             graph_memory_limit_bytes,
@@ -1431,10 +1432,48 @@ where
             options,
             operation,
             f,
-            cache,
+            std::sync::Arc::clone(cache),
         );
     }
-    run_with_uncached_cugraph_graph::<T, F>(context, graph_memory_limit_bytes, edges, options, operation, f)
+    let result =
+        run_with_uncached_cugraph_graph::<T, F>(context, graph_memory_limit_bytes, edges, options, operation, f);
+    if resident_graph_cache.is_some() {
+        let cache_metadata = graph_cache_bypass_metadata_for_missing_key(spec);
+        result.map(|result| with_graph_cache_metadata(result, cache_metadata))
+    } else {
+        result
+    }
+}
+
+#[cfg(feature = "cugraph")]
+fn graph_cache_bypass_metadata_for_missing_key(spec: &crate::plan::GraphAlgorithmSpec) -> &'static str {
+    match (&spec.algorithm, &spec.params) {
+        (crate::plan::GraphAlgorithm::Bfs, crate::plan::GraphAlgorithmParams::Bfs(params))
+            if params.predicates.include_edges.is_some() =>
+        {
+            "bypass_predicate_include_edges"
+        },
+        // BFS with stable edge ids normally dispatches through
+        // `run_with_cugraph_graph_edge_ids`; this mirrors that label if the
+        // routing ever changes.
+        (crate::plan::GraphAlgorithm::Bfs, crate::plan::GraphAlgorithmParams::Bfs(_))
+            if spec.edge_columns.edge_id.is_some() =>
+        {
+            "bypass_edge_id_graph"
+        },
+        (crate::plan::GraphAlgorithm::Bfs, crate::plan::GraphAlgorithmParams::Bfs(_)) => {
+            "bypass_no_residency_descriptor"
+        },
+        (crate::plan::GraphAlgorithm::PageRank, crate::plan::GraphAlgorithmParams::PageRank(_))
+            if spec.edge_columns.edge_id.is_some() =>
+        {
+            "bypass_edge_id_binding"
+        },
+        (crate::plan::GraphAlgorithm::PageRank, crate::plan::GraphAlgorithmParams::PageRank(_)) => {
+            "bypass_no_residency_descriptor"
+        },
+        _ => "bypass_unkeyed_algorithm",
+    }
 }
 
 #[cfg(feature = "cugraph")]
@@ -1666,7 +1705,16 @@ where
             error
         }
     })?;
-    attach_graph_budget_observation(f(budget.runtime.as_ref(), &entered, &mut graph), budget.token.as_ref(), operation)
+    let result = attach_graph_budget_observation(
+        f(budget.runtime.as_ref(), &entered, &mut graph),
+        budget.token.as_ref(),
+        operation,
+    );
+    if context.resident_graph_cache().is_some() {
+        result.map(|result| with_graph_cache_metadata(result, "bypass_edge_id_graph"))
+    } else {
+        result
+    }
 }
 
 #[cfg(feature = "cugraph")]

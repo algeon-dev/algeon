@@ -59,6 +59,7 @@ fn bfs_drops_null_edge_rows_before_graph_construction() {
     let graph_metrics = &result.metrics().graph_algorithm_runtime_rows;
     assert_eq!(graph_metrics.len(), 1);
     assert!(graph_metrics[0].algorithm_metadata.contains("null_edge_rows_dropped=2"));
+    assert!(!graph_metrics[0].algorithm_metadata.contains("graph_cache="));
     assert!(graph_metrics[0].graph_peak_bytes.is_some());
     assert!(result.metrics().graph_reservation_rows.is_empty());
     assert!(result.metrics().budgeted_execution_events.iter().any(|event| {
@@ -161,6 +162,55 @@ fn bfs_resident_graph_cache_reuses_parked_forward_graph() {
 }
 
 #[test]
+fn bfs_without_graph_residency_reports_cache_bypass() {
+    let runtime = Arc::new(cudf::Runtime::builder().with_device_memory_manager().build().unwrap());
+    let cache = Arc::new(GpuResidentGraphCache::new(64 * 1024 * 1024));
+    let context = ExecutionContext::builder()
+        .with_shared_runtime(Arc::clone(&runtime))
+        .with_resident_graph_cache(Arc::clone(&cache))
+        .build()
+        .unwrap();
+
+    let edge_schema = Arc::new(Schema::new(vec![
+        Field::new("src", DataType::Int32, false),
+        Field::new("dst", DataType::Int32, false),
+    ]));
+    let edge_batch = RecordBatch::try_new(
+        Arc::clone(&edge_schema),
+        vec![Arc::new(Int32Array::from(vec![0, 1, 2])), Arc::new(Int32Array::from(vec![1, 2, 3]))],
+    )
+    .unwrap();
+
+    let mut builder = QueryPlanBuilder::new();
+    let edges = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("edges", Arc::clone(&edge_schema))));
+    let spec = GraphAlgorithmSpec::with_stable_schema(
+        GraphAlgorithm::Bfs,
+        GraphEdgeColumnBindings::new("src", "dst", None::<&str>),
+        GraphConstructionOptions { directed: true, renumber: true, policy: GraphConstructionPolicy::RawLibcugraph },
+        GraphAlgorithmParams::Bfs(Box::new(GraphBfsParams::new(0, None))),
+    );
+    let graph = builder.add_graph_algorithm(edges, spec);
+    let plan = builder.finish_with_host_sink_schema(graph, stable_graph_result_schema(GraphAlgorithm::Bfs));
+
+    let mut gpu_inputs = GpuResidentInputMap::new();
+    gpu_inputs.insert(
+        "edges".to_string(),
+        GpuResultHandle::new(
+            &context,
+            GpuDataFrame::new(DataFrame::from_record_batch(&runtime, &edge_batch).unwrap()),
+            Arc::clone(&edge_schema),
+        )
+        .unwrap(),
+    );
+
+    let result = execute_query_plan_with_gpu_inputs(&context, &plan, &gpu_inputs).unwrap();
+    let metadata = &result.metrics().graph_algorithm_runtime_rows[0].algorithm_metadata;
+    assert!(metadata.contains("graph_cache=bypass_no_residency_descriptor"), "{metadata}");
+    assert_eq!(cache.len().unwrap(), 0);
+    assert_eq!(cache.checked_out_len().unwrap(), 0);
+}
+
+#[test]
 fn bfs_include_edges_bypasses_resident_graph_cache() {
     let runtime = Arc::new(cudf::Runtime::builder().with_device_memory_manager().build().unwrap());
     let cache = Arc::new(GpuResidentGraphCache::new(64 * 1024 * 1024));
@@ -255,7 +305,7 @@ fn bfs_include_edges_bypasses_resident_graph_cache() {
     let result = execute_query_plan_with_gpu_inputs(&context, &plan, &gpu_inputs).unwrap();
     let metadata = &result.metrics().graph_algorithm_runtime_rows[0].algorithm_metadata;
     assert!(metadata.contains("predicate_include_edges_rows=2"), "{metadata}");
-    assert!(!metadata.contains("graph_cache="), "{metadata}");
+    assert!(metadata.contains("graph_cache=bypass_predicate_include_edges"), "{metadata}");
     assert_eq!(cache.len().unwrap(), 0);
     assert_eq!(cache.checked_out_len().unwrap(), 0);
 }
@@ -362,6 +412,60 @@ fn pagerank_python_cugraph_reports_edge_normalize_in_graph_reservation() {
     assert_eq!(reservations[0].construction_policy, GraphConstructionPolicy::RawLibcugraph);
     assert_eq!(reservations[0].raw_input_edges, Some(45));
     assert!(reservations[0].graph_model_error_ratio.is_some());
+}
+
+#[test]
+fn pagerank_edge_id_binding_bypasses_resident_graph_cache() {
+    let runtime = Arc::new(cudf::Runtime::builder().with_device_memory_manager().build().unwrap());
+    let cache = Arc::new(GpuResidentGraphCache::new(64 * 1024 * 1024));
+    let context = ExecutionContext::builder()
+        .with_shared_runtime(Arc::clone(&runtime))
+        .with_resident_graph_cache(Arc::clone(&cache))
+        .build()
+        .unwrap();
+
+    let edge_schema = Arc::new(Schema::new(vec![
+        Field::new("src", DataType::Int32, false),
+        Field::new("dst", DataType::Int32, false),
+        Field::new("edge_id", DataType::Int32, false),
+    ]));
+    let edge_batch = RecordBatch::try_new(
+        Arc::clone(&edge_schema),
+        vec![
+            Arc::new(Int32Array::from(vec![0, 1, 2])),
+            Arc::new(Int32Array::from(vec![1, 2, 0])),
+            Arc::new(Int32Array::from(vec![10, 11, 12])),
+        ],
+    )
+    .unwrap();
+
+    let mut builder = QueryPlanBuilder::new();
+    let edges = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("edges", Arc::clone(&edge_schema))));
+    let spec = GraphAlgorithmSpec::with_stable_schema(
+        GraphAlgorithm::PageRank,
+        GraphEdgeColumnBindings::new("src", "dst", None::<&str>).with_edge_id("edge_id"),
+        GraphConstructionOptions::default(),
+        GraphAlgorithmParams::PageRank(GraphPageRankParams::default()),
+    );
+    let graph = builder.add_graph_algorithm(edges, spec);
+    let plan = builder.finish_with_host_sink_schema(graph, stable_graph_result_schema(GraphAlgorithm::PageRank));
+
+    let mut gpu_inputs = GpuResidentInputMap::new();
+    gpu_inputs.insert(
+        "edges".to_string(),
+        GpuResultHandle::new(
+            &context,
+            GpuDataFrame::new(DataFrame::from_record_batch(&runtime, &edge_batch).unwrap()),
+            Arc::clone(&edge_schema),
+        )
+        .unwrap(),
+    );
+
+    let result = execute_query_plan_with_gpu_inputs(&context, &plan, &gpu_inputs).unwrap();
+    let metadata = &result.metrics().graph_algorithm_runtime_rows[0].algorithm_metadata;
+    assert!(metadata.contains("graph_cache=bypass_edge_id_binding"), "{metadata}");
+    assert_eq!(cache.len().unwrap(), 0);
+    assert_eq!(cache.checked_out_len().unwrap(), 0);
 }
 
 #[test]
@@ -1808,8 +1912,13 @@ fn bfs_null_weight_does_not_drop_reachable_edges() {
 
 #[test]
 fn bfs_include_edge_ids_filters_edges() {
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
-    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime)).unwrap();
+    let runtime = Arc::new(cudf::Runtime::builder().with_device_memory_manager().build().unwrap());
+    let cache = Arc::new(GpuResidentGraphCache::new(64 * 1024 * 1024));
+    let context = ExecutionContext::builder()
+        .with_shared_runtime(Arc::clone(&runtime))
+        .with_resident_graph_cache(Arc::clone(&cache))
+        .build()
+        .unwrap();
 
     let edge_schema = Arc::new(Schema::new(vec![
         Field::new("src", DataType::Int32, false),
@@ -1893,6 +2002,9 @@ fn bfs_include_edge_ids_filters_edges() {
     let graph_metrics = &result.metrics().graph_algorithm_runtime_rows;
     assert_eq!(graph_metrics.len(), 1);
     assert!(graph_metrics[0].algorithm_metadata.contains("predicate_include_edge_ids_rows=2"));
+    assert!(graph_metrics[0].algorithm_metadata.contains("graph_cache=bypass_edge_id_graph"));
+    assert_eq!(cache.len().unwrap(), 0);
+    assert_eq!(cache.checked_out_len().unwrap(), 0);
 }
 
 #[test]
