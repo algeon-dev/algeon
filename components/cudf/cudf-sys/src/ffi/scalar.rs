@@ -74,11 +74,14 @@ extern "C" {
 
     pub fn cudf_scalar_destroy(handle: cudf_scalar_handle);
 
-    pub fn cudf_scalar_type(handle: cudf_scalar_handle, out: *mut cudf_type_id_t) -> cudf_status_t;
+    /// `out` receives a raw `cudf_type_id_t` discriminant. Declared as `i32`
+    /// so an unmirrored libcudf type id never materializes an invalid Rust
+    /// enum; callers must validate before converting.
+    pub fn cudf_scalar_type(handle: cudf_scalar_handle, out: *mut i32) -> cudf_status_t;
 
     pub fn cudf_scalar_data_type(
         handle: cudf_scalar_handle,
-        out_type_id: *mut cudf_type_id_t,
+        out_type_id: *mut i32,
         out_scale: *mut i32,
     ) -> cudf_status_t;
 

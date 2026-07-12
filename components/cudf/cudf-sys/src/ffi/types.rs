@@ -13,7 +13,10 @@ extern "C" {
 
     pub fn cudf_data_type_destroy(handle: cudf_data_type_handle);
 
-    pub fn cudf_data_type_id(handle: cudf_data_type_handle, out: *mut cudf_type_id_t) -> cudf_status_t;
+    /// `out` receives a raw `cudf_type_id_t` discriminant. Declared as `i32`
+    /// so an unmirrored libcudf type id never materializes an invalid Rust
+    /// enum; callers must validate before converting.
+    pub fn cudf_data_type_id(handle: cudf_data_type_handle, out: *mut i32) -> cudf_status_t;
 
     pub fn cudf_data_type_scale(handle: cudf_data_type_handle, out: *mut i32) -> cudf_status_t;
 

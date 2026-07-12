@@ -212,10 +212,10 @@ fn test_scalar_string_value_owned_output_survives_subsequent_shim_calls() {
     let st = unsafe { cudf_sys::cudf_scalar_string_value_ex(scalar, &mut ptr1, &mut len1, &exec) };
     assert_eq!(st, cudf_sys::CUDF_SUCCESS);
 
-    let mut type_id = cudf_sys::cudf_type_id_t::CUDF_TYPE_EMPTY;
+    let mut type_id: i32 = cudf_sys::cudf_type_id_t::CUDF_TYPE_EMPTY as i32;
     let st = unsafe { cudf_sys::cudf_scalar_type(scalar, &mut type_id) };
     assert_eq!(st, cudf_sys::CUDF_SUCCESS);
-    assert_eq!(type_id, cudf_sys::cudf_type_id_t::CUDF_TYPE_STRING);
+    assert_eq!(type_id, cudf_sys::cudf_type_id_t::CUDF_TYPE_STRING as i32);
 
     let mut ptr2: *mut c_char = ptr::null_mut();
     let mut len2: i32 = -1;
@@ -300,11 +300,11 @@ fn test_scalar_create_numeric_valid_requires_value() {
 }
 
 fn assert_scalar_data_type(scalar: *mut c_void, expected_type: cudf_sys::cudf_type_id_t, expected_scale: i32) {
-    let mut type_id = cudf_sys::cudf_type_id_t::CUDF_TYPE_EMPTY;
+    let mut type_id: i32 = cudf_sys::cudf_type_id_t::CUDF_TYPE_EMPTY as i32;
     let mut scale = i32::MIN;
     let st = unsafe { cudf_sys::cudf_scalar_data_type(scalar, &mut type_id, &mut scale) };
     assert_eq!(st, cudf_sys::CUDF_SUCCESS);
-    assert_eq!(type_id, expected_type);
+    assert_eq!(type_id, expected_type as i32);
     assert_eq!(scale, expected_scale);
 }
 

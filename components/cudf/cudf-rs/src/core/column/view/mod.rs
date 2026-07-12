@@ -125,7 +125,9 @@ impl<'a> ColumnView<'a> {
 
     /// Returns the data type of this column.
     pub fn data_type(&self) -> Result<DataType> {
-        let mut raw_id = cudf_sys::cudf_type_id_t::CUDF_TYPE_EMPTY;
+        // Raw discriminant: validated by `DataType::from_raw_parts` so an
+        // unmirrored libcudf type id stays a recoverable error, not UB.
+        let mut raw_id: i32 = 0;
         let mut scale = 0;
         // SAFETY: self.handle is valid (NonNull from construction/from_raw).
         error::check_status_in(
