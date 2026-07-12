@@ -67,6 +67,7 @@ pub struct NativeCudfExecutionConfig {
     adaptive_memory_history: Option<Arc<AdaptiveMemoryHistory>>,
     hash_join_build_cache: Option<Arc<GpuHashJoinBuildCache>>,
     local_parquet_source_cache: Option<Arc<GpuLocalParquetSourceCache>>,
+    query_service_local_parquet_source_cache_max_retained_bytes: Option<u64>,
     source_storage_profiles: Vec<SourceStorageProfile>,
     query_service_handle: Option<Arc<QueryHandle>>,
     query_admission_facts_recorded: Option<Arc<AtomicBool>>,
@@ -292,6 +293,7 @@ impl NativeCudfExecutionConfig {
             adaptive_memory_history: None,
             hash_join_build_cache: None,
             local_parquet_source_cache: None,
+            query_service_local_parquet_source_cache_max_retained_bytes: None,
             source_storage_profiles: Vec::new(),
             query_service_handle: None,
             query_admission_facts_recorded: None,
@@ -404,6 +406,7 @@ impl NativeCudfExecutionConfig {
             adaptive_memory_history: None,
             hash_join_build_cache: None,
             local_parquet_source_cache: None,
+            query_service_local_parquet_source_cache_max_retained_bytes: None,
             source_storage_profiles: Vec::new(),
             query_service_handle: None,
             query_admission_facts_recorded: None,
@@ -673,10 +676,31 @@ impl NativeCudfExecutionConfig {
         self
     }
 
+    /// Configure the service-owned decoded local-Parquet source cache for
+    /// backend/query-service execution.
+    ///
+    /// Standalone execution continues to use [`Self::with_local_parquet_source_cache`].
+    /// `None` disables the service cache. `Some(0)` is rejected when a
+    /// `QueryService` is built from this config.
+    pub fn with_query_service_local_parquet_source_cache_max_retained_bytes(
+        mut self,
+        max_retained_bytes: Option<u64>,
+    ) -> Self {
+        self.query_service_local_parquet_source_cache_max_retained_bytes = max_retained_bytes;
+        self
+    }
+
     /// Source object-store profiles registered for native remote source
     /// fetches and local-cache miss fills.
     pub fn source_storage_profiles(&self) -> &[SourceStorageProfile] {
         &self.source_storage_profiles
+    }
+
+    /// Per-device retained-byte cap for service-owned decoded local-Parquet
+    /// source caches. Runtime-affine entries may duplicate per warmed service
+    /// runtime until cross-runtime source-frame reuse is modeled.
+    pub fn query_service_local_parquet_source_cache_max_retained_bytes(&self) -> Option<u64> {
+        self.query_service_local_parquet_source_cache_max_retained_bytes
     }
 
     /// Register source object-store profiles used by native remote source

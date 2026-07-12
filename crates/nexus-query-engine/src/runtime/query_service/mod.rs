@@ -28,6 +28,7 @@ use crate::{
     chunk::SourceChunkPlanningOptions,
     dynamic_filter::DynamicFilterExecutionOptions,
     error::{QueryError, QueryErrorCode, Result},
+    exec::GpuLocalParquetSourceCache,
     metrics::QueryId,
     mode::{NativePipelineExecutionMode, StddevSampExecutionMode},
     util::comma_separated_usize,
@@ -188,6 +189,13 @@ struct QueryServiceResources {
     lakehouse_cache_fill_runtime: Arc<tokio::runtime::Runtime>,
     source_object_stores: Arc<SourceObjectStoreRegistry>,
     deployment_io_capability: DeploymentIoCapability,
+    local_parquet_source_caches: HashMap<usize, Arc<GpuLocalParquetSourceCache>>,
+}
+
+impl QueryServiceResources {
+    fn local_parquet_source_cache_for_device(&self, device_ordinal: usize) -> Option<Arc<GpuLocalParquetSourceCache>> {
+        self.local_parquet_source_caches.get(&device_ordinal).map(Arc::clone)
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -445,8 +453,13 @@ impl QueryService {
         if let Some(device_capacity_bytes) = config.device_capacity_bytes {
             registry_config = registry_config.with_device_capacity_bytes(device_capacity_bytes);
         }
+        let devices = super::DeviceRegistry::install(&super::CudfInventory, &registry_config)?;
+        let local_parquet_source_caches = local_parquet_source_caches_for_ordinals(
+            devices.device_ordinals(),
+            config.local_parquet_source_cache_max_retained_bytes,
+        );
         let resources = QueryServiceResources {
-            devices: super::DeviceRegistry::install(&super::CudfInventory, &registry_config)?,
+            devices,
             _governor_claim: None,
             host_fetch_budget: HostFetchBudget::new(
                 config.source_fetch.host_fetch_budget_bytes.unwrap_or_else(default_host_fetch_budget_bytes),
@@ -467,6 +480,7 @@ impl QueryService {
                 config.source_storage_profiles.clone(),
             )?),
             deployment_io_capability,
+            local_parquet_source_caches,
         };
         Self::build(config, tenants, Some(resources))
     }
@@ -2110,6 +2124,20 @@ impl QueryService {
             state.next_tenant_index = (index + 1) % self.inner.tenant_order.len();
         }
     }
+}
+
+fn local_parquet_source_caches_for_ordinals(
+    device_ordinals: &[usize],
+    max_retained_bytes: Option<u64>,
+) -> HashMap<usize, Arc<GpuLocalParquetSourceCache>> {
+    let Some(max_retained_bytes) = max_retained_bytes else {
+        return HashMap::new();
+    };
+    device_ordinals
+        .iter()
+        .copied()
+        .map(|ordinal| (ordinal, Arc::new(GpuLocalParquetSourceCache::new(max_retained_bytes))))
+        .collect()
 }
 
 fn invalid_requested_grant_error(

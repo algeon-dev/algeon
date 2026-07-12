@@ -339,7 +339,7 @@ impl QueryHandle {
             graph_memory_calibration_override: self.service.config.graph_memory_calibration_override,
             adaptive_memory_history: Some(Arc::new(AdaptiveMemoryHistory::default())),
             hash_join_build_cache: None,
-            local_parquet_source_cache: None,
+            local_parquet_source_cache: resources.local_parquet_source_cache_for_device(self.device_ordinal),
             stream_lease_guard: Some(stream_lease_guard),
             query_service_admitted: true,
         });

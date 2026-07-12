@@ -29,6 +29,7 @@ fi
 # binary NAMES here must match the binary(...) entries in the gpu test-group of
 # .config/nextest.toml (consistency is checked below).
 GPU_LANE="
+nexus-query-engine
 nexus-query-engine::native_execution_tests
 nexus-query-engine::native_contract_tests
 datafusion-nexus::cugraph_tests
@@ -49,7 +50,6 @@ datafusion-nexus::server_tests
 CPU_LANE="
 datafusion-nexus
 datafusion-nexus-bench
-nexus-query-engine
 datafusion-nexus::bin/datafusion_nexus_server
 datafusion-nexus::error_tests
 datafusion-nexus::native_fallback_pressure_tests
@@ -108,24 +108,30 @@ if [[ -n "${overlap}" ]]; then
 fi
 
 # Consistency: EACH gpu test-group override block in .config/nextest.toml must
-# contain exactly the GPU_LANE package::binary pairs. Comparing package-qualified
-# pairs per block catches (a) the two override blocks (default + gpu-parallel)
-# drifting apart and (b) a wrong package(...) paired with a right binary name --
-# both of which a name-only, file-wide check would miss.
+# contain exactly the GPU_LANE entries. Comparing package-qualified integration
+# test/bin targets and package lib targets per block catches (a) the two
+# override blocks (default + gpu-parallel) drifting apart and (b) a wrong
+# package(...) paired with a right binary name -- both of which a name-only,
+# file-wide check would miss.
 override_block_pairs() { # $1 = profile name (default | gpu-parallel)
-  awk -v prof="$1" '
+  block=$(awk -v prof="$1" '
     /^\[\[profile\./ { inblk = ($0 == "[[profile." prof ".overrides]]") }
     inblk && /package\(/ { print }
-  ' .config/nextest.toml \
-    | grep -oE 'package\([a-z0-9_-]+\)[[:space:]]*&[[:space:]]*binary\([a-z0-9_]+\)' \
-    | sed -E 's/package\(([a-z0-9_-]+)\)[[:space:]]*&[[:space:]]*binary\(([a-z0-9_]+)\)/\1::\2/' \
-    | sort -u
+  ' .config/nextest.toml)
+  {
+    printf '%s\n' "${block}" \
+      | grep -oE 'package\([a-z0-9_-]+\)[[:space:]]*&[[:space:]]*binary\([a-z0-9_]+\)' \
+      | sed -E 's/package\(([a-z0-9_-]+)\)[[:space:]]*&[[:space:]]*binary\(([a-z0-9_]+)\)/\1::\2/'
+    printf '%s\n' "${block}" \
+      | grep -oE 'package\([a-z0-9_-]+\)[[:space:]]*&[[:space:]]*kind\(lib\)' \
+      | sed -E 's/package\(([a-z0-9_-]+)\)[[:space:]]*&[[:space:]]*kind\(lib\)/\1/'
+  } | sort -u
 }
 for prof in default gpu-parallel; do
   block_pairs=$(override_block_pairs "${prof}")
   if [[ "${block_pairs}" != "${gpu_lane_sorted}" ]]; then
     status=1
-    echo "FAIL: gpu test-group [[profile.${prof}.overrides]] in .config/nextest.toml does not match GPU_LANE (package::binary):" >&2
+    echo "FAIL: gpu test-group [[profile.${prof}.overrides]] in .config/nextest.toml does not match GPU_LANE:" >&2
     diff <(printf '%s\n' "${gpu_lane_sorted}") <(printf '%s\n' "${block_pairs}") | sed 's/^/  /' >&2
   fi
 done

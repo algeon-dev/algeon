@@ -76,6 +76,7 @@ const MAX_ADMISSION_QUEUE_LEN_ENV: &str = "CUDF_QUERY_SERVICE_TPCH_MAX_ADMISSION
 const ADMISSION_WAIT_TIMEOUT_MS_ENV: &str = "CUDF_QUERY_SERVICE_TPCH_ADMISSION_WAIT_TIMEOUT_MS";
 const MAX_SOURCE_CHUNK_BYTES_ENV: &str = "CUDF_QUERY_SERVICE_TPCH_MAX_SOURCE_CHUNK_BYTES";
 const MAX_ROW_GROUPS_PER_CHUNK_ENV: &str = "CUDF_QUERY_SERVICE_TPCH_MAX_ROW_GROUPS_PER_CHUNK";
+const SOURCE_CACHE_MAX_RETAINED_BYTES_ENV: &str = "CUDF_QUERY_SERVICE_TPCH_SOURCE_CACHE_MAX_RETAINED_BYTES";
 const OVERLOAD_PROBE_ENV: &str = "CUDF_QUERY_SERVICE_TPCH_OVERLOAD_PROBE";
 
 #[tokio::main]
@@ -115,6 +116,7 @@ struct StressConfig {
     admission_wait_timeout: Duration,
     max_source_chunk_bytes: u64,
     max_row_groups_per_chunk: usize,
+    source_cache_max_retained_bytes: Option<u64>,
     run_overload_probe: bool,
     device_ordinals: Vec<usize>,
 }
@@ -161,6 +163,7 @@ impl StressConfig {
             admission_wait_timeout: Duration::from_millis(env_u64(ADMISSION_WAIT_TIMEOUT_MS_ENV, 30_000)?),
             max_source_chunk_bytes: env_u64(MAX_SOURCE_CHUNK_BYTES_ENV, 64 * 1024 * 1024)?,
             max_row_groups_per_chunk: env_usize(MAX_ROW_GROUPS_PER_CHUNK_ENV, 1)?,
+            source_cache_max_retained_bytes: optional_env_u64(SOURCE_CACHE_MAX_RETAINED_BYTES_ENV)?,
             run_overload_probe: env_bool(OVERLOAD_PROBE_ENV, true)?,
             device_ordinals: env_device_ordinals(DEVICE_ORDINALS_ENV)?,
         };
@@ -198,6 +201,9 @@ impl StressConfig {
         validate_nonzero(MAX_ADMISSION_QUEUE_LEN_ENV, self.max_admission_queue_len)?;
         validate_nonzero(MAX_SOURCE_CHUNK_BYTES_ENV, self.max_source_chunk_bytes)?;
         validate_nonzero(MAX_ROW_GROUPS_PER_CHUNK_ENV, self.max_row_groups_per_chunk)?;
+        if let Some(max_retained_bytes) = self.source_cache_max_retained_bytes {
+            validate_nonzero(SOURCE_CACHE_MAX_RETAINED_BYTES_ENV, max_retained_bytes)?;
+        }
         if self.admission_wait_timeout.is_zero() {
             return Err(plan_error(format!("{ADMISSION_WAIT_TIMEOUT_MS_ENV} must be greater than zero")));
         }
@@ -215,6 +221,7 @@ impl StressConfig {
             admission_wait_timeout: self.admission_wait_timeout,
             max_source_chunk_bytes: self.max_source_chunk_bytes,
             max_row_groups_per_chunk: self.max_row_groups_per_chunk,
+            local_parquet_source_cache_max_retained_bytes: self.source_cache_max_retained_bytes,
             ..QueryServiceConfig::default()
         }
     }
@@ -333,6 +340,10 @@ impl StressReport {
         output.push_str(&format!("# slot_guarantee={}\n", slot_guarantee_name(self.config.slot_guarantee)));
         output.push_str(&format!("# max_concurrent_queries={}\n", self.config.max_concurrent_queries));
         output.push_str(&format!("# max_admission_queue_len={}\n", self.config.max_admission_queue_len));
+        output.push_str(&format!(
+            "# source_cache_max_retained_bytes={}\n",
+            self.config.source_cache_max_retained_bytes.map_or_else(|| "none".to_string(), |value| value.to_string())
+        ));
         for summary in tenant_summaries(&self.rows) {
             output.push_str(&format!(
                 "# tenant_summary tenant_id={} succeeded={} overloaded={} failed={} max_total_wall_ms={} p95_total_wall_ms={}\n",
@@ -1109,6 +1120,7 @@ mod tests {
             admission_wait_timeout: Duration::from_secs(1),
             max_source_chunk_bytes: 1,
             max_row_groups_per_chunk: 1,
+            source_cache_max_retained_bytes: None,
             run_overload_probe: false,
             device_ordinals: vec![0],
         };

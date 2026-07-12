@@ -127,6 +127,10 @@ pub const NEXUS_SERVER_NATIVE_SOURCE_CHUNK_PLANNING_MODE_ENV: &str = "NEXUS_SERV
 /// service-level source IO setting applies in both bounded and unbounded mode.
 pub const NEXUS_SERVER_NATIVE_HOST_FETCH_ACQUIRE_TIMEOUT_SECS_ENV: &str =
     "NEXUS_SERVER_NATIVE_HOST_FETCH_ACQUIRE_TIMEOUT_SECS";
+/// Per-device retained-byte cap for the native query-service decoded local
+/// Parquet source cache. Unset disables the service cache.
+pub const NEXUS_SERVER_NATIVE_SOURCE_CACHE_MAX_RETAINED_BYTES_ENV: &str =
+    "NEXUS_SERVER_NATIVE_SOURCE_CACHE_MAX_RETAINED_BYTES";
 /// Native bounded-pipeline execution mode. Accepts `strict_bounded` or
 /// `adaptive`.
 pub const NEXUS_SERVER_NATIVE_PIPELINE_EXECUTION_MODE_ENV: &str = "NEXUS_SERVER_NATIVE_PIPELINE_EXECUTION_MODE";
@@ -253,6 +257,14 @@ pub const NEXUS_SERVER_NATIVE_CONFIG_OPTIONS: &[NexusServerNativeConfigOption] =
         scope: ServerNativeConfigScope::SourceIoResource,
         session_key: None,
         description: "Service-level host-buffer budget and source-fetch concurrency wait timeout.",
+    },
+    NexusServerNativeConfigOption {
+        toml_field: "native.source_cache_max_retained_bytes",
+        env_var: NEXUS_SERVER_NATIVE_SOURCE_CACHE_MAX_RETAINED_BYTES_ENV,
+        value_type: "positive integer bytes",
+        scope: ServerNativeConfigScope::BoundedExecution,
+        session_key: None,
+        description: "Per-device retained-byte cap for the query-service decoded local-Parquet source cache; runtime-affine entries may duplicate per warmed service runtime.",
     },
     NexusServerNativeConfigOption {
         toml_field: "native.pipeline_execution_mode",
@@ -457,6 +469,7 @@ struct ServerNativeFileConfig {
     max_source_reads_in_flight: Option<usize>,
     source_chunk_planning_mode: Option<String>,
     host_fetch_acquire_timeout_secs: Option<u64>,
+    source_cache_max_retained_bytes: Option<u64>,
     pipeline_execution_mode: Option<String>,
     statistical_aggregate_execution_mode: Option<String>,
 }
@@ -1268,6 +1281,12 @@ fn native_optimizer_config(
         "native.host_fetch_acquire_timeout_secs",
         file.host_fetch_acquire_timeout_secs,
     )?;
+    let source_cache_max_retained_bytes = optional_native_u64(
+        values,
+        NEXUS_SERVER_NATIVE_SOURCE_CACHE_MAX_RETAINED_BYTES_ENV,
+        "native.source_cache_max_retained_bytes",
+        if env_forces_unbounded { None } else { file.source_cache_max_retained_bytes },
+    )?;
     let native_pipeline_execution_mode = optional_native_string(
         values,
         NEXUS_SERVER_NATIVE_PIPELINE_EXECUTION_MODE_ENV,
@@ -1297,6 +1316,7 @@ fn native_optimizer_config(
             || min_retry_chunk_row_groups.is_some()
             || max_source_reads_in_flight.is_some()
             || source_chunk_planning_mode.is_some()
+            || source_cache_max_retained_bytes.is_some()
             || native_pipeline_execution_mode.is_some()
             || device_budget_fraction.is_some())
     {
@@ -1446,6 +1466,13 @@ fn native_optimizer_config(
             return Err(ServerError::invalid_config(timeout_secs.field, "must be greater than zero"));
         }
         execution_config = execution_config.with_host_fetch_acquire_timeout(Duration::from_secs(timeout_secs.value));
+    }
+    if let Some(max_retained_bytes) = source_cache_max_retained_bytes {
+        if max_retained_bytes.value == 0 {
+            return Err(ServerError::invalid_config(max_retained_bytes.field, "must be greater than zero"));
+        }
+        execution_config = execution_config
+            .with_query_service_local_parquet_source_cache_max_retained_bytes(Some(max_retained_bytes.value));
     }
     if let Some(mode) = native_pipeline_execution_mode {
         execution_config = execution_config.with_native_pipeline_execution_mode(mode.value);

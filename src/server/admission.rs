@@ -196,6 +196,13 @@ impl QueryAdmission {
                 let _ = writeln!(output, "# max_admission_queue_len={}", config.max_admission_queue_len);
                 let _ = writeln!(output, "# admission_wait_timeout_ms={}", config.admission_wait_timeout.as_millis());
                 let _ = writeln!(output, "# slot_guarantee={}", slot_guarantee_name(config.slot_guarantee));
+                let _ = writeln!(
+                    output,
+                    "# local_parquet_source_cache_max_retained_bytes={}",
+                    config
+                        .local_parquet_source_cache_max_retained_bytes
+                        .map_or_else(|| "none".to_string(), |value| value.to_string())
+                );
 
                 let snapshot = service
                     .admission_snapshot()
@@ -389,6 +396,7 @@ mod tests {
             (super::super::config::NEXUS_SERVER_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV, "1024".to_string()),
             (super::super::config::NEXUS_SERVER_NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV, "1".to_string()),
             (super::super::config::NEXUS_SERVER_NATIVE_MAX_SOURCE_READS_IN_FLIGHT_ENV, "2".to_string()),
+            (super::super::config::NEXUS_SERVER_NATIVE_SOURCE_CACHE_MAX_RETAINED_BYTES_ENV, "2048".to_string()),
         ]);
         let config = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap();
 
@@ -407,6 +415,7 @@ mod tests {
         assert_eq!(service.config().source_scheduler_policy.max_source_reads_in_flight(), 2);
         assert_eq!(service.config().max_admission_queue_len, 192);
         assert_eq!(service.config().admission_wait_timeout, std::time::Duration::from_secs(60));
+        assert_eq!(service.config().local_parquet_source_cache_max_retained_bytes, Some(2048));
         assert_eq!(service.tenant_budget(backend.tenant_id()).unwrap(), 3072);
 
         let permit = admission.try_acquire().unwrap().expect("first query should admit");
@@ -465,6 +474,7 @@ mod tests {
             (super::super::config::NEXUS_SERVER_NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV, "1".to_string()),
             (super::super::config::NEXUS_SERVER_ADMISSION_GRANT_MIN_ENV, "256".to_string()),
             (super::super::config::NEXUS_SERVER_ADMISSION_GRANT_WANT_ENV, "512".to_string()),
+            (super::super::config::NEXUS_SERVER_NATIVE_SOURCE_CACHE_MAX_RETAINED_BYTES_ENV, "2048".to_string()),
         ]);
         let config = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap();
         let admission = QueryAdmission::from_server_config_admission_only(&config).unwrap();
@@ -479,6 +489,7 @@ mod tests {
         assert!(payload.contains("# max_queries_per_device=none\n"), "{payload}");
         assert!(payload.contains("# placement_policy=least_loaded\n"), "{payload}");
         assert!(payload.contains("# slot_guarantee=guaranteed_minimum\n"), "{payload}");
+        assert!(payload.contains("# local_parquet_source_cache_max_retained_bytes=2048\n"), "{payload}");
         assert!(
             payload.contains("[admission]\nactive_queries\tqueued_queries\tnext_tenant_id\n1\t0\tdefault\n"),
             "{payload}"
