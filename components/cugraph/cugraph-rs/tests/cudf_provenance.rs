@@ -2,7 +2,11 @@
 //! compatibility requirements.
 mod common;
 
-use std::collections::{BTreeMap, HashMap};
+use std::{
+    collections::{BTreeMap, HashMap},
+    sync::Arc,
+    thread,
+};
 
 use common::{
     cudf::{
@@ -276,6 +280,176 @@ fn graph_built_on_one_runtime_runs_transposed_algorithms_on_same_device_runtime(
     }
 
     drop(graph);
+}
+
+#[test]
+fn parked_forward_graph_resumes_on_another_thread_with_same_runtime() {
+    let _guard = common::cudf::cuda_test_serial_guard();
+    let runtime = explicit_runtime_owner();
+    let handle = runtime_bound_handle(&runtime);
+    let entered =
+        handle.enter("parked_forward_graph_resumes_on_another_thread_with_same_runtime_build").expect("build entered");
+
+    let src = runtime.series(SSSP_GRAPH_SRC_I32).expect("src");
+    let dst = runtime.series(SSSP_GRAPH_DST_I32).expect("dst");
+    let weight = runtime.series(SSSP_GRAPH_WEIGHT_F32).expect("weight");
+    let opts = SeriesGraphOptions::default().renumber();
+    let mut graph = graph_from_series::<Forward>(&entered, &src, &dst, Some(&weight), &opts).expect("build graph");
+
+    let sources = DeviceArray::from_slice(&entered, &[BFS_SOURCE_VERTEX_I32]).expect("sources");
+    let sources_view = sources.view().expect("sources view");
+    let expected_bfs = graph
+        .bfs(&entered, &sources_view, &BfsParams::default())
+        .map(|result| bfs_distance_map_i32_result(&entered, &result))
+        .expect("baseline bfs");
+    let sssp_params = SsspParams::default().with_cutoff(NonNegativeF64::new(10.0).expect("cutoff"));
+    let expected_sssp = graph
+        .sssp(&entered, 0i32, &sssp_params)
+        .map(|result| sssp_distance_map_i32_f32(&entered, &result))
+        .expect("baseline sssp");
+
+    let parked = graph.park(&entered).expect("park graph");
+    drop(entered);
+    drop(handle);
+
+    let resume_runtime = Arc::clone(&runtime);
+    let join = thread::spawn(move || {
+        let handle = runtime_bound_handle(&resume_runtime);
+        let entered = handle
+            .enter("parked_forward_graph_resumes_on_another_thread_with_same_runtime_resume")
+            .expect("resume entered");
+        let mut graph = parked.resume(&entered).expect("resume graph");
+        let sources = DeviceArray::from_slice(&entered, &[BFS_SOURCE_VERTEX_I32]).expect("resume sources");
+        let sources_view = sources.view().expect("resume sources view");
+        let actual_bfs = graph
+            .bfs(&entered, &sources_view, &BfsParams::default())
+            .map(|result| bfs_distance_map_i32_result(&entered, &result))
+            .expect("resumed bfs");
+        let sssp_params = SsspParams::default().with_cutoff(NonNegativeF64::new(10.0).expect("cutoff"));
+        let actual_sssp = graph
+            .sssp(&entered, 0i32, &sssp_params)
+            .map(|result| sssp_distance_map_i32_f32(&entered, &result))
+            .expect("resumed sssp");
+        (actual_bfs, actual_sssp)
+    });
+    let (actual_bfs, actual_sssp) = join.join().expect("resume thread");
+
+    assert_eq!(actual_bfs, expected_bfs);
+    assert_f32_maps_close(&actual_sssp, &expected_sssp, 1.0e-5, "resumed sssp");
+}
+
+#[test]
+fn parked_transposed_graph_resumes_on_another_thread_with_same_runtime() {
+    let _guard = common::cudf::cuda_test_serial_guard();
+    let runtime = explicit_runtime_owner();
+    let handle = runtime_bound_handle(&runtime);
+    let entered = handle
+        .enter("parked_transposed_graph_resumes_on_another_thread_with_same_runtime_build")
+        .expect("build entered");
+
+    let src = runtime.series(DISCONNECTED_TWO_CYCLES_SRC_I32).expect("src");
+    let dst = runtime.series(DISCONNECTED_TWO_CYCLES_DST_I32).expect("dst");
+    let opts = SeriesGraphOptions::default().properties(GraphProperties::undirected()).renumber();
+    let mut graph = graph_from_series::<Transposed>(&entered, &src, &dst, None, &opts).expect("build graph");
+
+    let expected_pagerank = common::cudf::pagerank_score_map(&entered, &mut graph);
+    let expected_wcc = graph
+        .weakly_connected_components(&entered, &ConnectedComponentsParams::default())
+        .map(|result| normalized_wcc_labels(&entered, &result))
+        .expect("baseline wcc");
+
+    let parked = graph.park(&entered).expect("park graph");
+    drop(entered);
+    drop(handle);
+
+    let resume_runtime = Arc::clone(&runtime);
+    let join = thread::spawn(move || {
+        let handle = runtime_bound_handle(&resume_runtime);
+        let entered = handle
+            .enter("parked_transposed_graph_resumes_on_another_thread_with_same_runtime_resume")
+            .expect("resume entered");
+        let mut graph = parked.resume(&entered).expect("resume graph");
+        let actual_pagerank = common::cudf::pagerank_score_map(&entered, &mut graph);
+        let actual_wcc = graph
+            .weakly_connected_components(&entered, &ConnectedComponentsParams::default())
+            .map(|result| normalized_wcc_labels(&entered, &result))
+            .expect("resumed wcc");
+        (actual_pagerank, actual_wcc)
+    });
+    let (actual_pagerank, actual_wcc) = join.join().expect("resume thread");
+
+    assert_score_maps_close_f32(&actual_pagerank, &expected_pagerank, 1.0e-6, "resumed pagerank");
+    assert_eq!(actual_wcc, expected_wcc);
+}
+
+#[test]
+fn parked_graph_resume_rejects_different_runtime_owner() {
+    let _guard = common::cudf::cuda_test_serial_guard();
+    let runtime = explicit_runtime_owner();
+    let handle = runtime_bound_handle(&runtime);
+    let entered = handle.enter("parked_graph_resume_rejects_different_runtime_owner_build").expect("entered");
+
+    let src = runtime.series(TRIANGLE_TAIL_SRC_I32).expect("src");
+    let dst = runtime.series(TRIANGLE_TAIL_DST_I32).expect("dst");
+    let opts = SeriesGraphOptions::default().renumber();
+    let graph = graph_from_series::<Forward>(&entered, &src, &dst, None, &opts).expect("build graph");
+    let parked = graph.park(&entered).expect("park graph");
+
+    let other_runtime = explicit_runtime_owner();
+    let other_handle = runtime_bound_handle(&other_runtime);
+    let other_entered =
+        other_handle.enter("parked_graph_resume_rejects_different_runtime_owner_resume").expect("other entered");
+
+    let err = parked.resume(&other_entered).expect_err("resume should reject different runtime owner");
+    assert_eq!(err.kind(), cugraph::ErrorKind::InvalidState);
+    assert_eq!(err.operation(), "ParkedGraph::resume");
+}
+
+#[test]
+fn parked_graph_drops_on_another_thread_without_resume() {
+    let _guard = common::cudf::cuda_test_serial_guard();
+    let runtime = explicit_runtime_owner();
+    let handle = runtime_bound_handle(&runtime);
+    let entered = handle.enter("parked_graph_drops_on_another_thread_without_resume_build").expect("entered");
+
+    let src = runtime.series(TRIANGLE_TAIL_SRC_I32).expect("src");
+    let dst = runtime.series(TRIANGLE_TAIL_DST_I32).expect("dst");
+    let opts = SeriesGraphOptions::default().renumber();
+    let graph = graph_from_series::<Forward>(&entered, &src, &dst, None, &opts).expect("build graph");
+    let parked = graph.park(&entered).expect("park graph");
+    drop(entered);
+    drop(handle);
+
+    thread::spawn(move || drop(parked)).join().expect("drop thread");
+}
+
+#[test]
+fn graph_park_rejects_graph_used_by_different_runtime_owner() {
+    let _guard = common::cudf::cuda_test_serial_guard();
+    let build_runtime = explicit_runtime_owner();
+    let build_handle = runtime_bound_handle(&build_runtime);
+    let build_entered =
+        build_handle.enter("graph_park_rejects_graph_used_by_different_runtime_owner_build").expect("build entered");
+
+    let src = build_runtime.series(TRIANGLE_TAIL_SRC_I32).expect("src");
+    let dst = build_runtime.series(TRIANGLE_TAIL_DST_I32).expect("dst");
+    let opts = SeriesGraphOptions::default().renumber();
+    let mut graph = graph_from_series::<Forward>(&build_entered, &src, &dst, None, &opts).expect("build graph");
+
+    {
+        let other_runtime = explicit_runtime_owner();
+        let other_handle = runtime_bound_handle(&other_runtime);
+        let other_entered = other_handle
+            .enter("graph_park_rejects_graph_used_by_different_runtime_owner_touch")
+            .expect("other entered");
+        let sources = DeviceArray::from_slice(&other_entered, &[BFS_SOURCE_VERTEX_I32]).expect("sources");
+        let sources_view = sources.view().expect("sources view");
+        let _ = graph.bfs(&other_entered, &sources_view, &BfsParams::default()).expect("bfs");
+    }
+
+    let err = graph.park(&build_entered).expect_err("park should reject mixed runtime owners");
+    assert_eq!(err.kind(), cugraph::ErrorKind::InvalidState);
+    assert_eq!(err.operation(), "Graph::park");
 }
 
 #[test]

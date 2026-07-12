@@ -7,7 +7,7 @@ use cugraph::{
         KatzCentralityResult, PageRankResult,
     },
     community::{EcgResult, LeidenResult, LouvainResult, SpectralClusteringResult},
-    graph::{Forward, Graph, Transposed},
+    graph::{Forward, Graph, ParkedGraph, Transposed},
     layout::LayoutResult,
     random::RngState,
     sampling::{RandomWalkResult, SampleResult},
@@ -16,7 +16,7 @@ use cugraph::{
     },
     traversal::{BfsResult, ExtractPathsResult, SsspResult},
 };
-use static_assertions::assert_not_impl_any;
+use static_assertions::{assert_impl_all, assert_not_impl_any};
 
 #[test]
 fn graph_and_result_types_are_not_send_or_sync() {
@@ -26,6 +26,10 @@ fn graph_and_result_types_are_not_send_or_sync() {
     assert_not_impl_any!(Graph: Send, Sync);
     assert_not_impl_any!(Graph<Forward>: Send, Sync);
     assert_not_impl_any!(Graph<Transposed>: Send, Sync);
+    assert_impl_all!(ParkedGraph<Forward>: Send);
+    assert_impl_all!(ParkedGraph<Transposed>: Send);
+    assert_not_impl_any!(ParkedGraph<Forward>: Sync);
+    assert_not_impl_any!(ParkedGraph<Transposed>: Sync);
     assert_not_impl_any!(PageRankResult: Send, Sync);
     assert_not_impl_any!(BetweennessCentralityResult: Send, Sync);
     assert_not_impl_any!(EigenvectorCentralityResult: Send, Sync);

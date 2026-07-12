@@ -114,7 +114,7 @@ pub use array::{DeviceArray, DeviceArrayView, DeviceBuffer};
 // Error handling
 pub use error::{Error, ErrorKind, ErrorStatus};
 // Graph construction and type-state
-pub use graph::{Forward, Graph, GraphBuilder, Transposed, Transposition};
+pub use graph::{Forward, Graph, GraphBuilder, ParkedGraph, Transposed, Transposition};
 // Infrastructure
 pub use handle::{EnteredContext, ResourceHandle};
 // Unified cross-module vertex input model

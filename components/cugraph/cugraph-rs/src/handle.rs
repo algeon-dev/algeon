@@ -5,7 +5,7 @@
 //! work on the current thread. Both types are **not** `Send` or `Sync`
 //! because GPU state is thread-local.
 
-use std::{fmt, marker::PhantomData, mem::ManuallyDrop, ptr, ptr::NonNull, rc::Rc, sync::Arc};
+use std::{fmt, marker::PhantomData, mem::ManuallyDrop, ptr, ptr::NonNull, sync::Arc};
 
 use cudf::DeviceId;
 use cugraph_sys::{
@@ -88,6 +88,16 @@ struct RuntimeResourceHandleOwner {
     device: i32,
 }
 
+// SAFETY: the owner is an opaque native runtime-bound handle shim. It is only
+// destroyed once, through `Drop`, after switching to the CUDA device recorded
+// at construction. Sharing references to the owner does not expose mutable
+// Rust state or permit use of the raw cuGraph handle; `ResourceHandle` and
+// `EnteredContext` remain !Send/!Sync and are still the only execution tokens.
+unsafe impl Send for RuntimeResourceHandleOwner {}
+// SAFETY: see the `Send` impl above; shared references expose no mutation or
+// raw-handle use, and destruction is single-owner, device-guarded cleanup.
+unsafe impl Sync for RuntimeResourceHandleOwner {}
+
 impl RuntimeResourceHandleOwner {
     fn create(runtime: &Arc<cudf::Runtime>, operation: &'static str) -> Result<(Self, *mut cugraph_resource_handle_t)> {
         let binding =
@@ -144,12 +154,18 @@ impl Drop for RuntimeResourceHandleOwner {
 pub(crate) struct ResourceHandleLease {
     // Keep `shim` before `runtime` so the native runtime-bound shim is torn
     // down before releasing the retained cudf runtime owner.
-    shim: Rc<RuntimeResourceHandleOwner>,
+    shim: Arc<RuntimeResourceHandleOwner>,
     runtime: Arc<cudf::Runtime>,
     raw: *mut cugraph_resource_handle_t,
     device: i32,
 }
 
+// SAFETY: a lease is lifetime retention metadata. Sending or sharing it keeps
+// the runtime-bound shim/runtime alive but does not authorize raw-handle use
+// across threads. The raw handle is dereferenced only through non-Send
+// `ResourceHandle`/`EnteredContext` values; parked graph owners retain leases
+// solely so native graph teardown can safely outlive the producing handles.
+unsafe impl Send for ResourceHandleLease {}
 impl ResourceHandleLease {
     fn new(
         shim: RuntimeResourceHandleOwner,
@@ -157,7 +173,7 @@ impl ResourceHandleLease {
         raw: *mut cugraph_resource_handle_t,
         device: i32,
     ) -> Self {
-        Self { shim: Rc::new(shim), runtime, raw, device }
+        Self { shim: Arc::new(shim), runtime, raw, device }
     }
 
     fn raw(&self) -> *mut cugraph_resource_handle_t {
@@ -173,7 +189,11 @@ impl ResourceHandleLease {
     }
 
     pub(crate) fn same_owner(&self, other: &Self) -> bool {
-        Rc::ptr_eq(&self.shim, &other.shim)
+        Arc::ptr_eq(&self.shim, &other.shim)
+    }
+
+    pub(crate) fn same_runtime_owner(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.runtime, &other.runtime)
     }
 
     #[cfg(test)]
@@ -350,6 +370,9 @@ impl ResourceHandle {
     /// - the handle remains valid for the lifetime of this `ResourceHandle`
     /// - the handle is not freed externally while this wrapper exists
     /// - the calling thread obeys the external runtime's thread-affinity rules
+    /// - graph operations run through this handle are not ordered by
+    ///   [`Graph::park`](crate::graph::Graph::park), so the graph becomes
+    ///   ineligible for parked transfer
     pub unsafe fn from_raw_resource_handle(raw: *mut cugraph_resource_handle_t) -> Result<Self> {
         if raw.is_null() {
             return Err(Error::new(ErrorKind::InvalidInput, "ResourceHandle::from_raw_resource_handle")
@@ -377,6 +400,9 @@ impl ResourceHandle {
     /// - the calling thread's current CUDA device is the device that `raw` is
     ///   bound to
     /// - the calling thread obeys the external runtime's thread-affinity rules
+    /// - graph operations run through this handle are not ordered by
+    ///   [`Graph::park`](crate::graph::Graph::park), so the graph becomes
+    ///   ineligible for parked transfer
     ///
     /// For a borrowed/non-owning wrapper, use
     /// [`from_raw_resource_handle`](Self::from_raw_resource_handle) instead.
