@@ -16,6 +16,12 @@ cudf_status_t cudf_cuda_get_device(int32_t *device);
 /// Set the CUDA device ordinal for the calling thread.
 cudf_status_t cudf_cuda_set_device(int32_t device);
 
+/// Start profiler collection for the current process.
+cudf_status_t cudf_cuda_profiler_start(void);
+
+/// Stop profiler collection for the current process.
+cudf_status_t cudf_cuda_profiler_stop(void);
+
 /// Query the number of CUDA-capable devices visible to the process.
 cudf_status_t cudf_cuda_get_device_count(int32_t *count);
 

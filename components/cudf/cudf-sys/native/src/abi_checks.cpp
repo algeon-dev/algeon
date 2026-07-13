@@ -37,6 +37,12 @@
 #include <type_traits>
 
 static_assert(sizeof(cudf_status_t) == sizeof(int32_t), "cudf_status_t must be 32-bit");
+static_assert(std::is_same_v<decltype(&cudf_cuda_profiler_start),
+                             cudf_status_t (*)(void)>,
+              "cudf_cuda_profiler_start ABI signature changed");
+static_assert(std::is_same_v<decltype(&cudf_cuda_profiler_stop),
+                             cudf_status_t (*)(void)>,
+              "cudf_cuda_profiler_stop ABI signature changed");
 static_assert(sizeof(cudf_ast_operator_t) == sizeof(int32_t), "cudf_ast_operator_t must be 32-bit");
 static_assert(sizeof(cudf_ast_table_reference_t) == sizeof(int32_t),
               "cudf_ast_table_reference_t must be 32-bit");
