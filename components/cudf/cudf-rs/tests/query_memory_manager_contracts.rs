@@ -446,6 +446,171 @@ fn execution_budget_token_can_attach_as_arena_member() {
 }
 
 #[test]
+fn execution_budget_token_can_attach_as_query_domain_member() {
+    let _pool_state = shared_device_pool_guard();
+    let left = Runtime::builder().with_device_memory_manager().build().unwrap();
+    let right = Runtime::builder().with_device_memory_manager().build().unwrap();
+    let manager = left.device_memory_manager().unwrap();
+    let domain = manager
+        .query_memory_domain(
+            40_012,
+            QueryMemoryDomainOptions::new(64 * 1024 * 1024).with_ceiling_bytes(64 * 1024 * 1024),
+        )
+        .unwrap();
+    let left_token = cudf::ExecutionBudgetToken::from_runtime_in_query_domain(
+        &left,
+        ExecutionBudgetRequest::new(64 * 1024 * 1024).with_boundary("left_domain_member"),
+        &domain,
+    )
+    .unwrap();
+    let right_token = cudf::ExecutionBudgetToken::from_runtime_in_query_domain(
+        &right,
+        ExecutionBudgetRequest::new(64 * 1024 * 1024).with_boundary("right_domain_member"),
+        &domain,
+    )
+    .unwrap();
+
+    let left_outcome = left.series_from_value_with_budget(13i32, 1_000_000, &left_token).unwrap();
+    let right_outcome = right.series_from_value_with_budget(29i32, 4_000_000, &right_token).unwrap();
+
+    assert_eq!(left_token.enforcement(), ExecutionBudgetEnforcement::QueryDomainMember);
+    assert_eq!(right_token.enforcement(), ExecutionBudgetEnforcement::QueryDomainMember);
+    assert_eq!(left_outcome.report().enforcement(), ExecutionBudgetEnforcement::QueryDomainMember);
+    assert_eq!(right_outcome.report().enforcement(), ExecutionBudgetEnforcement::QueryDomainMember);
+    assert_eq!(left_outcome.report().status(), ExecutionBudgetStatus::ReservationEnforced);
+    assert_eq!(right_outcome.report().status(), ExecutionBudgetStatus::ReservationEnforced);
+
+    let left_output_bytes = left_outcome.value().device_allocated_size_bytes().unwrap() as u64;
+    let right_output_bytes = right_outcome.value().device_allocated_size_bytes().unwrap() as u64;
+    let left_usage = left_token.reservation_usage().unwrap();
+    let right_usage = right_token.reservation_usage().unwrap();
+    assert!(left_usage.current_bytes >= left_output_bytes);
+    assert!(right_usage.current_bytes >= right_output_bytes);
+    assert!(
+        left_usage.current_bytes < left_output_bytes + right_output_bytes,
+        "left member usage must not include the right member allocation: left_usage={left_usage:?} left_output_bytes={left_output_bytes} right_output_bytes={right_output_bytes}",
+    );
+
+    let domain_usage = domain.usage().unwrap();
+    assert_eq!(domain_usage.domain_id, 40_012);
+    assert_eq!(domain_usage.active_members, 2);
+    assert!(domain_usage.current_bytes >= left_output_bytes + right_output_bytes);
+}
+
+#[test]
+fn query_domain_member_usage_closes_when_budget_allocation_is_freed() {
+    let _pool_state = shared_device_pool_guard();
+    let runtime = Runtime::builder().with_device_memory_manager().build().unwrap();
+    let manager = runtime.device_memory_manager().unwrap();
+    let domain = manager
+        .query_memory_domain(
+            40_016,
+            QueryMemoryDomainOptions::new(16 * 1024 * 1024).with_ceiling_bytes(16 * 1024 * 1024),
+        )
+        .unwrap();
+    let token = cudf::ExecutionBudgetToken::from_runtime_in_query_domain(
+        &runtime,
+        ExecutionBudgetRequest::new(16 * 1024 * 1024).with_boundary("domain_member_deallocation"),
+        &domain,
+    )
+    .unwrap();
+
+    let outcome = runtime.series_from_value_with_budget(13i32, 1_000_000, &token).unwrap();
+    let output_bytes = outcome.value().device_allocated_size_bytes().unwrap() as u64;
+    assert!(token.reservation_usage().unwrap().current_bytes >= output_bytes);
+    assert!(domain.usage().unwrap().current_bytes >= output_bytes);
+
+    drop(outcome);
+    runtime.synchronize().unwrap();
+
+    let member_usage = token.reservation_usage().unwrap();
+    assert_eq!(member_usage.current_bytes, 0);
+    assert_eq!(member_usage.current_aligned_bytes, 0);
+    assert_eq!(member_usage.current_allocations, 0);
+
+    let domain_usage = domain.usage().unwrap();
+    assert_eq!(domain_usage.current_bytes, 0);
+    assert_eq!(domain_usage.current_aligned_bytes, 0);
+    assert_eq!(domain_usage.current_allocations, 0);
+    assert_eq!(domain_usage.active_members, 1);
+}
+
+#[test]
+fn query_domain_member_budget_token_resize_returns_structured_error() {
+    let runtime = Runtime::builder().with_device_memory_manager().build().unwrap();
+    let manager = runtime.device_memory_manager().unwrap();
+    let domain = manager
+        .query_memory_domain(40_013, QueryMemoryDomainOptions::new(8 * 1024 * 1024).with_ceiling_bytes(8 * 1024 * 1024))
+        .unwrap();
+    let mut token = cudf::ExecutionBudgetToken::from_runtime_in_query_domain(
+        &runtime,
+        ExecutionBudgetRequest::new(8 * 1024 * 1024).with_boundary("domain_member_resize"),
+        &domain,
+    )
+    .unwrap();
+
+    let err = token.resize(1024).unwrap_err();
+
+    assert_eq!(err.code(), ErrorCode::UnsupportedOperation);
+    assert_eq!(err.detail_value("reason"), Some("query_domain_member_resize_unsupported"));
+    assert_eq!(err.detail_value("remedy"), Some("resize the query memory domain with QueryMemoryDomain::resize_grant"));
+}
+
+#[test]
+fn sequential_query_domain_budget_tokens_reattach_same_stream_after_drop() {
+    let runtime = Runtime::builder().with_device_memory_manager().build().unwrap();
+    let manager = runtime.device_memory_manager().unwrap();
+    let domain = manager
+        .query_memory_domain(40_014, QueryMemoryDomainOptions::new(8 * 1024 * 1024).with_ceiling_bytes(8 * 1024 * 1024))
+        .unwrap();
+
+    {
+        let token = cudf::ExecutionBudgetToken::from_runtime_in_query_domain(
+            &runtime,
+            ExecutionBudgetRequest::new(8 * 1024 * 1024).with_boundary("first_domain_member"),
+            &domain,
+        )
+        .unwrap();
+        let outcome = runtime.series_from_value_with_budget(7i32, 1024, &token).unwrap();
+        assert_eq!(outcome.report().enforcement(), ExecutionBudgetEnforcement::QueryDomainMember);
+    }
+
+    let token = cudf::ExecutionBudgetToken::from_runtime_in_query_domain(
+        &runtime,
+        ExecutionBudgetRequest::new(8 * 1024 * 1024).with_boundary("second_domain_member"),
+        &domain,
+    )
+    .unwrap();
+    let outcome = runtime.series_from_value_with_budget(9i32, 1024, &token).unwrap();
+
+    assert_eq!(outcome.report().enforcement(), ExecutionBudgetEnforcement::QueryDomainMember);
+}
+
+#[test]
+fn second_live_query_domain_budget_token_on_same_stream_is_structured_rejection() {
+    let runtime = Runtime::builder().with_device_memory_manager().build().unwrap();
+    let manager = runtime.device_memory_manager().unwrap();
+    let domain = manager
+        .query_memory_domain(40_015, QueryMemoryDomainOptions::new(8 * 1024 * 1024).with_ceiling_bytes(8 * 1024 * 1024))
+        .unwrap();
+    let _first = cudf::ExecutionBudgetToken::from_runtime_in_query_domain(
+        &runtime,
+        ExecutionBudgetRequest::new(8 * 1024 * 1024).with_boundary("first_live_domain_member"),
+        &domain,
+    )
+    .unwrap();
+
+    let err = cudf::ExecutionBudgetToken::from_runtime_in_query_domain(
+        &runtime,
+        ExecutionBudgetRequest::new(8 * 1024 * 1024).with_boundary("second_live_domain_member"),
+        &domain,
+    )
+    .unwrap_err();
+
+    assert_eq!(err.kind(), ErrorKind::InvalidInput);
+}
+
+#[test]
 fn query_memory_domain_preserves_device_resource_identity() {
     assert_send_sync::<cudf::QueryMemoryDomain>();
 

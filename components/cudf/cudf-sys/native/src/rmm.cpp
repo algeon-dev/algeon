@@ -387,6 +387,20 @@ class budget_tracking_resource_adaptor final : public rmm::mr::device_memory_res
   std::atomic<std::size_t> largest_failed_allocation_bytes_{0};
 };
 
+struct query_domain_member_counters {
+  std::uint64_t id = 0;
+  std::size_t current_bytes = 0;
+  std::size_t peak_bytes = 0;
+  std::size_t total_bytes = 0;
+  std::size_t current_aligned_bytes = 0;
+  std::size_t peak_aligned_bytes = 0;
+  std::size_t total_allocations = 0;
+  std::size_t current_allocations = 0;
+  std::size_t peak_allocations = 0;
+  std::size_t failed_allocation_count = 0;
+  std::size_t largest_failed_allocation_bytes = 0;
+};
+
 class query_domain_resource final : public rmm::mr::device_memory_resource {
  public:
   query_domain_resource(cudaMemPool_t pool,
@@ -423,6 +437,30 @@ class query_domain_resource final : public rmm::mr::device_memory_resource {
     return out;
   }
 
+  [[nodiscard]] cudf_memory_resource_usage_t member_usage(
+    std::shared_ptr<query_domain_member_counters> const& member,
+    bool attached) const
+  {
+    cudf_memory_resource_usage_t out{};
+    if (member == nullptr) { return out; }
+    std::scoped_lock lock{member_mutex_};
+    fill_usage(out,
+               grant_bytes_.load(std::memory_order_relaxed),
+               member->current_bytes,
+               member->peak_bytes,
+               member->total_bytes,
+               member->current_aligned_bytes,
+               member->peak_aligned_bytes,
+               member->total_allocations,
+               member->current_allocations,
+               member->peak_allocations,
+               member->failed_allocation_count,
+               member->largest_failed_allocation_bytes);
+    out.reserved[0] = member->id;
+    out.reserved[1] = attached ? 1 : 0;
+    return out;
+  }
+
   [[nodiscard]] std::uint64_t domain_id() const noexcept { return domain_id_; }
 
   [[nodiscard]] std::size_t current_allocations() const noexcept
@@ -456,11 +494,43 @@ class query_domain_resource final : public rmm::mr::device_memory_resource {
     return read_cuda_pool_usage_noexcept(view_.pool_handle(), out);
   }
 
+  void* allocate_for_member(std::shared_ptr<query_domain_member_counters> const& member,
+                            rmm::cuda_stream_view stream,
+                            std::size_t bytes,
+                            std::size_t alignment)
+  {
+    return allocate_impl(member, stream, bytes, alignment);
+  }
+
+  void deallocate_from_adaptor(void* ptr,
+                               rmm::cuda_stream_view stream,
+                               std::size_t bytes,
+                               std::size_t alignment) noexcept
+  {
+    deallocate_impl(ptr, stream, bytes, alignment);
+  }
+
  private:
+  struct member_allocation_record {
+    std::size_t bytes = 0;
+    std::size_t aligned_bytes = 0;
+    std::shared_ptr<query_domain_member_counters> member;
+  };
+
   void record_failed_allocation(std::size_t bytes) noexcept
   {
     failed_allocation_count_.fetch_add(1, std::memory_order_relaxed);
     update_atomic_peak(largest_failed_allocation_bytes_, bytes);
+  }
+
+  void record_member_failed_allocation(
+    std::shared_ptr<query_domain_member_counters> const& member,
+    std::size_t bytes) noexcept
+  {
+    if (member == nullptr) { return; }
+    std::scoped_lock lock{member_mutex_};
+    member->failed_allocation_count += 1;
+    update_peak(member->largest_failed_allocation_bytes, bytes);
   }
 
   bool would_exceed_pool_ceiling(std::size_t aligned_bytes) const noexcept
@@ -471,9 +541,10 @@ class query_domain_resource final : public rmm::mr::device_memory_resource {
     return aligned_bytes > ceiling_bytes_ - static_cast<std::size_t>(usage.reserved_current_bytes);
   }
 
-  void* do_allocate(std::size_t bytes,
-                    rmm::cuda_stream_view stream,
-                    std::size_t alignment) override
+  void* allocate_impl(std::shared_ptr<query_domain_member_counters> const& member,
+                      rmm::cuda_stream_view stream,
+                      std::size_t bytes,
+                      std::size_t alignment)
   {
     if (bytes == 0) { return view_.allocate(stream, bytes, alignment); }
     auto const aligned_bytes = rmm::align_up(bytes, alignment);
@@ -483,6 +554,7 @@ class query_domain_resource final : public rmm::mr::device_memory_resource {
       auto const grant = grant_bytes_.load(std::memory_order_relaxed);
       if (old_aligned > grant || aligned_bytes > grant - old_aligned) {
         record_failed_allocation(bytes);
+        record_member_failed_allocation(member, bytes);
         throw reservation_limit_out_of_memory{
           "query memory domain grant exceeded"};
       }
@@ -499,6 +571,7 @@ class query_domain_resource final : public rmm::mr::device_memory_resource {
     } catch (rmm::out_of_memory const&) {
       current_aligned_bytes_ -= aligned_bytes;
       record_failed_allocation(bytes);
+      record_member_failed_allocation(member, bytes);
       if (would_exceed_pool_ceiling(aligned_bytes)) {
         throw reservation_limit_out_of_memory{
           "query memory domain pool ceiling exceeded"};
@@ -507,6 +580,28 @@ class query_domain_resource final : public rmm::mr::device_memory_resource {
     } catch (...) {
       current_aligned_bytes_ -= aligned_bytes;
       record_failed_allocation(bytes);
+      record_member_failed_allocation(member, bytes);
+      throw;
+    }
+
+    try {
+      if (member != nullptr) {
+        std::scoped_lock lock{member_mutex_};
+        member_allocations_[ptr] = member_allocation_record{bytes, aligned_bytes, member};
+        member->current_aligned_bytes += aligned_bytes;
+        member->current_bytes += bytes;
+        member->total_bytes += bytes;
+        member->current_allocations += 1;
+        member->total_allocations += 1;
+        update_peak(member->peak_bytes, member->current_bytes);
+        update_peak(member->peak_aligned_bytes, member->current_aligned_bytes);
+        update_peak(member->peak_allocations, member->current_allocations);
+      }
+    } catch (...) {
+      view_.deallocate(stream, ptr, bytes, alignment);
+      current_aligned_bytes_ -= aligned_bytes;
+      record_failed_allocation(bytes);
+      record_member_failed_allocation(member, bytes);
       throw;
     }
 
@@ -523,16 +618,55 @@ class query_domain_resource final : public rmm::mr::device_memory_resource {
     return ptr;
   }
 
+  void deallocate_impl(void* ptr,
+                       rmm::cuda_stream_view stream,
+                       std::size_t bytes,
+                       std::size_t alignment) noexcept
+  {
+    auto const aligned_bytes = rmm::align_up(bytes, alignment);
+    member_allocation_record record{};
+    bool found_member_record = false;
+    {
+      std::scoped_lock lock{member_mutex_};
+      auto const it = member_allocations_.find(ptr);
+      if (it != member_allocations_.end()) {
+        record = std::move(it->second);
+        member_allocations_.erase(it);
+        found_member_record = true;
+      }
+    }
+
+    view_.deallocate(stream, ptr, bytes, alignment);
+    current_aligned_bytes_ -= aligned_bytes;
+    current_bytes_ -= bytes;
+    current_allocations_ -= 1;
+
+    if (found_member_record && record.member != nullptr) {
+      std::scoped_lock lock{member_mutex_};
+      record.member->current_bytes =
+        record.member->current_bytes >= record.bytes ? record.member->current_bytes - record.bytes : 0;
+      record.member->current_aligned_bytes =
+        record.member->current_aligned_bytes >= record.aligned_bytes
+          ? record.member->current_aligned_bytes - record.aligned_bytes
+          : 0;
+      record.member->current_allocations =
+        record.member->current_allocations > 0 ? record.member->current_allocations - 1 : 0;
+    }
+  }
+
+  void* do_allocate(std::size_t bytes,
+                    rmm::cuda_stream_view stream,
+                    std::size_t alignment) override
+  {
+    return allocate_impl({}, stream, bytes, alignment);
+  }
+
   void do_deallocate(void* ptr,
                      std::size_t bytes,
                      rmm::cuda_stream_view stream,
                      std::size_t alignment) noexcept override
   {
-    auto const aligned_bytes = rmm::align_up(bytes, alignment);
-    view_.deallocate(stream, ptr, bytes, alignment);
-    current_aligned_bytes_ -= aligned_bytes;
-    current_bytes_ -= bytes;
-    current_allocations_ -= 1;
+    deallocate_impl(ptr, stream, bytes, alignment);
   }
 
   [[nodiscard]] bool do_is_equal(rmm::mr::device_memory_resource const& other) const noexcept override
@@ -554,6 +688,8 @@ class query_domain_resource final : public rmm::mr::device_memory_resource {
   std::atomic<std::size_t> peak_allocations_{0};
   std::atomic<std::size_t> failed_allocation_count_{0};
   std::atomic<std::size_t> largest_failed_allocation_bytes_{0};
+  mutable std::mutex member_mutex_;
+  std::unordered_map<void*, member_allocation_record> member_allocations_;
 };
 
 struct query_domain_state {
@@ -580,6 +716,7 @@ struct query_domain_member_state {
   void* stream_key = nullptr;
   bool attached    = true;
   std::shared_ptr<query_domain_state> domain;
+  std::shared_ptr<query_domain_member_counters> counters;
 };
 
 struct reservation_state {
@@ -767,6 +904,8 @@ class reservation_aware_resource_adaptor final : public rmm::mr::device_memory_r
     state->id        = reservation_id;
     state->stream_key = key;
     state->domain    = domain;
+    state->counters  = std::make_shared<query_domain_member_counters>();
+    state->counters->id = reservation_id;
     domain->active_members += 1;
     query_domain_members_by_stream_[key] = state;
     query_domain_member_count_.fetch_add(1, std::memory_order_relaxed);
@@ -892,11 +1031,7 @@ class reservation_aware_resource_adaptor final : public rmm::mr::device_memory_r
       return {};
     }
     std::shared_lock lock{query_domain_mutex_};
-    auto out = state->domain->resource->usage(state->domain->active,
-                                              state->domain->active_members);
-    out.reserved[0] = state->id;
-    out.reserved[1] = state->attached ? 1 : 0;
-    return out;
+    return state->domain->resource->member_usage(state->counters, state->attached);
   }
 
   bool resize(std::shared_ptr<reservation_state> const& state,
@@ -1098,7 +1233,8 @@ class reservation_aware_resource_adaptor final : public rmm::mr::device_memory_r
     auto query_member = query_domain_member_for_stream(stream);
     if (query_member != nullptr && query_member->domain != nullptr &&
         query_member->domain->resource != nullptr) {
-      return query_member->domain->resource->allocate(stream, bytes, alignment);
+      return query_member->domain->resource->allocate_for_member(
+        query_member->counters, stream, bytes, alignment);
     }
 
     auto const aligned_bytes = rmm::align_up(bytes, alignment);
@@ -1177,7 +1313,7 @@ class reservation_aware_resource_adaptor final : public rmm::mr::device_memory_r
   {
     auto query_domain = query_domain_for_pointer(ptr);
     if (query_domain != nullptr && query_domain->resource != nullptr) {
-      query_domain->resource->deallocate(stream, ptr, bytes, alignment);
+      query_domain->resource->deallocate_from_adaptor(ptr, stream, bytes, alignment);
       cleanup_query_domain_if_idle(query_domain);
       return;
     }
