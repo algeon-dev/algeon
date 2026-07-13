@@ -297,6 +297,34 @@ impl QueryAdmission {
                         report.last_pool_used_current_bytes
                     );
                 }
+
+                let query_execution = service.gpu_execution_query_report();
+                output.push_str("\n[gpu_execution]\n");
+                output.push_str("active_query_jobs\tpeak_active_query_jobs\n");
+                let _ = writeln!(
+                    output,
+                    "{}\t{}",
+                    query_execution.active_query_jobs, query_execution.peak_active_query_jobs
+                );
+
+                output.push_str("\n[gpu_execution_pools]\n");
+                output.push_str(
+                    "device_ordinal\tworker_count\tactive_jobs\tpeak_active_jobs\tqueued_jobs\tpeak_queued_jobs\tactive_query_jobs\tpeak_active_query_jobs\n",
+                );
+                for report in service.gpu_execution_pool_reports() {
+                    let _ = writeln!(
+                        output,
+                        "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
+                        report.device_ordinal,
+                        report.worker_count,
+                        report.active_jobs,
+                        report.peak_active_jobs,
+                        report.queued_jobs,
+                        report.peak_queued_jobs,
+                        report.active_query_jobs,
+                        report.peak_active_query_jobs,
+                    );
+                }
             },
             QueryAdmissionBackend::Semaphore { permits } => {
                 let available_permits = permits.available_permits();
@@ -535,6 +563,13 @@ mod tests {
             "{payload}"
         );
         assert!(payload.contains("[tenant_queue_depths]\ntenant_id\tqueued_queries\ndefault\t0\n"), "{payload}");
+        assert!(payload.contains("[gpu_execution]\nactive_query_jobs\tpeak_active_query_jobs\n0\t0\n"), "{payload}");
+        assert!(
+            payload.contains(
+                "[gpu_execution_pools]\ndevice_ordinal\tworker_count\tactive_jobs\tpeak_active_jobs\tqueued_jobs\tpeak_queued_jobs\tactive_query_jobs\tpeak_active_query_jobs\n"
+            ),
+            "{payload}"
+        );
         assert!(
             payload.contains(
                 "[memory_governor_reports]\ndevice_ordinal\tcapacity_bytes\toutstanding_bytes\tavailable_bytes\tactive_grants\tevictable_bytes\tfree_bytes\n0\t1024\t512\t512\t1\t0\t512\n"
@@ -548,6 +583,10 @@ mod tests {
                 "[device_memory_failure_reports]\ndevice_ordinal\tcallback_installed\tcallback_install_unavailable\tallocation_failure_count\ttotal_failed_allocation_bytes\tlargest_failed_allocation_bytes\ttrim_retry_count\tpool_usage_observation_count\tlast_failed_allocation_bytes\tlast_pool_reserved_current_bytes\tlast_pool_used_current_bytes\n"
             ),
             "{payload}"
+        );
+        assert!(
+            payload.find("[device_memory_failure_reports]").unwrap() < payload.find("[gpu_execution]").unwrap(),
+            "new diagnostics sections must follow the pre-existing TSV section order: {payload}"
         );
 
         drop(permit);

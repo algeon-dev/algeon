@@ -8,6 +8,7 @@ pub(super) struct QueryHandleLifetime {
     pub(super) service: Arc<QueryServiceInner>,
     pub(super) tenant_id: TenantId,
     pub(super) query_id: u64,
+    device_ordinal: usize,
     release_requested: AtomicBool,
     released: AtomicBool,
     active_contexts: AtomicUsize,
@@ -29,10 +30,13 @@ impl QueryHandleLifetime {
         memory_grant: MemoryGrant,
         device_slot: Option<DeviceActiveQuerySlot>,
     ) -> Arc<Self> {
+        let device_ordinal =
+            device_slot.as_ref().map(DeviceActiveQuerySlot::device_ordinal).unwrap_or(service.config.device_ordinal);
         Arc::new(Self {
             service,
             tenant_id,
             query_id,
+            device_ordinal,
             release_requested: AtomicBool::new(false),
             released: AtomicBool::new(false),
             active_contexts: AtomicUsize::new(0),
@@ -82,69 +86,47 @@ impl QueryHandleLifetime {
         if self.released.swap(true, Ordering::AcqRel) {
             return;
         }
-        match self.service.admission.lock() {
-            Ok(mut state) => {
-                state.active_queries = state.active_queries.saturating_sub(1);
-                state.active_adaptive_grants.remove(&self.query_id);
-            },
+        let root_context = match self.root_context.lock() {
+            Ok(mut context) => context.take(),
             Err(_error) => {
-                eprintln!("[nexus-query-engine] warning: failed to release poisoned query service admission state");
-            },
-        }
-        self.shrink_memory_grant_to_live_floor();
-        if let Some(device_ordinal) = self.release_device_slot() {
-            notify_shared_device_admission_available(device_ordinal);
-        }
-        self.service.notify_admission_available();
-        match self.root_context.lock() {
-            Ok(mut context) => {
-                context.take();
-            },
-            Err(_error) => {
-                eprintln!("[nexus-query-engine] warning: failed to drop poisoned query service root context");
-            },
-        }
-        match self.memory_grant.lock() {
-            Ok(mut memory_grant) => {
-                memory_grant.take();
-            },
-            Err(_error) => {
-                eprintln!("[nexus-query-engine] warning: failed to drop poisoned query service memory grant");
-            },
-        }
-    }
-
-    fn release_device_slot(&self) -> Option<usize> {
-        match self.device_slot.lock() {
-            Ok(mut slot) => slot.take().map(|slot| {
-                let device_ordinal = slot.device_ordinal();
-                drop(slot);
-                device_ordinal
-            }),
-            Err(_error) => {
-                eprintln!("[nexus-query-engine] warning: failed to drop poisoned query service device slot");
-                None
-            },
-        }
-    }
-
-    fn shrink_memory_grant_to_live_floor(&self) {
-        let grant = match self.memory_grant.lock() {
-            Ok(memory_grant) => memory_grant.as_ref().cloned(),
-            Err(_error) => {
-                eprintln!("[nexus-query-engine] warning: failed to inspect poisoned query service memory grant");
+                eprintln!("[nexus-query-engine] warning: failed to take poisoned query service root context");
                 None
             },
         };
-        let Some(grant) = grant else {
-            return;
+        let memory_grant = match self.memory_grant.lock() {
+            Ok(mut memory_grant) => memory_grant.take(),
+            Err(_error) => {
+                eprintln!("[nexus-query-engine] warning: failed to take poisoned query service memory grant");
+                None
+            },
         };
-        let live_reserved_bytes = grant.live_reserved_bytes();
-        if live_reserved_bytes == 0 {
-            return;
-        }
-        if let Err(error) = grant.try_shrink_to(live_reserved_bytes) {
-            eprintln!("[nexus-query-engine] warning: failed to shrink query service memory grant on release: {error}");
+        let device_slot = match self.device_slot.lock() {
+            Ok(mut device_slot) => device_slot.take(),
+            Err(_error) => {
+                eprintln!("[nexus-query-engine] warning: failed to take poisoned query service device slot");
+                None
+            },
+        };
+        let release = QueryHandleRelease {
+            service: Arc::clone(&self.service),
+            query_id: self.query_id,
+            device_ordinal: self.device_ordinal,
+            root_context,
+            memory_grant,
+            device_slot,
+        };
+        let pool = self
+            .service
+            .resources
+            .as_ref()
+            .and_then(|resources| resources.gpu_execution_pool_for_device(self.device_ordinal).ok());
+        match pool {
+            Some(pool) => {
+                if let Err(error) = pool.spawn(GpuExecutionJobKind::Cleanup, async move { release.finish() }) {
+                    eprintln!("[nexus-query-engine] warning: failed to dispatch query-service GPU cleanup: {error}");
+                }
+            },
+            None => release.finish(),
         }
     }
 
@@ -157,6 +139,61 @@ impl QueryHandleLifetime {
         .with_fact("tenant_id", self.tenant_id.as_str())
         .with_fact("query_id", self.query_id)
         .with_fact("reason", "query_handle_released")
+    }
+}
+
+struct QueryHandleRelease {
+    service: Arc<QueryServiceInner>,
+    query_id: u64,
+    device_ordinal: usize,
+    root_context: Option<ExecutionContext>,
+    memory_grant: Option<MemoryGrant>,
+    device_slot: Option<DeviceActiveQuerySlot>,
+}
+
+impl QueryHandleRelease {
+    fn finish(mut self) {
+        // Remove the adaptive-growth clone before dropping our grant, while
+        // retaining the active slot until every GPU-owned resource is gone.
+        // The final MemoryGrant drop invokes observers that reacquire this
+        // mutex, so it must never happen while the mutex is held.
+        match self.service.admission.lock() {
+            Ok(mut state) => {
+                state.active_adaptive_grants.remove(&self.query_id);
+                state.cleanup_in_progress = state.cleanup_in_progress.saturating_add(1);
+            },
+            Err(_error) => {
+                eprintln!("[nexus-query-engine] warning: failed to remove poisoned query service adaptive grant state");
+            },
+        }
+        if let Some(grant) = self.memory_grant.as_ref() {
+            let live_reserved_bytes = grant.live_reserved_bytes();
+            if live_reserved_bytes != 0
+                && let Err(error) = grant.try_shrink_to(live_reserved_bytes)
+            {
+                eprintln!(
+                    "[nexus-query-engine] warning: failed to shrink query service memory grant on release: {error}"
+                );
+            }
+        }
+        drop(self.root_context.take());
+        drop(self.memory_grant.take());
+        drop(self.device_slot.take());
+
+        match self.service.admission.lock() {
+            Ok(mut state) => {
+                state.active_queries = state.active_queries.saturating_sub(1);
+                state.cleanup_in_progress = state.cleanup_in_progress.saturating_sub(1);
+                if state.queued.is_empty() {
+                    QueryService { inner: Arc::clone(&self.service) }.grow_active_adaptive_grants_locked(&mut state);
+                }
+            },
+            Err(_error) => {
+                eprintln!("[nexus-query-engine] warning: failed to release poisoned query service admission state");
+            },
+        }
+        notify_shared_device_admission_available(self.device_ordinal);
+        self.service.notify_admission_available();
     }
 }
 
@@ -277,6 +314,37 @@ impl QueryHandle {
         self.acquire_context_with_cancellation(ExecutionCancellation::new())
     }
 
+    /// Acquires a tenant-bound execution context without blocking the caller's async runtime.
+    pub async fn acquire_context_async(self: &Arc<Self>) -> Result<TenantQueryContext> {
+        self.acquire_context_with_cancellation_async(ExecutionCancellation::new()).await
+    }
+
+    /// Acquires a tenant-bound execution context on this query's device executor.
+    pub async fn acquire_context_with_cancellation_async(
+        self: &Arc<Self>,
+        cancellation: ExecutionCancellation,
+    ) -> Result<TenantQueryContext> {
+        let pool = self.gpu_execution_pool()?;
+        let handle = Arc::clone(self);
+        pool.run(
+            GpuExecutionJobKind::ContextSetup,
+            async move { handle.acquire_context_with_cancellation(cancellation) },
+        )
+        .await?
+    }
+
+    /// Dedicated executor for synchronous GPU work on this query's selected device.
+    pub fn gpu_execution_pool(&self) -> Result<GpuExecutionPool> {
+        let Some(resources) = &self.service.resources else {
+            return Err(QueryError::new(
+                QueryErrorCode::InvalidPlan,
+                "nexus_query_engine.query_service.gpu_execution_pool",
+                "query service was constructed without runtime resources",
+            ));
+        };
+        resources.gpu_execution_pool_for_device(self.device_ordinal)
+    }
+
     /// Acquires a tenant-bound execution context that observes caller-supplied
     /// cooperative cancellation.
     pub fn acquire_context_with_cancellation(&self, cancellation: ExecutionCancellation) -> Result<TenantQueryContext> {
@@ -310,6 +378,7 @@ impl QueryHandle {
         let stream_lease_guard = Arc::new(stream_lease);
         let memory_grant = self.lifetime.memory_grant()?;
         let runtime = stream_lease_guard.shared_runtime();
+        let gpu_execution_pool = resources.gpu_execution_pool_for_device(self.device_ordinal)?;
         let grant_memory_domain = create_grant_memory_domain(
             runtime.as_ref(),
             Some(&memory_grant),
@@ -325,6 +394,7 @@ impl QueryHandle {
             query_id: Some(QueryId::new(format!("service-{}", self.query_id))),
             trace_id: None,
             runtime,
+            gpu_execution_pool,
             memory_policy: MemoryResourcePolicy::ExternalRuntime,
             memory_control_policy: self.memory_control_policy(),
             memory_grant: Some(memory_grant),
@@ -363,7 +433,10 @@ impl QueryHandle {
         Ok(TenantQueryContext { context, _lifetime_guard: lifetime_guard })
     }
 
-    /// Releases the admission slot before dropping the handle.
+    /// Requests admission release before dropping the handle.
+    ///
+    /// Runtime-backed services complete GPU resource destruction on the
+    /// selected device executor before waking queued admissions.
     pub fn finish(&self) {
         self.lifetime.request_release();
     }

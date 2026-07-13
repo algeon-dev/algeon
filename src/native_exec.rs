@@ -16,6 +16,9 @@ mod producer;
 mod unbounded_native;
 
 #[cfg(feature = "cugraph")]
+pub(crate) use common::run_gpu_execution_task;
+
+#[cfg(feature = "cugraph")]
 pub(crate) use self::admission::query_admission_ticket_from_task_context;
 #[cfg(all(test, feature = "cugraph"))]
 pub(crate) use self::admission::task_context_with_query_admission_ticket;

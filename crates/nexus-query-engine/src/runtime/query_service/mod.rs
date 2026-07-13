@@ -16,13 +16,14 @@ use tokio::{sync::Notify, time};
 use super::gpu::placement::rank_cache_affine_candidates;
 use super::{
     CudfInventory, DeploymentIoCapability, DeviceMemoryFailureReport, ExecutionBoundaryPolicy, ExecutionCancellation,
-    ExecutionContext, ExecutionContextParts, GdsConcurrencyGate, GpuInventory, GrantRequest, HostFetchBudget,
-    LakehouseCacheFillEventSink, MemoryControlPolicy, MemoryGovernor, MemoryGovernorReport, MemoryGrant,
-    MemoryResourcePolicy, PlacementPolicy, PlacementRequest, Priority, QueryPlacementHint, QueryPlacementPolicy,
-    QueryQos, SourceChunkPlanningMode, SourceFetchConcurrencyGate, SourceFetchConfig, SourceObjectStoreRegistry,
-    SourceSchedulerPolicy, SourceStorageProfile, default_host_fetch_budget_bytes, default_lakehouse_cache_fill_runtime,
-    default_service_stream_pool_size_for_device, default_source_fetch_runtime, gpu::DeviceActiveQuerySlot,
-    validate_service_stream_pool_device,
+    ExecutionContext, ExecutionContextParts, GdsConcurrencyGate, GpuExecutionJobKind, GpuExecutionPool,
+    GpuExecutionPoolSnapshot, GpuExecutionQuerySnapshot, GpuExecutionQueryTracker, GpuInventory, GrantRequest,
+    HostFetchBudget, LakehouseCacheFillEventSink, MemoryControlPolicy, MemoryGovernor, MemoryGovernorReport,
+    MemoryGrant, MemoryResourcePolicy, PlacementPolicy, PlacementRequest, Priority, QueryPlacementHint,
+    QueryPlacementPolicy, QueryQos, SourceChunkPlanningMode, SourceFetchConcurrencyGate, SourceFetchConfig,
+    SourceObjectStoreRegistry, SourceSchedulerPolicy, SourceStorageProfile, default_host_fetch_budget_bytes,
+    default_lakehouse_cache_fill_runtime, default_service_stream_pool_size_for_device, default_source_fetch_runtime,
+    gpu::DeviceActiveQuerySlot, validate_service_stream_pool_device,
 };
 use crate::{
     adaptive_runtime::AdaptiveMemoryHistory,
@@ -218,6 +219,8 @@ impl From<TenantGrantPolicy> for QueryGrantBand {
 #[derive(Debug, Clone)]
 struct QueryServiceResources {
     devices: super::DeviceRegistry,
+    gpu_execution_pools: HashMap<usize, GpuExecutionPool>,
+    gpu_execution_query_tracker: GpuExecutionQueryTracker,
     _governor_claim: Option<GovernorClaimLease>,
     host_fetch_budget: HostFetchBudget,
     source_fetch_concurrency: SourceFetchConcurrencyGate,
@@ -234,6 +237,17 @@ struct QueryServiceResources {
 }
 
 impl QueryServiceResources {
+    fn gpu_execution_pool_for_device(&self, device_ordinal: usize) -> Result<GpuExecutionPool> {
+        self.gpu_execution_pools.get(&device_ordinal).cloned().ok_or_else(|| {
+            QueryError::new(
+                QueryErrorCode::InvalidPlan,
+                "nexus_query_engine.query_service.gpu_execution_pool",
+                "query service GPU execution pool is not configured for the selected device",
+            )
+            .with_fact("device_ordinal", device_ordinal)
+        })
+    }
+
     fn local_parquet_source_cache_for_device(&self, device_ordinal: usize) -> Option<Arc<GpuLocalParquetSourceCache>> {
         self.local_parquet_source_caches.get(&device_ordinal).map(Arc::clone)
     }
@@ -503,6 +517,19 @@ impl QueryService {
             registry_config = registry_config.with_device_capacity_bytes(device_capacity_bytes);
         }
         let devices = super::DeviceRegistry::install(&super::CudfInventory, &registry_config)?;
+        let gpu_execution_query_tracker = GpuExecutionQueryTracker::new();
+        let gpu_execution_worker_count = gpu_execution_worker_count_per_device(&config);
+        let gpu_execution_pools = devices
+            .contexts()
+            .map(|device| {
+                GpuExecutionPool::new_with_tracker(
+                    device.device().ordinal(),
+                    gpu_execution_worker_count,
+                    gpu_execution_query_tracker.clone(),
+                )
+                .map(|pool| (device.device().ordinal(), pool))
+            })
+            .collect::<Result<HashMap<_, _>>>()?;
         let local_parquet_source_caches =
             local_parquet_source_caches_for_devices(&devices, config.local_parquet_source_cache_max_retained_bytes)?;
         #[cfg(feature = "cugraph")]
@@ -513,6 +540,8 @@ impl QueryService {
         )?;
         let resources = QueryServiceResources {
             devices,
+            gpu_execution_pools,
+            gpu_execution_query_tracker,
             _governor_claim: None,
             host_fetch_budget: HostFetchBudget::new(
                 config.source_fetch.host_fetch_budget_bytes.unwrap_or_else(default_host_fetch_budget_bytes),
@@ -1781,6 +1810,9 @@ impl QueryService {
                     return;
                 },
             };
+            if guard.cleanup_in_progress != 0 {
+                return;
+            }
             if guard.queued.is_empty() {
                 service.grow_active_adaptive_grants_locked(&mut guard);
             }
@@ -1800,6 +1832,9 @@ impl QueryService {
                     return;
                 },
             };
+            if guard.cleanup_in_progress != 0 {
+                return;
+            }
             if guard.queued.is_empty() {
                 service.grow_active_adaptive_grants_locked(&mut guard);
             }
@@ -2109,6 +2144,28 @@ impl QueryService {
         resources.devices.memory_failure_reports()
     }
 
+    /// Returns one dedicated GPU execution-pool report per service device.
+    pub fn gpu_execution_pool_reports(&self) -> Vec<GpuExecutionPoolSnapshot> {
+        let Some(resources) = &self.inner.resources else {
+            return Vec::new();
+        };
+        resources
+            .devices
+            .device_ordinals()
+            .iter()
+            .filter_map(|ordinal| resources.gpu_execution_pools.get(ordinal).map(GpuExecutionPool::snapshot))
+            .collect()
+    }
+
+    /// Returns the exact current and peak query concurrency across all service GPU pools.
+    pub fn gpu_execution_query_report(&self) -> GpuExecutionQuerySnapshot {
+        self.inner
+            .resources
+            .as_ref()
+            .map(|resources| resources.gpu_execution_query_tracker.snapshot())
+            .unwrap_or(GpuExecutionQuerySnapshot { active_query_jobs: 0, peak_active_query_jobs: 0 })
+    }
+
     /// Blocks until every created service runtime has completed background
     /// stream cleanup and returned to its per-device pool.
     ///
@@ -2412,6 +2469,10 @@ fn resident_graph_caches_for_ordinals(
 
 #[cfg(feature = "cugraph")]
 fn resident_graph_cache_max_copies_per_key(config: &QueryServiceConfig) -> usize {
+    config.max_queries_per_device.unwrap_or(config.max_concurrent_queries).min(config.max_concurrent_queries)
+}
+
+fn gpu_execution_worker_count_per_device(config: &QueryServiceConfig) -> usize {
     config.max_queries_per_device.unwrap_or(config.max_concurrent_queries).min(config.max_concurrent_queries)
 }
 

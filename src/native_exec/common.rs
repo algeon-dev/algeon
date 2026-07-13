@@ -15,7 +15,7 @@ use std::{
 
 use arrow::{datatypes::SchemaRef, record_batch::RecordBatch};
 use datafusion::{
-    common::{Result as DataFusionResult, utils::memory::get_record_batch_memory_size},
+    common::{DataFusionError, Result as DataFusionResult, utils::memory::get_record_batch_memory_size},
     execution::{
         context::TaskContext,
         memory_pool::{MemoryConsumer, MemoryReservation},
@@ -27,7 +27,7 @@ use datafusion::{
     },
 };
 use futures::Stream;
-use nexus_query_engine::{PlanNode, QueryPlan, SourceNode};
+use nexus_query_engine::{GpuExecutionJobKind, GpuExecutionPool, PlanNode, QueryPlan, SourceNode};
 
 use crate::error::{Error, ErrorCode};
 
@@ -152,6 +152,21 @@ where
         state: NativeHostOutputState::Loading(Box::pin(future)),
         reservation: None,
     })
+}
+
+/// Runs a host-facing native query future on its device's dedicated GPU executor.
+pub(crate) async fn run_gpu_execution_task<F, T>(
+    pool: GpuExecutionPool,
+    operation: &'static str,
+    future: F,
+) -> DataFusionResult<T>
+where
+    F: Future<Output = DataFusionResult<T>> + Send + 'static,
+    T: Send + 'static,
+{
+    pool.run(GpuExecutionJobKind::QueryExecution, future).await.map_err(|error| {
+        DataFusionError::from(native_query_runtime_error(operation, "dedicated GPU execution task failed", error))
+    })?
 }
 
 /// Collects `input_name`s of every GPU-resident source node in the plan.

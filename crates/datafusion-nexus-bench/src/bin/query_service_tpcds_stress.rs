@@ -88,8 +88,9 @@ async fn main() -> DataFusionResult<()> {
     if config.run_overload_probe {
         rows.push(run_overload_probe(&config)?);
     }
-    rows.extend(run_stress(&config, Arc::clone(&cpu_baselines)).await?);
-    let report = StressReport { config, dataset, rows };
+    let stress = run_stress(&config, Arc::clone(&cpu_baselines)).await?;
+    rows.extend(stress.rows);
+    let report = StressReport { config, dataset, rows, effective_active_max: stress.effective_active_max };
     print!("{}", report.to_tsv());
     Ok(())
 }
@@ -327,6 +328,12 @@ struct StressReport {
     config: StressConfig,
     dataset: TpcdsDatasetMetadata,
     rows: Vec<StressRow>,
+    effective_active_max: usize,
+}
+
+struct StressRun {
+    rows: Vec<StressRow>,
+    effective_active_max: usize,
 }
 
 impl StressReport {
@@ -339,6 +346,7 @@ impl StressReport {
         output.push_str(&format!("# tenant_want_grant_bytes={}\n", self.config.tenant_want_grant_bytes));
         output.push_str(&format!("# slot_guarantee={}\n", slot_guarantee_name(self.config.slot_guarantee)));
         output.push_str(&format!("# max_concurrent_queries={}\n", self.config.max_concurrent_queries));
+        output.push_str(&format!("# effective_active_max={}\n", self.effective_active_max));
         output.push_str(&format!("# max_admission_queue_len={}\n", self.config.max_admission_queue_len));
         output.push_str(&format!("# query_timeout_ms={}\n", self.config.query_timeout.as_millis()));
         for summary in tenant_summaries(&self.rows) {
@@ -431,7 +439,7 @@ async fn compute_cpu_baselines(config: &StressConfig) -> DataFusionResult<HashMa
 async fn run_stress(
     config: &StressConfig,
     cpu_baselines: Arc<HashMap<String, CpuBaseline>>,
-) -> DataFusionResult<Vec<StressRow>> {
+) -> DataFusionResult<StressRun> {
     let service = Arc::new(
         QueryService::new(
             config.service_config(),
@@ -465,7 +473,8 @@ async fn run_stress(
         );
     }
     rows.sort_by_key(|row| row.request_index);
-    Ok(rows)
+    let effective_active_max = service.gpu_execution_query_report().peak_active_query_jobs;
+    Ok(StressRun { rows, effective_active_max })
 }
 
 async fn run_native_request(

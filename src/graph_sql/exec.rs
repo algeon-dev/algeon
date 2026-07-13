@@ -61,6 +61,7 @@ use crate::{
         GpuResidentProducerExec, NativeCudfComposedExec, NativeCudfExec, NativeCudfExecutionConfig,
         NativeCudfGpuProducerExec, NativeCudfMetrics, admission::task_context_with_query_admission_ticket,
         gpu_resident_producer as native_gpu_resident_producer, query_admission_ticket_from_task_context,
+        run_gpu_execution_task,
     },
 };
 
@@ -450,7 +451,6 @@ impl ExecutionPlan for CugraphAlgoExec {
             NativeCudfMetrics::new_with_capture(&self.metrics, partition, default_execution_config.metrics_capture());
         self.validate_standalone_bounded_sources()?;
         let output = futures::stream::once(async move {
-            let _elapsed_compute = metrics.baseline.elapsed_compute().timer();
             let execution_config = cugraph_execution_config_for_task_context(
                 edge_source.as_ref(),
                 &default_execution_config,
@@ -475,69 +475,76 @@ impl ExecutionPlan for CugraphAlgoExec {
             if let Some(admission_facts) = context_lease.admission_facts() {
                 metrics.record_admission_facts(admission_facts);
             }
-            let context = context_lease.context();
-            let execution_task_context =
-                context_lease.task_context().map(Arc::clone).unwrap_or_else(|| Arc::clone(&task_context));
-            let edge_schema = edge_source.schema();
-            let (edge_frame, mut source_metrics) =
-                execute_edge_source_to_gpu(context, Arc::clone(&edge_source), Arc::clone(&execution_task_context))
-                    .await?;
-            let edge_frame = attach_graph_residency(edge_frame, graph_residency.as_ref(), edge_schema.as_ref(), &spec);
-            let (predicate_frames, predicate_source_metrics) =
-                execute_predicate_sources_to_gpu(context, &predicate_sources, Arc::clone(&execution_task_context))
-                    .await?;
-            source_metrics.merge_from(predicate_source_metrics);
-            let path_target = bfs_path_target_vertex(context, &spec, &predicate_frames)?;
-            let prepared = prepare_bfs_logical_gpu_inputs(context, &spec, edge_schema, edge_frame, predicate_frames)?;
-            let (batch, mut query_metrics) = if let Some(codebook) = prepared.logical_codebook {
-                let (handle, query_metrics) = execute_cugraph_query_to_gpu_with_options(
-                    context,
-                    &prepared.execution_spec,
-                    prepared.edge_schema,
-                    prepared.edge_frame,
-                    prepared.predicate_frames,
-                    None,
-                    None,
-                    edge_normalize_inserted,
-                )?;
-                let decoded_schema = bfs_decoded_output_schema_for_host(&spec);
-                let decoded = decode_bfs_logical_gpu_output(context, handle, &codebook, decoded_schema)?;
-                let batch = decoded.to_host_record_batch().map_err(|error| {
-                    DataFusionError::from(Error::from_native(
-                        "datafusion_nexus.cugraph_sql.logical_output",
-                        "failed to materialize decoded cuGraph logical BFS output",
-                        error,
-                    ))
-                })?;
-                let batch = if let Some(target) = path_target {
-                    reconstruct_bfs_path_batch(&spec, &batch, target)?
+            let gpu_execution_pool = context_lease.context().gpu_execution_pool();
+            run_gpu_execution_task(gpu_execution_pool, "datafusion_nexus.cugraph_sql.gpu_execution_pool", async move {
+                let _elapsed_compute = metrics.baseline.elapsed_compute().timer();
+                let context = context_lease.context();
+                let execution_task_context =
+                    context_lease.task_context().map(Arc::clone).unwrap_or_else(|| Arc::clone(&task_context));
+                let edge_schema = edge_source.schema();
+                let (edge_frame, mut source_metrics) =
+                    execute_edge_source_to_gpu(context, Arc::clone(&edge_source), Arc::clone(&execution_task_context))
+                        .await?;
+                let edge_frame =
+                    attach_graph_residency(edge_frame, graph_residency.as_ref(), edge_schema.as_ref(), &spec);
+                let (predicate_frames, predicate_source_metrics) =
+                    execute_predicate_sources_to_gpu(context, &predicate_sources, Arc::clone(&execution_task_context))
+                        .await?;
+                source_metrics.merge_from(predicate_source_metrics);
+                let path_target = bfs_path_target_vertex(context, &spec, &predicate_frames)?;
+                let prepared =
+                    prepare_bfs_logical_gpu_inputs(context, &spec, edge_schema, edge_frame, predicate_frames)?;
+                let (batch, mut query_metrics) = if let Some(codebook) = prepared.logical_codebook {
+                    let (handle, query_metrics) = execute_cugraph_query_to_gpu_with_options(
+                        context,
+                        &prepared.execution_spec,
+                        prepared.edge_schema,
+                        prepared.edge_frame,
+                        prepared.predicate_frames,
+                        None,
+                        None,
+                        edge_normalize_inserted,
+                    )?;
+                    let decoded_schema = bfs_decoded_output_schema_for_host(&spec);
+                    let decoded = decode_bfs_logical_gpu_output(context, handle, &codebook, decoded_schema)?;
+                    let batch = decoded.to_host_record_batch().map_err(|error| {
+                        DataFusionError::from(Error::from_native(
+                            "datafusion_nexus.cugraph_sql.logical_output",
+                            "failed to materialize decoded cuGraph logical BFS output",
+                            error,
+                        ))
+                    })?;
+                    let batch = if let Some(target) = path_target {
+                        reconstruct_bfs_path_batch(&spec, &batch, target)?
+                    } else {
+                        batch
+                    };
+                    (project_and_limit_host_batch(batch, projection.as_ref(), limit)?, query_metrics)
                 } else {
-                    batch
+                    let (batch, query_metrics) = execute_cugraph_query_to_host(
+                        context,
+                        &spec,
+                        prepared.edge_schema,
+                        prepared.edge_frame,
+                        prepared.predicate_frames,
+                        if path_target.is_some() { None } else { projection.as_ref() },
+                        if path_target.is_some() { None } else { limit },
+                        edge_normalize_inserted,
+                    )?;
+                    let batch = if let Some(target) = path_target {
+                        let path = reconstruct_bfs_path_batch(&spec, &batch, target)?;
+                        project_and_limit_host_batch(path, projection.as_ref(), limit)?
+                    } else {
+                        batch
+                    };
+                    (batch, query_metrics)
                 };
-                (project_and_limit_host_batch(batch, projection.as_ref(), limit)?, query_metrics)
-            } else {
-                let (batch, query_metrics) = execute_cugraph_query_to_host(
-                    context,
-                    &spec,
-                    prepared.edge_schema,
-                    prepared.edge_frame,
-                    prepared.predicate_frames,
-                    if path_target.is_some() { None } else { projection.as_ref() },
-                    if path_target.is_some() { None } else { limit },
-                    edge_normalize_inserted,
-                )?;
-                let batch = if let Some(target) = path_target {
-                    let path = reconstruct_bfs_path_batch(&spec, &batch, target)?;
-                    project_and_limit_host_batch(path, projection.as_ref(), limit)?
-                } else {
-                    batch
-                };
-                (batch, query_metrics)
-            };
-            query_metrics.merge_from(source_metrics);
-            metrics.record_query_metrics(&query_metrics);
-            metrics.record_lakehouse_cache_fill_events(&context.drain_lakehouse_cache_fill_event_snapshots());
-            Ok::<Option<RecordBatch>, DataFusionError>(Some(batch.record_output(&metrics.baseline)))
+                query_metrics.merge_from(source_metrics);
+                metrics.record_query_metrics(&query_metrics);
+                metrics.record_lakehouse_cache_fill_events(&context.drain_lakehouse_cache_fill_event_snapshots());
+                Ok::<Option<RecordBatch>, DataFusionError>(Some(batch.record_output(&metrics.baseline)))
+            })
+            .await
         })
         .try_filter_map(|batch| async move { Ok(batch) });
 
