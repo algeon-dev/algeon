@@ -9,7 +9,7 @@ build = "build.rs"
 [features]
 default = []
 cugraph = ["dep:cugraph", "dep:cugraph-sys"]
-# Optional NVML utilization facts; memory capacity and SM count use cudf-rs CUDA/RMM inventory.
+# Optional live NVML diagnostics; admission capacity and SM count remain on cudf-rs CUDA/RMM inventory.
 nvml = ["dep:nvml-wrapper"]
 
 [lints]

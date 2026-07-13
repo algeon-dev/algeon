@@ -18,7 +18,7 @@ use datafusion_nexus::{
     NativeDataFusionPlanningReport, NativeDataFusionPlanningRow, NativeDataFusionPostNativeExecutionPath,
     TableFormatScanRequest, load_glue_table,
 };
-use datafusion_nexus_bench::tpch_report_session_config;
+use datafusion_nexus_bench::{stress_harness::validate_synchronized_admission_queue, tpch_report_session_config};
 use nexus_query_engine::{QueryError, QueryService, QueryServiceConfig, QueryServiceTenantConfig, TenantId};
 use tokio::sync::Barrier;
 
@@ -146,12 +146,22 @@ impl StressConfig {
         validate_nonzero(TENANT_BUDGET_BYTES_ENV, self.tenant_budget_bytes)?;
         validate_nonzero(MAX_CONCURRENT_QUERIES_ENV, self.max_concurrent_queries)?;
         validate_nonzero(MAX_ADMISSION_QUEUE_LEN_ENV, self.max_admission_queue_len)?;
+        validate_synchronized_admission_queue(
+            MAX_ADMISSION_QUEUE_LEN_ENV,
+            self.max_admission_queue_len,
+            self.synchronized_request_count(),
+        )
+        .map_err(plan_error)?;
         validate_nonzero(MAX_SOURCE_CHUNK_BYTES_ENV, self.max_source_chunk_bytes)?;
         validate_nonzero(MAX_ROW_GROUPS_PER_CHUNK_ENV, self.max_row_groups_per_chunk)?;
         if self.admission_wait_timeout.is_zero() {
             return Err(plan_error(format!("{ADMISSION_WAIT_TIMEOUT_MS_ENV} must be greater than zero")));
         }
         Ok(())
+    }
+
+    fn synchronized_request_count(&self) -> usize {
+        self.tenants.len().saturating_mul(self.iterations)
     }
 
     fn service_config(&self) -> QueryServiceConfig {
@@ -819,6 +829,23 @@ fn plan_error(message: impl Into<String>) -> DataFusionError {
 mod tests {
     use super::*;
 
+    fn queue_test_config() -> StressConfig {
+        StressConfig {
+            glue: GlueIcebergTableConfig::new("glue", "db", "table", "s3://warehouse", "us-east-1"),
+            table_alias: "iceberg_t".to_string(),
+            sql: "select count(*) from iceberg_t".to_string(),
+            tenants: vec![TenantId::new("a"), TenantId::new("b")],
+            iterations: 2,
+            tenant_budget_bytes: 1,
+            max_concurrent_queries: 1,
+            max_admission_queue_len: 3,
+            admission_wait_timeout: Duration::from_secs(1),
+            max_source_chunk_bytes: 1,
+            max_row_groups_per_chunk: 1,
+            run_overload_probe: false,
+        }
+    }
+
     #[test]
     fn scalar_u64_reads_common_count_types() {
         let values = arrow::array::Int64Array::from(vec![42]);
@@ -860,5 +887,15 @@ mod tests {
             error: StructuredFailure::default(),
         };
         assert_eq!(row.to_tsv_line().split('\t').count(), TSV_COLUMNS.len());
+    }
+
+    #[test]
+    fn stress_config_rejects_queue_smaller_than_synchronized_wave() {
+        let config = queue_test_config();
+
+        let error = config.validate().unwrap_err();
+
+        assert!(error.to_string().contains(MAX_ADMISSION_QUEUE_LEN_ENV));
+        assert!(error.to_string().contains("synchronized request count (4)"));
     }
 }

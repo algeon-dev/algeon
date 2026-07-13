@@ -27,8 +27,8 @@ The split:
 ```bash
 # 1. Stage the binary + forked libs (compiles; strips/re-homes RUNPATHs when
 #    host tools are available).
-bash docker/build.sh                          # full: server,iceberg,cugraph
-FEATURES=server,iceberg bash docker/build.sh  # lean: cuDF only, ~3x smaller image
+bash docker/build.sh                               # full: server,iceberg,cugraph,nvml
+FEATURES=server,iceberg,nvml bash docker/build.sh  # lean: cuDF only, ~3x smaller image
 SKIP_CARGO_BUILD=1 bash docker/build.sh        # reuse an existing target/release build
 
 # 2. Build the image (feature-agnostic: bundles whatever build.sh staged,
@@ -49,7 +49,7 @@ mostly via the CUDA math libraries it pulls (`libcublasLt` alone is ~517 MB):
 
 | Build | Forked libs | Harvested CUDA | ≈ Final image |
 |---|---|---|---|
-| **lean** (`server,iceberg`) | ~180 MB | ~110 MB (cudart + nvrtc) | **~0.6 GB** |
+| **lean** (`server,iceberg,nvml`) | ~180 MB | ~110 MB (cudart + nvrtc) | **~0.6 GB** |
 | **full** (`+cugraph`) | ~480 MB | ~1.2 GB (+ cublasLt/cusparse/cusolver/curand/nvJitLink) | **~2 GB** |
 
 When `strip` is available, staged artifacts are stripped

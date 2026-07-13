@@ -139,7 +139,7 @@ impl ServerError {
     }
 
     #[must_use]
-    fn with_fact(mut self, key: &'static str, value: impl ToString) -> Self {
+    pub(crate) fn with_fact(mut self, key: &'static str, value: impl ToString) -> Self {
         self.inner = self.inner.with_fact(key, value);
         self
     }

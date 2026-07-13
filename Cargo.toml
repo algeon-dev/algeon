@@ -67,7 +67,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 [features]
 default = []
 cugraph = ["dep:cugraph", "dep:cugraph-sys", "nexus-query-engine/cugraph"]
-# Optional NVML utilization facts; memory capacity and SM count use cudf-rs CUDA/RMM inventory.
+# Optional live NVML diagnostics; admission capacity and SM count remain on cudf-rs CUDA/RMM inventory.
 nvml = ["nexus-query-engine/nvml"]
 iceberg = [
   "dep:aws-config",

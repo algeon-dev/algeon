@@ -522,6 +522,16 @@ enum DurationZeroPolicy {
 struct ServerAdmissionPlacementConfig {
     max_queries_per_device: Option<NativeConfigValue<usize>>,
     placement_policy: QueryPlacementPolicy,
+    placement_policy_field: Option<&'static str>,
+    pinned_device_ordinal_field: Option<&'static str>,
+}
+
+#[derive(Debug, Clone)]
+struct ServerAdmissionPolicyConfig {
+    policy: NexusAdmissionPolicy,
+    grant_min_field: Option<&'static str>,
+    grant_want_field: Option<&'static str>,
+    slot_guarantee_field: Option<&'static str>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -737,24 +747,24 @@ impl ServerConfig {
         let admission_limit_explicit = values
             .any_present([NEXUS_SERVER_MAX_CONCURRENT_QUERIES_ENV, NEXUS_SERVER_MAX_IN_FLIGHT_ENV])
             || overlay.admission.max_concurrent_queries.is_some();
-        let explicit_admission_memory_field = first_present_admission_memory_field(&mut values, &overlay.admission);
         let gpu_devices = server_gpu_devices(&mut values)?;
         let admission_workload_profile = server_admission_workload_profile(&mut values, &overlay.admission)?;
         let admission_placement = server_admission_placement_config(&mut values, &overlay.admission, &gpu_devices)?;
         let max_concurrent_queries = server_max_concurrent_queries(
             &mut values,
             &overlay.admission,
-            admission_workload_profile,
+            admission_workload_profile.value,
             server_placement_eligible_device_count(gpu_devices.len(), admission_placement.placement_policy),
         )?;
         let mut max_in_flight = max_concurrent_queries.value;
-        let mut admission_policy = server_admission_policy(
+        let admission = server_admission_policy(
             &mut values,
             &overlay.admission,
             max_in_flight,
             admission_workload_profile,
             admission_placement,
         )?;
+        let mut admission_policy = admission.policy.clone();
         let cpu_fallback_max_concurrent_statements =
             server_cpu_fallback_max_concurrent_statements(&mut values, &overlay.fallback)?;
         let cpu_fallback_wait_timeout = server_cpu_fallback_wait_timeout(&mut values, &overlay.fallback)?;
@@ -764,6 +774,7 @@ impl ServerConfig {
         );
         let mut native_optimizer_config =
             native_optimizer_config(&mut values, &overlay.native, &gpu_devices, device_budget_fraction)?;
+        validate_admission_grant_min_capacity(&admission, &native_optimizer_config)?;
         if let Some(limit) = cpu_fallback_max_concurrent_statements {
             native_optimizer_config = native_optimizer_config
                 .with_cpu_fallback_wait_timeout(cpu_fallback_wait_timeout.unwrap_or(Duration::ZERO))
@@ -824,7 +835,8 @@ impl ServerConfig {
         if matches!(
             native_optimizer_config.native_execution_config().memory_control_policy(),
             MemoryControlPolicy::Unbounded
-        ) && let Some(field) = explicit_admission_memory_field
+        ) && let Some(field) =
+            first_non_neutral_unbounded_admission_field(admission_workload_profile, &admission, admission_placement)
         {
             return Err(ServerError::invalid_config(field, "requires bounded native memory policy"));
         }
@@ -866,19 +878,22 @@ fn load_overlay(path: &std::path::Path) -> Result<ServerFileOverlay> {
 fn server_admission_workload_profile(
     values: &mut EnvValues<'_>,
     file: &ServerAdmissionFileConfig,
-) -> Result<ServerAdmissionWorkloadProfile> {
-    optional_native_string(
+) -> Result<NativeConfigValue<ServerAdmissionWorkloadProfile>> {
+    let selected = optional_native_string(
         values,
         NEXUS_SERVER_ADMISSION_WORKLOAD_PROFILE_ENV,
         "admission.workload_profile",
         file.workload_profile.as_deref(),
-    )
-    .map(|raw| {
-        ServerAdmissionWorkloadProfile::parse(&raw.value)
-            .map_err(|reason| ServerError::invalid_config(raw.field, reason))
-    })
-    .transpose()
-    .map(|profile| profile.unwrap_or(ServerAdmissionWorkloadProfile::Balanced))
+    );
+    match selected {
+        Some(raw) => ServerAdmissionWorkloadProfile::parse(&raw.value)
+            .map(|profile| NativeConfigValue::new(profile, raw.field))
+            .map_err(|reason| ServerError::invalid_config(raw.field, reason)),
+        None => Ok(NativeConfigValue::new(
+            ServerAdmissionWorkloadProfile::Balanced,
+            NEXUS_SERVER_ADMISSION_WORKLOAD_PROFILE_ENV,
+        )),
+    }
 }
 
 fn server_max_concurrent_queries(
@@ -950,6 +965,7 @@ fn server_admission_placement_config(
         placement_policy.as_ref().is_some_and(|raw| raw.field == NEXUS_SERVER_ADMISSION_PLACEMENT_POLICY_ENV);
     let pinned_device_ordinal_from_file =
         pinned_device_ordinal.as_ref().is_some_and(|value| value.field == "admission.pinned_device_ordinal");
+    let placement_policy_field = placement_policy.as_ref().map(|raw| raw.field);
     let placement_policy = placement_policy
         .map(|raw| parse_query_placement_policy(raw.field, &raw.value, pinned_device_ordinal))
         .transpose()?
@@ -966,21 +982,33 @@ fn server_admission_placement_config(
         && !matches!(placement_policy, QueryPlacementPolicy::Pinned { .. })
         && !(placement_policy_env_override && pinned_device_ordinal_from_file)
     {
+        let conflicting_field = placement_policy_field
+            .unwrap_or_else(|| placement_policy_field_for_pinned_source(pinned_device_ordinal.field));
         return Err(ServerError::invalid_config(
             pinned_device_ordinal.field,
-            format!("requires {NEXUS_SERVER_ADMISSION_PLACEMENT_POLICY_ENV}=pinned"),
-        ));
+            format!("requires {conflicting_field}=pinned"),
+        )
+        .with_fact("reason", "pinned_device_requires_pinned_placement")
+        .with_fact("conflicting_config_field", conflicting_field));
     }
-    Ok(ServerAdmissionPlacementConfig { max_queries_per_device, placement_policy })
+    let pinned_device_ordinal_field = pinned_device_ordinal
+        .filter(|_| !(placement_policy_env_override && pinned_device_ordinal_from_file))
+        .map(|value| value.field);
+    Ok(ServerAdmissionPlacementConfig {
+        max_queries_per_device,
+        placement_policy,
+        placement_policy_field,
+        pinned_device_ordinal_field,
+    })
 }
 
 fn server_admission_policy(
     values: &mut EnvValues<'_>,
     file: &ServerAdmissionFileConfig,
     max_in_flight: usize,
-    workload_profile: ServerAdmissionWorkloadProfile,
+    workload_profile: NativeConfigValue<ServerAdmissionWorkloadProfile>,
     placement: ServerAdmissionPlacementConfig,
-) -> Result<NexusAdmissionPolicy> {
+) -> Result<ServerAdmissionPolicyConfig> {
     let min = optional_admission_memory_share(
         values,
         NEXUS_SERVER_ADMISSION_GRANT_MIN_ENV,
@@ -993,7 +1021,12 @@ fn server_admission_policy(
         "admission.grant_want",
         file.grant_want.as_ref(),
     )?;
-    let profile_default_min = workload_profile.default_grant_min();
+    let grant_min_field = min
+        .as_ref()
+        .map(|value| value.field)
+        .or_else(|| workload_profile.value.default_grant_min().map(|_| workload_profile.field));
+    let grant_want_field = want.as_ref().map(|value| value.field);
+    let profile_default_min = workload_profile.value.default_grant_min();
     if let (Some(min), Some(want)) = (min.map(|value| value.value).or(profile_default_min), &want) {
         validate_comparable_memory_share_order(min, want.value, want.field)?;
     }
@@ -1002,10 +1035,12 @@ fn server_admission_policy(
         NEXUS_SERVER_ADMISSION_SLOT_GUARANTEE_ENV,
         "admission.slot_guarantee",
         file.slot_guarantee.as_deref(),
-    )
-    .map(|raw| parse_slot_guarantee(raw.field, &raw.value))
-    .transpose()?
-    .unwrap_or(workload_profile.default_slot_guarantee());
+    );
+    let slot_guarantee_field = slot_guarantee.as_ref().map(|raw| raw.field);
+    let slot_guarantee = slot_guarantee
+        .map(|raw| parse_slot_guarantee(raw.field, &raw.value))
+        .transpose()?
+        .unwrap_or(workload_profile.value.default_slot_guarantee());
     let wait_timeout = optional_duration_millis(
         values,
         NEXUS_SERVER_ADMISSION_WAIT_TIMEOUT_MS_ENV,
@@ -1028,7 +1063,7 @@ fn server_admission_policy(
     if let Some(want) = want {
         policy = policy.with_grant_want(want.value);
     }
-    Ok(policy)
+    Ok(ServerAdmissionPolicyConfig { policy, grant_min_field, grant_want_field, slot_guarantee_field })
 }
 
 fn server_placement_eligible_device_count(device_count: usize, placement_policy: QueryPlacementPolicy) -> usize {
@@ -1096,53 +1131,52 @@ fn validate_comparable_memory_share_order(min: MemoryShare, want: MemoryShare, w
     }
 }
 
-fn first_present_admission_memory_field(
-    values: &mut EnvValues<'_>,
-    file: &ServerAdmissionFileConfig,
+fn validate_admission_grant_min_capacity(
+    admission: &ServerAdmissionPolicyConfig,
+    optimizer: &CudfOptimizerConfig,
+) -> Result<()> {
+    let MemoryControlPolicy::Bounded { device_budget_bytes: device_capacity_bytes, .. } =
+        optimizer.native_execution_config().memory_control_policy()
+    else {
+        return Ok(());
+    };
+    let MemoryShare::Bytes(grant_min_bytes) = admission.policy.grant().min else {
+        return Ok(());
+    };
+    if grant_min_bytes <= device_capacity_bytes {
+        return Ok(());
+    }
+    let field = admission.grant_min_field.unwrap_or(NEXUS_SERVER_ADMISSION_GRANT_MIN_ENV);
+    Err(ServerError::invalid_config(field, "minimum admission grant exceeds per-device capacity")
+        .with_fact("reason", "admission_grant_min_above_device_capacity")
+        .with_fact("grant_min_bytes", grant_min_bytes)
+        .with_fact("device_capacity_bytes", device_capacity_bytes))
+}
+
+fn first_non_neutral_unbounded_admission_field(
+    workload_profile: NativeConfigValue<ServerAdmissionWorkloadProfile>,
+    admission: &ServerAdmissionPolicyConfig,
+    placement: ServerAdmissionPlacementConfig,
 ) -> Option<&'static str> {
-    if values.string(NEXUS_SERVER_ADMISSION_WORKLOAD_PROFILE_ENV).is_some() {
-        return Some(NEXUS_SERVER_ADMISSION_WORKLOAD_PROFILE_ENV);
+    if workload_profile.value != ServerAdmissionWorkloadProfile::Balanced {
+        return Some(workload_profile.field);
     }
-    if values.string(NEXUS_SERVER_ADMISSION_GRANT_MIN_ENV).is_some() {
-        return Some(NEXUS_SERVER_ADMISSION_GRANT_MIN_ENV);
+    if let Some(field) = admission.grant_min_field {
+        return Some(field);
     }
-    if values.string(NEXUS_SERVER_ADMISSION_GRANT_WANT_ENV).is_some() {
-        return Some(NEXUS_SERVER_ADMISSION_GRANT_WANT_ENV);
+    if let Some(field) = admission.grant_want_field {
+        return Some(field);
     }
-    if values.string(NEXUS_SERVER_ADMISSION_SLOT_GUARANTEE_ENV).is_some() {
-        return Some(NEXUS_SERVER_ADMISSION_SLOT_GUARANTEE_ENV);
+    if let Some(field) = admission.slot_guarantee_field {
+        return Some(field);
     }
-    if values.string(NEXUS_SERVER_ADMISSION_PLACEMENT_POLICY_ENV).is_some() {
-        return Some(NEXUS_SERVER_ADMISSION_PLACEMENT_POLICY_ENV);
+    if placement.placement_policy != QueryPlacementPolicy::LeastLoaded {
+        return placement.placement_policy_field;
     }
-    if values.string(NEXUS_SERVER_ADMISSION_PINNED_DEVICE_ENV).is_some() {
-        return Some(NEXUS_SERVER_ADMISSION_PINNED_DEVICE_ENV);
+    if let Some(field) = placement.pinned_device_ordinal_field {
+        return Some(field);
     }
-    if values.string(NEXUS_SERVER_ADMISSION_MAX_QUERIES_PER_DEVICE_ENV).is_some() {
-        return Some(NEXUS_SERVER_ADMISSION_MAX_QUERIES_PER_DEVICE_ENV);
-    }
-    if file.grant_min.is_some() {
-        return Some("admission.grant_min");
-    }
-    if file.workload_profile.is_some() {
-        return Some("admission.workload_profile");
-    }
-    if file.grant_want.is_some() {
-        return Some("admission.grant_want");
-    }
-    if file.slot_guarantee.is_some() {
-        return Some("admission.slot_guarantee");
-    }
-    if file.placement_policy.is_some() {
-        return Some("admission.placement_policy");
-    }
-    if file.pinned_device_ordinal.is_some() {
-        return Some("admission.pinned_device_ordinal");
-    }
-    if file.max_queries_per_device.is_some() {
-        return Some("admission.max_queries_per_device");
-    }
-    None
+    placement.max_queries_per_device.map(|value| value.field)
 }
 
 fn server_gpu_devices(values: &mut EnvValues<'_>) -> Result<Vec<usize>> {
@@ -1733,10 +1767,10 @@ fn parse_query_placement_policy(
         "best_fit" | "best-fit" => Ok(QueryPlacementPolicy::BestFit),
         "pinned" => {
             let Some(device_ordinal) = pinned_device_ordinal else {
-                return Err(ServerError::invalid_config(
-                    field,
-                    format!("requires {NEXUS_SERVER_ADMISSION_PINNED_DEVICE_ENV}"),
-                ));
+                let required_field = pinned_device_field_for_placement_source(field);
+                return Err(ServerError::invalid_config(field, format!("requires {required_field}"))
+                    .with_fact("reason", "pinned_placement_missing_device_ordinal")
+                    .with_fact("required_config_field", required_field));
             };
             Ok(QueryPlacementPolicy::Pinned { device_ordinal: device_ordinal.value })
         },
@@ -1744,6 +1778,22 @@ fn parse_query_placement_policy(
             field,
             format!("must be `least_loaded`, `best_fit`, or `pinned`, got `{other}`"),
         )),
+    }
+}
+
+fn pinned_device_field_for_placement_source(placement_field: &'static str) -> &'static str {
+    if placement_field == NEXUS_SERVER_ADMISSION_PLACEMENT_POLICY_ENV {
+        NEXUS_SERVER_ADMISSION_PINNED_DEVICE_ENV
+    } else {
+        "admission.pinned_device_ordinal"
+    }
+}
+
+fn placement_policy_field_for_pinned_source(pinned_field: &'static str) -> &'static str {
+    if pinned_field == NEXUS_SERVER_ADMISSION_PINNED_DEVICE_ENV {
+        NEXUS_SERVER_ADMISSION_PLACEMENT_POLICY_ENV
+    } else {
+        "admission.placement_policy"
     }
 }
 

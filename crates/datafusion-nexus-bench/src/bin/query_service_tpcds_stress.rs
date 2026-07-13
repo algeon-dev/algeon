@@ -20,7 +20,8 @@ use datafusion_nexus::{
 use datafusion_nexus_bench::{
     CUDF_TPCDS_GENERATION_COMMAND_ENV, CUDF_TPCDS_PARQUET_DIR_ENV, CUDF_TPCDS_SCALE_FACTOR_ENV, TPCDS_QUERIES,
     TpcdsDatasetMetadata, TpcdsQuery, default_tpcds_sf1_parquet_root, describe_tpcds_dataset,
-    tpcds_native_report_session_config, tpcds_report_session_config,
+    stress_harness::validate_synchronized_admission_queue, tpcds_native_report_session_config,
+    tpcds_report_session_config,
 };
 use nexus_query_engine::{
     QueryError, QueryService, QueryServiceConfig, QueryServiceTenantConfig, SlotGuarantee, TenantId,
@@ -208,7 +209,19 @@ impl StressConfig {
         }
         validate_query_ids(&self.bulk_queries)?;
         validate_query_ids(&self.interactive_queries)?;
+        validate_synchronized_admission_queue(
+            MAX_ADMISSION_QUEUE_LEN_ENV,
+            self.max_admission_queue_len,
+            self.synchronized_request_count(),
+        )
+        .map_err(plan_error)?;
         Ok(())
+    }
+
+    fn synchronized_request_count(&self) -> usize {
+        self.bulk_queries.len().saturating_mul(self.bulk_iterations).saturating_add(
+            self.interactive_queries.len().saturating_mul(self.interactive_iterations).saturating_mul(2),
+        )
     }
 
     fn service_config(&self) -> QueryServiceConfig {
@@ -1068,6 +1081,27 @@ fn plan_error(message: impl Into<String>) -> DataFusionError {
 mod tests {
     use super::*;
 
+    fn queue_test_config() -> StressConfig {
+        StressConfig {
+            dataset_root: PathBuf::new(),
+            bulk_queries: vec!["q01".to_string()],
+            interactive_queries: vec!["q10".to_string()],
+            bulk_iterations: 1,
+            interactive_iterations: 1,
+            device_capacity_bytes: 100,
+            tenant_min_grant_bytes: 25,
+            tenant_want_grant_bytes: 50,
+            slot_guarantee: SlotGuarantee::GuaranteedMinimum,
+            max_concurrent_queries: 2,
+            max_admission_queue_len: 2,
+            admission_wait_timeout: Duration::from_secs(1),
+            max_source_chunk_bytes: 1,
+            max_row_groups_per_chunk: 1,
+            query_timeout: Duration::from_secs(1),
+            run_overload_probe: false,
+        }
+    }
+
     #[test]
     fn query_ids_reject_unknown_tpcds_id() {
         let error = validate_query_ids(&["q100".to_string()]).unwrap_err();
@@ -1105,5 +1139,15 @@ mod tests {
             error: StructuredFailure::default(),
         };
         assert_eq!(row.to_tsv_line().split('\t').count(), TSV_COLUMNS.len());
+    }
+
+    #[test]
+    fn stress_config_rejects_queue_smaller_than_synchronized_wave() {
+        let config = queue_test_config();
+
+        let error = config.validate().unwrap_err();
+
+        assert!(error.to_string().contains(MAX_ADMISSION_QUEUE_LEN_ENV));
+        assert!(error.to_string().contains("synchronized request count (3)"));
     }
 }
