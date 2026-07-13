@@ -1,0 +1,115 @@
+---
+sidebar_position: 4
+slug: /design/cache
+description: How DataFusion Nexus caches remote Parquet bytes, decoded cuDF source frames, and reusable cuGraph graphs, including configuration, eviction, and diagnostics.
+---
+
+# Cache Design and Use
+
+Nexus has three opt-in, server-configurable cross-query cache layers. They
+remove different work and have different capacity authorities; enabling one
+does not implicitly enable the others.
+
+| Layer | Stores | Scope and capacity |
+| --- | --- | --- |
+| Lakehouse byte cache | Complete remote Parquet objects on local storage | Filesystem-persistent. `NEXUS_LAKEHOUSE_CACHE_MAX_BYTES` is a best-effort retained-byte target. |
+| Decoded source cache | cuDF frames produced by exact Parquet scan contracts | Process-local, per device and runtime. VRAM is capped per device and charged to the memory governor as evictable bytes. |
+| Resident graph cache | Constructed cuGraph graphs parked between queries | Process-local and per device/runtime. VRAM is capped per device, governor-accounted, and available only with cuGraph enabled. |
+
+In unbounded native execution, query-local DAG results and repeated hash-join
+builds are memoized automatically for one execution. Bounded join execution
+deliberately does not use that hash-join repository. A durable hash-join build
+cache also exists as an embedder API, but the server does not enable it by
+default.
+
+## Recommended server setup
+
+This example enables all three server-configurable layers for a bounded cuGraph
+server:
+
+```bash
+NEXUS_LAKEHOUSE_CACHE_ROOT=/var/cache/datafusion-nexus/lakehouse \
+NEXUS_LAKEHOUSE_CACHE_POLICY=read_through \
+NEXUS_LAKEHOUSE_CACHE_MAX_BYTES=536870912000 \
+NEXUS_SERVER_NATIVE_SOURCE_CACHE_MAX_RETAINED_BYTES=8589934592 \
+NEXUS_SERVER_NATIVE_GRAPH_CACHE_MAX_RETAINED_BYTES=17179869184 \
+NEXUS_SERVER_CUGRAPH_ENABLED=true \
+flock /tmp/cudf-gpu.lock bash scripts/run_server.sh
+```
+
+The two VRAM caches require bounded native memory policy. They currently cannot
+be combined with
+`NEXUS_SERVER_NATIVE_QUERY_MEMORY_DOMAIN_CEILING_MULTIPLIER`: query-owned
+allocator domains cannot own data whose cache lifetime crosses queries, so
+startup rejects that combination. The graph cache also
+requires a build with the `cugraph` feature and
+`NEXUS_SERVER_CUGRAPH_ENABLED=true`. Both VRAM cap values must be positive;
+leaving a cap unset disables that VRAM cache.
+
+Treat the GPU caps as retained maxima, not reservations. Source frames, graphs,
+and active queries share the same device budget. Leave enough headroom for
+query grants and cuDF/cuGraph workspace instead of sizing both caches to the
+whole card.
+
+## Lakehouse byte cache
+
+The byte cache is used by remote table-format Parquet source resolution when
+`NEXUS_LAKEHOUSE_CACHE_ROOT` is set. A hit must be a complete object matching
+the planned metadata; partial or stale entries are not served.
+
+`NEXUS_LAKEHOUSE_CACHE_POLICY` controls misses:
+
+- `disabled`: read the selected remote path and do not fill a miss;
+- `read_through`: serve the foreground query remotely and enqueue a bounded
+  background complete-object fill;
+- `fill_before_read`: fetch and publish the complete local file before cuDF
+  opens it.
+
+`NEXUS_LAKEHOUSE_CACHE_READ=enabled` is the default. Set it to `bypass` or
+`disabled` to ignore hits for an isolated benchmark while retaining the files.
+Cache paths are scoped by credential-free storage-domain identity, content
+identity, and location fingerprint. Publication is completion-aware, active
+reads are pinned against eviction, and retention cleanup protects the file
+being filled or read.
+
+## Decoded source cache
+
+Set `NEXUS_SERVER_NATIVE_SOURCE_CACHE_MAX_RETAINED_BYTES` to retain decoded
+Parquet results on each configured GPU. The key covers the complete scan
+contract: source and file identities, schema, projected/read columns,
+predicates, row groups, limits, partition values, delete files, and bounded
+chunk boundaries. Runtime identity is also part of reuse, so a frame is never
+silently consumed through an incompatible cuDF runtime.
+
+Entries are LRU-evicted. A frame in use is pinned; memory pressure can evict
+idle entries synchronously before admission fails. A miss that cannot fit is a
+cache skip, not permission to exceed the device governor.
+
+## Resident graph cache
+
+Set `NEXUS_SERVER_NATIVE_GRAPH_CACHE_MAX_RETAINED_BYTES` to retain constructed
+graphs for repeat cuGraph calls. A reusable key includes source provenance,
+graph preparation, orientation, and the algorithm-relevant construction
+contract; each device/runtime cache scopes the physical copy. Inputs without a
+strong identity bypass the cache.
+
+Graph checkout is exclusive. The cache can retain bounded replicas for the
+service runtime pool, place new work toward a device with the requested graph,
+and evict only idle parked graphs. The current reusable path covers eligible
+BFS and PageRank calls. Other algorithms, unsupported transformations,
+delete/remap contracts, or graph options bypass reuse rather than weakening
+the key.
+
+## Verify that reuse happened
+
+For the decoded cache, inspect native metrics and TSV rows:
+`source_cache_hits`, `source_cache_misses`, `source_cache_inserts`,
+`source_cache_insert_skipped`, and `source_cache_retained_bytes`. cuGraph
+algorithm metadata reports `graph_cache=hit`, `miss_inserted`, or an explicit
+bypass/skip reason.
+
+Lakehouse source diagnostics report `lakehouse_cache_status`, read mode, and
+fill mode. Background fills also emit structured completion/failure events.
+The server `GetAdmissionStats` action reports the configured source/graph caps
+and the memory-governor `evictable_bytes`/`free_bytes`, so operators can see
+cache pressure without treating live CUDA free memory as an admission signal.

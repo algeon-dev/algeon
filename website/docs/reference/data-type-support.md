@@ -10,6 +10,11 @@ execution. Unsupported CPU-readable fragments stay on the standard DataFusion
 CPU path under the default GPU-preferred policy; GPU-only source leaves and
 GPU-only policies fail planning with a structured reason instead.
 
+This page covers column representation. Operator and function support is
+documented separately in [Native SQL Support](./native-sql-support.mdx), and
+the exact physical plan should be checked with
+[`nexus_explain_coverage`](../integration/gpu-coverage-validation.mdx).
+
 ## Native relational columns
 
 The native engine has a cuDF representation for these Arrow data types:

@@ -13,5 +13,7 @@ execution contracts.
 
 - [Benchmarks](./benchmarks/index.mdx) - CPU and GPU benchmark results for DataFusion
   Nexus.
+- [Native SQL Support](./native-sql-support.mdx) - relational operators,
+  expressions, aggregates, windows, joins, and source boundaries.
 - [Data Type Support](./data-type-support.md) - Arrow, cuDF, and cuGraph data
   type support boundaries.

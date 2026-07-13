@@ -25,7 +25,8 @@ DataFusion session.
   inside your service boundary, not replace it.
 - **Flight SQL operator:** Read
   [Lakehouse and workspace boundary](#lakehouse-and-workspace-boundary), then
-  use server config and diagnostics as the deployment contract.
+  use server config, [cache policy](./cache.mdx), and diagnostics as the
+  deployment contract.
 - **Graph SQL user:** Jump to [cuGraph SQL path](#cugraph-sql-path). Discover
   and validate calls before running GPU graph work.
 - **Native contributor:** Read
@@ -96,7 +97,7 @@ instead of falling back — is described in
 
 ## Native Lowering and Admission
 
-Two deep contracts sit behind this overview, each on its own page:
+Three deep contracts sit behind this overview, each on its own page:
 
 - [Native Lowering & Fallback](./native-lowering.mdx) — the *plan-time*
   boundary: the relational acceleration path, the `datafusion_nexus_native`
@@ -107,6 +108,9 @@ Two deep contracts sit behind this overview, each on its own page:
 - [Admission & Memory Governance](./admission.mdx) — the *runtime* boundary:
   process-wide query admission, concurrency slots, device-memory grant bands,
   and the layered memory-control stack shared by library and server modes.
+- [Cache Design and Use](./cache.mdx) — the persistent data-reuse boundary:
+  lakehouse object bytes, decoded cuDF sources, resident cuGraph graphs,
+  eviction, sizing, and diagnostics.
 
 ## Layering and ownership
 
