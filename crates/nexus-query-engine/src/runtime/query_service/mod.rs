@@ -49,7 +49,7 @@ use admission::{
 };
 #[cfg(test)]
 use config::guaranteed_min_slot_capacity_for_capacities;
-pub use config::{QueryServiceConfig, QueryServiceTenantConfig, SlotGuarantee, TenantId};
+pub use config::{QueryMemoryDomainPolicy, QueryServiceConfig, QueryServiceTenantConfig, SlotGuarantee, TenantId};
 use config::{
     admission_capacity_bounds, default_stream_pool_size_for_ordinals, guaranteed_min_slot_capacity,
     minimum_stream_pool_size, placement_policy_admits_ordinal, validate_stream_pool_admission_capacity,

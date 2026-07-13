@@ -1,4 +1,7 @@
-use super::{super::create_grant_reservation_arena, *};
+use super::{
+    super::{create_grant_memory_domain, create_grant_reservation_arena},
+    *,
+};
 
 #[derive(Debug)]
 pub(super) struct QueryHandleLifetime {
@@ -307,7 +310,22 @@ impl QueryHandle {
         let stream_lease_guard = Arc::new(stream_lease);
         let memory_grant = self.lifetime.memory_grant()?;
         let runtime = stream_lease_guard.shared_runtime();
-        let grant_reservation_arena = create_grant_reservation_arena(runtime.as_ref(), Some(&memory_grant))?;
+        let grant_memory_domain =
+            if self.service.config.native_pipeline_execution_mode == NativePipelineExecutionMode::Adaptive {
+                create_grant_memory_domain(
+                    runtime.as_ref(),
+                    Some(&memory_grant),
+                    self.service.config.query_memory_domain,
+                    device.capacity_bytes(),
+                )?
+            } else {
+                None
+            };
+        let grant_reservation_arena = if grant_memory_domain.is_some() {
+            None
+        } else {
+            create_grant_reservation_arena(runtime.as_ref(), Some(&memory_grant))?
+        };
         let context = ExecutionContext::from_parts(ExecutionContextParts {
             query_id: Some(QueryId::new(format!("service-{}", self.query_id))),
             trace_id: None,
@@ -316,6 +334,7 @@ impl QueryHandle {
             memory_control_policy: self.memory_control_policy(),
             memory_grant: Some(memory_grant),
             grant_reservation_arena,
+            grant_memory_domain,
             boundary_policy: self.service.config.boundary_policy,
             source_scheduler_policy: self.service.config.source_scheduler_policy,
             source_chunk_planning_mode: self.service.config.source_chunk_planning_mode,
