@@ -12,7 +12,10 @@
 
 use std::sync::OnceLock;
 
-use crate::core::error::{self, Error, ErrorCode, Result};
+use crate::{
+    core::error::{self, Error, ErrorCode, Result},
+    device::inventory::{self, DeviceMemory},
+};
 
 /// A validated CUDA device ordinal.
 ///
@@ -78,6 +81,21 @@ impl DeviceId {
         // If another thread raced us, that's fine — same value.
         let _ = DEVICE_COUNT_CACHE.set(n);
         Ok(n)
+    }
+
+    /// Query the device's currently available and total memory.
+    pub fn available_memory(self) -> Result<DeviceMemory> {
+        inventory::available_memory(self)
+    }
+
+    /// Query the device's CUDA streaming multiprocessor count.
+    pub fn multiprocessor_count(self) -> Result<u32> {
+        inventory::multiprocessor_count(self)
+    }
+
+    /// Query the device's CUDA PCI bus id.
+    pub fn pci_bus_id(self) -> Result<String> {
+        inventory::pci_bus_id(self)
     }
 
     /// The zero-based device ordinal.
