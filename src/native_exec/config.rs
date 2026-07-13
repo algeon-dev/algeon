@@ -40,6 +40,20 @@ const GRAPH_TICKET_ASK_SAFETY_NUMERATOR: u64 = 6;
 const GRAPH_TICKET_ASK_SAFETY_DENOMINATOR: u64 = 5;
 const GRAPH_TICKET_NON_GRAPH_FLOOR_BYTES: u64 = 512 * 1024 * 1024;
 
+/// Cold and exact-runtime-warm graph prices before ticket safety margin and
+/// tenant-band clamping.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct GraphAdmissionModelAsk {
+    pub(crate) cold_bytes: u64,
+    pub(crate) warm_bytes: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct GraphAdmissionGrantAsk {
+    cold_bytes: u64,
+    warm_bytes: u64,
+}
+
 /// Adapter-side native execution configuration.
 ///
 /// This type holds the DataFusion-facing knobs for native cuDF execution. It does not eagerly create
@@ -876,30 +890,35 @@ impl NativeCudfExecutionConfig {
         self
     }
 
-    pub(crate) fn new_plan_query_admission_ticket(
+    fn new_plan_query_admission_ticket_with_graph_ask(
         &self,
-        requested_grant_bytes: Option<u64>,
-    ) -> Option<Arc<QueryAdmissionTicket>> {
-        self.new_plan_query_admission_ticket_with_placement_hint(requested_grant_bytes, QueryPlacementHint::default())
-    }
-
-    pub(crate) fn new_plan_query_admission_ticket_with_placement_hint(
-        &self,
-        requested_grant_bytes: Option<u64>,
+        graph_ask: Option<GraphAdmissionGrantAsk>,
         placement_hint: QueryPlacementHint,
     ) -> Option<Arc<QueryAdmissionTicket>> {
         if self.query_service_handle.is_some() {
             return None;
         }
         let source = self.query_admission_source.clone()?;
-        Some(QueryAdmissionTicket::new_with_placement_hint(
+        Some(QueryAdmissionTicket::new_with_placement_hint_and_warm_graph_grant(
             source,
             self.requested_grant_min_bytes,
-            self.requested_grant_bytes.or(requested_grant_bytes),
+            self.requested_grant_bytes.or(graph_ask.map(|ask| ask.cold_bytes)),
             placement_hint,
+            #[cfg(feature = "cugraph")]
+            graph_ask.map(|ask| ask.warm_bytes),
         ))
     }
 
+    pub(crate) fn new_plan_query_admission_ticket_with_graph_model_ask(
+        &self,
+        graph_model_ask: Option<GraphAdmissionModelAsk>,
+        placement_hint: QueryPlacementHint,
+    ) -> nexus_query_engine::Result<Option<Arc<QueryAdmissionTicket>>> {
+        let graph_ask = self.graph_aware_requested_grants_for_model_ask(graph_model_ask)?;
+        Ok(self.new_plan_query_admission_ticket_with_graph_ask(graph_ask, placement_hint))
+    }
+
+    #[cfg(test)]
     pub(crate) fn graph_aware_requested_grant_bytes_for_model_ask(
         &self,
         graph_model_ask_bytes: Option<u64>,
@@ -921,16 +940,38 @@ impl NativeCudfExecutionConfig {
         Ok(Some(priced.clamp(band.min_bytes, band.want_bytes)))
     }
 
+    fn graph_aware_requested_grants_for_model_ask(
+        &self,
+        graph_model_ask: Option<GraphAdmissionModelAsk>,
+    ) -> nexus_query_engine::Result<Option<GraphAdmissionGrantAsk>> {
+        if self.requested_grant_bytes.is_some() {
+            return Ok(None);
+        }
+        let Some(graph_model_ask) = graph_model_ask else {
+            return Ok(None);
+        };
+        let Some(source) = self.query_admission_source.clone() else {
+            return Ok(None);
+        };
+        let band = source.requested_grant_band(QueryGrantRequest {
+            requested_grant_min_bytes: self.requested_grant_min_bytes,
+            requested_grant_bytes: None,
+        })?;
+        let price = |bytes| graph_ticket_requested_grant_bytes(bytes).clamp(band.min_bytes, band.want_bytes);
+        Ok(Some(GraphAdmissionGrantAsk {
+            cold_bytes: price(graph_model_ask.cold_bytes),
+            warm_bytes: price(graph_model_ask.warm_bytes),
+        }))
+    }
+
     #[cfg(feature = "cugraph")]
     pub(crate) fn with_graph_aware_plan_query_admission_ticket(
         mut self,
-        graph_model_ask_bytes: Option<u64>,
+        graph_model_ask: Option<GraphAdmissionModelAsk>,
         placement_hint: QueryPlacementHint,
     ) -> nexus_query_engine::Result<Self> {
-        let requested_grant_bytes = self.graph_aware_requested_grant_bytes_for_model_ask(graph_model_ask_bytes)?;
-        if let Some(ticket) =
-            self.new_plan_query_admission_ticket_with_placement_hint(requested_grant_bytes, placement_hint)
-        {
+        let graph_ask = self.graph_aware_requested_grants_for_model_ask(graph_model_ask)?;
+        if let Some(ticket) = self.new_plan_query_admission_ticket_with_graph_ask(graph_ask, placement_hint) {
             self.query_admission_ticket = Some(ticket);
         }
         Ok(self)

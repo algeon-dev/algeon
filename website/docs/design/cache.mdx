@@ -100,6 +100,13 @@ BFS and PageRank calls. Other algorithms, unsupported transformations,
 delete/remap contracts, or graph options bypass reuse rather than weakening
 the key.
 
+Cold construction is coordinated per device and resident-graph key. One
+runtime builds at a time; followers observe cancellation and retry against the
+cache before a different runtime-affine replica may begin. Query admission can
+omit graph-construction bytes only after it reserves both an idle service
+runtime and that runtime's exact available cache entry. Device-level affinity
+by itself continues to use the cold price.
+
 ## Verify that reuse happened
 
 For the decoded cache, inspect native metrics and TSV rows:
@@ -110,6 +117,9 @@ bypass/skip reason.
 
 Lakehouse source diagnostics report `lakehouse_cache_status`, read mode, and
 fill mode. Background fills also emit structured completion/failure events.
-The server `GetAdmissionStats` action reports the configured source/graph caps
-and the memory-governor `evictable_bytes`/`free_bytes`, so operators can see
-cache pressure without treating live CUDA free memory as an admission signal.
+The server `GetAdmissionStats` action reports the configured source/graph caps,
+the memory-governor `evictable_bytes`/`free_bytes`, and an appended
+`[graph_cache]` section with one row per configured device. Its fields cover
+enabled state, entries, resident/in-use bytes, hits, misses, evictions,
+in-flight builds, and build waits. This lets operators reconcile cache pressure
+without treating live CUDA free memory as an admission signal.

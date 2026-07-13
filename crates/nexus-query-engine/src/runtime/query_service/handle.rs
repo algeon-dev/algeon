@@ -1,3 +1,5 @@
+#[cfg(feature = "cugraph")]
+use super::super::{ReservedResidentGraphHit, warm_graph_reservation_error};
 use super::{
     super::{create_grant_memory_domain, create_grant_reservation_arena},
     *,
@@ -15,6 +17,10 @@ pub(super) struct QueryHandleLifetime {
     root_context: Mutex<Option<ExecutionContext>>,
     memory_grant: Mutex<Option<MemoryGrant>>,
     device_slot: Mutex<Option<DeviceActiveQuerySlot>>,
+    #[cfg(feature = "cugraph")]
+    warm_graph_reservation: Mutex<Option<WarmGraphReservation>>,
+    #[cfg(feature = "cugraph")]
+    warm_graph_priced: bool,
 }
 
 #[derive(Debug)]
@@ -29,9 +35,12 @@ impl QueryHandleLifetime {
         query_id: u64,
         memory_grant: MemoryGrant,
         device_slot: Option<DeviceActiveQuerySlot>,
+        #[cfg(feature = "cugraph")] warm_graph_reservation: Option<WarmGraphReservation>,
     ) -> Arc<Self> {
         let device_ordinal =
             device_slot.as_ref().map(DeviceActiveQuerySlot::device_ordinal).unwrap_or(service.config.device_ordinal);
+        #[cfg(feature = "cugraph")]
+        let warm_graph_priced = warm_graph_reservation.is_some();
         Arc::new(Self {
             service,
             tenant_id,
@@ -43,6 +52,10 @@ impl QueryHandleLifetime {
             root_context: Mutex::new(None),
             memory_grant: Mutex::new(Some(memory_grant)),
             device_slot: Mutex::new(device_slot),
+            #[cfg(feature = "cugraph")]
+            warm_graph_reservation: Mutex::new(warm_graph_reservation),
+            #[cfg(feature = "cugraph")]
+            warm_graph_priced,
         })
     }
 
@@ -89,6 +102,8 @@ impl QueryHandleLifetime {
         let root_context = take_owned_for_cleanup(&self.root_context, "root context");
         let memory_grant = take_owned_for_cleanup(&self.memory_grant, "memory grant");
         let device_slot = take_owned_for_cleanup(&self.device_slot, "device slot");
+        #[cfg(feature = "cugraph")]
+        let warm_graph_reservation = take_owned_for_cleanup(&self.warm_graph_reservation, "warm graph reservation");
         let release = QueryHandleRelease {
             service: Arc::clone(&self.service),
             query_id: self.query_id,
@@ -96,6 +111,8 @@ impl QueryHandleLifetime {
             root_context,
             memory_grant,
             device_slot,
+            #[cfg(feature = "cugraph")]
+            warm_graph_reservation,
         };
         let pool = self
             .service
@@ -134,6 +151,14 @@ fn take_owned_for_cleanup<T>(owned: &Mutex<Option<T>>, resource: &'static str) -
     }
 }
 
+#[cfg(feature = "cugraph")]
+fn require_warm_graph_reservation<T>(reservation: Option<T>, warm_graph_priced: bool) -> Result<Option<T>> {
+    if reservation.is_none() && warm_graph_priced {
+        return Err(warm_graph_reservation_error("stream_and_pin_reservation_already_consumed"));
+    }
+    Ok(reservation)
+}
+
 struct QueryHandleRelease {
     service: Arc<QueryServiceInner>,
     query_id: u64,
@@ -141,6 +166,8 @@ struct QueryHandleRelease {
     root_context: Option<ExecutionContext>,
     memory_grant: Option<MemoryGrant>,
     device_slot: Option<DeviceActiveQuerySlot>,
+    #[cfg(feature = "cugraph")]
+    warm_graph_reservation: Option<WarmGraphReservation>,
 }
 
 impl QueryHandleRelease {
@@ -169,6 +196,8 @@ impl QueryHandleRelease {
             }
         }
         drop(self.root_context.take());
+        #[cfg(feature = "cugraph")]
+        drop(self.warm_graph_reservation.take());
         drop(self.memory_grant.take());
         drop(self.device_slot.take());
 
@@ -361,6 +390,29 @@ impl QueryHandle {
         }
         let stream_acquire_deadline =
             Instant::now().checked_add(self.service.config.admission_wait_timeout).unwrap_or_else(Instant::now);
+        #[cfg(feature = "cugraph")]
+        let warm_graph_reservation = require_warm_graph_reservation(
+            take_owned_for_cleanup(
+                &self.lifetime.warm_graph_reservation,
+                "warm graph reservation for context acquisition",
+            ),
+            self.lifetime.warm_graph_priced,
+        )?;
+        #[cfg(feature = "cugraph")]
+        let (stream_lease, reserved_resident_graph_hit) = match warm_graph_reservation {
+            Some(reservation) => {
+                (reservation.stream_lease, Some(Arc::new(ReservedResidentGraphHit::new(reservation.preparation_pin))))
+            },
+            None => {
+                let stream_lease = device.stream_pool().acquire_with_cancellation_deadline(
+                    &cancellation,
+                    stream_acquire_deadline,
+                    "nexus_query_engine.query_service.context.stream_acquire",
+                )?;
+                (stream_lease, None)
+            },
+        };
+        #[cfg(not(feature = "cugraph"))]
         let stream_lease = device.stream_pool().acquire_with_cancellation_deadline(
             &cancellation,
             stream_acquire_deadline,
@@ -418,6 +470,8 @@ impl QueryHandle {
             local_parquet_source_cache: resources.local_parquet_source_cache_for_device(self.device_ordinal),
             #[cfg(feature = "cugraph")]
             resident_graph_cache: resources.resident_graph_cache_for_device(self.device_ordinal),
+            #[cfg(feature = "cugraph")]
+            reserved_resident_graph_hit,
             stream_lease_guard: Some(stream_lease_guard),
             query_service_admitted: true,
         });
@@ -465,7 +519,11 @@ mod tests {
         sync::{Arc, Mutex},
     };
 
+    #[cfg(feature = "cugraph")]
+    use super::require_warm_graph_reservation;
     use super::take_owned_for_cleanup;
+    #[cfg(feature = "cugraph")]
+    use crate::error::{QueryErrorCode, QueryErrorStatus};
 
     #[test]
     fn poisoned_owned_resource_is_recovered_for_ordered_cleanup() {
@@ -478,5 +536,16 @@ mod tests {
 
         assert_eq!(take_owned_for_cleanup(owned.as_ref(), "test resource"), Some(7));
         assert_eq!(take_owned_for_cleanup(owned.as_ref(), "test resource"), None);
+    }
+
+    #[cfg(feature = "cugraph")]
+    #[test]
+    fn consumed_warm_graph_reservation_requires_query_readmission() {
+        let error = require_warm_graph_reservation(Option::<()>::None, true).unwrap_err();
+
+        assert_eq!(error.code(), QueryErrorCode::ServiceOverloaded);
+        assert_eq!(error.status(), QueryErrorStatus::Temporary);
+        assert_eq!(error.fact_value("reason"), Some("stream_and_pin_reservation_already_consumed"));
+        assert_eq!(error.fact_value("retry_action"), Some("readmit_query"));
     }
 }

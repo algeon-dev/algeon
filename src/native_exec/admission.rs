@@ -93,6 +93,8 @@ pub(crate) struct QueryAdmissionTicket {
     source: QueryAdmissionSource,
     requested_grant_min_bytes: Option<u64>,
     requested_grant_bytes: Option<u64>,
+    #[cfg(feature = "cugraph")]
+    warm_graph_requested_grant_bytes: Option<u64>,
     placement_hint: QueryPlacementHint,
     state: Mutex<TicketState>,
     notify: Arc<Notify>,
@@ -231,6 +233,23 @@ impl QueryAdmissionTicket {
         requested_grant_bytes: Option<u64>,
         placement_hint: QueryPlacementHint,
     ) -> Arc<Self> {
+        Self::new_with_placement_hint_and_warm_graph_grant(
+            source,
+            requested_grant_min_bytes,
+            requested_grant_bytes,
+            placement_hint,
+            #[cfg(feature = "cugraph")]
+            None,
+        )
+    }
+
+    pub(crate) fn new_with_placement_hint_and_warm_graph_grant(
+        source: QueryAdmissionSource,
+        requested_grant_min_bytes: Option<u64>,
+        requested_grant_bytes: Option<u64>,
+        placement_hint: QueryPlacementHint,
+        #[cfg(feature = "cugraph")] warm_graph_requested_grant_bytes: Option<u64>,
+    ) -> Arc<Self> {
         #[cfg(test)]
         static NEXT_TICKET_ID: AtomicU64 = AtomicU64::new(1);
         Arc::new(Self {
@@ -239,6 +258,8 @@ impl QueryAdmissionTicket {
             source,
             requested_grant_min_bytes,
             requested_grant_bytes,
+            #[cfg(feature = "cugraph")]
+            warm_graph_requested_grant_bytes,
             placement_hint,
             state: Mutex::new(TicketState::default()),
             notify: Arc::new(Notify::new()),
@@ -253,6 +274,11 @@ impl QueryAdmissionTicket {
     #[cfg(test)]
     pub(crate) fn requested_grant_bytes(&self) -> Option<u64> {
         self.requested_grant_bytes
+    }
+
+    #[cfg(all(test, feature = "cugraph"))]
+    pub(crate) fn warm_graph_requested_grant_bytes(&self) -> Option<u64> {
+        self.warm_graph_requested_grant_bytes
     }
 
     #[cfg(all(test, feature = "cugraph"))]
@@ -352,21 +378,22 @@ impl QueryAdmissionTicket {
         cancellation: ExecutionCancellation,
     ) -> nexus_query_engine::Result<TicketTenantQueryContext> {
         let mut reset_guard = TicketAdmitResetGuard { ticket: Arc::clone(self), task_key, disarmed: false };
-        let handle = match self
-            .source
-            .service
-            .admit_async_with_request(
-                self.source.tenant_id.clone(),
-                QueryAdmissionRequest::new()
-                    .with_qos(self.source.qos)
-                    .with_grant_request(QueryGrantRequest {
-                        requested_grant_min_bytes: self.requested_grant_min_bytes,
-                        requested_grant_bytes: self.requested_grant_bytes,
-                    })
-                    .with_placement_hint(self.placement_hint.clone()),
-            )
-            .await
-        {
+        let request = QueryAdmissionRequest::new()
+            .with_qos(self.source.qos)
+            .with_grant_request(QueryGrantRequest {
+                requested_grant_min_bytes: self.requested_grant_min_bytes,
+                requested_grant_bytes: self.requested_grant_bytes,
+            })
+            .with_placement_hint(self.placement_hint.clone());
+        #[cfg(feature = "cugraph")]
+        let request = match self.warm_graph_requested_grant_bytes {
+            Some(requested_grant_bytes) => request.with_warm_graph_grant_request(QueryGrantRequest {
+                requested_grant_min_bytes: self.requested_grant_min_bytes,
+                requested_grant_bytes: Some(requested_grant_bytes),
+            }),
+            None => request,
+        };
+        let handle = match self.source.service.admit_async_with_request(self.source.tenant_id.clone(), request).await {
             Ok(handle) => Arc::new(handle),
             Err(error) => {
                 reset_guard.reset();

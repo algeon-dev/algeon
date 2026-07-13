@@ -425,7 +425,7 @@ fn execute_bounded_generic_graph_algorithm(
     reservations: &mut ReservationTracker,
     metrics: &mut QueryMetrics,
 ) -> Result<ResidentGpuFrame> {
-    let (input, preparation_pin) = if let Some(raw_input_id) = graph_preparation_bypass_input(plan, graph) {
+    let (input, mut preparation_pin) = if let Some(raw_input_id) = graph_preparation_bypass_input(plan, graph) {
         let raw_input = execute_bounded_generic_node(context, plan, raw_input_id, gpu_inputs, reservations, metrics)?;
         if let Some(pin) = resident_graph_cache_preparation_pin(context, &raw_input.frame, &graph.spec)? {
             (raw_input, Some(pin))
@@ -450,6 +450,9 @@ fn execute_bounded_generic_graph_algorithm(
     } else {
         (execute_bounded_generic_node(context, plan, graph.input, gpu_inputs, reservations, metrics)?, None)
     };
+    if preparation_pin.is_none() {
+        preparation_pin = resident_graph_cache_preparation_pin(context, &input.frame, &graph.spec)?;
+    }
     let preparation_pin_id = preparation_pin.as_ref().map(|pin| pin.pin_id());
     let ResidentGpuFrame { frame: input_frame, reservation: input_reservation } = input;
     let input_rows = input_frame.num_rows() as u64;

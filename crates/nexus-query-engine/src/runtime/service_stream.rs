@@ -241,6 +241,33 @@ impl ServiceStreamPool {
         self.acquire_inner(Some(cancellation), Some(deadline), operation)
     }
 
+    /// Attempts to reserve an idle runtime for which `reserve` can also
+    /// acquire a caller-owned companion reservation.
+    ///
+    /// The callback runs while the stream-pool mutex is held. It must remain
+    /// host-only and must not call back into this stream pool. This is used by
+    /// query admission to reserve an exact-runtime resident graph cache entry
+    /// and its stream as one lifecycle; runtimes created after this call
+    /// cannot own an existing cache entry and are intentionally not created.
+    #[cfg(feature = "cugraph")]
+    pub(crate) fn try_acquire_matching<T>(
+        &self,
+        operation: &'static str,
+        mut reserve: impl FnMut(&Arc<cudf::Runtime>) -> Result<Option<T>>,
+    ) -> Result<Option<(StreamLease, T)>> {
+        let mut state = self.lock_state(operation)?;
+        for index in (0..state.idle.len()).rev() {
+            let runtime = &state.idle[index];
+            let Some(reservation) = reserve(runtime)? else {
+                continue;
+            };
+            let runtime = state.idle.swap_remove(index);
+            self.inner.state_changed.notify_all();
+            return Ok(Some((StreamLease { pool: self.clone(), runtime: Some(runtime) }, reservation)));
+        }
+        Ok(None)
+    }
+
     fn acquire_inner(
         &self,
         cancellation: Option<&ExecutionCancellation>,

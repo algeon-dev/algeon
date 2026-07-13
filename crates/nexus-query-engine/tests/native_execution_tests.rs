@@ -28,10 +28,12 @@ use nexus_query_engine::{
     GraphEdgeColumnBindings, GraphEdgePredicateInput, GraphMemoryCalibrationOverride, GraphMemoryModel,
     GraphMemoryModelInput, GraphPageRankParams, GraphPredicateInput, GraphReservationOutcome,
     GraphResidencyPlanAnalysis, GraphSeedMode, GraphTriangleCountAllParams, GraphVertexEstimate,
-    GraphVertexEstimateSource, force_next_graph_adaptive_chunk_attempt_resource_exhausted_for_test,
+    GraphVertexEstimateSource, QueryAdmissionRequest, QueryGrantRequest, QueryPlacementHint, QueryService,
+    QueryServiceConfig, QueryServiceTenantConfig, TenantId,
+    force_next_graph_adaptive_chunk_attempt_resource_exhausted_for_test,
     force_next_graph_adaptive_full_attempt_resource_exhausted_for_test,
     force_next_graph_statistics_optional_resource_exhausted_for_test, graph_residency_descriptor_for_edge_plan,
-    graph_vertex_estimate_probe_bytes, stable_graph_result_schema,
+    graph_vertex_estimate_probe_bytes, planned_resident_graph_key, stable_graph_result_schema,
 };
 use nexus_query_engine::{
     AggregateExpr, AggregateFunction, AggregateSpec, BinaryOp, BoundedJoinReservationContract,

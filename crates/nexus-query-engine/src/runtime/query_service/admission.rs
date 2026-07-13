@@ -50,6 +50,8 @@ pub(super) struct AdmissionRequest {
     pub(super) request_id: u64,
     pub(super) tenant_id: TenantId,
     pub(super) grant_policy: TenantGrantPolicy,
+    #[cfg(feature = "cugraph")]
+    pub(super) warm_graph_grant_policy: Option<TenantGrantPolicy>,
     pub(super) qos: QueryQos,
     pub(super) placement_hint: QueryPlacementHint,
     pub(super) deadline: Instant,
@@ -60,6 +62,9 @@ pub(super) struct PlacedQuery {
     pub(super) device_ordinal: usize,
     pub(super) memory_grant: MemoryGrant,
     pub(super) device_slot: Option<DeviceActiveQuerySlot>,
+    pub(super) grant_policy: TenantGrantPolicy,
+    #[cfg(feature = "cugraph")]
+    pub(super) warm_graph_reservation: Option<WarmGraphReservation>,
 }
 
 pub(super) fn weighted_adaptive_growth_allocations(
@@ -183,6 +188,8 @@ impl QueryAdmissionWaiter {
                 &self.tenant_id,
                 self.request_id,
                 self.grant_policy,
+                #[cfg(feature = "cugraph")]
+                state.queued[position].warm_graph_grant_policy,
                 state.queued[position].qos,
                 &state.queued[position].placement_hint,
                 Some(self.deadline),
@@ -224,7 +231,7 @@ impl QueryAdmissionWaiter {
                 &mut state,
                 self.request_id,
                 placed_query.device_ordinal,
-                self.grant_policy,
+                placed_query.grant_policy,
                 &placed_query.memory_grant,
             );
             self.service.rotate_after_admission(&mut state, &admitted.tenant_id);
@@ -245,6 +252,8 @@ impl QueryAdmissionWaiter {
                     self.request_id,
                     placed_query.memory_grant,
                     placed_query.device_slot,
+                    #[cfg(feature = "cugraph")]
+                    placed_query.warm_graph_reservation,
                 ),
                 service,
                 tenant_id: self.tenant_id.clone(),

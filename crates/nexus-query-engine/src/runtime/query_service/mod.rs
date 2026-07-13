@@ -26,6 +26,8 @@ use super::{
     default_service_stream_pool_size_for_device, default_source_fetch_runtime, gpu::DeviceActiveQuerySlot,
     validate_service_stream_pool_device,
 };
+#[cfg(feature = "cugraph")]
+use super::{DeviceContext, StreamLease};
 use crate::{
     adaptive_runtime::AdaptiveMemoryHistory,
     capability::{AggregateStrategyExecutionOptions, KeyedHashJoinStrategyOptions},
@@ -87,6 +89,31 @@ pub struct QueryServiceDeviceAdmissionSnapshot {
     pub process_active_query_slots: usize,
 }
 
+/// Per-device resident graph cache state for service diagnostics.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct QueryServiceGraphCacheSnapshot {
+    /// CUDA device ordinal.
+    pub device_ordinal: usize,
+    /// Whether a positive resident graph cache cap configured this device.
+    pub enabled: bool,
+    /// Available plus checked-out entries.
+    pub entries: usize,
+    /// Device bytes retained by all entries.
+    pub resident_bytes: u64,
+    /// Device bytes held by checked-out entries.
+    pub in_use_bytes: u64,
+    /// Successful exact-runtime checkouts.
+    pub hits: u64,
+    /// Cold graph executions elected by the build coordinator.
+    pub misses: u64,
+    /// Entries evicted under capacity or governor pressure.
+    pub evictions: u64,
+    /// Graph-build generations currently in flight.
+    pub builds_in_flight: usize,
+    /// Follower waits joined since service creation.
+    pub build_waits: u64,
+}
+
 /// Per-tenant queue depth in a [`QueryServiceAdmissionSnapshot`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TenantQueueDepth {
@@ -146,6 +173,13 @@ pub struct QueryAdmissionRequest {
     pub grant_request: QueryGrantRequest,
     /// Optional placement hints used only to order candidate devices.
     pub placement_hint: QueryPlacementHint,
+    /// Optional exact-runtime graph-cache hit price.
+    ///
+    /// QueryService uses this grant request only after it has reserved both an
+    /// idle stream-pool runtime and the matching resident graph cache entry.
+    /// Device-level cache presence alone never selects this price.
+    #[cfg(feature = "cugraph")]
+    pub warm_graph_grant_request: Option<QueryGrantRequest>,
 }
 
 impl QueryAdmissionRequest {
@@ -169,6 +203,14 @@ impl QueryAdmissionRequest {
     /// Sets optional placement metadata.
     pub fn with_placement_hint(mut self, placement_hint: QueryPlacementHint) -> Self {
         self.placement_hint = placement_hint;
+        self
+    }
+
+    /// Sets the grant request that is valid only for a reserved exact-runtime
+    /// resident graph cache hit.
+    #[cfg(feature = "cugraph")]
+    pub fn with_warm_graph_grant_request(mut self, grant_request: QueryGrantRequest) -> Self {
+        self.warm_graph_grant_request = Some(grant_request);
         self
     }
 }
@@ -246,6 +288,22 @@ struct QueryServiceResources {
     resident_graph_caches: HashMap<usize, Arc<crate::exec::GpuResidentGraphCache>>,
 }
 
+#[cfg(feature = "cugraph")]
+struct WarmGraphReservation {
+    stream_lease: StreamLease,
+    preparation_pin: crate::exec::GpuResidentGraphPreparationPin,
+}
+
+#[cfg(feature = "cugraph")]
+impl std::fmt::Debug for WarmGraphReservation {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WarmGraphReservation")
+            .field("device_ordinal", &self.stream_lease.runtime().device().ordinal())
+            .field("resident_key", self.preparation_pin.resident_key())
+            .finish()
+    }
+}
+
 impl QueryServiceResources {
     fn gpu_execution_pool_for_device(&self, device_ordinal: usize) -> Result<GpuExecutionPool> {
         self.gpu_execution_pools.get(&device_ordinal).cloned().ok_or_else(|| {
@@ -268,6 +326,26 @@ impl QueryServiceResources {
         device_ordinal: usize,
     ) -> Option<Arc<crate::exec::GpuResidentGraphCache>> {
         self.resident_graph_caches.get(&device_ordinal).map(Arc::clone)
+    }
+
+    #[cfg(feature = "cugraph")]
+    fn try_reserve_warm_graph(
+        &self,
+        device: &DeviceContext,
+        resident_graph_key: &crate::plan::ResidentGraphKey,
+    ) -> Result<Option<WarmGraphReservation>> {
+        let Some(cache) = self.resident_graph_cache_for_device(device.device().ordinal()) else {
+            return Ok(None);
+        };
+        device
+            .stream_pool()
+            .try_acquire_matching("nexus_query_engine.query_service.warm_graph_reservation", |runtime| {
+                cache.try_pin_available_key_for_runtime(resident_graph_key, runtime)
+            })
+            .map(|reservation| {
+                reservation
+                    .map(|(stream_lease, preparation_pin)| WarmGraphReservation { stream_lease, preparation_pin })
+            })
     }
 }
 
@@ -814,13 +892,26 @@ impl QueryService {
     ) -> Result<QueryHandle> {
         let tenant_id = tenant_id.into();
         let grant_policy = self.tenant_grant_policy_for_request(&tenant_id, request.grant_request)?;
+        #[cfg(feature = "cugraph")]
+        let warm_graph_grant_policy = request
+            .warm_graph_grant_request
+            .map(|request| self.tenant_grant_policy_for_request(&tenant_id, request))
+            .transpose()?;
         let qos = request.qos;
         let placement_hint = request.placement_hint;
         let request_id = self.inner.next_query_id.fetch_add(1, Ordering::Relaxed);
         let requested_at = Instant::now();
         let deadline = requested_at.checked_add(self.inner.config.admission_wait_timeout).unwrap_or(requested_at);
-        let request =
-            AdmissionRequest { request_id, tenant_id: tenant_id.clone(), grant_policy, qos, placement_hint, deadline };
+        let request = AdmissionRequest {
+            request_id,
+            tenant_id: tenant_id.clone(),
+            grant_policy,
+            #[cfg(feature = "cugraph")]
+            warm_graph_grant_policy,
+            qos,
+            placement_hint,
+            deadline,
+        };
 
         let mut slot_notifications = PendingDeviceSlotNotifications::default();
         let mut state = self.lock_admission()?;
@@ -858,6 +949,8 @@ impl QueryService {
                     &tenant_id,
                     request_id,
                     grant_policy,
+                    #[cfg(feature = "cugraph")]
+                    state.queued[position].warm_graph_grant_policy,
                     qos,
                     &state.queued[position].placement_hint,
                     Some(deadline),
@@ -914,7 +1007,7 @@ impl QueryService {
                     &mut state,
                     request_id,
                     placed_query.device_ordinal,
-                    grant_policy,
+                    placed_query.grant_policy,
                     &placed_query.memory_grant,
                 );
                 self.rotate_after_admission(&mut state, &admitted.tenant_id);
@@ -934,6 +1027,8 @@ impl QueryService {
                         request_id,
                         placed_query.memory_grant,
                         placed_query.device_slot,
+                        #[cfg(feature = "cugraph")]
+                        placed_query.warm_graph_reservation,
                     ),
                     service,
                     tenant_id,
@@ -1095,6 +1190,11 @@ impl QueryService {
     ) -> Result<QueryAdmissionWaiter> {
         let tenant_id = tenant_id.into();
         let grant_policy = self.tenant_grant_policy_for_request(&tenant_id, request.grant_request)?;
+        #[cfg(feature = "cugraph")]
+        let warm_graph_grant_policy = request
+            .warm_graph_grant_request
+            .map(|request| self.tenant_grant_policy_for_request(&tenant_id, request))
+            .transpose()?;
         let qos = request.qos;
         let placement_hint = request.placement_hint;
         let request_id = self.inner.next_query_id.fetch_add(1, Ordering::Relaxed);
@@ -1117,6 +1217,8 @@ impl QueryService {
             request_id,
             tenant_id: tenant_id.clone(),
             grant_policy,
+            #[cfg(feature = "cugraph")]
+            warm_graph_grant_policy,
             qos,
             placement_hint,
             deadline,
@@ -1185,6 +1287,11 @@ impl QueryService {
     ) -> Result<Option<QueryHandle>> {
         let tenant_id = tenant_id.into();
         let grant_policy = self.tenant_grant_policy_for_request(&tenant_id, request.grant_request)?;
+        #[cfg(feature = "cugraph")]
+        let warm_graph_grant_policy = request
+            .warm_graph_grant_request
+            .map(|request| self.tenant_grant_policy_for_request(&tenant_id, request))
+            .transpose()?;
         let qos = request.qos;
         let placement_hint = request.placement_hint;
         let mut slot_notifications = PendingDeviceSlotNotifications::default();
@@ -1201,6 +1308,8 @@ impl QueryService {
             &tenant_id,
             query_id,
             grant_policy,
+            #[cfg(feature = "cugraph")]
+            warm_graph_grant_policy,
             qos,
             &placement_hint,
             None,
@@ -1217,7 +1326,7 @@ impl QueryService {
             &mut state,
             query_id,
             placed_query.device_ordinal,
-            grant_policy,
+            placed_query.grant_policy,
             &placed_query.memory_grant,
         );
         self.rotate_after_admission(&mut state, &tenant_id);
@@ -1232,6 +1341,8 @@ impl QueryService {
                 query_id,
                 placed_query.memory_grant,
                 placed_query.device_slot,
+                #[cfg(feature = "cugraph")]
+                placed_query.warm_graph_reservation,
             ),
             service,
             tenant_id,
@@ -1725,6 +1836,7 @@ impl QueryService {
         tenant_id: &TenantId,
         query_id: u64,
         grant_policy: TenantGrantPolicy,
+        #[cfg(feature = "cugraph")] warm_graph_grant_policy: Option<TenantGrantPolicy>,
         qos: QueryQos,
         placement_hint: &QueryPlacementHint,
         deadline: Option<Instant>,
@@ -1750,6 +1862,9 @@ impl QueryService {
                 device_ordinal: self.inner.config.device_ordinal,
                 memory_grant,
                 device_slot: None,
+                grant_policy,
+                #[cfg(feature = "cugraph")]
+                warm_graph_reservation: None,
             }));
         };
 
@@ -1766,16 +1881,33 @@ impl QueryService {
             if available_bytes < grant_policy.min_bytes {
                 continue;
             }
-            let reserved_for_remaining_slots =
-                self.reserved_min_bytes_for_selected_device(resources, device, active_queries)?;
-            let Some(want_bytes) = self.grant_budget_bytes(available_bytes, grant_policy, reserved_for_remaining_slots)
-            else {
-                continue;
-            };
             let Some(device_slot) = context.try_acquire_query_slot(self.inner.config.max_queries_per_device) else {
                 continue;
             };
-            let mut request = GrantRequest::new(query_id, grant_policy.min_bytes, want_bytes);
+            #[cfg(feature = "cugraph")]
+            let warm_graph_reservation = match (warm_graph_grant_policy, placement_hint.resident_graph_key()) {
+                (Some(_warm_policy), Some(resident_graph_key)) => {
+                    resources.try_reserve_warm_graph(context, resident_graph_key)?
+                },
+                _ => None,
+            };
+            #[cfg(feature = "cugraph")]
+            let selected_grant_policy = if warm_graph_reservation.is_some() {
+                warm_graph_grant_policy.expect("warm reservation requires warm graph grant policy")
+            } else {
+                grant_policy
+            };
+            #[cfg(not(feature = "cugraph"))]
+            let selected_grant_policy = grant_policy;
+            let reserved_for_remaining_slots =
+                self.reserved_min_bytes_for_selected_device(resources, device, active_queries)?;
+            let Some(want_bytes) =
+                self.grant_budget_bytes(available_bytes, selected_grant_policy, reserved_for_remaining_slots)
+            else {
+                slot_notifications.release_slot(device_slot);
+                continue;
+            };
+            let mut request = GrantRequest::new(query_id, selected_grant_policy.min_bytes, want_bytes);
             request = request.with_qos(qos);
             if let Some(deadline) = deadline {
                 request = request.with_deadline(deadline);
@@ -1786,6 +1918,9 @@ impl QueryService {
                         device_ordinal: device.ordinal(),
                         memory_grant,
                         device_slot: Some(device_slot),
+                        grant_policy: selected_grant_policy,
+                        #[cfg(feature = "cugraph")]
+                        warm_graph_reservation,
                     }));
                 },
                 Ok(None) => slot_notifications.release_slot(device_slot),
@@ -2129,15 +2264,6 @@ impl QueryService {
         removed
     }
 
-    /// Returns the service memory-governor report.
-    #[deprecated(note = "use memory_governor_reports() to inspect every service device")]
-    pub fn memory_governor_report(&self) -> Result<MemoryGovernorReport> {
-        if let Some(resources) = &self.inner.resources {
-            return resources.devices.context_by_ordinal(self.inner.config.device_ordinal)?.memory_governor().report();
-        }
-        self.inner.fallback_memory_governor.report()
-    }
-
     /// Returns one memory-governor report for each installed service device.
     pub fn memory_governor_reports(&self) -> Result<Vec<MemoryGovernorReport>> {
         let Some(resources) = &self.inner.resources else {
@@ -2157,6 +2283,42 @@ impl QueryService {
             .map(|context| QueryServiceDeviceAdmissionSnapshot {
                 device_ordinal: context.device().ordinal(),
                 process_active_query_slots: context.active_queries(),
+            })
+            .collect()
+    }
+
+    /// Returns one resident graph cache row per configured service device,
+    /// including disabled all-zero rows.
+    pub fn resident_graph_cache_snapshots(&self) -> Result<Vec<QueryServiceGraphCacheSnapshot>> {
+        let Some(resources) = &self.inner.resources else {
+            return Ok(vec![QueryServiceGraphCacheSnapshot {
+                device_ordinal: self.inner.config.device_ordinal,
+                enabled: self.inner.config.resident_graph_cache_max_retained_bytes.is_some(),
+                ..QueryServiceGraphCacheSnapshot::default()
+            }]);
+        };
+        resources
+            .devices
+            .contexts()
+            .map(|context| {
+                let device_ordinal = context.device().ordinal();
+                #[cfg(feature = "cugraph")]
+                if let Some(cache) = resources.resident_graph_cache_for_device(device_ordinal) {
+                    let snapshot = cache.snapshot()?;
+                    return Ok(QueryServiceGraphCacheSnapshot {
+                        device_ordinal,
+                        enabled: true,
+                        entries: snapshot.entries,
+                        resident_bytes: snapshot.resident_bytes,
+                        in_use_bytes: snapshot.in_use_bytes,
+                        hits: snapshot.hits,
+                        misses: snapshot.misses,
+                        evictions: snapshot.evictions,
+                        builds_in_flight: snapshot.builds_in_flight,
+                        build_waits: snapshot.build_waits,
+                    });
+                }
+                Ok(QueryServiceGraphCacheSnapshot { device_ordinal, ..QueryServiceGraphCacheSnapshot::default() })
             })
             .collect()
     }
