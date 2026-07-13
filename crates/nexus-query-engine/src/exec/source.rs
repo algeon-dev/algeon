@@ -206,7 +206,7 @@ fn read_cacheable_local_parquet_source(
     cache: &std::sync::Arc<crate::exec::GpuLocalParquetSourceCache>,
     metrics: &mut QueryMetrics,
 ) -> Result<GpuDataFrame> {
-    if datafusion_order_tracking_enabled() || cache.is_governor_backed() {
+    if datafusion_order_tracking_enabled() {
         return read_local_parquet_source_uncached(context, source_node_id, source, metrics);
     }
 
@@ -223,12 +223,20 @@ fn read_cacheable_local_parquet_source(
     let frame = read_local_parquet_source_uncached(context, source_node_id, source, metrics)?;
     let retained_device_bytes = frame.device_allocated_size_bytes()?;
     let handle = GpuResultHandle::new(context, frame.clone(), Arc::clone(source.output_schema()))?;
-    match cache.insert_if_absent(key, handle, retained_device_bytes)? {
+    let insert =
+        cache.insert_if_absent_from_grant_pinned(key, handle, retained_device_bytes, context.memory_grant())?;
+    match insert.outcome {
         GpuLocalParquetSourceCacheInsert::Inserted => {
             metrics.record_source_cache_insert(cache.retained_device_bytes()?);
+            if let Some(handle) = insert.handle {
+                return Ok(handle.into_gpu_frame());
+            }
         },
         GpuLocalParquetSourceCacheInsert::AlreadyPresent | GpuLocalParquetSourceCacheInsert::CapacitySkipped => {
             metrics.record_source_cache_insert_skipped(cache.retained_device_bytes()?);
+            if let Some(handle) = insert.handle {
+                return Ok(handle.into_gpu_frame());
+            }
         },
     }
     Ok(frame)

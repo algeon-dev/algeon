@@ -244,7 +244,7 @@ fn bounded_bfs_resident_graph_cache_reuses_parked_forward_graph() {
 }
 
 #[test]
-fn shared_residency_does_not_preserve_graph_residency_descriptor() {
+fn source_alias_residency_does_not_preserve_graph_residency_descriptor() {
     let runtime = Arc::new(cudf::Runtime::new().unwrap());
     let edge_schema = Arc::new(Schema::new(vec![
         Field::new("src", DataType::Int32, false),
@@ -287,7 +287,7 @@ fn shared_residency_does_not_preserve_graph_residency_descriptor() {
     let source = GpuDataFrame::new(DataFrame::from_record_batch(&runtime, &edge_batch).unwrap())
         .with_graph_residency(descriptor.clone());
     let selected = source.frame().select(["src", "dst"]).unwrap();
-    let derived = GpuDataFrame::try_new_with_shared_residency(selected, &source).unwrap();
+    let derived = GpuDataFrame::try_new_with_source_residency(selected, &source).unwrap();
 
     assert!(
         derived.graph_residency().is_none(),

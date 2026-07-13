@@ -275,7 +275,6 @@ impl MemoryGovernor {
 
     /// Returns whether an active grant from this governor has enough budget to
     /// cover bytes that are being retained as evictable cache memory.
-    #[cfg(any(test, feature = "cugraph"))]
     pub(crate) fn grant_can_cover_evictable_bytes(&self, grant: &MemoryGrant, bytes: u64) -> Result<bool> {
         if bytes == 0 {
             return Ok(true);
@@ -297,7 +296,6 @@ impl MemoryGovernor {
     /// the grant is alive the governor may be temporarily over-accounted, which
     /// prevents admitting additional work. Once the grant drops, the retained
     /// bytes remain charged as evictable cache memory.
-    #[cfg(any(test, feature = "cugraph"))]
     pub(crate) fn try_reserve_evictable_bytes_from_grant(&self, grant: &MemoryGrant, bytes: u64) -> Result<bool> {
         if bytes == 0 {
             return Ok(true);
@@ -1092,12 +1090,7 @@ impl Drop for MemoryGrantLiveReservationInner {
 }
 
 impl MemoryGrantLiveReservation {
-    #[cfg(test)]
-    pub(crate) fn shrink_grant_to_retained_bytes(&self) -> Result<bool> {
-        self.inner.grant.try_shrink_to(self.inner.bytes)
-    }
-
-    pub(crate) fn retain_sibling_live_reservation(&self, bytes: u64) -> Result<Option<Self>> {
+    pub(crate) fn retain_derived_live_reservation(&self, bytes: u64) -> Result<Option<Self>> {
         let retained = self.inner.grant.retain_live_reservation(bytes);
         if retained.is_none() {
             return Ok(None);
@@ -1109,7 +1102,7 @@ impl MemoryGrantLiveReservation {
         drop(retained);
         Err(QueryError::new(
             QueryErrorCode::MemoryReservationFailed,
-            "nexus_query_engine.runtime.gpu.memory_grant.retain_sibling_live_reservation",
+            "nexus_query_engine.runtime.gpu.memory_grant.retain_derived_live_reservation",
             "memory grant cannot grow to cover derived resident GPU frame",
         )
         .with_fact("requested_bytes", bytes)
@@ -1329,27 +1322,6 @@ mod tests {
         assert_eq!(grant.live_reserved_bytes(), 0);
         assert!(grant.try_apply_requested_shrink(grant.live_reserved_bytes()).unwrap());
         assert_eq!(grant.budget_bytes(), 30);
-    }
-
-    #[test]
-    fn sibling_live_reservation_grows_grant_to_combined_live_footprint() {
-        let governor = MemoryGovernor::new(0, 100).unwrap();
-        let grant = governor.try_request(GrantRequest::new(1, 30, 50)).unwrap().unwrap();
-
-        grant.record_live_reservation_delta(20);
-        let raw = grant.retain_live_reservation(20).unwrap();
-        grant.record_live_reservation_delta(-20);
-
-        let decoded = raw.retain_sibling_live_reservation(45).unwrap().unwrap();
-
-        assert_eq!(grant.live_reserved_bytes(), 65);
-        assert_eq!(grant.budget_bytes(), 65);
-        drop(raw);
-        assert_eq!(grant.live_reserved_bytes(), 45);
-        assert!(decoded.shrink_grant_to_retained_bytes().unwrap());
-        assert_eq!(grant.budget_bytes(), 45);
-        drop(decoded);
-        assert_eq!(grant.live_reserved_bytes(), 0);
     }
 
     #[test]

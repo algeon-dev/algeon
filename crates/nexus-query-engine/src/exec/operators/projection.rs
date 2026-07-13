@@ -39,11 +39,11 @@ pub(in crate::exec) fn execute_projection(
     input: GpuDataFrame,
     metrics: &mut QueryMetrics,
 ) -> Result<GpuDataFrame> {
-    let frame = input.into_frame();
+    let frame = input.frame().clone();
     let timer = Instant::now();
     if let Some(output) = try_execute_column_only_projection(node, frame.clone(), None, metrics)? {
         metrics.operator_time += timer.elapsed();
-        return Ok(GpuDataFrame::new(output));
+        return GpuDataFrame::try_new_with_source_residency(output, &input);
     }
     let PreparedProjectionColumns { exprs, output_columns } = prepare_projection_columns(node, &frame)?;
     let output_columns = output_columns.iter().map(String::as_str).collect::<Vec<_>>();
@@ -60,7 +60,7 @@ pub(in crate::exec) fn execute_projection(
         )?;
     output = coerce_projection_output_schema(output, node, None, metrics)?;
     metrics.operator_time += timer.elapsed();
-    Ok(GpuDataFrame::new(output))
+    GpuDataFrame::try_new_with_source_residency(output, &input)
 }
 
 pub(in crate::exec) fn execute_projection_with_budget(
@@ -70,11 +70,11 @@ pub(in crate::exec) fn execute_projection_with_budget(
     token: &ExecutionBudgetToken,
     metrics: &mut QueryMetrics,
 ) -> Result<GpuDataFrame> {
-    let frame = input.into_frame();
+    let frame = input.frame().clone();
     let timer = Instant::now();
     if let Some(output) = try_execute_column_only_projection(node, frame.clone(), Some(token), metrics)? {
         metrics.operator_time += timer.elapsed();
-        return Ok(GpuDataFrame::new(output));
+        return GpuDataFrame::try_new_with_source_residency(output, &input);
     }
     let PreparedProjectionColumns { exprs, output_columns } = prepare_projection_columns(node, &frame)?;
     let output_columns = output_columns.iter().map(String::as_str).collect::<Vec<_>>();
@@ -99,7 +99,7 @@ pub(in crate::exec) fn execute_projection_with_budget(
     })?;
     output = coerce_projection_output_schema(output, node, Some(token), metrics)?;
     metrics.operator_time += timer.elapsed();
-    Ok(GpuDataFrame::new(output))
+    GpuDataFrame::try_new_with_source_residency(output, &input)
 }
 
 struct PreparedProjectionColumns<'a> {

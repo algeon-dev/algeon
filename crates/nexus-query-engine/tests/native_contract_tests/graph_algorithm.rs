@@ -2294,6 +2294,7 @@ const KNOWN_MISSING_CUGRAPH_RS_METHODS: &[&str] = &[
 /// workflow helpers that are not standalone algorithm entry points.
 const CUGRAPH_RS_NON_ALGORITHM_METHODS: &[&str] = &[
     // graph construction and property accessors
+    "device",
     "vertex_dtype",
     "weight_dtype",
     "properties",
@@ -2301,6 +2302,9 @@ const CUGRAPH_RS_NON_ALGORITHM_METHODS: &[&str] = &[
     "edge_count_checked",
     "has_edge_ids",
     "has_weights",
+    // graph residency lifecycle helpers, not standalone algorithms
+    "park",
+    "resume",
     // registered algorithm variants represented by auxiliary-input IR, not separate registry entries
     "bfs_with_predicates",
     // vertex-selection entry points that are Milestone 2 variants of registered algorithms

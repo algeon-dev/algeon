@@ -807,7 +807,8 @@ pub(in crate::exec::bounded) fn insert_bounded_local_parquet_source_cache(
     let schema = local_parquet_execution_frame_schema(source)?;
     let handle = GpuResultHandle::new(context, frame.clone(), schema)?;
     let protected_keys = reservations.source_cache_protected_keys_with(&key);
-    let insert = cache.insert_if_absent_protecting(key.clone(), handle, retained_device_bytes, &protected_keys)?;
+    let insert =
+        cache.insert_if_absent_protecting(key.clone(), handle, retained_device_bytes, &protected_keys, None)?;
     if !cache.is_governor_backed() {
         reservations.release_source_cache_baseline_bytes(insert.evicted_device_bytes, metrics);
     }

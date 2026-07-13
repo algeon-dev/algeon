@@ -41,7 +41,13 @@ static FORCE_NEXT_GRAPH_ADAPTIVE_FULL_ATTEMPT_RESOURCE_EXHAUSTED: AtomicBool = A
 #[cfg(feature = "cugraph")]
 static FORCE_NEXT_GRAPH_ADAPTIVE_CHUNK_ATTEMPT_RESOURCE_EXHAUSTED: AtomicBool = AtomicBool::new(false);
 #[cfg(feature = "cugraph")]
-static FORCE_NEXT_GRAPH_STATISTICS_OPTIONAL_RESOURCE_EXHAUSTED: AtomicBool = AtomicBool::new(false);
+thread_local! {
+    // Graph statistics probing is synchronous today. Keeping this test hook
+    // thread-local prevents one integration test from consuming another test's
+    // forced optional-resource exhaustion.
+    static FORCE_NEXT_GRAPH_STATISTICS_OPTIONAL_RESOURCE_EXHAUSTED: std::cell::Cell<bool> =
+        const { std::cell::Cell::new(false) };
+}
 
 #[cfg(feature = "cugraph")]
 pub(in crate::exec) enum RuntimeGraphSpecResolution {
@@ -88,7 +94,7 @@ pub fn force_next_graph_adaptive_chunk_attempt_resource_exhausted_for_test() {
 #[cfg(feature = "cugraph")]
 #[doc(hidden)]
 pub fn force_next_graph_statistics_optional_resource_exhausted_for_test() {
-    FORCE_NEXT_GRAPH_STATISTICS_OPTIONAL_RESOURCE_EXHAUSTED.store(true, Ordering::SeqCst);
+    FORCE_NEXT_GRAPH_STATISTICS_OPTIONAL_RESOURCE_EXHAUSTED.with(|force| force.set(true));
 }
 
 #[cfg(not(feature = "cugraph"))]
@@ -133,23 +139,23 @@ pub(super) fn execute_graph_algorithm(
         weight: node.spec.algorithm.consumes_weight(),
         edge_id: node.spec.edge_columns.edge_id.is_some(),
     };
-    let input = super::edge_null_filter::filter_null_edge_rows(
+    let filtered_input = super::edge_null_filter::filter_null_edge_rows(
         context,
         node_id,
         "graph_edge_null_filter",
-        input.into_frame(),
+        input.frame().clone(),
         &node.spec.edge_columns,
         null_filter_scope,
         metrics,
     )?;
-    let sanitized_input_rows = input.num_rows() as u64;
+    let sanitized_input_rows = filtered_input.num_rows() as u64;
     let null_edge_rows_dropped =
         prior_null_edge_rows_dropped.saturating_add(input_rows.saturating_sub(sanitized_input_rows));
     validate_betweenness_static_seed_policy(&node.spec)?;
     let graph_memory_limit_bytes =
-        admit_graph_memory(context, node_id, &node.spec, &input, sanitized_input_rows, metrics)?;
+        admit_graph_memory(context, node_id, &node.spec, &filtered_input, sanitized_input_rows, metrics)?;
     let runtime_spec = runtime_graph_spec_resolution_after_bounded_seed_validation(&node.spec, false);
-    let mut sanitized_input = GpuDataFrame::new(input);
+    let mut sanitized_input = GpuDataFrame::try_new_with_source_residency(filtered_input, &input)?;
     if null_edge_rows_dropped == 0
         && let Some(graph_residency) = input_graph_residency
     {
@@ -2421,7 +2427,7 @@ fn graph_statistics_optional_algorithm_evidence(
     if !needs_sum_out_degree && !needs_triangle_degree {
         return Ok(statistics);
     }
-    if FORCE_NEXT_GRAPH_STATISTICS_OPTIONAL_RESOURCE_EXHAUSTED.swap(false, Ordering::SeqCst) {
+    if FORCE_NEXT_GRAPH_STATISTICS_OPTIONAL_RESOURCE_EXHAUSTED.with(|force| force.replace(false)) {
         return Err(QueryError::new(
             QueryErrorCode::CudfResourceExhausted,
             GRAPH_STATISTICS_OPERATION,
