@@ -1,7 +1,7 @@
 mod common;
 
 use std::sync::{
-    Arc, PoisonError, RwLock, RwLockReadGuard, RwLockWriteGuard,
+    Arc, Barrier, PoisonError, RwLock, RwLockReadGuard, RwLockWriteGuard,
     atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering},
 };
 
@@ -741,6 +741,54 @@ fn query_memory_domain_and_legacy_reservation_are_mutually_exclusive_per_stream(
     let err = runtime.stream_reservation(41_102, 8 * 1024 * 1024).unwrap_err();
 
     assert_eq!(err.kind(), ErrorKind::InvalidInput);
+}
+
+#[test]
+fn concurrent_query_domain_and_legacy_reservation_on_same_stream_never_both_attach() {
+    let _pool_state = shared_device_pool_guard();
+
+    for iteration in 0..64 {
+        let runtime = Arc::new(Runtime::builder().with_device_memory_manager().build().unwrap());
+        let manager = runtime.device_memory_manager().unwrap();
+        let domain = Arc::new(
+            manager
+                .query_memory_domain(
+                    50_000 + iteration,
+                    QueryMemoryDomainOptions::new(8 * 1024 * 1024).with_ceiling_bytes(8 * 1024 * 1024),
+                )
+                .unwrap(),
+        );
+        let barrier = Arc::new(Barrier::new(3));
+
+        let legacy_runtime = Arc::clone(&runtime);
+        let legacy_barrier = Arc::clone(&barrier);
+        let legacy = std::thread::spawn(move || {
+            legacy_barrier.wait();
+            legacy_runtime.execution_budget_token(
+                ExecutionBudgetRequest::new(8 * 1024 * 1024).with_boundary("concurrent_legacy_reservation"),
+            )
+        });
+
+        let domain_runtime = Arc::clone(&runtime);
+        let domain_barrier = Arc::clone(&barrier);
+        let domain_handle = Arc::clone(&domain);
+        let query_domain = std::thread::spawn(move || {
+            domain_barrier.wait();
+            cudf::ExecutionBudgetToken::from_runtime_in_query_domain(
+                &domain_runtime,
+                ExecutionBudgetRequest::new(8 * 1024 * 1024).with_boundary("concurrent_query_domain"),
+                domain_handle.as_ref(),
+            )
+        });
+
+        barrier.wait();
+        let legacy_attached = legacy.join().unwrap().is_ok();
+        let domain_attached = query_domain.join().unwrap().is_ok();
+        assert_ne!(
+            legacy_attached, domain_attached,
+            "iteration {iteration}: exactly one reservation family must attach to one stream"
+        );
+    }
 }
 
 #[test]
