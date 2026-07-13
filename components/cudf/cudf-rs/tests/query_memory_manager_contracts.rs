@@ -9,10 +9,11 @@ use std::{
 };
 
 use cudf::{
-    DeviceId, DeviceMemoryFailureAction, DeviceMemoryFailureAllocationDomain, DeviceMemoryFailureSource,
-    DeviceMemoryManager, DeviceMemoryManagerBase, DeviceMemoryManagerOptions, DeviceMemoryResource, ErrorCode,
-    ErrorKind, ExecutionBudgetEnforcement, ExecutionBudgetRequest, ExecutionBudgetStatus, QueryMemoryDomainOptions,
-    Runtime, SortOptions, StreamReservationLease, testing::prelude::*,
+    DataFrame, DataType, DeviceId, DeviceMemoryFailureAction, DeviceMemoryFailureAllocationDomain,
+    DeviceMemoryFailureSource, DeviceMemoryManager, DeviceMemoryManagerBase, DeviceMemoryManagerOptions,
+    DeviceMemoryResource, ErrorCode, ErrorKind, ErrorStatus, ExecutionBudgetEnforcement, ExecutionBudgetRequest,
+    ExecutionBudgetStatus, QueryMemoryDomainOptions, Runtime, SortOptions, StreamReservationLease, TypeId,
+    ops::expr::col, testing::prelude::*,
 };
 
 fn assert_send_sync<T: Send + Sync>() {}
@@ -1041,7 +1042,7 @@ fn query_memory_domain_failure_identity_survives_fresh_thread_without_ambient_co
 }
 
 #[test]
-fn query_memory_domain_teardown_racing_allocation_blocks_stream_reattach_until_free() {
+fn query_memory_domain_teardown_racing_allocation_blocks_stream_reattach_until_commit() {
     let _pool_state = shared_device_pool_guard();
     const DOMAIN_ID: u64 = 60_001;
     let runtime = Arc::new(Runtime::builder().with_device_memory_manager().build().unwrap());
@@ -1086,15 +1087,22 @@ fn query_memory_domain_teardown_racing_allocation_blocks_stream_reattach_until_f
     let buffer = allocation.join().unwrap().unwrap();
     assert_eq!(query_domain_pool_count_for_id(&manager, DOMAIN_ID), 1);
 
-    let error = runtime.stream_reservation(61_102, 64 * 1024 * 1024).unwrap_err();
-    assert_eq!(error.kind(), ErrorKind::InvalidInput);
-
-    std::thread::spawn(move || drop(buffer)).join().unwrap();
-    assert_eq!(query_domain_pool_count_for_id(&manager, DOMAIN_ID), 0);
+    let replacement_lease = replacement.reserve_stream(runtime.stream(), 61_102, 64 * 1024 * 1024).unwrap();
+    assert_eq!(replacement_lease.usage().unwrap().current_allocations, 0);
+    assert_eq!(replacement_lease.usage().unwrap().routed_total_allocations, 0);
+    drop(replacement_lease);
 
     let legacy = runtime.stream_reservation(61_103, 64 * 1024 * 1024).unwrap();
     drop(legacy);
+
     let replacement_lease = replacement.reserve_stream(runtime.stream(), 61_104, 64 * 1024 * 1024).unwrap();
+
+    std::thread::spawn(move || drop(buffer)).join().unwrap();
+    assert_eq!(query_domain_pool_count_for_id(&manager, DOMAIN_ID), 0);
+    let replacement_usage = replacement_lease.usage().unwrap();
+    assert_eq!(replacement_usage.current_allocations, 0);
+    assert_eq!(replacement_usage.routed_total_allocations, 0);
+
     drop(replacement_lease);
 }
 
@@ -1144,6 +1152,105 @@ fn query_domain_direct_output_keeps_private_pool_until_output_drop() {
     drop(outcome);
     runtime.synchronize().unwrap();
     assert_eq!(query_domain_pool_count_for_id(&manager, DOMAIN_ID), 0);
+}
+
+#[test]
+fn fused_filter_literals_use_active_query_domain_member_after_input_member_detaches() {
+    let runtime = Runtime::builder().with_device_memory_manager().build().unwrap();
+    let manager = runtime.device_memory_manager().unwrap();
+    let domain = manager
+        .query_memory_domain(
+            60_003,
+            QueryMemoryDomainOptions::new(32 * 1024 * 1024).with_ceiling_bytes(32 * 1024 * 1024),
+        )
+        .unwrap();
+    let input_token = cudf::ExecutionBudgetToken::from_runtime_in_query_domain(
+        &runtime,
+        ExecutionBudgetRequest::new(16 * 1024 * 1024).with_boundary("filter_input"),
+        &domain,
+    )
+    .unwrap();
+    let input = runtime.series_from_value_with_budget(7i32, 4096, &input_token).unwrap().into_value();
+    let frame = DataFrame::from_series([("value", input)]).unwrap();
+    drop(input_token);
+
+    let filter_token = cudf::ExecutionBudgetToken::from_runtime_in_query_domain(
+        &runtime,
+        ExecutionBudgetRequest::new(16 * 1024 * 1024).with_boundary("filter_output"),
+        &domain,
+    )
+    .unwrap();
+    let filtered =
+        frame.with_execution(&filter_token.execution_overrides()).filter_expr(col("value").ge(7i32)).unwrap();
+
+    assert_eq!(filtered.num_rows(), 4096);
+    assert!(filter_token.reservation_usage().unwrap().direct_total_allocations > 0);
+}
+
+#[test]
+fn detached_query_domain_member_allocation_is_permanent_invalid_input() {
+    let runtime = Runtime::builder().with_device_memory_manager().build().unwrap();
+    let manager = runtime.device_memory_manager().unwrap();
+    let domain = manager
+        .query_memory_domain(
+            60_004,
+            QueryMemoryDomainOptions::new(16 * 1024 * 1024).with_ceiling_bytes(16 * 1024 * 1024),
+        )
+        .unwrap();
+    let token = cudf::ExecutionBudgetToken::from_runtime_in_query_domain(
+        &runtime,
+        ExecutionBudgetRequest::new(16 * 1024 * 1024).with_boundary("detached_member_input"),
+        &domain,
+    )
+    .unwrap();
+    let input = runtime.series_from_value_with_budget(7i32, 4096, &token).unwrap().into_value();
+    let frame = DataFrame::from_series([("value", input)]).unwrap();
+    drop(token);
+
+    let error = frame.filter_expr(col("value").ge(7i32)).unwrap_err();
+
+    assert_eq!(error.code(), ErrorCode::ForeignInvalidArgument);
+    assert_eq!(error.kind(), ErrorKind::InvalidInput);
+    assert_eq!(error.status(), ErrorStatus::Permanent);
+    assert!(error.to_string().contains("query memory domain member is detached"));
+}
+
+#[test]
+fn fused_filter_decimal_rescaling_uses_replacement_query_domain_member() {
+    let runtime = Runtime::builder().with_device_memory_manager().build().unwrap();
+    let manager = runtime.device_memory_manager().unwrap();
+    let domain = manager
+        .query_memory_domain(
+            60_005,
+            QueryMemoryDomainOptions::new(32 * 1024 * 1024).with_ceiling_bytes(32 * 1024 * 1024),
+        )
+        .unwrap();
+    let input_token = cudf::ExecutionBudgetToken::from_runtime_in_query_domain(
+        &runtime,
+        ExecutionBudgetRequest::new(16 * 1024 * 1024).with_boundary("decimal_filter_input"),
+        &domain,
+    )
+    .unwrap();
+    let input = runtime.series_from_value_with_budget(7i32, 4096, &input_token).unwrap().into_value();
+    let integer_frame = DataFrame::from_series([("value", input)]).unwrap();
+    let decimal_frame = integer_frame
+        .cast_column_with_budget("value", DataType::fixed_point(TypeId::Decimal128, -2), &input_token)
+        .unwrap()
+        .into_value();
+    drop(integer_frame);
+    drop(input_token);
+
+    let filter_token = cudf::ExecutionBudgetToken::from_runtime_in_query_domain(
+        &runtime,
+        ExecutionBudgetRequest::new(16 * 1024 * 1024).with_boundary("decimal_filter_output"),
+        &domain,
+    )
+    .unwrap();
+    let filtered =
+        decimal_frame.with_execution(&filter_token.execution_overrides()).filter_expr(col("value").ge(7i32)).unwrap();
+
+    assert_eq!(filtered.num_rows(), 4096);
+    assert!(filter_token.reservation_usage().unwrap().direct_total_allocations > 0);
 }
 
 #[test]

@@ -435,6 +435,7 @@ struct query_domain_member_counters {
   std::atomic<std::size_t> peak_allocations{0};
   std::atomic<std::size_t> failed_allocation_count{0};
   std::atomic<std::size_t> largest_failed_allocation_bytes{0};
+  std::atomic<std::size_t> routed_pending_allocations{0};
   std::atomic<std::size_t> routed_current_allocations{0};
   std::atomic<std::size_t> routed_total_allocations{0};
   std::atomic<std::size_t> direct_total_allocations{0};
@@ -669,12 +670,15 @@ class query_domain_resource final : public rmm::mr::device_memory_resource {
     if (bytes == 0) { return view_.allocate(stream, bytes, alignment); }
     auto const aligned_bytes = rmm::align_up(bytes, alignment);
     std::size_t member_reserved_total = 0;
+    if (member != nullptr && require_attached &&
+        !member->attached.load(std::memory_order_acquire)) {
+      throw std::invalid_argument{"query memory domain member is detached"};
+    }
     if (member != nullptr &&
-        ((require_attached && !member->attached.load(std::memory_order_acquire)) ||
-         !reserve_aligned_bytes(member->current_aligned_bytes,
-                                member->allocation_limit,
-                                aligned_bytes,
-                                member_reserved_total))) {
+        !reserve_aligned_bytes(member->current_aligned_bytes,
+                               member->allocation_limit,
+                               aligned_bytes,
+                               member_reserved_total)) {
       record_member_failed_allocation(member, bytes);
       throw attributed_out_of_memory{"query memory domain member limit exceeded",
                                      CUDF_MEMORY_FAILURE_SOURCE_RESERVATION_LIMIT,
@@ -842,12 +846,7 @@ class query_domain_member_resource final : public rmm::mr::device_memory_resourc
   void* allocate_routed(rmm::cuda_stream_view stream, std::size_t bytes, std::size_t alignment)
   {
     try {
-      auto* ptr =
-        domain_->resource->allocate_for_member(counters_, stream, bytes, alignment, false);
-      if (bytes != 0) {
-        counters_->routed_total_allocations.fetch_add(1, std::memory_order_relaxed);
-      }
-      return ptr;
+      return domain_->resource->allocate_for_member(counters_, stream, bytes, alignment, false);
     } catch (...) {
       if (bytes != 0) { cancel_routed_allocation(); }
       throw;
@@ -856,13 +855,31 @@ class query_domain_member_resource final : public rmm::mr::device_memory_resourc
 
   void reserve_routed_allocation() noexcept
   {
+    counters_->routed_pending_allocations.fetch_add(1, std::memory_order_acq_rel);
     counters_->routed_current_allocations.fetch_add(1, std::memory_order_acq_rel);
+  }
+
+  void commit_routed_allocation() noexcept
+  {
+    counters_->routed_pending_allocations.fetch_sub(1, std::memory_order_acq_rel);
+    counters_->routed_total_allocations.fetch_add(1, std::memory_order_relaxed);
+    cleanup_(domain_);
   }
 
   void cancel_routed_allocation() noexcept
   {
+    counters_->routed_pending_allocations.fetch_sub(1, std::memory_order_acq_rel);
     counters_->routed_current_allocations.fetch_sub(1, std::memory_order_acq_rel);
     cleanup_(domain_);
+  }
+
+  void rollback_routed_allocation(void* ptr,
+                                  rmm::cuda_stream_view stream,
+                                  std::size_t bytes,
+                                  std::size_t alignment) noexcept
+  {
+    domain_->resource->deallocate_from_adaptor(ptr, counters_, stream, bytes, alignment);
+    cancel_routed_allocation();
   }
 
   void deallocate_routed(void* ptr,
@@ -877,9 +894,9 @@ class query_domain_member_resource final : public rmm::mr::device_memory_resourc
     cleanup_(domain_);
   }
 
-  [[nodiscard]] std::size_t routed_current_allocations() const noexcept
+  [[nodiscard]] std::size_t routed_pending_allocations() const noexcept
   {
-    return counters_->routed_current_allocations.load(std::memory_order_acquire);
+    return counters_->routed_pending_allocations.load(std::memory_order_acquire);
   }
 
   void detach() noexcept { counters_->attached.store(false, std::memory_order_release); }
@@ -1006,7 +1023,7 @@ class reservation_aware_resource_adaptor final : public rmm::mr::device_memory_r
       auto state = existing_domain->second;
       if (state != nullptr &&
           (state->attached ||
-           (state->resource != nullptr && state->resource->routed_current_allocations() != 0))) {
+           (state->resource != nullptr && state->resource->routed_pending_allocations() != 0))) {
         error =
           "stream still has an attached or retiring query memory domain "
           "member";
@@ -1135,7 +1152,7 @@ class reservation_aware_resource_adaptor final : public rmm::mr::device_memory_r
       auto state = existing_domain->second;
       if (state != nullptr &&
           (state->attached ||
-           (state->resource != nullptr && state->resource->routed_current_allocations() != 0))) {
+           (state->resource != nullptr && state->resource->routed_pending_allocations() != 0))) {
         error =
           "stream still has an attached or retiring query memory domain "
           "member";
@@ -1208,7 +1225,7 @@ class reservation_aware_resource_adaptor final : public rmm::mr::device_memory_r
       domain                  = state->domain;
       auto const existing     = query_domain_members_by_stream_.find(state->stream_key);
       if (existing != query_domain_members_by_stream_.end() &&
-          (state->resource == nullptr || state->resource->routed_current_allocations() == 0)) {
+          (state->resource == nullptr || state->resource->routed_pending_allocations() == 0)) {
         auto existing_state = existing->second;
         if (existing_state == nullptr || existing_state.get() == state.get()) {
           query_domain_members_by_stream_.erase(existing);
@@ -1428,25 +1445,22 @@ class reservation_aware_resource_adaptor final : public rmm::mr::device_memory_r
     return query_domain_member_route{state, std::move(operation)};
   }
 
-  std::optional<query_domain_member_route> query_domain_member_for_deallocation(
-    rmm::cuda_stream_view stream, void* ptr)
+  std::optional<query_domain_member_route> query_domain_member_for_deallocation(void* ptr)
   {
-    if (query_domain_member_count_.load(std::memory_order_relaxed) == 0 || ptr == nullptr) {
+    if (query_domain_routed_pointer_count_.load(std::memory_order_relaxed) == 0 ||
+        ptr == nullptr) {
       return {};
     }
-    auto const key = stream_key(stream);
-    std::shared_lock lock{query_domain_mutex_};
-    auto const it = query_domain_members_by_stream_.find(key);
-    if (it == query_domain_members_by_stream_.end()) { return {}; }
-    auto state = it->second;
+    std::unique_lock lock{query_domain_mutex_};
+    auto const it = query_domain_members_by_pointer_.find(ptr);
+    if (it == query_domain_members_by_pointer_.end()) { return {}; }
+    auto state = std::move(it->second);
+    query_domain_members_by_pointer_.erase(it);
+    query_domain_routed_pointer_count_.fetch_sub(1, std::memory_order_relaxed);
     if (state == nullptr || state->domain == nullptr || state->domain->resource == nullptr ||
         state->resource == nullptr) {
       return {};
     }
-    cudaMemPool_t pointer_pool = nullptr;
-    auto const result          = cuPointerGetAttribute(
-      &pointer_pool, CU_POINTER_ATTRIBUTE_MEMPOOL_HANDLE, reinterpret_cast<CUdeviceptr>(ptr));
-    if (result != CUDA_SUCCESS || pointer_pool != state->domain->pool) { return {}; }
     return query_domain_member_route{state, state->domain->resource->begin_operation()};
   }
 
@@ -1493,12 +1507,12 @@ class reservation_aware_resource_adaptor final : public rmm::mr::device_memory_r
 
   void cleanup_retired_query_domain_member(std::shared_ptr<query_domain_member_state> const& member)
   {
-    if (member == nullptr || member->attached || member->resource == nullptr ||
-        member->resource->routed_current_allocations() != 0) {
+    if (member == nullptr || member->resource == nullptr ||
+        member->resource->routed_pending_allocations() != 0) {
       return;
     }
     std::unique_lock lock{query_domain_mutex_};
-    if (member->attached || member->resource->routed_current_allocations() != 0) { return; }
+    if (member->attached || member->resource->routed_pending_allocations() != 0) { return; }
     auto const it = query_domain_members_by_stream_.find(member->stream_key);
     if (it != query_domain_members_by_stream_.end() &&
         (it->second == nullptr || it->second.get() == member.get())) {
@@ -1593,6 +1607,27 @@ class reservation_aware_resource_adaptor final : public rmm::mr::device_memory_r
         pause_query_domain_route_if_armed(domain->id);
 #endif
         auto* result = query_route->member->resource->allocate_routed(stream, bytes, alignment);
+        if (bytes != 0) {
+          try {
+            std::unique_lock lock{query_domain_mutex_};
+            // Committed routed allocations retain their originating member by
+            // pointer, independently of whichever member is attached to the
+            // stream when the allocation is eventually freed. Direct member
+            // allocations bypass this map and retain their resource directly.
+            auto const insertion =
+              query_domain_members_by_pointer_.emplace(result, query_route->member);
+            if (!insertion.second) {
+              throw std::runtime_error{"duplicate query memory domain routed pointer"};
+            }
+            query_domain_routed_pointer_count_.fetch_add(1, std::memory_order_relaxed);
+          } catch (...) {
+            query_route->member->resource->rollback_routed_allocation(
+              result, stream, bytes, alignment);
+            throw;
+          }
+          query_route->member->resource->commit_routed_allocation();
+          cleanup_retired_query_domain_member(query_route->member);
+        }
         query_route->operation.finish();
         cleanup_query_domain_if_idle(domain);
         return result;
@@ -1687,7 +1722,7 @@ class reservation_aware_resource_adaptor final : public rmm::mr::device_memory_r
                      rmm::cuda_stream_view stream,
                      std::size_t alignment) noexcept override
   {
-    auto member_route = query_domain_member_for_deallocation(stream, ptr);
+    auto member_route = query_domain_member_for_deallocation(ptr);
     if (member_route.has_value()) {
       auto domain = member_route->member->domain;
       member_route->member->resource->deallocate_routed(ptr, stream, bytes, alignment);
@@ -1740,8 +1775,11 @@ class reservation_aware_resource_adaptor final : public rmm::mr::device_memory_r
   std::shared_mutex query_domain_mutex_;
   std::unordered_map<void*, std::shared_ptr<query_domain_member_state>>
     query_domain_members_by_stream_;
+  std::unordered_map<void*, std::shared_ptr<query_domain_member_state>>
+    query_domain_members_by_pointer_;
   std::unordered_map<cudaMemPool_t, std::shared_ptr<query_domain_state>> query_domains_by_pool_;
   std::atomic<std::size_t> query_domain_member_count_{0};
+  std::atomic<std::size_t> query_domain_routed_pointer_count_{0};
   std::atomic<std::size_t> query_domain_pool_count_{0};
   std::unordered_map<void*, std::weak_ptr<reservation_state>> reservations_by_stream_;
   std::unordered_map<void*, allocation_record> allocations_;
