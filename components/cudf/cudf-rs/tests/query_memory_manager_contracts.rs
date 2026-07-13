@@ -6,10 +6,10 @@ use std::sync::{
 };
 
 use cudf::{
-    DeviceId, DeviceMemoryFailureAction, DeviceMemoryFailureSource, DeviceMemoryManager, DeviceMemoryManagerBase,
-    DeviceMemoryManagerOptions, DeviceMemoryResource, ErrorCode, ErrorKind, ExecutionBudgetEnforcement,
-    ExecutionBudgetRequest, ExecutionBudgetStatus, QueryMemoryDomainOptions, Runtime, SortOptions,
-    StreamReservationLease, testing::prelude::*,
+    DeviceId, DeviceMemoryFailureAction, DeviceMemoryFailureAllocationDomain, DeviceMemoryFailureSource,
+    DeviceMemoryManager, DeviceMemoryManagerBase, DeviceMemoryManagerOptions, DeviceMemoryResource, ErrorCode,
+    ErrorKind, ExecutionBudgetEnforcement, ExecutionBudgetRequest, ExecutionBudgetStatus, QueryMemoryDomainOptions,
+    Runtime, SortOptions, StreamReservationLease, testing::prelude::*,
 };
 
 fn assert_send_sync<T: Send + Sync>() {}
@@ -275,16 +275,23 @@ fn detailed_failure_callback_reports_reservation_limit_source_and_does_not_trim(
     let seen_source = Arc::new(AtomicU32::new(u32::MAX));
     let seen_should_trim = Arc::new(AtomicBool::new(true));
     let seen_trim_count = Arc::new(AtomicU32::new(u32::MAX));
+    let seen_reservation_id = Arc::new(AtomicU64::new(0));
     let callback = {
         let callback_calls = Arc::clone(&callback_calls);
         let seen_source = Arc::clone(&seen_source);
         let seen_should_trim = Arc::clone(&seen_should_trim);
         let seen_trim_count = Arc::clone(&seen_trim_count);
+        let seen_reservation_id = Arc::clone(&seen_reservation_id);
         Arc::new(move |info: cudf::DeviceMemoryFailureInfo| {
             callback_calls.fetch_add(1, Ordering::SeqCst);
             seen_source.store(failure_source_code(info.source), Ordering::SeqCst);
             seen_should_trim.store(info.should_trim_and_retry(), Ordering::SeqCst);
             seen_trim_count.store(info.trim_retry_count, Ordering::SeqCst);
+            if let Some(DeviceMemoryFailureAllocationDomain::StreamReservation { reservation_id }) =
+                info.allocation_domain
+            {
+                seen_reservation_id.store(reservation_id, Ordering::SeqCst);
+            }
             DeviceMemoryFailureAction::TrimAndRetry
         })
     };
@@ -300,6 +307,7 @@ fn detailed_failure_callback_reports_reservation_limit_source_and_does_not_trim(
     assert_eq!(seen_source.load(Ordering::SeqCst), 1);
     assert!(!seen_should_trim.load(Ordering::SeqCst));
     assert_eq!(seen_trim_count.load(Ordering::SeqCst), 0);
+    assert_eq!(seen_reservation_id.load(Ordering::SeqCst), 9002);
 
     let after = manager.pool_usage().unwrap();
     assert_eq!(
@@ -307,6 +315,40 @@ fn detailed_failure_callback_reports_reservation_limit_source_and_does_not_trim(
         "reservation-limit trim-and-retry requests must not trim the shared pool: before={before:?} after={after:?}"
     );
     assert_eq!(after.used_current_bytes, before.used_current_bytes);
+}
+
+#[test]
+fn reservation_arena_failure_callback_reports_arena_and_member_identity() {
+    let manager_runtime = Runtime::builder().with_device_memory_manager().build().unwrap();
+    let device = manager_runtime.device();
+    let manager = manager_runtime.device_memory_manager().unwrap();
+    let seen_source = Arc::new(AtomicU32::new(u32::MAX));
+    let seen_arena_id = Arc::new(AtomicU64::new(0));
+    let seen_reservation_id = Arc::new(AtomicU64::new(0));
+    let callback_source = Arc::clone(&seen_source);
+    let callback_arena_id = Arc::clone(&seen_arena_id);
+    let callback_reservation_id = Arc::clone(&seen_reservation_id);
+    let callback = Arc::new(move |info: cudf::DeviceMemoryFailureInfo| {
+        callback_source.store(failure_source_code(info.source), Ordering::SeqCst);
+        if let Some(DeviceMemoryFailureAllocationDomain::ReservationArena { arena_id, reservation_id }) =
+            info.allocation_domain
+        {
+            callback_arena_id.store(arena_id, Ordering::SeqCst);
+            callback_reservation_id.store(reservation_id, Ordering::SeqCst);
+        }
+        DeviceMemoryFailureAction::Decline
+    });
+    let callback_mr = manager.resource().with_failure_callback_details(callback).unwrap();
+    let runtime = Runtime::builder().with_device(device).with_memory_resource(callback_mr).build().unwrap();
+    let arena = manager.reservation_arena(30_005, 1).unwrap();
+    let _lease = arena.reserve_stream(runtime.stream(), 30_505, 64 * 1024 * 1024).unwrap();
+
+    let err = runtime.series(&[1i32, 2, 3]).unwrap_err();
+
+    assert_eq!(err.kind(), ErrorKind::ResourceExhausted);
+    assert_eq!(seen_source.load(Ordering::SeqCst), failure_source_code(DeviceMemoryFailureSource::ReservationLimit));
+    assert_eq!(seen_arena_id.load(Ordering::SeqCst), 30_005);
+    assert_eq!(seen_reservation_id.load(Ordering::SeqCst), 30_505);
 }
 
 #[test]
@@ -821,9 +863,19 @@ fn query_memory_domain_failure_callback_reports_reservation_limit_source() {
     let device = manager_runtime.device();
     let manager = manager_runtime.device_memory_manager().unwrap();
     let seen_source = Arc::new(AtomicU32::new(u32::MAX));
+    let seen_domain_id = Arc::new(AtomicU64::new(0));
+    let seen_member_id = Arc::new(AtomicU64::new(0));
     let callback_source = Arc::clone(&seen_source);
+    let callback_domain_id = Arc::clone(&seen_domain_id);
+    let callback_member_id = Arc::clone(&seen_member_id);
     let callback = Arc::new(move |info: cudf::DeviceMemoryFailureInfo| {
         callback_source.store(failure_source_code(info.source), Ordering::SeqCst);
+        if let Some(DeviceMemoryFailureAllocationDomain::QueryMemoryDomain { domain_id, member_id }) =
+            info.allocation_domain
+        {
+            callback_domain_id.store(domain_id, Ordering::SeqCst);
+            callback_member_id.store(member_id, Ordering::SeqCst);
+        }
         DeviceMemoryFailureAction::Decline
     });
     let callback_mr = manager.resource().with_failure_callback_details(callback).unwrap();
@@ -837,6 +889,8 @@ fn query_memory_domain_failure_callback_reports_reservation_limit_source() {
 
     assert_eq!(err.kind(), ErrorKind::ResourceExhausted);
     assert_eq!(seen_source.load(Ordering::SeqCst), failure_source_code(DeviceMemoryFailureSource::ReservationLimit));
+    assert_eq!(seen_domain_id.load(Ordering::SeqCst), 40_005);
+    assert_eq!(seen_member_id.load(Ordering::SeqCst), 40_501);
 }
 
 #[test]

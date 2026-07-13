@@ -115,6 +115,12 @@ static_assert(sizeof(cudf_memory_failure_source_t) == sizeof(int32_t),
               "cudf_memory_failure_source_t must be 32-bit");
 static_assert(CUDF_MEMORY_FAILURE_SOURCE_PHYSICAL == 0);
 static_assert(CUDF_MEMORY_FAILURE_SOURCE_RESERVATION_LIMIT == 1);
+static_assert(sizeof(cudf_memory_failure_domain_t) == sizeof(int32_t),
+              "cudf_memory_failure_domain_t must be 32-bit");
+static_assert(CUDF_MEMORY_FAILURE_DOMAIN_NONE == 0);
+static_assert(CUDF_MEMORY_FAILURE_DOMAIN_STREAM_RESERVATION == 1);
+static_assert(CUDF_MEMORY_FAILURE_DOMAIN_RESERVATION_ARENA == 2);
+static_assert(CUDF_MEMORY_FAILURE_DOMAIN_QUERY_MEMORY_DOMAIN == 3);
 static_assert(std::is_standard_layout_v<cudf_memory_pool_usage_t>,
               "cudf_memory_pool_usage_t must be standard layout");
 static_assert(offsetof(cudf_memory_pool_usage_t, struct_size) == 0,

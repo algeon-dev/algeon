@@ -17,6 +17,7 @@
 namespace {
 struct cudf_stream_owner {
   rmm::cuda_stream stream;
+  int32_t device = -1;
 };
 
 struct cudf_stream_handle_state {
@@ -33,6 +34,10 @@ rmm::cuda_stream_view cudf_stream_view_from_handle(cudf_stream_handle handle) {
   return cudf_stream_state_from_handle(handle).owner->stream.view();
 }
 
+int32_t cudf_stream_device_from_handle(cudf_stream_handle handle) {
+  return cudf_stream_state_from_handle(handle).owner->device;
+}
+
 std::shared_ptr<void>
 cudf_stream_lifetime_from_handle(cudf_stream_handle handle) {
   return cudf_stream_state_from_handle(handle).owner;
@@ -46,6 +51,9 @@ cudf_status_t cudf_stream_create(cudf_stream_handle *out) {
   CUDF_RUST_TRY {
     auto state = std::make_unique<cudf_stream_handle_state>();
     state->owner = std::make_shared<cudf_stream_owner>();
+    int32_t device = 0;
+    CUDF_CUDA_TRY(cudaGetDevice(&device));
+    state->owner->device = device;
     *out = static_cast<cudf_stream_handle>(state.release());
     return CUDF_SUCCESS;
   }

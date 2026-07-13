@@ -45,6 +45,7 @@ enum { CUDF_MEMORY_FAILURE_INFO_RESERVED_SLOTS = 4 };
 
 enum {
   CUDF_MEMORY_FAILURE_INFO_HAS_POOL_USAGE = 1u << 0,
+  CUDF_MEMORY_FAILURE_INFO_HAS_ALLOCATION_DOMAIN = 1u << 1,
 };
 
 typedef enum {
@@ -62,6 +63,13 @@ typedef enum {
   CUDF_MEMORY_FAILURE_SOURCE_PHYSICAL = 0,
   CUDF_MEMORY_FAILURE_SOURCE_RESERVATION_LIMIT = 1,
 } cudf_memory_failure_source_t;
+
+typedef enum {
+  CUDF_MEMORY_FAILURE_DOMAIN_NONE = 0,
+  CUDF_MEMORY_FAILURE_DOMAIN_STREAM_RESERVATION = 1,
+  CUDF_MEMORY_FAILURE_DOMAIN_RESERVATION_ARENA = 2,
+  CUDF_MEMORY_FAILURE_DOMAIN_QUERY_MEMORY_DOMAIN = 3,
+} cudf_memory_failure_domain_t;
 
 /// Usage counters exposed by a production budget-tracking memory resource.
 ///
@@ -110,6 +118,12 @@ typedef struct {
   /// address the failure.
   uint32_t failure_source;
   uint32_t reserved_failure_info_padding;
+  /// When `CUDF_MEMORY_FAILURE_INFO_HAS_ALLOCATION_DOMAIN` is set:
+  /// reserved[0] is a `cudf_memory_failure_domain_t`, reserved[1] is the
+  /// primary domain id, and reserved[2] is the member/reservation id when
+  /// applicable. This overlay intentionally consumes every current reserved
+  /// slot; future failure-info extensions must grow this struct or define a
+  /// mutually exclusive overlay under a new flag.
   uint64_t reserved[CUDF_MEMORY_FAILURE_INFO_RESERVED_SLOTS - 1];
 } cudf_memory_failure_info_t;
 
