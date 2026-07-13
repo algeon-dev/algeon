@@ -8,7 +8,8 @@ use std::sync::{
 use cudf::{
     DeviceId, DeviceMemoryFailureAction, DeviceMemoryFailureSource, DeviceMemoryManager, DeviceMemoryManagerBase,
     DeviceMemoryManagerOptions, DeviceMemoryResource, ErrorCode, ErrorKind, ExecutionBudgetEnforcement,
-    ExecutionBudgetRequest, ExecutionBudgetStatus, Runtime, SortOptions, StreamReservationLease, testing::prelude::*,
+    ExecutionBudgetRequest, ExecutionBudgetStatus, QueryMemoryDomainOptions, Runtime, SortOptions,
+    StreamReservationLease, testing::prelude::*,
 };
 
 fn assert_send_sync<T: Send + Sync>() {}
@@ -442,6 +443,206 @@ fn execution_budget_token_can_attach_as_arena_member() {
     assert_eq!(outcome.report().enforcement(), ExecutionBudgetEnforcement::ReservationArenaMember);
     assert_eq!(outcome.report().status(), ExecutionBudgetStatus::ReservationEnforced);
     assert!(arena.usage().unwrap().current_bytes >= outcome.value().device_allocated_size_bytes().unwrap() as u64);
+}
+
+#[test]
+fn query_memory_domain_preserves_device_resource_identity() {
+    assert_send_sync::<cudf::QueryMemoryDomain>();
+
+    let rt = Runtime::builder().with_device_memory_manager().build().unwrap();
+    let manager = rt.device_memory_manager().unwrap();
+    let manager_mr = manager.resource().testing_raw_handle_value();
+    let domain = manager
+        .query_memory_domain(
+            40_001,
+            QueryMemoryDomainOptions::new(32 * 1024 * 1024).with_ceiling_bytes(64 * 1024 * 1024),
+        )
+        .unwrap();
+
+    let lease = domain.reserve_stream(rt.stream(), 40_101).unwrap();
+
+    assert_eq!(rt.memory_resource().testing_raw_handle_value(), manager_mr);
+    assert_eq!(lease.memory_resource().testing_raw_handle_value(), manager_mr);
+    assert_eq!(domain.usage().unwrap().domain_id, 40_001);
+    let pool_usage = domain.pool_usage().unwrap();
+    assert!(pool_usage.reserved_current_bytes >= pool_usage.used_current_bytes);
+}
+
+#[test]
+fn query_memory_domain_usage_closes_when_allocation_is_freed() {
+    let runtime = Runtime::builder().with_device_memory_manager().build().unwrap();
+    let manager = runtime.device_memory_manager().unwrap();
+    let domain = manager
+        .query_memory_domain(40_007, QueryMemoryDomainOptions::new(8 * 1024 * 1024).with_ceiling_bytes(8 * 1024 * 1024))
+        .unwrap();
+    let _lease = domain.reserve_stream(runtime.stream(), 40_701).unwrap();
+
+    let buffer = runtime.device_buffer(1024).unwrap();
+    let live = domain.usage().unwrap();
+    assert!(live.current_bytes >= 1024);
+    assert!(live.current_allocations > 0);
+
+    drop(buffer);
+
+    let released = domain.usage().unwrap();
+    assert_eq!(released.current_bytes, 0);
+    assert_eq!(released.current_aligned_bytes, 0);
+    assert_eq!(released.current_allocations, 0);
+}
+
+#[test]
+fn query_memory_domain_churn_reuses_grant_after_frees() {
+    let runtime = Runtime::builder().with_device_memory_manager().build().unwrap();
+    let manager = runtime.device_memory_manager().unwrap();
+    let domain = manager
+        .query_memory_domain(40_008, QueryMemoryDomainOptions::new(4 * 1024).with_ceiling_bytes(8 * 1024 * 1024))
+        .unwrap();
+    let _lease = domain.reserve_stream(runtime.stream(), 40_801).unwrap();
+
+    for _ in 0..16 {
+        let buffer = runtime.device_buffer(1024).unwrap();
+        drop(buffer);
+    }
+
+    let usage = domain.usage().unwrap();
+    assert_eq!(usage.current_bytes, 0);
+    assert_eq!(usage.current_allocations, 0);
+    assert_eq!(usage.failed_allocation_count, 0);
+    assert!(usage.total_bytes > usage.allocation_limit_bytes);
+}
+
+#[test]
+fn query_memory_domain_frees_are_accounted_per_domain() {
+    let left = Runtime::builder().with_device_memory_manager().build().unwrap();
+    let right = Runtime::builder().with_device_memory_manager().build().unwrap();
+    let manager = left.device_memory_manager().unwrap();
+    let left_domain = manager
+        .query_memory_domain(40_009, QueryMemoryDomainOptions::new(8 * 1024 * 1024).with_ceiling_bytes(8 * 1024 * 1024))
+        .unwrap();
+    let right_domain = manager
+        .query_memory_domain(40_010, QueryMemoryDomainOptions::new(8 * 1024 * 1024).with_ceiling_bytes(8 * 1024 * 1024))
+        .unwrap();
+    let _left_lease = left_domain.reserve_stream(left.stream(), 40_901).unwrap();
+    let _right_lease = right_domain.reserve_stream(right.stream(), 41_001).unwrap();
+
+    let left_buffer = left.device_buffer(1024).unwrap();
+    let right_buffer = right.device_buffer(2048).unwrap();
+    assert!(left_domain.usage().unwrap().current_bytes >= 1024);
+    assert!(right_domain.usage().unwrap().current_bytes >= 2048);
+
+    drop(left_buffer);
+
+    assert_eq!(left_domain.usage().unwrap().current_bytes, 0);
+    assert!(right_domain.usage().unwrap().current_bytes >= 2048);
+
+    drop(right_buffer);
+
+    assert_eq!(right_domain.usage().unwrap().current_bytes, 0);
+}
+
+#[test]
+fn query_memory_domain_resize_updates_gate_but_rejects_above_ceiling() {
+    let rt = Runtime::builder().with_device_memory_manager().build().unwrap();
+    let manager = rt.device_memory_manager().unwrap();
+    let domain = manager
+        .query_memory_domain(40_002, QueryMemoryDomainOptions::new(1).with_ceiling_bytes(8 * 1024 * 1024))
+        .unwrap();
+    let _lease = domain.reserve_stream(rt.stream(), 40_201).unwrap();
+
+    let err = expect_device_buffer_error(rt.device_buffer(1024));
+    assert_eq!(err.kind(), ErrorKind::ResourceExhausted);
+    assert!(domain.usage().unwrap().failed_allocation_count > 0);
+
+    domain.resize_grant(8 * 1024 * 1024).unwrap();
+    let buffer = rt.device_buffer(1024).unwrap();
+    assert_eq!(buffer.size_bytes().unwrap(), 1024);
+
+    let err = domain.resize_grant(16 * 1024 * 1024).unwrap_err();
+    assert_eq!(err.kind(), ErrorKind::InvalidInput);
+
+    let err = _lease.resize(1024).unwrap_err();
+    assert_eq!(err.kind(), ErrorKind::InvalidInput);
+}
+
+#[test]
+fn query_memory_domain_and_legacy_reservation_are_mutually_exclusive_per_stream() {
+    let runtime = Runtime::builder().with_device_memory_manager().build().unwrap();
+    let manager = runtime.device_memory_manager().unwrap();
+    let domain = manager
+        .query_memory_domain(40_011, QueryMemoryDomainOptions::new(8 * 1024 * 1024).with_ceiling_bytes(8 * 1024 * 1024))
+        .unwrap();
+
+    let _domain_lease = domain.reserve_stream(runtime.stream(), 41_101).unwrap();
+    let err = runtime.stream_reservation(41_102, 8 * 1024 * 1024).unwrap_err();
+
+    assert_eq!(err.kind(), ErrorKind::InvalidInput);
+}
+
+#[test]
+fn query_memory_domain_failure_is_query_local() {
+    let _pool_state = shared_device_pool_guard();
+    let left = Runtime::builder().with_device_memory_manager().build().unwrap();
+    let right = Runtime::builder().with_device_memory_manager().build().unwrap();
+    let manager = left.device_memory_manager().unwrap();
+    let left_domain = manager
+        .query_memory_domain(40_003, QueryMemoryDomainOptions::new(1).with_ceiling_bytes(8 * 1024 * 1024))
+        .unwrap();
+    let right_domain = manager
+        .query_memory_domain(40_004, QueryMemoryDomainOptions::new(8 * 1024 * 1024).with_ceiling_bytes(8 * 1024 * 1024))
+        .unwrap();
+    let _left_lease = left_domain.reserve_stream(left.stream(), 40_301).unwrap();
+    let _right_lease = right_domain.reserve_stream(right.stream(), 40_401).unwrap();
+
+    let err = expect_device_buffer_error(left.device_buffer(1024));
+    assert_eq!(err.kind(), ErrorKind::ResourceExhausted);
+    assert!(left_domain.usage().unwrap().failed_allocation_count > 0);
+
+    let right_buffer = right.device_buffer(1024).unwrap();
+    assert_eq!(right_buffer.size_bytes().unwrap(), 1024);
+    assert_eq!(right_domain.usage().unwrap().failed_allocation_count, 0);
+}
+
+#[test]
+fn query_memory_domain_failure_callback_reports_reservation_limit_source() {
+    let manager_runtime = Runtime::builder().with_device_memory_manager().build().unwrap();
+    let device = manager_runtime.device();
+    let manager = manager_runtime.device_memory_manager().unwrap();
+    let seen_source = Arc::new(AtomicU32::new(u32::MAX));
+    let callback_source = Arc::clone(&seen_source);
+    let callback = Arc::new(move |info: cudf::DeviceMemoryFailureInfo| {
+        callback_source.store(failure_source_code(info.source), Ordering::SeqCst);
+        DeviceMemoryFailureAction::Decline
+    });
+    let callback_mr = manager.resource().with_failure_callback_details(callback).unwrap();
+    let runtime = Runtime::builder().with_device(device).with_memory_resource(callback_mr).build().unwrap();
+    let domain = manager
+        .query_memory_domain(40_005, QueryMemoryDomainOptions::new(1).with_ceiling_bytes(8 * 1024 * 1024))
+        .unwrap();
+    let _lease = domain.reserve_stream(runtime.stream(), 40_501).unwrap();
+
+    let err = runtime.series(&[1i32, 2, 3]).unwrap_err();
+
+    assert_eq!(err.kind(), ErrorKind::ResourceExhausted);
+    assert_eq!(seen_source.load(Ordering::SeqCst), failure_source_code(DeviceMemoryFailureSource::ReservationLimit));
+}
+
+#[test]
+fn query_memory_domain_retained_output_survives_domain_handle_drop() {
+    let runtime = Runtime::builder().with_device_memory_manager().build().unwrap();
+    let manager = runtime.device_memory_manager().unwrap();
+
+    let retained = {
+        let domain = manager
+            .query_memory_domain(
+                40_006,
+                QueryMemoryDomainOptions::new(8 * 1024 * 1024).with_ceiling_bytes(8 * 1024 * 1024),
+            )
+            .unwrap();
+        let _lease = domain.reserve_stream(runtime.stream(), 40_601).unwrap();
+        runtime.device_buffer(1024).unwrap()
+    };
+
+    drop(retained);
 }
 
 #[test]

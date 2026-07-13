@@ -9,6 +9,7 @@
 #include <rmm/aligned.hpp>
 #include <rmm/mr/per_device_resource.hpp>
 #include <rmm/mr/cuda_async_memory_resource.hpp>
+#include <rmm/mr/cuda_async_view_memory_resource.hpp>
 #include <rmm/mr/cuda_memory_resource.hpp>
 #include <rmm/mr/failure_callback_resource_adaptor.hpp>
 #include <rmm/mr/limiting_resource_adaptor.hpp>
@@ -18,6 +19,7 @@
 #include <rmm/resource_ref.hpp>
 
 #include <cuda/memory_resource>
+#include <cuda.h>
 
 #include <algorithm>
 #include <atomic>
@@ -27,6 +29,7 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <shared_mutex>
 #include <stdexcept>
 #include <string>
 #include <unordered_map>
@@ -104,11 +107,40 @@ bool read_async_pool_usage_noexcept(cuda_async_resource_box* async_pool,
                                     cudf_memory_pool_usage_t& out) noexcept
 {
   if (async_pool == nullptr) { return false; }
+  auto const pool = async_pool->resource().pool_handle();
   std::uint64_t reserved_current = 0;
   std::uint64_t reserved_high    = 0;
   std::uint64_t used_current     = 0;
   std::uint64_t used_high        = 0;
-  auto const pool                = async_pool->resource().pool_handle();
+  if (cudaMemPoolGetAttribute(pool, cudaMemPoolAttrReservedMemCurrent, &reserved_current) !=
+      cudaSuccess) {
+    cudaGetLastError();
+    return false;
+  }
+  if (cudaMemPoolGetAttribute(pool, cudaMemPoolAttrReservedMemHigh, &reserved_high) !=
+      cudaSuccess) {
+    cudaGetLastError();
+    return false;
+  }
+  if (cudaMemPoolGetAttribute(pool, cudaMemPoolAttrUsedMemCurrent, &used_current) != cudaSuccess) {
+    cudaGetLastError();
+    return false;
+  }
+  if (cudaMemPoolGetAttribute(pool, cudaMemPoolAttrUsedMemHigh, &used_high) != cudaSuccess) {
+    cudaGetLastError();
+    return false;
+  }
+  fill_pool_usage(out, reserved_current, reserved_high, used_current, used_high);
+  return true;
+}
+
+bool read_cuda_pool_usage_noexcept(cudaMemPool_t pool, cudf_memory_pool_usage_t& out) noexcept
+{
+  if (pool == nullptr) { return false; }
+  std::uint64_t reserved_current = 0;
+  std::uint64_t reserved_high    = 0;
+  std::uint64_t used_current     = 0;
+  std::uint64_t used_high        = 0;
   if (cudaMemPoolGetAttribute(pool, cudaMemPoolAttrReservedMemCurrent, &reserved_current) !=
       cudaSuccess) {
     cudaGetLastError();
@@ -355,6 +387,201 @@ class budget_tracking_resource_adaptor final : public rmm::mr::device_memory_res
   std::atomic<std::size_t> largest_failed_allocation_bytes_{0};
 };
 
+class query_domain_resource final : public rmm::mr::device_memory_resource {
+ public:
+  query_domain_resource(cudaMemPool_t pool,
+                        std::uint64_t domain_id,
+                        std::size_t grant_bytes,
+                        std::size_t ceiling_bytes)
+    : view_{pool},
+      domain_id_{domain_id},
+      grant_bytes_{grant_bytes},
+      ceiling_bytes_{ceiling_bytes}
+  {
+  }
+
+  [[nodiscard]] cudf_memory_resource_usage_t usage(bool active,
+                                                   std::size_t active_members) const
+  {
+    cudf_memory_resource_usage_t out{};
+    fill_usage(out,
+               grant_bytes_.load(std::memory_order_relaxed),
+               current_bytes_.load(std::memory_order_relaxed),
+               peak_bytes_.load(std::memory_order_relaxed),
+               total_bytes_.load(std::memory_order_relaxed),
+               current_aligned_bytes_.load(std::memory_order_relaxed),
+               peak_aligned_bytes_.load(std::memory_order_relaxed),
+               total_allocations_.load(std::memory_order_relaxed),
+               current_allocations_.load(std::memory_order_relaxed),
+               peak_allocations_.load(std::memory_order_relaxed),
+               failed_allocation_count_.load(std::memory_order_relaxed),
+               largest_failed_allocation_bytes_.load(std::memory_order_relaxed));
+    out.reserved[0] = domain_id_;
+    out.reserved[1] = active ? 1 : 0;
+    out.reserved[2] = active_members;
+    out.reserved[3] = ceiling_bytes_;
+    return out;
+  }
+
+  [[nodiscard]] std::uint64_t domain_id() const noexcept { return domain_id_; }
+
+  [[nodiscard]] std::size_t current_allocations() const noexcept
+  {
+    return current_allocations_.load(std::memory_order_relaxed);
+  }
+
+  bool resize_grant(std::size_t grant_bytes, std::string& error)
+  {
+    if (grant_bytes > ceiling_bytes_) {
+      error = "query memory domain grant exceeds immutable pool ceiling";
+      return false;
+    }
+    grant_bytes_.store(grant_bytes, std::memory_order_relaxed);
+    return true;
+  }
+
+  void trim_to(std::uint64_t keep_bytes) { CUDF_CUDA_TRY(cudaMemPoolTrimTo(view_.pool_handle(), keep_bytes)); }
+
+  bool trim_to_noexcept(std::uint64_t keep_bytes) noexcept
+  {
+    if (cudaMemPoolTrimTo(view_.pool_handle(), keep_bytes) != cudaSuccess) {
+      cudaGetLastError();
+      return false;
+    }
+    return true;
+  }
+
+  bool pool_usage(cudf_memory_pool_usage_t& out) const noexcept
+  {
+    return read_cuda_pool_usage_noexcept(view_.pool_handle(), out);
+  }
+
+ private:
+  void record_failed_allocation(std::size_t bytes) noexcept
+  {
+    failed_allocation_count_.fetch_add(1, std::memory_order_relaxed);
+    update_atomic_peak(largest_failed_allocation_bytes_, bytes);
+  }
+
+  bool would_exceed_pool_ceiling(std::size_t aligned_bytes) const noexcept
+  {
+    cudf_memory_pool_usage_t usage{};
+    if (!pool_usage(usage)) { return false; }
+    if (usage.reserved_current_bytes > ceiling_bytes_) { return true; }
+    return aligned_bytes > ceiling_bytes_ - static_cast<std::size_t>(usage.reserved_current_bytes);
+  }
+
+  void* do_allocate(std::size_t bytes,
+                    rmm::cuda_stream_view stream,
+                    std::size_t alignment) override
+  {
+    if (bytes == 0) { return view_.allocate(stream, bytes, alignment); }
+    auto const aligned_bytes = rmm::align_up(bytes, alignment);
+    auto old_aligned         = current_aligned_bytes_.load(std::memory_order_relaxed);
+    std::size_t new_aligned  = 0;
+    while (true) {
+      auto const grant = grant_bytes_.load(std::memory_order_relaxed);
+      if (old_aligned > grant || aligned_bytes > grant - old_aligned) {
+        record_failed_allocation(bytes);
+        throw reservation_limit_out_of_memory{
+          "query memory domain grant exceeded"};
+      }
+      new_aligned = old_aligned + aligned_bytes;
+      if (current_aligned_bytes_.compare_exchange_weak(
+            old_aligned, new_aligned, std::memory_order_relaxed)) {
+        break;
+      }
+    }
+
+    void* ptr = nullptr;
+    try {
+      ptr = view_.allocate(stream, bytes, alignment);
+    } catch (rmm::out_of_memory const&) {
+      current_aligned_bytes_ -= aligned_bytes;
+      record_failed_allocation(bytes);
+      if (would_exceed_pool_ceiling(aligned_bytes)) {
+        throw reservation_limit_out_of_memory{
+          "query memory domain pool ceiling exceeded"};
+      }
+      throw;
+    } catch (...) {
+      current_aligned_bytes_ -= aligned_bytes;
+      record_failed_allocation(bytes);
+      throw;
+    }
+
+    auto const old_requested = current_bytes_.fetch_add(bytes);
+    auto const new_requested = old_requested + bytes;
+    auto const old_allocs    = current_allocations_.fetch_add(1);
+    auto const new_allocs    = old_allocs + 1;
+
+    update_atomic_peak(peak_aligned_bytes_, new_aligned);
+    update_atomic_peak(peak_bytes_, new_requested);
+    update_atomic_peak(peak_allocations_, new_allocs);
+    total_bytes_.fetch_add(bytes, std::memory_order_relaxed);
+    total_allocations_.fetch_add(1, std::memory_order_relaxed);
+    return ptr;
+  }
+
+  void do_deallocate(void* ptr,
+                     std::size_t bytes,
+                     rmm::cuda_stream_view stream,
+                     std::size_t alignment) noexcept override
+  {
+    auto const aligned_bytes = rmm::align_up(bytes, alignment);
+    view_.deallocate(stream, ptr, bytes, alignment);
+    current_aligned_bytes_ -= aligned_bytes;
+    current_bytes_ -= bytes;
+    current_allocations_ -= 1;
+  }
+
+  [[nodiscard]] bool do_is_equal(rmm::mr::device_memory_resource const& other) const noexcept override
+  {
+    return this == std::addressof(other);
+  }
+
+  rmm::mr::cuda_async_view_memory_resource view_;
+  std::uint64_t domain_id_;
+  std::atomic<std::size_t> grant_bytes_{0};
+  std::size_t ceiling_bytes_;
+  std::atomic<std::size_t> current_bytes_{0};
+  std::atomic<std::size_t> peak_bytes_{0};
+  std::atomic<std::size_t> total_bytes_{0};
+  std::atomic<std::size_t> current_aligned_bytes_{0};
+  std::atomic<std::size_t> peak_aligned_bytes_{0};
+  std::atomic<std::size_t> total_allocations_{0};
+  std::atomic<std::size_t> current_allocations_{0};
+  std::atomic<std::size_t> peak_allocations_{0};
+  std::atomic<std::size_t> failed_allocation_count_{0};
+  std::atomic<std::size_t> largest_failed_allocation_bytes_{0};
+};
+
+struct query_domain_state {
+  std::uint64_t id = 0;
+  int32_t device  = -1;
+  cudaMemPool_t pool{};
+  std::size_t ceiling_bytes = 0;
+  bool active               = true;
+  std::size_t active_members = 0;
+  std::shared_ptr<query_domain_resource> resource;
+
+  ~query_domain_state()
+  {
+    resource.reset();
+    if (pool != nullptr) {
+      cudaMemPoolDestroy(pool);
+      pool = nullptr;
+    }
+  }
+};
+
+struct query_domain_member_state {
+  std::uint64_t id = 0;
+  void* stream_key = nullptr;
+  bool attached    = true;
+  std::shared_ptr<query_domain_state> domain;
+};
+
 struct reservation_state {
   std::uint64_t id              = 0;
   std::size_t allocation_limit  = 0;
@@ -404,6 +631,17 @@ class reservation_aware_resource_adaptor final : public rmm::mr::device_memory_r
                                             std::string& error)
   {
     auto const key = stream_key(stream);
+    {
+      std::shared_lock query_lock{query_domain_mutex_};
+      auto const existing_domain = query_domain_members_by_stream_.find(key);
+      if (existing_domain != query_domain_members_by_stream_.end()) {
+        auto state = existing_domain->second.lock();
+        if (state != nullptr && state->attached) {
+          error = "stream already has an attached query memory domain";
+          return {};
+        }
+      }
+    }
     std::scoped_lock lock{mutex_};
     auto const existing = reservations_by_stream_.find(key);
     if (existing != reservations_by_stream_.end()) {
@@ -439,6 +677,102 @@ class reservation_aware_resource_adaptor final : public rmm::mr::device_memory_r
     return state;
   }
 
+  std::shared_ptr<query_domain_state> create_query_domain(std::uint64_t domain_id,
+                                                          std::size_t grant_bytes,
+                                                          std::size_t ceiling_bytes,
+                                                          std::uint64_t release_threshold,
+                                                          int32_t device,
+                                                          std::string& error)
+  {
+    if (ceiling_bytes == 0) {
+      error = "query memory domain ceiling must be nonzero";
+      return {};
+    }
+    if (grant_bytes > ceiling_bytes) {
+      error = "query memory domain grant exceeds ceiling";
+      return {};
+    }
+
+    cudaMemPoolProps props{};
+    props.allocType      = cudaMemAllocationTypePinned;
+    props.handleTypes    = cudaMemHandleTypeNone;
+    props.location.type  = cudaMemLocationTypeDevice;
+    props.location.id    = device;
+    props.maxSize        = ceiling_bytes;
+    cudaMemPool_t pool   = nullptr;
+    CUDF_CUDA_TRY(cudaMemPoolCreate(&pool, &props));
+    try {
+      CUDF_CUDA_TRY(cudaMemPoolSetAttribute(pool, cudaMemPoolAttrReleaseThreshold,
+                                            &release_threshold));
+      auto state            = std::make_shared<query_domain_state>();
+      auto* domain_pool     = pool;
+      state->id             = domain_id;
+      state->device         = device;
+      state->pool           = domain_pool;
+      pool                  = nullptr;
+      state->ceiling_bytes  = ceiling_bytes;
+      state->resource       = std::make_shared<query_domain_resource>(
+        domain_pool, domain_id, grant_bytes, ceiling_bytes);
+      {
+        std::unique_lock lock{query_domain_mutex_};
+        query_domains_by_pool_[domain_pool] = state;
+        query_domain_pool_count_.fetch_add(1, std::memory_order_relaxed);
+      }
+      return state;
+    } catch (...) {
+      if (pool != nullptr) { cudaMemPoolDestroy(pool); }
+      throw;
+    }
+  }
+
+  std::shared_ptr<query_domain_member_state> attach_query_domain(
+    std::shared_ptr<query_domain_state> const& domain,
+    rmm::cuda_stream_view stream,
+    std::uint64_t reservation_id,
+    std::string& error)
+  {
+    if (domain == nullptr) {
+      error = "query memory domain is null";
+      return {};
+    }
+    auto const key = stream_key(stream);
+    std::unique_lock query_lock{query_domain_mutex_};
+    if (!domain->active) {
+      error = "query memory domain is not active";
+      return {};
+    }
+    auto const existing_domain = query_domain_members_by_stream_.find(key);
+    if (existing_domain != query_domain_members_by_stream_.end()) {
+      auto state = existing_domain->second.lock();
+      if (state != nullptr && state->attached) {
+        error = "stream already has an attached query memory domain";
+        return {};
+      }
+      query_domain_members_by_stream_.erase(existing_domain);
+    }
+    {
+      std::scoped_lock legacy_lock{mutex_};
+      auto const existing = reservations_by_stream_.find(key);
+      if (existing != reservations_by_stream_.end()) {
+        auto state = existing->second.lock();
+        if (state != nullptr && state->attached) {
+          error = "stream already has an attached memory reservation";
+          return {};
+        }
+        reservations_by_stream_.erase(existing);
+      }
+    }
+
+    auto state        = std::make_shared<query_domain_member_state>();
+    state->id        = reservation_id;
+    state->stream_key = key;
+    state->domain    = domain;
+    domain->active_members += 1;
+    query_domain_members_by_stream_[key] = state;
+    query_domain_member_count_.fetch_add(1, std::memory_order_relaxed);
+    return state;
+  }
+
   void detach(std::shared_ptr<reservation_state> const& state)
   {
     if (state == nullptr) { return; }
@@ -457,11 +791,46 @@ class reservation_aware_resource_adaptor final : public rmm::mr::device_memory_r
     }
   }
 
+  void detach_query_domain_member(std::shared_ptr<query_domain_member_state> const& state)
+  {
+    if (state == nullptr) { return; }
+    std::shared_ptr<query_domain_state> domain;
+    {
+      std::unique_lock lock{query_domain_mutex_};
+      bool const was_attached = state->attached;
+      state->attached         = false;
+      domain                  = state->domain;
+      auto const existing     = query_domain_members_by_stream_.find(state->stream_key);
+      if (existing != query_domain_members_by_stream_.end()) {
+        auto existing_state = existing->second.lock();
+        if (existing_state == nullptr || existing_state.get() == state.get()) {
+          query_domain_members_by_stream_.erase(existing);
+        }
+      }
+      if (was_attached) {
+        query_domain_member_count_.fetch_sub(1, std::memory_order_relaxed);
+        if (domain != nullptr && domain->active_members > 0) { domain->active_members -= 1; }
+      }
+    }
+    cleanup_query_domain_if_idle(domain);
+  }
+
   void destroy_arena(std::shared_ptr<reservation_arena_state> const& state)
   {
     if (state == nullptr) { return; }
     std::scoped_lock lock{mutex_};
     state->active = false;
+  }
+
+  void destroy_query_domain(std::shared_ptr<query_domain_state> const& state)
+  {
+    if (state == nullptr) { return; }
+    {
+      std::unique_lock lock{query_domain_mutex_};
+      state->active = false;
+    }
+    if (state->resource != nullptr) { state->resource->trim_to_noexcept(0); }
+    cleanup_query_domain_if_idle(state);
   }
 
   cudf_memory_resource_usage_t usage(std::shared_ptr<reservation_state> const& state)
@@ -509,6 +878,27 @@ class reservation_aware_resource_adaptor final : public rmm::mr::device_memory_r
     return out;
   }
 
+  cudf_memory_resource_usage_t query_domain_usage(std::shared_ptr<query_domain_state> const& state)
+  {
+    if (state == nullptr || state->resource == nullptr) { return {}; }
+    std::shared_lock lock{query_domain_mutex_};
+    return state->resource->usage(state->active, state->active_members);
+  }
+
+  cudf_memory_resource_usage_t query_domain_member_usage(
+    std::shared_ptr<query_domain_member_state> const& state)
+  {
+    if (state == nullptr || state->domain == nullptr || state->domain->resource == nullptr) {
+      return {};
+    }
+    std::shared_lock lock{query_domain_mutex_};
+    auto out = state->domain->resource->usage(state->domain->active,
+                                              state->domain->active_members);
+    out.reserved[0] = state->id;
+    out.reserved[1] = state->attached ? 1 : 0;
+    return out;
+  }
+
   bool resize(std::shared_ptr<reservation_state> const& state,
               std::size_t limit_bytes,
               std::string& error)
@@ -543,6 +933,31 @@ class reservation_aware_resource_adaptor final : public rmm::mr::device_memory_r
     return true;
   }
 
+  bool resize_query_domain(std::shared_ptr<query_domain_state> const& state,
+                           std::size_t grant_bytes,
+                           std::string& error)
+  {
+    if (state == nullptr || state->resource == nullptr) {
+      error = "query memory domain is null";
+      return false;
+    }
+    std::shared_lock lock{query_domain_mutex_};
+    if (!state->active) {
+      error = "query memory domain is not active";
+      return false;
+    }
+    return state->resource->resize_grant(grant_bytes, error);
+  }
+
+  void trim_query_domain(std::shared_ptr<query_domain_state> const& state,
+                         std::uint64_t keep_bytes)
+  {
+    if (state == nullptr || state->resource == nullptr) {
+      throw std::runtime_error{"query memory domain is null"};
+    }
+    state->resource->trim_to(keep_bytes);
+  }
+
  private:
   struct allocation_record {
     std::size_t bytes = 0;
@@ -554,6 +969,50 @@ class reservation_aware_resource_adaptor final : public rmm::mr::device_memory_r
   static void* stream_key(rmm::cuda_stream_view stream)
   {
     return reinterpret_cast<void*>(stream.value());
+  }
+
+  std::shared_ptr<query_domain_member_state> query_domain_member_for_stream(
+    rmm::cuda_stream_view stream)
+  {
+    if (query_domain_member_count_.load(std::memory_order_relaxed) == 0) { return {}; }
+    auto const key = stream_key(stream);
+    std::shared_lock lock{query_domain_mutex_};
+    auto const it = query_domain_members_by_stream_.find(key);
+    if (it == query_domain_members_by_stream_.end()) { return {}; }
+    auto state = it->second.lock();
+    if (state == nullptr || !state->attached) { return {}; }
+    return state;
+  }
+
+  std::shared_ptr<query_domain_state> query_domain_for_pointer(void* ptr)
+  {
+    if (query_domain_pool_count_.load(std::memory_order_relaxed) == 0) { return {}; }
+    if (ptr == nullptr) { return {}; }
+    cudaMemPool_t pool = nullptr;
+    auto const result  = cuPointerGetAttribute(&pool,
+                                              CU_POINTER_ATTRIBUTE_MEMPOOL_HANDLE,
+                                              reinterpret_cast<CUdeviceptr>(ptr));
+    if (result != CUDA_SUCCESS || pool == nullptr) { return {}; }
+    std::shared_lock lock{query_domain_mutex_};
+    auto const it = query_domains_by_pool_.find(pool);
+    if (it == query_domains_by_pool_.end()) { return {}; }
+    return it->second;
+  }
+
+  void cleanup_query_domain_if_idle(std::shared_ptr<query_domain_state> const& domain)
+  {
+    if (domain == nullptr || domain->resource == nullptr) { return; }
+    if (domain->resource->current_allocations() != 0) { return; }
+    std::unique_lock lock{query_domain_mutex_};
+    if (domain->active || domain->active_members != 0 ||
+        domain->resource->current_allocations() != 0) {
+      return;
+    }
+    auto const it = query_domains_by_pool_.find(domain->pool);
+    if (it != query_domains_by_pool_.end() && it->second.get() == domain.get()) {
+      query_domains_by_pool_.erase(it);
+      query_domain_pool_count_.fetch_sub(1, std::memory_order_relaxed);
+    }
   }
 
   template <typename State>
@@ -636,6 +1095,12 @@ class reservation_aware_resource_adaptor final : public rmm::mr::device_memory_r
                     rmm::cuda_stream_view stream,
                     std::size_t alignment) override
   {
+    auto query_member = query_domain_member_for_stream(stream);
+    if (query_member != nullptr && query_member->domain != nullptr &&
+        query_member->domain->resource != nullptr) {
+      return query_member->domain->resource->allocate(stream, bytes, alignment);
+    }
+
     auto const aligned_bytes = rmm::align_up(bytes, alignment);
     std::shared_ptr<reservation_state> reservation;
     std::shared_ptr<reservation_arena_state> arena;
@@ -710,6 +1175,13 @@ class reservation_aware_resource_adaptor final : public rmm::mr::device_memory_r
                      rmm::cuda_stream_view stream,
                      std::size_t alignment) noexcept override
   {
+    auto query_domain = query_domain_for_pointer(ptr);
+    if (query_domain != nullptr && query_domain->resource != nullptr) {
+      query_domain->resource->deallocate(stream, ptr, bytes, alignment);
+      cleanup_query_domain_if_idle(query_domain);
+      return;
+    }
+
     allocation_record record{};
     bool found = false;
     {
@@ -740,6 +1212,12 @@ class reservation_aware_resource_adaptor final : public rmm::mr::device_memory_r
 
   cuda::mr::any_resource<cuda::mr::device_accessible> upstream_;
   std::mutex mutex_;
+  std::shared_mutex query_domain_mutex_;
+  std::unordered_map<void*, std::weak_ptr<query_domain_member_state>>
+    query_domain_members_by_stream_;
+  std::unordered_map<cudaMemPool_t, std::shared_ptr<query_domain_state>> query_domains_by_pool_;
+  std::atomic<std::size_t> query_domain_member_count_{0};
+  std::atomic<std::size_t> query_domain_pool_count_{0};
   std::unordered_map<void*, std::weak_ptr<reservation_state>> reservations_by_stream_;
   std::unordered_map<void*, allocation_record> allocations_;
 };
@@ -905,11 +1383,17 @@ struct device_memory_manager_state {
 struct reservation_handle_state {
   std::shared_ptr<device_memory_manager_state> manager;
   std::shared_ptr<reservation_state> reservation;
+  std::shared_ptr<query_domain_member_state> query_domain_member;
 };
 
 struct reservation_arena_handle_state {
   std::shared_ptr<device_memory_manager_state> manager;
   std::shared_ptr<reservation_arena_state> arena;
+};
+
+struct query_domain_handle_state {
+  std::shared_ptr<device_memory_manager_state> manager;
+  std::shared_ptr<query_domain_state> domain;
 };
 
 std::mutex& memory_resource_registry_mutex()
@@ -1812,7 +2296,11 @@ cudf_status_t cudf_reservation_usage(cudf_reservation_handle reservation,
       set_error("reservation manager resource is not reservation-aware");
       return CUDF_ERROR_INVALID_OPERATION;
     }
-    *out = adaptor->usage(state.reservation);
+    if (state.query_domain_member != nullptr) {
+      *out = adaptor->query_domain_member_usage(state.query_domain_member);
+    } else {
+      *out = adaptor->usage(state.reservation);
+    }
     return CUDF_SUCCESS;
   }
   CUDF_RUST_CATCH
@@ -1831,7 +2319,14 @@ cudf_status_t cudf_reservation_resize(cudf_reservation_handle reservation,
       return CUDF_ERROR_INVALID_OPERATION;
     }
     std::string resize_error;
-    if (!adaptor->resize(state.reservation, limit_bytes, resize_error)) {
+    bool resized = false;
+    if (state.query_domain_member != nullptr) {
+      set_error("query memory domain member reservations cannot be resized; resize the domain grant");
+      return CUDF_ERROR_INVALID_OPERATION;
+    } else {
+      resized = adaptor->resize(state.reservation, limit_bytes, resize_error);
+    }
+    if (!resized) {
       set_error(resize_error);
       return CUDF_ERROR_INVALID_OPERATION;
     }
@@ -1847,7 +2342,13 @@ cudf_status_t cudf_reservation_detach(cudf_reservation_handle reservation)
   {
     auto* state = static_cast<reservation_handle_state*>(reservation);
     auto* adaptor = state->manager->owner->reservation_adaptor;
-    if (adaptor != nullptr) { adaptor->detach(state->reservation); }
+    if (adaptor != nullptr) {
+      if (state->query_domain_member != nullptr) {
+        adaptor->detach_query_domain_member(state->query_domain_member);
+      } else {
+        adaptor->detach(state->reservation);
+      }
+    }
     delete state;
     return CUDF_SUCCESS;
   }
@@ -1904,6 +2405,188 @@ cudf_status_t cudf_reservation_arena_destroy(cudf_reservation_arena_handle arena
     auto* state = static_cast<reservation_arena_handle_state*>(arena);
     auto* adaptor = state->manager->owner->reservation_adaptor;
     if (adaptor != nullptr) { adaptor->destroy_arena(state->arena); }
+    delete state;
+    return CUDF_SUCCESS;
+  }
+  CUDF_RUST_CATCH
+}
+
+cudf_status_t cudf_memory_manager_create_query_memory_domain(
+  cudf_memory_manager_handle manager,
+  uint64_t domain_id,
+  size_t grant_bytes,
+  size_t ceiling_bytes,
+  uint64_t release_threshold_bytes,
+  cudf_query_memory_domain_handle* out)
+{
+  CUDF_RUST_NULL_CHECK(out, "out is null");
+  *out = nullptr;
+  CUDF_RUST_NULL_CHECK(manager, "manager is null");
+  CUDF_RUST_TRY
+  {
+    auto manager_state = memory_manager_from_handle(manager);
+    if (manager_state == nullptr) {
+      set_error("memory manager handle is not registered");
+      return CUDF_ERROR_INVALID_OPERATION;
+    }
+    auto* adaptor = manager_state->owner->reservation_adaptor;
+    if (adaptor == nullptr) {
+      set_error("memory manager resource is not reservation-aware");
+      return CUDF_ERROR_INVALID_OPERATION;
+    }
+    if (manager_state->owner->async_pool == nullptr) {
+      set_error("query memory domains require a CUDA async manager base");
+      return CUDF_ERROR_INVALID_OPERATION;
+    }
+
+    cudf_device_guard guard;
+    cudf_status_t const guard_status = guard.activate(manager_state->device);
+    if (guard_status != CUDF_SUCCESS) { return guard_status; }
+
+    std::string create_error;
+    auto domain = adaptor->create_query_domain(domain_id,
+                                               grant_bytes,
+                                               ceiling_bytes,
+                                               release_threshold_bytes,
+                                               manager_state->device,
+                                               create_error);
+    if (domain == nullptr) {
+      set_error(create_error);
+      return CUDF_ERROR_INVALID_ARGUMENT;
+    }
+
+    auto state     = std::make_unique<query_domain_handle_state>();
+    state->manager = std::move(manager_state);
+    state->domain  = std::move(domain);
+    *out = static_cast<cudf_query_memory_domain_handle>(state.release());
+    return CUDF_SUCCESS;
+  }
+  CUDF_RUST_CATCH
+}
+
+cudf_status_t cudf_query_memory_domain_attach_stream(cudf_query_memory_domain_handle domain,
+                                                     cudf_stream_handle stream,
+                                                     uint64_t reservation_id,
+                                                     cudf_reservation_handle* out)
+{
+  CUDF_RUST_NULL_CHECK(out, "out is null");
+  *out = nullptr;
+  CUDF_RUST_NULL_CHECK(domain, "query memory domain is null");
+  CUDF_RUST_NULL_CHECK(stream, "stream is null");
+  CUDF_RUST_TRY
+  {
+    auto& domain_state = *static_cast<query_domain_handle_state*>(domain);
+    auto* adaptor      = domain_state.manager->owner->reservation_adaptor;
+    if (adaptor == nullptr) {
+      set_error("query memory domain manager resource is not reservation-aware");
+      return CUDF_ERROR_INVALID_OPERATION;
+    }
+    std::string attach_error;
+    auto member = adaptor->attach_query_domain(domain_state.domain,
+                                               cudf_stream_view_from_handle(stream),
+                                               reservation_id,
+                                               attach_error);
+    if (member == nullptr) {
+      set_error(attach_error);
+      return CUDF_ERROR_INVALID_OPERATION;
+    }
+
+    auto state                  = std::make_unique<reservation_handle_state>();
+    state->manager              = domain_state.manager;
+    state->query_domain_member  = std::move(member);
+    *out = static_cast<cudf_reservation_handle>(state.release());
+    return CUDF_SUCCESS;
+  }
+  CUDF_RUST_CATCH
+}
+
+cudf_status_t cudf_query_memory_domain_usage(cudf_query_memory_domain_handle domain,
+                                             cudf_memory_resource_usage_t* out)
+{
+  CUDF_RUST_NULL_CHECK(out, "out is null");
+  *out = {};
+  CUDF_RUST_NULL_CHECK(domain, "query memory domain is null");
+  CUDF_RUST_TRY
+  {
+    auto& state = *static_cast<query_domain_handle_state*>(domain);
+    auto* adaptor = state.manager->owner->reservation_adaptor;
+    if (adaptor == nullptr) {
+      set_error("query memory domain manager resource is not reservation-aware");
+      return CUDF_ERROR_INVALID_OPERATION;
+    }
+    *out = adaptor->query_domain_usage(state.domain);
+    return CUDF_SUCCESS;
+  }
+  CUDF_RUST_CATCH
+}
+
+cudf_status_t cudf_query_memory_domain_pool_usage(cudf_query_memory_domain_handle domain,
+                                                  cudf_memory_pool_usage_t* out)
+{
+  CUDF_RUST_NULL_CHECK(out, "out is null");
+  *out = {};
+  CUDF_RUST_NULL_CHECK(domain, "query memory domain is null");
+  CUDF_RUST_TRY
+  {
+    auto& state = *static_cast<query_domain_handle_state*>(domain);
+    if (state.domain == nullptr || state.domain->resource == nullptr ||
+        !state.domain->resource->pool_usage(*out)) {
+      set_error("failed to read query memory domain pool usage");
+      return CUDF_ERROR_INVALID_OPERATION;
+    }
+    return CUDF_SUCCESS;
+  }
+  CUDF_RUST_CATCH
+}
+
+cudf_status_t cudf_query_memory_domain_resize_grant(cudf_query_memory_domain_handle domain,
+                                                    size_t grant_bytes)
+{
+  CUDF_RUST_NULL_CHECK(domain, "query memory domain is null");
+  CUDF_RUST_TRY
+  {
+    auto& state = *static_cast<query_domain_handle_state*>(domain);
+    auto* adaptor = state.manager->owner->reservation_adaptor;
+    if (adaptor == nullptr) {
+      set_error("query memory domain manager resource is not reservation-aware");
+      return CUDF_ERROR_INVALID_OPERATION;
+    }
+    std::string resize_error;
+    if (!adaptor->resize_query_domain(state.domain, grant_bytes, resize_error)) {
+      set_error(resize_error);
+      return CUDF_ERROR_INVALID_ARGUMENT;
+    }
+    return CUDF_SUCCESS;
+  }
+  CUDF_RUST_CATCH
+}
+
+cudf_status_t cudf_query_memory_domain_trim(cudf_query_memory_domain_handle domain,
+                                            uint64_t keep_bytes)
+{
+  CUDF_RUST_NULL_CHECK(domain, "query memory domain is null");
+  CUDF_RUST_TRY
+  {
+    auto& state = *static_cast<query_domain_handle_state*>(domain);
+    auto* adaptor = state.manager->owner->reservation_adaptor;
+    if (adaptor == nullptr) {
+      set_error("query memory domain manager resource is not reservation-aware");
+      return CUDF_ERROR_INVALID_OPERATION;
+    }
+    adaptor->trim_query_domain(state.domain, keep_bytes);
+    return CUDF_SUCCESS;
+  }
+  CUDF_RUST_CATCH
+}
+
+cudf_status_t cudf_query_memory_domain_destroy(cudf_query_memory_domain_handle domain)
+{
+  CUDF_RUST_NULL_CHECK(domain, "query memory domain is null");
+  CUDF_RUST_TRY
+  {
+    auto* state = static_cast<query_domain_handle_state*>(domain);
+    auto* adaptor = state->manager->owner->reservation_adaptor;
+    if (adaptor != nullptr) { adaptor->destroy_query_domain(state->domain); }
     delete state;
     return CUDF_SUCCESS;
   }

@@ -312,6 +312,7 @@ else()
   set(CUDF_RUST_CUDA_RUNTIME_MODE "shared")
   target_link_libraries(cudf_rust PRIVATE CUDA::cudart)
 endif()
+target_link_libraries(cudf_rust PRIVATE CUDA::cuda_driver)
 
 # ##################################################################################################
 # * Cargo link manifest ---------------------------------------------------------------------------

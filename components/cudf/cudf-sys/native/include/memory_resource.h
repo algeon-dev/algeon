@@ -23,6 +23,9 @@ typedef void* cudf_reservation_handle;
 /// Opaque handle to one query-scoped reservation arena.
 typedef void* cudf_reservation_arena_handle;
 
+/// Opaque handle to one query-scoped memory domain.
+typedef void* cudf_query_memory_domain_handle;
+
 /// Callback invoked by a failure-callback memory resource after an upstream
 /// allocation fails with an RMM out-of-memory error.
 ///
@@ -385,6 +388,56 @@ cudf_status_t cudf_reservation_arena_resize(cudf_reservation_arena_handle arena,
 /// Retained allocations remain associated with the arena for accounting until
 /// those pointers are deallocated.
 cudf_status_t cudf_reservation_arena_destroy(cudf_reservation_arena_handle arena);
+
+/// Create an opt-in query memory domain for this manager.
+///
+/// The domain owns a CUDA async memory pool capped by `ceiling_bytes` and a
+/// resizable live-byte grant gate initially set to `grant_bytes`. `ceiling_bytes`
+/// must be nonzero and `grant_bytes <= ceiling_bytes`. The manager's public
+/// device-level memory resource remains the resource passed through execution
+/// options; streams attached to the domain are routed internally.
+cudf_status_t cudf_memory_manager_create_query_memory_domain(
+  cudf_memory_manager_handle manager,
+  uint64_t domain_id,
+  size_t grant_bytes,
+  size_t ceiling_bytes,
+  uint64_t release_threshold_bytes,
+  cudf_query_memory_domain_handle* out);
+
+/// Attach a stream to a query memory domain.
+///
+/// Allocations routed through the manager's public memory resource on this
+/// stream are served by the domain's pool and charged to the domain grant.
+cudf_status_t cudf_query_memory_domain_attach_stream(cudf_query_memory_domain_handle domain,
+                                                     cudf_stream_handle stream,
+                                                     uint64_t reservation_id,
+                                                     cudf_reservation_handle* out);
+
+/// Read usage counters for a query memory domain.
+cudf_status_t cudf_query_memory_domain_usage(cudf_query_memory_domain_handle domain,
+                                             cudf_memory_resource_usage_t* out);
+
+/// Read physical CUDA async-pool counters for a query memory domain.
+cudf_status_t cudf_query_memory_domain_pool_usage(cudf_query_memory_domain_handle domain,
+                                                  cudf_memory_pool_usage_t* out);
+
+/// Resize the domain's live-byte grant.
+///
+/// Shrinking below current live usage is allowed; future allocations fail until
+/// enough memory is released or the grant is grown. Growing above the immutable
+/// driver pool ceiling is rejected.
+cudf_status_t cudf_query_memory_domain_resize_grant(cudf_query_memory_domain_handle domain,
+                                                    size_t grant_bytes);
+
+/// Explicitly trim idle bytes from the domain's CUDA async pool.
+cudf_status_t cudf_query_memory_domain_trim(cudf_query_memory_domain_handle domain,
+                                            uint64_t keep_bytes);
+
+/// Destroy a query memory domain handle.
+///
+/// The domain stops accepting new stream attachments. Retained allocations keep
+/// the native domain alive until they are released.
+cudf_status_t cudf_query_memory_domain_destroy(cudf_query_memory_domain_handle domain);
 
 /// Destroy a memory resource handle on the CUDA device that owns it.
 ///

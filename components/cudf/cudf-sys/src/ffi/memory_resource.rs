@@ -3,7 +3,8 @@ use std::os::raw::c_void;
 use crate::{
     cudf_memory_failure_callback_t, cudf_memory_failure_callback_v2_t, cudf_memory_manager_handle,
     cudf_memory_manager_options_t, cudf_memory_pool_usage_t, cudf_memory_resource_handle, cudf_memory_resource_usage_t,
-    cudf_reservation_arena_handle, cudf_reservation_handle, cudf_status_t, cudf_stream_handle,
+    cudf_query_memory_domain_handle, cudf_reservation_arena_handle, cudf_reservation_handle, cudf_status_t,
+    cudf_stream_handle,
 };
 
 extern "C" {
@@ -200,6 +201,48 @@ extern "C" {
 
     /// Destroy a reservation arena handle.
     pub fn cudf_reservation_arena_destroy(arena: cudf_reservation_arena_handle) -> cudf_status_t;
+
+    /// Create an opt-in query memory domain for a memory manager.
+    pub fn cudf_memory_manager_create_query_memory_domain(
+        manager: cudf_memory_manager_handle,
+        domain_id: u64,
+        grant_bytes: usize,
+        ceiling_bytes: usize,
+        release_threshold_bytes: u64,
+        out: *mut cudf_query_memory_domain_handle,
+    ) -> cudf_status_t;
+
+    /// Attach a stream to a query memory domain.
+    pub fn cudf_query_memory_domain_attach_stream(
+        domain: cudf_query_memory_domain_handle,
+        stream: cudf_stream_handle,
+        reservation_id: u64,
+        out: *mut cudf_reservation_handle,
+    ) -> cudf_status_t;
+
+    /// Read usage counters for a query memory domain.
+    pub fn cudf_query_memory_domain_usage(
+        domain: cudf_query_memory_domain_handle,
+        out: *mut cudf_memory_resource_usage_t,
+    ) -> cudf_status_t;
+
+    /// Read physical CUDA async-pool counters for a query memory domain.
+    pub fn cudf_query_memory_domain_pool_usage(
+        domain: cudf_query_memory_domain_handle,
+        out: *mut cudf_memory_pool_usage_t,
+    ) -> cudf_status_t;
+
+    /// Resize a query memory domain's live-byte grant.
+    pub fn cudf_query_memory_domain_resize_grant(
+        domain: cudf_query_memory_domain_handle,
+        grant_bytes: usize,
+    ) -> cudf_status_t;
+
+    /// Trim a query memory domain's idle pool pages.
+    pub fn cudf_query_memory_domain_trim(domain: cudf_query_memory_domain_handle, keep_bytes: u64) -> cudf_status_t;
+
+    /// Destroy a query memory domain handle.
+    pub fn cudf_query_memory_domain_destroy(domain: cudf_query_memory_domain_handle) -> cudf_status_t;
 
     /// Destroy a memory resource created by this shim on its owning device.
     pub fn cudf_memory_resource_destroy(handle: cudf_memory_resource_handle, device: i32) -> cudf_status_t;
