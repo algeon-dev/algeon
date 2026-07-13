@@ -5,6 +5,7 @@ use std::{
         Arc,
         atomic::{AtomicU64, Ordering},
     },
+    time::Instant,
 };
 
 use arrow::{
@@ -34,8 +35,8 @@ use datafusion::{
 use futures::{TryStreamExt, future::BoxFuture};
 use nexus_query_engine::{
     BinaryOp, CaseWhen, ExecutionContext, Expr as NativeExpr, GpuDataFrame, GpuResidentInputMap, GpuResidentSource,
-    GpuResultHandle, GraphAlgorithm, GraphAlgorithmParams, GraphAlgorithmSpec, GraphBetweennessCentralityParams,
-    GraphBetweennessSeeds, GraphBfsEndpointPolicy, GraphBfsParams,
+    GpuResultHandle, GraphAlgorithm, GraphAlgorithmParams, GraphAlgorithmRuntimeMetrics, GraphAlgorithmSpec,
+    GraphBetweennessCentralityParams, GraphBetweennessSeeds, GraphBfsEndpointPolicy, GraphBfsParams,
     GraphBfsPredicateInputs as NativeGraphBfsPredicateInputs, GraphConstructionOptions, GraphConstructionPolicy,
     GraphCoreNumberParams, GraphDegreesAllParams, GraphEcgParams, GraphEdgeBetweennessCentralityParams,
     GraphEdgeColumnBindings, GraphEdgePredicateInput as NativeGraphEdgePredicateInput,
@@ -52,7 +53,8 @@ use nexus_query_engine::{
 };
 
 use super::{
-    CugraphAlgorithm, CugraphAlgorithmParams, CugraphAlgorithmSpec, CugraphBfsOutputMode, CugraphBfsSource,
+    CugraphAlgorithm, CugraphAlgorithmParams, CugraphAlgorithmSpec, CugraphBfsFollowerOutcome, CugraphBfsLeader,
+    CugraphBfsOutputMode, CugraphBfsSingleflightJoin, CugraphBfsSingleflightKey, CugraphBfsSource,
     CugraphBfsSourceVertex, CugraphGraphConstructionPolicy, CugraphKCoreDegreeType, plan_error,
 };
 use crate::{
@@ -176,11 +178,329 @@ impl CugraphAlgoExec {
         )
     }
 
+    fn bfs_singleflight_key(&self, device_ordinal: usize) -> Option<CugraphBfsSingleflightKey> {
+        if !self.native_execution_config.cugraph_bfs_singleflight_enabled()
+            || !self.native_execution_config.has_query_admission_authority()
+            || self.native_execution_config.query_service_resident_graph_cache_max_retained_bytes().is_none()
+            || !self.predicate_sources.is_empty()
+        {
+            return None;
+        }
+        let CugraphAlgorithmParams::Bfs(params) = &self.spec.params else {
+            return None;
+        };
+        if params.depth_limit.is_some()
+            || params.predicates.has_inputs()
+            || params.output.return_target_info
+            || params.output.mode == CugraphBfsOutputMode::Path
+        {
+            return None;
+        }
+        let source_vertex = params.source.as_i64()?;
+        let descriptor = self.graph_residency.as_ref()?;
+        let edge_normalize_inserted = self.edge_normalize_inserted();
+        let native_spec =
+            native_graph_spec_for_placement_hint(&self.spec, edge_normalize_inserted, &self.predicate_sources)
+                .with_edge_normalize_inserted(edge_normalize_inserted);
+        let resident_graph_key = planned_resident_graph_key(descriptor, &native_spec)?;
+        Some(CugraphBfsSingleflightKey {
+            device_ordinal,
+            resident_graph_key: Some(resident_graph_key),
+            source_vertex,
+            normalized_output: params.output.mode == CugraphBfsOutputMode::Normalized,
+            projection: self.projection.clone(),
+            limit: self.limit,
+        })
+    }
+
     async fn execute_gpu_result_with_context_impl(
         &self,
         native_context: &ExecutionContext,
         partition: usize,
         task_context: Arc<TaskContext>,
+    ) -> Result<(String, GpuResultHandle)> {
+        let Some(key) = self.bfs_singleflight_key(native_context.runtime().device().ordinal()) else {
+            return self.execute_gpu_result_with_context_physical(native_context, partition, task_context, None).await;
+        };
+        let coordinator = self.native_execution_config.cugraph_bfs_singleflight();
+        loop {
+            match coordinator.join(key.clone())? {
+                CugraphBfsSingleflightJoin::Leader(mut leader) => {
+                    match self
+                        .execute_gpu_result_with_context_physical(
+                            native_context,
+                            partition,
+                            Arc::clone(&task_context),
+                            Some(&mut leader),
+                        )
+                        .await
+                    {
+                        Ok((input_name, handle)) => {
+                            let publication: Result<()> = (|| {
+                                if leader.has_followers()? {
+                                    let batch = handle.to_host_record_batch().map_err(|error| {
+                                        DataFusionError::from(Error::from_native(
+                                            "datafusion_nexus.cugraph_sql.bfs_singleflight_publish",
+                                            "failed to materialize the leader BFS result for coalesced followers",
+                                            error,
+                                        ))
+                                    })?;
+                                    leader.publish(Arc::new(batch))?;
+                                } else {
+                                    leader.complete_without_result()?;
+                                }
+                                Ok(())
+                            })();
+                            if let Err(error) = publication {
+                                leader.fail();
+                                return Err(error);
+                            }
+                            return Ok((input_name, handle));
+                        },
+                        Err(error) => {
+                            leader.fail();
+                            return Err(error);
+                        },
+                    }
+                },
+                CugraphBfsSingleflightJoin::Follower(mut follower) => {
+                    match follower.wait(native_context.cancellation()).await? {
+                        CugraphBfsFollowerOutcome::Ready(batch) => {
+                            let started = Instant::now();
+                            let schema = self.schema();
+                            let frame =
+                                record_batches_to_gpu(native_context, Arc::clone(&schema), &[batch.as_ref().clone()])?;
+                            let output_device_bytes = frame.device_allocated_size_bytes().ok();
+                            let handle = GpuResultHandle::new(native_context, frame, schema).map_err(|error| {
+                                DataFusionError::from(Error::from_native(
+                                    "datafusion_nexus.cugraph_sql.bfs_singleflight_follower",
+                                    "failed to bind the coalesced BFS follower output",
+                                    error,
+                                ))
+                            })?;
+                            coordinator.record_follower_copy();
+                            self.record_bfs_singleflight_gpu_follower_metrics(
+                                partition,
+                                &key,
+                                batch.as_ref(),
+                                output_device_bytes,
+                                started.elapsed(),
+                            );
+                            return Ok((self.gpu_result_input_name.clone(), handle));
+                        },
+                        CugraphBfsFollowerOutcome::Retry => continue,
+                    }
+                },
+            }
+        }
+    }
+
+    fn record_bfs_singleflight_gpu_follower_metrics(
+        &self,
+        partition: usize,
+        key: &CugraphBfsSingleflightKey,
+        batch: &RecordBatch,
+        output_device_bytes: Option<u64>,
+        elapsed: std::time::Duration,
+    ) {
+        let metrics = NativeCudfMetrics::new_with_capture(
+            &self.metrics,
+            partition,
+            self.native_execution_config.metrics_capture(),
+        );
+        let mut query_metrics = QueryMetrics::default();
+        query_metrics.record_graph_algorithm_runtime(GraphAlgorithmRuntimeMetrics {
+            node_id: "bfs_singleflight_follower".to_string(),
+            algorithm: "bfs".to_string(),
+            runtime_outcome: "succeeded".to_string(),
+            input_boundary: "singleflight_host_result".to_string(),
+            output_boundary: "gpu_resident".to_string(),
+            construction_policy: self.spec.graph_options.construction_policy.as_str().to_string(),
+            source_column: self.spec.src_col.clone(),
+            destination_column: self.spec.dst_col.clone(),
+            weight_column: None,
+            directed: self.spec.graph_options.directed,
+            renumber: self.spec.graph_options.renumber,
+            algorithm_parameters: format!("source_vertex={}", key.source_vertex),
+            algorithm_metadata: "graph_cache=singleflight_follower,bfs_singleflight=follower".to_string(),
+            output_rows: u64::try_from(batch.num_rows()).unwrap_or(u64::MAX),
+            output_columns: u64::try_from(batch.num_columns()).unwrap_or(u64::MAX),
+            output_device_bytes,
+            elapsed_ns: u64::try_from(elapsed.as_nanos()).unwrap_or(u64::MAX),
+            host_to_device_uploads: 1,
+            ..GraphAlgorithmRuntimeMetrics::default()
+        });
+        metrics.record_query_metrics(&query_metrics);
+    }
+
+    async fn execute_host_result_with_context_impl(
+        &self,
+        native_context: &ExecutionContext,
+        task_context: Arc<TaskContext>,
+        metrics: &NativeCudfMetrics,
+    ) -> Result<RecordBatch> {
+        let Some(key) = self.bfs_singleflight_key(native_context.runtime().device().ordinal()) else {
+            return self.execute_host_result_with_context_physical(native_context, task_context, metrics, None).await;
+        };
+        let coordinator = self.native_execution_config.cugraph_bfs_singleflight();
+        loop {
+            match coordinator.join(key.clone())? {
+                CugraphBfsSingleflightJoin::Leader(mut leader) => {
+                    match self
+                        .execute_host_result_with_context_physical(
+                            native_context,
+                            Arc::clone(&task_context),
+                            metrics,
+                            Some(&mut leader),
+                        )
+                        .await
+                    {
+                        Ok(batch) => {
+                            let publication = (|| {
+                                if leader.has_followers()? {
+                                    leader.publish(Arc::new(batch.clone()))
+                                } else {
+                                    leader.complete_without_result()
+                                }
+                            })();
+                            if let Err(error) = publication {
+                                leader.fail();
+                                return Err(error.into());
+                            }
+                            return Ok(batch);
+                        },
+                        Err(error) => {
+                            leader.fail();
+                            return Err(error);
+                        },
+                    }
+                },
+                CugraphBfsSingleflightJoin::Follower(mut follower) => {
+                    let started = Instant::now();
+                    match follower.wait(native_context.cancellation()).await? {
+                        CugraphBfsFollowerOutcome::Ready(batch) => {
+                            coordinator.record_follower_copy();
+                            self.record_bfs_singleflight_host_follower_metrics(
+                                metrics,
+                                &key,
+                                batch.as_ref(),
+                                started.elapsed(),
+                            );
+                            return Ok(batch.as_ref().clone());
+                        },
+                        CugraphBfsFollowerOutcome::Retry => continue,
+                    }
+                },
+            }
+        }
+    }
+
+    async fn execute_host_result_with_context_physical(
+        &self,
+        context: &ExecutionContext,
+        task_context: Arc<TaskContext>,
+        metrics: &NativeCudfMetrics,
+        mut singleflight_leader: Option<&mut CugraphBfsLeader>,
+    ) -> Result<RecordBatch> {
+        let _elapsed_compute = metrics.baseline.elapsed_compute().timer();
+        let edge_schema = self.edge_source.schema();
+        let (edge_frame, mut source_metrics) =
+            execute_edge_source_to_gpu(context, Arc::clone(&self.edge_source), Arc::clone(&task_context)).await?;
+        let edge_frame =
+            attach_graph_residency(edge_frame, self.graph_residency.as_ref(), edge_schema.as_ref(), &self.spec);
+        let (predicate_frames, predicate_source_metrics) =
+            execute_predicate_sources_to_gpu(context, &self.predicate_sources, task_context).await?;
+        source_metrics.merge_from(predicate_source_metrics);
+        let path_target = bfs_path_target_vertex(context, &self.spec, &predicate_frames)?;
+        let prepared = prepare_bfs_logical_gpu_inputs(context, &self.spec, edge_schema, edge_frame, predicate_frames)?;
+        let (batch, mut query_metrics) = if let Some(codebook) = prepared.logical_codebook {
+            let (handle, query_metrics) = execute_cugraph_query_to_gpu_with_options(
+                context,
+                &prepared.execution_spec,
+                prepared.edge_schema,
+                prepared.edge_frame,
+                prepared.predicate_frames,
+                None,
+                None,
+                self.edge_normalize_inserted(),
+                singleflight_leader.as_deref_mut(),
+            )?;
+            let decoded_schema = bfs_decoded_output_schema_for_host(&self.spec);
+            let decoded = decode_bfs_logical_gpu_output(context, handle, &codebook, decoded_schema)?;
+            let batch = decoded.to_host_record_batch().map_err(|error| {
+                DataFusionError::from(Error::from_native(
+                    "datafusion_nexus.cugraph_sql.logical_output",
+                    "failed to materialize decoded cuGraph logical BFS output",
+                    error,
+                ))
+            })?;
+            let batch = if let Some(target) = path_target {
+                reconstruct_bfs_path_batch(&self.spec, &batch, target)?
+            } else {
+                batch
+            };
+            (project_and_limit_host_batch(batch, self.projection.as_ref(), self.limit)?, query_metrics)
+        } else {
+            let (batch, query_metrics) = execute_cugraph_query_to_host(
+                context,
+                &self.spec,
+                prepared.edge_schema,
+                prepared.edge_frame,
+                prepared.predicate_frames,
+                if path_target.is_some() { None } else { self.projection.as_ref() },
+                if path_target.is_some() { None } else { self.limit },
+                self.edge_normalize_inserted(),
+                singleflight_leader.as_deref_mut(),
+            )?;
+            let batch = if let Some(target) = path_target {
+                let path = reconstruct_bfs_path_batch(&self.spec, &batch, target)?;
+                project_and_limit_host_batch(path, self.projection.as_ref(), self.limit)?
+            } else {
+                batch
+            };
+            (batch, query_metrics)
+        };
+        query_metrics.merge_from(source_metrics);
+        metrics.record_query_metrics(&query_metrics);
+        Ok(batch)
+    }
+
+    fn record_bfs_singleflight_host_follower_metrics(
+        &self,
+        metrics: &NativeCudfMetrics,
+        key: &CugraphBfsSingleflightKey,
+        batch: &RecordBatch,
+        elapsed: std::time::Duration,
+    ) {
+        let mut query_metrics = QueryMetrics::default();
+        query_metrics.record_graph_algorithm_runtime(GraphAlgorithmRuntimeMetrics {
+            node_id: "bfs_singleflight_follower".to_string(),
+            algorithm: "bfs".to_string(),
+            runtime_outcome: "succeeded".to_string(),
+            input_boundary: "singleflight_host_result".to_string(),
+            output_boundary: "host_arrow".to_string(),
+            construction_policy: self.spec.graph_options.construction_policy.as_str().to_string(),
+            source_column: self.spec.src_col.clone(),
+            destination_column: self.spec.dst_col.clone(),
+            weight_column: None,
+            directed: self.spec.graph_options.directed,
+            renumber: self.spec.graph_options.renumber,
+            algorithm_parameters: format!("source_vertex={}", key.source_vertex),
+            algorithm_metadata: "graph_cache=singleflight_follower,bfs_singleflight=follower".to_string(),
+            output_rows: u64::try_from(batch.num_rows()).unwrap_or(u64::MAX),
+            output_columns: u64::try_from(batch.num_columns()).unwrap_or(u64::MAX),
+            elapsed_ns: u64::try_from(elapsed.as_nanos()).unwrap_or(u64::MAX),
+            ..GraphAlgorithmRuntimeMetrics::default()
+        });
+        metrics.record_query_metrics(&query_metrics);
+    }
+
+    async fn execute_gpu_result_with_context_physical(
+        &self,
+        native_context: &ExecutionContext,
+        partition: usize,
+        task_context: Arc<TaskContext>,
+        mut singleflight_leader: Option<&mut CugraphBfsLeader>,
     ) -> Result<(String, GpuResultHandle)> {
         if partition != 0 {
             return Err(Error::new(
@@ -223,6 +543,7 @@ impl CugraphAlgoExec {
                     None,
                     None,
                     self.edge_normalize_inserted(),
+                    singleflight_leader.as_deref_mut(),
                 )?;
                 let decoded = decode_bfs_logical_gpu_output(
                     native_context,
@@ -249,6 +570,7 @@ impl CugraphAlgoExec {
                     None,
                     None,
                     self.edge_normalize_inserted(),
+                    singleflight_leader.as_deref_mut(),
                 )?;
                 let batch = handle.to_host_record_batch().map_err(|error| {
                     DataFusionError::from(Error::from_native(
@@ -308,6 +630,7 @@ impl CugraphAlgoExec {
             if prepared.logical_codebook.is_some() { None } else { self.projection.as_ref() },
             if prepared.logical_codebook.is_some() { None } else { self.limit },
             self.edge_normalize_inserted(),
+            singleflight_leader.as_deref_mut(),
         )?;
         let handle = if let Some(codebook) = prepared.logical_codebook {
             let decoded =
@@ -439,20 +762,14 @@ impl ExecutionPlan for CugraphAlgoExec {
         }
 
         let schema = self.schema();
-        let spec = self.spec.clone();
-        let edge_source = Arc::clone(&self.edge_source);
-        let predicate_sources = self.predicate_sources.clone();
-        let projection = self.projection.clone();
-        let limit = self.limit;
-        let graph_residency = self.graph_residency.clone();
-        let edge_normalize_inserted = self.edge_normalize_inserted();
+        let exec = self.clone();
         let default_execution_config = self.native_execution_config.clone();
         let metrics =
             NativeCudfMetrics::new_with_capture(&self.metrics, partition, default_execution_config.metrics_capture());
         self.validate_standalone_bounded_sources()?;
         let output = futures::stream::once(async move {
             let execution_config = cugraph_execution_config_for_task_context(
-                edge_source.as_ref(),
+                exec.edge_source.as_ref(),
                 &default_execution_config,
                 &task_context,
             );
@@ -477,70 +794,11 @@ impl ExecutionPlan for CugraphAlgoExec {
             }
             let gpu_execution_pool = context_lease.context().gpu_execution_pool();
             run_gpu_execution_task(gpu_execution_pool, "datafusion_nexus.cugraph_sql.gpu_execution_pool", async move {
-                let _elapsed_compute = metrics.baseline.elapsed_compute().timer();
                 let context = context_lease.context();
                 let execution_task_context =
                     context_lease.task_context().map(Arc::clone).unwrap_or_else(|| Arc::clone(&task_context));
-                let edge_schema = edge_source.schema();
-                let (edge_frame, mut source_metrics) =
-                    execute_edge_source_to_gpu(context, Arc::clone(&edge_source), Arc::clone(&execution_task_context))
-                        .await?;
-                let edge_frame =
-                    attach_graph_residency(edge_frame, graph_residency.as_ref(), edge_schema.as_ref(), &spec);
-                let (predicate_frames, predicate_source_metrics) =
-                    execute_predicate_sources_to_gpu(context, &predicate_sources, Arc::clone(&execution_task_context))
-                        .await?;
-                source_metrics.merge_from(predicate_source_metrics);
-                let path_target = bfs_path_target_vertex(context, &spec, &predicate_frames)?;
-                let prepared =
-                    prepare_bfs_logical_gpu_inputs(context, &spec, edge_schema, edge_frame, predicate_frames)?;
-                let (batch, mut query_metrics) = if let Some(codebook) = prepared.logical_codebook {
-                    let (handle, query_metrics) = execute_cugraph_query_to_gpu_with_options(
-                        context,
-                        &prepared.execution_spec,
-                        prepared.edge_schema,
-                        prepared.edge_frame,
-                        prepared.predicate_frames,
-                        None,
-                        None,
-                        edge_normalize_inserted,
-                    )?;
-                    let decoded_schema = bfs_decoded_output_schema_for_host(&spec);
-                    let decoded = decode_bfs_logical_gpu_output(context, handle, &codebook, decoded_schema)?;
-                    let batch = decoded.to_host_record_batch().map_err(|error| {
-                        DataFusionError::from(Error::from_native(
-                            "datafusion_nexus.cugraph_sql.logical_output",
-                            "failed to materialize decoded cuGraph logical BFS output",
-                            error,
-                        ))
-                    })?;
-                    let batch = if let Some(target) = path_target {
-                        reconstruct_bfs_path_batch(&spec, &batch, target)?
-                    } else {
-                        batch
-                    };
-                    (project_and_limit_host_batch(batch, projection.as_ref(), limit)?, query_metrics)
-                } else {
-                    let (batch, query_metrics) = execute_cugraph_query_to_host(
-                        context,
-                        &spec,
-                        prepared.edge_schema,
-                        prepared.edge_frame,
-                        prepared.predicate_frames,
-                        if path_target.is_some() { None } else { projection.as_ref() },
-                        if path_target.is_some() { None } else { limit },
-                        edge_normalize_inserted,
-                    )?;
-                    let batch = if let Some(target) = path_target {
-                        let path = reconstruct_bfs_path_batch(&spec, &batch, target)?;
-                        project_and_limit_host_batch(path, projection.as_ref(), limit)?
-                    } else {
-                        batch
-                    };
-                    (batch, query_metrics)
-                };
-                query_metrics.merge_from(source_metrics);
-                metrics.record_query_metrics(&query_metrics);
+                let batch =
+                    exec.execute_host_result_with_context_impl(context, execution_task_context, &metrics).await?;
                 metrics.record_lakehouse_cache_fill_events(&context.drain_lakehouse_cache_fill_event_snapshots());
                 Ok::<Option<RecordBatch>, DataFusionError>(Some(batch.record_output(&metrics.baseline)))
             })
@@ -1188,9 +1446,12 @@ mod tests {
         Arc::new(NativeCudfExec::try_new(plan, config.clone()).unwrap()) as Arc<dyn ExecutionPlan>
     }
 
-    fn native_graph_residency_edge_source(config: &NativeCudfExecutionConfig) -> Arc<dyn ExecutionPlan> {
+    fn native_graph_residency_edge_source_with_stable_id(
+        config: &NativeCudfExecutionConfig,
+        stable_id: &str,
+    ) -> Arc<dyn ExecutionPlan> {
         let file = LocalParquetFile::new("edges.parquet")
-            .with_stable_id("local:edges.parquet:1024:mtime=2026-07-12T00:00:00Z")
+            .with_stable_id(stable_id)
             .with_file_size_bytes(1024)
             .with_row_group_rows(vec![100, 200]);
         let source = LocalParquetSource::from_files(
@@ -1210,6 +1471,10 @@ mod tests {
         );
         let plan = builder.finish_with_host_sink(projected);
         Arc::new(NativeCudfExec::try_new(plan, config.clone()).unwrap()) as Arc<dyn ExecutionPlan>
+    }
+
+    fn native_graph_residency_edge_source(config: &NativeCudfExecutionConfig) -> Arc<dyn ExecutionPlan> {
+        native_graph_residency_edge_source_with_stable_id(config, "local:edges.parquet:1024:mtime=2026-07-12T00:00:00Z")
     }
 
     fn triangle_spec() -> CugraphAlgorithmSpec {
@@ -1296,6 +1561,116 @@ mod tests {
             output_schema: result_schema_for_params(CugraphAlgorithm::Bfs, &params),
             params,
         }
+    }
+
+    fn singleflight_test_exec_with_options(
+        source_vertex: i64,
+        depth_limit: Option<i64>,
+        construction_policy: CugraphGraphConstructionPolicy,
+        graph_stable_id: &str,
+        output_mode: CugraphBfsOutputMode,
+        projection: Option<Vec<usize>>,
+        limit: Option<usize>,
+    ) -> CugraphAlgoExec {
+        let config = NativeCudfExecutionConfig::bounded(1024 * 1024, 512, 1, 3, 1)
+            .with_query_admission_source(admission_only_source())
+            .with_query_service_resident_graph_cache_max_retained_bytes(Some(4096));
+        let edge_source = native_graph_residency_edge_source_with_stable_id(&config, graph_stable_id);
+        let mut spec = bfs_spec();
+        spec.graph_options.construction_policy = construction_policy;
+        {
+            let CugraphAlgorithmParams::Bfs(params) = &mut spec.params else { unreachable!("BFS test spec") };
+            params.source = CugraphBfsSource::scalar_i64(source_vertex);
+            params.depth_limit = depth_limit;
+            params.output.mode = output_mode;
+        }
+        spec.output_schema = result_schema_for_params(spec.algorithm, &spec.params);
+        CugraphAlgoExec::try_new(spec, edge_source, vec![], projection, limit, config).unwrap()
+    }
+
+    fn singleflight_test_exec(source_vertex: i64, depth_limit: Option<i64>) -> CugraphAlgoExec {
+        singleflight_test_exec_with_options(
+            source_vertex,
+            depth_limit,
+            CugraphGraphConstructionPolicy::RawLibcugraph,
+            "local:edges.parquet:1024:mtime=2026-07-12T00:00:00Z",
+            CugraphBfsOutputMode::Normalized,
+            None,
+            None,
+        )
+    }
+
+    #[test]
+    fn bfs_singleflight_eligibility_is_exact_and_rejects_bounded_depth() {
+        let first = singleflight_test_exec(1, None).bfs_singleflight_key(0).expect("deep scalar BFS should qualify");
+        let same = singleflight_test_exec(1, None).bfs_singleflight_key(0).expect("same deep BFS should qualify");
+        let other_source =
+            singleflight_test_exec(2, None).bfs_singleflight_key(0).expect("other scalar BFS should qualify");
+        let normalized_graph = singleflight_test_exec_with_options(
+            1,
+            None,
+            CugraphGraphConstructionPolicy::PythonCugraph,
+            "local:edges.parquet:1024:mtime=2026-07-12T00:00:00Z",
+            CugraphBfsOutputMode::Normalized,
+            None,
+            None,
+        )
+        .bfs_singleflight_key(0)
+        .expect("normalized scalar BFS should qualify");
+        let other_graph = singleflight_test_exec_with_options(
+            1,
+            None,
+            CugraphGraphConstructionPolicy::RawLibcugraph,
+            "local:other-edges.parquet:1024:mtime=2026-07-13T00:00:00Z",
+            CugraphBfsOutputMode::Normalized,
+            None,
+            None,
+        )
+        .bfs_singleflight_key(0)
+        .expect("other resident graph should qualify");
+        let raw_output = singleflight_test_exec_with_options(
+            1,
+            None,
+            CugraphGraphConstructionPolicy::RawLibcugraph,
+            "local:edges.parquet:1024:mtime=2026-07-12T00:00:00Z",
+            CugraphBfsOutputMode::Raw,
+            None,
+            None,
+        )
+        .bfs_singleflight_key(0)
+        .expect("raw-output scalar BFS should qualify");
+        let projected = singleflight_test_exec_with_options(
+            1,
+            None,
+            CugraphGraphConstructionPolicy::RawLibcugraph,
+            "local:edges.parquet:1024:mtime=2026-07-12T00:00:00Z",
+            CugraphBfsOutputMode::Normalized,
+            Some(vec![0, 3]),
+            None,
+        )
+        .bfs_singleflight_key(0)
+        .expect("projected scalar BFS should qualify");
+        let limited = singleflight_test_exec_with_options(
+            1,
+            None,
+            CugraphGraphConstructionPolicy::RawLibcugraph,
+            "local:edges.parquet:1024:mtime=2026-07-12T00:00:00Z",
+            CugraphBfsOutputMode::Normalized,
+            None,
+            Some(17),
+        )
+        .bfs_singleflight_key(0)
+        .expect("limited scalar BFS should qualify");
+
+        assert_eq!(first, same);
+        assert_ne!(first, other_source, "independent source semantics must never coalesce");
+        assert_ne!(first, singleflight_test_exec(1, None).bfs_singleflight_key(1).unwrap());
+        assert_ne!(first, other_graph, "different resident graphs must never coalesce");
+        assert_ne!(first, normalized_graph, "raw and Python-normalized graph preparations must never coalesce");
+        assert_ne!(first, raw_output, "raw and normalized BFS outputs must never coalesce");
+        assert_ne!(first, projected, "different projections must never coalesce");
+        assert_ne!(first, limited, "different limits must never coalesce");
+        assert!(singleflight_test_exec(1, Some(3)).bfs_singleflight_key(0).is_none());
     }
 
     #[test]
@@ -2973,6 +3348,7 @@ fn execute_cugraph_query_to_host(
     projection: Option<&Vec<usize>>,
     limit: Option<usize>,
     edge_normalize_inserted: bool,
+    singleflight_leader: Option<&mut CugraphBfsLeader>,
 ) -> Result<(RecordBatch, QueryMetrics)> {
     let graph_context = graph_algorithm_execution_context(context)?;
     let plan = cugraph_query_plan(
@@ -2986,6 +3362,9 @@ fn execute_cugraph_query_to_host(
         CugraphQuerySink::HostArrow,
         edge_normalize_inserted,
     )?;
+    if let Some(leader) = singleflight_leader {
+        leader.record_traversal_submission();
+    }
     let result = execute_query_plan_with_gpu_inputs(&graph_context, &plan.plan, &plan.inputs).map_err(|error| {
         DataFusionError::from(Error::from_native(
             "datafusion_nexus.cugraph_sql.execute",
@@ -3014,6 +3393,7 @@ fn execute_cugraph_query_to_gpu_with_options(
     projection: Option<&Vec<usize>>,
     limit: Option<usize>,
     edge_normalize_inserted: bool,
+    singleflight_leader: Option<&mut CugraphBfsLeader>,
 ) -> Result<(GpuResultHandle, QueryMetrics)> {
     let graph_context = graph_algorithm_execution_context(context)?;
     let plan = cugraph_query_plan(
@@ -3027,6 +3407,9 @@ fn execute_cugraph_query_to_gpu_with_options(
         CugraphQuerySink::GpuResident,
         edge_normalize_inserted,
     )?;
+    if let Some(leader) = singleflight_leader {
+        leader.record_traversal_submission();
+    }
     let result = execute_query_plan_with_gpu_inputs(&graph_context, &plan.plan, &plan.inputs).map_err(|error| {
         DataFusionError::from(Error::from_native(
             "datafusion_nexus.cugraph_sql.execute_gpu",

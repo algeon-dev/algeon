@@ -14,7 +14,7 @@
 //! binaries. GPU runs must be wrapped in `flock /tmp/cudf-gpu.lock`.
 
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     error::Error,
     fs,
     io::Write as _,
@@ -26,6 +26,7 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
+use arrow::{array::Array, datatypes::SchemaRef, record_batch::RecordBatch, util::display::array_value_to_string};
 use datafusion::{
     execution::{SessionStateBuilder, context::TaskContext},
     physical_plan::{ExecutionPlan, collect, displayable, metrics::MetricsSet},
@@ -35,6 +36,7 @@ use datafusion_nexus::{
     CandidateOutcome, CudfNativePhysicalOptimizerRule, CudfSessionStateBuilderExt, CugraphSqlConfig, MemoryShare,
     NativeDataFusionExecutionMetrics, NexusAdmissionPolicy, NexusGpuBackend, NexusMemoryPolicy, SlotGuarantee,
 };
+use nexus_query_engine::harness::StableFnv1a64;
 use tokio::sync::Barrier;
 
 const ENV_EDGES: &str = "CUDF_CUGRAPH_ADMISSION_EDGES_PARQUET";
@@ -273,6 +275,26 @@ fn catalog(seed: i64) -> Vec<QuerySpec> {
             false,
         ),
         spec(
+            "bfs_deep_full",
+            format!(
+                "SELECT vertex, distance, predecessor, reachable FROM \
+                 cugraph_bfs('citation_edges', {seed}, 'src', 'dst', NULL, \
+                 '{{\"output_mode\": \"normalized\"}}')"
+            ),
+            false,
+            false,
+        ),
+        spec(
+            "bfs_deep_full_sorted",
+            format!(
+                "SELECT vertex, distance, predecessor, reachable FROM \
+                 cugraph_bfs('citation_edges', {seed}, 'src', 'dst', NULL, \
+                 '{{\"output_mode\": \"normalized\"}}') ORDER BY vertex"
+            ),
+            false,
+            false,
+        ),
+        spec(
             "sssp",
             format!("SELECT COUNT(*) AS n FROM cugraph_sssp('citation_edges', {seed}, 'src', 'dst', 'weight')"),
             false,
@@ -388,12 +410,16 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let profiler_active = Arc::new(AtomicBool::new(false));
     let profiler_error = Arc::new(Mutex::new(None::<String>));
     let run_started = Instant::now();
+    if config.uses_phased_execution() {
+        backend.set_cugraph_bfs_singleflight_enabled(false);
+    }
     let mut tasks = Vec::with_capacity(workers.len());
     for (request, ctx) in workers {
         let barrier = Arc::clone(&barrier);
         let profiler_active = Arc::clone(&profiler_active);
         let profiler_error = Arc::clone(&profiler_error);
         let config = config.clone();
+        let worker_backend = backend.clone();
         tasks.push(tokio::spawn(async move {
             barrier.wait().await;
             if config.stagger_ms > 0 && request.task_index > 0 {
@@ -416,13 +442,16 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 warmup.push(run_one(&config, &ctx, &request, iteration).await);
             }
 
-            if barrier.wait().await.is_leader() && config.cuda_profiler_capture {
-                match cudf::runtime::cuda_profiler_start() {
-                    Ok(()) => profiler_active.store(true, Ordering::SeqCst),
-                    Err(error) => {
-                        *profiler_error.lock().unwrap() =
-                            Some(format!("failed to start CUDA profiler capture: {error}"));
-                    },
+            if barrier.wait().await.is_leader() {
+                worker_backend.set_cugraph_bfs_singleflight_enabled(true);
+                if config.cuda_profiler_capture {
+                    match cudf::runtime::cuda_profiler_start() {
+                        Ok(()) => profiler_active.store(true, Ordering::SeqCst),
+                        Err(error) => {
+                            *profiler_error.lock().unwrap() =
+                                Some(format!("failed to start CUDA profiler capture: {error}"));
+                        },
+                    }
                 }
             }
             barrier.wait().await;
@@ -465,9 +494,19 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     stop_flag.store(true, Ordering::SeqCst);
     let _ = sampler_handle.join();
+    backend.set_cugraph_bfs_singleflight_enabled(true);
 
     let effective_active_max = backend.query_service().gpu_execution_query_report().peak_active_query_jobs;
-    write_outputs(&config, &warmup_rows, &query_rows, &samples.lock().unwrap(), makespan_ms, effective_active_max)?;
+    let bfs_singleflight = backend.cugraph_bfs_singleflight_snapshot();
+    write_outputs(
+        &config,
+        &warmup_rows,
+        &query_rows,
+        &samples.lock().unwrap(),
+        makespan_ms,
+        effective_active_max,
+        bfs_singleflight,
+    )?;
     if let Some(error) = profiler_error.lock().unwrap().take() {
         return Err(error.into());
     }
@@ -659,7 +698,13 @@ async fn run_one(config: &HarnessConfig, ctx: &SessionContext, request: &Request
         Ok(Ok(batches)) => {
             row.output_rows = Some(batches.iter().map(|batch| batch.num_rows()).sum());
             row.absorb_metrics(&NativeDataFusionExecutionMetrics::from_metrics(&plan_metrics_recursive(plan.as_ref())));
-            row.finish_ok(started)
+            match fingerprint_batches(&plan.schema(), &batches) {
+                Ok(fingerprint) => {
+                    row.output_fingerprint = Some(fingerprint);
+                    row.finish_ok(started)
+                },
+                Err(error) => row.finish_failed(started, format!("output_fingerprint_failed: {error}")),
+            }
         },
         Ok(Err(error)) => {
             row.absorb_metrics(&NativeDataFusionExecutionMetrics::from_metrics(&plan_metrics_recursive(plan.as_ref())));
@@ -667,6 +712,51 @@ async fn run_one(config: &HarnessConfig, ctx: &SessionContext, request: &Request
         },
         Err(_) => row.finish_failed(started, format!("query_timeout after {} ms", config.query_timeout_ms)),
     }
+}
+
+fn fingerprint_batches(schema: &SchemaRef, batches: &[RecordBatch]) -> Result<String, arrow::error::ArrowError> {
+    let mut hasher = StableFnv1a64::new();
+    hasher.update_field("datafusion-nexus-cugraph-admission-output-multiset-v2");
+    for batch in batches {
+        if batch.schema().as_ref() != schema.as_ref() {
+            return Err(arrow::error::ArrowError::SchemaError(
+                "cuGraph stress output fingerprint requires collected batches to match the planned schema".to_string(),
+            ));
+        }
+    }
+    hasher.update_field("schema_metadata");
+    hasher.update_metadata(schema.metadata());
+    for field in schema.fields() {
+        hasher.update_field("field");
+        hasher.update_field(field.name());
+        hasher.update_field(&field.data_type().to_string());
+        hasher.update_field(if field.is_nullable() { "nullable" } else { "non_nullable" });
+        hasher.update_metadata(field.metadata());
+    }
+    hasher.update_field(&batches.iter().map(RecordBatch::num_rows).sum::<usize>().to_string());
+    hasher.update_field(&schema.fields().len().to_string());
+    let mut row_fingerprints = Vec::with_capacity(batches.iter().map(RecordBatch::num_rows).sum());
+    for batch in batches {
+        for row in 0..batch.num_rows() {
+            let mut row_hasher = StableFnv1a64::new();
+            row_hasher.update_field("datafusion-nexus-cugraph-admission-row-v1");
+            for column in 0..batch.num_columns() {
+                let array = batch.column(column);
+                if array.is_null(row) {
+                    row_hasher.update_field("null");
+                } else {
+                    row_hasher.update_field("value");
+                    row_hasher.update_field(&array_value_to_string(array.as_ref(), row)?);
+                }
+            }
+            row_fingerprints.push(row_hasher.finish());
+        }
+    }
+    row_fingerprints.sort_unstable();
+    for row_fingerprint in row_fingerprints {
+        hasher.update_bytes(&row_fingerprint.to_le_bytes());
+    }
+    Ok(format!("output-fnv1a64:{:016x}", hasher.finish()))
 }
 
 fn plan_metrics_recursive(plan: &dyn ExecutionPlan) -> MetricsSet {
@@ -745,6 +835,7 @@ struct QueryRow {
     graph_elapsed_ms: Option<f64>,
     graph_output_device_bytes: Option<usize>,
     output_rows: Option<usize>,
+    output_fingerprint: Option<String>,
     native_lowered: bool,
     error: Option<String>,
 }
@@ -809,6 +900,7 @@ impl QueryRow {
             graph_elapsed_ms: None,
             graph_output_device_bytes: None,
             output_rows: None,
+            output_fingerprint: None,
             native_lowered: false,
             error: None,
         }
@@ -1058,6 +1150,7 @@ fn write_outputs(
     samples: &[SampleRow],
     makespan_ms: f64,
     effective_active_max: usize,
+    bfs_singleflight: datafusion_nexus::graph_sql::CugraphBfsSingleflightSnapshot,
 ) -> Result<(), Box<dyn Error>> {
     let queries_path = config.out_dir.join("queries.tsv");
     write_query_rows(&queries_path, query_rows)?;
@@ -1072,15 +1165,25 @@ fn write_outputs(
         writeln!(samples_file, "{}", row.to_tsv())?;
     }
 
-    type LabelStats = (usize, usize, Vec<f64>, Vec<f64>);
+    let mut warmup_fingerprints = BTreeMap::<String, BTreeSet<String>>::new();
+    for row in warmup_rows {
+        if let Some(fingerprint) = &row.output_fingerprint {
+            warmup_fingerprints.entry(row.label.clone()).or_default().insert(fingerprint.clone());
+        }
+    }
+
+    type LabelStats = (usize, usize, Vec<f64>, Vec<f64>, BTreeSet<String>);
     let mut label_stats: BTreeMap<&str, LabelStats> = BTreeMap::new();
     for row in query_rows {
-        let entry = label_stats.entry(row.label.as_str()).or_insert((0, 0, Vec::new(), Vec::new()));
+        let entry = label_stats.entry(row.label.as_str()).or_insert((0, 0, Vec::new(), Vec::new(), BTreeSet::new()));
         if row.outcome == "succeeded" {
             entry.0 += 1;
             entry.2.push(row.wall_ms);
             if let Some(wait) = row.admission_wait_ms {
                 entry.3.push(wait);
+            }
+            if let Some(fingerprint) = &row.output_fingerprint {
+                entry.4.insert(fingerprint.clone());
             }
         } else {
             entry.1 += 1;
@@ -1110,7 +1213,9 @@ fn write_outputs(
             "graph_cache_max_retained_bytes": config.graph_cache_max_retained_bytes,
             "edges_parquet": config.edges_parquet,
         },
-        "labels": label_stats.iter().map(|(label, (ok, failed, walls, waits))| {
+        "labels": label_stats.iter().map(|(label, (ok, failed, walls, waits, fingerprints))| {
+            let warmup = warmup_fingerprints.get(*label).cloned().unwrap_or_default();
+            let outputs_match_warmup = !warmup.is_empty() && *fingerprints == warmup;
             serde_json::json!({
                 "label": label,
                 "succeeded": ok,
@@ -1120,6 +1225,10 @@ fn write_outputs(
                 "wall_ms_p95": percentile(walls, 0.95),
                 "admission_wait_ms_mean": mean(waits),
                 "admission_wait_ms_max": waits.iter().cloned().fold(f64::NAN, f64::max),
+                "output_fingerprints": fingerprints,
+                "output_fingerprint_count": fingerprints.len(),
+                "warmup_output_fingerprints": warmup,
+                "outputs_match_warmup": outputs_match_warmup,
             })
         }).collect::<Vec<_>>(),
         "peaks": {
@@ -1130,6 +1239,16 @@ fn write_outputs(
             "active_queries_max": samples.iter().map(|s| s.active_queries).max(),
             "queued_queries_max": samples.iter().map(|s| s.queued_queries).max(),
             "allocation_failure_count_last": samples.last().map(|s| s.allocation_failure_count),
+        },
+        "bfs_singleflight": {
+            "eligible_requests": bfs_singleflight.eligible_requests,
+            "physical_traversals": bfs_singleflight.physical_traversals,
+            "follower_copies": bfs_singleflight.follower_copies,
+            "groups_formed": bfs_singleflight.groups_formed,
+            "overflow_groups": bfs_singleflight.overflow_groups,
+            "leader_failures": bfs_singleflight.leader_failures,
+            "cancelled_waiters": bfs_singleflight.cancelled_waiters,
+            "peak_width": bfs_singleflight.peak_width,
         },
     });
     fs::write(config.out_dir.join("summary.json"), serde_json::to_string_pretty(&summary)?)?;
@@ -1284,9 +1403,28 @@ fn duration_ms(duration: Duration) -> f64 {
 
 #[cfg(test)]
 mod tests {
+    use arrow::{
+        array::{ArrayRef, Int64Array},
+        datatypes::{DataType, Field, Schema},
+    };
     use datafusion_nexus::{NativeGraphReservationMetricRow, NativeGraphRuntimeMetricRow};
 
     use super::*;
+
+    #[test]
+    fn output_fingerprint_compares_full_row_multisets() {
+        let schema = Arc::new(Schema::new(vec![Field::new("vertex", DataType::Int64, false)]));
+        let batch = |values: Vec<i64>| {
+            RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(Int64Array::from(values)) as ArrayRef]).unwrap()
+        };
+
+        let ordered = fingerprint_batches(&schema, &[batch(vec![1, 2, 3])]).unwrap();
+        let reordered = fingerprint_batches(&schema, &[batch(vec![3]), batch(vec![1, 2])]).unwrap();
+        let changed = fingerprint_batches(&schema, &[batch(vec![1, 2, 4])]).unwrap();
+
+        assert_eq!(ordered, reordered);
+        assert_ne!(ordered, changed);
+    }
 
     #[test]
     fn query_tsv_row_contract_matches_columns() {
