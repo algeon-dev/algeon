@@ -3,7 +3,7 @@ use std::{
     path::Path,
     process::Command,
     sync::Arc,
-    time::{SystemTime, UNIX_EPOCH},
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use arrow::{

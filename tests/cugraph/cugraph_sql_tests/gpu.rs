@@ -55,6 +55,13 @@ async fn cugraph_sql_backend_session_records_query_service_admission_metrics() {
     assert_eq!(plan_metric_usize(plan.as_ref(), "admission_sequence_observed"), 1);
     assert_eq!(plan_metric_usize(plan.as_ref(), "admission_wait_time_observed"), 1);
     assert_eq!(plan_metric_usize(plan.as_ref(), "query_grant_bytes_observed"), 1);
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while backend.query_service().admission_snapshot().unwrap().active_queries != 0 {
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+    })
+    .await
+    .expect("ordered query-service cleanup should release admission");
     assert_eq!(backend.query_service().admission_snapshot().unwrap().active_queries, 0);
 
     fs::remove_dir_all(dir).ok();
