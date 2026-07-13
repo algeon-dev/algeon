@@ -68,6 +68,7 @@ struct ServiceStreamPoolInner {
     pool_size: usize,
     state: Mutex<ServiceStreamPoolState>,
     available: Condvar,
+    state_changed: Condvar,
 }
 
 #[derive(Debug, Default)]
@@ -103,6 +104,7 @@ impl ServiceStreamPool {
                 pool_size,
                 state: Mutex::new(ServiceStreamPoolState::default()),
                 available: Condvar::new(),
+                state_changed: Condvar::new(),
             }),
         })
     }
@@ -146,6 +148,72 @@ impl ServiceStreamPool {
     /// Maximum number of simultaneously leased streams.
     pub fn pool_size(&self) -> usize {
         self.inner.pool_size
+    }
+
+    /// Wait until every runtime created by this pool has completed cleanup and
+    /// returned to the idle set.
+    ///
+    /// This is a quiescence boundary for benchmark warmup and graceful service
+    /// drain. It does not create runtimes that were never needed.
+    pub(crate) fn wait_until_idle(&self, deadline: Instant, operation: &'static str) -> Result<()> {
+        self.wait_until_quiescent(0, deadline, operation)
+    }
+
+    /// Wait until exactly `expected_leased_runtimes` created runtimes remain
+    /// checked out and every other runtime has completed cleanup.
+    pub(crate) fn wait_until_quiescent(
+        &self,
+        expected_leased_runtimes: usize,
+        deadline: Instant,
+        operation: &'static str,
+    ) -> Result<()> {
+        if expected_leased_runtimes > self.pool_size() {
+            return Err(QueryError::new(
+                QueryErrorCode::InvalidPlan,
+                operation,
+                "expected leased runtime count exceeds the service stream pool size",
+            )
+            .with_fact("device_ordinal", self.device().ordinal())
+            .with_fact("stream_pool_size", self.pool_size())
+            .with_fact("expected_leased_runtimes", expected_leased_runtimes)
+            .with_fact("reason", "expected_leases_exceed_pool_size"));
+        }
+
+        let mut state = self.lock_state(operation)?;
+        loop {
+            let active_leased_runtimes = state.created.saturating_sub(state.idle.len());
+            if active_leased_runtimes == expected_leased_runtimes {
+                return Ok(());
+            }
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                let reason = if expected_leased_runtimes == 0 {
+                    "stream_pool_idle_timeout"
+                } else {
+                    "stream_pool_quiescence_timeout"
+                };
+                return Err(QueryError::new(
+                    QueryErrorCode::ServiceOverloaded,
+                    operation,
+                    "timed out waiting for service stream pool cleanup",
+                )
+                .with_fact("device_ordinal", self.device().ordinal())
+                .with_fact("stream_pool_size", self.pool_size())
+                .with_fact("created_runtimes", state.created)
+                .with_fact("idle_runtimes", state.idle.len())
+                .with_fact("active_leased_runtimes", active_leased_runtimes)
+                .with_fact("expected_leased_runtimes", expected_leased_runtimes)
+                .with_fact("reason", reason));
+            }
+            let (next, _timeout) = self.inner.state_changed.wait_timeout(state, remaining).map_err(|_error| {
+                QueryError::new(
+                    QueryErrorCode::Internal,
+                    operation,
+                    "service stream pool mutex was poisoned while waiting for cleanup",
+                )
+            })?;
+            state = next;
+        }
     }
 
     /// Acquire a CUDA stream/runtime lease, blocking when all pool slots are busy.
@@ -195,10 +263,12 @@ impl ServiceStreamPool {
             }
             let mut state = self.lock_state(operation)?;
             if let Some(runtime) = state.idle.pop() {
+                self.inner.state_changed.notify_all();
                 break AcquireAction::Reuse(runtime);
             }
             if state.created < self.pool_size() {
                 state.created += 1;
+                self.inner.state_changed.notify_all();
                 break AcquireAction::Create;
             }
             if cancellation.is_some() || deadline.is_some() {
@@ -255,6 +325,7 @@ impl ServiceStreamPool {
             Ok(mut state) => {
                 state.created = state.created.saturating_sub(1);
                 self.inner.available.notify_one();
+                self.inner.state_changed.notify_all();
             },
             Err(_error) => {
                 eprintln!("[nexus-query-engine] warning: failed to update poisoned service stream pool state");
@@ -267,6 +338,7 @@ impl ServiceStreamPool {
             Ok(mut state) => {
                 state.idle.push(runtime);
                 self.inner.available.notify_one();
+                self.inner.state_changed.notify_all();
             },
             Err(_error) => {
                 eprintln!("[nexus-query-engine] warning: failed to return runtime to poisoned service stream pool");

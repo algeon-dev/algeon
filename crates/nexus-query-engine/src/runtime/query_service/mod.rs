@@ -2106,6 +2106,69 @@ impl QueryService {
         resources.devices.memory_failure_reports()
     }
 
+    /// Blocks until every created service runtime has completed background
+    /// stream cleanup and returned to its per-device pool.
+    ///
+    /// This provides an explicit quiescence boundary for warmup/capture and
+    /// graceful drain. It does not require unused lazy pool slots to be
+    /// created. Active queries cause the call to wait until `timeout` expires.
+    pub fn wait_for_stream_pools_idle(&self, timeout: Duration) -> Result<()> {
+        let Some(resources) = &self.inner.resources else {
+            return Ok(());
+        };
+        let deadline = Instant::now().checked_add(timeout).unwrap_or_else(Instant::now);
+        for context in resources.devices.contexts() {
+            context
+                .stream_pool()
+                .wait_until_idle(deadline, "nexus_query_engine.query_service.wait_for_stream_pools_idle")?;
+        }
+        Ok(())
+    }
+
+    /// Blocks until each pool has only its declared long-lived runtime leases
+    /// checked out and every other created runtime has completed cleanup.
+    ///
+    /// `expected_leased_runtimes` contains `(device_ordinal, count)` pairs.
+    /// Omitted configured devices expect zero leases. Duplicate or unknown
+    /// ordinals are rejected instead of being silently merged.
+    pub fn wait_for_stream_pools_quiescent(
+        &self,
+        expected_leased_runtimes: &[(usize, usize)],
+        timeout: Duration,
+    ) -> Result<()> {
+        let operation = "nexus_query_engine.query_service.wait_for_stream_pools_quiescent";
+        let Some(resources) = &self.inner.resources else {
+            if expected_leased_runtimes.iter().all(|(_device_ordinal, expected)| *expected == 0) {
+                return Ok(());
+            }
+            return Err(QueryError::new(
+                QueryErrorCode::InvalidPlan,
+                operation,
+                "expected stream-pool leases require query service runtime resources",
+            )
+            .with_fact("reason", "runtime_resources_unavailable"));
+        };
+        let mut expected_by_device = BTreeMap::new();
+        for &(device_ordinal, expected) in expected_leased_runtimes {
+            if expected_by_device.insert(device_ordinal, expected).is_some() {
+                return Err(QueryError::new(
+                    QueryErrorCode::InvalidPlan,
+                    operation,
+                    "expected stream-pool lease counts contain a duplicate device ordinal",
+                )
+                .with_fact("device_ordinal", device_ordinal)
+                .with_fact("reason", "duplicate_device_ordinal"));
+            }
+            resources.devices.context_by_ordinal(device_ordinal)?;
+        }
+        let deadline = Instant::now().checked_add(timeout).unwrap_or_else(Instant::now);
+        for context in resources.devices.contexts() {
+            let expected = expected_by_device.remove(&context.device().ordinal()).unwrap_or(0);
+            context.stream_pool().wait_until_quiescent(expected, deadline, operation)?;
+        }
+        Ok(())
+    }
+
     /// Returns the service configuration.
     pub fn config(&self) -> &QueryServiceConfig {
         &self.inner.config

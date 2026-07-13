@@ -89,7 +89,7 @@ pub(in crate::exec::bounded) fn execute_bounded_chunks_with_source_scheduler(
             metrics,
             1,
             max_attempts,
-            !bounded.has_source_adjacent_stages(),
+            retain_decoded_source_for_cache(context, bounded),
         ) {
             Ok(source) => source,
             Err(error) if is_prefetch_chunk_error(&error) && is_retryable_chunk_error(&error) => {

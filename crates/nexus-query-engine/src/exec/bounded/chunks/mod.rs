@@ -451,7 +451,7 @@ pub(in crate::exec::bounded) fn execute_bounded_raw_source_chunk(
         metrics,
         1,
         1,
-        !bounded.has_source_adjacent_stages(),
+        retain_decoded_source_for_cache(context, bounded),
     )
     .map_err(|error| attach_chunk_resource_facts(error, chunk, "source_chunk_read", 1, 1, metrics))?;
     let source_row_group_count = reported_source_chunk_read_row_groups(chunk, source.observed_row_group_count);
@@ -476,7 +476,7 @@ pub(in crate::exec::bounded) fn execute_bounded_raw_source_chunk_batch(
         reservations,
         metrics,
         "source_chunk_read",
-        !bounded.has_source_adjacent_stages(),
+        retain_decoded_source_for_cache(context, bounded),
     )
     .map_err(|error| attach_source_batch_resource_facts(error, batch, "source_chunk_read", 1, 1, metrics))?;
     let source_row_group_count = reported_source_chunk_batch_read_row_groups(batch, source.observed_row_group_count);
@@ -504,7 +504,7 @@ pub(super) fn execute_bounded_chunk_attempt(
         metrics,
         attempt,
         max_attempts,
-        !bounded.has_source_adjacent_stages(),
+        retain_decoded_source_for_cache(context, bounded),
     )
     .map_err(|error| attach_chunk_resource_facts(error, chunk, "source_chunk_read", attempt, max_attempts, metrics))?;
     execute_bounded_chunk_operator_from_source(
@@ -517,6 +517,10 @@ pub(super) fn execute_bounded_chunk_attempt(
         max_attempts,
         |_reservations, _metrics| Ok(()),
     )
+}
+
+fn retain_decoded_source_for_cache(context: &ExecutionContext, bounded: &BoundedPlan<'_>) -> bool {
+    context.local_parquet_source_cache().is_some() || !bounded.has_source_adjacent_stages()
 }
 fn read_bounded_chunk_source(
     context: &ExecutionContext,

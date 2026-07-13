@@ -1,5 +1,6 @@
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
+    fs,
     path::{Path, PathBuf},
     sync::Arc,
     time::{Duration, Instant},
@@ -14,8 +15,8 @@ use datafusion::{
 };
 use datafusion_nexus::{
     CudfNativePhysicalOptimizerRule, CudfOptimizerConfig, CudfSessionStateBuilderExt, Error as AdapterError,
-    GpuFallbackPolicy, NativeCudfExecutionConfig, NativeDataFusionPlanningOutcome, NativeDataFusionPlanningReport,
-    NativeDataFusionPlanningRow, NativeDataFusionPostNativeExecutionPath,
+    GpuFallbackPolicy, NativeCudfExecutionConfig, NativeDataFusionExecutionMetrics, NativeDataFusionPlanningOutcome,
+    NativeDataFusionPlanningReport, NativeDataFusionPlanningRow, NativeDataFusionPostNativeExecutionPath,
 };
 use datafusion_nexus_bench::{
     CUDF_TPCH_GENERATION_COMMAND_ENV, CUDF_TPCH_PARQUET_DIR_ENV, CUDF_TPCH_SCALE_FACTOR_ENV, TPCH_QUERIES, TPCH_TABLES,
@@ -77,6 +78,14 @@ const ADMISSION_WAIT_TIMEOUT_MS_ENV: &str = "CUDF_QUERY_SERVICE_TPCH_ADMISSION_W
 const MAX_SOURCE_CHUNK_BYTES_ENV: &str = "CUDF_QUERY_SERVICE_TPCH_MAX_SOURCE_CHUNK_BYTES";
 const MAX_ROW_GROUPS_PER_CHUNK_ENV: &str = "CUDF_QUERY_SERVICE_TPCH_MAX_ROW_GROUPS_PER_CHUNK";
 const SOURCE_CACHE_MAX_RETAINED_BYTES_ENV: &str = "CUDF_QUERY_SERVICE_TPCH_SOURCE_CACHE_MAX_RETAINED_BYTES";
+const WARMUP_ROUNDS_ENV: &str = "CUDF_QUERY_SERVICE_TPCH_WARMUP_ROUNDS";
+const STREAM_IDLE_TIMEOUT_MS_ENV: &str = "CUDF_QUERY_SERVICE_TPCH_STREAM_IDLE_TIMEOUT_MS";
+const CUDA_PROFILER_CAPTURE_ENV: &str = "CUDF_QUERY_SERVICE_TPCH_CUDA_PROFILER_CAPTURE";
+const PROFILE_LANES_ENV: &str = "CUDF_QUERY_SERVICE_TPCH_PROFILE_LANES";
+const PROFILE_QUERY_ID_ENV: &str = "CUDF_QUERY_SERVICE_TPCH_PROFILE_QUERY_ID";
+const PROFILE_WARMUP_ITERATIONS_ENV: &str = "CUDF_QUERY_SERVICE_TPCH_PROFILE_WARMUP_ITERATIONS";
+const PROFILE_MEASURED_ITERATIONS_ENV: &str = "CUDF_QUERY_SERVICE_TPCH_PROFILE_MEASURED_ITERATIONS";
+const PROFILE_EVIDENCE_PATH_ENV: &str = "CUDF_QUERY_SERVICE_TPCH_PROFILE_EVIDENCE_PATH";
 const OVERLOAD_PROBE_ENV: &str = "CUDF_QUERY_SERVICE_TPCH_OVERLOAD_PROBE";
 
 #[tokio::main]
@@ -94,7 +103,18 @@ async fn main() -> DataFusionResult<()> {
     if config.run_overload_probe {
         rows.push(run_overload_probe(&config)?);
     }
-    rows.extend(run_stress(&config, Arc::clone(&cpu_baselines)).await?);
+    let service = Arc::new(build_query_service(&config)?);
+    if let Some(profile) = &config.profile {
+        let result = run_profile_stress(&config, profile, Arc::clone(&service), Arc::clone(&cpu_baselines)).await?;
+        rows.extend(result.rows);
+        result.evidence.write_to(&profile.evidence_path)?;
+    } else {
+        run_warmup(&config, Arc::clone(&service), Arc::clone(&cpu_baselines)).await?;
+        let profiler_capture = CudaProfilerCapture::start(config.cuda_profiler_capture)?;
+        rows.extend(run_stress(&config, Arc::clone(&service), Arc::clone(&cpu_baselines)).await?);
+        wait_for_service_stream_pools_idle(Arc::clone(&service), config.stream_idle_timeout).await?;
+        profiler_capture.finish()?;
+    }
     let report = StressReport { config, dataset, rows };
     print!("{}", report.to_tsv());
     Ok(())
@@ -117,8 +137,21 @@ struct StressConfig {
     max_source_chunk_bytes: u64,
     max_row_groups_per_chunk: usize,
     source_cache_max_retained_bytes: Option<u64>,
+    warmup_rounds: usize,
+    stream_idle_timeout: Duration,
+    cuda_profiler_capture: bool,
+    profile: Option<StressProfileConfig>,
     run_overload_probe: bool,
     device_ordinals: Vec<usize>,
+}
+
+#[derive(Debug, Clone)]
+struct StressProfileConfig {
+    query_id: String,
+    lanes: usize,
+    warmup_iterations: usize,
+    measured_iterations: usize,
+    evidence_path: PathBuf,
 }
 
 impl StressConfig {
@@ -144,6 +177,7 @@ impl StressConfig {
         )?;
         let default_min_grant_bytes = grant_fraction_bytes(device_capacity_bytes, 1, 8);
         let default_want_grant_bytes = grant_fraction_bytes(device_capacity_bytes, 1, 2);
+        let profile = StressProfileConfig::from_env()?;
         let config = Self {
             dataset_root,
             bulk_queries: query_ids_from_env(BULK_QUERIES_ENV, &["q01", "q09", "q18", "q21"])?,
@@ -164,6 +198,10 @@ impl StressConfig {
             max_source_chunk_bytes: env_u64(MAX_SOURCE_CHUNK_BYTES_ENV, 64 * 1024 * 1024)?,
             max_row_groups_per_chunk: env_usize(MAX_ROW_GROUPS_PER_CHUNK_ENV, 1)?,
             source_cache_max_retained_bytes: optional_env_u64(SOURCE_CACHE_MAX_RETAINED_BYTES_ENV)?,
+            warmup_rounds: env_usize(WARMUP_ROUNDS_ENV, 0)?,
+            stream_idle_timeout: Duration::from_millis(env_u64(STREAM_IDLE_TIMEOUT_MS_ENV, 30_000)?),
+            cuda_profiler_capture: env_bool(CUDA_PROFILER_CAPTURE_ENV, false)?,
+            profile,
             run_overload_probe: env_bool(OVERLOAD_PROBE_ENV, true)?,
             device_ordinals: env_device_ordinals(DEVICE_ORDINALS_ENV)?,
         };
@@ -204,11 +242,38 @@ impl StressConfig {
         if let Some(max_retained_bytes) = self.source_cache_max_retained_bytes {
             validate_nonzero(SOURCE_CACHE_MAX_RETAINED_BYTES_ENV, max_retained_bytes)?;
         }
+        if self.stream_idle_timeout.is_zero() {
+            return Err(plan_error(format!("{STREAM_IDLE_TIMEOUT_MS_ENV} must be greater than zero")));
+        }
         if self.admission_wait_timeout.is_zero() {
             return Err(plan_error(format!("{ADMISSION_WAIT_TIMEOUT_MS_ENV} must be greater than zero")));
         }
         validate_query_ids(&self.bulk_queries)?;
         validate_query_ids(&self.interactive_queries)?;
+        if let Some(profile) = &self.profile {
+            validate_nonzero(PROFILE_LANES_ENV, profile.lanes)?;
+            validate_nonzero(PROFILE_WARMUP_ITERATIONS_ENV, profile.warmup_iterations)?;
+            validate_nonzero(PROFILE_MEASURED_ITERATIONS_ENV, profile.measured_iterations)?;
+            if profile.warmup_iterations < 2 {
+                return Err(plan_error(format!(
+                    "{PROFILE_WARMUP_ITERATIONS_ENV} must be at least 2 so the final warmup iteration can verify a cache-only path"
+                )));
+            }
+            if profile.lanes > self.max_concurrent_queries {
+                return Err(plan_error(format!("{PROFILE_LANES_ENV} must not exceed {MAX_CONCURRENT_QUERIES_ENV}")));
+            }
+            if self.source_cache_max_retained_bytes.is_none() {
+                return Err(plan_error(format!(
+                    "{SOURCE_CACHE_MAX_RETAINED_BYTES_ENV} must be set when {PROFILE_LANES_ENV} is enabled"
+                )));
+            }
+            if self.warmup_rounds != 0 {
+                return Err(plan_error(format!(
+                    "{WARMUP_ROUNDS_ENV} cannot be combined with {PROFILE_LANES_ENV}; profile warmup is controlled by {PROFILE_WARMUP_ITERATIONS_ENV}"
+                )));
+            }
+            validate_query_ids(std::slice::from_ref(&profile.query_id))?;
+        }
         Ok(())
     }
 
@@ -224,6 +289,24 @@ impl StressConfig {
             local_parquet_source_cache_max_retained_bytes: self.source_cache_max_retained_bytes,
             ..QueryServiceConfig::default()
         }
+    }
+}
+
+impl StressProfileConfig {
+    fn from_env() -> DataFusionResult<Option<Self>> {
+        let lanes = env_usize(PROFILE_LANES_ENV, 0)?;
+        if lanes == 0 {
+            return Ok(None);
+        }
+        Ok(Some(Self {
+            query_id: std::env::var(PROFILE_QUERY_ID_ENV).unwrap_or_else(|_| "q06".to_string()),
+            lanes,
+            warmup_iterations: env_usize(PROFILE_WARMUP_ITERATIONS_ENV, 2)?,
+            measured_iterations: env_usize(PROFILE_MEASURED_ITERATIONS_ENV, 8)?,
+            evidence_path: std::env::var_os(PROFILE_EVIDENCE_PATH_ENV)
+                .map(PathBuf::from)
+                .unwrap_or_else(|| PathBuf::from("query_service_tpch_profile_evidence.tsv")),
+        }))
     }
 }
 
@@ -286,8 +369,117 @@ struct StructuredFailure {
 }
 
 enum NativeCollectOutcome {
-    Succeeded { planning_row: NativeDataFusionPlanningRow, measurement: CpuBaseline },
-    RuntimeFailed { planning_row: NativeDataFusionPlanningRow, error: DataFusionError },
+    Succeeded {
+        planning_row: NativeDataFusionPlanningRow,
+        measurement: CpuBaseline,
+        metrics: NativeDataFusionExecutionMetrics,
+    },
+    RuntimeFailed {
+        planning_row: NativeDataFusionPlanningRow,
+        error: DataFusionError,
+        metrics: NativeDataFusionExecutionMetrics,
+    },
+}
+
+struct PreparedNativeQuery {
+    planning_row: NativeDataFusionPlanningRow,
+    plan: Arc<dyn ExecutionPlan>,
+    schema: ArrowSchemaRef,
+}
+
+struct ProfileStressResult {
+    rows: Vec<StressRow>,
+    evidence: ProfileEvidenceReport,
+}
+
+#[derive(Debug, Clone)]
+struct ProfileEvidenceRow {
+    phase: &'static str,
+    lane: usize,
+    iteration: usize,
+    request_index: usize,
+    admission_sequence: u64,
+    device_ordinal: usize,
+    query_id: String,
+    native_runtime_outcome: &'static str,
+    parity_status: &'static str,
+    source_cache_hits: usize,
+    source_cache_misses: usize,
+    source_cache_inserts: usize,
+    source_cache_insert_skipped: usize,
+    source_cache_retained_bytes: usize,
+    native_wall_ms: Option<f64>,
+}
+
+#[derive(Debug, Default)]
+struct ProfileEvidenceReport {
+    rows: Vec<ProfileEvidenceRow>,
+}
+
+#[derive(Clone)]
+struct ProfileLane {
+    lane: usize,
+    handle: Arc<nexus_query_engine::QueryHandle>,
+}
+
+struct PreparedProfileRequest {
+    phase: &'static str,
+    lane: usize,
+    request: StressRequest,
+    handle: Arc<nexus_query_engine::QueryHandle>,
+    prepared: PreparedNativeQuery,
+}
+
+struct ProfileRequestResult {
+    row: StressRow,
+    evidence: ProfileEvidenceRow,
+}
+
+struct CudaProfilerCapture {
+    active: bool,
+}
+
+impl CudaProfilerCapture {
+    fn start(enabled: bool) -> DataFusionResult<Self> {
+        if !enabled {
+            return Ok(Self { active: false });
+        }
+        cudf::runtime::cuda_profiler_start().map_err(|error| {
+            AdapterError::from_cudf(
+                "datafusion_nexus_bench.query_service_tpch_stress.profiler_start",
+                "failed to start CUDA profiler capture",
+                error,
+            )
+        })?;
+        Ok(Self { active: true })
+    }
+
+    fn finish(mut self) -> DataFusionResult<()> {
+        self.stop()
+    }
+
+    fn stop(&mut self) -> DataFusionResult<()> {
+        if !self.active {
+            return Ok(());
+        }
+        let result = cudf::runtime::cuda_profiler_stop().map_err(|error| {
+            AdapterError::from_cudf(
+                "datafusion_nexus_bench.query_service_tpch_stress.profiler_stop",
+                "failed to stop CUDA profiler capture",
+                error,
+            )
+        });
+        self.active = false;
+        result.map_err(DataFusionError::from)
+    }
+}
+
+impl Drop for CudaProfilerCapture {
+    fn drop(&mut self) {
+        if let Err(error) = self.stop() {
+            eprintln!("[query_service_tpch_stress] failed to stop CUDA profiler capture: {error}");
+        }
+    }
 }
 
 impl StructuredFailure {
@@ -340,10 +532,22 @@ impl StressReport {
         output.push_str(&format!("# slot_guarantee={}\n", slot_guarantee_name(self.config.slot_guarantee)));
         output.push_str(&format!("# max_concurrent_queries={}\n", self.config.max_concurrent_queries));
         output.push_str(&format!("# max_admission_queue_len={}\n", self.config.max_admission_queue_len));
+        output.push_str(&format!("# max_source_chunk_bytes={}\n", self.config.max_source_chunk_bytes));
+        output.push_str(&format!("# max_row_groups_per_chunk={}\n", self.config.max_row_groups_per_chunk));
         output.push_str(&format!(
             "# source_cache_max_retained_bytes={}\n",
             self.config.source_cache_max_retained_bytes.map_or_else(|| "none".to_string(), |value| value.to_string())
         ));
+        output.push_str(&format!("# warmup_rounds={}\n", self.config.warmup_rounds));
+        output.push_str(&format!("# stream_idle_timeout_ms={}\n", self.config.stream_idle_timeout.as_millis()));
+        output.push_str(&format!("# cuda_profiler_capture={}\n", self.config.cuda_profiler_capture));
+        if let Some(profile) = &self.config.profile {
+            output.push_str(&format!("# profile_query_id={}\n", profile.query_id));
+            output.push_str(&format!("# profile_lanes={}\n", profile.lanes));
+            output.push_str(&format!("# profile_warmup_iterations={}\n", profile.warmup_iterations));
+            output.push_str(&format!("# profile_measured_iterations={}\n", profile.measured_iterations));
+            output.push_str(&format!("# profile_evidence_path={}\n", profile.evidence_path.display()));
+        }
         for summary in tenant_summaries(&self.rows) {
             output.push_str(&format!(
                 "# tenant_summary tenant_id={} succeeded={} overloaded={} failed={} max_total_wall_ms={} p95_total_wall_ms={}\n",
@@ -362,6 +566,66 @@ impl StressReport {
             output.push('\n');
         }
         output
+    }
+}
+
+impl ProfileEvidenceReport {
+    const COLUMNS: [&'static str; 15] = [
+        "phase",
+        "lane",
+        "iteration",
+        "request_index",
+        "admission_sequence",
+        "device_ordinal",
+        "query_id",
+        "native_runtime_outcome",
+        "parity_status",
+        "source_cache_hits",
+        "source_cache_misses",
+        "source_cache_inserts",
+        "source_cache_insert_skipped",
+        "source_cache_retained_bytes",
+        "native_wall_ms",
+    ];
+
+    fn write_to(&self, path: &Path) -> DataFusionResult<()> {
+        fs::write(path, self.to_tsv()).map_err(|error| {
+            plan_error(format!("failed to write profile evidence sidecar {}: {error}", path.display()))
+        })
+    }
+
+    fn to_tsv(&self) -> String {
+        let mut output = Self::COLUMNS.join("\t");
+        output.push('\n');
+        for row in &self.rows {
+            output.push_str(&row.to_tsv_line());
+            output.push('\n');
+        }
+        output
+    }
+}
+
+impl ProfileEvidenceRow {
+    fn to_tsv_line(&self) -> String {
+        let fields = [
+            self.phase.to_string(),
+            self.lane.to_string(),
+            self.iteration.to_string(),
+            self.request_index.to_string(),
+            self.admission_sequence.to_string(),
+            self.device_ordinal.to_string(),
+            self.query_id.clone(),
+            self.native_runtime_outcome.to_string(),
+            self.parity_status.to_string(),
+            self.source_cache_hits.to_string(),
+            self.source_cache_misses.to_string(),
+            self.source_cache_inserts.to_string(),
+            self.source_cache_insert_skipped.to_string(),
+            self.source_cache_retained_bytes.to_string(),
+            self.native_wall_ms.map(format_ms).unwrap_or_else(|| "none".to_string()),
+        ];
+        debug_assert_eq!(fields.len(), ProfileEvidenceReport::COLUMNS.len());
+        fields.into_iter().map(|field| tsv_escape(&field)).collect::<Vec<_>>().join("\t")
     }
 }
 
@@ -426,6 +690,9 @@ async fn compute_cpu_baselines(config: &StressConfig) -> DataFusionResult<HashMa
     let mut query_ids = BTreeSet::new();
     query_ids.extend(config.bulk_queries.iter().cloned());
     query_ids.extend(config.interactive_queries.iter().cloned());
+    if let Some(profile) = &config.profile {
+        query_ids.insert(profile.query_id.clone());
+    }
     let ctx = SessionContext::new_with_config(tpch_tuned_cpu_session_config());
     register_tpch_tables(&ctx, &config.dataset_root).await?;
     let mut baselines = HashMap::with_capacity(query_ids.len());
@@ -440,22 +707,384 @@ async fn compute_cpu_baselines(config: &StressConfig) -> DataFusionResult<HashMa
     Ok(baselines)
 }
 
+fn build_query_service(config: &StressConfig) -> DataFusionResult<QueryService> {
+    QueryService::new_with_device_ordinals(
+        config.service_config(),
+        config.device_ordinals.clone(),
+        vec![
+            tenant_config("bulk", config),
+            tenant_config("interactive_a", config),
+            tenant_config("interactive_b", config),
+        ],
+    )
+    .map_err(native_error)
+}
+
+async fn run_warmup(
+    config: &StressConfig,
+    service: Arc<QueryService>,
+    cpu_baselines: Arc<HashMap<String, CpuBaseline>>,
+) -> DataFusionResult<()> {
+    for round in 1..=config.warmup_rounds {
+        let rows = run_stress(config, Arc::clone(&service), Arc::clone(&cpu_baselines)).await?;
+        if let Some(row) =
+            rows.iter().find(|row| row.native_runtime_outcome != "succeeded" || row.parity_status != "matched")
+        {
+            return Err(plan_error(format!(
+                "warmup round {round} failed for request_index={} query_id={}: runtime_outcome={} parity_status={} error={}",
+                row.request_index,
+                row.query_id,
+                row.native_runtime_outcome,
+                row.parity_status,
+                row.error.message.as_deref().unwrap_or("none"),
+            )));
+        }
+        wait_for_service_stream_pools_idle(Arc::clone(&service), config.stream_idle_timeout).await?;
+        eprintln!("[query_service_tpch_stress] warmup round {round} complete");
+    }
+    Ok(())
+}
+
+async fn wait_for_service_stream_pools_idle(service: Arc<QueryService>, timeout: Duration) -> DataFusionResult<()> {
+    tokio::task::spawn_blocking(move || service.wait_for_stream_pools_idle(timeout))
+        .await
+        .map_err(|error| plan_error(format!("query service stream-idle wait task join failed: {error}")))?
+        .map_err(native_error)
+}
+
+async fn run_profile_stress(
+    config: &StressConfig,
+    profile: &StressProfileConfig,
+    service: Arc<QueryService>,
+    cpu_baselines: Arc<HashMap<String, CpuBaseline>>,
+) -> DataFusionResult<ProfileStressResult> {
+    let lanes = admit_profile_lanes(Arc::clone(&service), profile.lanes).await?;
+    let expected_leases = profile_expected_root_leases(&lanes);
+    let mut evidence = ProfileEvidenceReport::default();
+
+    for iteration in 1..=profile.warmup_iterations {
+        let batch = prepare_profile_iteration(config, profile, &lanes, "warmup", iteration).await?;
+        let batches = batch.into_iter().map(|request| vec![request]).collect();
+        let results = execute_profile_batches(Arc::clone(&service), Arc::clone(&cpu_baselines), batches).await?;
+        wait_for_service_stream_pools_quiescent(
+            Arc::clone(&service),
+            expected_leases.clone(),
+            config.stream_idle_timeout,
+        )
+        .await?;
+        log_profile_cache_evidence(&results);
+        validate_profile_results(&results, iteration >= 2)?;
+        evidence.rows.extend(results.into_iter().map(|result| result.evidence));
+        eprintln!(
+            "[query_service_tpch_stress] profile warmup iteration {iteration}/{} complete",
+            profile.warmup_iterations
+        );
+    }
+
+    let measured_batches = prepare_profile_measurements(config, profile, &lanes).await?;
+    wait_for_service_stream_pools_quiescent(Arc::clone(&service), expected_leases.clone(), config.stream_idle_timeout)
+        .await?;
+
+    let profiler_capture = CudaProfilerCapture::start(config.cuda_profiler_capture)?;
+    let execution_result =
+        execute_profile_batches(Arc::clone(&service), Arc::clone(&cpu_baselines), measured_batches).await;
+    let quiescence_result =
+        wait_for_service_stream_pools_quiescent(Arc::clone(&service), expected_leases, config.stream_idle_timeout)
+            .await;
+    let profiler_result = profiler_capture.finish();
+    let results = execution_result?;
+    quiescence_result?;
+    profiler_result?;
+
+    log_profile_cache_evidence(&results);
+    validate_profile_results(&results, true)?;
+    let rows = results.iter().map(|result| result.row.clone()).collect::<Vec<_>>();
+    evidence.rows.extend(results.into_iter().map(|result| result.evidence));
+
+    drop(lanes);
+    wait_for_service_stream_pools_idle(service, config.stream_idle_timeout).await?;
+    Ok(ProfileStressResult { rows, evidence })
+}
+
+async fn admit_profile_lanes(service: Arc<QueryService>, lanes: usize) -> DataFusionResult<Vec<ProfileLane>> {
+    let mut admitted = Vec::with_capacity(lanes);
+    for lane in 1..=lanes {
+        let service_for_admission = Arc::clone(&service);
+        let handle = tokio::task::spawn_blocking(move || service_for_admission.admit_query("bulk"))
+            .await
+            .map_err(|error| plan_error(format!("profile lane admission task join failed: {error}")))?
+            .map_err(native_error)?;
+        admitted.push(ProfileLane { lane, handle: Arc::new(handle) });
+    }
+    Ok(admitted)
+}
+
+fn profile_expected_root_leases(lanes: &[ProfileLane]) -> Vec<(usize, usize)> {
+    let mut by_device = BTreeMap::new();
+    for lane in lanes {
+        *by_device.entry(lane.handle.device_ordinal()).or_insert(0) += 1;
+    }
+    by_device.into_iter().collect()
+}
+
+async fn wait_for_service_stream_pools_quiescent(
+    service: Arc<QueryService>,
+    expected_leases: Vec<(usize, usize)>,
+    timeout: Duration,
+) -> DataFusionResult<()> {
+    tokio::task::spawn_blocking(move || service.wait_for_stream_pools_quiescent(&expected_leases, timeout))
+        .await
+        .map_err(|error| plan_error(format!("query service stream-quiescence wait task join failed: {error}")))?
+        .map_err(native_error)
+}
+
+async fn prepare_profile_iteration(
+    config: &StressConfig,
+    profile: &StressProfileConfig,
+    lanes: &[ProfileLane],
+    phase: &'static str,
+    iteration: usize,
+) -> DataFusionResult<Vec<PreparedProfileRequest>> {
+    let query = tpch_query(&profile.query_id)?;
+    let mut prepared = Vec::with_capacity(lanes.len());
+    for lane in lanes {
+        let request = profile_request(profile, lane.lane, iteration);
+        let plan = prepare_native_with_handle(config, query, Arc::clone(&lane.handle)).await?;
+        prepared.push(PreparedProfileRequest {
+            phase,
+            lane: lane.lane,
+            request,
+            handle: Arc::clone(&lane.handle),
+            prepared: plan,
+        });
+    }
+    Ok(prepared)
+}
+
+async fn prepare_profile_measurements(
+    config: &StressConfig,
+    profile: &StressProfileConfig,
+    lanes: &[ProfileLane],
+) -> DataFusionResult<Vec<Vec<PreparedProfileRequest>>> {
+    let query = tpch_query(&profile.query_id)?;
+    let mut batches = Vec::with_capacity(lanes.len());
+    for lane in lanes {
+        let mut requests = Vec::with_capacity(profile.measured_iterations);
+        for iteration in 1..=profile.measured_iterations {
+            let request = profile_request(profile, lane.lane, iteration);
+            let plan = prepare_native_with_handle(config, query, Arc::clone(&lane.handle)).await?;
+            requests.push(PreparedProfileRequest {
+                phase: "measured",
+                lane: lane.lane,
+                request,
+                handle: Arc::clone(&lane.handle),
+                prepared: plan,
+            });
+        }
+        batches.push(requests);
+    }
+    Ok(batches)
+}
+
+fn profile_request(profile: &StressProfileConfig, lane: usize, iteration: usize) -> StressRequest {
+    StressRequest {
+        request_index: (iteration - 1) * profile.lanes + lane,
+        tenant_id: TenantId::new("bulk"),
+        workload_class: "profile",
+        query_id: profile.query_id.clone(),
+        iteration,
+    }
+}
+
+async fn execute_profile_batches(
+    service: Arc<QueryService>,
+    cpu_baselines: Arc<HashMap<String, CpuBaseline>>,
+    batches: Vec<Vec<PreparedProfileRequest>>,
+) -> DataFusionResult<Vec<ProfileRequestResult>> {
+    let barrier = Arc::new(Barrier::new(batches.len().max(1)));
+    let mut tasks = Vec::with_capacity(batches.len());
+    for batch in batches {
+        let service = Arc::clone(&service);
+        let cpu_baselines = Arc::clone(&cpu_baselines);
+        let barrier = Arc::clone(&barrier);
+        tasks.push(tokio::spawn(async move {
+            barrier.wait().await;
+            let mut results = Vec::with_capacity(batch.len());
+            for request in batch {
+                results.push(execute_prepared_profile_request(&service, &cpu_baselines, request).await?);
+            }
+            Ok::<Vec<ProfileRequestResult>, DataFusionError>(results)
+        }));
+    }
+
+    let mut results = Vec::new();
+    for task in tasks {
+        results.extend(task.await.map_err(|error| plan_error(format!("profile lane task join failed: {error}")))??);
+    }
+    results.sort_by_key(|result| (result.row.iteration, result.evidence.lane));
+    Ok(results)
+}
+
+async fn execute_prepared_profile_request(
+    service: &QueryService,
+    cpu_baselines: &HashMap<String, CpuBaseline>,
+    prepared: PreparedProfileRequest,
+) -> DataFusionResult<ProfileRequestResult> {
+    let PreparedProfileRequest { phase, lane, request, handle, prepared } = prepared;
+    let total_started = Instant::now();
+    let native_started = Instant::now();
+    let admission_sequence = handle.admission_sequence();
+    let device_ordinal = handle.device_ordinal();
+    let admission_wait_ms = Some(duration_ms(handle.admission_wait()));
+    let admission_facts = admission_facts(service, &handle)?;
+    let cpu = cpu_baselines.get(&request.query_id);
+
+    let (row, metrics) = match collect_prepared_native(prepared).await {
+        Ok(NativeCollectOutcome::Succeeded { planning_row, measurement: native, metrics }) => {
+            let parity = match cpu {
+                Some(cpu) if cpu.output_fingerprint == native.output_fingerprint => "matched",
+                Some(_) => "mismatched",
+                None => "cpu_missing",
+            };
+            let row = StressRow {
+                row_type: "query",
+                request_index: request.request_index,
+                tenant_id: request.tenant_id.to_string(),
+                workload_class: request.workload_class,
+                query_id: request.query_id.clone(),
+                iteration: request.iteration,
+                admission_sequence: Some(admission_sequence),
+                admission_wait_ms,
+                admission_facts,
+                total_wall_ms: duration_ms(total_started.elapsed()),
+                native_wall_ms: Some(duration_ms(native_started.elapsed())),
+                planning_outcome: planning_row.outcome.as_str().to_string(),
+                post_native_execution_path: planning_row.post_native_execution_path.as_str().to_string(),
+                native_runtime_outcome: "succeeded",
+                parity_status: parity,
+                cpu_output_rows: cpu.map(|cpu| cpu.output_rows),
+                native_output_rows: Some(native.output_rows),
+                cpu_output_fingerprint: cpu.map(|cpu| cpu.output_fingerprint.clone()),
+                native_output_fingerprint: Some(native.output_fingerprint),
+                error: StructuredFailure::default(),
+            };
+            (row, metrics)
+        },
+        Ok(NativeCollectOutcome::RuntimeFailed { planning_row, error, metrics }) => {
+            let row = failure_row(
+                &request,
+                total_started.elapsed(),
+                Some(admission_sequence),
+                admission_wait_ms,
+                admission_facts,
+                planning_row.outcome.as_str(),
+                planning_row.post_native_execution_path.as_str(),
+                "failed",
+                "native_failed",
+                StructuredFailure::from_datafusion_error(&error),
+                cpu,
+                None,
+            );
+            (row, metrics)
+        },
+        Err(error) => {
+            let row = failure_row(
+                &request,
+                total_started.elapsed(),
+                Some(admission_sequence),
+                admission_wait_ms,
+                admission_facts,
+                "unknown",
+                "unknown",
+                "failed",
+                "native_failed",
+                StructuredFailure::from_datafusion_error(&error),
+                cpu,
+                None,
+            );
+            (row, NativeDataFusionExecutionMetrics::default())
+        },
+    };
+
+    let evidence = ProfileEvidenceRow {
+        phase,
+        lane,
+        iteration: row.iteration,
+        request_index: row.request_index,
+        admission_sequence,
+        device_ordinal,
+        query_id: row.query_id.clone(),
+        native_runtime_outcome: row.native_runtime_outcome,
+        parity_status: row.parity_status,
+        source_cache_hits: metrics.source_cache_hits,
+        source_cache_misses: metrics.source_cache_misses,
+        source_cache_inserts: metrics.source_cache_inserts,
+        source_cache_insert_skipped: metrics.source_cache_insert_skipped,
+        source_cache_retained_bytes: metrics.source_cache_retained_bytes,
+        native_wall_ms: row.native_wall_ms,
+    };
+    Ok(ProfileRequestResult { row, evidence })
+}
+
+fn validate_profile_results(results: &[ProfileRequestResult], require_cache_only: bool) -> DataFusionResult<()> {
+    for result in results {
+        let row = &result.row;
+        let evidence = &result.evidence;
+        if row.native_runtime_outcome != "succeeded" || row.parity_status != "matched" {
+            return Err(plan_error(format!(
+                "profile {} lane {} iteration {} failed: runtime_outcome={} parity_status={} error={}",
+                evidence.phase,
+                evidence.lane,
+                evidence.iteration,
+                row.native_runtime_outcome,
+                row.parity_status,
+                row.error.message.as_deref().unwrap_or("none"),
+            )));
+        }
+        if require_cache_only
+            && (evidence.source_cache_hits == 0
+                || evidence.source_cache_misses != 0
+                || evidence.source_cache_inserts != 0)
+        {
+            return Err(plan_error(format!(
+                "profile {} lane {} iteration {} was not cache-only: hits={} misses={} inserts={} skipped={}",
+                evidence.phase,
+                evidence.lane,
+                evidence.iteration,
+                evidence.source_cache_hits,
+                evidence.source_cache_misses,
+                evidence.source_cache_inserts,
+                evidence.source_cache_insert_skipped,
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn log_profile_cache_evidence(results: &[ProfileRequestResult]) {
+    for result in results {
+        let evidence = &result.evidence;
+        eprintln!(
+            "[query_service_tpch_stress] profile phase={} lane={} iteration={} device={} hits={} misses={} inserts={} skipped={} retained_bytes={} native_wall_ms={}",
+            evidence.phase,
+            evidence.lane,
+            evidence.iteration,
+            evidence.device_ordinal,
+            evidence.source_cache_hits,
+            evidence.source_cache_misses,
+            evidence.source_cache_inserts,
+            evidence.source_cache_insert_skipped,
+            evidence.source_cache_retained_bytes,
+            evidence.native_wall_ms.map(format_ms).unwrap_or_else(|| "none".to_string()),
+        );
+    }
+}
+
 async fn run_stress(
     config: &StressConfig,
+    service: Arc<QueryService>,
     cpu_baselines: Arc<HashMap<String, CpuBaseline>>,
 ) -> DataFusionResult<Vec<StressRow>> {
-    let service = Arc::new(
-        QueryService::new_with_device_ordinals(
-            config.service_config(),
-            config.device_ordinals.clone(),
-            vec![
-                tenant_config("bulk", config),
-                tenant_config("interactive_a", config),
-                tenant_config("interactive_b", config),
-            ],
-        )
-        .map_err(native_error)?,
-    );
     let requests = build_requests(config);
     let barrier = Arc::new(Barrier::new(requests.len().max(1)));
     let mut tasks = Vec::with_capacity(requests.len());
@@ -517,7 +1146,7 @@ async fn run_native_request(
     let cpu = cpu_baselines.get(&request.query_id);
     let native_started = Instant::now();
     match collect_native_with_handle(config, query, Arc::clone(&handle)).await {
-        Ok(NativeCollectOutcome::Succeeded { planning_row, measurement: native }) => {
+        Ok(NativeCollectOutcome::Succeeded { planning_row, measurement: native, .. }) => {
             let parity = match (cpu, Some(&native)) {
                 (Some(cpu), Some(native)) if cpu.output_fingerprint == native.output_fingerprint => "matched",
                 (Some(_), Some(_)) => "mismatched",
@@ -547,7 +1176,7 @@ async fn run_native_request(
                 error: StructuredFailure::default(),
             })
         },
-        Ok(NativeCollectOutcome::RuntimeFailed { planning_row, error }) => Ok(failure_row(
+        Ok(NativeCollectOutcome::RuntimeFailed { planning_row, error, .. }) => Ok(failure_row(
             &request,
             total_started.elapsed(),
             admission_sequence,
@@ -583,6 +1212,15 @@ async fn collect_native_with_handle(
     query: &TpchQuery,
     handle: Arc<nexus_query_engine::QueryHandle>,
 ) -> DataFusionResult<NativeCollectOutcome> {
+    let prepared = prepare_native_with_handle(config, query, handle).await?;
+    collect_prepared_native(prepared).await
+}
+
+async fn prepare_native_with_handle(
+    config: &StressConfig,
+    query: &TpchQuery,
+    handle: Arc<nexus_query_engine::QueryHandle>,
+) -> DataFusionResult<PreparedNativeQuery> {
     let optimizer_config = CudfOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred).with_native_execution_config(
         NativeCudfExecutionConfig::bounded_auto_sized().with_query_service_handle(handle),
     );
@@ -613,12 +1251,25 @@ async fn collect_native_with_handle(
         )));
     }
     let schema = plan.schema();
-    let batches = match collect_plan_once(plan).await {
+    Ok(PreparedNativeQuery { planning_row, plan, schema })
+}
+
+async fn collect_prepared_native(prepared: PreparedNativeQuery) -> DataFusionResult<NativeCollectOutcome> {
+    let PreparedNativeQuery { planning_row, plan, schema } = prepared;
+    let batches = match collect_plan_once(Arc::clone(&plan)).await {
         Ok(batches) => batches,
-        Err(error) => return Ok(NativeCollectOutcome::RuntimeFailed { planning_row, error }),
+        Err(error) => {
+            let metrics = native_execution_metrics(&plan);
+            return Ok(NativeCollectOutcome::RuntimeFailed { planning_row, error, metrics });
+        },
     };
     let measurement = measure_output(&schema, &batches)?;
-    Ok(NativeCollectOutcome::Succeeded { planning_row, measurement })
+    let metrics = native_execution_metrics(&plan);
+    Ok(NativeCollectOutcome::Succeeded { planning_row, measurement, metrics })
+}
+
+fn native_execution_metrics(plan: &Arc<dyn ExecutionPlan>) -> NativeDataFusionExecutionMetrics {
+    plan.metrics().as_ref().map(NativeDataFusionExecutionMetrics::from_metrics).unwrap_or_default()
 }
 
 fn admission_facts(
@@ -1121,6 +1772,10 @@ mod tests {
             max_source_chunk_bytes: 1,
             max_row_groups_per_chunk: 1,
             source_cache_max_retained_bytes: None,
+            warmup_rounds: 0,
+            stream_idle_timeout: Duration::from_secs(1),
+            cuda_profiler_capture: false,
+            profile: None,
             run_overload_probe: false,
             device_ordinals: vec![0],
         };

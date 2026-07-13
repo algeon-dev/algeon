@@ -1008,6 +1008,42 @@ fn query_service_handle_reuses_one_root_context() {
 }
 
 #[test]
+fn query_service_waits_for_background_stream_cleanup_quiescence() {
+    let service = runtime_test_service(1, 8);
+    let handle = service.admit_query("large").unwrap();
+    let context = handle.acquire_context().unwrap();
+
+    let error = service.wait_for_stream_pools_idle(Duration::ZERO).unwrap_err();
+    assert_eq!(error.code(), QueryErrorCode::ServiceOverloaded);
+    assert_eq!(error.fact_value("reason"), Some("stream_pool_idle_timeout"));
+    assert_eq!(error.fact_value("created_runtimes"), Some("1"));
+    assert_eq!(error.fact_value("idle_runtimes"), Some("0"));
+
+    drop(context);
+    drop(handle);
+    service.wait_for_stream_pools_idle(Duration::from_secs(5)).unwrap();
+}
+
+#[test]
+fn query_service_quiescence_allows_declared_long_lived_root_contexts() {
+    let service = runtime_test_service(1, 8);
+    let handle = service.admit_query("large").unwrap();
+    let context = handle.acquire_context().unwrap();
+
+    service.wait_for_stream_pools_quiescent(&[(0, 1)], Duration::ZERO).unwrap();
+
+    let error = service.wait_for_stream_pools_quiescent(&[(0, 0)], Duration::ZERO).unwrap_err();
+    assert_eq!(error.code(), QueryErrorCode::ServiceOverloaded);
+    assert_eq!(error.fact_value("reason"), Some("stream_pool_idle_timeout"));
+    assert_eq!(error.fact_value("active_leased_runtimes"), Some("1"));
+    assert_eq!(error.fact_value("expected_leased_runtimes"), Some("0"));
+
+    drop(context);
+    drop(handle);
+    service.wait_for_stream_pools_idle(Duration::from_secs(5)).unwrap();
+}
+
+#[test]
 fn query_service_rejects_stream_pool_smaller_than_admission_limit() {
     let config =
         QueryServiceConfig { max_concurrent_queries: 2, stream_pool_size: Some(1), ..QueryServiceConfig::default() };

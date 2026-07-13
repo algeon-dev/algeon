@@ -2382,7 +2382,7 @@ fn bounded_local_parquet_source_cache_pressure_skips_gpu_resident_hit_until_drop
 }
 
 #[test]
-fn bounded_local_parquet_source_cache_scheduled_aggregate_warm_hit_skips_reinsert() {
+fn bounded_local_parquet_source_cache_source_adjacent_aggregate_warm_hit_skips_decode_and_reinsert() {
     let dir = unique_temp_dir("nexus-query-engine-bounded-source-cache-scheduled-aggregate");
     let path = dir.join("input.parquet");
     let runtime = Arc::new(cudf::Runtime::new().unwrap());
@@ -2403,7 +2403,12 @@ fn bounded_local_parquet_source_cache_scheduled_aggregate_warm_hit_skips_reinser
 
         let mut builder = QueryPlanBuilder::new();
         let source = builder.add_source(SourceNode::LocalParquet(source));
-        let aggregate = builder.add_aggregate(source, aggregate, Arc::clone(&output_schema));
+        let filter = builder.add_filter(
+            source,
+            Expr::binary(Expr::column("key"), BinaryOp::GtEq, Expr::literal(LiteralValue::Int32(2))),
+            Arc::clone(&input_schema),
+        );
+        let aggregate = builder.add_aggregate(filter, aggregate, Arc::clone(&output_schema));
         let sort = builder.add_sort(aggregate, sort, Arc::clone(&output_schema));
         builder.finish_with_host_sink(sort)
     };
@@ -2431,15 +2436,99 @@ fn bounded_local_parquet_source_cache_scheduled_aggregate_warm_hit_skips_reinser
     let warm_metrics = warm.metrics();
     assert!(warm_metrics.source_cache_hits > 0);
     assert_eq!(warm_metrics.source_cache_misses, 0);
-    assert!(
-        warm_metrics.source_cache_insert_skipped > 0,
-        "scheduled warm-hit path should attempt insert and resolve it as already-present"
-    );
+    assert_eq!(warm_metrics.source_cache_inserts, 0);
+    assert_eq!(warm_metrics.source_cache_insert_skipped, 0);
 
     let QueryOutput::HostArrow(batch) = warm.output() else {
         panic!("host sink should materialize one RecordBatch");
     };
-    assert_eq!(int32_array(batch, 0).values().as_ref(), &[0, 1, 2, 3]);
+    assert_eq!(int32_array(batch, 0).values().as_ref(), &[2, 3]);
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn bounded_local_parquet_source_cache_q06_like_global_aggregate_reuses_all_source_chunks() {
+    let dir = unique_temp_dir("nexus-query-engine-bounded-source-cache-q06-like-global-aggregate");
+    let path = dir.join("input.parquet");
+    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let input_schema = write_key_payload_row_grouped_parquet(&path, 1);
+    let projected_schema = Arc::new(Schema::new(vec![Field::new("discounted_payload", DataType::Int64, false)]));
+    let output_schema = Arc::new(Schema::new(vec![Field::new("revenue", DataType::Int64, true)]));
+    let governor = MemoryGovernor::new(runtime.device().ordinal(), 64 * 1024 * 1024).unwrap();
+    let cache = Arc::new(GpuLocalParquetSourceCache::new_governor_backed(64 * 1024 * 1024, governor));
+    let file_size = fs::metadata(&path).unwrap().len();
+
+    let build_plan = || {
+        let source = LocalParquetSource::from_files(
+            vec![LocalParquetFile::new(&path).with_file_size_bytes(file_size)],
+            Arc::clone(&input_schema),
+            vec!["key".to_string(), "payload".to_string()],
+        );
+        let aggregate = AggregateSpec::new(
+            vec![],
+            vec![AggregateExpr::new(AggregateFunction::Sum, Expr::column("discounted_payload"), "revenue")],
+        );
+
+        let mut builder = QueryPlanBuilder::new();
+        let source = builder.add_source(SourceNode::LocalParquet(source));
+        let filter = builder.add_filter(
+            source,
+            Expr::binary(Expr::column("key"), BinaryOp::LtEq, Expr::literal(LiteralValue::Int32(2))),
+            Arc::clone(&input_schema),
+        );
+        let projection = builder.add_projection(
+            filter,
+            projection_outputs(
+                vec![
+                    Expr::binary(Expr::column("payload"), BinaryOp::Multiply, Expr::literal(LiteralValue::Int64(2)))
+                        .alias("discounted_payload"),
+                ],
+                Arc::clone(&projected_schema),
+            ),
+        );
+        let aggregate = builder.add_aggregate(projection, aggregate, Arc::clone(&output_schema));
+        builder.finish_with_host_sink(aggregate)
+    };
+    let build_context = || {
+        ExecutionContext::builder()
+            .with_shared_runtime(Arc::clone(&runtime))
+            .with_memory_control_policy(MemoryControlPolicy::Bounded {
+                device_budget_bytes: 8 * 1024 * 1024 * 1024,
+                max_source_chunk_bytes: 1024 * 1024,
+                max_row_groups_per_chunk: 1,
+                max_retry_attempts: 1,
+                min_retry_chunk_row_groups: 1,
+            })
+            .with_source_scheduler_policy(SourceSchedulerPolicy::new(2))
+            .with_local_parquet_source_cache(Arc::clone(&cache))
+            .build()
+            .unwrap()
+    };
+
+    let cold = execute_query_plan(&build_context(), &build_plan()).unwrap();
+    let cold_metrics = cold.metrics();
+    assert_eq!(cold_metrics.source_cache_hits, 0);
+    assert_eq!(cold_metrics.source_cache_misses, 4);
+    assert_eq!(cold_metrics.source_cache_inserts, 4);
+    assert_eq!(cold_metrics.source_chunks_committed, 4);
+
+    let warm = execute_query_plan(&build_context(), &build_plan()).unwrap();
+    let warm_metrics = warm.metrics();
+    assert_eq!(warm_metrics.source_cache_hits, 4);
+    assert_eq!(warm_metrics.source_cache_misses, 0);
+    assert_eq!(warm_metrics.source_cache_inserts, 0);
+    assert_eq!(
+        warm_metrics.source_cache_insert_skipped, 4,
+        "scheduled warm hits may re-attempt admission, but must resolve as already present without decoding"
+    );
+    assert_eq!(warm_metrics.source_chunks_committed, 4);
+
+    let QueryOutput::HostArrow(batch) = warm.output() else {
+        panic!("host sink should materialize the q06-like global aggregate");
+    };
+    assert_eq!(batch.num_rows(), 1);
+    assert_eq!(int64_array(batch, 0).values().as_ref(), &[70]);
 
     fs::remove_dir_all(dir).unwrap();
 }

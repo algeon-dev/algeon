@@ -24,7 +24,8 @@ pub(super) fn stream_join_leaf_source_chunks_serial_from<F>(
 where
     F: FnMut(ResidentGpuFrame, &mut ReservationTracker, &mut QueryMetrics) -> Result<()>,
 {
-    let batches = join_leaf_source_chunk_batches(
+    let batches = cache_preserving_join_leaf_source_chunk_batches(
+        context,
         &stream.source,
         chunks,
         &stream.reader_dynamic_filters,
@@ -122,7 +123,7 @@ pub(super) fn stream_join_leaf_source_batch_with_consumer<F>(
 where
     F: FnMut(ResidentGpuFrame, &mut ReservationTracker, &mut QueryMetrics) -> Result<()>,
 {
-    let grow_source_to_observed = stream.stages.is_empty();
+    let grow_source_to_observed = retain_decoded_source_for_cache(context, stream);
     let (frame, reservation) = read_join_leaf_source_batch_attempt(
         context,
         &stream.source,
@@ -151,7 +152,7 @@ where
     F: FnMut(ResidentGpuFrame, &mut ReservationTracker, &mut QueryMetrics) -> Result<()>,
 {
     context.check_cancellation("nexus_query_engine.exec.bounded.join_leaf_source_stream")?;
-    let grow_source_to_observed = stream.stages.is_empty();
+    let grow_source_to_observed = retain_decoded_source_for_cache(context, stream);
     let (frame, reservation) = match read_join_leaf_source_chunk_attempt(
         context,
         &stream.source,
@@ -270,7 +271,7 @@ pub(super) fn stream_join_leaf_source_chunks_with_scheduler<F>(
 where
     F: FnMut(ResidentGpuFrame, &mut ReservationTracker, &mut QueryMetrics) -> Result<()>,
 {
-    let grow_source_to_observed = stream.stages.is_empty();
+    let grow_source_to_observed = retain_decoded_source_for_cache(context, stream);
     let mut pending = VecDeque::new();
     let mut next_chunk_index = 0usize;
     context.check_cancellation("nexus_query_engine.exec.bounded.join_leaf_source_stream_scheduler")?;
