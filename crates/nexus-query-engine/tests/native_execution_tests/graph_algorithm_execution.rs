@@ -209,7 +209,7 @@ fn bounded_bfs_resident_graph_cache_reuses_parked_forward_graph() {
     let spec = GraphAlgorithmSpec::with_stable_schema(
         GraphAlgorithm::Bfs,
         GraphEdgeColumnBindings::new("src", "dst", None::<&str>),
-        GraphConstructionOptions { directed: true, renumber: true, policy: GraphConstructionPolicy::RawLibcugraph },
+        GraphConstructionOptions { directed: true, renumber: true, policy: GraphConstructionPolicy::PythonCugraph },
         GraphAlgorithmParams::Bfs(Box::new(GraphBfsParams::new(0, None))),
     );
 
@@ -236,11 +236,17 @@ fn bounded_bfs_resident_graph_cache_reuses_parked_forward_graph() {
     let cold = execute_query_plan_with_gpu_inputs(&context, &plan, &gpu_inputs).unwrap();
     let cold_metadata = &cold.metrics().graph_algorithm_runtime_rows[0].algorithm_metadata;
     assert!(cold_metadata.contains("graph_cache=miss_inserted"), "{cold_metadata}");
+    let cold_reservation_stages =
+        cold.metrics().reservation_events.iter().filter_map(|event| event.stage.as_deref()).collect::<Vec<_>>();
+    assert!(cold_reservation_stages.contains(&"bounded_generic_edge_normalize"), "{cold_reservation_stages:?}");
     assert!(governor.evictable_bytes().unwrap() > 0);
 
     let warm = execute_query_plan_with_gpu_inputs(&context, &plan, &gpu_inputs).unwrap();
     let warm_metadata = &warm.metrics().graph_algorithm_runtime_rows[0].algorithm_metadata;
     assert!(warm_metadata.contains("graph_cache=hit;"), "{warm_metadata}");
+    let warm_reservation_stages =
+        warm.metrics().reservation_events.iter().filter_map(|event| event.stage.as_deref()).collect::<Vec<_>>();
+    assert!(!warm_reservation_stages.contains(&"bounded_generic_edge_normalize"));
 }
 
 #[test]

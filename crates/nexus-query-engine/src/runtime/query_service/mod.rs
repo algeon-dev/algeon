@@ -506,8 +506,11 @@ impl QueryService {
         let local_parquet_source_caches =
             local_parquet_source_caches_for_devices(&devices, config.local_parquet_source_cache_max_retained_bytes)?;
         #[cfg(feature = "cugraph")]
-        let resident_graph_caches =
-            resident_graph_caches_for_devices(&devices, config.resident_graph_cache_max_retained_bytes)?;
+        let resident_graph_caches = resident_graph_caches_for_devices(
+            &devices,
+            config.resident_graph_cache_max_retained_bytes,
+            resident_graph_cache_max_copies_per_key(&config),
+        )?;
         let resources = QueryServiceResources {
             devices,
             _governor_claim: None,
@@ -2348,16 +2351,20 @@ fn local_parquet_source_caches_for_devices(
 fn resident_graph_caches_for_devices(
     devices: &super::DeviceRegistry,
     max_retained_bytes: Option<u64>,
+    max_copies_per_key: usize,
 ) -> Result<HashMap<usize, Arc<crate::exec::GpuResidentGraphCache>>> {
     let Some(max_retained_bytes) = max_retained_bytes else {
         return Ok(HashMap::new());
     };
     let mut caches = HashMap::new();
     for device in devices.contexts() {
-        let cache = Arc::new(crate::exec::GpuResidentGraphCache::new_governor_backed(
-            max_retained_bytes,
-            device.memory_governor().clone(),
-        ));
+        let cache = Arc::new(
+            crate::exec::GpuResidentGraphCache::new_governor_backed(
+                max_retained_bytes,
+                device.memory_governor().clone(),
+            )
+            .with_max_copies_per_key(max_copies_per_key),
+        );
         crate::exec::GpuResidentGraphCache::register_governor_pressure_observer(&cache)?;
         caches.insert(device.device().ordinal(), cache);
     }
@@ -2383,6 +2390,7 @@ fn local_parquet_source_caches_for_ordinals(
 fn resident_graph_caches_for_ordinals(
     device_ordinals: &[usize],
     max_retained_bytes: Option<u64>,
+    max_copies_per_key: usize,
 ) -> HashMap<usize, Arc<crate::exec::GpuResidentGraphCache>> {
     let Some(max_retained_bytes) = max_retained_bytes else {
         return HashMap::new();
@@ -2390,8 +2398,21 @@ fn resident_graph_caches_for_ordinals(
     device_ordinals
         .iter()
         .copied()
-        .map(|ordinal| (ordinal, Arc::new(crate::exec::GpuResidentGraphCache::new(max_retained_bytes))))
+        .map(|ordinal| {
+            (
+                ordinal,
+                Arc::new(
+                    crate::exec::GpuResidentGraphCache::new(max_retained_bytes)
+                        .with_max_copies_per_key(max_copies_per_key),
+                ),
+            )
+        })
         .collect()
+}
+
+#[cfg(feature = "cugraph")]
+fn resident_graph_cache_max_copies_per_key(config: &QueryServiceConfig) -> usize {
+    config.max_queries_per_device.unwrap_or(config.max_concurrent_queries).min(config.max_concurrent_queries)
 }
 
 fn invalid_requested_grant_error(

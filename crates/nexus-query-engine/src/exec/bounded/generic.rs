@@ -194,16 +194,13 @@ fn execute_bounded_generic_node(
         PlanNode::EdgeNormalize(edge_normalize) => {
             let input =
                 execute_bounded_generic_node(context, plan, edge_normalize.input, gpu_inputs, reservations, metrics)?;
-            execute_bounded_generic_unary(
+            execute_bounded_generic_edge_normalize_from_input(
                 context,
                 id,
-                "bounded_generic_edge_normalize",
-                "bounded_generic_edge_normalize_output",
+                edge_normalize,
                 input,
                 reservations,
                 metrics,
-                false,
-                |context, input, _token, metrics| execute_edge_normalize(context, id, edge_normalize, input, metrics),
             )
         },
         PlanNode::GraphAlgorithm(graph) => {
@@ -252,6 +249,27 @@ fn execute_bounded_generic_node(
     }?;
 
     Ok(frame)
+}
+
+fn execute_bounded_generic_edge_normalize_from_input(
+    context: &ExecutionContext,
+    node_id: NodeId,
+    edge_normalize: &crate::plan::EdgeNormalizeNode,
+    input: ResidentGpuFrame,
+    reservations: &mut ReservationTracker,
+    metrics: &mut QueryMetrics,
+) -> Result<ResidentGpuFrame> {
+    execute_bounded_generic_unary(
+        context,
+        node_id,
+        "bounded_generic_edge_normalize",
+        "bounded_generic_edge_normalize_output",
+        input,
+        reservations,
+        metrics,
+        false,
+        |context, input, _token, metrics| execute_edge_normalize(context, node_id, edge_normalize, input, metrics),
+    )
 }
 
 pub(in crate::exec::bounded) fn execute_bounded_generic_union(
@@ -407,7 +425,32 @@ fn execute_bounded_generic_graph_algorithm(
     reservations: &mut ReservationTracker,
     metrics: &mut QueryMetrics,
 ) -> Result<ResidentGpuFrame> {
-    let input = execute_bounded_generic_node(context, plan, graph.input, gpu_inputs, reservations, metrics)?;
+    let (input, preparation_pin) = if let Some(raw_input_id) = graph_preparation_bypass_input(plan, graph) {
+        let raw_input = execute_bounded_generic_node(context, plan, raw_input_id, gpu_inputs, reservations, metrics)?;
+        if let Some(pin) = resident_graph_cache_preparation_pin(context, &raw_input.frame, &graph.spec)? {
+            (raw_input, Some(pin))
+        } else {
+            let PlanNode::EdgeNormalize(edge_normalize) =
+                &plan.node(graph.input).expect("preparation bypass validated graph input").kind
+            else {
+                unreachable!("preparation bypass requires an edge-normalize input")
+            };
+            (
+                execute_bounded_generic_edge_normalize_from_input(
+                    context,
+                    graph.input,
+                    edge_normalize,
+                    raw_input,
+                    reservations,
+                    metrics,
+                )?,
+                None,
+            )
+        }
+    } else {
+        (execute_bounded_generic_node(context, plan, graph.input, gpu_inputs, reservations, metrics)?, None)
+    };
+    let preparation_pin_id = preparation_pin.as_ref().map(|pin| pin.pin_id());
     let ResidentGpuFrame { frame: input_frame, reservation: input_reservation } = input;
     let input_rows = input_frame.num_rows() as u64;
     let input_columns = input_frame.num_columns() as u64;
@@ -580,6 +623,7 @@ fn execute_bounded_generic_graph_algorithm(
         input_rows,
         input_columns,
         null_edge_rows_dropped,
+        preparation_pin_id,
         metrics,
     ) {
         Ok(output) => output,
@@ -591,6 +635,7 @@ fn execute_bounded_generic_graph_algorithm(
             return Err(error.with_fact_if_absent("node_id", node_id));
         },
     };
+    drop(preparation_pin);
 
     let output_bytes = match observe_device_memory_bytes(&output, metrics) {
         Ok(bytes) => bytes,

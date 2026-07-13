@@ -5,6 +5,7 @@ pub(super) fn execute_pagerank(
     spec: &crate::plan::GraphAlgorithmSpec,
     inputs: GraphAlgorithmExecutionInputs,
 ) -> Result<GraphAlgorithmExecutionResult> {
+    let preparation_pin_id = inputs.preparation_pin_id;
     let input = inputs.edge_list;
     let crate::plan::GraphAlgorithmParams::PageRank(params) = &spec.params else {
         return Err(QueryError::new(
@@ -21,31 +22,48 @@ pub(super) fn execute_pagerank(
     let options = table_graph_options(spec);
     let pr_params = pagerank_params(params)?;
 
-    run_with_cugraph_graph::<cugraph::Transposed, _>(
-        context,
-        inputs.graph_memory_limit_bytes,
-        spec,
-        resident_graph_key,
-        edges,
-        options,
-        "datafusion_nexus_cugraph_pagerank",
-        |runtime, entered, graph| {
-            let result = graph
-                .pagerank(entered, &pr_params)
-                .map_err(map_cugraph_error("nexus_query_engine.graph_algorithm.pagerank", "cuGraph PageRank failed"))?;
-            let converged = result.converged().map_or_else(|_| "unknown".to_string(), |value| value.to_string());
-            let algorithm_metadata = format!("converged={},iterations={}", converged, result.num_iterations());
-            let frame = result.to_dataframe(runtime).map_err(map_cugraph_error(
-                "nexus_query_engine.graph_algorithm.pagerank_result",
-                "failed to convert cuGraph PageRank result to cudf DataFrame",
-            ))?;
-            Ok(GraphAlgorithmExecutionResult {
-                frame: normalize_graph_result_schema(frame, &spec.output_schema)?,
-                algorithm_metadata,
-                budget_observations: Vec::new(),
-            })
-        },
-    )
+    let run_pagerank = |runtime: &cudf::Runtime,
+                        entered: &cugraph::EnteredContext<'_>,
+                        graph: &mut cugraph::Graph<cugraph::Transposed>| {
+        let result = graph
+            .pagerank(entered, &pr_params)
+            .map_err(map_cugraph_error("nexus_query_engine.graph_algorithm.pagerank", "cuGraph PageRank failed"))?;
+        let converged = result.converged().map_or_else(|_| "unknown".to_string(), |value| value.to_string());
+        let algorithm_metadata = format!("converged={},iterations={}", converged, result.num_iterations());
+        let frame = result.to_dataframe(runtime).map_err(map_cugraph_error(
+            "nexus_query_engine.graph_algorithm.pagerank_result",
+            "failed to convert cuGraph PageRank result to cudf DataFrame",
+        ))?;
+        Ok(GraphAlgorithmExecutionResult {
+            frame: normalize_graph_result_schema(frame, &spec.output_schema)?,
+            algorithm_metadata,
+            budget_observations: Vec::new(),
+        })
+    };
+    if let Some(preparation_pin_id) = preparation_pin_id {
+        run_with_cugraph_graph_cache_hit::<cugraph::Transposed, _>(
+            context,
+            inputs.graph_memory_limit_bytes,
+            spec,
+            resident_graph_key,
+            edges,
+            options,
+            "datafusion_nexus_cugraph_pagerank",
+            preparation_pin_id,
+            run_pagerank,
+        )
+    } else {
+        run_with_cugraph_graph::<cugraph::Transposed, _>(
+            context,
+            inputs.graph_memory_limit_bytes,
+            spec,
+            resident_graph_key,
+            edges,
+            options,
+            "datafusion_nexus_cugraph_pagerank",
+            run_pagerank,
+        )
+    }
 }
 
 pub(super) fn execute_personalized_pagerank(
