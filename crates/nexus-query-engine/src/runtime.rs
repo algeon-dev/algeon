@@ -1714,14 +1714,32 @@ fn create_grant_memory_domain(
         return Ok(None);
     };
     let grant_key = grant.identity_key();
-    let mut registry = grant_memory_domain_registry().lock().map_err(|_error| {
+    let creation_lock = grant_memory_domain_creation_lock(grant_key)?;
+    let _creation_guard = creation_lock.lock().map_err(|_error| {
         QueryError::new(
             QueryErrorCode::Internal,
             "nexus_query_engine.runtime.grant_memory_domain",
-            "grant query memory domain registry mutex was poisoned",
+            "grant query memory domain creation mutex was poisoned",
         )
+        .with_fact("grant_id", grant.grant_id())
+        .with_fact("query_id", grant.query_id())
     })?;
-    if let Some(domain) = registry.get(&grant_key).and_then(Weak::upgrade) {
+    let existing_domain = {
+        let mut registry = grant_memory_domain_registry().lock().map_err(|_error| {
+            QueryError::new(
+                QueryErrorCode::Internal,
+                "nexus_query_engine.runtime.grant_memory_domain",
+                "grant query memory domain registry mutex was poisoned",
+            )
+        })?;
+        registry.retain(|key, domain| *key == grant_key || domain.strong_count() != 0);
+        let domain = registry.get(&grant_key).and_then(Weak::upgrade);
+        if domain.is_none() {
+            registry.remove(&grant_key);
+        }
+        domain
+    };
+    if let Some(domain) = existing_domain {
         if domain.device() != runtime.device() {
             return Err(QueryError::new(
                 QueryErrorCode::InvalidPlan,
@@ -1735,7 +1753,6 @@ fn create_grant_memory_domain(
         }
         return Ok(Some(domain));
     }
-    registry.remove(&grant_key);
 
     let (grant_bytes_u64, ceiling_bytes_u64) = grant.install_hard_cap_bytes_for_current_budget(|grant_bytes| {
         policy.ceiling_bytes(grant_bytes, device_capacity_bytes)
@@ -1794,8 +1811,17 @@ fn create_grant_memory_domain(
         observer_domain.resize_grant(grant_bytes).map_err(|error| error.to_string())
     });
     let initial_budget = grant.notify_on_budget_change(Arc::clone(&resize_observer))?;
-    registry.insert(grant_key, Arc::downgrade(&domain));
     resize_observer(initial_budget);
+    grant_memory_domain_registry()
+        .lock()
+        .map_err(|_error| {
+            QueryError::new(
+                QueryErrorCode::Internal,
+                "nexus_query_engine.runtime.grant_memory_domain",
+                "grant query memory domain registry mutex was poisoned",
+            )
+        })?
+        .insert(grant_key, Arc::downgrade(&domain));
     Ok(Some(domain))
 }
 
@@ -1832,6 +1858,55 @@ fn grant_reservation_arena_registry() -> &'static Mutex<HashMap<usize, Weak<cudf
 fn grant_memory_domain_registry() -> &'static Mutex<HashMap<usize, Weak<cudf::QueryMemoryDomain>>> {
     static REGISTRY: OnceLock<Mutex<HashMap<usize, Weak<cudf::QueryMemoryDomain>>>> = OnceLock::new();
     REGISTRY.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+#[derive(Debug)]
+struct GrantMemoryDomainCreationLock {
+    grant_key: usize,
+    lock: Arc<Mutex<()>>,
+}
+
+impl GrantMemoryDomainCreationLock {
+    fn lock(&self) -> std::sync::LockResult<std::sync::MutexGuard<'_, ()>> {
+        self.lock.lock()
+    }
+}
+
+impl Drop for GrantMemoryDomainCreationLock {
+    fn drop(&mut self) {
+        let Ok(mut locks) = grant_memory_domain_creation_locks().lock() else {
+            eprintln!("[nexus-query-engine] warning: failed to clean poisoned grant-domain creation-lock registry");
+            return;
+        };
+        let Some(registered) = locks.get(&self.grant_key).and_then(Weak::upgrade) else {
+            locks.remove(&self.grant_key);
+            return;
+        };
+        if Arc::ptr_eq(&registered, &self.lock) && Arc::strong_count(&self.lock) == 2 {
+            locks.remove(&self.grant_key);
+        }
+    }
+}
+
+fn grant_memory_domain_creation_locks() -> &'static Mutex<HashMap<usize, Weak<Mutex<()>>>> {
+    static CREATION_LOCKS: OnceLock<Mutex<HashMap<usize, Weak<Mutex<()>>>>> = OnceLock::new();
+    CREATION_LOCKS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn grant_memory_domain_creation_lock(grant_key: usize) -> Result<GrantMemoryDomainCreationLock> {
+    let mut locks = grant_memory_domain_creation_locks().lock().map_err(|_error| {
+        QueryError::new(
+            QueryErrorCode::Internal,
+            "nexus_query_engine.runtime.grant_memory_domain",
+            "grant query memory domain creation-lock registry mutex was poisoned",
+        )
+    })?;
+    if let Some(lock) = locks.get(&grant_key).and_then(Weak::upgrade) {
+        return Ok(GrantMemoryDomainCreationLock { grant_key, lock });
+    }
+    let lock = Arc::new(Mutex::new(()));
+    locks.insert(grant_key, Arc::downgrade(&lock));
+    Ok(GrantMemoryDomainCreationLock { grant_key, lock })
 }
 
 #[cfg(test)]

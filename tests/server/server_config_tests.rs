@@ -30,6 +30,7 @@ use datafusion_nexus::{
         NEXUS_SERVER_NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV, NEXUS_SERVER_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV,
         NEXUS_SERVER_NATIVE_MAX_SOURCE_READS_IN_FLIGHT_ENV, NEXUS_SERVER_NATIVE_MEMORY_POLICY_ENV,
         NEXUS_SERVER_NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS_ENV, NEXUS_SERVER_NATIVE_PIPELINE_EXECUTION_MODE_ENV,
+        NEXUS_SERVER_NATIVE_QUERY_MEMORY_DOMAIN_CEILING_MULTIPLIER_ENV,
         NEXUS_SERVER_NATIVE_SOURCE_CACHE_MAX_RETAINED_BYTES_ENV, NEXUS_SERVER_NATIVE_SOURCE_CHUNK_PLANNING_MODE_ENV,
         NEXUS_SERVER_NATIVE_STATISTICAL_AGGREGATE_EXECUTION_MODE_ENV, NEXUS_SERVER_STATEMENT_TICKET_TTL_SECS_ENV,
         NEXUS_SERVER_WORKSPACE_BACKING_ALIASES_ENV, NEXUS_SERVER_WORKSPACE_BACKING_CATALOG_ENV,
@@ -230,6 +231,10 @@ fn server_native_config_option_descriptors_cover_toml_env_and_session_keys() {
         ("native.host_fetch_acquire_timeout_secs", NEXUS_SERVER_NATIVE_HOST_FETCH_ACQUIRE_TIMEOUT_SECS_ENV),
         ("native.source_cache_max_retained_bytes", NEXUS_SERVER_NATIVE_SOURCE_CACHE_MAX_RETAINED_BYTES_ENV),
         ("native.graph_cache_max_retained_bytes", NEXUS_SERVER_NATIVE_GRAPH_CACHE_MAX_RETAINED_BYTES_ENV),
+        (
+            "native.query_memory_domain_ceiling_multiplier",
+            NEXUS_SERVER_NATIVE_QUERY_MEMORY_DOMAIN_CEILING_MULTIPLIER_ENV,
+        ),
         ("native.pipeline_execution_mode", NEXUS_SERVER_NATIVE_PIPELINE_EXECUTION_MODE_ENV),
         ("native.statistical_aggregate_execution_mode", NEXUS_SERVER_NATIVE_STATISTICAL_AGGREGATE_EXECUTION_MODE_ENV),
     ];
@@ -282,6 +287,7 @@ fn server_native_config_option_descriptors_document_scope() {
             "native.source_chunk_planning_mode",
             "native.source_cache_max_retained_bytes",
             "native.graph_cache_max_retained_bytes",
+            "native.query_memory_domain_ceiling_multiplier",
             "native.pipeline_execution_mode",
         ])
     );
@@ -706,6 +712,7 @@ fn server_config_accepts_extended_native_query_knobs() {
         (NEXUS_SERVER_NATIVE_SOURCE_CHUNK_PLANNING_MODE_ENV, "local_parquet_throughput".to_string()),
         (NEXUS_SERVER_NATIVE_HOST_FETCH_ACQUIRE_TIMEOUT_SECS_ENV, "12".to_string()),
         (NEXUS_SERVER_NATIVE_SOURCE_CACHE_MAX_RETAINED_BYTES_ENV, "256".to_string()),
+        (NEXUS_SERVER_NATIVE_QUERY_MEMORY_DOMAIN_CEILING_MULTIPLIER_ENV, "3".to_string()),
         (NEXUS_SERVER_NATIVE_PIPELINE_EXECUTION_MODE_ENV, "adaptive".to_string()),
         (NEXUS_SERVER_NATIVE_STATISTICAL_AGGREGATE_EXECUTION_MODE_ENV, "gpu_native_tolerant".to_string()),
     ]);
@@ -731,6 +738,7 @@ fn server_config_accepts_extended_native_query_knobs() {
     assert_eq!(native.source_chunk_planning_mode(), SourceChunkPlanningMode::LocalParquetThroughput);
     assert_eq!(native.source_fetch_config().host_fetch_acquire_timeout, Duration::from_secs(12));
     assert_eq!(native.query_service_local_parquet_source_cache_max_retained_bytes(), Some(256));
+    assert_eq!(native.query_service_query_memory_domain().unwrap().ceiling_multiplier, 3);
     #[cfg(feature = "cugraph")]
     assert_eq!(native.query_service_resident_graph_cache_max_retained_bytes(), Some(512));
     #[cfg(not(feature = "cugraph"))]
@@ -754,6 +762,7 @@ max_source_reads_in_flight = 4
 source_chunk_planning_mode = "local_parquet_throughput"
 host_fetch_acquire_timeout_secs = 12
 source_cache_max_retained_bytes = 256
+query_memory_domain_ceiling_multiplier = 3
 {graph_cache_toml}
 pipeline_execution_mode = "adaptive"
 statistical_aggregate_execution_mode = "gpu_native_tolerant"
@@ -781,6 +790,7 @@ statistical_aggregate_execution_mode = "gpu_native_tolerant"
     assert_eq!(native.source_chunk_planning_mode(), SourceChunkPlanningMode::LocalParquetThroughput);
     assert_eq!(native.source_fetch_config().host_fetch_acquire_timeout, Duration::from_secs(12));
     assert_eq!(native.query_service_local_parquet_source_cache_max_retained_bytes(), Some(256));
+    assert_eq!(native.query_service_query_memory_domain().unwrap().ceiling_multiplier, 3);
     #[cfg(feature = "cugraph")]
     assert_eq!(native.query_service_resident_graph_cache_max_retained_bytes(), Some(512));
     #[cfg(not(feature = "cugraph"))]
@@ -1195,6 +1205,13 @@ source_cache_max_retained_bytes = 0
 graph_cache_max_retained_bytes = 0
 "#,
             "native.graph_cache_max_retained_bytes",
+        ),
+        (
+            r#"
+[native]
+query_memory_domain_ceiling_multiplier = 0
+"#,
+            "native.query_memory_domain_ceiling_multiplier",
         ),
     ] {
         let (_dir, env) = env_with_server_toml(toml_body);

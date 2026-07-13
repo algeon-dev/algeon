@@ -131,7 +131,7 @@ impl SlotGuarantee {
     }
 }
 
-/// Opt-in policy for binding adaptive service contexts to cudf-rs query memory domains.
+/// Opt-in policy for binding service contexts to cudf-rs query memory domains.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct QueryMemoryDomainPolicy {
     /// Domain ceiling as a multiple of the grant budget observed when the
@@ -229,11 +229,11 @@ pub struct QueryServiceConfig {
     /// stream-pool runtime identity, matching the cugraph-rs parked-graph v1
     /// same-runtime resume contract.
     pub resident_graph_cache_max_retained_bytes: Option<u64>,
-    /// Optional per-query allocator domain policy for adaptive service contexts.
+    /// Optional per-query allocator domain policy for service contexts.
     ///
     /// `None` preserves the legacy grant-backed reservation arena path. When
-    /// enabled, only adaptive service contexts use query memory domains; strict
-    /// bounded contexts intentionally keep the per-boundary arena member path.
+    /// enabled, strict and adaptive contexts both use hard-limited query-domain
+    /// members for their boundary budget tokens.
     pub query_memory_domain: Option<QueryMemoryDomainPolicy>,
     /// Optional service stream pool size. `None` uses the SM-aware default.
     pub stream_pool_size: Option<usize>,

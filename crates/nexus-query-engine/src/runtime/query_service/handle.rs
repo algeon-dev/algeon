@@ -310,17 +310,12 @@ impl QueryHandle {
         let stream_lease_guard = Arc::new(stream_lease);
         let memory_grant = self.lifetime.memory_grant()?;
         let runtime = stream_lease_guard.shared_runtime();
-        let grant_memory_domain =
-            if self.service.config.native_pipeline_execution_mode == NativePipelineExecutionMode::Adaptive {
-                create_grant_memory_domain(
-                    runtime.as_ref(),
-                    Some(&memory_grant),
-                    self.service.config.query_memory_domain,
-                    device.capacity_bytes(),
-                )?
-            } else {
-                None
-            };
+        let grant_memory_domain = create_grant_memory_domain(
+            runtime.as_ref(),
+            Some(&memory_grant),
+            self.service.config.query_memory_domain,
+            device.capacity_bytes(),
+        )?;
         let grant_reservation_arena = if grant_memory_domain.is_some() {
             None
         } else {

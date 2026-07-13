@@ -24,8 +24,8 @@ use datafusion_nexus_bench::{
     register_tpch_table_layout, tpch_report_session_config, tpch_tuned_cpu_session_config,
 };
 use nexus_query_engine::{
-    QueryError, QueryService, QueryServiceConfig, QueryServiceTenantConfig, SlotGuarantee, TenantId,
-    harness::StableFnv1a64,
+    NativePipelineExecutionMode, QueryError, QueryMemoryDomainPolicy, QueryService, QueryServiceConfig,
+    QueryServiceTenantConfig, SlotGuarantee, TenantId, harness::StableFnv1a64,
 };
 use tokio::sync::Barrier;
 
@@ -78,6 +78,9 @@ const ADMISSION_WAIT_TIMEOUT_MS_ENV: &str = "CUDF_QUERY_SERVICE_TPCH_ADMISSION_W
 const MAX_SOURCE_CHUNK_BYTES_ENV: &str = "CUDF_QUERY_SERVICE_TPCH_MAX_SOURCE_CHUNK_BYTES";
 const MAX_ROW_GROUPS_PER_CHUNK_ENV: &str = "CUDF_QUERY_SERVICE_TPCH_MAX_ROW_GROUPS_PER_CHUNK";
 const SOURCE_CACHE_MAX_RETAINED_BYTES_ENV: &str = "CUDF_QUERY_SERVICE_TPCH_SOURCE_CACHE_MAX_RETAINED_BYTES";
+const NATIVE_PIPELINE_EXECUTION_MODE_ENV: &str = "CUDF_QUERY_SERVICE_TPCH_NATIVE_PIPELINE_EXECUTION_MODE";
+const QUERY_MEMORY_DOMAIN_CEILING_MULTIPLIER_ENV: &str =
+    "CUDF_QUERY_SERVICE_TPCH_QUERY_MEMORY_DOMAIN_CEILING_MULTIPLIER";
 const WARMUP_ROUNDS_ENV: &str = "CUDF_QUERY_SERVICE_TPCH_WARMUP_ROUNDS";
 const STREAM_IDLE_TIMEOUT_MS_ENV: &str = "CUDF_QUERY_SERVICE_TPCH_STREAM_IDLE_TIMEOUT_MS";
 const CUDA_PROFILER_CAPTURE_ENV: &str = "CUDF_QUERY_SERVICE_TPCH_CUDA_PROFILER_CAPTURE";
@@ -104,8 +107,10 @@ async fn main() -> DataFusionResult<()> {
         rows.push(run_overload_probe(&config)?);
     }
     let service = Arc::new(build_query_service(&config)?);
+    let mut profile_measured_execution_ms = None;
     if let Some(profile) = &config.profile {
         let result = run_profile_stress(&config, profile, Arc::clone(&service), Arc::clone(&cpu_baselines)).await?;
+        profile_measured_execution_ms = Some(result.measured_execution_ms);
         rows.extend(result.rows);
         result.evidence.write_to(&profile.evidence_path)?;
     } else {
@@ -115,7 +120,7 @@ async fn main() -> DataFusionResult<()> {
         wait_for_service_stream_pools_idle(Arc::clone(&service), config.stream_idle_timeout).await?;
         profiler_capture.finish()?;
     }
-    let report = StressReport { config, dataset, rows };
+    let report = StressReport { config, dataset, rows, profile_measured_execution_ms };
     print!("{}", report.to_tsv());
     Ok(())
 }
@@ -137,6 +142,8 @@ struct StressConfig {
     max_source_chunk_bytes: u64,
     max_row_groups_per_chunk: usize,
     source_cache_max_retained_bytes: Option<u64>,
+    native_pipeline_execution_mode: NativePipelineExecutionMode,
+    query_memory_domain_ceiling_multiplier: Option<u64>,
     warmup_rounds: usize,
     stream_idle_timeout: Duration,
     cuda_profiler_capture: bool,
@@ -198,6 +205,11 @@ impl StressConfig {
             max_source_chunk_bytes: env_u64(MAX_SOURCE_CHUNK_BYTES_ENV, 64 * 1024 * 1024)?,
             max_row_groups_per_chunk: env_usize(MAX_ROW_GROUPS_PER_CHUNK_ENV, 1)?,
             source_cache_max_retained_bytes: optional_env_u64(SOURCE_CACHE_MAX_RETAINED_BYTES_ENV)?,
+            native_pipeline_execution_mode: env_native_pipeline_execution_mode(
+                NATIVE_PIPELINE_EXECUTION_MODE_ENV,
+                NativePipelineExecutionMode::StrictBounded,
+            )?,
+            query_memory_domain_ceiling_multiplier: optional_env_u64(QUERY_MEMORY_DOMAIN_CEILING_MULTIPLIER_ENV)?,
             warmup_rounds: env_usize(WARMUP_ROUNDS_ENV, 0)?,
             stream_idle_timeout: Duration::from_millis(env_u64(STREAM_IDLE_TIMEOUT_MS_ENV, 30_000)?),
             cuda_profiler_capture: env_bool(CUDA_PROFILER_CAPTURE_ENV, false)?,
@@ -242,6 +254,9 @@ impl StressConfig {
         if let Some(max_retained_bytes) = self.source_cache_max_retained_bytes {
             validate_nonzero(SOURCE_CACHE_MAX_RETAINED_BYTES_ENV, max_retained_bytes)?;
         }
+        if let Some(multiplier) = self.query_memory_domain_ceiling_multiplier {
+            validate_nonzero(QUERY_MEMORY_DOMAIN_CEILING_MULTIPLIER_ENV, multiplier)?;
+        }
         if self.stream_idle_timeout.is_zero() {
             return Err(plan_error(format!("{STREAM_IDLE_TIMEOUT_MS_ENV} must be greater than zero")));
         }
@@ -254,18 +269,13 @@ impl StressConfig {
             validate_nonzero(PROFILE_LANES_ENV, profile.lanes)?;
             validate_nonzero(PROFILE_WARMUP_ITERATIONS_ENV, profile.warmup_iterations)?;
             validate_nonzero(PROFILE_MEASURED_ITERATIONS_ENV, profile.measured_iterations)?;
-            if profile.warmup_iterations < 2 {
+            if self.source_cache_max_retained_bytes.is_some() && profile.warmup_iterations < 2 {
                 return Err(plan_error(format!(
                     "{PROFILE_WARMUP_ITERATIONS_ENV} must be at least 2 so the final warmup iteration can verify a cache-only path"
                 )));
             }
             if profile.lanes > self.max_concurrent_queries {
                 return Err(plan_error(format!("{PROFILE_LANES_ENV} must not exceed {MAX_CONCURRENT_QUERIES_ENV}")));
-            }
-            if self.source_cache_max_retained_bytes.is_none() {
-                return Err(plan_error(format!(
-                    "{SOURCE_CACHE_MAX_RETAINED_BYTES_ENV} must be set when {PROFILE_LANES_ENV} is enabled"
-                )));
             }
             if self.warmup_rounds != 0 {
                 return Err(plan_error(format!(
@@ -287,6 +297,10 @@ impl StressConfig {
             max_source_chunk_bytes: self.max_source_chunk_bytes,
             max_row_groups_per_chunk: self.max_row_groups_per_chunk,
             local_parquet_source_cache_max_retained_bytes: self.source_cache_max_retained_bytes,
+            native_pipeline_execution_mode: self.native_pipeline_execution_mode,
+            query_memory_domain: self
+                .query_memory_domain_ceiling_multiplier
+                .map(|multiplier| QueryMemoryDomainPolicy::new().with_ceiling_multiplier(multiplier)),
             ..QueryServiceConfig::default()
         }
     }
@@ -390,6 +404,7 @@ struct PreparedNativeQuery {
 struct ProfileStressResult {
     rows: Vec<StressRow>,
     evidence: ProfileEvidenceReport,
+    measured_execution_ms: f64,
 }
 
 #[derive(Debug, Clone)]
@@ -519,6 +534,7 @@ struct StressReport {
     config: StressConfig,
     dataset: datafusion_nexus_bench::TpchDatasetMetadata,
     rows: Vec<StressRow>,
+    profile_measured_execution_ms: Option<f64>,
 }
 
 impl StressReport {
@@ -538,6 +554,16 @@ impl StressReport {
             "# source_cache_max_retained_bytes={}\n",
             self.config.source_cache_max_retained_bytes.map_or_else(|| "none".to_string(), |value| value.to_string())
         ));
+        output.push_str(&format!(
+            "# native_pipeline_execution_mode={}\n",
+            native_pipeline_execution_mode_name(self.config.native_pipeline_execution_mode)
+        ));
+        output.push_str(&format!(
+            "# query_memory_domain_ceiling_multiplier={}\n",
+            self.config
+                .query_memory_domain_ceiling_multiplier
+                .map_or_else(|| "none".to_string(), |value| value.to_string())
+        ));
         output.push_str(&format!("# warmup_rounds={}\n", self.config.warmup_rounds));
         output.push_str(&format!("# stream_idle_timeout_ms={}\n", self.config.stream_idle_timeout.as_millis()));
         output.push_str(&format!("# cuda_profiler_capture={}\n", self.config.cuda_profiler_capture));
@@ -547,6 +573,10 @@ impl StressReport {
             output.push_str(&format!("# profile_warmup_iterations={}\n", profile.warmup_iterations));
             output.push_str(&format!("# profile_measured_iterations={}\n", profile.measured_iterations));
             output.push_str(&format!("# profile_evidence_path={}\n", profile.evidence_path.display()));
+            output.push_str(&format!(
+                "# profile_measured_execution_ms={}\n",
+                self.profile_measured_execution_ms.map_or_else(|| "none".to_string(), format_ms)
+            ));
         }
         for summary in tenant_summaries(&self.rows) {
             output.push_str(&format!(
@@ -773,7 +803,7 @@ async fn run_profile_stress(
         )
         .await?;
         log_profile_cache_evidence(&results);
-        validate_profile_results(&results, iteration >= 2)?;
+        validate_profile_results(&results, config.source_cache_max_retained_bytes.is_some() && iteration >= 2)?;
         evidence.rows.extend(results.into_iter().map(|result| result.evidence));
         eprintln!(
             "[query_service_tpch_stress] profile warmup iteration {iteration}/{} complete",
@@ -786,8 +816,10 @@ async fn run_profile_stress(
         .await?;
 
     let profiler_capture = CudaProfilerCapture::start(config.cuda_profiler_capture)?;
+    let measured_started = Instant::now();
     let execution_result =
         execute_profile_batches(Arc::clone(&service), Arc::clone(&cpu_baselines), measured_batches).await;
+    let measured_execution_ms = duration_ms(measured_started.elapsed());
     let quiescence_result =
         wait_for_service_stream_pools_quiescent(Arc::clone(&service), expected_leases, config.stream_idle_timeout)
             .await;
@@ -797,13 +829,13 @@ async fn run_profile_stress(
     profiler_result?;
 
     log_profile_cache_evidence(&results);
-    validate_profile_results(&results, true)?;
+    validate_profile_results(&results, config.source_cache_max_retained_bytes.is_some())?;
     let rows = results.iter().map(|result| result.row.clone()).collect::<Vec<_>>();
     evidence.rows.extend(results.into_iter().map(|result| result.evidence));
 
     drop(lanes);
     wait_for_service_stream_pools_idle(service, config.stream_idle_timeout).await?;
-    Ok(ProfileStressResult { rows, evidence })
+    Ok(ProfileStressResult { rows, evidence, measured_execution_ms })
 }
 
 async fn admit_profile_lanes(service: Arc<QueryService>, lanes: usize) -> DataFusionResult<Vec<ProfileLane>> {
@@ -1623,6 +1655,22 @@ fn env_slot_guarantee(name: &'static str, default: SlotGuarantee) -> DataFusionR
     }
 }
 
+fn env_native_pipeline_execution_mode(
+    name: &'static str,
+    default: NativePipelineExecutionMode,
+) -> DataFusionResult<NativePipelineExecutionMode> {
+    match std::env::var_os(name) {
+        Some(value) => match value.to_string_lossy().trim().to_ascii_lowercase().as_str() {
+            "strict_bounded" => Ok(NativePipelineExecutionMode::StrictBounded),
+            "adaptive" => Ok(NativePipelineExecutionMode::Adaptive),
+            other => {
+                Err(plan_error(format!("failed to parse {name}: expected strict_bounded or adaptive, got {other}")))
+            },
+        },
+        None => Ok(default),
+    }
+}
+
 fn parse_slot_guarantee(name: &'static str, value: &str) -> DataFusionResult<SlotGuarantee> {
     match value.trim().to_ascii_lowercase().as_str() {
         "guaranteed_minimum" => Ok(SlotGuarantee::GuaranteedMinimum),
@@ -1637,6 +1685,13 @@ fn slot_guarantee_name(slot_guarantee: SlotGuarantee) -> &'static str {
     match slot_guarantee {
         SlotGuarantee::GuaranteedMinimum => "guaranteed_minimum",
         SlotGuarantee::Optimistic => "optimistic",
+    }
+}
+
+fn native_pipeline_execution_mode_name(mode: NativePipelineExecutionMode) -> &'static str {
+    match mode {
+        NativePipelineExecutionMode::StrictBounded => "strict_bounded",
+        NativePipelineExecutionMode::Adaptive => "adaptive",
     }
 }
 
@@ -1772,6 +1827,8 @@ mod tests {
             max_source_chunk_bytes: 1,
             max_row_groups_per_chunk: 1,
             source_cache_max_retained_bytes: None,
+            native_pipeline_execution_mode: NativePipelineExecutionMode::StrictBounded,
+            query_memory_domain_ceiling_multiplier: None,
             warmup_rounds: 0,
             stream_idle_timeout: Duration::from_secs(1),
             cuda_profiler_capture: false,
