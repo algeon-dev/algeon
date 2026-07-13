@@ -1,22 +1,29 @@
 //! Dataset loading helpers shared across cuGraph parity rows.
 //!
-//! The default `cargo test --features cugraph` invocation reaches this
-//! module only through the CPU-only manifest verification tests in
-//! `tests/cugraph/cugraph_parity.rs`. GPU execution paths (currently
-//! opt-in checks) will reuse the same dataset loading entry points so the
-//! Rust and Python sides observe byte-identical input.
+//! Both the CPU manifest checks and the registry-driven GPU acceptance test
+//! use these entry points so the Rust and Python sides observe byte-identical
+//! input.
 
 use std::{
     fs,
     path::{Path, PathBuf},
 };
 
-use datafusion_nexus::graph_sql::parity::{ParityManifest, ParityManifestError, data_root, load_manifest};
+use datafusion_nexus::graph_sql::parity::{
+    ParityDataset, ParityManifest, ParityManifestError, data_root, load_manifest,
+};
 use sha2::{Digest, Sha256};
 
 pub struct LoadedDatasets {
     pub data_root: PathBuf,
     pub manifest: ParityManifest,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct ParityEdge {
+    pub source: i64,
+    pub destination: i64,
+    pub weight: f64,
 }
 
 #[derive(Debug)]
@@ -80,6 +87,40 @@ pub fn load_and_verify_optional() -> Option<LoadedDatasets> {
         },
         Err(error) => panic!("cuGraph parity fixture is present but invalid: {error}"),
     }
+}
+
+pub fn load_edges(data_root: &Path, dataset: &ParityDataset) -> Result<Vec<ParityEdge>, String> {
+    if dataset.format != "space_separated_edges" || dataset.edge_columns != ["dst", "src", "weight"] {
+        return Err(format!(
+            "dataset '{}' has unsupported edge format {} / {:?}",
+            dataset.id, dataset.format, dataset.edge_columns
+        ));
+    }
+    let path = data_root.join(&dataset.path);
+    let raw = fs::read_to_string(&path).map_err(|error| format!("failed to read {}: {error}", path.display()))?;
+    raw.lines()
+        .enumerate()
+        .map(|(index, line)| {
+            let fields = line.split_whitespace().collect::<Vec<_>>();
+            if fields.len() != 3 {
+                return Err(format!("{}:{} expected dst src weight, got {line:?}", path.display(), index + 1));
+            }
+            let parse_i64 = |value: &str, name: &str| {
+                value
+                    .parse::<i64>()
+                    .map_err(|error| format!("{}:{} invalid {name} {value:?}: {error}", path.display(), index + 1))
+            };
+            let destination = parse_i64(fields[0], "destination")?;
+            let source = parse_i64(fields[1], "source")?;
+            let weight = fields[2]
+                .parse::<f64>()
+                .map_err(|error| format!("{}:{} invalid weight {:?}: {error}", path.display(), index + 1, fields[2]))?;
+            if !weight.is_finite() {
+                return Err(format!("{}:{} weight must be finite", path.display(), index + 1));
+            }
+            Ok(ParityEdge { source, destination, weight })
+        })
+        .collect()
 }
 
 fn verify_dataset_checksums(data_root: &Path, manifest: &ParityManifest) -> Result<(), LoadAndVerifyError> {

@@ -5,15 +5,15 @@
     "dataset_sha256": "4f0f2f55a69c5171ad36920a077f3e0c9cd1e8a5a3973e4fe39d6e929e3582ce",
     "params": {
       "max_level": 100,
-      "threshold": 1e-07,
-      "resolution": 1.0
+      "resolution": 1.0,
+      "threshold": 1e-7
     },
     "seed": null,
     "versions": {
-      "cudf": "26.04.000",
-      "cugraph": "26.04.000",
+      "cudf": "26.06.00",
+      "cugraph": "26.06.00",
       "numpy": "2.4.6",
-      "pylibcugraph": "26.04.000"
+      "pylibcugraph": "26.06.00"
     }
   },
   "result": {

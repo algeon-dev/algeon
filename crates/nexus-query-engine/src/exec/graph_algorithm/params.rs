@@ -345,7 +345,10 @@ pub(super) fn sssp_params(params: &crate::plan::GraphSsspParams) -> Result<cugra
     Ok(p)
 }
 
-pub(super) fn k_core_params(params: &crate::plan::GraphKCoreParams) -> Result<cugraph::structure::KCoreParams> {
+pub(super) fn k_core_params(
+    params: &crate::plan::GraphKCoreParams,
+    directed: bool,
+) -> Result<cugraph::structure::KCoreParams> {
     let k = std::num::NonZeroUsize::new(params.k as usize).ok_or_else(|| {
         QueryError::new(
             QueryErrorCode::InvalidPlan,
@@ -356,7 +359,7 @@ pub(super) fn k_core_params(params: &crate::plan::GraphKCoreParams) -> Result<cu
     })?;
     Ok(cugraph::structure::KCoreParams {
         k,
-        degree_type: degree_type_to_cugraph(params.degree_type),
+        degree_type: degree_type_to_cugraph(params.degree_type, directed),
         do_expensive_check: false,
     })
 }
@@ -364,6 +367,21 @@ pub(super) fn k_core_params(params: &crate::plan::GraphKCoreParams) -> Result<cu
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn undirected_core_degree_selectors_use_one_symmetric_adjacency_side() {
+        for degree_type in [
+            crate::plan::GraphKCoreDegreeType::In,
+            crate::plan::GraphKCoreDegreeType::Out,
+            crate::plan::GraphKCoreDegreeType::InOut,
+        ] {
+            assert_eq!(degree_type_to_cugraph(degree_type, false), cugraph::structure::KCoreDegreeType::In);
+        }
+        assert_eq!(
+            degree_type_to_cugraph(crate::plan::GraphKCoreDegreeType::InOut, true),
+            cugraph::structure::KCoreDegreeType::InOut
+        );
+    }
 
     #[test]
     fn spectral_clustering_params_reject_libcugraph_int_overflow_before_binding() {

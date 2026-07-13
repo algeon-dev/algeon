@@ -14,10 +14,10 @@
     },
     "seed": null,
     "versions": {
-      "cudf": "26.04.000",
-      "cugraph": "26.04.000",
+      "cudf": "26.06.00",
+      "cugraph": "26.06.00",
       "numpy": "2.4.6",
-      "pylibcugraph": "26.04.000"
+      "pylibcugraph": "26.06.00"
     }
   },
   "result": {
