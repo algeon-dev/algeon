@@ -1,6 +1,6 @@
 use std::os::raw::c_void;
 
-use crate::{cudf_memory_resource_handle, cudf_status_t, cudf_stream_handle};
+use crate::{cudf_memory_manager_handle, cudf_memory_resource_handle, cudf_status_t, cudf_stream_handle};
 
 extern "C" {
     // -- Test helpers --------------------------------------------------------
@@ -99,6 +99,23 @@ extern "C" {
     /// Install a previously observed raw device resource pointer as the
     /// process-global current device resource for tests.
     pub fn cudf_test_memory_resource_set_current_raw(raw_mr: *mut c_void) -> cudf_status_t;
+
+    /// Read the number of retained private query-domain pools for one domain id.
+    pub fn cudf_test_memory_manager_query_domain_pool_count_for_id(
+        manager: cudf_memory_manager_handle,
+        domain_id: u64,
+        out: *mut usize,
+    ) -> cudf_status_t;
+
+    /// Arm a one-shot pause after query-domain route lifetime acquisition.
+    /// Returns zero when debug test hooks are unavailable.
+    pub fn cudf_test_query_domain_route_pause_arm(domain_id: u64) -> i32;
+
+    /// Return nonzero once the query-domain route pause has been reached.
+    pub fn cudf_test_query_domain_route_pause_reached() -> i32;
+
+    /// Release the query-domain route pause.
+    pub fn cudf_test_query_domain_route_pause_release();
 
     /// Throw a non-I/O `std::runtime_error` from the native shim for error
     /// classification tests.

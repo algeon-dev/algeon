@@ -470,6 +470,27 @@ cudf_status_t cudf_memory_resource_destroy(cudf_memory_resource_handle handle, i
 /// remains alive.
 cudf_status_t cudf_memory_resource_raw(cudf_memory_resource_handle handle, void** out);
 
+/// Read the number of private query-domain pools retained for one domain id.
+///
+/// Test-only hook for lifecycle/routing assertions.
+cudf_status_t cudf_test_memory_manager_query_domain_pool_count_for_id(
+  cudf_memory_manager_handle manager,
+  uint64_t domain_id,
+  size_t* out);
+
+/// Arm a one-shot test pause after query-domain routing has acquired its
+/// in-flight lifetime guard and before the private-pool allocation begins.
+///
+/// Returns nonzero when debug test hooks are compiled in. Release builds
+/// return zero and do not add a hook check to the allocation hot path.
+int32_t cudf_test_query_domain_route_pause_arm(uint64_t domain_id);
+
+/// Return nonzero after the armed query-domain route pause is reached.
+int32_t cudf_test_query_domain_route_pause_reached(void);
+
+/// Release an armed or reached query-domain route pause.
+void cudf_test_query_domain_route_pause_release(void);
+
 /// Create a statistics-wrapped memory resource for allocator-sensitive tests.
 ///
 /// Test-only hook. The returned handle owns an RMM statistics adaptor and can

@@ -1,8 +1,11 @@
 mod common;
 
-use std::sync::{
-    Arc, Barrier, PoisonError, RwLock, RwLockReadGuard, RwLockWriteGuard,
-    atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering},
+use std::{
+    sync::{
+        Arc, Barrier, PoisonError, RwLock, RwLockReadGuard, RwLockWriteGuard,
+        atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering},
+    },
+    time::{Duration, Instant},
 };
 
 use cudf::{
@@ -61,6 +64,28 @@ fn failure_source_code(source: DeviceMemoryFailureSource) -> u32 {
         DeviceMemoryFailureSource::Physical => 0,
         DeviceMemoryFailureSource::ReservationLimit => 1,
         DeviceMemoryFailureSource::Unknown(value) => value,
+    }
+}
+
+fn query_domain_pool_count_for_id(manager: &DeviceMemoryManager, domain_id: u64) -> usize {
+    let mut raw_manager = std::ptr::null_mut();
+    let status =
+        unsafe { cudf_sys::cudf_memory_manager_for_device(manager.device().ordinal() as i32, &mut raw_manager) };
+    assert_eq!(status, cudf_sys::CUDF_SUCCESS);
+    assert!(!raw_manager.is_null());
+    let mut count = 0;
+    let status = unsafe {
+        cudf_sys::cudf_test_memory_manager_query_domain_pool_count_for_id(raw_manager, domain_id, &mut count)
+    };
+    assert_eq!(status, cudf_sys::CUDF_SUCCESS);
+    count
+}
+
+struct QueryDomainRoutePauseRelease;
+
+impl Drop for QueryDomainRoutePauseRelease {
+    fn drop(&mut self) {
+        unsafe { cudf_sys::cudf_test_query_domain_route_pause_release() };
     }
 }
 
@@ -891,6 +916,89 @@ fn query_memory_domain_failure_callback_reports_reservation_limit_source() {
     assert_eq!(seen_source.load(Ordering::SeqCst), failure_source_code(DeviceMemoryFailureSource::ReservationLimit));
     assert_eq!(seen_domain_id.load(Ordering::SeqCst), 40_005);
     assert_eq!(seen_member_id.load(Ordering::SeqCst), 40_501);
+}
+
+#[test]
+fn query_memory_domain_failure_identity_survives_fresh_thread_without_ambient_context() {
+    let manager_runtime = Runtime::builder().with_device_memory_manager().build().unwrap();
+    let device = manager_runtime.device();
+    let manager = manager_runtime.device_memory_manager().unwrap();
+    let seen_domain_id = Arc::new(AtomicU64::new(0));
+    let seen_member_id = Arc::new(AtomicU64::new(0));
+    let seen_source = Arc::new(AtomicU32::new(u32::MAX));
+    let callback_domain_id = Arc::clone(&seen_domain_id);
+    let callback_member_id = Arc::clone(&seen_member_id);
+    let callback_source = Arc::clone(&seen_source);
+    let callback = Arc::new(move |info: cudf::DeviceMemoryFailureInfo| {
+        callback_source.store(failure_source_code(info.source), Ordering::SeqCst);
+        if let Some(DeviceMemoryFailureAllocationDomain::QueryMemoryDomain { domain_id, member_id }) =
+            info.allocation_domain
+        {
+            callback_domain_id.store(domain_id, Ordering::SeqCst);
+            callback_member_id.store(member_id, Ordering::SeqCst);
+        }
+        DeviceMemoryFailureAction::Decline
+    });
+    let callback_mr = manager.resource().with_failure_callback_details(callback).unwrap();
+    let runtime = Runtime::builder().with_device(device).with_memory_resource(callback_mr).build().unwrap();
+    let domain = manager
+        .query_memory_domain(40_012, QueryMemoryDomainOptions::new(1).with_ceiling_bytes(8 * 1024 * 1024))
+        .unwrap();
+    let lease = domain.reserve_stream(runtime.stream(), 41_201).unwrap();
+
+    let error = std::thread::spawn(move || {
+        let error = runtime.series(&[1i32, 2, 3]).unwrap_err();
+        drop(lease);
+        drop(domain);
+        error
+    })
+    .join()
+    .unwrap();
+
+    assert_eq!(error.kind(), ErrorKind::ResourceExhausted);
+    assert_eq!(seen_source.load(Ordering::SeqCst), failure_source_code(DeviceMemoryFailureSource::ReservationLimit));
+    assert_eq!(seen_domain_id.load(Ordering::SeqCst), 40_012);
+    assert_eq!(seen_member_id.load(Ordering::SeqCst), 41_201);
+}
+
+#[test]
+fn query_memory_domain_teardown_racing_allocation_keeps_pool_routing_alive() {
+    let _pool_state = shared_device_pool_guard();
+    const DOMAIN_ID: u64 = 60_001;
+    let runtime = Arc::new(Runtime::builder().with_device_memory_manager().build().unwrap());
+    let manager = runtime.device_memory_manager().unwrap();
+    assert_eq!(query_domain_pool_count_for_id(&manager, DOMAIN_ID), 0);
+    let domain = manager
+        .query_memory_domain(
+            DOMAIN_ID,
+            QueryMemoryDomainOptions::new(64 * 1024 * 1024).with_ceiling_bytes(64 * 1024 * 1024),
+        )
+        .unwrap();
+    let lease = domain.reserve_stream(runtime.stream(), 61_001).unwrap();
+    assert_eq!(query_domain_pool_count_for_id(&manager, DOMAIN_ID), 1);
+
+    if unsafe { cudf_sys::cudf_test_query_domain_route_pause_arm(DOMAIN_ID) } == 0 {
+        eprintln!("skipping deterministic query-domain teardown race; debug test hooks are disabled");
+        return;
+    }
+    let pause_release = QueryDomainRoutePauseRelease;
+    let worker_runtime = Arc::clone(&runtime);
+    let allocation = std::thread::spawn(move || worker_runtime.device_buffer(16 * 1024 * 1024));
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while unsafe { cudf_sys::cudf_test_query_domain_route_pause_reached() } == 0 {
+        assert!(Instant::now() < deadline, "query-domain allocation did not reach the armed route pause");
+        std::thread::yield_now();
+    }
+
+    drop(lease);
+    drop(domain);
+    assert_eq!(query_domain_pool_count_for_id(&manager, DOMAIN_ID), 1);
+
+    drop(pause_release);
+    let buffer = allocation.join().unwrap().unwrap();
+    assert_eq!(query_domain_pool_count_for_id(&manager, DOMAIN_ID), 1);
+    std::thread::spawn(move || drop(buffer)).join().unwrap();
+    assert_eq!(query_domain_pool_count_for_id(&manager, DOMAIN_ID), 0);
 }
 
 #[test]
