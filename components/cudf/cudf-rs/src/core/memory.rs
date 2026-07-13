@@ -399,6 +399,12 @@ impl DeviceMemoryManagerOptions {
 pub struct ReservationUsage {
     pub reservation_id: u64,
     pub attached: bool,
+    /// Allocations made through a query-domain member's direct resource.
+    /// Zero for legacy and arena reservations.
+    pub direct_total_allocations: u64,
+    /// Allocations routed from the device-current resource into a query-domain
+    /// member. Zero for legacy and arena reservations.
+    pub routed_total_allocations: u64,
     pub allocation_limit_bytes: u64,
     pub current_bytes: u64,
     pub peak_bytes: u64,
@@ -472,6 +478,8 @@ pub struct QueryMemoryDomainUsage {
     pub active: bool,
     pub active_members: u64,
     pub ceiling_bytes: u64,
+    pub effective_driver_ceiling_bytes: u64,
+    pub driver_ceiling_verified: bool,
     pub allocation_limit_bytes: u64,
     pub current_bytes: u64,
     pub peak_bytes: u64,
@@ -490,6 +498,8 @@ impl From<cudf_sys::cudf_memory_resource_usage_t> for ReservationUsage {
         Self {
             reservation_id: value.reserved[0],
             attached: value.reserved[1] != 0,
+            direct_total_allocations: value.reserved[2],
+            routed_total_allocations: value.reserved[3],
             allocation_limit_bytes: value.allocation_limit_bytes,
             current_bytes: value.current_bytes,
             peak_bytes: value.peak_bytes,
@@ -512,6 +522,8 @@ impl From<cudf_sys::cudf_memory_resource_usage_t> for QueryMemoryDomainUsage {
             active: value.reserved[1] != 0,
             active_members: value.reserved[2],
             ceiling_bytes: value.reserved[3],
+            effective_driver_ceiling_bytes: value.reserved[4],
+            driver_ceiling_verified: value.reserved[5] != 0,
             allocation_limit_bytes: value.allocation_limit_bytes,
             current_bytes: value.current_bytes,
             peak_bytes: value.peak_bytes,
@@ -699,6 +711,7 @@ pub struct StreamReservationLease {
     // stream dropped first, a recycled raw stream value could inherit this
     // dying reservation's accounting.
     reservation: ReservationHandle,
+    resource: Option<DeviceMemoryResource>,
     _query_domain: Option<QueryMemoryDomain>,
     arena: Option<ReservationArena>,
     stream: CudaStream,
@@ -1194,6 +1207,7 @@ impl DeviceMemoryManager {
             stream: stream.clone(),
             arena: arena.cloned(),
             _query_domain: None,
+            resource: None,
             reservation,
         })
     }
@@ -1255,7 +1269,12 @@ impl QueryMemoryDomain {
     }
 
     /// Attach a stream to this query memory domain.
-    pub fn reserve_stream(&self, stream: &CudaStream, reservation_id: u64) -> Result<StreamReservationLease> {
+    pub fn reserve_stream(
+        &self,
+        stream: &CudaStream,
+        reservation_id: u64,
+        limit_bytes: usize,
+    ) -> Result<StreamReservationLease> {
         if stream.device() != self.device() {
             return Err(error::Error::new_with(
                 error::ErrorCode::RuntimeBindingMismatch,
@@ -1268,31 +1287,56 @@ impl QueryMemoryDomain {
             .with_detail("reason", "cross_device_query_memory_domain"));
         }
 
-        let mut reservation = ptr::null_mut();
+        let mut raw_reservation = ptr::null_mut();
+        let mut raw_resource = ptr::null_mut();
+        let status = unsafe {
+            cudf_sys::cudf_query_memory_domain_attach_stream(
+                self.handle.raw.as_ptr(),
+                stream.as_raw(),
+                reservation_id,
+                limit_bytes,
+                &mut raw_reservation,
+                &mut raw_resource,
+            )
+        };
+        // Adopt both native outputs before validating either one. If native
+        // code ever returns a partial pair, the successfully-created handle is
+        // still released on every error path.
+        let reservation = NonNull::new(raw_reservation).map(|raw| ReservationHandle { raw });
+        let resource = NonNull::new(raw_resource).map(|raw| DeviceMemoryResource {
+            handle: Arc::new(DeviceMemoryResourceHandle { raw, device: self.device(), _failure_callbacks: Vec::new() }),
+        });
         error::check_status_in_with_details(
-            unsafe {
-                cudf_sys::cudf_query_memory_domain_attach_stream(
-                    self.handle.raw.as_ptr(),
-                    stream.as_raw(),
-                    reservation_id,
-                    &mut reservation,
-                )
-            },
+            status,
             "memory::query_memory_domain::reserve_stream",
-            [("device", self.device().ordinal().to_string()), ("reservation_id", reservation_id.to_string())],
+            [
+                ("device", self.device().ordinal().to_string()),
+                ("reservation_id", reservation_id.to_string()),
+                ("limit_bytes", limit_bytes.to_string()),
+            ],
         )?;
-        let reservation = ReservationHandle {
-            raw: error::require_non_null(
-                reservation,
+        let reservation = reservation.ok_or_else(|| {
+            error::require_non_null(
+                raw_reservation,
                 "memory::query_memory_domain::reserve_stream",
                 "stream reservation",
-            )?,
-        };
+            )
+            .unwrap_err()
+        })?;
+        let resource = resource.ok_or_else(|| {
+            error::require_non_null(
+                raw_resource,
+                "memory::query_memory_domain::reserve_stream",
+                "device memory resource",
+            )
+            .unwrap_err()
+        })?;
         Ok(StreamReservationLease {
             manager: self.manager.clone(),
             stream: stream.clone(),
             arena: None,
             _query_domain: Some(self.clone()),
+            resource: Some(resource),
             reservation,
         })
     }
@@ -1334,6 +1378,11 @@ impl QueryMemoryDomain {
             [("device", self.device().ordinal().to_string()), ("keep_bytes", keep_bytes.to_string())],
         )
     }
+
+    /// Whether this build can enforce private-pool ceilings in the CUDA driver.
+    pub fn driver_ceiling_supported() -> bool {
+        unsafe { cudf_sys::cudf_query_memory_domain_driver_ceiling_supported() != 0 }
+    }
 }
 
 impl StreamReservationLease {
@@ -1349,7 +1398,7 @@ impl StreamReservationLease {
 
     /// Device-level memory resource to place in explicit execution options.
     pub fn memory_resource(&self) -> &DeviceMemoryResource {
-        self.manager.resource()
+        self.resource.as_ref().unwrap_or_else(|| self.manager.resource())
     }
 
     /// Parent reservation arena for this lease, when it is an arena member.
@@ -1371,8 +1420,8 @@ impl StreamReservationLease {
     ///
     /// Shrinking below current live usage is allowed. Future allocations fail
     /// until enough memory is released or the reservation is grown again.
-    /// Query memory domain member leases cannot be resized through this
-    /// method; resize the domain with [`QueryMemoryDomain::resize_grant`].
+    /// Query-memory-domain members enforce this independently of the parent
+    /// domain grant.
     pub fn resize(&self, limit_bytes: usize) -> Result<()> {
         error::check_status_in_with_details(
             unsafe { cudf_sys::cudf_reservation_resize(self.reservation.raw.as_ptr(), limit_bytes) },

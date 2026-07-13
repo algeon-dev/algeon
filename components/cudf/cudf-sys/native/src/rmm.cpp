@@ -7,27 +7,28 @@
 #include <cudf/utilities/memory_resource.hpp>
 
 #include <rmm/aligned.hpp>
-#include <rmm/mr/per_device_resource.hpp>
+#include <rmm/error.hpp>
 #include <rmm/mr/cuda_async_memory_resource.hpp>
 #include <rmm/mr/cuda_async_view_memory_resource.hpp>
 #include <rmm/mr/cuda_memory_resource.hpp>
 #include <rmm/mr/failure_callback_resource_adaptor.hpp>
 #include <rmm/mr/limiting_resource_adaptor.hpp>
+#include <rmm/mr/per_device_resource.hpp>
 #include <rmm/mr/pool_memory_resource.hpp>
 #include <rmm/mr/statistics_resource_adaptor.hpp>
-#include <rmm/error.hpp>
 #include <rmm/resource_ref.hpp>
 
-#include <cuda/memory_resource>
 #include <cuda.h>
+#include <cuda/memory_resource>
 
 #include <algorithm>
 #include <atomic>
 #include <cstdint>
+#include <functional>
 #include <limits>
-#include <new>
 #include <memory>
 #include <mutex>
+#include <new>
 #include <optional>
 #include <shared_mutex>
 #include <stdexcept>
@@ -79,18 +80,24 @@ void pause_query_domain_route_if_armed(std::uint64_t domain_id) noexcept
 }
 #endif
 
-class reservation_limit_out_of_memory final : public rmm::out_of_memory {
+class attributed_out_of_memory final : public rmm::out_of_memory {
  public:
-  reservation_limit_out_of_memory(char const* message,
-                                  memory_failure_domain_identity identity)
-    : rmm::out_of_memory{message}, identity_{identity}
+  attributed_out_of_memory(char const* message,
+                           cudf_memory_failure_source_t source,
+                           memory_failure_domain_identity identity,
+                           cudaMemPool_t pool = nullptr)
+    : rmm::out_of_memory{message}, source_{source}, identity_{identity}, pool_{pool}
   {
   }
 
+  [[nodiscard]] cudf_memory_failure_source_t source() const noexcept { return source_; }
   [[nodiscard]] memory_failure_domain_identity identity() const noexcept { return identity_; }
+  [[nodiscard]] cudaMemPool_t pool() const noexcept { return pool_; }
 
  private:
+  cudf_memory_failure_source_t source_;
   memory_failure_domain_identity identity_;
+  cudaMemPool_t pool_;
 };
 
 cudf_memory_manager_options_t default_memory_manager_options()
@@ -117,19 +124,22 @@ std::optional<std::size_t> optional_threshold_bytes(std::uint64_t value)
 }
 
 std::unique_ptr<cuda_async_resource_box> make_cuda_async_resource_box(
-  std::uint64_t initial_pool_size,
-  std::uint64_t release_threshold)
+  std::uint64_t initial_pool_size, std::uint64_t release_threshold)
 {
   return std::make_unique<cuda_async_resource_box>(optional_nonzero_bytes(initial_pool_size),
                                                   optional_threshold_bytes(release_threshold));
 }
 
 std::shared_ptr<cuda_async_resource_box> make_shared_cuda_async_resource_box(
-  std::uint64_t initial_pool_size,
-  std::uint64_t release_threshold)
+  std::uint64_t initial_pool_size, std::uint64_t release_threshold)
 {
   return std::make_shared<cuda_async_resource_box>(optional_nonzero_bytes(initial_pool_size),
                                                   optional_threshold_bytes(release_threshold));
+}
+
+cudaMemPool_t async_pool_handle(cuda_async_resource_box* async_pool) noexcept
+{
+  return async_pool == nullptr ? nullptr : async_pool->resource().pool_handle();
 }
 
 void fill_pool_usage(cudf_memory_pool_usage_t& out,
@@ -146,35 +156,13 @@ void fill_pool_usage(cudf_memory_pool_usage_t& out,
   out.used_high_bytes        = used_high;
 }
 
+bool read_cuda_pool_usage_noexcept(cudaMemPool_t pool, cudf_memory_pool_usage_t& out) noexcept;
+
 bool read_async_pool_usage_noexcept(cuda_async_resource_box* async_pool,
                                     cudf_memory_pool_usage_t& out) noexcept
 {
   if (async_pool == nullptr) { return false; }
-  auto const pool = async_pool->resource().pool_handle();
-  std::uint64_t reserved_current = 0;
-  std::uint64_t reserved_high    = 0;
-  std::uint64_t used_current     = 0;
-  std::uint64_t used_high        = 0;
-  if (cudaMemPoolGetAttribute(pool, cudaMemPoolAttrReservedMemCurrent, &reserved_current) !=
-      cudaSuccess) {
-    cudaGetLastError();
-    return false;
-  }
-  if (cudaMemPoolGetAttribute(pool, cudaMemPoolAttrReservedMemHigh, &reserved_high) !=
-      cudaSuccess) {
-    cudaGetLastError();
-    return false;
-  }
-  if (cudaMemPoolGetAttribute(pool, cudaMemPoolAttrUsedMemCurrent, &used_current) != cudaSuccess) {
-    cudaGetLastError();
-    return false;
-  }
-  if (cudaMemPoolGetAttribute(pool, cudaMemPoolAttrUsedMemHigh, &used_high) != cudaSuccess) {
-    cudaGetLastError();
-    return false;
-  }
-  fill_pool_usage(out, reserved_current, reserved_high, used_current, used_high);
-  return true;
+  return read_cuda_pool_usage_noexcept(async_pool->resource().pool_handle(), out);
 }
 
 bool read_cuda_pool_usage_noexcept(cudaMemPool_t pool, cudf_memory_pool_usage_t& out) noexcept
@@ -226,22 +214,21 @@ void trim_async_pool_to(cuda_async_resource_box* async_pool, std::uint64_t keep_
 
 bool async_pool_has_trim_retry_headroom(cudf_memory_pool_usage_t const& usage,
                                         std::size_t request_bytes);
-bool trim_async_pool_to_zero_noexcept(cuda_async_resource_box* async_pool) noexcept;
+bool trim_cuda_pool_to_zero_noexcept(cudaMemPool_t pool) noexcept;
 
-bool trim_async_pool_before_retry(cuda_async_resource_box* async_pool,
-                                  std::size_t request_bytes) noexcept
+bool trim_cuda_pool_before_retry(cudaMemPool_t pool, std::size_t request_bytes) noexcept
 {
-  if (async_pool == nullptr || request_bytes == 0) { return false; }
+  if (pool == nullptr || request_bytes == 0) { return false; }
   cudf_memory_pool_usage_t usage{};
-  if (!read_async_pool_usage_noexcept(async_pool, usage)) { return false; }
+  if (!read_cuda_pool_usage_noexcept(pool, usage)) { return false; }
   if (!async_pool_has_trim_retry_headroom(usage, request_bytes)) { return false; }
-  return trim_async_pool_to_zero_noexcept(async_pool);
+  return trim_cuda_pool_to_zero_noexcept(pool);
 }
 
-bool trim_async_pool_to_zero_noexcept(cuda_async_resource_box* async_pool) noexcept
+bool trim_cuda_pool_to_zero_noexcept(cudaMemPool_t pool) noexcept
 {
-  if (async_pool == nullptr) { return false; }
-  if (cudaMemPoolTrimTo(async_pool->resource().pool_handle(), 0) != cudaSuccess) {
+  if (pool == nullptr) { return false; }
+  if (cudaMemPoolTrimTo(pool, 0) != cudaSuccess) {
     cudaGetLastError();
     return false;
   }
@@ -262,7 +249,7 @@ bool async_pool_has_trim_retry_headroom(cudf_memory_pool_usage_t const& usage,
 void fill_failure_info(cudf_memory_failure_info_t& out,
                        int32_t device_ordinal,
                        std::size_t request_bytes,
-                       cuda_async_resource_box* async_pool,
+                       cudaMemPool_t pool,
                        cudf_memory_failure_source_t failure_source,
                        memory_failure_domain_identity identity,
                        std::uint32_t callback_attempt,
@@ -282,7 +269,7 @@ void fill_failure_info(cudf_memory_failure_info_t& out,
     out.reserved[2] = identity.secondary_id;
   }
   cudf_memory_pool_usage_t usage{};
-  if (read_async_pool_usage_noexcept(async_pool, usage)) {
+  if (read_cuda_pool_usage_noexcept(pool, usage)) {
     out.flags |= CUDF_MEMORY_FAILURE_INFO_HAS_POOL_USAGE;
     out.pool_reserved_current_bytes = usage.reserved_current_bytes;
     out.pool_reserved_high_bytes    = usage.reserved_high_bytes;
@@ -295,8 +282,7 @@ void update_atomic_peak(std::atomic<std::size_t>& peak, std::size_t value)
 {
   auto observed = peak.load(std::memory_order_relaxed);
   while (observed < value &&
-         !peak.compare_exchange_weak(observed, value, std::memory_order_relaxed)) {
-  }
+         !peak.compare_exchange_weak(observed, value, std::memory_order_relaxed)) {}
 }
 
 void update_peak(std::size_t& peak, std::size_t value) { peak = std::max(peak, value); }
@@ -364,9 +350,7 @@ class budget_tracking_resource_adaptor final : public rmm::mr::device_memory_res
     update_atomic_peak(largest_failed_allocation_bytes_, bytes);
   }
 
-  void* do_allocate(std::size_t bytes,
-                    rmm::cuda_stream_view stream,
-                    std::size_t alignment) override
+  void* do_allocate(std::size_t bytes, rmm::cuda_stream_view stream, std::size_t alignment) override
   {
     auto const aligned_bytes = rmm::align_up(bytes, alignment);
     auto old_aligned         = current_aligned_bytes_.load(std::memory_order_relaxed);
@@ -374,8 +358,7 @@ class budget_tracking_resource_adaptor final : public rmm::mr::device_memory_res
     while (true) {
       if (old_aligned > allocation_limit_ || aligned_bytes > allocation_limit_ - old_aligned) {
         record_failed_allocation(bytes);
-        throw rmm::out_of_memory{
-          "budget-tracking memory resource allocation limit exceeded"};
+        throw rmm::out_of_memory{"budget-tracking memory resource allocation limit exceeded"};
       }
       new_aligned = old_aligned + aligned_bytes;
       if (current_aligned_bytes_.compare_exchange_weak(
@@ -418,7 +401,8 @@ class budget_tracking_resource_adaptor final : public rmm::mr::device_memory_res
     current_allocations_ -= 1;
   }
 
-  [[nodiscard]] bool do_is_equal(rmm::mr::device_memory_resource const& other) const noexcept override
+  [[nodiscard]] bool do_is_equal(
+    rmm::mr::device_memory_resource const& other) const noexcept override
   {
     return this == std::addressof(other);
   }
@@ -439,16 +423,21 @@ class budget_tracking_resource_adaptor final : public rmm::mr::device_memory_res
 
 struct query_domain_member_counters {
   std::uint64_t id = 0;
-  std::size_t current_bytes = 0;
-  std::size_t peak_bytes = 0;
-  std::size_t total_bytes = 0;
-  std::size_t current_aligned_bytes = 0;
-  std::size_t peak_aligned_bytes = 0;
-  std::size_t total_allocations = 0;
-  std::size_t current_allocations = 0;
-  std::size_t peak_allocations = 0;
-  std::size_t failed_allocation_count = 0;
-  std::size_t largest_failed_allocation_bytes = 0;
+  std::atomic<bool> attached{true};
+  std::atomic<std::size_t> allocation_limit{0};
+  std::atomic<std::size_t> current_bytes{0};
+  std::atomic<std::size_t> peak_bytes{0};
+  std::atomic<std::size_t> total_bytes{0};
+  std::atomic<std::size_t> current_aligned_bytes{0};
+  std::atomic<std::size_t> peak_aligned_bytes{0};
+  std::atomic<std::size_t> total_allocations{0};
+  std::atomic<std::size_t> current_allocations{0};
+  std::atomic<std::size_t> peak_allocations{0};
+  std::atomic<std::size_t> failed_allocation_count{0};
+  std::atomic<std::size_t> largest_failed_allocation_bytes{0};
+  std::atomic<std::size_t> routed_current_allocations{0};
+  std::atomic<std::size_t> routed_total_allocations{0};
+  std::atomic<std::size_t> direct_total_allocations{0};
 };
 
 class query_domain_resource final : public rmm::mr::device_memory_resource {
@@ -492,16 +481,17 @@ class query_domain_resource final : public rmm::mr::device_memory_resource {
   query_domain_resource(cudaMemPool_t pool,
                         std::uint64_t domain_id,
                         std::size_t grant_bytes,
-                        std::size_t ceiling_bytes)
+                        std::size_t requested_ceiling_bytes,
+                        std::size_t effective_ceiling_bytes)
     : view_{pool},
       domain_id_{domain_id},
       grant_bytes_{grant_bytes},
-      ceiling_bytes_{ceiling_bytes}
+      requested_ceiling_bytes_{requested_ceiling_bytes},
+      effective_ceiling_bytes_{effective_ceiling_bytes}
   {
   }
 
-  [[nodiscard]] cudf_memory_resource_usage_t usage(bool active,
-                                                   std::size_t active_members) const
+  [[nodiscard]] cudf_memory_resource_usage_t usage(bool active, std::size_t active_members) const
   {
     cudf_memory_resource_usage_t out{};
     fill_usage(out,
@@ -519,31 +509,33 @@ class query_domain_resource final : public rmm::mr::device_memory_resource {
     out.reserved[0] = domain_id_;
     out.reserved[1] = active ? 1 : 0;
     out.reserved[2] = active_members;
-    out.reserved[3] = ceiling_bytes_;
+    out.reserved[3] = requested_ceiling_bytes_;
+    out.reserved[4] = effective_ceiling_bytes_;
+    out.reserved[5] = 1;
     return out;
   }
 
   [[nodiscard]] cudf_memory_resource_usage_t member_usage(
-    std::shared_ptr<query_domain_member_counters> const& member,
-    bool attached) const
+    std::shared_ptr<query_domain_member_counters> const& member, bool attached) const
   {
     cudf_memory_resource_usage_t out{};
     if (member == nullptr) { return out; }
-    std::scoped_lock lock{member_mutex_};
     fill_usage(out,
-               grant_bytes_.load(std::memory_order_relaxed),
-               member->current_bytes,
-               member->peak_bytes,
-               member->total_bytes,
-               member->current_aligned_bytes,
-               member->peak_aligned_bytes,
-               member->total_allocations,
-               member->current_allocations,
-               member->peak_allocations,
-               member->failed_allocation_count,
-               member->largest_failed_allocation_bytes);
+               member->allocation_limit.load(std::memory_order_relaxed),
+               member->current_bytes.load(std::memory_order_relaxed),
+               member->peak_bytes.load(std::memory_order_relaxed),
+               member->total_bytes.load(std::memory_order_relaxed),
+               member->current_aligned_bytes.load(std::memory_order_relaxed),
+               member->peak_aligned_bytes.load(std::memory_order_relaxed),
+               member->total_allocations.load(std::memory_order_relaxed),
+               member->current_allocations.load(std::memory_order_relaxed),
+               member->peak_allocations.load(std::memory_order_relaxed),
+               member->failed_allocation_count.load(std::memory_order_relaxed),
+               member->largest_failed_allocation_bytes.load(std::memory_order_relaxed));
     out.reserved[0] = member->id;
     out.reserved[1] = attached ? 1 : 0;
+    out.reserved[2] = member->direct_total_allocations.load(std::memory_order_relaxed);
+    out.reserved[3] = member->routed_total_allocations.load(std::memory_order_relaxed);
     return out;
   }
 
@@ -567,7 +559,7 @@ class query_domain_resource final : public rmm::mr::device_memory_resource {
 
   bool resize_grant(std::size_t grant_bytes, std::string& error)
   {
-    if (grant_bytes > ceiling_bytes_) {
+    if (grant_bytes > requested_ceiling_bytes_) {
       error = "query memory domain grant exceeds immutable pool ceiling";
       return false;
     }
@@ -575,7 +567,10 @@ class query_domain_resource final : public rmm::mr::device_memory_resource {
     return true;
   }
 
-  void trim_to(std::uint64_t keep_bytes) { CUDF_CUDA_TRY(cudaMemPoolTrimTo(view_.pool_handle(), keep_bytes)); }
+  void trim_to(std::uint64_t keep_bytes)
+  {
+    CUDF_CUDA_TRY(cudaMemPoolTrimTo(view_.pool_handle(), keep_bytes));
+  }
 
   bool trim_to_noexcept(std::uint64_t keep_bytes) noexcept
   {
@@ -594,48 +589,65 @@ class query_domain_resource final : public rmm::mr::device_memory_resource {
   void* allocate_for_member(std::shared_ptr<query_domain_member_counters> const& member,
                             rmm::cuda_stream_view stream,
                             std::size_t bytes,
-                            std::size_t alignment)
+                            std::size_t alignment,
+                            bool require_attached = true)
   {
-    return allocate_impl(member, stream, bytes, alignment);
+    return allocate_impl(member, stream, bytes, alignment, require_attached);
   }
 
   void deallocate_from_adaptor(void* ptr,
+                               std::shared_ptr<query_domain_member_counters> const& member,
                                rmm::cuda_stream_view stream,
                                std::size_t bytes,
                                std::size_t alignment) noexcept
   {
-    deallocate_impl(ptr, stream, bytes, alignment);
+    deallocate_impl(ptr, member, stream, bytes, alignment);
   }
 
  private:
-  struct member_allocation_record {
-    std::size_t bytes = 0;
-    std::size_t aligned_bytes = 0;
-    std::shared_ptr<query_domain_member_counters> member;
-  };
-
   void record_failed_allocation(std::size_t bytes) noexcept
   {
     failed_allocation_count_.fetch_add(1, std::memory_order_relaxed);
     update_atomic_peak(largest_failed_allocation_bytes_, bytes);
   }
 
-  void record_member_failed_allocation(
-    std::shared_ptr<query_domain_member_counters> const& member,
-    std::size_t bytes) noexcept
+  void record_member_failed_allocation(std::shared_ptr<query_domain_member_counters> const& member,
+                                       std::size_t bytes) noexcept
   {
     if (member == nullptr) { return; }
-    std::scoped_lock lock{member_mutex_};
-    member->failed_allocation_count += 1;
-    update_peak(member->largest_failed_allocation_bytes, bytes);
+    member->failed_allocation_count.fetch_add(1, std::memory_order_relaxed);
+    update_atomic_peak(member->largest_failed_allocation_bytes, bytes);
+  }
+
+  static bool reserve_aligned_bytes(std::atomic<std::size_t>& current,
+                                    std::atomic<std::size_t> const& limit,
+                                    std::size_t aligned_bytes,
+                                    std::size_t& reserved_total) noexcept
+  {
+    auto observed = current.load(std::memory_order_relaxed);
+    while (true) {
+      auto const current_limit = limit.load(std::memory_order_relaxed);
+      if (observed > current_limit || aligned_bytes > current_limit - observed) { return false; }
+      reserved_total = observed + aligned_bytes;
+      if (current.compare_exchange_weak(observed, reserved_total, std::memory_order_relaxed)) {
+        return true;
+      }
+    }
+  }
+
+  bool reserve_domain_aligned_bytes(std::size_t aligned_bytes, std::size_t& reserved_total) noexcept
+  {
+    return reserve_aligned_bytes(
+      current_aligned_bytes_, grant_bytes_, aligned_bytes, reserved_total);
   }
 
   bool would_exceed_pool_ceiling(std::size_t aligned_bytes) const noexcept
   {
     cudf_memory_pool_usage_t usage{};
     if (!pool_usage(usage)) { return false; }
-    if (usage.reserved_current_bytes > ceiling_bytes_) { return true; }
-    return aligned_bytes > ceiling_bytes_ - static_cast<std::size_t>(usage.reserved_current_bytes);
+    if (usage.reserved_current_bytes > effective_ceiling_bytes_) { return true; }
+    return aligned_bytes >
+           effective_ceiling_bytes_ - static_cast<std::size_t>(usage.reserved_current_bytes);
   }
 
   [[nodiscard]] memory_failure_domain_identity failure_identity(
@@ -651,65 +663,70 @@ class query_domain_resource final : public rmm::mr::device_memory_resource {
   void* allocate_impl(std::shared_ptr<query_domain_member_counters> const& member,
                       rmm::cuda_stream_view stream,
                       std::size_t bytes,
-                      std::size_t alignment)
+                      std::size_t alignment,
+                      bool require_attached = true)
   {
     if (bytes == 0) { return view_.allocate(stream, bytes, alignment); }
     auto const aligned_bytes = rmm::align_up(bytes, alignment);
-    auto old_aligned         = current_aligned_bytes_.load(std::memory_order_relaxed);
-    std::size_t new_aligned  = 0;
-    while (true) {
-      auto const grant = grant_bytes_.load(std::memory_order_relaxed);
-      if (old_aligned > grant || aligned_bytes > grant - old_aligned) {
-        record_failed_allocation(bytes);
-        record_member_failed_allocation(member, bytes);
-        throw reservation_limit_out_of_memory{
-          "query memory domain grant exceeded", failure_identity(member)};
-      }
-      new_aligned = old_aligned + aligned_bytes;
-      if (current_aligned_bytes_.compare_exchange_weak(
-            old_aligned, new_aligned, std::memory_order_relaxed)) {
-        break;
-      }
+    std::size_t member_reserved_total = 0;
+    if (member != nullptr &&
+        ((require_attached && !member->attached.load(std::memory_order_acquire)) ||
+         !reserve_aligned_bytes(member->current_aligned_bytes,
+                                member->allocation_limit,
+                                aligned_bytes,
+                                member_reserved_total))) {
+      record_member_failed_allocation(member, bytes);
+      throw attributed_out_of_memory{"query memory domain member limit exceeded",
+                                     CUDF_MEMORY_FAILURE_SOURCE_RESERVATION_LIMIT,
+                                     failure_identity(member),
+                                     view_.pool_handle()};
+    }
+
+    std::size_t domain_reserved_total = 0;
+    if (!reserve_domain_aligned_bytes(aligned_bytes, domain_reserved_total)) {
+      if (member != nullptr) { member->current_aligned_bytes.fetch_sub(aligned_bytes); }
+      record_failed_allocation(bytes);
+      record_member_failed_allocation(member, bytes);
+      throw attributed_out_of_memory{"query memory domain grant exceeded",
+                                     CUDF_MEMORY_FAILURE_SOURCE_RESERVATION_LIMIT,
+                                     failure_identity(member),
+                                     view_.pool_handle()};
     }
 
     void* ptr = nullptr;
     try {
       ptr = view_.allocate(stream, bytes, alignment);
     } catch (rmm::out_of_memory const&) {
-      current_aligned_bytes_ -= aligned_bytes;
+      current_aligned_bytes_.fetch_sub(aligned_bytes);
+      if (member != nullptr) { member->current_aligned_bytes.fetch_sub(aligned_bytes); }
       record_failed_allocation(bytes);
       record_member_failed_allocation(member, bytes);
       if (would_exceed_pool_ceiling(aligned_bytes)) {
-        throw reservation_limit_out_of_memory{
-          "query memory domain pool ceiling exceeded", failure_identity(member)};
+        throw attributed_out_of_memory{"query memory domain pool ceiling exceeded",
+                                       CUDF_MEMORY_FAILURE_SOURCE_RESERVATION_LIMIT,
+                                       failure_identity(member),
+                                       view_.pool_handle()};
       }
-      throw;
+      throw attributed_out_of_memory{"query memory domain physical allocation failed",
+                                     CUDF_MEMORY_FAILURE_SOURCE_PHYSICAL,
+                                     failure_identity(member),
+                                     view_.pool_handle()};
     } catch (...) {
-      current_aligned_bytes_ -= aligned_bytes;
+      current_aligned_bytes_.fetch_sub(aligned_bytes);
+      if (member != nullptr) { member->current_aligned_bytes.fetch_sub(aligned_bytes); }
       record_failed_allocation(bytes);
       record_member_failed_allocation(member, bytes);
       throw;
     }
 
-    try {
       if (member != nullptr) {
-        std::scoped_lock lock{member_mutex_};
-        member_allocations_[ptr] = member_allocation_record{bytes, aligned_bytes, member};
-        member->current_aligned_bytes += aligned_bytes;
-        member->current_bytes += bytes;
-        member->total_bytes += bytes;
-        member->current_allocations += 1;
-        member->total_allocations += 1;
-        update_peak(member->peak_bytes, member->current_bytes);
-        update_peak(member->peak_aligned_bytes, member->current_aligned_bytes);
-        update_peak(member->peak_allocations, member->current_allocations);
-      }
-    } catch (...) {
-      view_.deallocate(stream, ptr, bytes, alignment);
-      current_aligned_bytes_ -= aligned_bytes;
-      record_failed_allocation(bytes);
-      record_member_failed_allocation(member, bytes);
-      throw;
+        auto const member_requested   = member->current_bytes.fetch_add(bytes) + bytes;
+        auto const member_allocations = member->current_allocations.fetch_add(1) + 1;
+        member->total_bytes.fetch_add(bytes, std::memory_order_relaxed);
+        member->total_allocations.fetch_add(1, std::memory_order_relaxed);
+        update_atomic_peak(member->peak_bytes, member_requested);
+        update_atomic_peak(member->peak_aligned_bytes, member_reserved_total);
+        update_atomic_peak(member->peak_allocations, member_allocations);
     }
 
     auto const old_requested = current_bytes_.fetch_add(bytes);
@@ -717,7 +734,7 @@ class query_domain_resource final : public rmm::mr::device_memory_resource {
     auto const old_allocs    = current_allocations_.fetch_add(1);
     auto const new_allocs    = old_allocs + 1;
 
-    update_atomic_peak(peak_aligned_bytes_, new_aligned);
+    update_atomic_peak(peak_aligned_bytes_, domain_reserved_total);
     update_atomic_peak(peak_bytes_, new_requested);
     update_atomic_peak(peak_allocations_, new_allocs);
     total_bytes_.fetch_add(bytes, std::memory_order_relaxed);
@@ -726,44 +743,25 @@ class query_domain_resource final : public rmm::mr::device_memory_resource {
   }
 
   void deallocate_impl(void* ptr,
+                       std::shared_ptr<query_domain_member_counters> const& member,
                        rmm::cuda_stream_view stream,
                        std::size_t bytes,
                        std::size_t alignment) noexcept
   {
     auto const aligned_bytes = rmm::align_up(bytes, alignment);
-    member_allocation_record record{};
-    bool found_member_record = false;
-    {
-      std::scoped_lock lock{member_mutex_};
-      auto const it = member_allocations_.find(ptr);
-      if (it != member_allocations_.end()) {
-        record = std::move(it->second);
-        member_allocations_.erase(it);
-        found_member_record = true;
-      }
-    }
-
     view_.deallocate(stream, ptr, bytes, alignment);
-    current_aligned_bytes_ -= aligned_bytes;
-    current_bytes_ -= bytes;
-    current_allocations_ -= 1;
+    current_aligned_bytes_.fetch_sub(aligned_bytes);
+    current_bytes_.fetch_sub(bytes);
+    current_allocations_.fetch_sub(1);
 
-    if (found_member_record && record.member != nullptr) {
-      std::scoped_lock lock{member_mutex_};
-      record.member->current_bytes =
-        record.member->current_bytes >= record.bytes ? record.member->current_bytes - record.bytes : 0;
-      record.member->current_aligned_bytes =
-        record.member->current_aligned_bytes >= record.aligned_bytes
-          ? record.member->current_aligned_bytes - record.aligned_bytes
-          : 0;
-      record.member->current_allocations =
-        record.member->current_allocations > 0 ? record.member->current_allocations - 1 : 0;
+    if (member != nullptr) {
+      member->current_aligned_bytes.fetch_sub(aligned_bytes);
+      member->current_bytes.fetch_sub(bytes);
+      member->current_allocations.fetch_sub(1);
     }
   }
 
-  void* do_allocate(std::size_t bytes,
-                    rmm::cuda_stream_view stream,
-                    std::size_t alignment) override
+  void* do_allocate(std::size_t bytes, rmm::cuda_stream_view stream, std::size_t alignment) override
   {
     return allocate_impl({}, stream, bytes, alignment);
   }
@@ -773,10 +771,11 @@ class query_domain_resource final : public rmm::mr::device_memory_resource {
                      rmm::cuda_stream_view stream,
                      std::size_t alignment) noexcept override
   {
-    deallocate_impl(ptr, stream, bytes, alignment);
+    deallocate_impl(ptr, {}, stream, bytes, alignment);
   }
 
-  [[nodiscard]] bool do_is_equal(rmm::mr::device_memory_resource const& other) const noexcept override
+  [[nodiscard]] bool do_is_equal(
+    rmm::mr::device_memory_resource const& other) const noexcept override
   {
     return this == std::addressof(other);
   }
@@ -784,7 +783,8 @@ class query_domain_resource final : public rmm::mr::device_memory_resource {
   rmm::mr::cuda_async_view_memory_resource view_;
   std::uint64_t domain_id_;
   std::atomic<std::size_t> grant_bytes_{0};
-  std::size_t ceiling_bytes_;
+  std::size_t requested_ceiling_bytes_;
+  std::size_t effective_ceiling_bytes_;
   std::atomic<std::size_t> current_bytes_{0};
   std::atomic<std::size_t> peak_bytes_{0};
   std::atomic<std::size_t> total_bytes_{0};
@@ -796,8 +796,6 @@ class query_domain_resource final : public rmm::mr::device_memory_resource {
   std::atomic<std::size_t> in_flight_operations_{0};
   std::atomic<std::size_t> failed_allocation_count_{0};
   std::atomic<std::size_t> largest_failed_allocation_bytes_{0};
-  mutable std::mutex member_mutex_;
-  std::unordered_map<void*, member_allocation_record> member_allocations_;
 };
 
 struct query_domain_state {
@@ -805,6 +803,7 @@ struct query_domain_state {
   int32_t device  = -1;
   cudaMemPool_t pool{};
   std::size_t ceiling_bytes = 0;
+  std::size_t effective_ceiling_bytes = 0;
   bool active                         = true;
   std::atomic<bool> trim_pending{false};
   std::size_t active_members = 0;
@@ -826,6 +825,130 @@ struct query_domain_member_state {
   bool attached    = true;
   std::shared_ptr<query_domain_state> domain;
   std::shared_ptr<query_domain_member_counters> counters;
+  std::shared_ptr<class query_domain_member_resource> resource;
+};
+
+class query_domain_member_resource final : public rmm::mr::device_memory_resource {
+ public:
+  using cleanup_callback = std::function<void(std::shared_ptr<query_domain_state> const&)>;
+
+  query_domain_member_resource(std::shared_ptr<query_domain_state> domain,
+                               std::shared_ptr<query_domain_member_counters> counters,
+                               cleanup_callback cleanup)
+    : domain_{std::move(domain)}, counters_{std::move(counters)}, cleanup_{std::move(cleanup)}
+  {
+  }
+
+  void* allocate_routed(rmm::cuda_stream_view stream, std::size_t bytes, std::size_t alignment)
+  {
+    try {
+      auto* ptr =
+        domain_->resource->allocate_for_member(counters_, stream, bytes, alignment, false);
+      if (bytes != 0) {
+        counters_->routed_total_allocations.fetch_add(1, std::memory_order_relaxed);
+      }
+      return ptr;
+    } catch (...) {
+      if (bytes != 0) { cancel_routed_allocation(); }
+      throw;
+    }
+  }
+
+  void reserve_routed_allocation() noexcept
+  {
+    counters_->routed_current_allocations.fetch_add(1, std::memory_order_acq_rel);
+  }
+
+  void cancel_routed_allocation() noexcept
+  {
+    counters_->routed_current_allocations.fetch_sub(1, std::memory_order_acq_rel);
+    cleanup_(domain_);
+  }
+
+  void deallocate_routed(void* ptr,
+                         rmm::cuda_stream_view stream,
+                         std::size_t bytes,
+                         std::size_t alignment) noexcept
+  {
+    domain_->resource->deallocate_from_adaptor(ptr, counters_, stream, bytes, alignment);
+    if (bytes != 0) {
+      counters_->routed_current_allocations.fetch_sub(1, std::memory_order_acq_rel);
+    }
+    cleanup_(domain_);
+  }
+
+  [[nodiscard]] std::size_t routed_current_allocations() const noexcept
+  {
+    return counters_->routed_current_allocations.load(std::memory_order_acquire);
+  }
+
+  void detach() noexcept { counters_->attached.store(false, std::memory_order_release); }
+
+  bool resize(std::size_t limit_bytes) noexcept
+  {
+    counters_->allocation_limit.store(limit_bytes, std::memory_order_release);
+    return true;
+  }
+
+ private:
+  void* do_allocate(std::size_t bytes, rmm::cuda_stream_view stream, std::size_t alignment) override
+  {
+    auto* ptr = domain_->resource->allocate_for_member(counters_, stream, bytes, alignment);
+    counters_->direct_total_allocations.fetch_add(1, std::memory_order_relaxed);
+    return ptr;
+  }
+
+  void do_deallocate(void* ptr,
+                     std::size_t bytes,
+                     rmm::cuda_stream_view stream,
+                     std::size_t alignment) noexcept override
+  {
+    domain_->resource->deallocate_from_adaptor(ptr, counters_, stream, bytes, alignment);
+    cleanup_(domain_);
+  }
+
+  [[nodiscard]] bool do_is_equal(
+    rmm::mr::device_memory_resource const& other) const noexcept override
+  {
+    return this == std::addressof(other);
+  }
+
+  std::shared_ptr<query_domain_state> domain_;
+  std::shared_ptr<query_domain_member_counters> counters_;
+  cleanup_callback cleanup_;
+};
+
+class shared_query_domain_member_resource final : public rmm::mr::device_memory_resource {
+ public:
+  explicit shared_query_domain_member_resource(
+    std::shared_ptr<query_domain_member_resource> resource)
+    : resource_{std::move(resource)},
+      upstream_{rmm::mr::any_device_resource_from_raw(resource_.get())}
+  {
+  }
+
+ private:
+  void* do_allocate(std::size_t bytes, rmm::cuda_stream_view stream, std::size_t alignment) override
+  {
+    return upstream_.allocate(stream, bytes, alignment);
+  }
+
+  void do_deallocate(void* ptr,
+                     std::size_t bytes,
+                     rmm::cuda_stream_view stream,
+                     std::size_t alignment) noexcept override
+  {
+    upstream_.deallocate(stream, ptr, bytes, alignment);
+  }
+
+  [[nodiscard]] bool do_is_equal(
+    rmm::mr::device_memory_resource const& other) const noexcept override
+  {
+    return this == std::addressof(other);
+  }
+
+  std::shared_ptr<query_domain_member_resource> resource_;
+  cuda::mr::any_resource<cuda::mr::device_accessible> upstream_;
 };
 
 struct reservation_state {
@@ -880,12 +1003,17 @@ class reservation_aware_resource_adaptor final : public rmm::mr::device_memory_r
     std::unique_lock query_lock{query_domain_mutex_};
     auto const existing_domain = query_domain_members_by_stream_.find(key);
     if (existing_domain != query_domain_members_by_stream_.end()) {
-      auto state = existing_domain->second.lock();
-      if (state != nullptr && state->attached) {
-        error = "stream already has an attached query memory domain";
+      auto state = existing_domain->second;
+      if (state != nullptr &&
+          (state->attached ||
+           (state->resource != nullptr && state->resource->routed_current_allocations() != 0))) {
+        error =
+          "stream still has an attached or retiring query memory domain "
+          "member";
         return {};
       }
       query_domain_members_by_stream_.erase(existing_domain);
+      query_domain_member_count_.fetch_sub(1, std::memory_order_relaxed);
     }
     std::scoped_lock lock{mutex_};
     auto const existing = reservations_by_stream_.find(key);
@@ -937,6 +1065,10 @@ class reservation_aware_resource_adaptor final : public rmm::mr::device_memory_r
       error = "query memory domain grant exceeds ceiling";
       return {};
     }
+#if !CUDF_RUST_HAS_CUDA_MEMPOOL_MAX_SIZE
+    error = "query memory domains require CUDA private-pool hard ceiling support";
+    return {};
+#else
 
     cudaMemPoolProps props{};
     props.allocType      = cudaMemAllocationTypePinned;
@@ -947,8 +1079,17 @@ class reservation_aware_resource_adaptor final : public rmm::mr::device_memory_r
     cudaMemPool_t pool   = nullptr;
     CUDF_CUDA_TRY(cudaMemPoolCreate(&pool, &props));
     try {
-      CUDF_CUDA_TRY(cudaMemPoolSetAttribute(pool, cudaMemPoolAttrReleaseThreshold,
-                                            &release_threshold));
+      CUDF_CUDA_TRY(
+        cudaMemPoolSetAttribute(pool, cudaMemPoolAttrReleaseThreshold, &release_threshold));
+      std::uint64_t effective_ceiling = 0;
+      CUDF_CUDA_TRY(cudaMemPoolGetAttribute(pool, cudaMemPoolAttrMaxPoolSize, &effective_ceiling));
+      if (effective_ceiling == 0 || effective_ceiling < ceiling_bytes) {
+        error =
+          "CUDA private-pool effective ceiling is below the requested "
+          "ceiling";
+        cudaMemPoolDestroy(pool);
+        return {};
+      }
       auto state            = std::make_shared<query_domain_state>();
       auto* domain_pool     = pool;
       state->id             = domain_id;
@@ -956,8 +1097,9 @@ class reservation_aware_resource_adaptor final : public rmm::mr::device_memory_r
       state->pool           = domain_pool;
       pool                  = nullptr;
       state->ceiling_bytes  = ceiling_bytes;
-      state->resource       = std::make_shared<query_domain_resource>(
-        domain_pool, domain_id, grant_bytes, ceiling_bytes);
+      state->effective_ceiling_bytes = static_cast<std::size_t>(effective_ceiling);
+      state->resource                = std::make_shared<query_domain_resource>(
+        domain_pool, domain_id, grant_bytes, state->ceiling_bytes, state->effective_ceiling_bytes);
       {
         std::unique_lock lock{query_domain_mutex_};
         query_domains_by_pool_[domain_pool] = state;
@@ -968,12 +1110,14 @@ class reservation_aware_resource_adaptor final : public rmm::mr::device_memory_r
       if (pool != nullptr) { cudaMemPoolDestroy(pool); }
       throw;
     }
+#endif
   }
 
   std::shared_ptr<query_domain_member_state> attach_query_domain(
     std::shared_ptr<query_domain_state> const& domain,
     rmm::cuda_stream_view stream,
     std::uint64_t reservation_id,
+    std::size_t limit_bytes,
     std::string& error)
   {
     if (domain == nullptr) {
@@ -988,12 +1132,17 @@ class reservation_aware_resource_adaptor final : public rmm::mr::device_memory_r
     }
     auto const existing_domain = query_domain_members_by_stream_.find(key);
     if (existing_domain != query_domain_members_by_stream_.end()) {
-      auto state = existing_domain->second.lock();
-      if (state != nullptr && state->attached) {
-        error = "stream already has an attached query memory domain";
+      auto state = existing_domain->second;
+      if (state != nullptr &&
+          (state->attached ||
+           (state->resource != nullptr && state->resource->routed_current_allocations() != 0))) {
+        error =
+          "stream still has an attached or retiring query memory domain "
+          "member";
         return {};
       }
       query_domain_members_by_stream_.erase(existing_domain);
+      query_domain_member_count_.fetch_sub(1, std::memory_order_relaxed);
     }
     {
       std::scoped_lock legacy_lock{mutex_};
@@ -1014,6 +1163,15 @@ class reservation_aware_resource_adaptor final : public rmm::mr::device_memory_r
     state->domain    = domain;
     state->counters  = std::make_shared<query_domain_member_counters>();
     state->counters->id = reservation_id;
+    state->counters->allocation_limit.store(limit_bytes, std::memory_order_relaxed);
+    std::weak_ptr<query_domain_member_state> weak_state = state;
+    state->resource = std::make_shared<query_domain_member_resource>(
+      domain,
+      state->counters,
+      [this, weak_state](std::shared_ptr<query_domain_state> const& member_domain) {
+        if (auto member = weak_state.lock()) { cleanup_retired_query_domain_member(member); }
+        cleanup_query_domain_if_idle(member_domain);
+      });
     domain->active_members += 1;
     query_domain_members_by_stream_[key] = state;
     query_domain_member_count_.fetch_add(1, std::memory_order_relaxed);
@@ -1046,16 +1204,18 @@ class reservation_aware_resource_adaptor final : public rmm::mr::device_memory_r
       std::unique_lock lock{query_domain_mutex_};
       bool const was_attached = state->attached;
       state->attached         = false;
+      if (state->resource != nullptr) { state->resource->detach(); }
       domain                  = state->domain;
       auto const existing     = query_domain_members_by_stream_.find(state->stream_key);
-      if (existing != query_domain_members_by_stream_.end()) {
-        auto existing_state = existing->second.lock();
+      if (existing != query_domain_members_by_stream_.end() &&
+          (state->resource == nullptr || state->resource->routed_current_allocations() == 0)) {
+        auto existing_state = existing->second;
         if (existing_state == nullptr || existing_state.get() == state.get()) {
           query_domain_members_by_stream_.erase(existing);
+          query_domain_member_count_.fetch_sub(1, std::memory_order_relaxed);
         }
       }
       if (was_attached) {
-        query_domain_member_count_.fetch_sub(1, std::memory_order_relaxed);
         if (domain != nullptr && domain->active_members > 0) { domain->active_members -= 1; }
       }
     }
@@ -1135,12 +1295,12 @@ class reservation_aware_resource_adaptor final : public rmm::mr::device_memory_r
   [[nodiscard]] std::size_t query_domain_pool_count_for_id(std::uint64_t domain_id)
   {
     std::shared_lock lock{query_domain_mutex_};
-    return static_cast<std::size_t>(std::count_if(
-      query_domains_by_pool_.cbegin(),
-      query_domains_by_pool_.cend(),
-      [domain_id](auto const& entry) {
-        return entry.second != nullptr && entry.second->id == domain_id;
-      }));
+    return static_cast<std::size_t>(std::count_if(query_domains_by_pool_.cbegin(),
+                                                  query_domains_by_pool_.cend(),
+                                                  [domain_id](auto const& entry) {
+                                                    return entry.second != nullptr &&
+                                                           entry.second->id == domain_id;
+                                                  }));
   }
 
   cudf_memory_resource_usage_t query_domain_member_usage(
@@ -1203,8 +1363,23 @@ class reservation_aware_resource_adaptor final : public rmm::mr::device_memory_r
     return state->resource->resize_grant(grant_bytes, error);
   }
 
-  void trim_query_domain(std::shared_ptr<query_domain_state> const& state,
-                         std::uint64_t keep_bytes)
+  bool resize_query_domain_member(std::shared_ptr<query_domain_member_state> const& state,
+                                  std::size_t limit_bytes,
+                                  std::string& error)
+  {
+    if (state == nullptr || state->resource == nullptr) {
+      error = "query memory domain member is null";
+      return false;
+    }
+    std::shared_lock lock{query_domain_mutex_};
+    if (!state->attached) {
+      error = "query memory domain member is not attached";
+      return false;
+    }
+    return state->resource->resize(limit_bytes);
+  }
+
+  void trim_query_domain(std::shared_ptr<query_domain_state> const& state, std::uint64_t keep_bytes)
   {
     if (state == nullptr || state->resource == nullptr) {
       throw std::runtime_error{"query memory domain is null"};
@@ -1236,18 +1411,42 @@ class reservation_aware_resource_adaptor final : public rmm::mr::device_memory_r
   }
 
   std::optional<query_domain_member_route> query_domain_member_for_stream(
-    rmm::cuda_stream_view stream)
+    rmm::cuda_stream_view stream, std::size_t bytes)
   {
     if (query_domain_member_count_.load(std::memory_order_relaxed) == 0) { return {}; }
     auto const key = stream_key(stream);
     std::shared_lock lock{query_domain_mutex_};
     auto const it = query_domain_members_by_stream_.find(key);
     if (it == query_domain_members_by_stream_.end()) { return {}; }
-    auto state = it->second.lock();
+    auto state = it->second;
     if (state == nullptr || !state->attached || state->domain == nullptr ||
-        state->domain->resource == nullptr) {
+        state->domain->resource == nullptr || state->resource == nullptr) {
       return {};
     }
+    auto operation = state->domain->resource->begin_operation();
+    if (bytes != 0) { state->resource->reserve_routed_allocation(); }
+    return query_domain_member_route{state, std::move(operation)};
+  }
+
+  std::optional<query_domain_member_route> query_domain_member_for_deallocation(
+    rmm::cuda_stream_view stream, void* ptr)
+  {
+    if (query_domain_member_count_.load(std::memory_order_relaxed) == 0 || ptr == nullptr) {
+      return {};
+    }
+    auto const key = stream_key(stream);
+    std::shared_lock lock{query_domain_mutex_};
+    auto const it = query_domain_members_by_stream_.find(key);
+    if (it == query_domain_members_by_stream_.end()) { return {}; }
+    auto state = it->second;
+    if (state == nullptr || state->domain == nullptr || state->domain->resource == nullptr ||
+        state->resource == nullptr) {
+      return {};
+    }
+    cudaMemPool_t pointer_pool = nullptr;
+    auto const result          = cuPointerGetAttribute(
+      &pointer_pool, CU_POINTER_ATTRIBUTE_MEMPOOL_HANDLE, reinterpret_cast<CUdeviceptr>(ptr));
+    if (result != CUDA_SUCCESS || pointer_pool != state->domain->pool) { return {}; }
     return query_domain_member_route{state, state->domain->resource->begin_operation()};
   }
 
@@ -1256,9 +1455,8 @@ class reservation_aware_resource_adaptor final : public rmm::mr::device_memory_r
     if (query_domain_pool_count_.load(std::memory_order_relaxed) == 0) { return {}; }
     if (ptr == nullptr) { return {}; }
     cudaMemPool_t pool = nullptr;
-    auto const result  = cuPointerGetAttribute(&pool,
-                                              CU_POINTER_ATTRIBUTE_MEMPOOL_HANDLE,
-                                              reinterpret_cast<CUdeviceptr>(ptr));
+    auto const result  = cuPointerGetAttribute(
+      &pool, CU_POINTER_ATTRIBUTE_MEMPOOL_HANDLE, reinterpret_cast<CUdeviceptr>(ptr));
     if (result != CUDA_SUCCESS || pool == nullptr) { return {}; }
     std::shared_lock lock{query_domain_mutex_};
     auto const it = query_domains_by_pool_.find(pool);
@@ -1271,17 +1469,13 @@ class reservation_aware_resource_adaptor final : public rmm::mr::device_memory_r
   void cleanup_query_domain_if_idle(std::shared_ptr<query_domain_state> const& domain)
   {
     if (domain == nullptr || domain->resource == nullptr) { return; }
-    if (domain->resource->in_flight_operations() != 0) {
-      return;
-    }
+    if (domain->resource->in_flight_operations() != 0) { return; }
     if (domain->resource->current_allocations() != 0 &&
         !domain->trim_pending.load(std::memory_order_acquire)) {
       return;
     }
     std::unique_lock lock{query_domain_mutex_};
-    if (domain->resource->in_flight_operations() != 0) {
-      return;
-    }
+    if (domain->resource->in_flight_operations() != 0) { return; }
     if (!domain->active && domain->trim_pending.load(std::memory_order_relaxed) &&
         domain->resource->trim_to_noexcept(0)) {
       domain->trim_pending.store(false, std::memory_order_release);
@@ -1294,6 +1488,22 @@ class reservation_aware_resource_adaptor final : public rmm::mr::device_memory_r
     if (it != query_domains_by_pool_.end() && it->second.get() == domain.get()) {
       query_domains_by_pool_.erase(it);
       query_domain_pool_count_.fetch_sub(1, std::memory_order_relaxed);
+    }
+  }
+
+  void cleanup_retired_query_domain_member(std::shared_ptr<query_domain_member_state> const& member)
+  {
+    if (member == nullptr || member->attached || member->resource == nullptr ||
+        member->resource->routed_current_allocations() != 0) {
+      return;
+    }
+    std::unique_lock lock{query_domain_mutex_};
+    if (member->attached || member->resource->routed_current_allocations() != 0) { return; }
+    auto const it = query_domain_members_by_stream_.find(member->stream_key);
+    if (it != query_domain_members_by_stream_.end() &&
+        (it->second == nullptr || it->second.get() == member.get())) {
+      query_domain_members_by_stream_.erase(it);
+      query_domain_member_count_.fetch_sub(1, std::memory_order_relaxed);
     }
   }
 
@@ -1327,7 +1537,8 @@ class reservation_aware_resource_adaptor final : public rmm::mr::device_memory_r
     if (state.current_aligned_bytes > state.allocation_limit ||
         aligned_bytes > state.allocation_limit - state.current_aligned_bytes) {
       record_failed_allocation(state, bytes);
-      throw reservation_limit_out_of_memory{limit_message, identity};
+      throw attributed_out_of_memory{
+        limit_message, CUDF_MEMORY_FAILURE_SOURCE_RESERVATION_LIMIT, identity};
     }
     state.current_aligned_bytes += aligned_bytes;
   }
@@ -1356,9 +1567,7 @@ class reservation_aware_resource_adaptor final : public rmm::mr::device_memory_r
   }
 
   template <typename State>
-  void rollback_reserved_allocation(State& state,
-                                    std::size_t bytes,
-                                    std::size_t aligned_bytes)
+  void rollback_reserved_allocation(State& state, std::size_t bytes, std::size_t aligned_bytes)
   {
     release_reserved_alignment(state, aligned_bytes);
     record_failed_allocation(state, bytes);
@@ -1368,25 +1577,22 @@ class reservation_aware_resource_adaptor final : public rmm::mr::device_memory_r
   void release_allocation(State& state, std::size_t bytes, std::size_t aligned_bytes)
   {
     state.current_bytes = state.current_bytes >= bytes ? state.current_bytes - bytes : 0;
-    state.current_aligned_bytes =
-      state.current_aligned_bytes >= aligned_bytes ? state.current_aligned_bytes - aligned_bytes : 0;
-    state.current_allocations =
-      state.current_allocations > 0 ? state.current_allocations - 1 : 0;
+    state.current_aligned_bytes = state.current_aligned_bytes >= aligned_bytes
+                                    ? state.current_aligned_bytes - aligned_bytes
+                                    : 0;
+    state.current_allocations   = state.current_allocations > 0 ? state.current_allocations - 1 : 0;
   }
 
-  void* do_allocate(std::size_t bytes,
-                    rmm::cuda_stream_view stream,
-                    std::size_t alignment) override
+  void* do_allocate(std::size_t bytes, rmm::cuda_stream_view stream, std::size_t alignment) override
   {
-    auto query_route = query_domain_member_for_stream(stream);
+    auto query_route = query_domain_member_for_stream(stream, bytes);
     if (query_route.has_value()) {
       auto domain = query_route->member->domain;
       try {
 #ifndef NDEBUG
         pause_query_domain_route_if_armed(domain->id);
 #endif
-        auto* result = domain->resource->allocate_for_member(
-          query_route->member->counters, stream, bytes, alignment);
+        auto* result = query_route->member->resource->allocate_routed(stream, bytes, alignment);
         query_route->operation.finish();
         cleanup_query_domain_if_idle(domain);
         return result;
@@ -1481,10 +1687,20 @@ class reservation_aware_resource_adaptor final : public rmm::mr::device_memory_r
                      rmm::cuda_stream_view stream,
                      std::size_t alignment) noexcept override
   {
+    auto member_route = query_domain_member_for_deallocation(stream, ptr);
+    if (member_route.has_value()) {
+      auto domain = member_route->member->domain;
+      member_route->member->resource->deallocate_routed(ptr, stream, bytes, alignment);
+      member_route->operation.finish();
+      cleanup_retired_query_domain_member(member_route->member);
+      cleanup_query_domain_if_idle(domain);
+      return;
+    }
+
     auto query_route = query_domain_for_pointer(ptr);
     if (query_route.has_value()) {
       auto domain = query_route->domain;
-      domain->resource->deallocate_from_adaptor(ptr, stream, bytes, alignment);
+      domain->resource->deallocate_from_adaptor(ptr, {}, stream, bytes, alignment);
       query_route->operation.finish();
       cleanup_query_domain_if_idle(domain);
       return;
@@ -1513,7 +1729,8 @@ class reservation_aware_resource_adaptor final : public rmm::mr::device_memory_r
     }
   }
 
-  [[nodiscard]] bool do_is_equal(rmm::mr::device_memory_resource const& other) const noexcept override
+  [[nodiscard]] bool do_is_equal(
+    rmm::mr::device_memory_resource const& other) const noexcept override
   {
     return this == std::addressof(other);
   }
@@ -1521,7 +1738,7 @@ class reservation_aware_resource_adaptor final : public rmm::mr::device_memory_r
   cuda::mr::any_resource<cuda::mr::device_accessible> upstream_;
   std::mutex mutex_;
   std::shared_mutex query_domain_mutex_;
-  std::unordered_map<void*, std::weak_ptr<query_domain_member_state>>
+  std::unordered_map<void*, std::shared_ptr<query_domain_member_state>>
     query_domain_members_by_stream_;
   std::unordered_map<cudaMemPool_t, std::shared_ptr<query_domain_state>> query_domains_by_pool_;
   std::atomic<std::size_t> query_domain_member_count_{0};
@@ -1535,12 +1752,12 @@ class bounded_failure_callback_resource_adaptor final : public rmm::mr::device_m
   bounded_failure_callback_resource_adaptor(rmm::mr::device_memory_resource* upstream,
                                             cudf_memory_failure_callback_t callback,
                                             void* callback_arg,
-                                            cuda_async_resource_box* async_pool,
+                                            cudaMemPool_t pool,
                                             int32_t device_ordinal)
     : upstream_{rmm::mr::any_device_resource_from_raw(upstream)},
       callback_{callback},
       callback_arg_{callback_arg},
-      async_pool_{async_pool},
+      pool_{pool},
       device_ordinal_{device_ordinal}
   {
   }
@@ -1548,20 +1765,18 @@ class bounded_failure_callback_resource_adaptor final : public rmm::mr::device_m
   bounded_failure_callback_resource_adaptor(rmm::mr::device_memory_resource* upstream,
                                             cudf_memory_failure_callback_v2_t callback,
                                             void* callback_arg,
-                                            cuda_async_resource_box* async_pool,
+                                            cudaMemPool_t pool,
                                             int32_t device_ordinal)
     : upstream_{rmm::mr::any_device_resource_from_raw(upstream)},
       callback_v2_{callback},
       callback_arg_{callback_arg},
-      async_pool_{async_pool},
+      pool_{pool},
       device_ordinal_{device_ordinal}
   {
   }
 
  private:
-  void* do_allocate(std::size_t bytes,
-                    rmm::cuda_stream_view stream,
-                    std::size_t alignment) override
+  void* do_allocate(std::size_t bytes, rmm::cuda_stream_view stream, std::size_t alignment) override
   {
     std::uint32_t callback_retries = 0;
     bool trim_retry_attempted      = false;
@@ -1570,21 +1785,22 @@ class bounded_failure_callback_resource_adaptor final : public rmm::mr::device_m
       try {
         return upstream_.allocate(stream, bytes, alignment);
       } catch (rmm::out_of_memory const& error) {
-        auto const* reservation_error =
-          dynamic_cast<reservation_limit_out_of_memory const*>(&error);
-        auto const failure_source =
-          reservation_error == nullptr
-            ? CUDF_MEMORY_FAILURE_SOURCE_PHYSICAL
-            : CUDF_MEMORY_FAILURE_SOURCE_RESERVATION_LIMIT;
-        auto const failure_identity =
-          reservation_error == nullptr ? memory_failure_domain_identity{} : reservation_error->identity();
+        auto const* attributed_error = dynamic_cast<attributed_out_of_memory const*>(&error);
+        auto const failure_source    = attributed_error == nullptr
+                                         ? CUDF_MEMORY_FAILURE_SOURCE_PHYSICAL
+                                         : attributed_error->source();
+        auto const failure_identity = attributed_error == nullptr ? memory_failure_domain_identity{}
+                                                                  : attributed_error->identity();
+        auto const failure_pool = attributed_error != nullptr && attributed_error->pool() != nullptr
+                                    ? attributed_error->pool()
+                                    : pool_;
         if (callback_v2_ != nullptr) {
           if (callback_retries >= k_max_failure_callback_retries) { throw; }
           cudf_memory_failure_info_t info{};
           fill_failure_info(info,
                             device_ordinal_,
                             bytes,
-                            async_pool_,
+                            failure_pool,
                             failure_source,
                             failure_identity,
                             callback_retries,
@@ -1596,7 +1812,7 @@ class bounded_failure_callback_resource_adaptor final : public rmm::mr::device_m
           }
           if (failure_source == CUDF_MEMORY_FAILURE_SOURCE_PHYSICAL &&
               action == CUDF_MEMORY_FAILURE_ACTION_TRIM_AND_RETRY &&
-              trim_async_pool_to_zero_noexcept(async_pool_)) {
+              trim_cuda_pool_to_zero_noexcept(failure_pool)) {
             ++callback_retries;
             ++trim_retry_count;
             continue;
@@ -1604,7 +1820,7 @@ class bounded_failure_callback_resource_adaptor final : public rmm::mr::device_m
           throw;
         }
         if (failure_source == CUDF_MEMORY_FAILURE_SOURCE_PHYSICAL && !trim_retry_attempted &&
-            trim_async_pool_before_retry(async_pool_, bytes)) {
+            trim_cuda_pool_before_retry(failure_pool, bytes)) {
           trim_retry_attempted = true;
           continue;
         }
@@ -1625,7 +1841,8 @@ class bounded_failure_callback_resource_adaptor final : public rmm::mr::device_m
     upstream_.deallocate(stream, ptr, bytes, alignment);
   }
 
-  [[nodiscard]] bool do_is_equal(rmm::mr::device_memory_resource const& other) const noexcept override
+  [[nodiscard]] bool do_is_equal(
+    rmm::mr::device_memory_resource const& other) const noexcept override
   {
     return this == std::addressof(other);
   }
@@ -1634,7 +1851,7 @@ class bounded_failure_callback_resource_adaptor final : public rmm::mr::device_m
   cudf_memory_failure_callback_t callback_ = nullptr;
   cudf_memory_failure_callback_v2_t callback_v2_ = nullptr;
   void* callback_arg_                      = nullptr;
-  cuda_async_resource_box* async_pool_      = nullptr;
+  cudaMemPool_t pool_                            = nullptr;
   int32_t device_ordinal_                   = -1;
 };
 
@@ -1646,9 +1863,7 @@ class fail_first_allocation_resource_adaptor final : public rmm::mr::device_memo
   }
 
  private:
-  void* do_allocate(std::size_t bytes,
-                    rmm::cuda_stream_view stream,
-                    std::size_t alignment) override
+  void* do_allocate(std::size_t bytes, rmm::cuda_stream_view stream, std::size_t alignment) override
   {
     if (!failed_once_.exchange(true, std::memory_order_acq_rel)) {
       throw rmm::out_of_memory{"test memory resource forced first allocation failure"};
@@ -1664,7 +1879,8 @@ class fail_first_allocation_resource_adaptor final : public rmm::mr::device_memo
     upstream_.deallocate(stream, ptr, bytes, alignment);
   }
 
-  [[nodiscard]] bool do_is_equal(rmm::mr::device_memory_resource const& other) const noexcept override
+  [[nodiscard]] bool do_is_equal(
+    rmm::mr::device_memory_resource const& other) const noexcept override
   {
     return this == std::addressof(other);
   }
@@ -1694,6 +1910,9 @@ struct memory_resource_handle_state {
 struct device_memory_manager_state {
   int32_t device = -1;
   std::shared_ptr<memory_resource_owner> owner;
+  cudf_memory_failure_callback_t failure_callback       = nullptr;
+  cudf_memory_failure_callback_v2_t failure_callback_v2 = nullptr;
+  void* failure_callback_arg                            = nullptr;
   bool failure_callback_installed = false;
   bool current_resource_installed = false;
 };
@@ -1788,9 +2007,9 @@ rmm::mr::device_memory_resource* default_memory_resource_for_device(int32_t devi
   auto it         = resources.find(device);
   if (it == resources.end()) {
     it = resources
-           .emplace(device,
-                    std::make_shared<
-                      rmm::mr::device_memory_resource_box<rmm::mr::cuda_memory_resource>>())
+           .emplace(
+             device,
+             std::make_shared<rmm::mr::device_memory_resource_box<rmm::mr::cuda_memory_resource>>())
            .first;
   }
   return it->second.get();
@@ -1812,14 +2031,46 @@ void register_memory_resource_lifetime(std::shared_ptr<memory_resource_owner> co
   memory_resource_registry()[owner->mr.get()] = owner;
 }
 
+std::unique_ptr<memory_resource_handle_state> make_query_domain_member_resource_handle(
+  std::shared_ptr<device_memory_manager_state> const& manager,
+  std::shared_ptr<query_domain_member_state> const& member)
+{
+  auto state              = std::make_unique<memory_resource_handle_state>();
+  state->owner            = std::make_shared<memory_resource_owner>();
+  auto& owner             = *state->owner;
+  owner.device            = manager->device;
+  owner.upstream_lifetime = member->resource;
+  auto direct             = std::make_unique<shared_query_domain_member_resource>(member->resource);
+  if (manager->failure_callback_v2 != nullptr) {
+    owner.reservation_mr = std::move(direct);
+    owner.mr =
+      std::make_unique<bounded_failure_callback_resource_adaptor>(owner.reservation_mr.get(),
+                                                                  manager->failure_callback_v2,
+                                                                  manager->failure_callback_arg,
+                                                                  member->domain->pool,
+                                                                  manager->device);
+  } else if (manager->failure_callback != nullptr) {
+    owner.reservation_mr = std::move(direct);
+    owner.mr =
+      std::make_unique<bounded_failure_callback_resource_adaptor>(owner.reservation_mr.get(),
+                                                                  manager->failure_callback,
+                                                                  manager->failure_callback_arg,
+                                                                  member->domain->pool,
+                                                                  manager->device);
+  } else {
+    owner.mr = std::move(direct);
+  }
+  register_memory_resource_lifetime(state->owner);
+  return state;
+}
+
 std::mutex& memory_manager_registry_mutex()
 {
   static std::mutex mutex;
   return mutex;
 }
 
-std::unordered_map<int32_t, std::shared_ptr<device_memory_manager_state>>&
-memory_manager_registry()
+std::unordered_map<int32_t, std::shared_ptr<device_memory_manager_state>>& memory_manager_registry()
 {
   static std::unordered_map<int32_t, std::shared_ptr<device_memory_manager_state>> registry;
   return registry;
@@ -1851,7 +2102,9 @@ cudf_status_t normalize_memory_manager_options(cudf_memory_manager_options_t con
   switch (options->base_kind) {
     case CUDF_MEMORY_MANAGER_BASE_CUDA_ASYNC:
     case CUDF_MEMORY_MANAGER_BASE_POOL: out = *options; return CUDF_SUCCESS;
-    default: set_error("memory manager options base_kind is invalid"); return CUDF_ERROR_INVALID_ARGUMENT;
+    default:
+      set_error("memory manager options base_kind is invalid");
+      return CUDF_ERROR_INVALID_ARGUMENT;
   }
 }
 
@@ -1864,7 +2117,11 @@ std::shared_ptr<device_memory_manager_state> make_memory_manager_for_current_dev
 {
   auto manager    = std::make_shared<device_memory_manager_state>();
   manager->device = device;
-  manager->failure_callback_installed = failure_callback != nullptr || failure_callback_v2 != nullptr;
+  manager->failure_callback     = failure_callback;
+  manager->failure_callback_v2  = failure_callback_v2;
+  manager->failure_callback_arg = failure_callback_arg;
+  manager->failure_callback_installed =
+    failure_callback != nullptr || failure_callback_v2 != nullptr;
   manager->owner  = std::make_shared<memory_resource_owner>();
 
   auto& owner = *manager->owner;
@@ -1894,12 +2151,20 @@ std::shared_ptr<device_memory_manager_state> make_memory_manager_for_current_dev
   owner.reservation_adaptor = adaptor.get();
   if (failure_callback_v2 != nullptr) {
     owner.reservation_mr = std::move(adaptor);
-    owner.mr = std::make_unique<bounded_failure_callback_resource_adaptor>(
-      owner.reservation_mr.get(), failure_callback_v2, failure_callback_arg, owner.async_pool, device);
+    owner.mr             = std::make_unique<bounded_failure_callback_resource_adaptor>(
+      owner.reservation_mr.get(),
+      failure_callback_v2,
+      failure_callback_arg,
+      async_pool_handle(owner.async_pool),
+      device);
   } else if (failure_callback != nullptr) {
     owner.reservation_mr = std::move(adaptor);
-    owner.mr = std::make_unique<bounded_failure_callback_resource_adaptor>(
-      owner.reservation_mr.get(), failure_callback, failure_callback_arg, owner.async_pool, device);
+    owner.mr             = std::make_unique<bounded_failure_callback_resource_adaptor>(
+      owner.reservation_mr.get(),
+      failure_callback,
+      failure_callback_arg,
+      async_pool_handle(owner.async_pool),
+      device);
   } else {
     owner.mr = std::move(adaptor);
   }
@@ -1952,7 +2217,8 @@ cudf_status_t memory_manager_for_device_impl(int32_t device,
   {
     cudf_status_t const validation_status = validate_memory_manager_device(device);
     if (validation_status != CUDF_SUCCESS) { return validation_status; }
-    if (failure_callback == nullptr && failure_callback_v2 == nullptr && failure_callback_arg != nullptr) {
+    if (failure_callback == nullptr && failure_callback_v2 == nullptr &&
+        failure_callback_arg != nullptr) {
       set_error("failure callback argument requires a failure callback");
       return CUDF_ERROR_INVALID_OPERATION;
     }
@@ -1969,13 +2235,13 @@ cudf_status_t memory_manager_for_device_impl(int32_t device,
     auto& registry = memory_manager_registry();
     auto it        = registry.find(device);
     if (it == registry.end()) {
-      it = registry.emplace(device,
-                            make_memory_manager_for_current_device(
-                              device,
-                              failure_callback,
-                              failure_callback_v2,
-                              failure_callback_arg,
-                              resolved_options))
+      it = registry
+             .emplace(device,
+                      make_memory_manager_for_current_device(device,
+                                                             failure_callback,
+                                                             failure_callback_v2,
+                                                             failure_callback_arg,
+                                                             resolved_options))
              .first;
     } else if ((failure_callback != nullptr || failure_callback_v2 != nullptr) &&
                !it->second->failure_callback_installed) {
@@ -1993,7 +2259,9 @@ cudf_status_t memory_manager_for_device_impl(int32_t device,
       try {
         cudf_set_current_device_resource_raw(it->second->owner->mr.get());
       } catch (...) {
-        set_error("device memory manager current resource installation failed; manager remains registered");
+        set_error(
+          "device memory manager current resource installation failed; "
+          "manager remains registered");
         return CUDF_ERROR_INVALID_OPERATION;
       }
       it->second->current_resource_installed = true;
@@ -2017,8 +2285,7 @@ rmm::mr::device_memory_resource* cudf_tracked_current_device_resource_raw()
   auto const found = identities.find(device);
   if (found != identities.end()) { return found->second; }
 
-  return set_current_device_resource_raw_locked(device,
-                                                default_memory_resource_for_device(device));
+  return set_current_device_resource_raw_locked(device, default_memory_resource_for_device(device));
 }
 
 void cudf_set_current_device_resource_raw(rmm::mr::device_memory_resource* target)
@@ -2148,8 +2415,7 @@ cudf_status_t cudf_memory_resource_create_limiting(cudf_memory_resource_handle u
     auto* upstream_mr             = cudf_memory_resource_raw_from_handle(upstream);
     owner.mr =
       std::make_unique<rmm::mr::device_memory_resource_box<rmm::mr::limiting_resource_adaptor>>(
-        rmm::mr::any_device_resource_from_raw(upstream_mr),
-        allocation_limit);
+        rmm::mr::any_device_resource_from_raw(upstream_mr), allocation_limit);
     register_memory_resource_lifetime(state->owner);
     *out = static_cast<cudf_memory_resource_handle>(state.release());
     return CUDF_SUCCESS;
@@ -2157,11 +2423,10 @@ cudf_status_t cudf_memory_resource_create_limiting(cudf_memory_resource_handle u
   CUDF_RUST_CATCH
 }
 
-cudf_status_t cudf_memory_resource_create_failure_callback(
-  cudf_memory_resource_handle upstream,
-  cudf_memory_failure_callback_t callback,
-  void* callback_arg,
-  cudf_memory_resource_handle* out)
+cudf_status_t cudf_memory_resource_create_failure_callback(cudf_memory_resource_handle upstream,
+                                                           cudf_memory_failure_callback_t callback,
+                                                           void* callback_arg,
+                                                           cudf_memory_resource_handle* out)
 {
   CUDF_RUST_NULL_CHECK(out, "out is null");
   *out = nullptr;
@@ -2177,8 +2442,8 @@ cudf_status_t cudf_memory_resource_create_failure_callback(
     owner.async_pool        = upstream_owner.async_pool;
     owner.device            = upstream_owner.device;
     auto* upstream_mr       = cudf_memory_resource_raw_from_handle(upstream);
-    owner.mr = std::make_unique<bounded_failure_callback_resource_adaptor>(
-      upstream_mr, callback, callback_arg, owner.async_pool, owner.device);
+    owner.mr                = std::make_unique<bounded_failure_callback_resource_adaptor>(
+      upstream_mr, callback, callback_arg, async_pool_handle(owner.async_pool), owner.device);
     register_memory_resource_lifetime(state->owner);
     *out = static_cast<cudf_memory_resource_handle>(state.release());
     return CUDF_SUCCESS;
@@ -2206,8 +2471,8 @@ cudf_status_t cudf_memory_resource_create_failure_callback_v2(
     owner.async_pool        = upstream_owner.async_pool;
     owner.device            = upstream_owner.device;
     auto* upstream_mr       = cudf_memory_resource_raw_from_handle(upstream);
-    owner.mr = std::make_unique<bounded_failure_callback_resource_adaptor>(
-      upstream_mr, callback, callback_arg, owner.async_pool, owner.device);
+    owner.mr                = std::make_unique<bounded_failure_callback_resource_adaptor>(
+      upstream_mr, callback, callback_arg, async_pool_handle(owner.async_pool), owner.device);
     register_memory_resource_lifetime(state->owner);
     *out = static_cast<cudf_memory_resource_handle>(state.release());
     return CUDF_SUCCESS;
@@ -2232,8 +2497,8 @@ cudf_status_t cudf_memory_resource_create_budget_tracking(cudf_memory_resource_h
     owner.async_pool        = upstream_owner.async_pool;
     owner.device            = upstream_owner.device;
     auto* upstream_mr       = cudf_memory_resource_raw_from_handle(upstream);
-    auto tracker = std::make_unique<budget_tracking_resource_adaptor>(upstream_mr,
-                                                                      allocation_limit);
+    auto tracker =
+      std::make_unique<budget_tracking_resource_adaptor>(upstream_mr, allocation_limit);
     owner.budget_tracker = tracker.get();
     owner.mr             = std::move(tracker);
     register_memory_resource_lifetime(state->owner);
@@ -2281,8 +2546,7 @@ cudf_status_t cudf_memory_resource_pool_usage(cudf_memory_resource_handle handle
   CUDF_RUST_CATCH
 }
 
-cudf_status_t cudf_memory_resource_trim_to(cudf_memory_resource_handle handle,
-                                           uint64_t keep_bytes)
+cudf_status_t cudf_memory_resource_trim_to(cudf_memory_resource_handle handle, uint64_t keep_bytes)
 {
   CUDF_RUST_NULL_CHECK(handle, "handle is null");
   CUDF_RUST_TRY
@@ -2311,7 +2575,8 @@ cudf_status_t cudf_memory_resource_destroy(cudf_memory_resource_handle handle, i
     auto& owner = *state->owner;
     if (!state->non_owning_alias && cudf_tracked_current_device_resource_raw() == owner.mr.get()) {
       set_error(
-        "cannot destroy a memory resource while it is installed as the current device resource");
+        "cannot destroy a memory resource while it is installed as the "
+        "current device resource");
       return CUDF_ERROR_INVALID_OPERATION;
     }
     delete state;
@@ -2339,9 +2604,7 @@ cudf_status_t cudf_memory_manager_for_device(int32_t device, cudf_memory_manager
 }
 
 cudf_status_t cudf_memory_manager_for_device_with_options(
-  int32_t device,
-  cudf_memory_manager_options_t const* options,
-  cudf_memory_manager_handle* out)
+  int32_t device, cudf_memory_manager_options_t const* options, cudf_memory_manager_handle* out)
 {
   CUDF_RUST_NULL_CHECK(options, "options is null");
   return memory_manager_for_device_impl(device, nullptr, nullptr, nullptr, options, out);
@@ -2399,10 +2662,9 @@ cudf_status_t cudf_memory_manager_for_device_with_failure_callback_v2_and_option
   return memory_manager_for_device_impl(device, nullptr, callback, callback_arg, options, out);
 }
 
-cudf_status_t cudf_memory_manager_failure_callback_state(
-  int32_t device,
-  int32_t* exists,
-  int32_t* failure_callback_installed)
+cudf_status_t cudf_memory_manager_failure_callback_state(int32_t device,
+                                                         int32_t* exists,
+                                                         int32_t* failure_callback_installed)
 {
   CUDF_RUST_NULL_CHECK(exists, "exists is null");
   *exists = 0;
@@ -2468,8 +2730,7 @@ cudf_status_t cudf_memory_manager_pool_usage(cudf_memory_manager_handle manager,
   CUDF_RUST_CATCH
 }
 
-cudf_status_t cudf_memory_manager_trim_to(cudf_memory_manager_handle manager,
-                                          uint64_t keep_bytes)
+cudf_status_t cudf_memory_manager_trim_to(cudf_memory_manager_handle manager, uint64_t keep_bytes)
 {
   CUDF_RUST_NULL_CHECK(manager, "manager is null");
   CUDF_RUST_TRY
@@ -2509,7 +2770,8 @@ cudf_status_t cudf_memory_manager_attach_reservation(cudf_memory_manager_handle 
     cudf_status_t const stream_status = validate_stream_device_for_manager(
       stream,
       manager_state->device,
-      "stream reservation requires stream and memory manager to be on the same CUDA device");
+      "stream reservation requires stream and memory manager to be on the "
+      "same CUDA device");
     if (stream_status != CUDF_SUCCESS) { return stream_status; }
     auto* adaptor = manager_state->owner->reservation_adaptor;
     if (adaptor == nullptr) {
@@ -2518,8 +2780,8 @@ cudf_status_t cudf_memory_manager_attach_reservation(cudf_memory_manager_handle 
     }
 
     std::string attach_error;
-    auto reservation =
-      adaptor->attach(cudf_stream_view_from_handle(stream), reservation_id, limit_bytes, nullptr, attach_error);
+    auto reservation = adaptor->attach(
+      cudf_stream_view_from_handle(stream), reservation_id, limit_bytes, nullptr, attach_error);
     if (reservation == nullptr) {
       set_error(attach_error);
       return CUDF_ERROR_INVALID_OPERATION;
@@ -2534,11 +2796,10 @@ cudf_status_t cudf_memory_manager_attach_reservation(cudf_memory_manager_handle 
   CUDF_RUST_CATCH
 }
 
-cudf_status_t cudf_memory_manager_create_reservation_arena(
-  cudf_memory_manager_handle manager,
-  uint64_t arena_id,
-  size_t limit_bytes,
-  cudf_reservation_arena_handle* out)
+cudf_status_t cudf_memory_manager_create_reservation_arena(cudf_memory_manager_handle manager,
+                                                           uint64_t arena_id,
+                                                           size_t limit_bytes,
+                                                           cudf_reservation_arena_handle* out)
 {
   CUDF_RUST_NULL_CHECK(out, "out is null");
   *out = nullptr;
@@ -2565,13 +2826,12 @@ cudf_status_t cudf_memory_manager_create_reservation_arena(
   CUDF_RUST_CATCH
 }
 
-cudf_status_t cudf_memory_manager_attach_reservation_to_arena(
-  cudf_memory_manager_handle manager,
-  cudf_stream_handle stream,
-  cudf_reservation_arena_handle arena,
-  uint64_t reservation_id,
-  size_t limit_bytes,
-  cudf_reservation_handle* out)
+cudf_status_t cudf_memory_manager_attach_reservation_to_arena(cudf_memory_manager_handle manager,
+                                                              cudf_stream_handle stream,
+                                                              cudf_reservation_arena_handle arena,
+                                                              uint64_t reservation_id,
+                                                              size_t limit_bytes,
+                                                              cudf_reservation_handle* out)
 {
   CUDF_RUST_NULL_CHECK(out, "out is null");
   *out = nullptr;
@@ -2593,7 +2853,8 @@ cudf_status_t cudf_memory_manager_attach_reservation_to_arena(
     cudf_status_t const stream_status = validate_stream_device_for_manager(
       stream,
       manager_state->device,
-      "arena stream reservation requires stream and memory manager to be on the same CUDA device");
+      "arena stream reservation requires stream and memory manager to be on "
+      "the same CUDA device");
     if (stream_status != CUDF_SUCCESS) { return stream_status; }
     auto* adaptor = manager_state->owner->reservation_adaptor;
     if (adaptor == nullptr) {
@@ -2645,8 +2906,7 @@ cudf_status_t cudf_reservation_usage(cudf_reservation_handle reservation,
   CUDF_RUST_CATCH
 }
 
-cudf_status_t cudf_reservation_resize(cudf_reservation_handle reservation,
-                                      size_t limit_bytes)
+cudf_status_t cudf_reservation_resize(cudf_reservation_handle reservation, size_t limit_bytes)
 {
   CUDF_RUST_NULL_CHECK(reservation, "reservation is null");
   CUDF_RUST_TRY
@@ -2660,8 +2920,8 @@ cudf_status_t cudf_reservation_resize(cudf_reservation_handle reservation,
     std::string resize_error;
     bool resized = false;
     if (state.query_domain_member != nullptr) {
-      set_error("query memory domain member reservations cannot be resized; resize the domain grant");
-      return CUDF_ERROR_INVALID_OPERATION;
+      resized =
+        adaptor->resize_query_domain_member(state.query_domain_member, limit_bytes, resize_error);
     } else {
       resized = adaptor->resize(state.reservation, limit_bytes, resize_error);
     }
@@ -2714,8 +2974,7 @@ cudf_status_t cudf_reservation_arena_usage(cudf_reservation_arena_handle arena,
   CUDF_RUST_CATCH
 }
 
-cudf_status_t cudf_reservation_arena_resize(cudf_reservation_arena_handle arena,
-                                            size_t limit_bytes)
+cudf_status_t cudf_reservation_arena_resize(cudf_reservation_arena_handle arena, size_t limit_bytes)
 {
   CUDF_RUST_NULL_CHECK(arena, "arena is null");
   CUDF_RUST_TRY
@@ -2750,13 +3009,12 @@ cudf_status_t cudf_reservation_arena_destroy(cudf_reservation_arena_handle arena
   CUDF_RUST_CATCH
 }
 
-cudf_status_t cudf_memory_manager_create_query_memory_domain(
-  cudf_memory_manager_handle manager,
-  uint64_t domain_id,
-  size_t grant_bytes,
-  size_t ceiling_bytes,
-  uint64_t release_threshold_bytes,
-  cudf_query_memory_domain_handle* out)
+cudf_status_t cudf_memory_manager_create_query_memory_domain(cudf_memory_manager_handle manager,
+                                                             uint64_t domain_id,
+                                                             size_t grant_bytes,
+                                                             size_t ceiling_bytes,
+                                                             uint64_t release_threshold_bytes,
+                                                             cudf_query_memory_domain_handle* out)
 {
   CUDF_RUST_NULL_CHECK(out, "out is null");
   *out = nullptr;
@@ -2806,10 +3064,14 @@ cudf_status_t cudf_memory_manager_create_query_memory_domain(
 cudf_status_t cudf_query_memory_domain_attach_stream(cudf_query_memory_domain_handle domain,
                                                      cudf_stream_handle stream,
                                                      uint64_t reservation_id,
-                                                     cudf_reservation_handle* out)
+                                                     size_t limit_bytes,
+                                                     cudf_reservation_handle* out,
+                                                     cudf_memory_resource_handle* out_resource)
 {
   CUDF_RUST_NULL_CHECK(out, "out is null");
+  CUDF_RUST_NULL_CHECK(out_resource, "out_resource is null");
   *out = nullptr;
+  *out_resource = nullptr;
   CUDF_RUST_NULL_CHECK(domain, "query memory domain is null");
   CUDF_RUST_NULL_CHECK(stream, "stream is null");
   CUDF_RUST_TRY
@@ -2818,7 +3080,8 @@ cudf_status_t cudf_query_memory_domain_attach_stream(cudf_query_memory_domain_ha
     cudf_status_t const stream_status = validate_stream_device_for_manager(
       stream,
       domain_state.manager->device,
-      "query memory domain requires stream and domain manager to be on the same CUDA device");
+      "query memory domain requires stream and domain manager to be on the "
+      "same CUDA device");
     if (stream_status != CUDF_SUCCESS) { return stream_status; }
     auto* adaptor      = domain_state.manager->owner->reservation_adaptor;
     if (adaptor == nullptr) {
@@ -2829,19 +3092,36 @@ cudf_status_t cudf_query_memory_domain_attach_stream(cudf_query_memory_domain_ha
     auto member = adaptor->attach_query_domain(domain_state.domain,
                                                cudf_stream_view_from_handle(stream),
                                                reservation_id,
+                                               limit_bytes,
                                                attach_error);
     if (member == nullptr) {
       set_error(attach_error);
       return CUDF_ERROR_INVALID_OPERATION;
     }
 
-    auto state                  = std::make_unique<reservation_handle_state>();
-    state->manager              = domain_state.manager;
-    state->query_domain_member  = std::move(member);
-    *out = static_cast<cudf_reservation_handle>(state.release());
+    try {
+      auto resource_state = make_query_domain_member_resource_handle(domain_state.manager, member);
+      auto state          = std::make_unique<reservation_handle_state>();
+      state->manager      = domain_state.manager;
+      state->query_domain_member = member;
+      *out_resource = static_cast<cudf_memory_resource_handle>(resource_state.release());
+      *out          = static_cast<cudf_reservation_handle>(state.release());
+    } catch (...) {
+      adaptor->detach_query_domain_member(member);
+      throw;
+    }
     return CUDF_SUCCESS;
   }
   CUDF_RUST_CATCH
+}
+
+int32_t cudf_query_memory_domain_driver_ceiling_supported(void)
+{
+#if CUDF_RUST_HAS_CUDA_MEMPOOL_MAX_SIZE
+  return 1;
+#else
+  return 0;
+#endif
 }
 
 cudf_status_t cudf_query_memory_domain_usage(cudf_query_memory_domain_handle domain,
@@ -2938,9 +3218,7 @@ cudf_status_t cudf_query_memory_domain_destroy(cudf_query_memory_domain_handle d
 }
 
 cudf_status_t cudf_test_memory_manager_query_domain_pool_count_for_id(
-  cudf_memory_manager_handle manager,
-  uint64_t domain_id,
-  size_t* out)
+  cudf_memory_manager_handle manager, uint64_t domain_id, size_t* out)
 {
   CUDF_RUST_NULL_CHECK(out, "out is null");
   *out = 0;
@@ -3021,8 +3299,7 @@ cudf_status_t cudf_test_memory_resource_create_stats(cudf_memory_resource_handle
 }
 
 cudf_status_t cudf_test_memory_resource_create_fail_first_allocation(
-  cudf_memory_resource_handle upstream,
-  cudf_memory_resource_handle* out)
+  cudf_memory_resource_handle upstream, cudf_memory_resource_handle* out)
 {
   CUDF_RUST_NULL_CHECK(out, "out is null");
   *out = nullptr;

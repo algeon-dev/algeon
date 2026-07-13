@@ -217,8 +217,13 @@ extern "C" {
         domain: cudf_query_memory_domain_handle,
         stream: cudf_stream_handle,
         reservation_id: u64,
+        limit_bytes: usize,
         out: *mut cudf_reservation_handle,
+        out_resource: *mut cudf_memory_resource_handle,
     ) -> cudf_status_t;
+
+    /// Whether private CUDA pools support driver-enforced maximum sizes.
+    pub fn cudf_query_memory_domain_driver_ceiling_supported() -> i32;
 
     /// Read usage counters for a query memory domain.
     pub fn cudf_query_memory_domain_usage(

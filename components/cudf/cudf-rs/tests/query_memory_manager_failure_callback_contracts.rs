@@ -2,22 +2,35 @@ mod common;
 
 use std::sync::{
     Arc,
-    atomic::{AtomicUsize, Ordering},
+    atomic::{AtomicU64, AtomicUsize, Ordering},
 };
 
-use cudf::{DeviceId, DeviceMemoryManager, ErrorKind, ExecutionBudgetRequest, Runtime, testing::prelude::*};
+use cudf::{
+    DeviceId, DeviceMemoryFailureAction, DeviceMemoryFailureAllocationDomain, DeviceMemoryManager, ErrorKind,
+    ExecutionBudgetRequest, QueryMemoryDomainOptions, Runtime, testing::prelude::*,
+};
 
 #[test]
 fn manager_installed_failure_callback_observes_reservation_failures_and_preserves_stream_contract() {
     let device = DeviceId::current().unwrap();
     let calls = Arc::new(AtomicUsize::new(0));
+    let query_domain_id = Arc::new(AtomicU64::new(0));
+    let query_member_id = Arc::new(AtomicU64::new(0));
     let callback_calls = Arc::clone(&calls);
-    let callback = Arc::new(move |bytes: usize| {
-        assert!(bytes > 0);
+    let callback_domain_id = Arc::clone(&query_domain_id);
+    let callback_member_id = Arc::clone(&query_member_id);
+    let callback = Arc::new(move |info: cudf::DeviceMemoryFailureInfo| {
+        assert!(info.requested_bytes > 0);
         callback_calls.fetch_add(1, Ordering::SeqCst);
-        false
+        if let Some(DeviceMemoryFailureAllocationDomain::QueryMemoryDomain { domain_id, member_id }) =
+            info.allocation_domain
+        {
+            callback_domain_id.store(domain_id, Ordering::SeqCst);
+            callback_member_id.store(member_id, Ordering::SeqCst);
+        }
+        DeviceMemoryFailureAction::Decline
     });
-    let manager = DeviceMemoryManager::install_for_device_with_failure_callback(device, callback).unwrap();
+    let manager = DeviceMemoryManager::install_for_device_with_failure_callback_details(device, callback).unwrap();
     let state = DeviceMemoryManager::failure_callback_state_for_device(device).unwrap();
     assert!(state.exists);
     assert!(state.failure_callback_installed);
@@ -48,4 +61,20 @@ fn manager_installed_failure_callback_observes_reservation_failures_and_preserve
 
     assert_eq!(err.kind(), cudf::ErrorKind::InvalidInput);
     assert!(first.usage().unwrap().attached);
+
+    drop(first);
+    let domain = manager
+        .query_memory_domain(90_001, QueryMemoryDomainOptions::new(8 * 1024 * 1024).with_ceiling_bytes(8 * 1024 * 1024))
+        .unwrap();
+    let direct = cudf::ExecutionBudgetToken::from_runtime_in_query_domain(
+        &runtime,
+        ExecutionBudgetRequest::new(1).with_boundary("direct_domain_failure_callback"),
+        &domain,
+    )
+    .unwrap();
+    let err = runtime.series_from_value_with_budget(3i32, 1024, &direct).unwrap_err();
+
+    assert_eq!(err.kind(), ErrorKind::ResourceExhausted);
+    assert_eq!(query_domain_id.load(Ordering::SeqCst), 90_001);
+    assert_ne!(query_member_id.load(Ordering::SeqCst), 0);
 }

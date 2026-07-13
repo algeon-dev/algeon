@@ -418,14 +418,22 @@ cudf_status_t cudf_memory_manager_create_query_memory_domain(
   uint64_t release_threshold_bytes,
   cudf_query_memory_domain_handle* out);
 
-/// Attach a stream to a query memory domain.
+/// Attach a hard-limited member stream to a query memory domain.
 ///
 /// Allocations routed through the manager's public memory resource on this
-/// stream are served by the domain's pool and charged to the domain grant.
+/// stream are served by the domain's pool and charged to both the member limit
+/// and domain grant. `out_resource` directly allocates through this member and
+/// retains the domain pool until the resource is destroyed.
 cudf_status_t cudf_query_memory_domain_attach_stream(cudf_query_memory_domain_handle domain,
                                                      cudf_stream_handle stream,
                                                      uint64_t reservation_id,
-                                                     cudf_reservation_handle* out);
+                                                     size_t limit_bytes,
+                                                     cudf_reservation_handle* out,
+                                                     cudf_memory_resource_handle* out_resource);
+
+/// Return nonzero when this build can create private CUDA pools with a
+/// driver-enforced maximum size.
+int32_t cudf_query_memory_domain_driver_ceiling_supported(void);
 
 /// Read usage counters for a query memory domain.
 cudf_status_t cudf_query_memory_domain_usage(cudf_query_memory_domain_handle domain,

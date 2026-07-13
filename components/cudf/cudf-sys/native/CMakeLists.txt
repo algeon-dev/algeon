@@ -71,6 +71,27 @@ endif()
 
 rapids_find_package(CUDAToolkit REQUIRED)
 
+include(CheckCXXSourceCompiles)
+set(CMAKE_REQUIRED_LIBRARIES CUDA::cudart)
+check_cxx_source_compiles(
+  "#include <cuda_runtime_api.h>
+   int main() {
+     cudaMemPoolProps props{};
+     props.maxSize = 1;
+     cudaMemPoolAttr attr = cudaMemPoolAttrMaxPoolSize;
+     (void)attr;
+     return props.maxSize == 1 ? 0 : 1;
+   }"
+  CUDF_RUST_HAS_CUDA_MEMPOOL_MAX_SIZE
+)
+unset(CMAKE_REQUIRED_LIBRARIES)
+if(CUDF_RUST_HAS_CUDA_MEMPOOL_MAX_SIZE)
+  add_compile_definitions(CUDF_RUST_HAS_CUDA_MEMPOOL_MAX_SIZE=1)
+else()
+  add_compile_definitions(CUDF_RUST_HAS_CUDA_MEMPOOL_MAX_SIZE=0)
+endif()
+message(STATUS "CUDA private-pool hard ceiling support: ${CUDF_RUST_HAS_CUDA_MEMPOOL_MAX_SIZE}")
+
 if(CUDF_USE_PER_THREAD_DEFAULT_STREAM)
   add_compile_definitions(CUDA_API_PER_THREAD_DEFAULT_STREAM CUDF_USE_PER_THREAD_DEFAULT_STREAM)
 endif()
