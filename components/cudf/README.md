@@ -1,6 +1,6 @@
 # cudf-rs
 
-`cudf-rs` is a Rust GPU DataFrame workspace built around `libcudf`, but it is
+`cudf-rs` is a Rust GPU DataFrame workspace built around [`libcudf`](https://github.com/DataFusion-Nexus/cudf), but it is
 not intended to be only a thin Rust binding layer. Its main direction is to
 make cuDF usable as part of backend services and query execution systems,
 including DataFusion-Nexus.
@@ -25,7 +25,7 @@ behavior explicit enough for service-side integration.
 - `cudf-rs/` - the safe public Rust API crate, published as `cudf`.
 - `cudf-sys/` - low-level FFI bindings and the native C shim around `libcudf`.
 - `rapids-interop/` - shared RAPIDS Rust interop contract types and traits.
-- `cudf/` - the pinned upstream cuDF source submodule used to build `libcudf`.
+- `cudf/` - the pinned upstream **[forked cuDF](https://github.com/DataFusion-Nexus/cudf)** source submodule used to build `libcudf`.
 
 ## Status
 

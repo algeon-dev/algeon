@@ -53,7 +53,7 @@ impl DataFrame {
     }
 }
 
-impl<'df, 'ctx, 'handles> DataFrameExecutionScope<'df, 'ctx, 'handles> {
+impl DataFrameExecutionScope<'_, '_, '_> {
     /// Evaluate expressions and add or replace columns using the borrowed execution override.
     ///
     /// Expression intermediates and outputs use the resolved stream and memory

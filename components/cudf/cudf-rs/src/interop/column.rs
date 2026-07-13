@@ -172,16 +172,18 @@ pub(super) fn transfer_from_owned_column_with_runtime_release_synchronization(
     let observation = column_boundary_observation(BoundaryKind::OwnedTransfer, &column, operation)?;
     let domain = Arc::clone(column.execution_domain());
     let (default_device, readiness) = prepared_device_readiness(operation, column.execution_domain())?;
-    let projection = {
+    let (column_projection, semantic_columns, bindings) = {
         let view = column.view().map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?;
-        prepared_column_projection_from_view(&view, operation, default_device, 0, 0)?
+        let projection = prepared_column_projection_from_view(&view, operation, default_device, 0, 0)?;
+        (projection.column, projection.semantic_columns, to_static_bindings(operation, projection.bindings)?)
     };
+    let readiness = to_static_readiness(operation, readiness)?;
     let (owner, releaser) = runtime_owned_column_owner_and_releaser(column, default_device, synchronization);
     let transfer = OwnedColumnTransfer::try_new_with_semantic_columns(
-        projection.column,
-        projection.semantic_columns,
-        to_static_bindings(operation, projection.bindings)?,
-        to_static_readiness(operation, readiness)?,
+        column_projection,
+        semantic_columns,
+        bindings,
+        readiness,
         owned_transfer_diagnostics(),
         owned_transfer_runtime_release_contract_with_synchronization(default_device, synchronization)?,
         owner,
@@ -192,7 +194,7 @@ pub(super) fn transfer_from_owned_column_with_runtime_release_synchronization(
     Ok((transfer, releaser))
 }
 
-impl<'view> ColumnView<'view> {
+impl ColumnView<'_> {
     /// Project this low-level borrowed column view into the shared RAPIDS
     /// borrowed interop ABI.
     ///
@@ -240,7 +242,7 @@ impl<'view> ColumnView<'view> {
 }
 
 impl TryBorrowColumnView for ColumnView<'_> {
-    fn try_borrow_column_view<'a>(&'a self) -> Result<BorrowedColumnView<'a>, InteropError> {
+    fn try_borrow_column_view(&self) -> Result<BorrowedColumnView<'_>, InteropError> {
         borrow_from_column_view(self, "interop::ColumnView::try_borrow_column_view")
     }
 }
@@ -442,7 +444,7 @@ impl Column {
 }
 
 impl TryBorrowColumnView for Column {
-    fn try_borrow_column_view<'a>(&'a self) -> Result<BorrowedColumnView<'a>, InteropError> {
+    fn try_borrow_column_view(&self) -> Result<BorrowedColumnView<'_>, InteropError> {
         borrow_from_owned_column(self, "interop::Column::try_borrow_column_view")
     }
 }

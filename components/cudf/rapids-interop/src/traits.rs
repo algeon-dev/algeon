@@ -9,7 +9,7 @@ use crate::{
 /// The returned descriptor lifetime is intentionally tied to the specific
 /// borrow of `self`.
 pub trait TryBorrowColumnView {
-    fn try_borrow_column_view<'a>(&'a self) -> Result<BorrowedColumnView<'a>>;
+    fn try_borrow_column_view(&self) -> Result<BorrowedColumnView<'_>>;
 }
 
 /// Fallible producer adapter for a borrowed table descriptor.
@@ -17,7 +17,7 @@ pub trait TryBorrowColumnView {
 /// The returned descriptor lifetime is intentionally tied to the specific
 /// borrow of `self`.
 pub trait TryBorrowTableView {
-    fn try_borrow_table_view<'a>(&'a self) -> Result<BorrowedTableView<'a>>;
+    fn try_borrow_table_view(&self) -> Result<BorrowedTableView<'_>>;
 }
 
 /// Fallible producer adapter for a prepared device column export.
@@ -60,8 +60,8 @@ pub trait TryIntoOwnedDevicePartitionedTableTransfer: Sized {
     fn try_into_owned_device_partitioned_table_transfer(self) -> Result<PartitionedOwnedTableTransfer>;
 }
 
-impl<'a> TryBorrowColumnView for BorrowedColumnView<'a> {
-    fn try_borrow_column_view<'b>(&'b self) -> Result<BorrowedColumnView<'b>> {
+impl TryBorrowColumnView for BorrowedColumnView<'_> {
+    fn try_borrow_column_view(&self) -> Result<BorrowedColumnView<'_>> {
         match self.column() {
             Some(column) => BorrowedColumnView::try_new_with_semantic_columns(
                 column.clone(),
@@ -81,27 +81,27 @@ impl<'a> TryBorrowColumnView for BorrowedColumnView<'a> {
     }
 }
 
-impl<'a> TryBorrowTableView for BorrowedTableView<'a> {
-    fn try_borrow_table_view<'b>(&'b self) -> Result<BorrowedTableView<'b>> {
+impl TryBorrowTableView for BorrowedTableView<'_> {
+    fn try_borrow_table_view(&self) -> Result<BorrowedTableView<'_>> {
         let columns =
             self.columns().iter().map(|column| column.try_borrow_column_view()).collect::<Result<Vec<_>>>()?;
         BorrowedTableView::try_new(self.num_rows(), columns, self.execution())
     }
 }
 
-impl<'a> TryPrepareDeviceColumnExport for PreparedColumnExport<'a> {
+impl TryPrepareDeviceColumnExport for PreparedColumnExport<'_> {
     fn try_prepare_device_column_export(&self) -> Result<PreparedColumnExport<'_>> {
         Ok(self.clone())
     }
 }
 
-impl<'a> TryPrepareDeviceTableExport for PreparedTableExport<'a> {
+impl TryPrepareDeviceTableExport for PreparedTableExport<'_> {
     fn try_prepare_device_table_export(&self) -> Result<PreparedTableExport<'_>> {
         Ok(self.clone())
     }
 }
 
-impl<'a> TryPrepareDevicePartitionedTableExport for PartitionedPreparedTableExport<'a> {
+impl TryPrepareDevicePartitionedTableExport for PartitionedPreparedTableExport<'_> {
     fn try_prepare_device_partitioned_table_export(&self) -> Result<PartitionedPreparedTableExport<'_>> {
         Ok(self.clone())
     }

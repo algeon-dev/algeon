@@ -29,7 +29,7 @@ pub struct BorrowedStream<'a> {
 // external synchronization by the owning layer.
 unsafe impl Send for BorrowedStream<'_> {}
 
-impl<'a> BorrowedStream<'a> {
+impl BorrowedStream<'_> {
     /// Bind a raw stream owner-handle token to an external lifetime.
     ///
     /// # Safety
@@ -62,7 +62,7 @@ pub struct BorrowedEvent<'a> {
 unsafe impl Send for BorrowedEvent<'_> {}
 unsafe impl Sync for BorrowedEvent<'_> {}
 
-impl<'a> BorrowedEvent<'a> {
+impl BorrowedEvent<'_> {
     /// Bind a raw event owner-handle token to an external lifetime.
     ///
     /// # Safety
@@ -97,7 +97,7 @@ pub struct BorrowedMemoryResource<'a> {
 unsafe impl Send for BorrowedMemoryResource<'_> {}
 unsafe impl Sync for BorrowedMemoryResource<'_> {}
 
-impl<'a> BorrowedMemoryResource<'a> {
+impl BorrowedMemoryResource<'_> {
     /// Bind a raw memory-resource owner-handle token to an external lifetime.
     ///
     /// # Safety

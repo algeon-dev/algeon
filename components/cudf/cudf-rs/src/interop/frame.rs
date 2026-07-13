@@ -337,7 +337,7 @@ impl Series {
 }
 
 impl TryBorrowColumnView for Series {
-    fn try_borrow_column_view<'a>(&'a self) -> Result<BorrowedColumnView<'a>, InteropError> {
+    fn try_borrow_column_view(&self) -> Result<BorrowedColumnView<'_>, InteropError> {
         borrow_from_owned_column(self.as_column(), "interop::Series::try_borrow_column_view")
     }
 }
@@ -548,7 +548,7 @@ impl DataFrame {
 }
 
 impl TryBorrowTableView for DataFrame {
-    fn try_borrow_table_view<'a>(&'a self) -> Result<BorrowedTableView<'a>, InteropError> {
+    fn try_borrow_table_view(&self) -> Result<BorrowedTableView<'_>, InteropError> {
         let execution = execution_binding("interop::DataFrame::try_borrow_table_view", self.execution_domain())?;
         let columns = self
             .columns_map()

@@ -953,7 +953,7 @@ fn dataframe_device_allocated_size_bytes(frame: &DataFrame, operation: &'static 
     })
 }
 
-impl<'a, 'ctx, 'handles> GroupByExecutionScope<'a, 'ctx, 'handles> {
+impl GroupByExecutionScope<'_, '_, '_> {
     /// Execute the groupby with the given aggregation specifications.
     pub fn agg(&self, specs: &[AggSpec]) -> Result<DataFrame> {
         self.groupby.agg_in_context(specs, self.ctx)

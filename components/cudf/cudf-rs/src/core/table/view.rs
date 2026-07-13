@@ -287,7 +287,7 @@ impl<'a> TableView<'a> {
     }
 }
 
-impl<'a> Drop for TableView<'a> {
+impl Drop for TableView<'_> {
     fn drop(&mut self) {
         // SAFETY: self.handle is valid (NonNull from construction). Drop runs
         // exactly once, so the handle is destroyed exactly once.

@@ -4,7 +4,7 @@ use crate::core::{
     row_range,
 };
 
-pub(crate) fn slice_view_for_test<'a>(column: &'a Column, offset: usize, length: usize) -> Result<ColumnView<'a>> {
+pub(crate) fn slice_view_for_test(column: &Column, offset: usize, length: usize) -> Result<ColumnView<'_>> {
     let operation = "testing::column::slice_view";
     let view = Column::view(column)?;
     let start = i32::try_from(offset).map_err(|_| error::row_range_limit_error(operation, "start", offset))?;

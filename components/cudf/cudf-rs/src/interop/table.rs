@@ -187,7 +187,7 @@ impl TableView<'_> {
 }
 
 impl TryBorrowTableView for TableView<'_> {
-    fn try_borrow_table_view<'a>(&'a self) -> Result<BorrowedTableView<'a>, InteropError> {
+    fn try_borrow_table_view(&self) -> Result<BorrowedTableView<'_>, InteropError> {
         borrow_table_view_from_table_view(self, "interop::TableView::try_borrow_table_view")
     }
 }
@@ -401,7 +401,7 @@ impl Table {
 }
 
 impl TryBorrowTableView for Table {
-    fn try_borrow_table_view<'a>(&'a self) -> Result<BorrowedTableView<'a>, InteropError> {
+    fn try_borrow_table_view(&self) -> Result<BorrowedTableView<'_>, InteropError> {
         borrow_table_view_from_table(self, "interop::Table::try_borrow_table_view")
     }
 }

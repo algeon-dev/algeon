@@ -12,7 +12,7 @@ fn schema_nullability(nullable: bool) -> SchemaNullability {
 }
 
 pub(super) fn prepared_column_projection_from_view<'a>(
-    view: &ColumnView<'_>,
+    view: &ColumnView<'a>,
     operation: &'static str,
     default_device: i32,
     next_column_id: u32,

@@ -80,15 +80,15 @@ fn observed_raw_record_call_count_for_stream_raw(stream_raw: usize) -> i32 {
     out
 }
 
-fn shared_same_device_completion<'a>(stream: &'a CudaStream) -> CompletionAuthority<'a> {
+fn shared_same_device_completion(stream: &CudaStream) -> CompletionAuthority<'_> {
     CompletionAuthority::SameDeviceStream { stream: cudf::interop::cuda_stream_handle(stream).unwrap() }
 }
 
-fn shared_stream_read_start<'a>(stream: &'a CudaStream) -> ReadStartAuthority<'a> {
+fn shared_stream_read_start(stream: &CudaStream) -> ReadStartAuthority<'_> {
     ReadStartAuthority::ConsumerStream { stream: cudf::interop::cuda_stream_handle(stream).unwrap() }
 }
 
-fn shared_cross_device_completion<'a>(event: &'a CudaEvent) -> CompletionAuthority<'a> {
+fn shared_cross_device_completion(event: &CudaEvent) -> CompletionAuthority<'_> {
     CompletionAuthority::CrossDeviceEvent { event: cudf::interop::cuda_event_handle(event).unwrap() }
 }
 
