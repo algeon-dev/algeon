@@ -13,8 +13,9 @@ use errors::{
     foreign_column_view_metadata_contract_error, foreign_string_view_contract_error,
 };
 pub(crate) use testing_hooks::{
-    column_view_to_fixed_width_host_bytes_for_test, column_view_to_raw_bytes_for_test,
-    synthetic_string_view_without_children, trigger_fixed_width_host_byte_range_overflow_for_test,
+    column_view_copy_fixed_width_to_host_for_benchmark, column_view_to_fixed_width_host_bytes_for_test,
+    column_view_to_raw_bytes_for_test, synthetic_string_view_without_children,
+    trigger_fixed_width_host_byte_range_overflow_for_test,
 };
 
 use super::{convert::copy_view_to_owned, device_slice::DeviceSlice, owned::Column};
