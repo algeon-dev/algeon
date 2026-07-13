@@ -33,9 +33,10 @@ futures = { workspace = true }
 iceberg = { workspace = true, optional = true }
 iceberg-catalog-glue = { workspace = true, optional = true }
 parquet = { workspace = true }
+prost = "0.14"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"], optional = true }
 serde_json = { workspace = true }
-tokio = { workspace = true, features = ["macros", "process", "rt", "rt-multi-thread", "time"] }
+tokio = { workspace = true, features = ["macros", "process", "rt", "rt-multi-thread", "sync", "time"] }
 tonic = { workspace = true }
 url = "2.5"
 
