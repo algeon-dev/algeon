@@ -1686,7 +1686,7 @@ fn graph_operation_registry_pins_descriptor_contracts() {
                 GraphSourceVertexRequirement::None,
                 GraphWeightPolicy::Ignored,
                 GraphOutputSchemaKind::Fixed,
-                true,
+                false,
             ),
             (
                 GraphAlgorithm::EigenvectorCentrality,
@@ -1805,14 +1805,14 @@ fn graph_operation_registry_pins_descriptor_contracts() {
                 GraphSourceVertexRequirement::None,
                 GraphWeightPolicy::Ignored,
                 GraphOutputSchemaKind::Fixed,
-                true,
+                false,
             ),
             (
                 GraphAlgorithm::Ecg,
                 GraphSourceVertexRequirement::None,
                 GraphWeightPolicy::Ignored,
                 GraphOutputSchemaKind::Fixed,
-                true,
+                false,
             ),
             (
                 GraphAlgorithm::SpectralModularityMaximization,
