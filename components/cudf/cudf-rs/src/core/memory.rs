@@ -371,6 +371,22 @@ pub struct DeviceMemoryManagerOptions {
 }
 
 impl DeviceMemoryManagerOptions {
+    fn normalized(self) -> Self {
+        let base = match self.base {
+            DeviceMemoryManagerBase::CudaAsync { initial_pool_size, release_threshold } => {
+                DeviceMemoryManagerBase::CudaAsync {
+                    initial_pool_size: initial_pool_size.filter(|size| *size != 0),
+                    release_threshold: release_threshold.filter(|threshold| *threshold != usize::MAX),
+                }
+            },
+            DeviceMemoryManagerBase::Pool { initial_pool_size, maximum_pool_size } => DeviceMemoryManagerBase::Pool {
+                initial_pool_size,
+                maximum_pool_size: maximum_pool_size.filter(|size| *size != 0),
+            },
+        };
+        Self { base }
+    }
+
     fn to_sys(self) -> cudf_sys::cudf_memory_manager_options_t {
         let mut out = cudf_sys::cudf_memory_manager_options_t::default();
         match self.base {
@@ -387,6 +403,61 @@ impl DeviceMemoryManagerOptions {
         }
         out
     }
+
+    fn from_sys(value: cudf_sys::cudf_memory_manager_options_t) -> Result<Self> {
+        let initial_pool_size = memory_manager_option_bytes(value.initial_pool_size_bytes, "initial_pool_size_bytes")?;
+        let base = match value.base_kind {
+            cudf_sys::cudf_memory_manager_base_kind_t::CUDF_MEMORY_MANAGER_BASE_CUDA_ASYNC => {
+                let release_threshold = if value.release_threshold_bytes == u64::MAX {
+                    None
+                } else {
+                    Some(memory_manager_option_bytes(value.release_threshold_bytes, "release_threshold_bytes")?)
+                };
+                DeviceMemoryManagerBase::CudaAsync {
+                    initial_pool_size: (initial_pool_size != 0).then_some(initial_pool_size),
+                    release_threshold,
+                }
+            },
+            cudf_sys::cudf_memory_manager_base_kind_t::CUDF_MEMORY_MANAGER_BASE_POOL => {
+                let maximum_pool_size = if value.maximum_pool_size_bytes == 0 {
+                    None
+                } else {
+                    Some(memory_manager_option_bytes(value.maximum_pool_size_bytes, "maximum_pool_size_bytes")?)
+                };
+                DeviceMemoryManagerBase::Pool { initial_pool_size, maximum_pool_size }
+            },
+        };
+        Ok(Self { base })
+    }
+}
+
+fn memory_manager_option_bytes(value: u64, field: &'static str) -> Result<usize> {
+    usize::try_from(value).map_err(|_| {
+        error::Error::new_with(
+            error::ErrorCode::ValueOutOfRange,
+            "memory::device_memory_manager::options_for_device",
+            "installed device memory manager option does not fit usize",
+        )
+        .with_detail("field", field)
+        .with_detail("value", value.to_string())
+    })
+}
+
+fn ensure_memory_manager_options_match(
+    existing: DeviceMemoryManagerOptions,
+    requested: DeviceMemoryManagerOptions,
+) -> Result<()> {
+    if existing == requested.normalized() {
+        return Ok(());
+    }
+    Err(error::Error::new_with(
+        error::ErrorCode::RuntimeBindingMismatch,
+        "memory::device_memory_manager::for_device",
+        "device memory manager already exists with different physical-base options",
+    )
+    .with_detail("existing_options", format!("{existing:?}"))
+    .with_detail("requested_options", format!("{requested:?}"))
+    .with_detail("reason", "device_memory_manager_options_conflict"))
 }
 
 /// Usage counters for a stream-bound reservation.
@@ -793,14 +864,14 @@ impl DeviceMemoryManager {
     /// let _lease = rt.stream_reservation(1, 1 << 30).unwrap();
     /// ```
     pub fn install_for_device(device: DeviceId) -> Result<Self> {
-        Self::for_device(device)
+        Self::for_device_with_options(device, DeviceMemoryManagerOptions::default())
     }
 
     /// Explicitly install the memory domain for `device` with physical-base
     /// options.
     ///
-    /// Options only affect first creation for a device. If a manager already
-    /// exists, the existing process-local manager is returned.
+    /// If a manager already exists, its effective options must match exactly;
+    /// the process-global allocator cannot be replaced after first use.
     pub fn install_for_device_with_options(device: DeviceId, options: DeviceMemoryManagerOptions) -> Result<Self> {
         Self::for_device_with_options(device, options)
     }
@@ -877,18 +948,54 @@ impl DeviceMemoryManager {
         Self::failure_callback_state_for_device_raw(device)
     }
 
+    /// Returns the effective physical-base options for an existing process-local manager.
+    pub fn options_for_device(device: DeviceId) -> Result<Option<DeviceMemoryManagerOptions>> {
+        let _guard = DeviceGuard::new(device)?;
+        let mut exists = 0;
+        let mut options = cudf_sys::cudf_memory_manager_options_t::default();
+        error::check_status_in_with_details(
+            unsafe {
+                cudf_sys::cudf_memory_manager_options_for_device(device.ordinal_raw(), &mut exists, &mut options)
+            },
+            "memory::device_memory_manager::options_for_device",
+            [("device", device.ordinal().to_string())],
+        )?;
+        (exists != 0).then(|| DeviceMemoryManagerOptions::from_sys(options)).transpose()
+    }
+
     /// Resolve the process-local manager for `device`, creating it if needed.
     ///
     /// On first creation the manager installs its reservation-aware adaptor as
     /// the current RMM resource for `device`. Later calls return aliases to
     /// the same manager and resource.
     pub fn for_device(device: DeviceId) -> Result<Self> {
-        Self::for_device_with_options(device, DeviceMemoryManagerOptions::default())
+        let _guard = DeviceGuard::new(device)?;
+        let mut manager = ptr::null_mut();
+        error::check_status_in_with_details(
+            unsafe { cudf_sys::cudf_memory_manager_for_device(device.ordinal_raw(), &mut manager) },
+            "memory::device_memory_manager::for_device",
+            [("device", device.ordinal().to_string())],
+        )?;
+        let manager = error::require_non_null(manager, "memory::device_memory_manager::for_device", "memory manager")?;
+
+        let mut resource = ptr::null_mut();
+        error::check_status_in(
+            unsafe { cudf_sys::cudf_memory_manager_resource(manager.as_ptr(), &mut resource) },
+            "memory::device_memory_manager::resource",
+        )?;
+        let resource =
+            DeviceMemoryResource::from_created_handle(resource, device, "memory::device_memory_manager::resource")?;
+
+        Ok(Self { handle: Arc::new(DeviceMemoryManagerHandle { raw: manager, device }), resource })
     }
 
     /// Resolve the process-local manager for `device`, creating it with
-    /// `options` if needed.
+    /// `options` if needed. An existing manager with different effective
+    /// options returns [`crate::ErrorCode::RuntimeBindingMismatch`].
     pub fn for_device_with_options(device: DeviceId, options: DeviceMemoryManagerOptions) -> Result<Self> {
+        if let Some(existing) = Self::options_for_device(device)? {
+            ensure_memory_manager_options_match(existing, options)?;
+        }
         let _guard = DeviceGuard::new(device)?;
         let options = options.to_sys();
         let mut manager = ptr::null_mut();
@@ -917,6 +1024,9 @@ impl DeviceMemoryManager {
         callback: Arc<dyn Fn(DeviceMemoryFailureInfo) -> DeviceMemoryFailureAction + Send + Sync + 'static>,
         options: DeviceMemoryManagerOptions,
     ) -> Result<Self> {
+        if let Some(existing) = Self::options_for_device(device)? {
+            ensure_memory_manager_options_match(existing, options)?;
+        }
         let _guard = DeviceGuard::new(device)?;
         let device_ordinal = device.ordinal_raw();
         let options = options.to_sys();

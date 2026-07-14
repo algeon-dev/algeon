@@ -1948,6 +1948,7 @@ struct memory_resource_handle_state {
 struct device_memory_manager_state {
   int32_t device = -1;
   std::shared_ptr<memory_resource_owner> owner;
+  cudf_memory_manager_options_t options = default_memory_manager_options();
   cudf_memory_failure_callback_t failure_callback       = nullptr;
   cudf_memory_failure_callback_v2_t failure_callback_v2 = nullptr;
   void* failure_callback_arg                            = nullptr;
@@ -2146,6 +2147,18 @@ cudf_status_t normalize_memory_manager_options(cudf_memory_manager_options_t con
   }
 }
 
+bool memory_manager_options_equal(cudf_memory_manager_options_t const& left,
+                                  cudf_memory_manager_options_t const& right)
+{
+  if (left.base_kind != right.base_kind) { return false; }
+  if (left.base_kind == CUDF_MEMORY_MANAGER_BASE_CUDA_ASYNC) {
+    return left.initial_pool_size_bytes == right.initial_pool_size_bytes &&
+           left.release_threshold_bytes == right.release_threshold_bytes;
+  }
+  return left.initial_pool_size_bytes == right.initial_pool_size_bytes &&
+         left.maximum_pool_size_bytes == right.maximum_pool_size_bytes;
+}
+
 std::shared_ptr<device_memory_manager_state> make_memory_manager_for_current_device(
   int32_t device,
   cudf_memory_failure_callback_t failure_callback,
@@ -2155,6 +2168,7 @@ std::shared_ptr<device_memory_manager_state> make_memory_manager_for_current_dev
 {
   auto manager    = std::make_shared<device_memory_manager_state>();
   manager->device = device;
+  manager->options = options;
   manager->failure_callback     = failure_callback;
   manager->failure_callback_v2  = failure_callback_v2;
   manager->failure_callback_arg = failure_callback_arg;
@@ -2281,6 +2295,12 @@ cudf_status_t memory_manager_for_device_impl(int32_t device,
                                                              failure_callback_arg,
                                                              resolved_options))
              .first;
+    } else if (options != nullptr &&
+               !memory_manager_options_equal(it->second->options, resolved_options)) {
+      set_error(
+        "device memory manager already exists with different physical-base options; "
+        "the process-global allocator cannot be replaced after first use");
+      return CUDF_ERROR_INVALID_OPERATION;
     } else if ((failure_callback != nullptr || failure_callback_v2 != nullptr) &&
                !it->second->failure_callback_installed) {
       set_error(
@@ -2717,6 +2737,27 @@ cudf_status_t cudf_memory_manager_failure_callback_state(int32_t device,
     if (it == memory_manager_registry().end()) { return CUDF_SUCCESS; }
     *exists = 1;
     *failure_callback_installed = it->second->failure_callback_installed ? 1 : 0;
+    return CUDF_SUCCESS;
+  }
+  CUDF_RUST_CATCH
+}
+
+cudf_status_t cudf_memory_manager_options_for_device(
+  int32_t device, int32_t* exists, cudf_memory_manager_options_t* out)
+{
+  CUDF_RUST_NULL_CHECK(exists, "exists is null");
+  *exists = 0;
+  CUDF_RUST_NULL_CHECK(out, "out is null");
+  *out = default_memory_manager_options();
+  CUDF_RUST_TRY
+  {
+    cudf_status_t const validation_status = validate_memory_manager_device(device);
+    if (validation_status != CUDF_SUCCESS) { return validation_status; }
+    std::scoped_lock lock{memory_manager_registry_mutex()};
+    auto const it = memory_manager_registry().find(device);
+    if (it == memory_manager_registry().end()) { return CUDF_SUCCESS; }
+    *exists = 1;
+    *out    = it->second->options;
     return CUDF_SUCCESS;
   }
   CUDF_RUST_CATCH

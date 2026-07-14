@@ -643,11 +643,6 @@ impl DataFrameJoinPairIndices {
     /// [`reservation_size_bytes_for_len`](Self::reservation_size_bytes_for_len)
     /// for exact retained gather-map reporting.
     pub const OUTPUT_SIZE_PREFLIGHT_CONTRACT: &'static str = EQUALITY_JOIN_OUTPUT_SIZE_PREFLIGHT_CONTRACT;
-    #[deprecated(
-        since = "0.1.0",
-        note = "renamed to OUTPUT_SIZE_PREFLIGHT_CONTRACT after the bounded engine started using the exact preflight"
-    )]
-    pub const OUTPUT_SIZE_PREFLIGHT_CONTRACT_GAP: &'static str = Self::OUTPUT_SIZE_PREFLIGHT_CONTRACT;
 
     pub(crate) fn new(left: Series, right: Series) -> Self {
         Self { left: DataFrameJoinIndices::new(left), right: DataFrameJoinIndices::new(right) }
