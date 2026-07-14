@@ -1161,6 +1161,7 @@ pub(crate) fn read_parquet_table_with_evidence(
 
     let use_explicit_remote_datasource =
         options.remote_source.as_ref().is_some_and(RemoteParquetSource::should_use_explicit_remote_datasource);
+    let _io_guard = super::lock_libcudf_io(OPERATION)?;
     let status = if use_explicit_remote_datasource {
         let filepath = path_input.expect("remote source validation requires path input");
         let profile_raw = remote_profile_raw.as_ref().expect("remote profile exists for remote source");
@@ -1447,6 +1448,7 @@ pub(crate) fn read_parquet_multi_table(options: &ParquetMultiTableReadOptions) -
 
     // SAFETY: filepath_ptrs and column/row-group buffers are valid for this
     // call. The predicate handle, when present, is retained by options.
+    let _io_guard = super::lock_libcudf_io(OPERATION)?;
     let status = if has_explicit_remote_sources {
         let remote_source_flags = remote_source_flags.as_ref().expect("remote flags exist when remote sources exist");
         let remote_profile_raw = remote_profile_raw.as_ref().expect("remote profiles exist when remote sources exist");
@@ -1780,6 +1782,7 @@ pub(crate) fn write_parquet_with_exec(
     let (name_ptrs, num_cols) =
         if name_ptrs_vec.is_empty() { (ptr::null(), 0) } else { (name_ptrs_vec.as_ptr(), name_ptrs_vec.len() as i32) };
 
+    let _io_guard = super::lock_libcudf_io("io::parquet::write_parquet")?;
     error::check_status_in_with_details(
         // SAFETY: table handle is valid (NonNull). filepath is a valid CString.
         // name_ptrs is either null or a valid pointer to num_cols CString pointers.

@@ -56,6 +56,7 @@ pub fn read_json_table(options: &JsonTableReadOptions) -> Result<TableReadOutput
     let mut table_handle = ptr::null_mut();
     let mut names_ptr: *mut *mut std::os::raw::c_char = ptr::null_mut();
     let mut num_names: i32 = 0;
+    let _io_guard = super::lock_libcudf_io(OPERATION)?;
     error::check_status_in_with_details(
         unsafe {
             cudf_sys::cudf_io_read_json_with_metadata_ex(
@@ -166,6 +167,7 @@ pub(crate) fn write_json_with_exec(
 
     let names_ptr = if c_name_ptrs.is_empty() { ptr::null() } else { c_name_ptrs.as_ptr() };
 
+    let _io_guard = super::lock_libcudf_io(operation)?;
     error::check_status_in_with_details(
         unsafe {
             cudf_sys::cudf_io_write_json_ex(
