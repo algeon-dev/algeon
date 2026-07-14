@@ -3,8 +3,11 @@ use std::fmt;
 use std::{collections::BTreeMap, fs, net::SocketAddr, num::NonZeroUsize, path::PathBuf, time::Duration};
 
 use nexus_query_engine::{
-    MemoryControlPolicy, NativePipelineExecutionMode, QueryMemoryDomainPolicy, QueryPlacementPolicy, SlotGuarantee,
-    SourceChunkPlanningMode, SourceSchedulerPolicy, StatisticalAggregateExecutionMode,
+    mode::{NativePipelineExecutionMode, StatisticalAggregateExecutionMode},
+    runtime::{
+        MemoryControlPolicy, QueryMemoryDomainPolicy, QueryPlacementPolicy, SlotGuarantee, SourceChunkPlanningMode,
+        SourceSchedulerPolicy,
+    },
 };
 use serde::Deserialize;
 
@@ -14,18 +17,24 @@ use super::{
 };
 #[cfg(feature = "iceberg")]
 use crate::table_format::scan::{DEFAULT_TABLE_FORMAT_S3_SOURCE_STORAGE_PROFILE_ID, credential_free_endpoint_identity};
+use crate::{
+    backend::{MemoryShare, NexusAdmissionPolicy},
+    native_exec::NativeCudfExecutionConfig,
+    planner::CudfOptimizerConfig,
+    policy::GpuFallbackPolicy,
+};
+#[cfg(feature = "cugraph")]
+use crate::{graph_sql::CugraphGraphConstructionPolicy, graph_sql::CugraphGraphOptions};
 #[cfg(feature = "iceberg")]
 use crate::{
-    AWS_ENDPOINT_URL_ENV, AWS_ENDPOINT_URL_S3_ENV, NEXUS_ICEBERG_PARQUET_READ_STRATEGY_ENV,
-    NEXUS_ICEBERG_REMOTE_DIRECT_ENV, NEXUS_ICEBERG_REMOTE_DIRECT_READ_MODE_ENV,
-    NEXUS_ICEBERG_REMOTE_HOST_BUFFER_RANGED_ENV, NEXUS_LAKEHOUSE_CACHE_MAX_BYTES_ENV, NEXUS_LAKEHOUSE_CACHE_POLICY_ENV,
-    NEXUS_LAKEHOUSE_CACHE_READ_ENV, NEXUS_LAKEHOUSE_CACHE_ROOT_ENV, TableFormatLakehouseCachePolicy,
-    TableFormatLakehouseCacheReadPolicy, TableFormatParquetReadStrategyConfig,
-    TableFormatParquetReadStrategyPreference,
+    table_format::AWS_ENDPOINT_URL_ENV, table_format::AWS_ENDPOINT_URL_S3_ENV,
+    table_format::NEXUS_ICEBERG_PARQUET_READ_STRATEGY_ENV, table_format::NEXUS_ICEBERG_REMOTE_DIRECT_ENV,
+    table_format::NEXUS_ICEBERG_REMOTE_DIRECT_READ_MODE_ENV, table_format::NEXUS_ICEBERG_REMOTE_HOST_BUFFER_RANGED_ENV,
+    table_format::NEXUS_LAKEHOUSE_CACHE_MAX_BYTES_ENV, table_format::NEXUS_LAKEHOUSE_CACHE_POLICY_ENV,
+    table_format::NEXUS_LAKEHOUSE_CACHE_READ_ENV, table_format::NEXUS_LAKEHOUSE_CACHE_ROOT_ENV,
+    table_format::TableFormatLakehouseCachePolicy, table_format::TableFormatLakehouseCacheReadPolicy,
+    table_format::TableFormatParquetReadStrategyConfig, table_format::TableFormatParquetReadStrategyPreference,
 };
-use crate::{CudfOptimizerConfig, GpuFallbackPolicy, MemoryShare, NativeCudfExecutionConfig, NexusAdmissionPolicy};
-#[cfg(feature = "cugraph")]
-use crate::{CugraphGraphConstructionPolicy, CugraphGraphOptions};
 
 /// Socket address the Flight SQL server listens on. Defaults to `0.0.0.0:50051`.
 pub const NEXUS_SERVER_BIND_ENV: &str = "NEXUS_SERVER_BIND";
@@ -420,7 +429,7 @@ pub struct ServerConfig {
     /// Authentication mode applied to incoming Flight SQL RPCs. Loaded
     /// from the TOML overlay pointed to by
     /// [`NEXUS_SERVER_CONFIG_FILE_ENV`]; defaults to
-    /// [`super::auth::AuthMode::Disabled`] when no file is provided.
+    /// [`crate::server::AuthMode::Disabled`] when no file is provided.
     pub auth: AuthConfig,
     /// Optional mutable workspace overlay that can read through to a
     /// configured source schema while keeping all DDL local to the workspace.
@@ -1677,7 +1686,7 @@ fn first_present_bounded_budget_field(
 fn iceberg_source_storage_profile(
     config: &IcebergServerConfig,
     values: &mut EnvValues<'_>,
-) -> nexus_query_engine::SourceStorageProfile {
+) -> nexus_query_engine::runtime::SourceStorageProfile {
     match &config.backend {
         IcebergCatalogBackendConfig::Glue(glue) => {
             let mut catalog_config = crate::table_format::iceberg::catalog::GlueIcebergCatalogConfig::new(
@@ -1964,7 +1973,7 @@ fn iceberg_parquet_read_strategy_config(
         config.storage_endpoint = Some(credential_free_endpoint_identity(endpoint));
     }
     if iceberg_backend_requires_scoped_remote_direct_profile(backend) {
-        config.credential_mode = nexus_query_engine::CredentialMode::ScopedResolved;
+        config.credential_mode = nexus_query_engine::source::CredentialMode::ScopedResolved;
     }
     Ok(config)
 }
@@ -2009,7 +2018,9 @@ fn table_format_parquet_read_strategy_config(
         .map(|raw| parse_remote_parquet_read_mode(&raw))
         .transpose()?
         .unwrap_or_default();
-    if !remote_direct_enabled && remote_direct_read_mode == nexus_query_engine::RemoteParquetReadMode::RequireDirect {
+    if !remote_direct_enabled
+        && remote_direct_read_mode == nexus_query_engine::source::RemoteParquetReadMode::RequireDirect
+    {
         return Err(ServerError::invalid_config(
             NEXUS_ICEBERG_REMOTE_DIRECT_ENV,
             format!("cannot be disabled when {NEXUS_ICEBERG_REMOTE_DIRECT_READ_MODE_ENV} is `require_direct`"),
@@ -2066,9 +2077,9 @@ fn table_format_parquet_read_strategy_config(
         || has_explicit_s3_credentials
         || credential_source.is_some()
     {
-        nexus_query_engine::CredentialMode::ScopedResolved
+        nexus_query_engine::source::CredentialMode::ScopedResolved
     } else {
-        nexus_query_engine::CredentialMode::SharedProcessEnv
+        nexus_query_engine::source::CredentialMode::SharedProcessEnv
     };
 
     Ok(TableFormatParquetReadStrategyConfig {
@@ -2101,11 +2112,13 @@ fn parse_table_format_parquet_read_strategy(raw: &str) -> Result<TableFormatParq
 }
 
 #[cfg(feature = "iceberg")]
-fn parse_remote_parquet_read_mode(raw: &str) -> Result<nexus_query_engine::RemoteParquetReadMode> {
+fn parse_remote_parquet_read_mode(raw: &str) -> Result<nexus_query_engine::source::RemoteParquetReadMode> {
     match raw.trim().to_ascii_lowercase().as_str() {
-        "prefer" | "prefer_direct" => Ok(nexus_query_engine::RemoteParquetReadMode::PreferDirect),
-        "require" | "require_direct" => Ok(nexus_query_engine::RemoteParquetReadMode::RequireDirect),
-        "allow_host_fallback" | "host_fallback" => Ok(nexus_query_engine::RemoteParquetReadMode::AllowHostFallback),
+        "prefer" | "prefer_direct" => Ok(nexus_query_engine::source::RemoteParquetReadMode::PreferDirect),
+        "require" | "require_direct" => Ok(nexus_query_engine::source::RemoteParquetReadMode::RequireDirect),
+        "allow_host_fallback" | "host_fallback" => {
+            Ok(nexus_query_engine::source::RemoteParquetReadMode::AllowHostFallback)
+        },
         other => Err(ServerError::invalid_config(
             NEXUS_ICEBERG_REMOTE_DIRECT_READ_MODE_ENV,
             format!("must be `prefer_direct`, `require_direct`, or `allow_host_fallback`, got `{other}`"),
@@ -2281,14 +2294,14 @@ fn reject_iceberg_env_without_feature(values: &mut EnvValues<'_>) -> Result<()> 
         NEXUS_ICEBERG_S3_REGION_ENV,
         NEXUS_ICEBERG_S3_PATH_STYLE_ENV,
         NEXUS_ICEBERG_S3_CREDENTIAL_SOURCE_ENV,
-        crate::NEXUS_ICEBERG_PARQUET_READ_STRATEGY_ENV,
-        crate::NEXUS_ICEBERG_REMOTE_DIRECT_ENV,
-        crate::NEXUS_ICEBERG_REMOTE_DIRECT_READ_MODE_ENV,
-        crate::NEXUS_ICEBERG_REMOTE_HOST_BUFFER_RANGED_ENV,
-        crate::NEXUS_LAKEHOUSE_CACHE_ROOT_ENV,
-        crate::NEXUS_LAKEHOUSE_CACHE_READ_ENV,
-        crate::NEXUS_LAKEHOUSE_CACHE_POLICY_ENV,
-        crate::NEXUS_LAKEHOUSE_CACHE_MAX_BYTES_ENV,
+        crate::table_format::NEXUS_ICEBERG_PARQUET_READ_STRATEGY_ENV,
+        crate::table_format::NEXUS_ICEBERG_REMOTE_DIRECT_ENV,
+        crate::table_format::NEXUS_ICEBERG_REMOTE_DIRECT_READ_MODE_ENV,
+        crate::table_format::NEXUS_ICEBERG_REMOTE_HOST_BUFFER_RANGED_ENV,
+        crate::table_format::NEXUS_LAKEHOUSE_CACHE_ROOT_ENV,
+        crate::table_format::NEXUS_LAKEHOUSE_CACHE_READ_ENV,
+        crate::table_format::NEXUS_LAKEHOUSE_CACHE_POLICY_ENV,
+        crate::table_format::NEXUS_LAKEHOUSE_CACHE_MAX_BYTES_ENV,
         NEXUS_ICEBERG_SCAN_PLANNING_TIMEOUT_SECS_ENV,
     ]) {
         return Err(ServerError::invalid_config(

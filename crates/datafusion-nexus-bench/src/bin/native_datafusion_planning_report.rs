@@ -15,8 +15,11 @@ use datafusion::{
     prelude::{ParquetReadOptions, SessionConfig, SessionContext},
 };
 use datafusion_nexus::{
-    CudfNativePhysicalOptimizerRule, CudfOptimizerConfig, CudfSessionStateBuilderExt, GpuFallbackPolicy,
-    NativeCudfExecutionConfig, NativeDataFusionPlanningReport, NativePipelineExecutionMode,
+    native_exec::NativeCudfExecutionConfig,
+    native_report::NativeDataFusionPlanningReport,
+    planner::{CudfNativePhysicalOptimizerRule, CudfOptimizerConfig},
+    policy::GpuFallbackPolicy,
+    session::CudfSessionStateBuilderExt,
 };
 use datafusion_nexus_bench::{
     ClickbenchDatasetMetadata, TpcdsDatasetMetadata, TpchDatasetMetadata,
@@ -27,6 +30,7 @@ use datafusion_nexus_bench::{
     tpch_datafusion_planning_workload_items_with_optimizer_config, tpch_native_optimizer_config,
     tpch_report_session_config,
 };
+use nexus_query_engine::mode::NativePipelineExecutionMode;
 
 const CUDF_NATIVE_DATAFUSION_PLANNING_WORKLOAD_ENV: &str = "CUDF_NATIVE_DATAFUSION_PLANNING_WORKLOAD";
 const CUDF_NATIVE_PIPELINE_EXECUTION_MODE_ENV: &str = "CUDF_NATIVE_PIPELINE_EXECUTION_MODE";

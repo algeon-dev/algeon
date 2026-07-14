@@ -447,7 +447,7 @@ fn bounded_native_query_executes_decimal_sum_ratio_at_output_scale() {
         vec!["o_year".to_string(), "is_target".to_string(), "volume".to_string()],
     );
     let target_volume = Expr::case(
-        vec![nexus_query_engine::CaseWhen::new(Expr::column("is_target"), Expr::column("volume"))],
+        vec![nexus_query_engine::expr::CaseWhen::new(Expr::column("is_target"), Expr::column("volume"))],
         Expr::literal(LiteralValue::Decimal128 { raw: 0, precision: 38, scale: 8 }),
     )
     .alias("target_volume");

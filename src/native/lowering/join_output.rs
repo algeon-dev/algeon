@@ -3,7 +3,8 @@ use std::sync::Arc;
 use arrow::datatypes::{Schema, SchemaRef};
 use datafusion::{common::JoinSide as DataFusionJoinSide, logical_expr::JoinType, physical_plan::ExecutionPlan};
 use nexus_query_engine::{
-    ColumnRef as NativeColumnRef, JoinOutputColumn as NativeJoinOutputColumn, JoinSide as NativeJoinSide,
+    expr::ColumnRef as NativeColumnRef,
+    plan::{JoinOutputColumn as NativeJoinOutputColumn, JoinSide as NativeJoinSide},
 };
 
 use super::{FieldBinding, LoweredNativeInput, RequiredFields, executable_schema_and_bindings, join::CanonicalJoin};
@@ -128,7 +129,7 @@ fn hidden_row_count_input<'a>(
 ) -> Option<(DataFusionJoinSide, &'a LoweredNativeInput, &'a FieldBinding)> {
     if matches!(
         canonical.native_join_type(),
-        nexus_query_engine::JoinType::LeftSemi | nexus_query_engine::JoinType::LeftAnti
+        nexus_query_engine::plan::JoinType::LeftSemi | nexus_query_engine::plan::JoinType::LeftAnti
     ) {
         return first_binding_for_side(left, right, canonical.datafusion_side_for_native_left());
     }

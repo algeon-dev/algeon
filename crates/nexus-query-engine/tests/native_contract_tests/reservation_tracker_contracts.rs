@@ -1,10 +1,10 @@
 use nexus_query_engine::{
-    MemoryReservationEventAction, MemoryReservationEventOutcome,
     exec::reservation_contract_testing::{
         probe_alias_contract, probe_alias_outlives_source_release_contract, probe_denial_capacity_after_alias,
         probe_join_materialization_txn_rollback_contract, probe_source_cache_alias_relabel_contract,
         probe_transfer_contract,
     },
+    metrics::{MemoryReservationEventAction, MemoryReservationEventOutcome},
 };
 
 #[test]

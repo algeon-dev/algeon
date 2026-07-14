@@ -11,8 +11,8 @@ use super::{
     error::ServerError,
 };
 #[cfg(feature = "cugraph")]
-use crate::CugraphSqlConfig;
-use crate::{CudfSessionStateBuilderExt, NexusGpuBackend};
+use crate::graph_sql::CugraphSqlConfig;
+use crate::{backend::NexusGpuBackend, session::CudfSessionStateBuilderExt};
 
 pub async fn build_session_context(config: &ServerConfig) -> super::error::Result<SessionContext> {
     build_session_context_with_backend(config, None).await
@@ -79,7 +79,7 @@ pub async fn build_session_context_with_backend(
 #[cfg(feature = "cugraph")]
 pub(crate) fn cugraph_sql_config(
     config: &super::config::CugraphServerConfig,
-    native_execution_config: crate::NativeCudfExecutionConfig,
+    native_execution_config: crate::native_exec::NativeCudfExecutionConfig,
 ) -> CugraphSqlConfig {
     let sql = CugraphSqlConfig { default_graph_options: config.default_graph_options.clone(), ..Default::default() };
     sql.with_native_execution_config(native_execution_config)
@@ -372,8 +372,8 @@ async fn build_alias_provider(
         #[cfg(not(feature = "iceberg-cpu"))]
         IcebergProviderKind::Cpu => Err(ServerError::session(
             "iceberg-cpu feature is required to build CPU IcebergStaticTableProvider",
-            crate::Error::new(
-                crate::ErrorCode::CudfInvalidInput,
+            crate::error::Error::new(
+                crate::error::ErrorCode::CudfInvalidInput,
                 "datafusion_nexus.server.session.build_alias_provider",
                 "iceberg-cpu feature disabled at build time",
             ),

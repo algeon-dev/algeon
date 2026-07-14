@@ -1,4 +1,4 @@
-use nexus_query_engine::{
+use nexus_query_engine::plan::{
     NativePlanCpuPreferenceReason, NativePlanPreferenceDecision, NativePlanPreferenceOptions,
     native_plan_preference_decision,
 };
@@ -140,11 +140,11 @@ fn topk_join_plan(
     row_groups_per_source: usize,
     rows_per_source: u64,
     bytes_per_source: u64,
-) -> nexus_query_engine::QueryPlan {
+) -> nexus_query_engine::plan::QueryPlan {
     topk_join_plan_with_residual(row_groups_per_source, rows_per_source, bytes_per_source, false)
 }
 
-fn residual_topk_join_plan(row_groups_per_source: usize) -> nexus_query_engine::QueryPlan {
+fn residual_topk_join_plan(row_groups_per_source: usize) -> nexus_query_engine::plan::QueryPlan {
     topk_join_plan_with_residual(row_groups_per_source, 10_000, 1024 * 1024, true)
 }
 
@@ -153,7 +153,7 @@ fn topk_join_plan_with_residual(
     rows_per_source: u64,
     bytes_per_source: u64,
     residual: bool,
-) -> nexus_query_engine::QueryPlan {
+) -> nexus_query_engine::plan::QueryPlan {
     let mut builder = QueryPlanBuilder::new();
     let left_schema = key_value_schema();
     let right_schema = key_label_schema();
@@ -201,7 +201,7 @@ fn topk_join_plan_with_residual(
     builder.finish_with_host_sink(limit)
 }
 
-fn topk_join_without_row_group_metadata() -> nexus_query_engine::QueryPlan {
+fn topk_join_without_row_group_metadata() -> nexus_query_engine::plan::QueryPlan {
     let mut builder = QueryPlanBuilder::new();
     let left_schema = key_value_schema();
     let right_schema = key_label_schema();
@@ -244,7 +244,7 @@ fn topk_join_without_row_group_metadata() -> nexus_query_engine::QueryPlan {
     builder.finish_with_host_sink(limit)
 }
 
-fn grouped_aggregate_plan(row_groups: usize) -> nexus_query_engine::QueryPlan {
+fn grouped_aggregate_plan(row_groups: usize) -> nexus_query_engine::plan::QueryPlan {
     let mut builder = QueryPlanBuilder::new();
     let source_schema = key_value_schema();
     let aggregate_schema = Arc::new(Schema::new(vec![
@@ -281,7 +281,7 @@ fn full_sort_join_aggregate_plan(
     row_groups_per_source: usize,
     rows_per_source: u64,
     bytes_per_source: u64,
-) -> nexus_query_engine::QueryPlan {
+) -> nexus_query_engine::plan::QueryPlan {
     let mut builder = QueryPlanBuilder::new();
     let left_schema = key_value_schema();
     let right_schema = key_label_schema();

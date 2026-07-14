@@ -8,9 +8,12 @@ use datafusion::{
     physical_plan::ExecutionPlan,
 };
 use nexus_query_engine::{
-    LimitSpec as NativeLimitSpec, LiteralBatchSource as NativeLiteralBatchSource,
-    LocalParquetSource as NativeLocalParquetSource, QueryPlanBuilder as NativeQueryPlanBuilder,
-    ScanLimitDisposition as NativeScanLimitDisposition, SourceNode as NativeSourceNode,
+    expr::LimitSpec as NativeLimitSpec,
+    plan::QueryPlanBuilder as NativeQueryPlanBuilder,
+    source::{
+        LiteralBatchSource as NativeLiteralBatchSource, LocalParquetSource as NativeLocalParquetSource,
+        ScanLimitDisposition as NativeScanLimitDisposition, SourceNode as NativeSourceNode,
+    },
 };
 
 use super::{

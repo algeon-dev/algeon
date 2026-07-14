@@ -1,8 +1,14 @@
 use datafusion::common::{DataFusionError, Result as DataFusionResult};
 use nexus_query_engine::{
-    CompiledPipeline, QueryPlan, StrictBoundedContractGateRow, StrictBoundedContractReport, StrictBoundedExecutionMode,
-    capability::ContractStatus, strict_bounded_pipeline_admission_with_statistical_aggregate_mode,
-    strict_bounded_pipeline_rejection_projection_with_statistical_aggregate_mode,
+    capability::ContractStatus,
+    contract_report::{StrictBoundedContractGateRow, StrictBoundedContractReport},
+    exec::{
+        strict_bounded_pipeline_admission_with_statistical_aggregate_mode,
+        strict_bounded_pipeline_rejection_projection_with_statistical_aggregate_mode,
+    },
+    mode::StrictBoundedExecutionMode,
+    pipeline::CompiledPipeline,
+    plan::QueryPlan,
 };
 
 use crate::{error::Error, native_exec::NativeCudfExecutionConfig, report::GpuCandidate};
@@ -144,7 +150,7 @@ pub(super) fn strict_bounded_admission_is_rejected(
     ) {
         Ok(Some(_)) => Ok(false),
         Ok(None) => Ok(true),
-        Err(error) if error.code() == nexus_query_engine::QueryErrorCode::UnsupportedPlanShape => Ok(true),
+        Err(error) if error.code() == nexus_query_engine::error::QueryErrorCode::UnsupportedPlanShape => Ok(true),
         Err(error) => Err(strict_bounded_report_error(stamp_native_error_correlation(error, execution_config))),
     }
 }
@@ -205,7 +211,7 @@ fn non_join_bounded_diagnostics() -> NativeStrictBoundedContractDiagnostics {
     }
 }
 
-fn strict_bounded_report_error(error: nexus_query_engine::QueryError) -> DataFusionError {
+fn strict_bounded_report_error(error: nexus_query_engine::error::QueryError) -> DataFusionError {
     Error::from_native(
         "datafusion_nexus.native.strict_bounded_contract_diagnostics",
         "strict bounded contract diagnostics could not be built",
@@ -237,9 +243,9 @@ fn stamp_strict_report_correlation(
 }
 
 fn stamp_native_error_correlation(
-    mut error: nexus_query_engine::QueryError,
+    mut error: nexus_query_engine::error::QueryError,
     execution_config: &NativeCudfExecutionConfig,
-) -> nexus_query_engine::QueryError {
+) -> nexus_query_engine::error::QueryError {
     if let Some(query_id) = execution_config.query_id() {
         error = error.with_query_id(query_id.clone());
     }

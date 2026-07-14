@@ -41,14 +41,20 @@ use datafusion::{
     prelude::{ParquetReadOptions, SessionConfig, SessionContext},
 };
 use datafusion_nexus::{
-    CUDF_TABLE_FORMAT_GPU_ONLY_LEAF_GUARD_RULE_NAME, CudfNativePhysicalOptimizerRule, CudfOptimizerConfig,
-    CudfSessionStateBuilderExt, CudfTableFormatGpuOnlyLeafGuardRule, CudfTableFormatScanExec, FallbackReason,
-    GpuFallbackPolicy, TableFormat, TableFormatColumnMapping, TableFormatColumnRole, TableFormatColumnSource,
-    TableFormatDataFile, TableFormatDataFileFormat, TableFormatPlanner, TableFormatReadCapability, TableFormatScanPlan,
-    TableFormatScanRequest,
-    iceberg::CudfIcebergTableProvider,
+    planner::{
+        CUDF_TABLE_FORMAT_GPU_ONLY_LEAF_GUARD_RULE_NAME, CudfNativePhysicalOptimizerRule, CudfOptimizerConfig,
+        CudfTableFormatGpuOnlyLeafGuardRule,
+    },
+    policy::{FallbackReason, GpuFallbackPolicy},
     server::{FlightSqlNativeRejectClass, ServerSessionProfile, apply_session_profile, log_leaf_guard_rejection},
-    table_format::scan::{TableFormatPredicate, TableFormatPredicateOp},
+    session::CudfSessionStateBuilderExt,
+    table_format::{
+        CudfTableFormatScanExec, TableFormat, TableFormatColumnMapping, TableFormatColumnRole, TableFormatColumnSource,
+        TableFormatDataFile, TableFormatDataFileFormat, TableFormatPlanner, TableFormatReadCapability,
+        TableFormatScanPlan, TableFormatScanRequest,
+        iceberg::CudfIcebergTableProvider,
+        scan::{TableFormatPredicate, TableFormatPredicateOp},
+    },
 };
 use futures::future::BoxFuture;
 
@@ -678,21 +684,21 @@ fn find_table_format_scan(plan: &dyn ExecutionPlan) -> Option<&CudfTableFormatSc
     plan.children().into_iter().find_map(|child| find_table_format_scan(child.as_ref()))
 }
 
-fn adapter_error_from(error: &DataFusionError) -> &datafusion_nexus::Error {
+fn adapter_error_from(error: &DataFusionError) -> &datafusion_nexus::error::Error {
     // `DataFusionError::Context` wraps the inner planning error with the
     // optimizer rule name; recurse into it before downcasting.
     if let DataFusionError::Context(_, inner) = error {
         return adapter_error_from(inner);
     }
     let DataFusionError::External(boxed) = error else {
-        panic!("expected datafusion_nexus::Error to cross DataFusion as `External`, got: {error:?}");
+        panic!("expected datafusion_nexus::error::Error to cross DataFusion as `External`, got: {error:?}");
     };
     boxed
-        .downcast_ref::<datafusion_nexus::Error>()
-        .expect("external errors emitted by datafusion-nexus must downcast to datafusion_nexus::Error")
+        .downcast_ref::<datafusion_nexus::error::Error>()
+        .expect("external errors emitted by datafusion-nexus must downcast to datafusion_nexus::error::Error")
 }
 
-fn collect_facts(error: &datafusion_nexus::Error) -> std::collections::BTreeMap<&'static str, String> {
+fn collect_facts(error: &datafusion_nexus::error::Error) -> std::collections::BTreeMap<&'static str, String> {
     error.facts().iter().map(|(key, value)| (key, value.to_string())).collect()
 }
 
@@ -861,7 +867,7 @@ impl TableFormatPlanner for RecordingPlanner {
     fn plan_scan(
         &self,
         request: TableFormatScanRequest,
-    ) -> BoxFuture<'_, datafusion_nexus::Result<TableFormatScanPlan>> {
+    ) -> BoxFuture<'_, datafusion_nexus::error::Result<TableFormatScanPlan>> {
         let scan_limit = request.scan_limit;
         let high_branch_pruned = self.plan.snapshot_id.as_deref() == Some("high-empty")
             && matches!(

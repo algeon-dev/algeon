@@ -127,7 +127,7 @@ fn assert_hash_join_prebuild_exact_requirement(
     );
 }
 
-fn assert_hash_join_prebuild_exact_gate(pipeline: &nexus_query_engine::CompiledPipeline, label: &str) {
+fn assert_hash_join_prebuild_exact_gate(pipeline: &nexus_query_engine::pipeline::CompiledPipeline, label: &str) {
     assert!(
         pipeline.gates().iter().any(|gate| {
             gate.reservation_kind() == ReservationKind::HashTable
@@ -163,7 +163,8 @@ fn large_keyed_inner_build_selects_partitioned_strategy_with_hash_preflight_gate
     assert_eq!(facts.get("probe_side_bytes").map(String::as_str), Some("n2:1024"));
     assert_eq!(facts.get("probe_reuse_count").map(String::as_str), Some("n2:1"));
 
-    let pipeline = nexus_query_engine::compile_pipeline(&plan, &analysis).expect("partitioned join should compile");
+    let pipeline =
+        nexus_query_engine::pipeline::compile_pipeline(&plan, &analysis).expect("partitioned join should compile");
     assert_hash_join_prebuild_exact_gate(&pipeline, "compiled partitioned join pipeline");
     assert!(
         pipeline.gates().iter().any(|gate| {
@@ -184,7 +185,7 @@ fn plan_captured_keyed_hash_join_strategy_options_drive_strict_admission_facts()
         .with_large_keyed_hash_build_bytes_threshold(16 * 1024 * 1024 * 1024)
         .with_small_reusable_hash_build_row_threshold(200_000_000)
         .with_small_reusable_hash_build_bytes_threshold(16 * 1024 * 1024 * 1024);
-    let optimized = nexus_query_engine::optimize_query_plan(
+    let optimized = nexus_query_engine::optimizer::optimize_query_plan(
         large_keyed_join_strategy_plan(JoinType::Inner),
         &NativeOptimizerOptions { keyed_hash_join_strategy: strategy_options, ..NativeOptimizerOptions::disabled() },
     );
@@ -224,7 +225,8 @@ fn large_keyed_left_and_full_builds_select_partitioned_strategy_with_hash_prefli
         assert_eq!(facts.get("probe_side_bytes").map(String::as_str), Some("n2:1024"));
         assert_eq!(facts.get("partitioned_hash_join_rejected_reason"), None);
 
-        let pipeline = nexus_query_engine::compile_pipeline(&plan, &analysis).expect("partitioned join should compile");
+        let pipeline =
+            nexus_query_engine::pipeline::compile_pipeline(&plan, &analysis).expect("partitioned join should compile");
         assert_hash_join_prebuild_exact_gate(&pipeline, &format!("large keyed {join_type} join"));
         assert_one_shot_output_preflight_contract(&pipeline, &format!("large keyed {join_type} join"));
     }
@@ -274,7 +276,8 @@ fn small_single_use_keyed_inner_join_stays_reusable_strategy() {
     assert_eq!(facts.get("probe_reuse_count").map(String::as_str), Some("n2:1"));
     assert_eq!(facts.get("reusable_prebuild_supported").map(String::as_str), Some("n2:true"));
 
-    let pipeline = nexus_query_engine::compile_pipeline(&plan, &analysis).expect("small reusable join should compile");
+    let pipeline =
+        nexus_query_engine::pipeline::compile_pipeline(&plan, &analysis).expect("small reusable join should compile");
     assert!(
         pipeline.gates().iter().any(|gate| gate.reservation_kind() == ReservationKind::HashTable),
         "compiled small reusable join pipeline should carry a reusable hash-table gate"
@@ -442,7 +445,7 @@ fn single_use_non_small_keyed_build_selects_partitioned_strategy() {
     assert_eq!(facts.get("build_side_bytes").map(String::as_str), Some("n2:134217728"));
     assert_eq!(facts.get("probe_side_bytes").map(String::as_str), Some("n2:1048576"));
 
-    let pipeline = nexus_query_engine::compile_pipeline(&plan, &analysis)
+    let pipeline = nexus_query_engine::pipeline::compile_pipeline(&plan, &analysis)
         .expect("single-use non-small partitioned join should compile");
     assert_hash_join_prebuild_exact_gate(&pipeline, "single-use non-small partitioned join");
     assert_one_shot_output_preflight_contract(&pipeline, "single-use non-small keyed join");
@@ -478,8 +481,8 @@ fn large_keyed_inner_residual_build_selects_partitioned_mixed_strategy_without_h
     assert_eq!(facts.get("partitioned_hash_join_rejected_reason"), None);
     assert_eq!(facts.get("one_shot_equi_rejected_reason"), None);
 
-    let pipeline =
-        nexus_query_engine::compile_pipeline(&plan, &analysis).expect("partitioned residual join should compile");
+    let pipeline = nexus_query_engine::pipeline::compile_pipeline(&plan, &analysis)
+        .expect("partitioned residual join should compile");
     assert!(
         pipeline.gates().iter().all(|gate| gate.reservation_kind() != ReservationKind::HashTable),
         "compiled partitioned residual join pipeline must not carry reusable hash-table gates"
@@ -538,7 +541,7 @@ fn keyed_decimal_division_residual_selects_one_shot_post_filter_strategy() {
     assert_eq!(facts.get("one_shot_equi_rejected_reason"), None);
 }
 
-fn assert_one_shot_output_preflight_contract(pipeline: &nexus_query_engine::CompiledPipeline, label: &str) {
+fn assert_one_shot_output_preflight_contract(pipeline: &nexus_query_engine::pipeline::CompiledPipeline, label: &str) {
     let gate = pipeline
         .gates()
         .iter()
@@ -555,7 +558,7 @@ fn assert_one_shot_output_preflight_contract(pipeline: &nexus_query_engine::Comp
     );
 }
 
-pub(crate) fn large_keyed_join_strategy_plan(join_type: JoinType) -> nexus_query_engine::QueryPlan {
+pub(crate) fn large_keyed_join_strategy_plan(join_type: JoinType) -> nexus_query_engine::plan::QueryPlan {
     let left_schema = Arc::new(Schema::new(vec![
         Field::new("order_id", DataType::Int32, false),
         Field::new("qty", DataType::Int32, false),
@@ -610,7 +613,7 @@ pub(crate) fn large_keyed_join_strategy_plan(join_type: JoinType) -> nexus_query
     builder.finish_with_host_sink(join)
 }
 
-fn large_keyed_probe_join_strategy_plan(build_rows: u64, build_bytes: u64) -> nexus_query_engine::QueryPlan {
+fn large_keyed_probe_join_strategy_plan(build_rows: u64, build_bytes: u64) -> nexus_query_engine::plan::QueryPlan {
     let left_schema = Arc::new(Schema::new(vec![
         Field::new("order_id", DataType::Int32, false),
         Field::new("qty", DataType::Int32, false),
@@ -665,7 +668,7 @@ fn large_keyed_probe_join_strategy_plan(build_rows: u64, build_bytes: u64) -> ne
     builder.finish_with_host_sink(join)
 }
 
-fn medium_single_use_keyed_build_join_strategy_plan() -> nexus_query_engine::QueryPlan {
+fn medium_single_use_keyed_build_join_strategy_plan() -> nexus_query_engine::plan::QueryPlan {
     let left_schema = Arc::new(Schema::new(vec![
         Field::new("order_id", DataType::Int32, false),
         Field::new("qty", DataType::Int32, false),
@@ -723,15 +726,15 @@ fn medium_single_use_keyed_build_join_strategy_plan() -> nexus_query_engine::Que
 fn small_keyed_join_strategy_plan(
     join_type: JoinType,
     build_artifact_id: Option<&str>,
-) -> nexus_query_engine::QueryPlan {
+) -> nexus_query_engine::plan::QueryPlan {
     sized_keyed_join_strategy_plan(join_type, build_artifact_id, 10, 1024)
 }
 
-fn byte_small_row_non_small_keyed_join_strategy_plan() -> nexus_query_engine::QueryPlan {
+fn byte_small_row_non_small_keyed_join_strategy_plan() -> nexus_query_engine::plan::QueryPlan {
     sized_keyed_join_strategy_plan(JoinType::Inner, None, 2_000_000, 16 * 1024 * 1024)
 }
 
-fn row_small_byte_non_small_keyed_join_strategy_plan() -> nexus_query_engine::QueryPlan {
+fn row_small_byte_non_small_keyed_join_strategy_plan() -> nexus_query_engine::plan::QueryPlan {
     sized_keyed_join_strategy_plan(JoinType::Inner, None, 10, 128 * 1024 * 1024)
 }
 
@@ -740,7 +743,7 @@ fn sized_keyed_join_strategy_plan(
     build_artifact_id: Option<&str>,
     build_rows: u64,
     build_bytes: u64,
-) -> nexus_query_engine::QueryPlan {
+) -> nexus_query_engine::plan::QueryPlan {
     let left_schema = Arc::new(Schema::new(vec![
         Field::new("order_id", DataType::Int32, false),
         Field::new("qty", DataType::Int32, false),
@@ -794,7 +797,7 @@ fn sized_keyed_join_strategy_plan(
     builder.finish_with_host_sink(join)
 }
 
-fn unknown_probe_small_left_build_join_strategy_plan() -> nexus_query_engine::QueryPlan {
+fn unknown_probe_small_left_build_join_strategy_plan() -> nexus_query_engine::plan::QueryPlan {
     let left_schema = Arc::new(Schema::new(vec![
         Field::new("order_id", DataType::Int32, false),
         Field::new("qty", DataType::Int32, false),
@@ -842,7 +845,7 @@ fn unknown_probe_small_left_build_join_strategy_plan() -> nexus_query_engine::Qu
     builder.finish_with_host_sink(join)
 }
 
-fn string_keyed_join_strategy_plan() -> nexus_query_engine::QueryPlan {
+fn string_keyed_join_strategy_plan() -> nexus_query_engine::plan::QueryPlan {
     string_keyed_join_strategy_plan_with_probe(10_000, 1024 * 1024, 10, 1024)
 }
 
@@ -851,7 +854,7 @@ fn string_keyed_join_strategy_plan_with_probe(
     probe_bytes: u64,
     build_rows: u64,
     build_bytes: u64,
-) -> nexus_query_engine::QueryPlan {
+) -> nexus_query_engine::plan::QueryPlan {
     let left_schema = Arc::new(Schema::new(vec![
         Field::new("customer_id", DataType::Utf8, false),
         Field::new("qty", DataType::Int32, false),
@@ -906,7 +909,7 @@ fn string_keyed_join_strategy_plan_with_probe(
     builder.finish_with_host_sink(join)
 }
 
-fn large_keyed_residual_join_strategy_plan() -> nexus_query_engine::QueryPlan {
+fn large_keyed_residual_join_strategy_plan() -> nexus_query_engine::plan::QueryPlan {
     let left_schema = Arc::new(Schema::new(vec![
         Field::new("order_id", DataType::Int32, false),
         Field::new("qty", DataType::Int32, false),
@@ -966,7 +969,7 @@ fn large_keyed_residual_join_strategy_plan() -> nexus_query_engine::QueryPlan {
     builder.finish_with_host_sink(join)
 }
 
-fn large_keyed_residual_or_join_strategy_plan() -> nexus_query_engine::QueryPlan {
+fn large_keyed_residual_or_join_strategy_plan() -> nexus_query_engine::plan::QueryPlan {
     let left_schema = Arc::new(Schema::new(vec![
         Field::new("order_id", DataType::Int32, false),
         Field::new("qty", DataType::Int32, true),
@@ -1030,7 +1033,7 @@ fn large_keyed_residual_or_join_strategy_plan() -> nexus_query_engine::QueryPlan
     builder.finish_with_host_sink(join)
 }
 
-fn decimal_division_residual_join_strategy_plan() -> nexus_query_engine::QueryPlan {
+fn decimal_division_residual_join_strategy_plan() -> nexus_query_engine::plan::QueryPlan {
     let left_schema = Arc::new(Schema::new(vec![
         Field::new("order_id", DataType::Int32, false),
         Field::new("sales_cnt_decimal", DataType::Decimal128(17, 2), false),
@@ -1428,17 +1431,17 @@ fn bounded_capability_analysis_rejects_multi_join_admission_without_family_recog
     assert!(matches!(projection.owner, nexus_query_engine::capability::CapabilityRejectionOwner::Admission(_)));
 
     assert!(
-        nexus_query_engine::strict_bounded_pipeline_admission(&plan)
+        nexus_query_engine::exec::strict_bounded_pipeline_admission(&plan)
             .expect("strict admission should not fail")
             .is_none(),
         "strict admission must reject through the same envelope projection"
     );
 
-    let adaptive_admission = nexus_query_engine::adaptive_bounded_pipeline_admission(&plan)
+    let adaptive_admission = nexus_query_engine::exec::adaptive_bounded_pipeline_admission(&plan)
         .expect("adaptive admission should not fail")
         .expect("join plan should produce adaptive admission evidence");
     let adaptive_row = adaptive_admission.report().row();
-    assert_eq!(adaptive_row.candidate_status, nexus_query_engine::AdaptiveCandidateStatus::Rejected);
+    assert_eq!(adaptive_row.candidate_status, nexus_query_engine::adaptive_report::AdaptiveCandidateStatus::Rejected);
     assert_eq!(adaptive_row.rejection_reason, Some(projection.reason));
     assert!(
         adaptive_row.missing_strict_contracts.iter().any(|contract| contract.required_contract == projection.reason),
@@ -1650,7 +1653,7 @@ fn bounded_capability_analysis_rejects_one_sided_residual_as_subgraph_invariant(
     assert_eq!(facts.get("references_right").map(String::as_str), Some("false"));
 }
 
-pub(crate) fn unsupported_cross_key_join_plan() -> nexus_query_engine::QueryPlan {
+pub(crate) fn unsupported_cross_key_join_plan() -> nexus_query_engine::plan::QueryPlan {
     let left_schema = Arc::new(Schema::new(vec![Field::new("l_key", DataType::Int32, false)]));
     let right_schema = Arc::new(Schema::new(vec![Field::new("r_key", DataType::Int32, false)]));
     let output_schema = Arc::new(Schema::new(vec![
@@ -1685,7 +1688,7 @@ pub(crate) fn unsupported_cross_key_join_plan() -> nexus_query_engine::QueryPlan
     builder.finish_with_host_sink(join)
 }
 
-fn simple_root_join_plan() -> nexus_query_engine::QueryPlan {
+fn simple_root_join_plan() -> nexus_query_engine::plan::QueryPlan {
     let left_schema = Arc::new(Schema::new(vec![Field::new("l_key", DataType::Int32, false)]));
     let right_schema = Arc::new(Schema::new(vec![Field::new("r_key", DataType::Int32, false)]));
     let output_schema = Arc::new(Schema::new(vec![Field::new("l_key", DataType::Int32, false)]));
@@ -1715,7 +1718,7 @@ fn simple_root_join_plan() -> nexus_query_engine::QueryPlan {
     builder.finish_with_host_sink(join)
 }
 
-fn root_join_with_unsupported_output_dtype_plan() -> nexus_query_engine::QueryPlan {
+fn root_join_with_unsupported_output_dtype_plan() -> nexus_query_engine::plan::QueryPlan {
     let left_schema = Arc::new(Schema::new(vec![Field::new("l_key", DataType::Int32, false)]));
     let right_schema = Arc::new(Schema::new(vec![Field::new("r_key", DataType::Int32, false)]));
     let output_schema = Arc::new(Schema::new(vec![Field::new("l_key", DataType::Binary, false)]));
@@ -1745,7 +1748,7 @@ fn root_join_with_unsupported_output_dtype_plan() -> nexus_query_engine::QueryPl
     builder.finish_with_host_sink(join)
 }
 
-fn single_join_pipeline_with_empty_in_list_filter_plan() -> nexus_query_engine::QueryPlan {
+fn single_join_pipeline_with_empty_in_list_filter_plan() -> nexus_query_engine::plan::QueryPlan {
     let base = simple_root_join_plan();
     let root = base.root_id();
     let output_schema = Arc::new(Schema::new(vec![Field::new("l_key", DataType::Int32, false)]));
@@ -1765,7 +1768,7 @@ fn single_join_pipeline_with_empty_in_list_filter_plan() -> nexus_query_engine::
     builder.finish_with_host_sink(filter)
 }
 
-fn root_join_with_like_residual_plan() -> nexus_query_engine::QueryPlan {
+fn root_join_with_like_residual_plan() -> nexus_query_engine::plan::QueryPlan {
     let left_schema = Arc::new(Schema::new(vec![
         Field::new("l_key", DataType::Int32, false),
         Field::new("l_text", DataType::Utf8, false),
@@ -1799,7 +1802,7 @@ fn root_join_with_like_residual_plan() -> nexus_query_engine::QueryPlan {
     builder.finish_with_host_sink(join)
 }
 
-fn root_join_with_one_sided_residual_plan() -> nexus_query_engine::QueryPlan {
+fn root_join_with_one_sided_residual_plan() -> nexus_query_engine::plan::QueryPlan {
     let left_schema = Arc::new(Schema::new(vec![
         Field::new("l_key", DataType::Int32, false),
         Field::new("l_qty", DataType::Int32, false),
@@ -1837,7 +1840,7 @@ fn root_join_with_one_sided_residual_plan() -> nexus_query_engine::QueryPlan {
     builder.finish_with_host_sink(join)
 }
 
-fn multi_join_candidate_with_aggregate_inside_join_subtree_plan() -> nexus_query_engine::QueryPlan {
+fn multi_join_candidate_with_aggregate_inside_join_subtree_plan() -> nexus_query_engine::plan::QueryPlan {
     let partsupp_schema = Arc::new(Schema::new(vec![
         Field::new("ps_partkey", DataType::Int32, false),
         Field::new("ps_suppkey", DataType::Int32, false),
@@ -2171,7 +2174,7 @@ fn bounded_multi_join_aggregate_over_join_subplan_topk_accepts_single_output_pos
         "post-root filtering join should be part of the post-root stage order evidence"
     );
 
-    let pipeline = nexus_query_engine::compile_pipeline(&plan, &analysis)
+    let pipeline = nexus_query_engine::pipeline::compile_pipeline(&plan, &analysis)
         .expect("post-root filtering join TopK plan should compile");
     assert_eq!(
         nexus_query_engine::exec::compiled_bounded_pipeline_support(&pipeline)
@@ -2254,7 +2257,7 @@ fn bounded_root_topk_join_aggregate_pipeline_is_executable_with_modeled_contract
             && requirement.quality == ContractQuality::QueryEngineOwnedBoundary
     }));
 
-    let admission = nexus_query_engine::strict_bounded_pipeline_admission(&plan)
+    let admission = nexus_query_engine::exec::strict_bounded_pipeline_admission(&plan)
         .expect("strict bounded admission should not fail")
         .expect("root TopK join/aggregate pipeline should be admitted");
     assert_eq!(admission.envelope(), nexus_query_engine::capability::StrictBoundedEnvelope::RootTopKJoinAggregate);
@@ -2325,7 +2328,7 @@ fn bounded_root_topk_join_aggregate_allows_shared_source_reuse() {
         analysis.admits_root_topk_join_aggregate_pipeline(),
         "source reuse is a modeled source-read contract, not computed producer fanout"
     );
-    let admission = nexus_query_engine::strict_bounded_pipeline_admission(&plan)
+    let admission = nexus_query_engine::exec::strict_bounded_pipeline_admission(&plan)
         .expect("strict bounded admission should not fail")
         .expect("shared-source root TopK join/aggregate pipeline should be admitted");
     assert_eq!(admission.envelope(), nexus_query_engine::capability::StrictBoundedEnvelope::RootTopKJoinAggregate);
@@ -2363,7 +2366,7 @@ fn bounded_root_topk_join_aggregate_allows_shared_computed_fanout_with_explicit_
         });
         assert!(has_expected_shared_producer, "{variant:?}: expected shared {expected_shared_operator} producer proof");
 
-        let admission = nexus_query_engine::strict_bounded_pipeline_admission(&plan)
+        let admission = nexus_query_engine::exec::strict_bounded_pipeline_admission(&plan)
             .expect("strict bounded admission should not fail")
             .unwrap_or_else(|| panic!("{variant:?} root TopK join/aggregate pipeline should be admitted"));
         assert_eq!(admission.envelope(), nexus_query_engine::capability::StrictBoundedEnvelope::RootTopKJoinAggregate);
@@ -2373,7 +2376,7 @@ fn bounded_root_topk_join_aggregate_allows_shared_computed_fanout_with_explicit_
 #[test]
 fn root_topk_source_reduction_uses_plan_captured_join_strategy_threshold() {
     let strategy_options = KeyedHashJoinStrategyOptions::default().with_small_one_shot_probe_bytes_threshold(2048);
-    let optimized = nexus_query_engine::optimize_query_plan(
+    let optimized = nexus_query_engine::optimizer::optimize_query_plan(
         root_topk_join_aggregate_variant_plan(RootTopKJoinAggregateVariant::SmallExactSharedProjectionAggregateFanout),
         &NativeOptimizerOptions { keyed_hash_join_strategy: strategy_options, ..NativeOptimizerOptions::disabled() },
     );
@@ -2414,7 +2417,7 @@ fn bounded_root_topk_join_aggregate_allows_distinct_and_keyless_subcontracts_wit
             .unwrap_or_else(|error| panic!("{variant:?} capability report should be valid: {error}"));
         assert_strict_report_has_modeled_subcontract(&report, expected_contract, &format!("{variant:?}"));
 
-        let admission = nexus_query_engine::strict_bounded_pipeline_admission(&plan)
+        let admission = nexus_query_engine::exec::strict_bounded_pipeline_admission(&plan)
             .expect("strict bounded admission should not fail")
             .unwrap_or_else(|| panic!("{variant:?} root TopK join/aggregate pipeline should be admitted"));
         assert_eq!(admission.envelope(), nexus_query_engine::capability::StrictBoundedEnvelope::RootTopKJoinAggregate);
@@ -2446,7 +2449,7 @@ fn bounded_root_topk_join_aggregate_allows_sort_fetch_hash_join_input_subcontrac
             &format!("{variant:?}"),
         );
 
-        let admission = nexus_query_engine::strict_bounded_pipeline_admission(&plan)
+        let admission = nexus_query_engine::exec::strict_bounded_pipeline_admission(&plan)
             .expect("strict bounded admission should not fail")
             .unwrap_or_else(|| panic!("{variant:?} root TopK pipeline should be admitted"));
         assert_eq!(admission.envelope(), nexus_query_engine::capability::StrictBoundedEnvelope::RootTopKJoinAggregate);
@@ -2515,7 +2518,7 @@ fn bounded_root_topk_join_aggregate_allows_sort_fetch_join_aggregate_subcontract
             .unwrap_or_else(|error| panic!("{variant:?} capability report should be valid: {error}"));
         assert_strict_report_has_modeled_subcontract(&report, expected_contract, &format!("{variant:?}"));
 
-        let admission = nexus_query_engine::strict_bounded_pipeline_admission(&plan)
+        let admission = nexus_query_engine::exec::strict_bounded_pipeline_admission(&plan)
             .expect("strict bounded admission should not fail")
             .unwrap_or_else(|| panic!("{variant:?} root TopK pipeline should be admitted"));
         assert_eq!(admission.envelope(), nexus_query_engine::capability::StrictBoundedEnvelope::RootTopKJoinAggregate);
@@ -2533,9 +2536,9 @@ fn bounded_root_topk_join_aggregate_allows_null_filtered_aggregate_fan_in_subcon
         RootTopKJoinAggregateVariant::SortFetchNullFilteredLeftAggregateFanInFullBoundedReturnBuilds,
         RootTopKJoinAggregateVariant::SortFetchNullFilteredLeftAggregateFanInLargeReturnBuild,
     ] {
-        let plan = nexus_query_engine::optimize_query_plan(
+        let plan = nexus_query_engine::optimizer::optimize_query_plan(
             root_topk_join_aggregate_variant_plan(variant),
-            &nexus_query_engine::NativeOptimizerOptions::default(),
+            &nexus_query_engine::optimizer::NativeOptimizerOptions::default(),
         )
         .plan;
         let analysis = plan.capability_analysis();
@@ -2553,7 +2556,7 @@ fn bounded_root_topk_join_aggregate_allows_null_filtered_aggregate_fan_in_subcon
             "null_filtered_aggregate_fan_in",
         );
 
-        let admission = nexus_query_engine::strict_bounded_pipeline_admission(&plan)
+        let admission = nexus_query_engine::exec::strict_bounded_pipeline_admission(&plan)
             .expect("strict bounded admission should not fail")
             .expect("null-filtered aggregate fan-in root TopK pipeline should be admitted");
         assert_eq!(admission.envelope(), nexus_query_engine::capability::StrictBoundedEnvelope::RootTopKJoinAggregate);
@@ -2631,9 +2634,9 @@ fn bounded_root_topk_join_aggregate_rejects_optimized_null_filtered_unsafe_marke
             "root_topk_join_aggregate_requires_keyed_hash_keyless_or_cross_join",
         ),
     ] {
-        let plan = nexus_query_engine::optimize_query_plan(
+        let plan = nexus_query_engine::optimizer::optimize_query_plan(
             root_topk_join_aggregate_variant_plan(variant),
-            &nexus_query_engine::NativeOptimizerOptions::default(),
+            &nexus_query_engine::optimizer::NativeOptimizerOptions::default(),
         )
         .plan;
         let analysis = plan.capability_analysis();
@@ -2740,8 +2743,8 @@ fn bounded_root_topk_join_aggregate_shape_miss_does_not_mask_general_rejection()
     if let Some(projection) = analysis.first_rejection_projection() {
         assert_ne!(projection.reason, "root_topk_join_aggregate_requires_grouped_aggregate_fragment");
     }
-    let admission =
-        nexus_query_engine::strict_bounded_pipeline_admission(&plan).expect("strict bounded admission should not fail");
+    let admission = nexus_query_engine::exec::strict_bounded_pipeline_admission(&plan)
+        .expect("strict bounded admission should not fail");
     if let Some(admission) = admission {
         assert_ne!(
             admission.envelope(),

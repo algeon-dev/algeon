@@ -42,7 +42,7 @@ use datafusion::{
     prelude::SessionContext,
 };
 use futures::{Stream, StreamExt, TryStreamExt};
-use nexus_query_engine::ExecutionCancellation;
+use nexus_query_engine::runtime::ExecutionCancellation;
 use prost::Message;
 use tokio_util::sync::CancellationToken;
 use tonic::{Code, Request, Response, Status, Streaming, metadata::MetadataValue};
@@ -61,14 +61,15 @@ use super::{
     table_format_operator_fast_fail::fast_fail_unsupported_table_format_operator_plan,
 };
 #[cfg(feature = "cugraph")]
-use crate::CudfSessionStateBuilderExt;
-#[cfg(feature = "cugraph")]
 use crate::graph_sql::CugraphSqlConfig;
+#[cfg(feature = "cugraph")]
+use crate::session::CudfSessionStateBuilderExt;
 use crate::{
-    CudfNativePhysicalOptimizerRule, CudfOptimizerConfig, DataFusionNexusSessionConfig, Error, ErrorCode,
-    error::ErrorSourceDiagnostics,
+    error::{Error, ErrorCode, ErrorSourceDiagnostics},
     native_exec::{NativeMetricsCapture, NativeMetricsCaptureSink},
+    planner::{CudfNativePhysicalOptimizerRule, CudfOptimizerConfig},
     session::install_cudf_native_rule_with_session_config,
+    session_config::DataFusionNexusSessionConfig,
 };
 
 mod metadata;
@@ -267,7 +268,7 @@ impl DatafusionCudfFlightSqlService {
     }
 
     /// Validate the bearer token on a tonic request. Returns the
-    /// authenticated [`super::auth::Principal`] when auth is enabled,
+    /// authenticated [`crate::server::Principal`] when auth is enabled,
     /// or `None` when the server is running in
     /// [`AuthMode::Disabled`]. Errors as `Status::unauthenticated`.
     fn check_auth<T>(&self, request: &Request<T>) -> Result<Option<super::auth::Principal>, Status> {
@@ -1318,7 +1319,7 @@ impl DatafusionCudfFlightSqlService {
         Ok(error.with_source(source))
     }
 
-    fn dataset_schema_for_prepared_statement(&self, plan: &LogicalPlan) -> crate::Result<Schema> {
+    fn dataset_schema_for_prepared_statement(&self, plan: &LogicalPlan) -> crate::error::Result<Schema> {
         match plan {
             LogicalPlan::Ddl(ddl) => {
                 verify_update_ddl(
@@ -1531,7 +1532,7 @@ async fn reject_drop_object_type_mismatch(
     ctx: &SessionContext,
     plan: &LogicalPlan,
     operation: &'static str,
-) -> crate::Result<()> {
+) -> crate::error::Result<()> {
     let (object_name, expected_table_type) = match plan {
         LogicalPlan::Ddl(DdlStatement::DropTable(drop_table)) => (&drop_table.name, TableType::Base),
         LogicalPlan::Ddl(DdlStatement::DropView(drop_view)) => (&drop_view.name, TableType::View),
@@ -1583,7 +1584,7 @@ fn drop_statement_for_table_type(table_type: TableType) -> &'static str {
 mod correlation_tests {
     use super::*;
     use crate::{
-        GpuFallbackPolicy,
+        policy::GpuFallbackPolicy,
         server::auth::{AuthMode, TokenStore},
     };
 
@@ -1802,7 +1803,7 @@ mod tests {
 
     use super::*;
     use crate::{
-        GpuFallbackPolicy,
+        policy::GpuFallbackPolicy,
         server::{
             auth::{AuthMode, TokenStore},
             error::{ERROR_CODE_METADATA_KEY, ERROR_KIND_METADATA_KEY, ERROR_STATUS_METADATA_KEY},
@@ -1817,7 +1818,7 @@ mod tests {
         },
     };
 
-    type PlannerFuture<'a> = BoxFuture<'a, crate::Result<TableFormatScanPlan>>;
+    type PlannerFuture<'a> = BoxFuture<'a, crate::error::Result<TableFormatScanPlan>>;
 
     #[derive(Debug)]
     struct SleepingPlanner {

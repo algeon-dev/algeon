@@ -27,7 +27,11 @@ use datafusion::{
     },
 };
 use futures::Stream;
-use nexus_query_engine::{GpuExecutionJobKind, GpuExecutionPool, PlanNode, QueryPlan, SourceNode};
+use nexus_query_engine::{
+    plan::{PlanNode, QueryPlan},
+    runtime::{GpuExecutionJobKind, GpuExecutionPool},
+    source::SourceNode,
+};
 
 use crate::error::{Error, ErrorCode};
 
@@ -212,7 +216,7 @@ pub(super) fn write_native_plan_tree(f: &mut std::fmt::Formatter<'_>, plan: &Que
 pub(super) fn native_query_runtime_error(
     operation: &'static str,
     message: impl Into<String>,
-    source: nexus_query_engine::QueryError,
+    source: nexus_query_engine::error::QueryError,
 ) -> Error {
     mark_native_runtime_error(Error::from_native(operation, message, source), "runtime_execution")
 }

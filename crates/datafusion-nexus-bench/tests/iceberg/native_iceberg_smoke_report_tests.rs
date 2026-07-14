@@ -1,10 +1,15 @@
 use std::collections::HashMap;
 
 use datafusion_nexus::{
-    NativeDataFusionExecutionMetrics, NativeDataFusionPlanningOutcome, NativeDataFusionPostNativeExecutionPath,
-    NativeLakehouseCacheFillEventMetricRow, NativeSourceReadRuntimeMetricRow, TableFormat, TableFormatDataFile,
-    TableFormatDataFileFormat, TableFormatParquetReadStrategyConfig, TableFormatReadCapability, TableFormatScanPlan,
-    TableFormatUnsupportedFeature, TableFormatUnsupportedFeatureCode, resolve_table_format_parquet_source,
+    native_report::{
+        NativeDataFusionExecutionMetrics, NativeDataFusionPlanningOutcome, NativeDataFusionPostNativeExecutionPath,
+        NativeLakehouseCacheFillEventMetricRow, NativeSourceReadRuntimeMetricRow,
+    },
+    table_format::{
+        TableFormat, TableFormatDataFile, TableFormatDataFileFormat, TableFormatParquetReadStrategyConfig,
+        TableFormatReadCapability, TableFormatScanPlan, TableFormatUnsupportedFeature,
+        TableFormatUnsupportedFeatureCode, resolve_table_format_parquet_source,
+    },
 };
 use datafusion_nexus_bench::iceberg_smoke::{
     self as native_iceberg_smoke_report, CustomWorkload, IcebergNativeSmokeConfig, IcebergNativeSmokeFixture,
@@ -286,7 +291,7 @@ fn report_tsv_distinguishes_native_source_read_from_cpu_arrow_fallback() {
         "not_applicable".to_string(),
     );
     row.native_runtime_started = true;
-    row.native_runtime_outcome = datafusion_nexus::NativeDataFusionRuntimeOutcome::Succeeded;
+    row.native_runtime_outcome = datafusion_nexus::native_report::NativeDataFusionRuntimeOutcome::Succeeded;
     row.native_output_rows = Some(1);
     row.native_output_batches = Some(1);
     row.native_count_value = Some(7);

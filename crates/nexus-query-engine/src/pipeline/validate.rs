@@ -21,7 +21,7 @@ use crate::{
 
 const OPERATION: &str = "nexus_query_engine.pipeline.validate";
 
-pub(super) fn validate_pipeline(pipeline: &CompiledPipeline) -> crate::Result<()> {
+pub(super) fn validate_pipeline(pipeline: &CompiledPipeline) -> crate::error::Result<()> {
     let task_ids = validate_tasks(pipeline)?;
     let edge_ids = validate_edges(pipeline, &task_ids)?;
     let barrier_ids = validate_barriers(pipeline, &task_ids)?;
@@ -45,7 +45,7 @@ pub(super) fn validate_pipeline(pipeline: &CompiledPipeline) -> crate::Result<()
     Ok(())
 }
 
-fn validate_tasks(pipeline: &CompiledPipeline) -> crate::Result<BTreeSet<PipelineTaskId>> {
+fn validate_tasks(pipeline: &CompiledPipeline) -> crate::error::Result<BTreeSet<PipelineTaskId>> {
     let mut ids = BTreeSet::new();
     for (index, task) in pipeline.tasks().iter().enumerate() {
         if task.id().index() != index {
@@ -63,7 +63,7 @@ fn validate_tasks(pipeline: &CompiledPipeline) -> crate::Result<BTreeSet<Pipelin
 fn validate_edges(
     pipeline: &CompiledPipeline,
     task_ids: &BTreeSet<PipelineTaskId>,
-) -> crate::Result<BTreeSet<PipelineEdgeId>> {
+) -> crate::error::Result<BTreeSet<PipelineEdgeId>> {
     let mut ids = BTreeSet::new();
     for (index, edge) in pipeline.edges().iter().enumerate() {
         if edge.id().index() != index {
@@ -91,7 +91,7 @@ fn validate_edges(
 fn validate_barriers(
     pipeline: &CompiledPipeline,
     task_ids: &BTreeSet<PipelineTaskId>,
-) -> crate::Result<BTreeSet<PipelineBarrierId>> {
+) -> crate::error::Result<BTreeSet<PipelineBarrierId>> {
     let mut ids = BTreeSet::new();
     for (index, barrier) in pipeline.barriers().iter().enumerate() {
         if barrier.id().index() != index {
@@ -116,7 +116,7 @@ fn validate_barriers(
 fn validate_resources(
     pipeline: &CompiledPipeline,
     task_ids: &BTreeSet<PipelineTaskId>,
-) -> crate::Result<BTreeSet<ResidentResourceId>> {
+) -> crate::error::Result<BTreeSet<ResidentResourceId>> {
     let mut ids = BTreeSet::new();
     for (index, resource) in pipeline.resources().iter().enumerate() {
         if resource.id().index() != index {
@@ -148,7 +148,7 @@ fn validate_lifetime(
     resource: ResidentResourceId,
     lifetime: ResidentLifetime,
     task_ids: &BTreeSet<PipelineTaskId>,
-) -> crate::Result<()> {
+) -> crate::error::Result<()> {
     match lifetime {
         ResidentLifetime::TaskLocal { task } => {
             if !task_ids.contains(&task) {
@@ -180,7 +180,7 @@ fn validate_gates(
     task_ids: &BTreeSet<PipelineTaskId>,
     edge_ids: &BTreeSet<PipelineEdgeId>,
     barrier_ids: &BTreeSet<PipelineBarrierId>,
-) -> crate::Result<BTreeSet<ReservationGateId>> {
+) -> crate::error::Result<BTreeSet<ReservationGateId>> {
     let mut ids = BTreeSet::new();
     for (index, gate) in pipeline.gates().iter().enumerate() {
         if gate.id().index() != index {
@@ -216,7 +216,10 @@ fn validate_gates(
     Ok(ids)
 }
 
-fn validate_task_dependencies(pipeline: &CompiledPipeline, task_ids: &BTreeSet<PipelineTaskId>) -> crate::Result<()> {
+fn validate_task_dependencies(
+    pipeline: &CompiledPipeline,
+    task_ids: &BTreeSet<PipelineTaskId>,
+) -> crate::error::Result<()> {
     let mut incoming = BTreeSet::new();
     for edge in pipeline.edges() {
         incoming.insert(edge.to());
@@ -267,7 +270,7 @@ fn is_join_build_for_probe(pipeline: &CompiledPipeline, build_id: PipelineTaskId
         && (build.plan_node().is_none() || probe.plan_node().is_none() || build.plan_node() == probe.plan_node())
 }
 
-fn validate_task_graph_is_acyclic(pipeline: &CompiledPipeline) -> crate::Result<()> {
+fn validate_task_graph_is_acyclic(pipeline: &CompiledPipeline) -> crate::error::Result<()> {
     let adjacency = adjacency(pipeline);
     let mut visiting = BTreeSet::new();
     let mut visited = BTreeSet::new();
@@ -283,7 +286,7 @@ fn visit_task(
     adjacency: &BTreeMap<PipelineTaskId, Vec<PipelineTaskId>>,
     visiting: &mut BTreeSet<PipelineTaskId>,
     visited: &mut BTreeSet<PipelineTaskId>,
-) -> crate::Result<()> {
+) -> crate::error::Result<()> {
     if visited.contains(&task) {
         return Ok(());
     }
@@ -301,7 +304,7 @@ fn visit_task(
 fn validate_task_resource_references(
     pipeline: &CompiledPipeline,
     resource_ids: &BTreeSet<ResidentResourceId>,
-) -> crate::Result<()> {
+) -> crate::error::Result<()> {
     for task in pipeline.tasks() {
         for resource in task.input_resources().iter().chain(task.output_resources()) {
             if !resource_ids.contains(resource) {
@@ -323,7 +326,7 @@ fn validate_task_resource_references(
     Ok(())
 }
 
-fn validate_resource_flow(pipeline: &CompiledPipeline) -> crate::Result<()> {
+fn validate_resource_flow(pipeline: &CompiledPipeline) -> crate::error::Result<()> {
     for resource in pipeline.resources() {
         let producer = task_by_id(pipeline, resource.producer())?;
         if !producer.output_resources().contains(&resource.id()) {
@@ -426,7 +429,7 @@ fn validate_resource_flow(pipeline: &CompiledPipeline) -> crate::Result<()> {
     Ok(())
 }
 
-fn validate_sink_output_lifetimes(pipeline: &CompiledPipeline) -> crate::Result<()> {
+fn validate_sink_output_lifetimes(pipeline: &CompiledPipeline) -> crate::error::Result<()> {
     let sink_outputs = pipeline
         .resources()
         .iter()
@@ -473,7 +476,7 @@ fn validate_sink_output_lifetimes(pipeline: &CompiledPipeline) -> crate::Result<
 fn validate_shared_resident_resource_edges(
     pipeline: &CompiledPipeline,
     resource: &ResidentResource,
-) -> crate::Result<()> {
+) -> crate::error::Result<()> {
     let shared_edges = pipeline
         .edges()
         .iter()
@@ -534,7 +537,7 @@ fn validate_shared_resident_resource_edges(
     Ok(())
 }
 
-fn validate_task_input_resource_consumers(pipeline: &CompiledPipeline) -> crate::Result<()> {
+fn validate_task_input_resource_consumers(pipeline: &CompiledPipeline) -> crate::error::Result<()> {
     for task in pipeline.tasks() {
         for resource_id in task.input_resources() {
             let resource = resource_by_id(pipeline, *resource_id)?;
@@ -555,7 +558,7 @@ fn validate_task_input_resource_consumers(pipeline: &CompiledPipeline) -> crate:
     Ok(())
 }
 
-fn validate_barrier_dominance(pipeline: &CompiledPipeline) -> crate::Result<()> {
+fn validate_barrier_dominance(pipeline: &CompiledPipeline) -> crate::error::Result<()> {
     for barrier in pipeline.barriers() {
         if barrier.upstream_tasks().is_empty() {
             return Err(invalid("pipeline barrier has no upstream tasks").with_fact("barrier_id", barrier.id()));
@@ -647,7 +650,7 @@ fn validate_barrier_task_pair(
     expected_upstream: PipelineTaskKind,
     downstream_id: PipelineTaskId,
     expected_downstream: PipelineTaskKind,
-) -> crate::Result<()> {
+) -> crate::error::Result<()> {
     let upstream = task_by_id(pipeline, upstream_id)?;
     let downstream = task_by_id(pipeline, downstream_id)?;
     if upstream.kind() != expected_upstream {
@@ -681,7 +684,7 @@ fn validate_barrier_upstream_kinds(
     barrier: PipelineBarrierId,
     upstream_tasks: &[PipelineTaskId],
     expected: &[PipelineTaskKind],
-) -> crate::Result<()> {
+) -> crate::error::Result<()> {
     for task_id in upstream_tasks {
         let task = task_by_id(pipeline, *task_id)?;
         if !expected.contains(&task.kind()) {
@@ -695,7 +698,10 @@ fn validate_barrier_upstream_kinds(
     Ok(())
 }
 
-fn validate_gate_references(pipeline: &CompiledPipeline, gate_ids: &BTreeSet<ReservationGateId>) -> crate::Result<()> {
+fn validate_gate_references(
+    pipeline: &CompiledPipeline,
+    gate_ids: &BTreeSet<ReservationGateId>,
+) -> crate::error::Result<()> {
     for task in pipeline.tasks() {
         for gate in task.gates() {
             if !gate_ids.contains(gate) {
@@ -733,7 +739,7 @@ fn validate_gate_references(pipeline: &CompiledPipeline, gate_ids: &BTreeSet<Res
     Ok(())
 }
 
-fn validate_gate_owner_references(pipeline: &CompiledPipeline) -> crate::Result<()> {
+fn validate_gate_owner_references(pipeline: &CompiledPipeline) -> crate::error::Result<()> {
     for gate in pipeline.gates() {
         let owner_references_gate = match gate.owner() {
             ReservationGateOwner::Task(task_id) => {
@@ -757,7 +763,7 @@ fn validate_gate_owner_references(pipeline: &CompiledPipeline) -> crate::Result<
     Ok(())
 }
 
-fn validate_reservation_gate_contracts(pipeline: &CompiledPipeline) -> crate::Result<()> {
+fn validate_reservation_gate_contracts(pipeline: &CompiledPipeline) -> crate::error::Result<()> {
     for gate in pipeline.gates() {
         if gate.memory_boundary().is_empty() {
             return Err(invalid("pipeline reservation gate has empty memory boundary").with_fact("gate_id", gate.id()));
@@ -784,7 +790,7 @@ fn validate_gate_scope(
     owner: ReservationGateOwner,
     scope: ReservationRequirementScope,
     kind: ReservationKind,
-) -> crate::Result<()> {
+) -> crate::error::Result<()> {
     let valid = match (scope, owner) {
         (ReservationRequirementScope::Node, ReservationGateOwner::Task(_)) => true,
         (ReservationRequirementScope::Edge, ReservationGateOwner::Edge(_)) => true,
@@ -820,7 +826,7 @@ fn validate_unresolved_preflight_label(
     required_contract: &'static str,
     status: ContractStatus,
     quality: ContractQuality,
-) -> crate::Result<()> {
+) -> crate::error::Result<()> {
     let unresolved_gap = strict_unresolved_preflight_gap(kind, required_contract);
     if quality == ContractQuality::HardBudgetedReportWithUnresolvedPreflight {
         if status != ContractStatus::Modeled {
@@ -850,7 +856,7 @@ fn validate_unresolved_preflight_label(
 fn task_by_id(
     pipeline: &CompiledPipeline,
     task_id: PipelineTaskId,
-) -> crate::Result<&crate::pipeline::model::PipelineTask> {
+) -> crate::error::Result<&crate::pipeline::model::PipelineTask> {
     pipeline
         .tasks()
         .iter()
@@ -861,7 +867,7 @@ fn task_by_id(
 fn resource_by_id(
     pipeline: &CompiledPipeline,
     resource_id: ResidentResourceId,
-) -> crate::Result<&crate::pipeline::model::ResidentResource> {
+) -> crate::error::Result<&crate::pipeline::model::ResidentResource> {
     pipeline
         .resources()
         .iter()

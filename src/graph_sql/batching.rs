@@ -15,7 +15,7 @@ use std::{
 };
 
 use arrow::record_batch::RecordBatch;
-use nexus_query_engine::{ExecutionCancellation, ResidentGraphKey};
+use nexus_query_engine::{plan::ResidentGraphKey, runtime::ExecutionCancellation};
 use tokio::sync::watch;
 
 use crate::error::{Error, ErrorCode, Result};

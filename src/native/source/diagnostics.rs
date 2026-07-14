@@ -6,7 +6,7 @@ use datafusion::{
     parquet::file::reader::{FileReader, SerializedFileReader},
     physical_plan::filter::FilterExec,
 };
-use nexus_query_engine::{
+use nexus_query_engine::source::{
     ByteRangeDisposition as NativeByteRangeDisposition, PartitionColumnDisposition as NativePartitionColumnDisposition,
     PredicateDisposition as NativePredicateDisposition, RejectedSourceFeature as NativeRejectedSourceFeature,
     ScanLimitDisposition as NativeScanLimitDisposition, SchemaMappingDisposition as NativeSchemaMappingDisposition,
@@ -260,7 +260,7 @@ pub(in crate::native) fn local_parquet_source_diagnostics(
     rejected_features.dedup();
 
     NativeSourceDiagnostics {
-        format: nexus_query_engine::SourceFormat::Parquet,
+        format: nexus_query_engine::source::SourceFormat::Parquet,
         source_read_strategy: "local_kvikio".to_string(),
         source_decode_input: "filepath".to_string(),
         credential_mode: "none".to_string(),

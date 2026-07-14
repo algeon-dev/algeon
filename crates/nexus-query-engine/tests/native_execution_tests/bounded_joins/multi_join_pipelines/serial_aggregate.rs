@@ -57,15 +57,18 @@ fn bounded_native_query_executes_serial_aggregate_multi_join_distinct_count_spin
         JoinSpec::new(
             JoinType::Inner,
             vec![JoinKey::new(
-                nexus_query_engine::ColumnRef::input(0, "ps_partkey", "ps_partkey"),
-                nexus_query_engine::ColumnRef::input(1, "p_partkey", "p_partkey"),
+                nexus_query_engine::expr::ColumnRef::input(0, "ps_partkey", "ps_partkey"),
+                nexus_query_engine::expr::ColumnRef::input(1, "p_partkey", "p_partkey"),
             )],
         )
         .with_output_projection(vec![
-            JoinOutputColumn::left(nexus_query_engine::ColumnRef::input(0, "ps_suppkey", "ps_suppkey"), "ps_suppkey"),
-            JoinOutputColumn::right(nexus_query_engine::ColumnRef::input(1, "p_brand", "p_brand"), "p_brand"),
-            JoinOutputColumn::right(nexus_query_engine::ColumnRef::input(1, "p_type", "p_type"), "p_type"),
-            JoinOutputColumn::right(nexus_query_engine::ColumnRef::input(1, "p_size", "p_size"), "p_size"),
+            JoinOutputColumn::left(
+                nexus_query_engine::expr::ColumnRef::input(0, "ps_suppkey", "ps_suppkey"),
+                "ps_suppkey",
+            ),
+            JoinOutputColumn::right(nexus_query_engine::expr::ColumnRef::input(1, "p_brand", "p_brand"), "p_brand"),
+            JoinOutputColumn::right(nexus_query_engine::expr::ColumnRef::input(1, "p_type", "p_type"), "p_type"),
+            JoinOutputColumn::right(nexus_query_engine::expr::ColumnRef::input(1, "p_size", "p_size"), "p_size"),
         ])
         .with_build_side(JoinSide::Right),
         Arc::clone(&join_schema),
@@ -76,15 +79,18 @@ fn bounded_native_query_executes_serial_aggregate_multi_join_distinct_count_spin
         JoinSpec::new(
             JoinType::Inner,
             vec![JoinKey::new(
-                nexus_query_engine::ColumnRef::input(0, "ps_suppkey", "ps_suppkey"),
-                nexus_query_engine::ColumnRef::input(1, "s_suppkey", "s_suppkey"),
+                nexus_query_engine::expr::ColumnRef::input(0, "ps_suppkey", "ps_suppkey"),
+                nexus_query_engine::expr::ColumnRef::input(1, "s_suppkey", "s_suppkey"),
             )],
         )
         .with_output_projection(vec![
-            JoinOutputColumn::left(nexus_query_engine::ColumnRef::input(0, "ps_suppkey", "ps_suppkey"), "ps_suppkey"),
-            JoinOutputColumn::left(nexus_query_engine::ColumnRef::input(0, "p_brand", "p_brand"), "p_brand"),
-            JoinOutputColumn::left(nexus_query_engine::ColumnRef::input(0, "p_type", "p_type"), "p_type"),
-            JoinOutputColumn::left(nexus_query_engine::ColumnRef::input(0, "p_size", "p_size"), "p_size"),
+            JoinOutputColumn::left(
+                nexus_query_engine::expr::ColumnRef::input(0, "ps_suppkey", "ps_suppkey"),
+                "ps_suppkey",
+            ),
+            JoinOutputColumn::left(nexus_query_engine::expr::ColumnRef::input(0, "p_brand", "p_brand"), "p_brand"),
+            JoinOutputColumn::left(nexus_query_engine::expr::ColumnRef::input(0, "p_type", "p_type"), "p_type"),
+            JoinOutputColumn::left(nexus_query_engine::expr::ColumnRef::input(0, "p_size", "p_size"), "p_size"),
         ])
         .with_build_side(JoinSide::Right),
         Arc::clone(&join_schema),

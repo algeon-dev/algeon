@@ -2217,6 +2217,7 @@ dependencies = [
  "cugraph-sys",
  "datafusion",
  "datafusion-nexus",
+ "nexus-query-engine",
  "serde",
  "serde_json",
  "tokio",

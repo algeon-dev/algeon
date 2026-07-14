@@ -41,15 +41,22 @@ use datafusion::{
     prelude::{ParquetReadOptions, SessionConfig, SessionContext},
 };
 use datafusion_nexus::{
-    CudfOptimizerConfig, CudfSessionStateBuilderExt, Error, ErrorCode, GpuFallbackPolicy, NativeCudfExec,
-    NativeCudfExecutionConfig, lower_physical_plan_to_native,
+    error::{Error, ErrorCode},
+    native::lower_physical_plan_to_native,
+    native_exec::{NativeCudfExec, NativeCudfExecutionConfig},
+    planner::CudfOptimizerConfig,
+    policy::GpuFallbackPolicy,
+    session::CudfSessionStateBuilderExt,
 };
 use datafusion_nexus_bench::{
     CUDF_TPCH_PARQUET_DIR_ENV, TPCH_QUERIES, TPCH_TABLES, TpchDefaultScale, default_nvme_tpch_dataset,
     default_tpch_parquet_root, tpch_report_session_config, write_tiny_tpch_parquet_dataset,
 };
 use nexus_query_engine::{
-    ExecutionContext, MemoryControlPolicy, PlanNode, QueryOutput, SourceNode, execute_query_plan,
+    exec::{QueryOutput, execute_query_plan},
+    plan::PlanNode,
+    runtime::{ExecutionContext, MemoryControlPolicy},
+    source::SourceNode,
 };
 use tokio::sync::Mutex;
 

@@ -16,7 +16,7 @@ fn default_config_selects_all_tpch_queries() {
     };
     assert_eq!(profile_name, TPCH_NATIVE_PROFILE_CONSERVATIVE);
     assert_eq!(profile_source, "default");
-    assert_eq!(source_chunk_planning_mode, nexus_query_engine::SourceChunkPlanningMode::Conservative);
+    assert_eq!(source_chunk_planning_mode, nexus_query_engine::runtime::SourceChunkPlanningMode::Conservative);
     assert_eq!(config.native_pipeline_execution_mode, NativePipelineExecutionMode::StrictBounded);
     assert_eq!(config.native_source_cache_policy.as_str(), "disabled");
     config.validate().unwrap();
@@ -33,7 +33,7 @@ fn native_profile_defaults_to_conservative() {
     assert_eq!(profile.max_row_groups_per_chunk, DEFAULT_NATIVE_MAX_ROW_GROUPS_PER_CHUNK);
     assert_eq!(profile.max_retry_attempts, DEFAULT_NATIVE_MAX_RETRY_ATTEMPTS);
     assert_eq!(profile.min_retry_chunk_row_groups, DEFAULT_NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS);
-    assert_eq!(profile.source_chunk_planning_mode, nexus_query_engine::SourceChunkPlanningMode::Conservative);
+    assert_eq!(profile.source_chunk_planning_mode, nexus_query_engine::runtime::SourceChunkPlanningMode::Conservative);
 }
 
 #[test]
@@ -48,7 +48,10 @@ fn native_profile_resolves_sf100_gpu_throughput() {
     assert_eq!(profile.max_row_groups_per_chunk, TPCH_SF100_GPU_THROUGHPUT_MAX_ROW_GROUPS_PER_CHUNK);
     assert_eq!(profile.max_retry_attempts, DEFAULT_NATIVE_MAX_RETRY_ATTEMPTS);
     assert_eq!(profile.min_retry_chunk_row_groups, DEFAULT_NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS);
-    assert_eq!(profile.source_chunk_planning_mode, nexus_query_engine::SourceChunkPlanningMode::LocalParquetThroughput);
+    assert_eq!(
+        profile.source_chunk_planning_mode,
+        nexus_query_engine::runtime::SourceChunkPlanningMode::LocalParquetThroughput
+    );
 }
 
 #[test]
@@ -65,7 +68,7 @@ fn native_profile_source_chunk_planning_reaches_execution_config() {
 
     assert_eq!(
         execution.source_chunk_planning_mode(),
-        nexus_query_engine::SourceChunkPlanningMode::LocalParquetThroughput
+        nexus_query_engine::runtime::SourceChunkPlanningMode::LocalParquetThroughput
     );
 }
 
@@ -97,7 +100,7 @@ fn native_profile_overrides_become_custom() {
     assert_eq!(profile.profile_name, TPCH_NATIVE_PROFILE_CUSTOM);
     assert_eq!(profile.profile_source, "custom_overrides");
     assert_eq!(profile.max_source_chunk_bytes, 123_456);
-    assert_eq!(profile.source_chunk_planning_mode, nexus_query_engine::SourceChunkPlanningMode::Conservative);
+    assert_eq!(profile.source_chunk_planning_mode, nexus_query_engine::runtime::SourceChunkPlanningMode::Conservative);
 }
 
 #[test]

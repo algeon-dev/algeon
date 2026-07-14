@@ -211,7 +211,7 @@ fn native_validation_error_for_plan(build_root: impl FnOnce(&mut QueryPlanBuilde
     let root = build_root(&mut builder);
     let plan = builder.finish_with_host_sink(root);
 
-    match nexus_query_engine::execute_query_plan(&context, &plan) {
+    match nexus_query_engine::exec::execute_query_plan(&context, &plan) {
         Ok(_) => panic!("plan validation should reject before execution"),
         Err(error) => error,
     }

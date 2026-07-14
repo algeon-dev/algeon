@@ -245,7 +245,7 @@ fn native_lead_window_with_explicit_default_fills_partition_edges() {
             vec![WindowFunction::lead(
                 Expr::column("value"),
                 1,
-                Some(nexus_query_engine::LiteralValue::Int64(-1)),
+                Some(nexus_query_engine::expr::LiteralValue::Int64(-1)),
                 "next_value",
             )],
         ),

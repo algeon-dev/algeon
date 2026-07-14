@@ -5,7 +5,7 @@ use std::{
 
 use arrow::datatypes::{Field, Schema, SchemaRef};
 use datafusion::physical_expr::expressions::Column;
-use nexus_query_engine::NodeId as NativeNodeId;
+use nexus_query_engine::plan::NodeId as NativeNodeId;
 
 use super::naming::{sanitize_field_name, unique_name_with_suffix};
 use crate::policy::FallbackReason;

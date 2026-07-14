@@ -24,13 +24,20 @@ use datafusion::{
     prelude::{ParquetReadOptions, SessionConfig, SessionContext},
 };
 use datafusion_nexus::{
-    CUGRAPH_DESCRIBE_ALGORITHM_FUNCTION, CUGRAPH_LIST_ALGORITHMS_FUNCTION, CUGRAPH_OPERATION_REGISTRY,
-    CUGRAPH_VALIDATE_CALL_FUNCTION, CudfOptimizerConfig, CudfSessionStateBuilderExt, CugraphAlgorithm,
-    CugraphAlgorithmParams, CugraphBfsOutputMode, CugraphBfsSource, CugraphBfsSourceVertex,
-    CugraphGraphConstructionPolicy, CugraphSqlConfig, GpuFallbackPolicy, NativeCudfComposedExec, NativeCudfExec,
-    NativeDataFusionExecutionMetrics, NexusAdmissionPolicy, NexusGpuBackend, SlotGuarantee,
-    parse_cugraph_algorithm_spec, stable_result_schema,
+    backend::{NexusAdmissionPolicy, NexusGpuBackend},
+    graph_sql::{
+        CUGRAPH_DESCRIBE_ALGORITHM_FUNCTION, CUGRAPH_LIST_ALGORITHMS_FUNCTION, CUGRAPH_OPERATION_REGISTRY,
+        CUGRAPH_VALIDATE_CALL_FUNCTION, CugraphAlgorithm, CugraphAlgorithmParams, CugraphBfsOutputMode,
+        CugraphBfsSource, CugraphBfsSourceVertex, CugraphGraphConstructionPolicy, CugraphSqlConfig,
+        parse_cugraph_algorithm_spec, stable_result_schema,
+    },
+    native_exec::{NativeCudfComposedExec, NativeCudfExec},
+    native_report::NativeDataFusionExecutionMetrics,
+    planner::CudfOptimizerConfig,
+    policy::GpuFallbackPolicy,
+    session::CudfSessionStateBuilderExt,
 };
+use nexus_query_engine::runtime::SlotGuarantee;
 
 #[path = "cugraph_sql_tests/gpu.rs"]
 mod gpu;

@@ -17,17 +17,28 @@ use datafusion::{
     },
 };
 use datafusion_nexus::{
-    CandidateOutcome, CudfNativePhysicalOptimizerRule, CudfOptimizerConfig, DataFusionNexusSessionConfig, ErrorCode,
-    FallbackReason, GpuFallbackPolicy, NativeCudfComposedExec, NativeCudfExec, NativeCudfExecutionConfig,
-    NativeCudfGpuProducerExec, NativePipelineExecutionMode, NativePlanPreferenceOptions,
-    STRICT_BOUNDED_NON_JOIN_OUTSIDE_REPORT_SCOPE_REASON, cudf_native_physical_optimizer_rules,
-    lower_physical_plan_to_native,
+    error::ErrorCode,
+    native::lower_physical_plan_to_native,
+    native_exec::{NativeCudfComposedExec, NativeCudfExec, NativeCudfExecutionConfig, NativeCudfGpuProducerExec},
+    planner::{
+        CudfNativePhysicalOptimizerRule, CudfOptimizerConfig, STRICT_BOUNDED_NON_JOIN_OUTSIDE_REPORT_SCOPE_REASON,
+    },
+    policy::{FallbackReason, GpuFallbackPolicy},
+    report::CandidateOutcome,
+    session::cudf_native_physical_optimizer_rules,
+    session_config::DataFusionNexusSessionConfig,
 };
 use datafusion_nexus_bench::{TPCH_QUERIES, write_tiny_tpch_parquet_dataset};
 use nexus_query_engine::{
-    BoundedJoinReservationContract, MemoryControlPolicy, PipelineTaskKind, ReservationKind, SourceChunkPlanningMode,
-    SourceChunkPlanningOptions, SourceFetchConfig, StrictBoundedExecutionMode, capability::ContractQuality,
-    compile_pipeline,
+    capability::ContractQuality,
+    chunk::SourceChunkPlanningOptions,
+    mode::{NativePipelineExecutionMode, StrictBoundedExecutionMode},
+    pipeline::{PipelineTaskKind, compile_pipeline},
+    plan::NativePlanPreferenceOptions,
+    runtime::{
+        BoundedJoinReservationContract, MemoryControlPolicy, ReservationKind, SourceChunkPlanningMode,
+        SourceFetchConfig,
+    },
 };
 
 #[path = "native_exec_tests/bounded_join.rs"]
@@ -431,7 +442,7 @@ fn native_optimizer_reestablishes_declared_scan_ordering_through_aggregate() {
     let native = optimized
         .downcast_ref::<NativeCudfExec>()
         .expect("ordered aggregate should lower with an explicit final native sort");
-    assert!(matches!(native.native_plan().root_node().kind, nexus_query_engine::PlanNode::Sort(_)));
+    assert!(matches!(native.native_plan().root_node().kind, nexus_query_engine::plan::PlanNode::Sort(_)));
     assert_eq!(optimized.properties().output_ordering().cloned(), expected_ordering);
     let report = rule.last_report().expect("native optimizer should record a planning report");
     assert_eq!(report.rewritten_count(), 1, "outcomes={:?}", report.outcomes());
@@ -468,7 +479,7 @@ fn native_execution_reestablished_declared_scan_ordering_is_sorted() {
     let native = optimized
         .downcast_ref::<NativeCudfExec>()
         .expect("ordered aggregate should lower with an explicit final native sort");
-    assert!(matches!(native.native_plan().root_node().kind, nexus_query_engine::PlanNode::Sort(_)));
+    assert!(matches!(native.native_plan().root_node().kind, nexus_query_engine::plan::PlanNode::Sort(_)));
     let batches =
         futures::executor::block_on(collect(Arc::clone(&optimized), Arc::new(TaskContext::default()))).unwrap();
     assert_eq!(batches.len(), 1);
@@ -494,7 +505,7 @@ fn native_execution_sort_preserving_merge_matches_datafusion_sorted_input() {
     let optimized = rule.optimize(plan, &ConfigOptions::default()).unwrap();
 
     let native = optimized.downcast_ref::<NativeCudfExec>().expect("SPM over sorted input should lower to native");
-    assert!(matches!(native.native_plan().root_node().kind, nexus_query_engine::PlanNode::Sort(_)));
+    assert!(matches!(native.native_plan().root_node().kind, nexus_query_engine::plan::PlanNode::Sort(_)));
     let actual =
         futures::executor::block_on(collect(Arc::clone(&optimized), Arc::new(TaskContext::default()))).unwrap();
     assert_eq!(actual.len(), expected.len());
@@ -692,7 +703,8 @@ fn native_optimizer_rule_obeys_gpu_only_policy_for_rejected_plan() {
     let DataFusionError::External(source) = &error else {
         panic!("GpuOnly native rejection should preserve the typed adapter error");
     };
-    let adapter_error = source.downcast_ref::<datafusion_nexus::Error>().expect("expected datafusion-nexus Error");
+    let adapter_error =
+        source.downcast_ref::<datafusion_nexus::error::Error>().expect("expected datafusion-nexus Error");
 
     assert_eq!(adapter_error.code(), ErrorCode::NativeCandidateRejected);
     assert_eq!(adapter_error.fact_value("fallback_reason"), Some("unsupported_expression"));
@@ -868,7 +880,7 @@ fn native_optimizer_rule_executes_try_cast_string_to_integer_with_null_on_failur
         parquet::arrow::ArrowWriter,
         prelude::{ParquetReadOptions, SessionConfig, SessionContext},
     };
-    use datafusion_nexus::CudfSessionStateBuilderExt;
+    use datafusion_nexus::session::CudfSessionStateBuilderExt;
 
     let dir = unique_temp_dir("datafusion-nexus-native-exec-try-cast");
     let path = dir.join("input.parquet");

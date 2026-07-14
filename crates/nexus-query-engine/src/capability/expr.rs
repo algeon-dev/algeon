@@ -4,7 +4,7 @@
 //! produces a stable `(reason, expression_family)` rejection for reports.
 
 use super::{model::*, *};
-use crate::DatePart;
+use crate::expr::DatePart;
 
 // Stable report facts for an expression capability miss.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -31,7 +31,7 @@ pub(super) fn expression_rejection_decision(
 }
 
 pub(super) fn validation_result_decision(
-    result: crate::Result<()>,
+    result: crate::error::Result<()>,
     reason: &'static str,
     facts: impl IntoIterator<Item = (&'static str, String)>,
 ) -> CapabilityDecision {

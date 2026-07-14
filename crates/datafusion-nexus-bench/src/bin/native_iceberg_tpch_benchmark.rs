@@ -8,8 +8,11 @@ use std::{
 };
 
 use datafusion_nexus::{
-    NativeDataFusionPlanningOutcome, NativeDataFusionPostNativeExecutionPath, NativeDataFusionRuntimeOutcome,
-    ParityComparisonMode, ParityStatus, TableFormat, TableFormatScanPlan,
+    native_report::{
+        NativeDataFusionPlanningOutcome, NativeDataFusionPostNativeExecutionPath, NativeDataFusionRuntimeOutcome,
+        ParityComparisonMode, ParityStatus,
+    },
+    table_format::{TableFormat, TableFormatScanPlan},
 };
 use datafusion_nexus_bench::TPCH_QUERIES;
 

@@ -18,35 +18,52 @@ use arrow::{
 };
 use cudf::DataFrame;
 #[cfg(feature = "cugraph")]
-use nexus_query_engine::GpuResidentGraphCache;
+use nexus_query_engine::exec::GpuResidentGraphCache;
 #[cfg(feature = "cugraph")]
 use nexus_query_engine::{
-    AdaptiveMemoryHistory, GRAPH_MEMORY_BUDGET_TRACKING_MIN_LIMIT_BYTES, GRAPH_VERTEX_ESTIMATE_BOUNDARY,
-    GRAPH_VERTEX_ESTIMATE_PROBE_MIN_BYTES, GraphAlgorithm, GraphAlgorithmParams, GraphAlgorithmSpec,
-    GraphBetweennessCentralityParams, GraphBetweennessSeeds, GraphBfsEndpointPolicy, GraphBfsParams,
-    GraphBfsPredicateInputs, GraphConstructionOptions, GraphConstructionPolicy, GraphEdgeBetweennessCentralityParams,
-    GraphEdgeColumnBindings, GraphEdgePredicateInput, GraphMemoryCalibrationOverride, GraphMemoryModel,
-    GraphMemoryModelInput, GraphPageRankParams, GraphPredicateInput, GraphReservationOutcome,
-    GraphResidencyPlanAnalysis, GraphSeedMode, GraphTriangleCountAllParams, GraphVertexEstimate,
-    GraphVertexEstimateSource, QueryAdmissionRequest, QueryGrantRequest, QueryPlacementHint, QueryService,
-    QueryServiceConfig, QueryServiceTenantConfig, TenantId,
-    force_next_graph_adaptive_chunk_attempt_resource_exhausted_for_test,
-    force_next_graph_adaptive_full_attempt_resource_exhausted_for_test,
-    force_next_graph_statistics_optional_resource_exhausted_for_test, graph_residency_descriptor_for_edge_plan,
-    graph_vertex_estimate_probe_bytes, planned_resident_graph_key, stable_graph_result_schema,
+    adaptive_runtime::AdaptiveMemoryHistory, exec::force_next_graph_adaptive_chunk_attempt_resource_exhausted_for_test,
+    exec::force_next_graph_adaptive_full_attempt_resource_exhausted_for_test,
+    exec::force_next_graph_statistics_optional_resource_exhausted_for_test,
+    graph_memory::GRAPH_MEMORY_BUDGET_TRACKING_MIN_LIMIT_BYTES, graph_memory::GRAPH_VERTEX_ESTIMATE_BOUNDARY,
+    graph_memory::GRAPH_VERTEX_ESTIMATE_PROBE_MIN_BYTES, graph_memory::GraphMemoryCalibrationOverride,
+    graph_memory::GraphMemoryModel, graph_memory::GraphMemoryModelInput, graph_memory::GraphReservationOutcome,
+    graph_memory::GraphSeedMode, graph_memory::GraphVertexEstimate, graph_memory::GraphVertexEstimateSource,
+    graph_memory::graph_vertex_estimate_probe_bytes, plan::GraphAlgorithm, plan::GraphAlgorithmParams,
+    plan::GraphAlgorithmSpec, plan::GraphBetweennessCentralityParams, plan::GraphBetweennessSeeds,
+    plan::GraphBfsEndpointPolicy, plan::GraphBfsParams, plan::GraphBfsPredicateInputs, plan::GraphConstructionOptions,
+    plan::GraphConstructionPolicy, plan::GraphEdgeBetweennessCentralityParams, plan::GraphEdgeColumnBindings,
+    plan::GraphEdgePredicateInput, plan::GraphPageRankParams, plan::GraphPredicateInput,
+    plan::GraphResidencyPlanAnalysis, plan::GraphTriangleCountAllParams,
+    plan::graph_residency_descriptor_for_edge_plan, plan::planned_resident_graph_key, plan::stable_graph_result_schema,
+    runtime::QueryAdmissionRequest, runtime::QueryGrantRequest, runtime::QueryPlacementHint, runtime::QueryService,
+    runtime::QueryServiceConfig, runtime::QueryServiceTenantConfig, runtime::TenantId,
 };
 use nexus_query_engine::{
-    AggregateExpr, AggregateFunction, AggregateSpec, BinaryOp, BoundedJoinReservationContract,
-    BuildMaterializationBoundary, ExecutionBoundaryPolicy, ExecutionContext, Expr, GpuDataFrame, GpuHashJoinBuildCache,
-    GpuLocalParquetSourceCache, GpuResidentInputMap, GpuResidentSource, GpuResultHandle, GrantRequest,
-    GroupingSetsSpec, JoinKey, JoinNullEquality, JoinOutputColumn, JoinSide, JoinSpec, JoinType, LimitSpec,
-    LiteralBatchSource, LiteralValue, LocalParquetFile, LocalParquetSource, MemoryControlPolicy, MemoryGovernor,
-    MemoryReservationEventAction, MemorySpaceId, MissingColumn, NativePipelineExecutionMode, ParquetEqualityDeleteFile,
-    ParquetPositionDeleteFile, PartitionColumn, ProjectionOutput, QueryErrorCode, QueryMetrics, QueryOutput,
-    QueryPlanBuilder, ReservationKind, ResolvedParquetSource, SortExpr, SortSpec, SourceChunkPlanningPolicy,
-    SourceNode, SourceSchedulerPolicy, StddevSampExecutionMode, WindowFunction, WindowSpec, ZERO_COLUMN_COUNT_COLUMN,
-    execute_query_plan, execute_query_plan_with_gpu_inputs, materialize_gpu_result_to_host,
-    plan_local_parquet_source_chunks,
+    chunk::{SourceChunkPlanningPolicy, plan_local_parquet_source_chunks},
+    error::QueryErrorCode,
+    exec::{
+        GpuDataFrame, GpuHashJoinBuildCache, GpuLocalParquetSourceCache, GpuResidentInputMap, GpuResultHandle,
+        QueryOutput, execute_query_plan, execute_query_plan_with_gpu_inputs, materialize_gpu_result_to_host,
+    },
+    expr::{
+        AggregateExpr, AggregateFunction, AggregateSpec, BinaryOp, Expr, GroupingSetsSpec, LimitSpec, LiteralValue,
+        SortExpr, SortSpec,
+    },
+    metrics::{MemoryReservationEventAction, QueryMetrics},
+    mode::{NativePipelineExecutionMode, StddevSampExecutionMode},
+    plan::{
+        JoinKey, JoinNullEquality, JoinOutputColumn, JoinSide, JoinSpec, JoinType, ProjectionOutput, QueryPlanBuilder,
+        WindowFunction, WindowSpec,
+    },
+    runtime::{
+        BoundedJoinReservationContract, BuildMaterializationBoundary, ExecutionBoundaryPolicy, ExecutionContext,
+        GrantRequest, MemoryControlPolicy, MemoryGovernor, MemorySpaceId, ReservationKind, SourceSchedulerPolicy,
+    },
+    source::{
+        GpuResidentSource, LiteralBatchSource, LocalParquetFile, LocalParquetSource, MissingColumn,
+        ParquetEqualityDeleteFile, ParquetPositionDeleteFile, PartitionColumn, ResolvedParquetSource, SourceNode,
+        ZERO_COLUMN_COUNT_COLUMN,
+    },
 };
 use parquet::{arrow::ArrowWriter, file::properties::WriterProperties};
 
@@ -96,7 +113,7 @@ use parquet_fixtures::*;
 use projection_test_support::*;
 use test_support::*;
 
-fn assert_bounded_join_rejection_contract(error: &nexus_query_engine::QueryError) {
+fn assert_bounded_join_rejection_contract(error: &nexus_query_engine::error::QueryError) {
     let contract = BoundedJoinReservationContract;
     let expected_facts = contract.unsupported_shape_facts(ExecutionBoundaryPolicy::default());
 
@@ -198,7 +215,7 @@ fn assert_bounded_join_rejection_contract(error: &nexus_query_engine::QueryError
     assert!(error.source_error().is_none());
 }
 
-fn assert_bounded_join_rejection_reservation_facts_are_consistent(error: &nexus_query_engine::QueryError) {
+fn assert_bounded_join_rejection_reservation_facts_are_consistent(error: &nexus_query_engine::error::QueryError) {
     let modeled = error
         .fact_value("modeled_reservations")
         .map(csv_values)

@@ -13,7 +13,7 @@ pub(in crate::native::lowering) fn lower_table_format_zero_column_count_source(
 pub(super) fn add_table_format_zero_column_count_source_node(
     scan_plan: &TableFormatScanPlan,
     builder: &mut NativeQueryPlanBuilder,
-) -> Result<nexus_query_engine::NodeId, FallbackReason> {
+) -> Result<nexus_query_engine::plan::NodeId, FallbackReason> {
     let requirements = NativeParquetColumnRequirements {
         read_columns: Vec::new(),
         read_column_file_indices: Vec::new(),

@@ -18,7 +18,7 @@ use datafusion::{
     catalog::{CatalogProvider, SchemaProvider},
     prelude::{SessionConfig, SessionContext},
 };
-use datafusion_nexus::iceberg::catalog::{
+use datafusion_nexus::table_format::iceberg::catalog::{
     CudfIcebergCatalogProvider, IcebergCatalogBackend, IcebergProviderKind, build_catalog_provider_from_backend,
     build_scoped_catalog_provider_from_backend,
 };
@@ -46,20 +46,20 @@ impl MockIcebergCatalogBackend {
 
 #[async_trait]
 impl IcebergCatalogBackend for MockIcebergCatalogBackend {
-    async fn list_namespaces(&self) -> datafusion_nexus::Result<Vec<NamespaceIdent>> {
+    async fn list_namespaces(&self) -> datafusion_nexus::error::Result<Vec<NamespaceIdent>> {
         Ok(self.namespaces.clone())
     }
 
-    async fn list_tables(&self, namespace: &NamespaceIdent) -> datafusion_nexus::Result<Vec<TableIdent>> {
+    async fn list_tables(&self, namespace: &NamespaceIdent) -> datafusion_nexus::error::Result<Vec<TableIdent>> {
         let key = Self::namespace_key(namespace);
         let names = self.tables_by_namespace.get(&key).cloned().unwrap_or_default();
         let idents = names.into_iter().map(|name| TableIdent::new(namespace.clone(), name)).collect();
         Ok(idents)
     }
 
-    async fn load_table(&self, _table: &TableIdent) -> datafusion_nexus::Result<iceberg::table::Table> {
-        Err(datafusion_nexus::Error::new(
-            datafusion_nexus::ErrorCode::CudfDependencyFailure,
+    async fn load_table(&self, _table: &TableIdent) -> datafusion_nexus::error::Result<iceberg::table::Table> {
+        Err(datafusion_nexus::error::Error::new(
+            datafusion_nexus::error::ErrorCode::CudfDependencyFailure,
             "mock_backend.load_table",
             "MockIcebergCatalogBackend does not support loading tables",
         ))
@@ -399,15 +399,15 @@ impl CountingMockBackend {
 
 #[async_trait]
 impl IcebergCatalogBackend for CountingMockBackend {
-    async fn list_namespaces(&self) -> datafusion_nexus::Result<Vec<NamespaceIdent>> {
+    async fn list_namespaces(&self) -> datafusion_nexus::error::Result<Vec<NamespaceIdent>> {
         self.inner.list_namespaces().await
     }
 
-    async fn list_tables(&self, namespace: &NamespaceIdent) -> datafusion_nexus::Result<Vec<TableIdent>> {
+    async fn list_tables(&self, namespace: &NamespaceIdent) -> datafusion_nexus::error::Result<Vec<TableIdent>> {
         self.inner.list_tables(namespace).await
     }
 
-    async fn load_table(&self, table: &TableIdent) -> datafusion_nexus::Result<iceberg::table::Table> {
+    async fn load_table(&self, table: &TableIdent) -> datafusion_nexus::error::Result<iceberg::table::Table> {
         self.load_count.fetch_add(1, Ordering::SeqCst);
         self.inner.load_table(table).await
     }

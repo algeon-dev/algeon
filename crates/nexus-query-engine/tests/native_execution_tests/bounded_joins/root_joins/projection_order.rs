@@ -21,8 +21,8 @@ fn bounded_native_query_preserves_right_then_left_projected_cross_output_order()
         left,
         right,
         JoinSpec::new(JoinType::Cross, vec![]).with_output_projection(vec![
-            JoinOutputColumn::right(nexus_query_engine::ColumnRef::input(1, "category", "category"), "category"),
-            JoinOutputColumn::left(nexus_query_engine::ColumnRef::input(0, "qty", "qty"), "qty"),
+            JoinOutputColumn::right(nexus_query_engine::expr::ColumnRef::input(1, "category", "category"), "category"),
+            JoinOutputColumn::left(nexus_query_engine::expr::ColumnRef::input(0, "qty", "qty"), "qty"),
         ]),
         Arc::clone(&output_schema),
     );
@@ -121,13 +121,13 @@ fn bounded_native_query_preserves_mixed_projected_cross_output_order() {
         right,
         JoinSpec::new(JoinType::Cross, vec![]).with_output_projection(vec![
             JoinOutputColumn::right(
-                nexus_query_engine::ColumnRef::input(1, "order_id", "right_order_id"),
+                nexus_query_engine::expr::ColumnRef::input(1, "order_id", "right_order_id"),
                 "right_order_id",
             ),
-            JoinOutputColumn::left(nexus_query_engine::ColumnRef::input(0, "qty", "qty"), "qty"),
-            JoinOutputColumn::right(nexus_query_engine::ColumnRef::input(1, "category", "category"), "category"),
+            JoinOutputColumn::left(nexus_query_engine::expr::ColumnRef::input(0, "qty", "qty"), "qty"),
+            JoinOutputColumn::right(nexus_query_engine::expr::ColumnRef::input(1, "category", "category"), "category"),
             JoinOutputColumn::left(
-                nexus_query_engine::ColumnRef::input(0, "order_id", "left_order_id"),
+                nexus_query_engine::expr::ColumnRef::input(0, "order_id", "left_order_id"),
                 "left_order_id",
             ),
         ]),

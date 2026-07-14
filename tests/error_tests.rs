@@ -1,6 +1,9 @@
 use datafusion::common::DataFusionError;
-use datafusion_nexus::{Error, ErrorCode, ErrorKind, ErrorStatus};
-use nexus_query_engine::{QueryError, QueryErrorCode, TriageCode, TriageVerdict};
+use datafusion_nexus::error::{Error, ErrorCode, ErrorKind, ErrorStatus};
+use nexus_query_engine::{
+    error::{QueryError, QueryErrorCode},
+    triage::{TriageCode, TriageVerdict},
+};
 
 #[test]
 fn error_code_projections_are_stable_policy_contracts() {
@@ -73,31 +76,31 @@ fn error_code_projections_are_stable_policy_contracts() {
 fn native_source_storage_errors_preserve_adapter_status_mapping() {
     for (native_code, adapter_code, adapter_kind, adapter_status) in [
         (
-            nexus_query_engine::QueryErrorCode::SourceAccessDenied,
+            nexus_query_engine::error::QueryErrorCode::SourceAccessDenied,
             ErrorCode::SourceAccessDenied,
             ErrorKind::PermissionDenied,
             ErrorStatus::Permanent,
         ),
         (
-            nexus_query_engine::QueryErrorCode::SourceUnauthenticated,
+            nexus_query_engine::error::QueryErrorCode::SourceUnauthenticated,
             ErrorCode::SourceUnauthenticated,
             ErrorKind::Unauthenticated,
             ErrorStatus::Permanent,
         ),
         (
-            nexus_query_engine::QueryErrorCode::SourceObjectNotFound,
+            nexus_query_engine::error::QueryErrorCode::SourceObjectNotFound,
             ErrorCode::SourceObjectNotFound,
             ErrorKind::NotFound,
             ErrorStatus::Permanent,
         ),
         (
-            nexus_query_engine::QueryErrorCode::SourceTemporaryFailure,
+            nexus_query_engine::error::QueryErrorCode::SourceTemporaryFailure,
             ErrorCode::SourceTemporaryFailure,
             ErrorKind::DependencyFailure,
             ErrorStatus::Temporary,
         ),
     ] {
-        let native_error = nexus_query_engine::QueryError::new(
+        let native_error = nexus_query_engine::error::QueryError::new(
             native_code,
             "nexus_query_engine.source_metadata.object_store_footer",
             "source object storage failure",
@@ -116,8 +119,8 @@ fn native_source_storage_errors_preserve_adapter_status_mapping() {
 
 #[test]
 fn native_service_overloaded_error_preserves_adapter_classification_and_facts() {
-    let native_error = nexus_query_engine::QueryError::new(
-        nexus_query_engine::QueryErrorCode::ServiceOverloaded,
+    let native_error = nexus_query_engine::error::QueryError::new(
+        nexus_query_engine::error::QueryErrorCode::ServiceOverloaded,
         "nexus_query_engine.query_service.admit",
         "native query service is overloaded",
     )
@@ -176,14 +179,20 @@ fn native_query_error_json_uses_fact_only_correlation_ids() {
 
 #[test]
 fn native_query_error_triage_codes_preserve_invalid_input_and_unsupported_capability() {
-    assert_eq!(nexus_query_engine::TriageCode::from(QueryErrorCode::CudfInvalidInput), TriageCode::InvalidInput);
-    assert_eq!(nexus_query_engine::TriageCode::from(QueryErrorCode::CudfUnsupported), TriageCode::UnsupportedPlanShape);
+    assert_eq!(
+        nexus_query_engine::triage::TriageCode::from(QueryErrorCode::CudfInvalidInput),
+        TriageCode::InvalidInput
+    );
+    assert_eq!(
+        nexus_query_engine::triage::TriageCode::from(QueryErrorCode::CudfUnsupported),
+        TriageCode::UnsupportedPlanShape
+    );
 }
 
 #[test]
 fn native_error_message_is_preserved_as_adapter_fact() {
-    let native_error = nexus_query_engine::QueryError::new(
-        nexus_query_engine::QueryErrorCode::InvalidPlan,
+    let native_error = nexus_query_engine::error::QueryError::new(
+        nexus_query_engine::error::QueryErrorCode::InvalidPlan,
         "nexus_query_engine.graph_algorithm.betweenness_seed_policy",
         "exact betweenness requires explicit seeds or k above the configured vertex threshold",
     );
@@ -202,8 +211,8 @@ fn native_error_message_is_preserved_as_adapter_fact() {
 
 #[test]
 fn native_correlation_facts_follow_stamped_query_error() {
-    let native_error = nexus_query_engine::QueryError::new(
-        nexus_query_engine::QueryErrorCode::InvalidPlan,
+    let native_error = nexus_query_engine::error::QueryError::new(
+        nexus_query_engine::error::QueryErrorCode::InvalidPlan,
         "nexus_query_engine.query_service.context",
         "query service handle was released before context acquisition",
     )
@@ -221,8 +230,8 @@ fn native_correlation_facts_follow_stamped_query_error() {
 
 #[test]
 fn native_fact_collisions_preserve_adapter_facts_and_record_skipped_keys() {
-    let native_error = nexus_query_engine::QueryError::new(
-        nexus_query_engine::QueryErrorCode::UnsupportedPlanShape,
+    let native_error = nexus_query_engine::error::QueryError::new(
+        nexus_query_engine::error::QueryErrorCode::UnsupportedPlanShape,
         "nexus_query_engine.plan.lower",
         "native plan shape is not supported",
     )
@@ -279,8 +288,9 @@ fn datafusion_conversion_preserves_typed_adapter_error() {
     let DataFusionError::External(source) = datafusion_error else {
         panic!("adapter errors must cross the DataFusion boundary as typed external errors");
     };
-    let adapter_error =
-        source.downcast_ref::<Error>().expect("DataFusion external error should preserve datafusion_nexus::Error");
+    let adapter_error = source
+        .downcast_ref::<Error>()
+        .expect("DataFusion external error should preserve datafusion_nexus::error::Error");
 
     assert_eq!(adapter_error.code(), ErrorCode::InvalidExecutionPlan);
     assert_eq!(adapter_error.kind(), ErrorKind::Planning);
@@ -289,7 +299,7 @@ fn datafusion_conversion_preserves_typed_adapter_error() {
 
 #[test]
 fn native_cancelled_error_preserves_adapter_classification_and_facts() {
-    let native_error = nexus_query_engine::ExecutionCancellation::new();
+    let native_error = nexus_query_engine::runtime::ExecutionCancellation::new();
     native_error.cancel();
     let adapter_error = Error::from_native(
         "datafusion_nexus.native_exec.execute",
@@ -306,15 +316,18 @@ fn native_cancelled_error_preserves_adapter_classification_and_facts() {
 
 #[test]
 fn native_memory_reservation_error_preserves_adapter_classification_and_facts() {
-    let native_error =
-        nexus_query_engine::MemoryReservationRequest::new(nexus_query_engine::ReservationKind::FinalSort, 4096, 2048)
-            .with_memory_boundary("final_sort")
-            .with_node_id("n5")
-            .with_stage("final_sort")
-            .with_chunk_index(7)
-            .with_row_groups(vec![3, 5])
-            .with_attempt(1, 3)
-            .denied_error(1024);
+    let native_error = nexus_query_engine::runtime::MemoryReservationRequest::new(
+        nexus_query_engine::runtime::ReservationKind::FinalSort,
+        4096,
+        2048,
+    )
+    .with_memory_boundary("final_sort")
+    .with_node_id("n5")
+    .with_stage("final_sort")
+    .with_chunk_index(7)
+    .with_row_groups(vec![3, 5])
+    .with_attempt(1, 3)
+    .denied_error(1024);
 
     let adapter_error =
         Error::from_native("datafusion_nexus.native.execute", "native cudf query execution failed", native_error);
@@ -336,15 +349,15 @@ fn native_memory_reservation_error_preserves_adapter_classification_and_facts() 
 
 #[test]
 fn native_retry_error_preserves_resume_boundary_facts() {
-    let native_error = nexus_query_engine::RetryFacts::new()
+    let native_error = nexus_query_engine::runtime::RetryFacts::new()
         .with_retry_action("reduce_final_sort_fan_in")
         .with_resume_boundary("final_sort")
         .with_committed_chunks(4)
         .with_committed_partials(4)
         .with_merge_level(2)
         .with_merge_fan_in(8)
-        .attach_to_error(nexus_query_engine::QueryError::new(
-            nexus_query_engine::QueryErrorCode::MemoryReservationFailed,
+        .attach_to_error(nexus_query_engine::error::QueryError::new(
+            nexus_query_engine::error::QueryErrorCode::MemoryReservationFailed,
             "nexus_query_engine.final_sort.topk_concat",
             "native final sort exhausted bounded memory",
         ));

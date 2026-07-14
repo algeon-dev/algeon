@@ -76,7 +76,7 @@ impl CompiledPipeline {
     }
 
     /// Validate id positions, cross references, resource flow, and gate contracts.
-    pub fn validate(&self) -> crate::Result<()> {
+    pub fn validate(&self) -> crate::error::Result<()> {
         super::validate::validate_pipeline(self)
     }
 }

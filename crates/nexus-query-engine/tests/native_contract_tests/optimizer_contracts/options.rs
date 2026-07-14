@@ -118,17 +118,17 @@ fn count_non_null_column_pruning_options_and_rule_name_are_stable() {
 #[test]
 fn outer_join_null_rejection_options_and_rule_name_are_stable() {
     assert_eq!(OUTER_JOIN_NULL_REJECTION_RULE_NAME, "outer_join_null_rejection");
-    assert!(nexus_query_engine::OuterJoinNullRejectionOptions::default().enabled);
-    assert!(!nexus_query_engine::OuterJoinNullRejectionOptions::disabled().enabled);
+    assert!(nexus_query_engine::optimizer::OuterJoinNullRejectionOptions::default().enabled);
+    assert!(!nexus_query_engine::optimizer::OuterJoinNullRejectionOptions::disabled().enabled);
 }
 
 #[test]
 fn join_filter_reassociation_options_and_rule_name_are_stable() {
     assert_eq!(JOIN_FILTER_REASSOCIATION_RULE_NAME, "join_filter_reassociation");
-    assert!(nexus_query_engine::JoinFilterReassociationOptions::default().enabled);
-    assert!(nexus_query_engine::JoinFilterReassociationOptions::default().residual_filter_pushdown_enabled);
-    assert!(!nexus_query_engine::JoinFilterReassociationOptions::disabled().enabled);
-    assert!(!nexus_query_engine::JoinFilterReassociationOptions::disabled().residual_filter_pushdown_enabled);
+    assert!(nexus_query_engine::optimizer::JoinFilterReassociationOptions::default().enabled);
+    assert!(nexus_query_engine::optimizer::JoinFilterReassociationOptions::default().residual_filter_pushdown_enabled);
+    assert!(!nexus_query_engine::optimizer::JoinFilterReassociationOptions::disabled().enabled);
+    assert!(!nexus_query_engine::optimizer::JoinFilterReassociationOptions::disabled().residual_filter_pushdown_enabled);
 }
 
 #[test]
@@ -140,7 +140,7 @@ fn dimension_derived_row_group_pruning_options_and_rule_name_are_stable() {
         DimensionDerivedRowGroupPruningOptions::DEFAULT_MAX_DIMENSION_ROWS
     );
     assert!(!DimensionDerivedRowGroupPruningOptions::disabled().enabled);
-    assert_eq!(nexus_query_engine::DIMENSION_KEY_FILTER_MAX_RUNS, nexus_query_engine::DimensionKeyFilter::MAX_RUNS);
+    assert_eq!(nexus_query_engine::optimizer::DIMENSION_KEY_FILTER_MAX_RUNS, nexus_query_engine::optimizer::DimensionKeyFilter::MAX_RUNS);
     DimensionDerivedRowGroupPruningOptions::default().validate().unwrap();
 }
 

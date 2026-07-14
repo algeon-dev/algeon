@@ -1,7 +1,8 @@
 use super::*;
 use crate::{
-    LocalParquetSource, PredicateDisposition, WindowFrame, WindowNode,
     dynamic_filter::{DynamicFilterConsumer, DynamicFilterConsumerReductionStage},
+    plan::{WindowFrame, WindowNode},
+    source::{LocalParquetSource, PredicateDisposition},
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

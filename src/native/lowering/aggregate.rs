@@ -6,10 +6,12 @@ use datafusion::{
     physical_plan::{ExecutionPlan, aggregates::AggregateExec, projection::ProjectionExec},
 };
 use nexus_query_engine::{
-    AggregateExpr as NativeAggregateExpr, AggregateFunction as NativeAggregateFunction,
-    AggregateSpec as NativeAggregateSpec, Expr as NativeExpr, GroupingSetsSpec as NativeGroupingSetsSpec,
-    NodeId as NativeNodeId, QueryPlanBuilder as NativeQueryPlanBuilder,
-    ZERO_COLUMN_COUNT_COLUMN as NATIVE_ZERO_COLUMN_COUNT_COLUMN,
+    expr::{
+        AggregateExpr as NativeAggregateExpr, AggregateFunction as NativeAggregateFunction,
+        AggregateSpec as NativeAggregateSpec, Expr as NativeExpr, GroupingSetsSpec as NativeGroupingSetsSpec,
+    },
+    plan::{NodeId as NativeNodeId, QueryPlanBuilder as NativeQueryPlanBuilder},
+    source::ZERO_COLUMN_COUNT_COLUMN as NATIVE_ZERO_COLUMN_COUNT_COLUMN,
 };
 
 use super::{

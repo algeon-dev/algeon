@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use arrow::datatypes::SchemaRef;
 use datafusion::physical_plan::ExecutionPlan;
-use nexus_query_engine::QueryPlanBuilder as NativeQueryPlanBuilder;
+use nexus_query_engine::plan::QueryPlanBuilder as NativeQueryPlanBuilder;
 
 use super::{
     FieldBinding, LoweredNativeInput, RequiredFields, executable_schema_and_bindings, lower_native_input,

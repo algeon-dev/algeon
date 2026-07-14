@@ -1,8 +1,11 @@
 use cudf::{DeviceId, DeviceMemoryManager, DeviceMemoryManagerBase, DeviceMemoryManagerOptions};
 use nexus_query_engine::{
-    DeploymentIoCapability, GdsDriverProbeStatus, KvikioCompatModeStatus, NvidiaFsProbeStatus, QueryErrorCode,
-    QueryMemoryDomainPolicy, QueryService, QueryServiceConfig, QueryServiceTenantConfig, S3SourceStorageProfile,
-    SourceStorageProfile,
+    error::QueryErrorCode,
+    runtime::{
+        DeploymentIoCapability, GdsDriverProbeStatus, KvikioCompatModeStatus, NvidiaFsProbeStatus,
+        QueryMemoryDomainPolicy, QueryService, QueryServiceConfig, QueryServiceTenantConfig, S3SourceStorageProfile,
+        SourceStorageProfile,
+    },
 };
 
 fn non_gds_deployment() -> DeploymentIoCapability {

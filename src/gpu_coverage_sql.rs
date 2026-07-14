@@ -17,9 +17,11 @@ use datafusion::{
 };
 
 use crate::{
-    Error, ErrorCode, NEXUS_EXPLAIN_COVERAGE_FUNCTION, QueryGpuCoverage,
-    gpu_coverage::{coverage_validator_recursion_error, gpu_coverage_validation_in_progress},
-    validate_query,
+    error::{Error, ErrorCode},
+    gpu_coverage::{
+        NEXUS_EXPLAIN_COVERAGE_FUNCTION, QueryGpuCoverage, coverage_validator_recursion_error,
+        gpu_coverage_validation_in_progress, validate_query,
+    },
 };
 
 /// Return the SQL table function that exposes [`validate_query`].
@@ -164,7 +166,10 @@ mod tests {
     use datafusion::execution::SessionStateBuilder;
 
     use super::*;
-    use crate::{CudfOptimizerConfig, CudfSessionStateBuilderExt, GpuFallbackPolicy, NativeCudfExecutionConfig};
+    use crate::{
+        native_exec::NativeCudfExecutionConfig, planner::CudfOptimizerConfig, policy::GpuFallbackPolicy,
+        session::CudfSessionStateBuilderExt,
+    };
 
     fn test_optimizer_config() -> CudfOptimizerConfig {
         CudfOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred)

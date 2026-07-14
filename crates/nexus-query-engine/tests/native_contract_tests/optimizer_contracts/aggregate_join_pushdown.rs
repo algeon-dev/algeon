@@ -364,7 +364,7 @@ fn aggregate_join_pushdown_preserves_grouping_id_output_schema_for_grouping_sets
             vec![Expr::column("state"), Expr::column("county")],
             vec![AggregateExpr::new(AggregateFunction::Sum, Expr::column("net_profit"), "sum_profit")],
         )
-        .with_grouping_sets(nexus_query_engine::GroupingSetsSpec::new(
+        .with_grouping_sets(nexus_query_engine::expr::GroupingSetsSpec::new(
             vec![vec![true, true], vec![false, true], vec![false, false]],
             "__grouping_id",
         )),
@@ -430,7 +430,7 @@ fn aggregate_join_pushdown_avg_grouping_sets_final_projection_facts_match_typed_
             vec![Expr::column("state"), Expr::column("county")],
             vec![AggregateExpr::new(AggregateFunction::Avg, Expr::column("qty"), "avg_qty")],
         )
-        .with_grouping_sets(nexus_query_engine::GroupingSetsSpec::new(
+        .with_grouping_sets(nexus_query_engine::expr::GroupingSetsSpec::new(
             vec![vec![true, true], vec![false, true], vec![false, false]],
             "__grouping_id",
         )),

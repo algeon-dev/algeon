@@ -14,9 +14,9 @@ use datafusion::{
 };
 
 #[cfg(feature = "cugraph")]
-use crate::NativeCudfExecutionConfig;
-#[cfg(feature = "cugraph")]
 use crate::graph_sql::{CugraphSqlConfig, cugraph_table_functions};
+#[cfg(feature = "cugraph")]
+use crate::native_exec::NativeCudfExecutionConfig;
 use crate::{
     gpu_coverage_sql::gpu_coverage_table_function,
     planner::{
@@ -231,7 +231,7 @@ fn insert_cudf_native_rules_before_final_validation(
 
 #[cfg(all(test, feature = "cugraph"))]
 mod tests {
-    use nexus_query_engine::{
+    use nexus_query_engine::runtime::{
         DeploymentIoCapability, GdsDriverProbeStatus, KvikioCompatModeStatus, NvidiaFsProbeStatus, QueryService,
         QueryServiceConfig, QueryServiceTenantConfig, TenantId,
     };

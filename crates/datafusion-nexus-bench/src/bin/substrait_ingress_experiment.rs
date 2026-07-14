@@ -28,8 +28,9 @@ use std::{
 use arrow::util::pretty::pretty_format_batches;
 use datafusion::{execution::SessionStateBuilder, prelude::SessionContext};
 use datafusion_nexus::{
-    CudfNativePhysicalOptimizerRule, CudfSessionStateBuilderExt, NativeDataFusionPlanningReport,
-    NativeDataFusionPostNativeExecutionPath,
+    native_report::{NativeDataFusionPlanningReport, NativeDataFusionPostNativeExecutionPath},
+    planner::CudfNativePhysicalOptimizerRule,
+    session::CudfSessionStateBuilderExt,
 };
 use datafusion_nexus_bench::{
     TPCH_QUERIES, TPCH_TABLES, discover_tpch_table_layout, prepare_tpch_report_dataset, register_tpch_table_layout,

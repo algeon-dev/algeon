@@ -34,22 +34,30 @@ use datafusion::{
 };
 use futures::{TryStreamExt, future::BoxFuture};
 use nexus_query_engine::{
-    BinaryOp, CaseWhen, ExecutionContext, Expr as NativeExpr, GpuDataFrame, GpuResidentInputMap, GpuResidentSource,
-    GpuResultHandle, GraphAlgorithm, GraphAlgorithmParams, GraphAlgorithmRuntimeMetrics, GraphAlgorithmSpec,
-    GraphBetweennessCentralityParams, GraphBetweennessSeeds, GraphBfsEndpointPolicy, GraphBfsParams,
-    GraphBfsPredicateInputs as NativeGraphBfsPredicateInputs, GraphConstructionOptions, GraphConstructionPolicy,
-    GraphCoreNumberParams, GraphDegreesAllParams, GraphEcgParams, GraphEdgeBetweennessCentralityParams,
-    GraphEdgeColumnBindings, GraphEdgePredicateInput as NativeGraphEdgePredicateInput,
-    GraphEigenvectorCentralityParams, GraphForceAtlas2Params, GraphHitsParams, GraphInDegreesAllParams,
-    GraphKCoreDegreeType, GraphKCoreParams, GraphKatzCentralityParams, GraphLeidenParams, GraphLouvainParams,
-    GraphMstParams, GraphOutDegreesAllParams, GraphPageRankParams,
-    GraphPageRankPersonalizationInput as NativeGraphPageRankPersonalizationInput, GraphPersonalizedPageRankParams,
-    GraphPredicateInput as NativeGraphPredicateInput, GraphResidencyDescriptor, GraphResidencyPlanAnalysis,
-    GraphSccParams, GraphSourceFingerprintBypassReason, GraphSpectralClusteringParams, GraphSsspParams,
-    GraphTriangleCountAllParams, GraphWccParams, LimitSpec, LiteralValue, MemoryControlPolicy, PlanNode,
-    ProjectionOutput, QueryMetrics, QueryOutput, QueryPlacementHint, QueryPlanBuilder, SourceNode, execute_query_plan,
-    execute_query_plan_with_gpu_inputs, graph_edge_list_output_rows_for_plan, graph_memory_estimate_for_edge_list,
-    graph_residency_descriptor_for_edge_plan, planned_resident_graph_key,
+    exec::{
+        GpuDataFrame, GpuResidentInputMap, GpuResultHandle, QueryOutput, execute_query_plan,
+        execute_query_plan_with_gpu_inputs,
+    },
+    expr::{BinaryOp, CaseWhen, Expr as NativeExpr, LimitSpec, LiteralValue},
+    graph_memory::{graph_edge_list_output_rows_for_plan, graph_memory_estimate_for_edge_list},
+    metrics::{GraphAlgorithmRuntimeMetrics, QueryMetrics},
+    plan::{
+        GraphAlgorithm, GraphAlgorithmParams, GraphAlgorithmSpec, GraphBetweennessCentralityParams,
+        GraphBetweennessSeeds, GraphBfsEndpointPolicy, GraphBfsParams,
+        GraphBfsPredicateInputs as NativeGraphBfsPredicateInputs, GraphConstructionOptions, GraphConstructionPolicy,
+        GraphCoreNumberParams, GraphDegreesAllParams, GraphEcgParams, GraphEdgeBetweennessCentralityParams,
+        GraphEdgeColumnBindings, GraphEdgePredicateInput as NativeGraphEdgePredicateInput,
+        GraphEigenvectorCentralityParams, GraphForceAtlas2Params, GraphHitsParams, GraphInDegreesAllParams,
+        GraphKCoreDegreeType, GraphKCoreParams, GraphKatzCentralityParams, GraphLeidenParams, GraphLouvainParams,
+        GraphMstParams, GraphOutDegreesAllParams, GraphPageRankParams,
+        GraphPageRankPersonalizationInput as NativeGraphPageRankPersonalizationInput, GraphPersonalizedPageRankParams,
+        GraphPredicateInput as NativeGraphPredicateInput, GraphResidencyDescriptor, GraphResidencyPlanAnalysis,
+        GraphSccParams, GraphSourceFingerprintBypassReason, GraphSpectralClusteringParams, GraphSsspParams,
+        GraphTriangleCountAllParams, GraphWccParams, PlanNode, ProjectionOutput, QueryPlanBuilder,
+        graph_residency_descriptor_for_edge_plan, planned_resident_graph_key,
+    },
+    runtime::{ExecutionContext, MemoryControlPolicy, QueryPlacementHint},
+    source::{GpuResidentSource, SourceNode},
 };
 
 use super::{
@@ -1134,7 +1142,7 @@ fn graph_residency_optional_dtype_matches(
     }
 }
 
-fn native_plan_is_graph_ticket_light_edge_source(native_plan: &nexus_query_engine::QueryPlan) -> bool {
+fn native_plan_is_graph_ticket_light_edge_source(native_plan: &nexus_query_engine::plan::QueryPlan) -> bool {
     native_plan.nodes().iter().all(|node| {
         matches!(node.kind, PlanNode::Source(_) | PlanNode::Filter(_) | PlanNode::Projection(_) | PlanNode::Limit(_))
     })
@@ -1289,9 +1297,13 @@ mod tests {
         prelude::{ParquetReadOptions, SessionConfig, SessionContext},
     };
     use nexus_query_engine::{
-        DeploymentIoCapability, Expr, GdsDriverProbeStatus, KvikioCompatModeStatus, LiteralBatchSource,
-        LocalParquetFile, LocalParquetSource, NvidiaFsProbeStatus, ProjectionOutput, QueryService, QueryServiceConfig,
-        QueryServiceTenantConfig, SortExpr, SortSpec, TenantId,
+        expr::{Expr, SortExpr, SortSpec},
+        plan::ProjectionOutput,
+        runtime::{
+            DeploymentIoCapability, GdsDriverProbeStatus, KvikioCompatModeStatus, NvidiaFsProbeStatus, QueryService,
+            QueryServiceConfig, QueryServiceTenantConfig, TenantId,
+        },
+        source::{LiteralBatchSource, LocalParquetFile, LocalParquetSource},
     };
     use parquet::{arrow::ArrowWriter, file::properties::WriterProperties};
 
@@ -1437,7 +1449,7 @@ mod tests {
     fn native_edge_source_with_root(
         row_group_rows: Vec<u64>,
         config: &NativeCudfExecutionConfig,
-        root: impl FnOnce(&mut QueryPlanBuilder, nexus_query_engine::NodeId) -> nexus_query_engine::NodeId,
+        root: impl FnOnce(&mut QueryPlanBuilder, nexus_query_engine::plan::NodeId) -> nexus_query_engine::plan::NodeId,
     ) -> Arc<dyn ExecutionPlan> {
         let source = LocalParquetSource::from_files(
             vec![LocalParquetFile::new("edges.parquet").with_row_group_rows(row_group_rows)],
@@ -1723,7 +1735,7 @@ mod tests {
         let min = 64 * 1024 * 1024;
         let config = NativeCudfExecutionConfig::bounded(min, 512, 1, 3, 1);
         let stale_config = config.clone().with_graph_memory_calibration_override(
-            nexus_query_engine::GraphMemoryCalibrationOverride::none().with_raw_input_edges(30_000),
+            nexus_query_engine::graph_memory::GraphMemoryCalibrationOverride::none().with_raw_input_edges(30_000),
         );
         let edge_source = memory_edge_source(300);
 
@@ -1848,7 +1860,7 @@ mod tests {
             .resident_graph_key()
             .expect("keyable DataFusion edge source should carry a graph placement hint");
 
-        assert_eq!(resident_key.orientation, nexus_query_engine::GraphResidencyOrientation::Transposed);
+        assert_eq!(resident_key.orientation, nexus_query_engine::plan::GraphResidencyOrientation::Transposed);
         assert_eq!(resident_key.source_column, "src");
         assert_eq!(resident_key.destination_column, "dst");
         assert_eq!(resident_key.weight_column.as_deref(), Some("weight"));
@@ -1872,7 +1884,7 @@ mod tests {
             .resident_graph_key()
             .expect("keyable DataFusion BFS edge source should carry a graph placement hint");
 
-        assert_eq!(resident_key.orientation, nexus_query_engine::GraphResidencyOrientation::Forward);
+        assert_eq!(resident_key.orientation, nexus_query_engine::plan::GraphResidencyOrientation::Forward);
         assert_eq!(resident_key.source_column, "src");
         assert_eq!(resident_key.destination_column, "dst");
         assert_eq!(resident_key.weight_column, None);
@@ -1918,7 +1930,7 @@ mod tests {
         assert!(graph_residency_matches_edge_schema(descriptor, edge_schema.as_ref(), &exec.spec));
         assert_eq!(
             placement_hint.resident_graph_key().map(|key| key.orientation),
-            Some(nexus_query_engine::GraphResidencyOrientation::Forward)
+            Some(nexus_query_engine::plan::GraphResidencyOrientation::Forward)
         );
     }
 
@@ -1962,7 +1974,7 @@ mod tests {
             .resident_graph_key()
             .expect("keyable cached graph query should carry a placement hint");
 
-        assert_eq!(resident_key.orientation, nexus_query_engine::GraphResidencyOrientation::Transposed);
+        assert_eq!(resident_key.orientation, nexus_query_engine::plan::GraphResidencyOrientation::Transposed);
         assert_eq!(resident_key.source_column, "src");
         assert_eq!(resident_key.destination_column, "dst");
         assert_eq!(resident_key.weight_column.as_deref(), Some("weight"));
@@ -1990,7 +2002,7 @@ mod tests {
         let config = NativeCudfExecutionConfig::bounded(min, 512, 1, 3, 1)
             .with_query_admission_source(source)
             .with_graph_memory_calibration_override(
-                nexus_query_engine::GraphMemoryCalibrationOverride::none().with_raw_input_edges(300),
+                nexus_query_engine::graph_memory::GraphMemoryCalibrationOverride::none().with_raw_input_edges(300),
             );
         let edge_source = sorted_native_edge_source(vec![100, 200], &config);
 
@@ -2547,7 +2559,7 @@ fn prepare_bfs_logical_gpu_inputs(
         DataFusionError::from(Error::from_native(
             "datafusion_nexus.cugraph_sql.logical_mapping",
             "failed to concatenate cuGraph logical BFS mapping domain on GPU",
-            nexus_query_engine::QueryError::from_cudf(
+            nexus_query_engine::error::QueryError::from_cudf(
                 "datafusion_nexus.cugraph_sql.logical_mapping",
                 "failed to concatenate cuGraph logical BFS mapping domain on GPU",
                 error,
@@ -2558,7 +2570,7 @@ fn prepare_bfs_logical_gpu_inputs(
         DataFusionError::from(Error::from_native(
             "datafusion_nexus.cugraph_sql.logical_mapping",
             "failed to build cuGraph logical BFS codebook on GPU",
-            nexus_query_engine::QueryError::from_cudf(
+            nexus_query_engine::error::QueryError::from_cudf(
                 "datafusion_nexus.cugraph_sql.logical_mapping",
                 "failed to build cuGraph logical BFS codebook on GPU",
                 error,
@@ -2677,7 +2689,7 @@ fn bfs_literal_string_source_series(
         DataFusionError::from(Error::from_native(
             "datafusion_nexus.cugraph_sql.logical_mapping",
             "failed to create GPU source-vertices series for cuGraph logical BFS mapping",
-            nexus_query_engine::QueryError::from_cudf(
+            nexus_query_engine::error::QueryError::from_cudf(
                 "datafusion_nexus.cugraph_sql.logical_mapping",
                 "failed to create GPU source-vertices series for cuGraph logical BFS mapping",
                 error,
@@ -2977,7 +2989,7 @@ fn apply_gpu_projection_limit(
                     input_schema.fields().get(*index).map(|field| field.as_ref().clone()).ok_or_else(|| {
                         plan_error(format!("cuGraph output projection index {index} is out of range"))
                     })?;
-                Ok(ProjectionOutput::new(nexus_query_engine::Expr::column(field.name()), field))
+                Ok(ProjectionOutput::new(nexus_query_engine::expr::Expr::column(field.name()), field))
             })
             .collect::<Result<Vec<_>>>()?;
         root_schema = projected_schema(&input_schema, Some(projection))?;
@@ -3291,7 +3303,7 @@ fn cudf_logical_mapping_error(error: cudf::Error) -> DataFusionError {
     Error::from_native(
         "datafusion_nexus.cugraph_sql.logical_mapping",
         "cuGraph logical BFS GPU mapping failed",
-        nexus_query_engine::QueryError::from_cudf(
+        nexus_query_engine::error::QueryError::from_cudf(
             "datafusion_nexus.cugraph_sql.logical_mapping",
             "cuGraph logical BFS GPU mapping failed",
             error,
@@ -3317,7 +3329,7 @@ fn record_batches_to_gpu(
             DataFusionError::from(Error::from_native(
                 "datafusion_nexus.cugraph_sql.edge_source_host_import",
                 "failed to import empty host Arrow edge-source batch into cudf",
-                nexus_query_engine::QueryError::from_cudf(
+                nexus_query_engine::error::QueryError::from_cudf(
                     "datafusion_nexus.cugraph_sql.edge_source_host_import",
                     "failed to import empty host Arrow edge-source batch into cudf",
                     error,
@@ -3329,7 +3341,7 @@ fn record_batches_to_gpu(
         DataFusionError::from(Error::from_native(
             "datafusion_nexus.cugraph_sql.edge_source_host_import",
             "failed to import host Arrow edge-source batches into cudf",
-            nexus_query_engine::QueryError::from_cudf(
+            nexus_query_engine::error::QueryError::from_cudf(
                 "datafusion_nexus.cugraph_sql.edge_source_host_import",
                 "failed to import host Arrow edge-source batches into cudf",
                 error,
@@ -3454,7 +3466,7 @@ enum CugraphQuerySink {
 }
 
 struct CugraphQueryPlan {
-    plan: nexus_query_engine::QueryPlan,
+    plan: nexus_query_engine::plan::QueryPlan,
     inputs: GpuResidentInputMap,
 }
 
@@ -3506,7 +3518,7 @@ fn cugraph_query_plan(
                     spec.output_schema.fields().get(*index).map(|field| field.as_ref().clone()).ok_or_else(|| {
                         plan_error(format!("cuGraph output projection index {index} is out of range"))
                     })?;
-                Ok(ProjectionOutput::new(nexus_query_engine::Expr::column(field.name()), field))
+                Ok(ProjectionOutput::new(nexus_query_engine::expr::Expr::column(field.name()), field))
             })
             .collect::<Result<Vec<_>>>()?;
         root = builder.add_projection(root, outputs);
@@ -3526,7 +3538,7 @@ fn bind_predicate_gpu_inputs(
     builder: &mut QueryPlanBuilder,
     inputs: &mut GpuResidentInputMap,
     predicate_frames: Vec<CugraphGpuFrame>,
-) -> Result<Vec<nexus_query_engine::NodeId>> {
+) -> Result<Vec<nexus_query_engine::plan::NodeId>> {
     let mut nodes = Vec::with_capacity(predicate_frames.len());
     for (index, CugraphGpuFrame { schema, frame }) in predicate_frames.into_iter().enumerate() {
         let input_name = format!("__datafusion_nexus_cugraph_side_input_{index}");
@@ -3546,7 +3558,7 @@ fn bind_predicate_gpu_inputs(
 fn native_graph_spec(
     spec: &CugraphAlgorithmSpec,
     edge_normalize_inserted: bool,
-    predicate_nodes: &[nexus_query_engine::NodeId],
+    predicate_nodes: &[nexus_query_engine::plan::NodeId],
 ) -> GraphAlgorithmSpec {
     let mut edge_columns =
         GraphEdgeColumnBindings::new(spec.src_col.clone(), spec.dst_col.clone(), spec.weight_col.clone());
@@ -3715,7 +3727,7 @@ fn native_algorithm(algorithm: CugraphAlgorithm) -> GraphAlgorithm {
 
 fn native_algorithm_params(
     params: &CugraphAlgorithmParams,
-    predicate_nodes: &[nexus_query_engine::NodeId],
+    predicate_nodes: &[nexus_query_engine::plan::NodeId],
 ) -> GraphAlgorithmParams {
     match params {
         CugraphAlgorithmParams::PageRank(params) => GraphAlgorithmParams::PageRank(GraphPageRankParams {
@@ -3851,7 +3863,7 @@ fn native_algorithm_params(
 
 fn native_bfs_params(
     params: &super::CugraphBfsParams,
-    predicate_nodes: &[nexus_query_engine::NodeId],
+    predicate_nodes: &[nexus_query_engine::plan::NodeId],
 ) -> GraphBfsParams {
     let mut native = GraphBfsParams::new(params.source.as_i64().unwrap_or(0), params.depth_limit);
     let mut next = predicate_nodes.iter().copied();

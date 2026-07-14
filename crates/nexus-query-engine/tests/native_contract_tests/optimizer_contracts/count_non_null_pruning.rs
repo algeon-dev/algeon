@@ -197,7 +197,7 @@ fn count_non_null_pruning_keeps_grouped_count_column_when_no_retained_non_null_c
 fn count_non_null_pruning_source_adjacent_plan(
     carrier_null_counts: Option<Vec<Option<u64>>>,
     count_null_counts: Option<Vec<Option<u64>>>,
-) -> nexus_query_engine::QueryPlan {
+) -> nexus_query_engine::plan::QueryPlan {
     let source_schema = Arc::new(Schema::new(vec![
         Field::new("o_custkey", DataType::Int32, false),
         Field::new("o_orderkey", DataType::Int32, false),
@@ -256,7 +256,7 @@ fn count_non_null_pruning_source_adjacent_plan(
     builder.finish_with_host_sink(aggregate)
 }
 
-fn count_non_null_pruning_synthetic_source_plan() -> nexus_query_engine::QueryPlan {
+fn count_non_null_pruning_synthetic_source_plan() -> nexus_query_engine::plan::QueryPlan {
     let source_schema = Arc::new(Schema::new(vec![
         Field::new("k", DataType::Int32, false),
         Field::new("cnt", DataType::Int32, false),
@@ -331,7 +331,7 @@ fn count_non_null_pruning_synthetic_source_plan() -> nexus_query_engine::QueryPl
     builder.finish_with_host_sink(aggregate)
 }
 
-fn non_count_projection_pruning_plan() -> nexus_query_engine::QueryPlan {
+fn non_count_projection_pruning_plan() -> nexus_query_engine::plan::QueryPlan {
     let source_schema = Arc::new(Schema::new(vec![
         Field::new("k", DataType::Int32, false),
         Field::new("payload", DataType::Int64, false),
@@ -368,7 +368,7 @@ fn non_count_projection_pruning_plan() -> nexus_query_engine::QueryPlan {
     builder.finish_with_host_sink(aggregate)
 }
 
-fn count_non_null_pruning_overridden_source_plan() -> nexus_query_engine::QueryPlan {
+fn count_non_null_pruning_overridden_source_plan() -> nexus_query_engine::plan::QueryPlan {
     let physical_schema = Arc::new(Schema::new(vec![
         Field::new("raw_custkey", DataType::Int32, false),
         Field::new("raw_orderkey", DataType::Int32, false),

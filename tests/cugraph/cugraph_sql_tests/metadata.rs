@@ -649,7 +649,7 @@ async fn cugraph_metadata_validate_call_accepts_nullable_edge_schema_for_runtime
 
 #[test]
 fn cugraph_sql_operation_registry_matches_native_engine_inventory() {
-    use nexus_query_engine::GRAPH_OPERATION_REGISTRY;
+    use nexus_query_engine::plan::GRAPH_OPERATION_REGISTRY;
 
     let sql_algorithms: Vec<_> = CUGRAPH_OPERATION_REGISTRY.iter().map(|entry| entry.native_algorithm).collect();
     let native_algorithms: Vec<_> = GRAPH_OPERATION_REGISTRY.iter().map(|entry| entry.algorithm).collect();
@@ -670,7 +670,7 @@ fn cugraph_sql_operation_registry_matches_native_engine_inventory() {
 
 #[tokio::test]
 async fn cugraph_metadata_registry_matches_native_graph_descriptors() {
-    use nexus_query_engine::GRAPH_OPERATION_REGISTRY;
+    use nexus_query_engine::plan::GRAPH_OPERATION_REGISTRY;
 
     let state = SessionStateBuilder::new_with_default_features().with_cugraph_sql(CugraphSqlConfig::default()).build();
     let ctx = SessionContext::new_with_state(state);

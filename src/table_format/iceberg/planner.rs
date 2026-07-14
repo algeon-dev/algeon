@@ -37,14 +37,14 @@ use iceberg::{
     },
     table::Table,
 };
-use nexus_query_engine::is_supported_arrow_type;
+use nexus_query_engine::datatypes::is_supported_arrow_type;
 use parquet::file::{
     FOOTER_SIZE,
     metadata::{FooterTail, ParquetMetaData, ParquetMetaDataReader},
 };
 
 use crate::{
-    Error, ErrorCode, Result,
+    error::{Error, ErrorCode, Result},
     table_format::{
         scan::{
             TableFormat, TableFormatColumnMapping, TableFormatColumnRole, TableFormatColumnSource, TableFormatDataFile,
@@ -694,7 +694,7 @@ mod tests {
 
     use super::*;
     use crate::{
-        FallbackReason,
+        policy::FallbackReason,
         table_format::scan::{TableFormatLakehouseCachePolicy, TableFormatParquetReadStrategyPreference},
     };
 

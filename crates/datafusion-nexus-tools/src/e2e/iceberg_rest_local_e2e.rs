@@ -24,7 +24,7 @@
 use std::sync::Arc;
 
 use datafusion::catalog::CatalogProvider;
-use datafusion_nexus::iceberg::catalog::{
+use datafusion_nexus::table_format::iceberg::catalog::{
     IcebergCatalogBackend, IcebergProviderKind, RestIcebergCatalogBackend, RestIcebergCatalogConfig,
     build_scoped_catalog_provider_from_backend,
 };
@@ -310,7 +310,8 @@ async fn rest_native_planning_and_parity_local() {
         prelude::{SessionConfig, SessionContext},
     };
     use datafusion_nexus::{
-        CudfOptimizerConfig, CudfSessionStateBuilderExt, GpuFallbackPolicy, NativeCudfExecutionConfig,
+        native_exec::NativeCudfExecutionConfig, planner::CudfOptimizerConfig, policy::GpuFallbackPolicy,
+        session::CudfSessionStateBuilderExt,
     };
 
     let namespace = std::env::var("NEXUS_ICEBERG_NAMESPACE")

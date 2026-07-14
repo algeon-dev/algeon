@@ -28,7 +28,7 @@ const OPERATION: &str = "nexus_query_engine.pipeline.compile";
 /// a report-family fallback. The resulting graph is mode-agnostic; strict and
 /// adaptive execution apply their own admission and runtime policy after this
 /// step.
-pub fn compile_pipeline(plan: &QueryPlan, analysis: &CapabilityAnalysis) -> crate::Result<CompiledPipeline> {
+pub fn compile_pipeline(plan: &QueryPlan, analysis: &CapabilityAnalysis) -> crate::error::Result<CompiledPipeline> {
     reject_local_capability_rejections(analysis)?;
 
     let node_order = reachable_postorder(plan)?;
@@ -64,7 +64,7 @@ pub fn compile_pipeline(plan: &QueryPlan, analysis: &CapabilityAnalysis) -> crat
     Ok(pipeline)
 }
 
-fn reject_local_capability_rejections(analysis: &CapabilityAnalysis) -> crate::Result<()> {
+fn reject_local_capability_rejections(analysis: &CapabilityAnalysis) -> crate::error::Result<()> {
     if let Some(node) =
         analysis.nodes.iter().find(|node| matches!(node.executable, CapabilityDecision::Rejected { .. }))
         && let CapabilityDecision::Rejected { reason, .. } = &node.executable
@@ -186,7 +186,7 @@ impl NodeTasks {
     }
 }
 
-fn reachable_postorder(plan: &QueryPlan) -> crate::Result<Vec<NodeId>> {
+fn reachable_postorder(plan: &QueryPlan) -> crate::error::Result<Vec<NodeId>> {
     let mut order = Vec::new();
     let mut visiting = BTreeSet::new();
     let mut visited = BTreeSet::new();
@@ -200,7 +200,7 @@ fn visit_reachable(
     visiting: &mut BTreeSet<NodeId>,
     visited: &mut BTreeSet<NodeId>,
     order: &mut Vec<NodeId>,
-) -> crate::Result<()> {
+) -> crate::error::Result<()> {
     if visited.contains(&node_id) {
         return Ok(());
     }
@@ -223,7 +223,7 @@ fn collect_dependencies(
     plan: &QueryPlan,
     node_order: &[NodeId],
     node_set: &BTreeSet<NodeId>,
-) -> crate::Result<Vec<PlanDependency>> {
+) -> crate::error::Result<Vec<PlanDependency>> {
     let mut dependencies = Vec::new();
     for consumer in node_order {
         let node = plan
@@ -250,7 +250,7 @@ fn validate_analysis_covers_plan(
     analysis: &CapabilityAnalysis,
     node_order: &[NodeId],
     dependencies: &[PlanDependency],
-) -> crate::Result<()> {
+) -> crate::error::Result<()> {
     for node_id in node_order {
         if analysis.nodes.iter().all(|node| node.node_id != *node_id) {
             return Err(
@@ -295,7 +295,7 @@ fn input_role(kind: &PlanNode, input_index: usize) -> InputRole {
     }
 }
 
-fn assign_task_ids(plan: &QueryPlan, node_order: &[NodeId]) -> crate::Result<BTreeMap<NodeId, NodeTasks>> {
+fn assign_task_ids(plan: &QueryPlan, node_order: &[NodeId]) -> crate::error::Result<BTreeMap<NodeId, NodeTasks>> {
     let mut task_ids = BTreeMap::new();
     let mut next = 0;
     for node_id in node_order {
@@ -330,7 +330,7 @@ fn build_tasks(
     task_ids: &BTreeMap<NodeId, NodeTasks>,
     resource_ids: &BTreeMap<NodeId, ResidentResourceId>,
     gate_builder: &mut GateBuilder,
-) -> crate::Result<Vec<PipelineTask>> {
+) -> crate::error::Result<Vec<PipelineTask>> {
     let mut tasks = Vec::new();
     for node_id in node_order {
         let node = plan
@@ -514,7 +514,7 @@ fn input_resources(
     consumer: NodeId,
     dependencies: &[PlanDependency],
     resource_ids: &BTreeMap<NodeId, ResidentResourceId>,
-) -> crate::Result<Vec<ResidentResourceId>> {
+) -> crate::error::Result<Vec<ResidentResourceId>> {
     dependencies
         .iter()
         .filter(|dependency| dependency.consumer == consumer)
@@ -527,7 +527,7 @@ fn join_input_resources(
     selector: InputRoleSelector,
     dependencies: &[PlanDependency],
     resource_ids: &BTreeMap<NodeId, ResidentResourceId>,
-) -> crate::Result<Vec<ResidentResourceId>> {
+) -> crate::error::Result<Vec<ResidentResourceId>> {
     dependencies
         .iter()
         .filter(|dependency| {
@@ -549,7 +549,7 @@ fn build_plan_edges(
     task_ids: &BTreeMap<NodeId, NodeTasks>,
     resource_ids: &BTreeMap<NodeId, ResidentResourceId>,
     gate_builder: &mut GateBuilder,
-) -> crate::Result<Vec<PipelineEdge>> {
+) -> crate::error::Result<Vec<PipelineEdge>> {
     let mut edges = Vec::new();
     for dependency in dependencies {
         let contract = edge_contract_for_dependency(analysis, dependency).ok_or_else(|| {
@@ -584,7 +584,7 @@ fn append_join_internal_edges(
     analysis: &CapabilityAnalysis,
     task_ids: &BTreeMap<NodeId, NodeTasks>,
     edges: &mut Vec<PipelineEdge>,
-) -> crate::Result<()> {
+) -> crate::error::Result<()> {
     for node_id in node_order {
         let Some(node) = plan.node(*node_id) else {
             return Err(invalid("reachable query plan node is missing").with_fact("node_id", node_id));
@@ -613,7 +613,7 @@ fn append_dynamic_filter_control_edges(
     plan: &QueryPlan,
     task_ids: &BTreeMap<NodeId, NodeTasks>,
     edges: &mut Vec<PipelineEdge>,
-) -> crate::Result<()> {
+) -> crate::error::Result<()> {
     for route in plan.dynamic_filter_routes() {
         if route.readiness != DynamicFilterReadiness::ProducerCompleteBeforeConsumer {
             continue;
@@ -635,7 +635,7 @@ fn append_dynamic_filter_control_edges(
 fn dynamic_filter_producer_task(
     task_ids: &BTreeMap<NodeId, NodeTasks>,
     producer: &DynamicFilterProducer,
-) -> crate::Result<Option<PipelineTaskId>> {
+) -> crate::error::Result<Option<PipelineTaskId>> {
     match producer {
         DynamicFilterProducer::HashJoinBuild { join_node_id, .. } => tasks_for(task_ids, *join_node_id)
             .and_then(|tasks| {
@@ -651,7 +651,7 @@ fn dynamic_filter_producer_task(
 fn dynamic_filter_consumer_task(
     task_ids: &BTreeMap<NodeId, NodeTasks>,
     consumer: &DynamicFilterConsumer,
-) -> crate::Result<Option<PipelineTaskId>> {
+) -> crate::error::Result<Option<PipelineTaskId>> {
     match consumer {
         DynamicFilterConsumer::LocalParquetSource { source_node_id } => {
             tasks_for(task_ids, *source_node_id).map(|tasks| Some(tasks.output_task()))
@@ -675,7 +675,7 @@ fn append_sink_task(
     tasks: &mut Vec<PipelineTask>,
     edges: &mut Vec<PipelineEdge>,
     gate_builder: &mut GateBuilder,
-) -> crate::Result<SinkCompilation> {
+) -> crate::error::Result<SinkCompilation> {
     let ResultSink::HostArrow { input, .. } = plan.sink() else {
         return Ok(SinkCompilation { task: None, edge: None });
     };
@@ -708,7 +708,7 @@ fn build_resources(
     task_ids: &BTreeMap<NodeId, NodeTasks>,
     resource_ids: &BTreeMap<NodeId, ResidentResourceId>,
     sink_task: Option<PipelineTaskId>,
-) -> crate::Result<Vec<ResidentResource>> {
+) -> crate::error::Result<Vec<ResidentResource>> {
     let mut resources = Vec::new();
     for node_id in node_order {
         let resource = resource_for(resource_ids, *node_id)?;
@@ -719,7 +719,7 @@ fn build_resources(
             .map(|dependency| {
                 tasks_for(task_ids, dependency.consumer).map(|tasks| tasks.input_task(dependency.input_role))
             })
-            .collect::<crate::Result<Vec<_>>>()?;
+            .collect::<crate::error::Result<Vec<_>>>()?;
         if plan.sink().input() == *node_id
             && let Some(sink_task) = sink_task
         {
@@ -748,7 +748,7 @@ fn build_barriers(
     task_ids: &BTreeMap<NodeId, NodeTasks>,
     sink_task: Option<PipelineTaskId>,
     gate_builder: &mut GateBuilder,
-) -> crate::Result<Vec<PipelineBarrier>> {
+) -> crate::error::Result<Vec<PipelineBarrier>> {
     let mut barriers = Vec::new();
     for node_id in node_order {
         let node = plan
@@ -883,12 +883,12 @@ fn downstream_tasks(
     producer: NodeId,
     dependencies: &[PlanDependency],
     task_ids: &BTreeMap<NodeId, NodeTasks>,
-) -> crate::Result<Vec<PipelineTaskId>> {
+) -> crate::error::Result<Vec<PipelineTaskId>> {
     let mut tasks = dependencies
         .iter()
         .filter(|dependency| dependency.producer == producer)
         .map(|dependency| tasks_for(task_ids, dependency.consumer).map(|tasks| tasks.input_task(dependency.input_role)))
-        .collect::<crate::Result<Vec<_>>>()?;
+        .collect::<crate::error::Result<Vec<_>>>()?;
     tasks.sort_unstable();
     tasks.dedup();
     Ok(tasks)
@@ -900,7 +900,7 @@ fn build_sink_boundary(
     task_ids: &BTreeMap<NodeId, NodeTasks>,
     sink_compilation: SinkCompilation,
     gate_builder: &mut GateBuilder,
-) -> crate::Result<SinkBoundary> {
+) -> crate::error::Result<SinkBoundary> {
     let kind = match plan.sink() {
         ResultSink::HostArrow { .. } => SinkBoundaryKind::HostArrowMaterialization,
         ResultSink::GpuResident { .. } => SinkBoundaryKind::GpuResidentOutput,
@@ -929,7 +929,10 @@ fn edge_contract_for_dependency<'a>(
     })
 }
 
-fn sink_edge_contract<'a>(plan: &QueryPlan, analysis: &'a CapabilityAnalysis) -> crate::Result<&'a EdgeContract> {
+fn sink_edge_contract<'a>(
+    plan: &QueryPlan,
+    analysis: &'a CapabilityAnalysis,
+) -> crate::error::Result<&'a EdgeContract> {
     let consumer = EdgeConsumer::Sink(sink_consumer_kind(plan.sink()));
     analysis.edges.iter().find(|edge| edge.producer == plan.sink().input() && edge.consumer == consumer).ok_or_else(
         || {
@@ -940,7 +943,7 @@ fn sink_edge_contract<'a>(plan: &QueryPlan, analysis: &'a CapabilityAnalysis) ->
     )
 }
 
-fn node_capability_for(analysis: &CapabilityAnalysis, node_id: NodeId) -> crate::Result<&NodeCapability> {
+fn node_capability_for(analysis: &CapabilityAnalysis, node_id: NodeId) -> crate::error::Result<&NodeCapability> {
     analysis.nodes.iter().find(|node| node.node_id == node_id).ok_or_else(|| {
         invalid("capability analysis does not cover a sink-reachable query node").with_fact("node_id", node_id)
     })
@@ -957,7 +960,7 @@ fn edge_kind_for_dependency(contract: &EdgeContract, input_role: InputRole) -> P
     }
 }
 
-fn require_build_before_probe_invariant(analysis: &CapabilityAnalysis, join_id: NodeId) -> crate::Result<()> {
+fn require_build_before_probe_invariant(analysis: &CapabilityAnalysis, join_id: NodeId) -> crate::error::Result<()> {
     let Some(invariant) = analysis
         .invariants
         .iter()
@@ -973,14 +976,14 @@ fn require_build_before_probe_invariant(analysis: &CapabilityAnalysis, join_id: 
     Ok(())
 }
 
-fn tasks_for(task_ids: &BTreeMap<NodeId, NodeTasks>, node_id: NodeId) -> crate::Result<NodeTasks> {
+fn tasks_for(task_ids: &BTreeMap<NodeId, NodeTasks>, node_id: NodeId) -> crate::error::Result<NodeTasks> {
     task_ids
         .get(&node_id)
         .copied()
         .ok_or_else(|| invalid("query plan node has no assigned pipeline task").with_fact("node_id", node_id))
 }
 
-fn single_task(task_ids: &BTreeMap<NodeId, NodeTasks>, node_id: NodeId) -> crate::Result<PipelineTaskId> {
+fn single_task(task_ids: &BTreeMap<NodeId, NodeTasks>, node_id: NodeId) -> crate::error::Result<PipelineTaskId> {
     match tasks_for(task_ids, node_id)? {
         NodeTasks::Single { task } => Ok(task),
         NodeTasks::Join { .. } => {
@@ -992,7 +995,7 @@ fn single_task(task_ids: &BTreeMap<NodeId, NodeTasks>, node_id: NodeId) -> crate
 fn resource_for(
     resource_ids: &BTreeMap<NodeId, ResidentResourceId>,
     node_id: NodeId,
-) -> crate::Result<ResidentResourceId> {
+) -> crate::error::Result<ResidentResourceId> {
     resource_ids
         .get(&node_id)
         .copied()

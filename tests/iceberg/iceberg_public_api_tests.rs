@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use datafusion::prelude::SessionContext;
-use datafusion_nexus::iceberg::{
+use datafusion_nexus::table_format::iceberg::{
     GlueIcebergCredentialSource, GlueIcebergTableConfig, load_glue_table, register_glue_table, table_provider,
 };
 

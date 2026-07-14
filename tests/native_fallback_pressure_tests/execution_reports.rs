@@ -355,7 +355,7 @@ fn aggregate_runtime_probe_summary_uses_selection_evidence_not_strategy_name_alo
             ),
             aggregate_strategy_row("prepared_sort_groupby", "partial", "selected", "selected", 500, 55),
             aggregate_strategy_row("encoded_key_partial", "partial", "selected", "selected", 600, 66),
-            datafusion_nexus::NativeAggregateStrategyMetricRow {
+            datafusion_nexus::native_report::NativeAggregateStrategyMetricRow {
                 selected_strategy: "prepared_sort_groupby".to_string(),
                 execution_stage: "partial".to_string(),
                 exact_cardinality_probe_status: "measured".to_string(),
@@ -516,8 +516,8 @@ fn aggregate_strategy_row(
     prepared_sort_groupby_selection_reason: &str,
     input_rows: usize,
     strategy_operator_elapsed_ns: usize,
-) -> datafusion_nexus::NativeAggregateStrategyMetricRow {
-    datafusion_nexus::NativeAggregateStrategyMetricRow {
+) -> datafusion_nexus::native_report::NativeAggregateStrategyMetricRow {
+    datafusion_nexus::native_report::NativeAggregateStrategyMetricRow {
         selected_strategy: selected_strategy.to_string(),
         execution_stage: execution_stage.to_string(),
         prepared_sort_groupby_cost_model_status: prepared_sort_groupby_cost_model_status.to_string(),
@@ -559,7 +559,7 @@ fn native_datafusion_reports_scope_strict_contract_rows_to_join_candidates() {
     ));
     report.push_rejected(
         GpuCandidate::new("SortExec(fetch)(AggregateExec(LocalParquetScan))", 1),
-        datafusion_nexus::FallbackReason::UnsupportedExpression,
+        datafusion_nexus::policy::FallbackReason::UnsupportedExpression,
     );
     let diagnostics = NativePlanningDiagnostics {
         input_plan_root: "SortExec".to_string(),
@@ -720,7 +720,7 @@ fn native_datafusion_reports_project_adaptive_rows_without_strict_contract_rows(
 #[test]
 fn native_datafusion_planning_report_projects_native_optimizer_diagnostics() {
     let optimizer_result =
-        nexus_query_engine::optimize_query_plan(semijoin_reduction_projection_plan(), &Default::default());
+        nexus_query_engine::optimizer::optimize_query_plan(semijoin_reduction_projection_plan(), &Default::default());
     assert_eq!(optimizer_result.diagnostics.semijoin_reduction.applied_count, 1);
 
     let mut report = PlanningReport::new();
@@ -759,8 +759,10 @@ fn native_datafusion_planning_report_projects_native_optimizer_diagnostics() {
 
 #[test]
 fn native_datafusion_planning_report_projects_projection_simplification_diagnostics() {
-    let optimizer_result =
-        nexus_query_engine::optimize_query_plan(projection_simplification_identity_plan(), &Default::default());
+    let optimizer_result = nexus_query_engine::optimizer::optimize_query_plan(
+        projection_simplification_identity_plan(),
+        &Default::default(),
+    );
     assert_eq!(optimizer_result.diagnostics.projection_simplification.considered_count, 1);
     assert_eq!(optimizer_result.diagnostics.projection_simplification.applied_count, 1);
 
@@ -799,7 +801,8 @@ fn native_datafusion_planning_report_projects_projection_simplification_diagnost
 
 #[test]
 fn native_datafusion_planning_report_projects_dynamic_filter_route_diagnostics() {
-    let optimizer_result = nexus_query_engine::optimize_query_plan(dynamic_filter_route_plan(), &Default::default());
+    let optimizer_result =
+        nexus_query_engine::optimizer::optimize_query_plan(dynamic_filter_route_plan(), &Default::default());
     assert_eq!(optimizer_result.diagnostics.dynamic_filter_route_discovery.route_count, 1);
 
     let mut report = PlanningReport::new();
@@ -845,8 +848,8 @@ fn native_datafusion_planning_report_uses_native_optimizer_stable_rule_rows() {
         input_plan_shape: "AggregateExec(HashJoinExec)".to_string(),
         input_join_diagnostics: Vec::new(),
         report,
-        native_optimizer: nexus_query_engine::NativeOptimizerDiagnostics {
-            aggregate_join_pushdown: nexus_query_engine::AggregateJoinPushdownDiagnostics {
+        native_optimizer: nexus_query_engine::optimizer::NativeOptimizerDiagnostics {
+            aggregate_join_pushdown: nexus_query_engine::optimizer::AggregateJoinPushdownDiagnostics {
                 considered_count: 1,
                 applied_count: 1,
                 candidates: Vec::new(),
@@ -880,7 +883,7 @@ fn planning_native_optimizer_cell(planning: &NativeDataFusionPlanningReport) -> 
     row.split('\t').nth(native_optimizer_index).expect("native_optimizer TSV cell").to_string()
 }
 
-fn semijoin_reduction_projection_plan() -> nexus_query_engine::QueryPlan {
+fn semijoin_reduction_projection_plan() -> nexus_query_engine::plan::QueryPlan {
     let mut builder = QueryPlanBuilder::new();
     let x = builder.add_source(semijoin_gpu_source("x", &["x_key", "x_payload"]));
     let y = builder.add_source(semijoin_gpu_source("y", &["y_key", "y_payload"]));
@@ -890,28 +893,28 @@ fn semijoin_reduction_projection_plan() -> nexus_query_engine::QueryPlan {
     let xy = builder.add_join(
         x,
         y,
-        nexus_query_engine::JoinSpec::new(
-            nexus_query_engine::JoinType::Inner,
-            vec![nexus_query_engine::JoinKey::new(
-                nexus_query_engine::ColumnRef::input(0, "x_key", "x_key"),
-                nexus_query_engine::ColumnRef::input(1, "y_key", "y_key"),
+        nexus_query_engine::plan::JoinSpec::new(
+            nexus_query_engine::plan::JoinType::Inner,
+            vec![nexus_query_engine::plan::JoinKey::new(
+                nexus_query_engine::expr::ColumnRef::input(0, "x_key", "x_key"),
+                nexus_query_engine::expr::ColumnRef::input(1, "y_key", "y_key"),
             )],
         )
         .with_output_projection(vec![
-            nexus_query_engine::JoinOutputColumn::left(
-                nexus_query_engine::ColumnRef::input(0, "x_key", "x_key"),
+            nexus_query_engine::plan::JoinOutputColumn::left(
+                nexus_query_engine::expr::ColumnRef::input(0, "x_key", "x_key"),
                 "x_key",
             ),
-            nexus_query_engine::JoinOutputColumn::left(
-                nexus_query_engine::ColumnRef::input(0, "x_payload", "x_payload"),
+            nexus_query_engine::plan::JoinOutputColumn::left(
+                nexus_query_engine::expr::ColumnRef::input(0, "x_payload", "x_payload"),
                 "x_payload",
             ),
-            nexus_query_engine::JoinOutputColumn::right(
-                nexus_query_engine::ColumnRef::input(1, "y_key", "y_key"),
+            nexus_query_engine::plan::JoinOutputColumn::right(
+                nexus_query_engine::expr::ColumnRef::input(1, "y_key", "y_key"),
                 "y_key",
             ),
-            nexus_query_engine::JoinOutputColumn::right(
-                nexus_query_engine::ColumnRef::input(1, "y_payload", "y_payload"),
+            nexus_query_engine::plan::JoinOutputColumn::right(
+                nexus_query_engine::expr::ColumnRef::input(1, "y_payload", "y_payload"),
                 "y_payload",
             ),
         ]),
@@ -920,19 +923,19 @@ fn semijoin_reduction_projection_plan() -> nexus_query_engine::QueryPlan {
     let semi = builder.add_join(
         xy,
         keyset,
-        nexus_query_engine::JoinSpec::new(
-            nexus_query_engine::JoinType::LeftSemi,
-            vec![nexus_query_engine::JoinKey::new(
-                nexus_query_engine::ColumnRef::input(0, "y_key", "y_key"),
-                nexus_query_engine::ColumnRef::input(1, "y_key", "y_key"),
+        nexus_query_engine::plan::JoinSpec::new(
+            nexus_query_engine::plan::JoinType::LeftSemi,
+            vec![nexus_query_engine::plan::JoinKey::new(
+                nexus_query_engine::expr::ColumnRef::input(0, "y_key", "y_key"),
+                nexus_query_engine::expr::ColumnRef::input(1, "y_key", "y_key"),
             )],
         )
         .with_output_projection(
             ["x_key", "x_payload", "y_key", "y_payload"]
                 .into_iter()
                 .map(|name| {
-                    nexus_query_engine::JoinOutputColumn::left(
-                        nexus_query_engine::ColumnRef::input(0, name, name),
+                    nexus_query_engine::plan::JoinOutputColumn::left(
+                        nexus_query_engine::expr::ColumnRef::input(0, name, name),
                         name,
                     )
                 })
@@ -943,7 +946,7 @@ fn semijoin_reduction_projection_plan() -> nexus_query_engine::QueryPlan {
     builder.finish_gpu_resident(semi)
 }
 
-fn projection_simplification_identity_plan() -> nexus_query_engine::QueryPlan {
+fn projection_simplification_identity_plan() -> nexus_query_engine::plan::QueryPlan {
     let mut builder = QueryPlanBuilder::new();
     let source = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new(
         "identity_projection_source",
@@ -951,26 +954,26 @@ fn projection_simplification_identity_plan() -> nexus_query_engine::QueryPlan {
     )));
     let projection = builder.add_projection(
         source,
-        vec![nexus_query_engine::ProjectionOutput::new(
-            nexus_query_engine::Expr::column("key"),
+        vec![nexus_query_engine::plan::ProjectionOutput::new(
+            nexus_query_engine::expr::Expr::column("key"),
             Field::new("key", DataType::Int32, false),
         )],
     );
     builder.finish_gpu_resident(projection)
 }
 
-fn dynamic_filter_route_plan() -> nexus_query_engine::QueryPlan {
+fn dynamic_filter_route_plan() -> nexus_query_engine::plan::QueryPlan {
     let left_schema = Arc::new(Schema::new(vec![Field::new("left_key", DataType::Int32, false)]));
     let right_schema = Arc::new(Schema::new(vec![Field::new("right_key", DataType::Int32, false)]));
     let output_schema = Arc::new(Schema::new(vec![
         Field::new("left_key", DataType::Int32, false),
         Field::new("right_key", DataType::Int32, false),
     ]));
-    let left_file = nexus_query_engine::LocalParquetFile::new("/tmp/dynamic-filter-left.parquet")
+    let left_file = nexus_query_engine::source::LocalParquetFile::new("/tmp/dynamic-filter-left.parquet")
         .with_stable_id("dynamic-filter-left")
         .with_projected_row_group_bytes(vec![1024], vec![1024])
         .with_row_group_rows(vec![10]);
-    let right_file = nexus_query_engine::LocalParquetFile::new("/tmp/dynamic-filter-right.parquet")
+    let right_file = nexus_query_engine::source::LocalParquetFile::new("/tmp/dynamic-filter-right.parquet")
         .with_stable_id("dynamic-filter-right")
         .with_projected_row_group_bytes(vec![64], vec![64])
         .with_row_group_rows(vec![2]);
@@ -989,24 +992,24 @@ fn dynamic_filter_route_plan() -> nexus_query_engine::QueryPlan {
     let join = builder.add_join(
         left,
         right,
-        nexus_query_engine::JoinSpec::new(
-            nexus_query_engine::JoinType::Inner,
-            vec![nexus_query_engine::JoinKey::new(
-                nexus_query_engine::ColumnRef::input(0, "left_key", "left_key"),
-                nexus_query_engine::ColumnRef::input(1, "right_key", "right_key"),
+        nexus_query_engine::plan::JoinSpec::new(
+            nexus_query_engine::plan::JoinType::Inner,
+            vec![nexus_query_engine::plan::JoinKey::new(
+                nexus_query_engine::expr::ColumnRef::input(0, "left_key", "left_key"),
+                nexus_query_engine::expr::ColumnRef::input(1, "right_key", "right_key"),
             )],
         )
         .with_output_projection(vec![
-            nexus_query_engine::JoinOutputColumn::left(
-                nexus_query_engine::ColumnRef::input(0, "left_key", "left_key"),
+            nexus_query_engine::plan::JoinOutputColumn::left(
+                nexus_query_engine::expr::ColumnRef::input(0, "left_key", "left_key"),
                 "left_key",
             ),
-            nexus_query_engine::JoinOutputColumn::right(
-                nexus_query_engine::ColumnRef::input(1, "right_key", "right_key"),
+            nexus_query_engine::plan::JoinOutputColumn::right(
+                nexus_query_engine::expr::ColumnRef::input(1, "right_key", "right_key"),
                 "right_key",
             ),
         ])
-        .with_build_side(nexus_query_engine::JoinSide::Right),
+        .with_build_side(nexus_query_engine::plan::JoinSide::Right),
         output_schema,
     );
     builder.finish_with_host_sink(join)
@@ -1020,11 +1023,14 @@ fn semijoin_aggregate_keyset_source(
     builder: &mut QueryPlanBuilder,
     name: &str,
     key_name: &str,
-) -> nexus_query_engine::NodeId {
+) -> nexus_query_engine::plan::NodeId {
     let source = builder.add_source(semijoin_gpu_source(name, &[key_name]));
     builder.add_aggregate(
         source,
-        nexus_query_engine::AggregateSpec::new(vec![nexus_query_engine::Expr::column(key_name)], Vec::new()),
+        nexus_query_engine::expr::AggregateSpec::new(
+            vec![nexus_query_engine::expr::Expr::column(key_name)],
+            Vec::new(),
+        ),
         semijoin_schema(&[key_name]),
     )
 }
@@ -1048,7 +1054,7 @@ fn adaptive_report_for_projection_test() -> AdaptivePipelineReport {
         &plan,
         AdaptiveCandidateStatus::Admitted,
         AdaptiveStrategy::ConservativeCompiledPipeline,
-        nexus_query_engine::AdaptiveAdmissionRuntimeEvidence::default(),
+        nexus_query_engine::adaptive_report::AdaptiveAdmissionRuntimeEvidence::default(),
         None,
         None,
     )

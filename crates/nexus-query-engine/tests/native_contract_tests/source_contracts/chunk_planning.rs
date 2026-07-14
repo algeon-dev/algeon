@@ -646,12 +646,14 @@ fn dynamic_filter_small_in_list_prunes_source_row_groups_and_builds_reader_predi
     );
     let mut builder = QueryPlanBuilder::new();
     let source_id = builder.add_source(SourceNode::LocalParquet(source.clone()));
-    let route =
-        dynamic_filter_source_route(source_id, nexus_query_engine::DynamicFilterConsumerLowering::ReaderPredicate);
-    let mut filters = nexus_query_engine::DynamicFilterSet::new();
+    let route = dynamic_filter_source_route(
+        source_id,
+        nexus_query_engine::dynamic_filter::DynamicFilterConsumerLowering::ReaderPredicate,
+    );
+    let mut filters = nexus_query_engine::dynamic_filter::DynamicFilterSet::new();
     filters.insert(
-        nexus_query_engine::DynamicFilterId::new(0),
-        nexus_query_engine::DynamicFilter::SmallInListI64 { values: vec![2, 3], min: 2, max: 3 },
+        nexus_query_engine::dynamic_filter::DynamicFilterId::new(0),
+        nexus_query_engine::dynamic_filter::DynamicFilter::SmallInListI64 { values: vec![2, 3], min: 2, max: 3 },
     );
 
     let rewritten =
@@ -683,12 +685,14 @@ fn dynamic_filter_row_group_pruning_uses_leaf_stats_for_root_column() {
     );
     let mut builder = QueryPlanBuilder::new();
     let source_id = builder.add_source(SourceNode::LocalParquet(source.clone()));
-    let route =
-        dynamic_filter_source_route(source_id, nexus_query_engine::DynamicFilterConsumerLowering::ReaderPredicate);
-    let mut filters = nexus_query_engine::DynamicFilterSet::new();
+    let route = dynamic_filter_source_route(
+        source_id,
+        nexus_query_engine::dynamic_filter::DynamicFilterConsumerLowering::ReaderPredicate,
+    );
+    let mut filters = nexus_query_engine::dynamic_filter::DynamicFilterSet::new();
     filters.insert(
-        nexus_query_engine::DynamicFilterId::new(0),
-        nexus_query_engine::DynamicFilter::SmallInListI64 { values: vec![5], min: 5, max: 5 },
+        nexus_query_engine::dynamic_filter::DynamicFilterId::new(0),
+        nexus_query_engine::dynamic_filter::DynamicFilter::SmallInListI64 { values: vec![5], min: 5, max: 5 },
     );
 
     let rewritten =
@@ -727,12 +731,14 @@ fn dynamic_filter_position_delete_source_prunes_row_groups_without_reader_predic
     );
     let mut builder = QueryPlanBuilder::new();
     let source_id = builder.add_source(SourceNode::LocalParquet(source.clone()));
-    let route =
-        dynamic_filter_source_route(source_id, nexus_query_engine::DynamicFilterConsumerLowering::ReaderPredicate);
-    let mut filters = nexus_query_engine::DynamicFilterSet::new();
+    let route = dynamic_filter_source_route(
+        source_id,
+        nexus_query_engine::dynamic_filter::DynamicFilterConsumerLowering::ReaderPredicate,
+    );
+    let mut filters = nexus_query_engine::dynamic_filter::DynamicFilterSet::new();
     filters.insert(
-        nexus_query_engine::DynamicFilterId::new(0),
-        nexus_query_engine::DynamicFilter::SmallInListI64 { values: vec![0, 5], min: 0, max: 5 },
+        nexus_query_engine::dynamic_filter::DynamicFilterId::new(0),
+        nexus_query_engine::dynamic_filter::DynamicFilter::SmallInListI64 { values: vec![0, 5], min: 0, max: 5 },
     );
 
     let rewritten =
@@ -763,10 +769,15 @@ fn dynamic_filter_empty_payload_records_explicit_empty_row_group_selection() {
     );
     let mut builder = QueryPlanBuilder::new();
     let source_id = builder.add_source(SourceNode::LocalParquet(source.clone()));
-    let route =
-        dynamic_filter_source_route(source_id, nexus_query_engine::DynamicFilterConsumerLowering::ReaderPredicate);
-    let mut filters = nexus_query_engine::DynamicFilterSet::new();
-    filters.insert(nexus_query_engine::DynamicFilterId::new(0), nexus_query_engine::DynamicFilter::Empty);
+    let route = dynamic_filter_source_route(
+        source_id,
+        nexus_query_engine::dynamic_filter::DynamicFilterConsumerLowering::ReaderPredicate,
+    );
+    let mut filters = nexus_query_engine::dynamic_filter::DynamicFilterSet::new();
+    filters.insert(
+        nexus_query_engine::dynamic_filter::DynamicFilterId::new(0),
+        nexus_query_engine::dynamic_filter::DynamicFilter::Empty,
+    );
 
     let rewritten =
         nexus_query_engine::dynamic_filter::apply_dynamic_filters_to_local_parquet_source(&source, &[&route], &filters)
@@ -829,12 +840,12 @@ fn dynamic_filter_range_merges_with_static_reader_predicate() {
     let source_id = builder.add_source(SourceNode::LocalParquet(source.clone()));
     let route = dynamic_filter_source_route(
         source_id,
-        nexus_query_engine::DynamicFilterConsumerLowering::MergedReaderPredicate,
+        nexus_query_engine::dynamic_filter::DynamicFilterConsumerLowering::MergedReaderPredicate,
     );
-    let mut filters = nexus_query_engine::DynamicFilterSet::new();
+    let mut filters = nexus_query_engine::dynamic_filter::DynamicFilterSet::new();
     filters.insert(
-        nexus_query_engine::DynamicFilterId::new(0),
-        nexus_query_engine::DynamicFilter::RangeI64 { min: 2, max: 3 },
+        nexus_query_engine::dynamic_filter::DynamicFilterId::new(0),
+        nexus_query_engine::dynamic_filter::DynamicFilter::RangeI64 { min: 2, max: 3 },
     );
 
     let rewritten =
@@ -875,12 +886,12 @@ fn dynamic_filter_range_does_not_create_unsupported_merged_reader_predicate() {
     let source_id = builder.add_source(SourceNode::LocalParquet(source.clone()));
     let route = dynamic_filter_source_route(
         source_id,
-        nexus_query_engine::DynamicFilterConsumerLowering::MergedReaderPredicate,
+        nexus_query_engine::dynamic_filter::DynamicFilterConsumerLowering::MergedReaderPredicate,
     );
-    let mut filters = nexus_query_engine::DynamicFilterSet::new();
+    let mut filters = nexus_query_engine::dynamic_filter::DynamicFilterSet::new();
     filters.insert(
-        nexus_query_engine::DynamicFilterId::new(0),
-        nexus_query_engine::DynamicFilter::RangeI64 { min: 2, max: 3 },
+        nexus_query_engine::dynamic_filter::DynamicFilterId::new(0),
+        nexus_query_engine::dynamic_filter::DynamicFilter::RangeI64 { min: 2, max: 3 },
     );
 
     let rewritten =
@@ -903,12 +914,14 @@ fn dynamic_filter_hash_set_prunes_row_groups_without_reader_predicate_lowering()
     );
     let mut builder = QueryPlanBuilder::new();
     let source_id = builder.add_source(SourceNode::LocalParquet(source.clone()));
-    let route =
-        dynamic_filter_source_route(source_id, nexus_query_engine::DynamicFilterConsumerLowering::ReaderPredicate);
-    let mut filters = nexus_query_engine::DynamicFilterSet::new();
+    let route = dynamic_filter_source_route(
+        source_id,
+        nexus_query_engine::dynamic_filter::DynamicFilterConsumerLowering::ReaderPredicate,
+    );
+    let mut filters = nexus_query_engine::dynamic_filter::DynamicFilterSet::new();
     filters.insert(
-        nexus_query_engine::DynamicFilterId::new(0),
-        nexus_query_engine::DynamicFilter::HashSetContainsI64 { values: vec![2, 3], min: 2, max: 3 },
+        nexus_query_engine::dynamic_filter::DynamicFilterId::new(0),
+        nexus_query_engine::dynamic_filter::DynamicFilter::HashSetContainsI64 { values: vec![2, 3], min: 2, max: 3 },
     );
 
     let rewritten =
@@ -1065,20 +1078,23 @@ fn write_nested_key_parquet(path: &Path) -> Arc<Schema> {
 }
 
 fn dynamic_filter_source_route(
-    source_id: nexus_query_engine::NodeId,
-    lowering: nexus_query_engine::DynamicFilterConsumerLowering,
-) -> nexus_query_engine::DynamicFilterRoute {
-    nexus_query_engine::DynamicFilterRoute::new(
-        nexus_query_engine::DynamicFilterId::new(0),
-        nexus_query_engine::DynamicFilterProducer::HashJoinBuild {
+    source_id: nexus_query_engine::plan::NodeId,
+    lowering: nexus_query_engine::dynamic_filter::DynamicFilterConsumerLowering,
+) -> nexus_query_engine::dynamic_filter::DynamicFilterRoute {
+    nexus_query_engine::dynamic_filter::DynamicFilterRoute::new(
+        nexus_query_engine::dynamic_filter::DynamicFilterId::new(0),
+        nexus_query_engine::dynamic_filter::DynamicFilterProducer::HashJoinBuild {
             join_node_id: source_id,
             build_side: JoinSide::Right,
             build_input: source_id,
         },
-        nexus_query_engine::DynamicFilterConsumer::LocalParquetSource { source_node_id: source_id },
+        nexus_query_engine::dynamic_filter::DynamicFilterConsumer::LocalParquetSource { source_node_id: source_id },
         vec!["key".to_string()],
         vec!["key".to_string()],
-        vec![nexus_query_engine::DynamicFilterKind::Range, nexus_query_engine::DynamicFilterKind::SmallInList],
+        vec![
+            nexus_query_engine::dynamic_filter::DynamicFilterKind::Range,
+            nexus_query_engine::dynamic_filter::DynamicFilterKind::SmallInList,
+        ],
         lowering,
     )
 }

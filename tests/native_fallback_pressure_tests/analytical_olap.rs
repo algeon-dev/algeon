@@ -149,7 +149,7 @@ async fn native_pipeline_analytical_olap_adaptive_planning_report_uses_adaptive_
 
 fn assert_planning_row_has_family_free_rejection_diagnostics(
     query_id: &str,
-    row: &datafusion_nexus::NativeDataFusionPlanningRow,
+    row: &datafusion_nexus::native_report::NativeDataFusionPlanningRow,
 ) {
     for gate in &row.strict_bounded_contract_rows {
         assert_no_legacy_rejection_terms(query_id, &gate.to_stable_kv_row());

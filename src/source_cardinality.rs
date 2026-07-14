@@ -5,7 +5,7 @@ use std::{
 };
 
 use arrow::datatypes::Schema;
-use nexus_query_engine::{BinaryOp, Expr, LiteralValue};
+use nexus_query_engine::expr::{BinaryOp, Expr, LiteralValue};
 
 /// Arrow schema/field metadata key carrying comma-separated source unique-key
 /// column groups.

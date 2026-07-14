@@ -132,7 +132,7 @@ fn compiled_scheduler_errors_when_no_ready_task_can_be_admitted() {
 
     let error = scheduler.run(&mut executor).expect_err("all ready tasks are admission-not-ready");
 
-    assert_eq!(error.code(), nexus_query_engine::QueryErrorCode::MemoryReservationFailed);
+    assert_eq!(error.code(), nexus_query_engine::error::QueryErrorCode::MemoryReservationFailed);
     assert_eq!(error.facts().get("ready_task_count"), Some("2"));
     assert_eq!(error.facts().get("ready_task_ids"), Some("t0,t1"));
     assert_eq!(error.facts().get("max_estimated_required_bytes"), Some("70"));
@@ -254,7 +254,7 @@ fn compiled_state_rejects_consuming_multi_consumer_resource() {
         .consume_task_input_resource(&pipeline.tasks()[1], ResidentResourceId::new(0))
         .expect_err("multi-consumer input must not be consumed early");
 
-    assert_eq!(error.code(), nexus_query_engine::QueryErrorCode::InvalidPlan);
+    assert_eq!(error.code(), nexus_query_engine::error::QueryErrorCode::InvalidPlan);
     assert_eq!(error.facts().get("compiled_task_id"), Some("t1"));
     assert_eq!(error.facts().get("resident_resource_id"), Some("r0"));
     assert_eq!(error.facts().get("consumer_count"), Some("2"));
@@ -283,7 +283,7 @@ fn compiled_scheduler_releases_entire_completion_batch_when_release_errors() {
 
     let error = scheduler.run(&mut executor).expect_err("release failure should fail the pipeline");
 
-    assert_eq!(error.code(), nexus_query_engine::QueryErrorCode::Internal);
+    assert_eq!(error.code(), nexus_query_engine::error::QueryErrorCode::Internal);
     assert_eq!(error.facts().get("resident_resource_id"), Some("r0"));
     assert_eq!(executor.released, vec![ResidentResourceId::new(0), ResidentResourceId::new(1)]);
     assert_eq!(executor.cleanup_calls, 1);
@@ -297,7 +297,7 @@ fn compiled_scheduler_errors_when_task_omits_declared_output_resource() {
 
     let error = scheduler.run(&mut executor).expect_err("missing output should fail");
 
-    assert_eq!(error.code(), nexus_query_engine::QueryErrorCode::InvalidPlan);
+    assert_eq!(error.code(), nexus_query_engine::error::QueryErrorCode::InvalidPlan);
     assert_eq!(error.facts().get("compiled_task_id"), Some("t0"));
     assert_eq!(error.facts().get("resident_resource_id"), Some("r0"));
 }
@@ -310,7 +310,7 @@ fn compiled_scheduler_releases_live_resources_when_executor_fails() {
 
     let error = scheduler.run(&mut executor).expect_err("downstream executor failure should fail the pipeline");
 
-    assert_eq!(error.code(), nexus_query_engine::QueryErrorCode::Internal);
+    assert_eq!(error.code(), nexus_query_engine::error::QueryErrorCode::Internal);
     assert_eq!(error.facts().get("compiled_task_id"), Some("t1"));
     assert_eq!(executor.executed, vec![PipelineTaskId::new(0), PipelineTaskId::new(1)]);
     assert_eq!(executor.released, vec![ResidentResourceId::new(0)]);
@@ -326,7 +326,7 @@ fn compiled_scheduler_cleans_task_local_reservations_when_executor_fails() {
 
     let error = scheduler.run(&mut executor).expect_err("downstream executor failure should clean task-local state");
 
-    assert_eq!(error.code(), nexus_query_engine::QueryErrorCode::Internal);
+    assert_eq!(error.code(), nexus_query_engine::error::QueryErrorCode::Internal);
     assert_eq!(executor.released, vec![ResidentResourceId::new(0)]);
     assert!(executor.task_local_live.is_empty());
     assert_eq!(executor.task_local_released, vec!["join_build_hash_table"]);
@@ -343,7 +343,7 @@ fn compiled_scheduler_cleans_task_local_reservations_when_completion_validation_
 
     let error = scheduler.run(&mut executor).expect_err("duplicate output should clean partial task state");
 
-    assert_eq!(error.code(), nexus_query_engine::QueryErrorCode::InvalidPlan);
+    assert_eq!(error.code(), nexus_query_engine::error::QueryErrorCode::InvalidPlan);
     assert_eq!(executor.released, vec![ResidentResourceId::new(0)]);
     assert!(executor.task_local_live.is_empty());
     assert_eq!(executor.task_local_released, vec!["join_probe_gather_map"]);
@@ -357,7 +357,7 @@ fn compiled_scheduler_state_errors_when_input_resource_is_missing() {
 
     let error = state.prepare_task(&pipeline.tasks()[1]).expect_err("downstream task should require produced input");
 
-    assert_eq!(error.code(), nexus_query_engine::QueryErrorCode::InvalidPlan);
+    assert_eq!(error.code(), nexus_query_engine::error::QueryErrorCode::InvalidPlan);
     assert_eq!(error.facts().get("compiled_task_id"), Some("t1"));
     assert_eq!(error.facts().get("resident_resource_id"), Some("r0"));
 }
@@ -370,7 +370,7 @@ fn compiled_scheduler_errors_when_task_reports_duplicate_produced_resource() {
 
     let error = scheduler.run(&mut executor).expect_err("duplicate output should fail");
 
-    assert_eq!(error.code(), nexus_query_engine::QueryErrorCode::InvalidPlan);
+    assert_eq!(error.code(), nexus_query_engine::error::QueryErrorCode::InvalidPlan);
     assert_eq!(error.facts().get("compiled_task_id"), Some("t0"));
     assert_eq!(error.facts().get("resident_resource_id"), Some("r0"));
     assert_eq!(executor.released, vec![ResidentResourceId::new(0)]);

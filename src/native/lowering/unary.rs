@@ -5,7 +5,7 @@ use datafusion::{
     physical_expr::PhysicalExpr,
     physical_plan::{ExecutionPlan, projection::ProjectionExec},
 };
-use nexus_query_engine::{Expr as NativeExpr, QueryPlanBuilder as NativeQueryPlanBuilder};
+use nexus_query_engine::{expr::Expr as NativeExpr, plan::QueryPlanBuilder as NativeQueryPlanBuilder};
 
 use super::{
     LoweredNativeInput, RequiredFields, executable_schema_and_bindings,

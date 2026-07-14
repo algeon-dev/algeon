@@ -6,7 +6,8 @@ use datafusion::{
     physical_plan::ExecutionPlan,
 };
 use nexus_query_engine::{
-    Expr as NativeExpr, QueryPlanBuilder as NativeQueryPlanBuilder, SourceDiagnostics as NativeSourceDiagnostics,
+    expr::Expr as NativeExpr, plan::QueryPlanBuilder as NativeQueryPlanBuilder,
+    source::SourceDiagnostics as NativeSourceDiagnostics,
 };
 
 mod local_parquet;
@@ -90,7 +91,7 @@ pub(super) enum SourceUnprojectedFilterOutput {
 
 pub(super) fn project_scan_output_columns(
     builder: &mut NativeQueryPlanBuilder,
-    input_node: nexus_query_engine::NodeId,
+    input_node: nexus_query_engine::plan::NodeId,
     input_schema: SchemaRef,
     input_bindings: Vec<super::FieldBinding>,
     required_output_fields: &RequiredFields,
@@ -187,7 +188,7 @@ pub(super) fn required_source_scan_output_indices(
 
 pub(super) fn add_source_filter_projection(
     builder: &mut NativeQueryPlanBuilder,
-    filtered_node: nexus_query_engine::NodeId,
+    filtered_node: nexus_query_engine::plan::NodeId,
     scan_output: &LoweredNativeInput,
     filter_schema: SchemaRef,
     projection: &[usize],
@@ -203,7 +204,7 @@ pub(super) fn add_source_filter_projection(
             let input_index = projection.get(*output_index).copied().ok_or(FallbackReason::UnsupportedExpression)?;
             let input_binding = scan_output.binding_for_frontend_index(input_index)?;
             Ok(alias_if_needed(
-                nexus_query_engine::Expr::column(input_binding.native_name.as_str()),
+                nexus_query_engine::expr::Expr::column(input_binding.native_name.as_str()),
                 output_binding.native_name.as_str(),
             ))
         })

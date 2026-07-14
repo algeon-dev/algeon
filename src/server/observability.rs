@@ -10,11 +10,10 @@ use datafusion::{
     common::DataFusionError,
     physical_plan::{ExecutionPlan, displayable, metrics::MetricsSet},
 };
-use nexus_query_engine::{LakehouseCacheFillEventSnapshot, QueryMetrics};
+use nexus_query_engine::{metrics::QueryMetrics, runtime::LakehouseCacheFillEventSnapshot};
 
 use crate::{
-    Error, ErrorCode,
-    error::ErrorSourceDiagnostics,
+    error::{Error, ErrorCode, ErrorSourceDiagnostics},
     native_exec::{NativeCudfMetrics, NativeMetricsCaptureSink, admission::QueryAdmissionFacts},
     native_report::{
         NativeDataFusionExecutionReport, NativeDataFusionExecutionWorkloadItem, NativeDataFusionPlanningReport,
@@ -585,9 +584,9 @@ pub(super) fn native_explain_for_plan(plan: &dyn ExecutionPlan) -> Option<String
 }
 
 fn contains_native_wrapper(plan: &dyn ExecutionPlan) -> bool {
-    if plan.downcast_ref::<crate::NativeCudfExec>().is_some()
-        || plan.downcast_ref::<crate::NativeCudfComposedExec>().is_some()
-        || plan.downcast_ref::<crate::NativeCudfGpuProducerExec>().is_some()
+    if plan.downcast_ref::<crate::native_exec::NativeCudfExec>().is_some()
+        || plan.downcast_ref::<crate::native_exec::NativeCudfComposedExec>().is_some()
+        || plan.downcast_ref::<crate::native_exec::NativeCudfGpuProducerExec>().is_some()
     {
         return true;
     }

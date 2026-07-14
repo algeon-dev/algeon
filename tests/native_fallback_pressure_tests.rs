@@ -34,17 +34,24 @@ use datafusion::{
     prelude::{ParquetReadOptions, SessionConfig, SessionContext},
 };
 use datafusion_nexus::{
-    CudfNativePhysicalOptimizerRule, CudfOptimizerConfig, CudfSessionStateBuilderExt, FallbackReason, GpuCandidate,
-    GpuFallbackPolicy, NATIVE_DATAFUSION_EXECUTION_TSV_HEADER, NATIVE_DATAFUSION_PLANNING_TSV_HEADER,
-    NATIVE_FALLBACK_PRESSURE_TSV_HEADER, NativeAdaptivePipelineCandidateDiagnostics, NativeAdaptivePipelineDiagnostics,
-    NativeCudfComposedExec, NativeCudfExec, NativeCudfExecutionConfig, NativeCudfGpuProducerExec,
-    NativeDataFusionExecutionMetrics, NativeDataFusionExecutionReport, NativeDataFusionExecutionWorkloadItem,
-    NativeDataFusionPlanningOutcome, NativeDataFusionPlanningReport, NativeDataFusionPlanningWorkloadItem,
-    NativeDataFusionPostNativeExecutionPath, NativeDataFusionRuntime, NativeDataFusionRuntimeOutcome,
-    NativeDynamicFilterRuntimeMetricRow, NativeFallbackPressureOutcome, NativeFallbackPressureReport,
-    NativeFallbackPressureWorkloadItem, NativePipelineExecutionMode, NativePlanningDiagnostics,
-    NativeStrictBoundedAcceptedCandidateDiagnostics, NativeStrictBoundedCompiledGraphDiagnostics,
-    NativeStrictBoundedContractDiagnostics, NativeStrictBoundedRejectedCandidateDiagnostics, PlanningReport,
+    native_exec::{NativeCudfComposedExec, NativeCudfExec, NativeCudfExecutionConfig, NativeCudfGpuProducerExec},
+    native_report::{
+        NATIVE_DATAFUSION_EXECUTION_TSV_HEADER, NATIVE_DATAFUSION_PLANNING_TSV_HEADER,
+        NATIVE_FALLBACK_PRESSURE_TSV_HEADER, NativeDataFusionExecutionMetrics, NativeDataFusionExecutionReport,
+        NativeDataFusionExecutionWorkloadItem, NativeDataFusionPlanningOutcome, NativeDataFusionPlanningReport,
+        NativeDataFusionPlanningWorkloadItem, NativeDataFusionPostNativeExecutionPath, NativeDataFusionRuntime,
+        NativeDataFusionRuntimeOutcome, NativeDynamicFilterRuntimeMetricRow, NativeFallbackPressureOutcome,
+        NativeFallbackPressureReport, NativeFallbackPressureWorkloadItem,
+    },
+    planner::{
+        CudfNativePhysicalOptimizerRule, CudfOptimizerConfig, NativeAdaptivePipelineCandidateDiagnostics,
+        NativeAdaptivePipelineDiagnostics, NativePlanningDiagnostics, NativeStrictBoundedAcceptedCandidateDiagnostics,
+        NativeStrictBoundedCompiledGraphDiagnostics, NativeStrictBoundedContractDiagnostics,
+        NativeStrictBoundedRejectedCandidateDiagnostics,
+    },
+    policy::{FallbackReason, GpuFallbackPolicy},
+    report::{GpuCandidate, PlanningReport},
+    session::CudfSessionStateBuilderExt,
 };
 use datafusion_nexus_bench::{
     ANALYTICAL_OLAP_QUERIES, ANALYTICAL_OLAP_QUERY_COUNT, AnalyticalOlapCapabilityFirstAdmission,
@@ -56,12 +63,17 @@ use datafusion_nexus_bench::{
     write_tiny_tpch_parquet_dataset,
 };
 use nexus_query_engine::{
-    AdaptiveCandidateStatus, AdaptivePipelineReport, AdaptiveStrategy, GpuResidentSource, LocalParquetSource,
-    QueryPlanBuilder, SourceNode, StrictBoundedContractGateId, StrictBoundedContractGateRow,
-    StrictBoundedContractOwner, StrictBoundedContractReport, StrictBoundedExecutionMode,
+    adaptive_report::{AdaptiveCandidateStatus, AdaptivePipelineReport, AdaptiveStrategy},
     capability::{ContractQuality, ContractStatus, ReservationRequirementScope},
+    contract_report::{
+        StrictBoundedContractGateId, StrictBoundedContractGateRow, StrictBoundedContractOwner,
+        StrictBoundedContractReport,
+    },
+    mode::{NativePipelineExecutionMode, StrictBoundedExecutionMode},
     pipeline::{ReservationGateId, ReservationGateOwner},
+    plan::QueryPlanBuilder,
     runtime::ReservationKind,
+    source::{GpuResidentSource, LocalParquetSource, SourceNode},
 };
 
 const EXPECTED_BOUNDED_TPCH_ACCEPTED: &[&str] = &[

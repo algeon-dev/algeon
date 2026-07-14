@@ -16,14 +16,15 @@ use datafusion::{
     prelude::{ParquetReadOptions, SessionConfig, SessionContext},
 };
 use datafusion_nexus::{
-    NativeCudfExecutionConfig, NativeFallbackPressureReport, NativeFallbackPressureWorkloadItem,
-    NativePipelineExecutionMode,
+    native_exec::NativeCudfExecutionConfig,
+    native_report::{NativeFallbackPressureReport, NativeFallbackPressureWorkloadItem},
 };
 use datafusion_nexus_bench::{
     TpcdsDatasetMetadata, TpchDatasetMetadata, prepare_tpcds_report_dataset, prepare_tpch_report_dataset,
     tpcds_fallback_pressure_workload_items, tpcds_report_session_config, tpch_fallback_pressure_workload_items,
     tpch_report_session_config, tpch_scalar_fallback_pressure_workload_items,
 };
+use nexus_query_engine::mode::NativePipelineExecutionMode;
 
 const CUDF_NATIVE_PIPELINE_EXECUTION_MODE_ENV: &str = "CUDF_NATIVE_PIPELINE_EXECUTION_MODE";
 

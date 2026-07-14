@@ -14,9 +14,15 @@ use datafusion::{
     prelude::SessionContext,
 };
 use datafusion_nexus::{
-    CudfNativePhysicalOptimizerRule, CudfOptimizerConfig, CudfSessionStateBuilderExt, Error as AdapterError,
-    GpuFallbackPolicy, NativeCudfExecutionConfig, NativeDataFusionExecutionMetrics, NativeDataFusionPlanningOutcome,
-    NativeDataFusionPlanningReport, NativeDataFusionPlanningRow, NativeDataFusionPostNativeExecutionPath,
+    error::Error as AdapterError,
+    native_exec::NativeCudfExecutionConfig,
+    native_report::{
+        NativeDataFusionExecutionMetrics, NativeDataFusionPlanningOutcome, NativeDataFusionPlanningReport,
+        NativeDataFusionPlanningRow, NativeDataFusionPostNativeExecutionPath,
+    },
+    planner::{CudfNativePhysicalOptimizerRule, CudfOptimizerConfig},
+    policy::GpuFallbackPolicy,
+    session::CudfSessionStateBuilderExt,
 };
 use datafusion_nexus_bench::{
     CUDF_TPCH_GENERATION_COMMAND_ENV, CUDF_TPCH_PARQUET_DIR_ENV, CUDF_TPCH_SCALE_FACTOR_ENV, TPCH_QUERIES, TPCH_TABLES,
@@ -25,8 +31,12 @@ use datafusion_nexus_bench::{
     tpch_tuned_cpu_session_config,
 };
 use nexus_query_engine::{
-    NativePipelineExecutionMode, QueryError, QueryMemoryDomainPolicy, QueryService, QueryServiceConfig,
-    QueryServiceTenantConfig, SlotGuarantee, TenantId, harness::StableFnv1a64,
+    error::QueryError,
+    harness::StableFnv1a64,
+    mode::NativePipelineExecutionMode,
+    runtime::{
+        QueryMemoryDomainPolicy, QueryService, QueryServiceConfig, QueryServiceTenantConfig, SlotGuarantee, TenantId,
+    },
 };
 use tokio::sync::Barrier;
 
@@ -476,14 +486,14 @@ struct ProfileEvidenceReport {
 #[derive(Clone)]
 struct ProfileLane {
     lane: usize,
-    handle: Arc<nexus_query_engine::QueryHandle>,
+    handle: Arc<nexus_query_engine::runtime::QueryHandle>,
 }
 
 struct PreparedProfileRequest {
     phase: &'static str,
     lane: usize,
     request: StressRequest,
-    handle: Arc<nexus_query_engine::QueryHandle>,
+    handle: Arc<nexus_query_engine::runtime::QueryHandle>,
     prepared: PreparedNativeQuery,
 }
 
@@ -1290,7 +1300,7 @@ async fn run_native_request(
 async fn collect_native_with_handle(
     config: &StressConfig,
     query: &TpchQuery,
-    handle: Arc<nexus_query_engine::QueryHandle>,
+    handle: Arc<nexus_query_engine::runtime::QueryHandle>,
 ) -> DataFusionResult<NativeCollectOutcome> {
     let prepared = prepare_native_with_handle(config, query, handle).await?;
     collect_prepared_native(prepared).await
@@ -1299,7 +1309,7 @@ async fn collect_native_with_handle(
 async fn prepare_native_with_handle(
     config: &StressConfig,
     query: &TpchQuery,
-    handle: Arc<nexus_query_engine::QueryHandle>,
+    handle: Arc<nexus_query_engine::runtime::QueryHandle>,
 ) -> DataFusionResult<PreparedNativeQuery> {
     let optimizer_config = CudfOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred).with_native_execution_config(
         NativeCudfExecutionConfig::bounded_auto_sized().with_query_service_handle(handle),
@@ -1354,7 +1364,7 @@ fn native_execution_metrics(plan: &Arc<dyn ExecutionPlan>) -> NativeDataFusionEx
 
 fn admission_facts(
     service: &QueryService,
-    handle: &nexus_query_engine::QueryHandle,
+    handle: &nexus_query_engine::runtime::QueryHandle,
 ) -> DataFusionResult<AdmissionFacts> {
     let reports = service.memory_governor_reports().map_err(native_error)?;
     let report = reports

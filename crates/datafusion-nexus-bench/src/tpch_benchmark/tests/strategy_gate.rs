@@ -386,7 +386,7 @@ fn sf100_bounded_memory_policy() -> NativeTpchMemoryPolicy {
         1024,
         DEFAULT_NATIVE_MAX_RETRY_ATTEMPTS,
         DEFAULT_NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS,
-        nexus_query_engine::SourceChunkPlanningMode::LocalParquetThroughput,
+        nexus_query_engine::runtime::SourceChunkPlanningMode::LocalParquetThroughput,
     )
 }
 

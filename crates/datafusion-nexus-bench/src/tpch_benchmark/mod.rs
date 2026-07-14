@@ -14,14 +14,20 @@ use datafusion::{
     prelude::{SessionConfig, SessionContext},
 };
 use datafusion_nexus::{
-    CudfNativePhysicalOptimizerRule, CudfOptimizerConfig, CudfSessionStateBuilderExt, Error as AdapterError,
-    GpuFallbackPolicy, NativeAggregateStrategyMetricRow, NativeCudfExecutionConfig, NativeDataFusionExecutionMetrics,
-    NativeDataFusionPlanningOutcome, NativeDataFusionPlanningReport, NativeDataFusionPlanningRow,
-    NativeDataFusionPostNativeExecutionPath, NativeDataFusionRuntimeOutcome, NativeDynamicFilterRuntimeMetricRow,
-    NativeGraphReservationMetricRow, NativeGraphRuntimeMetricRow, NativeJoinStrategyMetricRow,
-    NativePipelineExecutionMode, NativeSourceDiagnosticSummary, NativeTaskOperatorMetricRow,
-    NativeTaskRuntimeMetricRow,
+    error::Error as AdapterError,
+    native_exec::NativeCudfExecutionConfig,
+    native_report::{
+        NativeAggregateStrategyMetricRow, NativeDataFusionExecutionMetrics, NativeDataFusionPlanningOutcome,
+        NativeDataFusionPlanningReport, NativeDataFusionPlanningRow, NativeDataFusionPostNativeExecutionPath,
+        NativeDataFusionRuntimeOutcome, NativeDynamicFilterRuntimeMetricRow, NativeGraphReservationMetricRow,
+        NativeGraphRuntimeMetricRow, NativeJoinStrategyMetricRow, NativeSourceDiagnosticSummary,
+        NativeTaskOperatorMetricRow, NativeTaskRuntimeMetricRow,
+    },
+    planner::{CudfNativePhysicalOptimizerRule, CudfOptimizerConfig},
+    policy::GpuFallbackPolicy,
+    session::CudfSessionStateBuilderExt,
 };
+use nexus_query_engine::mode::NativePipelineExecutionMode;
 
 use crate::{
     CUDF_TPCH_GENERATION_COMMAND_ENV, CUDF_TPCH_PARQUET_DIR_ENV, CUDF_TPCH_SCALE_FACTOR_ENV, TPCH_QUERIES, TPCH_TABLES,

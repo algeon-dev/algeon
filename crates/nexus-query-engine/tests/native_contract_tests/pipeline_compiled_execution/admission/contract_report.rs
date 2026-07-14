@@ -199,7 +199,7 @@ fn d5_contract_report_rejects_unresolved_preflight_gate_labeled_exact() {
     let error = StrictBoundedContractReport::from_compiled_pipeline(&analysis, &malformed)
         .expect_err("D.5 report construction should reject mislabeled unresolved preflight");
 
-    assert_eq!(error.code(), nexus_query_engine::QueryErrorCode::InvalidPlan);
+    assert_eq!(error.code(), nexus_query_engine::error::QueryErrorCode::InvalidPlan);
     assert_eq!(error.fact_value("reservation_kind"), Some("source_read"));
     assert_eq!(error.fact_value("contract_quality"), Some("exact_preflight"));
 }
@@ -217,7 +217,7 @@ fn strict_preflight_gap_contract_report_rejects_hard_budgeted_quality_without_tr
     let error = StrictBoundedContractReport::from_gate_rows(StrictBoundedExecutionMode::StrictBounded, vec![invalid])
         .expect_err("F.6 should reject unresolved quality after the placeholder contract is replaced");
 
-    assert_eq!(error.code(), nexus_query_engine::QueryErrorCode::InvalidPlan);
+    assert_eq!(error.code(), nexus_query_engine::error::QueryErrorCode::InvalidPlan);
     assert_eq!(error.fact_value("reservation_kind"), Some("source_read"));
     assert_eq!(
         error.fact_value("required_contract"),
@@ -275,7 +275,7 @@ fn d5_contract_report_rejects_public_gate_rows_with_invalid_quality_accounting()
         let error =
             StrictBoundedContractReport::from_gate_rows(StrictBoundedExecutionMode::StrictBounded, vec![invalid])
                 .unwrap_err();
-        assert_eq!(error.code(), nexus_query_engine::QueryErrorCode::InvalidPlan);
+        assert_eq!(error.code(), nexus_query_engine::error::QueryErrorCode::InvalidPlan);
         assert_eq!(error.fact_value("reservation_kind"), Some(kind.as_str()));
     }
 }
@@ -303,7 +303,7 @@ fn d5_contract_report_rejects_public_unresolved_preflight_rows_with_non_hard_bud
             let error =
                 StrictBoundedContractReport::from_gate_rows(StrictBoundedExecutionMode::StrictBounded, vec![invalid])
                     .unwrap_err();
-            assert_eq!(error.code(), nexus_query_engine::QueryErrorCode::InvalidPlan);
+            assert_eq!(error.code(), nexus_query_engine::error::QueryErrorCode::InvalidPlan);
             assert_eq!(error.fact_value("reservation_kind"), Some(reservation_kind.as_str()));
             assert_eq!(error.fact_value("required_contract"), Some(required_contract));
             assert_eq!(error.fact_value("contract_quality"), Some(contract_quality.as_str()));

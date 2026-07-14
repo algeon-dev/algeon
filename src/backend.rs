@@ -4,15 +4,21 @@ use std::{collections::BTreeSet, sync::Arc, time::Duration};
 
 use datafusion::execution::SessionStateBuilder;
 use nexus_query_engine::{
-    DeploymentIoCapability, GdsDriverProbeStatus, KvikioCompatModeStatus, MemoryControlPolicy,
-    NativePipelineExecutionMode, NvidiaFsProbeStatus, QueryMemoryDomainPolicy, QueryPlacementPolicy, QueryService,
-    QueryServiceConfig, QueryServiceTenantConfig, SlotGuarantee, TenantId,
+    mode::NativePipelineExecutionMode,
+    runtime::{
+        DeploymentIoCapability, GdsDriverProbeStatus, KvikioCompatModeStatus, MemoryControlPolicy, NvidiaFsProbeStatus,
+        QueryMemoryDomainPolicy, QueryPlacementPolicy, QueryService, QueryServiceConfig, QueryServiceTenantConfig,
+        SlotGuarantee, TenantId,
+    },
 };
 
 use crate::{
-    CudfNativePhysicalOptimizerRule, CudfOptimizerConfig, Error, ErrorCode, GpuFallbackPolicy,
-    NativeCudfExecutionConfig, Result, native_exec::QueryAdmissionSource,
-    session::install_cudf_native_rule_with_session_config, session_config::DataFusionNexusSessionConfig,
+    error::{Error, ErrorCode, Result},
+    native_exec::{NativeCudfExecutionConfig, QueryAdmissionSource},
+    planner::{CudfNativePhysicalOptimizerRule, CudfOptimizerConfig},
+    policy::GpuFallbackPolicy,
+    session::install_cudf_native_rule_with_session_config,
+    session_config::DataFusionNexusSessionConfig,
 };
 
 const DEFAULT_BACKEND_TENANT_ID: &str = "default";
@@ -1686,7 +1692,7 @@ mod tests {
     #[cfg(feature = "cugraph")]
     #[test]
     fn backend_install_rejects_preexisting_cugraph_sql_registration() {
-        use crate::{CugraphSqlConfig, session::CudfSessionStateBuilderExt};
+        use crate::{graph_sql::CugraphSqlConfig, session::CudfSessionStateBuilderExt};
 
         let backend = NexusGpuBackend::builder()
             .memory_policy(NexusMemoryPolicy::Bounded {

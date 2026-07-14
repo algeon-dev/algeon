@@ -54,20 +54,20 @@ fn bounded_compiled_join_rollup_avg_final_merge_concatenates_typed_null_partials
         JoinSpec::new(
             JoinType::Inner,
             vec![JoinKey::new(
-                nexus_query_engine::ColumnRef::input(0, "item_sk", "inventory_item_sk"),
-                nexus_query_engine::ColumnRef::input(1, "item_sk", "item_item_sk"),
+                nexus_query_engine::expr::ColumnRef::input(0, "item_sk", "inventory_item_sk"),
+                nexus_query_engine::expr::ColumnRef::input(1, "item_sk", "item_item_sk"),
             )],
         )
         .with_output_projection(vec![
             JoinOutputColumn::right(
-                nexus_query_engine::ColumnRef::input(1, "product_name", "product_name"),
+                nexus_query_engine::expr::ColumnRef::input(1, "product_name", "product_name"),
                 "product_name",
             ),
-            JoinOutputColumn::right(nexus_query_engine::ColumnRef::input(1, "brand", "brand"), "brand"),
-            JoinOutputColumn::right(nexus_query_engine::ColumnRef::input(1, "class", "class"), "class"),
-            JoinOutputColumn::right(nexus_query_engine::ColumnRef::input(1, "category", "category"), "category"),
+            JoinOutputColumn::right(nexus_query_engine::expr::ColumnRef::input(1, "brand", "brand"), "brand"),
+            JoinOutputColumn::right(nexus_query_engine::expr::ColumnRef::input(1, "class", "class"), "class"),
+            JoinOutputColumn::right(nexus_query_engine::expr::ColumnRef::input(1, "category", "category"), "category"),
             JoinOutputColumn::left(
-                nexus_query_engine::ColumnRef::input(0, "quantity_on_hand", "quantity_on_hand"),
+                nexus_query_engine::expr::ColumnRef::input(0, "quantity_on_hand", "quantity_on_hand"),
                 "quantity_on_hand",
             ),
         ])

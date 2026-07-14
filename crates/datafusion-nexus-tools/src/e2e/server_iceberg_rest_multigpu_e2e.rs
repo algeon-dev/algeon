@@ -32,8 +32,8 @@ use arrow_flight::{
 };
 use datafusion::prelude::{SessionConfig, SessionContext};
 use datafusion_nexus::{
-    ParityFloatTolerance, ParityStatus, compare_record_batches,
-    iceberg::catalog::{
+    native_report::{ParityFloatTolerance, ParityStatus, compare_record_batches},
+    table_format::iceberg::catalog::{
         IcebergCatalogBackend, IcebergProviderKind, RestIcebergCatalogBackend, RestIcebergCatalogConfig,
         build_scoped_catalog_provider_from_backend,
     },

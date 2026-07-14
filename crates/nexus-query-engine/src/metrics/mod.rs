@@ -26,9 +26,20 @@ mod operator;
 mod source_read;
 mod task;
 
+use correlation::inherited_query_id;
+
 pub use self::{
-    aggregate::*, boundary::*, correlation::*, descriptor::*, dynamic_filter::*, graph::*, join::*, memory::*,
-    operator::*, source_read::*, task::*,
+    aggregate::AggregateStrategyDecisionMetrics,
+    boundary::BoundaryMetrics,
+    correlation::{CompiledTaskId, PlanNodeId, PlanTaskMapping, QueryId, TraceId},
+    descriptor::{MetricAggregation, MetricDescriptor, MetricDirection, MetricUnit, QUERY_METRIC_DESCRIPTORS},
+    dynamic_filter::{DynamicFilterRuntimeMetrics, DynamicFilterSourceSnapshot},
+    graph::GraphAlgorithmRuntimeMetrics,
+    join::{JoinOperatorMetrics, JoinStrategyDecisionMetrics},
+    memory::{MemoryReservationEvent, MemoryReservationEventAction, MemoryReservationEventOutcome},
+    operator::OperatorMetrics,
+    source_read::{SourceReadParquetEvidenceMetrics, SourceReadRuntimeMetrics},
+    task::{BudgetedExecutionEvent, TaskOperatorMetrics, TaskRuntimeMetrics},
 };
 
 /// Query-scoped metrics accumulated during native execution.

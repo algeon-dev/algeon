@@ -29,13 +29,13 @@ fn native_query_rejects_invalid_cross_join_before_source_read() {
         JoinSpec::new(
             JoinType::Cross,
             vec![JoinKey::new(
-                nexus_query_engine::ColumnRef::input(0, "id", "left_id"),
-                nexus_query_engine::ColumnRef::input(1, "id", "right_id"),
+                nexus_query_engine::expr::ColumnRef::input(0, "id", "left_id"),
+                nexus_query_engine::expr::ColumnRef::input(1, "id", "right_id"),
             )],
         )
         .with_output_projection(vec![
-            JoinOutputColumn::left(nexus_query_engine::ColumnRef::input(0, "id", "left_id"), "left_id"),
-            JoinOutputColumn::right(nexus_query_engine::ColumnRef::input(1, "id", "right_id"), "right_id"),
+            JoinOutputColumn::left(nexus_query_engine::expr::ColumnRef::input(0, "id", "left_id"), "left_id"),
+            JoinOutputColumn::right(nexus_query_engine::expr::ColumnRef::input(1, "id", "right_id"), "right_id"),
         ]),
         output_schema,
     );
@@ -97,13 +97,13 @@ fn native_query_rejects_duplicate_join_output_names_before_runtime_materializati
         JoinSpec::new(
             JoinType::Inner,
             vec![JoinKey::new(
-                nexus_query_engine::ColumnRef::input(0, "id", "left_id"),
-                nexus_query_engine::ColumnRef::input(1, "id", "right_id"),
+                nexus_query_engine::expr::ColumnRef::input(0, "id", "left_id"),
+                nexus_query_engine::expr::ColumnRef::input(1, "id", "right_id"),
             )],
         )
         .with_output_projection(vec![
-            JoinOutputColumn::left(nexus_query_engine::ColumnRef::input(0, "n_name", "supp_n_name"), "n_name"),
-            JoinOutputColumn::right(nexus_query_engine::ColumnRef::input(1, "n_name", "cust_n_name"), "n_name"),
+            JoinOutputColumn::left(nexus_query_engine::expr::ColumnRef::input(0, "n_name", "supp_n_name"), "n_name"),
+            JoinOutputColumn::right(nexus_query_engine::expr::ColumnRef::input(1, "n_name", "cust_n_name"), "n_name"),
         ])
         .with_null_equality(JoinNullEquality::NullsDoNotMatch)
         .with_build_side(JoinSide::Right),

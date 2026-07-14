@@ -102,7 +102,7 @@ pub(super) fn adapter_error(error: &DataFusionError) -> &Error {
     let DataFusionError::External(source) = error else {
         panic!("native execution errors should cross DataFusion as external adapter errors: {error}");
     };
-    source.downcast_ref::<Error>().expect("DataFusion external error should preserve datafusion_nexus::Error")
+    source.downcast_ref::<Error>().expect("DataFusion external error should preserve datafusion_nexus::error::Error")
 }
 
 pub(super) fn assert_native_cudf_exec(plan: &Arc<dyn ExecutionPlan>, context: &str) {

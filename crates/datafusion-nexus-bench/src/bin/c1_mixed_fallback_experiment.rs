@@ -28,9 +28,12 @@ use datafusion::{
     prelude::{ParquetReadOptions, SessionConfig, SessionContext},
 };
 use datafusion_nexus::{
-    CandidateOutcome, CudfNativePhysicalOptimizerRule, CudfOptimizerConfig, CudfSessionStateBuilderExt,
-    GpuFallbackPolicy, NativeCudfExecutionConfig, NativeDataFusionPlanningReport,
-    NativeDataFusionPostNativeExecutionPath,
+    native_exec::NativeCudfExecutionConfig,
+    native_report::{NativeDataFusionPlanningReport, NativeDataFusionPostNativeExecutionPath},
+    planner::{CudfNativePhysicalOptimizerRule, CudfOptimizerConfig},
+    policy::GpuFallbackPolicy,
+    report::CandidateOutcome,
+    session::CudfSessionStateBuilderExt,
 };
 
 struct Case {

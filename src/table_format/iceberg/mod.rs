@@ -123,7 +123,7 @@ pub(crate) fn insert_explicit_nexus_s3_credentials(
 
 /// Builds the adapter-owned Iceberg provider that plans scans into native
 /// table-format facts instead of delegating to an Arrow reader.
-pub fn table_provider(table: Table) -> crate::Result<CudfIcebergTableProvider> {
+pub fn table_provider(table: Table) -> crate::error::Result<CudfIcebergTableProvider> {
     CudfIcebergTableProvider::try_new(table)
 }
 
@@ -428,7 +428,7 @@ pub struct GlueIcebergTableRegistration {
 /// AWS credential values may be passed to `iceberg-catalog-glue` at runtime
 /// through environment variables, but the returned diagnostics never retain
 /// those values.
-pub async fn load_glue_table(config: GlueIcebergTableConfig) -> crate::Result<LoadedGlueIcebergTable> {
+pub async fn load_glue_table(config: GlueIcebergTableConfig) -> crate::error::Result<LoadedGlueIcebergTable> {
     load_glue_table_with_env(config, |name| std::env::var(name).ok()).await
 }
 
@@ -448,7 +448,7 @@ pub async fn register_glue_table(
 async fn load_glue_table_with_env(
     config: GlueIcebergTableConfig,
     mut get: impl FnMut(&str) -> Option<String>,
-) -> crate::Result<LoadedGlueIcebergTable> {
+) -> crate::error::Result<LoadedGlueIcebergTable> {
     let diagnostics = config.diagnostics_with_env(&mut get);
     let mut props = HashMap::from([
         (GLUE_CATALOG_PROP_WAREHOUSE.to_string(), config.warehouse.clone()),
@@ -502,14 +502,15 @@ fn glue_error(
     config: &GlueIcebergTableConfig,
     credential_source: GlueIcebergCredentialSource,
     source: iceberg::Error,
-) -> crate::Error {
-    let error = crate::Error::new(catalog::classify_iceberg_catalog_error(&source), LOAD_GLUE_TABLE_OPERATION, message)
-        .with_fact("catalog_type", "glue")
-        .with_fact("catalog_name", &config.catalog_name)
-        .with_fact("database", &config.database)
-        .with_fact("table", &config.table)
-        .with_fact("region", &config.region)
-        .with_fact("credential_source", credential_source.code());
+) -> crate::error::Error {
+    let error =
+        crate::error::Error::new(catalog::classify_iceberg_catalog_error(&source), LOAD_GLUE_TABLE_OPERATION, message)
+            .with_fact("catalog_type", "glue")
+            .with_fact("catalog_name", &config.catalog_name)
+            .with_fact("database", &config.database)
+            .with_fact("table", &config.table)
+            .with_fact("region", &config.region)
+            .with_fact("credential_source", credential_source.code());
     catalog::apply_iceberg_catalog_error_facts(error, &source).with_source(source)
 }
 
@@ -541,7 +542,7 @@ mod tests {
             source,
         );
 
-        assert_eq!(error.code(), crate::ErrorCode::SourceAccessDenied);
+        assert_eq!(error.code(), crate::error::ErrorCode::SourceAccessDenied);
         assert_eq!(error.fact_value("aws_error_code"), Some("AccessDeniedException"));
         assert_eq!(error.fact_value("aws_http_status"), Some("403"));
         assert_eq!(error.fact_value("aws_retryable"), Some("false"));

@@ -18,7 +18,7 @@ use datafusion::{
         windows::{BoundedWindowAggExec, WindowAggExec},
     },
 };
-use nexus_query_engine::LimitSpec as NativeLimitSpec;
+use nexus_query_engine::expr::LimitSpec as NativeLimitSpec;
 
 use crate::{
     native_exec::gpu_resident_producer_input_name, policy::FallbackReason, report::GpuCandidate,

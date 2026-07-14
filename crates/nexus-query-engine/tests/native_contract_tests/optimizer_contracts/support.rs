@@ -1,4 +1,4 @@
-fn single_source_plan() -> nexus_query_engine::QueryPlan {
+fn single_source_plan() -> nexus_query_engine::plan::QueryPlan {
     let schema = Arc::new(Schema::new(vec![Field::new("key", DataType::Int32, false)]));
     let mut builder = QueryPlanBuilder::new();
     let source = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("input", schema)));
@@ -109,7 +109,7 @@ fn schema(fields: &[&str]) -> Arc<Schema> {
     Arc::new(Schema::new(fields.iter().map(|name| Field::new(*name, DataType::Int32, false)).collect::<Vec<_>>()))
 }
 
-fn plan_has_output_name_prefix(plan: &nexus_query_engine::QueryPlan, prefix: &str) -> bool {
+fn plan_has_output_name_prefix(plan: &nexus_query_engine::plan::QueryPlan, prefix: &str) -> bool {
     plan.nodes().iter().any(|node| match &node.kind {
         PlanNode::Aggregate(aggregate) => aggregate.spec.aggr_exprs.iter().any(|expr| expr.alias.starts_with(prefix)),
         PlanNode::Projection(projection) => {
@@ -123,7 +123,7 @@ fn left_projection(fields: &[&str]) -> Vec<JoinOutputColumn> {
     fields.iter().map(|name| JoinOutputColumn::left(ColumnRef::input(0, *name, *name), *name)).collect()
 }
 
-fn assert_all_node_inputs_exist(plan: &nexus_query_engine::QueryPlan) {
+fn assert_all_node_inputs_exist(plan: &nexus_query_engine::plan::QueryPlan) {
     for node in plan.nodes() {
         for input in node.input_ids() {
             assert!(
@@ -136,7 +136,7 @@ fn assert_all_node_inputs_exist(plan: &nexus_query_engine::QueryPlan) {
     }
 }
 
-fn source_input_name(plan: &nexus_query_engine::QueryPlan, node_id: nexus_query_engine::NodeId) -> Option<String> {
+fn source_input_name(plan: &nexus_query_engine::plan::QueryPlan, node_id: nexus_query_engine::plan::NodeId) -> Option<String> {
     let node = plan.node(node_id)?;
     let PlanNode::Source(source) = &node.kind else { return None };
     match source.as_ref() {

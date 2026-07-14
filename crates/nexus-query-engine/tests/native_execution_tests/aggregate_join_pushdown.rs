@@ -10,8 +10,8 @@ fn optimized_aggregate_join_pushdown_matches_plain_sum_inner_join_with_duplicate
     let left_schema = write_aggregate_join_pushdown_left_parquet(&runtime, &left_path);
     let right_schema = write_aggregate_join_pushdown_right_parquet(&runtime, &right_path);
     let plan = aggregate_join_pushdown_execution_plan(&left_path, &left_schema, &right_path, &right_schema);
-    let optimizer_result = nexus_query_engine::optimize_query_plan(plan.clone(), &Default::default());
-    assert_eq!(optimizer_result.change, nexus_query_engine::NativeOptimizerChange::Changed);
+    let optimizer_result = nexus_query_engine::optimizer::optimize_query_plan(plan.clone(), &Default::default());
+    assert_eq!(optimizer_result.change, nexus_query_engine::optimizer::NativeOptimizerChange::Changed);
     assert_eq!(optimizer_result.diagnostics.aggregate_join_pushdown.applied_count, 1);
 
     let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime)).unwrap();
@@ -49,8 +49,8 @@ fn optimized_aggregate_join_pushdown_matches_left_join_count_with_unmatched_rows
     let left_schema = write_left_count_customer_parquet(&runtime, &left_path);
     let right_schema = write_left_count_orders_parquet(&runtime, &right_path);
     let plan = aggregate_join_pushdown_left_count_plan(&left_path, &left_schema, &right_path, &right_schema);
-    let optimizer_result = nexus_query_engine::optimize_query_plan(plan.clone(), &Default::default());
-    assert_eq!(optimizer_result.change, nexus_query_engine::NativeOptimizerChange::Changed);
+    let optimizer_result = nexus_query_engine::optimizer::optimize_query_plan(plan.clone(), &Default::default());
+    assert_eq!(optimizer_result.change, nexus_query_engine::optimizer::NativeOptimizerChange::Changed);
     assert_eq!(optimizer_result.diagnostics.aggregate_join_pushdown.applied_count, 1);
 
     let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime)).unwrap();
@@ -83,7 +83,7 @@ fn aggregate_join_pushdown_execution_plan(
     left_schema: &Arc<Schema>,
     right_path: &Path,
     right_schema: &Arc<Schema>,
-) -> nexus_query_engine::QueryPlan {
+) -> nexus_query_engine::plan::QueryPlan {
     let join_schema = Arc::new(Schema::new(vec![
         Field::new("ss_net_profit", DataType::Int64, true),
         Field::new("s_store_name", DataType::Utf8, true),
@@ -106,17 +106,17 @@ fn aggregate_join_pushdown_execution_plan(
         JoinSpec::new(
             JoinType::Inner,
             vec![JoinKey::new(
-                nexus_query_engine::ColumnRef::input(0, "zip_prefix", "zip_prefix"),
-                nexus_query_engine::ColumnRef::input(1, "zip_prefix", "zip_prefix"),
+                nexus_query_engine::expr::ColumnRef::input(0, "zip_prefix", "zip_prefix"),
+                nexus_query_engine::expr::ColumnRef::input(1, "zip_prefix", "zip_prefix"),
             )],
         )
         .with_output_projection(vec![
             JoinOutputColumn::left(
-                nexus_query_engine::ColumnRef::input(0, "ss_net_profit", "ss_net_profit"),
+                nexus_query_engine::expr::ColumnRef::input(0, "ss_net_profit", "ss_net_profit"),
                 "ss_net_profit",
             ),
             JoinOutputColumn::left(
-                nexus_query_engine::ColumnRef::input(0, "s_store_name", "s_store_name"),
+                nexus_query_engine::expr::ColumnRef::input(0, "s_store_name", "s_store_name"),
                 "s_store_name",
             ),
         ])
@@ -154,7 +154,7 @@ fn aggregate_join_pushdown_left_count_plan(
     left_schema: &Arc<Schema>,
     right_path: &Path,
     right_schema: &Arc<Schema>,
-) -> nexus_query_engine::QueryPlan {
+) -> nexus_query_engine::plan::QueryPlan {
     let join_schema = Arc::new(Schema::new(vec![
         Field::new("c_custkey", DataType::Int32, false),
         Field::new("o_orderkey", DataType::Int64, true),
@@ -177,13 +177,19 @@ fn aggregate_join_pushdown_left_count_plan(
         JoinSpec::new(
             JoinType::Left,
             vec![JoinKey::new(
-                nexus_query_engine::ColumnRef::input(0, "c_custkey", "c_custkey"),
-                nexus_query_engine::ColumnRef::input(1, "o_custkey", "o_custkey"),
+                nexus_query_engine::expr::ColumnRef::input(0, "c_custkey", "c_custkey"),
+                nexus_query_engine::expr::ColumnRef::input(1, "o_custkey", "o_custkey"),
             )],
         )
         .with_output_projection(vec![
-            JoinOutputColumn::left(nexus_query_engine::ColumnRef::input(0, "c_custkey", "c_custkey"), "c_custkey"),
-            JoinOutputColumn::right(nexus_query_engine::ColumnRef::input(1, "o_orderkey", "o_orderkey"), "o_orderkey"),
+            JoinOutputColumn::left(
+                nexus_query_engine::expr::ColumnRef::input(0, "c_custkey", "c_custkey"),
+                "c_custkey",
+            ),
+            JoinOutputColumn::right(
+                nexus_query_engine::expr::ColumnRef::input(1, "o_orderkey", "o_orderkey"),
+                "o_orderkey",
+            ),
         ])
         .with_build_side(JoinSide::Right),
         join_schema,

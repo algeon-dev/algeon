@@ -19,9 +19,12 @@ use datafusion::{
     execution::SessionStateBuilder,
 };
 use datafusion_nexus::{
-    CudfNativePhysicalOptimizerRule, CudfSessionStateBuilderExt, Error, ErrorCode, ErrorKind, ErrorStatus,
-    PlanningReport,
+    error::{Error, ErrorCode, ErrorKind, ErrorStatus},
+    planner::CudfNativePhysicalOptimizerRule,
+    report::PlanningReport,
+    session::CudfSessionStateBuilderExt,
 };
+use nexus_query_engine::error::{QueryError, QueryErrorKind, QueryErrorStatus};
 use serde::Serialize;
 use serde_json::{Value, json};
 
@@ -234,14 +237,13 @@ impl AppError {
         Self::new(status, "datafusion_error", error.to_string())
     }
 
-    fn from_native(error: datafusion_nexus::admission_contracts::QueryError) -> Self {
-        let status = if error.kind() == datafusion_nexus::admission_contracts::QueryErrorKind::ResourceExhausted
-            && error.status() == datafusion_nexus::admission_contracts::QueryErrorStatus::Temporary
-        {
-            StatusCode::TOO_MANY_REQUESTS
-        } else {
-            StatusCode::INTERNAL_SERVER_ERROR
-        };
+    fn from_native(error: QueryError) -> Self {
+        let status =
+            if error.kind() == QueryErrorKind::ResourceExhausted && error.status() == QueryErrorStatus::Temporary {
+                StatusCode::TOO_MANY_REQUESTS
+            } else {
+                StatusCode::INTERNAL_SERVER_ERROR
+            };
         let retry_after_secs = (status == StatusCode::TOO_MANY_REQUESTS).then_some(1);
         Self {
             status,

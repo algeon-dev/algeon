@@ -4,12 +4,13 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use datafusion_nexus::{NativeDataFusionExecutionReport, NativePipelineExecutionMode};
+use datafusion_nexus::native_report::NativeDataFusionExecutionReport;
 use datafusion_nexus_bench::{
     TpcdsDatasetMetadata, TpcdsExecutionProgressEvent, prepare_tpcds_report_dataset,
     tpcds_datafusion_execution_workload_items_filtered, tpcds_native_analytics_optimizer_config,
     tpcds_report_session_config,
 };
+use nexus_query_engine::mode::NativePipelineExecutionMode;
 
 const CUDF_NATIVE_PIPELINE_EXECUTION_MODE_ENV: &str = "CUDF_NATIVE_PIPELINE_EXECUTION_MODE";
 const CUDF_TPCDS_EXECUTION_QUERY_IDS_ENV: &str = "CUDF_TPCDS_EXECUTION_QUERY_IDS";

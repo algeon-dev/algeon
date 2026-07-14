@@ -38,6 +38,12 @@ fi
 
 status=0
 
+echo "==> scripts/check_source_layout.sh  (advisory layout signals + blocking baseline-growth ratchet)"
+if ! bash scripts/check_source_layout.sh; then
+  status=1
+fi
+echo
+
 TEST_RUNNER="${TEST_RUNNER:-nextest}"
 GPU_LOCK="${GPU_LOCK:-/tmp/cudf-gpu.lock}"
 GPU_PARALLEL="${GPU_PARALLEL:-0}"

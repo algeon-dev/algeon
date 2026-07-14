@@ -296,8 +296,7 @@ fn first_rejection_reason(report: &PlanningReport) -> Option<FallbackReason> {
 mod tests {
     use super::*;
     use crate::{
-        Error,
-        error::ErrorCode,
+        error::{Error, ErrorCode},
         report::{GpuCandidate, PlanningReport},
     };
 

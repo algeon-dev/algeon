@@ -237,13 +237,13 @@ impl<'a> CompiledGpuTaskExecutor<'a> {
             .output_schema()
             .fields()
             .iter()
-            .map(|field| crate::JoinOutputColumnUpperBoundInput {
+            .map(|field| crate::exec::JoinOutputColumnUpperBoundInput {
                 data_type: field.data_type().clone(),
                 input_max_string_length_bytes: string_floor_max_bytes(field.data_type()),
                 input_total_string_bytes: None,
             })
             .collect::<Vec<_>>();
-        let output_floor = crate::join_output_upper_bound_bytes(1, &output_columns)?;
+        let output_floor = crate::exec::join_output_upper_bound_bytes(1, &output_columns)?;
         let gather_map_floor =
             cudf::DataFrameJoinPairIndices::reservation_size_bytes_for_len(1).map(|bytes| bytes as u64).unwrap_or(64);
         let stream_target_bytes = reusable_hash_join_stream_target_output_bytes(self.context, &self.reservations);

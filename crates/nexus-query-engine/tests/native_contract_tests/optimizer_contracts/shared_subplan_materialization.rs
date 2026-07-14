@@ -288,7 +288,7 @@ fn native_optimizer_rejects_repeated_scalar_mixed_distinct_branches_without_stre
     assert_eq!(candidate.filtered_aggregate_memory_threshold_policy, "runtime_budget/2");
     assert_eq!(
         candidate.rejected_reason,
-        Some(nexus_query_engine::SharedSubplanMaterializationRejectedReason::UnsupportedScalarAggregateShape)
+        Some(nexus_query_engine::optimizer::SharedSubplanMaterializationRejectedReason::UnsupportedScalarAggregateShape)
     );
     let local_source_reuse = &result.diagnostics.local_parquet_source_reuse;
     assert_eq!(local_source_reuse.considered_count, 1);
@@ -549,7 +549,7 @@ fn native_optimizer_rejects_grouped_materialization_when_source_predicate_collid
     assert_eq!(diagnostics.applied_count, 0);
     assert_eq!(
         diagnostics.candidates[0].rejected_reason,
-        Some(nexus_query_engine::SharedSubplanMaterializationRejectedReason::PredicateNotPostAggregateFilterable)
+        Some(nexus_query_engine::optimizer::SharedSubplanMaterializationRejectedReason::PredicateNotPostAggregateFilterable)
     );
 }
 
@@ -571,7 +571,7 @@ fn native_optimizer_rejects_grouped_materialization_when_predicate_column_has_di
     assert_eq!(diagnostics.applied_count, 0);
     assert_eq!(
         diagnostics.candidates[0].rejected_reason,
-        Some(nexus_query_engine::SharedSubplanMaterializationRejectedReason::PredicateNotPostAggregateFilterable)
+        Some(nexus_query_engine::optimizer::SharedSubplanMaterializationRejectedReason::PredicateNotPostAggregateFilterable)
     );
 }
 
@@ -593,7 +593,7 @@ fn native_optimizer_rejects_grouped_materialization_with_duplicate_source_occurr
     assert_eq!(diagnostics.applied_count, 0);
     assert_eq!(
         diagnostics.candidates[0].rejected_reason,
-        Some(nexus_query_engine::SharedSubplanMaterializationRejectedReason::PredicateColumnPropagationUnsupported)
+        Some(nexus_query_engine::optimizer::SharedSubplanMaterializationRejectedReason::PredicateColumnPropagationUnsupported)
     );
 }
 
@@ -615,7 +615,7 @@ fn native_optimizer_rejects_grouped_materialization_with_reused_source_node_occu
     assert_eq!(diagnostics.applied_count, 0);
     assert_eq!(
         diagnostics.candidates[0].rejected_reason,
-        Some(nexus_query_engine::SharedSubplanMaterializationRejectedReason::PredicateColumnPropagationUnsupported)
+        Some(nexus_query_engine::optimizer::SharedSubplanMaterializationRejectedReason::PredicateColumnPropagationUnsupported)
     );
 }
 
@@ -637,7 +637,7 @@ fn native_optimizer_rejects_unreachable_grouped_materialization_without_claiming
     assert_eq!(diagnostics.applied_count, 0);
     assert_eq!(
         diagnostics.candidates[0].rejected_reason,
-        Some(nexus_query_engine::SharedSubplanMaterializationRejectedReason::NotReachableFromSink)
+        Some(nexus_query_engine::optimizer::SharedSubplanMaterializationRejectedReason::NotReachableFromSink)
     );
 }
 
@@ -660,7 +660,7 @@ fn native_optimizer_rejects_scalar_materialization_with_conflicting_source_refs(
     let candidate = &diagnostics.candidates[0];
     assert_eq!(
         candidate.rejected_reason,
-        Some(nexus_query_engine::SharedSubplanMaterializationRejectedReason::PredicateColumnPropagationUnsupported)
+        Some(nexus_query_engine::optimizer::SharedSubplanMaterializationRejectedReason::PredicateColumnPropagationUnsupported)
     );
 }
 
@@ -697,7 +697,7 @@ fn native_optimizer_rejects_scalar_materialization_with_duplicate_join_input_col
     assert_eq!(diagnostics.applied_count, 0);
     assert_eq!(
         diagnostics.candidates[0].rejected_reason,
-        Some(nexus_query_engine::SharedSubplanMaterializationRejectedReason::PredicateColumnPropagationUnsupported)
+        Some(nexus_query_engine::optimizer::SharedSubplanMaterializationRejectedReason::PredicateColumnPropagationUnsupported)
     );
 }
 
@@ -737,7 +737,7 @@ fn native_optimizer_rejects_scalar_materialization_with_reused_source_node_join_
     assert_eq!(diagnostics.applied_count, 0);
     assert_eq!(
         diagnostics.candidates[0].rejected_reason,
-        Some(nexus_query_engine::SharedSubplanMaterializationRejectedReason::PredicateColumnPropagationUnsupported)
+        Some(nexus_query_engine::optimizer::SharedSubplanMaterializationRejectedReason::PredicateColumnPropagationUnsupported)
     );
 }
 
@@ -805,7 +805,7 @@ fn disabled_shared_subplan_materialization_emits_no_diagnostics() {
     assert!(result.diagnostics.shared_subplan_materialization.is_empty());
 }
 
-fn repeated_grouped_aggregate_materialization_plan() -> nexus_query_engine::QueryPlan {
+fn repeated_grouped_aggregate_materialization_plan() -> nexus_query_engine::plan::QueryPlan {
     let mut builder = QueryPlanBuilder::new();
     let aggregate_schema = schema(&["county", "quarter", "year", "store_sales"]);
     let mut aggregates = Vec::new();
@@ -825,7 +825,7 @@ fn repeated_grouped_aggregate_materialization_plan() -> nexus_query_engine::Quer
     builder.finish_gpu_resident(union)
 }
 
-fn repeated_aliased_grouped_aggregate_materialization_plan() -> nexus_query_engine::QueryPlan {
+fn repeated_aliased_grouped_aggregate_materialization_plan() -> nexus_query_engine::plan::QueryPlan {
     let mut builder = QueryPlanBuilder::new();
     let source_schema = schema(&["county", "sales"]);
     let aggregate_schema = schema(&["county_name", "store_sales"]);
@@ -862,7 +862,7 @@ fn repeated_aliased_grouped_aggregate_materialization_plan() -> nexus_query_engi
     builder.finish_gpu_resident(union)
 }
 
-fn repeated_grouped_aggregate_materialization_with_projected_argument_aliases_plan() -> nexus_query_engine::QueryPlan {
+fn repeated_grouped_aggregate_materialization_with_projected_argument_aliases_plan() -> nexus_query_engine::plan::QueryPlan {
     let mut builder = QueryPlanBuilder::new();
     let aggregate_schema = Arc::new(Schema::new(vec![
         Field::new("county", DataType::Int32, false),
@@ -902,7 +902,7 @@ fn repeated_grouped_aggregate_materialization_with_projected_argument_aliases_pl
     builder.finish_gpu_resident(union)
 }
 
-fn repeated_grouped_projected_alias_materialization_with_local_filters_plan() -> nexus_query_engine::QueryPlan {
+fn repeated_grouped_projected_alias_materialization_with_local_filters_plan() -> nexus_query_engine::plan::QueryPlan {
     let mut builder = QueryPlanBuilder::new();
     let source_schema = schema(&["county", "quarter", "year", "sales"]);
     let aggregate_schema = Arc::new(Schema::new(vec![
@@ -978,7 +978,7 @@ fn estimated_sales_source_without_reader_predicate(bytes: u64) -> SourceNode {
     ))
 }
 
-fn repeated_grouped_aggregate_predicate_alias_collision_plan() -> nexus_query_engine::QueryPlan {
+fn repeated_grouped_aggregate_predicate_alias_collision_plan() -> nexus_query_engine::plan::QueryPlan {
     let mut builder = QueryPlanBuilder::new();
     let aggregate_schema = schema(&["county", "quarter", "year", "store_sales"]);
     let mut aggregates = Vec::new();
@@ -998,7 +998,7 @@ fn repeated_grouped_aggregate_predicate_alias_collision_plan() -> nexus_query_en
     builder.finish_gpu_resident(union)
 }
 
-fn repeated_grouped_aggregate_predicate_group_name_lineage_collision_plan() -> nexus_query_engine::QueryPlan {
+fn repeated_grouped_aggregate_predicate_group_name_lineage_collision_plan() -> nexus_query_engine::plan::QueryPlan {
     let mut builder = QueryPlanBuilder::new();
     let join_schema = schema(&["customer_id", "sales"]);
     let aggregate_schema = schema(&["customer_id", "store_sales"]);
@@ -1042,7 +1042,7 @@ fn repeated_grouped_aggregate_predicate_group_name_lineage_collision_plan() -> n
     builder.finish_gpu_resident(union)
 }
 
-fn repeated_grouped_aggregate_self_join_duplicate_source_plan() -> nexus_query_engine::QueryPlan {
+fn repeated_grouped_aggregate_self_join_duplicate_source_plan() -> nexus_query_engine::plan::QueryPlan {
     let mut builder = QueryPlanBuilder::new();
     let join_schema = schema(&["customer_id", "sales"]);
     let aggregate_schema = schema(&["customer_id", "store_sales"]);
@@ -1086,7 +1086,7 @@ fn repeated_grouped_aggregate_self_join_duplicate_source_plan() -> nexus_query_e
     builder.finish_gpu_resident(union)
 }
 
-fn repeated_grouped_aggregate_reused_source_node_self_join_plan() -> nexus_query_engine::QueryPlan {
+fn repeated_grouped_aggregate_reused_source_node_self_join_plan() -> nexus_query_engine::plan::QueryPlan {
     let mut builder = QueryPlanBuilder::new();
     let join_schema = schema(&["customer_id", "sales"]);
     let aggregate_schema = schema(&["customer_id", "store_sales"]);
@@ -1129,7 +1129,7 @@ fn repeated_grouped_aggregate_reused_source_node_self_join_plan() -> nexus_query
     builder.finish_gpu_resident(union)
 }
 
-fn unreachable_grouped_aggregate_materialization_plan() -> nexus_query_engine::QueryPlan {
+fn unreachable_grouped_aggregate_materialization_plan() -> nexus_query_engine::plan::QueryPlan {
     let mut builder = QueryPlanBuilder::new();
     let root = builder.add_source(estimated_local_source("root", "root_key", 1024, 10));
     let aggregate_schema = schema(&["county", "store_sales"]);
@@ -1165,7 +1165,7 @@ fn unreachable_grouped_aggregate_materialization_plan() -> nexus_query_engine::Q
     builder.finish_gpu_resident(root)
 }
 
-fn repeated_scalar_count_materialization_plan() -> nexus_query_engine::QueryPlan {
+fn repeated_scalar_count_materialization_plan() -> nexus_query_engine::plan::QueryPlan {
     let mut builder = QueryPlanBuilder::new();
     let fact_schema = schema(&["ss_sold_time_sk"]);
     let count_schema = schema(&["count"]);
@@ -1209,7 +1209,7 @@ fn repeated_scalar_count_materialization_plan() -> nexus_query_engine::QueryPlan
     builder.finish_gpu_resident(union)
 }
 
-fn repeated_scalar_count_materialization_with_mismatched_source_contracts_plan() -> nexus_query_engine::QueryPlan {
+fn repeated_scalar_count_materialization_with_mismatched_source_contracts_plan() -> nexus_query_engine::plan::QueryPlan {
     let mut builder = QueryPlanBuilder::new();
     let fact_schema = schema(&["ss_sold_time_sk"]);
     let count_schema = schema(&["count"]);
@@ -1260,7 +1260,7 @@ fn repeated_scalar_count_materialization_with_mismatched_source_contracts_plan()
     builder.finish_gpu_resident(union)
 }
 
-fn repeated_scalar_count_materialization_with_mismatched_decimal_contracts_plan() -> nexus_query_engine::QueryPlan {
+fn repeated_scalar_count_materialization_with_mismatched_decimal_contracts_plan() -> nexus_query_engine::plan::QueryPlan {
     let mut builder = QueryPlanBuilder::new();
     let fact_schema = schema(&["ss_sold_time_sk"]);
     let count_schema = schema(&["count"]);
@@ -1318,7 +1318,7 @@ fn repeated_scalar_count_materialization_with_mismatched_decimal_contracts_plan(
     builder.finish_gpu_resident(union)
 }
 
-fn repeated_scalar_count_materialization_with_redundant_projection_plan() -> nexus_query_engine::QueryPlan {
+fn repeated_scalar_count_materialization_with_redundant_projection_plan() -> nexus_query_engine::plan::QueryPlan {
     let mut builder = QueryPlanBuilder::new();
     let fact_schema = schema(&["ss_sold_time_sk"]);
     let count_schema = schema(&["count"]);
@@ -1371,7 +1371,7 @@ fn repeated_scalar_count_materialization_with_redundant_projection_plan() -> nex
     builder.finish_gpu_resident(union)
 }
 
-fn repeated_scalar_count_materialization_with_reader_predicate_filters_plan() -> nexus_query_engine::QueryPlan {
+fn repeated_scalar_count_materialization_with_reader_predicate_filters_plan() -> nexus_query_engine::plan::QueryPlan {
     let mut builder = QueryPlanBuilder::new();
     let fact_schema = schema(&["ss_sold_time_sk"]);
     let time_schema = Arc::new(Schema::new(vec![
@@ -1421,7 +1421,7 @@ fn repeated_scalar_count_materialization_with_reader_predicate_filters_plan() ->
     builder.finish_gpu_resident(union)
 }
 
-fn repeated_scalar_mixed_aggregate_materialization_plan() -> nexus_query_engine::QueryPlan {
+fn repeated_scalar_mixed_aggregate_materialization_plan() -> nexus_query_engine::plan::QueryPlan {
     let mut builder = QueryPlanBuilder::new();
     let mut branches = Vec::new();
     let mut branch_schemas = Vec::new();
@@ -1474,7 +1474,7 @@ enum Q09ScalarBranch {
     AvgNetPaid,
 }
 
-fn repeated_q09_like_scalar_materialization_plan() -> nexus_query_engine::QueryPlan {
+fn repeated_q09_like_scalar_materialization_plan() -> nexus_query_engine::plan::QueryPlan {
     repeated_q09_like_scalar_materialization_plan_with_order(&[
         Q09ScalarBranch::Count,
         Q09ScalarBranch::AvgDiscount,
@@ -1484,14 +1484,14 @@ fn repeated_q09_like_scalar_materialization_plan() -> nexus_query_engine::QueryP
 
 fn repeated_q09_like_scalar_materialization_plan_with_order(
     branch_order: &[Q09ScalarBranch],
-) -> nexus_query_engine::QueryPlan {
+) -> nexus_query_engine::plan::QueryPlan {
     repeated_q09_like_scalar_materialization_plan_with_order_and_bucket_count(branch_order, 2)
 }
 
 fn repeated_q09_like_scalar_materialization_plan_with_order_and_bucket_count(
     branch_order: &[Q09ScalarBranch],
     bucket_count: i32,
-) -> nexus_query_engine::QueryPlan {
+) -> nexus_query_engine::plan::QueryPlan {
     let mut builder = QueryPlanBuilder::new();
     let mut branches = Vec::new();
     let mut branch_schemas = Vec::new();
@@ -1565,7 +1565,7 @@ fn repeated_q09_like_scalar_materialization_plan_with_order_and_bucket_count(
     builder.finish_gpu_resident(root)
 }
 
-fn repeated_projected_literal_count_star_scalar_materialization_plan() -> nexus_query_engine::QueryPlan {
+fn repeated_projected_literal_count_star_scalar_materialization_plan() -> nexus_query_engine::plan::QueryPlan {
     let mut builder = QueryPlanBuilder::new();
     let mut branches = Vec::new();
     let mut branch_schemas = Vec::new();
@@ -1599,7 +1599,7 @@ fn repeated_projected_literal_count_star_scalar_materialization_plan() -> nexus_
     builder.finish_gpu_resident(root)
 }
 
-fn repeated_scalar_count_with_different_projected_filter_plan() -> nexus_query_engine::QueryPlan {
+fn repeated_scalar_count_with_different_projected_filter_plan() -> nexus_query_engine::plan::QueryPlan {
     let mut builder = QueryPlanBuilder::new();
     let mut branches = Vec::new();
     let mut branch_schemas = Vec::new();
@@ -1636,7 +1636,7 @@ fn repeated_scalar_count_with_different_projected_filter_plan() -> nexus_query_e
     builder.finish_gpu_resident(root)
 }
 
-fn repeated_scalar_count_with_different_local_filter_plan() -> nexus_query_engine::QueryPlan {
+fn repeated_scalar_count_with_different_local_filter_plan() -> nexus_query_engine::plan::QueryPlan {
     let mut builder = QueryPlanBuilder::new();
     let mut branches = Vec::new();
     let mut branch_schemas = Vec::new();
@@ -1672,7 +1672,7 @@ fn repeated_scalar_count_with_different_local_filter_plan() -> nexus_query_engin
     builder.finish_gpu_resident(root)
 }
 
-fn repeated_scalar_avg_with_conflicting_source_refs_plan() -> nexus_query_engine::QueryPlan {
+fn repeated_scalar_avg_with_conflicting_source_refs_plan() -> nexus_query_engine::plan::QueryPlan {
     let mut builder = QueryPlanBuilder::new();
     let mut branches = Vec::new();
     let mut branch_schemas = Vec::new();
@@ -1695,7 +1695,7 @@ fn repeated_scalar_avg_with_conflicting_source_refs_plan() -> nexus_query_engine
     builder.finish_gpu_resident(root)
 }
 
-fn repeated_scalar_count_with_limit_plan() -> nexus_query_engine::QueryPlan {
+fn repeated_scalar_count_with_limit_plan() -> nexus_query_engine::plan::QueryPlan {
     let mut builder = QueryPlanBuilder::new();
     let mut branches = Vec::new();
     let mut branch_schemas = Vec::new();
@@ -1723,7 +1723,7 @@ fn repeated_scalar_count_with_limit_plan() -> nexus_query_engine::QueryPlan {
     builder.finish_gpu_resident(root)
 }
 
-fn repeated_scalar_join_count_with_duplicate_input_names_plan() -> nexus_query_engine::QueryPlan {
+fn repeated_scalar_join_count_with_duplicate_input_names_plan() -> nexus_query_engine::plan::QueryPlan {
     let mut builder = QueryPlanBuilder::new();
     let mut branches = Vec::new();
     let mut branch_schemas = Vec::new();
@@ -1761,7 +1761,7 @@ fn repeated_scalar_join_count_with_duplicate_input_names_plan() -> nexus_query_e
     builder.finish_gpu_resident(root)
 }
 
-fn repeated_scalar_self_join_count_with_duplicate_rowset_plan() -> nexus_query_engine::QueryPlan {
+fn repeated_scalar_self_join_count_with_duplicate_rowset_plan() -> nexus_query_engine::plan::QueryPlan {
     let mut builder = QueryPlanBuilder::new();
     let mut branches = Vec::new();
     let mut branch_schemas = Vec::new();
@@ -1799,7 +1799,7 @@ fn repeated_scalar_self_join_count_with_duplicate_rowset_plan() -> nexus_query_e
     builder.finish_gpu_resident(root)
 }
 
-fn repeated_scalar_self_join_count_with_reused_source_node_plan() -> nexus_query_engine::QueryPlan {
+fn repeated_scalar_self_join_count_with_reused_source_node_plan() -> nexus_query_engine::plan::QueryPlan {
     let mut builder = QueryPlanBuilder::new();
     let mut branches = Vec::new();
     let mut branch_schemas = Vec::new();
@@ -1836,7 +1836,7 @@ fn repeated_scalar_self_join_count_with_reused_source_node_plan() -> nexus_query
     builder.finish_gpu_resident(root)
 }
 
-fn grouped_and_scalar_sum_over_permuted_source_files_plan() -> nexus_query_engine::QueryPlan {
+fn grouped_and_scalar_sum_over_permuted_source_files_plan() -> nexus_query_engine::plan::QueryPlan {
     let mut builder = QueryPlanBuilder::new();
     let grouped_input = builder.add_source(two_file_source(["a", "b"]));
     let scalar_input = builder.add_source(two_file_source(["b", "a"]));

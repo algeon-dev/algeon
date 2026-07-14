@@ -16,17 +16,21 @@ use datafusion::{
 };
 use futures::TryStreamExt;
 use nexus_query_engine::{
-    BinaryOp, DimensionDerivedKeyRange as KeyRange, DimensionKeyAccumulator, DimensionKeyFilter, Expr, LiteralValue,
-    LocalParquetRowGroupSelection, LocalParquetSource, NodeId, ParquetSourceLocation, PlanNode, QueryPlan,
-    SourceColumnRef, SourceNode, apply_dimension_derived_pruning_with_stats, apply_local_parquet_row_group_selections,
-    discover_dimension_derived_pruning_requests,
-    optimizer::{local_parquet_source, reader_projection_indices},
+    expr::{BinaryOp, Expr, LiteralValue},
+    optimizer::{
+        DimensionKeyAccumulator, DimensionKeyFilter, KeyRange, LocalParquetRowGroupSelection,
+        apply_dimension_derived_pruning_with_stats, apply_local_parquet_row_group_selections,
+        discover_dimension_derived_pruning_requests, local_parquet_source, reader_projection_indices,
+        seed_dimension_derived_reader_predicates,
+    },
     parquet_stats::{leaf_column_statistics, row_group_i64_range_for_root_column},
-    seed_dimension_derived_reader_predicates,
+    plan::{NodeId, PlanNode, QueryPlan},
+    source::{LocalParquetSource, ParquetSourceLocation, SourceColumnRef, SourceNode},
 };
 
 use crate::{
-    NativeCudfExec, error::ErrorSourceDiagnostics, native::table_format_pruning_policy::TableFormatPruningPolicy,
+    error::ErrorSourceDiagnostics, native::table_format_pruning_policy::TableFormatPruningPolicy,
+    native_exec::NativeCudfExec,
 };
 
 type BoxFutureResult<T> = Pin<Box<dyn Future<Output = Result<T>> + Send>>;
@@ -683,7 +687,7 @@ enum RequestOutcome {
 async fn prune_request(
     plan: QueryPlan,
     runtime_env: &Arc<RuntimeEnv>,
-    request: nexus_query_engine::DimensionDerivedPruningRequest,
+    request: nexus_query_engine::optimizer::DimensionDerivedPruningRequest,
 ) -> std::result::Result<RequestOutcome, String> {
     let target_source_node_id = request.target_source_node_id;
     let Some(target_source) = local_parquet_source(&plan, target_source_node_id) else {

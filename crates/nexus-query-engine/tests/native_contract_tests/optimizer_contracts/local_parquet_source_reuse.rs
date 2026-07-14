@@ -87,7 +87,7 @@ fn native_optimizer_rejects_source_reuse_with_branch_specific_dynamic_filter_rou
     assert_eq!(diagnostics.applied_count, 0);
     assert_eq!(
         diagnostics.candidates[0].rejected_reason,
-        Some(nexus_query_engine::LocalParquetSourceReuseRejectedReason::DynamicFilterConsumerConflict)
+        Some(nexus_query_engine::optimizer::LocalParquetSourceReuseRejectedReason::DynamicFilterConsumerConflict)
     );
     assert_eq!(local_parquet_source_count_for_stable_id(&result.plan, "web_sales"), 2);
     assert!(result.plan.dynamic_filter_routes().iter().any(|route| {
@@ -278,7 +278,7 @@ fn native_optimizer_rejects_local_parquet_source_reuse_with_different_file_order
     assert_eq!(result.diagnostics.local_parquet_source_reuse.applied_count, 0);
     assert_eq!(
         result.diagnostics.local_parquet_source_reuse.candidates[0].rejected_reason,
-        Some(nexus_query_engine::LocalParquetSourceReuseRejectedReason::UnsupportedSourceContract)
+        Some(nexus_query_engine::optimizer::LocalParquetSourceReuseRejectedReason::UnsupportedSourceContract)
     );
     assert_eq!(local_parquet_source_count_for_stable_id(&result.plan, "customer_address_a"), 2);
 }
@@ -300,7 +300,7 @@ fn native_optimizer_rejects_source_reuse_with_conflicting_file_index_column_name
     assert_eq!(diagnostics.applied_count, 0);
     assert_eq!(
         diagnostics.candidates[0].rejected_reason,
-        Some(nexus_query_engine::LocalParquetSourceReuseRejectedReason::UnsupportedSourceContract)
+        Some(nexus_query_engine::optimizer::LocalParquetSourceReuseRejectedReason::UnsupportedSourceContract)
     );
 }
 
@@ -321,7 +321,7 @@ fn native_optimizer_rejects_source_reuse_with_conflicting_column_name_file_indic
     assert_eq!(diagnostics.applied_count, 0);
     assert_eq!(
         diagnostics.candidates[0].rejected_reason,
-        Some(nexus_query_engine::LocalParquetSourceReuseRejectedReason::UnsupportedSourceContract)
+        Some(nexus_query_engine::optimizer::LocalParquetSourceReuseRejectedReason::UnsupportedSourceContract)
     );
 }
 
@@ -342,7 +342,7 @@ fn native_optimizer_rejects_count_star_probe_source_reuse() {
     assert_eq!(diagnostics.applied_count, 0);
     assert_eq!(
         diagnostics.candidates[0].rejected_reason,
-        Some(nexus_query_engine::LocalParquetSourceReuseRejectedReason::UnsupportedSourceContract)
+        Some(nexus_query_engine::optimizer::LocalParquetSourceReuseRejectedReason::UnsupportedSourceContract)
     );
     assert_eq!(count_star_probe_source_count(&result.plan), 2);
 }
@@ -364,7 +364,7 @@ fn native_optimizer_rejects_position_delete_source_reuse_contract() {
     assert_eq!(diagnostics.applied_count, 0);
     assert_eq!(
         diagnostics.candidates[0].rejected_reason,
-        Some(nexus_query_engine::LocalParquetSourceReuseRejectedReason::UnsupportedSourceContract)
+        Some(nexus_query_engine::optimizer::LocalParquetSourceReuseRejectedReason::UnsupportedSourceContract)
     );
 }
 
@@ -385,7 +385,7 @@ fn native_optimizer_rejects_field_id_output_schema_override_source_reuse_contrac
     assert_eq!(diagnostics.applied_count, 0);
     assert_eq!(
         diagnostics.candidates[0].rejected_reason,
-        Some(nexus_query_engine::LocalParquetSourceReuseRejectedReason::UnsupportedSourceContract)
+        Some(nexus_query_engine::optimizer::LocalParquetSourceReuseRejectedReason::UnsupportedSourceContract)
     );
 }
 
@@ -477,7 +477,7 @@ fn native_optimizer_rejects_large_superset_reuse_when_variant_feeds_grouped_aggr
     assert_eq!(diagnostics.applied_count, 0);
     assert_eq!(
         diagnostics.candidates[0].rejected_reason,
-        Some(nexus_query_engine::LocalParquetSourceReuseRejectedReason::VariantTooLarge)
+        Some(nexus_query_engine::optimizer::LocalParquetSourceReuseRejectedReason::VariantTooLarge)
     );
     assert_eq!(local_parquet_source_count_for_stable_id(&result.plan, "inventory"), 2);
 }
@@ -556,7 +556,7 @@ fn native_optimizer_reuses_large_filtered_existing_superset_outside_source_adjac
     );
 }
 
-fn compatible_small_local_parquet_source_variants_plan() -> nexus_query_engine::QueryPlan {
+fn compatible_small_local_parquet_source_variants_plan() -> nexus_query_engine::plan::QueryPlan {
     let mut builder = QueryPlanBuilder::new();
     let full = builder.add_source(customer_address_source(&["id", "state"], &[0, 1], None));
     let filtered = builder.add_source(customer_address_source(
@@ -576,7 +576,7 @@ fn compatible_small_local_parquet_source_variants_plan() -> nexus_query_engine::
     builder.finish_gpu_resident(union)
 }
 
-fn contract_mismatched_local_parquet_source_variants_plan() -> nexus_query_engine::QueryPlan {
+fn contract_mismatched_local_parquet_source_variants_plan() -> nexus_query_engine::plan::QueryPlan {
     let mut builder = QueryPlanBuilder::new();
     let direct = builder.add_source(SourceNode::LocalParquet(contract_sensitive_customer_address_source(
         remote_direct_customer_address_contract(),
@@ -596,7 +596,7 @@ fn contract_mismatched_local_parquet_source_variants_plan() -> nexus_query_engin
     builder.finish_gpu_resident(union)
 }
 
-fn count_star_probe_source_reuse_plan() -> nexus_query_engine::QueryPlan {
+fn count_star_probe_source_reuse_plan() -> nexus_query_engine::plan::QueryPlan {
     let mut builder = QueryPlanBuilder::new();
     let left = builder.add_source(count_star_probe_customer_address_source("id", 0));
     let right = builder.add_source(count_star_probe_customer_address_source("zip", 2));
@@ -605,7 +605,7 @@ fn count_star_probe_source_reuse_plan() -> nexus_query_engine::QueryPlan {
     builder.finish_gpu_resident(union)
 }
 
-fn position_delete_source_reuse_plan() -> nexus_query_engine::QueryPlan {
+fn position_delete_source_reuse_plan() -> nexus_query_engine::plan::QueryPlan {
     let mut builder = QueryPlanBuilder::new();
     let left = builder.add_source(SourceNode::LocalParquet(
         contract_sensitive_customer_address_source(remote_direct_customer_address_contract())
@@ -626,7 +626,7 @@ fn position_delete_source_reuse_plan() -> nexus_query_engine::QueryPlan {
     builder.finish_gpu_resident(union)
 }
 
-fn field_id_output_schema_override_source_reuse_plan() -> nexus_query_engine::QueryPlan {
+fn field_id_output_schema_override_source_reuse_plan() -> nexus_query_engine::plan::QueryPlan {
     let mut builder = QueryPlanBuilder::new();
     let left = builder.add_source(field_id_output_schema_override_source(&[("old_id", "id")]));
     let right = builder.add_source(field_id_output_schema_override_source(&[("old_id", "id"), ("old_state", "state")]));
@@ -642,7 +642,7 @@ fn field_id_output_schema_override_source_reuse_plan() -> nexus_query_engine::Qu
     builder.finish_gpu_resident(union)
 }
 
-fn compatible_sensitive_stable_id_local_parquet_source_variants_plan() -> nexus_query_engine::QueryPlan {
+fn compatible_sensitive_stable_id_local_parquet_source_variants_plan() -> nexus_query_engine::plan::QueryPlan {
     let mut builder = QueryPlanBuilder::new();
     let full = builder.add_source(sensitive_stable_id_customer_address_source(&["id", "state"], &[0, 1], None));
     let filtered = builder.add_source(sensitive_stable_id_customer_address_source(
@@ -662,7 +662,7 @@ fn compatible_sensitive_stable_id_local_parquet_source_variants_plan() -> nexus_
     builder.finish_gpu_resident(union)
 }
 
-fn decimal_contract_mismatched_local_parquet_source_variants_plan() -> nexus_query_engine::QueryPlan {
+fn decimal_contract_mismatched_local_parquet_source_variants_plan() -> nexus_query_engine::plan::QueryPlan {
     let mut builder = QueryPlanBuilder::new();
     let plain = builder.add_source(SourceNode::LocalParquet(contract_sensitive_customer_address_source(
         remote_direct_customer_address_contract(),
@@ -683,7 +683,7 @@ fn decimal_contract_mismatched_local_parquet_source_variants_plan() -> nexus_que
     builder.finish_gpu_resident(union)
 }
 
-fn compatible_local_parquet_source_variants_with_different_file_order_plan() -> nexus_query_engine::QueryPlan {
+fn compatible_local_parquet_source_variants_with_different_file_order_plan() -> nexus_query_engine::plan::QueryPlan {
     let mut builder = QueryPlanBuilder::new();
     let first = builder.add_source(customer_address_two_file_source(&["id", "state"], &[0, 1], false));
     let second = builder.add_source(customer_address_two_file_source(&["id", "zip"], &[0, 2], true));
@@ -699,7 +699,7 @@ fn compatible_local_parquet_source_variants_with_different_file_order_plan() -> 
     builder.finish_gpu_resident(union)
 }
 
-fn compatible_small_local_parquet_source_variants_with_max_rows_plan() -> nexus_query_engine::QueryPlan {
+fn compatible_small_local_parquet_source_variants_with_max_rows_plan() -> nexus_query_engine::plan::QueryPlan {
     let mut builder = QueryPlanBuilder::new();
     let full = builder.add_source(customer_address_source(&["id", "state"], &[0, 1], None));
     let filtered = builder.add_source(customer_address_source_with_max_rows(
@@ -720,7 +720,7 @@ fn compatible_small_local_parquet_source_variants_with_max_rows_plan() -> nexus_
     builder.finish_gpu_resident(union)
 }
 
-fn conflicting_file_index_local_parquet_source_variants_plan() -> nexus_query_engine::QueryPlan {
+fn conflicting_file_index_local_parquet_source_variants_plan() -> nexus_query_engine::plan::QueryPlan {
     let mut builder = QueryPlanBuilder::new();
     let id_source = builder.add_source(customer_address_source(&["id"], &[0], None));
     let zip_source = builder.add_source(customer_address_source(&["zip"], &[0], None));
@@ -736,7 +736,7 @@ fn conflicting_file_index_local_parquet_source_variants_plan() -> nexus_query_en
     builder.finish_gpu_resident(union)
 }
 
-fn conflicting_column_name_local_parquet_source_variants_plan() -> nexus_query_engine::QueryPlan {
+fn conflicting_column_name_local_parquet_source_variants_plan() -> nexus_query_engine::plan::QueryPlan {
     let mut builder = QueryPlanBuilder::new();
     let first = builder.add_source(customer_address_source(&["id"], &[0], None));
     let second = builder.add_source(customer_address_source(&["id"], &[1], None));
@@ -752,7 +752,7 @@ fn conflicting_column_name_local_parquet_source_variants_plan() -> nexus_query_e
     builder.finish_gpu_resident(union)
 }
 
-fn graph_bfs_local_source_reuse_plan() -> nexus_query_engine::QueryPlan {
+fn graph_bfs_local_source_reuse_plan() -> nexus_query_engine::plan::QueryPlan {
     let mut builder = QueryPlanBuilder::new();
     let edges = builder.add_source(graph_reuse_source(&["src", "dst", "weight"], &[0, 1, 2]));
     let target_vertices = builder.add_source(graph_reuse_source(&["vertex_id"], &[3]));
@@ -792,7 +792,7 @@ fn graph_reuse_source(columns: &[&str], file_indices: &[usize]) -> SourceNode {
     ))
 }
 
-fn large_local_parquet_source_variants_plan() -> nexus_query_engine::QueryPlan {
+fn large_local_parquet_source_variants_plan() -> nexus_query_engine::plan::QueryPlan {
     let mut builder = QueryPlanBuilder::new();
     let left = builder.add_source(estimated_local_source_with_stable_id(
         "inventory",
@@ -821,7 +821,7 @@ fn large_local_parquet_source_variants_plan() -> nexus_query_engine::QueryPlan {
     builder.finish_gpu_resident(union)
 }
 
-fn large_superset_with_smaller_local_parquet_source_variant_plan() -> nexus_query_engine::QueryPlan {
+fn large_superset_with_smaller_local_parquet_source_variant_plan() -> nexus_query_engine::plan::QueryPlan {
     let mut builder = QueryPlanBuilder::new();
     let superset = builder.add_source(estimated_local_source_with_stable_id(
         "inventory",
@@ -849,7 +849,7 @@ fn large_superset_with_smaller_local_parquet_source_variant_plan() -> nexus_quer
     builder.finish_gpu_resident(union)
 }
 
-fn large_superset_with_grouped_aggregate_source_variant_plan() -> nexus_query_engine::QueryPlan {
+fn large_superset_with_grouped_aggregate_source_variant_plan() -> nexus_query_engine::plan::QueryPlan {
     let mut builder = QueryPlanBuilder::new();
     let superset = builder.add_source(estimated_local_source_with_stable_id(
         "inventory",
@@ -885,7 +885,7 @@ fn large_superset_with_grouped_aggregate_source_variant_plan() -> nexus_query_en
     builder.finish_gpu_resident(union)
 }
 
-fn file_size_only_superset_with_grouped_aggregate_source_variant_plan() -> nexus_query_engine::QueryPlan {
+fn file_size_only_superset_with_grouped_aggregate_source_variant_plan() -> nexus_query_engine::plan::QueryPlan {
     let mut builder = QueryPlanBuilder::new();
     let superset = builder.add_source(file_size_only_local_source_with_stable_id(
         "inventory",
@@ -939,7 +939,7 @@ fn file_size_only_local_source_with_stable_id(
     SourceNode::LocalParquet(source)
 }
 
-fn large_grouped_aggregate_superset_with_smaller_source_variant_plan() -> nexus_query_engine::QueryPlan {
+fn large_grouped_aggregate_superset_with_smaller_source_variant_plan() -> nexus_query_engine::plan::QueryPlan {
     let mut builder = QueryPlanBuilder::new();
     let aggregate_input = builder.add_source(estimated_local_source_with_stable_id(
         "inventory",
@@ -975,7 +975,7 @@ fn large_grouped_aggregate_superset_with_smaller_source_variant_plan() -> nexus_
     builder.finish_gpu_resident(union)
 }
 
-fn large_filtered_superset_with_smaller_local_parquet_source_variant_plan() -> nexus_query_engine::QueryPlan {
+fn large_filtered_superset_with_smaller_local_parquet_source_variant_plan() -> nexus_query_engine::plan::QueryPlan {
     let mut builder = QueryPlanBuilder::new();
     let superset = builder.add_source(estimated_local_source_with_stable_id_and_predicate(
         "inventory",
@@ -1174,7 +1174,7 @@ fn count_star_probe_customer_address_source(column: &str, file_index: usize) -> 
     SourceNode::LocalParquet(source)
 }
 
-fn count_star_probe_source_count(plan: &nexus_query_engine::QueryPlan) -> usize {
+fn count_star_probe_source_count(plan: &nexus_query_engine::plan::QueryPlan) -> usize {
     plan.nodes()
         .iter()
         .filter(|node| match &node.kind {
@@ -1190,12 +1190,12 @@ fn gpu_source(name: &str, fields: &[&str]) -> SourceNode {
     SourceNode::GpuResident(GpuResidentSource::new(name, schema(fields)))
 }
 
-fn local_parquet_source_count_for_stable_id(plan: &nexus_query_engine::QueryPlan, stable_id: &str) -> usize {
+fn local_parquet_source_count_for_stable_id(plan: &nexus_query_engine::plan::QueryPlan, stable_id: &str) -> usize {
     local_parquet_sources_for_stable_id(plan, stable_id).len()
 }
 
 fn local_parquet_sources_for_stable_id<'a>(
-    plan: &'a nexus_query_engine::QueryPlan,
+    plan: &'a nexus_query_engine::plan::QueryPlan,
     stable_id: &str,
 ) -> Vec<&'a LocalParquetSource> {
     plan.nodes()
@@ -1212,7 +1212,7 @@ fn local_parquet_sources_for_stable_id<'a>(
         .collect()
 }
 
-fn assert_source_input(plan: &nexus_query_engine::QueryPlan, node_id: nexus_query_engine::NodeId, name: &str) {
+fn assert_source_input(plan: &nexus_query_engine::plan::QueryPlan, node_id: nexus_query_engine::plan::NodeId, name: &str) {
     let node = plan.node(node_id).expect("node should exist");
     match &node.kind {
         PlanNode::Source(source) => match source.as_ref() {

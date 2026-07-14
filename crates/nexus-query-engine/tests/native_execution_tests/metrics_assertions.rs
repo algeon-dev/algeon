@@ -2,8 +2,9 @@ use std::sync::Arc;
 
 use arrow::datatypes::{DataType, Field, Schema};
 use nexus_query_engine::{
-    BudgetedExecutionEvent, Expr, MemoryReservationEvent, MemoryReservationEventAction, MemorySpaceId, QueryMetrics,
-    ReservationKind,
+    expr::Expr,
+    metrics::{BudgetedExecutionEvent, MemoryReservationEvent, MemoryReservationEventAction, QueryMetrics},
+    runtime::{MemorySpaceId, ReservationKind},
 };
 
 pub(super) fn budgeted_events<'a>(metrics: &'a QueryMetrics, operation: &str) -> Vec<&'a BudgetedExecutionEvent> {

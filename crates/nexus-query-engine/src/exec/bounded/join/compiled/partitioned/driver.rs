@@ -911,7 +911,7 @@ fn release_partitioned_join_driver_state(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::JoinSpec;
+    use crate::plan::JoinSpec;
 
     fn retry_join_node(join_type: JoinType, build_side: JoinSide) -> JoinNode {
         JoinNode {

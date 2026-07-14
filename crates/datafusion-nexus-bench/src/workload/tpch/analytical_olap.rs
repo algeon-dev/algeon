@@ -5,8 +5,9 @@ use datafusion::{
     prelude::{SessionConfig, SessionContext},
 };
 use datafusion_nexus::{
-    CudfNativePhysicalOptimizerRule, CudfOptimizerConfig, CudfSessionStateBuilderExt,
-    NativeDataFusionPlanningWorkloadItem, NativeFallbackPressureWorkloadItem,
+    native_report::{NativeDataFusionPlanningWorkloadItem, NativeFallbackPressureWorkloadItem},
+    planner::{CudfNativePhysicalOptimizerRule, CudfOptimizerConfig},
+    session::CudfSessionStateBuilderExt,
 };
 
 use super::{TpchWorkloadResult, register_tpch_tables, tpch_native_optimizer_config};

@@ -27,14 +27,14 @@ use arrow_flight::{
 };
 use datafusion::prelude::ParquetReadOptions;
 use datafusion_nexus::{
-    NexusGpuBackend, SlotGuarantee,
+    backend::NexusGpuBackend,
     server::{
-        FlightSqlServer, ServerConfig, ServerShutdown,
-        error::{ERROR_CODE_METADATA_KEY, ERROR_KIND_METADATA_KEY, ERROR_STATUS_METADATA_KEY},
-        serve_with_listener,
+        ERROR_CODE_METADATA_KEY, ERROR_KIND_METADATA_KEY, ERROR_STATUS_METADATA_KEY, FlightSqlServer, ServerConfig,
+        ServerShutdown, serve_with_listener,
     },
 };
 use futures::TryStreamExt;
+use nexus_query_engine::runtime::SlotGuarantee;
 use parquet::{arrow::ArrowWriter, file::properties::WriterProperties};
 use prost::Message as _;
 use tokio_util::sync::CancellationToken;

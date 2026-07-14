@@ -15,7 +15,7 @@ use datafusion::{
         projection::ProjectionExec,
     },
 };
-use nexus_query_engine::{
+use nexus_query_engine::datatypes::{
     is_supported_arrow_cast, is_supported_arrow_type, is_supported_list_carry_type, is_timestamp_with_timezone,
 };
 

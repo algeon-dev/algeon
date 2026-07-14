@@ -8,7 +8,10 @@ use datafusion::{
     logical_expr::{Distinct, Expr, ExprSchemable, LogicalPlan},
 };
 
-use crate::{Error, ErrorCode, FallbackReason};
+use crate::{
+    error::{Error, ErrorCode},
+    policy::FallbackReason,
+};
 
 const TABLE_FORMAT_OPERATOR_FAST_FAIL_OPERATION: &str =
     "datafusion_nexus.server.flight.fast_fail_table_format_operator";
@@ -125,7 +128,7 @@ fn unsupported_operator_column(
     UnsupportedTableFormatOperatorColumn {
         operator,
         column: column.into(),
-        data_type: nexus_query_engine::diagnostic_arrow_type(data_type),
+        data_type: nexus_query_engine::datatypes::diagnostic_arrow_type(data_type),
         role,
     }
 }
@@ -138,9 +141,9 @@ fn logical_expr_column_name(expr: &Expr) -> String {
 }
 
 fn native_table_format_operator_type_is_unsupported(data_type: &arrow::datatypes::DataType) -> bool {
-    !nexus_query_engine::is_supported_arrow_type(data_type)
-        || nexus_query_engine::is_supported_list_carry_type(data_type)
-        || nexus_query_engine::is_timestamp_with_timezone(data_type)
+    !nexus_query_engine::datatypes::is_supported_arrow_type(data_type)
+        || nexus_query_engine::datatypes::is_supported_list_carry_type(data_type)
+        || nexus_query_engine::datatypes::is_timestamp_with_timezone(data_type)
 }
 
 fn logical_expr_is_from_gpu_only_table_format_scan(expr: &Expr, input_plan: &LogicalPlan) -> bool {

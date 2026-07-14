@@ -32,9 +32,14 @@ use datafusion::{
     prelude::{ParquetReadOptions, SessionConfig, SessionContext},
 };
 use datafusion_nexus::{
-    CudfNativePhysicalOptimizerRule, CudfOptimizerConfig, CudfSessionStateBuilderExt, GpuFallbackPolicy,
-    NativeCudfExecutionConfig, NativeDataFusionExecutionWorkloadItem, NativeDataFusionPlanningWorkloadItem,
-    NativeDataFusionRuntime, NativeFallbackPressureWorkloadItem,
+    native_exec::NativeCudfExecutionConfig,
+    native_report::{
+        NativeDataFusionExecutionWorkloadItem, NativeDataFusionPlanningWorkloadItem, NativeDataFusionRuntime,
+        NativeFallbackPressureWorkloadItem,
+    },
+    planner::{CudfNativePhysicalOptimizerRule, CudfOptimizerConfig},
+    policy::GpuFallbackPolicy,
+    session::CudfSessionStateBuilderExt,
 };
 
 mod analytical_olap;

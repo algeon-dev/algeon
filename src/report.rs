@@ -4,7 +4,8 @@
 //! rather than parsing printed physical plans.
 
 use nexus_query_engine::{
-    PlanNodeId, QueryId, TraceId, TriageEvidenceRef, TriageSeverity, TriageSignal, TriageSummary, TriageVerdict,
+    metrics::{PlanNodeId, QueryId, TraceId},
+    triage::{TriageEvidenceRef, TriageSeverity, TriageSignal, TriageSummary, TriageVerdict},
 };
 use serde_json::{Value, json};
 

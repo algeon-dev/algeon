@@ -8,7 +8,7 @@
 use std::fmt::Write;
 
 use datafusion::physical_plan::metrics::MetricsSet;
-use nexus_query_engine::{AdaptivePipelineReportRow, StrictBoundedContractGateRow};
+use nexus_query_engine::{adaptive_report::AdaptivePipelineReportRow, contract_report::StrictBoundedContractGateRow};
 
 use super::{metrics::NativePlanTaskMappingMetricRow, *};
 use crate::planner::NativeStrictBoundedCompiledGraphDiagnostics;
@@ -196,7 +196,7 @@ pub(super) fn format_source_read_runtime_rows(rows: &[NativeSourceReadRuntimeMet
 }
 
 pub(super) fn format_native_optimizer_diagnostics(
-    diagnostics: &nexus_query_engine::NativeOptimizerDiagnostics,
+    diagnostics: &nexus_query_engine::optimizer::NativeOptimizerDiagnostics,
 ) -> String {
     let rows = diagnostics.stable_rule_rows();
     if rows.is_empty() {

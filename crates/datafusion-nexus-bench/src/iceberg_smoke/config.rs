@@ -554,7 +554,9 @@ impl IcebergNativeSmokeFixture {
         Some(config)
     }
 
-    pub(crate) fn glue_catalog_config(&self) -> Option<datafusion_nexus::iceberg::catalog::GlueIcebergCatalogConfig> {
+    pub(crate) fn glue_catalog_config(
+        &self,
+    ) -> Option<datafusion_nexus::table_format::iceberg::catalog::GlueIcebergCatalogConfig> {
         let Self::GlueS3 {
             catalog_name,
             warehouse,
@@ -570,8 +572,11 @@ impl IcebergNativeSmokeFixture {
         else {
             return None;
         };
-        let mut config =
-            datafusion_nexus::iceberg::catalog::GlueIcebergCatalogConfig::new(catalog_name, warehouse, region);
+        let mut config = datafusion_nexus::table_format::iceberg::catalog::GlueIcebergCatalogConfig::new(
+            catalog_name,
+            warehouse,
+            region,
+        );
         if let Some(catalog_id) = catalog_id.as_ref() {
             config = config.with_catalog_id(catalog_id.clone());
         }
@@ -606,7 +611,7 @@ impl IcebergNativeSmokeFixture {
         }
     }
 
-    pub(crate) fn source_storage_profile(&self) -> Option<datafusion_nexus::SourceStorageProfile> {
+    pub(crate) fn source_storage_profile(&self) -> Option<nexus_query_engine::runtime::SourceStorageProfile> {
         match self {
             Self::LocalMetadata { .. } => None,
             Self::GlueS3 { .. } => {
@@ -644,7 +649,7 @@ fn shared_native_runtime() -> SmokeResult<Arc<cudf::Runtime>> {
 }
 
 pub(crate) async fn native_session_context(
-    source_storage_profile: Option<datafusion_nexus::SourceStorageProfile>,
+    source_storage_profile: Option<nexus_query_engine::runtime::SourceStorageProfile>,
     native_execution_profile: NativeExecutionProfile,
 ) -> SmokeResult<(SessionContext, Arc<CudfNativePhysicalOptimizerRule>)> {
     let mut execution_config =
@@ -677,10 +682,10 @@ pub fn native_session_config_for_profile(profile: NativeExecutionProfile) -> Ses
 pub fn native_optimizer_options_for_profile(
     profile: NativeExecutionProfile,
     execution_config: &NativeCudfExecutionConfig,
-) -> datafusion_nexus::NativeOptimizerOptions {
-    let mut options = datafusion_nexus::NativeOptimizerOptions::default();
+) -> nexus_query_engine::optimizer::NativeOptimizerOptions {
+    let mut options = nexus_query_engine::optimizer::NativeOptimizerOptions::default();
     if matches!(profile, NativeExecutionProfile::TpchBenchmark | NativeExecutionProfile::TpcdsBenchmark)
-        && let nexus_query_engine::MemoryControlPolicy::Bounded { max_source_chunk_bytes, .. } =
+        && let nexus_query_engine::runtime::MemoryControlPolicy::Bounded { max_source_chunk_bytes, .. } =
             execution_config.memory_control_policy()
     {
         let max_source_reads_in_flight =
@@ -692,13 +697,13 @@ pub fn native_optimizer_options_for_profile(
 }
 
 async fn resolve_default_chain_source_storage_profile(
-    source_storage_profile: Option<datafusion_nexus::SourceStorageProfile>,
-) -> SmokeResult<Option<datafusion_nexus::SourceStorageProfile>> {
+    source_storage_profile: Option<nexus_query_engine::runtime::SourceStorageProfile>,
+) -> SmokeResult<Option<nexus_query_engine::runtime::SourceStorageProfile>> {
     let Some(profile) = source_storage_profile else {
         return Ok(None);
     };
     let s3 = profile.s3_profile();
-    if !matches!(s3.credential, datafusion_nexus::S3SourceStorageCredential::DefaultChain) {
+    if !matches!(s3.credential, nexus_query_engine::runtime::S3SourceStorageCredential::DefaultChain) {
         return Ok(Some(profile));
     }
 
@@ -715,7 +720,7 @@ async fn resolve_default_chain_source_storage_profile(
     let credentials = credentials_provider.provide_credentials().await.map_err(|error| {
         smoke_error(format!("failed to load AWS credentials for native remote-direct S3 reads: {error}"))
     })?;
-    let mut resolved_s3 = datafusion_nexus::S3SourceStorageProfile::default_chain();
+    let mut resolved_s3 = nexus_query_engine::runtime::S3SourceStorageProfile::default_chain();
     if let Some(region) = s3
         .region
         .as_deref()
@@ -738,7 +743,7 @@ async fn resolve_default_chain_source_storage_profile(
         credentials.secret_access_key().to_string(),
         credentials.session_token().map(str::to_string),
     );
-    Ok(Some(datafusion_nexus::SourceStorageProfile::s3(profile.id().to_string(), resolved_s3)))
+    Ok(Some(nexus_query_engine::runtime::SourceStorageProfile::s3(profile.id().to_string(), resolved_s3)))
 }
 
 pub fn native_execution_config_for_profile_with_env(

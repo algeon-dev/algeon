@@ -9,7 +9,7 @@
 //     (post-physical-opt under GPU session config, WITHOUT our rule)
 //   - GPU physical plan after our rule runs (NativeCudfExec wrappers visible)
 //   - Actual retained planning diagnostics from `CudfNativePhysicalOptimizerRule`
-//   - Lowered native IR (`nexus_query_engine::QueryPlan` per candidate) from
+//   - Lowered native IR (`nexus_query_engine::plan::QueryPlan` per candidate) from
 //     calling `lower_physical_plan_to_native` on the pre-rule plan
 //   - The `PlanningReport` from the lowering call (rewritten / rejected
 //     candidates with `FallbackReason::code()`)
@@ -38,13 +38,16 @@ use datafusion::{
     prelude::{SessionConfig, SessionContext},
 };
 use datafusion_nexus::{
-    CandidateOutcome, CudfNativePhysicalOptimizerRule, CudfOptimizerConfig, CudfSessionStateBuilderExt,
-    NativeDataFusionPlanningReport, lower_physical_plan_to_native,
+    native::lower_physical_plan_to_native,
+    native_report::NativeDataFusionPlanningReport,
+    planner::{CudfNativePhysicalOptimizerRule, CudfOptimizerConfig},
+    report::CandidateOutcome,
+    session::CudfSessionStateBuilderExt,
 };
 use datafusion_nexus_bench::{
     TPCDS_QUERIES, TpcdsQuery, register_tpcds_tables, tpcds_native_optimizer_config, tpcds_native_report_session_config,
 };
-use nexus_query_engine::{
+use nexus_query_engine::optimizer::{
     AGGREGATE_JOIN_PUSHDOWN_RULE_NAME, DIMENSION_DERIVED_ROW_GROUP_PRUNING_RULE_NAME,
     DYNAMIC_FILTER_ROUTE_DISCOVERY_RULE_NAME, JOIN_BUILD_SIDE_SELECTION_RULE_NAME, JOIN_FILTER_REASSOCIATION_RULE_NAME,
     LOCAL_PARQUET_SOURCE_REUSE_RULE_NAME, OUTER_JOIN_NULL_REJECTION_RULE_NAME, PROJECTION_SIMPLIFICATION_RULE_NAME,
@@ -348,10 +351,10 @@ struct OptimizedNativePlanEvidence {
 
 fn current_state_row(
     query: &TpcdsQuery,
-    lowering: &datafusion_nexus::NativeLoweringResult,
-    retained_diagnostics: Option<&datafusion_nexus::NativePlanningDiagnostics>,
+    lowering: &datafusion_nexus::native::NativeLoweringResult,
+    retained_diagnostics: Option<&datafusion_nexus::planner::NativePlanningDiagnostics>,
     retained_planning_tsv: &str,
-    post_rule_native_plans: &[&nexus_query_engine::QueryPlan],
+    post_rule_native_plans: &[&nexus_query_engine::plan::QueryPlan],
     optimizer_config: &CudfOptimizerConfig,
 ) -> CurrentStateRow {
     let optimized_evidence = optimized_native_plan_evidence(lowering, post_rule_native_plans, optimizer_config);
@@ -380,13 +383,13 @@ fn current_state_row(
 }
 
 fn optimized_native_plan_evidence(
-    lowering: &datafusion_nexus::NativeLoweringResult,
-    post_rule_native_plans: &[&nexus_query_engine::QueryPlan],
+    lowering: &datafusion_nexus::native::NativeLoweringResult,
+    post_rule_native_plans: &[&nexus_query_engine::plan::QueryPlan],
     optimizer_config: &CudfOptimizerConfig,
 ) -> OptimizedNativePlanEvidence {
     let plan = if let Some(plan) = lowering.plans.first() {
         let options = native_optimizer_options_for_execution(optimizer_config);
-        nexus_query_engine::optimize_query_plan(plan.clone(), &options).plan
+        nexus_query_engine::optimizer::optimize_query_plan(plan.clone(), &options).plan
     } else if let Some(plan) = post_rule_native_plans.first() {
         (*plan).clone()
     } else {
@@ -403,10 +406,12 @@ fn optimized_native_plan_evidence(
     };
 
     let statistical_mode = optimizer_config.statistical_aggregate_execution_mode();
-    let admission =
-        nexus_query_engine::strict_bounded_pipeline_admission_with_statistical_aggregate_mode(&plan, statistical_mode);
+    let admission = nexus_query_engine::exec::strict_bounded_pipeline_admission_with_statistical_aggregate_mode(
+        &plan,
+        statistical_mode,
+    );
     let first_capability_rejection_projection =
-        match nexus_query_engine::strict_bounded_pipeline_rejection_projection_with_statistical_aggregate_mode(
+        match nexus_query_engine::exec::strict_bounded_pipeline_rejection_projection_with_statistical_aggregate_mode(
             &plan,
             statistical_mode,
         ) {
@@ -464,20 +469,22 @@ fn optimized_native_plan_evidence(
     }
 }
 
-fn native_optimizer_options_for_execution(config: &CudfOptimizerConfig) -> nexus_query_engine::NativeOptimizerOptions {
+fn native_optimizer_options_for_execution(
+    config: &CudfOptimizerConfig,
+) -> nexus_query_engine::optimizer::NativeOptimizerOptions {
     let mut options = config.native_optimizer_options().clone();
     options.semijoin_reduction.admission_mode = match config.native_pipeline_execution_mode() {
-        nexus_query_engine::NativePipelineExecutionMode::StrictBounded => {
-            nexus_query_engine::SemijoinReductionAdmissionMode::StrictBounded
+        nexus_query_engine::mode::NativePipelineExecutionMode::StrictBounded => {
+            nexus_query_engine::optimizer::SemijoinReductionAdmissionMode::StrictBounded
         },
-        nexus_query_engine::NativePipelineExecutionMode::Adaptive => {
-            nexus_query_engine::SemijoinReductionAdmissionMode::Adaptive
+        nexus_query_engine::mode::NativePipelineExecutionMode::Adaptive => {
+            nexus_query_engine::optimizer::SemijoinReductionAdmissionMode::Adaptive
         },
     };
     options
 }
 
-fn direct_lowering_outcome(lowering: &datafusion_nexus::NativeLoweringResult) -> String {
+fn direct_lowering_outcome(lowering: &datafusion_nexus::native::NativeLoweringResult) -> String {
     match (lowering.rewritten_count(), lowering.rejected_count()) {
         (0, 0) => "no_candidates".to_string(),
         (rewritten, 0) => format!("rewritten:{rewritten}"),
@@ -486,7 +493,7 @@ fn direct_lowering_outcome(lowering: &datafusion_nexus::NativeLoweringResult) ->
     }
 }
 
-fn direct_lowering_first_rejection(lowering: &datafusion_nexus::NativeLoweringResult) -> String {
+fn direct_lowering_first_rejection(lowering: &datafusion_nexus::native::NativeLoweringResult) -> String {
     lowering
         .report
         .outcomes()
@@ -500,7 +507,7 @@ fn direct_lowering_first_rejection(lowering: &datafusion_nexus::NativeLoweringRe
         .unwrap_or_else(|| "none".to_string())
 }
 
-fn native_optimizer_applied_rules(diagnostics: &nexus_query_engine::NativeOptimizerDiagnostics) -> String {
+fn native_optimizer_applied_rules(diagnostics: &nexus_query_engine::optimizer::NativeOptimizerDiagnostics) -> String {
     let mut rules = Vec::new();
     if diagnostics.projection_simplification.applied_count > 0 {
         rules.push(PROJECTION_SIMPLIFICATION_RULE_NAME);
@@ -645,7 +652,7 @@ async fn dump_engine_plans(ctx: &SessionContext, sql: &str) -> Result<(String, S
     Ok((unopt_logical, opt_logical, physical_text))
 }
 
-fn collect_native_exec_plans(plan: &dyn ExecutionPlan) -> Vec<&nexus_query_engine::QueryPlan> {
+fn collect_native_exec_plans(plan: &dyn ExecutionPlan) -> Vec<&nexus_query_engine::plan::QueryPlan> {
     let mut plans = Vec::new();
     collect_native_exec_plans_inner(plan, &mut plans);
     plans
@@ -653,12 +660,12 @@ fn collect_native_exec_plans(plan: &dyn ExecutionPlan) -> Vec<&nexus_query_engin
 
 fn collect_native_exec_plans_inner<'a>(
     plan: &'a dyn ExecutionPlan,
-    plans: &mut Vec<&'a nexus_query_engine::QueryPlan>,
+    plans: &mut Vec<&'a nexus_query_engine::plan::QueryPlan>,
 ) {
-    if let Some(native) = plan.downcast_ref::<datafusion_nexus::NativeCudfExec>() {
+    if let Some(native) = plan.downcast_ref::<datafusion_nexus::native_exec::NativeCudfExec>() {
         plans.push(native.native_plan());
     }
-    if let Some(native) = plan.downcast_ref::<datafusion_nexus::NativeCudfComposedExec>() {
+    if let Some(native) = plan.downcast_ref::<datafusion_nexus::native_exec::NativeCudfComposedExec>() {
         plans.push(native.native_plan());
     }
     for child in plan.children() {
@@ -695,7 +702,7 @@ fn describe_session_config(config: &SessionConfig) -> String {
     out
 }
 
-fn format_native_ir(lowering: &datafusion_nexus::NativeLoweringResult) -> String {
+fn format_native_ir(lowering: &datafusion_nexus::native::NativeLoweringResult) -> String {
     let mut out = String::new();
     out.push_str(&format!("candidate_count={}\n", lowering.candidate_count()));
     out.push_str(&format!("rewritten_count={}\n", lowering.rewritten_count()));
@@ -712,7 +719,7 @@ fn format_native_ir(lowering: &datafusion_nexus::NativeLoweringResult) -> String
 }
 
 fn format_optimized_native_ir(
-    lowering: &datafusion_nexus::NativeLoweringResult,
+    lowering: &datafusion_nexus::native::NativeLoweringResult,
     optimizer_config: &CudfOptimizerConfig,
 ) -> String {
     let mut out = String::new();
@@ -726,10 +733,10 @@ fn format_optimized_native_ir(
     let options = native_optimizer_options_for_execution(optimizer_config);
     let statistical_mode = optimizer_config.statistical_aggregate_execution_mode();
     for (index, plan) in lowering.plans.iter().enumerate() {
-        let optimized = nexus_query_engine::optimize_query_plan(plan.clone(), &options);
+        let optimized = nexus_query_engine::optimizer::optimize_query_plan(plan.clone(), &options);
         let analysis = optimized.plan.capability_analysis();
         let mode_aware_envelope =
-            match nexus_query_engine::strict_bounded_pipeline_admission_with_statistical_aggregate_mode(
+            match nexus_query_engine::exec::strict_bounded_pipeline_admission_with_statistical_aggregate_mode(
                 &optimized.plan,
                 statistical_mode,
             ) {
@@ -752,7 +759,7 @@ fn format_optimized_native_ir(
     out
 }
 
-fn format_post_rule_native_ir(plans: &[&nexus_query_engine::QueryPlan]) -> String {
+fn format_post_rule_native_ir(plans: &[&nexus_query_engine::plan::QueryPlan]) -> String {
     let mut out = String::new();
     out.push_str(&format!("native_exec_count={}\n\n", plans.len()));
     if plans.is_empty() {
@@ -764,7 +771,7 @@ fn format_post_rule_native_ir(plans: &[&nexus_query_engine::QueryPlan]) -> Strin
     out
 }
 
-fn format_post_rule_compiled_pipelines(plans: &[&nexus_query_engine::QueryPlan]) -> String {
+fn format_post_rule_compiled_pipelines(plans: &[&nexus_query_engine::plan::QueryPlan]) -> String {
     let mut out = String::new();
     out.push_str(&format!("native_exec_count={}\n\n", plans.len()));
     if plans.is_empty() {
@@ -772,7 +779,7 @@ fn format_post_rule_compiled_pipelines(plans: &[&nexus_query_engine::QueryPlan])
     }
     for (index, plan) in plans.iter().enumerate() {
         let analysis = plan.capability_analysis();
-        match nexus_query_engine::compile_pipeline(plan, &analysis) {
+        match nexus_query_engine::pipeline::compile_pipeline(plan, &analysis) {
             Ok(pipeline) => out.push_str(&format!("compiled_pipeline[{index}]=\n{}\n", pipeline.debug_render())),
             Err(error) => {
                 out.push_str(&format!("compiled_pipeline[{index}]=<compile failed: {error}>\n\n"));
@@ -782,14 +789,18 @@ fn format_post_rule_compiled_pipelines(plans: &[&nexus_query_engine::QueryPlan])
     out
 }
 
-fn format_native_optimizer_diagnostics(diagnostics: &nexus_query_engine::NativeOptimizerDiagnostics) -> String {
+fn format_native_optimizer_diagnostics(
+    diagnostics: &nexus_query_engine::optimizer::NativeOptimizerDiagnostics,
+) -> String {
     let mut out = String::new();
     out.push_str(&format!("is_empty={}\n", diagnostics.is_empty()));
     out.push_str(&format!("{diagnostics:#?}\n"));
     out
 }
 
-fn format_strict_bounded_contract_diagnostics(diagnostics: &datafusion_nexus::NativePlanningDiagnostics) -> String {
+fn format_strict_bounded_contract_diagnostics(
+    diagnostics: &datafusion_nexus::planner::NativePlanningDiagnostics,
+) -> String {
     let contract = &diagnostics.strict_bounded_contract;
     let mut out = String::new();
     out.push_str(&format!("accepted_count={}\n", contract.accepted_candidates.len()));
@@ -798,13 +809,14 @@ fn format_strict_bounded_contract_diagnostics(diagnostics: &datafusion_nexus::Na
     out
 }
 
-fn format_adaptive_pipeline_diagnostics(diagnostics: &datafusion_nexus::NativePlanningDiagnostics) -> String {
+fn format_adaptive_pipeline_diagnostics(diagnostics: &datafusion_nexus::planner::NativePlanningDiagnostics) -> String {
     let adaptive = &diagnostics.adaptive_pipeline;
     let rejected_count = adaptive
         .candidates
         .iter()
         .filter(|candidate| {
-            candidate.report.row().candidate_status == nexus_query_engine::AdaptiveCandidateStatus::Rejected
+            candidate.report.row().candidate_status
+                == nexus_query_engine::adaptive_report::AdaptiveCandidateStatus::Rejected
         })
         .count();
     let mut out = String::new();
@@ -814,14 +826,14 @@ fn format_adaptive_pipeline_diagnostics(diagnostics: &datafusion_nexus::NativePl
     out
 }
 
-fn format_planning_report(lowering: &datafusion_nexus::NativeLoweringResult) -> String {
+fn format_planning_report(lowering: &datafusion_nexus::native::NativeLoweringResult) -> String {
     let mut out = String::new();
     out.push_str("# Lowering CandidateOutcome list (one per candidate found before execution-boundary admission)\n\n");
     out.push_str(&format_planning_report_from_report(&lowering.report));
     out
 }
 
-fn format_planning_report_from_report(report: &datafusion_nexus::PlanningReport) -> String {
+fn format_planning_report_from_report(report: &datafusion_nexus::report::PlanningReport) -> String {
     let mut out = String::new();
     out.push_str("# CandidateOutcome list\n\n");
     for (index, outcome) in report.outcomes().iter().enumerate() {
@@ -847,7 +859,7 @@ fn format_planning_report_from_report(report: &datafusion_nexus::PlanningReport)
     out
 }
 
-fn render_query_summary(query: &TpcdsQuery, lowering: &datafusion_nexus::NativeLoweringResult) -> String {
+fn render_query_summary(query: &TpcdsQuery, lowering: &datafusion_nexus::native::NativeLoweringResult) -> String {
     let mut out = String::new();
     out.push_str(&format!("# TPC-DS {} triage bundle\n\n", query.id));
     out.push_str("## Files\n\n");
@@ -873,7 +885,7 @@ fn render_query_summary(query: &TpcdsQuery, lowering: &datafusion_nexus::NativeL
     out.push_str(
         "| adaptive_pipeline.gpu.postRule.txt | adaptive admission evidence retained by the post-rule optimizer |\n",
     );
-    out.push_str("| native_ir.gpu.txt | lowered `nexus_query_engine::QueryPlan` per rewritten candidate |\n");
+    out.push_str("| native_ir.gpu.txt | lowered `nexus_query_engine::plan::QueryPlan` per rewritten candidate |\n");
     out.push_str(
         "| native_ir.gpu.optimized.txt | direct lowered native IR after native optimizer rules, with strict envelope evidence |\n",
     );

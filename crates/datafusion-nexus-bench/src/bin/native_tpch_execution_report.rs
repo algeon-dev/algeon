@@ -3,11 +3,12 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use datafusion_nexus::{NativeDataFusionExecutionReport, NativePipelineExecutionMode};
+use datafusion_nexus::native_report::NativeDataFusionExecutionReport;
 use datafusion_nexus_bench::{
     TpchDatasetMetadata, prepare_tpch_report_dataset, tpch_datafusion_execution_workload_items_with_optimizer_config,
     tpch_native_optimizer_config, tpch_report_session_config,
 };
+use nexus_query_engine::mode::NativePipelineExecutionMode;
 
 const CUDF_NATIVE_PIPELINE_EXECUTION_MODE_ENV: &str = "CUDF_NATIVE_PIPELINE_EXECUTION_MODE";
 

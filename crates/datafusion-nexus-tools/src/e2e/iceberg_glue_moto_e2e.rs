@@ -7,7 +7,7 @@
 use std::{collections::HashMap, sync::Arc};
 
 use datafusion::catalog::CatalogProvider;
-use datafusion_nexus::iceberg::catalog::{
+use datafusion_nexus::table_format::iceberg::catalog::{
     GlueIcebergCatalogBackend, GlueIcebergCatalogConfig, IcebergCatalogBackend, IcebergProviderKind,
     build_scoped_catalog_provider_from_backend,
 };
@@ -101,10 +101,10 @@ fn local_warehouse() -> String {
 
 fn local_env(name: &str) -> Option<String> {
     match name {
-        datafusion_nexus::iceberg::AWS_ACCESS_KEY_ID_ENV => Some(moto_access_key()),
-        datafusion_nexus::iceberg::AWS_SECRET_ACCESS_KEY_ENV => Some(moto_secret_key()),
-        datafusion_nexus::iceberg::NEXUS_ICEBERG_S3_ACCESS_KEY_ID_ENV => Some(local_s3_access_key()),
-        datafusion_nexus::iceberg::NEXUS_ICEBERG_S3_SECRET_ACCESS_KEY_ENV => Some(local_s3_secret_key()),
+        datafusion_nexus::table_format::iceberg::AWS_ACCESS_KEY_ID_ENV => Some(moto_access_key()),
+        datafusion_nexus::table_format::iceberg::AWS_SECRET_ACCESS_KEY_ENV => Some(moto_secret_key()),
+        datafusion_nexus::table_format::iceberg::NEXUS_ICEBERG_S3_ACCESS_KEY_ID_ENV => Some(local_s3_access_key()),
+        datafusion_nexus::table_format::iceberg::NEXUS_ICEBERG_S3_SECRET_ACCESS_KEY_ENV => Some(local_s3_secret_key()),
         _ => None,
     }
 }
@@ -118,12 +118,12 @@ fn moto_secret_key() -> String {
 }
 
 fn local_s3_access_key() -> String {
-    std::env::var(datafusion_nexus::iceberg::NEXUS_ICEBERG_S3_ACCESS_KEY_ID_ENV)
+    std::env::var(datafusion_nexus::table_format::iceberg::NEXUS_ICEBERG_S3_ACCESS_KEY_ID_ENV)
         .unwrap_or_else(|_| "cudfadmin".to_string())
 }
 
 fn local_s3_secret_key() -> String {
-    std::env::var(datafusion_nexus::iceberg::NEXUS_ICEBERG_S3_SECRET_ACCESS_KEY_ENV)
+    std::env::var(datafusion_nexus::table_format::iceberg::NEXUS_ICEBERG_S3_SECRET_ACCESS_KEY_ENV)
         .unwrap_or_else(|_| "cudfadminsecret".to_string())
 }
 

@@ -20,7 +20,7 @@
 //! reaches the native flag through the planning `shutdown_token` arm.
 
 use dashmap::DashMap;
-use nexus_query_engine::ExecutionCancellation;
+use nexus_query_engine::runtime::ExecutionCancellation;
 use tokio_util::sync::CancellationToken;
 
 /// Registry of in-flight statement cancellation handles, keyed by query id.

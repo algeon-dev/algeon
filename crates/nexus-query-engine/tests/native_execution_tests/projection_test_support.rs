@@ -61,7 +61,7 @@ pub(super) fn assert_duplicate_host_sink_schema_restoration(bounded: bool) {
 pub(super) fn host_sink_schema_validation_error(
     root_schema: Arc<Schema>,
     sink_schema: Arc<Schema>,
-) -> nexus_query_engine::QueryError {
+) -> nexus_query_engine::error::QueryError {
     let runtime = Arc::new(cudf::Runtime::new().unwrap());
     let mut builder = QueryPlanBuilder::new();
     let source =

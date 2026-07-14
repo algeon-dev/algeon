@@ -71,7 +71,7 @@ fn accepted_row_reports_fingerprint_mismatch_without_canonical_output_fingerprin
 #[test]
 fn native_runtime_failure_preserves_adapter_error_facts() {
     let adapter_error = AdapterError::new(
-        datafusion_nexus::ErrorCode::MemoryReservationFailed,
+        datafusion_nexus::error::ErrorCode::MemoryReservationFailed,
         "datafusion_nexus.native_exec.execute",
         "native cudf query execution failed",
     )
@@ -130,7 +130,7 @@ fn native_runtime_failure_preserves_adapter_error_facts() {
 #[test]
 fn planning_failure_preserves_adapter_error_facts() {
     let adapter_error = AdapterError::new(
-        datafusion_nexus::ErrorCode::InvalidExecutionPlan,
+        datafusion_nexus::error::ErrorCode::InvalidExecutionPlan,
         "datafusion_nexus.native_planner",
         "native physical planning failed",
     )
@@ -154,7 +154,7 @@ fn planning_failure_preserves_adapter_error_facts() {
 #[test]
 fn cpu_runtime_failure_preserves_adapter_error_facts() {
     let adapter_error = AdapterError::new(
-        datafusion_nexus::ErrorCode::InvalidExecutionPlan,
+        datafusion_nexus::error::ErrorCode::InvalidExecutionPlan,
         "datafusion_nexus.cpu_collect",
         "cpu collection failed",
     )

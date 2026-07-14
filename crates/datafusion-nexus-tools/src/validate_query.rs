@@ -1,7 +1,7 @@
 use std::{error::Error, path::PathBuf};
 
 use datafusion::prelude::{ParquetReadOptions, SessionContext};
-use datafusion_nexus::{QueryGpuCoverage, QueryGpuCoverageOverall, validate_query};
+use datafusion_nexus::gpu_coverage::{QueryGpuCoverage, QueryGpuCoverageOverall, validate_query};
 
 type ValidateResult<T> = Result<T, Box<dyn Error + Send + Sync>>;
 

@@ -43,7 +43,7 @@ pub(super) struct NativeTpchBenchmarkConfig {
 #[derive(Debug, Clone)]
 pub(super) struct NativeTpchRuntimeResources {
     pub(super) runtime: Option<Arc<cudf::Runtime>>,
-    pub(super) source_cache: Option<Arc<nexus_query_engine::GpuLocalParquetSourceCache>>,
+    pub(super) source_cache: Option<Arc<nexus_query_engine::exec::GpuLocalParquetSourceCache>>,
 }
 
 impl NativeTpchBenchmarkConfig {
@@ -115,7 +115,7 @@ impl NativeTpchBenchmarkConfig {
                 max_retry_attempts,
                 min_retry_chunk_row_groups,
             )
-            .with_source_scheduler_policy(nexus_query_engine::SourceSchedulerPolicy::new(
+            .with_source_scheduler_policy(nexus_query_engine::runtime::SourceSchedulerPolicy::new(
                 self.max_source_reads_in_flight,
             ))
             .with_source_chunk_planning_mode(source_chunk_planning_mode),
@@ -134,7 +134,7 @@ impl NativeTpchBenchmarkConfig {
         let source_cache = match self.native_source_cache_policy {
             NativeTpchSourceCachePolicy::Disabled => None,
             NativeTpchSourceCachePolicy::GpuResident { max_retained_bytes } => {
-                Some(Arc::new(nexus_query_engine::GpuLocalParquetSourceCache::new(max_retained_bytes)))
+                Some(Arc::new(nexus_query_engine::exec::GpuLocalParquetSourceCache::new(max_retained_bytes)))
             },
         };
         Ok(NativeTpchRuntimeResources { runtime: Some(runtime), source_cache })
@@ -162,7 +162,7 @@ trait NativeExecutionConfigSourceCacheExt {
 
     fn with_optional_local_parquet_source_cache(
         self,
-        cache: Option<Arc<nexus_query_engine::GpuLocalParquetSourceCache>>,
+        cache: Option<Arc<nexus_query_engine::exec::GpuLocalParquetSourceCache>>,
     ) -> Self;
 }
 
@@ -176,7 +176,7 @@ impl NativeExecutionConfigSourceCacheExt for NativeCudfExecutionConfig {
 
     fn with_optional_local_parquet_source_cache(
         self,
-        cache: Option<Arc<nexus_query_engine::GpuLocalParquetSourceCache>>,
+        cache: Option<Arc<nexus_query_engine::exec::GpuLocalParquetSourceCache>>,
     ) -> Self {
         match cache {
             Some(cache) => self.with_local_parquet_source_cache(cache),
@@ -260,7 +260,7 @@ pub(super) enum NativeTpchMemoryPolicy {
         max_row_groups_per_chunk: usize,
         max_retry_attempts: usize,
         min_retry_chunk_row_groups: usize,
-        source_chunk_planning_mode: nexus_query_engine::SourceChunkPlanningMode,
+        source_chunk_planning_mode: nexus_query_engine::runtime::SourceChunkPlanningMode,
     },
 }
 
@@ -284,7 +284,7 @@ impl NativeTpchMemoryPolicy {
         max_row_groups_per_chunk: usize,
         max_retry_attempts: usize,
         min_retry_chunk_row_groups: usize,
-        source_chunk_planning_mode: nexus_query_engine::SourceChunkPlanningMode,
+        source_chunk_planning_mode: nexus_query_engine::runtime::SourceChunkPlanningMode,
     ) -> Self {
         Self::Bounded {
             profile_name: TPCH_NATIVE_PROFILE_CUSTOM,
@@ -349,7 +349,7 @@ impl Default for NativeTpchMemoryPolicy {
             max_row_groups_per_chunk: DEFAULT_NATIVE_MAX_ROW_GROUPS_PER_CHUNK,
             max_retry_attempts: DEFAULT_NATIVE_MAX_RETRY_ATTEMPTS,
             min_retry_chunk_row_groups: DEFAULT_NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS,
-            source_chunk_planning_mode: nexus_query_engine::SourceChunkPlanningMode::Conservative,
+            source_chunk_planning_mode: nexus_query_engine::runtime::SourceChunkPlanningMode::Conservative,
         }
     }
 }
@@ -363,7 +363,7 @@ pub(super) struct NativeTpchProfileSettings {
     pub(super) max_row_groups_per_chunk: usize,
     pub(super) max_retry_attempts: usize,
     pub(super) min_retry_chunk_row_groups: usize,
-    pub(super) source_chunk_planning_mode: nexus_query_engine::SourceChunkPlanningMode,
+    pub(super) source_chunk_planning_mode: nexus_query_engine::runtime::SourceChunkPlanningMode,
 }
 
 impl NativeTpchProfileSettings {
@@ -390,7 +390,7 @@ struct NativeTpchProfileBase {
     max_row_groups_per_chunk: usize,
     max_retry_attempts: usize,
     min_retry_chunk_row_groups: usize,
-    source_chunk_planning_mode: nexus_query_engine::SourceChunkPlanningMode,
+    source_chunk_planning_mode: nexus_query_engine::runtime::SourceChunkPlanningMode,
 }
 
 fn native_tpch_profile_settings_from_env() -> DataFusionResult<NativeTpchProfileSettings> {
@@ -490,7 +490,7 @@ fn native_tpch_profile_base(profile: Option<&str>) -> DataFusionResult<NativeTpc
             max_row_groups_per_chunk: DEFAULT_NATIVE_MAX_ROW_GROUPS_PER_CHUNK,
             max_retry_attempts: DEFAULT_NATIVE_MAX_RETRY_ATTEMPTS,
             min_retry_chunk_row_groups: DEFAULT_NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS,
-            source_chunk_planning_mode: nexus_query_engine::SourceChunkPlanningMode::Conservative,
+            source_chunk_planning_mode: nexus_query_engine::runtime::SourceChunkPlanningMode::Conservative,
         }),
         TPCH_NATIVE_PROFILE_SF100_GPU_THROUGHPUT => Ok(NativeTpchProfileBase {
             name: TPCH_NATIVE_PROFILE_SF100_GPU_THROUGHPUT,
@@ -500,7 +500,7 @@ fn native_tpch_profile_base(profile: Option<&str>) -> DataFusionResult<NativeTpc
             max_row_groups_per_chunk: TPCH_SF100_GPU_THROUGHPUT_MAX_ROW_GROUPS_PER_CHUNK,
             max_retry_attempts: DEFAULT_NATIVE_MAX_RETRY_ATTEMPTS,
             min_retry_chunk_row_groups: DEFAULT_NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS,
-            source_chunk_planning_mode: nexus_query_engine::SourceChunkPlanningMode::LocalParquetThroughput,
+            source_chunk_planning_mode: nexus_query_engine::runtime::SourceChunkPlanningMode::LocalParquetThroughput,
         }),
         other => Err(plan_error(format!(
             "invalid {CUDF_TPCH_BENCH_NATIVE_PROFILE_ENV}: {other}; expected {TPCH_NATIVE_PROFILE_CONSERVATIVE} or {TPCH_NATIVE_PROFILE_SF100_GPU_THROUGHPUT}"
@@ -617,11 +617,11 @@ fn parse_env_u64_value(name: &'static str, value: String) -> DataFusionResult<u6
 
 fn parse_env_source_chunk_planning_mode(
     value: String,
-) -> DataFusionResult<nexus_query_engine::SourceChunkPlanningMode> {
+) -> DataFusionResult<nexus_query_engine::runtime::SourceChunkPlanningMode> {
     match value.trim().to_ascii_lowercase().as_str() {
-        "conservative" => Ok(nexus_query_engine::SourceChunkPlanningMode::Conservative),
+        "conservative" => Ok(nexus_query_engine::runtime::SourceChunkPlanningMode::Conservative),
         "local_parquet_throughput" | "local_throughput" => {
-            Ok(nexus_query_engine::SourceChunkPlanningMode::LocalParquetThroughput)
+            Ok(nexus_query_engine::runtime::SourceChunkPlanningMode::LocalParquetThroughput)
         },
         other => Err(plan_error(format!(
             "invalid {CUDF_TPCH_BENCH_NATIVE_SOURCE_CHUNK_PLANNING_MODE_ENV}: {other}; expected conservative or local_parquet_throughput"

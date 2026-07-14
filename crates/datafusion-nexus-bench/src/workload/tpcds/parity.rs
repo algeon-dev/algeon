@@ -13,9 +13,13 @@ use datafusion::{
     prelude::{SessionConfig, SessionContext},
 };
 use datafusion_nexus::{
-    CudfNativePhysicalOptimizerRule, CudfOptimizerConfig, CudfSessionStateBuilderExt, NativePlanningFailure,
-    NativeTpcdsParityCpuOutcome, NativeTpcdsParityExternalOutput, NativeTpcdsParityNativePlanningOutcome,
-    NativeTpcdsParityNativeRuntimeOutcome, NativeTpcdsParityRow, NativeTpcdsParityWorkloadItem, ParityFloatTolerance,
+    native_report::{
+        NativePlanningFailure, NativeTpcdsParityCpuOutcome, NativeTpcdsParityExternalOutput,
+        NativeTpcdsParityNativePlanningOutcome, NativeTpcdsParityNativeRuntimeOutcome, NativeTpcdsParityRow,
+        NativeTpcdsParityWorkloadItem, ParityFloatTolerance,
+    },
+    planner::{CudfNativePhysicalOptimizerRule, CudfOptimizerConfig},
+    session::CudfSessionStateBuilderExt,
 };
 use futures::FutureExt;
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;

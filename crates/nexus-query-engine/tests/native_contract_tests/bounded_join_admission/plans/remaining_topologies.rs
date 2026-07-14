@@ -1,12 +1,12 @@
 use super::*;
 
-pub(crate) fn aggregate_over_join_subplan_topk_plan() -> nexus_query_engine::QueryPlan {
+pub(crate) fn aggregate_over_join_subplan_topk_plan() -> nexus_query_engine::plan::QueryPlan {
     aggregate_over_join_subplan_topk_plan_inner(AggregateOverJoinSubplanTopKVariant::Admitted)
 }
 
 pub(crate) fn aggregate_over_join_subplan_topk_variant_plan(
     variant: AggregateOverJoinSubplanTopKVariant,
-) -> nexus_query_engine::QueryPlan {
+) -> nexus_query_engine::plan::QueryPlan {
     aggregate_over_join_subplan_topk_plan_inner(variant)
 }
 
@@ -34,7 +34,7 @@ pub(crate) enum AggregateOverJoinSubplanTopKVariant {
 
 fn aggregate_over_join_subplan_topk_plan_inner(
     variant: AggregateOverJoinSubplanTopKVariant,
-) -> nexus_query_engine::QueryPlan {
+) -> nexus_query_engine::plan::QueryPlan {
     let mut builder = QueryPlanBuilder::new();
     let a = source(&mut builder, "aggregate-over-join-topk-a");
     let b = source(&mut builder, "aggregate-over-join-topk-b");
@@ -103,7 +103,7 @@ fn aggregate_over_join_subplan_topk_plan_inner(
     }
 }
 
-pub(crate) fn resident_grouped_aggregate_input_post_join_aggregate_topk_plan() -> nexus_query_engine::QueryPlan {
+pub(crate) fn resident_grouped_aggregate_input_post_join_aggregate_topk_plan() -> nexus_query_engine::plan::QueryPlan {
     resident_grouped_aggregate_input_post_join_aggregate_topk_variant_plan(
         ResidentGroupedAggregateInputPostJoinAggregateTopKVariant::Admitted,
     )
@@ -111,7 +111,7 @@ pub(crate) fn resident_grouped_aggregate_input_post_join_aggregate_topk_plan() -
 
 pub(crate) fn resident_grouped_aggregate_input_post_join_aggregate_topk_variant_plan(
     variant: ResidentGroupedAggregateInputPostJoinAggregateTopKVariant,
-) -> nexus_query_engine::QueryPlan {
+) -> nexus_query_engine::plan::QueryPlan {
     let mut builder = QueryPlanBuilder::new();
     let a = source(&mut builder, "resident-aggregate-post-aggregate-topk-a");
     let b = source(&mut builder, "resident-aggregate-post-aggregate-topk-b");
@@ -212,7 +212,7 @@ pub(crate) enum ResidentGroupedAggregateInputPostJoinAggregateTopKVariant {
     UnsupportedGroupedInputFilter,
 }
 
-pub(crate) fn resident_grouped_aggregate_subquery_filter_plan() -> nexus_query_engine::QueryPlan {
+pub(crate) fn resident_grouped_aggregate_subquery_filter_plan() -> nexus_query_engine::plan::QueryPlan {
     let mut builder = QueryPlanBuilder::new();
     let a = source(&mut builder, "resident-aggregate-subquery-filter-a");
     let b = source(&mut builder, "resident-aggregate-subquery-filter-b");
@@ -231,13 +231,13 @@ pub(crate) fn resident_grouped_aggregate_subquery_filter_plan() -> nexus_query_e
     builder.finish_with_host_sink(sort)
 }
 
-pub(crate) fn root_topk_join_aggregate_plan() -> nexus_query_engine::QueryPlan {
+pub(crate) fn root_topk_join_aggregate_plan() -> nexus_query_engine::plan::QueryPlan {
     root_topk_join_aggregate_variant_plan(RootTopKJoinAggregateVariant::Admitted)
 }
 
 pub(crate) fn root_topk_join_aggregate_variant_plan(
     variant: RootTopKJoinAggregateVariant,
-) -> nexus_query_engine::QueryPlan {
+) -> nexus_query_engine::plan::QueryPlan {
     if variant.is_null_filtered_aggregate_fan_in() {
         return root_topk_null_filtered_aggregate_fan_in_plan(variant);
     }
@@ -889,7 +889,7 @@ enum NullFilteredReturnBuildShape {
 
 fn root_topk_null_filtered_aggregate_fan_in_plan(
     variant: RootTopKJoinAggregateVariant,
-) -> nexus_query_engine::QueryPlan {
+) -> nexus_query_engine::plan::QueryPlan {
     let mut builder = QueryPlanBuilder::new();
     let store_return_shape = if matches!(
         variant,
@@ -971,7 +971,7 @@ fn null_filtered_aggregate_branch(
     wrong_build_side: bool,
     marker_escapes: bool,
     marker_filter_reuse: bool,
-) -> nexus_query_engine::NodeId {
+) -> nexus_query_engine::plan::NodeId {
     let fact = if reduced_fact {
         source_with_reduction(builder, &format!("{label}-fact"), true)
     } else {
@@ -1033,9 +1033,9 @@ fn null_filtered_aggregate_branch(
 
 fn aggregate_fan_in_left_join(
     builder: &mut QueryPlanBuilder,
-    left: nexus_query_engine::NodeId,
-    right: nexus_query_engine::NodeId,
-) -> nexus_query_engine::NodeId {
+    left: nexus_query_engine::plan::NodeId,
+    right: nexus_query_engine::plan::NodeId,
+) -> nexus_query_engine::plan::NodeId {
     builder.add_join(
         left,
         right,
@@ -1056,8 +1056,8 @@ fn aggregate_fan_in_left_join(
 
 fn grouped_aggregate_with_extra_key(
     builder: &mut QueryPlanBuilder,
-    input: nexus_query_engine::NodeId,
-) -> nexus_query_engine::NodeId {
+    input: nexus_query_engine::plan::NodeId,
+) -> nexus_query_engine::plan::NodeId {
     let schema = Arc::new(Schema::new(vec![
         Field::new("k", DataType::Int32, false),
         Field::new("v", DataType::Int64, true),
@@ -1074,7 +1074,8 @@ fn grouped_aggregate_with_extra_key(
     builder.add_projection(grouped, projection_outputs(vec![Expr::column("k"), Expr::column("v")], key_value_schema()))
 }
 
-pub(crate) fn shared_grouped_aggregate_fanout_to_join_and_grouped_aggregate_plan() -> nexus_query_engine::QueryPlan {
+pub(crate) fn shared_grouped_aggregate_fanout_to_join_and_grouped_aggregate_plan() -> nexus_query_engine::plan::QueryPlan
+{
     let mut builder = QueryPlanBuilder::new();
     let a = source(&mut builder, "shared-grouped-aggregate-fanout-a");
     let b = source(&mut builder, "shared-grouped-aggregate-fanout-b");
@@ -1096,7 +1097,7 @@ pub(crate) fn shared_grouped_aggregate_fanout_to_join_and_grouped_aggregate_plan
     builder.finish_with_host_sink(sort)
 }
 
-fn source(builder: &mut QueryPlanBuilder, label: &str) -> nexus_query_engine::NodeId {
+fn source(builder: &mut QueryPlanBuilder, label: &str) -> nexus_query_engine::plan::NodeId {
     builder.add_source(SourceNode::LocalParquet(LocalParquetSource::new(
         format!("/tmp/{label}.parquet"),
         key_value_schema(),
@@ -1108,7 +1109,7 @@ fn source_with_reduction(
     builder: &mut QueryPlanBuilder,
     label: &str,
     selected_subset: bool,
-) -> nexus_query_engine::NodeId {
+) -> nexus_query_engine::plan::NodeId {
     let file = if selected_subset {
         LocalParquetFile::new(format!("/tmp/{label}.parquet"))
             .with_file_size_bytes(4096)
@@ -1129,7 +1130,7 @@ fn source_with_known_size(
     builder: &mut QueryPlanBuilder,
     label: &str,
     file_size_bytes: u64,
-) -> nexus_query_engine::NodeId {
+) -> nexus_query_engine::plan::NodeId {
     let file = LocalParquetFile::new(format!("/tmp/{label}.parquet")).with_file_size_bytes(file_size_bytes);
     builder.add_source(SourceNode::LocalParquet(LocalParquetSource::from_files(
         vec![file],
@@ -1138,7 +1139,10 @@ fn source_with_known_size(
     )))
 }
 
-fn filter_source(builder: &mut QueryPlanBuilder, input: nexus_query_engine::NodeId) -> nexus_query_engine::NodeId {
+fn filter_source(
+    builder: &mut QueryPlanBuilder,
+    input: nexus_query_engine::plan::NodeId,
+) -> nexus_query_engine::plan::NodeId {
     builder.add_filter(
         input,
         Expr::binary(Expr::column("k"), BinaryOp::Gt, Expr::literal(LiteralValue::Int32(0))),
@@ -1148,10 +1152,10 @@ fn filter_source(builder: &mut QueryPlanBuilder, input: nexus_query_engine::Node
 
 fn join(
     builder: &mut QueryPlanBuilder,
-    left: nexus_query_engine::NodeId,
-    right: nexus_query_engine::NodeId,
+    left: nexus_query_engine::plan::NodeId,
+    right: nexus_query_engine::plan::NodeId,
     _value_name: &str,
-) -> nexus_query_engine::NodeId {
+) -> nexus_query_engine::plan::NodeId {
     let output_schema = key_value_schema();
     builder.add_join(
         left,
@@ -1171,10 +1175,10 @@ fn join(
 
 fn full_join(
     builder: &mut QueryPlanBuilder,
-    left: nexus_query_engine::NodeId,
-    right: nexus_query_engine::NodeId,
+    left: nexus_query_engine::plan::NodeId,
+    right: nexus_query_engine::plan::NodeId,
     output: FullJoinOutput,
-) -> nexus_query_engine::NodeId {
+) -> nexus_query_engine::plan::NodeId {
     let output_projection = match output {
         FullJoinOutput::BothSides => vec![
             JoinOutputColumn::left(ColumnRef::input(0, "k", "k"), "k"),
@@ -1202,9 +1206,9 @@ enum FullJoinOutput {
 
 fn semi_join(
     builder: &mut QueryPlanBuilder,
-    left: nexus_query_engine::NodeId,
-    right: nexus_query_engine::NodeId,
-) -> nexus_query_engine::NodeId {
+    left: nexus_query_engine::plan::NodeId,
+    right: nexus_query_engine::plan::NodeId,
+) -> nexus_query_engine::plan::NodeId {
     builder.add_join(
         left,
         right,
@@ -1223,9 +1227,9 @@ fn semi_join(
 
 fn residual_join_against_grouped_aggregate(
     builder: &mut QueryPlanBuilder,
-    grouped: nexus_query_engine::NodeId,
-    subtree: nexus_query_engine::NodeId,
-) -> nexus_query_engine::NodeId {
+    grouped: nexus_query_engine::plan::NodeId,
+    subtree: nexus_query_engine::plan::NodeId,
+) -> nexus_query_engine::plan::NodeId {
     builder.add_join(
         grouped,
         subtree,
@@ -1247,7 +1251,10 @@ fn residual_join_against_grouped_aggregate(
     )
 }
 
-fn grouped_aggregate(builder: &mut QueryPlanBuilder, input: nexus_query_engine::NodeId) -> nexus_query_engine::NodeId {
+fn grouped_aggregate(
+    builder: &mut QueryPlanBuilder,
+    input: nexus_query_engine::plan::NodeId,
+) -> nexus_query_engine::plan::NodeId {
     builder.add_aggregate(
         input,
         AggregateSpec::new(
@@ -1258,7 +1265,10 @@ fn grouped_aggregate(builder: &mut QueryPlanBuilder, input: nexus_query_engine::
     )
 }
 
-fn scalar_aggregate(builder: &mut QueryPlanBuilder, input: nexus_query_engine::NodeId) -> nexus_query_engine::NodeId {
+fn scalar_aggregate(
+    builder: &mut QueryPlanBuilder,
+    input: nexus_query_engine::plan::NodeId,
+) -> nexus_query_engine::plan::NodeId {
     builder.add_aggregate(
         input,
         AggregateSpec::new(vec![], vec![AggregateExpr::new(AggregateFunction::Min, Expr::column("v"), "v")]),
@@ -1268,8 +1278,8 @@ fn scalar_aggregate(builder: &mut QueryPlanBuilder, input: nexus_query_engine::N
 
 fn scalar_key_value_aggregate(
     builder: &mut QueryPlanBuilder,
-    input: nexus_query_engine::NodeId,
-) -> nexus_query_engine::NodeId {
+    input: nexus_query_engine::plan::NodeId,
+) -> nexus_query_engine::plan::NodeId {
     builder.add_aggregate(
         input,
         AggregateSpec::new(
@@ -1285,8 +1295,8 @@ fn scalar_key_value_aggregate(
 
 fn rank_window_project_key_value(
     builder: &mut QueryPlanBuilder,
-    input: nexus_query_engine::NodeId,
-) -> nexus_query_engine::NodeId {
+    input: nexus_query_engine::plan::NodeId,
+) -> nexus_query_engine::plan::NodeId {
     let window_schema = Arc::new(Schema::new(vec![
         Field::new("k", DataType::Int32, false),
         Field::new("v", DataType::Int64, true),
@@ -1306,8 +1316,8 @@ fn rank_window_project_key_value(
 
 fn sorted_rank_window_project_key_value(
     builder: &mut QueryPlanBuilder,
-    input: nexus_query_engine::NodeId,
-) -> nexus_query_engine::NodeId {
+    input: nexus_query_engine::plan::NodeId,
+) -> nexus_query_engine::plan::NodeId {
     let sort = builder.add_sort(
         input,
         SortSpec::new(vec![
@@ -1321,8 +1331,8 @@ fn sorted_rank_window_project_key_value(
 
 fn unordered_aggregate_window_project_key_value(
     builder: &mut QueryPlanBuilder,
-    input: nexus_query_engine::NodeId,
-) -> nexus_query_engine::NodeId {
+    input: nexus_query_engine::plan::NodeId,
+) -> nexus_query_engine::plan::NodeId {
     let window_schema = Arc::new(Schema::new(vec![
         Field::new("k", DataType::Int32, false),
         Field::new("v", DataType::Int64, true),
@@ -1342,8 +1352,8 @@ fn unordered_aggregate_window_project_key_value(
 
 fn unordered_global_aggregate_window_project_key_value(
     builder: &mut QueryPlanBuilder,
-    input: nexus_query_engine::NodeId,
-) -> nexus_query_engine::NodeId {
+    input: nexus_query_engine::plan::NodeId,
+) -> nexus_query_engine::plan::NodeId {
     let window_schema = Arc::new(Schema::new(vec![
         Field::new("k", DataType::Int32, false),
         Field::new("v", DataType::Int64, true),
@@ -1363,8 +1373,8 @@ fn unordered_global_aggregate_window_project_key_value(
 
 fn rank_filter_window_project_key_value(
     builder: &mut QueryPlanBuilder,
-    input: nexus_query_engine::NodeId,
-) -> nexus_query_engine::NodeId {
+    input: nexus_query_engine::plan::NodeId,
+) -> nexus_query_engine::plan::NodeId {
     let sorted = builder.add_sort(
         input,
         SortSpec::new(vec![
@@ -1395,7 +1405,10 @@ fn rank_filter_window_project_key_value(
     project_key_value(builder, filter)
 }
 
-fn project_key_value(builder: &mut QueryPlanBuilder, input: nexus_query_engine::NodeId) -> nexus_query_engine::NodeId {
+fn project_key_value(
+    builder: &mut QueryPlanBuilder,
+    input: nexus_query_engine::plan::NodeId,
+) -> nexus_query_engine::plan::NodeId {
     builder.add_projection(input, projection_outputs(vec![Expr::column("k"), Expr::column("v")], key_value_schema()))
 }
 

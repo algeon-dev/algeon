@@ -957,14 +957,14 @@ fn bounded_native_query_executes_join_over_gpu_resident_inputs() {
         JoinSpec::new(
             JoinType::Inner,
             vec![JoinKey::new(
-                nexus_query_engine::ColumnRef::input(0, "id", "left_id"),
-                nexus_query_engine::ColumnRef::input(1, "id", "right_id"),
+                nexus_query_engine::expr::ColumnRef::input(0, "id", "left_id"),
+                nexus_query_engine::expr::ColumnRef::input(1, "id", "right_id"),
             )],
         )
         .with_output_projection(vec![
-            JoinOutputColumn::left(nexus_query_engine::ColumnRef::input(0, "id", "id"), "id"),
-            JoinOutputColumn::left(nexus_query_engine::ColumnRef::input(0, "lval", "lval"), "lval"),
-            JoinOutputColumn::right(nexus_query_engine::ColumnRef::input(1, "rval", "rval"), "rval"),
+            JoinOutputColumn::left(nexus_query_engine::expr::ColumnRef::input(0, "id", "id"), "id"),
+            JoinOutputColumn::left(nexus_query_engine::expr::ColumnRef::input(0, "lval", "lval"), "lval"),
+            JoinOutputColumn::right(nexus_query_engine::expr::ColumnRef::input(1, "rval", "rval"), "rval"),
         ])
         .with_null_equality(JoinNullEquality::NullsDoNotMatch)
         .with_build_side(JoinSide::Right),

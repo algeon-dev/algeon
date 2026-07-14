@@ -153,7 +153,8 @@ stream pools, and admission queue.
 ```rust
 use datafusion::execution::SessionStateBuilder;
 use datafusion::prelude::SessionContext;
-use datafusion_nexus::prelude::*;
+use datafusion_nexus::backend::{NexusAdmissionPolicy, NexusGpuBackend, NexusMemoryPolicy};
+use nexus_query_engine::runtime::query_service::SlotGuarantee;
 
 let backend = NexusGpuBackend::builder()
     .memory_policy(NexusMemoryPolicy::BoundedAuto {

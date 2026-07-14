@@ -3,12 +3,13 @@ use std::{
     process::ExitCode,
 };
 
-use datafusion_nexus::{NativeDataFusionExecutionReport, NativePipelineExecutionMode};
+use datafusion_nexus::native_report::NativeDataFusionExecutionReport;
 use datafusion_nexus_bench::{
     ClickbenchDatasetMetadata, ClickbenchExecutionProgressEvent, ClickbenchWorkloadResult,
     clickbench_datafusion_execution_workload_items_filtered, clickbench_native_optimizer_config,
     clickbench_report_session_config, prepare_clickbench_report_dataset,
 };
+use nexus_query_engine::mode::NativePipelineExecutionMode;
 
 const CUDF_NATIVE_PIPELINE_EXECUTION_MODE_ENV: &str = "CUDF_NATIVE_PIPELINE_EXECUTION_MODE";
 const CUDF_CLICKBENCH_EXECUTION_QUERY_IDS_ENV: &str = "CUDF_CLICKBENCH_EXECUTION_QUERY_IDS";

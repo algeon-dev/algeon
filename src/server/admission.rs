@@ -1,8 +1,8 @@
 use std::{fmt::Write, num::NonZeroUsize, sync::Arc};
 
 #[cfg(test)]
-use nexus_query_engine::QueryHandle;
-use nexus_query_engine::TenantId;
+use nexus_query_engine::runtime::QueryHandle;
+use nexus_query_engine::runtime::TenantId;
 use tokio::sync::Semaphore;
 #[cfg(test)]
 use tokio::sync::{OwnedSemaphorePermit, TryAcquireError};
@@ -11,7 +11,10 @@ use super::{
     config::ServerConfig,
     error::{Result, ServerError},
 };
-use crate::{NexusAdmissionPolicy, NexusGpuBackend, native_exec::UnboundedNativeExecutionLimiter};
+use crate::{
+    backend::{NexusAdmissionPolicy, NexusGpuBackend},
+    native_exec::UnboundedNativeExecutionLimiter,
+};
 
 const DEFAULT_SERVER_TENANT_ID: &str = "default";
 
@@ -220,7 +223,9 @@ impl QueryAdmission {
                     config.max_queries_per_device.map_or_else(|| "none".to_string(), |value| value.to_string())
                 );
                 let _ = writeln!(output, "# placement_policy={}", config.placement_policy.as_str());
-                if let nexus_query_engine::QueryPlacementPolicy::Pinned { device_ordinal } = config.placement_policy {
+                if let nexus_query_engine::runtime::QueryPlacementPolicy::Pinned { device_ordinal } =
+                    config.placement_policy
+                {
                     let _ = writeln!(output, "# pinned_device_ordinal={device_ordinal}");
                 }
                 let _ = writeln!(output, "# max_admission_queue_len={}", config.max_admission_queue_len);
@@ -494,7 +499,7 @@ pub(crate) fn server_admission_policy(config: &ServerConfig) -> NexusAdmissionPo
     config.admission_policy.clone().with_max_concurrent_queries(config.max_in_flight)
 }
 
-fn format_tenant_queue_depths(depths: &[nexus_query_engine::TenantQueueDepth]) -> String {
+fn format_tenant_queue_depths(depths: &[nexus_query_engine::runtime::TenantQueueDepth]) -> String {
     depths
         .iter()
         .map(|depth| format!("{}:{}", depth.tenant_id.as_str(), depth.queued_queries))
@@ -502,10 +507,10 @@ fn format_tenant_queue_depths(depths: &[nexus_query_engine::TenantQueueDepth]) -
         .join(",")
 }
 
-fn slot_guarantee_name(slot_guarantee: nexus_query_engine::SlotGuarantee) -> &'static str {
+fn slot_guarantee_name(slot_guarantee: nexus_query_engine::runtime::SlotGuarantee) -> &'static str {
     match slot_guarantee {
-        nexus_query_engine::SlotGuarantee::GuaranteedMinimum => "guaranteed_minimum",
-        nexus_query_engine::SlotGuarantee::Optimistic => "optimistic",
+        nexus_query_engine::runtime::SlotGuarantee::GuaranteedMinimum => "guaranteed_minimum",
+        nexus_query_engine::runtime::SlotGuarantee::Optimistic => "optimistic",
     }
 }
 
@@ -548,7 +553,7 @@ mod tests {
 
         assert_eq!(service.config().max_concurrent_queries, 3);
         assert_eq!(service.config().max_queries_per_device, None);
-        assert_eq!(service.config().placement_policy, nexus_query_engine::QueryPlacementPolicy::LeastLoaded);
+        assert_eq!(service.config().placement_policy, nexus_query_engine::runtime::QueryPlacementPolicy::LeastLoaded);
         assert_eq!(service.config().device_ordinal, 0);
         assert_eq!(service.config().device_capacity_bytes, Some(3072));
         assert_eq!(service.config().stream_pool_size, Some(9));

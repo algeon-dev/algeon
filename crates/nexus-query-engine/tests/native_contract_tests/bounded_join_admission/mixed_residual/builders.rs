@@ -10,7 +10,7 @@ pub(super) enum MultiJoinAggregateLeaf {
 
 pub(super) fn hash_multi_join_with_aggregate_leaf_plan(
     aggregate_leaf: MultiJoinAggregateLeaf,
-) -> nexus_query_engine::QueryPlan {
+) -> nexus_query_engine::plan::QueryPlan {
     let base_schema = Arc::new(Schema::new(vec![
         Field::new("id", DataType::Int32, false),
         Field::new("left_payload", DataType::Int32, false),
@@ -85,9 +85,9 @@ pub(super) fn hash_multi_join_with_aggregate_leaf_plan(
 
 pub(super) fn aggregate_leaf_source(
     builder: &mut QueryPlanBuilder,
-    input: nexus_query_engine::NodeId,
+    input: nexus_query_engine::plan::NodeId,
     output_schema: Arc<Schema>,
-) -> nexus_query_engine::NodeId {
+) -> nexus_query_engine::plan::NodeId {
     builder.add_aggregate(
         input,
         AggregateSpec::new(
@@ -105,7 +105,7 @@ pub(super) fn mixed_residual_join_plan(
     join_type: JoinType,
     build_side: JoinSide,
     output_projection: Vec<JoinOutputColumn>,
-) -> nexus_query_engine::QueryPlan {
+) -> nexus_query_engine::plan::QueryPlan {
     let left_source =
         LocalParquetSource::new("/tmp/left.parquet", left_schema, vec!["id".into(), "left_payload".into()]);
     let right_source =
@@ -135,7 +135,7 @@ pub(super) fn mixed_residual_multi_join_plan(
     second_join_type: JoinType,
     second_join_build_side: JoinSide,
     second_join_projection: Vec<JoinOutputColumn>,
-) -> nexus_query_engine::QueryPlan {
+) -> nexus_query_engine::plan::QueryPlan {
     let base_schema = Arc::new(Schema::new(vec![
         Field::new("id", DataType::Int32, false),
         Field::new("left_payload", DataType::Int32, false),
@@ -208,7 +208,7 @@ pub(super) fn mixed_residual_multi_join_plan(
 pub(super) fn valid_mixed_residual_semi_anti_then_invalid_mixed_residual_join_plan(
     first_join_type: JoinType,
     second_join_type: JoinType,
-) -> nexus_query_engine::QueryPlan {
+) -> nexus_query_engine::plan::QueryPlan {
     let base_schema = Arc::new(Schema::new(vec![
         Field::new("id", DataType::Int32, false),
         Field::new("left_payload", DataType::Int32, false),
@@ -287,7 +287,7 @@ pub(super) fn valid_mixed_residual_semi_anti_then_invalid_mixed_residual_join_pl
     builder.finish_with_host_sink(second_join)
 }
 
-pub(super) fn mixed_residual_multi_join_with_aggregate_leaf_plan() -> nexus_query_engine::QueryPlan {
+pub(super) fn mixed_residual_multi_join_with_aggregate_leaf_plan() -> nexus_query_engine::plan::QueryPlan {
     let base_schema = Arc::new(Schema::new(vec![
         Field::new("id", DataType::Int32, false),
         Field::new("left_payload", DataType::Int32, false),
@@ -370,7 +370,7 @@ pub(super) fn keyless_conditional_left_semi_plan(
     right_schema: Arc<Schema>,
     output_schema: Arc<Schema>,
     build_side: JoinSide,
-) -> nexus_query_engine::QueryPlan {
+) -> nexus_query_engine::plan::QueryPlan {
     let left_source = LocalParquetSource::new("/tmp/left.parquet", left_schema, vec!["left_payload".into()]);
     let right_source = LocalParquetSource::new("/tmp/right.parquet", right_schema, vec!["right_payload".into()]);
     let mut builder = QueryPlanBuilder::new();

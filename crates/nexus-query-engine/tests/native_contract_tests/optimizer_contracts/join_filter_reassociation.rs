@@ -260,7 +260,7 @@ fn join_filter_reassociation_declines_out_of_range_float_scalar_bounds() {
     fs::remove_dir_all(dir).expect("temporary test directory should be removable");
 }
 
-fn inner_join_filter_over_projected_inner_join_plan() -> nexus_query_engine::QueryPlan {
+fn inner_join_filter_over_projected_inner_join_plan() -> nexus_query_engine::plan::QueryPlan {
     let mut builder = QueryPlanBuilder::new();
     let sales = builder.add_source(gpu_source("sales", &["s_item", "s_ticket", "customer", "amount"]));
     let returns = builder.add_source(gpu_source("returns", &["r_item", "r_ticket", "reason_key", "returned"]));
@@ -321,7 +321,7 @@ fn inner_join_filter_over_projected_inner_join_plan() -> nexus_query_engine::Que
     builder.finish_gpu_resident(filtered)
 }
 
-fn nested_inner_join_filter_plan() -> nexus_query_engine::QueryPlan {
+fn nested_inner_join_filter_plan() -> nexus_query_engine::plan::QueryPlan {
     let mut builder = QueryPlanBuilder::new();
     let sales = builder.add_source(gpu_source("sales", &["sold_date_sk", "customer_sk", "amount"]));
     let customer = builder.add_source(gpu_source("customer", &["customer_sk", "addr_sk"]));
@@ -386,7 +386,7 @@ fn nested_inner_join_filter_plan() -> nexus_query_engine::QueryPlan {
     builder.finish_gpu_resident(date_filtered)
 }
 
-fn projected_parent_join_filter_over_fact_join_plan() -> nexus_query_engine::QueryPlan {
+fn projected_parent_join_filter_over_fact_join_plan() -> nexus_query_engine::plan::QueryPlan {
     let mut builder = QueryPlanBuilder::new();
     let supplier = builder.add_source(gpu_source("supplier", &["s_suppkey", "s_nationkey"]));
     let partsupp = builder.add_source(gpu_source("partsupp", &["ps_suppkey", "ps_partkey", "ps_supplycost"]));
@@ -457,7 +457,7 @@ fn projected_parent_join_filter_over_fact_join_plan() -> nexus_query_engine::Que
     builder.finish_gpu_resident(projected)
 }
 
-fn shared_projected_parent_join_filter_plan() -> nexus_query_engine::QueryPlan {
+fn shared_projected_parent_join_filter_plan() -> nexus_query_engine::plan::QueryPlan {
     let mut builder = QueryPlanBuilder::new();
     let sales = builder.add_source(gpu_source("sales", &["s_item", "s_ticket", "customer", "amount"]));
     let returns = builder.add_source(gpu_source("returns", &["r_item", "r_ticket", "reason_key", "returned"]));
@@ -512,7 +512,7 @@ fn shared_projected_parent_join_filter_plan() -> nexus_query_engine::QueryPlan {
     builder.finish_gpu_resident(union)
 }
 
-fn subtree_contains_gpu_source(plan: &nexus_query_engine::QueryPlan, node_id: NodeId, source_name: &str) -> bool {
+fn subtree_contains_gpu_source(plan: &nexus_query_engine::plan::QueryPlan, node_id: NodeId, source_name: &str) -> bool {
     let Some(node) = plan.node(node_id) else {
         return false;
     };
@@ -524,7 +524,7 @@ fn subtree_contains_gpu_source(plan: &nexus_query_engine::QueryPlan, node_id: No
     node.input_ids().iter().any(|input| subtree_contains_gpu_source(plan, *input, source_name))
 }
 
-fn scalar_range_residual_plan(date_path: &Path, date_schema: Arc<Schema>) -> nexus_query_engine::QueryPlan {
+fn scalar_range_residual_plan(date_path: &Path, date_schema: Arc<Schema>) -> nexus_query_engine::plan::QueryPlan {
     let mut builder = QueryPlanBuilder::new();
     let sales = builder.add_source(estimated_local_source_with_fields(
         "scalar_range_store_sales",
@@ -639,7 +639,7 @@ fn scalar_range_residual_plan(date_path: &Path, date_schema: Arc<Schema>) -> nex
     builder.finish_gpu_resident(upper_join)
 }
 
-fn date32_scalar_range_residual_plan(date_path: &Path, date_schema: Arc<Schema>) -> nexus_query_engine::QueryPlan {
+fn date32_scalar_range_residual_plan(date_path: &Path, date_schema: Arc<Schema>) -> nexus_query_engine::plan::QueryPlan {
     let mut builder = QueryPlanBuilder::new();
     let left_schema = Arc::new(Schema::new(vec![Field::new("d_date", DataType::Date32, false)]));
     let left =
@@ -676,7 +676,7 @@ fn date32_scalar_range_residual_plan(date_path: &Path, date_schema: Arc<Schema>)
 fn out_of_range_float_scalar_range_residual_plan(
     scalar_path: &Path,
     scalar_schema: Arc<Schema>,
-) -> nexus_query_engine::QueryPlan {
+) -> nexus_query_engine::plan::QueryPlan {
     let mut builder = QueryPlanBuilder::new();
     let left = builder.add_source(estimated_local_source_with_fields(
         "float_scalar_fact",

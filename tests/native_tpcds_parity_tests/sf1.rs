@@ -2,15 +2,19 @@ use std::{collections::BTreeSet, future::Future};
 
 use datafusion::{common::config::ConfigOptions, physical_optimizer::PhysicalOptimizerRule};
 use datafusion_nexus::{
-    CudfNativePhysicalOptimizerRule, NativeDataFusionPlanningOutcome, NativeDataFusionPlanningReport,
-    NativeDataFusionPostNativeExecutionPath, NativeDataFusionRuntimeOutcome, NativePipelineExecutionMode,
-    NativeTpcdsParityPlanningOutcome, NativeTpcdsParityReport, ParityComparisonMode, ParityFloatTolerance,
-    ParityStageStatus, ParityStatus, StatisticalAggregateExecutionMode, lower_physical_plan_to_native,
+    native::lower_physical_plan_to_native,
+    native_report::{
+        NativeDataFusionPlanningOutcome, NativeDataFusionPlanningReport, NativeDataFusionPostNativeExecutionPath,
+        NativeDataFusionRuntimeOutcome, NativeTpcdsParityPlanningOutcome, NativeTpcdsParityReport,
+        ParityComparisonMode, ParityFloatTolerance, ParityStageStatus, ParityStatus,
+    },
+    planner::CudfNativePhysicalOptimizerRule,
 };
 use datafusion_nexus_bench::{
     tpcds_datafusion_planning_workload_items_with_optimizer_config, tpcds_native_report_session_config,
     tpcds_report_session_config,
 };
+use nexus_query_engine::mode::{NativePipelineExecutionMode, StatisticalAggregateExecutionMode};
 
 use super::support::*;
 
@@ -808,9 +812,9 @@ async fn tpcds_sf1_rank_window_queries_match_current_admission_contract() {
     let q67_lowering = lower_physical_plan_to_native(plain_tpcds_physical_plan(root, "q67").await);
     assert_eq!(q67_lowering.rewritten_count(), 1, "q67 outcomes={:?}", q67_lowering.report.outcomes());
     assert_eq!(q67_lowering.rejected_count(), 0, "q67 outcomes={:?}", q67_lowering.report.outcomes());
-    let q67_optimized = nexus_query_engine::optimize_query_plan(
+    let q67_optimized = nexus_query_engine::optimizer::optimize_query_plan(
         q67_lowering.plans[0].clone(),
-        &nexus_query_engine::NativeOptimizerOptions::default(),
+        &nexus_query_engine::optimizer::NativeOptimizerOptions::default(),
     )
     .plan;
     let q67_analysis = q67_optimized.capability_analysis();
@@ -1107,14 +1111,14 @@ async fn tpcds_sf1_distributed_aggregate_lowering_admits_shared_resident_groupin
         assert_eq!(lowering.rewritten_count(), 1, "{query_id} outcomes={:?}", lowering.report.outcomes());
         assert_eq!(lowering.rejected_count(), 0, "{query_id} outcomes={:?}", lowering.report.outcomes());
 
-        let optimized = nexus_query_engine::optimize_query_plan(
+        let optimized = nexus_query_engine::optimizer::optimize_query_plan(
             lowering.plans[0].clone(),
-            &nexus_query_engine::NativeOptimizerOptions::default(),
+            &nexus_query_engine::optimizer::NativeOptimizerOptions::default(),
         )
         .plan;
         let rendered = optimized.to_string();
         assert!(rendered.contains("Aggregate"), "{query_id} must retain native aggregate lowering:\n{rendered}");
-        let admission = nexus_query_engine::strict_bounded_pipeline_admission(&optimized)
+        let admission = nexus_query_engine::exec::strict_bounded_pipeline_admission(&optimized)
             .expect("strict admission should not fail");
         assert!(admission.is_some(), "{query_id} strict bounded admission should accept the whole native plan");
 
@@ -1240,13 +1244,13 @@ async fn tpcds_sf1_distinct_aggregate_global_limit_query_matches_as_whole_native
     let lowering = lower_physical_plan_to_native(plain_tpcds_physical_plan(root, "q28").await);
     assert_eq!(lowering.rewritten_count(), 1, "outcomes={:?}", lowering.report.outcomes());
     assert_eq!(lowering.rejected_count(), 0, "outcomes={:?}", lowering.report.outcomes());
-    let optimized = nexus_query_engine::optimize_query_plan(
+    let optimized = nexus_query_engine::optimizer::optimize_query_plan(
         lowering.plans[0].clone(),
-        &nexus_query_engine::NativeOptimizerOptions::default(),
+        &nexus_query_engine::optimizer::NativeOptimizerOptions::default(),
     )
     .plan;
     assert!(
-        plan_contains_aggregate_function(&optimized, nexus_query_engine::AggregateFunction::NUnique),
+        plan_contains_aggregate_function(&optimized, nexus_query_engine::expr::AggregateFunction::NUnique),
         "q28 must retain count-distinct as the native NUnique aggregate:\n{optimized}"
     );
 
@@ -1473,17 +1477,17 @@ async fn tpcds_sf1_q72_outer_hash_join_lowering_admits_whole_native_plan() {
     assert_eq!(lowering.rewritten_count(), 1, "q72 outcomes={:?}", lowering.report.outcomes());
     assert_eq!(lowering.rejected_count(), 0, "q72 outcomes={:?}", lowering.report.outcomes());
 
-    let optimized = nexus_query_engine::optimize_query_plan(
+    let optimized = nexus_query_engine::optimizer::optimize_query_plan(
         lowering.plans[0].clone(),
-        &nexus_query_engine::NativeOptimizerOptions::default(),
+        &nexus_query_engine::optimizer::NativeOptimizerOptions::default(),
     )
     .plan;
     let rendered = optimized.to_string();
     assert!(rendered.contains("type=left"), "q72 should lower left/right outer joins natively:\n{rendered}");
 
     let analysis = optimized.capability_analysis();
-    let admission =
-        nexus_query_engine::strict_bounded_pipeline_admission(&optimized).expect("strict admission should not fail");
+    let admission = nexus_query_engine::exec::strict_bounded_pipeline_admission(&optimized)
+        .expect("strict admission should not fail");
     assert!(
         admission.is_some(),
         "q72 strict bounded admission should accept the whole native plan; first_rejection={:?}\n{rendered}",

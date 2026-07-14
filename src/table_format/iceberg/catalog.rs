@@ -31,11 +31,11 @@ use iceberg_catalog_glue::{
 };
 use iceberg_catalog_rest::{REST_CATALOG_PROP_URI, REST_CATALOG_PROP_WAREHOUSE, RestCatalogBuilder};
 use iceberg_storage_opendal::OpenDalStorageFactory;
-use nexus_query_engine::{S3SourceStorageProfile, SourceStorageProfile};
+use nexus_query_engine::runtime::{S3SourceStorageProfile, SourceStorageProfile};
 use tokio::sync::RwLock;
 
 use crate::{
-    Error, ErrorCode, Result,
+    error::{Error, ErrorCode, Result},
     table_format::scan::{
         DEFAULT_TABLE_FORMAT_S3_SOURCE_STORAGE_PROFILE_ID, TableFormatParquetReadStrategyConfig,
         credential_free_endpoint_identity,
@@ -318,7 +318,7 @@ impl<'a> S3FileIoConfig<'a> {
             || self.non_empty_endpoint().is_some()
             || self.path_style_access.is_some()
         {
-            config.credential_mode = nexus_query_engine::CredentialMode::ScopedResolved;
+            config.credential_mode = nexus_query_engine::source::CredentialMode::ScopedResolved;
         }
         if self.non_empty_endpoint().is_some() && self.path_style_access == Some(false) {
             config.remote_direct_profile_unsupported_reason = Some("remote_direct_virtual_hosted_endpoint_unsupported");
@@ -391,7 +391,7 @@ fn log_iceberg_metadata_lookup(
 /// tables in.
 ///
 /// The dynamic catalog stays neutral — the choice is decided once at server
-/// startup based on [`crate::server::config::ServerSessionProfile`] (when the
+/// startup based on [`crate::server::ServerSessionProfile`] (when the
 /// server is built with both `iceberg` and `iceberg-cpu`).
 ///
 /// `Gpu` wraps loaded tables in the adapter's native
@@ -1936,9 +1936,9 @@ mod rest_tests {
     #[test]
     fn rest_parquet_strategy_config_uses_injected_server_strategy() {
         let injected = TableFormatParquetReadStrategyConfig {
-            preference: crate::TableFormatParquetReadStrategyPreference::LocalCache,
+            preference: crate::table_format::TableFormatParquetReadStrategyPreference::LocalCache,
             lakehouse_cache_root: Some(std::path::PathBuf::from("/tmp/rest-cache")),
-            lakehouse_cache_policy: crate::TableFormatLakehouseCachePolicy::FillBeforeRead,
+            lakehouse_cache_policy: crate::table_format::TableFormatLakehouseCachePolicy::FillBeforeRead,
             lakehouse_cache_max_bytes: Some(1024),
             ..Default::default()
         };
@@ -1947,9 +1947,12 @@ mod rest_tests {
 
         let strategy = config.parquet_read_strategy_config_from(injected);
 
-        assert_eq!(strategy.preference, crate::TableFormatParquetReadStrategyPreference::LocalCache);
+        assert_eq!(strategy.preference, crate::table_format::TableFormatParquetReadStrategyPreference::LocalCache);
         assert_eq!(strategy.lakehouse_cache_root, Some(std::path::PathBuf::from("/tmp/rest-cache")));
-        assert_eq!(strategy.lakehouse_cache_policy, crate::TableFormatLakehouseCachePolicy::FillBeforeRead);
+        assert_eq!(
+            strategy.lakehouse_cache_policy,
+            crate::table_format::TableFormatLakehouseCachePolicy::FillBeforeRead
+        );
         assert_eq!(strategy.lakehouse_cache_max_bytes, Some(1024));
         assert_eq!(strategy.storage_profile_id.as_deref(), Some(DEFAULT_TABLE_FORMAT_S3_SOURCE_STORAGE_PROFILE_ID));
         assert_eq!(strategy.storage_endpoint.as_deref(), Some("http://localhost:9000"));
@@ -1982,9 +1985,9 @@ mod rest_tests {
     #[tokio::test]
     async fn catalog_provider_carries_backend_strategy_into_schema_provider() {
         let strategy = TableFormatParquetReadStrategyConfig {
-            preference: crate::TableFormatParquetReadStrategyPreference::LocalCache,
+            preference: crate::table_format::TableFormatParquetReadStrategyPreference::LocalCache,
             lakehouse_cache_root: Some(std::path::PathBuf::from("/tmp/provider-cache")),
-            lakehouse_cache_policy: crate::TableFormatLakehouseCachePolicy::FillBeforeRead,
+            lakehouse_cache_policy: crate::table_format::TableFormatLakehouseCachePolicy::FillBeforeRead,
             ..Default::default()
         };
         let backend = Arc::new(StrategyMockBackend { parquet_read_strategy_config: Some(strategy.clone()) });
@@ -2019,7 +2022,7 @@ mod rest_tests {
         assert_eq!(s3.endpoint.as_deref(), Some("http://localhost:9000"));
         assert_eq!(s3.virtual_hosted_style_request, Some(false));
         match &s3.credential {
-            nexus_query_engine::S3SourceStorageCredential::Static {
+            nexus_query_engine::runtime::S3SourceStorageCredential::Static {
                 access_key_id,
                 secret_access_key,
                 session_token,
@@ -2051,7 +2054,7 @@ mod rest_tests {
 
         let profile = config.source_storage_profile_with_env(env);
 
-        assert_eq!(profile.s3_profile().credential, nexus_query_engine::S3SourceStorageCredential::Unsigned);
+        assert_eq!(profile.s3_profile().credential, nexus_query_engine::runtime::S3SourceStorageCredential::Unsigned);
     }
 
     #[test]
@@ -2063,7 +2066,7 @@ mod rest_tests {
         let profile = config.source_storage_profile_with_env(|_| None);
 
         assert_eq!(strategy.storage_profile_id.as_deref(), Some(DEFAULT_TABLE_FORMAT_S3_SOURCE_STORAGE_PROFILE_ID));
-        assert_eq!(strategy.credential_mode, nexus_query_engine::CredentialMode::ScopedResolved);
+        assert_eq!(strategy.credential_mode, nexus_query_engine::source::CredentialMode::ScopedResolved);
         assert_eq!(profile.s3_profile().region.as_deref(), Some("us-west-2"));
         assert!(profile.requires_scoped_remote_direct_profile());
     }
@@ -2082,11 +2085,11 @@ mod rest_tests {
         let profile = config.source_storage_profile_with_env(env);
 
         assert_eq!(strategy.storage_profile_id.as_deref(), Some(DEFAULT_TABLE_FORMAT_S3_SOURCE_STORAGE_PROFILE_ID));
-        assert_eq!(strategy.credential_mode, nexus_query_engine::CredentialMode::ScopedResolved);
+        assert_eq!(strategy.credential_mode, nexus_query_engine::source::CredentialMode::ScopedResolved);
         assert_eq!(profile.id(), DEFAULT_TABLE_FORMAT_S3_SOURCE_STORAGE_PROFILE_ID);
         assert_eq!(profile.s3_profile().region.as_deref(), Some("us-west-2"));
         match &profile.s3_profile().credential {
-            nexus_query_engine::S3SourceStorageCredential::Static {
+            nexus_query_engine::runtime::S3SourceStorageCredential::Static {
                 access_key_id,
                 secret_access_key,
                 session_token,
@@ -2211,7 +2214,7 @@ mod rest_tests {
         assert_eq!(s3.endpoint.as_deref(), Some("http://user:secret@localhost:9000/catalog?signature=secret#frag"));
         assert_eq!(s3.virtual_hosted_style_request, Some(false));
         match &s3.credential {
-            nexus_query_engine::S3SourceStorageCredential::Static {
+            nexus_query_engine::runtime::S3SourceStorageCredential::Static {
                 access_key_id,
                 secret_access_key,
                 session_token,
@@ -2227,9 +2230,9 @@ mod rest_tests {
     #[test]
     fn glue_parquet_strategy_config_uses_injected_server_strategy() {
         let injected = TableFormatParquetReadStrategyConfig {
-            preference: crate::TableFormatParquetReadStrategyPreference::RemoteKvikio,
+            preference: crate::table_format::TableFormatParquetReadStrategyPreference::RemoteKvikio,
             lakehouse_cache_root: Some(std::path::PathBuf::from("/tmp/glue-cache")),
-            lakehouse_cache_policy: crate::TableFormatLakehouseCachePolicy::ReadThrough,
+            lakehouse_cache_policy: crate::table_format::TableFormatLakehouseCachePolicy::ReadThrough,
             lakehouse_cache_max_bytes: Some(2048),
             storage_endpoint: Some("https://ambient.example.invalid".to_string()),
             ..Default::default()
@@ -2239,9 +2242,9 @@ mod rest_tests {
 
         let strategy = config.parquet_read_strategy_config_from(injected);
 
-        assert_eq!(strategy.preference, crate::TableFormatParquetReadStrategyPreference::RemoteKvikio);
+        assert_eq!(strategy.preference, crate::table_format::TableFormatParquetReadStrategyPreference::RemoteKvikio);
         assert_eq!(strategy.lakehouse_cache_root, Some(std::path::PathBuf::from("/tmp/glue-cache")));
-        assert_eq!(strategy.lakehouse_cache_policy, crate::TableFormatLakehouseCachePolicy::ReadThrough);
+        assert_eq!(strategy.lakehouse_cache_policy, crate::table_format::TableFormatLakehouseCachePolicy::ReadThrough);
         assert_eq!(strategy.lakehouse_cache_max_bytes, Some(2048));
         assert_eq!(strategy.storage_profile_id.as_deref(), Some(DEFAULT_TABLE_FORMAT_S3_SOURCE_STORAGE_PROFILE_ID));
         assert_eq!(strategy.storage_endpoint.as_deref(), Some("http://localhost:9000/catalog"));
@@ -2260,7 +2263,7 @@ mod rest_tests {
 
         let profile = config.source_storage_profile_with_env(env);
 
-        assert_eq!(profile.s3_profile().credential, nexus_query_engine::S3SourceStorageCredential::Unsigned);
+        assert_eq!(profile.s3_profile().credential, nexus_query_engine::runtime::S3SourceStorageCredential::Unsigned);
     }
 
     #[test]

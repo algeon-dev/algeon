@@ -26,9 +26,15 @@ fn bounded_native_query_executes_root_left_hash_join_with_unmatched_probe_rows()
         right,
         JoinSpec::new(JoinType::Left, vec![join_order_id_key()])
             .with_output_projection(vec![
-                JoinOutputColumn::left(nexus_query_engine::ColumnRef::input(0, "order_id", "order_id"), "order_id"),
-                JoinOutputColumn::left(nexus_query_engine::ColumnRef::input(0, "qty", "qty"), "qty"),
-                JoinOutputColumn::right(nexus_query_engine::ColumnRef::input(1, "category", "category"), "category"),
+                JoinOutputColumn::left(
+                    nexus_query_engine::expr::ColumnRef::input(0, "order_id", "order_id"),
+                    "order_id",
+                ),
+                JoinOutputColumn::left(nexus_query_engine::expr::ColumnRef::input(0, "qty", "qty"), "qty"),
+                JoinOutputColumn::right(
+                    nexus_query_engine::expr::ColumnRef::input(1, "category", "category"),
+                    "category",
+                ),
             ])
             .with_null_equality(JoinNullEquality::NullsDoNotMatch)
             .with_build_side(JoinSide::Right),
@@ -117,15 +123,18 @@ fn bounded_native_query_executes_root_full_hash_join_with_symmetric_unmatched_ro
         JoinSpec::new(JoinType::Full, vec![join_order_id_key()])
             .with_output_projection(vec![
                 JoinOutputColumn::left(
-                    nexus_query_engine::ColumnRef::input(0, "order_id", "left_order_id"),
+                    nexus_query_engine::expr::ColumnRef::input(0, "order_id", "left_order_id"),
                     "left_order_id",
                 ),
                 JoinOutputColumn::right(
-                    nexus_query_engine::ColumnRef::input(1, "order_id", "right_order_id"),
+                    nexus_query_engine::expr::ColumnRef::input(1, "order_id", "right_order_id"),
                     "right_order_id",
                 ),
-                JoinOutputColumn::left(nexus_query_engine::ColumnRef::input(0, "qty", "qty"), "qty"),
-                JoinOutputColumn::right(nexus_query_engine::ColumnRef::input(1, "category", "category"), "category"),
+                JoinOutputColumn::left(nexus_query_engine::expr::ColumnRef::input(0, "qty", "qty"), "qty"),
+                JoinOutputColumn::right(
+                    nexus_query_engine::expr::ColumnRef::input(1, "category", "category"),
+                    "category",
+                ),
             ])
             .with_null_equality(JoinNullEquality::NullsDoNotMatch)
             .with_build_side(JoinSide::Right),

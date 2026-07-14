@@ -8,7 +8,7 @@ use std::{env, net::SocketAddr, process::ExitCode};
 use anyhow::{Context, anyhow};
 use axum::Router;
 use datafusion_nexus::{
-    NexusGpuBackend,
+    backend::NexusGpuBackend,
     server::{ServerConfig, init_cuda_device},
 };
 use datafusion_nexus_examples::{AppState, BindAddrs, flight, rest};

@@ -9,11 +9,14 @@ use std::{
 use arrow::datatypes::{DataType, Schema, SchemaRef};
 use futures::future::BoxFuture;
 use nexus_query_engine::{
-    CredentialMode, LakehouseCacheFillMode, LakehouseCacheReadMode, LakehouseCacheStatus, RemoteParquetReadMode,
-    ResolvedParquetSource, SourceStorageProfile,
+    runtime::SourceStorageProfile,
+    source::{
+        CredentialMode, LakehouseCacheFillMode, LakehouseCacheReadMode, LakehouseCacheStatus, RemoteParquetReadMode,
+        ResolvedParquetSource,
+    },
 };
 
-use crate::{Result, policy::FallbackReason};
+use crate::{error::Result, policy::FallbackReason};
 
 mod columns;
 mod config;
@@ -23,16 +26,32 @@ mod plan;
 mod request;
 mod source_resolution;
 
-pub use columns::*;
+pub use columns::{
+    TableFormatColumnMapping, TableFormatColumnRole, TableFormatColumnSource, TableFormatPartitionTransform,
+    TableFormatPartitionValue, TableFormatScalarValue,
+};
 #[cfg(test)]
 use config::table_format_parquet_read_strategy_config_from_env;
-pub use config::*;
-pub use diagnostics::*;
-pub use files::*;
+pub use config::{
+    AWS_ENDPOINT_URL_ENV, AWS_ENDPOINT_URL_S3_ENV, DEFAULT_TABLE_FORMAT_S3_SOURCE_STORAGE_PROFILE_ID,
+    NEXUS_ICEBERG_PARQUET_READ_STRATEGY_ENV, NEXUS_ICEBERG_REMOTE_DIRECT_ENV,
+    NEXUS_ICEBERG_REMOTE_DIRECT_READ_MODE_ENV, NEXUS_ICEBERG_REMOTE_HOST_BUFFER_RANGED_ENV,
+    NEXUS_LAKEHOUSE_CACHE_MAX_BYTES_ENV, NEXUS_LAKEHOUSE_CACHE_POLICY_ENV, NEXUS_LAKEHOUSE_CACHE_READ_ENV,
+    NEXUS_LAKEHOUSE_CACHE_ROOT_ENV, TableFormatLakehouseCachePolicy, TableFormatLakehouseCacheReadPolicy,
+    TableFormatParquetReadStrategyConfig, TableFormatParquetReadStrategyPreference,
+};
+pub use diagnostics::{
+    TableFormatDirectDeviceReadDisposition, TableFormatScanDiagnostics, TableFormatUnsupportedFeature,
+    TableFormatUnsupportedFeatureCode,
+};
+pub use files::{TableFormatDataFile, TableFormatDataFileFormat, TableFormatDeleteFile, TableFormatDeleteFileContent};
+pub use plan::TableFormatScanPlan;
 #[cfg(test)]
 use plan::table_format_source_read_contract;
-pub use plan::*;
-pub use request::*;
+pub use request::{
+    TableFormat, TableFormatLiteral, TableFormatPlanner, TableFormatPlanningDeadline, TableFormatPredicate,
+    TableFormatPredicateOp, TableFormatScanRequest,
+};
 pub use source_resolution::{
     TableFormatParquetSourceMetadata, TableFormatReadCapability, credential_free_endpoint_identity,
     resolve_table_format_parquet_source, resolve_table_format_parquet_source_with_metadata,

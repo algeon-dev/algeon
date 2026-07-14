@@ -15,13 +15,14 @@ use datafusion::{
     physical_plan::{ExecutionPlan, collect},
     prelude::{SessionConfig, SessionContext},
 };
-use datafusion_nexus::{CudfNativePhysicalOptimizerRule, CudfSessionStateBuilderExt, NativePipelineExecutionMode};
+use datafusion_nexus::{planner::CudfNativePhysicalOptimizerRule, session::CudfSessionStateBuilderExt};
 use datafusion_nexus_bench::{
     CLICKBENCH_QUERIES, ClickbenchDatasetMetadata, ClickbenchLayout, ClickbenchQuery, ClickbenchWorkloadError,
     ClickbenchWorkloadResult, clickbench_native_optimizer_config, clickbench_report_session_config,
     clickbench_tuned_cpu_session_config, discover_clickbench_layout, prepare_clickbench_report_dataset,
     register_clickbench_table,
 };
+use nexus_query_engine::mode::NativePipelineExecutionMode;
 
 const TSV_COLUMNS: &[&str] = &[
     "query_id",

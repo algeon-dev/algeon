@@ -329,7 +329,7 @@ mod get_tables_prefilter_tests {
 
     use super::*;
     use crate::{
-        GpuFallbackPolicy,
+        policy::GpuFallbackPolicy,
         server::auth::{AuthMode, TokenStore},
     };
 

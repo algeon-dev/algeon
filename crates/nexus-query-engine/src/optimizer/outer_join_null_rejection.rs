@@ -651,7 +651,10 @@ mod tests {
     use arrow::datatypes::Schema;
 
     use super::consumer_counts;
-    use crate::{LiteralBatchSource, QueryPlanBuilder, SourceNode};
+    use crate::{
+        plan::QueryPlanBuilder,
+        source::{LiteralBatchSource, SourceNode},
+    };
 
     #[test]
     fn consumer_counts_includes_result_sink_input() {

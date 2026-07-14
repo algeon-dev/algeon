@@ -416,7 +416,7 @@ fn projection_root_scalar_fanout_plan_with_variant(variant: ProjectionScalarSeto
     let mut builder = QueryPlanBuilder::new();
     let driver = match variant {
         ProjectionScalarSetopPlanVariant::OneRowDriver => {
-            builder.add_source(SourceNode::LiteralBatch(nexus_query_engine::LiteralBatchSource::placeholder_row()))
+            builder.add_source(SourceNode::LiteralBatch(nexus_query_engine::source::LiteralBatchSource::placeholder_row()))
         },
         ProjectionScalarSetopPlanVariant::ScanLimitDriver => {
             let driver = builder.add_source(SourceNode::LocalParquet(

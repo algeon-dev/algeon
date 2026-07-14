@@ -33,8 +33,8 @@ pub struct AuthConfig {
 /// roles = ["reader"]
 /// ```
 ///
-/// See the module docs in [`crate::server::auth`] for the planned set of
-/// future modes (JWT, OIDC, mTLS, ...) and how they will be added.
+/// Future modes such as JWT, OIDC, and mTLS should be added as explicit
+/// variants so configuration stays closed and validated.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum AuthMode {

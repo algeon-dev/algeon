@@ -34,13 +34,13 @@ fn bounded_native_query_rejects_unsupported_join_under_aggregate_before_source_r
         JoinSpec::new(
             JoinType::LeftSemi,
             vec![JoinKey::new(
-                nexus_query_engine::ColumnRef::input(0, "id", "left_id"),
-                nexus_query_engine::ColumnRef::input(1, "id", "right_id"),
+                nexus_query_engine::expr::ColumnRef::input(0, "id", "left_id"),
+                nexus_query_engine::expr::ColumnRef::input(1, "id", "right_id"),
             )],
         )
         .with_output_projection(vec![
-            JoinOutputColumn::left(nexus_query_engine::ColumnRef::input(0, "id", "id"), "id"),
-            JoinOutputColumn::left(nexus_query_engine::ColumnRef::input(0, "amount", "amount"), "amount"),
+            JoinOutputColumn::left(nexus_query_engine::expr::ColumnRef::input(0, "id", "id"), "id"),
+            JoinOutputColumn::left(nexus_query_engine::expr::ColumnRef::input(0, "amount", "amount"), "amount"),
         ])
         .with_build_side(JoinSide::Left),
         join_schema,
@@ -123,13 +123,16 @@ fn bounded_native_query_rejects_grouped_aggregate_join_build_input_without_stric
         JoinSpec::new(
             JoinType::Inner,
             vec![JoinKey::new(
-                nexus_query_engine::ColumnRef::input(0, "id", "left_id"),
-                nexus_query_engine::ColumnRef::input(1, "id", "right_id"),
+                nexus_query_engine::expr::ColumnRef::input(0, "id", "left_id"),
+                nexus_query_engine::expr::ColumnRef::input(1, "id", "right_id"),
             )],
         )
         .with_output_projection(vec![
-            JoinOutputColumn::left(nexus_query_engine::ColumnRef::input(0, "id", "id"), "id"),
-            JoinOutputColumn::left(nexus_query_engine::ColumnRef::input(0, "sum_amount", "sum_amount"), "sum_amount"),
+            JoinOutputColumn::left(nexus_query_engine::expr::ColumnRef::input(0, "id", "id"), "id"),
+            JoinOutputColumn::left(
+                nexus_query_engine::expr::ColumnRef::input(0, "sum_amount", "sum_amount"),
+                "sum_amount",
+            ),
         ])
         .with_build_side(JoinSide::Left),
         join_schema,

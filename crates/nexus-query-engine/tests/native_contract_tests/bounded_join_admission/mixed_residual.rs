@@ -7,7 +7,7 @@ mod root;
 
 use builders::*;
 
-pub(crate) fn admitted_mixed_residual_multi_join_plan() -> nexus_query_engine::QueryPlan {
+pub(crate) fn admitted_mixed_residual_multi_join_plan() -> nexus_query_engine::plan::QueryPlan {
     mixed_residual_multi_join_plan(
         JoinType::Inner,
         JoinSide::Right,

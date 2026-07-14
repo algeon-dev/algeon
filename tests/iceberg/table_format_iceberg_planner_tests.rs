@@ -2,10 +2,13 @@ use std::{fs, path::PathBuf, sync::Arc};
 
 use arrow::datatypes::DataType;
 use datafusion_nexus::{
-    FallbackReason, TableFormatColumnSource, TableFormatDataFileFormat, TableFormatDeleteFileContent,
-    TableFormatDirectDeviceReadDisposition, TableFormatPartitionTransform, TableFormatReadCapability,
-    TableFormatScalarValue, TableFormatScanRequest,
-    iceberg::{IcebergTableFormatPlanner, iceberg_file_scan_tasks_to_table_format_scan_plan},
+    policy::FallbackReason,
+    table_format::{
+        TableFormatColumnSource, TableFormatDataFileFormat, TableFormatDeleteFileContent,
+        TableFormatDirectDeviceReadDisposition, TableFormatPartitionTransform, TableFormatReadCapability,
+        TableFormatScalarValue, TableFormatScanRequest,
+        iceberg::{IcebergTableFormatPlanner, iceberg_file_scan_tasks_to_table_format_scan_plan},
+    },
 };
 use iceberg::{
     TableIdent,

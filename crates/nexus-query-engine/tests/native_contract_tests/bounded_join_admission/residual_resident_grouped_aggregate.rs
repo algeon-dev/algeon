@@ -231,7 +231,7 @@ pub(crate) enum ResidualResidentGroupedAggregateInputVariant {
 
 pub(crate) fn residual_resident_grouped_aggregate_input_plan(
     variant: ResidualResidentGroupedAggregateInputVariant,
-) -> nexus_query_engine::QueryPlan {
+) -> nexus_query_engine::plan::QueryPlan {
     let part_schema = Arc::new(Schema::new(vec![
         Field::new("p_partkey", DataType::Int32, false),
         Field::new("p_brand", DataType::Utf8, false),

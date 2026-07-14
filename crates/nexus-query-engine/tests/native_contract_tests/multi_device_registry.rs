@@ -3,7 +3,7 @@ use std::{
     time::Duration,
 };
 
-use nexus_query_engine::{
+use nexus_query_engine::runtime::{
     DeploymentIoCapability, GdsDriverProbeStatus, KvikioCompatModeStatus, NvidiaFsProbeStatus, QueryGrantRequest,
     QueryPlacementPolicy, QueryService, QueryServiceConfig, QueryServiceTenantConfig, SlotGuarantee, TenantId,
 };
@@ -612,6 +612,6 @@ fn queued_query_service_admission_times_out_while_device_capacity_is_busy() {
     std::thread::sleep(Duration::from_millis(5));
     let error = waiter.try_admit().unwrap_err();
 
-    assert_eq!(error.code(), nexus_query_engine::QueryErrorCode::ServiceOverloaded);
+    assert_eq!(error.code(), nexus_query_engine::error::QueryErrorCode::ServiceOverloaded);
     assert_eq!(error.fact_value("reason"), Some("admission_wait_timeout"));
 }

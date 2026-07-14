@@ -16,7 +16,10 @@ use datafusion::{
         metrics::{ExecutionPlanMetricsSet, MetricsSet, RecordOutput},
     },
 };
-use nexus_query_engine::{GpuResidentInputMap, QueryOutput, QueryPlan, execute_query_plan_with_gpu_inputs};
+use nexus_query_engine::{
+    exec::{GpuResidentInputMap, QueryOutput, execute_query_plan_with_gpu_inputs},
+    plan::QueryPlan,
+};
 
 use super::{
     common::{

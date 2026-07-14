@@ -383,12 +383,12 @@ fn assert_native_ir_details(case: &GpuCoverageSqlCase, lowering: &NativeLowering
                 plan.nodes().iter().any(|node| {
                     matches!(
                         &node.kind,
-                        nexus_query_engine::PlanNode::Window(window)
+                        nexus_query_engine::plan::PlanNode::Window(window)
                             if window
                                 .spec
                                 .functions
                                 .iter()
-                                .any(|function| matches!(function, nexus_query_engine::WindowFunction::RowNumber { .. }))
+                                .any(|function| matches!(function, nexus_query_engine::plan::WindowFunction::RowNumber { .. }))
                     )
                 }),
                 "window_row_number should lower to native RowNumber IR"
@@ -400,10 +400,10 @@ fn assert_native_ir_details(case: &GpuCoverageSqlCase, lowering: &NativeLowering
             assert!(
                 observed.iter().any(|function| matches!(
                     function,
-                    nexus_query_engine::WindowFunction::LagLead {
+                    nexus_query_engine::plan::WindowFunction::LagLead {
                         offset: 1,
                         default: None,
-                        direction: nexus_query_engine::ShiftDirection::Lag,
+                        direction: nexus_query_engine::plan::ShiftDirection::Lag,
                         ..
                     }
                 )),
@@ -416,10 +416,10 @@ fn assert_native_ir_details(case: &GpuCoverageSqlCase, lowering: &NativeLowering
             assert!(
                 observed.iter().any(|function| matches!(
                     function,
-                    nexus_query_engine::WindowFunction::LagLead {
+                    nexus_query_engine::plan::WindowFunction::LagLead {
                         offset: 2,
-                        default: Some(nexus_query_engine::LiteralValue::Int64(0)),
-                        direction: nexus_query_engine::ShiftDirection::Lag,
+                        default: Some(nexus_query_engine::expr::LiteralValue::Int64(0)),
+                        direction: nexus_query_engine::plan::ShiftDirection::Lag,
                         ..
                     }
                 )),
@@ -432,10 +432,10 @@ fn assert_native_ir_details(case: &GpuCoverageSqlCase, lowering: &NativeLowering
             assert!(
                 observed.iter().any(|function| matches!(
                     function,
-                    nexus_query_engine::WindowFunction::LagLead {
+                    nexus_query_engine::plan::WindowFunction::LagLead {
                         offset: 1,
                         default: None,
-                        direction: nexus_query_engine::ShiftDirection::Lead,
+                        direction: nexus_query_engine::plan::ShiftDirection::Lead,
                         ..
                     }
                 )),
@@ -447,7 +447,7 @@ fn assert_native_ir_details(case: &GpuCoverageSqlCase, lowering: &NativeLowering
             assert!(
                 matches!(
                     &plan.root_node().kind,
-                    nexus_query_engine::PlanNode::Limit(limit) if limit.spec.skip == 2 && limit.spec.fetch.is_none()
+                    nexus_query_engine::plan::PlanNode::Limit(limit) if limit.spec.skip == 2 && limit.spec.fetch.is_none()
                 ),
                 "offset_without_limit should lower to an offset-only native Limit"
             );
@@ -458,8 +458,8 @@ fn assert_native_ir_details(case: &GpuCoverageSqlCase, lowering: &NativeLowering
                 plan.nodes().iter().any(|node| {
                     matches!(
                         &node.kind,
-                        nexus_query_engine::PlanNode::Source(source)
-                            if matches!(source.as_ref(), nexus_query_engine::SourceNode::LiteralBatch(_))
+                        nexus_query_engine::plan::PlanNode::Source(source)
+                            if matches!(source.as_ref(), nexus_query_engine::source::SourceNode::LiteralBatch(_))
                     )
                 }),
                 "{} should lower to a native literal batch source",
@@ -470,14 +470,16 @@ fn assert_native_ir_details(case: &GpuCoverageSqlCase, lowering: &NativeLowering
     }
 }
 
-fn collect_lag_lead_functions(plan: &nexus_query_engine::QueryPlan) -> Vec<nexus_query_engine::WindowFunction> {
+fn collect_lag_lead_functions(
+    plan: &nexus_query_engine::plan::QueryPlan,
+) -> Vec<nexus_query_engine::plan::WindowFunction> {
     plan.nodes()
         .iter()
         .filter_map(|node| match &node.kind {
-            nexus_query_engine::PlanNode::Window(window) => Some(window.spec.functions.clone()),
+            nexus_query_engine::plan::PlanNode::Window(window) => Some(window.spec.functions.clone()),
             _ => None,
         })
         .flatten()
-        .filter(|function| matches!(function, nexus_query_engine::WindowFunction::LagLead { .. }))
+        .filter(|function| matches!(function, nexus_query_engine::plan::WindowFunction::LagLead { .. }))
         .collect()
 }

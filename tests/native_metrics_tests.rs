@@ -2,15 +2,23 @@ use std::sync::Arc;
 
 use arrow::datatypes::{DataType, Field, Schema};
 use datafusion_nexus::{
-    NATIVE_CUDF_DATAFUSION_METRIC_NAMES, NATIVE_DATAFUSION_EXECUTION_TSV_HEADER, NATIVE_DATAFUSION_PLANNING_TSV_HEADER,
-    NATIVE_FALLBACK_PRESSURE_TSV_HEADER, NATIVE_TPCDS_PARITY_TSV_HEADER, native_report_metric_descriptor,
-    native_report_metric_descriptors,
+    native_exec::NATIVE_CUDF_DATAFUSION_METRIC_NAMES,
+    native_report::{
+        NATIVE_DATAFUSION_EXECUTION_TSV_HEADER, NATIVE_DATAFUSION_PLANNING_TSV_HEADER,
+        NATIVE_FALLBACK_PRESSURE_TSV_HEADER, NATIVE_TPCDS_PARITY_TSV_HEADER, native_report_metric_descriptor,
+        native_report_metric_descriptors,
+    },
 };
 use nexus_query_engine::{
-    ExecutionContext, GpuLocalParquetSourceCache, GpuLocalParquetSourceCacheKey, LocalParquetFile, LocalParquetSource,
-    MemoryControlPolicy, MemoryReservationEventAction, MemoryReservationRequest, MemorySpaceId, MetricAggregation,
-    MetricUnit, QueryId, QueryMetrics, QueryPlanBuilder, ReservationKind, SourceChunk, SourceChunkPlanningMode,
-    SourceNode, TraceId,
+    chunk::SourceChunk,
+    exec::{GpuLocalParquetSourceCache, GpuLocalParquetSourceCacheKey},
+    metrics::{MemoryReservationEventAction, MetricAggregation, MetricUnit, QueryId, QueryMetrics, TraceId},
+    plan::QueryPlanBuilder,
+    runtime::{
+        ExecutionContext, MemoryControlPolicy, MemoryReservationRequest, MemorySpaceId, ReservationKind,
+        SourceChunkPlanningMode,
+    },
+    source::{LocalParquetFile, LocalParquetSource, SourceNode},
 };
 
 #[test]
@@ -149,9 +157,9 @@ fn query_metrics_reservation_timeline_records_live_ledger_deltas() {
 
     metrics.record_reservation_granted_timeline_event(&request, MemoryReservationEventAction::Reserve, 60, 60, 60);
     metrics.record_reservation_granted_timeline_event(&grow, MemoryReservationEventAction::Grow, 20, 20, 80);
-    metrics.record_reservation_timeline_event(nexus_query_engine::MemoryReservationEvent::from_request(
+    metrics.record_reservation_timeline_event(nexus_query_engine::metrics::MemoryReservationEvent::from_request(
         &grow,
-        nexus_query_engine::MemoryReservationEventOutcome::Applied,
+        nexus_query_engine::metrics::MemoryReservationEventOutcome::Applied,
         MemoryReservationEventAction::Shrink,
         0,
         -30,

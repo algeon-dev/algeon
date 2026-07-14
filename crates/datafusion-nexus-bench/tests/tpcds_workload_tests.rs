@@ -4,7 +4,10 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use datafusion_nexus::{CudfOptimizerConfig, GpuFallbackPolicy, NativeCudfExecutionConfig, ParityFloatTolerance};
+use datafusion_nexus::{
+    native_exec::NativeCudfExecutionConfig, native_report::ParityFloatTolerance, planner::CudfOptimizerConfig,
+    policy::GpuFallbackPolicy,
+};
 use datafusion_nexus_bench::{
     CUDF_TPCDS_NATIVE_CPU_PREFERENCE_ENV, CUDF_TPCDS_NATIVE_CPU_PREFERENCE_MAX_RESIDUAL_JOIN_ROW_GROUPS_ENV,
     CUDF_TPCDS_NATIVE_CPU_PREFERENCE_MAX_RESIDUAL_JOIN_SOURCE_BYTES_ENV,
@@ -148,7 +151,7 @@ fn tpcds_native_profile_defaults_to_conservative() {
     assert_eq!(profile.profile_source, "default");
     assert_eq!(profile.max_source_chunk_bytes, NativeCudfExecutionConfig::DEFAULT_BOUNDED_MAX_SOURCE_CHUNK_BYTES);
     assert_eq!(profile.max_row_groups_per_chunk, NativeCudfExecutionConfig::DEFAULT_BOUNDED_MAX_ROW_GROUPS_PER_CHUNK);
-    assert_eq!(profile.source_chunk_planning_mode, nexus_query_engine::SourceChunkPlanningMode::Conservative);
+    assert_eq!(profile.source_chunk_planning_mode, nexus_query_engine::runtime::SourceChunkPlanningMode::Conservative);
 }
 
 #[test]
@@ -160,7 +163,10 @@ fn tpcds_native_profile_resolves_sf100_gpu_throughput() {
     assert_eq!(profile.device_budget_bytes, TPCDS_SF100_GPU_THROUGHPUT_DEVICE_BUDGET_BYTES);
     assert_eq!(profile.max_source_chunk_bytes, TPCDS_SF100_GPU_THROUGHPUT_MAX_SOURCE_CHUNK_BYTES);
     assert_eq!(profile.max_row_groups_per_chunk, TPCDS_SF100_GPU_THROUGHPUT_MAX_ROW_GROUPS_PER_CHUNK);
-    assert_eq!(profile.source_chunk_planning_mode, nexus_query_engine::SourceChunkPlanningMode::LocalParquetThroughput);
+    assert_eq!(
+        profile.source_chunk_planning_mode,
+        nexus_query_engine::runtime::SourceChunkPlanningMode::LocalParquetThroughput
+    );
 }
 
 #[test]
@@ -177,7 +183,7 @@ fn tpcds_native_profile_numeric_overrides_become_custom() {
     assert_eq!(profile.device_budget_bytes, 123456789);
     assert_eq!(profile.max_source_chunk_bytes, 268435456);
     assert_eq!(profile.max_row_groups_per_chunk, 8);
-    assert_eq!(profile.source_chunk_planning_mode, nexus_query_engine::SourceChunkPlanningMode::Conservative);
+    assert_eq!(profile.source_chunk_planning_mode, nexus_query_engine::runtime::SourceChunkPlanningMode::Conservative);
 }
 
 #[test]
@@ -189,7 +195,10 @@ fn tpcds_native_profile_source_chunk_planning_mode_override_becomes_custom() {
 
     assert_eq!(profile.profile_name, TPCDS_NATIVE_PROFILE_CUSTOM);
     assert_eq!(profile.profile_source, "custom_overrides");
-    assert_eq!(profile.source_chunk_planning_mode, nexus_query_engine::SourceChunkPlanningMode::LocalParquetThroughput);
+    assert_eq!(
+        profile.source_chunk_planning_mode,
+        nexus_query_engine::runtime::SourceChunkPlanningMode::LocalParquetThroughput
+    );
 }
 
 #[test]
@@ -318,7 +327,7 @@ fn tpcds_native_profile_settings_from(
 
 fn tpcds_native_cpu_preference_options_from(
     pairs: impl IntoIterator<Item = (&'static str, &'static str)>,
-) -> nexus_query_engine::NativePlanPreferenceOptions {
+) -> nexus_query_engine::plan::NativePlanPreferenceOptions {
     let env = pairs.into_iter().map(|(key, value)| (key, value.to_string())).collect::<BTreeMap<_, _>>();
     tpcds_native_cpu_preference_options_with_env(|name| env.get(name).cloned())
 }

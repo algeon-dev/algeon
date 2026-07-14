@@ -6,13 +6,19 @@ use datafusion::{
     prelude::SessionContext,
 };
 use datafusion_nexus::{
-    CudfOptimizerConfig, CudfSessionStateBuilderExt, DATAFUSION_NEXUS_SESSION_CONFIG_OPTIONS,
-    DataFusionNexusSessionConfig, Error, ErrorCode, GpuFallbackPolicy, NativeCudfExecutionConfig,
-    NativeMemoryPolicyConfig,
+    error::{Error, ErrorCode},
+    native_exec::NativeCudfExecutionConfig,
+    planner::CudfOptimizerConfig,
+    policy::GpuFallbackPolicy,
+    session::CudfSessionStateBuilderExt,
+    session_config::{DATAFUSION_NEXUS_SESSION_CONFIG_OPTIONS, DataFusionNexusSessionConfig, NativeMemoryPolicyConfig},
 };
 use nexus_query_engine::{
-    MemoryControlPolicy, NativePipelineExecutionMode, QueryService, QueryServiceConfig, QueryServiceTenantConfig,
-    SlotGuarantee, SourceChunkPlanningMode, SourceSchedulerPolicy, StatisticalAggregateExecutionMode,
+    mode::{NativePipelineExecutionMode, StatisticalAggregateExecutionMode},
+    runtime::{
+        MemoryControlPolicy, QueryService, QueryServiceConfig, QueryServiceTenantConfig, SlotGuarantee,
+        SourceChunkPlanningMode, SourceSchedulerPolicy,
+    },
 };
 
 #[test]

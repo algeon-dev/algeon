@@ -33,8 +33,8 @@ fn optimized_semijoin_reduction_matches_original_execution_on_small_fixture() {
     write_i32_parquet(&runtime, &keyset_path, Arc::clone(&keyset_schema), vec![("b_key", vec![2, 2, 4])]);
 
     let plan = semijoin_reduction_execution_plan(&a_path, &a_schema, &b_path, &b_schema, &keyset_path, &keyset_schema);
-    let optimizer_result = nexus_query_engine::optimize_query_plan(plan.clone(), &Default::default());
-    assert_eq!(optimizer_result.change, nexus_query_engine::NativeOptimizerChange::Changed);
+    let optimizer_result = nexus_query_engine::optimizer::optimize_query_plan(plan.clone(), &Default::default());
+    assert_eq!(optimizer_result.change, nexus_query_engine::optimizer::NativeOptimizerChange::Changed);
     assert_eq!(optimizer_result.diagnostics.semijoin_reduction.applied_count, 1);
 
     let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime)).unwrap();
@@ -71,7 +71,7 @@ fn semijoin_reduction_execution_plan(
     b_schema: &Arc<Schema>,
     keyset_path: &Path,
     keyset_schema: &Arc<Schema>,
-) -> nexus_query_engine::QueryPlan {
+) -> nexus_query_engine::plan::QueryPlan {
     let output_schema = Arc::new(Schema::new(vec![
         Field::new("a_key", DataType::Int32, false),
         Field::new("a_payload", DataType::Int32, false),
@@ -95,15 +95,21 @@ fn semijoin_reduction_execution_plan(
         JoinSpec::new(
             JoinType::Inner,
             vec![JoinKey::new(
-                nexus_query_engine::ColumnRef::input(0, "a_key", "a_key"),
-                nexus_query_engine::ColumnRef::input(1, "b_key", "b_key"),
+                nexus_query_engine::expr::ColumnRef::input(0, "a_key", "a_key"),
+                nexus_query_engine::expr::ColumnRef::input(1, "b_key", "b_key"),
             )],
         )
         .with_output_projection(vec![
-            JoinOutputColumn::left(nexus_query_engine::ColumnRef::input(0, "a_key", "a_key"), "a_key"),
-            JoinOutputColumn::left(nexus_query_engine::ColumnRef::input(0, "a_payload", "a_payload"), "a_payload"),
-            JoinOutputColumn::right(nexus_query_engine::ColumnRef::input(1, "b_key", "b_key"), "b_key"),
-            JoinOutputColumn::right(nexus_query_engine::ColumnRef::input(1, "b_payload", "b_payload"), "b_payload"),
+            JoinOutputColumn::left(nexus_query_engine::expr::ColumnRef::input(0, "a_key", "a_key"), "a_key"),
+            JoinOutputColumn::left(
+                nexus_query_engine::expr::ColumnRef::input(0, "a_payload", "a_payload"),
+                "a_payload",
+            ),
+            JoinOutputColumn::right(nexus_query_engine::expr::ColumnRef::input(1, "b_key", "b_key"), "b_key"),
+            JoinOutputColumn::right(
+                nexus_query_engine::expr::ColumnRef::input(1, "b_payload", "b_payload"),
+                "b_payload",
+            ),
         ])
         .with_build_side(JoinSide::Right),
         Arc::clone(&output_schema),
@@ -114,15 +120,21 @@ fn semijoin_reduction_execution_plan(
         JoinSpec::new(
             JoinType::LeftSemi,
             vec![JoinKey::new(
-                nexus_query_engine::ColumnRef::input(0, "b_key", "b_key"),
-                nexus_query_engine::ColumnRef::input(1, "b_key", "b_key"),
+                nexus_query_engine::expr::ColumnRef::input(0, "b_key", "b_key"),
+                nexus_query_engine::expr::ColumnRef::input(1, "b_key", "b_key"),
             )],
         )
         .with_output_projection(vec![
-            JoinOutputColumn::left(nexus_query_engine::ColumnRef::input(0, "a_key", "a_key"), "a_key"),
-            JoinOutputColumn::left(nexus_query_engine::ColumnRef::input(0, "a_payload", "a_payload"), "a_payload"),
-            JoinOutputColumn::left(nexus_query_engine::ColumnRef::input(0, "b_key", "b_key"), "b_key"),
-            JoinOutputColumn::left(nexus_query_engine::ColumnRef::input(0, "b_payload", "b_payload"), "b_payload"),
+            JoinOutputColumn::left(nexus_query_engine::expr::ColumnRef::input(0, "a_key", "a_key"), "a_key"),
+            JoinOutputColumn::left(
+                nexus_query_engine::expr::ColumnRef::input(0, "a_payload", "a_payload"),
+                "a_payload",
+            ),
+            JoinOutputColumn::left(nexus_query_engine::expr::ColumnRef::input(0, "b_key", "b_key"), "b_key"),
+            JoinOutputColumn::left(
+                nexus_query_engine::expr::ColumnRef::input(0, "b_payload", "b_payload"),
+                "b_payload",
+            ),
         ])
         .with_build_side(JoinSide::Right),
         Arc::clone(&output_schema),

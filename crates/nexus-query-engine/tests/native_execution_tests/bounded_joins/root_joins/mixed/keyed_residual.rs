@@ -26,8 +26,11 @@ fn bounded_native_query_executes_root_mixed_inner_join_with_ordered_reservations
         JoinSpec::new(JoinType::Inner, vec![join_order_id_key()])
             .with_residual_predicate(qty_gt_right_order_id_times_ten())
             .with_output_projection(vec![
-                JoinOutputColumn::left(nexus_query_engine::ColumnRef::input(0, "qty", "qty"), "qty"),
-                JoinOutputColumn::right(nexus_query_engine::ColumnRef::input(1, "category", "category"), "category"),
+                JoinOutputColumn::left(nexus_query_engine::expr::ColumnRef::input(0, "qty", "qty"), "qty"),
+                JoinOutputColumn::right(
+                    nexus_query_engine::expr::ColumnRef::input(1, "category", "category"),
+                    "category",
+                ),
             ])
             .with_build_side(JoinSide::Right),
         Arc::clone(&output_schema),
@@ -101,9 +104,15 @@ fn bounded_native_query_streams_chunked_probe_into_mixed_inner_residual_join() {
         JoinSpec::new(JoinType::Inner, vec![join_order_id_key()])
             .with_residual_predicate(qty_gt_right_order_id_times_ten())
             .with_output_projection(vec![
-                JoinOutputColumn::left(nexus_query_engine::ColumnRef::input(0, "order_id", "order_id"), "order_id"),
-                JoinOutputColumn::left(nexus_query_engine::ColumnRef::input(0, "qty", "qty"), "qty"),
-                JoinOutputColumn::right(nexus_query_engine::ColumnRef::input(1, "category", "category"), "category"),
+                JoinOutputColumn::left(
+                    nexus_query_engine::expr::ColumnRef::input(0, "order_id", "order_id"),
+                    "order_id",
+                ),
+                JoinOutputColumn::left(nexus_query_engine::expr::ColumnRef::input(0, "qty", "qty"), "qty"),
+                JoinOutputColumn::right(
+                    nexus_query_engine::expr::ColumnRef::input(1, "category", "category"),
+                    "category",
+                ),
             ])
             .with_build_side(JoinSide::Right),
         Arc::clone(&output_schema),
@@ -203,9 +212,15 @@ fn bounded_native_query_streams_right_probe_into_left_build_mixed_inner_residual
         JoinSpec::new(JoinType::Inner, vec![join_order_id_key()])
             .with_residual_predicate(qty_gt_right_order_id_times_ten())
             .with_output_projection(vec![
-                JoinOutputColumn::left(nexus_query_engine::ColumnRef::input(0, "order_id", "order_id"), "order_id"),
-                JoinOutputColumn::left(nexus_query_engine::ColumnRef::input(0, "qty", "qty"), "qty"),
-                JoinOutputColumn::right(nexus_query_engine::ColumnRef::input(1, "category", "category"), "category"),
+                JoinOutputColumn::left(
+                    nexus_query_engine::expr::ColumnRef::input(0, "order_id", "order_id"),
+                    "order_id",
+                ),
+                JoinOutputColumn::left(nexus_query_engine::expr::ColumnRef::input(0, "qty", "qty"), "qty"),
+                JoinOutputColumn::right(
+                    nexus_query_engine::expr::ColumnRef::input(1, "category", "category"),
+                    "category",
+                ),
             ])
             .with_build_side(JoinSide::Left),
         Arc::clone(&output_schema),
@@ -306,8 +321,11 @@ fn bounded_native_query_executes_root_mixed_left_join_with_unmatched_left_rows()
         JoinSpec::new(JoinType::Left, vec![join_order_id_key()])
             .with_residual_predicate(qty_gt_right_order_id_times_ten())
             .with_output_projection(vec![
-                JoinOutputColumn::left(nexus_query_engine::ColumnRef::input(0, "qty", "qty"), "qty"),
-                JoinOutputColumn::right(nexus_query_engine::ColumnRef::input(1, "category", "category"), "category"),
+                JoinOutputColumn::left(nexus_query_engine::expr::ColumnRef::input(0, "qty", "qty"), "qty"),
+                JoinOutputColumn::right(
+                    nexus_query_engine::expr::ColumnRef::input(1, "category", "category"),
+                    "category",
+                ),
             ])
             .with_build_side(JoinSide::Right),
         Arc::clone(&output_schema),
@@ -372,15 +390,18 @@ fn bounded_native_query_executes_root_mixed_full_join_with_pair_reservations() {
             .with_residual_predicate(qty_gt_right_order_id_times_ten())
             .with_output_projection(vec![
                 JoinOutputColumn::left(
-                    nexus_query_engine::ColumnRef::input(0, "order_id", "left_order_id"),
+                    nexus_query_engine::expr::ColumnRef::input(0, "order_id", "left_order_id"),
                     "left_order_id",
                 ),
                 JoinOutputColumn::right(
-                    nexus_query_engine::ColumnRef::input(1, "order_id", "right_order_id"),
+                    nexus_query_engine::expr::ColumnRef::input(1, "order_id", "right_order_id"),
                     "right_order_id",
                 ),
-                JoinOutputColumn::left(nexus_query_engine::ColumnRef::input(0, "qty", "qty"), "qty"),
-                JoinOutputColumn::right(nexus_query_engine::ColumnRef::input(1, "category", "category"), "category"),
+                JoinOutputColumn::left(nexus_query_engine::expr::ColumnRef::input(0, "qty", "qty"), "qty"),
+                JoinOutputColumn::right(
+                    nexus_query_engine::expr::ColumnRef::input(1, "category", "category"),
+                    "category",
+                ),
             ])
             .with_build_side(JoinSide::Right),
         Arc::clone(&output_schema),

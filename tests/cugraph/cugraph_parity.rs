@@ -30,10 +30,14 @@ use datafusion::{
     prelude::{CsvReadOptions, SessionConfig, SessionContext},
 };
 use datafusion_nexus::{
-    CUGRAPH_OPERATION_REGISTRY, CugraphAlgorithm, CugraphSqlConfig, GpuFallbackPolicy, NexusAdmissionPolicy,
-    NexusGpuBackend, SlotGuarantee,
-    graph_sql::parity::{CUGRAPH_PARITY_SPECS, OracleLookup, ParityTruthSource, data_root, load_ref_csv_vertex_list},
+    backend::{NexusAdmissionPolicy, NexusGpuBackend},
+    graph_sql::{
+        CUGRAPH_OPERATION_REGISTRY, CugraphAlgorithm, CugraphSqlConfig,
+        parity::{CUGRAPH_PARITY_SPECS, OracleLookup, ParityTruthSource, data_root, load_ref_csv_vertex_list},
+    },
+    policy::GpuFallbackPolicy,
 };
+use nexus_query_engine::runtime::SlotGuarantee;
 use serde_json::{Map, Value};
 
 #[test]
