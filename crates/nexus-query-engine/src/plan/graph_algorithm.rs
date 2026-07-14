@@ -98,8 +98,6 @@ pub enum GraphAlgorithm {
     Ecg,
     /// <https://docs.rapids.ai/api/cugraph/stable/api_docs/cugraph_c/community/#spectral-clustering-modularity-maximization>
     SpectralModularityMaximization,
-    /// <https://docs.rapids.ai/api/cugraph/stable/api_docs/cugraph_c/community/#balanced-cut>
-    BalancedCutClustering,
     /// Force-directed graph layout.
     /// <https://docs.rapids.ai/api/cugraph/stable/api_docs/api/cugraph/cugraph.layout.force_atlas2.force_atlas2/>
     ForceAtlas2,
@@ -131,7 +129,6 @@ impl GraphAlgorithm {
             Self::Leiden => "leiden",
             Self::Ecg => "ecg",
             Self::SpectralModularityMaximization => "spectral_modularity_maximization",
-            Self::BalancedCutClustering => "balanced_cut_clustering",
             Self::ForceAtlas2 => "force_atlas2",
         }
     }
@@ -401,8 +398,7 @@ impl GraphOperationDefinition {
         match self.algorithm {
             GraphAlgorithm::WeaklyConnectedComponents
             | GraphAlgorithm::MinimumSpanningTree
-            | GraphAlgorithm::SpectralModularityMaximization
-            | GraphAlgorithm::BalancedCutClustering => Some(false),
+            | GraphAlgorithm::SpectralModularityMaximization => Some(false),
             GraphAlgorithm::StronglyConnectedComponents => Some(true),
             _ => None,
         }
@@ -411,9 +407,9 @@ impl GraphOperationDefinition {
     /// Vertex-id dtype support for this algorithm.
     pub const fn vertex_id_type_support(&self) -> GraphVertexIdTypeSupport {
         match self.algorithm {
-            GraphAlgorithm::MinimumSpanningTree
-            | GraphAlgorithm::SpectralModularityMaximization
-            | GraphAlgorithm::BalancedCutClustering => GraphVertexIdTypeSupport::Int32OnlyLegacyEdgeType,
+            GraphAlgorithm::MinimumSpanningTree | GraphAlgorithm::SpectralModularityMaximization => {
+                GraphVertexIdTypeSupport::Int32OnlyLegacyEdgeType
+            },
             _ => GraphVertexIdTypeSupport::Int32OrInt64,
         }
     }
@@ -442,7 +438,6 @@ impl GraphOperationDefinition {
                 | GraphAlgorithm::Leiden
                 | GraphAlgorithm::Ecg
                 | GraphAlgorithm::SpectralModularityMaximization
-                | GraphAlgorithm::BalancedCutClustering
                 | GraphAlgorithm::ForceAtlas2
         ) {
             options.directed = false;
@@ -494,9 +489,6 @@ impl GraphOperationDefinition {
             GraphAlgorithm::Ecg => GraphAlgorithmParams::Ecg(GraphEcgParams::default()),
             GraphAlgorithm::SpectralModularityMaximization => {
                 GraphAlgorithmParams::SpectralModularityMaximization(GraphSpectralClusteringParams::default())
-            },
-            GraphAlgorithm::BalancedCutClustering => {
-                GraphAlgorithmParams::BalancedCutClustering(GraphSpectralClusteringParams::default())
             },
             GraphAlgorithm::ForceAtlas2 => GraphAlgorithmParams::ForceAtlas2(GraphForceAtlas2Params::default()),
         }
@@ -634,11 +626,6 @@ pub const GRAPH_OPERATION_REGISTRY: &[GraphOperationDefinition] = &[
     GraphOperationDefinition {
         algorithm: GraphAlgorithm::SpectralModularityMaximization,
         name: "spectral_modularity_maximization",
-        layout_requirement: GraphLayoutRequirement::Forward,
-    },
-    GraphOperationDefinition {
-        algorithm: GraphAlgorithm::BalancedCutClustering,
-        name: "balanced_cut_clustering",
         layout_requirement: GraphLayoutRequirement::Forward,
     },
     GraphOperationDefinition {
@@ -1367,7 +1354,6 @@ pub enum GraphAlgorithmParams {
     Leiden(GraphLeidenParams),
     Ecg(GraphEcgParams),
     SpectralModularityMaximization(GraphSpectralClusteringParams),
-    BalancedCutClustering(GraphSpectralClusteringParams),
     ForceAtlas2(GraphForceAtlas2Params),
 }
 
@@ -1397,7 +1383,6 @@ impl GraphAlgorithmParams {
             Self::Leiden(_) => GraphAlgorithm::Leiden,
             Self::Ecg(_) => GraphAlgorithm::Ecg,
             Self::SpectralModularityMaximization(_) => GraphAlgorithm::SpectralModularityMaximization,
-            Self::BalancedCutClustering(_) => GraphAlgorithm::BalancedCutClustering,
             Self::ForceAtlas2(_) => GraphAlgorithm::ForceAtlas2,
         }
     }
@@ -1947,12 +1932,11 @@ impl Default for GraphEcgParams {
     }
 }
 
-/// Parameters for spectral modularity maximization and balanced-cut clustering.
+/// Parameters for spectral modularity maximization.
 ///
 /// Mirrors `cugraph::community::SpectralClusteringParams` without cugraph-rs
 /// newtype wrappers and without `do_expensive_check` (always false in the
-/// adapter). Both `SpectralModularityMaximization` and the deprecated
-/// `BalancedCutClustering` share this struct.
+/// adapter).
 #[derive(Debug, Clone, PartialEq)]
 pub struct GraphSpectralClusteringParams {
     /// Desired number of clusters. Must be >= 1.
@@ -2227,13 +2211,10 @@ pub fn stable_graph_result_schema(algorithm: GraphAlgorithm) -> SchemaRef {
             Field::new("src", arrow::datatypes::DataType::Int64, false),
             Field::new("dst", arrow::datatypes::DataType::Int64, false),
         ],
-        // Leiden, ECG, spectral modularity maximization, and balanced-cut
-        // clustering all return a vertex-partition assignment. Labels are
+        // Leiden, ECG, and spectral modularity maximization return a
+        // vertex-partition assignment. Labels are
         // partition identifiers; parity tests use partition-equivalence.
-        GraphAlgorithm::Leiden
-        | GraphAlgorithm::Ecg
-        | GraphAlgorithm::SpectralModularityMaximization
-        | GraphAlgorithm::BalancedCutClustering => {
+        GraphAlgorithm::Leiden | GraphAlgorithm::Ecg | GraphAlgorithm::SpectralModularityMaximization => {
             vec![
                 Field::new("vertex", arrow::datatypes::DataType::Int64, false),
                 Field::new("partition", arrow::datatypes::DataType::Int64, false),

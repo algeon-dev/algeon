@@ -165,7 +165,7 @@ Expected output starts with:
 
 ```text
 algorithms
-24
+23
 ```
 
 ## Troubleshooting

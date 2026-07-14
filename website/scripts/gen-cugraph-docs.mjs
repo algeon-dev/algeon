@@ -29,7 +29,7 @@ const REQUIRED_KEYS = [
 // family slug -> { label, position, functions[] } ; position drives sidebar order
 const FAMILIES = {
   centrality:   { label: 'Centrality', position: 2, functions: ['cugraph_pagerank','cugraph_personalized_pagerank','cugraph_eigenvector_centrality','cugraph_katz_centrality','cugraph_hits','cugraph_betweenness_centrality','cugraph_edge_betweenness_centrality'] },
-  community:    { label: 'Community Detection', position: 3, functions: ['cugraph_louvain','cugraph_leiden','cugraph_ecg','cugraph_spectral_modularity_maximization','cugraph_balanced_cut_clustering'] },
+  community:    { label: 'Community Detection', position: 3, functions: ['cugraph_louvain','cugraph_leiden','cugraph_ecg','cugraph_spectral_modularity_maximization'] },
   traversal:    { label: 'Traversal & Paths', position: 4, functions: ['cugraph_bfs','cugraph_sssp'] },
   connectivity: { label: 'Connectivity', position: 5, functions: ['cugraph_weakly_connected_components','cugraph_strongly_connected_components','cugraph_minimum_spanning_tree'] },
   structure:    { label: 'Structure', position: 6, functions: ['cugraph_degrees_all','cugraph_in_degrees_all','cugraph_out_degrees_all','cugraph_triangle_count_all','cugraph_core_number','cugraph_k_core'] },

@@ -62,9 +62,6 @@ pub fn default_params(algorithm: GraphAlgorithm) -> GraphAlgorithmParams {
         GraphAlgorithm::SpectralModularityMaximization => {
             GraphAlgorithmParams::SpectralModularityMaximization(GraphSpectralClusteringParams::default())
         },
-        GraphAlgorithm::BalancedCutClustering => {
-            GraphAlgorithmParams::BalancedCutClustering(GraphSpectralClusteringParams::default())
-        },
         GraphAlgorithm::ForceAtlas2 => GraphAlgorithmParams::ForceAtlas2(GraphForceAtlas2Params::default()),
     }
 }
@@ -250,7 +247,6 @@ fn registry_pins_current_cugraph_sql_inventory() {
             CugraphAlgorithm::Leiden,
             CugraphAlgorithm::Ecg,
             CugraphAlgorithm::SpectralModularityMaximization,
-            CugraphAlgorithm::BalancedCutClustering,
             CugraphAlgorithm::ForceAtlas2,
         ],
         "cuGraph SQL operation registry order is part of the public surface",

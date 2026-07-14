@@ -3830,17 +3830,6 @@ fn native_algorithm_params(
                 seed: params.seed,
             })
         },
-        CugraphAlgorithmParams::BalancedCutClustering(params) => {
-            GraphAlgorithmParams::BalancedCutClustering(GraphSpectralClusteringParams {
-                n_clusters: params.n_clusters,
-                n_eigenvectors: params.n_eigenvectors,
-                evs_tolerance: params.evs_tolerance,
-                evs_max_iterations: params.evs_max_iterations,
-                k_means_tolerance: params.k_means_tolerance,
-                k_means_max_iterations: params.k_means_max_iterations,
-                seed: params.seed,
-            })
-        },
         CugraphAlgorithmParams::ForceAtlas2(params) => GraphAlgorithmParams::ForceAtlas2(GraphForceAtlas2Params {
             max_iter: params.max_iter,
             outbound_attraction_distribution: params.outbound_attraction_distribution,

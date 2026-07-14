@@ -414,18 +414,6 @@ pub const CUGRAPH_PARITY_SPECS: &[ParitySpec] = &[
         tolerance: ParityTolerance::exact(),
     },
     ParitySpec {
-        label: "balanced_cut_clustering/karate@default",
-        algorithm: CugraphAlgorithm::BalancedCutClustering,
-        dataset: "karate",
-        // seed=0 matches GraphSpectralClusteringParams::default() seed.
-        params_json: r#"{"n_clusters":2,"n_eigenvectors":2,"evs_tolerance":0.01,"evs_max_iterations":500,"k_means_tolerance":0.001,"k_means_max_iterations":100,"seed":0}"#,
-        seed: None,
-        truth_source: ParityTruthSource::OracleJson,
-        oracle_relpath: "karate/balanced_cut_clustering__default.json",
-        comparator: ParityComparator::PartitionEquivalence,
-        tolerance: ParityTolerance::exact(),
-    },
-    ParitySpec {
         label: "force_atlas2/karate@default",
         algorithm: CugraphAlgorithm::ForceAtlas2,
         dataset: "karate",

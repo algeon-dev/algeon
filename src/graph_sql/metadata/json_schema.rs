@@ -347,8 +347,7 @@ fn algorithm_options_schema_json(algorithm: CugraphAlgorithm) -> Value {
                 }
             })
         },
-        CugraphAlgorithmParams::SpectralModularityMaximization(params)
-        | CugraphAlgorithmParams::BalancedCutClustering(params) => {
+        CugraphAlgorithmParams::SpectralModularityMaximization(params) => {
             json!({
                 "n_clusters": {
                     "scope": "algorithm",
@@ -858,8 +857,7 @@ fn params_json(params: &CugraphAlgorithmParams) -> Value {
         CugraphAlgorithmParams::Ecg(params) => {
             json!({"min_weight": params.min_weight, "ensemble_size": params.ensemble_size, "max_level": params.max_level, "threshold": params.threshold, "resolution": params.resolution, "seed": params.seed})
         },
-        CugraphAlgorithmParams::SpectralModularityMaximization(params)
-        | CugraphAlgorithmParams::BalancedCutClustering(params) => {
+        CugraphAlgorithmParams::SpectralModularityMaximization(params) => {
             json!({"n_clusters": params.n_clusters, "n_eigenvectors": params.n_eigenvectors, "evs_tolerance": params.evs_tolerance, "evs_max_iterations": params.evs_max_iterations, "k_means_tolerance": params.k_means_tolerance, "k_means_max_iterations": params.k_means_max_iterations, "seed": params.seed})
         },
         CugraphAlgorithmParams::ForceAtlas2(params) => {

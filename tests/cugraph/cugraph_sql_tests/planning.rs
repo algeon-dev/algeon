@@ -63,12 +63,6 @@ async fn cugraph_sql_planning_exposes_stable_output_schemas() {
         CugraphAlgorithm::SpectralModularityMaximization,
     )
     .await;
-    assert_sql_schema(
-        &ctx,
-        "SELECT * FROM cugraph_balanced_cut_clustering('graph_edges')",
-        CugraphAlgorithm::BalancedCutClustering,
-    )
-    .await;
     assert_sql_schema(&ctx, "SELECT * FROM cugraph_force_atlas2('graph_edges')", CugraphAlgorithm::ForceAtlas2).await;
 }
 
@@ -106,11 +100,6 @@ async fn cugraph_undirected_only_algorithms_reject_directed_graph_option() {
              'graph_edges', 'src', 'dst', NULL, '{\"directed\":true}')",
             "cugraph_spectral_modularity_maximization requires directed=false",
         ),
-        (
-            "SELECT * FROM cugraph_balanced_cut_clustering(\
-             'graph_edges', 'src', 'dst', NULL, '{\"directed\":true}')",
-            "cugraph_balanced_cut_clustering requires directed=false",
-        ),
     ] {
         let error = ctx.sql(sql).await.unwrap_err().to_string();
         assert!(error.contains(expected), "{error}");
@@ -135,10 +124,6 @@ async fn cugraph_table_function_scan_rejects_int64_for_legacy_int32_only_algorit
         (
             "SELECT * FROM cugraph_spectral_modularity_maximization('edges_i64')",
             "SELECT * FROM cugraph_spectral_modularity_maximization('edges_i32')",
-        ),
-        (
-            "SELECT * FROM cugraph_balanced_cut_clustering('edges_i64')",
-            "SELECT * FROM cugraph_balanced_cut_clustering('edges_i32')",
         ),
     ] {
         let int64_df = ctx.sql(int64_sql).await.unwrap();
@@ -468,12 +453,8 @@ fn cugraph_sql_planning_schema_contracts_are_exact() {
         schema_fields(CugraphAlgorithm::PersonalizedPageRank),
         vec![Field::new("vertex", DataType::Int64, false), Field::new("value", DataType::Float64, false)],
     );
-    for algorithm in [
-        CugraphAlgorithm::Leiden,
-        CugraphAlgorithm::Ecg,
-        CugraphAlgorithm::SpectralModularityMaximization,
-        CugraphAlgorithm::BalancedCutClustering,
-    ] {
+    for algorithm in [CugraphAlgorithm::Leiden, CugraphAlgorithm::Ecg, CugraphAlgorithm::SpectralModularityMaximization]
+    {
         assert_eq!(
             schema_fields(algorithm),
             vec![Field::new("vertex", DataType::Int64, false), Field::new("partition", DataType::Int64, false)],

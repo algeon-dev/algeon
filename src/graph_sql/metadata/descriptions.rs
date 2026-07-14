@@ -134,14 +134,11 @@ fn result_field_description(algorithm: CugraphAlgorithm, field_name: &str) -> &'
         (CugraphAlgorithm::Leiden, "partition") => "Community identifier assigned by Leiden.",
         (CugraphAlgorithm::Ecg, "vertex") => "Vertex assigned to an ECG community.",
         (CugraphAlgorithm::Ecg, "partition") => "Community identifier assigned by ECG.",
-        (CugraphAlgorithm::SpectralModularityMaximization | CugraphAlgorithm::BalancedCutClustering, "vertex") => {
+        (CugraphAlgorithm::SpectralModularityMaximization, "vertex") => {
             "Vertex assigned to a spectral clustering partition."
         },
         (CugraphAlgorithm::SpectralModularityMaximization, "partition") => {
             "Cluster identifier assigned by spectral modularity maximization."
-        },
-        (CugraphAlgorithm::BalancedCutClustering, "partition") => {
-            "Cluster identifier assigned by balanced-cut spectral clustering."
         },
         (CugraphAlgorithm::ForceAtlas2, "vertex") => "Vertex receiving ForceAtlas2 layout coordinates.",
         (CugraphAlgorithm::ForceAtlas2, "x") => "X coordinate assigned by ForceAtlas2.",
@@ -244,7 +241,6 @@ pub(super) fn summary(algorithm: CugraphAlgorithm) -> &'static str {
         CugraphAlgorithm::Leiden => "Detect communities with Leiden optimization.",
         CugraphAlgorithm::Ecg => "Detect communities with ensemble clustering for graphs.",
         CugraphAlgorithm::SpectralModularityMaximization => "Cluster vertices with spectral modularity maximization.",
-        CugraphAlgorithm::BalancedCutClustering => "Cluster vertices with balanced-cut spectral clustering.",
         CugraphAlgorithm::ForceAtlas2 => "Compute ForceAtlas2 two-dimensional layout coordinates.",
     }
 }
