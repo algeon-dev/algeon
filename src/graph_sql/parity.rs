@@ -27,6 +27,12 @@ pub enum ParityComparator {
     Numeric,
     /// Compare partitions as set-of-sets, ignoring label renaming.
     PartitionEquivalence,
+    /// Validate a randomized partition by vertex coverage, a bounded
+    /// community count, and modularity relative to the oracle baseline.
+    ///
+    /// Unlike [`Self::PartitionEquivalence`], this intentionally does not
+    /// require a byte-identical partition across cuGraph builds.
+    PartitionQuality,
     /// Seeded random output; sequence + grouping must match plus the
     /// distribution baseline.
     SeededSequence,
@@ -49,6 +55,7 @@ impl ParityComparator {
             Self::ExactInt => "exact_int",
             Self::Numeric => "numeric",
             Self::PartitionEquivalence => "partition_equivalence",
+            Self::PartitionQuality => "partition_quality",
             Self::SeededSequence => "seeded_sequence",
             Self::RankCorrelation => "rank_correlation",
             Self::EdgeSubgraph => "edge_subgraph",
@@ -79,7 +86,8 @@ impl ParityTruthSource {
 
 /// Per-row tolerance for floating-point comparators.
 ///
-/// Comparators that operate on integers ignore both fields.
+/// Integer comparators ignore both fields. `PartitionQuality` uses them as
+/// absolute and relative modularity tolerances.
 #[doc(hidden)]
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ParityTolerance {
@@ -398,8 +406,13 @@ pub const CUGRAPH_PARITY_SPECS: &[ParitySpec] = &[
         seed: None,
         truth_source: ParityTruthSource::OracleJson,
         oracle_relpath: "karate/ecg__default.json",
-        comparator: ParityComparator::PartitionEquivalence,
-        tolerance: ParityTolerance::exact(),
+        // ECG runs a randomized Louvain ensemble. A fixed seed makes a
+        // particular build repeatable, but does not make partitions portable
+        // across CUDA/cuGraph builds or graph-ordering implementations. Keep
+        // the Python result as a modularity baseline instead of requiring its
+        // exact set-of-sets partition.
+        comparator: ParityComparator::PartitionQuality,
+        tolerance: ParityTolerance { abs: 5.0e-2, rel: 0.0 },
     },
     ParitySpec {
         label: "spectral_modularity_maximization/karate@default",

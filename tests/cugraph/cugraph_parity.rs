@@ -3,7 +3,10 @@
 //! The CPU tests validate local dataset SHA-256 values and oracle headers.
 //! The registry-driven GPU test executes every advertised algorithm through
 //! its public SQL table function and compares Arrow results with the pinned
-//! Python cuGraph oracle (or the curated Katz reference CSV). See
+//! Python cuGraph oracle (or the curated Katz reference CSV). ECG is the
+//! exception: its randomized ensemble is checked for replay stability and
+//! partition quality against the oracle, not an exact cross-build partition.
+//! See
 //! `docs/plan/2026-05-20-cugraph-rs-full-api-support-plan.md` (Testing
 //! redesign section) for the full design.
 
@@ -224,9 +227,30 @@ async fn all_registered_algorithms_execute_on_gpu_and_match_oracles() {
             spec.label,
             datafusion::physical_plan::displayable(plan.as_ref()).indent(false)
         );
-        let batches = datafusion::physical_plan::collect(plan, ctx.task_ctx())
+        let batches = datafusion::physical_plan::collect(Arc::clone(&plan), ctx.task_ctx())
             .await
             .unwrap_or_else(|error| panic!("{}: GPU execution failed for {sql}: {error}", spec.label));
+        if spec.algorithm == CugraphAlgorithm::Ecg {
+            // A DataFusion physical plan owns consumable file-scan state, so
+            // collecting the same `plan` twice only replays an exhausted
+            // source. Rebuild it from the same logical DataFrame to exercise
+            // the same SQL, binary, and seed with a fresh execution graph.
+            let replay_plan = df.create_physical_plan().await.unwrap_or_else(|error| {
+                panic!("{}: ECG replay physical planning failed for {sql}: {error}", spec.label)
+            });
+            assert!(
+                plan_contains_cugraph_exec(replay_plan.as_ref()),
+                "{}: ECG replay query did not plan a CugraphAlgoExec:\n{}",
+                spec.label,
+                datafusion::physical_plan::displayable(replay_plan.as_ref()).indent(false)
+            );
+            let replay = datafusion::physical_plan::collect(replay_plan, ctx.task_ctx())
+                .await
+                .unwrap_or_else(|error| panic!("{}: GPU replay failed for {sql}: {error}", spec.label));
+            compare::compare_repeated_partitions(&batches, &replay).unwrap_or_else(|reason| {
+                panic!("{}: same-binary, same-seed ECG replay was unstable: {reason}\nSQL: {sql}", spec.label)
+            });
+        }
         let reference_vertices = match spec.truth_source {
             ParityTruthSource::RefCsv { path } => Some(
                 load_ref_csv_vertex_list(&loaded.data_root, path)
@@ -239,11 +263,15 @@ async fn all_registered_algorithms_execute_on_gpu_and_match_oracles() {
             .unwrap_or_else(|error| panic!("{}: dataset edge load failed: {error}", spec.label));
         compare::compare(spec, &batches, &document, reference_vertices.as_deref(), &edges)
             .unwrap_or_else(|reason| panic!("{}: GPU/oracle parity failed: {reason}\nSQL: {sql}", spec.label));
-        assert!(executed.insert(spec.algorithm), "algorithm {:?} executed more than once", spec.algorithm);
+        assert!(
+            executed.insert(spec.algorithm),
+            "parity registry contains more than one row for algorithm {:?}",
+            spec.algorithm
+        );
     }
 
     let registered = CUGRAPH_OPERATION_REGISTRY.iter().map(|definition| definition.algorithm).collect();
-    assert_eq!(executed, registered, "the GPU parity run must execute every registered algorithm exactly once");
+    assert_eq!(executed, registered, "the GPU parity run must cover every registered algorithm");
 }
 
 fn parity_session_state() -> datafusion::execution::SessionState {

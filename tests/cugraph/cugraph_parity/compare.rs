@@ -174,9 +174,12 @@ pub fn compare(
         },
         ParityComparator::Numeric => compare_numeric(&actual, &expected, spec.tolerance.abs, spec.tolerance.rel),
         ParityComparator::PartitionEquivalence => compare_partitions(&actual, &expected),
+        ParityComparator::PartitionQuality if spec.algorithm == CugraphAlgorithm::Ecg => {
+            compare_ecg_partition_quality(&actual, &expected, edges, spec)
+        },
         ParityComparator::EdgeSubgraph => compare_edges(&actual, &expected),
         ParityComparator::TopKVertices => unreachable!("handled above"),
-        ParityComparator::SeededSequence | ParityComparator::RankCorrelation => {
+        ParityComparator::PartitionQuality | ParityComparator::SeededSequence | ParityComparator::RankCorrelation => {
             Err(format!("comparator family '{}' has no registry rows yet", spec.comparator.as_str()))
         },
     }
@@ -468,24 +471,187 @@ fn cells_match(column: &str, actual: Cell, expected: Cell) -> bool {
 }
 
 fn compare_partitions(actual: &Table, expected: &Table) -> Result<(), String> {
-    let actual_vertices = actual.integer_column("vertex")?;
-    let expected_vertices = expected.integer_column("vertex")?;
-    let label_name = if actual.columns.contains_key("partition") { "partition" } else { "label" };
-    let actual_labels = actual.integer_column(label_name)?;
-    let expected_labels = expected.integer_column(label_name)?;
-    let canonicalize = |vertices: Vec<i64>, labels: Vec<i64>| {
-        let mut groups = BTreeMap::<i64, BTreeSet<i64>>::new();
-        for (vertex, label) in vertices.into_iter().zip(labels) {
-            groups.entry(label).or_default().insert(vertex);
-        }
-        groups.into_values().collect::<BTreeSet<_>>()
-    };
-    let actual_groups = canonicalize(actual_vertices, actual_labels);
-    let expected_groups = canonicalize(expected_vertices, expected_labels);
+    let actual_groups = partition_groups(actual)?;
+    let expected_groups = partition_groups(expected)?;
     if actual_groups != expected_groups {
         return Err(format!("partition mismatch: GPU={actual_groups:?} oracle={expected_groups:?}"));
     }
     Ok(())
+}
+
+/// Verify that repeated runs from the same loaded binary and seed produce the
+/// same partition. Community label IDs themselves are not part of the
+/// contract, so this compares sets of vertices per community.
+pub fn compare_repeated_partitions(
+    initial_batches: &[RecordBatch],
+    replay_batches: &[RecordBatch],
+) -> Result<(), String> {
+    let initial = Table::from_batches(initial_batches)?;
+    let replay = Table::from_batches(replay_batches)?;
+    let initial_groups = partition_groups(&initial)?;
+    let replay_groups = partition_groups(&replay)?;
+    if initial_groups != replay_groups {
+        return Err(format!("partition changed between runs: initial={initial_groups:?} replay={replay_groups:?}"));
+    }
+    Ok(())
+}
+
+/// ECG uses randomized Louvain internally.  Exact partition equality with a
+/// Python oracle is therefore not a portable correctness condition: a CUDA or
+/// cuGraph build may choose an equally valid partition despite the same seed.
+///
+/// The oracle remains useful as a quality baseline. Require the exact vertex
+/// set, permit at most one community either side of its count, and require
+/// modularity on the same Python-compatible undirected normalized edge list to
+/// remain within tolerance below the oracle baseline. A higher modularity is
+/// an improvement, not a parity failure.
+fn compare_ecg_partition_quality(
+    actual: &Table,
+    expected: &Table,
+    edges: &[ParityEdge],
+    spec: &ParitySpec,
+) -> Result<(), String> {
+    const COMMUNITY_COUNT_DELTA: usize = 1;
+
+    let actual_assignments = partition_assignments(actual)?;
+    let expected_assignments = partition_assignments(expected)?;
+    let actual_vertices = actual_assignments.keys().copied().collect::<BTreeSet<_>>();
+    let expected_vertices = expected_assignments.keys().copied().collect::<BTreeSet<_>>();
+    let normalized_edges = python_undirected_edges(edges)?;
+    let graph_vertices =
+        normalized_edges.iter().flat_map(|edge| [edge.source, edge.destination]).collect::<BTreeSet<_>>();
+    if actual_vertices != graph_vertices {
+        return Err(format!("ECG vertex coverage mismatch: GPU={actual_vertices:?} graph={graph_vertices:?}"));
+    }
+    if expected_vertices != graph_vertices {
+        return Err(format!(
+            "ECG oracle vertex coverage mismatch: oracle={expected_vertices:?} graph={graph_vertices:?}"
+        ));
+    }
+
+    let actual_communities = actual_assignments.values().copied().collect::<BTreeSet<_>>().len();
+    let expected_communities = expected_assignments.values().copied().collect::<BTreeSet<_>>().len();
+    let minimum_communities = expected_communities.saturating_sub(COMMUNITY_COUNT_DELTA).max(1);
+    let maximum_communities = expected_communities.saturating_add(COMMUNITY_COUNT_DELTA);
+    if !(minimum_communities..=maximum_communities).contains(&actual_communities) {
+        return Err(format!(
+            "ECG community-count mismatch: GPU={actual_communities}, oracle={expected_communities}, accepted={minimum_communities}..={maximum_communities}"
+        ));
+    }
+
+    let resolution = ecg_resolution(spec)?;
+    let actual_modularity = partition_modularity(&actual_assignments, &normalized_edges, resolution)?;
+    let expected_modularity = partition_modularity(&expected_assignments, &normalized_edges, resolution)?;
+    let tolerance = spec.tolerance.abs.max(spec.tolerance.rel * expected_modularity.abs());
+    let minimum_modularity = expected_modularity - tolerance;
+    if actual_modularity < minimum_modularity {
+        return Err(format!(
+            "ECG modularity below oracle baseline: GPU={actual_modularity}, oracle={expected_modularity}, minimum={minimum_modularity}, tolerance={tolerance}"
+        ));
+    }
+    Ok(())
+}
+
+fn partition_assignments(table: &Table) -> Result<BTreeMap<i64, i64>, String> {
+    let vertices = table.integer_column("vertex")?;
+    let label_name = if table.columns.contains_key("partition") { "partition" } else { "label" };
+    let labels = table.integer_column(label_name)?;
+    if vertices.len() != labels.len() {
+        return Err(format!(
+            "partition result has mismatched vertex/label lengths: vertices={} labels={}",
+            vertices.len(),
+            labels.len()
+        ));
+    }
+    let mut assignments = BTreeMap::new();
+    for (row, (vertex, label)) in vertices.into_iter().zip(labels).enumerate() {
+        if assignments.insert(vertex, label).is_some() {
+            return Err(format!("partition result has duplicate vertex {vertex} at row {row}"));
+        }
+    }
+    Ok(assignments)
+}
+
+fn partition_groups(table: &Table) -> Result<BTreeSet<BTreeSet<i64>>, String> {
+    let mut groups = BTreeMap::<i64, BTreeSet<i64>>::new();
+    for (vertex, label) in partition_assignments(table)? {
+        groups.entry(label).or_default().insert(vertex);
+    }
+    Ok(groups.into_values().collect())
+}
+
+fn ecg_resolution(spec: &ParitySpec) -> Result<f64, String> {
+    let params = serde_json::from_str::<Value>(spec.params_json)
+        .map_err(|error| format!("ECG parity spec has invalid params JSON: {error}"))?;
+    let resolution = params
+        .get("resolution")
+        .and_then(Value::as_f64)
+        .ok_or_else(|| "ECG parity spec is missing a numeric resolution".to_string())?;
+    if !resolution.is_finite() || resolution <= 0.0 {
+        return Err(format!("ECG parity spec resolution must be finite and positive, got {resolution}"));
+    }
+    Ok(resolution)
+}
+
+/// Mirror the undirected Python-compatible edge normalization used by ECG:
+/// add reverse arcs, then retain the minimum finite weight for every directed
+/// `(src, dst)` pair. The committed karate fixture is already symmetric, but
+/// doing this explicitly keeps the metric coupled to execution semantics.
+fn python_undirected_edges(edges: &[ParityEdge]) -> Result<Vec<ParityEdge>, String> {
+    let mut normalized = BTreeMap::<(i64, i64), f64>::new();
+    for edge in edges {
+        if !edge.weight.is_finite() {
+            return Err(format!(
+                "ECG input edge {}->{} has non-finite weight {}",
+                edge.source, edge.destination, edge.weight
+            ));
+        }
+        for (source, destination) in [(edge.source, edge.destination), (edge.destination, edge.source)] {
+            normalized
+                .entry((source, destination))
+                .and_modify(|weight| *weight = weight.min(edge.weight))
+                .or_insert(edge.weight);
+        }
+    }
+    Ok(normalized
+        .into_iter()
+        .map(|((source, destination), weight)| ParityEdge { source, destination, weight })
+        .collect())
+}
+
+/// Match libcugraph ECG's final modularity calculation: sum internal edge
+/// weights divided by total oriented weight, minus resolution times the sum of
+/// squared source-community weights divided by total weight squared.
+fn partition_modularity(
+    assignments: &BTreeMap<i64, i64>,
+    edges: &[ParityEdge],
+    resolution: f64,
+) -> Result<f64, String> {
+    let mut total_weight = 0.0;
+    let mut internal_weight = 0.0;
+    let mut community_weights = BTreeMap::<i64, f64>::new();
+    for edge in edges {
+        let source_community = assignments
+            .get(&edge.source)
+            .ok_or_else(|| format!("ECG partition is missing source vertex {}", edge.source))?;
+        let destination_community = assignments
+            .get(&edge.destination)
+            .ok_or_else(|| format!("ECG partition is missing destination vertex {}", edge.destination))?;
+        total_weight += edge.weight;
+        *community_weights.entry(*source_community).or_default() += edge.weight;
+        if source_community == destination_community {
+            internal_weight += edge.weight;
+        }
+    }
+    if !total_weight.is_finite() || total_weight <= 0.0 {
+        return Err(format!("ECG modularity requires positive finite total edge weight, got {total_weight}"));
+    }
+    let sum_degree_squared = community_weights.values().map(|weight| weight * weight).sum::<f64>();
+    let modularity = internal_weight / total_weight - resolution * sum_degree_squared / (total_weight * total_weight);
+    if !modularity.is_finite() {
+        return Err(format!("ECG modularity is non-finite: {modularity}"));
+    }
+    Ok(modularity)
 }
 
 fn compare_edges(actual: &Table, expected: &Table) -> Result<(), String> {
@@ -541,9 +707,10 @@ mod tests {
     use std::sync::Arc;
 
     use arrow::{
-        array::Int64Array,
+        array::{ArrayRef, Int64Array},
         datatypes::{Field, Schema},
     };
+    use datafusion_nexus::graph_sql::parity::ParityTolerance;
 
     use super::*;
 
@@ -568,11 +735,114 @@ mod tests {
         }
     }
 
+    fn ecg_quality_spec(abs_tolerance: f64) -> ParitySpec {
+        ParitySpec {
+            label: "ecg/test",
+            algorithm: CugraphAlgorithm::Ecg,
+            dataset: "test",
+            params_json: r#"{"resolution":1.0}"#,
+            seed: Some(0),
+            truth_source: ParityTruthSource::OracleJson,
+            oracle_relpath: "test.json",
+            comparator: ParityComparator::PartitionQuality,
+            tolerance: ParityTolerance { abs: abs_tolerance, rel: 0.0 },
+        }
+    }
+
+    fn partition_batches(vertices: Vec<i64>, labels: Vec<i64>) -> Vec<RecordBatch> {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("vertex", DataType::Int64, false),
+            Field::new("partition", DataType::Int64, false),
+        ]));
+        vec![
+            RecordBatch::try_new(
+                schema,
+                vec![Arc::new(Int64Array::from(vertices)) as ArrayRef, Arc::new(Int64Array::from(labels)) as ArrayRef],
+            )
+            .unwrap(),
+        ]
+    }
+
     #[test]
     fn partition_comparison_ignores_label_renaming() {
         let actual = partition_table(vec![0, 1, 2, 3], vec![7, 7, 9, 9], "partition");
         let expected = partition_table(vec![0, 1, 2, 3], vec![2, 2, 1, 1], "partition");
         compare_partitions(&actual, &expected).unwrap();
+    }
+
+    #[test]
+    fn ecg_quality_comparison_accepts_different_partition_at_the_same_quality() {
+        // The two ways to split a four-cycle both have modularity zero. This
+        // proves the ECG comparator deliberately accepts an equally good
+        // partition rather than treating the oracle's labels as a golden
+        // cross-build result.
+        let expected = partition_table(vec![0, 1, 2, 3], vec![0, 0, 1, 1], "partition");
+        let actual = partition_table(vec![0, 1, 2, 3], vec![0, 1, 1, 0], "partition");
+        let edges = [
+            ParityEdge { source: 0, destination: 1, weight: 1.0 },
+            ParityEdge { source: 1, destination: 2, weight: 1.0 },
+            ParityEdge { source: 2, destination: 3, weight: 1.0 },
+            ParityEdge { source: 3, destination: 0, weight: 1.0 },
+        ];
+        compare_ecg_partition_quality(&actual, &expected, &edges, &ecg_quality_spec(0.0)).unwrap();
+    }
+
+    #[test]
+    fn ecg_quality_comparison_rejects_low_modularity_partition() {
+        let expected = partition_table(vec![0, 1, 2, 3], vec![0, 0, 1, 1], "partition");
+        let actual = partition_table(vec![0, 1, 2, 3], vec![0, 0, 0, 0], "partition");
+        let edges = [
+            ParityEdge { source: 0, destination: 1, weight: 1.0 },
+            ParityEdge { source: 2, destination: 3, weight: 1.0 },
+        ];
+        let error = compare_ecg_partition_quality(&actual, &expected, &edges, &ecg_quality_spec(0.1)).unwrap_err();
+        assert!(error.contains("modularity below oracle baseline"), "unexpected error: {error}");
+    }
+
+    #[test]
+    fn ecg_quality_comparison_accepts_higher_modularity_than_the_oracle() {
+        let expected = partition_table(vec![0, 1, 2, 3], vec![0, 0, 0, 0], "partition");
+        let actual = partition_table(vec![0, 1, 2, 3], vec![0, 0, 1, 1], "partition");
+        let edges = [
+            ParityEdge { source: 0, destination: 1, weight: 1.0 },
+            ParityEdge { source: 2, destination: 3, weight: 1.0 },
+        ];
+        compare_ecg_partition_quality(&actual, &expected, &edges, &ecg_quality_spec(0.0)).unwrap();
+    }
+
+    #[test]
+    fn ecg_quality_comparison_rejects_unreasonable_community_count() {
+        let expected = partition_table(vec![0, 1, 2, 3], vec![0, 0, 1, 1], "partition");
+        let actual = partition_table(vec![0, 1, 2, 3], vec![0, 1, 2, 3], "partition");
+        let edges = [
+            ParityEdge { source: 0, destination: 1, weight: 1.0 },
+            ParityEdge { source: 2, destination: 3, weight: 1.0 },
+        ];
+        let error = compare_ecg_partition_quality(&actual, &expected, &edges, &ecg_quality_spec(1.0)).unwrap_err();
+        assert!(error.contains("community-count mismatch"), "unexpected error: {error}");
+    }
+
+    #[test]
+    fn ecg_quality_comparison_rejects_incomplete_vertex_coverage() {
+        let expected = partition_table(vec![0, 1, 2, 3], vec![0, 0, 1, 1], "partition");
+        let actual = partition_table(vec![0, 1, 2], vec![0, 0, 1], "partition");
+        let edges = [
+            ParityEdge { source: 0, destination: 1, weight: 1.0 },
+            ParityEdge { source: 2, destination: 3, weight: 1.0 },
+        ];
+        let error = compare_ecg_partition_quality(&actual, &expected, &edges, &ecg_quality_spec(1.0)).unwrap_err();
+        assert!(error.contains("vertex coverage mismatch"), "unexpected error: {error}");
+    }
+
+    #[test]
+    fn repeated_partition_comparison_ignores_label_renaming_but_rejects_group_changes() {
+        let initial = partition_batches(vec![0, 1, 2, 3], vec![7, 7, 9, 9]);
+        let relabeled = partition_batches(vec![0, 1, 2, 3], vec![2, 2, 1, 1]);
+        compare_repeated_partitions(&initial, &relabeled).unwrap();
+
+        let changed = partition_batches(vec![0, 1, 2, 3], vec![2, 1, 1, 2]);
+        let error = compare_repeated_partitions(&initial, &changed).unwrap_err();
+        assert!(error.contains("partition changed between runs"), "unexpected error: {error}");
     }
 
     #[test]
