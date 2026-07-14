@@ -30,6 +30,8 @@ pub struct DeviceRegistryConfig {
     /// The effective capacity is `min(inventory_capacity, device_capacity_bytes)`
     /// so a single config value cannot over-grant smaller GPUs.
     pub device_capacity_bytes: Option<u64>,
+    /// Physical allocator installed for each device before any runtime is built.
+    pub device_memory_manager_base: cudf::DeviceMemoryManagerBase,
 }
 
 impl DeviceRegistryConfig {
@@ -41,6 +43,7 @@ impl DeviceRegistryConfig {
             capacity_headroom_bytes: 500 * 1024 * 1024,
             fallback_capacity_bytes: 256 * 1024 * 1024,
             device_capacity_bytes: None,
+            device_memory_manager_base: cudf::DeviceMemoryManagerBase::default(),
         }
     }
 
@@ -54,6 +57,12 @@ impl DeviceRegistryConfig {
     /// Sets a maximum governor capacity for every installed device.
     pub fn with_device_capacity_bytes(mut self, device_capacity_bytes: u64) -> Self {
         self.device_capacity_bytes = Some(device_capacity_bytes);
+        self
+    }
+
+    /// Selects the process-lifetime physical allocator installed per device.
+    pub fn with_device_memory_manager_base(mut self, base: cudf::DeviceMemoryManagerBase) -> Self {
+        self.device_memory_manager_base = base;
         self
     }
 }
@@ -87,8 +96,12 @@ impl DeviceRegistry {
             let capacity_bytes =
                 config.device_capacity_bytes.map_or(inventory_capacity_bytes, |cap| cap.min(inventory_capacity_bytes));
             let memory_failure_tracker = DeviceMemoryFailureTracker::for_device(*ordinal);
-            let mr_manager = install_device_memory_manager(device, &memory_failure_tracker)
-                .map_err(|error| error.with_fact("device_ordinal", *ordinal))?;
+            let mr_manager = install_device_memory_manager(
+                device,
+                &memory_failure_tracker,
+                cudf::DeviceMemoryManagerOptions { base: config.device_memory_manager_base },
+            )
+            .map_err(|error| error.with_fact("device_ordinal", *ordinal))?;
             let stream_pool = ServiceStreamPool::new(device, config.stream_pool_size)?;
             let governor = shared_memory_governor(*ordinal, capacity_bytes)?;
             let active_queries = shared_active_query_counter(*ordinal)?;
@@ -215,7 +228,35 @@ fn shared_active_query_counter(device_ordinal: usize) -> Result<Arc<AtomicUsize>
 fn install_device_memory_manager(
     device: cudf::DeviceId,
     memory_failure_tracker: &DeviceMemoryFailureTracker,
+    options: cudf::DeviceMemoryManagerOptions,
 ) -> Result<cudf::DeviceMemoryManager> {
+    match install_device_memory_manager_inner(device, memory_failure_tracker, options) {
+        Ok(manager) => Ok(manager),
+        Err(error) if error.fact_value("reason") == Some("device_memory_manager_options_conflict") => Err(error),
+        Err(error) => match installed_memory_manager_options_conflict(device, options) {
+            Some(conflict) => Err(conflict.with_source(error)),
+            None => Err(error),
+        },
+    }
+}
+
+fn install_device_memory_manager_inner(
+    device: cudf::DeviceId,
+    memory_failure_tracker: &DeviceMemoryFailureTracker,
+    options: cudf::DeviceMemoryManagerOptions,
+) -> Result<cudf::DeviceMemoryManager> {
+    let existing_options = cudf::DeviceMemoryManager::options_for_device(device).map_err(|error| {
+        QueryError::from_cudf(
+            "nexus_query_engine.gpu.device_registry.memory_manager",
+            "failed to inspect installed device memory manager options",
+            error,
+        )
+    })?;
+    if let Some(existing_options) = existing_options
+        && existing_options != options
+    {
+        return Err(memory_manager_options_conflict(existing_options, options));
+    }
     let callback_state = cudf::DeviceMemoryManager::failure_callback_state_for_device(device).map_err(|error| {
         QueryError::from_cudf(
             "nexus_query_engine.gpu.device_registry.memory_manager",
@@ -225,7 +266,7 @@ fn install_device_memory_manager(
     })?;
     if callback_state.exists && !callback_state.failure_callback_installed {
         memory_failure_tracker.mark_callback_install_unavailable();
-        return cudf::DeviceMemoryManager::install_for_device(device).map_err(|error| {
+        return cudf::DeviceMemoryManager::install_for_device_with_options(device, options).map_err(|error| {
             QueryError::from_cudf(
                 "nexus_query_engine.gpu.device_registry.memory_manager",
                 "failed to install existing device memory manager after callback install was unavailable",
@@ -236,7 +277,7 @@ fn install_device_memory_manager(
     if callback_state.exists && callback_state.failure_callback_installed {
         let report = memory_failure_tracker.report();
         if report.callback_installed {
-            return cudf::DeviceMemoryManager::install_for_device(device).map_err(|error| {
+            return cudf::DeviceMemoryManager::install_for_device_with_options(device, options).map_err(|error| {
                 QueryError::from_cudf(
                     "nexus_query_engine.gpu.device_registry.memory_manager",
                     "failed to resolve existing callback-installed device memory manager",
@@ -245,7 +286,7 @@ fn install_device_memory_manager(
             });
         }
         memory_failure_tracker.mark_callback_install_unavailable();
-        return cudf::DeviceMemoryManager::install_for_device(device).map_err(|error| {
+        return cudf::DeviceMemoryManager::install_for_device_with_options(device, options).map_err(|error| {
             QueryError::from_cudf(
                 "nexus_query_engine.gpu.device_registry.memory_manager",
                 "failed to resolve existing foreign callback-installed device memory manager",
@@ -253,9 +294,10 @@ fn install_device_memory_manager(
             )
         });
     }
-    match cudf::DeviceMemoryManager::install_for_device_with_failure_callback_details(
+    match cudf::DeviceMemoryManager::install_for_device_with_failure_callback_details_and_options(
         device,
         memory_failure_tracker.failure_callback(),
+        options,
     ) {
         Ok(manager) => {
             memory_failure_tracker.mark_callback_installed();
@@ -264,7 +306,7 @@ fn install_device_memory_manager(
         Err(error) => {
             if existing_plain_memory_manager(device)? {
                 memory_failure_tracker.mark_callback_install_unavailable();
-                cudf::DeviceMemoryManager::install_for_device(device).map_err(|fallback_error| {
+                cudf::DeviceMemoryManager::install_for_device_with_options(device, options).map_err(|fallback_error| {
                     QueryError::from_cudf(
                         "nexus_query_engine.gpu.device_registry.memory_manager",
                         "failed to install existing device memory manager after callback install was unavailable",
@@ -280,6 +322,29 @@ fn install_device_memory_manager(
             }
         },
     }
+}
+
+fn installed_memory_manager_options_conflict(
+    device: cudf::DeviceId,
+    requested_options: cudf::DeviceMemoryManagerOptions,
+) -> Option<QueryError> {
+    let existing_options = cudf::DeviceMemoryManager::options_for_device(device).ok().flatten()?;
+    (existing_options != requested_options)
+        .then(|| memory_manager_options_conflict(existing_options, requested_options))
+}
+
+fn memory_manager_options_conflict(
+    existing_options: cudf::DeviceMemoryManagerOptions,
+    requested_options: cudf::DeviceMemoryManagerOptions,
+) -> QueryError {
+    QueryError::new(
+        QueryErrorCode::InvalidPlan,
+        "nexus_query_engine.gpu.device_registry.memory_manager",
+        "device memory manager is already installed with different physical-base options",
+    )
+    .with_fact("existing_options", format!("{existing_options:?}"))
+    .with_fact("requested_options", format!("{requested_options:?}"))
+    .with_fact("reason", "device_memory_manager_options_conflict")
 }
 
 fn existing_plain_memory_manager(device: cudf::DeviceId) -> Result<bool> {
@@ -322,6 +387,30 @@ fn validate_registry_config(config: &DeviceRegistryConfig) -> Result<()> {
         )
         .with_fact("field", "device_capacity_bytes")
         .with_fact("reason", "zero"));
+    }
+    if let cudf::DeviceMemoryManagerBase::Pool { initial_pool_size, maximum_pool_size } =
+        config.device_memory_manager_base
+    {
+        if initial_pool_size == 0 {
+            return Err(QueryError::new(
+                QueryErrorCode::InvalidPlan,
+                "nexus_query_engine.gpu.device_registry.config",
+                "device memory manager pool initial size must be greater than zero",
+            )
+            .with_fact("field", "device_memory_manager_base.initial_pool_size")
+            .with_fact("reason", "zero"));
+        }
+        if maximum_pool_size.is_some_and(|maximum| maximum < initial_pool_size) {
+            return Err(QueryError::new(
+                QueryErrorCode::InvalidPlan,
+                "nexus_query_engine.gpu.device_registry.config",
+                "device memory manager pool maximum must be at least its initial size",
+            )
+            .with_fact("field", "device_memory_manager_base.maximum_pool_size")
+            .with_fact("initial_pool_size", initial_pool_size)
+            .with_fact("maximum_pool_size", maximum_pool_size.unwrap_or_default())
+            .with_fact("reason", "pool_maximum_below_initial"));
+        }
     }
     Ok(())
 }
@@ -447,5 +536,18 @@ mod tests {
         assert_eq!(error.code(), QueryErrorCode::InvalidPlan);
         assert_eq!(error.fact_value("field"), Some("device_ordinals"));
         assert_eq!(error.fact_value("reason"), Some("out_of_range"));
+    }
+
+    #[test]
+    fn registry_config_rejects_pool_maximum_below_initial_size() {
+        let config = DeviceRegistryConfig::new(vec![0], 1).with_device_memory_manager_base(
+            cudf::DeviceMemoryManagerBase::Pool { initial_pool_size: 4096, maximum_pool_size: Some(2048) },
+        );
+
+        let error = validate_registry_config(&config).unwrap_err();
+
+        assert_eq!(error.code(), QueryErrorCode::InvalidPlan);
+        assert_eq!(error.fact_value("field"), Some("device_memory_manager_base.maximum_pool_size"));
+        assert_eq!(error.fact_value("reason"), Some("pool_maximum_below_initial"));
     }
 }

@@ -457,6 +457,52 @@ fn validate_placement_policy_for_resources(
     .with_fact("pinned_device_ordinal", device_ordinal))
 }
 
+fn validate_placement_policy_for_device_ordinals(config: &QueryServiceConfig, device_ordinals: &[usize]) -> Result<()> {
+    let QueryPlacementPolicy::Pinned { device_ordinal } = config.placement_policy else {
+        return Ok(());
+    };
+    // An empty list means all visible devices; the resolved registry performs
+    // the definitive check after inventory discovery.
+    if device_ordinals.is_empty() || device_ordinals.contains(&device_ordinal) {
+        return Ok(());
+    }
+    Err(QueryError::new(
+        QueryErrorCode::InvalidPlan,
+        "nexus_query_engine.query_service.config.validate",
+        "pinned query placement device must be one of the query service devices",
+    )
+    .with_fact("field", "placement_policy")
+    .with_fact("reason", "pinned_device_not_configured")
+    .with_fact("pinned_device_ordinal", device_ordinal))
+}
+
+fn validate_query_service_tenants(tenants: &[QueryServiceTenantConfig]) -> Result<()> {
+    if tenants.is_empty() {
+        return Err(QueryError::new(
+            QueryErrorCode::InvalidPlan,
+            "nexus_query_engine.query_service.tenant.validate",
+            "query service requires at least one tenant",
+        )
+        .with_fact("field", "tenants")
+        .with_fact("reason", "empty"));
+    }
+
+    let mut tenant_ids = BTreeSet::new();
+    for tenant in tenants {
+        tenant.validate()?;
+        if !tenant_ids.insert(tenant.tenant_id.as_str()) {
+            return Err(QueryError::new(
+                QueryErrorCode::InvalidPlan,
+                "nexus_query_engine.query_service.tenant.validate",
+                "query service tenant ids must be unique",
+            )
+            .with_fact("tenant_id", tenant.tenant_id.as_str())
+            .with_fact("reason", "duplicate"));
+        }
+    }
+    Ok(())
+}
+
 fn register_shared_device_admission_waiters(inner: &Arc<QueryServiceInner>) -> Result<()> {
     let Some(resources) = &inner.resources else {
         return Ok(());
@@ -588,6 +634,12 @@ impl QueryService {
         tenants: Vec<QueryServiceTenantConfig>,
         deployment_io_capability: DeploymentIoCapability,
     ) -> Result<Self> {
+        // Resource-independent admission must precede process-global allocator
+        // installation so those rejections cannot mutate CUDA/RMM state.
+        config.validate(&deployment_io_capability)?;
+        SourceObjectStoreRegistry::validate_profiles(&config.source_storage_profiles)?;
+        validate_query_service_tenants(&tenants)?;
+        validate_placement_policy_for_device_ordinals(&config, &device_ordinals)?;
         let default_stream_pool_size = default_stream_pool_size_for_ordinals(&device_ordinals)?;
         let minimum_stream_pool_size = minimum_stream_pool_size(
             config.max_concurrent_queries,
@@ -601,6 +653,7 @@ impl QueryService {
             config.source_scheduler_policy.max_source_reads_in_flight(),
         )?;
         let mut registry_config = super::DeviceRegistryConfig::new(device_ordinals, stream_pool_size);
+        registry_config = registry_config.with_device_memory_manager_base(config.device_memory_manager_base);
         if let Some(device_capacity_bytes) = config.device_capacity_bytes {
             registry_config = registry_config.with_device_capacity_bytes(device_capacity_bytes);
         }
@@ -706,43 +759,22 @@ impl QueryService {
     ) -> Result<Self> {
         let mut resources = resources;
         config.validate(&deployment)?;
+        SourceObjectStoreRegistry::validate_profiles(&config.source_storage_profiles)?;
+        validate_query_service_tenants(&tenants)?;
         validate_placement_policy_for_resources(&config, resources.as_ref())?;
-        if tenants.is_empty() {
-            return Err(QueryError::new(
-                QueryErrorCode::InvalidPlan,
-                "nexus_query_engine.query_service.tenant.validate",
-                "query service requires at least one tenant",
-            )
-            .with_fact("field", "tenants")
-            .with_fact("reason", "empty"));
-        }
 
         let mut tenant_grants = HashMap::with_capacity(tenants.len());
         let mut tenant_order = Vec::with_capacity(tenants.len());
         let mut max_tenant_want_bytes = 0u64;
         let mut max_tenant_min_bytes = 0u64;
         for tenant in tenants {
-            tenant.validate()?;
             max_tenant_want_bytes = max_tenant_want_bytes.max(tenant.device_budget_bytes);
             max_tenant_min_bytes = max_tenant_min_bytes.max(tenant.min_device_budget_bytes);
-            if tenant_grants
-                .insert(
-                    tenant.tenant_id.clone(),
-                    TenantGrantPolicy {
-                        min_bytes: tenant.min_device_budget_bytes,
-                        want_bytes: tenant.device_budget_bytes,
-                    },
-                )
-                .is_some()
-            {
-                return Err(QueryError::new(
-                    QueryErrorCode::InvalidPlan,
-                    "nexus_query_engine.query_service.tenant.validate",
-                    "query service tenant ids must be unique",
-                )
-                .with_fact("tenant_id", tenant.tenant_id.as_str())
-                .with_fact("reason", "duplicate"));
-            }
+            let previous = tenant_grants.insert(
+                tenant.tenant_id.clone(),
+                TenantGrantPolicy { min_bytes: tenant.min_device_budget_bytes, want_bytes: tenant.device_budget_bytes },
+            );
+            debug_assert!(previous.is_none(), "tenant preflight guarantees unique ids");
             tenant_order.push(tenant.tenant_id);
         }
         let max_concurrent_queries_u64 = u64::try_from(config.max_concurrent_queries).unwrap_or(u64::MAX);

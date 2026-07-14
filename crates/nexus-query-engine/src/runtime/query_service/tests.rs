@@ -694,6 +694,42 @@ fn query_service_rejects_query_memory_domain_with_durable_gpu_caches() {
     }
 }
 
+#[test]
+fn query_service_validates_pool_allocator_and_rejects_private_query_domains() {
+    let zero_pool = QueryServiceConfig {
+        device_memory_manager_base: cudf::DeviceMemoryManagerBase::Pool {
+            initial_pool_size: 0,
+            maximum_pool_size: Some(4096),
+        },
+        ..QueryServiceConfig::default()
+    };
+    let zero_error = QueryService::new_for_admission_tests(
+        zero_pool,
+        vec![QueryServiceTenantConfig::new("tenant", 1024 * 1024)],
+        non_gds_deployment(),
+    )
+    .unwrap_err();
+    assert_eq!(zero_error.fact_value("field"), Some("device_memory_manager_base.initial_pool_size"));
+    assert_eq!(zero_error.fact_value("reason"), Some("zero"));
+
+    let private_domain = QueryServiceConfig {
+        device_memory_manager_base: cudf::DeviceMemoryManagerBase::Pool {
+            initial_pool_size: 4096,
+            maximum_pool_size: Some(8192),
+        },
+        query_memory_domain: Some(QueryMemoryDomainPolicy::default()),
+        ..QueryServiceConfig::default()
+    };
+    let domain_error = QueryService::new_for_admission_tests(
+        private_domain,
+        vec![QueryServiceTenantConfig::new("tenant", 1024 * 1024)],
+        non_gds_deployment(),
+    )
+    .unwrap_err();
+    assert_eq!(domain_error.code(), QueryErrorCode::InvalidPlan);
+    assert_eq!(domain_error.fact_value("reason"), Some("query_memory_domain_requires_cuda_async_manager"));
+}
+
 #[cfg(feature = "cugraph")]
 #[test]
 fn query_service_rejects_zero_resident_graph_cache_capacity() {
