@@ -459,7 +459,7 @@ impl CugraphAlgoExec {
                 if path_target.is_some() { None } else { self.projection.as_ref() },
                 if path_target.is_some() { None } else { self.limit },
                 self.edge_normalize_inserted(),
-                singleflight_leader.as_deref_mut(),
+                singleflight_leader,
             )?;
             let batch = if let Some(target) = path_target {
                 let path = reconstruct_bfs_path_batch(&self.spec, &batch, target)?;
@@ -639,7 +639,7 @@ impl CugraphAlgoExec {
             if prepared.logical_codebook.is_some() { None } else { self.projection.as_ref() },
             if prepared.logical_codebook.is_some() { None } else { self.limit },
             self.edge_normalize_inserted(),
-            singleflight_leader.as_deref_mut(),
+            singleflight_leader,
         )?;
         let handle = if let Some(codebook) = prepared.logical_codebook {
             let decoded =
