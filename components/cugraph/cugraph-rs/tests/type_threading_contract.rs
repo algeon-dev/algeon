@@ -1,5 +1,3 @@
-#[allow(deprecated)]
-use cugraph::community::BalancedCutClusteringResult;
 use cugraph::{
     array::{DeviceArray, DeviceArrayView},
     centrality::{
@@ -40,10 +38,6 @@ fn graph_and_result_types_are_not_send_or_sync() {
     assert_not_impl_any!(LeidenResult: Send, Sync);
     assert_not_impl_any!(EcgResult: Send, Sync);
     assert_not_impl_any!(SpectralClusteringResult: Send, Sync);
-    #[allow(deprecated)]
-    {
-        assert_not_impl_any!(BalancedCutClusteringResult: Send, Sync);
-    }
     assert_not_impl_any!(BfsResult: Send, Sync);
     assert_not_impl_any!(SsspResult: Send, Sync);
     assert_not_impl_any!(ExtractPathsResult: Send, Sync);

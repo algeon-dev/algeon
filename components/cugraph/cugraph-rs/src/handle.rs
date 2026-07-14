@@ -411,24 +411,6 @@ impl ResourceHandle {
         Ok(Self { state: ResourceHandleState::ExternalOwned { raw, device }, _nosend_nosync: PhantomData })
     }
 
-    /// Wrap an existing external cuGraph resource handle.
-    ///
-    /// Deprecated alias for
-    /// [`from_raw_resource_handle`](Self::from_raw_resource_handle).
-    ///
-    /// # Safety
-    ///
-    /// Same safety requirements as
-    /// [`from_raw_resource_handle`](Self::from_raw_resource_handle).
-    #[deprecated(
-        note = "use ResourceHandle::from_raw_resource_handle(raw); this API wraps a cugraph_resource_handle_t*, not a raft::handle_t*"
-    )]
-    pub unsafe fn from_raft_handle(raw: *mut cugraph_resource_handle_t) -> Result<Self> {
-        // SAFETY: this deprecated alias forwards the exact same contract to
-        // `from_raw_resource_handle`.
-        unsafe { Self::from_raw_resource_handle(raw) }
-    }
-
     /// Get the raw C pointer. For internal use by other modules.
     #[allow(dead_code)]
     pub(crate) fn as_ptr(&self) -> *mut cugraph_resource_handle_t {

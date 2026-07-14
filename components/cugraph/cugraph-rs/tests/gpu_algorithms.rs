@@ -1667,45 +1667,6 @@ fn clustering_analysis_accepts_explicit_partition_columns() {
 }
 
 #[test]
-#[allow(deprecated)]
-fn balanced_cut_clustering_is_deprecated_but_callable() {
-    let _guard = common::cudf::cuda_test_serial_guard();
-    let handle = test_handle();
-    let entered = handle.enter("balanced_cut_clustering_is_deprecated_but_callable").expect("entered");
-    let src_data = [0i32, 0, 1, 1, 2, 2, 2, 3, 3, 3, 4, 4, 5, 5];
-    let dst_data = [1i32, 2, 0, 2, 0, 1, 3, 2, 4, 5, 3, 5, 3, 4];
-    let weights_data = [1.0f32; 14];
-    let src = DeviceArray::from_slice(&entered, &src_data).expect("src");
-    let dst = DeviceArray::from_slice(&entered, &dst_data).expect("dst");
-    let weights = DeviceArray::from_slice(&entered, &weights_data).expect("weights");
-    let src_view = src.view().expect("src_view");
-    let dst_view = dst.view().expect("dst_view");
-    let weights_view = weights.view().expect("weights_view");
-    let params = cugraph::community::BalancedCutClusteringParams::default();
-    let mut last_error = None;
-
-    for seed in 99..109 {
-        let mut graph = GraphBuilder::new(&src_view, &dst_view)
-            .weights(&weights_view)
-            .properties(GraphProperties::undirected())
-            .renumber()
-            .build::<Forward>(&entered)
-            .expect("graph");
-        let mut rng = RngState::new(&entered, seed).expect("rng");
-        match graph.balanced_cut_clustering(&entered, &mut rng, &params) {
-            Ok(result) => {
-                assert_eq!(result.vertex_ids().expect("vertices").len(), 6);
-                assert_eq!(result.clusters().expect("clusters").len(), 6);
-                return;
-            },
-            Err(err) => last_error = Some(err),
-        }
-    }
-
-    panic!("balanced cut clustering did not converge in retry window: {last_error:?}");
-}
-
-#[test]
 fn degrees_all_on_empty_graph_returns_empty_results() {
     let _guard = common::cudf::cuda_test_serial_guard();
     let handle = test_handle();

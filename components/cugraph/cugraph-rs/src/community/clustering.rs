@@ -4,9 +4,8 @@ use std::{num::NonZeroUsize, ptr};
 
 use cugraph_sys::{
     cugraph_analyze_clustering_edge_cut, cugraph_analyze_clustering_modularity, cugraph_analyze_clustering_ratio_cut,
-    cugraph_balanced_cut_clustering, cugraph_clustering_result_free, cugraph_clustering_result_get_clusters,
-    cugraph_clustering_result_get_vertices, cugraph_clustering_result_t, cugraph_error_t,
-    cugraph_spectral_modularity_maximization,
+    cugraph_clustering_result_free, cugraph_clustering_result_get_clusters, cugraph_clustering_result_get_vertices,
+    cugraph_clustering_result_t, cugraph_error_t, cugraph_spectral_modularity_maximization,
 };
 
 use crate::{
@@ -54,10 +53,6 @@ impl Default for SpectralClusteringParams {
         }
     }
 }
-
-/// Parameters for deprecated balanced-cut clustering.
-#[deprecated(note = "cuGraph deprecates balanced cut clustering; use spectral_modularity_maximization instead")]
-pub type BalancedCutClusteringParams = SpectralClusteringParams;
 
 pub(crate) struct ClusteringResult {
     raw: *mut cugraph_clustering_result_t,
@@ -175,53 +170,6 @@ macro_rules! define_clustering_result {
 
 define_clustering_result!(SpectralClusteringResult, spectral_clustering_result_to_dataframe);
 
-#[deprecated(
-    note = "cuGraph deprecates balanced cut clustering; use SpectralClusteringResult from spectral_modularity_maximization instead"
-)]
-pub struct BalancedCutClusteringResult(ClusteringResult);
-
-#[allow(deprecated)]
-impl std::fmt::Debug for BalancedCutClusteringResult {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("BalancedCutClusteringResult").finish_non_exhaustive()
-    }
-}
-
-#[allow(deprecated)]
-impl BalancedCutClusteringResult {
-    /// # Safety
-    ///
-    /// `raw` must be a valid, non-null pointer returned by
-    /// `cugraph_balanced_cut_clustering`. Ownership is transferred to this
-    /// struct.
-    pub(crate) unsafe fn from_raw(
-        raw: *mut cugraph_clustering_result_t,
-        device: i32,
-        resource_handle_lease: Option<ResourceHandleLease>,
-    ) -> Result<Self> {
-        // SAFETY: caller upholds the contract documented on this fn, which matches
-        // `ClusteringResult::from_raw`'s requirements (valid non-null pointer with
-        // transferred ownership).
-        Ok(Self(unsafe { ClusteringResult::from_raw(raw, device, resource_handle_lease) }?))
-    }
-
-    /// Vertex ids in the clustering output.
-    pub fn vertex_ids(&self) -> Result<VertexIds<'_>> {
-        self.0.vertices("BalancedCutClusteringResult::vertex_ids")
-    }
-
-    /// Per-vertex cluster assignments.
-    pub fn clusters(&self) -> Result<VertexIds<'_>> {
-        self.0.clusters("BalancedCutClusteringResult::clusters")
-    }
-
-    /// Convert this result to a cudf DataFrame.
-    pub fn to_dataframe(&self, runtime: &cudf::Runtime) -> Result<cudf::DataFrame> {
-        crate::cudf_interop::balanced_cut_clustering_result_to_dataframe(self, runtime)
-            .map_err(|e: Error| e.with_operation("BalancedCutClusteringResult::to_dataframe"))
-    }
-}
-
 pub(crate) fn spectral_modularity_maximization(
     handle: &EnteredContext<'_>,
     rng_state: &mut RngState,
@@ -238,19 +186,6 @@ pub(crate) fn spectral_modularity_maximization(
     )?;
     // SAFETY: on success, cuGraph transfers ownership of the result pointer.
     unsafe { SpectralClusteringResult::from_raw(raw, handle.device(), handle.runtime_bound_lease()) }
-}
-
-#[allow(deprecated)]
-pub(crate) fn balanced_cut_clustering(
-    handle: &EnteredContext<'_>,
-    rng_state: &mut RngState,
-    graph: &mut Graph<Forward>,
-    params: &BalancedCutClusteringParams,
-) -> Result<BalancedCutClusteringResult> {
-    let raw =
-        run_clustering(handle, rng_state, graph, params, cugraph_balanced_cut_clustering, "balanced_cut_clustering")?;
-    // SAFETY: on success, cuGraph transfers ownership of the result pointer.
-    unsafe { BalancedCutClusteringResult::from_raw(raw, handle.device(), handle.runtime_bound_lease()) }
 }
 
 type ClusteringFn = unsafe extern "C" fn(
