@@ -11,7 +11,7 @@ fn bounded_keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline_
     assert!(!plan.capability_analysis().admits_keyless_conditional_join_input_subplan_pipeline());
     assert!(plan.capability_analysis().admits_keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline());
     assert!(!plan.capability_analysis().admits_closed_multi_join_subgraph());
-    assert!(plan.bounded_join_unsupported_shape_facts(ExecutionBoundaryPolicy::default()).is_none());
+    assert!(unsupported_facts(&plan, ExecutionBoundaryPolicy::default()).is_none());
     let facts = BoundedJoinReservationContract.facts(ExecutionBoundaryPolicy::default());
     assert_eq!(
         facts
@@ -56,7 +56,7 @@ fn bounded_keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline_
             "{variant:?}"
         );
         assert!(!plan.capability_analysis().admits_closed_multi_join_subgraph(), "{variant:?}");
-        let facts = plan.bounded_join_unsupported_shape_facts(ExecutionBoundaryPolicy::default()).expect(
+        let facts = unsupported_facts(&plan, ExecutionBoundaryPolicy::default()).expect(
             "unsupported aggregate-over-join-subplan aggregate-over-join subplan inputs shape should produce facts",
         );
         assert_eq!(

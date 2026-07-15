@@ -46,10 +46,10 @@ host:
 ```bash
 docker --version
 nvidia-smi
-docker run --rm --gpus all nvidia/cuda:13.0.1-base-ubuntu24.04 nvidia-smi
+docker run --rm --gpus all nvidia/cuda:13.2.1-base-ubuntu24.04 nvidia-smi
 ```
 
-The default image uses CUDA 13.0 runtime layers. The host driver must support
+The default image uses CUDA 13.2 runtime layers. The host driver must support
 CUDA 13, and the forked native libraries must include kernels for the GPU
 architecture you deploy on. The full `cugraph` image is currently only portable
 to architectures included when `cugraph-rs` was built.

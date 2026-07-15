@@ -43,7 +43,7 @@ pub(super) struct NativeTpchBenchmarkConfig {
 #[derive(Debug, Clone)]
 pub(super) struct NativeTpchRuntimeResources {
     pub(super) runtime: Option<Arc<cudf::Runtime>>,
-    pub(super) source_cache: Option<Arc<nexus_query_engine::exec::GpuLocalParquetSourceCache>>,
+    pub(super) source_cache: Option<Arc<nexus_query_engine::runtime::cache::local_parquet::GpuLocalParquetSourceCache>>,
 }
 
 impl NativeTpchBenchmarkConfig {
@@ -133,9 +133,9 @@ impl NativeTpchBenchmarkConfig {
         );
         let source_cache = match self.native_source_cache_policy {
             NativeTpchSourceCachePolicy::Disabled => None,
-            NativeTpchSourceCachePolicy::GpuResident { max_retained_bytes } => {
-                Some(Arc::new(nexus_query_engine::exec::GpuLocalParquetSourceCache::new(max_retained_bytes)))
-            },
+            NativeTpchSourceCachePolicy::GpuResident { max_retained_bytes } => Some(Arc::new(
+                nexus_query_engine::runtime::cache::local_parquet::GpuLocalParquetSourceCache::new(max_retained_bytes),
+            )),
         };
         Ok(NativeTpchRuntimeResources { runtime: Some(runtime), source_cache })
     }
@@ -162,7 +162,7 @@ trait NativeExecutionConfigSourceCacheExt {
 
     fn with_optional_local_parquet_source_cache(
         self,
-        cache: Option<Arc<nexus_query_engine::exec::GpuLocalParquetSourceCache>>,
+        cache: Option<Arc<nexus_query_engine::runtime::cache::local_parquet::GpuLocalParquetSourceCache>>,
     ) -> Self;
 }
 
@@ -176,7 +176,7 @@ impl NativeExecutionConfigSourceCacheExt for NativeCudfExecutionConfig {
 
     fn with_optional_local_parquet_source_cache(
         self,
-        cache: Option<Arc<nexus_query_engine::exec::GpuLocalParquetSourceCache>>,
+        cache: Option<Arc<nexus_query_engine::runtime::cache::local_parquet::GpuLocalParquetSourceCache>>,
     ) -> Self {
         match cache {
             Some(cache) => self.with_local_parquet_source_cache(cache),

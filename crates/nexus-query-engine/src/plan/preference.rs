@@ -5,6 +5,8 @@
 //! known high-overhead native shape. Decisions here must stay conservative:
 //! missing evidence keeps GPU preferred.
 
+use std::collections::BTreeMap;
+
 use super::*;
 use crate::source::LocalParquetSource;
 

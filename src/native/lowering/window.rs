@@ -33,9 +33,10 @@ use super::{
 };
 use crate::{
     native::{
+        expression_contract::{is_supported_native_type, validate_physical_expr},
         literal::{NativeLiteralContext, native_literal_value},
         normalize::{NormalizedNativeSort, NormalizedNativeWindow},
-        validate::{is_supported_native_type, validate_physical_expr, validate_schema, validate_sort_ordering},
+        validate::{validate_schema, validate_sort_ordering},
     },
     policy::FallbackReason,
 };

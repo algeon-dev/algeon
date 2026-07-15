@@ -7,7 +7,7 @@
 //! Public APIs fall into four groups:
 //!
 //! - [`plan`] and [`expr`] define the DataFusion-free query IR.
-//! - [`capability`] and [`pipeline`] prove and compile bounded-execution
+//! - [`capability`], [`admission`], and [`pipeline`] prove and compile bounded-execution
 //!   contracts without naming legacy execution families.
 //! - [`runtime`] owns device, memory, boundary, and scheduler policy.
 //! - [`exec`] executes a validated [`plan::QueryPlan`] and returns
@@ -21,7 +21,8 @@
 
 pub mod adaptive_report;
 pub mod adaptive_runtime;
-pub(crate) mod bounded;
+/// Strict and adaptive bounded-pipeline admission and diagnostics.
+pub mod admission;
 /// Capability-analysis model and admission helpers for native execution.
 pub mod capability;
 pub mod chunk;

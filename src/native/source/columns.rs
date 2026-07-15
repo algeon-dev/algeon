@@ -17,11 +17,12 @@ use parquet::{
 
 use crate::{
     native::{
+        expression_contract::is_supported_native_type,
         pruning::{
             local_object_path_to_filesystem, scan_predicate_is_dynamic_filter_hint,
             scan_predicate_without_dynamic_filter_hints,
         },
-        validate::{collect_required_columns, is_supported_native_type, native_zero_column_count_source_is_safe},
+        validate::{collect_required_columns, native_zero_column_count_source_is_safe},
     },
     policy::FallbackReason,
 };

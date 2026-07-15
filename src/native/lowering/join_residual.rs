@@ -1,6 +1,6 @@
 use std::{collections::BTreeSet, sync::Arc};
 
-use arrow::datatypes::{DataType, Field, SchemaRef};
+use arrow::datatypes::{Field, SchemaRef};
 use datafusion::{
     common::JoinSide as DataFusionJoinSide,
     physical_expr::{
@@ -15,14 +15,17 @@ use nexus_query_engine::expr::{CaseWhen as NativeCaseWhen, Expr as NativeExpr, L
 
 use super::{
     LoweredNativeInput,
-    expr::{alias_if_needed, lower_binary_operator, lower_literal, physical_expr_field},
+    expr::{alias_if_needed, lower_binary_operator, lower_literal, physical_expr_field_from_validated},
     join::CanonicalJoin,
     naming::unique_name_with_suffix,
 };
 use crate::{
     native::{
+        expression_contract::{
+            JoinResidualCastMode, ScalarFunctionKind, ValidatedJoinResidual, case_expr_data_type,
+            declared_decimal_divide_output_type, is_string_type, join_residual_cast_mode, physical_expr_data_type,
+        },
         literal::{literal_i32, substring_stop_position},
-        validate::{is_supported_native_cast, is_supported_native_type, validate_physical_expr},
     },
     policy::FallbackReason,
 };
@@ -73,6 +76,7 @@ pub(super) struct JoinResidualMaterialization {
 
 #[derive(Debug, Clone, Copy)]
 struct JoinFilterLoweringContext<'a> {
+    contract: &'a ValidatedJoinResidual<'a>,
     filter: &'a JoinFilter,
     left_schema: &'a SchemaRef,
     right_schema: &'a SchemaRef,
@@ -88,20 +92,26 @@ pub(super) struct JoinResidualInputBindings<'a> {
 }
 
 pub(super) fn lower_join_filter(
-    filter: &JoinFilter,
-    left_schema: &SchemaRef,
-    right_schema: &SchemaRef,
+    contract: &ValidatedJoinResidual<'_>,
     canonical: CanonicalJoin,
     bindings: Option<JoinResidualInputBindings<'_>>,
 ) -> Result<LoweredJoinResidual, FallbackReason> {
     // Supported residual vocabulary is deliberately small. Expressions the
     // cuDF join AST cannot represent directly may be materialized on one input
     // side, but a residual predicate must still reference both sides.
-    validate_physical_expr(filter.expression(), filter.schema())?;
+    let filter = contract.filter();
+    debug_assert!(Arc::ptr_eq(contract.expression().expr(), filter.expression()));
     let mut left_required = BTreeSet::new();
     let mut right_required = BTreeSet::new();
     let mut materializations = JoinResidualMaterializations::default();
-    let context = JoinFilterLoweringContext { filter, left_schema, right_schema, canonical, bindings };
+    let context = JoinFilterLoweringContext {
+        contract,
+        filter,
+        left_schema: contract.left_schema(),
+        right_schema: contract.right_schema(),
+        canonical,
+        bindings,
+    };
     let predicate = lower_join_filter_expr(
         filter.expression(),
         context,
@@ -109,9 +119,10 @@ pub(super) fn lower_join_filter(
         &mut right_required,
         &mut materializations,
     )?;
-    if left_required.is_empty() || right_required.is_empty() {
-        return Err(FallbackReason::UnsupportedExpression);
-    }
+    debug_assert!(
+        !left_required.is_empty() && !right_required.is_empty(),
+        "validated join residual must reference both inputs"
+    );
     Ok(LoweredJoinResidual { predicate, left_required, right_required, materializations })
 }
 
@@ -126,14 +137,15 @@ fn lower_join_filter_expr(
         return lower_join_filter_column(column, context, left_required, right_required);
     }
     if let Some(literal) = expr.downcast_ref::<Literal>() {
-        return lower_literal(literal.value());
+        return Ok(lower_literal(literal.value()).expect("validated join-residual literal must lower"));
     }
     if let Some(binary) = expr.downcast_ref::<BinaryExpr>() {
         let left = lower_join_filter_expr(binary.left(), context, left_required, right_required, materializations)?;
         let right = lower_join_filter_expr(binary.right(), context, left_required, right_required, materializations)?;
-        let op = lower_binary_operator(binary.op())?;
+        let op = lower_binary_operator(binary.op());
         if matches!(binary.op(), datafusion::logical_expr::Operator::Divide)
-            && let Some(output_type) = declared_decimal_divide_output_type(binary, context.filter.schema())?
+            && let Some(output_type) = declared_decimal_divide_output_type(binary, context.filter.schema())
+                .expect("validated join-residual decimal division must have a supported output type")
         {
             return Ok(NativeExpr::binary_with_output_type(left, op, right, output_type));
         }
@@ -161,20 +173,13 @@ fn lower_join_filter_expr(
         )?));
     }
     if let Some(cast) = expr.downcast_ref::<CastExpr>() {
-        let source_type = cast
-            .expr()
-            .data_type(context.filter.schema().as_ref())
-            .map_err(|_error| FallbackReason::UnsupportedExpression)?;
-        if !is_supported_native_cast(&source_type, cast.cast_type()) {
-            return Err(FallbackReason::UnsupportedType);
-        }
-        if !is_supported_join_residual_ast_cast_target(cast.cast_type()) {
+        if matches!(
+            join_residual_cast_mode(cast.cast_type()).expect("validated join-residual cast target"),
+            JoinResidualCastMode::Materialize
+        ) {
             // Some casts are valid native expressions but not accepted in the
             // join residual AST. Materialize those on one input side and let
             // the residual predicate reference the synthetic column.
-            if !is_supported_join_residual_materialized_cast_target(cast.cast_type()) {
-                return Err(FallbackReason::UnsupportedExpression);
-            }
             return materialize_join_residual_expr(expr, context, left_required, right_required, materializations);
         }
         return Ok(NativeExpr::cast(
@@ -183,20 +188,17 @@ fn lower_join_filter_expr(
         ));
     }
     if let Some(in_list) = expr.downcast_ref::<InListExpr>() {
-        if in_list.is_empty() {
-            return Err(FallbackReason::UnsupportedExpression);
-        }
+        debug_assert!(!in_list.is_empty(), "empty IN list cannot carry a join-residual validation proof");
         let expr = lower_join_filter_expr(in_list.expr(), context, left_required, right_required, materializations)?;
         let list = in_list
             .list()
             .iter()
             .map(|item| {
-                let Some(literal) = item.downcast_ref::<Literal>() else {
-                    return Err(FallbackReason::UnsupportedExpression);
-                };
-                if literal.value().is_null() {
-                    return Err(FallbackReason::UnsupportedExpression);
-                }
+                let literal = item.downcast_ref::<Literal>().expect("validated join-residual IN entries are literals");
+                debug_assert!(
+                    !literal.value().is_null(),
+                    "null IN entry cannot carry a join-residual validation proof"
+                );
                 lower_join_filter_expr(item, context, left_required, right_required, materializations)
             })
             .collect::<Result<Vec<_>, FallbackReason>>()?;
@@ -207,7 +209,7 @@ fn lower_join_filter_expr(
         });
     }
     if let Some(case) = expr.downcast_ref::<CaseExpr>() {
-        if join_filter_expr_single_side(expr, context.filter).is_ok() {
+        if context.contract.single_side(expr).is_ok() {
             return materialize_join_residual_expr(expr, context, left_required, right_required, materializations);
         }
         return lower_join_filter_case_expr(case, context, left_required, right_required, materializations);
@@ -215,7 +217,7 @@ fn lower_join_filter_expr(
     if expr.downcast_ref::<ScalarFunctionExpr>().is_some() {
         return materialize_join_residual_expr(expr, context, left_required, right_required, materializations);
     }
-    Err(FallbackReason::UnsupportedExpression)
+    unreachable!("validated join residual must have a lowering branch")
 }
 
 fn lower_join_filter_case_expr(
@@ -250,21 +252,12 @@ fn lower_join_filter_case_expr(
     let else_expr = match case.else_expr() {
         Some(else_expr) => lower_join_filter_expr(else_expr, context, left_required, right_required, materializations)?,
         None => {
-            let data_type = case
-                .data_type(context.filter.schema().as_ref())
-                .map_err(|_error| FallbackReason::UnsupportedExpression)?;
+            let data_type = case_expr_data_type(case, context.filter.schema())
+                .expect("validated join-residual CASE must have an output type");
             NativeExpr::literal(NativeLiteralValue::Null(data_type))
         },
     };
     Ok(NativeExpr::case(branches, else_expr))
-}
-
-fn is_supported_join_residual_ast_cast_target(target_type: &DataType) -> bool {
-    matches!(target_type, DataType::Int64 | DataType::UInt64 | DataType::Float64)
-}
-
-fn is_supported_join_residual_materialized_cast_target(target_type: &DataType) -> bool {
-    matches!(target_type, DataType::Decimal128(_, _) | DataType::Utf8 | DataType::LargeUtf8 | DataType::Utf8View)
 }
 
 fn materialize_join_residual_expr(
@@ -276,98 +269,29 @@ fn materialize_join_residual_expr(
 ) -> Result<NativeExpr, FallbackReason> {
     // Materializations are valid only when the whole expression belongs to one
     // DataFusion side. Cross-side expressions must remain in the residual AST.
-    let side = join_filter_expr_single_side(expr, context.filter)?;
+    let side = context.contract.single_side(expr).expect("validated materialized residual must belong to one side");
     let (schema, required) = match side {
         DataFusionJoinSide::Left => (context.left_schema, left_required),
         DataFusionJoinSide::Right => (context.right_schema, right_required),
-        DataFusionJoinSide::None => return Err(FallbackReason::UnsupportedExpression),
+        DataFusionJoinSide::None => unreachable!("validated materialized residual must belong to left or right"),
     };
     let native_expr = lower_join_filter_side_expr(expr, context, schema, side, required)?;
-    let side_materializations = materializations.side_mut(side)?;
+    let side_materializations =
+        materializations.side_mut(side).expect("validated materialization side must be left or right");
     let alias = unique_synthetic_join_residual_alias(side, side_materializations.len(), schema, side_materializations);
-    let field = physical_expr_field(expr, context.filter.schema(), alias.as_str())?;
+    let field =
+        physical_expr_field_from_validated(&context.contract.expression().trusted_descendant(expr), alias.as_str())
+            .expect("validated materialized residual must have a native field");
     side_materializations.push(JoinResidualMaterialization {
         alias: alias.clone(),
         expr: alias_if_needed(native_expr, alias.as_str()),
         field,
     });
-    let native_input_index = context.canonical.native_input_index_for_datafusion_side(side)?;
+    let native_input_index = context
+        .canonical
+        .native_input_index_for_datafusion_side(side)
+        .expect("validated materialization side must map to a native input");
     Ok(NativeExpr::input_column(native_input_index, alias.as_str(), alias.as_str()))
-}
-
-fn join_filter_expr_single_side(
-    expr: &Arc<dyn PhysicalExpr>,
-    filter: &JoinFilter,
-) -> Result<DataFusionJoinSide, FallbackReason> {
-    let mut side = None;
-    collect_join_filter_expr_sides(expr, filter, &mut side)?;
-    side.ok_or(FallbackReason::UnsupportedExpression)
-}
-
-fn collect_join_filter_expr_sides(
-    expr: &Arc<dyn PhysicalExpr>,
-    filter: &JoinFilter,
-    side: &mut Option<DataFusionJoinSide>,
-) -> Result<(), FallbackReason> {
-    if let Some(column) = expr.downcast_ref::<Column>() {
-        let column_index = filter.column_indices().get(column.index()).ok_or(FallbackReason::UnsupportedExpression)?;
-        match column_index.side {
-            DataFusionJoinSide::Left | DataFusionJoinSide::Right => {
-                if side.is_some_and(|existing| existing != column_index.side) {
-                    return Err(FallbackReason::UnsupportedExpression);
-                }
-                *side = Some(column_index.side);
-                return Ok(());
-            },
-            DataFusionJoinSide::None => return Err(FallbackReason::UnsupportedExpression),
-        }
-    }
-    if expr.downcast_ref::<Literal>().is_some() {
-        return Ok(());
-    }
-    if let Some(binary) = expr.downcast_ref::<BinaryExpr>() {
-        collect_join_filter_expr_sides(binary.left(), filter, side)?;
-        return collect_join_filter_expr_sides(binary.right(), filter, side);
-    }
-    if let Some(not) = expr.downcast_ref::<NotExpr>() {
-        return collect_join_filter_expr_sides(not.arg(), filter, side);
-    }
-    if let Some(is_null) = expr.downcast_ref::<IsNullExpr>() {
-        return collect_join_filter_expr_sides(is_null.arg(), filter, side);
-    }
-    if let Some(is_not_null) = expr.downcast_ref::<IsNotNullExpr>() {
-        return collect_join_filter_expr_sides(is_not_null.arg(), filter, side);
-    }
-    if let Some(cast) = expr.downcast_ref::<CastExpr>() {
-        return collect_join_filter_expr_sides(cast.expr(), filter, side);
-    }
-    if let Some(in_list) = expr.downcast_ref::<InListExpr>() {
-        collect_join_filter_expr_sides(in_list.expr(), filter, side)?;
-        for item in in_list.list() {
-            collect_join_filter_expr_sides(item, filter, side)?;
-        }
-        return Ok(());
-    }
-    if let Some(case) = expr.downcast_ref::<CaseExpr>() {
-        if let Some(expr) = case.expr() {
-            collect_join_filter_expr_sides(expr, filter, side)?;
-        }
-        for (when, then) in case.when_then_expr() {
-            collect_join_filter_expr_sides(when, filter, side)?;
-            collect_join_filter_expr_sides(then, filter, side)?;
-        }
-        if let Some(else_expr) = case.else_expr() {
-            collect_join_filter_expr_sides(else_expr, filter, side)?;
-        }
-        return Ok(());
-    }
-    if let Some(function) = expr.downcast_ref::<ScalarFunctionExpr>() {
-        for arg in function.args() {
-            collect_join_filter_expr_sides(arg, filter, side)?;
-        }
-        return Ok(());
-    }
-    Err(FallbackReason::UnsupportedExpression)
 }
 
 fn lower_join_filter_side_expr(
@@ -378,27 +302,31 @@ fn lower_join_filter_side_expr(
     required: &mut BTreeSet<usize>,
 ) -> Result<NativeExpr, FallbackReason> {
     if let Some(column) = expr.downcast_ref::<Column>() {
-        let column_index =
-            context.filter.column_indices().get(column.index()).ok_or(FallbackReason::UnsupportedExpression)?;
+        let column_index = context
+            .filter
+            .column_indices()
+            .get(column.index())
+            .expect("validated residual column must have a side mapping");
         if column_index.side != side {
-            return Err(FallbackReason::UnsupportedExpression);
+            unreachable!("validated single-side residual cannot cross join inputs");
         }
-        let field = side_schema.fields().get(column_index.index).ok_or(FallbackReason::UnsupportedExpression)?;
-        if !is_supported_native_type(field.data_type()) {
-            return Err(FallbackReason::UnsupportedType);
-        }
+        let field = side_schema
+            .fields()
+            .get(column_index.index)
+            .expect("validated residual column must exist in its side schema");
         required.insert(column_index.index);
         return Ok(NativeExpr::column(side_native_name(context, side, column_index.index, field.name())?));
     }
     if let Some(literal) = expr.downcast_ref::<Literal>() {
-        return lower_literal(literal.value());
+        return Ok(lower_literal(literal.value()).expect("validated materialized literal must lower"));
     }
     if let Some(binary) = expr.downcast_ref::<BinaryExpr>() {
         let left = lower_join_filter_side_expr(binary.left(), context, side_schema, side, required)?;
         let right = lower_join_filter_side_expr(binary.right(), context, side_schema, side, required)?;
-        let op = lower_binary_operator(binary.op())?;
+        let op = lower_binary_operator(binary.op());
         if matches!(binary.op(), datafusion::logical_expr::Operator::Divide)
-            && let Some(output_type) = declared_decimal_divide_output_type(binary, context.filter.schema())?
+            && let Some(output_type) = declared_decimal_divide_output_type(binary, context.filter.schema())
+                .expect("validated materialized decimal division must have a supported output type")
         {
             return Ok(NativeExpr::binary_with_output_type(left, op, right, output_type));
         }
@@ -426,13 +354,8 @@ fn lower_join_filter_side_expr(
         )?));
     }
     if let Some(cast) = expr.downcast_ref::<CastExpr>() {
-        let source_type = cast
-            .expr()
-            .data_type(context.filter.schema().as_ref())
-            .map_err(|_error| FallbackReason::UnsupportedExpression)?;
-        if !is_supported_native_cast(&source_type, cast.cast_type()) {
-            return Err(FallbackReason::UnsupportedType);
-        }
+        let source_type = physical_expr_data_type(cast.expr(), context.filter.schema())
+            .expect("validated materialized cast source must have a type");
         if is_string_type(&source_type) && is_string_type(cast.cast_type()) {
             return lower_join_filter_side_expr(cast.expr(), context, side_schema, side, required);
         }
@@ -442,20 +365,14 @@ fn lower_join_filter_side_expr(
         ));
     }
     if let Some(in_list) = expr.downcast_ref::<InListExpr>() {
-        if in_list.is_empty() {
-            return Err(FallbackReason::UnsupportedExpression);
-        }
+        debug_assert!(!in_list.is_empty(), "empty materialized IN list cannot carry a validation proof");
         let expr = lower_join_filter_side_expr(in_list.expr(), context, side_schema, side, required)?;
         let list = in_list
             .list()
             .iter()
             .map(|item| {
-                let Some(literal) = item.downcast_ref::<Literal>() else {
-                    return Err(FallbackReason::UnsupportedExpression);
-                };
-                if literal.value().is_null() {
-                    return Err(FallbackReason::UnsupportedExpression);
-                }
+                let literal = item.downcast_ref::<Literal>().expect("validated materialized IN entries are literals");
+                debug_assert!(!literal.value().is_null(), "null materialized IN entry cannot carry a validation proof");
                 lower_join_filter_side_expr(item, context, side_schema, side, required)
             })
             .collect::<Result<Vec<_>, FallbackReason>>()?;
@@ -471,7 +388,7 @@ fn lower_join_filter_side_expr(
     if let Some(function) = expr.downcast_ref::<ScalarFunctionExpr>() {
         return lower_join_filter_side_scalar_function_expr(function, context, side_schema, side, required);
     }
-    Err(FallbackReason::UnsupportedExpression)
+    unreachable!("validated materialized residual must have a lowering branch")
 }
 
 fn lower_join_filter_side_case_expr(
@@ -501,9 +418,8 @@ fn lower_join_filter_side_case_expr(
     let else_expr = match case.else_expr() {
         Some(else_expr) => lower_join_filter_side_expr(else_expr, context, side_schema, side, required)?,
         None => {
-            let data_type = case
-                .data_type(context.filter.schema().as_ref())
-                .map_err(|_error| FallbackReason::UnsupportedExpression)?;
+            let data_type = case_expr_data_type(case, context.filter.schema())
+                .expect("validated materialized CASE must have an output type");
             NativeExpr::literal(NativeLiteralValue::Null(data_type))
         },
     };
@@ -517,11 +433,11 @@ fn lower_join_filter_side_scalar_function_expr(
     side: DataFusionJoinSide,
     required: &mut BTreeSet<usize>,
 ) -> Result<NativeExpr, FallbackReason> {
-    match function.name().to_ascii_lowercase().as_str() {
-        "substring" | "substr" => {
+    match ScalarFunctionKind::from_name(function.name()).expect("validated join residual scalar function") {
+        ScalarFunctionKind::Substring => {
             lower_join_filter_side_substring_function(function, context, side_schema, side, required)
         },
-        "lower" => lower_join_filter_side_string_case_function(
+        ScalarFunctionKind::Lower => lower_join_filter_side_string_case_function(
             function,
             context,
             side_schema,
@@ -529,7 +445,7 @@ fn lower_join_filter_side_scalar_function_expr(
             required,
             NativeExpr::lower,
         ),
-        "upper" => lower_join_filter_side_string_case_function(
+        ScalarFunctionKind::Upper => lower_join_filter_side_string_case_function(
             function,
             context,
             side_schema,
@@ -537,7 +453,7 @@ fn lower_join_filter_side_scalar_function_expr(
             required,
             NativeExpr::upper,
         ),
-        _ => Err(FallbackReason::UnsupportedExpression),
+        _ => unreachable!("join residual proof excludes other scalar functions"),
     }
 }
 
@@ -549,20 +465,18 @@ fn lower_join_filter_side_substring_function(
     required: &mut BTreeSet<usize>,
 ) -> Result<NativeExpr, FallbackReason> {
     let args = function.args();
-    if !(2..=3).contains(&args.len()) {
-        return Err(FallbackReason::UnsupportedExpression);
-    }
-    validate_join_filter_string_expr(&args[0], context.filter.schema())?;
-    let start = literal_i32(&args[1])?;
-    if start < 1 {
-        return Err(FallbackReason::UnsupportedExpression);
-    }
-    let length = if args.len() == 3 { Some(literal_i32(&args[2])?) } else { None };
-    if let Some(length) = length
-        && (length < 0 || substring_stop_position(start, length).is_none())
-    {
-        return Err(FallbackReason::UnsupportedExpression);
-    }
+    debug_assert!((2..=3).contains(&args.len()), "invalid SUBSTRING arity cannot carry a residual proof");
+    let start = literal_i32(&args[1]).expect("validated residual SUBSTRING start must be an i32 literal");
+    debug_assert!(start >= 1, "invalid residual SUBSTRING start cannot carry a validation proof");
+    let length = if args.len() == 3 {
+        Some(literal_i32(&args[2]).expect("validated residual SUBSTRING length must be an i32 literal"))
+    } else {
+        None
+    };
+    debug_assert!(
+        length.is_none_or(|length| length >= 0 && substring_stop_position(start, length).is_some()),
+        "invalid residual SUBSTRING length cannot carry a validation proof"
+    );
     Ok(NativeExpr::substring(
         lower_join_filter_side_expr(&args[0], context, side_schema, side, required)?,
         start,
@@ -578,49 +492,8 @@ fn lower_join_filter_side_string_case_function(
     required: &mut BTreeSet<usize>,
     constructor: fn(NativeExpr) -> NativeExpr,
 ) -> Result<NativeExpr, FallbackReason> {
-    let [expr] = function.args() else {
-        return Err(FallbackReason::UnsupportedExpression);
-    };
-    validate_join_filter_string_expr(expr, context.filter.schema())?;
+    let [expr] = function.args() else { unreachable!("validated residual string case must have one argument") };
     Ok(constructor(lower_join_filter_side_expr(expr, context, side_schema, side, required)?))
-}
-
-fn validate_join_filter_string_expr(
-    expr: &Arc<dyn PhysicalExpr>,
-    input_schema: &SchemaRef,
-) -> Result<(), FallbackReason> {
-    let data_type = expr.data_type(input_schema.as_ref()).map_err(|_error| FallbackReason::UnsupportedExpression)?;
-    if matches!(data_type, DataType::Utf8 | DataType::LargeUtf8 | DataType::Utf8View) {
-        Ok(())
-    } else {
-        Err(FallbackReason::UnsupportedType)
-    }
-}
-
-fn is_string_type(data_type: &DataType) -> bool {
-    matches!(data_type, DataType::Utf8 | DataType::LargeUtf8 | DataType::Utf8View)
-}
-
-fn declared_decimal_divide_output_type(
-    binary: &BinaryExpr,
-    input_schema: &SchemaRef,
-) -> Result<Option<DataType>, FallbackReason> {
-    let left_type =
-        binary.left().data_type(input_schema.as_ref()).map_err(|_error| FallbackReason::UnsupportedExpression)?;
-    let right_type =
-        binary.right().data_type(input_schema.as_ref()).map_err(|_error| FallbackReason::UnsupportedExpression)?;
-    if !matches!(left_type, DataType::Decimal128(_, _)) && !matches!(right_type, DataType::Decimal128(_, _)) {
-        return Ok(None);
-    }
-    let declared_type =
-        binary.data_type(input_schema.as_ref()).map_err(|_error| FallbackReason::UnsupportedExpression)?;
-    if !matches!(declared_type, DataType::Decimal128(_, _)) {
-        return Ok(None);
-    }
-    if !is_supported_native_type(&declared_type) {
-        return Err(FallbackReason::UnsupportedType);
-    }
-    Ok(Some(declared_type))
 }
 
 fn unique_synthetic_join_residual_alias(
@@ -657,19 +530,23 @@ fn lower_join_filter_column(
     left_required: &mut BTreeSet<usize>,
     right_required: &mut BTreeSet<usize>,
 ) -> Result<NativeExpr, FallbackReason> {
-    let column_index =
-        context.filter.column_indices().get(column.index()).ok_or(FallbackReason::UnsupportedExpression)?;
+    let column_index = context
+        .filter
+        .column_indices()
+        .get(column.index())
+        .expect("validated residual column must have a side mapping");
     let (datafusion_side, schema, required) = match column_index.side {
         DataFusionJoinSide::Left => (DataFusionJoinSide::Left, context.left_schema, left_required),
         DataFusionJoinSide::Right => (DataFusionJoinSide::Right, context.right_schema, right_required),
-        DataFusionJoinSide::None => return Err(FallbackReason::UnsupportedExpression),
+        DataFusionJoinSide::None => unreachable!("validated residual column must belong to a join input"),
     };
-    let field = schema.fields().get(column_index.index).ok_or(FallbackReason::UnsupportedExpression)?;
-    if !is_supported_native_type(field.data_type()) {
-        return Err(FallbackReason::UnsupportedType);
-    }
+    let field =
+        schema.fields().get(column_index.index).expect("validated residual column must exist in its side schema");
     required.insert(column_index.index);
-    let native_input_index = context.canonical.native_input_index_for_datafusion_side(datafusion_side)?;
+    let native_input_index = context
+        .canonical
+        .native_input_index_for_datafusion_side(datafusion_side)
+        .expect("validated residual side must map to a native input");
     let native_name = side_native_name(context, datafusion_side, column_index.index, field.name())?;
     Ok(NativeExpr::input_column(native_input_index, native_name, field.name()))
 }
@@ -686,7 +563,172 @@ fn side_native_name<'a>(
     let input = match side {
         DataFusionJoinSide::Left => bindings.left,
         DataFusionJoinSide::Right => bindings.right,
-        DataFusionJoinSide::None => return Err(FallbackReason::UnsupportedExpression),
+        DataFusionJoinSide::None => unreachable!("validated residual binding side must be left or right"),
     };
     Ok(input.binding_for_frontend_index(frontend_index)?.native_name.as_str())
+}
+
+#[cfg(test)]
+mod tests {
+    use arrow::datatypes::{DataType, Field, Schema};
+    use datafusion::{
+        common::{JoinSide, ScalarValue},
+        config::ConfigOptions,
+        functions::{string, unicode},
+        logical_expr::Operator,
+        physical_expr::{
+            PhysicalExpr, ScalarFunctionExpr,
+            expressions::{CaseExpr, CastExpr, IsNotNullExpr, IsNullExpr, NotExpr, binary, col, in_list, lit},
+        },
+        physical_plan::joins::utils::{ColumnIndex, JoinFilter},
+    };
+    use nexus_query_engine::plan::JoinType as NativeJoinType;
+
+    use super::*;
+    use crate::native::expression_contract::validate_join_residual;
+
+    fn scalar_function(
+        name: &str,
+        function: Arc<datafusion::logical_expr::ScalarUDF>,
+        args: Vec<Arc<dyn PhysicalExpr>>,
+        output_type: DataType,
+    ) -> Arc<dyn PhysicalExpr> {
+        Arc::new(ScalarFunctionExpr::new(
+            name,
+            function,
+            args,
+            Arc::new(Field::new(name, output_type, true)),
+            Arc::new(ConfigOptions::new()),
+        ))
+    }
+
+    fn residual_schemas(data_type: DataType) -> (SchemaRef, SchemaRef, SchemaRef) {
+        (
+            Arc::new(Schema::new(vec![Field::new("left", data_type.clone(), true)])),
+            Arc::new(Schema::new(vec![Field::new("right", data_type.clone(), true)])),
+            Arc::new(Schema::new(vec![
+                Field::new("left", data_type.clone(), true),
+                Field::new("right", data_type, true),
+            ])),
+        )
+    }
+
+    fn assert_join_residual_parity(
+        label: &str,
+        expr: Arc<dyn PhysicalExpr>,
+        left_schema: &SchemaRef,
+        right_schema: &SchemaRef,
+        filter_schema: &SchemaRef,
+    ) {
+        let filter = JoinFilter::new(
+            expr,
+            vec![ColumnIndex { index: 0, side: JoinSide::Left }, ColumnIndex { index: 0, side: JoinSide::Right }],
+            Arc::clone(filter_schema),
+        );
+        let validated = validate_join_residual(&filter, left_schema, right_schema)
+            .unwrap_or_else(|error| panic!("{label} must validate: {error:?}"));
+        let lowered = lower_join_filter(&validated, CanonicalJoin::new(NativeJoinType::Inner, false), None)
+            .unwrap_or_else(|error| panic!("{label} must lower: {error:?}"));
+        assert!(!lowered.left_required.is_empty(), "{label} must retain a left input dependency");
+        assert!(!lowered.right_required.is_empty(), "{label} must retain a right input dependency");
+    }
+
+    #[test]
+    fn every_supported_join_residual_shape_validates_then_lowers() {
+        let (left_schema, right_schema, schema) = residual_schemas(DataType::Int32);
+        let left = || col("left", &schema).unwrap();
+        let right = || col("right", &schema).unwrap();
+        let cross_side = || binary(left(), Operator::Eq, right(), &schema).unwrap();
+
+        assert_join_residual_parity("columns and binary", cross_side(), &left_schema, &right_schema, &schema);
+
+        let not_and_null = binary(
+            Arc::new(NotExpr::new(cross_side())),
+            Operator::And,
+            binary(Arc::new(IsNullExpr::new(left())), Operator::Or, Arc::new(IsNotNullExpr::new(right())), &schema)
+                .unwrap(),
+            &schema,
+        )
+        .unwrap();
+        assert_join_residual_parity("not and null predicates", not_and_null, &left_schema, &right_schema, &schema);
+
+        let ast_cast = binary(
+            Arc::new(CastExpr::new(left(), DataType::Int64, None)),
+            Operator::Eq,
+            Arc::new(CastExpr::new(right(), DataType::Int64, None)),
+            &schema,
+        )
+        .unwrap();
+        assert_join_residual_parity("AST casts", ast_cast, &left_schema, &right_schema, &schema);
+
+        let materialized_cast = binary(
+            Arc::new(CastExpr::new(left(), DataType::Decimal128(10, 0), None)),
+            Operator::Eq,
+            Arc::new(CastExpr::new(right(), DataType::Decimal128(10, 0), None)),
+            &schema,
+        )
+        .unwrap();
+        assert_join_residual_parity("materialized casts", materialized_cast, &left_schema, &right_schema, &schema);
+
+        let in_list_expr = binary(
+            in_list(
+                left(),
+                vec![lit(ScalarValue::Int32(Some(1))), lit(ScalarValue::Int32(Some(2)))],
+                &false,
+                schema.as_ref(),
+            )
+            .unwrap(),
+            Operator::And,
+            cross_side(),
+            &schema,
+        )
+        .unwrap();
+        assert_join_residual_parity("IN list", in_list_expr, &left_schema, &right_schema, &schema);
+
+        let single_side_case: Arc<dyn PhysicalExpr> = Arc::new(
+            CaseExpr::try_new(
+                None,
+                vec![(binary(left(), Operator::Gt, lit(ScalarValue::Int32(Some(0))), &schema).unwrap(), left())],
+                Some(lit(ScalarValue::Int32(Some(0)))),
+            )
+            .unwrap(),
+        );
+        let materialized_case = binary(single_side_case, Operator::Eq, right(), &schema).unwrap();
+        assert_join_residual_parity(
+            "single-side materialized CASE",
+            materialized_case,
+            &left_schema,
+            &right_schema,
+            &schema,
+        );
+
+        let cross_side_case: Arc<dyn PhysicalExpr> = Arc::new(
+            CaseExpr::try_new(
+                None,
+                vec![(cross_side(), lit(ScalarValue::Boolean(Some(true))))],
+                Some(lit(ScalarValue::Boolean(Some(false)))),
+            )
+            .unwrap(),
+        );
+        assert_join_residual_parity("cross-side CASE", cross_side_case, &left_schema, &right_schema, &schema);
+
+        let (left_schema, right_schema, schema) = residual_schemas(DataType::Utf8);
+        let left = || col("left", &schema).unwrap();
+        let right = || col("right", &schema).unwrap();
+        let supported_functions = [
+            scalar_function(
+                "substring",
+                unicode::substr(),
+                vec![left(), lit(ScalarValue::Int64(Some(1))), lit(ScalarValue::Int64(Some(2)))],
+                DataType::Utf8,
+            ),
+            scalar_function("lower", string::lower(), vec![left()], DataType::Utf8),
+            scalar_function("upper", string::upper(), vec![left()], DataType::Utf8),
+        ];
+        for function in supported_functions {
+            let name = function.downcast_ref::<ScalarFunctionExpr>().unwrap().name().to_string();
+            let predicate = binary(function, Operator::Eq, right(), &schema).unwrap();
+            assert_join_residual_parity(&name, predicate, &left_schema, &right_schema, &schema);
+        }
+    }
 }

@@ -9,8 +9,6 @@ use parquet::file::reader::FileReader;
 
 use super::*;
 
-mod validate;
-
 mod cache_runtime;
 mod cudf_contract;
 mod gpu_resident;
@@ -45,15 +43,15 @@ use scan_limit::*;
 pub(in crate::exec) use scheduler::{ScheduledLocalParquetRead, ScheduledLocalParquetReadOutput};
 pub(in crate::exec) use schema::local_parquet_execution_frame_schema;
 use schema::{coerce_local_parquet_source_schema, materialize_missing_columns};
-pub use validate::validate_local_parquet_source;
 use zero_column_count::{read_zero_column_count_source, zero_column_count_chunk_frame_with_budget};
 
 pub(in crate::exec) use crate::source::{
     local_parquet_file_row_group_metadata_count, parquet_file_path_fact, parquet_file_stable_id_fact,
 };
 use crate::{
-    exec::types::{GpuLocalParquetSourceCacheInsert, GpuLocalParquetSourceCacheKey},
     metrics::SourceReadParquetEvidenceMetrics,
+    runtime::cache::local_parquet::{GpuLocalParquetSourceCacheInsert, GpuLocalParquetSourceCacheKey},
+    source::validate_local_parquet_source,
 };
 
 pub(in crate::exec) fn parquet_chunk_path_fact(chunk: &SourceChunk) -> String {
@@ -157,7 +155,7 @@ pub fn read_literal_batch_source(
     source: &crate::source::LiteralBatchSource,
     metrics: &mut QueryMetrics,
 ) -> Result<GpuDataFrame> {
-    crate::exec::validate_literal_batch_source(source)?;
+    crate::source::validate_literal_batch_source(source)?;
     let mut frames = Vec::with_capacity(source.batches.len());
     for batch in &source.batches {
         context.check_cancellation("nexus_query_engine.literal_batch_source.read")?;
@@ -203,7 +201,7 @@ fn read_cacheable_local_parquet_source(
     context: &ExecutionContext,
     source_node_id: NodeId,
     source: &LocalParquetSource,
-    cache: &std::sync::Arc<crate::exec::GpuLocalParquetSourceCache>,
+    cache: &std::sync::Arc<crate::runtime::cache::local_parquet::GpuLocalParquetSourceCache>,
     metrics: &mut QueryMetrics,
 ) -> Result<GpuDataFrame> {
     if datafusion_order_tracking_enabled() {

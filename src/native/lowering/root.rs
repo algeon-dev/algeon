@@ -39,6 +39,7 @@ use super::{
 };
 use crate::{
     native::{
+        expression_contract::validate_physical_expr,
         normalize::{
             NormalizedNativeAggregateRoot, NormalizedNativeInput, NormalizedNativeInputRoot,
             NormalizedNativeLiteralSource, NormalizedNativePlan, NormalizedNativeScan, NormalizedNativeSortExprs,
@@ -49,8 +50,8 @@ use crate::{
             native_source_output_schema, required_parquet_column_requirements, validate_slice1_parquet_scan,
         },
         validate::{
-            native_zero_column_count_source_is_safe, validate_aggregate_for_native_lowering, validate_physical_expr,
-            validate_schema, validate_sort_ordering,
+            native_zero_column_count_source_is_safe, validate_aggregate_for_native_lowering, validate_schema,
+            validate_sort_ordering,
         },
     },
     policy::FallbackReason,

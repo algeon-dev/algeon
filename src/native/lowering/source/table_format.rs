@@ -28,14 +28,12 @@ use super::{
 };
 use crate::{
     native::{
+        expression_contract::{is_list_carry_type, is_supported_native_type, validate_physical_expr},
         lowering::{LoweredNativeInput, RequiredFields, expr::lower_physical_expr_with_bindings},
         normalize::NormalizedNativeSource,
         source::{NativeParquetColumnRequirements, attach_row_group_byte_metadata},
         table_format_pruning_policy::TableFormatPruningPolicy,
-        validate::{
-            collect_required_columns, is_list_carry_type, is_supported_native_type, validate_physical_expr,
-            validate_schema,
-        },
+        validate::{collect_required_columns, validate_schema},
     },
     policy::FallbackReason,
     source_cardinality::reader_predicate_proves_source_at_most_one_row,
@@ -400,9 +398,8 @@ mod tests {
         physical_plan::filter::FilterExec,
     };
     use nexus_query_engine::{
-        exec::validate_local_parquet_source,
         plan::PlanNode,
-        source::{CredentialMode, ResolvedParquetSource, SourceColumnRef as NativeSourceColumnRef},
+        source::{self, CredentialMode, ResolvedParquetSource, SourceColumnRef as NativeSourceColumnRef},
     };
     use parquet::{arrow::ArrowWriter, file::properties::WriterProperties};
 
@@ -538,7 +535,7 @@ mod tests {
         assert_eq!(native_source.read_columns, vec!["old_status"]);
         assert_eq!(native_source.projected_output_columns, vec!["status"]);
         assert_eq!(native_source.files[0].field_id_read_bindings[0].physical_name, "old_status");
-        validate_local_parquet_source(&native_source).unwrap();
+        source::validate_local_parquet_source(&native_source).unwrap();
         fs::remove_dir_all(dir).ok();
     }
 
@@ -808,7 +805,7 @@ mod tests {
                 .unwrap();
 
         assert_eq!(groups[0].source_schema.field_with_name("event_ts").unwrap().data_type(), &timestamp_type);
-        validate_local_parquet_source(&native_source).unwrap();
+        source::validate_local_parquet_source(&native_source).unwrap();
     }
 
     #[test]
@@ -856,7 +853,7 @@ mod tests {
                 .unwrap();
 
         assert_eq!(groups[0].source_schema.field_with_name("event_ts").unwrap().data_type(), &timestamp_type);
-        validate_local_parquet_source(&native_source).unwrap();
+        source::validate_local_parquet_source(&native_source).unwrap();
     }
 
     #[test]
@@ -986,7 +983,7 @@ mod tests {
         assert_eq!(groups[0].field_id_bindings[0][0].data_type, DataType::Int16);
         assert_eq!(groups[0].source_schema.field_with_name("status").unwrap().data_type(), &DataType::Int32);
         assert!(groups[0].has_read_coercions());
-        validate_local_parquet_source(&native_source).unwrap();
+        source::validate_local_parquet_source(&native_source).unwrap();
     }
 
     #[test]
@@ -1140,7 +1137,7 @@ mod tests {
         assert_eq!(groups[0].source_schema.field_with_name("status").unwrap().data_type(), &DataType::Int32);
         assert!(groups[0].has_read_coercions());
         assert!(native_source.reader_predicate.is_none());
-        validate_local_parquet_source(&native_source).unwrap();
+        source::validate_local_parquet_source(&native_source).unwrap();
     }
 
     #[test]
@@ -2164,7 +2161,7 @@ mod tests {
         assert_eq!(native_source.read_columns, vec!["old_status"]);
         assert!(native_source.projected_output_columns.is_empty());
         assert_eq!(native_source.pure_filter_columns, vec!["status"]);
-        validate_local_parquet_source(&native_source).unwrap();
+        source::validate_local_parquet_source(&native_source).unwrap();
         fs::remove_dir_all(dir).ok();
     }
 

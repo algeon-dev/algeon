@@ -7,7 +7,6 @@ use std::{
 const STRICT_BOUNDED_MODULES: &[&str] = &["strict"];
 const ADAPTIVE_BOUNDED_MODULES: &[&str] = &["adaptive"];
 const SHARED_BOUNDED_RUNTIME_MODULES: &[&str] = &[
-    "admission",
     "aggregate",
     "chunks",
     "compiled",
@@ -53,14 +52,18 @@ const RETIRED_DISPATCH_ENTRYPOINTS: &[&str] = &[
 
 const STRICT_SOURCE_ROOTS: &[&str] = &[
     "crates/nexus-query-engine/src/contract_report.rs",
+    "crates/nexus-query-engine/src/admission/strict.rs",
     "crates/nexus-query-engine/src/exec/bounded/strict.rs",
     "crates/nexus-query-engine/src/exec/bounded/join/compiled.rs",
     "src/planner/native/strict_bounded.rs",
 ];
 
 const SHARED_MODE_AGNOSTIC_ROOTS: &[&str] = &[
+    "crates/nexus-query-engine/src/admission/diagnostics.rs",
+    "crates/nexus-query-engine/src/admission/join_strategy.rs",
+    "crates/nexus-query-engine/src/admission/shared.rs",
+    "crates/nexus-query-engine/src/admission/support.rs",
     "crates/nexus-query-engine/src/capability",
-    "crates/nexus-query-engine/src/exec/bounded/admission.rs",
     "crates/nexus-query-engine/src/pipeline",
 ];
 
@@ -204,9 +207,9 @@ fn strict_and_shared_graph_modules_do_not_use_adaptive_runtime_contract_terms() 
 
 #[test]
 fn capability_first_admission_strict_and_adaptive_facades_enter_through_capability_first_admission() {
-    let strict = read_repo_file("crates/nexus-query-engine/src/exec/bounded/strict.rs");
-    let adaptive = read_repo_file("crates/nexus-query-engine/src/exec/bounded/adaptive.rs");
-    let admission = read_repo_file("crates/nexus-query-engine/src/exec/bounded/admission.rs");
+    let strict = read_repo_file("crates/nexus-query-engine/src/admission/strict.rs");
+    let adaptive = read_repo_file("crates/nexus-query-engine/src/admission/adaptive.rs");
+    let admission = read_repo_file("crates/nexus-query-engine/src/admission/shared.rs");
 
     assert!(
         admission.contains("CapabilityFirstPipelineAdmission"),
@@ -232,8 +235,8 @@ fn capability_first_admission_live_capability_first_paths_do_not_import_bounded_
         "crates/nexus-query-engine/src/capability.rs",
         "crates/nexus-query-engine/src/capability/node.rs",
         "crates/nexus-query-engine/src/capability/shape.rs",
-        "crates/nexus-query-engine/src/exec/bounded/compiled/join_strategy.rs",
-        "crates/nexus-query-engine/src/exec/bounded/compiled/support.rs",
+        "crates/nexus-query-engine/src/admission/join_strategy.rs",
+        "crates/nexus-query-engine/src/admission/support.rs",
         "crates/nexus-query-engine/src/exec/bounded/join/compiled.rs",
     ] {
         let source = read_repo_file(relative);
@@ -285,10 +288,10 @@ fn capability_first_cleanup_family_recognizer_sources_are_deleted_or_demoted() {
         );
     }
 
-    let bounded_mod = read_repo_file("crates/nexus-query-engine/src/bounded.rs");
+    let admission_mod = read_repo_file("crates/nexus-query-engine/src/admission.rs");
     assert!(
-        !bounded_mod.contains("#![allow(dead_code)]"),
-        "bounded.rs must not keep a dead-code retirement shield after capability recognizer deletion"
+        !admission_mod.contains("#![allow(dead_code)]"),
+        "admission.rs must not keep a dead-code retirement shield after capability recognizer deletion"
     );
 }
 
@@ -311,7 +314,8 @@ fn capability_first_cleanup_normal_execution_sources_do_not_reintroduce_family_p
 #[test]
 fn canonical_rejection_fact_rejection_facts_do_not_reintroduce_family_blocker_projection() {
     let mut source = String::new();
-    for file in source_files(&["crates/nexus-query-engine/src/bounded", "crates/nexus-query-engine/src/exec/bounded"]) {
+    for file in source_files(&["crates/nexus-query-engine/src/admission", "crates/nexus-query-engine/src/exec/bounded"])
+    {
         source.push_str(&read_file(&file));
         source.push('\n');
     }

@@ -9,13 +9,16 @@ use nexus_query_engine::{expr::Expr as NativeExpr, plan::QueryPlanBuilder as Nat
 
 use super::{
     LoweredNativeInput, RequiredFields, executable_schema_and_bindings,
-    expr::{alias_if_needed, collect_required_field_indices, lower_physical_expr_with_bindings},
+    expr::{
+        alias_if_needed, collect_required_field_indices, lower_physical_expr_with_bindings,
+        lower_validated_physical_expr_with_bindings,
+    },
     lower_native_input, projection_outputs,
 };
 use crate::{
     native::{
+        expression_contract::validate_physical_expr,
         normalize::{NormalizedNativeFilter, NormalizedNativeProjection},
-        validate::validate_physical_expr,
     },
     policy::FallbackReason,
 };
@@ -25,7 +28,7 @@ pub(super) fn lower_filter_input(
     builder: &mut NativeQueryPlanBuilder,
     required_output_fields: &RequiredFields,
 ) -> Result<LoweredNativeInput, FallbackReason> {
-    validate_physical_expr(filter.filter.predicate(), &filter.filter.input().schema())?;
+    let validated_predicate = validate_physical_expr(filter.filter.predicate(), &filter.filter.input().schema())?;
     let selection = required_filter_output_selection(filter.filter, required_output_fields)?;
     let mut predicate_required = BTreeSet::new();
     collect_required_field_indices(
@@ -50,11 +53,7 @@ pub(super) fn lower_filter_input(
     )?;
     let filtered_node = builder.add_filter(
         input.node,
-        lower_physical_expr_with_bindings(
-            filter.filter.predicate(),
-            &filter.filter.input().schema(),
-            Some(&input.bindings),
-        )?,
+        lower_validated_physical_expr_with_bindings(&validated_predicate, Some(&input.bindings))?,
         Arc::clone(&input.schema),
     );
     if !selection.requires_projection_from(&input) {
@@ -124,8 +123,10 @@ pub(super) fn lower_projection_input(
 ) -> Result<LoweredNativeInput, FallbackReason> {
     let required_projection = required_projection_exprs(projection.projection, required_output_fields)?;
     let mut child_required = BTreeSet::new();
+    let mut validated_projection = Vec::with_capacity(required_projection.len());
     for projection_expr in &required_projection {
-        validate_physical_expr(projection_expr.expr, &projection.projection.input().schema())?;
+        validated_projection
+            .push(validate_physical_expr(projection_expr.expr, &projection.projection.input().schema())?);
         collect_required_field_indices(
             projection_expr.expr,
             &projection.projection.input().schema(),
@@ -149,14 +150,11 @@ pub(super) fn lower_projection_input(
     let (schema, bindings) = executable_schema_and_bindings(&projection.projection.schema(), required_output_fields)?;
     let expressions = required_projection
         .iter()
+        .zip(validated_projection.iter())
         .zip(bindings.iter())
-        .map(|projection_expr| {
-            let (projection_expr, binding) = projection_expr;
-            let expr = lower_physical_expr_with_bindings(
-                projection_expr.expr,
-                &projection.projection.input().schema(),
-                Some(&input.bindings),
-            )?;
+        .map(|((projection_expr, validated), binding)| {
+            debug_assert!(Arc::ptr_eq(projection_expr.expr, validated.expr()));
+            let expr = lower_validated_physical_expr_with_bindings(validated, Some(&input.bindings))?;
             Ok(alias_if_needed(expr, binding.native_name.as_str()))
         })
         .collect::<Result<Vec<_>, FallbackReason>>()?;

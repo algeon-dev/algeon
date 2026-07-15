@@ -45,7 +45,7 @@ use datafusion_nexus::{
 };
 use futures::future::BoxFuture;
 use nexus_query_engine::{
-    exec::{QueryOutput, execute_query_plan},
+    exec::{execute_query_plan, output::QueryOutput},
     expr::LiteralValue as NativeLiteralValue,
     plan::PlanNode,
     runtime::ExecutionContext,

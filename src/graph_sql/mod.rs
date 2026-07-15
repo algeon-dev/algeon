@@ -1,6 +1,5 @@
 //! SQL-facing cuGraph table-function contracts.
 
-mod batching;
 mod exec;
 mod metadata;
 #[doc(hidden)]
@@ -9,17 +8,11 @@ mod parser;
 mod table_function;
 mod types;
 
-pub use batching::CugraphBfsSingleflightSnapshot;
-pub(crate) use batching::{
-    CugraphBfsFollowerOutcome, CugraphBfsLeader, CugraphBfsSingleflight, CugraphBfsSingleflightJoin,
-    CugraphBfsSingleflightKey,
-};
 use datafusion::{
     common::{DataFusionError, Result, ScalarValue, TableReference},
     logical_expr::Expr,
 };
 pub use exec::CugraphAlgoExec;
-pub(crate) use exec::gpu_resident_producer;
 pub use parser::parse_cugraph_algorithm_spec;
 pub use table_function::{CugraphAlgoTableProvider, cugraph_table_functions, register_cugraph_udtfs};
 pub use types::{

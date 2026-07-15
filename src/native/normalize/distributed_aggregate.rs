@@ -8,7 +8,7 @@ use datafusion::{
 };
 
 use super::{NativePlanRejection, peel_repartition};
-use crate::{native::validate::is_supported_native_type, policy::FallbackReason, report::GpuCandidate};
+use crate::{native::expression_contract::is_supported_native_type, policy::FallbackReason, report::GpuCandidate};
 
 #[derive(Debug, Clone)]
 pub(in crate::native) struct DistributedAggregatePeel<'a> {

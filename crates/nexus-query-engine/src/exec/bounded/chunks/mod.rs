@@ -11,7 +11,7 @@ use super::{
     *,
 };
 use crate::{
-    exec::types::{GpuLocalParquetSourceCacheInsert, GpuLocalParquetSourceCacheKey},
+    runtime::cache::local_parquet::{GpuLocalParquetSourceCacheInsert, GpuLocalParquetSourceCacheKey},
     source::{LocalParquetFile, ParquetReadStrategy, RemoteParquetReadMode},
 };
 

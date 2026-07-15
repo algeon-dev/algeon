@@ -6,11 +6,11 @@ use cudf::{DataFrame, SortOptions as CudfSortOptions};
 use super::*;
 use crate::{
     error::{QueryError, QueryErrorCode, Result},
+    naming::{DATAFUSION_ORDER_COLUMN_PREFIX, is_datafusion_order_column_name},
     plan::{JoinSide, JoinType, PlanNode, QueryPlan},
     runtime::ExecutionContext,
 };
 
-const DATAFUSION_ORDER_COLUMN_PREFIX: &str = "__cudf_df_order_";
 const SOURCE_ORDER_MAJOR_COLUMN: &str = "__cudf_df_order_0";
 const SOURCE_ORDER_ROW_COLUMN: &str = "__cudf_df_order_1";
 
@@ -50,10 +50,6 @@ pub(in crate::exec) fn plan_requires_datafusion_exact_statistical_order(plan: &Q
         },
         _ => false,
     })
-}
-
-pub(in crate::exec) fn is_datafusion_order_column_name(name: &str) -> bool {
-    name.starts_with(DATAFUSION_ORDER_COLUMN_PREFIX)
 }
 
 pub(in crate::exec) fn datafusion_order_columns(frame: &DataFrame) -> Vec<String> {

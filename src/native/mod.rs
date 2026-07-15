@@ -3,7 +3,8 @@
 //! Lowering is planning-only: it returns native query plans plus structured
 //! planning/source diagnostics, but does not execute or allocate GPU memory.
 
-pub mod lakehouse_pruning;
+mod expression_contract;
+pub(crate) mod lakehouse_pruning;
 pub(crate) mod literal;
 mod lowering;
 mod normalize;
@@ -11,6 +12,16 @@ mod pruning;
 mod source;
 mod table_format_pruning_policy;
 mod validate;
+
+impl From<expression_contract::ExpressionRejection> for crate::policy::FallbackReason {
+    fn from(rejection: expression_contract::ExpressionRejection) -> Self {
+        let _capability = rejection.capability();
+        match rejection.kind() {
+            expression_contract::ExpressionRejectionKind::UnsupportedExpression => Self::UnsupportedExpression,
+            expression_contract::ExpressionRejectionKind::UnsupportedType => Self::UnsupportedType,
+        }
+    }
+}
 
 use std::sync::Arc;
 

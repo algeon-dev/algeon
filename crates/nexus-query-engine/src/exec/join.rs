@@ -3,10 +3,11 @@ use cudf::{
     DataFrameJoinOptions, DataFrameMixedJoinOptions, DataFramePredicateJoinOptions, NullEquality as CudfNullEquality,
 };
 
-use super::{types::gpu_hash_join_build_columns, *};
+use super::*;
 use crate::{
     metrics::{JoinOperatorMetrics, OperatorMetrics},
     plan::{JoinNullEquality, JoinSide, JoinType},
+    runtime::resident::gpu_hash_join_build_columns,
 };
 
 mod conditional;

@@ -8,12 +8,12 @@ use std::{
 use arrow::record_batch::RecordBatch;
 
 use super::{
-    join_strategy::{CompiledJoinExecutionStrategy, CompiledJoinStrategySelection},
     reservations::validate_task_runtime_gates,
     scheduler::{CompiledSchedulingCycle, CompiledTaskAdmission, CompiledTaskExecutor, CompiledTaskOutput},
     state::CompiledPipelineState,
 };
 use crate::{
+    admission::{CompiledJoinExecutionStrategy, CompiledJoinStrategySelection},
     capability::{
         KeyedHashJoinStrategyInputFacts, keyed_hash_join_strategy_input_facts_for_plan,
         keyed_hash_join_strategy_should_probe_left_one_shot_build_key_uniqueness_with_options,
@@ -50,7 +50,6 @@ use crate::{
             reusable_hash_join_stream_target_output_bytes, try_start_bounded_join_leaf_local_parquet_source_prefetch,
         },
         materialize_bounded_frame_to_host,
-        types::{GpuDataFrame, GpuResidentInputMap, GpuResultHandle},
     },
     metrics::QueryMetrics,
     pipeline::{
@@ -61,7 +60,10 @@ use crate::{
         FilterNode, JoinNode, JoinNullEquality, JoinSide, JoinType, LimitNode, NodeId, PlanNode, ProjectionNode,
         QueryPlan, ResultSink, SortNode,
     },
-    runtime::{ExecutionContext, MemoryControlPolicy, MemoryReservationRequest, MemorySpaceId, ReservationKind},
+    runtime::{
+        ExecutionContext, MemoryControlPolicy, MemoryReservationRequest, MemorySpaceId, ReservationKind,
+        resident::{GpuDataFrame, GpuResidentInputMap, GpuResultHandle},
+    },
     source::SourceNode,
 };
 

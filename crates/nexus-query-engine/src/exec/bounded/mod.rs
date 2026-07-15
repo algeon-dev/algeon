@@ -1,13 +1,12 @@
 use super::{source::record_bounded_parquet_source_metrics, *};
 
 // Milestone E ownership boundary:
-// - adaptive: adaptive-only admission/report/execution facade.
-// - strict: strict bounded admission/report/execution facade.
-// - compiled: shared compiled pipeline runtime and graph-support checks.
+// - adaptive: adaptive-only execution facade.
+// - strict: strict bounded execution facade.
+// - compiled: shared compiled pipeline runtime.
 // - remaining modules: bounded runtime/operator support shared by the current
 //   bounded executors, but not owners of mode-specific admission/report policy.
 mod adaptive;
-mod admission;
 mod aggregate;
 pub(in crate::exec) mod chunks;
 mod compiled;
@@ -22,10 +21,6 @@ mod source_batching_policy;
 pub(in crate::exec) mod strict;
 
 use adaptive::try_execute_adaptive_bounded_pipeline;
-pub use adaptive::{
-    AdaptivePipelineAdmission, adaptive_bounded_pipeline_admission,
-    adaptive_bounded_pipeline_admission_with_memory_history,
-};
 use aggregate::*;
 pub use aggregate::{PartialAggregateShape, partial_aggregate_upper_bound_bytes};
 use chunks::*;
@@ -157,18 +152,23 @@ fn reject_bounded_join_plan(context: &ExecutionContext, plan: &QueryPlan) -> Res
             "bounded_join_plan_shape_unsupported",
         );
         let mut projection_error_source = None;
-        let facts = match strict::strict_bounded_pipeline_rejection_projection_with_statistical_aggregate_mode(
+        let facts = match crate::admission::strict_bounded_pipeline_rejection_projection_with_statistical_aggregate_mode(
             plan,
             context.statistical_aggregate_execution_mode(),
         ) {
-            Ok(Some(projection)) => {
-                crate::bounded::bounded_join_unsupported_shape_facts(plan, context.boundary_policy(), Some(&projection))
-            },
+            Ok(Some(projection)) => crate::admission::bounded_join_unsupported_shape_facts_with_projection(
+                plan,
+                context.boundary_policy(),
+                Some(&projection),
+            ),
             Ok(None) => contract.unsupported_shape_facts(context.boundary_policy()),
             Err(projection_error) => {
-                let mut facts =
-                    crate::bounded::bounded_join_unsupported_shape_facts(plan, context.boundary_policy(), None);
-                crate::bounded::insert_bounded_join_rejection_projection_error_facts(&mut facts, &projection_error);
+                let mut facts = crate::admission::bounded_join_unsupported_shape_facts_with_projection(
+                    plan,
+                    context.boundary_policy(),
+                    None,
+                );
+                crate::admission::insert_bounded_join_rejection_projection_error_facts(&mut facts, &projection_error);
                 projection_error_source = Some(projection_error);
                 facts
             },

@@ -10,14 +10,15 @@ mod common;
 mod composed;
 mod config;
 mod fallback;
+pub mod graph;
 mod host;
+pub(crate) mod lakehouse;
 mod metrics;
-mod producer;
+pub mod producer;
 mod unbounded_native;
 
 #[cfg(feature = "cugraph")]
 pub(crate) use common::run_gpu_execution_task;
-pub(crate) use config::GraphAdmissionModelAsk;
 
 #[cfg(feature = "cugraph")]
 pub(crate) use self::admission::query_admission_ticket_from_task_context;
@@ -27,14 +28,11 @@ pub(crate) use self::admission::task_context_with_query_admission_ticket;
 pub(crate) use self::metrics::NativeCudfMetrics;
 #[cfg(feature = "server")]
 pub(crate) use self::metrics::{NativeMetricsCapture, NativeMetricsCaptureSink};
-#[cfg(feature = "cugraph")]
-pub(crate) use self::producer::{GpuResidentProducerExec, gpu_resident_producer};
 #[cfg(feature = "server")]
 pub(crate) use self::unbounded_native::UnboundedNativeExecutionLimiter;
 pub(crate) use self::{
     admission::{QueryAdmissionSource, plan_is_query_admission_wrapped, wrap_plan_with_query_admission_ticket},
     fallback::{CpuFallbackStatementLimiter, plan_is_cpu_fallback_limited, wrap_plan_with_cpu_fallback_limit},
-    producer::gpu_resident_producer_input_name,
     unbounded_native::{plan_is_unbounded_native_execution_limited, wrap_plan_with_unbounded_native_execution_limit},
 };
 pub use self::{

@@ -201,43 +201,6 @@ impl QueryPlan {
         self.nodes.iter().any(|node| matches!(node.kind, PlanNode::EdgeNormalize(_)))
     }
 
-    /// Returns diagnostic facts for join plans rejected by every bounded join path.
-    ///
-    /// These facts are explanatory planning/execution diagnostics. They do not
-    /// toggle executor behavior and should not be treated as optimizer hints.
-    pub fn bounded_join_unsupported_shape_facts(
-        &self,
-        boundary_policy: ExecutionBoundaryPolicy,
-    ) -> Option<BTreeMap<&'static str, String>> {
-        if !self.contains_join() {
-            return None;
-        }
-
-        match crate::exec::strict_bounded_pipeline_rejection_projection(self) {
-            Ok(Some(projection)) => {
-                Some(bounded_join_unsupported_shape_facts(self, boundary_policy, Some(&projection)))
-            },
-            Ok(None) => None,
-            Err(error) => {
-                let mut facts = bounded_join_unsupported_shape_facts(self, boundary_policy, None);
-                crate::bounded::insert_bounded_join_rejection_projection_error_facts(&mut facts, &error);
-                Some(facts)
-            },
-        }
-    }
-
-    /// Returns modeled bounded-join facts for executable bounded join plans.
-    pub fn bounded_join_modeled_facts(
-        &self,
-        boundary_policy: ExecutionBoundaryPolicy,
-    ) -> Option<BTreeMap<&'static str, String>> {
-        if !self.contains_join() {
-            return None;
-        }
-        matches!(crate::exec::strict_bounded_pipeline_rejection_projection(self), Ok(None))
-            .then(|| bounded_join_modeled_facts(self, boundary_policy))
-    }
-
     /// Returns nodes that are not reachable from the explicit sink input.
     ///
     /// Builders normally produce sink-reachable plans, but this is useful for

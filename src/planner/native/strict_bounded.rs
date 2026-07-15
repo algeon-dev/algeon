@@ -1,11 +1,11 @@
 use datafusion::common::{DataFusionError, Result as DataFusionResult};
 use nexus_query_engine::{
-    capability::ContractStatus,
-    contract_report::{StrictBoundedContractGateRow, StrictBoundedContractReport},
-    exec::{
+    admission::{
         strict_bounded_pipeline_admission_with_statistical_aggregate_mode,
         strict_bounded_pipeline_rejection_projection_with_statistical_aggregate_mode,
     },
+    capability::ContractStatus,
+    contract_report::{StrictBoundedContractGateRow, StrictBoundedContractReport},
     mode::StrictBoundedExecutionMode,
     pipeline::CompiledPipeline,
     plan::QueryPlan,

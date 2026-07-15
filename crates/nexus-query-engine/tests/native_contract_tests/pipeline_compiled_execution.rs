@@ -19,6 +19,14 @@ use nexus_query_engine::{
     adaptive_runtime::{
         AdaptiveMemoryHistory, AdaptiveMemoryHistoryKey, AdaptiveMemoryObservation, AdaptiveTaskMemoryHistoryKey,
     },
+    admission::{
+        CompiledBoundedPipelineSupport, adaptive_bounded_pipeline_admission,
+        adaptive_bounded_pipeline_admission_with_memory_history, compiled_bounded_pipeline_support,
+        compiled_bounded_query_plan_support, strict_bounded_pipeline_admission,
+        strict_bounded_pipeline_admission_with_statistical_aggregate_mode,
+        strict_bounded_pipeline_rejection_projection,
+        strict_bounded_pipeline_rejection_projection_with_statistical_aggregate_mode,
+    },
     capability::{
         CapabilityDecision, CapabilityEnvelopeAdmission, ContractQuality, ContractStatus, ReservationRequirementScope,
         STRICT_UNRESOLVED_PREFLIGHT_GAPS, StrictBoundedEnvelope, SubgraphInvariantKind,
@@ -30,15 +38,10 @@ use nexus_query_engine::{
     },
     dynamic_filter::DynamicFilterProducer,
     exec::{
-        CompiledBoundedPipelineSupport, CompiledGpuTaskExecutor, CompiledPipelineScheduler, CompiledPipelineState,
-        CompiledSchedulingCycle, CompiledTaskAdmission, CompiledTaskExecutor, CompiledTaskOutput, GpuResidentInputMap,
-        QueryOutput, QueryOutputMode, adaptive_bounded_pipeline_admission,
-        adaptive_bounded_pipeline_admission_with_memory_history, compiled_bounded_pipeline_support,
-        compiled_bounded_query_plan_support, execute_query_plan, execute_query_plan_with_gpu_inputs,
-        materialize_gpu_result_to_host, strict_bounded_pipeline_admission,
-        strict_bounded_pipeline_admission_with_statistical_aggregate_mode,
-        strict_bounded_pipeline_rejection_projection,
-        strict_bounded_pipeline_rejection_projection_with_statistical_aggregate_mode,
+        CompiledGpuTaskExecutor, CompiledPipelineScheduler, CompiledPipelineState, CompiledSchedulingCycle,
+        CompiledTaskAdmission, CompiledTaskExecutor, CompiledTaskOutput, execute_query_plan,
+        execute_query_plan_with_gpu_inputs, materialize_gpu_result_to_host,
+        output::{QueryOutput, QueryOutputMode},
     },
     expr::{
         AggregateExpr, AggregateFunction, AggregateSpec, BinaryOp, CaseWhen, ColumnRef, Expr, GroupingSetsSpec,
@@ -57,7 +60,9 @@ use nexus_query_engine::{
         JoinKey, JoinOutputColumn, JoinSide, JoinSpec, JoinType, NodeId, PlanNode, ProjectionOutput, QueryPlan,
         QueryPlanBuilder, WindowFunction, WindowSpec,
     },
-    runtime::{ExecutionContext, MemoryControlPolicy, MemoryReservationRequest, ReservationKind},
+    runtime::{
+        ExecutionContext, MemoryControlPolicy, MemoryReservationRequest, ReservationKind, resident::GpuResidentInputMap,
+    },
     source::{
         GpuResidentSource, LocalParquetFile, LocalParquetSource, ParquetEqualityDeleteFile, PartitionColumn,
         ResolvedParquetSource, SourceNode,

@@ -277,7 +277,7 @@ fn fallback_pressure_adaptive_pipeline_rows(
         return crate::planner::NativeAdaptivePipelineDiagnostics::default();
     };
     let memory_history = execution_config.adaptive_memory_history();
-    match nexus_query_engine::exec::adaptive_bounded_pipeline_admission_with_memory_history(
+    match nexus_query_engine::admission::adaptive_bounded_pipeline_admission_with_memory_history(
         plan,
         memory_history.as_deref(),
     ) {

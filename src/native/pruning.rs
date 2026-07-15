@@ -27,7 +27,7 @@ use datafusion::{
 };
 use nexus_query_engine::source::PredicateDisposition as NativePredicateDisposition;
 
-use super::validate::validate_physical_expr;
+use super::expression_contract::validate_physical_expr;
 use crate::policy::FallbackReason;
 
 #[path = "pruning/row_groups.rs"]

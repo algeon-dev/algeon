@@ -24,9 +24,8 @@ fn bounded_mixed_keyed_residual_join_resident_grouped_aggregate_input_pipeline_i
             plan.capability_analysis().admits_mixed_keyed_residual_join_resident_grouped_aggregate_input_pipeline(),
             "{variant:?}"
         );
-        assert!(plan.bounded_join_unsupported_shape_facts(ExecutionBoundaryPolicy::default()).is_none(), "{variant:?}");
-        let facts = plan
-            .bounded_join_modeled_facts(ExecutionBoundaryPolicy::default())
+        assert!(unsupported_facts(&plan, ExecutionBoundaryPolicy::default()).is_none(), "{variant:?}");
+        let facts = modeled_facts(&plan, ExecutionBoundaryPolicy::default())
             .expect("executable residual-resident grouped aggregate family should emit modeled facts");
         assert_eq!(facts.get("bounded_join_execution_family"), None, "{variant:?}");
         assert_eq!(facts.get("blocked_reservations").map(String::as_str), Some(""), "{variant:?}");
@@ -83,8 +82,7 @@ fn bounded_mixed_keyed_residual_join_resident_grouped_aggregate_input_capability
             !plan.capability_analysis().admits_mixed_keyed_residual_join_resident_grouped_aggregate_input_pipeline(),
             "{variant:?}"
         );
-        let facts = plan
-            .bounded_join_unsupported_shape_facts(ExecutionBoundaryPolicy::default())
+        let facts = unsupported_facts(&plan, ExecutionBoundaryPolicy::default())
             .expect("unsupported resident grouped aggregate input variant should produce facts");
         assert_rejection_facts_are_family_free(&facts, "unsupported_residual_resident_grouped_aggregate_input");
         assert!(facts.contains_key("bounded_join_rejection_reason"), "{variant:?}");

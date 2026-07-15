@@ -5,7 +5,7 @@
 //! execution according to the [`ExecutionContext`].
 //! GPU-resident input lookup is by plan-local names supplied in
 //! [`GpuResidentInputMap`]. Metrics are owned by the returned
-//! [`QueryExecutionResult`] so callers can record them after choosing host or
+//! [`output::QueryExecutionResult`] so callers can record them after choosing host or
 //! GPU-resident output handling.
 
 use std::{cell::Cell, collections::HashMap, rc::Rc, sync::Arc, time::Instant};
@@ -35,29 +35,22 @@ mod lowering_policy;
 mod materialize;
 mod operators;
 mod order;
+/// Native execution output types.
+pub mod output;
 mod retry;
 mod source;
-mod types;
-#[cfg(feature = "cugraph")]
-pub(crate) use types::GpuResidentGraphPreparationPin;
 mod util;
 mod validate;
 
 #[doc(hidden)]
 pub use bounded::strict::{
-    CompiledBoundedPipelineSupport, CompiledGpuResource, CompiledGpuTaskExecutor, CompiledPipelineScheduler,
-    CompiledPipelineState, CompiledSchedulingCycle, CompiledTaskAdmission, CompiledTaskExecutor, CompiledTaskOutput,
-    ReleasedCompiledResource, ResidentFrameStreamProducerTestHarness, StrictBoundedPipelineAdmission,
-    YieldedFrameCounterTestHarness, compiled_bounded_pipeline_support, compiled_bounded_query_plan_support,
-    strict_bounded_pipeline_admission, strict_bounded_pipeline_admission_with_statistical_aggregate_mode,
-    strict_bounded_pipeline_rejection_projection,
-    strict_bounded_pipeline_rejection_projection_with_statistical_aggregate_mode,
+    CompiledGpuResource, CompiledGpuTaskExecutor, CompiledPipelineScheduler, CompiledPipelineState,
+    CompiledSchedulingCycle, CompiledTaskAdmission, CompiledTaskExecutor, CompiledTaskOutput, ReleasedCompiledResource,
+    ResidentFrameStreamProducerTestHarness, YieldedFrameCounterTestHarness,
 };
 pub use bounded::{
-    AdaptivePipelineAdmission, JoinOutputColumnUpperBoundInput, PER_COLUMN_ALIGNMENT_PADDING_BYTES,
-    PartialAggregateShape, STRING_OFFSET_BYTES_CONSERVATIVE, adaptive_bounded_pipeline_admission,
-    adaptive_bounded_pipeline_admission_with_memory_history, join_output_upper_bound_bytes,
-    partial_aggregate_upper_bound_bytes,
+    JoinOutputColumnUpperBoundInput, PER_COLUMN_ALIGNMENT_PADDING_BYTES, PartialAggregateShape,
+    STRING_OFFSET_BYTES_CONSERVATIVE, join_output_upper_bound_bytes, partial_aggregate_upper_bound_bytes,
 };
 use edge_normalize::execute_edge_normalize;
 #[cfg(feature = "cugraph")]
@@ -67,21 +60,11 @@ pub use graph_algorithm::{
     force_next_graph_adaptive_full_attempt_resource_exhausted_for_test,
     force_next_graph_statistics_optional_resource_exhausted_for_test,
 };
+use output::QueryOutput;
 pub use source::{
     ResolvedRemoteParquetDatasourceProbe, probe_resolved_remote_parquet_datasource, read_gpu_resident_source,
-    read_literal_batch_source, read_local_parquet_source, validate_local_parquet_source,
+    read_literal_batch_source, read_local_parquet_source,
 };
-#[cfg(feature = "cugraph")]
-pub use types::{
-    DEFAULT_RESIDENT_GRAPH_CACHE_MAX_COPIES_PER_KEY, GpuResidentGraphCache, GpuResidentGraphCacheInsert,
-    GpuResidentGraphCacheSnapshot,
-};
-pub use types::{
-    GpuDataFrame, GpuFilteredJoinBuildHandle, GpuHashJoinBuildCache, GpuHashJoinBuildHandle,
-    GpuLocalParquetSourceCache, GpuLocalParquetSourceCacheInsert, GpuLocalParquetSourceCacheKey, GpuResidentInputMap,
-    GpuResultHandle, QueryExecutionResult, QueryOutput, QueryOutputMode,
-};
-
 #[doc(hidden)]
 pub mod reservation_contract_testing {
     #![allow(missing_docs)]
@@ -90,15 +73,15 @@ pub mod reservation_contract_testing {
 
     use arrow::datatypes::{DataType as ArrowDataType, Field, Schema};
 
-    use super::{
-        bounded::{JoinMaterializationTxn, ReservationTracker},
-        types::GpuLocalParquetSourceCacheKey,
-    };
+    use super::bounded::{JoinMaterializationTxn, ReservationTracker};
     use crate::{
         error::{QueryError, Result},
         metrics::QueryMetrics,
         pipeline::PipelineTaskKind,
-        runtime::{MemoryReservationRequest, MemorySpaceId, ReservationKind},
+        runtime::{
+            MemoryReservationRequest, MemorySpaceId, ReservationKind,
+            cache::local_parquet::GpuLocalParquetSourceCacheKey,
+        },
         source::LocalParquetSource,
     };
 
@@ -336,7 +319,8 @@ pub mod reservation_contract_testing {
     }
 }
 
-pub(crate) use self::validate::validate_literal_batch_source;
+#[cfg(feature = "cugraph")]
+use self::graph_algorithm::resident_cache::resident_graph_cache_preparation_pin;
 use self::{
     bounded::*,
     graph_algorithm::*,
@@ -345,7 +329,7 @@ use self::{
     materialize::*,
     operators::*,
     order::*,
-    types::{QueryExecutionResult as ExecutionResult, QueryOutput as Output},
+    output::{QueryExecutionResult as ExecutionResult, QueryOutput as Output},
     util::*,
     validate::*,
 };
@@ -368,11 +352,14 @@ use crate::{
     runtime::{
         BoundedJoinReservationContract, ExecutionContext, MemoryControlPolicy, MemoryReservationRequest,
         ReservationKind, RetryFacts,
+        cache::hash_join::GpuHashJoinBuildCache,
+        resident::{
+            GpuDataFrame, GpuFilteredJoinBuildHandle, GpuHashJoinBuildHandle, GpuResidentInputMap, GpuResultHandle,
+        },
     },
     source::{
-        ByteRangeDisposition, GpuResidentSource, LocalParquetFile, LocalParquetSource, PartitionColumn,
-        PartitionColumnDisposition, ScanLimitDisposition, SchemaMappingDisposition, ZERO_COLUMN_COUNT_COLUMN,
-        ZeroColumnCountDisposition,
+        GpuResidentSource, LocalParquetFile, LocalParquetSource, ZERO_COLUMN_COUNT_COLUMN,
+        validate_local_parquet_source,
     },
 };
 
@@ -548,7 +535,7 @@ fn execute_node(
     gpu_inputs: &GpuResidentInputMap,
     scratch: &mut ExecutionScratch,
     metrics: &mut QueryMetrics,
-) -> Result<types::GpuDataFrame> {
+) -> Result<GpuDataFrame> {
     context.check_cancellation("nexus_query_engine.exec.execute_node")?;
     if let Some(frame) = scratch.node_results.get(&id) {
         return Ok(frame.clone());

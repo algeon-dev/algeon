@@ -21,7 +21,7 @@ fn compiled_gpu_executor_runs_root_hash_join_build_probe_materialize() {
     let scheduler = CompiledPipelineScheduler::new(&pipeline).expect("pipeline should be schedulable");
     let context = bounded_context(Arc::new(runtime));
     let mut compiled_metrics = QueryMetrics::default();
-    let gpu_inputs = nexus_query_engine::exec::GpuResidentInputMap::new();
+    let gpu_inputs = nexus_query_engine::runtime::resident::GpuResidentInputMap::new();
 
     let (state, compiled_batch) = {
         let mut executor =
@@ -81,7 +81,7 @@ fn compiled_gpu_executor_runs_shared_source_hash_join_without_rereading() {
     let scheduler = CompiledPipelineScheduler::new(&pipeline).expect("pipeline should be schedulable");
     let context = bounded_context(Arc::new(runtime));
     let mut metrics = QueryMetrics::default();
-    let gpu_inputs = nexus_query_engine::exec::GpuResidentInputMap::new();
+    let gpu_inputs = nexus_query_engine::runtime::resident::GpuResidentInputMap::new();
 
     let (state, compiled_batch) = {
         let mut executor = CompiledGpuTaskExecutor::new(&context, &plan, &pipeline, &gpu_inputs, &mut metrics).unwrap();
@@ -558,18 +558,25 @@ fn execute_query_plan_routes_gpu_resident_sink_join_through_compiled_pipeline() 
         "GPU sink compiled pipeline must not carry host materialization gates"
     );
     assert!(
-        nexus_query_engine::exec::strict_bounded_pipeline_rejection_projection(&plan)
+        nexus_query_engine::admission::strict_bounded_pipeline_rejection_projection(&plan)
             .expect("strict rejection projection should not fail")
             .is_none(),
         "GPU sink should stay inside the compiled bounded envelope"
     );
     assert!(
-        plan.bounded_join_modeled_facts(nexus_query_engine::runtime::ExecutionBoundaryPolicy::default()).is_some(),
+        nexus_query_engine::admission::bounded_join_modeled_facts(
+            &plan,
+            nexus_query_engine::runtime::ExecutionBoundaryPolicy::default()
+        )
+        .is_some(),
         "GPU sink plans admitted by strict compiled execution must emit modeled bounded-join facts"
     );
     assert!(
-        plan.bounded_join_unsupported_shape_facts(nexus_query_engine::runtime::ExecutionBoundaryPolicy::default())
-            .is_none(),
+        nexus_query_engine::admission::bounded_join_unsupported_shape_facts(
+            &plan,
+            nexus_query_engine::runtime::ExecutionBoundaryPolicy::default()
+        )
+        .is_none(),
         "GPU sink plans admitted by strict compiled execution must not emit unsupported bounded-join facts"
     );
     let context = bounded_context(Arc::new(runtime));
@@ -1294,7 +1301,7 @@ fn compiled_host_sink_diagnostics_are_structured_without_legacy_routing_terms() 
     let analysis = plan.capability_analysis();
     let pipeline = compile_pipeline(&plan, &analysis).expect("root join should compile");
     let context = bounded_context(Arc::new(runtime));
-    let gpu_inputs = nexus_query_engine::exec::GpuResidentInputMap::new();
+    let gpu_inputs = nexus_query_engine::runtime::resident::GpuResidentInputMap::new();
     let mut metrics = QueryMetrics::default();
     let mut executor = CompiledGpuTaskExecutor::new(&context, &plan, &pipeline, &gpu_inputs, &mut metrics).unwrap();
 

@@ -1334,7 +1334,7 @@ fn write_outputs(
     device_samples: &[DeviceSampleRow],
     makespan_ms: f64,
     effective_active_max: usize,
-    bfs_singleflight: datafusion_nexus::graph_sql::CugraphBfsSingleflightSnapshot,
+    bfs_singleflight: datafusion_nexus::native_exec::graph::GraphBfsSingleflightSnapshot,
 ) -> Result<(), Box<dyn Error>> {
     let queries_path = config.out_dir.join("queries.tsv");
     write_query_rows(&queries_path, query_rows)?;

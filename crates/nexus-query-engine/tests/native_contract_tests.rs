@@ -28,7 +28,6 @@ use nexus_query_engine::{
         is_supported_list_carry_type,
     },
     error::{QueryError, QueryErrorCode, QueryErrorKind, QueryErrorStatus},
-    exec::{GpuLocalParquetSourceCacheKey, validate_local_parquet_source},
     expr::{
         AggregateExpr, AggregateFunction, AggregateSpec, BinaryOp, CaseWhen, ColumnRef, DatePart, Expr, LimitSpec,
         LiteralValue, SortExpr, SortSpec,
@@ -45,6 +44,7 @@ use nexus_query_engine::{
         ExecutionBoundaryPolicy, ExecutionCancellation, ExecutionContext, MemoryControlPolicy,
         MemoryReservationRequest, MemorySpaceId, ProbeExecutionBoundary, ReservationKind,
         ResultMaterializationBoundary, RetryFacts, SourceReadBoundary, SourceSchedulerPolicy,
+        cache::local_parquet::GpuLocalParquetSourceCacheKey,
     },
     source::{
         ByteRangeDisposition, CredentialMode, GpuResidentSource, LakehouseCacheFillMode, LakehouseCacheReadMode,
@@ -53,6 +53,7 @@ use nexus_query_engine::{
         ParquetReaderDecimalTypeId, PartitionColumn, PartitionColumnDisposition, PredicateDisposition,
         RejectedSourceFeature, RemoteParquetReadMode, ResolvedParquetSource, ScanLimitDisposition,
         SchemaMappingDisposition, SourceColumnRef, SourceNode, ZERO_COLUMN_COUNT_COLUMN, ZeroColumnCountDisposition,
+        validate_local_parquet_source,
     },
 };
 use parquet::{arrow::ArrowWriter, file::properties::WriterProperties};

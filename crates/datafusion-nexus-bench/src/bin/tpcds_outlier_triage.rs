@@ -406,12 +406,12 @@ fn optimized_native_plan_evidence(
     };
 
     let statistical_mode = optimizer_config.statistical_aggregate_execution_mode();
-    let admission = nexus_query_engine::exec::strict_bounded_pipeline_admission_with_statistical_aggregate_mode(
+    let admission = nexus_query_engine::admission::strict_bounded_pipeline_admission_with_statistical_aggregate_mode(
         &plan,
         statistical_mode,
     );
     let first_capability_rejection_projection =
-        match nexus_query_engine::exec::strict_bounded_pipeline_rejection_projection_with_statistical_aggregate_mode(
+        match nexus_query_engine::admission::strict_bounded_pipeline_rejection_projection_with_statistical_aggregate_mode(
             &plan,
             statistical_mode,
         ) {
@@ -736,7 +736,7 @@ fn format_optimized_native_ir(
         let optimized = nexus_query_engine::optimizer::optimize_query_plan(plan.clone(), &options);
         let analysis = optimized.plan.capability_analysis();
         let mode_aware_envelope =
-            match nexus_query_engine::exec::strict_bounded_pipeline_admission_with_statistical_aggregate_mode(
+            match nexus_query_engine::admission::strict_bounded_pipeline_admission_with_statistical_aggregate_mode(
                 &optimized.plan,
                 statistical_mode,
             ) {

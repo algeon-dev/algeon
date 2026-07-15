@@ -22,11 +22,9 @@ use super::{
 };
 use crate::{
     native::{
+        expression_contract::validate_physical_expr,
         normalize::{NormalizedNativeAggregate, NormalizedNativeAggregateRoot, NormalizedNativeSortExprs},
-        validate::{
-            aggregate_is_count_star_only, validate_aggregate_for_native_lowering, validate_physical_expr,
-            validate_schema,
-        },
+        validate::{aggregate_is_count_star_only, validate_aggregate_for_native_lowering, validate_schema},
     },
     policy::FallbackReason,
 };
@@ -246,9 +244,9 @@ pub(super) fn lower_aggregate_spec(
         .map(|(index, (expr, alias))| {
             let native_expr = prepared.group_expr_aliases.as_ref().and_then(|aliases| aliases.get(index)).map_or_else(
                 || lower_physical_expr_with_bindings(expr, &frontend_schema, Some(&prepared.input.bindings)),
-                |alias| Ok(NativeExpr::column(alias)),
+                |alias| Ok::<NativeExpr, FallbackReason>(NativeExpr::column(alias)),
             )?;
-            Ok(alias_if_needed(native_expr, alias))
+            Ok::<NativeExpr, FallbackReason>(alias_if_needed(native_expr, alias))
         })
         .collect::<Result<Vec<_>, _>>()?;
 

@@ -1,6 +1,6 @@
 use std::sync::Barrier;
 
-use super::*;
+use super::{super::memory_domain::grant_memory_domain_creation_locks, *};
 use crate::{
     graph_memory::GraphMemoryCalibrationOverride,
     runtime::{GdsDriverProbeStatus, KvikioCompatModeStatus, NvidiaFsProbeStatus},
@@ -988,7 +988,7 @@ fn concurrent_runtimes_single_flight_query_memory_domain_creation() {
             let barrier = Arc::clone(&barrier);
             std::thread::spawn(move || {
                 barrier.wait();
-                let domain = super::super::create_grant_memory_domain(
+                let domain = super::super::memory_domain::create_grant_memory_domain(
                     runtime.as_ref(),
                     Some(&grant),
                     Some(QueryMemoryDomainPolicy::default()),
@@ -1004,7 +1004,7 @@ fn concurrent_runtimes_single_flight_query_memory_domain_creation() {
     let domains = threads.into_iter().map(|thread| thread.join().unwrap()).collect::<Vec<_>>();
 
     assert!(domains.iter().all(|domain| Arc::ptr_eq(&domains[0], domain)));
-    assert!(!super::super::grant_memory_domain_creation_locks().lock().unwrap().contains_key(&grant_key));
+    assert!(!grant_memory_domain_creation_locks().lock().unwrap().contains_key(&grant_key));
 }
 
 #[test]

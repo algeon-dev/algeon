@@ -7,7 +7,6 @@ use std::{
 use super::*;
 use crate::{
     adaptive_runtime::{AdaptiveMemoryHistory, AdaptiveTaskMemoryHistoryShape},
-    exec::types::{GpuLocalParquetSourceCache, GpuLocalParquetSourceCacheKey, GpuLocalParquetSourceCachePin},
     metrics::{
         CompiledTaskId, MemoryReservationEvent, MemoryReservationEventAction, MemoryReservationEventOutcome,
         PlanNodeId, QueryId,
@@ -15,7 +14,10 @@ use crate::{
     mode::NativePipelineExecutionMode,
     pipeline::CompiledPipeline,
     plan::QueryPlan,
-    runtime::{ExecutionContext, MemoryGrant, MemorySpaceId, gpu::governor::MemoryGrantLiveReservation},
+    runtime::{
+        ExecutionContext, MemoryGrant, MemorySpaceId, cache::local_parquet::*,
+        gpu::governor::MemoryGrantLiveReservation,
+    },
 };
 
 #[derive(Debug, Clone)]
@@ -719,7 +721,6 @@ impl ReservationTracker {
             );
             return Err(request.denied_error(remaining));
         }
-
         if !self.reserve_live_bytes(request.requested_bytes)? {
             let remaining = self.reservable_remaining_bytes()?;
             metrics.record_reservation_denied_timeline_event(
@@ -955,7 +956,6 @@ impl ReservationTracker {
             );
             return Err(request.denied_error(remaining));
         }
-
         if !self.reserve_live_bytes(request.requested_bytes)? {
             let remaining = self.reservable_remaining_bytes()?;
             metrics.record_reservation_denied_timeline_event(

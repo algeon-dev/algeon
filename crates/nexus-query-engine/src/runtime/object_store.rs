@@ -38,6 +38,25 @@ impl SourceStorageProfile {
         &self.s3
     }
 
+    /// Builds an S3 object store with the same credential, endpoint, region,
+    /// and addressing policy used by native source execution.
+    ///
+    /// Adapter-side metadata continuations use this to read Parquet footers
+    /// without maintaining a second storage-profile interpretation.
+    pub fn build_s3_object_store(
+        &self,
+        bucket: impl Into<String>,
+        fallback_region: impl Into<String>,
+    ) -> Result<Arc<dyn object_store::ObjectStore>> {
+        let key = S3ObjectStoreKey {
+            bucket: bucket.into(),
+            region: fallback_region.into(),
+            storage_profile_id: Some(self.id.clone()),
+        };
+        let store: Arc<dyn object_store::ObjectStore> = Arc::new(build_s3_store(&key, Some(self))?);
+        Ok(store)
+    }
+
     /// Whether this profile needs per-profile settings that libcudf/KvikIO
     /// cannot currently receive through the typed remote Parquet contract.
     pub fn requires_scoped_remote_direct_profile(&self) -> bool {
@@ -595,6 +614,20 @@ mod tests {
             S3SourceStorageProfile::default_chain().with_endpoint("http://localhost:9000").with_path_style_access(true),
         );
         assert!(custom_endpoint.requires_scoped_remote_direct_profile());
+    }
+
+    #[test]
+    fn source_storage_profile_builds_object_store_for_adapter_metadata_reads() {
+        let profile = SourceStorageProfile::s3(
+            "iceberg-profile",
+            S3SourceStorageProfile::default_chain().with_unsigned_requests(),
+        );
+
+        let store = profile.build_s3_object_store("lakehouse", "us-east-1");
+
+        if let Err(error) = store {
+            panic!("native storage profile should build an S3 object store: {error}");
+        }
     }
 
     #[test]

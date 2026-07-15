@@ -123,7 +123,7 @@ pub(super) fn source_node_executable_decision(source: &SourceNode) -> Capability
         ),
         SourceNode::GpuResident(_) => CapabilityDecision::Satisfied,
         SourceNode::LiteralBatch(source) => validation_result_decision(
-            crate::exec::validate_literal_batch_source(source),
+            crate::source::validate_literal_batch_source(source),
             "unsupported_literal_batch_source_capability",
             [("source_format", "literal_batch".to_string())],
         ),

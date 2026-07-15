@@ -38,7 +38,7 @@ use crate::{
     error::{Error, ErrorCode},
     native_exec::{
         NativeCudfComposedExec, NativeCudfExec, NativeCudfExecutionConfig, NativeCudfGpuProducerExec,
-        gpu_resident_producer_input_name,
+        producer::gpu_resident_producer_input_name,
     },
     policy::{FallbackReason, GpuFallbackPolicy},
     report::{CandidateOutcome, GpuCandidate, PlanningReport},
@@ -733,11 +733,12 @@ fn producerize_native_fragments(
                 .execution_config()
                 .plan_task_mapping_datafusion_shape()
                 .or_else(|| native_execution_config.plan_task_mapping_datafusion_shape()),
+            native_execution_config.lakehouse_footer_pruning(),
+            native_execution_config.source_storage_profiles().to_vec(),
         )
         .map_err(DataFusionError::from)?;
         return Ok(Some(Arc::new(producer)));
     }
-
     if plan.downcast_ref::<NativeCudfComposedExec>().is_some()
         || gpu_resident_producer_input_name(plan.as_ref()).is_some()
     {
@@ -1261,7 +1262,6 @@ mod tests {
                 nexus_query_engine::chunk::SourceChunkPlanningOptions::default()
                     .with_local_parquet_throughput_min_device_budget_bytes(0),
             );
-
         let error = native_optimizer_options_for_execution(
             &nexus_query_engine::optimizer::NativeOptimizerOptions::disabled(),
             &execution_config,

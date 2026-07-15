@@ -1,0 +1,452 @@
+use std::{
+    fmt,
+    fs::{self, File},
+    io::{Read, Write},
+    net::{TcpListener, TcpStream},
+    ops::Range,
+    path::{Path, PathBuf},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, AtomicUsize, Ordering},
+    },
+    thread,
+    time::{Duration, SystemTime, UNIX_EPOCH},
+};
+
+use arrow::{
+    array::{ArrayRef, Int64Array},
+    datatypes::{DataType, Field, Schema},
+    record_batch::RecordBatch,
+};
+use bytes::Bytes;
+use datafusion::{
+    execution::{object_store::ObjectStoreUrl, runtime_env::RuntimeEnv},
+    object_store::{
+        CopyOptions, GetOptions, GetResult, ListResult, MultipartUpload, ObjectMeta, ObjectStore, ObjectStoreExt,
+        PutMultipartOptions, PutOptions, PutPayload, PutResult, Result as ObjectStoreResult, memory::InMemory,
+        path::Path as ObjectStorePath,
+    },
+    parquet::{arrow::ArrowWriter, file::properties::WriterProperties},
+    physical_plan::ExecutionPlan,
+    prelude::{SessionConfig, SessionContext},
+};
+use futures::{StreamExt, stream::BoxStream};
+use nexus_query_engine::{
+    expr::{BinaryOp, Expr, LiteralValue},
+    optimizer::local_parquet_source,
+    plan::{NodeId, QueryPlan, QueryPlanBuilder},
+    runtime::{
+        DeploymentIoCapability, GdsDriverProbeStatus, KvikioCompatModeStatus, NvidiaFsProbeStatus, QueryService,
+        QueryServiceConfig, QueryServiceTenantConfig, S3SourceStorageProfile, SourceStorageProfile, TenantId,
+    },
+    source::{GpuResidentSource, LocalParquetFile, LocalParquetSource, SourceNode},
+};
+
+use super::prune_native_query_plan;
+use crate::native_exec::{
+    NativeCudfComposedExec, NativeCudfExec, NativeCudfExecutionConfig, NativeCudfGpuProducerExec, QueryAdmissionSource,
+};
+
+#[derive(Debug)]
+struct TrackingObjectStore {
+    inner: InMemory,
+    get_calls: Arc<AtomicUsize>,
+}
+
+impl TrackingObjectStore {
+    fn new() -> (Self, Arc<AtomicUsize>) {
+        let get_calls = Arc::new(AtomicUsize::new(0));
+        (Self { inner: InMemory::new(), get_calls: Arc::clone(&get_calls) }, get_calls)
+    }
+}
+
+impl fmt::Display for TrackingObjectStore {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("TrackingObjectStore")
+    }
+}
+
+#[async_trait::async_trait]
+impl ObjectStore for TrackingObjectStore {
+    async fn put_opts(
+        &self,
+        location: &ObjectStorePath,
+        payload: PutPayload,
+        opts: PutOptions,
+    ) -> ObjectStoreResult<PutResult> {
+        self.inner.put_opts(location, payload, opts).await
+    }
+
+    async fn put_multipart_opts(
+        &self,
+        location: &ObjectStorePath,
+        opts: PutMultipartOptions,
+    ) -> ObjectStoreResult<Box<dyn MultipartUpload>> {
+        self.inner.put_multipart_opts(location, opts).await
+    }
+
+    async fn get_opts(&self, location: &ObjectStorePath, options: GetOptions) -> ObjectStoreResult<GetResult> {
+        self.get_calls.fetch_add(1, Ordering::Relaxed);
+        self.inner.get_opts(location, options).await
+    }
+
+    async fn get_ranges(&self, location: &ObjectStorePath, ranges: &[Range<u64>]) -> ObjectStoreResult<Vec<Bytes>> {
+        self.get_calls.fetch_add(1, Ordering::Relaxed);
+        self.inner.get_ranges(location, ranges).await
+    }
+
+    fn delete_stream(
+        &self,
+        locations: BoxStream<'static, ObjectStoreResult<ObjectStorePath>>,
+    ) -> BoxStream<'static, ObjectStoreResult<ObjectStorePath>> {
+        self.inner.delete_stream(locations)
+    }
+
+    fn list(&self, prefix: Option<&ObjectStorePath>) -> BoxStream<'static, ObjectStoreResult<ObjectMeta>> {
+        self.inner.list(prefix)
+    }
+
+    async fn list_with_delimiter(&self, prefix: Option<&ObjectStorePath>) -> ObjectStoreResult<ListResult> {
+        self.inner.list_with_delimiter(prefix).await
+    }
+
+    async fn copy_opts(
+        &self,
+        from: &ObjectStorePath,
+        to: &ObjectStorePath,
+        options: CopyOptions,
+    ) -> ObjectStoreResult<()> {
+        self.inner.copy_opts(from, to, options).await
+    }
+}
+
+struct TestS3Server {
+    endpoint: String,
+    request_count: Arc<AtomicUsize>,
+    stop: Arc<AtomicBool>,
+    worker: Option<thread::JoinHandle<()>>,
+}
+
+impl TestS3Server {
+    fn start(payload: Vec<u8>) -> Self {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("test S3 listener should bind");
+        listener.set_nonblocking(true).expect("test S3 listener should become nonblocking");
+        let address = listener.local_addr().expect("test S3 listener should have an address");
+        let request_count = Arc::new(AtomicUsize::new(0));
+        let stop = Arc::new(AtomicBool::new(false));
+        let worker_requests = Arc::clone(&request_count);
+        let worker_stop = Arc::clone(&stop);
+        let worker = thread::spawn(move || {
+            while !worker_stop.load(Ordering::Acquire) {
+                match listener.accept() {
+                    Ok((mut stream, _)) => {
+                        worker_requests.fetch_add(1, Ordering::Relaxed);
+                        serve_s3_request(&mut stream, &payload);
+                    },
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        thread::sleep(Duration::from_millis(2));
+                    },
+                    Err(_) => break,
+                }
+            }
+        });
+        Self { endpoint: format!("http://{address}"), request_count, stop, worker: Some(worker) }
+    }
+}
+
+impl Drop for TestS3Server {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Release);
+        if let Some(worker) = self.worker.take() {
+            worker.join().expect("test S3 worker should stop cleanly");
+        }
+    }
+}
+
+fn serve_s3_request(stream: &mut TcpStream, payload: &[u8]) {
+    stream.set_read_timeout(Some(Duration::from_secs(2))).expect("test S3 read timeout should be configurable");
+    let mut request = Vec::new();
+    let mut buffer = [0_u8; 4096];
+    while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+        let count = stream.read(&mut buffer).expect("test S3 request should be readable");
+        if count == 0 {
+            break;
+        }
+        request.extend_from_slice(&buffer[..count]);
+    }
+    let request = String::from_utf8_lossy(&request);
+    let method = request.split_whitespace().next().unwrap_or_default();
+    let range = request.lines().find_map(|line| {
+        let value = line.strip_prefix("Range: bytes=").or_else(|| line.strip_prefix("range: bytes="))?;
+        let (start, end) = value.trim().split_once('-')?;
+        Some((start.parse::<usize>().ok()?, end.parse::<usize>().ok()?))
+    });
+    let (status, body, content_range) = match (method, range) {
+        ("HEAD", _) => ("200 OK", &[][..], None),
+        ("GET", Some((start, end))) if start < payload.len() => {
+            let end = end.min(payload.len() - 1);
+            ("206 Partial Content", &payload[start..=end], Some((start, end)))
+        },
+        ("GET", Some(_)) => ("416 Range Not Satisfiable", &[][..], None),
+        ("GET", None) => ("200 OK", payload, None),
+        _ => ("405 Method Not Allowed", &[][..], None),
+    };
+    let mut response = format!(
+        "HTTP/1.1 {status}\r\nContent-Length: {}\r\nLast-Modified: Wed, 01 Jan 2025 00:00:00 GMT\r\nETag: \"test-etag\"\r\nAccept-Ranges: bytes\r\nx-amz-request-id: test-request\r\nConnection: close\r\n",
+        if method == "HEAD" { payload.len() } else { body.len() }
+    );
+    if let Some((start, end)) = content_range {
+        response.push_str(&format!("Content-Range: bytes {start}-{end}/{}\r\n", payload.len()));
+    }
+    response.push_str("\r\n");
+    stream.write_all(response.as_bytes()).expect("test S3 response headers should be writable");
+    if method != "HEAD" {
+        stream.write_all(body).expect("test S3 response body should be writable");
+    }
+}
+
+fn prunable_object_store_source(
+    uri: &str,
+    file_size_bytes: usize,
+    storage_profile_id: Option<&str>,
+) -> LocalParquetSource {
+    let schema = Arc::new(Schema::new(vec![Field::new("value", DataType::Int64, false)]));
+    let mut file = LocalParquetFile::object_store_uri(uri)
+        .expect("test object-store URI should parse")
+        .with_file_size_bytes(file_size_bytes as u64);
+    if let Some(profile_id) = storage_profile_id {
+        let resolved_source = file.resolved_source.clone().with_storage_profile_id(profile_id.to_string());
+        file = file
+            .with_resolved_parquet_source(resolved_source)
+            .expect("test storage profile should preserve the source location");
+    }
+    LocalParquetSource::from_files(vec![file], schema, vec!["value".to_string()]).with_reader_predicate(Expr::binary(
+        Expr::column("value"),
+        BinaryOp::Eq,
+        Expr::literal(LiteralValue::Int64(9)),
+    ))
+}
+
+fn prunable_query_plan(uri: &str, file_size_bytes: usize, gpu_resident_sink: bool) -> (QueryPlan, NodeId) {
+    let mut builder = QueryPlanBuilder::new();
+    let source = builder.add_source(SourceNode::LocalParquet(prunable_object_store_source(uri, file_size_bytes, None)));
+    let plan =
+        if gpu_resident_sink { builder.finish_gpu_resident(source) } else { builder.finish_with_host_sink(source) };
+    (plan, source)
+}
+
+fn admission_only_execution_config() -> NativeCudfExecutionConfig {
+    let tenant_id = TenantId::new("lakehouse-order-test");
+    let deployment = DeploymentIoCapability::from_probe_inputs(
+        NvidiaFsProbeStatus::DriverMissing,
+        KvikioCompatModeStatus::Unset,
+        GdsDriverProbeStatus::ProbeUnimplemented,
+    );
+    let service = QueryService::new_admission_only(
+        QueryServiceConfig {
+            device_capacity_bytes: Some(1024 * 1024),
+            max_concurrent_queries: 1,
+            ..QueryServiceConfig::default()
+        },
+        vec![QueryServiceTenantConfig::new(tenant_id.clone(), 1024 * 1024)],
+        deployment,
+    )
+    .expect("admission-only query service should build");
+    NativeCudfExecutionConfig::bounded(1024 * 1024, 512, 1, 3, 1)
+        .with_query_admission_source(QueryAdmissionSource::new(service, tenant_id))
+        .with_plan_query_admission_ticket()
+        .with_lakehouse_footer_pruning(true)
+}
+
+fn task_context_with_runtime(runtime_env: Arc<RuntimeEnv>) -> Arc<datafusion::execution::TaskContext> {
+    SessionContext::new_with_config_rt(SessionConfig::new(), runtime_env).task_ctx()
+}
+
+async fn register_tracking_parquet_store(
+    runtime_env: &Arc<RuntimeEnv>,
+    store_url: &str,
+    bytes: &[u8],
+) -> Arc<AtomicUsize> {
+    let (store, get_calls) = TrackingObjectStore::new();
+    store
+        .put(&ObjectStorePath::from("table/data.parquet"), Bytes::copy_from_slice(bytes).into())
+        .await
+        .expect("test object-store payload should be writable");
+    let store_url = ObjectStoreUrl::parse(store_url).expect("test object-store URL should parse");
+    runtime_env.register_object_store(store_url.as_ref(), Arc::new(store));
+    get_calls
+}
+
+#[tokio::test]
+async fn product_pruning_uses_runtime_object_store_and_noops_when_store_is_missing() {
+    let (dir, bytes) = prunable_parquet_fixture("lakehouse-object-store-pruning");
+    let object_path = ObjectStorePath::from("table/data.parquet");
+    let store: Arc<dyn ObjectStore> = Arc::new(InMemory::new());
+    store.put(&object_path, bytes.clone().into()).await.expect("test object-store payload should be writable");
+    let runtime_env = Arc::new(RuntimeEnv::default());
+    let store_url = ObjectStoreUrl::parse("s3://lakehouse").expect("test object-store URL should parse");
+    runtime_env.register_object_store(store_url.as_ref(), Arc::clone(&store));
+
+    let source = prunable_object_store_source("s3://lakehouse/table/data.parquet", bytes.len(), None);
+    let mut builder = QueryPlanBuilder::new();
+    let source_node_id = builder.add_source(SourceNode::LocalParquet(source));
+    let plan = builder.finish_with_host_sink(source_node_id);
+
+    let pruned = prune_native_query_plan(plan.clone(), &runtime_env, &[]).await;
+    let pruned_source = local_parquet_source(&pruned, source_node_id).expect("pruned source should remain present");
+    assert_eq!(pruned_source.files[0].row_groups.as_deref(), Some(&[1][..]));
+
+    let unchanged = prune_native_query_plan(plan, &Arc::new(RuntimeEnv::default()), &[]).await;
+    let unchanged_source =
+        local_parquet_source(&unchanged, source_node_id).expect("unpruned source should remain present");
+    assert_eq!(unchanged_source.files[0].row_groups, None);
+    remove_fixture(dir);
+}
+
+#[tokio::test]
+async fn product_pruning_prefers_runtime_object_store_over_source_storage_profile() {
+    let (dir, bytes) = prunable_parquet_fixture("lakehouse-runtime-store-precedence");
+    let store: Arc<dyn ObjectStore> = Arc::new(InMemory::new());
+    store
+        .put(&ObjectStorePath::from("table/data.parquet"), bytes.clone().into())
+        .await
+        .expect("test object-store payload should be writable");
+    let runtime_env = Arc::new(RuntimeEnv::default());
+    let store_url = ObjectStoreUrl::parse("s3://lakehouse").expect("test object-store URL should parse");
+    runtime_env.register_object_store(store_url.as_ref(), store);
+
+    let source =
+        prunable_object_store_source("s3://lakehouse/table/data.parquet", bytes.len(), Some("unreachable-profile"));
+    let mut builder = QueryPlanBuilder::new();
+    let source_node_id = builder.add_source(SourceNode::LocalParquet(source));
+    let plan = builder.finish_with_host_sink(source_node_id);
+    let unreachable_profile = SourceStorageProfile::s3(
+        "unreachable-profile",
+        S3SourceStorageProfile::default_chain()
+            .with_region("us-east-1")
+            .with_endpoint("http://127.0.0.1:9")
+            .with_path_style_access(true)
+            .with_unsigned_requests(),
+    );
+
+    let pruned = prune_native_query_plan(plan, &runtime_env, &[unreachable_profile]).await;
+    let pruned_source = local_parquet_source(&pruned, source_node_id).expect("pruned source should remain present");
+    assert_eq!(pruned_source.files[0].row_groups.as_deref(), Some(&[1][..]));
+    remove_fixture(dir);
+}
+
+#[tokio::test]
+async fn product_pruning_falls_back_to_source_storage_profile() {
+    let (dir, bytes) = prunable_parquet_fixture("lakehouse-profile-store-fallback");
+    let server = TestS3Server::start(bytes.clone());
+    let profile = SourceStorageProfile::s3(
+        "local-profile",
+        S3SourceStorageProfile::default_chain()
+            .with_region("us-east-1")
+            .with_endpoint(server.endpoint.clone())
+            .with_path_style_access(true)
+            .with_unsigned_requests(),
+    );
+    let source = prunable_object_store_source("s3://lakehouse/table/data.parquet", bytes.len(), Some("local-profile"));
+    let mut builder = QueryPlanBuilder::new();
+    let source_node_id = builder.add_source(SourceNode::LocalParquet(source));
+    let plan = builder.finish_with_host_sink(source_node_id);
+
+    let pruned = prune_native_query_plan(plan, &Arc::new(RuntimeEnv::default()), &[profile]).await;
+    let pruned_source = local_parquet_source(&pruned, source_node_id).expect("pruned source should remain present");
+    assert_eq!(pruned_source.files[0].row_groups.as_deref(), Some(&[1][..]));
+    assert!(server.request_count.load(Ordering::Relaxed) > 0, "storage-profile fallback should reach S3");
+    remove_fixture(dir);
+}
+
+#[tokio::test]
+async fn native_host_resolves_lakehouse_metadata_before_admission_context() {
+    let (dir, bytes) = prunable_parquet_fixture("lakehouse-host-before-admission");
+    let runtime_env = Arc::new(RuntimeEnv::default());
+    let get_calls = register_tracking_parquet_store(&runtime_env, "s3://host-source", &bytes).await;
+    let (plan, _) = prunable_query_plan("s3://host-source/table/data.parquet", bytes.len(), false);
+    let exec = NativeCudfExec::try_new(plan, admission_only_execution_config())
+        .expect("test native host execution should build");
+
+    let mut stream = exec
+        .execute(0, task_context_with_runtime(runtime_env))
+        .expect("native host execution should return a lazy stream");
+    let result = stream.next().await.expect("native host stream should resolve once");
+
+    assert!(result.is_err(), "admission-only service must reject native context acquisition");
+    assert!(get_calls.load(Ordering::Relaxed) > 0, "footer metadata must resolve before context acquisition");
+    remove_fixture(dir);
+}
+
+#[tokio::test]
+async fn native_composed_resolves_consumer_and_producer_metadata_before_admission_context() {
+    let (dir, bytes) = prunable_parquet_fixture("lakehouse-composed-before-admission");
+    let runtime_env = Arc::new(RuntimeEnv::default());
+    let consumer_gets = register_tracking_parquet_store(&runtime_env, "s3://consumer-source", &bytes).await;
+    let producer_gets = register_tracking_parquet_store(&runtime_env, "s3://producer-source", &bytes).await;
+
+    let (producer_plan, _) = prunable_query_plan("s3://producer-source/table/data.parquet", bytes.len(), true);
+    let producer = NativeCudfGpuProducerExec::try_new_with_metrics_capture_and_shape(
+        "producer",
+        producer_plan,
+        None,
+        None,
+        true,
+        Vec::new(),
+    )
+    .expect("test native producer should build");
+
+    let schema = Arc::new(Schema::new(vec![Field::new("value", DataType::Int64, false)]));
+    let mut builder = QueryPlanBuilder::new();
+    let consumer_source = builder.add_source(SourceNode::LocalParquet(prunable_object_store_source(
+        "s3://consumer-source/table/data.parquet",
+        bytes.len(),
+        None,
+    )));
+    let producer_source =
+        builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("producer", Arc::clone(&schema))));
+    let union = builder.add_union(vec![consumer_source, producer_source], Arc::clone(&schema));
+    let consumer_plan = builder.finish_with_host_sink(union);
+    let exec =
+        NativeCudfComposedExec::try_new(consumer_plan, vec![Arc::new(producer)], admission_only_execution_config())
+            .expect("test native composed execution should build");
+
+    let mut stream = exec
+        .execute(0, task_context_with_runtime(runtime_env))
+        .expect("native composed execution should return a lazy stream");
+    let result = stream.next().await.expect("native composed stream should resolve once");
+
+    assert!(result.is_err(), "admission-only service must reject native context acquisition");
+    assert!(consumer_gets.load(Ordering::Relaxed) > 0, "consumer footer metadata must resolve before admission");
+    assert!(producer_gets.load(Ordering::Relaxed) > 0, "producer footer metadata must resolve before admission");
+    remove_fixture(dir);
+}
+
+fn prunable_parquet_fixture(prefix: &str) -> (PathBuf, Vec<u8>) {
+    let dir = unique_test_dir(prefix);
+    fs::create_dir_all(&dir).expect("temporary lakehouse pruning directory should be created");
+    let path = dir.join("data.parquet");
+    write_prunable_i64_parquet(&path);
+    let bytes = fs::read(path).expect("test parquet payload should be readable");
+    (dir, bytes)
+}
+
+fn write_prunable_i64_parquet(path: &Path) {
+    let schema = Arc::new(Schema::new(vec![Field::new("value", DataType::Int64, false)]));
+    let values = Arc::new(Int64Array::from(vec![1, 9])) as ArrayRef;
+    let batch = RecordBatch::try_new(Arc::clone(&schema), vec![values]).expect("test batch should be valid");
+    let file = File::create(path).expect("test parquet file should be creatable");
+    let props = WriterProperties::builder().set_max_row_group_row_count(Some(1)).build();
+    let mut writer = ArrowWriter::try_new(file, schema, Some(props)).expect("test parquet writer should be valid");
+    writer.write(&batch).expect("test parquet batch should be writable");
+    writer.close().expect("test parquet writer should close");
+}
+
+fn unique_test_dir(prefix: &str) -> PathBuf {
+    let nanos = SystemTime::now().duration_since(UNIX_EPOCH).expect("system time should be valid").as_nanos();
+    std::env::temp_dir().join(format!("{prefix}-{}-{nanos}", std::process::id()))
+}
+
+fn remove_fixture(dir: PathBuf) {
+    fs::remove_dir_all(dir).expect("temporary lakehouse pruning directory should be removable");
+}

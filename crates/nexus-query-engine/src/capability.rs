@@ -11,7 +11,6 @@ use std::collections::{BTreeMap, BTreeSet};
 use crate::{
     chunk::local_parquet_source_has_exact_read_preflight,
     error::QueryError,
-    exec::validate_local_parquet_source,
     expr::{
         AggregateExpr, AggregateFunction, AggregateSpec, BinaryOp, ColumnQualifier, Expr, GroupingSetsSpec,
         LiteralValue,
@@ -21,7 +20,7 @@ use crate::{
         WindowFunction,
     },
     runtime::ReservationKind,
-    source::SourceNode,
+    source::{SourceNode, validate_local_parquet_source},
 };
 
 mod admission;

@@ -247,7 +247,7 @@ pub(super) fn table_format_source_contract_schema(
         .iter()
         .map(|index| {
             let field = footer_schema.fields().get(*index).ok_or(FallbackReason::NativeSourceSchemaMapping)?;
-            Ok((field.name().clone(), table_format_file_read_contract_field(field)))
+            Ok::<_, FallbackReason>((field.name().clone(), table_format_file_read_contract_field(field)))
         })
         .collect::<Result<Vec<_>, _>>()?;
     for field in output_schema.fields() {

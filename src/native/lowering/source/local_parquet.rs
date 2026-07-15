@@ -26,6 +26,7 @@ use super::{
 };
 use crate::{
     native::{
+        expression_contract::validate_physical_expr,
         lowering::{
             LoweredNativeInput, RequiredFields, executable_schema_and_bindings, expr::lower_physical_expr_with_bindings,
         },
@@ -35,7 +36,7 @@ use crate::{
             native_parquet_object_store_scan_is_supported, native_source_output_schema,
             required_parquet_column_requirements_for_scan_columns, validate_slice1_parquet_scan,
         },
-        validate::{validate_physical_expr, validate_schema},
+        validate::validate_schema,
     },
     policy::FallbackReason,
 };

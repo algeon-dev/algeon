@@ -18,7 +18,6 @@ use nexus_query_engine::{
     capability::{AggregateStrategyExecutionOptions, KeyedHashJoinStrategyOptions},
     chunk::SourceChunkPlanningOptions,
     dynamic_filter::DynamicFilterExecutionOptions,
-    exec::{GpuHashJoinBuildCache, GpuLocalParquetSourceCache},
     graph_memory::GraphMemoryCalibrationOverride,
     metrics::{QueryId, TraceId},
     mode::{NativePipelineExecutionMode, StddevSampExecutionMode},
@@ -26,8 +25,9 @@ use nexus_query_engine::{
         CudfInventory, ExecutionBoundaryPolicy, ExecutionCancellation, ExecutionContext, GpuExecutionJobKind,
         GpuExecutionPool, GpuInventory, MemoryControlPolicy, MemoryResourcePolicy, QueryGrantRequest, QueryHandle,
         QueryMemoryDomainPolicy, QueryPlacementHint, ServiceStreamPool, SourceChunkPlanningMode, SourceFetchConfig,
-        SourceSchedulerPolicy, SourceStorageProfile, TenantQueryContext, default_service_stream_pool_size_for_device,
-        device_budget_bytes_from_facts,
+        SourceSchedulerPolicy, SourceStorageProfile, TenantQueryContext,
+        cache::{hash_join::GpuHashJoinBuildCache, local_parquet::GpuLocalParquetSourceCache},
+        default_service_stream_pool_size_for_device, device_budget_bytes_from_facts,
     },
 };
 
@@ -39,21 +39,14 @@ use super::{
     metrics::NativeMetricsCapture,
     unbounded_native::UnboundedNativeExecutionLimiter,
 };
-use crate::error::Error;
-#[cfg(feature = "cugraph")]
-use crate::graph_sql::{CugraphBfsSingleflight, CugraphBfsSingleflightSnapshot};
+use crate::{
+    error::Error,
+    native_exec::graph::{GraphAdmissionModelAsk, GraphExecutionServices},
+};
 
 const GRAPH_TICKET_ASK_SAFETY_NUMERATOR: u64 = 6;
 const GRAPH_TICKET_ASK_SAFETY_DENOMINATOR: u64 = 5;
 const GRAPH_TICKET_NON_GRAPH_FLOOR_BYTES: u64 = 512 * 1024 * 1024;
-
-/// Cold and exact-runtime-warm graph prices before ticket safety margin and
-/// tenant-band clamping.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct GraphAdmissionModelAsk {
-    pub(crate) cold_bytes: u64,
-    pub(crate) warm_bytes: u64,
-}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct GraphAdmissionGrantAsk {
@@ -107,8 +100,8 @@ pub struct NativeCudfExecutionConfig {
     trace_id: Option<TraceId>,
     plan_task_mapping_datafusion_shape: Option<String>,
     metrics_capture: Option<NativeMetricsCapture>,
-    #[cfg(feature = "cugraph")]
-    cugraph_bfs_singleflight: CugraphBfsSingleflight,
+    lakehouse_footer_pruning: bool,
+    graph_execution_services: GraphExecutionServices,
 }
 
 /// Native execution context plus any service leases that must outlive execution.
@@ -337,8 +330,8 @@ impl NativeCudfExecutionConfig {
             trace_id: None,
             plan_task_mapping_datafusion_shape: None,
             metrics_capture: None,
-            #[cfg(feature = "cugraph")]
-            cugraph_bfs_singleflight: CugraphBfsSingleflight::default(),
+            lakehouse_footer_pruning: false,
+            graph_execution_services: GraphExecutionServices::default(),
         }
     }
 
@@ -454,8 +447,8 @@ impl NativeCudfExecutionConfig {
             trace_id: None,
             plan_task_mapping_datafusion_shape: None,
             metrics_capture: None,
-            #[cfg(feature = "cugraph")]
-            cugraph_bfs_singleflight: CugraphBfsSingleflight::default(),
+            lakehouse_footer_pruning: false,
+            graph_execution_services: GraphExecutionServices::default(),
         }
     }
 
@@ -610,6 +603,15 @@ impl NativeCudfExecutionConfig {
 
     pub(crate) fn metrics_capture(&self) -> Option<NativeMetricsCapture> {
         self.metrics_capture.clone()
+    }
+
+    pub(crate) fn with_lakehouse_footer_pruning(mut self, enabled: bool) -> Self {
+        self.lakehouse_footer_pruning = enabled;
+        self
+    }
+
+    pub(crate) fn lakehouse_footer_pruning(&self) -> bool {
+        self.lakehouse_footer_pruning
     }
 
     /// Select strict bounded or adaptive native bounded-pipeline execution.
@@ -769,24 +771,16 @@ impl NativeCudfExecutionConfig {
         self.query_service_resident_graph_cache_max_retained_bytes
     }
 
-    #[cfg(feature = "cugraph")]
-    pub(crate) fn cugraph_bfs_singleflight(&self) -> CugraphBfsSingleflight {
-        self.cugraph_bfs_singleflight.clone()
+    pub(crate) fn graph_execution_services(&self) -> &GraphExecutionServices {
+        &self.graph_execution_services
     }
 
-    #[cfg(feature = "cugraph")]
-    pub(crate) fn cugraph_bfs_singleflight_snapshot(&self) -> CugraphBfsSingleflightSnapshot {
-        self.cugraph_bfs_singleflight.snapshot()
+    pub(crate) fn graph_bfs_singleflight_snapshot(&self) -> super::graph::GraphBfsSingleflightSnapshot {
+        self.graph_execution_services.bfs_singleflight_snapshot()
     }
 
-    #[cfg(feature = "cugraph")]
-    pub(crate) fn set_cugraph_bfs_singleflight_enabled(&self, enabled: bool) {
-        self.cugraph_bfs_singleflight.set_enabled(enabled);
-    }
-
-    #[cfg(feature = "cugraph")]
-    pub(crate) fn cugraph_bfs_singleflight_enabled(&self) -> bool {
-        self.cugraph_bfs_singleflight.is_enabled()
+    pub(crate) fn set_graph_bfs_singleflight_enabled(&self, enabled: bool) {
+        self.graph_execution_services.set_bfs_singleflight_enabled(enabled);
     }
 
     /// Per-query allocator-domain policy for backend/query-service execution.
@@ -966,8 +960,8 @@ impl NativeCudfExecutionConfig {
         })?;
         let price = |bytes| graph_ticket_requested_grant_bytes(bytes).clamp(band.min_bytes, band.want_bytes);
         Ok(Some(GraphAdmissionGrantAsk {
-            cold_bytes: price(graph_model_ask.cold_bytes),
-            warm_bytes: price(graph_model_ask.warm_bytes),
+            cold_bytes: price(graph_model_ask.cold_bytes()),
+            warm_bytes: price(graph_model_ask.warm_bytes()),
         }))
     }
 

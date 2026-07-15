@@ -56,7 +56,10 @@ fn bounded_native_query_executes_mixed_left_semi_left_anti_multi_join_pipeline_w
     assert!(!plan.capability_analysis().admits_root_join());
     assert!(!plan.capability_analysis().admits_single_join_post_root_pipeline());
     assert!(plan.capability_analysis().admits_closed_multi_join_subgraph());
-    assert!(plan.bounded_join_unsupported_shape_facts(ExecutionBoundaryPolicy::default()).is_none());
+    assert!(
+        nexus_query_engine::admission::bounded_join_unsupported_shape_facts(&plan, ExecutionBoundaryPolicy::default())
+            .is_none()
+    );
 
     let context = bounded_join_execution_context(&runtime);
     let result = execute_query_plan(&context, &plan).unwrap();
