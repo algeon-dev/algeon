@@ -38,6 +38,12 @@ fi
 
 status=0
 
+echo "==> scripts/check_build_support.sh  (RAPIDS metadata + runtime-library identity helpers)"
+if ! bash scripts/check_build_support.sh; then
+  status=1
+fi
+echo
+
 echo "==> scripts/check_source_layout.sh  (advisory layout signals + blocking baseline-growth ratchet)"
 if ! bash scripts/check_source_layout.sh; then
   status=1

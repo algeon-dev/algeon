@@ -19,6 +19,9 @@ workspace = true
 arrow = { workspace = true }
 bytes = "1"
 cudf = { workspace = true }
+# Direct edge so build.rs receives both the runtime directory and the shared
+# RMM/logger identity exported through cudf-sys's DEP_CUDF_RUST_* metadata.
+cudf-sys = { workspace = true }
 cugraph = { workspace = true, optional = true }
 cugraph-sys = { workspace = true, optional = true }
 futures = { workspace = true }

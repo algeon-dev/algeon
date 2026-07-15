@@ -49,8 +49,9 @@ use datafusion_nexus::server::{
     NEXUS_ICEBERG_S3_PATH_STYLE_ENV, NEXUS_ICEBERG_S3_REGION_ENV, ServerConfig, serve_with_listener,
 };
 use futures::TryStreamExt;
-use tonic::transport::Endpoint;
 use url::Url;
+
+use crate::connection_retry::{BeforeConnect, ConnectionRetryConfig, connect_with_retry};
 
 type E2eResult<T> = Result<T, Box<dyn std::error::Error + Send + Sync>>;
 
@@ -271,7 +272,7 @@ async fn validate_substrate(
     addr: std::net::SocketAddr,
 ) -> E2eResult<SubstrateResults> {
     let label = substrate.label();
-    let mut client = connect_with_retry(addr).await?;
+    let mut client = connect_flight_sql(addr).await?;
 
     // COUNT(*) is sanity only: MetadataRowCount sources answer it from Iceberg
     // metadata without opening the remote Parquet source.
@@ -480,27 +481,22 @@ fn free_local_addr() -> (TcpListener, std::net::SocketAddr) {
     (listener, addr)
 }
 
-async fn connect_with_retry(
+async fn connect_flight_sql(
     addr: std::net::SocketAddr,
 ) -> E2eResult<FlightSqlServiceClient<tonic::transport::Channel>> {
     let uri = format!("http://{addr}");
-    let deadline = std::time::Instant::now() + Duration::from_secs(15);
-    let mut backoff = Duration::from_millis(10);
-    loop {
-        match Endpoint::from_shared(uri.clone())?.connect().await {
-            Ok(channel) => return Ok(FlightSqlServiceClient::new(channel)),
-            Err(error) => {
-                if std::time::Instant::now() >= deadline {
-                    return Err(format!(
-                        "Flight SQL server did not accept connections at {addr} within 15s: {error:?}"
-                    )
-                    .into());
-                }
-                tokio::time::sleep(backoff).await;
-                backoff = (backoff * 2).min(Duration::from_millis(500));
-            },
-        }
-    }
+    connect_with_retry(
+        &uri,
+        ConnectionRetryConfig::exponential_timeout(
+            Duration::from_secs(15),
+            Duration::from_millis(10),
+            Duration::from_millis(500),
+        ),
+        || Ok(BeforeConnect::Continue),
+        FlightSqlServiceClient::new,
+        |error| format!("Flight SQL server did not accept connections at {addr} within 15s: {error:?}"),
+    )
+    .await
 }
 
 /// Renders RecordBatches to a sorted Vec of row strings for order-insensitive,

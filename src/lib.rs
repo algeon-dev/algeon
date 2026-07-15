@@ -1,4 +1,4 @@
-//! DataFusion adapter for native cudf-rs GPU execution.
+//! DataFusion adapter for native GPU execution.
 //!
 //! The crate exposes the DataFusion-facing boundary around the native
 //! [`nexus_query_engine`] IR:

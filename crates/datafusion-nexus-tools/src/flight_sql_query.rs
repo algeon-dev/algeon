@@ -10,7 +10,8 @@ use arrow::{
 };
 use arrow_flight::sql::client::FlightSqlServiceClient;
 use futures::TryStreamExt;
-use tonic::transport::Endpoint;
+
+use crate::connection_retry::{BeforeConnect, ConnectionRetryConfig, connect_with_retry};
 
 type QueryResult<T> = Result<T, Box<dyn Error + Send + Sync>>;
 
@@ -34,7 +35,7 @@ macro_rules! downcast_value {
 
 pub async fn run(args: Vec<String>) -> QueryResult<()> {
     let (url, sql) = parse_args(args);
-    let mut client = connect_with_retry(&url).await?;
+    let mut client = connect_flight_sql(&url).await?;
     let batches = execute_batches(&mut client, &sql).await?;
     print_batches(&batches);
     Ok(())
@@ -63,18 +64,15 @@ fn join_sql(args: &[String]) -> Option<String> {
     (!sql.trim().is_empty()).then_some(sql)
 }
 
-async fn connect_with_retry(url: &str) -> QueryResult<FlightSqlServiceClient<tonic::transport::Channel>> {
-    let mut last_error = None;
-    for _ in 0..600 {
-        match Endpoint::from_shared(url.to_string())?.connect().await {
-            Ok(channel) => return Ok(FlightSqlServiceClient::new(channel)),
-            Err(error) => {
-                last_error = Some(error);
-                tokio::time::sleep(Duration::from_millis(100)).await;
-            },
-        }
-    }
-    Err(format!("Flight SQL server did not accept connections at {url}: {last_error:?}").into())
+async fn connect_flight_sql(url: &str) -> QueryResult<FlightSqlServiceClient<tonic::transport::Channel>> {
+    connect_with_retry(
+        url,
+        ConnectionRetryConfig::fixed_attempts(600, Duration::from_millis(100)),
+        || Ok(BeforeConnect::Continue),
+        FlightSqlServiceClient::new,
+        |error| format!("Flight SQL server did not accept connections at {url}: {:?}", Some(error)),
+    )
+    .await
 }
 
 async fn execute_batches(
