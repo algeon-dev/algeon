@@ -11,9 +11,13 @@ use datafusion_nexus::{
     policy::GpuFallbackPolicy,
 };
 use datafusion_nexus_bench::{
-    TpcdsExternalEngineConfig, TpcdsExternalOracleConfig, prepare_tpcds_report_dataset, tpcds_native_optimizer_config,
-    tpcds_parity_report_rows_with_external_oracles, tpcds_report_session_config,
+    report_metadata::ReportDatasetMetadataExt,
+    report_workload::tpcds::{
+        TpcdsExternalEngineConfig, TpcdsExternalOracleConfig, TpcdsParityProgressEvent, tpcds_native_optimizer_config,
+        tpcds_parity_report_rows_with_external_oracles, tpcds_report_session_config,
+    },
 };
+use datafusion_nexus_workloads::tpcds::{TpcdsWorkloadResult, prepare_tpcds_report_dataset};
 use nexus_query_engine::mode::{NativePipelineExecutionMode, StatisticalAggregateExecutionMode};
 
 const CUDF_TPCDS_PARITY_QUERY_IDS_ENV: &str = "CUDF_TPCDS_PARITY_QUERY_IDS";
@@ -32,10 +36,7 @@ async fn main() {
     fs::remove_dir_all(dir).unwrap();
 }
 
-async fn write_parity_report(
-    dir: &std::path::Path,
-    output: &mut impl Write,
-) -> datafusion_nexus_bench::TpcdsWorkloadResult<()> {
+async fn write_parity_report(dir: &std::path::Path, output: &mut impl Write) -> TpcdsWorkloadResult<()> {
     let (root, metadata) = prepare_tpcds_report_dataset(dir)?;
     let optimizer_config = native_optimizer_config_from_env();
     let statistical_aggregate_execution_mode = optimizer_config.statistical_aggregate_execution_mode();
@@ -51,8 +52,8 @@ async fn write_parity_report(
     output.write_all(header.as_bytes())?;
     output.flush()?;
 
-    let mut progress = |event: datafusion_nexus_bench::TpcdsParityProgressEvent<'_>| {
-        if let datafusion_nexus_bench::TpcdsParityProgressEvent::RowReady { row, .. } = event {
+    let mut progress = |event: TpcdsParityProgressEvent<'_>| {
+        if let TpcdsParityProgressEvent::RowReady { row, .. } = event {
             writeln!(output, "{}", row.to_tsv_line()).expect("failed to write TPC-DS parity TSV row");
             output.flush().expect("failed to flush TPC-DS parity TSV row");
         }

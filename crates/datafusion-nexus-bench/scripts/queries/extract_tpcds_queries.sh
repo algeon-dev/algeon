@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Re-generate crates/datafusion-nexus-bench/src/workload/tpcds_queries.rs from the DuckDB tpcds extension.
+# Re-generate crates/datafusion-nexus-workloads/src/tpcds/catalog.rs from the DuckDB tpcds extension.
 #
 # Usage:
 #   crates/datafusion-nexus-bench/scripts/queries/extract_tpcds_queries.sh [DUCKDB_BINARY]
@@ -13,11 +13,11 @@
 #   1. Resolves DuckDB binary + version.
 #   2. Captures datafusion-nexus git rev + working-tree state.
 #   3. Runs DuckDB's tpcds extension to dump query_nr 1..99 to per-query files.
-#   4. Assembles crates/datafusion-nexus-bench/src/workload/tpcds_queries.rs with a provenance header.
+#   4. Assembles crates/datafusion-nexus-workloads/src/tpcds/catalog.rs with a provenance header.
 #
 # Any deterministic compatibility rewrite (e.g. for DataFusion) must be applied
 # in this script and recorded in REWRITE_APPLIED below. Do NOT hand-edit
-# crates/datafusion-nexus-bench/src/workload/tpcds_queries.rs — re-run this script instead.
+# crates/datafusion-nexus-workloads/src/tpcds/catalog.rs — re-run this script instead.
 
 set -euo pipefail
 
@@ -43,8 +43,8 @@ DUCKDB_BIN_ABS="$(readlink -f "${DUCKDB_BIN}")"
 DUCKDB_VERSION="$("${DUCKDB_BIN}" --version | head -1)"
 
 # --- Resolve repo paths ------------------------------------------------------
-REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
-OUT_FILE="${REPO_ROOT}/crates/datafusion-nexus-bench/src/workload/tpcds_queries.rs"
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../.." && pwd)"
+OUT_FILE="${REPO_ROOT}/crates/datafusion-nexus-workloads/src/tpcds/catalog.rs"
 
 GIT_REV="$(git -C "${REPO_ROOT}" rev-parse HEAD)"
 if [[ -n "$(git -C "${REPO_ROOT}" status --porcelain)" ]]; then
@@ -74,7 +74,7 @@ TMPDB="${WORK_DIR}/extract.duckdb"
 echo "[extract_tpcds_queries] running DuckDB extraction (${DUCKDB_VERSION})" >&2
 echo "${EXTRACT_SQL}" | "${DUCKDB_BIN}" "${TMPDB}" > /dev/null
 
-# --- Assemble crates/datafusion-nexus-bench/src/workload/tpcds_queries.rs ---------------------------------
+# --- Assemble crates/datafusion-nexus-workloads/src/tpcds/catalog.rs --------------------------------------
 EXTRACT_CMD_DESC="duckdb <tmpdb> -c \"INSTALL tpcds; LOAD tpcds; COPY (SELECT query FROM tpcds_queries() WHERE query_nr = N) TO 'qNN.sql' (HEADER false, QUOTE '', DELIMITER '');\" for N in 1..99"
 
 DUCKDB_BIN_ABS="${DUCKDB_BIN_ABS}" \
@@ -129,7 +129,7 @@ header = f"""\
 //   working_tree        : {GIT_TREE}
 //   rewrite_applied     : {REWRITE}
 //
-// Surface mirrors `crates/datafusion-nexus-bench/src/workload/tpch_queries.rs`:
+// Surface mirrors `crates/datafusion-nexus-workloads/src/tpch/catalog.rs`:
 //   - TPCDS_QUERY_COUNT
 //   - TPCDS_QUERIES: &[TpcdsQuery]
 //   - tpcds_query_ids()

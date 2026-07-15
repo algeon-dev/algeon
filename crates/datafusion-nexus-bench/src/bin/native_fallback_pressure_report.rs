@@ -20,9 +20,18 @@ use datafusion_nexus::{
     native_report::{NativeFallbackPressureReport, NativeFallbackPressureWorkloadItem},
 };
 use datafusion_nexus_bench::{
-    TpcdsDatasetMetadata, TpchDatasetMetadata, prepare_tpcds_report_dataset, prepare_tpch_report_dataset,
-    tpcds_fallback_pressure_workload_items, tpcds_report_session_config, tpch_fallback_pressure_workload_items,
-    tpch_report_session_config, tpch_scalar_fallback_pressure_workload_items,
+    report_metadata::ReportDatasetMetadataExt,
+    report_workload::{
+        tpcds::{tpcds_fallback_pressure_workload_items, tpcds_report_session_config},
+        tpch::{
+            tpch_fallback_pressure_workload_items, tpch_report_session_config,
+            tpch_scalar_fallback_pressure_workload_items,
+        },
+    },
+};
+use datafusion_nexus_workloads::{
+    tpcds::{TpcdsDatasetMetadata, TpcdsWorkloadResult, prepare_tpcds_report_dataset},
+    tpch::{TpchDatasetMetadata, TpchWorkloadResult, prepare_tpch_report_dataset},
 };
 use nexus_query_engine::mode::NativePipelineExecutionMode;
 
@@ -108,13 +117,13 @@ async fn synthetic_workload_items(dir: &std::path::Path) -> Vec<NativeFallbackPr
     items
 }
 
-async fn tpch_workload_items(dir: &std::path::Path) -> datafusion_nexus_bench::TpchWorkloadResult<TpchWorkload> {
+async fn tpch_workload_items(dir: &std::path::Path) -> TpchWorkloadResult<TpchWorkload> {
     let (root, metadata) = prepare_tpch_report_dataset(dir)?;
     let items = tpch_fallback_pressure_workload_items(&root, tpch_report_session_config()).await?;
     Ok(TpchWorkload { items, metadata })
 }
 
-async fn tpch_scalar_workload_items(dir: &std::path::Path) -> datafusion_nexus_bench::TpchWorkloadResult<TpchWorkload> {
+async fn tpch_scalar_workload_items(dir: &std::path::Path) -> TpchWorkloadResult<TpchWorkload> {
     let (root, metadata) = prepare_tpch_report_dataset(dir)?;
     let items = tpch_scalar_fallback_pressure_workload_items(&root, tpch_report_session_config()).await?;
     Ok(TpchWorkload { items, metadata })
@@ -125,7 +134,7 @@ struct TpchWorkload {
     metadata: TpchDatasetMetadata,
 }
 
-async fn tpcds_workload_items(dir: &std::path::Path) -> datafusion_nexus_bench::TpcdsWorkloadResult<TpcdsWorkload> {
+async fn tpcds_workload_items(dir: &std::path::Path) -> TpcdsWorkloadResult<TpcdsWorkload> {
     let (root, metadata) = prepare_tpcds_report_dataset(dir)?;
     let items = tpcds_fallback_pressure_workload_items(&root, tpcds_report_session_config()).await?;
     Ok(TpcdsWorkload { items, metadata })

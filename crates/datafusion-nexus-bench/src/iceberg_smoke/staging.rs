@@ -138,7 +138,7 @@ fn scan_plan_with_tpcds_source_unique_keys(
     if table_name != "reason" {
         return scan_plan;
     }
-    let Some(key) = crate::workload::tpcds::tpcds_source_unique_key(table_name) else {
+    let Some(key) = crate::report_workload::tpcds::tpcds_source_unique_key(table_name) else {
         return scan_plan;
     };
 

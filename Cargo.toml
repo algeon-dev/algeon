@@ -9,6 +9,7 @@ build = "build.rs"
 [workspace]
 members = [
   ".",
+  "crates/datafusion-nexus-workloads",
   "crates/nexus-query-engine",
   "crates/datafusion-nexus-bench",
   "crates/datafusion-nexus-tools",
@@ -16,6 +17,7 @@ members = [
 ]
 default-members = [
   ".",
+  "crates/datafusion-nexus-workloads",
   "crates/nexus-query-engine",
   "crates/datafusion-nexus-bench",
 ]
@@ -34,6 +36,7 @@ workspace = true
 
 [workspace.dependencies]
 datafusion-nexus = { path = ".", default-features = false }
+datafusion-nexus-workloads = { path = "crates/datafusion-nexus-workloads" }
 nexus-query-engine = { path = "crates/nexus-query-engine", default-features = false }
 cudf = { path = "../cudf-rs/cudf-rs" }
 cudf-sys = { path = "../cudf-rs/cudf-sys" }
@@ -147,7 +150,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"], option
 uuid = { version = "1.23", features = ["v4"], optional = true }
 
 [dev-dependencies]
-datafusion-nexus-bench = { path = "crates/datafusion-nexus-bench" }
+datafusion-nexus-workloads = { workspace = true }
 hex = "0.4"
 sha2 = "0.11"
 tempfile = { workspace = true }

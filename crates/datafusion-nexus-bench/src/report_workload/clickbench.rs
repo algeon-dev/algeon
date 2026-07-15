@@ -1,23 +1,11 @@
-use std::{
-    error::Error as StdError,
-    fmt::{Display, Formatter},
-    path::{Path, PathBuf},
-    sync::Arc,
-};
+use std::{path::Path, sync::Arc};
 
-use arrow::{error::ArrowError, record_batch::RecordBatch};
+use arrow::record_batch::RecordBatch;
 use datafusion::{
-    catalog::TableProvider,
     common::utils::memory::get_record_batch_memory_size,
-    datasource::{
-        file_format::options::ReadOptions,
-        listing::{ListingTable, ListingTableConfig, ListingTableUrl},
-    },
-    error::DataFusionError,
     execution::{SessionStateBuilder, context::TaskContext},
-    parquet::errors::ParquetError,
     physical_plan::{ExecutionPlan, collect},
-    prelude::{ParquetReadOptions, SessionConfig, SessionContext},
+    prelude::{SessionConfig, SessionContext},
 };
 use datafusion_nexus::{
     native_exec::NativeCudfExecutionConfig,
@@ -29,20 +17,9 @@ use datafusion_nexus::{
     policy::GpuFallbackPolicy,
     session::CudfSessionStateBuilderExt,
 };
-
-mod dataset;
-
-pub use dataset::{
-    CLICKBENCH_RAW_TABLE, CLICKBENCH_TABLE, CUDF_CLICKBENCH_CONTENT_FINGERPRINT_ENV,
-    CUDF_CLICKBENCH_GENERATION_COMMAND_ENV, CUDF_CLICKBENCH_PARQUET_DIR_ENV, ClickbenchDatasetMetadata,
-    ClickbenchLayout, DEFAULT_LOCAL_CLICKBENCH_PARTITIONED_DIR, DEFAULT_LOCAL_CLICKBENCH_SINGLE_DIR,
-    DEFAULT_LOCAL_CLICKBENCH_SINGLE_PARQUET, DEFAULT_NVME_CLICKBENCH_PARTITIONED_DIR, describe_clickbench_dataset,
-    describe_clickbench_dataset_with_content_fingerprint, discover_clickbench_layout,
-    external_clickbench_dataset_metadata, prepare_clickbench_report_dataset,
-};
-
-pub use super::clickbench_queries::{
-    CLICKBENCH_QUERIES, CLICKBENCH_QUERY_COUNT, ClickbenchQuery, clickbench_query_ids,
+use datafusion_nexus_workloads::clickbench::{
+    CLICKBENCH_QUERIES, ClickbenchQuery, ClickbenchWorkloadResult, discover_clickbench_layout,
+    register_clickbench_table,
 };
 
 /// Device-byte budget for bounded native ClickBench execution.
@@ -60,76 +37,6 @@ pub const CUDF_CLICKBENCH_NATIVE_MAX_RETRY_ATTEMPTS_ENV: &str = "CUDF_CLICKBENCH
 /// Minimum row-group granularity used when retrying with smaller chunks. Default: 1.
 pub const CUDF_CLICKBENCH_NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS_ENV: &str =
     "CUDF_CLICKBENCH_NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS";
-
-/// Result type used by ClickBench fixture and workload helpers.
-pub type ClickbenchWorkloadResult<T> = std::result::Result<T, ClickbenchWorkloadError>;
-
-/// Error categories surfaced by ClickBench fixture discovery and workload helpers.
-#[derive(Debug)]
-pub enum ClickbenchWorkloadError {
-    /// Filesystem error while discovering or reading fixtures.
-    Io(std::io::Error),
-    /// Arrow schema/record-batch error.
-    Arrow(ArrowError),
-    /// Parquet metadata or reader error.
-    Parquet(ParquetError),
-    /// DataFusion planning, registration, or execution error.
-    DataFusion(DataFusionError),
-    /// Non-UTF-8 path where DataFusion registration requires a string path.
-    NonUtf8Path(PathBuf),
-    /// Ambiguous, incomplete, schema-mismatched, or otherwise invalid fixture.
-    InvalidDataset(String),
-}
-
-impl Display for ClickbenchWorkloadError {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Io(error) => write!(f, "I/O error: {error}"),
-            Self::Arrow(error) => write!(f, "Arrow error: {error}"),
-            Self::Parquet(error) => write!(f, "Parquet error: {error}"),
-            Self::DataFusion(error) => write!(f, "DataFusion error: {error}"),
-            Self::NonUtf8Path(path) => write!(f, "path is not valid UTF-8: {}", path.display()),
-            Self::InvalidDataset(message) => write!(f, "invalid ClickBench dataset: {message}"),
-        }
-    }
-}
-
-impl StdError for ClickbenchWorkloadError {
-    fn source(&self) -> Option<&(dyn StdError + 'static)> {
-        match self {
-            Self::Io(error) => Some(error),
-            Self::Arrow(error) => Some(error),
-            Self::Parquet(error) => Some(error),
-            Self::DataFusion(error) => Some(error),
-            Self::NonUtf8Path(_) => None,
-            Self::InvalidDataset(_) => None,
-        }
-    }
-}
-
-impl From<std::io::Error> for ClickbenchWorkloadError {
-    fn from(value: std::io::Error) -> Self {
-        Self::Io(value)
-    }
-}
-
-impl From<ArrowError> for ClickbenchWorkloadError {
-    fn from(value: ArrowError) -> Self {
-        Self::Arrow(value)
-    }
-}
-
-impl From<ParquetError> for ClickbenchWorkloadError {
-    fn from(value: ParquetError) -> Self {
-        Self::Parquet(value)
-    }
-}
-
-impl From<DataFusionError> for ClickbenchWorkloadError {
-    fn from(value: DataFusionError) -> Self {
-        Self::DataFusion(value)
-    }
-}
 
 /// Decision-grade session config for ClickBench reports.
 ///
@@ -216,78 +123,6 @@ fn optional_env_usize(name: &'static str) -> Option<usize> {
             .parse::<usize>()
             .unwrap_or_else(|error| panic!("unsupported {name}={value}; expected unsigned integer: {error}"))
     })
-}
-
-/// Register the ClickBench fixture as `hits_raw` + the canonical `hits` view.
-///
-/// The view applies the `EventDate` cast from `ClickBench/datafusion/create.sql`
-/// so upstream queries reference dates rather than the underlying epoch-day
-/// integer. Callers must use a [`SessionContext`] whose config has
-/// `execution.parquet.binary_as_string = true` (use
-/// [`clickbench_report_session_config`] or
-/// [`clickbench_tuned_cpu_session_config`]); otherwise the upstream blob/
-/// string columns will be loaded as `Binary` and the queries that filter on
-/// string literals will fail to plan.
-pub async fn register_clickbench_table(
-    ctx: &SessionContext,
-    layout: &ClickbenchLayout,
-) -> ClickbenchWorkloadResult<()> {
-    match layout {
-        ClickbenchLayout::Single { file } => {
-            let path_str = file.to_str().ok_or_else(|| ClickbenchWorkloadError::NonUtf8Path(file.clone()))?;
-            ctx.register_parquet(CLICKBENCH_RAW_TABLE, path_str, ParquetReadOptions::default()).await?;
-        },
-        ClickbenchLayout::Partitioned { files, .. } => {
-            register_clickbench_partitioned_shards(ctx, files).await?;
-        },
-    }
-    let view_sql = format!(
-        r#"CREATE VIEW {CLICKBENCH_TABLE} AS SELECT * EXCEPT ("EventDate"), CAST(CAST("EventDate" AS INTEGER) AS DATE) AS "EventDate" FROM {CLICKBENCH_RAW_TABLE}"#
-    );
-    ctx.sql(&view_sql).await?;
-    Ok(())
-}
-
-/// Register the discovered `hits_*.parquet` shards as an explicit multi-path
-/// listing so the registration never silently picks up stray Parquet files
-/// that live alongside the canonical shards (e.g. user exports or stale
-/// snapshots). Mirrors the multi-path branch of `register_tpch_table_layout`
-/// for sibling-split tables, but threads the session's `binary_as_string`
-/// option through via `ParquetReadOptions::to_listing_options` so the
-/// upstream blob/string columns surface as UTF-8 strings.
-async fn register_clickbench_partitioned_shards(
-    ctx: &SessionContext,
-    files: &[PathBuf],
-) -> ClickbenchWorkloadResult<()> {
-    let urls = files
-        .iter()
-        .map(|path| -> ClickbenchWorkloadResult<ListingTableUrl> {
-            let absolute = path.canonicalize().map_err(|error| {
-                ClickbenchWorkloadError::InvalidDataset(format!(
-                    "failed to canonicalize ClickBench shard {}: {error}",
-                    path.display()
-                ))
-            })?;
-            let absolute_str =
-                absolute.to_str().ok_or_else(|| ClickbenchWorkloadError::NonUtf8Path(absolute.clone()))?;
-            Ok(ListingTableUrl::parse(format!("file://{absolute_str}"))?)
-        })
-        .collect::<ClickbenchWorkloadResult<Vec<_>>>()?;
-    if urls.is_empty() {
-        return Err(ClickbenchWorkloadError::InvalidDataset(
-            "register_clickbench_partitioned_shards called with zero shards".to_string(),
-        ));
-    }
-    let session_state = ctx.state();
-    let listing_options =
-        ParquetReadOptions::default().to_listing_options(session_state.config(), session_state.default_table_options());
-    let inferred_schema = listing_options.infer_schema(&session_state, &urls[0]).await?;
-    let config = ListingTableConfig::new_with_multi_paths(urls)
-        .with_listing_options(listing_options)
-        .with_schema(inferred_schema);
-    let listing_table: Arc<dyn TableProvider> = Arc::new(ListingTable::try_new(config)?);
-    ctx.register_table(CLICKBENCH_RAW_TABLE, listing_table)?;
-    Ok(())
 }
 
 /// Builds fallback-pressure planning items for all ClickBench queries.

@@ -48,9 +48,9 @@ use datafusion_nexus::{
     policy::GpuFallbackPolicy,
     session::CudfSessionStateBuilderExt,
 };
-use datafusion_nexus_bench::{
+use datafusion_nexus_workloads::tpch::{
     CUDF_TPCH_PARQUET_DIR_ENV, TPCH_QUERIES, TPCH_TABLES, TpchDefaultScale, default_nvme_tpch_dataset,
-    default_tpch_parquet_root, tpch_report_session_config, write_tiny_tpch_parquet_dataset,
+    default_tpch_parquet_root, write_tiny_tpch_parquet_dataset,
 };
 use nexus_query_engine::{
     exec::{execute_query_plan, output::QueryOutput},
@@ -61,6 +61,9 @@ use nexus_query_engine::{
 use tokio::sync::Mutex;
 
 static ARROW_HOST_OBSERVATION_LOCK: Mutex<()> = Mutex::const_new(());
+
+#[path = "support/tpch_session.rs"]
+mod tpch_session;
 
 #[path = "native_runtime_pruning_tests/datafusion_exec.rs"]
 mod datafusion_exec;
@@ -78,6 +81,7 @@ mod tpch;
 use fixtures::*;
 use sql::*;
 use support::*;
+use tpch_session::tpch_report_session_config;
 
 #[tokio::test]
 async fn native_runtime_default_sql_sum_expression_matches_cpu() {

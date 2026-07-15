@@ -154,8 +154,8 @@ impl ClickbenchDatasetMetadata {
     }
 
     /// Converts ClickBench metadata into shared report-header metadata.
-    pub fn to_workload_dataset_metadata(&self) -> datafusion_nexus::native_report::WorkloadDatasetMetadata {
-        datafusion_nexus::native_report::WorkloadDatasetMetadata {
+    pub fn to_neutral_metadata(&self) -> crate::metadata::WorkloadDatasetMetadata {
+        crate::metadata::WorkloadDatasetMetadata {
             workload: "clickbench",
             root: self.root.clone(),
             scale_factor: Some(self.layout_label().to_string()),
@@ -374,7 +374,7 @@ pub fn prepare_clickbench_report_dataset() -> ClickbenchWorkloadResult<Option<(P
         return Ok(Some((root_path, metadata)));
     }
 
-    if crate::workload::tpch::default_nvme_mount_present() {
+    if crate::tpch::default_nvme_mount_present() {
         let nvme = PathBuf::from(DEFAULT_NVME_CLICKBENCH_PARTITIONED_DIR);
         if nvme.is_dir()
             && let Ok(metadata) = describe_clickbench_dataset(

@@ -1,0 +1,15 @@
+[package]
+name = "datafusion-nexus-workloads"
+description = "Adapter-neutral benchmark catalogs, fixtures, dataset discovery, and DataFusion registration."
+version = { workspace = true }
+edition = "2024"
+rust-version = { workspace = true }
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+arrow = { workspace = true }
+datafusion = { workspace = true }
+parquet = { workspace = true }

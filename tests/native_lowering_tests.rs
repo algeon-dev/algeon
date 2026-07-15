@@ -63,11 +63,7 @@ use datafusion_nexus::{
     policy::FallbackReason,
     report::CandidateOutcome,
 };
-use datafusion_nexus_bench::{
-    ANALYTICAL_OLAP_QUERIES, ANALYTICAL_OLAP_QUERY_COUNT, AnalyticalOlapCapabilityFirstAdmission,
-    AnalyticalOlapLoweringExpectation, analytical_olap_fallback_pressure_workload_items, analytical_olap_query_ids,
-    tpch_fallback_pressure_workload_items, tpch_report_session_config, write_tiny_tpch_parquet_dataset,
-};
+use datafusion_nexus_workloads::tpch::write_tiny_tpch_parquet_dataset;
 use nexus_query_engine::{
     expr::{AggregateFunction, Expr, LiteralValue},
     plan::{
@@ -76,6 +72,17 @@ use nexus_query_engine::{
     },
     source::{SourceColumnRef, SourceNode, ZERO_COLUMN_COUNT_COLUMN},
 };
+
+#[path = "support/analytical_olap_workload.rs"]
+mod analytical_olap_workload;
+#[path = "support/tpch_report.rs"]
+mod tpch_report;
+#[path = "support/tpch_session.rs"]
+mod tpch_session;
+
+use analytical_olap_workload::*;
+use tpch_report::tpch_fallback_pressure_workload_items;
+use tpch_session::tpch_report_session_config;
 
 #[path = "native_lowering_tests/analytical_olap.rs"]
 mod analytical_olap;

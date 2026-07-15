@@ -18,7 +18,7 @@ use datafusion_nexus::{
         TableFormat, TableFormatDataFile, TableFormatDataFileFormat, TableFormatReadCapability, TableFormatScanPlan,
     },
 };
-use datafusion_nexus_bench::TPCH_QUERIES;
+use datafusion_nexus_workloads::tpch::TPCH_QUERIES;
 use native_iceberg_tpch_benchmark::{
     BenchmarkTimeoutCategory, IcebergTpchBenchmarkConfig, IcebergTpchBenchmarkReport, IcebergTpchBenchmarkRow,
     native_iceberg_smoke_report::{
@@ -432,7 +432,7 @@ fn cpu_baseline_uses_empty_listing_extension_for_extensionless_cache_files() {
 
 #[test]
 fn full_sf1_staged_s3_gate_passes_for_all_queries_with_staged_native_parity() {
-    let query_ids = datafusion_nexus_bench::TPCH_QUERIES.iter().map(|query| query.id).collect::<Vec<_>>().join(",");
+    let query_ids = TPCH_QUERIES.iter().map(|query| query.id).collect::<Vec<_>>().join(",");
     let env = HashMap::from([
         ("AWS_PROFILE", "local-dev"),
         ("NEXUS_ICEBERG_SMOKE_FIXTURE_MODE", "glue_s3"),
@@ -440,30 +440,28 @@ fn full_sf1_staged_s3_gate_passes_for_all_queries_with_staged_native_parity() {
         ("NEXUS_ICEBERG_TPCH_BENCH_ITERATIONS", "1"),
     ]);
     let config = IcebergTpchBenchmarkConfig::from_env_get(|name| env.get(name).map(|value| value.to_string())).unwrap();
-    let report = IcebergTpchBenchmarkReport {
-        rows: datafusion_nexus_bench::TPCH_QUERIES.iter().map(|query| staged_s3_matched_row(query.id)).collect(),
-    };
+    let report =
+        IcebergTpchBenchmarkReport { rows: TPCH_QUERIES.iter().map(|query| staged_s3_matched_row(query.id)).collect() };
 
     let summary = validate_full_sf1_staged_s3_gate_for_config(&report, &config).unwrap().unwrap();
 
-    assert_eq!(summary.query_count, datafusion_nexus_bench::TPCH_QUERIES.len());
+    assert_eq!(summary.query_count, TPCH_QUERIES.len());
     assert_eq!(summary.measured_iterations, 1);
-    assert_eq!(summary.native_runtime_elapsed_ms_total, datafusion_nexus_bench::TPCH_QUERIES.len() as u128 * 10);
-    assert_eq!(summary.cpu_runtime_elapsed_ms_total, datafusion_nexus_bench::TPCH_QUERIES.len() as u128 * 20);
+    assert_eq!(summary.native_runtime_elapsed_ms_total, TPCH_QUERIES.len() as u128 * 10);
+    assert_eq!(summary.cpu_runtime_elapsed_ms_total, TPCH_QUERIES.len() as u128 * 20);
     assert_eq!(summary.report_elapsed_ms, 123);
 }
 
 #[test]
 fn full_sf1_staged_s3_gate_fails_on_direct_or_unmatched_rows() {
-    let query_ids = datafusion_nexus_bench::TPCH_QUERIES.iter().map(|query| query.id).collect::<Vec<_>>().join(",");
+    let query_ids = TPCH_QUERIES.iter().map(|query| query.id).collect::<Vec<_>>().join(",");
     let env = HashMap::from([
         ("AWS_PROFILE", "local-dev"),
         ("NEXUS_ICEBERG_SMOKE_FIXTURE_MODE", "glue_s3"),
         ("NEXUS_ICEBERG_TPCH_BENCH_QUERY_IDS", query_ids.as_str()),
     ]);
     let config = IcebergTpchBenchmarkConfig::from_env_get(|name| env.get(name).map(|value| value.to_string())).unwrap();
-    let mut rows =
-        datafusion_nexus_bench::TPCH_QUERIES.iter().map(|query| staged_s3_matched_row(query.id)).collect::<Vec<_>>();
+    let mut rows = TPCH_QUERIES.iter().map(|query| staged_s3_matched_row(query.id)).collect::<Vec<_>>();
     rows[0].smoke_row.staging_summary.status = ObjectStoreStagingStatus::DirectNative;
     rows[1].smoke_row.parity_status = ParityStatus::Mismatched;
     let report = IcebergTpchBenchmarkReport { rows };
@@ -476,15 +474,14 @@ fn full_sf1_staged_s3_gate_fails_on_direct_or_unmatched_rows() {
 
 #[test]
 fn full_sf1_staged_s3_gate_reports_timeout_failures_separately() {
-    let query_ids = datafusion_nexus_bench::TPCH_QUERIES.iter().map(|query| query.id).collect::<Vec<_>>().join(",");
+    let query_ids = TPCH_QUERIES.iter().map(|query| query.id).collect::<Vec<_>>().join(",");
     let env = HashMap::from([
         ("AWS_PROFILE", "local-dev"),
         ("NEXUS_ICEBERG_SMOKE_FIXTURE_MODE", "glue_s3"),
         ("NEXUS_ICEBERG_TPCH_BENCH_QUERY_IDS", query_ids.as_str()),
     ]);
     let config = IcebergTpchBenchmarkConfig::from_env_get(|name| env.get(name).map(|value| value.to_string())).unwrap();
-    let mut rows =
-        datafusion_nexus_bench::TPCH_QUERIES.iter().map(|query| staged_s3_matched_row(query.id)).collect::<Vec<_>>();
+    let mut rows = TPCH_QUERIES.iter().map(|query| staged_s3_matched_row(query.id)).collect::<Vec<_>>();
     rows[0].timeout_category = Some(BenchmarkTimeoutCategory::NativeRuntime);
     rows[0].smoke_row.native_runtime_outcome = NativeDataFusionRuntimeOutcome::Failed;
     rows[0].smoke_row.parity_status = ParityStatus::NativeFailed;

@@ -1,23 +1,12 @@
-use std::{
-    error::Error as StdError,
-    fmt::{Display, Formatter},
-    path::{Path, PathBuf},
-    sync::Arc,
-};
+use std::{path::Path, sync::Arc};
 
-use arrow::{error::ArrowError, record_batch::RecordBatch};
+use arrow::record_batch::RecordBatch;
 use datafusion::{
-    catalog::TableProvider,
     common::{ScalarValue, utils::memory::get_record_batch_memory_size},
-    datasource::{
-        file_format::parquet::ParquetFormat,
-        listing::{ListingOptions, ListingTable, ListingTableConfig, ListingTableUrl},
-    },
     error::DataFusionError,
     execution::{SessionStateBuilder, context::TaskContext},
     functions_aggregate::count::count_udaf,
     logical_expr::Operator,
-    parquet::errors::ParquetError,
     physical_expr::{
         PhysicalExpr,
         aggregate::AggregateExprBuilder,
@@ -29,7 +18,7 @@ use datafusion::{
         collect,
         filter::FilterExec,
     },
-    prelude::{ParquetReadOptions, SessionConfig, SessionContext},
+    prelude::{SessionConfig, SessionContext},
 };
 use datafusion_nexus::{
     native_exec::NativeCudfExecutionConfig,
@@ -41,10 +30,9 @@ use datafusion_nexus::{
     policy::GpuFallbackPolicy,
     session::CudfSessionStateBuilderExt,
 };
+use datafusion_nexus_workloads::tpch::{TPCH_QUERIES, TpchWorkloadResult, register_tpch_tables};
 
 mod analytical_olap;
-mod dataset;
-mod tiny;
 
 pub use analytical_olap::{
     ANALYTICAL_OLAP_QUERIES, ANALYTICAL_OLAP_QUERY_COUNT, AnalyticalOlapCapabilityFirstAdmission,
@@ -53,83 +41,6 @@ pub use analytical_olap::{
     analytical_olap_datafusion_planning_workload_items_with_optimizer_config,
     analytical_olap_fallback_pressure_workload_items, analytical_olap_query_ids,
 };
-pub use dataset::{
-    CUDF_TPCH_CONTENT_FINGERPRINT_ENV, CUDF_TPCH_GENERATION_COMMAND_ENV, CUDF_TPCH_PARQUET_DIR_ENV,
-    CUDF_TPCH_SCALE_FACTOR_ENV, DEFAULT_LOCAL_TPCH_SF1_PARQUET_DIR, DEFAULT_LOCAL_TPCH_SF10_PARQUET_DIR,
-    DEFAULT_LOCAL_TPCH_SF100_OPTIMIZED_PARQUET_DIR, DEFAULT_NVME_MOUNT_ROOT, DEFAULT_NVME_TPCH_SF1_PARQUET_DIR,
-    DEFAULT_NVME_TPCH_SF10_PARQUET_DIR, DEFAULT_NVME_TPCH_SF100_OPTIMIZED_PARQUET_DIR, TPCH_TABLES,
-    TpchDatasetMetadata, TpchDefaultScale, TpchTableFileMetadata, TpchTableLayout, TpchTableMetadata,
-    default_nvme_mount_present, default_nvme_tpch_dataset, default_nvme_tpch_dataset_with_fingerprint,
-    default_tpch_parquet_root, describe_tpch_dataset, describe_tpch_dataset_with_content_fingerprint,
-    discover_tpch_table_layout, external_tpch_dataset_metadata, prepare_tpch_report_dataset,
-    tiny_tpch_dataset_metadata,
-};
-pub use tiny::write_tiny_tpch_parquet_dataset;
-
-pub use super::tpch_queries::{TPCH_QUERIES, TPCH_QUERY_COUNT, TpchQuery, tpch_query_ids};
-
-pub type TpchWorkloadResult<T> = std::result::Result<T, TpchWorkloadError>;
-
-#[derive(Debug)]
-pub enum TpchWorkloadError {
-    Io(std::io::Error),
-    Arrow(ArrowError),
-    Parquet(ParquetError),
-    DataFusion(DataFusionError),
-    NonUtf8Path(PathBuf),
-    InvalidDataset(String),
-}
-
-impl Display for TpchWorkloadError {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Io(error) => write!(f, "I/O error: {error}"),
-            Self::Arrow(error) => write!(f, "Arrow error: {error}"),
-            Self::Parquet(error) => write!(f, "Parquet error: {error}"),
-            Self::DataFusion(error) => write!(f, "DataFusion error: {error}"),
-            Self::NonUtf8Path(path) => write!(f, "path is not valid UTF-8: {}", path.display()),
-            Self::InvalidDataset(message) => write!(f, "invalid TPC-H dataset: {message}"),
-        }
-    }
-}
-
-impl StdError for TpchWorkloadError {
-    fn source(&self) -> Option<&(dyn StdError + 'static)> {
-        match self {
-            Self::Io(error) => Some(error),
-            Self::Arrow(error) => Some(error),
-            Self::Parquet(error) => Some(error),
-            Self::DataFusion(error) => Some(error),
-            Self::NonUtf8Path(_) => None,
-            Self::InvalidDataset(_) => None,
-        }
-    }
-}
-
-impl From<std::io::Error> for TpchWorkloadError {
-    fn from(value: std::io::Error) -> Self {
-        Self::Io(value)
-    }
-}
-
-impl From<ArrowError> for TpchWorkloadError {
-    fn from(value: ArrowError) -> Self {
-        Self::Arrow(value)
-    }
-}
-
-impl From<ParquetError> for TpchWorkloadError {
-    fn from(value: ParquetError) -> Self {
-        Self::Parquet(value)
-    }
-}
-
-impl From<DataFusionError> for TpchWorkloadError {
-    fn from(value: DataFusionError) -> Self {
-        Self::DataFusion(value)
-    }
-}
-
 /// Session config used by TPC-H native report surfaces.
 ///
 /// Uses one target partition and disables DataFusion repartitioning and
@@ -443,45 +354,3 @@ WHERE EXTRACT(HOUR FROM o_orderdate) = 1
 ",
     },
 ];
-
-async fn register_tpch_tables(ctx: &SessionContext, root: &Path) -> TpchWorkloadResult<()> {
-    for table in TPCH_TABLES {
-        let layout = discover_tpch_table_layout(root, table)?;
-        register_tpch_table_layout(ctx, table, &layout).await?;
-    }
-    Ok(())
-}
-
-/// Register a single TPC-H table from a discovered layout. Single-file and
-/// directory layouts go through `register_parquet`; sibling-split layouts
-/// (e.g. SF100's `lineitem_0000.parquet` + `lineitem_0001.parquet`) are
-/// registered as a multi-path `ListingTable` so every shard lands under the
-/// same logical table name.
-pub async fn register_tpch_table_layout(
-    ctx: &SessionContext,
-    table: &str,
-    layout: &TpchTableLayout,
-) -> TpchWorkloadResult<()> {
-    if layout.files.len() == 1 || layout.anchor.is_dir() {
-        let path = layout.anchor.to_str().ok_or_else(|| TpchWorkloadError::NonUtf8Path(layout.anchor.clone()))?;
-        ctx.register_parquet(table, path, ParquetReadOptions::default()).await?;
-        return Ok(());
-    }
-
-    let urls = layout
-        .files
-        .iter()
-        .map(|path| -> TpchWorkloadResult<ListingTableUrl> {
-            let path_str = path.to_str().ok_or_else(|| TpchWorkloadError::NonUtf8Path(path.clone()))?;
-            Ok(ListingTableUrl::parse(format!("file://{path_str}"))?)
-        })
-        .collect::<TpchWorkloadResult<Vec<_>>>()?;
-    let listing_options = ListingOptions::new(Arc::new(ParquetFormat::default())).with_file_extension(".parquet");
-    let inferred_schema = listing_options.infer_schema(&ctx.state(), &urls[0]).await?;
-    let config = ListingTableConfig::new_with_multi_paths(urls)
-        .with_listing_options(listing_options)
-        .with_schema(inferred_schema);
-    let listing_table: Arc<dyn TableProvider> = Arc::new(ListingTable::try_new(config)?);
-    ctx.register_table(table, listing_table)?;
-    Ok(())
-}

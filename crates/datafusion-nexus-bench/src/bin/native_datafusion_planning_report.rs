@@ -22,13 +22,28 @@ use datafusion_nexus::{
     session::CudfSessionStateBuilderExt,
 };
 use datafusion_nexus_bench::{
-    ClickbenchDatasetMetadata, TpcdsDatasetMetadata, TpchDatasetMetadata,
-    clickbench_datafusion_planning_workload_items_with_optimizer_config, clickbench_native_optimizer_config,
-    clickbench_report_session_config, prepare_clickbench_report_dataset, prepare_tpcds_report_dataset,
-    prepare_tpch_report_dataset, tpcds_datafusion_planning_workload_items_with_optimizer_config,
-    tpcds_native_optimizer_config, tpcds_report_session_config,
-    tpch_datafusion_planning_workload_items_with_optimizer_config, tpch_native_optimizer_config,
-    tpch_report_session_config,
+    report_metadata::ReportDatasetMetadataExt,
+    report_workload::{
+        clickbench::{
+            clickbench_datafusion_planning_workload_items_with_optimizer_config, clickbench_native_optimizer_config,
+            clickbench_report_session_config,
+        },
+        tpcds::{
+            tpcds_datafusion_planning_workload_items_with_optimizer_config, tpcds_native_optimizer_config,
+            tpcds_report_session_config,
+        },
+        tpch::{
+            tpch_datafusion_planning_workload_items_with_optimizer_config, tpch_native_optimizer_config,
+            tpch_report_session_config,
+        },
+    },
+};
+use datafusion_nexus_workloads::{
+    clickbench::{
+        ClickbenchDatasetMetadata, ClickbenchWorkloadError, ClickbenchWorkloadResult, prepare_clickbench_report_dataset,
+    },
+    tpcds::{TpcdsDatasetMetadata, TpcdsWorkloadResult, prepare_tpcds_report_dataset},
+    tpch::{TpchDatasetMetadata, TpchWorkloadResult, prepare_tpch_report_dataset},
 };
 use nexus_query_engine::mode::NativePipelineExecutionMode;
 
@@ -95,7 +110,7 @@ async fn synthetic_report(dir: &std::path::Path) -> NativeDataFusionPlanningRepo
     NativeDataFusionPlanningReport { rows, workload_dataset: None }
 }
 
-async fn tpch_report(dir: &std::path::Path) -> datafusion_nexus_bench::TpchWorkloadResult<TpchPlanningReport> {
+async fn tpch_report(dir: &std::path::Path) -> TpchWorkloadResult<TpchPlanningReport> {
     let (root, metadata) = prepare_tpch_report_dataset(dir)?;
     let optimizer_config =
         tpch_native_optimizer_config().with_native_pipeline_execution_mode(native_pipeline_execution_mode_from_env());
@@ -114,7 +129,7 @@ struct TpchPlanningReport {
     metadata: TpchDatasetMetadata,
 }
 
-async fn tpcds_report(dir: &std::path::Path) -> datafusion_nexus_bench::TpcdsWorkloadResult<TpcdsPlanningReport> {
+async fn tpcds_report(dir: &std::path::Path) -> TpcdsWorkloadResult<TpcdsPlanningReport> {
     let (root, metadata) = prepare_tpcds_report_dataset(dir)?;
     let optimizer_config =
         tpcds_native_optimizer_config().with_native_pipeline_execution_mode(native_pipeline_execution_mode_from_env());
@@ -133,9 +148,9 @@ struct TpcdsPlanningReport {
     metadata: TpcdsDatasetMetadata,
 }
 
-async fn clickbench_report() -> datafusion_nexus_bench::ClickbenchWorkloadResult<ClickbenchPlanningReport> {
+async fn clickbench_report() -> ClickbenchWorkloadResult<ClickbenchPlanningReport> {
     let (root, metadata) = prepare_clickbench_report_dataset()?.ok_or_else(|| {
-        datafusion_nexus_bench::ClickbenchWorkloadError::InvalidDataset(
+        ClickbenchWorkloadError::InvalidDataset(
             "no ClickBench fixture found; set CUDF_CLICKBENCH_PARQUET_DIR or stage \
              fixture/data/clickbench/{hits.parquet, partitioned/} before running this report"
                 .to_string(),

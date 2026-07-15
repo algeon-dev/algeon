@@ -29,13 +29,14 @@ use datafusion_nexus::{
         },
     },
 };
-use datafusion_nexus_bench::{stress_harness::validate_synchronized_admission_queue, tpch_report_session_config};
+use datafusion_nexus_bench::{
+    report_workload::tpch::tpch_report_session_config, stress_harness::validate_synchronized_admission_queue,
+};
 use nexus_query_engine::{
     error::QueryError,
     runtime::{QueryService, QueryServiceConfig, QueryServiceTenantConfig, TenantId},
 };
 use tokio::sync::Barrier;
-
 const TSV_COLUMNS: &[&str] = &[
     "row_type",
     "request_index",
@@ -72,7 +73,6 @@ const DEFAULT_TABLE: &str = "lineitem";
 const DEFAULT_WAREHOUSE: &str = "s3://lakehouse/warehouse";
 const DEFAULT_CATALOG_ID: &str = "";
 const DEFAULT_REGION: &str = "us-east-1";
-
 const QUERY_ENV: &str = "CUDF_QUERY_SERVICE_ICEBERG_SQL";
 const TENANTS_ENV: &str = "CUDF_QUERY_SERVICE_ICEBERG_TENANTS";
 const ITERATIONS_ENV: &str = "CUDF_QUERY_SERVICE_ICEBERG_ITERATIONS";

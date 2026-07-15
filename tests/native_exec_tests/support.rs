@@ -38,12 +38,14 @@ use datafusion::{
 use datafusion_nexus::{
     native_exec::NativeCudfExecutionConfig, planner::CudfOptimizerConfig, policy::GpuFallbackPolicy,
 };
-use datafusion_nexus_bench::{TPCH_TABLES, tpch_report_session_config};
+use datafusion_nexus_workloads::tpch::TPCH_TABLES;
 use nexus_query_engine::{
     expr::ColumnRef,
     plan::{JoinKey, JoinOutputColumn, JoinSide, JoinSpec, JoinType, QueryPlan, QueryPlanBuilder},
     source::{GpuResidentSource, LocalParquetFile, LocalParquetSource, SourceNode},
 };
+
+use crate::tpch_session::tpch_report_session_config;
 
 pub(super) fn bounded_config() -> NativeCudfExecutionConfig {
     NativeCudfExecutionConfig::bounded(256 * 1024 * 1024, 64 * 1024 * 1024, 2, 3, 1)

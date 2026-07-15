@@ -20,7 +20,7 @@ TEST_REVIEW_LINES=1500
 # not participate in review signals or the blocking growth ratchet.
 is_generated_static() {
   case "$1" in
-    crates/datafusion-nexus-bench/src/workload/tpcds_queries.rs) return 0 ;;
+    crates/datafusion-nexus-workloads/src/tpcds/catalog.rs) return 0 ;;
     *) return 1 ;;
   esac
 }

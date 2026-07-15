@@ -11,8 +11,7 @@ production 1365 crates/datafusion-nexus-bench/src/bin/tpcds_three_way_bench.rs
 production 913 crates/datafusion-nexus-bench/src/iceberg_smoke/config.rs
 production 917 crates/datafusion-nexus-bench/src/iceberg_smoke/runner.rs
 production 979 crates/datafusion-nexus-bench/src/tpch_benchmark/reports.rs
-production 887 crates/datafusion-nexus-bench/src/workload/tpcds.rs
-production 1204 crates/datafusion-nexus-bench/src/workload/tpcds/tiny.rs
+production 1204 crates/datafusion-nexus-workloads/src/tpcds/fixture.rs
 production 1498 crates/datafusion-nexus-tools/src/e2e/server_iceberg_rest_multigpu_e2e.rs
 production 1757 crates/nexus-query-engine/src/capability/admission.rs
 production 847 crates/nexus-query-engine/src/capability/aggregate.rs
@@ -113,6 +112,6 @@ production 1507 src/table_format/iceberg/planner.rs
 production 1295 src/table_format/iceberg/planner/tasks.rs
 production 1232 src/table_format/scan/source_resolution.rs
 test 1856 tests/iceberg/table_format_provider_tests.rs
-test 1651 tests/native_tpcds_parity_tests/sf1.rs
+test 1647 tests/native_tpcds_parity_tests/sf1.rs
 test 2469 tests/server/server_config_tests.rs
 test 1972 tests/server/server_flight_sql_tests.rs

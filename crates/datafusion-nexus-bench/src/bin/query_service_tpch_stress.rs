@@ -25,10 +25,13 @@ use datafusion_nexus::{
     session::CudfSessionStateBuilderExt,
 };
 use datafusion_nexus_bench::{
+    report_workload::tpch::{tpch_report_session_config, tpch_tuned_cpu_session_config},
+    stress_harness::validate_synchronized_admission_queue,
+};
+use datafusion_nexus_workloads::tpch::{
     CUDF_TPCH_GENERATION_COMMAND_ENV, CUDF_TPCH_PARQUET_DIR_ENV, CUDF_TPCH_SCALE_FACTOR_ENV, TPCH_QUERIES, TPCH_TABLES,
-    TpchQuery, default_tpch_parquet_root, describe_tpch_dataset, discover_tpch_table_layout,
-    register_tpch_table_layout, stress_harness::validate_synchronized_admission_queue, tpch_report_session_config,
-    tpch_tuned_cpu_session_config,
+    TpchDatasetMetadata, TpchDefaultScale, TpchQuery, default_tpch_parquet_root, describe_tpch_dataset,
+    discover_tpch_table_layout, register_tpch_table_layout,
 };
 use nexus_query_engine::{
     error::QueryError,
@@ -39,7 +42,6 @@ use nexus_query_engine::{
     },
 };
 use tokio::sync::Barrier;
-
 const TSV_COLUMNS: &[&str] = &[
     "row_type",
     "request_index",
@@ -71,7 +73,6 @@ const TSV_COLUMNS: &[&str] = &[
     "error_facts",
     "error_message",
 ];
-
 const DATASET_ROOT_ENV: &str = CUDF_TPCH_PARQUET_DIR_ENV;
 const BULK_QUERIES_ENV: &str = "CUDF_QUERY_SERVICE_TPCH_BULK_QUERY_IDS";
 const INTERACTIVE_QUERIES_ENV: &str = "CUDF_QUERY_SERVICE_TPCH_INTERACTIVE_QUERY_IDS";
@@ -102,7 +103,6 @@ const PROFILE_WARMUP_ITERATIONS_ENV: &str = "CUDF_QUERY_SERVICE_TPCH_PROFILE_WAR
 const PROFILE_MEASURED_ITERATIONS_ENV: &str = "CUDF_QUERY_SERVICE_TPCH_PROFILE_MEASURED_ITERATIONS";
 const PROFILE_EVIDENCE_PATH_ENV: &str = "CUDF_QUERY_SERVICE_TPCH_PROFILE_EVIDENCE_PATH";
 const OVERLOAD_PROBE_ENV: &str = "CUDF_QUERY_SERVICE_TPCH_OVERLOAD_PROBE";
-
 #[tokio::main]
 async fn main() -> DataFusionResult<()> {
     let config = StressConfig::from_env()?;
@@ -179,7 +179,7 @@ impl StressConfig {
     fn from_env() -> DataFusionResult<Self> {
         let dataset_root = match std::env::var_os(DATASET_ROOT_ENV) {
             Some(value) => PathBuf::from(value),
-            None => default_tpch_parquet_root(datafusion_nexus_bench::TpchDefaultScale::Sf1).into(),
+            None => default_tpch_parquet_root(TpchDefaultScale::Sf1).into(),
         };
         let max_concurrent_queries = env_usize(MAX_CONCURRENT_QUERIES_ENV, 1)?;
         let legacy_tenant_budget_bytes = optional_env_u64(TENANT_BUDGET_BYTES_ENV)?;
@@ -584,7 +584,7 @@ impl StructuredFailure {
 #[derive(Debug)]
 struct StressReport {
     config: StressConfig,
-    dataset: datafusion_nexus_bench::TpchDatasetMetadata,
+    dataset: TpchDatasetMetadata,
     rows: Vec<StressRow>,
     profile_measured_execution_ms: Option<f64>,
     effective_active_max: usize,

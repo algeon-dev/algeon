@@ -9,7 +9,7 @@
 //   extraction_command  : duckdb <tmpdb> -c "INSTALL tpcds; LOAD tpcds; COPY (SELECT query FROM tpcds_queries() WHERE query_nr = N) TO 'qNN.sql' (HEADER false, QUOTE '', DELIMITER '');" for N in 1..99
 //   rewrite_applied     : trailing semicolon and trailing whitespace stripped per query; otherwise vendored verbatim
 //
-// Surface mirrors `crates/datafusion-nexus-bench/src/workload/tpch_queries.rs`:
+// Surface mirrors `crates/datafusion-nexus-workloads/src/tpch/catalog.rs`:
 //   - TPCDS_QUERY_COUNT
 //   - TPCDS_QUERIES: &[TpcdsQuery]
 //   - tpcds_query_ids()

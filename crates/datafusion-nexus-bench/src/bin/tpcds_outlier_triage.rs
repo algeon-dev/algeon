@@ -44,16 +44,16 @@ use datafusion_nexus::{
     report::CandidateOutcome,
     session::CudfSessionStateBuilderExt,
 };
-use datafusion_nexus_bench::{
-    TPCDS_QUERIES, TpcdsQuery, register_tpcds_tables, tpcds_native_optimizer_config, tpcds_native_report_session_config,
+use datafusion_nexus_bench::report_workload::tpcds::{
+    register_tpcds_tables_with_native_metadata, tpcds_native_optimizer_config, tpcds_native_report_session_config,
 };
+use datafusion_nexus_workloads::tpcds::{TPCDS_QUERIES, TpcdsQuery};
 use nexus_query_engine::optimizer::{
     AGGREGATE_JOIN_PUSHDOWN_RULE_NAME, DIMENSION_DERIVED_ROW_GROUP_PRUNING_RULE_NAME,
     DYNAMIC_FILTER_ROUTE_DISCOVERY_RULE_NAME, JOIN_BUILD_SIDE_SELECTION_RULE_NAME, JOIN_FILTER_REASSOCIATION_RULE_NAME,
     LOCAL_PARQUET_SOURCE_REUSE_RULE_NAME, OUTER_JOIN_NULL_REJECTION_RULE_NAME, PROJECTION_SIMPLIFICATION_RULE_NAME,
     SEMIJOIN_REDUCTION_RULE_NAME, SHARED_SUBPLAN_MATERIALIZATION_RULE_NAME, STREAM_FANOUT_REPLAY_RULE_NAME,
 };
-
 #[tokio::main(flavor = "multi_thread", worker_threads = 4)]
 async fn main() -> Result<(), Box<dyn Error>> {
     let cfg = TriageConfig::from_env()?;
@@ -136,7 +136,7 @@ impl TriageConfig {
 
 async fn build_cpu_context(root: &Path) -> Result<SessionContext, Box<dyn Error>> {
     let ctx = SessionContext::new_with_config(tuned_cpu_session_config());
-    register_tpcds_tables(&ctx, root).await?;
+    register_tpcds_tables_with_native_metadata(&ctx, root).await?;
     Ok(ctx)
 }
 
@@ -155,7 +155,7 @@ async fn build_gpu_context(
     }
     let state = builder.build();
     let ctx = SessionContext::new_with_state(state);
-    register_tpcds_tables(&ctx, root).await?;
+    register_tpcds_tables_with_native_metadata(&ctx, root).await?;
     Ok((ctx, retained_rule))
 }
 

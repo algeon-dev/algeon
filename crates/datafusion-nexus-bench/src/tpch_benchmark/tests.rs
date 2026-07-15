@@ -1,5 +1,6 @@
+use datafusion_nexus_workloads::tpch::TpchTableMetadata;
+
 use super::*;
-use crate::TpchTableMetadata;
 
 #[path = "tests/config_dataset.rs"]
 mod config_dataset;

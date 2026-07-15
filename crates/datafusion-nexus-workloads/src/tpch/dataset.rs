@@ -10,7 +10,7 @@ use parquet::{
     file::reader::{FileReader, SerializedFileReader},
 };
 
-use super::{TpchWorkloadError, TpchWorkloadResult, tiny::write_tiny_tpch_parquet_dataset};
+use super::{TpchWorkloadError, TpchWorkloadResult, fixture::write_tiny_tpch_parquet_dataset};
 
 /// Canonical TPC-H table names in fixture discovery order.
 pub const TPCH_TABLES: &[&str] =
@@ -191,8 +191,8 @@ impl TpchDatasetMetadata {
         format_table_metadata(&self.tables, |table| table.row_group_count as u64)
     }
 
-    pub fn to_workload_dataset_metadata(&self) -> datafusion_nexus::native_report::WorkloadDatasetMetadata {
-        datafusion_nexus::native_report::WorkloadDatasetMetadata {
+    pub fn to_neutral_metadata(&self) -> crate::metadata::WorkloadDatasetMetadata {
+        crate::metadata::WorkloadDatasetMetadata {
             workload: "tpch",
             root: self.root.clone(),
             scale_factor: Some(self.scale_factor.clone()),

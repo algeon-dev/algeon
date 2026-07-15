@@ -28,7 +28,7 @@ use datafusion_nexus::{
     session::cudf_native_physical_optimizer_rules,
     session_config::DataFusionNexusSessionConfig,
 };
-use datafusion_nexus_bench::{TPCH_QUERIES, write_tiny_tpch_parquet_dataset};
+use datafusion_nexus_workloads::tpch::{TPCH_QUERIES, write_tiny_tpch_parquet_dataset};
 use nexus_query_engine::{
     capability::ContractQuality,
     chunk::SourceChunkPlanningOptions,
@@ -45,6 +45,8 @@ use nexus_query_engine::{
 mod bounded_join;
 #[path = "native_exec_tests/support.rs"]
 mod support;
+#[path = "support/tpch_session.rs"]
+mod tpch_session;
 
 use support::*;
 

@@ -5,9 +5,13 @@ use std::{
 
 use datafusion_nexus::native_report::NativeDataFusionExecutionReport;
 use datafusion_nexus_bench::{
-    TpchDatasetMetadata, prepare_tpch_report_dataset, tpch_datafusion_execution_workload_items_with_optimizer_config,
-    tpch_native_optimizer_config, tpch_report_session_config,
+    report_metadata::ReportDatasetMetadataExt,
+    report_workload::tpch::{
+        tpch_datafusion_execution_workload_items_with_optimizer_config, tpch_native_optimizer_config,
+        tpch_report_session_config,
+    },
 };
+use datafusion_nexus_workloads::tpch::{TpchDatasetMetadata, TpchWorkloadResult, prepare_tpch_report_dataset};
 use nexus_query_engine::mode::NativePipelineExecutionMode;
 
 const CUDF_NATIVE_PIPELINE_EXECUTION_MODE_ENV: &str = "CUDF_NATIVE_PIPELINE_EXECUTION_MODE";
@@ -20,7 +24,7 @@ async fn main() {
     fs::remove_dir_all(dir).unwrap();
 }
 
-async fn tpch_report(dir: &std::path::Path) -> datafusion_nexus_bench::TpchWorkloadResult<TpchExecutionReport> {
+async fn tpch_report(dir: &std::path::Path) -> TpchWorkloadResult<TpchExecutionReport> {
     let (root, metadata) = prepare_tpch_report_dataset(dir)?;
     let optimizer_config =
         tpch_native_optimizer_config().with_native_pipeline_execution_mode(native_pipeline_execution_mode_from_env());

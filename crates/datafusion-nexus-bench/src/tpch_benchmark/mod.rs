@@ -27,14 +27,14 @@ use datafusion_nexus::{
     policy::GpuFallbackPolicy,
     session::CudfSessionStateBuilderExt,
 };
-use nexus_query_engine::mode::NativePipelineExecutionMode;
-
-use crate::{
+use datafusion_nexus_workloads::tpch::{
     CUDF_TPCH_GENERATION_COMMAND_ENV, CUDF_TPCH_PARQUET_DIR_ENV, CUDF_TPCH_SCALE_FACTOR_ENV, TPCH_QUERIES, TPCH_TABLES,
     TpchDatasetMetadata, TpchQuery, TpchTableLayout, TpchWorkloadError, default_nvme_tpch_dataset_with_fingerprint,
     describe_tpch_dataset_with_content_fingerprint, prepare_tpch_report_dataset, register_tpch_table_layout,
-    tpch_report_session_config,
 };
+use nexus_query_engine::mode::NativePipelineExecutionMode;
+
+use crate::report_workload::tpch::tpch_report_session_config;
 
 mod case_runner;
 mod config;
