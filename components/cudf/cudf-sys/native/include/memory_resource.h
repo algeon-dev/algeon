@@ -20,6 +20,14 @@ typedef void* cudf_memory_manager_handle;
 /// Opaque handle to one stream-bound memory reservation.
 typedef void* cudf_reservation_handle;
 
+/// Callback invoked by a failure-callback memory resource after an upstream
+/// allocation fails with an RMM out-of-memory error.
+///
+/// Return nonzero to retry the allocation, or zero to rethrow the allocation
+/// failure. Implementations must be re-entrancy-safe: the callback runs inside
+/// the allocating thread and must not allocate through the same memory resource.
+typedef int32_t (*cudf_memory_failure_callback_t)(size_t bytes, void* callback_arg);
+
 enum { CUDF_MEMORY_RESOURCE_USAGE_RESERVED_SLOTS = 8 };
 
 /// Usage counters exposed by a production budget-tracking memory resource.
@@ -69,6 +77,21 @@ cudf_status_t cudf_memory_resource_create_pool(size_t initial_pool_size,
 cudf_status_t cudf_memory_resource_create_limiting(cudf_memory_resource_handle upstream,
                                                    size_t allocation_limit,
                                                    cudf_memory_resource_handle* out);
+
+/// Create a failure-callback memory resource that wraps an existing memory resource.
+///
+/// The returned resource calls `callback(bytes, callback_arg)` when the
+/// upstream resource throws an RMM out-of-memory error. A nonzero callback
+/// result retries the allocation; zero preserves the original failure. The
+/// callback and its argument must remain valid until the returned resource is
+/// destroyed. Existing upstream allocations are not counted. The returned
+/// handle retains the upstream resource lifetime and does not change the
+/// allocator used by unrelated `cudf-sys` APIs.
+cudf_status_t cudf_memory_resource_create_failure_callback(
+  cudf_memory_resource_handle upstream,
+  cudf_memory_failure_callback_t callback,
+  void* callback_arg,
+  cudf_memory_resource_handle* out);
 
 /// Create a budget-tracking memory resource that wraps an existing memory resource.
 ///

@@ -9,6 +9,7 @@
 #include <rmm/aligned.hpp>
 #include <rmm/mr/per_device_resource.hpp>
 #include <rmm/mr/cuda_memory_resource.hpp>
+#include <rmm/mr/failure_callback_resource_adaptor.hpp>
 #include <rmm/mr/limiting_resource_adaptor.hpp>
 #include <rmm/mr/pool_memory_resource.hpp>
 #include <rmm/mr/statistics_resource_adaptor.hpp>
@@ -112,7 +113,8 @@ class budget_tracking_resource_adaptor final : public rmm::mr::device_memory_res
     while (true) {
       if (old_aligned > allocation_limit_ || aligned_bytes > allocation_limit_ - old_aligned) {
         record_failed_allocation(bytes);
-        throw std::bad_alloc{};
+        throw rmm::out_of_memory{
+          "budget-tracking memory resource allocation limit exceeded"};
       }
       new_aligned = old_aligned + aligned_bytes;
       if (current_aligned_bytes_.compare_exchange_weak(
@@ -295,7 +297,8 @@ class reservation_aware_resource_adaptor final : public rmm::mr::device_memory_r
     if (state.current_aligned_bytes > state.allocation_limit ||
         aligned_bytes > state.allocation_limit - state.current_aligned_bytes) {
       record_failed_allocation(state, bytes);
-      throw std::bad_alloc{};
+      throw rmm::out_of_memory{
+        "stream reservation memory resource allocation limit exceeded"};
     }
     state.current_aligned_bytes += aligned_bytes;
   }
@@ -687,6 +690,39 @@ cudf_status_t cudf_memory_resource_create_limiting(cudf_memory_resource_handle u
       std::make_unique<rmm::mr::device_memory_resource_box<rmm::mr::limiting_resource_adaptor>>(
         rmm::mr::any_device_resource_from_raw(upstream_mr),
         allocation_limit);
+    register_memory_resource_lifetime(state->owner);
+    *out = static_cast<cudf_memory_resource_handle>(state.release());
+    return CUDF_SUCCESS;
+  }
+  CUDF_RUST_CATCH
+}
+
+cudf_status_t cudf_memory_resource_create_failure_callback(
+  cudf_memory_resource_handle upstream,
+  cudf_memory_failure_callback_t callback,
+  void* callback_arg,
+  cudf_memory_resource_handle* out)
+{
+  CUDF_RUST_NULL_CHECK(out, "out is null");
+  *out = nullptr;
+  CUDF_RUST_NULL_CHECK(upstream, "upstream is null");
+  CUDF_RUST_NULL_CHECK(callback, "callback is null");
+  CUDF_RUST_TRY
+  {
+    auto state              = std::make_unique<memory_resource_handle_state>();
+    state->owner            = std::make_shared<memory_resource_owner>();
+    auto& owner             = *state->owner;
+    owner.upstream_lifetime = cudf_memory_resource_lifetime_from_handle(upstream);
+    auto* upstream_mr       = cudf_memory_resource_raw_from_handle(upstream);
+    auto failure_callback   = [callback](std::size_t bytes, void* arg) {
+      return callback(bytes, arg) != 0;
+    };
+    owner.mr =
+      std::make_unique<rmm::mr::device_memory_resource_box<
+        rmm::mr::failure_callback_resource_adaptor<>>>(
+        rmm::mr::any_device_resource_from_raw(upstream_mr),
+        std::move(failure_callback),
+        callback_arg);
     register_memory_resource_lifetime(state->owner);
     *out = static_cast<cudf_memory_resource_handle>(state.release());
     return CUDF_SUCCESS;

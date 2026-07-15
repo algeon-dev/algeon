@@ -136,6 +136,7 @@ const SAFE_LAYER_NON_EXECUTION_FFI_ALLOWLIST: &[(&str, &str)] = &[
     ("cudf_last_error_message", "error metadata accessor"),
     ("cudf_memory_resource_create_budget_tracking", "runtime memory-resource lifecycle"),
     ("cudf_memory_resource_create_cuda", "runtime memory-resource lifecycle"),
+    ("cudf_memory_resource_create_failure_callback", "runtime memory-resource lifecycle"),
     ("cudf_memory_resource_create_limiting", "runtime memory-resource lifecycle"),
     ("cudf_memory_resource_create_pool", "runtime memory-resource lifecycle"),
     ("cudf_memory_resource_destroy", "runtime memory-resource lifecycle"),

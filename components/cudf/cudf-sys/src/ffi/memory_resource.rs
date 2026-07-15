@@ -1,8 +1,8 @@
 use std::os::raw::c_void;
 
 use crate::{
-    cudf_memory_manager_handle, cudf_memory_resource_handle, cudf_memory_resource_usage_t, cudf_reservation_handle,
-    cudf_status_t, cudf_stream_handle,
+    cudf_memory_failure_callback_t, cudf_memory_manager_handle, cudf_memory_resource_handle,
+    cudf_memory_resource_usage_t, cudf_reservation_handle, cudf_status_t, cudf_stream_handle,
 };
 
 extern "C" {
@@ -29,6 +29,14 @@ extern "C" {
     pub fn cudf_memory_resource_create_limiting(
         upstream: cudf_memory_resource_handle,
         allocation_limit: usize,
+        out: *mut cudf_memory_resource_handle,
+    ) -> cudf_status_t;
+
+    /// Create an owned failure-callback memory resource handle around `upstream`.
+    pub fn cudf_memory_resource_create_failure_callback(
+        upstream: cudf_memory_resource_handle,
+        callback: cudf_memory_failure_callback_t,
+        callback_arg: *mut c_void,
         out: *mut cudf_memory_resource_handle,
     ) -> cudf_status_t;
 

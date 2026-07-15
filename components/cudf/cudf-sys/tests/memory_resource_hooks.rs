@@ -1,6 +1,10 @@
 mod support;
 
-use std::{ffi::c_void, ptr};
+use std::{
+    ffi::c_void,
+    ptr,
+    sync::atomic::{AtomicUsize, Ordering},
+};
 
 use support::{
     CurrentDeviceResourceRestore, OwnedMemoryResource, OwnedStream, current_device, current_device_resource_raw,
@@ -8,6 +12,16 @@ use support::{
 };
 
 fn make_i32_column_with_memory_resource(data: &[i32], mr: &cudf_sys::BorrowedMemoryResource<'_>) -> *mut c_void {
+    let (status, out) = try_make_i32_column_with_memory_resource(data, mr);
+    assert_eq!(status, cudf_sys::CUDF_SUCCESS);
+    assert!(!out.is_null());
+    out
+}
+
+fn try_make_i32_column_with_memory_resource(
+    data: &[i32],
+    mr: &cudf_sys::BorrowedMemoryResource<'_>,
+) -> (cudf_sys::cudf_status_t, *mut c_void) {
     let stream = OwnedStream::new();
     let stream = stream.borrowed();
     let exec = required_exec_options(&stream, mr);
@@ -23,9 +37,7 @@ fn make_i32_column_with_memory_resource(data: &[i32], mr: &cudf_sys::BorrowedMem
             &mut out,
         )
     };
-    assert_eq!(st, cudf_sys::CUDF_SUCCESS);
-    assert!(!out.is_null());
-    out
+    (st, out)
 }
 
 fn create_cuda_memory_resource() -> *mut c_void {
@@ -42,6 +54,74 @@ fn create_pool_memory_resource() -> *mut c_void {
     assert_eq!(status, cudf_sys::CUDF_SUCCESS);
     assert!(!mr.is_null());
     mr
+}
+
+struct RawMemoryResource {
+    raw: *mut c_void,
+    device: i32,
+}
+
+impl RawMemoryResource {
+    fn from_raw(raw: *mut c_void) -> Self {
+        assert!(!raw.is_null());
+        Self { raw, device: current_device() }
+    }
+
+    fn raw(&self) -> *mut c_void {
+        self.raw
+    }
+
+    fn borrowed(&self) -> cudf_sys::BorrowedMemoryResource<'_> {
+        unsafe { cudf_sys::BorrowedMemoryResource::from_raw(self.raw) }
+    }
+}
+
+impl Drop for RawMemoryResource {
+    fn drop(&mut self) {
+        if !self.raw.is_null() {
+            let status = unsafe { cudf_sys::cudf_memory_resource_destroy(self.raw, self.device) };
+            assert_eq!(status, cudf_sys::CUDF_SUCCESS);
+            self.raw = ptr::null_mut();
+        }
+    }
+}
+
+fn create_limiting_memory_resource(upstream: *mut c_void, allocation_limit: usize) -> RawMemoryResource {
+    let mut raw = ptr::null_mut();
+    let status = unsafe { cudf_sys::cudf_memory_resource_create_limiting(upstream, allocation_limit, &mut raw) };
+    assert_eq!(status, cudf_sys::CUDF_SUCCESS);
+    RawMemoryResource::from_raw(raw)
+}
+
+fn create_budget_tracking_memory_resource(upstream: *mut c_void, allocation_limit: usize) -> RawMemoryResource {
+    let mut raw = ptr::null_mut();
+    let status = unsafe { cudf_sys::cudf_memory_resource_create_budget_tracking(upstream, allocation_limit, &mut raw) };
+    assert_eq!(status, cudf_sys::CUDF_SUCCESS);
+    RawMemoryResource::from_raw(raw)
+}
+
+fn create_failure_callback_memory_resource(
+    upstream: *mut c_void,
+    callback: cudf_sys::cudf_memory_failure_callback_t,
+    callback_arg: *mut c_void,
+) -> RawMemoryResource {
+    let mut raw = ptr::null_mut();
+    let status =
+        unsafe { cudf_sys::cudf_memory_resource_create_failure_callback(upstream, callback, callback_arg, &mut raw) };
+    assert_eq!(status, cudf_sys::CUDF_SUCCESS);
+    RawMemoryResource::from_raw(raw)
+}
+
+unsafe extern "C" fn stateless_decline_callback(_bytes: usize, _callback_arg: *mut c_void) -> i32 {
+    0
+}
+
+unsafe extern "C" fn retry_once_then_decline_callback(bytes: usize, callback_arg: *mut c_void) -> i32 {
+    if bytes == 0 || callback_arg.is_null() {
+        return 0;
+    }
+    let calls = unsafe { &*(callback_arg as *const AtomicUsize) };
+    i32::from(calls.fetch_add(1, Ordering::SeqCst) == 0)
 }
 
 #[test]
@@ -152,4 +232,62 @@ fn raw_stream_accessor_returns_underlying_cuda_stream_pointer() {
     let stream = OwnedStream::new();
     let raw = stream.raw_cuda_stream();
     assert!(!raw.is_null(), "underlying CUDA stream pointer must be non-null");
+}
+
+#[test]
+fn failure_callback_memory_resource_rejects_null_callback() {
+    let upstream = RawMemoryResource::from_raw(create_cuda_memory_resource());
+    let mut out = ptr::null_mut();
+
+    let status = unsafe {
+        cudf_sys::cudf_memory_resource_create_failure_callback(upstream.raw(), None, ptr::null_mut(), &mut out)
+    };
+
+    assert_eq!(status, cudf_sys::CUDF_ERROR_NULL);
+    assert!(out.is_null());
+}
+
+#[test]
+fn failure_callback_memory_resource_allows_null_callback_arg() {
+    let upstream = RawMemoryResource::from_raw(create_cuda_memory_resource());
+    let _callback_mr =
+        create_failure_callback_memory_resource(upstream.raw(), Some(stateless_decline_callback), ptr::null_mut());
+}
+
+#[test]
+fn failure_callback_memory_resource_retries_until_callback_declines() {
+    let upstream = RawMemoryResource::from_raw(create_cuda_memory_resource());
+    let limiting = create_limiting_memory_resource(upstream.raw(), 1);
+    let calls = AtomicUsize::new(0);
+    let callback_mr = create_failure_callback_memory_resource(
+        limiting.raw(),
+        Some(retry_once_then_decline_callback),
+        &calls as *const AtomicUsize as *mut c_void,
+    );
+    let borrowed = callback_mr.borrowed();
+
+    let (status, out) = try_make_i32_column_with_memory_resource(&[1, 2, 3], &borrowed);
+
+    assert_eq!(status, cudf_sys::CUDF_ERROR_OUT_OF_MEMORY);
+    assert!(out.is_null());
+    assert_eq!(calls.load(Ordering::SeqCst), 2);
+}
+
+#[test]
+fn failure_callback_memory_resource_retries_budget_tracking_limit_failures() {
+    let upstream = RawMemoryResource::from_raw(create_cuda_memory_resource());
+    let budget_tracking = create_budget_tracking_memory_resource(upstream.raw(), 1);
+    let calls = AtomicUsize::new(0);
+    let callback_mr = create_failure_callback_memory_resource(
+        budget_tracking.raw(),
+        Some(retry_once_then_decline_callback),
+        &calls as *const AtomicUsize as *mut c_void,
+    );
+    let borrowed = callback_mr.borrowed();
+
+    let (status, out) = try_make_i32_column_with_memory_resource(&[1, 2, 3], &borrowed);
+
+    assert_eq!(status, cudf_sys::CUDF_ERROR_OUT_OF_MEMORY);
+    assert!(out.is_null());
+    assert_eq!(calls.load(Ordering::SeqCst), 2);
 }
