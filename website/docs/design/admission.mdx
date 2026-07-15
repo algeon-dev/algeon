@@ -81,7 +81,7 @@ are sized, and which layer enforces what.
       kind: 'admission queue', name: 'QueryService',
       note: ['slot cap · priority tiers · tenant round-robin', 'small queries backfill past a blocked head'],
       tone: 'engine',
-      sub: 'nexus-query-engine · runtime/query_service.rs',
+      sub: 'nexus-query-engine · runtime/query_service/',
       edgeLabel: 'async admit at the first native stream poll',
       detail: <>The admission queue is priority-tiered
         (<code>Critical → Low</code>) with tenant round-robin inside a tier.
