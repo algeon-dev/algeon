@@ -155,6 +155,40 @@ fn cached_cudf_discovery_defers_missing_env_to_cmake_contract() {
 }
 
 #[test]
+fn libcudf_runtime_identity_prefers_installed_prefix_layout() {
+    let unique = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+    let temp_dir = std::env::temp_dir().join(format!("cudf-sys-installed-libcudf-contract-{unique}"));
+    let install_dir = temp_dir.join("install");
+    let build_dir = temp_dir.join("build");
+    let installed_libcudf = install_dir.join("lib/libcudf.so");
+    let build_libcudf = build_dir.join("libcudf.so");
+    fs::create_dir_all(installed_libcudf.parent().unwrap()).unwrap();
+    fs::create_dir_all(&build_dir).unwrap();
+    fs::write(&installed_libcudf, b"installed libcudf").unwrap();
+    fs::write(&build_libcudf, b"build-tree libcudf").unwrap();
+
+    let resolved = build_support::locate_prebuilt_libcudf(Some(&install_dir), Some(&build_dir));
+
+    assert_eq!(resolved.as_deref(), Some(installed_libcudf.as_path()));
+    fs::remove_dir_all(temp_dir).unwrap();
+}
+
+#[test]
+fn libcudf_runtime_identity_supports_cpp_build_tree_layout() {
+    let unique = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+    let temp_dir = std::env::temp_dir().join(format!("cudf-sys-build-libcudf-contract-{unique}"));
+    let build_dir = temp_dir.join("cpp-build");
+    let build_libcudf = build_dir.join("libcudf.so");
+    fs::create_dir_all(&build_dir).unwrap();
+    fs::write(&build_libcudf, b"build-tree libcudf").unwrap();
+
+    let resolved = build_support::locate_prebuilt_libcudf(None, Some(&build_dir));
+
+    assert_eq!(resolved.as_deref(), Some(build_libcudf.as_path()));
+    fs::remove_dir_all(temp_dir).unwrap();
+}
+
+#[test]
 fn supported_target_os_accepts_linux_only() {
     build_support::ensure_supported_target_os("linux").expect("linux target should be accepted");
 
@@ -279,6 +313,20 @@ fn build_script_treats_rapids_logger_runtime_library_as_optional() {
         !BUILD_RS.contains("no shared {file_name} found under the libcudf discovery prefix"),
         "expected build.rs to avoid warning generically for optional runtime dependencies"
     );
+}
+
+#[test]
+fn build_script_exports_exact_libcudf_runtime_identity() {
+    for expected in [
+        "locate_prebuilt_libcudf()",
+        "emit_runtime_dep_path_metadata(\"libcudf-runtime-lib\"",
+        "required libcudf.so was not found",
+    ] {
+        assert!(BUILD_RS.contains(expected), "expected build.rs to contain libcudf metadata contract `{expected}`");
+    }
+    for expected in ["cargo:{key}=", "cargo:metadata={key}="] {
+        assert!(BUILD_RS.contains(expected), "expected the metadata helper to emit `{expected}`");
+    }
 }
 
 #[test]
