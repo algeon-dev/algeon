@@ -680,10 +680,10 @@ cudf_status_t cudf_hash_join_create_ex(cudf_table_view_handle build,
 /// reusable hash-join artifact with explicit execution context.
 ///
 /// The execution context is part of the contract surface so callers can use the
-/// same stream and memory-resource policy as the eventual build call. Build-key
-/// tables that require unsupported retained preprocessing buffers (nested keys,
-/// or keys that may have non-empty nulls such as nullable string keys) fail
-/// with CUDF_ERROR_INVALID_ARGUMENT.
+/// same stream and memory-resource policy as the eventual build call. The call
+/// does not allocate device memory; exact flat nullable-string preprocessing is
+/// sized by inspecting existing offsets and null masks. Nested build-key tables
+/// fail with CUDF_ERROR_INVALID_ARGUMENT.
 ///
 /// `options` must name an explicit valid device and non-NULL stream/MR.
 cudf_status_t cudf_hash_join_pre_build_reservation_size_ex(cudf_table_view_handle build,

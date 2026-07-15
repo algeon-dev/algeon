@@ -364,6 +364,18 @@ mod join_hash_join_execution_tests {
     }
 
     #[test]
+    fn hash_join_pre_build_reservation_matches_non_nullable_string_build_artifact() {
+        let runtime = Runtime::new().unwrap();
+        let build_keys =
+            Table::from_columns(vec![runtime.column_from_strs(&["alpha", "beta", "gamma"]).unwrap()]).unwrap();
+
+        assert_hash_join_pre_build_matches_built_size(
+            &build_keys,
+            HashJoinOptions::new().null_equality(NullEquality::Equal),
+        );
+    }
+
+    #[test]
     fn hash_join_pre_build_reservation_rejects_empty_build_table() {
         let runtime = Runtime::new().unwrap();
         let build_keys = runtime.empty_table().unwrap();
@@ -414,31 +426,26 @@ mod join_hash_join_execution_tests {
     }
 
     #[test]
-    fn hash_join_pre_build_reservation_rejects_nullable_string_build_key_with_null_payload() {
+    fn hash_join_pre_build_reservation_matches_nullable_string_build_key_with_null_payload() {
         let build_keys = Table::from_columns(vec![
             column_from_strs_nullable(&["alpha", "null-payload", "omega"], &[true, false, true]).unwrap(),
         ])
         .unwrap();
 
-        assert_hash_join_pre_build_invalid_argument(
+        assert_hash_join_pre_build_matches_built_size(
             &build_keys,
             HashJoinOptions::new().null_equality(NullEquality::Equal),
         );
     }
 
     #[test]
-    fn hash_join_new_rejects_nullable_string_build_key_with_null_payload() {
+    fn hash_join_new_accepts_nullable_string_build_key_with_null_payload() {
         let build_keys = Table::from_columns(vec![
             column_from_strs_nullable(&["alpha", "null-payload", "omega"], &[true, false, true]).unwrap(),
         ])
         .unwrap();
 
-        let err = HashJoin::new(build_keys, HashJoinOptions::new().null_equality(NullEquality::Equal))
-            .expect_err("hash join creation must reject retained preprocessing gaps rather than build unstable state");
-
-        assert_eq!(err.kind(), ErrorKind::InvalidInput);
-        assert_eq!(err.code(), ErrorCode::ForeignInvalidArgument);
-        assert_eq!(err.operation(), "hash_join::new");
+        HashJoin::new(build_keys, HashJoinOptions::new().null_equality(NullEquality::Equal)).unwrap();
     }
 
     #[test]

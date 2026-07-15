@@ -621,8 +621,8 @@ extern "C" {
         options: *const cudf_exec_options_t,
     ) -> cudf_status_t;
 
-    /// Return exact retained hash-join build bytes with explicit execution
-    /// context.
+    /// Return exact retained hash-join build bytes without allocating device
+    /// payload, using an explicit execution context.
     ///
     /// `options` must name an explicit valid device and non-null stream/MR.
     pub fn cudf_hash_join_pre_build_reservation_size_ex(

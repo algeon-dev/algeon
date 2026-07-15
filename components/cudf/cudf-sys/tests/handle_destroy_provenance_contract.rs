@@ -178,7 +178,7 @@ fn hash_join_create_preserves_pre_build_rejection_instead_of_building_unknown_re
 
     if !source_contract_support::contains_normalized(
         body,
-        "auto const reservation_size = cudf::hash_join::pre_build_reservation_size(*build_view, load_factor);",
+        "auto const reservation_size = cudf::hash_join::pre_build_reservation_size(*build_view, load_factor, exec->stream, *exec->mr);",
     ) {
         violations.push(
             "cudf_hash_join_create_ex must compute the retained-size contract before constructing the join".to_string(),
@@ -197,6 +197,20 @@ fn hash_join_create_preserves_pre_build_rejection_instead_of_building_unknown_re
         violations.is_empty(),
         "hash join creation must not build retained state after libcudf rejects exact pre-build sizing.\n{}",
         violations.join("\n")
+    );
+}
+
+#[test]
+fn hash_join_pre_build_sizing_forwards_explicit_execution_context() {
+    let sources = NativeSources::load();
+    let body = sources.function_body("cudf_hash_join_pre_build_reservation_size_ex").body;
+
+    assert!(
+        source_contract_support::contains_normalized(
+            body,
+            "*out = cudf::hash_join::pre_build_reservation_size(*build_view, load_factor, exec->stream, *exec->mr);",
+        ),
+        "hash-join pre-build sizing must inspect nullable string metadata on the resolved stream/MR context"
     );
 }
 

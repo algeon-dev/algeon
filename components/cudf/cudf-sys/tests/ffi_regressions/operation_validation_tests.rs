@@ -1912,6 +1912,77 @@ fn test_filter_join_indices_ex_uses_explicit_memory_resource_for_allocations_and
 }
 
 #[test]
+fn test_hash_join_pre_build_sizing_allocates_no_device_payload_and_uses_explicit_context() {
+    let _shim_state = lock_shim_state();
+
+    let strings = [
+        std::ffi::CString::new("alpha").unwrap(),
+        std::ffi::CString::new("null-payload").unwrap(),
+        std::ffi::CString::new("omega").unwrap(),
+    ];
+    let string_ptrs = strings.iter().map(|value| value.as_ptr()).collect::<Vec<_>>();
+    let lengths = strings.iter().map(|value| value.as_bytes().len() as i32).collect::<Vec<_>>();
+    let validity = [0b0000_0101u8];
+    let (input_stream, input_mr, input_exec) = strict_exec_owners();
+    let mut col: *mut c_void = ptr::null_mut();
+    let status = unsafe {
+        cudf_sys::cudf_column_create_strings_ex(
+            string_ptrs.as_ptr(),
+            lengths.as_ptr(),
+            string_ptrs.len() as i32,
+            validity.as_ptr(),
+            1,
+            &input_exec,
+            &mut col,
+        )
+    };
+    assert_eq!(status, cudf_sys::CUDF_SUCCESS);
+    assert!(!col.is_null());
+    let tbl = make_table_from_one_column(col);
+    let tv = make_table_view(tbl);
+
+    let previous_raw = current_device_resource_raw();
+    let current_mr = OwnedMemoryResource::new_test_stats();
+    let _restore = CurrentDeviceResourceRestore::new(previous_raw);
+    let target_mr = OwnedMemoryResource::new_test_stats();
+    let stream = OwnedStream::new();
+    let target_stream = stream.borrowed();
+    let target_borrowed = target_mr.borrowed();
+    let exec = required_exec_options(&target_stream, &target_borrowed);
+    let current_borrowed = current_mr.borrowed();
+    cudf_sys::test_set_current_device_resource(&current_borrowed)
+        .expect("failed to install current sentinel memory resource");
+
+    let current_before = current_mr.allocation_count();
+    let target_before = target_mr.allocation_count();
+    reset_exec_observation();
+    let mut reservation = 0usize;
+    let status = unsafe { cudf_sys::cudf_hash_join_pre_build_reservation_size_ex(tv, 0.5, &mut reservation, &exec) };
+
+    assert_eq!(status, cudf_sys::CUDF_SUCCESS);
+    assert!(reservation > 0);
+    assert_eq!(last_exec_stream_value(), stream_value(stream.as_raw()));
+    assert_eq!(last_exec_mr_raw(), target_mr.raw_device_resource());
+    assert_eq!(
+        current_mr.allocation_count(),
+        current_before,
+        "pre-build admission sizing must not allocate a sanitized payload through ambient MR"
+    );
+    assert_eq!(
+        target_mr.allocation_count(),
+        target_before,
+        "pre-build admission sizing must not allocate a sanitized payload through explicit MR"
+    );
+
+    unsafe {
+        cudf_sys::cudf_table_view_destroy(tv);
+        cudf_sys::cudf_table_destroy(tbl);
+    }
+    drop(input_mr);
+    drop(input_stream);
+}
+
+#[test]
 fn test_hash_join_create_ex_uses_explicit_memory_resource_for_build_allocations() {
     let _shim_state = lock_shim_state();
     let previous_raw = current_device_resource_raw();
