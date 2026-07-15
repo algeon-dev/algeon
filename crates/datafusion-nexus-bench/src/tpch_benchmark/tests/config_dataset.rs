@@ -18,8 +18,35 @@ fn default_config_selects_all_tpch_queries() {
     assert_eq!(profile_source, "default");
     assert_eq!(source_chunk_planning_mode, nexus_query_engine::runtime::SourceChunkPlanningMode::Conservative);
     assert_eq!(config.native_pipeline_execution_mode, NativePipelineExecutionMode::StrictBounded);
+    assert_eq!(config.native_fallback_policy, GpuFallbackPolicy::GpuPreferred);
+    assert_eq!(gpu_fallback_policy_label(config.native_fallback_policy), "gpu_preferred");
     assert_eq!(config.native_source_cache_policy.as_str(), "disabled");
     config.validate().unwrap();
+}
+
+#[test]
+fn native_fallback_policy_config_resolver_accepts_stable_spellings_and_rejects_unknown_values() {
+    assert_eq!(native_tpch_fallback_policy_from_value(None).unwrap(), GpuFallbackPolicy::GpuPreferred);
+    assert_eq!(native_tpch_fallback_policy_from_value(Some("gpu_only")).unwrap(), GpuFallbackPolicy::GpuOnly);
+    assert_eq!(native_tpch_fallback_policy_from_value(Some("gpu-preferred")).unwrap(), GpuFallbackPolicy::GpuPreferred);
+    assert_eq!(native_tpch_fallback_policy_from_value(Some("CpuOnly")).unwrap(), GpuFallbackPolicy::CpuOnly);
+
+    let error = native_tpch_fallback_policy_from_value(Some("native_only"))
+        .expect_err("unknown fallback policies must be rejected while config is resolved");
+    assert!(error.to_string().contains(CUDF_TPCH_BENCH_NATIVE_FALLBACK_POLICY_ENV));
+}
+
+#[test]
+fn native_planning_uses_the_policy_frozen_in_benchmark_config() {
+    let config = NativeTpchBenchmarkConfig {
+        native_fallback_policy: GpuFallbackPolicy::GpuOnly,
+        ..NativeTpchBenchmarkConfig::default()
+    };
+    let resources = NativeTpchRuntimeResources { runtime: None, source_cache: None };
+
+    let optimizer = execution::native_optimizer_config(&config, &resources);
+
+    assert_eq!(optimizer.fallback_policy(), GpuFallbackPolicy::GpuOnly);
 }
 
 #[test]

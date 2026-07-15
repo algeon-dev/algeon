@@ -157,7 +157,7 @@ async fn native_profile_iceberg_q1_style_cast_round_aggregate_order_limit_rewrit
 }
 
 #[tokio::test]
-async fn native_profile_iceberg_cte_aggregate_join_back_uses_partial_native_fragments() {
+async fn native_profile_iceberg_cte_aggregate_join_back_fully_lowers_to_native() {
     let plan = native_admissible_scan_plan(iceberg_test_schema());
     let physical_plan = run_iceberg_sql_under_native_profile(
         &[("iceberg_t", plan)],
@@ -173,9 +173,10 @@ async fn native_profile_iceberg_cte_aggregate_join_back_uses_partial_native_frag
     .expect("native profile must rewrite native-safe CTE aggregate fragments");
 
     assert_no_leftover_table_format_scan(physical_plan.as_ref());
-    assert_plan_contains_native_cudf_exec(physical_plan.as_ref());
-    assert_plan_contains_operator(physical_plan.as_ref(), "HashJoinExec");
-    assert_plan_contains_operator(physical_plan.as_ref(), "SortExec");
+    assert_query_fully_lowered_to_native(physical_plan.as_ref());
+    assert_plan_contains_operator(physical_plan.as_ref(), "NativeCudfGpuProducerExec");
+    assert_plan_does_not_contain_operator(physical_plan.as_ref(), "HashJoinExec");
+    assert_plan_does_not_contain_operator(physical_plan.as_ref(), "SortExec");
 }
 
 #[tokio::test]
@@ -200,7 +201,7 @@ async fn native_profile_iceberg_not_in_count_distinct_composes_gpu_resident_chil
 }
 
 #[tokio::test]
-async fn native_profile_iceberg_two_derived_aggregates_joined_to_fact_use_partial_native_fragments() {
+async fn native_profile_iceberg_two_derived_aggregates_joined_to_fact_fully_lower_to_native() {
     let plan = native_admissible_scan_plan(iceberg_test_schema());
     let physical_plan = run_iceberg_sql_under_native_profile(
         &[("iceberg_t", plan)],
@@ -218,9 +219,9 @@ async fn native_profile_iceberg_two_derived_aggregates_joined_to_fact_use_partia
     .expect("native profile must rewrite native-safe aggregate branches");
 
     assert_no_leftover_table_format_scan(physical_plan.as_ref());
-    assert_plan_contains_native_cudf_exec(physical_plan.as_ref());
-    assert_plan_contains_operator(physical_plan.as_ref(), "HashJoinExec");
-    assert_plan_contains_operator(physical_plan.as_ref(), "SortExec");
+    assert_query_fully_lowered_to_native(physical_plan.as_ref());
+    assert_plan_does_not_contain_operator(physical_plan.as_ref(), "HashJoinExec");
+    assert_plan_does_not_contain_operator(physical_plan.as_ref(), "SortExec");
 }
 
 #[tokio::test]
@@ -297,7 +298,7 @@ async fn native_profile_iceberg_correlated_scalar_avg_rewrites_with_no_leftover_
 }
 
 #[tokio::test]
-async fn native_profile_iceberg_correlated_scalar_max_uses_partial_native_fragments() {
+async fn native_profile_iceberg_correlated_scalar_max_fully_lowers_to_native() {
     let plan = native_admissible_scan_plan(iceberg_test_schema());
     let physical_plan = run_iceberg_sql_under_native_profile(
         &[("iceberg_t", plan)],
@@ -310,9 +311,9 @@ async fn native_profile_iceberg_correlated_scalar_max_uses_partial_native_fragme
     .expect("native profile must rewrite native-safe correlated scalar MAX fragments");
 
     assert_no_leftover_table_format_scan(physical_plan.as_ref());
-    assert_plan_contains_native_cudf_exec(physical_plan.as_ref());
-    assert_plan_contains_operator(physical_plan.as_ref(), "HashJoinExec");
-    assert_plan_contains_operator(physical_plan.as_ref(), "AggregateExec");
+    assert_query_fully_lowered_to_native(physical_plan.as_ref());
+    assert_plan_does_not_contain_operator(physical_plan.as_ref(), "HashJoinExec");
+    assert_plan_does_not_contain_operator(physical_plan.as_ref(), "AggregateExec");
 }
 
 #[tokio::test]

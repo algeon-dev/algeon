@@ -32,7 +32,7 @@ impl<'a> FooterObjectStoreRegistry<'a> {
         source_node_id: NodeId,
     ) -> std::result::Result<Arc<dyn datafusion::object_store::ObjectStore>, String> {
         match self.runtime_env.object_store(&object.store_url) {
-            Ok(store) => return Ok(store),
+            Ok(store) => Ok(store),
             Err(runtime_error) if object.scheme == "s3" => {
                 let Some(profile_id) = file.resolved_source.storage_profile_id.as_deref() else {
                     return Err(format!(

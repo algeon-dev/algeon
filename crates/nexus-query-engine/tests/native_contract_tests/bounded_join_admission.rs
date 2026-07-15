@@ -357,46 +357,28 @@ fn unknown_probe_with_small_left_build_selects_reusable_strategy() {
 }
 
 #[test]
-fn small_string_keyed_join_rejects_unsupported_hash_prebuild_contract_before_runtime() {
+fn small_flat_string_keyed_join_defers_null_payload_validation_to_exact_prebuild() {
     let plan = string_keyed_join_strategy_plan();
     let analysis = plan.capability_analysis();
 
-    assert!(analysis.has_rejections(), "string-key hash pre-build should be rejected before runtime");
-    let rejected_join = analysis
-        .nodes
-        .iter()
-        .find(|node| matches!(node.operator, NodeOperator::Join { join_type: JoinType::Inner, .. }))
-        .expect("string-key plan should contain an inner join capability");
-    let CapabilityDecision::Rejected { reason, facts } = &rejected_join.executable else {
-        panic!("string-key hash pre-build should be rejected as a node capability");
-    };
-    assert_eq!(*reason, "unsupported_hash_join_pre_build_reservation_capability");
-    assert_eq!(facts.get("reason").map(String::as_str), Some("hash_join_pre_build_reservation_unsupported_build_key"));
-    assert_eq!(facts.get("build_key").map(String::as_str), Some("customer_id"));
-    assert_eq!(facts.get("build_key_data_type").map(String::as_str), Some("Utf8"));
-    assert_eq!(facts.get("required_contract").map(String::as_str), Some("hash_join_pre_build_reservation_size_bytes"));
-    assert!(modeled_facts(&plan, ExecutionBoundaryPolicy::default()).is_none());
+    assert!(!analysis.has_rejections(), "flat string keys should use cuDF's exact runtime pre-build contract");
+    let facts = modeled_facts(&plan, ExecutionBoundaryPolicy::default())
+        .expect("flat string-key hash join should report a modeled bounded contract");
+    assert_eq!(facts.get("join_strategy").map(String::as_str), Some("n2:reusable_hash_equi"));
+    assert_eq!(facts.get("reusable_hash_join_rejected_reason"), None);
 }
 
 #[test]
-fn large_string_keyed_probe_rejects_unsupported_hash_prebuild_contract_before_runtime() {
+fn large_probe_with_small_flat_string_build_keeps_reusable_strategy() {
     let plan = string_keyed_join_strategy_plan_with_probe(10_000_000, 3 * 1024 * 1024 * 1024, 10, 1024);
     let analysis = plan.capability_analysis();
 
-    assert!(analysis.has_rejections(), "string-key partitioned hash pre-build should be rejected before runtime");
-    let rejected_join = analysis
-        .nodes
-        .iter()
-        .find(|node| matches!(node.operator, NodeOperator::Join { join_type: JoinType::Inner, .. }))
-        .expect("string-key plan should contain an inner join capability");
-    let CapabilityDecision::Rejected { reason, facts } = &rejected_join.executable else {
-        panic!("string-key partitioned hash pre-build should be rejected as a node capability");
-    };
-    assert_eq!(*reason, "unsupported_hash_join_pre_build_reservation_capability");
-    assert_eq!(facts.get("reason").map(String::as_str), Some("hash_join_pre_build_reservation_unsupported_build_key"));
-    assert_eq!(facts.get("build_key").map(String::as_str), Some("customer_id"));
-    assert_eq!(facts.get("build_key_data_type").map(String::as_str), Some("Utf8"));
-    assert!(modeled_facts(&plan, ExecutionBoundaryPolicy::default()).is_none());
+    assert!(!analysis.has_rejections(), "flat string keys should use cuDF's exact runtime pre-build contract");
+    let facts = modeled_facts(&plan, ExecutionBoundaryPolicy::default())
+        .expect("small flat string build should report a modeled bounded contract");
+    assert_eq!(facts.get("join_strategy").map(String::as_str), Some("n2:reusable_hash_equi"));
+    assert_eq!(facts.get("reusable_hash_join_rejected_reason"), None);
+    assert_eq!(facts.get("probe_side_bytes").map(String::as_str), Some("n2:3221225472"));
 }
 
 #[test]

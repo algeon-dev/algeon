@@ -652,15 +652,14 @@ pub(crate) async fn native_session_context(
     source_storage_profile: Option<nexus_query_engine::runtime::SourceStorageProfile>,
     native_execution_profile: NativeExecutionProfile,
 ) -> SmokeResult<(SessionContext, Arc<CudfNativePhysicalOptimizerRule>)> {
-    let mut execution_config =
-        native_execution_config_for_profile_with_env(native_execution_profile, |name| std::env::var(name).ok())?;
+    let (mut execution_config, fallback_policy) = native_session_execution_config_from_env(native_execution_profile)?;
     execution_config = execution_config.with_shared_runtime(shared_native_runtime()?);
     if let Some(profile) = resolve_default_chain_source_storage_profile(source_storage_profile).await? {
         execution_config = execution_config.with_source_storage_profile(profile);
     }
     let native_optimizer_options = native_optimizer_options_for_profile(native_execution_profile, &execution_config);
     let native_rule = Arc::new(CudfNativePhysicalOptimizerRule::new(
-        CudfOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred)
+        CudfOptimizerConfig::new(fallback_policy)
             .with_native_execution_config(execution_config)
             .with_native_optimizer_options(native_optimizer_options),
     ));

@@ -10,7 +10,7 @@ async fn native_pipeline_analytical_olap_workload_lowers_into_native_query_plans
     assert_eq!(items.len(), ANALYTICAL_OLAP_QUERY_COUNT);
     assert_eq!(
         items.iter().map(|item| item.query_id.as_str()).collect::<Vec<_>>(),
-        analytical_olap_query_ids().collect::<Vec<_>>()
+        ANALYTICAL_OLAP_QUERIES.iter().map(|query| query.id).collect::<Vec<_>>()
     );
     assert!(
         ANALYTICAL_OLAP_QUERIES.iter().any(
@@ -37,16 +37,16 @@ async fn native_pipeline_analytical_olap_workload_lowers_into_native_query_plans
 
 #[test]
 fn native_pipeline_analytical_olap_workload_has_required_shape_coverage() {
-    let classes = ANALYTICAL_OLAP_QUERIES.iter().map(|query| query.workload_class.as_str()).collect::<BTreeSet<_>>();
+    let classes = ANALYTICAL_OLAP_QUERIES.iter().map(|query| query.workload_class).collect::<BTreeSet<_>>();
 
     assert_eq!(
         classes,
         BTreeSet::from([
-            "aggregate_sort_topk",
-            "decorrelatable_subquery",
-            "multi_join_resident_pressure",
-            "self_join",
-            "star_schema_join",
+            AnalyticalOlapWorkloadClass::AggregateSortTopK,
+            AnalyticalOlapWorkloadClass::DecorrelatableSubquery,
+            AnalyticalOlapWorkloadClass::MultiJoinResidentPressure,
+            AnalyticalOlapWorkloadClass::SelfJoin,
+            AnalyticalOlapWorkloadClass::StarSchemaJoin,
         ])
     );
 }

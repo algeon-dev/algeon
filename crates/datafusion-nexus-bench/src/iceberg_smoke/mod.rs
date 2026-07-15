@@ -158,6 +158,7 @@ const NATIVE_MAX_SOURCE_READS_IN_FLIGHT_ENV: &str = "NEXUS_ICEBERG_NATIVE_MAX_SO
 const NATIVE_STATISTICAL_AGGREGATE_EXECUTION_MODE_ENV: &str =
     "NEXUS_ICEBERG_NATIVE_STATISTICAL_AGGREGATE_EXECUTION_MODE";
 const NATIVE_STDDEV_SAMP_EXECUTION_MODE_ENV: &str = "NEXUS_ICEBERG_NATIVE_STDDEV_SAMP_EXECUTION_MODE";
+const NATIVE_FALLBACK_POLICY_ENV: &str = "NEXUS_ICEBERG_NATIVE_FALLBACK_POLICY";
 const TPCH_SCALE_FACTOR_ENV: &str = "NEXUS_ICEBERG_TPCH_SCALE_FACTOR";
 const TPCDS_SCALE_FACTOR_ENV: &str = "NEXUS_ICEBERG_TPCDS_SCALE_FACTOR";
 const OBJECT_STORE_STAGING_ENV: &str = "NEXUS_ICEBERG_SMOKE_OBJECT_STORE_STAGING";
@@ -186,6 +187,23 @@ const DEFAULT_REST_TABLE: &str = "lineitem";
 const TPCH_NATIVE_MAX_SOURCE_CHUNK_BYTES_DEFAULT: u64 = 32 * 1024 * 1024 * 1024;
 const TPCH_NATIVE_MAX_ROW_GROUPS_PER_CHUNK_DEFAULT: usize = 1024;
 const TPCH_NATIVE_MAX_SOURCE_READS_IN_FLIGHT_DEFAULT: usize = 2;
+
+fn native_session_execution_config_from_env(
+    profile: NativeExecutionProfile,
+) -> SmokeResult<(NativeCudfExecutionConfig, GpuFallbackPolicy)> {
+    let execution_config = native_execution_config_for_profile_with_env(profile, |name| std::env::var(name).ok())?;
+    let fallback_policy = match std::env::var(NATIVE_FALLBACK_POLICY_ENV) {
+        Ok(value) => crate::report_workload::parse_gpu_fallback_policy(&value).map_err(smoke_error),
+        Err(std::env::VarError::NotPresent) => Ok(GpuFallbackPolicy::GpuPreferred),
+        Err(error) => Err(smoke_error(format!("failed to read {NATIVE_FALLBACK_POLICY_ENV}: {error}"))),
+    }?;
+    eprintln!(
+        "[native_iceberg_smoke_report] stage=native_session_config fallback_policy={} native_pipeline_execution_mode={}",
+        crate::report_workload::gpu_fallback_policy_label(fallback_policy),
+        execution_config.native_pipeline_execution_mode().as_str(),
+    );
+    Ok((execution_config, fallback_policy))
+}
 
 mod config;
 mod cpu_baseline;

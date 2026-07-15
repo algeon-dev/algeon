@@ -401,6 +401,34 @@ pub(super) fn aggregate_sort_limit_plan(
     Arc::new(LocalLimitExec::new(sort, 2))
 }
 
+pub(super) fn count_only_sort_limit_plan(scan: Arc<dyn ExecutionPlan>) -> Arc<dyn ExecutionPlan> {
+    let scan_schema = scan.schema();
+    let count = AggregateExprBuilder::new(count_udaf(), vec![lit(ScalarValue::Int64(Some(1)))])
+        .schema(Arc::clone(&scan_schema))
+        .alias("count_rows")
+        .build()
+        .unwrap();
+    let aggregate: Arc<dyn ExecutionPlan> = Arc::new(
+        AggregateExec::try_new(
+            AggregateMode::Single,
+            PhysicalGroupBy::new_single(Vec::new()),
+            vec![Arc::new(count)],
+            vec![None],
+            scan,
+            scan_schema,
+        )
+        .unwrap(),
+    );
+    let aggregate_schema = aggregate.schema();
+    let sort_exprs = LexOrdering::new([PhysicalSortExpr::new(
+        col("count_rows", &aggregate_schema).unwrap(),
+        ArrowSortOptions::new(true, false),
+    )])
+    .unwrap();
+    let sort: Arc<dyn ExecutionPlan> = Arc::new(SortExec::new(sort_exprs, aggregate).with_fetch(Some(1)));
+    Arc::new(LocalLimitExec::new(sort, 1))
+}
+
 pub(super) fn grouped_sum_aggregate_plan(scan: Arc<dyn ExecutionPlan>) -> Arc<dyn ExecutionPlan> {
     let scan_schema = scan.schema();
     let group_by = PhysicalGroupBy::new_single(vec![(col("key", &scan_schema).unwrap(), "key".to_string())]);

@@ -3,6 +3,8 @@ use super::*;
 const DEFAULT_QUERY_IDS: &[&str] =
     &["q03", "q07", "q22", "q26", "q32", "q37", "q42", "q52", "q55", "q62", "q82", "q85", "q92", "q93", "q97"];
 
+const CUDF_TPCDS_BENCH_NATIVE_FALLBACK_POLICY_ENV: &str = "CUDF_TPCDS_BENCH_NATIVE_FALLBACK_POLICY";
+
 impl BenchConfig {
     pub(super) fn from_env() -> Result<Self, Box<dyn Error>> {
         let engine = match std::env::var("CUDF_TPCDS_BENCH_ENGINE").as_deref() {
@@ -30,7 +32,28 @@ impl BenchConfig {
             Engine::CpuDataFusion => tpcds_native_profile_settings_with_env(|_| None),
             Engine::NativeGpu | Engine::HybridCpuPreferred => tpcds_native_profile_settings_from_env(),
         };
-        Ok(Self { engine, root, queries, warmups, iterations, native_profile })
+        let native_pipeline_execution_mode =
+            tpcds_native_analytics_optimizer_config_with_profile_settings(&native_profile)
+                .native_pipeline_execution_mode();
+        Ok(Self {
+            engine,
+            root,
+            queries,
+            warmups,
+            iterations,
+            native_profile,
+            native_fallback_policy: native_fallback_policy_from_env()?,
+            native_pipeline_execution_mode,
+        })
+    }
+}
+
+fn native_fallback_policy_from_env() -> Result<GpuFallbackPolicy, Box<dyn Error>> {
+    match std::env::var(CUDF_TPCDS_BENCH_NATIVE_FALLBACK_POLICY_ENV) {
+        Ok(value) => crate::report_workload::parse_gpu_fallback_policy(&value)
+            .map_err(|error| format!("invalid {CUDF_TPCDS_BENCH_NATIVE_FALLBACK_POLICY_ENV}: {error}").into()),
+        Err(std::env::VarError::NotPresent) => Ok(GpuFallbackPolicy::GpuPreferred),
+        Err(error) => Err(format!("failed to read {CUDF_TPCDS_BENCH_NATIVE_FALLBACK_POLICY_ENV}: {error}").into()),
     }
 }
 
@@ -63,7 +86,9 @@ pub(super) async fn build_runtime(cfg: &BenchConfig) -> Result<BenchRuntime, Box
             Ok(BenchRuntime { execution_ctx: ctx, optimizer: None, native_planning: None, skip_cpu_preferred: false })
         },
         Engine::NativeGpu => {
-            let optimizer_config = tpcds_native_analytics_optimizer_config_with_profile_settings(&cfg.native_profile);
+            let optimizer_config = tpcds_native_analytics_optimizer_config_with_profile_settings(&cfg.native_profile)
+                .with_fallback_policy(cfg.native_fallback_policy)
+                .with_native_pipeline_execution_mode(cfg.native_pipeline_execution_mode);
             let rule = Arc::new(CudfNativePhysicalOptimizerRule::new(optimizer_config));
             let state = SessionStateBuilder::new_with_default_features()
                 .with_config(tpcds_native_report_session_config())
@@ -81,7 +106,13 @@ pub(super) async fn build_runtime(cfg: &BenchConfig) -> Result<BenchRuntime, Box
         Engine::HybridCpuPreferred => {
             let cpu_ctx = SessionContext::new_with_config(tuned_cpu_session_config());
             register_tpcds_tables_with_native_metadata(&cpu_ctx, &cfg.root).await?;
-            let (native_ctx, optimizer) = build_native_planning_context(&cfg.root, &cfg.native_profile).await?;
+            let (native_ctx, optimizer) = build_native_planning_context(
+                &cfg.root,
+                &cfg.native_profile,
+                cfg.native_fallback_policy,
+                cfg.native_pipeline_execution_mode,
+            )
+            .await?;
             Ok(BenchRuntime {
                 execution_ctx: cpu_ctx,
                 optimizer: None,
@@ -95,9 +126,13 @@ pub(super) async fn build_runtime(cfg: &BenchConfig) -> Result<BenchRuntime, Box
 async fn build_native_planning_context(
     root: &Path,
     native_profile: &TpcdsNativeProfileSettings,
+    fallback_policy: GpuFallbackPolicy,
+    native_pipeline_execution_mode: NativePipelineExecutionMode,
 ) -> Result<(SessionContext, Arc<CudfNativePhysicalOptimizerRule>), Box<dyn Error>> {
     let optimizer_config =
-        tpcds_native_analytics_optimizer_config_with_cpu_preference_and_profile_settings(native_profile);
+        tpcds_native_analytics_optimizer_config_with_cpu_preference_and_profile_settings(native_profile)
+            .with_fallback_policy(fallback_policy)
+            .with_native_pipeline_execution_mode(native_pipeline_execution_mode);
     let rule = Arc::new(CudfNativePhysicalOptimizerRule::new(optimizer_config));
     let state = SessionStateBuilder::new_with_default_features()
         .with_config(tpcds_native_report_session_config())

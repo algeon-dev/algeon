@@ -95,8 +95,7 @@ async fn plan_native_query_with_resources(
     config: &NativeTpchBenchmarkConfig,
     resources: &NativeTpchRuntimeResources,
 ) -> DataFusionResult<PlannedNativeQuery> {
-    let optimizer_config = CudfOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred)
-        .with_native_execution_config(config.native_execution_config_with_resources(resources));
+    let optimizer_config = native_optimizer_config(config, resources);
     let native_rule = Arc::new(CudfNativePhysicalOptimizerRule::new(optimizer_config.clone()));
     let state = SessionStateBuilder::new_with_default_features()
         .with_config(native_session_config(config))
@@ -110,6 +109,14 @@ async fn plan_native_query_with_resources(
         NativeDataFusionPlanningReport::from_retained_rule(query.id, Arc::clone(&plan), native_rule.as_ref());
     let planning_row = select_benchmark_planning_row(query.id, planning_report.rows)?;
     Ok(PlannedNativeQuery { plan, planning_row })
+}
+
+pub(super) fn native_optimizer_config(
+    config: &NativeTpchBenchmarkConfig,
+    resources: &NativeTpchRuntimeResources,
+) -> CudfOptimizerConfig {
+    CudfOptimizerConfig::new(config.native_fallback_policy)
+        .with_native_execution_config(config.native_execution_config_with_resources(resources))
 }
 
 fn native_session_config(config: &NativeTpchBenchmarkConfig) -> SessionConfig {

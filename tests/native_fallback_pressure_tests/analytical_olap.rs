@@ -38,6 +38,11 @@ async fn native_pipeline_analytical_olap_strict_planning_report_pins_capability_
     let report = NativeDataFusionPlanningReport::collect(items);
 
     assert_eq!(planning_query_count(&report), ANALYTICAL_OLAP_QUERY_COUNT);
+    assert_eq!(
+        ANALYTICAL_OLAP_STRICT_ADMISSION_EXPECTATIONS.len(),
+        ANALYTICAL_OLAP_QUERY_COUNT,
+        "every analytical OLAP query must declare its strict-admission expectation"
+    );
     assert!(
         ANALYTICAL_OLAP_QUERIES.iter().any(
             |query| query.capability_first_admission == AnalyticalOlapCapabilityFirstAdmission::ExpectedSupersetWin
@@ -55,35 +60,17 @@ async fn native_pipeline_analytical_olap_strict_planning_report_pins_capability_
         assert!(row.native_candidate_shape.as_deref().is_some_and(|shape| shape.contains("JoinExec")));
         assert_planning_row_has_family_free_rejection_diagnostics(query.id, row);
 
-        match query.current_strict_admission {
-            AnalyticalOlapCurrentStrictAdmission::Accepted => {
-                assert_eq!(row.outcome, NativeDataFusionPlanningOutcome::AcceptedReplaced, "{}", query.id);
-                assert_eq!(row.reason_code, None, "{}", query.id);
-                assert!(!row.rejected_before_execution, "{}", query.id);
-                assert!(!row.strict_bounded_contract_rows.is_empty(), "{} should emit strict gate rows", query.id);
-                assert!(!row.strict_bounded_compiled_graphs.is_empty(), "{} should emit compiled graph rows", query.id);
-            },
-            AnalyticalOlapCurrentStrictAdmission::RejectedBeforeExecution => {
-                assert_eq!(row.outcome, NativeDataFusionPlanningOutcome::RejectedBeforeExecution, "{}", query.id);
-                assert_eq!(
-                    row.reason_code.as_deref(),
-                    Some(FallbackReason::NativeBoundedJoinUnsupported.code()),
-                    "{}",
-                    query.id
-                );
-                assert_eq!(row.unsupported_category.as_deref(), Some("operator_hashjoin"), "{}", query.id);
-                assert!(row.rejected_before_execution, "{}", query.id);
-                assert!(
-                    row.strict_bounded_compiled_graphs.is_empty(),
-                    "{} should not emit compiled graph rows",
-                    query.id
-                );
-                assert_eq!(
-                    query.capability_first_admission,
-                    AnalyticalOlapCapabilityFirstAdmission::ExpectedSupersetWin
-                );
-            },
-        }
+        assert_eq!(
+            analytical_olap_strict_admission(query.id),
+            Some(AnalyticalOlapCurrentStrictAdmission::Accepted),
+            "{} must have an explicit strict-admission expectation",
+            query.id
+        );
+        assert_eq!(row.outcome, NativeDataFusionPlanningOutcome::AcceptedReplaced, "{}", query.id);
+        assert_eq!(row.reason_code, None, "{}", query.id);
+        assert!(!row.rejected_before_execution, "{}", query.id);
+        assert!(!row.strict_bounded_contract_rows.is_empty(), "{} should emit strict gate rows", query.id);
+        assert!(!row.strict_bounded_compiled_graphs.is_empty(), "{} should emit compiled graph rows", query.id);
         if query.capability_first_admission == AnalyticalOlapCapabilityFirstAdmission::ExpectedSupersetWin {
             assert_eq!(
                 row.outcome,

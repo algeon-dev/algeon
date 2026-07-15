@@ -70,17 +70,27 @@ use nexus_query_engine::{
     source::{GpuResidentSource, LocalParquetSource, SourceNode},
 };
 
+#[path = "support/analytical_olap_planning.rs"]
+mod analytical_olap_planning;
 #[path = "support/analytical_olap_workload.rs"]
 mod analytical_olap_workload;
+#[path = "support/tpch_fallback_workload.rs"]
+mod tpch_fallback_workload;
 #[path = "support/tpch_report.rs"]
 mod tpch_report;
 #[path = "support/tpch_session.rs"]
 mod tpch_session;
 
+use analytical_olap_planning::{
+    ANALYTICAL_OLAP_STRICT_ADMISSION_EXPECTATIONS, AnalyticalOlapCurrentStrictAdmission,
+    analytical_olap_datafusion_planning_workload_items,
+    analytical_olap_datafusion_planning_workload_items_with_optimizer_config, analytical_olap_strict_admission,
+};
 use analytical_olap_workload::*;
+use tpch_fallback_workload::tpch_fallback_pressure_workload_items;
 use tpch_report::{
-    TestReportDatasetMetadataExt, tpch_datafusion_planning_workload_items, tpch_fallback_pressure_workload_items,
-    tpch_native_optimizer_config, tpch_scalar_fallback_pressure_workload_items,
+    TestReportDatasetMetadataExt, tpch_datafusion_planning_workload_items, tpch_native_optimizer_config,
+    tpch_scalar_fallback_pressure_workload_items,
 };
 use tpch_session::tpch_report_session_config;
 

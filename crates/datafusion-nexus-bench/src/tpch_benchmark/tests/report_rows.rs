@@ -2,8 +2,11 @@ use super::*;
 
 #[test]
 fn benchmark_report_accepted_rows_include_bounded_status_contract_rows_and_resource_metrics() {
-    let config =
-        NativeTpchBenchmarkConfig { query_ids: vec!["q01".to_string()], ..NativeTpchBenchmarkConfig::default() };
+    let config = NativeTpchBenchmarkConfig {
+        query_ids: vec!["q01".to_string()],
+        native_fallback_policy: GpuFallbackPolicy::GpuOnly,
+        ..NativeTpchBenchmarkConfig::default()
+    };
     let row = NativeTpchBenchmarkRow {
         query_id: "q01".to_string(),
         planning_outcome: NativeDataFusionPlanningOutcome::AcceptedReplaced,
@@ -319,6 +322,7 @@ fn benchmark_report_accepted_rows_include_bounded_status_contract_rows_and_resou
     let report = NativeTpchBenchmarkReport { metadata: benchmark_metadata(), config, rows: vec![row] };
 
     let text = report.to_tsv();
+    assert!(text.contains("# tpch_benchmark_native_fallback_policy=gpu_only\n"));
     assert!(text.contains(
         "q01\taccepted_replaced\tbounded_accepted_parity_matched\tnone\tnone\tnone\tnone\tnone\tsort_local_parquet_aggregate\tnative\tfalse\ttrue\ttrue\tsucceeded"
     ));
@@ -330,6 +334,8 @@ fn benchmark_report_accepted_rows_include_bounded_status_contract_rows_and_resou
     let header = lines.next().expect("benchmark report should contain a TSV header");
     let fields = lines.next().expect("benchmark report should contain a q01 row").split('\t').collect::<Vec<_>>();
     let header_fields = header.split('\t').collect::<Vec<_>>();
+    assert_eq!(header, NATIVE_TPCH_BENCHMARK_TSV_HEADER);
+    assert_eq!(fields.len(), header_fields.len());
     assert_eq!(fields[header_index(&header_fields, "peak_memory_operator_class")], "source");
     assert_eq!(fields[header_index(&header_fields, "peak_memory_operator_class_bytes")], "64");
     assert_eq!(fields[header_index(&header_fields, "task_reservation_operator_class")], "source");

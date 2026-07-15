@@ -255,7 +255,31 @@ impl PhysicalOptimizerRule for CudfNativePhysicalOptimizerRule {
                 native_plan_preference_options,
             )?,
         };
-        let mut optimized = apply_native_fallback_policy(Arc::clone(&plan), optimized, &effective_config)?;
+        if self.stage == NativeOptimizerStage::Final
+            && effective_config.fallback_policy() == crate::policy::GpuFallbackPolicy::GpuOnly
+        {
+            // Retain final-stage evidence before the terminal GpuOnly policy
+            // can return an error. Otherwise the shared rule state would still
+            // describe the earlier count-only probe miss and observability
+            // would misattribute the final planning failure to that probe.
+            self.store_optimization_attempt(&optimized)?;
+        }
+        // The early count-only pass is a probe, not the GpuOnly admission
+        // boundary. Its normal miss must leave the DataFusion plan intact so
+        // the final native planner can evaluate the general plan shape. Only
+        // the final stage may turn a rejected native candidate into the
+        // caller-visible GpuOnly planning error.
+        let mut optimized = match self.stage {
+            NativeOptimizerStage::Final | NativeOptimizerStage::CountOnlyProbe
+                if effective_config.fallback_policy() == crate::policy::GpuFallbackPolicy::CpuOnly =>
+            {
+                apply_native_fallback_policy(Arc::clone(&plan), optimized, &effective_config)?
+            },
+            NativeOptimizerStage::Final => {
+                apply_native_fallback_policy(Arc::clone(&plan), optimized, &effective_config)?
+            },
+            NativeOptimizerStage::CountOnlyProbe => optimized,
+        };
         let query_admission_ticket =
             plan_query_admission_ticket_for_optimized_plan(optimized.plan.as_ref(), native_execution_config)?;
         apply_execution_admission_wrappers(
@@ -265,6 +289,24 @@ impl PhysicalOptimizerRule for CudfNativePhysicalOptimizerRule {
             native_execution_config,
             query_admission_ticket,
         );
+        self.store_optimization_attempt(&optimized)?;
+        Ok(optimized.plan)
+    }
+
+    fn name(&self) -> &str {
+        match self.stage {
+            NativeOptimizerStage::CountOnlyProbe => CUDF_NATIVE_COUNT_ONLY_PHYSICAL_OPTIMIZER_RULE_NAME,
+            NativeOptimizerStage::Final => CUDF_NATIVE_PHYSICAL_OPTIMIZER_RULE_NAME,
+        }
+    }
+
+    fn schema_check(&self) -> bool {
+        true
+    }
+}
+
+impl CudfNativePhysicalOptimizerRule {
+    fn store_optimization_attempt(&self, optimized: &NativeOptimizationAttempt) -> DataFusionResult<()> {
         *self.state.last_report.lock().map_err(|_| {
             datafusion::common::DataFusionError::from(Error::new(
                 ErrorCode::Internal,
@@ -284,18 +326,7 @@ impl PhysicalOptimizerRule for CudfNativePhysicalOptimizerRule {
             optimized.strict_bounded_contract.clone();
         *self.state.last_adaptive_pipeline.lock().expect("native adaptive pipeline diagnostics mutex poisoned") =
             optimized.adaptive_pipeline.clone();
-        Ok(optimized.plan)
-    }
-
-    fn name(&self) -> &str {
-        match self.stage {
-            NativeOptimizerStage::CountOnlyProbe => CUDF_NATIVE_COUNT_ONLY_PHYSICAL_OPTIMIZER_RULE_NAME,
-            NativeOptimizerStage::Final => CUDF_NATIVE_PHYSICAL_OPTIMIZER_RULE_NAME,
-        }
-    }
-
-    fn schema_check(&self) -> bool {
-        true
+        Ok(())
     }
 }
 
