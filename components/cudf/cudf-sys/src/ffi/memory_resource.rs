@@ -7,7 +7,7 @@ use crate::{
     cudf_stream_handle,
 };
 
-extern "C" {
+unsafe extern "C" {
     // -- Memory Resource -----------------------------------------------------
 
     /// Create an owned CUDA-backed RMM memory resource handle.

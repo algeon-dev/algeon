@@ -279,10 +279,10 @@ fn check_libcudf_staleness(manifest_dir: &Path) {
         }
         let (dir_newest, count) = find_newest_source(dir, libcudf_mtime);
         total_newer += count;
-        if let Some(candidate) = dir_newest {
-            if newest.as_ref().is_none_or(|(_, t)| candidate.1 > *t) {
-                newest = Some(candidate);
-            }
+        if let Some(candidate) = dir_newest
+            && newest.as_ref().is_none_or(|(_, t)| candidate.1 > *t)
+        {
+            newest = Some(candidate);
         }
     }
 

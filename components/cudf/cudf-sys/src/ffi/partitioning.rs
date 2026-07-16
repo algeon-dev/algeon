@@ -1,6 +1,6 @@
 use crate::{cudf_exec_options_t, cudf_status_t, cudf_table_handle, cudf_table_view_handle};
 
-extern "C" {
+unsafe extern "C" {
     /// Hash-partition rows with explicit execution options.
     ///
     /// `options` must be non-null, name an explicit valid device, provide a

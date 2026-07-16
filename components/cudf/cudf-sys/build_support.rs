@@ -43,10 +43,14 @@ pub fn parse_cargo_link_directives(manifest: &str) -> Result<Vec<String>, String
 
 pub fn normalized_cmake_bool_from_env(var_name: &str) -> Result<Option<&'static str>, String> {
     match env::var(var_name) {
-        Ok(value) => parse_cmake_bool(var_name, &value).map(Some),
-        Err(env::VarError::NotPresent) => Ok(None),
+        Ok(value) => normalized_cmake_bool(var_name, Some(&value)),
+        Err(env::VarError::NotPresent) => normalized_cmake_bool(var_name, None),
         Err(env::VarError::NotUnicode(_)) => Err(format!("{var_name} contained non-Unicode data")),
     }
+}
+
+pub fn normalized_cmake_bool(var_name: &str, value: Option<&str>) -> Result<Option<&'static str>, String> {
+    value.map(|value| parse_cmake_bool(var_name, value)).transpose()
 }
 
 pub fn parse_cmake_bool(var_name: &str, value: &str) -> Result<&'static str, String> {
@@ -66,13 +70,19 @@ pub fn cmake_cache_value<'a>(cache: &'a str, key: &str) -> Option<&'a str> {
 }
 
 pub fn cached_cudf_discovery_matches_env(cache: &str) -> bool {
-    if let Some(install_dir) = env_path("CUDF_INSTALL_DIR") {
-        return cmake_cache_path_matches(cache, "CUDF_INSTALL_DIR", &install_dir)
+    let install_dir = env_path("CUDF_INSTALL_DIR");
+    let build_dir = env_path("CUDF_CPP_BUILD_DIR");
+    cached_cudf_discovery_matches(cache, install_dir.as_deref(), build_dir.as_deref())
+}
+
+pub fn cached_cudf_discovery_matches(cache: &str, install_dir: Option<&Path>, build_dir: Option<&Path>) -> bool {
+    if let Some(install_dir) = install_dir {
+        return cmake_cache_path_matches(cache, "CUDF_INSTALL_DIR", install_dir)
             && cmake_cache_value(cache, "CUDF_CPP_BUILD_DIR").is_none();
     }
 
-    if let Some(build_dir) = env_path("CUDF_CPP_BUILD_DIR") {
-        return cmake_cache_path_matches(cache, "CUDF_CPP_BUILD_DIR", &build_dir)
+    if let Some(build_dir) = build_dir {
+        return cmake_cache_path_matches(cache, "CUDF_CPP_BUILD_DIR", build_dir)
             && cmake_cache_value(cache, "CUDF_INSTALL_DIR").is_none();
     }
 

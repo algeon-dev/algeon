@@ -183,7 +183,9 @@ unsafe fn collect_column_names(
 
     let mut names = Vec::with_capacity(num_names as usize);
     for i in 0..num_names {
-        let name_ptr = *names_ptr.add(i as usize);
+        // SAFETY: the caller guarantees `names_ptr` addresses at least
+        // `num_names` entries; the positive-count null case was rejected.
+        let name_ptr = unsafe { *names_ptr.add(i as usize) };
         if name_ptr.is_null() {
             return Err(error::foreign_invariant_violation(
                 operation,
@@ -196,7 +198,9 @@ unsafe fn collect_column_names(
             .with_fact(FACT_COLUMN_INDEX, i as usize));
         }
 
-        let cstr = CStr::from_ptr(name_ptr);
+        // SAFETY: the FFI contract requires each non-null entry to reference
+        // a NUL-terminated string for the duration of this conversion.
+        let cstr = unsafe { CStr::from_ptr(name_ptr) };
         let name = cstr.to_str().map_err(|_| {
             error::foreign_invariant_violation(
                 operation,

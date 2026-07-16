@@ -6,7 +6,7 @@ pub const CUDF_DEVICE_ATTRIBUTE_MULTIPROCESSOR_COUNT: i32 = 1;
 pub const CUDF_DEVICE_ATTRIBUTE_MANAGED_MEMORY: i32 = 2;
 pub const CUDF_DEVICE_ATTRIBUTE_CONCURRENT_MANAGED_ACCESS: i32 = 3;
 
-extern "C" {
+unsafe extern "C" {
     // -- Device ---------------------------------------------------------------
 
     /// Query the CUDA device ordinal for the calling thread.

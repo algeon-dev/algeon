@@ -1303,17 +1303,17 @@ pub(crate) fn read_parquet_multi_table(options: &ParquetMultiTableReadOptions) -
             },
         }
     }
-    if let Some(row_groups_per_file) = &options.row_groups_per_file {
-        if row_groups_per_file.len() != options.inputs.len() {
-            return Err(Error::new_with(
-                ErrorCode::ColumnLengthMismatch,
-                OPERATION,
-                "row-group selection count must match file count",
-            )
-            .with_detail("reason", "row_group_file_count_mismatch")
-            .with_detail("file_count", options.inputs.len().to_string())
-            .with_detail("row_group_file_count", row_groups_per_file.len().to_string()));
-        }
+    if let Some(row_groups_per_file) = &options.row_groups_per_file
+        && row_groups_per_file.len() != options.inputs.len()
+    {
+        return Err(Error::new_with(
+            ErrorCode::ColumnLengthMismatch,
+            OPERATION,
+            "row-group selection count must match file count",
+        )
+        .with_detail("reason", "row_group_file_count_mismatch")
+        .with_detail("file_count", options.inputs.len().to_string())
+        .with_detail("row_group_file_count", row_groups_per_file.len().to_string()));
     }
 
     let file_count = i32::try_from(options.inputs.len())

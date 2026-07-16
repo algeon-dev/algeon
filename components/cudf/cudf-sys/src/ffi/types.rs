@@ -1,6 +1,6 @@
 use crate::{cudf_data_type_handle, cudf_status_t, cudf_type_id_t};
 
-extern "C" {
+unsafe extern "C" {
     // -- DataType ------------------------------------------------------------
 
     pub fn cudf_data_type_create(type_id: cudf_type_id_t, out: *mut cudf_data_type_handle) -> cudf_status_t;

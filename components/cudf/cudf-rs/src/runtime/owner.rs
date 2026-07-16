@@ -557,7 +557,9 @@ impl Runtime {
         len: usize,
         type_id: TypeId,
     ) -> Result<Column> {
-        Column::from_device_ptr_with_runtime(self, device_ptr, len, type_id)
+        // SAFETY: this method forwards the caller's documented pointer,
+        // length, device-ordering, and lifetime guarantees unchanged.
+        unsafe { Column::from_device_ptr_with_runtime(self, device_ptr, len, type_id) }
     }
 
     /// Create a low-level `Column` by adopting an owned `DeviceBuffer`
@@ -895,25 +897,25 @@ impl RuntimeBuilder {
     fn resolve_device(&self) -> Result<DeviceId> {
         if let Some(target) = self.device {
             // Explicit device — validate supplied handles agree.
-            if let Some(ref stream) = self.stream {
-                if stream.device() != target {
-                    return Err(Self::runtime_binding_mismatch(
-                        "stream",
-                        target,
-                        stream.device(),
-                        "cross-device stream: stream was created on a different device than the runtime target",
-                    ));
-                }
+            if let Some(ref stream) = self.stream
+                && stream.device() != target
+            {
+                return Err(Self::runtime_binding_mismatch(
+                    "stream",
+                    target,
+                    stream.device(),
+                    "cross-device stream: stream was created on a different device than the runtime target",
+                ));
             }
-            if let MemoryResourceSelection::Owned(ref mr) = self.mr_selection {
-                if mr.device() != target {
-                    return Err(Self::runtime_binding_mismatch(
-                        "memory_resource",
-                        target,
-                        mr.device(),
-                        "cross-device memory resource: MR was created on a different device than the runtime target",
-                    ));
-                }
+            if let MemoryResourceSelection::Owned(ref mr) = self.mr_selection
+                && mr.device() != target
+            {
+                return Err(Self::runtime_binding_mismatch(
+                    "memory_resource",
+                    target,
+                    mr.device(),
+                    "cross-device memory resource: MR was created on a different device than the runtime target",
+                ));
             }
             Ok(target)
         } else {

@@ -3,7 +3,7 @@ use crate::{
     cudf_unary_operator_t,
 };
 
-extern "C" {
+unsafe extern "C" {
     // -- Unary ---------------------------------------------------------------
 
     /// `options` must name an explicit valid device and non-NULL stream/MR.

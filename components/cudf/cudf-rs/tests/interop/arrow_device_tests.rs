@@ -395,13 +395,17 @@ unsafe extern "C" fn observe_arrow_schema_release(schema: *mut ArrowSchema) {
         return;
     }
 
-    let state = (*schema).private_data.cast::<ArrowReleaseObserverState>();
-    assert!(!state.is_null(), "schema release observer state should be present");
-    (*state).schema_releases.fetch_add(1, Ordering::SeqCst);
-    (*schema).release = (*state).schema_release;
-    (*schema).private_data = (*state).schema_private_data;
-    if let Some(release) = (*state).schema_release {
-        release(schema);
+    // SAFETY: the test installs this callback only on live Arrow roots whose
+    // private data points to the observer state allocated below.
+    unsafe {
+        let state = (*schema).private_data.cast::<ArrowReleaseObserverState>();
+        assert!(!state.is_null(), "schema release observer state should be present");
+        (*state).schema_releases.fetch_add(1, Ordering::SeqCst);
+        (*schema).release = (*state).schema_release;
+        (*schema).private_data = (*state).schema_private_data;
+        if let Some(release) = (*state).schema_release {
+            release(schema);
+        }
     }
 }
 
@@ -410,15 +414,20 @@ unsafe extern "C" fn observe_arrow_array_release(array: *mut ArrowArray) {
         return;
     }
 
-    let state = (*array).private_data.cast::<ArrowReleaseObserverState>();
-    assert!(!state.is_null(), "array release observer state should be present");
-    (*state).array_releases.fetch_add(1, Ordering::SeqCst);
-    (*array).release = (*state).array_release;
-    (*array).private_data = (*state).array_private_data;
-    if let Some(release) = (*state).array_release {
-        release(array);
+    // SAFETY: the test installs this callback only on live Arrow roots whose
+    // private data points to the uniquely owned observer state allocated
+    // below; the array callback is its sole deallocator.
+    unsafe {
+        let state = (*array).private_data.cast::<ArrowReleaseObserverState>();
+        assert!(!state.is_null(), "array release observer state should be present");
+        (*state).array_releases.fetch_add(1, Ordering::SeqCst);
+        (*array).release = (*state).array_release;
+        (*array).private_data = (*state).array_private_data;
+        if let Some(release) = (*state).array_release {
+            release(array);
+        }
+        drop(Box::from_raw(state));
     }
-    drop(Box::from_raw(state));
 }
 
 unsafe fn install_release_observers(schema: *mut c_void, array: *mut c_void) -> (Arc<AtomicUsize>, Arc<AtomicUsize>) {
@@ -426,19 +435,24 @@ unsafe fn install_release_observers(schema: *mut c_void, array: *mut c_void) -> 
     let array = array.cast::<ArrowDeviceArray>();
     let schema_releases = Arc::new(AtomicUsize::new(0));
     let array_releases = Arc::new(AtomicUsize::new(0));
-    let state = Box::into_raw(Box::new(ArrowReleaseObserverState {
-        schema_releases: Arc::clone(&schema_releases),
-        array_releases: Arc::clone(&array_releases),
-        schema_release: (*schema).release,
-        schema_private_data: (*schema).private_data,
-        array_release: (*array).array.release,
-        array_private_data: (*array).array.private_data,
-    }));
+    // SAFETY: the caller passes the live, uniquely owned schema and device
+    // array roots returned by the bridge; this function preserves their
+    // original callbacks before installing the observers.
+    unsafe {
+        let state = Box::into_raw(Box::new(ArrowReleaseObserverState {
+            schema_releases: Arc::clone(&schema_releases),
+            array_releases: Arc::clone(&array_releases),
+            schema_release: (*schema).release,
+            schema_private_data: (*schema).private_data,
+            array_release: (*array).array.release,
+            array_private_data: (*array).array.private_data,
+        }));
 
-    (*schema).release = Some(observe_arrow_schema_release);
-    (*schema).private_data = state.cast();
-    (*array).array.release = Some(observe_arrow_array_release);
-    (*array).array.private_data = state.cast();
+        (*schema).release = Some(observe_arrow_schema_release);
+        (*schema).private_data = state.cast();
+        (*array).array.release = Some(observe_arrow_array_release);
+        (*array).array.private_data = state.cast();
+    }
 
     (schema_releases, array_releases)
 }

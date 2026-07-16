@@ -1,6 +1,6 @@
 use crate::{cudf_column_handle, cudf_column_view_handle, cudf_exec_options_t, cudf_scalar_handle, cudf_status_t};
 
-extern "C" {
+unsafe extern "C" {
     // -- Replace -------------------------------------------------------------
 
     /// Replace nulls from a scalar with explicit execution context.

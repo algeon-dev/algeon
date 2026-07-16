@@ -5,7 +5,7 @@ use crate::{
     cudf_reduce_aggregation_kind_t, cudf_scalar_handle, cudf_status_t, cudf_table_handle, cudf_table_view_handle,
 };
 
-extern "C" {
+unsafe extern "C" {
     // -- GroupBy --------------------------------------------------------------
 
     pub fn cudf_aggregation_create(kind: cudf_aggregation_kind_t, out: *mut *mut c_void) -> cudf_status_t;

@@ -2,7 +2,7 @@ use std::os::raw::c_void;
 
 use crate::{cudf_column_handle, cudf_device_buffer_handle, cudf_exec_options_t, cudf_status_t, cudf_type_id_t};
 
-extern "C" {
+unsafe extern "C" {
     // -- DeviceBuffer (owned GPU memory) -------------------------------------
 
     /// Allocate a device buffer of `size` bytes using explicit execution

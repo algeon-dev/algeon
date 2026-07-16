@@ -251,16 +251,16 @@ impl Column {
         domain: Arc<ExecutionDomain>,
         operation: &'static str,
     ) -> Result<Self> {
-        if let Some(validity) = validity {
-            if data.len() != validity.len() {
-                return Err(Error::new_with(
-                    ErrorCode::ColumnLengthMismatch,
-                    operation,
-                    "data and validity slices must have the same length",
-                )
-                .with_fact(FACT_EXPECTED_ROWS, data.len())
-                .with_fact(FACT_ACTUAL_ROWS, validity.len()));
-            }
+        if let Some(validity) = validity
+            && data.len() != validity.len()
+        {
+            return Err(Error::new_with(
+                ErrorCode::ColumnLengthMismatch,
+                operation,
+                "data and validity slices must have the same length",
+            )
+            .with_fact(FACT_EXPECTED_ROWS, data.len())
+            .with_fact(FACT_ACTUAL_ROWS, validity.len()));
         }
 
         let mut handle = ptr::null_mut();
@@ -326,16 +326,16 @@ impl Column {
 
         let row_count = data.len() / elem_size;
         let size = usize_to_i32_len(row_count, "row_count", operation)?;
-        if let Some(validity) = validity {
-            if validity.len() != row_count {
-                return Err(Error::new_with(
-                    ErrorCode::ColumnLengthMismatch,
-                    operation,
-                    "data and validity slices must have the same length",
-                )
-                .with_fact(FACT_EXPECTED_ROWS, row_count)
-                .with_fact(FACT_ACTUAL_ROWS, validity.len()));
-            }
+        if let Some(validity) = validity
+            && validity.len() != row_count
+        {
+            return Err(Error::new_with(
+                ErrorCode::ColumnLengthMismatch,
+                operation,
+                "data and validity slices must have the same length",
+            )
+            .with_fact(FACT_EXPECTED_ROWS, row_count)
+            .with_fact(FACT_ACTUAL_ROWS, validity.len()));
         }
 
         let null_mask = validity.map(validity_to_bitmask);
@@ -630,16 +630,16 @@ impl Column {
         domain: Arc<ExecutionDomain>,
         operation: &'static str,
     ) -> Result<Self> {
-        if let Some(validity) = validity {
-            if data.len() != validity.len() {
-                return Err(Error::new_with(
-                    ErrorCode::ColumnLengthMismatch,
-                    operation,
-                    "data and validity slices must have the same length",
-                )
-                .with_fact(FACT_EXPECTED_ROWS, data.len())
-                .with_fact(FACT_ACTUAL_ROWS, validity.len()));
-            }
+        if let Some(validity) = validity
+            && data.len() != validity.len()
+        {
+            return Err(Error::new_with(
+                ErrorCode::ColumnLengthMismatch,
+                operation,
+                "data and validity slices must have the same length",
+            )
+            .with_fact(FACT_EXPECTED_ROWS, data.len())
+            .with_fact(FACT_ACTUAL_ROWS, validity.len()));
         }
 
         let num_strings = usize_to_i32_len(data.len(), "row_count", operation)?;

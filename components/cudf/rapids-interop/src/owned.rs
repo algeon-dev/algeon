@@ -261,15 +261,15 @@ impl OwnedTableTransfer {
         validate_owned_transfer_profile(diagnostics)?;
         validate_release_contract(release_contract)?;
 
-        if let Some(names) = table.names() {
-            if names.len() != table.columns().len() {
-                return Err(InteropError::new(
-                    InteropErrorKind::InvalidView,
-                    "owned table transfer names must match the number of table schema columns",
-                )
-                .with_context("names_len", names.len().to_string())
-                .with_context("num_columns", table.columns().len().to_string()));
-            }
+        if let Some(names) = table.names()
+            && names.len() != table.columns().len()
+        {
+            return Err(InteropError::new(
+                InteropErrorKind::InvalidView,
+                "owned table transfer names must match the number of table schema columns",
+            )
+            .with_context("names_len", names.len().to_string())
+            .with_context("num_columns", table.columns().len().to_string()));
         }
 
         let top_level_map = semantic_column_map(&columns, "table_column_id")?;

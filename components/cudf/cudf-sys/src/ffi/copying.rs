@@ -3,7 +3,7 @@ use crate::{
     cudf_status_t, cudf_table_handle, cudf_table_view_handle,
 };
 
-extern "C" {
+unsafe extern "C" {
     // -- Copying (gather) ----------------------------------------------------
 
     /// Gather rows with explicit execution options.

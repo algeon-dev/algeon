@@ -3,7 +3,7 @@ use crate::{
     cudf_exec_options_t, cudf_status_t,
 };
 
-extern "C" {
+unsafe extern "C" {
     // -- Datetime ------------------------------------------------------------
 
     /// Extract a datetime component with explicit execution options.

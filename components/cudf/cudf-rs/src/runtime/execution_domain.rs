@@ -297,27 +297,27 @@ impl ExecutionDomain {
         override_mr: Option<&DeviceMemoryResource>,
         operation: &'static str,
     ) -> Result<Arc<Self>> {
-        if let Some(os) = override_stream {
-            if os.device() != input.device {
-                return Err(Self::borrowed_override_binding_mismatch(
-                    operation,
-                    "stream",
-                    input.device,
-                    os.device(),
-                    "cross-device borrowed stream override: stream was created on a different device than the input runtime",
-                ));
-            }
+        if let Some(os) = override_stream
+            && os.device() != input.device
+        {
+            return Err(Self::borrowed_override_binding_mismatch(
+                operation,
+                "stream",
+                input.device,
+                os.device(),
+                "cross-device borrowed stream override: stream was created on a different device than the input runtime",
+            ));
         }
-        if let Some(omr) = override_mr {
-            if omr.device() != input.device {
-                return Err(Self::borrowed_override_binding_mismatch(
-                    operation,
-                    "memory_resource",
-                    input.device,
-                    omr.device(),
-                    "cross-device borrowed memory-resource override: memory resource was created on a different device than the input runtime",
-                ));
-            }
+        if let Some(omr) = override_mr
+            && omr.device() != input.device
+        {
+            return Err(Self::borrowed_override_binding_mismatch(
+                operation,
+                "memory_resource",
+                input.device,
+                omr.device(),
+                "cross-device borrowed memory-resource override: memory resource was created on a different device than the input runtime",
+            ));
         }
 
         let stream =

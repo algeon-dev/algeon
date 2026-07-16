@@ -651,19 +651,22 @@ unsafe fn create_agg_handle(agg: &GroupByAgg) -> Result<*mut c_void> {
     match agg {
         GroupByAgg::Sum => {
             error::check_status_in(
-                cudf_sys::cudf_aggregation_create(CUDF_AGG_SUM, &mut handle),
+                // SAFETY: the aggregation kind and out-pointer are valid.
+                unsafe { cudf_sys::cudf_aggregation_create(CUDF_AGG_SUM, &mut handle) },
                 "groupby::create_agg_handle(sum)",
             )?;
         },
         GroupByAgg::Min => {
             error::check_status_in(
-                cudf_sys::cudf_aggregation_create(CUDF_AGG_MIN, &mut handle),
+                // SAFETY: the aggregation kind and out-pointer are valid.
+                unsafe { cudf_sys::cudf_aggregation_create(CUDF_AGG_MIN, &mut handle) },
                 "groupby::create_agg_handle(min)",
             )?;
         },
         GroupByAgg::Max => {
             error::check_status_in(
-                cudf_sys::cudf_aggregation_create(CUDF_AGG_MAX, &mut handle),
+                // SAFETY: the aggregation kind and out-pointer are valid.
+                unsafe { cudf_sys::cudf_aggregation_create(CUDF_AGG_MAX, &mut handle) },
                 "groupby::create_agg_handle(max)",
             )?;
         },
@@ -674,43 +677,53 @@ unsafe fn create_agg_handle(agg: &GroupByAgg) -> Result<*mut c_void> {
                 cudf_null_policy_t::CUDF_NULL_POLICY_EXCLUDE
             };
             error::check_status_in(
-                cudf_sys::cudf_aggregation_create_count(policy, &mut handle),
+                // SAFETY: the null policy and out-pointer are valid.
+                unsafe { cudf_sys::cudf_aggregation_create_count(policy, &mut handle) },
                 "groupby::create_agg_handle(count)",
             )?;
         },
         GroupByAgg::Mean => {
             error::check_status_in(
-                cudf_sys::cudf_aggregation_create(CUDF_AGG_MEAN, &mut handle),
+                // SAFETY: the aggregation kind and out-pointer are valid.
+                unsafe { cudf_sys::cudf_aggregation_create(CUDF_AGG_MEAN, &mut handle) },
                 "groupby::create_agg_handle(mean)",
             )?;
         },
         GroupByAgg::Median => {
             error::check_status_in(
-                cudf_sys::cudf_aggregation_create(CUDF_AGG_MEDIAN, &mut handle),
+                // SAFETY: the aggregation kind and out-pointer are valid.
+                unsafe { cudf_sys::cudf_aggregation_create(CUDF_AGG_MEDIAN, &mut handle) },
                 "groupby::create_agg_handle(median)",
             )?;
         },
         GroupByAgg::NUnique => {
             error::check_status_in(
-                cudf_sys::cudf_aggregation_create(CUDF_AGG_NUNIQUE, &mut handle),
+                // SAFETY: the aggregation kind and out-pointer are valid.
+                unsafe { cudf_sys::cudf_aggregation_create(CUDF_AGG_NUNIQUE, &mut handle) },
                 "groupby::create_agg_handle(nunique)",
             )?;
         },
         GroupByAgg::Std { ddof } => {
             error::check_status_in(
-                cudf_sys::cudf_aggregation_create_std(
-                    checked_ddof_to_i32(*ddof, "groupby::create_agg_handle(std)")?,
-                    &mut handle,
-                ),
+                // SAFETY: the checked ddof and out-pointer are valid.
+                unsafe {
+                    cudf_sys::cudf_aggregation_create_std(
+                        checked_ddof_to_i32(*ddof, "groupby::create_agg_handle(std)")?,
+                        &mut handle,
+                    )
+                },
                 "groupby::create_agg_handle(std)",
             )?;
         },
         GroupByAgg::Variance { ddof } => {
             error::check_status_in(
-                cudf_sys::cudf_aggregation_create_variance(
-                    checked_ddof_to_i32(*ddof, "groupby::create_agg_handle(variance)")?,
-                    &mut handle,
-                ),
+                // SAFETY: the checked ddof and out-pointer are valid.
+                unsafe {
+                    cudf_sys::cudf_aggregation_create_variance(
+                        checked_ddof_to_i32(*ddof, "groupby::create_agg_handle(variance)")?,
+                        &mut handle,
+                    )
+                },
                 "groupby::create_agg_handle(variance)",
             )?;
         },
@@ -733,8 +746,10 @@ unsafe fn create_groupby_scan_agg_handle(agg: ScanAgg) -> Result<*mut c_void> {
         ScanAgg::Max => CUDF_REDUCE_AGG_MAX,
         ScanAgg::Product => CUDF_REDUCE_AGG_PRODUCT,
     };
+    // SAFETY: `kind` is one of the supported scan aggregations and `handle`
+    // is a live out-pointer whose status is checked before use.
     error::check_status_in_with_details(
-        cudf_sys::cudf_groupby_scan_aggregation_create(kind, &mut handle),
+        unsafe { cudf_sys::cudf_groupby_scan_aggregation_create(kind, &mut handle) },
         "groupby::create_groupby_scan_agg_handle",
         [("scan_aggregation", format!("{:?}", agg).to_lowercase())],
     )?;

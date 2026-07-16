@@ -2,7 +2,7 @@ use std::os::raw::c_void;
 
 use crate::{cudf_event_handle, cudf_status_t, cudf_stream_handle};
 
-extern "C" {
+unsafe extern "C" {
     // -- Event ---------------------------------------------------------------
 
     /// Create an owned CUDA event handle.

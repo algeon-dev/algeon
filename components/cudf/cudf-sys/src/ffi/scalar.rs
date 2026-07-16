@@ -2,7 +2,7 @@ use std::os::raw::{c_char, c_void};
 
 use crate::{cudf_exec_options_t, cudf_scalar_handle, cudf_status_t, cudf_type_id_t};
 
-extern "C" {
+unsafe extern "C" {
     // -- Scalar --------------------------------------------------------------
 
     /// Create a numeric scalar with explicit execution options.

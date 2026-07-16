@@ -286,15 +286,15 @@ impl<'a> PreparedTableExport<'a> {
     ) -> Result<Self> {
         let profile = validate_prepared_profile(diagnostics)?;
 
-        if let Some(names) = table.names() {
-            if names.len() != table.columns().len() {
-                return Err(InteropError::new(
-                    InteropErrorKind::InvalidView,
-                    "prepared table names must match the number of table schema columns",
-                )
-                .with_context("names_len", names.len().to_string())
-                .with_context("num_columns", table.columns().len().to_string()));
-            }
+        if let Some(names) = table.names()
+            && names.len() != table.columns().len()
+        {
+            return Err(InteropError::new(
+                InteropErrorKind::InvalidView,
+                "prepared table names must match the number of table schema columns",
+            )
+            .with_context("names_len", names.len().to_string())
+            .with_context("num_columns", table.columns().len().to_string()));
         }
 
         let binding_map = binding_map(&bindings)?;

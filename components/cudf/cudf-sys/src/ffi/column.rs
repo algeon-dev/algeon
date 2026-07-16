@@ -5,7 +5,7 @@ use crate::{
     cudf_interop_semantic_column_t, cudf_scalar_handle, cudf_status_t, cudf_type_id_t,
 };
 
-extern "C" {
+unsafe extern "C" {
     // -- Column (owning) -----------------------------------------------------
 
     pub fn cudf_column_create_empty_ex(

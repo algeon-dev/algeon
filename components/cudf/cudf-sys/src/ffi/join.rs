@@ -6,7 +6,7 @@ use crate::{
     cudf_table_view_handle,
 };
 
-extern "C" {
+unsafe extern "C" {
     // -- Join ----------------------------------------------------------------
 
     /// Inner join with explicit execution context.

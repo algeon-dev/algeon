@@ -3,7 +3,7 @@ use crate::{
     cudf_table_view_handle,
 };
 
-extern "C" {
+unsafe extern "C" {
     // -- Concatenate ---------------------------------------------------------
 
     /// Concatenate multiple columns into one with explicit execution context.
