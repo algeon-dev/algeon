@@ -189,6 +189,19 @@ fn libcudf_runtime_identity_supports_cpp_build_tree_layout() {
 }
 
 #[test]
+fn installed_prefix_is_derived_only_from_installed_libcudf_layouts() {
+    assert_eq!(
+        build_support::installed_prefix_for_libcudf(Path::new("/opt/cudf/lib/libcudf.so")),
+        Some(Path::new("/opt/cudf"))
+    );
+    assert_eq!(
+        build_support::installed_prefix_for_libcudf(Path::new("/opt/cudf/lib64/libcudf.so")),
+        Some(Path::new("/opt/cudf"))
+    );
+    assert_eq!(build_support::installed_prefix_for_libcudf(Path::new("/src/cudf/cpp/build/libcudf.so")), None);
+}
+
+#[test]
 fn supported_target_os_accepts_linux_only() {
     build_support::ensure_supported_target_os("linux").expect("linux target should be accepted");
 
