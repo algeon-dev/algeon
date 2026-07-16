@@ -444,6 +444,18 @@ impl StreamReservationLease {
         Ok(usage.into())
     }
 
+    /// Resize this reservation's hard live-byte limit.
+    ///
+    /// Shrinking below current live usage is allowed. Future allocations fail
+    /// until enough memory is released or the reservation is grown again.
+    pub fn resize(&self, limit_bytes: usize) -> Result<()> {
+        error::check_status_in_with_details(
+            unsafe { cudf_sys::cudf_reservation_resize(self.reservation.raw.as_ptr(), limit_bytes) },
+            "memory::stream_reservation_lease::resize",
+            [("device", self.manager.device().ordinal().to_string()), ("limit_bytes", limit_bytes.to_string())],
+        )
+    }
+
     /// Borrow this lease as per-operation execution overrides.
     pub fn execution_overrides(&self) -> crate::ExecutionOverrides<'_> {
         crate::ExecutionOverrides::new().with_stream(&self.stream).with_memory_resource(self.memory_resource())

@@ -261,6 +261,23 @@ class reservation_aware_resource_adaptor final : public rmm::mr::device_memory_r
     return out;
   }
 
+  bool resize(std::shared_ptr<reservation_state> const& state,
+              std::size_t limit_bytes,
+              std::string& error)
+  {
+    if (state == nullptr) {
+      error = "reservation is null";
+      return false;
+    }
+    std::scoped_lock lock{mutex_};
+    if (!state->attached) {
+      error = "reservation is not attached";
+      return false;
+    }
+    state->allocation_limit = limit_bytes;
+    return true;
+  }
+
  private:
   struct allocation_record {
     std::size_t bytes = 0;
@@ -925,6 +942,28 @@ cudf_status_t cudf_reservation_usage(cudf_reservation_handle reservation,
       return CUDF_ERROR_INVALID_OPERATION;
     }
     *out = adaptor->usage(state.reservation);
+    return CUDF_SUCCESS;
+  }
+  CUDF_RUST_CATCH
+}
+
+cudf_status_t cudf_reservation_resize(cudf_reservation_handle reservation,
+                                      size_t limit_bytes)
+{
+  CUDF_RUST_NULL_CHECK(reservation, "reservation is null");
+  CUDF_RUST_TRY
+  {
+    auto& state = *static_cast<reservation_handle_state*>(reservation);
+    auto* adaptor = state.manager->owner->reservation_adaptor;
+    if (adaptor == nullptr) {
+      set_error("reservation manager resource is not reservation-aware");
+      return CUDF_ERROR_INVALID_OPERATION;
+    }
+    std::string resize_error;
+    if (!adaptor->resize(state.reservation, limit_bytes, resize_error)) {
+      set_error(resize_error);
+      return CUDF_ERROR_INVALID_OPERATION;
+    }
     return CUDF_SUCCESS;
   }
   CUDF_RUST_CATCH

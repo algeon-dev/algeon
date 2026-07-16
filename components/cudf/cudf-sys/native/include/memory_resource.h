@@ -149,6 +149,13 @@ cudf_status_t cudf_memory_manager_attach_reservation(cudf_memory_manager_handle 
 cudf_status_t cudf_reservation_usage(cudf_reservation_handle reservation,
                                      cudf_memory_resource_usage_t* out);
 
+/// Resize the live-byte limit for an attached reservation.
+///
+/// Shrinking below current live usage is allowed; future allocations fail until
+/// enough memory is released or the reservation is grown again.
+cudf_status_t cudf_reservation_resize(cudf_reservation_handle reservation,
+                                      size_t limit_bytes);
+
 /// Detach a reservation from its stream and destroy the reservation handle.
 ///
 /// Retained allocations remain associated with the detached reservation for
