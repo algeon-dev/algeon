@@ -469,10 +469,11 @@ pub(crate) fn parse_cmake_link_command(command: &str) -> Result<ParsedLinkComman
         }
 
         let path = Path::new(&token);
-        if path.is_absolute() && looks_like_library_path(path) {
-            if let Some(parent) = path.parent() {
-                push_unique_path(&mut link_dirs, normalize_existing_dir(parent)?);
-            }
+        if path.is_absolute()
+            && looks_like_library_path(path)
+            && let Some(parent) = path.parent()
+        {
+            push_unique_path(&mut link_dirs, normalize_existing_dir(parent)?);
         }
     }
 

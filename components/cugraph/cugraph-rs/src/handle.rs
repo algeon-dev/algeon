@@ -72,7 +72,7 @@ struct cugraph_rs_runtime_resource_handle_t {
     _private: [u8; 0],
 }
 
-extern "C" {
+unsafe extern "C" {
     fn cugraph_rs_runtime_resource_handle_create(
         cuda_stream: *mut std::ffi::c_void,
         device_memory_resource: *mut std::ffi::c_void,

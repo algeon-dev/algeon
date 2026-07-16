@@ -2,14 +2,13 @@ mod build_support;
 
 use std::{collections::BTreeSet, env, path::PathBuf};
 
-use build_support::{CompilerFamily, external_warning_control_args, resolve_shim_compile_layout, system_include_args};
+use build_support::{resolve_shim_compile_layout, system_include_args};
 
 fn emit_link_search_path(path: &str) {
     println!("cargo:rustc-link-search=native={}", path);
 }
 
 fn emit_runtime_search_path(path: &str) {
-    #[cfg(target_os = "linux")]
     println!("cargo:rustc-link-arg=-Wl,-rpath,{}", path);
 }
 
@@ -94,16 +93,8 @@ fn main() {
     build.file(&compile_layout.source_file);
     build.include(&compile_layout.local_include_dir);
 
-    let compiler_family = match build.get_compiler().is_like_msvc() {
-        true => CompilerFamily::Msvc,
-        false => CompilerFamily::GnuLike,
-    };
-
-    for arg in external_warning_control_args(compiler_family) {
-        build.flag(arg);
-    }
     for include_dir in &compile_layout.native_include_dirs {
-        for arg in system_include_args(compiler_family, include_dir) {
+        for arg in system_include_args(include_dir) {
             build.flag(arg);
         }
     }

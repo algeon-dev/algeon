@@ -149,10 +149,10 @@ fn actual_api_from_generated_bindings() -> BTreeSet<String> {
 
     let mut actual = BTreeSet::new();
     for line in content.lines() {
-        if let Some(rest) = line.trim().strip_prefix("pub fn cugraph_") {
-            if let Some(name) = rest.split('(').next() {
-                actual.insert(format!("cugraph_{name}"));
-            }
+        if let Some(rest) = line.trim().strip_prefix("pub fn cugraph_")
+            && let Some(name) = rest.split('(').next()
+        {
+            actual.insert(format!("cugraph_{name}"));
         }
     }
 

@@ -1326,13 +1326,13 @@ impl<'a> GraphBuilder<'a> {
         expected: usize,
         name: &'static str,
     ) -> Result<()> {
-        if let Some((_, len)) = array {
-            if len != expected {
-                return Err(Error::new(ErrorKind::InvalidInput, "GraphBuilder::build")
-                    .with_message(format!("{name} must have the same number of elements as src/dst"))
-                    .with_context("src_len", expected.to_string())
-                    .with_context(name, len.to_string()));
-            }
+        if let Some((_, len)) = array
+            && len != expected
+        {
+            return Err(Error::new(ErrorKind::InvalidInput, "GraphBuilder::build")
+                .with_message(format!("{name} must have the same number of elements as src/dst"))
+                .with_context("src_len", expected.to_string())
+                .with_context(name, len.to_string()));
         }
         Ok(())
     }
@@ -1487,8 +1487,7 @@ impl Graph<Transposed> {
         self.validate_vertex_selection(&vertices, "Graph::degrees", "vertices", true)?;
         let resolved = vertices.resolve(handle)?;
         let view = resolved.view()?;
-        let result = crate::structure::degrees::degrees(handle, self, view.as_ref(), false);
-        result
+        crate::structure::degrees::degrees(handle, self, view.as_ref(), false)
     }
 
     /// Compute degrees with optional expensive input validation.
@@ -1502,8 +1501,7 @@ impl Graph<Transposed> {
         self.validate_vertex_selection(&vertices, "Graph::degrees", "vertices", true)?;
         let resolved = vertices.resolve(handle)?;
         let view = resolved.view()?;
-        let result = crate::structure::degrees::degrees(handle, self, view.as_ref(), do_expensive_check);
-        result
+        crate::structure::degrees::degrees(handle, self, view.as_ref(), do_expensive_check)
     }
 
     /// Compute degrees for every vertex in the graph.
@@ -1530,8 +1528,7 @@ impl Graph<Transposed> {
         self.validate_vertex_selection(&vertices, "Graph::in_degrees", "vertices", true)?;
         let resolved = vertices.resolve(handle)?;
         let view = resolved.view()?;
-        let result = crate::structure::degrees::in_degrees(handle, self, view.as_ref(), false);
-        result
+        crate::structure::degrees::in_degrees(handle, self, view.as_ref(), false)
     }
 
     /// Compute in-degrees with optional expensive input validation.
@@ -1545,8 +1542,7 @@ impl Graph<Transposed> {
         self.validate_vertex_selection(&vertices, "Graph::in_degrees", "vertices", true)?;
         let resolved = vertices.resolve(handle)?;
         let view = resolved.view()?;
-        let result = crate::structure::degrees::in_degrees(handle, self, view.as_ref(), do_expensive_check);
-        result
+        crate::structure::degrees::in_degrees(handle, self, view.as_ref(), do_expensive_check)
     }
 
     /// Compute in-degrees for every vertex in the graph.
@@ -1910,8 +1906,7 @@ impl<T: Transposition> Graph<T> {
         self.validate_vertex_selection(&vertex_list, "Graph::betweenness_centrality", "vertex_list", true)?;
         let resolved = vertex_list.resolve(handle)?;
         let view = resolved.view()?;
-        let result = crate::centrality::betweenness::betweenness_centrality(handle, self, view.as_ref(), params);
-        result
+        crate::centrality::betweenness::betweenness_centrality(handle, self, view.as_ref(), params)
     }
 
     /// Compute exact betweenness centrality over all vertices.
@@ -2230,8 +2225,7 @@ impl<T: Transposition> Graph<T> {
         self.validate_vertex_selection(&vertices, "Graph::out_degrees", "vertices", true)?;
         let resolved = vertices.resolve(handle)?;
         let view = resolved.view()?;
-        let result = crate::structure::degrees::out_degrees(handle, self, view.as_ref(), false);
-        result
+        crate::structure::degrees::out_degrees(handle, self, view.as_ref(), false)
     }
 
     /// Compute out-degrees with optional expensive input validation.
@@ -2245,8 +2239,7 @@ impl<T: Transposition> Graph<T> {
         self.validate_vertex_selection(&vertices, "Graph::out_degrees", "vertices", true)?;
         let resolved = vertices.resolve(handle)?;
         let view = resolved.view()?;
-        let result = crate::structure::degrees::out_degrees(handle, self, view.as_ref(), do_expensive_check);
-        result
+        crate::structure::degrees::out_degrees(handle, self, view.as_ref(), do_expensive_check)
     }
 
     /// Compute out-degrees for every vertex in the graph.
