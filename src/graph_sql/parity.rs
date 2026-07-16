@@ -14,9 +14,7 @@ pub const CUGRAPH_DATA_MANIFEST_PATH: &str = "fixture/data/cugraph/manifest.json
 
 /// Comparator family expected for a parity row.
 ///
-/// Mirrors the families enumerated in
-/// `docs/plan/2026-05-20-cugraph-rs-full-api-support-plan.md` (Testing
-/// redesign / Comparator families).
+/// Comparator family used by the registry-driven parity harness.
 #[doc(hidden)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ParityComparator {

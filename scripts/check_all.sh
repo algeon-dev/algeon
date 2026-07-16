@@ -291,9 +291,8 @@ else
   feature_label=all
 fi
 
-RUSTFMT_TOOLCHAIN=$(sed -nE 's/^channel = "([^"]+)"$/\1/p' rustfmt-toolchain.toml 2>/dev/null)
-[[ "${RUSTFMT_TOOLCHAIN}" =~ ^nightly-[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] \
-  || usage_error "rustfmt-toolchain.toml must contain one exact dated nightly channel."
+# Formatting requires the installed nightly toolchain.
+RUSTFMT_TOOLCHAIN="nightly"
 
 DOC_RUSTDOCFLAGS="${RUSTDOCFLAGS:-}"
 DOC_RUSTDOCFLAGS="${DOC_RUSTDOCFLAGS:+${DOC_RUSTDOCFLAGS} }-D warnings"
@@ -382,11 +381,11 @@ define_phase lane-structure "test_lane_policy.py check-catalog + generated overr
 define_phase default-members "cargo check ${FEATURE_ARGS[*]}"
 define_phase live-inventory "bash scripts/ci/check_gpu_test_lane.sh ${FEATURE_ARGS[*]}"
 define_phase gpu-preflight "cargo nextest show-config --color never -P ${GPU_NEXTEST_PROFILE} test-groups ${FEATURE_ARGS[*]}"
-define_phase cpu-tests "CUDF_RUNTIME_POLICY=forbid cargo nextest run ${FEATURE_ARGS[*]} -E 'not group(gpu) & not group(gpu-exclusive)' --no-fail-fast"
-define_phase gpu-shared-tests "CUDF_RUNTIME_POLICY=allow flock ${GPU_LOCK} cargo nextest run -P ${GPU_NEXTEST_PROFILE} ${FEATURE_ARGS[*]} -E group(${GPU_NEXTEST_GROUP}) --no-fail-fast --test-threads ${gpu_threads}"
-define_phase gpu-exclusive-tests "CUDF_RUNTIME_POLICY=allow flock ${GPU_LOCK} cargo nextest run -P ${GPU_NEXTEST_PROFILE} ${FEATURE_ARGS[*]} -E group(gpu-exclusive) --no-fail-fast --test-threads ${GPU_EXCLUSIVE_CAP}"
-define_phase cargo-diagnostic "CUDF_RUNTIME_POLICY=allow RUST_TEST_THREADS=1 flock ${GPU_LOCK} cargo test ${FEATURE_ARGS[*]} --no-fail-fast --lib --bins --tests --examples -- --test-threads=1"
-define_phase doctests "CUDF_RUNTIME_POLICY=allow flock ${GPU_LOCK} cargo test ${FEATURE_ARGS[*]} --doc --no-fail-fast"
+define_phase cpu-tests "cargo nextest run ${FEATURE_ARGS[*]} -E 'not group(gpu) & not group(gpu-exclusive)' --no-fail-fast"
+define_phase gpu-shared-tests "flock ${GPU_LOCK} cargo nextest run -P ${GPU_NEXTEST_PROFILE} ${FEATURE_ARGS[*]} -E group(${GPU_NEXTEST_GROUP}) --no-fail-fast --test-threads ${gpu_threads}"
+define_phase gpu-exclusive-tests "flock ${GPU_LOCK} cargo nextest run -P ${GPU_NEXTEST_PROFILE} ${FEATURE_ARGS[*]} -E group(gpu-exclusive) --no-fail-fast --test-threads ${GPU_EXCLUSIVE_CAP}"
+define_phase cargo-diagnostic "RUST_TEST_THREADS=1 flock ${GPU_LOCK} cargo test ${FEATURE_ARGS[*]} --no-fail-fast --lib --bins --tests --examples -- --test-threads=1"
+define_phase doctests "flock ${GPU_LOCK} cargo test ${FEATURE_ARGS[*]} --doc --no-fail-fast"
 define_phase rustdoc "RUSTDOCFLAGS='${DOC_RUSTDOCFLAGS}' cargo doc ${FEATURE_ARGS[*]} --no-deps --keep-going"
 define_phase clippy "cargo clippy --all-targets ${FEATURE_ARGS[*]}"
 define_phase tools-check "cargo check -p datafusion-nexus-tools --all-targets --all-features"
@@ -577,7 +576,7 @@ run_gpu_config_preflight() {
       echo "ERROR: nextest show-config reports cap '${configured_gpu_cap}' for group '${GPU_NEXTEST_GROUP}', expected dynamic cap 'num-cpus'." >&2
       return 2
     fi
-    shared_summary="shared: profile=${GPU_NEXTEST_PROFILE} group=${GPU_NEXTEST_GROUP} configured_cap=${configured_gpu_cap} explicit_test_threads=${gpu_threads} effective_gpu_cap=${gpu_threads} runtime_policy=allow"
+    shared_summary="shared: profile=${GPU_NEXTEST_PROFILE} group=${GPU_NEXTEST_GROUP} configured_cap=${configured_gpu_cap} explicit_test_threads=${gpu_threads} effective_gpu_cap=${gpu_threads}"
   fi
   if [[ "${needs_exclusive_gpu}" -eq 1 ]]; then
     local configured_gpu_exclusive_cap
@@ -591,34 +590,34 @@ run_gpu_config_preflight() {
       echo "ERROR: nextest show-config reports cap ${configured_gpu_exclusive_cap} for group 'gpu-exclusive', expected required cap ${GPU_EXCLUSIVE_CAP}." >&2
       return 2
     fi
-    exclusive_summary="exclusive: group=gpu-exclusive configured_cap=${configured_gpu_exclusive_cap} explicit_test_threads=${GPU_EXCLUSIVE_CAP} runtime_policy=allow"
+    exclusive_summary="exclusive: group=gpu-exclusive configured_cap=${configured_gpu_exclusive_cap} explicit_test_threads=${GPU_EXCLUSIVE_CAP}"
   fi
-  echo "==> GPU scheduling preflight: CPU runtime policy=forbid; ${shared_summary}; ${exclusive_summary}; lock=${GPU_LOCK}"
+  echo "==> GPU scheduling preflight: ${shared_summary}; ${exclusive_summary}; lock=${GPU_LOCK}"
   return 0
 }
 
 cpu_test_command() {
-  CUDF_RUNTIME_POLICY=forbid cargo nextest run "${FEATURE_ARGS[@]}" \
+  cargo nextest run "${FEATURE_ARGS[@]}" \
     -E 'not group(gpu) & not group(gpu-exclusive)' --no-fail-fast
 }
 
 gpu_shared_test_command() {
-  CUDF_RUNTIME_POLICY=allow flock "${GPU_LOCK}" cargo nextest run -P "${GPU_NEXTEST_PROFILE}" \
+  flock "${GPU_LOCK}" cargo nextest run -P "${GPU_NEXTEST_PROFILE}" \
     "${FEATURE_ARGS[@]}" -E "group(${GPU_NEXTEST_GROUP})" --no-fail-fast --test-threads "${gpu_threads}"
 }
 
 gpu_exclusive_test_command() {
-  CUDF_RUNTIME_POLICY=allow flock "${GPU_LOCK}" cargo nextest run -P "${GPU_NEXTEST_PROFILE}" \
+  flock "${GPU_LOCK}" cargo nextest run -P "${GPU_NEXTEST_PROFILE}" \
     "${FEATURE_ARGS[@]}" -E 'group(gpu-exclusive)' --no-fail-fast --test-threads "${GPU_EXCLUSIVE_CAP}"
 }
 
 cargo_diagnostic_command() {
-  CUDF_RUNTIME_POLICY=allow RUST_TEST_THREADS=1 flock "${GPU_LOCK}" cargo test \
+  RUST_TEST_THREADS=1 flock "${GPU_LOCK}" cargo test \
     "${FEATURE_ARGS[@]}" --no-fail-fast --lib --bins --tests --examples -- --test-threads=1
 }
 
 doctest_command() {
-  CUDF_RUNTIME_POLICY=allow flock "${GPU_LOCK}" cargo test \
+  flock "${GPU_LOCK}" cargo test \
     "${FEATURE_ARGS[@]}" --doc --no-fail-fast
 }
 
@@ -666,10 +665,10 @@ if [[ "${runner}" == nextest && "${lane}" != policy ]]; then
       shared_summary="shared=not-selected"
       exclusive_summary="exclusive=not-selected"
       [[ "${needs_shared_gpu}" -eq 0 ]] \
-        || shared_summary="shared: profile=${GPU_NEXTEST_PROFILE} group=${GPU_NEXTEST_GROUP} configured_cap=num-cpus explicit_test_threads=${gpu_threads} effective_gpu_cap=${gpu_threads} runtime_policy=allow"
+        || shared_summary="shared: profile=${GPU_NEXTEST_PROFILE} group=${GPU_NEXTEST_GROUP} configured_cap=num-cpus explicit_test_threads=${gpu_threads} effective_gpu_cap=${gpu_threads}"
       [[ "${needs_exclusive_gpu}" -eq 0 ]] \
-        || exclusive_summary="exclusive: group=gpu-exclusive configured_cap=${GPU_EXCLUSIVE_CAP} explicit_test_threads=${GPU_EXCLUSIVE_CAP} runtime_policy=allow"
-      gpu_scheduling_summary="CPU runtime policy=forbid; ${shared_summary}; ${exclusive_summary}; lock=${GPU_LOCK}"
+        || exclusive_summary="exclusive: group=gpu-exclusive configured_cap=${GPU_EXCLUSIVE_CAP} explicit_test_threads=${GPU_EXCLUSIVE_CAP}"
+      gpu_scheduling_summary="${shared_summary}; ${exclusive_summary}; lock=${GPU_LOCK}"
     fi
   fi
   if [[ "${lane_safe}" -eq 1 ]]; then

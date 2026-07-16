@@ -1,8 +1,6 @@
 use super::*;
 #[cfg(feature = "cugraph")]
-use crate::exec::graph_algorithm::{
-    adaptive_betweenness::*, diagnostics::*, memory::*, resident_cache::*, statistics::*,
-};
+use crate::exec::graph_algorithm::{adaptive_betweenness::*, diagnostics::*, memory::*, statistics::*};
 use crate::exec::source::{ScheduledLocalParquetReadOutput, record_bounded_parquet_source_metrics};
 
 pub(in crate::exec::bounded) fn execute_bounded_generic_query_plan(

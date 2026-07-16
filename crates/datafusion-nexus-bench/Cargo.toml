@@ -26,15 +26,12 @@ cugraph = [
   "dep:cugraph",
   "dep:cugraph-sys",
 ]
-# Experimental: Substrait logical-plan ingress evaluation (docs/issue/substrait_limitation_issue.md).
-substrait = ["dep:datafusion-substrait"]
 
 [dependencies]
 datafusion-nexus = { workspace = true }
 datafusion-nexus-workloads = { workspace = true }
 nexus-query-engine = { workspace = true }
 datafusion = { workspace = true }
-datafusion-substrait = { version = "54", optional = true }
 arrow = { workspace = true }
 async-trait = "0.1"
 parquet = { workspace = true }
@@ -77,10 +74,6 @@ required-features = ["cugraph"]
 [[bin]]
 name = "cugraph_admission_stress"
 required-features = ["cugraph"]
-
-[[bin]]
-name = "substrait_ingress_experiment"
-required-features = ["substrait"]
 
 [[test]]
 name = "iceberg_bin_tests"

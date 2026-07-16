@@ -32,8 +32,8 @@
 //! ```bash
 //! NEXUS_ICEBERG_GLUE_REMOTE_DIRECT_E2E=1 \
 //!   NEXUS_ICEBERG_NAMESPACE=tpch_sf1 \
-//!   AWS_ACCESS_KEY_ID=cudfadmin \
-//!   AWS_SECRET_ACCESS_KEY=cudfadminsecret \
+//!   AWS_ACCESS_KEY_ID=nexusadmin \
+//!   AWS_SECRET_ACCESS_KEY=nexusadmin \
 //!   flock /tmp/cudf-gpu.lock \
 //!   cargo run -p datafusion-nexus-tools --features server-iceberg-e2e -- \
 //!   server-iceberg-glue-remote-direct-e2e
@@ -160,9 +160,9 @@ impl RunParams {
         };
 
         let aws_access_key_id = std::env::var(datafusion_nexus::table_format::iceberg::AWS_ACCESS_KEY_ID_ENV)
-            .unwrap_or_else(|_| "cudfadmin".to_string());
+            .unwrap_or_else(|_| "nexusadmin".to_string());
         let aws_secret_access_key = std::env::var(datafusion_nexus::table_format::iceberg::AWS_SECRET_ACCESS_KEY_ENV)
-            .unwrap_or_else(|_| "cudfadminsecret".to_string());
+            .unwrap_or_else(|_| "nexusadmin".to_string());
 
         Ok(Self {
             glue_uri,

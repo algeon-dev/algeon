@@ -5,6 +5,9 @@ version = { workspace = true }
 edition = "2024"
 rust-version = { workspace = true }
 build = "build.rs"
+repository = "https://github.com/DataFusion-Nexus/datafusion-nexus"
+homepage = "https://datafusion.nexus"
+readme = "README.md"
 
 [workspace]
 members = [
@@ -24,7 +27,7 @@ default-members = [
 resolver = "3"
 
 [workspace.package]
-version = "0.2.0"
+version = "0.1.0"
 rust-version = "1.94"
 
 [workspace.lints.rustdoc]

@@ -1,6 +1,6 @@
 //! cuGraph-heavy admission and memory-governance stress harness.
 //!
-//! Library-mode experiment binary: builds one process-scoped
+//! The library-mode stress binary builds one process-scoped
 //! `NexusGpuBackend`, installs cuGraph SQL on per-worker `SessionContext`s,
 //! fires a configurable concurrent workload, and reports
 //!

@@ -28,9 +28,7 @@ pub mod native_exec;
 pub mod native_report;
 mod physical_plan;
 pub mod planner;
-/// GPU fallback policy and stable fallback reason vocabulary.
 pub mod policy;
-/// Native planning report candidate/outcome types.
 pub mod report;
 #[cfg(feature = "server")]
 pub mod server;

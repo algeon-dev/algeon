@@ -69,14 +69,11 @@ building binaries that must run on a *different* GPU model
 ## Host compiler: gcc/g++ 14
 
 ```bash
-sudo apt-get install -y build-essential git ninja-build gcc-14 g++-14 protobuf-compiler
+sudo apt-get install -y build-essential git ninja-build gcc-14 g++-14
 ```
 
 This line also installs **ninja** (the generator every CMake build in the stack
-uses; RAPIDS build scripts default to it), **git**, and **protoc**
-(`protobuf-compiler`, required by the opt-in `substrait` feature that
-`--all-features` builds — including `scripts/check_all.sh` and the canonical
-`cargo nextest run --all-features` — enable).
+uses; RAPIDS build scripts default to it), and **git**.
 
 RAPIDS 26.06 **pins gcc 14** as the host compiler for both native builds
 (`gcc_linux-64=14.*` in the cudf and cugraph `dependencies.yaml`). Ubuntu

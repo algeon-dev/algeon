@@ -119,12 +119,12 @@ fn moto_secret_key() -> String {
 
 fn local_s3_access_key() -> String {
     std::env::var(datafusion_nexus::table_format::iceberg::NEXUS_ICEBERG_S3_ACCESS_KEY_ID_ENV)
-        .unwrap_or_else(|_| "cudfadmin".to_string())
+        .unwrap_or_else(|_| "nexusadmin".to_string())
 }
 
 fn local_s3_secret_key() -> String {
     std::env::var(datafusion_nexus::table_format::iceberg::NEXUS_ICEBERG_S3_SECRET_ACCESS_KEY_ENV)
-        .unwrap_or_else(|_| "cudfadminsecret".to_string())
+        .unwrap_or_else(|_| "nexusadmin".to_string())
 }
 
 async fn local_glue_catalog(config: &GlueIcebergCatalogConfig) -> iceberg_catalog_glue::GlueCatalog {

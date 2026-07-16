@@ -51,8 +51,7 @@ fi
 #                                          CudfTableFormatScanExec leaf.
 #                                          NOTE: cpu_fallback is **testing-only** while
 #                                          Iceberg is configured — the GPU-only leaf has
-#                                          no CPU Arrow reader yet (tracked as Milestone 6 of
-#                                          docs/plan/2026-05-22-flight-sql-iceberg-cpu-fallback-plan.md),
+#                                          no CPU Arrow reader yet,
 #                                          so plain ORDER BY queries hit the Milestone 1 leaf
 #                                          guard and fail in planning. The server emits a
 #                                          startup WARN when this combination is selected.
@@ -192,8 +191,8 @@ if [[ "${NEXUS_RUN_SERVER_ICEBERG:-1}" != "0" ]]; then
     export NEXUS_ICEBERG_S3_ENDPOINT="${NEXUS_ICEBERG_S3_ENDPOINT:-http://localhost:9000}"
     export NEXUS_ICEBERG_S3_REGION="${NEXUS_ICEBERG_S3_REGION:-us-east-1}"
     export NEXUS_ICEBERG_S3_PATH_STYLE="${NEXUS_ICEBERG_S3_PATH_STYLE:-true}"
-    export NEXUS_ICEBERG_S3_ACCESS_KEY_ID="${NEXUS_ICEBERG_S3_ACCESS_KEY_ID:-cudfadmin}"
-    export NEXUS_ICEBERG_S3_SECRET_ACCESS_KEY="${NEXUS_ICEBERG_S3_SECRET_ACCESS_KEY:-cudfadminsecret}"
+    export NEXUS_ICEBERG_S3_ACCESS_KEY_ID="${NEXUS_ICEBERG_S3_ACCESS_KEY_ID:-nexusadmin}"
+    export NEXUS_ICEBERG_S3_SECRET_ACCESS_KEY="${NEXUS_ICEBERG_S3_SECRET_ACCESS_KEY:-nexusadmin}"
     # export NEXUS_ICEBERG_TABLES="lineitem,orders"
     # export NEXUS_ICEBERG_GLUE_CATALOG_ID=""
 

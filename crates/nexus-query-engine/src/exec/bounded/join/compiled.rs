@@ -1748,10 +1748,8 @@ impl CompiledJoinIndices {
         }
     }
 }
-fn materialize_compiled_indices_output(
-    context: &ExecutionContext,
+struct CompiledJoinMaterializationRequest {
     node_id: NodeId,
-    node: &JoinNode,
     execution_strategy: &'static str,
     key_count: usize,
     residual_predicate: bool,
@@ -1766,9 +1764,32 @@ fn materialize_compiled_indices_output(
     gather_map_reservation: ActiveReservation,
     timer: Instant,
     one_shot_index_bytes: Option<u64>,
+}
+
+fn materialize_compiled_indices_output(
+    context: &ExecutionContext,
+    node: &JoinNode,
+    request: CompiledJoinMaterializationRequest,
     reservations: &mut ReservationTracker,
     metrics: &mut QueryMetrics,
 ) -> Result<ResidentGpuFrame> {
+    let CompiledJoinMaterializationRequest {
+        node_id,
+        execution_strategy,
+        key_count,
+        residual_predicate,
+        build_side,
+        probe_side,
+        left,
+        right,
+        indices,
+        mixed_size_data_bytes,
+        filtered_probe_state_bytes,
+        expected_output_rows,
+        gather_map_reservation,
+        timer,
+        one_shot_index_bytes,
+    } = request;
     let mut txn = JoinMaterializationTxn::with_sides(left, right);
     txn.set_gather_map_reservation(gather_map_reservation);
     let overrides = execution_overrides(context);

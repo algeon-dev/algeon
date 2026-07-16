@@ -50,19 +50,19 @@ commands are equivalent to:
 
 ```bash
 AVAILABLE_CPU_CORES=$(nproc)
-CUDF_RUNTIME_POLICY=forbid cargo nextest run --all-features \
+cargo nextest run --all-features \
   -E 'not group(gpu) & not group(gpu-exclusive)' --no-fail-fast
-CUDF_RUNTIME_POLICY=allow flock /tmp/cudf-gpu.lock \
+flock /tmp/cudf-gpu.lock \
   cargo nextest run -P default --all-features \
   -E 'group(gpu)' --no-fail-fast --test-threads "${AVAILABLE_CPU_CORES}"
-CUDF_RUNTIME_POLICY=allow flock /tmp/cudf-gpu.lock \
+flock /tmp/cudf-gpu.lock \
   cargo nextest run -P default --all-features \
   -E 'group(gpu-exclusive)' --no-fail-fast --test-threads 1
 ```
 
 Always run all three lanes for full coverage. The harness first runs the
-binary-lane classification tripwire, verifies the configured cap with
-`nextest show-config`, and applies explicit runtime policies.
+binary-lane classification tripwire and verifies the configured cap with
+`nextest show-config` before running GPU lanes.
 
 ## Modes and options
 
@@ -75,9 +75,8 @@ bash scripts/check_all.sh --fast
 It runs isolated policy self-tests, pinned rustfmt, build support, the
 catalog/generated lane-structure checks, and the CPU nextest lane. It does not
 run live nextest inventory, GPU tests, doctests, rustdoc, clippy, or the explicit
-tools/examples checks. The CPU lane uses
-`CUDF_RUNTIME_POLICY=forbid`, so an accidentally unclassified GPU test fails at
-runtime creation before any CUDA query.
+tools/examples checks. CPU-lane membership is enforced by the binary-lane
+classification tripwire before the test command runs.
 
 Use `--lane` for an intentionally partial lane-only run:
 
@@ -91,9 +90,8 @@ bash scripts/check_all.sh --lane all
 ```
 
 Even `--lane all` runs only the three test lanes and their required preflight;
-it does not claim full validation. GPU selections preserve the global lock and
-runtime policy. `--lane policy` runs policy/format/structure checks without test
-lanes.
+it does not claim full validation. GPU selections preserve the global lock.
+`--lane policy` runs policy/format/structure checks without test lanes.
 
 Feature selection follows Cargo semantics:
 
@@ -137,14 +135,10 @@ strict when that phase runs.
 policy. It must be a non-empty single-line path without `|`, which delimits the
 final phase table.
 
-The harness also provides a runtime backstop for catalog mistakes. It launches
-the CPU nextest command with `CUDF_RUNTIME_POLICY=forbid`; cudf-rs checks that
-policy in `RuntimeBuilder::build` before device resolution or CUDA FFI and
-returns typed `RuntimeCreationForbidden` / `ExecutionContext` / `Permanent`
-metadata. Shared GPU, exclusive GPU, doctest, and cargo-diagnostic commands each
-set `CUDF_RUNTIME_POLICY=allow` explicitly, so a caller's ambient value cannot
-silently change lane behavior. Invalid or non-Unicode policy values fail closed
-as cudf-rs `InvalidRuntimePolicy` errors.
+The binary-lane catalog is the admission control for CPU and GPU tests. Keep it
+complete and run the live inventory check when changing test binaries: without
+the former cudf-rs runtime-policy backstop, an incorrectly classified CPU test
+is not rejected at CUDA-runtime creation.
 
 ## Doctests and rustdoc
 
@@ -152,7 +146,7 @@ Doctests are GPU-capable until a mechanical classifier proves otherwise. The
 canonical harness therefore runs them as a separate, third flocked command:
 
 ```bash
-CUDF_RUNTIME_POLICY=allow flock /tmp/cudf-gpu.lock \
+flock /tmp/cudf-gpu.lock \
   cargo test --all-features --doc --no-fail-fast
 ```
 
@@ -247,14 +241,12 @@ cargo run --features server --bin datafusion_nexus_server
 ## Formatting and lints
 
 ```bash
-cargo +nightly-2026-07-13 fmt --all --check  # canonical pinned check
-cargo +nightly fmt --all                    # compatible developer command
+cargo +nightly fmt --all --check
 cargo clippy --all-targets --all-features
 RUSTDOCFLAGS="-D warnings" cargo doc --all-features --no-deps --keep-going
 ```
 
-Stable is pinned in `rust-toolchain.toml`; the canonical rustfmt nightly is
-pinned separately in `rustfmt-toolchain.toml`.
+The MSRV is Rust 1.94. Formatting requires nightly.
 
 ## Continuous enforcement
 

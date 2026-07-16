@@ -1,12 +1,10 @@
-//! Minimal repro probe: native aggregate semantics over EMPTY input.
+//! Native empty-input aggregate report.
 //!
-//! TPC-DS tiny-dataset parity showed 9 queries with `cpu=1 native=0` row
-//! mismatches (all ROLLUP/global-aggregate shapes) plus 2 `compiled final
-//! merge produced no non-empty partitions` failures. This probe checks the
-//! minimal shapes on a single local parquet source with a never-true filter,
-//! with no joins involved (so the join-leaf empty-chunk fix is out of scope).
+//! Compares native and plain-DataFusion results for global, grouped, and
+//! rollup aggregates over empty and nonempty local parquet inputs. The input
+//! shapes isolate aggregate behavior from join processing.
 //!
-//! Run: `flock /tmp/cudf-gpu.lock cargo run -p datafusion-nexus-bench --bin empty_input_agg_probe`
+//! Run: `flock /tmp/cudf-gpu.lock cargo run -p datafusion-nexus-bench --bin native_empty_input_aggregate_report`
 
 use std::{
     error::Error,
@@ -34,7 +32,7 @@ use datafusion_nexus::{
     session::CudfSessionStateBuilderExt,
 };
 
-const PROBES: &[(&str, &str)] = &[
+const CASES: &[(&str, &str)] = &[
     ("global_agg_over_empty", "SELECT SUM(payload) AS s, COUNT(*) AS c FROM bench WHERE key > 100000"),
     ("global_avg_over_empty", "SELECT AVG(payload) AS a FROM bench WHERE key > 100000"),
     ("group_by_over_empty", "SELECT key, SUM(payload) AS s FROM bench WHERE key > 100000 GROUP BY key"),
@@ -50,18 +48,18 @@ const PROBES: &[(&str, &str)] = &[
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
-    let dir = unique_temp_dir("empty-input-agg-probe");
+    let dir = unique_temp_dir("datafusion-nexus-native-empty-input-aggregate-report");
     let path = dir.join("bench.parquet");
     write_parquet(&path);
 
-    for (id, sql) in PROBES {
+    for (id, sql) in CASES {
         // Native session.
         let optimizer_config = CudfOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred).with_native_execution_config(
             NativeCudfExecutionConfig::bounded(256 * 1024 * 1024, 64 * 1024 * 1024, 1, 3, 1),
         );
         let rule = Arc::new(CudfNativePhysicalOptimizerRule::new(optimizer_config));
         let state = SessionStateBuilder::new_with_default_features()
-            .with_config(probe_config())
+            .with_config(report_session_config())
             .with_cudf_native_rule(Arc::clone(&rule))
             .build();
         let ctx = SessionContext::new_with_state(state);
@@ -77,7 +75,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
         // Plain CPU session.
         let cpu_ctx = SessionContext::new_with_state(
-            SessionStateBuilder::new_with_default_features().with_config(probe_config()).build(),
+            SessionStateBuilder::new_with_default_features().with_config(report_session_config()).build(),
         );
         cpu_ctx.register_parquet("bench", path.to_str().unwrap(), ParquetReadOptions::default()).await?;
         let cpu = pretty_format_batches(&cpu_ctx.sql(sql).await?.collect().await?)?.to_string();
@@ -96,7 +94,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-fn probe_config() -> SessionConfig {
+fn report_session_config() -> SessionConfig {
     let mut config = SessionConfig::new()
         .with_repartition_file_scans(false)
         .with_repartition_aggregations(false)

@@ -227,7 +227,6 @@ pub(super) fn sql_info_data() -> Result<arrow_flight::sql::metadata::SqlInfoData
     builder.append(SqlInfo::FlightSqlServerArrowVersion, "1.3");
     builder.append(SqlInfo::FlightSqlServerReadOnly, false);
     builder.append(SqlInfo::FlightSqlServerSql, true);
-    builder.append(SqlInfo::FlightSqlServerSubstrait, false);
     builder.append(SqlInfo::FlightSqlServerTransaction, SqlSupportedTransaction::None as i32);
     builder.append(SqlInfo::FlightSqlServerCancel, true);
     builder.append(SqlInfo::FlightSqlServerBulkIngestion, false);
