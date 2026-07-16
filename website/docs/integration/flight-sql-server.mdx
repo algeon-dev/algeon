@@ -49,7 +49,7 @@ NEXUS_SERVER_WORKSPACE_SCHEMA=public \
 NEXUS_SERVER_WORKSPACE_BACKING_CATALOG=lake \
 NEXUS_SERVER_WORKSPACE_BACKING_SCHEMA=citation_network \
 NEXUS_SERVER_WORKSPACE_BACKING_ALIASES=citation_edges,citation_edges_by_dst,papers,paper_authors,paper_fos \
-flock /tmp/cudf-gpu.lock bash scripts/run_server.sh
+flock /tmp/cudf-gpu.lock bash scripts/dev/run_server.sh
 ```
 
 The startup log should show `iceberg_enabled=true`, `cugraph_enabled=true`, a

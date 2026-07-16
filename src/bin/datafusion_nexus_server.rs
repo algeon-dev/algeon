@@ -3,34 +3,8 @@ use std::{env, error::Error as StdError, io::IsTerminal, process::ExitCode};
 use datafusion_nexus::server::{NEXUS_SERVER_LOG_ENV, ServerConfig, ServerError, serve};
 
 fn main() -> ExitCode {
-    // Precondition check FIRST — before the tokio runtime or any other code that
-    // may have been emitted with elevated SIMD. Catches a CPU below the compiled
-    // baseline and prints a clear message instead of an opaque SIGILL.
-    ensure_cpu_baseline();
     serve_main()
 }
-
-/// Fail fast if the host CPU is below the `x86-64-v2` baseline this binary is
-/// compiled for (`target-cpu=x86-64-v2` in `.cargo/config.toml`). The check
-/// itself relies only on CPUID (baseline-safe). `ahash` and all other Rust
-/// codegen select their instruction set at compile time from `target_feature`,
-/// so a too-old CPU would otherwise crash with an illegal instruction.
-#[cfg(target_arch = "x86_64")]
-fn ensure_cpu_baseline() {
-    // SSE4.2 + POPCNT are representative of the x86-64-v2 feature set.
-    let supported = std::arch::is_x86_feature_detected!("sse4.2") && std::arch::is_x86_feature_detected!("popcnt");
-    if !supported {
-        eprintln!(
-            "FATAL: datafusion-nexus was built for the x86-64-v2 CPU baseline (SSE4.2 + POPCNT) but \
-             this host CPU does not support it. Run on a newer CPU, or rebuild with a lower \
-             target-cpu floor in .cargo/config.toml."
-        );
-        std::process::exit(1);
-    }
-}
-
-#[cfg(not(target_arch = "x86_64"))]
-fn ensure_cpu_baseline() {}
 
 #[tokio::main]
 async fn serve_main() -> ExitCode {

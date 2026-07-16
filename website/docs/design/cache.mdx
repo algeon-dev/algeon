@@ -34,7 +34,7 @@ NEXUS_LAKEHOUSE_CACHE_MAX_BYTES=536870912000 \
 NEXUS_SERVER_NATIVE_SOURCE_CACHE_MAX_RETAINED_BYTES=8589934592 \
 NEXUS_SERVER_NATIVE_GRAPH_CACHE_MAX_RETAINED_BYTES=17179869184 \
 NEXUS_SERVER_CUGRAPH_ENABLED=true \
-flock /tmp/cudf-gpu.lock bash scripts/run_server.sh
+flock /tmp/cudf-gpu.lock bash scripts/dev/run_server.sh
 ```
 
 The two VRAM caches require bounded native memory policy. They currently cannot

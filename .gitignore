@@ -55,3 +55,5 @@ fixture/data/
 # node_modules are ignored by website/.gitignore.
 
 .codex
+.pi-subagents
+.claude

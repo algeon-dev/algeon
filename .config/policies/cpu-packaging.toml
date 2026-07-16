@@ -1,0 +1,92 @@
+# Repository-owned clean-build and CPU artifact policy.
+
+[clean_environment]
+# The canonical Cargo subprocess is launched with env -i semantics. Only these
+# toolchain/location inputs are copied from the caller; codegen flag variables
+# are never passed through.
+pass_through = [
+  "PATH",
+  "HOME",
+  "RUSTUP_HOME",
+  "CUDA_HOME",
+  "CUDA_PATH",
+  "LD_LIBRARY_PATH",
+  "LIBRARY_PATH",
+  "CPATH",
+  "C_INCLUDE_PATH",
+  "CPLUS_INCLUDE_PATH",
+  "PKG_CONFIG_PATH",
+  "PKG_CONFIG_LIBDIR",
+  "PKG_CONFIG_SYSROOT_DIR",
+]
+explicit_inputs = ["CUDF_INSTALL_DIR", "CUGRAPH_BUILD_DIR"]
+
+# Presence is rejected regardless of spelling inside the value. This is an
+# allowlisted clean-build contract, not a denylist of known-unsafe CPU names.
+forbidden_exact = [
+  "RUSTFLAGS",
+  "CARGO_ENCODED_RUSTFLAGS",
+  "CARGO_BUILD_RUSTFLAGS",
+  "CARGO_BUILD_TARGET",
+  "CARGO_TARGET_DIR",
+  "RUSTC",
+  "RUSTC_BOOTSTRAP",
+  "RUSTC_WRAPPER",
+  "RUSTC_WORKSPACE_WRAPPER",
+  "CARGO_BUILD_RUSTC",
+  "CARGO_BUILD_RUSTC_WRAPPER",
+  "CARGO_INCREMENTAL",
+  "CPPFLAGS",
+  "LDFLAGS",
+  "NVCCFLAGS",
+  "CUDAFLAGS",
+  "CMAKE_TOOLCHAIN_FILE",
+  "CMAKE_PROJECT_INCLUDE",
+  "CMAKE_PROJECT_TOP_LEVEL_INCLUDES",
+]
+forbidden_patterns = [
+  "^CARGO_TARGET_.*_(RUSTFLAGS|LINKER)$",
+  "^CARGO_PROFILE_.*$",
+  "(^|_)(CFLAGS|CXXFLAGS)($|_)",
+  "^CMAKE_(C|CXX|CUDA|ASM)_FLAGS($|_)",
+]
+
+# Compiler/tool selection is policy-owned. Ambient values with these names are
+# ignored and replaced before Cargo starts, so a command such as
+# `CC="gcc -march=native"` cannot enter the canonical build.
+[clean_environment.fixed_build_environment]
+CC = "/usr/bin/gcc-14"
+CXX = "/usr/bin/g++-14"
+CUDAHOSTCXX = "/usr/bin/g++-14"
+AR = "/usr/bin/ar"
+CMAKE = "/usr/bin/cmake"
+CMAKE_GENERATOR = "Ninja"
+
+[clean_environment.tool_version_commands]
+cc = ["/usr/bin/gcc-14", "--version"]
+cxx = ["/usr/bin/g++-14", "--version"]
+ar = ["/usr/bin/ar", "--version"]
+cmake = ["/usr/bin/cmake", "--version"]
+ninja = ["/usr/bin/ninja", "--version"]
+
+[profiles.portable]
+kind = "redistributable"
+declared_baseline = "x86-64-v2"
+target_triple = "x86_64-unknown-linux-gnu"
+rustflags = ["-C", "target-cpu=x86-64-v2"]
+cargo_profile = "release"
+artifact_dir = "portable-x86-64-v2"
+image_tag_suffix = "x86-64-v2"
+image_arch = "amd64"
+deployment_requirement = "The host CPU must implement the full x86-64-v2 ISA; a pre-v2 host may SIGILL before main."
+
+[profiles.tuned-local-v3]
+kind = "tuned-local"
+declared_baseline = "x86-64-v3"
+target_triple = "x86_64-unknown-linux-gnu"
+rustflags = ["-C", "target-cpu=x86-64-v3"]
+cargo_profile = "release"
+artifact_dir = "tuned-local-x86-64-v3"
+image_tag_suffix = "x86-64-v3-tuned"
+image_arch = "amd64"
+deployment_requirement = "Deploy only to hosts that implement the full x86-64-v3 ISA; this artifact is not the portable v2 image."

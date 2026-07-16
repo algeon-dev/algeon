@@ -63,14 +63,15 @@ cd "$NEXUS_ROOT/datafusion-nexus"
 
 # Full image: Flight SQL server + Iceberg + cuGraph SQL + NVML diagnostics.
 bash docker/build.sh
-docker build -t datafusion-nexus-server:latest docker/
+# Run the exact docker build command printed above. It includes policy-derived
+# CPU label inputs and artifact/provenance hashes.
 ```
 
 For a smaller cuDF-only server image, omit `cugraph` when staging the payload:
 
 ```bash
 FEATURES=server,iceberg,nvml bash docker/build.sh
-docker build -t datafusion-nexus-server:latest docker/
+# Run the exact printed docker build command.
 ```
 
 For this lean image, keep cuGraph disabled at runtime. Use direct `docker run`
@@ -83,12 +84,37 @@ runtime payload:
 
 ```bash
 SKIP_CARGO_BUILD=1 bash docker/build.sh
-docker build -t datafusion-nexus-server:latest docker/
+# Run the exact printed docker build command.
 ```
 
-`docker/build.sh` refuses host-tuned CPU codegen flags such as
-`target-cpu=native`, `-march=native`, `+aes`, and `+avx512`; redistributable
-images use the repository's fixed `x86-64-v2` CPU baseline.
+Skipping compilation does not trust an arbitrary `target/release` binary. It
+requires an artifact created by the canonical packaging helper whose binary
+hash, policy hash, features, profile, target, and codegen flags still agree.
+
+Redistributable builds use the declarative `portable` profile in
+`.config/policies/cpu-packaging.toml`. The helper rejects ambient Rust/C/C++ codegen and
+Cargo target/profile overrides wholesale, then invokes Cargo from an isolated
+working directory and clean `CARGO_HOME` with the policy's exact target triple
+and `target-cpu=x86-64-v2`. The resulting `docker/dist/cpu-provenance.json`
+records the exact rustc/Cargo versions, target, effective codegen flags,
+declared baseline, features/profile, policy hash, and binary hash. Docker
+hard-fails if its baseline/profile/target labels or hashes disagree with that
+provenance.
+
+x86-64-v2 is a runtime host precondition, not a friendly startup check. Code
+compiled for v2 can execute before `main`; on a pre-v2 host the process may
+terminate with `SIGILL` before it can print a diagnostic.
+
+An explicitly tuned build has a separate artifact root, deployment contract,
+provenance profile, and tag:
+
+```bash
+CPU_PACKAGE_PROFILE=tuned-local-v3 bash docker/build.sh
+# Run the printed command; it tags datafusion-nexus-server:x86-64-v3-tuned.
+```
+
+Deploy that image only to full x86-64-v3 hosts and never retag it as the
+portable `datafusion-nexus-server:x86-64-v2` image.
 
 ## Run the server
 
@@ -96,7 +122,7 @@ For the minimal no-catalog server, run the image directly:
 
 ```bash
 flock /tmp/cudf-gpu.lock \
-  docker run --rm --gpus all -p 50051:50051 datafusion-nexus-server:latest
+  docker run --rm --gpus all -p 50051:50051 datafusion-nexus-server:x86-64-v2
 ```
 
 Startup is eager: CUDA/RMM admission initializes before the Flight SQL port is
@@ -110,14 +136,16 @@ starting datafusion-nexus Flight SQL server
 The image has a TCP healthcheck for `NEXUS_SERVER_BIND`:
 
 ```bash
-docker ps --filter ancestor=datafusion-nexus-server:latest
+docker ps --filter ancestor=datafusion-nexus-server:x86-64-v2
 ```
 
 ### Local fixture launcher
 
 `docker/run.sh` is a convenience launcher for local fixture-style runs. It uses
 host networking, enables cuGraph SQL by default, sets bounded native memory
-knobs, and wires the local Iceberg REST/RustFS defaults:
+knobs, and wires the local Iceberg REST/RustFS defaults. It defaults to
+`datafusion-nexus-server:x86-64-v2`; set `NEXUS_SERVER_IMAGE` explicitly for a
+tuned artifact:
 
 ```bash
 flock /tmp/cudf-gpu.lock bash docker/run.sh

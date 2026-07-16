@@ -2,8 +2,8 @@
 # Run datafusion_nexus_server directly (no Docker).
 #
 # Usage:
-#   bash scripts/run_server.sh             # start the server
-#   bash scripts/run_server.sh --dry-run   # print the env + command without executing
+#   bash scripts/dev/run_server.sh             # start the server
+#   bash scripts/dev/run_server.sh --dry-run   # print the env + command without executing
 #
 # The release binary must already be built. Either artifact flavor works:
 #   cargo build --release --features server,iceberg,nvml --bin datafusion_nexus_server
@@ -22,7 +22,7 @@ set -euo pipefail
 DRY_RUN=0
 [[ "${1:-}" == "--dry-run" ]] && DRY_RUN=1
 
-REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 TARGET_ROOT="${CARGO_TARGET_DIR:-${REPO_ROOT}/target}"
 BINARY="${TARGET_ROOT}/release/datafusion_nexus_server"
 
