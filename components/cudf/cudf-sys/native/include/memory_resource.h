@@ -124,6 +124,33 @@ cudf_status_t cudf_memory_resource_usage(cudf_memory_resource_handle handle,
 /// same manager without replacing the current resource.
 cudf_status_t cudf_memory_manager_for_device(int32_t device, cudf_memory_manager_handle* out);
 
+/// Resolve the process-local reservation-aware memory manager for `device`,
+/// installing a failure callback around the device-global current resource if
+/// this call creates the manager.
+///
+/// The callback is installed outside the reservation-aware adaptor, so it
+/// observes both physical upstream OOMs and reservation-limit failures. If the
+/// manager already exists, this function succeeds only when that manager was
+/// created with a failure callback; it does not replace an existing current
+/// device resource or callback. `callback_arg` is stored by the process-global
+/// device manager and must remain valid for the process/device-manager
+/// lifetime.
+cudf_status_t cudf_memory_manager_for_device_with_failure_callback(
+  int32_t device,
+  cudf_memory_failure_callback_t callback,
+  void* callback_arg,
+  cudf_memory_manager_handle* out);
+
+/// Query whether a process-local memory manager already exists for `device`
+/// and whether it was created with a failure callback.
+///
+/// `*exists` is set to nonzero when a manager exists. `*failure_callback_installed`
+/// is set to nonzero only when that existing manager was callback-installed.
+cudf_status_t cudf_memory_manager_failure_callback_state(
+  int32_t device,
+  int32_t* exists,
+  int32_t* failure_callback_installed);
+
 /// Create a memory-resource handle alias for a device memory manager.
 ///
 /// The returned handle points at the manager's long-lived device-level adaptor

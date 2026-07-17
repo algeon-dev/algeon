@@ -86,11 +86,12 @@
 //! ```
 
 use std::{
+    collections::{HashMap, hash_map::Entry},
     ffi::c_void,
     panic::{AssertUnwindSafe, catch_unwind},
     ptr::{self, NonNull},
     sync::{
-        Arc,
+        Arc, Mutex, OnceLock,
         atomic::{AtomicBool, Ordering},
     },
 };
@@ -115,6 +116,15 @@ pub struct DeviceMemoryResourceUsage {
     pub peak_allocations: u64,
     pub failed_allocation_count: u64,
     pub largest_failed_allocation_bytes: u64,
+}
+
+/// Whether cudf-rs has already installed a process-local device memory manager
+/// for a CUDA device, and whether that manager was created with a failure
+/// callback.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DeviceMemoryManagerFailureCallbackState {
+    pub exists: bool,
+    pub failure_callback_installed: bool,
 }
 
 impl From<cudf_sys::cudf_memory_resource_usage_t> for DeviceMemoryResourceUsage {
@@ -251,6 +261,11 @@ unsafe extern "C" fn failure_callback_trampoline(bytes: usize, callback_arg: *mu
     }
 }
 
+fn device_manager_failure_callbacks() -> &'static Mutex<HashMap<i32, Arc<FailureCallbackState>>> {
+    static CALLBACKS: OnceLock<Mutex<HashMap<i32, Arc<FailureCallbackState>>>> = OnceLock::new();
+    CALLBACKS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
 /// Process-local reservation-aware memory manager for one CUDA device.
 ///
 /// The native layer creates at most one manager per device. The manager owns a
@@ -334,6 +349,35 @@ impl DeviceMemoryManager {
         Self::for_device(device)
     }
 
+    /// Explicitly install the memory domain for `device` with a process-lifetime
+    /// allocation-failure callback.
+    ///
+    /// The first successful call for a device creates the device manager,
+    /// installs the reservation-aware allocator as the device's current RMM
+    /// resource, then wraps that allocator in RMM's failure-callback adaptor.
+    /// The callback observes reservation-limit failures and upstream
+    /// out-of-memory failures. It runs inside the allocating thread and must
+    /// be re-entrancy-safe: do not allocate through the same resource, block
+    /// on application locks, or unwind.
+    ///
+    /// Later calls for a manager that was already installed with a failure
+    /// callback return the existing manager; the original callback remains in
+    /// force. Later calls after a plain [`Self::install_for_device`] or
+    /// [`Self::for_device`] fail because the process-global current resource
+    /// cannot be swapped safely after first use.
+    pub fn install_for_device_with_failure_callback(
+        device: DeviceId,
+        callback: Arc<dyn Fn(usize) -> bool + Send + Sync + 'static>,
+    ) -> Result<Self> {
+        Self::for_device_with_failure_callback(device, callback)
+    }
+
+    /// Returns whether `device` already has a process-local memory manager and
+    /// whether that manager was created with a failure callback.
+    pub fn failure_callback_state_for_device(device: DeviceId) -> Result<DeviceMemoryManagerFailureCallbackState> {
+        Self::failure_callback_state_for_device_raw(device)
+    }
+
     /// Resolve the process-local manager for `device`, creating it if needed.
     ///
     /// On first creation the manager installs its reservation-aware adaptor as
@@ -358,6 +402,103 @@ impl DeviceMemoryManager {
             DeviceMemoryResource::from_created_handle(resource, device, "memory::device_memory_manager::resource")?;
 
         Ok(Self { handle: Arc::new(DeviceMemoryManagerHandle { raw: manager, device }), resource })
+    }
+
+    fn for_device_with_failure_callback(
+        device: DeviceId,
+        callback: Arc<dyn Fn(usize) -> bool + Send + Sync + 'static>,
+    ) -> Result<Self> {
+        let _guard = DeviceGuard::new(device)?;
+        let device_ordinal = device.ordinal_raw();
+        let native_state_before = Self::failure_callback_state_for_device_raw(device)?;
+        let callbacks = device_manager_failure_callbacks();
+        let mut callbacks = callbacks.lock().map_err(|_| {
+            error::Error::new_with(
+                error::ErrorCode::InvariantViolation,
+                "memory::device_memory_manager::for_device_with_failure_callback",
+                "device memory manager failure callback registry mutex was poisoned",
+            )
+        })?;
+        if native_state_before.exists
+            && native_state_before.failure_callback_installed
+            && !callbacks.contains_key(&device_ordinal)
+        {
+            return Err(error::Error::new_with(
+                error::ErrorCode::RuntimeBindingMismatch,
+                "memory::device_memory_manager::for_device_with_failure_callback",
+                "device memory manager already exists with a failure callback not owned by this cudf-rs callback registry",
+            ));
+        }
+        let mut inserted_callback_state = false;
+        let callback_state = match callbacks.entry(device_ordinal) {
+            Entry::Occupied(entry) => Arc::clone(entry.get()),
+            Entry::Vacant(entry) => {
+                inserted_callback_state = true;
+                Arc::clone(entry.insert(Arc::new(FailureCallbackState { callback, panicked: AtomicBool::new(false) })))
+            },
+        };
+
+        let callback_arg = Arc::as_ptr(&callback_state) as *mut c_void;
+        let mut manager = ptr::null_mut();
+        let status = unsafe {
+            cudf_sys::cudf_memory_manager_for_device_with_failure_callback(
+                device.ordinal_raw(),
+                Some(failure_callback_trampoline),
+                callback_arg,
+                &mut manager,
+            )
+        };
+        if status != cudf_sys::CUDF_SUCCESS {
+            let native_state = Self::failure_callback_state_for_device_raw(device);
+            if inserted_callback_state
+                && callbacks.get(&device_ordinal).is_some_and(|state| Arc::ptr_eq(state, &callback_state))
+                && native_state.as_ref().is_ok_and(|state| !state.exists || !state.failure_callback_installed)
+            {
+                callbacks.remove(&device_ordinal);
+            }
+            error::check_status_in_with_details(
+                status,
+                "memory::device_memory_manager::for_device_with_failure_callback",
+                [("device", device.ordinal().to_string())],
+            )?;
+        }
+        drop(callbacks);
+        let manager = error::require_non_null(
+            manager,
+            "memory::device_memory_manager::for_device_with_failure_callback",
+            "memory manager",
+        )?;
+
+        let mut resource = ptr::null_mut();
+        error::check_status_in(
+            unsafe { cudf_sys::cudf_memory_manager_resource(manager.as_ptr(), &mut resource) },
+            "memory::device_memory_manager::resource",
+        )?;
+        let resource =
+            DeviceMemoryResource::from_created_handle(resource, device, "memory::device_memory_manager::resource")?;
+
+        Ok(Self { handle: Arc::new(DeviceMemoryManagerHandle { raw: manager, device }), resource })
+    }
+
+    fn failure_callback_state_for_device_raw(device: DeviceId) -> Result<DeviceMemoryManagerFailureCallbackState> {
+        let _guard = DeviceGuard::new(device)?;
+        let mut exists = 0;
+        let mut failure_callback_installed = 0;
+        error::check_status_in_with_details(
+            unsafe {
+                cudf_sys::cudf_memory_manager_failure_callback_state(
+                    device.ordinal_raw(),
+                    &mut exists,
+                    &mut failure_callback_installed,
+                )
+            },
+            "memory::device_memory_manager::failure_callback_state_for_device",
+            [("device", device.ordinal().to_string())],
+        )?;
+        Ok(DeviceMemoryManagerFailureCallbackState {
+            exists: exists != 0,
+            failure_callback_installed: failure_callback_installed != 0,
+        })
     }
 
     /// CUDA device owned by this manager.

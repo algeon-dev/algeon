@@ -56,6 +56,23 @@ extern "C" {
     /// Resolve the process-local reservation-aware memory manager for one CUDA device.
     pub fn cudf_memory_manager_for_device(device: i32, out: *mut cudf_memory_manager_handle) -> cudf_status_t;
 
+    /// Resolve the process-local reservation-aware memory manager for one CUDA
+    /// device, installing a process-lifetime failure callback if this call
+    /// creates the manager.
+    pub fn cudf_memory_manager_for_device_with_failure_callback(
+        device: i32,
+        callback: cudf_memory_failure_callback_t,
+        callback_arg: *mut c_void,
+        out: *mut cudf_memory_manager_handle,
+    ) -> cudf_status_t;
+
+    /// Query whether a device memory manager exists and whether it has a failure callback.
+    pub fn cudf_memory_manager_failure_callback_state(
+        device: i32,
+        exists: *mut i32,
+        failure_callback_installed: *mut i32,
+    ) -> cudf_status_t;
+
     /// Create a memory-resource handle alias for a device memory manager.
     pub fn cudf_memory_manager_resource(
         manager: cudf_memory_manager_handle,

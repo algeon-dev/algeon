@@ -440,6 +440,7 @@ struct memory_resource_owner {
   std::shared_ptr<rmm::mr::device_memory_resource> upstream;
   std::shared_ptr<rmm::mr::device_memory_resource> pool;
   std::shared_ptr<void> upstream_lifetime;
+  std::unique_ptr<rmm::mr::device_memory_resource> reservation_mr;
   std::unique_ptr<rmm::mr::device_memory_resource> mr;
   rmm::mr::statistics_resource_adaptor* stats = nullptr;
   budget_tracking_resource_adaptor* budget_tracker                         = nullptr;
@@ -454,6 +455,8 @@ struct memory_resource_handle_state {
 struct device_memory_manager_state {
   int32_t device = -1;
   std::shared_ptr<memory_resource_owner> owner;
+  bool failure_callback_installed = false;
+  bool current_resource_installed = false;
 };
 
 struct reservation_handle_state {
@@ -500,8 +503,25 @@ std::mutex& current_memory_resource_identity_mutex()
 rmm::mr::device_memory_resource* set_current_device_resource_raw_locked(
   int32_t device, rmm::mr::device_memory_resource* target)
 {
-  rmm::mr::set_current_device_resource(rmm::mr::any_device_resource_from_raw(target));
-  current_memory_resource_identities()[device] = target;
+  auto& identities = current_memory_resource_identities();
+  auto const existing = identities.find(device);
+  bool const had_existing = existing != identities.end();
+  auto* previous = had_existing ? existing->second : nullptr;
+  if (had_existing) {
+    existing->second = target;
+  } else {
+    identities.emplace(device, target);
+  }
+  try {
+    rmm::mr::set_current_device_resource(rmm::mr::any_device_resource_from_raw(target));
+  } catch (...) {
+    if (had_existing) {
+      identities.find(device)->second = previous;
+    } else {
+      identities.erase(device);
+    }
+    throw;
+  }
   return target;
 }
 
@@ -566,10 +586,13 @@ std::shared_ptr<device_memory_manager_state> memory_manager_from_handle(
 }
 
 std::shared_ptr<device_memory_manager_state> make_memory_manager_for_current_device(
-  int32_t device)
+  int32_t device,
+  cudf_memory_failure_callback_t failure_callback,
+  void* failure_callback_arg)
 {
   auto manager    = std::make_shared<device_memory_manager_state>();
   manager->device = device;
+  manager->failure_callback_installed = failure_callback != nullptr;
   manager->owner  = std::make_shared<memory_resource_owner>();
 
   auto& owner    = *manager->owner;
@@ -579,13 +602,97 @@ std::shared_ptr<device_memory_manager_state> make_memory_manager_for_current_dev
     rmm::mr::any_device_resource_from_raw(owner.upstream.get()), 0);
   auto adaptor = std::make_unique<reservation_aware_resource_adaptor>(owner.pool.get());
   owner.reservation_adaptor = adaptor.get();
-  owner.mr                  = std::move(adaptor);
+  if (failure_callback != nullptr) {
+    auto retry_callback = [failure_callback](std::size_t bytes, void* arg) {
+      return failure_callback(bytes, arg) != 0;
+    };
+    owner.reservation_mr = std::move(adaptor);
+    owner.mr =
+      std::make_unique<rmm::mr::device_memory_resource_box<
+        rmm::mr::failure_callback_resource_adaptor<>>>(
+        rmm::mr::any_device_resource_from_raw(owner.reservation_mr.get()),
+        std::move(retry_callback),
+        failure_callback_arg);
+  } else {
+    owner.mr = std::move(adaptor);
+  }
   register_memory_resource_lifetime(manager->owner);
 
-  // Device-domain invariant: this is the one production install point. The
-  // adaptor stays the device's current resource for the process lifetime.
-  cudf_set_current_device_resource_raw(owner.mr.get());
   return manager;
+}
+
+cudf_status_t validate_memory_manager_device(int32_t device)
+{
+  if (device < 0) {
+    set_error("device must be >= 0");
+    return CUDF_ERROR_INVALID_OPERATION;
+  }
+  int32_t device_count = 0;
+  cudaError_t const count_status = cudaGetDeviceCount(&device_count);
+  if (count_status != cudaSuccess) {
+    auto msg = std::string("cudaGetDeviceCount failed: ") + cudaGetErrorString(count_status);
+    set_error(msg);
+    return CUDF_ERROR_CUDA;
+  }
+  if (device >= device_count) {
+    set_error("device is outside the available CUDA device range");
+    return CUDF_ERROR_INVALID_OPERATION;
+  }
+  return CUDF_SUCCESS;
+}
+
+cudf_status_t memory_manager_for_device_impl(int32_t device,
+                                             cudf_memory_failure_callback_t failure_callback,
+                                             void* failure_callback_arg,
+                                             cudf_memory_manager_handle* out)
+{
+  CUDF_RUST_NULL_CHECK(out, "out is null");
+  *out = nullptr;
+  CUDF_RUST_TRY
+  {
+    cudf_status_t const validation_status = validate_memory_manager_device(device);
+    if (validation_status != CUDF_SUCCESS) { return validation_status; }
+    if (failure_callback == nullptr && failure_callback_arg != nullptr) {
+      set_error("failure callback argument requires a failure callback");
+      return CUDF_ERROR_INVALID_OPERATION;
+    }
+
+    cudf_device_guard guard;
+    cudf_status_t const guard_status = guard.activate(device);
+    if (guard_status != CUDF_SUCCESS) { return guard_status; }
+
+    std::scoped_lock lock{memory_manager_registry_mutex()};
+    auto& registry = memory_manager_registry();
+    auto it        = registry.find(device);
+    if (it == registry.end()) {
+      it = registry.emplace(device,
+                            make_memory_manager_for_current_device(
+                              device, failure_callback, failure_callback_arg))
+             .first;
+    } else if (failure_callback != nullptr && !it->second->failure_callback_installed) {
+      set_error(
+        "device memory manager already exists without a failure callback; "
+        "install the callback before first use");
+      return CUDF_ERROR_INVALID_OPERATION;
+    }
+    if (!it->second->current_resource_installed) {
+      // Device-domain invariant: this is the one production install point. The
+      // adaptor stays the device's current resource for the process lifetime.
+      // The manager is already registry-owned before the current resource is
+      // switched, so any exception during the switch cannot leave RMM pointing
+      // at freed memory.
+      try {
+        cudf_set_current_device_resource_raw(it->second->owner->mr.get());
+      } catch (...) {
+        set_error("device memory manager current resource installation failed; manager remains registered");
+        return CUDF_ERROR_INVALID_OPERATION;
+      }
+      it->second->current_resource_installed = true;
+    }
+    *out = static_cast<cudf_memory_manager_handle>(it->second.get());
+    return CUDF_SUCCESS;
+  }
+  CUDF_RUST_CATCH
 }
 }  // namespace
 
@@ -828,37 +935,39 @@ cudf_status_t cudf_memory_resource_raw(cudf_memory_resource_handle handle, void*
 
 cudf_status_t cudf_memory_manager_for_device(int32_t device, cudf_memory_manager_handle* out)
 {
+  return memory_manager_for_device_impl(device, nullptr, nullptr, out);
+}
+
+cudf_status_t cudf_memory_manager_for_device_with_failure_callback(
+  int32_t device,
+  cudf_memory_failure_callback_t callback,
+  void* callback_arg,
+  cudf_memory_manager_handle* out)
+{
   CUDF_RUST_NULL_CHECK(out, "out is null");
   *out = nullptr;
+  CUDF_RUST_NULL_CHECK(callback, "callback is null");
+  return memory_manager_for_device_impl(device, callback, callback_arg, out);
+}
+
+cudf_status_t cudf_memory_manager_failure_callback_state(
+  int32_t device,
+  int32_t* exists,
+  int32_t* failure_callback_installed)
+{
+  CUDF_RUST_NULL_CHECK(exists, "exists is null");
+  *exists = 0;
+  CUDF_RUST_NULL_CHECK(failure_callback_installed, "failure_callback_installed is null");
+  *failure_callback_installed = 0;
   CUDF_RUST_TRY
   {
-    if (device < 0) {
-      set_error("device must be >= 0");
-      return CUDF_ERROR_INVALID_OPERATION;
-    }
-    int32_t device_count = 0;
-    cudaError_t const count_status = cudaGetDeviceCount(&device_count);
-    if (count_status != cudaSuccess) {
-      auto msg = std::string("cudaGetDeviceCount failed: ") + cudaGetErrorString(count_status);
-      set_error(msg);
-      return CUDF_ERROR_CUDA;
-    }
-    if (device >= device_count) {
-      set_error("device is outside the available CUDA device range");
-      return CUDF_ERROR_INVALID_OPERATION;
-    }
-
-    cudf_device_guard guard;
-    cudf_status_t const guard_status = guard.activate(device);
-    if (guard_status != CUDF_SUCCESS) { return guard_status; }
-
+    cudf_status_t const validation_status = validate_memory_manager_device(device);
+    if (validation_status != CUDF_SUCCESS) { return validation_status; }
     std::scoped_lock lock{memory_manager_registry_mutex()};
-    auto& registry = memory_manager_registry();
-    auto it        = registry.find(device);
-    if (it == registry.end()) {
-      it = registry.emplace(device, make_memory_manager_for_current_device(device)).first;
-    }
-    *out = static_cast<cudf_memory_manager_handle>(it->second.get());
+    auto const it = memory_manager_registry().find(device);
+    if (it == memory_manager_registry().end()) { return CUDF_SUCCESS; }
+    *exists = 1;
+    *failure_callback_installed = it->second->failure_callback_installed ? 1 : 0;
     return CUDF_SUCCESS;
   }
   CUDF_RUST_CATCH
