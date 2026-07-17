@@ -36,8 +36,8 @@ use nexus_query_engine::{
     pipeline::{PipelineTaskKind, compile_pipeline},
     plan::NativePlanPreferenceOptions,
     runtime::{
-        BoundedJoinReservationContract, MemoryControlPolicy, ReservationKind, SourceChunkPlanningMode,
-        SourceFetchConfig,
+        BoundedJoinReservationContract, LakehouseCacheFillConfig, MemoryControlPolicy, ReservationKind,
+        SourceChunkPlanningMode,
     },
 };
 
@@ -131,16 +131,16 @@ fn bounded_auto_sized_uses_bounded_defaults_and_prefetch_scheduler() {
     assert_eq!(min_retry_chunk_row_groups, NativeCudfExecutionConfig::DEFAULT_BOUNDED_MIN_RETRY_CHUNK_ROW_GROUPS);
     assert_eq!(config.source_scheduler_policy().max_source_reads_in_flight(), 2);
     assert_eq!(config.source_chunk_planning_mode(), SourceChunkPlanningMode::Conservative);
-    assert_eq!(
-        config.source_fetch_config().host_fetch_acquire_timeout,
-        SourceFetchConfig::DEFAULT_HOST_FETCH_ACQUIRE_TIMEOUT
-    );
+    assert_eq!(config.lakehouse_cache_fill_config().acquire_timeout, LakehouseCacheFillConfig::DEFAULT_ACQUIRE_TIMEOUT);
     assert_eq!(
         config
             .clone()
-            .with_host_fetch_acquire_timeout(Duration::from_secs(11))
-            .source_fetch_config()
-            .host_fetch_acquire_timeout,
+            .with_lakehouse_cache_fill_config(LakehouseCacheFillConfig {
+                acquire_timeout: Duration::from_secs(11),
+                ..Default::default()
+            })
+            .lakehouse_cache_fill_config()
+            .acquire_timeout,
         Duration::from_secs(11)
     );
     assert_eq!(

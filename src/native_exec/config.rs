@@ -4,12 +4,9 @@
 //! construction, allocator setup, memory-control validation, and cache wiring
 //! happen later when execution builds the native query context.
 
-use std::{
-    sync::{
-        Arc, OnceLock,
-        atomic::{AtomicBool, Ordering},
-    },
-    time::Duration,
+use std::sync::{
+    Arc, OnceLock,
+    atomic::{AtomicBool, Ordering},
 };
 
 use datafusion::execution::context::TaskContext;
@@ -23,9 +20,9 @@ use nexus_query_engine::{
     mode::{NativePipelineExecutionMode, StddevSampExecutionMode},
     runtime::{
         CudfInventory, ExecutionBoundaryPolicy, ExecutionCancellation, ExecutionContext, GpuExecutionJobKind,
-        GpuExecutionPool, GpuInventory, MemoryControlPolicy, MemoryResourcePolicy, QueryGrantRequest, QueryHandle,
-        QueryMemoryDomainPolicy, QueryPlacementHint, ServiceStreamPool, SourceChunkPlanningMode, SourceFetchConfig,
-        SourceSchedulerPolicy, SourceStorageProfile, TenantQueryContext,
+        GpuExecutionPool, GpuInventory, LakehouseCacheFillConfig, MemoryControlPolicy, MemoryResourcePolicy,
+        QueryGrantRequest, QueryHandle, QueryMemoryDomainPolicy, QueryPlacementHint, ServiceStreamPool,
+        SourceChunkPlanningMode, SourceSchedulerPolicy, SourceStorageProfile, TenantQueryContext,
         cache::{hash_join::GpuHashJoinBuildCache, local_parquet::GpuLocalParquetSourceCache},
         default_service_stream_pool_size_for_device, device_budget_bytes_from_facts,
     },
@@ -69,7 +66,7 @@ pub struct NativeCudfExecutionConfig {
     boundary_policy: ExecutionBoundaryPolicy,
     source_scheduler_policy: SourceSchedulerPolicy,
     source_chunk_planning_mode: SourceChunkPlanningMode,
-    source_fetch_config: SourceFetchConfig,
+    lakehouse_cache_fill_config: LakehouseCacheFillConfig,
     host_output_memory_pool_accounting: bool,
     service_stream_pool: Option<ServiceStreamPool>,
     service_stream_pool_size: Option<usize>,
@@ -299,7 +296,7 @@ impl NativeCudfExecutionConfig {
             boundary_policy: ExecutionBoundaryPolicy::default(),
             source_scheduler_policy: SourceSchedulerPolicy::default(),
             source_chunk_planning_mode: SourceChunkPlanningMode::default(),
-            source_fetch_config: SourceFetchConfig::default(),
+            lakehouse_cache_fill_config: LakehouseCacheFillConfig::default(),
             host_output_memory_pool_accounting: false,
             service_stream_pool: None,
             service_stream_pool_size: None,
@@ -416,7 +413,7 @@ impl NativeCudfExecutionConfig {
             boundary_policy: ExecutionBoundaryPolicy::default(),
             source_scheduler_policy: SourceSchedulerPolicy::default(),
             source_chunk_planning_mode: SourceChunkPlanningMode::default(),
-            source_fetch_config: SourceFetchConfig::default(),
+            lakehouse_cache_fill_config: LakehouseCacheFillConfig::default(),
             host_output_memory_pool_accounting: false,
             service_stream_pool: None,
             service_stream_pool_size: None,
@@ -507,18 +504,12 @@ impl NativeCudfExecutionConfig {
         self
     }
 
-    /// Set service-level source IO resource policy for standalone native execution.
+    /// Set the lakehouse cache-fill resource policy for standalone native execution.
     ///
     /// Query-service execution gets this policy from the admitted service handle
     /// instead; this setter covers direct `NativeCudfExec`/optimizer usage.
-    pub fn with_source_fetch_config(mut self, source_fetch_config: SourceFetchConfig) -> Self {
-        self.source_fetch_config = source_fetch_config;
-        self
-    }
-
-    /// Set the timeout used by blocking object-store SourceFetch resource acquisition.
-    pub fn with_host_fetch_acquire_timeout(mut self, timeout: Duration) -> Self {
-        self.source_fetch_config.host_fetch_acquire_timeout = timeout;
+    pub fn with_lakehouse_cache_fill_config(mut self, config: LakehouseCacheFillConfig) -> Self {
+        self.lakehouse_cache_fill_config = config;
         self
     }
 
@@ -818,7 +809,7 @@ impl NativeCudfExecutionConfig {
         self.boundary_policy = handle.boundary_policy();
         self.source_scheduler_policy = handle.source_scheduler_policy();
         self.source_chunk_planning_mode = handle.source_chunk_planning_mode();
-        self.source_fetch_config = handle.source_fetch_config();
+        self.lakehouse_cache_fill_config = handle.lakehouse_cache_fill_config();
         self.native_pipeline_execution_mode = handle.native_pipeline_execution_mode();
         self.stddev_samp_execution_mode = handle.stddev_samp_execution_mode();
         self.dynamic_filter_execution_options = handle.dynamic_filter_execution_options();
@@ -1067,9 +1058,9 @@ impl NativeCudfExecutionConfig {
         self.source_chunk_planning_mode
     }
 
-    /// Source IO resource policy used by standalone native execution.
-    pub fn source_fetch_config(&self) -> &SourceFetchConfig {
-        &self.source_fetch_config
+    /// Lakehouse cache-fill resource policy used by standalone native execution.
+    pub fn lakehouse_cache_fill_config(&self) -> &LakehouseCacheFillConfig {
+        &self.lakehouse_cache_fill_config
     }
 
     /// Whether host Arrow output from native execution is charged to
@@ -1191,7 +1182,7 @@ impl NativeCudfExecutionConfig {
             .with_boundary_policy(self.boundary_policy)
             .with_source_scheduler_policy(self.source_scheduler_policy)
             .with_source_chunk_planning_mode(self.source_chunk_planning_mode)
-            .with_source_fetch_config(self.source_fetch_config.clone())
+            .with_lakehouse_cache_fill_config(self.lakehouse_cache_fill_config.clone())
             .with_cancellation(self.cancellation.clone())
             .with_native_pipeline_execution_mode(self.native_pipeline_execution_mode)
             .with_statistical_aggregate_execution_mode(self.stddev_samp_execution_mode)

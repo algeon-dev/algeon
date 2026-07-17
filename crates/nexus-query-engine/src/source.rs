@@ -40,7 +40,7 @@ pub use parquet::{
 };
 pub use read_policy::{
     CredentialMode, LakehouseCacheFillMode, LakehouseCacheReadMode, LakehouseCacheStatus, ParquetReadStrategy,
-    RemoteParquetReadMode, ResolvedParquetSource, SourceDecodeInput,
+    ResolvedParquetInput, ResolvedParquetSource,
 };
 pub(crate) use reader_predicate_literals::{
     ReaderPredicateDecimalScaleError, reader_predicate_decimal_raw_for_integer_value,

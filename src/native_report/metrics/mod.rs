@@ -7,9 +7,7 @@ use std::collections::BTreeSet;
 
 use datafusion::physical_plan::metrics::MetricsSet;
 
-use super::tsv::{
-    metric_count, metric_duration_nanos, optional_observed_metric_count, optional_observed_metric_duration_nanos,
-};
+use super::tsv::{metric_count, optional_observed_metric_count, optional_observed_metric_duration_nanos};
 
 mod dynamic_filter;
 mod graph;
@@ -255,18 +253,6 @@ pub struct NativeDataFusionExecutionMetrics {
     pub aggregate_strategy_rows: Vec<NativeAggregateStrategyMetricRow>,
     /// Stable nested join strategy rows.
     pub join_strategy_rows: Vec<NativeJoinStrategyMetricRow>,
-    /// Object-store bytes fetched into host buffers.
-    pub source_fetch_bytes: usize,
-    /// Count of object-store SourceFetch operations.
-    pub source_fetch_count: usize,
-    /// Time spent waiting for host-buffer byte budget, in nanoseconds.
-    pub host_fetch_budget_wait_time_ns: Option<usize>,
-    /// Time spent waiting for SourceFetch concurrency permits, in nanoseconds.
-    pub source_fetch_concurrency_wait_time_ns: Option<usize>,
-    /// Time spent fetching object-store bytes into host buffers, in nanoseconds.
-    pub source_fetch_time_ns: Option<usize>,
-    /// Time spent decoding host-buffer Parquet bytes, in nanoseconds.
-    pub source_decode_time_ns: Option<usize>,
 }
 
 impl NativeDataFusionExecutionMetrics {
@@ -388,12 +374,6 @@ impl NativeDataFusionExecutionMetrics {
             join_gather_map_bytes: metric_count(metrics, "join_gather_map_bytes"),
             aggregate_strategy_rows: aggregate_strategy_rows(metrics),
             join_strategy_rows: join_strategy_rows(metrics),
-            source_fetch_bytes: metric_count(metrics, "source_fetch_bytes"),
-            source_fetch_count: metric_count(metrics, "source_fetch_count"),
-            host_fetch_budget_wait_time_ns: metric_duration_nanos(metrics, "host_fetch_budget_wait_time"),
-            source_fetch_concurrency_wait_time_ns: metric_duration_nanos(metrics, "source_fetch_concurrency_wait_time"),
-            source_fetch_time_ns: metric_duration_nanos(metrics, "source_fetch_time"),
-            source_decode_time_ns: metric_duration_nanos(metrics, "source_decode_time"),
         }
     }
 

@@ -283,8 +283,6 @@ pub struct NativeSourceDiagnosticSummary {
     pub format: String,
     /// High-level source read strategy summary.
     pub source_read_strategy: String,
-    /// cuDF decode input summary.
-    pub source_decode_input: String,
     /// Credential mode summary.
     pub credential_mode: String,
     /// Lakehouse byte-cache status summary.
@@ -293,8 +291,6 @@ pub struct NativeSourceDiagnosticSummary {
     pub lakehouse_cache_read_mode: String,
     /// Lakehouse complete-object cache fill mode summary.
     pub lakehouse_cache_fill_mode: String,
-    /// Stable source fallback reason summary.
-    pub source_fallback_reason: String,
     /// Whether direct device read is enabled for this source.
     pub direct_device_read: bool,
     /// Number of source files.
@@ -524,12 +520,6 @@ impl TsvRow for NativeDataFusionExecutionRow {
             self.metrics.join_gather_map_bytes.to_string(),
             format_aggregate_strategy_rows(&self.metrics.aggregate_strategy_rows),
             format_join_strategy_rows(&self.metrics.join_strategy_rows),
-            self.metrics.source_fetch_bytes.to_string(),
-            self.metrics.source_fetch_count.to_string(),
-            optional_duration_ms_text(self.metrics.host_fetch_budget_wait_time_ns),
-            optional_duration_ms_text(self.metrics.source_fetch_concurrency_wait_time_ns),
-            optional_duration_ms_text(self.metrics.source_fetch_time_ns),
-            optional_duration_ms_text(self.metrics.source_decode_time_ns),
             format_source_diagnostics(&self.source_diagnostics),
             format_lakehouse_cache_fill_event_snapshot_rows(&self.metrics.lakehouse_cache_fill_event_snapshot_rows),
             format_plan_task_mapping_rows(&plan_task_mapping_rows),
@@ -673,10 +663,6 @@ mod tests {
                 | "dynamic_filter_runtime_rows"
                 | "aggregate_strategy_rows"
                 | "join_strategy_rows"
-                | "host_fetch_budget_wait_time_ms"
-                | "source_fetch_concurrency_wait_time_ms"
-                | "source_fetch_time_ms"
-                | "source_decode_time_ms"
                 | "source_diagnostics"
                 | "lakehouse_cache_fill_event_snapshot_rows" => "none",
                 _ => "0",
@@ -799,12 +785,6 @@ mod tests {
                 one_shot_join_materialization_bytes: 90,
                 one_shot_join_output_bytes: 91,
                 join_gather_map_bytes: 92,
-                source_fetch_bytes: 93,
-                source_fetch_count: 94,
-                host_fetch_budget_wait_time_ns: Some(1_000_000),
-                source_fetch_concurrency_wait_time_ns: Some(2_500_000),
-                source_fetch_time_ns: Some(3_750_000),
-                source_decode_time_ns: Some(4_125_000),
                 lakehouse_cache_fill_event_snapshot_rows: vec![
                     super::super::metrics::NativeLakehouseCacheFillEventMetricRow {
                         outcome: "completed".to_string(),
@@ -836,7 +816,7 @@ mod tests {
                 "mixed_post_decode\tmeasured_source_pruned\tsource_read_pruned\tnone\t",
                 "46\t47\t48\t49\t50\t51\t52\t53\t54\t55\t56\t57\t58\t59\t60\t61\t62\t63\t64\t65\t66\t67\t",
                 "0\t0\t0\t0\t0\t0\t0\t0\t68\t69\t70\t71\t72\t73\t74\t75\t76\t77\t78\t79\t80\t81\t82\t83\t",
-                "84\t85\t86\t87\t88\t89\t90\t91\t92\tnone\tnone\t93\t94\t1.000\t2.500\t3.750\t4.125\tnone\t",
+                "84\t85\t86\t87\t88\t89\t90\t91\t92\tnone\tnone\tnone\t",
                 "outcome=completed,bytes=4096,elapsed_ns=9000000,cache_path_hash=cache123,stable_id_hash=stable456,",
                 "file_index=0,chunk_index=2,error_code=none,error_kind=none,error_status=none,error_operation=none",
                 "\tnone"

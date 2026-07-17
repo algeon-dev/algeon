@@ -104,21 +104,13 @@ fn chunk_multi_source_batch_rejection(chunk: &SourceChunk) -> Option<&'static st
     if chunk.zero_column_count {
         return Some("ineligible_zero_column_count");
     }
-    if chunk.resolved_source.uses_host_buffer() {
-        return Some("ineligible_host_buffer");
-    }
     if !matches!(
-        chunk.resolved_source.read_strategy,
+        chunk.resolved_source.read_strategy(),
         crate::source::ParquetReadStrategy::LocalKvikio
             | crate::source::ParquetReadStrategy::LocalCacheKvikio
             | crate::source::ParquetReadStrategy::RemoteDirect
     ) {
         return Some("ineligible_read_strategy");
-    }
-    if matches!(chunk.resolved_source.read_strategy, crate::source::ParquetReadStrategy::RemoteDirect)
-        && chunk.resolved_source.remote_read_mode != crate::source::RemoteParquetReadMode::RequireDirect
-    {
-        return Some("ineligible_remote_read_mode");
     }
     if chunk.read_columns.is_empty() {
         return Some("ineligible_empty_read_columns");
@@ -170,7 +162,7 @@ fn source_chunk_batch_extension_rejection(
     if left.read_columns != right.read_columns {
         return Some("incompatible_read_columns");
     }
-    if left.resolved_source.read_strategy != right.resolved_source.read_strategy {
+    if left.resolved_source.read_strategy() != right.resolved_source.read_strategy() {
         return Some("incompatible_read_strategy");
     }
     let Some(current_bytes) = current_bytes else {

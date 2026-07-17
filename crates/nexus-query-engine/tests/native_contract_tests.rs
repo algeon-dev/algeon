@@ -51,9 +51,8 @@ use nexus_query_engine::{
         LakehouseCacheStatus, LiteralBatchSource, LocalParquetFile, LocalParquetSource, MissingColumn,
         ParquetEqualityDeleteFile, ParquetFieldIdReadBinding, ParquetPositionDeleteFile, ParquetReaderDecimalType,
         ParquetReaderDecimalTypeId, PartitionColumn, PartitionColumnDisposition, PredicateDisposition,
-        RejectedSourceFeature, RemoteParquetReadMode, ResolvedParquetSource, ScanLimitDisposition,
-        SchemaMappingDisposition, SourceColumnRef, SourceNode, ZERO_COLUMN_COUNT_COLUMN, ZeroColumnCountDisposition,
-        validate_local_parquet_source,
+        RejectedSourceFeature, ResolvedParquetSource, ScanLimitDisposition, SchemaMappingDisposition, SourceColumnRef,
+        SourceNode, ZERO_COLUMN_COUNT_COLUMN, ZeroColumnCountDisposition, validate_local_parquet_source,
     },
 };
 use parquet::{arrow::ArrowWriter, file::properties::WriterProperties};

@@ -817,15 +817,12 @@ fn resident_graph_cache_replica_limit_matches_per_device_admission_ceiling() {
 }
 
 #[test]
-fn query_service_resources_use_independent_lakehouse_cache_fill_limits() {
+fn query_service_resources_use_shared_lakehouse_cache_fill_limits() {
     let config = QueryServiceConfig {
-        source_fetch: SourceFetchConfig {
-            host_fetch_budget_bytes: Some(4096),
-            host_fetch_acquire_timeout: Duration::from_secs(9),
-            host_fetch_max_concurrent_ops: 5,
-            lakehouse_cache_fill_budget_bytes: Some(2048),
-            lakehouse_cache_fill_max_concurrent_ops: 2,
-            ..SourceFetchConfig::default()
+        lakehouse_cache_fill: LakehouseCacheFillConfig {
+            budget_bytes: Some(2048),
+            acquire_timeout: Duration::from_secs(9),
+            max_concurrent_ops: 2,
         },
         slot_guarantee: SlotGuarantee::Optimistic,
         ..QueryServiceConfig::default()
@@ -838,18 +835,14 @@ fn query_service_resources_use_independent_lakehouse_cache_fill_limits() {
     .unwrap();
     let resources = service.inner.resources.as_ref().unwrap();
 
-    assert_eq!(resources.host_fetch_budget.budget_bytes(), 4096);
-    assert_eq!(resources.source_fetch_concurrency.max_concurrent_ops(), 5);
     assert_eq!(resources.lakehouse_cache_fill_budget.budget_bytes(), 2048);
     assert_eq!(resources.lakehouse_cache_fill_concurrency.max_concurrent_ops(), 2);
 
     let handle = service.admit_query("tenant").unwrap();
     let tenant_context = handle.acquire_context().unwrap();
     let context = tenant_context.context();
-    assert_eq!(context.host_fetch_budget().budget_bytes(), 4096);
-    assert_eq!(context.host_fetch_acquire_timeout(), Duration::from_secs(9));
-    assert_eq!(context.host_fetch_max_concurrent_ops(), 5);
     assert_eq!(context.lakehouse_cache_fill_budget().budget_bytes(), 2048);
+    assert_eq!(context.lakehouse_cache_fill_acquire_timeout(), Duration::from_secs(9));
     assert_eq!(context.lakehouse_cache_fill_max_concurrent_ops(), 2);
 
     context.lakehouse_cache_fill_events().record(super::super::LakehouseCacheFillEvent {

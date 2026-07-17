@@ -137,8 +137,6 @@ pub struct TableFormatScanDiagnostics {
     pub native_source_read_capability: String,
     /// Comma-separated high-level source read strategies.
     pub source_read_strategy: String,
-    /// Comma-separated cuDF decode input kinds.
-    pub source_decode_input: String,
     /// Comma-separated credential modes.
     pub credential_mode: String,
     /// Comma-separated local byte-cache statuses.
@@ -147,8 +145,6 @@ pub struct TableFormatScanDiagnostics {
     pub lakehouse_cache_read_mode: String,
     /// Comma-separated complete-object lakehouse cache fill modes.
     pub lakehouse_cache_fill_mode: String,
-    /// Comma-separated stable source fallback reasons.
-    pub source_fallback_reason: String,
     /// Direct device-read eligibility.
     pub direct_device_read_disposition: TableFormatDirectDeviceReadDisposition,
 }
@@ -167,12 +163,10 @@ impl TableFormatScanDiagnostics {
             ("rejected_feature_list", self.rejected_feature_list.join(",")),
             ("native_source_read_capability", self.native_source_read_capability.clone()),
             ("source_read_strategy", self.source_read_strategy.clone()),
-            ("source_decode_input", self.source_decode_input.clone()),
             ("credential_mode", self.credential_mode.clone()),
             ("lakehouse_cache_status", self.lakehouse_cache_status.clone()),
             ("lakehouse_cache_read_mode", self.lakehouse_cache_read_mode.clone()),
             ("lakehouse_cache_fill_mode", self.lakehouse_cache_fill_mode.clone()),
-            ("source_fallback_reason", self.source_fallback_reason.clone()),
             ("direct_device_read_disposition", self.direct_device_read_disposition.code().to_string()),
         ])
     }

@@ -11,7 +11,7 @@ pub enum MetricUnit {
     Rows,
     /// Bytes resident on or allocated from device memory.
     DeviceBytes,
-    /// Bytes resident in host memory or fetched through host buffers.
+    /// Bytes resident in host memory.
     HostBytes,
     /// Parquet compressed bytes.
     ParquetBytes,
@@ -1010,54 +1010,6 @@ pub const QUERY_METRIC_DESCRIPTORS: &[MetricDescriptor] = &[
         MetricUnit::Nanos,
         MetricAggregation::Sum,
         "Time spent looking up source cache entries.",
-        Some(MetricDirection::LowerIsBetter),
-        None,
-    ),
-    metric(
-        "source_fetch_bytes",
-        MetricUnit::HostBytes,
-        MetricAggregation::Sum,
-        "Object-store bytes fetched into host buffers.",
-        Some(MetricDirection::LowerIsBetter),
-        None,
-    ),
-    metric(
-        "source_fetch_count",
-        MetricUnit::Count,
-        MetricAggregation::Sum,
-        "Object-store SourceFetch operations.",
-        Some(MetricDirection::LowerIsBetter),
-        None,
-    ),
-    metric(
-        "host_fetch_budget_wait_time",
-        MetricUnit::Nanos,
-        MetricAggregation::Sum,
-        "Time spent waiting for host-buffer byte budget.",
-        Some(MetricDirection::LowerIsBetter),
-        None,
-    ),
-    metric(
-        "source_fetch_concurrency_wait_time",
-        MetricUnit::Nanos,
-        MetricAggregation::Sum,
-        "Time spent waiting for object-store fetch permits.",
-        Some(MetricDirection::LowerIsBetter),
-        None,
-    ),
-    metric(
-        "source_fetch_time",
-        MetricUnit::Nanos,
-        MetricAggregation::Sum,
-        "Time spent fetching object-store bytes into host buffers.",
-        Some(MetricDirection::LowerIsBetter),
-        None,
-    ),
-    metric(
-        "source_decode_time",
-        MetricUnit::Nanos,
-        MetricAggregation::Sum,
-        "Time spent decoding host-buffer Parquet bytes into device frames.",
         Some(MetricDirection::LowerIsBetter),
         None,
     ),

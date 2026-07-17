@@ -122,8 +122,6 @@ fn benchmark_report_accepted_rows_include_bounded_status_contract_rows_and_resou
             source_cache_inserts: 30,
             source_cache_insert_skipped: 31,
             source_cache_retained_bytes: 32,
-            source_fetch_bytes: 33,
-            source_fetch_count: 34,
             row_groups_planned: 35,
             row_groups_committed: 36,
             partial_aggregate_count: 37,
@@ -297,10 +295,6 @@ fn benchmark_report_accepted_rows_include_bounded_status_contract_rows_and_resou
                 join_output_rows: 4,
                 join_output_bytes: 8192,
             }],
-            host_fetch_budget_wait_time_ns: Some(5_000_000),
-            source_fetch_concurrency_wait_time_ns: Some(6_000_000),
-            source_fetch_time_ns: Some(7_000_000),
-            source_decode_time_ns: Some(8_000_000),
             ..Default::default()
         },
         timing_metrics: NativeTpchTimingMetrics {
@@ -308,10 +302,6 @@ fn benchmark_report_accepted_rows_include_bounded_status_contract_rows_and_resou
             source_read_time_ms: Some(2.0),
             source_read_queue_wait_time_ms: Some(3.0),
             source_cache_lookup_time_ms: Some(4.0),
-            host_fetch_budget_wait_time_ms: Some(5.0),
-            source_fetch_concurrency_wait_time_ms: Some(6.0),
-            source_fetch_time_ms: Some(7.0),
-            source_decode_time_ms: Some(8.0),
             operator_time_ms: Some(9.0),
             chunk_operator_time_ms: Some(10.0),
             final_merge_time_ms: Some(11.0),
@@ -346,8 +336,6 @@ fn benchmark_report_accepted_rows_include_bounded_status_contract_rows_and_resou
     assert_eq!(fields[header_index(&header_fields, "partitioned_join_count")], "0");
     assert_eq!(fields[header_index(&header_fields, "join_partitioning_status")], "not_partitioned");
     assert_eq!(fields[header_index(&header_fields, "aggregate_merge_status")], "thresholded");
-    assert_eq!(fields[header_index(&header_fields, "source_fetch_bytes")], "33");
-    assert_eq!(fields[header_index(&header_fields, "source_fetch_count")], "34");
     assert_eq!(fields[header_index(&header_fields, "row_groups_planned")], "35");
     assert_eq!(fields[header_index(&header_fields, "row_groups_committed")], "36");
     assert_eq!(fields[header_index(&header_fields, "aggregate_libcudf_runtime_probe_count")], "1");
@@ -394,11 +382,7 @@ fn benchmark_report_accepted_rows_include_bounded_status_contract_rows_and_resou
             .contains("prepared_sort_groupby_num_groups=unknown")
     );
     assert!(text.contains("\tnode_id=n7,join_strategy=one_shot_equi,execution_strategy=bounded_one_shot_equi_join"));
-    assert!(
-        text.contains(
-            "\t1.000\t2.000\t3.000\t4.000\t5.000\t6.000\t7.000\t8.000\t9.000\t10.000\t11.000\t12.000\t13.000\n"
-        )
-    );
+    assert!(text.contains("\t1.000\t2.000\t3.000\t4.000\t9.000\t10.000\t11.000\t12.000\t13.000\n"));
 }
 
 #[test]

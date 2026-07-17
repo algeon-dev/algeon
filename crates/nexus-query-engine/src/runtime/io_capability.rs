@@ -1,9 +1,7 @@
-//! Deployment IO capability probes and GDS source eligibility diagnostics.
+//! Deployment IO capability probes for readiness and diagnostics.
 //!
 //! These types are readiness/reporting contracts. They do not select an
-//! execution path by themselves; source execution continues to use the existing
-//! host-buffer object-store path unless a future pipeline compiler consumes
-//! these diagnostics.
+//! execution path by themselves.
 
 use std::path::{Path, PathBuf};
 
@@ -245,102 +243,6 @@ impl GdsDriverProbeStatus {
     }
 }
 
-/// GDS eligibility decision for a specific source location and chunk size.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum SourceGdsEligibility {
-    /// The source can use a future GDS direct-device path.
-    Eligible,
-    /// Deployment-level GDS capability is unavailable.
-    DeploymentUnavailable,
-    /// Remote object-store/network sources must use host-buffer fetch/decode.
-    RemoteObjectStore,
-    /// The URI scheme is neither local filesystem nor a supported local/RDMA filesystem.
-    UnsupportedScheme,
-    /// The local path is not under a configured GDS-capable mount root.
-    NotOnGdsCapableMount,
-    /// The chunk is below the configured GDS minimum chunk-size threshold.
-    BelowMinChunkBytes,
-}
-
-impl SourceGdsEligibility {
-    /// Stable report code for this eligibility decision.
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Eligible => "eligible",
-            Self::DeploymentUnavailable => "deployment_unavailable",
-            Self::RemoteObjectStore => "remote_object_store",
-            Self::UnsupportedScheme => "unsupported_scheme",
-            Self::NotOnGdsCapableMount => "not_on_gds_capable_mount",
-            Self::BelowMinChunkBytes => "below_min_chunk_bytes",
-        }
-    }
-}
-
-/// Classifies a source location for future GDS direct-device reads.
-///
-/// S3, GS, HTTP(S), and HDFS locations are never GDS-eligible. Today only local
-/// filesystem paths under configured GDS-capable roots are eligible when the
-/// deployment probe succeeded and the chunk clears `gds_min_chunk_bytes`.
-pub fn source_gds_eligibility(
-    deployment: &DeploymentIoCapability,
-    source_location: &str,
-    chunk_bytes: Option<u64>,
-    gds_min_chunk_bytes: u64,
-    gds_capable_mount_roots: &[PathBuf],
-) -> SourceGdsEligibility {
-    let source = SourceLocationKind::classify(source_location);
-    if source.is_remote_object_store() {
-        return SourceGdsEligibility::RemoteObjectStore;
-    }
-    if !deployment.gds_available {
-        return SourceGdsEligibility::DeploymentUnavailable;
-    }
-    if chunk_bytes.is_some_and(|bytes| bytes < gds_min_chunk_bytes) {
-        return SourceGdsEligibility::BelowMinChunkBytes;
-    }
-    let Some(local_path) = source.local_path() else {
-        return SourceGdsEligibility::UnsupportedScheme;
-    };
-    if gds_capable_mount_roots.iter().any(|root| local_path.starts_with(root)) {
-        SourceGdsEligibility::Eligible
-    } else {
-        SourceGdsEligibility::NotOnGdsCapableMount
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum SourceLocationKind {
-    LocalPath(PathBuf),
-    RemoteObjectStore,
-    UnsupportedScheme,
-}
-
-impl SourceLocationKind {
-    fn classify(source_location: &str) -> Self {
-        let trimmed = source_location.trim();
-        let Some((scheme, rest)) = trimmed.split_once("://") else {
-            return Self::LocalPath(PathBuf::from(trimmed));
-        };
-        match scheme.to_ascii_lowercase().as_str() {
-            "file" => Self::LocalPath(PathBuf::from(rest)),
-            "s3" | "gs" | "gcs" | "az" | "abfs" | "abfss" | "http" | "https" | "hdfs" => Self::RemoteObjectStore,
-            "nvmeof" => Self::LocalPath(PathBuf::from(rest)),
-            _ => Self::UnsupportedScheme,
-        }
-    }
-
-    fn is_remote_object_store(&self) -> bool {
-        matches!(self, Self::RemoteObjectStore)
-    }
-
-    fn local_path(&self) -> Option<&Path> {
-        match self {
-            Self::LocalPath(path) => Some(path.as_path()),
-            Self::RemoteObjectStore | Self::UnsupportedScheme => None,
-        }
-    }
-}
-
 fn probe_nvidia_fs_status() -> NvidiaFsProbeStatus {
     probe_nvidia_fs_status_from_paths([NVIDIA_FS_PROC_PATH, NVIDIA_FS_SYSFS_PATH].iter().map(Path::new))
 }
@@ -385,14 +287,6 @@ fn gds_availability_status(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn available_deployment() -> DeploymentIoCapability {
-        DeploymentIoCapability::from_probe_inputs(
-            NvidiaFsProbeStatus::Present { path: PathBuf::from(NVIDIA_FS_PROC_PATH) },
-            KvikioCompatModeStatus::Unset,
-            GdsDriverProbeStatus::Available,
-        )
-    }
 
     #[test]
     fn kvikio_compat_mode_detection_distinguishes_forced_on_off_and_unset() {
@@ -446,75 +340,6 @@ mod tests {
         assert!(facts.contains(&("gds_status", "driver_missing".to_string())));
         assert!(facts.contains(&("kvikio_compat_mode", "forced_on".to_string())));
         assert!(facts.contains(&("gds_driver_probe_status", "probe_unimplemented".to_string())));
-    }
-
-    #[test]
-    fn source_gds_eligibility_never_allows_remote_object_store_locations() {
-        let deployment = available_deployment();
-        let roots = [PathBuf::from("/mnt/nexus-gds")];
-        for uri in [
-            "s3://bucket/file.parquet",
-            "gs://bucket/file.parquet",
-            "https://example.test/file.parquet",
-            "hdfs://namenode/file.parquet",
-        ] {
-            assert_eq!(
-                source_gds_eligibility(&deployment, uri, Some(64 * 1024 * 1024), 4 * 1024 * 1024, &roots),
-                SourceGdsEligibility::RemoteObjectStore
-            );
-        }
-    }
-
-    #[test]
-    fn source_gds_eligibility_requires_available_deployment_local_mount_and_min_chunk() {
-        let roots = [PathBuf::from("/mnt/nexus-gds")];
-        let unavailable = DeploymentIoCapability::from_probe_inputs(
-            NvidiaFsProbeStatus::DriverMissing,
-            KvikioCompatModeStatus::Unset,
-            GdsDriverProbeStatus::Available,
-        );
-        assert_eq!(
-            source_gds_eligibility(
-                &unavailable,
-                "/mnt/nexus-gds/tpch/sf10/lineitem.parquet",
-                Some(64 * 1024 * 1024),
-                4 * 1024 * 1024,
-                &roots,
-            ),
-            SourceGdsEligibility::DeploymentUnavailable
-        );
-
-        let available = available_deployment();
-        assert_eq!(
-            source_gds_eligibility(
-                &available,
-                "/mnt/nexus-gds/tpch/sf10/lineitem.parquet",
-                Some(1024),
-                4 * 1024 * 1024,
-                &roots,
-            ),
-            SourceGdsEligibility::BelowMinChunkBytes
-        );
-        assert_eq!(
-            source_gds_eligibility(
-                &available,
-                "/tmp/tpch/sf10/lineitem.parquet",
-                Some(64 * 1024 * 1024),
-                4 * 1024 * 1024,
-                &roots,
-            ),
-            SourceGdsEligibility::NotOnGdsCapableMount
-        );
-        assert_eq!(
-            source_gds_eligibility(
-                &available,
-                "file:///mnt/nexus-gds/tpch/sf10/lineitem.parquet",
-                Some(64 * 1024 * 1024),
-                4 * 1024 * 1024,
-                &roots,
-            ),
-            SourceGdsEligibility::Eligible
-        );
     }
 
     #[test]

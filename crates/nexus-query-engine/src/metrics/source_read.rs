@@ -13,18 +13,6 @@ pub struct SourceReadRuntimeMetrics {
     pub read_kind: String,
     /// Parquet read strategy used by the chunk or batch.
     pub read_strategy: String,
-    /// Host-buffer object-store fetch mode, or `none` for path-based reads.
-    pub host_buffer_fetch_mode: String,
-    /// Host-buffer payload bytes supplied to libcudf, when applicable.
-    pub host_buffer_payload_bytes: u64,
-    /// Object-store range request count for ranged host-buffer reads.
-    pub host_buffer_requested_range_count: u64,
-    /// Object-store range bytes requested for ranged host-buffer reads.
-    pub host_buffer_requested_range_bytes: u64,
-    /// Original object bytes represented by a ranged host-buffer read.
-    pub host_buffer_original_file_bytes: u64,
-    /// Mini-Parquet footer bytes produced by a ranged host-buffer read.
-    pub host_buffer_mini_parquet_footer_bytes: u64,
     /// Lower-layer Parquet read evidence reported by cudf-rs.
     pub parquet_read_evidence: SourceReadParquetEvidenceMetrics,
     /// Batch index within the source stream, or the chunk index for singleton reads.
@@ -81,16 +69,10 @@ impl SourceReadRuntimeMetrics {
     /// Serializes this row as stable comma-separated key/value pairs.
     pub fn to_stable_kv_row(&self) -> String {
         format!(
-            "source_node_id={},read_kind={},read_strategy={},host_buffer_fetch_mode={},host_buffer_payload_bytes={},host_buffer_requested_range_count={},host_buffer_requested_range_bytes={},host_buffer_original_file_bytes={},host_buffer_mini_parquet_footer_bytes={},batch_index={},chunk_count={},first_chunk_index={},last_chunk_index={},first_file_index={},last_file_index={},file_count={},row_group_count={},read_columns_per_file={},read_columns_total={},known_file_bytes={},estimated_source_read_bytes={},known_row_group_bytes={},known_projected_compressed_bytes={},known_projected_uncompressed_bytes={},known_pure_filter_compressed_bytes={},known_pure_filter_uncompressed_bytes={},output_rows={},reader_predicate={},reader_dynamic_filter_count={},source_batching_reason={},source_chunk_planning_mode={},source_chunk_planning_reason={},elapsed_ns={},parquet_read_input_kind={},remote_read_mode={},parquet_read_backend={},parquet_read_fallback_reason={},remote_backend_build_status={},remote_read_bytes={},remote_read_range_count={},device_read_support={},parquet_pruning_input_row_groups={},parquet_row_groups_after_stats_filter={},parquet_row_groups_after_bloom_filter={},parquet_bloom_pruning_status={}",
+            "source_node_id={},read_kind={},read_strategy={},batch_index={},chunk_count={},first_chunk_index={},last_chunk_index={},first_file_index={},last_file_index={},file_count={},row_group_count={},read_columns_per_file={},read_columns_total={},known_file_bytes={},estimated_source_read_bytes={},known_row_group_bytes={},known_projected_compressed_bytes={},known_projected_uncompressed_bytes={},known_pure_filter_compressed_bytes={},known_pure_filter_uncompressed_bytes={},output_rows={},reader_predicate={},reader_dynamic_filter_count={},source_batching_reason={},source_chunk_planning_mode={},source_chunk_planning_reason={},elapsed_ns={},parquet_read_input_kind={},remote_read_mode={},parquet_read_backend={},remote_backend_build_status={},remote_read_bytes={},remote_read_range_count={},device_read_support={},parquet_pruning_input_row_groups={},parquet_row_groups_after_stats_filter={},parquet_row_groups_after_bloom_filter={},parquet_bloom_pruning_status={}",
             self.source_node_id,
             self.read_kind,
             self.read_strategy,
-            self.host_buffer_fetch_mode,
-            self.host_buffer_payload_bytes,
-            self.host_buffer_requested_range_count,
-            self.host_buffer_requested_range_bytes,
-            self.host_buffer_original_file_bytes,
-            self.host_buffer_mini_parquet_footer_bytes,
             self.batch_index,
             self.chunk_count,
             self.first_chunk_index,
@@ -118,7 +100,6 @@ impl SourceReadRuntimeMetrics {
             self.parquet_read_evidence.input_kind,
             self.parquet_read_evidence.remote_read_mode,
             self.parquet_read_evidence.backend,
-            self.parquet_read_evidence.fallback_reason,
             self.parquet_read_evidence.backend_build_status,
             optional_u64(self.parquet_read_evidence.remote_bytes),
             optional_u64(self.parquet_read_evidence.remote_range_count),
@@ -140,8 +121,6 @@ pub struct SourceReadParquetEvidenceMetrics {
     pub remote_read_mode: String,
     /// Parquet reader backend evidence.
     pub backend: String,
-    /// Lower-layer fallback reason, if reported.
-    pub fallback_reason: String,
     /// Build-time remote backend status reported by cudf-rs/libcudf.
     pub backend_build_status: String,
     /// Remote bytes read, when reported by the lower layer.
@@ -166,7 +145,6 @@ impl Default for SourceReadParquetEvidenceMetrics {
             input_kind: "none".to_string(),
             remote_read_mode: "none".to_string(),
             backend: "none".to_string(),
-            fallback_reason: "none".to_string(),
             backend_build_status: "none".to_string(),
             remote_bytes: None,
             remote_range_count: None,
@@ -281,28 +259,6 @@ impl QueryMetrics {
     /// Adds source cache lookup time.
     pub fn record_source_cache_lookup_time(&mut self, elapsed: Duration) {
         self.source_cache_lookup_time += elapsed;
-    }
-
-    /// Records one object-store SourceFetch payload.
-    pub fn record_source_fetch(&mut self, bytes: u64, elapsed: Duration) {
-        self.source_fetch_count = self.source_fetch_count.saturating_add(1);
-        self.source_fetch_bytes = self.source_fetch_bytes.saturating_add(bytes);
-        self.source_fetch_time += elapsed;
-    }
-
-    /// Adds time spent waiting on host-buffer byte budget.
-    pub fn record_host_fetch_budget_wait(&mut self, elapsed: Duration) {
-        self.host_fetch_budget_wait_time += elapsed;
-    }
-
-    /// Adds time spent waiting on the SourceFetch concurrency gate.
-    pub fn record_source_fetch_concurrency_wait(&mut self, elapsed: Duration) {
-        self.source_fetch_concurrency_wait_time += elapsed;
-    }
-
-    /// Adds time spent decoding host-buffer Parquet bytes.
-    pub fn record_source_decode_time(&mut self, elapsed: Duration) {
-        self.source_decode_time += elapsed;
     }
 
     /// Updates the peak retained source-cache bytes.

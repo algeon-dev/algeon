@@ -335,10 +335,7 @@ pub(in crate::exec::bounded) fn try_start_bounded_join_leaf_local_parquet_source
 fn join_leaf_source_prefetch_remote_reader_admitted(source: &LocalParquetSource) -> bool {
     !source.files.is_empty()
         && source.files.iter().all(|file| {
-            matches!(
-                file.resolved_source.read_strategy,
-                crate::source::ParquetReadStrategy::RemoteDirect | crate::source::ParquetReadStrategy::RemoteHostBuffer
-            )
+            matches!(file.resolved_source.read_strategy(), crate::source::ParquetReadStrategy::RemoteDirect)
         })
 }
 

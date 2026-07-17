@@ -156,7 +156,6 @@ pub fn log_leaf_guard_rejection(query_id: &str, error: &DataFusionError, profile
         planned_delete_file_count = fields.planned_delete_file_count,
         rejected_feature_list = fields.rejected_feature_list,
         source_read_strategy = fields.source_read_strategy,
-        source_decode_input = fields.source_decode_input,
         credential_mode = fields.credential_mode,
         lakehouse_cache_status = fields.lakehouse_cache_status,
         direct_device_read_disposition = fields.direct_device_read_disposition,
@@ -204,7 +203,6 @@ pub(crate) struct LeafGuardEventFields<'a> {
     pub planned_delete_file_count: &'a str,
     pub rejected_feature_list: &'a str,
     pub source_read_strategy: &'a str,
-    pub source_decode_input: &'a str,
     pub credential_mode: &'a str,
     pub lakehouse_cache_status: &'a str,
     pub direct_device_read_disposition: &'a str,
@@ -259,7 +257,6 @@ pub(crate) fn leaf_guard_event_fields(error: &DataFusionError) -> Option<LeafGua
         planned_delete_file_count: facts.get("planned_delete_file_count").unwrap_or(""),
         rejected_feature_list: facts.get("rejected_feature_list").unwrap_or(""),
         source_read_strategy: facts.get("source_read_strategy").unwrap_or(""),
-        source_decode_input: facts.get("source_decode_input").unwrap_or(""),
         credential_mode: facts.get("credential_mode").unwrap_or(""),
         lakehouse_cache_status: facts.get("lakehouse_cache_status").unwrap_or(""),
         direct_device_read_disposition: facts.get("direct_device_read_disposition").unwrap_or(""),
@@ -515,8 +512,7 @@ mod tests {
         .with_fact("planned_data_file_count", "2")
         .with_fact("planned_delete_file_count", "1")
         .with_fact("rejected_feature_list", FallbackReason::IcebergFieldIdMappingUnsupported.code())
-        .with_fact("source_read_strategy", "remote_host_buffer_full")
-        .with_fact("source_decode_input", "host_buffer")
+        .with_fact("source_read_strategy", "remote_direct")
         .with_fact("credential_mode", "scoped_resolved")
         .with_fact("lakehouse_cache_status", "miss")
         .with_fact("direct_device_read_disposition", "rejected")
@@ -535,8 +531,7 @@ mod tests {
         assert_eq!(fields.planned_data_file_count, "2");
         assert_eq!(fields.planned_delete_file_count, "1");
         assert_eq!(fields.rejected_feature_list, FallbackReason::IcebergFieldIdMappingUnsupported.code());
-        assert_eq!(fields.source_read_strategy, "remote_host_buffer_full");
-        assert_eq!(fields.source_decode_input, "host_buffer");
+        assert_eq!(fields.source_read_strategy, "remote_direct");
         assert_eq!(fields.credential_mode, "scoped_resolved");
         assert_eq!(fields.lakehouse_cache_status, "miss");
         assert_eq!(fields.direct_device_read_disposition, "rejected");

@@ -310,12 +310,10 @@ fn benchmark_report_tsv_exposes_runtime_timing_and_parity_fields() {
     assert!(tsv.contains("\tnative_runtime_elapsed_ms\t"));
     assert!(tsv.contains("\tcpu_runtime_elapsed_ms\t"));
     assert!(tsv.contains("\tsource_read_strategy\t"));
-    assert!(tsv.contains("\tsource_decode_input\t"));
     assert!(tsv.contains("\tcredential_mode\t"));
     assert!(tsv.contains("\tlakehouse_cache_status\t"));
     assert!(tsv.contains("\tlakehouse_cache_read_mode\t"));
     assert!(tsv.contains("\tlakehouse_cache_fill_mode\t"));
-    assert!(tsv.contains("\tsource_fallback_reason\t"));
     assert!(tsv.contains("\tnative_source_read_runtime_rows\t"));
     assert!(tsv.contains("\tlakehouse_cache_fill_event_snapshot_rows\t"));
     assert!(tsv.contains("\ttimeout_category\t"));

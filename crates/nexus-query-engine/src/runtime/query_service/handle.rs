@@ -289,9 +289,9 @@ impl QueryHandle {
         self.service.config.source_chunk_planning_mode
     }
 
-    /// Source IO resource policy assigned to this admitted query.
-    pub fn source_fetch_config(&self) -> SourceFetchConfig {
-        self.service.config.source_fetch.clone()
+    /// Lakehouse cache-fill resource policy assigned to this admitted query.
+    pub fn lakehouse_cache_fill_config(&self) -> LakehouseCacheFillConfig {
+        self.service.config.lakehouse_cache_fill.clone()
     }
 
     /// Native bounded-pipeline mode copied into the tenant execution context.
@@ -447,16 +447,12 @@ impl QueryHandle {
             boundary_policy: self.service.config.boundary_policy,
             source_scheduler_policy: self.service.config.source_scheduler_policy,
             source_chunk_planning_mode: self.service.config.source_chunk_planning_mode,
-            source_fetch_config: self.service.config.source_fetch.clone(),
+            lakehouse_cache_fill_config: self.service.config.lakehouse_cache_fill.clone(),
             service_stream_pool: device.stream_pool().clone(),
-            host_fetch_budget: resources.host_fetch_budget.clone(),
-            source_fetch_concurrency: resources.source_fetch_concurrency.clone(),
             lakehouse_cache_fill_budget: resources.lakehouse_cache_fill_budget.clone(),
             lakehouse_cache_fill_concurrency: resources.lakehouse_cache_fill_concurrency.clone(),
             lakehouse_cache_fill_events: super::LakehouseCacheFillEventSink::default(),
-            gds_concurrency: resources.gds_concurrency.clone(),
-            source_fetch_runtime: Arc::clone(&resources.source_fetch_runtime),
-            lakehouse_cache_fill_runtime: Arc::clone(&resources.lakehouse_cache_fill_runtime),
+            object_store_control_runtime: Arc::clone(&resources.object_store_control_runtime),
             source_object_stores: Arc::clone(&resources.source_object_stores),
             deployment_io_capability: resources.deployment_io_capability.clone(),
             cancellation,

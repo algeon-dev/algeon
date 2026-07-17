@@ -239,10 +239,6 @@ pub(super) fn iceberg_config(values: &mut EnvValues<'_>) -> Result<Option<Iceber
         NEXUS_ICEBERG_S3_REGION_ENV,
         NEXUS_ICEBERG_S3_PATH_STYLE_ENV,
         NEXUS_ICEBERG_S3_CREDENTIAL_SOURCE_ENV,
-        NEXUS_ICEBERG_PARQUET_READ_STRATEGY_ENV,
-        NEXUS_ICEBERG_REMOTE_DIRECT_ENV,
-        NEXUS_ICEBERG_REMOTE_DIRECT_READ_MODE_ENV,
-        NEXUS_ICEBERG_REMOTE_HOST_BUFFER_RANGED_ENV,
         NEXUS_LAKEHOUSE_CACHE_ROOT_ENV,
         NEXUS_LAKEHOUSE_CACHE_READ_ENV,
         NEXUS_LAKEHOUSE_CACHE_POLICY_ENV,
@@ -362,27 +358,6 @@ pub(super) fn iceberg_backend_requires_scoped_remote_direct_profile(backend: &Ic
 pub(super) fn table_format_parquet_read_strategy_config(
     values: &mut EnvValues<'_>,
 ) -> Result<TableFormatParquetReadStrategyConfig> {
-    let preference = values
-        .string(NEXUS_ICEBERG_PARQUET_READ_STRATEGY_ENV)
-        .map(|raw| parse_table_format_parquet_read_strategy(&raw))
-        .transpose()?
-        .unwrap_or_default();
-    let remote_direct_enabled = values.optional_bool(NEXUS_ICEBERG_REMOTE_DIRECT_ENV)?.unwrap_or(true);
-    let remote_direct_read_mode = values
-        .string(NEXUS_ICEBERG_REMOTE_DIRECT_READ_MODE_ENV)
-        .map(|raw| parse_remote_parquet_read_mode(&raw))
-        .transpose()?
-        .unwrap_or(nexus_query_engine::source::RemoteParquetReadMode::RequireDirect);
-    if !remote_direct_enabled
-        && remote_direct_read_mode == nexus_query_engine::source::RemoteParquetReadMode::RequireDirect
-    {
-        return Err(ServerError::invalid_config(
-            NEXUS_ICEBERG_REMOTE_DIRECT_ENV,
-            format!("cannot be disabled when {NEXUS_ICEBERG_REMOTE_DIRECT_READ_MODE_ENV} is `require_direct`"),
-        ));
-    }
-    let remote_host_buffer_ranged_enabled =
-        values.optional_bool(NEXUS_ICEBERG_REMOTE_HOST_BUFFER_RANGED_ENV)?.unwrap_or(false);
     let lakehouse_cache_root = values.string(NEXUS_LAKEHOUSE_CACHE_ROOT_ENV).map(PathBuf::from);
     let lakehouse_cache_read_policy = values
         .string(NEXUS_LAKEHOUSE_CACHE_READ_ENV)
@@ -438,10 +413,6 @@ pub(super) fn table_format_parquet_read_strategy_config(
     };
 
     Ok(TableFormatParquetReadStrategyConfig {
-        preference,
-        remote_direct_enabled,
-        remote_direct_read_mode,
-        remote_host_buffer_ranged_enabled,
         lakehouse_cache_root,
         lakehouse_cache_read_policy,
         lakehouse_cache_policy,
@@ -450,35 +421,6 @@ pub(super) fn table_format_parquet_read_strategy_config(
         credential_mode,
         ..Default::default()
     })
-}
-
-#[cfg(feature = "iceberg")]
-pub(super) fn parse_table_format_parquet_read_strategy(raw: &str) -> Result<TableFormatParquetReadStrategyPreference> {
-    match raw.trim().to_ascii_lowercase().as_str() {
-        "auto" => Ok(TableFormatParquetReadStrategyPreference::Auto),
-        "host_buffer" => Ok(TableFormatParquetReadStrategyPreference::HostBuffer),
-        "local_cache" => Ok(TableFormatParquetReadStrategyPreference::LocalCache),
-        "remote_kvikio" => Ok(TableFormatParquetReadStrategyPreference::RemoteKvikio),
-        other => Err(ServerError::invalid_config(
-            NEXUS_ICEBERG_PARQUET_READ_STRATEGY_ENV,
-            format!("must be `auto`, `host_buffer`, `local_cache`, or `remote_kvikio`, got `{other}`"),
-        )),
-    }
-}
-
-#[cfg(feature = "iceberg")]
-pub(super) fn parse_remote_parquet_read_mode(raw: &str) -> Result<nexus_query_engine::source::RemoteParquetReadMode> {
-    match raw.trim().to_ascii_lowercase().as_str() {
-        "prefer" | "prefer_direct" => Ok(nexus_query_engine::source::RemoteParquetReadMode::PreferDirect),
-        "require" | "require_direct" => Ok(nexus_query_engine::source::RemoteParquetReadMode::RequireDirect),
-        "allow_host_fallback" | "host_fallback" => {
-            Ok(nexus_query_engine::source::RemoteParquetReadMode::AllowHostFallback)
-        },
-        other => Err(ServerError::invalid_config(
-            NEXUS_ICEBERG_REMOTE_DIRECT_READ_MODE_ENV,
-            format!("must be `prefer_direct`, `require_direct`, or `allow_host_fallback`, got `{other}`"),
-        )),
-    }
 }
 
 #[cfg(feature = "iceberg")]
@@ -604,10 +546,6 @@ pub(super) fn reject_iceberg_env_without_feature(values: &mut EnvValues<'_>) -> 
         NEXUS_ICEBERG_S3_REGION_ENV,
         NEXUS_ICEBERG_S3_PATH_STYLE_ENV,
         NEXUS_ICEBERG_S3_CREDENTIAL_SOURCE_ENV,
-        crate::table_format::NEXUS_ICEBERG_PARQUET_READ_STRATEGY_ENV,
-        crate::table_format::NEXUS_ICEBERG_REMOTE_DIRECT_ENV,
-        crate::table_format::NEXUS_ICEBERG_REMOTE_DIRECT_READ_MODE_ENV,
-        crate::table_format::NEXUS_ICEBERG_REMOTE_HOST_BUFFER_RANGED_ENV,
         crate::table_format::NEXUS_LAKEHOUSE_CACHE_ROOT_ENV,
         crate::table_format::NEXUS_LAKEHOUSE_CACHE_READ_ENV,
         crate::table_format::NEXUS_LAKEHOUSE_CACHE_POLICY_ENV,

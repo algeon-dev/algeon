@@ -29,11 +29,6 @@ pub const NEXUS_SERVER_NATIVE_MAX_SOURCE_READS_IN_FLIGHT_ENV: &str = "NEXUS_SERV
 /// Bounded source chunk planning mode. Accepts `conservative` or
 /// `local_parquet_throughput`.
 pub const NEXUS_SERVER_NATIVE_SOURCE_CHUNK_PLANNING_MODE_ENV: &str = "NEXUS_SERVER_NATIVE_SOURCE_CHUNK_PLANNING_MODE";
-/// Seconds a native object-store source read may wait for host-buffer budget
-/// or source-fetch concurrency before returning a resource timeout. This
-/// service-level source IO setting applies in both bounded and unbounded mode.
-pub const NEXUS_SERVER_NATIVE_HOST_FETCH_ACQUIRE_TIMEOUT_SECS_ENV: &str =
-    "NEXUS_SERVER_NATIVE_HOST_FETCH_ACQUIRE_TIMEOUT_SECS";
 /// Per-device retained-byte cap for the native query-service decoded local
 /// Parquet source cache. Unset disables the service cache.
 pub const NEXUS_SERVER_NATIVE_SOURCE_CACHE_MAX_RETAINED_BYTES_ENV: &str =
@@ -162,14 +157,6 @@ pub const NEXUS_SERVER_NATIVE_CONFIG_OPTIONS: &[NexusServerNativeConfigOption] =
         description: "Bounded source chunk planning mode.",
     },
     NexusServerNativeConfigOption {
-        toml_field: "native.host_fetch_acquire_timeout_secs",
-        env_var: NEXUS_SERVER_NATIVE_HOST_FETCH_ACQUIRE_TIMEOUT_SECS_ENV,
-        value_type: "positive integer seconds",
-        scope: ServerNativeConfigScope::SourceIoResource,
-        session_key: None,
-        description: "Service-level host-buffer budget and source-fetch concurrency wait timeout.",
-    },
-    NexusServerNativeConfigOption {
         toml_field: "native.source_cache_max_retained_bytes",
         env_var: NEXUS_SERVER_NATIVE_SOURCE_CACHE_MAX_RETAINED_BYTES_ENV,
         value_type: "positive integer bytes",
@@ -282,12 +269,6 @@ pub(super) fn native_optimizer_config(
         parse_source_chunk_planning_mode(raw.field, &raw.value).map(|mode| NativeConfigValue::new(mode, raw.field))
     })
     .transpose()?;
-    let host_fetch_acquire_timeout_secs = optional_native_u64(
-        values,
-        NEXUS_SERVER_NATIVE_HOST_FETCH_ACQUIRE_TIMEOUT_SECS_ENV,
-        "native.host_fetch_acquire_timeout_secs",
-        file.host_fetch_acquire_timeout_secs,
-    )?;
     let source_cache_max_retained_bytes = optional_native_u64(
         values,
         NEXUS_SERVER_NATIVE_SOURCE_CACHE_MAX_RETAINED_BYTES_ENV,
@@ -481,12 +462,6 @@ pub(super) fn native_optimizer_config(
     }
     if let Some(mode) = source_chunk_planning_mode {
         execution_config = execution_config.with_source_chunk_planning_mode(mode.value);
-    }
-    if let Some(timeout_secs) = host_fetch_acquire_timeout_secs {
-        if timeout_secs.value == 0 {
-            return Err(ServerError::invalid_config(timeout_secs.field, "must be greater than zero"));
-        }
-        execution_config = execution_config.with_host_fetch_acquire_timeout(Duration::from_secs(timeout_secs.value));
     }
     if let Some(max_retained_bytes) = source_cache_max_retained_bytes {
         if max_retained_bytes.value == 0 {

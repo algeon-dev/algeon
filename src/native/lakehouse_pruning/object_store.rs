@@ -34,7 +34,7 @@ impl<'a> FooterObjectStoreRegistry<'a> {
         match self.runtime_env.object_store(&object.store_url) {
             Ok(store) => Ok(store),
             Err(runtime_error) if object.scheme == "s3" => {
-                let Some(profile_id) = file.resolved_source.storage_profile_id.as_deref() else {
+                let Some(profile_id) = file.resolved_source.storage_profile_id() else {
                     return Err(format!(
                         "object_store_unregistered {}",
                         foreign_error_diagnostic(

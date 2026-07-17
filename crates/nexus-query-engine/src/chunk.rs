@@ -1351,8 +1351,7 @@ mod tests {
         runtime::{MemoryControlPolicy, SourceChunkPlanningMode},
         source::{
             CredentialMode, LakehouseCacheReadMode, LakehouseCacheStatus, ParquetPositionDeleteFile,
-            ParquetReadStrategy, ParquetReaderDecimalTypeId, ParquetSourceLocation, RemoteParquetReadMode,
-            ResolvedParquetSource,
+            ParquetReaderDecimalTypeId, ParquetSourceLocation, ResolvedParquetSource,
         },
     };
 
@@ -1401,8 +1400,7 @@ mod tests {
         let mut chunk = batchable_chunk(index, file_index, bytes);
         let location = format!("s3://bucket/part-{file_index}.parquet");
         chunk.resolved_source =
-            ResolvedParquetSource::remote_direct(location.clone(), CredentialMode::SharedProcessEnv)
-                .with_remote_read_mode(RemoteParquetReadMode::RequireDirect);
+            ResolvedParquetSource::remote_kvikio(location.clone(), CredentialMode::SharedProcessEnv);
         chunk.location = ParquetSourceLocation::object_store_uri(&location).expect("valid s3 object URI");
         chunk.path = PathBuf::from(location);
         chunk
@@ -1569,7 +1567,7 @@ mod tests {
         ));
         fs::write(&path, b"placeholder").unwrap();
         let resolved_source =
-            ResolvedParquetSource::remote_direct("s3://bucket/table/part-0.parquet", CredentialMode::SharedProcessEnv)
+            ResolvedParquetSource::remote_kvikio("s3://bucket/table/part-0.parquet", CredentialMode::SharedProcessEnv)
                 .with_lakehouse_cache_path(path.display().to_string())
                 .with_lakehouse_cache_read_mode(LakehouseCacheReadMode::Bypassed)
                 .with_content_identity("content-a");
@@ -1584,8 +1582,7 @@ mod tests {
     #[test]
     fn source_metadata_cache_key_distinguishes_object_store_profile_and_content_identity() {
         let base_resolved =
-            ResolvedParquetSource::remote_direct("s3://bucket/table/part-0.parquet", CredentialMode::SharedProcessEnv)
-                .with_remote_read_mode(RemoteParquetReadMode::RequireDirect);
+            ResolvedParquetSource::remote_kvikio("s3://bucket/table/part-0.parquet", CredentialMode::SharedProcessEnv);
         let base = LocalParquetFile::from_resolved_parquet_source(base_resolved)
             .expect("valid remote direct source")
             .with_stable_id("part-0")
@@ -1598,10 +1595,10 @@ mod tests {
             .clone()
             .with_resolved_parquet_source(base.resolved_source.clone().with_content_identity("content-b"))
             .expect("valid content-scoped remote direct source");
-        let other_location = LocalParquetFile::from_resolved_parquet_source(
-            ResolvedParquetSource::remote_direct("s3://bucket/table/part-1.parquet", CredentialMode::SharedProcessEnv)
-                .with_remote_read_mode(RemoteParquetReadMode::RequireDirect),
-        )
+        let other_location = LocalParquetFile::from_resolved_parquet_source(ResolvedParquetSource::remote_kvikio(
+            "s3://bucket/table/part-1.parquet",
+            CredentialMode::SharedProcessEnv,
+        ))
         .expect("valid remote direct source")
         .with_stable_id("part-0")
         .with_file_size_bytes(4096);
@@ -1615,8 +1612,7 @@ mod tests {
     fn remote_direct_decimal_reader_predicate_requires_footer_type_metadata() {
         let schema = Arc::new(Schema::new(vec![Field::new("discount", DataType::Decimal128(15, 2), true)]));
         let resolved =
-            ResolvedParquetSource::remote_direct("s3://bucket/table/part-0.parquet", CredentialMode::SharedProcessEnv)
-                .with_remote_read_mode(RemoteParquetReadMode::RequireDirect);
+            ResolvedParquetSource::remote_kvikio("s3://bucket/table/part-0.parquet", CredentialMode::SharedProcessEnv);
         let file = LocalParquetFile::from_resolved_parquet_source(resolved)
             .expect("valid remote direct source")
             .with_stable_id("part-0")
@@ -1640,44 +1636,7 @@ mod tests {
         assert_eq!(error.code(), QueryErrorCode::UnsupportedPlanShape);
         assert_eq!(error.fact_value("reason"), Some("reader_decimal_type_metadata_unavailable"));
         assert_eq!(error.fact_value("read_strategy"), Some("remote_direct"));
-        assert_eq!(error.fact_value("remote_read_mode"), Some("require_direct"));
-        assert_eq!(error.fact_value("missing_reader_decimal_columns"), Some("discount"));
-        assert!(error.fact_value("path").is_some_and(|value| value.starts_with("object_store:s3:fnv64:")));
-        assert!(!error.to_string().contains("s3://bucket"));
-    }
-
-    #[test]
-    fn remote_host_buffer_decimal_reader_predicate_requires_footer_type_metadata() {
-        let schema = Arc::new(Schema::new(vec![Field::new("discount", DataType::Decimal128(15, 2), true)]));
-        let resolved = ResolvedParquetSource::remote_host_buffer(
-            "s3://bucket/table/part-0.parquet",
-            "s3://bucket/table/part-0.parquet",
-            CredentialMode::SharedProcessEnv,
-        );
-        let file = LocalParquetFile::from_resolved_parquet_source(resolved)
-            .expect("valid remote host-buffer source")
-            .with_stable_id("part-0")
-            .with_file_size_bytes(4096);
-        let predicate = Expr::binary(
-            Expr::column("discount"),
-            BinaryOp::GtEq,
-            Expr::literal(LiteralValue::Decimal128 { raw: 5, precision: 15, scale: 2 }),
-        );
-        let source = LocalParquetSource::from_files(vec![file], schema, vec!["discount".to_string()])
-            .with_column_file_indices(vec![0], vec![0], vec![])
-            .with_reader_predicate(predicate);
-
-        let error = plan_local_parquet_source_chunks(
-            NodeId::from_index_for_internal_use(7),
-            &source,
-            SourceChunkPlanningPolicy::new(None, 1),
-        )
-        .expect_err("remote host-buffer decimal predicates need proven footer dtype metadata");
-
-        assert_eq!(error.code(), QueryErrorCode::UnsupportedPlanShape);
-        assert_eq!(error.fact_value("reason"), Some("reader_decimal_type_metadata_unavailable"));
-        assert_eq!(error.fact_value("read_strategy"), Some("remote_host_buffer"));
-        assert_eq!(error.fact_value("remote_read_mode"), Some("allow_host_fallback"));
+        assert_eq!(error.fact_value("remote_read_mode"), Some("require_kvikio"));
         assert_eq!(error.fact_value("missing_reader_decimal_columns"), Some("discount"));
         assert!(error.fact_value("path").is_some_and(|value| value.starts_with("object_store:s3:fnv64:")));
         assert!(!error.to_string().contains("s3://bucket"));
@@ -1687,8 +1646,7 @@ mod tests {
     fn remote_direct_decimal_reader_predicate_rejects_supplied_footer_type_mismatch() {
         let schema = Arc::new(Schema::new(vec![Field::new("discount", DataType::Decimal128(15, 2), true)]));
         let resolved =
-            ResolvedParquetSource::remote_direct("s3://bucket/table/part-0.parquet", CredentialMode::SharedProcessEnv)
-                .with_remote_read_mode(RemoteParquetReadMode::RequireDirect);
+            ResolvedParquetSource::remote_kvikio("s3://bucket/table/part-0.parquet", CredentialMode::SharedProcessEnv);
         let file = LocalParquetFile::from_resolved_parquet_source(resolved)
             .expect("valid remote direct source")
             .with_stable_id("part-0")
@@ -1719,54 +1677,7 @@ mod tests {
         assert_eq!(error.code(), QueryErrorCode::UnsupportedPlanShape);
         assert_eq!(error.fact_value("reason"), Some("reader_decimal_type_metadata_mismatch"));
         assert_eq!(error.fact_value("read_strategy"), Some("remote_direct"));
-        assert_eq!(error.fact_value("remote_read_mode"), Some("require_direct"));
-        assert!(
-            error
-                .fact_value("missing_reader_decimal_columns")
-                .is_some_and(|value| { value.contains("discount:decimal32:-2!=footer:decimal64:-2") })
-        );
-        assert!(!error.to_string().contains("s3://bucket"));
-    }
-
-    #[test]
-    fn remote_host_buffer_decimal_reader_predicate_rejects_supplied_footer_type_mismatch() {
-        let schema = Arc::new(Schema::new(vec![Field::new("discount", DataType::Decimal128(15, 2), true)]));
-        let resolved = ResolvedParquetSource::remote_host_buffer(
-            "s3://bucket/table/part-0.parquet",
-            "s3://bucket/table/part-0.parquet",
-            CredentialMode::SharedProcessEnv,
-        );
-        let file = LocalParquetFile::from_resolved_parquet_source(resolved)
-            .expect("valid remote host-buffer source")
-            .with_stable_id("part-0")
-            .with_reader_decimal_types(vec![ParquetReaderDecimalType::new(
-                "discount",
-                ParquetReaderDecimalTypeId::Decimal32,
-                -2,
-            )]);
-        let predicate = Expr::binary(
-            Expr::column("discount"),
-            BinaryOp::GtEq,
-            Expr::literal(LiteralValue::Decimal128 { raw: 5, precision: 15, scale: 2 }),
-        );
-        let source = LocalParquetSource::from_files(vec![file], schema, vec!["discount".to_string()])
-            .with_column_file_indices(vec![0], vec![0], vec![])
-            .with_reader_predicate(predicate);
-        let footer_reader_decimal_types =
-            vec![ParquetReaderDecimalType::new("discount", ParquetReaderDecimalTypeId::Decimal64, -2)];
-
-        let error = validate_supplied_reader_decimal_types_match_footer(
-            &source,
-            &source.files[0],
-            &source.files[0].reader_decimal_types,
-            &footer_reader_decimal_types,
-        )
-        .expect_err("pre-attached host-buffer reader decimal types must match footer metadata");
-
-        assert_eq!(error.code(), QueryErrorCode::UnsupportedPlanShape);
-        assert_eq!(error.fact_value("reason"), Some("reader_decimal_type_metadata_mismatch"));
-        assert_eq!(error.fact_value("read_strategy"), Some("remote_host_buffer"));
-        assert_eq!(error.fact_value("remote_read_mode"), Some("allow_host_fallback"));
+        assert_eq!(error.fact_value("remote_read_mode"), Some("require_kvikio"));
         assert!(
             error
                 .fact_value("missing_reader_decimal_columns")
@@ -1804,27 +1715,15 @@ mod tests {
     }
 
     #[test]
-    fn local_throughput_source_chunk_planning_rejects_object_store_and_host_buffer_sources() {
+    fn local_throughput_source_chunk_planning_rejects_object_store_sources() {
         let object_store = source_from_file(
             LocalParquetFile::object_store_uri("s3://bucket/table/part-0.parquet").expect("valid s3 object URI"),
         );
-        let mut host_buffer_file = local_source_file();
-        host_buffer_file.resolved_source.read_strategy = ParquetReadStrategy::RemoteHostBuffer;
-        let host_buffer = source_from_file(host_buffer_file);
         let policy = bounded_policy(64 * 1024 * 1024 * 1024, 64 * 1024 * 1024, 1);
 
         assert_eq!(
             SourceChunkPlanningPolicy::from_memory_policy_with_mode(
                 &object_store,
-                policy,
-                SourceChunkPlanningMode::LocalParquetThroughput,
-            )
-            .max_row_groups_per_chunk,
-            1
-        );
-        assert_eq!(
-            SourceChunkPlanningPolicy::from_memory_policy_with_mode(
-                &host_buffer,
                 policy,
                 SourceChunkPlanningMode::LocalParquetThroughput,
             )
@@ -2015,18 +1914,16 @@ mod tests {
         let mut read_all = batchable_chunk(1, 1, 20);
         read_all.reads_all_row_groups = true;
         read_all.row_group_indexes.clear();
-        let mut host_buffer = batchable_chunk(2, 2, 30);
-        host_buffer.resolved_source.read_strategy = ParquetReadStrategy::RemoteHostBuffer;
-        let remote_direct = remote_direct_require_batchable_chunk(3, 3, 40);
+        let remote_direct = remote_direct_require_batchable_chunk(2, 2, 40);
 
         let batches = plan_source_chunk_batches(
-            &[batchable_chunk(0, 0, 10), read_all, host_buffer, remote_direct, batchable_chunk(4, 4, 50)],
+            &[batchable_chunk(0, 0, 10), read_all, remote_direct, batchable_chunk(3, 3, 50)],
             None,
         );
 
-        assert_eq!(batches.len(), 5);
+        assert_eq!(batches.len(), 4);
         assert!(batches.iter().all(SourceChunkBatch::is_singleton));
-        assert_eq!(batches[3].source_batching_reason, "incompatible_read_strategy");
+        assert_eq!(batches[2].source_batching_reason, "incompatible_read_strategy");
     }
 
     #[test]
@@ -2043,20 +1940,6 @@ mod tests {
         assert_eq!(batches[0].chunks.iter().map(|chunk| chunk.chunk_index).collect::<Vec<_>>(), vec![0, 1]);
         assert_eq!(batches[0].estimated_source_read_bytes, Some(30));
         assert_eq!(batches[1].chunks.iter().map(|chunk| chunk.chunk_index).collect::<Vec<_>>(), vec![2]);
-    }
-
-    #[test]
-    fn source_chunk_batches_keep_prefer_direct_remote_chunks_singleton() {
-        let mut prefer_direct = remote_direct_require_batchable_chunk(0, 0, 10);
-        prefer_direct.resolved_source.remote_read_mode = RemoteParquetReadMode::PreferDirect;
-        let chunks = vec![prefer_direct, remote_direct_require_batchable_chunk(1, 1, 20)];
-
-        let batches = plan_source_chunk_batches(&chunks, None);
-
-        assert_eq!(batches.len(), 2);
-        assert!(batches.iter().all(SourceChunkBatch::is_singleton));
-        assert_eq!(batches[0].source_batching_reason, "ineligible_remote_read_mode");
-        assert_eq!(batches[1].source_batching_reason, "trailing_singleton");
     }
 
     #[test]

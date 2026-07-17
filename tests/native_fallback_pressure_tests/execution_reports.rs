@@ -223,7 +223,7 @@ fn native_datafusion_execution_report_records_runtime_boundaries() {
     assert_eq!(row.metrics.graph_reservation_rows[0].graph_statistics_exact_vertices, None);
 
     let text = report.to_tsv();
-    assert_eq!(NATIVE_DATAFUSION_EXECUTION_TSV_HEADER.split('\t').count(), 136);
+    assert_eq!(NATIVE_DATAFUSION_EXECUTION_TSV_HEADER.split('\t').count(), 130);
     assert!(NATIVE_DATAFUSION_EXECUTION_TSV_HEADER.contains(
         "\trejected_before_execution\tadmission_sequence\tadmission_wait_ms\tdevice_ordinal\tquery_grant_bytes\tnative_runtime_started\t"
     ));
@@ -256,9 +256,16 @@ fn native_datafusion_execution_report_records_runtime_boundaries() {
             .contains("\taggregate_exact_cardinality_probe_count\taggregate_exact_cardinality_probe_elapsed_ns\t")
     );
     assert!(NATIVE_DATAFUSION_EXECUTION_TSV_HEADER.contains("\taggregate_strategy_rows\tjoin_strategy_rows\t"));
-    assert!(NATIVE_DATAFUSION_EXECUTION_TSV_HEADER.contains(
-        "\tsource_fetch_bytes\tsource_fetch_count\thost_fetch_budget_wait_time_ms\tsource_fetch_concurrency_wait_time_ms\tsource_fetch_time_ms\tsource_decode_time_ms\t"
-    ));
+    for removed in [
+        concat!("source_", "fetch_bytes"),
+        concat!("source_", "fetch_count"),
+        concat!("host_", "fetch_budget_wait_time_ms"),
+        concat!("source_", "fetch_concurrency_wait_time_ms"),
+        concat!("source_", "fetch_time_ms"),
+        concat!("source_", "decode_time_ms"),
+    ] {
+        assert!(!NATIVE_DATAFUSION_EXECUTION_TSV_HEADER.split('\t').any(|column| column == removed));
+    }
     assert!(
         NATIVE_DATAFUSION_EXECUTION_TSV_HEADER
             .ends_with("\tsource_diagnostics\tlakehouse_cache_fill_event_snapshot_rows\tplan_task_mapping_rows")

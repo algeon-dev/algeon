@@ -12,13 +12,7 @@ pub(super) fn record_background_cache_file_fill_enqueue_runtime(
         query_id: None,
         source_node_id: source_node_id.to_string(),
         read_kind: "background_cache_fill_file".to_string(),
-        read_strategy: file.resolved_source.read_strategy.as_str().to_string(),
-        host_buffer_fetch_mode: "none".to_string(),
-        host_buffer_payload_bytes: 0,
-        host_buffer_requested_range_count: 0,
-        host_buffer_requested_range_bytes: 0,
-        host_buffer_original_file_bytes: file.file_size_bytes.unwrap_or(0),
-        host_buffer_mini_parquet_footer_bytes: 0,
+        read_strategy: file.resolved_source.read_strategy().as_str().to_string(),
         parquet_read_evidence: SourceReadParquetEvidenceMetrics::default(),
         batch_index: file_index as u64,
         chunk_count: 0,
@@ -68,13 +62,7 @@ pub(super) fn record_background_cache_chunk_fill_enqueue_runtime(
         query_id: None,
         source_node_id: chunk.source_node_id.to_string(),
         read_kind: "background_cache_fill_chunk".to_string(),
-        read_strategy: chunk.resolved_source.read_strategy.as_str().to_string(),
-        host_buffer_fetch_mode: "none".to_string(),
-        host_buffer_payload_bytes: 0,
-        host_buffer_requested_range_count: 0,
-        host_buffer_requested_range_bytes: 0,
-        host_buffer_original_file_bytes: chunk.known_file_bytes.unwrap_or(0),
-        host_buffer_mini_parquet_footer_bytes: 0,
+        read_strategy: chunk.resolved_source.read_strategy().as_str().to_string(),
         parquet_read_evidence: SourceReadParquetEvidenceMetrics::default(),
         batch_index: chunk.chunk_index as u64,
         chunk_count: 0,
@@ -110,7 +98,6 @@ pub(super) fn record_source_chunk_read_runtime(
     output_rows: u64,
     elapsed: Duration,
     reader_dynamic_filter_count: usize,
-    host_buffer_fetch: &HostBufferFetchRuntimeMetrics,
     read_evidence: Option<&cudf::io::parquet::ParquetReadEvidence>,
     metrics: &mut QueryMetrics,
 ) {
@@ -118,18 +105,8 @@ pub(super) fn record_source_chunk_read_runtime(
         query_id: None,
         source_node_id: chunk.source_node_id.to_string(),
         read_kind: "chunk".to_string(),
-        read_strategy: chunk.resolved_source.read_strategy.as_str().to_string(),
-        host_buffer_fetch_mode: if host_buffer_fetch.fetch_mode.is_empty() {
-            "none".to_string()
-        } else {
-            host_buffer_fetch.fetch_mode.clone()
-        },
-        host_buffer_payload_bytes: host_buffer_fetch.payload_bytes,
-        host_buffer_requested_range_count: host_buffer_fetch.requested_range_count,
-        host_buffer_requested_range_bytes: host_buffer_fetch.requested_range_bytes,
-        host_buffer_original_file_bytes: host_buffer_fetch.original_file_bytes,
-        host_buffer_mini_parquet_footer_bytes: host_buffer_fetch.mini_parquet_footer_bytes,
-        parquet_read_evidence: source_read_parquet_evidence_metrics(read_evidence, host_buffer_fetch),
+        read_strategy: chunk.resolved_source.read_strategy().as_str().to_string(),
+        parquet_read_evidence: source_read_parquet_evidence_metrics(read_evidence),
         batch_index: chunk.chunk_index as u64,
         chunk_count: 1,
         first_chunk_index: chunk.chunk_index as u64,
@@ -191,17 +168,8 @@ pub(super) fn record_source_chunk_batch_read_runtime(
         query_id: None,
         source_node_id: first_chunk.source_node_id.to_string(),
         read_kind: read_kind.to_string(),
-        read_strategy: first_chunk.resolved_source.read_strategy.as_str().to_string(),
-        host_buffer_fetch_mode: "none".to_string(),
-        host_buffer_payload_bytes: 0,
-        host_buffer_requested_range_count: 0,
-        host_buffer_requested_range_bytes: 0,
-        host_buffer_original_file_bytes: 0,
-        host_buffer_mini_parquet_footer_bytes: 0,
-        parquet_read_evidence: source_read_parquet_evidence_metrics(
-            read_evidence,
-            &HostBufferFetchRuntimeMetrics::default(),
-        ),
+        read_strategy: first_chunk.resolved_source.read_strategy().as_str().to_string(),
+        parquet_read_evidence: source_read_parquet_evidence_metrics(read_evidence),
         batch_index: batch.batch_index as u64,
         chunk_count: batch.chunk_count() as u64,
         first_chunk_index: first_chunk.chunk_index as u64,
@@ -254,7 +222,6 @@ pub(super) fn record_source_file_read_runtime(
     observed_row_group_count: u64,
     output_rows: u64,
     elapsed: Duration,
-    host_buffer_fetch: &HostBufferFetchRuntimeMetrics,
     read_evidence: Option<&cudf::io::parquet::ParquetReadEvidence>,
     metrics: &mut QueryMetrics,
 ) {
@@ -262,18 +229,8 @@ pub(super) fn record_source_file_read_runtime(
         query_id: None,
         source_node_id: source_node_id.to_string(),
         read_kind: "file".to_string(),
-        read_strategy: file.resolved_source.read_strategy.as_str().to_string(),
-        host_buffer_fetch_mode: if host_buffer_fetch.fetch_mode.is_empty() {
-            "none".to_string()
-        } else {
-            host_buffer_fetch.fetch_mode.clone()
-        },
-        host_buffer_payload_bytes: host_buffer_fetch.payload_bytes,
-        host_buffer_requested_range_count: host_buffer_fetch.requested_range_count,
-        host_buffer_requested_range_bytes: host_buffer_fetch.requested_range_bytes,
-        host_buffer_original_file_bytes: host_buffer_fetch.original_file_bytes,
-        host_buffer_mini_parquet_footer_bytes: host_buffer_fetch.mini_parquet_footer_bytes,
-        parquet_read_evidence: source_read_parquet_evidence_metrics(read_evidence, host_buffer_fetch),
+        read_strategy: file.resolved_source.read_strategy().as_str().to_string(),
+        parquet_read_evidence: source_read_parquet_evidence_metrics(read_evidence),
         batch_index: chunk_index as u64,
         chunk_count: 1,
         first_chunk_index: chunk_index as u64,
@@ -315,16 +272,9 @@ pub(super) fn record_source_file_read_runtime(
 
 pub(super) fn source_read_parquet_evidence_metrics(
     evidence: Option<&cudf::io::parquet::ParquetReadEvidence>,
-    host_buffer_fetch: &HostBufferFetchRuntimeMetrics,
 ) -> SourceReadParquetEvidenceMetrics {
-    let ranged_mini_parquet_bloom_status =
-        (host_buffer_fetch.fetch_mode == "ranged_parquet").then_some("bloom_ineligible_ranged_mini_parquet");
     let Some(evidence) = evidence else {
-        let mut metrics = SourceReadParquetEvidenceMetrics::default();
-        if let Some(status) = ranged_mini_parquet_bloom_status {
-            metrics.bloom_pruning_status = status.to_string();
-        }
-        return metrics;
+        return SourceReadParquetEvidenceMetrics::default();
     };
     let pruning = evidence.pruning;
     SourceReadParquetEvidenceMetrics {
@@ -335,7 +285,6 @@ pub(super) fn source_read_parquet_evidence_metrics(
             .unwrap_or("none")
             .to_string(),
         backend: evidence.backend.to_string(),
-        fallback_reason: evidence.fallback_reason.to_string(),
         backend_build_status: evidence.backend_build_status.as_str().to_string(),
         remote_bytes: evidence.remote_bytes,
         remote_range_count: evidence.remote_range_count,
@@ -343,10 +292,7 @@ pub(super) fn source_read_parquet_evidence_metrics(
         pruning_input_row_groups: pruning.map(|pruning| pruning.input_row_groups),
         row_groups_after_stats_filter: pruning.and_then(|pruning| pruning.row_groups_after_stats_filter),
         row_groups_after_bloom_filter: pruning.and_then(|pruning| pruning.row_groups_after_bloom_filter),
-        bloom_pruning_status: ranged_mini_parquet_bloom_status
-            .or_else(|| bloom_pruning_status(pruning))
-            .unwrap_or("not_reported")
-            .to_string(),
+        bloom_pruning_status: bloom_pruning_status(pruning).unwrap_or("not_reported").to_string(),
     }
 }
 

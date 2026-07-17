@@ -2,9 +2,9 @@ use std::time::Duration;
 
 /// Internal policy for lakehouse cache admission, layout, and sidecar locks.
 ///
-/// These values shape host-buffer cache files and lock retry behavior. They are
+/// These values shape lakehouse cache files and lock retry behavior. They are
 /// not exposed as user-facing query knobs; production controls remain the
-/// lakehouse cache configuration and host/source fetch resource policies.
+/// lakehouse cache configuration and cache-fill resource policies.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(in crate::exec::source) struct LakehouseCachePolicy {
     optimized_batch_min_files: usize,

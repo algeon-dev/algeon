@@ -623,7 +623,7 @@ fn backend_query_service_config(
             QueryPlacementPolicy::LeastLoaded | QueryPlacementPolicy::BestFit => resolved.device_ordinals[0],
             _ => resolved.device_ordinals[0],
         },
-        source_fetch: execution_config.source_fetch_config().clone(),
+        lakehouse_cache_fill: execution_config.lakehouse_cache_fill_config().clone(),
         source_storage_profiles: execution_config.source_storage_profiles().to_vec(),
         boundary_policy: execution_config.boundary_policy(),
         source_scheduler_policy: execution_config.source_scheduler_policy(),

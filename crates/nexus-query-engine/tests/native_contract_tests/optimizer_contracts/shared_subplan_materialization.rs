@@ -1215,7 +1215,7 @@ fn repeated_scalar_count_materialization_with_mismatched_source_contracts_plan()
     let count_schema = schema(&["count"]);
     let mut counts = Vec::new();
     for (hour, fact_contract) in
-        [8, 9].into_iter().zip([remote_direct_customer_address_contract(), host_buffer_customer_address_contract()])
+        [8, 9].into_iter().zip([remote_direct_customer_address_contract(), cache_policy_customer_address_contract()])
     {
         let fact = builder.add_source(estimated_source_with_resolved_contract(
             fact_contract,

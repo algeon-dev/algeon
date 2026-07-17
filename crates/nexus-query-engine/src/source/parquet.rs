@@ -729,15 +729,10 @@ impl LocalParquetFile {
         let uri = uri.into();
         let location = ParquetSourceLocation::object_store_uri(uri.clone())?;
         let stable_id = location.diagnostic_location();
-        let reader_path = object_store_reader_path(&uri);
         Ok(Self {
             location,
-            path: PathBuf::from(&reader_path),
-            resolved_source: ResolvedParquetSource::remote_host_buffer(
-                uri,
-                reader_path,
-                CredentialMode::SharedProcessEnv,
-            ),
+            path: PathBuf::from(object_store_reader_path(&uri)),
+            resolved_source: ResolvedParquetSource::remote_kvikio(uri, CredentialMode::SharedProcessEnv),
             stable_id,
             file_size_bytes: None,
             row_groups: None,
@@ -762,7 +757,7 @@ impl LocalParquetFile {
         let stable_id = location.diagnostic_location();
         Ok(Self {
             location,
-            path: PathBuf::from(&resolved_source.reader_location),
+            path: PathBuf::from(resolved_source.reader_location()),
             resolved_source,
             stable_id,
             file_size_bytes: None,
@@ -785,7 +780,7 @@ impl LocalParquetFile {
     /// Replaces the resolved reader contract and updates the reader path.
     pub fn with_resolved_parquet_source(mut self, resolved_source: ResolvedParquetSource) -> Result<Self, String> {
         self.location = parquet_source_location_for_original(&resolved_source.original_location)?;
-        self.path = PathBuf::from(&resolved_source.reader_location);
+        self.path = PathBuf::from(resolved_source.reader_location());
         self.resolved_source = resolved_source;
         Ok(self)
     }
@@ -920,12 +915,9 @@ mod tests {
 
     #[test]
     fn resolved_local_file_uri_uses_filesystem_path_for_location_and_reader_path() {
-        let source = ResolvedParquetSource::local_kvikio("/tmp/table.parquet");
-        let file = LocalParquetFile::from_resolved_parquet_source(ResolvedParquetSource {
-            original_location: "file:/tmp/table.parquet".to_string(),
-            ..source
-        })
-        .unwrap();
+        let mut source = ResolvedParquetSource::local_kvikio("/tmp/table.parquet");
+        source.original_location = "file:/tmp/table.parquet".to_string();
+        let file = LocalParquetFile::from_resolved_parquet_source(source).unwrap();
 
         assert_eq!(file.location.as_local_path(), Some(Path::new("/tmp/table.parquet")));
         assert_eq!(file.path, PathBuf::from("/tmp/table.parquet"));
@@ -933,12 +925,9 @@ mod tests {
 
     #[test]
     fn resolved_local_file_uri_with_localhost_authority_is_local_path() {
-        let source = ResolvedParquetSource::local_kvikio("/tmp/table.parquet");
-        let file = LocalParquetFile::from_resolved_parquet_source(ResolvedParquetSource {
-            original_location: "file://localhost/tmp/table.parquet".to_string(),
-            ..source
-        })
-        .unwrap();
+        let mut source = ResolvedParquetSource::local_kvikio("/tmp/table.parquet");
+        source.original_location = "file://localhost/tmp/table.parquet".to_string();
+        let file = LocalParquetFile::from_resolved_parquet_source(source).unwrap();
 
         assert_eq!(file.location.as_local_path(), Some(Path::new("/tmp/table.parquet")));
     }
@@ -946,7 +935,7 @@ mod tests {
     #[test]
     fn remote_direct_source_diagnostics_are_not_proven_direct_device_reads() {
         let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, true)]));
-        let file = LocalParquetFile::from_resolved_parquet_source(ResolvedParquetSource::remote_direct(
+        let file = LocalParquetFile::from_resolved_parquet_source(ResolvedParquetSource::remote_kvikio(
             "s3://bucket/table/part-0.parquet",
             CredentialMode::SharedProcessEnv,
         ))
@@ -954,15 +943,61 @@ mod tests {
         let source = LocalParquetSource::from_files(vec![file], schema, vec!["id".to_string()]);
 
         assert_eq!(source.diagnostics.source_read_strategy, "remote_direct");
-        assert_eq!(source.diagnostics.source_decode_input, "filepath");
         assert!(!source.diagnostics.direct_device_read);
         assert!(source.diagnostics.rejected_features.is_empty());
     }
 
     #[test]
+    fn object_store_uri_defaults_to_tagged_remote_kvikio_input() {
+        let uri = "s3://bucket/table/part-0.parquet";
+        let file = LocalParquetFile::object_store_uri(uri).unwrap();
+
+        assert!(matches!(
+            &file.resolved_source.input,
+            crate::source::ResolvedParquetInput::RemoteKvikio {
+                uri: resolved_uri,
+                credential_mode: CredentialMode::SharedProcessEnv,
+                storage_profile_id: None,
+            } if resolved_uri == uri
+        ));
+        assert_eq!(file.resolved_source.reader_location(), uri);
+        assert_eq!(file.resolved_source.read_strategy(), crate::source::ParquetReadStrategy::RemoteDirect);
+    }
+
+    #[test]
+    fn remote_and_local_cache_object_store_identity_stays_with_its_tagged_access_path() {
+        let remote =
+            ResolvedParquetSource::remote_kvikio("s3://bucket/table/part-0.parquet", CredentialMode::ScopedResolved)
+                .with_storage_profile_id("remote-profile");
+        assert!(matches!(
+            &remote.input,
+            crate::source::ResolvedParquetInput::RemoteKvikio {
+                credential_mode: CredentialMode::ScopedResolved,
+                storage_profile_id: Some(profile_id),
+                ..
+            } if profile_id == "remote-profile"
+        ));
+
+        let cached = ResolvedParquetSource::local_cache_kvikio(
+            "s3://bucket/table/part-0.parquet",
+            "/tmp/cache/part-0.parquet",
+            CredentialMode::ScopedResolved,
+            crate::source::LakehouseCacheStatus::Hit,
+        )
+        .with_storage_profile_id("maintenance-profile");
+        assert!(matches!(
+            &cached.input,
+            crate::source::ResolvedParquetInput::LocalKvikio { reader_path }
+                if reader_path == "/tmp/cache/part-0.parquet"
+        ));
+        assert_eq!(cached.credential_mode(), CredentialMode::ScopedResolved);
+        assert_eq!(cached.storage_profile_id(), Some("maintenance-profile"));
+    }
+
+    #[test]
     fn object_store_default_stable_ids_are_redacted_hashes() {
         let uri = "s3://secret-bucket/private/key.parquet?X-Amz-Signature=abc";
-        let file = LocalParquetFile::from_resolved_parquet_source(ResolvedParquetSource::remote_direct(
+        let file = LocalParquetFile::from_resolved_parquet_source(ResolvedParquetSource::remote_kvikio(
             uri,
             CredentialMode::SharedProcessEnv,
         ))
@@ -977,7 +1012,7 @@ mod tests {
     #[test]
     fn source_debug_redacts_object_store_locations_and_stable_ids() {
         let uri = "s3://secret-bucket/private/key.parquet?X-Amz-Signature=abc";
-        let source = ResolvedParquetSource::remote_direct(uri, CredentialMode::SharedProcessEnv)
+        let source = ResolvedParquetSource::remote_kvikio(uri, CredentialMode::SharedProcessEnv)
             .with_lakehouse_cache_config("/tmp/cache/secret-bucket/private/key.parquet?token=abc", None)
             .with_lakehouse_cache_path("/tmp/cache/secret-bucket/private/key.parquet?token=abc");
         let file = LocalParquetFile::from_resolved_parquet_source(source)
@@ -1004,7 +1039,7 @@ mod tests {
         let referenced = "s3://secret-bucket/private/data.parquet?X-Amz-Signature=abc";
         let delete_file = ParquetPositionDeleteFile::from_resolved_parquet_source(
             "delete-1",
-            ResolvedParquetSource::remote_direct(
+            ResolvedParquetSource::remote_kvikio(
                 "s3://delete-bucket/private/delete.parquet?X-Amz-Signature=def",
                 CredentialMode::SharedProcessEnv,
             ),

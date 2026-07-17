@@ -693,10 +693,7 @@ mod tests {
     use nexus_query_engine::source::{CredentialMode, ResolvedParquetSource};
 
     use super::*;
-    use crate::{
-        policy::FallbackReason,
-        table_format::scan::{TableFormatLakehouseCachePolicy, TableFormatParquetReadStrategyPreference},
-    };
+    use crate::{policy::FallbackReason, table_format::scan::TableFormatLakehouseCachePolicy};
 
     fn iceberg_schema() -> Arc<IcebergSchema> {
         Arc::new(
@@ -710,7 +707,6 @@ mod tests {
     #[test]
     fn iceberg_task_conversion_uses_injected_parquet_read_strategy_config() {
         let config = TableFormatParquetReadStrategyConfig {
-            preference: TableFormatParquetReadStrategyPreference::LocalCache,
             lakehouse_cache_root: Some(PathBuf::from("/tmp/cudf-iceberg-test-cache")),
             lakehouse_cache_policy: TableFormatLakehouseCachePolicy::FillBeforeRead,
             storage_endpoint: Some("http://rustfs.local:9000/minio".to_string()),
@@ -743,7 +739,7 @@ mod tests {
         .unwrap();
         let resolved = plan.data_files[0].resolved_parquet_source.as_ref().unwrap();
 
-        assert_eq!(resolved.storage_profile_id.as_deref(), Some("rest-s3"));
+        assert_eq!(resolved.storage_profile_id(), Some("rest-s3"));
         assert_eq!(resolved.storage_domain.as_deref(), Some("bucket@http://rustfs.local:9000/minio"));
         assert!(resolved.content_identity.as_deref().is_some_and(|identity| {
             identity.starts_with("iceberg_snapshot_123_file_") && identity.ends_with("_size_4096_rows_17")
@@ -1257,7 +1253,7 @@ mod tests {
             TableFormatDeleteFileContent::PositionDeletes,
         )
         .with_read_capability(TableFormatReadCapability::object_store("s3"))
-        .with_resolved_parquet_source(ResolvedParquetSource::remote_direct(
+        .with_resolved_parquet_source(ResolvedParquetSource::remote_kvikio(
             "s3://bucket/table/delete.parquet",
             CredentialMode::SharedProcessEnv,
         ));

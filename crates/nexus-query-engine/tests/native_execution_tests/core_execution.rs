@@ -169,7 +169,6 @@ fn native_query_executes_direct_parquet_pipeline_to_host_sink() {
     assert_eq!(source_read_row.parquet_read_evidence.input_kind, "local_path");
     assert_eq!(source_read_row.parquet_read_evidence.remote_read_mode, "none");
     assert_eq!(source_read_row.parquet_read_evidence.backend, "libcudf_path_reader");
-    assert_eq!(source_read_row.parquet_read_evidence.fallback_reason, "not_applicable");
     assert!(source_read_row.parquet_read_evidence.pruning_input_row_groups.is_some());
     assert_eq!(source_read_row.parquet_read_evidence.row_groups_after_stats_filter, None);
     assert_eq!(source_read_row.parquet_read_evidence.row_groups_after_bloom_filter, None);
@@ -1718,7 +1717,6 @@ fn bounded_generic_local_parquet_source_batches_adjacent_files() {
     assert_eq!(source_read_row.parquet_read_evidence.input_kind, "local_path_multi");
     assert_eq!(source_read_row.parquet_read_evidence.remote_read_mode, "none");
     assert_eq!(source_read_row.parquet_read_evidence.backend, "libcudf_path_reader");
-    assert_eq!(source_read_row.parquet_read_evidence.fallback_reason, "not_applicable");
 
     let QueryOutput::HostArrow(batch) = result.output() else {
         panic!("host sink should materialize one RecordBatch");

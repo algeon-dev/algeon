@@ -2096,12 +2096,9 @@ fn graph_local_parquet_file() -> LocalParquetFile {
 }
 
 fn graph_object_store_parquet_file(content_identity: &str) -> LocalParquetFile {
-    let resolved = ResolvedParquetSource::remote_host_buffer(
-        "s3://bucket/graph-residency.parquet",
-        "s3://bucket/graph-residency.parquet",
-        CredentialMode::SharedProcessEnv,
-    )
-    .with_content_identity(content_identity);
+    let resolved =
+        ResolvedParquetSource::remote_kvikio("s3://bucket/graph-residency.parquet", CredentialMode::SharedProcessEnv)
+            .with_content_identity(content_identity);
     LocalParquetFile::from_resolved_parquet_source(resolved)
         .expect("object-store graph source should be valid")
         .with_file_size_bytes(1024)

@@ -4,14 +4,14 @@ use std::{sync::Arc, time::Duration};
 
 use super::{
     super::{
-        DeploymentIoCapability, ExecutionBoundaryPolicy, GpuExecutionPool, HostFetchBudget, MemoryControlPolicy,
-        MemoryGrant, MemoryResourcePolicy, ServiceStreamPool, SourceChunkPlanningMode, SourceFetchConfig,
-        SourceStorageProfile, cache,
+        CacheFillByteBudget, DeploymentIoCapability, ExecutionBoundaryPolicy, GpuExecutionPool,
+        LakehouseCacheFillConfig, MemoryControlPolicy, MemoryGrant, MemoryResourcePolicy, ServiceStreamPool,
+        SourceChunkPlanningMode, SourceStorageProfile, cache,
         cache_events::LakehouseCacheFillEventSink,
+        cache_fill::{CacheFillConcurrencyGate, default_lakehouse_cache_fill_budget_bytes},
         memory_domain::create_grant_reservation_arena,
-        object_store::{SourceObjectStoreRegistry, default_lakehouse_cache_fill_runtime, default_source_fetch_runtime},
+        object_store::{SourceObjectStoreRegistry, default_object_store_control_runtime},
         service_stream::{default_service_stream_pool_size_for_device, validate_service_stream_pool_size},
-        source_fetch::{GdsConcurrencyGate, SourceFetchConcurrencyGate, default_host_fetch_budget_bytes},
     },
     ExecutionCancellation, ExecutionContext, ExecutionContextParts, SourceSchedulerPolicy,
 };
@@ -55,22 +55,16 @@ pub struct ExecutionContextBuilder {
     /// Source read scheduling contract.
     source_scheduler_policy: SourceSchedulerPolicy,
     source_chunk_planning_mode: SourceChunkPlanningMode,
-    /// Optional service-level source IO configuration.
-    source_fetch_config: Option<SourceFetchConfig>,
+    /// Optional service-level lakehouse cache-fill configuration.
+    lakehouse_cache_fill_config: Option<LakehouseCacheFillConfig>,
     /// Source object-store profiles available to execution-time fetches.
     source_storage_profiles: Vec<SourceStorageProfile>,
     /// Optional caller-owned service stream pool.
     service_stream_pool: Option<ServiceStreamPool>,
     /// Pool size for the default process-global service stream pool.
     service_stream_pool_size: Option<usize>,
-    /// Optional caller-owned host fetch budget.
-    host_fetch_budget: Option<HostFetchBudget>,
-    /// Host fetch budget size used when constructing the default budget.
-    host_fetch_budget_bytes: Option<u64>,
-    /// Timeout used by blocking object-store SourceFetch resource acquisition.
-    host_fetch_acquire_timeout: Option<Duration>,
-    /// Max object-store SourceFetch operations allowed concurrently.
-    host_fetch_max_concurrent_ops: Option<usize>,
+    /// Optional caller-owned lakehouse cache-fill byte budget.
+    lakehouse_cache_fill_budget: Option<CacheFillByteBudget>,
     /// Background lakehouse cache-fill budget size used when constructing the default fill budget.
     lakehouse_cache_fill_budget_bytes: Option<u64>,
     /// Max background lakehouse complete-object cache-fill operations allowed concurrently.
@@ -193,18 +187,13 @@ impl ExecutionContextBuilder {
         self
     }
 
-    /// Sets the service-level source IO configuration.
-    ///
-    /// Existing per-field builder setters for host-buffer budget and
-    /// object-store operation count override the corresponding values in this
-    /// config so older call sites can keep using their narrower knobs.
-    pub fn with_source_fetch_config(mut self, source_fetch_config: SourceFetchConfig) -> Self {
-        self.source_fetch_config = Some(source_fetch_config);
+    /// Sets the service-level lakehouse cache-fill resource configuration.
+    pub fn with_lakehouse_cache_fill_config(mut self, config: LakehouseCacheFillConfig) -> Self {
+        self.lakehouse_cache_fill_config = Some(config);
         self
     }
 
-    /// Registers source object-store profiles used by remote host-buffer reads
-    /// and local-cache miss fills.
+    /// Registers source object-store profiles used by remote reads and cache fills.
     pub fn with_source_storage_profiles(mut self, profiles: impl IntoIterator<Item = SourceStorageProfile>) -> Self {
         self.source_storage_profiles = profiles.into_iter().collect();
         self
@@ -224,35 +213,21 @@ impl ExecutionContextBuilder {
         self
     }
 
-    /// Uses a caller-owned host fetch budget for object-store source reads.
-    pub fn with_host_fetch_budget(mut self, host_fetch_budget: HostFetchBudget) -> Self {
-        self.host_fetch_budget = Some(host_fetch_budget);
-        self
-    }
-
-    /// Sets the size of the default host fetch budget.
-    ///
-    /// Ignored when a budget is supplied with [`Self::with_host_fetch_budget`].
-    pub fn with_host_fetch_budget_bytes(mut self, budget_bytes: u64) -> Self {
-        self.host_fetch_budget_bytes = Some(budget_bytes);
-        self
-    }
-
-    /// Sets the timeout used by blocking object-store SourceFetch resource acquisition.
-    pub fn with_host_fetch_acquire_timeout(mut self, timeout: Duration) -> Self {
-        self.host_fetch_acquire_timeout = Some(timeout);
-        self
-    }
-
-    /// Sets the service-wide object-store SourceFetch operation cap.
-    pub fn with_host_fetch_max_concurrent_ops(mut self, max_concurrent_ops: usize) -> Self {
-        self.host_fetch_max_concurrent_ops = Some(max_concurrent_ops);
+    /// Uses a caller-owned lakehouse cache-fill byte budget.
+    pub fn with_lakehouse_cache_fill_budget(mut self, budget: CacheFillByteBudget) -> Self {
+        self.lakehouse_cache_fill_budget = Some(budget);
         self
     }
 
     /// Sets the service-wide background lakehouse cache-fill byte budget.
     pub fn with_lakehouse_cache_fill_budget_bytes(mut self, budget_bytes: u64) -> Self {
         self.lakehouse_cache_fill_budget_bytes = Some(budget_bytes);
+        self
+    }
+
+    /// Sets the bounded wait for blocking lakehouse cache maintenance resources.
+    pub fn with_lakehouse_cache_fill_acquire_timeout(mut self, timeout: Duration) -> Self {
+        self.lakehouse_cache_fill_config.get_or_insert_with(Default::default).acquire_timeout = timeout;
         self
     }
 
@@ -355,39 +330,23 @@ impl ExecutionContextBuilder {
         }
         let deployment_io_capability =
             self.deployment_io_capability.unwrap_or_else(DeploymentIoCapability::cached_current_host);
-        let mut source_fetch_config = self.source_fetch_config.unwrap_or_default();
-        if let Some(host_fetch_budget_bytes) = self.host_fetch_budget_bytes {
-            source_fetch_config.host_fetch_budget_bytes = Some(host_fetch_budget_bytes);
-        }
-        if let Some(host_fetch_acquire_timeout) = self.host_fetch_acquire_timeout {
-            source_fetch_config.host_fetch_acquire_timeout = host_fetch_acquire_timeout;
-        }
-        if let Some(max_concurrent_ops) = self.host_fetch_max_concurrent_ops {
-            source_fetch_config.host_fetch_max_concurrent_ops = max_concurrent_ops;
-        }
+        let mut lakehouse_cache_fill_config = self.lakehouse_cache_fill_config.unwrap_or_default();
         if let Some(lakehouse_cache_fill_budget_bytes) = self.lakehouse_cache_fill_budget_bytes {
-            source_fetch_config.lakehouse_cache_fill_budget_bytes = Some(lakehouse_cache_fill_budget_bytes);
+            lakehouse_cache_fill_config.budget_bytes = Some(lakehouse_cache_fill_budget_bytes);
         }
         if let Some(lakehouse_cache_fill_max_concurrent_ops) = self.lakehouse_cache_fill_max_concurrent_ops {
-            source_fetch_config.lakehouse_cache_fill_max_concurrent_ops = lakehouse_cache_fill_max_concurrent_ops;
+            lakehouse_cache_fill_config.max_concurrent_ops = lakehouse_cache_fill_max_concurrent_ops;
         }
-        source_fetch_config.validate_for_deployment(&deployment_io_capability)?;
-        let host_fetch_budget = match self.host_fetch_budget {
+        lakehouse_cache_fill_config.validate()?;
+        let lakehouse_cache_fill_budget = match self.lakehouse_cache_fill_budget {
             Some(budget) => budget,
-            None => HostFetchBudget::new(
-                source_fetch_config.host_fetch_budget_bytes.unwrap_or_else(default_host_fetch_budget_bytes),
+            None => CacheFillByteBudget::new(
+                lakehouse_cache_fill_config.budget_bytes.unwrap_or_else(default_lakehouse_cache_fill_budget_bytes),
             )?,
         };
-        let source_fetch_concurrency =
-            SourceFetchConcurrencyGate::new(source_fetch_config.host_fetch_max_concurrent_ops)?;
-        let lakehouse_cache_fill_budget = HostFetchBudget::new(
-            source_fetch_config.lakehouse_cache_fill_budget_bytes.unwrap_or_else(default_host_fetch_budget_bytes),
-        )?;
         let lakehouse_cache_fill_concurrency =
-            SourceFetchConcurrencyGate::new(source_fetch_config.lakehouse_cache_fill_max_concurrent_ops)?;
-        let gds_concurrency = GdsConcurrencyGate::new(source_fetch_config.gds_max_concurrent_ops)?;
-        let source_fetch_runtime = default_source_fetch_runtime()?;
-        let lakehouse_cache_fill_runtime = default_lakehouse_cache_fill_runtime()?;
+            CacheFillConcurrencyGate::new(lakehouse_cache_fill_config.max_concurrent_ops)?;
+        let object_store_control_runtime = default_object_store_control_runtime()?;
         let source_object_stores = Arc::new(SourceObjectStoreRegistry::with_profiles(self.source_storage_profiles)?);
         let query_id = self.query_id;
         let trace_id = self.trace_id;
@@ -419,16 +378,12 @@ impl ExecutionContextBuilder {
                 boundary_policy: self.boundary_policy,
                 source_scheduler_policy: self.source_scheduler_policy,
                 source_chunk_planning_mode: self.source_chunk_planning_mode,
-                source_fetch_config,
+                lakehouse_cache_fill_config,
                 service_stream_pool,
-                host_fetch_budget,
-                source_fetch_concurrency,
                 lakehouse_cache_fill_budget,
                 lakehouse_cache_fill_concurrency,
                 lakehouse_cache_fill_events: LakehouseCacheFillEventSink::default(),
-                gds_concurrency,
-                source_fetch_runtime,
-                lakehouse_cache_fill_runtime,
+                object_store_control_runtime,
                 source_object_stores,
                 deployment_io_capability,
                 cancellation: self.cancellation,
@@ -499,16 +454,12 @@ impl ExecutionContextBuilder {
             boundary_policy: self.boundary_policy,
             source_scheduler_policy: self.source_scheduler_policy,
             source_chunk_planning_mode: self.source_chunk_planning_mode,
-            source_fetch_config,
+            lakehouse_cache_fill_config,
             service_stream_pool,
-            host_fetch_budget,
-            source_fetch_concurrency,
             lakehouse_cache_fill_budget,
             lakehouse_cache_fill_concurrency,
             lakehouse_cache_fill_events: LakehouseCacheFillEventSink::default(),
-            gds_concurrency,
-            source_fetch_runtime,
-            lakehouse_cache_fill_runtime,
+            object_store_control_runtime,
             source_object_stores,
             deployment_io_capability,
             cancellation: self.cancellation,

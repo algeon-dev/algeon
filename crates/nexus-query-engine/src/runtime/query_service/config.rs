@@ -188,8 +188,8 @@ impl Default for QueryMemoryDomainPolicy {
 pub struct QueryServiceConfig {
     /// CUDA device ordinal used by contexts created through this service.
     pub device_ordinal: usize,
-    /// Source IO policy and shared gate sizes.
-    pub source_fetch: SourceFetchConfig,
+    /// Lakehouse cache-fill policy and shared resource limits.
+    pub lakehouse_cache_fill: LakehouseCacheFillConfig,
     /// Source object-store profiles available to service-owned execution contexts.
     pub source_storage_profiles: Vec<SourceStorageProfile>,
     /// Source/build/probe/result boundary policy copied into tenant contexts.
@@ -271,7 +271,8 @@ pub struct QueryServiceConfig {
 
 impl QueryServiceConfig {
     pub(super) fn validate(&self, deployment: &DeploymentIoCapability) -> Result<()> {
-        self.source_fetch.validate_for_deployment(deployment)?;
+        let _ = deployment;
+        self.lakehouse_cache_fill.validate()?;
         self.boundary_policy.validate(false)?;
         self.source_scheduler_policy.validate()?;
         self.dynamic_filter_execution_options.validate()?;
@@ -400,7 +401,7 @@ impl Default for QueryServiceConfig {
     fn default() -> Self {
         Self {
             device_ordinal: 0,
-            source_fetch: SourceFetchConfig::default(),
+            lakehouse_cache_fill: LakehouseCacheFillConfig::default(),
             source_storage_profiles: Vec::new(),
             boundary_policy: ExecutionBoundaryPolicy::default(),
             source_scheduler_policy: SourceSchedulerPolicy::default(),
@@ -418,11 +419,11 @@ impl Default for QueryServiceConfig {
             device_memory_manager_base: cudf::DeviceMemoryManagerBase::default(),
             stream_pool_size: None,
             device_capacity_bytes: None,
-            max_concurrent_queries: SourceFetchConfig::DEFAULT_HOST_FETCH_MAX_CONCURRENT_OPS,
+            max_concurrent_queries: 64,
             max_queries_per_device: None,
             placement_policy: QueryPlacementPolicy::default(),
             slot_guarantee: SlotGuarantee::GuaranteedMinimum,
-            max_admission_queue_len: SourceFetchConfig::DEFAULT_HOST_FETCH_MAX_CONCURRENT_OPS,
+            max_admission_queue_len: 64,
             admission_wait_timeout: Duration::from_secs(30),
             max_source_chunk_bytes: 64 * 1024 * 1024,
             max_row_groups_per_chunk: 1,

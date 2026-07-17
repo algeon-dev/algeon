@@ -91,8 +91,6 @@ const NATIVE_REPORT_DESCRIPTOR_NAMES: &[&str] = &[
     "hash_join_durable_cache_misses",
     "hash_join_hash_table_bytes",
     "host_datafusion_boundary_count",
-    "host_fetch_budget_wait_time",
-    "host_fetch_budget_wait_time_ms",
     "host_to_device_uploaded_bytes",
     "host_to_device_uploaded_rows",
     "host_to_device_uploads",
@@ -192,15 +190,7 @@ const NATIVE_REPORT_DESCRIPTOR_NAMES: &[&str] = &[
     "source_chunks_committed",
     "source_chunks_planned",
     "source_chunks_retried",
-    "source_decode_time",
-    "source_decode_time_ms",
     "source_diagnostics",
-    "source_fetch_bytes",
-    "source_fetch_concurrency_wait_time",
-    "source_fetch_concurrency_wait_time_ms",
-    "source_fetch_count",
-    "source_fetch_time",
-    "source_fetch_time_ms",
     "source_metadata_load_time",
     "source_read_boundary_direct_device",
     "source_read_prefetches_abandoned",
@@ -264,7 +254,7 @@ fn unit_for_name(name: &str) -> MetricUnit {
     } else if name.ends_with("_rows") || name.contains("_output_rows") || name.contains("_input_rows") {
         MetricUnit::Rows
     } else if name.ends_with("_bytes") {
-        if name.contains("host") || name == "source_fetch_bytes" {
+        if name.contains("host") {
             MetricUnit::HostBytes
         } else if name.contains("parquet")
             || name.contains("file")

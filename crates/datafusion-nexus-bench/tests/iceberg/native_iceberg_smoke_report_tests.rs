@@ -296,19 +296,13 @@ fn report_tsv_distinguishes_native_source_read_from_cpu_arrow_fallback() {
     row.native_output_batches = Some(1);
     row.native_count_value = Some(7);
     row.record_native_metrics(NativeDataFusionExecutionMetrics {
-        source_fetch_bytes: 1024,
-        source_fetch_count: 2,
-        host_fetch_budget_wait_time_ns: Some(5_000_000),
-        source_fetch_concurrency_wait_time_ns: Some(6_000_000),
-        source_fetch_time_ns: Some(7_250_000),
-        source_decode_time_ns: Some(8_500_000),
         source_read_runtime_rows: vec![NativeSourceReadRuntimeMetricRow {
             source_node_id: "source-0".to_string(),
             read_kind: "chunk".to_string(),
             read_strategy: "remote_direct".to_string(),
             parquet_read_input_kind: "remote_path".to_string(),
-            remote_read_mode: "require_direct".to_string(),
-            parquet_read_backend: "kvikio_remote".to_string(),
+            remote_read_mode: "require_kvikio".to_string(),
+            parquet_read_backend: "cudf_sys_kvikio_remote_datasource".to_string(),
             remote_backend_build_status: "kvikio_remote_io_enabled".to_string(),
             remote_read_bytes: Some(2048),
             remote_read_range_count: Some(3),
@@ -356,12 +350,10 @@ fn report_tsv_distinguishes_native_source_read_from_cpu_arrow_fallback() {
         "rejected_feature_list",
         "native_source_read_capability",
         "source_read_strategy",
-        "source_decode_input",
         "credential_mode",
         "lakehouse_cache_status",
         "lakehouse_cache_read_mode",
         "lakehouse_cache_fill_mode",
-        "source_fallback_reason",
         "direct_device_read_disposition",
         "object_store_staging_mode",
         "object_store_staging_status",
@@ -376,12 +368,6 @@ fn report_tsv_distinguishes_native_source_read_from_cpu_arrow_fallback() {
         "native_runtime_elapsed_ms",
         "native_output_rows",
         "native_output_batches",
-        "source_fetch_bytes",
-        "source_fetch_count",
-        "host_fetch_budget_wait_time_ms",
-        "source_fetch_concurrency_wait_time_ms",
-        "source_fetch_time_ms",
-        "source_decode_time_ms",
         "native_source_read_runtime_rows",
         "lakehouse_cache_fill_event_snapshot_rows",
         "expected_count",
@@ -402,12 +388,10 @@ fn report_tsv_distinguishes_native_source_read_from_cpu_arrow_fallback() {
     assert_eq!(row_line.split('\t').count(), expected_columns.len());
     assert!(tsv.contains("\tnative_source_read_capability\t"));
     assert!(tsv.contains("\tsource_read_strategy\t"));
-    assert!(tsv.contains("\tsource_decode_input\t"));
     assert!(tsv.contains("\tcredential_mode\t"));
     assert!(tsv.contains("\tlakehouse_cache_status\t"));
     assert!(tsv.contains("\tlakehouse_cache_read_mode\t"));
     assert!(tsv.contains("\tlakehouse_cache_fill_mode\t"));
-    assert!(tsv.contains("\tsource_fallback_reason\t"));
     assert!(tsv.contains("\tdirect_device_read_disposition\t"));
     assert!(tsv.contains("\tobject_store_staging_mode\t"));
     assert!(tsv.contains("\tobject_store_staging_status\t"));
@@ -418,27 +402,17 @@ fn report_tsv_distinguishes_native_source_read_from_cpu_arrow_fallback() {
     assert!(tsv.contains("\tcpu_output_fingerprint\t"));
     assert!(tsv.contains("\tcomparison_mode\t"));
     assert!(tsv.contains("\tparity_status\t"));
-    assert!(tsv.contains("\tsource_fetch_bytes\tsource_fetch_count\t"));
-    assert!(tsv.contains("\thost_fetch_budget_wait_time_ms\tsource_fetch_concurrency_wait_time_ms\t"));
     assert!(tsv.contains("\tnative_source_read_runtime_rows\t"));
     assert!(tsv.contains("\tlakehouse_cache_fill_event_snapshot_rows\t"));
-    assert_eq!(tsv_field(&tsv, "source_fetch_bytes"), "1024");
-    assert_eq!(tsv_field(&tsv, "source_fetch_count"), "2");
     assert!(tsv_field(&tsv, "native_source_read_runtime_rows").contains("remote_read_bytes=2048"));
     assert!(tsv_field(&tsv, "native_source_read_runtime_rows").contains("parquet_bloom_pruning_status=bloom_pruned"));
     assert!(tsv_field(&tsv, "lakehouse_cache_fill_event_snapshot_rows").contains("outcome=completed"));
     assert!(tsv_field(&tsv, "lakehouse_cache_fill_event_snapshot_rows").contains("bytes=4096"));
-    assert_eq!(tsv_field(&tsv, "host_fetch_budget_wait_time_ms"), "5.000");
-    assert_eq!(tsv_field(&tsv, "source_fetch_concurrency_wait_time_ms"), "6.000");
-    assert_eq!(tsv_field(&tsv, "source_fetch_time_ms"), "7.250");
-    assert_eq!(tsv_field(&tsv, "source_decode_time_ms"), "8.500");
     assert_eq!(tsv_field(&tsv, "source_read_strategy"), "local_kvikio");
-    assert_eq!(tsv_field(&tsv, "source_decode_input"), "filepath");
     assert_eq!(tsv_field(&tsv, "credential_mode"), "none");
     assert_eq!(tsv_field(&tsv, "lakehouse_cache_status"), "disabled");
     assert_eq!(tsv_field(&tsv, "lakehouse_cache_read_mode"), "disabled");
     assert_eq!(tsv_field(&tsv, "lakehouse_cache_fill_mode"), "disabled");
-    assert_eq!(tsv_field(&tsv, "source_fallback_reason"), "none");
     assert_eq!(tsv_field(&tsv, "object_store_staging_mode"), "auto");
     assert_eq!(tsv_field(&tsv, "object_store_staging_status"), "not_needed");
     assert_eq!(tsv_field(&tsv, "native_planning_outcome"), "accepted_replaced");
@@ -497,7 +471,6 @@ fn report_tsv_records_direct_s3_as_remote_direct_native_without_staging() {
     let tsv = report.to_tsv();
     assert_eq!(tsv_field(&tsv, "native_source_read_capability"), "object_store:s3");
     assert_eq!(tsv_field(&tsv, "source_read_strategy"), "remote_direct");
-    assert_eq!(tsv_field(&tsv, "source_decode_input"), "filepath");
     assert_eq!(tsv_field(&tsv, "object_store_staging_mode"), "disabled");
     assert_eq!(tsv_field(&tsv, "object_store_staging_status"), "direct_s3_native");
     assert_eq!(tsv_field(&tsv, "native_planning_outcome"), "accepted_replaced");

@@ -245,8 +245,6 @@ impl_query_count_recording! {
     one_shot_join_index_bytes => one_shot_join_index_bytes,
     one_shot_join_materialization_bytes => one_shot_join_materialization_bytes,
     one_shot_join_output_bytes => one_shot_join_output_bytes,
-    source_fetch_bytes => source_fetch_bytes,
-    source_fetch_count => source_fetch_count,
 }
 
 impl_query_optional_recording! {
@@ -268,10 +266,6 @@ impl_query_timer_recording! {
     source_metadata_load_time => source_metadata_load_time,
     source_read_queue_wait_time => source_read_queue_wait_time,
     source_cache_lookup_time => source_cache_lookup_time,
-    host_fetch_budget_wait_time => host_fetch_budget_wait_time,
-    source_fetch_concurrency_wait_time => source_fetch_concurrency_wait_time,
-    source_fetch_time => source_fetch_time,
-    source_decode_time => source_decode_time,
     parquet_read_time => parquet_read_time,
     source_read_time => source_read_time,
     operator_time => operator_time,

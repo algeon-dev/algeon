@@ -4,12 +4,12 @@ use ::object_store::ObjectStoreExt;
 
 use super::{
     cache_events::LakehouseCacheFillEventSink,
-    object_store::default_source_fetch_runtime,
+    cache_fill::default_lakehouse_cache_fill_budget_bytes_from_physical_memory,
+    object_store::default_object_store_control_runtime,
     service_stream::{
         default_service_stream_pool_size_from_device_facts, default_service_stream_pool_size_from_sm_count,
         nonzero_sm_count,
     },
-    source_fetch::{GdsConcurrencyGate, default_host_fetch_budget_bytes_from_physical_memory},
     *,
 };
 use crate::{
@@ -19,7 +19,7 @@ use crate::{
 
 #[test]
 fn object_store_fetch_returns_bytes_from_full_get() {
-    let runtime = default_source_fetch_runtime().unwrap();
+    let runtime = default_object_store_control_runtime().unwrap();
     let store = Arc::new(::object_store::memory::InMemory::new());
     let location = ::object_store::path::Path::from("part-0.parquet");
     runtime.block_on(store.put(&location, b"abcdef".as_ref().into())).unwrap();
@@ -104,62 +104,59 @@ fn service_stream_pool_sm_count_filters_zero_counts() {
 }
 
 #[test]
-fn default_host_fetch_budget_is_capped() {
+fn default_lakehouse_cache_fill_budget_is_capped() {
     assert_eq!(
-        default_host_fetch_budget_bytes_from_physical_memory(Some(128 * 1024 * 1024 * 1024)),
-        SourceFetchConfig::DEFAULT_HOST_FETCH_BUDGET_CAP_BYTES
+        default_lakehouse_cache_fill_budget_bytes_from_physical_memory(Some(128 * 1024 * 1024 * 1024)),
+        LakehouseCacheFillConfig::DEFAULT_BUDGET_CAP_BYTES
     );
-    assert_eq!(default_host_fetch_budget_bytes_from_physical_memory(Some(4 * 1024 * 1024 * 1024)), 1024 * 1024 * 1024);
     assert_eq!(
-        default_host_fetch_budget_bytes_from_physical_memory(None),
-        SourceFetchConfig::DEFAULT_HOST_FETCH_BUDGET_BYTES
+        default_lakehouse_cache_fill_budget_bytes_from_physical_memory(Some(4 * 1024 * 1024 * 1024)),
+        1024 * 1024 * 1024
+    );
+    assert_eq!(
+        default_lakehouse_cache_fill_budget_bytes_from_physical_memory(None),
+        LakehouseCacheFillConfig::DEFAULT_BUDGET_BYTES
     );
 }
 
 #[test]
-fn host_fetch_budget_tracks_acquire_grow_and_release() {
-    let budget = HostFetchBudget::new(1024).unwrap();
-    let mut first = budget.acquire(256).unwrap();
+fn cache_fill_byte_budget_tracks_acquire_grow_and_release() {
+    let budget = CacheFillByteBudget::new(1024).unwrap();
+    let cancellation = ExecutionCancellation::new();
+    let mut first = budget
+        .acquire_with_timeout(&cancellation, 256, Duration::ZERO, "nexus_query_engine.test.cache_fill")
+        .unwrap()
+        .unwrap();
     assert_eq!(first.bytes(), 256);
     first.grow_to(512).unwrap();
     assert_eq!(first.bytes(), 512);
-    let second = budget.acquire(512).unwrap();
+    let second = budget.try_acquire(512).unwrap().unwrap();
     drop(first);
-    let third = budget.acquire(512).unwrap();
+    let third = budget.try_acquire(512).unwrap().unwrap();
     drop(second);
     drop(third);
 }
 
 #[test]
-fn host_fetch_budget_rejects_oversized_fetches() {
-    let budget = HostFetchBudget::new(1024).unwrap();
-    let error = budget.acquire(2048).unwrap_err();
+fn cache_fill_byte_budget_rejects_oversized_fetches() {
+    let budget = CacheFillByteBudget::new(1024).unwrap();
+    let error = budget.try_acquire(2048).unwrap_err();
     assert_eq!(error.code(), QueryErrorCode::MemoryReservationFailed);
     assert_eq!(error.fact_value("requested_bytes"), Some("2048"));
     assert_eq!(error.fact_value("budget_bytes"), Some("1024"));
 }
 
 #[test]
-fn execution_context_records_host_fetch_concurrency_limit() {
-    let context = ExecutionContext::builder().with_host_fetch_max_concurrent_ops(7).build().unwrap();
-    assert_eq!(context.host_fetch_max_concurrent_ops(), 7);
-}
-
-#[test]
-fn execution_context_records_host_fetch_acquire_timeout() {
-    let context = ExecutionContext::builder().with_host_fetch_acquire_timeout(Duration::from_secs(11)).build().unwrap();
-    assert_eq!(context.host_fetch_acquire_timeout(), Duration::from_secs(11));
-}
-
-#[test]
 fn execution_context_records_lakehouse_cache_fill_resource_limits() {
     let context = ExecutionContext::builder()
         .with_lakehouse_cache_fill_budget_bytes(2048)
+        .with_lakehouse_cache_fill_acquire_timeout(Duration::from_secs(11))
         .with_lakehouse_cache_fill_max_concurrent_ops(3)
         .build()
         .unwrap();
 
     assert_eq!(context.lakehouse_cache_fill_budget().budget_bytes(), 2048);
+    assert_eq!(context.lakehouse_cache_fill_acquire_timeout(), Duration::from_secs(11));
     assert_eq!(context.lakehouse_cache_fill_max_concurrent_ops(), 3);
 }
 
@@ -264,7 +261,7 @@ fn unbounded_fragment_context_preserves_query_state() {
             max_retry_attempts: 1,
             min_retry_chunk_row_groups: 1,
         })
-        .with_host_fetch_max_concurrent_ops(7)
+        .with_lakehouse_cache_fill_max_concurrent_ops(7)
         .build()
         .unwrap();
     context.lakehouse_cache_fill_events().record(LakehouseCacheFillEvent {
@@ -283,7 +280,7 @@ fn unbounded_fragment_context_preserves_query_state() {
 
     assert_eq!(fragment_context.memory_control_policy(), MemoryControlPolicy::Unbounded);
     assert!(fragment_context.cancellation().is_cancelled());
-    assert_eq!(fragment_context.host_fetch_max_concurrent_ops(), 7);
+    assert_eq!(fragment_context.lakehouse_cache_fill_max_concurrent_ops(), 7);
     assert_eq!(fragment_context.lakehouse_cache_fill_event_snapshots().len(), 1);
     assert_eq!(context.lakehouse_cache_fill_event_snapshots().len(), 1);
 }
@@ -315,226 +312,29 @@ fn execution_context_rejects_invalid_source_chunk_planning_options() {
 }
 
 #[test]
-fn execution_context_rejects_zero_host_fetch_concurrency_limit() {
-    let error = ExecutionContext::builder().with_host_fetch_max_concurrent_ops(0).build().unwrap_err();
-    assert_eq!(error.code(), QueryErrorCode::InvalidPlan);
-    assert_eq!(error.fact_value("field"), Some("host_fetch_max_concurrent_ops"));
+fn lakehouse_cache_fill_config_defaults_match_contract() {
+    let config = LakehouseCacheFillConfig::default();
+    assert_eq!(config.budget_bytes, None);
+    assert_eq!(config.acquire_timeout, Duration::from_secs(30));
+    assert_eq!(config.max_concurrent_ops, 4);
+    config.validate().unwrap();
 }
 
 #[test]
-fn execution_context_rejects_zero_host_fetch_acquire_timeout() {
-    let error = ExecutionContext::builder().with_host_fetch_acquire_timeout(Duration::ZERO).build().unwrap_err();
-    assert_eq!(error.code(), QueryErrorCode::InvalidPlan);
-    assert_eq!(error.fact_value("field"), Some("host_fetch_acquire_timeout"));
-}
-
-fn available_gds_capability() -> DeploymentIoCapability {
-    DeploymentIoCapability::from_probe_inputs(
-        NvidiaFsProbeStatus::Present { path: std::path::PathBuf::from(NVIDIA_FS_PROC_PATH) },
-        KvikioCompatModeStatus::Unset,
-        GdsDriverProbeStatus::Available,
-    )
-}
-
-fn gds_source_fetch_config() -> SourceFetchConfig {
-    SourceFetchConfig {
-        gds_capable_mount_roots: vec![std::path::PathBuf::from("/mnt/nexus-gds")],
-        ..SourceFetchConfig::default()
+fn lakehouse_cache_fill_config_rejects_zero_controls() {
+    for (config, field) in [
+        (LakehouseCacheFillConfig { budget_bytes: Some(0), ..Default::default() }, "lakehouse_cache_fill_budget_bytes"),
+        (
+            LakehouseCacheFillConfig { acquire_timeout: Duration::ZERO, ..Default::default() },
+            "lakehouse_cache_fill_acquire_timeout",
+        ),
+        (
+            LakehouseCacheFillConfig { max_concurrent_ops: 0, ..Default::default() },
+            "lakehouse_cache_fill_max_concurrent_ops",
+        ),
+    ] {
+        let error = config.validate().unwrap_err();
+        assert_eq!(error.code(), QueryErrorCode::InvalidPlan);
+        assert_eq!(error.fact_value("field"), Some(field));
     }
-}
-
-#[test]
-fn source_fetch_config_defaults_match_source_fetch_contract() {
-    let config = SourceFetchConfig::default();
-    assert_eq!(config.substrate, SourceFetchSubstrate::Auto);
-    assert_eq!(config.host_fetch_budget_bytes, None);
-    assert_eq!(config.host_fetch_acquire_timeout, SourceFetchConfig::DEFAULT_HOST_FETCH_ACQUIRE_TIMEOUT);
-    assert_eq!(config.host_fetch_max_concurrent_ops, SourceFetchConfig::DEFAULT_HOST_FETCH_MAX_CONCURRENT_OPS);
-    assert_eq!(config.lakehouse_cache_fill_budget_bytes, None);
-    assert_eq!(
-        config.lakehouse_cache_fill_max_concurrent_ops,
-        SourceFetchConfig::DEFAULT_LAKEHOUSE_CACHE_FILL_MAX_CONCURRENT_OPS
-    );
-    assert_eq!(config.gds_max_concurrent_ops, SourceFetchConfig::DEFAULT_GDS_MAX_CONCURRENT_OPS);
-    assert_eq!(config.gds_min_chunk_bytes, SourceFetchConfig::DEFAULT_GDS_MIN_CHUNK_BYTES);
-    assert_eq!(SourceFetchConfig::DEFAULT_HOST_FETCH_ACQUIRE_TIMEOUT, Duration::from_secs(30));
-    assert_eq!(DEFAULT_HOST_FETCH_ACQUIRE_TIMEOUT, SourceFetchConfig::DEFAULT_HOST_FETCH_ACQUIRE_TIMEOUT);
-    assert_eq!(DEFAULT_HOST_FETCH_BUDGET_BYTES, SourceFetchConfig::DEFAULT_HOST_FETCH_BUDGET_BYTES);
-    assert_eq!(DEFAULT_HOST_FETCH_BUDGET_CAP_BYTES, SourceFetchConfig::DEFAULT_HOST_FETCH_BUDGET_CAP_BYTES);
-    assert_eq!(DEFAULT_HOST_FETCH_MAX_CONCURRENT_OPS, SourceFetchConfig::DEFAULT_HOST_FETCH_MAX_CONCURRENT_OPS);
-    assert_eq!(
-        DEFAULT_LAKEHOUSE_CACHE_FILL_MAX_CONCURRENT_OPS,
-        SourceFetchConfig::DEFAULT_LAKEHOUSE_CACHE_FILL_MAX_CONCURRENT_OPS
-    );
-    assert_eq!(DEFAULT_GDS_MAX_CONCURRENT_OPS, SourceFetchConfig::DEFAULT_GDS_MAX_CONCURRENT_OPS);
-    assert_eq!(DEFAULT_GDS_MIN_CHUNK_BYTES, SourceFetchConfig::DEFAULT_GDS_MIN_CHUNK_BYTES);
-}
-
-#[test]
-fn source_fetch_strategy_auto_rejects_remote_object_store_without_host_buffer_fallback() {
-    let config = SourceFetchConfig::default();
-    let decision = config.decide_source_fetch_strategy(
-        &available_gds_capability(),
-        "s3://bucket/path/file.parquet",
-        Some(64 * 1024 * 1024),
-    );
-
-    assert_eq!(decision.strategy, SourceFetchStrategy::Rejected);
-    assert_eq!(decision.reason, SourceFetchStrategyReason::RemoteObjectStore);
-    assert_eq!(decision.gds_eligibility, SourceGdsEligibility::RemoteObjectStore);
-    assert_eq!(
-        decision.diagnostic_facts(),
-        vec![
-            ("source_fetch_strategy", "rejected".to_string()),
-            ("source_fetch_strategy_reason", "remote_object_store".to_string()),
-            ("source_fetch_substrate", "auto".to_string()),
-            ("source_gds_eligibility", "remote_object_store".to_string()),
-        ]
-    );
-}
-
-#[test]
-fn source_fetch_strategy_auto_selects_direct_device_only_for_gds_eligible_local_chunks() {
-    let config = gds_source_fetch_config();
-    let decision = config.decide_source_fetch_strategy(
-        &available_gds_capability(),
-        "/mnt/nexus-gds/tpch/sf10/lineitem.parquet",
-        Some(64 * 1024 * 1024),
-    );
-
-    assert_eq!(decision.strategy, SourceFetchStrategy::DirectDevice);
-    assert_eq!(decision.reason, SourceFetchStrategyReason::GdsEligible);
-    assert_eq!(decision.gds_eligibility, SourceGdsEligibility::Eligible);
-}
-
-#[test]
-fn source_fetch_config_rejects_host_buffer_substrate() {
-    let config = SourceFetchConfig { substrate: SourceFetchSubstrate::HostBuffer, ..gds_source_fetch_config() };
-    let error = config.validate_for_deployment(&available_gds_capability()).unwrap_err();
-    assert_eq!(error.code(), QueryErrorCode::InvalidPlan);
-    assert_eq!(error.fact_value("source_fetch_substrate"), Some("host_buffer"));
-    assert_eq!(error.fact_value("reason"), Some("host_buffer_disabled"));
-
-    let decision = config.decide_source_fetch_strategy(
-        &available_gds_capability(),
-        "/mnt/nexus-gds/tpch/sf10/lineitem.parquet",
-        Some(64 * 1024 * 1024),
-    );
-
-    assert_eq!(decision.strategy, SourceFetchStrategy::Rejected);
-    assert_eq!(decision.reason, SourceFetchStrategyReason::HostBufferDisabled);
-    assert_eq!(decision.gds_eligibility, SourceGdsEligibility::Eligible);
-}
-
-#[test]
-fn source_fetch_strategy_direct_device_rejects_ineligible_sources() {
-    let config = SourceFetchConfig { substrate: SourceFetchSubstrate::DirectDevice, ..gds_source_fetch_config() };
-
-    let remote = config.decide_source_fetch_strategy(
-        &available_gds_capability(),
-        "https://example.test/file.parquet",
-        Some(64 * 1024 * 1024),
-    );
-    assert_eq!(remote.strategy, SourceFetchStrategy::Rejected);
-    assert_eq!(remote.reason, SourceFetchStrategyReason::RemoteObjectStore);
-
-    let small = config.decide_source_fetch_strategy(
-        &available_gds_capability(),
-        "/mnt/nexus-gds/tpch/sf10/lineitem.parquet",
-        Some(1024),
-    );
-    assert_eq!(small.strategy, SourceFetchStrategy::Rejected);
-    assert_eq!(small.reason, SourceFetchStrategyReason::BelowMinChunkBytes);
-
-    let eligible = config.decide_source_fetch_strategy(
-        &available_gds_capability(),
-        "/mnt/nexus-gds/tpch/sf10/lineitem.parquet",
-        Some(64 * 1024 * 1024),
-    );
-    assert_eq!(eligible.strategy, SourceFetchStrategy::DirectDevice);
-    assert_eq!(eligible.reason, SourceFetchStrategyReason::GdsEligible);
-}
-
-#[test]
-fn execution_context_exposes_effective_source_fetch_strategy() {
-    let context = ExecutionContext::builder()
-        .with_deployment_io_capability(available_gds_capability())
-        .with_source_fetch_config(gds_source_fetch_config())
-        .build()
-        .unwrap();
-
-    let decision =
-        context.source_fetch_strategy_for_location("/mnt/nexus-gds/tpch/sf10/lineitem.parquet", Some(64 * 1024 * 1024));
-
-    assert_eq!(decision.strategy, SourceFetchStrategy::DirectDevice);
-    assert_eq!(decision.substrate, SourceFetchSubstrate::Auto);
-}
-
-#[test]
-fn source_fetch_config_rejects_zero_gds_controls() {
-    let deployment = available_gds_capability();
-    let zero_ops = SourceFetchConfig { gds_max_concurrent_ops: 0, ..SourceFetchConfig::default() };
-    let error = zero_ops.validate_for_deployment(&deployment).unwrap_err();
-    assert_eq!(error.code(), QueryErrorCode::InvalidPlan);
-    assert_eq!(error.fact_value("field"), Some("gds_max_concurrent_ops"));
-
-    let zero_cache_fill_ops =
-        SourceFetchConfig { lakehouse_cache_fill_max_concurrent_ops: 0, ..SourceFetchConfig::default() };
-    let error = zero_cache_fill_ops.validate_for_deployment(&deployment).unwrap_err();
-    assert_eq!(error.code(), QueryErrorCode::InvalidPlan);
-    assert_eq!(error.fact_value("field"), Some("lakehouse_cache_fill_max_concurrent_ops"));
-
-    let zero_cache_fill_budget =
-        SourceFetchConfig { lakehouse_cache_fill_budget_bytes: Some(0), ..SourceFetchConfig::default() };
-    let error = zero_cache_fill_budget.validate_for_deployment(&deployment).unwrap_err();
-    assert_eq!(error.code(), QueryErrorCode::InvalidPlan);
-    assert_eq!(error.fact_value("field"), Some("lakehouse_cache_fill_budget_bytes"));
-
-    let zero_host_fetch_acquire_timeout =
-        SourceFetchConfig { host_fetch_acquire_timeout: Duration::ZERO, ..SourceFetchConfig::default() };
-    let error = zero_host_fetch_acquire_timeout.validate_for_deployment(&deployment).unwrap_err();
-    assert_eq!(error.code(), QueryErrorCode::InvalidPlan);
-    assert_eq!(error.fact_value("field"), Some("host_fetch_acquire_timeout"));
-
-    let zero_min_chunk = SourceFetchConfig { gds_min_chunk_bytes: 0, ..SourceFetchConfig::default() };
-    let error = zero_min_chunk.validate_for_deployment(&deployment).unwrap_err();
-    assert_eq!(error.code(), QueryErrorCode::InvalidPlan);
-    assert_eq!(error.fact_value("field"), Some("gds_min_chunk_bytes"));
-}
-
-#[test]
-fn direct_device_source_fetch_config_requires_gds_available() {
-    let unavailable = DeploymentIoCapability::from_probe_inputs(
-        NvidiaFsProbeStatus::DriverMissing,
-        KvikioCompatModeStatus::Unset,
-        GdsDriverProbeStatus::Available,
-    );
-    let config = SourceFetchConfig { substrate: SourceFetchSubstrate::DirectDevice, ..gds_source_fetch_config() };
-    let error = config.validate_for_deployment(&unavailable).unwrap_err();
-    assert_eq!(error.code(), QueryErrorCode::InvalidPlan);
-    assert_eq!(error.fact_value("source_fetch_substrate"), Some("direct_device"));
-    assert_eq!(error.fact_value("gds_available"), Some("false"));
-    assert_eq!(error.fact_value("gds_status"), Some("driver_missing"));
-
-    config.validate_for_deployment(&available_gds_capability()).unwrap();
-}
-
-#[test]
-fn gds_concurrency_gate_limits_in_flight_ops() {
-    let gate = GdsConcurrencyGate::new(1).unwrap();
-    let permit = gate.acquire().unwrap();
-    let gate_for_thread = gate.clone();
-    let (started_sender, started_receiver) = std::sync::mpsc::channel();
-    let (acquired_sender, acquired_receiver) = std::sync::mpsc::channel();
-    let handle = std::thread::spawn(move || {
-        started_sender.send(()).unwrap();
-        let permit = gate_for_thread.acquire().unwrap();
-        acquired_sender.send(()).unwrap();
-        drop(permit);
-    });
-    started_receiver.recv().unwrap();
-    assert!(acquired_receiver.try_recv().is_err());
-    drop(permit);
-    acquired_receiver.recv().unwrap();
-    handle.join().unwrap();
 }

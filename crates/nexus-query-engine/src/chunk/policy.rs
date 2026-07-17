@@ -298,7 +298,7 @@ fn local_parquet_throughput_planning_admitted(
         local_parquet_throughput_file_uses_supported_reader_path(file)
             && file.partition_values.is_empty()
             && matches!(
-                file.resolved_source.read_strategy,
+                file.resolved_source.read_strategy(),
                 ParquetReadStrategy::LocalKvikio | ParquetReadStrategy::LocalCacheKvikio
             )
             && local_parquet_throughput_file_has_source_read_bytes(source, file)
@@ -306,10 +306,10 @@ fn local_parquet_throughput_planning_admitted(
 }
 
 fn local_parquet_throughput_file_uses_supported_reader_path(file: &LocalParquetFile) -> bool {
-    match file.resolved_source.read_strategy {
+    match file.resolved_source.read_strategy() {
         ParquetReadStrategy::LocalKvikio => file.location.is_local_path(),
         ParquetReadStrategy::LocalCacheKvikio => file.path.is_file(),
-        ParquetReadStrategy::RemoteHostBuffer | ParquetReadStrategy::RemoteDirect => false,
+        ParquetReadStrategy::RemoteDirect => false,
     }
 }
 

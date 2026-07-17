@@ -179,10 +179,10 @@ pub(crate) fn cpu_baseline_listing_url_from_data_file(
     file: &datafusion_nexus::table_format::TableFormatDataFile,
 ) -> Option<datafusion::error::Result<ListingTableUrl>> {
     if let Some(resolved) = &file.resolved_parquet_source
-        && resolved.read_strategy == ParquetReadStrategy::LocalCacheKvikio
-        && Path::new(&resolved.reader_location).exists()
+        && resolved.read_strategy() == ParquetReadStrategy::LocalCacheKvikio
+        && Path::new(resolved.reader_location()).exists()
     {
-        return Some(ListingTableUrl::parse(resolved.reader_location.as_str()));
+        return Some(ListingTableUrl::parse(resolved.reader_location()));
     }
 
     match &file.read_capability {
