@@ -8,6 +8,7 @@
 
 #include <rmm/aligned.hpp>
 #include <rmm/mr/per_device_resource.hpp>
+#include <rmm/mr/cuda_async_memory_resource.hpp>
 #include <rmm/mr/cuda_memory_resource.hpp>
 #include <rmm/mr/failure_callback_resource_adaptor.hpp>
 #include <rmm/mr/limiting_resource_adaptor.hpp>
@@ -21,15 +22,193 @@
 #include <algorithm>
 #include <atomic>
 #include <cstdint>
+#include <limits>
 #include <new>
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <stdexcept>
 #include <string>
 #include <unordered_map>
 #include <utility>
 
 namespace {
+
+constexpr std::uint32_t k_max_failure_callback_retries = 8;
+constexpr std::uint64_t k_default_async_release_threshold =
+  std::numeric_limits<std::uint64_t>::max();
+constexpr std::uint64_t k_trim_retry_idle_to_request_ratio = 10;
+
+using cuda_async_resource_box =
+  rmm::mr::device_memory_resource_box<rmm::mr::cuda_async_memory_resource>;
+
+class reservation_limit_out_of_memory final : public rmm::out_of_memory {
+ public:
+  explicit reservation_limit_out_of_memory(char const* message) : rmm::out_of_memory{message} {}
+};
+
+cudf_memory_manager_options_t default_memory_manager_options()
+{
+  cudf_memory_manager_options_t options{};
+  options.struct_size             = sizeof(cudf_memory_manager_options_t);
+  options.base_kind               = CUDF_MEMORY_MANAGER_BASE_CUDA_ASYNC;
+  options.flags                   = 0;
+  options.initial_pool_size_bytes = 0;
+  options.maximum_pool_size_bytes = 0;
+  options.release_threshold_bytes = k_default_async_release_threshold;
+  return options;
+}
+
+std::optional<std::size_t> optional_nonzero_bytes(std::uint64_t value)
+{
+  if (value == 0) { return std::nullopt; }
+  return static_cast<std::size_t>(value);
+}
+
+std::optional<std::size_t> optional_threshold_bytes(std::uint64_t value)
+{
+  return static_cast<std::size_t>(value);
+}
+
+std::unique_ptr<cuda_async_resource_box> make_cuda_async_resource_box(
+  std::uint64_t initial_pool_size,
+  std::uint64_t release_threshold)
+{
+  return std::make_unique<cuda_async_resource_box>(optional_nonzero_bytes(initial_pool_size),
+                                                  optional_threshold_bytes(release_threshold));
+}
+
+std::shared_ptr<cuda_async_resource_box> make_shared_cuda_async_resource_box(
+  std::uint64_t initial_pool_size,
+  std::uint64_t release_threshold)
+{
+  return std::make_shared<cuda_async_resource_box>(optional_nonzero_bytes(initial_pool_size),
+                                                  optional_threshold_bytes(release_threshold));
+}
+
+void fill_pool_usage(cudf_memory_pool_usage_t& out,
+                     std::uint64_t reserved_current,
+                     std::uint64_t reserved_high,
+                     std::uint64_t used_current,
+                     std::uint64_t used_high)
+{
+  out                        = {};
+  out.struct_size            = sizeof(cudf_memory_pool_usage_t);
+  out.reserved_current_bytes = reserved_current;
+  out.reserved_high_bytes    = reserved_high;
+  out.used_current_bytes     = used_current;
+  out.used_high_bytes        = used_high;
+}
+
+bool read_async_pool_usage_noexcept(cuda_async_resource_box* async_pool,
+                                    cudf_memory_pool_usage_t& out) noexcept
+{
+  if (async_pool == nullptr) { return false; }
+  std::uint64_t reserved_current = 0;
+  std::uint64_t reserved_high    = 0;
+  std::uint64_t used_current     = 0;
+  std::uint64_t used_high        = 0;
+  auto const pool                = async_pool->resource().pool_handle();
+  if (cudaMemPoolGetAttribute(pool, cudaMemPoolAttrReservedMemCurrent, &reserved_current) !=
+      cudaSuccess) {
+    cudaGetLastError();
+    return false;
+  }
+  if (cudaMemPoolGetAttribute(pool, cudaMemPoolAttrReservedMemHigh, &reserved_high) !=
+      cudaSuccess) {
+    cudaGetLastError();
+    return false;
+  }
+  if (cudaMemPoolGetAttribute(pool, cudaMemPoolAttrUsedMemCurrent, &used_current) != cudaSuccess) {
+    cudaGetLastError();
+    return false;
+  }
+  if (cudaMemPoolGetAttribute(pool, cudaMemPoolAttrUsedMemHigh, &used_high) != cudaSuccess) {
+    cudaGetLastError();
+    return false;
+  }
+  fill_pool_usage(out, reserved_current, reserved_high, used_current, used_high);
+  return true;
+}
+
+void read_async_pool_usage(cuda_async_resource_box* async_pool, cudf_memory_pool_usage_t& out)
+{
+  if (async_pool == nullptr) {
+    throw std::runtime_error{"memory resource is not backed by a CUDA async pool"};
+  }
+  if (!read_async_pool_usage_noexcept(async_pool, out)) {
+    throw std::runtime_error{"failed to read CUDA async pool usage"};
+  }
+}
+
+void trim_async_pool_to(cuda_async_resource_box* async_pool, std::uint64_t keep_bytes)
+{
+  if (async_pool == nullptr) {
+    throw std::runtime_error{"memory resource is not backed by a CUDA async pool"};
+  }
+  CUDF_CUDA_TRY(cudaMemPoolTrimTo(async_pool->resource().pool_handle(), keep_bytes));
+}
+
+bool async_pool_has_trim_retry_headroom(cudf_memory_pool_usage_t const& usage,
+                                        std::size_t request_bytes);
+bool trim_async_pool_to_zero_noexcept(cuda_async_resource_box* async_pool) noexcept;
+
+bool trim_async_pool_before_retry(cuda_async_resource_box* async_pool,
+                                  std::size_t request_bytes) noexcept
+{
+  if (async_pool == nullptr || request_bytes == 0) { return false; }
+  cudf_memory_pool_usage_t usage{};
+  if (!read_async_pool_usage_noexcept(async_pool, usage)) { return false; }
+  if (!async_pool_has_trim_retry_headroom(usage, request_bytes)) { return false; }
+  return trim_async_pool_to_zero_noexcept(async_pool);
+}
+
+bool trim_async_pool_to_zero_noexcept(cuda_async_resource_box* async_pool) noexcept
+{
+  if (async_pool == nullptr) { return false; }
+  if (cudaMemPoolTrimTo(async_pool->resource().pool_handle(), 0) != cudaSuccess) {
+    cudaGetLastError();
+    return false;
+  }
+  return true;
+}
+
+bool async_pool_has_trim_retry_headroom(cudf_memory_pool_usage_t const& usage,
+                                        std::size_t request_bytes)
+{
+  if (request_bytes == 0 || usage.reserved_current_bytes <= usage.used_current_bytes) {
+    return false;
+  }
+  auto const idle_bytes = usage.reserved_current_bytes - usage.used_current_bytes;
+  return idle_bytes / static_cast<std::uint64_t>(request_bytes) >=
+         k_trim_retry_idle_to_request_ratio;
+}
+
+void fill_failure_info(cudf_memory_failure_info_t& out,
+                       int32_t device_ordinal,
+                       std::size_t request_bytes,
+                       cuda_async_resource_box* async_pool,
+                       cudf_memory_failure_source_t failure_source,
+                       std::uint32_t callback_attempt,
+                       std::uint32_t trim_retry_count)
+{
+  out                   = {};
+  out.struct_size       = sizeof(cudf_memory_failure_info_t);
+  out.device_ordinal    = device_ordinal;
+  out.callback_attempt  = callback_attempt;
+  out.trim_retry_count  = trim_retry_count;
+  out.requested_bytes   = static_cast<std::uint64_t>(request_bytes);
+  out.failure_source    = static_cast<std::uint32_t>(failure_source);
+  cudf_memory_pool_usage_t usage{};
+  if (read_async_pool_usage_noexcept(async_pool, usage)) {
+    out.flags |= CUDF_MEMORY_FAILURE_INFO_HAS_POOL_USAGE;
+    out.pool_reserved_current_bytes = usage.reserved_current_bytes;
+    out.pool_reserved_high_bytes    = usage.reserved_high_bytes;
+    out.pool_used_current_bytes     = usage.used_current_bytes;
+    out.pool_used_high_bytes        = usage.used_high_bytes;
+  }
+}
+
 void update_atomic_peak(std::atomic<std::size_t>& peak, std::size_t value)
 {
   auto observed = peak.load(std::memory_order_relaxed);
@@ -181,6 +360,24 @@ struct reservation_state {
   std::size_t allocation_limit  = 0;
   void* stream_key              = nullptr;
   bool attached                 = true;
+  std::shared_ptr<struct reservation_arena_state> arena;
+  std::size_t current_bytes     = 0;
+  std::size_t peak_bytes        = 0;
+  std::size_t total_bytes       = 0;
+  std::size_t current_aligned_bytes = 0;
+  std::size_t peak_aligned_bytes    = 0;
+  std::size_t total_allocations     = 0;
+  std::size_t current_allocations   = 0;
+  std::size_t peak_allocations      = 0;
+  std::size_t failed_allocation_count = 0;
+  std::size_t largest_failed_allocation_bytes = 0;
+};
+
+struct reservation_arena_state {
+  std::uint64_t id              = 0;
+  std::size_t allocation_limit  = 0;
+  bool active                   = true;
+  std::size_t active_members    = 0;
   std::size_t current_bytes     = 0;
   std::size_t peak_bytes        = 0;
   std::size_t total_bytes       = 0;
@@ -203,6 +400,7 @@ class reservation_aware_resource_adaptor final : public rmm::mr::device_memory_r
   std::shared_ptr<reservation_state> attach(rmm::cuda_stream_view stream,
                                             std::uint64_t reservation_id,
                                             std::size_t limit_bytes,
+                                            std::shared_ptr<reservation_arena_state> arena,
                                             std::string& error)
   {
     auto const key = stream_key(stream);
@@ -216,12 +414,28 @@ class reservation_aware_resource_adaptor final : public rmm::mr::device_memory_r
       }
       reservations_by_stream_.erase(existing);
     }
+    if (arena != nullptr && !arena->active) {
+      error = "reservation arena is not active";
+      return {};
+    }
 
     auto state              = std::make_shared<reservation_state>();
     state->id              = reservation_id;
     state->allocation_limit = limit_bytes;
     state->stream_key      = key;
+    state->arena           = std::move(arena);
+    if (state->arena != nullptr) { state->arena->active_members += 1; }
     reservations_by_stream_[key] = state;
+    return state;
+  }
+
+  std::shared_ptr<reservation_arena_state> create_arena(std::uint64_t arena_id,
+                                                        std::size_t limit_bytes)
+  {
+    std::scoped_lock lock{mutex_};
+    auto state              = std::make_shared<reservation_arena_state>();
+    state->id              = arena_id;
+    state->allocation_limit = limit_bytes;
     return state;
   }
 
@@ -229,6 +443,7 @@ class reservation_aware_resource_adaptor final : public rmm::mr::device_memory_r
   {
     if (state == nullptr) { return; }
     std::scoped_lock lock{mutex_};
+    bool const was_attached = state->attached;
     state->attached = false;
     auto const existing = reservations_by_stream_.find(state->stream_key);
     if (existing != reservations_by_stream_.end()) {
@@ -237,6 +452,16 @@ class reservation_aware_resource_adaptor final : public rmm::mr::device_memory_r
         reservations_by_stream_.erase(existing);
       }
     }
+    if (was_attached && state->arena != nullptr && state->arena->active_members > 0) {
+      state->arena->active_members -= 1;
+    }
+  }
+
+  void destroy_arena(std::shared_ptr<reservation_arena_state> const& state)
+  {
+    if (state == nullptr) { return; }
+    std::scoped_lock lock{mutex_};
+    state->active = false;
   }
 
   cudf_memory_resource_usage_t usage(std::shared_ptr<reservation_state> const& state)
@@ -261,6 +486,29 @@ class reservation_aware_resource_adaptor final : public rmm::mr::device_memory_r
     return out;
   }
 
+  cudf_memory_resource_usage_t arena_usage(std::shared_ptr<reservation_arena_state> const& state)
+  {
+    cudf_memory_resource_usage_t out{};
+    if (state == nullptr) { return out; }
+    std::scoped_lock lock{mutex_};
+    fill_usage(out,
+               state->allocation_limit,
+               state->current_bytes,
+               state->peak_bytes,
+               state->total_bytes,
+               state->current_aligned_bytes,
+               state->peak_aligned_bytes,
+               state->total_allocations,
+               state->current_allocations,
+               state->peak_allocations,
+               state->failed_allocation_count,
+               state->largest_failed_allocation_bytes);
+    out.reserved[0] = state->id;
+    out.reserved[1] = state->active ? 1 : 0;
+    out.reserved[2] = state->active_members;
+    return out;
+  }
+
   bool resize(std::shared_ptr<reservation_state> const& state,
               std::size_t limit_bytes,
               std::string& error)
@@ -278,11 +526,29 @@ class reservation_aware_resource_adaptor final : public rmm::mr::device_memory_r
     return true;
   }
 
+  bool resize_arena(std::shared_ptr<reservation_arena_state> const& state,
+                    std::size_t limit_bytes,
+                    std::string& error)
+  {
+    if (state == nullptr) {
+      error = "reservation arena is null";
+      return false;
+    }
+    std::scoped_lock lock{mutex_};
+    if (!state->active) {
+      error = "reservation arena is not active";
+      return false;
+    }
+    state->allocation_limit = limit_bytes;
+    return true;
+  }
+
  private:
   struct allocation_record {
     std::size_t bytes = 0;
     std::size_t aligned_bytes = 0;
     std::shared_ptr<reservation_state> reservation;
+    std::shared_ptr<reservation_arena_state> arena;
   };
 
   static void* stream_key(rmm::cuda_stream_view stream)
@@ -290,7 +556,8 @@ class reservation_aware_resource_adaptor final : public rmm::mr::device_memory_r
     return reinterpret_cast<void*>(stream.value());
   }
 
-  void record_failed_allocation(reservation_state& state, std::size_t bytes)
+  template <typename State>
+  void record_failed_allocation(State& state, std::size_t bytes)
   {
     state.failed_allocation_count += 1;
     update_peak(state.largest_failed_allocation_bytes, bytes);
@@ -309,18 +576,22 @@ class reservation_aware_resource_adaptor final : public rmm::mr::device_memory_r
     return state;
   }
 
-  void reserve_allocation(reservation_state& state, std::size_t bytes, std::size_t aligned_bytes)
+  template <typename State>
+  void reserve_allocation(State& state,
+                          std::size_t bytes,
+                          std::size_t aligned_bytes,
+                          char const* limit_message)
   {
     if (state.current_aligned_bytes > state.allocation_limit ||
         aligned_bytes > state.allocation_limit - state.current_aligned_bytes) {
       record_failed_allocation(state, bytes);
-      throw rmm::out_of_memory{
-        "stream reservation memory resource allocation limit exceeded"};
+      throw reservation_limit_out_of_memory{limit_message};
     }
     state.current_aligned_bytes += aligned_bytes;
   }
 
-  void commit_allocation(reservation_state& state, std::size_t bytes, std::size_t aligned_bytes)
+  template <typename State>
+  void commit_allocation(State& state, std::size_t bytes, std::size_t aligned_bytes)
   {
     state.current_bytes += bytes;
     state.total_bytes += bytes;
@@ -332,19 +603,27 @@ class reservation_aware_resource_adaptor final : public rmm::mr::device_memory_r
     (void)aligned_bytes;
   }
 
-  void rollback_reserved_allocation(reservation_state& state,
-                                    std::size_t bytes,
-                                    std::size_t aligned_bytes)
+  template <typename State>
+  void release_reserved_alignment(State& state, std::size_t aligned_bytes)
   {
     if (state.current_aligned_bytes >= aligned_bytes) {
       state.current_aligned_bytes -= aligned_bytes;
     } else {
       state.current_aligned_bytes = 0;
     }
+  }
+
+  template <typename State>
+  void rollback_reserved_allocation(State& state,
+                                    std::size_t bytes,
+                                    std::size_t aligned_bytes)
+  {
+    release_reserved_alignment(state, aligned_bytes);
     record_failed_allocation(state, bytes);
   }
 
-  void release_allocation(reservation_state& state, std::size_t bytes, std::size_t aligned_bytes)
+  template <typename State>
+  void release_allocation(State& state, std::size_t bytes, std::size_t aligned_bytes)
   {
     state.current_bytes = state.current_bytes >= bytes ? state.current_bytes - bytes : 0;
     state.current_aligned_bytes =
@@ -359,10 +638,33 @@ class reservation_aware_resource_adaptor final : public rmm::mr::device_memory_r
   {
     auto const aligned_bytes = rmm::align_up(bytes, alignment);
     std::shared_ptr<reservation_state> reservation;
+    std::shared_ptr<reservation_arena_state> arena;
     {
       std::scoped_lock lock{mutex_};
       reservation = reservation_for_stream(stream);
-      if (reservation != nullptr) { reserve_allocation(*reservation, bytes, aligned_bytes); }
+      if (reservation != nullptr) {
+        arena = reservation->arena;
+        if (arena != nullptr) {
+          try {
+            reserve_allocation(*arena,
+                               bytes,
+                               aligned_bytes,
+                               "reservation arena memory resource allocation limit exceeded");
+          } catch (...) {
+            record_failed_allocation(*reservation, bytes);
+            throw;
+          }
+        }
+        try {
+          reserve_allocation(*reservation,
+                             bytes,
+                             aligned_bytes,
+                             "stream reservation memory resource allocation limit exceeded");
+        } catch (...) {
+          if (arena != nullptr) { release_reserved_alignment(*arena, aligned_bytes); }
+          throw;
+        }
+      }
     }
 
     void* ptr = nullptr;
@@ -371,6 +673,7 @@ class reservation_aware_resource_adaptor final : public rmm::mr::device_memory_r
     } catch (...) {
       if (reservation != nullptr) {
         std::scoped_lock lock{mutex_};
+        if (arena != nullptr) { rollback_reserved_allocation(*arena, bytes, aligned_bytes); }
         rollback_reserved_allocation(*reservation, bytes, aligned_bytes);
       }
       throw;
@@ -382,7 +685,8 @@ class reservation_aware_resource_adaptor final : public rmm::mr::device_memory_r
         // Insert before commit: the map insert is the only throwing step, and
         // commit_allocation is pure arithmetic, so a throw here always means
         // "reserved but never committed".
-        allocations_[ptr] = allocation_record{bytes, aligned_bytes, reservation};
+        allocations_[ptr] = allocation_record{bytes, aligned_bytes, reservation, arena};
+        if (arena != nullptr) { commit_allocation(*arena, bytes, aligned_bytes); }
         commit_allocation(*reservation, bytes, aligned_bytes);
       } catch (...) {
         // Bookkeeping failed (e.g. bad_alloc on rehash): release the upstream
@@ -392,6 +696,7 @@ class reservation_aware_resource_adaptor final : public rmm::mr::device_memory_r
         {
           std::scoped_lock lock{mutex_};
           allocations_.erase(ptr);
+          if (arena != nullptr) { rollback_reserved_allocation(*arena, bytes, aligned_bytes); }
           rollback_reserved_allocation(*reservation, bytes, aligned_bytes);
         }
         throw;
@@ -421,6 +726,9 @@ class reservation_aware_resource_adaptor final : public rmm::mr::device_memory_r
 
     if (found && record.reservation != nullptr) {
       std::scoped_lock lock{mutex_};
+      if (record.arena != nullptr) {
+        release_allocation(*record.arena, record.bytes, record.aligned_bytes);
+      }
       release_allocation(*record.reservation, record.bytes, record.aligned_bytes);
     }
   }
@@ -436,6 +744,139 @@ class reservation_aware_resource_adaptor final : public rmm::mr::device_memory_r
   std::unordered_map<void*, allocation_record> allocations_;
 };
 
+class bounded_failure_callback_resource_adaptor final : public rmm::mr::device_memory_resource {
+ public:
+  bounded_failure_callback_resource_adaptor(rmm::mr::device_memory_resource* upstream,
+                                            cudf_memory_failure_callback_t callback,
+                                            void* callback_arg,
+                                            cuda_async_resource_box* async_pool,
+                                            int32_t device_ordinal)
+    : upstream_{rmm::mr::any_device_resource_from_raw(upstream)},
+      callback_{callback},
+      callback_arg_{callback_arg},
+      async_pool_{async_pool},
+      device_ordinal_{device_ordinal}
+  {
+  }
+
+  bounded_failure_callback_resource_adaptor(rmm::mr::device_memory_resource* upstream,
+                                            cudf_memory_failure_callback_v2_t callback,
+                                            void* callback_arg,
+                                            cuda_async_resource_box* async_pool,
+                                            int32_t device_ordinal)
+    : upstream_{rmm::mr::any_device_resource_from_raw(upstream)},
+      callback_v2_{callback},
+      callback_arg_{callback_arg},
+      async_pool_{async_pool},
+      device_ordinal_{device_ordinal}
+  {
+  }
+
+ private:
+  void* do_allocate(std::size_t bytes,
+                    rmm::cuda_stream_view stream,
+                    std::size_t alignment) override
+  {
+    std::uint32_t callback_retries = 0;
+    bool trim_retry_attempted      = false;
+    std::uint32_t trim_retry_count = 0;
+    while (true) {
+      try {
+        return upstream_.allocate(stream, bytes, alignment);
+      } catch (rmm::out_of_memory const& error) {
+        auto const failure_source =
+          dynamic_cast<reservation_limit_out_of_memory const*>(&error) == nullptr
+            ? CUDF_MEMORY_FAILURE_SOURCE_PHYSICAL
+            : CUDF_MEMORY_FAILURE_SOURCE_RESERVATION_LIMIT;
+        if (callback_v2_ != nullptr) {
+          if (callback_retries >= k_max_failure_callback_retries) { throw; }
+          cudf_memory_failure_info_t info{};
+          fill_failure_info(info, device_ordinal_, bytes, async_pool_, failure_source, callback_retries,
+                            trim_retry_count);
+          auto const action = callback_v2_(&info, callback_arg_);
+          if (action == CUDF_MEMORY_FAILURE_ACTION_RETRY) {
+            ++callback_retries;
+            continue;
+          }
+          if (failure_source == CUDF_MEMORY_FAILURE_SOURCE_PHYSICAL &&
+              action == CUDF_MEMORY_FAILURE_ACTION_TRIM_AND_RETRY &&
+              trim_async_pool_to_zero_noexcept(async_pool_)) {
+            ++callback_retries;
+            ++trim_retry_count;
+            continue;
+          }
+          throw;
+        }
+        if (failure_source == CUDF_MEMORY_FAILURE_SOURCE_PHYSICAL && !trim_retry_attempted &&
+            trim_async_pool_before_retry(async_pool_, bytes)) {
+          trim_retry_attempted = true;
+          continue;
+        }
+        if (callback_ == nullptr || callback_retries >= k_max_failure_callback_retries ||
+            callback_(bytes, callback_arg_) == 0) {
+          throw;
+        }
+        ++callback_retries;
+      }
+    }
+  }
+
+  void do_deallocate(void* ptr,
+                     std::size_t bytes,
+                     rmm::cuda_stream_view stream,
+                     std::size_t alignment) noexcept override
+  {
+    upstream_.deallocate(stream, ptr, bytes, alignment);
+  }
+
+  [[nodiscard]] bool do_is_equal(rmm::mr::device_memory_resource const& other) const noexcept override
+  {
+    return this == std::addressof(other);
+  }
+
+  cuda::mr::any_resource<cuda::mr::device_accessible> upstream_;
+  cudf_memory_failure_callback_t callback_ = nullptr;
+  cudf_memory_failure_callback_v2_t callback_v2_ = nullptr;
+  void* callback_arg_                      = nullptr;
+  cuda_async_resource_box* async_pool_      = nullptr;
+  int32_t device_ordinal_                   = -1;
+};
+
+class fail_first_allocation_resource_adaptor final : public rmm::mr::device_memory_resource {
+ public:
+  explicit fail_first_allocation_resource_adaptor(rmm::mr::device_memory_resource* upstream)
+    : upstream_{rmm::mr::any_device_resource_from_raw(upstream)}
+  {
+  }
+
+ private:
+  void* do_allocate(std::size_t bytes,
+                    rmm::cuda_stream_view stream,
+                    std::size_t alignment) override
+  {
+    if (!failed_once_.exchange(true, std::memory_order_acq_rel)) {
+      throw rmm::out_of_memory{"test memory resource forced first allocation failure"};
+    }
+    return upstream_.allocate(stream, bytes, alignment);
+  }
+
+  void do_deallocate(void* ptr,
+                     std::size_t bytes,
+                     rmm::cuda_stream_view stream,
+                     std::size_t alignment) noexcept override
+  {
+    upstream_.deallocate(stream, ptr, bytes, alignment);
+  }
+
+  [[nodiscard]] bool do_is_equal(rmm::mr::device_memory_resource const& other) const noexcept override
+  {
+    return this == std::addressof(other);
+  }
+
+  cuda::mr::any_resource<cuda::mr::device_accessible> upstream_;
+  std::atomic<bool> failed_once_{false};
+};
+
 struct memory_resource_owner {
   std::shared_ptr<rmm::mr::device_memory_resource> upstream;
   std::shared_ptr<rmm::mr::device_memory_resource> pool;
@@ -445,6 +886,8 @@ struct memory_resource_owner {
   rmm::mr::statistics_resource_adaptor* stats = nullptr;
   budget_tracking_resource_adaptor* budget_tracker                         = nullptr;
   reservation_aware_resource_adaptor* reservation_adaptor                   = nullptr;
+  cuda_async_resource_box* async_pool                                       = nullptr;
+  int32_t device                                                            = -1;
 };
 
 struct memory_resource_handle_state {
@@ -462,6 +905,11 @@ struct device_memory_manager_state {
 struct reservation_handle_state {
   std::shared_ptr<device_memory_manager_state> manager;
   std::shared_ptr<reservation_state> reservation;
+};
+
+struct reservation_arena_handle_state {
+  std::shared_ptr<device_memory_manager_state> manager;
+  std::shared_ptr<reservation_arena_state> arena;
 };
 
 std::mutex& memory_resource_registry_mutex()
@@ -585,34 +1033,71 @@ std::shared_ptr<device_memory_manager_state> memory_manager_from_handle(
   return {};
 }
 
+cudf_status_t normalize_memory_manager_options(cudf_memory_manager_options_t const* options,
+                                               cudf_memory_manager_options_t& out)
+{
+  out = default_memory_manager_options();
+  if (options == nullptr) { return CUDF_SUCCESS; }
+  if (options->struct_size != sizeof(cudf_memory_manager_options_t)) {
+    set_error("memory manager options struct_size is invalid");
+    return CUDF_ERROR_INVALID_ARGUMENT;
+  }
+  if (options->flags != 0) {
+    set_error("memory manager options flags must be zero");
+    return CUDF_ERROR_INVALID_ARGUMENT;
+  }
+  switch (options->base_kind) {
+    case CUDF_MEMORY_MANAGER_BASE_CUDA_ASYNC:
+    case CUDF_MEMORY_MANAGER_BASE_POOL: out = *options; return CUDF_SUCCESS;
+    default: set_error("memory manager options base_kind is invalid"); return CUDF_ERROR_INVALID_ARGUMENT;
+  }
+}
+
 std::shared_ptr<device_memory_manager_state> make_memory_manager_for_current_device(
   int32_t device,
   cudf_memory_failure_callback_t failure_callback,
-  void* failure_callback_arg)
+  cudf_memory_failure_callback_v2_t failure_callback_v2,
+  void* failure_callback_arg,
+  cudf_memory_manager_options_t const& options)
 {
   auto manager    = std::make_shared<device_memory_manager_state>();
   manager->device = device;
-  manager->failure_callback_installed = failure_callback != nullptr;
+  manager->failure_callback_installed = failure_callback != nullptr || failure_callback_v2 != nullptr;
   manager->owner  = std::make_shared<memory_resource_owner>();
 
-  auto& owner    = *manager->owner;
-  owner.upstream =
-    std::make_shared<rmm::mr::device_memory_resource_box<rmm::mr::cuda_memory_resource>>();
-  owner.pool = std::make_shared<rmm::mr::device_memory_resource_box<rmm::mr::pool_memory_resource>>(
-    rmm::mr::any_device_resource_from_raw(owner.upstream.get()), 0);
+  auto& owner = *manager->owner;
+  owner.device = device;
+  if (options.base_kind == CUDF_MEMORY_MANAGER_BASE_CUDA_ASYNC) {
+    auto async_pool = make_shared_cuda_async_resource_box(options.initial_pool_size_bytes,
+                                                         options.release_threshold_bytes);
+    owner.async_pool = async_pool.get();
+    owner.pool       = std::move(async_pool);
+  } else {
+    owner.upstream =
+      std::make_shared<rmm::mr::device_memory_resource_box<rmm::mr::cuda_memory_resource>>();
+    auto upstream = rmm::mr::any_device_resource_from_raw(owner.upstream.get());
+    if (options.maximum_pool_size_bytes > 0) {
+      owner.pool =
+        std::make_shared<rmm::mr::device_memory_resource_box<rmm::mr::pool_memory_resource>>(
+          std::move(upstream),
+          static_cast<std::size_t>(options.initial_pool_size_bytes),
+          static_cast<std::size_t>(options.maximum_pool_size_bytes));
+    } else {
+      owner.pool =
+        std::make_shared<rmm::mr::device_memory_resource_box<rmm::mr::pool_memory_resource>>(
+          std::move(upstream), static_cast<std::size_t>(options.initial_pool_size_bytes));
+    }
+  }
   auto adaptor = std::make_unique<reservation_aware_resource_adaptor>(owner.pool.get());
   owner.reservation_adaptor = adaptor.get();
-  if (failure_callback != nullptr) {
-    auto retry_callback = [failure_callback](std::size_t bytes, void* arg) {
-      return failure_callback(bytes, arg) != 0;
-    };
+  if (failure_callback_v2 != nullptr) {
     owner.reservation_mr = std::move(adaptor);
-    owner.mr =
-      std::make_unique<rmm::mr::device_memory_resource_box<
-        rmm::mr::failure_callback_resource_adaptor<>>>(
-        rmm::mr::any_device_resource_from_raw(owner.reservation_mr.get()),
-        std::move(retry_callback),
-        failure_callback_arg);
+    owner.mr = std::make_unique<bounded_failure_callback_resource_adaptor>(
+      owner.reservation_mr.get(), failure_callback_v2, failure_callback_arg, owner.async_pool, device);
+  } else if (failure_callback != nullptr) {
+    owner.reservation_mr = std::move(adaptor);
+    owner.mr = std::make_unique<bounded_failure_callback_resource_adaptor>(
+      owner.reservation_mr.get(), failure_callback, failure_callback_arg, owner.async_pool, device);
   } else {
     owner.mr = std::move(adaptor);
   }
@@ -643,7 +1128,9 @@ cudf_status_t validate_memory_manager_device(int32_t device)
 
 cudf_status_t memory_manager_for_device_impl(int32_t device,
                                              cudf_memory_failure_callback_t failure_callback,
+                                             cudf_memory_failure_callback_v2_t failure_callback_v2,
                                              void* failure_callback_arg,
+                                             cudf_memory_manager_options_t const* options,
                                              cudf_memory_manager_handle* out)
 {
   CUDF_RUST_NULL_CHECK(out, "out is null");
@@ -652,10 +1139,14 @@ cudf_status_t memory_manager_for_device_impl(int32_t device,
   {
     cudf_status_t const validation_status = validate_memory_manager_device(device);
     if (validation_status != CUDF_SUCCESS) { return validation_status; }
-    if (failure_callback == nullptr && failure_callback_arg != nullptr) {
+    if (failure_callback == nullptr && failure_callback_v2 == nullptr && failure_callback_arg != nullptr) {
       set_error("failure callback argument requires a failure callback");
       return CUDF_ERROR_INVALID_OPERATION;
     }
+    cudf_memory_manager_options_t resolved_options{};
+    cudf_status_t const options_status =
+      normalize_memory_manager_options(options, resolved_options);
+    if (options_status != CUDF_SUCCESS) { return options_status; }
 
     cudf_device_guard guard;
     cudf_status_t const guard_status = guard.activate(device);
@@ -667,9 +1158,14 @@ cudf_status_t memory_manager_for_device_impl(int32_t device,
     if (it == registry.end()) {
       it = registry.emplace(device,
                             make_memory_manager_for_current_device(
-                              device, failure_callback, failure_callback_arg))
+                              device,
+                              failure_callback,
+                              failure_callback_v2,
+                              failure_callback_arg,
+                              resolved_options))
              .first;
-    } else if (failure_callback != nullptr && !it->second->failure_callback_installed) {
+    } else if ((failure_callback != nullptr || failure_callback_v2 != nullptr) &&
+               !it->second->failure_callback_installed) {
       set_error(
         "device memory manager already exists without a failure callback; "
         "install the callback before first use");
@@ -753,6 +1249,7 @@ cudf_status_t cudf_memory_resource_create_cuda(cudf_memory_resource_handle* out)
   {
     auto state       = std::make_unique<memory_resource_handle_state>();
     state->owner     = std::make_shared<memory_resource_owner>();
+    state->owner->device = current_cuda_device();
     state->owner->mr =
       std::make_unique<rmm::mr::device_memory_resource_box<rmm::mr::cuda_memory_resource>>();
     register_memory_resource_lifetime(state->owner);
@@ -776,6 +1273,7 @@ cudf_status_t cudf_memory_resource_create_pool(size_t initial_pool_size,
     auto state     = std::make_unique<memory_resource_handle_state>();
     state->owner   = std::make_shared<memory_resource_owner>();
     auto& owner    = *state->owner;
+    owner.device   = current_cuda_device();
     owner.upstream =
       std::make_shared<rmm::mr::device_memory_resource_box<rmm::mr::cuda_memory_resource>>();
     auto upstream = rmm::mr::any_device_resource_from_raw(owner.upstream.get());
@@ -796,6 +1294,28 @@ cudf_status_t cudf_memory_resource_create_pool(size_t initial_pool_size,
   CUDF_RUST_CATCH
 }
 
+cudf_status_t cudf_memory_resource_create_cuda_async(size_t initial_pool_size,
+                                                     uint64_t release_threshold,
+                                                     cudf_memory_resource_handle* out)
+{
+  CUDF_RUST_NULL_CHECK(out, "out is null");
+  *out = nullptr;
+  CUDF_RUST_TRY
+  {
+    auto state        = std::make_unique<memory_resource_handle_state>();
+    state->owner      = std::make_shared<memory_resource_owner>();
+    auto async_pool   = make_cuda_async_resource_box(initial_pool_size, release_threshold);
+    auto* async_pool_ptr = async_pool.get();
+    state->owner->device = current_cuda_device();
+    state->owner->async_pool = async_pool_ptr;
+    state->owner->mr         = std::move(async_pool);
+    register_memory_resource_lifetime(state->owner);
+    *out = static_cast<cudf_memory_resource_handle>(state.release());
+    return CUDF_SUCCESS;
+  }
+  CUDF_RUST_CATCH
+}
+
 cudf_status_t cudf_memory_resource_create_limiting(cudf_memory_resource_handle upstream,
                                                    size_t allocation_limit,
                                                    cudf_memory_resource_handle* out)
@@ -808,7 +1328,10 @@ cudf_status_t cudf_memory_resource_create_limiting(cudf_memory_resource_handle u
     auto state                    = std::make_unique<memory_resource_handle_state>();
     state->owner                  = std::make_shared<memory_resource_owner>();
     auto& owner                   = *state->owner;
+    auto& upstream_owner          = memory_resource_owner_from_handle(upstream);
     owner.upstream_lifetime       = cudf_memory_resource_lifetime_from_handle(upstream);
+    owner.async_pool              = upstream_owner.async_pool;
+    owner.device                  = upstream_owner.device;
     auto* upstream_mr             = cudf_memory_resource_raw_from_handle(upstream);
     owner.mr =
       std::make_unique<rmm::mr::device_memory_resource_box<rmm::mr::limiting_resource_adaptor>>(
@@ -836,17 +1359,42 @@ cudf_status_t cudf_memory_resource_create_failure_callback(
     auto state              = std::make_unique<memory_resource_handle_state>();
     state->owner            = std::make_shared<memory_resource_owner>();
     auto& owner             = *state->owner;
+    auto& upstream_owner    = memory_resource_owner_from_handle(upstream);
     owner.upstream_lifetime = cudf_memory_resource_lifetime_from_handle(upstream);
+    owner.async_pool        = upstream_owner.async_pool;
+    owner.device            = upstream_owner.device;
     auto* upstream_mr       = cudf_memory_resource_raw_from_handle(upstream);
-    auto failure_callback   = [callback](std::size_t bytes, void* arg) {
-      return callback(bytes, arg) != 0;
-    };
-    owner.mr =
-      std::make_unique<rmm::mr::device_memory_resource_box<
-        rmm::mr::failure_callback_resource_adaptor<>>>(
-        rmm::mr::any_device_resource_from_raw(upstream_mr),
-        std::move(failure_callback),
-        callback_arg);
+    owner.mr = std::make_unique<bounded_failure_callback_resource_adaptor>(
+      upstream_mr, callback, callback_arg, owner.async_pool, owner.device);
+    register_memory_resource_lifetime(state->owner);
+    *out = static_cast<cudf_memory_resource_handle>(state.release());
+    return CUDF_SUCCESS;
+  }
+  CUDF_RUST_CATCH
+}
+
+cudf_status_t cudf_memory_resource_create_failure_callback_v2(
+  cudf_memory_resource_handle upstream,
+  cudf_memory_failure_callback_v2_t callback,
+  void* callback_arg,
+  cudf_memory_resource_handle* out)
+{
+  CUDF_RUST_NULL_CHECK(out, "out is null");
+  *out = nullptr;
+  CUDF_RUST_NULL_CHECK(upstream, "upstream is null");
+  CUDF_RUST_NULL_CHECK(callback, "callback is null");
+  CUDF_RUST_TRY
+  {
+    auto state              = std::make_unique<memory_resource_handle_state>();
+    state->owner            = std::make_shared<memory_resource_owner>();
+    auto& owner             = *state->owner;
+    auto& upstream_owner    = memory_resource_owner_from_handle(upstream);
+    owner.upstream_lifetime = cudf_memory_resource_lifetime_from_handle(upstream);
+    owner.async_pool        = upstream_owner.async_pool;
+    owner.device            = upstream_owner.device;
+    auto* upstream_mr       = cudf_memory_resource_raw_from_handle(upstream);
+    owner.mr = std::make_unique<bounded_failure_callback_resource_adaptor>(
+      upstream_mr, callback, callback_arg, owner.async_pool, owner.device);
     register_memory_resource_lifetime(state->owner);
     *out = static_cast<cudf_memory_resource_handle>(state.release());
     return CUDF_SUCCESS;
@@ -866,7 +1414,10 @@ cudf_status_t cudf_memory_resource_create_budget_tracking(cudf_memory_resource_h
     auto state              = std::make_unique<memory_resource_handle_state>();
     state->owner            = std::make_shared<memory_resource_owner>();
     auto& owner             = *state->owner;
+    auto& upstream_owner    = memory_resource_owner_from_handle(upstream);
     owner.upstream_lifetime = cudf_memory_resource_lifetime_from_handle(upstream);
+    owner.async_pool        = upstream_owner.async_pool;
+    owner.device            = upstream_owner.device;
     auto* upstream_mr       = cudf_memory_resource_raw_from_handle(upstream);
     auto tracker = std::make_unique<budget_tracking_resource_adaptor>(upstream_mr,
                                                                       allocation_limit);
@@ -893,6 +1444,42 @@ cudf_status_t cudf_memory_resource_usage(cudf_memory_resource_handle handle,
       return CUDF_ERROR_INVALID_OPERATION;
     }
     *out = owner.budget_tracker->usage();
+    return CUDF_SUCCESS;
+  }
+  CUDF_RUST_CATCH
+}
+
+cudf_status_t cudf_memory_resource_pool_usage(cudf_memory_resource_handle handle,
+                                              cudf_memory_pool_usage_t* out)
+{
+  CUDF_RUST_NULL_CHECK(out, "out is null");
+  *out = {};
+  CUDF_RUST_NULL_CHECK(handle, "handle is null");
+  CUDF_RUST_TRY
+  {
+    auto& owner = memory_resource_owner_from_handle(handle);
+    if (owner.async_pool == nullptr) {
+      set_error("memory resource is not backed by a CUDA async pool");
+      return CUDF_ERROR_INVALID_OPERATION;
+    }
+    read_async_pool_usage(owner.async_pool, *out);
+    return CUDF_SUCCESS;
+  }
+  CUDF_RUST_CATCH
+}
+
+cudf_status_t cudf_memory_resource_trim_to(cudf_memory_resource_handle handle,
+                                           uint64_t keep_bytes)
+{
+  CUDF_RUST_NULL_CHECK(handle, "handle is null");
+  CUDF_RUST_TRY
+  {
+    auto& owner = memory_resource_owner_from_handle(handle);
+    if (owner.async_pool == nullptr) {
+      set_error("memory resource is not backed by a CUDA async pool");
+      return CUDF_ERROR_INVALID_OPERATION;
+    }
+    trim_async_pool_to(owner.async_pool, keep_bytes);
     return CUDF_SUCCESS;
   }
   CUDF_RUST_CATCH
@@ -935,7 +1522,16 @@ cudf_status_t cudf_memory_resource_raw(cudf_memory_resource_handle handle, void*
 
 cudf_status_t cudf_memory_manager_for_device(int32_t device, cudf_memory_manager_handle* out)
 {
-  return memory_manager_for_device_impl(device, nullptr, nullptr, out);
+  return memory_manager_for_device_impl(device, nullptr, nullptr, nullptr, nullptr, out);
+}
+
+cudf_status_t cudf_memory_manager_for_device_with_options(
+  int32_t device,
+  cudf_memory_manager_options_t const* options,
+  cudf_memory_manager_handle* out)
+{
+  CUDF_RUST_NULL_CHECK(options, "options is null");
+  return memory_manager_for_device_impl(device, nullptr, nullptr, nullptr, options, out);
 }
 
 cudf_status_t cudf_memory_manager_for_device_with_failure_callback(
@@ -947,7 +1543,47 @@ cudf_status_t cudf_memory_manager_for_device_with_failure_callback(
   CUDF_RUST_NULL_CHECK(out, "out is null");
   *out = nullptr;
   CUDF_RUST_NULL_CHECK(callback, "callback is null");
-  return memory_manager_for_device_impl(device, callback, callback_arg, out);
+  return memory_manager_for_device_impl(device, callback, nullptr, callback_arg, nullptr, out);
+}
+
+cudf_status_t cudf_memory_manager_for_device_with_failure_callback_v2(
+  int32_t device,
+  cudf_memory_failure_callback_v2_t callback,
+  void* callback_arg,
+  cudf_memory_manager_handle* out)
+{
+  CUDF_RUST_NULL_CHECK(out, "out is null");
+  *out = nullptr;
+  CUDF_RUST_NULL_CHECK(callback, "callback is null");
+  return memory_manager_for_device_impl(device, nullptr, callback, callback_arg, nullptr, out);
+}
+
+cudf_status_t cudf_memory_manager_for_device_with_failure_callback_and_options(
+  int32_t device,
+  cudf_memory_failure_callback_t callback,
+  void* callback_arg,
+  cudf_memory_manager_options_t const* options,
+  cudf_memory_manager_handle* out)
+{
+  CUDF_RUST_NULL_CHECK(out, "out is null");
+  *out = nullptr;
+  CUDF_RUST_NULL_CHECK(callback, "callback is null");
+  CUDF_RUST_NULL_CHECK(options, "options is null");
+  return memory_manager_for_device_impl(device, callback, nullptr, callback_arg, options, out);
+}
+
+cudf_status_t cudf_memory_manager_for_device_with_failure_callback_v2_and_options(
+  int32_t device,
+  cudf_memory_failure_callback_v2_t callback,
+  void* callback_arg,
+  cudf_memory_manager_options_t const* options,
+  cudf_memory_manager_handle* out)
+{
+  CUDF_RUST_NULL_CHECK(out, "out is null");
+  *out = nullptr;
+  CUDF_RUST_NULL_CHECK(callback, "callback is null");
+  CUDF_RUST_NULL_CHECK(options, "options is null");
+  return memory_manager_for_device_impl(device, nullptr, callback, callback_arg, options, out);
 }
 
 cudf_status_t cudf_memory_manager_failure_callback_state(
@@ -996,6 +1632,50 @@ cudf_status_t cudf_memory_manager_resource(cudf_memory_manager_handle manager,
   CUDF_RUST_CATCH
 }
 
+cudf_status_t cudf_memory_manager_pool_usage(cudf_memory_manager_handle manager,
+                                             cudf_memory_pool_usage_t* out)
+{
+  CUDF_RUST_NULL_CHECK(out, "out is null");
+  *out = {};
+  CUDF_RUST_NULL_CHECK(manager, "manager is null");
+  CUDF_RUST_TRY
+  {
+    auto manager_state = memory_manager_from_handle(manager);
+    if (manager_state == nullptr) {
+      set_error("memory manager handle is not registered");
+      return CUDF_ERROR_INVALID_OPERATION;
+    }
+    if (manager_state->owner->async_pool == nullptr) {
+      set_error("memory manager is not backed by a CUDA async pool");
+      return CUDF_ERROR_INVALID_OPERATION;
+    }
+    read_async_pool_usage(manager_state->owner->async_pool, *out);
+    return CUDF_SUCCESS;
+  }
+  CUDF_RUST_CATCH
+}
+
+cudf_status_t cudf_memory_manager_trim_to(cudf_memory_manager_handle manager,
+                                          uint64_t keep_bytes)
+{
+  CUDF_RUST_NULL_CHECK(manager, "manager is null");
+  CUDF_RUST_TRY
+  {
+    auto manager_state = memory_manager_from_handle(manager);
+    if (manager_state == nullptr) {
+      set_error("memory manager handle is not registered");
+      return CUDF_ERROR_INVALID_OPERATION;
+    }
+    if (manager_state->owner->async_pool == nullptr) {
+      set_error("memory manager is not backed by a CUDA async pool");
+      return CUDF_ERROR_INVALID_OPERATION;
+    }
+    trim_async_pool_to(manager_state->owner->async_pool, keep_bytes);
+    return CUDF_SUCCESS;
+  }
+  CUDF_RUST_CATCH
+}
+
 cudf_status_t cudf_memory_manager_attach_reservation(cudf_memory_manager_handle manager,
                                                      cudf_stream_handle stream,
                                                      uint64_t reservation_id,
@@ -1021,7 +1701,89 @@ cudf_status_t cudf_memory_manager_attach_reservation(cudf_memory_manager_handle 
 
     std::string attach_error;
     auto reservation =
-      adaptor->attach(cudf_stream_view_from_handle(stream), reservation_id, limit_bytes, attach_error);
+      adaptor->attach(cudf_stream_view_from_handle(stream), reservation_id, limit_bytes, nullptr, attach_error);
+    if (reservation == nullptr) {
+      set_error(attach_error);
+      return CUDF_ERROR_INVALID_OPERATION;
+    }
+
+    auto state         = std::make_unique<reservation_handle_state>();
+    state->manager     = std::move(manager_state);
+    state->reservation = std::move(reservation);
+    *out = static_cast<cudf_reservation_handle>(state.release());
+    return CUDF_SUCCESS;
+  }
+  CUDF_RUST_CATCH
+}
+
+cudf_status_t cudf_memory_manager_create_reservation_arena(
+  cudf_memory_manager_handle manager,
+  uint64_t arena_id,
+  size_t limit_bytes,
+  cudf_reservation_arena_handle* out)
+{
+  CUDF_RUST_NULL_CHECK(out, "out is null");
+  *out = nullptr;
+  CUDF_RUST_NULL_CHECK(manager, "manager is null");
+  CUDF_RUST_TRY
+  {
+    auto manager_state = memory_manager_from_handle(manager);
+    if (manager_state == nullptr) {
+      set_error("memory manager handle is not registered");
+      return CUDF_ERROR_INVALID_OPERATION;
+    }
+    auto* adaptor = manager_state->owner->reservation_adaptor;
+    if (adaptor == nullptr) {
+      set_error("memory manager resource is not reservation-aware");
+      return CUDF_ERROR_INVALID_OPERATION;
+    }
+
+    auto state     = std::make_unique<reservation_arena_handle_state>();
+    state->manager = std::move(manager_state);
+    state->arena   = adaptor->create_arena(arena_id, limit_bytes);
+    *out = static_cast<cudf_reservation_arena_handle>(state.release());
+    return CUDF_SUCCESS;
+  }
+  CUDF_RUST_CATCH
+}
+
+cudf_status_t cudf_memory_manager_attach_reservation_to_arena(
+  cudf_memory_manager_handle manager,
+  cudf_stream_handle stream,
+  cudf_reservation_arena_handle arena,
+  uint64_t reservation_id,
+  size_t limit_bytes,
+  cudf_reservation_handle* out)
+{
+  CUDF_RUST_NULL_CHECK(out, "out is null");
+  *out = nullptr;
+  CUDF_RUST_NULL_CHECK(manager, "manager is null");
+  CUDF_RUST_NULL_CHECK(stream, "stream is null");
+  CUDF_RUST_NULL_CHECK(arena, "arena is null");
+  CUDF_RUST_TRY
+  {
+    auto manager_state = memory_manager_from_handle(manager);
+    if (manager_state == nullptr) {
+      set_error("memory manager handle is not registered");
+      return CUDF_ERROR_INVALID_OPERATION;
+    }
+    auto& arena_state = *static_cast<reservation_arena_handle_state*>(arena);
+    if (arena_state.manager.get() != manager_state.get()) {
+      set_error("reservation arena belongs to a different memory manager");
+      return CUDF_ERROR_INVALID_OPERATION;
+    }
+    auto* adaptor = manager_state->owner->reservation_adaptor;
+    if (adaptor == nullptr) {
+      set_error("memory manager resource is not reservation-aware");
+      return CUDF_ERROR_INVALID_OPERATION;
+    }
+
+    std::string attach_error;
+    auto reservation = adaptor->attach(cudf_stream_view_from_handle(stream),
+                                       reservation_id,
+                                       limit_bytes,
+                                       arena_state.arena,
+                                       attach_error);
     if (reservation == nullptr) {
       set_error(attach_error);
       return CUDF_ERROR_INVALID_OPERATION;
@@ -1092,6 +1854,62 @@ cudf_status_t cudf_reservation_detach(cudf_reservation_handle reservation)
   CUDF_RUST_CATCH
 }
 
+cudf_status_t cudf_reservation_arena_usage(cudf_reservation_arena_handle arena,
+                                           cudf_memory_resource_usage_t* out)
+{
+  CUDF_RUST_NULL_CHECK(out, "out is null");
+  *out = {};
+  CUDF_RUST_NULL_CHECK(arena, "arena is null");
+  CUDF_RUST_TRY
+  {
+    auto& state = *static_cast<reservation_arena_handle_state*>(arena);
+    auto* adaptor = state.manager->owner->reservation_adaptor;
+    if (adaptor == nullptr) {
+      set_error("reservation arena manager resource is not reservation-aware");
+      return CUDF_ERROR_INVALID_OPERATION;
+    }
+    *out = adaptor->arena_usage(state.arena);
+    return CUDF_SUCCESS;
+  }
+  CUDF_RUST_CATCH
+}
+
+cudf_status_t cudf_reservation_arena_resize(cudf_reservation_arena_handle arena,
+                                            size_t limit_bytes)
+{
+  CUDF_RUST_NULL_CHECK(arena, "arena is null");
+  CUDF_RUST_TRY
+  {
+    auto& state = *static_cast<reservation_arena_handle_state*>(arena);
+    auto* adaptor = state.manager->owner->reservation_adaptor;
+    if (adaptor == nullptr) {
+      set_error("reservation arena manager resource is not reservation-aware");
+      return CUDF_ERROR_INVALID_OPERATION;
+    }
+    std::string resize_error;
+    if (!adaptor->resize_arena(state.arena, limit_bytes, resize_error)) {
+      set_error(resize_error);
+      return CUDF_ERROR_INVALID_OPERATION;
+    }
+    return CUDF_SUCCESS;
+  }
+  CUDF_RUST_CATCH
+}
+
+cudf_status_t cudf_reservation_arena_destroy(cudf_reservation_arena_handle arena)
+{
+  CUDF_RUST_NULL_CHECK(arena, "arena is null");
+  CUDF_RUST_TRY
+  {
+    auto* state = static_cast<reservation_arena_handle_state*>(arena);
+    auto* adaptor = state->manager->owner->reservation_adaptor;
+    if (adaptor != nullptr) { adaptor->destroy_arena(state->arena); }
+    delete state;
+    return CUDF_SUCCESS;
+  }
+  CUDF_RUST_CATCH
+}
+
 cudf_status_t cudf_test_memory_resource_create_stats(cudf_memory_resource_handle* out)
 {
   CUDF_RUST_NULL_CHECK(out, "out is null");
@@ -1101,6 +1919,7 @@ cudf_status_t cudf_test_memory_resource_create_stats(cudf_memory_resource_handle
     auto state     = std::make_unique<memory_resource_handle_state>();
     state->owner   = std::make_shared<memory_resource_owner>();
     auto& owner    = *state->owner;
+    owner.device   = current_cuda_device();
     owner.upstream =
       std::make_shared<rmm::mr::device_memory_resource_box<rmm::mr::cuda_memory_resource>>();
     auto stats =
@@ -1108,6 +1927,31 @@ cudf_status_t cudf_test_memory_resource_create_stats(cudf_memory_resource_handle
         rmm::mr::any_device_resource_from_raw(owner.upstream.get()));
     owner.stats = &stats->resource();
     owner.mr    = std::move(stats);
+    register_memory_resource_lifetime(state->owner);
+    *out = static_cast<cudf_memory_resource_handle>(state.release());
+    return CUDF_SUCCESS;
+  }
+  CUDF_RUST_CATCH
+}
+
+cudf_status_t cudf_test_memory_resource_create_fail_first_allocation(
+  cudf_memory_resource_handle upstream,
+  cudf_memory_resource_handle* out)
+{
+  CUDF_RUST_NULL_CHECK(out, "out is null");
+  *out = nullptr;
+  CUDF_RUST_NULL_CHECK(upstream, "upstream is null");
+  CUDF_RUST_TRY
+  {
+    auto state              = std::make_unique<memory_resource_handle_state>();
+    state->owner            = std::make_shared<memory_resource_owner>();
+    auto& owner             = *state->owner;
+    auto& upstream_owner    = memory_resource_owner_from_handle(upstream);
+    owner.upstream_lifetime = cudf_memory_resource_lifetime_from_handle(upstream);
+    owner.async_pool        = upstream_owner.async_pool;
+    owner.device            = upstream_owner.device;
+    auto* upstream_mr       = cudf_memory_resource_raw_from_handle(upstream);
+    owner.mr                = std::make_unique<fail_first_allocation_resource_adaptor>(upstream_mr);
     register_memory_resource_lifetime(state->owner);
     *out = static_cast<cudf_memory_resource_handle>(state.release());
     return CUDF_SUCCESS;

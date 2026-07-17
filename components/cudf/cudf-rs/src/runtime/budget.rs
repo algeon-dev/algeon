@@ -9,7 +9,10 @@ use std::{
 use super::{CudaStream, ExecutionOverrides, Runtime};
 use crate::core::{
     error::{BudgetExhaustionDetail, Error, Result},
-    memory::{DeviceMemoryManager, DeviceMemoryResource, ReservationUsage, StreamReservationLease},
+    memory::{
+        DeviceMemoryManager, DeviceMemoryResource, ReservationArena, ReservationArenaUsage, ReservationUsage,
+        StreamReservationLease,
+    },
 };
 
 static NEXT_RESERVATION_ID: AtomicU64 = AtomicU64::new(1);
@@ -54,12 +57,15 @@ impl ExecutionBudgetRequest {
 pub enum ExecutionBudgetEnforcement {
     /// Allocations are charged through a device-level adaptor by stream reservation.
     StreamBoundReservation,
+    /// Allocations are charged through a stream member under a query reservation arena.
+    ReservationArenaMember,
 }
 
 impl ExecutionBudgetEnforcement {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::StreamBoundReservation => "stream_bound_reservation",
+            Self::ReservationArenaMember => "reservation_arena_member",
         }
     }
 }
@@ -97,10 +103,13 @@ pub struct ExecutionBudgetReport {
 }
 
 impl ExecutionBudgetReport {
-    pub(crate) fn reservation_enforced(request: ExecutionBudgetRequest) -> Self {
+    pub(crate) fn reservation_enforced(
+        request: ExecutionBudgetRequest,
+        enforcement: ExecutionBudgetEnforcement,
+    ) -> Self {
         Self {
             request,
-            enforcement: ExecutionBudgetEnforcement::StreamBoundReservation,
+            enforcement,
             status: ExecutionBudgetStatus::ReservationEnforced,
             allocator_high_water_bytes: None,
             allocator_current_bytes: None,
@@ -229,6 +238,7 @@ impl<T> BudgetedExecutionOutcome<T> {
 pub struct ExecutionBudgetToken {
     request: ExecutionBudgetRequest,
     lease: StreamReservationLease,
+    enforcement: ExecutionBudgetEnforcement,
 }
 
 impl ExecutionBudgetToken {
@@ -237,7 +247,18 @@ impl ExecutionBudgetToken {
         let manager = DeviceMemoryManager::for_device(runtime.device())?;
         let reservation_id = NEXT_RESERVATION_ID.fetch_add(1, Ordering::Relaxed);
         let lease = manager.reserve_stream(runtime.stream(), reservation_id, request.budget_bytes())?;
-        Ok(Self { request, lease })
+        Ok(Self { request, lease, enforcement: ExecutionBudgetEnforcement::StreamBoundReservation })
+    }
+
+    /// Create a budget token by attaching a member reservation under an arena.
+    pub fn from_runtime_in_arena(
+        runtime: &Runtime,
+        request: ExecutionBudgetRequest,
+        arena: &ReservationArena,
+    ) -> Result<Self> {
+        let reservation_id = NEXT_RESERVATION_ID.fetch_add(1, Ordering::Relaxed);
+        let lease = arena.reserve_stream(runtime.stream(), reservation_id, request.budget_bytes())?;
+        Ok(Self { request, lease, enforcement: ExecutionBudgetEnforcement::ReservationArenaMember })
     }
 
     /// Resize this token's hard stream-bound reservation.
@@ -259,6 +280,11 @@ impl ExecutionBudgetToken {
         self.lease.memory_resource()
     }
 
+    /// How this token's hard budget is enforced.
+    pub fn enforcement(&self) -> ExecutionBudgetEnforcement {
+        self.enforcement
+    }
+
     /// Stream that owns this token's active reservation.
     pub fn stream(&self) -> &CudaStream {
         self.lease.stream()
@@ -269,13 +295,18 @@ impl ExecutionBudgetToken {
         self.lease.usage()
     }
 
+    /// Snapshot parent arena usage counters when this token is an arena member.
+    pub fn reservation_arena_usage(&self) -> Result<Option<ReservationArenaUsage>> {
+        self.lease.reservation_arena().map(ReservationArena::usage).transpose()
+    }
+
     /// Borrow this token as an execution override for one operation.
     pub fn execution_overrides(&self) -> ExecutionOverrides<'_> {
         self.lease.execution_overrides()
     }
 
     pub(crate) fn reservation_enforced_report(&self) -> ExecutionBudgetReport {
-        let report = ExecutionBudgetReport::reservation_enforced(self.request.clone());
+        let report = ExecutionBudgetReport::reservation_enforced(self.request.clone(), self.enforcement);
         match self.lease.usage() {
             Ok(usage) => report.with_allocator_usage(usage),
             Err(_) => report,
@@ -288,7 +319,7 @@ impl ExecutionBudgetToken {
             .with_detail_if_absent("budget_operation", operation)
             .with_detail_if_absent("budget_boundary", self.request.boundary().to_string())
             .with_detail_if_absent("budget_bytes", self.request.budget_bytes().to_string())
-            .with_detail_if_absent("budget_enforcement", ExecutionBudgetEnforcement::StreamBoundReservation.as_str())
+            .with_detail_if_absent("budget_enforcement", self.enforcement.as_str())
             .with_detail_if_absent("budget_status", "exceeded_or_lower_layer_rejected");
         match self.lease.usage() {
             Ok(usage) => {

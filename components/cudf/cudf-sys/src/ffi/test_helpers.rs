@@ -71,6 +71,12 @@ extern "C" {
     /// integration tests.
     pub fn cudf_test_memory_resource_create_stats(out: *mut cudf_memory_resource_handle) -> cudf_status_t;
 
+    /// Create a memory resource that fails the first allocation, then delegates.
+    pub fn cudf_test_memory_resource_create_fail_first_allocation(
+        upstream: cudf_memory_resource_handle,
+        out: *mut cudf_memory_resource_handle,
+    ) -> cudf_status_t;
+
     /// Read the cumulative allocation count from a statistics memory resource.
     pub fn cudf_test_memory_resource_allocation_count(
         handle: cudf_memory_resource_handle,

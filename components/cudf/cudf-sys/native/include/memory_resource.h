@@ -20,8 +20,15 @@ typedef void* cudf_memory_manager_handle;
 /// Opaque handle to one stream-bound memory reservation.
 typedef void* cudf_reservation_handle;
 
+/// Opaque handle to one query-scoped reservation arena.
+typedef void* cudf_reservation_arena_handle;
+
 /// Callback invoked by a failure-callback memory resource after an upstream
 /// allocation fails with an RMM out-of-memory error.
+///
+/// Legacy callback resources may trim idle async-pool pages and retry once
+/// before invoking this callback. Use `cudf_memory_failure_callback_v2_t` when
+/// the callback owner needs the failure payload and explicit trim action.
 ///
 /// Return nonzero to retry the allocation, or zero to rethrow the allocation
 /// failure. Implementations must be re-entrancy-safe: the callback runs inside
@@ -29,6 +36,29 @@ typedef void* cudf_reservation_handle;
 typedef int32_t (*cudf_memory_failure_callback_t)(size_t bytes, void* callback_arg);
 
 enum { CUDF_MEMORY_RESOURCE_USAGE_RESERVED_SLOTS = 8 };
+enum { CUDF_MEMORY_POOL_USAGE_RESERVED_SLOTS = 4 };
+enum { CUDF_MEMORY_MANAGER_OPTIONS_RESERVED_SLOTS = 4 };
+enum { CUDF_MEMORY_FAILURE_INFO_RESERVED_SLOTS = 4 };
+
+enum {
+  CUDF_MEMORY_FAILURE_INFO_HAS_POOL_USAGE = 1u << 0,
+};
+
+typedef enum {
+  CUDF_MEMORY_MANAGER_BASE_CUDA_ASYNC = 0,
+  CUDF_MEMORY_MANAGER_BASE_POOL = 1,
+} cudf_memory_manager_base_kind_t;
+
+typedef enum {
+  CUDF_MEMORY_FAILURE_ACTION_DECLINE = 0,
+  CUDF_MEMORY_FAILURE_ACTION_RETRY = 1,
+  CUDF_MEMORY_FAILURE_ACTION_TRIM_AND_RETRY = 2,
+} cudf_memory_failure_action_t;
+
+typedef enum {
+  CUDF_MEMORY_FAILURE_SOURCE_PHYSICAL = 0,
+  CUDF_MEMORY_FAILURE_SOURCE_RESERVATION_LIMIT = 1,
+} cudf_memory_failure_source_t;
 
 /// Usage counters exposed by a production budget-tracking memory resource.
 ///
@@ -51,6 +81,60 @@ typedef struct {
   uint64_t reserved[CUDF_MEMORY_RESOURCE_USAGE_RESERVED_SLOTS];
 } cudf_memory_resource_usage_t;
 
+/// Physical CUDA memory-pool counters for an async-pool-backed memory resource.
+typedef struct {
+  size_t struct_size;
+  uint64_t reserved_current_bytes;
+  uint64_t reserved_high_bytes;
+  uint64_t used_current_bytes;
+  uint64_t used_high_bytes;
+  uint64_t reserved[CUDF_MEMORY_POOL_USAGE_RESERVED_SLOTS];
+} cudf_memory_pool_usage_t;
+
+/// Allocation-failure payload passed to reclaim-capable failure callbacks.
+typedef struct {
+  size_t struct_size;
+  int32_t device_ordinal;
+  uint32_t flags;
+  uint32_t callback_attempt;
+  uint32_t trim_retry_count;
+  uint64_t requested_bytes;
+  uint64_t pool_reserved_current_bytes;
+  uint64_t pool_reserved_high_bytes;
+  uint64_t pool_used_current_bytes;
+  uint64_t pool_used_high_bytes;
+  /// `cudf_memory_failure_source_t` value identifying whether retry/trim can
+  /// address the failure.
+  uint32_t failure_source;
+  uint32_t reserved_failure_info_padding;
+  uint64_t reserved[CUDF_MEMORY_FAILURE_INFO_RESERVED_SLOTS - 1];
+} cudf_memory_failure_info_t;
+
+/// Reclaim-capable callback invoked by a failure-callback memory resource.
+///
+/// Return a `cudf_memory_failure_action_t` value. For physical upstream
+/// allocation failures, `TRIM_AND_RETRY` asks the native adaptor to trim the
+/// async pool to zero idle bytes, then retry the allocation if trimming
+/// succeeds. Reservation-limit failures are reported to the callback but never
+/// trim the physical pool.
+typedef int32_t (*cudf_memory_failure_callback_v2_t)(cudf_memory_failure_info_t const* info,
+                                                     void* callback_arg);
+
+/// Device memory manager physical-base options.
+///
+/// Default options use `CUDF_MEMORY_MANAGER_BASE_CUDA_ASYNC`, no initial pool
+/// priming, and a release threshold of `UINT64_MAX` so the pool stays warm
+/// until callers explicitly trim it.
+typedef struct {
+  size_t struct_size;
+  cudf_memory_manager_base_kind_t base_kind;
+  uint32_t flags;
+  uint64_t initial_pool_size_bytes;
+  uint64_t maximum_pool_size_bytes;
+  uint64_t release_threshold_bytes;
+  uint64_t reserved[CUDF_MEMORY_MANAGER_OPTIONS_RESERVED_SLOTS];
+} cudf_memory_manager_options_t;
+
 /// Create a CUDA (default) memory resource.
 ///
 /// This creates an owned RMM resource object that can be attached to
@@ -67,6 +151,15 @@ cudf_status_t cudf_memory_resource_create_cuda(cudf_memory_resource_handle* out)
 cudf_status_t cudf_memory_resource_create_pool(size_t initial_pool_size,
                                                size_t maximum_pool_size,
                                                cudf_memory_resource_handle* out);
+
+/// Create a cudaMallocAsync-backed memory resource.
+///
+/// `initial_pool_size` primes the pool when nonzero. `release_threshold`
+/// controls the CUDA pool release threshold; pass `UINT64_MAX` to retain idle
+/// memory across synchronizations until an explicit trim.
+cudf_status_t cudf_memory_resource_create_cuda_async(size_t initial_pool_size,
+                                                     uint64_t release_threshold,
+                                                     cudf_memory_resource_handle* out);
 
 /// Create a limiting memory resource that wraps an existing memory resource.
 ///
@@ -93,6 +186,13 @@ cudf_status_t cudf_memory_resource_create_failure_callback(
   void* callback_arg,
   cudf_memory_resource_handle* out);
 
+/// Create a reclaim-capable failure-callback memory resource around `upstream`.
+cudf_status_t cudf_memory_resource_create_failure_callback_v2(
+  cudf_memory_resource_handle upstream,
+  cudf_memory_failure_callback_v2_t callback,
+  void* callback_arg,
+  cudf_memory_resource_handle* out);
+
 /// Create a budget-tracking memory resource that wraps an existing memory resource.
 ///
 /// The returned resource enforces a hard aligned live-byte limit and records
@@ -116,6 +216,21 @@ cudf_status_t cudf_memory_resource_create_budget_tracking(cudf_memory_resource_h
 cudf_status_t cudf_memory_resource_usage(cudf_memory_resource_handle handle,
                                          cudf_memory_resource_usage_t* out);
 
+/// Read physical async-pool counters.
+///
+/// Returns `CUDF_ERROR_INVALID_OPERATION` if `handle` is not backed by a CUDA
+/// async pool.
+cudf_status_t cudf_memory_resource_pool_usage(cudf_memory_resource_handle handle,
+                                              cudf_memory_pool_usage_t* out);
+
+/// Explicitly trim idle bytes from a CUDA async pool.
+///
+/// `keep_bytes` is passed to `cudaMemPoolTrimTo`. Returns
+/// `CUDF_ERROR_INVALID_OPERATION` if `handle` is not backed by a CUDA async
+/// pool.
+cudf_status_t cudf_memory_resource_trim_to(cudf_memory_resource_handle handle,
+                                           uint64_t keep_bytes);
+
 /// Resolve the process-local reservation-aware memory manager for `device`.
 ///
 /// The manager owns one device-level reservation-aware adaptor backed by one
@@ -123,6 +238,16 @@ cudf_status_t cudf_memory_resource_usage(cudf_memory_resource_handle handle,
 /// RMM resource when the manager is first created; subsequent calls return the
 /// same manager without replacing the current resource.
 cudf_status_t cudf_memory_manager_for_device(int32_t device, cudf_memory_manager_handle* out);
+
+/// Resolve the process-local reservation-aware memory manager for `device`
+/// with explicit physical-base options.
+///
+/// The options only affect first creation for a device. Later calls return the
+/// already-created manager.
+cudf_status_t cudf_memory_manager_for_device_with_options(
+  int32_t device,
+  cudf_memory_manager_options_t const* options,
+  cudf_memory_manager_handle* out);
 
 /// Resolve the process-local reservation-aware memory manager for `device`,
 /// installing a failure callback around the device-global current resource if
@@ -139,6 +264,33 @@ cudf_status_t cudf_memory_manager_for_device_with_failure_callback(
   int32_t device,
   cudf_memory_failure_callback_t callback,
   void* callback_arg,
+  cudf_memory_manager_handle* out);
+
+/// Resolve the process-local reservation-aware memory manager for `device`,
+/// installing a reclaim-capable process-lifetime failure callback if this call
+/// creates the manager.
+cudf_status_t cudf_memory_manager_for_device_with_failure_callback_v2(
+  int32_t device,
+  cudf_memory_failure_callback_v2_t callback,
+  void* callback_arg,
+  cudf_memory_manager_handle* out);
+
+/// Resolve the process-local reservation-aware memory manager for `device`
+/// with explicit physical-base options and a process-lifetime failure callback.
+cudf_status_t cudf_memory_manager_for_device_with_failure_callback_and_options(
+  int32_t device,
+  cudf_memory_failure_callback_t callback,
+  void* callback_arg,
+  cudf_memory_manager_options_t const* options,
+  cudf_memory_manager_handle* out);
+
+/// Resolve the process-local reservation-aware memory manager for `device`
+/// with options and a reclaim-capable process-lifetime failure callback.
+cudf_status_t cudf_memory_manager_for_device_with_failure_callback_v2_and_options(
+  int32_t device,
+  cudf_memory_failure_callback_v2_t callback,
+  void* callback_arg,
+  cudf_memory_manager_options_t const* options,
   cudf_memory_manager_handle* out);
 
 /// Query whether a process-local memory manager already exists for `device`
@@ -160,6 +312,14 @@ cudf_status_t cudf_memory_manager_failure_callback_state(
 cudf_status_t cudf_memory_manager_resource(cudf_memory_manager_handle manager,
                                            cudf_memory_resource_handle* out);
 
+/// Read physical async-pool counters for a device memory manager.
+cudf_status_t cudf_memory_manager_pool_usage(cudf_memory_manager_handle manager,
+                                             cudf_memory_pool_usage_t* out);
+
+/// Explicitly trim idle bytes from a device memory manager's CUDA async pool.
+cudf_status_t cudf_memory_manager_trim_to(cudf_memory_manager_handle manager,
+                                          uint64_t keep_bytes);
+
 /// Attach a hard live-byte reservation to `stream` for this manager.
 ///
 /// Allocations routed through the manager's resource are charged to the
@@ -171,6 +331,26 @@ cudf_status_t cudf_memory_manager_attach_reservation(cudf_memory_manager_handle 
                                                      uint64_t reservation_id,
                                                      size_t limit_bytes,
                                                      cudf_reservation_handle* out);
+
+/// Create a query-scoped reservation arena for this manager.
+///
+/// Member reservations attached to the arena are still stream-bound, but every
+/// allocation is also charged to this parent arena before the member is charged.
+/// The arena limit is a hard live-byte cap shared by all members.
+cudf_status_t cudf_memory_manager_create_reservation_arena(
+  cudf_memory_manager_handle manager,
+  uint64_t arena_id,
+  size_t limit_bytes,
+  cudf_reservation_arena_handle* out);
+
+/// Attach a stream-bound reservation as a member of an arena.
+cudf_status_t cudf_memory_manager_attach_reservation_to_arena(
+  cudf_memory_manager_handle manager,
+  cudf_stream_handle stream,
+  cudf_reservation_arena_handle arena,
+  uint64_t reservation_id,
+  size_t limit_bytes,
+  cudf_reservation_handle* out);
 
 /// Read usage counters for a live reservation handle.
 cudf_status_t cudf_reservation_usage(cudf_reservation_handle reservation,
@@ -188,6 +368,23 @@ cudf_status_t cudf_reservation_resize(cudf_reservation_handle reservation,
 /// Retained allocations remain associated with the detached reservation for
 /// accounting until those pointers are deallocated.
 cudf_status_t cudf_reservation_detach(cudf_reservation_handle reservation);
+
+/// Read usage counters for a live reservation arena handle.
+cudf_status_t cudf_reservation_arena_usage(cudf_reservation_arena_handle arena,
+                                           cudf_memory_resource_usage_t* out);
+
+/// Resize the live-byte limit for a reservation arena.
+///
+/// Shrinking below current live usage is allowed; future member allocations fail
+/// until enough memory is released or the arena is grown again.
+cudf_status_t cudf_reservation_arena_resize(cudf_reservation_arena_handle arena,
+                                            size_t limit_bytes);
+
+/// Destroy an arena handle.
+///
+/// Retained allocations remain associated with the arena for accounting until
+/// those pointers are deallocated.
+cudf_status_t cudf_reservation_arena_destroy(cudf_reservation_arena_handle arena);
 
 /// Destroy a memory resource handle on the CUDA device that owns it.
 ///
@@ -211,6 +408,12 @@ cudf_status_t cudf_memory_resource_raw(cudf_memory_resource_handle handle, void*
 /// Test-only hook. The returned handle owns an RMM statistics adaptor and can
 /// be inspected with `cudf_test_memory_resource_allocation_count`.
 cudf_status_t cudf_test_memory_resource_create_stats(cudf_memory_resource_handle* out);
+
+/// Create a test-only resource that fails the first allocation, then delegates
+/// all later allocations to `upstream`.
+cudf_status_t cudf_test_memory_resource_create_fail_first_allocation(
+  cudf_memory_resource_handle upstream,
+  cudf_memory_resource_handle* out);
 
 /// Read the cumulative allocation count from a statistics memory resource.
 ///
