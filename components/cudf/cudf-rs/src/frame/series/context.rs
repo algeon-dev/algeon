@@ -8,6 +8,7 @@ use super::{
 };
 use crate::{
     core::{
+        column::ColumnView,
         error::{Error, ErrorCode, FACT_LEFT_TYPE_ID, FACT_RIGHT_TYPE_ID, Result},
         row_range,
         scalar::{IntoRuntimeScalar, Scalar},
@@ -17,6 +18,7 @@ use crate::{
     internal::temp_table::TempTableView,
     ops::{
         binary::{self, BinaryOperator},
+        concatenate,
         datetime::{self, DatetimeComponent},
         factorization,
         groupby::GroupByAgg,
@@ -30,6 +32,7 @@ use crate::{
     runtime::{
         ExecutionOverrides, Runtime,
         execution_domain::{ConsumerCompletionFence, ExecutionDomain},
+        execution_resolver::ResolvedExecution,
     },
 };
 
@@ -287,6 +290,35 @@ impl Series {
     }
 
     // ── Hand-written helpers (unique control flow) ──────────────────────
+
+    /// Concatenate multiple series using a borrowed per-operation execution override.
+    pub fn concat_in(series: &[&Series], ctx: &ExecutionOverrides<'_>) -> Result<Series> {
+        let operation = "series::with_execution::concat";
+        let Some(first) = series.first() else {
+            return Err(Error::new_with(
+                ErrorCode::UnsupportedOperation,
+                operation,
+                "cannot concatenate empty slice of Series",
+            )
+            .with_detail("reason", "empty_input")
+            .with_detail("remedy", "provide at least one input series"));
+        };
+        let output_domain = ctx.resolve_output_domain(first.column.execution_domain())?;
+        let execution = ResolvedExecution::with_output_domain(
+            output_domain,
+            series.iter().map(|series| series.column.execution_domain()),
+            operation,
+        )?;
+        let views = series
+            .iter()
+            .map(|series| series.column.view().map_err(|error| error.reanchor(operation)))
+            .collect::<Result<Vec<_>>>()?;
+        let view_refs = views.iter().collect::<Vec<&ColumnView<'_>>>();
+        let col =
+            concatenate::concatenate_columns_with_exec(&view_refs, execution.output_domain(), execution.exec_options())
+                .map_err(|error| error.reanchor(operation))?;
+        Series::from_column(col)
+    }
 
     pub(super) fn sort_values_with_context(
         &self,
