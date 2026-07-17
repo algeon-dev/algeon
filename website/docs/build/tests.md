@@ -217,15 +217,63 @@ loads nor modifies the real RAPIDS libraries.
 ## Per-crate suites
 
 ```bash
-cargo test -p datafusion-nexus
-cargo test -p nexus-query-engine
-cargo test --test native_lowering_tests <substring>
+bash scripts/check_all.sh --fast
+bash scripts/check_all.sh --lane gpu-shared
+bash scripts/check_all.sh --runner cargo-diagnostic
 ```
 
-`cargo nextest run` is the deterministic unit/integration surface. It
+Do not use bare parallel `cargo test` for `datafusion-nexus`: libtest runs
+cases in a binary as threads and does not provide the native standalone-context
+admission model. The explicit Cargo diagnostic serializes that noncanonical
+surface under the GPU lock. `cargo nextest run` is the deterministic
+unit/integration surface, but a bare invocation does **not** acquire the
+cross-consumer GPU lock; use `check_all.sh` for repository validation. It
 intentionally contains **no external-service E2E** — nothing in the Cargo test
 targets needs a real AWS account or a running catalog. External E2E lives in
 explicit tool invocations instead.
+
+## Provisioned workload acceptance
+
+Scale-factor datasets are not Cargo tests. They are explicit acceptance runs:
+
+```bash
+flock /tmp/cudf-gpu.lock \
+  CUDF_TPCDS_PARQUET_DIR=/path/to/complete/tpcds-sf1 \
+  cargo run -p datafusion-nexus-bench --bin native_tpcds_parity_report
+
+flock /tmp/cudf-gpu.lock \
+  CUDF_TPCH_PARQUET_DIR=/path/to/complete/tpch-sf1 \
+  cargo run -p datafusion-nexus-bench --bin native_tpch_execution_report
+```
+
+Both commands validate their dataset before the workload begins and fail when
+it is incomplete. The TPC-DS report emits one row per attempted query, so its
+TSV distinguishes attempted, matched, and failed query IDs rather than
+converting an unavailable fixture into a passed Rust test.
+
+Python-cuGraph comparisons are similarly provisioned acceptance coverage. They
+are explicit tools commands, not Cargo test targets, and must run only on a
+host with Python cuGraph installed:
+
+```bash
+flock /tmp/cudf-gpu.lock \
+  cargo run -p datafusion-nexus-tools --features cugraph-oracle -- \
+  cugraph-fixture-e2e bfs-include-edges
+```
+
+An unavailable oracle is a failure for that selected acceptance run, never a
+successful skipped assertion. Replace `bfs-include-edges` with `pagerank`,
+`bfs-utf8-include-edges`, `bfs-utf8-path`, or `bfs-utf8-predicates` for the
+other provisioned cases.
+
+Provision the Graph500 R-MAT fixture with `fixture/scripts/run_gen.sh
+graph500_rmat --scale 12 --edgefactor 16 --overwrite`, then run:
+
+```bash
+flock /tmp/cudf-gpu.lock \
+  cargo run -p datafusion-nexus-tools --features cugraph-oracle -- \
+  cugraph-fixture-e2e graph500-rmat
+```
 
 ## Feature flags
 

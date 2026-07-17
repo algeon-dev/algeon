@@ -13,7 +13,7 @@ workspace = true
 [features]
 default = []
 validate-query = ["dep:datafusion", "dep:datafusion-nexus"]
-cugraph-oracle = ["dep:datafusion-nexus", "datafusion-nexus/cugraph"]
+cugraph-oracle = ["dep:cudf", "dep:datafusion", "dep:datafusion-nexus", "dep:nexus-query-engine", "datafusion-nexus/cugraph"]
 iceberg-e2e = [
   "dep:datafusion",
   "dep:datafusion-nexus",
@@ -27,8 +27,10 @@ embedded-backend-e2e = ["server-iceberg-e2e", "dep:reqwest"]
 [dependencies]
 arrow = { workspace = true }
 arrow-flight = { workspace = true }
+cudf = { workspace = true, optional = true }
 datafusion = { workspace = true, optional = true }
 datafusion-nexus = { workspace = true, optional = true }
+nexus-query-engine = { workspace = true, optional = true }
 futures = { workspace = true }
 iceberg = { workspace = true, optional = true }
 iceberg-catalog-glue = { workspace = true, optional = true }

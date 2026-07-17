@@ -154,13 +154,13 @@ the fork, not upstream cuGraph, must be built.
 ```bash
 cd "$NEXUS_ROOT/datafusion-nexus"
 cargo build --features cugraph,server
-flock /tmp/cudf-gpu.lock cargo nextest run --features cugraph,server --no-fail-fast
+bash scripts/check_all.sh --features cugraph,server
 ```
 
 `--features cugraph,server` builds the full GPU stack plus the Flight SQL
-server. The nextest invocation is the canonical local check — one flocked run
-covers the CPU and GPU lanes together. See [Tests](./tests.md) for the lane
-model, `scripts/check_all.sh`, and the feature matrix.
+server. `check_all.sh` is the canonical local check; it assigns CPU and GPU
+lanes and acquires the cross-consumer GPU lock. See [Tests](./tests.md) for the
+lane model and feature matrix.
 
 To package the standalone Flight SQL server after this source build, continue
 with [Building with Docker](./docker.md).

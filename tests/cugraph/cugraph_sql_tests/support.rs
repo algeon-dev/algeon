@@ -155,12 +155,10 @@ print(json.dumps({
         Ok(output) => output,
         Err(error) => {
             handle_python_oracle_unavailable(format!("Python cuGraph oracle unavailable: {error}"));
-            return None;
         },
     };
     if output.status.code() == Some(77) {
         handle_python_oracle_unavailable(String::from_utf8_lossy(&output.stderr));
-        return None;
     }
     assert!(
         output.status.success(),
@@ -179,7 +177,7 @@ print(json.dumps({
     Some(PythonPageRankOracle { versions, rows })
 }
 
-pub(super) fn handle_python_oracle_unavailable(message: impl AsRef<str>) {
+pub(super) fn handle_python_oracle_unavailable(message: impl AsRef<str>) -> ! {
     crate::cugraph_optional_fixture::handle_cugraph_python_oracle_unavailable("cuGraph Python oracle", message);
 }
 
