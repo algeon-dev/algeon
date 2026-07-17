@@ -30,7 +30,7 @@ FLOAT_VARIANCE_QUERY_IDS = frozenset(["q04"])
 TIE_DIVERGENCE_QUERY_IDS = frozenset(
     ["q18", "q25", "q26", "q31", "q32", "q33", "q39", "q40", "q41", "q42"]
 )
-REFERENCE_ENGINES = ("duckdb", "reference", "cpu_datafusion")
+REFERENCE_ENGINES = ("duckdb", "cpu_datafusion")
 NATIVE_ENGINE = "datafusion_nexus"
 
 OUTPUT_HEADER = [

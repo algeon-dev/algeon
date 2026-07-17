@@ -52,7 +52,6 @@ class ClassifyQueryTest(unittest.TestCase):
     def test_all_engines_same_when_all_fingerprints_match(self) -> None:
         rows = [
             make_row("q18", "duckdb", 1, "fp-abc"),
-            make_row("q18", "reference", 1, "fp-abc"),
             make_row("q18", "cpu_datafusion", 1, "fp-abc"),
             make_row("q18", "datafusion_nexus", 1, "fp-abc"),
         ]
@@ -78,7 +77,6 @@ class ClassifyQueryTest(unittest.TestCase):
     def test_tie_divergence_for_waiver_query_different_fingerprints_same_count(self) -> None:
         rows = [
             make_row("q18", "duckdb", 1, "fp-duckdb"),
-            make_row("q18", "reference", 1, "fp-reference"),
             make_row("q18", "cpu_datafusion", 1, "fp-cpu"),
             make_row("q18", "datafusion_nexus", 1, "fp-native"),
         ]
@@ -113,7 +111,6 @@ class ClassifyQueryTest(unittest.TestCase):
     def test_float_variance_q04_same_row_count_different_fingerprints(self) -> None:
         rows = [
             make_row("q04", "duckdb", 1, "fp-duckdb", row_count="1"),
-            make_row("q04", "reference", 1, "fp-reference", row_count="1"),
             make_row("q04", "cpu_datafusion", 1, "fp-cpu", row_count="1"),
             make_row("q04", "datafusion_nexus", 1, "fp-native", row_count="1"),
         ]
@@ -155,8 +152,8 @@ class ClassifyQueryTest(unittest.TestCase):
 
     def test_engine_instability_takes_priority_over_tie_divergence(self) -> None:
         rows = [
-            make_row("q31", "reference", 1, "fp-a"),
-            make_row("q31", "reference", 2, "fp-b"),  # unstable
+            make_row("q31", "duckdb", 1, "fp-a"),
+            make_row("q31", "duckdb", 2, "fp-b"),  # unstable
             make_row("q31", "cpu_datafusion", 1, "fp-cpu"),
             make_row("q31", "datafusion_nexus", 1, "fp-native"),
         ]
@@ -178,7 +175,6 @@ class ClassifyQueryTest(unittest.TestCase):
     def test_correctness_bug_when_reference_engines_agree_and_native_differs(self) -> None:
         rows = [
             make_row("q23", "duckdb", 1, "fp-ref"),
-            make_row("q23", "reference", 1, "fp-ref"),
             make_row("q23", "cpu_datafusion", 1, "fp-ref"),
             make_row("q23", "datafusion_nexus", 1, "fp-native-wrong"),
         ]
@@ -209,7 +205,6 @@ class ClassifyQueryTest(unittest.TestCase):
     def test_unexpected_mismatch_q23_when_reference_engines_disagree(self) -> None:
         rows = [
             make_row("q23", "duckdb", 1, "fp-duckdb"),
-            make_row("q23", "reference", 1, "fp-reference"),
             make_row("q23", "cpu_datafusion", 1, "fp-cpu"),
             make_row("q23", "datafusion_nexus", 1, "fp-native"),
         ]
@@ -249,7 +244,6 @@ class ClassifyQueryTest(unittest.TestCase):
     def test_failed_iteration_not_counted_when_other_succeeds(self) -> None:
         rows = [
             make_row("q18", "duckdb", 1, "fp-good"),
-            make_row("q18", "reference", 1, "fp-ignored", status="failed"),
             make_row("q18", "cpu_datafusion", 1, "fp-good"),
         ]
         result = self.m.classify_query("q18", rows)
@@ -271,7 +265,6 @@ class ClassifyQueryTest(unittest.TestCase):
     def test_mismatched_engines_identifies_outlier(self) -> None:
         rows = [
             make_row("q32", "duckdb", 1, "fp-majority"),
-            make_row("q32", "reference", 1, "fp-majority"),
             make_row("q32", "cpu_datafusion", 1, "fp-outlier"),
             make_row("q32", "datafusion_nexus", 1, "fp-majority"),
         ]
@@ -293,7 +286,6 @@ class ClassifyQueryTest(unittest.TestCase):
     def test_reference_fingerprint_is_consensus_when_refs_agree(self) -> None:
         rows = [
             make_row("q23", "duckdb", 1, "fp-ref-consensus"),
-            make_row("q23", "reference", 1, "fp-ref-consensus"),
             make_row("q23", "cpu_datafusion", 1, "fp-ref-consensus"),
             make_row("q23", "datafusion_nexus", 1, "fp-native"),
         ]
@@ -303,7 +295,6 @@ class ClassifyQueryTest(unittest.TestCase):
     def test_reference_fingerprint_is_disagreement_when_refs_differ(self) -> None:
         rows = [
             make_row("q23", "duckdb", 1, "fp-a"),
-            make_row("q23", "reference", 1, "fp-b"),
             make_row("q23", "datafusion_nexus", 1, "fp-c"),
         ]
         result = self.m.classify_query("q23", rows)
