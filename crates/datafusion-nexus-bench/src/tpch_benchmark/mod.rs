@@ -28,8 +28,8 @@ use datafusion_nexus::{
     session::CudfSessionStateBuilderExt,
 };
 use datafusion_nexus_workloads::tpch::{
-    CUDF_TPCH_GENERATION_COMMAND_ENV, CUDF_TPCH_PARQUET_DIR_ENV, CUDF_TPCH_SCALE_FACTOR_ENV, TPCH_QUERIES, TPCH_TABLES,
-    TpchDatasetMetadata, TpchQuery, TpchTableLayout, TpchWorkloadError, default_nvme_tpch_dataset_with_fingerprint,
+    CUDF_TPCH_GENERATION_COMMAND_ENV, CUDF_TPCH_SCALE_FACTOR_ENV, NEXUS_PARQUET_DIR_ENV, TPCH_QUERIES, TPCH_TABLES,
+    TpchDatasetMetadata, TpchQuery, TpchTableLayout, TpchWorkloadError, default_tpch_dataset_with_fingerprint,
     describe_tpch_dataset_with_content_fingerprint, prepare_tpch_report_dataset, register_tpch_table_layout,
 };
 use nexus_query_engine::mode::NativePipelineExecutionMode;

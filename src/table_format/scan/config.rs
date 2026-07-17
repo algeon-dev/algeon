@@ -3,14 +3,16 @@ use super::*;
 pub const DEFAULT_TABLE_FORMAT_S3_SOURCE_STORAGE_PROFILE_ID: &str = "table_format_s3";
 
 /// Env var selecting the table-format Parquet source strategy. Accepts `auto`,
-/// `host_buffer`, `local_cache`, or `remote_kvikio`; defaults to `auto`.
+/// `local_cache`, or `remote_kvikio`; defaults to `auto`. `host_buffer` is a
+/// retired spelling and is rejected before native GPU execution.
 pub const NEXUS_ICEBERG_PARQUET_READ_STRATEGY_ENV: &str = "NEXUS_ICEBERG_PARQUET_READ_STRATEGY";
 /// Boolean env var enabling foreground remote-direct object-store Parquet
 /// reads. Defaults to enabled.
 pub const NEXUS_ICEBERG_REMOTE_DIRECT_ENV: &str = "NEXUS_ICEBERG_REMOTE_DIRECT";
 /// Env var selecting the lower-layer fallback policy for remote-direct Parquet
 /// reads. Accepts `prefer_direct`, `require_direct`, or
-/// `allow_host_fallback`; defaults to `prefer_direct`.
+/// `allow_host_fallback`; defaults to `require_direct`. Any host-buffer
+/// fallback is rejected before native GPU execution.
 pub const NEXUS_ICEBERG_REMOTE_DIRECT_READ_MODE_ENV: &str = "NEXUS_ICEBERG_REMOTE_DIRECT_READ_MODE";
 /// Boolean env var enabling ranged mini-Parquet fallback for remote host-buffer
 /// reads. Defaults to disabled.
@@ -39,7 +41,7 @@ pub enum TableFormatParquetReadStrategyPreference {
     /// Choose the safe default for the source location.
     #[default]
     Auto,
-    /// Force remote object-store host-buffer fetch/decode.
+    /// Legacy remote object-store host-buffer setting. It is rejected.
     HostBuffer,
     /// Prefer an existing local byte-cache entry when available.
     LocalCache,
@@ -153,7 +155,7 @@ impl Default for TableFormatParquetReadStrategyConfig {
         Self {
             preference: TableFormatParquetReadStrategyPreference::Auto,
             remote_direct_enabled: true,
-            remote_direct_read_mode: RemoteParquetReadMode::PreferDirect,
+            remote_direct_read_mode: RemoteParquetReadMode::RequireDirect,
             remote_host_buffer_ranged_enabled: false,
             lakehouse_cache_root: None,
             lakehouse_cache_read_policy: TableFormatLakehouseCacheReadPolicy::Enabled,
@@ -208,7 +210,7 @@ pub(super) fn table_format_parquet_read_strategy_config_from_env(
     let remote_direct_read_mode = get(NEXUS_ICEBERG_REMOTE_DIRECT_READ_MODE_ENV)
         .as_deref()
         .map(parse_remote_parquet_read_mode_lossy)
-        .unwrap_or_default();
+        .unwrap_or(RemoteParquetReadMode::RequireDirect);
     let remote_host_buffer_ranged_enabled = get(NEXUS_ICEBERG_REMOTE_HOST_BUFFER_RANGED_ENV)
         .is_some_and(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"));
     let lakehouse_cache_root = env_nonempty(&mut get, NEXUS_LAKEHOUSE_CACHE_ROOT_ENV).map(PathBuf::from);

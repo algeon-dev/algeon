@@ -372,7 +372,7 @@ pub(super) fn table_format_parquet_read_strategy_config(
         .string(NEXUS_ICEBERG_REMOTE_DIRECT_READ_MODE_ENV)
         .map(|raw| parse_remote_parquet_read_mode(&raw))
         .transpose()?
-        .unwrap_or_default();
+        .unwrap_or(nexus_query_engine::source::RemoteParquetReadMode::RequireDirect);
     if !remote_direct_enabled
         && remote_direct_read_mode == nexus_query_engine::source::RemoteParquetReadMode::RequireDirect
     {

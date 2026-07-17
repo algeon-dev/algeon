@@ -19,7 +19,7 @@ docker compose -f fixture/iceberg-local/docker-compose.yml up -d
 The canonical benchmark-style REST E2E entrypoint still loads TPC-H by default:
 
 ```bash
-fixture/scripts/e2e.sh iceberg-local --reuse-parquet
+fixture/iceberg-local/e2e.sh iceberg-local --reuse-parquet
 ```
 
 ## Load the citation network for website examples
@@ -28,7 +28,7 @@ For the website cuGraph examples, load the DBLP / AMiner citation network into
 the same REST catalog:
 
 ```bash
-fixture/scripts/fixture.sh iceberg rest load \
+fixture/fixture.sh iceberg rest load \
   --workload citation_network \
   --load-mode add-files
 ```

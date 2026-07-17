@@ -336,6 +336,13 @@ fn available_gds_capability() -> DeploymentIoCapability {
     )
 }
 
+fn gds_source_fetch_config() -> SourceFetchConfig {
+    SourceFetchConfig {
+        gds_capable_mount_roots: vec![std::path::PathBuf::from("/mnt/nexus-gds")],
+        ..SourceFetchConfig::default()
+    }
+}
+
 #[test]
 fn source_fetch_config_defaults_match_source_fetch_contract() {
     let config = SourceFetchConfig::default();
@@ -364,7 +371,7 @@ fn source_fetch_config_defaults_match_source_fetch_contract() {
 }
 
 #[test]
-fn source_fetch_strategy_auto_keeps_remote_object_store_on_host_buffer() {
+fn source_fetch_strategy_auto_rejects_remote_object_store_without_host_buffer_fallback() {
     let config = SourceFetchConfig::default();
     let decision = config.decide_source_fetch_strategy(
         &available_gds_capability(),
@@ -372,13 +379,13 @@ fn source_fetch_strategy_auto_keeps_remote_object_store_on_host_buffer() {
         Some(64 * 1024 * 1024),
     );
 
-    assert_eq!(decision.strategy, SourceFetchStrategy::HostBuffer);
+    assert_eq!(decision.strategy, SourceFetchStrategy::Rejected);
     assert_eq!(decision.reason, SourceFetchStrategyReason::RemoteObjectStore);
     assert_eq!(decision.gds_eligibility, SourceGdsEligibility::RemoteObjectStore);
     assert_eq!(
         decision.diagnostic_facts(),
         vec![
-            ("source_fetch_strategy", "host_buffer".to_string()),
+            ("source_fetch_strategy", "rejected".to_string()),
             ("source_fetch_strategy_reason", "remote_object_store".to_string()),
             ("source_fetch_substrate", "auto".to_string()),
             ("source_gds_eligibility", "remote_object_store".to_string()),
@@ -388,10 +395,10 @@ fn source_fetch_strategy_auto_keeps_remote_object_store_on_host_buffer() {
 
 #[test]
 fn source_fetch_strategy_auto_selects_direct_device_only_for_gds_eligible_local_chunks() {
-    let config = SourceFetchConfig::default();
+    let config = gds_source_fetch_config();
     let decision = config.decide_source_fetch_strategy(
         &available_gds_capability(),
-        "/opt/dlami/nvme/tpch/sf10/lineitem.parquet",
+        "/mnt/nexus-gds/tpch/sf10/lineitem.parquet",
         Some(64 * 1024 * 1024),
     );
 
@@ -401,42 +408,47 @@ fn source_fetch_strategy_auto_selects_direct_device_only_for_gds_eligible_local_
 }
 
 #[test]
-fn source_fetch_strategy_host_buffer_substrate_overrides_gds_eligible_sources() {
-    let config = SourceFetchConfig { substrate: SourceFetchSubstrate::HostBuffer, ..SourceFetchConfig::default() };
+fn source_fetch_config_rejects_host_buffer_substrate() {
+    let config = SourceFetchConfig { substrate: SourceFetchSubstrate::HostBuffer, ..gds_source_fetch_config() };
+    let error = config.validate_for_deployment(&available_gds_capability()).unwrap_err();
+    assert_eq!(error.code(), QueryErrorCode::InvalidPlan);
+    assert_eq!(error.fact_value("source_fetch_substrate"), Some("host_buffer"));
+    assert_eq!(error.fact_value("reason"), Some("host_buffer_disabled"));
+
     let decision = config.decide_source_fetch_strategy(
         &available_gds_capability(),
-        "/opt/dlami/nvme/tpch/sf10/lineitem.parquet",
+        "/mnt/nexus-gds/tpch/sf10/lineitem.parquet",
         Some(64 * 1024 * 1024),
     );
 
-    assert_eq!(decision.strategy, SourceFetchStrategy::HostBuffer);
-    assert_eq!(decision.reason, SourceFetchStrategyReason::SubstrateHostBuffer);
+    assert_eq!(decision.strategy, SourceFetchStrategy::Rejected);
+    assert_eq!(decision.reason, SourceFetchStrategyReason::HostBufferDisabled);
     assert_eq!(decision.gds_eligibility, SourceGdsEligibility::Eligible);
 }
 
 #[test]
-fn source_fetch_strategy_direct_device_still_falls_back_for_ineligible_sources() {
-    let config = SourceFetchConfig { substrate: SourceFetchSubstrate::DirectDevice, ..SourceFetchConfig::default() };
+fn source_fetch_strategy_direct_device_rejects_ineligible_sources() {
+    let config = SourceFetchConfig { substrate: SourceFetchSubstrate::DirectDevice, ..gds_source_fetch_config() };
 
     let remote = config.decide_source_fetch_strategy(
         &available_gds_capability(),
         "https://example.test/file.parquet",
         Some(64 * 1024 * 1024),
     );
-    assert_eq!(remote.strategy, SourceFetchStrategy::HostBuffer);
+    assert_eq!(remote.strategy, SourceFetchStrategy::Rejected);
     assert_eq!(remote.reason, SourceFetchStrategyReason::RemoteObjectStore);
 
     let small = config.decide_source_fetch_strategy(
         &available_gds_capability(),
-        "/opt/dlami/nvme/tpch/sf10/lineitem.parquet",
+        "/mnt/nexus-gds/tpch/sf10/lineitem.parquet",
         Some(1024),
     );
-    assert_eq!(small.strategy, SourceFetchStrategy::HostBuffer);
+    assert_eq!(small.strategy, SourceFetchStrategy::Rejected);
     assert_eq!(small.reason, SourceFetchStrategyReason::BelowMinChunkBytes);
 
     let eligible = config.decide_source_fetch_strategy(
         &available_gds_capability(),
-        "/opt/dlami/nvme/tpch/sf10/lineitem.parquet",
+        "/mnt/nexus-gds/tpch/sf10/lineitem.parquet",
         Some(64 * 1024 * 1024),
     );
     assert_eq!(eligible.strategy, SourceFetchStrategy::DirectDevice);
@@ -447,12 +459,12 @@ fn source_fetch_strategy_direct_device_still_falls_back_for_ineligible_sources()
 fn execution_context_exposes_effective_source_fetch_strategy() {
     let context = ExecutionContext::builder()
         .with_deployment_io_capability(available_gds_capability())
-        .with_source_fetch_config(SourceFetchConfig::default())
+        .with_source_fetch_config(gds_source_fetch_config())
         .build()
         .unwrap();
 
-    let decision = context
-        .source_fetch_strategy_for_location("/opt/dlami/nvme/tpch/sf10/lineitem.parquet", Some(64 * 1024 * 1024));
+    let decision =
+        context.source_fetch_strategy_for_location("/mnt/nexus-gds/tpch/sf10/lineitem.parquet", Some(64 * 1024 * 1024));
 
     assert_eq!(decision.strategy, SourceFetchStrategy::DirectDevice);
     assert_eq!(decision.substrate, SourceFetchSubstrate::Auto);
@@ -497,7 +509,7 @@ fn direct_device_source_fetch_config_requires_gds_available() {
         KvikioCompatModeStatus::Unset,
         GdsDriverProbeStatus::Available,
     );
-    let config = SourceFetchConfig { substrate: SourceFetchSubstrate::DirectDevice, ..SourceFetchConfig::default() };
+    let config = SourceFetchConfig { substrate: SourceFetchSubstrate::DirectDevice, ..gds_source_fetch_config() };
     let error = config.validate_for_deployment(&unavailable).unwrap_err();
     assert_eq!(error.code(), QueryErrorCode::InvalidPlan);
     assert_eq!(error.fact_value("source_fetch_substrate"), Some("direct_device"));

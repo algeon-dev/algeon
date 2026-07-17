@@ -23,22 +23,16 @@ DEVICE_CAPACITY_BYTES="${NEXUS_ADMISSION_MATRIX_DEVICE_CAPACITY_BYTES:-}"
 
 default_tpch_root() {
   local scale="$1"
-  local nvme_root="/opt/dlami/nvme/tpch/${scale}/parquet"
-  local local_root="./fixture/data/tpch/${scale}/parquet"
+  local local_root="./fixture/tpc-h/data/${scale}/parquet"
   if [[ "${scale}" == "sf100" ]]; then
-    nvme_root="/opt/dlami/nvme/tpch/sf100_optimized/parquet"
-    local_root="./fixture/data/tpch/sf100_optimized/parquet"
+    local_root="./fixture/tpc-h/data/sf100_optimized/parquet"
   fi
-  if [[ -d "/opt/dlami/nvme" ]]; then
-    printf '%s\n' "${nvme_root}"
-  else
-    printf '%s\n' "${local_root}"
-  fi
+  printf '%s\n' "${local_root}"
 }
 
-SF10_ROOT="${CUDF_TPCH_SF10_PARQUET_DIR:-}"
+SF10_ROOT="${NEXUS_ADMISSION_MATRIX_SF10_PARQUET_DIR:-}"
 SF10_ROOT="${SF10_ROOT:-$(default_tpch_root sf10)}"
-SF100_ROOT="${CUDF_TPCH_SF100_PARQUET_DIR:-}"
+SF100_ROOT="${NEXUS_ADMISSION_MATRIX_SF100_PARQUET_DIR:-}"
 SF100_ROOT="${SF100_ROOT:-$(default_tpch_root sf100)}"
 
 SF10_MAX_SOURCE_CHUNK_BYTES="${NEXUS_ADMISSION_MATRIX_SF10_MAX_SOURCE_CHUNK_BYTES:-4294967296}"
@@ -280,12 +274,12 @@ run_case() {
 
   if [[ "${DRY_RUN}" -eq 0 && ! -d "${root}" ]]; then
     echo "ERROR: TPC-H ${scale} root not found: ${root}" >&2
-    echo "Set CUDF_TPCH_SF10_PARQUET_DIR or CUDF_TPCH_SF100_PARQUET_DIR, or populate the default fixture root." >&2
+    echo "Set NEXUS_ADMISSION_MATRIX_SF10_PARQUET_DIR or NEXUS_ADMISSION_MATRIX_SF100_PARQUET_DIR, or populate the default fixture root." >&2
     return 2
   fi
 
   local env_vars=(
-    "CUDF_TPCH_PARQUET_DIR=${root}"
+    "NEXUS_PARQUET_DIR=${root}"
     "CUDF_TPCH_SCALE_FACTOR=${scale}"
     "CUDF_QUERY_SERVICE_TPCH_SLOT_GUARANTEE=${slot_guarantee}"
     "CUDF_QUERY_SERVICE_TPCH_MAX_CONCURRENT_QUERIES=${concurrency}"

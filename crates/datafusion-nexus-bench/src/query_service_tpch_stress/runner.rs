@@ -24,7 +24,7 @@ use datafusion_nexus::{
     session::CudfSessionStateBuilderExt,
 };
 use datafusion_nexus_workloads::tpch::{
-    CUDF_TPCH_GENERATION_COMMAND_ENV, CUDF_TPCH_PARQUET_DIR_ENV, CUDF_TPCH_SCALE_FACTOR_ENV, TPCH_QUERIES, TPCH_TABLES,
+    CUDF_TPCH_GENERATION_COMMAND_ENV, CUDF_TPCH_SCALE_FACTOR_ENV, NEXUS_PARQUET_DIR_ENV, TPCH_QUERIES, TPCH_TABLES,
     TpchDatasetMetadata, TpchDefaultScale, TpchQuery, default_tpch_parquet_root, describe_tpch_dataset,
     discover_tpch_table_layout, register_tpch_table_layout,
 };

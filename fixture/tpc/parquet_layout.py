@@ -56,7 +56,10 @@ def parse_scale(value: str) -> float:
 def resolve_output_dir(*, workload: str, scale: float, out: Path | None, out_root: Path | None) -> Path:
     if out is not None:
         return out
-    root = out_root if out_root is not None else repo_root() / "fixture" / "data" / workload
+    fixture_dir = {"tpch": "tpc-h", "tpcds": "tpc-ds"}.get(workload)
+    if fixture_dir is None:
+        raise ValueError(f"unsupported TPC fixture workload: {workload}")
+    root = out_root if out_root is not None else repo_root() / "fixture" / fixture_dir / "data"
     return root / scale_label(scale) / "parquet"
 
 
@@ -68,7 +71,8 @@ def ensure_safe_replace_dir(path: Path) -> None:
         Path.home().resolve(),
         root,
         root / "fixture",
-        root / "fixture" / "data",
+        root / "fixture" / "tpc-h" / "data",
+        root / "fixture" / "tpc-ds" / "data",
         root / "target",
         root / "target" / "fixture-staging",
     }

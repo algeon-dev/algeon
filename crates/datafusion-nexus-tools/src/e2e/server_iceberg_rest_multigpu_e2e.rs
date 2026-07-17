@@ -5,7 +5,7 @@
 //! GPUs, drives concurrent TPC-H statements through Flight SQL, and retains
 //! machine-readable evidence under `target/production_acceptance`.
 //!
-//! Use `fixture/scripts/e2e.sh iceberg-local --server-rest-multigpu-only` so
+//! Use `fixture/iceberg-local/e2e.sh iceberg-local --server-rest-multigpu-only` so
 //! the REST/RustFS stack, fixture load, release build, and GPU flock are all
 //! handled consistently.
 

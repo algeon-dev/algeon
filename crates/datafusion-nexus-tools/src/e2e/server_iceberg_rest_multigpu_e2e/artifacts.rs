@@ -59,7 +59,7 @@ pub(super) fn write_run_metadata(params: &Params) -> E2eResult<()> {
             "crates/datafusion-nexus-tools/src/connection_retry.rs",
             "crates/datafusion-nexus-tools/src/e2e/server_iceberg_rest_multigpu_e2e.rs",
             "crates/datafusion-nexus-tools/src/e2e/server_iceberg_rest_multigpu_e2e",
-            "fixture/scripts/e2e.sh",
+            "fixture/iceberg-local/e2e.sh",
         ],
     ) {
         fs::write(params.artifact_dir.join("source.diff"), diff)?;

@@ -12,6 +12,7 @@ use parquet::{
 };
 
 use super::{ClickbenchWorkloadError, ClickbenchWorkloadResult};
+use crate::NEXUS_PARQUET_DIR_ENV;
 
 /// The single logical table exposed by the ClickBench fixture. Upstream uses
 /// `hits` as the canonical view name; we register the raw Parquet under
@@ -23,9 +24,6 @@ pub const CLICKBENCH_TABLE: &str = "hits";
 /// the canonical `EventDate` cast. Mirrors `ClickBench/datafusion/create.sql`.
 pub const CLICKBENCH_RAW_TABLE: &str = "hits_raw";
 
-/// Explicit ClickBench Parquet fixture. Accepts a single `hits.parquet` file
-/// or an unambiguous partitioned directory.
-pub const CUDF_CLICKBENCH_PARQUET_DIR_ENV: &str = "CUDF_CLICKBENCH_PARQUET_DIR";
 /// Free-form provenance command recorded in dataset metadata.
 pub const CUDF_CLICKBENCH_GENERATION_COMMAND_ENV: &str = "CUDF_CLICKBENCH_GENERATION_COMMAND";
 /// Truthy flag requesting a content-fingerprint pass.
@@ -36,20 +34,15 @@ pub const CUDF_CLICKBENCH_CONTENT_FINGERPRINT_ENV: &str = "CUDF_CLICKBENCH_CONTE
 
 /// In-repo default for the single-file ClickBench fixture. Used when no env
 /// var is set and the partitioned variants are unavailable.
-pub const DEFAULT_LOCAL_CLICKBENCH_SINGLE_PARQUET: &str = "./fixture/data/clickbench/hits.parquet";
+pub const DEFAULT_LOCAL_CLICKBENCH_SINGLE_PARQUET: &str = "./fixture/clickbench/data/hits.parquet";
 
 /// In-repo default directory for the single-file ClickBench fixture, i.e. a
 /// directory containing `hits.parquet`. Discovery resolves this to a
 /// [`ClickbenchLayout::Single`].
-pub const DEFAULT_LOCAL_CLICKBENCH_SINGLE_DIR: &str = "./fixture/data/clickbench/single";
+pub const DEFAULT_LOCAL_CLICKBENCH_SINGLE_DIR: &str = "./fixture/clickbench/data/single";
 
 /// In-repo default for the partitioned ClickBench fixture (100 shards).
-pub const DEFAULT_LOCAL_CLICKBENCH_PARTITIONED_DIR: &str = "./fixture/data/clickbench/partitioned";
-
-/// On-host NVMe default for the partitioned ClickBench fixture. Probed only
-/// when the NVMe mount is present; absence is silent and the implicit
-/// preparation walks the local fallback chain instead.
-pub const DEFAULT_NVME_CLICKBENCH_PARTITIONED_DIR: &str = "/opt/dlami/nvme/clickbench/partitioned";
+pub const DEFAULT_LOCAL_CLICKBENCH_PARTITIONED_DIR: &str = "./fixture/clickbench/data/partitioned";
 
 /// Discovered ClickBench fixture layout.
 ///
@@ -177,7 +170,7 @@ impl ClickbenchDatasetMetadata {
 
 /// Discover a ClickBench layout under `root`. Accepts:
 ///
-/// 1. A file path ending in `.parquet` (e.g. `fixture/data/clickbench/hits.parquet`).
+/// 1. A file path ending in `.parquet` (e.g. `fixture/clickbench/data/hits.parquet`).
 /// 2. A directory containing `hits.parquet` (single layout).
 /// 3. A directory containing `hits_*.parquet` (partitioned at this level).
 /// 4. A directory containing a `partitioned/` subdir with `hits_*.parquet`.
@@ -348,18 +341,17 @@ pub fn external_clickbench_dataset_metadata(
 /// Discover the ClickBench fixture path for reports/benchmarks. Resolution
 /// order:
 ///
-/// 1. `CUDF_CLICKBENCH_PARQUET_DIR` env var (file or directory).
-/// 2. NVMe partitioned default (only when the NVMe mount is present).
-/// 3. Local partitioned default (`./fixture/data/clickbench/partitioned`).
-/// 4. Local single-file default (`./fixture/data/clickbench/hits.parquet`).
+/// 1. `NEXUS_PARQUET_DIR` env var (file or directory).
+/// 2. Local partitioned default (`./fixture/clickbench/data/partitioned`).
+/// 3. Local single-file default (`./fixture/clickbench/data/hits.parquet`).
 ///
 /// The env-var fixture is strict: if set, it must describe a valid complete
 /// ClickBench layout, and its generation command defaults to
-/// `unknown_external`. Invalid implicit NVMe/local candidates are skipped
+/// `unknown_external`. Invalid implicit local candidates are skipped
 /// during fallback. A truthy `CUDF_CLICKBENCH_CONTENT_FINGERPRINT` requests the
 /// expensive content hash. Returns `Ok(None)` when no implicit fixture exists.
 pub fn prepare_clickbench_report_dataset() -> ClickbenchWorkloadResult<Option<(PathBuf, ClickbenchDatasetMetadata)>> {
-    if let Ok(root) = std::env::var(CUDF_CLICKBENCH_PARQUET_DIR_ENV) {
+    if let Ok(root) = std::env::var(NEXUS_PARQUET_DIR_ENV) {
         let root_path = PathBuf::from(&root);
         let generation_command =
             std::env::var(CUDF_CLICKBENCH_GENERATION_COMMAND_ENV).unwrap_or_else(|_| "unknown_external".to_string());
@@ -372,19 +364,6 @@ pub fn prepare_clickbench_report_dataset() -> ClickbenchWorkloadResult<Option<(P
             include_content_fingerprint,
         )?;
         return Ok(Some((root_path, metadata)));
-    }
-
-    if crate::tpch::default_nvme_mount_present() {
-        let nvme = PathBuf::from(DEFAULT_NVME_CLICKBENCH_PARTITIONED_DIR);
-        if nvme.is_dir()
-            && let Ok(metadata) = describe_clickbench_dataset(
-                &nvme,
-                "external_parquet_root",
-                format!("local {DEFAULT_NVME_CLICKBENCH_PARTITIONED_DIR} parquet fixture (default)"),
-            )
-        {
-            return Ok(Some((nvme, metadata)));
-        }
     }
 
     let local_partitioned = PathBuf::from(DEFAULT_LOCAL_CLICKBENCH_PARTITIONED_DIR);

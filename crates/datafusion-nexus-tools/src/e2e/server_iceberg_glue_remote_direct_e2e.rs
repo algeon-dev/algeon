@@ -26,8 +26,8 @@
 //!
 //! GPU is required (native remote-direct execution). Serialize with
 //! `flock /tmp/cudf-gpu.lock` per repo policy. Load a data-bearing namespace
-//! first (`fixture/scripts/e2e.sh iceberg-local --load-glue ...` or
-//! `fixture/scripts/fixture.sh iceberg glue-moto load`).
+//! first (`fixture/iceberg-local/e2e.sh iceberg-local --load-glue ...` or
+//! `fixture/fixture.sh iceberg glue-moto load`).
 //!
 //! ```bash
 //! NEXUS_ICEBERG_GLUE_REMOTE_DIRECT_E2E=1 \

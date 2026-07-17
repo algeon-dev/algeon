@@ -3,7 +3,7 @@
 
 The source of truth for cuGraph dataset bytes is the cuGraph repository, not
 this repository. This script copies the small upstream datasets and reference
-outputs needed by the datafusion-nexus parity harness into the ignored local
+outputs needed by the datafusion-nexus parity harness into the versioned graph
 fixture root, then writes a manifest with SHA-256 checksums for the copied
 bytes.
 """
@@ -24,7 +24,7 @@ from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_CUGRAPH_REPO = REPO_ROOT.parent / "cugraph-rs" / "cugraph"
-DEFAULT_DATA_ROOT = REPO_ROOT / "fixture" / "data" / "cugraph"
+DEFAULT_DATA_ROOT = REPO_ROOT / "fixture" / "graph" / "cugraph"
 
 
 @dataclass(frozen=True)
@@ -56,7 +56,7 @@ REFERENCES = [
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Copy cuGraph parity datasets from ../cugraph-rs/cugraph and generate fixture/data/cugraph/manifest.json.",
+        description="Copy cuGraph parity datasets from ../cugraph-rs/cugraph and generate fixture/graph/cugraph/manifest.json.",
     )
     parser.add_argument(
         "--cugraph-repo",
@@ -68,7 +68,7 @@ def parse_args() -> argparse.Namespace:
         "--out-dir",
         type=Path,
         default=Path(os.getenv("CUDF_CUGRAPH_DATA_ROOT", DEFAULT_DATA_ROOT)),
-        help="Local fixture root. Defaults to CUDF_CUGRAPH_DATA_ROOT or fixture/data/cugraph.",
+        help="Local fixture root. Defaults to CUDF_CUGRAPH_DATA_ROOT or fixture/graph/cugraph.",
     )
     parser.add_argument(
         "--oracle",

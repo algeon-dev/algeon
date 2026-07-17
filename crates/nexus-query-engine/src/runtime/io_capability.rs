@@ -11,8 +11,6 @@ use std::path::{Path, PathBuf};
 pub const NVIDIA_FS_PROC_PATH: &str = "/proc/driver/nvidia-fs";
 /// Alternate sysfs module path that also indicates `nvidia-fs` is loaded.
 pub const NVIDIA_FS_SYSFS_PATH: &str = "/sys/module/nvidia_fs";
-/// Default local NVMe fixture root treated as GDS-eligible once deployment GDS is available.
-pub const DEFAULT_GDS_LOCAL_MOUNT_ROOT: &str = "/opt/dlami/nvme";
 /// Environment variable used by KvikIO to force compatibility/POSIX mode.
 pub const KVIKIO_COMPAT_MODE_ENV: &str = "KVIKIO_COMPAT_MODE";
 
@@ -310,22 +308,6 @@ pub fn source_gds_eligibility(
     }
 }
 
-/// Classifies a source location using the default local GDS mount roots.
-pub fn source_gds_eligibility_with_default_mounts(
-    deployment: &DeploymentIoCapability,
-    source_location: &str,
-    chunk_bytes: Option<u64>,
-    gds_min_chunk_bytes: u64,
-) -> SourceGdsEligibility {
-    source_gds_eligibility(
-        deployment,
-        source_location,
-        chunk_bytes,
-        gds_min_chunk_bytes,
-        &[PathBuf::from(DEFAULT_GDS_LOCAL_MOUNT_ROOT)],
-    )
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum SourceLocationKind {
     LocalPath(PathBuf),
@@ -469,6 +451,7 @@ mod tests {
     #[test]
     fn source_gds_eligibility_never_allows_remote_object_store_locations() {
         let deployment = available_deployment();
+        let roots = [PathBuf::from("/mnt/nexus-gds")];
         for uri in [
             "s3://bucket/file.parquet",
             "gs://bucket/file.parquet",
@@ -476,7 +459,7 @@ mod tests {
             "hdfs://namenode/file.parquet",
         ] {
             assert_eq!(
-                source_gds_eligibility_with_default_mounts(&deployment, uri, Some(64 * 1024 * 1024), 4 * 1024 * 1024),
+                source_gds_eligibility(&deployment, uri, Some(64 * 1024 * 1024), 4 * 1024 * 1024, &roots),
                 SourceGdsEligibility::RemoteObjectStore
             );
         }
@@ -484,46 +467,51 @@ mod tests {
 
     #[test]
     fn source_gds_eligibility_requires_available_deployment_local_mount_and_min_chunk() {
+        let roots = [PathBuf::from("/mnt/nexus-gds")];
         let unavailable = DeploymentIoCapability::from_probe_inputs(
             NvidiaFsProbeStatus::DriverMissing,
             KvikioCompatModeStatus::Unset,
             GdsDriverProbeStatus::Available,
         );
         assert_eq!(
-            source_gds_eligibility_with_default_mounts(
+            source_gds_eligibility(
                 &unavailable,
-                "/opt/dlami/nvme/tpch/sf10/lineitem.parquet",
+                "/mnt/nexus-gds/tpch/sf10/lineitem.parquet",
                 Some(64 * 1024 * 1024),
-                4 * 1024 * 1024
+                4 * 1024 * 1024,
+                &roots,
             ),
             SourceGdsEligibility::DeploymentUnavailable
         );
 
         let available = available_deployment();
         assert_eq!(
-            source_gds_eligibility_with_default_mounts(
+            source_gds_eligibility(
                 &available,
-                "/opt/dlami/nvme/tpch/sf10/lineitem.parquet",
+                "/mnt/nexus-gds/tpch/sf10/lineitem.parquet",
                 Some(1024),
-                4 * 1024 * 1024
+                4 * 1024 * 1024,
+                &roots,
             ),
             SourceGdsEligibility::BelowMinChunkBytes
         );
         assert_eq!(
-            source_gds_eligibility_with_default_mounts(
+            source_gds_eligibility(
                 &available,
                 "/tmp/tpch/sf10/lineitem.parquet",
                 Some(64 * 1024 * 1024),
-                4 * 1024 * 1024
+                4 * 1024 * 1024,
+                &roots,
             ),
             SourceGdsEligibility::NotOnGdsCapableMount
         );
         assert_eq!(
-            source_gds_eligibility_with_default_mounts(
+            source_gds_eligibility(
                 &available,
-                "file:///opt/dlami/nvme/tpch/sf10/lineitem.parquet",
+                "file:///mnt/nexus-gds/tpch/sf10/lineitem.parquet",
                 Some(64 * 1024 * 1024),
-                4 * 1024 * 1024
+                4 * 1024 * 1024,
+                &roots,
             ),
             SourceGdsEligibility::Eligible
         );

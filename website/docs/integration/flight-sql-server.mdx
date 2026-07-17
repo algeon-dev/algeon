@@ -25,7 +25,7 @@ that stack, load the citation network, then run the server bound to localhost:
 
 ```bash
 docker compose -f fixture/iceberg-local/docker-compose.yml up -d
-fixture/scripts/fixture.sh iceberg rest load \
+fixture/fixture.sh iceberg rest load \
   --workload citation_network \
   --load-mode add-files
 

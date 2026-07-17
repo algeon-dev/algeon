@@ -3,7 +3,7 @@ use super::{support::*, *};
 // Per-algorithm Python-oracle GPU tests for PageRank, BFS, and Louvain
 // previously lived here. They have been subsumed by the registry-driven
 // `tests/cugraph/cugraph_parity.rs` harness, which reads local oracle JSON
-// produced by `fixture/scripts/cugraph_oracle.py`. The composition test below
+// produced by `fixture/graph/cugraph_oracle.py`. The composition test below
 // stays in place and will move into the harness as a Milestone 2
 // composition entry.
 

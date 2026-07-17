@@ -70,13 +70,13 @@ the upstream `dblp.v12.json` file, then load them into the local Iceberg REST
 catalog with `add-files` mode:
 
 ```bash
-python3 fixture/scripts/dblp_ingest.py \
+python3 fixture/graph/dblp_ingest.py \
   --source-json /path/to/dblp.v12.json \
-  --out-root fixture/data/demo \
+  --out-root fixture/graph/demo \
   --overwrite
 
 docker compose -f fixture/iceberg-local/docker-compose.yml up -d
-fixture/scripts/fixture.sh iceberg rest load \
+fixture/fixture.sh iceberg rest load \
   --workload citation_network \
   --load-mode add-files
 ```
@@ -189,7 +189,7 @@ REST pipeline results, Flight SQL graph queries, shared-ledger overload, and
 graceful shutdown:
 
 ```bash
-fixture/scripts/e2e.sh embedded-backend
+fixture/iceberg-local/e2e.sh embedded-backend
 ```
 
 Use `--skip-stack` when the REST catalog and RustFS are already running, and

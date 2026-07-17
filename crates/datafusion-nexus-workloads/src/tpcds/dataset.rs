@@ -11,6 +11,7 @@ use parquet::{
 };
 
 use super::{TpcdsWorkloadError, TpcdsWorkloadResult, fixture::write_tiny_tpcds_parquet_dataset};
+use crate::NEXUS_PARQUET_DIR_ENV;
 
 /// Canonical TPC-DS table names in registration/report order.
 pub const TPCDS_TABLES: &[&str] = &[
@@ -39,9 +40,6 @@ pub const TPCDS_TABLES: &[&str] = &[
     "web_sales",
     "web_site",
 ];
-/// Explicit Parquet fixture root. When unset, report helpers try the default
-/// SF1 fixture before generating tiny data.
-pub const CUDF_TPCDS_PARQUET_DIR_ENV: &str = "CUDF_TPCDS_PARQUET_DIR";
 /// Reported scale-factor label; set this explicitly for non-SF1 fixtures.
 pub const CUDF_TPCDS_SCALE_FACTOR_ENV: &str = "CUDF_TPCDS_SCALE_FACTOR";
 /// Free-form provenance command recorded in dataset metadata.
@@ -51,28 +49,12 @@ pub const CUDF_TPCDS_GENERATION_COMMAND_ENV: &str = "CUDF_TPCDS_GENERATION_COMMA
 /// content-fingerprint pass.
 pub const CUDF_TPCDS_CONTENT_FINGERPRINT_ENV: &str = "CUDF_TPCDS_CONTENT_FINGERPRINT";
 
-/// Default on-host NVMe Parquet root for the TPC-DS SF1 fixture, staged at
-/// boot by `rsync-tpcds.service`. Used as an implicit fallback by
-/// `prepare_tpcds_report_dataset` when `CUDF_TPCDS_PARQUET_DIR` is unset and
-/// the host actually has the fixture present; absence is silent (the
-/// preparation falls back to the tiny dataset).
-pub const DEFAULT_NVME_TPCDS_SF1_PARQUET_DIR: &str = "/opt/dlami/nvme/tpcds/sf1/parquet";
+/// In-repo default Parquet root for the TPC-DS SF1 fixture.
+pub const DEFAULT_LOCAL_TPCDS_SF1_PARQUET_DIR: &str = "./fixture/tpc-ds/data/sf1/parquet";
 
-/// In-repo fallback Parquet root for the TPC-DS SF1 fixture, used when the
-/// `DEFAULT_NVME_MOUNT_ROOT` mount point is not present on this host.
-pub const DEFAULT_LOCAL_TPCDS_SF1_PARQUET_DIR: &str = "./fixture/data/tpcds/sf1/parquet";
-
-/// Returns the on-host default Parquet root for the TPC-DS SF1 fixture,
-/// picking the NVMe-staged path when `DEFAULT_NVME_MOUNT_ROOT` is mounted and
-/// the in-repo `./fixture/data/...` path otherwise. The decision is based solely
-/// on whether the NVMe drive is attached — fixture completeness is probed by
-/// the caller.
+/// Returns the in-repo default Parquet root for the TPC-DS SF1 fixture.
 pub fn default_tpcds_sf1_parquet_root() -> &'static str {
-    if crate::tpch::default_nvme_mount_present() {
-        DEFAULT_NVME_TPCDS_SF1_PARQUET_DIR
-    } else {
-        DEFAULT_LOCAL_TPCDS_SF1_PARQUET_DIR
-    }
+    DEFAULT_LOCAL_TPCDS_SF1_PARQUET_DIR
 }
 
 /// TPC-DS fixture metadata recorded in report headers.
@@ -211,12 +193,12 @@ pub fn external_tpcds_dataset_metadata(
 
 /// Selects the TPC-DS fixture for report helpers.
 ///
-/// `CUDF_TPCDS_PARQUET_DIR` is strict: if set, that fixture must be complete.
+/// `NEXUS_PARQUET_DIR` is strict: if set, that fixture must be complete.
 /// When unset, the helper tries the implicit SF1 default and falls back to
 /// generating tiny data under `tiny_root`. A truthy
 /// `CUDF_TPCDS_CONTENT_FINGERPRINT` requests the expensive content hash.
 pub fn prepare_tpcds_report_dataset(tiny_root: &Path) -> TpcdsWorkloadResult<(PathBuf, TpcdsDatasetMetadata)> {
-    if let Ok(root) = std::env::var(CUDF_TPCDS_PARQUET_DIR_ENV) {
+    if let Ok(root) = std::env::var(NEXUS_PARQUET_DIR_ENV) {
         let root = PathBuf::from(root);
         let scale_factor = std::env::var(CUDF_TPCDS_SCALE_FACTOR_ENV).unwrap_or_else(|_| "unknown".to_string());
         let generation_command =
@@ -233,7 +215,7 @@ pub fn prepare_tpcds_report_dataset(tiny_root: &Path) -> TpcdsWorkloadResult<(Pa
         return Ok((root, metadata));
     }
 
-    if let Some((root, metadata)) = try_default_nvme_tpcds_sf1_dataset() {
+    if let Some((root, metadata)) = try_default_local_tpcds_sf1_dataset() {
         return Ok((root, metadata));
     }
 
@@ -242,13 +224,10 @@ pub fn prepare_tpcds_report_dataset(tiny_root: &Path) -> TpcdsWorkloadResult<(Pa
     Ok((tiny_root.to_path_buf(), metadata))
 }
 
-/// Returns the on-host default SF1 fixture when it is complete. The probe
-/// picks between the NVMe-staged root and the in-repo `./fixture/data/...`
-/// fallback based solely on whether `DEFAULT_NVME_MOUNT_ROOT` is mounted on
-/// this host; fixture completeness is then checked at the chosen root. A
-/// `None` return means "no implicit external fixture available, fall back to
-/// the tiny dataset".
-fn try_default_nvme_tpcds_sf1_dataset() -> Option<(PathBuf, TpcdsDatasetMetadata)> {
+/// Returns the in-repo default SF1 fixture when it is complete. A `None`
+/// return means "no implicit external fixture available, fall back to the tiny
+/// dataset".
+fn try_default_local_tpcds_sf1_dataset() -> Option<(PathBuf, TpcdsDatasetMetadata)> {
     let root_str = default_tpcds_sf1_parquet_root();
     let root = PathBuf::from(root_str);
     if !root.is_dir() {

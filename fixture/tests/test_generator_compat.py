@@ -19,11 +19,11 @@ from types import ModuleType
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-FIXTURE_SH = REPO_ROOT / "fixture" / "scripts" / "fixture.sh"
-GEN_TPCH = REPO_ROOT / "fixture" / "scripts" / "gen_tpch.py"
-GEN_TPCDS = REPO_ROOT / "fixture" / "scripts" / "gen_tpcds.py"
+FIXTURE_SH = REPO_ROOT / "fixture" / "fixture.sh"
+GEN_TPCH = REPO_ROOT / "fixture" / "tpc-h" / "generate.py"
+GEN_TPCDS = REPO_ROOT / "fixture" / "tpc-ds" / "generate.py"
 SPARK_WRITE_ICEBERG = REPO_ROOT / "fixture" / "iceberg-local" / "spark_write_iceberg.py"
-TPC_PARQUET_LAYOUT = REPO_ROOT / "fixture" / "scripts" / "tpc_parquet_layout.py"
+TPC_PARQUET_LAYOUT = REPO_ROOT / "fixture" / "tpc" / "parquet_layout.py"
 
 
 def run_cmd(args: list[str], env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
@@ -155,11 +155,11 @@ class FixtureGeneratorCompatibilityTests(unittest.TestCase):
         self.assertEqual(scales, [1.0])
         self.assertEqual(
             layout.resolve_output_dir(workload="tpch", scale=scales[0], out=None, out_root=None),
-            REPO_ROOT / "fixture" / "data" / "tpch" / "sf1" / "parquet",
+            REPO_ROOT / "fixture" / "tpc-h" / "data" / "sf1" / "parquet",
         )
         self.assertEqual(
             layout.resolve_output_dir(workload="tpcds", scale=scales[0], out=None, out_root=None),
-            REPO_ROOT / "fixture" / "data" / "tpcds" / "sf1" / "parquet",
+            REPO_ROOT / "fixture" / "tpc-ds" / "data" / "sf1" / "parquet",
         )
 
     def test_fixture_router_calls_generate_raw_without_verification_dependency(self) -> None:
