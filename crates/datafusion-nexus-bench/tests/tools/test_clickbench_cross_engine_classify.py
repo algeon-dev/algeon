@@ -295,6 +295,7 @@ class ClassifyQueryTest(unittest.TestCase):
     def test_reference_fingerprint_is_disagreement_when_refs_differ(self) -> None:
         rows = [
             make_row("q23", "duckdb", 1, "fp-a"),
+            make_row("q23", "cpu_datafusion", 1, "fp-b"),
             make_row("q23", "datafusion_nexus", 1, "fp-c"),
         ]
         result = self.m.classify_query("q23", rows)
