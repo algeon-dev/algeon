@@ -30,7 +30,15 @@
 //! assert_eq!(df2.num_columns(), 2);
 //! ```
 
-use std::{cell::Cell, ffi::c_void, ptr, sync::Arc};
+use std::{
+    cell::Cell,
+    ffi::c_void,
+    ptr,
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    },
+};
 
 use arrow::{
     array::*,
@@ -61,10 +69,11 @@ use crate::{
 pub(crate) mod testing_hooks;
 
 thread_local! {
-    static HOST_ARROW_EXPORT_CALL_COUNT: Cell<usize> = const { Cell::new(0) };
-    static HOST_ARROW_IMPORT_CALL_COUNT: Cell<usize> = const { Cell::new(0) };
     static HOST_ARROW_LAST_BOUNDARY_OBSERVATION: Cell<Option<BoundaryObservation>> = const { Cell::new(None) };
 }
+
+static HOST_ARROW_EXPORT_CALL_COUNT: AtomicUsize = AtomicUsize::new(0);
+static HOST_ARROW_IMPORT_CALL_COUNT: AtomicUsize = AtomicUsize::new(0);
 
 const DEFAULT_DECIMAL128_ARROW_PRECISION: u8 = 38;
 
@@ -1131,17 +1140,17 @@ fn decimal128_array_from_values(
 }
 
 pub(super) fn reset_host_interop_observation() {
-    HOST_ARROW_EXPORT_CALL_COUNT.with(|count| count.set(0));
-    HOST_ARROW_IMPORT_CALL_COUNT.with(|count| count.set(0));
+    HOST_ARROW_EXPORT_CALL_COUNT.store(0, Ordering::Release);
+    HOST_ARROW_IMPORT_CALL_COUNT.store(0, Ordering::Release);
     HOST_ARROW_LAST_BOUNDARY_OBSERVATION.with(|last| last.set(None));
 }
 
 pub(super) fn host_export_call_count() -> usize {
-    HOST_ARROW_EXPORT_CALL_COUNT.with(Cell::get)
+    HOST_ARROW_EXPORT_CALL_COUNT.load(Ordering::Acquire)
 }
 
 pub(super) fn host_import_call_count() -> usize {
-    HOST_ARROW_IMPORT_CALL_COUNT.with(Cell::get)
+    HOST_ARROW_IMPORT_CALL_COUNT.load(Ordering::Acquire)
 }
 
 pub(super) fn last_host_boundary_observation() -> Option<BoundaryObservation> {
@@ -1149,11 +1158,11 @@ pub(super) fn last_host_boundary_observation() -> Option<BoundaryObservation> {
 }
 
 fn record_host_export_call() {
-    HOST_ARROW_EXPORT_CALL_COUNT.with(|count| count.set(count.get() + 1));
+    HOST_ARROW_EXPORT_CALL_COUNT.fetch_add(1, Ordering::AcqRel);
 }
 
 fn record_host_import_call() {
-    HOST_ARROW_IMPORT_CALL_COUNT.with(|count| count.set(count.get() + 1));
+    HOST_ARROW_IMPORT_CALL_COUNT.fetch_add(1, Ordering::AcqRel);
 }
 
 fn record_host_boundary_observation_in_domain(

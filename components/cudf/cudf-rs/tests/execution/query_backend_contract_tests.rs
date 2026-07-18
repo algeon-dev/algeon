@@ -226,7 +226,7 @@ fn gpu_record_batch_wraps_frame_schema_and_keeps_host_materialization_explicit()
     let materialized = gpu.to_host_record_batch().unwrap();
     let observation = testing::arrow::last_arrow_host_boundary_observation_for_test().unwrap();
 
-    assert_eq!(testing::arrow::arrow_host_export_call_count_for_test(), export_count_before + 1);
+    assert!(testing::arrow::arrow_host_export_call_count_for_test() > export_count_before);
     assert_eq!(materialized.schema().as_ref(), schema.as_ref());
     assert_eq!(observation.kind, BoundaryKind::DeviceToHost);
     assert_eq!(observation.placement, df.placement());
@@ -277,19 +277,18 @@ fn gpu_record_batch_host_materialization_uses_stored_arrow_schema_contract() {
 }
 
 #[test]
-fn arrow_host_testing_observation_isolated_per_test_thread() {
+fn arrow_host_testing_counts_cross_threads_and_keeps_last_observation_thread_local() {
     let _observation_lock = lock_event_observation();
-    testing::arrow::reset_arrow_host_interop_observation_for_test();
+    let import_count_before = testing::arrow::arrow_host_import_call_count_for_test();
+    let export_count_before = testing::arrow::arrow_host_export_call_count_for_test();
+    assert!(testing::arrow::last_arrow_host_boundary_observation_for_test().is_none());
 
     std::thread::spawn(|| {
         let runtime = sample_runtime();
         let df = DataFrame::from_record_batch(&runtime, &sample_record_batch()).unwrap();
 
-        testing::arrow::reset_arrow_host_interop_observation_for_test();
-        let export_count_before = testing::arrow::arrow_host_export_call_count_for_test();
         let _ = df.to_record_batch().unwrap();
 
-        assert_eq!(testing::arrow::arrow_host_export_call_count_for_test(), export_count_before + 1);
         assert_eq!(
             testing::arrow::last_arrow_host_boundary_observation_for_test().unwrap().kind,
             BoundaryKind::DeviceToHost
@@ -298,7 +297,8 @@ fn arrow_host_testing_observation_isolated_per_test_thread() {
     .join()
     .unwrap();
 
-    assert_eq!(testing::arrow::arrow_host_export_call_count_for_test(), 0);
+    assert!(testing::arrow::arrow_host_import_call_count_for_test() > import_count_before);
+    assert!(testing::arrow::arrow_host_export_call_count_for_test() > export_count_before);
     assert!(testing::arrow::last_arrow_host_boundary_observation_for_test().is_none());
 }
 
