@@ -197,10 +197,20 @@ fn native_query_domain_rejects_cross_device_stream() {
     let stream = OwnedStream::new();
 
     let mut reservation = ptr::null_mut();
-    let status =
-        unsafe { cudf_sys::cudf_query_memory_domain_attach_stream(domain, stream.as_raw(), 70_003, &mut reservation) };
+    let mut resource = ptr::null_mut();
+    let status = unsafe {
+        cudf_sys::cudf_query_memory_domain_attach_stream(
+            domain,
+            stream.as_raw(),
+            70_003,
+            1024 * 1024,
+            &mut reservation,
+            &mut resource,
+        )
+    };
     assert_eq!(status, cudf_sys::CUDF_ERROR_INVALID_OPERATION);
     assert!(reservation.is_null());
+    assert!(resource.is_null());
     assert!(
         last_error_message().contains("same CUDA device"),
         "expected same-device rejection, got {:?}",

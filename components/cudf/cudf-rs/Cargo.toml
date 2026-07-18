@@ -19,6 +19,10 @@ path = "examples/dual_pipeline_bench.rs"
 name = "io_flake_repro"
 path = "examples/io_flake_repro.rs"
 
+[[example]]
+name = "query_memory_domain_alloc_storm"
+path = "examples/query_memory_domain_alloc_storm.rs"
+
 [dependencies]
 cudf-sys.workspace = true
 rapids-interop.workspace = true
