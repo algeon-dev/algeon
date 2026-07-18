@@ -3,6 +3,7 @@
 #include "execution_context_internal.hpp"
 #include "shim_common.h"
 
+#include <cuda_profiler_api.h>
 #include <cuda_runtime_api.h>
 #include <rmm/cuda_device.hpp>
 
@@ -51,6 +52,38 @@ cudf_status_t cudf_cuda_set_device(int32_t device) {
     if (err != cudaSuccess) {
       auto msg =
           std::string("cudaSetDevice failed: ") + cudaGetErrorString(err);
+      set_error(msg);
+      return CUDF_ERROR_CUDA;
+    }
+    return CUDF_SUCCESS;
+  }
+  CUDF_RUST_CATCH
+}
+
+cudf_status_t cudf_cuda_profiler_start(void) {
+  CUDF_RUST_TRY {
+    cudaError_t err = cudaProfilerStart();
+    if (err != cudaSuccess) {
+      auto msg = std::string("cudaProfilerStart failed: ") +
+                 cudaGetErrorName(err) + " (code " +
+                 std::to_string(static_cast<int>(err)) + "): " +
+                 cudaGetErrorString(err);
+      set_error(msg);
+      return CUDF_ERROR_CUDA;
+    }
+    return CUDF_SUCCESS;
+  }
+  CUDF_RUST_CATCH
+}
+
+cudf_status_t cudf_cuda_profiler_stop(void) {
+  CUDF_RUST_TRY {
+    cudaError_t err = cudaProfilerStop();
+    if (err != cudaSuccess) {
+      auto msg = std::string("cudaProfilerStop failed: ") +
+                 cudaGetErrorName(err) + " (code " +
+                 std::to_string(static_cast<int>(err)) + "): " +
+                 cudaGetErrorString(err);
       set_error(msg);
       return CUDF_ERROR_CUDA;
     }

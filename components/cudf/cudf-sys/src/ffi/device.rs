@@ -15,6 +15,12 @@ extern "C" {
     /// Set the CUDA device ordinal for the calling thread.
     pub fn cudf_cuda_set_device(device: i32) -> cudf_status_t;
 
+    /// Start profiler collection for the current process.
+    pub fn cudf_cuda_profiler_start() -> cudf_status_t;
+
+    /// Stop profiler collection for the current process.
+    pub fn cudf_cuda_profiler_stop() -> cudf_status_t;
+
     /// Query the number of CUDA-capable devices visible to the process.
     pub fn cudf_cuda_get_device_count(count: *mut i32) -> cudf_status_t;
 
