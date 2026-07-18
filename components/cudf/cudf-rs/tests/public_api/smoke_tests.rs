@@ -27,6 +27,7 @@ fn query_memory_manager_surface_is_publicly_importable() {
     let _ = DeviceMemoryManager::install_for_device_with_failure_callback;
     let _ = DeviceMemoryManager::install_for_device_with_failure_callback_details;
     let _ = DeviceMemoryManager::failure_callback_state_for_device;
+    let _ = DeviceMemoryManager::options_for_device;
     let _: Option<DeviceMemoryFailureInfo> = None;
     let _ = DeviceMemoryFailureAction::Decline;
     let _ = DeviceMemoryFailureAllocationDomain::StreamReservation { reservation_id: 1 };

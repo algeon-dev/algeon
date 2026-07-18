@@ -136,6 +136,13 @@ extern "C" {
         failure_callback_installed: *mut i32,
     ) -> cudf_status_t;
 
+    /// Query the effective physical-base options of a device memory manager.
+    pub fn cudf_memory_manager_options_for_device(
+        device: i32,
+        exists: *mut i32,
+        out: *mut cudf_memory_manager_options_t,
+    ) -> cudf_status_t;
+
     /// Create a memory-resource handle alias for a device memory manager.
     pub fn cudf_memory_manager_resource(
         manager: cudf_memory_manager_handle,

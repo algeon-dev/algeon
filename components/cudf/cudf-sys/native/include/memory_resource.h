@@ -259,8 +259,10 @@ cudf_status_t cudf_memory_manager_for_device(int32_t device, cudf_memory_manager
 /// Resolve the process-local reservation-aware memory manager for `device`
 /// with explicit physical-base options.
 ///
-/// The options only affect first creation for a device. Later calls return the
-/// already-created manager.
+/// Later calls return the already-created manager only when its effective
+/// options match. Mismatched explicit options return
+/// `CUDF_ERROR_INVALID_OPERATION` because the process-global allocator cannot
+/// be replaced after first use.
 cudf_status_t cudf_memory_manager_for_device_with_options(
   int32_t device,
   cudf_memory_manager_options_t const* options,
@@ -319,6 +321,14 @@ cudf_status_t cudf_memory_manager_failure_callback_state(
   int32_t device,
   int32_t* exists,
   int32_t* failure_callback_installed);
+
+/// Query the effective physical-base options of the process-local manager.
+///
+/// `*exists` is zero and `*out` receives defaults when no manager exists.
+cudf_status_t cudf_memory_manager_options_for_device(
+  int32_t device,
+  int32_t* exists,
+  cudf_memory_manager_options_t* out);
 
 /// Create a memory-resource handle alias for a device memory manager.
 ///

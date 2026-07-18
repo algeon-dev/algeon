@@ -636,6 +636,11 @@ pub(crate) fn usize_to_i64(value: usize, operation: &'static str, field: &'stati
 // --------------------------------------------------------------------------
 
 fn leaf_code_for_status(status: cudf_sys::cudf_status_t, message: &str) -> ErrorCode {
+    if status == cudf_sys::CUDF_ERROR_INVALID_OPERATION
+        && message.contains("device memory manager already exists with different physical-base options")
+    {
+        return ErrorCode::RuntimeBindingMismatch;
+    }
     match status {
         cudf_sys::CUDF_ERROR_INVALID_ARGUMENT | cudf_sys::CUDF_ERROR_INVALID_OPERATION | cudf_sys::CUDF_ERROR_TYPE => {
             ErrorCode::ForeignInvalidArgument

@@ -162,6 +162,8 @@ const SAFE_LAYER_NON_EXECUTION_FFI_ALLOWLIST: &[(&str, &str)] = &[
     ("cudf_memory_manager_create_query_memory_domain", "runtime query-memory-domain lifecycle"),
     ("cudf_memory_manager_create_reservation_arena", "runtime reservation-arena lifecycle"),
     ("cudf_memory_manager_failure_callback_state", "runtime device memory-manager state query"),
+    ("cudf_memory_manager_options_for_device", "runtime device memory-manager options query"),
+    ("cudf_memory_manager_for_device", "runtime device memory-manager lifecycle"),
     ("cudf_memory_manager_for_device_with_failure_callback_v2_and_options", "runtime device memory-manager lifecycle"),
     ("cudf_memory_manager_for_device_with_options", "runtime device memory-manager lifecycle"),
     ("cudf_memory_manager_pool_usage", "metadata-only device memory-manager async-pool accounting"),
