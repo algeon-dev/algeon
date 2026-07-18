@@ -768,16 +768,15 @@ class reservation_aware_resource_adaptor final : public rmm::mr::device_memory_r
                                             std::string& error)
   {
     auto const key = stream_key(stream);
-    {
-      std::shared_lock query_lock{query_domain_mutex_};
-      auto const existing_domain = query_domain_members_by_stream_.find(key);
-      if (existing_domain != query_domain_members_by_stream_.end()) {
-        auto state = existing_domain->second.lock();
-        if (state != nullptr && state->attached) {
-          error = "stream already has an attached query memory domain";
-          return {};
-        }
+    std::unique_lock query_lock{query_domain_mutex_};
+    auto const existing_domain = query_domain_members_by_stream_.find(key);
+    if (existing_domain != query_domain_members_by_stream_.end()) {
+      auto state = existing_domain->second.lock();
+      if (state != nullptr && state->attached) {
+        error = "stream already has an attached query memory domain";
+        return {};
       }
+      query_domain_members_by_stream_.erase(existing_domain);
     }
     std::scoped_lock lock{mutex_};
     auto const existing = reservations_by_stream_.find(key);
