@@ -128,7 +128,7 @@ impl DataFrame {
         output_domain: Arc<ExecutionDomain>,
         operation: &'static str,
     ) -> Result<Self> {
-        let lowered = match lower_row_predicate(self, &predicate, operation) {
+        let lowered = match lower_row_predicate(self, &predicate, &output_domain, operation) {
             Ok(lowered) => lowered,
             Err(err) if should_use_mask_fallback(&err) => {
                 return self.filter_expr_via_boolean_mask(predicate, output_domain, operation);
@@ -178,9 +178,14 @@ fn should_use_mask_fallback(err: &Error) -> bool {
         && err.detail_value("reason") == Some("unsupported_expr_kind")
 }
 
-fn lower_row_predicate(df: &DataFrame, expr: &Expr, operation: &'static str) -> Result<LoweredRowPredicate> {
+fn lower_row_predicate(
+    df: &DataFrame,
+    expr: &Expr,
+    output_domain: &Arc<ExecutionDomain>,
+    operation: &'static str,
+) -> Result<LoweredRowPredicate> {
     let mut lowered = LoweredRowPredicate { nodes: Vec::new(), scalars: Vec::new(), root_index: -1 };
-    let (root_index, output_type) = lower_expr(df, expr, &mut lowered, operation)?;
+    let (root_index, output_type) = lower_expr(df, expr, output_domain, &mut lowered, operation)?;
     if output_type.id() != TypeId::Bool8 {
         return Err(Error::new_with(ErrorCode::TypeMismatch, operation, "row predicate must evaluate to Bool8")
             .with_fact(FACT_LEFT_TYPE_ID, output_type.id())
@@ -193,6 +198,7 @@ fn lower_row_predicate(df: &DataFrame, expr: &Expr, operation: &'static str) -> 
 fn lower_expr(
     df: &DataFrame,
     expr: &Expr,
+    output_domain: &Arc<ExecutionDomain>,
     lowered: &mut LoweredRowPredicate,
     operation: &'static str,
 ) -> Result<(i32, DataType)> {
@@ -214,14 +220,14 @@ fn lower_expr(
             )?;
             Ok((index, dtype))
         },
-        Expr::Literal(literal) => lower_literal(df, literal, lowered, operation),
-        Expr::BinaryOp { lhs, op, rhs } => lower_binary_expr(df, lhs, *op, rhs, lowered, operation),
+        Expr::Literal(literal) => lower_literal(literal, output_domain, lowered, operation),
+        Expr::BinaryOp { lhs, op, rhs } => lower_binary_expr(df, lhs, *op, rhs, output_domain, lowered, operation),
         Expr::BinaryOpWithType { .. } => unsupported_predicate(operation, expr_kind(expr)),
-        Expr::UnaryOp { op, input } => lower_unary_expr(df, *op, input, lowered, operation),
+        Expr::UnaryOp { op, input } => lower_unary_expr(df, *op, input, output_domain, lowered, operation),
         Expr::Round { .. } => unsupported_predicate(operation, expr_kind(expr)),
-        Expr::IsNull(input) => lower_is_null_expr(df, input, lowered, operation),
+        Expr::IsNull(input) => lower_is_null_expr(df, input, output_domain, lowered, operation),
         Expr::IsNotNull(input) => {
-            let (is_null_index, _) = lower_is_null_expr(df, input, lowered, operation)?;
+            let (is_null_index, _) = lower_is_null_expr(df, input, output_domain, lowered, operation)?;
             let not_index = push_node(
                 lowered,
                 cudf_sys::cudf_row_predicate_node_t {
@@ -236,7 +242,7 @@ fn lower_expr(
             )?;
             Ok((not_index, DataType::new(TypeId::Bool8)))
         },
-        Expr::Alias { inner, .. } => lower_expr(df, inner, lowered, operation),
+        Expr::Alias { inner, .. } => lower_expr(df, inner, output_domain, lowered, operation),
         Expr::Cast { .. }
         | Expr::TryCast { .. }
         | Expr::FillNaScalar { .. }
@@ -255,24 +261,24 @@ fn lower_expr(
 }
 
 fn lower_literal(
-    df: &DataFrame,
     literal: &LitValue,
+    output_domain: &Arc<ExecutionDomain>,
     lowered: &mut LoweredRowPredicate,
     operation: &'static str,
 ) -> Result<(i32, DataType)> {
-    lower_literal_with_target(df, literal, None, lowered, operation)
+    lower_literal_with_target(literal, None, output_domain, lowered, operation)
 }
 
 fn lower_literal_with_target(
-    df: &DataFrame,
     literal: &LitValue,
     target_type: Option<DataType>,
+    output_domain: &Arc<ExecutionDomain>,
     lowered: &mut LoweredRowPredicate,
     operation: &'static str,
 ) -> Result<(i32, DataType)> {
-    let mut scalar = literal.to_scalar_in_domain(df.execution_domain())?;
+    let mut scalar = literal.to_scalar_in_domain(output_domain)?;
     if let Some(target_type) = target_type {
-        scalar = align_decimal_literal_scalar(df, scalar, target_type, operation)?;
+        scalar = align_decimal_literal_scalar(scalar, target_type, output_domain, operation)?;
     }
     let dtype = scalar.data_type()?;
     if !row_predicate_literal_dtype_is_supported(dtype) {
@@ -296,9 +302,9 @@ fn lower_literal_with_target(
 }
 
 fn align_decimal_literal_scalar(
-    df: &DataFrame,
     scalar: Scalar,
     target_type: DataType,
+    output_domain: &Arc<ExecutionDomain>,
     operation: &'static str,
 ) -> Result<Scalar> {
     if !target_type.id().is_decimal() {
@@ -312,7 +318,7 @@ fn align_decimal_literal_scalar(
         return Ok(scalar);
     };
     let raw = rescale_decimal_raw(raw, source_scale, target_type.scale(), operation)?;
-    Scalar::decimal_from_raw_in_domain(raw, target_type, df.execution_domain())
+    Scalar::decimal_from_raw_in_domain(raw, target_type, output_domain)
 }
 
 fn scalar_decimal_or_integral_raw(scalar: &Scalar, source_type: DataType) -> Result<Option<(i128, i32)>> {
@@ -387,23 +393,26 @@ fn lower_binary_expr(
     lhs: &Expr,
     op: BinaryOperator,
     rhs: &Expr,
+    output_domain: &Arc<ExecutionDomain>,
     lowered: &mut LoweredRowPredicate,
     operation: &'static str,
 ) -> Result<(i32, DataType)> {
     let (lhs_index, lhs_type, rhs_index, rhs_type) = match (lhs, rhs) {
         (Expr::Literal(literal), rhs) if op.is_comparison() => {
-            let (rhs_index, rhs_type) = lower_expr(df, rhs, lowered, operation)?;
-            let (lhs_index, lhs_type) = lower_literal_with_target(df, literal, Some(rhs_type), lowered, operation)?;
+            let (rhs_index, rhs_type) = lower_expr(df, rhs, output_domain, lowered, operation)?;
+            let (lhs_index, lhs_type) =
+                lower_literal_with_target(literal, Some(rhs_type), output_domain, lowered, operation)?;
             (lhs_index, lhs_type, rhs_index, rhs_type)
         },
         (lhs, Expr::Literal(literal)) if op.is_comparison() => {
-            let (lhs_index, lhs_type) = lower_expr(df, lhs, lowered, operation)?;
-            let (rhs_index, rhs_type) = lower_literal_with_target(df, literal, Some(lhs_type), lowered, operation)?;
+            let (lhs_index, lhs_type) = lower_expr(df, lhs, output_domain, lowered, operation)?;
+            let (rhs_index, rhs_type) =
+                lower_literal_with_target(literal, Some(lhs_type), output_domain, lowered, operation)?;
             (lhs_index, lhs_type, rhs_index, rhs_type)
         },
         _ => {
-            let (lhs_index, lhs_type) = lower_expr(df, lhs, lowered, operation)?;
-            let (rhs_index, rhs_type) = lower_expr(df, rhs, lowered, operation)?;
+            let (lhs_index, lhs_type) = lower_expr(df, lhs, output_domain, lowered, operation)?;
+            let (rhs_index, rhs_type) = lower_expr(df, rhs, output_domain, lowered, operation)?;
             (lhs_index, lhs_type, rhs_index, rhs_type)
         },
     };
@@ -505,10 +514,11 @@ fn lower_unary_expr(
     df: &DataFrame,
     op: UnaryOperator,
     input: &Expr,
+    output_domain: &Arc<ExecutionDomain>,
     lowered: &mut LoweredRowPredicate,
     operation: &'static str,
 ) -> Result<(i32, DataType)> {
-    let (input_index, input_type) = lower_expr(df, input, lowered, operation)?;
+    let (input_index, input_type) = lower_expr(df, input, output_domain, lowered, operation)?;
     match op {
         UnaryOperator::Not => {
             if input_type.id() != TypeId::Bool8 {
@@ -541,10 +551,11 @@ fn lower_unary_expr(
 fn lower_is_null_expr(
     df: &DataFrame,
     input: &Expr,
+    output_domain: &Arc<ExecutionDomain>,
     lowered: &mut LoweredRowPredicate,
     operation: &'static str,
 ) -> Result<(i32, DataType)> {
-    let (input_index, _) = lower_expr(df, input, lowered, operation)?;
+    let (input_index, _) = lower_expr(df, input, output_domain, lowered, operation)?;
     let index = push_node(
         lowered,
         cudf_sys::cudf_row_predicate_node_t {
