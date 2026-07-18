@@ -1,6 +1,6 @@
 ---
 sidebar_position: 3
-description: Run the built-in DataFusion Nexus Flight SQL server and connect to it with Apache Arrow ADBC or arrow_cli.
+description: Run the built-in DataFusion Nexus Flight SQL server and connect to it with Apache Arrow ADBC, databow, or arrow_cli.
 ---
 
 # Flight SQL Server
@@ -107,14 +107,46 @@ The same contract applies from Java, Go, C/C++, Rust, Python, or any other
 runtime with an ADBC Flight SQL driver: configure the driver with the Flight SQL
 URI, execute SQL, and consume Arrow batches in the client-side service.
 
-## Smoke-test with arrow_cli
+## Smoke-test with a CLI
 
-[`arrow_cli`](https://github.com/sundy-li/arrow_cli) is useful for checking that the server is reachable, reproducing a
+A CLI client is useful for checking that the server is reachable, reproducing a
 SQL statement by hand, and debugging an ADBC client. Application code should use
 an ADBC driver library instead.
 
+### databow
+
+[`databow`](https://github.com/columnar-tech/databow) is an interactive SQL
+shell over ADBC, so it exercises the same Flight SQL driver path as the
+application code above. Follow the
+[databow documentation](https://docs.columnar.tech/databow/) to install it and
+the ADBC `flightsql` driver, then connect with the server bind address as the
+URI:
+
 ```bash
-arrow_cli --host 127.0.0.1 -P 50051 --timeout 120 --output tsv
+databow --driver flightsql --uri grpc://127.0.0.1:50051
+```
+
+`--query "..."` runs a single statement and exits, and `--output` exports the
+result to a `.json`, `.csv`, or `.arrow` file. To avoid repeating the URI,
+save a connection profile at `~/.config/adbc/profiles/nexus.toml`:
+
+```toml
+profile_version = 1
+driver = "flightsql"
+
+[Options]
+uri = "grpc://127.0.0.1:50051"
+```
+
+and connect with `databow --profile nexus`.
+
+### arrow_cli
+
+[`arrow_cli`](https://github.com/sundy-li/arrow_cli) is a lighter-weight Flight
+SQL shell that needs no driver installation:
+
+```bash
+arrow_cli --host 127.0.0.1 -P 50051 --timeout 120
 ```
 
 :::warning[One statement per line]

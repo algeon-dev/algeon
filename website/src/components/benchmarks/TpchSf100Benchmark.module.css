@@ -48,12 +48,13 @@
 .chartCard {
   border: 1px solid var(--ifm-color-emphasis-200);
   border-radius: 8px;
+  padding: 0.75rem 1rem 1.25rem;
 }
 
 .chartCaption {
   color: var(--ifm-font-color-secondary);
   font-size: 0.84rem;
-  margin: 0 0 0.85rem;
+  margin: 0.9rem 0 0.85rem;
 }
 
 .chartNotes {
@@ -89,6 +90,22 @@
   min-width: 0;
 }
 
+/* recharts axis/legend text uses <text> with inline fills; recolor them to
+   follow the theme font color so they are readable on the dark card. */
+.chart :global(.recharts-cartesian-axis-tick-value),
+.chart :global(.recharts-legend-item-text) {
+  fill: var(--ifm-font-color-secondary) !important;
+  color: var(--ifm-font-color-secondary) !important;
+}
+
+.chart :global(.recharts-legend-item) {
+  cursor: default;
+}
+
+[data-theme='dark'] .chart :global(.recharts-cartesian-grid line) {
+  stroke-opacity: 0.55;
+}
+
 .chartTabs :global(.tabs__item) {
   font-size: 0.86rem;
   letter-spacing: 0;
@@ -108,7 +125,27 @@
 }
 
 .resultsTable {
+  border-collapse: collapse;
   font-size: 0.86rem;
+  width: 100%;
+}
+
+.resultsTable th,
+.resultsTable td {
+  border: 1px solid var(--ifm-color-emphasis-200);
+  padding: 0.45rem 0.65rem;
+  text-align: left;
+  white-space: nowrap;
+}
+
+.resultsTable th {
+  background: var(--ifm-color-emphasis-100);
+  color: var(--ifm-heading-color);
+  font-weight: 700;
+}
+
+.resultsTable tbody tr:nth-child(odd) {
+  background: var(--ifm-color-emphasis-0);
 }
 
 .queryCell {

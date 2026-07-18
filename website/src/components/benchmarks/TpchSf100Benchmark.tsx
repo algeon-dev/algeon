@@ -1,20 +1,26 @@
 import React from 'react';
 import {
+  Bar,
   BarChart,
-  Card,
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeaderCell,
-  TableRow,
-} from '@tremor/react';
+  CartesianGrid,
+  Legend,
+  ResponsiveContainer,
+  Tooltip,
+  XAxis,
+  YAxis,
+} from 'recharts';
 import Tabs from '@theme/Tabs';
 import TabItem from '@theme/TabItem';
 import {tpchSf100Benchmark} from '@site/src/data/tpchSf100Benchmark';
 import styles from './TpchSf100Benchmark.module.css';
 
 const bytesPerGiB = 1024 ** 3;
+
+// Palette mirrors the previous Tremor chart colors.
+const colorCpu = '#0071C5'; // cpu-blue
+const colorGpu = '#76B900'; // gpu-green
+const colorSpeedup = '#10b981'; // emerald
+const colorMemory = '#6366f1'; // indigo
 
 function formatMs(value: number): string {
   if (value >= 1000) {
@@ -38,6 +44,40 @@ function formatGiB(value: number): string {
 function formatNumber(value: number): string {
   return new Intl.NumberFormat('en-US').format(value);
 }
+
+function formatGiBShort(value: number): string {
+  return `${value.toFixed(1)} GiB`;
+}
+
+// recharts renders its default tooltip with hard-coded white styling, which
+// clashes with the dark theme. Style it through Infima CSS variables so it
+// tracks the active theme automatically.
+const tooltipContentStyle: React.CSSProperties = {
+  background: 'var(--ifm-background-surface-color)',
+  border: '1px solid var(--ifm-color-emphasis-300)',
+  borderRadius: '6px',
+  boxShadow: 'var(--ifm-global-shadow-md)',
+  color: 'var(--ifm-font-color-base)',
+  fontSize: '0.82rem',
+  lineHeight: 1.4,
+  padding: '0.5rem 0.75rem',
+};
+
+const tooltipLabelStyle: React.CSSProperties = {
+  color: 'var(--ifm-heading-color)',
+  fontWeight: 600,
+  marginBottom: '0.25rem',
+};
+
+const tooltipItemStyle: React.CSSProperties = {
+  color: 'var(--ifm-font-color-base)',
+  padding: 0,
+};
+
+const tooltipCursorStyle = {
+  fill: 'var(--ifm-color-emphasis-300)',
+  fillOpacity: 0.35,
+} as const;
 
 export default function TpchSf100Benchmark(): React.ReactElement {
   const {dataset, config, rows, summary} = tpchSf100Benchmark;
@@ -90,35 +130,49 @@ export default function TpchSf100Benchmark(): React.ReactElement {
       </section>
 
       <section className={styles.chartPanel} aria-label="Benchmark charts">
-        <Card className={`${styles.chartCard} ${styles.tabChartCard}`}>
+        <div className={`${styles.chartCard} ${styles.tabChartCard}`}>
           <Tabs className={styles.chartTabs} groupId="tpch-sf100-chart-tabs" queryString={false}>
             <TabItem value="runtime" label="Per-query runtime" default>
               <p className={styles.chartCaption}>Wall time, measured iteration mean.</p>
-              <BarChart
-                className={styles.chart}
-                data={runtimeData}
-                index="query"
-                categories={['CPU', 'GPU']}
-                colors={['cpu-blue', 'gpu-green']}
-                valueFormatter={formatMs}
-                yAxisWidth={58}
-                showLegend
-                showGridLines
-              />
+              <div className={styles.chart}>
+                <ResponsiveContainer width="100%" height="100%">
+                  <BarChart data={runtimeData} margin={{top: 8, right: 16, left: 0, bottom: 0}}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="var(--ifm-color-emphasis-200)" />
+                    <XAxis dataKey="query" tick={{fontSize: 12}} />
+                    <YAxis tick={{fontSize: 12}} width={58} tickFormatter={formatMs} />
+                    <Tooltip
+                      contentStyle={tooltipContentStyle}
+                      labelStyle={tooltipLabelStyle}
+                      itemStyle={tooltipItemStyle}
+                      cursor={tooltipCursorStyle}
+                      formatter={(value) => formatMs(Number(value))}
+                    />
+                    <Legend />
+                    <Bar dataKey="CPU" fill={colorCpu} />
+                    <Bar dataKey="GPU" fill={colorGpu} />
+                  </BarChart>
+                </ResponsiveContainer>
+              </div>
             </TabItem>
             <TabItem value="speedup" label="Speedup">
               <p className={styles.chartCaption}>CPU wall time divided by GPU wall time.</p>
-              <BarChart
-                className={styles.chart}
-                data={speedupData}
-                index="query"
-                categories={['CPU/GPU']}
-                colors={['emerald']}
-                valueFormatter={formatSpeedup}
-                yAxisWidth={44}
-                showLegend={false}
-                showGridLines
-              />
+              <div className={styles.chart}>
+                <ResponsiveContainer width="100%" height="100%">
+                  <BarChart data={speedupData} margin={{top: 8, right: 16, left: 0, bottom: 0}}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="var(--ifm-color-emphasis-200)" />
+                    <XAxis dataKey="query" tick={{fontSize: 12}} />
+                    <YAxis tick={{fontSize: 12}} width={44} tickFormatter={formatSpeedup} />
+                    <Tooltip
+                      contentStyle={tooltipContentStyle}
+                      labelStyle={tooltipLabelStyle}
+                      itemStyle={tooltipItemStyle}
+                      cursor={tooltipCursorStyle}
+                      formatter={(value) => formatSpeedup(Number(value))}
+                    />
+                    <Bar dataKey="CPU/GPU" fill={colorSpeedup} />
+                  </BarChart>
+                </ResponsiveContainer>
+              </div>
             </TabItem>
             <TabItem value="memory" label="Memory pressure">
               <p className={styles.chartCaption}>
@@ -135,51 +189,57 @@ export default function TpchSf100Benchmark(): React.ReactElement {
                   state outside the query reservation ledger.
                 </li>
               </ul>
-              <BarChart
-                className={styles.chart}
-                data={memoryData}
-                index="query"
-                categories={['Reservation peak']}
-                colors={['indigo']}
-                valueFormatter={(value) => `${value.toFixed(1)} GiB`}
-                yAxisWidth={58}
-                showLegend={false}
-                showGridLines
-              />
+              <div className={styles.chart}>
+                <ResponsiveContainer width="100%" height="100%">
+                  <BarChart data={memoryData} margin={{top: 8, right: 16, left: 0, bottom: 0}}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="var(--ifm-color-emphasis-200)" />
+                    <XAxis dataKey="query" tick={{fontSize: 12}} />
+                    <YAxis tick={{fontSize: 12}} width={58} tickFormatter={formatGiBShort} />
+                    <Tooltip
+                      contentStyle={tooltipContentStyle}
+                      labelStyle={tooltipLabelStyle}
+                      itemStyle={tooltipItemStyle}
+                      cursor={tooltipCursorStyle}
+                      formatter={(value) => formatGiBShort(Number(value))}
+                    />
+                    <Bar dataKey="Reservation peak" fill={colorMemory} />
+                  </BarChart>
+                </ResponsiveContainer>
+              </div>
             </TabItem>
             <TabItem value="results" label="Per-query results">
               <p className={styles.chartCaption}>{summary.queryCount} TPC-H queries.</p>
               <div className={styles.tablePanel}>
-                <Table className={styles.resultsTable}>
-                  <TableHead>
-                    <TableRow>
-                      <TableHeaderCell>Query</TableHeaderCell>
-                      <TableHeaderCell>CPU</TableHeaderCell>
-                      <TableHeaderCell>GPU</TableHeaderCell>
-                      <TableHeaderCell>Speedup</TableHeaderCell>
-                      <TableHeaderCell>Peak class</TableHeaderCell>
-                      <TableHeaderCell>Peak bytes</TableHeaderCell>
-                      <TableHeaderCell>Row groups</TableHeaderCell>
-                    </TableRow>
-                  </TableHead>
-                  <TableBody>
+                <table className={styles.resultsTable}>
+                  <thead>
+                    <tr>
+                      <th>Query</th>
+                      <th>CPU</th>
+                      <th>GPU</th>
+                      <th>Speedup</th>
+                      <th>Peak class</th>
+                      <th>Peak bytes</th>
+                      <th>Row groups</th>
+                    </tr>
+                  </thead>
+                  <tbody>
                     {rows.map((row) => (
-                      <TableRow key={row.queryId}>
-                        <TableCell className={styles.queryCell}>{row.queryId}</TableCell>
-                        <TableCell>{formatMs(row.cpuMs)}</TableCell>
-                        <TableCell>{formatMs(row.gpuMs)}</TableCell>
-                        <TableCell>{formatSpeedup(row.speedup)}</TableCell>
-                        <TableCell>{row.peakMemoryOperatorClass}</TableCell>
-                        <TableCell>{formatGiB(row.peakMemoryOperatorClassBytes)}</TableCell>
-                        <TableCell>{formatNumber(row.rowGroupsSelected)}</TableCell>
-                      </TableRow>
+                      <tr key={row.queryId}>
+                        <td className={styles.queryCell}>{row.queryId}</td>
+                        <td>{formatMs(row.cpuMs)}</td>
+                        <td>{formatMs(row.gpuMs)}</td>
+                        <td>{formatSpeedup(row.speedup)}</td>
+                        <td>{row.peakMemoryOperatorClass}</td>
+                        <td>{formatGiB(row.peakMemoryOperatorClassBytes)}</td>
+                        <td>{formatNumber(row.rowGroupsSelected)}</td>
+                      </tr>
                     ))}
-                  </TableBody>
-                </Table>
+                  </tbody>
+                </table>
               </div>
             </TabItem>
           </Tabs>
-        </Card>
+        </div>
       </section>
     </div>
   );
