@@ -1,0 +1,15 @@
+[package]
+name = "cuvs-sys"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+links = "cuvs_c"
+description = "Hand-written raw FFI bindings to a scoped subset of the cuVS C API"
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme.workspace = true
+categories = ["api-bindings", "external-ffi-bindings"]
+keywords = ["cuvs", "cuda", "ffi", "gpu", "rapids"]
+
+[build-dependencies]

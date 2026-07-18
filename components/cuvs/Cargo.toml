@@ -1,0 +1,15 @@
+[workspace]
+members = ["cuvs-sys", "cuvs"]
+resolver = "3"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.94.0"
+license = "Apache-2.0"
+repository = "https://github.com/morristai/cuvs-rs"
+homepage = "https://github.com/morristai/cuvs-rs"
+readme = "README.md"
+
+[workspace.dependencies]
+cuvs-sys = { path = "cuvs-sys", version = "0.1.0" }
