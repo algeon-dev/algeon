@@ -231,11 +231,11 @@ mod tests {
 
     #[test]
     fn failure_info_preserves_unknown_allocation_domain_identity() {
-        let mut raw = cudf_sys::cudf_memory_failure_info_t::default();
-        raw.flags = cudf_sys::CUDF_MEMORY_FAILURE_INFO_HAS_ALLOCATION_DOMAIN;
-        raw.reserved[0] = 99;
-        raw.reserved[1] = 1234;
-        raw.reserved[2] = 5678;
+        let raw = cudf_sys::cudf_memory_failure_info_t {
+            flags: cudf_sys::CUDF_MEMORY_FAILURE_INFO_HAS_ALLOCATION_DOMAIN,
+            reserved: [99, 1234, 5678],
+            ..Default::default()
+        };
 
         let info = DeviceMemoryFailureInfo::from_sys(raw);
 

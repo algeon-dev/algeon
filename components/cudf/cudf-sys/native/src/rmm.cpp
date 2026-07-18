@@ -32,6 +32,7 @@
 #include <shared_mutex>
 #include <stdexcept>
 #include <string>
+#include <thread>
 #include <unordered_map>
 #include <utility>
 
@@ -50,6 +51,33 @@ struct memory_failure_domain_identity {
   std::uint64_t primary_id          = 0;
   std::uint64_t secondary_id        = 0;
 };
+
+#ifndef NDEBUG
+struct query_domain_route_pause_state {
+  std::atomic<bool> armed{false};
+  std::atomic<bool> reached{false};
+  std::atomic<bool> released{false};
+  std::atomic<std::uint64_t> target_domain_id{0};
+};
+
+query_domain_route_pause_state& query_domain_route_pause()
+{
+  static query_domain_route_pause_state state;
+  return state;
+}
+
+void pause_query_domain_route_if_armed(std::uint64_t domain_id) noexcept
+{
+  auto& state = query_domain_route_pause();
+  if (!state.armed.load(std::memory_order_acquire)) { return; }
+  if (state.target_domain_id.load(std::memory_order_relaxed) != domain_id) { return; }
+  state.reached.store(true, std::memory_order_release);
+  while (!state.released.load(std::memory_order_acquire)) {
+    std::this_thread::yield();
+  }
+  state.armed.store(false, std::memory_order_release);
+}
+#endif
 
 class reservation_limit_out_of_memory final : public rmm::out_of_memory {
  public:
@@ -425,6 +453,42 @@ struct query_domain_member_counters {
 
 class query_domain_resource final : public rmm::mr::device_memory_resource {
  public:
+  class operation_guard {
+   public:
+    operation_guard(operation_guard const&)            = delete;
+    operation_guard& operator=(operation_guard const&) = delete;
+
+    operation_guard(operation_guard&& other) noexcept
+      : resource_{std::exchange(other.resource_, nullptr)}
+    {
+    }
+
+    operation_guard& operator=(operation_guard&& other) noexcept
+    {
+      if (this != &other) {
+        finish();
+        resource_ = std::exchange(other.resource_, nullptr);
+      }
+      return *this;
+    }
+
+    ~operation_guard() { finish(); }
+
+    void finish() noexcept
+    {
+      if (resource_ == nullptr) { return; }
+      resource_->in_flight_operations_.fetch_sub(1, std::memory_order_acq_rel);
+      resource_ = nullptr;
+    }
+
+   private:
+    friend class query_domain_resource;
+
+    explicit operation_guard(query_domain_resource* resource) noexcept : resource_{resource} {}
+
+    query_domain_resource* resource_ = nullptr;
+  };
+
   query_domain_resource(cudaMemPool_t pool,
                         std::uint64_t domain_id,
                         std::size_t grant_bytes,
@@ -488,6 +552,17 @@ class query_domain_resource final : public rmm::mr::device_memory_resource {
   [[nodiscard]] std::size_t current_allocations() const noexcept
   {
     return current_allocations_.load(std::memory_order_relaxed);
+  }
+
+  [[nodiscard]] std::size_t in_flight_operations() const noexcept
+  {
+    return in_flight_operations_.load(std::memory_order_acquire);
+  }
+
+  [[nodiscard]] operation_guard begin_operation() noexcept
+  {
+    in_flight_operations_.fetch_add(1, std::memory_order_acq_rel);
+    return operation_guard{this};
   }
 
   bool resize_grant(std::size_t grant_bytes, std::string& error)
@@ -718,6 +793,7 @@ class query_domain_resource final : public rmm::mr::device_memory_resource {
   std::atomic<std::size_t> total_allocations_{0};
   std::atomic<std::size_t> current_allocations_{0};
   std::atomic<std::size_t> peak_allocations_{0};
+  std::atomic<std::size_t> in_flight_operations_{0};
   std::atomic<std::size_t> failed_allocation_count_{0};
   std::atomic<std::size_t> largest_failed_allocation_bytes_{0};
   mutable std::mutex member_mutex_;
@@ -729,7 +805,8 @@ struct query_domain_state {
   int32_t device  = -1;
   cudaMemPool_t pool{};
   std::size_t ceiling_bytes = 0;
-  bool active               = true;
+  bool active                         = true;
+  std::atomic<bool> trim_pending{false};
   std::size_t active_members = 0;
   std::shared_ptr<query_domain_resource> resource;
 
@@ -998,8 +1075,8 @@ class reservation_aware_resource_adaptor final : public rmm::mr::device_memory_r
     {
       std::unique_lock lock{query_domain_mutex_};
       state->active = false;
+      state->trim_pending.store(true, std::memory_order_release);
     }
-    if (state->resource != nullptr) { state->resource->trim_to_noexcept(0); }
     cleanup_query_domain_if_idle(state);
   }
 
@@ -1053,6 +1130,17 @@ class reservation_aware_resource_adaptor final : public rmm::mr::device_memory_r
     if (state == nullptr || state->resource == nullptr) { return {}; }
     std::shared_lock lock{query_domain_mutex_};
     return state->resource->usage(state->active, state->active_members);
+  }
+
+  [[nodiscard]] std::size_t query_domain_pool_count_for_id(std::uint64_t domain_id)
+  {
+    std::shared_lock lock{query_domain_mutex_};
+    return static_cast<std::size_t>(std::count_if(
+      query_domains_by_pool_.cbegin(),
+      query_domains_by_pool_.cend(),
+      [domain_id](auto const& entry) {
+        return entry.second != nullptr && entry.second->id == domain_id;
+      }));
   }
 
   cudf_memory_resource_usage_t query_domain_member_usage(
@@ -1125,6 +1213,16 @@ class reservation_aware_resource_adaptor final : public rmm::mr::device_memory_r
   }
 
  private:
+  struct query_domain_member_route {
+    std::shared_ptr<query_domain_member_state> member;
+    query_domain_resource::operation_guard operation;
+  };
+
+  struct query_domain_pointer_route {
+    std::shared_ptr<query_domain_state> domain;
+    query_domain_resource::operation_guard operation;
+  };
+
   struct allocation_record {
     std::size_t bytes = 0;
     std::size_t aligned_bytes = 0;
@@ -1137,7 +1235,7 @@ class reservation_aware_resource_adaptor final : public rmm::mr::device_memory_r
     return reinterpret_cast<void*>(stream.value());
   }
 
-  std::shared_ptr<query_domain_member_state> query_domain_member_for_stream(
+  std::optional<query_domain_member_route> query_domain_member_for_stream(
     rmm::cuda_stream_view stream)
   {
     if (query_domain_member_count_.load(std::memory_order_relaxed) == 0) { return {}; }
@@ -1146,11 +1244,14 @@ class reservation_aware_resource_adaptor final : public rmm::mr::device_memory_r
     auto const it = query_domain_members_by_stream_.find(key);
     if (it == query_domain_members_by_stream_.end()) { return {}; }
     auto state = it->second.lock();
-    if (state == nullptr || !state->attached) { return {}; }
-    return state;
+    if (state == nullptr || !state->attached || state->domain == nullptr ||
+        state->domain->resource == nullptr) {
+      return {};
+    }
+    return query_domain_member_route{state, state->domain->resource->begin_operation()};
   }
 
-  std::shared_ptr<query_domain_state> query_domain_for_pointer(void* ptr)
+  std::optional<query_domain_pointer_route> query_domain_for_pointer(void* ptr)
   {
     if (query_domain_pool_count_.load(std::memory_order_relaxed) == 0) { return {}; }
     if (ptr == nullptr) { return {}; }
@@ -1162,14 +1263,29 @@ class reservation_aware_resource_adaptor final : public rmm::mr::device_memory_r
     std::shared_lock lock{query_domain_mutex_};
     auto const it = query_domains_by_pool_.find(pool);
     if (it == query_domains_by_pool_.end()) { return {}; }
-    return it->second;
+    auto domain = it->second;
+    if (domain == nullptr || domain->resource == nullptr) { return {}; }
+    return query_domain_pointer_route{domain, domain->resource->begin_operation()};
   }
 
   void cleanup_query_domain_if_idle(std::shared_ptr<query_domain_state> const& domain)
   {
     if (domain == nullptr || domain->resource == nullptr) { return; }
-    if (domain->resource->current_allocations() != 0) { return; }
+    if (domain->resource->in_flight_operations() != 0) {
+      return;
+    }
+    if (domain->resource->current_allocations() != 0 &&
+        !domain->trim_pending.load(std::memory_order_acquire)) {
+      return;
+    }
     std::unique_lock lock{query_domain_mutex_};
+    if (domain->resource->in_flight_operations() != 0) {
+      return;
+    }
+    if (!domain->active && domain->trim_pending.load(std::memory_order_relaxed) &&
+        domain->resource->trim_to_noexcept(0)) {
+      domain->trim_pending.store(false, std::memory_order_release);
+    }
     if (domain->active || domain->active_members != 0 ||
         domain->resource->current_allocations() != 0) {
       return;
@@ -1262,11 +1378,23 @@ class reservation_aware_resource_adaptor final : public rmm::mr::device_memory_r
                     rmm::cuda_stream_view stream,
                     std::size_t alignment) override
   {
-    auto query_member = query_domain_member_for_stream(stream);
-    if (query_member != nullptr && query_member->domain != nullptr &&
-        query_member->domain->resource != nullptr) {
-      return query_member->domain->resource->allocate_for_member(
-        query_member->counters, stream, bytes, alignment);
+    auto query_route = query_domain_member_for_stream(stream);
+    if (query_route.has_value()) {
+      auto domain = query_route->member->domain;
+      try {
+#ifndef NDEBUG
+        pause_query_domain_route_if_armed(domain->id);
+#endif
+        auto* result = domain->resource->allocate_for_member(
+          query_route->member->counters, stream, bytes, alignment);
+        query_route->operation.finish();
+        cleanup_query_domain_if_idle(domain);
+        return result;
+      } catch (...) {
+        query_route->operation.finish();
+        cleanup_query_domain_if_idle(domain);
+        throw;
+      }
     }
 
     auto const aligned_bytes = rmm::align_up(bytes, alignment);
@@ -1353,10 +1481,12 @@ class reservation_aware_resource_adaptor final : public rmm::mr::device_memory_r
                      rmm::cuda_stream_view stream,
                      std::size_t alignment) noexcept override
   {
-    auto query_domain = query_domain_for_pointer(ptr);
-    if (query_domain != nullptr && query_domain->resource != nullptr) {
-      query_domain->resource->deallocate_from_adaptor(ptr, stream, bytes, alignment);
-      cleanup_query_domain_if_idle(query_domain);
+    auto query_route = query_domain_for_pointer(ptr);
+    if (query_route.has_value()) {
+      auto domain = query_route->domain;
+      domain->resource->deallocate_from_adaptor(ptr, stream, bytes, alignment);
+      query_route->operation.finish();
+      cleanup_query_domain_if_idle(domain);
       return;
     }
 
@@ -2805,6 +2935,65 @@ cudf_status_t cudf_query_memory_domain_destroy(cudf_query_memory_domain_handle d
     return CUDF_SUCCESS;
   }
   CUDF_RUST_CATCH
+}
+
+cudf_status_t cudf_test_memory_manager_query_domain_pool_count_for_id(
+  cudf_memory_manager_handle manager,
+  uint64_t domain_id,
+  size_t* out)
+{
+  CUDF_RUST_NULL_CHECK(out, "out is null");
+  *out = 0;
+  CUDF_RUST_NULL_CHECK(manager, "manager is null");
+  CUDF_RUST_TRY
+  {
+    auto manager_state = memory_manager_from_handle(manager);
+    if (manager_state == nullptr) {
+      set_error("memory manager handle is not registered");
+      return CUDF_ERROR_INVALID_OPERATION;
+    }
+    auto* adaptor = manager_state->owner->reservation_adaptor;
+    if (adaptor == nullptr) {
+      set_error("memory manager resource is not reservation-aware");
+      return CUDF_ERROR_INVALID_OPERATION;
+    }
+    *out = adaptor->query_domain_pool_count_for_id(domain_id);
+    return CUDF_SUCCESS;
+  }
+  CUDF_RUST_CATCH
+}
+
+int32_t cudf_test_query_domain_route_pause_arm(uint64_t domain_id)
+{
+#ifndef NDEBUG
+  auto& state = query_domain_route_pause();
+  state.reached.store(false, std::memory_order_relaxed);
+  state.released.store(false, std::memory_order_relaxed);
+  state.target_domain_id.store(domain_id, std::memory_order_relaxed);
+  state.armed.store(true, std::memory_order_release);
+  return 1;
+#else
+  (void)domain_id;
+  return 0;
+#endif
+}
+
+int32_t cudf_test_query_domain_route_pause_reached()
+{
+#ifndef NDEBUG
+  return query_domain_route_pause().reached.load(std::memory_order_acquire) ? 1 : 0;
+#else
+  return 0;
+#endif
+}
+
+void cudf_test_query_domain_route_pause_release()
+{
+#ifndef NDEBUG
+  auto& state = query_domain_route_pause();
+  state.released.store(true, std::memory_order_release);
+  state.armed.store(false, std::memory_order_release);
+#endif
 }
 
 cudf_status_t cudf_test_memory_resource_create_stats(cudf_memory_resource_handle* out)
