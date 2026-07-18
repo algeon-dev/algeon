@@ -243,6 +243,11 @@ fn cudf_dtype_from_arrow_type_in(dt: &ArrowDataType, operation: &'static str) ->
         ArrowDataType::Float64 => DataType::new(TypeId::Float64),
         ArrowDataType::Boolean => DataType::new(TypeId::Bool8),
         ArrowDataType::Date32 => DataType::new(TypeId::TimestampDays),
+        ArrowDataType::Date64 => DataType::new(TypeId::TimestampMilliseconds),
+        ArrowDataType::Time32(TimeUnit::Second) => DataType::new(TypeId::DurationSeconds),
+        ArrowDataType::Time32(TimeUnit::Millisecond) => DataType::new(TypeId::DurationMilliseconds),
+        ArrowDataType::Time64(TimeUnit::Microsecond) => DataType::new(TypeId::DurationMicroseconds),
+        ArrowDataType::Time64(TimeUnit::Nanosecond) => DataType::new(TypeId::DurationNanoseconds),
         ArrowDataType::Timestamp(unit, _) => cudf_timestamp_dtype(unit),
         ArrowDataType::Duration(TimeUnit::Second) => DataType::new(TypeId::DurationSeconds),
         ArrowDataType::Duration(TimeUnit::Millisecond) => DataType::new(TypeId::DurationMilliseconds),
@@ -554,7 +559,7 @@ pub fn dataframe_from_record_batch(runtime: &Runtime, batch: &RecordBatch) -> Re
 ///
 /// - allocates **one** device buffer per column sized for all batches,
 /// - stages source bytes through reusable pinned slabs
-///   ([`crate::runtime::host_staging`]) so the host-to-device copies are true
+///   (`crate::runtime::host_staging`) so the host-to-device copies are true
 ///   asynchronous DMA, and
 /// - waits only on the staging copies' completion events instead of full
 ///   stream synchronizations per batch.
@@ -695,6 +700,9 @@ fn staged_import_type_id(dt: &ArrowDataType) -> Option<TypeId> {
         ArrowDataType::Float32 => Some(TypeId::Float32),
         ArrowDataType::Float64 => Some(TypeId::Float64),
         ArrowDataType::Date32 => Some(TypeId::TimestampDays),
+        ArrowDataType::Date64 => Some(TypeId::TimestampMilliseconds),
+        ArrowDataType::Time64(TimeUnit::Microsecond) => Some(TypeId::DurationMicroseconds),
+        ArrowDataType::Time64(TimeUnit::Nanosecond) => Some(TypeId::DurationNanoseconds),
         ArrowDataType::Timestamp(TimeUnit::Second, _) => Some(TypeId::TimestampSeconds),
         ArrowDataType::Timestamp(TimeUnit::Millisecond, _) => Some(TypeId::TimestampMilliseconds),
         ArrowDataType::Timestamp(TimeUnit::Microsecond, _) => Some(TypeId::TimestampMicroseconds),
@@ -1210,6 +1218,33 @@ fn arrow_array_to_column(runtime: &Runtime, arr: &dyn Array, field_name: &str) -
             arr,
             DataType::new(TypeId::TimestampDays),
         ),
+        ArrowDataType::Date64 => primitive_arrow_to_fixed_width_column::<arrow::datatypes::Date64Type>(
+            runtime,
+            arr,
+            DataType::new(TypeId::TimestampMilliseconds),
+        ),
+        ArrowDataType::Time32(TimeUnit::Second) => {
+            time32_arrow_to_duration_column::<arrow::datatypes::Time32SecondType>(
+                runtime,
+                arr,
+                DataType::new(TypeId::DurationSeconds),
+            )
+        },
+        ArrowDataType::Time32(TimeUnit::Millisecond) => time32_arrow_to_duration_column::<
+            arrow::datatypes::Time32MillisecondType,
+        >(
+            runtime, arr, DataType::new(TypeId::DurationMilliseconds)
+        ),
+        ArrowDataType::Time64(TimeUnit::Microsecond) => primitive_arrow_to_fixed_width_column::<
+            arrow::datatypes::Time64MicrosecondType,
+        >(
+            runtime, arr, DataType::new(TypeId::DurationMicroseconds)
+        ),
+        ArrowDataType::Time64(TimeUnit::Nanosecond) => primitive_arrow_to_fixed_width_column::<
+            arrow::datatypes::Time64NanosecondType,
+        >(
+            runtime, arr, DataType::new(TypeId::DurationNanoseconds)
+        ),
         ArrowDataType::Timestamp(unit, _) => timestamp_arrow_to_column(runtime, arr, unit),
         ArrowDataType::Duration(TimeUnit::Second) => primitive_arrow_to_fixed_width_column::<
             arrow::datatypes::DurationSecondType,
@@ -1613,6 +1648,16 @@ where A: arrow::datatypes::ArrowPrimitiveType {
     let prim = arr.as_primitive::<A>();
     let values = prim.values().as_ref();
     let bytes = native_slice_as_bytes(values);
+    let validity = prim.nulls().map(|null_buf| null_buf.iter().collect::<Vec<_>>());
+    Column::from_fixed_width_host_bytes_with_runtime(runtime, dtype, bytes, validity.as_deref())
+        .map_err(|error| error.reanchor("arrow::arrow_array_to_column"))
+}
+
+fn time32_arrow_to_duration_column<A>(runtime: &Runtime, arr: &dyn Array, dtype: DataType) -> Result<Column>
+where A: arrow::datatypes::ArrowPrimitiveType<Native = i32> {
+    let prim = arr.as_primitive::<A>();
+    let values = prim.values().iter().map(|value| i64::from(*value)).collect::<Vec<_>>();
+    let bytes = native_slice_as_bytes(&values);
     let validity = prim.nulls().map(|null_buf| null_buf.iter().collect::<Vec<_>>());
     Column::from_fixed_width_host_bytes_with_runtime(runtime, dtype, bytes, validity.as_deref())
         .map_err(|error| error.reanchor("arrow::arrow_array_to_column"))

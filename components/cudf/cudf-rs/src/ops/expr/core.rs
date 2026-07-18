@@ -519,34 +519,34 @@ impl Expr {
                     StringOperator::Upper => {
                         string_ops::to_upper_impl(&cv, &ctx.output_domain, ctx.required_exec_options(), ctx.operation)?
                     },
-                    StringOperator::Strip => {
-                        let empty = Scalar::from_str_in_domain("", &ctx.output_domain)?;
+                    StringOperator::Strip(to_strip) => {
+                        let to_strip = Scalar::from_str_in_domain(to_strip, &ctx.output_domain)?;
                         string_ops::strip_impl(
                             &cv,
                             StripSide::Both,
-                            &empty,
+                            &to_strip,
                             &ctx.output_domain,
                             ctx.required_exec_options(),
                             ctx.operation,
                         )?
                     },
-                    StringOperator::LStrip => {
-                        let empty = Scalar::from_str_in_domain("", &ctx.output_domain)?;
+                    StringOperator::LStrip(to_strip) => {
+                        let to_strip = Scalar::from_str_in_domain(to_strip, &ctx.output_domain)?;
                         string_ops::strip_impl(
                             &cv,
                             StripSide::Left,
-                            &empty,
+                            &to_strip,
                             &ctx.output_domain,
                             ctx.required_exec_options(),
                             ctx.operation,
                         )?
                     },
-                    StringOperator::RStrip => {
-                        let empty = Scalar::from_str_in_domain("", &ctx.output_domain)?;
+                    StringOperator::RStrip(to_strip) => {
+                        let to_strip = Scalar::from_str_in_domain(to_strip, &ctx.output_domain)?;
                         string_ops::strip_impl(
                             &cv,
                             StripSide::Right,
-                            &empty,
+                            &to_strip,
                             &ctx.output_domain,
                             ctx.required_exec_options(),
                             ctx.operation,

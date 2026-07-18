@@ -127,7 +127,7 @@ fn device_memory_manager_default_async_pool_exposes_usage_and_trim() {
 fn failure_callback_trims_idle_async_pool_and_retries_before_rust_callback() {
     let device = DeviceId::current().unwrap();
     let idle_bytes = 128 * 1024 * 1024;
-    let request_bytes = 1 * 1024 * 1024;
+    let request_bytes = 1024 * 1024;
     let async_mr = DeviceMemoryResource::cuda_async_on(device, None, None).unwrap();
     let priming_runtime =
         Runtime::builder().with_device(device).with_memory_resource(async_mr.clone()).build().unwrap();
@@ -175,7 +175,7 @@ fn failure_callback_trims_idle_async_pool_and_retries_before_rust_callback() {
 fn detailed_failure_callback_reports_pool_usage_and_can_trim_retry() {
     let device = DeviceId::current().unwrap();
     let idle_bytes = 128 * 1024 * 1024;
-    let request_bytes = 1 * 1024 * 1024;
+    let request_bytes = 1024 * 1024;
     let async_mr = DeviceMemoryResource::cuda_async_on(device, None, None).unwrap();
     let priming_runtime =
         Runtime::builder().with_device(device).with_memory_resource(async_mr.clone()).build().unwrap();

@@ -107,7 +107,7 @@ impl DeviceBuffer {
     /// copy completes in stream order (record a [`CudaEvent`] on the same
     /// stream after this call and wait on it before reusing the region). For
     /// true asynchronous overlap `data` should live in pinned host memory
-    /// (see [`crate::runtime::host_staging`]); pageable sources fall back to
+    /// (see `crate::runtime::host_staging`); pageable sources fall back to
     /// the driver's staged copy path.
     ///
     /// [`CudaEvent`]: crate::runtime::CudaEvent

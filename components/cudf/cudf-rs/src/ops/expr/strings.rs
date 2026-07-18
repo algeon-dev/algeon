@@ -9,9 +9,9 @@ use super::*;
 pub enum StringOperator {
     Lower,
     Upper,
-    Strip,
-    LStrip,
-    RStrip,
+    Strip(String),
+    LStrip(String),
+    RStrip(String),
     Len,
     ByteCount,
     Contains(String),
@@ -45,17 +45,32 @@ impl ExprStringNamespace {
 
     /// Strip whitespace from both sides.
     pub fn strip(self) -> Expr {
-        Expr::StringOp { input: Box::new(self.0), op: StringOperator::Strip }
+        self.strip_chars("")
+    }
+
+    /// Strip the provided set of characters from both sides.
+    pub fn strip_chars(self, to_strip: impl Into<String>) -> Expr {
+        Expr::StringOp { input: Box::new(self.0), op: StringOperator::Strip(to_strip.into()) }
     }
 
     /// Strip leading whitespace.
     pub fn lstrip(self) -> Expr {
-        Expr::StringOp { input: Box::new(self.0), op: StringOperator::LStrip }
+        self.lstrip_chars("")
+    }
+
+    /// Strip the provided set of characters from the left side.
+    pub fn lstrip_chars(self, to_strip: impl Into<String>) -> Expr {
+        Expr::StringOp { input: Box::new(self.0), op: StringOperator::LStrip(to_strip.into()) }
     }
 
     /// Strip trailing whitespace.
     pub fn rstrip(self) -> Expr {
-        Expr::StringOp { input: Box::new(self.0), op: StringOperator::RStrip }
+        self.rstrip_chars("")
+    }
+
+    /// Strip the provided set of characters from the right side.
+    pub fn rstrip_chars(self, to_strip: impl Into<String>) -> Expr {
+        Expr::StringOp { input: Box::new(self.0), op: StringOperator::RStrip(to_strip.into()) }
     }
 
     /// Character count per string element.
