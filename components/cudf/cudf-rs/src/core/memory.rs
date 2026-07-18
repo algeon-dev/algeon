@@ -360,11 +360,84 @@ pub struct ReservationArenaUsage {
     pub largest_failed_allocation_bytes: u64,
 }
 
+/// Options for an opt-in query memory domain.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct QueryMemoryDomainOptions {
+    pub grant_bytes: usize,
+    pub ceiling_bytes: usize,
+    pub release_threshold_bytes: Option<usize>,
+}
+
+impl QueryMemoryDomainOptions {
+    /// Create a domain whose initial grant and immutable pool ceiling are equal.
+    pub fn new(grant_bytes: usize) -> Self {
+        Self { grant_bytes, ceiling_bytes: grant_bytes, release_threshold_bytes: None }
+    }
+
+    /// Set the immutable driver pool ceiling.
+    pub fn with_ceiling_bytes(mut self, ceiling_bytes: usize) -> Self {
+        self.ceiling_bytes = ceiling_bytes;
+        self
+    }
+
+    /// Set the CUDA pool release threshold.
+    pub fn with_release_threshold_bytes(mut self, release_threshold_bytes: usize) -> Self {
+        self.release_threshold_bytes = Some(release_threshold_bytes);
+        self
+    }
+
+    fn release_threshold_for_sys(self) -> u64 {
+        self.release_threshold_bytes.unwrap_or(self.ceiling_bytes) as u64
+    }
+}
+
+/// Usage counters for an opt-in query memory domain.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct QueryMemoryDomainUsage {
+    pub domain_id: u64,
+    pub active: bool,
+    pub active_members: u64,
+    pub ceiling_bytes: u64,
+    pub allocation_limit_bytes: u64,
+    pub current_bytes: u64,
+    pub peak_bytes: u64,
+    pub total_bytes: u64,
+    pub current_aligned_bytes: u64,
+    pub peak_aligned_bytes: u64,
+    pub total_allocations: u64,
+    pub current_allocations: u64,
+    pub peak_allocations: u64,
+    pub failed_allocation_count: u64,
+    pub largest_failed_allocation_bytes: u64,
+}
+
 impl From<cudf_sys::cudf_memory_resource_usage_t> for ReservationUsage {
     fn from(value: cudf_sys::cudf_memory_resource_usage_t) -> Self {
         Self {
             reservation_id: value.reserved[0],
             attached: value.reserved[1] != 0,
+            allocation_limit_bytes: value.allocation_limit_bytes,
+            current_bytes: value.current_bytes,
+            peak_bytes: value.peak_bytes,
+            total_bytes: value.total_bytes,
+            current_aligned_bytes: value.current_aligned_bytes,
+            peak_aligned_bytes: value.peak_aligned_bytes,
+            total_allocations: value.total_allocations,
+            current_allocations: value.current_allocations,
+            peak_allocations: value.peak_allocations,
+            failed_allocation_count: value.failed_allocation_count,
+            largest_failed_allocation_bytes: value.largest_failed_allocation_bytes,
+        }
+    }
+}
+
+impl From<cudf_sys::cudf_memory_resource_usage_t> for QueryMemoryDomainUsage {
+    fn from(value: cudf_sys::cudf_memory_resource_usage_t) -> Self {
+        Self {
+            domain_id: value.reserved[0],
+            active: value.reserved[1] != 0,
+            active_members: value.reserved[2],
+            ceiling_bytes: value.reserved[3],
             allocation_limit_bytes: value.allocation_limit_bytes,
             current_bytes: value.current_bytes,
             peak_bytes: value.peak_bytes,
@@ -552,6 +625,7 @@ pub struct StreamReservationLease {
     // stream dropped first, a recycled raw stream value could inherit this
     // dying reservation's accounting.
     reservation: ReservationHandle,
+    _query_domain: Option<QueryMemoryDomain>,
     arena: Option<ReservationArena>,
     stream: CudaStream,
     manager: DeviceMemoryManager,
@@ -568,6 +642,13 @@ pub struct ReservationArena {
     manager: DeviceMemoryManager,
 }
 
+/// Opt-in query memory domain backed by a private CUDA async pool.
+#[derive(Clone, Debug)]
+pub struct QueryMemoryDomain {
+    handle: Arc<QueryMemoryDomainHandle>,
+    manager: DeviceMemoryManager,
+}
+
 #[derive(Debug)]
 struct ReservationHandle {
     raw: NonNull<std::ffi::c_void>,
@@ -578,6 +659,11 @@ struct ReservationArenaHandle {
     raw: NonNull<std::ffi::c_void>,
 }
 
+#[derive(Debug)]
+struct QueryMemoryDomainHandle {
+    raw: NonNull<std::ffi::c_void>,
+}
+
 // SAFETY: native detach/usage paths are synchronized by the manager.
 unsafe impl Send for ReservationHandle {}
 unsafe impl Sync for ReservationHandle {}
@@ -585,6 +671,10 @@ unsafe impl Sync for ReservationHandle {}
 // SAFETY: native arena usage/resize/destroy paths are synchronized by the manager.
 unsafe impl Send for ReservationArenaHandle {}
 unsafe impl Sync for ReservationArenaHandle {}
+
+// SAFETY: native query-domain usage/resize/destroy paths are synchronized by the manager.
+unsafe impl Send for QueryMemoryDomainHandle {}
+unsafe impl Sync for QueryMemoryDomainHandle {}
 
 impl DeviceMemoryManager {
     /// Explicitly install the memory domain for `device` (idempotent).
@@ -923,6 +1013,38 @@ impl DeviceMemoryManager {
         Ok(ReservationArena { handle: Arc::new(arena), manager: self.clone() })
     }
 
+    /// Create an opt-in query memory domain backed by a private CUDA async pool.
+    pub fn query_memory_domain(&self, domain_id: u64, options: QueryMemoryDomainOptions) -> Result<QueryMemoryDomain> {
+        let mut domain = ptr::null_mut();
+        error::check_status_in_with_details(
+            unsafe {
+                cudf_sys::cudf_memory_manager_create_query_memory_domain(
+                    self.handle.raw.as_ptr(),
+                    domain_id,
+                    options.grant_bytes,
+                    options.ceiling_bytes,
+                    options.release_threshold_for_sys(),
+                    &mut domain,
+                )
+            },
+            "memory::device_memory_manager::query_memory_domain",
+            [
+                ("device", self.device().ordinal().to_string()),
+                ("domain_id", domain_id.to_string()),
+                ("grant_bytes", options.grant_bytes.to_string()),
+                ("ceiling_bytes", options.ceiling_bytes.to_string()),
+            ],
+        )?;
+        let domain = QueryMemoryDomainHandle {
+            raw: error::require_non_null(
+                domain,
+                "memory::device_memory_manager::query_memory_domain",
+                "query memory domain",
+            )?,
+        };
+        Ok(QueryMemoryDomain { handle: Arc::new(domain), manager: self.clone() })
+    }
+
     fn reserve_stream_with_arena(
         &self,
         stream: &CudaStream,
@@ -993,7 +1115,13 @@ impl DeviceMemoryManager {
                 "stream reservation",
             )?,
         };
-        Ok(StreamReservationLease { manager: self.clone(), stream: stream.clone(), arena: arena.cloned(), reservation })
+        Ok(StreamReservationLease {
+            manager: self.clone(),
+            stream: stream.clone(),
+            arena: arena.cloned(),
+            _query_domain: None,
+            reservation,
+        })
     }
 }
 
@@ -1041,6 +1169,99 @@ impl ReservationArena {
     }
 }
 
+impl QueryMemoryDomain {
+    /// Manager that owns this query memory domain.
+    pub fn manager(&self) -> &DeviceMemoryManager {
+        &self.manager
+    }
+
+    /// CUDA device owned by this query memory domain.
+    pub fn device(&self) -> DeviceId {
+        self.manager.device()
+    }
+
+    /// Attach a stream to this query memory domain.
+    pub fn reserve_stream(&self, stream: &CudaStream, reservation_id: u64) -> Result<StreamReservationLease> {
+        if stream.device() != self.device() {
+            return Err(error::Error::new_with(
+                error::ErrorCode::RuntimeBindingMismatch,
+                "memory::query_memory_domain::reserve_stream",
+                "query memory domain requires stream and domain to be on the same CUDA device",
+            )
+            .with_fact(error::FACT_LEFT_DEVICE, error::DeviceIdFact(stream.device().ordinal_raw()))
+            .with_fact(error::FACT_RIGHT_DEVICE, error::DeviceIdFact(self.device().ordinal_raw()))
+            .with_detail("resource", "stream_and_query_memory_domain")
+            .with_detail("reason", "cross_device_query_memory_domain"));
+        }
+
+        let mut reservation = ptr::null_mut();
+        error::check_status_in_with_details(
+            unsafe {
+                cudf_sys::cudf_query_memory_domain_attach_stream(
+                    self.handle.raw.as_ptr(),
+                    stream.as_raw(),
+                    reservation_id,
+                    &mut reservation,
+                )
+            },
+            "memory::query_memory_domain::reserve_stream",
+            [("device", self.device().ordinal().to_string()), ("reservation_id", reservation_id.to_string())],
+        )?;
+        let reservation = ReservationHandle {
+            raw: error::require_non_null(
+                reservation,
+                "memory::query_memory_domain::reserve_stream",
+                "stream reservation",
+            )?,
+        };
+        Ok(StreamReservationLease {
+            manager: self.manager.clone(),
+            stream: stream.clone(),
+            arena: None,
+            _query_domain: Some(self.clone()),
+            reservation,
+        })
+    }
+
+    /// Snapshot usage counters for this query memory domain.
+    pub fn usage(&self) -> Result<QueryMemoryDomainUsage> {
+        let mut usage = cudf_sys::cudf_memory_resource_usage_t::default();
+        error::check_status_in(
+            unsafe { cudf_sys::cudf_query_memory_domain_usage(self.handle.raw.as_ptr(), &mut usage) },
+            "memory::query_memory_domain::usage",
+        )?;
+        Ok(usage.into())
+    }
+
+    /// Read physical CUDA async-pool counters for this query memory domain.
+    pub fn pool_usage(&self) -> Result<DeviceMemoryPoolUsage> {
+        let mut usage = cudf_sys::cudf_memory_pool_usage_t::default();
+        error::check_status_in(
+            unsafe { cudf_sys::cudf_query_memory_domain_pool_usage(self.handle.raw.as_ptr(), &mut usage) },
+            "memory::query_memory_domain::pool_usage",
+        )?;
+        Ok(usage.into())
+    }
+
+    /// Resize this domain's live-byte grant.
+    pub fn resize_grant(&self, grant_bytes: usize) -> Result<()> {
+        error::check_status_in_with_details(
+            unsafe { cudf_sys::cudf_query_memory_domain_resize_grant(self.handle.raw.as_ptr(), grant_bytes) },
+            "memory::query_memory_domain::resize_grant",
+            [("device", self.device().ordinal().to_string()), ("grant_bytes", grant_bytes.to_string())],
+        )
+    }
+
+    /// Explicitly trim idle bytes from this domain's CUDA async pool.
+    pub fn trim_to(&self, keep_bytes: u64) -> Result<()> {
+        error::check_status_in_with_details(
+            unsafe { cudf_sys::cudf_query_memory_domain_trim(self.handle.raw.as_ptr(), keep_bytes) },
+            "memory::query_memory_domain::trim_to",
+            [("device", self.device().ordinal().to_string()), ("keep_bytes", keep_bytes.to_string())],
+        )
+    }
+}
+
 impl StreamReservationLease {
     /// Manager that owns the reservation-aware device resource.
     pub fn manager(&self) -> &DeviceMemoryManager {
@@ -1076,6 +1297,8 @@ impl StreamReservationLease {
     ///
     /// Shrinking below current live usage is allowed. Future allocations fail
     /// until enough memory is released or the reservation is grown again.
+    /// Query memory domain member leases cannot be resized through this
+    /// method; resize the domain with [`QueryMemoryDomain::resize_grant`].
     pub fn resize(&self, limit_bytes: usize) -> Result<()> {
         error::check_status_in_with_details(
             unsafe { cudf_sys::cudf_reservation_resize(self.reservation.raw.as_ptr(), limit_bytes) },
@@ -1095,6 +1318,15 @@ impl Drop for ReservationArenaHandle {
         let status = unsafe { cudf_sys::cudf_reservation_arena_destroy(self.raw.as_ptr()) };
         if status != cudf_sys::CUDF_SUCCESS {
             eprintln!("[cudf::ReservationArena] warning: failed to destroy reservation arena");
+        }
+    }
+}
+
+impl Drop for QueryMemoryDomainHandle {
+    fn drop(&mut self) {
+        let status = unsafe { cudf_sys::cudf_query_memory_domain_destroy(self.raw.as_ptr()) };
+        if status != cudf_sys::CUDF_SUCCESS {
+            eprintln!("[cudf::QueryMemoryDomain] warning: failed to destroy query memory domain");
         }
     }
 }

@@ -431,6 +431,7 @@ pub type cudf_memory_resource_handle = *mut c_void;
 pub type cudf_memory_manager_handle = *mut c_void;
 pub type cudf_reservation_handle = *mut c_void;
 pub type cudf_reservation_arena_handle = *mut c_void;
+pub type cudf_query_memory_domain_handle = *mut c_void;
 pub type cudf_memory_failure_callback_t = Option<unsafe extern "C" fn(bytes: usize, callback_arg: *mut c_void) -> i32>;
 pub type cudf_memory_failure_callback_v2_t =
     Option<unsafe extern "C" fn(info: *const cudf_memory_failure_info_t, callback_arg: *mut c_void) -> i32>;

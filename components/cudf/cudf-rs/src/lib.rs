@@ -236,8 +236,9 @@ pub use core::{
     memory::{
         DeviceMemoryFailureAction, DeviceMemoryFailureInfo, DeviceMemoryFailureSource, DeviceMemoryManager,
         DeviceMemoryManagerBase, DeviceMemoryManagerFailureCallbackState, DeviceMemoryManagerOptions,
-        DeviceMemoryPoolUsage, DeviceMemoryResource, DeviceMemoryResourceUsage, ReservationArena,
-        ReservationArenaUsage, ReservationUsage, StreamReservationLease,
+        DeviceMemoryPoolUsage, DeviceMemoryResource, DeviceMemoryResourceUsage, QueryMemoryDomain,
+        QueryMemoryDomainOptions, QueryMemoryDomainUsage, ReservationArena, ReservationArenaUsage, ReservationUsage,
+        StreamReservationLease,
     },
     scalar::IntoRuntimeScalar,
     types::{CudfType, DataType, NullEquality, NullPolicy, TimestampResolution, TypeId},
