@@ -617,9 +617,9 @@ impl HashJoin {
     ///
     /// This is a planning contract for bounded engines. It returns the exact
     /// retained bytes for the reusable hash table and build-key device views,
-    /// without building or retaining the hash table. Build keys that may retain
-    /// equality-preprocessing buffers, such as nested columns or nullable
-    /// string columns with non-empty null payloads, are rejected by libcudf.
+    /// without building or allocating retained payload. Flat nullable string
+    /// keys include their retained null-payload sanitization allocation; nested
+    /// build keys are rejected by libcudf.
     pub fn pre_build_reservation_size_bytes(build: &Table, options: HashJoinOptions) -> Result<usize> {
         let ctx = ExecutionOverrides::new();
         Self::pre_build_reservation_size_bytes_in(build, options, &ctx)

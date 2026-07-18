@@ -6,9 +6,9 @@ impl DataFrame {
     ///
     /// This is a planning contract for bounded engines. It returns the exact
     /// retained bytes for the reusable hash table and build-key device views,
-    /// without building or retaining the hash table. libcudf rejects build keys
-    /// whose equality preprocessing may retain additional buffers, including
-    /// nested columns and nullable string columns with non-empty null payloads.
+    /// without building or allocating retained payload. libcudf includes retained
+    /// null-payload sanitization for flat nullable string keys; nested build
+    /// keys remain unsupported.
     pub fn hash_join_pre_build_reservation_size_bytes<I, S>(
         &self,
         build_on: I,

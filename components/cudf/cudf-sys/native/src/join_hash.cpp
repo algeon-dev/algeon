@@ -514,8 +514,8 @@ cudf_status_t cudf_hash_join_create_ex(cudf_table_view_handle build,
     owner->upstream_mr_lifetime = exec->mr_lifetime;
     owner->stream_lifetime = exec->stream_lifetime;
     owner->mr_raw = exec->mr_raw;
-    auto const reservation_size =
-      cudf::hash_join::pre_build_reservation_size(*build_view, load_factor);
+    auto const reservation_size = cudf::hash_join::pre_build_reservation_size(
+      *build_view, load_factor, exec->stream, *exec->mr);
     {
       owner->join =
         std::make_unique<cudf::hash_join>(*build_view, nullable, null_eq, load_factor, exec->stream);
@@ -542,7 +542,8 @@ cudf_status_t cudf_hash_join_pre_build_reservation_size_ex(cudf_table_view_handl
     if (exec_status != CUDF_SUCCESS) { return exec_status; }
 
     auto* build_view = static_cast<cudf::table_view*>(build);
-    *out            = cudf::hash_join::pre_build_reservation_size(*build_view, load_factor);
+    *out = cudf::hash_join::pre_build_reservation_size(
+      *build_view, load_factor, exec->stream, *exec->mr);
     return CUDF_SUCCESS;
   }
   CUDF_RUST_CATCH
