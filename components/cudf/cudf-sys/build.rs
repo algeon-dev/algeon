@@ -115,21 +115,9 @@ fn compiler_from_env(env_key: &str) -> Option<PathBuf> {
 /// CMake uses to find libcudf: `CUDF_INSTALL_DIR` (preferred) or
 /// `CUDF_CPP_BUILD_DIR`.
 fn locate_prebuilt_libcudf() -> Option<PathBuf> {
-    if let Ok(install_dir) = env::var("CUDF_INSTALL_DIR") {
-        for sub in ["lib", "lib64"] {
-            let candidate = PathBuf::from(&install_dir).join(sub).join("libcudf.so");
-            if candidate.is_file() {
-                return Some(candidate);
-            }
-        }
-    }
-    if let Ok(build_dir) = env::var("CUDF_CPP_BUILD_DIR") {
-        let candidate = PathBuf::from(build_dir).join("libcudf.so");
-        if candidate.is_file() {
-            return Some(candidate);
-        }
-    }
-    None
+    let install_dir = env::var_os("CUDF_INSTALL_DIR").map(PathBuf::from);
+    let build_dir = env::var_os("CUDF_CPP_BUILD_DIR").map(PathBuf::from);
+    build_support::locate_prebuilt_libcudf(install_dir.as_deref(), build_dir.as_deref())
 }
 
 /// Locate a shared runtime dependency library (e.g. `librmm.so`) shipped by
@@ -208,6 +196,14 @@ fn emit_optional_runtime_dep_library_metadata(key: &str, file_name: &str, build_
 fn emit_runtime_dep_library_metadata() {
     let discovery_env_present =
         env::var_os("CUDF_INSTALL_DIR").is_some() || env::var_os("CUDF_CPP_BUILD_DIR").is_some();
+    match locate_prebuilt_libcudf() {
+        Some(path) => emit_runtime_dep_path_metadata("libcudf-runtime-lib", &path),
+        None if discovery_env_present => println!(
+            "cargo:warning=required libcudf.so was not found under the configured libcudf discovery path \
+             (CUDF_INSTALL_DIR/CUDF_CPP_BUILD_DIR); downstream builds cannot pin the exact libcudf runtime identity"
+        ),
+        None => {},
+    }
     emit_required_runtime_dep_library_metadata(
         "rmm-runtime-lib",
         "librmm.so",

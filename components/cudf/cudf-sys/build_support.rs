@@ -91,6 +91,23 @@ pub fn paths_equivalent(left: &Path, right: &Path) -> bool {
     }
 }
 
+/// Resolve the exact libcudf shared library selected by the native discovery
+/// contract. Installed prefixes use lib/lib64; a C++ build tree exposes
+/// libcudf.so at its root.
+pub fn locate_prebuilt_libcudf(install_dir: Option<&Path>, build_dir: Option<&Path>) -> Option<PathBuf> {
+    if let Some(install_dir) = install_dir {
+        for subdir in ["lib", "lib64"] {
+            let candidate = install_dir.join(subdir).join("libcudf.so");
+            if candidate.is_file() {
+                return Some(candidate);
+            }
+        }
+    }
+
+    let candidate = build_dir?.join("libcudf.so");
+    candidate.is_file().then_some(candidate)
+}
+
 fn env_path(var_name: &str) -> Option<PathBuf> {
     env::var(var_name).ok().map(PathBuf::from)
 }
