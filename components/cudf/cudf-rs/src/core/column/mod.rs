@@ -21,6 +21,7 @@ pub(crate) use sequence::position_sequence_in_domain;
 pub(crate) use testing_hooks::slice_view_for_test;
 pub use view::ColumnView;
 pub(crate) use view::{
-    column_view_to_fixed_width_host_bytes_for_test, column_view_to_raw_bytes_for_test,
-    synthetic_string_view_without_children, trigger_fixed_width_host_byte_range_overflow_for_test,
+    column_view_copy_fixed_width_to_host_for_benchmark, column_view_to_fixed_width_host_bytes_for_test,
+    column_view_to_raw_bytes_for_test, synthetic_string_view_without_children,
+    trigger_fixed_width_host_byte_range_overflow_for_test,
 };

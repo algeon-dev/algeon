@@ -23,6 +23,10 @@ path = "examples/io_flake_repro.rs"
 name = "query_memory_domain_alloc_storm"
 path = "examples/query_memory_domain_alloc_storm.rs"
 
+[[example]]
+name = "d2h_materialization_bench"
+path = "examples/d2h_materialization_bench.rs"
+
 [dependencies]
 cudf-sys.workspace = true
 rapids-interop.workspace = true
