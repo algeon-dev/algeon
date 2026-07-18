@@ -8,10 +8,10 @@ use std::{
 
 use super::{CudaStream, ExecutionOverrides, Runtime};
 use crate::core::{
-    error::{BudgetExhaustionDetail, Error, Result},
+    error::{BudgetExhaustionDetail, Error, ErrorCode, Result},
     memory::{
-        DeviceMemoryManager, DeviceMemoryResource, ReservationArena, ReservationArenaUsage, ReservationUsage,
-        StreamReservationLease,
+        DeviceMemoryManager, DeviceMemoryResource, QueryMemoryDomain, ReservationArena, ReservationArenaUsage,
+        ReservationUsage, StreamReservationLease,
     },
 };
 
@@ -59,6 +59,8 @@ pub enum ExecutionBudgetEnforcement {
     StreamBoundReservation,
     /// Allocations are charged through a stream member under a query reservation arena.
     ReservationArenaMember,
+    /// Allocations are charged through a stream member under a query memory domain.
+    QueryDomainMember,
 }
 
 impl ExecutionBudgetEnforcement {
@@ -66,6 +68,7 @@ impl ExecutionBudgetEnforcement {
         match self {
             Self::StreamBoundReservation => "stream_bound_reservation",
             Self::ReservationArenaMember => "reservation_arena_member",
+            Self::QueryDomainMember => "query_domain_member",
         }
     }
 }
@@ -261,12 +264,38 @@ impl ExecutionBudgetToken {
         Ok(Self { request, lease, enforcement: ExecutionBudgetEnforcement::ReservationArenaMember })
     }
 
+    /// Create a budget token by attaching a member reservation under a query
+    /// memory domain.
+    ///
+    /// The request's `budget_bytes` remains a diagnostic boundary budget.
+    /// Query-domain members are enforced by the domain-wide grant gate and
+    /// immutable driver pool ceiling, not by a per-token allocator sub-limit.
+    pub fn from_runtime_in_query_domain(
+        runtime: &Runtime,
+        request: ExecutionBudgetRequest,
+        domain: &QueryMemoryDomain,
+    ) -> Result<Self> {
+        let reservation_id = NEXT_RESERVATION_ID.fetch_add(1, Ordering::Relaxed);
+        let lease = domain.reserve_stream(runtime.stream(), reservation_id)?;
+        Ok(Self { request, lease, enforcement: ExecutionBudgetEnforcement::QueryDomainMember })
+    }
+
     /// Resize this token's hard stream-bound reservation.
     ///
     /// Shrinking below current live usage is allowed by the underlying
     /// reservation manager. Future allocations fail until enough memory is
     /// released or the token is grown again.
     pub fn resize(&mut self, budget_bytes: usize) -> Result<()> {
+        if self.enforcement == ExecutionBudgetEnforcement::QueryDomainMember {
+            return Err(Error::new_with(
+                ErrorCode::UnsupportedOperation,
+                "runtime::ExecutionBudgetToken::resize",
+                "query-domain budget tokens cannot resize their member reservation",
+            )
+            .with_detail("resource", "query_domain_member_budget_token")
+            .with_detail("reason", "query_domain_member_resize_unsupported")
+            .with_detail("remedy", "resize the query memory domain with QueryMemoryDomain::resize_grant"));
+        }
         self.lease.resize(budget_bytes)?;
         self.request.budget_bytes = budget_bytes;
         Ok(())
