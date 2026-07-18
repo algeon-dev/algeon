@@ -60,7 +60,7 @@ impl DatafusionCudfFlightSqlService {
             let _query_enter = query_span.enter();
             tracing::info!(
                 query_id,
-                correlation_id = correlation_id.as_deref().unwrap_or(""),
+                correlation_id = tracing_correlation_id(correlation_id.as_deref()),
                 "executing Flight SQL statement ticket"
             );
         }

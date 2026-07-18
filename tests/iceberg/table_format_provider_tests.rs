@@ -27,7 +27,7 @@ use datafusion::{
     prelude::{SessionConfig, SessionContext},
 };
 use datafusion_nexus::{
-    error::{ErrorCode, ErrorStatus},
+    error::{DataFusionErrorExt, ErrorCode, ErrorStatus},
     native::lower_physical_plan_to_native,
     policy::FallbackReason,
     report::CandidateOutcome,
@@ -1367,8 +1367,9 @@ fn table_format_scan_preserves_unsupported_feature_reason_and_never_executes_cpu
     };
     let rendered = err.to_string();
     assert!(rendered.contains("does not execute a CPU Arrow reader"));
-    assert!(rendered.contains("cpu_arrow_reader_fallback"));
-    assert!(rendered.contains("false"));
+    let nexus = err.find_nexus_error().expect("table-format execution error must preserve typed Nexus facts");
+    assert_eq!(nexus.fact_value("cpu_arrow_reader_fallback"), Some("false"));
+    assert_eq!(nexus.fact_value("table_format"), Some("iceberg"));
 }
 
 fn iceberg_test_schema() -> Arc<Schema> {

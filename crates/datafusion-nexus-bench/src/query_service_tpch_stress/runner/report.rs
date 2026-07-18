@@ -49,7 +49,7 @@ impl StructuredFailure {
     }
 
     pub(super) fn from_datafusion_error(error: &DataFusionError) -> Self {
-        adapter_error_from_datafusion(error).map(Self::from_adapter_error).unwrap_or_else(|| Self {
+        error.find_nexus_error().map(Self::from_adapter_error).unwrap_or_else(|| Self {
             code: Some("datafusion_error".to_string()),
             message: Some(error.to_string()),
             ..Self::default()

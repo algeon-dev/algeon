@@ -34,6 +34,9 @@ feature adds SQL-visible `cugraph_*` table functions on these surfaces, and the
    and why not, if it doesn't — with
    [GPU coverage validation](./gpu-coverage-validation.mdx)
    (`nexus_explain_coverage` in SQL, `validate_query` in Rust).
+6. At your application boundary, enrich errors that carry a typed Nexus source,
+   then keep your existing policy for ordinary DataFusion failures. See
+   [Handling Errors](./handling-errors.mdx).
 
 The [cuGraph SQL API](../cugraph/overview.mdx) section is the function-level
 contract: call signatures, graph options, validation metadata, demo dataset,

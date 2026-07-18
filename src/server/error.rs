@@ -3,8 +3,11 @@ use std::{error::Error as StdError, fmt, sync::Arc};
 use datafusion::common::{DataFusionError, SchemaError};
 use tonic::{Status, metadata::MetadataValue};
 
-use super::{datafusion_error::find_adapter_error, observability::CapturedError};
-use crate::error::{Error, ErrorCode, ErrorKind, ErrorSourceDiagnostics, ErrorStatus, Facts};
+use super::observability::CapturedError;
+use crate::error::{
+    DataFusionErrorExt, Error, ErrorCode, ErrorKind, ErrorSourceDiagnostics, ErrorStatus, Facts,
+    datafusion_error_human_message,
+};
 
 /// Flight SQL response metadata key containing the stable adapter error code.
 pub const ERROR_CODE_METADATA_KEY: &str = "x-datafusion-nexus-error-code";
@@ -185,31 +188,21 @@ impl ServerError {
 }
 
 fn adapter_error_with_message(message: String, source: Error) -> Error {
-    let mut error = Error::new(source.code(), source.operation(), message);
-    for (key, value) in source.facts().iter() {
-        error = error.with_fact(key, value);
-    }
-    error.with_source(source)
+    let facts = source.facts().clone();
+    Error::new(source.code(), source.operation(), message).with_preserved_facts(facts).with_source(source)
 }
 
 fn server_error_from_datafusion_error(message: String, source: DataFusionError) -> Error {
-    if let Some((code, operation, facts)) = find_adapter_error(&source).map(|adapter_source| {
-        (
-            adapter_source.code(),
-            adapter_source.operation(),
-            adapter_source.facts().iter().map(|(key, value)| (key, value.to_string())).collect::<Vec<_>>(),
-        )
-    }) {
-        let mut error = Error::new(code, operation, message);
-        for (key, value) in facts {
-            error = error.with_fact(key, value);
-        }
-        return error.with_source(source);
+    if let Some((code, operation, facts)) = source
+        .find_nexus_error()
+        .map(|adapter_source| (adapter_source.code(), adapter_source.operation(), adapter_source.facts().clone()))
+    {
+        return Error::new(code, operation, message).with_preserved_facts(facts).with_source(source);
     }
     let code = classify_datafusion_error(&source);
     let datafusion_error = datafusion_error_variant(&source);
     Error::new(code, "datafusion_nexus.server.session", message)
-        .with_fact("datafusion_error", datafusion_error)
+        .with_log_safe_fact("datafusion_error", datafusion_error)
         .with_source(source)
 }
 
@@ -256,17 +249,10 @@ impl fmt::Display for ServerError {
             self.operation(),
             quote(self.message()),
         )?;
-        if self.facts().iter().next().is_none() {
-            f.write_str(" facts={}")?;
-        } else {
-            f.write_str(" facts={")?;
-            for (index, (key, value)) in self.facts().iter().enumerate() {
-                if index > 0 {
-                    f.write_str(", ")?;
-                }
-                write!(f, "{key}={}", quote(value))?;
-            }
-            f.write_str("}")?;
+        let projection = self.facts().log_safe_projection();
+        write!(f, " facts={{{}}}", projection.rendered().unwrap_or_default())?;
+        if projection.truncated() {
+            f.write_str(" error_facts_truncated=true")?;
         }
         Ok(())
     }
@@ -291,42 +277,52 @@ pub fn datafusion_error_to_status(error: DataFusionError) -> Status {
 }
 
 pub fn datafusion_error_to_status_for_operation(error: DataFusionError, operation: &'static str) -> Status {
-    if let Some(adapter_error) = find_adapter_error(&error) {
+    if let Some(adapter_error) = error.find_nexus_error() {
         return adapter_error_to_status(adapter_error);
     }
     adapter_error_to_status(&adapter_error_from_datafusion_error(error, operation))
 }
 
 pub(super) fn datafusion_error_to_captured_error(error: &DataFusionError, operation: &'static str) -> CapturedError {
-    if let Some(adapter_error) = find_adapter_error(error) {
+    if let Some(adapter_error) = error.find_nexus_error() {
         return CapturedError::from_adapter_error(adapter_error);
     }
     let code = classify_datafusion_error(error);
     let message = client_datafusion_error_message(error);
     let datafusion_error = datafusion_error_variant(error);
-    CapturedError::from_datafusion_error(
-        error,
-        code,
-        operation,
-        message,
-        vec![("datafusion_error", datafusion_error.to_string())],
-    )
+    let mut facts = Facts::new();
+    facts.insert_log_safe("datafusion_error", datafusion_error.to_string());
+    CapturedError::from_datafusion_error(error, code, operation, message, facts)
 }
 
 pub(crate) fn adapter_error_to_status(error: &Error) -> Status {
     let message = client_status_message(error);
     let diagnostics = ErrorSourceDiagnostics::from_source(error.source_error());
-    tracing::warn!(
-        error_code = error.code().as_str(),
-        error_kind = error.kind().as_str(),
-        error_status = error.status().as_str(),
-        error_operation = error.operation(),
-        error_message = error.message(),
-        error_source_chain = diagnostics.chain(),
-        error_root_cause = diagnostics.root_cause_when_distinct(),
-        client_message = message.as_str(),
-        "converted adapter error to Flight SQL status"
-    );
+    let log_messages = adapter_status_log_messages(error.message(), message.as_str(), &diagnostics);
+    let log_facts = adapter_status_log_facts(error);
+    macro_rules! log_status_conversion {
+        ($level:expr) => {
+            tracing::event!(
+                $level,
+                error_code = error.code().as_str(),
+                error_kind = error.kind().as_str(),
+                error_status = error.status().as_str(),
+                error_operation = error.operation(),
+                error_message = error.message(),
+                error_source_chain = log_messages.source_chain,
+                error_root_cause = log_messages.root_cause,
+                client_message = log_messages.client_message,
+                error_facts = log_facts.rendered.as_deref(),
+                error_facts_truncated = log_facts.truncated,
+                "converted adapter error to Flight SQL status"
+            )
+        };
+    }
+    match adapter_status_log_level(error.kind()) {
+        AdapterStatusLogLevel::Info => log_status_conversion!(tracing::Level::INFO),
+        AdapterStatusLogLevel::Warn => log_status_conversion!(tracing::Level::WARN),
+        AdapterStatusLogLevel::Error => log_status_conversion!(tracing::Level::ERROR),
+    }
     let status = match error.kind() {
         ErrorKind::Cancelled => Status::cancelled(message),
         ErrorKind::NotFound => Status::not_found(message),
@@ -340,6 +336,57 @@ pub(crate) fn adapter_error_to_status(error: &Error) -> Status {
         },
     };
     status_with_error_metadata(status, error)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AdapterStatusLogLevel {
+    Info,
+    Warn,
+    Error,
+}
+
+fn adapter_status_log_level(kind: ErrorKind) -> AdapterStatusLogLevel {
+    match kind {
+        ErrorKind::Cancelled
+        | ErrorKind::NotFound
+        | ErrorKind::PermissionDenied
+        | ErrorKind::Unauthenticated
+        | ErrorKind::Planning
+        | ErrorKind::InvalidInput
+        | ErrorKind::Unsupported => AdapterStatusLogLevel::Info,
+        ErrorKind::ResourceExhausted | ErrorKind::DependencyFailure => AdapterStatusLogLevel::Warn,
+        ErrorKind::Execution | ErrorKind::InvariantViolation | ErrorKind::Internal => AdapterStatusLogLevel::Error,
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct AdapterStatusLogMessages<'a> {
+    source_chain: Option<&'a str>,
+    root_cause: Option<&'a str>,
+    client_message: Option<&'a str>,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct AdapterStatusLogFacts {
+    rendered: Option<String>,
+    truncated: Option<bool>,
+}
+
+fn adapter_status_log_facts(error: &Error) -> AdapterStatusLogFacts {
+    let projection = error.facts().log_safe_projection();
+    AdapterStatusLogFacts { rendered: projection.rendered(), truncated: projection.truncated().then_some(true) }
+}
+
+fn adapter_status_log_messages<'a>(
+    error_message: &'a str,
+    client_message: &'a str,
+    diagnostics: &'a ErrorSourceDiagnostics,
+) -> AdapterStatusLogMessages<'a> {
+    AdapterStatusLogMessages {
+        source_chain: diagnostics.chain().filter(|source_chain| *source_chain != error_message),
+        root_cause: diagnostics.root_cause_when_distinct(),
+        client_message: (client_message != error_message).then_some(client_message),
+    }
 }
 
 pub(super) fn status_source_diagnostics(status: &Status) -> (Option<String>, Option<String>) {
@@ -496,11 +543,16 @@ fn adapter_error_from_datafusion_error(error: DataFusionError, operation: &'stat
     let code = classify_datafusion_error(&error);
     let message = client_datafusion_error_message(&error);
     let datafusion_error = datafusion_error_variant(&error);
-    Error::new(code, operation, message).with_fact("datafusion_error", datafusion_error).with_source(error)
+    Error::new(code, operation, message).with_log_safe_fact("datafusion_error", datafusion_error).with_source(error)
 }
 
 fn client_datafusion_error_message(error: &DataFusionError) -> String {
-    let message = effective_datafusion_error(error).message().into_owned();
+    let effective = effective_datafusion_error(error);
+    let human_message = datafusion_error_human_message(effective);
+    let message = match effective {
+        DataFusionError::SQL(_, _) => format!("invalid SQL statement: {human_message}"),
+        _ => human_message,
+    };
     maybe_append_cugraph_feature_hint(message)
 }
 
@@ -649,7 +701,10 @@ fn datafusion_error_variant(error: &DataFusionError) -> &'static str {
 mod tests {
     use std::{error::Error as StdError, fmt};
 
-    use datafusion::common::{Column, SchemaError, TableReference};
+    use datafusion::{
+        common::{Column, SchemaError, TableReference},
+        sql::sqlparser::parser::ParserError,
+    };
     use tonic::Code;
 
     use super::*;
@@ -681,6 +736,227 @@ mod tests {
     impl StdError for TestSourceError {
         fn source(&self) -> Option<&(dyn StdError + 'static)> {
             self.source.as_deref().map(|source| source as &(dyn StdError + 'static))
+        }
+    }
+
+    #[test]
+    fn sql_parser_message_uses_display_context_and_deduplicated_source_diagnostics() {
+        let parser = ParserError::ParserError("Expected: an SQL statement, found: quit at Line: 1, Column: 1".into());
+        let parser_display = parser.to_string();
+        let datafusion_error = DataFusionError::SQL(Box::new(parser), None);
+
+        let adapter = adapter_error_from_datafusion_error(datafusion_error, TEST_OPERATION);
+
+        assert_eq!(adapter.message(), format!("invalid SQL statement: {parser_display}"));
+        assert!(!adapter.message().contains("ParserError("), "{}", adapter.message());
+        assert!(matches!(
+            adapter.source_error().and_then(|source| source.downcast_ref::<DataFusionError>()),
+            Some(DataFusionError::SQL(_, _))
+        ));
+
+        let diagnostics = ErrorSourceDiagnostics::from_source(adapter.source_error());
+        assert_eq!(diagnostics.chain(), Some(parser_display.as_str()));
+        assert_eq!(diagnostics.root_cause(), Some(parser_display.as_str()));
+        assert_eq!(diagnostics.root_cause_when_distinct(), None);
+        assert_eq!(diagnostics.chain().unwrap().matches(&parser_display).count(), 1);
+        assert!(!diagnostics.chain().unwrap().contains("ParserError("));
+
+        let log_messages = adapter_status_log_messages(adapter.message(), adapter.message(), &diagnostics);
+        assert_eq!(log_messages.source_chain, Some(parser_display.as_str()));
+        assert_eq!(log_messages.root_cause, None);
+        assert_eq!(log_messages.client_message, None);
+
+        let status = adapter_error_to_status(&adapter);
+        assert_eq!(status.code(), Code::InvalidArgument);
+        assert_eq!(status.message(), format!("invalid SQL statement: {parser_display}"));
+        assert!(!status.message().contains("ParserError("));
+        assert_error_metadata(&status, "sql_parse", "invalid_input", "permanent");
+        assert_eq!(status_source_diagnostics(&status), (Some(parser_display.clone()), Some(parser_display.clone())));
+    }
+
+    #[test]
+    fn boundary_log_omits_source_and_client_messages_equal_to_error_message() {
+        let error = Error::new(ErrorCode::InvalidRequest, TEST_OPERATION, "same human message")
+            .with_source(TestSourceError::leaf("same human message"));
+        let diagnostics = ErrorSourceDiagnostics::from_source(error.source_error());
+
+        assert_eq!(
+            adapter_status_log_messages(error.message(), error.message(), &diagnostics),
+            AdapterStatusLogMessages { source_chain: None, root_cause: None, client_message: None }
+        );
+    }
+
+    #[test]
+    fn boundary_log_uses_safe_fact_projection_and_truncation_marker() {
+        let error = Error::new(ErrorCode::Internal, TEST_OPERATION, "fact projection")
+            .with_log_safe_fact("classification", "native\nhttps://user:secret@example.test/private")
+            .with_log_safe_fact("long", "x".repeat(300))
+            .with_fact("literal", "customer-secret")
+            .with_fact("path", "/private/customer.parquet");
+
+        let log_facts = adapter_status_log_facts(&error);
+        let rendered = log_facts.rendered.expect("safe facts should be logged");
+        assert!(rendered.contains("classification=native <redacted-uri>"), "{rendered}");
+        assert!(rendered.contains("long="), "{rendered}");
+        assert!(!rendered.contains("customer-secret"), "{rendered}");
+        assert!(!rendered.contains("/private/customer.parquet"), "{rendered}");
+        assert_eq!(log_facts.truncated, Some(true));
+    }
+
+    #[test]
+    fn retained_adapter_facts_use_the_same_safe_projection() {
+        let error = Error::new(ErrorCode::Internal, TEST_OPERATION, "retained fact projection")
+            .with_log_safe_fact("classification", "runtime\nerror")
+            .with_log_safe_fact("long", "x".repeat(300))
+            .with_fact("literal", "customer-secret")
+            .with_fact("value", "private-value")
+            .with_fact("path", "/private/customer.parquet")
+            .with_fact("config_value", "private-config")
+            .with_fact("native_message", "private-native-message")
+            .with_fact("cudf_message", "private-cudf-message");
+
+        let captured = CapturedError::from_adapter_error(&error);
+
+        assert!(captured.facts.contains(&("classification".to_string(), "runtime error".to_string())));
+        assert!(captured.facts.contains(&("error_facts_truncated".to_string(), "true".to_string())));
+        for hidden_key in ["literal", "value", "path", "config_value", "native_message", "cudf_message"] {
+            assert!(captured.facts.iter().all(|(key, _)| key != hidden_key), "retained unsafe fact {hidden_key}");
+        }
+    }
+
+    #[test]
+    fn server_error_display_uses_the_same_safe_fact_projection() {
+        let error = ServerError {
+            inner: Error::new(ErrorCode::Internal, TEST_OPERATION, "server display projection")
+                .with_log_safe_fact("classification", "runtime\nhttps://user:secret@example.test/private")
+                .with_log_safe_fact("long", "x".repeat(300))
+                .with_fact("literal", "customer-secret")
+                .with_fact("config_value", "private-config"),
+        };
+
+        let rendered = error.to_string();
+        assert!(rendered.contains("classification=runtime <redacted-uri>"), "{rendered}");
+        assert!(rendered.contains("error_facts_truncated=true"), "{rendered}");
+        assert!(!rendered.contains("customer-secret"), "{rendered}");
+        assert!(!rendered.contains("private-config"), "{rendered}");
+        assert!(!rendered.contains("user:secret"), "{rendered}");
+    }
+
+    #[test]
+    fn credential_key_variants_are_redacted_across_all_projection_sinks() {
+        let make_error = || {
+            Error::new(ErrorCode::Internal, TEST_OPERATION, "credential projection")
+                .with_log_safe_fact("client", "CLIENT-SECRET=client-value-secret")
+                .with_log_safe_fact("refresh", "Refresh.Token:refresh-value-secret")
+                .with_log_safe_fact("aws", "AWS_SECRET_ACCESS_KEY=aws-value-secret")
+        };
+
+        let facts_debug = format!("{:?}", make_error().facts());
+        let boundary = adapter_status_log_facts(&make_error()).rendered.expect("safe facts should render");
+        let retained = format!("{:?}", CapturedError::from_adapter_error(&make_error()).facts);
+        let display = ServerError { inner: make_error() }.to_string();
+        for sink in [&facts_debug, &boundary, &retained, &display] {
+            assert_eq!(sink.matches("<redacted-credential>").count(), 3, "{sink}");
+            for secret in ["client-value-secret", "refresh-value-secret", "aws-value-secret"] {
+                assert!(!sink.contains(secret), "{sink}");
+            }
+        }
+    }
+
+    #[test]
+    fn server_error_debug_omits_native_and_cudf_source_payloads_but_keeps_typed_access() {
+        let native = nexus_query_engine::error::QueryError::new(
+            nexus_query_engine::error::QueryErrorCode::InvalidPlan,
+            "nexus_query_engine.test.server_debug_source",
+            "server-native-source-message-secret",
+        )
+        .with_fact("literal", "server-native-source-fact-secret");
+        let native_error = ServerError {
+            inner: Error::from_native("datafusion_nexus.test.server_debug_source", "native server wrapper", native),
+        };
+        let native_source = native_error
+            .source()
+            .and_then(|source| source.downcast_ref::<nexus_query_engine::error::QueryError>())
+            .expect("native source must remain typed");
+        assert_eq!(native_source.fact_value("literal"), Some("server-native-source-fact-secret"));
+        let native_debug = format!("{native_error:?}");
+        assert!(native_debug.contains("<source omitted>"), "{native_debug}");
+        assert!(!native_debug.contains("server-native-source-message-secret"), "{native_debug}");
+        assert!(!native_debug.contains("server-native-source-fact-secret"), "{native_debug}");
+
+        let cudf = cudf::testing::error::new_with_for_test(
+            cudf::ErrorCode::ForeignInvalidArgument,
+            "cudf.test.server_debug_source",
+            "server-cudf-source-detail-secret refresh_token=cudf-refresh-secret",
+        );
+        let cudf_error = ServerError {
+            inner: Error::from_cudf("datafusion_nexus.test.server_debug_source", "cudf server wrapper", cudf),
+        };
+        let cudf_source = cudf_error
+            .source()
+            .and_then(|source| source.downcast_ref::<cudf::Error>())
+            .expect("cuDF source must remain typed");
+        assert_eq!(cudf_source.message(), "server-cudf-source-detail-secret refresh_token=cudf-refresh-secret");
+        let cudf_debug = format!("{cudf_error:?}");
+        assert!(cudf_debug.contains("<source omitted>"), "{cudf_debug}");
+        assert!(!cudf_debug.contains("server-cudf-source-detail-secret"), "{cudf_debug}");
+        assert!(!cudf_debug.contains("cudf-refresh-secret"), "{cudf_debug}");
+    }
+
+    #[test]
+    fn log_safe_facts_do_not_widen_flight_metadata() {
+        let status = adapter_error_to_status(
+            &Error::new(ErrorCode::InvalidRequest, TEST_OPERATION, "invalid request")
+                .with_log_safe_fact("log_classification", "request_shape")
+                .with_fact("unsupported_column", "countDetail"),
+        );
+
+        assert_metadata_value(&status, UNSUPPORTED_COLUMN_METADATA_KEY, "countDetail");
+        assert!(status.metadata().get("x-datafusion-nexus-log-classification").is_none());
+        assert!(status.metadata().get("log_classification").is_none());
+    }
+
+    #[test]
+    fn boundary_log_severity_is_derived_from_error_kind() {
+        let cases = [
+            (ErrorKind::Cancelled, AdapterStatusLogLevel::Info),
+            (ErrorKind::NotFound, AdapterStatusLogLevel::Info),
+            (ErrorKind::PermissionDenied, AdapterStatusLogLevel::Info),
+            (ErrorKind::Unauthenticated, AdapterStatusLogLevel::Info),
+            (ErrorKind::Planning, AdapterStatusLogLevel::Info),
+            (ErrorKind::InvalidInput, AdapterStatusLogLevel::Info),
+            (ErrorKind::Unsupported, AdapterStatusLogLevel::Info),
+            (ErrorKind::ResourceExhausted, AdapterStatusLogLevel::Warn),
+            (ErrorKind::DependencyFailure, AdapterStatusLogLevel::Warn),
+            (ErrorKind::Execution, AdapterStatusLogLevel::Error),
+            (ErrorKind::InvariantViolation, AdapterStatusLogLevel::Error),
+            (ErrorKind::Internal, AdapterStatusLogLevel::Error),
+        ];
+
+        for (kind, expected) in cases {
+            assert_eq!(adapter_status_log_level(kind), expected, "unexpected boundary log level for {kind}");
+        }
+    }
+
+    #[test]
+    fn adapter_kind_to_flight_code_contract_matches_consumer_documentation() {
+        let cases = [
+            (ErrorCode::Cancelled, Code::Cancelled),
+            (ErrorCode::ObjectNotFound, Code::NotFound),
+            (ErrorCode::SourceAccessDenied, Code::PermissionDenied),
+            (ErrorCode::SourceUnauthenticated, Code::Unauthenticated),
+            (ErrorCode::InvalidRequest, Code::InvalidArgument),
+            (ErrorCode::DataFusionPlanning, Code::InvalidArgument),
+            (ErrorCode::UnsupportedOperator, Code::Unimplemented),
+            (ErrorCode::ServiceOverloaded, Code::ResourceExhausted),
+            (ErrorCode::CudfDependencyFailure, Code::Internal),
+            (ErrorCode::CudfInvariantViolation, Code::Internal),
+            (ErrorCode::Internal, Code::Internal),
+        ];
+
+        for (error_code, expected_flight_code) in cases {
+            let error = Error::new(error_code, TEST_OPERATION, "Flight mapping contract");
+            assert_eq!(adapter_error_to_status(&error).code(), expected_flight_code, "{error_code}");
         }
     }
 
@@ -950,6 +1226,7 @@ mod tests {
         );
         assert_eq!(captured.root_cause.as_deref(), Some("root credential expired"));
         assert!(captured.facts.iter().any(|(key, _)| key == "datafusion_error"));
+        assert_eq!(captured.facts, vec![("datafusion_error".to_string(), "context".to_string())]);
         assert!(!captured.diagnostic.contains("code="), "{}", captured.diagnostic);
         assert!(!captured.diagnostic.contains("facts="), "{}", captured.diagnostic);
     }

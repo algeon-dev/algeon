@@ -335,13 +335,17 @@ async fn update_ddl_read_only_schema_failure_captures_catalog_target_facts() {
         .expect("failed DDL update should retain query stats")
         .to_query_stats_payload();
     assert!(payload.contains("operation=datafusion_nexus.server.flight.do_put_statement_update.sql"), "{payload}");
-    assert!(payload.contains("fact.target_catalog=glue"), "{payload}");
-    assert!(payload.contains("fact.target_schema=nexus_graph"), "{payload}");
-    assert!(payload.contains("fact.target_table=target_edges"), "{payload}");
     assert!(payload.contains("fact.statement_kind=CreateView"), "{payload}");
     assert!(payload.contains("fact.iceberg_enabled=true"), "{payload}");
-    assert!(payload.contains("fact.workspace_catalog=datafusion"), "{payload}");
-    assert!(payload.contains("fact.workspace_schema=public"), "{payload}");
+    for raw_fact in [
+        "fact.target_catalog=",
+        "fact.target_schema=",
+        "fact.target_table=",
+        "fact.workspace_catalog=",
+        "fact.workspace_schema=",
+    ] {
+        assert!(!payload.contains(raw_fact), "raw identifier fact must not be retained: {payload}");
+    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -375,7 +379,8 @@ async fn update_set_datafusion_nexus_key_is_rejected_loudly() {
         .expect("failed SET update should retain query stats")
         .to_query_stats_payload();
     assert!(payload.contains("fact.reason=flight_session_scoped_datafusion_nexus_keys_unsupported"), "{payload}");
-    assert!(payload.contains("fact.config_key=datafusion_nexus.request.requested_grant_bytes"), "{payload}");
+    assert!(payload.contains("fact.configuration_scope=server_or_tenant_defaults"), "{payload}");
+    assert!(!payload.contains("fact.config_key="), "raw config key must not be retained: {payload}");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

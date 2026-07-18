@@ -228,5 +228,7 @@ pub(super) fn native_query_runtime_error(
 /// and to assert that native execution does not silently fall back to CPU
 /// once started.
 pub(super) fn mark_native_runtime_error(error: Error, stage: &'static str) -> Error {
-    error.with_fact("native_datafusion_stage", stage).with_fact("cpu_fallback_after_native_start", false)
+    error
+        .with_log_safe_fact("native_datafusion_stage", stage)
+        .with_log_safe_fact("cpu_fallback_after_native_start", false)
 }

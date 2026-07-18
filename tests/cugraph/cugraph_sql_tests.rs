@@ -15,7 +15,7 @@ use arrow::{
     record_batch::RecordBatch,
 };
 use datafusion::{
-    common::ScalarValue,
+    common::{DataFusionError, ScalarValue},
     datasource::MemTable,
     execution::SessionStateBuilder,
     logical_expr::{col, lit},
@@ -25,6 +25,7 @@ use datafusion::{
 };
 use datafusion_nexus::{
     backend::{NexusAdmissionPolicy, NexusGpuBackend},
+    error::{DataFusionErrorExt, Error},
     graph_sql::{
         CUGRAPH_DESCRIBE_ALGORITHM_FUNCTION, CUGRAPH_LIST_ALGORITHMS_FUNCTION, CUGRAPH_OPERATION_REGISTRY,
         CUGRAPH_VALIDATE_CALL_FUNCTION, CugraphAlgorithm, CugraphAlgorithmParams, CugraphBfsOutputMode,
@@ -38,6 +39,10 @@ use datafusion_nexus::{
     session::CudfSessionStateBuilderExt,
 };
 use nexus_query_engine::runtime::SlotGuarantee;
+
+fn typed_nexus_error(error: &DataFusionError) -> &Error {
+    error.find_nexus_error().expect("cuGraph DataFusion error must preserve the typed Nexus error")
+}
 
 #[path = "cugraph_sql_tests/gpu.rs"]
 pub mod gpu;

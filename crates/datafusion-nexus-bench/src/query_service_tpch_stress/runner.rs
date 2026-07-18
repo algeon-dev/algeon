@@ -13,7 +13,7 @@ use datafusion::{
     prelude::SessionContext,
 };
 use datafusion_nexus::{
-    error::Error as AdapterError,
+    error::{DataFusionErrorExt, Error as AdapterError},
     native_exec::NativeCudfExecutionConfig,
     native_report::{
         NativeDataFusionExecutionMetrics, NativeDataFusionPlanningOutcome, NativeDataFusionPlanningReport,
@@ -713,18 +713,6 @@ fn failure_row(
         cpu_output_fingerprint: cpu.map(|cpu| cpu.output_fingerprint.clone()),
         native_output_fingerprint: native.map(|native| native.output_fingerprint.clone()),
         error,
-    }
-}
-
-fn adapter_error_from_datafusion(error: &DataFusionError) -> Option<&AdapterError> {
-    match error {
-        DataFusionError::External(source) => source.downcast_ref::<AdapterError>(),
-        DataFusionError::Context(_, source) | DataFusionError::Diagnostic(_, source) => {
-            adapter_error_from_datafusion(source)
-        },
-        DataFusionError::Collection(errors) => errors.iter().find_map(adapter_error_from_datafusion),
-        DataFusionError::Shared(source) => adapter_error_from_datafusion(source),
-        _ => None,
     }
 }
 

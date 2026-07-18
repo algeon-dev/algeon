@@ -54,7 +54,6 @@ use super::{
     auth::{AuthInterceptor, handle_handshake},
     cancel::QueryCancellation,
     config::ServerSessionProfile,
-    datafusion_error::find_adapter_error,
     diagnostics::{log_leaf_guard_rejection, log_native_planning_report_for_tables},
     error::{adapter_error_to_status, datafusion_error_to_captured_error, datafusion_error_to_status_for_operation},
     observability::{CapturedError, QueryObservability},
@@ -65,7 +64,7 @@ use crate::graph_sql::CugraphSqlConfig;
 #[cfg(feature = "cugraph")]
 use crate::session::CudfSessionStateBuilderExt;
 use crate::{
-    error::{Error, ErrorCode, ErrorSourceDiagnostics},
+    error::{DataFusionErrorExt, Error, ErrorCode, ErrorSourceDiagnostics},
     native_exec::{NativeMetricsCapture, NativeMetricsCaptureSink},
     planner::{CudfNativePhysicalOptimizerRule, CudfOptimizerConfig},
     session::install_cudf_native_rule_with_session_config,
@@ -85,8 +84,8 @@ mod status;
 mod tests;
 mod tickets;
 
-use correlation::finish_adapter_error_status_with_correlation_id;
 pub(super) use correlation::{attach_query_response_metadata, request_correlation_id};
+use correlation::{finish_adapter_error_status_with_correlation_id, tracing_correlation_id};
 use ddl::{referenced_table_names, reject_drop_object_type_mismatch};
 #[cfg(all(test, feature = "iceberg"))]
 use execution::cancel_invalid_argument_status;

@@ -18,7 +18,6 @@ mod admission;
 mod auth;
 mod cancel;
 mod config;
-mod datafusion_error;
 mod diagnostics;
 mod error;
 mod flight;

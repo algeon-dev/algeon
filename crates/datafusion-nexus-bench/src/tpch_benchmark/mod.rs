@@ -14,7 +14,7 @@ use datafusion::{
     prelude::{SessionConfig, SessionContext},
 };
 use datafusion_nexus::{
-    error::Error as AdapterError,
+    error::{DataFusionErrorExt, Error as AdapterError},
     native_exec::NativeCudfExecutionConfig,
     native_report::{
         NativeAggregateStrategyMetricRow, NativeDataFusionExecutionMetrics, NativeDataFusionPlanningOutcome,

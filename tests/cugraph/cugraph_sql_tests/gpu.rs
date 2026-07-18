@@ -489,12 +489,14 @@ async fn cugraph_sql_gpu_bfs_path_empty_source_with_bad_include_vertices_is_reje
         .unwrap()
         .collect()
         .await
-        .unwrap_err()
-        .to_string();
+        .unwrap_err();
     drop_session_context_on_blocking_thread(ctx).await;
-    assert!(error.contains("predicate_vertices_absent"), "unexpected error: {error}");
-    assert!(error.contains("include_vertices"), "error should carry predicate_role: {error}");
-    assert!(!error.contains("Found invalid vertex"), "error should be graph-aware: {error}");
+    let nexus = typed_nexus_error(&error);
+    assert_eq!(nexus.fact_value("reason"), Some("predicate_vertices_absent"));
+    assert_eq!(nexus.fact_value("predicate_role"), Some("include_vertices"));
+    let native_message =
+        nexus.fact_value("native_message").expect("native diagnostic must be preserved as a typed fact");
+    assert!(!native_message.contains("Found invalid vertex"));
 }
 
 #[tokio::test]
@@ -523,12 +525,14 @@ async fn cugraph_sql_gpu_bfs_path_absent_source_with_bad_include_vertices_is_rej
         .unwrap()
         .collect()
         .await
-        .unwrap_err()
-        .to_string();
+        .unwrap_err();
     drop_session_context_on_blocking_thread(ctx).await;
-    assert!(error.contains("predicate_vertices_absent"), "unexpected error: {error}");
-    assert!(error.contains("include_vertices"), "error should carry predicate_role: {error}");
-    assert!(!error.contains("Found invalid vertex"), "error should be graph-aware: {error}");
+    let nexus = typed_nexus_error(&error);
+    assert_eq!(nexus.fact_value("reason"), Some("predicate_vertices_absent"));
+    assert_eq!(nexus.fact_value("predicate_role"), Some("include_vertices"));
+    let native_message =
+        nexus.fact_value("native_message").expect("native diagnostic must be preserved as a typed fact");
+    assert!(!native_message.contains("Found invalid vertex"));
 }
 
 #[tokio::test]
@@ -554,11 +558,14 @@ async fn cugraph_sql_gpu_bfs_path_partial_absent_sources_are_rejected() {
         .unwrap()
         .collect()
         .await
-        .unwrap_err()
-        .to_string();
+        .unwrap_err();
     drop_session_context_on_blocking_thread(ctx).await;
-    assert!(error.contains("partial_source_vertices_absent"), "unexpected error: {error}");
-    assert!(!error.contains("Found invalid vertex"), "error should be graph-aware: {error}");
+    let nexus = typed_nexus_error(&error);
+    assert_eq!(nexus.fact_value("reason"), Some("partial_source_vertices_absent"));
+    assert_eq!(nexus.fact_value("predicate_role"), Some("source_vertices"));
+    let native_message =
+        nexus.fact_value("native_message").expect("native diagnostic must be preserved as a typed fact");
+    assert!(!native_message.contains("Found invalid vertex"));
 }
 
 #[tokio::test]
@@ -643,12 +650,14 @@ async fn cugraph_sql_gpu_bfs_path_empty_edge_source_with_bad_include_vertices_is
         .unwrap()
         .collect()
         .await
-        .unwrap_err()
-        .to_string();
+        .unwrap_err();
     drop_session_context_on_blocking_thread(ctx).await;
-    assert!(error.contains("predicate_vertices_absent"), "unexpected error: {error}");
-    assert!(error.contains("include_vertices"), "error should carry predicate_role: {error}");
-    assert!(!error.contains("Found invalid vertex"), "error should be graph-aware: {error}");
+    let nexus = typed_nexus_error(&error);
+    assert_eq!(nexus.fact_value("reason"), Some("predicate_vertices_absent"));
+    assert_eq!(nexus.fact_value("predicate_role"), Some("include_vertices"));
+    let native_message =
+        nexus.fact_value("native_message").expect("native diagnostic must be preserved as a typed fact");
+    assert!(!native_message.contains("Found invalid vertex"));
 }
 
 #[tokio::test]
@@ -822,13 +831,13 @@ async fn cugraph_sql_gpu_bfs_target_vertices_with_null_values_is_rejected() {
         .unwrap()
         .collect()
         .await
-        .unwrap_err()
-        .to_string();
+        .unwrap_err();
     // Vertex-set predicate values that are actually null are rejected at
     // execution with the value-level diagnostic code carrying the role/column.
-    assert!(error.contains("predicate_column_contains_nulls"), "unexpected error: {error}");
-    assert!(error.contains("target_vertices"), "error should carry predicate_role: {error}");
-    assert!(error.contains("vertex_id"), "error should carry the column name: {error}");
+    let nexus = typed_nexus_error(&error);
+    assert_eq!(nexus.fact_value("reason"), Some("predicate_column_contains_nulls"));
+    assert_eq!(nexus.fact_value("predicate_role"), Some("target_vertices"));
+    assert_eq!(nexus.fact_value("column"), Some("vertex_id"));
 }
 
 #[tokio::test]
@@ -851,9 +860,13 @@ async fn cugraph_sql_gpu_bfs_include_edges_empty_after_drop_is_explicit_error() 
         .unwrap()
         .collect()
         .await
-        .unwrap_err()
-        .to_string();
+        .unwrap_err();
     // A whitelist that collapses to empty after dropping null rows is a
     // deliberate error, never a silent empty BFS.
-    assert!(error.contains("include_edges whitelist is empty"), "unexpected error: {error}");
+    let nexus = typed_nexus_error(&error);
+    assert_eq!(nexus.fact_value("predicate_role"), Some("include_edges"));
+    assert!(
+        nexus.fact_value("native_message").is_some_and(|message| message.contains("include_edges whitelist is empty")),
+        "unexpected typed Nexus error: {nexus:?}"
+    );
 }

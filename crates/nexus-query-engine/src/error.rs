@@ -55,9 +55,8 @@ pub enum QueryErrorCode {
     CudfTemporaryFailure,
     /// cuDF reported a persistent dependency/runtime failure.
     ///
-    /// `Persistent` is cuDF's retry classification: not immediately transient,
-    /// but distinct from this crate's `Permanent` status for caller-fixable or
-    /// deterministic non-retryable failures.
+    /// The failure has been observed to recur or is known to continue. Stop
+    /// automatic retries and escalate or wait for intervention.
     CudfPersistentFailure,
     /// cuDF reported a permanent dependency failure.
     CudfDependencyFailure,
@@ -172,17 +171,22 @@ impl fmt::Display for QueryErrorKind {
 }
 
 /// Retry and remediation status for native-engine errors.
+///
+/// Only [`Self::Temporary`] is automatically retryable.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum QueryErrorStatus {
-    /// Non-retryable without changing the query, input, configuration, or code.
+    /// The same request will not succeed without changing its query, input,
+    /// configuration, or code. Do not retry it automatically.
     Permanent,
-    /// Retry or smaller resource admission may succeed without external repair.
+    /// The failure may clear without external repair. Automatic retry, backoff,
+    /// or smaller resource admission may succeed.
     Temporary,
-    /// cuDF classified the condition as not immediately transient.
+    /// A dependency/runtime failure has been observed to recur or is known to
+    /// continue. Stop automatic retries and escalate or wait for intervention.
     ///
-    /// This name is intentionally distinct from `Permanent`: persistent failures
-    /// are dependency/runtime classifications, while permanent failures are
-    /// deterministic non-retryable outcomes at this API boundary.
+    /// This remains distinct from [`Self::Permanent`] because it records a
+    /// continuing dependency failure rather than a request that must change;
+    /// neither status is automatically retryable.
     Persistent,
 }
 
@@ -235,10 +239,11 @@ pub const fn kind_for_code(code: QueryErrorCode) -> QueryErrorKind {
 
 /// Maps each native error code to its stable retry/remediation status.
 ///
-/// `status` answers what kind of remediation is plausible. `Permanent` means
-/// retrying the same operation is not expected to help. `Persistent` preserves
-/// cuDF's dependency/runtime status and is deliberately not a synonym for
-/// `Permanent`.
+/// Only [`QueryErrorStatus::Temporary`] is automatically retryable.
+/// [`QueryErrorStatus::Persistent`] means a repeated or known-continuing
+/// dependency failure that requires escalation or intervention, while
+/// [`QueryErrorStatus::Permanent`] means the request, input, configuration, or
+/// code must change before the same operation can succeed.
 pub const fn status_for_code(code: QueryErrorCode) -> QueryErrorStatus {
     match code {
         QueryErrorCode::Cancelled => QueryErrorStatus::Permanent,
@@ -458,6 +463,14 @@ impl QueryError {
         self.code.status()
     }
 
+    /// Returns whether this error is eligible for automatic retry.
+    ///
+    /// This is an exact alias for
+    /// `self.status() == QueryErrorStatus::Temporary`.
+    pub fn is_retryable(&self) -> bool {
+        self.status() == QueryErrorStatus::Temporary
+    }
+
     /// Returns the query-wide diagnostic correlation id, when assigned.
     pub fn query_id(&self) -> Option<&QueryId> {
         self.query_id.as_ref()
@@ -623,10 +636,11 @@ impl StdError for QueryError {
 }
 
 // cuDF classification priority is resource exhaustion first, then retry status
-// (`Temporary`/`Persistent`), then permanent failures by cuDF kind. Notable
-// permanent mappings: `NotFound` is treated as invalid input,
-// `ExecutionContext` is treated as an invariant violation, and unknown kinds
-// fall back to dependency failure.
+// (`Temporary`/`Persistent`), then permanent failures by cuDF kind. This keeps
+// cuDF's action contract intact: only Temporary is automatically retryable;
+// Persistent requires escalation or intervention. Notable permanent mappings:
+// `NotFound` is treated as invalid input, `ExecutionContext` is treated as an
+// invariant violation, and unknown kinds fall back to dependency failure.
 fn code_for_cudf_error(error: &cudf::Error) -> QueryErrorCode {
     if error.kind() == cudf::ErrorKind::ResourceExhausted {
         return QueryErrorCode::CudfResourceExhausted;

@@ -27,7 +27,7 @@ impl FlightSqlService for DatafusionCudfFlightSqlService {
         let planning_started_at = Instant::now();
         tracing::info!(
             query_id,
-            correlation_id = correlation_id.as_deref().unwrap_or(""),
+            correlation_id = tracing_correlation_id(correlation_id.as_deref()),
             sql,
             "planning Flight SQL statement"
         );
@@ -125,7 +125,7 @@ impl FlightSqlService for DatafusionCudfFlightSqlService {
         let planning_started_at = Instant::now();
         tracing::info!(
             query_id,
-            correlation_id = correlation_id.as_deref().unwrap_or(""),
+            correlation_id = tracing_correlation_id(correlation_id.as_deref()),
             sql,
             prepared_statement_handle = handle.as_str(),
             "planning Flight SQL prepared statement"

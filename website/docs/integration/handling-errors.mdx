@@ -1,0 +1,254 @@
+---
+sidebar_position: 2.75
+sidebar_label: Handling Errors
+description: Discover typed DataFusion Nexus errors, preserve ordinary DataFusion fallback policy, and disclose diagnostics safely.
+---
+
+# Handling Errors
+
+Nexus errors cross an embedded DataFusion boundary as typed sources. Handle
+them as an enrichment layer: look for a Nexus `Error` first, and only use its
+stable identity when one is present. If discovery returns `None`, keep the
+DataFusion error and your application's existing fallback policy.
+
+```rust
+use datafusion::common::DataFusionError;
+use datafusion_nexus::error::{DataFusionErrorExt, Error};
+
+fn into_app_error(error: DataFusionError) -> AppError {
+    if let Some(nexus) = error.find_nexus_error() {
+        return AppError::from_nexus(nexus);
+    }
+
+    // Application-owned policy for an ordinary DataFusion failure.
+    AppError::from_datafusion(error)
+}
+
+struct AppError;
+
+impl AppError {
+    fn from_nexus(_error: &Error) -> Self {
+        Self
+    }
+
+    fn from_datafusion(_error: DataFusionError) -> Self {
+        Self
+    }
+}
+```
+
+This is the pattern used by the embedded backend example's REST frontend. It
+does not reproduce the Nexus code taxonomy or attempt to infer Nexus identity
+from error text. The fallback branch remains free to map DataFusion planning,
+schema, resource, and internal failures according to that application's own
+HTTP or job policy.
+
+## What crosses the DataFusion boundary
+
+Converting `datafusion_nexus::error::Error` into `DataFusionError` produces
+exactly:
+
+```rust
+DataFusionError::External(Box::new(nexus_error))
+```
+
+The concrete `Error` remains available behind the boxed source, so a direct
+`External` consumer can downcast it:
+
+```rust
+if let DataFusionError::External(source) = &error {
+    if let Some(nexus) = source.downcast_ref::<datafusion_nexus::error::Error>() {
+        // Read nexus.code(), kind(), status(), operation(), message(), facts().
+    }
+}
+```
+
+Real DataFusion call stacks add wrappers. Prefer `find_nexus_error()` over a
+one-layer match: it follows standard error sources and visits every
+`DataFusionError::Collection` branch in deterministic depth-first order, with
+defensive depth and node bounds. It returns a borrowed `&Error`; it does not
+rewrite the original `DataFusionError`.
+
+Do not parse `Display` or `Debug` output. `Display` is human-facing, while the
+typed accessors are the compatibility contract for policy decisions.
+
+## Retry semantics
+
+Use `Error::status()` or its exact convenience predicate
+`Error::is_retryable()`:
+
+| Status | Meaning |
+| --- | --- |
+| `Temporary` | The operation is eligible for automatic retry. `is_retryable()` is `true` only for this status. |
+| `Persistent` | The dependency failure is repeated or known to continue; escalate or intervene instead of blindly retrying. |
+| `Permanent` | The request, input, configuration, or code must change before the same operation can succeed. |
+
+Transport policy remains yours. For example, the REST example maps a temporary
+resource-exhaustion error to HTTP `429` with `Retry-After`, but that mapping is
+not part of the Nexus error identity.
+
+## Stable identity contract
+
+`ErrorCode` is the most specific machine identity. `ErrorKind` is its stable
+aggregation bucket, and `ErrorStatus` is its retry/remediation policy. The
+snake-case labels returned by `as_str()` and the code-to-kind/status mappings
+below are the compatibility contract. The enums are non-exhaustive where they
+may grow, so consumers must retain a fallback arm for future codes or kinds.
+
+| Code | Kind | Status |
+| --- | --- | --- |
+| `cancelled` | `cancelled` | `permanent` |
+| `sql_parse` | `invalid_input` | `permanent` |
+| `invalid_request` | `invalid_input` | `permanent` |
+| `datafusion_planning` | `planning` | `permanent` |
+| `planning_timeout` | `planning` | `permanent` |
+| `object_not_found` | `not_found` | `permanent` |
+| `source_access_denied` | `permission_denied` | `permanent` |
+| `source_unauthenticated` | `unauthenticated` | `permanent` |
+| `source_object_not_found` | `not_found` | `permanent` |
+| `source_temporary_failure` | `dependency_failure` | `temporary` |
+| `field_not_found` | `invalid_input` | `permanent` |
+| `native_candidate_rejected` | `planning` | `permanent` |
+| `unsupported_operator` | `unsupported` | `permanent` |
+| `unsupported_expression` | `unsupported` | `permanent` |
+| `unsupported_type` | `unsupported` | `permanent` |
+| `invalid_execution_plan` | `planning` | `permanent` |
+| `invalid_child_count` | `internal` | `permanent` |
+| `cudf_invalid_input` | `invalid_input` | `permanent` |
+| `cudf_unsupported` | `unsupported` | `permanent` |
+| `cudf_resource_exhausted` | `resource_exhausted` | `temporary` |
+| `cudf_temporary_failure` | `dependency_failure` | `temporary` |
+| `cudf_persistent_failure` | `dependency_failure` | `persistent` |
+| `cudf_dependency_failure` | `dependency_failure` | `permanent` |
+| `cudf_invariant_violation` | `invariant_violation` | `permanent` |
+| `memory_reservation_failed` | `resource_exhausted` | `temporary` |
+| `service_overloaded` | `resource_exhausted` | `temporary` |
+| `server_transport_failure` | `dependency_failure` | `permanent` |
+| `internal` | `internal` | `permanent` |
+
+Existing labels and mappings are stable. New non-exhaustive variants may be
+added. Human `Display`/`Debug` formatting and arbitrary fact values are not a
+parseable compatibility surface.
+
+## Recommended HTTP policy
+
+HTTP mapping is application policy, not intrinsic error identity. This table is
+a starting point that services should override for their resource model and API
+semantics:
+
+| Nexus kind | Recommended HTTP response |
+| --- | --- |
+| `cancelled` | `408 Request Timeout` (or a documented `499` convention) |
+| `not_found` | `404 Not Found` |
+| `permission_denied` | `403 Forbidden` |
+| `unauthenticated` | `401 Unauthorized` |
+| `planning`, `invalid_input` | `400 Bad Request` |
+| `unsupported` | `422 Unprocessable Content`; use `501 Not Implemented` when it is an endpoint-wide capability gap |
+| `resource_exhausted` | `429 Too Many Requests`, normally with bounded `Retry-After` when status is `temporary` |
+| `execution`, `dependency_failure` | `503 Service Unavailable` for dependency availability; otherwise `500 Internal Server Error` |
+| `invariant_violation`, `internal` | `500 Internal Server Error` |
+
+Apply status after kind: only `temporary` permits automatic retry;
+`persistent` should stop automatic retries even if the HTTP response is `503`.
+Do not put internal messages or raw facts into the response merely because a
+kind maps to a client-visible status.
+
+## Facts and disclosure
+
+`Error::facts()` provides sorted, typed diagnostic fields for trusted
+in-process inspection. Raw values are preserved exactly by `get()` and
+`iter()`. They may contain query literals, object paths, identifiers,
+configuration values, backend messages, or credentials. Therefore:
+
+- Do not serialize every fact into an HTTP response, Flight metadata, metric
+  label, or log record.
+- Select client-visible fields explicitly at the boundary you own.
+- Use `with_fact` for ordinary or externally supplied diagnostics; those facts
+  stay hidden from Nexus's safe log and retained-diagnostic projection.
+- `with_log_safe_fact` is an explicit disclosure decision for bounded
+  operational classification values. Nexus still normalizes, redacts, and caps
+  that projection as defense in depth, but the method does not make an unsafe
+  value safe.
+
+`Facts`' `Debug` implementation also uses the bounded safe projection. This is
+useful for diagnostics, but it is not a replacement for an application-level
+client disclosure policy. The REST example deliberately keeps raw Nexus and
+native facts in process rather than forwarding them wholesale.
+
+Error construction is failure-safe. Empty operation/message inputs receive
+deterministic non-empty fallbacks. Empty fact keys are ignored; duplicate facts
+keep the first value and its original disclosure choice, with sorted rejected
+keys recorded in `fact_collision_keys` (`<empty>` represents an empty key).
+Attaching a second source preserves the first source rather than replacing its
+causal chain.
+
+## Result boundary rule
+
+Use the result type owned by the surrounding surface:
+
+- Implementations of DataFusion traits and query/session execution surfaces
+  return `datafusion::common::Result<T>` (`DataFusionResult<T>`).
+- Nexus-specific setup and control-plane APIs may return
+  `datafusion_nexus::error::Result<T>` so callers can inspect `Error` directly.
+- Cross into a DataFusion-owned surface with `?`; `From<Error> for
+  DataFusionError` preserves the typed source in `External`.
+- Do not add or emulate a reverse blanket conversion. An arbitrary
+  `DataFusionError` does not acquire Nexus identity.
+
+```rust
+use datafusion::common::Result as DataFusionResult;
+use datafusion_nexus::error::{Error, ErrorCode, Result as NexusResult};
+
+fn configure_nexus() -> NexusResult<()> {
+    Err(Error::new(
+        ErrorCode::InvalidRequest,
+        "my_service.configure_nexus",
+        "invalid Nexus configuration",
+    ))
+}
+
+fn datafusion_owned_execution() -> DataFusionResult<()> {
+    configure_nexus()?; // exactly one conversion to DataFusionError::External
+    Ok(())
+}
+```
+
+## Flight SQL metadata boundary
+
+The built-in Flight SQL server exposes a deliberately selected metadata set on
+its gRPC status:
+
+| Metadata key | Value |
+| --- | --- |
+| `x-datafusion-nexus-error-code` | Stable Nexus error code |
+| `x-datafusion-nexus-error-kind` | Coarse Nexus error kind |
+| `x-datafusion-nexus-error-status` | Retry/remediation status |
+| `x-datafusion-nexus-error-operation` | Stable operation identifier |
+| `x-datafusion-nexus-unsupported-column` | Selected unsupported column, when available |
+| `x-datafusion-nexus-unsupported-column-type` | Selected unsupported Arrow type, when available |
+| `x-datafusion-nexus-unsupported-column-role` | Selected unsupported column role, when available |
+
+This metadata is client-visible transport data and may also be visible to
+proxies or telemetry at the service boundary. Nexus does not copy arbitrary
+facts into it, and marking a fact with `with_log_safe_fact` does not widen the
+Flight metadata set. Clients should trust these fields only to the degree they
+trust the authenticated Flight endpoint and transport path.
+
+For typed Nexus errors, the built-in server maps kinds to gRPC codes as follows:
+
+| Nexus kind | gRPC code |
+| --- | --- |
+| `cancelled` | `CANCELLED` |
+| `not_found` | `NOT_FOUND` |
+| `permission_denied` | `PERMISSION_DENIED` |
+| `unauthenticated` | `UNAUTHENTICATED` |
+| `invalid_input`, `planning` | `INVALID_ARGUMENT` |
+| `unsupported` | `UNIMPLEMENTED` |
+| `resource_exhausted` | `RESOURCE_EXHAUSTED` |
+| `execution`, `dependency_failure`, `invariant_violation`, `internal` | `INTERNAL` |
+
+The Flight server may map an ordinary DataFusion failure to a useful gRPC code
+and generic client message, but that server-private classifier does not turn
+the failure into a public Nexus `Error` identity. Embedded consumers should
+still use the L1-first recipe above: typed Nexus discovery when present,
+otherwise their existing DataFusion fallback.
