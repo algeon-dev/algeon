@@ -255,7 +255,7 @@ fn find_newest_source(
 
 /// Warn (via `cargo:warning=`) when libcudf C++ sources are newer than the
 /// installed `libcudf.so`, which usually means the user edited or pulled cudf
-/// without re-running `./build.sh libcudf`. Set
+/// without rebuilding the libcudf install prefix. Set
 /// `CUDF_RS_SKIP_STALENESS_CHECK=1` to suppress.
 fn check_libcudf_staleness(manifest_dir: &Path) {
     println!("cargo:rerun-if-env-changed=CUDF_RS_SKIP_STALENESS_CHECK");
@@ -291,8 +291,12 @@ fn check_libcudf_staleness(manifest_dir: &Path) {
     }
 
     let display_path = newest.as_ref().map(|(p, _)| p.display().to_string()).unwrap_or_default();
+    let rebuild_command = match build_support::installed_prefix_for_libcudf(&libcudf_so) {
+        Some(install_prefix) => format!("`INSTALL_PREFIX={} ./build.sh libcudf`", install_prefix.display()),
+        None => "`./build.sh libcudf -n`".to_owned(),
+    };
     println!(
-        "cargo:warning=libcudf appears stale: {total_newer} source file(s) under cudf/cpp/{{src,include}} are newer than {}. Re-run `./build.sh libcudf` in cudf/ to rebuild. (newest: {}) Set CUDF_RS_SKIP_STALENESS_CHECK=1 to silence.",
+        "cargo:warning=libcudf appears stale: {total_newer} source file(s) under cudf/cpp/{{src,include}} are newer than {}. In cudf/, run {rebuild_command} to rebuild the selected libcudf. (newest: {}) Set CUDF_RS_SKIP_STALENESS_CHECK=1 to silence.",
         libcudf_so.display(),
         display_path,
     );

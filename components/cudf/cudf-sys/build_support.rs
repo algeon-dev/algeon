@@ -108,6 +108,16 @@ pub fn locate_prebuilt_libcudf(install_dir: Option<&Path>, build_dir: Option<&Pa
     candidate.is_file().then_some(candidate)
 }
 
+/// Return the install prefix for a libcudf shared library in the conventional
+/// `<prefix>/lib{,64}/libcudf.so` layout. A C++ build-tree library has no
+/// install prefix and returns `None`.
+pub fn installed_prefix_for_libcudf(library_path: &Path) -> Option<&Path> {
+    let library_dir = library_path.parent()?;
+    matches!(library_dir.file_name().and_then(|name| name.to_str()), Some("lib" | "lib64"))
+        .then(|| library_dir.parent())
+        .flatten()
+}
+
 fn env_path(var_name: &str) -> Option<PathBuf> {
     env::var(var_name).ok().map(PathBuf::from)
 }
