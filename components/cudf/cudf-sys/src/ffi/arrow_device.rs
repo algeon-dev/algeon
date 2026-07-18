@@ -5,7 +5,7 @@ use crate::{
     cudf_exec_options_t, cudf_status_t, cudf_table_handle, cudf_table_view_handle,
 };
 
-extern "C" {
+unsafe extern "C" {
     // -- Arrow Device Column Bridge -----------------------------------------
 
     /// Export a column view through Arrow C Device ABI using strict explicit

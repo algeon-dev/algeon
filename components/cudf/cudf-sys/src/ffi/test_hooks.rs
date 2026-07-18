@@ -1,6 +1,6 @@
 use crate::{cudf_column_view_handle, cudf_status_t, cudf_type_id_t};
 
-extern "C" {
+unsafe extern "C" {
     // -- Test observation hooks -----------------------------------------------
     //
     // These functions are defined in `native/src/execution_context.cpp` and

@@ -10,7 +10,7 @@ use crate::{
 };
 
 #[link(name = "cudf_rust")]
-extern "C" {
+unsafe extern "C" {
     #[link_name = "cudf_datetime_extract_component_ex"]
     fn cudf_datetime_extract_component_ex_raw(
         input: *mut c_void,

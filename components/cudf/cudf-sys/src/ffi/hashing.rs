@@ -1,6 +1,6 @@
 use crate::{cudf_column_handle, cudf_exec_options_t, cudf_status_t, cudf_table_view_handle};
 
-extern "C" {
+unsafe extern "C" {
     // -- Hashing -------------------------------------------------------------
 
     /// Compute MurmurHash3 with explicit execution options. `options` must be

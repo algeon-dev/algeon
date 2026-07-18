@@ -500,10 +500,10 @@ pub fn error_context_value(err: &cudf::Error, key: &str) -> Option<String> {
     // Canonical facts take precedence over legacy diagnostic details. This
     // mirrors the §5 rule that a canonical key is machine-read from `facts()`
     // only — producers no longer duplicate it into `details()`.
-    if let Some(fact_name) = FactKeyName::from_snake_case(key) {
-        if let Some(value) = err.fact_value(fact_name) {
-            return Some(fact_value_to_string(value));
-        }
+    if let Some(fact_name) = FactKeyName::from_snake_case(key)
+        && let Some(value) = err.fact_value(fact_name)
+    {
+        return Some(fact_value_to_string(value));
     }
     err.details().iter().find_map(|(ctx_key, ctx_value)| (*ctx_key == key).then(|| ctx_value.to_string()))
 }

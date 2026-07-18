@@ -389,21 +389,21 @@ fn validate_source_file_metadata_lengths(file: &LocalParquetFile, file_index: us
         ("pure_filter_row_group_uncompressed_bytes", file.pure_filter_row_group_uncompressed_bytes.as_ref()),
         ("row_group_rows", file.row_group_rows.as_ref()),
     ] {
-        if let Some(values) = values {
-            if values.len() != expected_count {
-                return Err(Error::new_with(
-                    ErrorCode::ColumnLengthMismatch,
-                    OP_PLAN_CHUNKS,
-                    "row-group metadata vectors must have matching lengths",
-                )
-                .with_fact(FACT_ACTUAL_COUNT, values.len())
-                .with_fact(FACT_EXPECTED_COUNT, expected_count)
-                .with_detail("reason", "row_group_metadata_count_mismatch")
-                .with_detail("field", field.to_string())
-                .with_detail("file_index", file_index.to_string())
-                .with_detail("stable_id", file.stable_id.clone())
-                .with_detail("path", file.path.display().to_string()));
-            }
+        if let Some(values) = values
+            && values.len() != expected_count
+        {
+            return Err(Error::new_with(
+                ErrorCode::ColumnLengthMismatch,
+                OP_PLAN_CHUNKS,
+                "row-group metadata vectors must have matching lengths",
+            )
+            .with_fact(FACT_ACTUAL_COUNT, values.len())
+            .with_fact(FACT_EXPECTED_COUNT, expected_count)
+            .with_detail("reason", "row_group_metadata_count_mismatch")
+            .with_detail("field", field.to_string())
+            .with_detail("file_index", file_index.to_string())
+            .with_detail("stable_id", file.stable_id.clone())
+            .with_detail("path", file.path.display().to_string()));
         }
     }
 

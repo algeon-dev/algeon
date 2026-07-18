@@ -2,7 +2,7 @@ use std::os::raw::c_void;
 
 use crate::{cudf_memory_manager_handle, cudf_memory_resource_handle, cudf_status_t, cudf_stream_handle};
 
-extern "C" {
+unsafe extern "C" {
     // -- Test helpers --------------------------------------------------------
 
     /// Force the next `cudf_table_release_columns` handle-array allocation to

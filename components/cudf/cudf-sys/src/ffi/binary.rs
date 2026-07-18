@@ -3,7 +3,7 @@ use crate::{
     cudf_scalar_handle, cudf_status_t,
 };
 
-extern "C" {
+unsafe extern "C" {
     // -- Binary --------------------------------------------------------------
 
     /// `options` must name an explicit valid device and non-NULL stream/MR.

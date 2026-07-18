@@ -9,7 +9,6 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 const BUILD_RS: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/build.rs"));
 const NATIVE_CMAKELISTS: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/native/CMakeLists.txt"));
 const NATIVE_DISCOVERY_CMAKE: &str =
@@ -93,15 +92,9 @@ fn parse_cmake_bool_rejects_invalid_values() {
 }
 
 #[test]
-fn normalized_cmake_bool_from_env_reads_optional_env_input() {
-    let _guard = ENV_LOCK.lock().unwrap();
-    std::env::remove_var("CUDA_STATIC_RUNTIME");
-    assert_eq!(build_support::normalized_cmake_bool_from_env("CUDA_STATIC_RUNTIME").unwrap(), None);
-
-    std::env::set_var("CUDA_STATIC_RUNTIME", "yes");
-    assert_eq!(build_support::normalized_cmake_bool_from_env("CUDA_STATIC_RUNTIME").unwrap(), Some("ON"));
-
-    std::env::remove_var("CUDA_STATIC_RUNTIME");
+fn normalized_cmake_bool_reads_optional_input() {
+    assert_eq!(build_support::normalized_cmake_bool("CUDA_STATIC_RUNTIME", None).unwrap(), None);
+    assert_eq!(build_support::normalized_cmake_bool("CUDA_STATIC_RUNTIME", Some("yes")).unwrap(), Some("ON"));
 }
 
 #[test]
@@ -114,44 +107,50 @@ fn cmake_cache_value_reads_typed_entries() {
 }
 
 #[test]
-fn cached_cudf_discovery_matches_install_env_and_rejects_stale_paths() {
-    let _guard = ENV_LOCK.lock().unwrap();
-    std::env::set_var("CUDF_INSTALL_DIR", "/opt/current-cudf");
-    std::env::remove_var("CUDF_CPP_BUILD_DIR");
+fn cached_cudf_discovery_matches_install_path_and_rejects_stale_paths() {
+    let install_dir = Path::new("/opt/current-cudf");
 
-    assert!(build_support::cached_cudf_discovery_matches_env(
+    assert!(build_support::cached_cudf_discovery_matches(
         "CUDF_INSTALL_DIR:STRING=/opt/current-cudf\ncudf_DIR:PATH=/opt/current-cudf/lib/cmake/cudf\n",
+        Some(install_dir),
+        None,
     ));
-    assert!(!build_support::cached_cudf_discovery_matches_env("CUDF_INSTALL_DIR:STRING=/opt/old-cudf\n"));
-    assert!(!build_support::cached_cudf_discovery_matches_env(
+    assert!(!build_support::cached_cudf_discovery_matches(
+        "CUDF_INSTALL_DIR:STRING=/opt/old-cudf\n",
+        Some(install_dir),
+        None,
+    ));
+    assert!(!build_support::cached_cudf_discovery_matches(
         "CUDF_INSTALL_DIR:STRING=/opt/current-cudf\nCUDF_CPP_BUILD_DIR:STRING=/tmp/old-build\n",
+        Some(install_dir),
+        None,
     ));
-
-    std::env::remove_var("CUDF_INSTALL_DIR");
 }
 
 #[test]
-fn cached_cudf_discovery_matches_build_env_and_rejects_mode_switch_cache() {
-    let _guard = ENV_LOCK.lock().unwrap();
-    std::env::remove_var("CUDF_INSTALL_DIR");
-    std::env::set_var("CUDF_CPP_BUILD_DIR", "/opt/cudf/cpp/build");
+fn cached_cudf_discovery_matches_build_path_and_rejects_mode_switch_cache() {
+    let build_dir = Path::new("/opt/cudf/cpp/build");
 
-    assert!(build_support::cached_cudf_discovery_matches_env("CUDF_CPP_BUILD_DIR:STRING=/opt/cudf/cpp/build\n"));
-    assert!(!build_support::cached_cudf_discovery_matches_env("CUDF_CPP_BUILD_DIR:STRING=/opt/cudf/cpp/old\n"));
-    assert!(!build_support::cached_cudf_discovery_matches_env(
+    assert!(build_support::cached_cudf_discovery_matches(
+        "CUDF_CPP_BUILD_DIR:STRING=/opt/cudf/cpp/build\n",
+        None,
+        Some(build_dir),
+    ));
+    assert!(!build_support::cached_cudf_discovery_matches(
+        "CUDF_CPP_BUILD_DIR:STRING=/opt/cudf/cpp/old\n",
+        None,
+        Some(build_dir),
+    ));
+    assert!(!build_support::cached_cudf_discovery_matches(
         "CUDF_INSTALL_DIR:STRING=/opt/old-install\nCUDF_CPP_BUILD_DIR:STRING=/opt/cudf/cpp/build\n",
+        None,
+        Some(build_dir),
     ));
-
-    std::env::remove_var("CUDF_CPP_BUILD_DIR");
 }
 
 #[test]
-fn cached_cudf_discovery_defers_missing_env_to_cmake_contract() {
-    let _guard = ENV_LOCK.lock().unwrap();
-    std::env::remove_var("CUDF_INSTALL_DIR");
-    std::env::remove_var("CUDF_CPP_BUILD_DIR");
-
-    assert!(build_support::cached_cudf_discovery_matches_env("CUDF_INSTALL_DIR:STRING=/opt/old-cudf\n"));
+fn cached_cudf_discovery_defers_missing_paths_to_cmake_contract() {
+    assert!(build_support::cached_cudf_discovery_matches("CUDF_INSTALL_DIR:STRING=/opt/old-cudf\n", None, None,));
 }
 
 #[test]

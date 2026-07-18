@@ -53,10 +53,10 @@ impl DisplayColumnMetadata {
             details.push("nullable".to_string());
         }
 
-        if let Some(null_count) = self.null_count {
-            if null_count > 0 {
-                details.push(format!("nulls={null_count}"));
-            }
+        if let Some(null_count) = self.null_count
+            && null_count > 0
+        {
+            details.push(format!("nulls={null_count}"));
         }
 
         (!details.is_empty()).then(|| details.join(", "))

@@ -2,7 +2,7 @@ use crate::{
     cudf_ast_expression_handle, cudf_ast_operator_t, cudf_ast_table_reference_t, cudf_scalar_handle, cudf_status_t,
 };
 
-extern "C" {
+unsafe extern "C" {
     pub fn cudf_ast_column_reference_create(
         column_index: i32,
         table_source: cudf_ast_table_reference_t,

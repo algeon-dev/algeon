@@ -9,7 +9,7 @@ use crate::support::{OwnedStream, make_stats_memory_resource, required_exec_opti
 // pass deliberately invalid enum discriminants to the C shim without
 // constructing invalid Rust enum values (which is instant UB).
 #[allow(dead_code)]
-extern "C" {
+unsafe extern "C" {
     #[link_name = "cudf_ast_column_reference_create"]
     pub(crate) fn cudf_ast_column_reference_create_raw(
         column_index: i32,
@@ -217,7 +217,7 @@ pub(crate) type FilterJoinIndicesExRaw = unsafe extern "C" fn(
 ) -> i32;
 
 #[allow(dead_code)]
-extern "C" {
+unsafe extern "C" {
     #[link_name = "cudf_conditional_inner_join_indices_ex"]
     pub(crate) fn cudf_conditional_inner_join_indices_raw(
         left: *mut c_void,
@@ -310,7 +310,7 @@ pub(crate) type MixedSingleJoinRaw = unsafe extern "C" fn(
 ) -> i32;
 
 #[allow(dead_code)]
-extern "C" {
+unsafe extern "C" {
     #[link_name = "cudf_mixed_inner_join_indices_ex"]
     pub(crate) fn cudf_mixed_inner_join_indices_raw(
         left_equality: *mut c_void,
@@ -372,7 +372,7 @@ extern "C" {
 }
 
 #[allow(dead_code)]
-extern "C" {
+unsafe extern "C" {
     #[link_name = "cudf_scan_aggregation_create"]
     pub(crate) fn cudf_scan_aggregation_create_raw(kind: i32, out: *mut *mut c_void) -> i32;
     #[link_name = "cudf_scan_ex"]

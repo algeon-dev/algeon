@@ -2,7 +2,7 @@ use std::os::raw::c_char;
 
 use crate::{cudf_exec_options_t, cudf_status_t, cudf_table_handle, cudf_table_view_handle};
 
-extern "C" {
+unsafe extern "C" {
     // -- I/O: CSV ------------------------------------------------------------
 
     /// Read a CSV file into a table with explicit execution context.

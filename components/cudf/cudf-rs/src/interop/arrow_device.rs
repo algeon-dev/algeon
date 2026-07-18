@@ -308,8 +308,12 @@ unsafe fn release_arrow_schema_handle(schema: *mut ArrowSchema) {
     if schema.is_null() {
         return;
     }
-    if let Some(release) = (*schema).release {
-        release(schema);
+    // SAFETY: the caller guarantees that `schema` points to a live Arrow
+    // schema whose release callback may be invoked at most once here.
+    unsafe {
+        if let Some(release) = (*schema).release {
+            release(schema);
+        }
     }
 }
 
@@ -317,8 +321,12 @@ unsafe fn release_arrow_device_array_handle(array: *mut ArrowDeviceArray) {
     if array.is_null() {
         return;
     }
-    if let Some(release) = (*array).array.release {
-        release(ptr::addr_of_mut!((*array).array));
+    // SAFETY: the caller guarantees that `array` points to a live Arrow
+    // device array whose embedded release callback is valid to invoke.
+    unsafe {
+        if let Some(release) = (*array).array.release {
+            release(ptr::addr_of_mut!((*array).array));
+        }
     }
 }
 
@@ -326,8 +334,12 @@ unsafe fn finish_transfer_state(state: *mut DeviceArrowAbiTransferState) {
     if state.is_null() {
         return;
     }
-    if (*state).remaining_releases.fetch_sub(1, Ordering::AcqRel) == 1 {
-        drop(Box::from_raw(state));
+    // SAFETY: the caller passes the unique allocation shared by the two
+    // release callbacks; the atomic counter selects the sole deallocator.
+    unsafe {
+        if (*state).remaining_releases.fetch_sub(1, Ordering::AcqRel) == 1 {
+            drop(Box::from_raw(state));
+        }
     }
 }
 
@@ -336,32 +348,37 @@ unsafe extern "C" fn release_owned_arrow_schema(schema: *mut ArrowSchema) {
         return;
     }
 
-    let state = (*schema).private_data.cast::<DeviceArrowAbiTransferState>();
-    if state.is_null() {
-        return;
+    // SAFETY: the Arrow release contract guarantees that `schema` is a live
+    // root initialized by this bridge and that its private data remains valid
+    // until the callback clears the producer release function.
+    unsafe {
+        let state = (*schema).private_data.cast::<DeviceArrowAbiTransferState>();
+        if state.is_null() {
+            return;
+        }
+        // Restore the producer's release/private_data on whatever struct the
+        // consumer is releasing (possibly the consumer's own moved copy) and run
+        // it in place. The Arrow C Data Interface forbids the release callback
+        // from freeing the struct itself: spec-compliant consumers move the
+        // struct into their own storage, so the pointer passed here need not be
+        // the bridge's heap allocation.
+        (*schema).release = (*state).schema_release;
+        (*schema).private_data = (*state).schema_private_data;
+        if let Some(release) = (*schema).release {
+            release(schema);
+        }
+        if (*schema).release.is_some() {
+            // The producer declined to run cleanup now and re-installed itself
+            // for retry. Re-wrap so a consumer retry routes back through this
+            // owned-ABI shim, and keep the shared transfer state alive.
+            (*state).schema_release = (*schema).release;
+            (*state).schema_private_data = (*schema).private_data;
+            (*schema).release = Some(release_owned_arrow_schema);
+            (*schema).private_data = state.cast();
+            return;
+        }
+        finish_transfer_state(state);
     }
-    // Restore the producer's release/private_data on whatever struct the
-    // consumer is releasing (possibly the consumer's own moved copy) and run
-    // it in place. The Arrow C Data Interface forbids the release callback
-    // from freeing the struct itself: spec-compliant consumers move the
-    // struct into their own storage, so the pointer passed here need not be
-    // the bridge's heap allocation.
-    (*schema).release = (*state).schema_release;
-    (*schema).private_data = (*state).schema_private_data;
-    if let Some(release) = (*schema).release {
-        release(schema);
-    }
-    if (*schema).release.is_some() {
-        // The producer declined to run cleanup now and re-installed itself
-        // for retry. Re-wrap so a consumer retry routes back through this
-        // owned-ABI shim, and keep the shared transfer state alive.
-        (*state).schema_release = (*schema).release;
-        (*state).schema_private_data = (*schema).private_data;
-        (*schema).release = Some(release_owned_arrow_schema);
-        (*schema).private_data = state.cast();
-        return;
-    }
-    finish_transfer_state(state);
 }
 
 unsafe extern "C" fn release_owned_arrow_array(array: *mut ArrowArray) {
@@ -369,32 +386,37 @@ unsafe extern "C" fn release_owned_arrow_array(array: *mut ArrowArray) {
         return;
     }
 
-    let state = (*array).private_data.cast::<DeviceArrowAbiTransferState>();
-    if state.is_null() {
-        return;
+    // SAFETY: the Arrow release contract guarantees that `array` is a live
+    // root initialized by this bridge and that its private data remains valid
+    // until the callback clears the producer release function.
+    unsafe {
+        let state = (*array).private_data.cast::<DeviceArrowAbiTransferState>();
+        if state.is_null() {
+            return;
+        }
+        // See `release_owned_arrow_schema`: release contents in place and never
+        // free the struct. The pointer may also be a bare `ArrowArray` copy
+        // (e.g. arrow-rs moves only the embedded array out of an
+        // `ArrowDeviceArray`), so it must never be treated as a device-array
+        // shim allocation here.
+        (*array).release = (*state).array_release;
+        (*array).private_data = (*state).array_private_data;
+        if let Some(release) = (*array).release {
+            release(array);
+        }
+        if (*array).release.is_some() {
+            // The producer declined to run cleanup now (the provenance wrapper
+            // re-installs itself when its device cannot be activated) and expects
+            // a retry. Re-wrap so the retry routes back through this owned-ABI
+            // shim, and keep the shared transfer state alive.
+            (*state).array_release = (*array).release;
+            (*state).array_private_data = (*array).private_data;
+            (*array).release = Some(release_owned_arrow_array);
+            (*array).private_data = state.cast();
+            return;
+        }
+        finish_transfer_state(state);
     }
-    // See `release_owned_arrow_schema`: release contents in place and never
-    // free the struct. The pointer may also be a bare `ArrowArray` copy
-    // (e.g. arrow-rs moves only the embedded array out of an
-    // `ArrowDeviceArray`), so it must never be treated as a device-array
-    // shim allocation here.
-    (*array).release = (*state).array_release;
-    (*array).private_data = (*state).array_private_data;
-    if let Some(release) = (*array).release {
-        release(array);
-    }
-    if (*array).release.is_some() {
-        // The producer declined to run cleanup now (the provenance wrapper
-        // re-installs itself when its device cannot be activated) and expects
-        // a retry. Re-wrap so the retry routes back through this owned-ABI
-        // shim, and keep the shared transfer state alive.
-        (*state).array_release = (*array).release;
-        (*state).array_private_data = (*array).private_data;
-        (*array).release = Some(release_owned_arrow_array);
-        (*array).private_data = state.cast();
-        return;
-    }
-    finish_transfer_state(state);
 }
 
 fn validate_raw_abi_parts(
@@ -506,7 +528,9 @@ unsafe fn arrow_schema_is_supported_fixed_width_leaf(
         .with_detail("reported_table_column_count", schema.n_children.to_string()));
     }
 
-    let format = CStr::from_ptr(schema.format).to_string_lossy();
+    // SAFETY: the caller guarantees that the non-null Arrow format pointer is
+    // valid and NUL-terminated for the lifetime of `schema`.
+    let format = unsafe { CStr::from_ptr(schema.format) }.to_string_lossy();
     if format.is_empty() {
         return Ok(false);
     }
@@ -553,7 +577,9 @@ unsafe fn fixed_width_values_buffer_ptr(
         ));
     }
 
-    Ok(*array.buffers.add(FIXED_WIDTH_DATA_BUFFER_INDEX))
+    // SAFETY: the validated buffer count and non-null pointer establish that
+    // the fixed-width data-buffer slot is readable.
+    Ok(unsafe { *array.buffers.add(FIXED_WIDTH_DATA_BUFFER_INDEX) })
 }
 
 unsafe fn table_child_schema_for_fixed_width_ptr<'a>(
@@ -587,7 +613,9 @@ unsafe fn table_child_schema_for_fixed_width_ptr<'a>(
         ));
     }
 
-    let child = *schema.children.add(index);
+    // SAFETY: `index` is below the validated child count and the children
+    // pointer is non-null.
+    let child = unsafe { *schema.children.add(index) };
     if child.is_null() {
         return Err(arrow_device_schema_metadata_violation(
             operation,
@@ -598,7 +626,9 @@ unsafe fn table_child_schema_for_fixed_width_ptr<'a>(
         ));
     }
 
-    Ok(Some(&*child))
+    // SAFETY: the caller guarantees that Arrow child pointers are live for
+    // the lifetime carried by the parent schema.
+    Ok(Some(unsafe { &*child }))
 }
 
 unsafe fn table_child_array_for_fixed_width_ptr<'a>(
@@ -631,7 +661,9 @@ unsafe fn table_child_array_for_fixed_width_ptr<'a>(
         ));
     }
 
-    let child = *array.array.children.add(index);
+    // SAFETY: `index` is below the validated child count and the children
+    // pointer is non-null.
+    let child = unsafe { *array.array.children.add(index) };
     if child.is_null() {
         return Err(arrow_device_array_metadata_violation(
             operation,
@@ -642,7 +674,9 @@ unsafe fn table_child_array_for_fixed_width_ptr<'a>(
         ));
     }
 
-    Ok(Some(&*child))
+    // SAFETY: the caller guarantees that Arrow child pointers are live for
+    // the lifetime carried by the parent array.
+    Ok(Some(unsafe { &*child }))
 }
 
 struct DeviceArrowAbiRootInner {

@@ -5,7 +5,7 @@ use crate::{
     cudf_status_t, cudf_strip_side_t,
 };
 
-extern "C" {
+unsafe extern "C" {
     // -- String operations ---------------------------------------------------
 
     /// Convert string column to lowercase with explicit execution context.

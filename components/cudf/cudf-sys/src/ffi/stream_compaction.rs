@@ -3,7 +3,7 @@ use crate::{
     cudf_stream_compaction_null_equality_t, cudf_table_handle, cudf_table_view_handle,
 };
 
-extern "C" {
+unsafe extern "C" {
     // -- Stream Compaction ---------------------------------------------------
 
     /// Drop rows with explicit execution options. `options` must be non-null

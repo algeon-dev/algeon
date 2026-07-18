@@ -1,6 +1,6 @@
 use crate::{cudf_column_handle, cudf_column_view_handle, cudf_exec_options_t, cudf_status_t};
 
-extern "C" {
+unsafe extern "C" {
     // -- Search --------------------------------------------------------------
 
     /// Check if elements of `needles` exist in `haystack` using explicit

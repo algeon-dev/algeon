@@ -1,6 +1,6 @@
 use crate::{cudf_column_handle, cudf_column_view_handle, cudf_exec_options_t, cudf_status_t, cudf_type_id_t};
 
-extern "C" {
+unsafe extern "C" {
     // -- Dictionary ----------------------------------------------------------
 
     /// Encode with explicit execution options.

@@ -1260,18 +1260,18 @@ impl DeviceMemoryManager {
             .with_detail("resource", "stream_and_memory_manager")
             .with_detail("reason", "cross_device_stream_reservation"));
         }
-        if let Some(arena) = arena {
-            if arena.manager.device() != self.device() {
-                return Err(error::Error::new_with(
-                    error::ErrorCode::RuntimeBindingMismatch,
-                    "memory::device_memory_manager::reserve_stream",
-                    "reservation arena requires arena and memory manager to be on the same CUDA device",
-                )
-                .with_fact(error::FACT_LEFT_DEVICE, error::DeviceIdFact(arena.manager.device().ordinal_raw()))
-                .with_fact(error::FACT_RIGHT_DEVICE, error::DeviceIdFact(self.device().ordinal_raw()))
-                .with_detail("resource", "arena_and_memory_manager")
-                .with_detail("reason", "cross_device_reservation_arena"));
-            }
+        if let Some(arena) = arena
+            && arena.manager.device() != self.device()
+        {
+            return Err(error::Error::new_with(
+                error::ErrorCode::RuntimeBindingMismatch,
+                "memory::device_memory_manager::reserve_stream",
+                "reservation arena requires arena and memory manager to be on the same CUDA device",
+            )
+            .with_fact(error::FACT_LEFT_DEVICE, error::DeviceIdFact(arena.manager.device().ordinal_raw()))
+            .with_fact(error::FACT_RIGHT_DEVICE, error::DeviceIdFact(self.device().ordinal_raw()))
+            .with_detail("resource", "arena_and_memory_manager")
+            .with_detail("reason", "cross_device_reservation_arena"));
         }
 
         let mut reservation = ptr::null_mut();

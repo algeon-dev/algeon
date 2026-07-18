@@ -51,7 +51,7 @@ pub struct cudf_io_parquet_pruning_evidence_t {
     pub row_groups_after_bloom_filter: i64,
 }
 
-extern "C" {
+unsafe extern "C" {
     // -- I/O: Parquet --------------------------------------------------------
 
     /// Read Parquet with explicit execution context.

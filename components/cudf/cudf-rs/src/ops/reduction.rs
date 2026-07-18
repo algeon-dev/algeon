@@ -125,71 +125,80 @@ unsafe fn create_reduce_agg_handle(agg: &ReduceAgg) -> Result<*mut c_void> {
     match agg {
         ReduceAgg::Sum => {
             error::check_status_in(
-                cudf_sys::cudf_reduce_aggregation_create(CUDF_REDUCE_AGG_SUM, &mut handle),
+                // SAFETY: the aggregation kind and out-pointer are valid.
+                unsafe { cudf_sys::cudf_reduce_aggregation_create(CUDF_REDUCE_AGG_SUM, &mut handle) },
                 "reduction::create_reduce_agg_handle(sum)",
             )?;
         },
         ReduceAgg::Min => {
             error::check_status_in(
-                cudf_sys::cudf_reduce_aggregation_create(CUDF_REDUCE_AGG_MIN, &mut handle),
+                // SAFETY: the aggregation kind and out-pointer are valid.
+                unsafe { cudf_sys::cudf_reduce_aggregation_create(CUDF_REDUCE_AGG_MIN, &mut handle) },
                 "reduction::create_reduce_agg_handle(min)",
             )?;
         },
         ReduceAgg::Max => {
             error::check_status_in(
-                cudf_sys::cudf_reduce_aggregation_create(CUDF_REDUCE_AGG_MAX, &mut handle),
+                // SAFETY: the aggregation kind and out-pointer are valid.
+                unsafe { cudf_sys::cudf_reduce_aggregation_create(CUDF_REDUCE_AGG_MAX, &mut handle) },
                 "reduction::create_reduce_agg_handle(max)",
             )?;
         },
         ReduceAgg::Product => {
             error::check_status_in(
-                cudf_sys::cudf_reduce_aggregation_create(CUDF_REDUCE_AGG_PRODUCT, &mut handle),
+                // SAFETY: the aggregation kind and out-pointer are valid.
+                unsafe { cudf_sys::cudf_reduce_aggregation_create(CUDF_REDUCE_AGG_PRODUCT, &mut handle) },
                 "reduction::create_reduce_agg_handle(product)",
             )?;
         },
         ReduceAgg::Mean => {
             error::check_status_in(
-                cudf_sys::cudf_reduce_aggregation_create(CUDF_REDUCE_AGG_MEAN, &mut handle),
+                // SAFETY: the aggregation kind and out-pointer are valid.
+                unsafe { cudf_sys::cudf_reduce_aggregation_create(CUDF_REDUCE_AGG_MEAN, &mut handle) },
                 "reduction::create_reduce_agg_handle(mean)",
             )?;
         },
         ReduceAgg::Median => {
             error::check_status_in(
-                cudf_sys::cudf_reduce_aggregation_create(CUDF_REDUCE_AGG_MEDIAN, &mut handle),
+                // SAFETY: the aggregation kind and out-pointer are valid.
+                unsafe { cudf_sys::cudf_reduce_aggregation_create(CUDF_REDUCE_AGG_MEDIAN, &mut handle) },
                 "reduction::create_reduce_agg_handle(median)",
             )?;
         },
         ReduceAgg::Any => {
             error::check_status_in(
-                cudf_sys::cudf_reduce_aggregation_create(CUDF_REDUCE_AGG_ANY, &mut handle),
+                // SAFETY: the aggregation kind and out-pointer are valid.
+                unsafe { cudf_sys::cudf_reduce_aggregation_create(CUDF_REDUCE_AGG_ANY, &mut handle) },
                 "reduction::create_reduce_agg_handle(any)",
             )?;
         },
         ReduceAgg::All => {
             error::check_status_in(
-                cudf_sys::cudf_reduce_aggregation_create(CUDF_REDUCE_AGG_ALL, &mut handle),
+                // SAFETY: the aggregation kind and out-pointer are valid.
+                unsafe { cudf_sys::cudf_reduce_aggregation_create(CUDF_REDUCE_AGG_ALL, &mut handle) },
                 "reduction::create_reduce_agg_handle(all)",
             )?;
         },
         ReduceAgg::NUnique { null_policy } => {
             error::check_status_in(
-                cudf_sys::cudf_reduce_aggregation_create_nunique(*null_policy as i32, &mut handle),
+                // SAFETY: the null policy and out-pointer are valid.
+                unsafe { cudf_sys::cudf_reduce_aggregation_create_nunique(*null_policy as i32, &mut handle) },
                 "reduction::create_reduce_agg_handle(nunique)",
             )?;
         },
         ReduceAgg::Variance { ddof } => {
             let ddof = checked_ddof_to_i32(*ddof, "reduction::create_reduce_agg_handle(variance)")?;
-            // SAFETY: handle is initialized to null and set by the C shim on success.
             error::check_status_in(
-                cudf_sys::cudf_reduce_aggregation_create_variance(ddof, &mut handle),
+                // SAFETY: the checked ddof and out-pointer are valid.
+                unsafe { cudf_sys::cudf_reduce_aggregation_create_variance(ddof, &mut handle) },
                 "reduction::create_reduce_agg_handle(variance)",
             )?;
         },
         ReduceAgg::Std { ddof } => {
             let ddof = checked_ddof_to_i32(*ddof, "reduction::create_reduce_agg_handle(std)")?;
-            // SAFETY: handle is initialized to null and set by the C shim on success.
             error::check_status_in(
-                cudf_sys::cudf_reduce_aggregation_create_std(ddof, &mut handle),
+                // SAFETY: the checked ddof and out-pointer are valid.
+                unsafe { cudf_sys::cudf_reduce_aggregation_create_std(ddof, &mut handle) },
                 "reduction::create_reduce_agg_handle(std)",
             )?;
         },
@@ -211,9 +220,10 @@ unsafe fn create_scan_agg_handle(agg: ScanAgg) -> Result<*mut c_void> {
         ScanAgg::Max => CUDF_REDUCE_AGG_MAX,
         ScanAgg::Product => CUDF_REDUCE_AGG_PRODUCT,
     };
-    // SAFETY: handle is initialized to null and set by the C shim on success.
+    // SAFETY: `kind` is one of the supported scan aggregations and `handle`
+    // is a live out-pointer whose status is checked before use.
     error::check_status_in_with_details(
-        cudf_sys::cudf_scan_aggregation_create(kind, &mut handle),
+        unsafe { cudf_sys::cudf_scan_aggregation_create(kind, &mut handle) },
         "reduction::create_scan_agg_handle",
         [("scan_aggregation", format!("{:?}", agg).to_lowercase())],
     )?;

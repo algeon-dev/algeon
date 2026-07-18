@@ -80,17 +80,17 @@ impl DataFrame {
         let col_rows = series.len();
         let expected_rows = if self.num_columns() > 0 || self.row_count > 0 { Some(self.row_count) } else { None };
 
-        if let Some(self_rows) = expected_rows {
-            if col_rows != self_rows {
-                return Err(Error::new_with(
-                    ErrorCode::ColumnLengthMismatch,
-                    "dataframe::with_column",
-                    format!("new column has {} rows but DataFrame has {} rows", col_rows, self_rows),
-                )
-                .with_column(name.to_string())
-                .with_fact(FACT_ACTUAL_ROWS, col_rows)
-                .with_fact(FACT_EXPECTED_ROWS, self_rows));
-            }
+        if let Some(self_rows) = expected_rows
+            && col_rows != self_rows
+        {
+            return Err(Error::new_with(
+                ErrorCode::ColumnLengthMismatch,
+                "dataframe::with_column",
+                format!("new column has {} rows but DataFrame has {} rows", col_rows, self_rows),
+            )
+            .with_column(name.to_string())
+            .with_fact(FACT_ACTUAL_ROWS, col_rows)
+            .with_fact(FACT_EXPECTED_ROWS, self_rows));
         }
 
         let mut new_columns = self.columns.clone();

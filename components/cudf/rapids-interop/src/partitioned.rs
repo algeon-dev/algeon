@@ -208,15 +208,15 @@ where
 
     let partition_top_level_columns = partitions.iter().map(&top_level_column_count_of).sum::<usize>();
     let total_top_level_columns = schema_names.map_or(partition_top_level_columns, |names| names.len());
-    if let Some(names) = schema_names {
-        if names.len() < partition_top_level_columns {
-            return Err(InteropError::new(
-                InteropErrorKind::InvalidView,
-                format!("{kind} names must cover every partitioned top-level column"),
-            )
-            .with_context("names_len", names.len().to_string())
-            .with_context("partition_top_level_columns", partition_top_level_columns.to_string()));
-        }
+    if let Some(names) = schema_names
+        && names.len() < partition_top_level_columns
+    {
+        return Err(InteropError::new(
+            InteropErrorKind::InvalidView,
+            format!("{kind} names must cover every partitioned top-level column"),
+        )
+        .with_context("names_len", names.len().to_string())
+        .with_context("partition_top_level_columns", partition_top_level_columns.to_string()));
     }
 
     let expected_profile = match kind {

@@ -373,13 +373,13 @@ pub(crate) fn validate_prepared_host_column_against_bindings<'a>(
         bindings: &HashMap<BufferId, &'a BufferBinding<'a>>,
     ) -> Result<()> {
         if let PhysicalValidity::ValidityMask { mask, null_count } = column.validity() {
-            if let Some(null_count) = null_count {
-                if *null_count > column.len() {
-                    return Err(InteropError::new(InteropErrorKind::InvalidView, "null count exceeds logical length")
-                        .with_context("column_id", column.id().get().to_string())
-                        .with_context("null_count", null_count.to_string())
-                        .with_context("len", column.len().to_string()));
-                }
+            if let Some(null_count) = null_count
+                && *null_count > column.len()
+            {
+                return Err(InteropError::new(InteropErrorKind::InvalidView, "null count exceeds logical length")
+                    .with_context("column_id", column.id().get().to_string())
+                    .with_context("null_count", null_count.to_string())
+                    .with_context("len", column.len().to_string()));
             }
 
             let mask_binding = require_binding(bindings, *mask, column)?;
@@ -770,13 +770,13 @@ pub(crate) fn validate_prepared_column_against_bindings<'a>(
     };
 
     if let PhysicalValidity::ValidityMask { mask, null_count } = column.validity() {
-        if let Some(null_count) = null_count {
-            if *null_count > column.len() {
-                return Err(InteropError::new(InteropErrorKind::InvalidView, "null count exceeds logical length")
-                    .with_context("column_id", column.id().get().to_string())
-                    .with_context("null_count", null_count.to_string())
-                    .with_context("len", column.len().to_string()));
-            }
+        if let Some(null_count) = null_count
+            && *null_count > column.len()
+        {
+            return Err(InteropError::new(InteropErrorKind::InvalidView, "null count exceeds logical length")
+                .with_context("column_id", column.id().get().to_string())
+                .with_context("null_count", null_count.to_string())
+                .with_context("len", column.len().to_string()));
         }
 
         let mask_binding = require_binding(bindings, *mask, column)?;

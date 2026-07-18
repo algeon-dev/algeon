@@ -65,30 +65,30 @@ fn validate_sort_params(
 ) -> Result<()> {
     let expected = i32::try_from(num_keys).map_err(|_| sort_key_count_limit_error(operation, num_keys))?;
 
-    if let Some(orders) = column_order {
-        if orders.len() != num_keys {
-            return Err(sort_option_count_mismatch_error(
-                operation,
-                format!("column_order length ({}) must equal number of keys ({})", orders.len(), num_keys),
-                "column_order_length_mismatch",
-                "provide either no column_order values or exactly one value per sort key",
-                num_keys,
-                orders.len(),
-            ));
-        }
+    if let Some(orders) = column_order
+        && orders.len() != num_keys
+    {
+        return Err(sort_option_count_mismatch_error(
+            operation,
+            format!("column_order length ({}) must equal number of keys ({})", orders.len(), num_keys),
+            "column_order_length_mismatch",
+            "provide either no column_order values or exactly one value per sort key",
+            num_keys,
+            orders.len(),
+        ));
     }
 
-    if let Some(nulls) = null_precedence {
-        if nulls.len() != num_keys {
-            return Err(sort_option_count_mismatch_error(
-                operation,
-                format!("null_precedence length ({}) must equal number of keys ({})", nulls.len(), num_keys),
-                "null_precedence_length_mismatch",
-                "provide either no null_precedence values or exactly one value per sort key",
-                num_keys,
-                nulls.len(),
-            ));
-        }
+    if let Some(nulls) = null_precedence
+        && nulls.len() != num_keys
+    {
+        return Err(sort_option_count_mismatch_error(
+            operation,
+            format!("null_precedence length ({}) must equal number of keys ({})", nulls.len(), num_keys),
+            "null_precedence_length_mismatch",
+            "provide either no null_precedence values or exactly one value per sort key",
+            num_keys,
+            nulls.len(),
+        ));
     }
 
     let _ = expected;

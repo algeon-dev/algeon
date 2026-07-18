@@ -4,7 +4,7 @@ use crate::{
     cudf_table_view_handle,
 };
 
-extern "C" {
+unsafe extern "C" {
     // -- Table (owning) ------------------------------------------------------
 
     /// Create a table from owning column handles.
