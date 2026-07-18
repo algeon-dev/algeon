@@ -99,6 +99,37 @@ impl DeviceBuffer {
         Ok(buf)
     }
 
+    /// Issue an asynchronous host-to-device copy of `data` into this buffer
+    /// at byte offset `dst_offset` on the runtime's stream, without
+    /// synchronizing.
+    ///
+    /// The caller must keep the source region valid and unmodified until the
+    /// copy completes in stream order (record a [`CudaEvent`] on the same
+    /// stream after this call and wait on it before reusing the region). For
+    /// true asynchronous overlap `data` should live in pinned host memory
+    /// (see [`crate::runtime::host_staging`]); pageable sources fall back to
+    /// the driver's staged copy path.
+    ///
+    /// [`CudaEvent`]: crate::runtime::CudaEvent
+    pub(crate) fn copy_from_host_range_async(&self, dst_offset: usize, data: &[u8]) -> Result<()> {
+        if data.is_empty() {
+            return Ok(());
+        }
+        let exec_options = self.domain.exec_options_raw();
+        error::check_status_in(
+            unsafe {
+                cudf_sys::cudf_device_buffer_copy_from_host_range_async_ex(
+                    self.handle.as_ptr(),
+                    dst_offset,
+                    data.as_ptr() as *const c_void,
+                    data.len(),
+                    &exec_options,
+                )
+            },
+            "device_buffer::copy_from_host_range_async",
+        )
+    }
+
     /// Returns the size of this buffer in bytes.
     pub fn size_bytes(&self) -> Result<usize> {
         let mut out: usize = 0;

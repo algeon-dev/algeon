@@ -432,6 +432,26 @@ impl DataFrame {
     pub fn from_record_batch(runtime: &Runtime, batch: &RecordBatch) -> Result<Self> {
         runtime.dataframe_from_record_batch(batch)
     }
+
+    /// Create a GPU `DataFrame` from a sequence of Arrow [`RecordBatch`]es
+    /// sharing one schema, staging the host copies through reusable pinned
+    /// slabs.
+    ///
+    /// Prefer this over calling [`Self::from_record_batch`] per batch and
+    /// concatenating on the device: per-batch imports issue one small
+    /// pageable host-to-device copy and one stream synchronization per
+    /// column per batch, which serializes process-wide under concurrent
+    /// queries. See [`dataframe_from_record_batches`] for the staged-import
+    /// contract, the fast-path type set, and the fallback behavior.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `batches` is empty, batch schemas differ, the
+    /// combined row count exceeds cudf's supported column length, or any
+    /// column type is unsupported by the host import path.
+    pub fn from_record_batches(runtime: &Runtime, batches: &[RecordBatch]) -> Result<Self> {
+        runtime.dataframe_from_record_batches(batches)
+    }
 }
 
 impl Runtime {
@@ -439,6 +459,14 @@ impl Runtime {
     /// inside this runtime.
     pub fn dataframe_from_record_batch(&self, batch: &RecordBatch) -> Result<DataFrame> {
         dataframe_from_record_batch(self, batch)
+    }
+
+    /// Convert same-schema Arrow [`RecordBatch`]es to one GPU [`DataFrame`]
+    /// via pinned-staged host copy inside this runtime.
+    ///
+    /// See [`dataframe_from_record_batches`].
+    pub fn dataframe_from_record_batches(&self, batches: &[RecordBatch]) -> Result<DataFrame> {
+        dataframe_from_record_batches(self, batches)
     }
 }
 
@@ -512,6 +540,258 @@ pub fn dataframe_from_record_batch(runtime: &Runtime, batch: &RecordBatch) -> Re
     )?;
     record_host_boundary_observation_in_domain(runtime.execution_domain(), observation);
     Ok(frame)
+}
+
+/// Convert a sequence of Arrow [`RecordBatch`]es sharing one schema into a
+/// single GPU [`DataFrame`] via batched host copy.
+///
+/// This is the many-batch counterpart of [`dataframe_from_record_batch`],
+/// built for streamed producers (one batch per upstream morsel). Importing
+/// batch-by-batch issues one device allocation, one small host-to-device
+/// copy, and one stream synchronization **per column per batch**; under
+/// concurrent queries those small pageable copies serialize process-wide in
+/// the CUDA driver. This entry point instead:
+///
+/// - allocates **one** device buffer per column sized for all batches,
+/// - stages source bytes through reusable pinned slabs
+///   ([`crate::runtime::host_staging`]) so the host-to-device copies are true
+///   asynchronous DMA, and
+/// - waits only on the staging copies' completion events instead of full
+///   stream synchronizations per batch.
+///
+/// Columns whose type or nullability is outside the staged fast path
+/// (non-primitive layouts such as strings and booleans, decimals, or any
+/// column with nulls) are concatenated on the host with Arrow's `concat`
+/// kernel and imported through the same per-column path as
+/// [`dataframe_from_record_batch`] — one import per column instead of one
+/// per column per batch.
+///
+/// All batches must share `batches[0]`'s schema. The combined row count must
+/// fit cudf's row-count type (`i32`).
+///
+/// # Errors
+///
+/// Returns an error if `batches` is empty, schemas differ, the combined row
+/// count overflows, a column type is unsupported by the host import path, or
+/// a copy fails.
+pub fn dataframe_from_record_batches(runtime: &Runtime, batches: &[RecordBatch]) -> Result<DataFrame> {
+    record_host_import_call();
+    let Some(first_batch) = batches.first() else {
+        return Err(Error::new_with(
+            ErrorCode::EmptyInput,
+            "dataframe_from_record_batches",
+            "at least one record batch is required; build an empty batch from the schema for empty imports",
+        ));
+    };
+    if batches.len() == 1 {
+        return dataframe_from_record_batch(runtime, first_batch);
+    }
+    let schema = first_batch.schema();
+    for (batch_index, batch) in batches.iter().enumerate().skip(1) {
+        if batch.schema() != schema {
+            return Err(Error::new_with(
+                ErrorCode::TypeMismatch,
+                "dataframe_from_record_batches",
+                format!("record batch {batch_index} does not share the first batch's schema"),
+            ));
+        }
+    }
+
+    let total_rows: usize = batches.iter().map(RecordBatch::num_rows).sum();
+    if i32::try_from(total_rows).is_err() {
+        return Err(Error::new_with(
+            ErrorCode::ValueOutOfRange,
+            "dataframe_from_record_batches",
+            format!("combined row count {total_rows} exceeds cudf's supported column length"),
+        ));
+    }
+
+    let num_cols = schema.fields().len();
+    if num_cols == 0 {
+        let frame = DataFrame::from_raw_parts(fast_index_map(), total_rows, Arc::clone(runtime.execution_domain()));
+        let observation = frame.boundary_observation_for_query_stage(
+            BoundaryKind::HostToDevice,
+            QueryStageKind::InteropImport,
+            false,
+            "dataframe_from_record_batches",
+        )?;
+        record_host_boundary_observation_in_domain(runtime.execution_domain(), observation);
+        return Ok(frame);
+    }
+
+    let mut names: Vec<String> = Vec::with_capacity(num_cols);
+    let mut columns: Vec<Column> = Vec::with_capacity(num_cols);
+    for (i, field) in schema.fields().iter().enumerate() {
+        names.push(field.name().clone());
+        let arrays: Vec<&dyn Array> = batches.iter().map(|batch| batch.column(i).as_ref()).collect();
+        let all_non_null = arrays.iter().all(|array| array.null_count() == 0);
+        let column = match staged_import_type_id(field.data_type()) {
+            Some(type_id) if all_non_null => {
+                let elem_size = field.data_type().primitive_width().ok_or_else(|| {
+                    Error::new_with(
+                        ErrorCode::UnsupportedDtype,
+                        "dataframe_from_record_batches",
+                        format!("staged import type {:?} lacks a fixed primitive width", field.data_type()),
+                    )
+                })?;
+                let datas: Vec<arrow::array::ArrayData> = arrays.iter().map(|array| array.to_data()).collect();
+                let slices: Vec<&[u8]> = datas
+                    .iter()
+                    .map(|data| {
+                        let start = data.offset() * elem_size;
+                        let len = data.len() * elem_size;
+                        &data.buffers()[0].as_slice()[start..start + len]
+                    })
+                    .collect();
+                staged_fixed_width_column(runtime, type_id, total_rows, &slices)
+                    .map_err(|error| error.reanchor("arrow::dataframe_from_record_batches"))?
+            },
+            _ => {
+                let merged = arrow::compute::concat(&arrays).map_err(|error| {
+                    error::foreign_invariant_violation(
+                        "dataframe_from_record_batches",
+                        error.to_string(),
+                        "record_batch",
+                        "arrow_concat_failed",
+                        "ensure batch columns share one Arrow data type and valid layouts",
+                    )
+                    .with_source(error)
+                })?;
+                arrow_array_to_column(runtime, merged.as_ref(), field.name())?
+            },
+        };
+        columns.push(column);
+    }
+
+    let frame = DataFrame::new(names, columns)?;
+    let observation = frame.boundary_observation_for_query_stage(
+        BoundaryKind::HostToDevice,
+        QueryStageKind::InteropImport,
+        false,
+        "dataframe_from_record_batches",
+    )?;
+    record_host_boundary_observation_in_domain(runtime.execution_domain(), observation);
+    Ok(frame)
+}
+
+/// cudf type id for Arrow types eligible for the staged fixed-width import
+/// fast path.
+///
+/// The fast path requires the Arrow values buffer to be a plain fixed-width
+/// array whose bytes can be adopted verbatim as the cudf column data:
+/// bit-packed (`Boolean`), offset-based (strings, lists), and
+/// scale-carrying (`Decimal128`) types are excluded and take the concat
+/// fallback.
+fn staged_import_type_id(dt: &ArrowDataType) -> Option<TypeId> {
+    match dt {
+        ArrowDataType::Int8 => Some(TypeId::Int8),
+        ArrowDataType::Int16 => Some(TypeId::Int16),
+        ArrowDataType::Int32 => Some(TypeId::Int32),
+        ArrowDataType::Int64 => Some(TypeId::Int64),
+        ArrowDataType::UInt8 => Some(TypeId::UInt8),
+        ArrowDataType::UInt16 => Some(TypeId::UInt16),
+        ArrowDataType::UInt32 => Some(TypeId::UInt32),
+        ArrowDataType::UInt64 => Some(TypeId::UInt64),
+        ArrowDataType::Float32 => Some(TypeId::Float32),
+        ArrowDataType::Float64 => Some(TypeId::Float64),
+        ArrowDataType::Date32 => Some(TypeId::TimestampDays),
+        ArrowDataType::Timestamp(TimeUnit::Second, _) => Some(TypeId::TimestampSeconds),
+        ArrowDataType::Timestamp(TimeUnit::Millisecond, _) => Some(TypeId::TimestampMilliseconds),
+        ArrowDataType::Timestamp(TimeUnit::Microsecond, _) => Some(TypeId::TimestampMicroseconds),
+        ArrowDataType::Timestamp(TimeUnit::Nanosecond, _) => Some(TypeId::TimestampNanoseconds),
+        ArrowDataType::Duration(TimeUnit::Second) => Some(TypeId::DurationSeconds),
+        ArrowDataType::Duration(TimeUnit::Millisecond) => Some(TypeId::DurationMilliseconds),
+        ArrowDataType::Duration(TimeUnit::Microsecond) => Some(TypeId::DurationMicroseconds),
+        ArrowDataType::Duration(TimeUnit::Nanosecond) => Some(TypeId::DurationNanoseconds),
+        _ => None,
+    }
+}
+
+/// Build one non-nullable fixed-width column by staging `slices` through
+/// pinned slabs into a single device buffer.
+///
+/// Uses two slabs in rotation: while one slab's DMA is in flight, the other
+/// is filled on the CPU. Each slab is guarded by a CUDA event recorded after
+/// its copy; the event is awaited before the slab is refilled and before the
+/// leases return the slabs to the pool.
+fn staged_fixed_width_column(
+    runtime: &Runtime,
+    type_id: TypeId,
+    total_rows: usize,
+    slices: &[&[u8]],
+) -> Result<Column> {
+    let total_bytes: usize = slices.iter().map(|slice| slice.len()).sum();
+    let device_buffer = crate::core::DeviceBuffer::new_in_runtime(runtime, total_bytes)?;
+    if total_bytes > 0 {
+        let _device_guard = crate::runtime::device_guard::DeviceGuard::new(runtime.device())
+            .map_err(|error| error.reanchor("arrow::staged_fixed_width_column"))?;
+        let pool = crate::runtime::host_staging::pinned_staging_pool();
+        let mut leases = [pool.acquire()?, pool.acquire()?];
+        let events = [crate::runtime::CudaEvent::new()?, crate::runtime::CudaEvent::new()?];
+        let mut event_pending = [false, false];
+        let slab_capacity = pool.slab_bytes();
+        let stream = runtime.stream();
+
+        let mut current = 0usize;
+        let mut fill = 0usize;
+        let mut dst_offset = 0usize;
+        for slice in slices {
+            let mut consumed = 0usize;
+            while consumed < slice.len() {
+                if fill == slab_capacity {
+                    flush_staging_slab(
+                        &device_buffer,
+                        &mut leases[current],
+                        fill,
+                        &mut dst_offset,
+                        &events[current],
+                        stream,
+                    )?;
+                    event_pending[current] = true;
+                    current ^= 1;
+                    if event_pending[current] {
+                        events[current].synchronize()?;
+                        event_pending[current] = false;
+                    }
+                    fill = 0;
+                }
+                let take = (slab_capacity - fill).min(slice.len() - consumed);
+                leases[current].slab().write_at(fill, &slice[consumed..consumed + take]);
+                fill += take;
+                consumed += take;
+            }
+        }
+        if fill > 0 {
+            flush_staging_slab(&device_buffer, &mut leases[current], fill, &mut dst_offset, &events[current], stream)?;
+            event_pending[current] = true;
+        }
+        debug_assert_eq!(dst_offset, total_bytes);
+        for (index, pending) in event_pending.iter().enumerate() {
+            if *pending {
+                events[index].synchronize()?;
+            }
+        }
+    }
+    runtime.column_from_device_buffer(device_buffer, total_rows, type_id)
+}
+
+fn flush_staging_slab(
+    device_buffer: &crate::core::DeviceBuffer,
+    lease: &mut crate::runtime::host_staging::PinnedSlabLease,
+    fill: usize,
+    dst_offset: &mut usize,
+    event: &crate::runtime::CudaEvent,
+    stream: &crate::runtime::stream::CudaStream,
+) -> Result<()> {
+    let slab = lease.slab();
+    // SAFETY: the slab holds at least `fill` initialized bytes written via
+    // `write_at`, and the lease keeps the region alive until the recorded
+    // event is awaited.
+    let staged = unsafe { std::slice::from_raw_parts(slab.as_ptr(), fill) };
+    device_buffer.copy_from_host_range_async(*dst_offset, staged)?;
+    event.record(stream)?;
+    *dst_offset += fill;
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------

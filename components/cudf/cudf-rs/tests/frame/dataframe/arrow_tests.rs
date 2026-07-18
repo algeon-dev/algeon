@@ -1517,3 +1517,115 @@ fn test_round_trip_empty_string_schema() {
     let strs = df2.series("s").unwrap().to_strings_strict().unwrap();
     assert!(strs.is_empty());
 }
+
+// ---------------------------------------------------------------------------
+// Batched pinned-staged import: DataFrame::from_record_batches
+// ---------------------------------------------------------------------------
+
+fn batches_from_ranges(ranges: &[std::ops::Range<i64>]) -> Vec<RecordBatch> {
+    ranges
+        .iter()
+        .map(|range| {
+            let ids = Int64Array::from_iter_values(range.clone());
+            let scores = Float64Array::from_iter_values(range.clone().map(|value| value as f64 * 0.5));
+            RecordBatch::try_from_iter(vec![("id", Arc::new(ids) as ArrayRef), ("score", Arc::new(scores) as ArrayRef)])
+                .unwrap()
+        })
+        .collect()
+}
+
+#[test]
+fn test_from_record_batches_matches_per_batch_import() {
+    let runtime = crate::common::sample_runtime();
+    let batches = batches_from_ranges(&[0..3, 3..8, 8..15]);
+
+    let staged = DataFrame::from_record_batches(&runtime, &batches).unwrap();
+
+    assert_eq!(staged.num_rows(), 15);
+    assert_eq!(staged.column_names(), vec!["id", "score"]);
+    let round_trip = staged.to_record_batch().unwrap();
+    let ids = round_trip.column(0).as_primitive::<arrow::datatypes::Int64Type>();
+    assert_eq!(ids.values(), &(0..15).collect::<Vec<i64>>()[..]);
+    let scores = round_trip.column(1).as_primitive::<arrow::datatypes::Float64Type>();
+    assert_eq!(scores.values(), &(0..15).map(|value| value as f64 * 0.5).collect::<Vec<f64>>()[..]);
+}
+
+#[test]
+fn test_from_record_batches_supports_sliced_batches() {
+    let runtime = crate::common::sample_runtime();
+    let full = batches_from_ranges(std::slice::from_ref(&(0..10))).remove(0);
+    let batches = vec![full.slice(1, 4), full.slice(6, 3)];
+
+    let staged = DataFrame::from_record_batches(&runtime, &batches).unwrap();
+
+    let round_trip = staged.to_record_batch().unwrap();
+    let ids = round_trip.column(0).as_primitive::<arrow::datatypes::Int64Type>();
+    assert_eq!(ids.values(), &[1, 2, 3, 4, 6, 7, 8][..]);
+}
+
+#[test]
+fn test_from_record_batches_crosses_staging_slab_boundaries() {
+    let runtime = crate::common::sample_runtime();
+    // 3 batches x 1.5M rows x 8 bytes = 36 MB total, crossing the default
+    // 16 MiB staging slab several times within and across batches.
+    let per_batch: i64 = 1_500_000;
+    let batches: Vec<RecordBatch> = (0..3)
+        .map(|batch_index| {
+            let start = batch_index * per_batch;
+            let ids = Int64Array::from_iter_values(start..start + per_batch);
+            RecordBatch::try_from_iter(vec![("id", Arc::new(ids) as ArrayRef)]).unwrap()
+        })
+        .collect();
+
+    let staged = DataFrame::from_record_batches(&runtime, &batches).unwrap();
+
+    assert_eq!(staged.num_rows(), 3 * per_batch as usize);
+    let series = staged.series("id").unwrap();
+    assert_eq!(series.min_value::<i64>().unwrap(), Some(0));
+    assert_eq!(series.max_value::<i64>().unwrap(), Some(3 * per_batch - 1));
+    assert_eq!(series.sum_value::<i64>().unwrap(), (0..3 * per_batch).sum::<i64>());
+}
+
+#[test]
+fn test_from_record_batches_nullable_and_string_fallback() {
+    let runtime = crate::common::sample_runtime();
+    let batch_one = RecordBatch::try_from_iter_with_nullable(vec![
+        ("n", Arc::new(Int64Array::from(vec![Some(1), None])) as ArrayRef, true),
+        ("s", Arc::new(StringArray::from(vec![Some("a"), Some("b")])) as ArrayRef, true),
+    ])
+    .unwrap();
+    let batch_two = RecordBatch::try_from_iter_with_nullable(vec![
+        ("n", Arc::new(Int64Array::from(vec![Some(3)])) as ArrayRef, true),
+        ("s", Arc::new(StringArray::from(vec![None::<&str>])) as ArrayRef, true),
+    ])
+    .unwrap();
+
+    let staged = DataFrame::from_record_batches(&runtime, &[batch_one, batch_two]).unwrap();
+
+    let round_trip = staged.to_record_batch().unwrap();
+    let numbers = round_trip.column(0).as_primitive::<arrow::datatypes::Int64Type>();
+    assert_eq!(numbers.iter().collect::<Vec<_>>(), vec![Some(1), None, Some(3)]);
+    let strings = round_trip.column(1).as_any().downcast_ref::<StringArray>().unwrap();
+    assert_eq!(strings.iter().collect::<Vec<_>>(), vec![Some("a"), Some("b"), None]);
+}
+
+#[test]
+fn test_from_record_batches_rejects_empty_input() {
+    let runtime = crate::common::sample_runtime();
+
+    let error = DataFrame::from_record_batches(&runtime, &[]).unwrap_err();
+
+    assert_eq!(error.code(), ErrorCode::EmptyInput);
+}
+
+#[test]
+fn test_from_record_batches_rejects_schema_mismatch() {
+    let runtime = crate::common::sample_runtime();
+    let ints = RecordBatch::try_from_iter(vec![("v", Arc::new(Int64Array::from(vec![1i64])) as ArrayRef)]).unwrap();
+    let floats =
+        RecordBatch::try_from_iter(vec![("v", Arc::new(Float64Array::from(vec![1.0f64])) as ArrayRef)]).unwrap();
+
+    let error = DataFrame::from_record_batches(&runtime, &[ints, floats]).unwrap_err();
+
+    assert_eq!(error.code(), ErrorCode::TypeMismatch);
+}
