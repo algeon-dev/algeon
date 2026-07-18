@@ -234,11 +234,11 @@ pub mod testing;
 pub use core::{
     error::{BudgetExhaustionDetail, Error, ErrorCode, ErrorKind, ErrorStatus, Result},
     memory::{
-        DeviceMemoryFailureAction, DeviceMemoryFailureInfo, DeviceMemoryFailureSource, DeviceMemoryManager,
-        DeviceMemoryManagerBase, DeviceMemoryManagerFailureCallbackState, DeviceMemoryManagerOptions,
-        DeviceMemoryPoolUsage, DeviceMemoryResource, DeviceMemoryResourceUsage, QueryMemoryDomain,
-        QueryMemoryDomainOptions, QueryMemoryDomainUsage, ReservationArena, ReservationArenaUsage, ReservationUsage,
-        StreamReservationLease,
+        DeviceMemoryFailureAction, DeviceMemoryFailureAllocationDomain, DeviceMemoryFailureInfo,
+        DeviceMemoryFailureSource, DeviceMemoryManager, DeviceMemoryManagerBase,
+        DeviceMemoryManagerFailureCallbackState, DeviceMemoryManagerOptions, DeviceMemoryPoolUsage,
+        DeviceMemoryResource, DeviceMemoryResourceUsage, QueryMemoryDomain, QueryMemoryDomainOptions,
+        QueryMemoryDomainUsage, ReservationArena, ReservationArenaUsage, ReservationUsage, StreamReservationLease,
     },
     scalar::IntoRuntimeScalar,
     types::{CudfType, DataType, NullEquality, NullPolicy, TimestampResolution, TypeId},

@@ -179,11 +179,79 @@ impl DeviceMemoryFailureSource {
     }
 }
 
+/// Budget domain that rejected an allocation.
+///
+/// This identifies the budget that rejected the allocation, not every budget
+/// that was attached to the stream. For example, a reservation attached to an
+/// arena reports [`Self::StreamReservation`] when its own member limit rejects
+/// first, and [`Self::ReservationArena`] when the arena cap rejects first.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeviceMemoryFailureAllocationDomain {
+    /// A stream-bound reservation rejected the allocation.
+    StreamReservation { reservation_id: u64 },
+    /// A query-scoped reservation arena rejected the allocation.
+    ReservationArena { arena_id: u64, reservation_id: u64 },
+    /// A query memory domain rejected the allocation.
+    QueryMemoryDomain { domain_id: u64, member_id: u64 },
+    /// A newer native library reported a domain kind this cudf-rs version does not know.
+    Unknown { kind: u64, primary_id: u64, secondary_id: u64 },
+}
+
+impl DeviceMemoryFailureAllocationDomain {
+    fn from_sys(kind: u64, primary_id: u64, secondary_id: u64) -> Option<Self> {
+        match kind {
+            value if value == cudf_sys::cudf_memory_failure_domain_t::CUDF_MEMORY_FAILURE_DOMAIN_NONE as u64 => None,
+            value
+                if value
+                    == cudf_sys::cudf_memory_failure_domain_t::CUDF_MEMORY_FAILURE_DOMAIN_STREAM_RESERVATION as u64 =>
+            {
+                Some(Self::StreamReservation { reservation_id: primary_id })
+            },
+            value
+                if value
+                    == cudf_sys::cudf_memory_failure_domain_t::CUDF_MEMORY_FAILURE_DOMAIN_RESERVATION_ARENA as u64 =>
+            {
+                Some(Self::ReservationArena { arena_id: primary_id, reservation_id: secondary_id })
+            },
+            value
+                if value
+                    == cudf_sys::cudf_memory_failure_domain_t::CUDF_MEMORY_FAILURE_DOMAIN_QUERY_MEMORY_DOMAIN
+                        as u64 =>
+            {
+                Some(Self::QueryMemoryDomain { domain_id: primary_id, member_id: secondary_id })
+            },
+            other => Some(Self::Unknown { kind: other, primary_id, secondary_id }),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn failure_info_preserves_unknown_allocation_domain_identity() {
+        let mut raw = cudf_sys::cudf_memory_failure_info_t::default();
+        raw.flags = cudf_sys::CUDF_MEMORY_FAILURE_INFO_HAS_ALLOCATION_DOMAIN;
+        raw.reserved[0] = 99;
+        raw.reserved[1] = 1234;
+        raw.reserved[2] = 5678;
+
+        let info = DeviceMemoryFailureInfo::from_sys(raw);
+
+        assert_eq!(
+            info.allocation_domain,
+            Some(DeviceMemoryFailureAllocationDomain::Unknown { kind: 99, primary_id: 1234, secondary_id: 5678 })
+        );
+    }
+}
+
 /// Allocation-failure payload passed to reclaim-capable failure callbacks.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DeviceMemoryFailureInfo {
     pub device: DeviceId,
     pub source: DeviceMemoryFailureSource,
+    pub allocation_domain: Option<DeviceMemoryFailureAllocationDomain>,
     pub requested_bytes: u64,
     pub callback_attempt: u32,
     pub trim_retry_count: u32,
@@ -206,9 +274,15 @@ impl DeviceMemoryFailureInfo {
         } else {
             DeviceId::DEFAULT
         };
+        let allocation_domain = (value.flags & cudf_sys::CUDF_MEMORY_FAILURE_INFO_HAS_ALLOCATION_DOMAIN != 0)
+            .then(|| {
+                DeviceMemoryFailureAllocationDomain::from_sys(value.reserved[0], value.reserved[1], value.reserved[2])
+            })
+            .flatten();
         Self {
             device,
             source: DeviceMemoryFailureSource::from_sys(value.failure_source),
+            allocation_domain,
             requested_bytes: value.requested_bytes,
             callback_attempt: value.callback_attempt,
             trim_retry_count: value.trim_retry_count,

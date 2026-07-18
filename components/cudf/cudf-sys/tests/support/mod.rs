@@ -99,6 +99,13 @@ pub fn set_current_device(device: i32) {
     assert_eq!(st, cudf_sys::CUDF_SUCCESS);
 }
 
+pub fn visible_device_count() -> i32 {
+    let mut count = 0;
+    let st = unsafe { cudf_sys::cudf_cuda_get_device_count(&mut count) };
+    assert_eq!(st, cudf_sys::CUDF_SUCCESS);
+    count
+}
+
 pub fn required_exec_options(
     stream: &cudf_sys::BorrowedStream<'_>,
     mr: &cudf_sys::BorrowedMemoryResource<'_>,

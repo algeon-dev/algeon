@@ -7,8 +7,9 @@ use std::{
 };
 
 use support::{
-    CurrentDeviceResourceRestore, OwnedMemoryResource, OwnedStream, current_device, current_device_resource_raw,
-    lock_shim_state, required_exec_options,
+    CurrentDeviceResourceRestore, CurrentDeviceRestore, OwnedMemoryResource, OwnedStream, current_device,
+    current_device_resource_raw, last_error_message, lock_shim_state, required_exec_options, set_current_device,
+    visible_device_count,
 };
 
 fn make_i32_column_with_memory_resource(data: &[i32], mr: &cudf_sys::BorrowedMemoryResource<'_>) -> *mut c_void {
@@ -122,6 +123,94 @@ unsafe extern "C" fn retry_once_then_decline_callback(bytes: usize, callback_arg
     }
     let calls = unsafe { &*(callback_arg as *const AtomicUsize) };
     i32::from(calls.fetch_add(1, Ordering::SeqCst) == 0)
+}
+
+#[test]
+fn native_manager_reservation_rejects_cross_device_stream() {
+    let _shim_state = lock_shim_state();
+    if visible_device_count() < 2 {
+        eprintln!("skipping native cross-device stream reservation test; fewer than two CUDA devices are visible");
+        return;
+    }
+    let _restore = CurrentDeviceRestore::new();
+
+    set_current_device(0);
+    let mut manager = ptr::null_mut();
+    let status = unsafe { cudf_sys::cudf_memory_manager_for_device(0, &mut manager) };
+    assert_eq!(status, cudf_sys::CUDF_SUCCESS);
+    assert!(!manager.is_null());
+
+    set_current_device(1);
+    let stream = OwnedStream::new();
+
+    let mut reservation = ptr::null_mut();
+    let status = unsafe {
+        cudf_sys::cudf_memory_manager_attach_reservation(
+            manager,
+            stream.as_raw(),
+            70_001,
+            1024 * 1024,
+            &mut reservation,
+        )
+    };
+    assert_eq!(status, cudf_sys::CUDF_ERROR_INVALID_OPERATION);
+    assert!(reservation.is_null());
+    assert!(
+        last_error_message().contains("same CUDA device"),
+        "expected same-device rejection, got {:?}",
+        last_error_message()
+    );
+
+    drop(stream);
+}
+
+#[test]
+fn native_query_domain_rejects_cross_device_stream() {
+    let _shim_state = lock_shim_state();
+    if visible_device_count() < 2 {
+        eprintln!("skipping native cross-device query-domain test; fewer than two CUDA devices are visible");
+        return;
+    }
+    let _restore = CurrentDeviceRestore::new();
+
+    set_current_device(0);
+    let mut manager = ptr::null_mut();
+    let status = unsafe { cudf_sys::cudf_memory_manager_for_device(0, &mut manager) };
+    assert_eq!(status, cudf_sys::CUDF_SUCCESS);
+    assert!(!manager.is_null());
+
+    let mut domain = ptr::null_mut();
+    let status = unsafe {
+        cudf_sys::cudf_memory_manager_create_query_memory_domain(
+            manager,
+            70_002,
+            1024 * 1024,
+            1024 * 1024,
+            1024 * 1024,
+            &mut domain,
+        )
+    };
+    assert_eq!(status, cudf_sys::CUDF_SUCCESS);
+    assert!(!domain.is_null());
+
+    set_current_device(1);
+    let stream = OwnedStream::new();
+
+    let mut reservation = ptr::null_mut();
+    let status =
+        unsafe { cudf_sys::cudf_query_memory_domain_attach_stream(domain, stream.as_raw(), 70_003, &mut reservation) };
+    assert_eq!(status, cudf_sys::CUDF_ERROR_INVALID_OPERATION);
+    assert!(reservation.is_null());
+    assert!(
+        last_error_message().contains("same CUDA device"),
+        "expected same-device rejection, got {:?}",
+        last_error_message()
+    );
+
+    drop(stream);
+    set_current_device(0);
+    let status = unsafe { cudf_sys::cudf_query_memory_domain_destroy(domain) };
+    assert_eq!(status, cudf_sys::CUDF_SUCCESS);
 }
 
 #[test]

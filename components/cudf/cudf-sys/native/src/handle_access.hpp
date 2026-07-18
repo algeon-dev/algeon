@@ -12,6 +12,8 @@
 
 rmm::cuda_stream_view cudf_stream_view_from_handle(cudf_stream_handle handle);
 
+int32_t cudf_stream_device_from_handle(cudf_stream_handle handle);
+
 std::shared_ptr<void>
 cudf_stream_lifetime_from_handle(cudf_stream_handle handle);
 

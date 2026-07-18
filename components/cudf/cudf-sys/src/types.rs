@@ -443,6 +443,7 @@ pub const CUDF_MEMORY_POOL_USAGE_RESERVED_SLOTS: usize = 4;
 pub const CUDF_MEMORY_MANAGER_OPTIONS_RESERVED_SLOTS: usize = 4;
 pub const CUDF_MEMORY_FAILURE_INFO_RESERVED_SLOTS: usize = 4;
 pub const CUDF_MEMORY_FAILURE_INFO_HAS_POOL_USAGE: u32 = 1 << 0;
+pub const CUDF_MEMORY_FAILURE_INFO_HAS_ALLOCATION_DOMAIN: u32 = 1 << 1;
 
 #[repr(i32)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -464,6 +465,15 @@ pub enum cudf_memory_failure_action_t {
 pub enum cudf_memory_failure_source_t {
     CUDF_MEMORY_FAILURE_SOURCE_PHYSICAL = 0,
     CUDF_MEMORY_FAILURE_SOURCE_RESERVATION_LIMIT = 1,
+}
+
+#[repr(i32)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum cudf_memory_failure_domain_t {
+    CUDF_MEMORY_FAILURE_DOMAIN_NONE = 0,
+    CUDF_MEMORY_FAILURE_DOMAIN_STREAM_RESERVATION = 1,
+    CUDF_MEMORY_FAILURE_DOMAIN_RESERVATION_ARENA = 2,
+    CUDF_MEMORY_FAILURE_DOMAIN_QUERY_MEMORY_DOMAIN = 3,
 }
 
 #[repr(C)]

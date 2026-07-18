@@ -16,9 +16,9 @@ mod series_display_tests;
 #[test]
 fn query_memory_manager_surface_is_publicly_importable() {
     use cudf::{
-        DeviceMemoryFailureAction, DeviceMemoryFailureInfo, DeviceMemoryFailureSource, DeviceMemoryManager,
-        DeviceMemoryManagerFailureCallbackState, DeviceMemoryResource, ExecutionBudgetEnforcement,
-        ExecutionBudgetStatus, ReservationUsage, Runtime, StreamReservationLease,
+        DeviceMemoryFailureAction, DeviceMemoryFailureAllocationDomain, DeviceMemoryFailureInfo,
+        DeviceMemoryFailureSource, DeviceMemoryManager, DeviceMemoryManagerFailureCallbackState, DeviceMemoryResource,
+        ExecutionBudgetEnforcement, ExecutionBudgetStatus, ReservationUsage, Runtime, StreamReservationLease,
     };
 
     let _ = cudf::ExecutionBudgetToken::resize;
@@ -29,6 +29,7 @@ fn query_memory_manager_surface_is_publicly_importable() {
     let _ = DeviceMemoryManager::failure_callback_state_for_device;
     let _: Option<DeviceMemoryFailureInfo> = None;
     let _ = DeviceMemoryFailureAction::Decline;
+    let _ = DeviceMemoryFailureAllocationDomain::StreamReservation { reservation_id: 1 };
     let _ = DeviceMemoryFailureSource::Physical;
     let _: Option<DeviceMemoryManagerFailureCallbackState> = None;
     let _ = StreamReservationLease::resize;

@@ -45,9 +45,24 @@ constexpr std::uint64_t k_trim_retry_idle_to_request_ratio = 10;
 using cuda_async_resource_box =
   rmm::mr::device_memory_resource_box<rmm::mr::cuda_async_memory_resource>;
 
+struct memory_failure_domain_identity {
+  cudf_memory_failure_domain_t kind = CUDF_MEMORY_FAILURE_DOMAIN_NONE;
+  std::uint64_t primary_id          = 0;
+  std::uint64_t secondary_id        = 0;
+};
+
 class reservation_limit_out_of_memory final : public rmm::out_of_memory {
  public:
-  explicit reservation_limit_out_of_memory(char const* message) : rmm::out_of_memory{message} {}
+  reservation_limit_out_of_memory(char const* message,
+                                  memory_failure_domain_identity identity)
+    : rmm::out_of_memory{message}, identity_{identity}
+  {
+  }
+
+  [[nodiscard]] memory_failure_domain_identity identity() const noexcept { return identity_; }
+
+ private:
+  memory_failure_domain_identity identity_;
 };
 
 cudf_memory_manager_options_t default_memory_manager_options()
@@ -221,6 +236,7 @@ void fill_failure_info(cudf_memory_failure_info_t& out,
                        std::size_t request_bytes,
                        cuda_async_resource_box* async_pool,
                        cudf_memory_failure_source_t failure_source,
+                       memory_failure_domain_identity identity,
                        std::uint32_t callback_attempt,
                        std::uint32_t trim_retry_count)
 {
@@ -231,6 +247,12 @@ void fill_failure_info(cudf_memory_failure_info_t& out,
   out.trim_retry_count  = trim_retry_count;
   out.requested_bytes   = static_cast<std::uint64_t>(request_bytes);
   out.failure_source    = static_cast<std::uint32_t>(failure_source);
+  if (identity.kind != CUDF_MEMORY_FAILURE_DOMAIN_NONE) {
+    out.flags |= CUDF_MEMORY_FAILURE_INFO_HAS_ALLOCATION_DOMAIN;
+    out.reserved[0] = static_cast<std::uint64_t>(identity.kind);
+    out.reserved[1] = identity.primary_id;
+    out.reserved[2] = identity.secondary_id;
+  }
   cudf_memory_pool_usage_t usage{};
   if (read_async_pool_usage_noexcept(async_pool, usage)) {
     out.flags |= CUDF_MEMORY_FAILURE_INFO_HAS_POOL_USAGE;
@@ -541,6 +563,16 @@ class query_domain_resource final : public rmm::mr::device_memory_resource {
     return aligned_bytes > ceiling_bytes_ - static_cast<std::size_t>(usage.reserved_current_bytes);
   }
 
+  [[nodiscard]] memory_failure_domain_identity failure_identity(
+    std::shared_ptr<query_domain_member_counters> const& member) const noexcept
+  {
+    return memory_failure_domain_identity{
+      CUDF_MEMORY_FAILURE_DOMAIN_QUERY_MEMORY_DOMAIN,
+      domain_id_,
+      member == nullptr ? 0 : member->id,
+    };
+  }
+
   void* allocate_impl(std::shared_ptr<query_domain_member_counters> const& member,
                       rmm::cuda_stream_view stream,
                       std::size_t bytes,
@@ -556,7 +588,7 @@ class query_domain_resource final : public rmm::mr::device_memory_resource {
         record_failed_allocation(bytes);
         record_member_failed_allocation(member, bytes);
         throw reservation_limit_out_of_memory{
-          "query memory domain grant exceeded"};
+          "query memory domain grant exceeded", failure_identity(member)};
       }
       new_aligned = old_aligned + aligned_bytes;
       if (current_aligned_bytes_.compare_exchange_weak(
@@ -574,7 +606,7 @@ class query_domain_resource final : public rmm::mr::device_memory_resource {
       record_member_failed_allocation(member, bytes);
       if (would_exceed_pool_ceiling(aligned_bytes)) {
         throw reservation_limit_out_of_memory{
-          "query memory domain pool ceiling exceeded"};
+          "query memory domain pool ceiling exceeded", failure_identity(member)};
       }
       throw;
     } catch (...) {
@@ -1173,12 +1205,13 @@ class reservation_aware_resource_adaptor final : public rmm::mr::device_memory_r
   void reserve_allocation(State& state,
                           std::size_t bytes,
                           std::size_t aligned_bytes,
-                          char const* limit_message)
+                          char const* limit_message,
+                          memory_failure_domain_identity identity)
   {
     if (state.current_aligned_bytes > state.allocation_limit ||
         aligned_bytes > state.allocation_limit - state.current_aligned_bytes) {
       record_failed_allocation(state, bytes);
-      throw reservation_limit_out_of_memory{limit_message};
+      throw reservation_limit_out_of_memory{limit_message, identity};
     }
     state.current_aligned_bytes += aligned_bytes;
   }
@@ -1249,7 +1282,12 @@ class reservation_aware_resource_adaptor final : public rmm::mr::device_memory_r
             reserve_allocation(*arena,
                                bytes,
                                aligned_bytes,
-                               "reservation arena memory resource allocation limit exceeded");
+                               "reservation arena memory resource allocation limit exceeded",
+                               memory_failure_domain_identity{
+                                 CUDF_MEMORY_FAILURE_DOMAIN_RESERVATION_ARENA,
+                                 arena->id,
+                                 reservation->id,
+                               });
           } catch (...) {
             record_failed_allocation(*reservation, bytes);
             throw;
@@ -1259,7 +1297,12 @@ class reservation_aware_resource_adaptor final : public rmm::mr::device_memory_r
           reserve_allocation(*reservation,
                              bytes,
                              aligned_bytes,
-                             "stream reservation memory resource allocation limit exceeded");
+                             "stream reservation memory resource allocation limit exceeded",
+                             memory_failure_domain_identity{
+                               CUDF_MEMORY_FAILURE_DOMAIN_STREAM_RESERVATION,
+                               reservation->id,
+                               0,
+                             });
         } catch (...) {
           if (arena != nullptr) { release_reserved_alignment(*arena, aligned_bytes); }
           throw;
@@ -1397,14 +1440,24 @@ class bounded_failure_callback_resource_adaptor final : public rmm::mr::device_m
       try {
         return upstream_.allocate(stream, bytes, alignment);
       } catch (rmm::out_of_memory const& error) {
+        auto const* reservation_error =
+          dynamic_cast<reservation_limit_out_of_memory const*>(&error);
         auto const failure_source =
-          dynamic_cast<reservation_limit_out_of_memory const*>(&error) == nullptr
+          reservation_error == nullptr
             ? CUDF_MEMORY_FAILURE_SOURCE_PHYSICAL
             : CUDF_MEMORY_FAILURE_SOURCE_RESERVATION_LIMIT;
+        auto const failure_identity =
+          reservation_error == nullptr ? memory_failure_domain_identity{} : reservation_error->identity();
         if (callback_v2_ != nullptr) {
           if (callback_retries >= k_max_failure_callback_retries) { throw; }
           cudf_memory_failure_info_t info{};
-          fill_failure_info(info, device_ordinal_, bytes, async_pool_, failure_source, callback_retries,
+          fill_failure_info(info,
+                            device_ordinal_,
+                            bytes,
+                            async_pool_,
+                            failure_source,
+                            failure_identity,
+                            callback_retries,
                             trim_retry_count);
           auto const action = callback_v2_(&info, callback_arg_);
           if (action == CUDF_MEMORY_FAILURE_ACTION_RETRY) {
@@ -1740,6 +1793,17 @@ cudf_status_t validate_memory_manager_device(int32_t device)
   }
   if (device >= device_count) {
     set_error("device is outside the available CUDA device range");
+    return CUDF_ERROR_INVALID_OPERATION;
+  }
+  return CUDF_SUCCESS;
+}
+
+cudf_status_t validate_stream_device_for_manager(cudf_stream_handle stream,
+                                                 int32_t manager_device,
+                                                 char const* error_message)
+{
+  if (cudf_stream_device_from_handle(stream) != manager_device) {
+    set_error(error_message);
     return CUDF_ERROR_INVALID_OPERATION;
   }
   return CUDF_SUCCESS;
@@ -2312,6 +2376,11 @@ cudf_status_t cudf_memory_manager_attach_reservation(cudf_memory_manager_handle 
       set_error("memory manager handle is not registered");
       return CUDF_ERROR_INVALID_OPERATION;
     }
+    cudf_status_t const stream_status = validate_stream_device_for_manager(
+      stream,
+      manager_state->device,
+      "stream reservation requires stream and memory manager to be on the same CUDA device");
+    if (stream_status != CUDF_SUCCESS) { return stream_status; }
     auto* adaptor = manager_state->owner->reservation_adaptor;
     if (adaptor == nullptr) {
       set_error("memory manager resource is not reservation-aware");
@@ -2391,6 +2460,11 @@ cudf_status_t cudf_memory_manager_attach_reservation_to_arena(
       set_error("reservation arena belongs to a different memory manager");
       return CUDF_ERROR_INVALID_OPERATION;
     }
+    cudf_status_t const stream_status = validate_stream_device_for_manager(
+      stream,
+      manager_state->device,
+      "arena stream reservation requires stream and memory manager to be on the same CUDA device");
+    if (stream_status != CUDF_SUCCESS) { return stream_status; }
     auto* adaptor = manager_state->owner->reservation_adaptor;
     if (adaptor == nullptr) {
       set_error("memory manager resource is not reservation-aware");
@@ -2611,6 +2685,11 @@ cudf_status_t cudf_query_memory_domain_attach_stream(cudf_query_memory_domain_ha
   CUDF_RUST_TRY
   {
     auto& domain_state = *static_cast<query_domain_handle_state*>(domain);
+    cudf_status_t const stream_status = validate_stream_device_for_manager(
+      stream,
+      domain_state.manager->device,
+      "query memory domain requires stream and domain manager to be on the same CUDA device");
+    if (stream_status != CUDF_SUCCESS) { return stream_status; }
     auto* adaptor      = domain_state.manager->owner->reservation_adaptor;
     if (adaptor == nullptr) {
       set_error("query memory domain manager resource is not reservation-aware");
