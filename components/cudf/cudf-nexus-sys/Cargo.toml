@@ -1,0 +1,22 @@
+[package]
+name = "cudf-nexus-sys"
+description = "Linux-only low-level FFI bindings to libcudf"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords = ["cuda", "cudf", "ffi", "gpu", "rapids"]
+categories = ["api-bindings", "science"]
+build = "build.rs"
+links = "cudf_rust"
+
+[lib]
+name = "cudf_sys"
+
+[build-dependencies]
+cmake.workspace = true
+
+[dev-dependencies]
+static_assertions.workspace = true

@@ -151,7 +151,7 @@ assert_no_cudf_sys_compile "02-baseline-repeat"
 echo "PATH-only change must stay fresh..."
 run_no_run "03-path-append" env \
   CC="${CC}" CXX="${CXX}" CUDF_INSTALL_DIR="${CUDF_INSTALL_DIR}" \
-  PATH="/tmp/cudf-rs-irrelevant-bin:${PATH}"
+  PATH="/tmp/cudf-irrelevant-bin:${PATH}"
 assert_no_cudf_sys_compile "03-path-append"
 
 echo "Simulated venv PATH prefix must stay fresh..."
@@ -201,7 +201,7 @@ run_no_run "09-restore-install-dir" --allow-timeout env \
   CC="${CC}" CXX="${CXX}" CUDF_INSTALL_DIR="${CUDF_INSTALL_DIR}"
 
 echo "Touching a cudf-sys shim source must dirty the native build..."
-SHIM_SOURCE="${ROOT}/cudf-sys/native/src/error.cpp"
+SHIM_SOURCE="${ROOT}/cudf-nexus-sys/native/src/error.cpp"
 if [[ ! -f "${SHIM_SOURCE}" ]]; then
   echo "ERROR: missing shim source ${SHIM_SOURCE}" >&2
   exit 2

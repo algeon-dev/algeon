@@ -1,5 +1,5 @@
 [workspace]
-members = ["cudf-sys", "cudf-rs", "rapids-interop"]
+members = ["cudf-nexus-sys", "cudf-nexus", "rapids-interop"]
 resolver = "3"
 
 [workspace.package]
@@ -7,8 +7,8 @@ version = "0.1.0"
 edition = "2024"
 rust-version = "1.94"
 license = "Apache-2.0"
-repository = "https://github.com/DataFusion-Nexus/cudf-rs"
-homepage = "https://github.com/DataFusion-Nexus/cudf-rs"
+repository = "https://github.com/DataFusion-Nexus/cudf-nexus"
+homepage = "https://github.com/DataFusion-Nexus/cudf-nexus"
 readme = "README.md"
 
 [workspace.dependencies]
@@ -17,7 +17,7 @@ arrow = { version = "58.3", features = ["ffi"] }
 bitflags = "2"
 cmake = "0.1"
 csv = "1.4"
-cudf-sys = { path = "cudf-sys", version = "0.1.0" }
+cudf-sys = { package = "cudf-nexus-sys", path = "cudf-nexus-sys", version = "0.1.0" }
 indexmap = "2"
 parquet = { version = "=58.3", default-features = false }
 rapids-interop = { path = "rapids-interop", version = "0.1.0" }
