@@ -417,12 +417,12 @@ impl DataFrame {
         let _consumer_fence =
             ExecutionDomain::insert_stream_dependency(value.execution_domain(), col.execution_domain(), operation)?;
         let cv = col.view()?;
-        let exec_options = col.execution_domain().exec_options_raw();
+        let exec_options = col.execution_domain().enter_execution()?;
         let new_col = crate::ops::replace::replace_nulls_with_exec_options(
             &cv,
             value,
             col.execution_domain(),
-            &exec_options,
+            exec_options.options(),
             operation,
         )?;
 

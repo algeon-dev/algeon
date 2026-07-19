@@ -147,7 +147,7 @@ unsafe impl Sync for DistinctHashJoinHandle {}
 
 impl DistinctHashJoinHandle {
     fn new(build: &TableView<'_>, domain: &Arc<ExecutionDomain>, operation: &'static str) -> Result<Self> {
-        let exec_options = domain.exec_options_raw();
+        let exec_options = domain.enter_execution()?;
         let mut handle = ptr::null_mut();
         error::check_status_in_with_details(
             unsafe {
@@ -155,7 +155,7 @@ impl DistinctHashJoinHandle {
                     build.raw_handle(),
                     cudf_sys::cudf_null_equality_t::CUDF_NULL_EQUALITY_EQUAL,
                     &mut handle,
-                    &exec_options,
+                    exec_options.options(),
                 )
             },
             operation,
@@ -173,7 +173,7 @@ impl DistinctHashJoinHandle {
         output_domain: &Arc<ExecutionDomain>,
         operation: &'static str,
     ) -> Result<Column> {
-        let exec_options = output_domain.exec_options_raw();
+        let exec_options = output_domain.enter_execution()?;
         let mut handle = ptr::null_mut();
         error::check_status_in_with_details(
             unsafe {
@@ -181,7 +181,7 @@ impl DistinctHashJoinHandle {
                     self.handle.as_ptr(),
                     probe.raw_handle(),
                     &mut handle,
-                    &exec_options,
+                    exec_options.options(),
                 )
             },
             operation,
@@ -193,7 +193,12 @@ impl DistinctHashJoinHandle {
 
 impl Drop for DistinctHashJoinHandle {
     fn drop(&mut self) {
-        unsafe { cudf_sys::cudf_distinct_hash_join_destroy(self.handle.as_ptr()) };
+        crate::core::native_teardown::drop_device_owned_handle(
+            self.handle.as_ptr(),
+            self._domain.device_id(),
+            "DistinctHashJoinHandle::drop",
+            |owned| unsafe { cudf_sys::cudf_distinct_hash_join_destroy(owned) },
+        );
     }
 }
 

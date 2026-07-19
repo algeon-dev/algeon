@@ -21,6 +21,7 @@ typedef enum {
   CUDF_ERROR_FATAL_CUDA        = 9,
   CUDF_ERROR_INVALID_ARGUMENT  = 10,
   CUDF_ERROR_UNSUPPORTED       = 11,
+  CUDF_ERROR_SIZE_OVERFLOW     = 12,
 } cudf_status_t;
 
 /// Retrieve the thread-local error message from the last failed call.
@@ -30,6 +31,10 @@ const char* cudf_last_error_message(void);
 
 /// Clear the thread-local error state.
 void cudf_clear_error(void);
+
+/// Testing-only: make the next provenance-bound destroy on this thread return
+/// `status` without running native cleanup. Pass CUDF_SUCCESS to disarm.
+void cudf_test_fail_next_provenance_destroy(cudf_status_t status);
 
 #ifdef __cplusplus
 }

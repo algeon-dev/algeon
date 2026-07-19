@@ -209,7 +209,11 @@ cudf_status_t cudf_column_device_allocated_size(cudf_column_handle handle,
                                                 size_t *out);
 
 /// Destroy an owning column handle.
-void cudf_column_destroy(cudf_column_handle handle);
+///
+/// Ownership is consumed on call, including on failure. CUDF_SUCCESS means
+/// cleanup completed; any error means the allocation was quarantined and the
+/// handle must not be reused or destroyed again.
+cudf_status_t cudf_column_destroy(cudf_column_handle handle);
 
 /// Get an immutable view of a column. The view is heap-allocated and must
 /// be freed with cudf_column_view_destroy. The view borrows from `handle`
@@ -218,7 +222,7 @@ cudf_status_t cudf_column_view(cudf_column_handle handle,
                                cudf_column_view_handle *out);
 
 /// Destroy a column_view handle.
-void cudf_column_view_destroy(cudf_column_view_handle handle);
+cudf_status_t cudf_column_view_destroy(cudf_column_view_handle handle);
 
 /// Get the type_id of a column_view.
 cudf_status_t cudf_column_view_type(cudf_column_view_handle handle,
@@ -492,6 +496,16 @@ cudf_status_t cudf_column_view_strings_to_host_ex(
     cudf_column_view_handle handle, int32_t *offsets_buf,
     size_t offsets_buf_size, char *chars_buf, size_t chars_buf_size,
     int32_t *total_chars_bytes, const cudf_exec_options_t *options);
+
+/// Testing-only: exercise the checked size arithmetic used by recursive
+/// owning-handle payload/allocation accounting.
+cudf_status_t cudf_test_checked_owning_handle_size_add(
+    size_t left, size_t right, size_t *out);
+
+/// Testing-only: exercise the checked size arithmetic used by recursive
+/// owning-handle payload/allocation accounting.
+cudf_status_t cudf_test_checked_owning_handle_size_mul(
+    size_t left, size_t right, size_t *out);
 
 #ifdef __cplusplus
 }

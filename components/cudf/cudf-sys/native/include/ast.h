@@ -101,8 +101,9 @@ cudf_status_t cudf_ast_operation_binary_create(cudf_ast_operator_t op,
                                                cudf_ast_expression_handle right,
                                                cudf_ast_expression_handle* out);
 
-/// Destroy an AST expression handle.
-void cudf_ast_expression_destroy(cudf_ast_expression_handle handle);
+/// Destroy an AST expression handle. Ownership is consumed on call; success
+/// means cleanup completed and failure means the handle is quarantined.
+cudf_status_t cudf_ast_expression_destroy(cudf_ast_expression_handle handle);
 
 #ifdef __cplusplus
 }

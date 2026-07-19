@@ -221,6 +221,7 @@ static_assert(CUDF_ERROR_UNKNOWN == 8);
 static_assert(CUDF_ERROR_FATAL_CUDA == 9);
 static_assert(CUDF_ERROR_INVALID_ARGUMENT == 10);
 static_assert(CUDF_ERROR_UNSUPPORTED == 11);
+static_assert(CUDF_ERROR_SIZE_OVERFLOW == 12);
 static_assert(CUDF_MEMORY_MANAGER_BASE_CUDA_ASYNC == 0);
 static_assert(CUDF_MEMORY_MANAGER_BASE_POOL == 1);
 

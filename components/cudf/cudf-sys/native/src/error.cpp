@@ -63,6 +63,9 @@ cudf_status_t translate_exception_impl(cudf_status_t runtime_error_status)
   } catch (std::invalid_argument const& e) {
     set_error(e.what());
     return CUDF_ERROR_INVALID_ARGUMENT;
+  } catch (std::overflow_error const& e) {
+    set_error(e.what());
+    return CUDF_ERROR_SIZE_OVERFLOW;
   } catch (std::ios_base::failure const& e) {
     set_error(e.what());
     return CUDF_ERROR_IO;

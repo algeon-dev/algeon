@@ -13,7 +13,6 @@ const GPU_OWNING_PUBLIC_DESTROY_FUNCTIONS: &[&str] =
 fn gpu_owning_public_destroy_functions_use_provenance_helper_instead_of_naked_delete() {
     let sources = NativeSources::load();
     let mut violations = Vec::new();
-    let mut helper_sets = Vec::new();
 
     for function in GPU_OWNING_PUBLIC_DESTROY_FUNCTIONS {
         let region = sources.function_body(function);
@@ -33,15 +32,6 @@ fn gpu_owning_public_destroy_functions_use_provenance_helper_instead_of_naked_de
                 function, region.file_name
             ));
         }
-        helper_sets.push((*function, helpers));
-    }
-
-    let common_helpers = common_helper_names(&helper_sets);
-    if common_helpers.is_empty() {
-        violations.push(format!(
-            "expected all GPU-owning public destroy functions to share a common \
-             provenance-aware destroy helper; saw helper sets: {helper_sets:?}"
-        ));
     }
 
     assert!(
@@ -91,6 +81,41 @@ fn gpu_owning_handle_owners_carry_destroy_provenance() {
     assert!(
         violations.is_empty(),
         "GPU-owning native handle owners must retain destroy-time provenance.\n{}",
+        violations.join("\n")
+    );
+}
+
+#[test]
+fn gpu_resources_are_declared_after_retained_provenance_so_they_drop_first() {
+    let sources = NativeSources::load();
+    let combined = sources.combined();
+    let mut violations = Vec::new();
+
+    for (owner, resource) in [
+        ("native_column_handle_state", "_column"),
+        ("native_table_handle_state", "_table"),
+        ("cudf_scalar_owner", "scalar"),
+        ("cudf_device_buffer_owner", "buffer"),
+        ("adopted_device_buffer_column_handle_state", "_data_owner"),
+        ("prepared_groupby_owner", "groupby"),
+        ("arrow_device_imported_column_handle_state", "_view"),
+        ("arrow_device_imported_table_root_state", "view"),
+    ] {
+        let body = type_body(combined, owner);
+        let provenance_position =
+            body.rfind("provenance").unwrap_or_else(|| panic!("expected {owner} to retain provenance"));
+        let resource_position =
+            body.rfind(resource).unwrap_or_else(|| panic!("expected {owner} to contain resource `{resource}`"));
+        if provenance_position > resource_position {
+            violations.push(format!(
+                "{owner} must declare retained provenance before `{resource}` so reverse field destruction releases the GPU resource first"
+            ));
+        }
+    }
+
+    assert!(
+        violations.is_empty(),
+        "GPU resource owners must outlive neither their stream/MR provenance.\n{}",
         violations.join("\n")
     );
 }
@@ -247,54 +272,42 @@ fn arrow_device_array_release_carries_provenance_without_global_side_map() {
 }
 
 #[test]
-fn destroy_provenance_cleanup_reports_completion_and_destructors_do_not_release_on_failure() {
+fn destroy_provenance_cleanup_returns_status_and_never_terminates() {
     let sources = NativeSources::load();
     let combined = sources.combined();
     let mut violations = Vec::new();
 
-    if !combined.contains("cudf_provenance_cleanup_result") {
-        violations.push("provenance cleanup helper must expose whether cleanup completed".to_string());
+    if combined.contains("std::terminate()") {
+        violations.push("native teardown must never call std::terminate()".to_string());
     }
-    for marker in [
-        "cudf_provenance_cleanup_result::completed",
-        "cudf_provenance_cleanup_result::not_run",
-        "cudf_provenance_cleanup_result::failed",
-    ] {
-        if !combined.contains(marker) {
-            violations.push(format!("cudf_destroy_under_provenance must return `{marker}` on the matching path"));
-        }
+    if combined.contains("cudf_provenance_cleanup_result") {
+        violations.push(
+            "provenance teardown must expose cudf_status_t directly, not an internal completion enum".to_string(),
+        );
     }
 
-    for (owner, forbidden_release) in [
-        ("native_column_handle_state", "column.release()"),
-        ("native_table_handle_state", "table.release()"),
-        ("adopted_device_buffer_column_handle_state", "data_owner.release()"),
-        ("arrow_device_imported_column_handle_state", "view.release()"),
-        ("arrow_device_imported_table_root_state", "local_view.release()"),
-    ] {
-        let body = type_body(combined, owner);
-        if body.contains(forbidden_release) {
-            violations.push(format!("{owner} destructor must not release ownership after incomplete cleanup"));
-        }
-        if !body.contains("std::terminate()") {
-            violations.push(format!(
-                "{owner} destructor must fail closed when cleanup does not complete and ownership remains"
-            ));
+    let helper = sources.function_body("cudf_destroy_under_provenance").body;
+    for marker in
+        ["return injected", "return status", "return CUDF_SUCCESS", "return cudf_translate_cleanup_exception_noexcept"]
+    {
+        if !helper.contains(marker) {
+            violations.push(format!("cudf_destroy_under_provenance must contain `{marker}`"));
         }
     }
 
     for function in GPU_OWNING_PUBLIC_DESTROY_FUNCTIONS {
+        if !combined.contains(&format!("cudf_status_t {function}")) {
+            violations.push(format!("{function} must expose cudf_status_t in the native ABI"));
+        }
         let body = sources.function_body(function).body;
-        if body.contains("cudf_destroy_under_provenance") && !body.contains("std::terminate()") {
-            violations.push(format!(
-                "{function} must not silently ignore incomplete provenance cleanup for an owned GPU handle"
-            ));
+        if !body.contains("return") {
+            violations.push(format!("{function} must return the observable teardown status"));
         }
     }
 
     assert!(
         violations.is_empty(),
-        "destroy provenance cleanup must be observable and destructors must not leak on failure.\n{}",
+        "destroy provenance cleanup must be status-returning and never terminate.\n{}",
         violations.join("\n")
     );
 }
@@ -654,16 +667,6 @@ fn destroy_provenance_identifiers(source: &str) -> BTreeSet<String> {
         .filter(|identifier| identifier.contains("destroy") && identifier.contains("provenance"))
         .map(ToString::to_string)
         .collect()
-}
-
-fn common_helper_names(helper_sets: &[(&str, BTreeSet<String>)]) -> BTreeSet<String> {
-    let Some((_, first)) = helper_sets.first() else {
-        return BTreeSet::new();
-    };
-    helper_sets
-        .iter()
-        .skip(1)
-        .fold(first.clone(), |common, (_, helpers)| common.intersection(helpers).cloned().collect())
 }
 
 fn identifiers(source: &str) -> impl Iterator<Item = &str> {

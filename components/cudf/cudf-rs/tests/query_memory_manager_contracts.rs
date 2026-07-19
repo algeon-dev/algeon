@@ -13,8 +13,47 @@ use cudf::{
     DeviceMemoryFailureSource, DeviceMemoryManager, DeviceMemoryManagerBase, DeviceMemoryManagerOptions,
     DeviceMemoryResource, ErrorCode, ErrorKind, ErrorStatus, ExecutionBudgetEnforcement, ExecutionBudgetRequest,
     ExecutionBudgetStatus, QueryMemoryDomainOptions, Runtime, SortOptions, StreamReservationLease, TypeId,
-    ops::expr::col, testing::prelude::*,
+    ops::expr::col, runtime::CudaStream, testing::prelude::*,
 };
+use static_assertions::assert_not_impl_any;
+
+assert_not_impl_any!(cudf::ExecutionBudgetToken: Clone);
+
+static NEXT_BUDGET_LIFETIME_TEST_ID: AtomicU64 = AtomicU64::new(700_000);
+
+struct BudgetRuntimeDropProbe(Arc<AtomicUsize>);
+
+impl Drop for BudgetRuntimeDropProbe {
+    fn drop(&mut self) {
+        self.0.fetch_add(1, Ordering::SeqCst);
+    }
+}
+
+struct BudgetReservationDropOrderProbe {
+    manager: DeviceMemoryManager,
+    stream: CudaStream,
+    reservation_detached: Arc<AtomicBool>,
+}
+
+impl Drop for BudgetReservationDropOrderProbe {
+    fn drop(&mut self) {
+        let reservation_id = NEXT_BUDGET_LIFETIME_TEST_ID.fetch_add(1, Ordering::Relaxed);
+        let detached = self.manager.reserve_stream(&self.stream, reservation_id, 1).is_ok();
+        self.reservation_detached.store(detached, Ordering::SeqCst);
+    }
+}
+
+fn runtime_with_budget_drop_probe() -> (Runtime, Arc<AtomicUsize>) {
+    let base = Runtime::builder().with_device_memory_manager().build().unwrap();
+    let drops = Arc::new(AtomicUsize::new(0));
+    let retained = base.with_retained_lifetime(Arc::new(BudgetRuntimeDropProbe(Arc::clone(&drops)))).unwrap();
+    drop(base);
+    (retained, drops)
+}
+
+fn next_budget_lifetime_test_id() -> u64 {
+    NEXT_BUDGET_LIFETIME_TEST_ID.fetch_add(1, Ordering::Relaxed)
+}
 
 fn assert_send_sync<T: Send + Sync>() {}
 
@@ -563,6 +602,193 @@ fn execution_budget_token_can_attach_as_query_domain_member() {
     assert_eq!(domain_usage.domain_id, 40_012);
     assert_eq!(domain_usage.active_members, 2);
     assert!(domain_usage.current_bytes >= left_output_bytes + right_output_bytes);
+}
+
+#[test]
+fn execution_budget_token_retains_source_runtime_until_token_drop() {
+    let _pool_state = shared_device_pool_guard();
+    let (runtime, drops) = runtime_with_budget_drop_probe();
+    let token = cudf::ExecutionBudgetToken::from_runtime(
+        &runtime,
+        ExecutionBudgetRequest::new(1024 * 1024).with_boundary("runtime_lifetime"),
+    )
+    .unwrap();
+
+    drop(runtime);
+    assert_eq!(drops.load(Ordering::SeqCst), 0);
+
+    drop(token);
+    assert_eq!(drops.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn arena_budget_token_retains_source_runtime_after_external_handles_drop() {
+    let _pool_state = shared_device_pool_guard();
+    let (runtime, drops) = runtime_with_budget_drop_probe();
+    let manager = runtime.device_memory_manager().unwrap();
+    let arena = manager.reservation_arena(next_budget_lifetime_test_id(), 1024 * 1024).unwrap();
+    let token = cudf::ExecutionBudgetToken::from_runtime_in_arena(
+        &runtime,
+        ExecutionBudgetRequest::new(1024 * 1024).with_boundary("arena_runtime_lifetime"),
+        &arena,
+    )
+    .unwrap();
+
+    drop(arena);
+    drop(runtime);
+    assert_eq!(drops.load(Ordering::SeqCst), 0);
+
+    drop(token);
+    assert_eq!(drops.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn query_domain_budget_token_retains_source_runtime_after_external_handles_drop() {
+    let _pool_state = shared_device_pool_guard();
+    let (runtime, drops) = runtime_with_budget_drop_probe();
+    let manager = runtime.device_memory_manager().unwrap();
+    let domain = manager
+        .query_memory_domain(
+            next_budget_lifetime_test_id(),
+            QueryMemoryDomainOptions::new(1024 * 1024).with_ceiling_bytes(1024 * 1024),
+        )
+        .unwrap();
+    let token = cudf::ExecutionBudgetToken::from_runtime_in_query_domain(
+        &runtime,
+        ExecutionBudgetRequest::new(1024 * 1024).with_boundary("query_domain_runtime_lifetime"),
+        &domain,
+    )
+    .unwrap();
+
+    drop(domain);
+    drop(runtime);
+    assert_eq!(drops.load(Ordering::SeqCst), 0);
+
+    drop(token);
+    assert_eq!(drops.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn execution_budget_token_constructed_from_runtime_clone_retains_exact_source() {
+    let _pool_state = shared_device_pool_guard();
+    let (runtime, drops) = runtime_with_budget_drop_probe();
+    let supplied_clone = runtime.clone();
+    let token = cudf::ExecutionBudgetToken::from_runtime(
+        &supplied_clone,
+        ExecutionBudgetRequest::new(1024 * 1024).with_boundary("runtime_clone_lifetime"),
+    )
+    .unwrap();
+
+    drop(supplied_clone);
+    drop(runtime);
+    assert_eq!(drops.load(Ordering::SeqCst), 0);
+
+    drop(token);
+    assert_eq!(drops.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn budgeted_output_inherits_retained_runtime_lifetime_after_token_drop() {
+    let _pool_state = shared_device_pool_guard();
+    let (runtime, drops) = runtime_with_budget_drop_probe();
+    let manager = runtime.device_memory_manager().unwrap();
+    let domain = manager
+        .query_memory_domain(
+            next_budget_lifetime_test_id(),
+            QueryMemoryDomainOptions::new(8 * 1024 * 1024).with_ceiling_bytes(8 * 1024 * 1024),
+        )
+        .unwrap();
+    let token = cudf::ExecutionBudgetToken::from_runtime_in_query_domain(
+        &runtime,
+        ExecutionBudgetRequest::new(8 * 1024 * 1024).with_boundary("budgeted_output_runtime_lifetime"),
+        &domain,
+    )
+    .unwrap();
+    let outcome = runtime.series_from_value_with_budget(17i32, 4096, &token).unwrap();
+
+    drop(domain);
+    drop(token);
+    drop(runtime);
+    assert_eq!(drops.load(Ordering::SeqCst), 0);
+
+    drop(outcome);
+    assert_eq!(drops.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn execution_budget_token_retains_only_its_source_runtime() {
+    let _pool_state = shared_device_pool_guard();
+    let (runtime_a, drops_a) = runtime_with_budget_drop_probe();
+    let (runtime_b, drops_b) = runtime_with_budget_drop_probe();
+    let token = cudf::ExecutionBudgetToken::from_runtime(
+        &runtime_a,
+        ExecutionBudgetRequest::new(1024 * 1024).with_boundary("runtime_a_lifetime"),
+    )
+    .unwrap();
+
+    drop(runtime_a);
+    drop(runtime_b);
+    assert_eq!(drops_a.load(Ordering::SeqCst), 0);
+    assert_eq!(drops_b.load(Ordering::SeqCst), 1);
+
+    drop(token);
+    assert_eq!(drops_a.load(Ordering::SeqCst), 1);
+    assert_eq!(drops_b.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn execution_budget_token_retention_has_no_runtime_affinity_cycle() {
+    let _pool_state = shared_device_pool_guard();
+    let runtime = Runtime::builder().with_device_memory_manager().build().unwrap();
+    let affinity_anchor = runtime.affinity_anchor();
+    let lease_anchor = runtime.lease_anchor();
+    let token = cudf::ExecutionBudgetToken::from_runtime(
+        &runtime,
+        ExecutionBudgetRequest::new(1024 * 1024).with_boundary("runtime_cycle_check"),
+    )
+    .unwrap();
+
+    drop(runtime);
+    assert!(affinity_anchor.is_alive());
+    assert!(lease_anchor.is_current());
+
+    drop(token);
+    assert!(!lease_anchor.is_current());
+    assert!(!affinity_anchor.is_alive());
+}
+
+#[test]
+fn execution_budget_token_detaches_reservation_before_retained_runtime_drop() {
+    let _pool_state = shared_device_pool_guard();
+    let base = Runtime::builder().with_device_memory_manager().build().unwrap();
+    let manager = base.device_memory_manager().unwrap();
+    let reservation_detached = Arc::new(AtomicBool::new(false));
+    let retained_runtime = base
+        .with_retained_lifetime(Arc::new(BudgetReservationDropOrderProbe {
+            manager: manager.clone(),
+            stream: base.stream().clone(),
+            reservation_detached: Arc::clone(&reservation_detached),
+        }))
+        .unwrap();
+    drop(base);
+    let token = cudf::ExecutionBudgetToken::from_runtime(
+        &retained_runtime,
+        ExecutionBudgetRequest::new(1024 * 1024).with_boundary("reservation_drop_order"),
+    )
+    .unwrap();
+    drop(retained_runtime);
+
+    assert!(
+        manager.reserve_stream(token.stream(), next_budget_lifetime_test_id(), 1).is_err(),
+        "the token reservation must still be attached before token drop"
+    );
+    assert!(!reservation_detached.load(Ordering::SeqCst));
+
+    drop(token);
+    assert!(
+        reservation_detached.load(Ordering::SeqCst),
+        "retained Runtime teardown must observe the token reservation already detached"
+    );
 }
 
 #[test]

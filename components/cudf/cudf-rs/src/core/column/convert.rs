@@ -17,9 +17,9 @@ pub(crate) fn copy_view_to_owned(cv: &ColumnView<'_>) -> Result<Column> {
         );
     }
     let mut handle = ptr::null_mut();
-    let exec_options = cv.execution_domain().exec_options_raw();
+    let exec_options = cv.execution_domain().enter_execution()?;
     error::check_status_in(
-        unsafe { cudf_sys::cudf_column_copy_from_view_ex(cv.raw_handle(), &exec_options, &mut handle) },
+        unsafe { cudf_sys::cudf_column_copy_from_view_ex(cv.raw_handle(), exec_options.options(), &mut handle) },
         "column::copy_view_to_owned",
     )?;
     unsafe { Column::from_raw_with_domain(handle, Arc::clone(cv.execution_domain())) }

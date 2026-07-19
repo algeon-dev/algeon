@@ -97,7 +97,11 @@ cudf_status_t cudf_table_device_allocated_size(cudf_table_handle handle,
                                                size_t *out);
 
 /// Destroy an owning table handle.
-void cudf_table_destroy(cudf_table_handle handle);
+///
+/// Ownership is consumed on call, including on failure. CUDF_SUCCESS means
+/// cleanup completed; any error means the allocation was quarantined and the
+/// handle must not be reused or destroyed again.
+cudf_status_t cudf_table_destroy(cudf_table_handle handle);
 
 /// Get an immutable view of a table. The view is heap-allocated and must
 /// be freed with cudf_table_view_destroy. Borrows from `handle`.
@@ -105,7 +109,7 @@ cudf_status_t cudf_table_view(cudf_table_handle handle,
                               cudf_table_view_handle *out);
 
 /// Destroy a table_view handle.
-void cudf_table_view_destroy(cudf_table_view_handle handle);
+cudf_status_t cudf_table_view_destroy(cudf_table_view_handle handle);
 
 /// Get the number of columns in a table_view.
 cudf_status_t cudf_table_view_num_columns(cudf_table_view_handle handle,

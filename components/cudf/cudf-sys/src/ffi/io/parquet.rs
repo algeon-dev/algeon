@@ -51,6 +51,10 @@ pub struct cudf_io_parquet_pruning_evidence_t {
     pub row_groups_after_bloom_filter: i64,
 }
 
+pub const CUDF_IO_KVIKIO_COMPAT_MODE_AUTO: i32 = 0;
+pub const CUDF_IO_KVIKIO_COMPAT_MODE_ON: i32 = 1;
+pub const CUDF_IO_KVIKIO_COMPAT_MODE_OFF: i32 = 2;
+
 unsafe extern "C" {
     // -- I/O: Parquet --------------------------------------------------------
 
@@ -224,6 +228,19 @@ unsafe extern "C" {
     /// Returns whether libcudf was compiled with CUDF_KVIKIO_REMOTE_IO:
     /// 1 = enabled, 0 = disabled, -1 = unknown/reserved.
     pub fn cudf_io_remote_parquet_kvikio_remote_io_enabled() -> i32;
+
+    pub fn cudf_io_kvikio_set_compat_mode(compat_mode: i32) -> cudf_status_t;
+
+    pub fn cudf_io_kvikio_compat_mode() -> i32;
+
+    pub fn cudf_io_kvikio_drain_bounce_buffer_pools(
+        out_cleared_bytes: *mut u64,
+        out_active_io: *mut u64,
+    ) -> cudf_status_t;
+
+    pub fn cudf_test_io_kvikio_active_io_begin() -> cudf_status_t;
+
+    pub fn cudf_test_io_kvikio_active_io_end() -> cudf_status_t;
 
     /// Opens a path datasource and reports datasource-level read capability
     /// without launching a Parquet decode.

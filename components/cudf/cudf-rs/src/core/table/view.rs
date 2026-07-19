@@ -289,10 +289,11 @@ impl<'a> TableView<'a> {
 
 impl Drop for TableView<'_> {
     fn drop(&mut self) {
-        // SAFETY: self.handle is valid (NonNull from construction). Drop runs
-        // exactly once, so the handle is destroyed exactly once.
-        unsafe {
-            cudf_sys::cudf_table_view_destroy(self.handle.as_ptr());
-        }
+        crate::core::native_teardown::drop_device_owned_handle(
+            self.handle.as_ptr(),
+            self.domain.device_id(),
+            "TableView::drop",
+            |owned| unsafe { cudf_sys::cudf_table_view_destroy(owned) },
+        );
     }
 }

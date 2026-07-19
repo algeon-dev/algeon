@@ -76,9 +76,9 @@ unsafe extern "C" {
         out_materialization: *mut i32,
     ) -> cudf_status_t;
 
-    pub fn cudf_arrow_device_schema_destroy(schema: cudf_arrow_schema_handle);
+    pub fn cudf_arrow_device_schema_destroy(schema: cudf_arrow_schema_handle) -> cudf_status_t;
 
-    pub fn cudf_arrow_device_array_destroy(array: cudf_arrow_device_array_handle);
+    pub fn cudf_arrow_device_array_destroy(array: cudf_arrow_device_array_handle) -> cudf_status_t;
 
     pub fn cudf_arrow_device_array_device_id(array: cudf_arrow_device_array_handle, out: *mut i64) -> cudf_status_t;
 

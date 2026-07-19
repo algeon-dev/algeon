@@ -88,13 +88,16 @@ use crate::{
         hash::{FastHashMap, fast_hash_map_with_capacity},
         resolve::missing_column_error,
     },
-    runtime::{ExecutionOverrides, execution_domain::ExecutionDomain},
+    runtime::{
+        ExecutionOverrides,
+        execution_domain::{EnteredExecution, ExecutionDomain},
+    },
 };
 
 struct ExprEvalContext<'df> {
     df: &'df DataFrame,
     output_domain: Arc<ExecutionDomain>,
-    exec_options: cudf_sys::cudf_exec_options_t,
+    exec_options: EnteredExecution,
     operation: &'static str,
     normalized_columns: RefCell<FastHashMap<String, Series>>,
 }
@@ -102,7 +105,7 @@ struct ExprEvalContext<'df> {
 impl<'df> ExprEvalContext<'df> {
     fn new(df: &'df DataFrame, overrides: &ExecutionOverrides<'_>, operation: &'static str) -> Result<Self> {
         let output_domain = overrides.resolve_output_domain(df.execution_domain())?;
-        let exec_options = output_domain.exec_options_raw();
+        let exec_options = output_domain.enter_execution()?;
         Ok(Self {
             df,
             output_domain,
@@ -112,19 +115,23 @@ impl<'df> ExprEvalContext<'df> {
         })
     }
 
-    fn with_output_domain(df: &'df DataFrame, output_domain: Arc<ExecutionDomain>, operation: &'static str) -> Self {
-        let exec_options = output_domain.exec_options_raw();
-        Self {
+    fn with_output_domain(
+        df: &'df DataFrame,
+        output_domain: Arc<ExecutionDomain>,
+        operation: &'static str,
+    ) -> Result<Self> {
+        let exec_options = output_domain.enter_execution()?;
+        Ok(Self {
             df,
             output_domain,
             exec_options,
             operation,
             normalized_columns: RefCell::new(fast_hash_map_with_capacity(df.num_columns())),
-        }
+        })
     }
 
     fn required_exec_options(&self) -> &cudf_sys::cudf_exec_options_t {
-        &self.exec_options
+        self.exec_options.options()
     }
 
     fn output_domain(&self) -> Arc<ExecutionDomain> {
@@ -185,7 +192,7 @@ pub(crate) fn eval_in_output_domain(
     operation: &'static str,
     expr: &Expr,
 ) -> Result<Series> {
-    let ctx = ExprEvalContext::with_output_domain(df, output_domain, operation);
+    let ctx = ExprEvalContext::with_output_domain(df, output_domain, operation)?;
     expr.eval_with_context(&ctx)
 }
 // ===========================================================================

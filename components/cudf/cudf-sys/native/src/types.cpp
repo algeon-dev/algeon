@@ -34,9 +34,14 @@ cudf_status_t cudf_data_type_create_fixed_point(cudf_type_id_t type_id,
   CUDF_RUST_CATCH
 }
 
-void cudf_data_type_destroy(cudf_data_type_handle handle)
+cudf_status_t cudf_data_type_destroy(cudf_data_type_handle handle)
 {
-  delete static_cast<cudf::data_type*>(handle);
+  try {
+    delete static_cast<cudf::data_type*>(handle);
+    return CUDF_SUCCESS;
+  } catch (...) {
+    return cudf_translate_cleanup_exception_noexcept();
+  }
 }
 
 cudf_status_t cudf_data_type_id(cudf_data_type_handle handle, cudf_type_id_t* out)

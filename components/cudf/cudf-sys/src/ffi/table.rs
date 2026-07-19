@@ -84,13 +84,13 @@ unsafe extern "C" {
 
     pub fn cudf_table_device_allocated_size(handle: cudf_table_handle, out: *mut usize) -> cudf_status_t;
 
-    pub fn cudf_table_destroy(handle: cudf_table_handle);
+    pub fn cudf_table_destroy(handle: cudf_table_handle) -> cudf_status_t;
 
     // -- TableView (non-owning) ----------------------------------------------
 
     pub fn cudf_table_view(handle: cudf_table_handle, out: *mut cudf_table_view_handle) -> cudf_status_t;
 
-    pub fn cudf_table_view_destroy(handle: cudf_table_view_handle);
+    pub fn cudf_table_view_destroy(handle: cudf_table_view_handle) -> cudf_status_t;
 
     pub fn cudf_table_view_num_columns(handle: cudf_table_view_handle, out: *mut i32) -> cudf_status_t;
 

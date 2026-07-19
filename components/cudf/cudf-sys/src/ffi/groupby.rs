@@ -16,14 +16,14 @@ unsafe extern "C" {
 
     pub fn cudf_aggregation_create_variance(ddof: i32, out: *mut *mut c_void) -> cudf_status_t;
 
-    pub fn cudf_aggregation_destroy(handle: *mut c_void);
+    pub fn cudf_aggregation_destroy(handle: *mut c_void) -> cudf_status_t;
 
     pub fn cudf_groupby_scan_aggregation_create(
         kind: cudf_reduce_aggregation_kind_t,
         out: *mut *mut c_void,
     ) -> cudf_status_t;
 
-    pub fn cudf_groupby_scan_aggregation_destroy(handle: *mut c_void);
+    pub fn cudf_groupby_scan_aggregation_destroy(handle: *mut c_void) -> cudf_status_t;
 
     pub fn cudf_prepared_groupby_create_ex(
         keys: cudf_table_view_handle,
@@ -33,7 +33,7 @@ unsafe extern "C" {
         options: *const cudf_exec_options_t,
     ) -> cudf_status_t;
 
-    pub fn cudf_prepared_groupby_destroy(handle: *mut c_void);
+    pub fn cudf_prepared_groupby_destroy(handle: *mut c_void) -> cudf_status_t;
 
     pub fn cudf_prepared_groupby_prepare_groups_ex(
         groupby: *mut c_void,

@@ -236,7 +236,9 @@ unsafe extern "C" {
         options: *const cudf_exec_options_t,
     ) -> cudf_status_t;
 
-    pub fn cudf_conditional_full_join_size_data_destroy(handle: cudf_conditional_full_join_size_data_handle);
+    pub fn cudf_conditional_full_join_size_data_destroy(
+        handle: cudf_conditional_full_join_size_data_handle,
+    ) -> cudf_status_t;
 
     pub fn cudf_conditional_full_join_size_data_output_size(
         handle: cudf_conditional_full_join_size_data_handle,
@@ -465,7 +467,7 @@ unsafe extern "C" {
         options: *const cudf_exec_options_t,
     ) -> cudf_status_t;
 
-    pub fn cudf_mixed_join_size_data_destroy(handle: cudf_mixed_join_size_data_handle);
+    pub fn cudf_mixed_join_size_data_destroy(handle: cudf_mixed_join_size_data_handle) -> cudf_status_t;
 
     pub fn cudf_mixed_join_size_data_output_size(
         handle: cudf_mixed_join_size_data_handle,
@@ -508,7 +510,7 @@ unsafe extern "C" {
         options: *const cudf_exec_options_t,
     ) -> cudf_status_t;
 
-    pub fn cudf_distinct_hash_join_destroy(handle: cudf_distinct_hash_join_handle);
+    pub fn cudf_distinct_hash_join_destroy(handle: cudf_distinct_hash_join_handle) -> cudf_status_t;
 
     /// Probe a distinct hash-join build artifact with explicit execution
     /// context.
@@ -538,7 +540,7 @@ unsafe extern "C" {
         options: *const cudf_exec_options_t,
     ) -> cudf_status_t;
 
-    pub fn cudf_filtered_join_destroy(handle: cudf_filtered_join_handle);
+    pub fn cudf_filtered_join_destroy(handle: cudf_filtered_join_handle) -> cudf_status_t;
 
     pub fn cudf_filtered_join_device_allocated_size(
         handle: cudf_filtered_join_handle,
@@ -559,7 +561,7 @@ unsafe extern "C" {
         options: *const cudf_exec_options_t,
     ) -> cudf_status_t;
 
-    pub fn cudf_filtered_join_probe_destroy(handle: cudf_filtered_join_probe_handle);
+    pub fn cudf_filtered_join_probe_destroy(handle: cudf_filtered_join_probe_handle) -> cudf_status_t;
 
     pub fn cudf_filtered_join_probe_output_size(
         handle: cudf_filtered_join_probe_handle,
@@ -632,7 +634,7 @@ unsafe extern "C" {
         options: *const cudf_exec_options_t,
     ) -> cudf_status_t;
 
-    pub fn cudf_hash_join_destroy(handle: cudf_hash_join_handle);
+    pub fn cudf_hash_join_destroy(handle: cudf_hash_join_handle) -> cudf_status_t;
 
     pub fn cudf_hash_join_device_allocated_size(handle: cudf_hash_join_handle, out: *mut usize) -> cudf_status_t;
 

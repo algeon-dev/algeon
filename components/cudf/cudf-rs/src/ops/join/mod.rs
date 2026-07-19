@@ -314,31 +314,56 @@ unsafe impl Sync for MixedJoinSizeDataHandle {}
 
 impl Drop for HashJoinHandle {
     fn drop(&mut self) {
-        unsafe { cudf_sys::cudf_hash_join_destroy(self.handle.as_ptr()) };
+        crate::core::native_teardown::drop_device_owned_handle(
+            self.handle.as_ptr(),
+            self._domain.device_id(),
+            "HashJoinHandle::drop",
+            |owned| unsafe { cudf_sys::cudf_hash_join_destroy(owned) },
+        );
     }
 }
 
 impl Drop for FilteredJoinHandle {
     fn drop(&mut self) {
-        unsafe { cudf_sys::cudf_filtered_join_destroy(self.handle.as_ptr()) };
+        crate::core::native_teardown::drop_device_owned_handle(
+            self.handle.as_ptr(),
+            self._domain.device_id(),
+            "FilteredJoinHandle::drop",
+            |owned| unsafe { cudf_sys::cudf_filtered_join_destroy(owned) },
+        );
     }
 }
 
 impl Drop for FilteredJoinProbeHandle {
     fn drop(&mut self) {
-        unsafe { cudf_sys::cudf_filtered_join_probe_destroy(self.handle.as_ptr()) };
+        crate::core::native_teardown::drop_device_owned_handle(
+            self.handle.as_ptr(),
+            self._domain.device_id(),
+            "FilteredJoinProbeHandle::drop",
+            |owned| unsafe { cudf_sys::cudf_filtered_join_probe_destroy(owned) },
+        );
     }
 }
 
 impl Drop for ConditionalFullJoinSizeDataHandle {
     fn drop(&mut self) {
-        unsafe { cudf_sys::cudf_conditional_full_join_size_data_destroy(self.handle.as_ptr()) };
+        crate::core::native_teardown::drop_device_owned_handle(
+            self.handle.as_ptr(),
+            self._domain.device_id(),
+            "ConditionalFullJoinSizeDataHandle::drop",
+            |owned| unsafe { cudf_sys::cudf_conditional_full_join_size_data_destroy(owned) },
+        );
     }
 }
 
 impl Drop for MixedJoinSizeDataHandle {
     fn drop(&mut self) {
-        unsafe { cudf_sys::cudf_mixed_join_size_data_destroy(self.handle.as_ptr()) };
+        crate::core::native_teardown::drop_device_owned_handle(
+            self.handle.as_ptr(),
+            self._domain.device_id(),
+            "MixedJoinSizeDataHandle::drop",
+            |owned| unsafe { cudf_sys::cudf_mixed_join_size_data_destroy(owned) },
+        );
     }
 }
 

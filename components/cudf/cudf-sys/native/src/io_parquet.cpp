@@ -30,6 +30,7 @@
 #include <vector>
 
 #ifdef CUDF_RUST_LIBCUDF_KVIKIO_REMOTE_IO_ENABLED
+#include <kvikio/bounce_buffer.hpp>
 #include <kvikio/defaults.hpp>
 #include <kvikio/remote_handle.hpp>
 #endif
@@ -43,6 +44,30 @@ constexpr int32_t CUDF_IO_REMOTE_PARQUET_FALLBACK_BACKEND_UNAVAILABLE = 1;
 #ifdef CUDF_RUST_LIBCUDF_KVIKIO_REMOTE_IO_ENABLED
 constexpr unsigned int CUDF_IO_REMOTE_PARQUET_DEFAULT_KVIKIO_THREADS = 64;
 constexpr size_t CUDF_IO_REMOTE_PARQUET_DEFAULT_KVIKIO_TASK_SIZE      = 64 * 1024 * 1024;
+
+std::mutex kvikio_io_lifecycle_mutex;
+uint64_t kvikio_active_io = 0;
+
+class kvikio_active_io_guard {
+ public:
+  kvikio_active_io_guard()
+  {
+    std::lock_guard const lock(kvikio_io_lifecycle_mutex);
+    ++kvikio_active_io;
+  }
+
+  ~kvikio_active_io_guard()
+  {
+    std::lock_guard const lock(kvikio_io_lifecycle_mutex);
+    --kvikio_active_io;
+  }
+
+  kvikio_active_io_guard(kvikio_active_io_guard const&)            = delete;
+  kvikio_active_io_guard& operator=(kvikio_active_io_guard const&) = delete;
+};
+#else
+struct kvikio_active_io_guard {
+};
 #endif
 
 template <typename Builder>
@@ -657,6 +682,7 @@ cudf_status_t cudf_io_read_parquet_ex(const char* filepath,
   cudf_status_t const args_status =
     validate_parquet_reader_args(columns, num_columns, skip_rows, num_rows, row_groups, num_row_groups);
   if (args_status != CUDF_SUCCESS) { return args_status; }
+  kvikio_active_io_guard const active_io;
   CUDF_RUST_TRY
   {
     auto exec                       = std::unique_ptr<cudf_exec_context>{};
@@ -740,6 +766,7 @@ cudf_status_t cudf_io_write_parquet_ex(cudf_table_view_handle table,
     return CUDF_ERROR_INVALID_OPERATION;
   }
   if (num_columns > 0) { CUDF_RUST_NULL_CHECK(column_names, "column_names is null"); }
+  kvikio_active_io_guard const active_io;
   CUDF_RUST_TRY
   {
     auto exec                       = std::unique_ptr<cudf_exec_context>{};
@@ -805,6 +832,7 @@ cudf_status_t cudf_io_read_parquet_with_metadata_ex(const char* filepath,
   cudf_status_t const args_status =
     validate_parquet_reader_args(columns, num_columns, skip_rows, num_rows, row_groups, num_row_groups);
   if (args_status != CUDF_SUCCESS) { return args_status; }
+  kvikio_active_io_guard const active_io;
   CUDF_RUST_TRY
   {
     auto exec                       = std::unique_ptr<cudf_exec_context>{};
@@ -869,6 +897,7 @@ cudf_status_t cudf_io_read_parquet_with_metadata_filter_ex(const char* filepath,
   cudf_status_t const args_status =
     validate_parquet_reader_args(columns, num_columns, skip_rows, num_rows, row_groups, num_row_groups);
   if (args_status != CUDF_SUCCESS) { return args_status; }
+  kvikio_active_io_guard const active_io;
   CUDF_RUST_TRY
   {
     auto exec                       = std::unique_ptr<cudf_exec_context>{};
@@ -945,6 +974,7 @@ cudf_status_t cudf_io_read_remote_parquet_with_metadata_filter_ex(
   set_error("libcudf was not built with KvikIO remote IO");
   return CUDF_ERROR_UNSUPPORTED;
 #else
+  kvikio_active_io_guard const active_io;
   CUDF_RUST_TRY
   {
     auto exec                       = std::unique_ptr<cudf_exec_context>{};
@@ -1025,6 +1055,7 @@ cudf_status_t cudf_io_read_parquet_multi_with_metadata_filter_ex(
     row_groups,
     num_row_groups);
   if (args_status != CUDF_SUCCESS) { return args_status; }
+  kvikio_active_io_guard const active_io;
   CUDF_RUST_TRY
   {
     auto exec                       = std::unique_ptr<cudf_exec_context>{};
@@ -1162,6 +1193,7 @@ cudf_status_t cudf_io_read_parquet_multi_mixed_with_metadata_filter_ex(
   set_error("libcudf was not built with KvikIO remote IO");
   return CUDF_ERROR_UNSUPPORTED;
 #else
+  kvikio_active_io_guard const active_io;
   CUDF_RUST_TRY
   {
     auto exec                       = std::unique_ptr<cudf_exec_context>{};
@@ -1324,6 +1356,103 @@ int32_t cudf_io_remote_parquet_kvikio_remote_io_enabled(void)
 #endif
 }
 
+cudf_status_t cudf_io_kvikio_set_compat_mode(int32_t compat_mode)
+{
+#ifndef CUDF_RUST_LIBCUDF_KVIKIO_REMOTE_IO_ENABLED
+  set_error("libcudf was not built with KvikIO remote IO");
+  return CUDF_ERROR_UNSUPPORTED;
+#else
+  CUDF_RUST_TRY
+  {
+    std::lock_guard const lock(kvikio_io_lifecycle_mutex);
+    if (kvikio_active_io != 0) {
+      set_error("cannot configure KvikIO compatibility mode while I/O is active");
+      return CUDF_ERROR_IO;
+    }
+    switch (compat_mode) {
+      case CUDF_IO_KVIKIO_COMPAT_MODE_AUTO:
+        kvikio::defaults::set_compat_mode(kvikio::CompatMode::AUTO);
+        break;
+      case CUDF_IO_KVIKIO_COMPAT_MODE_ON:
+        kvikio::defaults::set_compat_mode(kvikio::CompatMode::ON);
+        break;
+      case CUDF_IO_KVIKIO_COMPAT_MODE_OFF:
+        kvikio::defaults::set_compat_mode(kvikio::CompatMode::OFF);
+        break;
+      default:
+        set_error("unknown KvikIO compatibility mode");
+        return CUDF_ERROR_INVALID_ARGUMENT;
+    }
+    return CUDF_SUCCESS;
+  }
+  CUDF_RUST_IO_CATCH
+#endif
+}
+
+int32_t cudf_io_kvikio_compat_mode(void)
+{
+#ifndef CUDF_RUST_LIBCUDF_KVIKIO_REMOTE_IO_ENABLED
+  return -1;
+#else
+  switch (kvikio::defaults::compat_mode()) {
+    case kvikio::CompatMode::AUTO: return CUDF_IO_KVIKIO_COMPAT_MODE_AUTO;
+    case kvikio::CompatMode::ON: return CUDF_IO_KVIKIO_COMPAT_MODE_ON;
+    case kvikio::CompatMode::OFF: return CUDF_IO_KVIKIO_COMPAT_MODE_OFF;
+  }
+  return -1;
+#endif
+}
+
+cudf_status_t cudf_io_kvikio_drain_bounce_buffer_pools(uint64_t* out_cleared_bytes,
+                                                       uint64_t* out_active_io)
+{
+  CUDF_RUST_NULL_CHECK(out_cleared_bytes, "out_cleared_bytes is null");
+  CUDF_RUST_NULL_CHECK(out_active_io, "out_active_io is null");
+  *out_cleared_bytes = 0;
+  *out_active_io      = 0;
+#ifndef CUDF_RUST_LIBCUDF_KVIKIO_REMOTE_IO_ENABLED
+  return CUDF_SUCCESS;
+#else
+  CUDF_RUST_TRY
+  {
+    std::lock_guard const lock(kvikio_io_lifecycle_mutex);
+    *out_active_io = kvikio_active_io;
+    if (kvikio_active_io != 0) { return CUDF_SUCCESS; }
+    *out_cleared_bytes = kvikio::PageAlignedBounceBufferPool::instance().clear();
+    *out_cleared_bytes += kvikio::CudaPinnedBounceBufferPool::instance().clear();
+    *out_cleared_bytes += kvikio::CudaPageAlignedPinnedBounceBufferPool::instance().clear();
+    return CUDF_SUCCESS;
+  }
+  CUDF_RUST_IO_CATCH
+#endif
+}
+
+cudf_status_t cudf_test_io_kvikio_active_io_begin(void)
+{
+#ifndef CUDF_RUST_LIBCUDF_KVIKIO_REMOTE_IO_ENABLED
+  return CUDF_SUCCESS;
+#else
+  std::lock_guard const lock(kvikio_io_lifecycle_mutex);
+  ++kvikio_active_io;
+  return CUDF_SUCCESS;
+#endif
+}
+
+cudf_status_t cudf_test_io_kvikio_active_io_end(void)
+{
+#ifndef CUDF_RUST_LIBCUDF_KVIKIO_REMOTE_IO_ENABLED
+  return CUDF_SUCCESS;
+#else
+  std::lock_guard const lock(kvikio_io_lifecycle_mutex);
+  if (kvikio_active_io == 0) {
+    set_error("KvikIO active I/O test count is already zero");
+    return CUDF_ERROR_INVALID_OPERATION;
+  }
+  --kvikio_active_io;
+  return CUDF_SUCCESS;
+#endif
+}
+
 cudf_status_t cudf_io_probe_path_datasource(const char* filepath,
                                             int64_t preferred_read_size,
                                             cudf_io_datasource_probe_result_t* out)
@@ -1338,6 +1467,7 @@ cudf_status_t cudf_io_probe_path_datasource(const char* filepath,
     set_error("preferred_read_size must be >= -1");
     return CUDF_ERROR_INVALID_OPERATION;
   }
+  kvikio_active_io_guard const active_io;
   CUDF_RUST_TRY
   {
     auto source              = cudf::io::datasource::create(std::string(filepath));
@@ -1377,6 +1507,7 @@ cudf_status_t cudf_io_probe_remote_parquet_datasource(
   set_error("libcudf was not built with KvikIO remote IO");
   return CUDF_ERROR_UNSUPPORTED;
 #else
+  kvikio_active_io_guard const active_io;
   CUDF_RUST_TRY
   {
     auto exec                 = cudf_make_exec_context();

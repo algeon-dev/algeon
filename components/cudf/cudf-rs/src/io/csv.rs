@@ -43,7 +43,7 @@ pub fn read_csv(options: &CsvTableReadOptions) -> Result<TableReadOutput> {
     let filepath = super::path_to_cstring(&options.filepath, operation)?;
     super::validate_input_path(&options.filepath, operation)?;
     let output_domain = Arc::clone(options.runtime.execution_domain());
-    let exec_options = output_domain.exec_options_raw();
+    let exec_options = output_domain.enter_execution()?;
 
     let mut table_handle = ptr::null_mut();
     error::check_status_in_with_details(
@@ -54,7 +54,7 @@ pub fn read_csv(options: &CsvTableReadOptions) -> Result<TableReadOutput> {
                 options.delimiter as std::os::raw::c_char,
                 if options.has_header { 1 } else { 0 },
                 &mut table_handle,
-                &exec_options,
+                exec_options.options(),
             )
         },
         operation,

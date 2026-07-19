@@ -102,14 +102,13 @@ cudf_status_t cudf_conditional_full_join_begin_size_data_ex(
   return conditional_full_join_size_data_impl(left, right, predicate, out, options);
 }
 
-void cudf_conditional_full_join_size_data_destroy(
+cudf_status_t cudf_conditional_full_join_size_data_destroy(
   cudf_conditional_full_join_size_data_handle handle)
 {
-  if (handle == nullptr) { return; }
-  cudf_clear_error();
+  if (handle == nullptr) { return CUDF_SUCCESS; }
   auto* owner      = static_cast<conditional_full_join_size_data_owner*>(handle);
   auto provenance = cached_join_owner_provenance(*owner);
-  (void)cudf_destroy_under_provenance(provenance, [owner] { delete owner; });
+  return cudf_destroy_under_provenance(provenance, [owner] { delete owner; });
 }
 
 cudf_status_t cudf_conditional_full_join_size_data_output_size(

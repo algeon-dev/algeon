@@ -470,21 +470,15 @@ cudf_status_t cudf_scalar_copy_ex(cudf_scalar_handle src,
   CUDF_RUST_CATCH
 }
 
-void cudf_scalar_destroy(cudf_scalar_handle handle) {
-  if (handle == nullptr) {
-    return;
-  }
-  cudf_clear_error();
+cudf_status_t cudf_scalar_destroy(cudf_scalar_handle handle) {
+  if (handle == nullptr) { return CUDF_SUCCESS; }
   try {
     auto *owner = static_cast<cudf_scalar_owner *>(handle);
     auto const provenance = owner->provenance;
-    auto const cleanup =
-        cudf_destroy_under_provenance(provenance, [owner] { delete owner; });
-    if (cleanup != cudf_provenance_cleanup_result::completed) {
-      std::terminate();
-    }
+    // The handle is consumed even when provenance entry or cleanup fails.
+    return cudf_destroy_under_provenance(provenance, [owner] { delete owner; });
   } catch (...) {
-    (void)translate_exception();
+    return cudf_translate_cleanup_exception_noexcept();
   }
 }
 

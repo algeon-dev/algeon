@@ -13,6 +13,7 @@ pub mod column;
 pub mod concatenate;
 pub mod core;
 pub mod dataframe;
+pub mod device_safety;
 pub mod dictionary;
 pub mod error;
 pub mod factorization;
@@ -86,6 +87,7 @@ pub trait FailFirstAllocationTestingExt {
 /// Testing-only access to runtime provenance identity.
 pub trait RuntimeTestingExt {
     fn testing_execution_domain_id(&self) -> u64;
+    fn testing_retained_lifetime_count(&self) -> usize;
 }
 
 /// Testing-only borrowed view access for integration tests and contract checks.
@@ -220,6 +222,10 @@ impl FailFirstAllocationTestingExt for DeviceMemoryResource {
 impl RuntimeTestingExt for Runtime {
     fn testing_execution_domain_id(&self) -> u64 {
         self.__debug_execution_domain_id()
+    }
+
+    fn testing_retained_lifetime_count(&self) -> usize {
+        self.__debug_retained_lifetime_count()
     }
 }
 

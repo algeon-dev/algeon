@@ -56,15 +56,17 @@ cudf_status_t cudf_aggregation_create_std(int32_t ddof, cudf_aggregation_handle*
 /// Create a VARIANCE aggregation with ddof.
 cudf_status_t cudf_aggregation_create_variance(int32_t ddof, cudf_aggregation_handle* out);
 
-/// Destroy an aggregation handle.
-void cudf_aggregation_destroy(cudf_aggregation_handle handle);
+/// Destroy an aggregation handle. Ownership is consumed on call; success
+/// means cleanup completed and failure means the handle remains quarantined.
+cudf_status_t cudf_aggregation_destroy(cudf_aggregation_handle handle);
 
 /// Create a grouped scan aggregation (SUM, MIN, MAX, PRODUCT).
 cudf_status_t cudf_groupby_scan_aggregation_create(cudf_reduce_aggregation_kind_t kind,
                                                    cudf_groupby_scan_aggregation_handle* out);
 
-/// Destroy a grouped scan aggregation handle.
-void cudf_groupby_scan_aggregation_destroy(cudf_groupby_scan_aggregation_handle handle);
+/// Destroy a grouped scan aggregation handle. Ownership is consumed on call;
+/// success means cleanup completed and failure means the handle is quarantined.
+cudf_status_t cudf_groupby_scan_aggregation_destroy(cudf_groupby_scan_aggregation_handle handle);
 
 /// Arm a one-shot malformed metadata response for the next groupby aggregate
 /// call on the current thread. Intended only for integration tests that
@@ -83,8 +85,9 @@ cudf_status_t cudf_prepared_groupby_create_ex(cudf_table_view_handle keys,
                                               cudf_prepared_groupby_handle* out,
                                               const cudf_exec_options_t* options);
 
-/// Destroy a reusable groupby handle.
-void cudf_prepared_groupby_destroy(cudf_prepared_groupby_handle handle);
+/// Destroy a reusable groupby handle. Ownership is consumed on call; success
+/// means cleanup completed and failure means the handle remains quarantined.
+cudf_status_t cudf_prepared_groupby_destroy(cudf_prepared_groupby_handle handle);
 
 /// Prepare reusable grouping state and return stable cardinality facts.
 ///

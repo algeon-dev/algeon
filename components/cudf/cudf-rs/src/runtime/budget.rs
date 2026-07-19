@@ -237,20 +237,40 @@ impl<T> BudgetedExecutionOutcome<T> {
 }
 
 /// Hard execution-budget token backed by a stream-bound reservation.
+///
+/// Every token owns a clone of the exact [`Runtime`] supplied to its
+/// constructor, including that runtime's retained lifetimes. On drop, the
+/// stream reservation is detached before the retained runtime is released.
 #[derive(Debug)]
 pub struct ExecutionBudgetToken {
-    request: ExecutionBudgetRequest,
+    // Field order is load-bearing: detach the reservation and release its
+    // arena/query-domain resources before dropping the retained Runtime whose
+    // domain owns the originating stream, MR, and retained query lifetimes.
     lease: StreamReservationLease,
+    request: ExecutionBudgetRequest,
     enforcement: ExecutionBudgetEnforcement,
+    _retained_runtime: Runtime,
 }
 
 impl ExecutionBudgetToken {
+    fn new(
+        runtime: &Runtime,
+        request: ExecutionBudgetRequest,
+        lease: StreamReservationLease,
+        enforcement: ExecutionBudgetEnforcement,
+    ) -> Self {
+        Self { lease, request, enforcement, _retained_runtime: runtime.clone() }
+    }
+
     /// Create a budget token by attaching a reservation to a runtime's stream.
+    ///
+    /// The token retains the exact runtime, including its retained lifetimes,
+    /// until after the stream reservation is detached.
     pub fn from_runtime(runtime: &Runtime, request: ExecutionBudgetRequest) -> Result<Self> {
         let manager = DeviceMemoryManager::for_device(runtime.device())?;
         let reservation_id = NEXT_RESERVATION_ID.fetch_add(1, Ordering::Relaxed);
         let lease = manager.reserve_stream(runtime.stream(), reservation_id, request.budget_bytes())?;
-        Ok(Self { request, lease, enforcement: ExecutionBudgetEnforcement::StreamBoundReservation })
+        Ok(Self::new(runtime, request, lease, ExecutionBudgetEnforcement::StreamBoundReservation))
     }
 
     /// Create a budget token by attaching a member reservation under an arena.
@@ -261,7 +281,7 @@ impl ExecutionBudgetToken {
     ) -> Result<Self> {
         let reservation_id = NEXT_RESERVATION_ID.fetch_add(1, Ordering::Relaxed);
         let lease = arena.reserve_stream(runtime.stream(), reservation_id, request.budget_bytes())?;
-        Ok(Self { request, lease, enforcement: ExecutionBudgetEnforcement::ReservationArenaMember })
+        Ok(Self::new(runtime, request, lease, ExecutionBudgetEnforcement::ReservationArenaMember))
     }
 
     /// Create a budget token by attaching a member reservation under a query
@@ -276,7 +296,7 @@ impl ExecutionBudgetToken {
     ) -> Result<Self> {
         let reservation_id = NEXT_RESERVATION_ID.fetch_add(1, Ordering::Relaxed);
         let lease = domain.reserve_stream(runtime.stream(), reservation_id, request.budget_bytes())?;
-        Ok(Self { request, lease, enforcement: ExecutionBudgetEnforcement::QueryDomainMember })
+        Ok(Self::new(runtime, request, lease, ExecutionBudgetEnforcement::QueryDomainMember))
     }
 
     /// Resize this token's hard stream-bound reservation.

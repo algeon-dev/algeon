@@ -1768,8 +1768,8 @@ impl DataFrame {
         };
         let _consumer_fence = prepare_write_domain(&self.domain, &write_domain, "dataframe::write_csv_with_options")?;
         let tv = self.build_table_view()?;
-        let exec_options = write_domain.exec_options_raw();
-        csv::write_csv_with_exec(&tv, &opts, &exec_options)?;
+        let exec_options = write_domain.enter_execution()?;
+        csv::write_csv_with_exec(&tv, &opts, exec_options.options())?;
         write_domain.synchronize_for_host_visibility("dataframe::write_csv_with_options")
     }
 
@@ -2245,8 +2245,8 @@ impl DataFrame {
         let _consumer_fence =
             prepare_write_domain(&self.domain, &write_domain, "dataframe::write_parquet_with_options")?;
         let tv = self.build_table_view()?;
-        let exec_options = write_domain.exec_options_raw();
-        parquet::write_parquet_with_exec(&tv, &table_options, &exec_options)?;
+        let exec_options = write_domain.enter_execution()?;
+        parquet::write_parquet_with_exec(&tv, &table_options, exec_options.options())?;
         write_domain.synchronize_for_host_visibility("dataframe::write_parquet_with_options")
     }
 
@@ -2321,8 +2321,8 @@ impl DataFrame {
         };
         let _consumer_fence = prepare_write_domain(&self.domain, &write_domain, "dataframe::write_json_with_options")?;
         let tv = self.build_table_view()?;
-        let exec_options = write_domain.exec_options_raw();
-        json::write_json_with_exec(&tv, &opts, &exec_options)?;
+        let exec_options = write_domain.enter_execution()?;
+        json::write_json_with_exec(&tv, &opts, exec_options.options())?;
         write_domain.synchronize_for_host_visibility("dataframe::write_json_with_options")
     }
 }

@@ -22,8 +22,8 @@
 
 namespace {
 struct cudf_device_buffer_owner {
-  rmm::device_buffer buffer;
   cudf_handle_provenance provenance;
+  rmm::device_buffer buffer;
 };
 
 cudf_device_buffer_handle
@@ -53,23 +53,10 @@ public:
       cudf_device_buffer_owner *data_owner,
       cudf_device_buffer_owner *null_mask_owner,
       cudf_handle_provenance provenance)
-      : _dtype{dtype}, _size{size}, _null_count{null_count},
+      : _provenance{std::move(provenance)},
+        _dtype{dtype}, _size{size}, _null_count{null_count},
         _pending_data_owner{data_owner},
-        _pending_null_mask_owner{null_mask_owner},
-        _provenance{std::move(provenance)} {}
-
-  ~adopted_device_buffer_column_handle_state() override {
-    auto data_owner = std::move(_data_owner);
-    auto null_mask_owner = std::move(_null_mask_owner);
-    auto const result = cudf_destroy_under_provenance(_provenance, [&] {
-      null_mask_owner.reset();
-      data_owner.reset();
-    });
-    if (result != cudf_provenance_cleanup_result::completed &&
-        (null_mask_owner != nullptr || data_owner != nullptr)) {
-      std::terminate();
-    }
-  }
+        _pending_null_mask_owner{null_mask_owner} {}
 
   void commit_published_handles() noexcept {
     _data_owner.reset(_pending_data_owner);
@@ -142,6 +129,7 @@ private:
                                        : _null_mask_owner.get();
   }
 
+  cudf_handle_provenance _provenance;
   cudf::data_type _dtype;
   cudf::size_type _size;
   cudf::size_type _null_count;
@@ -149,7 +137,6 @@ private:
   cudf_device_buffer_owner *_pending_null_mask_owner;
   std::unique_ptr<cudf_device_buffer_owner> _data_owner;
   std::unique_ptr<cudf_device_buffer_owner> _null_mask_owner;
-  cudf_handle_provenance _provenance;
 };
 
 cudf_column_handle release_adopted_column_handle(
@@ -184,21 +171,15 @@ cudf_status_t cudf_device_buffer_create_ex(size_t size,
   CUDF_RUST_CATCH
 }
 
-void cudf_device_buffer_destroy(cudf_device_buffer_handle handle) {
-  if (handle == nullptr) {
-    return;
-  }
-  cudf_clear_error();
+cudf_status_t cudf_device_buffer_destroy(cudf_device_buffer_handle handle) {
+  if (handle == nullptr) { return CUDF_SUCCESS; }
   try {
     auto *owner = static_cast<cudf_device_buffer_owner *>(handle);
     auto const provenance = owner->provenance;
-    auto const cleanup =
-        cudf_destroy_under_provenance(provenance, [owner] { delete owner; });
-    if (cleanup != cudf_provenance_cleanup_result::completed) {
-      std::terminate();
-    }
+    // The handle is consumed even when provenance entry or cleanup fails.
+    return cudf_destroy_under_provenance(provenance, [owner] { delete owner; });
   } catch (...) {
-    (void)translate_exception();
+    return cudf_translate_cleanup_exception_noexcept();
   }
 }
 

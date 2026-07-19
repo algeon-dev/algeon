@@ -72,7 +72,7 @@ unsafe extern "C" {
         out: *mut cudf_scalar_handle,
     ) -> cudf_status_t;
 
-    pub fn cudf_scalar_destroy(handle: cudf_scalar_handle);
+    pub fn cudf_scalar_destroy(handle: cudf_scalar_handle) -> cudf_status_t;
 
     /// `out` receives a raw `cudf_type_id_t` discriminant. Declared as `i32`
     /// so an unmirrored libcudf type id never materializes an invalid Rust

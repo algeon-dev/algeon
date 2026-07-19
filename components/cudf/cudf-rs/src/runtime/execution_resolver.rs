@@ -9,7 +9,7 @@ use std::sync::Arc;
 
 use super::{
     execution_context::ExecutionOverrides,
-    execution_domain::{ConsumerCompletionFence, ExecutionDomain},
+    execution_domain::{ConsumerCompletionFence, EnteredExecution, ExecutionDomain},
 };
 use crate::core::error::Result;
 
@@ -23,7 +23,7 @@ use crate::core::error::Result;
 /// stream-ordered deallocation of an input can never race the consumer.
 pub(crate) struct ResolvedExecution {
     output_domain: Arc<ExecutionDomain>,
-    exec_options: cudf_sys::cudf_exec_options_t,
+    exec_options: EnteredExecution,
     consumer_fence: ConsumerCompletionFence,
 }
 
@@ -52,7 +52,7 @@ impl ResolvedExecution {
         operation: &'static str,
     ) -> Result<Self> {
         let output_domain = ctx.resolve_output_domain(primary)?;
-        let mut resolved = Self::new(output_domain, operation);
+        let mut resolved = Self::new(output_domain, operation)?;
         resolved.order_input(primary)?;
         for secondary in secondaries {
             resolved.order_input(secondary)?;
@@ -65,7 +65,7 @@ impl ResolvedExecution {
         secondaries: impl IntoIterator<Item = &'a Arc<ExecutionDomain>>,
         operation: &'static str,
     ) -> Result<Self> {
-        let mut resolved = Self::new(output_domain, operation);
+        let mut resolved = Self::new(output_domain, operation)?;
         for secondary in secondaries {
             resolved.order_input(secondary)?;
         }
@@ -83,13 +83,13 @@ impl ResolvedExecution {
     }
 
     pub(crate) fn exec_options(&self) -> &cudf_sys::cudf_exec_options_t {
-        &self.exec_options
+        self.exec_options.options()
     }
 
-    fn new(output_domain: Arc<ExecutionDomain>, operation: &'static str) -> Self {
-        let exec_options = output_domain.exec_options_raw();
+    fn new(output_domain: Arc<ExecutionDomain>, operation: &'static str) -> Result<Self> {
+        let exec_options = output_domain.enter_execution()?;
         let consumer_fence = ConsumerCompletionFence::for_output(&output_domain, operation);
-        Self { output_domain, exec_options, consumer_fence }
+        Ok(Self { output_domain, exec_options, consumer_fence })
     }
 }
 

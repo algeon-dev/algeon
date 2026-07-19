@@ -304,32 +304,6 @@ struct DeviceArrowAbiTransferState {
 unsafe impl Send for DeviceArrowAbiTransferState {}
 unsafe impl Sync for DeviceArrowAbiTransferState {}
 
-unsafe fn release_arrow_schema_handle(schema: *mut ArrowSchema) {
-    if schema.is_null() {
-        return;
-    }
-    // SAFETY: the caller guarantees that `schema` points to a live Arrow
-    // schema whose release callback may be invoked at most once here.
-    unsafe {
-        if let Some(release) = (*schema).release {
-            release(schema);
-        }
-    }
-}
-
-unsafe fn release_arrow_device_array_handle(array: *mut ArrowDeviceArray) {
-    if array.is_null() {
-        return;
-    }
-    // SAFETY: the caller guarantees that `array` points to a live Arrow
-    // device array whose embedded release callback is valid to invoke.
-    unsafe {
-        if let Some(release) = (*array).array.release {
-            release(ptr::addr_of_mut!((*array).array));
-        }
-    }
-}
-
 unsafe fn finish_transfer_state(state: *mut DeviceArrowAbiTransferState) {
     if state.is_null() {
         return;
@@ -441,6 +415,16 @@ fn validate_raw_abi_parts(
         )
     })?;
     Ok((schema, array))
+}
+
+fn device_id_for_native_teardown(array: NonNull<c_void>) -> Option<crate::runtime::DeviceId> {
+    let mut raw = -1_i64;
+    let status = unsafe { cudf_sys::cudf_arrow_device_array_device_id(array.as_ptr(), &mut raw) };
+    if status != cudf_sys::CUDF_SUCCESS {
+        return None;
+    }
+    let ordinal = i32::try_from(raw).ok()?;
+    (ordinal >= 0).then(|| crate::runtime::DeviceId::from_validated_ordinal_raw(ordinal))
 }
 
 fn with_optional_column_index(mut err: Error, column_index: Option<usize>) -> Error {
@@ -682,32 +666,34 @@ unsafe fn table_child_array_for_fixed_width_ptr<'a>(
 struct DeviceArrowAbiRootInner {
     schema: NonNull<c_void>,
     array: NonNull<c_void>,
+    device: Option<crate::runtime::DeviceId>,
     materialization: DeviceArrowImportMaterialization,
     retained_owner: Option<Arc<dyn Any + Send + Sync>>,
     ownership: DeviceArrowAbiOwnership,
 }
 
+fn drop_device_arrow_array(array: NonNull<c_void>, device: Option<crate::runtime::DeviceId>) {
+    if let Some(device) = device {
+        crate::core::native_teardown::drop_device_owned_handle(
+            array.as_ptr(),
+            device,
+            "DeviceArrowAbiRootInner::drop",
+            |owned| unsafe { cudf_sys::cudf_arrow_device_array_destroy(owned) },
+        );
+    } else {
+        crate::core::native_teardown::quarantine_unknown_device_owned_handle(
+            array.as_ptr(),
+            "DeviceArrowAbiRootInner::drop",
+        );
+    }
+}
+
 impl Drop for DeviceArrowAbiRootInner {
     fn drop(&mut self) {
-        unsafe {
-            match self.ownership {
-                DeviceArrowAbiOwnership::DestroyShim => {
-                    cudf_sys::cudf_arrow_device_schema_destroy(self.schema.as_ptr());
-                    cudf_sys::cudf_arrow_device_array_destroy(self.array.as_ptr());
-                },
-                DeviceArrowAbiOwnership::ArrowRelease => {
-                    // Run the Arrow release callbacks first (these free the
-                    // contents and null out `release`), then reclaim the
-                    // bridge-allocated root structs themselves. The
-                    // `from_raw_abi_parts` safety contract guarantees these
-                    // pointers are this bridge's own heap allocations.
-                    release_arrow_schema_handle(self.schema.as_ptr().cast());
-                    release_arrow_device_array_handle(self.array.as_ptr().cast());
-                    cudf_sys::cudf_arrow_device_schema_destroy(self.schema.as_ptr());
-                    cudf_sys::cudf_arrow_device_array_destroy(self.array.as_ptr());
-                },
-            }
-        }
+        // Both ownership modes use the public destroy shims: they invoke any
+        // live Arrow release callback and reclaim the bridge-owned root.
+        let _ = unsafe { cudf_sys::cudf_arrow_device_schema_destroy(self.schema.as_ptr()) };
+        drop_device_arrow_array(self.array, self.device);
     }
 }
 
@@ -903,7 +889,7 @@ fn unwrap_abi_root(inner: Arc<DeviceArrowAbiRootInner>) -> DeviceArrowAbiRootInn
 
 fn export_device_arrow_column_from_view(
     view: &crate::core::column::ColumnView<'_>,
-    exec_options: cudf_sys::cudf_exec_options_t,
+    exec_options: crate::runtime::execution_domain::EnteredExecution,
     retained_owner: Arc<dyn Any + Send + Sync>,
     operation: &'static str,
     reported_materialization: Option<DeviceArrowExportMaterialization>,
@@ -919,7 +905,7 @@ fn export_device_arrow_column_from_view(
         unsafe {
             cudf_sys::cudf_arrow_device_column_export(
                 view.raw_handle(),
-                &exec_options,
+                exec_options.options(),
                 &mut schema,
                 &mut array,
                 &mut materialization,
@@ -936,6 +922,7 @@ fn export_device_arrow_column_from_view(
     let inner = Arc::new(DeviceArrowAbiRootInner {
         schema: error::require_non_null(schema, operation, "ArrowSchema")?,
         array: error::require_non_null(array, operation, "ArrowDeviceArray")?,
+        device: Some(view.execution_domain().device_id()),
         materialization: import_materialization,
         retained_owner: Some(retained_owner),
         ownership: DeviceArrowAbiOwnership::DestroyShim,
@@ -947,7 +934,7 @@ fn export_device_arrow_column_from_view(
 
 fn export_device_arrow_table_from_view(
     view: &crate::core::table::TableView<'_>,
-    exec_options: cudf_sys::cudf_exec_options_t,
+    exec_options: crate::runtime::execution_domain::EnteredExecution,
     raw_names: Option<&[*const c_char]>,
     retained_owner: Arc<dyn Any + Send + Sync>,
     operation: &'static str,
@@ -972,7 +959,7 @@ fn export_device_arrow_table_from_view(
         unsafe {
             cudf_sys::cudf_arrow_device_table_export(
                 view.raw_handle(),
-                &exec_options,
+                exec_options.options(),
                 raw_names_ptr,
                 raw_names_len,
                 &mut schema,
@@ -991,6 +978,7 @@ fn export_device_arrow_table_from_view(
     let inner = Arc::new(DeviceArrowAbiRootInner {
         schema: error::require_non_null(schema, operation, "ArrowSchema")?,
         array: error::require_non_null(array, operation, "ArrowDeviceArray")?,
+        device: Some(view.execution_domain().device_id()),
         materialization: import_materialization,
         retained_owner: Some(retained_owner),
         ownership: DeviceArrowAbiOwnership::DestroyShim,
@@ -1196,6 +1184,7 @@ impl ForeignDeviceArrowColumn {
             inner: Arc::new(DeviceArrowAbiRootInner {
                 schema,
                 array,
+                device: device_id_for_native_teardown(array),
                 materialization,
                 retained_owner: None,
                 ownership: DeviceArrowAbiOwnership::ArrowRelease,
@@ -1444,6 +1433,7 @@ impl ForeignDeviceArrowTable {
             inner: Arc::new(DeviceArrowAbiRootInner {
                 schema,
                 array,
+                device: device_id_for_native_teardown(array),
                 materialization,
                 retained_owner: None,
                 ownership: DeviceArrowAbiOwnership::ArrowRelease,
@@ -1487,7 +1477,7 @@ impl Series {
     pub fn try_prepare_device_arrow_export(&self) -> Result<DeviceArrowColumnExport> {
         let operation = "interop::Series::try_prepare_device_arrow_export";
         let view = self.as_column().view().map_err(|error| error.reanchor(operation))?;
-        let exec_options = view.execution_domain().exec_options_raw();
+        let exec_options = view.execution_domain().enter_execution()?;
         let retained_owner: Arc<dyn Any + Send + Sync> = self.arc();
 
         export_device_arrow_column_from_view(&view, exec_options, retained_owner, operation, None)
@@ -1505,7 +1495,7 @@ impl Column {
         let operation = "interop::Column::try_prepare_device_arrow_export";
         let retained_column = Arc::new(self);
         let view = retained_column.view().map_err(|error| error.reanchor(operation))?;
-        let exec_options = retained_column.execution_domain().exec_options_raw();
+        let exec_options = retained_column.execution_domain().enter_execution()?;
         let retained_owner: Arc<dyn Any + Send + Sync> = Arc::clone(&retained_column) as Arc<dyn Any + Send + Sync>;
 
         export_device_arrow_column_from_view(&view, exec_options, retained_owner, operation, None)
@@ -1523,7 +1513,7 @@ impl Column {
         let operation = "interop::Column::try_prepare_device_arrow_export_with_deep_copy";
         let retained_column = Arc::new(self.deep_copy().map_err(|error| error.reanchor(operation))?);
         let view = retained_column.view().map_err(|error| error.reanchor(operation))?;
-        let exec_options = retained_column.execution_domain().exec_options_raw();
+        let exec_options = retained_column.execution_domain().enter_execution()?;
         let retained_owner: Arc<dyn Any + Send + Sync> = Arc::clone(&retained_column) as Arc<dyn Any + Send + Sync>;
 
         export_device_arrow_column_from_view(
@@ -1541,7 +1531,7 @@ impl Table {
         let operation = "interop::Table::try_prepare_device_arrow_export";
         let retained_table = Arc::new(self);
         let view = retained_table.view().map_err(|error| error.reanchor(operation))?;
-        let exec_options = retained_table.execution_domain().exec_options_raw();
+        let exec_options = retained_table.execution_domain().enter_execution()?;
         let retained_owner: Arc<dyn Any + Send + Sync> = Arc::clone(&retained_table) as Arc<dyn Any + Send + Sync>;
 
         export_device_arrow_table_from_view(&view, exec_options, None, retained_owner, operation, None)
@@ -1558,7 +1548,7 @@ impl Table {
         let operation = "interop::Table::try_prepare_device_arrow_export_with_deep_copy";
         let retained_table = Arc::new(self.deep_copy().map_err(|error| error.reanchor(operation))?);
         let view = retained_table.view().map_err(|error| error.reanchor(operation))?;
-        let exec_options = retained_table.execution_domain().exec_options_raw();
+        let exec_options = retained_table.execution_domain().enter_execution()?;
         let retained_owner: Arc<dyn Any + Send + Sync> = Arc::clone(&retained_table) as Arc<dyn Any + Send + Sync>;
 
         export_device_arrow_table_from_view(
@@ -1577,7 +1567,7 @@ impl DataFrame {
         let operation = "interop::DataFrame::try_prepare_device_arrow_export";
         let retained_df = Arc::new(self.clone());
         let view = retained_df.build_table_view().map_err(|error| error.reanchor(operation))?;
-        let exec_options = retained_df.execution_domain().exec_options_raw();
+        let exec_options = retained_df.execution_domain().enter_execution()?;
         let names = retained_df.column_names_owned();
         let c_names = names
             .iter()
@@ -1606,7 +1596,7 @@ impl Column {
         validate_supported_device_type(input.inner.try_device_type(operation)?, operation)?;
         validate_same_device(input.inner.try_device_id(operation)?, runtime, operation, "foreign_device_arrow_column")?;
 
-        let exec_options = runtime.execution_domain().exec_options_raw();
+        let exec_options = runtime.execution_domain().enter_execution()?;
         let mut handle = ptr::null_mut();
         let mut materialization: i32 =
             cudf_sys::cudf_arrow_device_import_materialization_t::CUDF_ARROW_DEVICE_IMPORT_FOREIGN_RETAINED_VIEW as i32;
@@ -1616,7 +1606,7 @@ impl Column {
                 cudf_sys::cudf_arrow_device_column_import(
                     input.inner.schema.as_ptr(),
                     input.inner.array.as_ptr(),
-                    &exec_options,
+                    exec_options.options(),
                     &mut handle,
                     &mut materialization,
                 )
@@ -1675,7 +1665,7 @@ impl Table {
         validate_supported_device_type(input.inner.try_device_type(operation)?, operation)?;
         validate_same_device(input.inner.try_device_id(operation)?, runtime, operation, "foreign_device_arrow_table")?;
 
-        let exec_options = runtime.execution_domain().exec_options_raw();
+        let exec_options = runtime.execution_domain().enter_execution()?;
         let mut handle = ptr::null_mut();
         let mut materialization: i32 =
             cudf_sys::cudf_arrow_device_import_materialization_t::CUDF_ARROW_DEVICE_IMPORT_FOREIGN_RETAINED_VIEW as i32;
@@ -1685,7 +1675,7 @@ impl Table {
                 cudf_sys::cudf_arrow_device_table_import(
                     input.inner.schema.as_ptr(),
                     input.inner.array.as_ptr(),
-                    &exec_options,
+                    exec_options.options(),
                     &mut handle,
                     &mut materialization,
                 )

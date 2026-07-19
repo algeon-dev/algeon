@@ -96,11 +96,13 @@ cudf_status_t cudf_arrow_device_table_import(
     cudf_exec_options_t const *options, cudf_table_handle *out,
     cudf_arrow_device_import_materialization_t *out_materialization);
 
-/// Destroy one heap-owned ArrowSchema handle returned by this shim.
-void cudf_arrow_device_schema_destroy(cudf_arrow_schema_handle schema);
+/// Destroy one heap-owned ArrowSchema handle returned by this shim. Ownership
+/// is consumed on call; failure quarantines the root and must not be retried.
+cudf_status_t cudf_arrow_device_schema_destroy(cudf_arrow_schema_handle schema);
 
 /// Destroy one heap-owned ArrowDeviceArray handle returned by this shim.
-void cudf_arrow_device_array_destroy(cudf_arrow_device_array_handle array);
+/// Ownership is consumed on call; failure quarantines the root.
+cudf_status_t cudf_arrow_device_array_destroy(cudf_arrow_device_array_handle array);
 
 /// Read the ArrowDeviceArray device id.
 cudf_status_t

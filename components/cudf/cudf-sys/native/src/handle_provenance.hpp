@@ -21,15 +21,12 @@ cudf_capture_exec_provenance(cudf_exec_context const &exec) noexcept;
 
 cudf_handle_provenance cudf_capture_current_handle_provenance();
 
-void cudf_translate_cleanup_exception_noexcept() noexcept;
+cudf_status_t cudf_translate_cleanup_exception_noexcept() noexcept;
+
+/// Return and clear a testing-only one-shot destroy failure.
+cudf_status_t cudf_take_test_provenance_destroy_failure() noexcept;
 
 cudf_status_t cudf_translate_exception_for_provenance_call();
-
-enum class cudf_provenance_cleanup_result {
-  completed,
-  not_run,
-  failed,
-};
 
 template <typename Callable>
 cudf_status_t
@@ -63,21 +60,29 @@ cudf_invoke_under_provenance(cudf_handle_provenance const &provenance,
   return std::forward<Callable>(call)();
 }
 
+/// Run cleanup under captured provenance without allowing an exception to
+/// cross the C ABI. The caller consumes ownership before invoking this helper:
+/// CUDF_SUCCESS means cleanup completed, while every error means the caller
+/// must quarantine the now-unreachable native allocation.
 template <typename Callable>
-cudf_provenance_cleanup_result
+cudf_status_t
 cudf_destroy_under_provenance(cudf_handle_provenance const &provenance,
                               Callable &&cleanup) noexcept {
+  if (auto const injected = cudf_take_test_provenance_destroy_failure();
+      injected != CUDF_SUCCESS) {
+    return injected;
+  }
   try {
     cudf_device_guard device_guard;
-    if (device_guard.activate(provenance.device) != CUDF_SUCCESS) {
-      return cudf_provenance_cleanup_result::not_run;
+    if (auto const status = device_guard.activate(provenance.device);
+        status != CUDF_SUCCESS) {
+      return status;
     }
 
     std::forward<Callable>(cleanup)();
-    return cudf_provenance_cleanup_result::completed;
+    return CUDF_SUCCESS;
   } catch (...) {
-    cudf_translate_cleanup_exception_noexcept();
-    return cudf_provenance_cleanup_result::failed;
+    return cudf_translate_cleanup_exception_noexcept();
   }
 }
 

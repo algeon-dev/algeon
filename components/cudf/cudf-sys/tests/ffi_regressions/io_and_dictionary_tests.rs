@@ -147,6 +147,23 @@ fn test_invalid_argument_maps_to_invalid_argument() {
 }
 
 #[test]
+fn test_owning_handle_size_arithmetic_overflow_is_typed_and_does_not_wrap() {
+    let _shim_state = lock_shim_state();
+    let mut out = usize::MAX;
+
+    let add_status = unsafe { cudf_sys::cudf_test_checked_owning_handle_size_add(usize::MAX, 1, &mut out) };
+    assert_eq!(add_status, cudf_sys::CUDF_ERROR_SIZE_OVERFLOW);
+    assert_eq!(out, 0, "failed checked addition must leave a deterministic output");
+    assert!(last_error_message().contains("overflow"));
+
+    out = usize::MAX;
+    let mul_status = unsafe { cudf_sys::cudf_test_checked_owning_handle_size_mul(usize::MAX, 2, &mut out) };
+    assert_eq!(mul_status, cudf_sys::CUDF_ERROR_SIZE_OVERFLOW);
+    assert_eq!(out, 0, "failed checked multiplication must leave a deterministic output");
+    assert!(last_error_message().contains("overflow"));
+}
+
+#[test]
 fn test_io_read_parquet_with_metadata_invalid_args_clear_outputs() {
     let _shim_state = lock_shim_state();
     let (_stream, _mr, exec) = io_exec_options();

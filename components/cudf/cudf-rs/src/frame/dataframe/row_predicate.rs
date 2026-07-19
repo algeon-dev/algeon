@@ -136,7 +136,7 @@ impl DataFrame {
             Err(err) => return Err(err),
         };
         let _consumer_fence = ExecutionDomain::insert_stream_dependency(&self.domain, &output_domain, operation)?;
-        let exec_options = output_domain.exec_options_raw();
+        let exec_options = output_domain.enter_execution()?;
         let tv = self.build_table_view()?;
         let result_table = filter::apply_row_predicate_impl(
             &tv,
@@ -144,7 +144,7 @@ impl DataFrame {
             lowered.root_index,
             &lowered.scalars,
             &output_domain,
-            &exec_options,
+            exec_options.options(),
             operation,
         )?;
         Self::from_table_with_names(result_table, self.column_names_owned())

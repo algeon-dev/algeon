@@ -648,6 +648,7 @@ fn leaf_code_for_status(status: cudf_sys::cudf_status_t, message: &str) -> Error
         cudf_sys::CUDF_ERROR_CUDA => ErrorCode::CudaRuntime,
         cudf_sys::CUDF_ERROR_FATAL_CUDA => ErrorCode::FatalCuda,
         cudf_sys::CUDF_ERROR_OUT_OF_MEMORY => ErrorCode::OutOfMemory,
+        cudf_sys::CUDF_ERROR_SIZE_OVERFLOW => ErrorCode::SizeOverflow,
         cudf_sys::CUDF_ERROR_UNSUPPORTED => ErrorCode::UnsupportedOperation,
         cudf_sys::CUDF_ERROR_IO if is_transient_cuda_io_message(message) => ErrorCode::TransientIoFailure,
         cudf_sys::CUDF_ERROR_IO => ErrorCode::IoFailure,
@@ -697,6 +698,32 @@ fn read_ffi_last_error_message() -> String {
 /// Convert a C shim status into a `Result<()>` anchored at the caller's
 /// operation label.
 pub(crate) fn check_status_in(status: cudf_sys::cudf_status_t, operation: &'static str) -> Result<()> {
+    if status == cudf_sys::CUDF_SUCCESS {
+        return Ok(());
+    }
+    if status == cudf_sys::CUDF_ERROR_FATAL_CUDA
+        && let Some(device) = crate::runtime::device_guard::current_entered_device()
+    {
+        crate::runtime::report_device_fault(
+            device,
+            crate::runtime::DeviceFaultKind::FatalDeviceOperation,
+            operation,
+            Some(status),
+        );
+    }
+    check_status_in_without_device_report(status, operation)
+}
+
+/// Convert a C shim status without inferring device ownership from the
+/// thread-local entry stack.
+///
+/// Device-aware runtime boundaries use this after reporting through their
+/// explicit owner-device path so one native failure produces one health
+/// record rather than a second generic TLS-derived record.
+pub(crate) fn check_status_in_without_device_report(
+    status: cudf_sys::cudf_status_t,
+    operation: &'static str,
+) -> Result<()> {
     if status == cudf_sys::CUDF_SUCCESS {
         return Ok(());
     }
@@ -891,4 +918,23 @@ pub fn find_cudf_error_in_chain<'a>(error: &'a (dyn StdError + 'static)) -> Opti
         current = err.source();
     }
     None
+}
+
+#[cfg(test)]
+mod size_overflow_tests {
+    use super::*;
+
+    #[test]
+    fn native_size_overflow_status_maps_to_permanent_resource_error() {
+        let error = error_for_ffi_status(
+            cudf_sys::CUDF_ERROR_SIZE_OVERFLOW,
+            "cudf::test.size_overflow",
+            "synthetic size overflow".to_string(),
+        );
+
+        assert_eq!(error.code(), ErrorCode::SizeOverflow);
+        assert_eq!(error.kind(), ErrorKind::ResourceExhausted);
+        assert_eq!(error.status(), ErrorStatus::Permanent);
+        assert!(!error.is_retryable());
+    }
 }

@@ -45,6 +45,8 @@ use std::{
 };
 
 use super::{
+    affinity::{ExecutionBindingId, RuntimeAffinityAnchor, RuntimeAffinityId, RuntimeAffinityOwner},
+    binding_extension::BindingExtensions,
     boundary::{BoundaryObservation, BoundaryObserverRef},
     device::DeviceId,
     device_guard::DeviceGuard,
@@ -63,11 +65,107 @@ static NEXT_BUNDLE_ID: AtomicU64 = AtomicU64::new(1);
 
 pub(crate) struct ExecutionDomain {
     device: DeviceId,
+    authority: DeviceExecutionAuthority,
+    // Binding extensions are dropped before the stream and memory resource.
+    // Cross-crate native owners may borrow those handles during teardown.
+    binding_extensions: Arc<BindingExtensions>,
     stream: Arc<CudaStream>,
     mr: Arc<DeviceMemoryResource>,
     workflow_id: ExecutionWorkflowId,
     bundle_id: ExecutionBundleId,
+    binding_id: ExecutionBindingId,
+    affinity_owner: Arc<RuntimeAffinityOwner>,
     boundary_observer: Option<BoundaryObserverRef>,
+    retained_lifetimes: RetainedLifetimes,
+}
+
+/// Immutable device authority shared by all execution-domain FFI entry.
+pub(crate) struct DeviceExecutionAuthority {
+    device: DeviceId,
+}
+
+/// Scoped execution options whose lifetime proves owner-device entry.
+pub(crate) struct EnteredExecution {
+    _entry: DeviceGuard,
+    options: cudf_sys::cudf_exec_options_t,
+}
+
+impl EnteredExecution {
+    /// Borrow the native execution options while retaining the host-thread
+    /// owner-device entry proof carried by this value.
+    pub(crate) fn options(&self) -> &cudf_sys::cudf_exec_options_t {
+        &self.options
+    }
+}
+
+impl DeviceExecutionAuthority {
+    fn new(device: DeviceId) -> Self {
+        Self { device }
+    }
+
+    fn enter(&self, stream: &CudaStream, mr: &DeviceMemoryResource) -> Result<EnteredExecution> {
+        let entry = DeviceGuard::enter(self.device, "execution_domain::enter")?;
+        Ok(EnteredExecution {
+            _entry: entry,
+            options: cudf_sys::cudf_exec_options_t {
+                struct_size: std::mem::size_of::<cudf_sys::cudf_exec_options_t>(),
+                device: self.device.ordinal_raw(),
+                flags: cudf_sys::CUDF_EXEC_FLAG_DEVICE_EXPLICIT,
+                stream: stream.as_raw() as *mut c_void,
+                mr: mr.as_raw() as *mut c_void,
+                reserved: [0; cudf_sys::CUDF_EXEC_OPTIONS_RESERVED_SLOTS],
+            },
+        })
+    }
+}
+
+/// Flat, clone-cheap retained owner set.
+///
+/// Tokens are deduplicated by allocation identity. Keeping one flat Arc-backed
+/// slice avoids recursive provenance chains and bounds repeated inheritance to
+/// the number of distinct owners rather than the number of derivations.
+#[derive(Clone, Default)]
+struct RetainedLifetimes {
+    tokens: Option<Arc<[Arc<dyn Send + Sync>]>>,
+}
+
+impl RetainedLifetimes {
+    fn iter(&self) -> impl Iterator<Item = &Arc<dyn Send + Sync>> {
+        self.tokens.as_deref().into_iter().flatten()
+    }
+
+    fn len(&self) -> usize {
+        self.tokens.as_ref().map_or(0, |tokens| tokens.len())
+    }
+
+    /// Return a new set only when `lifetime` is not already retained.
+    fn with_added(&self, lifetime: Arc<dyn Send + Sync>) -> Option<Self> {
+        if self.iter().any(|existing| Arc::ptr_eq(existing, &lifetime)) {
+            return None;
+        }
+        let mut tokens = Vec::with_capacity(self.len() + 1);
+        tokens.extend(self.iter().cloned());
+        tokens.push(lifetime);
+        Some(Self { tokens: Some(Arc::from(tokens.into_boxed_slice())) })
+    }
+
+    /// Return the flat union only when `other` contributes a distinct token.
+    fn union(&self, other: &Self) -> Option<Self> {
+        let mut added = Vec::new();
+        for candidate in other.iter() {
+            let already_retained = self.iter().chain(added.iter()).any(|existing| Arc::ptr_eq(existing, candidate));
+            if !already_retained {
+                added.push(Arc::clone(candidate));
+            }
+        }
+        if added.is_empty() {
+            return None;
+        }
+        let mut tokens = Vec::with_capacity(self.len() + added.len());
+        tokens.extend(self.iter().cloned());
+        tokens.extend(added);
+        Some(Self { tokens: Some(Arc::from(tokens.into_boxed_slice())) })
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -145,11 +243,16 @@ impl ExecutionDomain {
     ) -> Result<Arc<Self>> {
         Ok(Arc::new(Self {
             device,
+            authority: DeviceExecutionAuthority::new(device),
+            binding_extensions: Arc::new(BindingExtensions::default()),
             stream: Arc::new(stream),
             mr: Arc::new(mr),
             workflow_id: Self::next_workflow_id()?,
             bundle_id: Self::next_bundle_id()?,
+            binding_id: ExecutionBindingId::next()?,
+            affinity_owner: RuntimeAffinityOwner::new()?,
             boundary_observer,
+            retained_lifetimes: RetainedLifetimes::default(),
         }))
     }
 
@@ -171,11 +274,16 @@ impl ExecutionDomain {
         let mr = Arc::new(DeviceMemoryResource::cuda()?);
         let domain = Arc::new(Self {
             device,
+            authority: DeviceExecutionAuthority::new(device),
+            binding_extensions: Arc::new(BindingExtensions::default()),
             stream,
             mr,
             workflow_id: ExecutionWorkflowId::new(identity)?,
             bundle_id: Self::next_bundle_id()?,
+            binding_id: ExecutionBindingId::next()?,
+            affinity_owner: RuntimeAffinityOwner::new()?,
             boundary_observer: None,
+            retained_lifetimes: RetainedLifetimes::default(),
         });
         cache.insert(identity, Arc::clone(&domain));
         Ok(domain)
@@ -227,6 +335,31 @@ impl ExecutionDomain {
         }
     }
 
+    pub(crate) fn affinity_id(&self) -> RuntimeAffinityId {
+        self.affinity_owner.id()
+    }
+
+    pub(crate) fn binding_id(&self) -> ExecutionBindingId {
+        self.binding_id
+    }
+
+    pub(crate) fn binding_extensions(self: &Arc<Self>) -> &BindingExtensions {
+        self.binding_extensions.as_ref()
+    }
+
+    pub(crate) fn affinity_anchor(&self) -> RuntimeAffinityAnchor {
+        RuntimeAffinityAnchor::new(&self.affinity_owner)
+    }
+
+    pub(crate) fn affinity_owner(&self) -> &Arc<RuntimeAffinityOwner> {
+        &self.affinity_owner
+    }
+
+    pub(crate) fn same_affinity(left: &Arc<Self>, right: &Arc<Self>) -> bool {
+        left.affinity_owner.id() == right.affinity_owner.id()
+            && Arc::ptr_eq(&left.affinity_owner, &right.affinity_owner)
+    }
+
     pub(crate) fn boundary_observer(&self) -> Option<BoundaryObserverRef> {
         self.boundary_observer.clone()
     }
@@ -272,15 +405,8 @@ impl ExecutionDomain {
         Ok(fence)
     }
 
-    pub(crate) fn exec_options_raw(&self) -> cudf_sys::cudf_exec_options_t {
-        cudf_sys::cudf_exec_options_t {
-            struct_size: std::mem::size_of::<cudf_sys::cudf_exec_options_t>(),
-            device: self.device.ordinal_raw(),
-            flags: cudf_sys::CUDF_EXEC_FLAG_DEVICE_EXPLICIT,
-            stream: self.stream.as_raw() as *mut c_void,
-            mr: self.mr.as_raw() as *mut c_void,
-            reserved: [0; cudf_sys::CUDF_EXEC_OPTIONS_RESERVED_SLOTS],
-        }
+    pub(crate) fn enter_execution(&self) -> Result<EnteredExecution> {
+        self.authority.enter(&self.stream, &self.mr)
     }
 
     pub(crate) fn stream(&self) -> &CudaStream {
@@ -329,11 +455,91 @@ impl ExecutionDomain {
 
         Ok(Arc::new(Self {
             device: input.device,
+            authority: DeviceExecutionAuthority::new(input.device),
+            binding_extensions: Arc::new(BindingExtensions::default()),
             stream,
             mr,
             workflow_id: input.workflow_id,
             bundle_id: Self::next_bundle_id()?,
+            binding_id: ExecutionBindingId::next()?,
+            affinity_owner: Arc::clone(&input.affinity_owner),
             boundary_observer: input.boundary_observer.clone(),
+            retained_lifetimes: input.retained_lifetimes.clone(),
+        }))
+    }
+
+    pub(crate) fn with_retained_lifetime(
+        input: &Arc<Self>,
+        retained_lifetime: Arc<dyn Send + Sync>,
+    ) -> Result<Arc<Self>> {
+        let Some(retained_lifetimes) = input.retained_lifetimes.with_added(retained_lifetime) else {
+            return Ok(Arc::clone(input));
+        };
+        Ok(Arc::new(Self {
+            device: input.device,
+            authority: DeviceExecutionAuthority::new(input.device),
+            binding_extensions: Arc::clone(&input.binding_extensions),
+            stream: Arc::clone(&input.stream),
+            mr: Arc::clone(&input.mr),
+            workflow_id: input.workflow_id,
+            bundle_id: Self::next_bundle_id()?,
+            binding_id: input.binding_id,
+            affinity_owner: Arc::clone(&input.affinity_owner),
+            boundary_observer: input.boundary_observer.clone(),
+            retained_lifetimes,
+        }))
+    }
+
+    pub(crate) fn inherit_retained_lifetime(input: &Arc<Self>, source: &Arc<Self>) -> Result<Arc<Self>> {
+        let Some(retained_lifetimes) = input.retained_lifetimes.union(&source.retained_lifetimes) else {
+            return Ok(Arc::clone(input));
+        };
+        Ok(Arc::new(Self {
+            device: input.device,
+            authority: DeviceExecutionAuthority::new(input.device),
+            binding_extensions: Arc::clone(&input.binding_extensions),
+            stream: Arc::clone(&input.stream),
+            mr: Arc::clone(&input.mr),
+            workflow_id: input.workflow_id,
+            bundle_id: Self::next_bundle_id()?,
+            binding_id: input.binding_id,
+            affinity_owner: Arc::clone(&input.affinity_owner),
+            boundary_observer: input.boundary_observer.clone(),
+            retained_lifetimes,
+        }))
+    }
+
+    pub(crate) fn debug_retained_lifetime_count(&self) -> usize {
+        self.retained_lifetimes.len()
+    }
+
+    pub(crate) fn inherit_affinity(input: &Arc<Self>, source: &Arc<Self>) -> Result<Arc<Self>> {
+        if input.device != source.device {
+            return Err(Error::new_with(
+                ErrorCode::RuntimeBindingMismatch,
+                "runtime::Runtime::inherit_affinity_from",
+                "runtime affinity can only be inherited between runtimes on the same CUDA device",
+            )
+            .with_fact(FACT_LEFT_DEVICE, DeviceIdFact(input.device.ordinal_raw()))
+            .with_fact(FACT_RIGHT_DEVICE, DeviceIdFact(source.device.ordinal_raw()))
+            .with_detail("reason", "cross_device_runtime_affinity")
+            .with_detail("remedy", "create the companion runtime on the same CUDA device as its base runtime"));
+        }
+        if Self::same_affinity(input, source) {
+            return Ok(Arc::clone(input));
+        }
+        Ok(Arc::new(Self {
+            device: input.device,
+            authority: DeviceExecutionAuthority::new(input.device),
+            binding_extensions: Arc::clone(&input.binding_extensions),
+            stream: Arc::clone(&input.stream),
+            mr: Arc::clone(&input.mr),
+            workflow_id: input.workflow_id,
+            bundle_id: Self::next_bundle_id()?,
+            binding_id: input.binding_id,
+            affinity_owner: Arc::clone(&source.affinity_owner),
+            boundary_observer: input.boundary_observer.clone(),
+            retained_lifetimes: input.retained_lifetimes.clone(),
         }))
     }
 
@@ -495,5 +701,35 @@ impl Drop for ConsumerCompletionFence {
                 );
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::testing::device_safety::{DeviceEntryTestCall, DeviceSafetyTestScope};
+
+    #[test]
+    fn restore_failure_prevents_later_execution_options_before_cuda_ffi() {
+        let runtime = crate::Runtime::new().expect("runtime");
+        let owner = runtime.device().ordinal_raw();
+        let ambient = owner.saturating_add(1);
+        let scope = DeviceSafetyTestScope::install([
+            DeviceEntryTestCall::GetDevice { status: cudf_sys::CUDF_SUCCESS, device: ambient },
+            DeviceEntryTestCall::SetDevice { expected_target: owner, status: cudf_sys::CUDF_SUCCESS },
+            DeviceEntryTestCall::SetDevice { expected_target: ambient, status: cudf_sys::CUDF_ERROR_FATAL_CUDA },
+            DeviceEntryTestCall::GetDevice { status: cudf_sys::CUDF_SUCCESS, device: owner },
+        ]);
+
+        let entered = runtime.execution_domain().enter_execution().expect("initial entered execution");
+        assert_eq!(entered.options().device, owner);
+        drop(entered);
+
+        let error = match runtime.execution_domain().enter_execution() {
+            Ok(_) => panic!("poisoned thread authority must prevent construction of later execution options"),
+            Err(error) => error,
+        };
+        assert_eq!(error.code(), ErrorCode::FatalCuda);
+        assert_eq!(scope.remaining_call_count(), 1, "rejected options must not cross CUDA FFI");
     }
 }

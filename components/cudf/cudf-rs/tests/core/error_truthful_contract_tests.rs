@@ -48,6 +48,14 @@ fn transient_io_failure_is_a_temporary_dependency_leaf() {
 }
 
 #[test]
+fn deterministic_host_materialization_size_failures_are_permanent_resource_leaves() {
+    for code in [ErrorCode::SizeOverflow, ErrorCode::HostMaterializationLimitExceeded] {
+        assert_eq!(kind_for_code(code), ErrorKind::ResourceExhausted);
+        assert_eq!(status_for_code(code), ErrorStatus::Permanent);
+    }
+}
+
+#[test]
 fn ffi_io_status_promotes_only_known_cuda_copy_transients() {
     let transient = cudf::testing::core::ffi_io_status_error_for_test(
         "CUDA error encountered at: cudf/cpp/src/utilities/cuda_memcpy.cu:43: 1 cudaErrorInvalidValue invalid argument",

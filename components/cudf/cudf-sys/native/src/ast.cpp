@@ -166,14 +166,14 @@ cudf_status_t cudf_ast_operation_binary_create(cudf_ast_operator_t op,
   CUDF_RUST_CATCH
 }
 
-void cudf_ast_expression_destroy(cudf_ast_expression_handle handle)
+cudf_status_t cudf_ast_expression_destroy(cudf_ast_expression_handle handle)
 {
-  if (handle == nullptr) { return; }
-  cudf_clear_error();
+  if (handle == nullptr) { return CUDF_SUCCESS; }
   try {
     delete static_cast<cudf_ast_expression_owner_ref*>(handle);
+    return CUDF_SUCCESS;
   } catch (...) {
-    (void)translate_exception();
+    return cudf_translate_cleanup_exception_noexcept();
   }
 }
 }  // extern "C"

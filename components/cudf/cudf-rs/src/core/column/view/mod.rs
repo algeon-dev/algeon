@@ -84,11 +84,17 @@ impl<'a> ColumnView<'a> {
     }
 
     pub(crate) fn slice_with_operation(&self, offset: i32, length: i32, operation: &'static str) -> Result<Self> {
-        let exec_options = self.domain.exec_options_raw();
+        let exec_options = self.domain.enter_execution()?;
         let mut sliced = ptr::null_mut();
         error::check_status_in(
             unsafe {
-                cudf_sys::cudf_column_view_slice_ex(self.handle.as_ptr(), offset, length, &exec_options, &mut sliced)
+                cudf_sys::cudf_column_view_slice_ex(
+                    self.handle.as_ptr(),
+                    offset,
+                    length,
+                    exec_options.options(),
+                    &mut sliced,
+                )
             },
             operation,
         )?;
@@ -173,10 +179,12 @@ impl<'a> ColumnView<'a> {
         )
         .map_err(classify_column_view_metadata_error)?;
         if out < 0 {
-            let exec_options = self.domain.exec_options_raw();
+            let exec_options = self.domain.enter_execution()?;
             // SAFETY: self.handle is valid (NonNull from construction/from_raw).
             error::check_status_in(
-                unsafe { cudf_sys::cudf_column_view_null_count_ex(self.handle.as_ptr(), &exec_options, &mut out) },
+                unsafe {
+                    cudf_sys::cudf_column_view_null_count_ex(self.handle.as_ptr(), exec_options.options(), &mut out)
+                },
                 "column_view::null_count",
             )
             .map_err(classify_column_view_metadata_error)?;
@@ -247,10 +255,14 @@ impl<'a> ColumnView<'a> {
     /// the root list offset to the child range.
     pub(crate) fn list_sliced_child(&self) -> Result<ColumnView<'a>> {
         let mut child_handle = ptr::null_mut();
-        let exec_options = self.domain.exec_options_raw();
+        let exec_options = self.domain.enter_execution()?;
         error::check_status_in(
             unsafe {
-                cudf_sys::cudf_column_view_list_sliced_child_ex(self.handle.as_ptr(), &exec_options, &mut child_handle)
+                cudf_sys::cudf_column_view_list_sliced_child_ex(
+                    self.handle.as_ptr(),
+                    exec_options.options(),
+                    &mut child_handle,
+                )
             },
             "column_view::list_sliced_child",
         )?;
@@ -288,11 +300,11 @@ impl<'a> ColumnView<'a> {
     pub(crate) fn string_chars_ptr_and_size(&self) -> Result<(*const c_void, usize)> {
         let mut out_ptr: *const c_void = std::ptr::null();
         let mut out_size: usize = 0;
-        let exec_options = self.domain.exec_options_raw();
+        let exec_options = self.domain.enter_execution()?;
         let status = unsafe {
             cudf_sys::cudf_column_view_string_chars_ptr_and_size_ex(
                 self.handle.as_ptr(),
-                &exec_options,
+                exec_options.options(),
                 &mut out_ptr,
                 &mut out_size,
             )
@@ -372,14 +384,14 @@ impl<'a> ColumnView<'a> {
 
         // SAFETY: buf is a valid mutable buffer of buf_size bytes. self.handle is
         // valid. Type was checked above to match T::TYPE_ID.
-        let exec_options = self.domain.exec_options_raw();
+        let exec_options = self.domain.enter_execution()?;
         error::check_status_in(
             unsafe {
                 cudf_sys::cudf_column_view_to_host_ex(
                     self.handle.as_ptr(),
                     buf.as_mut_ptr() as *mut c_void,
                     buf_size,
-                    &exec_options,
+                    exec_options.options(),
                 )
             },
             "column_view::to_vec",
@@ -437,14 +449,14 @@ impl<'a> ColumnView<'a> {
 
         self.synchronize_host_visibility("column_view::to_raw_bytes")?;
 
-        let exec_options = self.domain.exec_options_raw();
+        let exec_options = self.domain.enter_execution()?;
         error::check_status_in(
             unsafe {
                 cudf_sys::cudf_column_view_to_host_ex(
                     self.handle.as_ptr(),
                     buf.as_mut_ptr() as *mut c_void,
                     size,
-                    &exec_options,
+                    exec_options.options(),
                 )
             },
             "column_view::to_raw_bytes",
@@ -514,14 +526,14 @@ impl<'a> ColumnView<'a> {
 
         self.synchronize_host_visibility("column_view::to_fixed_width_host_bytes")?;
 
-        let exec_options = self.domain.exec_options_raw();
+        let exec_options = self.domain.enter_execution()?;
         error::check_status_in(
             unsafe {
                 cudf_sys::cudf_column_view_to_host_ex(
                     self.handle.as_ptr(),
                     buf.as_mut_ptr() as *mut c_void,
                     buf_size,
-                    &exec_options,
+                    exec_options.options(),
                 )
             },
             "column_view::to_fixed_width_host_bytes",
@@ -546,14 +558,14 @@ impl<'a> ColumnView<'a> {
 
         // SAFETY: mask buffer is large enough (padded to 64-byte boundaries).
         // self.handle is valid and nullable (checked above).
-        let exec_options = self.domain.exec_options_raw();
+        let exec_options = self.domain.enter_execution()?;
         error::check_status_in(
             unsafe {
                 cudf_sys::cudf_column_view_null_mask_to_host_ex(
                     self.handle.as_ptr(),
                     mask.as_mut_ptr(),
                     alloc_bytes,
-                    &exec_options,
+                    exec_options.options(),
                 )
             },
             operation,
@@ -650,7 +662,7 @@ impl<'a> ColumnView<'a> {
                 .with_detail("chars_size", chars_size.to_string())
         })?;
         let mut chars = vec![0u8; chars_size];
-        let exec_options = self.domain.exec_options_raw();
+        let exec_options = self.domain.enter_execution()?;
         let chars_buf = if chars.is_empty() { ptr::null_mut() } else { chars.as_mut_ptr() as *mut c_char };
         let mut total_chars_bytes = 0;
 
@@ -666,7 +678,7 @@ impl<'a> ColumnView<'a> {
                     chars_buf,
                     chars.len(),
                     &mut total_chars_bytes,
-                    &exec_options,
+                    exec_options.options(),
                 )
             },
             operation,
@@ -843,8 +855,8 @@ impl ColumnView<'_> {
                         .with_detail("values_type_id", values_type_id_str.clone())
                 })?;
 
-        let exec_options = self.domain.exec_options_raw();
-        search::contains_impl(values, self, &self.domain, &exec_options, "column_view::isin").map_err(|e| {
+        let exec_options = self.domain.enter_execution()?;
+        search::contains_impl(values, self, &self.domain, exec_options.options(), "column_view::isin").map_err(|e| {
             e.reanchor("column_view::isin")
                 .with_detail("input_type_id", input_type_id_str)
                 .with_detail("values_type_id", values_type_id_str)
@@ -853,8 +865,11 @@ impl ColumnView<'_> {
 }
 impl Drop for ColumnView<'_> {
     fn drop(&mut self) {
-        unsafe {
-            cudf_sys::cudf_column_view_destroy(self.handle.as_ptr());
-        }
+        crate::core::native_teardown::drop_device_owned_handle(
+            self.handle.as_ptr(),
+            self.domain.device_id(),
+            "ColumnView::drop",
+            |owned| unsafe { cudf_sys::cudf_column_view_destroy(owned) },
+        );
     }
 }

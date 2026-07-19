@@ -61,8 +61,15 @@ cudf_status_t cudf_stream_create(cudf_stream_handle *out) {
 }
 
 /// Destroy a CUDA stream handle.
-void cudf_stream_destroy(cudf_stream_handle handle) {
-  delete static_cast<cudf_stream_handle_state *>(handle);
+cudf_status_t cudf_stream_destroy(cudf_stream_handle handle) {
+  try {
+    // Ownership is consumed on call. Shared execution contexts may keep the
+    // underlying CUDA stream owner alive after this handle is reclaimed.
+    delete static_cast<cudf_stream_handle_state *>(handle);
+    return CUDF_SUCCESS;
+  } catch (...) {
+    return cudf_translate_cleanup_exception_noexcept();
+  }
 }
 
 /// Synchronize a CUDA stream (block until all operations complete).

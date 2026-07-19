@@ -1975,6 +1975,19 @@ fn device_arrow_import_rejects_different_runtime_device() {
 }
 
 #[test]
+fn owner_unknown_device_array_drop_quarantines_without_destructor_ffi() {
+    let scope = cudf::testing::device_safety::DeviceSafetyTestScope::install([]);
+
+    // The hook uses a non-null dangling pointer. Reaching the native
+    // destructor would be invalid; successful return proves the None-owner
+    // branch consumed it into quarantine without FFI.
+    cudf::testing::interop::quarantine_owner_unknown_device_array_for_test();
+
+    assert_eq!(scope.unknown_device_quarantined_count(), 1);
+    assert_eq!(scope.remaining_call_count(), 0);
+}
+
+#[test]
 fn device_arrow_import_rejects_non_cuda_device_type() {
     let _observation_lock = lock_event_observation();
     let runtime = Runtime::builder().build().unwrap();

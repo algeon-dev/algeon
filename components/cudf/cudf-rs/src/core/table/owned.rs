@@ -142,9 +142,12 @@ impl Table {
         if status != cudf_sys::CUDF_SUCCESS {
             for &h in &handles {
                 if !h.is_null() {
-                    // SAFETY: Each handle was valid from into_raw(). On failure
-                    // the C shim did not consume them, so we must clean up.
-                    unsafe { cudf_sys::cudf_column_destroy(h) };
+                    crate::core::native_teardown::drop_device_owned_handle(
+                        h,
+                        domain.device_id(),
+                        "table::from_columns::cleanup_column",
+                        |owned| unsafe { cudf_sys::cudf_column_destroy(owned) },
+                    );
                 }
             }
             error::check_status_in(status, operation)?;
@@ -167,10 +170,10 @@ impl Table {
     /// Deep-copy this table.
     pub fn deep_copy(&self) -> Result<Self> {
         let mut handle = ptr::null_mut();
-        let exec_options = self.domain.exec_options_raw();
+        let exec_options = self.domain.enter_execution()?;
         // SAFETY: self.handle is valid (NonNull invariant from construction).
         error::check_status_in(
-            unsafe { cudf_sys::cudf_table_copy_ex(self.handle.as_ptr(), &exec_options, &mut handle) },
+            unsafe { cudf_sys::cudf_table_copy_ex(self.handle.as_ptr(), exec_options.options(), &mut handle) },
             "table::deep_copy",
         )?;
         Self::from_handle_with_domain(handle, Arc::clone(&self.domain))
@@ -241,8 +244,12 @@ impl Table {
         if status != cudf_sys::CUDF_SUCCESS {
             // On failure, the C shim did NOT consume the table.
             // We must destroy it ourselves to avoid a leak.
-            // SAFETY: raw_handle is still valid because the C shim did not consume it.
-            unsafe { cudf_sys::cudf_table_destroy(raw_handle) };
+            crate::core::native_teardown::drop_device_owned_handle(
+                raw_handle,
+                domain.device_id(),
+                "table::into_columns::cleanup_table",
+                |owned| unsafe { cudf_sys::cudf_table_destroy(owned) },
+            );
             error::check_status_in(status, "table::into_columns")?;
             unreachable!();
         }
@@ -293,10 +300,11 @@ impl Table {
 
 impl Drop for Table {
     fn drop(&mut self) {
-        // SAFETY: self.handle is valid (NonNull from construction). Drop runs
-        // exactly once, so the handle is destroyed exactly once.
-        unsafe {
-            cudf_sys::cudf_table_destroy(self.handle.as_ptr());
-        }
+        crate::core::native_teardown::drop_device_owned_handle(
+            self.handle.as_ptr(),
+            self.domain.device_id(),
+            "Table::drop",
+            |owned| unsafe { cudf_sys::cudf_table_destroy(owned) },
+        );
     }
 }

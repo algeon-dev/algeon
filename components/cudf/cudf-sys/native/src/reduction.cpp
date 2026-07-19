@@ -110,9 +110,14 @@ cudf_status_t cudf_reduce_aggregation_create_nunique(int32_t null_policy,
   CUDF_RUST_CATCH
 }
 
-void cudf_reduce_aggregation_destroy(cudf_reduce_aggregation_handle handle)
+cudf_status_t cudf_reduce_aggregation_destroy(cudf_reduce_aggregation_handle handle)
 {
-  delete static_cast<cudf::reduce_aggregation*>(handle);
+  try {
+    delete static_cast<cudf::reduce_aggregation*>(handle);
+    return CUDF_SUCCESS;
+  } catch (...) {
+    return cudf_translate_cleanup_exception_noexcept();
+  }
 }
 
 cudf_status_t cudf_scan_aggregation_create(cudf_reduce_aggregation_kind_t kind,
@@ -138,9 +143,14 @@ cudf_status_t cudf_scan_aggregation_create(cudf_reduce_aggregation_kind_t kind,
   CUDF_RUST_CATCH
 }
 
-void cudf_scan_aggregation_destroy(cudf_scan_aggregation_handle handle)
+cudf_status_t cudf_scan_aggregation_destroy(cudf_scan_aggregation_handle handle)
 {
-  delete static_cast<cudf::scan_aggregation*>(handle);
+  try {
+    delete static_cast<cudf::scan_aggregation*>(handle);
+    return CUDF_SUCCESS;
+  } catch (...) {
+    return cudf_translate_cleanup_exception_noexcept();
+  }
 }
 
 cudf_status_t cudf_reduce_ex(cudf_column_view_handle input,

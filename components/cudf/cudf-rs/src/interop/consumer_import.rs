@@ -21,7 +21,7 @@ use super::{
 use crate::{
     core::{column::Column, error, table::Table},
     frame::{dataframe::DataFrame, series::Series},
-    runtime::{CudaEvent, Runtime, device_guard::DeviceGuard},
+    runtime::{CudaEvent, Runtime, device_guard::DeviceGuard, execution_domain::EnteredExecution},
 };
 
 struct OwnedTransferImportRetention<T> {
@@ -188,8 +188,11 @@ fn missing_dataframe_import_names_error(operation: &'static str, explicit_varian
     .with_context("remedy", format!("use {explicit_variant} when the root does not carry schema names"))
 }
 
-fn runtime_exec_options(runtime: &Runtime) -> cudf_sys::cudf_exec_options_t {
-    runtime.execution_domain().exec_options_raw()
+fn runtime_exec_options(runtime: &Runtime, operation: &'static str) -> Result<EnteredExecution, InteropError> {
+    runtime
+        .execution_domain()
+        .enter_execution()
+        .map_err(|error| map_cudf_error(InteropErrorKind::ExecutionBindingUnavailable, operation, error))
 }
 
 fn synchronize_shared_completion_result(
@@ -236,7 +239,7 @@ pub(super) fn import_column_from_borrowed_view(
         borrowed.execution().device(),
         runtime,
     )?;
-    let exec_options = runtime_exec_options(runtime);
+    let exec_options = runtime_exec_options(runtime, operation)?;
     let mut handle = std::ptr::null_mut();
 
     match borrowed.column() {
@@ -254,7 +257,7 @@ pub(super) fn import_column_from_borrowed_view(
                         checked_i32_from_usize("num_semantic_columns", graph.ffi_columns.len(), operation)?,
                         graph.ffi_bindings.as_ptr(),
                         checked_i32_from_usize("num_bindings", graph.ffi_bindings.len(), operation)?,
-                        &exec_options,
+                        exec_options.options(),
                         &mut handle,
                     )
                 },
@@ -278,7 +281,7 @@ pub(super) fn import_column_from_borrowed_view(
                         borrowed.data_ptr(),
                         null_mask,
                         null_count,
-                        &exec_options,
+                        exec_options.options(),
                         &mut handle,
                     )
                 },
@@ -485,7 +488,7 @@ pub(super) fn import_column_from_prepared_export(
     operation: &'static str,
 ) -> Result<Column, InteropError> {
     let graph = prepared_device_import_column_graph(export, operation)?;
-    let exec_options = runtime_exec_options(runtime);
+    let exec_options = runtime_exec_options(runtime, operation)?;
     let num_semantic_columns = checked_i32_from_usize("num_semantic_columns", graph.ffi_columns.len(), operation)?;
     let num_bindings = checked_i32_from_usize("num_bindings", graph.ffi_bindings.len(), operation)?;
 
@@ -510,7 +513,7 @@ pub(super) fn import_column_from_prepared_export(
                         num_semantic_columns,
                         graph.ffi_bindings.as_ptr(),
                         num_bindings,
-                        &exec_options,
+                        exec_options.options(),
                         &mut handle,
                     )
                 },
@@ -552,7 +555,7 @@ pub(super) fn import_column_from_prepared_export(
                         num_semantic_columns,
                         graph.ffi_bindings.as_ptr(),
                         num_bindings,
-                        &exec_options,
+                        exec_options.options(),
                         &mut handle,
                     )
                 },
@@ -577,7 +580,7 @@ pub(super) fn import_table_from_prepared_export(
     operation: &'static str,
 ) -> Result<Table, InteropError> {
     let graph = prepared_device_import_table_graph(export, operation)?;
-    let exec_options = runtime_exec_options(runtime);
+    let exec_options = runtime_exec_options(runtime, operation)?;
     let num_semantic_columns = checked_i32_from_usize("num_semantic_columns", graph.ffi_columns.len(), operation)?;
     let num_bindings = checked_i32_from_usize("num_bindings", graph.ffi_bindings.len(), operation)?;
 
@@ -602,7 +605,7 @@ pub(super) fn import_table_from_prepared_export(
                         num_semantic_columns,
                         graph.ffi_bindings.as_ptr(),
                         num_bindings,
-                        &exec_options,
+                        exec_options.options(),
                         &mut handle,
                     )
                 },
@@ -644,7 +647,7 @@ pub(super) fn import_table_from_prepared_export(
                         num_semantic_columns,
                         graph.ffi_bindings.as_ptr(),
                         num_bindings,
-                        &exec_options,
+                        exec_options.options(),
                         &mut handle,
                     )
                 },
@@ -690,7 +693,7 @@ pub(super) fn import_partitioned_local_tables_from_prepared_export(
 
         let graph = prepared_device_import_table_graph(partition.export(), operation)
             .map_err(|error| error.with_context("partition_index", partition_index.to_string()))?;
-        let exec_options = runtime_exec_options(runtime);
+        let exec_options = runtime_exec_options(runtime, operation)?;
         let num_semantic_columns =
             checked_i32_from_usize("num_semantic_columns", graph.ffi_columns.len(), operation)
                 .map_err(|error| error.with_context("partition_index", partition_index.to_string()))?;
@@ -711,7 +714,7 @@ pub(super) fn import_partitioned_local_tables_from_prepared_export(
                     num_semantic_columns,
                     graph.ffi_bindings.as_ptr(),
                     num_bindings,
-                    &exec_options,
+                    exec_options.options(),
                     &mut handle,
                 )
             },

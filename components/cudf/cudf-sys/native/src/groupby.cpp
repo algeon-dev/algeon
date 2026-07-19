@@ -33,8 +33,8 @@ bool should_fail_next_groupby_negative_total_columns()
 }
 
 struct prepared_groupby_owner {
-  std::unique_ptr<cudf::groupby::groupby> groupby;
   cudf_handle_provenance provenance;
+  std::unique_ptr<cudf::groupby::groupby> groupby;
 };
 
 struct groupby_column_handle_deleter {
@@ -146,9 +146,14 @@ cudf_status_t cudf_aggregation_create_variance(int32_t ddof, cudf_aggregation_ha
   CUDF_RUST_CATCH
 }
 
-void cudf_aggregation_destroy(cudf_aggregation_handle handle)
+cudf_status_t cudf_aggregation_destroy(cudf_aggregation_handle handle)
 {
-  delete static_cast<cudf::groupby_aggregation*>(handle);
+  try {
+    delete static_cast<cudf::groupby_aggregation*>(handle);
+    return CUDF_SUCCESS;
+  } catch (...) {
+    return cudf_translate_cleanup_exception_noexcept();
+  }
 }
 
 cudf_status_t cudf_groupby_scan_aggregation_create(cudf_reduce_aggregation_kind_t kind,
@@ -180,9 +185,14 @@ cudf_status_t cudf_groupby_scan_aggregation_create(cudf_reduce_aggregation_kind_
   CUDF_RUST_CATCH
 }
 
-void cudf_groupby_scan_aggregation_destroy(cudf_groupby_scan_aggregation_handle handle)
+cudf_status_t cudf_groupby_scan_aggregation_destroy(cudf_groupby_scan_aggregation_handle handle)
 {
-  delete static_cast<cudf::groupby_scan_aggregation*>(handle);
+  try {
+    delete static_cast<cudf::groupby_scan_aggregation*>(handle);
+    return CUDF_SUCCESS;
+  } catch (...) {
+    return cudf_translate_cleanup_exception_noexcept();
+  }
 }
 
 cudf_status_t cudf_groupby_aggregate_ex(cudf_table_view_handle keys,
@@ -368,13 +378,13 @@ cudf_status_t cudf_prepared_groupby_create_ex(cudf_table_view_handle keys,
   CUDF_RUST_CATCH
 }
 
-void cudf_prepared_groupby_destroy(cudf_prepared_groupby_handle handle)
+cudf_status_t cudf_prepared_groupby_destroy(cudf_prepared_groupby_handle handle)
 {
-  if (handle == nullptr) { return; }
-  cudf_clear_error();
+  if (handle == nullptr) { return CUDF_SUCCESS; }
   auto* owner = static_cast<prepared_groupby_owner*>(handle);
   auto provenance = owner->provenance;
-  (void)cudf_destroy_under_provenance(provenance, [owner] { delete owner; });
+  // Ownership is consumed even when cleanup is rejected.
+  return cudf_destroy_under_provenance(provenance, [owner] { delete owner; });
 }
 
 cudf_status_t cudf_prepared_groupby_prepare_groups_ex(cudf_prepared_groupby_handle groupby,

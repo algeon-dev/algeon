@@ -19,6 +19,9 @@ cudf_status_t translate_exception();
 
 cudf_status_t translate_io_exception();
 
+// Destructor-boundary translation that is itself guaranteed not to throw.
+cudf_status_t cudf_translate_cleanup_exception_noexcept() noexcept;
+
 // Exception-catching macro pair for C shim functions.
 //
 // Allocation failures must always surface as CUDF_ERROR_OUT_OF_MEMORY.

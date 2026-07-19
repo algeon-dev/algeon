@@ -369,7 +369,12 @@ impl PreparedDataFrameGroupBy {
 
 impl Drop for PreparedDataFrameGroupBy {
     fn drop(&mut self) {
-        unsafe { cudf_sys::cudf_prepared_groupby_destroy(self.handle.as_ptr()) };
+        crate::core::native_teardown::drop_device_owned_handle(
+            self.handle.as_ptr(),
+            self.keys_domain.device_id(),
+            "PreparedDataFrameGroupBy::drop",
+            |owned| unsafe { cudf_sys::cudf_prepared_groupby_destroy(owned) },
+        );
     }
 }
 
@@ -577,7 +582,12 @@ impl<'a> GroupBy<'a> {
         let prepared_facts = match prepared_groupby_facts_raw(handle.as_ptr(), &keys_domain, operation) {
             Ok(facts) => facts,
             Err(error) => {
-                unsafe { cudf_sys::cudf_prepared_groupby_destroy(handle.as_ptr()) };
+                crate::core::native_teardown::drop_device_owned_handle(
+                    handle.as_ptr(),
+                    keys_domain.device_id(),
+                    "groupby::PreparedDataFrameGroupBy::new::cleanup",
+                    |owned| unsafe { cudf_sys::cudf_prepared_groupby_destroy(owned) },
+                );
                 return Err(error);
             },
         };
