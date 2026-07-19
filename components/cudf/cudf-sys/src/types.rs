@@ -423,6 +423,7 @@ pub type cudf_distinct_hash_join_handle = *mut c_void;
 pub type cudf_filtered_join_handle = *mut c_void;
 pub type cudf_filtered_join_probe_handle = *mut c_void;
 pub type cudf_hash_join_handle = *mut c_void;
+pub type cudf_prepared_replace_with_backrefs_handle = *mut c_void;
 pub type cudf_conditional_full_join_size_data_handle = *mut c_void;
 pub type cudf_mixed_join_size_data_handle = *mut c_void;
 pub type cudf_device_buffer_handle = *mut c_void;

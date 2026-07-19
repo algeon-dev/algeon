@@ -104,6 +104,97 @@ cudf_status_t cudf_strings_replace_with_backrefs_ex(cudf_column_view_handle inpu
                                                     cudf_column_handle* out,
                                                     const cudf_exec_options_t* options);
 
+/// Exact retained-output / temporary-workspace preflight for
+/// `cudf_strings_replace_with_backrefs_ex`.
+///
+/// Runs the libcudf size-pass for replace-with-backrefs and returns:
+/// - `retained_output_bytes`: exact device allocation of the final strings
+/// column
+/// - `temporary_workspace_bytes`: conservative temporary-workspace upper bound
+///   based on actual sizing allocations and execute allocation extents
+/// - `reservation_required_bytes`: hard aligned-live-byte reservation bound,
+///   using each allocation's actual RMM alignment
+///
+/// `retained_output_bytes + temporary_workspace_bytes` remains a requested-byte
+/// fact. Use `reservation_required_bytes` directly for bounded admission.
+/// On success, synchronizes the selected stream so borrowed host pattern and
+/// replacement memory is no longer in use. `options` must name an explicit
+/// valid device and non-NULL stream/MR.
+cudf_status_t cudf_strings_replace_with_backrefs_output_size_ex(cudf_column_view_handle input,
+                                                                const char* pattern,
+                                                                int32_t pattern_len,
+                                                                const char* replacement,
+                                                                int32_t replacement_len,
+                                                                size_t* retained_output_bytes,
+                                                                size_t* temporary_workspace_bytes,
+                                                                size_t* reservation_required_bytes,
+                                                                const cudf_exec_options_t* options);
+
+/// Opaque prepared replace-with-backrefs handle.
+///
+/// Owns compiled regex device program, replacement/backref device state, and
+/// the completed size-pass offsets. The input column view is borrowed and must
+/// outlive the handle through execute. Every device allocation uses the
+/// explicit execution memory resource from prepare options.
+typedef void* cudf_prepared_replace_with_backrefs_handle;
+
+/// Prepare reusable replace-with-backrefs state after one size pass.
+///
+/// Requested-byte facts and the reservation bound are distinct:
+/// - retained_output_bytes: final strings column (offsets+chars+nullmask)
+/// - retained_state_bytes: exact prepared handle allocation after size pass
+/// - peak_execute_workspace_bytes: conservative additional non-output workspace
+///   bound based on actual allocation extents
+/// - execute_reservation_required_bytes: hard aligned-live-byte reservation
+///   bound for execute after this handle has already been prepared
+///
+/// On success, synchronizes the selected stream so borrowed host pattern and
+/// replacement memory is no longer in use. `options` must name an explicit
+/// valid device and non-NULL stream/MR. `options->mr` must outlive the handle.
+cudf_status_t cudf_strings_prepare_replace_with_backrefs_ex(
+  cudf_column_view_handle input,
+  const char* pattern,
+  int32_t pattern_len,
+  const char* replacement,
+  int32_t replacement_len,
+  cudf_prepared_replace_with_backrefs_handle* out,
+  const cudf_exec_options_t* options);
+
+/// Read exact output-size / retained-state facts from a prepared handle.
+cudf_status_t cudf_strings_prepared_replace_with_backrefs_output_size_facts(
+  cudf_prepared_replace_with_backrefs_handle handle,
+  size_t* retained_output_bytes,
+  size_t* retained_state_bytes,
+  size_t* peak_execute_workspace_bytes,
+  size_t* execute_reservation_required_bytes,
+  uint64_t* size_pass_count);
+
+/// Consume prepared replace state and run only the write pass.
+///
+/// Ownership of `handle` is consumed on call. Must not re-run the size kernel.
+/// Input and stream must be identical to those supplied to prepare.
+/// On success, synchronizes the selected stream. `options` must name an
+/// explicit valid device and non-NULL stream/MR. `options->mr` must outlive the
+/// returned column.
+cudf_status_t cudf_strings_execute_replace_with_backrefs_ex(
+  cudf_column_view_handle input,
+  cudf_prepared_replace_with_backrefs_handle handle,
+  cudf_column_handle* out,
+  const cudf_exec_options_t* options);
+
+/// Destroy an unused prepared replace handle. Ownership is consumed on call;
+/// success means cleanup completed and failure means the handle is quarantined.
+cudf_status_t cudf_strings_prepared_replace_with_backrefs_destroy(
+  cudf_prepared_replace_with_backrefs_handle handle);
+
+/// Process-local number of replace-with-backrefs size-kernel launches.
+/// Intended for tests that prove prepared execute performs one size traversal
+/// per prepare, not a second size traversal on execute.
+cudf_status_t cudf_strings_replace_with_backrefs_size_pass_count(uint64_t* out);
+
+/// Reset the process-local size-pass counter used by tests.
+cudf_status_t cudf_strings_replace_with_backrefs_reset_size_pass_count(void);
+
 // ---------------------------------------------------------------------------
 // Slice
 // ---------------------------------------------------------------------------

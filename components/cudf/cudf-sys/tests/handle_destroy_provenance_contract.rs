@@ -313,6 +313,49 @@ fn destroy_provenance_cleanup_returns_status_and_never_terminates() {
 }
 
 #[test]
+fn prepared_replace_execute_consumes_failures_under_owner_provenance() {
+    let sources = NativeSources::load();
+    let execute = sources.function_body("cudf_strings_execute_replace_with_backrefs_ex").body;
+    let cleanup = sources.function_body("destroy_consumed_prepared_replace_owner").body;
+    let mut violations = Vec::new();
+
+    if execute.contains("std::unique_ptr<prepared_replace_with_backrefs_owner>") {
+        violations.push(
+            "prepared replace execute must not install a default unique_ptr before execution options are validated"
+                .to_string(),
+        );
+    }
+    for marker in [
+        "cleanup_consumed_prepared_replace_owner_before_return(owner, exec_status)",
+        "exec->device != owner->provenance.device",
+        "cleanup_consumed_prepared_replace_owner_before_return( owner, CUDF_ERROR_INVALID_OPERATION)",
+    ] {
+        if !source_contract_support::contains_normalized(execute, marker) {
+            violations.push(format!("prepared replace execute must contain `{marker}`"));
+        }
+    }
+    let mismatch = execute.find("exec->device != owner->provenance.device");
+    let libcudf_execute = execute.find("cudf::strings::execute_replace_with_backrefs");
+    if mismatch.zip(libcudf_execute).is_none_or(|(mismatch, execute)| mismatch >= execute) {
+        violations.push("prepared replace execute must reject device mismatch before calling libcudf".to_string());
+    }
+    if !source_contract_support::contains_normalized(
+        cleanup,
+        "return cudf_destroy_under_provenance(provenance, [owner] { delete owner; });",
+    ) {
+        violations.push(
+            "consumed prepared replace cleanup must destroy or quarantine through captured provenance".to_string(),
+        );
+    }
+
+    assert!(
+        violations.is_empty(),
+        "prepared replace failure cleanup must be provenance-aware and consume exactly once.\n{}",
+        violations.join("\n")
+    );
+}
+
+#[test]
 fn table_release_columns_preserves_existing_column_provenance_from_table_state() {
     let sources = NativeSources::load();
     let table_release = sources.function_body("cudf_table_release_columns");
