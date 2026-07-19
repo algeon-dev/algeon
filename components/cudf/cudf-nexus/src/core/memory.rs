@@ -1973,7 +1973,7 @@ fn record_native_teardown_failure(device: DeviceId, operation: &'static str, sta
             device,
             crate::runtime::DeviceFaultKind::FatalDeviceOperation,
             operation,
-            Some(status as i32),
+            Some(crate::runtime::DeviceFaultNativeStatus::Cudf(status)),
         );
     }
     crate::runtime::device_health::record_teardown_failure(

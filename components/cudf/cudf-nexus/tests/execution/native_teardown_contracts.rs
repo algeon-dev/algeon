@@ -1,7 +1,7 @@
 use cudf::{
     DataFrame, ErrorCode, Runtime,
     core::Table,
-    runtime::{DeviceEntryGuard, DeviceFaultKind, DeviceHealthStatus},
+    runtime::{DeviceEntryGuard, DeviceFaultKind, DeviceFaultNativeStatus, DeviceHealthStatus},
     testing::device_safety::{DeviceEntryTestCall, DeviceSafetyTestScope},
 };
 
@@ -41,7 +41,7 @@ fn fatal_native_owner_destroy_failures_never_abort_and_poison_is_sticky() {
     let first = snapshot.first_fault().expect("fatal teardown records first fault");
     assert_eq!(first.kind(), DeviceFaultKind::FatalDeviceOperation);
     assert_eq!(first.operation(), "Column::drop");
-    assert_eq!(first.native_status(), Some(cudf_sys::CUDF_ERROR_FATAL_CUDA as i32));
+    assert_eq!(first.native_status(), Some(DeviceFaultNativeStatus::Cudf(cudf_sys::CUDF_ERROR_FATAL_CUDA)));
 
     let error = DeviceEntryGuard::enter(device, "native_teardown_contract::later_work")
         .expect_err("fatal teardown must permanently reject later device work");

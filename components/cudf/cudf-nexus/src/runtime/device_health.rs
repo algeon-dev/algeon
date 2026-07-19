@@ -51,7 +51,21 @@ pub enum DeviceFaultKind {
 pub struct DeviceFault {
     kind: DeviceFaultKind,
     operation: &'static str,
-    native_status: Option<i32>,
+    native_status: Option<DeviceFaultNativeStatus>,
+}
+
+/// Native status retained with a device fault, including its ABI family.
+///
+/// cuDF status codes and CUDA runtime status codes have distinct native types.
+/// Retaining the family prevents lossy signedness conversions when a fault is
+/// reported across the runtime boundary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum DeviceFaultNativeStatus {
+    /// Status produced by a cuDF FFI call.
+    Cudf(cudf_sys::cudf_status_t),
+    /// Status produced by the CUDA runtime.
+    Cuda(i32),
 }
 
 impl DeviceFault {
@@ -65,9 +79,9 @@ impl DeviceFault {
         self.operation
     }
 
-    /// Native cudf status when the fault originated from a status-returning
-    /// FFI call.
-    pub fn native_status(self) -> Option<i32> {
+    /// Native status and its ABI family when the fault originated from a
+    /// status-returning FFI call.
+    pub fn native_status(self) -> Option<DeviceFaultNativeStatus> {
         self.native_status
     }
 }
@@ -245,7 +259,7 @@ pub(crate) fn record_fault(
     operation: &'static str,
     native_status: Option<cudf_sys::cudf_status_t>,
 ) {
-    report_device_fault(device, kind, operation, native_status.map(|status| status as i32));
+    report_device_fault(device, kind, operation, native_status.map(DeviceFaultNativeStatus::Cudf));
 }
 
 /// Report a device-bound fault observed by an authorized sibling runtime.
@@ -258,7 +272,7 @@ pub fn report_device_fault(
     device: DeviceId,
     kind: DeviceFaultKind,
     operation: &'static str,
-    native_status: Option<i32>,
+    native_status: Option<DeviceFaultNativeStatus>,
 ) {
     with_registry(|registry| {
         let state = registry.state(device);
@@ -411,6 +425,23 @@ mod tests {
         let error = ensure_healthy(device, "new_work").expect_err("unhealthy device must reject new work");
         assert_eq!(error.code(), ErrorCode::FatalCuda);
         assert_eq!(scope.health_snapshot(device).rejected_operation_count(), 1);
+    }
+
+    #[test]
+    fn cudf_fault_status_retains_its_unsigned_ffi_value() {
+        let scope = DeviceSafetyTestScope::install([]);
+        let device = DeviceId::DEFAULT;
+        let status = u32::MAX;
+
+        report_device_fault(
+            device,
+            DeviceFaultKind::FatalDeviceOperation,
+            "unsigned_cudf_status",
+            Some(DeviceFaultNativeStatus::Cudf(status)),
+        );
+
+        let first = scope.health_snapshot(device).first_fault().expect("recorded fault");
+        assert_eq!(first.native_status(), Some(DeviceFaultNativeStatus::Cudf(status)));
     }
 
     #[test]

@@ -29,7 +29,7 @@ pub(crate) fn drop_device_owned_handle<T>(
             device,
             DeviceFaultKind::FatalDeviceOperation,
             operation,
-            Some(status as i32),
+            Some(crate::runtime::DeviceFaultNativeStatus::Cudf(status)),
         );
     }
     crate::runtime::device_health::record_teardown_failure(
