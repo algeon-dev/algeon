@@ -1127,14 +1127,19 @@ unsafe impl Sync for DeviceMemoryManagerHandle {}
 /// Dropping this value detaches the reservation from the stream. Allocations
 /// made while it was attached remain accounted to the reservation identity
 /// until those retained objects are destroyed.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct StreamReservationLease {
     // Field order is load-bearing: Rust drops fields in declaration order,
     // and the reservation must detach while the stream (whose raw value keys
     // the native attachment map) and the manager are still alive. If the
     // stream dropped first, a recycled raw stream value could inherit this
     // dying reservation's accounting.
-    reservation: ReservationHandle,
+    //
+    // The handle is shared: clones of this lease keep the member attached,
+    // and the member detaches only when the final clone drops. This lets an
+    // attempt hold one member per stream for its whole lifetime while
+    // handing shared views to per-stage budget tokens.
+    reservation: Arc<ReservationHandle>,
     resource: Option<DeviceMemoryResource>,
     _query_domain: Option<QueryMemoryDomain>,
     arena: Option<ReservationArena>,
@@ -1826,7 +1831,7 @@ impl DeviceMemoryManager {
             arena: arena.cloned(),
             _query_domain: None,
             resource: None,
-            reservation,
+            reservation: Arc::new(reservation),
         })
     }
 }
@@ -1963,7 +1968,7 @@ impl QueryMemoryDomain {
             arena: None,
             _query_domain: Some(self.clone()),
             resource: Some(resource),
-            reservation,
+            reservation: Arc::new(reservation),
         })
     }
 
