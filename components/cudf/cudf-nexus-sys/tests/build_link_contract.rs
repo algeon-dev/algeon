@@ -107,6 +107,41 @@ fn cmake_cache_value_reads_typed_entries() {
 }
 
 #[test]
+fn cached_cmake_compilers_reject_toolchain_transitions() {
+    let cache = "\
+CMAKE_C_COMPILER:FILEPATH=/opt/gcc-14/bin/gcc\n\
+CMAKE_CXX_COMPILER:FILEPATH=/opt/gcc-14/bin/g++\n";
+
+    assert!(build_support::cached_cmake_compilers_match(
+        cache,
+        Path::new("/opt/gcc-14/bin/gcc"),
+        Path::new("/opt/gcc-14/bin/g++"),
+    ));
+    assert!(!build_support::cached_cmake_compilers_match(cache, Path::new("/usr/bin/cc"), Path::new("/usr/bin/c++"),));
+
+    let unique = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+    let temp_dir = std::env::temp_dir().join(format!("cudf-sys-compiler-cache-contract-{unique}"));
+    let compiler = temp_dir.join("gcc-14");
+    let compiler_symlink = temp_dir.join("cc");
+    fs::create_dir_all(&temp_dir).unwrap();
+    fs::write(&compiler, "").unwrap();
+    std::os::unix::fs::symlink(&compiler, &compiler_symlink).unwrap();
+
+    assert!(build_support::paths_equivalent(&compiler_symlink, &compiler));
+    assert!(!build_support::cached_cmake_compilers_match(
+        &format!(
+            "CMAKE_C_COMPILER:FILEPATH={}\nCMAKE_CXX_COMPILER:FILEPATH={}\n",
+            compiler_symlink.display(),
+            compiler.display(),
+        ),
+        &compiler,
+        &compiler,
+    ));
+
+    fs::remove_dir_all(temp_dir).unwrap();
+}
+
+#[test]
 fn cached_cudf_discovery_matches_install_path_and_rejects_stale_paths() {
     let install_dir = Path::new("/opt/current-cudf");
 
@@ -272,12 +307,12 @@ fn build_script_makes_clang_tools_opt_in_and_tracks_explicit_tool_env() {
         "expected the explicit CMake override to reach cmake-rs through its standard CMAKE input"
     );
     assert!(
-        BUILD_RS.contains("resolve_compiler_from_env(\"CC\")"),
-        "expected build.rs to resolve CC through the shared absolute-path helper"
+        BUILD_RS.contains("resolve_compiler_from_env_or_name(\"CC\", \"cc\")"),
+        "expected build.rs to resolve an effective CC even when the override is unset"
     );
     assert!(
-        BUILD_RS.contains("resolve_compiler_from_env(\"CXX\")"),
-        "expected build.rs to resolve CXX through the shared absolute-path helper"
+        BUILD_RS.contains("resolve_compiler_from_env_or_name(\"CXX\", \"c++\")"),
+        "expected build.rs to resolve an effective CXX even when the override is unset"
     );
 }
 
@@ -351,10 +386,13 @@ fn resolve_compiler_from_env_accepts_absolute_and_basename_toolchains() {
     let resolved_base = build_support::resolve_compiler_from_env("CUDF_SYS_TEST_CC_BASE")
         .unwrap()
         .expect("basename CC should resolve through PATH");
+    let resolved_default = build_support::resolve_compiler_from_env_or_name("CUDF_SYS_TEST_CC_DEFAULT", "cc-wrapper")
+        .expect("unset CC should resolve the default compiler through PATH");
     assert!(resolved_abs.is_absolute(), "absolute override must stay absolute: {}", resolved_abs.display());
     assert!(resolved_base.is_absolute(), "basename resolution must return absolute path: {}", resolved_base.display());
     assert_eq!(resolved_abs.file_name(), compiler.file_name());
     assert_eq!(resolved_base.file_name(), compiler.file_name());
+    assert_eq!(resolved_default, resolved_base);
 
     unsafe {
         std::env::remove_var("CUDF_SYS_TEST_CC_ABS");

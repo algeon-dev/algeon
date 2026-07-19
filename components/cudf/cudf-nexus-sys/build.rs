@@ -64,7 +64,7 @@ fn run_clang_format_check(clang_format: &Path, config_path: &Path, lint_files: &
 /// match the current Cargo build. CMake otherwise keeps stale cache entries
 /// across auto-reconfigures, including the libcudf discovery prefix, and may
 /// silently ignore updated environment variables.
-fn discard_stale_cmake_build_dir() {
+fn discard_stale_cmake_build_dir(c_compiler: &Path, cxx_compiler: &Path) {
     let Ok(out_dir) = env::var("OUT_DIR") else { return };
     let out_dir = PathBuf::from(out_dir);
     let build_dir = out_dir.join("build");
@@ -72,7 +72,7 @@ fn discard_stale_cmake_build_dir() {
     let Ok(cache) = fs::read_to_string(&cache_path) else { return };
     let expected = format!("CMAKE_INSTALL_PREFIX:PATH={}", out_dir.display());
     if cache.lines().any(|line| line == expected)
-        && cached_compilers_match_env(&cache)
+        && build_support::cached_cmake_compilers_match(&cache, c_compiler, cxx_compiler)
         && build_support::cached_cudf_discovery_matches_env(&cache)
     {
         return;
@@ -87,21 +87,6 @@ fn discard_stale_cmake_build_dir() {
     if let Err(error) = fs::remove_dir_all(&build_dir) {
         panic!("failed to remove stale cmake build directory at {}: {error}", build_dir.display(),);
     }
-}
-
-fn cached_compilers_match_env(cache: &str) -> bool {
-    cached_compiler_matches_env(cache, "CMAKE_C_COMPILER", "CC")
-        && cached_compiler_matches_env(cache, "CMAKE_CXX_COMPILER", "CXX")
-}
-
-fn cached_compiler_matches_env(cache: &str, cache_key: &str, env_key: &str) -> bool {
-    let Some(expected) = compiler_from_env(env_key) else { return true };
-    let Some(cached) = build_support::cmake_cache_value(cache, cache_key) else { return false };
-    build_support::paths_equivalent(Path::new(cached), &expected)
-}
-
-fn compiler_from_env(env_key: &str) -> Option<PathBuf> {
-    build_support::resolve_compiler_from_env(env_key).ok().flatten()
 }
 
 /// Locate the pre-built `libcudf.so` based on the same env vars cudf-sys's
@@ -345,16 +330,14 @@ fn main() {
     // discard and cmake-rs observe the same toolchain identity. Basename CC/CXX
     // values remain accepted for ergonomics, but PATH is no longer a Cargo
     // fingerprint input.
-    if let Some(cc) = build_support::resolve_compiler_from_env("CC").unwrap_or_else(|error| panic!("{error}")) {
-        // SAFETY: build scripts are single-threaded and cmake-rs reads CC before spawn.
-        unsafe {
-            env::set_var("CC", &cc);
-        }
+    let cc = build_support::resolve_compiler_from_env_or_name("CC", "cc").unwrap_or_else(|error| panic!("{error}"));
+    // SAFETY: build scripts are single-threaded and cmake-rs reads CC before spawn.
+    unsafe {
+        env::set_var("CC", &cc);
     }
-    if let Some(cxx) = build_support::resolve_compiler_from_env("CXX").unwrap_or_else(|error| panic!("{error}")) {
-        unsafe {
-            env::set_var("CXX", &cxx);
-        }
+    let cxx = build_support::resolve_compiler_from_env_or_name("CXX", "c++").unwrap_or_else(|error| panic!("{error}"));
+    unsafe {
+        env::set_var("CXX", &cxx);
     }
 
     // Make the repository-owned CMake pin effective, not metadata-only. The
@@ -370,7 +353,7 @@ fn main() {
         }
     }
 
-    discard_stale_cmake_build_dir();
+    discard_stale_cmake_build_dir(&cc, &cxx);
 
     let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
     check_libcudf_staleness(&manifest_dir);
