@@ -260,6 +260,7 @@ fn rmm_singleton_bridge_is_private_and_resolved_by_the_shim() {
         "the version-scripted shim must not instantiate RMM's per-device singleton"
     );
     assert!(RMM_INTEROP_BRIDGE_CPP.contains("rmm::mr::set_current_device_resource"));
+    assert!(RMM_INTEROP_BRIDGE_CPP.contains("rmm::mr::get_current_device_resource_ref()"));
     assert!(
         !RMM_INTEROP_BRIDGE_CPP.contains("dlsym") && !RMM_INTEROP_BRIDGE_CPP.contains("_Z"),
         "the bridge must use a typed local call, not dynamic or mangled-symbol lookup"

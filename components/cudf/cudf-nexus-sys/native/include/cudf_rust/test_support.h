@@ -38,6 +38,8 @@ cudf_status_t cudf_test_exec_last_device(int32_t* out);
 cudf_status_t cudf_test_default_stream_value(uintptr_t* out);
 cudf_status_t cudf_test_stream_handle_value(cudf_stream_handle handle, uintptr_t* out);
 cudf_status_t cudf_test_current_device_resource_raw(void** out);
+void cudf_test_memory_manager_fail_next_current_resource_install(void);
+void cudf_test_memory_manager_invoke_failure_callback_before_install_returns(void);
 
 void cudf_test_row_predicate_reset_observation(void);
 cudf_status_t cudf_test_row_predicate_filter_call_count(int32_t* out);
@@ -102,6 +104,7 @@ cudf_status_t cudf_test_memory_resource_active_allocation_count(cudf_memory_reso
                                                                 int64_t* out);
 cudf_status_t cudf_test_memory_resource_raw(cudf_memory_resource_handle handle, void** out);
 cudf_status_t cudf_test_memory_resource_set_current(cudf_memory_resource_handle handle);
+cudf_status_t cudf_test_memory_resource_set_current_untracked(cudf_memory_resource_handle handle);
 cudf_status_t cudf_test_memory_resource_set_current_raw(void* raw_mr);
 cudf_status_t cudf_test_memory_manager_query_domain_pool_count_for_id(
   cudf_memory_manager_handle manager, uint64_t domain_id, size_t* out);

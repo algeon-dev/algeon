@@ -198,6 +198,7 @@ fn device_memory_manager_default_async_pool_exposes_usage_and_trim() {
         device,
         DeviceMemoryManagerOptions {
             base: DeviceMemoryManagerBase::CudaAsync { initial_pool_size: None, release_threshold: None },
+            allocation_limit_bytes: None,
         },
     )
     .unwrap();

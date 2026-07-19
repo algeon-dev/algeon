@@ -149,6 +149,9 @@ fn shim_contains_no_current_resource_guard_or_swap_machinery() {
                 "get_current_device_resource",
             ] {
                 if line.contains(forbidden) {
+                    if forbidden == "get_current_device_resource" && file_name(&path) == "rmm_interop_bridge.cpp" {
+                        continue;
+                    }
                     violations.push(format!("{}:{} forbidden `{}`:\n{}", file_name(&path), index + 1, forbidden, line));
                 }
             }
@@ -179,6 +182,7 @@ fn current_resource_installation_is_confined_to_device_domain_setup() {
                 name == "rmm_interop_bridge.cpp"
             } else if line.contains("cudf_rust_rmm_set_current_device_resource") {
                 path.ends_with("native/src/memory/manager.cpp")
+                    || path.ends_with("native/src/memory/test_support.cpp")
                     || name == "rmm_interop_bridge.cpp"
                     || name == "rmm_interop_bridge.hpp"
             } else if line.contains("cudf_set_current_device_resource_raw")
@@ -240,6 +244,15 @@ fn rmm_install_primitive_is_a_single_locked_choke_point() {
     assert!(
         manager_cpp.contains("current_memory_resource_identity_mutex()"),
         "the current-resource identity map must keep its own small lock (never spanning libcudf calls)"
+    );
+    assert_eq!(
+        bridge_cpp.matches("rmm::mr::get_current_device_resource_ref()").count(),
+        1,
+        "installation inspection must compare against RMM's actual per-device resource"
+    );
+    assert!(
+        manager_cpp.contains("cudf_rust_rmm_current_device_resource_is(manager.owner->mr.get())"),
+        "manager integrity inspection must use the typed actual-RMM comparator"
     );
     assert!(
         !bridge_cpp.contains("dlsym") && !bridge_cpp.contains("_Z"),

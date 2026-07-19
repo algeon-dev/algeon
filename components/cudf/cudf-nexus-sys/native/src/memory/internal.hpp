@@ -554,6 +554,8 @@ struct memory_resource_owner {
   std::shared_ptr<rmm::mr::device_memory_resource> upstream;
   std::shared_ptr<rmm::mr::device_memory_resource> pool;
   std::shared_ptr<void> upstream_lifetime;
+  // Reverse member destruction tears this down before its physical base.
+  std::unique_ptr<rmm::mr::device_memory_resource> limiting_mr;
   std::unique_ptr<rmm::mr::device_memory_resource> reservation_mr;
   std::unique_ptr<rmm::mr::device_memory_resource> mr;
 #ifdef CUDF_RUST_ENABLE_TEST_HOOKS
@@ -579,6 +581,14 @@ struct device_memory_manager_state {
   void* failure_callback_arg                            = nullptr;
   bool failure_callback_installed                       = false;
   bool current_resource_installed                       = false;
+  bool current_resource_install_retryable               = false;
+  bool current_resource_integrity_lost                  = false;
+  cudf_memory_manager_installation_cause_t current_resource_install_cause =
+    CUDF_MEMORY_MANAGER_INSTALLATION_CAUSE_NONE;
+  std::atomic<bool> failure_callback_panicked{false};
+  bool has_installation_identity                        = false;
+  cudf_memory_manager_installation_identity_t installation_identity{};
+  std::uint64_t installation_generation                 = 0;
 };
 
 struct reservation_handle_state {
@@ -614,13 +624,15 @@ std::unique_ptr<rmm::mr::device_memory_resource> make_bounded_failure_callback_r
   cudf_memory_failure_callback_t callback,
   void* callback_arg,
   cudaMemPool_t pool,
-  int32_t device_ordinal);
+  int32_t device_ordinal,
+  std::atomic<bool>* callback_panicked = nullptr);
 std::unique_ptr<rmm::mr::device_memory_resource> make_bounded_failure_callback_resource(
   rmm::mr::device_memory_resource* upstream,
   cudf_memory_failure_callback_v2_t callback,
   void* callback_arg,
   cudaMemPool_t pool,
-  int32_t device_ordinal);
+  int32_t device_ordinal,
+  std::atomic<bool>* callback_panicked = nullptr);
 
 }  // namespace cudf::rust::memory
 

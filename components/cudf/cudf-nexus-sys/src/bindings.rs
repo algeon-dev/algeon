@@ -18,6 +18,8 @@ pub type _bindgen_ty_2 = core::ffi::c_uint;
 pub type _bindgen_ty_3 = core::ffi::c_uint;
 pub type _bindgen_ty_4 = core::ffi::c_uint;
 pub type cudf_memory_failure_action_t = core::ffi::c_uint;
+#[doc = " Reserved for the Rust unwind guard. Native callback adaptors must treat\n this as a permanent callback-health failure, never as a user action."]
+pub type _bindgen_ty_5 = core::ffi::c_int;
 pub type cudf_memory_failure_source_t = core::ffi::c_uint;
 pub type cudf_memory_failure_domain_t = core::ffi::c_uint;
 #[doc = " Return a `cudf_memory_failure_action_t` value for a failed allocation."]
@@ -110,8 +112,13 @@ pub type cudf_conditional_full_join_size_data_handle = *mut cudf_conditional_ful
 pub type cudf_mixed_join_size_data_handle = *mut cudf_mixed_join_size_data_handle_state;
 #[doc = " Opaque handle to the process-local memory manager for one CUDA device."]
 pub type cudf_memory_manager_handle = *mut cudf_memory_manager_handle_state;
-pub type _bindgen_ty_5 = core::ffi::c_uint;
+pub type _bindgen_ty_6 = core::ffi::c_uint;
 pub type cudf_memory_manager_base_kind_t = core::ffi::c_uint;
+pub type cudf_memory_manager_installation_status_t = core::ffi::c_uint;
+pub type cudf_memory_manager_installation_retry_t = core::ffi::c_uint;
+#[doc = " Closed reason carried by every authoritative install/inspect record."]
+pub type cudf_memory_manager_installation_cause_t = core::ffi::c_uint;
+pub type _bindgen_ty_7 = core::ffi::c_uint;
 #[doc = " Opaque handle to one stream-bound memory reservation."]
 pub type cudf_reservation_handle = *mut cudf_reservation_handle_state;
 #[doc = " Opaque handle to one query-scoped reservation arena."]
@@ -421,7 +428,33 @@ pub struct cudf_memory_manager_options_t {
     pub initial_pool_size_bytes: u64,
     pub maximum_pool_size_bytes: u64,
     pub release_threshold_bytes: u64,
-    pub reserved: [u64; 4usize],
+    #[doc = " Optional manager-wide live-allocation limit. Zero means unbounded."]
+    pub allocation_limit_bytes: u64,
+    pub reserved: [u64; 3usize],
+}
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct cudf_memory_manager_installation_identity_t {
+    pub owner_fingerprint: [u8; 16usize],
+    pub callback_version: u32,
+    pub reserved_padding: u32,
+    pub partition_fingerprint: [u8; 16usize],
+}
+#[doc = " Atomic process installation record for one device manager."]
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct cudf_memory_manager_installation_record_t {
+    pub struct_size: usize,
+    pub device_ordinal: i32,
+    pub flags: u32,
+    pub status: cudf_memory_manager_installation_status_t,
+    pub retry: cudf_memory_manager_installation_retry_t,
+    pub cause: cudf_memory_manager_installation_cause_t,
+    pub reserved_padding: u32,
+    pub installation_generation: u64,
+    pub effective_options: cudf_memory_manager_options_t,
+    pub identity: cudf_memory_manager_installation_identity_t,
+    pub reserved: [u64; 3usize],
 }
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]
@@ -465,6 +498,7 @@ pub const CUDF_MEMORY_FAILURE_INFO_HAS_ALLOCATION_DOMAIN: _bindgen_ty_4 = 2;
 pub const CUDF_MEMORY_FAILURE_ACTION_DECLINE: cudf_memory_failure_action_t = 0;
 pub const CUDF_MEMORY_FAILURE_ACTION_RETRY: cudf_memory_failure_action_t = 1;
 pub const CUDF_MEMORY_FAILURE_ACTION_TRIM_AND_RETRY: cudf_memory_failure_action_t = 2;
+pub const CUDF_MEMORY_FAILURE_ACTION_CALLBACK_PANICKED: _bindgen_ty_5 = -2147483648;
 pub const CUDF_MEMORY_FAILURE_SOURCE_PHYSICAL: cudf_memory_failure_source_t = 0;
 pub const CUDF_MEMORY_FAILURE_SOURCE_RESERVATION_LIMIT: cudf_memory_failure_source_t = 1;
 pub const CUDF_MEMORY_FAILURE_DOMAIN_NONE: cudf_memory_failure_domain_t = 0;
@@ -682,9 +716,38 @@ pub const CUDF_JOIN_KIND_LEFT_JOIN: cudf_join_kind_t = 1;
 pub const CUDF_JOIN_KIND_FULL_JOIN: cudf_join_kind_t = 2;
 pub const CUDF_JOIN_KIND_LEFT_SEMI_JOIN: cudf_join_kind_t = 3;
 pub const CUDF_JOIN_KIND_LEFT_ANTI_JOIN: cudf_join_kind_t = 4;
-pub const CUDF_MEMORY_MANAGER_OPTIONS_RESERVED_SLOTS: _bindgen_ty_5 = 4;
+pub const CUDF_MEMORY_MANAGER_OPTIONS_RESERVED_SLOTS: _bindgen_ty_6 = 3;
 pub const CUDF_MEMORY_MANAGER_BASE_CUDA_ASYNC: cudf_memory_manager_base_kind_t = 0;
 pub const CUDF_MEMORY_MANAGER_BASE_POOL: cudf_memory_manager_base_kind_t = 1;
+pub const CUDF_MEMORY_MANAGER_INSTALLATION_UNINSTALLED: cudf_memory_manager_installation_status_t = 0;
+pub const CUDF_MEMORY_MANAGER_INSTALLATION_INCOMPLETE: cudf_memory_manager_installation_status_t = 1;
+pub const CUDF_MEMORY_MANAGER_INSTALLATION_OWNED: cudf_memory_manager_installation_status_t = 2;
+pub const CUDF_MEMORY_MANAGER_INSTALLATION_UNIDENTIFIED: cudf_memory_manager_installation_status_t = 3;
+pub const CUDF_MEMORY_MANAGER_INSTALLATION_CALLBACK_PANICKED: cudf_memory_manager_installation_status_t = 4;
+pub const CUDF_MEMORY_MANAGER_INSTALLATION_INSTALLABLE: cudf_memory_manager_installation_retry_t = 0;
+pub const CUDF_MEMORY_MANAGER_INSTALLATION_RETRYABLE: cudf_memory_manager_installation_retry_t = 1;
+pub const CUDF_MEMORY_MANAGER_INSTALLATION_REUSABLE: cudf_memory_manager_installation_retry_t = 2;
+pub const CUDF_MEMORY_MANAGER_INSTALLATION_PERMANENTLY_UNUSABLE: cudf_memory_manager_installation_retry_t = 3;
+pub const CUDF_MEMORY_MANAGER_INSTALLATION_CAUSE_NONE: cudf_memory_manager_installation_cause_t = 0;
+pub const CUDF_MEMORY_MANAGER_INSTALLATION_CAUSE_CURRENT_RESOURCE_INSTALL_FAILED:
+    cudf_memory_manager_installation_cause_t = 1;
+pub const CUDF_MEMORY_MANAGER_INSTALLATION_CAUSE_CURRENT_RESOURCE_REPLACED: cudf_memory_manager_installation_cause_t =
+    2;
+pub const CUDF_MEMORY_MANAGER_INSTALLATION_CAUSE_FAILURE_CALLBACK_PANICKED: cudf_memory_manager_installation_cause_t =
+    3;
+pub const CUDF_MEMORY_MANAGER_INSTALLATION_CAUSE_FAILURE_CALLBACK_MISSING: cudf_memory_manager_installation_cause_t = 4;
+pub const CUDF_MEMORY_MANAGER_INSTALLATION_CAUSE_IDENTITY_MISSING: cudf_memory_manager_installation_cause_t = 5;
+pub const CUDF_MEMORY_MANAGER_INSTALLATION_CAUSE_OPTIONS_MISMATCH: cudf_memory_manager_installation_cause_t = 6;
+pub const CUDF_MEMORY_MANAGER_INSTALLATION_CAUSE_IDENTITY_MISMATCH: cudf_memory_manager_installation_cause_t = 7;
+pub const CUDF_MEMORY_MANAGER_INSTALLATION_CAUSE_CALLBACK_BINDING_MISMATCH: cudf_memory_manager_installation_cause_t =
+    8;
+pub const CUDF_MEMORY_MANAGER_INSTALLATION_FLAG_EXISTS: _bindgen_ty_7 = 1;
+pub const CUDF_MEMORY_MANAGER_INSTALLATION_FLAG_FAILURE_CALLBACK_INSTALLED: _bindgen_ty_7 = 2;
+pub const CUDF_MEMORY_MANAGER_INSTALLATION_FLAG_CURRENT_RESOURCE_INSTALLED: _bindgen_ty_7 = 4;
+pub const CUDF_MEMORY_MANAGER_INSTALLATION_FLAG_CALLBACK_PANICKED: _bindgen_ty_7 = 8;
+pub const CUDF_MEMORY_MANAGER_INSTALLATION_FLAG_HAS_IDENTITY: _bindgen_ty_7 = 16;
+#[doc = " The manager was created by this install call, even if its current-resource\n switch remained incomplete."]
+pub const CUDF_MEMORY_MANAGER_INSTALLATION_FLAG_CREATED_BY_CALL: _bindgen_ty_7 = 32;
 pub const CUDF_ORDER_ASCENDING: cudf_order_t = 0;
 pub const CUDF_ORDER_DESCENDING: cudf_order_t = 1;
 pub const CUDF_NULL_ORDER_AFTER: cudf_null_order_t = 0;
@@ -2574,10 +2637,29 @@ unsafe extern "C" {
         options: *const cudf_memory_manager_options_t,
         out: *mut cudf_memory_manager_handle,
     ) -> cudf_status_t;
+    pub fn cudf_memory_manager_install_owned_with_failure_callback_v2_and_options(
+        device: i32,
+        callback: cudf_memory_failure_callback_v2_t,
+        callback_arg: *mut core::ffi::c_void,
+        options: *const cudf_memory_manager_options_t,
+        identity: *const cudf_memory_manager_installation_identity_t,
+        out: *mut cudf_memory_manager_handle,
+        installation: *mut cudf_memory_manager_installation_record_t,
+    ) -> cudf_status_t;
+    pub fn cudf_memory_manager_installation_record(
+        device: i32,
+        out: *mut cudf_memory_manager_installation_record_t,
+    ) -> cudf_status_t;
     pub fn cudf_memory_manager_failure_callback_state(
         device: i32,
         exists: *mut i32,
         failure_callback_installed: *mut i32,
+    ) -> cudf_status_t;
+    pub fn cudf_memory_manager_installation_state(
+        device: i32,
+        exists: *mut i32,
+        failure_callback_installed: *mut i32,
+        current_resource_installed: *mut i32,
     ) -> cudf_status_t;
     pub fn cudf_memory_manager_options_for_device(
         device: i32,

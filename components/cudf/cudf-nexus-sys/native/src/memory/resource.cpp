@@ -334,12 +334,14 @@ class bounded_failure_callback_resource_adaptor final : public rmm::mr::device_m
                                             cudf_memory_failure_callback_t callback,
                                             void* callback_arg,
                                             cudaMemPool_t pool,
-                                            int32_t device_ordinal)
+                                            int32_t device_ordinal,
+                                            std::atomic<bool>* callback_panicked)
     : upstream_{rmm::mr::any_device_resource_from_raw(upstream)},
       callback_{callback},
       callback_arg_{callback_arg},
       pool_{pool},
-      device_ordinal_{device_ordinal}
+      device_ordinal_{device_ordinal},
+      callback_panicked_{callback_panicked}
   {
   }
 
@@ -347,12 +349,14 @@ class bounded_failure_callback_resource_adaptor final : public rmm::mr::device_m
                                             cudf_memory_failure_callback_v2_t callback,
                                             void* callback_arg,
                                             cudaMemPool_t pool,
-                                            int32_t device_ordinal)
+                                            int32_t device_ordinal,
+                                            std::atomic<bool>* callback_panicked)
     : upstream_{rmm::mr::any_device_resource_from_raw(upstream)},
       callback_v2_{callback},
       callback_arg_{callback_arg},
       pool_{pool},
-      device_ordinal_{device_ordinal}
+      device_ordinal_{device_ordinal},
+      callback_panicked_{callback_panicked}
   {
   }
 
@@ -387,6 +391,12 @@ class bounded_failure_callback_resource_adaptor final : public rmm::mr::device_m
                             callback_retries,
                             trim_retry_count);
           auto const action = callback_v2_(&info, callback_arg_);
+          if (action == CUDF_MEMORY_FAILURE_ACTION_CALLBACK_PANICKED) {
+            if (callback_panicked_ != nullptr) {
+              callback_panicked_->store(true, std::memory_order_release);
+            }
+            throw;
+          }
           if (action == CUDF_MEMORY_FAILURE_ACTION_RETRY) {
             ++callback_retries;
             continue;
@@ -434,6 +444,7 @@ class bounded_failure_callback_resource_adaptor final : public rmm::mr::device_m
   void* callback_arg_                            = nullptr;
   cudaMemPool_t pool_                            = nullptr;
   int32_t device_ordinal_                        = -1;
+  std::atomic<bool>* callback_panicked_          = nullptr;
 };
 
 std::unique_ptr<rmm::mr::device_memory_resource> make_bounded_failure_callback_resource(
@@ -441,10 +452,11 @@ std::unique_ptr<rmm::mr::device_memory_resource> make_bounded_failure_callback_r
   cudf_memory_failure_callback_t callback,
   void* callback_arg,
   cudaMemPool_t pool,
-  int32_t device_ordinal)
+  int32_t device_ordinal,
+  std::atomic<bool>* callback_panicked)
 {
   return std::make_unique<bounded_failure_callback_resource_adaptor>(
-    upstream, callback, callback_arg, pool, device_ordinal);
+    upstream, callback, callback_arg, pool, device_ordinal, callback_panicked);
 }
 
 std::unique_ptr<rmm::mr::device_memory_resource> make_bounded_failure_callback_resource(
@@ -452,10 +464,11 @@ std::unique_ptr<rmm::mr::device_memory_resource> make_bounded_failure_callback_r
   cudf_memory_failure_callback_v2_t callback,
   void* callback_arg,
   cudaMemPool_t pool,
-  int32_t device_ordinal)
+  int32_t device_ordinal,
+  std::atomic<bool>* callback_panicked)
 {
   return std::make_unique<bounded_failure_callback_resource_adaptor>(
-    upstream, callback, callback_arg, pool, device_ordinal);
+    upstream, callback, callback_arg, pool, device_ordinal, callback_panicked);
 }
 
 std::mutex& memory_resource_registry_mutex()

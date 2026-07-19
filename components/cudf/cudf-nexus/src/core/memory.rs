@@ -94,7 +94,7 @@ use std::{
     ptr::{self, NonNull},
     sync::{
         Arc, Mutex, OnceLock,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
 };
 
@@ -300,7 +300,259 @@ impl DeviceMemoryFailureInfo {
 pub struct DeviceMemoryManagerFailureCallbackState {
     pub exists: bool,
     pub failure_callback_installed: bool,
+    pub current_resource_installed: bool,
     pub failure_callback_panicked: bool,
+}
+
+/// Stable identity of the process-lifetime callback and memory partition that
+/// owns a device memory manager installation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct DeviceMemoryManagerInstallationIdentity {
+    pub owner_fingerprint: [u8; 16],
+    pub callback_version: u32,
+    pub partition_fingerprint: [u8; 16],
+}
+
+impl DeviceMemoryManagerInstallationIdentity {
+    pub const fn new(owner_fingerprint: [u8; 16], callback_version: u32, partition_fingerprint: [u8; 16]) -> Self {
+        Self { owner_fingerprint, callback_version, partition_fingerprint }
+    }
+}
+
+fn installation_identity_to_sys(
+    identity: DeviceMemoryManagerInstallationIdentity,
+) -> cudf_sys::cudf_memory_manager_installation_identity_t {
+    cudf_sys::cudf_memory_manager_installation_identity_t {
+        owner_fingerprint: identity.owner_fingerprint,
+        callback_version: identity.callback_version,
+        reserved_padding: 0,
+        partition_fingerprint: identity.partition_fingerprint,
+    }
+}
+
+fn installation_identity_from_sys(
+    identity: cudf_sys::cudf_memory_manager_installation_identity_t,
+) -> DeviceMemoryManagerInstallationIdentity {
+    DeviceMemoryManagerInstallationIdentity::new(
+        identity.owner_fingerprint,
+        identity.callback_version,
+        identity.partition_fingerprint,
+    )
+}
+
+/// Authoritative state of the process-lifetime manager/callback installation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum DeviceMemoryManagerInstallationStatus {
+    Uninstalled,
+    Incomplete,
+    Owned,
+    Unidentified,
+    CallbackPanicked,
+}
+
+/// Whether a later owner may install or reuse the observed manager.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum DeviceMemoryManagerInstallationRetry {
+    Installable,
+    Retryable,
+    Reusable,
+    PermanentlyUnusable,
+}
+
+/// Closed native reason for an installation disposition.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum DeviceMemoryManagerInstallationCause {
+    None,
+    CurrentResourceInstallFailed,
+    CurrentResourceReplaced,
+    FailureCallbackPanicked,
+    FailureCallbackMissing,
+    IdentityMissing,
+    OptionsMismatch,
+    IdentityMismatch,
+    CallbackBindingMismatch,
+}
+
+/// Atomic inspection of a device's native manager and Rust callback owner.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DeviceMemoryManagerInstallationState {
+    pub device_ordinal: usize,
+    pub status: DeviceMemoryManagerInstallationStatus,
+    pub retry: DeviceMemoryManagerInstallationRetry,
+    pub cause: DeviceMemoryManagerInstallationCause,
+    pub effective_options: Option<DeviceMemoryManagerOptions>,
+    pub identity: Option<DeviceMemoryManagerInstallationIdentity>,
+    pub installation_generation: Option<u64>,
+    pub failure_callback_installed: bool,
+    pub current_resource_installed: bool,
+    pub failure_callback_panicked: bool,
+}
+
+/// Whether an identity-aware install created or reused the process manager.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeviceMemoryManagerInstallationOutcomeKind {
+    Installed,
+    Reused,
+}
+
+/// Result of one successful identity-aware installation transaction.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DeviceMemoryManagerInstallationOutcome {
+    pub kind: DeviceMemoryManagerInstallationOutcomeKind,
+    pub state: DeviceMemoryManagerInstallationState,
+}
+
+/// Failure from an identity-aware install together with the exact native
+/// record returned by that same locked transaction, when one was available.
+#[derive(Debug)]
+pub struct DeviceMemoryManagerInstallationError {
+    error: error::Error,
+    state: Option<Box<DeviceMemoryManagerInstallationState>>,
+}
+
+impl DeviceMemoryManagerInstallationError {
+    /// The ordinary cudf error for callers that do not need recovery state.
+    pub fn error(&self) -> &error::Error {
+        &self.error
+    }
+
+    /// The authoritative record returned by the rejected native transaction.
+    ///
+    /// This is `None` only when validation or Rust callback-registry access
+    /// failed before the native install/inspect transaction ran, or when the
+    /// native record itself violated its ABI contract.
+    pub fn installation_state(&self) -> Option<DeviceMemoryManagerInstallationState> {
+        self.state.as_deref().copied()
+    }
+
+    /// Discard the optional installation state and recover the ordinary error.
+    pub fn into_error(self) -> error::Error {
+        self.error
+    }
+}
+
+impl std::fmt::Display for DeviceMemoryManagerInstallationError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.error.fmt(formatter)
+    }
+}
+
+impl std::error::Error for DeviceMemoryManagerInstallationError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.error)
+    }
+}
+
+fn installation_state_from_native_record(
+    record: cudf_sys::cudf_memory_manager_installation_record_t,
+) -> Result<DeviceMemoryManagerInstallationState> {
+    if record.struct_size != core::mem::size_of::<cudf_sys::cudf_memory_manager_installation_record_t>() {
+        return Err(error::Error::new_with(
+            error::ErrorCode::ForeignInvariantViolation,
+            "memory::device_memory_manager::installation_state_for_device",
+            "native installation record returned an incompatible struct size",
+        )
+        .with_detail("struct_size", record.struct_size.to_string()));
+    }
+    let status = match record.status {
+        cudf_sys::CUDF_MEMORY_MANAGER_INSTALLATION_UNINSTALLED => DeviceMemoryManagerInstallationStatus::Uninstalled,
+        cudf_sys::CUDF_MEMORY_MANAGER_INSTALLATION_INCOMPLETE => DeviceMemoryManagerInstallationStatus::Incomplete,
+        cudf_sys::CUDF_MEMORY_MANAGER_INSTALLATION_OWNED => DeviceMemoryManagerInstallationStatus::Owned,
+        cudf_sys::CUDF_MEMORY_MANAGER_INSTALLATION_UNIDENTIFIED => DeviceMemoryManagerInstallationStatus::Unidentified,
+        cudf_sys::CUDF_MEMORY_MANAGER_INSTALLATION_CALLBACK_PANICKED => {
+            DeviceMemoryManagerInstallationStatus::CallbackPanicked
+        },
+        value => {
+            return Err(error::Error::new_with(
+                error::ErrorCode::ForeignInvariantViolation,
+                "memory::device_memory_manager::installation_state_for_device",
+                "native installation record returned an unknown status",
+            )
+            .with_detail("status", value.to_string()));
+        },
+    };
+    let retry = match record.retry {
+        cudf_sys::CUDF_MEMORY_MANAGER_INSTALLATION_INSTALLABLE => DeviceMemoryManagerInstallationRetry::Installable,
+        cudf_sys::CUDF_MEMORY_MANAGER_INSTALLATION_RETRYABLE => DeviceMemoryManagerInstallationRetry::Retryable,
+        cudf_sys::CUDF_MEMORY_MANAGER_INSTALLATION_REUSABLE => DeviceMemoryManagerInstallationRetry::Reusable,
+        cudf_sys::CUDF_MEMORY_MANAGER_INSTALLATION_PERMANENTLY_UNUSABLE => {
+            DeviceMemoryManagerInstallationRetry::PermanentlyUnusable
+        },
+        value => {
+            return Err(error::Error::new_with(
+                error::ErrorCode::ForeignInvariantViolation,
+                "memory::device_memory_manager::installation_state_for_device",
+                "native installation record returned an unknown retry classification",
+            )
+            .with_detail("retry", value.to_string()));
+        },
+    };
+    let cause = match record.cause {
+        cudf_sys::CUDF_MEMORY_MANAGER_INSTALLATION_CAUSE_NONE => DeviceMemoryManagerInstallationCause::None,
+        cudf_sys::CUDF_MEMORY_MANAGER_INSTALLATION_CAUSE_CURRENT_RESOURCE_INSTALL_FAILED => {
+            DeviceMemoryManagerInstallationCause::CurrentResourceInstallFailed
+        },
+        cudf_sys::CUDF_MEMORY_MANAGER_INSTALLATION_CAUSE_CURRENT_RESOURCE_REPLACED => {
+            DeviceMemoryManagerInstallationCause::CurrentResourceReplaced
+        },
+        cudf_sys::CUDF_MEMORY_MANAGER_INSTALLATION_CAUSE_FAILURE_CALLBACK_PANICKED => {
+            DeviceMemoryManagerInstallationCause::FailureCallbackPanicked
+        },
+        cudf_sys::CUDF_MEMORY_MANAGER_INSTALLATION_CAUSE_FAILURE_CALLBACK_MISSING => {
+            DeviceMemoryManagerInstallationCause::FailureCallbackMissing
+        },
+        cudf_sys::CUDF_MEMORY_MANAGER_INSTALLATION_CAUSE_IDENTITY_MISSING => {
+            DeviceMemoryManagerInstallationCause::IdentityMissing
+        },
+        cudf_sys::CUDF_MEMORY_MANAGER_INSTALLATION_CAUSE_OPTIONS_MISMATCH => {
+            DeviceMemoryManagerInstallationCause::OptionsMismatch
+        },
+        cudf_sys::CUDF_MEMORY_MANAGER_INSTALLATION_CAUSE_IDENTITY_MISMATCH => {
+            DeviceMemoryManagerInstallationCause::IdentityMismatch
+        },
+        cudf_sys::CUDF_MEMORY_MANAGER_INSTALLATION_CAUSE_CALLBACK_BINDING_MISMATCH => {
+            DeviceMemoryManagerInstallationCause::CallbackBindingMismatch
+        },
+        value => {
+            return Err(error::Error::new_with(
+                error::ErrorCode::ForeignInvariantViolation,
+                "memory::device_memory_manager::installation_state_for_device",
+                "native installation record returned an unknown cause",
+            )
+            .with_detail("cause", value.to_string()));
+        },
+    };
+    let exists = record.flags & cudf_sys::CUDF_MEMORY_MANAGER_INSTALLATION_FLAG_EXISTS != 0;
+    let has_identity = record.flags & cudf_sys::CUDF_MEMORY_MANAGER_INSTALLATION_FLAG_HAS_IDENTITY != 0;
+    let device_ordinal = usize::try_from(record.device_ordinal).map_err(|_| {
+        error::Error::new_with(
+            error::ErrorCode::ForeignInvariantViolation,
+            "memory::device_memory_manager::installation_state_for_device",
+            "native installation record returned a negative device ordinal",
+        )
+    })?;
+    Ok(DeviceMemoryManagerInstallationState {
+        device_ordinal,
+        status,
+        retry,
+        cause,
+        effective_options: exists
+            .then(|| DeviceMemoryManagerOptions::from_sys(record.effective_options))
+            .transpose()?,
+        identity: has_identity.then(|| installation_identity_from_sys(record.identity)),
+        installation_generation: (record.installation_generation != 0).then_some(record.installation_generation),
+        failure_callback_installed: record.flags
+            & cudf_sys::CUDF_MEMORY_MANAGER_INSTALLATION_FLAG_FAILURE_CALLBACK_INSTALLED
+            != 0,
+        current_resource_installed: record.flags
+            & cudf_sys::CUDF_MEMORY_MANAGER_INSTALLATION_FLAG_CURRENT_RESOURCE_INSTALLED
+            != 0,
+        failure_callback_panicked: record.flags & cudf_sys::CUDF_MEMORY_MANAGER_INSTALLATION_FLAG_CALLBACK_PANICKED
+            != 0,
+    })
 }
 
 impl From<cudf_sys::cudf_memory_resource_usage_t> for DeviceMemoryResourceUsage {
@@ -351,6 +603,9 @@ impl Default for DeviceMemoryManagerBase {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct DeviceMemoryManagerOptions {
     pub base: DeviceMemoryManagerBase,
+    /// Immutable hard limit enforced by the process manager. `None` leaves the
+    /// selected physical base unpartitioned.
+    pub allocation_limit_bytes: Option<usize>,
 }
 
 impl DeviceMemoryManagerOptions {
@@ -367,11 +622,59 @@ impl DeviceMemoryManagerOptions {
                 maximum_pool_size: maximum_pool_size.filter(|size| *size != 0),
             },
         };
-        Self { base }
+        Self { base, allocation_limit_bytes: self.allocation_limit_bytes }
     }
 
-    fn to_sys(self) -> cudf_sys::cudf_memory_manager_options_t {
-        let mut out = cudf_sys::cudf_memory_manager_options_t::default();
+    /// Validate this configuration without consulting CUDA or process-global
+    /// allocator state.
+    pub fn validate(&self) -> Result<()> {
+        if self.allocation_limit_bytes == Some(0) {
+            return Err(invalid_memory_manager_options(
+                "allocation_limit_bytes",
+                "allocation limit must be greater than zero when configured",
+            ));
+        }
+        let normalized = (*self).normalized();
+        let Some(limit) = normalized.allocation_limit_bytes else {
+            if let DeviceMemoryManagerBase::Pool { initial_pool_size, maximum_pool_size: Some(maximum) } =
+                normalized.base
+                && maximum < initial_pool_size
+            {
+                return Err(invalid_memory_manager_options(
+                    "maximum_pool_size",
+                    "maximum pool size must not be below the initial pool size",
+                ));
+            }
+            return Ok(());
+        };
+        match normalized.base {
+            DeviceMemoryManagerBase::CudaAsync { initial_pool_size: Some(initial), .. } if initial > limit => Err(
+                invalid_memory_manager_options("initial_pool_size", "initial pool size exceeds the allocation limit"),
+            ),
+            DeviceMemoryManagerBase::Pool { initial_pool_size, .. } if initial_pool_size > limit => Err(
+                invalid_memory_manager_options("initial_pool_size", "initial pool size exceeds the allocation limit"),
+            ),
+            DeviceMemoryManagerBase::Pool { initial_pool_size, maximum_pool_size: Some(maximum) }
+                if maximum < initial_pool_size =>
+            {
+                Err(invalid_memory_manager_options(
+                    "maximum_pool_size",
+                    "maximum pool size must not be below the initial pool size",
+                ))
+            },
+            DeviceMemoryManagerBase::Pool { maximum_pool_size: Some(maximum), .. } if maximum > limit => Err(
+                invalid_memory_manager_options("maximum_pool_size", "maximum pool size exceeds the allocation limit"),
+            ),
+            _ => Ok(()),
+        }
+    }
+
+    fn to_sys(self) -> Result<cudf_sys::cudf_memory_manager_options_t> {
+        self.validate()?;
+        let mut out = cudf_sys::cudf_memory_manager_options_t {
+            allocation_limit_bytes: self.allocation_limit_bytes.unwrap_or(0) as u64,
+            ..Default::default()
+        };
         match self.base {
             DeviceMemoryManagerBase::CudaAsync { initial_pool_size, release_threshold } => {
                 out.base_kind = cudf_sys::CUDF_MEMORY_MANAGER_BASE_CUDA_ASYNC;
@@ -384,7 +687,7 @@ impl DeviceMemoryManagerOptions {
                 out.maximum_pool_size_bytes = maximum_pool_size.unwrap_or(0) as u64;
             },
         }
-        out
+        Ok(out)
     }
 
     fn from_sys(value: cudf_sys::cudf_memory_manager_options_t) -> Result<Self> {
@@ -418,8 +721,21 @@ impl DeviceMemoryManagerOptions {
                 .with_detail("base_kind", other.to_string()));
             },
         };
-        Ok(Self { base })
+        let allocation_limit_bytes = if value.allocation_limit_bytes == 0 {
+            None
+        } else {
+            Some(memory_manager_option_bytes(value.allocation_limit_bytes, "allocation_limit_bytes")?)
+        };
+        let options = Self { base, allocation_limit_bytes };
+        options.validate()?;
+        Ok(options)
     }
+}
+
+fn invalid_memory_manager_options(field: &'static str, message: &'static str) -> error::Error {
+    error::Error::new_with(error::ErrorCode::ValueOutOfRange, "memory::device_memory_manager::options", message)
+        .with_detail("field", field)
+        .with_detail("reason", "invalid_device_memory_manager_options")
 }
 
 fn memory_manager_option_bytes(value: u64, field: &'static str) -> Result<usize> {
@@ -674,18 +990,64 @@ unsafe impl Sync for DeviceMemoryResourceHandle {}
 
 type FailureCallback = dyn Fn(DeviceMemoryFailureInfo) -> DeviceMemoryFailureAction + Send + Sync + 'static;
 
+struct CallbackInstallationFailure {
+    error: error::Error,
+    state: Option<Box<DeviceMemoryManagerInstallationState>>,
+}
+
+impl CallbackInstallationFailure {
+    fn with_state(error: error::Error, state: Option<DeviceMemoryManagerInstallationState>) -> Self {
+        Self { error, state: state.map(Box::new) }
+    }
+}
+
+impl From<error::Error> for CallbackInstallationFailure {
+    fn from(error: error::Error) -> Self {
+        Self { error, state: None }
+    }
+}
+
+impl From<CallbackInstallationFailure> for DeviceMemoryManagerInstallationError {
+    fn from(failure: CallbackInstallationFailure) -> Self {
+        Self { error: failure.error, state: failure.state }
+    }
+}
+
 struct FailureCallbackState {
     callback: Arc<FailureCallback>,
     panicked: AtomicBool,
+    installation_generation: AtomicU64,
 }
 
 impl FailureCallbackState {
     fn new(callback: Arc<FailureCallback>) -> Self {
-        Self { callback, panicked: AtomicBool::new(false) }
+        Self { callback, panicked: AtomicBool::new(false), installation_generation: AtomicU64::new(0) }
     }
 
-    fn has_panicked(&self) -> bool {
-        self.panicked.load(Ordering::Acquire)
+    fn installation_generation(&self) -> Option<u64> {
+        let generation = self.installation_generation.load(Ordering::Acquire);
+        (generation != 0).then_some(generation)
+    }
+
+    fn bind_installation_generation(&self, generation: u64) -> Result<()> {
+        if generation == 0 {
+            return Err(error::Error::new_with(
+                error::ErrorCode::ForeignInvariantViolation,
+                "memory::device_memory_manager::install_owned",
+                "native installation record returned a zero callback generation",
+            ));
+        }
+        match self.installation_generation.compare_exchange(0, generation, Ordering::AcqRel, Ordering::Acquire) {
+            Ok(_) => Ok(()),
+            Err(existing) if existing == generation => Ok(()),
+            Err(existing) => Err(error::Error::new_with(
+                error::ErrorCode::InvariantViolation,
+                "memory::device_memory_manager::install_owned",
+                "callback state was rebound to a different installation generation",
+            )
+            .with_detail("existing_generation", existing.to_string())
+            .with_detail("observed_generation", generation.to_string())),
+        }
     }
 }
 
@@ -698,7 +1060,7 @@ unsafe extern "C" fn failure_callback_trampoline(
     }
     let state = unsafe { &*(callback_arg as *const FailureCallbackState) };
     if state.panicked.load(Ordering::Acquire) {
-        return 0;
+        return cudf_sys::CUDF_MEMORY_FAILURE_ACTION_CALLBACK_PANICKED;
     }
     if info.is_null() {
         return 0;
@@ -713,7 +1075,7 @@ unsafe extern "C" fn failure_callback_trampoline(
                     info.requested_bytes
                 );
             }
-            0
+            cudf_sys::CUDF_MEMORY_FAILURE_ACTION_CALLBACK_PANICKED
         },
     }
 }
@@ -895,7 +1257,10 @@ impl DeviceMemoryManager {
             device,
             wrap_simple_failure_callback(callback),
             DeviceMemoryManagerOptions::default(),
+            None,
         )
+        .map(|(manager, _, _, _)| manager)
+        .map_err(|failure| failure.error)
     }
 
     /// Explicitly install the memory domain for `device` with a
@@ -908,7 +1273,10 @@ impl DeviceMemoryManager {
             device,
             callback,
             DeviceMemoryManagerOptions::default(),
+            None,
         )
+        .map(|(manager, _, _, _)| manager)
+        .map_err(|failure| failure.error)
     }
 
     /// Explicitly install the memory domain for `device` with physical-base
@@ -922,7 +1290,10 @@ impl DeviceMemoryManager {
             device,
             wrap_simple_failure_callback(callback),
             options,
+            None,
         )
+        .map(|(manager, _, _, _)| manager)
+        .map_err(|failure| failure.error)
     }
 
     /// Explicitly install the memory domain for `device` with physical-base
@@ -933,13 +1304,86 @@ impl DeviceMemoryManager {
         callback: Arc<dyn Fn(DeviceMemoryFailureInfo) -> DeviceMemoryFailureAction + Send + Sync + 'static>,
         options: DeviceMemoryManagerOptions,
     ) -> Result<Self> {
-        Self::for_device_with_failure_callback_details_and_options(device, callback, options)
+        Self::for_device_with_failure_callback_details_and_options(device, callback, options, None)
+            .map(|(manager, _, _, _)| manager)
+            .map_err(|failure| failure.error)
+    }
+
+    /// Atomically installs or reuses the process-lifetime manager for an
+    /// identified owner, callback contract, and enforced memory partition.
+    ///
+    /// Reuse requires exact identity and effective options. An existing plain,
+    /// legacy-unidentified, foreign, or panicked callback is rejected rather
+    /// than rebound to the new caller.
+    pub fn install_for_device_with_owned_failure_callback_details_and_options(
+        device: DeviceId,
+        identity: DeviceMemoryManagerInstallationIdentity,
+        callback: Arc<dyn Fn(DeviceMemoryFailureInfo) -> DeviceMemoryFailureAction + Send + Sync + 'static>,
+        options: DeviceMemoryManagerOptions,
+    ) -> Result<(Self, DeviceMemoryManagerInstallationOutcome)> {
+        Self::try_install_for_device_with_owned_failure_callback_details_and_options(
+            device, identity, callback, options,
+        )
+        .map_err(DeviceMemoryManagerInstallationError::into_error)
+    }
+
+    /// Identity-aware install with the exact native record preserved on
+    /// incomplete, incompatible, or permanently unusable outcomes.
+    pub fn try_install_for_device_with_owned_failure_callback_details_and_options(
+        device: DeviceId,
+        identity: DeviceMemoryManagerInstallationIdentity,
+        callback: Arc<dyn Fn(DeviceMemoryFailureInfo) -> DeviceMemoryFailureAction + Send + Sync + 'static>,
+        options: DeviceMemoryManagerOptions,
+    ) -> std::result::Result<(Self, DeviceMemoryManagerInstallationOutcome), DeviceMemoryManagerInstallationError> {
+        let (manager, installed, callback_state, state) =
+            Self::for_device_with_failure_callback_details_and_options(device, callback, options, Some(identity))?;
+        let state = state.ok_or_else(|| DeviceMemoryManagerInstallationError {
+            error: error::Error::new_with(
+                error::ErrorCode::InvariantViolation,
+                "memory::device_memory_manager::install_owned",
+                "identity-aware native installation did not return its authoritative record",
+            ),
+            state: None,
+        })?;
+        if state.status != DeviceMemoryManagerInstallationStatus::Owned
+            || state.retry != DeviceMemoryManagerInstallationRetry::Reusable
+            || state.cause != DeviceMemoryManagerInstallationCause::None
+            || state.identity != Some(identity)
+            || state.installation_generation != callback_state.installation_generation()
+            || !state.failure_callback_installed
+            || !state.current_resource_installed
+        {
+            return Err(DeviceMemoryManagerInstallationError {
+                error: error::Error::new_with(
+                    error::ErrorCode::InvariantViolation,
+                    "memory::device_memory_manager::install_owned",
+                    "installed device memory manager did not retain the requested ownership identity",
+                )
+                .with_detail("requested_identity", format!("{identity:?}"))
+                .with_detail("observed_state", format!("{state:?}"))
+                .with_detail("reason", "device_memory_manager_installation_identity_lost"),
+                state: Some(Box::new(state)),
+            });
+        }
+        let kind = if installed {
+            DeviceMemoryManagerInstallationOutcomeKind::Installed
+        } else {
+            DeviceMemoryManagerInstallationOutcomeKind::Reused
+        };
+        Ok((manager, DeviceMemoryManagerInstallationOutcome { kind, state }))
     }
 
     /// Returns whether `device` already has a process-local memory manager and
     /// whether that manager was created with a failure callback.
     pub fn failure_callback_state_for_device(device: DeviceId) -> Result<DeviceMemoryManagerFailureCallbackState> {
         Self::failure_callback_state_for_device_raw(device)
+    }
+
+    /// Inspects native manager state and the original Rust callback identity
+    /// while serializing against identity-aware installation.
+    pub fn installation_state_for_device(device: DeviceId) -> Result<DeviceMemoryManagerInstallationState> {
+        let record = Self::native_installation_record_for_device(device)?;
+        installation_state_from_native_record(record)
     }
 
     /// Returns the effective physical-base options for an existing process-local manager.
@@ -987,11 +1431,12 @@ impl DeviceMemoryManager {
     /// `options` if needed. An existing manager with different effective
     /// options returns [`crate::ErrorCode::RuntimeBindingMismatch`].
     pub fn for_device_with_options(device: DeviceId, options: DeviceMemoryManagerOptions) -> Result<Self> {
+        options.validate()?;
         if let Some(existing) = Self::options_for_device(device)? {
             ensure_memory_manager_options_match(existing, options)?;
         }
         let _guard = DeviceGuard::new(device)?;
-        let options = options.to_sys();
+        let options = options.to_sys()?;
         let mut manager = ptr::null_mut();
         error::check_status_in_with_details(
             unsafe {
@@ -1017,14 +1462,12 @@ impl DeviceMemoryManager {
         device: DeviceId,
         callback: Arc<dyn Fn(DeviceMemoryFailureInfo) -> DeviceMemoryFailureAction + Send + Sync + 'static>,
         options: DeviceMemoryManagerOptions,
-    ) -> Result<Self> {
-        if let Some(existing) = Self::options_for_device(device)? {
-            ensure_memory_manager_options_match(existing, options)?;
-        }
-        let _guard = DeviceGuard::new(device)?;
-        let device_ordinal = device.ordinal_raw();
-        let options = options.to_sys();
-        let native_state_before = Self::failure_callback_state_for_device_raw(device)?;
+        installation_identity: Option<DeviceMemoryManagerInstallationIdentity>,
+    ) -> std::result::Result<
+        (Self, bool, Arc<FailureCallbackState>, Option<DeviceMemoryManagerInstallationState>),
+        CallbackInstallationFailure,
+    > {
+        options.validate()?;
         let callbacks = device_manager_failure_callbacks();
         let mut callbacks = callbacks.lock().map_err(|_| {
             error::Error::new_with(
@@ -1033,15 +1476,26 @@ impl DeviceMemoryManager {
                 "device memory manager failure callback registry mutex was poisoned",
             )
         })?;
-        if native_state_before.exists
-            && native_state_before.failure_callback_installed
+        let native_state_before = if installation_identity.is_none() {
+            if let Some(existing) = Self::options_for_device(device)? {
+                ensure_memory_manager_options_match(existing, options)?;
+            }
+            Some(Self::failure_callback_state_for_device_raw(device)?)
+        } else {
+            None
+        };
+        let _guard = DeviceGuard::new(device)?;
+        let device_ordinal = device.ordinal_raw();
+        let options = options.to_sys()?;
+        if native_state_before.is_some_and(|state| state.exists && state.failure_callback_installed)
             && !callbacks.contains_key(&device_ordinal)
         {
             return Err(error::Error::new_with(
                 error::ErrorCode::RuntimeBindingMismatch,
                 "memory::device_memory_manager::for_device_with_failure_callback",
                 "device memory manager already exists with a failure callback not owned by this cudf callback registry",
-            ));
+            )
+            .into());
         }
         let mut inserted_callback_state = false;
         let callback_state = match callbacks.entry(device_ordinal) {
@@ -1054,85 +1508,128 @@ impl DeviceMemoryManager {
 
         let callback_arg = Arc::as_ptr(&callback_state) as *mut c_void;
         let mut manager = ptr::null_mut();
-        let status = unsafe {
-            cudf_sys::cudf_memory_manager_for_device_with_failure_callback_v2_and_options(
-                device.ordinal_raw(),
-                Some(failure_callback_trampoline),
-                callback_arg,
-                &options,
-                &mut manager,
-            )
-        };
-        if status != cudf_sys::CUDF_SUCCESS {
-            let native_state = Self::native_failure_callback_state_for_device_raw(device);
-            if inserted_callback_state
-                && callbacks.get(&device_ordinal).is_some_and(|state| Arc::ptr_eq(state, &callback_state))
-                && native_state.as_ref().is_ok_and(|state| !state.exists || !state.failure_callback_installed)
-            {
-                callbacks.remove(&device_ordinal);
+        let mut installation_record = cudf_sys::cudf_memory_manager_installation_record_t::default();
+        let status = if let Some(identity) = installation_identity {
+            let identity = installation_identity_to_sys(identity);
+            unsafe {
+                cudf_sys::cudf_memory_manager_install_owned_with_failure_callback_v2_and_options(
+                    device.ordinal_raw(),
+                    Some(failure_callback_trampoline),
+                    callback_arg,
+                    &options,
+                    &identity,
+                    &mut manager,
+                    &mut installation_record,
+                )
             }
-            error::check_status_in_with_details(
+        } else {
+            unsafe {
+                cudf_sys::cudf_memory_manager_for_device_with_failure_callback_v2_and_options(
+                    device.ordinal_raw(),
+                    Some(failure_callback_trampoline),
+                    callback_arg,
+                    &options,
+                    &mut manager,
+                )
+            }
+        };
+        let created_by_call = installation_identity.is_some()
+            && installation_record.flags & cudf_sys::CUDF_MEMORY_MANAGER_INSTALLATION_FLAG_CREATED_BY_CALL != 0;
+        if installation_identity.is_some() && (!inserted_callback_state || created_by_call) {
+            callback_state.bind_installation_generation(installation_record.installation_generation)?;
+        }
+        if installation_identity.is_some()
+            && inserted_callback_state
+            && !created_by_call
+            && callbacks.get(&device_ordinal).is_some_and(|state| Arc::ptr_eq(state, &callback_state))
+        {
+            callbacks.remove(&device_ordinal);
+        }
+        let installation_state = installation_identity
+            .is_some()
+            .then(|| installation_state_from_native_record(installation_record))
+            .transpose()?;
+        if status != cudf_sys::CUDF_SUCCESS {
+            let cause = installation_state.map(|state| state.cause);
+            drop(callbacks);
+            let native_error = error::check_status_in_with_details(
                 status,
                 "memory::device_memory_manager::for_device_with_failure_callback",
                 [("device", device.ordinal().to_string())],
-            )?;
+            )
+            .expect_err("non-success native status must produce an error");
+            let installation_error = match cause {
+                Some(
+                    DeviceMemoryManagerInstallationCause::CurrentResourceReplaced
+                    | DeviceMemoryManagerInstallationCause::FailureCallbackPanicked
+                    | DeviceMemoryManagerInstallationCause::FailureCallbackMissing
+                    | DeviceMemoryManagerInstallationCause::IdentityMissing
+                    | DeviceMemoryManagerInstallationCause::OptionsMismatch
+                    | DeviceMemoryManagerInstallationCause::IdentityMismatch
+                    | DeviceMemoryManagerInstallationCause::CallbackBindingMismatch,
+                ) => error::Error::new_with(
+                    error::ErrorCode::RuntimeBindingMismatch,
+                    "memory::device_memory_manager::install_owned",
+                    "device memory manager installation is incompatible or permanently unusable",
+                )
+                .with_detail("native_error", native_error.to_string()),
+                _ => native_error,
+            };
+            let error = match cause {
+                Some(cause) => installation_error.with_detail("installation_cause", format!("{cause:?}")),
+                None => installation_error,
+            };
+            return Err(CallbackInstallationFailure::with_state(error, installation_state));
         }
         drop(callbacks);
         let manager = error::require_non_null(
             manager,
             "memory::device_memory_manager::for_device_with_failure_callback",
             "memory manager",
-        )?;
+        )
+        .map_err(|error| CallbackInstallationFailure::with_state(error, installation_state))?;
 
         let mut resource = ptr::null_mut();
         error::check_status_in(
             unsafe { cudf_sys::cudf_memory_manager_resource(manager.as_ptr(), &mut resource) },
             "memory::device_memory_manager::resource",
-        )?;
+        )
+        .map_err(|error| CallbackInstallationFailure::with_state(error, installation_state))?;
         let resource =
-            DeviceMemoryResource::from_created_handle(resource, device, "memory::device_memory_manager::resource")?;
+            DeviceMemoryResource::from_created_handle(resource, device, "memory::device_memory_manager::resource")
+                .map_err(|error| CallbackInstallationFailure::with_state(error, installation_state))?;
 
-        Ok(Self { handle: Arc::new(DeviceMemoryManagerHandle { raw: manager, device }), resource })
+        let installed = installation_identity
+            .map_or_else(|| native_state_before.is_none_or(|state| !state.exists), |_| created_by_call);
+        Ok((
+            Self { handle: Arc::new(DeviceMemoryManagerHandle { raw: manager, device }), resource },
+            installed,
+            callback_state,
+            installation_state,
+        ))
     }
 
     fn failure_callback_state_for_device_raw(device: DeviceId) -> Result<DeviceMemoryManagerFailureCallbackState> {
-        let mut state = Self::native_failure_callback_state_for_device_raw(device)?;
-        if state.failure_callback_installed {
-            let callbacks = device_manager_failure_callbacks().lock().map_err(|_| {
-                error::Error::new_with(
-                    error::ErrorCode::InvariantViolation,
-                    "memory::device_memory_manager::failure_callback_state_for_device",
-                    "device memory manager failure callback registry mutex was poisoned",
-                )
-            })?;
-            state.failure_callback_panicked =
-                callbacks.get(&device.ordinal_raw()).is_some_and(|state| state.has_panicked());
-        }
-        Ok(state)
+        let state = Self::installation_state_for_device(device)?;
+        Ok(DeviceMemoryManagerFailureCallbackState {
+            exists: state.status != DeviceMemoryManagerInstallationStatus::Uninstalled,
+            failure_callback_installed: state.failure_callback_installed,
+            current_resource_installed: state.current_resource_installed,
+            failure_callback_panicked: state.failure_callback_panicked,
+        })
     }
 
-    fn native_failure_callback_state_for_device_raw(
+    fn native_installation_record_for_device(
         device: DeviceId,
-    ) -> Result<DeviceMemoryManagerFailureCallbackState> {
+    ) -> Result<cudf_sys::cudf_memory_manager_installation_record_t> {
         let _guard = DeviceGuard::new(device)?;
-        let mut exists = 0;
-        let mut failure_callback_installed = 0;
+        let mut record = cudf_sys::cudf_memory_manager_installation_record_t::default();
         error::check_status_in_with_details(
-            unsafe {
-                cudf_sys::cudf_memory_manager_failure_callback_state(
-                    device.ordinal_raw(),
-                    &mut exists,
-                    &mut failure_callback_installed,
-                )
-            },
-            "memory::device_memory_manager::failure_callback_state_for_device",
+            unsafe { cudf_sys::cudf_memory_manager_installation_record(device.ordinal_raw(), &mut record) },
+            "memory::device_memory_manager::installation_state_for_device",
             [("device", device.ordinal().to_string())],
         )?;
-        Ok(DeviceMemoryManagerFailureCallbackState {
-            exists: exists != 0,
-            failure_callback_installed: failure_callback_installed != 0,
-            failure_callback_panicked: false,
-        })
+        Ok(record)
     }
 
     /// CUDA device owned by this manager.
@@ -1210,6 +1707,15 @@ impl DeviceMemoryManager {
 
     /// Create an opt-in query memory domain backed by a private CUDA async pool.
     pub fn query_memory_domain(&self, domain_id: u64, options: QueryMemoryDomainOptions) -> Result<QueryMemoryDomain> {
+        if Self::options_for_device(self.device())?.is_some_and(|options| options.allocation_limit_bytes.is_some()) {
+            return Err(error::Error::new_with(
+                error::ErrorCode::UnsupportedOperation,
+                "memory::device_memory_manager::query_memory_domain",
+                "query memory domains cannot bypass a hard manager allocation limit",
+            )
+            .with_detail("reason", "query_domain_incompatible_with_allocation_limit")
+            .with_detail("device", self.device().ordinal().to_string()));
+        }
         let _guard = DeviceGuard::new(self.device())?;
         let mut domain = ptr::null_mut();
         error::check_status_in_with_details(

@@ -33,6 +33,10 @@ typedef enum {
   CUDF_MEMORY_FAILURE_ACTION_TRIM_AND_RETRY = 2,
 } cudf_memory_failure_action_t;
 
+/// Reserved for the Rust unwind guard. Native callback adaptors must treat
+/// this as a permanent callback-health failure, never as a user action.
+enum { CUDF_MEMORY_FAILURE_ACTION_CALLBACK_PANICKED = (-2147483647 - 1) };
+
 typedef enum {
   CUDF_MEMORY_FAILURE_SOURCE_PHYSICAL          = 0,
   CUDF_MEMORY_FAILURE_SOURCE_RESERVATION_LIMIT = 1,

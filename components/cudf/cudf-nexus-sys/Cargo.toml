@@ -36,6 +36,12 @@ name = "native_abi_contract"
 name = "bindings_contract"
 
 [[test]]
+name = "memory_manager_static_partition_contract"
+
+[[test]]
+name = "memory_manager_old_options_abi_contract"
+
+[[test]]
 name = "build_link_contract"
 required-features = ["test-hooks"]
 

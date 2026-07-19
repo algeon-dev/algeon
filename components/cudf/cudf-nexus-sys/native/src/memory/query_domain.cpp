@@ -828,14 +828,16 @@ std::unique_ptr<memory_resource_handle_state> make_query_domain_member_resource_
                                                       manager->failure_callback_v2,
                                                       manager->failure_callback_arg,
                                                       member->domain->pool,
-                                                      manager->device);
+                                                      manager->device,
+                                                      &manager->failure_callback_panicked);
   } else if (manager->failure_callback != nullptr) {
     owner.reservation_mr = std::move(direct);
     owner.mr             = make_bounded_failure_callback_resource(owner.reservation_mr.get(),
                                                       manager->failure_callback,
                                                       manager->failure_callback_arg,
                                                       member->domain->pool,
-                                                      manager->device);
+                                                      manager->device,
+                                                      &manager->failure_callback_panicked);
   } else {
     owner.mr = std::move(direct);
   }
@@ -872,6 +874,12 @@ cudf_status_t cudf_memory_manager_create_query_memory_domain(cudf_memory_manager
     }
     if (manager_state->owner->async_pool == nullptr) {
       set_error("query memory domains require a CUDA async manager base");
+      return CUDF_ERROR_INVALID_OPERATION;
+    }
+    if (manager_state->options.allocation_limit_bytes > 0) {
+      set_error(
+        "query memory domains are incompatible with a hard manager allocation limit because "
+        "their private CUDA pools bypass aggregate partition accounting");
       return CUDF_ERROR_INVALID_OPERATION;
     }
 
