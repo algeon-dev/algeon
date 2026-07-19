@@ -218,14 +218,8 @@ const SAFE_LAYER_NON_EXECUTION_FFI_ALLOWLIST: &[(&str, &str)] = &[
         "cudf_strings_prepared_replace_with_backrefs_output_size_facts",
         "metadata-only prepared replace-with-backrefs sizing facts accessor",
     ),
-    (
-        "cudf_strings_replace_with_backrefs_reset_size_pass_count",
-        "test-only process-lifecycle counter control",
-    ),
-    (
-        "cudf_strings_replace_with_backrefs_size_pass_count",
-        "test-only process-lifecycle counter query",
-    ),
+    ("cudf_strings_replace_with_backrefs_reset_size_pass_count", "test-only process-lifecycle counter control"),
+    ("cudf_strings_replace_with_backrefs_size_pass_count", "test-only process-lifecycle counter query"),
     ("cudf_table_create", "ownership transfer from existing columns"),
     ("cudf_table_create_from_owned_device_transfer", "ownership transfer from external device export"),
     ("cudf_table_destroy", "provenance-bound lifecycle"),

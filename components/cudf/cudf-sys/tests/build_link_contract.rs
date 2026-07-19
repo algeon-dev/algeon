@@ -221,32 +221,25 @@ fn build_script_tracks_build_support_and_cargo_link_template_changes() {
     }
     assert!(BUILD_RS.contains("cmake/cudf-discovery.cmake"), "expected build.rs to track the CMake discovery helper");
     assert!(
-        BUILD_RS.contains("manifest_dir.join(\"../cudf/cpp/build/CMakeCache.txt\")"),
-        "expected build.rs to track the local libcudf CMakeCache used for remote IO capability detection"
-    );
-    assert!(
-        BUILD_RS.contains("PathBuf::from(cudf_cpp_build_dir).join(\"CMakeCache.txt\")"),
-        "expected build.rs to track an env-selected libcudf build cache used for remote IO capability detection"
+        BUILD_RS.contains("active_cudf_cmake_cache"),
+        "expected build.rs to select only the CMakeCache from the active discovery contract"
     );
 }
 
 #[test]
 fn build_script_tracks_native_build_env_changes() {
-    for env_var in [
-        "CUDF_INSTALL_DIR",
-        "CUDF_CPP_BUILD_DIR",
-        "CUDA_HOME",
-        "CUDA_PATH",
-        "CUDA_STATIC_RUNTIME",
-        "CUDF_RUST_CLANG_LINT",
-    ] {
+    for env_var in build_support::tracked_native_build_env_vars() {
         let expected = format!("cargo:rerun-if-env-changed={env_var}");
         assert!(BUILD_RS.contains(&expected), "expected build.rs to track {env_var} with `{expected}`");
     }
+    assert!(
+        !BUILD_RS.contains("cargo:rerun-if-env-changed=PATH"),
+        "expected build.rs to stop treating ambient PATH as a native fingerprint input"
+    );
 }
 
 #[test]
-fn build_script_makes_clang_tools_opt_in_and_tracks_path_changes() {
+fn build_script_makes_clang_tools_opt_in_and_tracks_explicit_tool_env() {
     assert!(
         BUILD_RS.contains("CUDF_RUST_CLANG_LINT"),
         "expected build.rs to gate native clang linting behind CUDF_RUST_CLANG_LINT"
@@ -257,14 +250,122 @@ fn build_script_makes_clang_tools_opt_in_and_tracks_path_changes() {
     );
 
     for tool in ["clang-format", "clang-tidy"] {
-        let expected = format!("find_required_executable(\"{tool}\")");
-        assert!(BUILD_RS.contains(&expected), "expected build.rs to discover {tool} via `{expected}`");
+        assert!(
+            BUILD_RS.contains(&format!("\"{tool}\"")),
+            "expected build.rs to resolve {tool} by name when the explicit override is unset"
+        );
     }
+    assert!(
+        BUILD_RS.contains("resolve_tool_from_env_or_name"),
+        "expected build.rs to resolve clang tools from explicit env overrides before PATH"
+    );
+    assert!(
+        BUILD_RS.contains("CLANG_FORMAT_EXE_ENV"),
+        "expected build.rs to use the shared clang-format override env constant"
+    );
+    assert!(
+        BUILD_RS.contains("CLANG_TIDY_EXE_ENV"),
+        "expected build.rs to use the shared clang-tidy override env constant"
+    );
+    assert!(
+        BUILD_RS.contains("env::set_var(\"CMAKE\", cmake)"),
+        "expected the explicit CMake override to reach cmake-rs through its standard CMAKE input"
+    );
+    assert!(
+        BUILD_RS.contains("resolve_compiler_from_env(\"CC\")"),
+        "expected build.rs to resolve CC through the shared absolute-path helper"
+    );
+    assert!(
+        BUILD_RS.contains("resolve_compiler_from_env(\"CXX\")"),
+        "expected build.rs to resolve CXX through the shared absolute-path helper"
+    );
+}
+
+#[test]
+fn default_sibling_cmake_cache_is_skipped_when_install_prefix_is_selected() {
+    let unique = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+    let temp_dir = std::env::temp_dir().join(format!("cudf-sys-sibling-cache-contract-{unique}"));
+    let manifest_dir = temp_dir.join("cudf-sys");
+    let install_dir = temp_dir.join("install");
+    let sibling_build = temp_dir.join("cudf/cpp/build");
+    fs::create_dir_all(&manifest_dir).unwrap();
+    fs::create_dir_all(&install_dir).unwrap();
+    fs::create_dir_all(&sibling_build).unwrap();
 
     assert!(
-        BUILD_RS.contains("cargo:rerun-if-env-changed=PATH"),
-        "expected build.rs to rerun when PATH changes so clang tool discovery stays current"
+        build_support::active_cudf_cmake_cache(&manifest_dir, Some(&install_dir), None).is_none(),
+        "install-prefix discovery must ignore an unrelated sibling CMakeCache"
     );
+    assert!(
+        build_support::active_cudf_cmake_cache(&manifest_dir, None, None)
+            == Some(build_support::default_sibling_cudf_cmake_cache(&manifest_dir)),
+        "absent discovery overrides still use the default sibling build tree when present"
+    );
+    assert!(
+        build_support::active_cudf_cmake_cache(&manifest_dir, None, Some(&manifest_dir.join("../cudf/cpp/build")),)
+            == Some(build_support::default_sibling_cudf_cmake_cache(&manifest_dir)),
+        "explicit selection of the default sibling build must keep tracking its cache"
+    );
+    assert_eq!(
+        build_support::active_cudf_cmake_cache(&manifest_dir, None, Some(&temp_dir.join("other-build"))),
+        Some(temp_dir.join("other-build/CMakeCache.txt")),
+        "a non-default explicit build dir must track only its own cache path"
+    );
+    assert!(
+        build_support::active_cudf_cmake_cache(&manifest_dir, Some(&install_dir), Some(&temp_dir.join("other-build")),)
+            .is_none(),
+        "install-prefix discovery must ignore an inactive explicit build-dir cache"
+    );
+
+    fs::remove_dir_all(temp_dir).unwrap();
+}
+
+#[test]
+fn resolve_compiler_from_env_accepts_absolute_and_basename_toolchains() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let unique = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+    let temp_dir = std::env::temp_dir().join(format!("cudf-sys-compiler-contract-{unique}"));
+    let compiler = temp_dir.join("cc-wrapper");
+    fs::create_dir_all(&temp_dir).unwrap();
+    fs::write(&compiler, "#!/bin/sh\nexit 0\n").unwrap();
+    let mut permissions = fs::metadata(&compiler).unwrap().permissions();
+    permissions.set_mode(0o755);
+    fs::set_permissions(&compiler, permissions).unwrap();
+
+    let absolute = build_support::resolve_compiler_from_env("CUDF_SYS_TEST_CC_ABS");
+    // unset path
+    assert_eq!(absolute.unwrap(), None);
+
+    // SAFETY: test process isolates these env vars and restores them below.
+    let original_path = std::env::var_os("PATH");
+    unsafe {
+        std::env::set_var("CUDF_SYS_TEST_CC_ABS", &compiler);
+        std::env::set_var("CUDF_SYS_TEST_CC_BASE", "cc-wrapper");
+        std::env::set_var("PATH", std::env::join_paths([&temp_dir, Path::new("/usr/bin"), Path::new("/bin")]).unwrap());
+    }
+
+    let resolved_abs = build_support::resolve_compiler_from_env("CUDF_SYS_TEST_CC_ABS")
+        .unwrap()
+        .expect("absolute CC override should resolve");
+    let resolved_base = build_support::resolve_compiler_from_env("CUDF_SYS_TEST_CC_BASE")
+        .unwrap()
+        .expect("basename CC should resolve through PATH");
+    assert!(resolved_abs.is_absolute(), "absolute override must stay absolute: {}", resolved_abs.display());
+    assert!(resolved_base.is_absolute(), "basename resolution must return absolute path: {}", resolved_base.display());
+    assert_eq!(resolved_abs.file_name(), compiler.file_name());
+    assert_eq!(resolved_base.file_name(), compiler.file_name());
+
+    unsafe {
+        std::env::remove_var("CUDF_SYS_TEST_CC_ABS");
+        std::env::remove_var("CUDF_SYS_TEST_CC_BASE");
+        match original_path {
+            Some(path) => std::env::set_var("PATH", path),
+            None => std::env::remove_var("PATH"),
+        }
+    }
+
+    fs::remove_dir_all(temp_dir).unwrap();
 }
 
 #[test]

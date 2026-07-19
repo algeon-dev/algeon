@@ -172,6 +172,19 @@ pub fn collect_native_clang_lint_files(manifest_dir: &Path) -> Result<Vec<PathBu
     Ok(lint_files)
 }
 
+/// Explicit override for the clang-format executable used when
+/// `CUDF_RUST_CLANG_LINT` is enabled. Prefer an absolute path so the tool
+/// identity is independent of ambient `PATH` churn.
+pub const CLANG_FORMAT_EXE_ENV: &str = "CUDF_RUST_CLANG_FORMAT";
+
+/// Explicit override for the clang-tidy executable used when
+/// `CUDF_RUST_CLANG_LINT` is enabled. Prefer an absolute path so the tool
+/// identity is independent of ambient `PATH` churn.
+pub const CLANG_TIDY_EXE_ENV: &str = "CUDF_RUST_CLANG_TIDY";
+
+/// Optional pin for the CMake executable used by the native shim build.
+pub const CMAKE_EXE_ENV: &str = "CUDF_RUST_CMAKE";
+
 pub fn find_required_executable(tool: &str) -> Result<PathBuf, String> {
     let path = env::var_os("PATH")
         .ok_or_else(|| format!("required build-time tool `{tool}` was not found because PATH is unset"))?;
@@ -182,11 +195,122 @@ pub fn find_executable_in_path(tool: &str, path: OsString) -> Result<PathBuf, St
     for directory in env::split_paths(&path) {
         let candidate = directory.join(tool);
         if is_executable_file(&candidate) {
-            return Ok(candidate);
+            return canonicalize_existing(&candidate).or(Ok(candidate));
         }
     }
 
     Err(format!("required build-time tool `{tool}` was not found in PATH"))
+}
+
+/// Resolve a build tool from an optional absolute env override, falling back
+/// to a one-shot PATH lookup. The resolved path is canonical when possible so
+/// callers can fingerprint the real executable instead of ambient PATH.
+pub fn resolve_tool_from_env_or_name(env_key: &str, default_name: &str) -> Result<PathBuf, String> {
+    match env::var(env_key) {
+        Ok(value) => resolve_explicit_tool_path(env_key, &value),
+        Err(env::VarError::NotPresent) => find_required_executable(default_name),
+        Err(env::VarError::NotUnicode(_)) => Err(format!("{env_key} contained non-Unicode data")),
+    }
+}
+
+/// Resolve `CC` / `CXX`-style compiler env vars. Basename values are resolved
+/// once through PATH and returned as absolute paths so subsequent PATH-only
+/// changes do not alter the selected toolchain without changing the env value
+/// or the underlying binary identity.
+pub fn resolve_compiler_from_env(env_key: &str) -> Result<Option<PathBuf>, String> {
+    match env::var(env_key) {
+        Ok(value) => {
+            let value = value.trim();
+            if value.is_empty() {
+                return Err(format!("{env_key} is set but empty"));
+            }
+            if value.contains(char::is_whitespace) {
+                return Err(format!("{env_key} must be a single executable path without whitespace; got {value:?}"));
+            }
+            let path = PathBuf::from(value);
+            if path.components().count() > 1 {
+                return resolve_explicit_tool_path(env_key, value).map(Some);
+            }
+            find_required_executable(value).map(Some)
+        },
+        Err(env::VarError::NotPresent) => Ok(None),
+        Err(env::VarError::NotUnicode(_)) => Err(format!("{env_key} contained non-Unicode data")),
+    }
+}
+
+fn resolve_explicit_tool_path(env_key: &str, value: &str) -> Result<PathBuf, String> {
+    let path = PathBuf::from(value.trim());
+    if path.as_os_str().is_empty() {
+        return Err(format!("{env_key} is set but empty"));
+    }
+    if !path.is_absolute() {
+        return Err(format!("{env_key} must be an absolute path to a build tool executable; got {}", path.display()));
+    }
+    if !is_executable_file(&path) {
+        return Err(format!("{env_key} does not point at an executable file: {}", path.display()));
+    }
+    canonicalize_existing(&path).or(Ok(path))
+}
+
+fn canonicalize_existing(path: &Path) -> Result<PathBuf, String> {
+    fs::canonicalize(path).map_err(|error| format!("failed to canonicalize {}: {error}", path.display()))
+}
+
+/// Sibling libcudf build-tree cache used when discovery is not driven by an
+/// install prefix. Path is relative to the `cudf-sys` manifest directory.
+pub fn default_sibling_cudf_cmake_cache(manifest_dir: &Path) -> PathBuf {
+    manifest_dir.join("../cudf/cpp/build/CMakeCache.txt")
+}
+
+/// `CMakeCache.txt` that participates in the active libcudf discovery
+/// contract, if any.
+///
+/// When `CUDF_INSTALL_DIR` is selected, an unrelated source-tree CMake cache
+/// must not invalidate `cudf-sys`, even if `CUDF_CPP_BUILD_DIR` is also present.
+/// An explicit build directory tracks only its own cache. With no override the
+/// default sibling build tree is the active cache candidate.
+pub fn active_cudf_cmake_cache(
+    manifest_dir: &Path,
+    install_dir: Option<&Path>,
+    build_dir: Option<&Path>,
+) -> Option<PathBuf> {
+    if install_dir.is_some() {
+        return None;
+    }
+
+    Some(match build_dir {
+        Some(build_dir) => build_dir.join("CMakeCache.txt"),
+        None => default_sibling_cudf_cmake_cache(manifest_dir),
+    })
+}
+
+/// Env vars that form the explicit native rebuild contract after ambient PATH
+/// was removed as a fingerprint input.
+pub fn tracked_native_build_env_vars() -> &'static [&'static str] {
+    &[
+        "CC",
+        "CXX",
+        "CUDACXX",
+        "CUDAHOSTCXX",
+        "CUDF_INSTALL_DIR",
+        "CUDF_CPP_BUILD_DIR",
+        "CUDA_HOME",
+        "CUDA_PATH",
+        "CUDAToolkit_ROOT",
+        "CUDA_STATIC_RUNTIME",
+        "CMAKE",
+        "CMAKE_GENERATOR",
+        "CMAKE_TOOLCHAIN_FILE",
+        "CMAKE_PREFIX_PATH",
+        "CMAKE_LIBRARY_PATH",
+        "CMAKE_CUDA_ARCHITECTURES",
+        "CUDAARCHS",
+        "CUDF_RUST_CLANG_LINT",
+        CLANG_FORMAT_EXE_ENV,
+        CLANG_TIDY_EXE_ENV,
+        CMAKE_EXE_ENV,
+        "CUDF_RS_SKIP_STALENESS_CHECK",
+    ]
 }
 
 fn collect_clang_lint_files_from_dir(dir: &Path, lint_files: &mut Vec<PathBuf>) -> Result<(), String> {
