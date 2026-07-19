@@ -191,6 +191,12 @@ impl fmt::Debug for RemoteParquetCredential {
 pub enum RemoteReadMode {
     /// Fail unless cudf-rs can prove direct/range-aware remote IO.
     RequireDirect,
+    /// Fail unless cudf-rs uses its explicit KvikIO remote datasource.
+    ///
+    /// Unlike [`Self::RequireDirect`], this accepts both native device reads
+    /// and KvikIO compatibility IO. The caller still never supplies remote
+    /// object bytes or falls back to libcudf's unverified path reader.
+    RequireKvikio,
     /// Prefer direct/range-aware remote IO but allow lower layers to choose.
     #[default]
     PreferDirect,
@@ -203,9 +209,14 @@ impl RemoteReadMode {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::RequireDirect => "require_direct",
+            Self::RequireKvikio => "require_kvikio",
             Self::PreferDirect => "prefer_direct",
             Self::AllowHostFallback => "allow_host_fallback",
         }
+    }
+
+    const fn requires_explicit_kvikio_datasource(self) -> bool {
+        matches!(self, Self::RequireDirect | Self::RequireKvikio)
     }
 }
 
@@ -330,7 +341,7 @@ impl RemoteParquetSource {
     }
 
     fn can_use_path_reader_fallback(&self) -> bool {
-        self.read_mode != RemoteReadMode::RequireDirect && self.profile.is_path_reader_compatible()
+        !self.read_mode.requires_explicit_kvikio_datasource() && self.profile.is_path_reader_compatible()
     }
 
     fn should_use_explicit_remote_datasource(&self) -> bool {
@@ -364,6 +375,8 @@ pub enum RemoteParquetCapabilityDisposition {
     CredentialModeUnsupported,
     /// The requested direct policy cannot be proven by this cudf-rs build.
     DirectEvidenceUnavailable,
+    /// The requested explicit KvikIO datasource cannot be proven by this cudf-rs build.
+    KvikioEvidenceUnavailable,
 }
 
 /// Capability probe result for a typed remote Parquet source.
@@ -391,7 +404,13 @@ pub struct RemoteParquetDatasourceProbe {
 /// evidence, `RequireDirect` is reported unavailable and other modes are
 /// reported as unverified path-reader capability.
 pub fn remote_parquet_capability(source: &RemoteParquetSource) -> RemoteParquetCapability {
-    let backend_build_status = remote_parquet_backend_build_status();
+    remote_parquet_capability_with_status(source, remote_parquet_backend_build_status())
+}
+
+fn remote_parquet_capability_with_status(
+    source: &RemoteParquetSource,
+    backend_build_status: RemoteParquetBackendBuildStatus,
+) -> RemoteParquetCapability {
     RemoteParquetCapability {
         disposition: if source.profile.endpoint().is_some() && source.profile.path_style_access() == Some(false) {
             RemoteParquetCapabilityDisposition::CredentialModeUnsupported
@@ -403,6 +422,8 @@ pub fn remote_parquet_capability(source: &RemoteParquetSource) -> RemoteParquetC
             RemoteParquetCapabilityDisposition::BackendBuildDisabled
         } else if source.profile.credential_mode != RemoteCredentialMode::SharedProcessEnv {
             RemoteParquetCapabilityDisposition::CredentialModeUnsupported
+        } else if source.read_mode == RemoteReadMode::RequireKvikio {
+            RemoteParquetCapabilityDisposition::KvikioEvidenceUnavailable
         } else {
             RemoteParquetCapabilityDisposition::DirectEvidenceUnavailable
         },
@@ -921,16 +942,33 @@ fn remote_read_evidence_from_raw(
     }
 }
 
-fn validate_require_direct_evidence(
+fn validate_required_remote_evidence(
     evidence: &ParquetReadEvidence,
-    require_direct: bool,
+    required_mode: Option<RemoteReadMode>,
     operation: &'static str,
 ) -> Result<()> {
-    if !require_direct {
+    let Some(required_mode) = required_mode.filter(|mode| mode.requires_explicit_kvikio_datasource()) else {
         return Ok(());
-    }
-    let direct_backend = evidence.backend == "cudf_sys_kvikio_remote_datasource";
+    };
+    let explicit_kvikio_backend = evidence.backend == "cudf_sys_kvikio_remote_datasource";
     let no_fallback = evidence.fallback_reason == "none";
+    if required_mode == RemoteReadMode::RequireKvikio {
+        if explicit_kvikio_backend && no_fallback {
+            return Ok(());
+        }
+        return Err(Error::new_with(
+            ErrorCode::UnsupportedOperation,
+            operation,
+            "RequireKvikio remote Parquet read did not produce required explicit KvikIO datasource evidence",
+        )
+        .with_detail("resource", "remote_parquet_read_evidence")
+        .with_detail("reason", "require_kvikio_evidence_unavailable")
+        .with_detail("remote_read_mode", required_mode.as_str())
+        .with_detail("input_kind", evidence.input_kind)
+        .with_detail("backend", evidence.backend)
+        .with_detail("fallback_reason", evidence.fallback_reason)
+        .with_detail("remote_backend_build_status", evidence.backend_build_status.as_str()));
+    }
     let has_remote_bytes = evidence.remote_bytes.is_some_and(|bytes| bytes > 0);
     let has_remote_ranges = evidence.remote_range_count.is_some_and(|ranges| ranges > 0);
     // Footer and metadata reads are host-facing even on the explicit KvikIO
@@ -940,7 +978,7 @@ fn validate_require_direct_evidence(
     let used_device_read = evidence.device_read_support == "supported_used";
     let payload_device_read_required = remote_payload_device_read_required(evidence);
     let direct_device_read_proven = used_device_read || (device_read_capable && !payload_device_read_required);
-    if direct_backend && no_fallback && has_remote_bytes && has_remote_ranges && direct_device_read_proven {
+    if explicit_kvikio_backend && no_fallback && has_remote_bytes && has_remote_ranges && direct_device_read_proven {
         return Ok(());
     }
     Err(Error::new_with(
@@ -950,7 +988,7 @@ fn validate_require_direct_evidence(
     )
     .with_detail("resource", "remote_parquet_read_evidence")
     .with_detail("reason", "require_direct_evidence_unavailable")
-    .with_detail("remote_read_mode", RemoteReadMode::RequireDirect.as_str())
+    .with_detail("remote_read_mode", required_mode.as_str())
     .with_detail("input_kind", evidence.input_kind)
     .with_detail("backend", evidence.backend)
     .with_detail("fallback_reason", evidence.fallback_reason)
@@ -1261,9 +1299,9 @@ pub(crate) fn read_parquet_table_with_evidence(
         cudf_sys::cudf_io_free_column_names(names_ptr, num_names);
         names?
     };
-    validate_require_direct_evidence(
+    validate_required_remote_evidence(
         &read_evidence,
-        options.remote_source.as_ref().is_some_and(|source| source.read_mode() == RemoteReadMode::RequireDirect),
+        options.remote_source.as_ref().map(RemoteParquetSource::read_mode),
         OPERATION,
     )?;
 
@@ -1528,15 +1566,21 @@ pub(crate) fn read_parquet_multi_table(options: &ParquetMultiTableReadOptions) -
     }
     .map(|evidence| evidence.with_pruning(pruning_evidence_from_raw(pruning_raw_evidence)));
     if let Some(evidence) = read_evidence.as_ref() {
-        validate_require_direct_evidence(
-            evidence,
-            options
-                .inputs
-                .iter()
-                .filter_map(ParquetMultiTableInput::remote_source)
-                .any(|source| source.read_mode() == RemoteReadMode::RequireDirect),
-            OPERATION,
-        )?;
+        let required_mode = options
+            .inputs
+            .iter()
+            .filter_map(ParquetMultiTableInput::remote_source)
+            .map(RemoteParquetSource::read_mode)
+            .find(|mode| *mode == RemoteReadMode::RequireDirect)
+            .or_else(|| {
+                options
+                    .inputs
+                    .iter()
+                    .filter_map(ParquetMultiTableInput::remote_source)
+                    .map(RemoteParquetSource::read_mode)
+                    .find(|mode| *mode == RemoteReadMode::RequireKvikio)
+            });
+        validate_required_remote_evidence(evidence, required_mode, OPERATION)?;
     }
     Ok(ParquetTableReadOutput { output: TableReadOutput { table, column_names: Some(column_names) }, read_evidence })
 }
@@ -1593,7 +1637,7 @@ mod tests {
 
     #[test]
     fn require_direct_accepts_kvikio_remote_datasource_evidence() {
-        validate_require_direct_evidence(&direct_evidence(), true, "test").unwrap();
+        validate_required_remote_evidence(&direct_evidence(), Some(RemoteReadMode::RequireDirect), "test").unwrap();
     }
 
     #[test]
@@ -1610,7 +1654,8 @@ mod tests {
             pruning: None,
         };
 
-        let error = validate_require_direct_evidence(&evidence, true, "test").unwrap_err();
+        let error =
+            validate_required_remote_evidence(&evidence, Some(RemoteReadMode::RequireDirect), "test").unwrap_err();
 
         assert_eq!(error.code(), ErrorCode::UnsupportedOperation);
         assert_eq!(error.detail_value("reason"), Some("require_direct_evidence_unavailable"));
@@ -1622,7 +1667,8 @@ mod tests {
         let mut evidence = direct_evidence();
         evidence.device_read_support = "supported_not_used";
 
-        let error = validate_require_direct_evidence(&evidence, true, "test").unwrap_err();
+        let error =
+            validate_required_remote_evidence(&evidence, Some(RemoteReadMode::RequireDirect), "test").unwrap_err();
 
         assert_eq!(error.code(), ErrorCode::UnsupportedOperation);
         assert_eq!(error.detail_value("reason"), Some("require_direct_evidence_unavailable"));
@@ -1641,7 +1687,7 @@ mod tests {
             row_groups_after_bloom_filter: None,
         });
 
-        validate_require_direct_evidence(&evidence, true, "test").unwrap();
+        validate_required_remote_evidence(&evidence, Some(RemoteReadMode::RequireDirect), "test").unwrap();
     }
 
     #[test]
@@ -1649,13 +1695,67 @@ mod tests {
         let mut evidence = direct_evidence();
         evidence.device_read_support = "unsupported";
 
-        let error = validate_require_direct_evidence(&evidence, true, "test").unwrap_err();
+        let error =
+            validate_required_remote_evidence(&evidence, Some(RemoteReadMode::RequireDirect), "test").unwrap_err();
 
         assert_eq!(error.code(), ErrorCode::UnsupportedOperation);
         assert_eq!(error.detail_value("reason"), Some("require_direct_evidence_unavailable"));
         assert_eq!(error.detail_value("backend"), Some("cudf_sys_kvikio_remote_datasource"));
         assert_eq!(error.detail_value("device_read_capable"), Some("false"));
         assert_eq!(error.detail_value("device_read_used"), Some("false"));
+    }
+
+    #[test]
+    fn require_kvikio_accepts_compatibility_io_from_explicit_remote_datasource() {
+        for device_read_support in ["supported_not_used", "unsupported"] {
+            let mut evidence = direct_evidence();
+            evidence.requested_remote_read_mode = Some(RemoteReadMode::RequireKvikio);
+            evidence.device_read_support = device_read_support;
+
+            validate_required_remote_evidence(&evidence, Some(RemoteReadMode::RequireKvikio), "test")
+                .expect("KvikIO compatibility IO is internal to the explicit datasource");
+        }
+    }
+
+    #[test]
+    fn require_kvikio_rejects_unverified_path_reader_and_backend_fallback() {
+        let mut path_reader = direct_evidence();
+        path_reader.requested_remote_read_mode = Some(RemoteReadMode::RequireKvikio);
+        path_reader.backend = "libcudf_path_reader_unverified";
+        path_reader.fallback_reason = "not_reported_by_libcudf";
+
+        let error =
+            validate_required_remote_evidence(&path_reader, Some(RemoteReadMode::RequireKvikio), "test").unwrap_err();
+        assert_eq!(error.code(), ErrorCode::UnsupportedOperation);
+        assert_eq!(error.detail_value("reason"), Some("require_kvikio_evidence_unavailable"));
+        assert_eq!(error.detail_value("backend"), Some("libcudf_path_reader_unverified"));
+
+        let mut backend_fallback = direct_evidence();
+        backend_fallback.requested_remote_read_mode = Some(RemoteReadMode::RequireKvikio);
+        backend_fallback.fallback_reason = "backend_unavailable";
+        let error = validate_required_remote_evidence(&backend_fallback, Some(RemoteReadMode::RequireKvikio), "test")
+            .unwrap_err();
+        assert_eq!(error.detail_value("reason"), Some("require_kvikio_evidence_unavailable"));
+        assert_eq!(error.detail_value("fallback_reason"), Some("backend_unavailable"));
+    }
+
+    #[test]
+    fn require_kvikio_is_fail_closed_when_backend_is_unavailable() {
+        let source = RemoteParquetSource::s3("s3://bucket/table/part-0.parquet")
+            .unwrap()
+            .with_read_mode(RemoteReadMode::RequireKvikio);
+
+        assert!(!source.can_use_path_reader_fallback());
+        assert!(source.should_use_explicit_remote_datasource());
+
+        let disabled =
+            remote_parquet_capability_with_status(&source, RemoteParquetBackendBuildStatus::KvikioRemoteIoDisabled);
+        assert_eq!(disabled.disposition, RemoteParquetCapabilityDisposition::BackendBuildDisabled);
+        assert_eq!(disabled.read_mode, RemoteReadMode::RequireKvikio);
+
+        let unknown = remote_parquet_capability_with_status(&source, RemoteParquetBackendBuildStatus::Unknown);
+        assert_eq!(unknown.disposition, RemoteParquetCapabilityDisposition::KvikioEvidenceUnavailable);
+        assert_eq!(RemoteReadMode::RequireKvikio.as_str(), "require_kvikio");
     }
 
     #[test]
