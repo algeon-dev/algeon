@@ -2,6 +2,7 @@
 #include "handle_access.hpp"
 #include "memory/internal.hpp"
 #include "shim_common.h"
+#include "test_support_internal.hpp"
 
 #include <cudf/utilities/memory_resource.hpp>
 
@@ -788,6 +789,7 @@ cudf_status_t cudf_memory_resource_destroy(cudf_memory_resource_handle handle, i
         "current device resource");
       return CUDF_ERROR_INVALID_OPERATION;
     }
+    cudf::rust::test_support::record_memory_resource_destroy(owner.mr.get());
     delete state;
     return CUDF_SUCCESS;
   }

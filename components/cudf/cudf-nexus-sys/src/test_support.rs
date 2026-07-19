@@ -22,6 +22,9 @@ unsafe extern "C" {
     pub fn cudf_test_exec_reset_observation();
     pub fn cudf_test_exec_last_stream_value(out: *mut usize) -> cudf_status_t;
     pub fn cudf_test_exec_last_sync_stream_value(out: *mut usize) -> cudf_status_t;
+    pub fn cudf_test_exec_last_sync_sequence(out: *mut u64) -> cudf_status_t;
+    pub fn cudf_test_exec_last_memory_resource_destroy_raw(out: *mut *mut core::ffi::c_void) -> cudf_status_t;
+    pub fn cudf_test_exec_last_memory_resource_destroy_sequence(out: *mut u64) -> cudf_status_t;
     pub fn cudf_test_exec_last_mr_raw(out: *mut *mut core::ffi::c_void) -> cudf_status_t;
     pub fn cudf_test_exec_observed_mr_count(out: *mut usize) -> cudf_status_t;
     pub fn cudf_test_exec_observed_mr_overflowed(out: *mut i32) -> cudf_status_t;

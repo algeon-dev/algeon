@@ -4,10 +4,11 @@
 //! family. The goal is to protect provenance, execution, and synchronization
 //! contracts without locking the library into an API-by-API matrix.
 use cudf::{
-    DataFrame, DataType, ErrorCode, ErrorKind, ExecutionOverrides, GroupByAgg, Series, SortOptions, TypeId,
+    DataFrame, DataType, ErrorCode, ErrorKind, ExecutionOverrides, GroupByAgg, Runtime, Series, SortOptions, TypeId,
     core::{
         Column, Table,
         error::{FactKeyName, FactValue},
+        memory::DeviceMemoryResource,
     },
     ops::{
         binary::{self, BinaryOperator},
@@ -24,9 +25,10 @@ use tempfile::TempDir;
 
 use crate::common::{
     column_from_slice, column_from_slice_nullable, column_from_strs, dataframe_from_columns,
-    dependency_wait_call_count_for_stream, explicit_i32_column, explicit_i32_series, last_exec_mr_value,
-    last_exec_stream_value, last_sync_stream_value, lock_event_observation, reset_dependency_observation,
-    reset_exec_observation, reset_sync_observation, sample_runtime, scalar,
+    dependency_wait_call_count_for_stream, explicit_i32_column, explicit_i32_series,
+    last_destroyed_memory_resource_value, last_exec_mr_value, last_exec_stream_value,
+    last_memory_resource_destroy_sequence, last_sync_sequence, last_sync_stream_value, lock_event_observation,
+    reset_dependency_observation, reset_exec_observation, reset_sync_observation, sample_runtime, scalar,
 };
 
 fn explicit_nullable_i32_series(_name: &str, data: &[i32], validity: &[bool], identity: u64) -> Series {
@@ -68,6 +70,52 @@ fn helper_constructors_seed_explicit_runtime_domain() {
     assert_eq!(df.testing_execution_domain_kind(), "explicit");
     assert_eq!(df.testing_execution_domain_id(), expected_id);
     assert_eq!(df.series("id").unwrap().as_column().testing_execution_domain_id(), expected_id);
+}
+
+#[test]
+fn private_pool_teardown_fences_its_registered_stream_before_resource_release() {
+    let _event_observation = lock_event_observation();
+    let runtime = Runtime::builder().with_pool_memory_resource(16 * 1024 * 1024, None).build().unwrap();
+    let stream = runtime.stream().testing_raw_handle_value();
+    let memory_resource = runtime.memory_resource().testing_raw_handle_value();
+    let output = runtime.series(&[1_i32, 2, 3]).unwrap();
+
+    // The output's native allocation must be released before the last runtime
+    // owner tears down its private pool. Reset after that release so this
+    // assertion observes the retirement fence paired with pool destruction.
+    drop(output);
+    reset_sync_observation();
+    drop(runtime);
+
+    assert_eq!(last_sync_stream_value(), stream);
+    assert_eq!(last_destroyed_memory_resource_value(), memory_resource);
+    assert!(
+        last_sync_sequence() < last_memory_resource_destroy_sequence(),
+        "private-pool stream retirement must precede native memory-resource destruction"
+    );
+}
+
+#[test]
+fn private_pool_adaptor_teardown_inherits_the_registered_stream_fence() {
+    let _event_observation = lock_event_observation();
+    let pool = DeviceMemoryResource::pool(16 * 1024 * 1024, None).unwrap();
+    let runtime = Runtime::builder().with_memory_resource(pool.limiting(16 * 1024 * 1024).unwrap()).build().unwrap();
+    let stream = runtime.stream().testing_raw_handle_value();
+    let memory_resource = runtime.memory_resource().testing_raw_handle_value();
+    let output = runtime.series(&[1_i32, 2, 3]).unwrap();
+
+    drop(output);
+    reset_sync_observation();
+    drop(runtime);
+
+    assert_eq!(last_sync_stream_value(), stream);
+    assert_eq!(last_destroyed_memory_resource_value(), memory_resource);
+    assert!(
+        last_sync_sequence() < last_memory_resource_destroy_sequence(),
+        "an adaptor over a private pool must retain the pool retirement fence"
+    );
+
+    drop(pool);
 }
 
 #[test]

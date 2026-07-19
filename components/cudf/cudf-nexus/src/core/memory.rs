@@ -977,9 +977,50 @@ pub struct DeviceMemoryResource {
 struct DeviceMemoryResourceHandle {
     raw: Option<NonNull<cudf_sys::cudf_memory_resource_handle_state>>,
     device: DeviceId,
+    // Pool-backed resources release physical allocations during native
+    // destruction. Keep every runtime stream that selected such a resource so
+    // its outstanding work can retire before that release begins.
+    retirement_streams: Option<Arc<RetirementStreams>>,
     // Keeps callback states alive until after `raw` and any native upstream
     // lifetimes retained by derived resources are destroyed in Drop.
     _failure_callbacks: Vec<Arc<FailureCallbackState>>,
+}
+
+/// Streams that have submitted work through one destructible memory-resource
+/// lineage.
+///
+/// The set lives with the resource handle rather than an execution domain:
+/// domains can borrow another stream or share a pool across runtimes, while
+/// only the final native resource destruction needs a retirement fence. Each
+/// entry retains its stream owner so field-drop order cannot destroy the stream
+/// before the resource has been fenced.
+#[derive(Default)]
+struct RetirementStreams {
+    streams: Mutex<Vec<CudaStream>>,
+}
+
+impl RetirementStreams {
+    fn register(&self, stream: &CudaStream) {
+        let mut streams = match self.streams.lock() {
+            Ok(streams) => streams,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        if streams.iter().any(|registered| registered.identity() == stream.identity()) {
+            return;
+        }
+        streams.push(stream.clone());
+    }
+
+    fn synchronize_for_teardown(&self) -> Result<()> {
+        let streams = match self.streams.lock() {
+            Ok(streams) => streams.clone(),
+            Err(poisoned) => poisoned.into_inner().clone(),
+        };
+        for stream in streams {
+            stream.synchronize_for_teardown("DeviceMemoryResourceHandle::drop")?;
+        }
+        Ok(())
+    }
 }
 
 // SAFETY: RMM device_memory_resource implementations are thread-safe — allocate()
@@ -1934,6 +1975,7 @@ impl QueryMemoryDomain {
             handle: Arc::new(DeviceMemoryResourceHandle {
                 raw: Some(raw),
                 device: self.device(),
+                retirement_streams: None,
                 _failure_callbacks: Vec::new(),
             }),
         });
@@ -2119,7 +2161,7 @@ impl DeviceMemoryResource {
         device: DeviceId,
         constructor: &'static str,
     ) -> Result<Self> {
-        Self::from_created_handle_with_callbacks(handle, device, constructor, Vec::new())
+        Self::from_created_handle_with_callbacks(handle, device, constructor, None, Vec::new())
     }
 
     /// Adopt an owned native memory-resource handle for unstable test support.
@@ -2139,12 +2181,14 @@ impl DeviceMemoryResource {
         handle: cudf_sys::cudf_memory_resource_handle,
         device: DeviceId,
         constructor: &'static str,
+        retirement_streams: Option<Arc<RetirementStreams>>,
         failure_callbacks: Vec<Arc<FailureCallbackState>>,
     ) -> Result<Self> {
         Ok(Self {
             handle: Arc::new(DeviceMemoryResourceHandle {
                 raw: Some(error::require_non_null(handle, constructor, "device memory resource")?),
                 device,
+                retirement_streams,
                 _failure_callbacks: failure_callbacks,
             }),
         })
@@ -2204,7 +2248,13 @@ impl DeviceMemoryResource {
                 ("maximum_pool_size", maximum_pool_size.map_or_else(|| "None".to_string(), |size| size.to_string())),
             ],
         )?;
-        Self::from_created_handle(handle, device, "memory::device_memory_resource::pool_on")
+        Self::from_created_handle_with_callbacks(
+            handle,
+            device,
+            "memory::device_memory_resource::pool_on",
+            Some(Arc::new(RetirementStreams::default())),
+            Vec::new(),
+        )
     }
 
     /// Create a cudaMallocAsync-backed memory resource handle on the calling
@@ -2240,7 +2290,13 @@ impl DeviceMemoryResource {
                 ("release_threshold", release_threshold.map_or_else(|| "None".to_string(), |size| size.to_string())),
             ],
         )?;
-        Self::from_created_handle(handle, device, "memory::device_memory_resource::cuda_async_on")
+        Self::from_created_handle_with_callbacks(
+            handle,
+            device,
+            "memory::device_memory_resource::cuda_async_on",
+            Some(Arc::new(RetirementStreams::default())),
+            Vec::new(),
+        )
     }
 
     /// Create a hard-limiting memory resource around this resource.
@@ -2270,6 +2326,7 @@ impl DeviceMemoryResource {
             handle,
             self.device(),
             "memory::device_memory_resource::limiting",
+            self.handle.retirement_streams.clone(),
             self.handle._failure_callbacks.clone(),
         )
     }
@@ -2323,6 +2380,7 @@ impl DeviceMemoryResource {
             handle,
             self.device(),
             "memory::device_memory_resource::with_failure_callback",
+            self.handle.retirement_streams.clone(),
             failure_callbacks,
         )
     }
@@ -2356,6 +2414,7 @@ impl DeviceMemoryResource {
             handle,
             self.device(),
             "memory::device_memory_resource::budget_tracking_limit",
+            self.handle.retirement_streams.clone(),
             self.handle._failure_callbacks.clone(),
         )
     }
@@ -2405,6 +2464,15 @@ impl DeviceMemoryResource {
         self.handle.device
     }
 
+    /// Register a same-device stream whose work must retire before this
+    /// pool-backed resource can release its physical backing allocation.
+    pub(crate) fn register_stream_for_retirement(&self, stream: &CudaStream) {
+        debug_assert_eq!(stream.device(), self.device());
+        if let Some(retirement_streams) = &self.handle.retirement_streams {
+            retirement_streams.register(stream);
+        }
+    }
+
     /// Borrow this owner as a low-level `cudf-sys` memory-resource handle.
     ///
     /// The returned wrapper does not transfer ownership. Its lifetime is tied
@@ -2434,6 +2502,26 @@ impl DeviceMemoryResource {
 
 impl Drop for DeviceMemoryResourceHandle {
     fn drop(&mut self) {
+        let retirement_error = self
+            .raw
+            .is_some()
+            .then_some(self.retirement_streams.as_ref())
+            .flatten()
+            .and_then(|retirement_streams| retirement_streams.synchronize_for_teardown().err());
+        if let Some(error) = retirement_error {
+            // A pool may release backing allocations in native destruction.
+            // Without a successful fence, leaking is safer than racing queued
+            // device work with that release. Leak the registered stream owners
+            // with it: letting their native stream handles drop could otherwise
+            // retire queued work after the allocator has been quarantined.
+            let _ = self.raw.take();
+            std::mem::forget(std::mem::take(&mut self.retirement_streams));
+            if !self._failure_callbacks.is_empty() {
+                std::mem::forget(std::mem::take(&mut self._failure_callbacks));
+            }
+            crate::runtime::quarantine_device_resource(self.device, "DeviceMemoryResourceHandle::drop", &error);
+            return;
+        }
         let mut raw = self.raw.take().map_or(ptr::null_mut(), NonNull::as_ptr);
         let mut status = None;
         crate::runtime::drop_device_resource(&mut raw, self.device, "DeviceMemoryResourceHandle::drop", |owned| {

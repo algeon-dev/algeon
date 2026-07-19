@@ -18,9 +18,11 @@ use cudf_sys::{
     test_support::{
         cudf_test_event_last_wait_stream_raw, cudf_test_event_reset_observation,
         cudf_test_event_stream_wait_call_count, cudf_test_event_stream_wait_call_count_for_stream_raw,
-        cudf_test_exec_last_device, cudf_test_exec_last_mr_raw, cudf_test_exec_last_stream_value,
-        cudf_test_exec_last_sync_stream_value, cudf_test_exec_observed_mr_count, cudf_test_exec_observed_mr_overflowed,
-        cudf_test_exec_observed_mr_raw_at, cudf_test_exec_reset_observation,
+        cudf_test_exec_last_device, cudf_test_exec_last_memory_resource_destroy_raw,
+        cudf_test_exec_last_memory_resource_destroy_sequence, cudf_test_exec_last_mr_raw,
+        cudf_test_exec_last_stream_value, cudf_test_exec_last_sync_sequence, cudf_test_exec_last_sync_stream_value,
+        cudf_test_exec_observed_mr_count, cudf_test_exec_observed_mr_overflowed, cudf_test_exec_observed_mr_raw_at,
+        cudf_test_exec_reset_observation,
     },
 };
 use rapids_interop::{ColumnLayout, InteropError, Placement};
@@ -411,6 +413,30 @@ pub fn last_sync_stream_value() -> usize {
     let mut out: usize = 0;
     let status = unsafe { cudf_test_exec_last_sync_stream_value(&mut out) };
     assert_eq!(status, cudf_sys::CUDF_SUCCESS, "failed to read last synchronized stream observation");
+    out
+}
+
+#[allow(dead_code)]
+pub fn last_sync_sequence() -> u64 {
+    let mut out = 0;
+    let status = unsafe { cudf_test_exec_last_sync_sequence(&mut out) };
+    assert_eq!(status, cudf_sys::CUDF_SUCCESS, "failed to read last synchronization sequence");
+    out
+}
+
+#[allow(dead_code)]
+pub fn last_destroyed_memory_resource_value() -> usize {
+    let mut out = ptr::null_mut();
+    let status = unsafe { cudf_test_exec_last_memory_resource_destroy_raw(&mut out) };
+    assert_eq!(status, cudf_sys::CUDF_SUCCESS, "failed to read last destroyed memory resource observation");
+    out as usize
+}
+
+#[allow(dead_code)]
+pub fn last_memory_resource_destroy_sequence() -> u64 {
+    let mut out = 0;
+    let status = unsafe { cudf_test_exec_last_memory_resource_destroy_sequence(&mut out) };
+    assert_eq!(status, cudf_sys::CUDF_SUCCESS, "failed to read memory resource destruction sequence");
     out
 }
 

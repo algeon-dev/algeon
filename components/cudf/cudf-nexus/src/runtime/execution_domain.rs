@@ -240,6 +240,7 @@ impl ExecutionDomain {
         mr: DeviceMemoryResource,
         boundary_observer: Option<BoundaryObserverRef>,
     ) -> Result<Arc<Self>> {
+        mr.register_stream_for_retirement(&stream);
         Ok(Arc::new(Self {
             device,
             authority: DeviceExecutionAuthority::new(device),
@@ -451,6 +452,8 @@ impl ExecutionDomain {
         if stream.as_raw() == input.stream.as_raw() && mr.as_raw() == input.mr.as_raw() {
             return Ok(Arc::clone(input));
         }
+
+        mr.register_stream_for_retirement(stream.as_ref());
 
         Ok(Arc::new(Self {
             device: input.device,

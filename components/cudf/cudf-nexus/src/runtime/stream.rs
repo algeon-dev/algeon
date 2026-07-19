@@ -88,6 +88,21 @@ impl CudaStream {
         )
     }
 
+    /// Synchronize before destroying a device-owned resource that retains this
+    /// stream. Unlike normal execution, teardown must still attempt owner-device
+    /// entry after the device has been marked unhealthy so it can either retire
+    /// the resource safely or quarantine it.
+    pub(crate) fn synchronize_for_teardown(&self, operation: &'static str) -> Result<()> {
+        let _entry = DeviceEntryGuard::enter_for_teardown(self.device(), operation)?;
+        // SAFETY: the resource-retirement registry retains a clone of this
+        // stream until after the fence has completed.
+        check_device_status_in(
+            unsafe { cudf_sys::cudf_stream_synchronize(self.handle.raw()) },
+            self.device(),
+            operation,
+        )
+    }
+
     /// Check whether all operations already enqueued on this stream have
     /// completed (non-blocking).
     pub fn is_ready(&self) -> Result<bool> {

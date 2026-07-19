@@ -12,6 +12,7 @@ namespace cudf::rust::test_support {
 
 void record_exec_context(std::uintptr_t stream_raw, void* mr_raw);
 void record_synchronized_stream(std::uintptr_t stream_raw);
+void record_memory_resource_destroy(void* mr_raw);
 
 bool take_column_view_metadata_read_failure();
 bool take_fixed_width_host_import_after_data_copy();
@@ -49,6 +50,7 @@ cudf_status_t apply_io_metadata_fault(int32_t fault, char*** out_names, int32_t*
 
 inline void record_exec_context(std::uintptr_t, void*) {}
 inline void record_synchronized_stream(std::uintptr_t) {}
+inline void record_memory_resource_destroy(void*) {}
 
 inline bool take_column_view_metadata_read_failure() { return false; }
 inline bool take_fixed_width_host_import_after_data_copy() { return false; }
