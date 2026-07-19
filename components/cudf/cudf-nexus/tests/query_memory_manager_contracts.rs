@@ -15,6 +15,7 @@ use cudf::{
     ExecutionBudgetStatus, QueryMemoryDomainOptions, Runtime, SortOptions, StreamReservationLease, TypeId,
     ops::expr::col, runtime::CudaStream, testing::prelude::*,
 };
+use cudf_sys::test_support;
 use static_assertions::assert_not_impl_any;
 
 assert_not_impl_any!(cudf::ExecutionBudgetToken: Clone);
@@ -85,9 +86,24 @@ fn set_current_device_for_runtime(rt: &Runtime) {
     assert_eq!(status, cudf_sys::CUDF_SUCCESS);
 }
 
+fn fail_first_allocation_resource(upstream: &DeviceMemoryResource) -> DeviceMemoryResource {
+    let mut raw = std::ptr::null_mut();
+    let status = unsafe {
+        test_support::cudf_test_memory_resource_create_fail_first_allocation(
+            upstream.as_borrowed_sys().as_raw(),
+            &mut raw,
+        )
+    };
+    assert_eq!(status, cudf_sys::CUDF_SUCCESS, "failed to create fail-first memory resource");
+    // SAFETY: the hook returned one newly owned resource tied to the same
+    // device as `upstream`, and this test transfers its sole ownership to cudf.
+    unsafe { cudf::testing::core::adopt_owned_memory_resource_for_test(raw, upstream.device()) }
+        .expect("failed to adopt fail-first memory resource")
+}
+
 fn current_device_resource_raw_value() -> usize {
     let mut out = std::ptr::null_mut();
-    let status = unsafe { cudf_sys::cudf_test_current_device_resource_raw(&mut out) };
+    let status = unsafe { cudf_sys::test_support::cudf_test_current_device_resource_raw(&mut out) };
     assert_eq!(status, cudf_sys::CUDF_SUCCESS);
     out as usize
 }
@@ -115,7 +131,11 @@ fn query_domain_pool_count_for_id(manager: &DeviceMemoryManager, domain_id: u64)
     assert!(!raw_manager.is_null());
     let mut count = 0;
     let status = unsafe {
-        cudf_sys::cudf_test_memory_manager_query_domain_pool_count_for_id(raw_manager, domain_id, &mut count)
+        cudf_sys::test_support::cudf_test_memory_manager_query_domain_pool_count_for_id(
+            raw_manager,
+            domain_id,
+            &mut count,
+        )
     };
     assert_eq!(status, cudf_sys::CUDF_SUCCESS);
     count
@@ -125,7 +145,7 @@ struct QueryDomainRoutePauseRelease;
 
 impl Drop for QueryDomainRoutePauseRelease {
     fn drop(&mut self) {
-        unsafe { cudf_sys::cudf_test_query_domain_route_pause_release() };
+        unsafe { cudf_sys::test_support::cudf_test_query_domain_route_pause_release() };
     }
 }
 
@@ -210,7 +230,7 @@ fn failure_callback_trims_idle_async_pool_and_retries_before_rust_callback() {
         "test setup must leave enough idle async-pool bytes to trigger trim retry: {before:?}"
     );
 
-    let fail_first = async_mr.testing_fail_first_allocation().unwrap();
+    let fail_first = fail_first_allocation_resource(&async_mr);
     let rust_callback_calls = Arc::new(AtomicUsize::new(0));
     let callback_calls = Arc::clone(&rust_callback_calls);
     let callback = Arc::new(move |_bytes: usize| {
@@ -255,7 +275,7 @@ fn detailed_failure_callback_reports_pool_usage_and_can_trim_retry() {
     assert_eq!(before.used_current_bytes, 0);
     assert!(before.reserved_current_bytes >= (10 * request_bytes) as u64);
 
-    let fail_first = async_mr.testing_fail_first_allocation().unwrap();
+    let fail_first = fail_first_allocation_resource(&async_mr);
     let callback_calls = Arc::new(AtomicUsize::new(0));
     let seen_device = Arc::new(AtomicUsize::new(usize::MAX));
     let seen_source = Arc::new(AtomicU32::new(u32::MAX));
@@ -1283,7 +1303,7 @@ fn query_memory_domain_teardown_racing_allocation_blocks_stream_reattach_until_c
     let lease = domain.reserve_stream(runtime.stream(), 61_001, 64 * 1024 * 1024).unwrap();
     assert_eq!(query_domain_pool_count_for_id(&manager, DOMAIN_ID), 1);
 
-    if unsafe { cudf_sys::cudf_test_query_domain_route_pause_arm(DOMAIN_ID) } == 0 {
+    if unsafe { cudf_sys::test_support::cudf_test_query_domain_route_pause_arm(DOMAIN_ID) } == 0 {
         eprintln!("skipping deterministic query-domain teardown race; debug test hooks are disabled");
         return;
     }
@@ -1291,7 +1311,7 @@ fn query_memory_domain_teardown_racing_allocation_blocks_stream_reattach_until_c
     let worker_runtime = Arc::clone(&runtime);
     let allocation = std::thread::spawn(move || worker_runtime.device_buffer(16 * 1024 * 1024));
     let deadline = Instant::now() + Duration::from_secs(5);
-    while unsafe { cudf_sys::cudf_test_query_domain_route_pause_reached() } == 0 {
+    while unsafe { cudf_sys::test_support::cudf_test_query_domain_route_pause_reached() } == 0 {
         assert!(Instant::now() < deadline, "query-domain allocation did not reach the armed route pause");
         std::thread::yield_now();
     }

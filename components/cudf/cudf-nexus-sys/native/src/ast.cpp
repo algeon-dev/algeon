@@ -1,4 +1,4 @@
-#include "ast.h"
+#include "cudf_rust/ast.h"
 
 #include "ast_handle.hpp"
 #include "scalar_handle.hpp"
@@ -170,7 +170,7 @@ cudf_status_t cudf_ast_expression_destroy(cudf_ast_expression_handle handle)
 {
   if (handle == nullptr) { return CUDF_SUCCESS; }
   try {
-    delete static_cast<cudf_ast_expression_owner_ref*>(handle);
+    delete reinterpret_cast<cudf_ast_expression_owner_ref*>(handle);
     return CUDF_SUCCESS;
   } catch (...) {
     return cudf_translate_cleanup_exception_noexcept();

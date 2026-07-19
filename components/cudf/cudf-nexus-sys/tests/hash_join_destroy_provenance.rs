@@ -4,7 +4,7 @@ mod support;
 #[path = "ffi_regressions/helpers.rs"]
 mod helpers;
 
-use std::{ffi::c_void, ptr};
+use std::ptr;
 
 use helpers::{make_i32_column, make_table_from_one_column, make_table_view};
 use support::{OwnedMemoryResource, OwnedStream, current_device, current_device_resource_raw, lock_shim_state};
@@ -12,8 +12,8 @@ use support::{OwnedMemoryResource, OwnedStream, current_device, current_device_r
 #[test]
 fn column_destroy_keeps_explicit_memory_resource_alive_after_handle_destroy() {
     let _shim_state = lock_shim_state();
-    let mut mr: *mut c_void = ptr::null_mut();
-    let status = unsafe { cudf_sys::cudf_test_memory_resource_create_stats(&mut mr) };
+    let mut mr: cudf_sys::cudf_memory_resource_handle = ptr::null_mut();
+    let status = unsafe { cudf_sys::test_support::cudf_test_memory_resource_create_stats(&mut mr) };
     assert_eq!(status, cudf_sys::CUDF_SUCCESS);
     assert!(!mr.is_null());
 
@@ -25,10 +25,10 @@ fn column_destroy_keeps_explicit_memory_resource_alive_after_handle_destroy() {
         .with_stream(&borrowed_stream)
         .with_memory_resource(&borrowed);
     let data = [1_i32, 2, 3, 4];
-    let mut column: *mut c_void = ptr::null_mut();
+    let mut column: cudf_sys::cudf_column_handle = ptr::null_mut();
     let status = unsafe {
         cudf_sys::cudf_column_create_numeric_ex(
-            cudf_sys::cudf_type_id_t::CUDF_TYPE_INT32,
+            cudf_sys::CUDF_TYPE_INT32,
             data.as_ptr().cast(),
             data.len() as i32,
             ptr::null(),
@@ -67,11 +67,11 @@ fn distinct_hash_join_destroy_uses_build_memory_resource() {
         .with_stream(&target_stream)
         .with_memory_resource(&build_borrowed);
 
-    let mut join: *mut c_void = ptr::null_mut();
+    let mut join: cudf_sys::cudf_distinct_hash_join_handle = ptr::null_mut();
     let status = unsafe {
         cudf_sys::cudf_distinct_hash_join_create_ex(
             build_tv,
-            cudf_sys::cudf_null_equality_t::CUDF_NULL_EQUALITY_EQUAL,
+            cudf_sys::CUDF_NULL_EQUALITY_EQUAL,
             &mut join,
             exec.as_raw(),
         )
@@ -126,12 +126,12 @@ fn hash_join_destroy_uses_build_memory_resource() {
         .with_stream(&target_stream)
         .with_memory_resource(&build_borrowed);
 
-    let mut join: *mut c_void = ptr::null_mut();
+    let mut join: cudf_sys::cudf_hash_join_handle = ptr::null_mut();
     let status = unsafe {
         cudf_sys::cudf_hash_join_create_ex(
             build_tv,
-            cudf_sys::cudf_nullable_join_t::CUDF_NULLABLE_JOIN_YES,
-            cudf_sys::cudf_null_equality_t::CUDF_NULL_EQUALITY_EQUAL,
+            cudf_sys::CUDF_NULLABLE_JOIN_YES,
+            cudf_sys::CUDF_NULL_EQUALITY_EQUAL,
             0.5,
             &mut join,
             exec.as_raw(),

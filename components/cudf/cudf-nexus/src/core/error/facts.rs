@@ -34,6 +34,11 @@ pub enum FactKeyName {
     KeysCount,
     DistinctKeysCount,
     TypeId,
+    ValidationReason,
+    ExecutionBindingId,
+    ValidationDevice,
+    ValidationStream,
+    ControlPlaneScalarBytes,
 }
 
 impl fmt::Display for FactKeyName {
@@ -78,6 +83,7 @@ pub enum FactValue {
     I64(i64),
     TypeId(TypeId),
     DeviceId(i32),
+    U64(u64),
 }
 
 impl fmt::Display for FactValue {
@@ -88,6 +94,7 @@ impl fmt::Display for FactValue {
             FactValue::I64(v) => write!(f, "{v}"),
             FactValue::TypeId(t) => write!(f, "{t}"),
             FactValue::DeviceId(d) => write!(f, "{d}"),
+            FactValue::U64(v) => write!(f, "{v}"),
         }
     }
 }
@@ -100,6 +107,7 @@ pub(crate) enum FactValueVariant {
     I64,
     TypeId,
     DeviceId,
+    U64,
 }
 
 impl FactValueVariant {
@@ -110,6 +118,7 @@ impl FactValueVariant {
             FactValue::I64(_) => FactValueVariant::I64,
             FactValue::TypeId(_) => FactValueVariant::TypeId,
             FactValue::DeviceId(_) => FactValueVariant::DeviceId,
+            FactValue::U64(_) => FactValueVariant::U64,
         }
     }
 }
@@ -137,6 +146,11 @@ impl FactKeyName {
             FactKeyName::KeysCount => "keys_count",
             FactKeyName::DistinctKeysCount => "distinct_keys_count",
             FactKeyName::TypeId => "type_id",
+            FactKeyName::ValidationReason => "validation_reason",
+            FactKeyName::ExecutionBindingId => "execution_binding_id",
+            FactKeyName::ValidationDevice => "validation_device",
+            FactKeyName::ValidationStream => "validation_stream",
+            FactKeyName::ControlPlaneScalarBytes => "control_plane_scalar_bytes",
         }
     }
 
@@ -160,6 +174,11 @@ impl FactKeyName {
             "keys_count" => FactKeyName::KeysCount,
             "distinct_keys_count" => FactKeyName::DistinctKeysCount,
             "type_id" => FactKeyName::TypeId,
+            "validation_reason" => FactKeyName::ValidationReason,
+            "execution_binding_id" => FactKeyName::ExecutionBindingId,
+            "validation_device" => FactKeyName::ValidationDevice,
+            "validation_stream" => FactKeyName::ValidationStream,
+            "control_plane_scalar_bytes" => FactKeyName::ControlPlaneScalarBytes,
             _ => return None,
         })
     }
@@ -184,6 +203,11 @@ impl FactKeyName {
             FactKeyName::KeysCount => FactValueVariant::Usize,
             FactKeyName::DistinctKeysCount => FactValueVariant::Usize,
             FactKeyName::TypeId => FactValueVariant::TypeId,
+            FactKeyName::ValidationReason => FactValueVariant::Str,
+            FactKeyName::ExecutionBindingId => FactValueVariant::U64,
+            FactKeyName::ValidationDevice => FactValueVariant::DeviceId,
+            FactKeyName::ValidationStream => FactValueVariant::Usize,
+            FactKeyName::ControlPlaneScalarBytes => FactValueVariant::Usize,
         }
     }
 }
@@ -234,6 +258,13 @@ impl IntoFactValue for i64 {
     }
 }
 
+impl sealed::Sealed for u64 {}
+impl IntoFactValue for u64 {
+    fn into_fact_value(self) -> FactValue {
+        FactValue::U64(self)
+    }
+}
+
 impl sealed::Sealed for TypeId {}
 impl IntoFactValue for TypeId {
     fn into_fact_value(self) -> FactValue {
@@ -270,6 +301,11 @@ pub(crate) const FACT_TABLE_COLUMN_COUNT: FactKey<usize> = FactKey::new(FactKeyN
 pub(crate) const FACT_KEYS_COUNT: FactKey<usize> = FactKey::new(FactKeyName::KeysCount);
 pub(crate) const FACT_DISTINCT_KEYS_COUNT: FactKey<usize> = FactKey::new(FactKeyName::DistinctKeysCount);
 pub(crate) const FACT_TYPE_ID: FactKey<TypeId> = FactKey::new(FactKeyName::TypeId);
+pub(crate) const FACT_VALIDATION_REASON: FactKey<&'static str> = FactKey::new(FactKeyName::ValidationReason);
+pub(crate) const FACT_EXECUTION_BINDING_ID: FactKey<u64> = FactKey::new(FactKeyName::ExecutionBindingId);
+pub(crate) const FACT_VALIDATION_DEVICE: FactKey<DeviceIdFact> = FactKey::new(FactKeyName::ValidationDevice);
+pub(crate) const FACT_VALIDATION_STREAM: FactKey<usize> = FactKey::new(FactKeyName::ValidationStream);
+pub(crate) const FACT_CONTROL_PLANE_SCALAR_BYTES: FactKey<usize> = FactKey::new(FactKeyName::ControlPlaneScalarBytes);
 
 // -- Facts container --------------------------------------------------------
 

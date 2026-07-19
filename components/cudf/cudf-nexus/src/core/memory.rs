@@ -144,9 +144,9 @@ pub enum DeviceMemoryFailureAction {
 impl DeviceMemoryFailureAction {
     fn to_sys(self) -> cudf_sys::cudf_memory_failure_action_t {
         match self {
-            Self::Decline => cudf_sys::cudf_memory_failure_action_t::CUDF_MEMORY_FAILURE_ACTION_DECLINE,
-            Self::Retry => cudf_sys::cudf_memory_failure_action_t::CUDF_MEMORY_FAILURE_ACTION_RETRY,
-            Self::TrimAndRetry => cudf_sys::cudf_memory_failure_action_t::CUDF_MEMORY_FAILURE_ACTION_TRIM_AND_RETRY,
+            Self::Decline => cudf_sys::CUDF_MEMORY_FAILURE_ACTION_DECLINE,
+            Self::Retry => cudf_sys::CUDF_MEMORY_FAILURE_ACTION_RETRY,
+            Self::TrimAndRetry => cudf_sys::CUDF_MEMORY_FAILURE_ACTION_TRIM_AND_RETRY,
         }
     }
 }
@@ -165,15 +165,8 @@ pub enum DeviceMemoryFailureSource {
 impl DeviceMemoryFailureSource {
     fn from_sys(value: u32) -> Self {
         match value {
-            value if value == cudf_sys::cudf_memory_failure_source_t::CUDF_MEMORY_FAILURE_SOURCE_PHYSICAL as u32 => {
-                Self::Physical
-            },
-            value
-                if value
-                    == cudf_sys::cudf_memory_failure_source_t::CUDF_MEMORY_FAILURE_SOURCE_RESERVATION_LIMIT as u32 =>
-            {
-                Self::ReservationLimit
-            },
+            value if value == cudf_sys::CUDF_MEMORY_FAILURE_SOURCE_PHYSICAL => Self::Physical,
+            value if value == cudf_sys::CUDF_MEMORY_FAILURE_SOURCE_RESERVATION_LIMIT => Self::ReservationLimit,
             other => Self::Unknown(other),
         }
     }
@@ -200,24 +193,14 @@ pub enum DeviceMemoryFailureAllocationDomain {
 impl DeviceMemoryFailureAllocationDomain {
     fn from_sys(kind: u64, primary_id: u64, secondary_id: u64) -> Option<Self> {
         match kind {
-            value if value == cudf_sys::cudf_memory_failure_domain_t::CUDF_MEMORY_FAILURE_DOMAIN_NONE as u64 => None,
-            value
-                if value
-                    == cudf_sys::cudf_memory_failure_domain_t::CUDF_MEMORY_FAILURE_DOMAIN_STREAM_RESERVATION as u64 =>
-            {
+            value if value == cudf_sys::CUDF_MEMORY_FAILURE_DOMAIN_NONE as u64 => None,
+            value if value == cudf_sys::CUDF_MEMORY_FAILURE_DOMAIN_STREAM_RESERVATION as u64 => {
                 Some(Self::StreamReservation { reservation_id: primary_id })
             },
-            value
-                if value
-                    == cudf_sys::cudf_memory_failure_domain_t::CUDF_MEMORY_FAILURE_DOMAIN_RESERVATION_ARENA as u64 =>
-            {
+            value if value == cudf_sys::CUDF_MEMORY_FAILURE_DOMAIN_RESERVATION_ARENA as u64 => {
                 Some(Self::ReservationArena { arena_id: primary_id, reservation_id: secondary_id })
             },
-            value
-                if value
-                    == cudf_sys::cudf_memory_failure_domain_t::CUDF_MEMORY_FAILURE_DOMAIN_QUERY_MEMORY_DOMAIN
-                        as u64 =>
-            {
+            value if value == cudf_sys::CUDF_MEMORY_FAILURE_DOMAIN_QUERY_MEMORY_DOMAIN as u64 => {
                 Some(Self::QueryMemoryDomain { domain_id: primary_id, member_id: secondary_id })
             },
             other => Some(Self::Unknown { kind: other, primary_id, secondary_id }),
@@ -391,12 +374,12 @@ impl DeviceMemoryManagerOptions {
         let mut out = cudf_sys::cudf_memory_manager_options_t::default();
         match self.base {
             DeviceMemoryManagerBase::CudaAsync { initial_pool_size, release_threshold } => {
-                out.base_kind = cudf_sys::cudf_memory_manager_base_kind_t::CUDF_MEMORY_MANAGER_BASE_CUDA_ASYNC;
+                out.base_kind = cudf_sys::CUDF_MEMORY_MANAGER_BASE_CUDA_ASYNC;
                 out.initial_pool_size_bytes = initial_pool_size.unwrap_or(0) as u64;
                 out.release_threshold_bytes = release_threshold.unwrap_or(usize::MAX) as u64;
             },
             DeviceMemoryManagerBase::Pool { initial_pool_size, maximum_pool_size } => {
-                out.base_kind = cudf_sys::cudf_memory_manager_base_kind_t::CUDF_MEMORY_MANAGER_BASE_POOL;
+                out.base_kind = cudf_sys::CUDF_MEMORY_MANAGER_BASE_POOL;
                 out.initial_pool_size_bytes = initial_pool_size as u64;
                 out.maximum_pool_size_bytes = maximum_pool_size.unwrap_or(0) as u64;
             },
@@ -407,7 +390,7 @@ impl DeviceMemoryManagerOptions {
     fn from_sys(value: cudf_sys::cudf_memory_manager_options_t) -> Result<Self> {
         let initial_pool_size = memory_manager_option_bytes(value.initial_pool_size_bytes, "initial_pool_size_bytes")?;
         let base = match value.base_kind {
-            cudf_sys::cudf_memory_manager_base_kind_t::CUDF_MEMORY_MANAGER_BASE_CUDA_ASYNC => {
+            cudf_sys::CUDF_MEMORY_MANAGER_BASE_CUDA_ASYNC => {
                 let release_threshold = if value.release_threshold_bytes == u64::MAX {
                     None
                 } else {
@@ -418,13 +401,21 @@ impl DeviceMemoryManagerOptions {
                     release_threshold,
                 }
             },
-            cudf_sys::cudf_memory_manager_base_kind_t::CUDF_MEMORY_MANAGER_BASE_POOL => {
+            cudf_sys::CUDF_MEMORY_MANAGER_BASE_POOL => {
                 let maximum_pool_size = if value.maximum_pool_size_bytes == 0 {
                     None
                 } else {
                     Some(memory_manager_option_bytes(value.maximum_pool_size_bytes, "maximum_pool_size_bytes")?)
                 };
                 DeviceMemoryManagerBase::Pool { initial_pool_size, maximum_pool_size }
+            },
+            other => {
+                return Err(error::Error::new_with(
+                    error::ErrorCode::ForeignInvariantViolation,
+                    "memory::device_memory_manager::options_for_device",
+                    "FFI returned an unknown memory-manager base kind",
+                )
+                .with_detail("base_kind", other.to_string()));
             },
         };
         Ok(Self { base })
@@ -668,7 +659,7 @@ pub struct DeviceMemoryResource {
 }
 
 struct DeviceMemoryResourceHandle {
-    raw: Option<NonNull<std::ffi::c_void>>,
+    raw: Option<NonNull<cudf_sys::cudf_memory_resource_handle_state>>,
     device: DeviceId,
     // Keeps callback states alive until after `raw` and any native upstream
     // lifetimes retained by derived resources are destroyed in Drop.
@@ -760,7 +751,7 @@ pub struct DeviceMemoryManager {
 
 #[derive(Debug)]
 struct DeviceMemoryManagerHandle {
-    raw: NonNull<std::ffi::c_void>,
+    raw: NonNull<cudf_sys::cudf_memory_manager_handle_state>,
     device: DeviceId,
 }
 
@@ -809,19 +800,19 @@ pub struct QueryMemoryDomain {
 
 #[derive(Debug)]
 struct ReservationHandle {
-    raw: Option<NonNull<std::ffi::c_void>>,
+    raw: Option<NonNull<cudf_sys::cudf_reservation_handle_state>>,
     device: DeviceId,
 }
 
 #[derive(Debug)]
 struct ReservationArenaHandle {
-    raw: Option<NonNull<std::ffi::c_void>>,
+    raw: Option<NonNull<cudf_sys::cudf_reservation_arena_handle_state>>,
     device: DeviceId,
 }
 
 #[derive(Debug)]
 struct QueryMemoryDomainHandle {
-    raw: Option<NonNull<std::ffi::c_void>>,
+    raw: Option<NonNull<cudf_sys::cudf_query_memory_domain_handle_state>>,
     device: DeviceId,
 }
 
@@ -1612,12 +1603,29 @@ impl DeviceMemoryResource {
         maximum_pool_size.unwrap_or(0)
     }
 
-    fn from_created_handle(handle: *mut std::ffi::c_void, device: DeviceId, constructor: &'static str) -> Result<Self> {
+    fn from_created_handle(
+        handle: cudf_sys::cudf_memory_resource_handle,
+        device: DeviceId,
+        constructor: &'static str,
+    ) -> Result<Self> {
         Self::from_created_handle_with_callbacks(handle, device, constructor, Vec::new())
     }
 
+    /// Adopt an owned native memory-resource handle for unstable test support.
+    ///
+    /// # Safety
+    /// `handle` must be a non-null, uniquely owned memory-resource handle
+    /// created for `device`. It must not be borrowed elsewhere and must be
+    /// destroyed with `cudf_memory_resource_destroy` exactly once.
+    pub(crate) unsafe fn adopt_owned_for_testing(
+        handle: cudf_sys::cudf_memory_resource_handle,
+        device: DeviceId,
+    ) -> Result<Self> {
+        Self::from_created_handle(handle, device, "testing::core::adopt_owned_memory_resource_for_test")
+    }
+
     fn from_created_handle_with_callbacks(
-        handle: *mut std::ffi::c_void,
+        handle: cudf_sys::cudf_memory_resource_handle,
         device: DeviceId,
         constructor: &'static str,
         failure_callbacks: Vec<Arc<FailureCallbackState>>,
@@ -1895,7 +1903,7 @@ impl DeviceMemoryResource {
         unsafe { cudf_sys::BorrowedMemoryResource::from_raw(self.handle.raw()) }
     }
 
-    pub(crate) fn as_raw(&self) -> *mut std::ffi::c_void {
+    pub(crate) fn as_raw(&self) -> cudf_sys::cudf_memory_resource_handle {
         self.handle.raw()
     }
 
@@ -1909,59 +1917,7 @@ impl DeviceMemoryResource {
         Ok(out)
     }
     pub(crate) fn __debug_raw_handle_value(&self) -> usize {
-        let Ok(_guard) = DeviceGuard::new(self.device()) else {
-            return 0;
-        };
-        let mut out = std::ptr::null_mut();
-        error::check_status_in(
-            unsafe { cudf_sys::cudf_test_memory_resource_raw(self.handle.raw(), &mut out) },
-            "memory::device_memory_resource::__debug_raw_handle_value",
-        )
-        .map(|_| out as usize)
-        .unwrap_or(0)
-    }
-    pub(crate) fn __test_stats() -> Result<Self> {
-        let device = DeviceId::current()?;
-        let mut handle = ptr::null_mut();
-        error::check_status_in(
-            unsafe { cudf_sys::cudf_test_memory_resource_create_stats(&mut handle) },
-            "memory::device_memory_resource::__test_stats",
-        )?;
-        Ok(Self {
-            handle: Arc::new(DeviceMemoryResourceHandle {
-                raw: Some(error::require_non_null(
-                    handle,
-                    "memory::device_memory_resource::__test_stats",
-                    "stats memory resource",
-                )?),
-                device,
-                _failure_callbacks: Vec::new(),
-            }),
-        })
-    }
-    pub(crate) fn __test_fail_first_allocation(&self) -> Result<Self> {
-        let _guard = DeviceGuard::new(self.device())?;
-        let mut handle = ptr::null_mut();
-        error::check_status_in_with_details(
-            unsafe { cudf_sys::cudf_test_memory_resource_create_fail_first_allocation(self.handle.raw(), &mut handle) },
-            "memory::device_memory_resource::__test_fail_first_allocation",
-            [("upstream_device", self.device().ordinal().to_string())],
-        )?;
-        Self::from_created_handle_with_callbacks(
-            handle,
-            self.device(),
-            "memory::device_memory_resource::__test_fail_first_allocation",
-            self.handle._failure_callbacks.clone(),
-        )
-    }
-    pub(crate) fn __test_allocation_count(&self) -> Result<i64> {
-        let _guard = DeviceGuard::new(self.device())?;
-        let mut out = 0_i64;
-        error::check_status_in(
-            unsafe { cudf_sys::cudf_test_memory_resource_allocation_count(self.handle.raw(), &mut out) },
-            "memory::device_memory_resource::__test_allocation_count",
-        )?;
-        Ok(out)
+        self.interop_raw_handle().map(|raw| raw as usize).unwrap_or(0)
     }
 }
 
@@ -1988,25 +1944,25 @@ impl Drop for DeviceMemoryResourceHandle {
 }
 
 impl DeviceMemoryResourceHandle {
-    fn raw(&self) -> *mut std::ffi::c_void {
+    fn raw(&self) -> cudf_sys::cudf_memory_resource_handle {
         self.raw.expect("live memory resource retains its native handle").as_ptr()
     }
 }
 
 impl ReservationHandle {
-    fn raw(&self) -> *mut std::ffi::c_void {
+    fn raw(&self) -> cudf_sys::cudf_reservation_handle {
         self.raw.expect("live reservation retains its native handle").as_ptr()
     }
 }
 
 impl ReservationArenaHandle {
-    fn raw(&self) -> *mut std::ffi::c_void {
+    fn raw(&self) -> cudf_sys::cudf_reservation_arena_handle {
         self.raw.expect("live reservation arena retains its native handle").as_ptr()
     }
 }
 
 impl QueryMemoryDomainHandle {
-    fn raw(&self) -> *mut std::ffi::c_void {
+    fn raw(&self) -> cudf_sys::cudf_query_memory_domain_handle {
         self.raw.expect("live query memory domain retains its native handle").as_ptr()
     }
 }
@@ -2017,7 +1973,7 @@ fn record_native_teardown_failure(device: DeviceId, operation: &'static str, sta
             device,
             crate::runtime::DeviceFaultKind::FatalDeviceOperation,
             operation,
-            Some(status),
+            Some(status as i32),
         );
     }
     crate::runtime::device_health::record_teardown_failure(

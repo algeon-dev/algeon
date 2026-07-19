@@ -245,7 +245,7 @@ pub(crate) fn record_fault(
     operation: &'static str,
     native_status: Option<cudf_sys::cudf_status_t>,
 ) {
-    report_device_fault(device, kind, operation, native_status);
+    report_device_fault(device, kind, operation, native_status.map(|status| status as i32));
 }
 
 /// Report a device-bound fault observed by an authorized sibling runtime.

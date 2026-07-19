@@ -3,12 +3,7 @@
 //! These functions operate on `STRING`-typed columns and return new columns.
 //! All operations are null-aware: null input elements produce null output.
 
-use std::{
-    os::raw::{c_char, c_void},
-    ptr,
-    ptr::NonNull,
-    sync::Arc,
-};
+use std::{os::raw::c_char, ptr, ptr::NonNull, sync::Arc};
 
 use crate::{
     core::{
@@ -43,9 +38,9 @@ pub enum StripSide {
 impl StripSide {
     pub(crate) fn to_raw(self) -> cudf_sys::cudf_strip_side_t {
         match self {
-            StripSide::Left => cudf_sys::cudf_strip_side_t::CUDF_STRIP_LEFT,
-            StripSide::Right => cudf_sys::cudf_strip_side_t::CUDF_STRIP_RIGHT,
-            StripSide::Both => cudf_sys::cudf_strip_side_t::CUDF_STRIP_BOTH,
+            StripSide::Left => cudf_sys::CUDF_STRIP_LEFT,
+            StripSide::Right => cudf_sys::CUDF_STRIP_RIGHT,
+            StripSide::Both => cudf_sys::CUDF_STRIP_BOTH,
         }
     }
 }
@@ -403,7 +398,7 @@ impl ReplaceWithBackrefsPreparedOutputSizeFacts {
 /// must resolve to the same CUDA stream used by prepare.
 pub struct SeriesPreparedReplaceWithBackrefs {
     input: Series,
-    handle: Option<NonNull<c_void>>,
+    handle: Option<NonNull<cudf_sys::cudf_prepared_replace_with_backrefs_handle_state>>,
     domain: Arc<ExecutionDomain>,
     facts: ReplaceWithBackrefsPreparedOutputSizeFacts,
 }

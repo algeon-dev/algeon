@@ -12,7 +12,6 @@
 
 use std::{
     fmt,
-    os::raw::c_void,
     ptr::{self, NonNull},
     sync::Arc,
 };
@@ -135,7 +134,7 @@ fn ensure_unique_keys(keys: &ColumnView<'_>, key_count: usize, operation: &'stat
 }
 
 struct DistinctHashJoinHandle {
-    handle: NonNull<c_void>,
+    handle: NonNull<cudf_sys::cudf_distinct_hash_join_handle_state>,
     _domain: Arc<ExecutionDomain>,
 }
 
@@ -153,7 +152,7 @@ impl DistinctHashJoinHandle {
             unsafe {
                 cudf_sys::cudf_distinct_hash_join_create_ex(
                     build.raw_handle(),
-                    cudf_sys::cudf_null_equality_t::CUDF_NULL_EQUALITY_EQUAL,
+                    cudf_sys::CUDF_NULL_EQUALITY_EQUAL,
                     &mut handle,
                     exec_options.options(),
                 )
@@ -276,7 +275,7 @@ fn execute_reusable_probe(
     let gathered = copying::gather_impl(
         &values_table,
         &build_indices_view,
-        cudf_sys::cudf_out_of_bounds_policy_t::CUDF_OUT_OF_BOUNDS_POLICY_NULLIFY,
+        cudf_sys::CUDF_OUT_OF_BOUNDS_POLICY_NULLIFY,
         "nullify",
         output_domain,
         exec_options,

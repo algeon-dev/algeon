@@ -57,25 +57,13 @@ impl DatetimeRoundingFrequency {
 
     pub(crate) fn to_raw(self) -> cudf_sys::cudf_datetime_rounding_frequency_t {
         match self {
-            DatetimeRoundingFrequency::Day => cudf_sys::cudf_datetime_rounding_frequency_t::CUDF_DATETIME_ROUNDING_DAY,
-            DatetimeRoundingFrequency::Hour => {
-                cudf_sys::cudf_datetime_rounding_frequency_t::CUDF_DATETIME_ROUNDING_HOUR
-            },
-            DatetimeRoundingFrequency::Minute => {
-                cudf_sys::cudf_datetime_rounding_frequency_t::CUDF_DATETIME_ROUNDING_MINUTE
-            },
-            DatetimeRoundingFrequency::Second => {
-                cudf_sys::cudf_datetime_rounding_frequency_t::CUDF_DATETIME_ROUNDING_SECOND
-            },
-            DatetimeRoundingFrequency::Millisecond => {
-                cudf_sys::cudf_datetime_rounding_frequency_t::CUDF_DATETIME_ROUNDING_MILLISECOND
-            },
-            DatetimeRoundingFrequency::Microsecond => {
-                cudf_sys::cudf_datetime_rounding_frequency_t::CUDF_DATETIME_ROUNDING_MICROSECOND
-            },
-            DatetimeRoundingFrequency::Nanosecond => {
-                cudf_sys::cudf_datetime_rounding_frequency_t::CUDF_DATETIME_ROUNDING_NANOSECOND
-            },
+            DatetimeRoundingFrequency::Day => cudf_sys::CUDF_DATETIME_ROUNDING_DAY,
+            DatetimeRoundingFrequency::Hour => cudf_sys::CUDF_DATETIME_ROUNDING_HOUR,
+            DatetimeRoundingFrequency::Minute => cudf_sys::CUDF_DATETIME_ROUNDING_MINUTE,
+            DatetimeRoundingFrequency::Second => cudf_sys::CUDF_DATETIME_ROUNDING_SECOND,
+            DatetimeRoundingFrequency::Millisecond => cudf_sys::CUDF_DATETIME_ROUNDING_MILLISECOND,
+            DatetimeRoundingFrequency::Microsecond => cudf_sys::CUDF_DATETIME_ROUNDING_MICROSECOND,
+            DatetimeRoundingFrequency::Nanosecond => cudf_sys::CUDF_DATETIME_ROUNDING_NANOSECOND,
         }
     }
 }
@@ -91,9 +79,9 @@ impl DatetimeComponent {
 
     pub(crate) fn to_raw(self) -> cudf_sys::cudf_datetime_component_t {
         match self {
-            DatetimeComponent::Year => cudf_sys::cudf_datetime_component_t::CUDF_DATETIME_COMPONENT_YEAR,
-            DatetimeComponent::Month => cudf_sys::cudf_datetime_component_t::CUDF_DATETIME_COMPONENT_MONTH,
-            DatetimeComponent::Day => cudf_sys::cudf_datetime_component_t::CUDF_DATETIME_COMPONENT_DAY,
+            DatetimeComponent::Year => cudf_sys::CUDF_DATETIME_COMPONENT_YEAR,
+            DatetimeComponent::Month => cudf_sys::CUDF_DATETIME_COMPONENT_MONTH,
+            DatetimeComponent::Day => cudf_sys::CUDF_DATETIME_COMPONENT_DAY,
         }
     }
 }

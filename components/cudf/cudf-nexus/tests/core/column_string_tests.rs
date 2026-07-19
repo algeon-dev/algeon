@@ -1,6 +1,7 @@
 //! Tests for string column creation and reading.
 
-use cudf::{ErrorCode, ErrorKind, TypeId, testing::prelude::*};
+use cudf::{ErrorCode, ErrorKind, Runtime, TypeId, testing::prelude::*};
+use cudf_sys::test_support;
 
 use crate::common::{
     column_from_slice, column_from_strs, column_from_strs_nullable, error_context_value, last_exec_mr_value,
@@ -96,6 +97,16 @@ fn test_from_strs_nullable_roundtrip() {
 
     let mask = view.to_host_validity().unwrap().unwrap();
     assert_eq!(mask, vec![true, false, true, false]);
+}
+
+fn synthetic_string_view_without_children() -> cudf::Result<cudf::testing::ColumnView<'static>> {
+    let runtime = Runtime::new()?;
+    let mut raw = std::ptr::null_mut();
+    let status = unsafe { test_support::cudf_test_column_view_create_synthetic_string_without_children(2, &mut raw) };
+    assert_eq!(status, cudf_sys::CUDF_SUCCESS, "failed to create synthetic string column view");
+    // SAFETY: the hook returned a fresh owned view for `runtime`'s current
+    // device, and the adapter transfers its unique destruction to cudf.
+    unsafe { cudf::testing::column::adopt_owned_column_view_for_test(raw, &runtime) }
 }
 
 #[test]
@@ -217,7 +228,7 @@ fn test_to_optional_strings_rejects_non_string_column() {
 
 #[test]
 fn test_to_strings_rejects_malformed_string_view_with_stable_foreign_contract() {
-    let view = cudf::testing::column::synthetic_string_view_without_children(2).unwrap();
+    let view = synthetic_string_view_without_children().unwrap();
 
     let err = view.to_strings_lossy().unwrap_err();
 
@@ -239,7 +250,7 @@ fn test_to_strings_rejects_malformed_string_view_with_stable_foreign_contract() 
 
 #[test]
 fn test_to_optional_strings_rejects_malformed_string_view_with_same_contract() {
-    let view = cudf::testing::column::synthetic_string_view_without_children(2).unwrap();
+    let view = synthetic_string_view_without_children().unwrap();
 
     let err = view.to_optional_strings().unwrap_err();
 

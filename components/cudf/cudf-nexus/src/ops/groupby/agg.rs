@@ -1,6 +1,6 @@
 //! Low-level groupby aggregation execution.
 
-use std::{marker::PhantomData, os::raw::c_void, ptr, ptr::NonNull, sync::Arc};
+use std::{marker::PhantomData, ptr, ptr::NonNull, sync::Arc};
 
 use smallvec::SmallVec;
 
@@ -112,7 +112,7 @@ pub struct PreparedGroupByFacts {
 /// aggregation requests, but they must be compatible with the original key row
 /// count.
 pub struct PreparedGroupBy<'keys> {
-    handle: NonNull<c_void>,
+    handle: NonNull<cudf_sys::cudf_prepared_groupby_handle_state>,
     keys_domain: Arc<ExecutionDomain>,
     keys_are_sorted: bool,
     null_policy: NullPolicy,
@@ -210,7 +210,7 @@ impl<'keys> PreparedGroupBy<'keys> {
 }
 
 pub(crate) fn prepared_groupby_facts_raw(
-    handle: *mut c_void,
+    handle: cudf_sys::cudf_prepared_groupby_handle,
     keys_domain: &Arc<ExecutionDomain>,
     operation: &'static str,
 ) -> Result<PreparedGroupByFacts> {
@@ -278,11 +278,12 @@ pub(crate) fn groupby_aggregate_impl(
     let request_count = i32::try_from(request_count_usize)
         .map_err(|_| groupby_request_count_limit_error(operation, request_count_usize))?;
 
-    let value_handles: SmallVec<[*mut c_void; GROUPBY_VALUE_HANDLE_INLINE_CAPACITY]> =
+    let value_handles: SmallVec<[cudf_sys::cudf_column_view_handle; GROUPBY_VALUE_HANDLE_INLINE_CAPACITY]> =
         requests.iter().map(|r| r.values.raw_handle()).collect();
 
     let mut agg_counts: SmallVec<[i32; GROUPBY_AGG_COUNT_INLINE_CAPACITY]> = SmallVec::with_capacity(requests.len());
-    let mut all_agg_handles: SmallVec<[*mut c_void; GROUPBY_AGG_HANDLE_INLINE_CAPACITY]> = SmallVec::new();
+    let mut all_agg_handles: SmallVec<[cudf_sys::cudf_aggregation_handle; GROUPBY_AGG_HANDLE_INLINE_CAPACITY]> =
+        SmallVec::new();
 
     for (request_index, req) in requests.iter().enumerate() {
         if req.aggregations.is_empty() {
@@ -316,7 +317,7 @@ pub(crate) fn groupby_aggregate_impl(
     }
 
     let mut out_keys = ptr::null_mut();
-    let mut out_values: *mut *mut c_void = ptr::null_mut();
+    let mut out_values: *mut cudf_sys::cudf_column_handle = ptr::null_mut();
     let mut out_total_columns: i32 = 0;
 
     let null_policy_ffi = null_policy.to_raw();
@@ -388,7 +389,7 @@ pub(crate) fn groupby_aggregate_impl(
 }
 
 pub(crate) fn groupby_aggregate_impl_with_prepared(
-    prepared: *mut c_void,
+    prepared: cudf_sys::cudf_prepared_groupby_handle,
     requests: &[AggregationRequest<'_>],
     null_policy: NullPolicy,
     keys_are_sorted: bool,
@@ -400,11 +401,12 @@ pub(crate) fn groupby_aggregate_impl_with_prepared(
     let request_count = i32::try_from(request_count_usize)
         .map_err(|_| groupby_request_count_limit_error(operation, request_count_usize))?;
 
-    let value_handles: SmallVec<[*mut c_void; GROUPBY_VALUE_HANDLE_INLINE_CAPACITY]> =
+    let value_handles: SmallVec<[cudf_sys::cudf_column_view_handle; GROUPBY_VALUE_HANDLE_INLINE_CAPACITY]> =
         requests.iter().map(|r| r.values.raw_handle()).collect();
 
     let mut agg_counts: SmallVec<[i32; GROUPBY_AGG_COUNT_INLINE_CAPACITY]> = SmallVec::with_capacity(requests.len());
-    let mut all_agg_handles: SmallVec<[*mut c_void; GROUPBY_AGG_HANDLE_INLINE_CAPACITY]> = SmallVec::new();
+    let mut all_agg_handles: SmallVec<[cudf_sys::cudf_aggregation_handle; GROUPBY_AGG_HANDLE_INLINE_CAPACITY]> =
+        SmallVec::new();
 
     for (request_index, req) in requests.iter().enumerate() {
         if req.aggregations.is_empty() {
@@ -438,7 +440,7 @@ pub(crate) fn groupby_aggregate_impl_with_prepared(
     }
 
     let mut out_keys = ptr::null_mut();
-    let mut out_values: *mut *mut c_void = ptr::null_mut();
+    let mut out_values: *mut cudf_sys::cudf_column_handle = ptr::null_mut();
     let mut out_total_columns: i32 = 0;
 
     let total_agg_handle_count = i32::try_from(all_agg_handles.len()).map_err(|_| {
@@ -519,11 +521,13 @@ pub(crate) fn groupby_scan_impl(
     let request_count = i32::try_from(request_count_usize)
         .map_err(|_| groupby_request_count_limit_error(operation, request_count_usize))?;
 
-    let value_handles: SmallVec<[*mut c_void; GROUPBY_VALUE_HANDLE_INLINE_CAPACITY]> =
+    let value_handles: SmallVec<[cudf_sys::cudf_column_view_handle; GROUPBY_VALUE_HANDLE_INLINE_CAPACITY]> =
         requests.iter().map(|r| r.values.raw_handle()).collect();
 
     let mut agg_counts: SmallVec<[i32; GROUPBY_AGG_COUNT_INLINE_CAPACITY]> = SmallVec::with_capacity(requests.len());
-    let mut all_agg_handles: SmallVec<[*mut c_void; GROUPBY_AGG_HANDLE_INLINE_CAPACITY]> = SmallVec::new();
+    let mut all_agg_handles: SmallVec<
+        [cudf_sys::cudf_groupby_scan_aggregation_handle; GROUPBY_AGG_HANDLE_INLINE_CAPACITY],
+    > = SmallVec::new();
 
     for (request_index, req) in requests.iter().enumerate() {
         if req.aggregations.is_empty() {
@@ -549,7 +553,7 @@ pub(crate) fn groupby_scan_impl(
     }
 
     let mut out_keys = ptr::null_mut();
-    let mut out_values: *mut *mut c_void = ptr::null_mut();
+    let mut out_values: *mut cudf_sys::cudf_column_handle = ptr::null_mut();
     let mut out_total_columns: i32 = 0;
 
     let null_policy_ffi = null_policy.to_raw();
@@ -649,8 +653,8 @@ fn compatible_prepared_groupby_domain(
 ///
 /// # Safety
 /// Caller must destroy the returned handle via `cudf_aggregation_destroy`.
-unsafe fn create_agg_handle(agg: &GroupByAgg) -> Result<*mut c_void> {
-    use cudf_sys::{cudf_aggregation_kind_t::*, cudf_null_policy_t};
+unsafe fn create_agg_handle(agg: &GroupByAgg) -> Result<cudf_sys::cudf_aggregation_handle> {
+    use cudf_sys::*;
 
     let mut handle = ptr::null_mut();
     match agg {
@@ -676,11 +680,7 @@ unsafe fn create_agg_handle(agg: &GroupByAgg) -> Result<*mut c_void> {
             )?;
         },
         GroupByAgg::Count { include_nulls } => {
-            let policy = if *include_nulls {
-                cudf_null_policy_t::CUDF_NULL_POLICY_INCLUDE
-            } else {
-                cudf_null_policy_t::CUDF_NULL_POLICY_EXCLUDE
-            };
+            let policy = if *include_nulls { CUDF_NULL_POLICY_INCLUDE } else { CUDF_NULL_POLICY_EXCLUDE };
             error::check_status_in(
                 // SAFETY: the null policy and out-pointer are valid.
                 unsafe { cudf_sys::cudf_aggregation_create_count(policy, &mut handle) },
@@ -741,8 +741,8 @@ unsafe fn create_agg_handle(agg: &GroupByAgg) -> Result<*mut c_void> {
 /// # Safety
 /// Caller must destroy the returned handle via
 /// `cudf_groupby_scan_aggregation_destroy`.
-unsafe fn create_groupby_scan_agg_handle(agg: ScanAgg) -> Result<*mut c_void> {
-    use cudf_sys::cudf_reduce_aggregation_kind_t::*;
+unsafe fn create_groupby_scan_agg_handle(agg: ScanAgg) -> Result<cudf_sys::cudf_groupby_scan_aggregation_handle> {
+    use cudf_sys::*;
 
     let mut handle = ptr::null_mut();
     let kind = match agg {

@@ -45,11 +45,13 @@ pub mod lookup;
 pub mod partitioning;
 pub mod reduction;
 pub mod replace;
+pub mod reshape;
 pub mod search;
 pub mod sorting;
 pub mod stream_compaction;
 pub mod strings;
 pub mod unary;
+pub(crate) mod validation;
 
 use std::ops::{Add, Div, Mul, Sub};
 

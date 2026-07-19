@@ -8,7 +8,8 @@ use cudf::testing::prelude::*;
 mod common;
 
 use cudf::{
-    DataFrame, DeviceId, ErrorCode, ErrorKind, ExecutionOverrides, MergeOptions, Runtime, Series, SortOptions, TypeId,
+    DataFrame, DenseMatrixLayout, DeviceId, ErrorCode, ErrorKind, ExecutionOverrides, MergeOptions, Runtime, Series,
+    SortOptions, TypeId,
     core::{
         error::{FactKeyName, FactValue},
         memory::DeviceMemoryResource,
@@ -26,6 +27,26 @@ use tempfile::TempDir;
 use crate::common::scalar;
 
 const SKIP_MULTI_GPU_ENV: &str = "CUDF_SKIP_MULTI_GPU";
+
+#[test]
+fn runtime_matrix_pack_rejects_cross_device_input() {
+    if !should_run_multi_gpu_test() {
+        return;
+    }
+    let (device0, device1) = first_two_test_devices();
+    let input_runtime = Runtime::builder().with_device(device0).build().unwrap();
+    let output_runtime = Runtime::builder().with_device(device1).build().unwrap();
+    let input = input_runtime.column_from_slice(&[1.0f32, 2.0]).unwrap();
+
+    let error = output_runtime
+        .pack_float32_columns(&[&input], DenseMatrixLayout::RowMajor)
+        .expect_err("cross-device matrix packing must be rejected");
+
+    assert_eq!(error.code(), ErrorCode::CrossDeviceInputs);
+    assert_eq!(error.operation(), "runtime::pack_float32_columns");
+    assert!(matches!(error.fact_value(FactKeyName::LeftDevice), Some(FactValue::DeviceId(_))));
+    assert!(matches!(error.fact_value(FactKeyName::RightDevice), Some(FactValue::DeviceId(_))));
+}
 
 fn should_run_multi_gpu_test() -> bool {
     if std::env::var(SKIP_MULTI_GPU_ENV).unwrap_or_default() == "1" {

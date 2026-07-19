@@ -1,7 +1,7 @@
 #ifndef CUDF_RUST_AST_HANDLE_HPP
 #define CUDF_RUST_AST_HANDLE_HPP
 
-#include "ast.h"
+#include "cudf_rust/ast.h"
 
 #include <cudf/ast/expressions.hpp>
 
@@ -24,13 +24,13 @@ inline cudf_ast_expression_handle cudf_release_ast_expression_handle(
   owner->expression = std::move(expression);
   owner->children   = std::move(children);
   auto handle       = std::make_unique<cudf_ast_expression_owner_ref>(std::move(owner));
-  return static_cast<cudf_ast_expression_handle>(handle.release());
+  return reinterpret_cast<cudf_ast_expression_handle>(handle.release());
 }
 
 inline cudf_ast_expression_owner_ref& cudf_ast_expression_owner_ref_from_handle(
   cudf_ast_expression_handle handle)
 {
-  return *static_cast<cudf_ast_expression_owner_ref*>(handle);
+  return *reinterpret_cast<cudf_ast_expression_owner_ref*>(handle);
 }
 
 inline cudf::ast::expression const& cudf_ast_expression_from_handle(

@@ -142,8 +142,9 @@ impl TypeId {
     /// Convert from a raw FFI type-id discriminant, returning an error for
     /// unknown values.
     ///
-    /// The raw value arrives as `i32` (not as the mirrored FFI enum) so a
-    /// libcudf type id this binding does not mirror yet stays a recoverable
+    /// Generated bindings expose the FFI value as a raw integer alias. This
+    /// validates that integer discriminant before it becomes a Rust enum, so
+    /// a libcudf type id this binding does not mirror yet stays a recoverable
     /// error instead of materializing an invalid Rust enum value.
     pub(crate) fn from_raw(raw: i32) -> Result<Self> {
         Self::ALL.iter().copied().find(|id| id.to_raw() as i32 == raw).ok_or_else(|| {
@@ -160,7 +161,7 @@ impl TypeId {
 
     /// Convert to the raw FFI type_id enum.
     pub(crate) fn to_raw(self) -> cudf_sys::cudf_type_id_t {
-        use cudf_sys::cudf_type_id_t::*;
+        use cudf_sys::*;
         match self {
             TypeId::Empty => CUDF_TYPE_EMPTY,
             TypeId::Int8 => CUDF_TYPE_INT8,
@@ -439,8 +440,8 @@ pub enum NullPolicy {
 impl NullPolicy {
     pub(crate) fn to_raw(self) -> cudf_sys::cudf_null_policy_t {
         match self {
-            NullPolicy::Exclude => cudf_sys::cudf_null_policy_t::CUDF_NULL_POLICY_EXCLUDE,
-            NullPolicy::Include => cudf_sys::cudf_null_policy_t::CUDF_NULL_POLICY_INCLUDE,
+            NullPolicy::Exclude => cudf_sys::CUDF_NULL_POLICY_EXCLUDE,
+            NullPolicy::Include => cudf_sys::CUDF_NULL_POLICY_INCLUDE,
         }
     }
 }
@@ -458,19 +459,15 @@ pub enum NullEquality {
 impl NullEquality {
     pub(crate) fn to_join_raw(self) -> cudf_sys::cudf_null_equality_t {
         match self {
-            NullEquality::Equal => cudf_sys::cudf_null_equality_t::CUDF_NULL_EQUALITY_EQUAL,
-            NullEquality::Unequal => cudf_sys::cudf_null_equality_t::CUDF_NULL_EQUALITY_UNEQUAL,
+            NullEquality::Equal => cudf_sys::CUDF_NULL_EQUALITY_EQUAL,
+            NullEquality::Unequal => cudf_sys::CUDF_NULL_EQUALITY_UNEQUAL,
         }
     }
 
     pub(crate) fn to_stream_compaction_raw(self) -> cudf_sys::cudf_stream_compaction_null_equality_t {
         match self {
-            NullEquality::Equal => {
-                cudf_sys::cudf_stream_compaction_null_equality_t::CUDF_STREAM_COMPACTION_NULL_EQUALITY_EQUAL
-            },
-            NullEquality::Unequal => {
-                cudf_sys::cudf_stream_compaction_null_equality_t::CUDF_STREAM_COMPACTION_NULL_EQUALITY_UNEQUAL
-            },
+            NullEquality::Equal => cudf_sys::CUDF_STREAM_COMPACTION_NULL_EQUALITY_EQUAL,
+            NullEquality::Unequal => cudf_sys::CUDF_STREAM_COMPACTION_NULL_EQUALITY_UNEQUAL,
         }
     }
 }
@@ -551,7 +548,7 @@ pub(crate) fn count_nulls(validity: &[bool]) -> i32 {
 // Internal helpers for FFI handle round-tripping of DataType.
 impl DataType {
     /// Create a C shim data_type handle from this DataType with operation context.
-    pub(crate) fn to_raw_handle_for(self, operation: &'static str) -> Result<*mut std::ffi::c_void> {
+    pub(crate) fn to_raw_handle_for(self, operation: &'static str) -> Result<cudf_sys::cudf_data_type_handle> {
         let mut handle = ptr::null_mut();
         if self.id.is_decimal() {
             error::check_status_in_with_details(

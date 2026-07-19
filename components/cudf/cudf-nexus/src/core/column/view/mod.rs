@@ -13,8 +13,8 @@ use errors::{
     foreign_column_view_metadata_contract_error, foreign_string_view_contract_error,
 };
 pub(crate) use testing_hooks::{
-    column_view_copy_fixed_width_to_host_for_benchmark, column_view_to_fixed_width_host_bytes_for_test,
-    column_view_to_raw_bytes_for_test, synthetic_string_view_without_children,
+    adopt_owned_column_view_for_test, column_view_copy_fixed_width_to_host_for_benchmark,
+    column_view_to_fixed_width_host_bytes_for_test, column_view_to_raw_bytes_for_test,
     trigger_fixed_width_host_byte_range_overflow_for_test,
 };
 
@@ -54,7 +54,7 @@ fn fixed_width_host_byte_range_overflow_error(
 /// The lifetime `'a` ties this view to the owning `Column` (or `Table`),
 /// preventing use-after-free at compile time.
 pub struct ColumnView<'a> {
-    pub(crate) handle: NonNull<c_void>,
+    pub(crate) handle: NonNull<cudf_sys::cudf_column_view_handle_state>,
     pub(crate) domain: Arc<ExecutionDomain>,
     pub(crate) _lifetime: PhantomData<&'a ()>,
 }
@@ -65,7 +65,10 @@ impl<'a> ColumnView<'a> {
     /// # Safety
     /// The handle must be a valid `cudf_column_view_handle` and must remain
     /// valid for lifetime `'a`.
-    pub(crate) unsafe fn from_raw_with_domain(handle: *mut c_void, domain: Arc<ExecutionDomain>) -> Result<Self> {
+    pub(crate) unsafe fn from_raw_with_domain(
+        handle: cudf_sys::cudf_column_view_handle,
+        domain: Arc<ExecutionDomain>,
+    ) -> Result<Self> {
         Ok(Self {
             handle: error::require_non_null(handle, "column_view::from_raw_with_domain", "column view")?,
             domain,
@@ -75,7 +78,7 @@ impl<'a> ColumnView<'a> {
 
     /// Returns the raw FFI handle pointer. For internal use by operations
     /// that need to pass column views to C shim functions.
-    pub(crate) fn raw_handle(&self) -> *mut c_void {
+    pub(crate) fn raw_handle(&self) -> cudf_sys::cudf_column_view_handle {
         self.handle.as_ptr()
     }
 
@@ -134,7 +137,7 @@ impl<'a> ColumnView<'a> {
     pub fn data_type(&self) -> Result<DataType> {
         // Raw discriminant: validated by `DataType::from_raw_parts` so an
         // unmirrored libcudf type id stays a recoverable error, not UB.
-        let mut raw_id: i32 = 0;
+        let mut raw_id: cudf_sys::cudf_type_id_t = 0;
         let mut scale = 0;
         // SAFETY: self.handle is valid (NonNull from construction/from_raw).
         error::check_status_in(
@@ -142,7 +145,7 @@ impl<'a> ColumnView<'a> {
             "column_view::data_type",
         )
         .map_err(classify_column_view_metadata_error)?;
-        DataType::from_raw_parts(raw_id, scale)
+        DataType::from_raw_parts(raw_id as i32, scale)
     }
 
     /// Returns the number of elements.

@@ -148,7 +148,7 @@ fn sorted_key_order(
         copying::gather_impl(
             &encoded_keys_table,
             &sorted_original_codes_view,
-            cudf_sys::cudf_out_of_bounds_policy_t::CUDF_OUT_OF_BOUNDS_POLICY_DONT_CHECK,
+            cudf_sys::CUDF_OUT_OF_BOUNDS_POLICY_DONT_CHECK,
             "dont_check",
             output_domain,
             exec_options,

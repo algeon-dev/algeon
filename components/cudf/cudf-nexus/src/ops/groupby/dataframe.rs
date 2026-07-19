@@ -1,6 +1,6 @@
 //! High-level DataFrame groupby API.
 
-use std::{os::raw::c_void, ptr, ptr::NonNull, sync::Arc};
+use std::{ptr, ptr::NonNull, sync::Arc};
 
 use smallvec::SmallVec;
 use typed_builder::TypedBuilder;
@@ -184,7 +184,7 @@ pub struct PreparedDataFrameGroupBy {
     df: DataFrame,
     keys: Vec<String>,
     options: GroupByOptions,
-    handle: NonNull<c_void>,
+    handle: NonNull<cudf_sys::cudf_prepared_groupby_handle_state>,
     keys_domain: Arc<ExecutionDomain>,
     prepared_facts: PreparedGroupByFacts,
 }

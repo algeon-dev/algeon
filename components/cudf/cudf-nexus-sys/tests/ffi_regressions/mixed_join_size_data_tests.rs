@@ -22,15 +22,15 @@ type BeginSizeDataExRaw = unsafe extern "C" fn(
 ) -> cudf_sys::cudf_status_t;
 
 struct MixedJoinInputs {
-    left_equality_tbl: *mut c_void,
-    right_equality_tbl: *mut c_void,
-    left_conditional_tbl: *mut c_void,
-    right_conditional_tbl: *mut c_void,
-    left_equality: *mut c_void,
-    right_equality: *mut c_void,
-    left_conditional: *mut c_void,
-    right_conditional: *mut c_void,
-    predicate: *mut c_void,
+    left_equality_tbl: cudf_sys::cudf_table_handle,
+    right_equality_tbl: cudf_sys::cudf_table_handle,
+    left_conditional_tbl: cudf_sys::cudf_table_handle,
+    right_conditional_tbl: cudf_sys::cudf_table_handle,
+    left_equality: cudf_sys::cudf_table_view_handle,
+    right_equality: cudf_sys::cudf_table_view_handle,
+    left_conditional: cudf_sys::cudf_table_view_handle,
+    right_conditional: cudf_sys::cudf_table_view_handle,
+    predicate: cudf_sys::cudf_ast_expression_handle,
 }
 
 impl MixedJoinInputs {
@@ -75,21 +75,21 @@ impl Drop for MixedJoinInputs {
     }
 }
 
-fn make_ast_column_reference(table_reference: cudf_sys::cudf_ast_table_reference_t) -> *mut c_void {
-    let mut out: *mut c_void = ptr::null_mut();
+fn make_ast_column_reference(
+    table_reference: cudf_sys::cudf_ast_table_reference_t,
+) -> cudf_sys::cudf_ast_expression_handle {
+    let mut out: cudf_sys::cudf_ast_expression_handle = ptr::null_mut();
     let status = unsafe { cudf_sys::cudf_ast_column_reference_create(0, table_reference, &mut out) };
     assert_eq!(status, cudf_sys::CUDF_SUCCESS);
     assert!(!out.is_null());
     out
 }
 
-fn make_left_less_than_right_predicate() -> *mut c_void {
-    let left = make_ast_column_reference(cudf_sys::cudf_ast_table_reference_t::CUDF_AST_TABLE_REFERENCE_LEFT);
-    let right = make_ast_column_reference(cudf_sys::cudf_ast_table_reference_t::CUDF_AST_TABLE_REFERENCE_RIGHT);
-    let mut out: *mut c_void = ptr::null_mut();
-    let status = unsafe {
-        cudf_sys::cudf_ast_operation_binary_create(cudf_sys::cudf_ast_operator_t::CUDF_AST_LESS, left, right, &mut out)
-    };
+fn make_left_less_than_right_predicate() -> cudf_sys::cudf_ast_expression_handle {
+    let left = make_ast_column_reference(cudf_sys::CUDF_AST_TABLE_REFERENCE_LEFT);
+    let right = make_ast_column_reference(cudf_sys::CUDF_AST_TABLE_REFERENCE_RIGHT);
+    let mut out: cudf_sys::cudf_ast_expression_handle = ptr::null_mut();
+    let status = unsafe { cudf_sys::cudf_ast_operation_binary_create(cudf_sys::CUDF_AST_LESS, left, right, &mut out) };
     assert_eq!(status, cudf_sys::CUDF_SUCCESS);
     assert!(!out.is_null());
     unsafe {
@@ -99,8 +99,8 @@ fn make_left_less_than_right_predicate() -> *mut c_void {
     out
 }
 
-fn column_len(col: *mut c_void) -> usize {
-    let mut view: *mut c_void = ptr::null_mut();
+fn column_len(col: cudf_sys::cudf_column_handle) -> usize {
+    let mut view: cudf_sys::cudf_column_view_handle = ptr::null_mut();
     let status = unsafe { cudf_sys::cudf_column_view(col, &mut view) };
     assert_eq!(status, cudf_sys::CUDF_SUCCESS);
     assert!(!view.is_null());
@@ -113,13 +113,13 @@ fn column_len(col: *mut c_void) -> usize {
     size as usize
 }
 
-fn read_all_i32(col: *mut c_void) -> Vec<i32> {
+fn read_all_i32(col: cudf_sys::cudf_column_handle) -> Vec<i32> {
     read_i32_column_data(col, column_len(col))
 }
 
 fn assert_size_data_payload(
     name: &str,
-    size_data: *mut c_void,
+    size_data: cudf_sys::cudf_mixed_join_size_data_handle,
     expected_size: usize,
     expected_left_indices: &[i32],
     expected_right_indices: &[i32],
@@ -144,8 +144,8 @@ fn assert_size_data_payload(
     assert_eq!(gather_map_size, expected_size * 2 * std::mem::size_of::<i32>(), "{name} exact pair gather-map bytes");
 
     reset_exec_observation();
-    let mut left_indices: *mut c_void = ptr::null_mut();
-    let mut right_indices: *mut c_void = ptr::null_mut();
+    let mut left_indices: cudf_sys::cudf_column_handle = ptr::null_mut();
+    let mut right_indices: cudf_sys::cudf_column_handle = ptr::null_mut();
     let status = unsafe {
         cudf_sys::cudf_mixed_join_size_data_materialize_indices_ex(
             size_data,
@@ -192,10 +192,10 @@ fn assert_size_data_case(
     let current_before = current_mr.allocation_count();
     let current_borrowed = current_mr.borrowed();
     reset_exec_observation();
-    cudf_sys::test_set_current_device_resource(&current_borrowed)
+    crate::support::set_current_device_resource(&current_borrowed)
         .expect("failed to install current sentinel memory resource");
 
-    let mut size_data: *mut c_void = ptr::null_mut();
+    let mut size_data: cudf_sys::cudf_mixed_join_size_data_handle = ptr::null_mut();
     let status = unsafe {
         begin(
             inputs.left_equality,
@@ -203,13 +203,13 @@ fn assert_size_data_case(
             inputs.left_conditional,
             inputs.right_conditional,
             inputs.predicate,
-            cudf_sys::cudf_null_equality_t::CUDF_NULL_EQUALITY_EQUAL,
+            cudf_sys::CUDF_NULL_EQUALITY_EQUAL,
             &mut size_data,
             &exec,
         )
     };
     let restored_current = current_device_resource_raw();
-    unsafe { cudf_sys::test_set_current_device_resource_raw(previous_raw) }
+    unsafe { crate::support::set_current_device_resource_raw(previous_raw) }
         .expect("failed to restore previous current device resource");
 
     assert_eq!(status, cudf_sys::CUDF_SUCCESS, "{name} begin_size_data failed");
@@ -263,10 +263,10 @@ fn assert_single_size_data_case(name: &str, begin: BeginSizeDataExRaw, expected_
     let current_before = current_mr.allocation_count();
     let current_borrowed = current_mr.borrowed();
     reset_exec_observation();
-    cudf_sys::test_set_current_device_resource(&current_borrowed)
+    crate::support::set_current_device_resource(&current_borrowed)
         .expect("failed to install current sentinel memory resource");
 
-    let mut size_data: *mut c_void = ptr::null_mut();
+    let mut size_data: cudf_sys::cudf_mixed_join_size_data_handle = ptr::null_mut();
     let status = unsafe {
         begin(
             inputs.left_equality,
@@ -274,13 +274,13 @@ fn assert_single_size_data_case(name: &str, begin: BeginSizeDataExRaw, expected_
             inputs.left_conditional,
             inputs.right_conditional,
             inputs.predicate,
-            cudf_sys::cudf_null_equality_t::CUDF_NULL_EQUALITY_EQUAL,
+            cudf_sys::CUDF_NULL_EQUALITY_EQUAL,
             &mut size_data,
             &exec,
         )
     };
     let restored_current = current_device_resource_raw();
-    unsafe { cudf_sys::test_set_current_device_resource_raw(previous_raw) }
+    unsafe { crate::support::set_current_device_resource_raw(previous_raw) }
         .expect("failed to restore previous current device resource");
 
     assert_eq!(status, cudf_sys::CUDF_SUCCESS, "{name} begin_size_data failed");
@@ -318,7 +318,7 @@ fn assert_single_size_data_case(name: &str, begin: BeginSizeDataExRaw, expected_
     assert_eq!(gather_map_size, expected_size * std::mem::size_of::<i32>(), "{name} exact single gather-map bytes");
 
     reset_exec_observation();
-    let mut indices: *mut c_void = ptr::null_mut();
+    let mut indices: cudf_sys::cudf_column_handle = ptr::null_mut();
     let status =
         unsafe { cudf_sys::cudf_mixed_join_size_data_materialize_single_indices_ex(size_data, &mut indices, &exec) };
     assert_eq!(status, cudf_sys::CUDF_SUCCESS, "{name} materialize_single_indices failed");
@@ -381,7 +381,7 @@ fn mixed_join_size_data_ex_forms_reject_null_exec_options() {
         ("left", cudf_sys::cudf_mixed_left_join_begin_size_data_ex),
         ("full", cudf_sys::cudf_mixed_full_join_begin_size_data_ex),
     ] {
-        let mut size_data: *mut c_void = ptr::null_mut();
+        let mut size_data: cudf_sys::cudf_mixed_join_size_data_handle = ptr::null_mut();
         let status = unsafe {
             begin(
                 inputs.left_equality,
@@ -389,7 +389,7 @@ fn mixed_join_size_data_ex_forms_reject_null_exec_options() {
                 inputs.left_conditional,
                 inputs.right_conditional,
                 inputs.predicate,
-                cudf_sys::cudf_null_equality_t::CUDF_NULL_EQUALITY_EQUAL,
+                cudf_sys::CUDF_NULL_EQUALITY_EQUAL,
                 &mut size_data,
                 ptr::null(),
             )
@@ -402,7 +402,7 @@ fn mixed_join_size_data_ex_forms_reject_null_exec_options() {
         ("semi", cudf_sys::cudf_mixed_left_semi_join_begin_size_data_ex as BeginSizeDataExRaw),
         ("anti", cudf_sys::cudf_mixed_left_anti_join_begin_size_data_ex),
     ] {
-        let mut size_data: *mut c_void = ptr::null_mut();
+        let mut size_data: cudf_sys::cudf_mixed_join_size_data_handle = ptr::null_mut();
         let status = unsafe {
             begin(
                 inputs.left_equality,
@@ -410,7 +410,7 @@ fn mixed_join_size_data_ex_forms_reject_null_exec_options() {
                 inputs.left_conditional,
                 inputs.right_conditional,
                 inputs.predicate,
-                cudf_sys::cudf_null_equality_t::CUDF_NULL_EQUALITY_EQUAL,
+                cudf_sys::CUDF_NULL_EQUALITY_EQUAL,
                 &mut size_data,
                 ptr::null(),
             )

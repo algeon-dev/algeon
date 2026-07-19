@@ -38,10 +38,9 @@ use crate::{
 /// Trait imports for the testing support surface.
 pub mod prelude {
     pub use super::{
-        AllocationCountTestingExt, BorrowedColumnSliceTestingExt, BorrowedViewTestingExt, DataFrameInContextTestingExt,
+        BorrowedColumnSliceTestingExt, BorrowedViewTestingExt, DataFrameInContextTestingExt,
         ExecutionDomainMemoryResourceTestingExt, ExecutionDomainRebindTestingExt, ExecutionDomainTestingExt,
-        FailFirstAllocationTestingExt, GroupByTestingExt, InteropRawHandleTestingExt, RawHandleTestingExt,
-        RuntimeTestingExt,
+        GroupByTestingExt, InteropRawHandleTestingExt, RawHandleTestingExt, RuntimeTestingExt,
     };
 }
 
@@ -72,16 +71,6 @@ pub trait RawHandleTestingExt {
 /// Testing-only access to interop raw handle values.
 pub trait InteropRawHandleTestingExt {
     fn testing_interop_raw_handle_value(&self) -> usize;
-}
-
-/// Testing-only access to allocation counters on stats memory resources.
-pub trait AllocationCountTestingExt {
-    fn testing_allocation_count(&self) -> Result<i64>;
-}
-
-/// Testing-only wrapper that forces the first allocation through a resource to fail.
-pub trait FailFirstAllocationTestingExt {
-    fn testing_fail_first_allocation(&self) -> Result<DeviceMemoryResource>;
 }
 
 /// Testing-only access to runtime provenance identity.
@@ -204,18 +193,6 @@ impl RawHandleTestingExt for CudaEvent {
 impl InteropRawHandleTestingExt for CudaEvent {
     fn testing_interop_raw_handle_value(&self) -> usize {
         self.__debug_interop_raw_handle_value()
-    }
-}
-
-impl AllocationCountTestingExt for DeviceMemoryResource {
-    fn testing_allocation_count(&self) -> Result<i64> {
-        self.__test_allocation_count()
-    }
-}
-
-impl FailFirstAllocationTestingExt for DeviceMemoryResource {
-    fn testing_fail_first_allocation(&self) -> Result<DeviceMemoryResource> {
-        self.__test_fail_first_allocation()
     }
 }
 

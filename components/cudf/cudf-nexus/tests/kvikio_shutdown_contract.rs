@@ -20,14 +20,14 @@ impl ActiveIoGuard {
     fn begin() -> Self {
         // SAFETY: the dedicated test binary serializes this process-global
         // hook and the guard balances the increment on every exit path.
-        let status = unsafe { cudf_sys::cudf_test_io_kvikio_active_io_begin() };
+        let status = unsafe { cudf_sys::test_support::cudf_test_io_kvikio_active_io_begin() };
         assert_eq!(status, cudf_sys::CUDF_SUCCESS);
         Self { active: true }
     }
 
     fn end(mut self) {
         // SAFETY: this is the matching decrement for `begin` above.
-        let status = unsafe { cudf_sys::cudf_test_io_kvikio_active_io_end() };
+        let status = unsafe { cudf_sys::test_support::cudf_test_io_kvikio_active_io_end() };
         self.active = false;
         assert_eq!(status, cudf_sys::CUDF_SUCCESS);
     }
@@ -38,7 +38,7 @@ impl Drop for ActiveIoGuard {
         if self.active {
             // SAFETY: best-effort unwind cleanup for the increment owned by
             // this guard. The normal path asserts the returned status.
-            let _ = unsafe { cudf_sys::cudf_test_io_kvikio_active_io_end() };
+            let _ = unsafe { cudf_sys::test_support::cudf_test_io_kvikio_active_io_end() };
         }
     }
 }

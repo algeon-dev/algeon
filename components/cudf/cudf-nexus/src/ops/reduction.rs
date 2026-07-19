@@ -15,7 +15,7 @@
 //! assert_eq!(cumsum.to_vec_strict::<i32>().unwrap(), vec![10, 30, 60]);
 //! ```
 
-use std::{os::raw::c_void, ptr, sync::Arc};
+use std::{ptr, sync::Arc};
 
 pub use crate::core::types::NullPolicy;
 use crate::{
@@ -81,8 +81,8 @@ pub enum ScanType {
 impl ScanType {
     pub(crate) fn to_raw(self) -> cudf_sys::cudf_scan_type_t {
         match self {
-            ScanType::Inclusive => cudf_sys::cudf_scan_type_t::CUDF_SCAN_INCLUSIVE,
-            ScanType::Exclusive => cudf_sys::cudf_scan_type_t::CUDF_SCAN_EXCLUSIVE,
+            ScanType::Inclusive => cudf_sys::CUDF_SCAN_INCLUSIVE,
+            ScanType::Exclusive => cudf_sys::CUDF_SCAN_EXCLUSIVE,
         }
     }
 }
@@ -118,8 +118,8 @@ pub(crate) fn checked_ddof_to_i32(ddof: u32, operation: &'static str) -> Result<
 ///
 /// # Safety
 /// Caller must destroy the returned handle via `cudf_reduce_aggregation_destroy`.
-unsafe fn create_reduce_agg_handle(agg: &ReduceAgg) -> Result<*mut c_void> {
-    use cudf_sys::cudf_reduce_aggregation_kind_t::*;
+unsafe fn create_reduce_agg_handle(agg: &ReduceAgg) -> Result<cudf_sys::cudf_reduce_aggregation_handle> {
+    use cudf_sys::*;
 
     let mut handle = ptr::null_mut();
     match agg {
@@ -210,8 +210,8 @@ unsafe fn create_reduce_agg_handle(agg: &ReduceAgg) -> Result<*mut c_void> {
 ///
 /// # Safety
 /// Caller must destroy the returned handle via `cudf_scan_aggregation_destroy`.
-unsafe fn create_scan_agg_handle(agg: ScanAgg) -> Result<*mut c_void> {
-    use cudf_sys::cudf_reduce_aggregation_kind_t::*;
+unsafe fn create_scan_agg_handle(agg: ScanAgg) -> Result<cudf_sys::cudf_scan_aggregation_handle> {
+    use cudf_sys::*;
 
     let mut handle = ptr::null_mut();
     let kind = match agg {

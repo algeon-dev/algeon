@@ -24,7 +24,7 @@ pub struct CudaEvent {
 }
 
 struct CudaEventHandle {
-    raw: Option<NonNull<std::ffi::c_void>>,
+    raw: Option<NonNull<cudf_sys::cudf_event_handle_state>>,
     device: DeviceId,
 }
 
@@ -106,7 +106,7 @@ impl CudaEvent {
         unsafe { cudf_sys::BorrowedEvent::from_raw(self.handle.raw()) }
     }
 
-    pub(crate) fn as_raw(&self) -> *mut std::ffi::c_void {
+    pub(crate) fn as_raw(&self) -> cudf_sys::cudf_event_handle {
         self.handle.raw()
     }
 
@@ -141,7 +141,7 @@ impl Drop for CudaEventHandle {
 }
 
 impl CudaEventHandle {
-    fn raw(&self) -> *mut std::ffi::c_void {
+    fn raw(&self) -> cudf_sys::cudf_event_handle {
         self.raw.expect("live CudaEvent always retains its native event").as_ptr()
     }
 }

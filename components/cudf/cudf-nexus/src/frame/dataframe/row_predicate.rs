@@ -209,12 +209,12 @@ fn lower_expr(
             let index = push_node(
                 lowered,
                 cudf_sys::cudf_row_predicate_node_t {
-                    kind: cudf_sys::cudf_row_predicate_node_kind_t::CUDF_ROW_PREDICATE_NODE_COLUMN_REF,
+                    kind: cudf_sys::CUDF_ROW_PREDICATE_NODE_COLUMN_REF,
                     lhs_index: -1,
                     rhs_index: -1,
                     column_index: crate::core::error::usize_to_i32(column_index, operation, "column_index")?,
-                    binary_op: cudf_sys::cudf_binary_operator_t::CUDF_BINARY_EQUAL,
-                    unary_op: cudf_sys::cudf_unary_operator_t::CUDF_UNARY_NOT,
+                    binary_op: cudf_sys::CUDF_BINARY_EQUAL,
+                    unary_op: cudf_sys::CUDF_UNARY_NOT,
                     literal: std::ptr::null_mut(),
                 },
             )?;
@@ -231,12 +231,12 @@ fn lower_expr(
             let not_index = push_node(
                 lowered,
                 cudf_sys::cudf_row_predicate_node_t {
-                    kind: cudf_sys::cudf_row_predicate_node_kind_t::CUDF_ROW_PREDICATE_NODE_UNARY_OP,
+                    kind: cudf_sys::CUDF_ROW_PREDICATE_NODE_UNARY_OP,
                     lhs_index: is_null_index,
                     rhs_index: -1,
                     column_index: -1,
-                    binary_op: cudf_sys::cudf_binary_operator_t::CUDF_BINARY_EQUAL,
-                    unary_op: cudf_sys::cudf_unary_operator_t::CUDF_UNARY_NOT,
+                    binary_op: cudf_sys::CUDF_BINARY_EQUAL,
+                    unary_op: cudf_sys::CUDF_UNARY_NOT,
                     literal: std::ptr::null_mut(),
                 },
             )?;
@@ -289,12 +289,12 @@ fn lower_literal_with_target(
     let index = push_node(
         lowered,
         cudf_sys::cudf_row_predicate_node_t {
-            kind: cudf_sys::cudf_row_predicate_node_kind_t::CUDF_ROW_PREDICATE_NODE_LITERAL,
+            kind: cudf_sys::CUDF_ROW_PREDICATE_NODE_LITERAL,
             lhs_index: -1,
             rhs_index: -1,
             column_index: -1,
-            binary_op: cudf_sys::cudf_binary_operator_t::CUDF_BINARY_EQUAL,
-            unary_op: cudf_sys::cudf_unary_operator_t::CUDF_UNARY_NOT,
+            binary_op: cudf_sys::CUDF_BINARY_EQUAL,
+            unary_op: cudf_sys::CUDF_UNARY_NOT,
             literal: handle,
         },
     )?;
@@ -449,12 +449,12 @@ fn lower_binary_expr(
     let index = push_node(
         lowered,
         cudf_sys::cudf_row_predicate_node_t {
-            kind: cudf_sys::cudf_row_predicate_node_kind_t::CUDF_ROW_PREDICATE_NODE_BINARY_OP,
+            kind: cudf_sys::CUDF_ROW_PREDICATE_NODE_BINARY_OP,
             lhs_index,
             rhs_index,
             column_index: -1,
             binary_op: op.to_raw(),
-            unary_op: cudf_sys::cudf_unary_operator_t::CUDF_UNARY_NOT,
+            unary_op: cudf_sys::CUDF_UNARY_NOT,
             literal: std::ptr::null_mut(),
         },
     )?;
@@ -533,11 +533,11 @@ fn lower_unary_expr(
             let index = push_node(
                 lowered,
                 cudf_sys::cudf_row_predicate_node_t {
-                    kind: cudf_sys::cudf_row_predicate_node_kind_t::CUDF_ROW_PREDICATE_NODE_UNARY_OP,
+                    kind: cudf_sys::CUDF_ROW_PREDICATE_NODE_UNARY_OP,
                     lhs_index: input_index,
                     rhs_index: -1,
                     column_index: -1,
-                    binary_op: cudf_sys::cudf_binary_operator_t::CUDF_BINARY_EQUAL,
+                    binary_op: cudf_sys::CUDF_BINARY_EQUAL,
                     unary_op: op.to_raw(),
                     literal: std::ptr::null_mut(),
                 },
@@ -559,12 +559,12 @@ fn lower_is_null_expr(
     let index = push_node(
         lowered,
         cudf_sys::cudf_row_predicate_node_t {
-            kind: cudf_sys::cudf_row_predicate_node_kind_t::CUDF_ROW_PREDICATE_NODE_IS_NULL,
+            kind: cudf_sys::CUDF_ROW_PREDICATE_NODE_IS_NULL,
             lhs_index: input_index,
             rhs_index: -1,
             column_index: -1,
-            binary_op: cudf_sys::cudf_binary_operator_t::CUDF_BINARY_EQUAL,
-            unary_op: cudf_sys::cudf_unary_operator_t::CUDF_UNARY_NOT,
+            binary_op: cudf_sys::CUDF_BINARY_EQUAL,
+            unary_op: cudf_sys::CUDF_UNARY_NOT,
             literal: std::ptr::null_mut(),
         },
     )?;

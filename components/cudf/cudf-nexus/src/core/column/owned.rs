@@ -130,7 +130,7 @@ fn null_count_exceeds_row_count_error(operation: &'static str, null_count: usize
 ///
 /// The underlying device memory is freed when this value is dropped.
 pub struct Column {
-    handle: NonNull<c_void>,
+    handle: NonNull<cudf_sys::cudf_column_handle_state>,
     domain: Arc<ExecutionDomain>,
     retained_owner: Option<Arc<dyn Any + Send + Sync>>,
 }
@@ -143,7 +143,7 @@ unsafe impl Send for Column {}
 unsafe impl Sync for Column {}
 
 impl Column {
-    fn from_handle_with_domain(handle: *mut c_void, domain: Arc<ExecutionDomain>) -> Result<Self> {
+    fn from_handle_with_domain(handle: cudf_sys::cudf_column_handle, domain: Arc<ExecutionDomain>) -> Result<Self> {
         Self::from_handle_with_domain_and_owner(handle, domain, None)
     }
 
@@ -172,7 +172,7 @@ impl Column {
     }
 
     fn from_handle_with_domain_and_owner(
-        handle: *mut c_void,
+        handle: cudf_sys::cudf_column_handle,
         domain: Arc<ExecutionDomain>,
         retained_owner: Option<Arc<dyn Any + Send + Sync>>,
     ) -> Result<Self> {
@@ -490,7 +490,7 @@ impl Column {
         Ok(out)
     }
 
-    pub(crate) fn into_raw_parts(self) -> (*mut c_void, Option<Arc<dyn Any + Send + Sync>>) {
+    pub(crate) fn into_raw_parts(self) -> (cudf_sys::cudf_column_handle, Option<Arc<dyn Any + Send + Sync>>) {
         let this = std::mem::ManuallyDrop::new(self);
         let Self { handle: _, domain: _, retained_owner: _ } = &*this;
         let handle = this.handle.as_ptr();
@@ -504,7 +504,10 @@ impl Column {
     /// # Safety
     /// The handle must be a valid `cudf_column_handle` and the caller must
     /// transfer ownership.
-    pub(crate) unsafe fn from_raw_with_domain(handle: *mut c_void, domain: Arc<ExecutionDomain>) -> Result<Self> {
+    pub(crate) unsafe fn from_raw_with_domain(
+        handle: cudf_sys::cudf_column_handle,
+        domain: Arc<ExecutionDomain>,
+    ) -> Result<Self> {
         Self::from_handle_with_domain(handle, domain)
     }
 
@@ -517,7 +520,7 @@ impl Column {
     /// required by the raw handle alive for the full lifetime of the returned
     /// column.
     pub(crate) unsafe fn from_raw_with_domain_and_owner(
-        handle: *mut c_void,
+        handle: cudf_sys::cudf_column_handle,
         domain: Arc<ExecutionDomain>,
         retained_owner: Arc<dyn Any + Send + Sync>,
     ) -> Result<Self> {
@@ -657,7 +660,7 @@ impl Column {
         error::check_status_in(
             unsafe {
                 cudf_sys::cudf_column_create_strings_ex(
-                    ptrs.as_ptr(),
+                    ptrs.as_ptr() as *mut *const c_char,
                     lengths.as_ptr(),
                     num_strings,
                     null_mask.as_ref().map_or(ptr::null(), |mask| mask.as_ptr()),

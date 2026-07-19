@@ -1,5 +1,5 @@
+#include "cudf_rust/io.h"
 #include "execution_context_internal.hpp"
-#include "io.h"
 #include "shim_common.h"
 
 #include <cudf/io/csv.hpp>
@@ -64,7 +64,7 @@ cudf_status_t cudf_io_write_csv_ex(cudf_table_view_handle table,
     cudf_status_t const exec_status = cudf_resolve_required_exec_options(exec_options, &exec);
     if (exec_status != CUDF_SUCCESS) { return exec_status; }
 
-    auto* view = static_cast<cudf::table_view*>(table);
+    auto* view = reinterpret_cast<cudf::table_view*>(table);
     auto sink  = cudf::io::sink_info(std::string(filepath));
 
     auto builder = cudf::io::csv_writer_options::builder(sink, *view)

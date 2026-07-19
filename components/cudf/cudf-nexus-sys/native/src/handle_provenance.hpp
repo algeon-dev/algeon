@@ -2,6 +2,7 @@
 #define CUDF_RUST_HANDLE_PROVENANCE_HPP
 
 #include "execution_context_internal.hpp"
+#include "test_support_internal.hpp"
 
 #include <cudf/utilities/error.hpp>
 
@@ -12,33 +13,25 @@
 struct cudf_handle_provenance {
   int32_t device;
   std::shared_ptr<void> stream_lifetime;
-  rmm::mr::device_memory_resource *mr_raw;
+  rmm::mr::device_memory_resource* mr_raw;
   std::shared_ptr<void> mr_lifetime;
 };
 
-cudf_handle_provenance
-cudf_capture_exec_provenance(cudf_exec_context const &exec) noexcept;
+cudf_handle_provenance cudf_capture_exec_provenance(cudf_exec_context const& exec) noexcept;
 
 cudf_handle_provenance cudf_capture_current_handle_provenance();
 
 cudf_status_t cudf_translate_cleanup_exception_noexcept() noexcept;
 
-/// Return and clear a testing-only one-shot destroy failure.
-cudf_status_t cudf_take_test_provenance_destroy_failure() noexcept;
-
 cudf_status_t cudf_translate_exception_for_provenance_call();
 
 template <typename Callable>
-cudf_status_t
-cudf_call_under_provenance(cudf_handle_provenance const &provenance,
-                           Callable &&call) {
+cudf_status_t cudf_call_under_provenance(cudf_handle_provenance const& provenance, Callable&& call)
+{
   try {
     cudf_device_guard device_guard;
-    cudf_status_t const device_status =
-        device_guard.activate(provenance.device);
-    if (device_status != CUDF_SUCCESS) {
-      return device_status;
-    }
+    cudf_status_t const device_status = device_guard.activate(provenance.device);
+    if (device_status != CUDF_SUCCESS) { return device_status; }
 
     std::forward<Callable>(call)();
     return CUDF_SUCCESS;
@@ -48,9 +41,9 @@ cudf_call_under_provenance(cudf_handle_provenance const &provenance,
 }
 
 template <typename Callable>
-decltype(auto)
-cudf_invoke_under_provenance(cudf_handle_provenance const &provenance,
-                             Callable &&call) {
+decltype(auto) cudf_invoke_under_provenance(cudf_handle_provenance const& provenance,
+                                            Callable&& call)
+{
   cudf_device_guard device_guard;
   cudf_status_t const device_status = device_guard.activate(provenance.device);
   if (device_status != CUDF_SUCCESS) {
@@ -65,17 +58,16 @@ cudf_invoke_under_provenance(cudf_handle_provenance const &provenance,
 /// CUDF_SUCCESS means cleanup completed, while every error means the caller
 /// must quarantine the now-unreachable native allocation.
 template <typename Callable>
-cudf_status_t
-cudf_destroy_under_provenance(cudf_handle_provenance const &provenance,
-                              Callable &&cleanup) noexcept {
-  if (auto const injected = cudf_take_test_provenance_destroy_failure();
+cudf_status_t cudf_destroy_under_provenance(cudf_handle_provenance const& provenance,
+                                            Callable&& cleanup) noexcept
+{
+  if (auto const injected = cudf::rust::test_support::take_provenance_destroy_failure();
       injected != CUDF_SUCCESS) {
     return injected;
   }
   try {
     cudf_device_guard device_guard;
-    if (auto const status = device_guard.activate(provenance.device);
-        status != CUDF_SUCCESS) {
+    if (auto const status = device_guard.activate(provenance.device); status != CUDF_SUCCESS) {
       return status;
     }
 
@@ -86,4 +78,4 @@ cudf_destroy_under_provenance(cudf_handle_provenance const &provenance,
   }
 }
 
-#endif // CUDF_RUST_HANDLE_PROVENANCE_HPP
+#endif  // CUDF_RUST_HANDLE_PROVENANCE_HPP

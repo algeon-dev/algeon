@@ -1,4 +1,4 @@
-#include "stream_compaction.h"
+#include "cudf_rust/stream_compaction.h"
 
 #include "execution_context_internal.hpp"
 #include "shim_common.h"
@@ -34,8 +34,8 @@ cudf_status_t cudf_drop_nulls_ex(cudf_table_view_handle input,
   if (num_keys > 0) { CUDF_RUST_NULL_CHECK(keys, "keys is null"); }
   CUDF_RUST_TRY
   {
-    auto* view = static_cast<cudf::table_view*>(input);
-    auto exec  = std::unique_ptr<cudf_exec_context>{};
+    auto* view                      = reinterpret_cast<cudf::table_view*>(input);
+    auto exec                       = std::unique_ptr<cudf_exec_context>{};
     cudf_status_t const exec_status = cudf_resolve_required_exec_options(options, &exec);
     if (exec_status != CUDF_SUCCESS) { return exec_status; }
 
@@ -44,7 +44,7 @@ cudf_status_t cudf_drop_nulls_ex(cudf_table_view_handle input,
 
     {
       auto result = cudf::drop_nulls(*view, key_vec, keep_threshold, exec->stream, *exec->mr);
-      *out        = cudf_release_table_handle(std::move(result), cudf_capture_exec_provenance(*exec));
+      *out = cudf_release_table_handle(std::move(result), cudf_capture_exec_provenance(*exec));
     }
     return CUDF_SUCCESS;
   }
@@ -105,8 +105,8 @@ cudf_status_t cudf_distinct_ex(cudf_table_view_handle input,
 
   CUDF_RUST_TRY
   {
-    auto* view = static_cast<cudf::table_view*>(input);
-    auto exec  = std::unique_ptr<cudf_exec_context>{};
+    auto* view                      = reinterpret_cast<cudf::table_view*>(input);
+    auto exec                       = std::unique_ptr<cudf_exec_context>{};
     cudf_status_t const exec_status = cudf_resolve_required_exec_options(options, &exec);
     if (exec_status != CUDF_SUCCESS) { return exec_status; }
 

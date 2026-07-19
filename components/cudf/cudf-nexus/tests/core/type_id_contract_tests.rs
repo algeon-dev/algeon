@@ -1,5 +1,5 @@
 use cudf::TypeId;
-use cudf_sys::cudf_type_id_t::*;
+use cudf_sys::*;
 
 #[test]
 fn public_type_id_discriminants_match_ffi_contract() {

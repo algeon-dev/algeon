@@ -1,4 +1,4 @@
-use std::{ffi::c_void, ptr};
+use std::ptr;
 
 use crate::{
     helpers::{make_i32_column, make_table_from_one_column, make_table_view, read_i32_column_data},
@@ -8,11 +8,11 @@ use crate::{
 const JOIN_NO_MATCH: i32 = i32::MIN;
 
 struct ConditionalJoinInputs {
-    left_tbl: *mut c_void,
-    right_tbl: *mut c_void,
-    left: *mut c_void,
-    right: *mut c_void,
-    predicate: *mut c_void,
+    left_tbl: cudf_sys::cudf_table_handle,
+    right_tbl: cudf_sys::cudf_table_handle,
+    left: cudf_sys::cudf_table_view_handle,
+    right: cudf_sys::cudf_table_view_handle,
+    predicate: cudf_sys::cudf_ast_expression_handle,
 }
 
 impl ConditionalJoinInputs {
@@ -20,7 +20,11 @@ impl ConditionalJoinInputs {
         Self::new_with_predicate(left_values, right_values, make_left_less_than_right_predicate())
     }
 
-    fn new_with_predicate(left_values: &[i32], right_values: &[i32], predicate: *mut c_void) -> Self {
+    fn new_with_predicate(
+        left_values: &[i32],
+        right_values: &[i32],
+        predicate: cudf_sys::cudf_ast_expression_handle,
+    ) -> Self {
         let left_tbl = make_table_from_one_column(make_i32_column(left_values));
         let right_tbl = make_table_from_one_column(make_i32_column(right_values));
         let left = make_table_view(left_tbl);
@@ -41,26 +45,28 @@ impl Drop for ConditionalJoinInputs {
     }
 }
 
-fn make_ast_column_reference(table_reference: cudf_sys::cudf_ast_table_reference_t) -> *mut c_void {
-    let mut out: *mut c_void = ptr::null_mut();
+fn make_ast_column_reference(
+    table_reference: cudf_sys::cudf_ast_table_reference_t,
+) -> cudf_sys::cudf_ast_expression_handle {
+    let mut out: cudf_sys::cudf_ast_expression_handle = ptr::null_mut();
     let status = unsafe { cudf_sys::cudf_ast_column_reference_create(0, table_reference, &mut out) };
     assert_eq!(status, cudf_sys::CUDF_SUCCESS);
     assert!(!out.is_null());
     out
 }
 
-fn make_left_less_than_right_predicate() -> *mut c_void {
-    make_left_binary_right_predicate(cudf_sys::cudf_ast_operator_t::CUDF_AST_LESS)
+fn make_left_less_than_right_predicate() -> cudf_sys::cudf_ast_expression_handle {
+    make_left_binary_right_predicate(cudf_sys::CUDF_AST_LESS)
 }
 
-fn make_left_add_right_predicate() -> *mut c_void {
-    make_left_binary_right_predicate(cudf_sys::cudf_ast_operator_t::CUDF_AST_ADD)
+fn make_left_add_right_predicate() -> cudf_sys::cudf_ast_expression_handle {
+    make_left_binary_right_predicate(cudf_sys::CUDF_AST_ADD)
 }
 
-fn make_left_binary_right_predicate(op: cudf_sys::cudf_ast_operator_t) -> *mut c_void {
-    let left = make_ast_column_reference(cudf_sys::cudf_ast_table_reference_t::CUDF_AST_TABLE_REFERENCE_LEFT);
-    let right = make_ast_column_reference(cudf_sys::cudf_ast_table_reference_t::CUDF_AST_TABLE_REFERENCE_RIGHT);
-    let mut out: *mut c_void = ptr::null_mut();
+fn make_left_binary_right_predicate(op: cudf_sys::cudf_ast_operator_t) -> cudf_sys::cudf_ast_expression_handle {
+    let left = make_ast_column_reference(cudf_sys::CUDF_AST_TABLE_REFERENCE_LEFT);
+    let right = make_ast_column_reference(cudf_sys::CUDF_AST_TABLE_REFERENCE_RIGHT);
+    let mut out: cudf_sys::cudf_ast_expression_handle = ptr::null_mut();
     let status = unsafe { cudf_sys::cudf_ast_operation_binary_create(op, left, right, &mut out) };
     assert_eq!(status, cudf_sys::CUDF_SUCCESS);
     assert!(!out.is_null());
@@ -71,8 +77,8 @@ fn make_left_binary_right_predicate(op: cudf_sys::cudf_ast_operator_t) -> *mut c
     out
 }
 
-fn column_len(col: *mut c_void) -> usize {
-    let mut view: *mut c_void = ptr::null_mut();
+fn column_len(col: cudf_sys::cudf_column_handle) -> usize {
+    let mut view: cudf_sys::cudf_column_view_handle = ptr::null_mut();
     let status = unsafe { cudf_sys::cudf_column_view(col, &mut view) };
     assert_eq!(status, cudf_sys::CUDF_SUCCESS);
     assert!(!view.is_null());
@@ -84,7 +90,7 @@ fn column_len(col: *mut c_void) -> usize {
     size as usize
 }
 
-fn read_all_i32(col: *mut c_void) -> Vec<i32> {
+fn read_all_i32(col: cudf_sys::cudf_column_handle) -> Vec<i32> {
     read_i32_column_data(col, column_len(col))
 }
 
@@ -95,7 +101,7 @@ fn conditional_full_join_size_data_reports_and_materializes_pair_contract() {
     let mr = OwnedMemoryResource::new_cuda();
     let exec = required_exec_options(&stream.borrowed(), &mr.borrowed());
     let inputs = ConditionalJoinInputs::new(&[2, 5, 9], &[1, 3, 6]);
-    let mut size_data: *mut c_void = ptr::null_mut();
+    let mut size_data: cudf_sys::cudf_conditional_full_join_size_data_handle = ptr::null_mut();
     let status = unsafe {
         cudf_sys::cudf_conditional_full_join_begin_size_data_ex(
             inputs.left,
@@ -119,8 +125,8 @@ fn conditional_full_join_size_data_reports_and_materializes_pair_contract() {
     assert_eq!(status, cudf_sys::CUDF_SUCCESS);
     assert_eq!(gather_map_size, 2 * output_size * std::mem::size_of::<i32>());
 
-    let mut left_indices: *mut c_void = ptr::null_mut();
-    let mut right_indices: *mut c_void = ptr::null_mut();
+    let mut left_indices: cudf_sys::cudf_column_handle = ptr::null_mut();
+    let mut right_indices: cudf_sys::cudf_column_handle = ptr::null_mut();
     let status = unsafe {
         cudf_sys::cudf_conditional_full_join_size_data_materialize_indices_ex(
             size_data,
@@ -147,7 +153,7 @@ fn conditional_full_join_size_data_empty_input_rejects_non_boolean_predicate() {
     let mr = OwnedMemoryResource::new_cuda();
     let exec = required_exec_options(&stream.borrowed(), &mr.borrowed());
     let inputs = ConditionalJoinInputs::new_with_predicate(&[], &[1, 2], make_left_add_right_predicate());
-    let mut size_data: *mut c_void = ptr::null_mut();
+    let mut size_data: cudf_sys::cudf_conditional_full_join_size_data_handle = ptr::null_mut();
     let status = unsafe {
         cudf_sys::cudf_conditional_full_join_begin_size_data_ex(
             inputs.left,
@@ -170,7 +176,7 @@ fn conditional_full_join_size_data_materialized_indices_survive_destroy_before_s
     let exec = required_exec_options(&stream.borrowed(), &mr.borrowed());
     let inputs = ConditionalJoinInputs::new(&[2, 5, 9], &[1, 3, 6]);
 
-    let mut size_data: *mut c_void = ptr::null_mut();
+    let mut size_data: cudf_sys::cudf_conditional_full_join_size_data_handle = ptr::null_mut();
     let status = unsafe {
         cudf_sys::cudf_conditional_full_join_begin_size_data_ex(
             inputs.left,
@@ -183,8 +189,8 @@ fn conditional_full_join_size_data_materialized_indices_survive_destroy_before_s
     assert_eq!(status, cudf_sys::CUDF_SUCCESS);
     assert!(!size_data.is_null());
 
-    let mut left_indices: *mut c_void = ptr::null_mut();
-    let mut right_indices: *mut c_void = ptr::null_mut();
+    let mut left_indices: cudf_sys::cudf_column_handle = ptr::null_mut();
+    let mut right_indices: cudf_sys::cudf_column_handle = ptr::null_mut();
     let status = unsafe {
         cudf_sys::cudf_conditional_full_join_size_data_materialize_indices_ex(
             size_data,

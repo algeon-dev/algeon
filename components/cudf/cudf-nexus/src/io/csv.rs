@@ -154,10 +154,13 @@ pub(crate) fn write_csv_with_exec(
         .transpose()?;
 
     // Build the pointer array outside the match so it outlives the FFI call.
-    let name_ptrs_vec: Vec<*const std::os::raw::c_char> =
+    let mut name_ptrs_vec: Vec<*const std::os::raw::c_char> =
         cstring_names.as_ref().map(|names| names.iter().map(|c| c.as_ptr()).collect()).unwrap_or_default();
-    let (name_ptrs, num_cols) =
-        if name_ptrs_vec.is_empty() { (ptr::null(), 0) } else { (name_ptrs_vec.as_ptr(), name_ptrs_vec.len() as i32) };
+    let (name_ptrs, num_cols) = if name_ptrs_vec.is_empty() {
+        (ptr::null_mut(), 0)
+    } else {
+        (name_ptrs_vec.as_mut_ptr(), name_ptrs_vec.len() as i32)
+    };
 
     error::check_status_in_with_details(
         // SAFETY: table handle is valid (NonNull). filepath is a valid CString (converted above).

@@ -121,6 +121,27 @@ fn gpu_resources_are_declared_after_retained_provenance_so_they_drop_first() {
 }
 
 #[test]
+fn groupby_scan_stages_all_owning_handles_before_raw_array_publication() {
+    let sources = NativeSources::load();
+    let body = sources.function_body("cudf_groupby_scan_ex").body;
+    let keys_owner = body
+        .find("unique_groupby_table_handle keys_handle")
+        .expect("groupby scan must stage its result keys in an owning handle");
+    let raw_column_release = body
+        .find("col_array.get()[idx++] = col.release();")
+        .expect("groupby scan must eventually transfer staged columns into its output array");
+
+    assert!(
+        keys_owner < raw_column_release,
+        "groupby scan must finish every fallible owning-handle construction before releasing columns into the raw output array"
+    );
+    assert!(
+        source_contract_support::contains_normalized(body, "*out_keys = keys_handle.release();"),
+        "groupby scan must publish the staged keys handle only at the output commit point"
+    );
+}
+
+#[test]
 fn cached_join_owners_retain_stream_lifetime_and_destroy_under_captured_mr() {
     let sources = NativeSources::load();
     let combined = sources.combined();

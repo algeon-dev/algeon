@@ -37,7 +37,6 @@
 use std::{
     collections::HashMap,
     num::NonZeroU64,
-    os::raw::c_void,
     sync::{
         Arc, Mutex, OnceLock,
         atomic::{AtomicU64, Ordering},
@@ -111,8 +110,8 @@ impl DeviceExecutionAuthority {
                 struct_size: std::mem::size_of::<cudf_sys::cudf_exec_options_t>(),
                 device: self.device.ordinal_raw(),
                 flags: cudf_sys::CUDF_EXEC_FLAG_DEVICE_EXPLICIT,
-                stream: stream.as_raw() as *mut c_void,
-                mr: mr.as_raw() as *mut c_void,
+                stream: stream.as_raw(),
+                mr: mr.as_raw(),
                 reserved: [0; cudf_sys::CUDF_EXEC_OPTIONS_RESERVED_SLOTS],
             },
         })

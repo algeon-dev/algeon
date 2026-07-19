@@ -1,6 +1,7 @@
 #include "execution_context_internal.hpp"
 #include "handle_access.hpp"
 #include "shim_common.h"
+#include "test_support_internal.hpp"
 
 #include <cudf/utilities/default_stream.hpp>
 #include <cudf/utilities/memory_resource.hpp>
@@ -9,60 +10,16 @@
 
 #include <cuda_runtime_api.h>
 
-#include <array>
 #include <cstddef>
 #include <cstdint>
-#include <limits>
 #include <memory>
 #include <mutex>
 #include <string>
 #include <utility>
 
 namespace {
-constexpr std::size_t k_exec_mr_observation_capacity = 64;
-
-thread_local std::uintptr_t g_last_exec_stream_value =
-    std::numeric_limits<std::uintptr_t>::max();
-thread_local std::uintptr_t g_last_exec_sync_stream_value =
-    std::numeric_limits<std::uintptr_t>::max();
-thread_local void *g_last_exec_mr_raw = nullptr;
-thread_local int32_t g_last_exec_device = -1;
-thread_local std::array<void *, k_exec_mr_observation_capacity>
-    g_exec_mr_observations{};
-thread_local std::size_t g_exec_mr_observation_start = 0;
-thread_local std::size_t g_exec_mr_observation_count = 0;
-thread_local bool g_exec_mr_observation_overflowed = false;
-
-void record_exec_context(rmm::cuda_stream_view stream,
-                         rmm::mr::device_memory_resource *mr_raw) {
-  g_last_exec_stream_value = reinterpret_cast<std::uintptr_t>(stream.value());
-  g_last_exec_mr_raw = mr_raw;
-  if (g_exec_mr_observation_count < g_exec_mr_observations.size()) {
-    auto const physical =
-        (g_exec_mr_observation_start + g_exec_mr_observation_count) %
-        g_exec_mr_observations.size();
-    g_exec_mr_observations[physical] = mr_raw;
-    ++g_exec_mr_observation_count;
-  } else {
-    g_exec_mr_observations[g_exec_mr_observation_start] = mr_raw;
-    g_exec_mr_observation_start =
-        (g_exec_mr_observation_start + 1) % g_exec_mr_observations.size();
-    g_exec_mr_observation_overflowed = true;
-  }
-
-  int32_t dev = -1;
-  if (cudaGetDevice(&dev) == cudaSuccess) {
-    g_last_exec_device = dev;
-  }
-}
-
-void *exec_mr_observation_at(std::size_t index) {
-  auto const physical =
-      (g_exec_mr_observation_start + index) % g_exec_mr_observations.size();
-  return g_exec_mr_observations[physical];
-}
-
-cudf_status_t get_current_device_or_error(int32_t *out) {
+cudf_status_t get_current_device_or_error(int32_t* out)
+{
   cudaError_t err = cudaGetDevice(out);
   if (err != cudaSuccess) {
     auto msg = std::string("cudaGetDevice failed: ") + cudaGetErrorString(err);
@@ -77,27 +34,28 @@ struct cudf_exec_mr_lifetime {
   std::shared_ptr<cuda::mr::any_resource<cuda::mr::device_accessible>> resource_ref_lifetime;
 };
 
-std::shared_ptr<cuda::mr::any_resource<cuda::mr::device_accessible>>
-make_exec_mr_ref(rmm::mr::device_memory_resource *raw) {
+std::shared_ptr<cuda::mr::any_resource<cuda::mr::device_accessible>> make_exec_mr_ref(
+  rmm::mr::device_memory_resource* raw)
+{
   return std::make_shared<cuda::mr::any_resource<cuda::mr::device_accessible>>(
-      rmm::mr::any_device_resource_from_raw(raw));
+    rmm::mr::any_device_resource_from_raw(raw));
 }
 
 std::shared_ptr<void> make_exec_mr_lifetime(
-    std::shared_ptr<void> resource_owner_lifetime,
-    std::shared_ptr<cuda::mr::any_resource<cuda::mr::device_accessible>> resource_ref_lifetime) {
-  auto lifetime = std::make_shared<cudf_exec_mr_lifetime>();
+  std::shared_ptr<void> resource_owner_lifetime,
+  std::shared_ptr<cuda::mr::any_resource<cuda::mr::device_accessible>> resource_ref_lifetime)
+{
+  auto lifetime                     = std::make_shared<cudf_exec_mr_lifetime>();
   lifetime->resource_owner_lifetime = std::move(resource_owner_lifetime);
-  lifetime->resource_ref_lifetime = std::move(resource_ref_lifetime);
+  lifetime->resource_ref_lifetime   = std::move(resource_ref_lifetime);
   return lifetime;
 }
-} // namespace
+}  // namespace
 
-cudf_status_t cudf_device_guard::activate(int32_t target) {
+cudf_status_t cudf_device_guard::activate(int32_t target)
+{
   cudf_status_t const current_status = get_current_device_or_error(&previous_);
-  if (current_status != CUDF_SUCCESS) {
-    return current_status;
-  }
+  if (current_status != CUDF_SUCCESS) { return current_status; }
   if (previous_ == target) {
     active_ = false;
     return CUDF_SUCCESS;
@@ -114,19 +72,28 @@ cudf_status_t cudf_device_guard::activate(int32_t target) {
   return CUDF_SUCCESS;
 }
 
-cudf_exec_context::cudf_exec_context(rmm::cuda_stream_view stream,
-                                     std::shared_ptr<void> stream_lifetime,
-                                     std::shared_ptr<cuda::mr::any_resource<cuda::mr::device_accessible>> mr,
-                                     rmm::mr::device_memory_resource *mr_raw,
-                                     std::shared_ptr<void> mr_lifetime,
-                                     int32_t device, cudf_device_guard guard)
-    : stream(stream), stream_lifetime(std::move(stream_lifetime)),
-      mr(std::move(mr)), mr_raw(mr_raw), mr_lifetime(std::move(mr_lifetime)),
-      device(device), guard(std::move(guard)) {}
+cudf_exec_context::cudf_exec_context(
+  rmm::cuda_stream_view stream,
+  std::shared_ptr<void> stream_lifetime,
+  std::shared_ptr<cuda::mr::any_resource<cuda::mr::device_accessible>> mr,
+  rmm::mr::device_memory_resource* mr_raw,
+  std::shared_ptr<void> mr_lifetime,
+  int32_t device,
+  cudf_device_guard guard)
+  : stream(stream),
+    stream_lifetime(std::move(stream_lifetime)),
+    mr(std::move(mr)),
+    mr_raw(mr_raw),
+    mr_lifetime(std::move(mr_lifetime)),
+    device(device),
+    guard(std::move(guard))
+{
+}
 
-cudf_exec_context cudf_make_exec_context() {
-  auto *mr_raw = cudf_tracked_current_device_resource_raw();
-  auto mr_ref = make_exec_mr_ref(mr_raw);
+cudf_exec_context cudf_make_exec_context()
+{
+  auto* mr_raw = cudf_tracked_current_device_resource_raw();
+  auto mr_ref  = make_exec_mr_ref(mr_raw);
   return {cudf::get_default_stream(),
           {},
           mr_ref,
@@ -135,8 +102,8 @@ cudf_exec_context cudf_make_exec_context() {
           0};
 }
 
-cudf_status_t cudf_resolve_exec_options(cudf_exec_options_t const *options,
-                                        cudf_exec_context *out) {
+cudf_status_t cudf_resolve_exec_options(cudf_exec_options_t const* options, cudf_exec_context* out)
+{
   if (out == nullptr) {
     set_error("out is null");
     return CUDF_ERROR_NULL;
@@ -146,19 +113,18 @@ cudf_status_t cudf_resolve_exec_options(cudf_exec_options_t const *options,
   // return. This must come before any struct-field access since there is no
   // struct.
   if (options == nullptr) {
-    int32_t dev = 0;
+    int32_t dev                        = 0;
     cudf_status_t const current_status = get_current_device_or_error(&dev);
-    if (current_status != CUDF_SUCCESS) {
-      return current_status;
-    }
-    out->device = dev;
-    out->stream = cudf::get_default_stream();
+    if (current_status != CUDF_SUCCESS) { return current_status; }
+    out->device          = dev;
+    out->stream          = cudf::get_default_stream();
     out->stream_lifetime = {};
-    out->mr_raw = cudf_tracked_current_device_resource_raw();
-    out->mr = make_exec_mr_ref(out->mr_raw);
+    out->mr_raw          = cudf_tracked_current_device_resource_raw();
+    out->mr              = make_exec_mr_ref(out->mr_raw);
     out->mr_lifetime =
-        make_exec_mr_lifetime(cudf_memory_resource_lifetime_from_raw(out->mr_raw), out->mr);
-    record_exec_context(out->stream, out->mr_raw);
+      make_exec_mr_lifetime(cudf_memory_resource_lifetime_from_raw(out->mr_raw), out->mr);
+    cudf::rust::test_support::record_exec_context(
+      reinterpret_cast<std::uintptr_t>(out->stream.value()), out->mr_raw);
     return CUDF_SUCCESS;
   }
 
@@ -188,45 +154,42 @@ cudf_status_t cudf_resolve_exec_options(cudf_exec_options_t const *options,
   // device is current on the calling thread.
   if ((options->flags & CUDF_EXEC_FLAG_DEVICE_EXPLICIT) != 0) {
     cudf_status_t const device_status = out->guard.activate(options->device);
-    if (device_status != CUDF_SUCCESS) {
-      return device_status;
-    }
+    if (device_status != CUDF_SUCCESS) { return device_status; }
     out->device = options->device;
   } else {
-    int32_t dev = 0;
+    int32_t dev                        = 0;
     cudf_status_t const current_status = get_current_device_or_error(&dev);
-    if (current_status != CUDF_SUCCESS) {
-      return current_status;
-    }
+    if (current_status != CUDF_SUCCESS) { return current_status; }
     out->device = dev;
   }
 
   // Step 4: Resolve stream and MR defaults on the now-active device.
   out->stream = cudf::get_default_stream();
   out->mr_raw = cudf_tracked_current_device_resource_raw();
-  out->mr = make_exec_mr_ref(out->mr_raw);
+  out->mr     = make_exec_mr_ref(out->mr_raw);
   out->mr_lifetime =
-      make_exec_mr_lifetime(cudf_memory_resource_lifetime_from_raw(out->mr_raw), out->mr);
+    make_exec_mr_lifetime(cudf_memory_resource_lifetime_from_raw(out->mr_raw), out->mr);
 
   // Step 5: Apply optional stream/MR overrides from the caller.
   if (options->stream != nullptr) {
-    out->stream = cudf_stream_view_from_handle(options->stream);
+    out->stream          = cudf_stream_view_from_handle(options->stream);
     out->stream_lifetime = cudf_stream_lifetime_from_handle(options->stream);
   }
   if (options->mr != nullptr) {
     out->mr_raw = cudf_memory_resource_raw_from_handle(options->mr);
-    out->mr = make_exec_mr_ref(out->mr_raw);
+    out->mr     = make_exec_mr_ref(out->mr_raw);
     out->mr_lifetime =
-        make_exec_mr_lifetime(cudf_memory_resource_lifetime_from_handle(options->mr), out->mr);
+      make_exec_mr_lifetime(cudf_memory_resource_lifetime_from_handle(options->mr), out->mr);
   }
 
-  record_exec_context(out->stream, out->mr_raw);
+  cudf::rust::test_support::record_exec_context(
+    reinterpret_cast<std::uintptr_t>(out->stream.value()), out->mr_raw);
   return CUDF_SUCCESS;
 }
 
-cudf_status_t
-cudf_resolve_required_exec_options(cudf_exec_options_t const *options,
-                                   std::unique_ptr<cudf_exec_context> *out) {
+cudf_status_t cudf_resolve_required_exec_options(cudf_exec_options_t const* options,
+                                                 std::unique_ptr<cudf_exec_context>* out)
+{
   if (out == nullptr) {
     set_error("out is null");
     return CUDF_ERROR_NULL;
@@ -258,11 +221,10 @@ cudf_resolve_required_exec_options(cudf_exec_options_t const *options,
     set_error("exec options device must be >= 0");
     return CUDF_ERROR_INVALID_OPERATION;
   }
-  int32_t device_count = 0;
+  int32_t device_count           = 0;
   cudaError_t const count_status = cudaGetDeviceCount(&device_count);
   if (count_status != cudaSuccess) {
-    auto msg = std::string("cudaGetDeviceCount failed: ") +
-               cudaGetErrorString(count_status);
+    auto msg = std::string("cudaGetDeviceCount failed: ") + cudaGetErrorString(count_status);
     set_error(msg);
     return CUDF_ERROR_CUDA;
   }
@@ -281,114 +243,30 @@ cudf_resolve_required_exec_options(cudf_exec_options_t const *options,
 
   cudf_device_guard guard;
   cudf_status_t const device_status = guard.activate(options->device);
-  if (device_status != CUDF_SUCCESS) {
-    return device_status;
-  }
+  if (device_status != CUDF_SUCCESS) { return device_status; }
 
-  auto stream = cudf_stream_view_from_handle(options->stream);
+  auto stream          = cudf_stream_view_from_handle(options->stream);
   auto stream_lifetime = cudf_stream_lifetime_from_handle(options->stream);
-  auto *mr_raw = cudf_memory_resource_raw_from_handle(options->mr);
-  auto mr = make_exec_mr_ref(mr_raw);
+  auto* mr_raw         = cudf_memory_resource_raw_from_handle(options->mr);
+  auto mr              = make_exec_mr_ref(mr_raw);
   auto mr_lifetime =
-      make_exec_mr_lifetime(cudf_memory_resource_lifetime_from_handle(options->mr), mr);
+    make_exec_mr_lifetime(cudf_memory_resource_lifetime_from_handle(options->mr), mr);
 
-  *out = std::make_unique<cudf_exec_context>(
-      stream, std::move(stream_lifetime), std::move(mr), mr_raw,
-      std::move(mr_lifetime), options->device, std::move(guard));
+  *out = std::make_unique<cudf_exec_context>(stream,
+                                             std::move(stream_lifetime),
+                                             std::move(mr),
+                                             mr_raw,
+                                             std::move(mr_lifetime),
+                                             options->device,
+                                             std::move(guard));
 
-  record_exec_context((*out)->stream, (*out)->mr_raw);
+  cudf::rust::test_support::record_exec_context(
+    reinterpret_cast<std::uintptr_t>((*out)->stream.value()), (*out)->mr_raw);
   return CUDF_SUCCESS;
 }
 
-void cudf_record_synchronized_stream(rmm::cuda_stream_view stream) {
-  g_last_exec_sync_stream_value =
-      reinterpret_cast<std::uintptr_t>(stream.value());
+void cudf_record_synchronized_stream(rmm::cuda_stream_view stream)
+{
+  cudf::rust::test_support::record_synchronized_stream(
+    reinterpret_cast<std::uintptr_t>(stream.value()));
 }
-
-extern "C" {
-void cudf_test_exec_reset_observation() {
-  g_last_exec_stream_value = std::numeric_limits<std::uintptr_t>::max();
-  g_last_exec_sync_stream_value = std::numeric_limits<std::uintptr_t>::max();
-  g_last_exec_mr_raw = nullptr;
-  g_last_exec_device = -1;
-  g_exec_mr_observations.fill(nullptr);
-  g_exec_mr_observation_start = 0;
-  g_exec_mr_observation_count = 0;
-  g_exec_mr_observation_overflowed = false;
-}
-
-cudf_status_t cudf_test_exec_last_stream_value(std::uintptr_t *out) {
-  CUDF_RUST_NULL_CHECK(out, "out is null");
-  *out = g_last_exec_stream_value;
-  return CUDF_SUCCESS;
-}
-
-cudf_status_t cudf_test_exec_last_sync_stream_value(std::uintptr_t *out) {
-  CUDF_RUST_NULL_CHECK(out, "out is null");
-  *out = g_last_exec_sync_stream_value;
-  return CUDF_SUCCESS;
-}
-
-cudf_status_t cudf_test_exec_last_mr_raw(void **out) {
-  CUDF_RUST_NULL_CHECK(out, "out is null");
-  *out = g_last_exec_mr_raw;
-  return CUDF_SUCCESS;
-}
-
-cudf_status_t cudf_test_exec_observed_mr_count(std::size_t *out) {
-  CUDF_RUST_NULL_CHECK(out, "out is null");
-  *out = g_exec_mr_observation_count;
-  return CUDF_SUCCESS;
-}
-
-cudf_status_t cudf_test_exec_observed_mr_overflowed(int32_t *out) {
-  CUDF_RUST_NULL_CHECK(out, "out is null");
-  *out = g_exec_mr_observation_overflowed ? 1 : 0;
-  return CUDF_SUCCESS;
-}
-
-cudf_status_t cudf_test_exec_observed_mr_raw_at(std::size_t index, void **out) {
-  CUDF_RUST_NULL_CHECK(out, "out is null");
-  if (index >= g_exec_mr_observation_count) {
-    set_error("execution memory-resource observation index is out of range");
-    return CUDF_ERROR_INVALID_OPERATION;
-  }
-  *out = exec_mr_observation_at(index);
-  return CUDF_SUCCESS;
-}
-
-cudf_status_t cudf_test_default_stream_value(std::uintptr_t *out) {
-  CUDF_RUST_NULL_CHECK(out, "out is null");
-  *out = reinterpret_cast<std::uintptr_t>(cudf::get_default_stream().value());
-  return CUDF_SUCCESS;
-}
-
-cudf_status_t cudf_test_stream_handle_value(cudf_stream_handle handle,
-                                            std::uintptr_t *out) {
-  CUDF_RUST_NULL_CHECK(out, "out is null");
-  *out = 0;
-  void *raw = nullptr;
-  cudf_status_t const status = cudf_stream_raw(handle, &raw);
-  if (status != CUDF_SUCCESS) {
-    return status;
-  }
-  *out = reinterpret_cast<std::uintptr_t>(raw);
-  return CUDF_SUCCESS;
-}
-
-cudf_status_t cudf_test_current_device_resource_raw(void **out) {
-  CUDF_RUST_NULL_CHECK(out, "out is null");
-  *out = nullptr;
-  CUDF_RUST_TRY {
-    *out = cudf_tracked_current_device_resource_raw();
-    return CUDF_SUCCESS;
-  }
-  CUDF_RUST_CATCH
-}
-
-cudf_status_t cudf_test_exec_last_device(int32_t *out) {
-  CUDF_RUST_NULL_CHECK(out, "out is null");
-  *out = g_last_exec_device;
-  return CUDF_SUCCESS;
-}
-} // extern "C"

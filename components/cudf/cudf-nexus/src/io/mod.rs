@@ -67,9 +67,9 @@ pub enum KvikioCompatMode {
 impl KvikioCompatMode {
     const fn as_ffi(self) -> i32 {
         match self {
-            Self::Auto => cudf_sys::CUDF_IO_KVIKIO_COMPAT_MODE_AUTO,
-            Self::On => cudf_sys::CUDF_IO_KVIKIO_COMPAT_MODE_ON,
-            Self::Off => cudf_sys::CUDF_IO_KVIKIO_COMPAT_MODE_OFF,
+            Self::Auto => cudf_sys::CUDF_IO_KVIKIO_COMPAT_MODE_AUTO as i32,
+            Self::On => cudf_sys::CUDF_IO_KVIKIO_COMPAT_MODE_ON as i32,
+            Self::Off => cudf_sys::CUDF_IO_KVIKIO_COMPAT_MODE_OFF as i32,
         }
     }
 }
@@ -92,9 +92,9 @@ pub fn set_kvikio_compat_mode(mode: KvikioCompatMode) -> Result<()> {
 pub fn kvikio_compat_mode() -> Option<KvikioCompatMode> {
     // SAFETY: this getter takes no pointers and returns a small integer tag.
     match unsafe { cudf_sys::cudf_io_kvikio_compat_mode() } {
-        cudf_sys::CUDF_IO_KVIKIO_COMPAT_MODE_AUTO => Some(KvikioCompatMode::Auto),
-        cudf_sys::CUDF_IO_KVIKIO_COMPAT_MODE_ON => Some(KvikioCompatMode::On),
-        cudf_sys::CUDF_IO_KVIKIO_COMPAT_MODE_OFF => Some(KvikioCompatMode::Off),
+        value if value == cudf_sys::CUDF_IO_KVIKIO_COMPAT_MODE_AUTO as i32 => Some(KvikioCompatMode::Auto),
+        value if value == cudf_sys::CUDF_IO_KVIKIO_COMPAT_MODE_ON as i32 => Some(KvikioCompatMode::On),
+        value if value == cudf_sys::CUDF_IO_KVIKIO_COMPAT_MODE_OFF as i32 => Some(KvikioCompatMode::Off),
         _ => None,
     }
 }
@@ -328,13 +328,13 @@ mod tests {
                 // SAFETY: this guard owns the matching test-only active-I/O
                 // increment. Cleanup is best-effort while unwinding; the
                 // normal path below asserts the status explicitly.
-                let _ = unsafe { cudf_sys::cudf_test_io_kvikio_active_io_end() };
+                let _ = unsafe { cudf_sys::test_support::cudf_test_io_kvikio_active_io_end() };
             }
         }
 
         // SAFETY: the test hook takes no pointers and the guard balances the
         // process-global lifecycle count even if the assertion below panics.
-        assert_eq!(unsafe { cudf_sys::cudf_test_io_kvikio_active_io_begin() }, cudf_sys::CUDF_SUCCESS);
+        assert_eq!(unsafe { cudf_sys::test_support::cudf_test_io_kvikio_active_io_begin() }, cudf_sys::CUDF_SUCCESS);
         let mut active_io = ActiveIoGuard(true);
         if super::kvikio_compat_mode().is_some() {
             let error = super::drain_kvikio_bounce_buffer_pools().unwrap_err();
@@ -344,7 +344,7 @@ mod tests {
             assert_eq!(error.detail_value("reason"), Some("active_io"));
         }
         // SAFETY: this is the matching decrement for the begin call above.
-        let status = unsafe { cudf_sys::cudf_test_io_kvikio_active_io_end() };
+        let status = unsafe { cudf_sys::test_support::cudf_test_io_kvikio_active_io_end() };
         active_io.0 = false;
         assert_eq!(status, cudf_sys::CUDF_SUCCESS);
     }

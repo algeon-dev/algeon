@@ -11,12 +11,82 @@ keywords = ["cuda", "cudf", "ffi", "gpu", "rapids"]
 categories = ["api-bindings", "science"]
 build = "build.rs"
 links = "cudf_rust"
+autotests = false
 
 [lib]
 name = "cudf_sys"
+
+[package.metadata.bindgen-cli]
+version = "0.72.1"
+
+[features]
+default = []
+test-hooks = []
 
 [build-dependencies]
 cmake.workspace = true
 
 [dev-dependencies]
 static_assertions.workspace = true
+
+[[test]]
+name = "native_abi_contract"
+
+[[test]]
+name = "bindings_contract"
+
+[[test]]
+name = "build_link_contract"
+required-features = ["test-hooks"]
+
+[[test]]
+name = "column_contract"
+required-features = ["test-hooks"]
+
+[[test]]
+name = "current_resource_invariant_contract"
+required-features = ["test-hooks"]
+
+[[test]]
+name = "execution_context_strict_contract"
+required-features = ["test-hooks"]
+
+[[test]]
+name = "ffi_regressions"
+required-features = ["test-hooks"]
+
+[[test]]
+name = "fingerprint_matrix_contract"
+required-features = ["test-hooks"]
+
+[[test]]
+name = "handle_destroy_provenance_contract"
+required-features = ["test-hooks"]
+
+[[test]]
+name = "hash_join_destroy_provenance"
+required-features = ["test-hooks"]
+
+[[test]]
+name = "memory_resource_hooks"
+required-features = ["test-hooks"]
+
+[[test]]
+name = "metadata_size_hooks"
+required-features = ["test-hooks"]
+
+[[test]]
+name = "prepared_import_contract"
+required-features = ["test-hooks"]
+
+[[test]]
+name = "profiler_api_contract"
+required-features = ["test-hooks"]
+
+[[test]]
+name = "source_contract_support"
+required-features = ["test-hooks"]
+
+[[test]]
+name = "thread_contract_tests"
+required-features = ["test-hooks"]

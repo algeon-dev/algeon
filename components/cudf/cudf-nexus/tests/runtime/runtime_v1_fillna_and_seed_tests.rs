@@ -10,7 +10,7 @@
 use std::{ffi::c_void, ptr};
 
 use cudf::{DataFrame, Series, TypeId, testing::prelude::*};
-use cudf_sys::{
+use cudf_sys::test_support::{
     cudf_test_current_device_resource_raw, cudf_test_exec_last_mr_raw, cudf_test_exec_last_stream_value,
     cudf_test_exec_reset_observation,
 };

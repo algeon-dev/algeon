@@ -1,4 +1,4 @@
-#include "unary.h"
+#include "cudf_rust/unary.h"
 
 #include "execution_context_internal.hpp"
 #include "shim_common.h"
@@ -13,8 +13,8 @@
 #include <memory>
 
 namespace {
-cudf_status_t to_unary_operator(cudf_unary_operator_t input,
-                                cudf::unary_operator *out) {
+cudf_status_t to_unary_operator(cudf_unary_operator_t input, cudf::unary_operator* out)
+{
   if (input < CUDF_UNARY_SIN || input > CUDF_UNARY_NEGATE) {
     set_error("invalid unary operator");
     return CUDF_ERROR_INVALID_OPERATION;
@@ -22,29 +22,27 @@ cudf_status_t to_unary_operator(cudf_unary_operator_t input,
   *out = static_cast<cudf::unary_operator>(input);
   return CUDF_SUCCESS;
 }
-} // namespace
+}  // namespace
 
 extern "C" {
 cudf_status_t cudf_unary_operation_ex(cudf_column_view_handle input,
                                       cudf_unary_operator_t op,
-                                      cudf_column_handle *out,
-                                      cudf_exec_options_t const *options) {
+                                      cudf_column_handle* out,
+                                      cudf_exec_options_t const* options)
+{
   CUDF_RUST_NULL_CHECK(out, "out is null");
   *out = nullptr;
   CUDF_RUST_NULL_CHECK(input, "input is null");
   cudf::unary_operator cudf_op;
   cudf_status_t status = to_unary_operator(op, &cudf_op);
-  if (status != CUDF_SUCCESS) {
-    return status;
-  }
-  CUDF_RUST_TRY {
+  if (status != CUDF_SUCCESS) { return status; }
+  CUDF_RUST_TRY
+  {
     auto exec                       = std::unique_ptr<cudf_exec_context>{};
     cudf_status_t const exec_status = cudf_resolve_required_exec_options(options, &exec);
-    if (exec_status != CUDF_SUCCESS) {
-      return exec_status;
-    }
+    if (exec_status != CUDF_SUCCESS) { return exec_status; }
 
-    auto *view = static_cast<cudf::column_view *>(input);
+    auto* view = reinterpret_cast<cudf::column_view*>(input);
 
     {
       auto result = cudf::unary_operation(*view, cudf_op, exec->stream, *exec->mr);
@@ -57,28 +55,26 @@ cudf_status_t cudf_unary_operation_ex(cudf_column_view_handle input,
 
 cudf_status_t cudf_round_half_up_ex(cudf_column_view_handle input,
                                     int32_t decimal_places,
-                                    cudf_column_handle *out,
-                                    cudf_exec_options_t const *options) {
+                                    cudf_column_handle* out,
+                                    cudf_exec_options_t const* options)
+{
   CUDF_RUST_NULL_CHECK(out, "out is null");
   *out = nullptr;
   CUDF_RUST_NULL_CHECK(input, "input is null");
-  CUDF_RUST_TRY {
+  CUDF_RUST_TRY
+  {
     auto exec                       = std::unique_ptr<cudf_exec_context>{};
     cudf_status_t const exec_status = cudf_resolve_required_exec_options(options, &exec);
-    if (exec_status != CUDF_SUCCESS) {
-      return exec_status;
-    }
+    if (exec_status != CUDF_SUCCESS) { return exec_status; }
 
-    auto *view = static_cast<cudf::column_view *>(input);
+    auto* view = reinterpret_cast<cudf::column_view*>(input);
 
     {
       auto const method = cudf::rounding_method::HALF_UP;
       auto result =
-          (view->type().id() == cudf::type_id::FLOAT32 ||
-           view->type().id() == cudf::type_id::FLOAT64)
-              ? cudf::round(*view, decimal_places, method, exec->stream, *exec->mr)
-              : cudf::round_decimal(*view, decimal_places, method, exec->stream,
-                                    *exec->mr);
+        (view->type().id() == cudf::type_id::FLOAT32 || view->type().id() == cudf::type_id::FLOAT64)
+          ? cudf::round(*view, decimal_places, method, exec->stream, *exec->mr)
+          : cudf::round_decimal(*view, decimal_places, method, exec->stream, *exec->mr);
       *out = cudf_release_column_handle(std::move(result), cudf_capture_exec_provenance(*exec));
     }
     return CUDF_SUCCESS;
@@ -87,19 +83,19 @@ cudf_status_t cudf_round_half_up_ex(cudf_column_view_handle input,
 }
 
 cudf_status_t cudf_is_null_ex(cudf_column_view_handle input,
-                              cudf_column_handle *out,
-                              cudf_exec_options_t const *options) {
+                              cudf_column_handle* out,
+                              cudf_exec_options_t const* options)
+{
   CUDF_RUST_NULL_CHECK(out, "out is null");
   *out = nullptr;
   CUDF_RUST_NULL_CHECK(input, "input is null");
-  CUDF_RUST_TRY {
+  CUDF_RUST_TRY
+  {
     auto exec                       = std::unique_ptr<cudf_exec_context>{};
     cudf_status_t const exec_status = cudf_resolve_required_exec_options(options, &exec);
-    if (exec_status != CUDF_SUCCESS) {
-      return exec_status;
-    }
+    if (exec_status != CUDF_SUCCESS) { return exec_status; }
 
-    auto *view = static_cast<cudf::column_view *>(input);
+    auto* view = reinterpret_cast<cudf::column_view*>(input);
 
     {
       auto result = cudf::is_null(*view, exec->stream, *exec->mr);
@@ -111,19 +107,19 @@ cudf_status_t cudf_is_null_ex(cudf_column_view_handle input,
 }
 
 cudf_status_t cudf_is_valid_ex(cudf_column_view_handle input,
-                               cudf_column_handle *out,
-                               cudf_exec_options_t const *options) {
+                               cudf_column_handle* out,
+                               cudf_exec_options_t const* options)
+{
   CUDF_RUST_NULL_CHECK(out, "out is null");
   *out = nullptr;
   CUDF_RUST_NULL_CHECK(input, "input is null");
-  CUDF_RUST_TRY {
+  CUDF_RUST_TRY
+  {
     auto exec                       = std::unique_ptr<cudf_exec_context>{};
     cudf_status_t const exec_status = cudf_resolve_required_exec_options(options, &exec);
-    if (exec_status != CUDF_SUCCESS) {
-      return exec_status;
-    }
+    if (exec_status != CUDF_SUCCESS) { return exec_status; }
 
-    auto *view = static_cast<cudf::column_view *>(input);
+    auto* view = reinterpret_cast<cudf::column_view*>(input);
 
     {
       auto result = cudf::is_valid(*view, exec->stream, *exec->mr);
@@ -136,21 +132,21 @@ cudf_status_t cudf_is_valid_ex(cudf_column_view_handle input,
 
 cudf_status_t cudf_cast_ex(cudf_column_view_handle input,
                            cudf_data_type_handle output_type,
-                           cudf_column_handle *out,
-                           cudf_exec_options_t const *options) {
+                           cudf_column_handle* out,
+                           cudf_exec_options_t const* options)
+{
   CUDF_RUST_NULL_CHECK(out, "out is null");
   *out = nullptr;
   CUDF_RUST_NULL_CHECK(input, "input is null");
   CUDF_RUST_NULL_CHECK(output_type, "output_type is null");
-  CUDF_RUST_TRY {
+  CUDF_RUST_TRY
+  {
     auto exec                       = std::unique_ptr<cudf_exec_context>{};
     cudf_status_t const exec_status = cudf_resolve_required_exec_options(options, &exec);
-    if (exec_status != CUDF_SUCCESS) {
-      return exec_status;
-    }
+    if (exec_status != CUDF_SUCCESS) { return exec_status; }
 
-    auto *view = static_cast<cudf::column_view *>(input);
-    auto *dtype = static_cast<cudf::data_type *>(output_type);
+    auto* view  = reinterpret_cast<cudf::column_view*>(input);
+    auto* dtype = reinterpret_cast<cudf::data_type*>(output_type);
 
     {
       auto result = cudf::cast(*view, *dtype, exec->stream, *exec->mr);
@@ -163,14 +159,16 @@ cudf_status_t cudf_cast_ex(cudf_column_view_handle input,
 
 cudf_status_t cudf_is_supported_cast(cudf_data_type_handle from_type,
                                      cudf_data_type_handle to_type,
-                                     int32_t *out) {
+                                     int32_t* out)
+{
   CUDF_RUST_NULL_CHECK(out, "out is null");
   *out = 0;
   CUDF_RUST_NULL_CHECK(from_type, "from_type is null");
   CUDF_RUST_NULL_CHECK(to_type, "to_type is null");
-  CUDF_RUST_TRY {
-    auto *from_dt = static_cast<cudf::data_type *>(from_type);
-    auto *to_dt = static_cast<cudf::data_type *>(to_type);
+  CUDF_RUST_TRY
+  {
+    auto* from_dt = reinterpret_cast<cudf::data_type*>(from_type);
+    auto* to_dt   = reinterpret_cast<cudf::data_type*>(to_type);
 
     *out = cudf::is_supported_cast(*from_dt, *to_dt) ? 1 : 0;
     return CUDF_SUCCESS;
@@ -179,19 +177,19 @@ cudf_status_t cudf_is_supported_cast(cudf_data_type_handle from_type,
 }
 
 cudf_status_t cudf_is_nan_ex(cudf_column_view_handle input,
-                             cudf_column_handle *out,
-                             cudf_exec_options_t const *options) {
+                             cudf_column_handle* out,
+                             cudf_exec_options_t const* options)
+{
   CUDF_RUST_NULL_CHECK(out, "out is null");
   *out = nullptr;
   CUDF_RUST_NULL_CHECK(input, "input is null");
-  CUDF_RUST_TRY {
+  CUDF_RUST_TRY
+  {
     auto exec                       = std::unique_ptr<cudf_exec_context>{};
     cudf_status_t const exec_status = cudf_resolve_required_exec_options(options, &exec);
-    if (exec_status != CUDF_SUCCESS) {
-      return exec_status;
-    }
+    if (exec_status != CUDF_SUCCESS) { return exec_status; }
 
-    auto *view = static_cast<cudf::column_view *>(input);
+    auto* view = reinterpret_cast<cudf::column_view*>(input);
 
     {
       auto result = cudf::is_nan(*view, exec->stream, *exec->mr);
@@ -203,19 +201,19 @@ cudf_status_t cudf_is_nan_ex(cudf_column_view_handle input,
 }
 
 cudf_status_t cudf_is_not_nan_ex(cudf_column_view_handle input,
-                                 cudf_column_handle *out,
-                                 cudf_exec_options_t const *options) {
+                                 cudf_column_handle* out,
+                                 cudf_exec_options_t const* options)
+{
   CUDF_RUST_NULL_CHECK(out, "out is null");
   *out = nullptr;
   CUDF_RUST_NULL_CHECK(input, "input is null");
-  CUDF_RUST_TRY {
+  CUDF_RUST_TRY
+  {
     auto exec                       = std::unique_ptr<cudf_exec_context>{};
     cudf_status_t const exec_status = cudf_resolve_required_exec_options(options, &exec);
-    if (exec_status != CUDF_SUCCESS) {
-      return exec_status;
-    }
+    if (exec_status != CUDF_SUCCESS) { return exec_status; }
 
-    auto *view = static_cast<cudf::column_view *>(input);
+    auto* view = reinterpret_cast<cudf::column_view*>(input);
 
     {
       auto result = cudf::is_not_nan(*view, exec->stream, *exec->mr);
@@ -225,4 +223,4 @@ cudf_status_t cudf_is_not_nan_ex(cudf_column_view_handle input,
   }
   CUDF_RUST_CATCH
 }
-} // extern "C"
+}  // extern "C"

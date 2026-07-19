@@ -55,7 +55,7 @@ fn test_device_buffer_copy_from_host_requires_explicit_exec_options_and_syncs() 
     let values = [1i32, 2, 3];
     let (stream, _mr, exec) = strict_exec_owners();
     let explicit_stream = stream_value(stream.as_raw());
-    let mut buffer: *mut c_void = ptr::null_mut();
+    let mut buffer: cudf_sys::cudf_device_buffer_handle = ptr::null_mut();
     let st = unsafe { cudf_sys::cudf_device_buffer_create_ex(std::mem::size_of_val(&values), &exec, &mut buffer) };
     assert_eq!(st, cudf_sys::CUDF_SUCCESS);
     assert!(!buffer.is_null());
@@ -92,14 +92,14 @@ fn test_column_copy_requires_explicit_exec_options() {
     let col = make_i32_column(&[1, 2, 3, 4]);
 
     reset_exec_observation();
-    let mut null_opts_out: *mut c_void = ptr::null_mut();
+    let mut null_opts_out: cudf_sys::cudf_column_handle = ptr::null_mut();
     let st = unsafe { cudf_sys::cudf_column_copy_ex(col, ptr::null(), &mut null_opts_out) };
     assert_eq!(st, cudf_sys::CUDF_ERROR_INVALID_OPERATION);
     assert!(null_opts_out.is_null());
 
     reset_exec_observation();
     let default_exec = cudf_sys::ExecutionContext::new();
-    let mut default_opts_out: *mut c_void = ptr::null_mut();
+    let mut default_opts_out: cudf_sys::cudf_column_handle = ptr::null_mut();
     let st = unsafe { cudf_sys::cudf_column_copy_ex(col, default_exec.as_raw(), &mut default_opts_out) };
     assert_eq!(st, cudf_sys::CUDF_ERROR_INVALID_OPERATION);
     assert!(default_opts_out.is_null());
@@ -107,7 +107,7 @@ fn test_column_copy_requires_explicit_exec_options() {
     let (stream, _mr, exec) = strict_exec_owners();
     let explicit_stream = stream_value(stream.as_raw());
     reset_exec_observation();
-    let mut explicit_out: *mut c_void = ptr::null_mut();
+    let mut explicit_out: cudf_sys::cudf_column_handle = ptr::null_mut();
     let st = unsafe { cudf_sys::cudf_column_copy_ex(col, &exec, &mut explicit_out) };
     assert_eq!(st, cudf_sys::CUDF_SUCCESS);
     assert_eq!(last_exec_stream_value(), explicit_stream);
@@ -131,10 +131,10 @@ fn test_scalar_create_numeric_remains_unsynchronized_before_return() {
     let exec = required_exec_options(&borrowed_stream, &borrowed_mr);
 
     reset_exec_observation();
-    let mut scalar: *mut c_void = ptr::null_mut();
+    let mut scalar: cudf_sys::cudf_scalar_handle = ptr::null_mut();
     let st = unsafe {
         cudf_sys::cudf_scalar_create_numeric_ex(
-            cudf_sys::cudf_type_id_t::CUDF_TYPE_INT32,
+            cudf_sys::CUDF_TYPE_INT32,
             &value as *const i32 as *const c_void,
             1,
             &exec,
@@ -166,10 +166,10 @@ fn test_scalar_create_numeric_ex_uses_explicit_stream_and_mr_without_syncing_bef
     let exec = required_exec_options(&borrowed_stream, &borrowed_mr);
 
     reset_exec_observation();
-    let mut scalar: *mut c_void = ptr::null_mut();
+    let mut scalar: cudf_sys::cudf_scalar_handle = ptr::null_mut();
     let st = unsafe {
         cudf_sys::cudf_scalar_create_numeric_ex(
-            cudf_sys::cudf_type_id_t::CUDF_TYPE_INT32,
+            cudf_sys::CUDF_TYPE_INT32,
             &value as *const i32 as *const c_void,
             1,
             &exec,
@@ -204,7 +204,7 @@ fn test_scalar_create_string_ex_uses_explicit_stream_and_mr_and_synchronizes_bef
     let exec = required_exec_options(&borrowed_stream, &borrowed_mr);
 
     reset_exec_observation();
-    let mut scalar: *mut c_void = ptr::null_mut();
+    let mut scalar: cudf_sys::cudf_scalar_handle = ptr::null_mut();
     let st = unsafe { cudf_sys::cudf_scalar_create_string_ex(hello.as_ptr(), 1, &exec, &mut scalar) };
     assert_eq!(st, cudf_sys::CUDF_SUCCESS);
     assert!(!scalar.is_null());
@@ -234,10 +234,10 @@ fn test_column_create_numeric_host_source_sync_contract() {
     let explicit_stream = stream_value(stream.as_raw());
 
     reset_exec_observation();
-    let mut explicit_out: *mut c_void = ptr::null_mut();
+    let mut explicit_out: cudf_sys::cudf_column_handle = ptr::null_mut();
     let st = unsafe {
         cudf_sys::cudf_column_create_numeric_ex(
-            cudf_sys::cudf_type_id_t::CUDF_TYPE_INT32,
+            cudf_sys::CUDF_TYPE_INT32,
             data.as_ptr() as *const c_void,
             data.len() as i32,
             null_mask.as_ptr(),
@@ -269,10 +269,10 @@ fn test_column_create_fixed_width_from_host_ex_uses_explicit_stream_and_syncs() 
     let explicit_stream = stream_value(stream.as_raw());
 
     reset_exec_observation();
-    let mut out: *mut c_void = ptr::null_mut();
+    let mut out: cudf_sys::cudf_column_handle = ptr::null_mut();
     let st = unsafe {
         cudf_sys::cudf_column_create_fixed_width_from_host_ex(
-            cudf_sys::cudf_type_id_t::CUDF_TYPE_INT32,
+            cudf_sys::CUDF_TYPE_INT32,
             0,
             data.as_ptr() as *const c_void,
             data.len() as i32,
@@ -301,11 +301,11 @@ fn test_column_create_fixed_width_from_host_ex_syncs_on_error_after_data_copy() 
     let explicit_stream = stream_value(stream.as_raw());
 
     reset_exec_observation();
-    unsafe { cudf_sys::cudf_test_fail_next_fixed_width_host_import_after_data_copy() };
-    let mut out: *mut c_void = ptr::null_mut();
+    unsafe { cudf_sys::test_support::cudf_test_fail_next_fixed_width_host_import_after_data_copy() };
+    let mut out: cudf_sys::cudf_column_handle = ptr::null_mut();
     let st = unsafe {
         cudf_sys::cudf_column_create_fixed_width_from_host_ex(
-            cudf_sys::cudf_type_id_t::CUDF_TYPE_INT32,
+            cudf_sys::CUDF_TYPE_INT32,
             0,
             data.as_ptr() as *const c_void,
             data.len() as i32,
@@ -333,11 +333,11 @@ fn test_column_create_fixed_width_from_host_ex_syncs_on_error_after_null_mask_co
     let explicit_stream = stream_value(stream.as_raw());
 
     reset_exec_observation();
-    unsafe { cudf_sys::cudf_test_fail_next_fixed_width_host_import_after_null_mask_copy() };
-    let mut out: *mut c_void = ptr::null_mut();
+    unsafe { cudf_sys::test_support::cudf_test_fail_next_fixed_width_host_import_after_null_mask_copy() };
+    let mut out: cudf_sys::cudf_column_handle = ptr::null_mut();
     let st = unsafe {
         cudf_sys::cudf_column_create_fixed_width_from_host_ex(
-            cudf_sys::cudf_type_id_t::CUDF_TYPE_INT32,
+            cudf_sys::CUDF_TYPE_INT32,
             0,
             data.as_ptr() as *const c_void,
             data.len() as i32,
@@ -359,17 +359,17 @@ fn test_column_create_strings_host_source_sync_contract() {
     let _shim_state = lock_shim_state();
     let values = ["ab", "", "cde"];
     let c_strings: Vec<_> = values.iter().map(|value| std::ffi::CString::new(*value).unwrap()).collect();
-    let string_ptrs: Vec<_> = c_strings.iter().map(|value| value.as_ptr()).collect();
+    let mut string_ptrs: Vec<_> = c_strings.iter().map(|value| value.as_ptr()).collect();
     let lengths: Vec<_> = values.iter().map(|value| value.len() as i32).collect();
 
     let (stream, _mr, exec) = strict_exec_owners();
     let explicit_stream = stream_value(stream.as_raw());
 
     reset_exec_observation();
-    let mut explicit_out: *mut c_void = ptr::null_mut();
+    let mut explicit_out: cudf_sys::cudf_column_handle = ptr::null_mut();
     let st = unsafe {
         cudf_sys::cudf_column_create_strings_ex(
-            string_ptrs.as_ptr(),
+            string_ptrs.as_mut_ptr(),
             lengths.as_ptr(),
             values.len() as i32,
             ptr::null(),
@@ -396,7 +396,7 @@ fn assert_strings_import_error_syncs_selected_stream(
 ) {
     let _shim_state = lock_shim_state();
     let c_strings: Vec<_> = values.iter().map(|value| std::ffi::CString::new(*value).unwrap()).collect();
-    let string_ptrs: Vec<_> = c_strings.iter().map(|value| value.as_ptr()).collect();
+    let mut string_ptrs: Vec<_> = c_strings.iter().map(|value| value.as_ptr()).collect();
     let lengths: Vec<_> = values.iter().map(|value| value.len() as i32).collect();
     let null_mask = validity.map(validity_to_bitmask).unwrap_or_default();
     let null_count =
@@ -408,10 +408,10 @@ fn assert_strings_import_error_syncs_selected_stream(
 
     reset_exec_observation();
     unsafe { arm_fault() };
-    let mut out: *mut c_void = ptr::null_mut();
+    let mut out: cudf_sys::cudf_column_handle = ptr::null_mut();
     let st = unsafe {
         cudf_sys::cudf_column_create_strings_ex(
-            string_ptrs.as_ptr(),
+            string_ptrs.as_mut_ptr(),
             lengths.as_ptr(),
             values.len() as i32,
             null_mask_ptr,
@@ -436,7 +436,7 @@ fn test_column_view_slice_ex_uses_explicit_stream_for_null_count() {
     let explicit_stream = stream_value(stream.as_raw());
 
     reset_exec_observation();
-    let mut slice: *mut c_void = ptr::null_mut();
+    let mut slice: cudf_sys::cudf_column_view_handle = ptr::null_mut();
     let st = unsafe { cudf_sys::cudf_column_view_slice_ex(view, 1, 2, &exec, &mut slice) };
     assert_eq!(st, cudf_sys::CUDF_SUCCESS);
     assert!(!slice.is_null());
@@ -458,7 +458,7 @@ fn test_column_view_slice_ex_uses_explicit_stream_for_null_count() {
 #[test]
 fn test_column_create_strings_ex_syncs_on_error_after_offsets_copy() {
     assert_strings_import_error_syncs_selected_stream(
-        cudf_sys::cudf_test_fail_next_strings_host_import_after_offsets_copy,
+        cudf_sys::test_support::cudf_test_fail_next_strings_host_import_after_offsets_copy,
         &["ab", "", "cde"],
         None,
     );
@@ -467,7 +467,7 @@ fn test_column_create_strings_ex_syncs_on_error_after_offsets_copy() {
 #[test]
 fn test_column_create_strings_ex_syncs_on_error_after_chars_copy() {
     assert_strings_import_error_syncs_selected_stream(
-        cudf_sys::cudf_test_fail_next_strings_host_import_after_chars_copy,
+        cudf_sys::test_support::cudf_test_fail_next_strings_host_import_after_chars_copy,
         &["ab", "", "cde"],
         None,
     );
@@ -477,7 +477,7 @@ fn test_column_create_strings_ex_syncs_on_error_after_chars_copy() {
 fn test_column_create_strings_ex_syncs_on_error_after_null_mask_copy() {
     let validity = [true, false, true];
     assert_strings_import_error_syncs_selected_stream(
-        cudf_sys::cudf_test_fail_next_strings_host_import_after_null_mask_copy,
+        cudf_sys::test_support::cudf_test_fail_next_strings_host_import_after_null_mask_copy,
         &["ab", "", "cde"],
         Some(&validity),
     );
@@ -486,7 +486,7 @@ fn test_column_create_strings_ex_syncs_on_error_after_null_mask_copy() {
 #[test]
 fn test_column_create_strings_ex_syncs_on_error_before_make_strings_column() {
     assert_strings_import_error_syncs_selected_stream(
-        cudf_sys::cudf_test_fail_next_strings_host_import_before_make_strings_column,
+        cudf_sys::test_support::cudf_test_fail_next_strings_host_import_before_make_strings_column,
         &["ab", "", "cde"],
         None,
     );
@@ -495,7 +495,7 @@ fn test_column_create_strings_ex_syncs_on_error_before_make_strings_column() {
 #[test]
 fn test_column_create_strings_ex_syncs_on_error_after_make_strings_column() {
     assert_strings_import_error_syncs_selected_stream(
-        cudf_sys::cudf_test_fail_next_strings_host_import_after_make_strings_column,
+        cudf_sys::test_support::cudf_test_fail_next_strings_host_import_after_make_strings_column,
         &["ab", "", "cde"],
         None,
     );
@@ -513,7 +513,7 @@ fn test_stream_handle_has_no_effect_until_attached_to_execution_context() {
     let borrowed_mr = mr.borrowed();
     let exec = required_exec_options(&borrowed_stream, &borrowed_mr);
     reset_exec_observation();
-    let mut explicit_out: *mut c_void = ptr::null_mut();
+    let mut explicit_out: cudf_sys::cudf_column_handle = ptr::null_mut();
     let st = unsafe { cudf_sys::cudf_column_copy_ex(col, &exec, &mut explicit_out) };
     assert_eq!(st, cudf_sys::CUDF_SUCCESS);
     assert_eq!(last_exec_stream_value(), explicit_stream);
@@ -860,14 +860,9 @@ fn test_column_create_from_device_data_sync_and_async_contracts() {
     assert!(!device_ptr.is_null());
 
     reset_exec_observation();
-    let mut sync_out: *mut c_void = ptr::null_mut();
+    let mut sync_out: cudf_sys::cudf_column_handle = ptr::null_mut();
     let st = unsafe {
-        cudf_sys::cudf_column_create_from_device_data(
-            cudf_sys::cudf_type_id_t::CUDF_TYPE_INT32,
-            device_ptr,
-            3,
-            &mut sync_out,
-        )
+        cudf_sys::cudf_column_create_from_device_data(cudf_sys::CUDF_TYPE_INT32, device_ptr, 3, &mut sync_out)
     };
     assert_eq!(st, cudf_sys::CUDF_ERROR_INVALID_OPERATION);
     assert!(sync_out.is_null());
@@ -876,10 +871,10 @@ fn test_column_create_from_device_data_sync_and_async_contracts() {
     let explicit_stream = stream_value(stream.as_raw());
 
     reset_exec_observation();
-    let mut async_out: *mut c_void = ptr::null_mut();
+    let mut async_out: cudf_sys::cudf_column_handle = ptr::null_mut();
     let st = unsafe {
         cudf_sys::cudf_column_create_from_device_data_ex(
-            cudf_sys::cudf_type_id_t::CUDF_TYPE_INT32,
+            cudf_sys::CUDF_TYPE_INT32,
             device_ptr,
             3,
             &exec,
@@ -913,7 +908,7 @@ fn test_memory_resource_has_no_effect_until_attached_to_execution_context() {
     let borrowed_mr = stats_mr.borrowed();
     let exec_opts = required_exec_options(&borrowed_stream, &borrowed_mr);
     reset_exec_observation();
-    let mut explicit_out: *mut c_void = ptr::null_mut();
+    let mut explicit_out: cudf_sys::cudf_column_handle = ptr::null_mut();
     let st = unsafe { cudf_sys::cudf_column_copy_ex(col, &exec_opts, &mut explicit_out) };
     assert_eq!(st, cudf_sys::CUDF_SUCCESS);
     assert!(stats_mr.allocation_count() > 0);

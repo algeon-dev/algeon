@@ -106,8 +106,8 @@ fn match_dictionaries_impl(
 ) -> Result<Vec<Column>> {
     let n = dict_columns.len();
     let n_i32 = i32::try_from(n).map_err(|_| dictionary_column_count_limit_error(operation, n))?;
-    let handles: Vec<*mut std::ffi::c_void> = dict_columns.iter().map(|c| c.raw_handle()).collect();
-    let mut out_columns: *mut *mut std::ffi::c_void = ptr::null_mut();
+    let handles: Vec<cudf_sys::cudf_column_view_handle> = dict_columns.iter().map(|c| c.raw_handle()).collect();
+    let mut out_columns: *mut cudf_sys::cudf_column_handle = ptr::null_mut();
     let mut out_count: i32 = 0;
 
     let status = unsafe {

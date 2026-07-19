@@ -217,7 +217,7 @@ fn test_read_parquet_many_metadata_fault_reports_file_index_and_path() {
 
     write_parquet_df(&path, &["id"], vec![column_from_slice(&[1i32, 2]).unwrap()]);
 
-    arm_next_io_metadata_fault(cudf_sys::CUDF_TEST_IO_METADATA_FAULT_ZERO_NAME_COUNT);
+    arm_next_io_metadata_fault(cudf_sys::test_support::CUDF_TEST_IO_METADATA_FAULT_ZERO_NAME_COUNT);
     let err = DataFrame::read_parquet_many(&rt, [&path]).expect_err("metadata fault should fail");
 
     assert_eq!(err.kind(), ErrorKind::InvariantViolation);

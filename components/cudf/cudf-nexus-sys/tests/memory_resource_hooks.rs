@@ -12,7 +12,10 @@ use support::{
     visible_device_count,
 };
 
-fn make_i32_column_with_memory_resource(data: &[i32], mr: &cudf_sys::BorrowedMemoryResource<'_>) -> *mut c_void {
+fn make_i32_column_with_memory_resource(
+    data: &[i32],
+    mr: &cudf_sys::BorrowedMemoryResource<'_>,
+) -> cudf_sys::cudf_column_handle {
     let (status, out) = try_make_i32_column_with_memory_resource(data, mr);
     assert_eq!(status, cudf_sys::CUDF_SUCCESS);
     assert!(!out.is_null());
@@ -22,14 +25,14 @@ fn make_i32_column_with_memory_resource(data: &[i32], mr: &cudf_sys::BorrowedMem
 fn try_make_i32_column_with_memory_resource(
     data: &[i32],
     mr: &cudf_sys::BorrowedMemoryResource<'_>,
-) -> (cudf_sys::cudf_status_t, *mut c_void) {
+) -> (cudf_sys::cudf_status_t, cudf_sys::cudf_column_handle) {
     let stream = OwnedStream::new();
     let stream = stream.borrowed();
     let exec = required_exec_options(&stream, mr);
-    let mut out: *mut c_void = ptr::null_mut();
+    let mut out: cudf_sys::cudf_column_handle = ptr::null_mut();
     let st = unsafe {
         cudf_sys::cudf_column_create_numeric_ex(
-            cudf_sys::cudf_type_id_t::CUDF_TYPE_INT32,
+            cudf_sys::CUDF_TYPE_INT32,
             data.as_ptr() as *const c_void,
             data.len() as i32,
             ptr::null(),
@@ -41,16 +44,16 @@ fn try_make_i32_column_with_memory_resource(
     (st, out)
 }
 
-fn create_cuda_memory_resource() -> *mut c_void {
-    let mut mr: *mut c_void = ptr::null_mut();
+fn create_cuda_memory_resource() -> cudf_sys::cudf_memory_resource_handle {
+    let mut mr: cudf_sys::cudf_memory_resource_handle = ptr::null_mut();
     let status = unsafe { cudf_sys::cudf_memory_resource_create_cuda(&mut mr) };
     assert_eq!(status, cudf_sys::CUDF_SUCCESS);
     assert!(!mr.is_null());
     mr
 }
 
-fn create_pool_memory_resource() -> *mut c_void {
-    let mut mr: *mut c_void = ptr::null_mut();
+fn create_pool_memory_resource() -> cudf_sys::cudf_memory_resource_handle {
+    let mut mr: cudf_sys::cudf_memory_resource_handle = ptr::null_mut();
     let status = unsafe { cudf_sys::cudf_memory_resource_create_pool(1 << 20, 1 << 24, &mut mr) };
     assert_eq!(status, cudf_sys::CUDF_SUCCESS);
     assert!(!mr.is_null());
@@ -58,17 +61,17 @@ fn create_pool_memory_resource() -> *mut c_void {
 }
 
 struct RawMemoryResource {
-    raw: *mut c_void,
+    raw: cudf_sys::cudf_memory_resource_handle,
     device: i32,
 }
 
 impl RawMemoryResource {
-    fn from_raw(raw: *mut c_void) -> Self {
+    fn from_raw(raw: cudf_sys::cudf_memory_resource_handle) -> Self {
         assert!(!raw.is_null());
         Self { raw, device: current_device() }
     }
 
-    fn raw(&self) -> *mut c_void {
+    fn raw(&self) -> cudf_sys::cudf_memory_resource_handle {
         self.raw
     }
 
@@ -87,14 +90,20 @@ impl Drop for RawMemoryResource {
     }
 }
 
-fn create_limiting_memory_resource(upstream: *mut c_void, allocation_limit: usize) -> RawMemoryResource {
+fn create_limiting_memory_resource(
+    upstream: cudf_sys::cudf_memory_resource_handle,
+    allocation_limit: usize,
+) -> RawMemoryResource {
     let mut raw = ptr::null_mut();
     let status = unsafe { cudf_sys::cudf_memory_resource_create_limiting(upstream, allocation_limit, &mut raw) };
     assert_eq!(status, cudf_sys::CUDF_SUCCESS);
     RawMemoryResource::from_raw(raw)
 }
 
-fn create_budget_tracking_memory_resource(upstream: *mut c_void, allocation_limit: usize) -> RawMemoryResource {
+fn create_budget_tracking_memory_resource(
+    upstream: cudf_sys::cudf_memory_resource_handle,
+    allocation_limit: usize,
+) -> RawMemoryResource {
     let mut raw = ptr::null_mut();
     let status = unsafe { cudf_sys::cudf_memory_resource_create_budget_tracking(upstream, allocation_limit, &mut raw) };
     assert_eq!(status, cudf_sys::CUDF_SUCCESS);
@@ -102,7 +111,7 @@ fn create_budget_tracking_memory_resource(upstream: *mut c_void, allocation_limi
 }
 
 fn create_failure_callback_memory_resource(
-    upstream: *mut c_void,
+    upstream: cudf_sys::cudf_memory_resource_handle,
     callback: cudf_sys::cudf_memory_failure_callback_t,
     callback_arg: *mut c_void,
 ) -> RawMemoryResource {
@@ -231,7 +240,7 @@ fn stats_memory_resource_can_be_installed_as_current_resource_and_used_explicitl
     let _restore = CurrentDeviceResourceRestore::new(previous_raw);
     let borrowed = stats.borrowed();
 
-    cudf_sys::test_set_current_device_resource(&borrowed).expect("failed to install current test allocator");
+    crate::support::set_current_device_resource(&borrowed).expect("failed to install current test allocator");
 
     let installed_raw = current_device_resource_raw();
     assert_ne!(installed_raw, previous_raw, "test allocator should replace the previous current allocator");
@@ -256,8 +265,8 @@ fn destroying_current_memory_resource_returns_invalid_operation_and_preserves_cu
     let _restore = CurrentDeviceResourceRestore::new(previous_raw);
 
     for (name, create) in [
-        ("cuda", create_cuda_memory_resource as fn() -> *mut c_void),
-        ("pool", create_pool_memory_resource as fn() -> *mut c_void),
+        ("cuda", create_cuda_memory_resource as fn() -> cudf_sys::cudf_memory_resource_handle),
+        ("pool", create_pool_memory_resource as fn() -> cudf_sys::cudf_memory_resource_handle),
     ] {
         let mr = create();
 
@@ -266,7 +275,7 @@ fn destroying_current_memory_resource_returns_invalid_operation_and_preserves_cu
         assert_eq!(status, cudf_sys::CUDF_SUCCESS);
         assert!(!installed_raw.is_null());
 
-        let status = unsafe { cudf_sys::cudf_test_memory_resource_set_current(mr) };
+        let status = unsafe { cudf_sys::test_support::cudf_test_memory_resource_set_current(mr) };
         assert_eq!(status, cudf_sys::CUDF_SUCCESS);
         assert_eq!(
             current_device_resource_raw(),
@@ -277,7 +286,7 @@ fn destroying_current_memory_resource_returns_invalid_operation_and_preserves_cu
         let destroy_status = unsafe { cudf_sys::cudf_memory_resource_destroy(mr, device) };
         let current_after_destroy = current_device_resource_raw();
 
-        unsafe { cudf_sys::test_set_current_device_resource_raw(previous_raw) }
+        unsafe { crate::support::set_current_device_resource_raw(previous_raw) }
             .expect("failed to restore previous current device resource before cleanup");
 
         if destroy_status == cudf_sys::CUDF_ERROR_INVALID_OPERATION {
@@ -302,13 +311,13 @@ fn destroying_non_current_memory_resource_still_succeeds_after_current_destroy_r
 
     let mr = create_cuda_memory_resource();
 
-    let status = unsafe { cudf_sys::cudf_test_memory_resource_set_current(mr) };
+    let status = unsafe { cudf_sys::test_support::cudf_test_memory_resource_set_current(mr) };
     assert_eq!(status, cudf_sys::CUDF_SUCCESS);
 
     let destroy_status = unsafe { cudf_sys::cudf_memory_resource_destroy(mr, device) };
     assert_eq!(destroy_status, cudf_sys::CUDF_ERROR_INVALID_OPERATION);
 
-    unsafe { cudf_sys::test_set_current_device_resource_raw(previous_raw) }
+    unsafe { crate::support::set_current_device_resource_raw(previous_raw) }
         .expect("failed to restore previous current device resource before cleanup");
 
     let cleanup_status = unsafe { cudf_sys::cudf_memory_resource_destroy(mr, device) };

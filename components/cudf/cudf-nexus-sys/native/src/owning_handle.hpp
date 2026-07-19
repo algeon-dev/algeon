@@ -1,9 +1,9 @@
 #ifndef CUDF_RUST_OWNING_HANDLE_HPP
 #define CUDF_RUST_OWNING_HANDLE_HPP
 
-#include "column.h"
+#include "cudf_rust/column.h"
+#include "cudf_rust/table.h"
 #include "handle_provenance.hpp"
-#include "table.h"
 
 #include <cudf/column/column.hpp>
 #include <cudf/column/column_view.hpp>
@@ -14,8 +14,23 @@
 #include <rmm/resource_ref.hpp>
 
 #include <memory>
+#include <new>
 #include <optional>
 #include <vector>
+
+struct cudf_column_handle_array_deleter {
+  void operator()(cudf_column_handle* handles) const noexcept { delete[] handles; }
+};
+
+using cudf_unique_column_handle_array =
+  std::unique_ptr<cudf_column_handle, cudf_column_handle_array_deleter>;
+
+[[nodiscard]] inline cudf_unique_column_handle_array cudf_allocate_column_handle_array(
+  std::size_t count) noexcept
+{
+  return cudf_unique_column_handle_array{count == 0 ? nullptr
+                                                    : new (std::nothrow) cudf_column_handle[count]};
+}
 
 struct cudf_column_handle_state {
   virtual ~cudf_column_handle_state() = default;

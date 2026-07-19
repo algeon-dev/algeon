@@ -46,6 +46,9 @@ use crate::{
     runtime::{BoundaryKind, BoundaryObservation, QueryStageKind, Runtime, record_boundary_observation_in_domain},
 };
 
+type ArrowDeviceArrayHandle = cudf_sys::cudf_arrow_device_array_handle_state;
+type ArrowDeviceSchemaHandle = cudf_sys::cudf_arrow_schema_handle_state;
+
 fn column_view_device_abi_observation(
     view: &crate::core::column::ColumnView<'_>,
     operation: &'static str,
@@ -95,18 +98,18 @@ pub enum DeviceArrowDeviceType {
 impl DeviceArrowDeviceType {
     fn from_raw(raw: i32) -> Self {
         match raw {
-            cudf_sys::CUDF_ARROW_DEVICE_TYPE_CUDA => Self::Cuda,
-            cudf_sys::CUDF_ARROW_DEVICE_TYPE_CUDA_HOST => Self::CudaHost,
-            cudf_sys::CUDF_ARROW_DEVICE_TYPE_CUDA_MANAGED => Self::CudaManaged,
+            value if value == cudf_sys::CUDF_ARROW_DEVICE_TYPE_CUDA as i32 => Self::Cuda,
+            value if value == cudf_sys::CUDF_ARROW_DEVICE_TYPE_CUDA_HOST as i32 => Self::CudaHost,
+            value if value == cudf_sys::CUDF_ARROW_DEVICE_TYPE_CUDA_MANAGED as i32 => Self::CudaManaged,
             _ => Self::Other(raw),
         }
     }
 
     fn raw_code(self) -> i32 {
         match self {
-            Self::Cuda => cudf_sys::CUDF_ARROW_DEVICE_TYPE_CUDA,
-            Self::CudaHost => cudf_sys::CUDF_ARROW_DEVICE_TYPE_CUDA_HOST,
-            Self::CudaManaged => cudf_sys::CUDF_ARROW_DEVICE_TYPE_CUDA_MANAGED,
+            Self::Cuda => cudf_sys::CUDF_ARROW_DEVICE_TYPE_CUDA as i32,
+            Self::CudaHost => cudf_sys::CUDF_ARROW_DEVICE_TYPE_CUDA_HOST as i32,
+            Self::CudaManaged => cudf_sys::CUDF_ARROW_DEVICE_TYPE_CUDA_MANAGED as i32,
             Self::Other(raw) => raw,
         }
     }
@@ -115,11 +118,13 @@ impl DeviceArrowDeviceType {
 // The materialization out-params cross the FFI as raw `i32` discriminants so
 // an unmirrored C-side value never materializes an invalid Rust enum; these
 // converters perform the actual validation.
-fn export_materialization_from_raw(raw: i32, operation: &'static str) -> Result<DeviceArrowExportMaterialization> {
-    use cudf_sys::cudf_arrow_device_export_materialization_t as Raw;
-    if raw == Raw::CUDF_ARROW_DEVICE_EXPORT_PRODUCER_RETAINED_VIEW as i32 {
+fn export_materialization_from_raw(
+    raw: cudf_sys::cudf_arrow_device_export_materialization_t,
+    operation: &'static str,
+) -> Result<DeviceArrowExportMaterialization> {
+    if raw == cudf_sys::CUDF_ARROW_DEVICE_EXPORT_PRODUCER_RETAINED_VIEW {
         Ok(DeviceArrowExportMaterialization::ProducerRetainedView)
-    } else if raw == Raw::CUDF_ARROW_DEVICE_EXPORT_BRIDGE_OWNED_DEVICE_COPY as i32 {
+    } else if raw == cudf_sys::CUDF_ARROW_DEVICE_EXPORT_BRIDGE_OWNED_DEVICE_COPY {
         Ok(DeviceArrowExportMaterialization::BridgeOwnedDeviceCopy)
     } else {
         Err(foreign_metadata_violation(
@@ -133,11 +138,13 @@ fn export_materialization_from_raw(raw: i32, operation: &'static str) -> Result<
     }
 }
 
-fn import_materialization_from_raw(raw: i32, operation: &'static str) -> Result<DeviceArrowImportMaterialization> {
-    use cudf_sys::cudf_arrow_device_import_materialization_t as Raw;
-    if raw == Raw::CUDF_ARROW_DEVICE_IMPORT_FOREIGN_RETAINED_VIEW as i32 {
+fn import_materialization_from_raw(
+    raw: cudf_sys::cudf_arrow_device_import_materialization_t,
+    operation: &'static str,
+) -> Result<DeviceArrowImportMaterialization> {
+    if raw == cudf_sys::CUDF_ARROW_DEVICE_IMPORT_FOREIGN_RETAINED_VIEW {
         Ok(DeviceArrowImportMaterialization::ForeignRetainedView)
-    } else if raw == Raw::CUDF_ARROW_DEVICE_IMPORT_BRIDGE_OWNED_DEVICE_COPY as i32 {
+    } else if raw == cudf_sys::CUDF_ARROW_DEVICE_IMPORT_BRIDGE_OWNED_DEVICE_COPY {
         Ok(DeviceArrowImportMaterialization::BridgeOwnedDeviceCopy)
     } else {
         Err(foreign_metadata_violation(
@@ -397,8 +404,8 @@ fn validate_raw_abi_parts(
     schema: *mut c_void,
     array: *mut c_void,
     operation: &'static str,
-) -> Result<(NonNull<c_void>, NonNull<c_void>)> {
-    let schema = NonNull::new(schema).ok_or_else(|| {
+) -> Result<(NonNull<ArrowDeviceSchemaHandle>, NonNull<ArrowDeviceArrayHandle>)> {
+    let schema = NonNull::new(schema.cast::<ArrowDeviceSchemaHandle>()).ok_or_else(|| {
         foreign_input_contract_error(
             operation,
             "Arrow device schema pointer must not be null",
@@ -406,7 +413,7 @@ fn validate_raw_abi_parts(
             "pass owned non-null Arrow device schema and array roots produced by this bridge handoff path",
         )
     })?;
-    let array = NonNull::new(array).ok_or_else(|| {
+    let array = NonNull::new(array.cast::<ArrowDeviceArrayHandle>()).ok_or_else(|| {
         foreign_input_contract_error(
             operation,
             "Arrow device array pointer must not be null",
@@ -417,7 +424,7 @@ fn validate_raw_abi_parts(
     Ok((schema, array))
 }
 
-fn device_id_for_native_teardown(array: NonNull<c_void>) -> Option<crate::runtime::DeviceId> {
+fn device_id_for_native_teardown(array: NonNull<ArrowDeviceArrayHandle>) -> Option<crate::runtime::DeviceId> {
     let mut raw = -1_i64;
     let status = unsafe { cudf_sys::cudf_arrow_device_array_device_id(array.as_ptr(), &mut raw) };
     if status != cudf_sys::CUDF_SUCCESS {
@@ -664,15 +671,15 @@ unsafe fn table_child_array_for_fixed_width_ptr<'a>(
 }
 
 struct DeviceArrowAbiRootInner {
-    schema: NonNull<c_void>,
-    array: NonNull<c_void>,
+    schema: NonNull<ArrowDeviceSchemaHandle>,
+    array: NonNull<ArrowDeviceArrayHandle>,
     device: Option<crate::runtime::DeviceId>,
     materialization: DeviceArrowImportMaterialization,
     retained_owner: Option<Arc<dyn Any + Send + Sync>>,
     ownership: DeviceArrowAbiOwnership,
 }
 
-fn drop_device_arrow_array(array: NonNull<c_void>, device: Option<crate::runtime::DeviceId>) {
+fn drop_device_arrow_array(array: NonNull<ArrowDeviceArrayHandle>, device: Option<crate::runtime::DeviceId>) {
     if let Some(device) = device {
         crate::core::native_teardown::drop_device_owned_handle(
             array.as_ptr(),
@@ -898,8 +905,7 @@ fn export_device_arrow_column_from_view(
         column_view_device_abi_observation(view, operation)?.with_query_stage(QueryStageKind::InteropExport);
     let mut schema = ptr::null_mut();
     let mut array = ptr::null_mut();
-    let mut materialization: i32 =
-        cudf_sys::cudf_arrow_device_export_materialization_t::CUDF_ARROW_DEVICE_EXPORT_PRODUCER_RETAINED_VIEW as i32;
+    let mut materialization = cudf_sys::CUDF_ARROW_DEVICE_EXPORT_PRODUCER_RETAINED_VIEW;
 
     error::check_status_in(
         unsafe {
@@ -944,8 +950,7 @@ fn export_device_arrow_table_from_view(
         table_view_device_abi_observation(view, operation)?.with_query_stage(QueryStageKind::InteropExport);
     let mut schema = ptr::null_mut();
     let mut array = ptr::null_mut();
-    let mut materialization: i32 =
-        cudf_sys::cudf_arrow_device_export_materialization_t::CUDF_ARROW_DEVICE_EXPORT_PRODUCER_RETAINED_VIEW as i32;
+    let mut materialization = cudf_sys::CUDF_ARROW_DEVICE_EXPORT_PRODUCER_RETAINED_VIEW;
     let (raw_names_ptr, raw_names_len) = match raw_names {
         Some(raw_names) => (
             raw_names.as_ptr(),
@@ -1019,11 +1024,11 @@ impl DeviceArrowColumnExport {
     }
 
     pub fn schema_ptr(&self) -> *const c_void {
-        self.inner.schema.as_ptr()
+        self.inner.schema.as_ptr().cast_const().cast()
     }
 
     pub fn device_array_ptr(&self) -> *const c_void {
-        self.inner.array.as_ptr()
+        self.inner.array.as_ptr().cast_const().cast()
     }
 
     /// Consume this export and return an owned Rust handoff for the raw Arrow
@@ -1085,11 +1090,11 @@ impl DeviceArrowColumnRawParts {
     }
 
     pub fn schema_ptr(&self) -> *mut c_void {
-        self.inner.schema.as_ptr()
+        self.inner.schema.as_ptr().cast()
     }
 
     pub fn device_array_ptr(&self) -> *mut c_void {
-        self.inner.array.as_ptr()
+        self.inner.array.as_ptr().cast()
     }
 
     /// Re-wrap these owned raw parts as a foreign input for safe import into a
@@ -1131,11 +1136,11 @@ impl DeviceArrowColumnOwnedAbiParts {
     }
 
     pub fn schema_ptr(&self) -> *mut c_void {
-        self.inner.schema.as_ptr()
+        self.inner.schema.as_ptr().cast()
     }
 
     pub fn device_array_ptr(&self) -> *mut c_void {
-        self.inner.array.as_ptr()
+        self.inner.array.as_ptr().cast()
     }
 
     /// Consume this wrapper and return raw Arrow C ABI ownership.
@@ -1149,7 +1154,7 @@ impl DeviceArrowColumnOwnedAbiParts {
     /// small root allocations to the process allocator.
     pub fn into_raw_abi(self) -> (*mut c_void, *mut c_void, DeviceArrowImportMaterialization) {
         let this = ManuallyDrop::new(self);
-        (this.inner.schema.as_ptr(), this.inner.array.as_ptr(), this.inner.materialization)
+        (this.inner.schema.as_ptr().cast(), this.inner.array.as_ptr().cast(), this.inner.materialization)
     }
 
     /// Re-wrap this self-contained ABI ownership as a safe foreign import
@@ -1255,11 +1260,11 @@ impl DeviceArrowTableExport {
     }
 
     pub fn schema_ptr(&self) -> *const c_void {
-        self.inner.schema.as_ptr()
+        self.inner.schema.as_ptr().cast_const().cast()
     }
 
     pub fn device_array_ptr(&self) -> *const c_void {
-        self.inner.array.as_ptr()
+        self.inner.array.as_ptr().cast_const().cast()
     }
 
     /// Consume this export and return an owned Rust handoff for the raw Arrow
@@ -1328,11 +1333,11 @@ impl DeviceArrowTableRawParts {
     }
 
     pub fn schema_ptr(&self) -> *mut c_void {
-        self.inner.schema.as_ptr()
+        self.inner.schema.as_ptr().cast()
     }
 
     pub fn device_array_ptr(&self) -> *mut c_void {
-        self.inner.array.as_ptr()
+        self.inner.array.as_ptr().cast()
     }
 
     /// Re-wrap these owned raw parts as a foreign input for safe import into a
@@ -1380,11 +1385,11 @@ impl DeviceArrowTableOwnedAbiParts {
     }
 
     pub fn schema_ptr(&self) -> *mut c_void {
-        self.inner.schema.as_ptr()
+        self.inner.schema.as_ptr().cast()
     }
 
     pub fn device_array_ptr(&self) -> *mut c_void {
-        self.inner.array.as_ptr()
+        self.inner.array.as_ptr().cast()
     }
 
     /// Consume this wrapper and return raw Arrow C ABI ownership.
@@ -1398,7 +1403,7 @@ impl DeviceArrowTableOwnedAbiParts {
     /// small root allocations to the process allocator.
     pub fn into_raw_abi(self) -> (*mut c_void, *mut c_void, DeviceArrowImportMaterialization) {
         let this = ManuallyDrop::new(self);
-        (this.inner.schema.as_ptr(), this.inner.array.as_ptr(), this.inner.materialization)
+        (this.inner.schema.as_ptr().cast(), this.inner.array.as_ptr().cast(), this.inner.materialization)
     }
 
     /// Re-wrap this self-contained ABI ownership as a safe foreign import
@@ -1598,8 +1603,7 @@ impl Column {
 
         let exec_options = runtime.execution_domain().enter_execution()?;
         let mut handle = ptr::null_mut();
-        let mut materialization: i32 =
-            cudf_sys::cudf_arrow_device_import_materialization_t::CUDF_ARROW_DEVICE_IMPORT_FOREIGN_RETAINED_VIEW as i32;
+        let mut materialization = cudf_sys::CUDF_ARROW_DEVICE_IMPORT_FOREIGN_RETAINED_VIEW;
 
         error::check_status_in(
             unsafe {
@@ -1667,8 +1671,7 @@ impl Table {
 
         let exec_options = runtime.execution_domain().enter_execution()?;
         let mut handle = ptr::null_mut();
-        let mut materialization: i32 =
-            cudf_sys::cudf_arrow_device_import_materialization_t::CUDF_ARROW_DEVICE_IMPORT_FOREIGN_RETAINED_VIEW as i32;
+        let mut materialization = cudf_sys::CUDF_ARROW_DEVICE_IMPORT_FOREIGN_RETAINED_VIEW;
 
         error::check_status_in(
             unsafe {

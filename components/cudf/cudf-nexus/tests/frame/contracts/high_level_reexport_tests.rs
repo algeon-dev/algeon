@@ -441,7 +441,7 @@ fn testing_submodules_expose_domain_scoped_hooks() {
     let _ = cudf::testing::arrow::trigger_numeric_to_arrow_error_for_test;
     let _ = cudf::testing::column::trigger_column_view_fixed_width_host_byte_range_overflow_for_test;
     let _ = cudf::testing::concatenate::trigger_concatenate_column_count_limit_error_for_test;
-    let _ = cudf::testing::core::stats_memory_resource;
+    let _ = cudf::testing::core::adopt_owned_memory_resource_for_test;
     let _ = cudf::testing::core::trigger_truthful_error_contract_for_test;
     let _ = cudf::testing::core::validity_to_host_null_mask_bytes;
     let _ = cudf::testing::dataframe::trigger_dataframe_row_range_overflow_error_for_test;

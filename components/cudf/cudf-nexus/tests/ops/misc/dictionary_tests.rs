@@ -5,6 +5,7 @@ use cudf::{
     ops::dictionary,
     testing::{ColumnView, prelude::*},
 };
+use cudf_sys::test_support;
 
 use crate::common::{
     column_from_slice, column_from_slice_nullable, error_context_value, last_exec_mr_value, last_exec_stream_value,
@@ -302,6 +303,9 @@ fn test_match_dictionaries_testing_hook_locks_result_count_mismatch_contract() {
 #[test]
 fn fatal_malformed_result_cleanup_preserves_primary_error_and_closes_device_admission() {
     let scope = cudf::testing::device_safety::DeviceSafetyTestScope::install([]);
+    // SAFETY: this one-shot hook only affects the next native provenance-bound
+    // destroy on this test thread.
+    unsafe { test_support::cudf_test_fail_next_provenance_destroy(cudf_sys::CUDF_ERROR_FATAL_CUDA) };
     let err = cudf::testing::dictionary::trigger_match_dictionaries_fatal_malformed_cleanup_for_test()
         .expect_err("malformed dictionary result remains the primary error");
 
@@ -317,7 +321,7 @@ fn fatal_malformed_result_cleanup_preserves_primary_error_and_closes_device_admi
     let first = snapshot.first_fault().expect("fatal cleanup fault");
     assert_eq!(first.kind(), cudf::runtime::DeviceFaultKind::FatalDeviceOperation);
     assert_eq!(first.operation(), "dictionary::match_dictionaries::cleanup_malformed_result");
-    assert_eq!(first.native_status(), Some(cudf_sys::CUDF_ERROR_FATAL_CUDA));
+    assert_eq!(first.native_status(), Some(cudf_sys::CUDF_ERROR_FATAL_CUDA as i32));
 
     let admission = cudf::runtime::DeviceEntryGuard::enter(device, "dictionary_cleanup::later_work")
         .expect_err("fatal malformed-result cleanup must close later device admission");

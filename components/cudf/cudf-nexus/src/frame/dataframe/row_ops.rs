@@ -196,7 +196,7 @@ impl DataFrame {
         let result_table = copying::gather_impl(
             &tv,
             indices,
-            cudf_sys::cudf_out_of_bounds_policy_t::CUDF_OUT_OF_BOUNDS_POLICY_NULLIFY,
+            cudf_sys::CUDF_OUT_OF_BOUNDS_POLICY_NULLIFY,
             "nullify",
             &output_domain,
             execution.exec_options(),
@@ -226,7 +226,7 @@ impl DataFrame {
         copying::gather_device_allocated_size_impl(
             &tv,
             indices,
-            cudf_sys::cudf_out_of_bounds_policy_t::CUDF_OUT_OF_BOUNDS_POLICY_NULLIFY,
+            cudf_sys::CUDF_OUT_OF_BOUNDS_POLICY_NULLIFY,
             "nullify",
             execution.exec_options(),
             operation,
@@ -308,7 +308,7 @@ impl DataFrame {
         let result_table = copying::gather_impl(
             &tv,
             &map_view,
-            cudf_sys::cudf_out_of_bounds_policy_t::CUDF_OUT_OF_BOUNDS_POLICY_DONT_CHECK,
+            cudf_sys::CUDF_OUT_OF_BOUNDS_POLICY_DONT_CHECK,
             "dont_check",
             &output_domain,
             execution.exec_options(),

@@ -35,7 +35,7 @@ pub struct CudaStream {
 }
 
 struct CudaStreamHandle {
-    raw: Option<NonNull<std::ffi::c_void>>,
+    raw: Option<NonNull<cudf_sys::cudf_stream_handle_state>>,
     device: DeviceId,
 }
 
@@ -122,7 +122,7 @@ impl CudaStream {
         unsafe { cudf_sys::BorrowedStream::from_raw(self.handle.raw()) }
     }
 
-    pub(crate) fn as_raw(&self) -> *mut std::ffi::c_void {
+    pub(crate) fn as_raw(&self) -> cudf_sys::cudf_stream_handle {
         self.handle.raw()
     }
 
@@ -138,14 +138,7 @@ impl CudaStream {
     }
 
     pub(crate) fn debug_handle_value(&self) -> Result<usize> {
-        let _entry = DeviceEntryGuard::enter(self.device(), "stream::debug_handle_value")?;
-        let mut out: usize = 0;
-        check_device_status_in(
-            unsafe { cudf_sys::cudf_test_stream_handle_value(self.handle.raw(), &mut out) },
-            self.device(),
-            "stream::debug_handle_value",
-        )?;
-        Ok(out)
+        self.interop_raw_handle().map(|raw| raw as usize)
     }
     pub(crate) fn __debug_raw_handle_value(&self) -> usize {
         self.debug_handle_value().unwrap_or(0)
@@ -165,7 +158,7 @@ impl Drop for CudaStreamHandle {
 }
 
 impl CudaStreamHandle {
-    fn raw(&self) -> *mut std::ffi::c_void {
+    fn raw(&self) -> cudf_sys::cudf_stream_handle {
         self.raw.expect("live CudaStream always retains its native stream").as_ptr()
     }
 }

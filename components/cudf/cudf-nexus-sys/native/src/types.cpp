@@ -1,4 +1,4 @@
-#include "types.h"
+#include "cudf_rust/types.h"
 
 #include "shim_common.h"
 
@@ -13,7 +13,7 @@ cudf_status_t cudf_data_type_create(cudf_type_id_t type_id, cudf_data_type_handl
   CUDF_RUST_TRY
   {
     auto* dt = new cudf::data_type(to_cudf_type_id(type_id));
-    *out     = static_cast<cudf_data_type_handle>(dt);
+    *out     = reinterpret_cast<cudf_data_type_handle>(dt);
     return CUDF_SUCCESS;
   }
   CUDF_RUST_CATCH
@@ -28,7 +28,7 @@ cudf_status_t cudf_data_type_create_fixed_point(cudf_type_id_t type_id,
   CUDF_RUST_TRY
   {
     auto* dt = new cudf::data_type(to_cudf_type_id(type_id), scale);
-    *out     = static_cast<cudf_data_type_handle>(dt);
+    *out     = reinterpret_cast<cudf_data_type_handle>(dt);
     return CUDF_SUCCESS;
   }
   CUDF_RUST_CATCH
@@ -37,7 +37,7 @@ cudf_status_t cudf_data_type_create_fixed_point(cudf_type_id_t type_id,
 cudf_status_t cudf_data_type_destroy(cudf_data_type_handle handle)
 {
   try {
-    delete static_cast<cudf::data_type*>(handle);
+    delete reinterpret_cast<cudf::data_type*>(handle);
     return CUDF_SUCCESS;
   } catch (...) {
     return cudf_translate_cleanup_exception_noexcept();
@@ -51,7 +51,7 @@ cudf_status_t cudf_data_type_id(cudf_data_type_handle handle, cudf_type_id_t* ou
   CUDF_RUST_NULL_CHECK(handle, "handle is null");
   CUDF_RUST_TRY
   {
-    auto* dt = static_cast<cudf::data_type*>(handle);
+    auto* dt = reinterpret_cast<cudf::data_type*>(handle);
     *out     = static_cast<cudf_type_id_t>(dt->id());
     return CUDF_SUCCESS;
   }
@@ -65,7 +65,7 @@ cudf_status_t cudf_data_type_scale(cudf_data_type_handle handle, int32_t* out)
   CUDF_RUST_NULL_CHECK(handle, "handle is null");
   CUDF_RUST_TRY
   {
-    auto* dt = static_cast<cudf::data_type*>(handle);
+    auto* dt = reinterpret_cast<cudf::data_type*>(handle);
     *out     = dt->scale();
     return CUDF_SUCCESS;
   }

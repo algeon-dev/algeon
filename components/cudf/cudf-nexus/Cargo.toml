@@ -29,6 +29,7 @@ typed-builder.workspace = true
 
 
 [dev-dependencies]
+cudf-sys = { workspace = true, features = ["test-hooks"] }
 indexmap = { workspace = true, features = ["serde"] }
 parquet = { workspace = true, features = ["arrow"] }
 static_assertions.workspace = true

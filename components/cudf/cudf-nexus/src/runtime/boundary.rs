@@ -27,6 +27,9 @@ pub enum BoundaryKind {
     InteropLease,
     /// Ownership was transferred through a RAPIDS interop owned-transfer root.
     OwnedTransfer,
+    /// Device-resident evidence was reduced to one bounded host-visible
+    /// control scalar without materializing the input payload.
+    BoundedControlScalar,
 }
 
 /// Query-stage taxonomy for memory and boundary observations.

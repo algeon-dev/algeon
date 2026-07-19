@@ -1,4 +1,4 @@
-#include "partitioning.h"
+#include "cudf_rust/partitioning.h"
 
 #include "execution_context_internal.hpp"
 #include "shim_common.h"
@@ -71,7 +71,7 @@ cudf_status_t cudf_hash_partition_ex(cudf_table_view_handle input,
     cudf_status_t const columns_status = copy_column_indices(column_indices, num_columns, &columns);
     if (columns_status != CUDF_SUCCESS) { return columns_status; }
 
-    auto* view = static_cast<cudf::table_view*>(input);
+    auto* view       = reinterpret_cast<cudf::table_view*>(input);
     auto partitioned = [&] {
       // libcudf hash_partition passes `mr` to the output table, but some
       // temporaries still allocate through RMM's current resource.

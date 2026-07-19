@@ -5,6 +5,13 @@ use std::{
 
 use crate::support::{OwnedStream, make_stats_memory_resource, required_exec_options};
 
+type Column = cudf_sys::cudf_column_handle;
+type ColumnView = cudf_sys::cudf_column_view_handle;
+type DataType = cudf_sys::cudf_data_type_handle;
+type Scalar = cudf_sys::cudf_scalar_handle;
+type Table = cudf_sys::cudf_table_handle;
+type TableView = cudf_sys::cudf_table_view_handle;
+
 // Re-declare selected FFI functions with `i32` parameters so that tests can
 // pass deliberately invalid enum discriminants to the C shim without
 // constructing invalid Rust enum values (which is instant UB).
@@ -420,16 +427,16 @@ unsafe extern "C" {
     ) -> i32;
 }
 
-pub(crate) fn make_i32_column(data: &[i32]) -> *mut c_void {
+pub(crate) fn make_i32_column(data: &[i32]) -> Column {
     let stream = OwnedStream::new();
     let mr = make_stats_memory_resource();
     let borrowed_stream = stream.borrowed();
     let borrowed_mr = mr.borrowed();
     let exec = required_exec_options(&borrowed_stream, &borrowed_mr);
-    let mut out: *mut c_void = ptr::null_mut();
+    let mut out: Column = ptr::null_mut();
     let st = unsafe {
         cudf_sys::cudf_column_create_numeric_ex(
-            cudf_sys::cudf_type_id_t::CUDF_TYPE_INT32,
+            cudf_sys::CUDF_TYPE_INT32,
             data.as_ptr() as *const c_void,
             data.len() as i32,
             ptr::null(),
@@ -453,7 +460,7 @@ pub(crate) fn validity_to_bitmask(validity: &[bool]) -> Vec<u8> {
     mask
 }
 
-pub(crate) fn make_i32_column_nullable(data: &[i32], validity: &[bool]) -> *mut c_void {
+pub(crate) fn make_i32_column_nullable(data: &[i32], validity: &[bool]) -> Column {
     assert_eq!(data.len(), validity.len());
     let null_mask = validity_to_bitmask(validity);
     let null_count = validity.iter().filter(|&&is_valid| !is_valid).count() as i32;
@@ -463,10 +470,10 @@ pub(crate) fn make_i32_column_nullable(data: &[i32], validity: &[bool]) -> *mut 
     let borrowed_stream = stream.borrowed();
     let borrowed_mr = mr.borrowed();
     let exec = required_exec_options(&borrowed_stream, &borrowed_mr);
-    let mut out: *mut c_void = ptr::null_mut();
+    let mut out: Column = ptr::null_mut();
     let st = unsafe {
         cudf_sys::cudf_column_create_numeric_ex(
-            cudf_sys::cudf_type_id_t::CUDF_TYPE_INT32,
+            cudf_sys::CUDF_TYPE_INT32,
             data.as_ptr() as *const c_void,
             data.len() as i32,
             null_mask.as_ptr(),
@@ -480,9 +487,9 @@ pub(crate) fn make_i32_column_nullable(data: &[i32], validity: &[bool]) -> *mut 
     out
 }
 
-pub(crate) fn make_string_column(data: &[&str]) -> *mut c_void {
+pub(crate) fn make_string_column(data: &[&str]) -> Column {
     let c_strings: Vec<_> = data.iter().map(|value| std::ffi::CString::new(*value).unwrap()).collect();
-    let string_ptrs: Vec<_> = c_strings.iter().map(|value| value.as_ptr()).collect();
+    let mut string_ptrs: Vec<_> = c_strings.iter().map(|value| value.as_ptr()).collect();
     let lengths: Vec<_> = data.iter().map(|value| value.len() as i32).collect();
 
     let stream = OwnedStream::new();
@@ -490,10 +497,10 @@ pub(crate) fn make_string_column(data: &[&str]) -> *mut c_void {
     let borrowed_stream = stream.borrowed();
     let borrowed_mr = mr.borrowed();
     let exec = required_exec_options(&borrowed_stream, &borrowed_mr);
-    let mut out: *mut c_void = ptr::null_mut();
+    let mut out: Column = ptr::null_mut();
     let st = unsafe {
         cudf_sys::cudf_column_create_strings_ex(
-            string_ptrs.as_ptr(),
+            string_ptrs.as_mut_ptr(),
             lengths.as_ptr(),
             data.len() as i32,
             ptr::null(),
@@ -507,53 +514,52 @@ pub(crate) fn make_string_column(data: &[&str]) -> *mut c_void {
     out
 }
 
-pub(crate) fn make_string_scalar(value: &str) -> *mut c_void {
+pub(crate) fn make_string_scalar(value: &str) -> Scalar {
     let c_value = std::ffi::CString::new(value).unwrap();
     let stream = OwnedStream::new();
     let mr = make_stats_memory_resource();
     let borrowed_stream = stream.borrowed();
     let borrowed_mr = mr.borrowed();
     let exec = required_exec_options(&borrowed_stream, &borrowed_mr);
-    let mut out: *mut c_void = ptr::null_mut();
+    let mut out: Scalar = ptr::null_mut();
     let st = unsafe { cudf_sys::cudf_scalar_create_string_ex(c_value.as_ptr(), 1, &exec, &mut out) };
     assert_eq!(st, cudf_sys::CUDF_SUCCESS);
     assert!(!out.is_null());
     out
 }
 
-pub(crate) fn make_empty_i32_column() -> *mut c_void {
+pub(crate) fn make_empty_i32_column() -> Column {
     let stream = OwnedStream::new();
     let mr = make_stats_memory_resource();
     let borrowed_stream = stream.borrowed();
     let borrowed_mr = mr.borrowed();
     let exec = required_exec_options(&borrowed_stream, &borrowed_mr);
-    let mut out: *mut c_void = ptr::null_mut();
-    let st =
-        unsafe { cudf_sys::cudf_column_create_empty_ex(cudf_sys::cudf_type_id_t::CUDF_TYPE_INT32, &exec, &mut out) };
+    let mut out: Column = ptr::null_mut();
+    let st = unsafe { cudf_sys::cudf_column_create_empty_ex(cudf_sys::CUDF_TYPE_INT32, &exec, &mut out) };
     assert_eq!(st, cudf_sys::CUDF_SUCCESS);
     assert!(!out.is_null());
     out
 }
 
-pub(crate) fn make_empty_table() -> *mut c_void {
-    let mut out: *mut c_void = ptr::null_mut();
+pub(crate) fn make_empty_table() -> Table {
+    let mut out: Table = ptr::null_mut();
     let st = unsafe { cudf_sys::cudf_table_create(ptr::null_mut(), 0, &mut out) };
     assert_eq!(st, cudf_sys::CUDF_SUCCESS);
     assert!(!out.is_null());
     out
 }
 
-pub(crate) fn make_column_view(col: *mut c_void) -> *mut c_void {
-    let mut out: *mut c_void = ptr::null_mut();
+pub(crate) fn make_column_view(col: Column) -> ColumnView {
+    let mut out: ColumnView = ptr::null_mut();
     let st = unsafe { cudf_sys::cudf_column_view(col, &mut out) };
     assert_eq!(st, cudf_sys::CUDF_SUCCESS);
     assert!(!out.is_null());
     out
 }
 
-pub(crate) fn make_table_from_one_column(col: *mut c_void) -> *mut c_void {
+pub(crate) fn make_table_from_one_column(col: Column) -> Table {
     let mut col_arr = [col];
-    let mut out: *mut c_void = ptr::null_mut();
+    let mut out: Table = ptr::null_mut();
     let st = unsafe { cudf_sys::cudf_table_create(col_arr.as_mut_ptr(), 1, &mut out) };
     assert_eq!(st, cudf_sys::CUDF_SUCCESS);
     assert!(!out.is_null());
@@ -562,7 +568,7 @@ pub(crate) fn make_table_from_one_column(col: *mut c_void) -> *mut c_void {
     out
 }
 
-pub(crate) fn read_i32_column_data(col: *mut c_void, expected_len: usize) -> Vec<i32> {
+pub(crate) fn read_i32_column_data(col: Column, expected_len: usize) -> Vec<i32> {
     let stream = OwnedStream::new();
     let mr = make_stats_memory_resource();
     let borrowed_stream = stream.borrowed();
@@ -572,7 +578,7 @@ pub(crate) fn read_i32_column_data(col: *mut c_void, expected_len: usize) -> Vec
 }
 
 pub(crate) fn read_i32_column_data_with_exec(
-    col: *mut c_void,
+    col: Column,
     expected_len: usize,
     exec: &cudf_sys::cudf_exec_options_t,
 ) -> Vec<i32> {
@@ -585,7 +591,7 @@ pub(crate) fn read_i32_column_data_with_exec(
     buf
 }
 
-pub(crate) fn read_string_column_data(col: *mut c_void) -> Vec<String> {
+pub(crate) fn read_string_column_data(col: Column) -> Vec<String> {
     let view = make_column_view(col);
     let mut size = 0i32;
     let st = unsafe { cudf_sys::cudf_column_view_size(view, &mut size) };
@@ -637,16 +643,16 @@ pub(crate) fn read_string_column_data(col: *mut c_void) -> Vec<String> {
         .collect()
 }
 
-pub(crate) fn make_table_view(tbl: *mut c_void) -> *mut c_void {
-    let mut out: *mut c_void = ptr::null_mut();
+pub(crate) fn make_table_view(tbl: Table) -> TableView {
+    let mut out: TableView = ptr::null_mut();
     let st = unsafe { cudf_sys::cudf_table_view(tbl, &mut out) };
     assert_eq!(st, cudf_sys::CUDF_SUCCESS);
     assert!(!out.is_null());
     out
 }
 
-pub(crate) fn make_table_from_columns(mut columns: Vec<*mut c_void>) -> *mut c_void {
-    let mut out: *mut c_void = ptr::null_mut();
+pub(crate) fn make_table_from_columns(mut columns: Vec<Column>) -> Table {
+    let mut out: Table = ptr::null_mut();
     let st = unsafe { cudf_sys::cudf_table_create(columns.as_mut_ptr(), columns.len() as i32, &mut out) };
     assert_eq!(st, cudf_sys::CUDF_SUCCESS);
     assert!(!out.is_null());
@@ -654,16 +660,16 @@ pub(crate) fn make_table_from_columns(mut columns: Vec<*mut c_void>) -> *mut c_v
     out
 }
 
-pub(crate) fn make_i32_scalar(value: i32) -> *mut c_void {
+pub(crate) fn make_i32_scalar(value: i32) -> Scalar {
     let stream = OwnedStream::new();
     let mr = make_stats_memory_resource();
     let borrowed_stream = stream.borrowed();
     let borrowed_mr = mr.borrowed();
     let exec = required_exec_options(&borrowed_stream, &borrowed_mr);
-    let mut out: *mut c_void = ptr::null_mut();
+    let mut out: Scalar = ptr::null_mut();
     let st = unsafe {
         cudf_sys::cudf_scalar_create_numeric_ex(
-            cudf_sys::cudf_type_id_t::CUDF_TYPE_INT32,
+            cudf_sys::CUDF_TYPE_INT32,
             &value as *const i32 as *const c_void,
             1,
             &exec,
@@ -676,15 +682,15 @@ pub(crate) fn make_i32_scalar(value: i32) -> *mut c_void {
     out
 }
 
-pub(crate) fn make_i32_data_type() -> *mut c_void {
-    let mut out: *mut c_void = ptr::null_mut();
-    let st = unsafe { cudf_sys::cudf_data_type_create(cudf_sys::cudf_type_id_t::CUDF_TYPE_INT32, &mut out) };
+pub(crate) fn make_i32_data_type() -> DataType {
+    let mut out: DataType = ptr::null_mut();
+    let st = unsafe { cudf_sys::cudf_data_type_create(cudf_sys::CUDF_TYPE_INT32, &mut out) };
     assert_eq!(st, cudf_sys::CUDF_SUCCESS);
     assert!(!out.is_null());
     out
 }
 
-pub(crate) fn make_dictionary_i32_column(data: &[i32]) -> *mut c_void {
+pub(crate) fn make_dictionary_i32_column(data: &[i32]) -> Column {
     let col = make_i32_column(data);
     let view = make_column_view(col);
     let stream = OwnedStream::new();
@@ -692,10 +698,8 @@ pub(crate) fn make_dictionary_i32_column(data: &[i32]) -> *mut c_void {
     let borrowed_stream = stream.borrowed();
     let borrowed_mr = mr.borrowed();
     let exec = required_exec_options(&borrowed_stream, &borrowed_mr);
-    let mut out: *mut c_void = ptr::null_mut();
-    let st = unsafe {
-        cudf_sys::cudf_dictionary_encode_ex(view, cudf_sys::cudf_type_id_t::CUDF_TYPE_INT32, &mut out, &exec)
-    };
+    let mut out: Column = ptr::null_mut();
+    let st = unsafe { cudf_sys::cudf_dictionary_encode_ex(view, cudf_sys::CUDF_TYPE_INT32, &mut out, &exec) };
     assert_eq!(st, cudf_sys::CUDF_SUCCESS);
     assert!(!out.is_null());
     stream.synchronize();
@@ -706,14 +710,14 @@ pub(crate) fn make_dictionary_i32_column(data: &[i32]) -> *mut c_void {
     out
 }
 
-pub(crate) fn decode_dictionary_i32_column(dict_col: *mut c_void, expected_len: usize) -> Vec<i32> {
+pub(crate) fn decode_dictionary_i32_column(dict_col: Column, expected_len: usize) -> Vec<i32> {
     let dict_view = make_column_view(dict_col);
     let stream = OwnedStream::new();
     let mr = make_stats_memory_resource();
     let borrowed_stream = stream.borrowed();
     let borrowed_mr = mr.borrowed();
     let exec = required_exec_options(&borrowed_stream, &borrowed_mr);
-    let mut decoded: *mut c_void = ptr::null_mut();
+    let mut decoded: Column = ptr::null_mut();
     let st = unsafe { cudf_sys::cudf_dictionary_decode_ex(dict_view, &mut decoded, &exec) };
     assert_eq!(st, cudf_sys::CUDF_SUCCESS);
     assert!(!decoded.is_null());
@@ -725,14 +729,14 @@ pub(crate) fn decode_dictionary_i32_column(dict_col: *mut c_void, expected_len: 
     data
 }
 
-pub(crate) fn make_sliced_column_view(col: *mut c_void, offset: usize, len: usize) -> *mut c_void {
+pub(crate) fn make_sliced_column_view(col: Column, offset: usize, len: usize) -> ColumnView {
     let base = make_column_view(col);
     let stream = OwnedStream::new();
     let mr = make_stats_memory_resource();
     let borrowed_stream = stream.borrowed();
     let borrowed_mr = mr.borrowed();
     let exec = required_exec_options(&borrowed_stream, &borrowed_mr);
-    let mut out: *mut c_void = ptr::null_mut();
+    let mut out: ColumnView = ptr::null_mut();
     let st = unsafe { cudf_sys::cudf_column_view_slice_ex(base, offset as i32, len as i32, &exec, &mut out) };
     assert_eq!(st, cudf_sys::CUDF_SUCCESS);
     assert!(!out.is_null());

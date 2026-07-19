@@ -1,4 +1,4 @@
-#include "replace.h"
+#include "cudf_rust/replace.h"
 
 #include "execution_context_internal.hpp"
 #include "scalar_handle.hpp"
@@ -24,7 +24,7 @@ cudf_status_t cudf_replace_nulls_scalar_ex(cudf_column_view_handle input,
   CUDF_RUST_NULL_CHECK(replacement, "replacement is null");
   CUDF_RUST_TRY
   {
-    auto* view                      = static_cast<cudf::column_view*>(input);
+    auto* view                      = reinterpret_cast<cudf::column_view*>(input);
     auto& scalar                    = cudf_scalar_from_handle(replacement);
     auto exec                       = std::unique_ptr<cudf_exec_context>{};
     cudf_status_t const exec_status = cudf_resolve_required_exec_options(options, &exec);
@@ -32,7 +32,7 @@ cudf_status_t cudf_replace_nulls_scalar_ex(cudf_column_view_handle input,
 
     {
       auto result = cudf::replace_nulls(*view, scalar, exec->stream, *exec->mr);
-      *out        = cudf_release_column_handle(std::move(result), cudf_capture_exec_provenance(*exec));
+      *out = cudf_release_column_handle(std::move(result), cudf_capture_exec_provenance(*exec));
     }
     return CUDF_SUCCESS;
   }
@@ -50,15 +50,15 @@ cudf_status_t cudf_replace_nulls_column_ex(cudf_column_view_handle input,
   CUDF_RUST_NULL_CHECK(replacement, "replacement is null");
   CUDF_RUST_TRY
   {
-    auto* view_input                = static_cast<cudf::column_view*>(input);
-    auto* view_replacement          = static_cast<cudf::column_view*>(replacement);
+    auto* view_input                = reinterpret_cast<cudf::column_view*>(input);
+    auto* view_replacement          = reinterpret_cast<cudf::column_view*>(replacement);
     auto exec                       = std::unique_ptr<cudf_exec_context>{};
     cudf_status_t const exec_status = cudf_resolve_required_exec_options(options, &exec);
     if (exec_status != CUDF_SUCCESS) { return exec_status; }
 
     {
       auto result = cudf::replace_nulls(*view_input, *view_replacement, exec->stream, *exec->mr);
-      *out        = cudf_release_column_handle(std::move(result), cudf_capture_exec_provenance(*exec));
+      *out = cudf_release_column_handle(std::move(result), cudf_capture_exec_provenance(*exec));
     }
     return CUDF_SUCCESS;
   }
@@ -75,7 +75,7 @@ cudf_status_t cudf_replace_nulls_policy_ex(cudf_column_view_handle input,
   CUDF_RUST_NULL_CHECK(input, "input is null");
   CUDF_RUST_TRY
   {
-    auto* view = static_cast<cudf::column_view*>(input);
+    auto* view = reinterpret_cast<cudf::column_view*>(input);
     cudf::replace_policy rp;
     switch (policy) {
       case 0: rp = cudf::replace_policy::PRECEDING; break;
@@ -90,7 +90,7 @@ cudf_status_t cudf_replace_nulls_policy_ex(cudf_column_view_handle input,
 
     {
       auto result = cudf::replace_nulls(*view, rp, exec->stream, *exec->mr);
-      *out        = cudf_release_column_handle(std::move(result), cudf_capture_exec_provenance(*exec));
+      *out = cudf_release_column_handle(std::move(result), cudf_capture_exec_provenance(*exec));
     }
     return CUDF_SUCCESS;
   }

@@ -212,7 +212,7 @@ cudf_status_t cudf_mixed_left_anti_join_begin_size_data_ex(cudf_table_view_handl
 cudf_status_t cudf_mixed_join_size_data_destroy(cudf_mixed_join_size_data_handle handle)
 {
   if (handle == nullptr) { return CUDF_SUCCESS; }
-  auto* owner      = static_cast<mixed_join_size_data_owner*>(handle);
+  auto* owner     = reinterpret_cast<mixed_join_size_data_owner*>(handle);
   auto provenance = cached_join_owner_provenance(*owner);
   return cudf_destroy_under_provenance(provenance, [owner] { delete owner; });
 }
@@ -225,7 +225,7 @@ cudf_status_t cudf_mixed_join_size_data_output_size(cudf_mixed_join_size_data_ha
   CUDF_RUST_NULL_CHECK(handle, "mixed join size data is null");
   CUDF_RUST_TRY
   {
-    auto* owner = static_cast<mixed_join_size_data_owner*>(handle);
+    auto* owner = reinterpret_cast<mixed_join_size_data_owner*>(handle);
     cudf_device_guard device_guard;
     cudf_status_t const device_status = device_guard.activate(owner->device);
     if (device_status != CUDF_SUCCESS) { return device_status; }
@@ -235,15 +235,15 @@ cudf_status_t cudf_mixed_join_size_data_output_size(cudf_mixed_join_size_data_ha
   CUDF_RUST_CATCH
 }
 
-cudf_status_t cudf_mixed_join_size_data_device_allocated_size(cudf_mixed_join_size_data_handle handle,
-                                                              size_t* out)
+cudf_status_t cudf_mixed_join_size_data_device_allocated_size(
+  cudf_mixed_join_size_data_handle handle, size_t* out)
 {
   CUDF_RUST_NULL_CHECK(out, "out is null");
   *out = 0;
   CUDF_RUST_NULL_CHECK(handle, "mixed join size data is null");
   CUDF_RUST_TRY
   {
-    auto* owner = static_cast<mixed_join_size_data_owner*>(handle);
+    auto* owner = reinterpret_cast<mixed_join_size_data_owner*>(handle);
     cudf_device_guard device_guard;
     cudf_status_t const device_status = device_guard.activate(owner->device);
     if (device_status != CUDF_SUCCESS) { return device_status; }
@@ -261,12 +261,13 @@ cudf_status_t cudf_mixed_join_size_data_gather_map_size(cudf_mixed_join_size_dat
   CUDF_RUST_NULL_CHECK(handle, "mixed join size data is null");
   CUDF_RUST_TRY
   {
-    auto* owner = static_cast<mixed_join_size_data_owner*>(handle);
+    auto* owner = reinterpret_cast<mixed_join_size_data_owner*>(handle);
     cudf_device_guard device_guard;
     cudf_status_t const device_status = device_guard.activate(owner->device);
     if (device_status != CUDF_SUCCESS) { return device_status; }
     auto const map_count =
-      (owner->kind == mixed_join_size_kind::semi || owner->kind == mixed_join_size_kind::anti) ? 1 : 2;
+      (owner->kind == mixed_join_size_kind::semi || owner->kind == mixed_join_size_kind::anti) ? 1
+                                                                                               : 2;
     *out = checked_join_gather_map_size_bytes(owner->output_size, map_count);
     return CUDF_SUCCESS;
   }

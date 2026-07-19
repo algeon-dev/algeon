@@ -1,11 +1,12 @@
 #include "io_test_hooks.hpp"
 
+#include "cudf_rust/test_support.h"
 #include "shim_common.h"
 
 #include <new>
 
 namespace {
-thread_local cudf_test_io_metadata_fault_t g_next_metadata_fault = CUDF_TEST_IO_METADATA_FAULT_NONE;
+thread_local int32_t g_next_metadata_fault = CUDF_TEST_IO_METADATA_FAULT_NONE;
 
 char** allocate_name_array(int32_t count)
 {
@@ -18,28 +19,15 @@ char** allocate_name_array(int32_t count)
 }
 }  // namespace
 
-extern "C" {
-void cudf_test_io_set_next_metadata_fault(cudf_test_io_metadata_fault_t fault)
-{
-  g_next_metadata_fault = fault;
-}
-
-void cudf_test_io_reset_metadata_fault()
-{
-  g_next_metadata_fault = CUDF_TEST_IO_METADATA_FAULT_NONE;
-}
-}  // extern "C"
-
-cudf_test_io_metadata_fault_t cudf_test_io_take_next_metadata_fault()
+namespace cudf::rust::test_support {
+int32_t take_io_metadata_fault()
 {
   auto const fault      = g_next_metadata_fault;
   g_next_metadata_fault = CUDF_TEST_IO_METADATA_FAULT_NONE;
   return fault;
 }
 
-cudf_status_t cudf_test_io_apply_metadata_fault(cudf_test_io_metadata_fault_t fault,
-                                                char*** out_names,
-                                                int32_t* out_num_names)
+cudf_status_t apply_io_metadata_fault(int32_t fault, char*** out_names, int32_t* out_num_names)
 {
   switch (fault) {
     case CUDF_TEST_IO_METADATA_FAULT_NONE: return CUDF_SUCCESS;
@@ -88,3 +76,16 @@ cudf_status_t cudf_test_io_apply_metadata_fault(cudf_test_io_metadata_fault_t fa
   set_error("unknown test metadata fault");
   return CUDF_ERROR_INVALID_ARGUMENT;
 }
+}  // namespace cudf::rust::test_support
+
+extern "C" {
+void cudf_test_io_set_next_metadata_fault(cudf_test_io_metadata_fault_t fault)
+{
+  g_next_metadata_fault = fault;
+}
+
+void cudf_test_io_reset_metadata_fault()
+{
+  g_next_metadata_fault = CUDF_TEST_IO_METADATA_FAULT_NONE;
+}
+}  // extern "C"

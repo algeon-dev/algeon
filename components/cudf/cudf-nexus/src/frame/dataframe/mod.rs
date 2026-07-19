@@ -30,7 +30,13 @@ pub use concat_ops::{ConcatByNameOptions, SchemaAlignment};
 pub use context::DataFrameExecutionScope;
 pub(crate) use fillna_ops::trigger_dataframe_dropna_subset_count_limit_error_for_test;
 pub use fillna_ops::{DropDuplicatesOptions, DropNaHow, DropNaOptions};
-pub use gpu_record_batch::{GpuRecordBatch, HostBatchCursor, HostBatchCursorConfig, PreparedHostBatch};
+pub use gpu_record_batch::{
+    GpuRecordBatch, HostBatchCursor, HostBatchCursorConfig, PreparedHostBatch, ValidatedFixedSizeListFloat32Export,
+    ValidatedUniformListFloat32Export,
+};
+pub(crate) use gpu_record_batch::{
+    fixed_size_list_structural_proof_build_count_for_test, reset_fixed_size_list_structural_proof_build_count_for_test,
+};
 pub use info::{
     ColumnMemoryAccounting, ColumnMemoryIdentity, DataFrameColumnInfo, DataFrameColumnMemoryIdentity, DataFrameInfo,
     DataFrameMemoryAccounting, DataFrameMemoryIdentity, DataTypeCount, FrameColumnMemoryAlias, FrameMemoryEffect,

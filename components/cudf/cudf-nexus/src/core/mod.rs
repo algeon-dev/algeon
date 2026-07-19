@@ -13,7 +13,7 @@ pub(crate) mod testing_hooks;
 pub mod types;
 
 pub(crate) use column::ColumnView;
-pub use column::{Column, DeviceBuffer, DeviceSlice};
+pub use column::{Column, DeviceBuffer, DeviceSlice, ValidatedFloat32DeviceBuffer, ValidatedInt64DeviceBufferRange};
 pub use error::{Error, ErrorCode, ErrorKind, ErrorStatus, Result};
 pub use memory::{DeviceMemoryResource, DeviceMemoryResourceUsage};
 pub use scalar::Scalar;

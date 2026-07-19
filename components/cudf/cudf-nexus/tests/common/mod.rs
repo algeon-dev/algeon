@@ -14,11 +14,14 @@ use cudf::{
     testing::{self, prelude::*},
 };
 use cudf_sys::{
-    CUDF_SUCCESS, cudf_cuda_get_device, cudf_cuda_set_device, cudf_test_event_last_wait_stream_raw,
-    cudf_test_event_reset_observation, cudf_test_event_stream_wait_call_count,
-    cudf_test_event_stream_wait_call_count_for_stream_raw, cudf_test_exec_last_device, cudf_test_exec_last_mr_raw,
-    cudf_test_exec_last_stream_value, cudf_test_exec_last_sync_stream_value, cudf_test_exec_observed_mr_count,
-    cudf_test_exec_observed_mr_overflowed, cudf_test_exec_observed_mr_raw_at, cudf_test_exec_reset_observation,
+    CUDF_SUCCESS, cudf_cuda_get_device, cudf_cuda_set_device,
+    test_support::{
+        cudf_test_event_last_wait_stream_raw, cudf_test_event_reset_observation,
+        cudf_test_event_stream_wait_call_count, cudf_test_event_stream_wait_call_count_for_stream_raw,
+        cudf_test_exec_last_device, cudf_test_exec_last_mr_raw, cudf_test_exec_last_stream_value,
+        cudf_test_exec_last_sync_stream_value, cudf_test_exec_observed_mr_count, cudf_test_exec_observed_mr_overflowed,
+        cudf_test_exec_observed_mr_raw_at, cudf_test_exec_reset_observation,
+    },
 };
 use rapids_interop::{ColumnLayout, InteropError, Placement};
 
@@ -270,20 +273,20 @@ pub fn reset_exec_observation() {
 
 #[allow(dead_code)]
 pub fn fail_next_column_view_metadata_read() {
-    unsafe { cudf_sys::cudf_test_fail_next_column_view_metadata_read() };
+    unsafe { cudf_sys::test_support::cudf_test_fail_next_column_view_metadata_read() };
 }
 
 #[allow(dead_code)]
-pub fn arm_next_io_metadata_fault(fault: i32) {
+pub fn arm_next_io_metadata_fault(fault: cudf_sys::test_support::cudf_test_io_metadata_fault_t) {
     unsafe {
-        cudf_sys::cudf_test_io_reset_metadata_fault();
-        cudf_sys::cudf_test_io_set_next_metadata_fault(fault);
+        cudf_sys::test_support::cudf_test_io_reset_metadata_fault();
+        cudf_sys::test_support::cudf_test_io_set_next_metadata_fault(fault);
     }
 }
 
 #[allow(dead_code)]
 pub fn reset_io_metadata_fault() {
-    unsafe { cudf_sys::cudf_test_io_reset_metadata_fault() };
+    unsafe { cudf_sys::test_support::cudf_test_io_reset_metadata_fault() };
 }
 
 #[allow(dead_code)]
@@ -298,22 +301,22 @@ pub fn reset_dependency_observation() {
 
 #[allow(dead_code)]
 pub fn reset_row_predicate_observation() {
-    unsafe { cudf_sys::cudf_test_row_predicate_reset_observation() };
+    unsafe { cudf_sys::test_support::cudf_test_row_predicate_reset_observation() };
 }
 
 #[allow(dead_code)]
 pub fn arm_next_groupby_negative_total_columns_fault() {
-    unsafe { cudf_sys::cudf_test_groupby_fail_next_negative_total_columns() };
+    unsafe { cudf_sys::test_support::cudf_test_groupby_fail_next_negative_total_columns() };
 }
 
 #[allow(dead_code)]
 pub fn arm_next_table_view_negative_num_columns_fault() {
-    unsafe { cudf_sys::cudf_test_table_view_fail_next_negative_num_columns() };
+    unsafe { cudf_sys::test_support::cudf_test_table_view_fail_next_negative_num_columns() };
 }
 
 #[allow(dead_code)]
 pub fn arm_next_table_view_negative_num_rows_fault() {
-    unsafe { cudf_sys::cudf_test_table_view_fail_next_negative_num_rows() };
+    unsafe { cudf_sys::test_support::cudf_test_table_view_fail_next_negative_num_rows() };
 }
 
 #[allow(dead_code)]
@@ -438,7 +441,7 @@ pub fn last_dependency_wait_stream_value() -> usize {
 #[allow(dead_code)]
 pub fn last_row_predicate_filter_calls() -> i32 {
     let mut out: i32 = -1;
-    let status = unsafe { cudf_sys::cudf_test_row_predicate_filter_call_count(&mut out) };
+    let status = unsafe { cudf_sys::test_support::cudf_test_row_predicate_filter_call_count(&mut out) };
     assert_eq!(status, cudf_sys::CUDF_SUCCESS, "failed to read row predicate filter call count");
     out
 }
@@ -446,7 +449,7 @@ pub fn last_row_predicate_filter_calls() -> i32 {
 #[allow(dead_code)]
 pub fn last_row_predicate_compute_mask_calls() -> i32 {
     let mut out: i32 = -1;
-    let status = unsafe { cudf_sys::cudf_test_row_predicate_compute_mask_call_count(&mut out) };
+    let status = unsafe { cudf_sys::test_support::cudf_test_row_predicate_compute_mask_call_count(&mut out) };
     assert_eq!(status, cudf_sys::CUDF_SUCCESS, "failed to read row predicate compute-mask call count");
     out
 }
@@ -454,7 +457,7 @@ pub fn last_row_predicate_compute_mask_calls() -> i32 {
 #[allow(dead_code)]
 pub fn last_row_predicate_final_filter_calls() -> i32 {
     let mut out: i32 = -1;
-    let status = unsafe { cudf_sys::cudf_test_row_predicate_final_filter_call_count(&mut out) };
+    let status = unsafe { cudf_sys::test_support::cudf_test_row_predicate_final_filter_call_count(&mut out) };
     assert_eq!(status, cudf_sys::CUDF_SUCCESS, "failed to read row predicate final-filter call count");
     out
 }
@@ -462,7 +465,7 @@ pub fn last_row_predicate_final_filter_calls() -> i32 {
 #[allow(dead_code)]
 pub fn last_row_predicate_mask_api_calls() -> i32 {
     let mut out: i32 = -1;
-    let status = unsafe { cudf_sys::cudf_test_apply_boolean_mask_call_count(&mut out) };
+    let status = unsafe { cudf_sys::test_support::cudf_test_apply_boolean_mask_call_count(&mut out) };
     assert_eq!(status, cudf_sys::CUDF_SUCCESS, "failed to read apply_boolean_mask call count");
     out
 }
@@ -518,6 +521,7 @@ fn fact_value_to_string(value: &FactValue) -> String {
         FactValue::I64(n) => n.to_string(),
         FactValue::TypeId(t) => t.to_string(),
         FactValue::DeviceId(d) => d.to_string(),
+        FactValue::U64(n) => n.to_string(),
         // `FactValue` is non_exhaustive; new variants default to their Display form.
         other => other.to_string(),
     }

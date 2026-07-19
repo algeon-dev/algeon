@@ -2,23 +2,26 @@
 // Rust declares FFI enums with `#[repr(i32)]`, so the C/C++ shim must keep
 // them 32-bit and preserve the discriminants expected by Rust.
 
-#include "arrow_device.h"
-#include "ast.h"
-#include "binary.h"
-#include "copying.h"
-#include "datetime.h"
-#include "device.h"
-#include "execution_context.h"
-#include "filter.h"
-#include "groupby.h"
-#include "join.h"
-#include "memory_resource.h"
-#include "reduction.h"
-#include "sorting.h"
-#include "stream_compaction.h"
-#include "strings.h"
-#include "types.h"
-#include "unary.h"
+#include "cudf_rust/arrow_device.h"
+#include "cudf_rust/ast.h"
+#include "cudf_rust/binary.h"
+#include "cudf_rust/copying.h"
+#include "cudf_rust/datetime.h"
+#include "cudf_rust/device.h"
+#include "cudf_rust/execution_context.h"
+#include "cudf_rust/filter.h"
+#include "cudf_rust/groupby.h"
+#include "cudf_rust/join.h"
+#include "cudf_rust/memory_manager.h"
+#include "cudf_rust/memory_resource.h"
+#include "cudf_rust/query_memory_domain.h"
+#include "cudf_rust/reduction.h"
+#include "cudf_rust/reservation.h"
+#include "cudf_rust/sorting.h"
+#include "cudf_rust/stream_compaction.h"
+#include "cudf_rust/strings.h"
+#include "cudf_rust/types.h"
+#include "cudf_rust/unary.h"
 
 #include <cudf/ast/ast_operator.hpp>
 #include <cudf/ast/expressions.hpp>
@@ -37,11 +40,9 @@
 #include <type_traits>
 
 static_assert(sizeof(cudf_status_t) == sizeof(int32_t), "cudf_status_t must be 32-bit");
-static_assert(std::is_same_v<decltype(&cudf_cuda_profiler_start),
-                             cudf_status_t (*)(void)>,
+static_assert(std::is_same_v<decltype(&cudf_cuda_profiler_start), cudf_status_t (*)(void)>,
               "cudf_cuda_profiler_start ABI signature changed");
-static_assert(std::is_same_v<decltype(&cudf_cuda_profiler_stop),
-                             cudf_status_t (*)(void)>,
+static_assert(std::is_same_v<decltype(&cudf_cuda_profiler_stop), cudf_status_t (*)(void)>,
               "cudf_cuda_profiler_stop ABI signature changed");
 static_assert(sizeof(cudf_ast_operator_t) == sizeof(int32_t), "cudf_ast_operator_t must be 32-bit");
 static_assert(sizeof(cudf_ast_table_reference_t) == sizeof(int32_t),
@@ -81,10 +82,16 @@ static_assert(sizeof(cudf_arrow_device_export_materialization_t) == sizeof(int32
               "cudf_arrow_device_export_materialization_t must be 32-bit");
 static_assert(sizeof(cudf_arrow_device_import_materialization_t) == sizeof(int32_t),
               "cudf_arrow_device_import_materialization_t must be 32-bit");
+static_assert(sizeof(cudf_arrow_device_type_t) == sizeof(int32_t),
+              "cudf_arrow_device_type_t must be 32-bit");
 static_assert(CUDF_ARROW_DEVICE_EXPORT_PRODUCER_RETAINED_VIEW == 0);
 static_assert(CUDF_ARROW_DEVICE_EXPORT_BRIDGE_OWNED_DEVICE_COPY == 1);
 static_assert(CUDF_ARROW_DEVICE_IMPORT_FOREIGN_RETAINED_VIEW == 0);
 static_assert(CUDF_ARROW_DEVICE_IMPORT_BRIDGE_OWNED_DEVICE_COPY == 1);
+static_assert(CUDF_ARROW_DEVICE_TYPE_CPU == 1);
+static_assert(CUDF_ARROW_DEVICE_TYPE_CUDA == 2);
+static_assert(CUDF_ARROW_DEVICE_TYPE_CUDA_HOST == 3);
+static_assert(CUDF_ARROW_DEVICE_TYPE_CUDA_MANAGED == 13);
 static_assert(std::is_standard_layout_v<cudf_exec_options_t>,
               "cudf_exec_options_t must be standard layout");
 static_assert(offsetof(cudf_exec_options_t, struct_size) == 0,
@@ -141,21 +148,21 @@ static_assert(offsetof(cudf_memory_failure_info_t, struct_size) == 0,
 static_assert(sizeof(static_cast<cudf_memory_failure_info_t*>(nullptr)->device_ordinal) ==
                 sizeof(int32_t),
               "cudf_memory_failure_info_t::device_ordinal must be 32-bit");
-static_assert(sizeof(static_cast<cudf_memory_failure_info_t*>(nullptr)->flags) ==
-                sizeof(uint32_t),
+static_assert(sizeof(static_cast<cudf_memory_failure_info_t*>(nullptr)->flags) == sizeof(uint32_t),
               "cudf_memory_failure_info_t::flags must be 32-bit");
 static_assert(sizeof(static_cast<cudf_memory_failure_info_t*>(nullptr)->failure_source) ==
                 sizeof(uint32_t),
               "cudf_memory_failure_info_t::failure_source must be 32-bit");
-static_assert(sizeof(static_cast<cudf_memory_failure_info_t*>(nullptr)
-                       ->reserved_failure_info_padding) == sizeof(uint32_t),
-              "cudf_memory_failure_info_t::reserved_failure_info_padding must be 32-bit");
-static_assert(sizeof(static_cast<cudf_memory_failure_info_t*>(nullptr)->failure_source) +
-                  sizeof(static_cast<cudf_memory_failure_info_t*>(nullptr)
-                           ->reserved_failure_info_padding) +
-                  sizeof(static_cast<cudf_memory_failure_info_t*>(nullptr)->reserved) ==
-                sizeof(uint64_t) * CUDF_MEMORY_FAILURE_INFO_RESERVED_SLOTS,
-              "cudf_memory_failure_info_t failure source must fit in the advertised reserved slots");
+static_assert(
+  sizeof(static_cast<cudf_memory_failure_info_t*>(nullptr)->reserved_failure_info_padding) ==
+    sizeof(uint32_t),
+  "cudf_memory_failure_info_t::reserved_failure_info_padding must be 32-bit");
+static_assert(
+  sizeof(static_cast<cudf_memory_failure_info_t*>(nullptr)->failure_source) +
+      sizeof(static_cast<cudf_memory_failure_info_t*>(nullptr)->reserved_failure_info_padding) +
+      sizeof(static_cast<cudf_memory_failure_info_t*>(nullptr)->reserved) ==
+    sizeof(uint64_t) * CUDF_MEMORY_FAILURE_INFO_RESERVED_SLOTS,
+  "cudf_memory_failure_info_t failure source must fit in the advertised reserved slots");
 static_assert(std::is_standard_layout_v<cudf_memory_manager_options_t>,
               "cudf_memory_manager_options_t must be standard layout");
 static_assert(offsetof(cudf_memory_manager_options_t, struct_size) == 0,
@@ -409,7 +416,8 @@ static_assert(CUDF_BINARY_NULL_NOT_EQUALS ==
               static_cast<int>(cudf::binary_operator::NULL_NOT_EQUALS));
 static_assert(CUDF_BINARY_NULL_MAX == static_cast<int>(cudf::binary_operator::NULL_MAX));
 static_assert(CUDF_BINARY_NULL_MIN == static_cast<int>(cudf::binary_operator::NULL_MIN));
-static_assert(CUDF_BINARY_GENERIC_BINARY == static_cast<int>(cudf::binary_operator::GENERIC_BINARY));
+static_assert(CUDF_BINARY_GENERIC_BINARY ==
+              static_cast<int>(cudf::binary_operator::GENERIC_BINARY));
 static_assert(CUDF_BINARY_NULL_LOGICAL_AND ==
               static_cast<int>(cudf::binary_operator::NULL_LOGICAL_AND));
 static_assert(CUDF_BINARY_NULL_LOGICAL_OR ==

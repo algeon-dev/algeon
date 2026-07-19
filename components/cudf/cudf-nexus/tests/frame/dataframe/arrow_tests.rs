@@ -48,6 +48,21 @@ fn assert_large_string_list_value(array: &LargeListArray, index: usize, expected
     }
 }
 
+fn assert_float32_list_value(array: &ListArray, index: usize, expected: &[Option<f32>]) {
+    let values = array.value(index);
+    let floats = values.as_primitive::<arrow::datatypes::Float32Type>();
+    assert_eq!(floats.len(), expected.len());
+    for (row, expected) in expected.iter().enumerate() {
+        match expected {
+            Some(value) => {
+                assert!(floats.is_valid(row));
+                assert_eq!(floats.value(row), *value);
+            },
+            None => assert!(floats.is_null(row)),
+        }
+    }
+}
+
 fn decimal128_series(values: &[i64], scale: i32) -> cudf::Result<cudf::Series> {
     crate::common::series("amount", values)?.astype(DataType::fixed_point(TypeId::Decimal128, scale))
 }
@@ -168,6 +183,15 @@ fn test_type_id_try_from_arrow_datatype_supported_mappings() {
             .unwrap(),
         TypeId::List
     );
+    assert_eq!(
+        TypeId::try_from(&ArrowDataType::List(Arc::new(Field::new("item", ArrowDataType::Float32, true)))).unwrap(),
+        TypeId::List
+    );
+    assert_eq!(
+        TypeId::try_from(&ArrowDataType::FixedSizeList(Arc::new(Field::new("item", ArrowDataType::Float32, true)), 3,))
+            .unwrap(),
+        TypeId::List
+    );
 }
 
 #[test]
@@ -239,13 +263,21 @@ fn test_arrow_host_dtype_mapping_preserves_logical_metadata() {
             .unwrap(),
         DataType::new(TypeId::List)
     );
-    assert!(cudf_dtype_can_export_to_arrow_type(
-        DataType::new(TypeId::List),
-        &ArrowDataType::LargeList(Arc::new(Field::new("element", ArrowDataType::LargeUtf8, true)))
-    ));
+    assert!(
+        !cudf_dtype_can_export_to_arrow_type(
+            DataType::new(TypeId::List),
+            &ArrowDataType::LargeList(Arc::new(Field::new("element", ArrowDataType::LargeUtf8, true)))
+        ),
+        "a dtype-only predicate cannot prove a nested child schema"
+    );
     assert!(is_supported_arrow_type(&ArrowDataType::Boolean));
     assert!(is_supported_arrow_type(&ArrowDataType::Utf8View));
     assert!(is_supported_arrow_type(&ArrowDataType::List(Arc::new(Field::new("item", ArrowDataType::Utf8View, true)))));
+    assert!(is_supported_arrow_type(&ArrowDataType::List(Arc::new(Field::new("item", ArrowDataType::Float32, true,)))));
+    assert!(is_supported_arrow_type(&ArrowDataType::FixedSizeList(
+        Arc::new(Field::new("item", ArrowDataType::Float32, false)),
+        2,
+    )));
     assert!(is_supported_arrow_numeric_type(&ArrowDataType::Float64));
     assert!(!is_supported_arrow_numeric_type(&ArrowDataType::Boolean));
     assert!(cudf_dtype_can_export_to_arrow_type(
@@ -256,6 +288,21 @@ fn test_arrow_host_dtype_mapping_preserves_logical_metadata() {
         DataType::fixed_point(TypeId::Decimal64, -3),
         &ArrowDataType::Decimal128(38, 2)
     ));
+}
+
+#[test]
+fn test_arrow_host_rejects_non_positive_fixed_size_list_dimension() {
+    use cudf::interop::arrow_host::cudf_dtype_from_arrow_type;
+
+    let error = cudf_dtype_from_arrow_type(&ArrowDataType::FixedSizeList(
+        Arc::new(Field::new("item", ArrowDataType::Float32, false)),
+        0,
+    ))
+    .expect_err("zero-width fixed-size vectors must be rejected");
+
+    assert_eq!(error.code(), ErrorCode::ValueOutOfRange);
+    assert_eq!(error_context_value(&error, "dimension").as_deref(), Some("0"));
+    assert_eq!(error_context_value(&error, "reason").as_deref(), Some("non_positive_fixed_size_list_dimension"));
 }
 
 #[test]
@@ -391,19 +438,28 @@ fn test_arrow_host_record_batch_schema_validation_reanchors_schema_errors() {
 }
 
 #[test]
-fn test_arrow_host_schema_validation_accepts_timezone_and_rejects_nested_types_before_copy() {
+fn test_arrow_host_schema_validation_accepts_timezone_and_numeric_lists_before_copy() {
     use cudf::interop::arrow_host::{cudf_dtype_from_arrow_type, validate_arrow_schema};
 
     let tz_dtype = cudf_dtype_from_arrow_type(&ArrowDataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into())))
         .expect("timezone-aware Arrow timestamps should import as physical cuDF timestamps");
     assert_eq!(tz_dtype, DataType::new(TypeId::TimestampMicroseconds));
 
-    let nested_schema = Schema::new(vec![Field::new(
+    let numeric_list_schema = Schema::new(vec![Field::new(
         "items",
         ArrowDataType::List(Arc::new(Field::new("item", ArrowDataType::Int32, true))),
         true,
     )]);
-    let nested_err = validate_arrow_schema(&nested_schema, 0).expect_err("nested Arrow types should be rejected");
+    let mapped = validate_arrow_schema(&numeric_list_schema, 0).expect("numeric Arrow lists should be admitted");
+    assert_eq!(mapped.fields()[0].cudf_data_type(), DataType::new(TypeId::List));
+
+    let unsupported_list_schema = Schema::new(vec![Field::new(
+        "items",
+        ArrowDataType::List(Arc::new(Field::new("item", ArrowDataType::Boolean, true))),
+        true,
+    )]);
+    let nested_err =
+        validate_arrow_schema(&unsupported_list_schema, 0).expect_err("unsupported list children should be rejected");
     assert_eq!(nested_err.kind(), ErrorKind::Unsupported);
     assert_eq!(nested_err.code(), ErrorCode::UnsupportedDtype);
     assert_eq!(nested_err.operation(), "arrow_host::validate_arrow_schema");
@@ -830,6 +886,200 @@ fn test_sliced_list_utf8_import_normalizes_offsets() {
     assert_eq!(items.value_offsets(), &[0, 2, 2]);
     assert_string_list_value(items, 0, &[Some("kept"), Some("also_kept")]);
     assert_string_list_value(items, 1, &[]);
+}
+
+#[test]
+fn test_list_float32_import_exports_numeric_child_with_root_and_child_validity() {
+    let item = Arc::new(Field::new("item", ArrowDataType::Float32, true));
+    let values = Arc::new(Float32Array::from(vec![Some(1.0), None, Some(3.0), Some(4.0), Some(5.0)]));
+    let lists = ListArray::new(
+        Arc::clone(&item),
+        OffsetBuffer::new(ScalarBuffer::from(vec![0, 2, 2, 3, 5])),
+        values,
+        Some(NullBuffer::from(vec![true, false, true, true])),
+    );
+    let schema = Arc::new(Schema::new(vec![Field::new("features", ArrowDataType::List(item), true)]));
+    let batch = RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(lists)]).unwrap();
+
+    let frame = import_record_batch(&batch).unwrap();
+    assert_eq!(frame.series("features").unwrap().dtype().unwrap(), DataType::new(TypeId::List));
+    let materialized = frame.to_record_batch().unwrap();
+    let features = materialized.column(0).as_any().downcast_ref::<ListArray>().unwrap();
+
+    assert_eq!(features.value_offsets(), &[0, 2, 2, 3, 5]);
+    assert!(features.is_valid(0));
+    assert!(features.is_null(1));
+    assert_float32_list_value(features, 0, &[Some(1.0), None]);
+    assert_float32_list_value(features, 2, &[Some(3.0)]);
+    assert_float32_list_value(features, 3, &[Some(4.0), Some(5.0)]);
+
+    let features_series = frame.series("features").unwrap();
+    let export = features_series.try_prepare_device_column_export().unwrap();
+    let child = match export.column().layout() {
+        rapids_interop::ColumnLayout::List { child, .. } => *child,
+        layout => panic!("expected list layout, got {layout:?}"),
+    };
+    let child = export.semantic_columns().iter().find(|column| column.id() == child).unwrap();
+    assert_eq!(child.data_type().id(), rapids_interop::TypeId::Float32);
+    assert!(matches!(child.layout(), rapids_interop::ColumnLayout::FixedWidth { .. }));
+}
+
+#[test]
+fn test_fixed_size_list_float32_import_synthesizes_cudf_list_offsets() {
+    let item = Arc::new(Field::new("item", ArrowDataType::Float32, true));
+    let values = Arc::new(Float32Array::from(vec![Some(1.0), Some(2.0), Some(3.0), None, Some(5.0), Some(6.0)]));
+    let lists = FixedSizeListArray::new(Arc::clone(&item), 2, values, Some(NullBuffer::from(vec![true, false, true])));
+    let schema = Arc::new(Schema::new(vec![Field::new("features", ArrowDataType::FixedSizeList(item, 2), true)]));
+    let batch = RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(lists)]).unwrap();
+
+    let frame = import_record_batch(&batch).unwrap();
+    assert_eq!(frame.series("features").unwrap().dtype().unwrap(), DataType::new(TypeId::List));
+    let materialized = frame.to_record_batch().unwrap();
+    let features = materialized.column(0).as_any().downcast_ref::<ListArray>().unwrap();
+
+    assert_eq!(features.value_offsets(), &[0, 2, 4, 6]);
+    assert!(features.is_valid(0));
+    assert!(features.is_null(1));
+    assert!(features.is_valid(2));
+    assert_float32_list_value(features, 0, &[Some(1.0), Some(2.0)]);
+    assert_float32_list_value(features, 2, &[Some(5.0), Some(6.0)]);
+
+    let fixed = cudf::frame::dataframe::GpuRecordBatch::new(frame, schema).unwrap().to_host_record_batch().unwrap();
+    let features = fixed.column(0).as_any().downcast_ref::<FixedSizeListArray>().unwrap();
+    assert_eq!(features.value_length(), 2);
+    assert!(features.is_valid(0));
+    assert!(features.is_null(1));
+    assert!(features.is_valid(2));
+    let first = features.value(0);
+    assert_eq!(first.as_primitive::<arrow::datatypes::Float32Type>().values(), &[1.0, 2.0]);
+    let third = features.value(2);
+    assert_eq!(third.as_primitive::<arrow::datatypes::Float32Type>().values(), &[5.0, 6.0]);
+}
+
+#[test]
+fn test_sliced_fixed_size_list_float32_import_uses_active_child_range() {
+    let item = Arc::new(Field::new("item", ArrowDataType::Float32, false));
+    let lists = FixedSizeListArray::new(
+        Arc::clone(&item),
+        2,
+        Arc::new(Float32Array::from(vec![0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0])),
+        None,
+    );
+    let sliced = lists.slice(1, 2);
+    let schema = Arc::new(Schema::new(vec![Field::new("features", ArrowDataType::FixedSizeList(item, 2), false)]));
+    let batch = RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(sliced)]).unwrap();
+
+    let materialized = import_record_batch(&batch).unwrap().to_record_batch().unwrap();
+    let features = materialized.column(0).as_any().downcast_ref::<ListArray>().unwrap();
+    assert_eq!(features.value_offsets(), &[0, 2, 4]);
+    assert_float32_list_value(features, 0, &[Some(2.0), Some(3.0)]);
+    assert_float32_list_value(features, 1, &[Some(4.0), Some(5.0)]);
+}
+
+#[test]
+fn test_gpu_record_batch_rejects_list_int64_claiming_float32_child_schema() {
+    let source_item = Arc::new(Field::new("item", ArrowDataType::Int64, false));
+    let source = ListArray::new(
+        Arc::clone(&source_item),
+        OffsetBuffer::new(ScalarBuffer::from(vec![0, 2, 3])),
+        Arc::new(Int64Array::from(vec![10, 20, 30])),
+        None,
+    );
+    let source_schema = Arc::new(Schema::new(vec![Field::new("features", ArrowDataType::List(source_item), false)]));
+    let source_batch = RecordBatch::try_new(source_schema, vec![Arc::new(source)]).unwrap();
+    let frame = import_record_batch(&source_batch).unwrap();
+    let claimed_schema = Arc::new(Schema::new(vec![Field::new(
+        "features",
+        ArrowDataType::List(Arc::new(Field::new("item", ArrowDataType::Float32, false))),
+        false,
+    )]));
+
+    let error = cudf::frame::dataframe::GpuRecordBatch::new(frame, claimed_schema)
+        .expect_err("List<Int64> must not claim a List<Float32> schema contract");
+
+    assert_eq!(error.code(), ErrorCode::UnsupportedDtype);
+    assert_eq!(error.operation(), "dataframe::GpuRecordBatch::new");
+    assert_eq!(error_context_value(&error, "actual_child_cudf_type").as_deref(), Some("int64"));
+    assert_eq!(error_context_value(&error, "expected_child_arrow_type").as_deref(), Some("Float32"));
+    assert_eq!(error_context_value(&error, "reason").as_deref(), Some("schema_list_child_dtype_mismatch"));
+}
+
+#[test]
+fn test_gpu_record_batch_rejects_list_string_claiming_float32_child_schema() {
+    let source_item = Arc::new(Field::new("item", ArrowDataType::Utf8, false));
+    let source = ListArray::new(
+        Arc::clone(&source_item),
+        OffsetBuffer::new(ScalarBuffer::from(vec![0, 1, 3])),
+        Arc::new(StringArray::from(vec!["large string payload", "another payload", "tail"])),
+        None,
+    );
+    let source_schema = Arc::new(Schema::new(vec![Field::new("features", ArrowDataType::List(source_item), false)]));
+    let source_batch = RecordBatch::try_new(source_schema, vec![Arc::new(source)]).unwrap();
+    let frame = import_record_batch(&source_batch).unwrap();
+    let claimed_schema = Arc::new(Schema::new(vec![Field::new(
+        "features",
+        ArrowDataType::List(Arc::new(Field::new("item", ArrowDataType::Float32, false))),
+        false,
+    )]));
+
+    let error = cudf::frame::dataframe::GpuRecordBatch::new(frame, claimed_schema)
+        .expect_err("List<String> must be rejected before Float32-based host memory estimation");
+
+    assert_eq!(error.code(), ErrorCode::UnsupportedDtype);
+    assert_eq!(error.operation(), "dataframe::GpuRecordBatch::new");
+    assert_eq!(error_context_value(&error, "actual_child_cudf_type").as_deref(), Some("string"));
+    assert_eq!(error_context_value(&error, "expected_child_arrow_type").as_deref(), Some("Float32"));
+    assert_eq!(error_context_value(&error, "reason").as_deref(), Some("schema_list_child_dtype_mismatch"));
+}
+
+#[test]
+fn test_gpu_record_batch_rejects_fixed_size_list_dimension_mismatch_at_construction() {
+    let item = Arc::new(Field::new("item", ArrowDataType::Float32, false));
+    let source =
+        FixedSizeListArray::new(Arc::clone(&item), 2, Arc::new(Float32Array::from(vec![1.0, 2.0, 3.0, 4.0])), None);
+    let source_schema =
+        Arc::new(Schema::new(vec![Field::new("features", ArrowDataType::FixedSizeList(Arc::clone(&item), 2), false)]));
+    let source_batch = RecordBatch::try_new(source_schema, vec![Arc::new(source)]).unwrap();
+    let frame = import_record_batch(&source_batch).unwrap();
+    let claimed_schema =
+        Arc::new(Schema::new(vec![Field::new("features", ArrowDataType::FixedSizeList(item, 3), false)]));
+
+    let error = cudf::frame::dataframe::GpuRecordBatch::new(frame, claimed_schema)
+        .expect_err("a retained FixedSizeList dimension must match every cudf list row");
+
+    assert_eq!(error.code(), ErrorCode::ColumnLengthMismatch);
+    assert_eq!(error.operation(), "dataframe::GpuRecordBatch::new");
+    assert_eq!(error_context_value(&error, "expected_dimension").as_deref(), Some("3"));
+    assert_eq!(error_context_value(&error, "minimum_actual_dimension").as_deref(), Some("2"));
+    assert_eq!(error_context_value(&error, "maximum_actual_dimension").as_deref(), Some("2"));
+    assert_eq!(error_context_value(&error, "evidence").as_deref(), Some("device_reduced_list_offset_width_range"));
+    assert_eq!(error_context_value(&error, "reason").as_deref(), Some("schema_fixed_size_list_dimension_mismatch"));
+}
+
+#[test]
+fn test_gpu_record_batch_checks_each_fixed_size_list_row_not_only_total_child_length() {
+    let item = Arc::new(Field::new("item", ArrowDataType::Float32, false));
+    let source = ListArray::new(
+        Arc::clone(&item),
+        OffsetBuffer::new(ScalarBuffer::from(vec![0, 1, 4])),
+        Arc::new(Float32Array::from(vec![1.0, 2.0, 3.0, 4.0])),
+        None,
+    );
+    let source_schema =
+        Arc::new(Schema::new(vec![Field::new("features", ArrowDataType::List(Arc::clone(&item)), false)]));
+    let source_batch = RecordBatch::try_new(source_schema, vec![Arc::new(source)]).unwrap();
+    let frame = import_record_batch(&source_batch).unwrap();
+    let claimed_schema =
+        Arc::new(Schema::new(vec![Field::new("features", ArrowDataType::FixedSizeList(item, 2), false)]));
+
+    let error = cudf::frame::dataframe::GpuRecordBatch::new(frame, claimed_schema)
+        .expect_err("equal total child length must not hide variable list row widths");
+
+    assert_eq!(error.code(), ErrorCode::ColumnLengthMismatch);
+    assert_eq!(error_context_value(&error, "expected_dimension").as_deref(), Some("2"));
+    assert_eq!(error_context_value(&error, "minimum_actual_dimension").as_deref(), Some("1"));
+    assert_eq!(error_context_value(&error, "maximum_actual_dimension").as_deref(), Some("3"));
+    assert_eq!(error_context_value(&error, "reason").as_deref(), Some("schema_fixed_size_list_dimension_mismatch"));
 }
 
 #[test]

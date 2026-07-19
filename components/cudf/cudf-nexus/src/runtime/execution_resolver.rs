@@ -117,12 +117,14 @@ mod tests {
     }
 
     fn reset_dependency_observation() {
-        unsafe { cudf_sys::cudf_test_event_reset_observation() };
+        unsafe { cudf_sys::test_support::cudf_test_event_reset_observation() };
     }
 
     fn dependency_wait_call_count_for_stream(stream_raw: usize) -> i32 {
         let mut out = -1;
-        let status = unsafe { cudf_sys::cudf_test_event_stream_wait_call_count_for_stream_raw(stream_raw, &mut out) };
+        let status = unsafe {
+            cudf_sys::test_support::cudf_test_event_stream_wait_call_count_for_stream_raw(stream_raw, &mut out)
+        };
         assert_eq!(status, cudf_sys::CUDF_SUCCESS);
         out
     }

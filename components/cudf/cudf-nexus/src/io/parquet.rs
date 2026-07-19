@@ -1175,10 +1175,13 @@ pub(crate) fn read_parquet_table_with_evidence(
                 .collect::<Result<Vec<_>>>()
         })
         .transpose()?;
-    let col_ptrs_vec: Vec<*const c_char> =
+    let mut col_ptrs_vec: Vec<*const c_char> =
         cstring_columns.as_ref().map(|cols| cols.iter().map(|c| c.as_ptr()).collect()).unwrap_or_default();
-    let (col_ptrs, num_cols) =
-        if col_ptrs_vec.is_empty() { (ptr::null(), 0) } else { (col_ptrs_vec.as_ptr(), col_ptrs_vec.len() as i32) };
+    let (col_ptrs, num_cols) = if col_ptrs_vec.is_empty() {
+        (ptr::null_mut(), 0)
+    } else {
+        (col_ptrs_vec.as_mut_ptr(), col_ptrs_vec.len() as i32)
+    };
 
     // Build row_groups pointer; the Option<Vec> must outlive the FFI call.
     let (rg_ptr, num_rg) = match options.row_groups.as_ref() {
@@ -1375,7 +1378,7 @@ pub(crate) fn read_parquet_multi_table(options: &ParquetMultiTableReadOptions) -
             }),
         })
         .collect::<Result<Vec<_>>>()?;
-    let filepath_ptrs = filepath_cstrings.iter().map(|path| path.as_ptr()).collect::<Vec<_>>();
+    let mut filepath_ptrs = filepath_cstrings.iter().map(|path| path.as_ptr()).collect::<Vec<_>>();
 
     let cstring_columns: Option<Vec<CString>> = options
         .columns
@@ -1397,10 +1400,13 @@ pub(crate) fn read_parquet_multi_table(options: &ParquetMultiTableReadOptions) -
                 .collect::<Result<Vec<_>>>()
         })
         .transpose()?;
-    let col_ptrs_vec: Vec<*const c_char> =
+    let mut col_ptrs_vec: Vec<*const c_char> =
         cstring_columns.as_ref().map(|cols| cols.iter().map(|c| c.as_ptr()).collect()).unwrap_or_default();
-    let (col_ptrs, num_cols) =
-        if col_ptrs_vec.is_empty() { (ptr::null(), 0) } else { (col_ptrs_vec.as_ptr(), col_ptrs_vec.len() as i32) };
+    let (col_ptrs, num_cols) = if col_ptrs_vec.is_empty() {
+        (ptr::null_mut(), 0)
+    } else {
+        (col_ptrs_vec.as_mut_ptr(), col_ptrs_vec.len() as i32)
+    };
 
     let mut row_group_offsets = Vec::new();
     let mut row_groups = Vec::new();
@@ -1490,7 +1496,7 @@ pub(crate) fn read_parquet_multi_table(options: &ParquetMultiTableReadOptions) -
         let remote_profile_raw = remote_profile_raw.as_ref().expect("remote profiles exist when remote sources exist");
         unsafe {
             cudf_sys::cudf_io_read_parquet_multi_mixed_with_metadata_filter_ex(
-                filepath_ptrs.as_ptr(),
+                filepath_ptrs.as_mut_ptr(),
                 remote_source_flags.as_ptr(),
                 remote_profile_raw.as_ptr(),
                 file_count,
@@ -1512,7 +1518,7 @@ pub(crate) fn read_parquet_multi_table(options: &ParquetMultiTableReadOptions) -
     } else {
         unsafe {
             cudf_sys::cudf_io_read_parquet_multi_with_metadata_filter_ex(
-                filepath_ptrs.as_ptr(),
+                filepath_ptrs.as_mut_ptr(),
                 file_count,
                 col_ptrs,
                 num_cols,
@@ -1875,10 +1881,13 @@ pub(crate) fn write_parquet_with_exec(
         .transpose()?;
 
     // Build the pointer array; the Vec must outlive the FFI call.
-    let name_ptrs_vec: Vec<*const c_char> =
+    let mut name_ptrs_vec: Vec<*const c_char> =
         cstring_names.as_ref().map(|names| names.iter().map(|c| c.as_ptr()).collect()).unwrap_or_default();
-    let (name_ptrs, num_cols) =
-        if name_ptrs_vec.is_empty() { (ptr::null(), 0) } else { (name_ptrs_vec.as_ptr(), name_ptrs_vec.len() as i32) };
+    let (name_ptrs, num_cols) = if name_ptrs_vec.is_empty() {
+        (ptr::null_mut(), 0)
+    } else {
+        (name_ptrs_vec.as_mut_ptr(), name_ptrs_vec.len() as i32)
+    };
 
     error::check_status_in_with_details(
         // SAFETY: table handle is valid (NonNull). filepath is a valid CString.

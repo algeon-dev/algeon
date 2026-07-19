@@ -1,4 +1,4 @@
-#include "strings.h"
+#include "cudf_rust/strings.h"
 
 #include "execution_context_internal.hpp"
 #include "handle_provenance.hpp"
@@ -39,7 +39,7 @@
 // Caller must guarantee the column is of type STRING.
 static cudf::strings_column_view to_strings_view(cudf_column_view_handle h)
 {
-  auto* view = static_cast<cudf::column_view*>(h);
+  auto* view = reinterpret_cast<cudf::column_view*>(h);
   return cudf::strings_column_view{*view};
 }
 
@@ -84,7 +84,9 @@ static cudf_status_t validate_like_arguments(char const* pattern,
   return CUDF_SUCCESS;
 }
 
-static cudf_status_t validate_string_range(char const* value, int32_t value_len, char const* value_name)
+static cudf_status_t validate_string_range(char const* value,
+                                           int32_t value_len,
+                                           char const* value_name)
 {
   if (value_len < 0) {
     set_error(std::string{value_name} + "_len must be non-negative");
@@ -130,7 +132,7 @@ cudf_status_t cudf_strings_to_lower_ex(cudf_column_view_handle input,
 
     {
       auto result = cudf::strings::to_lower(to_strings_view(input), exec->stream, *exec->mr);
-      *out        = cudf_release_column_handle(std::move(result), cudf_capture_exec_provenance(*exec));
+      *out = cudf_release_column_handle(std::move(result), cudf_capture_exec_provenance(*exec));
     }
     return CUDF_SUCCESS;
   }
@@ -152,7 +154,7 @@ cudf_status_t cudf_strings_to_upper_ex(cudf_column_view_handle input,
 
     {
       auto result = cudf::strings::to_upper(to_strings_view(input), exec->stream, *exec->mr);
-      *out        = cudf_release_column_handle(std::move(result), cudf_capture_exec_provenance(*exec));
+      *out = cudf_release_column_handle(std::move(result), cudf_capture_exec_provenance(*exec));
     }
     return CUDF_SUCCESS;
   }
@@ -182,8 +184,9 @@ cudf_status_t cudf_strings_contains_ex(cudf_column_view_handle input,
     cudf_status_t const type_status = check_string_scalar(target, &scalar);
     if (type_status != CUDF_SUCCESS) { return type_status; }
     {
-      auto result = cudf::strings::contains(to_strings_view(input), *scalar, exec->stream, *exec->mr);
-      *out        = cudf_release_column_handle(std::move(result), cudf_capture_exec_provenance(*exec));
+      auto result =
+        cudf::strings::contains(to_strings_view(input), *scalar, exec->stream, *exec->mr);
+      *out = cudf_release_column_handle(std::move(result), cudf_capture_exec_provenance(*exec));
     }
     return CUDF_SUCCESS;
   }
@@ -237,8 +240,9 @@ cudf_status_t cudf_strings_ends_with_ex(cudf_column_view_handle input,
     cudf_status_t const type_status = check_string_scalar(target, &scalar);
     if (type_status != CUDF_SUCCESS) { return type_status; }
     {
-      auto result = cudf::strings::ends_with(to_strings_view(input), *scalar, exec->stream, *exec->mr);
-      *out        = cudf_release_column_handle(std::move(result), cudf_capture_exec_provenance(*exec));
+      auto result =
+        cudf::strings::ends_with(to_strings_view(input), *scalar, exec->stream, *exec->mr);
+      *out = cudf_release_column_handle(std::move(result), cudf_capture_exec_provenance(*exec));
     }
     return CUDF_SUCCESS;
   }
@@ -277,7 +281,7 @@ cudf_status_t cudf_strings_like_ex(cudf_column_view_handle input,
         to_strings_view(input), pattern_view, escape_view, exec->stream, *exec->mr);
       exec->stream.synchronize();
       cudf_record_synchronized_stream(exec->stream);
-      *out        = cudf_release_column_handle(std::move(result), cudf_capture_exec_provenance(*exec));
+      *out = cudf_release_column_handle(std::move(result), cudf_capture_exec_provenance(*exec));
     }
     return CUDF_SUCCESS;
   }
@@ -460,7 +464,7 @@ cudf_status_t cudf_strings_prepare_replace_with_backrefs_ex(
         to_strings_view(input), *prog, replacement_view, exec->stream, *exec->mr);
       exec->stream.synchronize();
       cudf_record_synchronized_stream(exec->stream);
-      *out = static_cast<cudf_prepared_replace_with_backrefs_handle>(owner.release());
+      *out = reinterpret_cast<cudf_prepared_replace_with_backrefs_handle>(owner.release());
     }
     return CUDF_SUCCESS;
   }
@@ -490,7 +494,7 @@ cudf_status_t cudf_strings_prepared_replace_with_backrefs_output_size_facts(
 
   CUDF_RUST_TRY
   {
-    auto* owner = static_cast<prepared_replace_with_backrefs_owner*>(handle);
+    auto* owner = reinterpret_cast<prepared_replace_with_backrefs_owner*>(handle);
     CUDF_RUST_NULL_CHECK(owner->prepared, "prepared replace state is null");
     auto const facts =
       cudf::strings::get_replace_with_backrefs_prepared_output_size_facts(*owner->prepared);
@@ -519,7 +523,7 @@ cudf_status_t cudf_strings_execute_replace_with_backrefs_ex(
   // owner until execution context validation completes: a default unique_ptr
   // would destroy retained GPU state on the ambient device when validation
   // returns early.
-  auto* owner = static_cast<prepared_replace_with_backrefs_owner*>(handle);
+  auto* owner = reinterpret_cast<prepared_replace_with_backrefs_owner*>(handle);
 
   cudf_clear_error();
   try {
@@ -531,14 +535,13 @@ cudf_status_t cudf_strings_execute_replace_with_backrefs_ex(
 
     if (exec->device != owner->provenance.device) {
       set_error("execute device must match prepared replace-with-backrefs provenance");
-      return cleanup_consumed_prepared_replace_owner_before_return(
-        owner, CUDF_ERROR_INVALID_OPERATION);
+      return cleanup_consumed_prepared_replace_owner_before_return(owner,
+                                                                   CUDF_ERROR_INVALID_OPERATION);
     }
 
     if (owner->prepared == nullptr) {
       set_error("prepared replace state is null");
-      return cleanup_consumed_prepared_replace_owner_before_return(
-        owner, CUDF_ERROR_NULL);
+      return cleanup_consumed_prepared_replace_owner_before_return(owner, CUDF_ERROR_NULL);
     }
 
     {
@@ -570,7 +573,7 @@ cudf_status_t cudf_strings_prepared_replace_with_backrefs_destroy(
   cudf_prepared_replace_with_backrefs_handle handle)
 {
   if (handle == nullptr) { return CUDF_SUCCESS; }
-  auto* owner     = static_cast<prepared_replace_with_backrefs_owner*>(handle);
+  auto* owner     = reinterpret_cast<prepared_replace_with_backrefs_owner*>(handle);
   auto provenance = owner->provenance;
   // Ownership is consumed even when cleanup is rejected.
   return cudf_destroy_under_provenance(provenance, [owner] { delete owner; });
@@ -659,7 +662,7 @@ cudf_status_t cudf_strings_concatenate_ex(cudf_column_view_handle const* columns
     std::vector<cudf::column_view> views;
     views.reserve(static_cast<std::size_t>(num_columns));
     for (int32_t index = 0; index < num_columns; ++index) {
-      views.push_back(*static_cast<cudf::column_view*>(columns[index]));
+      views.push_back(*reinterpret_cast<cudf::column_view*>(columns[index]));
     }
 
     {
@@ -738,8 +741,9 @@ cudf_status_t cudf_strings_count_characters_ex(cudf_column_view_handle input,
     if (exec_status != CUDF_SUCCESS) { return exec_status; }
 
     {
-      auto result = cudf::strings::count_characters(to_strings_view(input), exec->stream, *exec->mr);
-      *out        = cudf_release_column_handle(std::move(result), cudf_capture_exec_provenance(*exec));
+      auto result =
+        cudf::strings::count_characters(to_strings_view(input), exec->stream, *exec->mr);
+      *out = cudf_release_column_handle(std::move(result), cudf_capture_exec_provenance(*exec));
     }
     return CUDF_SUCCESS;
   }
@@ -761,7 +765,7 @@ cudf_status_t cudf_strings_count_bytes_ex(cudf_column_view_handle input,
 
     {
       auto result = cudf::strings::count_bytes(to_strings_view(input), exec->stream, *exec->mr);
-      *out        = cudf_release_column_handle(std::move(result), cudf_capture_exec_provenance(*exec));
+      *out = cudf_release_column_handle(std::move(result), cudf_capture_exec_provenance(*exec));
     }
     return CUDF_SUCCESS;
   }
@@ -788,7 +792,7 @@ cudf_status_t cudf_strings_try_to_integers_ex(cudf_column_view_handle input,
     if (exec_status != CUDF_SUCCESS) { return exec_status; }
 
     auto strings_view = to_strings_view(input);
-    auto* dtype       = static_cast<cudf::data_type*>(output_type);
+    auto* dtype       = reinterpret_cast<cudf::data_type*>(output_type);
     if (!cudf::is_integral(*dtype)) {
       set_error("cudf_strings_try_to_integers: output_type must be an integral type");
       return CUDF_ERROR_TYPE;
@@ -805,8 +809,8 @@ cudf_status_t cudf_strings_try_to_integers_ex(cudf_column_view_handle input,
       auto valid_mask = cudf::strings::is_integer(strings_view, *dtype, exec->stream, *exec->mr);
       auto integers   = cudf::strings::to_integers(strings_view, *dtype, exec->stream, *exec->mr);
       auto null_value = cudf::make_default_constructed_scalar(*dtype, exec->stream, *exec->mr);
-      auto result =
-        cudf::copy_if_else(integers->view(), *null_value, valid_mask->view(), exec->stream, *exec->mr);
+      auto result     = cudf::copy_if_else(
+        integers->view(), *null_value, valid_mask->view(), exec->stream, *exec->mr);
       *out = cudf_release_column_handle(std::move(result), cudf_capture_exec_provenance(*exec));
     }
     return CUDF_SUCCESS;

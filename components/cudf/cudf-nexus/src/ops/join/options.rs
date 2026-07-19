@@ -16,8 +16,8 @@ pub enum NullableJoin {
 impl NullableJoin {
     pub(crate) fn to_raw(self) -> cudf_sys::cudf_nullable_join_t {
         match self {
-            NullableJoin::MaybeNull => cudf_sys::cudf_nullable_join_t::CUDF_NULLABLE_JOIN_YES,
-            NullableJoin::NoNulls => cudf_sys::cudf_nullable_join_t::CUDF_NULLABLE_JOIN_NO,
+            NullableJoin::MaybeNull => cudf_sys::CUDF_NULLABLE_JOIN_YES,
+            NullableJoin::NoNulls => cudf_sys::CUDF_NULLABLE_JOIN_NO,
         }
     }
 }

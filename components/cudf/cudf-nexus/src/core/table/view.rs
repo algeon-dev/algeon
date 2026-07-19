@@ -1,6 +1,5 @@
 use std::{
     marker::PhantomData,
-    os::raw::c_void,
     ptr::{self, NonNull},
     sync::Arc,
 };
@@ -24,7 +23,7 @@ enum TableViewBacking<'a> {
 
 /// A non-owning, immutable view of a GPU table.
 pub struct TableView<'a> {
-    handle: NonNull<c_void>,
+    handle: NonNull<cudf_sys::cudf_table_view_handle_state>,
     domain: Arc<ExecutionDomain>,
     _backing: TableViewBacking<'a>,
     _lifetime: PhantomData<&'a ()>,
@@ -84,7 +83,7 @@ impl<'a> TableView<'a> {
     }
 
     fn from_raw_handle_with_backing(
-        handle: *mut c_void,
+        handle: cudf_sys::cudf_table_view_handle,
         domain: Arc<ExecutionDomain>,
         backing: TableViewBacking<'a>,
     ) -> Result<Self> {
@@ -96,7 +95,10 @@ impl<'a> TableView<'a> {
         })
     }
 
-    pub(crate) fn from_raw_handle(handle: *mut c_void, domain: Arc<ExecutionDomain>) -> Result<Self> {
+    pub(crate) fn from_raw_handle(
+        handle: cudf_sys::cudf_table_view_handle,
+        domain: Arc<ExecutionDomain>,
+    ) -> Result<Self> {
         Self::from_raw_handle_with_backing(handle, domain, TableViewBacking::None)
     }
 
@@ -234,7 +236,7 @@ impl<'a> TableView<'a> {
             table_column_count_limit_error(operation, "number of column views exceeds i32::MAX", views.len())
         })?;
 
-        let mut handles: SmallVec<[*mut c_void; TABLE_HANDLE_INLINE_CAPACITY]> =
+        let mut handles: SmallVec<[cudf_sys::cudf_column_view_handle; TABLE_HANDLE_INLINE_CAPACITY]> =
             views.iter().map(|v| v.raw_handle()).collect();
 
         let mut out = ptr::null_mut();
@@ -266,7 +268,7 @@ impl<'a> TableView<'a> {
     }
 
     /// Returns the raw FFI handle. For internal I/O use.
-    pub(crate) fn raw_handle(&self) -> *mut c_void {
+    pub(crate) fn raw_handle(&self) -> cudf_sys::cudf_table_view_handle {
         self.handle.as_ptr()
     }
 

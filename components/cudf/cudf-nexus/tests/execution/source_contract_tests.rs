@@ -5,6 +5,7 @@ use std::{
 };
 
 const CONCATENATE_RS: &str = include_str!("../../src/ops/concatenate.rs");
+const RESHAPE_RS: &str = include_str!("../../src/ops/reshape.rs");
 const BINARY_RS: &str = include_str!("../../src/ops/binary.rs");
 const COPYING_RS: &str = include_str!("../../src/ops/copying.rs");
 const DATETIME_RS: &str = include_str!("../../src/ops/datetime.rs");
@@ -34,6 +35,7 @@ const PARTITIONING_RS: &str = include_str!("../../src/ops/partitioning.rs");
 const REPLACE_RS: &str = include_str!("../../src/ops/replace.rs");
 const REDUCTION_RS: &str = include_str!("../../src/ops/reduction.rs");
 const SEARCH_RS: &str = include_str!("../../src/ops/search.rs");
+const GPU_RECORD_BATCH_RS: &str = include_str!("../../src/frame/dataframe/gpu_record_batch.rs");
 const DATAFRAME_ROW_OPS_RS: &str = include_str!("../../src/frame/dataframe/row_ops.rs");
 const EXECUTION_DOMAIN_RS: &str = include_str!("../../src/runtime/execution_domain.rs");
 const EXPR_RS: &str = include_str!("../../src/ops/expr.rs");
@@ -43,6 +45,8 @@ const SORTING_RS: &str = include_str!("../../src/ops/sorting/mod.rs");
 const STREAM_COMPACTION_RS: &str = include_str!("../../src/ops/stream_compaction/mod.rs");
 const STRINGS_RS: &str = include_str!("../../src/ops/strings.rs");
 const UNARY_RS: &str = include_str!("../../src/ops/unary.rs");
+const VALIDATION_RS: &str = include_str!("../../src/ops/validation.rs");
+const MATRIX_RS: &str = include_str!("../../src/runtime/matrix.rs");
 
 const SAFE_LAYER_EXPLICIT_FFI_WITHOUT_EX_SUFFIX: &[(&str, &str)] = &[
     (
@@ -102,9 +106,6 @@ const SAFE_LAYER_NON_EXECUTION_FFI_ALLOWLIST: &[(&str, &str)] = &[
     ("cudf_io_kvikio_compat_mode", "metadata-only accessor for process-default KvikIO configuration"),
     ("cudf_io_kvikio_drain_bounce_buffer_pools", "process-lifecycle cleanup after all I/O workers have stopped"),
     ("cudf_io_kvikio_set_compat_mode", "process-default KvikIO configuration before I/O workers start"),
-    ("cudf_test_io_kvikio_active_io_begin", "test-only process-lifecycle counter control"),
-    ("cudf_test_io_kvikio_active_io_end", "test-only process-lifecycle counter control"),
-    ("cudf_test_fail_next_provenance_destroy", "test-only provenance teardown fault injection"),
     ("cudf_conditional_full_join_size_data_destroy", "provenance-bound lifecycle"),
     ("cudf_conditional_full_join_size_data_device_allocated_size", "metadata-only cached join planning accessor"),
     ("cudf_conditional_full_join_size_data_gather_map_size", "metadata-only cached join planning accessor"),
@@ -231,15 +232,6 @@ const SAFE_LAYER_NON_EXECUTION_FFI_ALLOWLIST: &[(&str, &str)] = &[
     ("cudf_table_view_num_columns", "metadata-only accessor"),
     ("cudf_table_view_num_rows", "metadata-only accessor"),
     ("cudf_table_view_select_columns", "descriptor-only borrowed view construction"),
-    ("cudf_test_arrow_device_array_set_device_type", "test hook"),
-    ("cudf_test_column_view_create_synthetic_string_without_children", "test hook"),
-    ("cudf_test_event_reset_observation", "test hook"),
-    ("cudf_test_event_stream_wait_call_count_for_stream_raw", "test hook"),
-    ("cudf_test_memory_resource_allocation_count", "test hook"),
-    ("cudf_test_memory_resource_create_fail_first_allocation", "test hook"),
-    ("cudf_test_memory_resource_create_stats", "test hook"),
-    ("cudf_test_memory_resource_raw", "test hook"),
-    ("cudf_test_stream_handle_value", "test hook"),
     ("cudf_type_size", "metadata-only type descriptor query"),
 ];
 
@@ -261,6 +253,88 @@ fn concatenate_helpers_require_explicit_execution_options() {
             "{function} must not call ambient non-_ex concatenate FFI"
         );
     }
+}
+
+#[test]
+fn reshape_helper_requires_explicit_execution_options() {
+    let body =
+        function_region(RESHAPE_RS, "pub(crate) fn interleave_columns_with_exec", "// SAFETY: a successful FFI call");
+    assert!(
+        body.contains("exec_options: &cudf_sys::cudf_exec_options_t"),
+        "interleave_columns_with_exec must require an explicit options reference"
+    );
+    assert!(!body.contains("exec_options: Option"), "reshape helper must not carry optional execution options");
+    assert!(
+        body.contains("cudf_sys::cudf_interleave_columns_ex") && !body.contains("cudf_sys::cudf_interleave_columns("),
+        "reshape helper must call only the explicit-context interleave FFI"
+    );
+    assert!(
+        body.contains("validate_interleave_inputs(columns)?"),
+        "explicit-context interleave must retain the safe-layer shape validation"
+    );
+    assert!(
+        RESHAPE_RS.contains("checked_interleave_output_size(expected_rows, columns.len())?"),
+        "safe-layer interleave validation must enforce the cudf size_type output limit"
+    );
+}
+
+#[test]
+fn fixed_size_list_schema_validation_uses_bounded_device_reduction_evidence() {
+    let body = function_region(
+        GPU_RECORD_BATCH_RS,
+        "fn validate_fixed_size_list_offsets",
+        "fn record_fixed_size_list_structural_proof",
+    );
+    assert!(
+        body.contains("binary::binary_operation_vv")
+            && body.contains("ReduceAgg::Min")
+            && body.contains("ReduceAgg::Max")
+            && body.contains("value::<i32>()")
+            && body.contains("BoundaryKind::BoundedControlScalar")
+            && body.contains("record_boundary_observation_in_domain"),
+        "FixedSizeList validation must compare offsets on device and return only bounded scalar evidence"
+    );
+    assert!(
+        !body.contains("to_vec") && !body.contains("Vec<"),
+        "FixedSizeList construction validation must not materialize all offsets in host memory"
+    );
+}
+
+#[test]
+fn finite_float32_validation_publishes_only_bounded_control_scalar_evidence() {
+    for required in [
+        "cudf_sys::cudf_float32_non_finite_count_ex",
+        "BoundaryKind::BoundedControlScalar",
+        "with_downloaded_bytes(control_scalar_bytes)",
+        "validation_evidence",
+        "bounded_control_scalar",
+    ] {
+        assert!(VALIDATION_RS.contains(required), "finite validation must retain `{required}`");
+    }
+    for forbidden in ["to_vec", "to_host", "RecordBatch", "cudaDeviceSynchronize"] {
+        assert!(!VALIDATION_RS.contains(forbidden), "finite validation must not use `{forbidden}`");
+    }
+}
+
+#[test]
+fn packed_float32_consumer_pointer_requires_finite_validation_gate() {
+    let raw_matrix =
+        function_region(MATRIX_RS, "impl PackedFloat32Matrix", "/// A packed Float32 matrix whose complete payload");
+    let validated_matrix = function_region(
+        MATRIX_RS,
+        "impl ValidatedPackedFloat32Matrix<'_>",
+        "impl fmt::Debug for ValidatedPackedFloat32Matrix<'_>",
+    );
+
+    assert!(
+        raw_matrix.contains("Result<ValidatedPackedFloat32Matrix<'_>>"),
+        "raw packed matrices must produce the borrowing validated wrapper"
+    );
+    assert!(!raw_matrix.contains("pub fn as_ptr"), "raw packed matrices must not expose the consumer pointer");
+    assert!(
+        validated_matrix.contains("pub fn as_ptr"),
+        "only the validated matrix gate should expose the consumer pointer"
+    );
 }
 
 #[test]

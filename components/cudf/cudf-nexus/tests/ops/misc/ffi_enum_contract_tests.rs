@@ -2,11 +2,7 @@ use cudf::{
     DuplicateKeepOption, NullEquality, NullPolicy, StripSide,
     ops::{binary::BinaryOperator, reduction::ScanType, stream_compaction::NanEquality, unary::UnaryOperator},
 };
-use cudf_sys::{
-    cudf_binary_operator_t::*, cudf_duplicate_keep_option_t::*, cudf_null_equality_t::*, cudf_null_policy_t::*,
-    cudf_scan_type_t::*, cudf_stream_compaction_nan_equality_t::*, cudf_stream_compaction_null_equality_t::*,
-    cudf_strip_side_t::*, cudf_unary_operator_t::*,
-};
+use cudf_sys::*;
 
 #[test]
 fn public_unary_operator_discriminants_match_ffi_contract() {

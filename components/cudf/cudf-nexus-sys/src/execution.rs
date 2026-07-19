@@ -1,14 +1,9 @@
-use std::{marker::PhantomData, os::raw::c_void};
+use std::marker::PhantomData;
 
 use crate::{
-    CUDF_EXEC_FLAG_DEVICE_EXPLICIT, CUDF_SUCCESS, cudf_event_handle, cudf_exec_options_t, cudf_memory_resource_handle,
-    cudf_status_t, cudf_stream_handle, cudf_test_memory_resource_set_current,
-    cudf_test_memory_resource_set_current_raw,
+    CUDF_EXEC_FLAG_DEVICE_EXPLICIT, cudf_event_handle, cudf_exec_options_t, cudf_memory_resource_handle,
+    cudf_stream_handle,
 };
-
-fn status_to_result(status: cudf_status_t) -> Result<(), cudf_status_t> {
-    if status == CUDF_SUCCESS { Ok(()) } else { Err(status) }
-}
 
 /// Borrowed CUDA stream owner-handle token.
 ///
@@ -163,18 +158,4 @@ impl Default for ExecutionContext<'_> {
     fn default() -> Self {
         Self::new()
     }
-}
-
-/// Install `mr` as the process-global current device resource for tests.
-pub fn test_set_current_device_resource(mr: &BorrowedMemoryResource<'_>) -> Result<(), cudf_status_t> {
-    status_to_result(unsafe { cudf_test_memory_resource_set_current(mr.as_raw()) })
-}
-
-/// Restore a previously observed raw device resource pointer for tests.
-///
-/// # Safety
-/// `raw_mr` must be a valid pointer to an `rmm::device_memory_resource` that
-/// outlives the test scope. Passing a dangling or mistyped pointer is UB.
-pub unsafe fn test_set_current_device_resource_raw(raw_mr: *mut c_void) -> Result<(), cudf_status_t> {
-    status_to_result(unsafe { cudf_test_memory_resource_set_current_raw(raw_mr) })
 }

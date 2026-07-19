@@ -1,6 +1,6 @@
 use std::{
     mem::{align_of, offset_of, size_of},
-    os::raw::{c_char, c_void},
+    os::raw::c_char,
     ptr,
 };
 
@@ -37,7 +37,7 @@ fn test_parquet_pruning_evidence_ffi_layout() {
 #[test]
 fn test_table_view_null_handle_clears_out() {
     let _shim_state = lock_shim_state();
-    let mut out = std::ptr::dangling_mut::<c_void>();
+    let mut out = std::ptr::dangling_mut::<cudf_sys::cudf_table_view_handle_state>();
     let status = unsafe { cudf_sys::cudf_table_view(ptr::null_mut(), &mut out) };
 
     assert_eq!(status, cudf_sys::CUDF_ERROR_NULL);
@@ -49,7 +49,7 @@ fn test_io_read_csv_missing_file_clears_out() {
     let _shim_state = lock_shim_state();
     let (_stream, _mr, exec) = io_exec_options();
     let path = unique_missing_path("csv");
-    let mut out = std::ptr::dangling_mut::<c_void>();
+    let mut out = std::ptr::dangling_mut::<cudf_sys::cudf_table_handle_state>();
     let status = unsafe { cudf_sys::cudf_io_read_csv_ex(path.as_ptr(), b',' as c_char, 1, &mut out, &exec) };
 
     assert_eq!(status, cudf_sys::CUDF_ERROR_IO);
@@ -61,9 +61,9 @@ fn test_io_read_parquet_missing_file_clears_out() {
     let _shim_state = lock_shim_state();
     let (_stream, _mr, exec) = io_exec_options();
     let path = unique_missing_path("parquet");
-    let mut out = std::ptr::dangling_mut::<c_void>();
+    let mut out = std::ptr::dangling_mut::<cudf_sys::cudf_table_handle_state>();
     let status = unsafe {
-        cudf_sys::cudf_io_read_parquet_ex(path.as_ptr(), ptr::null(), 0, 0, -1, ptr::null(), 0, &mut out, &exec)
+        cudf_sys::cudf_io_read_parquet_ex(path.as_ptr(), ptr::null_mut(), 0, 0, -1, ptr::null(), 0, &mut out, &exec)
     };
 
     assert_eq!(status, cudf_sys::CUDF_ERROR_IO);
@@ -74,16 +74,16 @@ fn test_io_read_parquet_missing_file_clears_out() {
 fn test_io_read_parquet_from_host_buffer_invalid_args_clear_out() {
     let _shim_state = lock_shim_state();
     let (_stream, _mr, exec) = io_exec_options();
-    let mut out = std::ptr::dangling_mut::<c_void>();
+    let mut out = std::ptr::dangling_mut::<cudf_sys::cudf_table_handle_state>();
     let status = unsafe {
         cudf_sys::cudf_io_read_parquet_from_host_buffer_ex(
-            ptr::null(),
+            ptr::null_mut(),
             16,
-            ptr::null(),
+            ptr::null_mut(),
             0,
             0,
             -1,
-            ptr::null(),
+            ptr::null_mut(),
             0,
             &mut out,
             &exec,
@@ -99,16 +99,16 @@ fn test_io_read_parquet_from_host_buffer_empty_buffer_rejected() {
     let _shim_state = lock_shim_state();
     let (_stream, _mr, exec) = io_exec_options();
     let bytes = [0u8; 1];
-    let mut out = std::ptr::dangling_mut::<c_void>();
+    let mut out = std::ptr::dangling_mut::<cudf_sys::cudf_table_handle_state>();
     let status = unsafe {
         cudf_sys::cudf_io_read_parquet_from_host_buffer_ex(
             bytes.as_ptr().cast(),
             0,
-            ptr::null(),
+            ptr::null_mut(),
             0,
             0,
             -1,
-            ptr::null(),
+            ptr::null_mut(),
             0,
             &mut out,
             &exec,
@@ -122,7 +122,7 @@ fn test_io_read_parquet_from_host_buffer_empty_buffer_rejected() {
 #[test]
 fn test_non_io_runtime_error_maps_to_unknown() {
     let _shim_state = lock_shim_state();
-    let status = unsafe { cudf_sys::cudf_test_throw_runtime_error() };
+    let status = unsafe { cudf_sys::test_support::cudf_test_throw_runtime_error() };
 
     assert_eq!(status, cudf_sys::CUDF_ERROR_UNKNOWN);
     assert!(last_error_message().contains("non-io runtime failure"));
@@ -131,7 +131,7 @@ fn test_non_io_runtime_error_maps_to_unknown() {
 #[test]
 fn test_bad_alloc_maps_to_out_of_memory() {
     let _shim_state = lock_shim_state();
-    let status = unsafe { cudf_sys::cudf_test_throw_bad_alloc() };
+    let status = unsafe { cudf_sys::test_support::cudf_test_throw_bad_alloc() };
 
     assert_eq!(status, cudf_sys::CUDF_ERROR_OUT_OF_MEMORY);
     assert!(!last_error_message().is_empty());
@@ -140,7 +140,7 @@ fn test_bad_alloc_maps_to_out_of_memory() {
 #[test]
 fn test_invalid_argument_maps_to_invalid_argument() {
     let _shim_state = lock_shim_state();
-    let status = unsafe { cudf_sys::cudf_test_throw_invalid_argument() };
+    let status = unsafe { cudf_sys::test_support::cudf_test_throw_invalid_argument() };
 
     assert_eq!(status, cudf_sys::CUDF_ERROR_INVALID_ARGUMENT);
     assert!(last_error_message().contains("invalid argument"));
@@ -151,13 +151,15 @@ fn test_owning_handle_size_arithmetic_overflow_is_typed_and_does_not_wrap() {
     let _shim_state = lock_shim_state();
     let mut out = usize::MAX;
 
-    let add_status = unsafe { cudf_sys::cudf_test_checked_owning_handle_size_add(usize::MAX, 1, &mut out) };
+    let add_status =
+        unsafe { cudf_sys::test_support::cudf_test_checked_owning_handle_size_add(usize::MAX, 1, &mut out) };
     assert_eq!(add_status, cudf_sys::CUDF_ERROR_SIZE_OVERFLOW);
     assert_eq!(out, 0, "failed checked addition must leave a deterministic output");
     assert!(last_error_message().contains("overflow"));
 
     out = usize::MAX;
-    let mul_status = unsafe { cudf_sys::cudf_test_checked_owning_handle_size_mul(usize::MAX, 2, &mut out) };
+    let mul_status =
+        unsafe { cudf_sys::test_support::cudf_test_checked_owning_handle_size_mul(usize::MAX, 2, &mut out) };
     assert_eq!(mul_status, cudf_sys::CUDF_ERROR_SIZE_OVERFLOW);
     assert_eq!(out, 0, "failed checked multiplication must leave a deterministic output");
     assert!(last_error_message().contains("overflow"));
@@ -168,17 +170,17 @@ fn test_io_read_parquet_with_metadata_invalid_args_clear_outputs() {
     let _shim_state = lock_shim_state();
     let (_stream, _mr, exec) = io_exec_options();
     let path = unique_missing_path("parquet");
-    let mut out_table = std::ptr::dangling_mut::<c_void>();
+    let mut out_table = std::ptr::dangling_mut::<cudf_sys::cudf_table_handle_state>();
     let mut out_names = std::ptr::dangling_mut::<*mut c_char>();
     let mut out_num_names = -1;
     let status = unsafe {
         cudf_sys::cudf_io_read_parquet_with_metadata_ex(
             path.as_ptr(),
-            ptr::null(),
+            ptr::null_mut(),
             -1,
             0,
             -1,
-            ptr::null(),
+            ptr::null_mut(),
             0,
             &mut out_table,
             &mut out_names,
@@ -198,9 +200,9 @@ fn test_io_read_parquet_multi_mixed_all_local_flags_allow_null_profiles() {
     let _shim_state = lock_shim_state();
     let (_stream, _mr, exec) = io_exec_options();
     let path = unique_missing_path("parquet");
-    let filepaths = [path.as_ptr()];
+    let mut filepaths = [path.as_ptr()];
     let remote_source_flags = [0_i32];
-    let mut out_table = std::ptr::dangling_mut::<c_void>();
+    let mut out_table = std::ptr::dangling_mut::<cudf_sys::cudf_table_handle_state>();
     let mut out_names = std::ptr::dangling_mut::<*mut c_char>();
     let mut out_num_names = -1;
     let mut evidence = cudf_sys::cudf_io_remote_parquet_read_evidence_t {
@@ -225,11 +227,11 @@ fn test_io_read_parquet_multi_mixed_all_local_flags_allow_null_profiles() {
 
     let status = unsafe {
         cudf_sys::cudf_io_read_parquet_multi_mixed_with_metadata_filter_ex(
-            filepaths.as_ptr(),
+            filepaths.as_mut_ptr(),
             remote_source_flags.as_ptr(),
-            ptr::null(),
+            ptr::null_mut(),
             filepaths.len() as i32,
-            ptr::null(),
+            ptr::null_mut(),
             0,
             ptr::null(),
             0,
@@ -259,7 +261,7 @@ fn test_io_read_parquet_from_host_buffer_with_metadata_invalid_args_clear_output
     let _shim_state = lock_shim_state();
     let (_stream, _mr, exec) = io_exec_options();
     let bytes = [0u8; 8];
-    let mut out_table = std::ptr::dangling_mut::<c_void>();
+    let mut out_table = std::ptr::dangling_mut::<cudf_sys::cudf_table_handle_state>();
     let mut out_names = std::ptr::dangling_mut::<*mut c_char>();
     let mut out_num_names = -1;
     let mut pruning_evidence = cudf_sys::cudf_io_parquet_pruning_evidence_t {
@@ -273,7 +275,7 @@ fn test_io_read_parquet_from_host_buffer_with_metadata_invalid_args_clear_output
         cudf_sys::cudf_io_read_parquet_from_host_buffer_with_metadata_filter_ex(
             bytes.as_ptr().cast(),
             bytes.len(),
-            ptr::null(),
+            ptr::null_mut(),
             -1,
             0,
             -1,
@@ -305,7 +307,7 @@ fn test_io_write_csv_negative_num_columns_rejected() {
     let path = unique_missing_path("csv");
 
     let out_status =
-        unsafe { cudf_sys::cudf_io_write_csv_ex(tv, path.as_ptr(), ptr::null(), -1, b',' as i8, 1, &exec) };
+        unsafe { cudf_sys::cudf_io_write_csv_ex(tv, path.as_ptr(), ptr::null_mut(), -1, b',' as i8, 1, &exec) };
     assert_eq!(out_status, cudf_sys::CUDF_ERROR_INVALID_OPERATION);
 
     unsafe {
@@ -322,9 +324,10 @@ fn test_io_write_csv_null_column_name_entry_rejected() {
     let tbl = make_table_from_one_column(col);
     let tv = make_table_view(tbl);
     let path = unique_missing_path("csv");
-    let names = [ptr::null()];
+    let mut names = [ptr::null()];
 
-    let status = unsafe { cudf_sys::cudf_io_write_csv_ex(tv, path.as_ptr(), names.as_ptr(), 1, b',' as i8, 1, &exec) };
+    let status =
+        unsafe { cudf_sys::cudf_io_write_csv_ex(tv, path.as_ptr(), names.as_mut_ptr(), 1, b',' as i8, 1, &exec) };
     assert_eq!(status, cudf_sys::CUDF_ERROR_NULL);
 
     unsafe {
@@ -338,9 +341,9 @@ fn test_io_read_parquet_negative_num_columns_rejected() {
     let _shim_state = lock_shim_state();
     let (_stream, _mr, exec) = io_exec_options();
     let path = unique_missing_path("parquet");
-    let mut out: *mut c_void = ptr::null_mut();
+    let mut out: cudf_sys::cudf_table_handle = ptr::null_mut();
     let status = unsafe {
-        cudf_sys::cudf_io_read_parquet_ex(path.as_ptr(), ptr::null(), -1, 0, -1, ptr::null(), 0, &mut out, &exec)
+        cudf_sys::cudf_io_read_parquet_ex(path.as_ptr(), ptr::null_mut(), -1, 0, -1, ptr::null(), 0, &mut out, &exec)
     };
     assert_eq!(status, cudf_sys::CUDF_ERROR_INVALID_OPERATION);
     assert!(out.is_null());
@@ -351,10 +354,20 @@ fn test_io_read_parquet_null_column_name_entry_rejected() {
     let _shim_state = lock_shim_state();
     let (_stream, _mr, exec) = io_exec_options();
     let path = unique_missing_path("parquet");
-    let columns = [ptr::null()];
-    let mut out: *mut c_void = ptr::null_mut();
+    let mut columns = [ptr::null()];
+    let mut out: cudf_sys::cudf_table_handle = ptr::null_mut();
     let status = unsafe {
-        cudf_sys::cudf_io_read_parquet_ex(path.as_ptr(), columns.as_ptr(), 1, 0, -1, ptr::null(), 0, &mut out, &exec)
+        cudf_sys::cudf_io_read_parquet_ex(
+            path.as_ptr(),
+            columns.as_mut_ptr(),
+            1,
+            0,
+            -1,
+            ptr::null(),
+            0,
+            &mut out,
+            &exec,
+        )
     };
     assert_eq!(status, cudf_sys::CUDF_ERROR_NULL);
     assert!(out.is_null());
@@ -365,9 +378,9 @@ fn test_io_read_parquet_negative_skip_rows_rejected() {
     let _shim_state = lock_shim_state();
     let (_stream, _mr, exec) = io_exec_options();
     let path = unique_missing_path("parquet");
-    let mut out: *mut c_void = ptr::null_mut();
+    let mut out: cudf_sys::cudf_table_handle = ptr::null_mut();
     let status = unsafe {
-        cudf_sys::cudf_io_read_parquet_ex(path.as_ptr(), ptr::null(), 0, -1, -1, ptr::null(), 0, &mut out, &exec)
+        cudf_sys::cudf_io_read_parquet_ex(path.as_ptr(), ptr::null_mut(), 0, -1, -1, ptr::null(), 0, &mut out, &exec)
     };
     assert_eq!(status, cudf_sys::CUDF_ERROR_INVALID_OPERATION);
     assert!(out.is_null());
@@ -378,9 +391,9 @@ fn test_io_read_parquet_invalid_num_rows_rejected() {
     let _shim_state = lock_shim_state();
     let (_stream, _mr, exec) = io_exec_options();
     let path = unique_missing_path("parquet");
-    let mut out: *mut c_void = ptr::null_mut();
+    let mut out: cudf_sys::cudf_table_handle = ptr::null_mut();
     let status = unsafe {
-        cudf_sys::cudf_io_read_parquet_ex(path.as_ptr(), ptr::null(), 0, 0, -2, ptr::null(), 0, &mut out, &exec)
+        cudf_sys::cudf_io_read_parquet_ex(path.as_ptr(), ptr::null_mut(), 0, 0, -2, ptr::null(), 0, &mut out, &exec)
     };
     assert_eq!(status, cudf_sys::CUDF_ERROR_INVALID_OPERATION);
     assert!(out.is_null());
@@ -395,7 +408,7 @@ fn test_io_write_parquet_negative_num_columns_rejected() {
     let tv = make_table_view(tbl);
     let path = unique_missing_path("parquet");
 
-    let status = unsafe { cudf_sys::cudf_io_write_parquet_ex(tv, path.as_ptr(), ptr::null(), -1, 0, -1, &exec) };
+    let status = unsafe { cudf_sys::cudf_io_write_parquet_ex(tv, path.as_ptr(), ptr::null_mut(), -1, 0, -1, &exec) };
     assert_eq!(status, cudf_sys::CUDF_ERROR_INVALID_OPERATION);
 
     unsafe {
@@ -412,9 +425,9 @@ fn test_io_write_parquet_null_column_name_entry_rejected() {
     let tbl = make_table_from_one_column(col);
     let tv = make_table_view(tbl);
     let path = unique_missing_path("parquet");
-    let names = [ptr::null()];
+    let mut names = [ptr::null()];
 
-    let status = unsafe { cudf_sys::cudf_io_write_parquet_ex(tv, path.as_ptr(), names.as_ptr(), 1, 0, -1, &exec) };
+    let status = unsafe { cudf_sys::cudf_io_write_parquet_ex(tv, path.as_ptr(), names.as_mut_ptr(), 1, 0, -1, &exec) };
     assert_eq!(status, cudf_sys::CUDF_ERROR_NULL);
 
     unsafe {
@@ -444,11 +457,11 @@ fn test_io_write_parquet_ex_uses_explicit_memory_resource_for_writer_temporaries
     let current_before = current_mr.allocation_count();
 
     let current_borrowed = current_mr.borrowed();
-    cudf_sys::test_set_current_device_resource(&current_borrowed)
+    crate::support::set_current_device_resource(&current_borrowed)
         .expect("failed to install current sentinel memory resource");
-    let status = unsafe { cudf_sys::cudf_io_write_parquet_ex(tv, path.as_ptr(), ptr::null(), 0, 0, -1, &exec) };
+    let status = unsafe { cudf_sys::cudf_io_write_parquet_ex(tv, path.as_ptr(), ptr::null_mut(), 0, 0, -1, &exec) };
     let restored_current = current_device_resource_raw();
-    unsafe { cudf_sys::test_set_current_device_resource_raw(previous_raw) }
+    unsafe { crate::support::set_current_device_resource_raw(previous_raw) }
         .expect("failed to restore previous current device resource");
 
     assert_eq!(status, cudf_sys::CUDF_SUCCESS, "{}", last_error_message());
@@ -484,7 +497,7 @@ fn test_io_probe_path_datasource_reports_local_file_capability_and_size() {
     let path = unique_missing_path("parquet");
     let path_buf = std::path::PathBuf::from(path.as_c_str().to_string_lossy().into_owned());
 
-    let status = unsafe { cudf_sys::cudf_io_write_parquet_ex(tv, path.as_ptr(), ptr::null(), 0, 0, -1, &exec) };
+    let status = unsafe { cudf_sys::cudf_io_write_parquet_ex(tv, path.as_ptr(), ptr::null_mut(), 0, 0, -1, &exec) };
     assert_eq!(status, cudf_sys::CUDF_SUCCESS, "{}", last_error_message());
 
     let mut probe = cudf_sys::cudf_io_datasource_probe_result_t {
@@ -526,13 +539,13 @@ fn test_io_read_parquet_with_metadata_negative_num_columns_rejected() {
     let _shim_state = lock_shim_state();
     let (_stream, _mr, exec) = io_exec_options();
     let path = unique_missing_path("parquet");
-    let mut out_table: *mut c_void = ptr::null_mut();
+    let mut out_table: cudf_sys::cudf_table_handle = ptr::null_mut();
     let mut out_names: *mut *mut i8 = ptr::null_mut();
     let mut out_num_names: i32 = -1;
     let status = unsafe {
         cudf_sys::cudf_io_read_parquet_with_metadata_ex(
             path.as_ptr(),
-            ptr::null(),
+            ptr::null_mut(),
             -1,
             0,
             -1,
@@ -554,14 +567,14 @@ fn test_io_read_parquet_with_metadata_null_column_name_entry_rejected() {
     let _shim_state = lock_shim_state();
     let (_stream, _mr, exec) = io_exec_options();
     let path = unique_missing_path("parquet");
-    let columns = [ptr::null()];
-    let mut out_table: *mut c_void = std::ptr::dangling_mut::<c_void>();
+    let mut columns = [ptr::null()];
+    let mut out_table: cudf_sys::cudf_table_handle = std::ptr::dangling_mut::<cudf_sys::cudf_table_handle_state>();
     let mut out_names: *mut *mut i8 = std::ptr::dangling_mut::<*mut i8>();
     let mut out_num_names: i32 = -1;
     let status = unsafe {
         cudf_sys::cudf_io_read_parquet_with_metadata_ex(
             path.as_ptr(),
-            columns.as_ptr(),
+            columns.as_mut_ptr(),
             1,
             0,
             -1,
@@ -584,13 +597,13 @@ fn test_io_read_parquet_with_metadata_negative_skip_rows_rejected() {
     let _shim_state = lock_shim_state();
     let (_stream, _mr, exec) = io_exec_options();
     let path = unique_missing_path("parquet");
-    let mut out_table: *mut c_void = ptr::null_mut();
+    let mut out_table: cudf_sys::cudf_table_handle = ptr::null_mut();
     let mut out_names: *mut *mut i8 = ptr::null_mut();
     let mut out_num_names: i32 = -1;
     let status = unsafe {
         cudf_sys::cudf_io_read_parquet_with_metadata_ex(
             path.as_ptr(),
-            ptr::null(),
+            ptr::null_mut(),
             0,
             -1,
             -1,
@@ -612,13 +625,13 @@ fn test_io_read_parquet_with_metadata_invalid_num_rows_rejected() {
     let _shim_state = lock_shim_state();
     let (_stream, _mr, exec) = io_exec_options();
     let path = unique_missing_path("parquet");
-    let mut out_table: *mut c_void = ptr::null_mut();
+    let mut out_table: cudf_sys::cudf_table_handle = ptr::null_mut();
     let mut out_names: *mut *mut i8 = ptr::null_mut();
     let mut out_num_names: i32 = -1;
     let status = unsafe {
         cudf_sys::cudf_io_read_parquet_with_metadata_ex(
             path.as_ptr(),
-            ptr::null(),
+            ptr::null_mut(),
             0,
             0,
             -2,
@@ -638,8 +651,8 @@ fn test_io_read_parquet_with_metadata_invalid_num_rows_rejected() {
 #[test]
 fn test_dictionary_match_dictionaries_invalid_num_columns_clears_outputs() {
     let _shim_state = lock_shim_state();
-    let dict_columns = std::ptr::NonNull::<*mut c_void>::dangling().as_ptr();
-    let mut out_columns = std::ptr::NonNull::<*mut c_void>::dangling().as_ptr();
+    let dict_columns = std::ptr::NonNull::<cudf_sys::cudf_column_view_handle>::dangling().as_ptr();
+    let mut out_columns = std::ptr::NonNull::<cudf_sys::cudf_column_handle>::dangling().as_ptr();
     let mut out_count: i32 = -1;
 
     let (_stream, _mr, exec) = io_exec_options();
@@ -659,7 +672,7 @@ fn test_replace_nulls_policy_rejects_invalid_policy_value() {
     let view = make_column_view(col);
 
     let (_stream, _mr, exec) = io_exec_options();
-    let mut out = std::ptr::NonNull::<c_void>::dangling().as_ptr();
+    let mut out = std::ptr::NonNull::<cudf_sys::cudf_column_handle_state>::dangling().as_ptr();
     let status = unsafe { cudf_sys::cudf_replace_nulls_policy_ex(view, 42, &mut out, &exec) };
 
     assert_eq!(status, cudf_sys::CUDF_ERROR_INVALID_OPERATION);
@@ -683,7 +696,7 @@ fn test_dictionary_match_dictionaries_null_entry_clears_outputs() {
     let dict_view = make_column_view(dict);
     let dict_columns = [dict_view, ptr::null_mut()];
 
-    let mut out_columns = std::ptr::NonNull::<*mut c_void>::dangling().as_ptr();
+    let mut out_columns = std::ptr::NonNull::<cudf_sys::cudf_column_handle>::dangling().as_ptr();
     let mut out_count: i32 = -1;
     let (_stream, _mr, exec) = io_exec_options();
     let status = unsafe {

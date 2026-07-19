@@ -1,4 +1,4 @@
-#include "datetime.h"
+#include "cudf_rust/datetime.h"
 
 #include "execution_context_internal.hpp"
 #include "shim_common.h"
@@ -78,7 +78,7 @@ cudf_status_t cudf_datetime_extract_component_ex(cudf_column_view_handle input,
     cudf_status_t const exec_status = cudf_resolve_required_exec_options(options, &exec);
     if (exec_status != CUDF_SUCCESS) { return exec_status; }
 
-    auto* view = static_cast<cudf::column_view*>(input);
+    auto* view = reinterpret_cast<cudf::column_view*>(input);
 
     {
       auto result =
@@ -107,11 +107,11 @@ cudf_status_t cudf_datetime_floor_ex(cudf_column_view_handle input,
     cudf_status_t const exec_status = cudf_resolve_required_exec_options(options, &exec);
     if (exec_status != CUDF_SUCCESS) { return exec_status; }
 
-    auto* view = static_cast<cudf::column_view*>(input);
+    auto* view = reinterpret_cast<cudf::column_view*>(input);
 
     {
       auto result = cudf::datetime::floor_datetimes(*view, cudf_frequency, exec->stream, *exec->mr);
-      *out        = cudf_release_column_handle(std::move(result), cudf_capture_exec_provenance(*exec));
+      *out = cudf_release_column_handle(std::move(result), cudf_capture_exec_provenance(*exec));
     }
     return CUDF_SUCCESS;
   }
@@ -132,7 +132,7 @@ cudf_status_t cudf_datetime_add_calendrical_months_scalar_ex(cudf_column_view_ha
     cudf_status_t const exec_status = cudf_resolve_required_exec_options(options, &exec);
     if (exec_status != CUDF_SUCCESS) { return exec_status; }
 
-    auto* view = static_cast<cudf::column_view*>(input);
+    auto* view = reinterpret_cast<cudf::column_view*>(input);
     {
       cudf::numeric_scalar<int32_t> months_scalar(months, true, exec->stream, *exec->mr);
       auto result =

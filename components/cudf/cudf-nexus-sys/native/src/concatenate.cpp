@@ -1,4 +1,4 @@
-#include "concatenate.h"
+#include "cudf_rust/concatenate.h"
 
 #include "execution_context_internal.hpp"
 #include "shim_common.h"
@@ -32,7 +32,7 @@ cudf_status_t cudf_concatenate_columns_ex(const cudf_column_view_handle* columns
     views.reserve(num_columns);
     for (int32_t i = 0; i < num_columns; ++i) {
       CUDF_RUST_NULL_CHECK(columns[i], "column view handle is null");
-      auto* cv = static_cast<cudf::column_view*>(columns[i]);
+      auto* cv = reinterpret_cast<cudf::column_view*>(columns[i]);
       views.push_back(*cv);
     }
 
@@ -42,7 +42,7 @@ cudf_status_t cudf_concatenate_columns_ex(const cudf_column_view_handle* columns
 
     {
       auto result = cudf::concatenate(views, exec->stream, *exec->mr);
-      *out        = cudf_release_column_handle(std::move(result), cudf_capture_exec_provenance(*exec));
+      *out = cudf_release_column_handle(std::move(result), cudf_capture_exec_provenance(*exec));
     }
     return CUDF_SUCCESS;
   }
@@ -67,7 +67,7 @@ cudf_status_t cudf_concatenate_tables_ex(const cudf_table_view_handle* tables,
     views.reserve(num_tables);
     for (int32_t i = 0; i < num_tables; ++i) {
       CUDF_RUST_NULL_CHECK(tables[i], "table view handle is null");
-      auto* tv = static_cast<cudf::table_view*>(tables[i]);
+      auto* tv = reinterpret_cast<cudf::table_view*>(tables[i]);
       views.push_back(*tv);
     }
 
@@ -77,7 +77,7 @@ cudf_status_t cudf_concatenate_tables_ex(const cudf_table_view_handle* tables,
 
     {
       auto result = cudf::concatenate(views, exec->stream, *exec->mr);
-      *out        = cudf_release_table_handle(std::move(result), cudf_capture_exec_provenance(*exec));
+      *out = cudf_release_table_handle(std::move(result), cudf_capture_exec_provenance(*exec));
     }
     return CUDF_SUCCESS;
   }

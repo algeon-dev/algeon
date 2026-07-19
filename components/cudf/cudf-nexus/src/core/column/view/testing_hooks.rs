@@ -9,14 +9,17 @@ use crate::{
     runtime::Runtime,
 };
 
-pub(crate) fn synthetic_string_view_without_children(size: usize) -> Result<ColumnView<'static>> {
-    let runtime = Runtime::new()?;
-    let size = error::usize_to_i32(size, "testing::synthetic_string_view_without_children", "row_count")?;
-    let mut handle = std::ptr::null_mut();
-    error::check_status_in(
-        unsafe { cudf_sys::cudf_test_column_view_create_synthetic_string_without_children(size, &mut handle) },
-        "testing::synthetic_string_view_without_children",
-    )?;
+/// Adopt an owned test-created column-view handle with the supplied runtime
+/// provenance.
+///
+/// # Safety
+/// `handle` must be a non-null, uniquely owned column-view handle whose CUDA
+/// device matches `runtime`. The caller transfers responsibility for exactly
+/// one `cudf_column_view_destroy` to the returned `ColumnView`.
+pub(crate) unsafe fn adopt_owned_column_view_for_test(
+    handle: cudf_sys::cudf_column_view_handle,
+    runtime: &Runtime,
+) -> Result<ColumnView<'static>> {
     unsafe { ColumnView::from_raw_with_domain(handle, Arc::clone(runtime.execution_domain())) }
 }
 

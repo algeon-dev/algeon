@@ -1,32 +1,67 @@
-use std::sync::Arc;
+use std::{cell::Cell, fmt, sync::Arc};
 
 use arrow::{
     array::{Array, ArrayRef, PrimitiveArray},
     compute::cast,
     datatypes::{
         DataType as ArrowDataType, DurationMicrosecondType, DurationMillisecondType, DurationNanosecondType,
-        DurationSecondType, SchemaRef, Time32MillisecondType, Time32SecondType, Time64MicrosecondType,
+        DurationSecondType, FieldRef, SchemaRef, Time32MillisecondType, Time32SecondType, Time64MicrosecondType,
         Time64NanosecondType, TimeUnit, TimestampMicrosecondType, TimestampMillisecondType, TimestampNanosecondType,
         TimestampSecondType,
     },
     record_batch::{RecordBatch, RecordBatchOptions},
 };
+use rapids_interop::{
+    BufferBinding, BufferId, ColumnId, ColumnLayout, CompletionAuthority, PhysicalValidity, PreparedColumnExport,
+    ProducerReadiness, ReadStartAuthority,
+};
 
 use super::DataFrame;
 use crate::{
     core::{
-        error::{self, Error, ErrorCode, FACT_LEFT_TYPE_ID, FACT_RIGHT_TYPE_ID, Result},
+        Column,
+        column::{ColumnView, copy_view_to_owned},
+        error::{
+            self, Error, ErrorCode, FACT_EXPECTED_ROWS, FACT_LEFT_TYPE_ID, FACT_RIGHT_TYPE_ID, FACT_VALIDATION_REASON,
+            Result,
+        },
         schema,
+        types::{DataType, TypeId},
     },
     interop::{
         arrow_device::DeviceArrowTableExport,
         arrow_host::{
-            ArrowHostSchema, cudf_dtype_can_export_to_arrow_type, estimate_arrow_host_record_batch_memory_bytes,
-            validate_arrow_schema,
+            ArrowHostSchema, cudf_dtype_can_export_to_arrow_type, cudf_dtype_from_arrow_type,
+            estimate_arrow_host_record_batch_memory_bytes, validate_arrow_schema,
         },
     },
-    runtime::ExecutionPlacement,
+    ops::{
+        binary::{self, BinaryOperator},
+        reduction::{self, ReduceAgg},
+        validation::{self, FiniteFloat32ValidationProof},
+    },
+    runtime::{
+        BoundaryKind, BoundaryObservation, DenseMatrixLayout, ExecutionBindingId, ExecutionPlacement,
+        PackedFloat32Matrix, QueryMemoryObservation, Runtime, execution_domain::ExecutionDomain,
+        record_boundary_observation_in_domain,
+    },
 };
+
+thread_local! {
+    static FIXED_SIZE_LIST_STRUCTURAL_PROOF_BUILD_COUNT: Cell<usize> = const { Cell::new(0) };
+}
+
+struct RetainedProducerDomain(Arc<ExecutionDomain>);
+
+impl fmt::Debug for RetainedProducerDomain {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("RetainedProducerDomain")
+            .field("binding_id", &self.0.binding_id())
+            .field("placement", &self.0.placement())
+            .finish()
+    }
+}
 
 /// GPU-resident DataFrame plus an external Arrow schema contract.
 ///
@@ -39,6 +74,551 @@ pub struct GpuRecordBatch {
     frame: DataFrame,
     schema: SchemaRef,
     mapped_schema: ArrowHostSchema,
+    fixed_size_list_proofs: Arc<[FixedSizeListStructuralProof]>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct FixedSizeListStructuralProof {
+    field_index: usize,
+    dimension: i32,
+    rows: usize,
+    child_offset: usize,
+    child_len: usize,
+    producer_column_identity: usize,
+    binding_id: ExecutionBindingId,
+    placement: ExecutionPlacement,
+    observation: Option<BoundaryObservation>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct UniformListFloat32Proof {
+    field_index: usize,
+    dimension: usize,
+    rows: usize,
+    root_offset: usize,
+    child_offset: usize,
+    child_len: usize,
+    producer_column_identity: usize,
+    binding_id: ExecutionBindingId,
+    placement: ExecutionPlacement,
+    offsets_observation: BoundaryObservation,
+}
+
+impl UniformListFloat32Proof {
+    fn matches_producer(self, producer: &Arc<crate::core::Column>) -> bool {
+        self.producer_column_identity == Arc::as_ptr(producer) as usize
+            && self.binding_id == producer.execution_domain().binding_id()
+            && self.placement == producer.execution_domain().placement()
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ListFloat32ExportContract {
+    field_index: usize,
+    dimension: usize,
+    rows: usize,
+    root_offset: Option<usize>,
+    child_offset: usize,
+    child_len: usize,
+    placement: ExecutionPlacement,
+}
+
+impl From<FixedSizeListStructuralProof> for ListFloat32ExportContract {
+    fn from(proof: FixedSizeListStructuralProof) -> Self {
+        Self {
+            field_index: proof.field_index,
+            dimension: proof.dimension as usize,
+            rows: proof.rows,
+            root_offset: None,
+            child_offset: proof.child_offset,
+            child_len: proof.child_len,
+            placement: proof.placement,
+        }
+    }
+}
+
+impl From<UniformListFloat32Proof> for ListFloat32ExportContract {
+    fn from(proof: UniformListFloat32Proof) -> Self {
+        Self {
+            field_index: proof.field_index,
+            dimension: proof.dimension,
+            rows: proof.rows,
+            root_offset: Some(proof.root_offset),
+            child_offset: proof.child_offset,
+            child_len: proof.child_len,
+            placement: proof.placement,
+        }
+    }
+}
+
+impl FixedSizeListStructuralProof {
+    fn matches_schema(self, schema: &SchemaRef) -> bool {
+        matches!(
+            schema.fields().get(self.field_index).map(|field| field.data_type()),
+            Some(ArrowDataType::FixedSizeList(_, dimension)) if *dimension == self.dimension
+        )
+    }
+
+    fn matches_producer(self, producer: &Arc<crate::core::Column>) -> bool {
+        self.producer_column_identity == Arc::as_ptr(producer) as usize
+            && self.binding_id == producer.execution_domain().binding_id()
+            && self.placement == producer.execution_domain().placement()
+    }
+}
+
+/// A device prepared export whose active `LIST<Float32>` range is proven to
+/// have one fixed-size child span per row and only finite child values.
+///
+/// The witness retains the ordinary [`PreparedColumnExport`] lease root while
+/// binding the structural proof to the exact producer column, execution
+/// binding, and active child range. Consumers must still activate and complete
+/// the prepared export's read lease before using the child values buffer.
+#[derive(Debug)]
+pub struct ValidatedFixedSizeListFloat32Export<'a> {
+    export: PreparedColumnExport<'a>,
+    producer_domain: RetainedProducerDomain,
+    proof: FixedSizeListStructuralProof,
+    finite_proof: FiniteFloat32ValidationProof,
+    root_column_id: ColumnId,
+    child_column_id: ColumnId,
+    child_values_buffer_id: BufferId,
+}
+
+#[derive(Debug)]
+struct ListFloat32ExportParts<'a> {
+    export: PreparedColumnExport<'a>,
+    root_column_id: ColumnId,
+    offsets_buffer_id: BufferId,
+    child_column_id: ColumnId,
+    child_values_buffer_id: BufferId,
+}
+
+/// A device prepared export whose active variable-width `List<Float32>` range
+/// was proven to have one uniform positive dimension and only finite values.
+///
+/// The proof is bound to the exact retained producer, root offset, semantic
+/// offsets/child identities, active child range, execution binding, and
+/// readiness stream. The ordinary prepared-export lease root remains
+/// retained and must be activated before a consumer reads the child buffer.
+#[derive(Debug)]
+pub struct ValidatedUniformListFloat32Export<'a> {
+    export: PreparedColumnExport<'a>,
+    producer_domain: RetainedProducerDomain,
+    proof: UniformListFloat32Proof,
+    finite_proof: FiniteFloat32ValidationProof,
+    root_column_id: ColumnId,
+    offsets_buffer_id: BufferId,
+    child_column_id: ColumnId,
+    child_values_buffer_id: BufferId,
+}
+
+impl ValidatedUniformListFloat32Export<'_> {
+    pub fn export(&self) -> &PreparedColumnExport<'_> {
+        &self.export
+    }
+
+    pub fn field_index(&self) -> usize {
+        self.proof.field_index
+    }
+
+    pub fn dimension(&self) -> usize {
+        self.proof.dimension
+    }
+
+    pub fn rows(&self) -> usize {
+        self.proof.rows
+    }
+
+    pub fn root_offset(&self) -> usize {
+        self.proof.root_offset
+    }
+
+    pub fn child_offset(&self) -> usize {
+        self.proof.child_offset
+    }
+
+    pub fn child_len(&self) -> usize {
+        self.finite_proof.validated_values()
+    }
+
+    pub fn child_byte_offset(&self) -> usize {
+        self.proof.child_offset * std::mem::size_of::<f32>()
+    }
+
+    pub fn binding_id(&self) -> ExecutionBindingId {
+        self.finite_proof.binding_id()
+    }
+
+    pub fn placement(&self) -> ExecutionPlacement {
+        self.finite_proof.placement()
+    }
+
+    pub fn offsets_observation(&self) -> BoundaryObservation {
+        self.proof.offsets_observation
+    }
+
+    pub fn finite_observation(&self) -> BoundaryObservation {
+        self.finite_proof.observation()
+    }
+
+    pub fn root_column_id(&self) -> ColumnId {
+        self.root_column_id
+    }
+
+    pub fn offsets_buffer_id(&self) -> BufferId {
+        self.offsets_buffer_id
+    }
+
+    pub fn child_column_id(&self) -> ColumnId {
+        self.child_column_id
+    }
+
+    pub fn child_values_buffer_id(&self) -> BufferId {
+        self.child_values_buffer_id
+    }
+
+    pub fn child_values_binding(&self) -> &BufferBinding<'_> {
+        self.export
+            .bindings()
+            .iter()
+            .find(|binding| binding.id() == self.child_values_buffer_id)
+            .expect("validated uniform-list child binding must remain present")
+    }
+
+    /// Copy the exact proof-covered Float32 child range into an owned column
+    /// on `runtime` without materializing vector payloads on the host.
+    ///
+    /// This is the owned-packing path for consumers such as mutable PCA input.
+    /// Callers that only need a read-only tensor should instead activate the
+    /// retained prepared export directly.
+    pub fn copy_active_child_into_runtime(&self, runtime: &Runtime) -> Result<Column> {
+        copy_validated_list_float32_child_into_runtime(
+            self.export(),
+            self.rows(),
+            self.dimension(),
+            self.child_len(),
+            runtime,
+            "dataframe::ValidatedUniformListFloat32Export::copy_active_child_into_runtime",
+        )
+    }
+
+    /// Pack the exact proof-covered child range directly into one owned matrix
+    /// allocation on `runtime`.
+    ///
+    /// Unlike composing [`copy_active_child_into_runtime`](Self::copy_active_child_into_runtime)
+    /// with [`Runtime::pack_flat_float32_column`], this activates the retained
+    /// prepared read once and performs only the final payload copy/reorder.
+    pub fn pack_active_child_into_runtime(
+        &self,
+        runtime: &Runtime,
+        layout: DenseMatrixLayout,
+    ) -> Result<PackedFloat32Matrix> {
+        pack_validated_list_float32_child_into_runtime(
+            self.export(),
+            &self.producer_domain.0,
+            self.child_values_binding(),
+            self.child_byte_offset(),
+            self.rows(),
+            self.dimension(),
+            self.child_len(),
+            runtime,
+            layout,
+            "dataframe::ValidatedUniformListFloat32Export::pack_active_child_into_runtime",
+        )
+    }
+}
+
+impl ValidatedFixedSizeListFloat32Export<'_> {
+    /// The retained producer-rooted export used to activate read access.
+    pub fn export(&self) -> &PreparedColumnExport<'_> {
+        &self.export
+    }
+
+    /// Positional field index in the retained [`GpuRecordBatch`] schema.
+    pub fn field_index(&self) -> usize {
+        self.proof.field_index
+    }
+
+    /// Number of Float32 values in every logical list row.
+    pub fn dimension(&self) -> usize {
+        self.proof.dimension as usize
+    }
+
+    /// Number of active logical list rows.
+    pub fn rows(&self) -> usize {
+        self.proof.rows
+    }
+
+    /// Active child offset in Float32 elements from the values binding base.
+    pub fn child_offset(&self) -> usize {
+        self.proof.child_offset
+    }
+
+    /// Number of active Float32 child values.
+    pub fn child_len(&self) -> usize {
+        self.finite_proof.validated_values()
+    }
+
+    /// Active child byte offset from the values binding base.
+    pub fn child_byte_offset(&self) -> usize {
+        self.proof.child_offset * std::mem::size_of::<f32>()
+    }
+
+    /// Exact producer stream/memory-resource binding covered by the proof.
+    pub fn binding_id(&self) -> ExecutionBindingId {
+        self.finite_proof.binding_id()
+    }
+
+    /// Exact producer placement covered by the proof.
+    pub fn placement(&self) -> ExecutionPlacement {
+        self.finite_proof.placement()
+    }
+
+    /// Bounded control-scalar evidence used to build the structural proof.
+    /// Empty inputs require no scalar read and therefore return `None`.
+    pub fn structural_observation(&self) -> Option<BoundaryObservation> {
+        self.proof.observation
+    }
+
+    /// Bounded control-scalar evidence that the exact active Float32 child
+    /// range contains only finite values.
+    pub fn finite_observation(&self) -> BoundaryObservation {
+        self.finite_proof.observation()
+    }
+
+    /// Semantic root list-column identity retained by the prepared export.
+    pub fn root_column_id(&self) -> ColumnId {
+        self.root_column_id
+    }
+
+    /// Semantic Float32 child-column identity retained by the prepared export.
+    pub fn child_column_id(&self) -> ColumnId {
+        self.child_column_id
+    }
+
+    /// Symbolic binding identity for the child Float32 values allocation.
+    pub fn child_values_buffer_id(&self) -> BufferId {
+        self.child_values_buffer_id
+    }
+
+    /// Child values binding covered by this structural and finite witness.
+    pub fn child_values_binding(&self) -> &BufferBinding<'_> {
+        self.export
+            .bindings()
+            .iter()
+            .find(|binding| binding.id() == self.child_values_buffer_id)
+            .expect("validated fixed-size-list child binding must remain present")
+    }
+
+    /// Copy the exact proof-covered Float32 child range into an owned column
+    /// on `runtime` without materializing vector payloads on the host.
+    ///
+    /// This is the owned-packing path for consumers such as mutable PCA input.
+    /// Callers that only need a read-only tensor should instead activate the
+    /// retained prepared export directly.
+    pub fn copy_active_child_into_runtime(&self, runtime: &Runtime) -> Result<Column> {
+        copy_validated_list_float32_child_into_runtime(
+            self.export(),
+            self.rows(),
+            self.dimension(),
+            self.child_len(),
+            runtime,
+            "dataframe::ValidatedFixedSizeListFloat32Export::copy_active_child_into_runtime",
+        )
+    }
+
+    /// Pack the exact proof-covered child range directly into one owned matrix
+    /// allocation on `runtime`.
+    ///
+    /// Unlike composing [`copy_active_child_into_runtime`](Self::copy_active_child_into_runtime)
+    /// with [`Runtime::pack_flat_float32_column`], this activates the retained
+    /// prepared read once and performs only the final payload copy/reorder.
+    pub fn pack_active_child_into_runtime(
+        &self,
+        runtime: &Runtime,
+        layout: DenseMatrixLayout,
+    ) -> Result<PackedFloat32Matrix> {
+        pack_validated_list_float32_child_into_runtime(
+            self.export(),
+            &self.producer_domain.0,
+            self.child_values_binding(),
+            self.child_byte_offset(),
+            self.rows(),
+            self.dimension(),
+            self.child_len(),
+            runtime,
+            layout,
+            "dataframe::ValidatedFixedSizeListFloat32Export::pack_active_child_into_runtime",
+        )
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn pack_validated_list_float32_child_into_runtime(
+    export: &PreparedColumnExport<'_>,
+    producer_domain: &Arc<ExecutionDomain>,
+    child_values: &BufferBinding<'_>,
+    child_byte_offset: usize,
+    rows: usize,
+    dimension: usize,
+    child_len: usize,
+    runtime: &Runtime,
+    layout: DenseMatrixLayout,
+    operation: &'static str,
+) -> Result<PackedFloat32Matrix> {
+    let expected_child_len = rows.checked_mul(dimension).ok_or_else(|| {
+        Error::new_with(ErrorCode::SizeOverflow, operation, "validated list matrix shape overflowed usize")
+            .with_detail("rows", rows.to_string())
+            .with_detail("dimension", dimension.to_string())
+            .with_detail("reason", "validated_list_matrix_shape_overflow")
+    })?;
+    if child_len != expected_child_len {
+        return Err(error::invariant_violation(
+            operation,
+            "validated list child length does not match its proof-covered matrix shape",
+        )
+        .with_detail("rows", rows.to_string())
+        .with_detail("dimension", dimension.to_string())
+        .with_detail("expected_child_len", expected_child_len.to_string())
+        .with_detail("validated_child_len", child_len.to_string())
+        .with_detail("reason", "validated_list_matrix_shape_mismatch"));
+    }
+
+    let child_bytes = child_len.checked_mul(std::mem::size_of::<f32>()).ok_or_else(|| {
+        Error::new_with(ErrorCode::SizeOverflow, operation, "validated list child byte length overflowed usize")
+            .with_detail("validated_child_len", child_len.to_string())
+            .with_detail("reason", "validated_list_child_byte_length_overflow")
+    })?;
+    let child_byte_end = child_byte_offset.checked_add(child_bytes).ok_or_else(|| {
+        Error::new_with(ErrorCode::SizeOverflow, operation, "validated list child byte range overflowed usize")
+            .with_detail("child_byte_offset", child_byte_offset.to_string())
+            .with_detail("child_bytes", child_bytes.to_string())
+            .with_detail("reason", "validated_list_child_byte_range_overflow")
+    })?;
+    if child_byte_end > child_values.bytes().byte_len() {
+        return Err(error::invariant_violation(
+            operation,
+            "validated list child range exceeds its retained values binding",
+        )
+        .with_detail("child_byte_end", child_byte_end.to_string())
+        .with_detail("binding_bytes", child_values.bytes().byte_len().to_string())
+        .with_detail("reason", "validated_list_child_binding_too_small"));
+    }
+
+    let runtime_device = runtime.device().ordinal() as i32;
+    if !matches!(
+        child_values.placement(),
+        rapids_interop::Placement::CudaDevice { device } if *device == runtime_device
+    ) {
+        return Err(Error::new_with(
+            ErrorCode::RuntimeBindingMismatch,
+            operation,
+            "validated list input and destination runtime must use the same CUDA device",
+        )
+        .with_detail("runtime_device", runtime_device.to_string())
+        .with_detail("reason", "validated_list_pack_device_mismatch"));
+    }
+
+    let child_address = (child_values.bytes().base_ptr() as usize).checked_add(child_byte_offset).ok_or_else(|| {
+        Error::new_with(ErrorCode::SizeOverflow, operation, "validated list child device address overflowed usize")
+            .with_detail("child_byte_offset", child_byte_offset.to_string())
+            .with_detail("reason", "validated_list_child_address_overflow")
+    })?;
+    let stream = crate::interop::cuda_stream_handle(runtime.stream())
+        .map_err(|error| error::from_interop_in(error, operation))?;
+    let lease = export
+        .try_activate_read_lease(
+            ReadStartAuthority::ConsumerStream { stream },
+            CompletionAuthority::SameDeviceStream { stream },
+        )
+        .map_err(|error| error::from_interop_in(error, operation))?;
+
+    // SAFETY: the validated export binds this exact active child range to a
+    // retained device allocation. The active lease orders producer writes
+    // before `runtime` and retains the allocation through completion below.
+    let packed = unsafe {
+        runtime.pack_borrowed_flat_float32_device_values(
+            child_address as *const std::ffi::c_void,
+            producer_domain,
+            rows,
+            dimension,
+            layout,
+            operation,
+        )
+    }?;
+    // The runtime's resolved execution domain has already installed the
+    // reverse consumer-completion fence on the producer domain. Completing
+    // the prepared lease records its stream witness, but no host wait is
+    // needed before returning the independently owned packed allocation.
+    let _completion = lease.complete().map_err(|error| error::from_interop_in(error, operation))?;
+    Ok(packed)
+}
+
+fn copy_validated_list_float32_child_into_runtime(
+    export: &PreparedColumnExport<'_>,
+    rows: usize,
+    dimension: usize,
+    child_len: usize,
+    runtime: &Runtime,
+    operation: &'static str,
+) -> Result<Column> {
+    let expected_child_len = rows.checked_mul(dimension).ok_or_else(|| {
+        Error::new_with(ErrorCode::SizeOverflow, operation, "validated list matrix shape overflowed usize")
+            .with_detail("rows", rows.to_string())
+            .with_detail("dimension", dimension.to_string())
+            .with_detail("reason", "validated_list_matrix_shape_overflow")
+    })?;
+    if child_len != expected_child_len {
+        return Err(error::invariant_violation(
+            operation,
+            "validated list child length does not match its proof-covered matrix shape",
+        )
+        .with_detail("rows", rows.to_string())
+        .with_detail("dimension", dimension.to_string())
+        .with_detail("expected_child_len", expected_child_len.to_string())
+        .with_detail("validated_child_len", child_len.to_string())
+        .with_detail("reason", "validated_list_matrix_shape_mismatch"));
+    }
+
+    let root = Column::try_import_from_prepared_column_export_into_runtime(export, runtime)
+        .map_err(|error| error::from_interop_in(error, operation))?;
+    let child = root
+        .view()
+        .map_err(|error| error.reanchor(operation))?
+        .list_sliced_child()
+        .map_err(|error| error.reanchor(operation))?;
+    let child_type = child.data_type().map_err(|error| error.reanchor(operation))?;
+    if child_type.id() != TypeId::Float32 {
+        return Err(error::invariant_violation(
+            operation,
+            "validated list import did not retain its Float32 child dtype",
+        )
+        .with_detail("actual_child_type", format!("{:?}", child_type.id()))
+        .with_detail("reason", "validated_list_child_type_mismatch"));
+    }
+    let imported_child_len = child.len().map_err(|error| error.reanchor(operation))?;
+    if imported_child_len != child_len {
+        return Err(error::invariant_violation(
+            operation,
+            "validated list import did not retain the proof-covered child range",
+        )
+        .with_detail("expected_child_len", child_len.to_string())
+        .with_detail("actual_child_len", imported_child_len.to_string())
+        .with_detail("reason", "validated_list_child_range_mismatch"));
+    }
+    if child.null_count().map_err(|error| error.reanchor(operation))? != 0 {
+        return Err(error::invariant_violation(
+            operation,
+            "validated list import introduced null Float32 child values",
+        )
+        .with_detail("reason", "validated_list_child_null_mismatch"));
+    }
+    copy_view_to_owned(&child).map_err(|error| error.reanchor(operation))
+}
+
+struct ValidatedFrameSchema {
+    mapped_schema: ArrowHostSchema,
+    fixed_size_list_proofs: Arc<[FixedSizeListStructuralProof]>,
 }
 
 /// Bounds one GPU-to-host materialization step by estimated final Arrow buffer
@@ -267,8 +847,7 @@ impl HostBatchCursor {
             .frame()
             .slice(self.offset, rows)
             .map_err(|error| error.reanchor("dataframe::HostBatchCursor::next_batch"))?;
-        GpuRecordBatch::new(frame, Arc::clone(self.batch.schema()))
-            .map_err(|error| error.reanchor("dataframe::HostBatchCursor::next_batch"))
+        self.batch.with_validated_slice(frame)
     }
 }
 
@@ -287,13 +866,33 @@ impl GpuRecordBatch {
 impl GpuRecordBatch {
     /// Validate and wrap a GPU DataFrame with an external Arrow schema.
     ///
-    /// Validation is copy-free. Field count, field names in order, and
-    /// Arrow-to-cudf logical dtypes must be materializable from the DataFrame
-    /// schema under the host-copy export contract. Arrow nullability remains
-    /// external schema metadata; it is not folded into the cudf physical dtype.
+    /// Validation does not materialize column payload values. Field count,
+    /// field names in order, and Arrow-to-cudf logical dtypes must be
+    /// materializable from the DataFrame schema under the host-copy export
+    /// contract. `FixedSizeList` additionally validates the structural list
+    /// offsets so a variable-width cudf list cannot claim a fixed-width Arrow
+    /// schema. Arrow nullability remains external schema metadata; it is not
+    /// folded into the cudf physical dtype.
     pub fn new(frame: DataFrame, schema: SchemaRef) -> Result<Self> {
-        let mapped_schema = validate_frame_schema(&frame, &schema)?;
-        Ok(Self { frame, schema, mapped_schema })
+        let validated = validate_frame_schema(&frame, &schema)?;
+        Ok(Self {
+            frame,
+            schema,
+            mapped_schema: validated.mapped_schema,
+            fixed_size_list_proofs: validated.fixed_size_list_proofs,
+        })
+    }
+
+    fn with_validated_slice(&self, frame: DataFrame) -> Result<Self> {
+        debug_assert!(self.fixed_size_list_proofs.iter().all(|proof| proof.matches_schema(&self.schema)));
+        let mapped_schema = self.mapped_schema.with_row_count(frame.num_rows());
+        let fixed_size_list_proofs = self
+            .fixed_size_list_proofs
+            .iter()
+            .map(|proof| rebind_fixed_size_list_structural_proof(*proof, &frame))
+            .collect::<Result<Vec<_>>>()?
+            .into();
+        Ok(Self { frame, schema: Arc::clone(&self.schema), mapped_schema, fixed_size_list_proofs })
     }
 
     /// Borrow the wrapped GPU DataFrame.
@@ -326,6 +925,242 @@ impl GpuRecordBatch {
         self.frame.placement()
     }
 
+    /// Prepare a zero-copy device export for one `FixedSizeList<Float32>`
+    /// field whose complete active range was structurally validated when this
+    /// batch was created and finite-validated immediately before export.
+    ///
+    /// The returned witness is bound to the exact retained producer column,
+    /// stream/memory-resource binding, semantic export graph, and active child
+    /// range. Root or child nulls and non-finite child values are rejected
+    /// because a dense vector consumer cannot represent them. Read access
+    /// still requires activation through
+    /// [`PreparedColumnExport::try_activate_read_lease`].
+    pub fn try_prepare_fixed_size_list_float32_export(
+        &self,
+        field_index: usize,
+    ) -> Result<ValidatedFixedSizeListFloat32Export<'_>> {
+        let proof =
+            self.fixed_size_list_proofs.iter().find(|proof| proof.field_index == field_index).copied().ok_or_else(
+                || {
+                    Error::new_with(
+                        ErrorCode::UnsupportedDtype,
+                        "dataframe::GpuRecordBatch::try_prepare_fixed_size_list_float32_export",
+                        "requested field is not a validated FixedSizeList",
+                    )
+                    .with_detail("field_index", field_index.to_string())
+                    .with_detail("reason", "fixed_size_list_structural_proof_unavailable")
+                },
+            )?;
+        self.try_prepare_fixed_size_list_float32_export_with_proof(field_index, proof)
+    }
+
+    fn try_prepare_fixed_size_list_float32_export_with_proof(
+        &self,
+        field_index: usize,
+        proof: FixedSizeListStructuralProof,
+    ) -> Result<ValidatedFixedSizeListFloat32Export<'_>> {
+        const OPERATION: &str = "dataframe::GpuRecordBatch::try_prepare_fixed_size_list_float32_export";
+        let (_, producer) = self.frame.columns_map().get_index(field_index).ok_or_else(|| {
+            Error::new_with(ErrorCode::IndexOutOfBounds, OPERATION, "fixed-size-list field index is out of bounds")
+                .with_detail("field_index", field_index.to_string())
+                .with_detail("column_count", self.frame.num_columns().to_string())
+        })?;
+        if proof.field_index != field_index || !proof.matches_producer(producer) {
+            return Err(Error::new_with(
+                ErrorCode::InvariantViolation,
+                OPERATION,
+                "fixed-size-list structural proof does not belong to the requested producer column",
+            )
+            .with_detail("field_index", field_index.to_string())
+            .with_detail("proof_field_index", proof.field_index.to_string())
+            .with_detail("proof_binding_id", proof.binding_id.to_string())
+            .with_detail("producer_binding_id", producer.execution_domain().binding_id().to_string())
+            .with_detail("reason", "fixed_size_list_proof_identity_mismatch"));
+        }
+
+        let export = producer
+            .try_prepare_device_column_export()
+            .map_err(|error| error::from_interop_in(error, OPERATION))?
+            .with_retained_owner_arc(Arc::clone(producer));
+        let parts = validate_list_float32_export(export, proof.into(), OPERATION)?;
+        let child = producer
+            .view()
+            .map_err(|error| error.reanchor(OPERATION))?
+            .list_sliced_child()
+            .map_err(|error| error.reanchor(OPERATION))?;
+        let finite_proof = validation::validate_finite_float32(&child).map_err(|error| error.reanchor(OPERATION))?;
+        if finite_proof.validated_values() != proof.child_len
+            || finite_proof.binding_id() != proof.binding_id
+            || finite_proof.placement() != proof.placement
+        {
+            return Err(error::invariant_violation(
+                OPERATION,
+                "FixedSizeList finite-value proof does not cover the structurally proven child range",
+            )
+            .with_detail("field_index", field_index.to_string())
+            .with_detail("structural_child_len", proof.child_len.to_string())
+            .with_detail("finite_validated_values", finite_proof.validated_values().to_string())
+            .with_detail("structural_binding_id", proof.binding_id.to_string())
+            .with_detail("finite_binding_id", finite_proof.binding_id().to_string())
+            .with_detail("reason", "fixed_size_list_finite_proof_mismatch"));
+        }
+
+        Ok(ValidatedFixedSizeListFloat32Export {
+            export: parts.export,
+            producer_domain: RetainedProducerDomain(Arc::clone(producer.execution_domain())),
+            proof,
+            finite_proof,
+            root_column_id: parts.root_column_id,
+            child_column_id: parts.child_column_id,
+            child_values_buffer_id: parts.child_values_buffer_id,
+        })
+    }
+
+    /// Prepare a zero-copy device export for a variable-width Arrow
+    /// `List<Float32>` or `LargeList<Float32>` field whose active rows all
+    /// have one uniform positive dimension.
+    ///
+    /// The dimension is derived from device-reduced active offset deltas; it
+    /// is never supplied by the caller. Empty inputs are rejected because a
+    /// variable-width schema cannot prove a dimension without any rows.
+    /// Root/child nulls, non-monotonic or ragged offsets, zero-width rows, and
+    /// non-finite child values are rejected before the proof-bearing witness
+    /// is returned.
+    pub fn try_prepare_uniform_list_float32_export(
+        &self,
+        field_index: usize,
+    ) -> Result<ValidatedUniformListFloat32Export<'_>> {
+        const OPERATION: &str = "dataframe::GpuRecordBatch::try_prepare_uniform_list_float32_export";
+        let field = self.schema.fields().get(field_index).ok_or_else(|| {
+            Error::new_with(ErrorCode::IndexOutOfBounds, OPERATION, "list field index is out of bounds")
+                .with_detail("field_index", field_index.to_string())
+                .with_detail("field_count", self.schema.fields().len().to_string())
+        })?;
+        let float32_child = match field.data_type() {
+            ArrowDataType::List(child) | ArrowDataType::LargeList(child) => {
+                matches!(child.data_type(), ArrowDataType::Float32)
+            },
+            _ => false,
+        };
+        if !float32_child {
+            return Err(Error::new_with(
+                ErrorCode::UnsupportedDtype,
+                OPERATION,
+                "uniform list export requires a variable-width List<Float32> schema field",
+            )
+            .with_detail("field_index", field_index.to_string())
+            .with_detail("arrow_type", format!("{:?}", field.data_type()))
+            .with_detail("reason", "uniform_list_float32_schema_required"));
+        }
+
+        let (_, producer) = self.frame.columns_map().get_index(field_index).ok_or_else(|| {
+            Error::new_with(ErrorCode::IndexOutOfBounds, OPERATION, "list producer index is out of bounds")
+                .with_detail("field_index", field_index.to_string())
+                .with_detail("column_count", self.frame.num_columns().to_string())
+        })?;
+        let view = producer.view().map_err(|error| error.reanchor(OPERATION))?;
+        let proof = validate_uniform_list_float32_offsets(&view, producer, field_index, OPERATION)?;
+        self.try_prepare_uniform_list_float32_export_with_proof(field_index, proof)
+    }
+
+    fn try_prepare_uniform_list_float32_export_with_proof(
+        &self,
+        field_index: usize,
+        proof: UniformListFloat32Proof,
+    ) -> Result<ValidatedUniformListFloat32Export<'_>> {
+        const OPERATION: &str = "dataframe::GpuRecordBatch::try_prepare_uniform_list_float32_export";
+        let (_, producer) = self.frame.columns_map().get_index(field_index).ok_or_else(|| {
+            Error::new_with(ErrorCode::IndexOutOfBounds, OPERATION, "list producer index is out of bounds")
+                .with_detail("field_index", field_index.to_string())
+                .with_detail("column_count", self.frame.num_columns().to_string())
+        })?;
+        if proof.field_index != field_index || !proof.matches_producer(producer) {
+            return Err(Error::new_with(
+                ErrorCode::InvariantViolation,
+                OPERATION,
+                "uniform-list proof does not belong to the requested producer column",
+            )
+            .with_detail("field_index", field_index.to_string())
+            .with_detail("proof_field_index", proof.field_index.to_string())
+            .with_detail("proof_binding_id", proof.binding_id.to_string())
+            .with_detail("producer_binding_id", producer.execution_domain().binding_id().to_string())
+            .with_detail("reason", "uniform_list_proof_identity_mismatch"));
+        }
+
+        let export = producer
+            .try_prepare_device_column_export()
+            .map_err(|error| error::from_interop_in(error, OPERATION))?
+            .with_retained_owner_arc(Arc::clone(producer));
+        let parts = validate_list_float32_export(export, proof.into(), OPERATION)?;
+        let child = producer
+            .view()
+            .map_err(|error| error.reanchor(OPERATION))?
+            .list_sliced_child()
+            .map_err(|error| error.reanchor(OPERATION))?;
+        let finite_proof = validation::validate_finite_float32(&child).map_err(|error| error.reanchor(OPERATION))?;
+        if finite_proof.validated_values() != proof.child_len
+            || finite_proof.binding_id() != proof.binding_id
+            || finite_proof.placement() != proof.placement
+        {
+            return Err(error::invariant_violation(
+                OPERATION,
+                "uniform-list finite proof does not cover the offset-proven active child range",
+            )
+            .with_detail("field_index", field_index.to_string())
+            .with_detail("offset_proof_child_len", proof.child_len.to_string())
+            .with_detail("finite_validated_values", finite_proof.validated_values().to_string())
+            .with_detail("offset_proof_binding_id", proof.binding_id.to_string())
+            .with_detail("finite_binding_id", finite_proof.binding_id().to_string())
+            .with_detail("reason", "uniform_list_finite_proof_mismatch"));
+        }
+
+        Ok(ValidatedUniformListFloat32Export {
+            export: parts.export,
+            producer_domain: RetainedProducerDomain(Arc::clone(producer.execution_domain())),
+            proof,
+            finite_proof,
+            root_column_id: parts.root_column_id,
+            offsets_buffer_id: parts.offsets_buffer_id,
+            child_column_id: parts.child_column_id,
+            child_values_buffer_id: parts.child_values_buffer_id,
+        })
+    }
+
+    pub(crate) fn trigger_uniform_list_proof_identity_mismatch_for_test(
+        &self,
+        proof_owner: &Self,
+        field_index: usize,
+    ) -> Result<()> {
+        const OPERATION: &str = "testing::trigger_uniform_list_proof_identity_mismatch";
+        let (_, producer) = proof_owner.frame.columns_map().get_index(field_index).ok_or_else(|| {
+            Error::new_with(ErrorCode::IndexOutOfBounds, OPERATION, "proof-owner list field index is out of bounds")
+                .with_detail("field_index", field_index.to_string())
+        })?;
+        let view = producer.view().map_err(|error| error.reanchor(OPERATION))?;
+        let proof = validate_uniform_list_float32_offsets(&view, producer, field_index, OPERATION)?;
+        self.try_prepare_uniform_list_float32_export_with_proof(field_index, proof).map(drop)
+    }
+
+    pub(crate) fn trigger_fixed_size_list_proof_identity_mismatch_for_test(
+        &self,
+        proof_owner: &Self,
+        field_index: usize,
+    ) -> Result<()> {
+        let proof = proof_owner
+            .fixed_size_list_proofs
+            .iter()
+            .find(|proof| proof.field_index == field_index)
+            .copied()
+            .ok_or_else(|| {
+            Error::new_with(
+                ErrorCode::UnsupportedDtype,
+                "testing::trigger_fixed_size_list_proof_identity_mismatch",
+                "proof owner does not contain the requested FixedSizeList proof",
+            )
+        })?;
+        self.try_prepare_fixed_size_list_float32_export_with_proof(field_index, proof).map(drop)
+    }
+
     /// Materialize this GPU batch as a host Arrow RecordBatch.
     ///
     /// This delegates to [`DataFrame::to_record_batch`] for the device-to-host
@@ -356,7 +1191,7 @@ impl GpuRecordBatch {
     }
 }
 
-fn validate_frame_schema(frame: &DataFrame, schema_ref: &SchemaRef) -> Result<ArrowHostSchema> {
+fn validate_frame_schema(frame: &DataFrame, schema_ref: &SchemaRef) -> Result<ValidatedFrameSchema> {
     let operation = "dataframe::GpuRecordBatch::new";
     let schema = schema_ref.as_ref();
     if schema.fields().len() != frame.num_columns() {
@@ -372,6 +1207,7 @@ fn validate_frame_schema(frame: &DataFrame, schema_ref: &SchemaRef) -> Result<Ar
         validate_arrow_schema(schema, frame.num_rows()).map_err(|error| error.reanchor_if_needed(operation))?;
     let frame_names = frame.column_names();
     debug_assert_eq!(mapped.len(), frame_names.len());
+    let mut fixed_size_list_proofs = Vec::new();
 
     for (index, (field, frame_name)) in mapped.fields().iter().zip(frame_names.iter()).enumerate() {
         if field.name() != *frame_name {
@@ -382,9 +1218,32 @@ fn validate_frame_schema(frame: &DataFrame, schema_ref: &SchemaRef) -> Result<Ar
                 .with_detail("reason", "schema_name_mismatch"));
         }
 
-        let frame_dtype = frame.series(frame_name)?.dtype().map_err(|error| error.reanchor_if_needed(operation))?;
+        let series = frame.series(frame_name)?;
+        let frame_dtype = series.dtype().map_err(|error| error.reanchor_if_needed(operation))?;
         let schema_dtype = field.cudf_data_type();
-        if !cudf_dtype_can_export_to_arrow_type(frame_dtype, field.arrow_data_type()) {
+        let can_export = match field.arrow_data_type() {
+            ArrowDataType::List(child) | ArrowDataType::LargeList(child) if frame_dtype.id() == TypeId::List => {
+                validate_list_schema_contract(
+                    &series.as_column().view().map_err(|error| error.reanchor_if_needed(operation))?,
+                    child,
+                    field.name(),
+                    index,
+                    operation,
+                )?;
+                true
+            },
+            ArrowDataType::FixedSizeList(child, dimension) if frame_dtype.id() == TypeId::List => {
+                let producer = series.arc();
+                let view = producer.view().map_err(|error| error.reanchor_if_needed(operation))?;
+                validate_list_schema_contract(&view, child, field.name(), index, operation)?;
+                let proof =
+                    validate_fixed_size_list_offsets(&view, &producer, *dimension, field.name(), index, operation)?;
+                fixed_size_list_proofs.push(proof);
+                true
+            },
+            _ => cudf_dtype_can_export_to_arrow_type(frame_dtype, field.arrow_data_type()),
+        };
+        if !can_export {
             return Err(Error::new_with(
                 ErrorCode::UnsupportedDtype,
                 operation,
@@ -407,7 +1266,654 @@ fn validate_frame_schema(frame: &DataFrame, schema_ref: &SchemaRef) -> Result<Ar
         }
     }
 
-    Ok(mapped)
+    Ok(ValidatedFrameSchema { mapped_schema: mapped, fixed_size_list_proofs: fixed_size_list_proofs.into() })
+}
+
+fn validate_list_schema_contract(
+    view: &ColumnView<'_>,
+    child_field: &FieldRef,
+    field_name: &str,
+    field_index: usize,
+    operation: &'static str,
+) -> Result<()> {
+    let child_view = view.list_sliced_child().map_err(|error| error.reanchor_if_needed(operation))?;
+    let actual_child_dtype = child_view.data_type().map_err(|error| error.reanchor_if_needed(operation))?;
+    let expected_child_dtype =
+        cudf_dtype_from_arrow_type(child_field.data_type()).map_err(|error| error.reanchor_if_needed(operation))?;
+    if !cudf_dtype_can_export_to_arrow_type(actual_child_dtype, child_field.data_type()) {
+        return Err(Error::new_with(
+            ErrorCode::UnsupportedDtype,
+            operation,
+            format!(
+                "Arrow schema field '{field_name}' requires list child {:?} but the DataFrame list child is {:?}",
+                child_field.data_type(),
+                actual_child_dtype.id()
+            ),
+        )
+        .with_fact(FACT_LEFT_TYPE_ID, actual_child_dtype.id())
+        .with_fact(FACT_RIGHT_TYPE_ID, expected_child_dtype.id())
+        .with_detail("field_name", field_name.to_string())
+        .with_detail("field_index", field_index.to_string())
+        .with_detail("actual_child_cudf_type", actual_child_dtype.id().name())
+        .with_detail("expected_child_arrow_type", format!("{:?}", child_field.data_type()))
+        .with_detail("reason", "schema_list_child_dtype_mismatch"));
+    }
+
+    Ok(())
+}
+
+fn validate_fixed_size_list_offsets(
+    view: &ColumnView<'_>,
+    producer: &Arc<crate::core::Column>,
+    dimension: i32,
+    field_name: &str,
+    field_index: usize,
+    operation: &'static str,
+) -> Result<FixedSizeListStructuralProof> {
+    let expected_dimension = usize::try_from(dimension).map_err(|_| {
+        Error::new_with(ErrorCode::ValueOutOfRange, operation, "Arrow FixedSizeList dimension must be positive")
+            .with_detail("field_name", field_name.to_string())
+            .with_detail("field_index", field_index.to_string())
+            .with_detail("dimension", dimension.to_string())
+            .with_detail("reason", "non_positive_fixed_size_list_dimension")
+    })?;
+    if expected_dimension == 0 {
+        return Err(Error::new_with(
+            ErrorCode::ValueOutOfRange,
+            operation,
+            "Arrow FixedSizeList dimension must be positive",
+        )
+        .with_detail("field_name", field_name.to_string())
+        .with_detail("field_index", field_index.to_string())
+        .with_detail("dimension", "0")
+        .with_detail("reason", "non_positive_fixed_size_list_dimension"));
+    }
+
+    let rows = view.len().map_err(|error| error.reanchor_if_needed(operation))?;
+    let child_view = view.list_sliced_child().map_err(|error| error.reanchor_if_needed(operation))?;
+    let child_offset_raw = child_view.offset().map_err(|error| error.reanchor_if_needed(operation))?;
+    let child_offset = usize::try_from(child_offset_raw).map_err(|_| {
+        error::foreign_invariant_violation(
+            operation,
+            "FixedSizeList child offset must be non-negative",
+            "list_child",
+            "negative_fixed_size_list_child_offset",
+            "ensure the cudf list column exposes a valid active child range",
+        )
+        .with_detail("field_name", field_name.to_string())
+        .with_detail("field_index", field_index.to_string())
+        .with_detail("child_offset", child_offset_raw.to_string())
+    })?;
+    let child_len = child_view.len().map_err(|error| error.reanchor_if_needed(operation))?;
+    let expected_child_len = rows.checked_mul(expected_dimension).ok_or_else(|| {
+        Error::new_with(ErrorCode::SizeOverflow, operation, "FixedSizeList active child length overflowed usize")
+            .with_detail("field_name", field_name.to_string())
+            .with_detail("field_index", field_index.to_string())
+            .with_detail("row_count", rows.to_string())
+            .with_detail("dimension", expected_dimension.to_string())
+            .with_detail("reason", "fixed_size_list_child_len_overflow")
+    })?;
+    if rows == 0 && child_len != expected_child_len {
+        return Err(error::foreign_invariant_violation(
+            operation,
+            "empty FixedSizeList active child range must also be empty",
+            "list_child",
+            "fixed_size_list_active_child_len_mismatch",
+            "ensure the cudf list active child range matches the fixed-size schema",
+        )
+        .with_detail("field_name", field_name.to_string())
+        .with_detail("field_index", field_index.to_string())
+        .with_detail("row_count", rows.to_string())
+        .with_detail("dimension", expected_dimension.to_string())
+        .with_detail("expected_child_len", expected_child_len.to_string())
+        .with_detail("actual_child_len", child_len.to_string()));
+    }
+    if rows == 0 {
+        return Ok(record_fixed_size_list_structural_proof(
+            field_index,
+            dimension,
+            rows,
+            child_offset,
+            child_len,
+            producer,
+            None,
+        ));
+    }
+    let root_offset_raw = view.offset().map_err(|error| error.reanchor_if_needed(operation))?;
+    let root_offset = usize::try_from(root_offset_raw).map_err(|_| {
+        error::foreign_invariant_violation(
+            operation,
+            "cudf list root offset must be non-negative",
+            "list_offsets",
+            "negative_list_root_offset",
+            "ensure the cudf list column exposes a valid active range",
+        )
+        .with_detail("field_name", field_name.to_string())
+        .with_detail("field_index", field_index.to_string())
+        .with_detail("root_offset", root_offset_raw.to_string())
+    })?;
+    let root_end = root_offset.checked_add(rows).ok_or_else(|| {
+        Error::new_with(ErrorCode::SizeOverflow, operation, "FixedSizeList active offset range overflowed usize")
+            .with_detail("field_name", field_name.to_string())
+            .with_detail("field_index", field_index.to_string())
+            .with_detail("root_offset", root_offset.to_string())
+            .with_detail("row_count", rows.to_string())
+            .with_detail("reason", "fixed_size_list_offset_range_overflow")
+    })?;
+    let offsets_view = view.child(0).map_err(|error| error.reanchor_if_needed(operation))?;
+    let offsets_len = offsets_view.len().map_err(|error| error.reanchor_if_needed(operation))?;
+    if offsets_len <= root_end {
+        return Err(error::foreign_invariant_violation(
+            operation,
+            "cudf list offsets are too short for the FixedSizeList active range",
+            "list_offsets",
+            "fixed_size_list_offsets_too_short",
+            "ensure the cudf list column exposes one more offset than active rows",
+        )
+        .with_detail("field_name", field_name.to_string())
+        .with_detail("field_index", field_index.to_string())
+        .with_detail("required_offset_index", root_end.to_string())
+        .with_detail("offset_count", offsets_len.to_string()));
+    }
+
+    let rows_i32 = i32::try_from(rows).map_err(|_| {
+        error::range_limit_error(operation, "row_count", "i32::MAX", rows)
+            .with_detail("field_name", field_name.to_string())
+            .with_detail("field_index", field_index.to_string())
+    })?;
+    let end_offset = root_offset_raw.checked_add(1).ok_or_else(|| {
+        Error::new_with(ErrorCode::SizeOverflow, operation, "FixedSizeList end-offset slice start overflowed i32")
+            .with_detail("field_name", field_name.to_string())
+            .with_detail("field_index", field_index.to_string())
+            .with_detail("root_offset", root_offset_raw.to_string())
+            .with_detail("reason", "fixed_size_list_end_offset_start_overflow")
+    })?;
+    let starts = offsets_view
+        .slice_with_operation(root_offset_raw, rows_i32, operation)
+        .map_err(|error| error.reanchor_if_needed(operation))?;
+    let ends = offsets_view
+        .slice_with_operation(end_offset, rows_i32, operation)
+        .map_err(|error| error.reanchor_if_needed(operation))?;
+    let int32_type = DataType::new(TypeId::Int32);
+    let widths = binary::binary_operation_vv(&ends, &starts, BinaryOperator::Sub, &int32_type)
+        .map_err(|error| error.reanchor(operation))?;
+    let widths_view = widths.view().map_err(|error| error.reanchor_if_needed(operation))?;
+    let minimum =
+        reduction::reduce(&widths_view, &ReduceAgg::Min, &int32_type).map_err(|error| error.reanchor(operation))?;
+    let maximum =
+        reduction::reduce(&widths_view, &ReduceAgg::Max, &int32_type).map_err(|error| error.reanchor(operation))?;
+    let minimum = minimum.value::<i32>().map_err(|error| error.reanchor(operation))?;
+    let maximum = maximum.value::<i32>().map_err(|error| error.reanchor(operation))?;
+    let observation = BoundaryObservation::new(
+        BoundaryKind::BoundedControlScalar,
+        producer.execution_domain().placement(),
+        rows,
+        2,
+        true,
+    )
+    .with_memory(
+        QueryMemoryObservation::empty().with_downloaded_bytes(2usize.saturating_mul(std::mem::size_of::<i32>())),
+    );
+    record_boundary_observation_in_domain(producer.execution_domain(), observation);
+    if minimum != dimension || maximum != dimension {
+        return Err(Error::new_with(
+            ErrorCode::ColumnLengthMismatch,
+            operation,
+            "cudf list row widths do not match the Arrow FixedSizeList dimension",
+        )
+        .with_fact(FACT_EXPECTED_ROWS, expected_dimension)
+        .with_detail("field_name", field_name.to_string())
+        .with_detail("field_index", field_index.to_string())
+        .with_detail("expected_dimension", expected_dimension.to_string())
+        .with_detail("minimum_actual_dimension", minimum.to_string())
+        .with_detail("maximum_actual_dimension", maximum.to_string())
+        .with_detail("evidence", "device_reduced_list_offset_width_range")
+        .with_detail("reason", "schema_fixed_size_list_dimension_mismatch"));
+    }
+
+    Ok(record_fixed_size_list_structural_proof(
+        field_index,
+        dimension,
+        rows,
+        child_offset,
+        child_len,
+        producer,
+        Some(observation),
+    ))
+}
+
+fn validate_uniform_list_float32_offsets(
+    view: &ColumnView<'_>,
+    producer: &Arc<crate::core::Column>,
+    field_index: usize,
+    operation: &'static str,
+) -> Result<UniformListFloat32Proof> {
+    let rows = view.len().map_err(|error| error.reanchor_if_needed(operation))?;
+    if rows == 0 {
+        return Err(Error::new_with(
+            ErrorCode::EmptyInput,
+            operation,
+            "variable-width List<Float32> dimension is unavailable for an empty active range",
+        )
+        .with_fact(FACT_VALIDATION_REASON, "uniform_list_dimension_unavailable")
+        .with_detail("field_index", field_index.to_string())
+        .with_detail("row_count", "0")
+        .with_detail("remedy", "provide at least one vector row or use a trusted FixedSizeList schema dimension"));
+    }
+
+    let root_offset_raw = view.offset().map_err(|error| error.reanchor_if_needed(operation))?;
+    let root_offset = usize::try_from(root_offset_raw).map_err(|_| {
+        error::foreign_invariant_violation(
+            operation,
+            "cudf list root offset must be non-negative",
+            "list_offsets",
+            "negative_list_root_offset",
+            "retain a valid cudf list active range",
+        )
+        .with_detail("field_index", field_index.to_string())
+        .with_detail("root_offset", root_offset_raw.to_string())
+    })?;
+    let root_end = root_offset.checked_add(rows).ok_or_else(|| {
+        Error::new_with(ErrorCode::SizeOverflow, operation, "uniform list active offset range overflowed usize")
+            .with_detail("field_index", field_index.to_string())
+            .with_detail("root_offset", root_offset.to_string())
+            .with_detail("row_count", rows.to_string())
+            .with_detail("reason", "uniform_list_offset_range_overflow")
+    })?;
+    let offsets_view = view.child(0).map_err(|error| error.reanchor_if_needed(operation))?;
+    let offsets_len = offsets_view.len().map_err(|error| error.reanchor_if_needed(operation))?;
+    if offsets_len <= root_end {
+        return Err(error::foreign_invariant_violation(
+            operation,
+            "cudf list offsets are too short for the active uniform-list range",
+            "list_offsets",
+            "uniform_list_offsets_too_short",
+            "retain one more list offset than active rows",
+        )
+        .with_detail("field_index", field_index.to_string())
+        .with_detail("required_offset_index", root_end.to_string())
+        .with_detail("offset_count", offsets_len.to_string()));
+    }
+
+    let rows_i32 =
+        i32::try_from(rows).map_err(|_| error::range_limit_error(operation, "row_count", "i32::MAX", rows))?;
+    let end_offset = root_offset_raw.checked_add(1).ok_or_else(|| {
+        Error::new_with(ErrorCode::SizeOverflow, operation, "uniform-list end-offset start overflowed i32")
+            .with_detail("field_index", field_index.to_string())
+            .with_detail("root_offset", root_offset_raw.to_string())
+            .with_detail("reason", "uniform_list_end_offset_start_overflow")
+    })?;
+    let starts = offsets_view
+        .slice_with_operation(root_offset_raw, rows_i32, operation)
+        .map_err(|error| error.reanchor_if_needed(operation))?;
+    let ends = offsets_view
+        .slice_with_operation(end_offset, rows_i32, operation)
+        .map_err(|error| error.reanchor_if_needed(operation))?;
+    let int32_type = DataType::new(TypeId::Int32);
+    let widths = binary::binary_operation_vv(&ends, &starts, BinaryOperator::Sub, &int32_type)
+        .map_err(|error| error.reanchor(operation))?;
+    let widths_view = widths.view().map_err(|error| error.reanchor_if_needed(operation))?;
+    let minimum =
+        reduction::reduce(&widths_view, &ReduceAgg::Min, &int32_type).map_err(|error| error.reanchor(operation))?;
+    let maximum =
+        reduction::reduce(&widths_view, &ReduceAgg::Max, &int32_type).map_err(|error| error.reanchor(operation))?;
+    let minimum = minimum.value::<i32>().map_err(|error| error.reanchor(operation))?;
+    let maximum = maximum.value::<i32>().map_err(|error| error.reanchor(operation))?;
+    let offsets_observation = BoundaryObservation::new(
+        BoundaryKind::BoundedControlScalar,
+        producer.execution_domain().placement(),
+        rows,
+        2,
+        true,
+    )
+    .with_memory(
+        QueryMemoryObservation::empty().with_downloaded_bytes(2usize.saturating_mul(std::mem::size_of::<i32>())),
+    );
+    record_boundary_observation_in_domain(producer.execution_domain(), offsets_observation);
+
+    if minimum < 0 {
+        return Err(error::foreign_invariant_violation(
+            operation,
+            "List<Float32> offsets are not monotonic over the active range",
+            "list_offsets",
+            "list_offsets_not_monotonic",
+            "repair the list offsets before requesting a dense-vector export",
+        )
+        .with_fact(FACT_VALIDATION_REASON, "list_offsets_not_monotonic")
+        .with_detail("field_index", field_index.to_string())
+        .with_detail("minimum_row_width", minimum.to_string())
+        .with_detail("maximum_row_width", maximum.to_string())
+        .with_detail("validation_evidence", "device_reduced_list_offset_width_range"));
+    }
+    if minimum == 0 {
+        return Err(Error::new_with(
+            ErrorCode::ValueOutOfRange,
+            operation,
+            "uniform List<Float32> dimension must be positive",
+        )
+        .with_fact(FACT_VALIDATION_REASON, "non_positive_vector_dimension")
+        .with_detail("field_index", field_index.to_string())
+        .with_detail("minimum_row_width", minimum.to_string())
+        .with_detail("maximum_row_width", maximum.to_string())
+        .with_detail("validation_evidence", "device_reduced_list_offset_width_range"));
+    }
+    if minimum != maximum {
+        return Err(Error::new_with(
+            ErrorCode::ColumnLengthMismatch,
+            operation,
+            "List<Float32> rows do not have one uniform dimension",
+        )
+        .with_fact(FACT_VALIDATION_REASON, "non_uniform_vector_dimension")
+        .with_detail("field_index", field_index.to_string())
+        .with_detail("minimum_row_width", minimum.to_string())
+        .with_detail("maximum_row_width", maximum.to_string())
+        .with_detail("validation_evidence", "device_reduced_list_offset_width_range"));
+    }
+    let dimension = usize::try_from(minimum).map_err(|_| {
+        error::foreign_invariant_violation(
+            operation,
+            "positive uniform list dimension must fit usize",
+            "list_offsets",
+            "uniform_list_dimension_conversion_failed",
+            "retain cudf-compatible list offsets",
+        )
+        .with_detail("dimension", minimum.to_string())
+    })?;
+
+    let child_view = view.list_sliced_child().map_err(|error| error.reanchor_if_needed(operation))?;
+    let child_offset_raw = child_view.offset().map_err(|error| error.reanchor_if_needed(operation))?;
+    let child_offset = usize::try_from(child_offset_raw).map_err(|_| {
+        error::foreign_invariant_violation(
+            operation,
+            "uniform List<Float32> child offset must be non-negative",
+            "list_child",
+            "negative_uniform_list_child_offset",
+            "retain a valid cudf list active child range",
+        )
+        .with_detail("field_index", field_index.to_string())
+        .with_detail("child_offset", child_offset_raw.to_string())
+    })?;
+    let child_len = child_view.len().map_err(|error| error.reanchor_if_needed(operation))?;
+    let expected_child_len = rows.checked_mul(dimension).ok_or_else(|| {
+        Error::new_with(ErrorCode::SizeOverflow, operation, "uniform List<Float32> child length overflowed usize")
+            .with_detail("field_index", field_index.to_string())
+            .with_detail("row_count", rows.to_string())
+            .with_detail("dimension", dimension.to_string())
+            .with_detail("reason", "uniform_list_child_len_overflow")
+    })?;
+    if child_len != expected_child_len {
+        return Err(error::foreign_invariant_violation(
+            operation,
+            "offset-proven uniform list span differs from the active child range",
+            "list_child",
+            "uniform_list_active_child_len_mismatch",
+            "retain a cudf list child range derived from the active offsets",
+        )
+        .with_detail("field_index", field_index.to_string())
+        .with_detail("dimension", dimension.to_string())
+        .with_detail("expected_child_len", expected_child_len.to_string())
+        .with_detail("actual_child_len", child_len.to_string()));
+    }
+
+    Ok(UniformListFloat32Proof {
+        field_index,
+        dimension,
+        rows,
+        root_offset,
+        child_offset,
+        child_len,
+        producer_column_identity: Arc::as_ptr(producer) as usize,
+        binding_id: producer.execution_domain().binding_id(),
+        placement: producer.execution_domain().placement(),
+        offsets_observation,
+    })
+}
+
+fn record_fixed_size_list_structural_proof(
+    field_index: usize,
+    dimension: i32,
+    rows: usize,
+    child_offset: usize,
+    child_len: usize,
+    producer: &Arc<crate::core::Column>,
+    observation: Option<BoundaryObservation>,
+) -> FixedSizeListStructuralProof {
+    FIXED_SIZE_LIST_STRUCTURAL_PROOF_BUILD_COUNT.with(|count| count.set(count.get().saturating_add(1)));
+    FixedSizeListStructuralProof {
+        field_index,
+        dimension,
+        rows,
+        child_offset,
+        child_len,
+        producer_column_identity: Arc::as_ptr(producer) as usize,
+        binding_id: producer.execution_domain().binding_id(),
+        placement: producer.execution_domain().placement(),
+        observation,
+    }
+}
+
+fn rebind_fixed_size_list_structural_proof(
+    proof: FixedSizeListStructuralProof,
+    frame: &DataFrame,
+) -> Result<FixedSizeListStructuralProof> {
+    const OPERATION: &str = "dataframe::GpuRecordBatch::with_validated_slice";
+    let (_, producer) = frame.columns_map().get_index(proof.field_index).ok_or_else(|| {
+        Error::new_with(
+            ErrorCode::InvariantViolation,
+            OPERATION,
+            "validated FixedSizeList field disappeared while slicing a GPU record batch",
+        )
+        .with_detail("field_index", proof.field_index.to_string())
+    })?;
+    let view = producer.view().map_err(|error| error.reanchor(OPERATION))?;
+    let rows = view.len().map_err(|error| error.reanchor(OPERATION))?;
+    let child = view.list_sliced_child().map_err(|error| error.reanchor(OPERATION))?;
+    let child_offset_raw = child.offset().map_err(|error| error.reanchor(OPERATION))?;
+    let child_offset = usize::try_from(child_offset_raw).map_err(|_| {
+        error::foreign_invariant_violation(
+            OPERATION,
+            "sliced FixedSizeList child offset must be non-negative",
+            "list_child",
+            "negative_fixed_size_list_child_offset",
+            "retain a valid cudf list slice",
+        )
+        .with_detail("field_index", proof.field_index.to_string())
+        .with_detail("child_offset", child_offset_raw.to_string())
+    })?;
+    let child_len = child.len().map_err(|error| error.reanchor(OPERATION))?;
+    let expected_child_len = rows.checked_mul(proof.dimension as usize).ok_or_else(|| {
+        Error::new_with(ErrorCode::SizeOverflow, OPERATION, "sliced FixedSizeList child length overflowed usize")
+            .with_detail("field_index", proof.field_index.to_string())
+            .with_detail("row_count", rows.to_string())
+            .with_detail("dimension", proof.dimension.to_string())
+    })?;
+    if child_len != expected_child_len {
+        return Err(error::invariant_violation(
+            OPERATION,
+            "slicing a structurally validated FixedSizeList changed its fixed-width child span",
+        )
+        .with_detail("field_index", proof.field_index.to_string())
+        .with_detail("expected_child_len", expected_child_len.to_string())
+        .with_detail("actual_child_len", child_len.to_string()));
+    }
+
+    Ok(FixedSizeListStructuralProof {
+        field_index: proof.field_index,
+        dimension: proof.dimension,
+        rows,
+        child_offset,
+        child_len,
+        producer_column_identity: Arc::as_ptr(producer) as usize,
+        binding_id: producer.execution_domain().binding_id(),
+        placement: producer.execution_domain().placement(),
+        observation: proof.observation,
+    })
+}
+
+fn validate_list_float32_export<'a>(
+    export: PreparedColumnExport<'a>,
+    contract: ListFloat32ExportContract,
+    operation: &'static str,
+) -> Result<ListFloat32ExportParts<'a>> {
+    let contract_error = |message: &'static str, reason: &'static str| {
+        error::foreign_invariant_violation(
+            operation,
+            message,
+            "fixed_size_list_export",
+            reason,
+            "rebuild the export from the validated GpuRecordBatch producer",
+        )
+        .with_detail("field_index", contract.field_index.to_string())
+        .with_detail("dimension", contract.dimension.to_string())
+    };
+
+    let root = export.column();
+    if root.data_type().id() != rapids_interop::TypeId::List || root.len() != contract.rows {
+        return Err(contract_error(
+            "prepared export root does not match the validated List<Float32> row contract",
+            "list_float32_export_root_mismatch",
+        )
+        .with_detail("root_type", format!("{:?}", root.data_type().id()))
+        .with_detail("root_rows", root.len().to_string())
+        .with_detail("proof_rows", contract.rows.to_string()));
+    }
+    if contract.root_offset.is_some_and(|root_offset| root.offset() != root_offset) {
+        return Err(contract_error(
+            "prepared list export root offset differs from the proven active range",
+            "list_float32_export_root_offset_mismatch",
+        )
+        .with_detail("proof_root_offset", contract.root_offset.unwrap_or_default().to_string())
+        .with_detail("export_root_offset", root.offset().to_string()));
+    }
+    if !validity_proves_no_nulls(root.validity()) {
+        return Err(Error::new_with(
+            ErrorCode::NullUnexpected,
+            operation,
+            "validated List<Float32> vector rows must not contain nulls",
+        )
+        .with_detail("field_index", contract.field_index.to_string())
+        .with_detail("reason", "null_vector_row"));
+    }
+
+    let (offsets_buffer_id, child_column_id) = match root.layout() {
+        ColumnLayout::List { offsets, child } => (*offsets, *child),
+        _ => {
+            return Err(contract_error(
+                "prepared export root does not retain a list layout",
+                "fixed_size_list_export_layout_mismatch",
+            ));
+        },
+    };
+    if !export.bindings().iter().any(|binding| binding.id() == offsets_buffer_id) {
+        return Err(contract_error(
+            "prepared List<Float32> export lost its offsets binding",
+            "list_float32_offsets_binding_missing",
+        ));
+    }
+    let child = export.semantic_columns().iter().find(|column| column.id() == child_column_id).ok_or_else(|| {
+        contract_error(
+            "prepared List<Float32> export lost its semantic child column",
+            "list_float32_child_column_missing",
+        )
+    })?;
+    if child.data_type().id() != rapids_interop::TypeId::Float32 {
+        return Err(contract_error("prepared list child is not Float32", "list_float32_child_type_mismatch")
+            .with_detail("child_type", format!("{:?}", child.data_type().id())));
+    }
+    if child.len() != contract.child_len || child.offset() != contract.child_offset {
+        return Err(contract_error(
+            "prepared List<Float32> child active range differs from the structural proof",
+            "list_float32_child_range_mismatch",
+        )
+        .with_detail("proof_child_offset", contract.child_offset.to_string())
+        .with_detail("export_child_offset", child.offset().to_string())
+        .with_detail("proof_child_len", contract.child_len.to_string())
+        .with_detail("export_child_len", child.len().to_string()));
+    }
+    if !validity_proves_no_nulls(child.validity()) {
+        return Err(Error::new_with(
+            ErrorCode::NullUnexpected,
+            operation,
+            "validated List<Float32> child must not contain nulls",
+        )
+        .with_detail("field_index", contract.field_index.to_string())
+        .with_detail("reason", "null_vector_value"));
+    }
+    let child_values_buffer_id = match child.layout() {
+        ColumnLayout::FixedWidth { values } => *values,
+        _ => {
+            return Err(contract_error(
+                "prepared List<Float32> child is not fixed-width",
+                "list_float32_child_layout_mismatch",
+            ));
+        },
+    };
+    let child_values =
+        export.bindings().iter().find(|binding| binding.id() == child_values_buffer_id).ok_or_else(|| {
+            contract_error(
+                "prepared List<Float32> export lost its child values binding",
+                "list_float32_child_values_binding_missing",
+            )
+        })?;
+    let required_child_bytes = contract
+        .child_offset
+        .checked_add(contract.child_len)
+        .and_then(|elements| elements.checked_mul(std::mem::size_of::<f32>()))
+        .ok_or_else(|| {
+            contract_error(
+                "validated List<Float32> child byte range overflowed usize",
+                "list_float32_child_byte_range_overflow",
+            )
+        })?;
+    if child_values.bytes().byte_len() < required_child_bytes {
+        return Err(contract_error(
+            "prepared List<Float32> child values binding is smaller than the proven active range",
+            "list_float32_child_values_binding_too_small",
+        )
+        .with_detail("required_child_bytes", required_child_bytes.to_string())
+        .with_detail("binding_bytes", child_values.bytes().byte_len().to_string()));
+    }
+
+    let expected_device = contract.placement.device.ordinal() as i32;
+    if !matches!(
+        child_values.placement(),
+        rapids_interop::Placement::CudaDevice { device } if *device == expected_device
+    ) {
+        return Err(contract_error(
+            "prepared List<Float32> child values binding is not on the proven CUDA device",
+            "list_float32_child_device_mismatch",
+        ));
+    }
+    match export.readiness() {
+        ProducerReadiness::DeviceStreamOrdered { stream }
+            if stream.device() == expected_device && stream.as_raw() as usize == contract.placement.stream_debug => {},
+        _ => {
+            return Err(contract_error(
+                "prepared List<Float32> export readiness differs from the proven execution stream",
+                "list_float32_export_readiness_mismatch",
+            ));
+        },
+    }
+
+    Ok(ListFloat32ExportParts {
+        root_column_id: root.id(),
+        offsets_buffer_id,
+        child_column_id,
+        child_values_buffer_id,
+        export,
+    })
+}
+
+fn validity_proves_no_nulls(validity: &PhysicalValidity) -> bool {
+    matches!(validity, PhysicalValidity::NoValidityBuffer | PhysicalValidity::ValidityMask { null_count: Some(0), .. })
+}
+
+pub(crate) fn reset_fixed_size_list_structural_proof_build_count_for_test() {
+    FIXED_SIZE_LIST_STRUCTURAL_PROOF_BUILD_COUNT.with(|count| count.set(0));
+}
+
+pub(crate) fn fixed_size_list_structural_proof_build_count_for_test() -> usize {
+    FIXED_SIZE_LIST_STRUCTURAL_PROOF_BUILD_COUNT.with(Cell::get)
 }
 
 fn record_batch_with_schema_contract(batch: RecordBatch, schema: &SchemaRef) -> Result<RecordBatch> {

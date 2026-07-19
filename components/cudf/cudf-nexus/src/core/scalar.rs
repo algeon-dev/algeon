@@ -142,7 +142,7 @@ fn validate_temporal_raw_range(raw: i64, type_id: TypeId, operation: &'static st
 ///
 /// Scalars can hold a single value of any cudf type, plus a validity flag.
 pub struct Scalar {
-    handle: NonNull<c_void>,
+    handle: NonNull<cudf_sys::cudf_scalar_handle_state>,
     pub(crate) domain: Arc<ExecutionDomain>,
 }
 
@@ -152,7 +152,7 @@ unsafe impl Send for Scalar {}
 unsafe impl Sync for Scalar {}
 
 impl Scalar {
-    fn from_handle_with_domain(handle: *mut c_void, domain: Arc<ExecutionDomain>) -> Result<Self> {
+    fn from_handle_with_domain(handle: cudf_sys::cudf_scalar_handle, domain: Arc<ExecutionDomain>) -> Result<Self> {
         Ok(Self { handle: error::require_non_null(handle, "scalar::from_handle_with_domain", "scalar")?, domain })
     }
 
@@ -409,7 +409,7 @@ impl Scalar {
     }
 
     /// Returns the raw FFI handle. For internal use by operations.
-    pub(crate) fn raw_handle(&self) -> *mut c_void {
+    pub(crate) fn raw_handle(&self) -> cudf_sys::cudf_scalar_handle {
         self.handle.as_ptr()
     }
 
@@ -417,7 +417,10 @@ impl Scalar {
         &self.domain
     }
 
-    pub(crate) unsafe fn from_raw_with_domain(handle: *mut c_void, domain: Arc<ExecutionDomain>) -> Result<Self> {
+    pub(crate) unsafe fn from_raw_with_domain(
+        handle: cudf_sys::cudf_scalar_handle,
+        domain: Arc<ExecutionDomain>,
+    ) -> Result<Self> {
         Self::from_handle_with_domain(handle, domain)
     }
 
@@ -566,14 +569,14 @@ impl Scalar {
     pub fn data_type(&self) -> Result<DataType> {
         // Raw discriminant: validated by `DataType::from_raw_parts` so an
         // unmirrored libcudf type id stays a recoverable error, not UB.
-        let mut raw_id: i32 = 0;
+        let mut raw_id: cudf_sys::cudf_type_id_t = 0;
         let mut scale = 0;
         // SAFETY: self.handle is valid (NonNull invariant from construction).
         error::check_status_in(
             unsafe { cudf_sys::cudf_scalar_data_type(self.handle.as_ptr(), &mut raw_id, &mut scale) },
             "scalar::data_type",
         )?;
-        DataType::from_raw_parts(raw_id, scale)
+        DataType::from_raw_parts(raw_id as i32, scale)
     }
 
     /// Returns `true` if this scalar holds a valid (non-null) value.

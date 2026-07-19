@@ -84,7 +84,7 @@ fn test_arrow_host_column_import_ex_imports_utf8_and_synchronizes() {
         private_data: ptr::null_mut(),
     };
 
-    let mut out: *mut c_void = ptr::null_mut();
+    let mut out: cudf_sys::cudf_column_handle = ptr::null_mut();
     let status = unsafe {
         cudf_sys::cudf_arrow_host_column_import_ex(
             (&mut schema as *mut ArrowSchema).cast::<c_void>(),

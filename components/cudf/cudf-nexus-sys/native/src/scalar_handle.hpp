@@ -1,8 +1,8 @@
 #ifndef CUDF_RUST_SCALAR_HANDLE_HPP
 #define CUDF_RUST_SCALAR_HANDLE_HPP
 
+#include "cudf_rust/scalar.h"
 #include "handle_provenance.hpp"
-#include "scalar.h"
 
 #include <cudf/scalar/scalar.hpp>
 
@@ -20,12 +20,12 @@ inline cudf_scalar_handle cudf_release_scalar_handle(std::unique_ptr<cudf::scala
   auto owner        = std::make_unique<cudf_scalar_owner>();
   owner->scalar     = std::move(scalar);
   owner->provenance = std::move(provenance);
-  return static_cast<cudf_scalar_handle>(owner.release());
+  return reinterpret_cast<cudf_scalar_handle>(owner.release());
 }
 
 inline cudf_scalar_owner& cudf_scalar_owner_from_handle(cudf_scalar_handle handle)
 {
-  return *static_cast<cudf_scalar_owner*>(handle);
+  return *reinterpret_cast<cudf_scalar_owner*>(handle);
 }
 
 inline cudf::scalar& cudf_scalar_from_handle(cudf_scalar_handle handle)

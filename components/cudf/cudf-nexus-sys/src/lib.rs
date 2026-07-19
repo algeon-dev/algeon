@@ -6,6 +6,15 @@
 //! directly as the owning API — use the `cudf` crate for safe owner types and
 //! higher-level semantics.
 //!
+//! # Safety
+//!
+//! Every raw function call in this crate is unsafe. Callers must uphold the
+//! handle ownership, device, stream, memory-resource, completion, and callback
+//! lifetime requirements documented by the C headers. See the concise
+//! [README](https://github.com/DataFusion-Nexus/cudf-nexus/blob/main/cudf-nexus-sys/README.md)
+//! and [SAFETY.md](https://github.com/DataFusion-Nexus/cudf-nexus/blob/main/cudf-nexus-sys/SAFETY.md)
+//! before adding or changing raw-handle code.
+//!
 //! Borrowed stream and memory-resource owner-handle tokens, plus an explicit
 //! CUDA device ordinal, are attached to a size-tagged execution contract
 //! (`cudf_exec_options_t`) for production `_ex` entry points. Execution-
@@ -13,12 +22,37 @@
 //! device, stream, and memory resource; null or partial options are reserved
 //! for narrow permissive diagnostics and legacy regression hooks.
 
-#![allow(non_camel_case_types)]
+#![deny(unsafe_op_in_unsafe_fn)]
 
+mod abi_ext;
+#[allow(
+    non_camel_case_types,
+    non_snake_case,
+    non_upper_case_globals,
+    dead_code,
+    clippy::all,
+    clippy::pedantic,
+    clippy::nursery,
+    clippy::missing_safety_doc,
+    clippy::unnecessary_cast
+)]
+mod bindings;
 mod execution;
-mod ffi;
-mod types;
 
+#[cfg(feature = "test-hooks")]
+#[allow(
+    non_camel_case_types,
+    non_snake_case,
+    non_upper_case_globals,
+    dead_code,
+    clippy::all,
+    clippy::pedantic,
+    clippy::nursery,
+    clippy::missing_safety_doc,
+    clippy::unnecessary_cast
+)]
+pub mod test_support;
+
+pub use abi_ext::*;
+pub use bindings::*;
 pub use execution::*;
-pub use ffi::*;
-pub use types::*;

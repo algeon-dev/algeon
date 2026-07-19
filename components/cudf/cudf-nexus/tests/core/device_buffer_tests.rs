@@ -1,5 +1,9 @@
 //! Integration tests for DeviceBuffer and zero-copy Column adoption.
-use cudf::{ErrorCode, ErrorKind, Runtime, TypeId, testing::prelude::*};
+use cudf::{
+    BoundaryKind, ErrorCode, ErrorKind, Runtime, TypeId,
+    core::error::{FactKeyName, FactValue},
+    testing::prelude::*,
+};
 
 use crate::common::error_context_value;
 
@@ -23,20 +27,149 @@ fn new_zero_bytes_succeeds() {
 }
 
 #[test]
-fn data_ptr_non_null_for_non_empty() {
+fn const_and_mut_pointers_are_non_null_for_non_empty_buffer() {
     let rt = Runtime::new().unwrap();
-    let buf = rt.device_buffer(64).unwrap();
-    assert!(!buf.data_ptr().unwrap().is_null());
+    let mut buf = rt.device_buffer(64).unwrap();
+    let const_ptr = buf.as_ptr().unwrap();
+    assert!(!const_ptr.is_null());
+    assert_eq!(buf.as_mut_ptr().unwrap().cast_const(), const_ptr);
 }
 
 #[test]
-fn data_ptr_zero_size_succeeds_even_if_pointer_is_null() {
+fn const_pointer_for_zero_size_succeeds_even_if_pointer_is_null() {
     let rt = Runtime::new().unwrap();
     let buf = rt.device_buffer(0).unwrap();
 
-    let _ptr = buf.data_ptr().unwrap();
+    let _ptr = buf.as_ptr().unwrap();
 
     assert!(buf.is_empty().unwrap());
+}
+
+#[test]
+fn device_buffer_reports_owning_runtime_binding() {
+    let rt = Runtime::new().unwrap();
+    let buf = rt.device_buffer(64).unwrap();
+
+    assert_eq!(buf.device(), rt.device());
+    assert_eq!(buf.placement(), rt.placement());
+    assert_eq!(buf.binding_id(), rt.binding_id());
+}
+
+#[test]
+fn float32_device_buffer_finite_proof_covers_the_exact_allocation_and_binding() {
+    let rt = Runtime::new().unwrap();
+    let buf = rt.device_buffer_from_host_data(&[1.0f32, 2.0, 3.0]).unwrap();
+    let raw = buf.as_ptr().unwrap();
+
+    let validated = buf.validate_finite_float32().unwrap();
+
+    assert_eq!(validated.len(), 3);
+    assert!(!validated.is_empty());
+    assert_eq!(validated.as_ptr().unwrap(), raw);
+    assert_eq!(validated.binding_id(), rt.binding_id());
+    assert_eq!(validated.placement(), rt.placement());
+    assert_eq!(validated.observation().kind, BoundaryKind::BoundedControlScalar);
+    assert_eq!(validated.observation().rows, 3);
+    assert_eq!(validated.observation().columns, 1);
+    assert_eq!(validated.observation().memory.downloaded_bytes, Some(std::mem::size_of::<i32>()));
+}
+
+#[test]
+fn float32_device_buffer_finite_proof_rejects_nan_and_infinities() {
+    for invalid in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+        let rt = Runtime::new().unwrap();
+        let buf = rt.device_buffer_from_host_data(&[1.0f32, invalid, 3.0]).unwrap();
+
+        let error = buf.validate_finite_float32().expect_err("non-finite raw buffer must be rejected");
+
+        assert_eq!(error.code(), ErrorCode::ValueOutOfRange);
+        assert_eq!(error.operation(), "device_buffer::validate_finite_float32");
+        assert_eq!(
+            error.fact_value(FactKeyName::ValidationReason),
+            Some(&FactValue::Str("non_finite_vector_value".into()))
+        );
+        assert_eq!(error.fact_value(FactKeyName::ExecutionBindingId), Some(&FactValue::U64(rt.binding_id().get())));
+        assert_eq!(error.fact_value(FactKeyName::ControlPlaneScalarBytes), Some(&FactValue::Usize(4)));
+        assert_eq!(error.detail_value("non_finite_count"), Some("1"));
+        assert_eq!(error.detail_value("validated_values"), Some("3"));
+    }
+}
+
+#[test]
+fn typed_device_buffer_validation_rejects_misaligned_allocation_size() {
+    let rt = Runtime::new().unwrap();
+    let buf = rt.device_buffer(3).unwrap();
+
+    let error = buf.validate_finite_float32().expect_err("unaligned raw buffer must be rejected");
+
+    assert_eq!(error.code(), ErrorCode::ValueOutOfRange);
+    assert_eq!(error.detail_value("reason"), Some("validation_buffer_size_misaligned"));
+}
+
+#[test]
+fn typed_device_buffer_validation_accepts_empty_allocation_with_bounded_proofs() {
+    let rt = Runtime::new().unwrap();
+    let buf = rt.device_buffer(0).unwrap();
+
+    {
+        let finite = buf.validate_finite_float32().unwrap();
+        assert!(finite.is_empty());
+        assert_eq!(finite.observation().memory.downloaded_bytes, Some(std::mem::size_of::<i32>()));
+    }
+
+    let range = buf.validate_int64_range(0, 1).unwrap();
+    assert!(range.is_empty());
+    assert_eq!(range.observation().memory.downloaded_bytes, Some(std::mem::size_of::<i32>()));
+}
+
+#[test]
+fn int64_device_buffer_range_proof_covers_the_exact_allocation_and_binding() {
+    let rt = Runtime::new().unwrap();
+    let buf = rt.device_buffer_from_host_data(&[0i64, 2, 4]).unwrap();
+    let raw = buf.as_ptr().unwrap();
+
+    let validated = buf.validate_int64_range(0, 5).unwrap();
+
+    assert_eq!(validated.len(), 3);
+    assert_eq!(validated.min_inclusive(), 0);
+    assert_eq!(validated.max_exclusive(), 5);
+    assert_eq!(validated.as_ptr().unwrap(), raw);
+    assert_eq!(validated.binding_id(), rt.binding_id());
+    assert_eq!(validated.placement(), rt.placement());
+    assert_eq!(validated.observation().kind, BoundaryKind::BoundedControlScalar);
+    assert_eq!(validated.observation().memory.downloaded_bytes, Some(std::mem::size_of::<i32>()));
+}
+
+#[test]
+fn int64_device_buffer_range_proof_rejects_both_bound_violations() {
+    for values in [[-1i64, 0, 1], [0i64, 1, 3]] {
+        let rt = Runtime::new().unwrap();
+        let buf = rt.device_buffer_from_host_data(&values).unwrap();
+
+        let error = buf.validate_int64_range(0, 3).expect_err("out-of-range raw buffer must be rejected");
+
+        assert_eq!(error.code(), ErrorCode::ValueOutOfRange);
+        assert_eq!(
+            error.fact_value(FactKeyName::ValidationReason),
+            Some(&FactValue::Str("integer_value_out_of_range".into()))
+        );
+        assert_eq!(error.fact_value(FactKeyName::ExecutionBindingId), Some(&FactValue::U64(rt.binding_id().get())));
+        assert_eq!(error.fact_value(FactKeyName::ControlPlaneScalarBytes), Some(&FactValue::Usize(4)));
+        assert_eq!(error.detail_value("out_of_range_count"), Some("1"));
+        assert_eq!(error.detail_value("min_inclusive"), Some("0"));
+        assert_eq!(error.detail_value("max_exclusive"), Some("3"));
+    }
+}
+
+#[test]
+fn int64_device_buffer_range_proof_rejects_empty_interval_before_execution() {
+    let rt = Runtime::new().unwrap();
+    let buf = rt.device_buffer_from_host_data(&[1i64]).unwrap();
+
+    let error = buf.validate_int64_range(2, 2).expect_err("empty validation range must be rejected");
+
+    assert_eq!(error.code(), ErrorCode::ValueOutOfRange);
+    assert_eq!(error.detail_value("reason"), Some("invalid_validation_range"));
 }
 
 #[test]
@@ -86,10 +219,10 @@ fn adopt_proves_zero_copy() {
     let rt = Runtime::new().unwrap();
     let data: &[i32] = &[42, 99];
     let buf = rt.device_buffer_from_host_data(data).unwrap();
-    let original_ptr = buf.data_ptr().unwrap();
+    let original_ptr = buf.as_ptr().unwrap();
     let col = crate::common::column_from_device_buffer(buf, 2, TypeId::Int32).unwrap();
     let view = col.testing_view().unwrap();
-    assert_eq!(view.device_data_ptr().unwrap(), original_ptr as *const _);
+    assert_eq!(view.device_data_ptr().unwrap(), original_ptr);
 }
 
 #[test]
@@ -123,14 +256,14 @@ fn runtime_adopt_i32_roundtrip_seeds_explicit_residency_without_copy() {
     let data: &[i32] = &[10, 20, 30];
     let rt = Runtime::new().unwrap();
     let buf = rt.device_buffer_from_host_data(data).unwrap();
-    let original_ptr = buf.data_ptr().unwrap();
+    let original_ptr = buf.as_ptr().unwrap();
 
     let col = rt.column_from_device_buffer(buf, 3, TypeId::Int32).unwrap();
     let view = col.testing_view().unwrap();
 
     assert_eq!(view.len().unwrap(), 3);
     assert_eq!(view.to_vec::<i32>().unwrap(), vec![10, 20, 30]);
-    assert_eq!(view.device_data_ptr().unwrap(), original_ptr as *const _);
+    assert_eq!(view.device_data_ptr().unwrap(), original_ptr);
     assert_eq!(col.testing_execution_domain_kind(), "explicit");
     assert_eq!(col.testing_execution_domain_id(), rt.testing_execution_domain_id());
     assert_eq!(col.testing_execution_domain_stream_value(), rt.stream().testing_raw_handle_value());
@@ -229,7 +362,7 @@ fn runtime_adopt_nullable_roundtrip_seeds_explicit_residency_without_copy() {
     mask[0] = 0x05;
     let rt = Runtime::new().unwrap();
     let data_buf = rt.device_buffer_from_host_data(data).unwrap();
-    let original_ptr = data_buf.data_ptr().unwrap();
+    let original_ptr = data_buf.as_ptr().unwrap();
     let mask_buf = rt.device_buffer_from_host_data(&mask).unwrap();
 
     let col = rt.column_from_device_buffer_nullable(data_buf, mask_buf, 2, 4, TypeId::Int32).unwrap();
@@ -238,7 +371,7 @@ fn runtime_adopt_nullable_roundtrip_seeds_explicit_residency_without_copy() {
     assert_eq!(view.len().unwrap(), 4);
     assert_eq!(view.null_count().unwrap(), 2);
     assert_eq!(view.to_host_validity().unwrap().unwrap(), vec![true, false, true, false]);
-    assert_eq!(view.device_data_ptr().unwrap(), original_ptr as *const _);
+    assert_eq!(view.device_data_ptr().unwrap(), original_ptr);
     assert_eq!(col.testing_execution_domain_kind(), "explicit");
     assert_eq!(col.testing_execution_domain_id(), rt.testing_execution_domain_id());
     assert_eq!(col.testing_execution_domain_stream_value(), rt.stream().testing_raw_handle_value());

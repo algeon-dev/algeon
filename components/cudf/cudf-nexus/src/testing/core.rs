@@ -1,8 +1,24 @@
-use crate::core::{DeviceMemoryResource, Error, Result};
+use crate::{
+    DeviceId,
+    core::{DeviceMemoryResource, Error, Result},
+};
 
-/// Build a stats memory resource for allocation-accounting tests.
-pub fn stats_memory_resource() -> Result<DeviceMemoryResource> {
-    crate::core::testing_hooks::stats_memory_resource()
+/// Adopt an owned test-created memory-resource handle.
+///
+/// This adapter does not construct a native test resource. Test code must use
+/// `cudf_sys::test_support` to create the handle, then transfer its unique
+/// ownership here so the normal safe owner performs device-aware teardown.
+///
+/// # Safety
+///
+/// `raw` must be a non-null, uniquely owned `cudf_memory_resource_handle`
+/// created for `device`. It must not have been adopted elsewhere, and no
+/// borrowed view of it may outlive the returned owner.
+pub unsafe fn adopt_owned_memory_resource_for_test(
+    raw: cudf_sys::cudf_memory_resource_handle,
+    device: DeviceId,
+) -> Result<DeviceMemoryResource> {
+    unsafe { DeviceMemoryResource::adopt_owned_for_testing(raw, device) }
 }
 
 /// Pack host validity bits into cuDF's allocation-sized null-mask layout.
