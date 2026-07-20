@@ -21,6 +21,13 @@
 #
 # Tuned packaging uses the separate `tuned-local-v3` policy profile, artifact
 # directory, provenance identity, image tag, and v3 deployment requirement.
+#
+# Workspace builds also require the mold linker. Install `mold` (Ubuntu:
+# `sudo apt-get install -y mold`) and keep `clang` available so Cargo can pass
+# `-fuse-ld=mold`. Redistributable packaging intentionally ignores this file:
+# `docker/build.sh` launches Cargo from an isolated cwd and clean CARGO_HOME
+# with only the policy's target and rustflags.
 # ---------------------------------------------------------------------------
 [target.x86_64-unknown-linux-gnu]
-rustflags = ["-C", "target-cpu=x86-64-v2"]
+linker = "clang"
+rustflags = ["-C", "target-cpu=x86-64-v2", "-C", "link-arg=-fuse-ld=mold"]

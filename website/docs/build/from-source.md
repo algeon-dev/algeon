@@ -81,7 +81,9 @@ cuobjdump --list-elf "$CUDF_INSTALL_DIR/lib/libcudf.so" \
 ## 3. Build and test cudf-rs
 
 `cudf-sys` compiles a C++ shim with CMake and links it against the installed
-libcudf; the pure-Rust crates build on top.
+libcudf; the pure-Rust crates build on top. These Cargo builds need the mold
+linker on the host (install mold and clang in
+[Prerequisites](./prerequisites.md#rust-linker-mold)).
 
 ```bash
 cd "$NEXUS_ROOT/cudf-rs"
@@ -150,6 +152,10 @@ the test suite passes on Blackwell — this is why the submodule pin matters and
 the fork, not upstream cuGraph, must be built.
 
 ## 6. Build and test datafusion-nexus
+
+`datafusion-nexus` selects mold via its `.cargo/config.toml`; mold and clang
+must already be installed (see
+[Prerequisites](./prerequisites.md#rust-linker-mold)).
 
 ```bash
 cd "$NEXUS_ROOT/datafusion-nexus"

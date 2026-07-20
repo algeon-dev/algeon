@@ -9,6 +9,27 @@ Every entry below is a failure mode observed on real hardware, with the root
 cause and the correct fix. If you hit something not listed, prefer diagnosing
 which layer's contract broke over patching symptoms downstream.
 
+## `cargo build` fails: mold or clang missing
+
+```text
+error: linker `clang` not found
+# or
+collect2: fatal error: cannot find 'ld'
+clang: error: invalid linker name in argument '-fuse-ld=mold'
+```
+
+`datafusion-nexus` selects clang + mold in `.cargo/config.toml`. Install both
+host packages (and the matching `~/.cargo` linker setting when building sibling
+crates) and re-run the Cargo command:
+
+```bash
+sudo apt-get install -y clang mold
+mold --version
+clang --version
+```
+
+See [Prerequisites](./prerequisites.md#rust-linker-mold).
+
 ## CMake refuses to configure: version too old
 
 ```text

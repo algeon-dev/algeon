@@ -1,6 +1,6 @@
 ---
 sidebar_position: 2
-description: System packages, CUDA toolkit, host compiler, and Rust toolchain needed before cloning anything — with each tool mapped to the layer that requires it.
+description: System packages, CUDA toolkit, host compiler, mold linker, and Rust toolchain needed before cloning anything — with each tool mapped to the layer that requires it.
 ---
 
 # Prerequisites
@@ -24,6 +24,7 @@ follow the [RAPIDS install guide](https://docs.rapids.ai/install/) and the
 | gcc/g++ **14** | libcudf build, libcugraph build (host compiler) | RAPIDS 26.06 pins gcc 14 |
 | CMake ≥ 3.30.4 | libcudf build, libcugraph build, the `cudf-sys` C++ shim | hard floor in the C++ projects |
 | Ninja | libcudf build, libcugraph build | RAPIDS build scripts default to it |
+| mold + clang | `cudf-rs`, `cugraph-rs`, `datafusion-nexus` Cargo builds | `datafusion-nexus` pins mold in `.cargo/config.toml`; install both on the host |
 | Rust (stable + nightly) | `cudf-rs`, `cugraph-rs`, `datafusion-nexus` | nightly only for `rustfmt` |
 | Python + pyarrow | a few `cudf-rs` Parquet **fixture tests** | **not** a build dependency |
 
@@ -69,11 +70,13 @@ building binaries that must run on a *different* GPU model
 ## Host compiler: gcc/g++ 14
 
 ```bash
-sudo apt-get install -y build-essential git ninja-build gcc-14 g++-14
+sudo apt-get install -y build-essential git ninja-build gcc-14 g++-14 clang mold
 ```
 
 This line also installs **ninja** (the generator every CMake build in the stack
-uses; RAPIDS build scripts default to it), and **git**.
+uses; RAPIDS build scripts default to it), **git**, **clang**, and **mold**.
+`datafusion-nexus` selects clang + mold from its `.cargo/config.toml`, so install
+both before any `cargo build` / `cargo test` step on the Rust workspaces.
 
 RAPIDS 26.06 **pins gcc 14** as the host compiler for both native builds
 (`gcc_linux-64=14.*` in the cudf and cugraph `dependencies.yaml`). Ubuntu
@@ -109,6 +112,41 @@ echo 'deb [signed-by=/usr/share/keyrings/kitware-archive-keyring.gpg] https://ap
 sudo apt-get update && sudo apt-get install -y cmake
 cmake --version   # ≥ 3.30.4
 ```
+
+## Rust linker: mold
+
+Normal Cargo builds for this stack require the
+[mold](https://github.com/rui314/mold) linker and `clang` on the host.
+`datafusion-nexus/.cargo/config.toml` selects them as:
+
+```toml
+[target.x86_64-unknown-linux-gnu]
+linker = "clang"
+rustflags = ["-C", "target-cpu=x86-64-v2", "-C", "link-arg=-fuse-ld=mold"]
+```
+
+Install mold and clang before the first Rust build:
+
+```bash
+sudo apt-get install -y clang mold
+mold --version
+clang --version
+```
+
+For sibling crates built outside `datafusion-nexus` (`cudf-rs`, `cugraph-rs`),
+install the same packages and keep an equivalent linker setting in
+`~/.cargo/config.toml` so plain `cargo build` still uses mold:
+
+```toml
+[target.x86_64-unknown-linux-gnu]
+linker = "clang"
+rustflags = ["-C", "link-arg=-fuse-ld=mold"]
+```
+
+Redistributable server packaging (`docker/build.sh`) does **not** read workspace
+or home Cargo linker config; it builds from an isolated working directory and
+clean `CARGO_HOME` with only the CPU packaging policy flags. Day-to-day source
+builds and tests still need mold on the host.
 
 ## Rust toolchain
 

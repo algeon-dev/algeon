@@ -103,13 +103,16 @@ AES-NI), which bakes those into unguarded code.
 The default packaging profile therefore pins a fixed **x86-64-v2** floor
 (~2008+, covering essentially every GPU server):
 
-- **Rust**: `.cargo/config.toml` sets `target-cpu=x86-64-v2`. v2 excludes `aes`,
-  so ahash compiles its **portable fallback** hasher for normal workspace
-  builds. Redistributable builds additionally use the clean, declarative
-  `portable` profile in `.config/policies/cpu-packaging.toml`; unsafe flags cannot enter
-  by another spelling because ambient flag/config variables are rejected
-  wholesale. Image baseline/profile/target labels come from that same policy
-  and are hard-checked against the staged provenance.
+- **Rust**: `.cargo/config.toml` sets `target-cpu=x86-64-v2` and selects the
+  mold linker via clang for normal source builds (install `mold` and `clang`
+  on the host first). v2 excludes `aes`, so ahash compiles its **portable
+  fallback** hasher for those builds. Redistributable builds additionally use
+  the clean, declarative `portable` profile in
+  `.config/policies/cpu-packaging.toml` from an isolated cwd/CARGO_HOME, so
+  workspace/home mold settings do not enter the packaged artifact; unsafe flags
+  cannot enter by another spelling because ambient flag/config variables are
+  rejected wholesale. Image baseline/profile/target labels come from that same
+  policy and are hard-checked against the staged provenance.
 - **C++ forked libs**: cuDF/cuGraph are built today with empty `CMAKE_CXX_FLAGS`
   (conservative — 0 AES-NI / 0 AVX-512 in `libcudf.so`), so they are already
   portable. Keep it that way: **never pass `-march=native`** to their builds;
