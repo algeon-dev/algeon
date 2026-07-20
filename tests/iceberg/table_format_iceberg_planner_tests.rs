@@ -54,6 +54,7 @@ fn file_scan_task(
         partition_spec: None,
         name_mapping: None,
         case_sensitive: true,
+        key_metadata: None,
     }
 }
 
@@ -94,6 +95,7 @@ fn identity_and_day_partition_task(path: impl Into<String>) -> FileScanTask {
         partition_spec: Some(Arc::new(partition_spec)),
         name_mapping: None,
         case_sensitive: true,
+        key_metadata: None,
     }
 }
 
@@ -136,6 +138,7 @@ fn timestamp_decimal_partition_task(path: impl Into<String>) -> FileScanTask {
         partition_spec: Some(Arc::new(partition_spec)),
         name_mapping: None,
         case_sensitive: true,
+        key_metadata: None,
     }
 }
 
@@ -171,6 +174,7 @@ fn task_with_partition_spec_source_absent_from_scan_schema(path: impl Into<Strin
         partition_spec: Some(Arc::new(partition_spec)),
         name_mapping: None,
         case_sensitive: true,
+        key_metadata: None,
     }
 }
 
@@ -417,6 +421,7 @@ fn position_delete_files_are_preserved_and_admit_native_execution() {
         file_type: DataContentType::PositionDeletes,
         partition_spec_id: 0,
         equality_ids: None,
+        key_metadata: None,
     };
 
     let plan = iceberg_file_scan_tasks_to_table_format_scan_plan(
@@ -451,6 +456,7 @@ fn equality_delete_files_are_preserved_but_reject_without_delete_footer_field_id
         file_type: DataContentType::EqualityDeletes,
         partition_spec_id: 0,
         equality_ids: Some(vec![1]),
+        key_metadata: None,
     };
 
     let plan = iceberg_file_scan_tasks_to_table_format_scan_plan(

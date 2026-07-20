@@ -56,11 +56,11 @@ blake3 = "1.8"
 datafusion = "54"
 futures = "0.3"
 getrandom = "0.3"
-iceberg = { path = "../iceberg-rust/crates/iceberg" }
-iceberg-catalog-glue = { path = "../iceberg-rust/crates/catalog/glue" }
-iceberg-catalog-rest = { path = "../iceberg-rust/crates/catalog/rest" }
-iceberg-datafusion = { path = "../iceberg-rust/crates/integrations/datafusion" }
-iceberg-storage-opendal = { path = "../iceberg-rust/crates/storage/opendal" }
+iceberg = { git = "https://github.com/apache/iceberg-rust.git", branch = "main" }
+iceberg-catalog-glue = { git = "https://github.com/apache/iceberg-rust.git", branch = "main" }
+iceberg-catalog-rest = { git = "https://github.com/apache/iceberg-rust.git", branch = "main" }
+iceberg-datafusion = { git = "https://github.com/apache/iceberg-rust.git", branch = "main" }
+iceberg-storage-opendal = { git = "https://github.com/apache/iceberg-rust.git", branch = "main" }
 object_store = { version = "0.13", default-features = false, features = ["aws"] }
 parquet = { version = "58.3", features = ["async", "object_store"] }
 serde = { version = "1", features = ["derive"] }
