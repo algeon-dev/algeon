@@ -170,6 +170,36 @@ void fill_usage(cudf_memory_resource_usage_t& out,
                 std::size_t failed_allocation_count,
                 std::size_t largest_failed_allocation_bytes);
 
+/// Shared live-allocation gate for one manager's base resource and every
+/// private query-domain pool it creates.  A static partition is an ownership
+/// boundary, so a query domain must consume the same limit rather than getting
+/// an independent private-pool allowance.
+class manager_allocation_limit_state final {
+ public:
+  explicit manager_allocation_limit_state(std::size_t limit_bytes) : limit_bytes_{limit_bytes} {}
+
+  [[nodiscard]] bool try_reserve(std::size_t aligned_bytes) noexcept
+  {
+    auto observed = current_aligned_bytes_.load(std::memory_order_relaxed);
+    while (true) {
+      if (observed > limit_bytes_ || aligned_bytes > limit_bytes_ - observed) { return false; }
+      if (current_aligned_bytes_.compare_exchange_weak(
+            observed, observed + aligned_bytes, std::memory_order_relaxed)) {
+        return true;
+      }
+    }
+  }
+
+  void release(std::size_t aligned_bytes) noexcept
+  {
+    current_aligned_bytes_.fetch_sub(aligned_bytes, std::memory_order_relaxed);
+  }
+
+ private:
+  std::size_t limit_bytes_;
+  std::atomic<std::size_t> current_aligned_bytes_{0};
+};
+
 struct query_domain_member_counters {
   std::uint64_t id = 0;
   std::atomic<bool> attached{true};
@@ -233,7 +263,8 @@ class query_domain_resource final : public rmm::mr::device_memory_resource {
                         std::uint64_t domain_generation,
                         std::size_t grant_bytes,
                         std::size_t requested_ceiling_bytes,
-                        std::size_t effective_ceiling_bytes);
+                        std::size_t effective_ceiling_bytes,
+                        std::shared_ptr<manager_allocation_limit_state> manager_allocation_limit);
 
   [[nodiscard]] cudf_memory_resource_usage_t usage(bool active, std::size_t active_members) const;
 
@@ -317,6 +348,7 @@ class query_domain_resource final : public rmm::mr::device_memory_resource {
   std::atomic<std::size_t> grant_bytes_{0};
   std::size_t requested_ceiling_bytes_;
   std::size_t effective_ceiling_bytes_;
+  std::shared_ptr<manager_allocation_limit_state> manager_allocation_limit_;
   std::atomic<std::size_t> current_bytes_{0};
   std::atomic<std::size_t> peak_bytes_{0};
   std::atomic<std::size_t> total_bytes_{0};
@@ -479,6 +511,7 @@ class reservation_aware_resource_adaptor final : public rmm::mr::device_memory_r
                                                           std::size_t ceiling_bytes,
                                                           std::uint64_t release_threshold,
                                                           int32_t device,
+                                                          std::shared_ptr<manager_allocation_limit_state> manager_allocation_limit,
                                                           std::string& error);
 
   std::shared_ptr<query_domain_member_state> attach_query_domain(
@@ -617,6 +650,7 @@ struct memory_resource_owner {
   std::shared_ptr<void> upstream_lifetime;
   // Reverse member destruction tears this down before its physical base.
   std::unique_ptr<rmm::mr::device_memory_resource> limiting_mr;
+  std::shared_ptr<manager_allocation_limit_state> manager_allocation_limit;
   std::unique_ptr<rmm::mr::device_memory_resource> reservation_mr;
   std::unique_ptr<rmm::mr::device_memory_resource> mr;
 #ifdef CUDF_RUST_ENABLE_TEST_HOOKS

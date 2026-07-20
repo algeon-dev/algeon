@@ -43,13 +43,15 @@ query_domain_resource::query_domain_resource(cudaMemPool_t pool,
                                              std::uint64_t domain_generation,
                                              std::size_t grant_bytes,
                                              std::size_t requested_ceiling_bytes,
-                                             std::size_t effective_ceiling_bytes)
+                                             std::size_t effective_ceiling_bytes,
+                                             std::shared_ptr<manager_allocation_limit_state> manager_allocation_limit)
   : view_{pool},
     domain_id_{domain_id},
     domain_generation_{domain_generation},
     grant_bytes_{grant_bytes},
     requested_ceiling_bytes_{requested_ceiling_bytes},
-    effective_ceiling_bytes_{effective_ceiling_bytes}
+    effective_ceiling_bytes_{effective_ceiling_bytes},
+    manager_allocation_limit_{std::move(manager_allocation_limit)}
 {
 }
 
@@ -261,10 +263,22 @@ void* query_domain_resource::allocate_impl(
                                    view_.pool_handle()};
   }
 
+  if (manager_allocation_limit_ != nullptr && !manager_allocation_limit_->try_reserve(aligned_bytes)) {
+    current_aligned_bytes_.fetch_sub(aligned_bytes);
+    if (member != nullptr) { member->current_aligned_bytes.fetch_sub(aligned_bytes); }
+    record_failed_allocation(bytes);
+    record_member_failed_allocation(member, bytes);
+    throw attributed_out_of_memory{"manager allocation limit exceeded",
+                                   CUDF_MEMORY_FAILURE_SOURCE_RESERVATION_LIMIT,
+                                   failure_identity(member),
+                                   view_.pool_handle()};
+  }
+
   void* ptr = nullptr;
   try {
     ptr = view_.allocate(stream, bytes, alignment);
   } catch (rmm::out_of_memory const&) {
+    if (manager_allocation_limit_ != nullptr) { manager_allocation_limit_->release(aligned_bytes); }
     current_aligned_bytes_.fetch_sub(aligned_bytes);
     if (member != nullptr) { member->current_aligned_bytes.fetch_sub(aligned_bytes); }
     record_failed_allocation(bytes);
@@ -280,6 +294,7 @@ void* query_domain_resource::allocate_impl(
                                    failure_identity(member),
                                    view_.pool_handle()};
   } catch (...) {
+    if (manager_allocation_limit_ != nullptr) { manager_allocation_limit_->release(aligned_bytes); }
     current_aligned_bytes_.fetch_sub(aligned_bytes);
     if (member != nullptr) { member->current_aligned_bytes.fetch_sub(aligned_bytes); }
     record_failed_allocation(bytes);
@@ -319,6 +334,7 @@ void query_domain_resource::deallocate_impl(
 {
   auto const aligned_bytes = cudf::rust::reservation::allocation_charge(bytes, alignment);
   view_.deallocate(stream, ptr, bytes, alignment);
+  if (manager_allocation_limit_ != nullptr) { manager_allocation_limit_->release(aligned_bytes); }
   current_aligned_bytes_.fetch_sub(aligned_bytes);
   current_bytes_.fetch_sub(bytes);
   current_allocations_.fetch_sub(1);
@@ -484,6 +500,7 @@ std::shared_ptr<query_domain_state> reservation_aware_resource_adaptor::create_q
   std::size_t ceiling_bytes,
   std::uint64_t release_threshold,
   int32_t device,
+  std::shared_ptr<manager_allocation_limit_state> manager_allocation_limit,
   std::string& error)
 {
   if (ceiling_bytes == 0) {
@@ -546,7 +563,8 @@ std::shared_ptr<query_domain_state> reservation_aware_resource_adaptor::create_q
       state->generation,
       grant_bytes,
       state->ceiling_bytes,
-      state->effective_ceiling_bytes);
+      state->effective_ceiling_bytes,
+      std::move(manager_allocation_limit));
     {
       std::unique_lock lock{query_domain_mutex_};
       query_domains_by_pool_[domain_pool] = state;
@@ -897,13 +915,6 @@ cudf_status_t cudf_memory_manager_create_query_memory_domain(cudf_memory_manager
       set_error("query memory domains require a CUDA async manager base");
       return CUDF_ERROR_INVALID_OPERATION;
     }
-    if (manager_state->options.allocation_limit_bytes > 0) {
-      set_error(
-        "query memory domains are incompatible with a hard manager allocation limit because "
-        "their private CUDA pools bypass aggregate partition accounting");
-      return CUDF_ERROR_INVALID_OPERATION;
-    }
-
     cudf_device_guard guard;
     cudf_status_t const guard_status = guard.activate(manager_state->device);
     if (guard_status != CUDF_SUCCESS) { return guard_status; }
@@ -914,6 +925,7 @@ cudf_status_t cudf_memory_manager_create_query_memory_domain(cudf_memory_manager
                                                ceiling_bytes,
                                                release_threshold_bytes,
                                                manager_state->device,
+                                               manager_state->owner->manager_allocation_limit,
                                                create_error);
     if (domain == nullptr) {
       set_error(create_error);

@@ -8,7 +8,6 @@
 
 #include <rmm/error.hpp>
 #include <rmm/mr/cuda_memory_resource.hpp>
-#include <rmm/mr/limiting_resource_adaptor.hpp>
 #include <rmm/mr/pool_memory_resource.hpp>
 
 #include <new>
@@ -18,6 +17,56 @@
 #include <string>
 
 namespace cudf::rust::memory {
+
+namespace {
+
+/// Enforces the manager-wide allocation limit through the same accounting
+/// state used by private query-domain pools.
+class manager_allocation_limit_resource_adaptor final : public rmm::mr::device_memory_resource {
+ public:
+  manager_allocation_limit_resource_adaptor(rmm::mr::device_memory_resource* upstream,
+                                            std::shared_ptr<manager_allocation_limit_state> state)
+    : upstream_{rmm::mr::any_device_resource_from_raw(upstream)}, state_{std::move(state)}
+  {
+  }
+
+ private:
+  void* do_allocate(std::size_t bytes, rmm::cuda_stream_view stream, std::size_t alignment) override
+  {
+    if (bytes == 0) { return upstream_.allocate(stream, bytes, alignment); }
+    auto const aligned_bytes = cudf::rust::reservation::allocation_charge(bytes, alignment);
+    if (!state_->try_reserve(aligned_bytes)) {
+      throw rmm::out_of_memory{"memory manager allocation limit exceeded"};
+    }
+    try {
+      return upstream_.allocate(stream, bytes, alignment);
+    } catch (...) {
+      state_->release(aligned_bytes);
+      throw;
+    }
+  }
+
+  void do_deallocate(void* ptr,
+                     std::size_t bytes,
+                     rmm::cuda_stream_view stream,
+                     std::size_t alignment) noexcept override
+  {
+    upstream_.deallocate(stream, ptr, bytes, alignment);
+    if (bytes != 0) {
+      state_->release(cudf::rust::reservation::allocation_charge(bytes, alignment));
+    }
+  }
+
+  [[nodiscard]] bool do_is_equal(rmm::mr::device_memory_resource const& other) const noexcept override
+  {
+    return this == std::addressof(other);
+  }
+
+  cuda::mr::any_resource<cuda::mr::device_accessible> upstream_;
+  std::shared_ptr<manager_allocation_limit_state> state_;
+};
+
+}  // namespace
 
 #ifdef CUDF_RUST_ENABLE_TEST_HOOKS
 std::atomic<bool>& fail_next_current_resource_install()
@@ -353,10 +402,12 @@ std::shared_ptr<device_memory_manager_state> make_memory_manager_for_current_dev
   }
   auto* physical_base = owner.pool.get();
   if (options.allocation_limit_bytes > 0) {
+    owner.manager_allocation_limit = std::make_shared<manager_allocation_limit_state>(
+      static_cast<std::size_t>(options.allocation_limit_bytes));
     owner.limiting_mr =
-      std::make_unique<rmm::mr::device_memory_resource_box<rmm::mr::limiting_resource_adaptor>>(
-        rmm::mr::any_device_resource_from_raw(physical_base),
-        static_cast<std::size_t>(options.allocation_limit_bytes));
+      std::make_unique<manager_allocation_limit_resource_adaptor>(
+        physical_base,
+        owner.manager_allocation_limit);
     physical_base = owner.limiting_mr.get();
   }
   auto adaptor = std::make_unique<reservation_aware_resource_adaptor>(physical_base);

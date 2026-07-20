@@ -90,9 +90,13 @@ fn identified_install_is_reusable_but_cannot_be_rebound() {
     assert_eq!(DeviceMemoryManager::installation_state_for_device(device).unwrap(), after);
 
     let manager = DeviceMemoryManager::for_device_with_options(device, options).unwrap();
-    let domain_error = manager.query_memory_domain(7, QueryMemoryDomainOptions::new(1024 * 1024)).unwrap_err();
-    assert_eq!(domain_error.code(), ErrorCode::UnsupportedOperation);
-    assert_eq!(domain_error.detail_value("reason"), Some("query_domain_incompatible_with_allocation_limit"));
+    let domain = manager
+        .query_memory_domain(7, QueryMemoryDomainOptions::new(1024 * 1024).with_ceiling_bytes(1024 * 1024))
+        .expect("a static-partition manager supports a bounded private query domain");
+    let identity = domain.identity().expect("query domain exposes its immutable identity");
+    assert_eq!(identity.device, device);
+    assert_eq!(identity.domain_id, 7);
+    drop(domain);
     let runtime =
         Runtime::builder().with_device(device).with_memory_resource(manager.resource().clone()).build().unwrap();
     let error = match runtime.device_buffer(9 * 1024 * 1024) {
