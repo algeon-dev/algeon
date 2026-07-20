@@ -2,64 +2,52 @@ pub(super) fn projection_root_scalar_fanout_plan() -> QueryPlan {
     projection_root_scalar_fanout_plan_with_variant(ProjectionScalarSetopPlanVariant::ScalarFanout)
 }
 
-#[allow(dead_code)]
 pub(super) fn projection_root_scalar_fanout_one_row_driver_plan() -> QueryPlan {
     projection_root_scalar_fanout_plan_with_variant(ProjectionScalarSetopPlanVariant::OneRowDriver)
 }
 
-#[allow(dead_code)]
 pub(super) fn projection_root_scalar_fanout_scan_limit_driver_plan() -> QueryPlan {
     projection_root_scalar_fanout_plan_with_variant(ProjectionScalarSetopPlanVariant::ScanLimitDriver)
 }
 
-#[allow(dead_code)]
 pub(super) fn projection_root_scalar_fanout_max_rows_driver_plan() -> QueryPlan {
     projection_root_scalar_fanout_plan_with_variant(ProjectionScalarSetopPlanVariant::MaxRowsDriver)
 }
 
-#[allow(dead_code)]
 pub(super) fn projection_root_scalar_fanout_limit_driver_plan() -> QueryPlan {
     projection_root_scalar_fanout_plan_with_variant(ProjectionScalarSetopPlanVariant::LimitDriver)
 }
 
-#[allow(dead_code)]
 pub(super) fn projection_root_scalar_fanout_unsupported_join_plan() -> QueryPlan {
     projection_root_scalar_fanout_plan_with_variant(ProjectionScalarSetopPlanVariant::UnsupportedJoin)
 }
 
-#[allow(dead_code)]
 pub(super) fn projection_root_repeated_scalar_fanout_plan() -> QueryPlan {
     projection_root_repeated_scalar_fanout_plan_with_variant(ProjectionScalarSetopPlanVariant::RepeatedScalarFanout)
 }
 
-#[allow(dead_code)]
 pub(super) fn projection_root_repeated_scalar_fanout_unbounded_input_plan() -> QueryPlan {
     projection_root_repeated_scalar_fanout_plan_with_variant(
         ProjectionScalarSetopPlanVariant::RepeatedScalarFanoutUnboundedInput,
     )
 }
 
-#[allow(dead_code)]
 pub(super) fn projection_root_setop_dedup_scalar_plan() -> QueryPlan {
     projection_root_setop_dedup_scalar_plan_with_variant(ProjectionScalarSetopPlanVariant::SetopDedup)
 }
 
-#[allow(dead_code)]
 pub(super) fn projection_root_setop_dedup_input_plan() -> QueryPlan {
     projection_root_setop_dedup_scalar_plan_with_variant(ProjectionScalarSetopPlanVariant::SetopDedupInput)
 }
 
-#[allow(dead_code)]
 pub(super) fn projection_root_setop_dedup_scalar_non_dedup_left_anti_input_plan() -> QueryPlan {
     projection_root_setop_dedup_scalar_plan_with_variant(ProjectionScalarSetopPlanVariant::NonDedupLeftAntiInput)
 }
 
-#[allow(dead_code)]
 pub(super) fn projection_root_setop_distinct_aggregate_plan() -> QueryPlan {
     projection_root_setop_dedup_scalar_plan_with_variant(ProjectionScalarSetopPlanVariant::DistinctAggregate)
 }
 
-#[allow(dead_code)]
 pub(super) fn projection_root_left_anti_scalar_count_plan() -> QueryPlan {
     let left_schema = Arc::new(Schema::new(vec![
         Field::new("id", DataType::Int64, false),
@@ -108,7 +96,6 @@ pub(super) fn projection_root_left_anti_scalar_count_plan() -> QueryPlan {
     builder.finish_with_host_sink(projection)
 }
 
-#[allow(dead_code)]
 pub(super) fn projection_root_scalar_join_grouped_avg_input_plan() -> QueryPlan {
     let left_schema = Arc::new(Schema::new(vec![
         Field::new("vendor", DataType::Int32, true),
@@ -182,7 +169,6 @@ pub(super) fn projection_root_scalar_join_grouped_avg_input_plan() -> QueryPlan 
     builder.finish_with_host_sink(projection)
 }
 
-#[allow(dead_code)]
 pub(super) fn projection_root_keyless_grouped_aggregate_input_plan() -> QueryPlan {
     let fact_schema = Arc::new(Schema::new(vec![
         Field::new("k", DataType::Int32, false),
@@ -246,7 +232,6 @@ pub(super) fn projection_root_keyless_grouped_aggregate_input_plan() -> QueryPla
     builder.finish_with_host_sink(projection)
 }
 
-#[allow(dead_code)]
 pub(super) fn projection_root_scalar_join_aggregate_input_plan() -> QueryPlan {
     let fact_schema = Arc::new(Schema::new(vec![
         Field::new("fact_k", DataType::Int32, false),
@@ -312,7 +297,6 @@ pub(super) fn projection_root_scalar_join_aggregate_input_plan() -> QueryPlan {
     builder.finish_with_host_sink(projection)
 }
 
-#[allow(dead_code)]
 pub(super) fn projection_root_keyed_grouped_aggregate_input_plan() -> QueryPlan {
     let fact_schema = Arc::new(Schema::new(vec![
         Field::new("fact_k", DataType::Int32, false),
@@ -379,7 +363,6 @@ pub(super) fn projection_root_keyed_grouped_aggregate_input_plan() -> QueryPlan 
     builder.finish_with_host_sink(projection)
 }
 
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ProjectionScalarSetopPlanVariant {
     ScalarFanout,
@@ -396,7 +379,6 @@ enum ProjectionScalarSetopPlanVariant {
     RepeatedScalarFanoutUnboundedInput,
 }
 
-#[allow(dead_code)]
 fn projection_root_scalar_fanout_plan_with_variant(variant: ProjectionScalarSetopPlanVariant) -> QueryPlan {
     let driver_schema = Arc::new(Schema::new(vec![Field::new("driver_id", DataType::Int32, false)]));
     let fact_schema = Arc::new(Schema::new(vec![
@@ -537,7 +519,6 @@ fn projection_root_scalar_fanout_plan_with_variant(variant: ProjectionScalarSeto
     builder.finish_with_host_sink(projection)
 }
 
-#[allow(dead_code)]
 fn projection_root_repeated_scalar_fanout_plan_with_variant(variant: ProjectionScalarSetopPlanVariant) -> QueryPlan {
     let driver_schema = Arc::new(Schema::new(vec![Field::new("driver_id", DataType::Int32, false)]));
     let fact_schema = Arc::new(Schema::new(vec![
@@ -670,7 +651,6 @@ fn projection_root_repeated_scalar_fanout_plan_with_variant(variant: ProjectionS
     builder.finish_with_host_sink(projection)
 }
 
-#[allow(dead_code)]
 fn projection_root_setop_dedup_scalar_plan_with_variant(variant: ProjectionScalarSetopPlanVariant) -> QueryPlan {
     let left_schema = Arc::new(Schema::new(vec![Field::new("k", DataType::Int32, false)]));
     let right_schema = Arc::new(Schema::new(vec![Field::new("k", DataType::Int32, false)]));

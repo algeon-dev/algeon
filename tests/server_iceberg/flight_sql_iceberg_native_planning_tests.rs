@@ -887,9 +887,7 @@ impl TableFormatPlanner for RecordingPlanner {
 
 // Milestone 1 retained a sibling reference on the leaf guard so emitted facts can
 // quote the first native rejection. The `last_report` accessor is the dependency
-// the guard reads at fire time; the assertion below pins the source of truth so
-// future refactors that drop the accessor surface in CI.
-#[allow(dead_code)]
-fn _last_report_accessor_is_present(rule: Arc<CudfNativePhysicalOptimizerRule>) {
-    let _ = rule.last_report();
-}
+// the guard reads at fire time; pin the method in the type system so dropping it
+// fails compilation for this suite.
+const _: fn(&CudfNativePhysicalOptimizerRule) -> Option<datafusion_nexus::report::PlanningReport> =
+    CudfNativePhysicalOptimizerRule::last_report;

@@ -138,7 +138,7 @@ impl LocalObservationCollector {
         }
     }
 
-    #[allow(dead_code)] // Called through the Phase 4 retrieval seam.
+    #[cfg(test)]
     fn drain(&mut self) -> Vec<Arc<RuntimeTraceSnapshot>> {
         let drained = self.observations.drain(..).collect::<Vec<_>>();
         self.drained_total = self.drained_total.saturating_add(u64::try_from(drained.len()).unwrap_or(u64::MAX));
@@ -295,14 +295,14 @@ impl NativeExecutionMetricsCapture {
         self.wiring.metric_capture_limits()
     }
 
-    #[allow(dead_code)] // Internal bounded standalone retrieval seam.
+    #[cfg(test)]
     pub(crate) fn runtime_observations(&self) -> Vec<Arc<RuntimeTraceSnapshot>> {
         self.local_observations.as_ref().map_or_else(Vec::new, |collector| {
             collector.lock().unwrap_or_else(std::sync::PoisonError::into_inner).observations.iter().cloned().collect()
         })
     }
 
-    #[allow(dead_code)] // Internal bounded standalone retrieval seam.
+    #[cfg(test)]
     pub(crate) fn drain_runtime_observations(&self) -> Vec<Arc<RuntimeTraceSnapshot>> {
         self.local_observations.as_ref().map_or_else(Vec::new, |collector| {
             collector.lock().unwrap_or_else(std::sync::PoisonError::into_inner).drain()

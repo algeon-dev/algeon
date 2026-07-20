@@ -1,3 +1,5 @@
+// Integration tests share the benchmark binary sources. Allow unused helpers that
+// only the CLI path exercises.
 #[allow(dead_code)]
 #[path = "../../src/bin/native_iceberg_tpch_benchmark.rs"]
 mod native_iceberg_tpch_benchmark;

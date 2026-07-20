@@ -19,7 +19,6 @@ pub struct IcebergNativeSmokeConfig {
     pub cpu_baseline_timeout_secs: Option<u64>,
 }
 
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SmokeQueryExecutionMode {
     NativeAndCpu,

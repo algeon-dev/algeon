@@ -184,7 +184,9 @@ macro_rules! define_contract {
         /// Generated recording identifiers for labelled summary rows.
         ///
         /// Recorders use these accessors instead of repeating public metric-name literals.
-        #[allow(dead_code)]
+        /// The ordered macro emits one accessor per public metric; only the labelled-row
+        /// recorders read them today.
+        #[allow(dead_code)] // macro emits one accessor per contract entry; subset is referenced
         pub(super) mod metric_name {
             $(
                 pub(in crate::native_exec::metrics) const fn $field() -> &'static str {

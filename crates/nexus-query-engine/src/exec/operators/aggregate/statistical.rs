@@ -57,7 +57,6 @@ pub(in crate::exec) fn should_execute_gpu_native_statistical_partial_aggregate(
             .all(|expr| expr.function.is_floating_statistical() || expr.function == AggregateFunction::Avg)
 }
 
-#[allow(clippy::too_many_arguments)]
 pub(super) fn execute_gpu_native_statistical_aggregate(
     context: &ExecutionContext,
     node_id: Option<NodeId>,
@@ -151,7 +150,6 @@ pub(super) fn execute_gpu_native_statistical_aggregate(
     Ok(GpuDataFrame::new(output))
 }
 
-#[allow(clippy::too_many_arguments)]
 pub(super) fn execute_gpu_native_statistical_aggregate_with_budget(
     context: &ExecutionContext,
     node_id: Option<NodeId>,
@@ -256,7 +254,6 @@ pub(super) fn execute_gpu_native_statistical_aggregate_with_budget(
     Ok(GpuDataFrame::new(output))
 }
 
-#[allow(clippy::too_many_arguments)]
 pub(in crate::exec) fn execute_gpu_native_statistical_partial_aggregate_with_budget(
     context: &ExecutionContext,
     node_id: Option<NodeId>,
@@ -338,7 +335,6 @@ pub(in crate::exec) fn execute_gpu_native_statistical_partial_aggregate_with_bud
     Ok(GpuDataFrame::new(output))
 }
 
-#[allow(clippy::too_many_arguments)]
 pub(in crate::exec) fn execute_gpu_native_statistical_final_merge_with_budget(
     context: &ExecutionContext,
     node_id: Option<NodeId>,
@@ -457,7 +453,6 @@ fn gpu_native_statistical_decision(
     decision
 }
 
-#[allow(clippy::too_many_arguments)]
 fn record_gpu_native_statistical_decision(
     metrics: &mut QueryMetrics,
     context: &ExecutionContext,
@@ -673,7 +668,6 @@ fn lower_gpu_native_statistical_final_merge_plan(
     })
 }
 
-#[allow(clippy::too_many_arguments)]
 fn ensure_partial_statistical_state(
     frame: &DataFrame,
     spec: &AggregateSpec,

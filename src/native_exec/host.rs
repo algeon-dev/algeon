@@ -95,7 +95,7 @@ impl NativeCudfExec {
         &self.execution_config
     }
 
-    #[allow(dead_code)] // Standalone callers can drain the wrapper-owned local collector here.
+    #[cfg(test)]
     pub(crate) fn metrics_capture(&self) -> Option<NativeExecutionMetricsCapture> {
         self.metrics_capture.clone()
     }

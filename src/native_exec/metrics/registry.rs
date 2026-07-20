@@ -42,6 +42,9 @@ macro_rules! register_metric {
 macro_rules! define_registry {
     ($( $field:ident => $name:literal: $kind:ident, )*) => {
         #[derive(Debug, Clone)]
+        // Fields are written through `NativeCudfMetrics: Deref<Target = NativeMetricRegistry>`
+        // from the descriptor recording macros. Keep the full ordered registry even when a
+        // particular build does not exercise every recorder path.
         #[allow(dead_code)]
         pub(crate) struct NativeMetricRegistry {
             $(pub(super) $field: metric_storage_type!($kind),)*

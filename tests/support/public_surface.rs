@@ -128,7 +128,6 @@ fn character_literal_end(bytes: &[u8], index: usize) -> Option<usize> {
     (bytes.get(content + 1) == Some(&b'\'')).then_some(content + 2)
 }
 
-#[allow(dead_code)]
 pub fn rust_identifier_count(source: &str, identifier: &str) -> usize {
     rust_tokens(source)
         .into_iter()
@@ -194,7 +193,7 @@ pub fn assert_no_crate_root_reexports(crate_root: &Path) {
     );
 }
 
-#[allow(dead_code)]
+#[allow(dead_code)] // adapter facade tests; pulled via path into engine contracts too
 pub fn assert_modules_are_private(module_root: &Path, modules: &[&str]) {
     let source = fs::read_to_string(module_root)
         .unwrap_or_else(|error| panic!("failed to read {}: {error}", module_root.display()));

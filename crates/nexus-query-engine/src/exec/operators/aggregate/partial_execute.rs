@@ -4,7 +4,6 @@ use arrow::datatypes::SchemaRef as ArrowSchemaRef;
 
 use super::{groupby::rename_groupby_key_columns, *};
 
-#[allow(clippy::too_many_arguments)]
 pub(in crate::exec::operators::aggregate) fn execute_prepared_sort_groupby_single_aggregate_with_budget(
     context: &ExecutionContext,
     node_id: Option<NodeId>,
@@ -92,7 +91,6 @@ pub(in crate::exec::operators::aggregate) fn execute_prepared_sort_groupby_singl
     Ok(GpuDataFrame::new(output))
 }
 
-#[allow(clippy::too_many_arguments)]
 pub(in crate::exec::operators::aggregate) fn execute_prepared_sort_groupby_partial_aggregate_with_budget(
     context: &ExecutionContext,
     node_id: Option<NodeId>,
@@ -182,7 +180,6 @@ pub(in crate::exec::operators::aggregate) fn execute_prepared_sort_groupby_parti
     Ok(GpuDataFrame::new(output))
 }
 
-#[allow(clippy::too_many_arguments)]
 pub(in crate::exec::operators::aggregate) fn execute_encoded_key_partial_aggregate_with_budget(
     context: &ExecutionContext,
     node_id: Option<NodeId>,

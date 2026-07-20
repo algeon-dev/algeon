@@ -196,7 +196,6 @@ pub(super) fn apply_filtered_grouped_materialization_facts(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 pub(super) fn record_filtered_grouped_segmented_failure(
     metrics: &mut QueryMetrics,
     context: &ExecutionContext,
@@ -227,7 +226,6 @@ pub(super) fn record_filtered_grouped_segmented_failure(
     );
 }
 
-#[allow(clippy::too_many_arguments)]
 pub(super) fn record_filtered_grouped_single_pass(
     metrics: &mut QueryMetrics,
     context: &ExecutionContext,
@@ -260,7 +258,6 @@ pub(super) fn record_filtered_grouped_single_pass(
     );
 }
 
-#[allow(clippy::too_many_arguments)]
 pub(super) fn execute_segmented_filtered_grouped_aggregate_with_budget(
     context: &ExecutionContext,
     node_id: Option<NodeId>,
@@ -322,7 +319,6 @@ pub(super) fn execute_segmented_filtered_grouped_aggregate_with_budget(
     Ok(output)
 }
 
-#[allow(clippy::too_many_arguments)]
 pub(super) fn execute_segmented_filtered_grouped_partial_aggregate_with_budget(
     context: &ExecutionContext,
     node_id: Option<NodeId>,
@@ -717,7 +713,6 @@ fn concat_partial_state_frames(
     })
 }
 
-#[allow(clippy::too_many_arguments)]
 fn record_segmented_filtered_grouped_strategy(
     metrics: &mut QueryMetrics,
     context: &ExecutionContext,

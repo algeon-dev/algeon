@@ -53,7 +53,6 @@ pub(in crate::capability) struct ProjectionGlobalLimitShape {
 }
 
 /// Projection root over scalar fanout or SQL setop/dedup join work.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub(in crate::capability) struct ProjectionScalarSetopShape {
     pub(in crate::capability) final_projection_id: NodeId,

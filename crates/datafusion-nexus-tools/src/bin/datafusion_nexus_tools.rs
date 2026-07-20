@@ -19,6 +19,8 @@ mod cugraph_bfs_predicate_fixture;
 mod cugraph_optional_fixture;
 #[cfg(all(feature = "cugraph-oracle", not(test)))]
 #[path = "../../../../tests/cugraph/cugraph_sql_tests.rs"]
+// Path-includes the shared cuGraph SQL fixtures for the pagerank tools runner; most
+// helpers are only exercised by Cargo test modules that this binary does not pull in.
 #[allow(dead_code, unused_imports)]
 mod cugraph_sql_tests;
 #[cfg(all(feature = "embedded-backend-e2e", not(test)))]
