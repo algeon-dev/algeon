@@ -6,12 +6,12 @@ use cugraph_sys::{
     cugraph_induced_subgraph_get_destinations, cugraph_induced_subgraph_get_edge_ids,
     cugraph_induced_subgraph_get_edge_type_ids, cugraph_induced_subgraph_get_edge_weights,
     cugraph_induced_subgraph_get_sources, cugraph_induced_subgraph_get_subgraph_offsets,
-    cugraph_induced_subgraph_result_free, cugraph_induced_subgraph_result_t, cugraph_type_erased_device_array_view_t,
+    cugraph_induced_subgraph_result_t, cugraph_type_erased_device_array_view_t,
 };
 
 use crate::{
     array::RawDeviceArrayView,
-    cuda::DeviceGuard,
+    cuda::{DeviceResourceKind, drop_device_resource},
     error::{Result, require_non_null},
     handle::ResourceHandleLease,
     structure::typed_results::{IntegerValues, ScoreValues, SizeValues, VertexIds},
@@ -109,11 +109,12 @@ impl InducedSubgraphResult {
 
 impl Drop for InducedSubgraphResult {
     fn drop(&mut self) {
-        if !self.raw.is_null() {
-            let _guard = DeviceGuard::switch_to_for_drop(self.device, "InducedSubgraphResult::drop").ok();
-            // SAFETY: `self.raw` is owned by this wrapper and freed exactly once.
-            unsafe { cugraph_induced_subgraph_result_free(self.raw) };
-        }
+        drop_device_resource(
+            &mut self.raw,
+            self.device,
+            "InducedSubgraphResult::drop",
+            DeviceResourceKind::InducedSubgraphResult,
+        );
     }
 }
 

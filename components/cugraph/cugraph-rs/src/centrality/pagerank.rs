@@ -3,13 +3,14 @@
 use std::ptr;
 
 use cugraph_sys::{
-    cugraph_centrality_result_free, cugraph_centrality_result_t, cugraph_error_t,
-    cugraph_pagerank_allow_nonconvergence, cugraph_personalized_pagerank_allow_nonconvergence,
+    cugraph_centrality_result_t, cugraph_error_t, cugraph_pagerank_allow_nonconvergence,
+    cugraph_personalized_pagerank_allow_nonconvergence,
 };
 
 use super::PageRankResult;
 use crate::{
     array::DeviceArrayView,
+    cuda::{DeviceResourceKind, drop_device_resource},
     error::{Error, ErrorKind, Result, check_error, require_non_null},
     graph::{Graph, Transposed},
     handle::EnteredContext,
@@ -301,9 +302,9 @@ fn pagerank_impl<V: CugraphElement, W: CugraphElement>(
                 &mut error,
             ),
         };
-        if let Err(err) = check_error(code, error, operation) {
+        if let Err(err) = check_error(code, error, handle.device(), operation) {
             if !result.is_null() {
-                cugraph_centrality_result_free(result);
+                drop_device_resource(&mut result, handle.device(), operation, DeviceResourceKind::CentralityResult);
             }
             return Err(err);
         }

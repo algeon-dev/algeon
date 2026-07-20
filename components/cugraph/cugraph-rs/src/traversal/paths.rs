@@ -3,16 +3,15 @@
 use std::{marker::PhantomData, ptr};
 
 use cugraph_sys::{
-    cugraph_error_t, cugraph_extract_paths, cugraph_extract_paths_result_free,
-    cugraph_extract_paths_result_get_max_path_length, cugraph_extract_paths_result_get_paths,
-    cugraph_extract_paths_result_t, cugraph_paths_result_free, cugraph_paths_result_get_distances,
+    cugraph_error_t, cugraph_extract_paths, cugraph_extract_paths_result_get_max_path_length,
+    cugraph_extract_paths_result_get_paths, cugraph_extract_paths_result_t, cugraph_paths_result_get_distances,
     cugraph_paths_result_get_predecessors, cugraph_paths_result_get_vertices, cugraph_paths_result_t,
     cugraph_type_erased_device_array_view_t,
 };
 
 use crate::{
     array::{DeviceArray, RawDeviceArrayView},
-    cuda::DeviceGuard,
+    cuda::{DeviceResourceKind, drop_device_resource},
     error::{Error, ErrorKind, Result, check_error, require_non_null},
     graph::{Forward, Graph},
     handle::{EnteredContext, ResourceHandleLease},
@@ -114,12 +113,7 @@ impl PathsResult {
 
 impl Drop for PathsResult {
     fn drop(&mut self) {
-        if !self.raw.is_null() {
-            let _guard = DeviceGuard::switch_to_for_drop(self.device, "PathsResult::drop").ok();
-            // SAFETY: `self.raw` is owned by this wrapper and has not been
-            // freed yet.
-            unsafe { cugraph_paths_result_free(self.raw) };
-        }
+        drop_device_resource(&mut self.raw, self.device, "PathsResult::drop", DeviceResourceKind::PathsResult);
     }
 }
 
@@ -220,10 +214,7 @@ impl Drop for ExtractPathsResult {
         if let ExtractPathsStorage::Native { raw, device } = &mut self.storage
             && !raw.is_null()
         {
-            let _guard = DeviceGuard::switch_to_for_drop(*device, "ExtractPathsResult::drop").ok();
-            // SAFETY: `raw` is owned by this wrapper and has not been
-            // freed yet.
-            unsafe { cugraph_extract_paths_result_free(*raw) };
+            drop_device_resource(raw, *device, "ExtractPathsResult::drop", DeviceResourceKind::ExtractPathsResult);
         }
     }
 }
@@ -265,7 +256,7 @@ pub(crate) fn extract_paths<'a, V: CugraphElement + 'a>(
             &mut result,
             &mut error,
         );
-        check_error(code, error, operation)?;
+        check_error(code, error, handle.device(), operation)?;
     }
 
     // SAFETY: on success, cuGraph transfers ownership of the result pointer to

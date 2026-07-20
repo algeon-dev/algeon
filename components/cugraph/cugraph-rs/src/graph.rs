@@ -51,16 +51,15 @@ use std::{
 };
 
 use cugraph_sys::{
-    cugraph_decompress_to_edgelist, cugraph_edgelist_free, cugraph_edgelist_get_destinations,
-    cugraph_edgelist_get_sources, cugraph_edgelist_t, cugraph_error_t, cugraph_graph_create_with_times_sg,
-    cugraph_graph_free, cugraph_graph_t, cugraph_type_erased_device_array_view_t,
-    cugraph_type_erased_device_array_view_type,
+    cugraph_decompress_to_edgelist, cugraph_edgelist_get_destinations, cugraph_edgelist_get_sources,
+    cugraph_edgelist_t, cugraph_error_t, cugraph_graph_create_with_times_sg, cugraph_graph_t,
+    cugraph_type_erased_device_array_view_t, cugraph_type_erased_device_array_view_type,
 };
 use rapids_interop::{CompletionWitness, InteropError};
 
 use crate::{
     array::{DeviceArray, DeviceArrayView, RawDeviceArrayView},
-    cuda::DeviceGuard,
+    cuda::{DeviceGuard, DeviceResourceKind, drop_device_resource, quarantine_device_drop},
     error::{Error, ErrorKind, Result, check_error, require_non_null},
     handle::{EnteredContext, ResourceHandleLease},
     structure::{ResolvedVertexSelection, VertexIds, VertexSelection},
@@ -156,7 +155,7 @@ pub struct Graph<T = Forward> {
 /// transfer state for an idle graph: it owns the native graph pointer, retains
 /// runtime-bound handle leases needed for teardown, and carries a CUDA event
 /// recorded after tracked work on the graph's runtime stream. Resume requires
-/// an entered context for the same cudf runtime owner that parked the graph.
+/// an entered context for the same cudf execution binding that parked the graph.
 pub struct ParkedGraph<T = Forward> {
     raw: *mut cugraph_graph_t,
     device: i32,
@@ -400,10 +399,21 @@ where
 impl Drop for DecompressedEdgelist {
     fn drop(&mut self) {
         if !self.raw.is_null() {
-            let _guard = DeviceGuard::switch_to_for_drop(self.device, "DecompressedEdgelist::drop").ok();
-            // SAFETY: `self.raw` is owned by this wrapper and has not been
-            // freed yet.
-            unsafe { cugraph_edgelist_free(self.raw) };
+            let mut free = || {
+                drop_device_resource(
+                    &mut self.raw,
+                    self.device,
+                    "DecompressedEdgelist::drop",
+                    DeviceResourceKind::Edgelist,
+                );
+            };
+            if let Some(lease) = self._resource_handle_lease.as_ref() {
+                // Teardown recovers exclusive access even after a use-path
+                // panic poisoned the stable gate; normal entry stays closed.
+                lease.with_teardown_gate(free);
+            } else {
+                free();
+            }
         }
     }
 }
@@ -442,8 +452,8 @@ impl<T> Graph<T> {
     ///
     /// Parking consumes the non-Send [`Graph`] and returns a [`ParkedGraph`]
     /// that is `Send` but not `Sync`. The graph must have been built and used
-    /// only through runtime-bound handles for the same cudf [`Runtime`]
-    /// owner as `handle`; otherwise a single park event cannot prove all
+    /// only through runtime-bound handles for the same exact cudf execution
+    /// binding as `handle`; otherwise a single park event cannot prove all
     /// graph work is ordered on one stream.
     ///
     /// Prepared-input completion witnesses are synchronized before parking so
@@ -462,7 +472,7 @@ impl<T> Graph<T> {
         }
         drop(self.pending_input_completion.take());
 
-        let _guard = DeviceGuard::switch_to(self.device, operation)?;
+        let _guard = DeviceGuard::enter_owner_device(self.device, operation)?;
         let event = cudf::runtime::CudaEvent::new()
             .map_err(|error| map_cudf_runtime_error(error, operation, "failed to create graph park CUDA event"))?;
         let runtime = handle.runtime().expect("validated runtime-bound handle");
@@ -516,9 +526,9 @@ impl<T> Graph<T> {
             return Err(Error::new(ErrorKind::InvalidState, operation)
                 .with_message("graph has no runtime-bound handle leases to prove park stream ownership"));
         }
-        if !leases.iter().all(|lease| lease.same_runtime_owner(&handle_lease)) {
+        if !leases.iter().all(|lease| lease.same_binding(&handle_lease)) {
             return Err(Error::new(ErrorKind::InvalidState, operation)
-                .with_message("graph has runtime-bound handle leases from multiple cudf runtime owners")
+                .with_message("graph execution binding does not match the park handle")
                 .with_context("lease_count", leases.len().to_string()));
         }
 
@@ -543,7 +553,16 @@ impl<T> Graph<T> {
                 .with_message("graph runtime-bound resource-handle lease ledger is already borrowed")
         })?;
 
-        if !leases.iter().any(|existing| existing.same_runtime_owner(&lease)) {
+        if let Some(existing) = leases.first()
+            && !existing.same_binding(&lease)
+        {
+            return Err(Error::new(ErrorKind::InvalidState, operation)
+                .with_message("graph execution binding does not match the resource handle")
+                .with_context("graph_binding_id", existing.runtime().binding_id().to_string())
+                .with_context("handle_binding_id", lease.runtime().binding_id().to_string()));
+        }
+
+        if !leases.iter().any(|existing| existing.same_native_owner(&lease)) {
             leases.push(lease);
         }
 
@@ -624,7 +643,7 @@ impl<T> Graph<T> {
                 &mut edgelist,
                 &mut error,
             );
-            check_error(code, error, operation)?;
+            check_error(code, error, handle.device(), operation)?;
         }
 
         // SAFETY: on success, cuGraph transfers ownership of the edgelist
@@ -724,8 +743,8 @@ impl<T> ParkedGraph<T> {
 
     /// Resume this parked graph under a runtime-bound entered context.
     ///
-    /// V1 resume is same-runtime by construction: `handle` must use the same
-    /// cudf `Runtime` owner as every lease retained by the parked graph. The
+    /// Resume is exact-binding by construction: `handle` must use the same
+    /// cudf runtime stream/MR binding as every retained lease. The
     /// runtime stream waits on the park event before the live [`Graph`] is
     /// returned to the caller.
     ///
@@ -782,9 +801,9 @@ impl<T> ParkedGraph<T> {
             return Err(Error::new(ErrorKind::InvalidState, operation)
                 .with_message("parked graph has no runtime-bound handle leases"));
         }
-        if !self.resource_handle_leases.iter().all(|lease| lease.same_runtime_owner(&handle_lease)) {
+        if !self.resource_handle_leases.iter().all(|lease| lease.same_binding(&handle_lease)) {
             return Err(Error::new(ErrorKind::InvalidState, operation)
-                .with_message("parked graph runtime owner does not match the resume handle")
+                .with_message("parked graph execution binding does not match the resume handle")
                 .with_context("lease_count", self.resource_handle_leases.len().to_string()));
         }
 
@@ -1088,7 +1107,7 @@ impl<'a> GraphBuilder<'a> {
                 &mut graph,
                 &mut error,
             );
-            check_error(code, error, "GraphBuilder::build")?;
+            check_error(code, error, handle.device(), "GraphBuilder::build")?;
         }
 
         let graph = require_non_null(graph, "GraphBuilder::build", "graph")?;
@@ -2307,13 +2326,43 @@ impl<T: Transposition> Graph<T> {
 }
 
 fn free_graph_raw(raw: &mut *mut cugraph_graph_t, device: i32, operation: &'static str) {
-    if !raw.is_null() {
-        let _guard = DeviceGuard::switch_to_for_drop(device, operation).ok();
-        // SAFETY: `raw` is owned by the caller and is freed at most once. The
-        // pointer is nulled immediately after free to make repeated best-effort
-        // cleanup paths harmless.
-        unsafe { cugraph_graph_free(*raw) };
-        *raw = ptr::null_mut();
+    drop_device_resource(raw, device, operation, DeviceResourceKind::Graph);
+}
+
+fn free_graph_raw_with_leases(
+    raw: &mut *mut cugraph_graph_t,
+    device: i32,
+    operation: &'static str,
+    leases: &[ResourceHandleLease],
+) {
+    if let Some(lease) = leases.first() {
+        // Teardown recovers exclusive access after use-path poison without
+        // reopening normal entry or exposing the native owner value.
+        lease.with_teardown_gate(|| free_graph_raw(raw, device, operation));
+    } else {
+        free_graph_raw(raw, device, operation);
+    }
+}
+
+fn free_parked_graph_raw_with_leases(
+    raw: &mut *mut cugraph_graph_t,
+    device: i32,
+    park_event: &cudf::runtime::CudaEvent,
+    leases: &[ResourceHandleLease],
+) {
+    let mut free = || match park_event.synchronize() {
+        Ok(()) => drop_device_resource(raw, device, "ParkedGraph::drop", DeviceResourceKind::Graph),
+        Err(error) => {
+            let owned = std::mem::replace(raw, ptr::null_mut());
+            if !owned.is_null() {
+                quarantine_device_drop("ParkedGraph::drop", device, &error);
+            }
+        },
+    };
+    if let Some(lease) = leases.first() {
+        lease.with_teardown_gate(free);
+    } else {
+        free();
     }
 }
 
@@ -2322,28 +2371,32 @@ impl<T> Drop for Graph<T> {
         if let Some(pending) = self.pending_input_completion.take() {
             pending.synchronize();
         }
-        free_graph_raw(&mut self.raw, self.device, "Graph::drop");
+        free_graph_raw_with_leases(&mut self.raw, self.device, "Graph::drop", self.resource_handle_leases.get_mut());
     }
 }
 
 impl<T> Drop for ParkedGraph<T> {
     fn drop(&mut self) {
-        {
-            let _guard = DeviceGuard::switch_to_for_drop(self.device, "ParkedGraph::drop").ok();
-            let _ = self.park_event.synchronize();
-        }
-        free_graph_raw(&mut self.raw, self.device, "ParkedGraph::drop");
+        free_parked_graph_raw_with_leases(&mut self.raw, self.device, &self.park_event, &self.resource_handle_leases);
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
+    use std::{
+        sync::{Arc, mpsc},
+        time::Duration,
+    };
 
     use rapids_interop::{CompletionWitnessBackend, CompletionWitnessKind};
 
     use super::*;
-    use crate::{array::DeviceArray, error::ErrorKind, handle::ResourceHandle};
+    use crate::{
+        array::DeviceArray,
+        cuda::{TestCudaCall, TestCudaHooks, fail_next_fatal_device_resource_destroy},
+        error::ErrorKind,
+        handle::ResourceHandle,
+    };
 
     #[derive(Debug)]
     struct FailingCompletionWitness;
@@ -2459,25 +2512,289 @@ mod tests {
     }
 
     #[test]
-    fn test_graph_runtime_bound_handle_leases_dedup_by_runtime_owner() {
+    fn test_graph_retains_one_native_handle_owner_for_one_binding_after_many_hot_hits() {
         let runtime = Arc::new(cudf::Runtime::builder().build().expect("runtime"));
         let build_handle = ResourceHandle::for_runtime(Arc::clone(&runtime)).expect("build handle");
         let build_entered =
-            build_handle.enter("test_graph_runtime_bound_handle_leases_dedup_by_runtime_owner_build").expect("entered");
+            build_handle.enter("test_graph_retains_one_native_handle_owner_for_one_binding_build").expect("entered");
         let graph = dummy_runtime_bound_graph(&build_entered, None);
         assert_eq!(graph.resource_handle_leases.borrow().len(), 1);
+        drop(build_entered);
 
-        let algorithm_handle = ResourceHandle::for_runtime(Arc::clone(&runtime)).expect("algorithm handle");
-        let algorithm_entered = algorithm_handle
-            .enter("test_graph_runtime_bound_handle_leases_dedup_by_runtime_owner_algorithm")
+        for _ in 0..100 {
+            let algorithm_handle = ResourceHandle::for_runtime(Arc::clone(&runtime)).expect("algorithm handle");
+            let algorithm_entered = algorithm_handle
+                .enter("test_graph_retains_one_native_handle_owner_for_one_binding_algorithm")
+                .expect("entered");
+            graph
+                .retain_runtime_bound_handle(
+                    &algorithm_entered,
+                    "test_graph_retains_one_native_handle_owner_for_one_binding",
+                )
+                .expect("retain runtime handle");
+        }
+
+        assert_eq!(graph.resource_handle_leases.borrow().len(), 1);
+    }
+
+    #[test]
+    fn test_graph_last_lease_releases_runtime_owner_after_graph_drop() {
+        let runtime = Arc::new(cudf::Runtime::builder().build().expect("runtime"));
+        let affinity = runtime.affinity_anchor();
+        let handle = ResourceHandle::for_runtime(Arc::clone(&runtime)).expect("handle");
+        let entered = handle.enter("test_graph_last_lease_releases_runtime_owner_after_graph_drop").expect("entered");
+        let graph = dummy_runtime_bound_graph(&entered, None);
+
+        drop(entered);
+        drop(handle);
+        drop(runtime);
+        assert!(affinity.is_alive(), "the graph lease must retain the runtime-bound owner");
+        drop(graph);
+        assert!(!affinity.is_alive(), "graph teardown must release the final runtime-bound owner lease");
+    }
+
+    #[test]
+    fn test_graph_drop_quarantines_native_pointer_when_device_entry_fails() {
+        let graph = Graph::<Forward> {
+            raw: std::ptr::NonNull::<cugraph_graph_t>::dangling().as_ptr(),
+            device: 0,
+            properties: GraphProperties::default(),
+            vertex_dtype: DataType::Int32,
+            weight_dtype: DataType::Float32,
+            has_weights: false,
+            has_edge_ids: false,
+            edge_id_dtype: None,
+            pending_input_completion: None,
+            resource_handle_leases: RefCell::new(Vec::new()),
+            untracked_resource_handle_use: Cell::new(false),
+            _nosend_nosync: PhantomData,
+            _transposition: PhantomData,
+        };
+        let reset = TestCudaHooks::install(vec![TestCudaCall::GetDevice {
+            status: cudf_sys::CUDF_ERROR_FATAL_CUDA,
+            device: 0,
+        }]);
+        let before = reset.health_snapshot(cudf::DeviceId::DEFAULT).quarantined_teardown_count();
+
+        drop(graph);
+
+        assert!(reset.health_snapshot(cudf::DeviceId::DEFAULT).quarantined_teardown_count() > before);
+    }
+
+    #[test]
+    fn fatal_native_graph_destroy_is_contained_and_rejects_later_owner_work() {
+        let runtime = Arc::new(cudf::Runtime::builder().build().expect("runtime"));
+        let device = runtime.device();
+        let handle = ResourceHandle::for_runtime(Arc::clone(&runtime)).expect("handle");
+        let entered = handle.enter("fatal_native_graph_destroy_build").expect("entered");
+        let src = DeviceArray::from_slice(&entered, &[0_i32, 1, 2]).expect("src");
+        let dst = DeviceArray::from_slice(&entered, &[1_i32, 2, 0]).expect("dst");
+        let src_view = src.view().expect("src view");
+        let dst_view = dst.view().expect("dst view");
+        let graph = GraphBuilder::new(&src_view, &dst_view).build::<Forward>(&entered).expect("graph");
+        drop(src_view);
+        drop(dst_view);
+        drop(src);
+        drop(dst);
+        drop(entered);
+        drop(handle);
+        drop(runtime);
+
+        let scope = TestCudaHooks::install(
+            (0..8).map(|_| TestCudaCall::GetDevice { status: cudf_sys::CUDF_SUCCESS, device: device.ordinal() as i32 }),
+        );
+        fail_next_fatal_device_resource_destroy(700);
+
+        // A native bridge regression that unwound or terminated across the C
+        // boundary would abort this test process instead of returning here.
+        drop(graph);
+
+        let snapshot = scope.health_snapshot(device);
+        assert_eq!(snapshot.status(), cudf::runtime::DeviceHealthStatus::Unhealthy);
+        assert_eq!(snapshot.first_fault().expect("fatal graph destroy fault").operation(), "Graph::drop");
+        assert!(snapshot.quarantined_teardown_count() >= 1);
+        let error = cudf::runtime::DeviceEntryGuard::enter(device, "later_cugraph_owner_work")
+            .expect_err("fatal graph teardown must reject later owner-device work");
+        assert_eq!(error.code(), cudf::ErrorCode::FatalCuda);
+    }
+
+    #[test]
+    fn parked_graph_event_and_runtime_chain_fail_closed_on_device_query_failure() {
+        let runtime = Arc::new(cudf::Runtime::builder().build().expect("runtime"));
+        let handle = ResourceHandle::for_runtime(Arc::clone(&runtime)).expect("handle");
+        let parked = {
+            let entered = handle.enter("parked_fail_closed_build").expect("entered");
+            let src = DeviceArray::from_slice(&entered, &[0_i32, 1, 2]).expect("src");
+            let dst = DeviceArray::from_slice(&entered, &[1_i32, 2, 0]).expect("dst");
+            let src_view = src.view().expect("src view");
+            let dst_view = dst.view().expect("dst view");
+            GraphBuilder::new(&src_view, &dst_view)
+                .build::<Forward>(&entered)
+                .expect("graph")
+                .park(&entered)
+                .expect("parked graph")
+        };
+        drop(handle);
+        drop(runtime);
+
+        // ParkedGraph teardown traverses the graph, its CudaEvent, the shared
+        // ResourceHandle owner, then ExecutionDomain stream/MR owners. Every
+        // injected query failure must consume/quarantine the corresponding
+        // pointer without invoking a destructor on an unproven device.
+        let scope = TestCudaHooks::install(
+            (0..8).map(|_| TestCudaCall::GetDevice { status: cudf_sys::CUDF_ERROR_FATAL_CUDA, device: 0 }),
+        );
+        drop(parked);
+
+        let snapshot = scope.health_snapshot(cudf::DeviceId::DEFAULT);
+        assert_eq!(snapshot.status(), cudf::runtime::DeviceHealthStatus::Unhealthy);
+        assert!(
+            snapshot.quarantined_teardown_count() >= 3,
+            "graph, event, and runtime-bound native owner must all fail closed"
+        );
+    }
+
+    #[test]
+    fn test_graph_drop_recovers_poisoned_use_gate_and_releases_owner() {
+        let runtime = Arc::new(cudf::Runtime::builder().build().expect("runtime"));
+        let affinity = runtime.affinity_anchor();
+        let handle = ResourceHandle::for_runtime(Arc::clone(&runtime)).expect("handle");
+        let graph = {
+            let entered =
+                handle.enter("test_graph_drop_recovers_poisoned_use_gate_build").expect("entered build context");
+            let src = DeviceArray::from_slice(&entered, &[0_i32, 1, 2]).expect("src");
+            let dst = DeviceArray::from_slice(&entered, &[1_i32, 2, 0]).expect("dst");
+            let src_view = src.view().expect("src view");
+            let dst_view = dst.view().expect("dst view");
+            GraphBuilder::new(&src_view, &dst_view).build::<Forward>(&entered).expect("graph")
+        };
+
+        let unwind = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _entered = handle.enter("test_graph_drop_recovers_poisoned_use_gate_poison").expect("entered");
+            panic!("intentional runtime-bound handle use poison")
+        }));
+        assert!(unwind.is_err());
+        handle
+            .enter("test_graph_drop_recovers_poisoned_use_gate_normal_retry")
+            .expect_err("normal handle entry remains fail-closed");
+
+        drop(handle);
+        drop(runtime);
+        assert!(affinity.is_alive(), "the graph retains the poisoned runtime-bound owner");
+        drop(graph);
+        assert!(!affinity.is_alive(), "Graph::drop must recover the gate and release the owner");
+    }
+
+    #[test]
+    fn test_parked_graph_drop_recovers_poisoned_use_gate_and_releases_owner() {
+        let runtime = Arc::new(cudf::Runtime::builder().build().expect("runtime"));
+        let affinity = runtime.affinity_anchor();
+        let handle = ResourceHandle::for_runtime(Arc::clone(&runtime)).expect("handle");
+        let parked = {
+            let entered =
+                handle.enter("test_parked_graph_drop_recovers_poisoned_use_gate_build").expect("entered build context");
+            let src = DeviceArray::from_slice(&entered, &[0_i32, 1, 2]).expect("src");
+            let dst = DeviceArray::from_slice(&entered, &[1_i32, 2, 0]).expect("dst");
+            let src_view = src.view().expect("src view");
+            let dst_view = dst.view().expect("dst view");
+            let graph = GraphBuilder::new(&src_view, &dst_view).build::<Forward>(&entered).expect("graph");
+            graph.park(&entered).expect("park graph")
+        };
+
+        let unwind = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _entered = handle.enter("test_parked_graph_drop_recovers_poisoned_use_gate_poison").expect("entered");
+            panic!("intentional parked-graph owner use poison")
+        }));
+        assert!(unwind.is_err());
+        handle
+            .enter("test_parked_graph_drop_recovers_poisoned_use_gate_normal_retry")
+            .expect_err("normal handle entry remains fail-closed");
+
+        drop(handle);
+        drop(runtime);
+        assert!(affinity.is_alive(), "the parked graph retains the poisoned runtime-bound owner");
+        drop(parked);
+        assert!(!affinity.is_alive(), "ParkedGraph::drop must recover the gate and release the owner");
+    }
+
+    #[test]
+    fn runtime_bound_native_owner_runs_graph_work_across_threads_and_drops_on_another_thread() {
+        const ITERATIONS: usize = 100;
+        const STEP_TIMEOUT: Duration = Duration::from_secs(10);
+
+        let runtime = Arc::new(cudf::Runtime::builder().build().expect("runtime"));
+        let affinity = runtime.affinity_anchor();
+        let (mut parked, native_owner) = {
+            let handle = ResourceHandle::for_runtime(Arc::clone(&runtime)).expect("build handle");
+            let entered = handle.enter("cross_thread_native_owner_build").expect("entered build context");
+            let native_owner = entered.handle_ptr() as usize;
+            let src = DeviceArray::from_slice(&entered, &[0_i32, 1, 2, 2]).expect("src");
+            let dst = DeviceArray::from_slice(&entered, &[1_i32, 2, 0, 1]).expect("dst");
+            let src_view = src.view().expect("src view");
+            let dst_view = dst.view().expect("dst view");
+            let graph = GraphBuilder::new(&src_view, &dst_view).build::<Forward>(&entered).expect("cross-thread graph");
+            (graph.park(&entered).expect("initial park"), native_owner)
+        };
+
+        for iteration in 0..ITERATIONS {
+            let worker_runtime = Arc::clone(&runtime);
+            let (result_tx, result_rx) = mpsc::sync_channel(1);
+            let worker = std::thread::spawn(move || {
+                let handle = ResourceHandle::for_runtime(worker_runtime).expect("worker handle");
+                let entered = handle.enter("cross_thread_native_owner_step").expect("entered worker context");
+                let observed_owner = entered.handle_ptr() as usize;
+                let mut graph = parked.resume(&entered).expect("resume graph");
+                let degrees = graph.out_degrees_all(&entered).expect("real cuGraph out-degrees operation");
+                drop(degrees);
+                let parked = graph.park(&entered).expect("repark graph");
+                result_tx.send((parked, observed_owner)).expect("send worker result");
+            });
+
+            let (next, observed_owner) = result_rx
+                .recv_timeout(STEP_TIMEOUT)
+                .unwrap_or_else(|error| panic!("cross-thread iteration {iteration} timed out: {error}"));
+            worker.join().unwrap_or_else(|payload| std::panic::resume_unwind(payload));
+            assert_eq!(observed_owner, native_owner, "every thread must enter the same native owner generation");
+            parked = next;
+        }
+
+        drop(runtime);
+        assert!(affinity.is_alive(), "the parked graph retains the runtime-bound native owner");
+        let (dropped_tx, dropped_rx) = mpsc::sync_channel(1);
+        let drop_worker = std::thread::spawn(move || {
+            drop(parked);
+            dropped_tx.send(()).expect("report parked graph drop");
+        });
+        dropped_rx.recv_timeout(STEP_TIMEOUT).expect("parked graph drop timed out");
+        drop_worker.join().unwrap_or_else(|payload| std::panic::resume_unwind(payload));
+        assert!(!affinity.is_alive(), "cross-thread final drop must release the runtime owner without a cycle");
+    }
+
+    #[test]
+    fn test_graph_rejects_same_affinity_with_different_execution_binding() {
+        let runtime = Arc::new(cudf::Runtime::builder().build().expect("runtime"));
+        let build_handle = ResourceHandle::for_runtime(Arc::clone(&runtime)).expect("build handle");
+        let build_entered = build_handle
+            .enter("test_graph_rejects_same_affinity_with_different_execution_binding_build")
             .expect("entered");
-        graph
-            .retain_runtime_bound_handle(
-                &algorithm_entered,
-                "test_graph_runtime_bound_handle_leases_dedup_by_runtime_owner",
-            )
-            .expect("retain runtime handle");
+        let graph = dummy_runtime_bound_graph(&build_entered, None);
 
+        let independent = cudf::Runtime::builder().build().expect("independent runtime");
+        let companion = Arc::new(independent.inherit_affinity_from(&runtime).expect("companion affinity"));
+        assert_eq!(runtime.affinity_id(), companion.affinity_id());
+        assert_ne!(runtime.binding_id(), companion.binding_id());
+        let other_handle = ResourceHandle::for_runtime(companion).expect("other handle");
+        let other_entered = other_handle
+            .enter("test_graph_rejects_same_affinity_with_different_execution_binding_use")
+            .expect("entered");
+
+        let err = graph
+            .retain_runtime_bound_handle(
+                &other_entered,
+                "test_graph_rejects_same_affinity_with_different_execution_binding",
+            )
+            .expect_err("different execution binding must fail before graph work");
+        assert_eq!(err.kind(), ErrorKind::InvalidState);
         assert_eq!(graph.resource_handle_leases.borrow().len(), 1);
     }
 

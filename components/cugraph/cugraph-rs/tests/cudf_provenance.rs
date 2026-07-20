@@ -4,7 +4,10 @@ mod common;
 
 use std::{
     collections::{BTreeMap, HashMap},
-    sync::Arc,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
     thread,
 };
 
@@ -61,6 +64,28 @@ fn observed_stream_wait_call_count_for_stream_raw(stream_raw: usize) -> i32 {
 fn test_handle() -> ResourceHandle {
     let runtime = explicit_runtime_owner();
     runtime_bound_handle(&runtime)
+}
+
+struct LocalProducerOwner {
+    runtime: Arc<cudf::Runtime>,
+    dropped: Arc<AtomicBool>,
+}
+
+impl LocalProducerOwner {
+    fn same_binding_as(runtime: &Arc<cudf::Runtime>) -> (Self, Arc<AtomicBool>) {
+        let dropped = Arc::new(AtomicBool::new(false));
+        let producer_runtime =
+            Arc::new(runtime.with_retained_lifetime(Arc::new(())).expect("same-binding producer runtime derivation"));
+        assert!(!Arc::ptr_eq(runtime, &producer_runtime));
+        assert_eq!(runtime.binding_id(), producer_runtime.binding_id());
+        (Self { runtime: producer_runtime, dropped: Arc::clone(&dropped) }, dropped)
+    }
+}
+
+impl Drop for LocalProducerOwner {
+    fn drop(&mut self) {
+        self.dropped.store(true, Ordering::SeqCst);
+    }
 }
 
 fn borrowed_with_device<'a>(column: &BorrowedColumnView<'a>, device: i32) -> BorrowedColumnView<'a> {
@@ -181,7 +206,7 @@ fn runtime_bound_handle_cross_device_borrowed_columns_are_rejected() {
 }
 
 #[test]
-fn graph_built_on_one_runtime_runs_forward_algorithms_on_same_device_runtime() {
+fn graph_built_on_one_runtime_rejects_forward_algorithms_on_different_binding() {
     let _guard = common::cudf::cuda_test_serial_guard();
     let build_runtime = explicit_runtime_owner();
     let build_handle = runtime_bound_handle(&build_runtime);
@@ -195,18 +220,6 @@ fn graph_built_on_one_runtime_runs_forward_algorithms_on_same_device_runtime() {
     let opts = SeriesGraphOptions::default().renumber();
     let mut graph =
         graph_from_series::<Forward>(&build_entered, &src, &dst, Some(&weight), &opts).expect("build graph");
-
-    let build_sources = DeviceArray::from_slice(&build_entered, &[BFS_SOURCE_VERTEX_I32]).expect("build sources");
-    let build_sources_view = build_sources.view().expect("build sources view");
-    let expected_bfs = graph
-        .bfs(&build_entered, &build_sources_view, &BfsParams::default())
-        .map(|result| bfs_distance_map_i32_result(&build_entered, &result))
-        .expect("baseline bfs");
-    let sssp_params = SsspParams::default().with_cutoff(NonNegativeF64::new(10.0).expect("cutoff"));
-    let expected_sssp = graph
-        .sssp(&build_entered, 0i32, &sssp_params)
-        .map(|result| sssp_distance_map_i32_f32(&build_entered, &result))
-        .expect("baseline sssp");
 
     drop(build_entered);
     let build_device = build_handle.device();
@@ -222,24 +235,18 @@ fn graph_built_on_one_runtime_runs_forward_algorithms_on_same_device_runtime() {
         let consumer_sources =
             DeviceArray::from_slice(&consumer_entered, &[BFS_SOURCE_VERTEX_I32]).expect("consumer sources");
         let consumer_sources_view = consumer_sources.view().expect("consumer sources view");
-        let actual_bfs = graph
+        let error = graph
             .bfs(&consumer_entered, &consumer_sources_view, &BfsParams::default())
-            .map(|result| bfs_distance_map_i32_result(&consumer_entered, &result))
-            .expect("cross-runtime bfs");
-        let actual_sssp = graph
-            .sssp(&consumer_entered, 0i32, &sssp_params)
-            .map(|result| sssp_distance_map_i32_f32(&consumer_entered, &result))
-            .expect("cross-runtime sssp");
-
-        assert_eq!(actual_bfs, expected_bfs);
-        assert_f32_maps_close(&actual_sssp, &expected_sssp, 1.0e-5, "cross-runtime sssp");
+            .expect_err("different execution binding must fail before BFS graph work");
+        assert_eq!(error.kind(), cugraph::ErrorKind::InvalidState);
+        assert_eq!(error.operation(), "bfs");
     }
 
     drop(graph);
 }
 
 #[test]
-fn graph_built_on_one_runtime_runs_transposed_algorithms_on_same_device_runtime() {
+fn graph_built_on_one_runtime_rejects_transposed_algorithms_on_different_binding() {
     let _guard = common::cudf::cuda_test_serial_guard();
     let build_runtime = explicit_runtime_owner();
     let build_handle = runtime_bound_handle(&build_runtime);
@@ -252,12 +259,6 @@ fn graph_built_on_one_runtime_runs_transposed_algorithms_on_same_device_runtime(
     let opts = SeriesGraphOptions::default().properties(GraphProperties::undirected()).renumber();
     let mut graph = graph_from_series::<Transposed>(&build_entered, &src, &dst, None, &opts).expect("build graph");
 
-    let expected_pagerank = common::cudf::pagerank_score_map(&build_entered, &mut graph);
-    let expected_wcc = graph
-        .weakly_connected_components(&build_entered, &ConnectedComponentsParams::default())
-        .map(|result| normalized_wcc_labels(&build_entered, &result))
-        .expect("baseline wcc");
-
     drop(build_entered);
     let build_device = build_handle.device();
 
@@ -269,14 +270,11 @@ fn graph_built_on_one_runtime_runs_transposed_algorithms_on_same_device_runtime(
             .expect("consumer entered");
         assert_eq!(build_device, consumer_handle.device());
 
-        let actual_pagerank = common::cudf::pagerank_score_map(&consumer_entered, &mut graph);
-        let actual_wcc = graph
+        let error = graph
             .weakly_connected_components(&consumer_entered, &ConnectedComponentsParams::default())
-            .map(|result| normalized_wcc_labels(&consumer_entered, &result))
-            .expect("cross-runtime wcc");
-
-        assert_score_maps_close_f32(&actual_pagerank, &expected_pagerank, 1.0e-6, "cross-runtime pagerank");
-        assert_eq!(actual_wcc, expected_wcc);
+            .expect_err("different execution binding must fail before WCC graph work");
+        assert_eq!(error.kind(), cugraph::ErrorKind::InvalidState);
+        assert_eq!(error.operation(), "weakly_connected_components");
     }
 
     drop(graph);
@@ -424,7 +422,7 @@ fn parked_graph_drops_on_another_thread_without_resume() {
 }
 
 #[test]
-fn graph_park_rejects_graph_used_by_different_runtime_owner() {
+fn graph_use_rejects_different_runtime_binding_before_park() {
     let _guard = common::cudf::cuda_test_serial_guard();
     let build_runtime = explicit_runtime_owner();
     let build_handle = runtime_bound_handle(&build_runtime);
@@ -444,12 +442,14 @@ fn graph_park_rejects_graph_used_by_different_runtime_owner() {
             .expect("other entered");
         let sources = DeviceArray::from_slice(&other_entered, &[BFS_SOURCE_VERTEX_I32]).expect("sources");
         let sources_view = sources.view().expect("sources view");
-        let _ = graph.bfs(&other_entered, &sources_view, &BfsParams::default()).expect("bfs");
+        let error = graph
+            .bfs(&other_entered, &sources_view, &BfsParams::default())
+            .expect_err("different execution binding must fail before BFS graph work");
+        assert_eq!(error.kind(), cugraph::ErrorKind::InvalidState);
+        assert_eq!(error.operation(), "bfs");
     }
 
-    let err = graph.park(&build_entered).expect_err("park should reject mixed runtime owners");
-    assert_eq!(err.kind(), cugraph::ErrorKind::InvalidState);
-    assert_eq!(err.operation(), "Graph::park");
+    graph.park(&build_entered).expect("rejected use must not taint exact-binding park");
 }
 
 #[test]
@@ -469,9 +469,11 @@ fn result_built_on_one_runtime_decodes_after_producer_runtime_drops() {
     drop(build_entered);
     let build_device = build_handle.device();
 
+    let producer_dropped;
     let result = {
-        let producer_runtime = explicit_runtime_owner();
-        let producer_handle = runtime_bound_handle(&producer_runtime);
+        let (producer_owner, dropped) = LocalProducerOwner::same_binding_as(&build_runtime);
+        producer_dropped = dropped;
+        let producer_handle = runtime_bound_handle(&producer_owner.runtime);
         let producer_entered = producer_handle
             .enter("result_built_on_one_runtime_decodes_after_producer_runtime_drops_produce")
             .expect("producer entered");
@@ -479,6 +481,7 @@ fn result_built_on_one_runtime_decodes_after_producer_runtime_drops() {
 
         graph.pagerank(&producer_entered, &PageRankParams::default()).expect("pagerank")
     };
+    assert!(producer_dropped.load(Ordering::SeqCst), "the local producer owner must drop after submission");
 
     drop(graph);
 
@@ -515,9 +518,11 @@ fn path_result_built_on_one_runtime_decodes_after_producer_runtime_drops() {
     drop(build_entered);
     let build_device = build_handle.device();
 
+    let producer_dropped;
     let result = {
-        let producer_runtime = explicit_runtime_owner();
-        let producer_handle = runtime_bound_handle(&producer_runtime);
+        let (producer_owner, dropped) = LocalProducerOwner::same_binding_as(&build_runtime);
+        producer_dropped = dropped;
+        let producer_handle = runtime_bound_handle(&producer_owner.runtime);
         let producer_entered = producer_handle
             .enter("path_result_built_on_one_runtime_decodes_after_producer_runtime_drops_produce")
             .expect("producer entered");
@@ -527,6 +532,7 @@ fn path_result_built_on_one_runtime_decodes_after_producer_runtime_drops() {
         let sources_view = sources.view().expect("sources view");
         graph.bfs(&producer_entered, &sources_view, &BfsParams::default()).expect("bfs")
     };
+    assert!(producer_dropped.load(Ordering::SeqCst), "the local producer owner must drop after submission");
 
     drop(graph);
 

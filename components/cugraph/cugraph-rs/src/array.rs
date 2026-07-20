@@ -15,7 +15,7 @@ use std::{fmt, marker::PhantomData, ptr};
 use cugraph_sys::*;
 
 use crate::{
-    cuda::DeviceGuard,
+    cuda::{DeviceResourceKind, drop_device_resource},
     error::{Error, ErrorKind, Result, check_error, require_non_null},
     handle::{EnteredContext, ResourceHandleLease},
     types::{CugraphElement, DataType},
@@ -67,10 +67,8 @@ impl RawDeviceArray {
         let raw_view = match require_non_null(raw_view, operation, "device_array_view") {
             Ok(raw_view) => raw_view,
             Err(error) => {
-                let _guard = DeviceGuard::switch_to_for_drop(device, operation).ok();
-                // SAFETY: construction has not succeeded, so `raw` is still
-                // uniquely owned here and must be released on error.
-                unsafe { cugraph_type_erased_device_array_free(raw) };
+                let mut raw = raw;
+                drop_device_resource(&mut raw, device, operation, DeviceResourceKind::DeviceArray);
                 return Err(error);
             },
         };
@@ -87,7 +85,7 @@ impl RawDeviceArray {
         unsafe {
             let code =
                 cugraph_type_erased_device_array_create(handle.handle_ptr(), len, dtype.into(), &mut raw, &mut error);
-            check_error(code, error, "RawDeviceArray::new")?;
+            check_error(code, error, handle.device(), "RawDeviceArray::new")?;
         }
 
         let raw = require_non_null(raw, "RawDeviceArray::new", "device_array")?;
@@ -97,10 +95,8 @@ impl RawDeviceArray {
         let raw_view = match require_non_null(raw_view, "RawDeviceArray::new", "device_array_view") {
             Ok(raw_view) => raw_view,
             Err(error) => {
-                let _guard = DeviceGuard::switch_to(handle.device(), "RawDeviceArray::new").ok();
-                // SAFETY: `raw` is still uniquely owned here because
-                // construction has not succeeded yet.
-                unsafe { cugraph_type_erased_device_array_free(raw) };
+                let mut raw = raw;
+                drop_device_resource(&mut raw, handle.device(), "RawDeviceArray::new", DeviceResourceKind::DeviceArray);
                 return Err(error);
             },
         };
@@ -139,7 +135,7 @@ impl RawDeviceArray {
                 data.as_ptr() as *const i8,
                 &mut error,
             );
-            check_error(code, error, "RawDeviceArray::copy_from_host")?;
+            check_error(code, error, handle.device(), "RawDeviceArray::copy_from_host")?;
         }
 
         Ok(())
@@ -149,17 +145,14 @@ impl RawDeviceArray {
 impl Drop for RawDeviceArray {
     fn drop(&mut self) {
         if !self.raw_view.is_null() {
-            let _guard = DeviceGuard::switch_to_for_drop(self.device, "RawDeviceArray::drop").ok();
-            // SAFETY: `self.raw_view` is owned by this wrapper and is freed at
-            // most once here.
+            // SAFETY: this C view owns host metadata only; upstream's implementation
+            // simply deletes the pointer/length/type record and never enters
+            // CUDA. It therefore remains safe to release after device health
+            // has failed and must not be routed through device teardown.
             unsafe { cugraph_type_erased_device_array_view_free(self.raw_view) };
+            self.raw_view = ptr::null_mut();
         }
-        if !self.raw.is_null() {
-            let _guard = DeviceGuard::switch_to_for_drop(self.device, "RawDeviceArray::drop").ok();
-            // SAFETY: `self.raw` is owned by this wrapper and has not been
-            // freed yet.
-            unsafe { cugraph_type_erased_device_array_free(self.raw) };
-        }
+        drop_device_resource(&mut self.raw, self.device, "RawDeviceArray::drop.array", DeviceResourceKind::DeviceArray);
     }
 }
 
@@ -318,7 +311,7 @@ impl RawDeviceArrayView<'_> {
                 self.raw,
                 &mut error,
             );
-            check_error(code, error, "RawDeviceArrayView::to_host_vec")?;
+            check_error(code, error, handle.device(), "RawDeviceArrayView::to_host_vec")?;
         }
 
         Ok(buf)
@@ -329,7 +322,8 @@ impl Drop for RawDeviceArrayView<'_> {
     fn drop(&mut self) {
         if self.owned && !self.raw.is_null() {
             // SAFETY: owned views created by this module are freed exactly once
-            // here when their wrapper is dropped.
+            // here. Upstream frees only host metadata; it does not access the
+            // backing device allocation or call CUDA.
             unsafe { cugraph_type_erased_device_array_view_free(self.raw) };
         }
     }
@@ -724,7 +718,8 @@ impl Drop for HostArrayView<'_> {
     fn drop(&mut self) {
         if !self.raw.is_null() {
             // SAFETY: `self.raw` is owned by this wrapper and is freed exactly
-            // once here.
+            // once here. Upstream frees only the host pointer/length/type
+            // metadata and never dereferences or releases the borrowed data.
             unsafe { cugraph_type_erased_host_array_view_free(self.raw) };
         }
     }

@@ -3,14 +3,14 @@
 use std::{marker::PhantomData, ptr};
 
 use cugraph_sys::{
-    cugraph_error_t, cugraph_triangle_count, cugraph_triangle_count_result_free,
-    cugraph_triangle_count_result_get_counts, cugraph_triangle_count_result_get_vertices,
-    cugraph_triangle_count_result_t, cugraph_type_erased_device_array_view_t,
+    cugraph_error_t, cugraph_triangle_count, cugraph_triangle_count_result_get_counts,
+    cugraph_triangle_count_result_get_vertices, cugraph_triangle_count_result_t,
+    cugraph_type_erased_device_array_view_t,
 };
 
 use crate::{
     array::{DeviceArrayView, RawDeviceArrayView},
-    cuda::DeviceGuard,
+    cuda::{DeviceResourceKind, drop_device_resource},
     error::{Error, Result, check_error, require_non_null},
     graph::Graph,
     handle::{EnteredContext, ResourceHandleLease},
@@ -52,7 +52,7 @@ pub(crate) fn triangle_count<T, V: CugraphElement>(
             &mut result,
             &mut error,
         );
-        check_error(code, error, "triangle_count")?;
+        check_error(code, error, handle.device(), "triangle_count")?;
     }
 
     let result = require_non_null(result, "triangle_count", "triangle_count_result")?;
@@ -141,11 +141,12 @@ impl TriangleCountResult {
 
 impl Drop for TriangleCountResult {
     fn drop(&mut self) {
-        if !self.raw.is_null() {
-            let _guard = DeviceGuard::switch_to_for_drop(self.device, "TriangleCountResult::drop").ok();
-            // SAFETY: `self.raw` is owned by this wrapper and freed exactly once.
-            unsafe { cugraph_triangle_count_result_free(self.raw) };
-        }
+        drop_device_resource(
+            &mut self.raw,
+            self.device,
+            "TriangleCountResult::drop",
+            DeviceResourceKind::TriangleCountResult,
+        );
     }
 }
 

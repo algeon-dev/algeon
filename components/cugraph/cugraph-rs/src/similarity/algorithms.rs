@@ -71,7 +71,7 @@ pub(crate) fn create_vertex_pairs<T, V: CugraphElement>(
             &mut result,
             &mut error,
         );
-        check_error(code, error, "create_vertex_pairs")?;
+        check_error(code, error, handle.device(), "create_vertex_pairs")?;
     }
 
     let result = require_non_null(result, "create_vertex_pairs", "vertex_pairs")?;
@@ -103,7 +103,7 @@ fn pairwise_similarity(
             &mut result,
             &mut error,
         );
-        check_error(code, error, operation)?;
+        check_error(code, error, handle.device(), operation)?;
     }
 
     // SAFETY: on success, cuGraph transfers ownership of the result pointer.
@@ -145,7 +145,7 @@ fn all_pairs_similarity<V: CugraphElement>(
             &mut result,
             &mut error,
         );
-        check_error(code, error, operation)?;
+        check_error(code, error, handle.device(), operation)?;
     }
 
     // SAFETY: on success, cuGraph transfers ownership of the result pointer.

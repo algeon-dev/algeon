@@ -43,7 +43,7 @@ pub(crate) fn minimum_spanning_tree<T>(
             &mut result,
             &mut error,
         );
-        check_error(code, error, "minimum_spanning_tree")?;
+        check_error(code, error, handle.device(), "minimum_spanning_tree")?;
     }
 
     let result = require_non_null(result, "minimum_spanning_tree", "induced_subgraph_result")?;

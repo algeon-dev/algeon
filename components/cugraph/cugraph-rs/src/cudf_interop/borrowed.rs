@@ -6,7 +6,7 @@ use rapids_interop::{BorrowedColumnView, BorrowedTableView, NullMaskKind, TypeId
 use super::{errors::map_runtime_ordering_interop_error, options::TableGraphOptions, types::borrowed_type_to_cugraph};
 use crate::{
     array::RawDeviceArrayView,
-    cuda::{DeviceGuard, check_cudf_status},
+    cuda::{DeviceGuard, check_cudf_status_on_device},
     error::{Error, ErrorKind, Result},
     graph::{Graph, GraphBuilder, Transposition},
     handle::EnteredContext,
@@ -317,7 +317,7 @@ pub(super) fn validate_edge_list_policy(
 }
 
 fn fence_producer_streams(edge_list: &BorrowedEdgeList<'_>, operation: &'static str) -> Result<()> {
-    let _device = DeviceGuard::switch_to(edge_list.src.execution().device(), operation)?;
+    let _device = DeviceGuard::enter_owner_device(edge_list.src.execution().device(), operation)?;
     let mut seen = BTreeSet::new();
 
     for stream in [
@@ -334,7 +334,8 @@ fn fence_producer_streams(edge_list: &BorrowedEdgeList<'_>, operation: &'static 
         }
         // SAFETY: `stream` comes from cudf execution metadata for a live
         // borrowed input column on the currently selected CUDA device.
-        check_cudf_status(unsafe { cudf_sys::cudf_raw_cuda_stream_synchronize(stream) }, operation)?;
+        let status = unsafe { cudf_sys::cudf_raw_cuda_stream_synchronize(stream) };
+        check_cudf_status_on_device(status, edge_list.src.execution().device(), operation)?;
     }
 
     Ok(())

@@ -57,7 +57,7 @@ pub(crate) fn edge_betweenness_centrality<T: Transposition, V: CugraphElement>(
             &mut result,
             &mut error,
         );
-        check_error(code, error, "edge_betweenness_centrality")?;
+        check_error(code, error, handle.device(), "edge_betweenness_centrality")?;
     }
 
     let result = require_non_null(result, "edge_betweenness_centrality", "edge_centrality_result")?;

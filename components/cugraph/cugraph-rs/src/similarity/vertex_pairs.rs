@@ -1,15 +1,15 @@
 //! RAII wrapper for `cugraph_vertex_pairs_t`.
 
-use std::{marker::PhantomData, ptr};
+use std::marker::PhantomData;
 
 use cugraph_sys::{
-    cugraph_type_erased_device_array_view_t, cugraph_vertex_pairs_free, cugraph_vertex_pairs_get_first,
-    cugraph_vertex_pairs_get_second, cugraph_vertex_pairs_t,
+    cugraph_type_erased_device_array_view_t, cugraph_vertex_pairs_get_first, cugraph_vertex_pairs_get_second,
+    cugraph_vertex_pairs_t,
 };
 
 use crate::{
     array::RawDeviceArrayView,
-    cuda::DeviceGuard,
+    cuda::{DeviceResourceKind, drop_device_resource},
     error::{Error, ErrorKind, Result, require_non_null},
     handle::ResourceHandleLease,
     structure::typed_results::VertexIds,
@@ -113,12 +113,7 @@ impl VertexPairs {
 
 impl Drop for VertexPairs {
     fn drop(&mut self) {
-        if !self.raw.is_null() {
-            let _guard = DeviceGuard::switch_to_for_drop(self.device, "VertexPairs::drop").ok();
-            // SAFETY: `self.raw` is owned by this wrapper and freed exactly once.
-            unsafe { cugraph_vertex_pairs_free(self.raw) };
-            self.raw = ptr::null_mut();
-        }
+        drop_device_resource(&mut self.raw, self.device, "VertexPairs::drop", DeviceResourceKind::VertexPairs);
     }
 }
 

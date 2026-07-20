@@ -9,9 +9,8 @@ use cugraph_sys::{
     cugraph_homogeneous_biased_temporal_neighbor_sample, cugraph_homogeneous_uniform_neighbor_sample,
     cugraph_homogeneous_uniform_temporal_neighbor_sample, cugraph_prior_sources_behavior_t,
     cugraph_prior_sources_behavior_t_CARRY_OVER, cugraph_prior_sources_behavior_t_DEFAULT,
-    cugraph_prior_sources_behavior_t_EXCLUDE, cugraph_random_walk_result_free,
-    cugraph_random_walk_result_get_max_path_length, cugraph_random_walk_result_get_paths,
-    cugraph_random_walk_result_get_weights, cugraph_random_walk_result_t, cugraph_sample_result_free,
+    cugraph_prior_sources_behavior_t_EXCLUDE, cugraph_random_walk_result_get_max_path_length,
+    cugraph_random_walk_result_get_paths, cugraph_random_walk_result_get_weights, cugraph_random_walk_result_t,
     cugraph_sample_result_get_edge_end_time, cugraph_sample_result_get_edge_id,
     cugraph_sample_result_get_edge_renumber_map, cugraph_sample_result_get_edge_renumber_map_offsets,
     cugraph_sample_result_get_edge_start_time, cugraph_sample_result_get_edge_type,
@@ -34,8 +33,8 @@ use cugraph_sys::{
 
 use crate::{
     array::{DeviceArray, DeviceArrayView, HostArrayView, RawDeviceArrayView},
-    cuda::DeviceGuard,
-    error::{Error, ErrorKind, Result, check_error, require_non_null},
+    cuda::{DeviceResourceKind, drop_device_resource},
+    error::{Error, ErrorKind, Result, check_error, check_host_error, require_non_null},
     graph::{Forward, Graph},
     handle::{EnteredContext, ResourceHandleLease},
     params::PositiveF64,
@@ -199,7 +198,7 @@ impl NativeSamplingOptions {
         // SAFETY: `raw` and `error` are valid out-pointers.
         unsafe {
             let code = cugraph_sampling_options_create(&mut raw, &mut error);
-            check_error(code, error, "NativeSamplingOptions::new")?;
+            check_host_error(code, error, "NativeSamplingOptions::new")?;
         }
         let raw = require_non_null(raw, "NativeSamplingOptions::new", "sampling_options")?;
 
@@ -230,7 +229,8 @@ impl Drop for NativeSamplingOptions {
     fn drop(&mut self) {
         if !self.raw.is_null() {
             // SAFETY: `self.raw` is owned by this wrapper and freed exactly
-            // once here.
+            // once here. Upstream's sampling-options object contains host
+            // scalar configuration only and does not own a CUDA resource.
             unsafe { cugraph_sampling_options_free(self.raw) };
         }
     }
@@ -327,12 +327,12 @@ impl RandomWalkResult {
 
 impl Drop for RandomWalkResult {
     fn drop(&mut self) {
-        if !self.raw.is_null() {
-            let _guard = DeviceGuard::switch_to_for_drop(self.device, "RandomWalkResult::drop").ok();
-            // SAFETY: `self.raw` is owned by this wrapper and freed at most
-            // once here.
-            unsafe { cugraph_random_walk_result_free(self.raw) };
-        }
+        drop_device_resource(
+            &mut self.raw,
+            self.device,
+            "RandomWalkResult::drop",
+            DeviceResourceKind::RandomWalkResult,
+        );
     }
 }
 
@@ -508,12 +508,7 @@ impl SampleResult {
 
 impl Drop for SampleResult {
     fn drop(&mut self) {
-        if !self.raw.is_null() {
-            let _guard = DeviceGuard::switch_to_for_drop(self.device, "SampleResult::drop").ok();
-            // SAFETY: `self.raw` is owned by this wrapper and freed at most
-            // once here.
-            unsafe { cugraph_sample_result_free(self.raw) };
-        }
+        drop_device_resource(&mut self.raw, self.device, "SampleResult::drop", DeviceResourceKind::SampleResult);
     }
 }
 
@@ -589,7 +584,7 @@ fn run_random_walks<V: CugraphElement>(
             &mut result,
             &mut error,
         );
-        check_error(code, error, operation)?;
+        check_error(code, error, handle.device(), operation)?;
     }
 
     // SAFETY: on success, cuGraph transfers ownership of the result pointer.
@@ -622,7 +617,7 @@ pub(crate) fn node2vec_random_walks<V: CugraphElement>(
             &mut result,
             &mut error,
         );
-        check_error(code, error, "node2vec_random_walks")?;
+        check_error(code, error, handle.device(), "node2vec_random_walks")?;
     }
 
     // SAFETY: on success, cuGraph transfers ownership of the result pointer.
@@ -654,7 +649,7 @@ where
             &mut vertices,
             &mut error,
         );
-        check_error(code, error, "select_random_vertices")?;
+        check_error(code, error, handle.device(), "select_random_vertices")?;
     }
 
     // SAFETY: on success, cuGraph transfers ownership of the device array.
@@ -713,7 +708,7 @@ pub(crate) fn homogeneous_uniform_neighbor_sample<V: CugraphElement>(
             &mut result,
             &mut error,
         );
-        check_error(code, error, "homogeneous_uniform_neighbor_sample")?;
+        check_error(code, error, handle.device(), "homogeneous_uniform_neighbor_sample")?;
     }
 
     // SAFETY: on success, cuGraph transfers ownership of the result pointer.
@@ -755,7 +750,7 @@ pub(crate) fn homogeneous_biased_neighbor_sample<V: CugraphElement>(
             &mut result,
             &mut error,
         );
-        check_error(code, error, "homogeneous_biased_neighbor_sample")?;
+        check_error(code, error, handle.device(), "homogeneous_biased_neighbor_sample")?;
     }
 
     // SAFETY: on success, cuGraph transfers ownership of the result pointer.
@@ -820,7 +815,7 @@ where
             &mut result,
             &mut error,
         );
-        check_error(code, error, "homogeneous_uniform_temporal_neighbor_sample")?;
+        check_error(code, error, handle.device(), "homogeneous_uniform_temporal_neighbor_sample")?;
     }
 
     // SAFETY: on success, cuGraph transfers ownership of the result pointer.
@@ -887,7 +882,7 @@ where
             &mut result,
             &mut error,
         );
-        check_error(code, error, "homogeneous_biased_temporal_neighbor_sample")?;
+        check_error(code, error, handle.device(), "homogeneous_biased_temporal_neighbor_sample")?;
     }
 
     // SAFETY: on success, cuGraph transfers ownership of the result pointer.

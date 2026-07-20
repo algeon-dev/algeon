@@ -1,15 +1,15 @@
 //! Similarity result wrappers.
 
-use std::{marker::PhantomData, ptr};
+use std::marker::PhantomData;
 
 use cugraph_sys::{
-    cugraph_similarity_result_free, cugraph_similarity_result_get_similarity,
-    cugraph_similarity_result_get_vertex_pairs, cugraph_similarity_result_t, cugraph_type_erased_device_array_view_t,
+    cugraph_similarity_result_get_similarity, cugraph_similarity_result_get_vertex_pairs, cugraph_similarity_result_t,
+    cugraph_type_erased_device_array_view_t,
 };
 
 use crate::{
     array::RawDeviceArrayView,
-    cuda::DeviceGuard,
+    cuda::{DeviceResourceKind, drop_device_resource},
     error::{Error, Result, require_non_null},
     handle::ResourceHandleLease,
     similarity::VertexPairs,
@@ -52,9 +52,8 @@ impl SimilarityResultInner {
         ) {
             Ok(pairs_raw) => pairs_raw,
             Err(error) => {
-                let _guard = DeviceGuard::switch_to_for_drop(device, operation).ok();
-                // SAFETY: `raw` is owned by this constructor until a wrapper is returned.
-                unsafe { cugraph_similarity_result_free(raw) };
+                let mut raw = raw;
+                drop_device_resource(&mut raw, device, operation, DeviceResourceKind::SimilarityResult);
                 return Err(error);
             },
         };
@@ -93,12 +92,12 @@ impl SimilarityResultInner {
 
 impl Drop for SimilarityResultInner {
     fn drop(&mut self) {
-        if !self.raw.is_null() {
-            let _guard = DeviceGuard::switch_to_for_drop(self.device, "SimilarityResultInner::drop").ok();
-            // SAFETY: `self.raw` is owned by this wrapper and freed exactly once.
-            unsafe { cugraph_similarity_result_free(self.raw) };
-            self.raw = ptr::null_mut();
-        }
+        drop_device_resource(
+            &mut self.raw,
+            self.device,
+            "SimilarityResultInner::drop",
+            DeviceResourceKind::SimilarityResult,
+        );
     }
 }
 

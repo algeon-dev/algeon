@@ -3,17 +3,16 @@
 use std::{marker::PhantomData, num::NonZeroUsize, ptr};
 
 use cugraph_sys::{
-    cugraph_core_number, cugraph_core_result_free, cugraph_core_result_get_core_numbers,
-    cugraph_core_result_get_vertices, cugraph_core_result_t, cugraph_error_t, cugraph_k_core,
-    cugraph_k_core_degree_type_t, cugraph_k_core_degree_type_t_K_CORE_DEGREE_TYPE_IN,
+    cugraph_core_number, cugraph_core_result_get_core_numbers, cugraph_core_result_get_vertices, cugraph_core_result_t,
+    cugraph_error_t, cugraph_k_core, cugraph_k_core_degree_type_t, cugraph_k_core_degree_type_t_K_CORE_DEGREE_TYPE_IN,
     cugraph_k_core_degree_type_t_K_CORE_DEGREE_TYPE_INOUT, cugraph_k_core_degree_type_t_K_CORE_DEGREE_TYPE_OUT,
-    cugraph_k_core_result_free, cugraph_k_core_result_get_dst_vertices, cugraph_k_core_result_get_src_vertices,
-    cugraph_k_core_result_get_weights, cugraph_k_core_result_t, cugraph_type_erased_device_array_view_t,
+    cugraph_k_core_result_get_dst_vertices, cugraph_k_core_result_get_src_vertices, cugraph_k_core_result_get_weights,
+    cugraph_k_core_result_t, cugraph_type_erased_device_array_view_t,
 };
 
 use crate::{
     array::RawDeviceArrayView,
-    cuda::DeviceGuard,
+    cuda::{DeviceResourceKind, drop_device_resource},
     error::{Error, Result, check_error, require_non_null},
     graph::Graph,
     handle::{EnteredContext, ResourceHandleLease},
@@ -100,7 +99,7 @@ pub(crate) fn core_number<T>(
             &mut result,
             &mut error,
         );
-        check_error(code, error, "core_number")?;
+        check_error(code, error, handle.device(), "core_number")?;
     }
 
     let result = require_non_null(result, "core_number", "core_result")?;
@@ -134,7 +133,7 @@ pub(crate) fn k_core<T>(
             &mut result,
             &mut error,
         );
-        check_error(code, error, "k_core")?;
+        check_error(code, error, handle.device(), "k_core")?;
     }
 
     let result = require_non_null(result, "k_core", "k_core_result")?;
@@ -229,11 +228,7 @@ impl CoreNumberResult {
 
 impl Drop for CoreNumberResult {
     fn drop(&mut self) {
-        if !self.raw.is_null() {
-            let _guard = DeviceGuard::switch_to_for_drop(self.device, "CoreNumberResult::drop").ok();
-            // SAFETY: `self.raw` is owned by this wrapper and freed exactly once.
-            unsafe { cugraph_core_result_free(self.raw) };
-        }
+        drop_device_resource(&mut self.raw, self.device, "CoreNumberResult::drop", DeviceResourceKind::CoreResult);
     }
 }
 
@@ -337,11 +332,7 @@ impl KCoreResult {
 
 impl Drop for KCoreResult {
     fn drop(&mut self) {
-        if !self.raw.is_null() {
-            let _guard = DeviceGuard::switch_to_for_drop(self.device, "KCoreResult::drop").ok();
-            // SAFETY: `self.raw` is owned by this wrapper and freed exactly once.
-            unsafe { cugraph_k_core_result_free(self.raw) };
-        }
+        drop_device_resource(&mut self.raw, self.device, "KCoreResult::drop", DeviceResourceKind::KCoreResult);
     }
 }
 
