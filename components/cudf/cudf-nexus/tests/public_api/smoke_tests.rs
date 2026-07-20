@@ -16,13 +16,17 @@ mod series_display_tests;
 #[test]
 fn query_memory_manager_surface_is_publicly_importable() {
     use cudf::{
-        DeviceMemoryFailureAction, DeviceMemoryFailureAllocationDomain, DeviceMemoryFailureInfo,
-        DeviceMemoryFailureSource, DeviceMemoryManager, DeviceMemoryManagerFailureCallbackState, DeviceMemoryResource,
-        ExecutionBudgetEnforcement, ExecutionBudgetStatus, ReservationUsage, Runtime, StreamReservationLease,
+        AllocatorEvent, AllocatorEventAction, AllocatorEventCompleteness, AllocatorEventDomainIdentity,
+        AllocatorEventRead, AllocatorEventRingBounds, DeviceMemoryFailureAction, DeviceMemoryFailureAllocationDomain,
+        DeviceMemoryFailureInfo, DeviceMemoryFailureSource, DeviceMemoryManager,
+        DeviceMemoryManagerFailureCallbackState, DeviceMemoryResource, ExecutionBudgetEnforcement,
+        ExecutionBudgetStatus, QueryMemoryDomainIdentity, ReservationUsage, Runtime, StreamReservationLease,
     };
 
     let _ = cudf::ExecutionBudgetToken::resize;
     let _ = DeviceMemoryResource::with_failure_callback;
+    let _ = DeviceMemoryManager::allocator_event_ring_bounds;
+    let _ = DeviceMemoryManager::read_allocator_event;
     let _ = DeviceMemoryResource::with_failure_callback_details;
     let _ = DeviceMemoryManager::install_for_device_with_failure_callback;
     let _ = DeviceMemoryManager::install_for_device_with_failure_callback_details;
@@ -33,6 +37,13 @@ fn query_memory_manager_surface_is_publicly_importable() {
     let _ = DeviceMemoryFailureAllocationDomain::StreamReservation { reservation_id: 1 };
     let _ = DeviceMemoryFailureSource::Physical;
     let _: Option<DeviceMemoryManagerFailureCallbackState> = None;
+    let _: Option<AllocatorEvent> = None;
+    let _: Option<AllocatorEventAction> = None;
+    let _: Option<AllocatorEventCompleteness> = None;
+    let _: Option<AllocatorEventDomainIdentity> = None;
+    let _: Option<AllocatorEventRead> = None;
+    let _: Option<AllocatorEventRingBounds> = None;
+    let _: Option<QueryMemoryDomainIdentity> = None;
     let _ = StreamReservationLease::resize;
     let _: Option<DeviceMemoryManager> = None;
     let _: Option<StreamReservationLease> = None;

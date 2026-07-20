@@ -268,6 +268,7 @@ add_library(
   src/scalar.cpp
   src/stream.cpp
   src/event.cpp
+  src/memory/allocator_event.cpp
   src/memory/resource.cpp
   src/memory/manager.cpp
   src/memory/reservation.cpp

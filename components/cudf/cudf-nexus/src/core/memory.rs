@@ -227,6 +227,42 @@ mod tests {
             Some(DeviceMemoryFailureAllocationDomain::Unknown { kind: 99, primary_id: 1234, secondary_id: 5678 })
         );
     }
+
+    #[test]
+    fn allocator_event_preserves_optional_samples_without_zero_fabrication() {
+        let raw = cudf_sys::cudf_allocator_event_t {
+            sequence: 17,
+            device_ordinal: -1,
+            completeness: cudf_sys::CUDF_ALLOCATOR_EVENT_COMPLETENESS_HAS_DOMAIN_IDENTITY
+                | cudf_sys::CUDF_ALLOCATOR_EVENT_COMPLETENESS_HAS_ACTION,
+            domain_kind: cudf_sys::CUDF_MEMORY_FAILURE_DOMAIN_QUERY_MEMORY_DOMAIN,
+            domain_id: 41,
+            domain_generation: 9,
+            domain_member_id: 3,
+            requested_bytes: 4096,
+            failure_source: cudf_sys::CUDF_MEMORY_FAILURE_SOURCE_RESERVATION_LIMIT,
+            action: cudf_sys::CUDF_MEMORY_FAILURE_ACTION_DECLINE as i32,
+            // This C ABI struct consists entirely of scalar fields and fixed
+            // scalar arrays, so zero is a valid baseline for the omitted
+            // optional fields.
+            ..unsafe { std::mem::zeroed() }
+        };
+
+        let event = AllocatorEvent::from_sys(raw);
+
+        assert_eq!(event.sequence, 17);
+        assert_eq!(event.device, None);
+        assert_eq!(event.monotonic_time_ns, None);
+        assert_eq!(event.pool_usage, None);
+        assert_eq!(event.action, Some(AllocatorEventAction::Decline));
+        assert_eq!(
+            event.allocation_domain,
+            Some(AllocatorEventDomainIdentity {
+                domain: DeviceMemoryFailureAllocationDomain::QueryMemoryDomain { domain_id: 41, member_id: 3 },
+                generation: 9,
+            })
+        );
+    }
 }
 
 /// Allocation-failure payload passed to reclaim-capable failure callbacks.
@@ -291,6 +327,146 @@ impl DeviceMemoryFailureInfo {
         let idle_bytes = pool_usage.reserved_current_bytes - pool_usage.used_current_bytes;
         idle_bytes / self.requested_bytes >= Self::TRIM_RETRY_IDLE_TO_REQUEST_RATIO
     }
+}
+
+/// Completeness facts for one allocator-event record.
+///
+/// A cleared flag means the native callback could not observe that field; it
+/// does not encode a zero-valued observation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AllocatorEventCompleteness {
+    pub timestamp: bool,
+    pub allocation_domain: bool,
+    pub pool_usage: bool,
+    pub action: bool,
+}
+
+impl AllocatorEventCompleteness {
+    fn from_sys(flags: u32) -> Self {
+        Self {
+            timestamp: flags & cudf_sys::CUDF_ALLOCATOR_EVENT_COMPLETENESS_HAS_TIMESTAMP != 0,
+            allocation_domain: flags & cudf_sys::CUDF_ALLOCATOR_EVENT_COMPLETENESS_HAS_DOMAIN_IDENTITY != 0,
+            pool_usage: flags & cudf_sys::CUDF_ALLOCATOR_EVENT_COMPLETENESS_HAS_POOL_USAGE != 0,
+            action: flags & cudf_sys::CUDF_ALLOCATOR_EVENT_COMPLETENESS_HAS_ACTION != 0,
+        }
+    }
+}
+
+/// Domain identity carried by an allocator-event record.
+///
+/// A generation is minted by native cuDF for every query-domain instance, so
+/// a reused logical domain id cannot be correlated as an older attempt.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AllocatorEventDomainIdentity {
+    pub domain: DeviceMemoryFailureAllocationDomain,
+    pub generation: u64,
+}
+
+/// Action observed after an allocator-failure callback returns.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AllocatorEventAction {
+    Decline,
+    Retry,
+    TrimAndRetry,
+    CallbackPanicked,
+    Unknown(i32),
+}
+
+impl AllocatorEventAction {
+    fn from_sys(value: i32) -> Self {
+        match value {
+            value if value == cudf_sys::CUDF_MEMORY_FAILURE_ACTION_DECLINE as i32 => Self::Decline,
+            value if value == cudf_sys::CUDF_MEMORY_FAILURE_ACTION_RETRY as i32 => Self::Retry,
+            value if value == cudf_sys::CUDF_MEMORY_FAILURE_ACTION_TRIM_AND_RETRY as i32 => Self::TrimAndRetry,
+            value if value == cudf_sys::CUDF_MEMORY_FAILURE_ACTION_CALLBACK_PANICKED => Self::CallbackPanicked,
+            other => Self::Unknown(other),
+        }
+    }
+}
+
+/// One bounded allocator event copied from the per-device fixed ring.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AllocatorEvent {
+    pub sequence: u64,
+    pub monotonic_time_ns: Option<u64>,
+    pub device: Option<DeviceId>,
+    pub allocation_domain: Option<AllocatorEventDomainIdentity>,
+    pub requested_bytes: u64,
+    pub source: DeviceMemoryFailureSource,
+    pub action: Option<AllocatorEventAction>,
+    pub callback_attempt: u32,
+    pub trim_retry_count: u32,
+    pub pool_usage: Option<DeviceMemoryPoolUsage>,
+    pub completeness: AllocatorEventCompleteness,
+}
+
+impl AllocatorEvent {
+    fn from_sys(value: cudf_sys::cudf_allocator_event_t) -> Self {
+        let completeness = AllocatorEventCompleteness::from_sys(value.completeness);
+        let device = (value.device_ordinal >= 0).then(|| DeviceId::from_validated_ordinal_raw(value.device_ordinal));
+        let allocation_domain = completeness
+            .allocation_domain
+            .then(|| {
+                DeviceMemoryFailureAllocationDomain::from_sys(
+                    value.domain_kind as u64,
+                    value.domain_id,
+                    value.domain_member_id,
+                )
+                .map(|domain| AllocatorEventDomainIdentity { domain, generation: value.domain_generation })
+            })
+            .flatten();
+        let pool_usage = completeness.pool_usage.then_some(DeviceMemoryPoolUsage {
+            reserved_current_bytes: value.pool_reserved_current_bytes,
+            reserved_high_bytes: value.pool_reserved_high_bytes,
+            used_current_bytes: value.pool_used_current_bytes,
+            used_high_bytes: value.pool_used_high_bytes,
+        });
+        Self {
+            sequence: value.sequence,
+            monotonic_time_ns: completeness.timestamp.then_some(value.monotonic_time_ns),
+            device,
+            allocation_domain,
+            requested_bytes: value.requested_bytes,
+            source: DeviceMemoryFailureSource::from_sys(value.failure_source),
+            action: completeness.action.then(|| AllocatorEventAction::from_sys(value.action)),
+            callback_attempt: value.callback_attempt,
+            trim_retry_count: value.trim_retry_count,
+            pool_usage,
+            completeness,
+        }
+    }
+}
+
+/// Snapshot bounds for the fixed per-device allocator-event ring.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AllocatorEventRingBounds {
+    pub capacity: u64,
+    pub first_available_sequence: Option<u64>,
+    pub next_sequence: u64,
+}
+
+impl From<cudf_sys::cudf_allocator_event_ring_bounds_t> for AllocatorEventRingBounds {
+    fn from(value: cudf_sys::cudf_allocator_event_ring_bounds_t) -> Self {
+        Self {
+            capacity: value.capacity,
+            first_available_sequence: (value.first_available_sequence != 0).then_some(value.first_available_sequence),
+            next_sequence: value.next_sequence,
+        }
+    }
+}
+
+/// Result of reading one exact sequence from the fixed allocator-event ring.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AllocatorEventRead {
+    /// The exact sequence was copied from one stable ring record.
+    Available(AllocatorEvent),
+    /// The sequence currently has no stable record. It must not be attributed,
+    /// even if a later read happens to observe a record.
+    Pending,
+    /// The fixed ring no longer retains this sequence.
+    Overwritten,
+    /// No producer has reserved this sequence.
+    NotYetRecorded,
 }
 
 /// Whether cudf has already installed a process-local device memory manager
@@ -849,6 +1025,18 @@ impl QueryMemoryDomainOptions {
     }
 }
 
+/// Stable native identity for one query-memory-domain instance.
+///
+/// `generation` is distinct from the caller-supplied domain id and changes for
+/// every native domain creation. Consumers must retain both values when
+/// correlating asynchronous allocator events.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct QueryMemoryDomainIdentity {
+    pub device: DeviceId,
+    pub domain_id: u64,
+    pub generation: u64,
+}
+
 /// Usage counters for an opt-in query memory domain.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct QueryMemoryDomainUsage {
@@ -1110,12 +1298,10 @@ unsafe extern "C" fn failure_callback_trampoline(
     match catch_unwind(AssertUnwindSafe(|| (state.callback)(info))) {
         Ok(action) => action.to_sys() as i32,
         Err(_) => {
-            if !state.panicked.swap(true, Ordering::AcqRel) {
-                eprintln!(
-                    "[cudf] warning: device memory failure callback panicked while handling allocation failure for {} bytes; disabling callback",
-                    info.requested_bytes
-                );
-            }
+            // This path runs under allocator failure handling. Publish the
+            // fail-closed state with one atomic store only; formatting or
+            // logging here could allocate or take a blocking stdio lock.
+            state.panicked.store(true, Ordering::Release);
             cudf_sys::CUDF_MEMORY_FAILURE_ACTION_CALLBACK_PANICKED
         },
     }
@@ -1710,6 +1896,86 @@ impl DeviceMemoryManager {
         )
     }
 
+    /// Returns the current bounds of this device's fixed allocator-event ring.
+    ///
+    /// Event producers are allocation-failure callbacks; this consumer API can
+    /// take normal runtime locks and does not participate in allocator
+    /// re-entrancy.
+    pub fn allocator_event_ring_bounds(&self) -> Result<AllocatorEventRingBounds> {
+        let _guard = DeviceGuard::new(self.device())?;
+        // Native initializes every output field, including `struct_size`.
+        let mut bounds = unsafe { std::mem::zeroed::<cudf_sys::cudf_allocator_event_ring_bounds_t>() };
+        error::check_status_in_with_details(
+            unsafe { cudf_sys::cudf_memory_manager_allocator_event_ring_bounds(self.handle.raw.as_ptr(), &mut bounds) },
+            "memory::device_memory_manager::allocator_event_ring_bounds",
+            [("device", self.device().ordinal().to_string())],
+        )?;
+        if bounds.struct_size != core::mem::size_of::<cudf_sys::cudf_allocator_event_ring_bounds_t>() {
+            return Err(error::Error::new_with(
+                error::ErrorCode::ForeignInvariantViolation,
+                "memory::device_memory_manager::allocator_event_ring_bounds",
+                "native allocator-event ring bounds returned an incompatible struct size",
+            )
+            .with_detail("struct_size", bounds.struct_size.to_string()));
+        }
+        Ok(bounds.into())
+    }
+
+    /// Reads one exact allocator-event sequence without treating absence as a
+    /// zero-valued event. Callers must handle pending and overwritten results
+    /// explicitly before attributing an event.
+    pub fn read_allocator_event(&self, sequence: u64) -> Result<AllocatorEventRead> {
+        let _guard = DeviceGuard::new(self.device())?;
+        // Native zeroes unavailable reads and fully initializes available ones.
+        let mut event = unsafe { std::mem::zeroed::<cudf_sys::cudf_allocator_event_t>() };
+        let mut status = cudf_sys::CUDF_ALLOCATOR_EVENT_READ_NOT_YET_RECORDED;
+        error::check_status_in_with_details(
+            unsafe {
+                cudf_sys::cudf_memory_manager_read_allocator_event(
+                    self.handle.raw.as_ptr(),
+                    sequence,
+                    &mut event,
+                    &mut status,
+                )
+            },
+            "memory::device_memory_manager::read_allocator_event",
+            [("device", self.device().ordinal().to_string()), ("sequence", sequence.to_string())],
+        )?;
+        match status {
+            value if value == cudf_sys::CUDF_ALLOCATOR_EVENT_READ_AVAILABLE => {
+                if event.struct_size != core::mem::size_of::<cudf_sys::cudf_allocator_event_t>() {
+                    return Err(error::Error::new_with(
+                        error::ErrorCode::ForeignInvariantViolation,
+                        "memory::device_memory_manager::read_allocator_event",
+                        "native allocator event returned an incompatible struct size",
+                    )
+                    .with_detail("struct_size", event.struct_size.to_string()));
+                }
+                if event.sequence != sequence {
+                    return Err(error::Error::new_with(
+                        error::ErrorCode::RuntimeBindingMismatch,
+                        "memory::device_memory_manager::read_allocator_event",
+                        "allocator event availability returned a different sequence",
+                    )
+                    .with_detail("requested_sequence", sequence.to_string())
+                    .with_detail("observed_sequence", event.sequence.to_string()));
+                }
+                Ok(AllocatorEventRead::Available(AllocatorEvent::from_sys(event)))
+            },
+            value if value == cudf_sys::CUDF_ALLOCATOR_EVENT_READ_PENDING => Ok(AllocatorEventRead::Pending),
+            value if value == cudf_sys::CUDF_ALLOCATOR_EVENT_READ_OVERWRITTEN => Ok(AllocatorEventRead::Overwritten),
+            value if value == cudf_sys::CUDF_ALLOCATOR_EVENT_READ_NOT_YET_RECORDED => {
+                Ok(AllocatorEventRead::NotYetRecorded)
+            },
+            other => Err(error::Error::new_with(
+                error::ErrorCode::RuntimeBindingMismatch,
+                "memory::device_memory_manager::read_allocator_event",
+                "allocator event reader returned an unknown status",
+            )
+            .with_detail("status", other.to_string())),
+        }
+    }
+
     /// Attach a hard live-byte reservation to `stream`.
     pub fn reserve_stream(
         &self,
@@ -1932,6 +2198,49 @@ impl QueryMemoryDomain {
     /// CUDA device owned by this query memory domain.
     pub fn device(&self) -> DeviceId {
         self.manager.device()
+    }
+
+    /// Returns the native domain instance identity used by allocator events.
+    ///
+    /// The domain id alone is not sufficient for correlation because callers
+    /// may create a later domain with the same logical id after teardown.
+    pub fn identity(&self) -> Result<QueryMemoryDomainIdentity> {
+        let _guard = DeviceGuard::new(self.device())?;
+        // Native initializes every output field, including `struct_size`.
+        let mut identity = unsafe { std::mem::zeroed::<cudf_sys::cudf_query_memory_domain_identity_t>() };
+        error::check_status_in(
+            unsafe { cudf_sys::cudf_query_memory_domain_identity(self.handle.raw(), &mut identity) },
+            "memory::query_memory_domain::identity",
+        )?;
+        if identity.struct_size != core::mem::size_of::<cudf_sys::cudf_query_memory_domain_identity_t>() {
+            return Err(error::Error::new_with(
+                error::ErrorCode::ForeignInvariantViolation,
+                "memory::query_memory_domain::identity",
+                "native query memory domain identity returned an incompatible struct size",
+            )
+            .with_detail("struct_size", identity.struct_size.to_string()));
+        }
+        if identity.device_ordinal < 0 || identity.domain_id == 0 || identity.generation == 0 {
+            return Err(error::Error::new_with(
+                error::ErrorCode::RuntimeBindingMismatch,
+                "memory::query_memory_domain::identity",
+                "native query memory domain returned an incomplete identity",
+            )
+            .with_detail("device_ordinal", identity.device_ordinal.to_string())
+            .with_detail("domain_id", identity.domain_id.to_string())
+            .with_detail("generation", identity.generation.to_string()));
+        }
+        let device = DeviceId::from_validated_ordinal_raw(identity.device_ordinal);
+        if device != self.device() {
+            return Err(error::Error::new_with(
+                error::ErrorCode::RuntimeBindingMismatch,
+                "memory::query_memory_domain::identity",
+                "native query memory domain identity does not match its owning device",
+            )
+            .with_detail("domain_device", device.ordinal().to_string())
+            .with_detail("owner_device", self.device().ordinal().to_string()));
+        }
+        Ok(QueryMemoryDomainIdentity { device, domain_id: identity.domain_id, generation: identity.generation })
     }
 
     /// Attach a stream to this query memory domain.

@@ -336,12 +336,14 @@ class bounded_failure_callback_resource_adaptor final : public rmm::mr::device_m
                                             void* callback_arg,
                                             cudaMemPool_t pool,
                                             int32_t device_ordinal,
+                                            allocator_event_ring* allocator_events,
                                             std::atomic<bool>* callback_panicked)
     : upstream_{rmm::mr::any_device_resource_from_raw(upstream)},
       callback_{callback},
       callback_arg_{callback_arg},
       pool_{pool},
       device_ordinal_{device_ordinal},
+      allocator_events_{allocator_events},
       callback_panicked_{callback_panicked}
   {
   }
@@ -351,12 +353,14 @@ class bounded_failure_callback_resource_adaptor final : public rmm::mr::device_m
                                             void* callback_arg,
                                             cudaMemPool_t pool,
                                             int32_t device_ordinal,
+                                            allocator_event_ring* allocator_events,
                                             std::atomic<bool>* callback_panicked)
     : upstream_{rmm::mr::any_device_resource_from_raw(upstream)},
       callback_v2_{callback},
       callback_arg_{callback_arg},
       pool_{pool},
       device_ordinal_{device_ordinal},
+      allocator_events_{allocator_events},
       callback_panicked_{callback_panicked}
   {
   }
@@ -392,6 +396,10 @@ class bounded_failure_callback_resource_adaptor final : public rmm::mr::device_m
                             callback_retries,
                             trim_retry_count);
           auto const action = callback_v2_(&info, callback_arg_);
+          if (allocator_events_ != nullptr) {
+            allocator_events_->record(
+              info, failure_identity, static_cast<cudf_memory_failure_action_t>(action));
+          }
           if (action == CUDF_MEMORY_FAILURE_ACTION_CALLBACK_PANICKED) {
             if (callback_panicked_ != nullptr) {
               callback_panicked_->store(true, std::memory_order_release);
@@ -416,10 +424,22 @@ class bounded_failure_callback_resource_adaptor final : public rmm::mr::device_m
           trim_retry_attempted = true;
           continue;
         }
-        if (callback_ == nullptr || callback_retries >= k_max_failure_callback_retries ||
-            callback_(bytes, callback_arg_) == 0) {
+        if (callback_ == nullptr || callback_retries >= k_max_failure_callback_retries) {
           throw;
         }
+        auto const action = callback_(bytes, callback_arg_) != 0 ? CUDF_MEMORY_FAILURE_ACTION_RETRY
+                                                                  : CUDF_MEMORY_FAILURE_ACTION_DECLINE;
+        cudf_memory_failure_info_t info{};
+        fill_failure_info(info,
+                          device_ordinal_,
+                          bytes,
+                          failure_pool,
+                          failure_source,
+                          failure_identity,
+                          callback_retries,
+                          trim_retry_count);
+        if (allocator_events_ != nullptr) { allocator_events_->record(info, failure_identity, action); }
+        if (action == CUDF_MEMORY_FAILURE_ACTION_DECLINE) { throw; }
         ++callback_retries;
       }
     }
@@ -445,6 +465,7 @@ class bounded_failure_callback_resource_adaptor final : public rmm::mr::device_m
   void* callback_arg_                            = nullptr;
   cudaMemPool_t pool_                            = nullptr;
   int32_t device_ordinal_                        = -1;
+  allocator_event_ring* allocator_events_        = nullptr;
   std::atomic<bool>* callback_panicked_          = nullptr;
 };
 
@@ -454,10 +475,11 @@ std::unique_ptr<rmm::mr::device_memory_resource> make_bounded_failure_callback_r
   void* callback_arg,
   cudaMemPool_t pool,
   int32_t device_ordinal,
+  allocator_event_ring* allocator_events,
   std::atomic<bool>* callback_panicked)
 {
   return std::make_unique<bounded_failure_callback_resource_adaptor>(
-    upstream, callback, callback_arg, pool, device_ordinal, callback_panicked);
+    upstream, callback, callback_arg, pool, device_ordinal, allocator_events, callback_panicked);
 }
 
 std::unique_ptr<rmm::mr::device_memory_resource> make_bounded_failure_callback_resource(
@@ -466,10 +488,11 @@ std::unique_ptr<rmm::mr::device_memory_resource> make_bounded_failure_callback_r
   void* callback_arg,
   cudaMemPool_t pool,
   int32_t device_ordinal,
+  allocator_event_ring* allocator_events,
   std::atomic<bool>* callback_panicked)
 {
   return std::make_unique<bounded_failure_callback_resource_adaptor>(
-    upstream, callback, callback_arg, pool, device_ordinal, callback_panicked);
+    upstream, callback, callback_arg, pool, device_ordinal, allocator_events, callback_panicked);
 }
 
 std::mutex& memory_resource_registry_mutex()
@@ -653,7 +676,7 @@ cudf_status_t cudf_memory_resource_create_failure_callback(cudf_memory_resource_
     owner.device            = upstream_owner.device;
     auto* upstream_mr       = cudf_memory_resource_raw_from_handle(upstream);
     owner.mr                = make_bounded_failure_callback_resource(
-      upstream_mr, callback, callback_arg, async_pool_handle(owner.async_pool), owner.device);
+      upstream_mr, callback, callback_arg, async_pool_handle(owner.async_pool), owner.device, nullptr);
     register_memory_resource_lifetime(state->owner);
     *out = reinterpret_cast<cudf_memory_resource_handle>(state.release());
     return CUDF_SUCCESS;
@@ -682,7 +705,7 @@ cudf_status_t cudf_memory_resource_create_failure_callback_v2(
     owner.device            = upstream_owner.device;
     auto* upstream_mr       = cudf_memory_resource_raw_from_handle(upstream);
     owner.mr                = make_bounded_failure_callback_resource(
-      upstream_mr, callback, callback_arg, async_pool_handle(owner.async_pool), owner.device);
+      upstream_mr, callback, callback_arg, async_pool_handle(owner.async_pool), owner.device, nullptr);
     register_memory_resource_lifetime(state->owner);
     *out = reinterpret_cast<cudf_memory_resource_handle>(state.release());
     return CUDF_SUCCESS;

@@ -1,7 +1,7 @@
 #ifndef CUDF_RUST_MEMORY_MANAGER_H
 #define CUDF_RUST_MEMORY_MANAGER_H
 
-#include "memory_resource.h"
+#include "allocator_event.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -144,6 +144,16 @@ cudf_status_t cudf_memory_manager_resource(cudf_memory_manager_handle manager,
 cudf_status_t cudf_memory_manager_pool_usage(cudf_memory_manager_handle manager,
                                              cudf_memory_pool_usage_t* out);
 cudf_status_t cudf_memory_manager_trim_to(cudf_memory_manager_handle manager, uint64_t keep_bytes);
+/// Reads the current fixed-ring bounds. This is a consumer operation; allocator
+/// callbacks never take its registry lock.
+cudf_status_t cudf_memory_manager_allocator_event_ring_bounds(
+  cudf_memory_manager_handle manager, cudf_allocator_event_ring_bounds_t* out);
+/// Reads one exact sequence. `out` is zeroed when the result is not available.
+cudf_status_t cudf_memory_manager_read_allocator_event(
+  cudf_memory_manager_handle manager,
+  uint64_t sequence,
+  cudf_allocator_event_t* out,
+  cudf_allocator_event_read_status_t* status);
 
 #ifdef __cplusplus
 }

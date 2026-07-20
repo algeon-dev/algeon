@@ -110,15 +110,21 @@ pub type cudf_hash_join_handle = *mut cudf_hash_join_handle_state;
 pub type cudf_conditional_full_join_size_data_handle = *mut cudf_conditional_full_join_size_data_handle_state;
 #[doc = " Opaque handle to retained libcudf mixed-join output-size data."]
 pub type cudf_mixed_join_size_data_handle = *mut cudf_mixed_join_size_data_handle_state;
+#[doc = " Number of fixed slots retained by every device-memory-manager allocator\n event ring. The producer path never allocates or waits for a reader."]
+pub type _bindgen_ty_6 = core::ffi::c_uint;
+pub type _bindgen_ty_7 = core::ffi::c_uint;
+pub type _bindgen_ty_8 = core::ffi::c_uint;
+#[doc = " Result of reading one exact sequence from a device-manager event ring."]
+pub type cudf_allocator_event_read_status_t = core::ffi::c_uint;
 #[doc = " Opaque handle to the process-local memory manager for one CUDA device."]
 pub type cudf_memory_manager_handle = *mut cudf_memory_manager_handle_state;
-pub type _bindgen_ty_6 = core::ffi::c_uint;
+pub type _bindgen_ty_9 = core::ffi::c_uint;
 pub type cudf_memory_manager_base_kind_t = core::ffi::c_uint;
 pub type cudf_memory_manager_installation_status_t = core::ffi::c_uint;
 pub type cudf_memory_manager_installation_retry_t = core::ffi::c_uint;
 #[doc = " Closed reason carried by every authoritative install/inspect record."]
 pub type cudf_memory_manager_installation_cause_t = core::ffi::c_uint;
-pub type _bindgen_ty_7 = core::ffi::c_uint;
+pub type _bindgen_ty_10 = core::ffi::c_uint;
 #[doc = " Opaque handle to one stream-bound memory reservation."]
 pub type cudf_reservation_handle = *mut cudf_reservation_handle_state;
 #[doc = " Opaque handle to one query-scoped reservation arena."]
@@ -413,6 +419,42 @@ pub struct cudf_conditional_full_join_size_data_handle_state {
 pub struct cudf_mixed_join_size_data_handle_state {
     _unused: [u8; 0],
 }
+#[doc = " Bounds of one fixed allocator-event ring at a point in time."]
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct cudf_allocator_event_ring_bounds_t {
+    pub struct_size: usize,
+    pub capacity: u64,
+    #[doc = " Lowest sequence that can still be present in the fixed ring. Zero means\n no sequence has been produced yet."]
+    pub first_available_sequence: u64,
+    #[doc = " First sequence not yet reserved by a producer. All produced sequences are\n strictly smaller than this value."]
+    pub next_sequence: u64,
+    pub reserved: [u64; 4usize],
+}
+#[doc = " One bounded, allocation-free allocator callback record.\n\n `domain_id` and `domain_generation` are meaningful only with\n `CUDF_ALLOCATOR_EVENT_COMPLETENESS_HAS_DOMAIN_IDENTITY`. A missing pool\n sample is represented by clearing its completeness bit, never by treating a\n zero-valued sample as observed data."]
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct cudf_allocator_event_t {
+    pub struct_size: usize,
+    pub sequence: u64,
+    pub monotonic_time_ns: u64,
+    pub device_ordinal: i32,
+    pub completeness: u32,
+    pub domain_kind: u32,
+    pub failure_source: u32,
+    pub action: i32,
+    pub callback_attempt: u32,
+    pub trim_retry_count: u32,
+    pub domain_id: u64,
+    pub domain_generation: u64,
+    pub domain_member_id: u64,
+    pub requested_bytes: u64,
+    pub pool_reserved_current_bytes: u64,
+    pub pool_reserved_high_bytes: u64,
+    pub pool_used_current_bytes: u64,
+    pub pool_used_high_bytes: u64,
+    pub reserved: [u64; 4usize],
+}
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]
 pub struct cudf_memory_manager_handle_state {
@@ -470,6 +512,17 @@ pub struct cudf_reservation_arena_handle_state {
 #[derive(Debug, Copy, Clone)]
 pub struct cudf_query_memory_domain_handle_state {
     _unused: [u8; 0],
+}
+#[doc = " Stable native identity for one query-memory-domain instance. `generation`\n changes whenever a new domain is created, even if a caller reuses the same\n logical domain id after teardown."]
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct cudf_query_memory_domain_identity_t {
+    pub struct_size: usize,
+    pub device_ordinal: i32,
+    pub reserved_padding: u32,
+    pub domain_id: u64,
+    pub generation: u64,
+    pub reserved: [u64; 4usize],
 }
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]
@@ -716,7 +769,25 @@ pub const CUDF_JOIN_KIND_LEFT_JOIN: cudf_join_kind_t = 1;
 pub const CUDF_JOIN_KIND_FULL_JOIN: cudf_join_kind_t = 2;
 pub const CUDF_JOIN_KIND_LEFT_SEMI_JOIN: cudf_join_kind_t = 3;
 pub const CUDF_JOIN_KIND_LEFT_ANTI_JOIN: cudf_join_kind_t = 4;
-pub const CUDF_MEMORY_MANAGER_OPTIONS_RESERVED_SLOTS: _bindgen_ty_6 = 3;
+pub const CUDF_ALLOCATOR_EVENT_RING_CAPACITY: _bindgen_ty_6 = 256;
+pub const CUDF_ALLOCATOR_EVENT_RESERVED_SLOTS: _bindgen_ty_7 = 4;
+#[doc = " A monotonic timestamp was captured while handling the allocation failure."]
+pub const CUDF_ALLOCATOR_EVENT_COMPLETENESS_HAS_TIMESTAMP: _bindgen_ty_8 = 1;
+#[doc = " The event carries a complete domain identity, including its generation."]
+pub const CUDF_ALLOCATOR_EVENT_COMPLETENESS_HAS_DOMAIN_IDENTITY: _bindgen_ty_8 = 2;
+#[doc = " The event carries one bounded CUDA-pool usage sample."]
+pub const CUDF_ALLOCATOR_EVENT_COMPLETENESS_HAS_POOL_USAGE: _bindgen_ty_8 = 4;
+#[doc = " The event carries the allocator callback action."]
+pub const CUDF_ALLOCATOR_EVENT_COMPLETENESS_HAS_ACTION: _bindgen_ty_8 = 8;
+#[doc = " The requested sequence was copied into the supplied event record."]
+pub const CUDF_ALLOCATOR_EVENT_READ_AVAILABLE: cudf_allocator_event_read_status_t = 0;
+#[doc = " A producer has reserved the sequence but has not published it yet."]
+pub const CUDF_ALLOCATOR_EVENT_READ_PENDING: cudf_allocator_event_read_status_t = 1;
+#[doc = " The requested sequence has fallen behind the fixed ring capacity."]
+pub const CUDF_ALLOCATOR_EVENT_READ_OVERWRITTEN: cudf_allocator_event_read_status_t = 2;
+#[doc = " The requested sequence has not been reserved by a producer yet."]
+pub const CUDF_ALLOCATOR_EVENT_READ_NOT_YET_RECORDED: cudf_allocator_event_read_status_t = 3;
+pub const CUDF_MEMORY_MANAGER_OPTIONS_RESERVED_SLOTS: _bindgen_ty_9 = 3;
 pub const CUDF_MEMORY_MANAGER_BASE_CUDA_ASYNC: cudf_memory_manager_base_kind_t = 0;
 pub const CUDF_MEMORY_MANAGER_BASE_POOL: cudf_memory_manager_base_kind_t = 1;
 pub const CUDF_MEMORY_MANAGER_INSTALLATION_UNINSTALLED: cudf_memory_manager_installation_status_t = 0;
@@ -741,13 +812,13 @@ pub const CUDF_MEMORY_MANAGER_INSTALLATION_CAUSE_OPTIONS_MISMATCH: cudf_memory_m
 pub const CUDF_MEMORY_MANAGER_INSTALLATION_CAUSE_IDENTITY_MISMATCH: cudf_memory_manager_installation_cause_t = 7;
 pub const CUDF_MEMORY_MANAGER_INSTALLATION_CAUSE_CALLBACK_BINDING_MISMATCH: cudf_memory_manager_installation_cause_t =
     8;
-pub const CUDF_MEMORY_MANAGER_INSTALLATION_FLAG_EXISTS: _bindgen_ty_7 = 1;
-pub const CUDF_MEMORY_MANAGER_INSTALLATION_FLAG_FAILURE_CALLBACK_INSTALLED: _bindgen_ty_7 = 2;
-pub const CUDF_MEMORY_MANAGER_INSTALLATION_FLAG_CURRENT_RESOURCE_INSTALLED: _bindgen_ty_7 = 4;
-pub const CUDF_MEMORY_MANAGER_INSTALLATION_FLAG_CALLBACK_PANICKED: _bindgen_ty_7 = 8;
-pub const CUDF_MEMORY_MANAGER_INSTALLATION_FLAG_HAS_IDENTITY: _bindgen_ty_7 = 16;
+pub const CUDF_MEMORY_MANAGER_INSTALLATION_FLAG_EXISTS: _bindgen_ty_10 = 1;
+pub const CUDF_MEMORY_MANAGER_INSTALLATION_FLAG_FAILURE_CALLBACK_INSTALLED: _bindgen_ty_10 = 2;
+pub const CUDF_MEMORY_MANAGER_INSTALLATION_FLAG_CURRENT_RESOURCE_INSTALLED: _bindgen_ty_10 = 4;
+pub const CUDF_MEMORY_MANAGER_INSTALLATION_FLAG_CALLBACK_PANICKED: _bindgen_ty_10 = 8;
+pub const CUDF_MEMORY_MANAGER_INSTALLATION_FLAG_HAS_IDENTITY: _bindgen_ty_10 = 16;
 #[doc = " The manager was created by this install call, even if its current-resource\n switch remained incomplete."]
-pub const CUDF_MEMORY_MANAGER_INSTALLATION_FLAG_CREATED_BY_CALL: _bindgen_ty_7 = 32;
+pub const CUDF_MEMORY_MANAGER_INSTALLATION_FLAG_CREATED_BY_CALL: _bindgen_ty_10 = 32;
 pub const CUDF_ORDER_ASCENDING: cudf_order_t = 0;
 pub const CUDF_ORDER_DESCENDING: cudf_order_t = 1;
 pub const CUDF_NULL_ORDER_AFTER: cudf_null_order_t = 0;
@@ -2675,6 +2746,18 @@ unsafe extern "C" {
         out: *mut cudf_memory_pool_usage_t,
     ) -> cudf_status_t;
     pub fn cudf_memory_manager_trim_to(manager: cudf_memory_manager_handle, keep_bytes: u64) -> cudf_status_t;
+    #[doc = " Reads the current fixed-ring bounds. This is a consumer operation; allocator\n callbacks never take its registry lock."]
+    pub fn cudf_memory_manager_allocator_event_ring_bounds(
+        manager: cudf_memory_manager_handle,
+        out: *mut cudf_allocator_event_ring_bounds_t,
+    ) -> cudf_status_t;
+    #[doc = " Reads one exact sequence. `out` is zeroed when the result is not available."]
+    pub fn cudf_memory_manager_read_allocator_event(
+        manager: cudf_memory_manager_handle,
+        sequence: u64,
+        out: *mut cudf_allocator_event_t,
+        status: *mut cudf_allocator_event_read_status_t,
+    ) -> cudf_status_t;
     #[doc = " Hash-partition table rows by selected column indices.\n\n `column_indices` must contain `num_columns` valid input column indices.\n `partition_offsets` must have space for `num_partitions + 1` int32 values.\n `options` must be non-NULL, name an explicit valid device, provide a\n non-NULL stream, and provide a non-NULL memory resource. `options->mr` must\n outlive the returned table."]
     pub fn cudf_hash_partition_ex(
         input: cudf_table_view_handle,
@@ -2739,6 +2822,10 @@ unsafe extern "C" {
     pub fn cudf_query_memory_domain_usage(
         domain: cudf_query_memory_domain_handle,
         out: *mut cudf_memory_resource_usage_t,
+    ) -> cudf_status_t;
+    pub fn cudf_query_memory_domain_identity(
+        domain: cudf_query_memory_domain_handle,
+        out: *mut cudf_query_memory_domain_identity_t,
     ) -> cudf_status_t;
     pub fn cudf_query_memory_domain_pool_usage(
         domain: cudf_query_memory_domain_handle,

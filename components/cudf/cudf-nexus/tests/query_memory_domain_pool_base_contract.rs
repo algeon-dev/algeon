@@ -1,6 +1,9 @@
+use std::sync::Arc;
+
 use cudf::{
-    DeviceId, DeviceMemoryManager, DeviceMemoryManagerBase, DeviceMemoryManagerOptions, ErrorCode, ErrorKind,
-    QueryMemoryDomainOptions, Runtime,
+    DeviceId, DeviceMemoryFailureAction, DeviceMemoryManager, DeviceMemoryManagerBase,
+    DeviceMemoryManagerInstallationCause, DeviceMemoryManagerInstallationIdentity, DeviceMemoryManagerOptions,
+    ErrorCode, ErrorKind, QueryMemoryDomainOptions, Runtime,
 };
 
 #[test]
@@ -39,6 +42,20 @@ fn query_memory_domain_rejects_pool_backed_manager() {
         Some(pool_options),
         "a conflicting explicit request must not replace the process-global pool",
     );
+
+    let owned_conflict = DeviceMemoryManager::try_install_for_device_with_owned_failure_callback_details_and_options(
+        device,
+        DeviceMemoryManagerInstallationIdentity::new(*b"nexus-test-owner", 1, [0x42; 16]),
+        Arc::new(|_| DeviceMemoryFailureAction::Decline),
+        DeviceMemoryManagerOptions::default(),
+    )
+    .unwrap_err();
+    assert_eq!(owned_conflict.error().code(), ErrorCode::RuntimeBindingMismatch);
+    let state = owned_conflict
+        .installation_state()
+        .expect("an owned-install conflict must preserve the authoritative native installation record");
+    assert_eq!(state.cause, DeviceMemoryManagerInstallationCause::OptionsMismatch);
+    assert_eq!(state.effective_options, Some(pool_options));
 
     let err = manager
         .query_memory_domain(50_001, QueryMemoryDomainOptions::new(8 * 1024 * 1024).with_ceiling_bytes(8 * 1024 * 1024))
