@@ -18,11 +18,12 @@ use nexus_query_engine::{
     graph_memory::GraphMemoryCalibrationOverride,
     metrics::{QueryId, TraceId},
     mode::{NativePipelineExecutionMode, StddevSampExecutionMode},
+    observability::{RuntimeObservationConfig, RuntimeObservationOwner, RuntimeTraceId},
     runtime::{
         CudfInventory, ExecutionBoundaryPolicy, ExecutionCancellation, ExecutionContext, GpuExecutionJobKind,
-        GpuExecutionPool, GpuInventory, LakehouseCacheFillConfig, MemoryControlPolicy, MemoryResourcePolicy,
-        QueryGrantRequest, QueryHandle, QueryMemoryDomainPolicy, QueryPlacementHint, ServiceStreamPool,
-        SourceChunkPlanningMode, SourceSchedulerPolicy, SourceStorageProfile, TenantQueryContext,
+        GpuExecutionPool, GpuInventory, IoLifecycle, LakehouseCacheFillConfig, MemoryControlPolicy,
+        MemoryResourcePolicy, QueryGrantRequest, QueryHandle, QueryMemoryDomainPolicy, QueryPlacementHint,
+        ServiceStreamPool, SourceChunkPlanningMode, SourceSchedulerPolicy, SourceStorageProfile, TenantQueryContext,
         cache::{hash_join::GpuHashJoinBuildCache, local_parquet::GpuLocalParquetSourceCache},
         default_service_stream_pool_size_for_device, device_budget_bytes_from_facts,
     },
@@ -33,7 +34,7 @@ use super::{
         QueryAdmissionFacts, QueryAdmissionSource, QueryAdmissionTicket, TicketTenantQueryContext,
         query_admission_ticket_from_task_context,
     },
-    metrics::NativeMetricsCapture,
+    metrics::{NativeExecutionMetricsCapture, NativeMetricsCapture},
     unbounded_native::UnboundedNativeExecutionLimiter,
 };
 use crate::{
@@ -71,6 +72,7 @@ pub struct NativeCudfExecutionConfig {
     service_stream_pool: Option<ServiceStreamPool>,
     service_stream_pool_size: Option<usize>,
     cancellation: ExecutionCancellation,
+    io_lifecycle: Option<IoLifecycle>,
     native_pipeline_execution_mode: NativePipelineExecutionMode,
     stddev_samp_execution_mode: StddevSampExecutionMode,
     dynamic_filter_execution_options: DynamicFilterExecutionOptions,
@@ -161,18 +163,23 @@ impl NativeCudfExecutionContext {
         }
     }
 
-    fn with_query_id(mut self, query_id: QueryId) -> Self {
-        self.context = self.context.with_query_id(query_id);
-        self
+    fn with_query_id(mut self, query_id: QueryId) -> nexus_query_engine::error::Result<Self> {
+        self.context = self.context.with_query_id(query_id)?;
+        Ok(self)
     }
 
-    fn with_trace_id(mut self, trace_id: TraceId) -> Self {
-        self.context = self.context.with_trace_id(trace_id);
-        self
+    fn with_trace_id(mut self, trace_id: TraceId) -> nexus_query_engine::error::Result<Self> {
+        self.context = self.context.with_trace_id(trace_id)?;
+        Ok(self)
     }
 
     fn with_graph_memory_calibration_override(mut self, override_: GraphMemoryCalibrationOverride) -> Self {
         self.context = self.context.with_graph_memory_calibration_override(override_);
+        self
+    }
+
+    fn with_io_lifecycle(mut self, lifecycle: IoLifecycle) -> Self {
+        self.context = self.context.clone().with_io_lifecycle(lifecycle);
         self
     }
 
@@ -301,6 +308,7 @@ impl NativeCudfExecutionConfig {
             service_stream_pool: None,
             service_stream_pool_size: None,
             cancellation: ExecutionCancellation::new(),
+            io_lifecycle: None,
             native_pipeline_execution_mode: NativePipelineExecutionMode::default(),
             stddev_samp_execution_mode: StddevSampExecutionMode::default(),
             dynamic_filter_execution_options: DynamicFilterExecutionOptions::default(),
@@ -326,7 +334,7 @@ impl NativeCudfExecutionConfig {
             query_id: None,
             trace_id: None,
             plan_task_mapping_datafusion_shape: None,
-            metrics_capture: None,
+            metrics_capture: Some(NativeMetricsCapture::without_sink("unassigned")),
             lakehouse_footer_pruning: false,
             graph_execution_services: GraphExecutionServices::default(),
         }
@@ -418,6 +426,7 @@ impl NativeCudfExecutionConfig {
             service_stream_pool: None,
             service_stream_pool_size: None,
             cancellation: ExecutionCancellation::new(),
+            io_lifecycle: None,
             native_pipeline_execution_mode: NativePipelineExecutionMode::default(),
             stddev_samp_execution_mode: StddevSampExecutionMode::default(),
             dynamic_filter_execution_options: DynamicFilterExecutionOptions::default(),
@@ -443,7 +452,7 @@ impl NativeCudfExecutionConfig {
             query_id: None,
             trace_id: None,
             plan_task_mapping_datafusion_shape: None,
-            metrics_capture: None,
+            metrics_capture: Some(NativeMetricsCapture::without_sink("unassigned")),
             lakehouse_footer_pruning: false,
             graph_execution_services: GraphExecutionServices::default(),
         }
@@ -543,6 +552,12 @@ impl NativeCudfExecutionConfig {
         self
     }
 
+    /// Attaches the server-generation gate used by file-backed native I/O.
+    pub fn with_io_lifecycle(mut self, lifecycle: IoLifecycle) -> Self {
+        self.io_lifecycle = Some(lifecycle);
+        self
+    }
+
     /// Attach a server-side query metrics capture sink.
     #[cfg(feature = "server")]
     pub(crate) fn with_metrics_capture(mut self, capture: NativeMetricsCapture) -> Self {
@@ -592,8 +607,21 @@ impl NativeCudfExecutionConfig {
         self.plan_task_mapping_datafusion_shape.as_deref()
     }
 
-    pub(crate) fn metrics_capture(&self) -> Option<NativeMetricsCapture> {
+    pub(crate) fn metrics_capture_factory(&self) -> Option<NativeMetricsCapture> {
         self.metrics_capture.clone()
+    }
+
+    pub(crate) fn new_metrics_capture(&self) -> Option<NativeExecutionMetricsCapture> {
+        self.query_admission_ticket
+            .as_ref()
+            .and_then(|ticket| ticket.metrics_capture())
+            .or_else(|| self.metrics_capture.as_ref().map(NativeMetricsCapture::new_execution))
+    }
+
+    pub(crate) fn runtime_observation_config(&self) -> RuntimeObservationConfig {
+        self.metrics_capture
+            .as_ref()
+            .map_or_else(RuntimeObservationConfig::native_execution, NativeMetricsCapture::runtime_observation_config)
     }
 
     pub(crate) fn with_lakehouse_footer_pruning(mut self, enabled: bool) -> Self {
@@ -876,8 +904,15 @@ impl NativeCudfExecutionConfig {
             && self.query_admission_ticket.is_none()
             && let Some(source) = self.query_admission_source.clone()
         {
-            self.query_admission_ticket =
-                Some(QueryAdmissionTicket::new(source, self.requested_grant_min_bytes, self.requested_grant_bytes));
+            let observation_capture = self.metrics_capture.as_ref().map(NativeMetricsCapture::new_execution);
+            let observation = self.new_runtime_observation(observation_capture.as_ref());
+            self.query_admission_ticket = Some(QueryAdmissionTicket::new_with_observation_and_capture(
+                source,
+                self.requested_grant_min_bytes,
+                self.requested_grant_bytes,
+                observation,
+                observation_capture,
+            ));
         }
         self
     }
@@ -891,14 +926,32 @@ impl NativeCudfExecutionConfig {
             return None;
         }
         let source = self.query_admission_source.clone()?;
-        Some(QueryAdmissionTicket::new_with_placement_hint_and_warm_graph_grant(
+        let observation_capture = self.metrics_capture.as_ref().map(NativeMetricsCapture::new_execution);
+        let observation = self.new_runtime_observation(observation_capture.as_ref());
+        Some(QueryAdmissionTicket::new_with_placement_hint_and_warm_graph_grant_and_observation_and_capture(
             source,
             self.requested_grant_min_bytes,
             self.requested_grant_bytes.or(graph_ask.map(|ask| ask.cold_bytes)),
             placement_hint,
             #[cfg(feature = "cugraph")]
             graph_ask.map(|ask| ask.warm_bytes),
+            observation,
+            observation_capture,
         ))
+    }
+
+    fn new_runtime_observation(
+        &self,
+        capture: Option<&NativeExecutionMetricsCapture>,
+    ) -> crate::native_exec::NativeRuntimeObservation {
+        let query_id = self.query_id.clone().unwrap_or_else(QueryId::mint);
+        let trace_id = self.trace_id.as_ref().map(|trace_id| RuntimeTraceId::new(trace_id.as_str()));
+        match capture {
+            Some(capture) => capture.new_runtime_observation(query_id, trace_id),
+            None => {
+                RuntimeObservationOwner::new(query_id, trace_id, RuntimeObservationConfig::native_execution()).into()
+            },
+        }
     }
 
     pub(crate) fn new_plan_query_admission_ticket_with_graph_model_ask(
@@ -1166,7 +1219,7 @@ impl NativeCudfExecutionConfig {
                         .is_some_and(|recorded| !recorded.swap(true, Ordering::AcqRel));
                     NativeCudfExecutionContext::tenant_bound(tenant_context, admission_facts, record_admission_facts)
                 })
-                .map(|context| self.stamp_acquired_service_context(context))
+                .and_then(|context| self.stamp_acquired_service_context(context))
                 .map_err(|error| {
                     Error::from_native(
                         "datafusion_nexus.native_exec.context",
@@ -1190,6 +1243,9 @@ impl NativeCudfExecutionConfig {
             .with_source_chunk_planning_options(self.source_chunk_planning_options)
             .with_graph_memory_calibration_override(self.graph_memory_calibration_override)
             .with_source_storage_profiles(self.source_storage_profiles.clone());
+        if let Some(lifecycle) = &self.io_lifecycle {
+            builder = builder.with_io_lifecycle(lifecycle.clone());
+        }
         if let Some(pool) = &self.service_stream_pool {
             builder = builder.with_service_stream_pool(pool.clone());
         }
@@ -1238,7 +1294,7 @@ impl NativeCudfExecutionConfig {
                 .acquire_context(task_context, self.cancellation.clone())
                 .await
                 .map(NativeCudfExecutionContext::ticket_bound)
-                .map(|context| self.stamp_acquired_service_context(context))
+                .and_then(|context| self.stamp_acquired_service_context(context))
                 .map_err(|error| {
                     Error::from_native(
                         "datafusion_nexus.native_exec.context",
@@ -1259,7 +1315,7 @@ impl NativeCudfExecutionConfig {
                         .is_some_and(|recorded| !recorded.swap(true, Ordering::AcqRel));
                     NativeCudfExecutionContext::tenant_bound(tenant_context, admission_facts, record_admission_facts)
                 })
-                .map(|context| self.stamp_acquired_service_context(context))
+                .and_then(|context| self.stamp_acquired_service_context(context))
                 .map_err(|error| {
                     Error::from_native(
                         "datafusion_nexus.native_exec.context",
@@ -1337,12 +1393,22 @@ impl NativeCudfExecutionConfig {
         })
     }
 
-    fn stamp_acquired_service_context(&self, mut context: NativeCudfExecutionContext) -> NativeCudfExecutionContext {
-        if let Some(query_id) = self.query_id.clone() {
-            context = context.with_query_id(query_id);
+    fn stamp_acquired_service_context(
+        &self,
+        mut context: NativeCudfExecutionContext,
+    ) -> nexus_query_engine::error::Result<NativeCudfExecutionContext> {
+        // An ambient composed-query ticket owns the canonical identity. Child
+        // fragment configs may carry independently minted planning ids and
+        // must not overwrite the pre-admission observation identity.
+        if context.context().query_id().is_none()
+            && let Some(query_id) = self.query_id.clone()
+        {
+            context = context.with_query_id(query_id)?;
         }
-        if let Some(trace_id) = self.trace_id.clone() {
-            context = context.with_trace_id(trace_id);
+        if context.context().trace_id().is_none()
+            && let Some(trace_id) = self.trace_id.clone()
+        {
+            context = context.with_trace_id(trace_id)?;
         }
         let current = context.context().graph_memory_calibration_override();
         let graph_memory_calibration_override =
@@ -1350,7 +1416,10 @@ impl NativeCudfExecutionConfig {
         if graph_memory_calibration_override != current {
             context = context.with_graph_memory_calibration_override(graph_memory_calibration_override);
         }
-        context
+        if let Some(lifecycle) = &self.io_lifecycle {
+            context = context.with_io_lifecycle(lifecycle.clone());
+        }
+        Ok(context)
     }
 
     pub(crate) fn graph_memory_calibration_override_for_acquired_service_context(
@@ -1453,8 +1522,8 @@ mod tests {
     use nexus_query_engine::{
         error::{QueryError, QueryErrorCode, Result},
         runtime::{
-            DeploymentIoCapability, DeviceFacts, GdsDriverProbeStatus, KvikioCompatModeStatus, NvidiaFsProbeStatus,
-            QueryService, QueryServiceConfig, QueryServiceTenantConfig, TenantId,
+            DeploymentIoCapability, DeviceFacts, GdsDriverProbeStatus, IoLifecycle, KvikioCompatModeStatus,
+            NvidiaFsProbeStatus, QueryService, QueryServiceConfig, QueryServiceTenantConfig, TenantId,
         },
     };
 
@@ -1568,6 +1637,39 @@ mod tests {
     }
 
     #[test]
+    fn standalone_bounded_and_unbounded_contexts_reject_parquet_io_after_generation_close() {
+        let configs = [
+            NativeCudfExecutionConfig::bounded(1024 * 1024, 512 * 1024, 1, 1, 1),
+            NativeCudfExecutionConfig::unbounded(),
+        ];
+
+        for config in configs {
+            let lifecycle = IoLifecycle::new();
+            let context = config.with_io_lifecycle(lifecycle.clone()).execution_context().unwrap();
+            lifecycle.close();
+
+            let error = context.context().acquire_io_lease("datafusion_nexus.test.parquet_io.after_close").unwrap_err();
+            assert_eq!(error.code(), QueryErrorCode::Cancelled);
+            assert_eq!(error.fact_value("reason"), Some("io_lifecycle_closed"));
+        }
+    }
+
+    #[test]
+    fn acquired_query_service_context_is_stamped_with_server_io_generation() {
+        let lifecycle = IoLifecycle::new();
+        let config =
+            NativeCudfExecutionConfig::bounded(1024 * 1024, 512 * 1024, 1, 1, 1).with_io_lifecycle(lifecycle.clone());
+        let context = NativeCudfExecutionContext::standalone(ExecutionContext::builder().build().unwrap(), None);
+        let context = config.stamp_acquired_service_context(context).unwrap();
+        lifecycle.close();
+
+        let error =
+            context.context().acquire_io_lease("datafusion_nexus.test.service_parquet_io.after_close").unwrap_err();
+        assert_eq!(error.code(), QueryErrorCode::Cancelled);
+        assert_eq!(error.fact_value("reason"), Some("io_lifecycle_closed"));
+    }
+
+    #[test]
     fn service_acquired_context_preserves_service_graph_calibration_without_adapter_override() {
         let service_override = GraphMemoryCalibrationOverride::default().with_raw_input_edges(45_564_149);
         let config = NativeCudfExecutionConfig::bounded_auto_sized();
@@ -1648,6 +1750,8 @@ mod tests {
         .unwrap();
         let source = QueryAdmissionSource::new(service, tenant_id);
         let base = NativeCudfExecutionConfig::bounded(1024, 512, 1, 3, 1)
+            .with_query_id("ticket-query")
+            .with_trace_id("ticket-trace")
             .with_query_admission_source(source)
             .with_requested_grant_min_bytes(Some(384))
             .with_requested_grant_bytes(Some(512));
@@ -1661,6 +1765,9 @@ mod tests {
         let ticket = config.query_admission_ticket().expect("plan ticket should be created");
         assert_eq!(ticket.requested_grant_min_bytes(), Some(384));
         assert_eq!(ticket.requested_grant_bytes(), Some(512));
+        let owner = ticket.observation_owner();
+        assert_eq!(owner.query_id().map(|query_id| query_id.as_str()), Some("ticket-query"));
+        assert_eq!(owner.trace_id().map(|trace_id| trace_id.as_str()), Some("ticket-trace"));
     }
 
     #[test]

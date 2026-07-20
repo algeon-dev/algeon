@@ -51,6 +51,12 @@ pub enum QueryErrorCode {
     /// This is classified as temporary because reducing memory pressure or
     /// retrying with a different admission decision can remediate it.
     CudfResourceExhausted,
+    /// A host materialization size computation overflowed the platform range.
+    /// The same request cannot be retried safely without changing its shape.
+    SizeOverflow,
+    /// One unsplittable Arrow host row exceeds the configured deterministic
+    /// materialization ceiling.
+    HostMaterializationLimitExceeded,
     /// cuDF reported a temporary dependency/runtime failure.
     CudfTemporaryFailure,
     /// cuDF reported a persistent dependency/runtime failure.
@@ -95,6 +101,8 @@ impl QueryErrorCode {
             Self::CudfInvalidInput => "cudf_invalid_input",
             Self::CudfUnsupported => "cudf_unsupported",
             Self::CudfResourceExhausted => "cudf_resource_exhausted",
+            Self::SizeOverflow => "size_overflow",
+            Self::HostMaterializationLimitExceeded => "host_materialization_limit_exceeded",
             Self::CudfTemporaryFailure => "cudf_temporary_failure",
             Self::CudfPersistentFailure => "cudf_persistent_failure",
             Self::CudfDependencyFailure => "cudf_dependency_failure",
@@ -223,6 +231,8 @@ pub const fn kind_for_code(code: QueryErrorCode) -> QueryErrorKind {
         QueryErrorCode::CudfInvalidInput => QueryErrorKind::InvalidInput,
         QueryErrorCode::CudfUnsupported => QueryErrorKind::Unsupported,
         QueryErrorCode::CudfResourceExhausted
+        | QueryErrorCode::SizeOverflow
+        | QueryErrorCode::HostMaterializationLimitExceeded
         | QueryErrorCode::MemoryReservationFailed
         | QueryErrorCode::ServiceOverloaded => QueryErrorKind::ResourceExhausted,
         QueryErrorCode::CudfTemporaryFailure
@@ -260,6 +270,8 @@ pub const fn status_for_code(code: QueryErrorCode) -> QueryErrorStatus {
         | QueryErrorCode::InvalidPlan
         | QueryErrorCode::CudfInvalidInput
         | QueryErrorCode::CudfUnsupported
+        | QueryErrorCode::SizeOverflow
+        | QueryErrorCode::HostMaterializationLimitExceeded
         | QueryErrorCode::CudfDependencyFailure
         | QueryErrorCode::SourceAccessDenied
         | QueryErrorCode::SourceUnauthenticated
@@ -635,13 +647,21 @@ impl StdError for QueryError {
     }
 }
 
-// cuDF classification priority is resource exhaustion first, then retry status
-// (`Temporary`/`Persistent`), then permanent failures by cuDF kind. This keeps
+// cuDF classification preserves permanent size/host-limit codes first, then
+// generic resource exhaustion, retry status (`Temporary`/`Persistent`), and
+// permanent failures by cuDF kind. This keeps
 // cuDF's action contract intact: only Temporary is automatically retryable;
 // Persistent requires escalation or intervention. Notable permanent mappings:
 // `NotFound` is treated as invalid input, `ExecutionContext` is treated as an
 // invariant violation, and unknown kinds fall back to dependency failure.
 fn code_for_cudf_error(error: &cudf::Error) -> QueryErrorCode {
+    match error.code() {
+        cudf::ErrorCode::SizeOverflow => return QueryErrorCode::SizeOverflow,
+        cudf::ErrorCode::HostMaterializationLimitExceeded => {
+            return QueryErrorCode::HostMaterializationLimitExceeded;
+        },
+        _ => {},
+    }
     if error.kind() == cudf::ErrorKind::ResourceExhausted {
         return QueryErrorCode::CudfResourceExhausted;
     }

@@ -12,13 +12,14 @@ pub(super) fn try_execute_adaptive_bounded_pipeline(
     plan: &QueryPlan,
     gpu_inputs: &GpuResidentInputMap,
     metrics: &mut QueryMetrics,
+    observation_scope: Option<&crate::observability::RuntimeExecutionObservationScope>,
 ) -> Result<Option<QueryOutput>> {
     let memory_history = context.adaptive_memory_history();
     let Some(admission) = adaptive_bounded_pipeline_admission_with_memory_history(plan, memory_history.as_deref())?
     else {
         return Ok(None);
     };
-    execute_adaptive_bounded_pipeline(context, plan, gpu_inputs, metrics, admission).map(Some)
+    execute_adaptive_bounded_pipeline(context, plan, gpu_inputs, metrics, admission, observation_scope).map(Some)
 }
 
 fn execute_adaptive_bounded_pipeline(
@@ -27,8 +28,9 @@ fn execute_adaptive_bounded_pipeline(
     gpu_inputs: &GpuResidentInputMap,
     metrics: &mut QueryMetrics,
     admission: AdaptivePipelineAdmission,
+    observation_scope: Option<&crate::observability::RuntimeExecutionObservationScope>,
 ) -> Result<QueryOutput> {
-    AdaptiveCompiledPipelineExecutor::new(context, plan, gpu_inputs, metrics, admission).run()
+    AdaptiveCompiledPipelineExecutor::new(context, plan, gpu_inputs, metrics, admission, observation_scope).run()
 }
 
 struct AdaptiveCompiledPipelineExecutor<'a, 'm> {
@@ -37,6 +39,7 @@ struct AdaptiveCompiledPipelineExecutor<'a, 'm> {
     gpu_inputs: &'a GpuResidentInputMap,
     metrics: &'m mut QueryMetrics,
     admission: AdaptivePipelineAdmission,
+    observation_scope: Option<&'a crate::observability::RuntimeExecutionObservationScope>,
 }
 
 impl<'a, 'm> AdaptiveCompiledPipelineExecutor<'a, 'm> {
@@ -46,8 +49,9 @@ impl<'a, 'm> AdaptiveCompiledPipelineExecutor<'a, 'm> {
         gpu_inputs: &'a GpuResidentInputMap,
         metrics: &'m mut QueryMetrics,
         admission: AdaptivePipelineAdmission,
+        observation_scope: Option<&'a crate::observability::RuntimeExecutionObservationScope>,
     ) -> Self {
-        Self { context, plan, gpu_inputs, metrics, admission }
+        Self { context, plan, gpu_inputs, metrics, admission, observation_scope }
     }
 
     fn run(self) -> Result<QueryOutput> {
@@ -83,6 +87,7 @@ impl<'a, 'm> AdaptiveCompiledPipelineExecutor<'a, 'm> {
                             pipeline,
                             self.gpu_inputs,
                             self.metrics,
+                            self.observation_scope,
                         )?;
                         if let Some(memory_history) = self.context.adaptive_memory_history() {
                             memory_history.record_observation(

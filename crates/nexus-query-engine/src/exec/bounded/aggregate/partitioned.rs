@@ -173,7 +173,8 @@ fn slice_compiled_aggregate_partition(
         )
     })?;
     let len = end.saturating_sub(start);
-    let overrides = execution_overrides(context);
+    let overrides_lease = execution_overrides(context)?;
+    let overrides = overrides_lease.overrides();
     let sliced = frame.with_execution(&overrides).slice(start, len).map_err(|error| {
         QueryError::from_cudf(
             "nexus_query_engine.bounded.aggregate.hash_partition_slice",

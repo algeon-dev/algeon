@@ -1,6 +1,12 @@
 //! Construction and policy validation for native execution contexts.
 
-use std::{sync::Arc, time::Duration};
+use std::{
+    error::Error as StdError,
+    fmt,
+    panic::{AssertUnwindSafe, catch_unwind},
+    sync::Arc,
+    time::Duration,
+};
 
 use super::{
     super::{
@@ -13,7 +19,8 @@ use super::{
         object_store::{SourceObjectStoreRegistry, default_object_store_control_runtime},
         service_stream::{default_service_stream_pool_size_for_device, validate_service_stream_pool_size},
     },
-    ExecutionCancellation, ExecutionContext, ExecutionContextParts, SourceSchedulerPolicy,
+    ExecutionCancellation, ExecutionContext, ExecutionContextParts, RuntimeObservedExecutionContext,
+    SourceSchedulerPolicy,
 };
 use crate::{
     adaptive_runtime::AdaptiveMemoryHistory,
@@ -23,6 +30,10 @@ use crate::{
     graph_memory::GraphMemoryCalibrationOverride,
     metrics::{QueryId, TraceId},
     mode::{NativePipelineExecutionMode, StddevSampExecutionMode},
+    observability::{
+        RuntimeObservationConfig, RuntimeObservationHandle, RuntimeObservationSession, RuntimeQueryId,
+        RuntimeTerminalOutcome, RuntimeTraceId,
+    },
 };
 
 /// Builder for [`ExecutionContext`].
@@ -32,14 +43,18 @@ use crate::{
 /// `memory_policy` no longer construct CUDA state. If no runtime is supplied,
 /// the builder creates a cudf runtime from the requested device ordinal and
 /// memory-resource policy.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Default)]
 pub struct ExecutionContextBuilder {
     /// Optional caller-provided diagnostic query id.
     query_id: Option<QueryId>,
     /// Optional caller-provided parent trace id.
     trace_id: Option<TraceId>,
+    /// Query-local bounded runtime observation policy.
+    runtime_observation_config: RuntimeObservationConfig,
     /// Prebuilt runtime to use instead of constructing one.
     runtime: Option<Arc<cudf::Runtime>>,
+    /// Optional server-generation gate for file-backed native I/O.
+    io_lifecycle: Option<crate::runtime::IoLifecycle>,
     /// Optional caller-owned dedicated GPU execution pool.
     gpu_execution_pool: Option<GpuExecutionPool>,
     /// CUDA device ordinal used only when this builder constructs the runtime.
@@ -94,6 +109,74 @@ pub struct ExecutionContextBuilder {
     resident_graph_cache: Option<Arc<cache::resident_graph::GpuResidentGraphCache>>,
 }
 
+/// Builder that owns a caller-supplied runtime observation session.
+///
+/// Attaching the unique observation owner moves construction onto this type so
+/// every consuming error path can return that owner to the caller.
+#[derive(Debug)]
+pub struct RuntimeObservedExecutionContextBuilder {
+    builder: ExecutionContextBuilder,
+    observation: RuntimeObservationSession,
+}
+
+/// Recoverable failure to build a runtime-observed execution context.
+///
+/// The native [`QueryError`] remains available for structured classification,
+/// while [`Self::into_parts`] returns the unique observation owner so retained
+/// records can still be inspected and sealed.
+#[derive(Debug)]
+pub struct RuntimeObservationBuildError {
+    error: Option<Box<QueryError>>,
+    observation: Option<RuntimeObservationSession>,
+}
+
+impl RuntimeObservationBuildError {
+    fn new(error: QueryError, observation: RuntimeObservationSession) -> Self {
+        Self { error: Some(Box::new(error)), observation: Some(observation) }
+    }
+
+    /// Returns the structured native build error.
+    pub fn query_error(&self) -> &QueryError {
+        self.error.as_deref().expect("runtime observation build error always contains its query error")
+    }
+
+    /// Returns the recovered unique observation owner.
+    pub fn observation(&self) -> &RuntimeObservationSession {
+        self.observation.as_ref().expect("runtime observation build error always contains its observation owner")
+    }
+
+    /// Separates the structured error from the recovered observation owner.
+    pub fn into_parts(mut self) -> (QueryError, RuntimeObservationSession) {
+        let error = self.error.take().expect("runtime observation build error always contains its query error");
+        let observation =
+            self.observation.take().expect("runtime observation build error always contains its observation owner");
+        (*error, observation)
+    }
+}
+
+impl fmt::Display for RuntimeObservationBuildError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Display::fmt(self.query_error(), formatter)
+    }
+}
+
+impl StdError for RuntimeObservationBuildError {
+    fn source(&self) -> Option<&(dyn StdError + 'static)> {
+        Some(self.query_error())
+    }
+}
+
+impl Drop for RuntimeObservationBuildError {
+    fn drop(&mut self) {
+        let Some(observation) = self.observation.take() else {
+            return;
+        };
+        let _ = catch_unwind(AssertUnwindSafe(|| {
+            let _ = observation.seal(RuntimeTerminalOutcome::Dropped);
+        }));
+    }
+}
+
 impl ExecutionContextBuilder {
     /// Creates a builder with default runtime and execution policies.
     pub fn new() -> Self {
@@ -121,6 +204,12 @@ impl ExecutionContextBuilder {
         self
     }
 
+    /// Attaches a server-generation lifecycle to file-backed native I/O.
+    pub fn with_io_lifecycle(mut self, lifecycle: crate::runtime::IoLifecycle) -> Self {
+        self.io_lifecycle = Some(lifecycle);
+        self
+    }
+
     /// Uses a caller-owned dedicated executor for synchronous GPU work.
     pub fn with_gpu_execution_pool(mut self, pool: GpuExecutionPool) -> Self {
         self.gpu_execution_pool = Some(pool);
@@ -137,6 +226,21 @@ impl ExecutionContextBuilder {
     pub fn with_trace_id(mut self, trace_id: impl Into<TraceId>) -> Self {
         self.trace_id = Some(trace_id.into());
         self
+    }
+
+    /// Enables or disables bounded runtime observation for the constructed context.
+    pub fn with_runtime_observation_config(mut self, config: RuntimeObservationConfig) -> Self {
+        self.runtime_observation_config = config;
+        self
+    }
+
+    /// Supplies a caller-created query session and enters the owner-preserving build API.
+    pub fn with_runtime_observation_session(
+        mut self,
+        session: RuntimeObservationSession,
+    ) -> RuntimeObservedExecutionContextBuilder {
+        self.runtime_observation_config = session.config();
+        RuntimeObservedExecutionContextBuilder { builder: self, observation: session }
     }
 
     /// Selects the CUDA device ordinal for runtime construction.
@@ -320,6 +424,79 @@ impl ExecutionContextBuilder {
     /// Validation failures carry report-facing facts such as
     /// `missing_hash_join_build_cache`; do not churn those fact keys casually.
     pub fn build(self) -> Result<ExecutionContext> {
+        if self.runtime_observation_config.is_enabled() {
+            return Err(runtime_observation_owner_required_error());
+        }
+        self.build_context(RuntimeObservationHandle::disabled())
+    }
+
+    /// Builds a cloneable execution context paired with its unique observation owner.
+    pub fn build_with_runtime_observation(
+        self,
+    ) -> std::result::Result<RuntimeObservedExecutionContext, RuntimeObservationBuildError> {
+        let observation = RuntimeObservationSession::new(
+            RuntimeQueryId::from(self.query_id.clone().unwrap_or_default()),
+            self.trace_id.as_ref().map(|trace_id| RuntimeTraceId::new(trace_id.to_string())),
+            self.runtime_observation_config,
+        );
+        self.build_with_observation(observation)
+    }
+
+    fn build_with_observation(
+        self,
+        observation: RuntimeObservationSession,
+    ) -> std::result::Result<RuntimeObservedExecutionContext, RuntimeObservationBuildError> {
+        let handle = observation.handle();
+        match self.build_context(handle) {
+            Ok(context) => Ok(RuntimeObservedExecutionContext::new(context, observation)),
+            Err(error) => Err(RuntimeObservationBuildError::new(error, observation)),
+        }
+    }
+
+    fn adopt_or_validate_runtime_observation_identity(
+        &mut self,
+        observation: &RuntimeObservationSession,
+    ) -> Result<()> {
+        let Some(observation_query_id) = observation.query_id() else {
+            return Ok(());
+        };
+        match &self.query_id {
+            Some(query_id) if query_id.as_str() != observation_query_id.as_str() => {
+                return Err(runtime_observation_identity_error(
+                    "runtime_observation_query_id_mismatch",
+                    "query_id",
+                    query_id.as_str(),
+                    observation_query_id.as_str(),
+                ));
+            },
+            Some(_) => {},
+            None => self.query_id = Some(QueryId::new(observation_query_id.as_str())),
+        }
+
+        match (&self.trace_id, observation.trace_id()) {
+            (Some(trace_id), Some(observation_trace_id)) if trace_id.as_str() != observation_trace_id.as_str() => {
+                Err(runtime_observation_identity_error(
+                    "runtime_observation_trace_id_mismatch",
+                    "trace_id",
+                    trace_id.as_str(),
+                    observation_trace_id.as_str(),
+                ))
+            },
+            (Some(trace_id), None) => Err(runtime_observation_identity_error(
+                "runtime_observation_trace_id_mismatch",
+                "trace_id",
+                trace_id.as_str(),
+                "none",
+            )),
+            (Some(_), Some(_)) | (None, None) => Ok(()),
+            (None, Some(observation_trace_id)) => {
+                self.trace_id = Some(TraceId::new(observation_trace_id.as_str()));
+                Ok(())
+            },
+        }
+    }
+
+    fn build_context(self, runtime_observation: RuntimeObservationHandle) -> Result<ExecutionContext> {
         self.memory_control_policy.validate()?;
         self.boundary_policy.validate(self.hash_join_build_cache.is_some())?;
         self.source_scheduler_policy.validate()?;
@@ -366,8 +543,16 @@ impl ExecutionContextBuilder {
                 resolve_gpu_execution_pool(gpu_execution_pool, runtime.device(), service_stream_pool.pool_size())?;
             let grant_reservation_arena = create_grant_reservation_arena(runtime.as_ref(), self.memory_grant.as_ref())?;
             return Ok(ExecutionContext::from_parts(ExecutionContextParts {
+                service_epoch: None,
+                query_epoch: None,
+                query_anchor: None,
+                io_lifecycle: self.io_lifecycle,
                 query_id,
                 trace_id,
+                runtime_observation,
+                runtime_observation_owner: None,
+                runtime_execution_scope: None,
+                runtime_stream_lease_scope: crate::observability::RuntimeStreamLeaseScope::default(),
                 runtime,
                 gpu_execution_pool,
                 memory_policy: MemoryResourcePolicy::ExternalRuntime,
@@ -442,8 +627,16 @@ impl ExecutionContextBuilder {
         let runtime = Arc::new(runtime);
         let grant_reservation_arena = create_grant_reservation_arena(runtime.as_ref(), self.memory_grant.as_ref())?;
         Ok(ExecutionContext::from_parts(ExecutionContextParts {
+            service_epoch: None,
+            query_epoch: None,
+            query_anchor: None,
+            io_lifecycle: self.io_lifecycle,
             query_id,
             trace_id,
+            runtime_observation,
+            runtime_observation_owner: None,
+            runtime_execution_scope: None,
+            runtime_stream_lease_scope: crate::observability::RuntimeStreamLeaseScope::default(),
             runtime,
             gpu_execution_pool,
             memory_policy,
@@ -479,6 +672,50 @@ impl ExecutionContextBuilder {
             query_service_admitted: false,
         }))
     }
+}
+
+impl RuntimeObservedExecutionContextBuilder {
+    /// Rejects the owner-discarding build method and returns the supplied owner.
+    pub fn build(self) -> std::result::Result<ExecutionContext, RuntimeObservationBuildError> {
+        Err(RuntimeObservationBuildError::new(runtime_observation_owner_required_error(), self.observation))
+    }
+
+    /// Builds the context while returning the supplied owner on every failure.
+    pub fn build_with_runtime_observation(
+        mut self,
+    ) -> std::result::Result<RuntimeObservedExecutionContext, RuntimeObservationBuildError> {
+        if let Err(error) = self.builder.adopt_or_validate_runtime_observation_identity(&self.observation) {
+            return Err(RuntimeObservationBuildError::new(error, self.observation));
+        }
+        self.builder.build_with_observation(self.observation)
+    }
+}
+
+fn runtime_observation_owner_required_error() -> QueryError {
+    QueryError::new(
+        QueryErrorCode::InvalidPlan,
+        "nexus_query_engine.runtime_observation.owner",
+        "enabled runtime observation requires an explicit owner lifetime",
+    )
+    .with_fact("reason", "runtime_observation_owner_required")
+    .with_fact("required_builder_method", "build_with_runtime_observation")
+}
+
+fn runtime_observation_identity_error(
+    reason: &'static str,
+    identity_kind: &'static str,
+    context_value: &str,
+    observation_value: &str,
+) -> QueryError {
+    QueryError::new(
+        QueryErrorCode::InvalidPlan,
+        "nexus_query_engine.runtime_observation.identity",
+        "execution context identity conflicts with the supplied runtime observation session",
+    )
+    .with_fact("reason", reason)
+    .with_fact("identity_kind", identity_kind)
+    .with_fact("context_identity", context_value)
+    .with_fact("observation_identity", observation_value)
 }
 
 fn resolve_gpu_execution_pool(

@@ -50,6 +50,7 @@ pub fn probe_resolved_remote_parquet_datasource(
     validate_remote_parquet_datasource_probe_request(resolved_source, OPERATION)?;
     let remote_source = cudf_remote_parquet_source_for_resolved_source(context, resolved_source, OPERATION)?;
     let source_capability = cudf::io::parquet::remote_parquet_capability(&remote_source);
+    let _io_lease = context.acquire_io_lease(OPERATION)?;
     let probe = cudf::io::parquet::probe_remote_parquet_datasource(&remote_source, preferred_read_size_bytes).map_err(
         |error| {
             QueryError::from_cudf_without_source(

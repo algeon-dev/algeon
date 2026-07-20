@@ -28,13 +28,76 @@ pub(super) struct WarmGraphReservation {
 impl std::fmt::Debug for WarmGraphReservation {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("WarmGraphReservation")
-            .field("device_ordinal", &self.stream_lease.runtime().device().ordinal())
+            .field("device_ordinal", &self.stream_lease.device().ordinal())
             .field("resident_key", self.preparation_pin.resident_key())
             .finish()
     }
 }
 
 impl QueryServiceResources {
+    pub(super) fn close_stream_pools(&self) -> Result<()> {
+        let operation = "nexus_query_engine.query_service.close_stream_pools";
+        let mut first_error = None;
+        for device in self.devices.contexts() {
+            if let Err(error) = device.stream_pool().close(operation)
+                && first_error.is_none()
+            {
+                first_error = Some(error);
+            }
+        }
+        match first_error {
+            Some(error) => Err(error),
+            None => Ok(()),
+        }
+    }
+
+    pub(super) fn close_and_drain_stream_pools_until(&self, deadline: Instant) -> Result<()> {
+        let operation = "nexus_query_engine.query_service.close_and_drain_stream_pools";
+        let mut first_error = None;
+        for device in self.devices.contexts() {
+            if let Err(error) = device.stream_pool().close_and_wait_until(deadline, operation)
+                && first_error.is_none()
+            {
+                first_error = Some(error);
+            }
+        }
+        match first_error {
+            Some(error) => Err(error),
+            None => Ok(()),
+        }
+    }
+
+    pub(super) fn close_and_drain_local_parquet_source_caches_until(&self, deadline: Instant) -> Result<()> {
+        let mut first_error = None;
+        for cache in self.local_parquet_source_caches.values() {
+            if let Err(error) = cache.close_and_drain_until(deadline)
+                && first_error.is_none()
+            {
+                first_error = Some(error);
+            }
+        }
+        match first_error {
+            Some(error) => Err(error),
+            None => Ok(()),
+        }
+    }
+
+    #[cfg(feature = "cugraph")]
+    pub(super) fn close_and_drain_resident_graph_caches_until(&self, deadline: Instant) -> Result<()> {
+        let mut first_error = None;
+        for cache in self.resident_graph_caches.values() {
+            if let Err(error) = cache.close_and_drain_until(deadline)
+                && first_error.is_none()
+            {
+                first_error = Some(error);
+            }
+        }
+        match first_error {
+            Some(error) => Err(error),
+            None => Ok(()),
+        }
+    }
+
     pub(super) fn gpu_execution_pool_for_device(&self, device_ordinal: usize) -> Result<GpuExecutionPool> {
         self.gpu_execution_pools.get(&device_ordinal).cloned().ok_or_else(|| {
             QueryError::new(

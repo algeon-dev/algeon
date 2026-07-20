@@ -226,6 +226,7 @@ fn bounded_native_query_applies_post_decode_filter_to_shared_local_source_frame(
             &pipeline,
             &gpu_inputs,
             &mut metrics,
+            None,
         )
         .unwrap();
         scheduler.run(&mut executor).unwrap();

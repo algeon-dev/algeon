@@ -23,7 +23,8 @@ pub(super) fn execute_edge_normalize(
         metrics,
     )?;
     let timer = Instant::now();
-    let overrides = execution_overrides(context);
+    let overrides_lease = execution_overrides(context)?;
+    let overrides = overrides_lease.overrides();
     let mut frame = project_edge_columns(frame, &node.spec, node_id)?;
 
     if node.spec.add_reverse {

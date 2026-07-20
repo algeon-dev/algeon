@@ -111,7 +111,8 @@ fn materialize_partitioned_hash_equi_join_partition(
 ) -> Result<PartitionedJoinPartitionOutput> {
     let left_keys = node.spec.keys.iter().map(|key| key.left.name().to_string()).collect::<Vec<_>>();
     let right_keys = node.spec.keys.iter().map(|key| key.right.name().to_string()).collect::<Vec<_>>();
-    let overrides = execution_overrides(context);
+    let overrides_lease = execution_overrides(context)?;
+    let overrides = overrides_lease.overrides();
     let timer = Instant::now();
     let mut txn = JoinMaterializationTxn::with_sides(left, right);
     let (left, right) = txn.sides();
@@ -263,7 +264,8 @@ pub(in crate::exec::bounded::join::compiled) fn execute_compiled_partitioned_has
     let partition_target_bytes = partitioned_join_target_bytes_for_context(context);
     let build_keys = join_keys_for_side(node, build_side);
     let probe_keys = join_keys_for_side(node, probe_side);
-    let overrides = execution_overrides(context);
+    let overrides_lease = execution_overrides(context)?;
+    let overrides = overrides_lease.overrides();
     let build_partitioned = hash_partition_join_side(
         context,
         node_id,
@@ -418,7 +420,8 @@ pub(in crate::exec::bounded::join::compiled) fn execute_compiled_partitioned_has
     let partition_target_bytes = partitioned_join_target_bytes_for_context(context);
     let build_keys = join_keys_for_side(node, build_side);
     let probe_keys = join_keys_for_side(node, probe_side);
-    let overrides = execution_overrides(context);
+    let overrides_lease = execution_overrides(context)?;
+    let overrides = overrides_lease.overrides();
     let build_partitioned = hash_partition_join_side(
         context,
         node_id,
@@ -580,7 +583,11 @@ impl PartitionedHashEquiJoinProbeStreamSource {
         };
         let probe_rows = probe.rows;
         let probe_bytes = probe.bytes;
-        let overrides = execution_overrides(&self.context);
+        let overrides_lease = match execution_overrides(&self.context) {
+            Ok(overrides) => overrides,
+            Err(error) => return Some(Err(error)),
+        };
+        let overrides = overrides_lease.overrides();
         let probe_partitioned = match hash_partition_join_side(
             &self.context,
             self.node_id,

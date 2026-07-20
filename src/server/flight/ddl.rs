@@ -3,12 +3,30 @@ use super::*;
 impl DatafusionCudfFlightSqlService {
     pub(super) async fn execute_update_sql(
         &self,
-        query_id: String,
+        mut planning_lease: QueryPlanningLease,
         sql: String,
         correlation_id: Option<String>,
         statement_kind: UpdateStatementKind,
     ) -> Result<i64, Status> {
-        let started_at = Instant::now();
+        let query_id = planning_lease.key().query_id().to_string();
+        let observation = match planning_lease.observation_handle() {
+            Ok(observation) => observation,
+            Err(error) => {
+                let (status, captured) = adapter_error_to_status_and_capture(
+                    error.adapter_error("datafusion_nexus.server.flight.update.observation_handle"),
+                );
+                planning_lease.finish_captured("planning", &status, captured);
+                return Err(status);
+            },
+        };
+        let mut execution_lease = match planning_lease.into_execution() {
+            Ok(execution_lease) => execution_lease,
+            Err(error) => {
+                let status = adapter_error_status(error.adapter_error(statement_kind.into_execution_operation()));
+                return Err(status_with_query_id_and_correlation_id(status, &query_id, correlation_id.as_deref()));
+            },
+        };
+        let activity_factory = execution_lease.activity_factory();
         let query_span = Self::query_span(&query_id, correlation_id.as_deref(), "update_statement");
         let _query_enter = query_span.enter();
         tracing::info!(
@@ -21,9 +39,14 @@ impl DatafusionCudfFlightSqlService {
 
         drop(_query_enter);
 
-        let lifecycle = QueryLifecycle::new(query_id.clone(), started_at);
         let native_cancellation = ExecutionCancellation::new();
-        let planning = self.query_planning(&query_id, correlation_id.as_deref(), native_cancellation.clone());
+        let planning = self.coordinated_query_planning(
+            &query_id,
+            correlation_id.as_deref(),
+            native_cancellation.clone(),
+            observation,
+            activity_factory,
+        );
         let query_ctx = &planning.ctx;
         let state = query_ctx.state();
         let plan = tokio::select! {
@@ -32,71 +55,57 @@ impl DatafusionCudfFlightSqlService {
                 Ok(plan) => plan,
                 Err(error) => {
                     log_leaf_guard_rejection(&query_id, &error, self.session_profile);
-                    self.observability.finish_failed(
-                        &query_id,
-                        "planning",
-                        datafusion_error_to_captured_error(&error, statement_kind.sql_operation()),
-                    );
+                    let captured = datafusion_error_to_captured_error(&error, statement_kind.sql_operation());
                     let status = status_with_query_id(
                         datafusion_error_to_status_for_operation(error, statement_kind.sql_operation()),
                         &query_id,
                     );
                     let status =
                         status_with_query_id_and_correlation_id(status, &query_id, correlation_id.as_deref());
-                    lifecycle.finish_status("planning", &status);
-                    self.observability.seal(&query_id);
+                    execution_lease.finish_failed("planning", captured);
                     return Err(status);
                 },
             },
             _ = self.shutdown_token.cancelled() => {
                 native_cancellation.cancel();
-                let status = finish_adapter_error_status_with_correlation_id(
-                    self.observability.as_ref(),
+                let (status, captured) = adapter_error_to_status_and_capture(server_shutdown_error());
+                let status = status_with_query_id_and_correlation_id(
+                    status,
                     &query_id,
                     correlation_id.as_deref(),
-                    "planning",
-                    server_shutdown_error(),
                 );
-                lifecycle.finish_status("planning", &status);
-                self.observability.seal(&query_id);
+                execution_lease.finish_captured("planning", &status, captured);
                 return Err(status);
             },
         };
         if let Err(error) = reject_parameterized_plan(&plan, statement_kind.sql_operation()) {
-            self.observability.finish_failed(
-                &query_id,
-                "planning",
-                datafusion_error_to_captured_error(&error, statement_kind.sql_operation()),
-            );
+            let captured = datafusion_error_to_captured_error(&error, statement_kind.sql_operation());
             let status = status_with_query_id(
                 datafusion_error_to_status_for_operation(error, statement_kind.sql_operation()),
                 &query_id,
             );
             let status = status_with_query_id_and_correlation_id(status, &query_id, correlation_id.as_deref());
-            lifecycle.finish_status("planning", &status);
-            self.observability.seal(&query_id);
+            execution_lease.finish_failed("planning", captured);
             return Err(status);
         }
         if let Err(error) = verify_update_plan(&plan) {
-            self.observability.finish_failed(&query_id, "planning", CapturedError::from_adapter_error(&error));
+            let captured = CapturedError::from_adapter_error(&error);
             let status = status_with_query_id_and_correlation_id(
                 adapter_error_status(error),
                 &query_id,
                 correlation_id.as_deref(),
             );
-            lifecycle.finish_status("planning", &status);
-            self.observability.seal(&query_id);
+            execution_lease.finish_failed("planning", captured);
             return Err(status);
         }
         if let Err(error) = reject_drop_object_type_mismatch(query_ctx, &plan, statement_kind.sql_operation()).await {
-            self.observability.finish_failed(&query_id, "planning", CapturedError::from_adapter_error(&error));
+            let captured = CapturedError::from_adapter_error(&error);
             let status = status_with_query_id_and_correlation_id(
                 adapter_error_status(error),
                 &query_id,
                 correlation_id.as_deref(),
             );
-            lifecycle.finish_status("planning", &status);
-            self.observability.seal(&query_id);
+            execution_lease.finish_failed("planning", captured);
             return Err(status);
         }
         let plan_for_error = plan.clone();
@@ -106,48 +115,52 @@ impl DatafusionCudfFlightSqlService {
                 Ok(df) => df,
                 Err(error) => {
                     log_leaf_guard_rejection(&query_id, &error, self.session_profile);
-                    let status = match self.ddl_read_only_registration_error(
+                    let (status, captured) = match self.ddl_read_only_registration_error(
                         query_ctx,
                         &plan_for_error,
                         error,
                         statement_kind.sql_operation(),
                     ) {
-                        Ok(error) => finish_adapter_error_status_with_correlation_id(
-                            self.observability.as_ref(),
-                            &query_id,
-                            correlation_id.as_deref(),
-                            "planning",
-                            error,
-                        ),
-                        Err(error) => {
-                            self.observability.finish_failed(
+                        Ok(error) => {
+                            let captured = CapturedError::from_adapter_error(&error);
+                            let status = finish_adapter_error_status_with_correlation_id(
+                                self.coordinator.as_ref(),
                                 &query_id,
+                                correlation_id.as_deref(),
                                 "planning",
-                                datafusion_error_to_captured_error(&error, statement_kind.sql_operation()),
+                                error,
                             );
+                            (status, captured)
+                        },
+                        Err(error) => {
+                            let captured = datafusion_error_to_captured_error(&error, statement_kind.sql_operation());
                             let status = status_with_query_id(
                                 datafusion_error_to_status_for_operation(error, statement_kind.sql_operation()),
                                 &query_id,
                             );
-                            status_with_query_id_and_correlation_id(status, &query_id, correlation_id.as_deref())
+                            (
+                                status_with_query_id_and_correlation_id(
+                                    status,
+                                    &query_id,
+                                    correlation_id.as_deref(),
+                                ),
+                                captured,
+                            )
                         },
                     };
-                    lifecycle.finish_status("planning", &status);
-                    self.observability.seal(&query_id);
+                    execution_lease.finish_failed("planning", captured);
                     return Err(status);
                 },
             },
             _ = self.shutdown_token.cancelled() => {
                 native_cancellation.cancel();
-                let status = finish_adapter_error_status_with_correlation_id(
-                    self.observability.as_ref(),
+                let (status, captured) = adapter_error_to_status_and_capture(server_shutdown_error());
+                let status = status_with_query_id_and_correlation_id(
+                    status,
                     &query_id,
                     correlation_id.as_deref(),
-                    "planning",
-                    server_shutdown_error(),
                 );
-                lifecycle.finish_status("planning", &status);
-                self.observability.seal(&query_id);
+                execution_lease.finish_captured("planning", &status, captured);
                 return Err(status);
             },
         };
@@ -158,44 +171,34 @@ impl DatafusionCudfFlightSqlService {
                 Ok(batches) => batches,
                 Err(error) => {
                     log_leaf_guard_rejection(&query_id, &error, self.session_profile);
-                    self.observability.finish_failed(
-                        &query_id,
-                        "collect",
-                        datafusion_error_to_captured_error(&error, statement_kind.collect_operation()),
-                    );
+                    let captured = datafusion_error_to_captured_error(&error, statement_kind.collect_operation());
                     let status = status_with_query_id(
                         datafusion_error_to_status_for_operation(error, statement_kind.collect_operation()),
                         &query_id,
                     );
                     let status =
                         status_with_query_id_and_correlation_id(status, &query_id, correlation_id.as_deref());
-                    lifecycle.finish_status("collect", &status);
-                    self.observability.seal(&query_id);
+                    execution_lease.finish_failed("collect", captured);
                     return Err(status);
                 },
             },
             _ = self.shutdown_token.cancelled() => {
                 native_cancellation.cancel();
-                let status = finish_adapter_error_status_with_correlation_id(
-                    self.observability.as_ref(),
+                let (status, captured) = adapter_error_to_status_and_capture(server_shutdown_error());
+                let status = status_with_query_id_and_correlation_id(
+                    status,
                     &query_id,
                     correlation_id.as_deref(),
-                    "collect",
-                    server_shutdown_error(),
                 );
-                lifecycle.finish_status("collect", &status);
-                self.observability.seal(&query_id);
+                execution_lease.finish_captured("collect", &status, captured);
                 return Err(status);
             },
         };
 
-        lifecycle.finish_success("collect");
-        self.observability.finish_success(&query_id);
-        self.observability.seal(&query_id);
+        execution_lease.finish_success();
         // Flight SQL update success responses carry only a record count, so
         // there is no portable client-visible query_id. Failure captures are
         // still retained because their Status metadata exposes the query_id.
-        self.observability.delete(&query_id);
         Ok(NO_UPDATED_RECORDS_COUNT)
     }
 

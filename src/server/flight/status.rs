@@ -3,12 +3,53 @@ use super::*;
 pub(super) fn datafusion_error_to_flight_error(
     error: DataFusionError,
     query_id: &str,
-    lifecycle: &QueryLifecycle,
+    terminal: &CoordinatorExecutionTerminal,
     operation: &'static str,
 ) -> FlightError {
-    let status = status_with_query_id(datafusion_error_to_status_for_operation(error, operation), query_id);
-    lifecycle.finish_status("stream", &status);
+    let (status, captured) = datafusion_error_to_status_and_capture(error, operation);
+    let status = status_with_query_id(status, query_id);
+    terminal.finish_captured("stream", &status, captured);
     FlightError::from(status)
+}
+
+pub(super) fn datafusion_error_to_status_and_capture(
+    error: DataFusionError,
+    operation: &'static str,
+) -> (Status, CapturedError) {
+    let captured = datafusion_error_to_captured_error(&error, operation);
+    let status = datafusion_error_to_status_for_operation(error, operation);
+    (status, captured)
+}
+
+pub(super) fn adapter_error_to_status_and_capture(error: Error) -> (Status, CapturedError) {
+    let captured = CapturedError::from_adapter_error(&error);
+    let status = adapter_error_status(error);
+    (status, captured)
+}
+
+pub(super) fn arrow_error_to_status_and_capture(
+    error: arrow::error::ArrowError,
+    operation: &'static str,
+    message: &'static str,
+) -> (Status, CapturedError) {
+    adapter_error_to_status_and_capture(Error::new(ErrorCode::Internal, operation, message).with_source(error))
+}
+
+pub(super) fn arrow_flight_error_to_status_and_capture(
+    error: arrow_flight::error::FlightError,
+    operation: &'static str,
+    message: &'static str,
+) -> (Status, CapturedError) {
+    match error {
+        arrow_flight::error::FlightError::Tonic(status) => {
+            let status = *status;
+            let captured = CapturedError::from_status(&status);
+            (status, captured)
+        },
+        error => {
+            adapter_error_to_status_and_capture(Error::new(ErrorCode::Internal, operation, message).with_source(error))
+        },
+    }
 }
 
 pub(super) fn verify_flight_info_plan(

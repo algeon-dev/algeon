@@ -1146,7 +1146,8 @@ fn concatenate_streamed_hash_join_outputs(
     let chunk_count = input_reservations.len();
     let first_frame = frames.remove(0);
     let rest_frame_refs = frames.iter().collect::<Vec<_>>();
-    let overrides = execution_overrides(context);
+    let overrides_lease = execution_overrides(context)?;
+    let overrides = overrides_lease.overrides();
     let timer = Instant::now();
     let output = match first_frame.with_execution(&overrides).concat_many(&rest_frame_refs) {
         Ok(output) => output,
@@ -1792,7 +1793,8 @@ fn materialize_compiled_indices_output(
     } = request;
     let mut txn = JoinMaterializationTxn::with_sides(left, right);
     txn.set_gather_map_reservation(gather_map_reservation);
-    let overrides = execution_overrides(context);
+    let overrides_lease = execution_overrides(context)?;
+    let overrides = overrides_lease.overrides();
     txn.set_indices(indices);
     let gather_map_bytes = match txn.indices().device_allocated_size_bytes(node) {
         Ok(bytes) => bytes,

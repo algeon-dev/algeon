@@ -534,16 +534,17 @@ fn drop_null_include_edge_rows(
 
     let input_rows = allowed_edges.num_rows();
     let predicates = right_keys.iter().map(|column| col(column.as_str()).is_not_null()).collect::<Vec<_>>();
-    let filtered =
-        allowed_edges.with_execution(&execution_overrides(context)).filter_all(predicates).map_err(|error| {
-            QueryError::from_cudf(
-                "nexus_query_engine.graph_algorithm.bfs_predicates",
-                "failed to drop null BFS include_edges predicate rows",
-                error,
-            )
-            .with_fact("predicate_role", "include_edges")
-            .with_fact("input", input)
-        })?;
+    let overrides_lease = execution_overrides(context)?;
+    let overrides = overrides_lease.overrides();
+    let filtered = allowed_edges.with_execution(&overrides).filter_all(predicates).map_err(|error| {
+        QueryError::from_cudf(
+            "nexus_query_engine.graph_algorithm.bfs_predicates",
+            "failed to drop null BFS include_edges predicate rows",
+            error,
+        )
+        .with_fact("predicate_role", "include_edges")
+        .with_fact("input", input)
+    })?;
     let null_rows_dropped = input_rows.saturating_sub(filtered.num_rows());
     Ok((filtered, null_rows_dropped))
 }
@@ -836,16 +837,15 @@ fn concrete_bfs_source_vertices(
 
 fn scalar_series<T>(context: &ExecutionContext, value: T, role: &'static str) -> Result<cudf::Series>
 where T: cudf::CudfType {
-    context.runtime().scalar(value).and_then(|scalar| context.runtime().series_from_scalar(&scalar, 1)).map_err(
-        |error| {
-            QueryError::from_cudf(
-                "nexus_query_engine.graph_algorithm.bfs_endpoint_membership",
-                "failed to materialize BFS endpoint scalar",
-                error,
-            )
-            .with_fact("predicate_role", role)
-        },
-    )
+    let runtime = context.runtime()?;
+    runtime.scalar(value).and_then(|scalar| runtime.series_from_scalar(&scalar, 1)).map_err(|error| {
+        QueryError::from_cudf(
+            "nexus_query_engine.graph_algorithm.bfs_endpoint_membership",
+            "failed to materialize BFS endpoint scalar",
+            error,
+        )
+        .with_fact("predicate_role", role)
+    })
 }
 
 fn graph_vertex_domain_frame(edges: &DataFrame, spec: &crate::plan::GraphAlgorithmSpec) -> Result<DataFrame> {
@@ -943,7 +943,7 @@ fn empty_bfs_result(
 
 fn empty_graph_result_frame(context: &ExecutionContext, schema: &arrow::datatypes::SchemaRef) -> Result<DataFrame> {
     if schema.fields().is_empty() {
-        return Ok(context.runtime().empty_dataframe());
+        return Ok(context.runtime()?.empty_dataframe());
     }
     let columns = schema
         .fields()
@@ -958,7 +958,7 @@ fn empty_graph_result_frame(context: &ExecutionContext, schema: &arrow::datatype
                 .with_fact("column", field.name().as_str())
                 .with_fact("data_type", format!("{:?}", field.data_type()))
             })?;
-            let series = context.runtime().empty_series(dtype).map_err(|error| {
+            let series = context.runtime()?.empty_series(dtype).map_err(|error| {
                 QueryError::from_cudf(
                     "nexus_query_engine.graph_algorithm.bfs_endpoint_membership",
                     "failed to build empty BFS result column",
@@ -1170,7 +1170,7 @@ fn append_bfs_target_metadata_columns(
     if !params.return_target_info {
         return Ok(frame);
     }
-    let frame = frame.copy_into_runtime(context.runtime()).map_err(|error| {
+    let frame = frame.copy_into_runtime(&context.runtime()?).map_err(|error| {
         QueryError::from_cudf(
             "nexus_query_engine.graph_algorithm.bfs_target_metadata",
             "failed to place BFS result in metadata runtime",
@@ -1185,10 +1185,10 @@ fn append_bfs_target_metadata_columns(
         )
     })?;
     let row_count = frame.num_rows();
-    let target_found = context
-        .runtime()
+    let runtime = context.runtime()?;
+    let target_found = runtime
         .scalar(info.target_found)
-        .and_then(|scalar| context.runtime().series_from_scalar(&scalar, row_count))
+        .and_then(|scalar| runtime.series_from_scalar(&scalar, row_count))
         .map_err(|error| {
             QueryError::from_cudf(
                 "nexus_query_engine.graph_algorithm.bfs_target_metadata",
@@ -1197,11 +1197,8 @@ fn append_bfs_target_metadata_columns(
             )
         })?;
     let target_distance = match info.target_distance {
-        Some(distance) => context
-            .runtime()
-            .scalar(distance)
-            .and_then(|scalar| context.runtime().series_from_scalar(&scalar, row_count)),
-        None => context.runtime().nulls(cudf::DataType::new(cudf::TypeId::Int64), row_count),
+        Some(distance) => runtime.scalar(distance).and_then(|scalar| runtime.series_from_scalar(&scalar, row_count)),
+        None => runtime.nulls(cudf::DataType::new(cudf::TypeId::Int64), row_count),
     }
     .map_err(|error| {
         QueryError::from_cudf(

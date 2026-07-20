@@ -2,7 +2,10 @@
 
 use arrow::record_batch::RecordBatch;
 
-use crate::{metrics::QueryMetrics, plan::ResultSink, runtime::resident::GpuResultHandle};
+use crate::{
+    error::QueryError, metrics::QueryMetrics, observability::SealedRuntimeObservationSnapshot, plan::ResultSink,
+    runtime::resident::GpuResultHandle,
+};
 
 /// Output residency requested by a query sink.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -77,6 +80,48 @@ impl QueryOutput {
 pub struct QueryExecutionResult {
     output: QueryOutput,
     metrics: QueryMetrics,
+}
+
+/// Evidence-preserving result of one observed native execution.
+///
+/// Unlike `Result<QueryExecutionResult, QueryError>`, this outcome retains
+/// aggregate metrics and the sealed observation snapshot when execution fails.
+pub struct QueryExecutionOutcome {
+    result: std::result::Result<QueryOutput, QueryError>,
+    metrics: QueryMetrics,
+    observation: Option<SealedRuntimeObservationSnapshot>,
+}
+
+impl QueryExecutionOutcome {
+    pub(crate) fn new(
+        result: std::result::Result<QueryOutput, QueryError>,
+        metrics: QueryMetrics,
+        observation: Option<SealedRuntimeObservationSnapshot>,
+    ) -> Self {
+        Self { result, metrics, observation }
+    }
+
+    /// Borrows the structured output-or-error result.
+    pub fn result(&self) -> std::result::Result<&QueryOutput, &QueryError> {
+        self.result.as_ref()
+    }
+
+    /// Borrows all aggregate metrics, including records emitted before failure.
+    pub const fn metrics(&self) -> &QueryMetrics {
+        &self.metrics
+    }
+
+    /// Borrows the immutable sealed evidence when recording was enabled.
+    pub const fn observation(&self) -> Option<&SealedRuntimeObservationSnapshot> {
+        self.observation.as_ref()
+    }
+
+    /// Consumes the outcome without discarding failure diagnostics.
+    pub fn into_parts(
+        self,
+    ) -> (std::result::Result<QueryOutput, QueryError>, QueryMetrics, Option<SealedRuntimeObservationSnapshot>) {
+        (self.result, self.metrics, self.observation)
+    }
 }
 
 impl QueryExecutionResult {

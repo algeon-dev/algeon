@@ -9,11 +9,15 @@ mod contract;
 mod record;
 mod registry;
 
-pub(crate) use capture::NativeMetricsCapture;
-#[cfg(feature = "server")]
+#[cfg(all(feature = "server", test))]
 pub(crate) use capture::NativeMetricsCaptureSink;
+#[cfg(feature = "server")]
+pub(crate) use capture::NativeObservationActivityFactory;
+pub(crate) use capture::{NativeExecutionMetricsCapture, NativeMetricsCapture, NativeRuntimeObservation};
 pub use contract::NATIVE_CUDF_DATAFUSION_METRIC_NAMES;
 pub(crate) use record::NativeCudfMetrics;
+
+pub(crate) const SERVER_CAPTURE_LOSS_METRIC_NAME: &str = "datafusion_nexus_server_capture_loss";
 
 #[cfg(test)]
 mod tests;

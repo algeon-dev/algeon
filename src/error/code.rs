@@ -59,6 +59,11 @@ pub enum ErrorCode {
     /// This is classified as temporary because reducing memory pressure or
     /// retrying with a different admission decision can remediate it.
     CudfResourceExhausted,
+    /// A host materialization size computation overflowed the platform range.
+    SizeOverflow,
+    /// One unsplittable Arrow host row exceeds the configured deterministic
+    /// materialization ceiling.
+    HostMaterializationLimitExceeded,
     /// cuDF reported a temporary dependency/runtime failure.
     CudfTemporaryFailure,
     /// cuDF reported a persistent dependency/runtime failure.
@@ -77,6 +82,13 @@ pub enum ErrorCode {
     MemoryReservationFailed,
     /// The native query service rejected work because admission capacity was exhausted.
     ServiceOverloaded,
+    /// One logical Arrow row cannot be represented within the configured
+    /// Flight/gRPC message limit.
+    ///
+    /// This is permanent for the same row and transport limit: callers must
+    /// project a smaller value or otherwise change the request. The server
+    /// must not raise tonic's message-size limit to hide this condition.
+    FlightFrameTooLarge,
     /// The Flight SQL server transport failed outside request handling.
     ServerTransportFailure,
     /// An internal adapter bug or unreachable condition.
@@ -107,12 +119,15 @@ impl ErrorCode {
             Self::CudfInvalidInput => "cudf_invalid_input",
             Self::CudfUnsupported => "cudf_unsupported",
             Self::CudfResourceExhausted => "cudf_resource_exhausted",
+            Self::SizeOverflow => "size_overflow",
+            Self::HostMaterializationLimitExceeded => "host_materialization_limit_exceeded",
             Self::CudfTemporaryFailure => "cudf_temporary_failure",
             Self::CudfPersistentFailure => "cudf_persistent_failure",
             Self::CudfDependencyFailure => "cudf_dependency_failure",
             Self::CudfInvariantViolation => "cudf_invariant_violation",
             Self::MemoryReservationFailed => "memory_reservation_failed",
             Self::ServiceOverloaded => "service_overloaded",
+            Self::FlightFrameTooLarge => "flight_frame_too_large",
             Self::ServerTransportFailure => "server_transport_failure",
             Self::Internal => "internal",
         }
@@ -252,9 +267,12 @@ pub const fn kind_for_code(code: ErrorCode) -> ErrorKind {
         ErrorCode::InvalidChildCount => ErrorKind::Internal,
         ErrorCode::CudfInvalidInput => ErrorKind::InvalidInput,
         ErrorCode::CudfUnsupported => ErrorKind::Unsupported,
-        ErrorCode::CudfResourceExhausted | ErrorCode::MemoryReservationFailed | ErrorCode::ServiceOverloaded => {
-            ErrorKind::ResourceExhausted
-        },
+        ErrorCode::CudfResourceExhausted
+        | ErrorCode::SizeOverflow
+        | ErrorCode::HostMaterializationLimitExceeded
+        | ErrorCode::MemoryReservationFailed
+        | ErrorCode::ServiceOverloaded
+        | ErrorCode::FlightFrameTooLarge => ErrorKind::ResourceExhausted,
         ErrorCode::CudfTemporaryFailure
         | ErrorCode::CudfPersistentFailure
         | ErrorCode::CudfDependencyFailure
@@ -290,6 +308,7 @@ pub const fn status_for_code(code: ErrorCode) -> ErrorStatus {
         | ErrorCode::SourceUnauthenticated
         | ErrorCode::SourceObjectNotFound
         | ErrorCode::FieldNotFound
+        | ErrorCode::FlightFrameTooLarge
         | ErrorCode::NativeCandidateRejected
         | ErrorCode::UnsupportedOperator
         | ErrorCode::UnsupportedExpression
@@ -298,6 +317,8 @@ pub const fn status_for_code(code: ErrorCode) -> ErrorStatus {
         | ErrorCode::InvalidChildCount
         | ErrorCode::CudfInvalidInput
         | ErrorCode::CudfUnsupported
+        | ErrorCode::SizeOverflow
+        | ErrorCode::HostMaterializationLimitExceeded
         | ErrorCode::CudfDependencyFailure
         | ErrorCode::CudfInvariantViolation
         | ErrorCode::ServerTransportFailure

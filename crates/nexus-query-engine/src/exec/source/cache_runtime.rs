@@ -74,23 +74,20 @@ pub(super) fn read_optimized_local_cache_chunk_batch(
     let token = context
         .execution_budget_token(ExecutionBudgetRequest::new(budget_bytes).with_boundary(budget_boundary))
         .map_err(|error| {
-            QueryError::from_cudf_with_budget_details(
-                "nexus_query_engine.local_parquet_chunk_batch.optimized_cache_budget",
-                "failed to create bounded optimized local parquet source chunk batch budget token",
-                error,
-            )
-            .with_fact("batch_index", batch.batch_index)
-            .with_fact("chunk_count", batch.chunk_count())
-            .with_fact("path", optimized_cache_path_fact(entry))
+            error
+                .with_fact("batch_index", batch.batch_index)
+                .with_fact("chunk_count", batch.chunk_count())
+                .with_fact("path", optimized_cache_path_fact(entry))
         })?;
     let read_columns = source.read_columns.iter().map(String::as_str).collect::<Vec<_>>();
     let _cache_read_pin = acquire_lakehouse_optimized_batch_read_pin(context, entry)?;
+    let _io_lease = context.acquire_io_lease("nexus_query_engine.local_parquet_chunk_batch.optimized_cache_read")?;
     let read_timer = Instant::now();
     let outcome = DataFrame::read_parquet_with_budget(
         ParquetReadOptions::builder()
             .filepath(&entry.path)
             .columns(&read_columns)
-            .with_runtime(context.runtime())
+            .with_runtime(&context.runtime()?)
             .build(),
         &token,
     )

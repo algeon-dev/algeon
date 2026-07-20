@@ -5,21 +5,43 @@ use std::sync::{
 };
 use std::{collections::BTreeMap, time::Duration};
 
+#[cfg(feature = "server")]
+use arrow::{
+    array::Int32Array,
+    datatypes::{DataType, Field, Schema},
+    record_batch::RecordBatch,
+};
+#[cfg(feature = "server")]
+use datafusion::common::DataFusionError;
 use datafusion::physical_plan::metrics::{ExecutionPlanMetricsSet, MetricCategory};
+#[cfg(feature = "server")]
+use nexus_query_engine::{
+    error::QueryErrorCode,
+    exec::execute_query_plan_observed,
+    observability::SealedRuntimeObservationSnapshot,
+    plan::QueryPlanBuilder,
+    runtime::{ExecutionCancellation, ExecutionContext},
+    source::{GpuResidentSource, LiteralBatchSource, SourceNode},
+};
 use nexus_query_engine::{
     metrics::{
         JoinOperatorMetrics, OperatorMetrics, QueryMetrics, SourceReadParquetEvidenceMetrics, SourceReadRuntimeMetrics,
     },
+    observability::RuntimeObservationConfig,
     runtime::LakehouseCacheFillEventSnapshot,
 };
 
+#[cfg(feature = "server")]
+use super::NativeMetricsCaptureSink;
 use super::{
-    NATIVE_CUDF_DATAFUSION_METRIC_NAMES, NativeCudfMetrics,
+    NATIVE_CUDF_DATAFUSION_METRIC_NAMES, NativeCudfMetrics, NativeMetricsCapture,
     contract::{NATIVE_CUDF_METRIC_DESCRIPTORS, NativeMetricKind},
     record::{NATIVE_CUDF_RECORDING_DESCRIPTORS, NativeMetricRecordingKind},
 };
 #[cfg(feature = "server")]
-use super::{NativeMetricsCapture, NativeMetricsCaptureSink};
+use crate::native_exec::{
+    NativeCudfComposedExec, NativeCudfExec, NativeCudfExecutionConfig, NativeCudfGpuProducerExec,
+};
 use crate::{native_exec::admission::QueryAdmissionFacts, native_report::NativeDataFusionExecutionMetrics};
 
 #[test]
@@ -134,11 +156,21 @@ fn native_metrics_record_query_service_admission_facts() {
 }
 
 #[cfg(feature = "server")]
-#[derive(Default)]
 struct CountingCaptureSink {
     admission_facts: AtomicUsize,
     query_metrics: AtomicUsize,
     cache_events: AtomicUsize,
+}
+
+#[cfg(feature = "server")]
+impl Default for CountingCaptureSink {
+    fn default() -> Self {
+        Self {
+            admission_facts: AtomicUsize::new(0),
+            query_metrics: AtomicUsize::new(0),
+            cache_events: AtomicUsize::new(0),
+        }
+    }
 }
 
 #[cfg(feature = "server")]
@@ -157,12 +189,46 @@ impl NativeMetricsCaptureSink for CountingCaptureSink {
 }
 
 #[cfg(feature = "server")]
+fn test_runtime_snapshot(query_id: &str) -> Arc<SealedRuntimeObservationSnapshot> {
+    Arc::new(
+        nexus_query_engine::observability::RuntimeObservationSession::new(
+            query_id,
+            None,
+            RuntimeObservationConfig::bounded(4, 4096),
+        )
+        .seal(nexus_query_engine::observability::RuntimeTerminalOutcome::Succeeded)
+        .expect("enabled observation seals"),
+    )
+}
+
+#[cfg(feature = "server")]
+#[test]
+fn native_metrics_capture_without_sink_retains_owned_runtime_evidence() {
+    let capture = NativeMetricsCapture::without_sink("no-sink").new_execution();
+    let snapshot = Arc::new(
+        nexus_query_engine::observability::RuntimeObservationSession::new(
+            "no-sink",
+            None,
+            RuntimeObservationConfig::bounded(4, 4096),
+        )
+        .seal(nexus_query_engine::observability::RuntimeTerminalOutcome::Succeeded)
+        .expect("enabled observation seals"),
+    );
+
+    capture.record_runtime_observation(Arc::clone(&snapshot));
+
+    let retained = capture.runtime_observations();
+    assert_eq!(retained.len(), 1);
+    assert!(Arc::ptr_eq(&retained[0], &snapshot));
+}
+
+#[cfg(feature = "server")]
 #[test]
 fn native_metrics_capture_does_not_keep_sink_alive() {
     let sink = Arc::new(CountingCaptureSink::default());
     let erased_sink: Arc<dyn NativeMetricsCaptureSink> = sink.clone();
     let weak_sink = Arc::downgrade(&erased_sink);
-    let capture = NativeMetricsCapture::new("q1", erased_sink);
+    let capture = NativeMetricsCapture::new("q1", erased_sink).new_execution();
 
     assert_eq!(Arc::strong_count(&sink), 1);
     capture.record_admission_facts(QueryAdmissionFacts {
@@ -184,7 +250,282 @@ fn native_metrics_capture_does_not_keep_sink_alive() {
         query_grant_bytes: 1024,
     });
     capture.record_query_metrics(&QueryMetrics::default());
+    let session = nexus_query_engine::observability::RuntimeObservationSession::new(
+        "q1",
+        None,
+        RuntimeObservationConfig::bounded(4, 4096),
+    );
+    let snapshot = Arc::new(
+        session
+            .seal(nexus_query_engine::observability::RuntimeTerminalOutcome::Succeeded)
+            .expect("enabled observation seals"),
+    );
+    capture.record_runtime_observation(Arc::clone(&snapshot));
     capture.record_lakehouse_cache_fill_events(&[]);
+    let retained = capture.runtime_observations();
+    assert_eq!(retained.len(), 1);
+    assert!(Arc::ptr_eq(&retained[0], &snapshot));
+}
+
+#[cfg(feature = "server")]
+#[test]
+fn local_observation_collector_retains_each_epoch_once_without_sink_publication() {
+    let wiring = NativeMetricsCapture::without_sink("q1")
+        .with_runtime_observation_config(RuntimeObservationConfig::bounded(7, 777));
+    let capture = wiring.new_execution();
+
+    let first = capture.new_runtime_observation("q1", None).into_local_owner();
+    let second = capture.new_runtime_observation("q1", None).into_local_owner();
+
+    assert!(!first.handle().is_same_session(&second.handle()));
+    assert_eq!(first.handle().live_snapshot().unwrap().manifest().limits.max_retained_records, 7);
+    assert_eq!(first.handle().live_snapshot().unwrap().manifest().limits.max_retained_bytes, 777);
+    let first_snapshot = Arc::new(
+        first
+            .finish_query(nexus_query_engine::observability::RuntimeTerminalOutcome::Succeeded)
+            .expect("first owner seals"),
+    );
+    let second_snapshot = Arc::new(
+        second
+            .finish_query(nexus_query_engine::observability::RuntimeTerminalOutcome::Succeeded)
+            .expect("second owner seals"),
+    );
+    capture.record_runtime_observation(Arc::clone(&first_snapshot));
+    capture.record_runtime_observation(Arc::clone(&first_snapshot));
+    capture.record_runtime_observation(second_snapshot);
+    assert_eq!(capture.runtime_observations().len(), 2);
+    assert_eq!(capture.retention_stats().recorded_total, 2);
+}
+
+#[cfg(feature = "server")]
+#[test]
+fn coordinated_execution_uses_external_handle_without_local_collector_or_seal_authority() {
+    let root = nexus_query_engine::observability::RuntimeObservationOwner::new(
+        "coordinated",
+        None,
+        RuntimeObservationConfig::bounded(7, 777),
+    );
+    let capture = NativeMetricsCapture::coordinated("coordinated", root.handle()).new_execution();
+    let observation = capture.new_runtime_observation("coordinated", None);
+
+    assert!(matches!(observation, super::capture::NativeRuntimeObservation::Coordinated(_)));
+    assert_eq!(capture.retention_stats().capacity, 0);
+    capture.record_runtime_observation(test_runtime_snapshot("must-not-retain"));
+    assert!(capture.runtime_observations().is_empty());
+    assert!(root.sealed_snapshot().is_none());
+}
+
+#[cfg(feature = "server")]
+#[test]
+fn standalone_execution_has_no_coordinated_activity_requirement() {
+    let capture = NativeMetricsCapture::without_sink("standalone").new_execution();
+
+    assert!(capture.new_observation_activity().is_none());
+}
+
+#[cfg(feature = "server")]
+#[test]
+fn cloned_config_allocates_isolated_drainable_local_collectors_and_drop_releases_evidence() {
+    let wiring = NativeMetricsCapture::without_sink("reused-config")
+        .with_runtime_observation_config(RuntimeObservationConfig::bounded(7, 777));
+    let config = NativeCudfExecutionConfig::unbounded().with_metrics_capture(wiring);
+    assert_eq!(config.runtime_observation_config().limits().max_retained_records, 7);
+    assert_eq!(config.runtime_observation_config().limits().max_retained_bytes, 777);
+    let schema = Arc::new(Schema::new(vec![Field::new("value", DataType::Int32, false)]));
+    let batch = RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(Int32Array::from(vec![1]))]).unwrap();
+    let make_plan = || {
+        let mut builder = QueryPlanBuilder::new();
+        let source = builder
+            .add_source(SourceNode::LiteralBatch(LiteralBatchSource::new(Arc::clone(&schema), vec![batch.clone()])));
+        builder.finish_with_host_sink(source)
+    };
+
+    let first = NativeCudfExec::try_new(make_plan(), config.clone()).expect("first wrapper builds");
+    let second = NativeCudfExec::try_new(make_plan(), config.clone()).expect("second wrapper builds");
+    let first_owner = first.metrics_capture().expect("default config creates a local collector");
+    let second_owner = second.metrics_capture().expect("default config creates a local collector");
+    assert_eq!(first_owner.runtime_observation_config().limits().max_retained_records, 7);
+    assert_eq!(first_owner.runtime_observation_config().limits().max_retained_bytes, 777);
+    assert!(!first_owner.shares_owner_with(&second_owner));
+
+    let first_snapshot = test_runtime_snapshot("first-owner");
+    let second_snapshot = test_runtime_snapshot("second-owner");
+    first_owner.record_runtime_observation(Arc::clone(&first_snapshot));
+    second_owner.record_runtime_observation(Arc::clone(&second_snapshot));
+    assert_eq!(first_owner.runtime_observations().len(), 1);
+    assert!(Arc::ptr_eq(&first_owner.runtime_observations()[0], &first_snapshot));
+    assert_eq!(second_owner.runtime_observations().len(), 1);
+    assert!(Arc::ptr_eq(&second_owner.runtime_observations()[0], &second_snapshot));
+
+    let drained = first_owner.drain_runtime_observations();
+    assert_eq!(drained.len(), 1);
+    assert!(first_owner.runtime_observations().is_empty());
+    assert_eq!(first_owner.retention_stats().drained_total, 1);
+    drop(drained);
+
+    let weak_second_snapshot = Arc::downgrade(&second_snapshot);
+    drop(second_snapshot);
+    drop(second_owner);
+    assert!(weak_second_snapshot.upgrade().is_some(), "execution wrapper remains the durable owner");
+    drop(second);
+    assert!(weak_second_snapshot.upgrade().is_none(), "dropping the wrapper releases local evidence");
+}
+
+#[cfg(feature = "server")]
+#[test]
+fn local_collector_overflow_and_zero_capacity_have_explicit_accounting() {
+    let wiring = NativeMetricsCapture::without_sink("bounded-owner");
+    let owner = wiring.new_execution_with_test_capacity(2);
+    let first = test_runtime_snapshot("retention-first");
+    let second = test_runtime_snapshot("retention-second");
+    let third = test_runtime_snapshot("retention-third");
+    owner.record_runtime_observation(Arc::clone(&first));
+    owner.record_runtime_observation(Arc::clone(&second));
+    owner.record_runtime_observation(Arc::clone(&third));
+
+    let retained = owner.runtime_observations();
+    assert_eq!(retained.len(), 2);
+    assert!(Arc::ptr_eq(&retained[0], &second), "overflow evicts the oldest snapshot first");
+    assert!(Arc::ptr_eq(&retained[1], &third));
+    assert_eq!(
+        owner.retention_stats(),
+        super::capture::NativeRuntimeObservationRetentionStats {
+            capacity: 2,
+            retained: 2,
+            recorded_total: 3,
+            dropped_total: 0,
+            evicted_total: 1,
+            drained_total: 0,
+        }
+    );
+    drop(retained);
+    assert_eq!(owner.drain_runtime_observations().len(), 2);
+    assert_eq!(owner.retention_stats().retained, 0);
+    assert_eq!(owner.retention_stats().drained_total, 2);
+
+    let disabled_retention = wiring.new_execution_with_test_capacity(0);
+    disabled_retention.record_runtime_observation(test_runtime_snapshot("retention-dropped"));
+    assert_eq!(disabled_retention.retention_stats().recorded_total, 1);
+    assert_eq!(disabled_retention.retention_stats().dropped_total, 1);
+    assert_eq!(disabled_retention.retention_stats().retained, 0);
+}
+
+#[cfg(feature = "server")]
+#[test]
+fn composed_native_fragments_share_only_the_parent_local_collector_and_capacity() {
+    let wiring = NativeMetricsCapture::without_sink("composed-owner")
+        .with_runtime_observation_config(RuntimeObservationConfig::bounded(9, 999));
+    let config = NativeCudfExecutionConfig::unbounded().with_metrics_capture(wiring);
+    let schema = Arc::new(Schema::new(vec![Field::new("value", DataType::Int32, false)]));
+    let batch = RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(Int32Array::from(vec![1]))]).unwrap();
+    let mut producer_builder = QueryPlanBuilder::new();
+    let producer_source = producer_builder
+        .add_source(SourceNode::LiteralBatch(LiteralBatchSource::new(Arc::clone(&schema), vec![batch])));
+    let producer_plan = producer_builder.finish_with_host_sink(producer_source).clone_with_gpu_resident_sink();
+    let producer = NativeCudfGpuProducerExec::try_new_with_metrics_capture(
+        "fragment",
+        producer_plan,
+        config.metrics_capture_factory(),
+    )
+    .expect("producer builds");
+    let original_producer_owner = producer.metrics_capture().expect("producer has a local collector");
+
+    let mut consumer_builder = QueryPlanBuilder::new();
+    let consumer_source =
+        consumer_builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("fragment", Arc::clone(&schema))));
+    let consumer_plan = consumer_builder.finish_with_host_sink(consumer_source);
+    let composed = NativeCudfComposedExec::try_new(consumer_plan.clone(), vec![Arc::new(producer)], config.clone())
+        .expect("composed wrapper builds");
+    let composed_owner = composed.metrics_capture().expect("composed wrapper has a local collector");
+    let rebound = composed.gpu_inputs()[0]
+        .as_ref()
+        .downcast_ref::<NativeCudfGpuProducerExec>()
+        .expect("native producer remains typed")
+        .metrics_capture()
+        .expect("rebound producer has a local collector");
+    assert!(composed_owner.shares_owner_with(&rebound));
+    assert_eq!(composed_owner.runtime_observation_config().limits().max_retained_records, 9);
+    assert_eq!(rebound.runtime_observation_config().limits().max_retained_bytes, 999);
+    assert!(!composed_owner.shares_owner_with(&original_producer_owner));
+
+    for index in 0..=NativeMetricsCapture::DEFAULT_RUNTIME_OBSERVATION_CAPACITY {
+        let target = if index % 2 == 0 { &composed_owner } else { &rebound };
+        target.record_runtime_observation(test_runtime_snapshot(&format!("composed-{index}")));
+    }
+    let stats = composed_owner.retention_stats();
+    assert_eq!(stats.recorded_total, 257);
+    assert_eq!(stats.retained, NativeMetricsCapture::DEFAULT_RUNTIME_OBSERVATION_CAPACITY);
+    assert_eq!(stats.evicted_total, 1);
+    assert_eq!(stats.dropped_total, 0);
+
+    let independent = NativeCudfComposedExec::try_new(consumer_plan, composed.gpu_inputs().to_vec(), config)
+        .expect("independent composed wrapper builds");
+    assert!(!composed_owner.shares_owner_with(&independent.metrics_capture().expect("owner exists")));
+}
+
+#[cfg(feature = "server")]
+#[test]
+fn cancelled_native_outcome_retains_local_evidence_before_error_conversion() {
+    let sink = Arc::new(CountingCaptureSink::default());
+    let capture = NativeMetricsCapture::new("capture-cancel", sink.clone()).new_execution();
+    let capture_owner = capture.clone();
+    let metrics_set = ExecutionPlanMetricsSet::new();
+    let native_metrics = NativeCudfMetrics::new_with_capture(&metrics_set, 0, Some(capture));
+    let schema = Arc::new(Schema::new(vec![Field::new("value", DataType::Int32, false)]));
+    let batch = RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(Int32Array::from(vec![1]))]).unwrap();
+    let mut plan = QueryPlanBuilder::new();
+    let source = plan.add_source(SourceNode::LiteralBatch(LiteralBatchSource::new(schema, vec![batch])));
+    let plan = plan.finish_with_host_sink(source);
+    let cancellation = ExecutionCancellation::new();
+    cancellation.cancel();
+    let context = ExecutionContext::builder()
+        .with_query_id("capture-cancel")
+        .with_cancellation(cancellation)
+        .build()
+        .expect("cancelled context builds");
+    let outcome = execute_query_plan_observed(&context, &plan, RuntimeObservationConfig::native_execution());
+
+    let error = match native_metrics.finalize_query_outcome(outcome) {
+        Err(error) => error,
+        Ok(_) => panic!("cancelled native result must remain typed"),
+    };
+    assert_eq!(error.code(), QueryErrorCode::Cancelled);
+    let _: DataFusionError = crate::native_exec::common::native_query_runtime_error(
+        "datafusion_nexus.native_exec.metrics.test",
+        "cancelled evidence conversion",
+        error,
+    )
+    .into();
+    assert_eq!(sink.query_metrics.load(Ordering::Relaxed), 1);
+    let owned = capture_owner.runtime_observations();
+    assert_eq!(owned.len(), 1);
+    assert_eq!(owned[0].footer().terminal, Some(nexus_query_engine::observability::RuntimeTerminalOutcome::Cancelled));
+    assert!(!owned[0].events().is_empty());
+}
+
+#[cfg(feature = "server")]
+#[test]
+fn successful_native_outcome_retains_one_owned_snapshot_in_local_collector() {
+    let sink = Arc::new(CountingCaptureSink::default());
+    let capture = NativeMetricsCapture::new("capture-success", sink.clone()).new_execution();
+    let capture_owner = capture.clone();
+    let metrics_set = ExecutionPlanMetricsSet::new();
+    let native_metrics = NativeCudfMetrics::new_with_capture(&metrics_set, 0, Some(capture));
+    let schema = Arc::new(Schema::new(vec![Field::new("value", DataType::Int32, false)]));
+    let batch = RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(Int32Array::from(vec![1]))]).unwrap();
+    let mut plan = QueryPlanBuilder::new();
+    let source = plan.add_source(SourceNode::LiteralBatch(LiteralBatchSource::new(schema, vec![batch])));
+    let plan = plan.finish_with_host_sink(source);
+    let context =
+        ExecutionContext::builder().with_query_id("capture-success").build().expect("successful context builds");
+    let outcome = execute_query_plan_observed(&context, &plan, RuntimeObservationConfig::native_execution());
+
+    native_metrics.finalize_query_outcome(outcome).expect("native execution succeeds");
+
+    assert_eq!(sink.query_metrics.load(Ordering::Relaxed), 1);
+    let owned = capture_owner.runtime_observations();
+    assert_eq!(owned.len(), 1);
+    assert_eq!(owned[0].footer().terminal, Some(nexus_query_engine::observability::RuntimeTerminalOutcome::Succeeded));
 }
 
 #[test]
@@ -508,6 +849,39 @@ fn source_read_runtime_rows_bridge_runtime_labels() {
     assert_eq!(row.source_chunk_planning_mode, "local_parquet_throughput");
     assert_eq!(row.source_chunk_planning_reason, "local_parquet_throughput_admitted");
     assert_eq!(row.elapsed_ns, 1234);
+}
+
+#[test]
+fn query_metric_row_bridge_enforces_shared_record_and_byte_caps() {
+    let metrics_set = ExecutionPlanMetricsSet::new();
+    let capture = NativeMetricsCapture::without_sink("bounded-metric-rows")
+        .with_runtime_observation_config(RuntimeObservationConfig::bounded(1, 4096))
+        .new_execution();
+    let native_metrics = NativeCudfMetrics::new_with_capture(&metrics_set, 0, Some(capture));
+    let mut query_metrics = QueryMetrics::default();
+    for index in 0..128 {
+        query_metrics.record_source_read_runtime(SourceReadRuntimeMetrics {
+            source_node_id: format!("parquet-source-{index}"),
+            read_kind: "chunk_batch".to_string(),
+            read_strategy: "local_parquet".to_string(),
+            ..SourceReadRuntimeMetrics::default()
+        });
+    }
+
+    native_metrics.record_query_metrics(&query_metrics);
+
+    let metrics = NativeDataFusionExecutionMetrics::from_metrics(&metrics_set.clone_inner());
+    assert_eq!(metrics.source_read_runtime_rows.len(), 1);
+    let (remaining_records, remaining_bytes, truncated, overflow) = native_metrics.row_capture_state();
+    assert_eq!(remaining_records, 0);
+    assert!(remaining_bytes < 4096);
+    assert!(truncated);
+    assert!(!overflow);
+    assert_eq!(
+        metrics_set.clone_inner().sum_by_name(super::SERVER_CAPTURE_LOSS_METRIC_NAME).unwrap().as_usize(),
+        1,
+        "one bounded boolean marker reports row loss without growing per dropped row"
+    );
 }
 
 #[test]

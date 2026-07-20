@@ -1,14 +1,14 @@
 //! Unified developer/operator tool entrypoint.
 //!
-//! E2E runners are dispatched as explicit subcommands instead of standalone
-//! Cargo bin targets, so `cargo test --all-targets` cannot accidentally turn
-//! them into test harnesses.
+//! E2E runners are dispatched as explicit subcommands. The test harness only
+//! includes pure parser/CLI unit tests; external-service runners remain behind
+//! `not(test)` and are executed explicitly with `cargo run`.
 
 use std::{env, error::Error};
 
 type ToolResult<T> = Result<T, Box<dyn Error + Send + Sync>>;
 
-#[cfg(not(test))]
+#[cfg(any(not(test), feature = "server-runtime-observability-e2e"))]
 #[path = "../connection_retry.rs"]
 mod connection_retry;
 #[cfg(all(feature = "cugraph-oracle", not(test)))]
@@ -45,6 +45,9 @@ mod server_iceberg_glue_remote_direct_e2e;
 #[cfg(all(feature = "server-iceberg-e2e", not(test)))]
 #[path = "../e2e/server_iceberg_rest_multigpu_e2e.rs"]
 mod server_iceberg_rest_multigpu_e2e;
+#[cfg(all(feature = "server-runtime-observability-e2e", test))]
+#[path = "../e2e/server_iceberg_rest_multigpu_e2e.rs"]
+mod server_iceberg_rest_multigpu_e2e;
 #[cfg(all(feature = "validate-query", not(test)))]
 #[path = "../validate_query.rs"]
 mod validate_query;
@@ -60,6 +63,9 @@ async fn main() -> ToolResult<()> {
         Some("server-iceberg-glue-moto-e2e") => run_server_iceberg_glue_moto_e2e().await,
         Some("server-iceberg-glue-remote-direct-e2e") => run_server_iceberg_glue_remote_direct_e2e().await,
         Some("server-iceberg-rest-multigpu-e2e") => run_server_iceberg_rest_multigpu_e2e().await,
+        Some("server-runtime-observability-e2e") => {
+            run_server_runtime_observability_e2e(env::args().skip(2).collect()).await
+        },
         Some("embedded-backend-e2e") => run_embedded_backend_e2e(env::args().skip(2).collect()).await,
         Some("cugraph-fixture-e2e") => run_cugraph_fixture_e2e(env::args().nth(2)).await,
         Some("validate-query") => run_validate_query(env::args().skip(2).collect()).await,
@@ -87,6 +93,7 @@ fn print_usage() {
            cargo run -p datafusion-nexus-tools --features server-iceberg-e2e -- server-iceberg-glue-moto-e2e\n\
            flock /tmp/cudf-gpu.lock cargo run -p datafusion-nexus-tools --features server-iceberg-e2e -- server-iceberg-glue-remote-direct-e2e\n\
            flock /tmp/cudf-gpu.lock cargo run -p datafusion-nexus-tools --features server-iceberg-e2e -- server-iceberg-rest-multigpu-e2e\n\
+           flock /tmp/cudf-gpu.lock cargo run -p datafusion-nexus-tools --features server-runtime-observability-e2e -- server-runtime-observability-e2e [OPTIONS]\n\
            flock /tmp/cudf-gpu.lock cargo run -p datafusion-nexus-tools --features embedded-backend-e2e -- embedded-backend-e2e\n\
            flock /tmp/cudf-gpu.lock cargo run -p datafusion-nexus-tools --features cugraph-oracle -- cugraph-fixture-e2e <pagerank|bfs-include-edges|bfs-utf8-include-edges|bfs-utf8-path|bfs-utf8-predicates>"
     );
@@ -160,6 +167,16 @@ async fn run_server_iceberg_glue_remote_direct_e2e() -> ToolResult<()> {
 #[cfg(all(feature = "server-iceberg-e2e", not(test)))]
 async fn run_server_iceberg_rest_multigpu_e2e() -> ToolResult<()> {
     server_iceberg_rest_multigpu_e2e::run().await
+}
+
+#[cfg(all(feature = "server-runtime-observability-e2e", not(test)))]
+async fn run_server_runtime_observability_e2e(args: Vec<String>) -> ToolResult<()> {
+    server_iceberg_rest_multigpu_e2e::run_runtime_observability(args).await
+}
+
+#[cfg(not(all(feature = "server-runtime-observability-e2e", not(test))))]
+async fn run_server_runtime_observability_e2e(_args: Vec<String>) -> ToolResult<()> {
+    Err("server-runtime-observability-e2e requires --features server-runtime-observability-e2e and normal cargo run execution".into())
 }
 
 #[cfg(not(all(feature = "server-iceberg-e2e", not(test))))]

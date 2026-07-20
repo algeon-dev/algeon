@@ -35,8 +35,7 @@ use nexus_query_engine::{
     plan::GraphEdgePredicateInput, plan::GraphPageRankParams, plan::GraphPredicateInput,
     plan::GraphResidencyPlanAnalysis, plan::GraphTriangleCountAllParams,
     plan::graph_residency_descriptor_for_edge_plan, plan::planned_resident_graph_key, plan::stable_graph_result_schema,
-    runtime::QueryAdmissionRequest, runtime::QueryGrantRequest, runtime::QueryPlacementHint, runtime::QueryService,
-    runtime::QueryServiceConfig, runtime::QueryServiceTenantConfig, runtime::TenantId,
+    runtime::QueryAdmissionRequest, runtime::QueryGrantRequest, runtime::QueryPlacementHint,
 };
 use nexus_query_engine::{
     chunk::{SourceChunkPlanningPolicy, plan_local_parquet_source_chunks},
@@ -50,13 +49,15 @@ use nexus_query_engine::{
     },
     metrics::{MemoryReservationEventAction, QueryMetrics},
     mode::{NativePipelineExecutionMode, StddevSampExecutionMode},
+    observability::AdmissionRequestId,
     plan::{
         JoinKey, JoinNullEquality, JoinOutputColumn, JoinSide, JoinSpec, JoinType, ProjectionOutput, QueryPlanBuilder,
         WindowFunction, WindowSpec,
     },
     runtime::{
         BoundedJoinReservationContract, BuildMaterializationBoundary, ExecutionBoundaryPolicy, ExecutionContext,
-        GrantRequest, MemoryControlPolicy, MemoryGovernor, MemorySpaceId, ReservationKind, SourceSchedulerPolicy,
+        GrantRequest, MemoryControlPolicy, MemoryGovernor, MemorySpaceId, QueryService, QueryServiceConfig,
+        QueryServiceTenantConfig, ReservationKind, SlotGuarantee, SourceSchedulerPolicy, TenantId,
         cache::{hash_join::GpuHashJoinBuildCache, local_parquet::GpuLocalParquetSourceCache},
         resident::{GpuDataFrame, GpuResidentInputMap, GpuResultHandle},
     },

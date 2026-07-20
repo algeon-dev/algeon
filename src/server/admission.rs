@@ -85,6 +85,37 @@ impl QueryAdmission {
         }
     }
 
+    fn close_and_wait_for_quiescence_blocking_until(&self, deadline: std::time::Instant) -> Result<()> {
+        match &self.backend {
+            QueryAdmissionBackend::QueryService { backend } => {
+                backend.query_service().close_and_wait_for_quiescence_until(deadline).map_err(|error| {
+                    ServerError::session("query service shutdown cleanup did not quiesce", error)
+                        .with_fact("shutdown_component", "query_admission")
+                })
+            },
+            QueryAdmissionBackend::Semaphore { permits } => {
+                permits.close();
+                Ok(())
+            },
+        }
+    }
+
+    pub(crate) async fn close_and_wait_for_quiescence_until(
+        self: &Arc<Self>,
+        deadline: std::time::Instant,
+    ) -> Result<()> {
+        let admission = Arc::clone(self);
+        tokio::task::spawn_blocking(move || admission.close_and_wait_for_quiescence_blocking_until(deadline))
+            .await
+            .map_err(|error| {
+                ServerError::shutdown_with_source(
+                    "query_admission_cleanup_task_failed",
+                    "query admission shutdown cleanup task failed",
+                    error,
+                )
+            })?
+    }
+
     #[cfg(test)]
     pub fn try_acquire(&self) -> Result<Option<QueryAdmissionPermit>> {
         match &self.backend {
@@ -294,7 +325,7 @@ impl QueryAdmission {
                 }
 
                 output.push_str("\n[memory_governor_grants]\n");
-                output.push_str("device_ordinal\tgrant_id\tquery_id\tpriority\tbudget_bytes\n");
+                output.push_str("device_ordinal\tgrant_id\tadmission_request_id\tpriority\tbudget_bytes\n");
                 for report in &reports {
                     for grant in &report.grants {
                         let _ = writeln!(
@@ -302,7 +333,7 @@ impl QueryAdmission {
                             "{}\t{}\t{}\t{}\t{}",
                             report.device_ordinal,
                             grant.grant_id,
-                            grant.query_id,
+                            grant.admission_request_id,
                             payload_value(grant.priority),
                             grant.budget_bytes
                         );

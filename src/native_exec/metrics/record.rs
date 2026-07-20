@@ -1,14 +1,28 @@
 //! Native query-metric recording into DataFusion wrapper metrics.
 
-use std::{collections::BTreeMap, ops::Deref};
+use std::{
+    collections::BTreeMap,
+    fmt::{self, Write},
+    ops::Deref,
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
+};
 
 use datafusion::physical_plan::metrics::{BaselineMetrics, Count, ExecutionPlanMetricsSet, MetricBuilder, MetricType};
 use nexus_query_engine::{
+    error::QueryError,
+    exec::output::{QueryExecutionOutcome, QueryOutput},
     metrics::{JoinOperatorMetrics, QueryMetrics},
+    observability::SealedRuntimeObservationSnapshot,
     runtime::{ExecutionBoundaryPolicy, LakehouseCacheFillEventSnapshot},
 };
 
-use super::{capture::NativeMetricsCapture, contract::metric_name, registry::NativeMetricRegistry};
+use super::{
+    SERVER_CAPTURE_LOSS_METRIC_NAME, capture::NativeExecutionMetricsCapture, contract::metric_name,
+    registry::NativeMetricRegistry,
+};
 use crate::native_exec::admission::QueryAdmissionFacts;
 
 mod mapping;
@@ -20,10 +34,77 @@ pub(super) use mapping::{NATIVE_CUDF_RECORDING_DESCRIPTORS, NativeMetricRecordin
 #[derive(Debug, Clone)]
 pub(crate) struct NativeCudfMetrics {
     metrics_set: ExecutionPlanMetricsSet,
-    capture: Option<NativeMetricsCapture>,
+    capture: Option<NativeExecutionMetricsCapture>,
     plan_task_mapping_datafusion_shape: Option<String>,
     pub(crate) baseline: BaselineMetrics,
     registry: NativeMetricRegistry,
+    row_capture_budget: Arc<Mutex<MetricRowCaptureBudget>>,
+    row_capture_loss: Count,
+    row_capture_loss_reported: Arc<AtomicBool>,
+}
+
+#[derive(Debug)]
+struct MetricRowCaptureBudget {
+    remaining_records: u64,
+    remaining_bytes: u64,
+    truncated: bool,
+    counter_overflow: bool,
+}
+
+impl MetricRowCaptureBudget {
+    fn new(capture: Option<&NativeExecutionMetricsCapture>) -> Self {
+        let limits = capture.map_or_else(
+            || nexus_query_engine::observability::RuntimeObservationConfig::native_execution().limits(),
+            NativeExecutionMetricsCapture::metric_capture_limits,
+        );
+        Self {
+            remaining_records: limits.max_retained_records,
+            remaining_bytes: limits.max_retained_bytes,
+            truncated: false,
+            counter_overflow: false,
+        }
+    }
+
+    fn admit(&mut self, row: &impl fmt::Debug) -> bool {
+        if self.remaining_records == 0 {
+            self.truncated = true;
+            return false;
+        }
+        let mut probe = MetricRowSizeProbe { remaining: self.remaining_bytes, exceeded: false };
+        let _ = write!(probe, "{row:?}");
+        if probe.exceeded {
+            self.truncated = true;
+            return false;
+        }
+        let used = self.remaining_bytes - probe.remaining;
+        self.remaining_records = self.remaining_records.checked_sub(1).unwrap_or_else(|| {
+            self.counter_overflow = true;
+            0
+        });
+        self.remaining_bytes = self.remaining_bytes.checked_sub(used).unwrap_or_else(|| {
+            self.counter_overflow = true;
+            0
+        });
+        true
+    }
+}
+
+struct MetricRowSizeProbe {
+    remaining: u64,
+    exceeded: bool,
+}
+
+impl fmt::Write for MetricRowSizeProbe {
+    fn write_str(&mut self, value: &str) -> fmt::Result {
+        let bytes = u64::try_from(value.len()).unwrap_or(u64::MAX);
+        if bytes > self.remaining {
+            self.exceeded = true;
+            self.remaining = 0;
+            return Err(fmt::Error);
+        }
+        self.remaining -= bytes;
+        Ok(())
+    }
 }
 
 // Recorder methods use descriptor-generated field identifiers directly while the
@@ -37,7 +118,7 @@ impl Deref for NativeCudfMetrics {
 }
 
 impl NativeCudfMetrics {
-    #[cfg(any(test, feature = "server"))]
+    #[cfg(test)]
     pub(crate) fn new(metrics: &ExecutionPlanMetricsSet, partition: usize) -> Self {
         Self::new_with_capture_and_shape(metrics, partition, None, None)
     }
@@ -47,7 +128,7 @@ impl NativeCudfMetrics {
     pub(crate) fn new_with_capture(
         metrics: &ExecutionPlanMetricsSet,
         partition: usize,
-        capture: Option<NativeMetricsCapture>,
+        capture: Option<NativeExecutionMetricsCapture>,
     ) -> Self {
         Self::new_with_capture_and_shape(metrics, partition, capture, None)
     }
@@ -55,16 +136,37 @@ impl NativeCudfMetrics {
     pub(crate) fn new_with_capture_and_shape(
         metrics: &ExecutionPlanMetricsSet,
         partition: usize,
-        capture: Option<NativeMetricsCapture>,
+        capture: Option<NativeExecutionMetricsCapture>,
         plan_task_mapping_datafusion_shape: Option<&str>,
     ) -> Self {
+        let row_capture_budget = Arc::new(Mutex::new(MetricRowCaptureBudget::new(capture.as_ref())));
+        let row_capture_loss = MetricBuilder::new(metrics)
+            .with_type(MetricType::Summary)
+            .counter(SERVER_CAPTURE_LOSS_METRIC_NAME, partition);
         Self {
             metrics_set: metrics.clone(),
             capture,
             plan_task_mapping_datafusion_shape: plan_task_mapping_datafusion_shape.map(ToString::to_string),
             baseline: BaselineMetrics::new(metrics, partition),
             registry: NativeMetricRegistry::register(metrics, partition),
+            row_capture_budget,
+            row_capture_loss,
+            row_capture_loss_reported: Arc::new(AtomicBool::new(false)),
         }
+    }
+
+    fn admit_metric_row(&self, row: &impl fmt::Debug) -> bool {
+        let admitted = self.row_capture_budget.lock().unwrap_or_else(std::sync::PoisonError::into_inner).admit(row);
+        if !admitted && !self.row_capture_loss_reported.swap(true, Ordering::Relaxed) {
+            self.row_capture_loss.add(1);
+        }
+        admitted
+    }
+
+    #[cfg(test)]
+    pub(super) fn row_capture_state(&self) -> (u64, u64, bool, bool) {
+        let budget = self.row_capture_budget.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        (budget.remaining_records, budget.remaining_bytes, budget.truncated, budget.counter_overflow)
     }
 
     pub(crate) fn record_admission_facts(&self, facts: QueryAdmissionFacts) {
@@ -75,16 +177,53 @@ impl NativeCudfMetrics {
     }
 
     pub(crate) fn record_query_metrics(&self, metrics: &QueryMetrics) {
-        let enriched_metrics;
-        let metrics = if let Some(shape) = &self.plan_task_mapping_datafusion_shape {
-            enriched_metrics = metrics.clone().with_plan_task_mapping_datafusion_shape(shape);
-            &enriched_metrics
-        } else {
-            metrics
-        };
         self.record_descriptor_query_metrics(metrics);
         if let Some(capture) = &self.capture {
             capture.record_query_metrics(metrics);
+        }
+    }
+
+    /// Records every evidence surface before returning the native result to the
+    /// adapter's `QueryError -> DataFusionError` conversion boundary.
+    pub(crate) fn finalize_query_outcome(
+        &self,
+        outcome: QueryExecutionOutcome,
+    ) -> std::result::Result<QueryOutput, QueryError> {
+        let (result, metrics, observation) = outcome.into_parts();
+        self.record_query_metrics(&metrics);
+        if let Some(observation) = observation {
+            self.record_runtime_observation(Arc::new(observation));
+        }
+        result
+    }
+
+    /// Finalize a native outcome whose logical host sink is materialized later
+    /// by the adapter's bounded GPU-to-host cursor.
+    pub(crate) fn finalize_query_outcome_for_deferred_host(
+        &self,
+        outcome: QueryExecutionOutcome,
+    ) -> std::result::Result<QueryOutput, QueryError> {
+        let (result, mut metrics, observation) = outcome.into_parts();
+        if metrics.compiled_pipeline_attempts > 0 {
+            metrics.record_compiled_pipeline_tasks_executed(1);
+            metrics.record_compiled_pipeline_host_arrow_sink();
+        }
+        self.record_query_metrics(&metrics);
+        if let Some(observation) = observation {
+            self.record_runtime_observation(Arc::new(observation));
+        }
+        result
+    }
+
+    pub(crate) fn record_deferred_host_materialization(&self, rows: usize, bytes: usize) {
+        self.device_to_host_materializations.add(1);
+        self.device_to_host_materialized_rows.add(rows);
+        self.device_to_host_materialized_bytes.add(bytes);
+    }
+
+    pub(crate) fn record_runtime_observation(&self, observation: Arc<SealedRuntimeObservationSnapshot>) {
+        if let Some(capture) = &self.capture {
+            capture.record_runtime_observation(observation);
         }
     }
 
@@ -97,6 +236,9 @@ impl NativeCudfMetrics {
 
     fn record_lakehouse_cache_fill_event_rows(&self, events: &[LakehouseCacheFillEventSnapshot]) {
         for event in events {
+            if !self.admit_metric_row(event) {
+                continue;
+            }
             MetricBuilder::new(&self.metrics_set)
                 .with_type(MetricType::Summary)
                 .with_new_label("outcome", event.outcome.to_string())
@@ -123,6 +265,9 @@ impl NativeCudfMetrics {
 
     fn record_graph_runtime_rows(&self, metrics: &QueryMetrics) {
         for row in &metrics.graph_algorithm_runtime_rows {
+            if !self.admit_metric_row(row) {
+                continue;
+            }
             MetricBuilder::new(&self.metrics_set)
                 .with_type(MetricType::Summary)
                 .with_new_label("node_id", row.node_id.clone())
@@ -164,6 +309,9 @@ impl NativeCudfMetrics {
 
     fn record_graph_reservation_rows(&self, metrics: &QueryMetrics) {
         for row in &metrics.graph_reservation_rows {
+            if !self.admit_metric_row(row) {
+                continue;
+            }
             MetricBuilder::new(&self.metrics_set)
                 .with_type(MetricType::Summary)
                 .with_new_label("node_id", row.node_id.clone())
@@ -257,6 +405,9 @@ impl NativeCudfMetrics {
 
     fn record_task_operator_rows(&self, metrics: &QueryMetrics) {
         for row in metrics.task_operator_metrics.values() {
+            if !self.admit_metric_row(row) {
+                continue;
+            }
             MetricBuilder::new(&self.metrics_set)
                 .with_type(MetricType::Summary)
                 .with_new_label("operator_kind", row.operator_kind.clone())
@@ -281,6 +432,9 @@ impl NativeCudfMetrics {
 
     fn record_task_runtime_rows(&self, metrics: &QueryMetrics) {
         for row in metrics.task_runtime_metrics.values() {
+            if !self.admit_metric_row(row) {
+                continue;
+            }
             MetricBuilder::new(&self.metrics_set)
                 .with_type(MetricType::Summary)
                 .with_new_label("compiled_task_id", row.compiled_task_id.clone())
@@ -304,7 +458,13 @@ impl NativeCudfMetrics {
     }
 
     fn record_plan_task_mapping_rows(&self, metrics: &QueryMetrics) {
-        for row in metrics.plan_task_mappings() {
+        for mut row in metrics.plan_task_mappings() {
+            if let Some(shape) = &self.plan_task_mapping_datafusion_shape {
+                row.datafusion_shape = Some(shape.clone());
+            }
+            if !self.admit_metric_row(&row) {
+                continue;
+            }
             MetricBuilder::new(&self.metrics_set)
                 .with_type(MetricType::Summary)
                 .with_new_label("query_id", row.query_id.as_str().to_string())
@@ -327,6 +487,9 @@ impl NativeCudfMetrics {
 
     fn record_dynamic_filter_runtime_rows(&self, metrics: &QueryMetrics) {
         for row in &metrics.dynamic_filter_runtime_rows {
+            if !self.admit_metric_row(row) {
+                continue;
+            }
             MetricBuilder::new(&self.metrics_set)
                 .with_type(MetricType::Summary)
                 .with_new_label("dynamic_filter_id", row.dynamic_filter_id.clone())
@@ -409,6 +572,9 @@ impl NativeCudfMetrics {
 
     fn record_source_read_runtime_rows(&self, metrics: &QueryMetrics) {
         for row in &metrics.source_read_runtime_rows {
+            if !self.admit_metric_row(row) {
+                continue;
+            }
             MetricBuilder::new(&self.metrics_set)
                 .with_type(MetricType::Summary)
                 .with_new_label("source_node_id", row.source_node_id.clone())
@@ -491,12 +657,18 @@ impl NativeCudfMetrics {
     fn record_join_strategy_rows(&self, metrics: &QueryMetrics) {
         let mut decision_facts_by_node: BTreeMap<&str, BTreeMap<String, String>> = BTreeMap::new();
         for decision in &metrics.join_strategy_decisions {
+            if !self.admit_metric_row(decision) {
+                continue;
+            }
             decision_facts_by_node
                 .entry(decision.node_id.as_str())
                 .or_default()
                 .extend(decision.facts.iter().map(|(key, value)| (key.clone(), value.clone())));
         }
         for operator in metrics.operators.iter().filter(|operator| operator.operator_kind == "join") {
+            if !self.admit_metric_row(operator) {
+                continue;
+            }
             let Some(join) = operator.join.as_ref() else {
                 continue;
             };
@@ -578,6 +750,9 @@ impl NativeCudfMetrics {
 
     fn record_aggregate_strategy_rows(&self, metrics: &QueryMetrics) {
         for decision in &metrics.aggregate_strategy_decisions {
+            if !self.admit_metric_row(decision) {
+                continue;
+            }
             let facts = &decision.facts;
             MetricBuilder::new(&self.metrics_set)
                 .with_type(MetricType::Summary)

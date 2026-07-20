@@ -190,6 +190,7 @@ impl QueryPlanBuilder {
             nodes: self.nodes,
             root,
             sink,
+            deferred_host_sink_schema: None,
             dynamic_filter_routes: Vec::new(),
             dynamic_filter_execution_options: Default::default(),
             keyed_hash_join_strategy_options: Default::default(),

@@ -14,6 +14,21 @@ pub(super) enum StatementTicketKind {
 }
 
 impl StatementTicketKind {
+    pub(super) const fn code(self) -> u8 {
+        match self {
+            Self::Statement => 0,
+            Self::PreparedStatement => 1,
+        }
+    }
+
+    pub(super) fn from_code(code: u8) -> Result<Self, Status> {
+        match code {
+            0 => Ok(Self::Statement),
+            1 => Ok(Self::PreparedStatement),
+            _ => Err(Status::internal("query coordinator retained an invalid statement ticket kind")),
+        }
+    }
+
     pub(super) const fn create_logical_plan_operation(self) -> &'static str {
         match self {
             Self::Statement => "datafusion_nexus.server.flight.get_flight_info_statement.create_logical_plan",
@@ -48,7 +63,8 @@ impl StatementTicketKind {
 /// Keeps the two DoPut update channels on one execution path without losing
 /// client-visible operation context.
 ///
-/// Update statements do not pass through `StatementTicket`, so this is the
+/// Update statements do not pass through the coordinator's statement-ticket
+/// handoff, so this is the
 /// lightweight equivalent of `StatementTicketKind` for planning/collect errors
 /// and tracing labels.
 #[derive(Debug, Clone, Copy)]
@@ -58,6 +74,13 @@ pub(super) enum UpdateStatementKind {
 }
 
 impl UpdateStatementKind {
+    pub(super) const fn into_execution_operation(self) -> &'static str {
+        match self {
+            Self::Statement => "datafusion_nexus.server.flight.do_put_statement_update.into_execution",
+            Self::PreparedStatement => "datafusion_nexus.server.flight.do_put_prepared_statement_update.into_execution",
+        }
+    }
+
     pub(super) const fn sql_operation(self) -> &'static str {
         match self {
             Self::Statement => "datafusion_nexus.server.flight.do_put_statement_update.sql",
@@ -73,30 +96,6 @@ impl UpdateStatementKind {
     }
 }
 
-/// Handoff record between `GetFlightInfo` and `DoGet`.
-///
-/// Flight SQL splits statement execution across RPCs: `GetFlightInfo` plans
-/// enough to return schema and ticket bytes, while `DoGet` later consumes the
-/// ticket and runs the query. This record keeps the per-execution state that
-/// must survive that gap: cancellation handle, correlation id, and
-/// prepared-statement dedup context. GPU admission is plan-scoped and lazy; it
-/// is not owned by the Flight SQL statement ticket.
-#[derive(Debug)]
-pub(super) struct StatementTicket {
-    pub(super) query_id: String,
-    pub(super) sql: String,
-    pub(super) correlation_id: Option<String>,
-    pub(super) ticket_kind: StatementTicketKind,
-    /// The originating prepared-statement handle, when this ticket was issued
-    /// from `get_flight_info_prepared_statement`. `None` for non-prepared
-    /// statement tickets. Used to deduplicate repeated no-result-set DDL
-    /// execution on the query channel (see `PreparedStatementEntry`).
-    pub(super) prepared_handle: Option<String>,
-    pub(super) native_cancellation: ExecutionCancellation,
-    pub(super) started_at: Instant,
-    pub(super) issued_at: Instant,
-}
-
 /// Owns the resources that must live exactly as long as a lazy DoGet stream.
 ///
 /// `DoGet` returns before the stream is fully polled, so ordinary stack cleanup
@@ -107,54 +106,31 @@ pub(super) struct QueryExecutionGuard {
     pub(super) query_id: String,
     pub(super) correlation_id: Option<String>,
     pub(super) cancellations: Arc<QueryCancellation>,
-    pub(super) observability: Arc<QueryObservability>,
     pub(super) flight_token: CancellationToken,
     pub(super) native_cancellation: ExecutionCancellation,
     pub(super) native_cancel_bridge: tokio::task::JoinHandle<()>,
     pub(super) shutdown_token: CancellationToken,
-    pub(super) lifecycle: Arc<QueryLifecycle>,
+    pub(super) terminal: Arc<CoordinatorExecutionTerminal>,
 }
 
-impl Drop for QueryExecutionGuard {
-    fn drop(&mut self) {
-        if !self.lifecycle.is_finished() {
-            self.native_cancellation.cancel();
-            self.flight_token.cancel();
-            let status = finish_adapter_error_status_with_correlation_id(
-                self.observability.as_ref(),
-                &self.query_id,
-                self.correlation_id.as_deref(),
-                "stream",
-                cancellation_error(&self.shutdown_token),
-            );
-            self.lifecycle.finish_status("stream", &status);
-        }
-        self.native_cancel_bridge.abort();
-        self.cancellations.remove(&self.query_id);
-        self.observability.seal(&self.query_id);
-        self.lifecycle.finish_dropped();
+pub(super) struct CoordinatorExecutionTerminal {
+    lease: Mutex<Option<QueryExecutionLease>>,
+    query_id: String,
+    started_at: Instant,
+}
+
+impl CoordinatorExecutionTerminal {
+    pub(super) fn new(lease: QueryExecutionLease, query_id: String, started_at: Instant) -> Arc<Self> {
+        Arc::new(Self { lease: Mutex::new(Some(lease)), query_id, started_at })
     }
-}
 
-/// Serializes terminal accounting for a statement.
-///
-/// Planning errors, stream errors, cancellation trailers, successful end of
-/// stream, and guard drop can race through different async paths. This latch
-/// makes the first terminal outcome authoritative so logs and query lifecycle
-/// state do not double-finish the same query.
-pub(super) struct QueryLifecycle {
-    pub(super) query_id: String,
-    pub(super) started_at: Instant,
-    pub(super) terminal: Mutex<Option<&'static str>>,
-}
-
-impl QueryLifecycle {
-    pub(super) fn new(query_id: String, started_at: Instant) -> Self {
-        Self { query_id, started_at, terminal: Mutex::new(None) }
+    pub(super) fn is_finished(&self) -> bool {
+        self.lease.lock().unwrap_or_else(std::sync::PoisonError::into_inner).is_none()
     }
 
     pub(super) fn finish_success(&self, stage: &'static str) {
-        if self.try_finish("succeeded") {
+        if let Some(lease) = self.lease.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take() {
+            lease.succeed();
             tracing::info!(
                 query_id = self.query_id,
                 outcome = "succeeded",
@@ -165,35 +141,42 @@ impl QueryLifecycle {
         }
     }
 
-    fn finish_dropped(&self) {
-        if self.try_finish("dropped") {
-            tracing::warn!(
-                query_id = self.query_id,
-                outcome = "dropped",
-                stage = "stream",
-                elapsed_ms = self.started_at.elapsed().as_millis(),
-                "finished Flight SQL statement"
-            );
-        }
-    }
-
-    pub(super) fn is_finished(&self) -> bool {
-        self.terminal.lock().expect("query lifecycle mutex poisoned").is_some()
-    }
-
-    pub(super) fn finish_status(&self, stage: &'static str, status: &Status) {
-        let outcome = status_outcome(status.code());
-        if self.try_finish(outcome) {
+    pub(super) fn finish_captured(&self, stage: &'static str, status: &Status, captured: CapturedError) {
+        if let Some(mut lease) = self.lease.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take() {
+            lease.finish_captured(stage, status, captured);
             log_statement_status(&self.query_id, stage, self.started_at, status);
         }
     }
 
-    fn try_finish(&self, outcome: &'static str) -> bool {
-        let mut terminal = self.terminal.lock().expect("query lifecycle mutex poisoned");
-        if terminal.is_some() {
-            return false;
+    pub(super) fn finish_panicked(&self, stage: &'static str) {
+        if let Some(mut lease) = self.lease.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take() {
+            lease.finish_panicked();
+            tracing::error!(
+                query_id = self.query_id,
+                outcome = "panicked",
+                stage,
+                elapsed_ms = self.started_at.elapsed().as_millis(),
+                "Flight SQL statement panicked"
+            );
         }
-        *terminal = Some(outcome);
-        true
+    }
+}
+
+impl Drop for QueryExecutionGuard {
+    fn drop(&mut self) {
+        if !self.terminal.is_finished() {
+            if std::thread::panicking() {
+                self.terminal.finish_panicked("stream");
+            } else {
+                let (status, captured) = adapter_error_to_status_and_capture(cancellation_error(&self.shutdown_token));
+                let status =
+                    status_with_query_id_and_correlation_id(status, &self.query_id, self.correlation_id.as_deref());
+                self.terminal.finish_captured("stream", &status, captured);
+            }
+            self.native_cancellation.cancel();
+            self.flight_token.cancel();
+        }
+        self.native_cancel_bridge.abort();
+        self.cancellations.remove(&self.query_id);
     }
 }

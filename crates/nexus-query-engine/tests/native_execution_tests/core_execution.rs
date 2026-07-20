@@ -11,13 +11,14 @@ fn expect_device_buffer_error(result: cudf::Result<cudf::core::DeviceBuffer>) ->
 fn grant_backed_budget_tokens_share_arena_across_stream_leases() {
     let runtime = Arc::new(cudf::Runtime::builder().with_device_memory_manager().build().unwrap());
     let governor = MemoryGovernor::new(runtime.device().ordinal(), 64 * 1024 * 1024).unwrap();
-    let grant = governor.request(GrantRequest::new(1, 12 * 1024 * 1024, 12 * 1024 * 1024)).unwrap();
+    let grant =
+        governor.request(GrantRequest::new(AdmissionRequestId::new(1), 12 * 1024 * 1024, 12 * 1024 * 1024)).unwrap();
     let context =
         ExecutionContext::builder().with_shared_runtime(Arc::clone(&runtime)).with_memory_grant(grant).build().unwrap();
 
     assert_eq!(governor.report().unwrap().outstanding_bytes, 12 * 1024 * 1024);
 
-    let grant = context.memory_grant().unwrap().clone();
+    let grant = context.memory_grant().unwrap().unwrap();
     let probe_token = context
         .execution_budget_token(cudf::ExecutionBudgetRequest::new(1024 * 1024).with_boundary("grant_arena_probe"))
         .unwrap();
@@ -55,7 +56,7 @@ fn grant_backed_budget_tokens_share_arena_across_stream_leases() {
         .execution_budget_token(cudf::ExecutionBudgetRequest::new(16 * 1024 * 1024).with_boundary("grant_arena_left"))
         .unwrap();
     assert_eq!(left_token.enforcement(), cudf::ExecutionBudgetEnforcement::ReservationArenaMember);
-    let left_buffer = context.runtime().device_buffer(8 * 1024 * 1024).unwrap();
+    let left_buffer = context.runtime().unwrap().device_buffer(8 * 1024 * 1024).unwrap();
 
     let stream_lease = context.service_stream_pool().acquire().unwrap();
     let leased_context = context.with_owned_stream_lease(stream_lease).unwrap();
@@ -65,12 +66,12 @@ fn grant_backed_budget_tokens_share_arena_across_stream_leases() {
         .unwrap();
     assert_eq!(right_token.enforcement(), cudf::ExecutionBudgetEnforcement::ReservationArenaMember);
 
-    let err = expect_device_buffer_error(right_context.runtime().device_buffer(8 * 1024 * 1024));
+    let err = expect_device_buffer_error(right_context.runtime().unwrap().device_buffer(8 * 1024 * 1024));
     assert_eq!(err.kind(), cudf::ErrorKind::ResourceExhausted);
 
     drop(left_buffer);
 
-    let right_buffer = right_context.runtime().device_buffer(8 * 1024 * 1024).unwrap();
+    let right_buffer = right_context.runtime().unwrap().device_buffer(8 * 1024 * 1024).unwrap();
     assert_eq!(right_buffer.size_bytes().unwrap(), 8 * 1024 * 1024);
 }
 
@@ -79,7 +80,8 @@ fn shared_memory_grant_contexts_reuse_one_arena_parent() {
     let left_runtime = Arc::new(cudf::Runtime::builder().with_device_memory_manager().build().unwrap());
     let right_runtime = Arc::new(cudf::Runtime::builder().with_device_memory_manager().build().unwrap());
     let governor = MemoryGovernor::new(left_runtime.device().ordinal(), 64 * 1024 * 1024).unwrap();
-    let grant = governor.request(GrantRequest::new(2, 12 * 1024 * 1024, 12 * 1024 * 1024)).unwrap();
+    let grant =
+        governor.request(GrantRequest::new(AdmissionRequestId::new(2), 12 * 1024 * 1024, 12 * 1024 * 1024)).unwrap();
     let left_context = ExecutionContext::builder()
         .with_shared_runtime(Arc::clone(&left_runtime))
         .with_memory_grant(grant.clone())
@@ -102,8 +104,8 @@ fn shared_memory_grant_contexts_reuse_one_arena_parent() {
         right_token.reservation_arena_usage().unwrap().unwrap().allocation_limit_bytes
     );
 
-    let left_buffer = left_context.runtime().device_buffer(8 * 1024 * 1024).unwrap();
-    let err = expect_device_buffer_error(right_context.runtime().device_buffer(8 * 1024 * 1024));
+    let left_buffer = left_context.runtime().unwrap().device_buffer(8 * 1024 * 1024).unwrap();
+    let err = expect_device_buffer_error(right_context.runtime().unwrap().device_buffer(8 * 1024 * 1024));
     assert_eq!(err.kind(), cudf::ErrorKind::ResourceExhausted);
     drop(left_buffer);
 }
@@ -1874,7 +1876,95 @@ fn bounded_local_parquet_source_cache_reuses_equivalent_relowered_scan_contract(
 }
 
 #[test]
-fn whole_source_local_parquet_source_cache_uses_active_grant_capacity() {
+fn query_service_shutdown_drains_source_cache_and_waits_for_escaped_pinned_output() {
+    use std::{
+        sync::mpsc,
+        time::{Duration, Instant},
+    };
+
+    let dir = unique_temp_dir("nexus-query-engine-service-source-cache-shutdown");
+    let path = dir.join("input.parquet");
+    write_row_grouped_input_parquet(&path);
+    let source_schema = Arc::new(Schema::new(vec![
+        Field::new("key", DataType::Int32, false),
+        Field::new("payload", DataType::Int64, false),
+    ]));
+    let config = QueryServiceConfig {
+        device_capacity_bytes: Some(128 * 1024 * 1024),
+        max_concurrent_queries: 1,
+        max_queries_per_device: Some(1),
+        max_row_groups_per_chunk: 8,
+        local_parquet_source_cache_max_retained_bytes: Some(32 * 1024 * 1024),
+        slot_guarantee: SlotGuarantee::GuaranteedMinimum,
+        ..QueryServiceConfig::default()
+    };
+    let tenants = vec![QueryServiceTenantConfig::with_grant_range(
+        TenantId::new("cache-shutdown"),
+        8 * 1024 * 1024,
+        32 * 1024 * 1024,
+    )];
+    let service = QueryService::new(config.clone(), tenants.clone()).unwrap();
+    let file_size = fs::metadata(&path).unwrap().len();
+    let source = LocalParquetSource::from_files(
+        vec![
+            LocalParquetFile::new(&path).with_stable_id("service-cache-shutdown-input").with_file_size_bytes(file_size),
+        ],
+        Arc::clone(&source_schema),
+        vec!["key".to_string(), "payload".to_string()],
+    );
+    let mut builder = QueryPlanBuilder::new();
+    let source = builder.add_source(SourceNode::LocalParquet(source));
+    let plan = builder.finish_gpu_resident(source);
+
+    let query = service.admit_query("cache-shutdown").unwrap();
+    let tenant_context = query.acquire_context().unwrap();
+    let cache = tenant_context.context().local_parquet_source_cache().expect("service source cache");
+    let result = execute_query_plan(tenant_context.context(), &plan).unwrap();
+    assert_eq!(result.metrics().source_cache_inserts, 1);
+    let (output, _metrics) = result.into_parts();
+    let QueryOutput::GpuResident(escaped) = output else {
+        panic!("GPU-resident source plan must return an escaped pinned handle");
+    };
+    assert!(!cache.is_empty().unwrap());
+    assert!(cache.retained_device_bytes().unwrap() > 0);
+    query.finish();
+    drop(tenant_context);
+    drop(query);
+
+    let (finished_tx, finished_rx) = mpsc::channel();
+    let closing_service = service.clone();
+    let close = std::thread::spawn(move || {
+        let result = closing_service.close_and_wait_for_quiescence(Duration::from_secs(10));
+        finished_tx.send(()).unwrap();
+        result
+    });
+    let cache_deadline = Instant::now() + Duration::from_secs(10);
+    while !cache.is_empty().unwrap() {
+        assert!(Instant::now() < cache_deadline, "shutdown did not drain the populated source cache");
+        std::thread::yield_now();
+    }
+    assert_eq!(cache.retained_device_bytes().unwrap(), 0);
+    assert!(
+        finished_rx.recv_timeout(Duration::from_millis(20)).is_err(),
+        "escaped GPU output must keep the invalidated service epoch live after cache drain"
+    );
+
+    drop(escaped);
+    finished_rx
+        .recv_timeout(Duration::from_secs(10))
+        .expect("service shutdown must finish after the escaped output drops");
+    close.join().unwrap().expect("query service closes cleanly");
+    drop(cache);
+    drop(service);
+
+    let replacement = QueryService::new(config, tenants).expect("replacement service acquires the released claim");
+    replacement.close_and_wait_for_quiescence(Duration::from_secs(10)).unwrap();
+    drop(replacement);
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn whole_source_local_parquet_source_cache_does_not_use_active_grant_capacity() {
     let dir = unique_temp_dir("nexus-query-engine-whole-source-cache-grant");
     let path = dir.join("input.parquet");
     let runtime = Arc::new(cudf::Runtime::new().unwrap());
@@ -1884,7 +1974,9 @@ fn whole_source_local_parquet_source_cache_uses_active_grant_capacity() {
         Field::new("payload", DataType::Int64, false),
     ]));
     let governor = MemoryGovernor::new(runtime.device().ordinal(), 64 * 1024 * 1024).unwrap();
-    let grant = governor.request(GrantRequest::new(200, governor.capacity_bytes(), governor.capacity_bytes())).unwrap();
+    let grant = governor
+        .request(GrantRequest::new(AdmissionRequestId::new(200), governor.capacity_bytes(), governor.capacity_bytes()))
+        .unwrap();
     assert_eq!(governor.free_bytes().unwrap(), 0);
     let cache = Arc::new(GpuLocalParquetSourceCache::new_governor_backed(64 * 1024 * 1024, governor.clone()));
     GpuLocalParquetSourceCache::register_governor_pressure_observer(&cache).unwrap();
@@ -1911,19 +2003,20 @@ fn whole_source_local_parquet_source_cache_uses_active_grant_capacity() {
     let cold = execute_query_plan(&context, &build_plan()).unwrap();
     assert_eq!(cold.metrics().source_cache_hits, 0);
     assert_eq!(cold.metrics().source_cache_misses, 1);
-    assert_eq!(cold.metrics().source_cache_inserts, 1);
-    let retained_bytes = cache.retained_device_bytes().unwrap();
-    assert!(retained_bytes > 0);
+    assert_eq!(cold.metrics().source_cache_inserts, 0);
+    assert_eq!(cold.metrics().source_cache_insert_skipped, 1);
+    assert_eq!(cache.retained_device_bytes().unwrap(), 0);
     let report = governor.report().unwrap();
-    assert_eq!(report.evictable_bytes, retained_bytes);
+    assert_eq!(report.evictable_bytes, 0);
     assert_eq!(report.outstanding_bytes, governor.capacity_bytes());
     assert_eq!(report.free_bytes, 0);
 
     let warm = execute_query_plan(&context, &build_plan()).unwrap();
-    assert_eq!(warm.metrics().source_cache_hits, 1);
-    assert_eq!(warm.metrics().source_cache_misses, 0);
+    assert_eq!(warm.metrics().source_cache_hits, 0);
+    assert_eq!(warm.metrics().source_cache_misses, 1);
     assert_eq!(warm.metrics().source_cache_inserts, 0);
-    assert_eq!(cache.retained_device_bytes().unwrap(), retained_bytes);
+    assert_eq!(warm.metrics().source_cache_insert_skipped, 1);
+    assert_eq!(cache.retained_device_bytes().unwrap(), 0);
 
     let QueryOutput::HostArrow(batch) = warm.output() else {
         panic!("host sink should materialize one RecordBatch");
@@ -1979,7 +2072,11 @@ fn whole_source_local_parquet_source_cache_miss_projection_pins_gpu_result_until
     assert!(retained_bytes > 0);
     assert!(
         governor
-            .try_request(GrantRequest::new(201, governor.capacity_bytes(), governor.capacity_bytes()))
+            .try_request(GrantRequest::new(
+                AdmissionRequestId::new(201),
+                governor.capacity_bytes(),
+                governor.capacity_bytes()
+            ))
             .unwrap()
             .is_none(),
         "pressure admission must not evict a cold-miss source-cache entry pinned by projected GPU output"
@@ -1989,7 +2086,11 @@ fn whole_source_local_parquet_source_cache_miss_projection_pins_gpu_result_until
 
     drop(cold);
     let grant = governor
-        .try_request(GrantRequest::new(202, governor.capacity_bytes(), governor.capacity_bytes()))
+        .try_request(GrantRequest::new(
+            AdmissionRequestId::new(202),
+            governor.capacity_bytes(),
+            governor.capacity_bytes(),
+        ))
         .unwrap()
         .expect("unpinned cold-miss cache entry should be evicted under pressure");
     assert_eq!(grant.budget_bytes(), governor.capacity_bytes());
@@ -2084,7 +2185,11 @@ fn whole_source_local_parquet_source_cache_single_input_union_pins_gpu_result_un
     assert!(retained_bytes > 0);
     assert!(
         governor
-            .try_request(GrantRequest::new(203, governor.capacity_bytes(), governor.capacity_bytes()))
+            .try_request(GrantRequest::new(
+                AdmissionRequestId::new(203),
+                governor.capacity_bytes(),
+                governor.capacity_bytes()
+            ))
             .unwrap()
             .is_none(),
         "pressure admission must not evict a source-cache entry pinned through single-input union"
@@ -2092,7 +2197,11 @@ fn whole_source_local_parquet_source_cache_single_input_union_pins_gpu_result_un
 
     drop(cold);
     let grant = governor
-        .try_request(GrantRequest::new(204, governor.capacity_bytes(), governor.capacity_bytes()))
+        .try_request(GrantRequest::new(
+            AdmissionRequestId::new(204),
+            governor.capacity_bytes(),
+            governor.capacity_bytes(),
+        ))
         .unwrap()
         .expect("unpinned union output should release source-cache pressure protection");
     assert_eq!(grant.budget_bytes(), governor.capacity_bytes());
@@ -2153,7 +2262,11 @@ fn whole_source_local_parquet_source_cache_edge_normalize_pins_alias_until_gpu_r
     assert!(retained_bytes > 0);
     assert!(
         governor
-            .try_request(GrantRequest::new(206, governor.capacity_bytes(), governor.capacity_bytes()))
+            .try_request(GrantRequest::new(
+                AdmissionRequestId::new(206),
+                governor.capacity_bytes(),
+                governor.capacity_bytes()
+            ))
             .unwrap()
             .is_none(),
         "pressure admission must not evict source-cache entry while edge-normalized GPU output aliases it"
@@ -2161,7 +2274,11 @@ fn whole_source_local_parquet_source_cache_edge_normalize_pins_alias_until_gpu_r
 
     drop(cold);
     let grant = governor
-        .try_request(GrantRequest::new(207, governor.capacity_bytes(), governor.capacity_bytes()))
+        .try_request(GrantRequest::new(
+            AdmissionRequestId::new(207),
+            governor.capacity_bytes(),
+            governor.capacity_bytes(),
+        ))
         .unwrap()
         .expect("unpinned edge-normalize source-cache entry should be evicted under pressure");
     assert_eq!(grant.budget_bytes(), governor.capacity_bytes());
@@ -2236,7 +2353,11 @@ fn bounded_local_parquet_source_cache_governor_owns_evictable_bytes() {
     drop(first);
     drop(second);
     let pressure_grant = governor
-        .try_request(GrantRequest::new(99, governor.capacity_bytes(), governor.capacity_bytes()))
+        .try_request(GrantRequest::new(
+            AdmissionRequestId::new(99),
+            governor.capacity_bytes(),
+            governor.capacity_bytes(),
+        ))
         .unwrap()
         .expect("admission should evict unpinned source-cache entries");
     assert_eq!(pressure_grant.budget_bytes(), governor.capacity_bytes());
@@ -2257,7 +2378,9 @@ fn bounded_local_parquet_source_cache_does_not_use_active_grant_capacity_for_ins
         Field::new("payload", DataType::Int64, false),
     ]));
     let governor = MemoryGovernor::new(runtime.device().ordinal(), 64 * 1024 * 1024).unwrap();
-    let grant = governor.request(GrantRequest::new(205, governor.capacity_bytes(), governor.capacity_bytes())).unwrap();
+    let grant = governor
+        .request(GrantRequest::new(AdmissionRequestId::new(205), governor.capacity_bytes(), governor.capacity_bytes()))
+        .unwrap();
     assert_eq!(governor.free_bytes().unwrap(), 0);
     let cache = Arc::new(GpuLocalParquetSourceCache::new_governor_backed(64 * 1024 * 1024, governor.clone()));
     GpuLocalParquetSourceCache::register_governor_pressure_observer(&cache).unwrap();
@@ -2359,7 +2482,11 @@ fn bounded_local_parquet_source_cache_pressure_skips_gpu_resident_hit_until_drop
     };
     assert!(
         governor
-            .try_request(GrantRequest::new(100, governor.capacity_bytes(), governor.capacity_bytes()))
+            .try_request(GrantRequest::new(
+                AdmissionRequestId::new(100),
+                governor.capacity_bytes(),
+                governor.capacity_bytes()
+            ))
             .unwrap()
             .is_none(),
         "pressure admission must not evict a pinned cache entry"
@@ -2369,7 +2496,11 @@ fn bounded_local_parquet_source_cache_pressure_skips_gpu_resident_hit_until_drop
 
     drop(warm);
     let grant = governor
-        .try_request(GrantRequest::new(101, governor.capacity_bytes(), governor.capacity_bytes()))
+        .try_request(GrantRequest::new(
+            AdmissionRequestId::new(101),
+            governor.capacity_bytes(),
+            governor.capacity_bytes(),
+        ))
         .unwrap()
         .expect("unpinned cache entry should be evicted under pressure");
     assert_eq!(grant.budget_bytes(), governor.capacity_bytes());

@@ -12,7 +12,8 @@ pub(super) fn execute_compiled_mixed_join_materialize(
     let residual_columns = residual_input_columns(node)?;
     let left_keys = node.spec.keys.iter().map(|key| key.left.name().to_string()).collect::<Vec<_>>();
     let right_keys = node.spec.keys.iter().map(|key| key.right.name().to_string()).collect::<Vec<_>>();
-    let overrides = execution_overrides(context);
+    let overrides_lease = execution_overrides(context)?;
+    let overrides = overrides_lease.overrides();
     let predicate = lower_join_residual_predicate(context, node, &residual_columns)?;
     let options = dataframe_mixed_join_options(&left_keys, &right_keys, &residual_columns, node.spec.null_equality);
     let timer = Instant::now();

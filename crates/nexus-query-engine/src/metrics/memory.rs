@@ -1,7 +1,92 @@
+use std::sync::{Arc, Mutex, MutexGuard};
+
 use super::{
     CompiledTaskId, PlanNodeId, QueryId, QueryMetrics, optional_row_groups, optional_str, optional_u64, optional_usize,
 };
 use crate::runtime::{MemoryReservationRequest, MemorySpaceId, ReservationKind};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ReservationAdmissionProjection {
+    None,
+    Granted,
+    Denied,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ReservationProjectionRecord {
+    event: MemoryReservationEvent,
+    task_kind: Option<String>,
+    admission: ReservationAdmissionProjection,
+}
+
+/// Query-owned, loss-independent source for the public reservation projection.
+///
+/// Cloning the owner takes an independent snapshot. Active reservations receive
+/// a handle instead, so their implicit drop/unwind releases still reach the
+/// metrics value that created them without coupling cloned metrics values.
+#[derive(Default)]
+pub(crate) struct ReservationProjectionLedger {
+    records: Arc<Mutex<Vec<ReservationProjectionRecord>>>,
+}
+
+impl ReservationProjectionLedger {
+    fn records(&self) -> MutexGuard<'_, Vec<ReservationProjectionRecord>> {
+        self.records.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    fn append(&self, record: ReservationProjectionRecord) {
+        self.records().push(record);
+    }
+
+    fn snapshot(&self) -> Vec<ReservationProjectionRecord> {
+        self.records().clone()
+    }
+
+    fn extend(&self, records: impl IntoIterator<Item = ReservationProjectionRecord>) {
+        self.records().extend(records);
+    }
+
+    fn handle(&self) -> ReservationProjectionLedgerHandle {
+        ReservationProjectionLedgerHandle { records: Arc::clone(&self.records) }
+    }
+}
+
+impl Clone for ReservationProjectionLedger {
+    fn clone(&self) -> Self {
+        Self { records: Arc::new(Mutex::new(self.snapshot())) }
+    }
+}
+
+impl std::fmt::Debug for ReservationProjectionLedger {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.debug_struct("ReservationProjectionLedger").field("record_count", &self.records().len()).finish()
+    }
+}
+
+// The ledger is private projection state; public QueryMetrics equality remains
+// defined by the existing public fields rebuilt from it.
+impl PartialEq for ReservationProjectionLedger {
+    fn eq(&self, _other: &Self) -> bool {
+        true
+    }
+}
+
+impl Eq for ReservationProjectionLedger {}
+
+#[derive(Debug, Clone)]
+pub(crate) struct ReservationProjectionLedgerHandle {
+    records: Arc<Mutex<Vec<ReservationProjectionRecord>>>,
+}
+
+impl ReservationProjectionLedgerHandle {
+    pub(crate) fn record_implicit_release(&self, event: MemoryReservationEvent, task_kind: Option<String>) {
+        self.records.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(ReservationProjectionRecord {
+            event,
+            task_kind,
+            admission: ReservationAdmissionProjection::None,
+        });
+    }
+}
 
 /// Outcome of one memory-reservation event.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -211,6 +296,65 @@ impl MemoryReservationEvent {
 }
 
 impl QueryMetrics {
+    pub(crate) fn reservation_projection_ledger_handle(&self) -> ReservationProjectionLedgerHandle {
+        self.reservation_projection_ledger.handle()
+    }
+
+    pub(crate) fn merge_reservation_projection_ledger(&mut self, other: &Self) {
+        self.reservation_projection_ledger.extend(other.reservation_projection_ledger.snapshot());
+    }
+
+    /// Rebuilds every public reservation counter and row from the loss-independent ledger.
+    /// Non-reservation task counts, elapsed time, and lower-level budget observations are preserved.
+    pub(crate) fn finalize_reservation_projection(&mut self) {
+        let records = self.reservation_projection_ledger.snapshot();
+        self.reservation_requested_bytes = 0;
+        self.reservation_granted_bytes = 0;
+        self.reservation_live_peak_bytes = 0;
+        self.reservation_denied_count = 0;
+        self.max_task_reservation_bytes = 0;
+        self.reservation_events.clear();
+        for metrics in self.task_operator_metrics.values_mut() {
+            metrics.reset_reservation_projection();
+        }
+        for metrics in self.task_runtime_metrics.values_mut() {
+            metrics.reset_reservation_projection();
+        }
+        for record in records {
+            self.apply_reservation_projection(record);
+        }
+    }
+
+    fn record_reservation_projection(&mut self, record: ReservationProjectionRecord) {
+        self.reservation_projection_ledger.append(record.clone());
+        self.apply_reservation_projection(record);
+    }
+
+    fn apply_reservation_projection(&mut self, mut record: ReservationProjectionRecord) {
+        if record.event.query_id.is_none() {
+            record.event.query_id = self.inherited_query_id();
+        }
+        if let (Some(compiled_task_id), Some(task_kind)) =
+            (record.event.compiled_task_id.as_ref(), record.task_kind.as_ref())
+        {
+            self.task_kind_by_compiled_task_id
+                .entry(compiled_task_id.as_str().to_string())
+                .or_insert_with(|| task_kind.clone());
+        }
+        match record.admission {
+            ReservationAdmissionProjection::None => {},
+            ReservationAdmissionProjection::Granted => {
+                self.record_reservation_granted(record.event.requested_bytes, record.event.granted_bytes);
+            },
+            ReservationAdmissionProjection::Denied => {
+                self.record_reservation_denied(record.event.requested_bytes);
+            },
+        }
+        self.record_reservation_live_peak(record.event.current_reserved_bytes);
+        self.record_task_reservation_event(&record.event);
+        self.reservation_events.push(record.event);
+    }
+
     /// Records a resident DataFrame memory observation in bytes.
     pub fn record_device_memory_observation(&mut self, bytes: u64) {
         self.peak_device_memory_bytes = Some(self.peak_device_memory_bytes.map_or(bytes, |peak| peak.max(bytes)));
@@ -232,26 +376,30 @@ impl QueryMetrics {
 
     /// Records a granted reservation event and updates live/task peaks.
     pub fn record_reservation_granted_event(&mut self, request: &MemoryReservationRequest, granted_bytes: u64) {
-        self.record_reservation_granted(request.requested_bytes, granted_bytes);
+        self.register_reservation_task_definition(request);
         let mut event = MemoryReservationEvent::granted(request, granted_bytes);
         if event.query_id.is_none() {
             event.query_id = self.inherited_query_id();
         }
-        self.record_reservation_live_peak(event.current_reserved_bytes);
-        self.record_task_reservation_event(&event);
-        self.reservation_events.push(event);
+        self.record_reservation_projection(ReservationProjectionRecord {
+            event,
+            task_kind: request.task_kind.clone(),
+            admission: ReservationAdmissionProjection::Granted,
+        });
     }
 
     /// Records a denied reservation event and updates live/task peaks.
     pub fn record_reservation_denied_event(&mut self, request: &MemoryReservationRequest, granted_bytes: u64) {
-        self.record_reservation_denied(request.requested_bytes);
+        self.register_reservation_task_definition(request);
         let mut event = MemoryReservationEvent::denied(request, granted_bytes);
         if event.query_id.is_none() {
             event.query_id = self.inherited_query_id();
         }
-        self.record_reservation_live_peak(event.current_reserved_bytes);
-        self.record_task_reservation_event(&event);
-        self.reservation_events.push(event);
+        self.record_reservation_projection(ReservationProjectionRecord {
+            event,
+            task_kind: request.task_kind.clone(),
+            admission: ReservationAdmissionProjection::Denied,
+        });
     }
 
     /// Records a granted reservation timeline event with an explicit action.
@@ -263,7 +411,7 @@ impl QueryMetrics {
         charged_delta_bytes: i128,
         current_reserved_bytes: u64,
     ) {
-        self.record_reservation_granted(request.requested_bytes, granted_bytes);
+        self.register_reservation_task_definition(request);
         let mut event = MemoryReservationEvent::from_request(
             request,
             MemoryReservationEventOutcome::Granted,
@@ -275,9 +423,11 @@ impl QueryMetrics {
         if event.query_id.is_none() {
             event.query_id = self.inherited_query_id();
         }
-        self.record_reservation_live_peak(event.current_reserved_bytes);
-        self.record_task_reservation_event(&event);
-        self.reservation_events.push(event);
+        self.record_reservation_projection(ReservationProjectionRecord {
+            event,
+            task_kind: request.task_kind.clone(),
+            admission: ReservationAdmissionProjection::Granted,
+        });
     }
 
     /// Records a denied reservation timeline event with an explicit action.
@@ -288,7 +438,7 @@ impl QueryMetrics {
         granted_bytes: u64,
         current_reserved_bytes: u64,
     ) {
-        self.record_reservation_denied(request.requested_bytes);
+        self.register_reservation_task_definition(request);
         let mut event = MemoryReservationEvent::from_request(
             request,
             MemoryReservationEventOutcome::Denied,
@@ -300,9 +450,11 @@ impl QueryMetrics {
         if event.query_id.is_none() {
             event.query_id = self.inherited_query_id();
         }
-        self.record_reservation_live_peak(event.current_reserved_bytes);
-        self.record_task_reservation_event(&event);
-        self.reservation_events.push(event);
+        self.record_reservation_projection(ReservationProjectionRecord {
+            event,
+            task_kind: request.task_kind.clone(),
+            admission: ReservationAdmissionProjection::Denied,
+        });
     }
 
     /// Records an already-built reservation timeline event.
@@ -310,12 +462,25 @@ impl QueryMetrics {
         if event.query_id.is_none() {
             event.query_id = self.inherited_query_id();
         }
-        self.record_reservation_live_peak(event.current_reserved_bytes);
-        self.record_task_reservation_event(&event);
-        self.reservation_events.push(event);
+        let task_kind = event
+            .compiled_task_id
+            .as_ref()
+            .and_then(|compiled_task_id| self.task_kind_by_compiled_task_id.get(compiled_task_id.as_str()))
+            .cloned();
+        self.record_reservation_projection(ReservationProjectionRecord {
+            event,
+            task_kind,
+            admission: ReservationAdmissionProjection::None,
+        });
     }
 
     fn record_reservation_live_peak(&mut self, current_reserved_bytes: u64) {
         self.reservation_live_peak_bytes = self.reservation_live_peak_bytes.max(current_reserved_bytes);
+    }
+
+    fn register_reservation_task_definition(&mut self, request: &MemoryReservationRequest) {
+        if let (Some(task_attempt_id), Some(task_kind)) = (&request.task_attempt_id, &request.task_kind) {
+            self.register_task_definition(task_attempt_id.task_id.as_str(), task_kind.clone());
+        }
     }
 }

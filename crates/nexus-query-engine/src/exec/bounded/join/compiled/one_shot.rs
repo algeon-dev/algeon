@@ -41,7 +41,8 @@ pub(super) fn execute_compiled_one_shot_equi_join_materialize(
     validate_one_shot_equi_join(node)?;
     let left_keys = node.spec.keys.iter().map(|key| key.left.name().to_string()).collect::<Vec<_>>();
     let right_keys = node.spec.keys.iter().map(|key| key.right.name().to_string()).collect::<Vec<_>>();
-    let overrides = execution_overrides(context);
+    let overrides_lease = execution_overrides(context)?;
+    let overrides = overrides_lease.overrides();
     let timer = Instant::now();
     let preflight_indices = match materialize_compiled_keyed_equality_join_indices_with_preflight(
         context,
@@ -325,7 +326,8 @@ pub(super) fn materialize_compiled_one_shot_equi_join_probe_chunk(
 ) -> Result<ResidentGpuFrame> {
     let left_keys = node.spec.keys.iter().map(|key| key.left.name().to_string()).collect::<Vec<_>>();
     let right_keys = node.spec.keys.iter().map(|key| key.right.name().to_string()).collect::<Vec<_>>();
-    let overrides = execution_overrides(context);
+    let overrides_lease = execution_overrides(context)?;
+    let overrides = overrides_lease.overrides();
     let timer = Instant::now();
     let (left_input, right_input) = match build_side {
         JoinSide::Left => (build, &probe),

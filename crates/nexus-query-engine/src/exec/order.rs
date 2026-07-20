@@ -72,7 +72,7 @@ pub(in crate::exec) fn append_source_order_columns(
     if !datafusion_order_tracking_enabled() || frame.contains(SOURCE_ORDER_MAJOR_COLUMN) {
         return Ok(frame);
     }
-    let frame = frame.copy_into_runtime(context.runtime()).map_err(|error| {
+    let frame = frame.copy_into_runtime(&context.runtime()?).map_err(|error| {
         QueryError::from_cudf(
             "nexus_query_engine.datafusion_order.source",
             "failed to relocate native source frame before appending hidden order columns",
@@ -88,7 +88,7 @@ pub(in crate::exec) fn append_source_order_columns(
         )
         .with_fact("major_ordinal", major_ordinal)
     })?;
-    let major = context.runtime().sequence::<i64>(major, 0, rows).map_err(|error| {
+    let major = context.runtime()?.sequence::<i64>(major, 0, rows).map_err(|error| {
         QueryError::from_cudf(
             "nexus_query_engine.datafusion_order.source",
             "failed to materialize native source order major column",
@@ -96,7 +96,7 @@ pub(in crate::exec) fn append_source_order_columns(
         )
         .with_fact("rows", rows)
     })?;
-    let row = context.runtime().sequence::<i64>(0, 1, rows).map_err(|error| {
+    let row = context.runtime()?.sequence::<i64>(0, 1, rows).map_err(|error| {
         QueryError::from_cudf(
             "nexus_query_engine.datafusion_order.source",
             "failed to materialize native source order row column",
@@ -182,7 +182,8 @@ pub(in crate::exec) fn sort_by_datafusion_order_if_present(
     if order_columns.is_empty() {
         return Ok(frame);
     }
-    let overrides = execution_overrides(context);
+    let overrides_lease = execution_overrides(context)?;
+    let overrides = overrides_lease.overrides();
     let timer = Instant::now();
     let output = frame
         .with_execution(&overrides)

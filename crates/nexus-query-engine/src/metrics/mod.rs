@@ -27,6 +27,7 @@ mod source_read;
 mod task;
 
 use correlation::inherited_query_id;
+pub(crate) use memory::ReservationProjectionLedgerHandle;
 
 pub use self::{
     aggregate::AggregateStrategyDecisionMetrics,
@@ -45,6 +46,7 @@ pub use self::{
 /// Query-scoped metrics accumulated during native execution.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct QueryMetrics {
+    pub(crate) reservation_projection_ledger: memory::ReservationProjectionLedger,
     /// Query-wide diagnostic correlation id.
     pub query_id: QueryId,
     /// Optional parent trace id.
@@ -104,8 +106,11 @@ pub struct QueryMetrics {
     pub plan_task_mapping_rows: Vec<PlanTaskMapping>,
     /// Optional frontend physical-plan shape used to annotate plan/task mapping rows.
     pub plan_task_mapping_datafusion_shape: Option<String>,
-    pub(crate) current_compiled_task_id: Option<String>,
-    /// Memory reservation timeline events.
+    /// Exact memory reservation timeline events.
+    ///
+    /// These public rows are not bounded by runtime-observation retention
+    /// limits; dropping them would make the public totals and task projections
+    /// misleading when the separately retained trace is truncated.
     pub reservation_events: Vec<MemoryReservationEvent>,
     /// Successful lower-level cuDF calls that returned an execution-budget report.
     ///
@@ -369,6 +374,7 @@ impl QueryMetrics {
 
     /// Merges another query metrics value into this one.
     pub fn merge_from(&mut self, mut other: QueryMetrics) {
+        self.merge_reservation_projection_ledger(&other);
         if !self.query_id.is_assigned() && other.query_id.is_assigned() {
             self.query_id = other.query_id.clone();
             self.stamp_existing_rows_with_query_id();

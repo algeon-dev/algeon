@@ -261,7 +261,8 @@ pub(super) fn slice_partition_join_side_range(
     }
     let start = partition_start.saturating_add(range.offset);
     let len = range.len;
-    let overrides = execution_overrides(context);
+    let overrides_lease = execution_overrides(context)?;
+    let overrides = overrides_lease.overrides();
     let frame = input.frame.with_execution(&overrides).slice(start, len).map_err(|error| {
         QueryError::from_cudf(
             "nexus_query_engine.bounded.join.hash_partition_slice",

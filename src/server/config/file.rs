@@ -9,6 +9,19 @@ pub(super) struct ServerFileOverlay {
     pub(super) admission: ServerAdmissionFileConfig,
     pub(super) fallback: ServerFallbackFileConfig,
     pub(super) native: ServerNativeFileConfig,
+    pub(super) observability: ServerObservabilityFileConfig,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub(super) struct ServerObservabilityFileConfig {
+    pub(super) per_query_max_records: Option<u64>,
+    pub(super) per_query_max_bytes: Option<u64>,
+    pub(super) active_logical_capture_max_bytes: Option<u64>,
+    pub(super) global_sealed_max_count: Option<usize>,
+    pub(super) global_sealed_max_bytes: Option<u64>,
+    pub(super) sealed_ttl_secs: Option<u64>,
+    pub(super) shutdown_grace_secs: Option<u64>,
 }
 
 #[derive(Debug, Default, Deserialize)]

@@ -67,16 +67,21 @@ pub(super) fn execute_bounded_query_plan(
     plan: &QueryPlan,
     gpu_inputs: &GpuResidentInputMap,
     metrics: &mut QueryMetrics,
+    observation_scope: Option<&crate::observability::RuntimeExecutionObservationScope>,
 ) -> Result<QueryOutput> {
     context.check_cancellation("nexus_query_engine.exec.bounded.execute_query_plan")?;
     match bounded_pipeline_execution_mode(context) {
         NativePipelineExecutionMode::StrictBounded => {
-            if let Some(output) = try_execute_strict_bounded_pipeline(context, plan, gpu_inputs, metrics)? {
+            if let Some(output) =
+                try_execute_strict_bounded_pipeline(context, plan, gpu_inputs, metrics, observation_scope)?
+            {
                 return Ok(output);
             }
         },
         NativePipelineExecutionMode::Adaptive => {
-            if let Some(output) = try_execute_adaptive_bounded_pipeline(context, plan, gpu_inputs, metrics)? {
+            if let Some(output) =
+                try_execute_adaptive_bounded_pipeline(context, plan, gpu_inputs, metrics, observation_scope)?
+            {
                 return Ok(output);
             }
         },
@@ -87,17 +92,20 @@ pub(super) fn execute_bounded_query_plan(
     }
 
     if !plan.nodes().iter().any(|node| matches!(node.kind, PlanNode::Aggregate(_))) {
-        return execute_bounded_generic_query_plan(context, plan, gpu_inputs, metrics);
+        return execute_bounded_generic_query_plan(context, plan, gpu_inputs, metrics, observation_scope);
     }
 
     let bounded = match BoundedPlan::analyze(plan) {
         Ok(bounded) => bounded,
-        Err(_error) => return execute_bounded_generic_query_plan(context, plan, gpu_inputs, metrics),
+        Err(_error) => {
+            return execute_bounded_generic_query_plan(context, plan, gpu_inputs, metrics, observation_scope);
+        },
     };
     let Some(device_budget_bytes) = context.bounded_device_budget_bytes() else {
         unreachable!("execute_bounded_query_plan is called only for bounded policies");
     };
-    let mut reservations = ReservationTracker::new_for_context(context, device_budget_bytes, metrics)?;
+    let mut reservations =
+        ReservationTracker::new_for_context(context, device_budget_bytes, metrics, observation_scope)?;
     let frame = execute_bounded_aggregate_to_frame(context, &bounded, &mut reservations, metrics)?;
     let frame = execute_post_aggregate_stages(context, &bounded, frame, &mut reservations, metrics)?;
     let frame = execute_final_sort_limit_with_retry(context, &bounded, frame, &mut reservations, metrics)?;
@@ -146,6 +154,12 @@ fn bounded_pipeline_execution_mode(context: &ExecutionContext) -> NativePipeline
 
 fn reject_bounded_join_plan(context: &ExecutionContext, plan: &QueryPlan) -> Result<()> {
     if plan.nodes().iter().any(|node| matches!(node.kind, PlanNode::Join(_))) {
+        // A frontend-owned incremental D2H cursor executes through a physical
+        // GPU-resident sink, but runtime rejection facts remain a contract with
+        // that frontend. Project them from the retained caller-visible host
+        // sink so the explicit materialization reservation is not erased.
+        let rejection_contract_plan = plan.clone_with_caller_visible_sink_contract();
+        let plan = &rejection_contract_plan;
         let contract = BoundedJoinReservationContract;
         let mut error = unsupported_bounded_shape(
             bounded_join_unsupported_message(contract),

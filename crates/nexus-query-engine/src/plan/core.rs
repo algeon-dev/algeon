@@ -24,6 +24,15 @@ pub struct QueryPlan {
     pub(super) nodes: Vec<QueryNode>,
     pub(super) root: NodeId,
     pub(super) sink: ResultSink,
+    /// Caller-visible host boundary retained when an embedding frontend takes
+    /// ownership of incremental host materialization after native execution.
+    ///
+    /// `sink` remains the physical GPU-resident execution boundary. This
+    /// contract is consulted only when projecting caller-visible runtime
+    /// rejection diagnostics, so a rejected plan does not silently lose its
+    /// modeled host-materialization boundary merely because the copy is
+    /// deferred to the frontend.
+    pub(super) deferred_host_sink_schema: Option<SchemaRef>,
     pub(super) dynamic_filter_routes: Vec<DynamicFilterRoute>,
     pub(super) dynamic_filter_execution_options: DynamicFilterExecutionOptions,
     pub(super) keyed_hash_join_strategy_options: KeyedHashJoinStrategyOptions,
@@ -41,6 +50,7 @@ impl QueryPlan {
             nodes,
             root,
             sink,
+            deferred_host_sink_schema: None,
             dynamic_filter_routes: Vec::new(),
             dynamic_filter_execution_options: DynamicFilterExecutionOptions::default(),
             keyed_hash_join_strategy_options: KeyedHashJoinStrategyOptions::default(),
@@ -109,8 +119,11 @@ impl QueryPlan {
     /// Returns this plan with rewrite-preserved execution policy state copied
     /// from another plan.
     pub(crate) fn with_rewrite_state_from(self, source: &Self) -> Self {
-        self.with_dynamic_filter_state_from(source)
-            .with_keyed_hash_join_strategy_options(source.keyed_hash_join_strategy_options)
+        let mut rewritten = self
+            .with_dynamic_filter_state_from(source)
+            .with_keyed_hash_join_strategy_options(source.keyed_hash_join_strategy_options);
+        rewritten.deferred_host_sink_schema = source.deferred_host_sink_schema.clone();
+        rewritten
     }
 
     /// Returns this plan with keyed-hash join strategy options copied from
@@ -129,10 +142,45 @@ impl QueryPlan {
             nodes: self.nodes.clone(),
             root: self.root,
             sink: ResultSink::GpuResident { input: self.root },
+            deferred_host_sink_schema: None,
             dynamic_filter_routes: self.dynamic_filter_routes.clone(),
             dynamic_filter_execution_options: self.dynamic_filter_execution_options,
             keyed_hash_join_strategy_options: self.keyed_hash_join_strategy_options,
         }
+    }
+
+    /// Return a copy that executes to a GPU-resident result while retaining
+    /// the existing host sink as the caller-visible result contract.
+    ///
+    /// Embedding frontends use this when they implement bounded incremental
+    /// device-to-host materialization themselves. Keeping this distinct from
+    /// [`Self::clone_with_gpu_resident_sink`] prevents a true GPU-to-GPU
+    /// consumer from acquiring a host-materialization contract it does not
+    /// own.
+    pub fn clone_with_deferred_host_materialization_sink(&self) -> Self {
+        let deferred_host_sink_schema = match (&self.deferred_host_sink_schema, &self.sink) {
+            (Some(schema), _) | (None, ResultSink::HostArrow { schema, .. }) => Some(Arc::clone(schema)),
+            (None, ResultSink::GpuResident { .. }) => None,
+        };
+        Self {
+            nodes: self.nodes.clone(),
+            root: self.root,
+            sink: ResultSink::GpuResident { input: self.root },
+            deferred_host_sink_schema,
+            dynamic_filter_routes: self.dynamic_filter_routes.clone(),
+            dynamic_filter_execution_options: self.dynamic_filter_execution_options,
+            keyed_hash_join_strategy_options: self.keyed_hash_join_strategy_options,
+        }
+    }
+
+    /// Reconstruct the caller-visible sink view used by runtime rejection
+    /// diagnostics. Successful execution continues to use the physical sink.
+    pub(crate) fn clone_with_caller_visible_sink_contract(&self) -> Self {
+        let mut plan = self.clone();
+        if let Some(schema) = plan.deferred_host_sink_schema.take() {
+            plan.sink = ResultSink::HostArrow { input: plan.root, schema };
+        }
+        plan
     }
 
     /// Returns this plan with a native sort appended above the current root.

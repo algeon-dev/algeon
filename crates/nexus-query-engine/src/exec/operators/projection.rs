@@ -47,7 +47,8 @@ pub(in crate::exec) fn execute_projection(
     }
     let PreparedProjectionColumns { exprs, output_columns } = prepare_projection_columns(node, &frame)?;
     let output_columns = output_columns.iter().map(String::as_str).collect::<Vec<_>>();
-    let overrides = execution_overrides(context);
+    let overrides_lease = execution_overrides(context)?;
+    let overrides = overrides_lease.overrides();
     let mut output =
         frame.with_execution(&overrides).with_columns(exprs).and_then(|frame| frame.select(output_columns)).map_err(
             |error| {

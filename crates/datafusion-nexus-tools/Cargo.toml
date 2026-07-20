@@ -22,6 +22,7 @@ iceberg-e2e = [
   "datafusion-nexus/iceberg-cpu",
 ]
 server-iceberg-e2e = ["iceberg-e2e", "datafusion-nexus/server"]
+server-runtime-observability-e2e = ["server-iceberg-e2e"]
 embedded-backend-e2e = ["server-iceberg-e2e", "dep:reqwest"]
 
 [dependencies]
@@ -38,6 +39,7 @@ parquet = { workspace = true }
 prost = "0.14"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"], optional = true }
 serde_json = { workspace = true }
+serde = { workspace = true }
 tokio = { workspace = true, features = ["macros", "process", "rt", "rt-multi-thread", "sync", "time"] }
 tonic = { workspace = true }
 url = "2.5"
@@ -45,7 +47,7 @@ url = "2.5"
 [[bin]]
 name = "datafusion_nexus_tools"
 path = "src/bin/datafusion_nexus_tools.rs"
-test = false
+test = true
 
 [[bin]]
 name = "refresh_cugraph_oracle"

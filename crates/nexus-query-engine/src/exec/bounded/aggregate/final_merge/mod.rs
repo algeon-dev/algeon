@@ -55,7 +55,7 @@ pub(super) fn partition_final_merge_partial(
             .with_memory_boundary("final_aggregate_hash_partition")
             .with_node_id(node_id)
             .with_stage("partitioned_final_merge")
-            .with_compiled_task_id(task_id.clone()),
+            .with_task_registration(task_id.clone(), 1, "aggregate"),
         metrics,
     ) {
         Ok(reservation) => reservation,
@@ -126,7 +126,7 @@ pub(super) fn partition_final_merge_partial(
         .with_memory_boundary("final_aggregate_hash_partition")
         .with_node_id(node_id)
         .with_stage("partitioned_final_merge")
-        .with_compiled_task_id(task_id);
+        .with_task_registration(task_id, 1, "aggregate");
         if let Err(error) = reservations.try_grow(&mut partition_reservation, grow_request, metrics) {
             drop(partitioned_frame);
             reservations.release(partition_reservation, metrics);
@@ -185,7 +185,8 @@ pub(super) fn slice_partitioned_final_merge_partition(
         )
     })?;
     let len = end.saturating_sub(start);
-    let overrides = execution_overrides(context);
+    let overrides_lease = execution_overrides(context)?;
+    let overrides = overrides_lease.overrides();
     let sliced = frame.with_execution(&overrides).slice(start, len).map_err(|error| {
         QueryError::from_cudf(
             "nexus_query_engine.final_merge.hash_partition_slice",
@@ -204,10 +205,14 @@ pub(super) fn slice_partitioned_final_merge_partition(
             .with_memory_boundary("final_aggregate_partition")
             .with_node_id(node_id)
             .with_stage("partitioned_final_merge")
-            .with_compiled_task_id(partitioned_final_merge_task_id(
-                node_id,
-                format!("partition.partial{partial_index}.partition{partition}"),
-            )),
+            .with_task_registration(
+                partitioned_final_merge_task_id(
+                    node_id,
+                    format!("partition.partial{partial_index}.partition{partition}"),
+                ),
+                1,
+                "aggregate",
+            ),
         metrics,
     )?;
     Ok(CommittedPartial { frame: gpu, reservation })
@@ -298,10 +303,11 @@ pub(super) fn apply_partitioned_final_merge_topk(
             .with_memory_boundary("partitioned_final_aggregate_topk_input")
             .with_node_id(bounded.aggregate_id)
             .with_stage("partitioned_final_merge_topk")
-            .with_compiled_task_id(partitioned_final_merge_task_id(
-                bounded.aggregate_id,
-                format!("topk_input.partition{partition_index}"),
-            )),
+            .with_task_registration(
+                partitioned_final_merge_task_id(bounded.aggregate_id, format!("topk_input.partition{partition_index}")),
+                1,
+                "aggregate",
+            ),
         metrics,
     )?;
     let input = CommittedPartial { frame, reservation: input_reservation };
@@ -338,7 +344,7 @@ pub(super) fn concatenate_partitioned_final_merge_outputs(
             .with_memory_boundary("partitioned_final_aggregate_output_concat")
             .with_node_id(node_id)
             .with_stage("partitioned_final_merge")
-            .with_compiled_task_id(task_id.clone()),
+            .with_task_registration(task_id.clone(), 1, "aggregate"),
         metrics,
     ) {
         Ok(reservation) => reservation,
@@ -402,7 +408,7 @@ pub(super) fn concatenate_partitioned_final_merge_outputs(
             .with_memory_boundary("partitioned_final_aggregate_output_concat")
             .with_node_id(node_id)
             .with_stage("partitioned_final_merge")
-            .with_compiled_task_id(task_id);
+            .with_task_registration(task_id, 1, "aggregate");
     if let Err(error) = reconcile_work_reservation_to_output(
         reservations,
         &mut concat_reservation,

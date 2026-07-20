@@ -511,7 +511,8 @@ fn repartition_partitioned_join_work(
     };
     let left_keys = join_keys_for_side(plan.node, JoinSide::Left);
     let right_keys = join_keys_for_side(plan.node, JoinSide::Right);
-    let overrides = execution_overrides(plan.context);
+    let overrides_lease = execution_overrides(plan.context)?;
+    let overrides = overrides_lease.overrides();
     let left_partitioned = match hash_partition_join_side(
         plan.context,
         plan.node_id,
@@ -741,7 +742,8 @@ pub(super) fn partition_join_sides(
 ) -> Result<PartitionedJoinSides> {
     let left_keys = join_keys_for_side(plan.node, JoinSide::Left);
     let right_keys = join_keys_for_side(plan.node, JoinSide::Right);
-    let overrides = execution_overrides(plan.context);
+    let overrides_lease = execution_overrides(plan.context)?;
+    let overrides = overrides_lease.overrides();
     let left_partitioned = hash_partition_join_side(
         plan.context,
         plan.node_id,

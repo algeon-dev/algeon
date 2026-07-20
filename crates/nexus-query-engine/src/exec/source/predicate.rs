@@ -63,7 +63,7 @@ pub(super) fn lower_source_reader_batch_predicate(
     if source.reader_predicate_requires_source_contract(predicate) {
         let predicate = lower_cudf_source_reader_predicate(source, predicate)?;
         return cudf::io::source::build_local_parquet_reader_batch_predicate(
-            context.runtime(),
+            &context.runtime()?,
             cudf_source,
             cudf_chunks,
             &predicate,
@@ -90,7 +90,7 @@ fn lower_source_reader_predicate_with_cudf_contract(
     predicate: &Expr,
 ) -> Result<AstExpression> {
     let predicate = lower_cudf_source_reader_predicate(source, predicate)?;
-    cudf::io::source::build_local_parquet_reader_predicate(context.runtime(), cudf_source, cudf_chunk, &predicate)
+    cudf::io::source::build_local_parquet_reader_predicate(&context.runtime()?, cudf_source, cudf_chunk, &predicate)
         .map_err(|error| {
             cudf_reader_predicate_error(
                 source,
@@ -556,7 +556,7 @@ fn lower_source_reader_ast_literal(
     value: &LiteralValue,
     target_type: Option<CudfDataType>,
 ) -> Result<AstExpression> {
-    let runtime = context.runtime();
+    let runtime = context.runtime()?;
     if let Some(target_type) = target_type
         && let Some(scalar) = lower_source_reader_ast_literal_with_target(context, value, target_type)?
     {
@@ -635,7 +635,7 @@ fn lower_source_reader_ast_literal_with_target(
     value: &LiteralValue,
     target_type: CudfDataType,
 ) -> Result<Option<cudf::core::Scalar>> {
-    let runtime = context.runtime();
+    let runtime = context.runtime()?;
     match target_type.id() {
         TypeId::Bool8 => match value {
             LiteralValue::Boolean(value) => runtime.scalar(*value).map(Some),

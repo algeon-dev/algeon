@@ -87,8 +87,19 @@ impl NativeDataFusionPlanningWorkloadItem {
             query_id: query_id.into(),
             input: NativeDataFusionPlanningWorkloadInput::Planned {
                 planned_plan,
-                native_diagnostics: Box::new(native_diagnostics),
+                native_diagnostics: Arc::new(native_diagnostics),
             },
+        }
+    }
+
+    pub(crate) fn new_shared(
+        query_id: impl Into<String>,
+        planned_plan: Arc<dyn ExecutionPlan>,
+        native_diagnostics: Arc<NativePlanningDiagnostics>,
+    ) -> Self {
+        Self {
+            query_id: query_id.into(),
+            input: NativeDataFusionPlanningWorkloadInput::Planned { planned_plan, native_diagnostics },
         }
     }
 
@@ -123,7 +134,7 @@ pub enum NativeDataFusionPlanningWorkloadInput {
         /// Post-native-optimizer DataFusion plan.
         planned_plan: Arc<dyn ExecutionPlan>,
         /// Native diagnostics retained for the same optimized plan.
-        native_diagnostics: Box<NativePlanningDiagnostics>,
+        native_diagnostics: Arc<NativePlanningDiagnostics>,
     },
     /// SQL/DataFusion/native diagnostic failure before a reportable plan existed.
     PlanningFailure(NativePlanningFailure),
@@ -150,9 +161,21 @@ impl NativeDataFusionExecutionWorkloadItem {
             query_id: query_id.into(),
             input: NativeDataFusionExecutionWorkloadInput::Planned {
                 planned_plan,
-                native_diagnostics: Box::new(native_diagnostics),
+                native_diagnostics: Arc::new(native_diagnostics),
                 runtime,
             },
+        }
+    }
+
+    pub(crate) fn new_shared(
+        query_id: impl Into<String>,
+        planned_plan: Arc<dyn ExecutionPlan>,
+        native_diagnostics: Arc<NativePlanningDiagnostics>,
+        runtime: NativeDataFusionRuntime,
+    ) -> Self {
+        Self {
+            query_id: query_id.into(),
+            input: NativeDataFusionExecutionWorkloadInput::Planned { planned_plan, native_diagnostics, runtime },
         }
     }
 
@@ -187,7 +210,7 @@ pub enum NativeDataFusionExecutionWorkloadInput {
         /// Post-native-optimizer DataFusion plan.
         planned_plan: Arc<dyn ExecutionPlan>,
         /// Native diagnostics retained for the same optimized plan.
-        native_diagnostics: Box<NativePlanningDiagnostics>,
+        native_diagnostics: Arc<NativePlanningDiagnostics>,
         /// Runtime outcome selected by the workload harness.
         runtime: NativeDataFusionRuntime,
     },

@@ -32,7 +32,8 @@ fn execute_compiled_projected_cross_join_materialize_with_strategy(
     metrics: &mut QueryMetrics,
 ) -> Result<ResidentGpuFrame> {
     let options = dataframe_cross_join_options(&node.spec.output_projection);
-    let overrides = execution_overrides(context);
+    let overrides_lease = execution_overrides(context)?;
+    let overrides = overrides_lease.overrides();
     let timer = Instant::now();
     let plan = left.frame.projected_cross_join_plan(&right.frame, options).map_err(|error| {
         QueryError::from_cudf(
@@ -284,7 +285,7 @@ fn keyless_outer_cross_join_indices(
     node: &JoinNode,
 ) -> Result<CompiledJoinIndices> {
     let sequence = || {
-        context.runtime().sequence(0i32, 1i32, output_size).map(cudf::DataFrameJoinIndices::from_series).map_err(
+        context.runtime()?.sequence(0i32, 1i32, output_size).map(cudf::DataFrameJoinIndices::from_series).map_err(
             |error| {
                 QueryError::from_cudf(
                     "nexus_query_engine.bounded.join.keyless_outer_cross_sequence",
@@ -296,7 +297,7 @@ fn keyless_outer_cross_join_indices(
         )
     };
     let null_supplier = || {
-        let sentinel = context.runtime().scalar(-1i32).map_err(|error| {
+        let sentinel = context.runtime()?.scalar(-1i32).map_err(|error| {
             QueryError::from_cudf(
                 "nexus_query_engine.bounded.join.keyless_outer_cross_null_supplier_scalar",
                 "failed to create keyless outer cross null-supplier gather sentinel",
@@ -305,7 +306,7 @@ fn keyless_outer_cross_join_indices(
             .with_fact("join_type", node.spec.join_type)
         })?;
         context
-            .runtime()
+            .runtime()?
             .series_from_scalar(&sentinel, output_size)
             .map(cudf::DataFrameJoinIndices::from_series)
             .map_err(|error| {

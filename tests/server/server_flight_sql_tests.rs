@@ -48,8 +48,12 @@ async fn flight_sql_client_can_run_select_one() {
     let (listener, addr) = free_local_addr();
     let mut config = ServerConfig::from_env_get(|_| None).unwrap();
     config.bind_addr = addr;
+    let replacement_config = config.clone();
+    let backend = NexusGpuBackend::from_server_config(&config).unwrap().expect("default server config is bounded");
+    let cleanup_backend = backend.clone();
 
-    let server = tokio::spawn(async move { serve_with_listener(config, listener).await });
+    let server = FlightSqlServer::builder().config(config).backend(backend).listener(listener).build().await.unwrap();
+    let server = tokio::spawn(async move { server.serve().await });
     let mut client = connect_with_retry(addr).await;
 
     let flight_info = client.execute("select 1 as one".to_string(), None).await.unwrap();
@@ -58,13 +62,62 @@ async fn flight_sql_client_can_run_select_one() {
     assert_eq!(schema.field(0).name(), "one");
     let ticket = flight_info.endpoint.first().and_then(|endpoint| endpoint.ticket.clone()).unwrap();
     let batches = client.do_get(ticket).await.unwrap().try_collect::<Vec<_>>().await.unwrap();
+    let delayed_cleanup = cleanup_backend
+        .query_service()
+        .admit_query("default")
+        .expect("test cleanup owner must be admitted before shutdown");
 
+    drop(client);
     server.abort();
+    let error = server.await.expect_err("aborted server task must report cancellation");
+    assert!(error.is_cancelled());
+    let error = NexusGpuBackend::from_server_config(&replacement_config)
+        .expect_err("hard abort does not synchronously complete active GPU query cleanup");
+    let diagnostic = format!("{error:?}");
+    assert!(diagnostic.contains("code: InvalidExecutionPlan"), "{diagnostic}");
+    assert!(diagnostic.contains("operation: \"datafusion_nexus.backend.query_service\""), "{diagnostic}");
+    assert!(
+        diagnostic.contains("native_operation\", \"nexus_query_engine.query_service.tenant.validate"),
+        "{diagnostic}"
+    );
+    drop(delayed_cleanup);
+    tokio::task::spawn_blocking(move || {
+        cleanup_backend.query_service().close_and_wait_for_quiescence(Duration::from_secs(10))
+    })
+    .await
+    .expect("aborted server cleanup waiter must not panic")
+    .expect("aborted server must reach query-service quiescence");
+    let replacement = NexusGpuBackend::from_server_config(&replacement_config)
+        .expect("quiescent aborted server must release its closed QueryService governor claim")
+        .expect("default server config is bounded");
+    drop(replacement);
 
     assert_eq!(batches.len(), 1);
     assert_eq!(batches[0].num_rows(), 1);
     assert_eq!(batches[0].num_columns(), 1);
     assert_eq!(int_value(batches[0].column(0)), Some(1));
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn aborting_server_future_never_blocks_current_thread_runtime_drop() {
+    let (listener, addr) = free_local_addr();
+    let mut config = ServerConfig::from_env_get(|_| None).unwrap();
+    config.bind_addr = addr;
+    let replacement_config = config.clone();
+    let server = tokio::spawn(async move { serve_with_listener(config, listener).await });
+    tokio::task::yield_now().await;
+
+    server.abort();
+    let error = tokio::time::timeout(Duration::from_secs(1), server)
+        .await
+        .expect("server task Drop must not block the current-thread runtime")
+        .expect_err("aborted server task must report cancellation");
+    assert!(error.is_cancelled());
+
+    let replacement = NexusGpuBackend::from_server_config(&replacement_config)
+        .expect("nonblocking abort must release a quiescent server governor claim")
+        .expect("default server config is bounded");
+    drop(replacement);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -99,6 +152,51 @@ async fn flight_sql_builder_can_run_select_one_and_shutdown_by_token() {
     server_result.expect("token shutdown should stop the server cleanly");
     assert_eq!(batches.len(), 1);
     assert_eq!(int_value(batches[0].column(0)), Some(1));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn unbounded_local_parquet_server_shutdown_allows_fresh_generation() {
+    let dir = tempfile::Builder::new().prefix("datafusion-nexus-unbounded-parquet-shutdown-").tempdir().unwrap();
+    let parquet_path = dir.path().join("edges.parquet");
+    write_update_edges_parquet(&parquet_path);
+
+    for generation in 0..2 {
+        let (listener, addr) = free_local_addr();
+        let mut config = ServerConfig::from_env_get(|name| {
+            (name == "NEXUS_SERVER_NATIVE_MEMORY_POLICY").then(|| "unbounded".to_string())
+        })
+        .unwrap();
+        config.bind_addr = addr;
+        let shutdown = CancellationToken::new();
+        let server = FlightSqlServer::builder()
+            .config(config)
+            .listener(listener)
+            .shutdown(ServerShutdown::Token(shutdown.clone()))
+            .build()
+            .await
+            .unwrap();
+        assert!(server.backend().is_none(), "generation {generation} must use semaphore/unbounded admission");
+        server
+            .session_context()
+            .register_parquet("shutdown_edges", parquet_path.to_str().unwrap(), ParquetReadOptions::default())
+            .await
+            .unwrap();
+
+        let server = tokio::spawn(async move { server.serve().await });
+        let mut client = connect_with_retry(addr).await;
+        let batches =
+            execute_batches(&mut client, "SELECT SUM(src) + SUM(dst) AS edge_total FROM shutdown_edges").await;
+        assert_eq!(batches.len(), 1);
+        assert_eq!(int_value(batches[0].column(0)), Some(4));
+
+        drop(client);
+        shutdown.cancel();
+        tokio::time::timeout(Duration::from_secs(10), server)
+            .await
+            .unwrap_or_else(|_| panic!("generation {generation} shutdown timed out"))
+            .unwrap_or_else(|error| panic!("generation {generation} server task failed: {error}"))
+            .unwrap_or_else(|error| panic!("generation {generation} shutdown failed: {error}"));
+    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -516,6 +614,11 @@ async fn drop_table_on_view_reports_object_type_mismatch() {
     assert_error_metadata(&status, "invalid_request", "invalid_input", "permanent");
     assert!(status.message().contains("DROP VIEW"));
     assert_no_diagnostic_fields(status.message());
+    let payload = get_query_stats_raw(&mut client, &query_id_from_status(&status)).await;
+    assert!(payload.contains("operation=datafusion_nexus.server.flight.do_put_statement_update.sql"), "{payload}");
+    assert!(payload.contains("fact.requested_table_type=TABLE"), "{payload}");
+    assert!(payload.contains("fact.actual_table_type=VIEW"), "{payload}");
+    assert!(!payload.contains("fact.object_name="), "raw object name must not be retained: {payload}");
 
     let _ = execute_batches(&mut client, "DROP VIEW drop_view_probe").await;
     let error = client.execute("SELECT * FROM drop_view_probe".to_string(), None).await.unwrap_err();

@@ -391,7 +391,7 @@ fn partition_source_adjacent_raw_chunk(
             .with_memory_boundary("source_adjacent_aggregate_hash_partition")
             .with_node_id(node_id)
             .with_stage("source_adjacent_aggregate_hash_partition")
-            .with_compiled_task_id(hash_task_id.clone()),
+            .with_task_registration(hash_task_id.clone(), 1, "aggregate"),
         metrics,
     ) {
         Ok(reservation) => reservation,
@@ -514,7 +514,7 @@ fn partition_source_adjacent_raw_chunk(
         .with_memory_boundary("source_adjacent_aggregate_hash_partition")
         .with_node_id(node_id)
         .with_stage("source_adjacent_aggregate_hash_partition")
-        .with_compiled_task_id(hash_task_id.clone());
+        .with_task_registration(hash_task_id.clone(), 1, "aggregate");
         if let Err(error) = reservations.try_grow(&mut partition_reservation, grow_request, metrics) {
             drop(partitioned_frame);
             reservations.release(partition_reservation, metrics);
@@ -580,7 +580,8 @@ fn slice_source_adjacent_aggregate_partition(
     if len == 0 && !retain_empty {
         return Ok(None);
     }
-    let overrides = execution_overrides(context);
+    let overrides_lease = execution_overrides(context)?;
+    let overrides = overrides_lease.overrides();
     let sliced = frame.with_execution(&overrides).slice(start, len).map_err(|error| {
         QueryError::from_cudf(
             "nexus_query_engine.bounded.aggregate.source_adjacent_hash_partition_slice",
@@ -613,11 +614,15 @@ fn slice_source_adjacent_aggregate_partition(
             .with_memory_boundary("source_adjacent_aggregate_partition")
             .with_node_id(node_id)
             .with_stage("source_adjacent_aggregate_partition")
-            .with_compiled_task_id(source_adjacent_aggregate_task_id(
-                node_id,
-                "source_adjacent_aggregate_partition",
-                format!("chunk{chunk_index}.partition{partition}"),
-            )),
+            .with_task_registration(
+                source_adjacent_aggregate_task_id(
+                    node_id,
+                    "source_adjacent_aggregate_partition",
+                    format!("chunk{chunk_index}.partition{partition}"),
+                ),
+                1,
+                "aggregate",
+            ),
         metrics,
     )?;
     Ok(Some(CommittedPartial { frame: gpu, reservation }))
@@ -675,7 +680,7 @@ fn execute_source_adjacent_partition_aggregate(
             .with_node_id(bounded.aggregate_id)
             .with_stage("source_adjacent_partitioned_partial_aggregate")
             .with_attempt(1, 1)
-            .with_compiled_task_id(task_id.clone()),
+            .with_task_registration(task_id.clone(), 1, "aggregate"),
         metrics,
     ) {
         Ok(reservation) => reservation,
@@ -701,7 +706,7 @@ fn execute_source_adjacent_partition_aggregate(
         },
     };
     let chunk_operator_timer = Instant::now();
-    metrics.set_current_task(task_id.clone());
+    let budget_event_start = metrics.budgeted_execution_event_count();
     let result = execute_partial_aggregate_with_budget(
         context,
         Some(bounded.aggregate_id),
@@ -713,7 +718,7 @@ fn execute_source_adjacent_partition_aggregate(
         Some(input_evidence),
         metrics,
     );
-    metrics.clear_current_task();
+    metrics.record_task_budget_observations_since(&task_id, budget_event_start);
     metrics.chunk_operator_time += chunk_operator_timer.elapsed();
     let frame = match result {
         Ok(frame) => frame,
@@ -741,7 +746,7 @@ fn execute_source_adjacent_partition_aggregate(
             .with_node_id(bounded.aggregate_id)
             .with_stage("source_adjacent_partitioned_partial_aggregate")
             .with_attempt(1, 1)
-            .with_compiled_task_id(task_id);
+            .with_task_registration(task_id, 1, "aggregate");
     if let Err(error) = reconcile_work_reservation_to_output(
         reservations,
         &mut work_reservation,
@@ -791,7 +796,7 @@ fn concatenate_committed_frames(
             .with_memory_boundary(stage)
             .with_node_id(node_id)
             .with_stage(stage)
-            .with_compiled_task_id(task_id.clone()),
+            .with_task_registration(task_id.clone(), 1, "aggregate"),
         metrics,
     ) {
         Ok(reservation) => reservation,
@@ -853,7 +858,7 @@ fn concatenate_committed_frames(
         .with_memory_boundary(output_boundary)
         .with_node_id(node_id)
         .with_stage(stage)
-        .with_compiled_task_id(task_id.clone());
+        .with_task_registration(task_id.clone(), 1, "aggregate");
     if let Err(error) = reconcile_work_reservation_to_output(
         reservations,
         &mut concat_reservation,

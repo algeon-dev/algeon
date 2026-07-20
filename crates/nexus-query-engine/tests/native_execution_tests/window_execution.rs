@@ -394,7 +394,11 @@ fn whole_source_cache_window_output_pins_alias_until_gpu_result_drop() {
     assert!(retained_bytes > 0);
     assert!(
         governor
-            .try_request(GrantRequest::new(301, governor.capacity_bytes(), governor.capacity_bytes()))
+            .try_request(GrantRequest::new(
+                AdmissionRequestId::new(301),
+                governor.capacity_bytes(),
+                governor.capacity_bytes()
+            ))
             .unwrap()
             .is_none(),
         "pressure admission must not evict source-cache entry while window GPU output aliases it"
@@ -402,7 +406,11 @@ fn whole_source_cache_window_output_pins_alias_until_gpu_result_drop() {
 
     drop(result);
     let grant = governor
-        .try_request(GrantRequest::new(302, governor.capacity_bytes(), governor.capacity_bytes()))
+        .try_request(GrantRequest::new(
+            AdmissionRequestId::new(302),
+            governor.capacity_bytes(),
+            governor.capacity_bytes(),
+        ))
         .unwrap()
         .expect("unpinned window source-cache entry should be evicted under pressure");
     assert_eq!(grant.budget_bytes(), governor.capacity_bytes());

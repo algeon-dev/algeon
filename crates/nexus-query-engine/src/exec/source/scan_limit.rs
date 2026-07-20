@@ -19,7 +19,7 @@ pub(super) fn empty_local_parquet_execution_frame(
         )
         .with_source(error)
     })?;
-    DataFrame::from_record_batch(context.runtime(), &batch).map_err(|error| {
+    DataFrame::from_record_batch(&context.runtime()?, &batch).map_err(|error| {
         QueryError::from_cudf(
             "nexus_query_engine.local_parquet_source.empty_scan_limit",
             "failed to upload zero-row local parquet source batch",
@@ -44,7 +44,8 @@ pub(in crate::exec) fn apply_source_scan_limit_to_frame(
         return Ok((frame, remaining_rows));
     }
 
-    let overrides = execution_overrides(context);
+    let overrides_lease = execution_overrides(context)?;
+    let overrides = overrides_lease.overrides();
     let timer = Instant::now();
     let frame = frame.with_execution(&overrides).slice(0, keep_rows).map_err(|error| {
         QueryError::from_cudf(
@@ -73,7 +74,8 @@ pub(super) fn apply_source_chunk_scan_limit(
         return Ok(frame);
     }
 
-    let overrides = execution_overrides(context);
+    let overrides_lease = execution_overrides(context)?;
+    let overrides = overrides_lease.overrides();
     let timer = Instant::now();
     let frame = frame.with_execution(&overrides).slice(0, keep_rows).map_err(|error| {
         QueryError::from_cudf(

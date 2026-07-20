@@ -1,7 +1,10 @@
 #[cfg(feature = "cugraph")]
 use super::super::context::{ReservedResidentGraphHit, warm_graph_reservation_error};
 use super::{
-    super::memory_domain::{create_grant_memory_domain, create_grant_reservation_arena},
+    super::{
+        context::{QueryResourceAnchor, QueryResourceEpoch, QueryServiceResourceEpoch},
+        memory_domain::{create_grant_memory_domain, create_grant_reservation_arena},
+    },
     *,
 };
 
@@ -9,11 +12,15 @@ use super::{
 pub(super) struct QueryHandleLifetime {
     pub(super) service: Arc<QueryServiceInner>,
     pub(super) tenant_id: TenantId,
-    pub(super) query_id: u64,
+    pub(super) admission_request_id: AdmissionRequestId,
+    observation: RuntimeObservationHandle,
+    observation_owner: Option<RuntimeObservationOwner>,
+    observation_activity: Mutex<Option<QueryActivityLease>>,
+    service_epoch_user: Mutex<Option<QueryServiceEpochUser>>,
     device_ordinal: usize,
     release_requested: AtomicBool,
     released: AtomicBool,
-    active_contexts: AtomicUsize,
+    query_epoch: QueryResourceEpoch,
     root_context: Mutex<Option<ExecutionContext>>,
     memory_grant: Mutex<Option<MemoryGrant>>,
     device_slot: Mutex<Option<DeviceActiveQuerySlot>>,
@@ -23,16 +30,14 @@ pub(super) struct QueryHandleLifetime {
     warm_graph_priced: bool,
 }
 
-#[derive(Debug)]
-struct QueryContextLifetimeGuard {
-    pub(super) lifetime: Arc<QueryHandleLifetime>,
-}
-
 impl QueryHandleLifetime {
     pub(super) fn new(
         service: Arc<QueryServiceInner>,
         tenant_id: TenantId,
-        query_id: u64,
+        admission_request_id: AdmissionRequestId,
+        observation: RuntimeObservationHandle,
+        observation_owner: Option<RuntimeObservationOwner>,
+        observation_activity: Option<QueryActivityLease>,
         memory_grant: MemoryGrant,
         device_slot: Option<DeviceActiveQuerySlot>,
         #[cfg(feature = "cugraph")] warm_graph_reservation: Option<WarmGraphReservation>,
@@ -41,21 +46,34 @@ impl QueryHandleLifetime {
             device_slot.as_ref().map(DeviceActiveQuerySlot::device_ordinal).unwrap_or(service.config.device_ordinal);
         #[cfg(feature = "cugraph")]
         let warm_graph_priced = warm_graph_reservation.is_some();
-        Arc::new(Self {
-            service,
-            tenant_id,
-            query_id,
-            device_ordinal,
-            release_requested: AtomicBool::new(false),
-            released: AtomicBool::new(false),
-            active_contexts: AtomicUsize::new(0),
-            root_context: Mutex::new(None),
-            memory_grant: Mutex::new(Some(memory_grant)),
-            device_slot: Mutex::new(device_slot),
-            #[cfg(feature = "cugraph")]
-            warm_graph_reservation: Mutex::new(warm_graph_reservation),
-            #[cfg(feature = "cugraph")]
-            warm_graph_priced,
+        let service_epoch_user = service.service_epoch.retain_existing_user();
+        Arc::new_cyclic(|weak: &Weak<QueryHandleLifetime>| {
+            let weak_lifetime = weak.clone();
+            let on_query_idle = Arc::new(move || {
+                if let Some(lifetime) = weak_lifetime.upgrade() {
+                    lifetime.release_if_ready();
+                }
+            });
+            Self {
+                service,
+                tenant_id,
+                admission_request_id,
+                observation,
+                observation_owner,
+                observation_activity: Mutex::new(observation_activity),
+                service_epoch_user: Mutex::new(Some(service_epoch_user)),
+                device_ordinal,
+                release_requested: AtomicBool::new(false),
+                released: AtomicBool::new(false),
+                query_epoch: QueryResourceEpoch::new(Some(on_query_idle)),
+                root_context: Mutex::new(None),
+                memory_grant: Mutex::new(Some(memory_grant)),
+                device_slot: Mutex::new(device_slot),
+                #[cfg(feature = "cugraph")]
+                warm_graph_reservation: Mutex::new(warm_graph_reservation),
+                #[cfg(feature = "cugraph")]
+                warm_graph_priced,
+            }
         })
     }
 
@@ -74,26 +92,22 @@ impl QueryHandleLifetime {
             .ok_or_else(|| self.released_error())
     }
 
-    fn retain_context(self: &Arc<Self>) -> Result<QueryContextLifetimeGuard> {
+    fn acquire_resource_anchor(self: &Arc<Self>, operation: &'static str) -> Result<Arc<QueryResourceAnchor>> {
         if self.release_requested.load(Ordering::Acquire) || self.released.load(Ordering::Acquire) {
             return Err(self.released_error());
         }
-        self.active_contexts.fetch_add(1, Ordering::AcqRel);
-        if self.release_requested.load(Ordering::Acquire) || self.released.load(Ordering::Acquire) {
-            let guard = QueryContextLifetimeGuard { lifetime: Arc::clone(self) };
-            drop(guard);
-            return Err(self.released_error());
-        }
-        Ok(QueryContextLifetimeGuard { lifetime: Arc::clone(self) })
+        let owner: Arc<dyn Send + Sync> = self.clone();
+        self.query_epoch.acquire(owner, operation).map_err(|_error| self.released_error())
     }
 
     fn request_release(&self) {
         self.release_requested.store(true, Ordering::Release);
+        self.query_epoch.invalidate();
         self.release_if_ready();
     }
 
     fn release_if_ready(&self) {
-        if !self.release_requested.load(Ordering::Acquire) || self.active_contexts.load(Ordering::Acquire) != 0 {
+        if !self.release_requested.load(Ordering::Acquire) || !self.query_epoch.is_idle() {
             return;
         }
         if self.released.swap(true, Ordering::AcqRel) {
@@ -102,11 +116,18 @@ impl QueryHandleLifetime {
         let root_context = take_owned_for_cleanup(&self.root_context, "root context");
         let memory_grant = take_owned_for_cleanup(&self.memory_grant, "memory grant");
         let device_slot = take_owned_for_cleanup(&self.device_slot, "device slot");
+        let observation_activity = take_owned_for_cleanup(&self.observation_activity, "observation activity");
+        let service_epoch_user = take_owned_for_cleanup(&self.service_epoch_user, "service epoch user");
         #[cfg(feature = "cugraph")]
         let warm_graph_reservation = take_owned_for_cleanup(&self.warm_graph_reservation, "warm graph reservation");
         let release = QueryHandleRelease {
             service: Arc::clone(&self.service),
-            query_id: self.query_id,
+            tenant_id: self.tenant_id.clone(),
+            admission_request_id: self.admission_request_id,
+            observation: self.observation.clone(),
+            observation_owner: self.observation_owner.clone(),
+            observation_activity,
+            service_epoch_user,
             device_ordinal: self.device_ordinal,
             root_context,
             memory_grant,
@@ -114,6 +135,9 @@ impl QueryHandleLifetime {
             #[cfg(feature = "cugraph")]
             warm_graph_reservation,
         };
+        if let Some(owner) = &release.observation_owner {
+            owner.begin_query_cleanup();
+        }
         let pool = self
             .service
             .resources
@@ -121,11 +145,17 @@ impl QueryHandleLifetime {
             .and_then(|resources| resources.gpu_execution_pool_for_device(self.device_ordinal).ok());
         match pool {
             Some(pool) => {
-                if let Err(error) = pool.spawn(GpuExecutionJobKind::Cleanup, async move { release.finish() }) {
-                    eprintln!("[nexus-query-engine] warning: failed to dispatch query-service GPU cleanup: {error}");
-                }
+                let observation = self.observation.clone();
+                pool.spawn_observed_with_completion(
+                    GpuExecutionJobKind::Cleanup,
+                    observation,
+                    async move { release.finish() },
+                    || {},
+                );
             },
-            None => release.finish(),
+            None => {
+                release.finish();
+            },
         }
     }
 
@@ -136,7 +166,7 @@ impl QueryHandleLifetime {
             "query service handle was released before context acquisition",
         )
         .with_fact("tenant_id", self.tenant_id.as_str())
-        .with_fact("query_id", self.query_id)
+        .with_fact("admission_request_id", self.admission_request_id)
         .with_fact("reason", "query_handle_released")
     }
 }
@@ -161,7 +191,12 @@ fn require_warm_graph_reservation<T>(reservation: Option<T>, warm_graph_priced: 
 
 struct QueryHandleRelease {
     service: Arc<QueryServiceInner>,
-    query_id: u64,
+    tenant_id: TenantId,
+    admission_request_id: AdmissionRequestId,
+    observation: RuntimeObservationHandle,
+    observation_owner: Option<RuntimeObservationOwner>,
+    observation_activity: Option<QueryActivityLease>,
+    service_epoch_user: Option<QueryServiceEpochUser>,
     device_ordinal: usize,
     root_context: Option<ExecutionContext>,
     memory_grant: Option<MemoryGrant>,
@@ -178,7 +213,7 @@ impl QueryHandleRelease {
         // mutex, so it must never happen while the mutex is held.
         match self.service.admission.lock() {
             Ok(mut state) => {
-                state.active_adaptive_grants.remove(&self.query_id);
+                state.active_adaptive_grants.remove(&self.admission_request_id);
                 state.cleanup_in_progress = state.cleanup_in_progress.saturating_add(1);
             },
             Err(_error) => {
@@ -195,33 +230,60 @@ impl QueryHandleRelease {
                 );
             }
         }
-        drop(self.root_context.take());
+        let root_context = self.root_context.take();
+        if root_context.as_ref().is_some_and(ExecutionContext::has_root_stream_lease) {
+            let root_context = root_context.expect("root context with a stream lease is present");
+            let installed = root_context.install_root_stream_cleanup_completion(move || {
+                self.complete_after_stream_cleanup();
+            });
+            debug_assert!(installed, "root stream cleanup completion is installed exactly once");
+            drop(root_context);
+            return;
+        }
+        drop(root_context);
+        self.complete_after_stream_cleanup();
+    }
+
+    fn complete_after_stream_cleanup(mut self) {
         #[cfg(feature = "cugraph")]
         drop(self.warm_graph_reservation.take());
         drop(self.memory_grant.take());
         drop(self.device_slot.take());
+        // Publish query quiescence only after this handle no longer retains
+        // the service epoch. `close_and_wait_for_quiescence` uses the active
+        // query count as its completion fence, so waking it earlier could let
+        // a replacement race the final governor-claim release.
+        drop(self.service_epoch_user.take());
 
-        match self.service.admission.lock() {
+        let queue_depth = match self.service.admission.lock() {
             Ok(mut state) => {
                 state.active_queries = state.active_queries.saturating_sub(1);
                 state.cleanup_in_progress = state.cleanup_in_progress.saturating_sub(1);
                 if state.queued.is_empty() {
                     QueryService { inner: Arc::clone(&self.service) }.grow_active_adaptive_grants_locked(&mut state);
                 }
+                state.queued.len()
             },
             Err(_error) => {
                 eprintln!("[nexus-query-engine] warning: failed to release poisoned query service admission state");
+                0
             },
-        }
+        };
         notify_shared_device_admission_available(self.device_ordinal);
         self.service.notify_admission_available();
-    }
-}
-
-impl Drop for QueryContextLifetimeGuard {
-    fn drop(&mut self) {
-        self.lifetime.active_contexts.fetch_sub(1, Ordering::AcqRel);
-        self.lifetime.release_if_ready();
+        record_admission_lifecycle(
+            &self.observation,
+            self.admission_request_id,
+            &self.tenant_id,
+            AdmissionLifecycleState::Released,
+            queue_depth,
+            Some(self.device_ordinal),
+            None,
+        );
+        drop(self.observation_activity.take());
+        if let Some(owner) = self.observation_owner.take() {
+            let _ = owner.finish_query_cleanup(RuntimeTerminalOutcome::Dropped);
+        }
     }
 }
 
@@ -230,7 +292,7 @@ impl Drop for QueryContextLifetimeGuard {
 pub struct QueryHandle {
     pub(super) service: Arc<QueryServiceInner>,
     pub(super) tenant_id: TenantId,
-    pub(super) query_id: u64,
+    pub(super) admission_request_id: AdmissionRequestId,
     pub(super) admission_sequence: u64,
     pub(super) admission_wait: Duration,
     pub(super) device_budget_bytes: u64,
@@ -239,9 +301,9 @@ pub struct QueryHandle {
 }
 
 impl QueryHandle {
-    /// Stable service-local query id assigned at admission time.
-    pub fn query_id(&self) -> u64 {
-        self.query_id
+    /// Stable service-local request id assigned for this admission attempt.
+    pub fn admission_request_id(&self) -> AdmissionRequestId {
+        self.admission_request_id
     }
 
     /// Monotonic service-local admission sequence assigned when this handle was admitted.
@@ -346,30 +408,47 @@ impl QueryHandle {
         cancellation: ExecutionCancellation,
     ) -> Result<TenantQueryContext> {
         let pool = self.gpu_execution_pool()?;
+        let observation = self.lifetime.observation.clone();
         let handle = Arc::clone(self);
-        pool.run(
-            GpuExecutionJobKind::ContextSetup,
-            async move { handle.acquire_context_with_cancellation(cancellation) },
-        )
+        pool.run_observed_scoped(GpuExecutionJobKind::ContextSetup, observation, move |stream_scope| async move {
+            handle.acquire_context_with_cancellation_and_stream_scope(cancellation, stream_scope)
+        })
         .await?
     }
 
     /// Dedicated executor for synchronous GPU work on this query's selected device.
     pub fn gpu_execution_pool(&self) -> Result<GpuExecutionPool> {
+        let operation = "nexus_query_engine.query_service.gpu_execution_pool";
+        let query_anchor = self.lifetime.acquire_resource_anchor(operation)?;
         let Some(resources) = &self.service.resources else {
             return Err(QueryError::new(
                 QueryErrorCode::InvalidPlan,
-                "nexus_query_engine.query_service.gpu_execution_pool",
+                operation,
                 "query service was constructed without runtime resources",
             ));
         };
-        resources.gpu_execution_pool_for_device(self.device_ordinal)
+        let pool = resources.gpu_execution_pool_for_device(self.device_ordinal)?;
+        let resource_epoch =
+            QueryServiceResourceEpoch::acquire(&self.service.service_epoch, Some(&query_anchor), operation)?;
+        Ok(pool.with_resource_epoch(resource_epoch))
     }
 
     /// Acquires a tenant-bound execution context that observes caller-supplied
     /// cooperative cancellation.
     pub fn acquire_context_with_cancellation(&self, cancellation: ExecutionCancellation) -> Result<TenantQueryContext> {
-        let lifetime_guard = self.lifetime.retain_context()?;
+        self.acquire_context_with_cancellation_and_stream_scope(
+            cancellation,
+            crate::observability::RuntimeStreamLeaseScope::default(),
+        )
+    }
+
+    fn acquire_context_with_cancellation_and_stream_scope(
+        &self,
+        cancellation: ExecutionCancellation,
+        stream_scope: crate::observability::RuntimeStreamLeaseScope,
+    ) -> Result<TenantQueryContext> {
+        let operation = "nexus_query_engine.query_service.context";
+        let query_anchor = self.lifetime.acquire_resource_anchor(operation)?;
         let Some(resources) = &self.service.resources else {
             return Err(QueryError::new(
                 QueryErrorCode::InvalidPlan,
@@ -386,7 +465,11 @@ impl QueryHandle {
             )
         })?;
         if let Some(context) = root_context.as_ref() {
-            return Ok(TenantQueryContext { context: context.clone(), _lifetime_guard: lifetime_guard });
+            let context = context.with_runtime_gpu_stream_scope(stream_scope);
+            drop(root_context);
+            let context = context.with_query_resource_anchor(query_anchor);
+            self.lifetime.query_epoch.check_open(operation).map_err(|_error| self.lifetime.released_error())?;
+            return Ok(TenantQueryContext { context });
         }
         let stream_acquire_deadline =
             Instant::now().checked_add(self.service.config.admission_wait_timeout).unwrap_or_else(Instant::now);
@@ -404,24 +487,28 @@ impl QueryHandle {
                 (reservation.stream_lease, Some(Arc::new(ReservedResidentGraphHit::new(reservation.preparation_pin))))
             },
             None => {
-                let stream_lease = device.stream_pool().acquire_with_cancellation_deadline(
+                let stream_lease = device.stream_pool().acquire_observed_with_cancellation_deadline(
                     &cancellation,
                     stream_acquire_deadline,
                     "nexus_query_engine.query_service.context.stream_acquire",
+                    self.lifetime.observation.clone(),
+                    stream_scope.clone(),
                 )?;
                 (stream_lease, None)
             },
         };
         #[cfg(not(feature = "cugraph"))]
-        let stream_lease = device.stream_pool().acquire_with_cancellation_deadline(
+        let stream_lease = device.stream_pool().acquire_observed_with_cancellation_deadline(
             &cancellation,
             stream_acquire_deadline,
             "nexus_query_engine.query_service.context.stream_acquire",
+            self.lifetime.observation.clone(),
+            stream_scope.clone(),
         )?;
-        validate_service_stream_pool_device(device.stream_pool(), stream_lease.runtime().device())?;
+        validate_service_stream_pool_device(device.stream_pool(), stream_lease.device())?;
         let stream_lease_guard = Arc::new(stream_lease);
         let memory_grant = self.lifetime.memory_grant()?;
-        let runtime = stream_lease_guard.shared_runtime();
+        let runtime = stream_lease_guard.shared_runtime()?;
         let gpu_execution_pool = resources.gpu_execution_pool_for_device(self.device_ordinal)?;
         let grant_memory_domain = create_grant_memory_domain(
             runtime.as_ref(),
@@ -434,9 +521,22 @@ impl QueryHandle {
         } else {
             create_grant_reservation_arena(runtime.as_ref(), Some(&memory_grant))?
         };
+        let observation_owner = self.lifetime.observation_owner.clone();
+        let query_id = self.lifetime.observation.query_id().map(|query_id| QueryId::new(query_id.as_str()));
+        let trace_id =
+            self.lifetime.observation.trace_id().map(|trace_id| crate::metrics::TraceId::new(trace_id.as_str()));
+        let runtime_observation = self.lifetime.observation.clone();
         let context = ExecutionContext::from_parts(ExecutionContextParts {
-            query_id: Some(QueryId::new(format!("service-{}", self.query_id))),
-            trace_id: None,
+            service_epoch: Some(self.service.service_epoch.clone()),
+            query_epoch: Some(self.lifetime.query_epoch.clone()),
+            query_anchor: None,
+            io_lifecycle: None,
+            query_id,
+            trace_id,
+            runtime_observation,
+            runtime_observation_owner: observation_owner,
+            runtime_execution_scope: None,
+            runtime_stream_lease_scope: stream_scope,
             runtime,
             gpu_execution_pool,
             memory_policy: MemoryResourcePolicy::ExternalRuntime,
@@ -472,7 +572,10 @@ impl QueryHandle {
             query_service_admitted: true,
         });
         *root_context = Some(context.clone());
-        Ok(TenantQueryContext { context, _lifetime_guard: lifetime_guard })
+        drop(root_context);
+        let context = context.with_query_resource_anchor(query_anchor);
+        self.lifetime.query_epoch.check_open(operation).map_err(|_error| self.lifetime.released_error())?;
+        Ok(TenantQueryContext { context })
     }
 
     /// Requests admission release before dropping the handle.
@@ -498,7 +601,6 @@ impl Drop for QueryHandle {
 #[derive(Debug)]
 pub struct TenantQueryContext {
     context: ExecutionContext,
-    _lifetime_guard: QueryContextLifetimeGuard,
 }
 
 impl TenantQueryContext {

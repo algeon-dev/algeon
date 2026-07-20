@@ -138,15 +138,15 @@ fn query_metrics_reservation_timeline_records_live_ledger_deltas() {
     metrics.record_compiled_pipeline_task_execution("t3", "join_probe");
     let request = MemoryReservationRequest::new(ReservationKind::SourceRead, 60, 100)
         .with_memory_boundary("source_read")
-        .with_compiled_task_id("t2")
+        .with_task_registration("t2", 1, "source_read")
         .with_resident_resource_id("r7");
     let grow = MemoryReservationRequest::new(ReservationKind::SourceRead, 20, 100)
         .with_memory_boundary("source_read")
-        .with_compiled_task_id("t2")
+        .with_task_registration("t2", 1, "source_read")
         .with_resident_resource_id("r7");
     let denied = MemoryReservationRequest::new(ReservationKind::ProbeSide, 40, 100)
         .with_memory_boundary("join_probe_side")
-        .with_compiled_task_id("t3")
+        .with_task_registration("t3", 1, "join_probe")
         .with_resident_resource_id("r7");
 
     metrics.record_reservation_granted_timeline_event(&request, MemoryReservationEventAction::Reserve, 60, 60, 60);
@@ -199,7 +199,7 @@ fn query_metrics_restamps_existing_runtime_rows_when_query_id_changes() {
     let request = MemoryReservationRequest::new(ReservationKind::SourceRead, 16, 64)
         .with_memory_boundary("source_read")
         .with_node_id("n7")
-        .with_compiled_task_id("task-1");
+        .with_task_registration("task-1", 1, "source_read");
 
     metrics.record_reservation_granted_event(&request, 16);
     metrics.set_query_id("capture-query");
@@ -225,7 +225,7 @@ fn query_metrics_json_projection_is_catalog_driven() {
     let request = MemoryReservationRequest::new(ReservationKind::SourceRead, 16, 64)
         .with_memory_boundary("source_read")
         .with_node_id("n7")
-        .with_compiled_task_id("task-1");
+        .with_task_registration("task-1", 1, "source_read");
     metrics.record_reservation_granted_event(&request, 16);
 
     let json = metrics.to_json();
@@ -255,7 +255,7 @@ fn query_metrics_triage_links_memory_denials_to_reservation_events() {
     let request = MemoryReservationRequest::new(ReservationKind::SourceRead, 128, 64)
         .with_memory_boundary("source_read")
         .with_node_id("n9")
-        .with_compiled_task_id("task-9");
+        .with_task_registration("task-9", 1, "source_read");
 
     metrics.record_reservation_denied_event(&request, 64);
 
@@ -303,7 +303,7 @@ fn query_metrics_reservation_events_retain_legacy_bounded_task_context() {
         .with_path("/tmp/lineitem.parquet")
         .with_row_groups(vec![10, 11])
         .with_attempt(2, 4)
-        .with_compiled_task_id("legacy_bounded.source_read.node7.file2.chunk3.attempt2")
+        .with_task_registration("legacy_bounded.source_read.node7.file2.chunk3.attempt2", 2, "source_read")
         .with_source_read_contract("conservative_estimate", Some(64), Some(80));
 
     metrics.record_reservation_denied_timeline_event(&request, MemoryReservationEventAction::Reserve, 20, 60);

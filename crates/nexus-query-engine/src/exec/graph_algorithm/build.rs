@@ -19,7 +19,7 @@ struct CugraphExecutionSession {
 #[allow(dead_code)]
 impl CugraphExecutionSession {
     fn new(context: &ExecutionContext) -> Result<Self> {
-        let runtime = context.shared_runtime();
+        let runtime = context.shared_runtime()?;
         let handle =
             cugraph::ResourceHandle::for_runtime(std::sync::Arc::clone(&runtime)).map_err(map_cugraph_error(
                 "nexus_query_engine.graph_algorithm.session",

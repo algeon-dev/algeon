@@ -13,7 +13,11 @@ pub(super) fn reserve_final_sort_output_bytes(
         .with_node_id(node_id)
         .with_stage("final_sort")
         .with_attempt(attempt, max_attempts)
-        .with_compiled_task_id(legacy_bounded_final_sort_task_id(node_id, attempt));
+        .with_task_registration(
+            legacy_bounded_final_sort_task_id(node_id, attempt),
+            u32::try_from(attempt).unwrap_or(u32::MAX),
+            "final_sort",
+        );
     reservations.try_reserve(output_request, metrics)
 }
 
@@ -40,7 +44,11 @@ pub(super) fn finalize_final_sort_output_reservation(
         .with_node_id(node_id)
         .with_stage("final_sort")
         .with_attempt(attempt, max_attempts)
-        .with_compiled_task_id(legacy_bounded_final_sort_task_id(node_id, attempt));
+        .with_task_registration(
+            legacy_bounded_final_sort_task_id(node_id, attempt),
+            u32::try_from(attempt).unwrap_or(u32::MAX),
+            "final_sort",
+        );
         reservations.try_grow(&mut reservation, grow_request, metrics)?;
     }
 

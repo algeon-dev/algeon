@@ -53,7 +53,9 @@ pub(super) fn filter_null_edge_rows(
     let input_rows = frame.num_rows() as u64;
     let predicates = columns.iter().map(|(_, column)| col(*column).is_not_null()).collect::<Vec<_>>();
     let timer = Instant::now();
-    let output = frame.with_execution(&execution_overrides(context)).filter_all(predicates).map_err(|error| {
+    let overrides_lease = execution_overrides(context)?;
+    let overrides = overrides_lease.overrides();
+    let output = frame.with_execution(&overrides).filter_all(predicates).map_err(|error| {
         QueryError::from_cudf(
             "nexus_query_engine.graph_algorithm.edge_null_filter",
             "failed to drop null cuGraph edge-list rows",

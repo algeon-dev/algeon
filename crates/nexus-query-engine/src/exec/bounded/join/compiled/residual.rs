@@ -17,7 +17,8 @@ pub(super) fn materialize_compiled_one_shot_residual_output(
     let mut txn = JoinMaterializationTxn::with_sides(left, right);
     txn.set_gather_map_reservation(gather_map_reservation);
     txn.set_indices(indices);
-    let overrides = execution_overrides(context);
+    let overrides_lease = execution_overrides(context)?;
+    let overrides = overrides_lease.overrides();
     let residual_candidate = match one_shot_residual_candidate_projection(node) {
         Ok(candidate) => candidate,
         Err(error) => {

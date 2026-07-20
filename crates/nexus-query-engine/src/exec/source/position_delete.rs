@@ -64,7 +64,8 @@ pub(super) fn read_position_delete_parquet_source_as_chunks(
     }
 
     let other_frame_refs = other_frames.iter().collect::<Vec<_>>();
-    let overrides = execution_overrides(context);
+    let overrides_lease = execution_overrides(context)?;
+    let overrides = overrides_lease.overrides();
     let timer = Instant::now();
     let output = frame.with_execution(&overrides).concat_many(&other_frame_refs).map_err(|error| {
         QueryError::from_cudf(
@@ -118,9 +119,10 @@ pub(super) fn read_position_delete_source_chunk(
     let row_position_range =
         if file.has_position_delete_files() { crate::chunk::source_chunk_row_position_range(chunk)? } else { None };
     let (cudf_source, cudf_chunk) = cudf_local_parquet_source_chunk(context, source, chunk)?;
+    let _io_lease = context.acquire_io_lease("nexus_query_engine.local_parquet_source.position_delete_chunk.read")?;
     let read_timer = Instant::now();
     let output = DataFrame::read_parquet_source_chunk_with_evidence(
-        context.runtime(),
+        &context.runtime()?,
         &cudf_source,
         &cudf_chunk,
         SourceReadMode::ExecutionFrame,
@@ -192,6 +194,8 @@ pub(super) fn apply_position_deletes_to_data_file(
     mut frame: DataFrame,
     metrics: &mut QueryMetrics,
 ) -> Result<DataFrame> {
+    let overrides_lease = execution_overrides(context)?;
+    let overrides = overrides_lease.overrides();
     if !file.has_row_delete_files() || frame.num_rows() == 0 {
         return Ok(frame);
     }
@@ -230,7 +234,7 @@ pub(super) fn apply_position_deletes_to_data_file(
         .with_fact("file_index", file_index)
     })?;
     let row_position_expr = position_delete_row_position_expr(row_position_column.as_str(), row_position_range)?;
-    frame = frame.with_execution(&execution_overrides(context)).with_columns([row_position_expr]).map_err(|error| {
+    frame = frame.with_execution(&overrides).with_columns([row_position_expr]).map_err(|error| {
         QueryError::from_cudf(
             "nexus_query_engine.local_parquet_source.position_deletes.row_positions",
             "failed to normalize Iceberg position-delete row positions",
@@ -268,7 +272,7 @@ pub(super) fn apply_position_deletes_to_data_file(
         }
         let predicates = position_delete_filter_predicates(delete_file, data_file_path, row_position_range)?;
         let matching_deletes = delete_frame
-            .with_execution(&execution_overrides(context))
+            .with_execution(&overrides)
             .filter_all(predicates)
             .and_then(|frame| frame.select([ICEBERG_POSITION_DELETE_POS_COLUMN]))
             .map_err(|error| {
@@ -290,7 +294,7 @@ pub(super) fn apply_position_deletes_to_data_file(
             continue;
         }
         frame = frame
-            .with_execution(&execution_overrides(context))
+            .with_execution(&overrides)
             .left_anti_join(
                 &matching_deletes,
                 cudf::DataFrameJoinOptions::new()
@@ -322,7 +326,7 @@ pub(super) fn apply_position_deletes_to_data_file(
             continue;
         }
         frame = frame
-            .with_execution(&execution_overrides(context))
+            .with_execution(&overrides)
             .left_anti_join(
                 &delete_frame,
                 cudf::DataFrameJoinOptions::new()
@@ -344,7 +348,7 @@ pub(super) fn apply_position_deletes_to_data_file(
             })?;
     }
     frame = frame
-        .with_execution(&execution_overrides(context))
+        .with_execution(&overrides)
         .sort_values([row_position_column.as_str()], CudfSortOptions::new().with_stable(true))
         .map_err(|error| {
             QueryError::from_cudf(

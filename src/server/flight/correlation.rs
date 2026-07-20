@@ -74,22 +74,31 @@ pub(in crate::server) fn attach_query_response_metadata<T>(
 }
 
 pub(super) fn finish_adapter_error_status_with_correlation_id(
-    observability: &QueryObservability,
+    _coordinator: &QueryCoordinator,
     query_id: &str,
     correlation_id: Option<&str>,
     stage: &'static str,
     error: Error,
 ) -> Status {
-    observability.finish_failed(query_id, stage, CapturedError::from_adapter_error(&error));
+    let _ = stage;
     status_with_query_id_and_correlation_id(adapter_error_status(error), query_id, correlation_id)
 }
 
 #[cfg(test)]
 mod correlation_tests {
+    use nexus_query_engine::observability::{
+        QueryBoundaryKind, RUNTIME_OBSERVATION_JSONL_SCHEMA, RuntimeObservationPayload,
+        RuntimeObservationRecordDisposition, RuntimeReservationAction, RuntimeReservationDisposition,
+        RuntimeReservationId,
+    };
+
     use super::*;
     use crate::{
         policy::GpuFallbackPolicy,
-        server::auth::{AuthMode, TokenStore},
+        server::{
+            auth::{AuthMode, TokenStore},
+            coordinator::QueryTerminalOutcome,
+        },
     };
 
     pub(super) fn test_service() -> DatafusionCudfFlightSqlService {
@@ -103,6 +112,13 @@ mod correlation_tests {
             #[cfg(feature = "cugraph")]
             None,
         )
+    }
+
+    fn query_stats(service: &DatafusionCudfFlightSqlService, query_id: &str) -> String {
+        String::from_utf8(
+            service.coordinator.query_stats(query_id).expect("query stats capture should be retained").to_vec(),
+        )
+        .expect("query stats are UTF-8")
     }
 
     #[test]
@@ -176,14 +192,10 @@ mod correlation_tests {
             response.metadata().get(CORRELATION_ID_METADATA_KEY).and_then(|value| value.to_str().ok()),
             Some("client-corr-42")
         );
-        let ticket = service.tickets.get(&query_id).expect("statement ticket should be retained");
-        assert_eq!(ticket.correlation_id.as_deref(), Some("client-corr-42"));
-        drop(ticket);
-        let payload = service
-            .observability
-            .get(&query_id)
-            .expect("query stats capture should be retained")
-            .to_query_stats_payload();
+        let correlation_id =
+            service.coordinator.ticket_correlation_id(&query_id).expect("statement ticket should be retained");
+        assert_eq!(correlation_id.as_deref(), Some("client-corr-42"));
+        let payload = query_stats(&service, &query_id);
         assert!(payload.contains("# correlation_id=client-corr-42\n"), "{payload}");
     }
 
@@ -203,14 +215,7 @@ mod correlation_tests {
             .and_then(|value| value.to_str().ok())
             .expect("query id response metadata")
             .to_string();
-        assert!(
-            !service
-                .observability
-                .get(&query_id)
-                .expect("query stats capture should be retained")
-                .to_query_stats_payload()
-                .contains("# correlation_id=")
-        );
+        assert!(!query_stats(&service, &query_id).contains("# correlation_id="));
 
         let response = service
             .execute_ticket(query_id.clone(), Some("do-get-corr-7".to_string()))
@@ -221,16 +226,99 @@ mod correlation_tests {
             response.metadata().get(CORRELATION_ID_METADATA_KEY).and_then(|value| value.to_str().ok()),
             Some("do-get-corr-7")
         );
-        let payload = service
-            .observability
-            .get(&query_id)
-            .expect("query stats capture should be retained")
-            .to_query_stats_payload();
+        let payload = query_stats(&service, &query_id);
         assert!(payload.contains("# correlation_id=do-get-corr-7\n"), "{payload}");
     }
 
     #[tokio::test]
-    async fn dropping_do_get_stream_cancels_statement() {
+    async fn oversized_native_single_cell_do_get_preserves_pre_d2h_limit_and_correlation_metadata() {
+        let service = test_service();
+        let correlation_id = "oversized-cell-correlation";
+        let mut request = Request::new(FlightDescriptor::new_cmd(Vec::<u8>::new()));
+        request.metadata_mut().insert(CORRELATION_ID_METADATA_KEY, MetadataValue::try_from(correlation_id).unwrap());
+        let response = service
+            .get_flight_info_statement(
+                CommandStatementQuery {
+                    query: format!("SELECT repeat('x', {}) AS oversized", 5 * 1024 * 1024),
+                    transaction_id: None,
+                },
+                request,
+            )
+            .await
+            .expect("oversized scalar statement must plan and issue a ticket");
+        let query_id = response
+            .metadata()
+            .get(QUERY_ID_METADATA_KEY)
+            .and_then(|value| value.to_str().ok())
+            .expect("query id response metadata")
+            .to_string();
+
+        let response = service
+            .execute_ticket(query_id.clone(), None)
+            .await
+            .expect("DoGet constructs a lazy response before encoding the oversized row");
+        assert_eq!(
+            response.metadata().get(QUERY_ID_METADATA_KEY).and_then(|value| value.to_str().ok()),
+            Some(query_id.as_str())
+        );
+        assert_eq!(
+            response.metadata().get(CORRELATION_ID_METADATA_KEY).and_then(|value| value.to_str().ok()),
+            Some(correlation_id)
+        );
+
+        let mut stream = response.into_inner();
+        let schema = stream.next().await.expect("schema frame").expect("schema frame is valid");
+        assert!(schema.encoded_len() <= super::super::frame_limiter::MAX_FLIGHT_FRAME_BYTES);
+        let status = stream
+            .next()
+            .await
+            .expect("oversized row must terminate the DoGet stream")
+            .expect_err("one oversized scalar cannot be emitted as FlightData");
+
+        assert_eq!(status.code(), Code::ResourceExhausted);
+        assert_eq!(
+            status.metadata().get(QUERY_ID_METADATA_KEY).and_then(|value| value.to_str().ok()),
+            Some(query_id.as_str())
+        );
+        assert_eq!(
+            status.metadata().get(CORRELATION_ID_METADATA_KEY).and_then(|value| value.to_str().ok()),
+            Some(correlation_id)
+        );
+        assert_eq!(
+            status.metadata().get(crate::server::error::ERROR_CODE_METADATA_KEY).and_then(|value| value.to_str().ok()),
+            Some("host_materialization_limit_exceeded")
+        );
+        assert_eq!(
+            status.metadata().get(crate::server::error::ERROR_KIND_METADATA_KEY).and_then(|value| value.to_str().ok()),
+            Some("resource_exhausted")
+        );
+        assert_eq!(
+            status
+                .metadata()
+                .get(crate::server::error::ERROR_STATUS_METADATA_KEY)
+                .and_then(|value| value.to_str().ok()),
+            Some("permanent")
+        );
+        assert_eq!(
+            status
+                .metadata()
+                .get(crate::server::error::ERROR_OPERATION_METADATA_KEY)
+                .and_then(|value| value.to_str().ok()),
+            Some("datafusion_nexus.native_exec.host_batch_cursor")
+        );
+        assert!(status.message().contains("resource exhausted"), "{status:?}");
+        assert!(!status.message().contains("internal server error"), "{status:?}");
+
+        let payload = query_stats(&service, &query_id);
+        assert!(payload.contains("code=host_materialization_limit_exceeded\n"), "{payload}");
+        assert!(payload.contains("kind=resource_exhausted\n"), "{payload}");
+        assert!(payload.contains("status=permanent\n"), "{payload}");
+        assert!(payload.contains("operation=datafusion_nexus.native_exec.host_batch_cursor\n"), "{payload}");
+        assert!(payload.contains("# correlation_id=oversized-cell-correlation\n"), "{payload}");
+    }
+
+    #[tokio::test]
+    async fn dropping_do_get_before_first_poll_cancels_statement() {
         let service = test_service();
         let response = service
             .get_flight_info_statement(
@@ -245,10 +333,8 @@ mod correlation_tests {
             .and_then(|value| value.to_str().ok())
             .expect("query id response metadata")
             .to_string();
-        let native_cancellation = {
-            let ticket = service.tickets.get(&query_id).expect("statement ticket should be retained");
-            ticket.native_cancellation.clone()
-        };
+        let native_cancellation =
+            service.coordinator.ticket_cancellation(&query_id).expect("statement ticket should be retained");
 
         let response =
             service.execute_ticket(query_id.clone(), None).await.expect("statement do_get should return a lazy stream");
@@ -258,16 +344,111 @@ mod correlation_tests {
 
         assert!(native_cancellation.is_cancelled(), "dropping the DoGet stream must cancel native execution");
         assert_eq!(service.cancellations.len(), 0, "dropped streams must leave no cancellable registry entry");
-        let payload = service
-            .observability
-            .get(&query_id)
-            .expect("query stats capture should be retained")
-            .to_query_stats_payload();
+        let payload = query_stats(&service, &query_id);
         assert!(payload.contains("# outcome=failed"), "{payload}");
         assert!(payload.contains("# sealed=true"), "{payload}");
         assert!(payload.contains("[structured_error]"), "{payload}");
         assert!(payload.contains("code=cancelled"), "{payload}");
         assert!(payload.contains("operation=datafusion_nexus.server.flight.cancel_query"), "{payload}");
+    }
+
+    #[tokio::test]
+    async fn panicking_lazy_do_get_drop_records_one_panicked_terminal_before_cancellation() {
+        let service = test_service();
+        let response = service
+            .get_flight_info_statement(
+                CommandStatementQuery { query: "SELECT 1 AS one".to_string(), transaction_id: None },
+                Request::new(FlightDescriptor::new_cmd(Vec::<u8>::new())),
+            )
+            .await
+            .expect("statement flight info should succeed");
+        let query_id = response
+            .metadata()
+            .get(QUERY_ID_METADATA_KEY)
+            .and_then(|value| value.to_str().ok())
+            .expect("query id response metadata")
+            .to_string();
+        let native_cancellation =
+            service.coordinator.ticket_cancellation(&query_id).expect("statement ticket should be retained");
+        let response =
+            service.execute_ticket(query_id.clone(), None).await.expect("statement do_get should return a lazy stream");
+
+        let unwind = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _response = response;
+            panic!("lazy stream panic probe");
+        }));
+
+        assert!(unwind.is_err());
+        assert_eq!(service.coordinator.terminal(&query_id), Some(QueryTerminalOutcome::Panicked));
+        assert!(native_cancellation.is_cancelled(), "panic cleanup still cancels native execution");
+        assert_eq!(service.cancellations.len(), 0);
+        let payload = query_stats(&service, &query_id);
+        assert!(payload.contains("# outcome=dropped\n"), "{payload}");
+        assert!(!payload.contains("code=cancelled"), "panic must not be downgraded to cancellation: {payload}");
+    }
+
+    #[tokio::test]
+    async fn dropping_do_get_midstream_cancels_statement() {
+        let service = test_service();
+        let response = service
+            .get_flight_info_statement(
+                CommandStatementQuery { query: "SELECT 1 AS one".to_string(), transaction_id: None },
+                Request::new(FlightDescriptor::new_cmd(Vec::<u8>::new())),
+            )
+            .await
+            .expect("statement flight info should succeed");
+        let query_id = response
+            .metadata()
+            .get(QUERY_ID_METADATA_KEY)
+            .and_then(|value| value.to_str().ok())
+            .expect("query id response metadata")
+            .to_string();
+        let native_cancellation =
+            service.coordinator.ticket_cancellation(&query_id).expect("statement ticket should be retained");
+
+        let mut stream = service
+            .execute_ticket(query_id.clone(), None)
+            .await
+            .expect("statement do_get should return a lazy stream")
+            .into_inner();
+        stream.next().await.expect("schema frame").expect("schema frame is valid");
+        stream.next().await.expect("record-batch frame").expect("record-batch frame is valid");
+        assert!(!native_cancellation.is_cancelled(), "partial polling must keep the query live");
+
+        drop(stream);
+
+        assert!(native_cancellation.is_cancelled(), "dropping a partially polled stream must cancel native work");
+        assert_eq!(service.cancellations.len(), 0, "midstream drops must remove cancellation registration");
+        let payload = query_stats(&service, &query_id);
+        assert!(payload.contains("# outcome=failed"), "{payload}");
+        assert!(payload.contains("code=cancelled"), "{payload}");
+        assert!(payload.contains("operation=datafusion_nexus.server.flight.cancel_query"), "{payload}");
+    }
+
+    #[test]
+    fn stream_error_terminalizes_once_with_structured_adapter_metadata() {
+        let service = test_service();
+        let query_id = "stream-error-terminal";
+        let planning =
+            service.register_query(query_id.to_string(), "SELECT private_sql_literal".to_string(), None).unwrap();
+        let execution = planning.into_execution().unwrap();
+        let terminal = CoordinatorExecutionTerminal::new(execution, query_id.to_string(), Instant::now());
+
+        let _flight_error = datafusion_error_to_flight_error(
+            DataFusionError::Execution("runtime batch failed".to_string()),
+            query_id,
+            &terminal,
+            "datafusion_nexus.server.flight.test_stream",
+        );
+
+        assert!(terminal.is_finished());
+        let payload = query_stats(&service, query_id);
+        assert!(payload.contains("# outcome=failed"), "{payload}");
+        assert!(payload.contains("# sealed=true"), "{payload}");
+        assert!(payload.contains("code=internal"), "{payload}");
+        assert!(payload.contains("kind=internal"), "{payload}");
+        assert!(payload.contains("status=permanent"), "{payload}");
+        assert!(payload.contains("operation=datafusion_nexus.server.flight.test_stream"), "{payload}");
     }
 
     #[tokio::test]
@@ -299,5 +480,228 @@ mod correlation_tests {
         assert!(payload.contains("# backend=semaphore\n"), "{payload}");
         assert!(payload.contains("[admission]\nactive_queries\tqueued_queries\tnext_tenant_id\n"), "{payload}");
         assert!(payload.contains("[semaphore]\nmax_in_flight\tavailable_permits\n1\t1\n"), "{payload}");
+    }
+
+    #[tokio::test]
+    async fn create_prepared_statement_is_terminalized_and_addressable_by_its_handle() {
+        let service = test_service();
+        let result = service
+            .do_action_create_prepared_statement(
+                ActionCreatePreparedStatementRequest { query: "SELECT 1 AS one".to_string(), transaction_id: None },
+                Request::new(arrow_flight::Action { r#type: String::new(), body: Default::default() }),
+            )
+            .await
+            .expect("prepared statement creation succeeds");
+        let query_id = std::str::from_utf8(&result.prepared_statement_handle).unwrap();
+        let payload = query_stats(&service, query_id);
+        assert!(payload.contains("# outcome=succeeded\n"), "{payload}");
+        assert!(payload.contains("# sealed=true\n"), "{payload}");
+        assert!(matches!(service.coordinator.artifact(query_id), Some(CoordinatorArtifact::Retained(_))));
+    }
+
+    #[tokio::test]
+    async fn get_query_runtime_artifact_action_returns_atomic_sanitized_versioned_frames() {
+        const QUERY_ID: &str = "runtime-artifact-rpc-query";
+        const SQL_SECRET: &str = "rpc-sql-literal-secret";
+        const RAW_SOURCE: &str = "s3://reader:rpc-path-secret@private-bucket/customer.parquet?token=raw-token";
+
+        let service = test_service();
+        let planning = service
+            .register_query(QUERY_ID.to_string(), format!("SELECT '{SQL_SECRET}' FROM '{RAW_SOURCE}'"), None)
+            .unwrap();
+        let observation = planning.observation_handle().unwrap();
+        let execution = planning.into_execution().unwrap();
+        let source_location_id =
+            observation.source_location_id(RAW_SOURCE).expect("enabled capture derives an opaque source identity");
+        assert!(matches!(
+            observation.record(|| RuntimeObservationPayload::QueryBoundary { boundary: QueryBoundaryKind::Started }),
+            RuntimeObservationRecordDisposition::Retained { .. }
+        ));
+        let reservation_id = RuntimeReservationId::new("rpc-reservation-1");
+        assert!(matches!(
+            observation.record(|| RuntimeObservationPayload::Reservation(Box::new(
+                nexus_query_engine::observability::RuntimeReservationObservation {
+                    reservation_id: reservation_id.clone(),
+                    lineage_id: reservation_id,
+                    task_attempt_id: None,
+                    task_kind: Some("source_read".to_string()),
+                    action: RuntimeReservationAction::Reserve,
+                    denied_action: None,
+                    disposition: RuntimeReservationDisposition::Applied,
+                    alias: false,
+                    reservation_kind: "source_input".to_string(),
+                    memory_space: "device:0".to_string(),
+                    memory_boundary: "source_read".to_string(),
+                    requested_bytes: 128,
+                    granted_bytes: 128,
+                    charged_delta_bytes: 128,
+                    current_reserved_bytes: 128,
+                    budget_bytes: 4096,
+                    node_id: Some("source-node-1".to_string()),
+                    stage: Some("read".to_string()),
+                    chunk_index: Some(0),
+                    file_index: Some(0),
+                    source_location_id: Some(source_location_id.clone()),
+                    row_groups: Some(vec![0]),
+                    attempt: Some(1),
+                    max_attempts: Some(1),
+                    resident_resource_id: None,
+                    source_read_contract_quality: Some("exact".to_string()),
+                    source_read_planning_bytes: Some(128),
+                    source_read_estimated_bytes: Some(128),
+                }
+            ))),
+            RuntimeObservationRecordDisposition::Retained { .. }
+        ));
+
+        let action_types = service
+            .list_custom_actions()
+            .await
+            .expect("custom actions should be listed")
+            .into_iter()
+            .map(|action| action.expect("custom action should be valid").r#type)
+            .collect::<Vec<_>>();
+        assert!(action_types.contains(&GET_QUERY_RUNTIME_ARTIFACT_ACTION.to_string()), "{action_types:?}");
+
+        let active = service
+            .do_action_fallback(Request::new(arrow_flight::Action {
+                r#type: GET_QUERY_RUNTIME_ARTIFACT_ACTION.to_string(),
+                body: QUERY_ID.as_bytes().to_vec().into(),
+            }))
+            .await
+            .expect("active runtime artifact action should succeed")
+            .into_inner()
+            .try_collect::<Vec<_>>()
+            .await
+            .expect("active action stream should be valid");
+        assert_eq!(active.len(), 1, "active artifacts must not emit a partial JSONL frame");
+        let active_control: serde_json::Value =
+            serde_json::from_slice(&active[0].body).expect("control frame should be JSON");
+        assert_eq!(
+            active_control,
+            serde_json::json!({
+                "schema": "datafusion_nexus.query_runtime_artifact.control.v1",
+                "version": 1,
+                "query_id": QUERY_ID,
+                "state": "active",
+                "retryable": true,
+            })
+        );
+
+        execution.succeed();
+
+        let sealed = service
+            .do_action_fallback(Request::new(arrow_flight::Action {
+                r#type: GET_QUERY_RUNTIME_ARTIFACT_ACTION.to_string(),
+                body: QUERY_ID.as_bytes().to_vec().into(),
+            }))
+            .await
+            .expect("sealed runtime artifact action should succeed")
+            .into_inner()
+            .try_collect::<Vec<_>>()
+            .await
+            .expect("sealed action stream should be valid");
+        assert_eq!(sealed.len(), 2, "sealed artifacts must emit one control frame and one complete JSONL frame");
+        let sealed_control: serde_json::Value =
+            serde_json::from_slice(&sealed[0].body).expect("control frame should be JSON");
+        assert_eq!(
+            sealed_control,
+            serde_json::json!({
+                "schema": "datafusion_nexus.query_runtime_artifact.control.v1",
+                "version": 1,
+                "query_id": QUERY_ID,
+                "state": "sealed",
+                "retryable": false,
+            })
+        );
+        let records = std::str::from_utf8(&sealed[1].body)
+            .expect("runtime artifact JSONL should be UTF-8")
+            .lines()
+            .map(|line| serde_json::from_str::<serde_json::Value>(line).expect("JSONL line should be complete"))
+            .collect::<Vec<_>>();
+        assert_eq!(records.first().and_then(|record| record["record_type"].as_str()), Some("manifest"));
+        assert_eq!(
+            records.first().and_then(|record| record["data"]["schema"].as_str()),
+            Some(RUNTIME_OBSERVATION_JSONL_SCHEMA)
+        );
+        let footer = records.last().expect("JSONL footer");
+        assert_eq!(footer["record_type"], "footer");
+        assert_eq!(footer["data"]["complete"], true);
+        assert_eq!(footer["data"]["terminal"], serde_json::json!({ "kind": "succeeded" }));
+
+        let wire_bytes = sealed.iter().flat_map(|frame| frame.body.iter().copied()).collect::<Vec<_>>();
+        let wire_text = String::from_utf8(wire_bytes).expect("artifact frames should be UTF-8");
+        assert!(wire_text.contains(source_location_id.as_str()), "opaque source identity should be exported");
+        for private_value in [SQL_SECRET, RAW_SOURCE, "rpc-path-secret", "raw-token"] {
+            assert!(!wire_text.contains(private_value), "runtime artifact leaked private value: {private_value}");
+        }
+    }
+
+    #[tokio::test]
+    async fn unavailable_runtime_artifact_action_emits_only_its_control_frame() {
+        const QUERY_ID: &str = "runtime-artifact-unavailable";
+
+        let service = test_service();
+        let planning = service.register_query(QUERY_ID.to_string(), "SELECT 1".to_string(), None).unwrap();
+        let hot = planning.hot_counters();
+        hot.record_output(usize::MAX, 0);
+        hot.record_output(1, 0);
+        planning.into_execution().unwrap().succeed();
+
+        let frames = service
+            .do_action_fallback(Request::new(arrow_flight::Action {
+                r#type: GET_QUERY_RUNTIME_ARTIFACT_ACTION.to_string(),
+                body: QUERY_ID.as_bytes().to_vec().into(),
+            }))
+            .await
+            .expect("unavailable runtime artifact action should succeed")
+            .into_inner()
+            .try_collect::<Vec<_>>()
+            .await
+            .expect("unavailable action stream should be valid");
+
+        assert_eq!(frames.len(), 1, "unavailable artifacts have exactly one control frame");
+        let control: serde_json::Value = serde_json::from_slice(&frames[0].body).expect("control frame should be JSON");
+        assert_eq!(
+            control,
+            serde_json::json!({
+                "schema": "datafusion_nexus.query_runtime_artifact.control.v1",
+                "version": 1,
+                "query_id": QUERY_ID,
+                "state": "unavailable",
+                "retryable": false,
+                "reason": "counter_overflow",
+                "incomplete": true,
+            })
+        );
+        assert_eq!(service.coordinator.artifact_egress_usage(), (0, 0));
+    }
+
+    #[tokio::test]
+    async fn dropping_runtime_artifact_action_stream_releases_egress_lease() {
+        const QUERY_ID: &str = "runtime-artifact-stream-cancel";
+
+        let service = test_service();
+        let planning = service.register_query(QUERY_ID.to_string(), "SELECT 1".to_string(), None).unwrap();
+        planning.into_execution().unwrap().succeed();
+        assert_eq!(service.coordinator.artifact_egress_usage(), (0, 0));
+
+        let response = service
+            .do_action_fallback(Request::new(arrow_flight::Action {
+                r#type: GET_QUERY_RUNTIME_ARTIFACT_ACTION.to_string(),
+                body: QUERY_ID.as_bytes().to_vec().into(),
+            }))
+            .await
+            .expect("sealed runtime artifact action should acquire one egress lease");
+        let usage_while_open = service.coordinator.artifact_egress_usage();
+        assert_eq!(usage_while_open.0, 1);
+        assert!(usage_while_open.1 > 0);
+
+        let mut stream = response.into_inner();
+        stream.next().await.expect("control frame").expect("control frame should be valid");
+        assert_eq!(service.coordinator.artifact_egress_usage(), usage_while_open);
+
+        drop(stream);
+        assert_eq!(service.coordinator.artifact_egress_usage(), (0, 0));
     }
 }

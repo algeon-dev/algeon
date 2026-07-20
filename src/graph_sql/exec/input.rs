@@ -33,9 +33,10 @@ pub(super) fn prepare_cugraph_source_metadata<'a>(
 
 pub(super) async fn execute_edge_source_to_gpu(
     context: &ExecutionContext,
+    metrics: &mut GraphExecutionMetrics<'_>,
     plan: Arc<dyn ExecutionPlan>,
     task_context: Arc<TaskContext>,
-) -> Result<(GpuDataFrame, QueryMetrics)> {
+) -> Result<GpuDataFrame> {
     if let Some(native) = as_native_cudf_exec(plan.as_ref()) {
         let native_plan = crate::native_exec::lakehouse::resolve_query_plan(
             native.execution_config(),
@@ -44,14 +45,13 @@ pub(super) async fn execute_edge_source_to_gpu(
         )
         .await
         .clone_with_gpu_resident_sink();
-        let result = execute_query_plan(context, &native_plan).map_err(|error| {
-            DataFusionError::from(Error::from_native(
-                "datafusion_nexus.cugraph_sql.edge_source_native",
-                "native cuGraph edge-source execution failed",
-                error,
-            ))
-        })?;
-        let (output, metrics) = result.into_parts();
+        let outcome = execute_query_plan_observed(context, &native_plan, metrics.runtime_observation_config());
+        let output = finalize_graph_query_outcome(
+            metrics,
+            outcome,
+            "datafusion_nexus.cugraph_sql.edge_source_native",
+            "native cuGraph edge-source execution failed",
+        )?;
         let QueryOutput::GpuResident(handle) = output else {
             return Err(Error::new(
                 ErrorCode::InvalidExecutionPlan,
@@ -60,7 +60,7 @@ pub(super) async fn execute_edge_source_to_gpu(
             )
             .into());
         };
-        return Ok((handle.into_gpu_frame(), metrics));
+        return Ok(handle.into_gpu_frame());
     }
     if let Some(native) = as_native_cudf_composed_exec(plan.as_ref()) {
         let native_plan = crate::native_exec::lakehouse::resolve_query_plan(
@@ -85,14 +85,18 @@ pub(super) async fn execute_edge_source_to_gpu(
                 producer.execute_gpu_result_with_context(context, 0, Arc::clone(&task_context)).await?;
             gpu_inputs.insert(input_name, handle);
         }
-        let result = execute_query_plan_with_gpu_inputs(context, &native_plan, &gpu_inputs).map_err(|error| {
-            DataFusionError::from(Error::from_native(
-                "datafusion_nexus.cugraph_sql.edge_source_composed",
-                "native composed cuGraph edge-source execution failed",
-                error,
-            ))
-        })?;
-        let (output, metrics) = result.into_parts();
+        let outcome = execute_query_plan_with_gpu_inputs_observed(
+            context,
+            &native_plan,
+            &gpu_inputs,
+            metrics.runtime_observation_config(),
+        );
+        let output = finalize_graph_query_outcome(
+            metrics,
+            outcome,
+            "datafusion_nexus.cugraph_sql.edge_source_composed",
+            "native composed cuGraph edge-source execution failed",
+        )?;
         let QueryOutput::GpuResident(handle) = output else {
             return Err(Error::new(
                 ErrorCode::InvalidExecutionPlan,
@@ -101,12 +105,12 @@ pub(super) async fn execute_edge_source_to_gpu(
             )
             .into());
         };
-        return Ok((handle.into_gpu_frame(), metrics));
+        return Ok(handle.into_gpu_frame());
     }
 
     let schema = plan.schema();
     let batches = collect(plan, task_context).await?;
-    Ok((record_batches_to_gpu(context, schema, &batches)?, QueryMetrics::default()))
+    record_batches_to_gpu(context, schema, &batches)
 }
 
 pub(super) struct CugraphGpuFrame {
@@ -116,19 +120,17 @@ pub(super) struct CugraphGpuFrame {
 
 pub(super) async fn execute_predicate_sources_to_gpu(
     context: &ExecutionContext,
+    metrics: &mut GraphExecutionMetrics<'_>,
     predicate_sources: &[Arc<dyn ExecutionPlan>],
     task_context: Arc<TaskContext>,
-) -> Result<(Vec<CugraphGpuFrame>, QueryMetrics)> {
+) -> Result<Vec<CugraphGpuFrame>> {
     let mut frames = Vec::with_capacity(predicate_sources.len());
-    let mut metrics = QueryMetrics::default();
     for source in predicate_sources {
         let schema = source.schema();
-        let (frame, source_metrics) =
-            execute_edge_source_to_gpu(context, Arc::clone(source), Arc::clone(&task_context)).await?;
-        metrics.merge_from(source_metrics);
+        let frame = execute_edge_source_to_gpu(context, metrics, Arc::clone(source), Arc::clone(&task_context)).await?;
         frames.push(CugraphGpuFrame { schema, frame });
     }
-    Ok((frames, metrics))
+    Ok(frames)
 }
 
 pub(super) fn cudf_logical_mapping_error(error: cudf::Error) -> DataFusionError {
@@ -153,11 +155,16 @@ pub(super) fn record_batches_to_gpu(
     schema: SchemaRef,
     batches: &[RecordBatch],
 ) -> Result<GpuDataFrame> {
+    let runtime = counted_cudf_runtime(
+        context,
+        "datafusion_nexus.cugraph_sql.edge_source_host_import.runtime",
+        "query service closed before cuGraph edge import acquired its runtime",
+    )?;
     let Some(first_batch) = batches.first() else {
         let arrays =
             schema.fields().iter().map(|field| arrow::array::new_empty_array(field.data_type())).collect::<Vec<_>>();
         let batch = RecordBatch::try_new(schema, arrays).map_err(DataFusionError::from)?;
-        return cudf::DataFrame::from_record_batch(context.runtime(), &batch).map(GpuDataFrame::new).map_err(|error| {
+        return cudf::DataFrame::from_record_batch(&runtime, &batch).map(GpuDataFrame::new).map_err(|error| {
             DataFusionError::from(Error::from_native(
                 "datafusion_nexus.cugraph_sql.edge_source_host_import",
                 "failed to import empty host Arrow edge-source batch into cudf",
@@ -169,7 +176,7 @@ pub(super) fn record_batches_to_gpu(
             ))
         });
     };
-    let imported = cudf::DataFrame::from_record_batches(context.runtime(), batches).map_err(|error| {
+    let imported = cudf::DataFrame::from_record_batches(&runtime, batches).map_err(|error| {
         DataFusionError::from(Error::from_native(
             "datafusion_nexus.cugraph_sql.edge_source_host_import",
             "failed to import host Arrow edge-source batches into cudf",

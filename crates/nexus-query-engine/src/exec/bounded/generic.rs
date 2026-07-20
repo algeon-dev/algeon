@@ -8,6 +8,7 @@ pub(in crate::exec::bounded) fn execute_bounded_generic_query_plan(
     plan: &QueryPlan,
     gpu_inputs: &GpuResidentInputMap,
     metrics: &mut QueryMetrics,
+    observation_scope: Option<&crate::observability::RuntimeExecutionObservationScope>,
 ) -> Result<QueryOutput> {
     context.check_cancellation("nexus_query_engine.exec.bounded.generic_query_plan")?;
     if plan.contains_join() {
@@ -17,7 +18,8 @@ pub(in crate::exec::bounded) fn execute_bounded_generic_query_plan(
     let Some(device_budget_bytes) = context.bounded_device_budget_bytes() else {
         unreachable!("execute_bounded_query_plan is called only for bounded policies");
     };
-    let mut reservations = ReservationTracker::new_for_context(context, device_budget_bytes, metrics)?;
+    let mut reservations =
+        ReservationTracker::new_for_context(context, device_budget_bytes, metrics, observation_scope)?;
     let committed =
         execute_bounded_generic_node(context, plan, plan.sink().input(), gpu_inputs, &mut reservations, metrics)?;
 
@@ -319,7 +321,8 @@ pub(in crate::exec::bounded) fn execute_bounded_generic_union(
     }
     let first = frames.remove(0);
     let rest = frames.iter().collect::<Vec<_>>();
-    let overrides = execution_overrides(context);
+    let overrides_lease = execution_overrides(context)?;
+    let overrides = overrides_lease.overrides();
     let timer = Instant::now();
     let output = match first.with_execution(&overrides).concat_many(&rest) {
         Ok(output) => output,

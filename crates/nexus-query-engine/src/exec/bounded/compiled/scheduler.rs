@@ -1,8 +1,15 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    panic::{AssertUnwindSafe, catch_unwind, resume_unwind},
+};
 
 use super::state::{CompiledPipelineState, ReleasedCompiledResource};
 use crate::{
     error::{QueryError, QueryErrorCode, Result},
+    observability::{
+        RuntimeCleanupFailureObservation, RuntimeEventContext, RuntimeExecutionObservationScope,
+        RuntimeObservationPayload, RuntimeSpanId, RuntimeTaskLifecycle, task_attempt_id,
+    },
     pipeline::{
         CompiledPipeline, PipelineEdgeKind, PipelineTask, PipelineTaskId, PipelineTaskKind, ResidentResourceId,
     },
@@ -25,9 +32,23 @@ pub trait CompiledTaskExecutor {
         state: &mut CompiledPipelineState<Self::Resource>,
     ) -> Result<CompiledTaskOutput<Self::Resource>>;
 
+    fn execute_task_attempt(
+        &mut self,
+        task: &PipelineTask,
+        state: &mut CompiledPipelineState<Self::Resource>,
+        _attempt_id: &crate::observability::TaskAttemptId,
+        _span_id: RuntimeSpanId,
+    ) -> Result<CompiledTaskOutput<Self::Resource>> {
+        self.execute_task(task, state)
+    }
+
     fn release_resource(&mut self, _resource: ResidentResourceId, payload: Self::Resource) -> Result<()> {
         drop(payload);
         Ok(())
+    }
+
+    fn cleanup_resource(&mut self, resource: ResidentResourceId, payload: Self::Resource) -> Result<()> {
+        self.release_resource(resource, payload)
     }
 
     fn cleanup_after_error(&mut self) -> Result<()> {
@@ -170,49 +191,133 @@ impl<'a> CompiledPipelineScheduler<'a> {
 
     pub fn run<E>(&self, executor: &mut E) -> Result<CompiledPipelineState<E::Resource>>
     where E: CompiledTaskExecutor {
+        self.run_inner(executor, None)
+    }
+
+    /// Runs with explicit query/plan identity and task-attempt spans.
+    pub fn run_observed<E>(
+        &self,
+        executor: &mut E,
+        observation_scope: &RuntimeExecutionObservationScope,
+    ) -> Result<CompiledPipelineState<E::Resource>>
+    where
+        E: CompiledTaskExecutor,
+    {
+        self.run_inner(executor, Some(observation_scope))
+    }
+
+    fn run_inner<E>(
+        &self,
+        executor: &mut E,
+        observation_scope: Option<&RuntimeExecutionObservationScope>,
+    ) -> Result<CompiledPipelineState<E::Resource>>
+    where
+        E: CompiledTaskExecutor,
+    {
         let mut state = CompiledPipelineState::new(self.pipeline)?;
 
         while state.completed_task_count() < self.pipeline.tasks().len() {
             let cycle = match executor.before_scheduling_cycle() {
                 Ok(cycle) => cycle,
                 Err(error) => {
-                    release_live_resources_on_error(executor, &mut state)?;
+                    cleanup_preserving_primary(
+                        executor,
+                        &mut state,
+                        observation_scope,
+                        "scheduling_cycle_failure",
+                        &error,
+                    );
                     return Err(error);
                 },
             };
             let task = match self.next_runnable_task(&state, executor, cycle) {
                 Ok(task) => task,
                 Err(error) => {
-                    release_live_resources_on_error(executor, &mut state)?;
+                    cleanup_preserving_primary(
+                        executor,
+                        &mut state,
+                        observation_scope,
+                        "runnable_task_selection_failure",
+                        &error,
+                    );
                     return Err(error);
                 },
             };
+            let attempt_id = task_attempt_id(task.id().to_string(), 1);
+            let task_span_id =
+                RuntimeSpanId::new(u64::try_from(task.id().index()).unwrap_or(u64::MAX).saturating_add(2));
+            let mut task_lifecycle = observation_scope.map(|scope| {
+                RuntimeTaskLifecycle::new(
+                    scope.observation().clone(),
+                    scope.plan_execution_id().clone(),
+                    attempt_id.clone(),
+                    task.kind().as_str(),
+                    task_span_id,
+                    scope.plan_span_id(),
+                )
+            });
             if let Err(error) = state.prepare_task(task) {
-                release_live_resources_on_error(executor, &mut state)?;
+                fail_task_lifecycle(&mut task_lifecycle, &error);
+                cleanup_preserving_primary(executor, &mut state, observation_scope, "task_preparation_failure", &error);
                 return Err(error);
             }
-            let output = match executor.execute_task(task, &mut state) {
-                Ok(output) => output,
-                Err(error) => {
-                    release_live_resources_on_error(executor, &mut state)?;
+            let output = match catch_unwind(AssertUnwindSafe(|| {
+                executor.execute_task_attempt(task, &mut state, &attempt_id, task_span_id)
+            })) {
+                Ok(Ok(output)) => output,
+                Ok(Err(error)) => {
+                    fail_task_lifecycle(&mut task_lifecycle, &error);
+                    cleanup_preserving_primary(
+                        executor,
+                        &mut state,
+                        observation_scope,
+                        "task_execution_failure",
+                        &error,
+                    );
                     return Err(error);
+                },
+                Err(payload) => {
+                    if let Some(lifecycle) = task_lifecycle.take() {
+                        lifecycle.panicked();
+                    }
+                    if let Err(cleanup_error) = release_live_resources_on_error(executor, &mut state) {
+                        record_cleanup_failure(observation_scope, "task_panic_cleanup", None, &cleanup_error);
+                    }
+                    resume_unwind(payload);
                 },
             };
             let released = match state.complete_task(task, output.into_produced_resources()) {
                 Ok(released) => released,
                 Err(error) => {
-                    release_live_resources_on_error(executor, &mut state)?;
+                    fail_task_lifecycle(&mut task_lifecycle, &error);
+                    cleanup_preserving_primary(
+                        executor,
+                        &mut state,
+                        observation_scope,
+                        "task_completion_failure",
+                        &error,
+                    );
                     return Err(error);
                 },
             };
             if let Err(error) = release_completed_resources(executor, released) {
-                let _cleanup_result = release_live_resources_on_error(executor, &mut state);
+                fail_task_lifecycle(&mut task_lifecycle, &error);
+                cleanup_preserving_primary(
+                    executor,
+                    &mut state,
+                    observation_scope,
+                    "completed_resource_release_failure",
+                    &error,
+                );
                 return Err(error);
+            }
+            if let Some(lifecycle) = task_lifecycle.take() {
+                lifecycle.finish();
             }
         }
 
         if let Err(error) = state.ensure_finished(self.pipeline) {
-            release_live_resources_on_error(executor, &mut state)?;
+            cleanup_preserving_primary(executor, &mut state, observation_scope, "final_validation_failure", &error);
             return Err(error);
         }
         Ok(state)
@@ -349,11 +454,55 @@ impl<'a> CompiledPipelineScheduler<'a> {
     }
 }
 
+fn fail_task_lifecycle(lifecycle: &mut Option<RuntimeTaskLifecycle>, error: &QueryError) {
+    if let Some(lifecycle) = lifecycle.take() {
+        lifecycle.fail(error.code().as_str(), error.code() == QueryErrorCode::Cancelled);
+    }
+}
+
+fn cleanup_preserving_primary<E>(
+    executor: &mut E,
+    state: &mut CompiledPipelineState<E::Resource>,
+    observation_scope: Option<&RuntimeExecutionObservationScope>,
+    phase: &'static str,
+    primary: &QueryError,
+) where
+    E: CompiledTaskExecutor,
+{
+    if let Err(cleanup_error) = release_live_resources_on_error(executor, state) {
+        record_cleanup_failure(observation_scope, phase, Some(primary), &cleanup_error);
+    }
+}
+
+fn record_cleanup_failure(
+    observation_scope: Option<&RuntimeExecutionObservationScope>,
+    phase: &'static str,
+    primary: Option<&QueryError>,
+    cleanup_error: &QueryError,
+) {
+    let Some(scope) = observation_scope else {
+        return;
+    };
+    scope.observation().record_with_context(
+        RuntimeEventContext::for_plan(scope.plan_execution_id().clone()).with_span(scope.plan_span_id(), None),
+        || {
+            RuntimeObservationPayload::CleanupFailure(Box::new(RuntimeCleanupFailureObservation {
+                phase: phase.to_string(),
+                primary_error_code: primary.map(|error| error.code().to_string()),
+                error_code: cleanup_error.code().to_string(),
+                error_kind: cleanup_error.kind().to_string(),
+                error_status: cleanup_error.status().to_string(),
+                error_operation: cleanup_error.operation().to_string(),
+            }))
+        },
+    );
+}
+
 fn release_live_resources_on_error<E>(executor: &mut E, state: &mut CompiledPipelineState<E::Resource>) -> Result<()>
 where E: CompiledTaskExecutor {
     let mut first_error = None;
     for resource in state.drain_live_resources() {
-        if let Err(error) = executor.release_resource(resource.id(), resource.into_payload())
+        if let Err(error) = executor.cleanup_resource(resource.id(), resource.into_payload())
             && first_error.is_none()
         {
             first_error = Some(error);
@@ -464,4 +613,233 @@ fn resource_not_ready_error<T>(
 
 fn invalid(message: &'static str) -> QueryError {
     QueryError::new(QueryErrorCode::InvalidPlan, OPERATION, message)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::panic::{AssertUnwindSafe, catch_unwind};
+
+    use super::*;
+    use crate::{
+        observability::{
+            PlanExecutionId, RuntimeObservationConfig, RuntimeObservationPayload, RuntimeObservationSession,
+            RuntimeQueryLifecycle, RuntimeTerminalOutcome, TaskLifecycleState,
+        },
+        pipeline::{
+            PipelineBarrier, PipelineBarrierId, PipelineBarrierKind, PipelineEdge, PipelineEdgeId, ResidentLifetime,
+            ResidentResource, SinkBoundary, SinkBoundaryKind,
+        },
+    };
+
+    struct LifecycleTestExecutor {
+        terminal_task: PipelineTaskId,
+        panic: bool,
+        cleanup_failure: bool,
+        released: Vec<ResidentResourceId>,
+        cleanup_calls: usize,
+    }
+
+    impl LifecycleTestExecutor {
+        fn failing(terminal_task: PipelineTaskId) -> Self {
+            Self { terminal_task, panic: false, cleanup_failure: false, released: Vec::new(), cleanup_calls: 0 }
+        }
+
+        fn failing_with_cleanup_failure(terminal_task: PipelineTaskId) -> Self {
+            Self { terminal_task, panic: false, cleanup_failure: true, released: Vec::new(), cleanup_calls: 0 }
+        }
+
+        fn panicking(terminal_task: PipelineTaskId) -> Self {
+            Self { terminal_task, panic: true, cleanup_failure: false, released: Vec::new(), cleanup_calls: 0 }
+        }
+    }
+
+    impl CompiledTaskExecutor for LifecycleTestExecutor {
+        type Resource = String;
+
+        fn execute_task(
+            &mut self,
+            task: &PipelineTask,
+            _state: &mut CompiledPipelineState<Self::Resource>,
+        ) -> Result<CompiledTaskOutput<Self::Resource>> {
+            if task.id() == self.terminal_task {
+                if self.panic {
+                    panic!("scheduler lifecycle unwind probe");
+                }
+                return Err(QueryError::new(QueryErrorCode::Internal, OPERATION, "scheduler lifecycle failure probe")
+                    .with_fact("primary_marker", "retained"));
+            }
+            Ok(CompiledTaskOutput::new(
+                task.output_resources().iter().map(|resource| (*resource, resource.to_string())).collect(),
+            ))
+        }
+
+        fn release_resource(&mut self, resource: ResidentResourceId, _payload: Self::Resource) -> Result<()> {
+            self.released.push(resource);
+            Ok(())
+        }
+
+        fn cleanup_after_error(&mut self) -> Result<()> {
+            self.cleanup_calls = self.cleanup_calls.saturating_add(1);
+            if self.cleanup_failure {
+                return Err(QueryError::new(
+                    QueryErrorCode::MemoryReservationFailed,
+                    "nexus_query_engine.exec.bounded.compiled.scheduler.cleanup_probe",
+                    "scheduler cleanup failure probe",
+                ));
+            }
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn observed_failure_records_one_terminal_and_cleans_live_resources() {
+        let pipeline = lifecycle_test_pipeline();
+        let scheduler = CompiledPipelineScheduler::new(&pipeline).expect("test pipeline validates");
+        let lifecycle = lifecycle("scheduler-failure");
+        let scope = lifecycle.execution_scope();
+        let mut executor = LifecycleTestExecutor::failing(PipelineTaskId::new(1));
+
+        let error = scheduler.run_observed(&mut executor, &scope).expect_err("injected task failure propagates");
+        assert_eq!(executor.released, [ResidentResourceId::new(0)]);
+        assert_eq!(executor.cleanup_calls, 1);
+        let snapshot = lifecycle
+            .finish(RuntimeTerminalOutcome::Failed { error_code: error.code().to_string() })
+            .expect("observation seals");
+        let states = task_states(&snapshot);
+        assert_eq!(
+            states,
+            [
+                ("t0".to_string(), TaskLifecycleState::Ready),
+                ("t0".to_string(), TaskLifecycleState::Started),
+                ("t0".to_string(), TaskLifecycleState::Finished),
+                ("t1".to_string(), TaskLifecycleState::Ready),
+                ("t1".to_string(), TaskLifecycleState::Started),
+                ("t1".to_string(), TaskLifecycleState::Failed { error_code: "internal".to_string() }),
+            ]
+        );
+    }
+
+    #[test]
+    fn observed_panic_records_one_panicked_terminal_cleans_and_resumes_unwind() {
+        let pipeline = lifecycle_test_pipeline();
+        let scheduler = CompiledPipelineScheduler::new(&pipeline).expect("test pipeline validates");
+        let lifecycle = lifecycle("scheduler-panic");
+        let scope = lifecycle.execution_scope();
+        let mut executor = LifecycleTestExecutor::panicking(PipelineTaskId::new(1));
+
+        let panic = catch_unwind(AssertUnwindSafe(|| scheduler.run_observed(&mut executor, &scope)));
+        assert!(panic.is_err());
+        assert_eq!(executor.released, [ResidentResourceId::new(0)]);
+        assert_eq!(executor.cleanup_calls, 1);
+        let snapshot = lifecycle.finish(RuntimeTerminalOutcome::Panicked).expect("observation seals");
+        let t1_terminals = task_states(&snapshot)
+            .into_iter()
+            .filter(|(task, state)| task == "t1" && task_terminal(state))
+            .collect::<Vec<_>>();
+        assert_eq!(t1_terminals, [("t1".to_string(), TaskLifecycleState::Panicked)]);
+    }
+
+    #[test]
+    fn observed_cleanup_failure_is_secondary_to_primary_task_error() {
+        let pipeline = lifecycle_test_pipeline();
+        let scheduler = CompiledPipelineScheduler::new(&pipeline).expect("test pipeline validates");
+        let lifecycle = lifecycle("scheduler-cleanup-failure");
+        let scope = lifecycle.execution_scope();
+        let mut executor = LifecycleTestExecutor::failing_with_cleanup_failure(PipelineTaskId::new(1));
+
+        let error = scheduler.run_observed(&mut executor, &scope).expect_err("primary task failure propagates");
+        assert_eq!(error.code(), QueryErrorCode::Internal);
+        assert_eq!(error.kind(), QueryErrorCode::Internal.kind());
+        assert_eq!(error.status(), QueryErrorCode::Internal.status());
+        assert_eq!(error.operation(), OPERATION);
+        assert_eq!(error.fact_value("primary_marker"), Some("retained"));
+        let snapshot = lifecycle
+            .finish(RuntimeTerminalOutcome::Failed { error_code: error.code().to_string() })
+            .expect("observation seals");
+        let cleanup = snapshot
+            .events()
+            .iter()
+            .find_map(|event| match &event.payload {
+                RuntimeObservationPayload::CleanupFailure(observation) => Some((
+                    &observation.phase,
+                    &observation.primary_error_code,
+                    &observation.error_code,
+                    &observation.error_kind,
+                    &observation.error_status,
+                    &observation.error_operation,
+                )),
+                _ => None,
+            })
+            .expect("secondary cleanup evidence is retained");
+        assert_eq!(cleanup.0, "task_execution_failure");
+        assert_eq!(cleanup.1.as_deref(), Some("internal"));
+        assert_eq!(cleanup.2, "memory_reservation_failed");
+        assert_eq!(cleanup.3, "resource_exhausted");
+        assert_eq!(cleanup.4, "temporary");
+        assert_eq!(cleanup.5, "nexus_query_engine.exec.bounded.compiled.scheduler.cleanup_probe");
+    }
+
+    fn lifecycle(label: &str) -> RuntimeQueryLifecycle {
+        RuntimeQueryLifecycle::new(
+            RuntimeObservationSession::new(label, None, RuntimeObservationConfig::bounded(32, 64 * 1024)),
+            PlanExecutionId::new(format!("plan-{label}")),
+        )
+    }
+
+    fn task_states(
+        snapshot: &crate::observability::SealedRuntimeObservationSnapshot,
+    ) -> Vec<(String, TaskLifecycleState)> {
+        snapshot
+            .events()
+            .iter()
+            .filter_map(|event| match &event.payload {
+                RuntimeObservationPayload::TaskLifecycle(observation) => {
+                    Some((observation.attempt_id.task_id.as_str().to_string(), observation.lifecycle.clone()))
+                },
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn task_terminal(state: &TaskLifecycleState) -> bool {
+        matches!(
+            state,
+            TaskLifecycleState::Finished
+                | TaskLifecycleState::Failed { .. }
+                | TaskLifecycleState::Cancelled
+                | TaskLifecycleState::Dropped
+                | TaskLifecycleState::Panicked
+        )
+    }
+
+    fn lifecycle_test_pipeline() -> CompiledPipeline {
+        let source = PipelineTaskId::new(0);
+        let unary = PipelineTaskId::new(1);
+        let frame = ResidentResourceId::new(0);
+        CompiledPipeline::new(
+            vec![
+                PipelineTask::new(source, PipelineTaskKind::SourceRead).with_output_resources(vec![frame]),
+                PipelineTask::new(unary, PipelineTaskKind::Unary).with_input_resources(vec![frame]),
+            ],
+            vec![
+                PipelineEdge::new(PipelineEdgeId::new(0), source, unary, PipelineEdgeKind::ResidentFrame)
+                    .with_resources(vec![frame]),
+            ],
+            vec![
+                PipelineBarrier::new(PipelineBarrierId::new(0), PipelineBarrierKind::SourceChunkBoundary)
+                    .with_upstream_tasks(vec![source])
+                    .with_downstream_tasks(vec![unary]),
+                PipelineBarrier::new(PipelineBarrierId::new(1), PipelineBarrierKind::SinkBoundary)
+                    .with_upstream_tasks(vec![unary]),
+            ],
+            vec![ResidentResource::new(
+                frame,
+                source,
+                vec![unary],
+                ResidentLifetime::BetweenTasks { producer: source },
+            )],
+            vec![],
+            SinkBoundary::new(SinkBoundaryKind::HostArrowMaterialization, unary),
+        )
+    }
 }

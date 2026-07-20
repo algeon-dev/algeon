@@ -148,7 +148,11 @@ pub(in crate::exec::bounded::aggregate) fn execute_final_aggregate_projection(
             .with_memory_boundary("final_aggregate_projection")
             .with_node_id(bounded.aggregate_id)
             .with_stage("final_projection")
-            .with_compiled_task_id(legacy_bounded_final_merge_task_id(bounded.aggregate_id, "final_projection"));
+            .with_task_registration(
+                legacy_bounded_final_merge_task_id(bounded.aggregate_id, "final_projection"),
+                1,
+                "aggregate",
+            );
     let work_reservation = reservations.try_reserve(request, metrics)?;
     let expected_output_names =
         bounded.aggregate.1.fields().iter().map(|field| field.name().clone()).collect::<Vec<_>>();
@@ -234,7 +238,11 @@ pub(in crate::exec::bounded::aggregate) fn execute_final_aggregate_projection(
             .with_memory_boundary("final_aggregate_projection_output")
             .with_node_id(bounded.aggregate_id)
             .with_stage("final_projection")
-            .with_compiled_task_id(legacy_bounded_final_merge_task_id(bounded.aggregate_id, "final_projection"));
+            .with_task_registration(
+                legacy_bounded_final_merge_task_id(bounded.aggregate_id, "final_projection"),
+                1,
+                "aggregate",
+            );
     let output_reservation = reservations.try_reserve(output_request, metrics)?;
     Ok(CommittedPartial { frame, reservation: output_reservation })
 }
@@ -282,7 +290,8 @@ pub(in crate::exec::bounded::aggregate) fn execute_final_aggregate(
 
     let frame = input.into_frame();
     let input_rows = frame.num_rows() as u64;
-    let overrides = execution_overrides(context);
+    let overrides_lease = execution_overrides(context)?;
+    let overrides = overrides_lease.overrides();
     let timer = Instant::now();
     let mut output = execute_groupby_aggregate_with_budget(
         &overrides,

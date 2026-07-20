@@ -232,7 +232,7 @@ pub(super) fn format_plan_task_mapping_rows(rows: &[NativePlanTaskMappingMetricR
     format_stable_nested_metric_rows(rows, NativePlanTaskMappingMetricRow::to_stable_kv_row)
 }
 
-pub(super) fn write_workload_dataset_metadata(output: &mut String, metadata: Option<&WorkloadDatasetMetadata>) {
+pub(super) fn write_workload_dataset_metadata(output: &mut impl Write, metadata: Option<&WorkloadDatasetMetadata>) {
     let Some(metadata) = metadata else {
         return;
     };

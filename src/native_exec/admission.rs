@@ -5,6 +5,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::{
     any::Any,
     collections::{HashMap, HashSet},
+    panic::{AssertUnwindSafe, catch_unwind},
     pin::Pin,
     sync::{Arc, Mutex},
     task::{Context, Poll},
@@ -22,13 +23,25 @@ use datafusion::{
     },
 };
 use futures::Stream;
-use nexus_query_engine::runtime::{
-    ExecutionCancellation, QueryAdmissionRequest, QueryGrantBand, QueryGrantRequest, QueryHandle, QueryPlacementHint,
-    QueryQos, QueryService, TenantId, TenantQueryContext,
+#[cfg(test)]
+use nexus_query_engine::metrics::QueryId;
+use nexus_query_engine::{
+    observability::{
+        RuntimeObservationConfig, RuntimeObservationOwner, RuntimeQueryId, RuntimeTerminalOutcome, RuntimeTraceId,
+    },
+    runtime::{
+        ExecutionCancellation, QueryAdmissionRequest, QueryGrantBand, QueryGrantRequest, QueryHandle,
+        QueryPlacementHint, QueryQos, QueryService, TenantId, TenantQueryContext,
+    },
 };
 use tokio::sync::Notify;
 
-use crate::error::Error;
+#[cfg(test)]
+use crate::native_exec::metrics::NativeMetricsCapture;
+use crate::{
+    error::Error,
+    native_exec::metrics::{NativeExecutionMetricsCapture, NativeRuntimeObservation},
+};
 
 /// Backend-owned service admission source copied into optimizer configs.
 #[derive(Debug, Clone)]
@@ -96,6 +109,10 @@ pub(crate) struct QueryAdmissionTicket {
     #[cfg(feature = "cugraph")]
     warm_graph_requested_grant_bytes: Option<u64>,
     placement_hint: QueryPlacementHint,
+    observation_query_id: Option<RuntimeQueryId>,
+    observation_trace_id: Option<RuntimeTraceId>,
+    observation_config: RuntimeObservationConfig,
+    observation_capture: Option<NativeExecutionMetricsCapture>,
     state: Mutex<TicketState>,
     notify: Arc<Notify>,
 }
@@ -138,11 +155,12 @@ pub(crate) fn task_context_with_query_admission_ticket(
     ))
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 struct TicketState {
     rounds: HashMap<usize, TicketRound>,
     admitting: HashSet<usize>,
     next_epoch: u64,
+    initial_observation: Option<NativeRuntimeObservation>,
 }
 
 #[derive(Debug)]
@@ -153,6 +171,7 @@ struct TicketRound {
     active_streams: usize,
     epoch: u64,
     admission_facts_recorded: bool,
+    observation: NativeRuntimeObservation,
 }
 
 /// Context acquired through a [`QueryAdmissionTicket`].
@@ -205,53 +224,103 @@ struct QueryAdmissionPendingContextGuard {
     task_key: usize,
     epoch: u64,
     released: bool,
+    observation: NativeRuntimeObservation,
 }
 
 struct TicketAdmitResetGuard {
     ticket: Arc<QueryAdmissionTicket>,
     task_key: usize,
     disarmed: bool,
+    observation: NativeRuntimeObservation,
 }
 
 impl QueryAdmissionTicket {
+    #[cfg(test)]
     pub(crate) fn new(
         source: QueryAdmissionSource,
         requested_grant_min_bytes: Option<u64>,
         requested_grant_bytes: Option<u64>,
     ) -> Arc<Self> {
-        Self::new_with_placement_hint(
+        Self::new_with_placement_hint_and_observation(
             source,
             requested_grant_min_bytes,
             requested_grant_bytes,
             QueryPlacementHint::default(),
+            RuntimeObservationOwner::new(QueryId::mint(), None, RuntimeObservationConfig::native_execution()),
+            None,
         )
     }
 
-    pub(crate) fn new_with_placement_hint(
+    #[cfg(test)]
+    pub(crate) fn new_with_observation(
+        source: QueryAdmissionSource,
+        requested_grant_min_bytes: Option<u64>,
+        requested_grant_bytes: Option<u64>,
+        observation_owner: RuntimeObservationOwner,
+    ) -> Arc<Self> {
+        Self::new_with_placement_hint_and_observation(
+            source,
+            requested_grant_min_bytes,
+            requested_grant_bytes,
+            QueryPlacementHint::default(),
+            observation_owner,
+            None,
+        )
+    }
+
+    pub(crate) fn new_with_observation_and_capture(
+        source: QueryAdmissionSource,
+        requested_grant_min_bytes: Option<u64>,
+        requested_grant_bytes: Option<u64>,
+        observation: impl Into<NativeRuntimeObservation>,
+        observation_capture: Option<NativeExecutionMetricsCapture>,
+    ) -> Arc<Self> {
+        Self::new_with_placement_hint_and_observation(
+            source,
+            requested_grant_min_bytes,
+            requested_grant_bytes,
+            QueryPlacementHint::default(),
+            observation,
+            observation_capture,
+        )
+    }
+
+    fn new_with_placement_hint_and_observation(
         source: QueryAdmissionSource,
         requested_grant_min_bytes: Option<u64>,
         requested_grant_bytes: Option<u64>,
         placement_hint: QueryPlacementHint,
+        observation: impl Into<NativeRuntimeObservation>,
+        observation_capture: Option<NativeExecutionMetricsCapture>,
     ) -> Arc<Self> {
-        Self::new_with_placement_hint_and_warm_graph_grant(
+        Self::new_with_placement_hint_and_warm_graph_grant_and_observation_and_capture(
             source,
             requested_grant_min_bytes,
             requested_grant_bytes,
             placement_hint,
             #[cfg(feature = "cugraph")]
             None,
+            observation,
+            observation_capture,
         )
     }
 
-    pub(crate) fn new_with_placement_hint_and_warm_graph_grant(
+    pub(crate) fn new_with_placement_hint_and_warm_graph_grant_and_observation_and_capture(
         source: QueryAdmissionSource,
         requested_grant_min_bytes: Option<u64>,
         requested_grant_bytes: Option<u64>,
         placement_hint: QueryPlacementHint,
         #[cfg(feature = "cugraph")] warm_graph_requested_grant_bytes: Option<u64>,
+        observation: impl Into<NativeRuntimeObservation>,
+        observation_capture: Option<NativeExecutionMetricsCapture>,
     ) -> Arc<Self> {
         #[cfg(test)]
         static NEXT_TICKET_ID: AtomicU64 = AtomicU64::new(1);
+        let observation = observation.into();
+        let observation_handle = observation.handle();
+        let observation_query_id = observation_handle.query_id().cloned();
+        let observation_trace_id = observation_handle.trace_id().cloned();
+        let observation_config = observation_handle.config();
         Arc::new(Self {
             #[cfg(test)]
             id: NEXT_TICKET_ID.fetch_add(1, Ordering::Relaxed),
@@ -261,7 +330,16 @@ impl QueryAdmissionTicket {
             #[cfg(feature = "cugraph")]
             warm_graph_requested_grant_bytes,
             placement_hint,
-            state: Mutex::new(TicketState::default()),
+            observation_query_id,
+            observation_trace_id,
+            observation_config,
+            observation_capture,
+            state: Mutex::new(TicketState {
+                rounds: HashMap::new(),
+                admitting: HashSet::new(),
+                next_epoch: 0,
+                initial_observation: Some(observation),
+            }),
             notify: Arc::new(Notify::new()),
         })
     }
@@ -291,19 +369,50 @@ impl QueryAdmissionTicket {
         self.requested_grant_min_bytes
     }
 
+    #[cfg(test)]
+    pub(crate) fn observation_owner(&self) -> RuntimeObservationOwner {
+        match self.new_observation() {
+            NativeRuntimeObservation::Local(owner) => owner,
+            NativeRuntimeObservation::Coordinated(_) => panic!("coordinated tickets do not expose seal authority"),
+        }
+    }
+
+    pub(crate) fn metrics_capture(&self) -> Option<NativeExecutionMetricsCapture> {
+        self.observation_capture.clone()
+    }
+
+    fn new_observation(&self) -> NativeRuntimeObservation {
+        match &self.observation_query_id {
+            Some(query_id) => match &self.observation_capture {
+                Some(capture) => capture.new_runtime_observation(query_id.clone(), self.observation_trace_id.clone()),
+                None => NativeRuntimeObservation::Local(RuntimeObservationOwner::new(
+                    query_id.clone(),
+                    self.observation_trace_id.clone(),
+                    self.observation_config,
+                )),
+            },
+            None => NativeRuntimeObservation::Local(RuntimeObservationOwner::disabled()),
+        }
+    }
+
+    fn take_epoch_observation(&self, state: &mut TicketState) -> NativeRuntimeObservation {
+        state.initial_observation.take().unwrap_or_else(|| self.new_observation())
+    }
+
     pub(crate) fn begin_execution_round(
         self: &Arc<Self>,
         task_context: Arc<TaskContext>,
     ) -> nexus_query_engine::error::Result<QueryAdmissionExecutionRoundGuard> {
         let task_key = Self::task_key(&task_context);
         let mut state = self.lock_state()?;
-        Self::remove_stale_rounds_locked(&mut state);
+        let stale_rounds = Self::remove_stale_rounds_locked(&mut state);
         let epoch = if let Some(round) = state.rounds.get_mut(&task_key) {
             round.active_streams = round.active_streams.saturating_add(1);
             round.epoch
         } else {
             state.next_epoch = state.next_epoch.saturating_add(1);
             let epoch = state.next_epoch;
+            let observation = self.take_epoch_observation(&mut state);
             state.rounds.insert(
                 task_key,
                 TicketRound {
@@ -313,10 +422,13 @@ impl QueryAdmissionTicket {
                     active_streams: 1,
                     epoch,
                     admission_facts_recorded: false,
+                    observation,
                 },
             );
             epoch
         };
+        drop(state);
+        self.finish_orphaned_rounds(stale_rounds);
         Ok(QueryAdmissionExecutionRoundGuard { ticket: Arc::clone(self), task_key, epoch, released: false })
     }
 
@@ -330,40 +442,75 @@ impl QueryAdmissionTicket {
             let notify = Arc::clone(&self.notify);
             let notified = notify.notified_owned();
             tokio::pin!(notified);
-            let action = {
+            let (action, stale_rounds) = {
                 let mut state = self.lock_state()?;
-                Self::remove_stale_rounds_locked(&mut state);
-                if let Some(round) = state.rounds.get_mut(&task_key)
+                let stale_rounds = Self::remove_stale_rounds_locked(&mut state);
+                let action = if let Some(round) = state.rounds.get_mut(&task_key)
                     && let Some(handle) = round.handle.as_ref().cloned()
                 {
                     let epoch = round.epoch;
+                    let observation = round.observation.clone();
                     round.active_contexts = round.active_contexts.saturating_add(1);
-                    TicketAcquireAction::Reuse { handle, epoch }
+                    TicketAcquireAction::Reuse { handle, epoch, observation }
                 } else {
                     notified.as_mut().enable();
                     if state.admitting.contains(&task_key) {
                         TicketAcquireAction::Wait
                     } else {
-                        let epoch = state.rounds.get(&task_key).map(|round| round.epoch);
+                        if !state.rounds.contains_key(&task_key) {
+                            state.next_epoch = state.next_epoch.saturating_add(1);
+                            let epoch = state.next_epoch;
+                            let observation = self.take_epoch_observation(&mut state);
+                            state.rounds.insert(
+                                task_key,
+                                TicketRound {
+                                    _task_context: Arc::clone(&task_context),
+                                    handle: None,
+                                    active_contexts: 0,
+                                    active_streams: 0,
+                                    epoch,
+                                    admission_facts_recorded: false,
+                                    observation,
+                                },
+                            );
+                        }
+                        let round = state.rounds.get(&task_key).expect("ticket round was just established");
+                        let epoch = round.epoch;
+                        let observation = round.observation.clone();
                         state.admitting.insert(task_key);
-                        TicketAcquireAction::Admit { epoch }
+                        TicketAcquireAction::Admit { epoch, observation }
                     }
-                }
+                };
+                (action, stale_rounds)
             };
+            self.finish_orphaned_rounds(stale_rounds);
 
             match action {
-                TicketAcquireAction::Reuse { handle, epoch } => {
+                TicketAcquireAction::Reuse { handle, epoch, observation } => {
                     return self
-                        .acquire_from_handle(handle, task_key, epoch, Arc::clone(&task_context), cancellation)
+                        .acquire_from_handle(
+                            handle,
+                            task_key,
+                            epoch,
+                            Arc::clone(&task_context),
+                            cancellation,
+                            observation,
+                        )
                         .await;
                 },
                 TicketAcquireAction::Wait => {
                     notified.await;
                     continue;
                 },
-                TicketAcquireAction::Admit { epoch } => {
+                TicketAcquireAction::Admit { epoch, observation } => {
                     return self
-                        .admit_and_acquire_context(task_key, Arc::clone(&task_context), epoch, cancellation)
+                        .admit_and_acquire_context(
+                            task_key,
+                            Arc::clone(&task_context),
+                            epoch,
+                            cancellation,
+                            observation,
+                        )
                         .await;
                 },
             }
@@ -374,10 +521,16 @@ impl QueryAdmissionTicket {
         self: &Arc<Self>,
         task_key: usize,
         task_context: Arc<TaskContext>,
-        epoch: Option<u64>,
+        epoch: u64,
         cancellation: ExecutionCancellation,
+        observation: NativeRuntimeObservation,
     ) -> nexus_query_engine::error::Result<TicketTenantQueryContext> {
-        let mut reset_guard = TicketAdmitResetGuard { ticket: Arc::clone(self), task_key, disarmed: false };
+        let mut reset_guard = TicketAdmitResetGuard {
+            ticket: Arc::clone(self),
+            task_key,
+            disarmed: false,
+            observation: observation.clone(),
+        };
         let request = QueryAdmissionRequest::new()
             .with_qos(self.source.qos)
             .with_grant_request(QueryGrantRequest {
@@ -385,6 +538,15 @@ impl QueryAdmissionTicket {
                 requested_grant_bytes: self.requested_grant_bytes,
             })
             .with_placement_hint(self.placement_hint.clone());
+        let request = match &observation {
+            NativeRuntimeObservation::Local(owner) => request.with_runtime_observation_owner(owner.clone()),
+            NativeRuntimeObservation::Coordinated(handle) => request.with_runtime_observation_handle(handle.clone()),
+        };
+        let request =
+            match self.observation_capture.as_ref().and_then(NativeExecutionMetricsCapture::new_observation_activity) {
+                Some(activity) => request.with_runtime_observation_activity_result(activity),
+                None => request,
+            };
         #[cfg(feature = "cugraph")]
         let request = match self.warm_graph_requested_grant_bytes {
             Some(requested_grant_bytes) => request.with_warm_graph_grant_request(QueryGrantRequest {
@@ -396,53 +558,48 @@ impl QueryAdmissionTicket {
         let handle = match self.source.service.admit_async_with_request(self.source.tenant_id.clone(), request).await {
             Ok(handle) => Arc::new(handle),
             Err(error) => {
+                self.finish_observation_for_error(&observation, &error);
                 reset_guard.reset();
                 return Err(error);
             },
         };
 
         let epoch = {
-            let mut state = self.lock_state()?;
-            state.admitting.remove(&task_key);
-            let epoch = if let Some(epoch) = epoch {
-                epoch
-            } else {
-                state.next_epoch = state.next_epoch.saturating_add(1);
-                let epoch = state.next_epoch;
-                state.rounds.insert(
-                    task_key,
-                    TicketRound {
-                        _task_context: Arc::clone(&task_context),
-                        handle: None,
-                        active_contexts: 0,
-                        active_streams: 0,
-                        epoch,
-                        admission_facts_recorded: false,
-                    },
-                );
-                epoch
+            let mut state = match self.lock_state() {
+                Ok(state) => state,
+                Err(error) => {
+                    reset_guard.disarmed = true;
+                    self.record_observation_outcome_for_error(&observation, &error);
+                    drop(handle);
+                    return Err(error);
+                },
             };
+            state.admitting.remove(&task_key);
             let Some(round) = state.rounds.get_mut(&task_key) else {
                 reset_guard.disarmed = true;
                 self.notify.notify_waiters();
-                drop(state);
-                drop(handle);
-                return Err(nexus_query_engine::error::QueryError::new(
+                let error = nexus_query_engine::error::QueryError::new(
                     nexus_query_engine::error::QueryErrorCode::Internal,
                     "datafusion_nexus.native_exec.admission_ticket",
                     "query admission ticket execution round disappeared during admission",
-                ));
+                );
+                self.record_observation_outcome_for_error(&observation, &error);
+                drop(state);
+                drop(handle);
+                return Err(error);
             };
             if round.epoch != epoch {
                 reset_guard.disarmed = true;
                 self.notify.notify_waiters();
-                drop(state);
-                drop(handle);
-                return Err(nexus_query_engine::error::QueryError::new(
+                let error = nexus_query_engine::error::QueryError::new(
                     nexus_query_engine::error::QueryErrorCode::Internal,
                     "datafusion_nexus.native_exec.admission_ticket",
                     "query admission ticket execution round changed during admission",
-                ));
+                );
+                self.record_observation_outcome_for_error(&observation, &error);
+                drop(state);
+                drop(handle);
+                return Err(error);
             }
             round.handle = Some(Arc::clone(&handle));
             round.active_contexts = round.active_contexts.saturating_add(1);
@@ -450,7 +607,7 @@ impl QueryAdmissionTicket {
             self.notify.notify_waiters();
             epoch
         };
-        self.acquire_from_handle(handle, task_key, epoch, task_context, cancellation).await
+        self.acquire_from_handle(handle, task_key, epoch, task_context, cancellation, observation).await
     }
 
     async fn acquire_from_handle(
@@ -460,9 +617,15 @@ impl QueryAdmissionTicket {
         epoch: u64,
         task_context: Arc<TaskContext>,
         cancellation: ExecutionCancellation,
+        observation: NativeRuntimeObservation,
     ) -> nexus_query_engine::error::Result<TicketTenantQueryContext> {
-        let mut pending_guard =
-            QueryAdmissionPendingContextGuard { ticket: Arc::clone(self), task_key, epoch, released: false };
+        let mut pending_guard = QueryAdmissionPendingContextGuard {
+            ticket: Arc::clone(self),
+            task_key,
+            epoch,
+            released: false,
+            observation: observation.clone(),
+        };
         match handle.acquire_context_with_cancellation_async(cancellation).await {
             Ok(tenant_context) => {
                 pending_guard.released = true;
@@ -479,7 +642,10 @@ impl QueryAdmissionTicket {
                     },
                 })
             },
-            Err(error) => Err(error),
+            Err(error) => {
+                self.record_observation_outcome_for_error(&observation, &error);
+                Err(error)
+            },
         }
     }
 
@@ -510,10 +676,13 @@ impl QueryAdmissionTicket {
             return;
         }
         round.active_contexts -= 1;
-        if round.active_contexts == 0 && (force || round.active_streams == 0) {
-            state.rounds.remove(&task_key);
+        let remove = round.active_contexts == 0 && (force || round.active_streams == 0);
+        let removed = remove.then(|| state.rounds.remove(&task_key)).flatten();
+        if removed.is_some() {
             self.notify.notify_waiters();
         }
+        drop(state);
+        self.finish_round(removed);
     }
 
     fn release_execution_round(self: &Arc<Self>, task_key: usize, epoch: u64) {
@@ -528,10 +697,48 @@ impl QueryAdmissionTicket {
             return;
         }
         round.active_streams -= 1;
-        if round.active_streams == 0 && round.active_contexts == 0 {
-            state.rounds.remove(&task_key);
+        let remove = round.active_streams == 0 && round.active_contexts == 0;
+        let removed = remove.then(|| state.rounds.remove(&task_key)).flatten();
+        if removed.is_some() {
             self.notify.notify_waiters();
         }
+        drop(state);
+        self.finish_round(removed);
+    }
+
+    fn finish_round(&self, round: Option<TicketRound>) {
+        let Some(round) = round else { return };
+        match round.handle {
+            Some(handle) => handle.finish(),
+            None => self.finish_observation(&round.observation, Self::drop_outcome(RuntimeTerminalOutcome::Dropped)),
+        }
+    }
+
+    fn finish_orphaned_rounds(&self, rounds: Vec<TicketRound>) {
+        for round in rounds {
+            self.finish_round(Some(round));
+        }
+    }
+
+    fn finish_observation(&self, observation: &NativeRuntimeObservation, outcome: RuntimeTerminalOutcome) {
+        Self::finish_observation_isolated(observation, outcome, self.observation_capture.as_ref());
+    }
+
+    fn finish_observation_isolated(
+        observation: &NativeRuntimeObservation,
+        outcome: RuntimeTerminalOutcome,
+        capture: Option<&NativeExecutionMetricsCapture>,
+    ) {
+        if let NativeRuntimeObservation::Local(owner) = observation
+            && let Ok(Some(snapshot)) = catch_unwind(AssertUnwindSafe(|| owner.finish_query(outcome)))
+            && let Some(capture) = capture
+        {
+            capture.record_runtime_observation(Arc::new(snapshot));
+        }
+    }
+
+    fn drop_outcome(normal: RuntimeTerminalOutcome) -> RuntimeTerminalOutcome {
+        if std::thread::panicking() { RuntimeTerminalOutcome::Panicked } else { normal }
     }
 
     fn reset_admitting(&self, task_key: usize) {
@@ -541,6 +748,32 @@ impl QueryAdmissionTicket {
         };
         state.admitting.remove(&task_key);
         self.notify.notify_waiters();
+    }
+
+    fn observation_outcome_for_error(error: &nexus_query_engine::error::QueryError) -> RuntimeTerminalOutcome {
+        if error.code() == nexus_query_engine::error::QueryErrorCode::Cancelled {
+            RuntimeTerminalOutcome::Cancelled
+        } else {
+            RuntimeTerminalOutcome::Failed { error_code: error.code().to_string() }
+        }
+    }
+
+    fn record_observation_outcome_for_error(
+        &self,
+        observation: &NativeRuntimeObservation,
+        error: &nexus_query_engine::error::QueryError,
+    ) {
+        if let NativeRuntimeObservation::Local(owner) = observation {
+            owner.record_terminal_outcome(Self::observation_outcome_for_error(error));
+        }
+    }
+
+    fn finish_observation_for_error(
+        &self,
+        observation: &NativeRuntimeObservation,
+        error: &nexus_query_engine::error::QueryError,
+    ) {
+        self.finish_observation(observation, Self::observation_outcome_for_error(error));
     }
 
     fn lock_state(&self) -> nexus_query_engine::error::Result<std::sync::MutexGuard<'_, TicketState>> {
@@ -561,14 +794,43 @@ impl QueryAdmissionTicket {
             .unwrap_or_else(|| Arc::as_ptr(task_context) as usize)
     }
 
-    fn remove_stale_rounds_locked(state: &mut TicketState) {
-        state.rounds.retain(|_task_key, round| round.active_contexts > 0 || round.active_streams > 0);
+    fn remove_stale_rounds_locked(state: &mut TicketState) -> Vec<TicketRound> {
+        let stale_keys = state
+            .rounds
+            .iter()
+            .filter_map(|(task_key, round)| {
+                (round.active_contexts == 0 && round.active_streams == 0).then_some(*task_key)
+            })
+            .collect::<Vec<_>>();
+        stale_keys.into_iter().filter_map(|task_key| state.rounds.remove(&task_key)).collect()
+    }
+}
+
+impl Drop for QueryAdmissionTicket {
+    fn drop(&mut self) {
+        let observation_capture = self.observation_capture.clone();
+        let state = self.state.get_mut().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let initial_observation = state.initial_observation.take();
+        let orphaned_rounds = state.rounds.drain().map(|(_, round)| round).collect::<Vec<_>>();
+        let outcome =
+            if std::thread::panicking() { RuntimeTerminalOutcome::Panicked } else { RuntimeTerminalOutcome::Dropped };
+        if let Some(observation) = initial_observation {
+            Self::finish_observation_isolated(&observation, outcome.clone(), observation_capture.as_ref());
+        }
+        for round in orphaned_rounds {
+            match round.handle {
+                Some(handle) => handle.finish(),
+                None => {
+                    Self::finish_observation_isolated(&round.observation, outcome.clone(), observation_capture.as_ref())
+                },
+            }
+        }
     }
 }
 
 enum TicketAcquireAction {
-    Reuse { handle: Arc<QueryHandle>, epoch: u64 },
-    Admit { epoch: Option<u64> },
+    Reuse { handle: Arc<QueryHandle>, epoch: u64, observation: NativeRuntimeObservation },
+    Admit { epoch: u64, observation: NativeRuntimeObservation },
     Wait,
 }
 
@@ -588,6 +850,9 @@ impl Drop for QueryAdmissionPendingContextGuard {
             return;
         }
         self.released = true;
+        if let NativeRuntimeObservation::Local(owner) = &self.observation {
+            owner.record_terminal_outcome(QueryAdmissionTicket::drop_outcome(RuntimeTerminalOutcome::Cancelled));
+        }
         self.ticket.release_epoch_context(self.task_key, self.epoch, true);
     }
 }
@@ -596,6 +861,21 @@ impl QueryAdmissionExecutionRoundGuard {
     #[cfg(test)]
     fn epoch(&self) -> u64 {
         self.epoch
+    }
+
+    #[cfg(test)]
+    fn observation_owner(&self) -> RuntimeObservationOwner {
+        self.ticket
+            .state
+            .lock()
+            .unwrap()
+            .rounds
+            .get(&self.task_key)
+            .filter(|round| round.epoch == self.epoch)
+            .expect("execution round owner remains live")
+            .observation
+            .clone()
+            .into_local_owner()
     }
 }
 
@@ -620,6 +900,12 @@ impl TicketAdmitResetGuard {
 
 impl Drop for TicketAdmitResetGuard {
     fn drop(&mut self) {
+        if !self.disarmed {
+            self.ticket.finish_observation(
+                &self.observation,
+                QueryAdmissionTicket::drop_outcome(RuntimeTerminalOutcome::Cancelled),
+            );
+        }
         self.reset();
     }
 }
@@ -827,6 +1113,7 @@ mod tests {
                 active_streams: 0,
                 epoch,
                 admission_facts_recorded: false,
+                observation: ticket.new_observation(),
             },
         );
     }
@@ -862,6 +1149,300 @@ mod tests {
                 .unwrap(),
             512
         );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn admission_ticket_owner_precedes_enqueue_and_seals_rejection() {
+        let configured_tenant = TenantId::new("configured");
+        let service = admission_only_service(&configured_tenant);
+        let owner = RuntimeObservationOwner::new(
+            "ticket-rejected-query",
+            None,
+            RuntimeObservationConfig::bounded(32, 32 * 1024),
+        );
+        let ticket = QueryAdmissionTicket::new_with_observation(
+            QueryAdmissionSource::new(service, TenantId::new("unknown")),
+            None,
+            None,
+            owner.clone(),
+        );
+
+        let error = ticket
+            .acquire_context(Arc::new(TaskContext::default()), ExecutionCancellation::new())
+            .await
+            .expect_err("unknown tenant rejects before admission");
+
+        assert_eq!(error.code(), nexus_query_engine::error::QueryErrorCode::InvalidPlan);
+        let snapshot = owner.sealed_snapshot().expect("admission rejection seals the ticket owner");
+        assert_eq!(snapshot.manifest().query_id.as_str(), "ticket-rejected-query");
+        assert!(matches!(
+            snapshot.footer().terminal,
+            Some(RuntimeTerminalOutcome::Failed { ref error_code })
+                if error_code == nexus_query_engine::error::QueryErrorCode::InvalidPlan.as_str()
+        ));
+        assert!(snapshot.events().iter().any(|event| matches!(
+            &event.payload,
+            nexus_query_engine::observability::RuntimeObservationPayload::Admission(observation)
+                if matches!(
+                    observation.lifecycle,
+                    nexus_query_engine::observability::AdmissionLifecycleState::Rejected { .. }
+                )
+        )));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn coordinated_ticket_reuses_one_observation_session_across_three_legal_epochs() {
+        let tenant_id = TenantId::new("tenant");
+        let service = admission_only_service(&tenant_id);
+        let root =
+            RuntimeObservationOwner::new("coordinated-ticket", None, RuntimeObservationConfig::bounded(64, 64 * 1024));
+        let capture = NativeMetricsCapture::coordinated("coordinated-ticket", root.handle())
+            .with_observation_activity_factory(Arc::new(|| {
+                Some(nexus_query_engine::runtime::QueryActivityLease::new(()))
+            }))
+            .new_execution();
+        assert_eq!(capture.retention_stats().capacity, 0);
+        let ticket = QueryAdmissionTicket::new_with_observation_and_capture(
+            QueryAdmissionSource::new(service, tenant_id),
+            None,
+            None,
+            NativeRuntimeObservation::Coordinated(root.handle()),
+            Some(capture.clone()),
+        );
+        let task_context = Arc::new(TaskContext::default());
+
+        for _ in 0..3 {
+            ticket
+                .acquire_context(Arc::clone(&task_context), ExecutionCancellation::new())
+                .await
+                .expect_err("admission-only service has no runtime execution context");
+            assert!(root.sealed_snapshot().is_none(), "admission epochs cannot seal the coordinator root");
+        }
+        drop(ticket);
+        assert!(root.sealed_snapshot().is_none(), "ticket drop cannot seal the coordinator root");
+
+        let snapshot = root.finish_query(RuntimeTerminalOutcome::Succeeded).unwrap();
+        assert_eq!(snapshot.manifest().query_id.as_str(), "coordinated-ticket");
+        assert!(capture.runtime_observations().is_empty());
+        assert_eq!(
+            snapshot
+                .events()
+                .iter()
+                .filter(|event| matches!(
+                    &event.payload,
+                    nexus_query_engine::observability::RuntimeObservationPayload::Admission(observation)
+                        if matches!(
+                            observation.lifecycle,
+                            nexus_query_engine::observability::AdmissionLifecycleState::Admitted
+                        )
+                ))
+                .count(),
+            3
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn coordinated_activity_rejection_is_a_structured_admission_failure() {
+        let tenant_id = TenantId::new("tenant");
+        let service = admission_only_service(&tenant_id);
+        let root = RuntimeObservationOwner::new(
+            "coordinated-activity-rejected",
+            None,
+            RuntimeObservationConfig::bounded(64, 64 * 1024),
+        );
+        let capture = NativeMetricsCapture::coordinated("coordinated-activity-rejected", root.handle())
+            .with_observation_activity_factory(Arc::new(|| None))
+            .new_execution();
+        let ticket = QueryAdmissionTicket::new_with_observation_and_capture(
+            QueryAdmissionSource::new(service.clone(), tenant_id),
+            None,
+            None,
+            NativeRuntimeObservation::Coordinated(root.handle()),
+            Some(capture),
+        );
+
+        let error = ticket
+            .acquire_context(Arc::new(TaskContext::default()), ExecutionCancellation::new())
+            .await
+            .expect_err("coordinator activity rejection must reject native admission");
+
+        assert_eq!(error.code(), nexus_query_engine::error::QueryErrorCode::Cancelled);
+        assert_eq!(error.operation(), "datafusion_nexus.native_exec.admission.observation_activity");
+        assert_eq!(error.fact_value("reason"), Some("query_coordinator_activity_rejected"));
+        assert_eq!(error.fact_value("admission_stage"), Some("observation_activity"));
+        let snapshot = service.admission_snapshot().unwrap();
+        assert_eq!(snapshot.active_queries, 0);
+        assert_eq!(snapshot.queued_queries, 0);
+        assert!(root.sealed_snapshot().is_none(), "coordinated rejection cannot seal the coordinator root");
+        assert!(root.live_snapshot().unwrap().events().iter().any(|event| matches!(
+            &event.payload,
+            nexus_query_engine::observability::RuntimeObservationPayload::Admission(observation)
+                if matches!(
+                    &observation.lifecycle,
+                    nexus_query_engine::observability::AdmissionLifecycleState::Rejected { reason }
+                        if reason == "query_coordinator_activity_rejected"
+                )
+        )));
+    }
+
+    #[test]
+    fn standalone_ticket_drop_transfers_one_sealed_snapshot_to_its_local_collector() {
+        let tenant_id = TenantId::new("tenant");
+        let service = admission_only_service(&tenant_id);
+        let capture = NativeMetricsCapture::without_sink("standalone-ticket").new_execution();
+        let observation = capture.new_runtime_observation("standalone-ticket", None);
+        let ticket = QueryAdmissionTicket::new_with_observation_and_capture(
+            QueryAdmissionSource::new(service, tenant_id),
+            None,
+            None,
+            observation,
+            Some(capture.clone()),
+        );
+
+        drop(ticket);
+
+        let retained = capture.runtime_observations();
+        assert_eq!(retained.len(), 1);
+        assert_eq!(retained[0].manifest().query_id.as_str(), "standalone-ticket");
+        assert_eq!(retained[0].footer().terminal, Some(RuntimeTerminalOutcome::Dropped));
+        assert_eq!(capture.retention_stats().recorded_total, 1);
+    }
+
+    #[test]
+    fn dropping_ticket_before_first_round_seals_initial_owner_once_and_isolates_observer_panics() {
+        let tenant_id = TenantId::new("tenant");
+        let service = admission_only_service(&tenant_id);
+        let owner = RuntimeObservationOwner::new(
+            "ticket-dropped-before-round",
+            None,
+            RuntimeObservationConfig::bounded(16, 4096),
+        );
+        let delivered = Arc::new(AtomicU64::new(0));
+        let delivered_for_observer = Arc::clone(&delivered);
+        owner.register_seal_observer(move |_| {
+            delivered_for_observer.fetch_add(1, Ordering::Relaxed);
+        });
+        owner.register_seal_observer(|_| panic!("ticket drop must isolate observer failure"));
+        let ticket = QueryAdmissionTicket::new_with_observation(
+            QueryAdmissionSource::new(service, tenant_id),
+            None,
+            None,
+            owner.clone(),
+        );
+
+        let dropped = catch_unwind(AssertUnwindSafe(|| drop(ticket)));
+
+        assert!(dropped.is_ok());
+        assert_eq!(delivered.load(Ordering::Relaxed), 1);
+        let snapshot = owner.sealed_snapshot().expect("last ticket owner drop must seal the initial observation");
+        assert_eq!(snapshot.footer().terminal, Some(RuntimeTerminalOutcome::Dropped));
+        assert_eq!(delivered.load(Ordering::Relaxed), 1, "ticket terminalization must remain exactly once");
+    }
+
+    #[test]
+    fn unwinding_unadmitted_round_guard_seals_panicked_exactly_once() {
+        let tenant_id = TenantId::new("tenant");
+        let service = admission_only_service(&tenant_id);
+        let owner =
+            RuntimeObservationOwner::new("unadmitted-round-panic", None, RuntimeObservationConfig::bounded(16, 4096));
+        let delivered = Arc::new(AtomicU64::new(0));
+        let delivered_for_observer = Arc::clone(&delivered);
+        owner.register_seal_observer(move |_| {
+            delivered_for_observer.fetch_add(1, Ordering::Relaxed);
+        });
+        let ticket = QueryAdmissionTicket::new_with_observation(
+            QueryAdmissionSource::new(service, tenant_id),
+            None,
+            None,
+            owner.clone(),
+        );
+        let guard = ticket.begin_execution_round(Arc::new(TaskContext::default())).unwrap();
+
+        let unwind = catch_unwind(AssertUnwindSafe(move || {
+            let _guard = guard;
+            panic!("unwind unadmitted round");
+        }));
+
+        assert!(unwind.is_err());
+        assert_eq!(owner.sealed_snapshot().unwrap().footer().terminal, Some(RuntimeTerminalOutcome::Panicked));
+        assert_eq!(delivered.load(Ordering::Relaxed), 1);
+        assert!(ticket.state.lock().is_ok(), "round unwind must not poison ticket state");
+        drop(ticket);
+        assert_eq!(delivered.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn unwinding_admit_reset_guard_seals_panicked_and_resets_without_poisoning() {
+        let tenant_id = TenantId::new("tenant");
+        let service = admission_only_service(&tenant_id);
+        let owner =
+            RuntimeObservationOwner::new("admit-reset-panic", None, RuntimeObservationConfig::bounded(16, 4096));
+        let delivered = Arc::new(AtomicU64::new(0));
+        let delivered_for_observer = Arc::clone(&delivered);
+        owner.register_seal_observer(move |_| {
+            delivered_for_observer.fetch_add(1, Ordering::Relaxed);
+        });
+        let ticket = QueryAdmissionTicket::new_with_observation(
+            QueryAdmissionSource::new(service, tenant_id),
+            None,
+            None,
+            owner.clone(),
+        );
+        let task_key = 41;
+        ticket.state.lock().unwrap().admitting.insert(task_key);
+        let guard = TicketAdmitResetGuard {
+            ticket: Arc::clone(&ticket),
+            task_key,
+            disarmed: false,
+            observation: NativeRuntimeObservation::Local(owner.clone()),
+        };
+
+        let unwind = catch_unwind(AssertUnwindSafe(move || {
+            let _guard = guard;
+            panic!("unwind admit reset");
+        }));
+
+        assert!(unwind.is_err());
+        assert_eq!(owner.sealed_snapshot().unwrap().footer().terminal, Some(RuntimeTerminalOutcome::Panicked));
+        assert_eq!(delivered.load(Ordering::Relaxed), 1);
+        assert!(!ticket.state.lock().unwrap().admitting.contains(&task_key));
+        drop(ticket);
+        assert_eq!(delivered.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn cancellation_before_first_context_acquire_seals_initial_owner() {
+        let tenant_id = TenantId::new("tenant");
+        let service = admission_only_service(&tenant_id);
+        let owner = RuntimeObservationOwner::new(
+            "ticket-cancelled-before-context",
+            None,
+            RuntimeObservationConfig::bounded(16, 4096),
+        );
+        let ticket = QueryAdmissionTicket::new_with_observation(
+            QueryAdmissionSource::new(service, tenant_id),
+            None,
+            None,
+            owner.clone(),
+        );
+        let task_context = Arc::new(TaskContext::default());
+        let task_key = QueryAdmissionTicket::task_key(&task_context);
+        let round = ticket.begin_execution_round(task_context).unwrap();
+        let round_owner = round.observation_owner();
+        ticket.state.lock().unwrap().rounds.get_mut(&task_key).unwrap().active_contexts = 1;
+        let pending = QueryAdmissionPendingContextGuard {
+            ticket: Arc::clone(&ticket),
+            task_key,
+            epoch: round.epoch(),
+            released: false,
+            observation: round_owner.into(),
+        };
+
+        drop(pending);
+        drop(round);
+
+        let snapshot = owner.sealed_snapshot().expect("cancelled first acquire must seal the initial owner");
+        assert_eq!(snapshot.footer().terminal, Some(RuntimeTerminalOutcome::Cancelled));
     }
 
     #[test]
@@ -908,11 +1489,17 @@ mod tests {
                 active_streams: 0,
                 epoch: 13,
                 admission_facts_recorded: false,
+                observation: ticket.new_observation(),
             },
         );
 
-        let pending =
-            QueryAdmissionPendingContextGuard { ticket: Arc::clone(&ticket), task_key, epoch: 13, released: false };
+        let pending = QueryAdmissionPendingContextGuard {
+            ticket: Arc::clone(&ticket),
+            task_key,
+            epoch: 13,
+            released: false,
+            observation: ticket.new_observation(),
+        };
         drop(pending);
 
         assert!(!ticket.state.lock().unwrap().rounds.contains_key(&task_key));
@@ -1013,6 +1600,118 @@ mod tests {
     }
 
     #[test]
+    fn sequential_execution_epochs_use_distinct_owners_and_plan_invocations() {
+        let tenant_id = TenantId::new("tenant");
+        let service = admission_only_service(&tenant_id);
+        let initial_owner = RuntimeObservationOwner::new(
+            "stable-external-query",
+            None,
+            RuntimeObservationConfig::bounded(64, 64 * 1024),
+        );
+        let ticket = QueryAdmissionTicket::new_with_observation(
+            QueryAdmissionSource::new(service, tenant_id),
+            None,
+            None,
+            initial_owner.clone(),
+        );
+        let task_context = Arc::new(TaskContext::default());
+
+        let first_round = ticket.begin_execution_round(Arc::clone(&task_context)).unwrap();
+        let first_owner = first_round.observation_owner();
+        let first_plan = nexus_query_engine::observability::RuntimePlanExecutionLifecycle::from_owner(
+            first_owner.clone(),
+            nexus_query_engine::observability::PlanExecutionId::new("epoch-plan-1"),
+        );
+        first_plan.finish(RuntimeTerminalOutcome::Succeeded);
+        let first_snapshot = first_owner.finish_query(RuntimeTerminalOutcome::Succeeded).unwrap();
+        drop(first_round);
+
+        let second_round = ticket.begin_execution_round(Arc::clone(&task_context)).unwrap();
+        let second_owner = second_round.observation_owner();
+        assert!(second_owner.live_snapshot().is_some(), "the next epoch must not reuse the sealed first owner");
+        let second_plan = nexus_query_engine::observability::RuntimePlanExecutionLifecycle::from_owner(
+            second_owner.clone(),
+            nexus_query_engine::observability::PlanExecutionId::new("epoch-plan-2"),
+        );
+        second_plan.finish(RuntimeTerminalOutcome::Succeeded);
+        let second_snapshot = second_owner.finish_query(RuntimeTerminalOutcome::Succeeded).unwrap();
+        drop(second_round);
+
+        assert_eq!(first_snapshot.manifest().query_id, second_snapshot.manifest().query_id);
+        assert!(
+            first_snapshot
+                .events()
+                .iter()
+                .any(|event| { event.plan_execution_id.as_ref().is_some_and(|id| id.as_str() == "epoch-plan-1") })
+        );
+        assert!(
+            second_snapshot
+                .events()
+                .iter()
+                .any(|event| { event.plan_execution_id.as_ref().is_some_and(|id| id.as_str() == "epoch-plan-2") })
+        );
+        assert!(
+            !second_snapshot
+                .events()
+                .iter()
+                .any(|event| { event.plan_execution_id.as_ref().is_some_and(|id| id.as_str() == "epoch-plan-1") })
+        );
+    }
+
+    #[test]
+    fn concurrent_execution_epochs_have_distinct_live_owners_with_shared_external_identity() {
+        let tenant_id = TenantId::new("tenant");
+        let service = admission_only_service(&tenant_id);
+        let ticket = QueryAdmissionTicket::new_with_observation(
+            QueryAdmissionSource::new(service, tenant_id),
+            None,
+            None,
+            RuntimeObservationOwner::new(
+                "concurrent-external-query",
+                None,
+                RuntimeObservationConfig::bounded(64, 64 * 1024),
+            ),
+        );
+        let first_round = ticket.begin_execution_round(Arc::new(TaskContext::default())).unwrap();
+        let second_round = ticket.begin_execution_round(Arc::new(TaskContext::default())).unwrap();
+        let first_owner = first_round.observation_owner();
+        let second_owner = second_round.observation_owner();
+
+        let first_plan = nexus_query_engine::observability::RuntimePlanExecutionLifecycle::from_owner(
+            first_owner.clone(),
+            nexus_query_engine::observability::PlanExecutionId::new("concurrent-plan-1"),
+        );
+        let second_plan = nexus_query_engine::observability::RuntimePlanExecutionLifecycle::from_owner(
+            second_owner.clone(),
+            nexus_query_engine::observability::PlanExecutionId::new("concurrent-plan-2"),
+        );
+        let first_live = first_owner.live_snapshot().unwrap();
+        let second_live = second_owner.live_snapshot().unwrap();
+        assert_eq!(first_live.manifest().query_id, second_live.manifest().query_id);
+        assert!(
+            first_live
+                .events()
+                .iter()
+                .any(|event| { event.plan_execution_id.as_ref().is_some_and(|id| id.as_str() == "concurrent-plan-1") })
+        );
+        assert!(
+            second_live
+                .events()
+                .iter()
+                .any(|event| { event.plan_execution_id.as_ref().is_some_and(|id| id.as_str() == "concurrent-plan-2") })
+        );
+        assert!(first_owner.sealed_snapshot().is_none());
+        assert!(second_owner.sealed_snapshot().is_none());
+
+        first_plan.finish(RuntimeTerminalOutcome::Succeeded);
+        second_plan.finish(RuntimeTerminalOutcome::Succeeded);
+        let _ = first_owner.finish_query(RuntimeTerminalOutcome::Succeeded);
+        let _ = second_owner.finish_query(RuntimeTerminalOutcome::Succeeded);
+        drop(first_round);
+        drop(second_round);
+    }
+
+    #[test]
     fn admission_wrapper_repeated_execute_with_same_context_shares_one_round() {
         let (ticket, _service, _tenant_id) = admission_only_ticket();
         let input = Arc::new(EmptyExec::new(Arc::new(Schema::empty()))) as Arc<dyn ExecutionPlan>;
@@ -1087,6 +1786,7 @@ mod tests {
                 active_streams: 0,
                 epoch: 1,
                 admission_facts_recorded: false,
+                observation: ticket.new_observation(),
             },
         );
         assert_eq!(service.admission_snapshot().unwrap().active_queries, 1);

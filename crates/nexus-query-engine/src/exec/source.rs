@@ -149,7 +149,7 @@ pub fn read_literal_batch_source(
     for batch in &source.batches {
         context.check_cancellation("nexus_query_engine.literal_batch_source.read")?;
         let timer = Instant::now();
-        let frame = DataFrame::from_record_batch(context.runtime(), batch).map_err(|error| {
+        let frame = DataFrame::from_record_batch(&context.runtime()?, batch).map_err(|error| {
             QueryError::from_cudf(
                 "nexus_query_engine.literal_batch_source.read",
                 "failed to import literal Arrow batch into native cudf",
@@ -172,7 +172,8 @@ pub fn read_literal_batch_source(
     }
 
     let other_frame_refs = other_frames.iter().collect::<Vec<_>>();
-    let overrides = execution_overrides(context);
+    let overrides_lease = execution_overrides(context)?;
+    let overrides = overrides_lease.overrides();
     let timer = Instant::now();
     let output = frame.with_execution(&overrides).concat_many(&other_frame_refs).map_err(|error| {
         QueryError::from_cudf(
@@ -210,8 +211,7 @@ fn read_cacheable_local_parquet_source(
     let frame = read_local_parquet_source_uncached(context, source_node_id, source, metrics)?;
     let retained_device_bytes = frame.device_allocated_size_bytes()?;
     let handle = GpuResultHandle::new(context, frame.clone(), Arc::clone(source.output_schema()))?;
-    let insert =
-        cache.insert_if_absent_from_grant_pinned(key, handle, retained_device_bytes, context.memory_grant())?;
+    let insert = cache.insert_if_absent_pinned(context, key, handle, retained_device_bytes)?;
     match insert.outcome {
         GpuLocalParquetSourceCacheInsert::Inserted => {
             metrics.record_source_cache_insert(cache.retained_device_bytes()?);
@@ -261,7 +261,7 @@ fn read_local_parquet_source_uncached(
         }
         let row_count_override = if columns.is_empty() { Some(local_parquet_file_row_count(file)?) } else { None };
         let frame = if columns.is_empty() {
-            context.runtime().empty_dataframe()
+            context.runtime()?.empty_dataframe()
         } else {
             let _cache_read_pin =
                 if file.resolved_source.read_strategy() == crate::source::ParquetReadStrategy::LocalCacheKvikio {
@@ -332,7 +332,8 @@ fn read_local_parquet_source_uncached(
     }
 
     let other_frame_refs = other_frames.iter().collect::<Vec<_>>();
-    let overrides = execution_overrides(context);
+    let overrides_lease = execution_overrides(context)?;
+    let overrides = overrides_lease.overrides();
     let timer = Instant::now();
     let output = frame.with_execution(&overrides).concat_many(&other_frame_refs).map_err(|error| {
         QueryError::from_cudf(
@@ -473,21 +474,17 @@ pub(super) fn read_local_parquet_chunk_with_reader_dynamic_filter_count(
     let token = context
         .execution_budget_token(ExecutionBudgetRequest::new(budget_bytes).with_boundary(budget_boundary))
         .map_err(|error| {
-            cudf_error_for_chunk_with_budget_details(
-                "nexus_query_engine.local_parquet_chunk.budget",
-                "failed to create bounded native local parquet source chunk budget token",
-                error,
-                chunk,
-            )
-            .with_fact("path", parquet_chunk_path_fact(chunk))
-            .with_fact("chunk_index", chunk.chunk_index)
-            .with_fact("file_index", chunk.file_index)
-            .with_fact("read_columns", chunk.read_columns.len())
-            .with_row_group_facts(chunk)
+            error
+                .with_fact("path", parquet_chunk_path_fact(chunk))
+                .with_fact("chunk_index", chunk.chunk_index)
+                .with_fact("file_index", chunk.file_index)
+                .with_fact("read_columns", chunk.read_columns.len())
+                .with_row_group_facts(chunk)
         })?;
+    let _io_lease = context.acquire_io_lease("nexus_query_engine.local_parquet_chunk.read")?;
     let read_timer = Instant::now();
     let outcome = DataFrame::read_parquet_source_chunk_with_budget_with_evidence(
-        context.runtime(),
+        &context.runtime()?,
         &cudf_source,
         &cudf_chunk,
         SourceReadMode::ExecutionFrame,
@@ -579,7 +576,7 @@ fn count_star_probe_weight_frame(
         .with_fact("max_row_count", i64::MAX)
     })?;
     let timer = Instant::now();
-    let series = context.runtime().series(&[count]).map_err(|error| {
+    let series = context.runtime()?.series(&[count]).map_err(|error| {
         QueryError::from_cudf(
             "nexus_query_engine.local_parquet_source.count_star_probe",
             "failed to construct native count-star probe weight input",
@@ -664,18 +661,13 @@ pub(super) fn read_local_parquet_chunk_batch(
     let token = context
         .execution_budget_token(ExecutionBudgetRequest::new(budget_bytes).with_boundary(budget_boundary))
         .map_err(|error| {
-            QueryError::from_cudf_with_budget_details(
-                "nexus_query_engine.local_parquet_chunk_batch.budget",
-                "failed to create bounded native local parquet source chunk batch budget token",
-                error,
-            )
-            .with_fact("batch_index", batch.batch_index)
-            .with_fact("chunk_count", batch.chunk_count())
+            error.with_fact("batch_index", batch.batch_index).with_fact("chunk_count", batch.chunk_count())
         })?;
 
+    let _io_lease = context.acquire_io_lease("nexus_query_engine.local_parquet_chunk_batch.read")?;
     let read_timer = Instant::now();
     let outcome = DataFrame::read_parquet_source_chunks_with_budget_with_evidence(
-        context.runtime(),
+        &context.runtime()?,
         &cudf_source,
         &cudf_chunks,
         SourceReadMode::ExecutionFrame,

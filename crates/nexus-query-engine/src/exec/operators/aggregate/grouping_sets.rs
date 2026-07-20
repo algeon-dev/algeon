@@ -242,7 +242,8 @@ fn execute_prefix_rollup_grouping_sets_groupby(
                 )?
             },
             None => {
-                let overrides = execution_overrides(context);
+                let overrides_lease = execution_overrides(context)?;
+                let overrides = overrides_lease.overrides();
                 execute_groupby_aggregate(&overrides, source, &rollup_aggregate, operation)?
             },
         };
@@ -312,7 +313,8 @@ fn execute_single_grouping_set_groupby(
                 )
             },
             None => {
-                let overrides = execution_overrides(context);
+                let overrides_lease = execution_overrides(context)?;
+                let overrides = overrides_lease.overrides();
                 execute_groupby_aggregate(&overrides, working, aggregate, operation)
             },
         };
@@ -332,7 +334,8 @@ fn execute_single_grouping_set_groupby(
             )?
         },
         None => {
-            let overrides = execution_overrides(context);
+            let overrides_lease = execution_overrides(context)?;
+            let overrides = overrides_lease.overrides();
             execute_groupby_aggregate(&overrides, frame, &grouping_set_aggregate, operation)?
         },
     };
@@ -431,7 +434,8 @@ fn complete_grouping_set_output(
             })
             .map(|outcome| budgeted_value(outcome, metrics, operation)),
         None => {
-            let overrides = execution_overrides(context);
+            let overrides_lease = execution_overrides(context)?;
+            let overrides = overrides_lease.overrides();
             output.with_execution(&overrides).with_columns(expressions).map_err(|error| {
                 QueryError::from_cudf(operation, "failed to complete grouping-set aggregate output columns", error)
             })
@@ -474,7 +478,8 @@ fn with_grouping_id_column(
             })
             .map(|outcome| budgeted_value(outcome, metrics, operation)),
         None => {
-            let overrides = execution_overrides(context);
+            let overrides_lease = execution_overrides(context)?;
+            let overrides = overrides_lease.overrides();
             frame.with_execution(&overrides).with_columns(expressions).map_err(|error| {
                 QueryError::from_cudf(operation, "failed to set prefix-rollup grouping-id column", error)
             })
@@ -629,7 +634,8 @@ fn prepare_grouping_set_frame(
             })
             .map(|outcome| budgeted_value(outcome, metrics, operation)),
         None => {
-            let overrides = execution_overrides(context);
+            let overrides_lease = execution_overrides(context)?;
+            let overrides = overrides_lease.overrides();
             frame.with_execution(&overrides).with_columns(expressions).map_err(|error| {
                 QueryError::from_cudf(operation, "failed to prepare grouping-set aggregate columns", error)
             })
@@ -685,7 +691,11 @@ fn concat_grouping_set_outputs(
     let other_refs = outputs.iter().collect::<Vec<_>>();
     match token {
         Some(token) => first.with_execution(&token.execution_overrides()).concat_many(&other_refs),
-        None => first.with_execution(&execution_overrides(context)).concat_many(&other_refs),
+        None => {
+            let overrides_lease = execution_overrides(context)?;
+            let overrides = overrides_lease.overrides();
+            first.with_execution(&overrides).concat_many(&other_refs)
+        },
     }
     .map_err(|error| QueryError::from_cudf(operation, "failed to concatenate grouping-set aggregate outputs", error))
 }

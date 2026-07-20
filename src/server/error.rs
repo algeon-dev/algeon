@@ -74,6 +74,30 @@ impl ServerError {
         Self::new(ErrorCode::Internal, "datafusion_nexus.server.startup", message)
     }
 
+    pub(crate) fn shutdown(reason: &'static str, message: impl Into<String>) -> Self {
+        Self::new(ErrorCode::Internal, "datafusion_nexus.server.shutdown", message).with_fact("reason", reason)
+    }
+
+    pub(crate) fn shutdown_with_source(
+        reason: &'static str,
+        message: impl Into<String>,
+        source: impl StdError + Send + Sync + 'static,
+    ) -> Self {
+        Self::shutdown(reason, message).with_source(source)
+    }
+
+    pub(crate) fn shutdown_from_shared_adapter_error(
+        reason: &'static str,
+        message: impl Into<String>,
+        source: Arc<Error>,
+    ) -> Self {
+        Self {
+            inner: Error::new(source.code(), "datafusion_nexus.server.shutdown", message)
+                .with_fact("reason", reason)
+                .with_source(source),
+        }
+    }
+
     pub(crate) fn builder_validation(reason: &'static str, message: impl Into<String>) -> Self {
         Self::new(ErrorCode::InvalidRequest, "datafusion_nexus.server.builder", message).with_fact("reason", reason)
     }
@@ -949,6 +973,8 @@ mod tests {
             (ErrorCode::DataFusionPlanning, Code::InvalidArgument),
             (ErrorCode::UnsupportedOperator, Code::Unimplemented),
             (ErrorCode::ServiceOverloaded, Code::ResourceExhausted),
+            (ErrorCode::SizeOverflow, Code::ResourceExhausted),
+            (ErrorCode::HostMaterializationLimitExceeded, Code::ResourceExhausted),
             (ErrorCode::CudfDependencyFailure, Code::Internal),
             (ErrorCode::CudfInvariantViolation, Code::Internal),
             (ErrorCode::Internal, Code::Internal),
@@ -1167,6 +1193,24 @@ mod tests {
         assert_eq!(status.code(), Code::ResourceExhausted);
         assert_error_metadata(&status, "service_overloaded", "resource_exhausted", "temporary");
         assert_eq!(status.message(), "service overloaded; retry later");
+        assert_no_diagnostic_fields(status.message());
+    }
+
+    #[test]
+    fn permanent_host_materialization_limit_projects_flight_resource_exhausted_without_retryability() {
+        let status = datafusion_error_to_status_for_operation(
+            Error::new(
+                ErrorCode::HostMaterializationLimitExceeded,
+                "datafusion_nexus.native_exec.host_batch_cursor",
+                "one Arrow row exceeds the configured host materialization ceiling",
+            )
+            .into(),
+            TEST_OPERATION,
+        );
+
+        assert_eq!(status.code(), Code::ResourceExhausted);
+        assert_error_metadata(&status, "host_materialization_limit_exceeded", "resource_exhausted", "permanent");
+        assert!(status.message().contains("resource exhausted"));
         assert_no_diagnostic_fields(status.message());
     }
 

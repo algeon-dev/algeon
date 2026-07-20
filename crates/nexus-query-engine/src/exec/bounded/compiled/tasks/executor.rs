@@ -36,13 +36,20 @@ impl<'a> CompiledGpuTaskExecutor<'a> {
         pipeline: &'a CompiledPipeline,
         gpu_inputs: &'a GpuResidentInputMap,
         metrics: &'a mut QueryMetrics,
+        observation_scope: Option<&crate::observability::RuntimeExecutionObservationScope>,
     ) -> Result<Self> {
         let Some(device_budget_bytes) = context.bounded_device_budget_bytes() else {
             return Err(invalid("compiled bounded task execution requires bounded memory control")
                 .with_fact("memory_control_policy", context.memory_control_policy().as_str()));
         };
-        let reservations =
-            ReservationTracker::new_for_compiled_context(context, plan, pipeline, device_budget_bytes, metrics)?;
+        let reservations = ReservationTracker::new_for_compiled_context(
+            context,
+            plan,
+            pipeline,
+            device_budget_bytes,
+            metrics,
+            observation_scope,
+        )?;
         Ok(Self {
             context,
             plan,
@@ -741,7 +748,7 @@ impl<'a> CompiledGpuTaskExecutor<'a> {
         let node = join_node(self.plan, task, node_id)?;
         let build = if state.can_consume_task_input_resource(task, input) {
             let input_payload = state.consume_task_input_resource(task, input)?.into_payload();
-            self.reservations.set_diagnostic_context(Some(task.id()), Some(input));
+            let _resource_observation_scope = self.reservations.enter_resource_observation_scope(input);
             let input_frame = match input_payload.payload {
                 CompiledGpuResourcePayload::JoinLeafLocalParquetSource(stream) => {
                     let stream = self.apply_dynamic_filters_to_source_stream(*stream)?;
@@ -866,7 +873,7 @@ impl<'a> CompiledGpuTaskExecutor<'a> {
         }
         let probe = if state.can_consume_task_input_resource(task, input) {
             let input_payload = state.consume_task_input_resource(task, input)?.into_payload();
-            self.reservations.set_diagnostic_context(Some(task.id()), Some(input));
+            let _resource_observation_scope = self.reservations.enter_resource_observation_scope(input);
             match input_payload.payload {
                 CompiledGpuResourcePayload::JoinLeafLocalParquetSource(stream) => {
                     let stream = self.apply_dynamic_filters_to_join_leaf_stream(node_id, *stream)?;
@@ -1905,12 +1912,31 @@ impl CompiledTaskExecutor for CompiledGpuTaskExecutor<'_> {
         task: &PipelineTask,
         state: &mut CompiledPipelineState<Self::Resource>,
     ) -> Result<CompiledTaskOutput<Self::Resource>> {
+        let attempt_id = crate::observability::task_attempt_id(task.id().to_string(), 1);
+        let span_id = crate::observability::RuntimeSpanId::new(
+            u64::try_from(task.id().index()).unwrap_or(u64::MAX).saturating_add(2),
+        );
+        self.execute_task_attempt(task, state, &attempt_id, span_id)
+    }
+
+    fn execute_task_attempt(
+        &mut self,
+        task: &PipelineTask,
+        state: &mut CompiledPipelineState<Self::Resource>,
+        attempt_id: &crate::observability::TaskAttemptId,
+        span_id: crate::observability::RuntimeSpanId,
+    ) -> Result<CompiledTaskOutput<Self::Resource>> {
         self.context.check_cancellation("nexus_query_engine.exec.bounded.compiled.task")?;
         validate_task_runtime_gates(self.pipeline, task)?;
         self.metrics.record_compiled_pipeline_task_mapping(task.id(), task.kind().as_str(), task.plan_node());
         self.metrics.record_compiled_pipeline_task_execution(task.id(), task.kind().as_str());
-        self.metrics.set_current_compiled_task(task.id());
-        self.reservations.set_diagnostic_context(Some(task.id()), task_diagnostic_resident_resource(task));
+        let _task_observation_scope = self.reservations.enter_task_observation_scope(
+            attempt_id.clone(),
+            task.kind().as_str(),
+            span_id,
+            task_diagnostic_resident_resource(task),
+        );
+        let budget_event_start = self.metrics.budgeted_execution_event_count();
         let timer = Instant::now();
         let result = match task.kind() {
             PipelineTaskKind::SourceRead
@@ -1927,36 +1953,40 @@ impl CompiledTaskExecutor for CompiledGpuTaskExecutor<'_> {
             PipelineTaskKind::Union => self.execute_union_task(task, state),
             PipelineTaskKind::SinkMaterialize => self.execute_sink_materialize_task(task, state),
         };
+        self.metrics.record_task_budget_observations_since(task.id(), budget_event_start);
         self.metrics.record_task_elapsed(task.id(), task.kind().as_str(), timer.elapsed());
-        self.reservations.clear_diagnostic_context();
-        self.metrics.clear_current_compiled_task();
         result
     }
 
     fn release_resource(&mut self, resource: ResidentResourceId, payload: Self::Resource) -> Result<()> {
+        let _resource_observation_scope = self.reservations.enter_resource_observation_scope(resource);
         match payload.payload {
             CompiledGpuResourcePayload::ResidentFrame { frame, .. } => {
-                self.reservations.set_diagnostic_context(None::<PipelineTaskId>, Some(resource));
                 self.reservations.release(frame.reservation, self.metrics);
-                self.reservations.clear_diagnostic_context();
             },
             CompiledGpuResourcePayload::ResidentFrameStream(stream) => {
-                self.reservations.set_diagnostic_context(None::<PipelineTaskId>, Some(resource));
                 stream.release_all(&mut self.reservations, self.metrics);
-                self.reservations.clear_diagnostic_context();
             },
             CompiledGpuResourcePayload::JoinLeafLocalParquetSource(_) => {},
             CompiledGpuResourcePayload::PendingJoinLeafLocalParquetSource(prefetch) => {
-                self.reservations.set_diagnostic_context(None::<PipelineTaskId>, Some(resource));
                 prefetch.abandon(&mut self.reservations, self.metrics);
-                self.reservations.clear_diagnostic_context();
             },
         }
         self.acknowledge_requested_grant_shrink()?;
         Ok(())
     }
 
+    fn cleanup_resource(&mut self, resource: ResidentResourceId, payload: Self::Resource) -> Result<()> {
+        let _cleanup_observation_scope = self
+            .reservations
+            .enter_release_observation_scope(crate::observability::RuntimeReservationDisposition::CleanupRelease);
+        self.release_resource(resource, payload)
+    }
+
     fn cleanup_after_error(&mut self) -> Result<()> {
+        let _cleanup_observation_scope = self
+            .reservations
+            .enter_release_observation_scope(crate::observability::RuntimeReservationDisposition::CleanupRelease);
         while let Some((_, probe)) = self.join_probes.pop_first() {
             release_bounded_compiled_join_probe_state(probe, &mut self.reservations, self.metrics);
         }

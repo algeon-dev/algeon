@@ -1,6 +1,8 @@
 use super::{node::projected_schema, *};
+
 pub(super) fn execute_cugraph_query_to_host(
     context: &ExecutionContext,
+    metrics: &mut GraphExecutionMetrics<'_>,
     spec: &CugraphAlgorithmSpec,
     edge_schema: SchemaRef,
     edge_frame: GpuDataFrame,
@@ -9,7 +11,7 @@ pub(super) fn execute_cugraph_query_to_host(
     limit: Option<usize>,
     edge_normalize_inserted: bool,
     singleflight_leader: Option<&mut GraphBfsLeader>,
-) -> Result<(RecordBatch, QueryMetrics)> {
+) -> Result<RecordBatch> {
     let graph_context = graph_algorithm_execution_context(context)?;
     let plan = cugraph_query_plan(
         &graph_context,
@@ -25,14 +27,18 @@ pub(super) fn execute_cugraph_query_to_host(
     if let Some(leader) = singleflight_leader {
         leader.record_traversal_submission();
     }
-    let result = execute_query_plan_with_gpu_inputs(&graph_context, &plan.plan, &plan.inputs).map_err(|error| {
-        DataFusionError::from(Error::from_native(
-            "datafusion_nexus.cugraph_sql.execute",
-            "native cuGraph SQL query execution failed",
-            error,
-        ))
-    })?;
-    let (output, metrics) = result.into_parts();
+    let outcome = execute_query_plan_with_gpu_inputs_observed(
+        &graph_context,
+        &plan.plan,
+        &plan.inputs,
+        metrics.runtime_observation_config(),
+    );
+    let output = finalize_graph_query_outcome(
+        metrics,
+        outcome,
+        "datafusion_nexus.cugraph_sql.execute",
+        "native cuGraph SQL query execution failed",
+    )?;
     let QueryOutput::HostArrow(batch) = output else {
         return Err(Error::new(
             ErrorCode::InvalidExecutionPlan,
@@ -41,11 +47,12 @@ pub(super) fn execute_cugraph_query_to_host(
         )
         .into());
     };
-    Ok((batch, metrics))
+    Ok(batch)
 }
 
 pub(super) fn execute_cugraph_query_to_gpu_with_options(
     context: &ExecutionContext,
+    metrics: &mut GraphExecutionMetrics<'_>,
     spec: &CugraphAlgorithmSpec,
     edge_schema: SchemaRef,
     edge_frame: GpuDataFrame,
@@ -54,7 +61,7 @@ pub(super) fn execute_cugraph_query_to_gpu_with_options(
     limit: Option<usize>,
     edge_normalize_inserted: bool,
     singleflight_leader: Option<&mut GraphBfsLeader>,
-) -> Result<(GpuResultHandle, QueryMetrics)> {
+) -> Result<GpuResultHandle> {
     let graph_context = graph_algorithm_execution_context(context)?;
     let plan = cugraph_query_plan(
         &graph_context,
@@ -70,14 +77,18 @@ pub(super) fn execute_cugraph_query_to_gpu_with_options(
     if let Some(leader) = singleflight_leader {
         leader.record_traversal_submission();
     }
-    let result = execute_query_plan_with_gpu_inputs(&graph_context, &plan.plan, &plan.inputs).map_err(|error| {
-        DataFusionError::from(Error::from_native(
-            "datafusion_nexus.cugraph_sql.execute_gpu",
-            "native cuGraph SQL GPU-resident query execution failed",
-            error,
-        ))
-    })?;
-    let (output, metrics) = result.into_parts();
+    let outcome = execute_query_plan_with_gpu_inputs_observed(
+        &graph_context,
+        &plan.plan,
+        &plan.inputs,
+        metrics.runtime_observation_config(),
+    );
+    let output = finalize_graph_query_outcome(
+        metrics,
+        outcome,
+        "datafusion_nexus.cugraph_sql.execute_gpu",
+        "native cuGraph SQL GPU-resident query execution failed",
+    )?;
     let QueryOutput::GpuResident(handle) = output else {
         return Err(Error::new(
             ErrorCode::InvalidExecutionPlan,
@@ -87,7 +98,7 @@ pub(super) fn execute_cugraph_query_to_gpu_with_options(
         .with_fact("result_sink", "host_arrow")
         .into());
     };
-    Ok((handle, metrics))
+    Ok(handle)
 }
 
 pub(super) fn graph_algorithm_execution_context(context: &ExecutionContext) -> Result<ExecutionContext> {

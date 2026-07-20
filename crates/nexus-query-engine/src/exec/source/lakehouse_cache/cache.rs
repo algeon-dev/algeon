@@ -197,12 +197,13 @@ pub(in crate::exec::source) fn publish_lakehouse_optimized_batch_frame(
 
     let temp_path = lakehouse_cache_temp_path(&entry.path);
     let row_group_size_rows = optimized_batch_row_group_size_rows(frame.num_rows());
+    let _io_lease = context.acquire_io_lease("nexus_query_engine.lakehouse_cache.optimized_batch.write")?;
     let write_result = frame.write_parquet_with_options(
         cudf::frame::dataframe::ParquetWriteOptions::builder()
             .filepath(&temp_path)
             .row_group_size_rows(row_group_size_rows)
             .dictionary_policy(cudf::frame::dataframe::ParquetDictionaryPolicy::Adaptive)
-            .with_runtime(context.runtime())
+            .with_runtime(&context.runtime()?)
             .build(),
     );
     if let Err(error) = write_result {

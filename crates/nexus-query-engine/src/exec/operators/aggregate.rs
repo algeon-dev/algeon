@@ -201,7 +201,8 @@ pub(in crate::exec) fn execute_aggregate(
     }
     let expected_output_names = output_schema.fields().iter().map(|field| field.name().clone()).collect::<Vec<_>>();
 
-    let overrides = execution_overrides(context);
+    let overrides_lease = execution_overrides(context)?;
+    let overrides = overrides_lease.overrides();
     let input_rows = frame.num_rows() as u64;
     let timer = Instant::now();
     let mut output = execute_groupby_aggregate(&overrides, frame, &aggregate, "nexus_query_engine.aggregate.execute")?;
@@ -488,7 +489,8 @@ pub(in crate::exec) fn execute_aggregate_with_budget_for_node(
     }
     let expected_output_names = output_schema.fields().iter().map(|field| field.name().clone()).collect::<Vec<_>>();
 
-    let overrides = execution_overrides(context);
+    let overrides_lease = execution_overrides(context)?;
+    let overrides = overrides_lease.overrides();
     let input_rows = frame.num_rows() as u64;
     let selection_timer = Instant::now();
     let mut capability_decision =
@@ -1022,7 +1024,8 @@ fn execute_partial_aggregate_with_budget_single_pass(
             metrics,
         );
     }
-    let overrides = execution_overrides(context);
+    let overrides_lease = execution_overrides(context)?;
+    let overrides = overrides_lease.overrides();
     let timer = Instant::now();
     let mut output = match execute_groupby_aggregate_with_budget(
         &overrides,
